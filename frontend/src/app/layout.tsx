@@ -9,6 +9,7 @@ import Footer from "@/components/Footer";
 import { AuthProvider } from "@/lib/auth";
 import { NotificationsProvider } from "@/lib/notifications";
 import { ToastProvider } from "@/components/Toast";
+import OnboardingModalWrapper from "@/components/OnboardingModalWrapper";
 
 export async function generateMetadata(): Promise<Metadata> {
   const t = await getTranslations("metadata");
@@ -50,6 +51,7 @@ export default async function RootLayout({
             <NotificationsProvider>
               <ToastProvider>
                 <Header />
+                <OnboardingModalWrapper />
                 <main id="main-content" className="flex-1">{children}</main>
                 <Footer />
               </ToastProvider>

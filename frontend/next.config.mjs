@@ -44,6 +44,17 @@ const cspValue = cspDirectives.join("; ");
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   output: 'standalone',
+  // Speed up "Collecting build traces" by excluding heavy / unused packages
+  outputFileTracingExcludes: {
+    '*': [
+      '@swc/core',
+      'esbuild',
+      '@esbuild/**',
+      'playwright',
+      '@playwright/**',
+      'sharp',
+    ],
+  },
   // Derive NEXT_PUBLIC_APP_TAG/VERSION from APP_TAG/VERSION so .env only
   // needs one pair of values. NEXT_PUBLIC_* still wins if set explicitly.
   env: {

@@ -11,7 +11,6 @@ import PaperCardSkeleton from "@/components/skeletons/PaperCardSkeleton";
 import PaperFilters from "@/components/PaperFilters";
 import Pagination from "@/components/Pagination";
 import LandingPage from "@/components/LandingPage";
-import OnboardingModal from "@/components/OnboardingModal";
 import { useAuth } from "@/lib/auth";
 
 const ITEMS_PER_PAGE = 10;
@@ -32,7 +31,6 @@ export default function HomePage() {
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-
   // Fetch disciplines once on mount (only when connected)
   useEffect(() => {
     if (!isConnected) return;
@@ -94,9 +92,6 @@ export default function HomePage() {
 
   return (
     <div>
-      {/* Onboarding modal for first-time connected users */}
-      <OnboardingModal username={username} />
-
       {/* Hero Section */}
       <section className="relative bg-white border-b border-parchment-dark overflow-hidden">
         <div className="absolute inset-0 geo-pattern opacity-60" />

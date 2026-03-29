@@ -9,9 +9,11 @@ const ONBOARDING_DISMISSED_KEY = "pevo_onboarding_dismissed";
 interface OnboardingModalProps {
   /** Show the modal (typically: user just connected for the first time) */
   username: string | null;
+  /** Hide the "Get Accredited" step when the user is already accredited */
+  isAccredited?: boolean;
 }
 
-export default function OnboardingModal({ username }: OnboardingModalProps) {
+export default function OnboardingModal({ username, isAccredited }: OnboardingModalProps) {
   const t = useTranslations("onboarding");
   const [open, setOpen] = useState(false);
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -99,6 +101,40 @@ export default function OnboardingModal({ username }: OnboardingModalProps) {
         <p className="text-sm text-ink-muted mb-6">{t("description")}</p>
 
         <div className="space-y-4">
+          {/* Accreditation — only shown when user is not yet accredited */}
+          {!isAccredited && (
+          <div className="flex items-start gap-3">
+            <div className="flex-shrink-0 w-10 h-10 rounded-full bg-pevo-crimson-light flex items-center justify-center">
+              <svg className="w-5 h-5 text-pevo-crimson" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z" />
+              </svg>
+            </div>
+            <div className="flex-1">
+              <h3 className="text-sm font-semibold text-ink">{t("accreditTitle")}</h3>
+              <p className="text-xs text-ink-muted">{t("accreditDescription")}</p>
+            </div>
+            <Link href="/accreditation" className="btn-primary text-xs no-underline" onClick={dismiss}>
+              {t("accreditButton")}
+            </Link>
+          </div>
+          )}
+
+          {/* Browse */}
+          <div className="flex items-start gap-3">
+            <div className="flex-shrink-0 w-10 h-10 rounded-full bg-pevo-teal-light flex items-center justify-center">
+              <svg className="w-5 h-5 text-pevo-teal" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 6.042A8.967 8.967 0 006 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 016 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 016-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0018 18a8.967 8.967 0 00-6 2.292m0-14.25v14.25" />
+              </svg>
+            </div>
+            <div className="flex-1">
+              <h3 className="text-sm font-semibold text-ink">{t("browseTitle")}</h3>
+              <p className="text-xs text-ink-muted">{t("browseDescription")}</p>
+            </div>
+            <Link href="/" className="btn-primary text-xs no-underline" onClick={dismiss}>
+              {t("browseButton")}
+            </Link>
+          </div>
+
           {/* Publish */}
           <div className="flex items-start gap-3">
             <div className="flex-shrink-0 w-10 h-10 rounded-full bg-pevo-green-light flex items-center justify-center">
@@ -112,38 +148,6 @@ export default function OnboardingModal({ username }: OnboardingModalProps) {
             </div>
             <Link href="/publish" className="btn-primary text-xs no-underline" onClick={dismiss}>
               {t("publishButton")}
-            </Link>
-          </div>
-
-          {/* Browse */}
-          <div className="flex items-start gap-3">
-            <div className="flex-shrink-0 w-10 h-10 rounded-full bg-pevo-teal-light flex items-center justify-center">
-              <svg className="w-5 h-5 text-pevo-teal" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M12 6.042A8.967 8.967 0 006 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 016 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 016-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0018 18a8.967 8.967 0 00-6 2.292m0-14.25v14.25" />
-              </svg>
-            </div>
-            <div className="flex-1">
-              <h3 className="text-sm font-semibold text-ink">{t("browseTitle")}</h3>
-              <p className="text-xs text-ink-muted">{t("browseDescription")}</p>
-            </div>
-            <Link href="/" className="btn-secondary text-xs no-underline" onClick={dismiss}>
-              {t("browseButton")}
-            </Link>
-          </div>
-
-          {/* Accreditation */}
-          <div className="flex items-start gap-3">
-            <div className="flex-shrink-0 w-10 h-10 rounded-full bg-pevo-crimson-light flex items-center justify-center">
-              <svg className="w-5 h-5 text-pevo-crimson" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z" />
-              </svg>
-            </div>
-            <div className="flex-1">
-              <h3 className="text-sm font-semibold text-ink">{t("accreditTitle")}</h3>
-              <p className="text-xs text-ink-muted">{t("accreditDescription")}</p>
-            </div>
-            <Link href="/accreditation" className="btn-secondary text-xs no-underline" onClick={dismiss}>
-              {t("accreditButton")}
             </Link>
           </div>
         </div>
