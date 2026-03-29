@@ -1,0 +1,351 @@
+import { Router, type Request, type Response } from 'express';
+import { PrivateKey } from '@hiveio/dhive';
+import { getPool, isHafAvailable } from '../db.js';
+import { hiveClient } from '../hive.js';
+import { config } from '../config.js';
+import { sendOk, sendError } from '../response.js';
+import { parseMeta, isPevoBridgePaper } from '../helpers.js';
+import { getAccreditedSet } from '../accreditation.js';
+import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';
+import { hafCache } from '../cache.js';
+import { logger } from '../logger.js';
+import { rateLimit, byIp, byAccount } from '../middleware/rateLimit.js';
+import { T } from '../hafsql.js';
+import {
+  parseIdentifier,
+  resolveToCanonical,
+  bridgePermlink,
+  lookupPreprint,
+  buildBridgeBody,
+  buildBridgeMetadata,
+} from '../bridge.js';
+
+const router = Router();
+
+// Per-endpoint rate limiters (per API contract)
+const lookupLimiter = rateLimit({ windowMs: 60_000, max: 20, keyFn: byIp });
+const registerLimiter = rateLimit({ windowMs: 3_600_000, max: 10, keyFn: byIp });
+const updateLimiter = rateLimit({ windowMs: 3_600_000, max: 10, keyFn: byIp });
+
+// ──────────────────────────────────────────────
+// GET /api/bridge/lookup?identifier=...
+// ──────────────────────────────────────────────
+
+router.get('/lookup', lookupLimiter, async (req: Request, res: Response) => {
+  const identifier = req.query.identifier as string;
+  if (!identifier || identifier.trim().length === 0) {
+    return sendError(res, 400, 'BAD_REQUEST', 'Query parameter "identifier" is required');
+  }
+
+  try {
+    const result = await lookupPreprint(identifier);
+    if (!result) {
+      return sendError(res, 404, 'NOT_FOUND', 'No preprint found for the given identifier');
+    }
+    sendOk(res, result);
+  } catch (err) {
+    logger.error({ err: (err as Error).message }, 'Preprint lookup failed');
+    sendError(res, 500, 'INTERNAL_ERROR', 'Failed to fetch preprint metadata');
+  }
+});
+
+// ──────────────────────────────────────────────
+// GET /api/bridge/check?identifier=...
+// ──────────────────────────────────────────────
+
+async function checkExistingBridge(identifier: string, resolvedParsed?: { type: 'arxiv' | 'doi'; id: string } | null) {
+  const parsed = resolvedParsed ?? parseIdentifier(identifier);
+  if (!parsed || (parsed.type !== 'arxiv' && parsed.type !== 'doi')) {
+    return { exists: false, author: null, permlink: null, title: null, created: null };
+  }
+
+  const permlink = bridgePermlink(parsed);
+
+  // Strategy 1: permlink check via Hive API (works without HAF)
+  try {
+    // Check all possible authors by querying HAF first
+    const pool = getPool();
+    if (pool && isHafAvailable()) {
+      // Metadata check: find by source DOI or arXiv ID
+      const sourceField = parsed.type === 'doi' ? 'doi' : 'arxiv_id';
+      const result = await pool.query(
+        `SELECT c.author, c.permlink, c.title, c.created
+         FROM ${T.comments} c
+         WHERE c.parent_author = '' AND c.parent_permlink = $2
+           AND (c.json_metadata -> $2 ->> 'type') = 'bridge_paper'
+           AND c.json_metadata ->> 'app' LIKE $3
+           AND (c.json_metadata -> $2 -> 'source' ->> $4) = $1
+         LIMIT 1`,
+        [parsed.id, config.appTag, `${config.appTag}/%`, sourceField],
+      );
+      if (result.rows.length > 0) {
+        const row = result.rows[0];
+        return { exists: true, author: row.author, permlink: row.permlink, title: row.title, created: row.created };
+      }
+
+      // Also check by deterministic permlink
+      const permlinkResult = await pool.query(
+        `SELECT c.author, c.permlink, c.title, c.created
+         FROM ${T.comments} c
+         WHERE c.parent_author = '' AND c.parent_permlink = $2
+           AND c.permlink = $1
+           AND (c.json_metadata -> $2 ->> 'type') = 'bridge_paper'
+           AND c.json_metadata ->> 'app' LIKE $3
+         LIMIT 1`,
+        [permlink, config.appTag, `${config.appTag}/%`],
+      );
+      if (permlinkResult.rows.length > 0) {
+        const row = permlinkResult.rows[0];
+        return { exists: true, author: row.author, permlink: row.permlink, title: row.title, created: row.created };
+      }
+    }
+  } catch (err) {
+    logger.error({ err: (err as Error).message }, 'Bridge check HAF query failed');
+  }
+
+  return { exists: false, author: null, permlink: null, title: null, created: null };
+}
+
+router.get('/check', lookupLimiter, async (req: Request, res: Response) => {
+  const identifier = req.query.identifier as string;
+  if (!identifier || identifier.trim().length === 0) {
+    return sendError(res, 400, 'BAD_REQUEST', 'Query parameter "identifier" is required');
+  }
+
+  try {
+    const parsed = await resolveToCanonical(identifier);
+    if (!parsed) {
+      return sendError(res, 400, 'BAD_REQUEST', 'Could not resolve identifier — try pasting a DOI or arXiv ID directly');
+    }
+
+    const cacheKey = `bridge-check:${parsed.type}:${parsed.id}`;
+    const result = await hafCache.getOrSet(cacheKey, () => checkExistingBridge(identifier, parsed), 30_000);
+    sendOk(res, result);
+  } catch (err) {
+    logger.error({ err: (err as Error).message }, 'Bridge check failed');
+    sendError(res, 500, 'INTERNAL_ERROR', 'Failed to check bridge paper status');
+  }
+});
+
+// ──────────────────────────────────────────────
+// POST /api/bridge/register
+// ──────────────────────────────────────────────
+
+router.post('/register', registerLimiter, verifyHiveSignature, async (req: Request, res: Response) => {
+  const username = req.hiveUsername!;
+  const { identifier, discipline, keywords, language } = req.body as {
+    identifier?: string;
+    discipline?: string;
+    keywords?: string[];
+    language?: string;
+  };
+
+  if (!identifier || typeof identifier !== 'string' || identifier.trim().length === 0) {
+    return sendError(res, 400, 'BAD_REQUEST', 'Field "identifier" is required');
+  }
+
+  // Verify accreditation
+  const accreditedSet = await getAccreditedSet([username]);
+  if (!accreditedSet.has(username)) {
+    return sendError(res, 403, 'FORBIDDEN', 'Only accredited researchers can register bridge papers');
+  }
+
+  if (!config.pevoBridgePostingKey) {
+    return sendError(res, 500, 'INTERNAL_ERROR', 'Bridge posting key not configured');
+  }
+
+  // Resolve identifier to canonical DOI or arXiv ID
+  let parsed;
+  try {
+    parsed = await resolveToCanonical(identifier);
+  } catch (err) {
+    logger.error({ err: (err as Error).message }, 'Identifier resolution failed');
+    return sendError(res, 500, 'INTERNAL_ERROR', 'Failed to resolve identifier');
+  }
+  if (!parsed) {
+    return sendError(res, 400, 'BAD_REQUEST', 'Could not resolve identifier — try pasting a DOI or arXiv ID directly');
+  }
+
+  // Check for duplicates
+  const existing = await checkExistingBridge(identifier, parsed);
+  if (existing.exists) {
+    return res.status(409).json({
+      status: 'error',
+      error: {
+        code: 'DUPLICATE',
+        message: 'This preprint is already registered on PEvO',
+        existing_author: existing.author,
+        existing_permlink: existing.permlink,
+      },
+    });
+  }
+
+  // Fetch metadata from source
+  let meta;
+  try {
+    meta = await lookupPreprint(identifier);
+  } catch (err) {
+    logger.error({ err: (err as Error).message }, 'Preprint metadata fetch failed during registration');
+    return sendError(res, 500, 'INTERNAL_ERROR', 'Failed to fetch preprint metadata from source');
+  }
+  if (!meta) {
+    return sendError(res, 400, 'BAD_REQUEST', 'No preprint found for the given identifier');
+  }
+
+  // Build and broadcast the Hive post under the bridge account
+  const permlink = bridgePermlink(parsed);
+  const body = buildBridgeBody(meta, username);
+  const jsonMetadata = buildBridgeMetadata(
+    meta,
+    username,
+    discipline || '',
+    keywords || [],
+    language || 'en',
+    1,
+    meta.title,
+    body,
+  );
+
+  try {
+    const key = PrivateKey.fromString(config.pevoBridgePostingKey);
+    const result = await hiveClient.broadcast.comment(
+      {
+        parent_author: '',
+        parent_permlink: config.appTag,
+        author: config.hiveBridgeAccount,
+        permlink,
+        title: meta.title,
+        body,
+        json_metadata: JSON.stringify(jsonMetadata),
+      },
+      key,
+    );
+
+    sendOk(res, {
+      author: config.hiveBridgeAccount,
+      permlink,
+      tx_id: result.id,
+      source: {
+        type: meta.source_type,
+        doi: meta.doi,
+        arxiv_id: meta.arxiv_id,
+        url: meta.source_url,
+      },
+    });
+  } catch (err) {
+    logger.error({ err }, 'Failed to broadcast bridge paper to Hive');
+    sendError(res, 500, 'INTERNAL_ERROR', 'Failed to publish bridge paper to Hive');
+  }
+});
+
+// ──────────────────────────────────────────────
+// POST /api/bridge/update
+// ──────────────────────────────────────────────
+
+router.post('/update', updateLimiter, verifyHiveSignature, async (req: Request, res: Response) => {
+  const username = req.hiveUsername!;
+  const { permlink } = req.body as { permlink?: string };
+
+  if (!permlink) {
+    return sendError(res, 400, 'BAD_REQUEST', 'Field "permlink" is required');
+  }
+
+  // Verify accreditation
+  const accreditedSet = await getAccreditedSet([username]);
+  if (!accreditedSet.has(username)) {
+    return sendError(res, 403, 'FORBIDDEN', 'Only accredited researchers can update bridge papers');
+  }
+
+  if (!config.pevoBridgePostingKey) {
+    return sendError(res, 500, 'INTERNAL_ERROR', 'Bridge posting key not configured');
+  }
+
+  // Fetch the existing bridge paper (always under bridge account)
+  let existingMeta: Record<string, unknown> | null = null;
+  let existingPevo: Record<string, unknown> | null = null;
+
+  try {
+    const post = await hiveClient.database.call('get_content', [config.hiveBridgeAccount, permlink]);
+    if (!post || !post.author || post.parent_permlink !== config.appTag) {
+      return sendError(res, 404, 'NOT_FOUND', 'Bridge paper not found');
+    }
+
+    existingMeta = parseMeta(post.json_metadata);
+    if (!isPevoBridgePaper(existingMeta)) {
+      return sendError(res, 404, 'NOT_FOUND', 'Bridge paper not found');
+    }
+
+    existingPevo = (existingMeta[config.appTag] || {}) as Record<string, unknown>;
+  } catch (err) {
+    logger.error({ err: (err as Error).message }, 'Failed to fetch existing bridge paper');
+    return sendError(res, 500, 'INTERNAL_ERROR', 'Failed to fetch existing bridge paper');
+  }
+
+  // Only the original registerer can update
+  const source = existingPevo.source as Record<string, unknown> | undefined;
+  const registeredBy = source?.registered_by as string | undefined;
+  if (registeredBy !== username) {
+    return sendError(res, 403, 'FORBIDDEN', 'Only the original registerer can update a bridge paper');
+  }
+
+  const sourceIdentifier = (source?.doi as string) || (source?.arxiv_id as string);
+  if (!sourceIdentifier) {
+    return sendError(res, 500, 'INTERNAL_ERROR', 'Bridge paper has no source identifier');
+  }
+
+  // Re-fetch metadata from source
+  let freshMeta;
+  try {
+    freshMeta = await lookupPreprint(sourceIdentifier);
+  } catch (err) {
+    logger.error({ err: (err as Error).message }, 'Failed to re-fetch preprint metadata for update');
+    return sendError(res, 500, 'INTERNAL_ERROR', 'Failed to fetch updated metadata from source');
+  }
+  if (!freshMeta) {
+    return sendError(res, 400, 'BAD_REQUEST', 'Source metadata could not be retrieved');
+  }
+
+  const previousVersion = (existingPevo.version as number) || 1;
+  const newVersion = previousVersion + 1;
+
+  const body = buildBridgeBody(freshMeta, username);
+  const jsonMetadata = buildBridgeMetadata(
+    freshMeta,
+    username,
+    (existingPevo.discipline as string) || '',
+    (existingPevo.keywords as string[]) || [],
+    (existingPevo.language as string) || 'en',
+    newVersion,
+    freshMeta.title,
+    body,
+  );
+
+  try {
+    const key = PrivateKey.fromString(config.pevoBridgePostingKey);
+    const result = await hiveClient.broadcast.comment(
+      {
+        parent_author: '',
+        parent_permlink: config.appTag,
+        author: config.hiveBridgeAccount,
+        permlink,
+        title: freshMeta.title,
+        body,
+        json_metadata: JSON.stringify(jsonMetadata),
+      },
+      key,
+    );
+
+    sendOk(res, {
+      author: config.hiveBridgeAccount,
+      permlink,
+      tx_id: result.id,
+      previous_version: previousVersion,
+      new_version: newVersion,
+    });
+  } catch (err) {
+    logger.error({ err }, 'Failed to broadcast bridge paper update to Hive');
+    sendError(res, 500, 'INTERNAL_ERROR', 'Failed to update bridge paper on Hive');
+  }
+});
+
+export default router;

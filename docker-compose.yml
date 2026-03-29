@@ -1,0 +1,106 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: always
+    environment:
+      POSTGRES_USER: pevo
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pevo_dev}
+      POSTGRES_DB: pevo_app
+    # No host port — only reachable within Docker network
+    expose:
+      - "5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./backend/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pevo -d pevo_app"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+
+  redis:
+    image: redis:7-alpine
+    restart: always
+    command: redis-server --maxmemory 128mb --maxmemory-policy allkeys-lru --requirepass ${REDIS_PASSWORD:-pevo_redis_dev}
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-pevo_redis_dev}", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    restart: always
+    # Reverse proxy routes API subdomain here; not bound to host
+    expose:
+      - "3001"
+    env_file:
+      - .env
+    environment:
+      APP_DATABASE_URL: postgresql://pevo:${POSTGRES_PASSWORD:-pevo_dev}@postgres:5432/pevo_app
+      REDIS_URL: redis://:${REDIS_PASSWORD:-pevo_redis_dev}@redis:6379
+      PORT: "3001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3001/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3001}
+        APP_TAG: ${APP_TAG:-pevo}
+        APP_VERSION: ${APP_VERSION:-0.1}
+        NEXT_PUBLIC_CONTACT_EMAIL: ${NEXT_PUBLIC_CONTACT_EMAIL:-support@pevo.science}
+        NEXT_PUBLIC_DISCORD_URL: ${NEXT_PUBLIC_DISCORD_URL:-}
+        NEXT_PUBLIC_GITHUB_ISSUES_URL: ${NEXT_PUBLIC_GITHUB_ISSUES_URL:-}
+    restart: always
+    # Reverse proxy routes main domain here; not bound to host
+    expose:
+      - "3000"
+    env_file:
+      - .env
+    environment:
+      PORT: "3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+
+volumes:
+  pgdata:
+  redis_data:

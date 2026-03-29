@@ -1,0 +1,39 @@
+# Environment
+.env
+.env.local
+
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+
+# IDE / tooling
+.claude/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Design assets (stored externally)
+pevo_design/
+
+# Agent coordination files (internal workflow)
+agents/
+AGENTS.md
+TASKS.md
+PROGRESS.md
+BLOCKED.md
+CLAUDE.md
+Whitepaper*.docx
+
+# Docker local overrides
+docker-compose.override.yml
+
+# Logs
+*.log
+
+# Test output
+test-results/
+coverage/

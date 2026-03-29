@@ -1,0 +1,26 @@
+**/node_modules
+**/.next
+**/dist
+**/.env
+**/.env.*
+**/*.log
+**/coverage
+.git
+
+# Test artifacts
+**/playwright-report
+**/test-results
+**/.playwright
+**/jest-cache
+
+# Documentation / non-build files
+docs/
+agents/
+*.md
+LICENSE
+deploy.sh
+
+# IDE / OS
+**/.vscode
+**/.idea
+**/.DS_Store
