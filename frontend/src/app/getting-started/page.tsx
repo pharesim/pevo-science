@@ -36,7 +36,7 @@ export default function GettingStartedPage() {
     },
     {
       key: "step6",
-      link: { href: "/", label: t("step6Link"), external: false },
+      link: { href: "/search", label: t("step6Link"), external: false },
       dotClass: "bg-pevo-crimson",
     },
     {
