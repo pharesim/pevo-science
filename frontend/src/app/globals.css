@@ -55,7 +55,7 @@ body {
   }
 
   .btn-primary {
-    @apply btn bg-pevo-teal text-white hover:bg-pevo-teal-dark;
+    @apply btn bg-pevo-teal text-white hover:bg-pevo-teal-dark hover:text-white;
   }
 
   .btn-secondary {
