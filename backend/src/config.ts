@@ -1,7 +1,14 @@
 import pino from 'pino';
 
-const appTag = process.env.APP_TAG || 'pevo';
-const appVersion = process.env.APP_VERSION || '0.1';
+if (!process.env.APP_TAG) {
+  throw new Error('APP_TAG must be set in .env');
+}
+if (!process.env.APP_VERSION) {
+  throw new Error('APP_VERSION must be set in .env');
+}
+
+const appTag = process.env.APP_TAG;
+const appVersion = process.env.APP_VERSION;
 
 if (!/^[a-z][a-z0-9._-]*$/.test(appTag)) {
   throw new Error('APP_TAG must start with a letter and contain only lowercase alphanumeric, dots, hyphens, underscores');

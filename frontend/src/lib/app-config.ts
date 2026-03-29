@@ -6,6 +6,13 @@
  * (e.g. alpha testing) that won't collide with production data.
  */
 
-export const APP_TAG = process.env.NEXT_PUBLIC_APP_TAG || "pevo";
-export const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION || "0.1";
+if (!process.env.NEXT_PUBLIC_APP_TAG) {
+  throw new Error("NEXT_PUBLIC_APP_TAG is not set — check APP_TAG in .env");
+}
+if (!process.env.NEXT_PUBLIC_APP_VERSION) {
+  throw new Error("NEXT_PUBLIC_APP_VERSION is not set — check APP_VERSION in .env");
+}
+
+export const APP_TAG = process.env.NEXT_PUBLIC_APP_TAG;
+export const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION;
 export const APP_ID = `${APP_TAG}/${APP_VERSION}`;
