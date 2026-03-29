@@ -107,6 +107,8 @@
     "keywords": "الكلمات المفتاحية",
     "keywordsPlaceholder": "مفصولة بفواصل، مثال: تصوير الرنين المغناطيسي الوظيفي، المرونة",
     "keywordsHint": "افصل الكلمات المفتاحية بفواصل",
+    "yourInfo": "معلوماتك",
+    "yourName": "اسمك",
     "coAuthors": "المؤلفون المشاركون",
     "addCoAuthor": "+ إضافة مؤلف مشارك",
     "noCoAuthors": "لم تتم إضافة مؤلفين مشاركين. ستُدرج كمؤلف وحيد.",
@@ -141,7 +143,9 @@
     "txTooLarge": "عذراً، بحثك يتجاوز الحد الأقصى لحجم المعاملة. ارفع ملف PDF واحتفظ بالملخص فقط في حقل النص.",
     "txSizeHint": "الحجم التقريبي: {current} كيلوبايت / الحد الأقصى {max} كيلوبايت",
     "needHelp": "Need help publishing?",
-    "contactUs": "Contact us"
+    "contactUs": "Contact us",
+    "accreditationRequired": "يجب أن تكون معتمدًا لنشر الأبحاث.",
+    "getAccredited": "الحصول على الاعتماد"
   },
   "review": {
     "backToPaper": "العودة إلى البحث",
@@ -176,7 +180,9 @@
     "edit": "تعديل",
     "nothingToPreview": "لا يوجد محتوى للمعاينة.",
     "reviewedVersion": "تمت مراجعة الإصدار {version}",
-    "submissionFailed": "فشل تقديم المراجعة"
+    "submissionFailed": "فشل تقديم المراجعة",
+    "accreditationRequired": "يجب أن تكون معتمدًا لتقديم المراجعات.",
+    "getAccredited": "الحصول على الاعتماد"
   },
   "accreditation": {
     "title": "اعتماد الباحثين",

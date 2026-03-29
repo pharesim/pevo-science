@@ -69,7 +69,7 @@ export default function ReviewPage({ params }: ReviewPageProps) {
   const t = useTranslations("review");
   const tCommon = useTranslations("common");
   const router = useRouter();
-  const { username, isConnected, connect } = useAuth();
+  const { username, isConnected, isAccredited, connect } = useAuth();
   const { toast } = useToast();
 
   const RATING_CONFIG: { key: RatingKey; label: string; description: string }[] = [
@@ -222,6 +222,22 @@ export default function ReviewPage({ params }: ReviewPageProps) {
         </div>
       )}
 
+      {isConnected && !isAccredited && (
+        <div className="card bg-pevo-crimson-light border-pevo-crimson/30 mb-6">
+          <div className="flex items-start gap-3">
+            <svg className="h-5 w-5 text-pevo-crimson shrink-0 mt-0.5" viewBox="0 0 20 20" fill="currentColor">
+              <path fillRule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.168 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 8a1 1 0 100-2 1 1 0 000 2z" clipRule="evenodd" />
+            </svg>
+            <div>
+              <p className="font-medium text-ink text-sm">{t("accreditationRequired")}</p>
+              <Link href="/accreditation" className="btn-primary text-xs mt-2 inline-block">
+                {t("getAccredited")}
+              </Link>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Progress indicator */}
       {step !== "idle" && (
         <div
@@ -245,7 +261,7 @@ export default function ReviewPage({ params }: ReviewPageProps) {
         </div>
       )}
 
-      <form onSubmit={handleSubmit} className="space-y-6">
+      {isAccredited && <form onSubmit={handleSubmit} className="space-y-6">
         {/* Structured ratings */}
         <div className="card">
           <h2 className="text-section-title text-ink font-serif mb-4">{t("ratingsTitle")}</h2>
@@ -323,7 +339,7 @@ export default function ReviewPage({ params }: ReviewPageProps) {
             {isSubmitting ? t("submitting") : t("submitButton")}
           </button>
         </div>
-      </form>
+      </form>}
     </div>
   );
 }

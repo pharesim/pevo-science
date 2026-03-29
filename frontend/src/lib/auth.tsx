@@ -14,7 +14,8 @@ import {
   isKeychainInstalled,
   signMessage,
 } from "./keychain";
-import { setSessionTokenGetter } from "./api";
+import { setSessionTokenGetter, fetchAccreditationStatus } from "./api";
+import type { Accreditation } from "@pevo/contracts";
 import UsernameModal from "@/components/UsernameModal";
 
 const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
@@ -24,6 +25,8 @@ interface AuthState {
   isConnected: boolean;
   isKeychainInstalled: boolean;
   isLoading: boolean;
+  isAccredited: boolean;
+  accreditation: Accreditation | null;
   connect: () => Promise<void>;
   disconnect: () => void;
   /** Returns the current session JWT, or null if not logged in */
@@ -35,6 +38,8 @@ const AuthContext = createContext<AuthState>({
   isConnected: false,
   isKeychainInstalled: false,
   isLoading: true,
+  isAccredited: false,
+  accreditation: null,
   connect: async () => {},
   disconnect: () => {},
   getSessionToken: () => null,
@@ -49,6 +54,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [keychainInstalled, setKeychainInstalled] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
+  const [isAccredited, setIsAccredited] = useState(false);
+  const [accreditation, setAccreditation] = useState<Accreditation | null>(null);
   const tokenRef = useRef<string | null>(null);
 
   // Store resolve/reject callbacks for the connect promise
@@ -67,10 +74,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       const saved = localStorage.getItem("pevo_session");
       if (saved) {
-        const { token, username: savedUser, expiresAt } = JSON.parse(saved);
+        const { token, username: savedUser, expiresAt, isAccredited: savedAccredited, accreditation: savedAccreditation } = JSON.parse(saved);
         if (token && savedUser && new Date(expiresAt) > new Date()) {
           tokenRef.current = token;
           setUsername(savedUser);
+          setIsAccredited(savedAccredited ?? false);
+          setAccreditation(savedAccreditation ?? null);
         } else {
           localStorage.removeItem("pevo_session");
         }
@@ -123,11 +132,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (res.ok) {
         const body = await res.json();
         tokenRef.current = body.data.token;
+
+        // Fetch accreditation status now that we have a session
+        let accreditedFlag = false;
+        let accreditationData: Accreditation | null = null;
+        try {
+          const accRes = await fetchAccreditationStatus(inputUsername);
+          accreditedFlag = accRes.data.is_accredited;
+          accreditationData = accRes.data.accreditation;
+        } catch { /* non-critical — default to unaccredited */ }
+
+        setIsAccredited(accreditedFlag);
+        setAccreditation(accreditationData);
+
         try {
           localStorage.setItem("pevo_session", JSON.stringify({
             token: body.data.token,
             username: inputUsername,
             expiresAt: body.data.expires_at,
+            isAccredited: accreditedFlag,
+            accreditation: accreditationData,
           }));
         } catch { /* storage full or blocked */ }
       }
@@ -154,6 +178,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const disconnect = useCallback(() => {
     setUsername(null);
+    setIsAccredited(false);
+    setAccreditation(null);
     tokenRef.current = null;
     try { localStorage.removeItem("pevo_session"); } catch { /* noop */ }
   }, []);
@@ -165,6 +191,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         isConnected: username !== null,
         isKeychainInstalled: keychainInstalled,
         isLoading,
+        isAccredited,
+        accreditation,
         connect,
         disconnect,
         getSessionToken,

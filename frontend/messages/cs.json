@@ -107,6 +107,8 @@
     "keywords": "Klíčová slova",
     "keywordsPlaceholder": "oddělená čárkou, např. fMRI, plasticita",
     "keywordsHint": "Oddělujte klíčová slova čárkami",
+    "yourInfo": "Vaše údaje",
+    "yourName": "Vaše jméno",
     "coAuthors": "Spoluautoři",
     "addCoAuthor": "+ Přidat spoluautora",
     "noCoAuthors": "Nebyli přidáni žádní spoluautoři. Budete uveden/a jako jediný autor.",
@@ -141,7 +143,9 @@
     "txTooLarge": "Omlouváme se, váš článek překračuje maximální velikost transakce. Nahrajte PDF a do textového pole ponechte pouze abstrakt.",
     "txSizeHint": "Odhadovaná velikost: {current} KB / {max} KB limit",
     "needHelp": "Need help publishing?",
-    "contactUs": "Contact us"
+    "contactUs": "Contact us",
+    "accreditationRequired": "Pro publikování článků musíte být akreditováni.",
+    "getAccredited": "Získat akreditaci"
   },
   "review": {
     "backToPaper": "Zpět na článek",
@@ -176,7 +180,9 @@
     "edit": "Upravit",
     "nothingToPreview": "Není co zobrazit.",
     "reviewedVersion": "Recenzována v{version}",
-    "submissionFailed": "Odeslání recenze selhalo"
+    "submissionFailed": "Odeslání recenze selhalo",
+    "accreditationRequired": "Pro odesílání recenzí musíte být akreditováni.",
+    "getAccredited": "Získat akreditaci"
   },
   "accreditation": {
     "title": "Akreditace výzkumníka",

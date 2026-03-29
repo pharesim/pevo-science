@@ -22,6 +22,9 @@ interface PublishDraft {
   discipline: string;
   keywordsText: string;
   coAuthors: CoAuthor[];
+  authorName: string;
+  authorAffiliation: string;
+  authorOrcid: string;
   savedAt: number;
 }
 
@@ -67,7 +70,7 @@ export default function PublishPage() {
   const tCommon = useTranslations("common");
   const tFilters = useTranslations("filters");
   const router = useRouter();
-  const { username, isConnected, connect } = useAuth();
+  const { username, isConnected, isAccredited, accreditation, connect } = useAuth();
   const { toast } = useToast();
 
   const [title, setTitle] = useState("");
@@ -76,6 +79,9 @@ export default function PublishPage() {
   const [discipline, setDiscipline] = useState("");
   const [keywordsText, setKeywordsText] = useState("");
   const [coAuthors, setCoAuthors] = useState<CoAuthor[]>([]);
+  const [authorName, setAuthorName] = useState(accreditation?.name ?? "");
+  const [authorAffiliation, setAuthorAffiliation] = useState(accreditation?.institution ?? "");
+  const [authorOrcid, setAuthorOrcid] = useState("");
   const [pdfFile, setPdfFile] = useState<File | null>(null);
   const [disciplineSearch, setDisciplineSearch] = useState("");
   const [disciplineDropdownOpen, setDisciplineDropdownOpen] = useState(false);
@@ -98,6 +104,9 @@ export default function PublishPage() {
           setDiscipline(draft.discipline);
           setKeywordsText(draft.keywordsText);
           setCoAuthors(draft.coAuthors || []);
+          if (draft.authorName) setAuthorName(draft.authorName);
+          if (draft.authorAffiliation) setAuthorAffiliation(draft.authorAffiliation);
+          if (draft.authorOrcid) setAuthorOrcid(draft.authorOrcid);
           setDraftSavedAt(draft.savedAt);
           setDraftRestored(true);
         }
@@ -118,12 +127,12 @@ export default function PublishPage() {
     }
     const timeout = setTimeout(() => {
       try {
-        const draft: PublishDraft = { title, abstract, body, discipline, keywordsText, coAuthors, savedAt: Date.now() };
+        const draft: PublishDraft = { title, abstract, body, discipline, keywordsText, coAuthors, authorName, authorAffiliation, authorOrcid, savedAt: Date.now() };
         localStorage.setItem(DRAFT_KEY, JSON.stringify(draft));
       } catch { /* ignore — best effort */ }
     }, 2000);
     return () => clearTimeout(timeout);
-  }, [title, abstract, body, discipline, keywordsText, coAuthors]);
+  }, [title, abstract, body, discipline, keywordsText, coAuthors, authorName, authorAffiliation, authorOrcid]);
 
   const discardDraft = () => {
     try { localStorage.removeItem(DRAFT_KEY); } catch { /* ignore */ }
@@ -133,6 +142,9 @@ export default function PublishPage() {
     setDiscipline("");
     setKeywordsText("");
     setCoAuthors([]);
+    setAuthorName(accreditation?.name ?? "");
+    setAuthorAffiliation(accreditation?.institution ?? "");
+    setAuthorOrcid("");
     setDraftRestored(false);
     setDraftSavedAt(null);
   };
@@ -203,7 +215,7 @@ export default function PublishPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!username || !isConnected) return;
+    if (!username || !isConnected || !authorName.trim()) return;
 
     if (txBlock) {
       toast(t("txTooLarge"), "error");
@@ -239,7 +251,7 @@ export default function PublishPage() {
         .filter(Boolean);
 
       const authors = [
-        { name: username, hive: username, orcid: "", affiliation: "" },
+        { name: authorName, hive: username, orcid: authorOrcid, affiliation: authorAffiliation },
         ...coAuthors.filter((ca) => ca.name && ca.hive),
       ];
 
@@ -329,6 +341,22 @@ export default function PublishPage() {
         </div>
       )}
 
+      {isConnected && !isAccredited && (
+        <div className="card bg-pevo-crimson-light border-pevo-crimson/30 mb-6">
+          <div className="flex items-start gap-3">
+            <svg className="h-5 w-5 text-pevo-crimson shrink-0 mt-0.5" viewBox="0 0 20 20" fill="currentColor">
+              <path fillRule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.168 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 8a1 1 0 100-2 1 1 0 000 2z" clipRule="evenodd" />
+            </svg>
+            <div>
+              <p className="font-medium text-ink text-sm">{t("accreditationRequired")}</p>
+              <Link href="/accreditation" className="btn-primary text-xs mt-2 inline-block">
+                {t("getAccredited")}
+              </Link>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Progress indicator */}
       {step !== "idle" && (
         <div
@@ -354,7 +382,7 @@ export default function PublishPage() {
         </div>
       )}
 
-      <form onSubmit={handleSubmit} className="space-y-6">
+      {isAccredited && <form onSubmit={handleSubmit} className="space-y-6">
         {/* Title */}
         <div className="card">
           <label htmlFor="paper-title" className="block text-sm font-semibold text-ink mb-2">
@@ -463,6 +491,53 @@ export default function PublishPage() {
                 onChange={(e) => setKeywordsText(e.target.value)}
               />
               <p className="text-xs text-ink-muted mt-1">{t("keywordsHint")}</p>
+            </div>
+          </div>
+        </div>
+
+        {/* Primary author */}
+        <div className="card">
+          <label className="block text-sm font-semibold text-ink mb-3">{t("yourInfo")}</label>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div>
+              <label htmlFor="author-name" className="block text-xs font-medium text-ink-muted mb-1">
+                {t("yourName")} *
+              </label>
+              <input
+                id="author-name"
+                type="text"
+                className="select-control"
+                placeholder={t("fullName")}
+                value={authorName}
+                onChange={(e) => setAuthorName(e.target.value)}
+                required
+              />
+            </div>
+            <div>
+              <label htmlFor="author-affiliation" className="block text-xs font-medium text-ink-muted mb-1">
+                {t("affiliation")}
+              </label>
+              <input
+                id="author-affiliation"
+                type="text"
+                className="select-control"
+                placeholder={t("affiliation")}
+                value={authorAffiliation}
+                onChange={(e) => setAuthorAffiliation(e.target.value)}
+              />
+            </div>
+            <div>
+              <label htmlFor="author-orcid" className="block text-xs font-medium text-ink-muted mb-1">
+                {t("orcidOptional")}
+              </label>
+              <input
+                id="author-orcid"
+                type="text"
+                className="select-control"
+                placeholder="0000-0001-2345-6789"
+                value={authorOrcid}
+                onChange={(e) => setAuthorOrcid(e.target.value)}
+              />
             </div>
           </div>
         </div>
@@ -593,7 +668,7 @@ export default function PublishPage() {
             {isSubmitting ? t("publishing") : t("publishButton")}
           </button>
         </div>
-      </form>
+      </form>}
 
       <p className="text-sm text-ink-muted mt-4">
         {t("needHelp")}{" "}

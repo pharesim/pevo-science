@@ -107,6 +107,8 @@
     "keywords": "关键词",
     "keywordsPlaceholder": "以逗号分隔，例如：fMRI, 可塑性",
     "keywordsHint": "请用逗号分隔关键词",
+    "yourInfo": "您的信息",
+    "yourName": "您的姓名",
     "coAuthors": "合著者",
     "addCoAuthor": "+ 添加合著者",
     "noCoAuthors": "未添加合著者。您将作为唯一作者。",
@@ -141,7 +143,9 @@
     "txTooLarge": "抱歉，您的论文超出了最大事务大小限制。请上传 PDF，并仅在文本字段中保留摘要。",
     "txSizeHint": "预估大小：{current} KB / {max} KB 上限",
     "needHelp": "Need help publishing?",
-    "contactUs": "Contact us"
+    "contactUs": "Contact us",
+    "accreditationRequired": "您需要获得认证才能发表论文。",
+    "getAccredited": "获取认证"
   },
   "review": {
     "backToPaper": "返回论文",
@@ -176,7 +180,9 @@
     "edit": "编辑",
     "nothingToPreview": "无内容可预览。",
     "reviewedVersion": "评审版本 v{version}",
-    "submissionFailed": "评审提交失败"
+    "submissionFailed": "评审提交失败",
+    "accreditationRequired": "您需要获得认证才能提交评审。",
+    "getAccredited": "获取认证"
   },
   "accreditation": {
     "title": "研究人员认证",

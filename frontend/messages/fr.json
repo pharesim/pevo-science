@@ -107,6 +107,8 @@
     "keywords": "Mots-clés",
     "keywordsPlaceholder": "séparés par des virgules, ex. : IRMf, plasticité",
     "keywordsHint": "Séparez les mots-clés par des virgules",
+    "yourInfo": "Vos informations",
+    "yourName": "Votre nom",
     "coAuthors": "Co-auteurs",
     "addCoAuthor": "+ Ajouter un co-auteur",
     "noCoAuthors": "Aucun co-auteur ajouté. Vous serez indiqué comme auteur unique.",
@@ -141,7 +143,9 @@
     "txTooLarge": "Désolé, votre article dépasse la taille maximale de transaction. Importez un PDF et ne conservez que le résumé dans le champ texte.",
     "txSizeHint": "Taille estimée : {current} Ko / {max} Ko maximum",
     "needHelp": "Need help publishing?",
-    "contactUs": "Contact us"
+    "contactUs": "Contact us",
+    "accreditationRequired": "Vous devez être accrédité pour publier des articles.",
+    "getAccredited": "Obtenir l'accréditation"
   },
   "review": {
     "backToPaper": "Retour à l'article",
@@ -176,7 +180,9 @@
     "edit": "Modifier",
     "nothingToPreview": "Rien à afficher en aperçu.",
     "reviewedVersion": "Version évaluée v{version}",
-    "submissionFailed": "La soumission de l'évaluation a échoué"
+    "submissionFailed": "La soumission de l'évaluation a échoué",
+    "accreditationRequired": "Vous devez être accrédité pour soumettre des évaluations.",
+    "getAccredited": "Obtenir l'accréditation"
   },
   "accreditation": {
     "title": "Accréditation des chercheurs",

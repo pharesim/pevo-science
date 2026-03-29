@@ -107,6 +107,8 @@
     "keywords": "Keywords",
     "keywordsPlaceholder": "comma-separated, e.g., fMRI, plasticity",
     "keywordsHint": "Separate keywords with commas",
+    "yourInfo": "Your Information",
+    "yourName": "Your name",
     "coAuthors": "Co-Authors",
     "addCoAuthor": "+ Add Co-Author",
     "noCoAuthors": "No co-authors added. You will be listed as the sole author.",
@@ -141,7 +143,9 @@
     "txTooLarge": "Sorry, your paper exceeds the maximum transaction size. Upload a PDF and keep only the abstract in the text field.",
     "txSizeHint": "Estimated size: {current} KB / {max} KB limit",
     "needHelp": "Need help publishing?",
-    "contactUs": "Contact us"
+    "contactUs": "Contact us",
+    "accreditationRequired": "You need to be accredited to publish papers.",
+    "getAccredited": "Get accredited"
   },
   "review": {
     "backToPaper": "Back to paper",
@@ -176,7 +180,9 @@
     "edit": "Edit",
     "nothingToPreview": "Nothing to preview.",
     "reviewedVersion": "Reviewed v{version}",
-    "submissionFailed": "Review submission failed"
+    "submissionFailed": "Review submission failed",
+    "accreditationRequired": "You need to be accredited to submit reviews.",
+    "getAccredited": "Get accredited"
   },
   "accreditation": {
     "title": "Researcher Accreditation",

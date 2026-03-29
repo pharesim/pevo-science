@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { useAuth } from "@/lib/auth";
 import { vote } from "@/lib/keychain";
@@ -14,7 +15,8 @@ interface VoteButtonsProps {
 
 export default function VoteButtons({ author, permlink, netVotes }: VoteButtonsProps) {
   const t = useTranslations("vote");
-  const { username, isConnected, connect } = useAuth();
+  const router = useRouter();
+  const { username, isConnected, isAccredited, connect } = useAuth();
   const { toast } = useToast();
   const [voteState, setVoteState] = useState<"none" | "up" | "down">("none");
   const [displayVotes, setDisplayVotes] = useState(netVotes);
@@ -27,6 +29,11 @@ export default function VoteButtons({ author, permlink, netVotes }: VoteButtonsP
       } catch {
         return;
       }
+      return;
+    }
+
+    if (!isAccredited) {
+      router.push("/accreditation");
       return;
     }
 

@@ -29,7 +29,7 @@ export default function CommentComposer({
   compact = false,
 }: CommentComposerProps) {
   const t = useTranslations("comments");
-  const { username, isConnected } = useAuth();
+  const { username, isConnected, isAccredited } = useAuth();
   const [body, setBody] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -42,6 +42,10 @@ export default function CommentComposer({
         </p>
       </div>
     );
+  }
+
+  if (!isAccredited) {
+    return null;
   }
 
   const handleSubmit = async () => {

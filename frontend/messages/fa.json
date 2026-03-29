@@ -107,6 +107,8 @@
     "keywords": "کلیدواژه‌ها",
     "keywordsPlaceholder": "جداشده با کاما، مثلا: fMRI، انعطاف‌پذیری",
     "keywordsHint": "کلیدواژه‌ها را با کاما جدا کنید",
+    "yourInfo": "اطلاعات شما",
+    "yourName": "نام شما",
     "coAuthors": "هم‌نویسندگان",
     "addCoAuthor": "+ افزودن هم‌نویسنده",
     "noCoAuthors": "هم‌نویسنده‌ای افزوده نشده است. شما به عنوان تنها نویسنده ثبت خواهید شد.",
@@ -141,7 +143,9 @@
     "txTooLarge": "متاسفانه مقاله شما از حداکثر اندازه تراکنش بیشتر است. یک PDF بارگذاری کنید و فقط چکیده را در فیلد متن نگه دارید.",
     "txSizeHint": "اندازه تخمینی: {current} کیلوبایت / حداکثر {max} کیلوبایت",
     "needHelp": "Need help publishing?",
-    "contactUs": "Contact us"
+    "contactUs": "Contact us",
+    "accreditationRequired": "برای انتشار مقالات باید اعتبارسنجی شده باشید.",
+    "getAccredited": "دریافت اعتبارسنجی"
   },
   "review": {
     "backToPaper": "بازگشت به مقاله",
@@ -176,7 +180,9 @@
     "edit": "ویرایش",
     "nothingToPreview": "چیزی برای پیش‌نمایش نیست.",
     "reviewedVersion": "داوری نسخه {version}",
-    "submissionFailed": "ارسال داوری ناموفق بود"
+    "submissionFailed": "ارسال داوری ناموفق بود",
+    "accreditationRequired": "برای ارسال داوری باید اعتبارسنجی شده باشید.",
+    "getAccredited": "دریافت اعتبارسنجی"
   },
   "accreditation": {
     "title": "اعتبارسنجی پژوهشگر",

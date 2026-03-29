@@ -107,6 +107,8 @@
     "keywords": "Schlagwörter",
     "keywordsPlaceholder": "kommagetrennt, z. B. fMRT, Plastizität",
     "keywordsHint": "Schlagwörter mit Komma trennen",
+    "yourInfo": "Ihre Informationen",
+    "yourName": "Ihr Name",
     "coAuthors": "Ko-Autoren",
     "addCoAuthor": "+ Ko-Autor hinzufügen",
     "noCoAuthors": "Keine Ko-Autoren hinzugefügt. Sie werden als alleiniger Autor aufgeführt.",
@@ -141,7 +143,9 @@
     "txTooLarge": "Ihre Publikation überschreitet die maximale Transaktionsgröße. Laden Sie ein PDF hoch und belassen Sie nur die Zusammenfassung im Textfeld.",
     "txSizeHint": "Geschätzte Größe: {current} KB / {max} KB Limit",
     "needHelp": "Need help publishing?",
-    "contactUs": "Contact us"
+    "contactUs": "Contact us",
+    "accreditationRequired": "Sie müssen akkreditiert sein, um Arbeiten zu veröffentlichen.",
+    "getAccredited": "Akkreditierung beantragen"
   },
   "review": {
     "backToPaper": "Zurück zur Publikation",
@@ -176,7 +180,9 @@
     "edit": "Bearbeiten",
     "nothingToPreview": "Keine Vorschau verfügbar.",
     "reviewedVersion": "Begutachtete Version v{version}",
-    "submissionFailed": "Einreichung der Begutachtung fehlgeschlagen"
+    "submissionFailed": "Einreichung der Begutachtung fehlgeschlagen",
+    "accreditationRequired": "Sie müssen akkreditiert sein, um Gutachten einzureichen.",
+    "getAccredited": "Akkreditierung beantragen"
   },
   "accreditation": {
     "title": "Akkreditierung für Forschende",

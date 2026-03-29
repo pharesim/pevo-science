@@ -107,6 +107,8 @@
     "keywords": "Nøgleord",
     "keywordsPlaceholder": "kommasepareret, f.eks. fMRI, plasticitet",
     "keywordsHint": "Adskil nøgleord med kommaer",
+    "yourInfo": "Dine oplysninger",
+    "yourName": "Dit navn",
     "coAuthors": "Medforfattere",
     "addCoAuthor": "+ Tilføj medforfatter",
     "noCoAuthors": "Ingen medforfattere tilføjet. Du vil blive angivet som eneforfatter.",
@@ -141,7 +143,9 @@
     "txTooLarge": "Beklager, din artikel overskrider den maksimale transaktionsstørrelse. Upload en PDF og behold kun resuméet i tekstfeltet.",
     "txSizeHint": "Estimeret størrelse: {current} KB / {max} KB grænse",
     "needHelp": "Need help publishing?",
-    "contactUs": "Contact us"
+    "contactUs": "Contact us",
+    "accreditationRequired": "Du skal være akkrediteret for at publicere artikler.",
+    "getAccredited": "Bliv akkrediteret"
   },
   "review": {
     "backToPaper": "Tilbage til artikel",
@@ -176,7 +180,9 @@
     "edit": "Rediger",
     "nothingToPreview": "Intet at forhåndsvise.",
     "reviewedVersion": "Bedømt v{version}",
-    "submissionFailed": "Indsendelse af bedømmelse mislykkedes"
+    "submissionFailed": "Indsendelse af bedømmelse mislykkedes",
+    "accreditationRequired": "Du skal være akkrediteret for at indsende bedømmelser.",
+    "getAccredited": "Bliv akkrediteret"
   },
   "accreditation": {
     "title": "Forskerakkreditering",

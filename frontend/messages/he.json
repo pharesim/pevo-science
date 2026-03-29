@@ -107,6 +107,8 @@
     "keywords": "מילות מפתח",
     "keywordsPlaceholder": "מופרדות בפסיקים, לדוגמה: fMRI, פלסטיות",
     "keywordsHint": "הפרידו מילות מפתח בפסיקים",
+    "yourInfo": "המידע שלך",
+    "yourName": "השם שלך",
     "coAuthors": "מחברים שותפים",
     "addCoAuthor": "+ הוספת מחבר שותף",
     "noCoAuthors": "לא נוספו מחברים שותפים. תופיעו כמחבר היחיד.",
@@ -141,7 +143,9 @@
     "txTooLarge": "מצטערים, המאמר שלכם חורג מגודל העסקה המרבי. העלו PDF והשאירו רק את התקציר בשדה הטקסט.",
     "txSizeHint": "גודל משוער: {current} KB / {max} KB מגבלה",
     "needHelp": "Need help publishing?",
-    "contactUs": "Contact us"
+    "contactUs": "Contact us",
+    "accreditationRequired": "עליך להיות מוסמך כדי לפרסם מאמרים.",
+    "getAccredited": "קבל הסמכה"
   },
   "review": {
     "backToPaper": "חזרה למאמר",
@@ -176,7 +180,9 @@
     "edit": "עריכה",
     "nothingToPreview": "אין מה להציג.",
     "reviewedVersion": "בוקרה גרסה v{version}",
-    "submissionFailed": "הגשת הביקורת נכשלה"
+    "submissionFailed": "הגשת הביקורת נכשלה",
+    "accreditationRequired": "עליך להיות מוסמך כדי להגיש ביקורות.",
+    "getAccredited": "קבל הסמכה"
   },
   "accreditation": {
     "title": "הסמכת חוקרים",

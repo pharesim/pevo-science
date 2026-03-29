@@ -107,6 +107,8 @@
     "keywords": "Parole Chiave",
     "keywordsPlaceholder": "separate da virgola, es., fMRI, plasticità",
     "keywordsHint": "Separa le parole chiave con virgole",
+    "yourInfo": "Le tue informazioni",
+    "yourName": "Il tuo nome",
     "coAuthors": "Co-Autori",
     "addCoAuthor": "+ Aggiungi Co-Autore",
     "noCoAuthors": "Nessun co-autore aggiunto. Sarai elencato come unico autore.",
@@ -141,7 +143,9 @@
     "txTooLarge": "Il tuo articolo supera la dimensione massima della transazione. Carica un PDF e mantieni solo l'abstract nel campo di testo.",
     "txSizeHint": "Dimensione stimata: {current} KB / {max} KB limite",
     "needHelp": "Need help publishing?",
-    "contactUs": "Contact us"
+    "contactUs": "Contact us",
+    "accreditationRequired": "Devi essere accreditato per pubblicare articoli.",
+    "getAccredited": "Ottieni l'accreditamento"
   },
   "review": {
     "backToPaper": "Torna all'articolo",
@@ -176,7 +180,9 @@
     "edit": "Modifica",
     "nothingToPreview": "Niente da visualizzare in anteprima.",
     "reviewedVersion": "Versione revisionata v{version}",
-    "submissionFailed": "Invio della revisione fallito"
+    "submissionFailed": "Invio della revisione fallito",
+    "accreditationRequired": "Devi essere accreditato per inviare revisioni.",
+    "getAccredited": "Ottieni l'accreditamento"
   },
   "accreditation": {
     "title": "Accreditamento Ricercatori",

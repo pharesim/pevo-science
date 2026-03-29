@@ -107,6 +107,8 @@
     "keywords": "Słowa kluczowe",
     "keywordsPlaceholder": "oddzielone przecinkami, np. fMRI, plastyczność",
     "keywordsHint": "Oddziel słowa kluczowe przecinkami",
+    "yourInfo": "Twoje dane",
+    "yourName": "Twoje imię",
     "coAuthors": "Współautorzy",
     "addCoAuthor": "+ Dodaj współautora",
     "noCoAuthors": "Brak dodanych współautorów. Będziesz wymieniony jako jedyny autor.",
@@ -141,7 +143,9 @@
     "txTooLarge": "Przepraszamy, Twoja praca przekracza maksymalny rozmiar transakcji. Prześlij PDF i pozostaw w polu tekstowym jedynie abstrakt.",
     "txSizeHint": "Szacowany rozmiar: {current} KB / {max} KB limit",
     "needHelp": "Need help publishing?",
-    "contactUs": "Contact us"
+    "contactUs": "Contact us",
+    "accreditationRequired": "Musisz być akredytowany, aby publikować artykuły.",
+    "getAccredited": "Uzyskaj akredytację"
   },
   "review": {
     "backToPaper": "Powrót do pracy",
@@ -176,7 +180,9 @@
     "edit": "Edycja",
     "nothingToPreview": "Brak treści do podglądu.",
     "reviewedVersion": "Recenzja wersji v{version}",
-    "submissionFailed": "Przesyłanie recenzji nie powiodło się"
+    "submissionFailed": "Przesyłanie recenzji nie powiodło się",
+    "accreditationRequired": "Musisz być akredytowany, aby przesyłać recenzje.",
+    "getAccredited": "Uzyskaj akredytację"
   },
   "accreditation": {
     "title": "Akredytacja naukowca",

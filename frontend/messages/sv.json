@@ -107,6 +107,8 @@
     "keywords": "Nyckelord",
     "keywordsPlaceholder": "kommaseparerade, t.ex. fMRI, plasticitet",
     "keywordsHint": "Separera nyckelord med kommatecken",
+    "yourInfo": "Din information",
+    "yourName": "Ditt namn",
     "coAuthors": "Medförfattare",
     "addCoAuthor": "+ Lägg till medförfattare",
     "noCoAuthors": "Inga medförfattare tillagda. Du kommer att listas som ensam författare.",
@@ -141,7 +143,9 @@
     "txTooLarge": "Tyvärr, din artikel överskrider den maximala transaktionsstorleken. Ladda upp en PDF och behåll bara sammanfattningen i textfältet.",
     "txSizeHint": "Uppskattad storlek: {current} KB / {max} KB gräns",
     "needHelp": "Need help publishing?",
-    "contactUs": "Contact us"
+    "contactUs": "Contact us",
+    "accreditationRequired": "Du måste vara ackrediterad för att publicera artiklar.",
+    "getAccredited": "Bli ackrediterad"
   },
   "review": {
     "backToPaper": "Tillbaka till artikeln",
@@ -176,7 +180,9 @@
     "edit": "Redigera",
     "nothingToPreview": "Inget att förhandsgranska.",
     "reviewedVersion": "Granskade v{version}",
-    "submissionFailed": "Inskickning av recension misslyckades"
+    "submissionFailed": "Inskickning av recension misslyckades",
+    "accreditationRequired": "Du måste vara ackrediterad för att skicka in recensioner.",
+    "getAccredited": "Bli ackrediterad"
   },
   "accreditation": {
     "title": "Forskarackreditering",
