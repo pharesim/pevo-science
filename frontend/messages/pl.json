@@ -488,7 +488,7 @@
   },
   "versions": {
     "label": "Wersja",
-    "versionWithDate": "v{number} -- {date}",
+    "versionWithDate": "v{number} - {date}",
     "latest": "Najnowsza",
     "metadataOnly": "Ta wersja zmieniła jedynie metadane (np. linki autorów, tagi) - treść nie została zmodyfikowana.",
     "metadataOnlyShort": "metadane"

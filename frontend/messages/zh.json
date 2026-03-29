@@ -488,7 +488,7 @@
   },
   "versions": {
     "label": "版本",
-    "versionWithDate": "v{number} -- {date}",
+    "versionWithDate": "v{number} - {date}",
     "latest": "最新",
     "metadataOnly": "此版本仅更改了元数据（如作者链接、标签）--内容未做修改。",
     "metadataOnlyShort": "元数据"
