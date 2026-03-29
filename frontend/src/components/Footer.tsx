@@ -86,7 +86,7 @@ export default function Footer() {
             <ul className="space-y-2 text-sm">
               <li>
                 <a
-                  href="https://github.com/pevo-science"
+                  href="https://github.com/pharesim/pevo-science"
                   target="_blank"
                   rel="noopener noreferrer"
                   className="text-ink-muted hover:text-pevo-teal no-underline"
