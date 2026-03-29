@@ -62,6 +62,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setSessionTokenGetter(() => tokenRef.current);
   }, []);
 
+  // Restore session from localStorage on mount
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("pevo_session");
+      if (saved) {
+        const { token, username: savedUser, expiresAt } = JSON.parse(saved);
+        if (token && savedUser && new Date(expiresAt) > new Date()) {
+          tokenRef.current = token;
+          setUsername(savedUser);
+        } else {
+          localStorage.removeItem("pevo_session");
+        }
+      }
+    } catch {
+      localStorage.removeItem("pevo_session");
+    }
+  }, []);
+
   useEffect(() => {
     waitForKeychain(3000).then((installed) => {
       setKeychainInstalled(installed);
@@ -105,6 +123,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (res.ok) {
         const body = await res.json();
         tokenRef.current = body.data.token;
+        try {
+          localStorage.setItem("pevo_session", JSON.stringify({
+            token: body.data.token,
+            username: inputUsername,
+            expiresAt: body.data.expires_at,
+          }));
+        } catch { /* storage full or blocked */ }
       }
 
       // If signMessage succeeds, the user controls this account
@@ -130,6 +155,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const disconnect = useCallback(() => {
     setUsername(null);
     tokenRef.current = null;
+    try { localStorage.removeItem("pevo_session"); } catch { /* noop */ }
   }, []);
 
   return (
