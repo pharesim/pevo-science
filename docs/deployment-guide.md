@@ -34,7 +34,7 @@ All configuration lives in a single `.env` file at the project root (see `.env.e
 ```bash
 # Public URLs
 APP_URL=https://pevo.science
-NEXT_PUBLIC_API_URL=https://pevo.science/api
+NEXT_PUBLIC_API_URL=https://pevo.science
 
 # Database
 POSTGRES_PASSWORD=<strong-random>
@@ -88,9 +88,9 @@ The same `docker-compose.yml` is used for both dev and production. The stack inc
 - **backend** — Node.js API server (512MB limit, health-checked)
 - **frontend** — Next.js app (256MB limit)
 
-The reverse proxy (TLS termination, routing) is managed outside of Docker Compose. Configure your existing reverse proxy to route `/api/*` to `localhost:3001` and `/*` to `localhost:3000`.
+The reverse proxy (TLS termination, routing) is managed outside of Docker Compose. Configure your existing reverse proxy to route `/api/` to `localhost:3001` (pass the `/api/` prefix through, do not strip it) and `/` to `localhost:3000`.
 
-Set `NEXT_PUBLIC_API_URL` to your public API URL (e.g., `https://pevo.science/api`) and `APP_URL` to your public frontend URL (e.g., `https://pevo.science`) in `.env`.
+Set `NEXT_PUBLIC_API_URL` to your public base URL (e.g., `https://pevo.science`) — **not** with an `/api` suffix, as the frontend code already adds `/api/` to all routes. Set `APP_URL` to the same value.
 
 ### 4. Set up backups
 
