@@ -382,7 +382,7 @@ export default function PublishPage() {
         </div>
       )}
 
-      {isAccredited && <form onSubmit={handleSubmit} className="space-y-6">
+      <form onSubmit={isAccredited ? handleSubmit : (e) => e.preventDefault()} className="space-y-6">
         {/* Title */}
         <div className="card">
           <label htmlFor="paper-title" className="block text-sm font-semibold text-ink mb-2">
@@ -660,15 +660,25 @@ export default function PublishPage() {
           <p className="text-xs text-ink-muted">
             {t("permanentNotice")}
           </p>
-          <button
-            type="submit"
-            className="btn-primary w-full sm:w-auto shrink-0"
-            disabled={!isConnected || isSubmitting || txBlock}
-          >
-            {isSubmitting ? t("publishing") : t("publishButton")}
-          </button>
+          {isAccredited ? (
+            <button
+              type="submit"
+              className="btn-primary w-full sm:w-auto shrink-0"
+              disabled={isSubmitting || txBlock}
+            >
+              {isSubmitting ? t("publishing") : t("publishButton")}
+            </button>
+          ) : !isConnected ? (
+            <Link href="/getting-started" className="btn-primary w-full sm:w-auto shrink-0 text-center no-underline">
+              {t("publishButton")}
+            </Link>
+          ) : (
+            <Link href="/accreditation" className="btn-primary w-full sm:w-auto shrink-0 text-center no-underline">
+              {t("getAccredited")}
+            </Link>
+          )}
         </div>
-      </form>}
+      </form>
 
       <p className="text-sm text-ink-muted mt-4">
         {t("needHelp")}{" "}

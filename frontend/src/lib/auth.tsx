@@ -176,6 +176,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return tokenRef.current;
   }, []);
 
+  // Poll accreditation status every 60s while logged in but not yet accredited
+  useEffect(() => {
+    if (!username || isAccredited) return;
+    const interval = setInterval(async () => {
+      try {
+        const accRes = await fetchAccreditationStatus(username);
+        if (accRes.data.is_accredited) {
+          setIsAccredited(true);
+          setAccreditation(accRes.data.accreditation);
+          try {
+            const saved = localStorage.getItem("pevo_session");
+            if (saved) {
+              const session = JSON.parse(saved);
+              session.isAccredited = true;
+              session.accreditation = accRes.data.accreditation;
+              localStorage.setItem("pevo_session", JSON.stringify(session));
+            }
+          } catch { /* noop */ }
+        }
+      } catch { /* non-critical */ }
+    }, 60_000);
+    return () => clearInterval(interval);
+  }, [username, isAccredited]);
+
   const disconnect = useCallback(() => {
     setUsername(null);
     setIsAccredited(false);
