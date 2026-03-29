@@ -230,7 +230,7 @@ export default function ReviewPage({ params }: ReviewPageProps) {
             </svg>
             <div>
               <p className="font-medium text-ink text-sm">{t("accreditationRequired")}</p>
-              <Link href="/accreditation" className="btn-primary text-xs mt-2 inline-block">
+              <Link href="/accreditation" className="btn-primary text-xs mt-2 no-underline">
                 {t("getAccredited")}
               </Link>
             </div>
