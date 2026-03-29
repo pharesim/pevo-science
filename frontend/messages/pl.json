@@ -118,7 +118,7 @@
     "affiliation": "Afiliacja",
     "removeCoAuthor": "Usuń współautora",
     "abstract": "Abstrakt",
-    "abstractPlaceholder": "Zwięzłe podsumowanie pracy — kontekst, metody, kluczowe wyniki i wnioski.",
+    "abstractPlaceholder": "Zwięzłe podsumowanie pracy - kontekst, metody, kluczowe wyniki i wnioski.",
     "abstractHint": "Maks. 2000 znaków. Abstrakt jest wyświetlany w wynikach wyszukiwania i na liście publikacji.",
     "paperContent": "Pełny tekst (Markdown)",
     "preview": "Podgląd",
@@ -214,7 +214,7 @@
     "submitButton": "Złóż wniosek o akredytację",
     "connectToBegin": "Zaloguj się, aby rozpocząć",
     "submittingRequest": "Przesyłanie...",
-    "checkEmail": "Sprawdź swoją skrzynkę e-mail — link weryfikacyjny został wysłany.",
+    "checkEmail": "Sprawdź swoją skrzynkę e-mail - link weryfikacyjny został wysłany.",
     "tryAgain": "Spróbuj ponownie",
     "needHelp": "Having trouble with accreditation?",
     "contactUs": "Contact us for help"
@@ -250,7 +250,7 @@
   },
   "badge": {
     "accredited": "Akredytowany",
-    "accreditedTitle": "Akredytowany naukowiec — tożsamość zweryfikowana"
+    "accreditedTitle": "Akredytowany naukowiec - tożsamość zweryfikowana"
   },
   "vote": {
     "upvote": "Głos za",
@@ -384,7 +384,7 @@
     "howItWorksTitle": "Jak to działa",
     "howItWorksDescription": "PEvO zastępuje tradycyjny model czasopism transparentnym, otwartym publikowaniem i oceną.",
     "step1Title": "Publikuj",
-    "step1Description": "Napisz swoją pracę w Markdown lub prześlij PDF. Jest publikowana w trwałym rejestrze — z oznaczeniem czasu, trwała i Twoja.",
+    "step1Description": "Napisz swoją pracę w Markdown lub prześlij PDF. Jest publikowana w trwałym rejestrze - z oznaczeniem czasu, trwała i Twoja.",
     "step2Title": "Recenzuj",
     "step2Description": "Akredytowani naukowcy piszą ustrukturyzowane recenzje z ocenami metodologii, nowatorskości, jasności i istotności.",
     "step3Title": "Buduj reputację",
@@ -402,7 +402,7 @@
     "openSource": "Open source",
     "openSourceDesc": "Licencja MIT, non-profit, w pełni forkowalne. Algorytm reputacji jest transparentny i konfigurowalny.",
     "decentralized": "Otwarta infrastruktura",
-    "decentralizedDesc": "Zbudowane na otwartym protokole — jak e-mail, każdy może uzyskać dostęp do danych. Brak pojedynczego punktu awarii, brak pojedynczego podmiotu kontrolującego.",
+    "decentralizedDesc": "Zbudowane na otwartym protokole - jak e-mail, każdy może uzyskać dostęp do danych. Brak pojedynczego punktu awarii, brak pojedynczego podmiotu kontrolującego.",
     "statsTitle": "Aktywność platformy",
     "statsPapers": "Opublikowane prace",
     "statsReviews": "Recenzje",
@@ -449,7 +449,7 @@
     "step7Title": "7. Buduj swoją reputację",
     "step7Description": "Twój wynik reputacji jest obliczany na podstawie opublikowanej aktywności. Publikuj wartościowe badania, pisz przemyślane recenzje i zdobywaj cytowania, aby podnosić swój wynik.",
     "tipsTitle": "Wskazówki dla nowych użytkowników",
-    "tip1": "Klucze Twojego konta Hive są ważne — nigdy nie udostępniaj swoich kluczy aktywnych ani właścicielskich.",
+    "tip1": "Klucze Twojego konta Hive są ważne - nigdy nie udostępniaj swoich kluczy aktywnych ani właścicielskich.",
     "tip2": "Opublikowane prace są trwale przechowywane na Hive i nie mogą zostać usunięte. Możesz publikować poprawione wersje z odniesieniem do oryginału.",
     "tip3": "Anonimowe recenzowanie jest dostępne dla akredytowanych naukowców, którzy chcą chronić swoją tożsamość.",
     "tip4": "W swoich pracach możesz używać notacji matematycznej LaTeX ze standardowymi ogranicznikami $ i $$.",
@@ -473,7 +473,7 @@
     "q7": "Czy mogę publikować anonimowo?",
     "a7": "Prace są zawsze przypisane do konta publikującego. Jednak recenzje mogą być przesyłane anonimowo za pośrednictwem konta proxy platformy. Tożsamość recenzenta jest przechowywana w formie zaszyfrowanej i może zostać ujawniona jedynie poprzez proces zarządzania.",
     "q8": "Czy prace są trwałe?",
-    "a8": "Prace są trwale przechowywane na Hive i nie mogą zostać usunięte. Jest to celowe — zapewnia integralność rejestru naukowego. Jeśli musisz poprawić pracę, możesz opublikować zaktualizowaną wersję z odniesieniem do oryginału. Wszystkie poprzednie wersje pozostają dostępne, a recenzje są dołączone do wersji, dla której zostały napisane.",
+    "a8": "Prace są trwale przechowywane na Hive i nie mogą zostać usunięte. Jest to celowe - zapewnia integralność rejestru naukowego. Jeśli musisz poprawić pracę, możesz opublikować zaktualizowaną wersję z odniesieniem do oryginału. Wszystkie poprzednie wersje pozostają dostępne, a recenzje są dołączone do wersji, dla której zostały napisane.",
     "q9": "Jakie formaty plików są obsługiwane?",
     "a9": "Prace można pisać bezpośrednio w Markdown (z obsługą notacji matematycznej LaTeX) lub przesyłać jako PDF. Pliki PDF są przechowywane na IPFS zapewniając trwały, rozproszony dostęp. Krótkie prace mogą istnieć w całości jako wpisy Markdown.",
     "q10": "Jak działa system reputacji?",
@@ -490,7 +490,7 @@
     "label": "Wersja",
     "versionWithDate": "v{number} -- {date}",
     "latest": "Najnowsza",
-    "metadataOnly": "Ta wersja zmieniła jedynie metadane (np. linki autorów, tagi) — treść nie została zmodyfikowana.",
+    "metadataOnly": "Ta wersja zmieniła jedynie metadane (np. linki autorów, tagi) - treść nie została zmodyfikowana.",
     "metadataOnlyShort": "metadane"
   },
   "orcid": {

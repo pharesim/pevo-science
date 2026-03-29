@@ -15,7 +15,7 @@ export default async function AboutPage() {
       <div className="relative rounded-xl overflow-hidden mb-10">
         <Image
           src="/images/hero-banner.png"
-          alt="The Future of Scientific Publishing — pevo.science"
+          alt="The Future of Scientific Publishing - pevo.science"
           width={960}
           height={540}
           className="w-full h-auto"
@@ -73,7 +73,7 @@ export default async function AboutPage() {
             <div className="rounded-xl overflow-hidden border border-parchment-dark">
               <Image
                 src="/images/infographic-publishing.jpg"
-                alt="PEvO publishing process — comparing traditional publishing with the PEvO open science approach"
+                alt="PEvO publishing process - comparing traditional publishing with the PEvO open science approach"
                 width={960}
                 height={680}
                 className="w-full h-auto"
@@ -121,7 +121,7 @@ export default async function AboutPage() {
             <div className="rounded-xl overflow-hidden border border-parchment-dark">
               <Image
                 src="/images/infographic-architecture.jpg"
-                alt="PEvO architecture — Hive network, IPFS storage, and the PEvO frontend"
+                alt="PEvO architecture - Hive network, IPFS storage, and the PEvO frontend"
                 width={960}
                 height={680}
                 className="w-full h-auto"

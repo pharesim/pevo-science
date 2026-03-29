@@ -118,7 +118,7 @@
     "affiliation": "Afiliacao",
     "removeCoAuthor": "Remover coautor",
     "abstract": "Resumo",
-    "abstractPlaceholder": "Um resumo conciso do seu artigo — contexto, metodos, principais resultados e conclusoes.",
+    "abstractPlaceholder": "Um resumo conciso do seu artigo - contexto, metodos, principais resultados e conclusoes.",
     "abstractHint": "Maximo de 2.000 caracteres. O resumo e exibido nos resultados de busca e nas listagens de artigos.",
     "paperContent": "Texto Completo (Markdown)",
     "preview": "Visualizar",
@@ -250,7 +250,7 @@
   },
   "badge": {
     "accredited": "Credenciado",
-    "accreditedTitle": "Pesquisador credenciado — identidade verificada"
+    "accreditedTitle": "Pesquisador credenciado - identidade verificada"
   },
   "vote": {
     "upvote": "Votar a favor",
@@ -490,7 +490,7 @@
     "label": "Versao",
     "versionWithDate": "v{number} -- {date}",
     "latest": "Mais recente",
-    "metadataOnly": "Esta versao alterou apenas metadados (ex., links de autores, tags) — nenhum conteudo foi modificado.",
+    "metadataOnly": "Esta versao alterou apenas metadados (ex., links de autores, tags) - nenhum conteudo foi modificado.",
     "metadataOnlyShort": "metadados"
   },
   "orcid": {

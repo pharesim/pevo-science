@@ -118,7 +118,7 @@
     "affiliation": "Tilknytning",
     "removeCoAuthor": "Fjern medforfatter",
     "abstract": "Resumé",
-    "abstractPlaceholder": "Et kort resumé af din artikel — baggrund, metoder, vigtigste resultater og konklusioner.",
+    "abstractPlaceholder": "Et kort resumé af din artikel - baggrund, metoder, vigtigste resultater og konklusioner.",
     "abstractHint": "Maks. 2.000 tegn. Resuméet vises i søgeresultater og artikeloversigter.",
     "paperContent": "Fuld tekst (Markdown)",
     "preview": "Forhåndsvisning",
@@ -250,7 +250,7 @@
   },
   "badge": {
     "accredited": "Akkrediteret",
-    "accreditedTitle": "Akkrediteret forsker — identitet verificeret"
+    "accreditedTitle": "Akkrediteret forsker - identitet verificeret"
   },
   "vote": {
     "upvote": "Stem op",
@@ -490,7 +490,7 @@
     "label": "Version",
     "versionWithDate": "v{number} -- {date}",
     "latest": "Nyeste",
-    "metadataOnly": "Denne version ændrede kun metadata (f.eks. forfatterlinks, tags) — intet indhold blev ændret.",
+    "metadataOnly": "Denne version ændrede kun metadata (f.eks. forfatterlinks, tags) - intet indhold blev ændret.",
     "metadataOnlyShort": "metadata"
   },
   "orcid": {

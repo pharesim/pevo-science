@@ -118,7 +118,7 @@
     "affiliation": "Affiliation",
     "removeCoAuthor": "Supprimer le co-auteur",
     "abstract": "Résumé",
-    "abstractPlaceholder": "Un résumé concis de votre article — contexte, méthodes, résultats principaux et conclusions.",
+    "abstractPlaceholder": "Un résumé concis de votre article - contexte, méthodes, résultats principaux et conclusions.",
     "abstractHint": "Maximum 2 000 caractères. Le résumé apparaît dans les résultats de recherche et les listes d'articles.",
     "paperContent": "Texte intégral (Markdown)",
     "preview": "Aperçu",
@@ -250,7 +250,7 @@
   },
   "badge": {
     "accredited": "Accrédité",
-    "accreditedTitle": "Chercheur accrédité — identité vérifiée"
+    "accreditedTitle": "Chercheur accrédité - identité vérifiée"
   },
   "vote": {
     "upvote": "Vote positif",
@@ -384,7 +384,7 @@
     "howItWorksTitle": "Comment ça fonctionne",
     "howItWorksDescription": "PEvO remplace le modèle traditionnel des revues par une publication et une évaluation transparentes et ouvertes.",
     "step1Title": "Publier",
-    "step1Description": "Rédigez votre article en Markdown ou importez un PDF. Il est publié sur le registre permanent — horodaté, permanent et le vôtre.",
+    "step1Description": "Rédigez votre article en Markdown ou importez un PDF. Il est publié sur le registre permanent - horodaté, permanent et le vôtre.",
     "step2Title": "Évaluer",
     "step2Description": "Les chercheurs accrédités rédigent des évaluations par les pairs structurées avec des notes sur la méthodologie, l'originalité, la clarté et l'importance.",
     "step3Title": "Construire sa réputation",
@@ -402,7 +402,7 @@
     "openSource": "Logiciel libre",
     "openSourceDesc": "Sous licence MIT, non lucratif, entièrement duplicable. L'algorithme de réputation est transparent et configurable.",
     "decentralized": "Infrastructure ouverte",
-    "decentralizedDesc": "Construit sur un protocole ouvert — comme le courrier électronique, tout le monde peut accéder aux données. Pas de point de défaillance unique, aucune entité ne contrôle le système.",
+    "decentralizedDesc": "Construit sur un protocole ouvert - comme le courrier électronique, tout le monde peut accéder aux données. Pas de point de défaillance unique, aucune entité ne contrôle le système.",
     "statsTitle": "Activité de la plateforme",
     "statsPapers": "Articles publiés",
     "statsReviews": "Évaluations par les pairs",
@@ -449,7 +449,7 @@
     "step7Title": "7. Construire votre réputation",
     "step7Description": "Votre score de réputation est calculé à partir de votre activité publiée. Publiez des recherches de qualité, rédigez des évaluations approfondies et obtenez des citations pour augmenter votre score.",
     "tipsTitle": "Conseils pour les nouveaux utilisateurs",
-    "tip1": "Les clés de votre compte Hive sont importantes — ne partagez jamais vos clés active ou owner.",
+    "tip1": "Les clés de votre compte Hive sont importantes - ne partagez jamais vos clés active ou owner.",
     "tip2": "Les articles publiés sont stockés de manière permanente sur Hive et ne peuvent pas être supprimés. Vous pouvez publier des versions révisées qui renvoient vers l'original.",
     "tip3": "L'évaluation anonyme est disponible pour les chercheurs accrédités qui souhaitent protéger leur identité.",
     "tip4": "Vous pouvez utiliser la notation mathématique LaTeX dans vos articles avec les délimiteurs standard $ et $$.",
@@ -473,7 +473,7 @@
     "q7": "Puis-je publier de manière anonyme ?",
     "a7": "Les articles sont toujours attribués au compte qui les publie. Cependant, les évaluations par les pairs peuvent être soumises de manière anonyme via un compte proxy de la plateforme. L'identité de l'évaluateur est stockée de manière chiffrée et ne peut être révélée que par une procédure de gouvernance.",
     "q8": "Les articles sont-ils permanents ?",
-    "a8": "Les articles sont stockés de manière permanente sur Hive et ne peuvent pas être supprimés. C'est intentionnel — cela garantit l'intégrité du registre scientifique. Si vous devez réviser un article, vous pouvez publier une version mise à jour qui renvoie vers l'original. Toutes les versions précédentes restent accessibles, et les évaluations restent rattachées à la version pour laquelle elles ont été rédigées.",
+    "a8": "Les articles sont stockés de manière permanente sur Hive et ne peuvent pas être supprimés. C'est intentionnel - cela garantit l'intégrité du registre scientifique. Si vous devez réviser un article, vous pouvez publier une version mise à jour qui renvoie vers l'original. Toutes les versions précédentes restent accessibles, et les évaluations restent rattachées à la version pour laquelle elles ont été rédigées.",
     "q9": "Quels formats de fichiers sont pris en charge ?",
     "a9": "Les articles peuvent être rédigés directement en Markdown (avec prise en charge des formules LaTeX) ou importés en tant que PDF. Les PDF sont stockés sur IPFS pour un accès permanent et distribué. Les articles courts peuvent être entièrement rédigés sous forme de publications Markdown.",
     "q10": "Comment fonctionne le système de réputation ?",
@@ -488,9 +488,9 @@
   },
   "versions": {
     "label": "Version",
-    "versionWithDate": "v{number} — {date}",
+    "versionWithDate": "v{number} - {date}",
     "latest": "Dernière",
-    "metadataOnly": "Cette version n'a modifié que les métadonnées (ex. : liens d'auteurs, tags) — aucun contenu n'a été modifié.",
+    "metadataOnly": "Cette version n'a modifié que les métadonnées (ex. : liens d'auteurs, tags) - aucun contenu n'a été modifié.",
     "metadataOnlyShort": "métadonnées"
   },
   "orcid": {

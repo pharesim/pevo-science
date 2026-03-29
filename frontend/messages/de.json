@@ -118,7 +118,7 @@
     "affiliation": "Zugehörigkeit",
     "removeCoAuthor": "Ko-Autor entfernen",
     "abstract": "Zusammenfassung",
-    "abstractPlaceholder": "Eine prägnante Zusammenfassung Ihrer Publikation — Hintergrund, Methoden, wichtigste Ergebnisse und Schlussfolgerungen.",
+    "abstractPlaceholder": "Eine prägnante Zusammenfassung Ihrer Publikation - Hintergrund, Methoden, wichtigste Ergebnisse und Schlussfolgerungen.",
     "abstractHint": "Maximal 2.000 Zeichen. Die Zusammenfassung wird in Suchergebnissen und Publikationslisten angezeigt.",
     "paperContent": "Volltext (Markdown)",
     "preview": "Vorschau",
@@ -250,7 +250,7 @@
   },
   "badge": {
     "accredited": "Akkreditiert",
-    "accreditedTitle": "Akkreditierte forschende Person — Identität verifiziert"
+    "accreditedTitle": "Akkreditierte forschende Person - Identität verifiziert"
   },
   "vote": {
     "upvote": "Positiv bewerten",
@@ -351,7 +351,7 @@
   "about": {
     "title": "Über PEvO",
     "whatIsTitle": "Was ist PEvO?",
-    "whatIsDescription": "PEvO (<strong>P</strong>ublish and <strong>Ev</strong>aluate <strong>O</strong>penly) ist eine offene Plattform für wissenschaftliche Publikation und interaktive Begutachtung. Publikationen, Begutachtungen und Abstimmungen werden in einem dauerhaften öffentlichen Register erfasst, das von keiner einzelnen Instanz kontrolliert wird — der gesamte wissenschaftliche Diskurs ist transparent, dauerhaft und überprüfbar.",
+    "whatIsDescription": "PEvO (<strong>P</strong>ublish and <strong>Ev</strong>aluate <strong>O</strong>penly) ist eine offene Plattform für wissenschaftliche Publikation und interaktive Begutachtung. Publikationen, Begutachtungen und Abstimmungen werden in einem dauerhaften öffentlichen Register erfasst, das von keiner einzelnen Instanz kontrolliert wird - der gesamte wissenschaftliche Diskurs ist transparent, dauerhaft und überprüfbar.",
     "whyTitle": "Warum offene Wissenschaft?",
     "whyDescription": "Das traditionelle akademische Publizieren leidet unter intransparenten Begutachtungsverfahren, kostenpflichtigem Zugang, langsamen Publikationszyklen und konzentrierter Entscheidungsmacht. PEvO begegnet diesen Problemen durch sofortige Veröffentlichung, transparente Begutachtung und uneingeschränkten Zugang.",
     "noPaywalls": "Keine Bezahlschranken",
@@ -384,7 +384,7 @@
     "howItWorksTitle": "So funktioniert es",
     "howItWorksDescription": "PEvO ersetzt das traditionelle Zeitschriftenmodell durch transparentes, offenes Publizieren und Begutachten.",
     "step1Title": "Veröffentlichen",
-    "step1Description": "Verfassen Sie Ihre Publikation in Markdown oder laden Sie ein PDF hoch. Sie wird im dauerhaften Register veröffentlicht — mit Zeitstempel, dauerhaft und Ihnen zugeordnet.",
+    "step1Description": "Verfassen Sie Ihre Publikation in Markdown oder laden Sie ein PDF hoch. Sie wird im dauerhaften Register veröffentlicht - mit Zeitstempel, dauerhaft und Ihnen zugeordnet.",
     "step2Title": "Begutachten",
     "step2Description": "Akkreditierte Forschende verfassen strukturierte Peer-Reviews mit Bewertungen zu Methodik, Neuartigkeit, Klarheit und Bedeutsamkeit.",
     "step3Title": "Reputation aufbauen",
@@ -402,7 +402,7 @@
     "openSource": "Quelloffen",
     "openSourceDesc": "MIT-lizenziert, gemeinnützig, vollständig forkbar. Der Reputationsalgorithmus ist transparent und konfigurierbar.",
     "decentralized": "Offene Infrastruktur",
-    "decentralizedDesc": "Aufgebaut auf einem offenen Protokoll — wie bei E-Mail kann jeder auf die Daten zugreifen. Kein einzelner Ausfallpunkt, keine einzelne kontrollierende Instanz.",
+    "decentralizedDesc": "Aufgebaut auf einem offenen Protokoll - wie bei E-Mail kann jeder auf die Daten zugreifen. Kein einzelner Ausfallpunkt, keine einzelne kontrollierende Instanz.",
     "statsTitle": "Plattformaktivität",
     "statsPapers": "Veröffentlichte Publikationen",
     "statsReviews": "Peer-Reviews",
@@ -449,17 +449,17 @@
     "step7Title": "7. Reputation aufbauen",
     "step7Description": "Ihr Reputationswert wird aus Ihrer veröffentlichten Aktivität berechnet. Veröffentlichen Sie qualitativ hochwertige Forschung, verfassen Sie durchdachte Begutachtungen und erhalten Sie Zitationen, um Ihren Wert zu steigern.",
     "tipsTitle": "Tipps für neue Nutzende",
-    "tip1": "Ihre Hive-Kontoschlüssel sind wichtig — geben Sie niemals Ihren aktiven oder Eigentümerschlüssel weiter.",
+    "tip1": "Ihre Hive-Kontoschlüssel sind wichtig - geben Sie niemals Ihren aktiven oder Eigentümerschlüssel weiter.",
     "tip2": "Veröffentlichte Publikationen werden dauerhaft auf Hive gespeichert und können nicht gelöscht werden. Sie können überarbeitete Versionen veröffentlichen, die auf das Original verweisen.",
     "tip3": "Anonyme Begutachtung steht akkreditierten Forschenden zur Verfügung, die ihre Identität schützen möchten.",
-    "tip4": "Sie können LaTeX-Notation für mathematische Formeln in Ihren Publikationen verwenden — mit den üblichen $- und $$-Begrenzungszeichen.",
+    "tip4": "Sie können LaTeX-Notation für mathematische Formeln in Ihren Publikationen verwenden - mit den üblichen $- und $$-Begrenzungszeichen.",
     "tip5": "Umfangreiche Publikationen (über 64 KB) sollten als PDF hochgeladen werden, welche auf IPFS gespeichert werden."
   },
   "faq": {
     "title": "Häufig gestellte Fragen",
     "description": "Häufige Fragen zu PEvO und offener Wissenschaft.",
     "q1": "Was ist PEvO?",
-    "a1": "PEvO (Publish and Evaluate Openly) ist eine offene Plattform für wissenschaftliche Publikation und interaktive Begutachtung. Publikationen, Begutachtungen und Abstimmungen werden in einem dauerhaften öffentlichen Register erfasst, das von keiner einzelnen Instanz kontrolliert wird — der gesamte wissenschaftliche Diskurs ist transparent, dauerhaft und überprüfbar.",
+    "a1": "PEvO (Publish and Evaluate Openly) ist eine offene Plattform für wissenschaftliche Publikation und interaktive Begutachtung. Publikationen, Begutachtungen und Abstimmungen werden in einem dauerhaften öffentlichen Register erfasst, das von keiner einzelnen Instanz kontrolliert wird - der gesamte wissenschaftliche Diskurs ist transparent, dauerhaft und überprüfbar.",
     "q2": "Ist PEvO kostenlos?",
     "a2": "Ja. PEvO ist vollständig kostenlos. Es fallen keine Transaktionsgebühren an; Veröffentlichen, Begutachten und Abstimmen kosten nichts. PEvO ist gemeinnützig und quelloffen.",
     "q3": "Welche Technologie verwendet PEvO?",
@@ -473,7 +473,7 @@
     "q7": "Kann ich anonym veröffentlichen?",
     "a7": "Publikationen werden immer dem veröffentlichenden Konto zugeordnet. Peer-Reviews können jedoch anonym über ein Plattform-Proxykonto eingereicht werden. Die Identität der begutachtenden Person wird verschlüsselt gespeichert und kann nur durch ein Governance-Verfahren offengelegt werden.",
     "q8": "Sind Publikationen dauerhaft?",
-    "a8": "Publikationen werden dauerhaft auf Hive gespeichert und können nicht gelöscht werden. Dies ist beabsichtigt — es gewährleistet die Integrität des wissenschaftlichen Registers. Wenn Sie eine Publikation überarbeiten möchten, können Sie eine aktualisierte Version veröffentlichen, die auf das Original verweist. Alle früheren Versionen bleiben zugänglich, und Begutachtungen bleiben der Version zugeordnet, für die sie verfasst wurden.",
+    "a8": "Publikationen werden dauerhaft auf Hive gespeichert und können nicht gelöscht werden. Dies ist beabsichtigt - es gewährleistet die Integrität des wissenschaftlichen Registers. Wenn Sie eine Publikation überarbeiten möchten, können Sie eine aktualisierte Version veröffentlichen, die auf das Original verweist. Alle früheren Versionen bleiben zugänglich, und Begutachtungen bleiben der Version zugeordnet, für die sie verfasst wurden.",
     "q9": "Welche Dateiformate werden unterstützt?",
     "a9": "Publikationen können direkt in Markdown (mit LaTeX-Unterstützung für mathematische Formeln) verfasst oder als PDF hochgeladen werden. PDFs werden auf IPFS für dauerhaften, verteilten Zugriff gespeichert. Kurze Publikationen können vollständig als Markdown-Beiträge vorliegen.",
     "q10": "Wie funktioniert das Reputationssystem?",
@@ -481,16 +481,16 @@
     "q11": "Ist PEvO quelloffen?",
     "a11": "Ja. PEvO ist MIT-lizenziert und vollständig forkbar. Der Quellcode, der Reputationsalgorithmus und alle Daten sind öffentlich. Es gibt keine Token, keine Bezahlschranken und keine Herstellerbindung.",
     "q12": "Wie zitiere ich eine PEvO-Publikation?",
-    "a12": "Jede Publikation hat eine eindeutige Kennung (Autor/Permlink) und eine dauerhafte URL. Sie können PEvO-Publikationen wie jede andere Online-Veröffentlichung zitieren — mit Autorennamen, Titel, Datum und PEvO-URL.",
+    "a12": "Jede Publikation hat eine eindeutige Kennung (Autor/Permlink) und eine dauerhafte URL. Sie können PEvO-Publikationen wie jede andere Online-Veröffentlichung zitieren - mit Autorennamen, Titel, Datum und PEvO-URL.",
     "ctaTitle": "Still have questions?",
     "ctaDescription": "We are here to help. Reach out to us directly.",
     "ctaButton": "Contact Us"
   },
   "versions": {
     "label": "Version",
-    "versionWithDate": "v{number} — {date}",
+    "versionWithDate": "v{number} - {date}",
     "latest": "Aktuell",
-    "metadataOnly": "Diese Version hat nur Metadaten geändert (z. B. Autorenlinks, Schlagwörter) — der Inhalt wurde nicht verändert.",
+    "metadataOnly": "Diese Version hat nur Metadaten geändert (z. B. Autorenlinks, Schlagwörter) - der Inhalt wurde nicht verändert.",
     "metadataOnlyShort": "Metadaten"
   },
   "orcid": {

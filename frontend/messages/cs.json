@@ -118,7 +118,7 @@
     "affiliation": "Afiliace",
     "removeCoAuthor": "Odebrat spoluautora",
     "abstract": "Abstrakt",
-    "abstractPlaceholder": "Stručné shrnutí článku — pozadí, metody, klíčové poznatky a závěry.",
+    "abstractPlaceholder": "Stručné shrnutí článku - pozadí, metody, klíčové poznatky a závěry.",
     "abstractHint": "Max. 2 000 znaků. Abstrakt se zobrazuje ve výsledcích vyhledávání a v přehledu článků.",
     "paperContent": "Plný text (Markdown)",
     "preview": "Náhled",
@@ -250,7 +250,7 @@
   },
   "badge": {
     "accredited": "Akreditovaný",
-    "accreditedTitle": "Akreditovaný výzkumník — identita ověřena"
+    "accreditedTitle": "Akreditovaný výzkumník - identita ověřena"
   },
   "vote": {
     "upvote": "Hlasovat pro",
@@ -384,7 +384,7 @@
     "howItWorksTitle": "Jak to funguje",
     "howItWorksDescription": "PEvO nahrazuje tradiční model časopisů transparentním, otevřeným publikováním a hodnocením.",
     "step1Title": "Publikujte",
-    "step1Description": "Napište svůj článek v Markdownu nebo nahrajte PDF. Je publikován na trvalém záznamu — s časovým razítkem, trvalý a váš.",
+    "step1Description": "Napište svůj článek v Markdownu nebo nahrajte PDF. Je publikován na trvalém záznamu - s časovým razítkem, trvalý a váš.",
     "step2Title": "Recenzujte",
     "step2Description": "Akreditovaní výzkumníci píší strukturované recenze s hodnocením metodologie, novosti, srozumitelnosti a významu.",
     "step3Title": "Budujte reputaci",
@@ -402,7 +402,7 @@
     "openSource": "Open Source",
     "openSourceDesc": "S licencí MIT, neziskové, plně forkovatelné. Algoritmus reputace je transparentní a konfigurovatelný.",
     "decentralized": "Otevřená infrastruktura",
-    "decentralizedDesc": "Postaveno na otevřeném protokolu — stejně jako e-mail, k datům má přístup kdokoli. Žádný jediný bod selhání, žádný jediný subjekt nemá kontrolu.",
+    "decentralizedDesc": "Postaveno na otevřeném protokolu - stejně jako e-mail, k datům má přístup kdokoli. Žádný jediný bod selhání, žádný jediný subjekt nemá kontrolu.",
     "statsTitle": "Aktivita platformy",
     "statsPapers": "Publikovaných článků",
     "statsReviews": "Recenzí",
@@ -449,7 +449,7 @@
     "step7Title": "7. Budujte svou reputaci",
     "step7Description": "Vaše skóre reputace se vypočítává z vaší publikované aktivity. Publikujte kvalitní výzkum, pište promyšlené recenze a získávejte citace pro zvýšení svého skóre.",
     "tipsTitle": "Tipy pro nové uživatele",
-    "tip1": "Klíče vašeho účtu Hive jsou důležité — nikdy nesdílejte své aktivní nebo vlastnické klíče.",
+    "tip1": "Klíče vašeho účtu Hive jsou důležité - nikdy nesdílejte své aktivní nebo vlastnické klíče.",
     "tip2": "Publikované články jsou trvale uloženy na Hive a nelze je smazat. Můžete publikovat revidované verze, které odkazují na originál.",
     "tip3": "Anonymní recenzování je k dispozici pro akreditované výzkumníky, kteří chtějí chránit svou identitu.",
     "tip4": "Ve svých článcích můžete používat matematickou notaci LaTeX pomocí standardních oddělovačů $ a $$.",
@@ -473,7 +473,7 @@
     "q7": "Mohu publikovat anonymně?",
     "a7": "Články jsou vždy přiřazeny k publikujícímu účtu. Recenze však mohou být odeslány anonymně prostřednictvím proxy účtu platformy. Identita recenzenta je uložena šifrovaně a může být odhalena pouze prostřednictvím řádného procesu.",
     "q8": "Jsou články trvalé?",
-    "a8": "Články jsou trvale uloženy na Hive a nelze je smazat. To je záměrné — zajišťuje to integritu vědeckého záznamu. Pokud potřebujete článek revidovat, můžete publikovat aktualizovanou verzi, která odkazuje na originál. Všechny předchozí verze zůstávají přístupné a recenze zůstávají připojeny k verzi, pro kterou byly napsány.",
+    "a8": "Články jsou trvale uloženy na Hive a nelze je smazat. To je záměrné - zajišťuje to integritu vědeckého záznamu. Pokud potřebujete článek revidovat, můžete publikovat aktualizovanou verzi, která odkazuje na originál. Všechny předchozí verze zůstávají přístupné a recenze zůstávají připojeny k verzi, pro kterou byly napsány.",
     "q9": "Jaké formáty souborů jsou podporovány?",
     "a9": "Články mohou být psány přímo v Markdownu (s podporou matematiky LaTeX) nebo nahrány jako PDF. PDF jsou uloženy na IPFS pro trvalý, distribuovaný přístup. Krátké články mohou existovat zcela jako Markdown příspěvky.",
     "q10": "Jak funguje systém reputace?",
@@ -488,9 +488,9 @@
   },
   "versions": {
     "label": "Verze",
-    "versionWithDate": "v{number} — {date}",
+    "versionWithDate": "v{number} - {date}",
     "latest": "Nejnovější",
-    "metadataOnly": "Tato verze změnila pouze metadata (např. odkazy na autory, štítky) — obsah nebyl upraven.",
+    "metadataOnly": "Tato verze změnila pouze metadata (např. odkazy na autory, štítky) - obsah nebyl upraven.",
     "metadataOnlyShort": "metadata"
   },
   "orcid": {

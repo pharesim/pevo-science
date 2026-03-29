@@ -118,7 +118,7 @@
     "affiliation": "Tillhörighet",
     "removeCoAuthor": "Ta bort medförfattare",
     "abstract": "Sammanfattning",
-    "abstractPlaceholder": "En kortfattad sammanfattning av din artikel — bakgrund, metoder, viktiga resultat och slutsatser.",
+    "abstractPlaceholder": "En kortfattad sammanfattning av din artikel - bakgrund, metoder, viktiga resultat och slutsatser.",
     "abstractHint": "Max 2 000 tecken. Sammanfattningen visas i sökresultat och artikellistor.",
     "paperContent": "Fulltext (Markdown)",
     "preview": "Förhandsgranska",
@@ -250,7 +250,7 @@
   },
   "badge": {
     "accredited": "Ackrediterad",
-    "accreditedTitle": "Ackrediterad forskare — identitet verifierad"
+    "accreditedTitle": "Ackrediterad forskare - identitet verifierad"
   },
   "vote": {
     "upvote": "Rösta upp",
@@ -490,7 +490,7 @@
     "label": "Version",
     "versionWithDate": "v{number} -- {date}",
     "latest": "Senaste",
-    "metadataOnly": "Denna version ändrade bara metadata (t.ex. författarlänkar, taggar) — inget innehåll ändrades.",
+    "metadataOnly": "Denna version ändrade bara metadata (t.ex. författarlänkar, taggar) - inget innehåll ändrades.",
     "metadataOnlyShort": "metadata"
   },
   "orcid": {

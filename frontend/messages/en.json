@@ -118,7 +118,7 @@
     "affiliation": "Affiliation",
     "removeCoAuthor": "Remove co-author",
     "abstract": "Abstract",
-    "abstractPlaceholder": "A concise summary of your paper — background, methods, key findings, and conclusions.",
+    "abstractPlaceholder": "A concise summary of your paper - background, methods, key findings, and conclusions.",
     "abstractHint": "Max 2,000 characters. The abstract is shown in search results and paper listings.",
     "paperContent": "Full Text (Markdown)",
     "preview": "Preview",
@@ -250,7 +250,7 @@
   },
   "badge": {
     "accredited": "Accredited",
-    "accreditedTitle": "Accredited researcher — identity verified"
+    "accreditedTitle": "Accredited researcher - identity verified"
   },
   "vote": {
     "upvote": "Upvote",
@@ -490,7 +490,7 @@
     "label": "Version",
     "versionWithDate": "v{number} -- {date}",
     "latest": "Latest",
-    "metadataOnly": "This version only changed metadata (e.g. author links, tags) — no content was modified.",
+    "metadataOnly": "This version only changed metadata (e.g. author links, tags) - no content was modified.",
     "metadataOnlyShort": "metadata"
   },
   "orcid": {

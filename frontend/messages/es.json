@@ -250,7 +250,7 @@
   },
   "badge": {
     "accredited": "Acreditado",
-    "accreditedTitle": "Investigador acreditado — identidad verificada"
+    "accreditedTitle": "Investigador acreditado - identidad verificada"
   },
   "vote": {
     "upvote": "Votar a favor",
@@ -490,7 +490,7 @@
     "label": "Versión",
     "versionWithDate": "v{number} -- {date}",
     "latest": "Última",
-    "metadataOnly": "Esta versión solo modificó metadatos (p. ej., enlaces de autor, etiquetas) — no se cambió el contenido.",
+    "metadataOnly": "Esta versión solo modificó metadatos (p. ej., enlaces de autor, etiquetas) - no se cambió el contenido.",
     "metadataOnlyShort": "metadatos"
   },
   "orcid": {

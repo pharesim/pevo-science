@@ -118,7 +118,7 @@
     "affiliation": "Affiliazione",
     "removeCoAuthor": "Rimuovi co-autore",
     "abstract": "Abstract",
-    "abstractPlaceholder": "Un riassunto conciso del tuo articolo — contesto, metodi, risultati principali e conclusioni.",
+    "abstractPlaceholder": "Un riassunto conciso del tuo articolo - contesto, metodi, risultati principali e conclusioni.",
     "abstractHint": "Massimo 2.000 caratteri. L'abstract viene mostrato nei risultati di ricerca e nell'elenco degli articoli.",
     "paperContent": "Testo Integrale (Markdown)",
     "preview": "Anteprima",
@@ -250,7 +250,7 @@
   },
   "badge": {
     "accredited": "Accreditato",
-    "accreditedTitle": "Ricercatore accreditato — identità verificata"
+    "accreditedTitle": "Ricercatore accreditato - identità verificata"
   },
   "vote": {
     "upvote": "Voto positivo",
@@ -490,7 +490,7 @@
     "label": "Versione",
     "versionWithDate": "v{number} -- {date}",
     "latest": "Ultima",
-    "metadataOnly": "Questa versione ha modificato solo i metadati (es. link autori, tag) — nessun contenuto è stato modificato.",
+    "metadataOnly": "Questa versione ha modificato solo i metadati (es. link autori, tag) - nessun contenuto è stato modificato.",
     "metadataOnlyShort": "metadati"
   },
   "orcid": {
