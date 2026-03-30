@@ -444,32 +444,44 @@ export default function PaperDetailClient({ author, permlink, initialData }: Pap
         {(() => {
           const m = paper.body.match(/##\s*Abstract\s*\n+([\s\S]*?)(?=\n##\s|\n---|\n\*\*\*|$)/i);
           const abs = m?.[1]?.trim();
-          return abs ? (
-            <div className="mt-6 border-l-4 border-pevo-teal/30 bg-parchment-warm/50 rounded-r-lg px-5 py-4">
-              <h2 className="text-lg font-semibold text-ink-dark mb-2">
+          if (!abs) return null;
+          return (
+            <section className="mt-8">
+              <h2 className="text-xl font-bold text-ink-dark mb-3 font-serif">
                 {t("abstractTitle")}
               </h2>
-              <p className="text-[0.95rem] leading-relaxed text-ink-light">
-                {abs}
-              </p>
-            </div>
-          ) : null;
+              <div className="border-l-4 border-pevo-teal/30 bg-parchment-warm/50 rounded-r-lg px-5 py-4">
+                <p className="text-[0.95rem] leading-relaxed text-ink-light">
+                  {abs}
+                </p>
+              </div>
+            </section>
+          );
         })()}
 
         {/* Paper body — collapsed by default */}
-        <button
-          onClick={() => setBodyExpanded(!bodyExpanded)}
-          className="mt-8 flex items-center gap-2 text-lg font-semibold text-ink-dark hover:text-pevo-teal transition-colors"
-        >
-          <span className={`inline-block transition-transform ${bodyExpanded ? "rotate-90" : ""}`}>▶</span>
-          {t("paperBody")}
-        </button>
-        {bodyExpanded && (
-          <MarkdownRenderer
-            content={paper.body}
-            className="mt-4 prose max-w-none text-[0.95rem]"
-          />
-        )}
+        <section className="mt-8">
+          <button
+            onClick={() => setBodyExpanded(!bodyExpanded)}
+            className="flex items-center gap-2 text-xl font-bold text-ink-dark font-serif hover:text-pevo-teal transition-colors"
+            aria-expanded={bodyExpanded}
+          >
+            <svg
+              className={`h-4 w-4 shrink-0 transition-transform ${bodyExpanded ? "rotate-90" : ""}`}
+              viewBox="0 0 20 20"
+              fill="currentColor"
+            >
+              <path fillRule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clipRule="evenodd" />
+            </svg>
+            {t("paperBody")}
+          </button>
+          {bodyExpanded && (
+            <MarkdownRenderer
+              content={paper.body}
+              className="mt-4 prose max-w-none text-[0.95rem]"
+            />
+          )}
+        </section>
       </article>
 
       {/* Citations */}
