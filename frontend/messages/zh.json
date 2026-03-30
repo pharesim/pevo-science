@@ -40,6 +40,7 @@
   },
   "paperDetail": {
     "abstractTitle": "摘要",
+    "paperBody": "论文",
     "backToPapers": "返回论文列表",
     "updated": "更新于 {date}",
     "votes": "{count} 票",

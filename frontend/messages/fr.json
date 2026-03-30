@@ -40,6 +40,7 @@
   },
   "paperDetail": {
     "abstractTitle": "Résumé",
+    "paperBody": "Article",
     "backToPapers": "Retour aux articles",
     "updated": "mis à jour le {date}",
     "votes": "{count} votes",

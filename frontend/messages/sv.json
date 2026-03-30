@@ -40,6 +40,7 @@
   },
   "paperDetail": {
     "abstractTitle": "Sammanfattning",
+    "paperBody": "Artikel",
     "backToPapers": "Tillbaka till artiklar",
     "updated": "uppdaterad {date}",
     "votes": "{count} röster",

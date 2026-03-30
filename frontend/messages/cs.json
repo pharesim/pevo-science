@@ -40,6 +40,7 @@
   },
   "paperDetail": {
     "abstractTitle": "Abstrakt",
+    "paperBody": "Článek",
     "backToPapers": "Zpět na články",
     "updated": "aktualizováno {date}",
     "votes": "{count} hlasů",

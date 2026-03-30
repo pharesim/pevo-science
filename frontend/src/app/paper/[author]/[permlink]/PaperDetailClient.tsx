@@ -445,7 +445,7 @@ export default function PaperDetailClient({ author, permlink, initialData }: Pap
           const abs = m?.[1]?.trim();
           return abs ? (
             <div className="mt-6 border-l-4 border-pevo-teal/30 bg-parchment-warm/50 rounded-r-lg px-5 py-4">
-              <h2 className="text-sm font-semibold uppercase tracking-wide text-ink-muted mb-2 font-sans">
+              <h2 className="text-lg font-semibold text-ink-dark mb-2">
                 {t("abstractTitle")}
               </h2>
               <p className="text-[0.95rem] leading-relaxed text-ink-light">
@@ -456,9 +456,12 @@ export default function PaperDetailClient({ author, permlink, initialData }: Pap
         })()}
 
         {/* Paper body */}
+        <h2 className="mt-8 text-lg font-semibold text-ink-dark mb-4">
+          {t("paperBody")}
+        </h2>
         <MarkdownRenderer
           content={paper.body}
-          className="mt-8 prose max-w-none text-[0.95rem]"
+          className="prose max-w-none text-[0.95rem]"
         />
       </article>
 

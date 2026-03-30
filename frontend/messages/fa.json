@@ -40,6 +40,7 @@
   },
   "paperDetail": {
     "abstractTitle": "چکیده",
+    "paperBody": "مقاله",
     "backToPapers": "بازگشت به مقالات",
     "updated": "به‌روزرسانی {date}",
     "votes": "{count} رای",

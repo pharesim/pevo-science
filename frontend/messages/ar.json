@@ -40,6 +40,7 @@
   },
   "paperDetail": {
     "abstractTitle": "الملخص",
+    "paperBody": "المقال",
     "backToPapers": "العودة إلى الأبحاث",
     "updated": "تم التحديث {date}",
     "votes": "{count} تصويت",

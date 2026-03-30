@@ -40,6 +40,7 @@
   },
   "paperDetail": {
     "abstractTitle": "תקציר",
+    "paperBody": "מאמר",
     "backToPapers": "חזרה למאמרים",
     "updated": "עודכן {date}",
     "votes": "{count} הצבעות",
