@@ -482,12 +482,32 @@ router.get('/:author/:permlink', async (req: Request, res: Response) => {
 
   const cacheKey = `paper-detail:${author}:${permlink}`;
   const cached = await hafCache.getOrSet(cacheKey, async () => {
-    if (isHafAvailable()) {
-      const result = await fetchPaperDetailFromHaf(author, permlink);
-      if (result) return result;
+    // Hive API first: get_content is a single fast call (~200ms) with no DB
+    // connection needed. HAF only adds versions/retraction which are rare.
+    const hiveResult = await fetchPaperDetailFromHiveApi(author, permlink);
+    if (hiveResult) {
+      // Best-effort: enrich with HAF-only data (versions, retraction) if available
+      if (isHafAvailable()) {
+        try {
+          const [versions, retraction] = await Promise.all([
+            resolveVersionsFromHaf(author, permlink),
+            getRetractionInfo(author, permlink),
+          ]);
+          if (versions.length > 0) hiveResult.versions = versions;
+          hiveResult.is_retracted = retraction.is_retracted;
+          hiveResult.retraction_reason = retraction.retraction_reason ?? null;
+          hiveResult.retraction_timestamp = retraction.retraction_timestamp ?? null;
+        } catch { /* HAF enrichment is best-effort */ }
+      }
+      return hiveResult;
     }
 
-    return fetchPaperDetailFromHiveApi(author, permlink);
+    // Fallback to HAF if Hive API failed
+    if (isHafAvailable()) {
+      return fetchPaperDetailFromHaf(author, permlink);
+    }
+
+    return null;
   }, 30 * 60_000, true);
 
   if (cached) return sendOk(res, cached);
