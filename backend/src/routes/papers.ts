@@ -456,7 +456,7 @@ function buildPaperDetail(
     json_metadata: meta,
     created: post.created,
     last_update: post.last_edited || post.last_update || post.created,
-    net_votes: post.net_votes,
+    net_votes: post.net_votes ?? 0,
     discipline: pevo.discipline || null,
     keywords: pevo.keywords || [],
     authors: pevo.authors || [],
