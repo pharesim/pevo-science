@@ -372,22 +372,17 @@ async function fetchPaperDetailFromHaf(author: string, permlink: string) {
 
     const citationCount = citationResult.rows[0]?.cnt ?? 0;
 
-    // Enrich with accreditation and reputation
+    // Enrich with accreditation (reputation not needed — not displayed on paper detail)
     const reviewAuthors = reviews.map((r) => r.author as string);
     const allUsers = [author, ...reviewAuthors];
-    const [accreditedSet, reputationMap] = await Promise.all([
-      getAccreditedSet(allUsers),
-      getReputationScores(allUsers),
-    ]);
+    const accreditedSet = await getAccreditedSet(allUsers);
 
     const detail = buildPaperDetail(row, meta, reviews);
     detail.citation_count = citationCount;
     detail.is_accredited = accreditedSet.has(author);
-    detail.author_reputation = reputationMap.get(author) ?? 0;
     detail.reviews = (detail.reviews as Array<Record<string, unknown>>).map((r) => ({
       ...r,
       is_accredited: accreditedSet.has(r.author as string),
-      reviewer_reputation: reputationMap.get(r.author as string) ?? 0,
     }));
 
     detail.versions = versions.length > 0 ? versions : [{ version_number: 1, created: detail.created as string, title: detail.title as string, is_content_revision: true }];
@@ -438,18 +433,14 @@ async function fetchPaperDetailFromHiveApi(author: string, permlink: string) {
     const detail = buildPaperDetail(post, meta, reviews);
 
     // Enrich with accreditation and reputation (B1 + B3)
+    // Enrich with accreditation (reputation not needed — not displayed on paper detail)
     const reviewerNames = reviews.map((r: Record<string, unknown>) => r.author as string);
     const allUsers = [author, ...reviewerNames];
-    const [accreditedSet, reputationMap] = await Promise.all([
-      getAccreditedSet(allUsers),
-      getReputationScores(allUsers),
-    ]);
+    const accreditedSet = await getAccreditedSet(allUsers);
     detail.is_accredited = accreditedSet.has(author);
-    detail.author_reputation = reputationMap.get(author) ?? 0;
     detail.reviews = (detail.reviews as Array<Record<string, unknown>>).map((r) => ({
       ...r,
       is_accredited: accreditedSet.has(r.author as string),
-      reviewer_reputation: reputationMap.get(r.author as string) ?? 0,
     }));
 
     // Version history (Hive API only returns latest — use pevo.version from metadata)

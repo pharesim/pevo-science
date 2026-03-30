@@ -12,7 +12,7 @@ import ReviewCard from "@/components/ReviewCard";
 import RatingBar from "@/components/RatingBar";
 import VoteButtons from "@/components/VoteButtons";
 import ThreadedComments from "@/components/ThreadedComments";
-import MarkdownRenderer from "@/components/MarkdownRenderer";
+import MarkdownRenderer from "@/components/LazyMarkdownRenderer";
 import VersionSelector from "@/components/VersionSelector";
 import PaperDetailSkeleton from "@/components/skeletons/PaperDetailSkeleton";
 import { useToast } from "@/components/Toast";
@@ -53,7 +53,7 @@ export default function PaperDetailClient({ author, permlink, initialData }: Pap
   const { isConnected, username } = useAuth();
   const { toast } = useToast();
   const [paper, setPaper] = useState<PaperDetail | null>(initialData ?? null);
-  const [loading, setLoading] = useState(!initialData);
+  const [loading, setLoading] = useState(initialData === undefined);
   const [bodyExpanded, setBodyExpanded] = useState(false);
   const [error, setError] = useState<string | null>(initialData === undefined ? null : initialData === null ? "Not found" : null);
 

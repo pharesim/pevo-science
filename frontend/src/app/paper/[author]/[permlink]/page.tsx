@@ -1,7 +1,12 @@
+import { cache } from "react";
 import type { Metadata } from "next";
 import { getTranslations } from "next-intl/server";
 import { fetchPaper } from "@/lib/api";
 import PaperDetailClient from "./PaperDetailClient";
+
+const getCachedPaper = cache((author: string, permlink: string) =>
+  fetchPaper(author, permlink)
+);
 
 interface PaperDetailPageProps {
   params: Promise<{
@@ -13,7 +18,7 @@ interface PaperDetailPageProps {
 export async function generateMetadata({ params }: PaperDetailPageProps): Promise<Metadata> {
   const { author, permlink } = await params;
   try {
-    const res = await fetchPaper(author, permlink);
+    const res = await getCachedPaper(author, permlink);
     return {
       title: res.data.title,
       description: res.data.body.slice(0, 200),
@@ -33,7 +38,7 @@ export default async function PaperDetailPage({ params }: PaperDetailPageProps) 
   // On failure, pass null — the client will show an error state.
   let initialData = null;
   try {
-    const res = await fetchPaper(author, permlink);
+    const res = await getCachedPaper(author, permlink);
     initialData = res.data;
   } catch {
     // Client will handle error display
