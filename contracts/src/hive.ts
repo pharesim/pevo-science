@@ -119,7 +119,6 @@ export interface AnonReviewAction {
   review_permlink: string;
   paper_author: string;
   paper_permlink: string;
-  encrypted_reviewer: string;
   attestation_id: string;
   expires: string;
   timestamp: string;

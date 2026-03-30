@@ -184,7 +184,6 @@ router.post('/anonymous', verifyHiveSignature, anonReviewLimiter, validate(anony
       review_permlink: permlink,
       paper_author,
       paper_permlink,
-      encrypted_reviewer: encrypted,
       attestation_id: attestationId,
       expires: expiresAt.toISOString(),
       timestamp: new Date().toISOString(),

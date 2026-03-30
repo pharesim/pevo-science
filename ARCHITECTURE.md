@@ -348,11 +348,16 @@ json: {
 6. If abuse is reported, a governance process can decrypt the mapping to identify the reviewer.
 7. The review's `json_metadata` includes `is_anonymous: true` and a `reviewer_attestation_id` that proves the anonymous reviewer is accredited without revealing their identity.
 
+### On-chain attestation
+
+The backend broadcasts a `custom_json` attestation for each anonymous review containing only the `attestation_id` (a SHA-256 hash), the review permlink, and the paper reference. The encrypted reviewer identity is **never** published on-chain -- it is stored only in the application database where it can be deleted after expiry.
+
 ### Security Properties
 - The `pevo.anon` posting key is held only by the backend server.
-- The encrypted mapping uses AES-256-GCM with a key stored in environment variables.
-- After TTL expiry, the mapping is permanently deleted.
-- The `reviewer_attestation_id` references the `custom_json` transaction that accredited the reviewer, but since multiple researchers are accredited, it does not uniquely identify the reviewer.
+- The encrypted mapping uses AES-256-GCM with a versioned key stored in environment variables.
+- After TTL expiry, the mapping is permanently deleted from the database.
+- To make identities truly unrecoverable, rotate the encryption key periodically and destroy old keys once all mappings for that key version have expired. The `key_version` column in `anon_review_mappings` tracks which key encrypted each mapping.
+- The on-chain attestation contains only a hash, not the ciphertext, so destroying the key is sufficient to make decryption impossible.
 
 ## 8. Discussion Threads
 
