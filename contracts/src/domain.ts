@@ -24,7 +24,7 @@ export interface Rating {
 
 // ─── Accreditation ───────────────────────────────────────────────
 
-export type AccreditationMethod = "email" | "pgp" | "personal" | "wot" | "orcid";
+export type AccreditationMethod = "email" | "pgp" | "personal" | "wot" | "orcid" | "manual";
 
 export interface Accreditation {
   name: string;

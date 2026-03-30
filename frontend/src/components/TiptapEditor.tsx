@@ -588,6 +588,7 @@ export default function TiptapEditor({ content, onChange, username, variant = "f
         bulletList: isAbstract ? false : undefined,
         orderedList: isAbstract ? false : undefined,
         blockquote: isAbstract ? false : undefined,
+        link: false,
       }),
       ...(isAbstract
         ? []

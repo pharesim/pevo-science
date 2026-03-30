@@ -87,12 +87,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } catch {
       localStorage.removeItem("pevo_session");
     }
+    // Session restore is done — UI can render logged-in state immediately
+    setIsLoading(false);
   }, []);
 
+  // Detect Keychain in background (doesn't block UI)
   useEffect(() => {
     waitForKeychain(3000).then((installed) => {
       setKeychainInstalled(installed);
-      setIsLoading(false);
     });
   }, []);
 
@@ -133,31 +135,36 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const body = await res.json();
         tokenRef.current = body.data.token;
 
-        // Fetch accreditation status now that we have a session
-        let accreditedFlag = false;
-        let accreditationData: Accreditation | null = null;
-        try {
-          const accRes = await fetchAccreditationStatus(inputUsername);
-          accreditedFlag = accRes.data.is_accredited;
-          accreditationData = accRes.data.accreditation;
-        } catch { /* non-critical — default to unaccredited */ }
-
-        setIsAccredited(accreditedFlag);
-        setAccreditation(accreditationData);
-
+        // Show logged-in state immediately, fetch accreditation in background
+        setUsername(inputUsername);
         try {
           localStorage.setItem("pevo_session", JSON.stringify({
             token: body.data.token,
             username: inputUsername,
             expiresAt: body.data.expires_at,
-            isAccredited: accreditedFlag,
-            accreditation: accreditationData,
+            isAccredited: false,
+            accreditation: null,
           }));
         } catch { /* storage full or blocked */ }
+
+        // Fetch accreditation status in background (non-blocking)
+        fetchAccreditationStatus(inputUsername).then((accRes) => {
+          const accreditedFlag = accRes.data.is_accredited;
+          const accreditationData = accRes.data.accreditation;
+          setIsAccredited(accreditedFlag);
+          setAccreditation(accreditationData);
+          try {
+            localStorage.setItem("pevo_session", JSON.stringify({
+              token: body.data.token,
+              username: inputUsername,
+              expiresAt: body.data.expires_at,
+              isAccredited: accreditedFlag,
+              accreditation: accreditationData,
+            }));
+          } catch { /* storage full or blocked */ }
+        }).catch(() => { /* non-critical — default to unaccredited */ });
       }
 
-      // If signMessage succeeds, the user controls this account
-      setUsername(inputUsername);
       pending?.resolve();
     } catch (err) {
       pending?.reject(err instanceof Error ? err : new Error("Sign failed"));
@@ -176,10 +183,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return tokenRef.current;
   }, []);
 
-  // Poll accreditation status every 60s while logged in but not yet accredited
+  // Check accreditation status immediately + poll every 60s while not yet accredited
   useEffect(() => {
     if (!username || isAccredited) return;
-    const interval = setInterval(async () => {
+    const check = async () => {
       try {
         const accRes = await fetchAccreditationStatus(username);
         if (accRes.data.is_accredited) {
@@ -196,7 +203,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           } catch { /* noop */ }
         }
       } catch { /* non-critical */ }
-    }, 60_000);
+    };
+    check();
+    const interval = setInterval(check, 60_000);
     return () => clearInterval(interval);
   }, [username, isAccredited]);
 

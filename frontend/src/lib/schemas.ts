@@ -2,7 +2,7 @@ import { z } from "zod";
 
 // ─── Domain Schemas ─────────────────────────────────────────────
 
-const AccreditationMethodSchema = z.enum(["email", "pgp", "personal", "wot", "orcid"]);
+const AccreditationMethodSchema = z.enum(["email", "pgp", "personal", "wot", "orcid", "manual"]);
 
 const AccreditationSchema = z.object({
   name: z.string(),
