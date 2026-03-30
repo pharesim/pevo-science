@@ -5,7 +5,11 @@ import {
   buildBridgeBody,
   buildBridgeMetadata,
 } from '../src/bridge.js';
+import { config } from '../src/config.js';
 import type { BridgeLookupResult } from '@pevo/contracts';
+
+const TAG = config.appTag;
+const APP_ID = config.appId;
 
 describe('parseIdentifier', () => {
   it('parses a plain arXiv ID', () => {
@@ -140,11 +144,11 @@ describe('buildBridgeBody', () => {
 describe('buildBridgeMetadata', () => {
   it('returns valid bridge paper metadata', () => {
     const meta = buildBridgeMetadata(SAMPLE_LOOKUP, 'scientist1', 'Computer Science', ['NLP'], 'en', 1);
-    expect(meta.app).toBe('pevo/0.1');
-    expect(meta.tags).toContain('pevo');
+    expect(meta.app).toBe(APP_ID);
+    expect(meta.tags).toContain(TAG);
     expect(meta.tags).toContain('science');
 
-    const pevo = meta.pevo;
+    const pevo = meta[TAG];
     expect(pevo.type).toBe('bridge_paper');
     expect(pevo.version).toBe(1);
     expect(pevo.discipline).toBe('Computer Science');

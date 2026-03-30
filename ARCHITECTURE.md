@@ -52,6 +52,7 @@ All on-chain identifiers are configurable via environment variables so that alph
 | `HIVE_ANON_ACCOUNT` | `pevo.anon` | Anonymous review posting |
 | `HIVE_BRIDGE_ACCOUNT` | (= `HIVE_ADMIN_ACCOUNT`) | Bridge paper posting. Defaults to admin account; set separately if you want a dedicated bridge identity |
 | `PEVO_BRIDGE_POSTING_KEY` | (= `PEVO_ADMIN_POSTING_KEY`) | Posting key for bridge account. Only needed if `HIVE_BRIDGE_ACCOUNT` differs from `HIVE_ADMIN_ACCOUNT` |
+| `ACCREDITATION_AUTHORITIES` | (empty) | Comma-separated list of additional accounts authorized to broadcast accreditations. `HIVE_ADMIN_ACCOUNT` is always implicitly authorized. |
 
 The frontend derives `NEXT_PUBLIC_APP_TAG` and `NEXT_PUBLIC_APP_VERSION` from `APP_TAG` and `APP_VERSION` automatically via `next.config.mjs`. No separate frontend env vars are needed.
 
@@ -73,7 +74,7 @@ PEvO only uses on-chain data from accredited users. This applies across the enti
 - **Votes:** Only votes from accredited accounts affect reputation scores. Votes from unaccredited accounts are ignored in all PEvO computations (they still affect Hive rewards natively, but PEvO does not use them).
 - **Reviews:** Only reviews from accredited accounts appear in the default view and count toward paper ratings.
 - **Citations:** Only citations from papers authored by accredited researchers count toward citation scores.
-- **Papers:** The default listing (`accredited_only=true`) shows only papers from accredited authors.
+- **Papers:** The default listing shows all papers (`accredited_only=false`). Each paper includes an `is_accredited` flag; the frontend can pass `accredited_only=true` to filter.
 
 Unaccredited users can still read all content and vote on Hive (affecting Hive reward payouts), but their activity is invisible to PEvO's reputation and ranking systems. This prevents Sybil attacks and ensures scientific quality.
 
@@ -179,6 +180,22 @@ json: {
 }
 ```
 
+### Accreditation Authority Whitelist
+
+When reading accreditation and revocation `custom_json` ops from the chain, the backend **must filter by sender**. Only transactions where `required_posting_auths` contains a whitelisted account are accepted. This prevents anyone from broadcasting a fake accreditation under the app's `custom_id`.
+
+The whitelist is: `[HIVE_ADMIN_ACCOUNT, ...ACCREDITATION_AUTHORITIES]`. The admin account is always implicitly included.
+
+**HAF SQL:** The `hafsql.operation_custom_json_view` has a `required_posting_auths` column (jsonb array of account names). Filter with:
+```sql
+AND cj.required_posting_auths ?| $N::text[]
+```
+where `$N` is the whitelist array. The `?|` operator checks if the jsonb array contains any of the given text values.
+
+**Hive API fallback:** Scan the account history of each whitelisted account for `custom_json` ops with matching `custom_id`. Merge results — the latest action per account (by block number) wins.
+
+**WoT vouches** are exempt from this filter — any accredited user can vouch for another.
+
 ## 3. Reputation Algorithm (v1)
 
 Reputation is computed entirely from public on-chain data via HAF SQL queries. Anyone running the same queries against the same HAF database must get identical results.
@@ -273,7 +290,7 @@ Search is powered by PostgreSQL full-text search over HAF-indexed PEvO content. 
 - `q` (required): Search query string
 - `type`: Filter by content type (`paper`, `review`, or `all`; default `all`)
 - `discipline`: Filter by discipline
-- `accredited_only`: Boolean, default `true` — only return content from accredited authors
+- `accredited_only`: Boolean, default `false` — when `true`, only return content from accredited authors
 - `sort`: `relevance` (default) or `date`
 - `page`, `limit`: Pagination (default limit 20, max 100)
 
@@ -373,7 +390,7 @@ Discussion comments use `pevo.type = "comment"` in `json_metadata` (see `docs/hi
 
 ### Accredited-Only Policy
 
-By default, only comments from accredited authors are returned (`accredited_only=true`). The `net_votes` field reflects accredited votes only, consistent with the platform-wide policy.
+By default, all comments are returned (`accredited_only=false`). Pass `accredited_only=true` to filter to accredited authors only. The `net_votes` field reflects accredited votes only, consistent with the platform-wide policy.
 
 ### Comment vs Review Distinction
 

@@ -18,7 +18,7 @@ function parseCommentParams(req: Request) {
   const page = Math.max(1, parseInt(req.query.page as string, 10) || 1);
   const limit = Math.min(200, Math.max(1, parseInt(req.query.limit as string, 10) || 50));
   const offset = (page - 1) * limit;
-  const accreditedOnly = req.query.accredited_only !== 'false';
+  const accreditedOnly = req.query.accredited_only === 'true';
   const sort: CommentSort = req.query.sort === 'votes' ? 'votes' : 'date';
   const order: 'asc' | 'desc' = req.query.order === 'desc' ? 'desc' : 'asc';
   return { page, limit, offset, accreditedOnly, sort, order };

@@ -1,10 +1,15 @@
 import { describe, it, expect } from 'vitest';
 import { parseMeta, isPevoPaper, isPevoReview, isPevoBridgePaper, isPevoAnyPaper, toPaperSummary } from '../src/helpers.js';
+import { config } from '../src/config.js';
+
+const TAG = config.appTag;
+const APP_ID = config.appId;
 
 describe('parseMeta', () => {
   it('parses a valid JSON string', () => {
-    const result = parseMeta('{"app":"pevo/0.1"}');
-    expect(result).toEqual({ app: 'pevo/0.1' });
+    const jsonStr = JSON.stringify({ app: APP_ID });
+    const result = parseMeta(jsonStr);
+    expect(result).toEqual({ app: APP_ID });
   });
 
   it('returns empty object for invalid JSON', () => {
@@ -12,7 +17,7 @@ describe('parseMeta', () => {
   });
 
   it('returns the object as-is if already an object', () => {
-    const obj = { app: 'pevo/0.1' };
+    const obj = { app: APP_ID };
     expect(parseMeta(obj)).toBe(obj);
   });
 
@@ -24,53 +29,53 @@ describe('parseMeta', () => {
 
 describe('isPevoPaper', () => {
   it('returns true for a valid PEvO paper metadata', () => {
-    expect(isPevoPaper({ app: 'pevo/0.1', pevo: { type: 'paper' } })).toBe(true);
+    expect(isPevoPaper({ app: APP_ID, [TAG]: { type: 'paper' } })).toBe(true);
   });
 
   it('returns false if pevo.type is not paper', () => {
-    expect(isPevoPaper({ app: 'pevo/0.1', pevo: { type: 'review' } })).toBe(false);
+    expect(isPevoPaper({ app: APP_ID, [TAG]: { type: 'review' } })).toBe(false);
   });
 
   it('returns false if app does not start with pevo/', () => {
-    expect(isPevoPaper({ app: 'other/0.1', pevo: { type: 'paper' } })).toBe(false);
+    expect(isPevoPaper({ app: 'other/0.1', [TAG]: { type: 'paper' } })).toBe(false);
   });
 
   it('returns false if pevo field is missing', () => {
-    expect(isPevoPaper({ app: 'pevo/0.1' })).toBe(false);
+    expect(isPevoPaper({ app: APP_ID })).toBe(false);
   });
 });
 
 describe('isPevoBridgePaper', () => {
   it('returns true for bridge_paper type', () => {
-    expect(isPevoBridgePaper({ app: 'pevo/0.1', pevo: { type: 'bridge_paper' } })).toBe(true);
+    expect(isPevoBridgePaper({ app: APP_ID, [TAG]: { type: 'bridge_paper' } })).toBe(true);
   });
 
   it('returns false for native paper type', () => {
-    expect(isPevoBridgePaper({ app: 'pevo/0.1', pevo: { type: 'paper' } })).toBe(false);
+    expect(isPevoBridgePaper({ app: APP_ID, [TAG]: { type: 'paper' } })).toBe(false);
   });
 });
 
 describe('isPevoAnyPaper', () => {
   it('returns true for native paper', () => {
-    expect(isPevoAnyPaper({ app: 'pevo/0.1', pevo: { type: 'paper' } })).toBe(true);
+    expect(isPevoAnyPaper({ app: APP_ID, [TAG]: { type: 'paper' } })).toBe(true);
   });
 
   it('returns true for bridge paper', () => {
-    expect(isPevoAnyPaper({ app: 'pevo/0.1', pevo: { type: 'bridge_paper' } })).toBe(true);
+    expect(isPevoAnyPaper({ app: APP_ID, [TAG]: { type: 'bridge_paper' } })).toBe(true);
   });
 
   it('returns false for review', () => {
-    expect(isPevoAnyPaper({ app: 'pevo/0.1', pevo: { type: 'review' } })).toBe(false);
+    expect(isPevoAnyPaper({ app: APP_ID, [TAG]: { type: 'review' } })).toBe(false);
   });
 });
 
 describe('isPevoReview', () => {
   it('returns true for a valid PEvO review metadata', () => {
-    expect(isPevoReview({ app: 'pevo/0.1', pevo: { type: 'review' } })).toBe(true);
+    expect(isPevoReview({ app: APP_ID, [TAG]: { type: 'review' } })).toBe(true);
   });
 
   it('returns false for paper type', () => {
-    expect(isPevoReview({ app: 'pevo/0.1', pevo: { type: 'paper' } })).toBe(false);
+    expect(isPevoReview({ app: APP_ID, [TAG]: { type: 'paper' } })).toBe(false);
   });
 });
 
@@ -85,8 +90,8 @@ describe('toPaperSummary', () => {
       net_votes: 5,
     };
     const meta = {
-      app: 'pevo/0.1',
-      pevo: {
+      app: APP_ID,
+      [TAG]: {
         type: 'paper',
         discipline: 'neuroscience',
         keywords: ['brain', 'cognition'],
@@ -119,7 +124,7 @@ describe('toPaperSummary', () => {
       created: '2026-02-01T00:00:00',
       net_votes: 0,
     };
-    const meta = { app: 'pevo/0.1', pevo: {} };
+    const meta = { app: APP_ID, [TAG]: {} };
 
     const result = toPaperSummary(post, meta);
     expect(result.abstract.length).toBe(300);

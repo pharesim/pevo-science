@@ -30,8 +30,8 @@ async function searchFromHaf(
   if (!pool) return null;
 
   try {
-    // Build CTEs with parameterized appTag — $1 is always the search query
-    const cte = buildWith(2, activeAccreditationsCteBody, retractedPapersCteBody);
+    // Build CTEs with parameterized appTag
+    const cte = buildWith(1, activeAccreditationsCteBody, retractedPapersCteBody);
     let paramIdx = cte.nextIdx;
 
     // appTag params for WHERE conditions
@@ -39,10 +39,15 @@ async function searchFromHaf(
     const appLikeParam = `$${paramIdx++}`;
     const cteParams = [...cte.params, config.appTag, `${config.appTag}/%`];
 
+    // Always filter by parent_permlink = appTag to leverage the index on
+    // hafsql.comments.  Without this, PostgreSQL does a full sequential scan
+    // of the (huge) comments table and the query times out.
     const conditions: string[] = [
+      `c.parent_permlink = ${appTagParam}`,
+      "c.parent_author = ''",
       `c.json_metadata ->> 'app' LIKE ${appLikeParam}`,
     ];
-    const params: unknown[] = [query, ...cteParams];
+    const params: unknown[] = [...cteParams];
 
     if (type === 'paper') {
       // Apply source filter within paper type
@@ -53,18 +58,14 @@ async function searchFromHaf(
       } else {
         conditions.push(`(c.json_metadata -> ${appTagParam} ->> 'type') IN ('paper', 'bridge_paper')`);
       }
-      conditions.push("c.parent_author = ''");
-      conditions.push(`c.parent_permlink = ${appTagParam}`);
-    } else if (type === 'review') {
-      conditions.push(`(c.json_metadata -> ${appTagParam} ->> 'type') = 'review'`);
     } else {
       // All types — include bridge papers alongside native
       if (source === 'native') {
-        conditions.push(`(c.json_metadata -> ${appTagParam} ->> 'type') IN ('paper', 'review')`);
+        conditions.push(`(c.json_metadata -> ${appTagParam} ->> 'type') = 'paper'`);
       } else if (source === 'bridge') {
         conditions.push(`(c.json_metadata -> ${appTagParam} ->> 'type') = 'bridge_paper'`);
       } else {
-        conditions.push(`(c.json_metadata -> ${appTagParam} ->> 'type') IN ('paper', 'bridge_paper', 'review')`);
+        conditions.push(`(c.json_metadata -> ${appTagParam} ->> 'type') IN ('paper', 'bridge_paper')`);
       }
     }
 
@@ -86,20 +87,30 @@ async function searchFromHaf(
     }
 
     const where = conditions.join(' AND ');
-    const tsQuery = 'plainto_tsquery($1)';
-    const rankExpr = sort === 'date'
+
+    // Use ILIKE instead of to_tsvector/plainto_tsquery because we cannot
+    // create GIN indexes on the public HAF database, so full-text search
+    // times out scanning the entire comments table.  The PEvO-filtered
+    // subset is tiny, so ILIKE is fast enough.
+    const ilikeParam = `$${paramIdx++}`;
+    const ilikePattern = `%${query}%`;
+    const textMatch = `(c.title ILIKE ${ilikeParam} OR c.body ILIKE ${ilikeParam})`;
+
+    const orderBy = sort === 'date'
       ? 'c.created DESC'
-      : `ts_rank_cd(to_tsvector(c.title || ' ' || c.body), ${tsQuery}) DESC`;
+      : `(CASE WHEN c.title ILIKE ${ilikeParam} THEN 1 ELSE 0 END) DESC, c.created DESC`;
 
     const countResult = await pool.query(
       `${cte.sql}
        SELECT count(*)::int AS total
        FROM ${T.comments} c
        WHERE ${where}
-         AND to_tsvector(c.title || ' ' || c.body) @@ ${tsQuery}`,
-      params,
+         AND ${textMatch}`,
+      [...params, ilikePattern],
     );
     const total = countResult.rows[0]?.total ?? 0;
+
+    const snippetExpr = `substring(c.body from 1 for 300)`;
 
     const dataResult = await pool.query(
       `${cte.sql}
@@ -108,15 +119,14 @@ async function searchFromHaf(
         c.author,
         c.permlink,
         c.title,
-        ts_headline(c.body, ${tsQuery}, 'MaxFragments=2, MaxWords=30') AS snippet,
-        ts_rank_cd(to_tsvector(c.title || ' ' || c.body), ${tsQuery}) AS rank,
+        ${snippetExpr} AS snippet,
         c.created
        FROM ${T.comments} c
        WHERE ${where}
-         AND to_tsvector(c.title || ' ' || c.body) @@ ${tsQuery}
-       ORDER BY ${rankExpr}
+         AND ${textMatch}
+       ORDER BY ${orderBy}
        LIMIT $${paramIdx++} OFFSET $${paramIdx++}`,
-      [...params, limit, offset],
+      [...params, ilikePattern, limit, offset],
     );
 
     const authors = dataResult.rows.map((r: Record<string, unknown>) => r.author as string);
@@ -128,7 +138,6 @@ async function searchFromHaf(
       permlink: r.permlink,
       title: r.title,
       snippet: r.snippet,
-      rank: r.rank,
       created: r.created,
       is_accredited: accreditedSet.has(r.author as string),
     }));
@@ -150,7 +159,7 @@ router.get('/', async (req: Request, res: Response) => {
   const discipline = req.query.discipline as string | undefined;
   const language = req.query.language as string | undefined;
   const source = req.query.source as string | undefined;
-  const accreditedOnly = req.query.accredited_only !== 'false'; // default true
+  const accreditedOnly = req.query.accredited_only === 'true'; // default false
   const includeRetracted = req.query.include_retracted === 'true'; // default false
   const sort = (req.query.sort as string) === 'date' ? 'date' : 'relevance';
   const { page, limit, offset } = parsePageLimit(req);

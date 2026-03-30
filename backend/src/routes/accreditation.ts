@@ -4,7 +4,7 @@ import nodemailer from 'nodemailer';
 import { PrivateKey } from '@hiveio/dhive';
 import { config } from '../config.js';
 import { hiveClient } from '../hive.js';
-import { getAppPool } from '../app-db.js';
+import { getRedis, isRedisAvailable } from '../redis.js';
 import { sendOk, sendError } from '../response.js';
 import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';
 import { validate, accreditationRequestSchema, accreditationVerifySchema } from '../validation.js';
@@ -42,39 +42,22 @@ interface PendingAccreditation {
 const memoryTokens = new Map<string, PendingAccreditation>();
 
 async function storeToken(pending: PendingAccreditation): Promise<void> {
-  const pool = getAppPool();
-  if (pool) {
-    await pool.query(
-      `INSERT INTO pending_accreditations (token, hive_username, full_name, institution, field, email, orcid, expires_at, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-       ON CONFLICT (token) DO NOTHING`,
-      [pending.token, pending.hive_username, pending.full_name, pending.institution, pending.field, pending.email, pending.orcid, pending.expires_at, pending.created_at],
-    );
-  } else {
-    memoryTokens.set(pending.token, pending);
+  const redis = getRedis();
+  if (redis && isRedisAvailable()) {
+    const ttl = Math.max(1, Math.ceil((pending.expires_at.getTime() - Date.now()) / 1000));
+    await redis.set(`pending_accred:${pending.token}`, JSON.stringify(pending), 'EX', ttl);
   }
+  memoryTokens.set(pending.token, pending);
 }
 
 async function getToken(token: string): Promise<PendingAccreditation | null> {
-  const pool = getAppPool();
-  if (pool) {
-    const result = await pool.query(
-      `SELECT * FROM pending_accreditations WHERE token = $1 AND expires_at > now()`,
-      [token],
-    );
-    if (result.rows.length === 0) return null;
-    const r = result.rows[0];
-    return {
-      hive_username: r.hive_username,
-      full_name: r.full_name,
-      institution: r.institution,
-      field: r.field,
-      email: r.email,
-      orcid: r.orcid,
-      token: r.token,
-      expires_at: new Date(r.expires_at),
-      created_at: new Date(r.created_at),
-    };
+  const redis = getRedis();
+  if (redis && isRedisAvailable()) {
+    const raw = await redis.get(`pending_accred:${token}`);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      return { ...parsed, expires_at: new Date(parsed.expires_at), created_at: new Date(parsed.created_at) };
+    }
   }
   const pending = memoryTokens.get(token);
   if (!pending) return null;
@@ -86,23 +69,18 @@ async function getToken(token: string): Promise<PendingAccreditation | null> {
 }
 
 async function deleteToken(token: string): Promise<void> {
-  const pool = getAppPool();
-  if (pool) {
-    await pool.query(`DELETE FROM pending_accreditations WHERE token = $1`, [token]);
-  } else {
-    memoryTokens.delete(token);
+  const redis = getRedis();
+  if (redis && isRedisAvailable()) {
+    await redis.del(`pending_accred:${token}`);
   }
+  memoryTokens.delete(token);
 }
 
 async function cleanupExpiredTokens(): Promise<void> {
-  const pool = getAppPool();
-  if (pool) {
-    await pool.query(`DELETE FROM pending_accreditations WHERE expires_at < now()`);
-  } else {
-    const now = new Date();
-    for (const [t, p] of memoryTokens) {
-      if (now > p.expires_at) memoryTokens.delete(t);
-    }
+  // Redis handles TTL automatically; just clean in-memory map
+  const now = new Date();
+  for (const [t, p] of memoryTokens) {
+    if (now > p.expires_at) memoryTokens.delete(t);
   }
 }
 
@@ -282,7 +260,6 @@ router.get('/orcid/start', verifyHiveSignature, async (req: Request, res: Respon
   const stateKey = `orcid_state:${state}`;
 
   // Store in Redis if available, otherwise in-memory
-  const { getRedis, isRedisAvailable } = await import('../redis.js');
   const redis = getRedis();
   if (redis && isRedisAvailable()) {
     await redis.set(stateKey, username, 'EX', ORCID_STATE_TTL_SECONDS);
@@ -322,7 +299,6 @@ router.post('/orcid/callback', verifyHiveSignature, async (req: Request, res: Re
 
   // Verify state
   let storedUsername: string | null = null;
-  const { getRedis, isRedisAvailable } = await import('../redis.js');
   const redis = getRedis();
   if (redis && isRedisAvailable()) {
     storedUsername = await redis.get(`orcid_state:${state}`);

@@ -70,6 +70,11 @@ export const config = {
   dataciteDoiPrefix: process.env.DATACITE_DOI_PREFIX || '',
   dataciteApiUrl: process.env.DATACITE_API_URL || 'https://api.datacite.org',
 
+  accreditationAuthorities: (() => {
+    const extra = (process.env.ACCREDITATION_AUTHORITIES || '').split(',').map(s => s.trim()).filter(Boolean);
+    return [hiveAdminAccount, ...extra];
+  })(),
+
   sessionSecret: process.env.SESSION_SECRET || 'pevo-dev-secret-do-not-use-in-production',
 
   // App identity — configurable so alpha/testing uses different namespace

@@ -75,14 +75,15 @@ export function activeAccreditationsCteBody(startIdx = 1): SqlFragment {
     FROM ${T.customJson} cj
     WHERE cj.custom_id = $${p}
       AND cj.json::jsonb ->> 'action' IN ('accredit', 'revoke')
+      AND cj.required_posting_auths ?| $${p + 1}::text[]
   ),
   active_accreditations AS (
     SELECT account, researcher_name, institution, field, method, event_timestamp, event_id
     FROM accred_ranked
     WHERE rn = 1 AND action = 'accredit'
   )`,
-    params: [config.appTag],
-    nextIdx: p + 1,
+    params: [config.appTag, config.accreditationAuthorities],
+    nextIdx: p + 2,
   };
 }
 

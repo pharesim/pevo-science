@@ -22,8 +22,8 @@ export async function getAccreditedSet(usernames: string[]): Promise<Set<string>
       const unique = [...new Set(usernames)];
       const placeholders = unique.map((_, i) => `$${i + 1}`).join(', ');
 
-      // Offset user params to start after appTag param
-      const userPlaceholders = unique.map((_, i) => `$${i + 2}`).join(', ');
+      // $1 = appTag, $2 = whitelist, $3+ = usernames
+      const userPlaceholders = unique.map((_, i) => `$${i + 3}`).join(', ');
       const result = await pool.query(
         `WITH ranked AS (
           SELECT
@@ -33,10 +33,11 @@ export async function getAccreditedSet(usernames: string[]): Promise<Set<string>
           FROM ${T.customJson} cj
           WHERE cj.custom_id = $1
             AND cj.json::jsonb ->> 'action' IN ('accredit', 'revoke')
+            AND cj.required_posting_auths ?| $2::text[]
             AND cj.json::jsonb ->> 'account' IN (${userPlaceholders})
         )
         SELECT account FROM ranked WHERE rn = 1 AND action = 'accredit'`,
-        [config.appTag, ...unique],
+        [config.appTag, config.accreditationAuthorities, ...unique],
       );
 
       return new Set(result.rows.map((r: { account: string }) => r.account));
@@ -78,65 +79,66 @@ export async function getAllAccreditedAccounts(): Promise<Set<string>> {
 }
 
 /**
- * Fallback: scan pevo.admin's account history for accreditation custom_json ops.
+ * Fallback: scan all whitelist accounts' histories for accreditation custom_json ops.
  * Less efficient than HAF but works without a database connection.
+ * Merges results — latest action per account by block number wins (first seen = most recent
+ * when scanning backwards).
  */
 async function getAccreditedSetFromHiveApi(usernames: string[]): Promise<Set<string>> {
   const unique = new Set(usernames);
   const fetchAll = unique.size === 0; // when empty, scan for all accreditations
-  const accredited = new Set<string>();
 
-  try {
-    // Fetch recent custom_json ops from pevo.admin's account history
-    // We scan backwards from -1 (most recent) in batches
-    const latestAction = new Map<string, string>(); // account -> 'accredit' | 'revoke'
-    let start = -1;
-    const batchSize = 1000;
-    let scanned = 0;
-    const maxScan = 5000; // safety limit
+  // latestAction: account -> 'accredit' | 'revoke' (first seen across all authority scans wins)
+  const latestAction = new Map<string, string>();
 
-    while (scanned < maxScan) {
-      const history: Array<[number, { op: unknown[] }]> = await hiveClient.database.call(
-        'get_account_history',
-        [config.hiveAdminAccount, start, Math.min(batchSize, start === -1 ? batchSize : start + 1)],
-      );
+  for (const authority of config.accreditationAuthorities) {
+    try {
+      let start = -1;
+      const batchSize = 1000;
+      let scanned = 0;
+      const maxScan = 5000;
 
-      if (history.length === 0) break;
+      while (scanned < maxScan) {
+        const history: Array<[number, { op: unknown[] }]> = await hiveClient.database.call(
+          'get_account_history',
+          [authority, start, Math.min(batchSize, start === -1 ? batchSize : start + 1)],
+        );
 
-      for (const [, entry] of history) {
-        const op = entry.op;
-        if (op[0] !== 'custom_json') continue;
+        if (history.length === 0) break;
 
-        const opData = op[1] as { id?: string; json?: string };
-        if (opData.id !== config.appTag) continue;
+        for (const [, entry] of history) {
+          const op = entry.op;
+          if (op[0] !== 'custom_json') continue;
 
-        try {
-          const payload = JSON.parse(opData.json || '{}');
-          if (payload.action !== 'accredit' && payload.action !== 'revoke') continue;
-          if (!fetchAll && !unique.has(payload.account)) continue;
+          const opData = op[1] as { id?: string; json?: string };
+          if (opData.id !== config.appTag) continue;
 
-          // Only keep the most recent action per account (first seen = most recent)
-          if (!latestAction.has(payload.account)) {
-            latestAction.set(payload.account, payload.action);
-          }
-        } catch (err) { logger.debug({ err }, 'Skipping malformed custom_json in accreditation scan'); }
+          try {
+            const payload = JSON.parse(opData.json || '{}');
+            if (payload.action !== 'accredit' && payload.action !== 'revoke') continue;
+            if (!fetchAll && !unique.has(payload.account)) continue;
+
+            if (!latestAction.has(payload.account)) {
+              latestAction.set(payload.account, payload.action);
+            }
+          } catch (err) { logger.debug({ err }, 'Skipping malformed custom_json in accreditation scan'); }
+        }
+
+        if (!fetchAll && latestAction.size >= unique.size) break;
+
+        scanned += history.length;
+        const oldestIdx = history[0][0];
+        if (oldestIdx <= 0) break;
+        start = oldestIdx - 1;
       }
-
-      // Check if we've resolved all requested accounts (skip for fetchAll — scan everything)
-      if (!fetchAll && latestAction.size >= unique.size) break;
-
-      scanned += history.length;
-      const oldestIdx = history[0][0];
-      if (oldestIdx <= 0) break;
-      start = oldestIdx - 1;
+    } catch (err) {
+      logger.error({ err, authority }, 'Hive API accreditation check failed for authority');
     }
-
-    for (const [account, action] of latestAction) {
-      if (action === 'accredit') accredited.add(account);
-    }
-  } catch (err) {
-    logger.error({ err }, 'Hive API accreditation check failed');
   }
 
+  const accredited = new Set<string>();
+  for (const [account, action] of latestAction) {
+    if (action === 'accredit') accredited.add(account);
+  }
   return accredited;
 }

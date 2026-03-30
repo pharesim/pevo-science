@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import { PrivateKey } from '@hiveio/dhive';
 import { config } from '../config.js';
 import { hiveClient } from '../hive.js';
-import { getAppPool } from '../app-db.js';
+import { getRedis, isRedisAvailable } from '../redis.js';
 import { sendOk, sendError } from '../response.js';
 import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';
 import { validate, anonymousReviewSchema } from '../validation.js';
@@ -64,29 +64,23 @@ async function storeAnonMapping(
   keyVersion: number,
   expiresAt: Date,
 ): Promise<void> {
-  const pool = getAppPool();
-  if (pool) {
-    await pool.query(
-      `INSERT INTO anon_review_mappings (anon_permlink, paper_author, paper_permlink, encrypted_data, iv, auth_tag, key_version, expires_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-       ON CONFLICT (anon_permlink) DO NOTHING`,
-      [permlink, paperAuthor, paperPermlink, encrypted, iv, authTag, keyVersion, expiresAt],
-    );
-  } else {
-    memoryMappings.set(permlink, { encrypted, iv, authTag, keyVersion, expiresAt });
+  const ttl = Math.max(1, Math.ceil((expiresAt.getTime() - Date.now()) / 1000));
+  const value = JSON.stringify({ encrypted, iv, authTag, keyVersion, paperAuthor, paperPermlink, expiresAt });
+  const redis = getRedis();
+  if (redis && isRedisAvailable()) {
+    await redis.set(`anon_mapping:${permlink}`, value, 'EX', ttl);
   }
+  memoryMappings.set(permlink, { encrypted, iv, authTag, keyVersion, expiresAt });
 }
 
 async function getAnonMapping(permlink: string): Promise<{ encrypted: string; iv: string; authTag: string; keyVersion: number } | null> {
-  const pool = getAppPool();
-  if (pool) {
-    const result = await pool.query(
-      `SELECT encrypted_data, iv, auth_tag, key_version FROM anon_review_mappings WHERE anon_permlink = $1 AND expires_at > now()`,
-      [permlink],
-    );
-    if (result.rows.length === 0) return null;
-    const r = result.rows[0];
-    return { encrypted: r.encrypted_data, iv: r.iv, authTag: r.auth_tag, keyVersion: r.key_version };
+  const redis = getRedis();
+  if (redis && isRedisAvailable()) {
+    const raw = await redis.get(`anon_mapping:${permlink}`);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      return { encrypted: parsed.encrypted, iv: parsed.iv, authTag: parsed.authTag, keyVersion: parsed.keyVersion };
+    }
   }
   const mapping = memoryMappings.get(permlink);
   if (!mapping) return null;
@@ -98,14 +92,10 @@ async function getAnonMapping(permlink: string): Promise<{ encrypted: string; iv
 }
 
 async function cleanupExpiredMappings(): Promise<void> {
-  const pool = getAppPool();
-  if (pool) {
-    await pool.query(`DELETE FROM anon_review_mappings WHERE expires_at < now()`);
-  } else {
-    const now = new Date();
-    for (const [k, v] of memoryMappings) {
-      if (now > v.expiresAt) memoryMappings.delete(k);
-    }
+  // Redis handles TTL automatically; just clean in-memory map
+  const now = new Date();
+  for (const [k, v] of memoryMappings) {
+    if (now > v.expiresAt) memoryMappings.delete(k);
   }
 }
 

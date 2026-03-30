@@ -47,7 +47,14 @@ import {
   NotificationBatchSchema,
 } from "./schemas";
 
-export const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
+// Server-side rendering (RSC) runs inside the Docker container where
+// NEXT_PUBLIC_API_URL (e.g. api.pevo.lvh.me:8090) resolves to 127.0.0.1
+// and is unreachable.  Use INTERNAL_API_URL (e.g. http://backend:3001)
+// for SSR, and the public URL for browser requests.
+const isServer = typeof window === "undefined";
+export const BASE_URL = isServer
+  ? (process.env.INTERNAL_API_URL || process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001")
+  : (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001");
 
 // Warn at build/startup if API URL is not explicitly configured
 if (

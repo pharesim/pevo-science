@@ -59,7 +59,7 @@ async function fetchPapersFromHaf(req: Request): Promise<{ rows: unknown[]; tota
   const keyword = req.query.keyword as string | undefined;
   const author = req.query.author as string | undefined;
   const language = req.query.language as string | undefined;
-  const accreditedOnly = req.query.accredited_only !== 'false'; // default true
+  const accreditedOnly = req.query.accredited_only === 'true'; // default false
   const includeRetracted = req.query.include_retracted === 'true'; // default false
   const source = req.query.source as string | undefined; // 'native', 'bridge', or omit for both
 
@@ -236,7 +236,7 @@ async function fetchPapersFromHiveApi(req: Request): Promise<{ rows: unknown[]; 
     const rows = papers.map((d) => {
       const meta = parseMeta(d.json_metadata);
       return toPaperSummary(
-        { author: d.author, permlink: d.permlink, title: d.title, body: d.body, created: d.created, net_votes: d.net_votes },
+        { author: d.author, permlink: d.permlink, title: d.title, body: d.body, created: d.created, net_votes: d.active_votes?.length ?? 0 },
         meta,
       );
     });
@@ -273,7 +273,7 @@ router.get('/', async (req: Request, res: Response) => {
     const keyword = req.query.keyword || '';
     const author = req.query.author || '';
     const language = req.query.language || '';
-    const accreditedOnly = req.query.accredited_only !== 'false';
+    const accreditedOnly = req.query.accredited_only === 'true';
     const includeRetracted = req.query.include_retracted === 'true';
     const source = req.query.source || '';
     const cacheKey = `papers:p=${page}:l=${limit}:s=${sort}:o=${order}:d=${discipline}:k=${keyword}:a=${author}:lang=${language}:ao=${accreditedOnly}:ir=${includeRetracted}:src=${source}`;

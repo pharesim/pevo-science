@@ -201,7 +201,7 @@ export interface SearchResult {
   permlink: string;
   title: string;
   snippet: string;
-  rank: number;
+  rank?: number;
   created: string;
   is_accredited: boolean;
 }
