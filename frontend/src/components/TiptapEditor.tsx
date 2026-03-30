@@ -602,7 +602,7 @@ export default function TiptapEditor({ content, onChange, username, variant = "f
   const editor = useEditor({
     extensions: [
       StarterKit.configure({
-        heading: isAbstract ? false : { levels: [2, 3] },
+        heading: isAbstract ? false : { levels: [2, 3, 4] },
         bulletList: isAbstract ? false : undefined,
         orderedList: isAbstract ? false : undefined,
         blockquote: isAbstract ? false : undefined,
@@ -902,6 +902,19 @@ export default function TiptapEditor({ content, onChange, username, variant = "f
               title="Heading 3"
             >
               H3
+            </ToolbarButton>
+            <ToolbarButton
+              onClick={() => {
+                if (markdownMode && markdownTextareaRef.current) {
+                  prefixMarkdownLines(markdownTextareaRef.current, "#### ", setMarkdownSource, onChange);
+                } else {
+                  editor.chain().focus().toggleHeading({ level: 4 }).run();
+                }
+              }}
+              active={!markdownMode && editor.isActive("heading", { level: 4 })}
+              title="Heading 4"
+            >
+              H4
             </ToolbarButton>
             <ToolbarButton
               onClick={() => {
