@@ -373,9 +373,6 @@ export default function PaperDetailClient({ author, permlink, initialData }: Pap
             </svg>
             {t("citations", { count: paper.citation_count })}
           </span>
-          <span className="text-ink-muted">
-            {t("payout", { value: paper.pending_payout_value })}
-          </span>
           {ipfsGatewayUrl && (
             <a
               href={ipfsGatewayUrl}
@@ -442,10 +439,22 @@ export default function PaperDetailClient({ author, permlink, initialData }: Pap
           </div>
         )}
 
+        {/* Abstract */}
+        {paper.abstract && (
+          <div className="mt-6 border-l-4 border-pevo-teal/30 bg-parchment-warm/50 rounded-r-lg px-5 py-4">
+            <h2 className="text-sm font-semibold uppercase tracking-wide text-ink-muted mb-2 font-sans">
+              {t("abstractTitle")}
+            </h2>
+            <p className="text-[0.95rem] leading-relaxed text-ink-light">
+              {paper.abstract}
+            </p>
+          </div>
+        )}
+
         {/* Paper body */}
         <MarkdownRenderer
           content={paper.body}
-          className="mt-6 prose prose-ink max-w-reading text-ink-light text-[0.95rem] leading-relaxed"
+          className="mt-8 prose max-w-none text-[0.95rem]"
         />
       </article>
 

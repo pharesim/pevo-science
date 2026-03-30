@@ -39,12 +39,12 @@
     "pdf": "PDF"
   },
   "paperDetail": {
+    "abstractTitle": "Sommario",
     "backToPapers": "Torna agli Articoli",
     "updated": "aggiornato il {date}",
     "votes": "{count} voti",
     "reviews": "{count, plural, one {# revisione} other {# revisioni}}",
     "citations": "{count, plural, one {# citazione} other {# citazioni}}",
-    "payout": "Compenso: {value}",
     "downloadPdf": "Scarica PDF",
     "referencesTitle": "Riferimenti ad Articoli PEvO",
     "peerReviewsTitle": "Revisioni Paritarie ({count})",

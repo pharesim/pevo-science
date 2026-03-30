@@ -39,12 +39,12 @@
     "pdf": "PDF"
   },
   "paperDetail": {
+    "abstractTitle": "תקציר",
     "backToPapers": "חזרה למאמרים",
     "updated": "עודכן {date}",
     "votes": "{count} הצבעות",
     "reviews": "{count, plural, one {ביקורת #} other {# ביקורות}}",
     "citations": "{count, plural, one {ציטוט #} other {# ציטוטים}}",
-    "payout": "תשלום: {value}",
     "downloadPdf": "הורדת PDF",
     "referencesTitle": "הפניות למאמרי PEvO",
     "peerReviewsTitle": "ביקורות עמיתים ({count})",

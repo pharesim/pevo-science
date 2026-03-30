@@ -39,12 +39,12 @@
     "pdf": "PDF"
   },
   "paperDetail": {
+    "abstractTitle": "Sammanfattning",
     "backToPapers": "Tillbaka till artiklar",
     "updated": "uppdaterad {date}",
     "votes": "{count} röster",
     "reviews": "{count, plural, one {# recension} other {# recensioner}}",
     "citations": "{count, plural, one {# citering} other {# citeringar}}",
-    "payout": "Utbetalning: {value}",
     "downloadPdf": "Ladda ner PDF",
     "referencesTitle": "Referenser till PEvO-artiklar",
     "peerReviewsTitle": "Kollegiala granskningar ({count})",

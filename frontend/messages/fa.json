@@ -39,12 +39,12 @@
     "pdf": "PDF"
   },
   "paperDetail": {
+    "abstractTitle": "چکیده",
     "backToPapers": "بازگشت به مقالات",
     "updated": "به‌روزرسانی {date}",
     "votes": "{count} رای",
     "reviews": "{count, plural, one {# داوری} other {# داوری}}",
     "citations": "{count, plural, one {# استناد} other {# استناد}}",
-    "payout": "پرداخت: {value}",
     "downloadPdf": "دانلود PDF",
     "referencesTitle": "ارجاعات به مقالات PEvO",
     "peerReviewsTitle": "داوری‌های همتا ({count})",

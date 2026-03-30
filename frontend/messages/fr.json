@@ -39,12 +39,12 @@
     "pdf": "PDF"
   },
   "paperDetail": {
+    "abstractTitle": "Résumé",
     "backToPapers": "Retour aux articles",
     "updated": "mis à jour le {date}",
     "votes": "{count} votes",
     "reviews": "{count, plural, one {# évaluation} other {# évaluations}}",
     "citations": "{count, plural, one {# citation} other {# citations}}",
-    "payout": "Rétribution : {value}",
     "downloadPdf": "Télécharger le PDF",
     "referencesTitle": "Références aux articles PEvO",
     "peerReviewsTitle": "Évaluations par les pairs ({count})",

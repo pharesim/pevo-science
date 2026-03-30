@@ -39,12 +39,12 @@
     "pdf": "PDF"
   },
   "paperDetail": {
+    "abstractTitle": "Resumé",
     "backToPapers": "Tilbage til artikler",
     "updated": "opdateret {date}",
     "votes": "{count} stemmer",
     "reviews": "{count, plural, one {# bedømmelse} other {# bedømmelser}}",
     "citations": "{count, plural, one {# citation} other {# citationer}}",
-    "payout": "Udbetaling: {value}",
     "downloadPdf": "Download PDF",
     "referencesTitle": "Referencer til PEvO-artikler",
     "peerReviewsTitle": "Fagfællebedømmelser ({count})",

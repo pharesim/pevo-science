@@ -39,12 +39,12 @@
     "pdf": "PDF"
   },
   "paperDetail": {
+    "abstractTitle": "Abstrakt",
     "backToPapers": "Zpět na články",
     "updated": "aktualizováno {date}",
     "votes": "{count} hlasů",
     "reviews": "{count, plural, one {# recenze} few {# recenze} other {# recenzí}}",
     "citations": "{count, plural, one {# citace} few {# citace} other {# citací}}",
-    "payout": "Výplata: {value}",
     "downloadPdf": "Stáhnout PDF",
     "referencesTitle": "Odkazy na články PEvO",
     "peerReviewsTitle": "Recenze ({count})",

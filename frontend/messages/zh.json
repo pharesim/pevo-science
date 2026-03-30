@@ -39,12 +39,12 @@
     "pdf": "PDF"
   },
   "paperDetail": {
+    "abstractTitle": "摘要",
     "backToPapers": "返回论文列表",
     "updated": "更新于 {date}",
     "votes": "{count} 票",
     "reviews": "{count, plural, one {# 篇评审} other {# 篇评审}}",
     "citations": "{count, plural, one {# 次引用} other {# 次引用}}",
-    "payout": "收益：{value}",
     "downloadPdf": "下载 PDF",
     "referencesTitle": "PEvO 论文引用",
     "peerReviewsTitle": "同行评审 ({count})",

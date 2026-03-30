@@ -39,12 +39,12 @@
     "pdf": "PDF"
   },
   "paperDetail": {
+    "abstractTitle": "Streszczenie",
     "backToPapers": "Powrót do publikacji",
     "updated": "zaktualizowano {date}",
     "votes": "{count} głosów",
     "reviews": "{count, plural, one {# recenzja} few {# recenzje} many {# recenzji} other {# recenzji}}",
     "citations": "{count, plural, one {# cytowanie} few {# cytowania} many {# cytowań} other {# cytowań}}",
-    "payout": "Wypłata: {value}",
     "downloadPdf": "Pobierz PDF",
     "referencesTitle": "Odwołania do publikacji PEvO",
     "peerReviewsTitle": "Recenzje ({count})",

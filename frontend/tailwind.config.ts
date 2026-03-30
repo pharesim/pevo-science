@@ -82,11 +82,80 @@ const config: Config = {
         DEFAULT: {
           css: {
             maxWidth: "72ch",
+            color: "#4A4A4A",
+            lineHeight: "1.75",
+            "h1, h2, h3, h4": {
+              color: "#2D2D2D",
+              fontFamily: "Merriweather, Georgia, serif",
+            },
+            h2: {
+              fontSize: "1.5rem",
+              marginTop: "2em",
+              marginBottom: "0.75em",
+              fontWeight: "700",
+            },
+            h3: {
+              fontSize: "1.25rem",
+              marginTop: "1.75em",
+              marginBottom: "0.5em",
+              fontWeight: "600",
+            },
+            h4: {
+              fontSize: "1.1rem",
+              marginTop: "1.5em",
+              marginBottom: "0.5em",
+              fontWeight: "600",
+            },
+            a: {
+              color: "#1B7A6D",
+              textDecoration: "underline",
+              "&:hover": {
+                color: "#14605A",
+              },
+            },
+            blockquote: {
+              borderLeftColor: "rgba(27, 122, 109, 0.4)",
+              color: "#6B7280",
+              fontStyle: "italic",
+            },
+            code: {
+              color: "#2D2D2D",
+              backgroundColor: "#F2F0EB",
+              borderRadius: "0.25rem",
+              padding: "0.15em 0.35em",
+              fontWeight: "400",
+            },
+            "code::before": { content: '""' },
+            "code::after": { content: '""' },
+            "pre code": {
+              backgroundColor: "transparent",
+              padding: "0",
+            },
+            pre: {
+              backgroundColor: "#F2F0EB",
+              color: "#2D2D2D",
+              borderRadius: "0.5rem",
+              border: "1px solid #E0DDD5",
+            },
+            "thead th": {
+              color: "#2D2D2D",
+              fontWeight: "600",
+              borderBottomColor: "#E0DDD5",
+            },
+            "tbody td": {
+              borderBottomColor: "#E0DDD5",
+            },
+            hr: {
+              borderColor: "#E0DDD5",
+            },
+            strong: {
+              color: "#2D2D2D",
+            },
           },
         },
       },
     },
   },
-  plugins: [],
+  plugins: [require("@tailwindcss/typography")],
 };
 export default config;

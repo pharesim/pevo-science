@@ -17,6 +17,7 @@
   "dependencies": {
     "@pevo/contracts": "file:../contracts",
     "@sentry/nextjs": "^10.46.0",
+    "@tailwindcss/typography": "^0.5.19",
     "@tiptap/extension-image": "^3.20.5",
     "@tiptap/extension-link": "^3.20.5",
     "@tiptap/extension-mathematics": "^3.20.5",

@@ -39,12 +39,12 @@
     "pdf": "PDF"
   },
   "paperDetail": {
+    "abstractTitle": "الملخص",
     "backToPapers": "العودة إلى الأبحاث",
     "updated": "تم التحديث {date}",
     "votes": "{count} تصويت",
     "reviews": "{count, plural, one {مراجعة واحدة} other {# مراجعة}}",
     "citations": "{count, plural, one {اقتباس واحد} other {# اقتباس}}",
-    "payout": "المكافأة: {value}",
     "downloadPdf": "تحميل PDF",
     "referencesTitle": "المراجع لأبحاث PEvO",
     "peerReviewsTitle": "مراجعات الأقران ({count})",
