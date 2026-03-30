@@ -28,5 +28,22 @@ export async function generateMetadata({ params }: PaperDetailPageProps): Promis
 
 export default async function PaperDetailPage({ params }: PaperDetailPageProps) {
   const { author, permlink } = await params;
-  return <PaperDetailClient author={author} permlink={permlink} />;
+
+  // Fetch server-side so the client component doesn't need a second request.
+  // On failure, pass null — the client will show an error state.
+  let initialData = null;
+  try {
+    const res = await fetchPaper(author, permlink);
+    initialData = res.data;
+  } catch {
+    // Client will handle error display
+  }
+
+  return (
+    <PaperDetailClient
+      author={author}
+      permlink={permlink}
+      initialData={initialData}
+    />
+  );
 }

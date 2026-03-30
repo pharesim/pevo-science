@@ -15,7 +15,7 @@ import {
   toPaperSummary,
   type SortField,
 } from '../helpers.js';
-import { getAccreditedSet } from '../accreditation.js';
+import { getAccreditedSet, getAllAccreditedAccounts } from '../accreditation.js';
 import { getReputationScores } from '../reputation.js';
 import { hafCache } from '../cache.js';
 import { logger } from '../logger.js';
@@ -24,7 +24,6 @@ import { rateLimit, byAccount } from '../middleware/rateLimit.js';
 import {
   T,
   accreditedVoteCount,
-  activeAccreditationsCte,
   activeAccreditationsCteBody,
   retractedPapersCteBody,
   buildWith,
@@ -297,40 +296,62 @@ async function fetchPaperDetailFromHaf(author: string, permlink: string) {
   if (!pool) return null;
 
   try {
-    const accredCte = activeAccreditationsCte();
-    const result = await pool.query(
-      `${accredCte.sql}
-       SELECT c.author, c.permlink, c.title, c.body, c.json_metadata,
-              c.created, c.last_edited,
-              ${accreditedVoteCount('c.author', 'c.permlink')} AS net_votes,
-              c.pending_payout_value
-       FROM ${T.comments} c
-       WHERE c.author = $${accredCte.nextIdx} AND c.permlink = $${accredCte.nextIdx + 1}
-         AND c.parent_author = '' AND c.parent_permlink = $${accredCte.nextIdx + 2}`,
-      [...accredCte.params, author, permlink, config.appTag],
-    );
-    if (result.rows.length === 0) return null;
+    // Pre-fetch the cached accredited account set once (10-min stable cache)
+    // instead of running the expensive ACTIVE_ACCREDITATIONS CTE per query.
+    const accreditedAccounts = await getAllAccreditedAccounts();
+    const accreditedArr = [...accreditedAccounts];
 
-    const row = result.rows[0];
+    // Run all independent queries in parallel:
+    // A) main paper, B) reviews, C) citation count, D) versions, E) retraction
+    const [paperResult, reviewsResult, citationResult, versions, retraction] = await Promise.all([
+      // A) Main paper data with accredited vote count via ANY()
+      pool.query(
+        `SELECT c.author, c.permlink, c.title, c.body, c.json_metadata,
+                c.created, c.last_edited,
+                (SELECT count(*)::int FROM ${T.votes} v
+                 WHERE v.author = c.author AND v.permlink = c.permlink
+                   AND v.rshares > 0 AND v.voter = ANY($4::text[])) AS net_votes,
+                c.pending_payout_value
+         FROM ${T.comments} c
+         WHERE c.author = $1 AND c.permlink = $2
+           AND c.parent_author = '' AND c.parent_permlink = $3`,
+        [author, permlink, config.appTag, accreditedArr],
+      ),
+      // B) Reviews from accredited reviewers with accredited vote count
+      pool.query(
+        `SELECT c.author, c.permlink, c.body, c.json_metadata, c.created,
+                (SELECT count(*)::int FROM ${T.votes} v
+                 WHERE v.author = c.author AND v.permlink = c.permlink
+                   AND v.rshares > 0 AND v.voter = ANY($5::text[])) AS net_votes
+         FROM ${T.comments} c
+         WHERE c.parent_author = $1 AND c.parent_permlink = $2
+           AND c.author = ANY($5::text[])
+           AND (c.json_metadata -> $3 ->> 'type') = 'review'
+           AND c.json_metadata ->> 'app' LIKE $4
+         ORDER BY c.created DESC`,
+        [author, permlink, config.appTag, `${config.appTag}/%`, accreditedArr],
+      ),
+      // C) Citation count from accredited authors
+      pool.query(
+        `SELECT count(*)::int AS cnt FROM ${T.comments} ci
+         WHERE ci.parent_author = '' AND ci.parent_permlink = $2
+           AND ci.author = ANY($4::text[])
+           AND (ci.json_metadata -> $2 ->> 'type') = 'paper'
+           AND ci.json_metadata ->> 'app' LIKE $3
+           AND ci.json_metadata -> $2 -> 'citations' @> $1::jsonb`,
+        [JSON.stringify([{ author, permlink }]), config.appTag, `${config.appTag}/%`, accreditedArr],
+      ),
+      // D) Version history
+      resolveVersionsFromHaf(author, permlink),
+      // E) Retraction status
+      getRetractionInfo(author, permlink),
+    ]);
+
+    if (paperResult.rows.length === 0) return null;
+
+    const row = paperResult.rows[0];
     const meta = parseMeta(row.json_metadata);
     if (!isPevoAnyPaper(meta)) return null;
-
-    // Fetch reviews from accredited reviewers only
-    const accredCte2 = activeAccreditationsCte();
-    const rvAppTag = `$${accredCte2.nextIdx + 2}`;
-    const rvAppLike = `$${accredCte2.nextIdx + 3}`;
-    const reviewsResult = await pool.query(
-      `${accredCte2.sql}
-       SELECT c.author, c.permlink, c.body, c.json_metadata, c.created,
-              ${accreditedVoteCount('c.author', 'c.permlink')} AS net_votes
-       FROM ${T.comments} c
-       JOIN active_accreditations aa ON aa.account = c.author
-       WHERE c.parent_author = $${accredCte2.nextIdx} AND c.parent_permlink = $${accredCte2.nextIdx + 1}
-         AND (c.json_metadata -> ${rvAppTag} ->> 'type') = 'review'
-         AND c.json_metadata ->> 'app' LIKE ${rvAppLike}
-       ORDER BY c.created DESC`,
-      [...accredCte2.params, author, permlink, config.appTag, `${config.appTag}/%`],
-    );
 
     const reviews = reviewsResult.rows.map((r: Record<string, unknown>) => {
       const rMeta = parseMeta(r.json_metadata);
@@ -350,20 +371,6 @@ async function fetchPaperDetailFromHaf(author: string, permlink: string) {
       };
     });
 
-    // Citation count: accredited authors only
-    const accredCte3 = activeAccreditationsCte();
-    const ciAppTag = `$${accredCte3.nextIdx + 1}`;
-    const ciAppLike = `$${accredCte3.nextIdx + 2}`;
-    const citationResult = await pool.query(
-      `${accredCte3.sql}
-       SELECT count(*)::int AS cnt FROM ${T.comments} ci
-       JOIN active_accreditations aa ON aa.account = ci.author
-       WHERE ci.parent_author = '' AND ci.parent_permlink = ${ciAppTag}
-         AND (ci.json_metadata -> ${ciAppTag} ->> 'type') = 'paper'
-         AND ci.json_metadata ->> 'app' LIKE ${ciAppLike}
-         AND ci.json_metadata -> ${ciAppTag} -> 'citations' @> $${accredCte3.nextIdx}::jsonb`,
-      [...accredCte3.params, JSON.stringify([{ author, permlink }]), config.appTag, `${config.appTag}/%`],
-    );
     const citationCount = citationResult.rows[0]?.cnt ?? 0;
 
     // Enrich with accreditation and reputation
@@ -384,11 +391,6 @@ async function fetchPaperDetailFromHaf(author: string, permlink: string) {
       reviewer_reputation: reputationMap.get(r.author as string) ?? 0,
     }));
 
-    // Version history and retraction status
-    const [versions, retraction] = await Promise.all([
-      resolveVersionsFromHaf(author, permlink),
-      getRetractionInfo(author, permlink),
-    ]);
     detail.versions = versions.length > 0 ? versions : [{ version_number: 1, created: detail.created as string, title: detail.title as string, is_content_revision: true }];
     detail.is_retracted = retraction.is_retracted;
     detail.retraction_reason = retraction.retraction_reason ?? null;
@@ -600,7 +602,7 @@ router.get('/:author/:permlink', async (req: Request, res: Response) => {
     }
 
     return fetchPaperDetailFromHiveApi(author, permlink);
-  });
+  }, 5 * 60_000, true);
 
   if (cached) return sendOk(res, cached);
   sendError(res, 404, 'NOT_FOUND', 'Paper not found');

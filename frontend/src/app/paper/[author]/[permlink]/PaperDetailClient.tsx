@@ -20,6 +20,7 @@ import { useToast } from "@/components/Toast";
 interface PaperDetailClientProps {
   author: string;
   permlink: string;
+  initialData?: PaperDetail | null;
 }
 
 import { formatDate } from "@/lib/format";
@@ -42,7 +43,7 @@ function averageRating(reviews: { rating: { methodology: number; novelty: number
   };
 }
 
-export default function PaperDetailClient({ author, permlink }: PaperDetailClientProps) {
+export default function PaperDetailClient({ author, permlink, initialData }: PaperDetailClientProps) {
   const t = useTranslations("paperDetail");
   const tReview = useTranslations("review");
   const tRetraction = useTranslations("retraction");
@@ -51,9 +52,9 @@ export default function PaperDetailClient({ author, permlink }: PaperDetailClien
   const tDoi = useTranslations("doi");
   const { isConnected, username } = useAuth();
   const { toast } = useToast();
-  const [paper, setPaper] = useState<PaperDetail | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [paper, setPaper] = useState<PaperDetail | null>(initialData ?? null);
+  const [loading, setLoading] = useState(!initialData);
+  const [error, setError] = useState<string | null>(initialData === undefined ? null : initialData === null ? "Not found" : null);
 
   const setPaperStable = useCallback((p: PaperDetail) => setPaper(p), []);
   const { citeOpen, setCiteOpen, citeLoading, citeRef, handleCitationExport } = useCitationExport(paper);
@@ -62,6 +63,9 @@ export default function PaperDetailClient({ author, permlink }: PaperDetailClien
   const { syncLoading, handleSync } = useBridgeSync(author, permlink, username, setPaperStable);
 
   useEffect(() => {
+    // Skip client-side fetch if we got data from the server
+    if (initialData !== undefined) return;
+
     setLoading(true);
     setError(null);
     fetchPaper(author, permlink)
@@ -71,7 +75,7 @@ export default function PaperDetailClient({ author, permlink }: PaperDetailClien
         setError(message);
       })
       .finally(() => setLoading(false));
-  }, [author, permlink]);
+  }, [author, permlink, initialData]);
 
   if (loading) {
     return <PaperDetailSkeleton />;

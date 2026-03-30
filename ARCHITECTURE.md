@@ -1291,3 +1291,43 @@ Operations that broadcast to the Hive chain need actual key-signed transactions.
 | Var | Required | Description |
 |-----|----------|-------------|
 | `SESSION_SECRET` | Yes (production) | Random string (32+ chars) for JWT HS256 signing. Must be set when `NODE_ENV=production`. |
+
+## 28. Caching and Query Performance
+
+### Cache Architecture
+
+The backend uses a `QueryCache` class (`backend/src/cache.ts`) with optional Redis backend, falling back to an in-memory Map. The block watcher polls HAF for new Hive blocks and clears volatile (non-stable) cache entries on each new block (~3s).
+
+**Cache entries have two durability modes:**
+
+| Mode | Cleared on new block? | Use case |
+|------|----------------------|----------|
+| Volatile (default) | Yes | Data that changes with every block (vote counts, new posts) |
+| Stable | No (TTL-based only) | Slow-changing data (accreditation set, reputation scores, paper detail) |
+
+**Key cache entries:**
+
+| Key pattern | TTL | Stable? | Description |
+|-------------|-----|---------|-------------|
+| `accredited_accounts_all` | 10 min | Yes | Full set of accredited accounts - used by paper detail and reputation queries |
+| `paper-detail:{author}:{permlink}` | 5 min | Yes | Complete paper detail response including reviews, citations, versions |
+| `reputation:{username}` | 60 min | Yes | Individual reputation scores |
+| `global_max_rshares` | 4 hours | Yes | Global reputation normalization maxima |
+| `papers:*` | 30s | No | Paper listing pages |
+
+### Paper Detail Query Optimization
+
+The paper detail endpoint (`GET /api/papers/:author/:permlink`) was optimized for performance:
+
+1. **Cached accredited set instead of CTE:** Instead of running the `ACTIVE_ACCREDITATIONS` CTE (which scans the entire `operation_custom_json_view` table) in every query, the paper detail handler fetches the cached accredited account set once via `getAllAccreditedAccounts()` and passes it as a `text[]` parameter using `ANY($N::text[])`. This eliminates 3 full-table scans per uncached request.
+
+2. **Parallel queries:** All 5 independent data fetches run concurrently via `Promise.all()`:
+   - Main paper data + accredited vote count
+   - Reviews from accredited reviewers + per-review vote counts
+   - Citation count from accredited authors
+   - Version history (from `operation_comment_view`)
+   - Retraction status (from `operation_custom_json_view`)
+
+3. **SSR data passing:** The Next.js paper page fetches paper data server-side and passes it as `initialData` to the client component, eliminating a redundant client-side fetch. The `generateMetadata` call and page render share the same server-side request (Next.js deduplicates fetch calls within a render pass).
+
+4. **Stable cache:** Paper detail uses a 5-minute stable TTL, surviving block-watcher clears. Paper content rarely changes between blocks, so volatile caching (cleared every ~3s) was wasteful.
