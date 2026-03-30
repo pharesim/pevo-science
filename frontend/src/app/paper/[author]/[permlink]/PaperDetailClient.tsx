@@ -439,17 +439,21 @@ export default function PaperDetailClient({ author, permlink, initialData }: Pap
           </div>
         )}
 
-        {/* Abstract */}
-        {paper.abstract && (
-          <div className="mt-6 border-l-4 border-pevo-teal/30 bg-parchment-warm/50 rounded-r-lg px-5 py-4">
-            <h2 className="text-sm font-semibold uppercase tracking-wide text-ink-muted mb-2 font-sans">
-              {t("abstractTitle")}
-            </h2>
-            <p className="text-[0.95rem] leading-relaxed text-ink-light">
-              {paper.abstract}
-            </p>
-          </div>
-        )}
+        {/* Abstract — extracted from body markdown */}
+        {(() => {
+          const m = paper.body.match(/##\s*Abstract\s*\n+([\s\S]*?)(?=\n##\s|\n---|\n\*\*\*|$)/i);
+          const abs = m?.[1]?.trim();
+          return abs ? (
+            <div className="mt-6 border-l-4 border-pevo-teal/30 bg-parchment-warm/50 rounded-r-lg px-5 py-4">
+              <h2 className="text-sm font-semibold uppercase tracking-wide text-ink-muted mb-2 font-sans">
+                {t("abstractTitle")}
+              </h2>
+              <p className="text-[0.95rem] leading-relaxed text-ink-light">
+                {abs}
+              </p>
+            </div>
+          ) : null;
+        })()}
 
         {/* Paper body */}
         <MarkdownRenderer

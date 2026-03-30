@@ -22,7 +22,6 @@ const MOCK_PAPER: Record<string, unknown> = {
 
 const MOCK_PAPER_DETAIL = {
   ...MOCK_PAPER,
-  abstract: "This paper explores neural plasticity.",
   body: "## Abstract\n\nThis paper explores neural plasticity.\n\n## Introduction\n\nPlasticity is a fundamental property of the brain.",
   authors: [
     { name: "Dr. Alice", hive: "alice", orcid: "0000-0001-2345-6789", affiliation: "MIT" },

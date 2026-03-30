@@ -117,7 +117,6 @@ export const PaperDetailSchema = z.object({
   author: z.string(),
   permlink: z.string(),
   title: z.string(),
-  abstract: z.string().nullable(),
   body: z.string(),
   json_metadata: z.record(z.string(), z.unknown()),
   created: z.string(),
