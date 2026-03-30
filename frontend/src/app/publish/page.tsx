@@ -55,8 +55,8 @@ const TX_HARD_BYTES = 60_000;
 
 /** Build the Hive post body from abstract + full text. */
 function composePostBody(abstract: string, fullText: string): string {
-  if (!fullText) return abstract;
-  return abstract + "\n\n---\n\n" + fullText;
+  if (!fullText) return "## Abstract\n\n" + abstract;
+  return "## Abstract\n\n" + abstract + "\n\n---\n\n" + fullText;
 }
 
 /** Estimate byte size of the transaction payload (body + metadata + title + overhead). */

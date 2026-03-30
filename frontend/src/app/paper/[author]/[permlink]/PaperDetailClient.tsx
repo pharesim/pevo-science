@@ -442,9 +442,9 @@ export default function PaperDetailClient({ author, permlink, initialData }: Pap
 
         {/* Abstract — extracted from body markdown */}
         {(() => {
-          // Try explicit ## Abstract section first, then fall back to text before first --- or ## heading
+          // Extract ## Abstract section, or fall back to text before first --- or ## heading (legacy posts)
           const explicit = paper.body.match(/##\s*Abstract\s*\n+([\s\S]*?)(?=\n##\s|\n---|\n\*\*\*|$)/i);
-          const leading = !explicit ? paper.body.match(/^([^#][\s\S]*?)(?=\n---|\n##\s|\n\*\*\*)/) : null;
+          const leading = !explicit ? paper.body.match(/^([^#\n][\s\S]*?)(?=\n---|\n##\s|\n\*\*\*)/) : null;
           const abs = (explicit?.[1] || leading?.[1] || "").trim();
           if (!abs) return null;
           return (
