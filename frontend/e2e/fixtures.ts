@@ -16,7 +16,6 @@ const MOCK_PAPER: Record<string, unknown> = {
   net_votes: 42,
   review_count: 2,
   citation_count: 5,
-  pending_payout_value: "12.345 HBD",
   is_accredited: true,
   author_reputation: 78,
 };

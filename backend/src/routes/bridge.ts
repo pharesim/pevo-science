@@ -208,16 +208,27 @@ router.post('/register', registerLimiter, verifyHiveSignature, async (req: Reque
 
   try {
     const key = PrivateKey.fromString(config.pevoBridgePostingKey);
-    const result = await hiveClient.broadcast.comment(
-      {
-        parent_author: '',
-        parent_permlink: config.appTag,
-        author: config.hiveBridgeAccount,
-        permlink,
-        title: meta.title,
-        body,
-        json_metadata: JSON.stringify(jsonMetadata),
-      },
+    const result = await hiveClient.broadcast.sendOperations(
+      [
+        ['comment', {
+          parent_author: '',
+          parent_permlink: config.appTag,
+          author: config.hiveBridgeAccount,
+          permlink,
+          title: meta.title,
+          body,
+          json_metadata: JSON.stringify(jsonMetadata),
+        }],
+        ['comment_options', {
+          author: config.hiveBridgeAccount,
+          permlink,
+          max_accepted_payout: '1000000.000 HBD',
+          percent_hbd: 0,
+          allow_votes: true,
+          allow_curation_rewards: true,
+          extensions: [],
+        }],
+      ],
       key,
     );
 
@@ -322,16 +333,27 @@ router.post('/update', updateLimiter, verifyHiveSignature, async (req: Request, 
 
   try {
     const key = PrivateKey.fromString(config.pevoBridgePostingKey);
-    const result = await hiveClient.broadcast.comment(
-      {
-        parent_author: '',
-        parent_permlink: config.appTag,
-        author: config.hiveBridgeAccount,
-        permlink,
-        title: freshMeta.title,
-        body,
-        json_metadata: JSON.stringify(jsonMetadata),
-      },
+    const result = await hiveClient.broadcast.sendOperations(
+      [
+        ['comment', {
+          parent_author: '',
+          parent_permlink: config.appTag,
+          author: config.hiveBridgeAccount,
+          permlink,
+          title: freshMeta.title,
+          body,
+          json_metadata: JSON.stringify(jsonMetadata),
+        }],
+        ['comment_options', {
+          author: config.hiveBridgeAccount,
+          permlink,
+          max_accepted_payout: '1000000.000 HBD',
+          percent_hbd: 0,
+          allow_votes: true,
+          allow_curation_rewards: true,
+          extensions: [],
+        }],
+      ],
       key,
     );
 

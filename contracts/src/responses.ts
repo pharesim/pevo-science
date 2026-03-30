@@ -61,7 +61,6 @@ export interface PaperDetail {
   created: string;
   last_update: string;
   net_votes: number;
-  pending_payout_value: string;
   discipline: string;
   keywords: string[];
   authors: PaperAuthor[];

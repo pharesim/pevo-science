@@ -108,6 +108,18 @@ export function publishPaper(
         json_metadata: JSON.stringify(jsonMetadata),
       },
     ],
+    [
+      "comment_options",
+      {
+        author: username,
+        permlink,
+        max_accepted_payout: "1000000.000 HBD",
+        percent_hbd: 0,
+        allow_votes: true,
+        allow_curation_rewards: true,
+        extensions: [],
+      },
+    ],
   ];
 
   return new Promise((resolve, reject) => {
@@ -145,6 +157,18 @@ export function postReview(
         title: "",
         body,
         json_metadata: JSON.stringify(jsonMetadata),
+      },
+    ],
+    [
+      "comment_options",
+      {
+        author: username,
+        permlink,
+        max_accepted_payout: "1000000.000 HBD",
+        percent_hbd: 0,
+        allow_votes: true,
+        allow_curation_rewards: true,
+        extensions: [],
       },
     ],
   ];
@@ -193,6 +217,18 @@ export function postComment(
         title: "",
         body,
         json_metadata: JSON.stringify(jsonMetadata),
+      },
+    ],
+    [
+      "comment_options",
+      {
+        author: username,
+        permlink,
+        max_accepted_payout: "1000000.000 HBD",
+        percent_hbd: 0,
+        allow_votes: true,
+        allow_curation_rewards: true,
+        extensions: [],
       },
     ],
   ];

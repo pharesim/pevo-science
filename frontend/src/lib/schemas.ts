@@ -122,7 +122,6 @@ export const PaperDetailSchema = z.object({
   created: z.string(),
   last_update: z.string(),
   net_votes: z.number(),
-  pending_payout_value: z.string(),
   discipline: z.string(),
   keywords: z.array(z.string()),
   authors: z.array(PaperAuthorSchema),

@@ -310,8 +310,7 @@ async function fetchPaperDetailFromHaf(author: string, permlink: string) {
                 c.created, c.last_edited,
                 (SELECT count(*)::int FROM ${T.votes} v
                  WHERE v.author = c.author AND v.permlink = c.permlink
-                   AND v.rshares > 0 AND v.voter = ANY($4::text[])) AS net_votes,
-                c.pending_payout_value
+                   AND v.rshares > 0 AND v.voter = ANY($4::text[])) AS net_votes
          FROM ${T.comments} c
          WHERE c.author = $1 AND c.permlink = $2
            AND c.parent_author = '' AND c.parent_permlink = $3`,
@@ -569,7 +568,6 @@ function buildPaperDetail(
     created: post.created,
     last_update: post.last_edited || post.last_update || post.created,
     net_votes: post.net_votes,
-    pending_payout_value: post.pending_payout_value || '0.000 HBD',
     discipline: pevo.discipline || null,
     keywords: pevo.keywords || [],
     authors: pevo.authors || [],

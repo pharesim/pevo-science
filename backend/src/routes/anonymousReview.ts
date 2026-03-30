@@ -159,16 +159,27 @@ router.post('/anonymous', verifyHiveSignature, anonReviewLimiter, validate(anony
 
   try {
     const key = PrivateKey.fromString(config.pevoAnonPostingKey);
-    const result = await hiveClient.broadcast.comment(
-      {
-        parent_author: paper_author,
-        parent_permlink: paper_permlink,
-        author: config.hiveAnonAccount,
-        permlink,
-        title: '',
-        body,
-        json_metadata: JSON.stringify(jsonMetadata),
-      },
+    const result = await hiveClient.broadcast.sendOperations(
+      [
+        ['comment', {
+          parent_author: paper_author,
+          parent_permlink: paper_permlink,
+          author: config.hiveAnonAccount,
+          permlink,
+          title: '',
+          body,
+          json_metadata: JSON.stringify(jsonMetadata),
+        }],
+        ['comment_options', {
+          author: config.hiveAnonAccount,
+          permlink,
+          max_accepted_payout: '1000000.000 HBD',
+          percent_hbd: 0,
+          allow_votes: true,
+          allow_curation_rewards: true,
+          extensions: [],
+        }],
+      ],
       key,
     );
 
