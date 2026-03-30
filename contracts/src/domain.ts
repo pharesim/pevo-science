@@ -4,7 +4,7 @@
 
 export interface PaperAuthor {
   name: string;
-  hive: string;
+  hive?: string;
   orcid?: string;
   affiliation?: string;
 }

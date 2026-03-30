@@ -300,18 +300,27 @@ export default function PaperDetailClient({ author, permlink }: PaperDetailClien
 
         {/* Authors */}
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mb-4">
-          {paper.authors.map((a) => (
-            <Link
-              key={a.hive}
-              href={`/profile/${a.hive}`}
-              className="text-sm no-underline hover:underline"
-            >
-              <span className="text-ink font-medium">{a.name}</span>
-              {a.affiliation && (
-                <span className="text-ink-muted ml-1">({a.affiliation})</span>
-              )}
-            </Link>
-          ))}
+          {paper.authors.map((a, i) =>
+            a.hive ? (
+              <Link
+                key={a.hive}
+                href={`/profile/${a.hive}`}
+                className="text-sm no-underline hover:underline"
+              >
+                <span className="text-ink font-medium">{a.name}</span>
+                {a.affiliation && (
+                  <span className="text-ink-muted ml-1">({a.affiliation})</span>
+                )}
+              </Link>
+            ) : (
+              <span key={`coauthor-${i}`} className="text-sm">
+                <span className="text-ink font-medium">{a.name}</span>
+                {a.affiliation && (
+                  <span className="text-ink-muted ml-1">({a.affiliation})</span>
+                )}
+              </span>
+            )
+          )}
           <AccreditationBadge isAccredited={paper.is_accredited} />
         </div>
 

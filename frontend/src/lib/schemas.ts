@@ -31,7 +31,7 @@ const RatingSchema = z.object({
 
 const PaperAuthorSchema = z.object({
   name: z.string(),
-  hive: z.string(),
+  hive: z.string().optional(),
   orcid: z.string().optional(),
   affiliation: z.string().optional(),
 });

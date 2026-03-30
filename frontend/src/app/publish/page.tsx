@@ -252,7 +252,7 @@ export default function PublishPage() {
 
       const authors = [
         { name: authorName, hive: username, orcid: authorOrcid, affiliation: authorAffiliation },
-        ...coAuthors.filter((ca) => ca.name && ca.hive),
+        ...coAuthors.filter((ca) => ca.name),
       ];
 
       const jsonMetadata = {

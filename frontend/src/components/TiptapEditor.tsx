@@ -25,13 +25,31 @@ import remarkHtml from "remark-html";
 import remarkMath from "remark-math";
 import remarkGfm from "remark-gfm";
 import DOMPurify from "dompurify";
+import { visit } from "unist-util-visit";
 
 // --- Markdown -> HTML conversion ---
+
+/** Strip GFM autolink literals (bare emails/URLs) so they stay as plain text.
+ *  Explicit links written as [text](url) or <url> are preserved. */
+function remarkStripAutolinkLiterals() {
+  return (tree: any, file: any) => {
+    const source: string = typeof file.value === "string" ? file.value : "";
+    visit(tree, "link", (node: any, index: number | undefined, parent: any) => {
+      if (index == null || !parent || !node.position) return;
+      const off = node.position.start.offset;
+      if (off != null && source[off] !== "[" && source[off] !== "<") {
+        parent.children.splice(index, 1, ...node.children);
+        return index; // revisit spliced position
+      }
+    });
+  };
+}
 
 function markdownToHtml(md: string): string {
   const file = remark()
     .use(remarkGfm)
     .use(remarkMath)
+    .use(remarkStripAutolinkLiterals)
     .use(remarkHtml, { sanitize: false })
     .processSync(md);
   let html = String(file);
