@@ -296,53 +296,19 @@ async function fetchPaperDetailFromHaf(author: string, permlink: string) {
   if (!pool) return null;
 
   try {
-    // Pre-fetch the cached accredited account set once (10-min stable cache)
-    // instead of running the expensive ACTIVE_ACCREDITATIONS CTE per query.
-    const accreditedAccounts = await getAllAccreditedAccounts();
-    const accreditedArr = [...accreditedAccounts];
-
-    // Run all independent queries in parallel:
-    // A) main paper, B) reviews, C) citation count, D) versions, E) retraction
-    const [paperResult, reviewsResult, citationResult, versions, retraction] = await Promise.all([
-      // A) Main paper data with accredited vote count via ANY()
+    // Fast path: fetch paper content + versions + retraction only.
+    // Accreditation-dependent data (votes, reviews, citations) is loaded
+    // lazily via the /enrichment endpoint.
+    const [paperResult, versions, retraction] = await Promise.all([
       pool.query(
         `SELECT c.author, c.permlink, c.title, c.body, c.json_metadata,
-                c.created, c.last_edited,
-                (SELECT count(*)::int FROM ${T.votes} v
-                 WHERE v.author = c.author AND v.permlink = c.permlink
-                   AND v.rshares > 0 AND v.voter = ANY($4::text[])) AS net_votes
+                c.created, c.last_edited
          FROM ${T.comments} c
          WHERE c.author = $1 AND c.permlink = $2
            AND c.parent_author = '' AND c.parent_permlink = $3`,
-        [author, permlink, config.appTag, accreditedArr],
+        [author, permlink, config.appTag],
       ),
-      // B) Reviews from accredited reviewers with accredited vote count
-      pool.query(
-        `SELECT c.author, c.permlink, c.body, c.json_metadata, c.created,
-                (SELECT count(*)::int FROM ${T.votes} v
-                 WHERE v.author = c.author AND v.permlink = c.permlink
-                   AND v.rshares > 0 AND v.voter = ANY($5::text[])) AS net_votes
-         FROM ${T.comments} c
-         WHERE c.parent_author = $1 AND c.parent_permlink = $2
-           AND c.author = ANY($5::text[])
-           AND (c.json_metadata -> $3 ->> 'type') = 'review'
-           AND c.json_metadata ->> 'app' LIKE $4
-         ORDER BY c.created DESC`,
-        [author, permlink, config.appTag, `${config.appTag}/%`, accreditedArr],
-      ),
-      // C) Citation count from accredited authors
-      pool.query(
-        `SELECT count(*)::int AS cnt FROM ${T.comments} ci
-         WHERE ci.parent_author = '' AND ci.parent_permlink = $2
-           AND ci.author = ANY($4::text[])
-           AND (ci.json_metadata -> $2 ->> 'type') = 'paper'
-           AND ci.json_metadata ->> 'app' LIKE $3
-           AND ci.json_metadata -> $2 -> 'citations' @> $1::jsonb`,
-        [JSON.stringify([{ author, permlink }]), config.appTag, `${config.appTag}/%`, accreditedArr],
-      ),
-      // D) Version history
       resolveVersionsFromHaf(author, permlink),
-      // E) Retraction status
       getRetractionInfo(author, permlink),
     ]);
 
@@ -352,39 +318,7 @@ async function fetchPaperDetailFromHaf(author: string, permlink: string) {
     const meta = parseMeta(row.json_metadata);
     if (!isPevoAnyPaper(meta)) return null;
 
-    const reviews = reviewsResult.rows.map((r: Record<string, unknown>) => {
-      const rMeta = parseMeta(r.json_metadata);
-      const pevo = safePevoMeta(rMeta);
-      const rating = pevo.rating as Record<string, number> | undefined;
-      return {
-        author: r.author,
-        permlink: r.permlink,
-        body: r.body,
-        rating: rating || { methodology: 0, novelty: 0, clarity: 0, significance: 0 },
-        is_anonymous: pevo.is_anonymous ?? false,
-        created: r.created,
-        net_votes: r.net_votes,
-        reviewer_reputation: 0,
-        is_accredited: false,
-        reviewed_version: (pevo.reviewed_version as number) || 1,
-      };
-    });
-
-    const citationCount = citationResult.rows[0]?.cnt ?? 0;
-
-    // Enrich with accreditation (reputation not needed — not displayed on paper detail)
-    const reviewAuthors = reviews.map((r) => r.author as string);
-    const allUsers = [author, ...reviewAuthors];
-    const accreditedSet = await getAccreditedSet(allUsers);
-
-    const detail = buildPaperDetail(row, meta, reviews);
-    detail.citation_count = citationCount;
-    detail.is_accredited = accreditedSet.has(author);
-    detail.reviews = (detail.reviews as Array<Record<string, unknown>>).map((r) => ({
-      ...r,
-      is_accredited: accreditedSet.has(r.author as string),
-    }));
-
+    const detail = buildPaperDetail(row, meta, []);
     detail.versions = versions.length > 0 ? versions : [{ version_number: 1, created: detail.created as string, title: detail.title as string, is_content_revision: true }];
     detail.is_retracted = retraction.is_retracted;
     detail.retraction_reason = retraction.retraction_reason ?? null;
@@ -405,43 +339,7 @@ async function fetchPaperDetailFromHiveApi(author: string, permlink: string) {
     const meta = parseMeta(post.json_metadata);
     if (!isPevoAnyPaper(meta)) return null;
 
-    // Fetch replies to get reviews
-    const replies = await hiveClient.database.call('get_content_replies', [author, permlink]);
-    const reviews = (replies || [])
-      .filter((r: Record<string, unknown>) => {
-        const rMeta = parseMeta(r.json_metadata);
-        return isPevoReview(rMeta);
-      })
-      .map((r: Record<string, unknown>) => {
-        const rMeta = parseMeta(r.json_metadata);
-        const pevo = safePevoMeta(rMeta);
-        const rating = pevo.rating as Record<string, number> | undefined;
-        return {
-          author: r.author,
-          permlink: r.permlink,
-          body: r.body,
-          rating: rating || { methodology: 0, novelty: 0, clarity: 0, significance: 0 },
-          is_anonymous: pevo.is_anonymous ?? false,
-          created: r.created,
-          net_votes: r.net_votes,
-          reviewer_reputation: 0,
-          is_accredited: false,
-          reviewed_version: (pevo.reviewed_version as number) || 1,
-        };
-      });
-
-    const detail = buildPaperDetail(post, meta, reviews);
-
-    // Enrich with accreditation and reputation (B1 + B3)
-    // Enrich with accreditation (reputation not needed — not displayed on paper detail)
-    const reviewerNames = reviews.map((r: Record<string, unknown>) => r.author as string);
-    const allUsers = [author, ...reviewerNames];
-    const accreditedSet = await getAccreditedSet(allUsers);
-    detail.is_accredited = accreditedSet.has(author);
-    detail.reviews = (detail.reviews as Array<Record<string, unknown>>).map((r) => ({
-      ...r,
-      is_accredited: accreditedSet.has(r.author as string),
-    }));
+    const detail = buildPaperDetail(post, meta, []);
 
     // Version history (Hive API only returns latest — use pevo.version from metadata)
     const pevoMeta = safePevoMeta(meta);
@@ -584,13 +482,150 @@ router.get('/:author/:permlink', async (req: Request, res: Response) => {
 
   const cacheKey = `paper-detail:${author}:${permlink}`;
   const cached = await hafCache.getOrSet(cacheKey, async () => {
-    // HAF first: provides accredited vote/review filtering + citation counts
     if (isHafAvailable()) {
       const result = await fetchPaperDetailFromHaf(author, permlink);
       if (result) return result;
     }
 
     return fetchPaperDetailFromHiveApi(author, permlink);
+  }, 30 * 60_000, true);
+
+  if (cached) return sendOk(res, cached);
+  sendError(res, 404, 'NOT_FOUND', 'Paper not found');
+});
+
+// ──────────────────────────────────────────────
+// GET /api/papers/:author/:permlink/enrichment
+// ──────────────────────────────────────────────
+
+async function fetchEnrichmentFromHaf(author: string, permlink: string) {
+  const pool = getPool();
+  if (!pool) return null;
+
+  try {
+    const accreditedAccounts = await getAllAccreditedAccounts();
+    const accreditedArr = [...accreditedAccounts];
+
+    const [voteResult, reviewsResult, citationResult] = await Promise.all([
+      // Accredited vote count
+      pool.query(
+        `SELECT count(*)::int AS net_votes FROM ${T.votes} v
+         WHERE v.author = $1 AND v.permlink = $2
+           AND v.rshares > 0 AND v.voter = ANY($3::text[])`,
+        [author, permlink, accreditedArr],
+      ),
+      // Reviews from accredited reviewers with accredited vote count
+      pool.query(
+        `SELECT c.author, c.permlink, c.body, c.json_metadata, c.created,
+                (SELECT count(*)::int FROM ${T.votes} v
+                 WHERE v.author = c.author AND v.permlink = c.permlink
+                   AND v.rshares > 0 AND v.voter = ANY($5::text[])) AS net_votes
+         FROM ${T.comments} c
+         WHERE c.parent_author = $1 AND c.parent_permlink = $2
+           AND c.author = ANY($5::text[])
+           AND (c.json_metadata -> $3 ->> 'type') = 'review'
+           AND c.json_metadata ->> 'app' LIKE $4
+         ORDER BY c.created DESC`,
+        [author, permlink, config.appTag, `${config.appTag}/%`, accreditedArr],
+      ),
+      // Citation count from accredited authors
+      pool.query(
+        `SELECT count(*)::int AS cnt FROM ${T.comments} ci
+         WHERE ci.parent_author = '' AND ci.parent_permlink = $2
+           AND ci.author = ANY($4::text[])
+           AND (ci.json_metadata -> $2 ->> 'type') = 'paper'
+           AND ci.json_metadata ->> 'app' LIKE $3
+           AND ci.json_metadata -> $2 -> 'citations' @> $1::jsonb`,
+        [JSON.stringify([{ author, permlink }]), config.appTag, `${config.appTag}/%`, accreditedArr],
+      ),
+    ]);
+
+    const reviews = reviewsResult.rows.map((r: Record<string, unknown>) => {
+      const rMeta = parseMeta(r.json_metadata);
+      const pevo = safePevoMeta(rMeta);
+      const rating = pevo.rating as Record<string, number> | undefined;
+      return {
+        author: r.author as string,
+        permlink: r.permlink as string,
+        body: r.body as string,
+        rating: rating || { methodology: 0, novelty: 0, clarity: 0, significance: 0 },
+        is_anonymous: pevo.is_anonymous ?? false,
+        created: r.created as string,
+        net_votes: r.net_votes as number,
+        reviewer_reputation: 0,
+        is_accredited: accreditedAccounts.has(r.author as string),
+        reviewed_version: (pevo.reviewed_version as number) || 1,
+      };
+    });
+
+    return {
+      net_votes: voteResult.rows[0]?.net_votes ?? 0,
+      reviews,
+      citation_count: citationResult.rows[0]?.cnt ?? 0,
+      is_accredited: accreditedAccounts.has(author),
+    };
+  } catch (err) {
+    logger.error({ err }, 'HAF enrichment query failed');
+    return null;
+  }
+}
+
+async function fetchEnrichmentFromHiveApi(author: string, permlink: string) {
+  try {
+    const [post, replies, accreditedAccounts] = await Promise.all([
+      hiveClient.database.call('get_content', [author, permlink]),
+      hiveClient.database.call('get_content_replies', [author, permlink]),
+      getAllAccreditedAccounts(),
+    ]);
+
+    if (!post || !post.author) return null;
+
+    const reviews = (replies || [])
+      .filter((r: Record<string, unknown>) => {
+        const rMeta = parseMeta(r.json_metadata);
+        return isPevoReview(rMeta) && accreditedAccounts.has(r.author as string);
+      })
+      .map((r: Record<string, unknown>) => {
+        const rMeta = parseMeta(r.json_metadata);
+        const pevo = safePevoMeta(rMeta);
+        const rating = pevo.rating as Record<string, number> | undefined;
+        return {
+          author: r.author as string,
+          permlink: r.permlink as string,
+          body: r.body as string,
+          rating: rating || { methodology: 0, novelty: 0, clarity: 0, significance: 0 },
+          is_anonymous: pevo.is_anonymous ?? false,
+          created: r.created as string,
+          net_votes: r.net_votes as number,
+          reviewer_reputation: 0,
+          is_accredited: true,
+          reviewed_version: (pevo.reviewed_version as number) || 1,
+        };
+      });
+
+    return {
+      net_votes: parseInt(post.net_votes, 10) || 0,
+      reviews,
+      citation_count: 0, // Cannot compute via Hive API
+      is_accredited: accreditedAccounts.has(author),
+    };
+  } catch (err) {
+    logger.error({ err }, 'Hive API enrichment failed');
+    return null;
+  }
+}
+
+router.get('/:author/:permlink/enrichment', async (req: Request, res: Response) => {
+  const { author, permlink } = req.params;
+
+  const cacheKey = `paper-enrichment:${author}:${permlink}`;
+  const cached = await hafCache.getOrSet(cacheKey, async () => {
+    if (isHafAvailable()) {
+      const result = await fetchEnrichmentFromHaf(author, permlink);
+      if (result) return result;
+    }
+
+    return fetchEnrichmentFromHiveApi(author, permlink);
   }, 5 * 60_000, true);
 
   if (cached) return sendOk(res, cached);

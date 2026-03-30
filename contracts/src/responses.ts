@@ -80,6 +80,14 @@ export interface PaperDetail {
   retraction_timestamp?: string | null;
 }
 
+/** Accreditation-dependent enrichment loaded lazily after initial paper render. */
+export interface PaperEnrichment {
+  net_votes: number;
+  reviews: ReviewInPaper[];
+  citation_count: number;
+  is_accredited: boolean;
+}
+
 // ─── Discussion Comment Responses ────────────────────────────
 
 export interface DiscussionComment {

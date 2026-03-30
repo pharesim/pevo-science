@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 import { useTranslations } from "next-intl";
 import type { PaperDetail } from "@pevo/contracts";
-import { fetchPaper } from "@/lib/api";
+import { fetchPaper, fetchPaperEnrichment } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { useCitationExport, useRetraction, usePaperDoi, useBridgeSync } from "./hooks";
 import AccreditationBadge from "@/components/AccreditationBadge";
@@ -54,6 +54,7 @@ export default function PaperDetailClient({ author, permlink, initialData }: Pap
   const { toast } = useToast();
   const [paper, setPaper] = useState<PaperDetail | null>(initialData ?? null);
   const [loading, setLoading] = useState(initialData === undefined);
+  const [enrichmentLoading, setEnrichmentLoading] = useState(true);
   const [bodyExpanded, setBodyExpanded] = useState(false);
   const [error, setError] = useState<string | null>(initialData === undefined ? null : initialData === null ? "Not found" : null);
 
@@ -77,6 +78,18 @@ export default function PaperDetailClient({ author, permlink, initialData }: Pap
       })
       .finally(() => setLoading(false));
   }, [author, permlink, initialData]);
+
+  // Lazy-load accreditation-dependent enrichment (votes, reviews, citations)
+  useEffect(() => {
+    if (!paper) return;
+    setEnrichmentLoading(true);
+    fetchPaperEnrichment(author, permlink)
+      .then((res) => {
+        setPaper((prev) => prev ? { ...prev, ...res.data } : prev);
+      })
+      .catch(() => { /* enrichment failure is non-critical */ })
+      .finally(() => setEnrichmentLoading(false));
+  }, [author, permlink, !!paper]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (loading) {
     return <PaperDetailSkeleton />;
@@ -326,7 +339,11 @@ export default function PaperDetailClient({ author, permlink, initialData }: Pap
               </span>
             )
           )}
-          <AccreditationBadge isAccredited={paper.is_accredited} />
+          {enrichmentLoading ? (
+            <span className="inline-block h-4 w-16 rounded bg-parchment-dark/40 animate-pulse" />
+          ) : (
+            <AccreditationBadge isAccredited={paper.is_accredited} />
+          )}
         </div>
 
         {/* Keywords */}
@@ -355,7 +372,11 @@ export default function PaperDetailClient({ author, permlink, initialData }: Pap
               <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
                 <path d="M10 3l-7 7h4v7h6v-7h4L10 3z" />
               </svg>
-              {t("votes", { count: paper.net_votes })}
+              {enrichmentLoading ? (
+                <span className="inline-block h-3 w-6 rounded bg-parchment-dark/40 animate-pulse" />
+              ) : (
+                t("votes", { count: paper.net_votes })
+              )}
             </span>
           )}
           <span title="Reviews" className="flex items-center gap-1">
@@ -366,13 +387,21 @@ export default function PaperDetailClient({ author, permlink, initialData }: Pap
                 clipRule="evenodd"
               />
             </svg>
-            {t("reviews", { count: paper.reviews.length })}
+            {enrichmentLoading ? (
+              <span className="inline-block h-3 w-6 rounded bg-parchment-dark/40 animate-pulse" />
+            ) : (
+              t("reviews", { count: paper.reviews.length })
+            )}
           </span>
           <span title="Citations" className="flex items-center gap-1">
             <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
               <path d="M9 4.804A7.968 7.968 0 005.5 4c-1.255 0-2.443.29-3.5.804v10A7.969 7.969 0 015.5 14c1.669 0 3.218.51 4.5 1.385A7.962 7.962 0 0114.5 14c1.255 0 2.443.29 3.5.804v-10A7.968 7.968 0 0014.5 4c-1.255 0-2.443.29-3.5.804V14a1 1 0 11-2 0V4.804z" />
             </svg>
-            {t("citations", { count: paper.citation_count })}
+            {enrichmentLoading ? (
+              <span className="inline-block h-3 w-6 rounded bg-parchment-dark/40 animate-pulse" />
+            ) : (
+              t("citations", { count: paper.citation_count })
+            )}
           </span>
           {ipfsGatewayUrl && (
             <a
@@ -511,7 +540,7 @@ export default function PaperDetailClient({ author, permlink, initialData }: Pap
       <section className="mt-8">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
           <h2 className="text-section-title text-ink font-serif">
-            {t("peerReviewsTitle", { count: paper.reviews.length })}
+            {enrichmentLoading ? t("peerReviewsTitle", { count: 0 }) : t("peerReviewsTitle", { count: paper.reviews.length })}
           </h2>
           {username !== paper.author && (
             <Link
@@ -523,40 +552,54 @@ export default function PaperDetailClient({ author, permlink, initialData }: Pap
           )}
         </div>
 
-        {/* Average ratings */}
-        {avg && (
-          <div className="card mb-6">
-            <h3 className="text-sm font-semibold text-ink mb-3">
-              {t("averageRatings", { count: paper.reviews.length })}
-            </h3>
-            <div className="space-y-2">
-              <RatingBar label={tReview("methodology")} value={avg.methodology} />
-              <RatingBar label={tReview("novelty")} value={avg.novelty} />
-              <RatingBar label={tReview("clarity")} value={avg.clarity} />
-              <RatingBar label={tReview("significance")} value={avg.significance} />
-            </div>
+        {enrichmentLoading ? (
+          <div className="space-y-4">
+            {[1, 2].map((i) => (
+              <div key={i} className="card animate-pulse">
+                <div className="h-4 w-1/3 rounded bg-parchment-dark/40 mb-3" />
+                <div className="h-3 w-full rounded bg-parchment-dark/30 mb-2" />
+                <div className="h-3 w-2/3 rounded bg-parchment-dark/30" />
+              </div>
+            ))}
           </div>
-        )}
-
-        {/* Individual reviews */}
-        <div className="space-y-4">
-          {paper.reviews.map((review) => (
-            <ReviewCard key={review.permlink} review={review} />
-          ))}
-        </div>
-
-        {paper.reviews.length === 0 && (
-          <div className="card text-center py-8">
-            <p className="text-ink-muted mb-3">{t("noReviews")}</p>
-            {username !== paper.author && (
-              <Link
-                href={`/review/${paper.author}/${paper.permlink}`}
-                className="btn-primary text-sm"
-              >
-                {t("writeReview")}
-              </Link>
+        ) : (
+          <>
+            {/* Average ratings */}
+            {avg && (
+              <div className="card mb-6">
+                <h3 className="text-sm font-semibold text-ink mb-3">
+                  {t("averageRatings", { count: paper.reviews.length })}
+                </h3>
+                <div className="space-y-2">
+                  <RatingBar label={tReview("methodology")} value={avg.methodology} />
+                  <RatingBar label={tReview("novelty")} value={avg.novelty} />
+                  <RatingBar label={tReview("clarity")} value={avg.clarity} />
+                  <RatingBar label={tReview("significance")} value={avg.significance} />
+                </div>
+              </div>
             )}
-          </div>
+
+            {/* Individual reviews */}
+            <div className="space-y-4">
+              {paper.reviews.map((review) => (
+                <ReviewCard key={review.permlink} review={review} />
+              ))}
+            </div>
+
+            {paper.reviews.length === 0 && (
+              <div className="card text-center py-8">
+                <p className="text-ink-muted mb-3">{t("noReviews")}</p>
+                {username !== paper.author && (
+                  <Link
+                    href={`/review/${paper.author}/${paper.permlink}`}
+                    className="btn-primary text-sm"
+                  >
+                    {t("writeReview")}
+                  </Link>
+                )}
+              </div>
+            )}
+          </>
         )}
       </section>
 

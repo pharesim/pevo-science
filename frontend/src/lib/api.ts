@@ -159,6 +159,10 @@ export async function fetchPaper(author: string, permlink: string): Promise<ApiR
   return request<PaperDetail>(`/api/papers/${encodeURIComponent(author)}/${encodeURIComponent(permlink)}`, undefined, PaperDetailSchema);
 }
 
+export async function fetchPaperEnrichment(author: string, permlink: string): Promise<ApiResponse<{ net_votes: number; reviews: PaperDetail["reviews"]; citation_count: number; is_accredited: boolean }>> {
+  return request(`/api/papers/${encodeURIComponent(author)}/${encodeURIComponent(permlink)}/enrichment`);
+}
+
 export async function fetchProfile(username: string): Promise<ApiResponse<Profile>> {
   return request<Profile>(`/api/profile/${encodeURIComponent(username)}`, undefined, ProfileSchema);
 }
