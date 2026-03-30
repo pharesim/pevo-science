@@ -56,6 +56,7 @@ export interface PaperDetail {
   author: string;
   permlink: string;
   title: string;
+  abstract: string | null;
   body: string;
   json_metadata: Record<string, unknown>;
   created: string;

@@ -563,6 +563,7 @@ function buildPaperDetail(
     author: post.author,
     permlink: post.permlink,
     title: post.title,
+    abstract: pevo.abstract || (post.body ? post.body.substring(0, 300) : null),
     body: post.body,
     json_metadata: meta,
     created: post.created,
