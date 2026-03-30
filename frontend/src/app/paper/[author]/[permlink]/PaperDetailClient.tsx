@@ -54,6 +54,7 @@ export default function PaperDetailClient({ author, permlink, initialData }: Pap
   const { toast } = useToast();
   const [paper, setPaper] = useState<PaperDetail | null>(initialData ?? null);
   const [loading, setLoading] = useState(!initialData);
+  const [bodyExpanded, setBodyExpanded] = useState(false);
   const [error, setError] = useState<string | null>(initialData === undefined ? null : initialData === null ? "Not found" : null);
 
   const setPaperStable = useCallback((p: PaperDetail) => setPaper(p), []);
@@ -455,14 +456,20 @@ export default function PaperDetailClient({ author, permlink, initialData }: Pap
           ) : null;
         })()}
 
-        {/* Paper body */}
-        <h2 className="mt-8 text-lg font-semibold text-ink-dark mb-4">
+        {/* Paper body — collapsed by default */}
+        <button
+          onClick={() => setBodyExpanded(!bodyExpanded)}
+          className="mt-8 flex items-center gap-2 text-lg font-semibold text-ink-dark hover:text-pevo-teal transition-colors"
+        >
+          <span className={`inline-block transition-transform ${bodyExpanded ? "rotate-90" : ""}`}>▶</span>
           {t("paperBody")}
-        </h2>
-        <MarkdownRenderer
-          content={paper.body}
-          className="prose max-w-none text-[0.95rem]"
-        />
+        </button>
+        {bodyExpanded && (
+          <MarkdownRenderer
+            content={paper.body}
+            className="mt-4 prose max-w-none text-[0.95rem]"
+          />
+        )}
       </article>
 
       {/* Citations */}
@@ -492,12 +499,14 @@ export default function PaperDetailClient({ author, permlink, initialData }: Pap
           <h2 className="text-section-title text-ink font-serif">
             {t("peerReviewsTitle", { count: paper.reviews.length })}
           </h2>
-          <Link
-            href={`/review/${paper.author}/${paper.permlink}`}
-            className="btn-primary text-sm w-full sm:w-auto text-center shrink-0"
-          >
-            {t("writeReview")}
-          </Link>
+          {username !== paper.author && (
+            <Link
+              href={`/review/${paper.author}/${paper.permlink}`}
+              className="btn-primary text-sm w-full sm:w-auto text-center shrink-0"
+            >
+              {t("writeReview")}
+            </Link>
+          )}
         </div>
 
         {/* Average ratings */}
@@ -525,12 +534,14 @@ export default function PaperDetailClient({ author, permlink, initialData }: Pap
         {paper.reviews.length === 0 && (
           <div className="card text-center py-8">
             <p className="text-ink-muted mb-3">{t("noReviews")}</p>
-            <Link
-              href={`/review/${paper.author}/${paper.permlink}`}
-              className="btn-primary text-sm"
-            >
-              {t("writeReview")}
-            </Link>
+            {username !== paper.author && (
+              <Link
+                href={`/review/${paper.author}/${paper.permlink}`}
+                className="btn-primary text-sm"
+              >
+                {t("writeReview")}
+              </Link>
+            )}
           </div>
         )}
       </section>
