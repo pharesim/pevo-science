@@ -54,7 +54,10 @@
     "noReviews": "Nenhuma revisao ainda. Seja o primeiro a revisar este artigo.",
     "notFoundTitle": "Artigo Nao Encontrado",
     "errorLoadingTitle": "Erro ao Carregar Artigo",
-    "notFoundDescription": "O artigo @{author}/{permlink} nao foi encontrado."
+    "notFoundDescription": "O artigo @{author}/{permlink} nao foi encontrado.",
+    "showFullPaper": "Mostrar artigo completo",
+    "collapseBody": "Recolher",
+    "noReviewsYet": "Nenhuma revisão ainda."
   },
   "filters": {
     "discipline": "Disciplina",
@@ -183,7 +186,8 @@
     "reviewedVersion": "Revisou v{version}",
     "submissionFailed": "Falha na submissao da revisao",
     "accreditationRequired": "Você precisa ser credenciado para enviar revisões.",
-    "getAccredited": "Obter credenciamento"
+    "getAccredited": "Obter credenciamento",
+    "cannotReviewOwn": "Não pode avaliar o seu próprio artigo."
   },
   "accreditation": {
     "title": "Credenciamento de Pesquisador",

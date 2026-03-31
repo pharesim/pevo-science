@@ -54,7 +54,10 @@
     "noReviews": "暂无评审。成为第一位评审此论文的人。",
     "notFoundTitle": "论文未找到",
     "errorLoadingTitle": "论文加载出错",
-    "notFoundDescription": "未找到论文 @{author}/{permlink}。"
+    "notFoundDescription": "未找到论文 @{author}/{permlink}。",
+    "showFullPaper": "显示全文",
+    "collapseBody": "收起",
+    "noReviewsYet": "暂无评审。"
   },
   "filters": {
     "discipline": "学科",
@@ -183,7 +186,8 @@
     "reviewedVersion": "评审版本 v{version}",
     "submissionFailed": "评审提交失败",
     "accreditationRequired": "您需要获得认证才能提交评审。",
-    "getAccredited": "获取认证"
+    "getAccredited": "获取认证",
+    "cannotReviewOwn": "您不能评审自己的论文。"
   },
   "accreditation": {
     "title": "研究人员认证",

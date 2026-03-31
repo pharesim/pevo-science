@@ -54,7 +54,10 @@
     "noReviews": "Brak recenzji. Bądź pierwszą osobą, która zrecenzuje tę pracę.",
     "notFoundTitle": "Nie znaleziono publikacji",
     "errorLoadingTitle": "Błąd ładowania publikacji",
-    "notFoundDescription": "Publikacja @{author}/{permlink} nie została znaleziona."
+    "notFoundDescription": "Publikacja @{author}/{permlink} nie została znaleziona.",
+    "showFullPaper": "Pokaż pełny artykuł",
+    "collapseBody": "Zwiń",
+    "noReviewsYet": "Brak recenzji."
   },
   "filters": {
     "discipline": "Dyscyplina",
@@ -183,7 +186,8 @@
     "reviewedVersion": "Recenzja wersji v{version}",
     "submissionFailed": "Przesyłanie recenzji nie powiodło się",
     "accreditationRequired": "Musisz być akredytowany, aby przesyłać recenzje.",
-    "getAccredited": "Uzyskaj akredytację"
+    "getAccredited": "Uzyskaj akredytację",
+    "cannotReviewOwn": "Nie możesz recenzować własnego artykułu."
   },
   "accreditation": {
     "title": "Akredytacja naukowca",

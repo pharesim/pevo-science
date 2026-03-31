@@ -54,7 +54,10 @@
     "noReviews": "Zatím žádné recenze. Buďte první, kdo tento článek orecenzuje.",
     "notFoundTitle": "Článek nenalezen",
     "errorLoadingTitle": "Chyba při načítání článku",
-    "notFoundDescription": "Článek @{author}/{permlink} nebyl nalezen."
+    "notFoundDescription": "Článek @{author}/{permlink} nebyl nalezen.",
+    "showFullPaper": "Zobrazit celý článek",
+    "collapseBody": "Sbalit",
+    "noReviewsYet": "Zatím žádné recenze."
   },
   "filters": {
     "discipline": "Obor",
@@ -183,7 +186,8 @@
     "reviewedVersion": "Recenzována v{version}",
     "submissionFailed": "Odeslání recenze selhalo",
     "accreditationRequired": "Pro odesílání recenzí musíte být akreditováni.",
-    "getAccredited": "Získat akreditaci"
+    "getAccredited": "Získat akreditaci",
+    "cannotReviewOwn": "Nemůžete recenzovat vlastní článek."
   },
   "accreditation": {
     "title": "Akreditace výzkumníka",

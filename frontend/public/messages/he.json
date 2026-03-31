@@ -54,7 +54,10 @@
     "noReviews": "אין ביקורות עדיין. היו הראשונים לכתוב ביקורת על מאמר זה.",
     "notFoundTitle": "המאמר לא נמצא",
     "errorLoadingTitle": "שגיאה בטעינת המאמר",
-    "notFoundDescription": "המאמר @{author}/{permlink} לא נמצא."
+    "notFoundDescription": "המאמר @{author}/{permlink} לא נמצא.",
+    "showFullPaper": "הצג מאמר מלא",
+    "collapseBody": "כווץ",
+    "noReviewsYet": "אין ביקורות עדיין."
   },
   "filters": {
     "discipline": "תחום",
@@ -183,7 +186,8 @@
     "reviewedVersion": "בוקרה גרסה v{version}",
     "submissionFailed": "הגשת הביקורת נכשלה",
     "accreditationRequired": "עליך להיות מוסמך כדי להגיש ביקורות.",
-    "getAccredited": "קבל הסמכה"
+    "getAccredited": "קבל הסמכה",
+    "cannotReviewOwn": "אינך יכול לסקור את המאמר שלך."
   },
   "accreditation": {
     "title": "הסמכת חוקרים",

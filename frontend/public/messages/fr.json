@@ -54,7 +54,10 @@
     "noReviews": "Aucune évaluation pour le moment. Soyez le premier à évaluer cet article.",
     "notFoundTitle": "Article introuvable",
     "errorLoadingTitle": "Erreur lors du chargement de l'article",
-    "notFoundDescription": "L'article @{author}/{permlink} est introuvable."
+    "notFoundDescription": "L'article @{author}/{permlink} est introuvable.",
+    "showFullPaper": "Afficher l'article complet",
+    "collapseBody": "Réduire",
+    "noReviewsYet": "Pas encore d'évaluations."
   },
   "filters": {
     "discipline": "Discipline",
@@ -183,7 +186,8 @@
     "reviewedVersion": "Version évaluée v{version}",
     "submissionFailed": "La soumission de l'évaluation a échoué",
     "accreditationRequired": "Vous devez être accrédité pour soumettre des évaluations.",
-    "getAccredited": "Obtenir l'accréditation"
+    "getAccredited": "Obtenir l'accréditation",
+    "cannotReviewOwn": "Vous ne pouvez pas évaluer votre propre article."
   },
   "accreditation": {
     "title": "Accréditation des chercheurs",

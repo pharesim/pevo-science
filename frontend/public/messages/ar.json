@@ -54,7 +54,10 @@
     "noReviews": "لا توجد مراجعات بعد. كن أول من يراجع هذا البحث.",
     "notFoundTitle": "البحث غير موجود",
     "errorLoadingTitle": "خطأ في تحميل البحث",
-    "notFoundDescription": "تعذّر العثور على البحث @{author}/{permlink}."
+    "notFoundDescription": "تعذّر العثور على البحث @{author}/{permlink}.",
+    "showFullPaper": "عرض المقال كاملاً",
+    "collapseBody": "طي",
+    "noReviewsYet": "لا توجد مراجعات بعد."
   },
   "filters": {
     "discipline": "التخصص",
@@ -183,7 +186,8 @@
     "reviewedVersion": "تمت مراجعة الإصدار {version}",
     "submissionFailed": "فشل تقديم المراجعة",
     "accreditationRequired": "يجب أن تكون معتمدًا لتقديم المراجعات.",
-    "getAccredited": "الحصول على الاعتماد"
+    "getAccredited": "الحصول على الاعتماد",
+    "cannotReviewOwn": "لا يمكنك مراجعة ورقتك البحثية."
   },
   "accreditation": {
     "title": "اعتماد الباحثين",

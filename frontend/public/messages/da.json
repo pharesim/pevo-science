@@ -54,7 +54,10 @@
     "noReviews": "Ingen bedømmelser endnu. Vær den første til at bedømme denne artikel.",
     "notFoundTitle": "Artikel ikke fundet",
     "errorLoadingTitle": "Fejl ved indlæsning af artikel",
-    "notFoundDescription": "Artiklen @{author}/{permlink} kunne ikke findes."
+    "notFoundDescription": "Artiklen @{author}/{permlink} kunne ikke findes.",
+    "showFullPaper": "Vis hele artiklen",
+    "collapseBody": "Skjul",
+    "noReviewsYet": "Ingen anmeldelser endnu."
   },
   "filters": {
     "discipline": "Fagområde",
@@ -183,7 +186,8 @@
     "reviewedVersion": "Bedømt v{version}",
     "submissionFailed": "Indsendelse af bedømmelse mislykkedes",
     "accreditationRequired": "Du skal være akkrediteret for at indsende bedømmelser.",
-    "getAccredited": "Bliv akkrediteret"
+    "getAccredited": "Bliv akkrediteret",
+    "cannotReviewOwn": "Du kan ikke anmelde din egen artikel."
   },
   "accreditation": {
     "title": "Forskerakkreditering",
