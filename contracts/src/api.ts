@@ -26,6 +26,7 @@ export type ErrorCode =
   | "FILE_TOO_LARGE"
   | "INVALID_FILE_TYPE"
   | "RATE_LIMITED"
+  | "BROADCAST_FAILED"
   | "INTERNAL_ERROR";
 
 export interface PaginationMeta {
