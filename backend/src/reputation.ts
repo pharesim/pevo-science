@@ -291,14 +291,30 @@ export async function getReputationWeights(): Promise<ReputationWeights> {
 
     let client: pg.PoolClient | undefined;
     try {
-      // Use a dedicated client in a transaction so SET LOCAL takes effect.
-      // This query scans the massive operation_custom_json_view table with
-      // text→jsonb casts; it times out frequently when no update_weights
-      // custom_json has ever been broadcast. Fail fast (5s) and use defaults.
+      // The full query scans operation_custom_json_view with text→jsonb casts
+      // and is expensive when no update_weights has ever been broadcast.
+      // Optimisation: first do a cheap EXISTS check with a tight timeout.
+      // If no matching row exists, skip the expensive ORDER BY query entirely.
       client = await pool.connect();
       await client.query('BEGIN');
-      await client.query('SET LOCAL statement_timeout = 5000');
+      await client.query('SET LOCAL statement_timeout = 2000');
 
+      const exists = await client.query(
+        `SELECT 1 FROM ${T.customJson} cj
+         WHERE cj.custom_id = $1
+           AND cj.json LIKE '%update_weights%'
+         LIMIT 1`,
+        [config.appTag],
+      );
+
+      if (exists.rows.length === 0) {
+        await client.query('COMMIT');
+        client.release();
+        return DEFAULT_REPUTATION_WEIGHTS;
+      }
+
+      // At least one update_weights row exists — fetch the latest.
+      await client.query('SET LOCAL statement_timeout = 5000');
       const result = await client.query(
         `SELECT cj.json FROM ${T.customJson} cj
          WHERE cj.custom_id = $1

@@ -80,24 +80,19 @@ async function getAccreditation(username: string) {
 router.get('/:username', async (req: Request, res: Response) => {
   const { username } = req.params;
 
-  // Verify the Hive account actually exists
-  try {
-    const [account] = await hiveClient.database.getAccounts([username]);
-    if (!account) {
-      return sendError(res, 404, 'NOT_FOUND', `Hive account @${username} does not exist`);
-    }
-  } catch (err) {
-    logger.error({ err, username }, 'Failed to verify Hive account existence');
-    return sendError(res, 500, 'INTERNAL_ERROR', 'Unable to verify Hive account');
-  }
-
   const data = await hafCache.getOrSet(`profile:${username}`, async () => {
-    const accreditation = await getAccreditation(username);
+    // Fire all independent lookups in parallel (account check, accreditation, stats)
+    const [accountResult, accreditation, hafStats] = await Promise.all([
+      hiveClient.database.getAccounts([username]),
+      getAccreditation(username),
+      isHafAvailable() ? getUserStatsFromHaf(username) : Promise.resolve(null),
+    ]);
+
+    const [account] = accountResult;
+    if (!account) return null;
+
     const isAccredited = !!accreditation;
-
-    let stats = isHafAvailable() ? await getUserStatsFromHaf(username) : null;
-    if (!stats) stats = await getUserStatsFromHiveApi(username);
-
+    const stats = hafStats ?? await getUserStatsFromHiveApi(username);
     const reputation = await computeReputation(stats, isAccredited);
 
     return {
@@ -113,6 +108,10 @@ router.get('/:username', async (req: Request, res: Response) => {
       },
     };
   }, 5 * 60_000, true);
+
+  if (data === null) {
+    return sendError(res, 404, 'NOT_FOUND', `Hive account @${username} does not exist`);
+  }
 
   sendOk(res, data);
 });
