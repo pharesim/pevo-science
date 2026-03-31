@@ -87,9 +87,9 @@
             <div class="relative" @click.outside="userMenuOpen = false">
               <!-- User menu trigger: bell + @username + chevron -->
               <button class="flex items-center gap-2 rounded-md border border-parchment-dark bg-white px-2.5 py-1.5 text-sm font-medium text-ink hover:border-pevo-teal transition-colors"
-                      @click="toggleUserMenu()" :aria-expanded="userMenuOpen" aria-haspopup="true">
+                      @click="toggleUserMenu()" :aria-expanded="userMenuOpen" aria-haspopup="true" :aria-label="$t('aria.notifications')">
                 <span class="relative">
-                  <svg class="w-4.5 h-4.5" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                  <svg class="w-4.5 h-4.5" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" aria-hidden="true">
                     <path stroke-linecap="round" stroke-linejoin="round" d="M14.857 17.082a23.848 23.848 0 005.454-1.31A8.967 8.967 0 0118 9.75V9A6 6 0 006 9v.75a8.967 8.967 0 01-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 01-5.714 0m5.714 0a3 3 0 11-5.714 0" />
                   </svg>
                   <span x-show="$store.notifications.unreadCount > 0" aria-live="polite"
@@ -217,6 +217,7 @@
               <div class="container-narrow relative py-12 sm:py-16">
                 <div class="flex flex-col sm:flex-row items-center gap-8">
                   <div class="flex-1">
+                    <!-- x-html intentional: heroTitle uses <highlight> for styled emphasis -->
                     <h1 class="text-4xl sm:text-5xl font-bold text-ink mb-4 leading-tight" x-html="$t('common.heroTitle')"></h1>
                     <p class="text-lg text-ink-muted mb-6 max-w-lg" x-text="$t('common.heroDescription')"></p>
                     <div class="flex flex-wrap gap-3">
@@ -265,6 +266,7 @@
               <div class="container-narrow relative py-12 sm:py-16">
                 <div class="flex flex-col sm:flex-row items-center gap-8">
                   <div class="flex-1">
+                    <!-- x-html intentional: heroTitle uses <highlight> for styled emphasis -->
                     <h1 class="text-4xl sm:text-5xl font-bold text-ink mb-4 leading-tight" x-html="$t('common.heroTitle')"></h1>
                     <p class="text-lg text-ink-muted mb-6 max-w-lg" x-text="$t('common.heroDescription')"></p>
                     <div class="flex flex-wrap gap-3">
@@ -470,7 +472,10 @@
           <div class="card text-center py-12">
             <h1 class="text-2xl font-bold text-ink mb-2" x-text="error"></h1>
             <p class="text-ink-muted mb-4" x-text="$t('paperDetail.notFoundDescription', { author: author, permlink: permlink })"></p>
-            <a href="/" @click.prevent="navigate('/')" class="btn-primary no-underline" x-text="$t('paperDetail.backToPapers')"></a>
+            <div class="flex justify-center gap-3">
+              <button @click="loadPaper()" class="btn-secondary" x-text="$t('paperDetail.retry')"></button>
+              <a href="/" @click.prevent="navigate('/')" class="btn-primary no-underline" x-text="$t('paperDetail.backToPapers')"></a>
+            </div>
           </div>
         </template>
 

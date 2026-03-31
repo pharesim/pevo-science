@@ -57,7 +57,8 @@
     "notFoundDescription": "未找到论文 @{author}/{permlink}。",
     "showFullPaper": "显示全文",
     "collapseBody": "收起",
-    "noReviewsYet": "暂无评审。"
+    "noReviewsYet": "暂无评审。",
+    "retry": "重试"
   },
   "filters": {
     "discipline": "学科",
@@ -655,5 +656,8 @@
     "cs": "Čeština",
     "sv": "Svenska",
     "da": "Dansk"
+  },
+  "aria": {
+    "notifications": "通知"
   }
 }

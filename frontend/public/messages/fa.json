@@ -57,7 +57,8 @@
     "notFoundDescription": "مقاله @{author}/{permlink} یافت نشد.",
     "showFullPaper": "نمایش مقاله کامل",
     "collapseBody": "جمع کردن",
-    "noReviewsYet": "هنوز بررسی‌ای وجود ندارد."
+    "noReviewsYet": "هنوز بررسی‌ای وجود ندارد.",
+    "retry": "تلاش مجدد"
   },
   "filters": {
     "discipline": "رشته",
@@ -655,5 +656,8 @@
     "cs": "Čeština",
     "sv": "Svenska",
     "da": "Dansk"
+  },
+  "aria": {
+    "notifications": "اعلان‌ها"
   }
 }

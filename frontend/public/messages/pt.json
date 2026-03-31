@@ -57,7 +57,8 @@
     "notFoundDescription": "O artigo @{author}/{permlink} nao foi encontrado.",
     "showFullPaper": "Mostrar artigo completo",
     "collapseBody": "Recolher",
-    "noReviewsYet": "Nenhuma revisão ainda."
+    "noReviewsYet": "Nenhuma revisão ainda.",
+    "retry": "Tentar novamente"
   },
   "filters": {
     "discipline": "Disciplina",
@@ -655,5 +656,8 @@
     "cs": "Čeština",
     "sv": "Svenska",
     "da": "Dansk"
+  },
+  "aria": {
+    "notifications": "Notificações"
   }
 }

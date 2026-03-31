@@ -4,7 +4,7 @@ services:
     restart: always
     environment:
       POSTGRES_USER: pevo
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pevo_dev}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: pevo_app
     # No host port — only reachable within Docker network
     expose:
@@ -25,11 +25,11 @@ services:
   redis:
     image: redis:7-alpine
     restart: always
-    command: redis-server --maxmemory 128mb --maxmemory-policy allkeys-lru --requirepass ${REDIS_PASSWORD:-pevo_redis_dev}
+    command: redis-server --maxmemory 128mb --maxmemory-policy allkeys-lru --requirepass ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-pevo_redis_dev}", "ping"]
+      test: ["CMD-SHELL", "REDISCLI_AUTH=$REDIS_PASSWORD redis-cli ping"]
       interval: 10s
       timeout: 3s
       retries: 5
@@ -48,8 +48,8 @@ services:
     env_file:
       - .env
     environment:
-      APP_DATABASE_URL: postgresql://pevo:${POSTGRES_PASSWORD:-pevo_dev}@postgres:5432/pevo_app
-      REDIS_URL: redis://:${REDIS_PASSWORD:-pevo_redis_dev}@redis:6379
+      APP_DATABASE_URL: postgresql://pevo:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/pevo_app
+      REDIS_URL: redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}@redis:6379
       PORT: "3001"
     depends_on:
       postgres:

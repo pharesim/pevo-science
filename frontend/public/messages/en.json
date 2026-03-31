@@ -57,7 +57,8 @@
     "notFoundDescription": "The paper @{author}/{permlink} could not be found.",
     "showFullPaper": "Show full paper",
     "collapseBody": "Collapse",
-    "noReviewsYet": "No reviews yet."
+    "noReviewsYet": "No reviews yet.",
+    "retry": "Retry"
   },
   "filters": {
     "discipline": "Discipline",
@@ -655,5 +656,8 @@
     "cs": "Čeština",
     "sv": "Svenska",
     "da": "Dansk"
+  },
+  "aria": {
+    "notifications": "Notifications"
   }
 }

@@ -35,7 +35,7 @@ function escapeHtml(str: string): string {
 }
 
 function generateUnsubscribeToken(username: string): string {
-  const secret = config.anonReviewEncryptionKey || 'pevo-digest-secret';
+  const secret = config.unsubscribeSecret || config.sessionSecret;
   return crypto.createHmac('sha256', secret).update(`unsubscribe:${username}`).digest('hex');
 }
 

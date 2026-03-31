@@ -50,6 +50,7 @@ async function pinToPinata(buffer: Buffer, filename: string): Promise<PinResult>
       pinata_secret_api_key: config.pinataSecretKey,
     },
     body: formData,
+    signal: AbortSignal.timeout(30_000),
   });
 
   if (!response.ok) {

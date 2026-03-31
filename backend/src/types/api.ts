@@ -19,6 +19,7 @@ export interface ApiError {
 
 export type ErrorCode =
   | "BAD_REQUEST"
+  | "VALIDATION_ERROR"
   | "UNAUTHORIZED"
   | "FORBIDDEN"
   | "NOT_FOUND"

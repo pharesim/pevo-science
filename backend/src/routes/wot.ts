@@ -50,7 +50,7 @@ router.post('/vouch', verifyHiveSignature, async (req: Request, res: Response) =
   }
 
   if (voucher === vouchee) {
-    return sendError(res, 400, 'BAD_REQUEST', 'Cannot vouch for yourself');
+    return sendError(res, 422, 'VALIDATION_ERROR', 'Cannot vouch for yourself');
   }
 
   // Verify voucher is accredited

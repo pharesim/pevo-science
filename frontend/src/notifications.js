@@ -39,6 +39,7 @@ export function initNotifications() {
     _failureCount: 0,
     _currentInterval: BASE_POLL_INTERVAL_MS,
     _username: null,
+    _generation: 0,
 
     get unreadCount() {
       return this.events.filter((e) => e.block_num > this.seenBlock).length;
@@ -46,6 +47,7 @@ export function initNotifications() {
 
     start(username) {
       this.stop();
+      this._generation += 1;
       this._username = username;
       this.seenBlock = getSeenBlock(username);
       this._failureCount = 0;
@@ -55,6 +57,7 @@ export function initNotifications() {
     },
 
     stop() {
+      this._generation += 1;
       if (this._timer) {
         clearTimeout(this._timer);
         this._timer = null;
@@ -71,6 +74,7 @@ export function initNotifications() {
     async poll() {
       if (!this._username) return;
       const username = this._username;
+      const gen = this._generation;
       const cursor = getCursor(username);
 
       try {
@@ -79,6 +83,8 @@ export function initNotifications() {
         this.pollingStopped = false;
 
         const res = await fetchNotifications(cursor, 50);
+
+        if (gen !== this._generation) return;
 
         if (res.status === 'ok' && res.data) {
           const batch = res.data;

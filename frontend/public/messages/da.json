@@ -57,7 +57,8 @@
     "notFoundDescription": "Artiklen @{author}/{permlink} kunne ikke findes.",
     "showFullPaper": "Vis hele artiklen",
     "collapseBody": "Skjul",
-    "noReviewsYet": "Ingen anmeldelser endnu."
+    "noReviewsYet": "Ingen anmeldelser endnu.",
+    "retry": "Prøv igen"
   },
   "filters": {
     "discipline": "Fagområde",
@@ -655,5 +656,8 @@
     "cs": "Čeština",
     "sv": "Svenska",
     "da": "Dansk"
+  },
+  "aria": {
+    "notifications": "Notifikationer"
   }
 }

@@ -45,6 +45,9 @@ export function initAuth() {
 
       // Start accreditation polling if connected but not yet accredited
       this._startAccreditationPolling();
+
+      // Clean up polling on page unload
+      window.addEventListener('beforeunload', () => this._stopAccreditationPolling());
     },
 
     async connect() {

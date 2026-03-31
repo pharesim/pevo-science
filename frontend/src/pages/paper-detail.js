@@ -44,14 +44,18 @@ export function initPaperDetailPage() {
     },
 
     async loadPaper() {
+      const author = this.author;
+      const permlink = this.permlink;
       this.loading = true;
       this.error = null;
       try {
-        const res = await fetchPaper(this.author, this.permlink);
+        const res = await fetchPaper(author, permlink);
+        if (this.author !== author || this.permlink !== permlink) return;
         this.paper = res.data;
         // Load enrichment (DOI) lazily
         this.loadDoi();
       } catch (err) {
+        if (this.author !== author || this.permlink !== permlink) return;
         this.error = err?.message === 'Not found'
           ? this.$t('paperDetail.notFoundTitle')
           : (err?.message || this.$t('paperDetail.errorLoadingTitle'));
@@ -204,13 +208,18 @@ export function initPaperDetailPage() {
     // Bridge sync
     async handleBridgeSync() {
       if (!this.$store.auth.username) return;
+      const author = this.author;
+      const permlink = this.permlink;
       this.syncLoading = true;
       try {
-        await updateBridgePaper(this.permlink);
+        await updateBridgePaper(permlink);
+        if (this.author !== author || this.permlink !== permlink) return;
         this.$store.toast.show(this.$t('bridge.syncSuccess'), 'success');
-        const res = await fetchPaper(this.author, this.permlink);
+        const res = await fetchPaper(author, permlink);
+        if (this.author !== author || this.permlink !== permlink) return;
         this.paper = res.data;
       } catch (err) {
+        if (this.author !== author || this.permlink !== permlink) return;
         this.$store.toast.show(err?.message || this.$t('bridge.syncFailed'), 'error');
       } finally {
         this.syncLoading = false;

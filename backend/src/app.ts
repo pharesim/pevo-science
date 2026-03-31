@@ -70,7 +70,7 @@ export function createApp() {
   // CORS: frontend is same-origin (served from this process).
   // Keep CORS middleware for external API consumers only.
   app.use(cors({
-    origin: config.appUrl || true, // same-origin by default; allow configured origin for external consumers
+    origin: config.appUrl || false, // deny cross-origin by default; allow configured origin for external consumers
     credentials: true,
     maxAge: 86400,
     methods: ['GET', 'POST', 'PUT', 'OPTIONS'],

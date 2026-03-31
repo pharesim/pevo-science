@@ -75,7 +75,8 @@ export const config = {
     return [hiveAdminAccount, ...extra];
   })(),
 
-  sessionSecret: process.env.SESSION_SECRET || 'pevo-dev-secret-do-not-use-in-production',
+  sessionSecret: process.env.SESSION_SECRET ?? (() => { throw new Error('SESSION_SECRET must be set'); })(),
+  unsubscribeSecret: process.env.UNSUBSCRIBE_SECRET || process.env.SESSION_SECRET || '',
 
   // App identity — configurable so alpha/testing uses different namespace
   hiveAdminAccount,
@@ -85,8 +86,3 @@ export const config = {
   appVersion,
   appId: `${appTag}/${appVersion}`,
 };
-
-// ── Startup validation ─────────────────────────────────────────
-if (process.env.NODE_ENV === 'production' && !process.env.SESSION_SECRET) {
-  throw new Error('SESSION_SECRET must be set in production');
-}

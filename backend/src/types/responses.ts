@@ -395,6 +395,7 @@ export interface SessionResponse {
 export interface HealthCheckResponse {
   status: string;
   haf_available: boolean;
+  redis_available?: boolean;
   timestamp: string;
 }
 

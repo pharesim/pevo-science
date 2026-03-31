@@ -46,7 +46,7 @@ export function renderMarkdown(content) {
     ADD_ATTR: ['xmlns', 'mathvariant', 'encoding', 'displaystyle', 'scriptlevel',
                'fence', 'stretchy', 'symmetric', 'lspace', 'rspace', 'movablelimits',
                'accent', 'accentunder', 'columnalign', 'columnspacing', 'rowspacing',
-               'class', 'style', 'width', 'height', 'aria-hidden'],
+               'class', 'width', 'height', 'aria-hidden'],
   });
 }
 

@@ -57,7 +57,8 @@
     "notFoundDescription": "L'article @{author}/{permlink} est introuvable.",
     "showFullPaper": "Afficher l'article complet",
     "collapseBody": "Réduire",
-    "noReviewsYet": "Pas encore d'évaluations."
+    "noReviewsYet": "Pas encore d'évaluations.",
+    "retry": "Réessayer"
   },
   "filters": {
     "discipline": "Discipline",
@@ -655,5 +656,8 @@
     "cs": "Čeština",
     "sv": "Svenska",
     "da": "Dansk"
+  },
+  "aria": {
+    "notifications": "Notifications"
   }
 }

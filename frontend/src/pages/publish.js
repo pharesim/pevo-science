@@ -3,6 +3,7 @@ import { uploadToIpfs, fetchDisciplines } from '../api.js';
 import { publishPaper } from '../keychain.js';
 import { sha256, sha256File, slugify } from '../crypto.js';
 import { createEditor } from '../editor.js';
+import { getAppTag, getAppId } from '../config.js';
 
 const DRAFT_KEY = 'pevo-draft-publish';
 const ABSTRACT_MAX_CHARS = 2000;
@@ -19,15 +20,6 @@ const DISCIPLINE_TAXONOMY = [
   { field: 'Humanities and Arts', subfields: ['History', 'Philosophy', 'Languages and Literature', 'Arts', 'Theology'] },
 ];
 
-function getAppTag() {
-  return (window.__PEVO_CONFIG__?.appTag) || 'pevo';
-}
-
-function getAppId() {
-  const tag = getAppTag();
-  const ver = (window.__PEVO_CONFIG__?.appVersion) || '0.1';
-  return `${tag}/${ver}`;
-}
 
 function relativeTime(timestamp) {
   const seconds = Math.floor((Date.now() - timestamp) / 1000);
@@ -210,6 +202,7 @@ export function initPublishPage() {
     },
 
     destroy() {
+      if (this._draftTimer) { clearTimeout(this._draftTimer); this._draftTimer = null; }
       if (this._abstractEditor) { this._abstractEditor.destroy(); this._abstractEditor = null; }
       if (this._bodyEditor) { this._bodyEditor.destroy(); this._bodyEditor = null; }
     },

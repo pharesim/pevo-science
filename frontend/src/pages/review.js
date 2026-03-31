@@ -2,16 +2,7 @@ import Alpine from 'alpinejs';
 import { fetchPaper, submitAnonymousReview } from '../api.js';
 import { postReview } from '../keychain.js';
 import { slugify } from '../crypto.js';
-
-function getAppTag() {
-  return (window.__PEVO_CONFIG__?.appTag) || 'pevo';
-}
-
-function getAppId() {
-  const tag = getAppTag();
-  const ver = (window.__PEVO_CONFIG__?.appVersion) || '0.1';
-  return `${tag}/${ver}`;
-}
+import { getAppTag, getAppId } from '../config.js';
 
 const RATING_KEYS = ['methodology', 'novelty', 'clarity', 'significance'];
 

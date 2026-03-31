@@ -1,4 +1,5 @@
 import { Router, type Request, type Response } from 'express';
+import crypto from 'node:crypto';
 import { getPool, isHafAvailable } from '../db.js';
 import { config } from '../config.js';
 import { sendOk, sendError } from '../response.js';
@@ -165,7 +166,8 @@ router.get('/', async (req: Request, res: Response) => {
   const { page, limit, offset } = parsePageLimit(req);
 
   if (isHafAvailable()) {
-    const cacheKey = `search:q=${q}:t=${type}:d=${discipline || ''}:l=${language || ''}:src=${source || ''}:a=${accreditedOnly}:r=${includeRetracted}:s=${sort}:p=${page}:lim=${limit}`;
+    const rawKey = `q=${q}:t=${type}:d=${discipline || ''}:l=${language || ''}:src=${source || ''}:a=${accreditedOnly}:r=${includeRetracted}:s=${sort}:p=${page}:lim=${limit}`;
+    const cacheKey = `search:${crypto.createHash('sha256').update(rawKey).digest('hex').slice(0, 32)}`;
     const result = await hafCache.getOrSet(cacheKey, () => searchFromHaf(q, type, discipline, language, source, accreditedOnly, includeRetracted, sort, limit, offset), 15_000);
     if (result) return sendOk(res, result.rows, { page, limit, total: result.total });
   }

@@ -6,6 +6,7 @@ import { hiveClient } from '../hive.js';
 import { sendError } from '../response.js';
 import { logger } from '../logger.js';
 import { config } from '../config.js';
+import { getRedis, isRedisAvailable } from '../redis.js';
 
 /**
  * Middleware that verifies a Hive Keychain signature.
@@ -20,19 +21,39 @@ import { config } from '../config.js';
  */
 
 const MAX_SIGNATURE_AGE_MS = 60_000; // 60 seconds
-const SEEN_SIGNATURES_TTL_MS = 5 * 60_000; // 5 minutes
+const SEEN_SIGNATURES_TTL_SEC = 300; // 5 minutes
 
-// In-memory replay cache (replaced by Redis in production via rateLimit)
+// In-memory replay cache — fallback when Redis is unavailable
 const seenSignatures = new Map<string, number>();
 
-// Cleanup interval
+// Cleanup interval for in-memory fallback
 const cleanupInterval = setInterval(() => {
   const now = Date.now();
   for (const [sig, ts] of seenSignatures) {
-    if (now - ts > SEEN_SIGNATURES_TTL_MS) seenSignatures.delete(sig);
+    if (now - ts > SEEN_SIGNATURES_TTL_SEC * 1000) seenSignatures.delete(sig);
   }
 }, 60_000);
 cleanupInterval.unref();
+
+async function isReplaySignature(signature: string): Promise<boolean> {
+  if (isRedisAvailable()) {
+    try {
+      const redis = getRedis()!;
+      // SETNX returns 1 if key was set (new), 0 if already existed (replay)
+      const result = await redis.set(`replay:${signature}`, '1', 'EX', SEEN_SIGNATURES_TTL_SEC, 'NX');
+      return result === null; // null means key already existed
+    } catch (err) {
+      logger.warn({ err }, 'Redis replay check failed, falling back to in-memory');
+    }
+  }
+  // In-memory fallback
+  if (seenSignatures.has(signature)) return true;
+  return false;
+}
+
+function recordSignatureInMemory(signature: string): void {
+  seenSignatures.set(signature, Date.now());
+}
 
 declare global {
   namespace Express {
@@ -67,7 +88,7 @@ export async function verifyHiveSignature(req: Request, res: Response, next: Nex
   }
 
   // Replay prevention: reject if we've seen this exact signature recently
-  if (seenSignatures.has(signature)) {
+  if (await isReplaySignature(signature)) {
     return sendError(res, 401, 'UNAUTHORIZED', 'Signature already used — replay rejected');
   }
 
@@ -120,8 +141,8 @@ export async function verifyHiveSignature(req: Request, res: Response, next: Nex
       return sendError(res, 401, 'UNAUTHORIZED', 'Invalid signature — does not match account posting key');
     }
 
-    // Record signature to prevent replay
-    seenSignatures.set(signature, Date.now());
+    // Record signature in memory fallback (Redis already recorded via SETNX above)
+    if (!isRedisAvailable()) recordSignatureInMemory(signature);
 
     req.hiveUsername = username;
     next();

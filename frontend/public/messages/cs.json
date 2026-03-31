@@ -57,7 +57,8 @@
     "notFoundDescription": "Článek @{author}/{permlink} nebyl nalezen.",
     "showFullPaper": "Zobrazit celý článek",
     "collapseBody": "Sbalit",
-    "noReviewsYet": "Zatím žádné recenze."
+    "noReviewsYet": "Zatím žádné recenze.",
+    "retry": "Zkusit znovu"
   },
   "filters": {
     "discipline": "Obor",
@@ -655,5 +656,8 @@
     "cs": "Čeština",
     "sv": "Svenska",
     "da": "Dansk"
+  },
+  "aria": {
+    "notifications": "Oznámení"
   }
 }

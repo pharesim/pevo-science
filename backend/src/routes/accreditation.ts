@@ -88,8 +88,9 @@ function maskEmail(email: string): string {
   const parts = email.split('@');
   if (parts.length !== 2 || !parts[0] || !parts[1]) return '***@***';
   const [local, domain] = parts;
-  if (local.length <= 2) return `${local[0]}***@${domain}`;
-  return `${local[0]}***${local[local.length - 1]}@${domain}`;
+  const tld = domain.includes('.') ? domain.slice(domain.lastIndexOf('.')) : domain;
+  const maskedLocal = local.length <= 2 ? `${local[0]}***` : `${local[0]}***`;
+  return `${maskedLocal}@***${tld}`;
 }
 
 function escapeHtml(str: string): string {
@@ -127,7 +128,7 @@ router.post('/request', verifyHiveSignature, accreditationRequestLimiter, valida
     return sendError(res, 400, 'BAD_REQUEST', 'Invalid email address');
   }
   if (FREE_EMAIL_DOMAINS.has(domain)) {
-    return sendError(res, 400, 'BAD_REQUEST', 'Please use an institutional email address');
+    return sendError(res, 422, 'VALIDATION_ERROR', 'Please use an institutional email address');
   }
 
   // Generate verification token
@@ -173,8 +174,9 @@ router.post('/request', verifyHiveSignature, accreditationRequestLimiter, valida
       return sendError(res, 500, 'INTERNAL_ERROR', 'Failed to send verification email');
     }
   } else if (process.env.NODE_ENV !== 'production') {
-    // Development only: log the token
-    logger.info({ hive_username, token }, 'Accreditation verification token (dev only)');
+    // Development only: log a truncated hash of the token (not the full token)
+    const tokenHash = crypto.createHash('sha256').update(token).digest('hex').slice(0, 8);
+    logger.info({ hive_username, tokenHash }, 'Accreditation verification token hash (dev only)');
   }
 
   sendOk(res, {
@@ -252,7 +254,7 @@ router.get('/orcid/start', verifyHiveSignature, async (req: Request, res: Respon
   const { getAccreditedSet } = await import('../accreditation.js');
   const accreditedSet = await getAccreditedSet([username]);
   if (accreditedSet.has(username)) {
-    return sendError(res, 400, 'BAD_REQUEST', 'Account is already accredited');
+    return sendError(res, 422, 'VALIDATION_ERROR', 'Account is already accredited');
   }
 
   // Generate state param for CSRF protection

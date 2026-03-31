@@ -841,7 +841,7 @@ router.post('/:author/:permlink/retract', verifyHiveSignature, retractLimiter, a
 
   // Check not already retracted
   if (await isRetracted(author, permlink)) {
-    return sendError(res, 400, 'BAD_REQUEST', 'Paper is already retracted');
+    return sendError(res, 422, 'VALIDATION_ERROR', 'Paper is already retracted');
   }
 
   // Broadcast retract_paper custom_json
@@ -1004,7 +1004,27 @@ async function getExistingDoi(author: string, permlink: string): Promise<{ doi: 
 
 router.get('/:author/:permlink/doi', async (req: Request, res: Response) => {
   const { author, permlink } = req.params;
-  const assign = req.query.assign === 'true';
+
+  const existing = await getExistingDoi(author, permlink);
+  if (existing) {
+    return sendOk(res, {
+      doi: existing.doi,
+      doi_url: existing.doi_url,
+      status: 'registered',
+      registered_at: existing.registered_at,
+    });
+  }
+
+  sendOk(res, { doi: null, doi_url: null, status: 'unregistered', registered_at: null });
+});
+
+router.post('/:author/:permlink/doi', verifyHiveSignature, doiAssignLimiter, async (req: Request, res: Response) => {
+  const { author, permlink } = req.params;
+  const username = req.hiveUsername!;
+
+  if (username !== author) {
+    return sendError(res, 403, 'FORBIDDEN', 'Only the paper author can assign a DOI');
+  }
 
   // Check for existing DOI
   const existing = await getExistingDoi(author, permlink);
@@ -1017,47 +1037,9 @@ router.get('/:author/:permlink/doi', async (req: Request, res: Response) => {
     });
   }
 
-  if (!assign) {
-    return sendOk(res, { doi: null, doi_url: null, status: 'unregistered', registered_at: null });
-  }
-
-  // Assignment requires auth + rate limiting — run Express middleware as async
-  const { verifyHiveSignature: verify } = await import('../middleware/verifyHiveSignature.js');
-  const runMiddleware = (mw: (req: Request, res: Response, next: (err?: unknown) => void) => void) =>
-    new Promise<void>((resolve, reject) => {
-      mw(req, res, (err?: unknown) => (err ? reject(err) : resolve()));
-    });
-
-  try {
-    await runMiddleware(verify);
-  } catch (verifyErr) {
-    if (!res.headersSent) {
-      logger.warn({ err: verifyErr }, 'DOI assignment auth verification failed');
-      return sendError(res, 401, 'UNAUTHORIZED', 'Authentication required for DOI assignment');
-    }
-    return;
-  }
-  if (res.headersSent) return;
-
-  try {
-    await runMiddleware(doiAssignLimiter);
-  } catch (rateLimitErr) {
-    logger.warn({ err: rateLimitErr }, 'DOI assignment rate limit middleware error');
-    if (!res.headersSent) {
-      return sendError(res, 500, 'INTERNAL_ERROR', 'Rate limit check failed');
-    }
-    return;
-  }
-  if (res.headersSent) return;
-
-  const username = req.hiveUsername!;
-  if (username !== author) {
-    return sendError(res, 403, 'FORBIDDEN', 'Only the paper author can assign a DOI');
-  }
-
   // Check paper exists and is not retracted
   if (await isRetracted(author, permlink)) {
-    return sendError(res, 400, 'BAD_REQUEST', 'Cannot assign DOI to a retracted paper');
+    return sendError(res, 422, 'VALIDATION_ERROR', 'Cannot assign DOI to a retracted paper');
   }
 
   if (!config.dataciteRepositoryId || !config.datacitePassword || !config.dataciteDoiPrefix) {

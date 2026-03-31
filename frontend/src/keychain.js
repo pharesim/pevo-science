@@ -1,15 +1,4 @@
-// App identity — reads from global config injected by backend or defaults
-function getAppTag() {
-  return (window.__PEVO_CONFIG__ && window.__PEVO_CONFIG__.appTag) || 'pevo';
-}
-
-function getAppVersion() {
-  return (window.__PEVO_CONFIG__ && window.__PEVO_CONFIG__.appVersion) || '0.1';
-}
-
-function getAppId() {
-  return `${getAppTag()}/${getAppVersion()}`;
-}
+import { getAppTag, getAppVersion, getAppId } from './config.js';
 
 export function isKeychainInstalled() {
   return typeof window !== 'undefined' && typeof window.hive_keychain !== 'undefined';

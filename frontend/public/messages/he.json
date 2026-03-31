@@ -57,7 +57,8 @@
     "notFoundDescription": "המאמר @{author}/{permlink} לא נמצא.",
     "showFullPaper": "הצג מאמר מלא",
     "collapseBody": "כווץ",
-    "noReviewsYet": "אין ביקורות עדיין."
+    "noReviewsYet": "אין ביקורות עדיין.",
+    "retry": "נסה שוב"
   },
   "filters": {
     "discipline": "תחום",
@@ -655,5 +656,8 @@
     "cs": "Čeština",
     "sv": "Svenska",
     "da": "Dansk"
+  },
+  "aria": {
+    "notifications": "התראות"
   }
 }

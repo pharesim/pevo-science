@@ -47,21 +47,21 @@ function renderCommentTree(comments, depth, t) {
     const commentId = `comment-${comment.author}-${comment.permlink}`;
 
     return `
-      <div class="${depthClass}" id="${escapeHtml(commentId)}">
+      <div class="${depthClass}" id="${commentId}">
         <div class="flex items-center gap-2 text-xs text-ink-muted">
           <button class="text-ink-muted hover:text-ink font-mono text-xs"
-                  @click="toggleCollapse('${escapeHtml(commentId)}')"
-                  x-text="collapsed['${escapeHtml(commentId)}'] ? '[+]' : '[-]'">[-]</button>
-          <a href="/profile/${escapeHtml(comment.author)}"
-             @click.prevent="navigate('/profile/${escapeHtml(comment.author)}')"
-             class="font-medium text-ink no-underline hover:text-pevo-teal">@${escapeHtml(comment.author)}</a>
+                  @click="toggleCollapse('${commentId}')"
+                  x-text="collapsed['${commentId}'] ? '[+]' : '[-]'">[-]</button>
+          <a href="/profile/${comment.author}"
+             @click.prevent="navigate('/profile/${comment.author}')"
+             class="font-medium text-ink no-underline hover:text-pevo-teal">@${comment.author}</a>
           ${accreditedBadge}
-          <time datetime="${escapeHtml(comment.created)}">${escapeHtml(formatTimeAgo(comment.created))}</time>
+          <time datetime="${comment.created}">${formatTimeAgo(comment.created)}</time>
         </div>
-        <div x-show="!collapsed['${escapeHtml(commentId)}']">
+        <div x-show="!collapsed['${commentId}']">
           <div class="mt-1 text-sm text-ink-light leading-relaxed prose prose-sm max-w-none">${bodyHtml}</div>
           <div class="flex items-center gap-3 mt-1.5">
-            <div x-data="voteButtons({ author: '${escapeHtml(comment.author)}', permlink: '${escapeHtml(comment.permlink)}', netVotes: ${comment.net_votes ?? 0} })">
+            <div x-data="voteButtons({ author: '${comment.author}', permlink: '${comment.permlink}', netVotes: ${comment.net_votes ?? 0} })">
               <div class="flex items-center gap-1">
                 <button class="p-1 rounded transition-colors disabled:opacity-50"
                         :class="voteState === 'up' ? 'text-pevo-green' : 'text-ink-muted hover:text-pevo-green'"
@@ -78,19 +78,19 @@ function renderCommentTree(comments, depth, t) {
             </div>
             <template x-if="$store.auth.isConnected">
               <button class="text-xs text-ink-muted hover:text-pevo-teal transition-colors"
-                      @click="toggleReply('${escapeHtml(commentId)}')"
+                      @click="toggleReply('${commentId}')"
                       x-text="$t('comments.reply')"></button>
             </template>
           </div>
-          <div x-show="replyOpen['${escapeHtml(commentId)}']" class="mt-2">
-            <div x-data="commentComposer({ parentAuthor: '${escapeHtml(comment.author)}', parentPermlink: '${escapeHtml(comment.permlink)}' })"
-                 x-on:comment-posted.window="if ($event.detail.parentPermlink === '${escapeHtml(comment.permlink)}') { replyOpen['${escapeHtml(commentId)}'] = false; loadComments(); }">
+          <div x-show="replyOpen['${commentId}']" class="mt-2">
+            <div x-data="commentComposer({ parentAuthor: '${comment.author}', parentPermlink: '${comment.permlink}' })"
+                 x-on:comment-posted.window="if ($event.detail.parentPermlink === '${comment.permlink}') { replyOpen['${commentId}'] = false; loadComments(); }">
               <textarea class="w-full rounded-md border border-parchment-dark bg-white px-3 py-2 text-sm text-ink placeholder:text-ink-muted focus:border-pevo-teal focus:outline-none focus:ring-1 focus:ring-pevo-teal resize-y"
-                        rows="2" :placeholder="$t('comments.replyTo', { author: '${escapeHtml(comment.author)}' })"
+                        rows="2" :placeholder="$t('comments.replyTo', { author: '${comment.author}' })"
                         x-model="body" :disabled="isSubmitting"></textarea>
               <p x-show="error" class="text-xs text-pevo-crimson mt-1" x-text="error"></p>
               <div class="flex items-center justify-end gap-2 mt-2">
-                <button class="btn-secondary text-xs" @click="replyOpen['${escapeHtml(commentId)}'] = false" :disabled="isSubmitting" x-text="$t('comments.cancel')"></button>
+                <button class="btn-secondary text-xs" @click="replyOpen['${commentId}'] = false" :disabled="isSubmitting" x-text="$t('comments.cancel')"></button>
                 <button class="btn-primary text-xs" @click="handleSubmit()" :disabled="isSubmitting || !body.trim()"
                         x-text="isSubmitting ? $t('comments.posting') : $t('comments.postComment')"></button>
               </div>

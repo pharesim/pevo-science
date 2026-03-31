@@ -57,7 +57,8 @@
     "notFoundDescription": "تعذّر العثور على البحث @{author}/{permlink}.",
     "showFullPaper": "عرض المقال كاملاً",
     "collapseBody": "طي",
-    "noReviewsYet": "لا توجد مراجعات بعد."
+    "noReviewsYet": "لا توجد مراجعات بعد.",
+    "retry": "إعادة المحاولة"
   },
   "filters": {
     "discipline": "التخصص",
@@ -655,5 +656,8 @@
     "cs": "Čeština",
     "sv": "Svenska",
     "da": "Dansk"
+  },
+  "aria": {
+    "notifications": "الإشعارات"
   }
 }

@@ -57,7 +57,8 @@
     "notFoundDescription": "Publikacja @{author}/{permlink} nie została znaleziona.",
     "showFullPaper": "Pokaż pełny artykuł",
     "collapseBody": "Zwiń",
-    "noReviewsYet": "Brak recenzji."
+    "noReviewsYet": "Brak recenzji.",
+    "retry": "Ponów"
   },
   "filters": {
     "discipline": "Dyscyplina",
@@ -655,5 +656,8 @@
     "cs": "Čeština",
     "sv": "Svenska",
     "da": "Dansk"
+  },
+  "aria": {
+    "notifications": "Powiadomienia"
   }
 }

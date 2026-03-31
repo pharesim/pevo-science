@@ -91,7 +91,7 @@ describe('POST /api/accreditation/request', () => {
         field: 'physics',
         email: 'test@gmail.com',
       });
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(422);
     expect(res.body.error.message).toContain('institutional');
   });
 });

@@ -57,7 +57,8 @@
     "notFoundDescription": "Die Publikation @{author}/{permlink} konnte nicht gefunden werden.",
     "showFullPaper": "Vollständigen Artikel anzeigen",
     "collapseBody": "Einklappen",
-    "noReviewsYet": "Noch keine Begutachtungen vorhanden."
+    "noReviewsYet": "Noch keine Begutachtungen vorhanden.",
+    "retry": "Erneut versuchen"
   },
   "filters": {
     "discipline": "Fachgebiet",
@@ -655,5 +656,8 @@
     "cs": "Čeština",
     "sv": "Svenska",
     "da": "Dansk"
+  },
+  "aria": {
+    "notifications": "Benachrichtigungen"
   }
 }
