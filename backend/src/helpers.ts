@@ -1,5 +1,5 @@
 import type { Request } from 'express';
-import type { PaperSummary, PaperSortOption } from '@pevo/contracts';
+import type { PaperSummary, PaperSortOption } from './types/index.js';
 import { config } from './config.js';
 import { logger } from './logger.js';
 

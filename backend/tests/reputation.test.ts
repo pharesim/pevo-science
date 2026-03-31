@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { DEFAULT_REPUTATION_WEIGHTS, type ReputationWeights } from '@pevo/contracts';
+import { DEFAULT_REPUTATION_WEIGHTS, type ReputationWeights } from '../src/types/index.js';
 import { decay, computeReputation, type UserStats } from '../src/reputation.js';
 
 function baseStats(): UserStats {

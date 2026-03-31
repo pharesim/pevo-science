@@ -1,5 +1,4 @@
-// @pevo/contracts — shared types for PEvO
-// Import from here: import { PaperSummary, Rating, ... } from "@pevo/contracts";
+// PEvO shared types — domain models, API shapes, Hive schemas
 
 export * from "./api.js";
 export * from "./domain.js";

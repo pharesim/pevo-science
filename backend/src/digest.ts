@@ -13,7 +13,7 @@ import { getAppPool } from './app-db.js';
 import { config } from './config.js';
 import { logger } from './logger.js';
 import { fetchNotificationsFromHaf } from './notification-queries.js';
-import type { NotificationEvent } from '@pevo/contracts';
+import type { NotificationEvent } from './types/index.js';
 
 // ── Types ───────────────────────────────────────
 

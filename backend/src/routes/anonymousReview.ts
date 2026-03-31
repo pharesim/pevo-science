@@ -10,7 +10,7 @@ import { validate, anonymousReviewSchema } from '../validation.js';
 import { rateLimit, byAccount } from '../middleware/rateLimit.js';
 import { getAccreditation } from '../routes/profile.js';
 import { logger } from '../logger.js';
-import type { AnonReviewAction } from '@pevo/contracts';
+import type { AnonReviewAction } from '../types/index.js';
 
 const anonReviewLimiter = rateLimit({ name: 'anon-review', windowMs: 60 * 60_000, max: 5, keyFn: byAccount });
 

@@ -7,7 +7,7 @@ import { getPool } from './db.js';
 import { config } from './config.js';
 import { logger } from './logger.js';
 import { T, activeAccreditationsCteBody } from './hafsql.js';
-import type { NotificationEvent, NotificationBatch } from '@pevo/contracts';
+import type { NotificationEvent, NotificationBatch } from './types/index.js';
 
 export async function fetchNotificationsFromHaf(
   account: string,

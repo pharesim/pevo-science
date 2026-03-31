@@ -21,7 +21,6 @@
   },
   "dependencies": {
     "@hiveio/dhive": "^1.3.0",
-    "@pevo/contracts": "file:../contracts",
     "@types/compression": "^1.8.1",
     "compression": "^1.8.1",
     "cors": "^2.8.5",

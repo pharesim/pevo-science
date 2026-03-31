@@ -9,7 +9,7 @@ import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';
 import { hafCache } from '../cache.js';
 import { logger } from '../logger.js';
 import { fetchNotificationsFromHaf } from '../notification-queries.js';
-import type { NotificationEvent, NotificationBatch } from '@pevo/contracts';
+import type { NotificationEvent, NotificationBatch } from '../types/index.js';
 
 const router = Router();
 

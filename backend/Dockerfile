@@ -3,11 +3,6 @@ FROM node:20-alpine AS build
 
 WORKDIR /app
 
-# Build contracts package (local dependency)
-COPY contracts/package.json contracts/tsconfig.json ./contracts/
-COPY contracts/src ./contracts/src
-RUN cd contracts && npm install && npm run build
-
 # Build frontend (Vite outputs to ../backend/public/)
 COPY frontend/package.json frontend/package-lock.json* ./frontend/
 RUN cd frontend && npm ci
@@ -27,10 +22,6 @@ RUN cd backend && npx tsc
 FROM node:20-alpine
 
 WORKDIR /app
-
-# Copy built contracts (with dist and package.json only)
-COPY --from=build /app/contracts/package.json ./contracts/
-COPY --from=build /app/contracts/dist ./contracts/dist
 
 # Install backend production dependencies
 COPY backend/package.json backend/package-lock.json* ./backend/

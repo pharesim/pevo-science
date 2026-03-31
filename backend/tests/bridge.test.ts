@@ -6,7 +6,7 @@ import {
   buildBridgeMetadata,
 } from '../src/bridge.js';
 import { config } from '../src/config.js';
-import type { BridgeLookupResult } from '@pevo/contracts';
+import type { BridgeLookupResult } from '../src/types/index.js';
 
 const TAG = config.appTag;
 const APP_ID = config.appId;

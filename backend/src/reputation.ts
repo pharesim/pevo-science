@@ -14,7 +14,7 @@ import { parseMeta, isPevoPaper } from './helpers.js';
 import { getAccreditedSet, getAllAccreditedAccounts } from './accreditation.js';
 import { hafCache } from './cache.js';
 import { logger } from './logger.js';
-import { DEFAULT_REPUTATION_WEIGHTS, type ReputationWeights, type ReputationScore } from '@pevo/contracts';
+import { DEFAULT_REPUTATION_WEIGHTS, type ReputationWeights, type ReputationScore } from './types/index.js';
 import { T } from './hafsql.js';
 
 const REPUTATION_CACHE_TTL = 60 * 60_000; // 1 hour

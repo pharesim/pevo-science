@@ -131,9 +131,8 @@ pevo/
   docker-compose.yml      Full stack (postgres, redis, backend, frontend)
   ARCHITECTURE.md         System design (single source of truth)
   PROGRESS.md             Milestone log
-  contracts/              @pevo/contracts — shared TypeScript types
-  backend/                Node.js + Express API (28 endpoints)
-  frontend/               Next.js frontend (15 pages, 6 locales)
+  backend/                Node.js + Express API (types in src/types/)
+  frontend/               Alpine.js SPA (Vite build)
   docs/
     api-contract.md       REST API specification
     hive-schemas.md       Hive post metadata + custom_json schemas

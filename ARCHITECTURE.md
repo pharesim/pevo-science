@@ -447,13 +447,9 @@ Authenticated endpoints (accreditation, IPFS upload, anonymous reviews) are rate
 
 v0.1 uses unversioned paths (`/api/...`). Future breaking changes will use path-based versioning (`/api/v2/...`) with a 6-month deprecation window for the previous version.
 
-### Shared Types Contract
+### Shared Types
 
-The `@pevo/contracts` package in `contracts/` defines TypeScript types consumed by the backend. The frontend (Alpine.js) does not use TypeScript — it consumes the same API shapes but without static type checking.
-
-The `DISCIPLINE_TAXONOMY` is also exported as `contracts/disciplines.json` for consumption by the frontend without TypeScript.
-
-The `ReputationWeights` interface includes both v1 and v2 fields; `DEFAULT_REPUTATION_WEIGHTS` provides defaults that produce v1-equivalent behavior.
+TypeScript type definitions live in `backend/src/types/` (domain models, API shapes, Hive schemas, discipline taxonomy). The `ReputationWeights` interface includes both v1 and v2 fields; `DEFAULT_REPUTATION_WEIGHTS` provides defaults that produce v1-equivalent behavior.
 
 ### Authentication
 
@@ -478,7 +474,7 @@ WoT is a decentralized alternative to the centralized email-based accreditation 
 
 ### On-Chain Schemas
 
-See `docs/hive-schemas.md` §2.5 (`vouch`) and §2.6 (`retract_vouch`). TypeScript types: `VouchAction`, `RetractVouchAction` in `@pevo/contracts`.
+See `docs/hive-schemas.md` §2.5 (`vouch`) and §2.6 (`retract_vouch`). TypeScript types: `VouchAction`, `RetractVouchAction` in `backend/src/types/hive.ts`.
 
 ### HAF Views
 
@@ -620,7 +616,7 @@ API responses are validated client-side using Zod schemas to guard against malfo
 
 ### Strategy
 
-- Define Zod schemas in `frontend/src/lib/schemas.ts` that mirror the `@pevo/contracts` response types
+- Define Zod schemas in `frontend/src/lib/schemas.ts` that mirror the `backend/src/types/responses.ts` types
 - The `request<T>()` function in `api.ts` accepts an optional Zod schema parameter
 - When provided, `schema.parse(data)` runs after `res.json()` — a `ZodError` is caught and converted to an `ApiRequestError` with code `INVALID_RESPONSE`
 - Critical endpoints (profile, accreditation status, notifications) MUST pass a schema
@@ -628,7 +624,7 @@ API responses are validated client-side using Zod schemas to guard against malfo
 
 ### Schema Ownership
 
-Schemas live in the frontend, not in `@pevo/contracts`. The contracts package defines TypeScript interfaces (compile-time); Zod schemas provide runtime validation. Keeping them separate avoids adding Zod as a dependency of the contracts package (which is also used by the backend).
+Schemas live in the frontend, not in the backend. The backend's `src/types/` directory defines TypeScript interfaces (compile-time); Zod schemas provide runtime validation.
 
 Full spec: `docs/frontend-validation.md`
 
@@ -973,7 +969,7 @@ Humanities and Arts
 
 ### Implementation
 
-- **Data file:** `contracts/src/disciplines.ts` exports `DISCIPLINE_TAXONOMY` (array of `{ field: string, subfields: string[] }`) and a flat `DISCIPLINES` string array of all valid sub-field values.
+- **Data file:** `backend/src/types/disciplines.ts` exports `DISCIPLINE_TAXONOMY` (array of `{ field: string, subfields: string[] }`) and a flat `DISCIPLINES` string array of all valid sub-field values.
 - **Publish form:** Searchable dropdown (combobox) grouped by top-level field. Replaces the current free-text input.
 - **`GET /api/disciplines`:** Returns only disciplines that have at least one paper, with counts. The response shape (`Discipline`) is unchanged.
 - **Backwards compatibility:** Papers published before the taxonomy was enforced may have `discipline` values not in the controlled vocabulary. These are displayed as-is but excluded from grouped filter dropdowns. The backend does NOT reject unknown disciplines on read — it only validates on write.
