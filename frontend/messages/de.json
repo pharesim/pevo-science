@@ -54,7 +54,10 @@
     "noReviews": "Noch keine Begutachtungen vorhanden. Verfassen Sie die erste Begutachtung zu dieser Publikation.",
     "notFoundTitle": "Publikation nicht gefunden",
     "errorLoadingTitle": "Fehler beim Laden der Publikation",
-    "notFoundDescription": "Die Publikation @{author}/{permlink} konnte nicht gefunden werden."
+    "notFoundDescription": "Die Publikation @{author}/{permlink} konnte nicht gefunden werden.",
+    "showFullPaper": "Vollständigen Artikel anzeigen",
+    "collapseBody": "Einklappen",
+    "noReviewsYet": "Noch keine Begutachtungen vorhanden."
   },
   "filters": {
     "discipline": "Fachgebiet",
@@ -183,7 +186,8 @@
     "reviewedVersion": "Begutachtete Version v{version}",
     "submissionFailed": "Einreichung der Begutachtung fehlgeschlagen",
     "accreditationRequired": "Sie müssen akkreditiert sein, um Gutachten einzureichen.",
-    "getAccredited": "Akkreditierung beantragen"
+    "getAccredited": "Akkreditierung beantragen",
+    "cannotReviewOwn": "Sie können Ihre eigene Publikation nicht begutachten."
   },
   "accreditation": {
     "title": "Akkreditierung für Forschende",

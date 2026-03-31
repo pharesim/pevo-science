@@ -1,5 +1,5 @@
 import Alpine from 'alpinejs';
-import { fetchPaper, fetchPaperEnrichment, fetchCitationExport, retractPaper, fetchDoi, assignDoi, updateBridgePaper } from '../api.js';
+import { fetchPaper, fetchPaperEnrichment, fetchCitationExport, retractPaper, fetchDoi, assignDoi, updateBridgePaper, fetchPaperComments } from '../api.js';
 import { formatDate } from '../components/paper-card.js';
 
 export function initPaperDetailPage() {
@@ -24,6 +24,9 @@ export function initPaperDetailPage() {
 
     // Bridge sync
     syncLoading: false,
+
+    // Paper body collapse
+    bodyExpanded: false,
 
     // Expose helper
     formatDate,
@@ -65,6 +68,14 @@ export function initPaperDetailPage() {
       } catch {
         // DOI is optional
       }
+    },
+
+    get isOwnPaper() {
+      const username = this.$store.auth.username;
+      if (!username || !this.paper) return false;
+      if (username === this.paper.author) return true;
+      const authors = this.paper.authors || [];
+      return authors.some(a => a.hive === username);
     },
 
     get authorNames() {

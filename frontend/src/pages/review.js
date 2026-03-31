@@ -33,6 +33,13 @@ export function initReviewPage() {
     get author() { return Alpine.store('router').params.author || ''; },
     get permlink() { return Alpine.store('router').params.permlink || ''; },
 
+    get isOwnPaper() {
+      if (!this.username) return false;
+      if (this.username === this.author) return true;
+      const authors = this.paper?.authors || this.paper?.json_metadata?.pevo?.authors || [];
+      return authors.some(a => a.hive === this.username);
+    },
+
     get paperTitle() {
       return this.paper?.title ?? `${this.author}/${this.permlink}`;
     },

@@ -576,7 +576,45 @@ frontend/
 
 Full spec: `docs/i18n-architecture.md`
 
-## 14. Frontend Response Validation
+## 14. Header Navigation Layout
+
+### Design goal
+
+Reduce visual clutter in the top navigation bar, especially when logged in. Keep the bar scannable at a glance.
+
+### Desktop layout (≥ md breakpoint)
+
+```
+[Logo + tagline]   Papers | Search | Researchers | More ▾   [Lang ▾]  [🔔 @user ▾]
+```
+
+**Left** — Logo and tagline (unchanged).
+
+**Center — primary links:**
+- Papers
+- Search
+- Researchers
+- **More ▾** dropdown (contains: Publish, Bridge (if connected), Accreditation, Stats, Getting Started, FAQ, About)
+
+"Publish" moves from the primary links into the More dropdown. It is a write action used less often than browsing and is only available to accredited users.
+
+**Right — controls:**
+1. **Language switcher** — standalone dropdown, unchanged.
+2. **User menu** (logged-in only) — a single trigger button showing the notification bell icon (with unread badge when count > 0) and `@username`. Clicking it opens a dropdown containing:
+   - **Profile** link (`/profile/:username`)
+   - **Notifications** panel (same content as the current notification popup — title, mark-all-read, event list)
+   - **Disconnect** button
+3. When logged out: a single **Connect** button (or "Install Keychain" link if Keychain is missing). No user menu.
+
+### Mobile layout (< md breakpoint)
+
+No change to the mobile hamburger menu — it already collapses everything into a slide-down panel where space is not an issue.
+
+### i18n keys
+
+No new keys required. Existing `nav.*`, `header.*`, and `notifications.*` keys cover all items.
+
+## 15. Frontend Response Validation
 
 API responses are validated client-side using Zod schemas to guard against malformed data from a compromised or misconfigured backend.
 
@@ -594,7 +632,7 @@ Schemas live in the frontend, not in `@pevo/contracts`. The contracts package de
 
 Full spec: `docs/frontend-validation.md`
 
-## 15. IPFS CDN Strategy
+## 16. IPFS CDN Strategy
 
 ### Current Flow
 
@@ -617,7 +655,7 @@ Frontend → CDN edge (Cloudflare/Fastly) → IPFS gateway (origin) → PDF
 |----------|---------|-------------|
 | `IPFS_GATEWAY_URL` | `https://ipfs.io` | IPFS gateway base URL (or CDN URL). Injected into frontend at build time via Vite `define`. |
 
-## 16. Runtime Requirements
+## 17. Runtime Requirements
 
 ### Node.js 20+
 
@@ -629,7 +667,7 @@ The project requires Node.js 20 or later. This is enforced by:
 
 **Reason:** The test runner (Vitest via Rolldown) requires `node:util.styleText`, which was added in Node 20.0.0.
 
-## 17. Paper Versioning
+## 18. Paper Versioning
 
 Papers can be revised after publication using Hive's native edit mechanism. The author broadcasts another `comment` operation with the same `author/permlink`, replacing the post body. The Hive API always returns the latest version, but HAF stores every operation, so the full edit history is recoverable.
 
@@ -703,7 +741,7 @@ WHERE op.op_type = 1  -- comment operation
 ORDER BY op.block_num;
 ```
 
-## 18. Paper Retraction
+## 19. Paper Retraction
 
 Hive posts are immutable after the payout window. PEvO supports retraction as a metadata overlay.
 
@@ -734,7 +772,7 @@ Either the paper author or `pevo.admin` (for misconduct) can retract.
 
 `pevo.retracted_papers` -- lists all retracted paper (author, permlink) pairs with retraction timestamp and reason.
 
-## 19. ORCID Accreditation
+## 20. ORCID Accreditation
 
 ORCID OAuth2 provides an additional accreditation method alongside email verification and Web of Trust.
 
@@ -762,7 +800,7 @@ ORCID OAuth2 provides an additional accreditation method alongside email verific
 - The ORCID iD is stored on-chain in the accreditation custom_json, making it publicly verifiable
 - ORCID's sandbox environment is used for development; production uses `https://orcid.org`
 
-## 20. Rich Text Editor with LaTeX
+## 21. Rich Text Editor with LaTeX
 
 Scientific papers require mathematical notation. PEvO provides a WYSIWYG editor for authoring and a rendering pipeline for viewing that both support LaTeX math.
 
@@ -876,7 +914,7 @@ dompurify         (HTML sanitization)
 4. **KaTeX error handling:** Invalid LaTeX (e.g., `$\frac{$`) should render the raw source with an error indicator, not crash the page. KaTeX's `throwOnError: false` option handles this.
 5. **On-chain storage:** The Hive post body remains Markdown text. No binary or HTML is stored. LaTeX is embedded as text delimiters within the Markdown, which is standard practice (used by arXiv, Jupyter, Obsidian, etc.).
 
-## 21. Discipline Taxonomy
+## 22. Discipline Taxonomy
 
 The `discipline` field in paper metadata currently accepts free-text. For effective filtering, PEvO adopts a controlled vocabulary based on the OECD Fields of Research and Development (Frascati Manual), adapted for common scientific usage.
 
@@ -941,7 +979,7 @@ Humanities and Arts
 - **Backwards compatibility:** Papers published before the taxonomy was enforced may have `discipline` values not in the controlled vocabulary. These are displayed as-is but excluded from grouped filter dropdowns. The backend does NOT reject unknown disciplines on read — it only validates on write.
 - **Extensibility:** New disciplines can be added to `disciplines.ts` via PR. The taxonomy is not stored on-chain; it is a frontend/backend convention only.
 
-## 22. DOI Assignment
+## 23. DOI Assignment
 
 PEvO papers can be assigned Digital Object Identifiers (DOIs) via DataCite, enabling citation in traditional academic literature.
 
@@ -992,7 +1030,7 @@ json: {
 
 DOI assignment requires a DataCite membership (~$500/year for non-profits). The feature is disabled (returns `INTERNAL_ERROR`) when DataCite credentials are not configured.
 
-## 23. Email Notification Digest
+## 24. Email Notification Digest
 
 Users who opt in receive periodic email summaries of their PEvO activity (new reviews, citations, votes, etc.).
 
@@ -1021,7 +1059,7 @@ Users who opt in receive periodic email summaries of their PEvO activity (new re
 
 See `docs/api-contract.md` for full endpoint specs.
 
-## 24. Content Security Policy (CSP)
+## 25. Content Security Policy (CSP)
 
 The frontend must serve a Content-Security-Policy header to mitigate XSS and data exfiltration.
 
@@ -1050,7 +1088,7 @@ form-action 'self';
 - `img-src` includes IPFS gateways for paper PDFs
 - CSP report-only mode (`Content-Security-Policy-Report-Only`) should be deployed first to catch violations before enforcing
 
-## 25. API Response Compression
+## 26. API Response Compression
 
 ### Implementation
 
@@ -1075,7 +1113,7 @@ This compresses all JSON responses larger than 1KB. No frontend changes needed �
 - Paper detail responses (with full body) compress significantly
 - Static frontend assets (JS, CSS) are also compressed since they're served through the same Express server
 
-## 26. Preprint Bridge
+## 27. Preprint Bridge
 
 ### Purpose
 
@@ -1258,7 +1296,7 @@ If no author in the array has a non-null `hive` field matching the requester, th
 - **Paper detail:** The UI shows a "Bridge Paper" badge and links to the original source.
 - **Statistics:** `GET /api/stats` includes a `total_bridge_papers` count.
 
-## 27. Session-Based Authentication
+## 28. Session-Based Authentication
 
 ### Problem
 
@@ -1308,7 +1346,7 @@ Operations that broadcast to the Hive chain need actual key-signed transactions.
 |-----|----------|-------------|
 | `SESSION_SECRET` | Yes (production) | Random string (32+ chars) for JWT HS256 signing. Must be set when `NODE_ENV=production`. |
 
-## 28. Caching and Query Performance
+## 29. Caching and Query Performance
 
 ### Cache Architecture
 

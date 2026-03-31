@@ -113,6 +113,24 @@ router.post('/anonymous', verifyHiveSignature, anonReviewLimiter, validate(anony
     return sendError(res, 403, 'FORBIDDEN', 'Only accredited researchers can post anonymous reviews');
   }
 
+  // Prevent authors (including co-authors) from reviewing their own papers
+  if (username === paper_author) {
+    return sendError(res, 403, 'FORBIDDEN', 'Authors cannot review their own papers');
+  }
+  try {
+    const post = await hiveClient.call('condenser_api', 'get_content', [paper_author, paper_permlink]);
+    if (post && post.json_metadata) {
+      const meta = typeof post.json_metadata === 'string' ? JSON.parse(post.json_metadata) : post.json_metadata;
+      const pevoMeta = meta[config.appTag] || meta.pevo;
+      const authors: Array<{ hive?: string }> = pevoMeta?.authors || [];
+      if (authors.some(a => a.hive === username)) {
+        return sendError(res, 403, 'FORBIDDEN', 'Authors cannot review their own papers');
+      }
+    }
+  } catch {
+    // Non-critical — if we can't fetch the paper, the primary author check above still applies
+  }
+
   if (!config.pevoAnonPostingKey) {
     return sendError(res, 500, 'INTERNAL_ERROR', 'Anonymous review posting key not configured');
   }

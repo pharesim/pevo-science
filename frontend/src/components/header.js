@@ -5,7 +5,7 @@ export function initHeader() {
   Alpine.data('header', () => ({
     mobileMenuOpen: false,
     moreOpen: false,
-    notifOpen: false,
+    userMenuOpen: false,
     langOpen: false,
 
     get primaryLinks() {
@@ -13,12 +13,13 @@ export function initHeader() {
         { path: '/', label: this.$t('nav.papers') },
         { path: '/search', label: this.$t('nav.search') },
         { path: '/researchers', label: this.$t('nav.researchers') },
-        { path: '/publish', label: this.$t('nav.publish') },
       ];
     },
 
     get moreLinks() {
-      const links = [];
+      const links = [
+        { path: '/publish', label: this.$t('nav.publish') },
+      ];
       if (this.$store.auth.isConnected) {
         links.push({ path: '/bridge', label: this.$t('bridge.navLabel') });
       }
@@ -69,13 +70,38 @@ export function initHeader() {
       this.mobileMenuOpen = false;
     },
 
-    toggleNotif() {
-      this.notifOpen = !this.notifOpen;
+    toggleUserMenu() {
+      this.userMenuOpen = !this.userMenuOpen;
     },
 
     selectLocale(locale) {
       this.$store.i18n.setLocale(locale);
       this.langOpen = false;
+    },
+
+    formatNotification(event) {
+      if (!event || !event.type) return '';
+      const typeMap = {
+        new_review: 'notifications.newReview',
+        new_citation: 'notifications.newCitation',
+        new_vote: 'notifications.newVote',
+        new_vouch: 'notifications.newVouch',
+        new_reply: 'notifications.newReply',
+      };
+      if (event.type === 'accreditation_update') {
+        const key = event.action === 'revoke'
+          ? 'notifications.accreditationRevoked'
+          : 'notifications.accreditationGranted';
+        return this.$t(key);
+      }
+      const key = typeMap[event.type];
+      if (!key) return event.type;
+      return this.$t(key, {
+        actor: event.actor || '',
+        title: event.title || '',
+        targetType: event.targetType || '',
+        relationship: event.relationship || '',
+      });
     },
 
     closeMoreOnClickOutside(event) {

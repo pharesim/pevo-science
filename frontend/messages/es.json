@@ -54,7 +54,10 @@
     "noReviews": "Aún no hay revisiones. Sea el primero en revisar este artículo.",
     "notFoundTitle": "Artículo no encontrado",
     "errorLoadingTitle": "Error al cargar el artículo",
-    "notFoundDescription": "No se pudo encontrar el artículo @{author}/{permlink}."
+    "notFoundDescription": "No se pudo encontrar el artículo @{author}/{permlink}.",
+    "showFullPaper": "Mostrar artículo completo",
+    "collapseBody": "Contraer",
+    "noReviewsYet": "Aún no hay revisiones."
   },
   "filters": {
     "discipline": "Disciplina",
@@ -183,7 +186,8 @@
     "reviewedVersion": "Revisó v{version}",
     "submissionFailed": "Error al enviar la revisión",
     "accreditationRequired": "Necesitas estar acreditado para enviar revisiones.",
-    "getAccredited": "Obtener acreditación"
+    "getAccredited": "Obtener acreditación",
+    "cannotReviewOwn": "No puede revisar su propio artículo."
   },
   "accreditation": {
     "title": "Acreditación de investigadores",

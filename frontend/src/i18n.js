@@ -36,7 +36,20 @@ function getNestedValue(obj, key) {
 
 function interpolate(template, params) {
   if (!params || !template) return template || '';
-  return template.replace(/\{(\w+)\}/g, (_, key) => {
+  // Handle ICU plural: {var, plural, one {singular} other {plural}}
+  const result = template.replace(/\{(\w+),\s*plural,\s*((?:[a-z]+\s*\{[^}]*\}\s*)+)\}/g, (_, varName, cases) => {
+    const value = Number(params[varName] ?? 0);
+    const parsed = {};
+    const caseRegex = /(\w+)\s*\{([^}]*)\}/g;
+    let m;
+    while ((m = caseRegex.exec(cases)) !== null) {
+      parsed[m[1]] = m[2];
+    }
+    const branch = (value === 1 && parsed.one) ? parsed.one : (parsed.other || '');
+    return branch.replace(/#/g, String(value));
+  });
+  // Handle simple {key} replacements
+  return result.replace(/\{(\w+)\}/g, (_, key) => {
     return params[key] !== undefined ? String(params[key]) : `{${key}}`;
   });
 }

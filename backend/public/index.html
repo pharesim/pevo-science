@@ -7,10 +7,10 @@
   <meta name="description" content="Open scientific publication and interactive peer evaluation on a permanent, open record. Non-profit, transparent, forkable." />
   <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
   <link rel="manifest" href="/manifest.json" />
-  <script type="module" crossorigin src="/assets/index-CVIi62qA.js"></script>
+  <script type="module" crossorigin src="/assets/index-D98OqVW0.js"></script>
   <link rel="modulepreload" crossorigin href="/assets/vendor-C0JM7Dhu.js">
   <link rel="modulepreload" crossorigin href="/assets/editor-TGd9frI2.js">
-  <link rel="stylesheet" crossorigin href="/assets/index-D7ZdnnnB.css">
+  <link rel="stylesheet" crossorigin href="/assets/index-CQACt_lo.css">
 </head>
 <body class="min-h-screen flex flex-col bg-parchment text-ink">
 
@@ -87,22 +87,36 @@
                class="btn-secondary text-sm no-underline" x-text="$t('header.installKeychain')"></a>
           </template>
           <template x-if="!$store.auth.isLoading && $store.auth.isKeychainInstalled && $store.auth.isConnected">
-            <div class="flex items-center gap-3">
-              <!-- Notification bell -->
-              <div class="relative">
-                <button class="relative p-1.5 text-ink-muted hover:text-pevo-teal transition-colors"
-                        @click="toggleNotif()" aria-label="Notifications" :aria-expanded="notifOpen">
-                  <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+            <div class="relative" @click.outside="userMenuOpen = false">
+              <!-- User menu trigger: bell + @username + chevron -->
+              <button class="flex items-center gap-2 rounded-md border border-parchment-dark bg-white px-2.5 py-1.5 text-sm font-medium text-ink hover:border-pevo-teal transition-colors"
+                      @click="toggleUserMenu()" :aria-expanded="userMenuOpen" aria-haspopup="true">
+                <span class="relative">
+                  <svg class="w-4.5 h-4.5" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
                     <path stroke-linecap="round" stroke-linejoin="round" d="M14.857 17.082a23.848 23.848 0 005.454-1.31A8.967 8.967 0 0118 9.75V9A6 6 0 006 9v.75a8.967 8.967 0 01-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 01-5.714 0m5.714 0a3 3 0 11-5.714 0" />
                   </svg>
                   <span x-show="$store.notifications.unreadCount > 0" aria-live="polite"
-                        class="absolute -top-0.5 -right-0.5 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-pevo-crimson px-1 text-[10px] font-bold text-white"
+                        class="absolute -top-1.5 -right-1.5 flex h-3.5 min-w-[0.875rem] items-center justify-center rounded-full bg-pevo-crimson px-0.5 text-[9px] font-bold text-white"
                         x-text="$store.notifications.unreadCount > 99 ? '99+' : $store.notifications.unreadCount"></span>
-                </button>
-                <!-- Notification panel placeholder (Phase 3+) -->
-                <div x-show="notifOpen" @click.outside="notifOpen = false"
-                     class="absolute right-0 top-full mt-2 w-80 max-h-96 overflow-auto rounded-lg border border-parchment-dark bg-white shadow-lg z-50 p-4">
-                  <div class="flex items-center justify-between mb-3">
+                </span>
+                <span x-text="'@' + $store.auth.username"></span>
+                <svg class="w-3.5 h-3.5 transition-transform" :class="userMenuOpen ? 'rotate-180' : ''" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
+                </svg>
+              </button>
+              <!-- User menu dropdown -->
+              <div x-show="userMenuOpen" x-transition class="absolute right-0 rtl:right-auto rtl:left-0 top-full mt-2 w-80 rounded-lg border border-parchment-dark bg-white shadow-lg z-50">
+                <!-- Profile link -->
+                <a :href="'/profile/' + $store.auth.username"
+                   @click.prevent="navigate('/profile/' + $store.auth.username); userMenuOpen = false"
+                   class="flex items-center gap-2 px-4 py-3 text-sm font-medium text-pevo-teal no-underline hover:bg-pevo-teal-light transition-colors rounded-t-lg">
+                  <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z" /></svg>
+                  <span x-text="'@' + $store.auth.username"></span>
+                </a>
+                <div class="border-t border-parchment-dark"></div>
+                <!-- Notifications section -->
+                <div class="px-4 py-3 max-h-64 overflow-auto">
+                  <div class="flex items-center justify-between mb-2">
                     <h3 class="text-sm font-semibold text-ink" x-text="$t('notifications.title')"></h3>
                     <button x-show="$store.notifications.unreadCount > 0"
                             class="text-xs text-pevo-teal hover:text-pevo-teal-dark font-medium"
@@ -111,17 +125,14 @@
                   </div>
                   <p x-show="$store.notifications.events.length === 0" class="text-sm text-ink-muted" x-text="$t('notifications.empty')"></p>
                   <template x-for="(event, i) in $store.notifications.events" :key="i">
-                    <div class="py-2 border-b border-parchment text-sm text-ink-light" x-text="event.type"></div>
+                    <div class="py-2 border-b border-parchment text-sm text-ink-light" x-text="formatNotification(event)"></div>
                   </template>
                 </div>
+                <div class="border-t border-parchment-dark"></div>
+                <!-- Disconnect -->
+                <button class="w-full px-4 py-2.5 text-sm text-ink-muted hover:text-pevo-crimson hover:bg-pevo-crimson-light transition-colors rounded-b-lg text-left rtl:text-right"
+                        @click="handleDisconnect(); userMenuOpen = false" x-text="$t('header.disconnect')"></button>
               </div>
-              <!-- Profile link -->
-              <a :href="'/profile/' + $store.auth.username"
-                 @click.prevent="navigate('/profile/' + $store.auth.username)"
-                 class="text-sm font-medium text-pevo-teal no-underline hover:text-pevo-teal-dark"
-                 x-text="'@' + $store.auth.username"></a>
-              <!-- Disconnect -->
-              <button class="btn-secondary text-sm" @click="handleDisconnect()" x-text="$t('header.disconnect')"></button>
             </div>
           </template>
           <template x-if="!$store.auth.isLoading && $store.auth.isKeychainInstalled && !$store.auth.isConnected">
@@ -670,8 +681,12 @@
                 </div>
               </template>
 
-              <!-- Paper body (markdown) -->
-              <div class="mt-6 prose prose-ink max-w-reading text-ink-light text-[0.95rem] leading-relaxed" x-markdown="paper.body"></div>
+              <!-- Paper body (collapsible) -->
+              <div class="mt-6">
+                <button type="button" class="btn-secondary text-sm mb-3" @click="bodyExpanded = !bodyExpanded"
+                        x-text="bodyExpanded ? $t('paperDetail.collapseBody') : $t('paperDetail.showFullPaper')"></button>
+                <div x-show="bodyExpanded" class="prose prose-ink max-w-reading text-ink-light text-[0.95rem] leading-relaxed" x-markdown="paper.body"></div>
+              </div>
             </article>
 
             <!-- Citations / References -->
@@ -694,7 +709,8 @@
             <section class="mt-8">
               <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
                 <h2 class="text-section-title text-ink font-serif" x-text="$t('paperDetail.peerReviewsTitle', { count: paper.reviews ? paper.reviews.length : 0 })"></h2>
-                <a :href="'/review/' + paper.author + '/' + paper.permlink"
+                <a x-show="!isOwnPaper"
+                   :href="'/review/' + paper.author + '/' + paper.permlink"
                    @click.prevent="navigate('/review/' + paper.author + '/' + paper.permlink)"
                    class="btn-primary text-sm w-full sm:w-auto text-center shrink-0 no-underline" x-text="$t('paperDetail.writeReview')"></a>
               </div>
@@ -775,12 +791,58 @@
               <!-- No reviews -->
               <template x-if="!paper.reviews || paper.reviews.length === 0">
                 <div class="card text-center py-8">
-                  <p class="text-ink-muted mb-3" x-text="$t('paperDetail.noReviews')"></p>
-                  <a :href="'/review/' + paper.author + '/' + paper.permlink"
-                     @click.prevent="navigate('/review/' + paper.author + '/' + paper.permlink)"
-                     class="btn-primary text-sm no-underline" x-text="$t('paperDetail.writeReview')"></a>
+                  <template x-if="!isOwnPaper">
+                    <div>
+                      <p class="text-ink-muted mb-3" x-text="$t('paperDetail.noReviews')"></p>
+                      <a :href="'/review/' + paper.author + '/' + paper.permlink"
+                         @click.prevent="navigate('/review/' + paper.author + '/' + paper.permlink)"
+                         class="btn-primary text-sm no-underline" x-text="$t('paperDetail.writeReview')"></a>
+                    </div>
+                  </template>
+                  <template x-if="isOwnPaper">
+                    <p class="text-ink-muted" x-text="$t('paperDetail.noReviewsYet')"></p>
+                  </template>
                 </div>
               </template>
+            </section>
+
+            <!-- Discussion section -->
+            <section class="mt-8" x-data="threadedComments({ paperAuthor: paper.author, paperPermlink: paper.permlink })"
+                     x-on:comment-posted.window="loadComments()">
+              <h2 class="text-section-title text-ink font-serif mb-4" x-text="$t('comments.titleWithCount', { count: totalCount })"></h2>
+
+              <!-- Loading -->
+              <p x-show="loading" class="text-sm text-ink-muted" x-text="$t('comments.loading')"></p>
+
+              <!-- Error -->
+              <p x-show="error" class="text-sm text-pevo-crimson" x-text="error"></p>
+
+              <!-- Top-level comment composer -->
+              <template x-if="$store.auth.isConnected">
+                <div class="mb-4" x-data="commentComposer({ parentAuthor: paper.author, parentPermlink: paper.permlink })">
+                  <textarea class="w-full rounded-md border border-parchment-dark bg-white px-3 py-2 text-sm text-ink placeholder:text-ink-muted focus:border-pevo-teal focus:outline-none focus:ring-1 focus:ring-pevo-teal resize-y"
+                            rows="3" :placeholder="$t('comments.startDiscussion')"
+                            x-model="body" :disabled="isSubmitting"></textarea>
+                  <p x-show="error" class="text-xs text-pevo-crimson mt-1" x-text="error"></p>
+                  <div class="flex justify-end mt-2">
+                    <button class="btn-primary text-sm" @click="handleSubmit()" :disabled="isSubmitting || !body.trim()"
+                            x-text="isSubmitting ? $t('comments.posting') : $t('comments.postComment')"></button>
+                  </div>
+                </div>
+              </template>
+
+              <!-- Connect prompt -->
+              <template x-if="!$store.auth.isConnected">
+                <p class="text-sm text-ink-muted mb-4" x-text="$t('comments.connectToComment')"></p>
+              </template>
+
+              <!-- No comments -->
+              <template x-if="!loading && !error && totalCount === 0">
+                <p class="text-sm text-ink-muted" x-text="$t('comments.noComments')"></p>
+              </template>
+
+              <!-- Threaded comments -->
+              <div x-show="!loading && totalCount > 0" class="space-y-4" x-html="commentsHtml"></div>
             </section>
           </div>
         </template>
@@ -1020,6 +1082,16 @@
           </div>
         </template>
 
+        <!-- Own paper warning -->
+        <template x-if="isConnected && isOwnPaper">
+          <div class="card bg-pevo-crimson-light border-pevo-crimson/30 mb-6">
+            <div class="flex items-start gap-3">
+              <svg class="h-5 w-5 text-pevo-crimson shrink-0 mt-0.5" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.168 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 8a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd" /></svg>
+              <p class="font-medium text-ink text-sm" x-text="$t('review.cannotReviewOwn')"></p>
+            </div>
+          </div>
+        </template>
+
         <!-- Progress indicator -->
         <template x-if="step !== 'idle'">
           <div class="card mb-6" :class="stepClass">
@@ -1030,7 +1102,7 @@
           </div>
         </template>
 
-        <template x-if="isAccredited">
+        <template x-if="isAccredited && !isOwnPaper">
           <form @submit.prevent="handleSubmit()" class="space-y-6">
             <!-- Star ratings -->
             <div class="card">

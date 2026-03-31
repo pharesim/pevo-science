@@ -54,7 +54,10 @@
     "noReviews": "No reviews yet. Be the first to review this paper.",
     "notFoundTitle": "Paper Not Found",
     "errorLoadingTitle": "Error Loading Paper",
-    "notFoundDescription": "The paper @{author}/{permlink} could not be found."
+    "notFoundDescription": "The paper @{author}/{permlink} could not be found.",
+    "showFullPaper": "Show full paper",
+    "collapseBody": "Collapse",
+    "noReviewsYet": "No reviews yet."
   },
   "filters": {
     "discipline": "Discipline",
@@ -183,7 +186,8 @@
     "reviewedVersion": "Reviewed v{version}",
     "submissionFailed": "Review submission failed",
     "accreditationRequired": "You need to be accredited to submit reviews.",
-    "getAccredited": "Get accredited"
+    "getAccredited": "Get accredited",
+    "cannotReviewOwn": "You cannot review your own paper."
   },
   "accreditation": {
     "title": "Researcher Accreditation",

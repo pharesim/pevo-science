@@ -54,7 +54,10 @@
     "noReviews": "هنوز داوری‌ای ثبت نشده است. اولین نفری باشید که این مقاله را داوری می‌کند.",
     "notFoundTitle": "مقاله یافت نشد",
     "errorLoadingTitle": "خطا در بارگذاری مقاله",
-    "notFoundDescription": "مقاله @{author}/{permlink} یافت نشد."
+    "notFoundDescription": "مقاله @{author}/{permlink} یافت نشد.",
+    "showFullPaper": "نمایش مقاله کامل",
+    "collapseBody": "جمع کردن",
+    "noReviewsYet": "هنوز بررسی‌ای وجود ندارد."
   },
   "filters": {
     "discipline": "رشته",
@@ -183,7 +186,8 @@
     "reviewedVersion": "داوری نسخه {version}",
     "submissionFailed": "ارسال داوری ناموفق بود",
     "accreditationRequired": "برای ارسال داوری باید اعتبارسنجی شده باشید.",
-    "getAccredited": "دریافت اعتبارسنجی"
+    "getAccredited": "دریافت اعتبارسنجی",
+    "cannotReviewOwn": "شما نمی‌توانید مقاله خود را بررسی کنید."
   },
   "accreditation": {
     "title": "اعتبارسنجی پژوهشگر",
