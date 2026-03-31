@@ -13,6 +13,7 @@ import {
   parseSort,
   parseOrder,
   toPaperSummary,
+  extractAbstract,
   type SortField,
 } from '../helpers.js';
 import { getAccreditedSet, getAllAccreditedAccounts } from '../accreditation.js';
@@ -520,6 +521,7 @@ function buildPaperDetail(
     permlink: post.permlink,
     title: post.title,
     body: post.body,
+    abstract: extractAbstract(post.body as string),
     json_metadata: meta,
     created: post.created,
     last_update: post.last_edited || post.last_update || post.created,

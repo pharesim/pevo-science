@@ -105,6 +105,17 @@ export function initPaperDetailPage() {
       };
     },
 
+    get bodyWithoutAbstract() {
+      if (!this.paper?.body) return '';
+      const sep = this.paper.body.indexOf('\n\n---\n\n');
+      if (sep === -1) return '';
+      return this.paper.body.slice(sep + 7);
+    },
+
+    get hasFullText() {
+      return this.bodyWithoutAbstract.length > 0;
+    },
+
     get isBridgePaper() {
       return this.paper?.json_metadata?.pevo?.type === 'bridge_paper';
     },
