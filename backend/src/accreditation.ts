@@ -56,11 +56,12 @@ export async function getAccreditedSet(usernames: string[]): Promise<Set<string>
  * expensive ACTIVE_ACCREDITATIONS_CTE on every call.
  */
 export async function getAllAccreditedAccounts(): Promise<Set<string>> {
-  return hafCache.getOrSet<Set<string>>('accredited_accounts_all', async () => {
+  const arr = await hafCache.getOrSet<string[]>('accredited_accounts_all', async () => {
     const pool = getPool();
     if (!pool) {
       // Hive API fallback: scan admin history for all accreditations
-      return getAccreditedSetFromHiveApi([]);
+      const set = await getAccreditedSetFromHiveApi([]);
+      return [...set];
     }
 
     try {
@@ -70,12 +71,13 @@ export async function getAllAccreditedAccounts(): Promise<Set<string>> {
          SELECT account FROM active_accreditations`,
         cte.params,
       );
-      return new Set(result.rows.map((r: { account: string }) => r.account));
+      return result.rows.map((r: { account: string }) => r.account);
     } catch (err) {
       logger.error({ err }, 'HAF full accreditation set query failed');
-      return new Set();
+      return [];
     }
   }, 10 * 60_000, true);
+  return new Set(arr);
 }
 
 /**

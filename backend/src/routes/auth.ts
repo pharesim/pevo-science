@@ -10,7 +10,7 @@ const SESSION_EXPIRY = '24h';
 const SESSION_EXPIRY_MS = 24 * 60 * 60 * 1000;
 
 // Rate limit: 10 requests per verified username per hour
-const sessionLimiter = rateLimit({ windowMs: 3_600_000, max: 10, keyFn: byAccount });
+const sessionLimiter = rateLimit({ name: 'auth-session', windowMs: 3_600_000, max: 10, keyFn: byAccount });
 
 router.post('/session', verifyHiveSignature, sessionLimiter, (req: Request, res: Response) => {
   const token = jwt.sign(

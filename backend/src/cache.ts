@@ -76,6 +76,60 @@ export class QueryCache {
     return data;
   }
 
+  /**
+   * Stale-while-revalidate: returns stale data instantly when fresh cache
+   * expires, while triggering a background refresh.
+   */
+  async getOrSetSWR<T>(
+    key: string,
+    fn: () => Promise<T>,
+    ttlMs?: number,
+    staleMs = 300_000,
+    stable = false,
+  ): Promise<T> {
+    const cached = await this.get<T>(key);
+    if (cached !== undefined) return cached;
+
+    const staleKey = `swr:${key}`;
+    const stale = await this.get<T>(staleKey);
+    if (stale !== undefined) {
+      this.revalidate(key, staleKey, fn, ttlMs, staleMs, stable);
+      return stale;
+    }
+
+    const data = await fn();
+    if (data !== null && data !== undefined) {
+      await this.set(key, data, ttlMs, stable);
+      await this.set(staleKey, data, staleMs, stable);
+    }
+    return data;
+  }
+
+  private revalidating = new Set<string>();
+
+  private async revalidate<T>(
+    key: string,
+    staleKey: string,
+    fn: () => Promise<T>,
+    ttlMs?: number,
+    staleMs?: number,
+    stable?: boolean,
+  ): Promise<void> {
+    if (this.revalidating.has(key)) return;
+    this.revalidating.add(key);
+    try {
+      const data = await fn();
+      if (data !== null && data !== undefined) {
+        await this.set(key, data, ttlMs, stable);
+        await this.set(staleKey, data, staleMs, stable);
+      }
+    } catch (err) {
+      logger.debug({ err, key }, 'SWR revalidation failed');
+    } finally {
+      this.revalidating.delete(key);
+    }
+  }
+
   async invalidate(key: string): Promise<void> {
     const redis = getRedis();
     if (redis) {

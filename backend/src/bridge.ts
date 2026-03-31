@@ -89,10 +89,12 @@ export function parseIdentifier(input: string): ParsedIdentifier | null {
 // ─── Permlink generation ─────────────────────────────────────────
 
 export function bridgePermlink(parsed: ParsedIdentifier): string {
-  if (parsed.type === 'arxiv') {
-    return `bridge-arxiv-${parsed.id.replace(/\./g, '-')}`;
-  }
-  return `bridge-doi-${parsed.id.replace(/[/.]/g, '-')}`;
+  const prefix = parsed.type === 'arxiv' ? 'bridge-arxiv-' : 'bridge-doi-';
+  const slug = parsed.id
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '');
+  return (prefix + slug).slice(0, 256);
 }
 
 // ─── arXiv HTML fallback (when API returns 429) ─────────────────

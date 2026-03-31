@@ -9,6 +9,7 @@
   "scripts": {
     "dev": "tsx watch --env-file=../.env src/index.ts",
     "build": "tsc",
+    "build:frontend": "cd ../frontend && npm run build",
     "start": "node --env-file=../.env dist/index.js",
     "lint": "eslint src/",
     "test": "vitest run",

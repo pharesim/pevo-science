@@ -41,8 +41,8 @@ function safePevoMeta(meta: Record<string, unknown>): Record<string, unknown> {
   return {};
 }
 
-const retractLimiter = rateLimit({ windowMs: 3_600_000, max: 5, keyFn: byAccount });
-const doiAssignLimiter = rateLimit({ windowMs: 3_600_000, max: 10, keyFn: byAccount });
+const retractLimiter = rateLimit({ name: 'paper-retract', windowMs: 3_600_000, max: 5, keyFn: byAccount });
+const doiAssignLimiter = rateLimit({ name: 'doi-assign', windowMs: 3_600_000, max: 10, keyFn: byAccount });
 
 // ──────────────────────────────────────────────
 // HAF SQL implementation for paper listing
@@ -122,44 +122,37 @@ async function fetchPapersFromHaf(req: Request): Promise<{ rows: unknown[]; tota
   const orderBy = `${sortMap[sort]} ${safeOrder}`;
 
   try {
-    const countResult = await pool.query(
-      `${cte.sql}
-       SELECT count(*)::int AS total FROM ${T.comments} c WHERE ${where}`,
-      params,
-    );
+    const limitParam = `$${paramIdx++}`;
+    const offsetParam = `$${paramIdx++}`;
+
+    const [countResult, dataResult] = await Promise.all([
+      pool.query(
+        `${cte.sql}
+         SELECT count(*)::int AS total FROM ${T.comments} c WHERE ${where}`,
+        params,
+      ),
+      pool.query(
+        `${cte.sql}
+         SELECT
+          c.author,
+          c.permlink,
+          c.title,
+          LEFT(c.body, 300) AS abstract,
+          c.json_metadata,
+          c.created,
+          ${accreditedVoteCount('c.author', 'c.permlink')} AS net_votes,
+          0 AS review_count,
+          0 AS citation_count,
+          0 AS author_reputation
+        FROM ${T.comments} c
+        WHERE ${where}
+        ORDER BY ${orderBy}
+        LIMIT ${limitParam} OFFSET ${offsetParam}`,
+        [...params, limit, offset],
+      ),
+    ]);
+
     const total = countResult.rows[0]?.total ?? 0;
-
-    const dataResult = await pool.query(
-      `${cte.sql}
-       SELECT
-        c.author,
-        c.permlink,
-        c.title,
-        LEFT(c.body, 300) AS abstract,
-        c.json_metadata,
-        c.created,
-        ${accreditedVoteCount('c.author', 'c.permlink')} AS net_votes,
-        -- Accredited reviewers only
-        (SELECT count(*)::int FROM ${T.comments} r
-         JOIN active_accreditations aa ON aa.account = r.author
-         WHERE r.parent_author = c.author AND r.parent_permlink = c.permlink
-           AND (r.json_metadata -> ${appTagParam} ->> 'type') = 'review'
-           AND r.json_metadata ->> 'app' LIKE ${appLikeParam}) AS review_count,
-        -- Citations from accredited authors only
-        (SELECT count(*)::int FROM ${T.comments} ci
-         JOIN active_accreditations aa ON aa.account = ci.author
-         WHERE ci.parent_author = '' AND ci.parent_permlink = ${appTagParam}
-           AND (ci.json_metadata -> ${appTagParam} ->> 'type') = 'paper'
-           AND ci.json_metadata ->> 'app' LIKE ${appLikeParam}
-           AND ci.json_metadata -> ${appTagParam} -> 'citations' @> jsonb_build_array(jsonb_build_object('author', c.author, 'permlink', c.permlink))) AS citation_count,
-        0 AS author_reputation
-      FROM ${T.comments} c
-      WHERE ${where}
-      ORDER BY ${orderBy}
-      LIMIT $${paramIdx++} OFFSET $${paramIdx++}`,
-      [...params, limit, offset],
-    );
-
     const authors = dataResult.rows.map((r: Record<string, unknown>) => r.author as string);
     const [accreditedSet, reputationMap] = await Promise.all([
       getAccreditedSet(authors),
@@ -277,7 +270,7 @@ router.get('/', async (req: Request, res: Response) => {
     const includeRetracted = req.query.include_retracted === 'true';
     const source = req.query.source || '';
     const cacheKey = `papers:p=${page}:l=${limit}:s=${sort}:o=${order}:d=${discipline}:k=${keyword}:a=${author}:lang=${language}:ao=${accreditedOnly}:ir=${includeRetracted}:src=${source}`;
-    const result = await hafCache.getOrSet(cacheKey, () => fetchPapersFromHaf(req));
+    const result = await hafCache.getOrSetSWR(cacheKey, () => fetchPapersFromHaf(req));
     if (result) {
       return sendOk(res, result.rows, { page, limit, total: result.total });
     }
@@ -285,6 +278,86 @@ router.get('/', async (req: Request, res: Response) => {
 
   const hiveResult = await fetchPapersFromHiveApi(req);
   sendOk(res, hiveResult.rows, { page, limit, total: hiveResult.total });
+});
+
+// ──────────────────────────────────────────────
+// GET /api/papers/batch-counts — review & citation counts
+// ──────────────────────────────────────────────
+
+router.get('/batch-counts', async (req: Request, res: Response) => {
+  const idsParam = (req.query.ids as string) || '';
+  const pairs = idsParam
+    .split(',')
+    .map((id) => id.trim())
+    .filter(Boolean)
+    .slice(0, 20) // cap to prevent abuse
+    .map((id) => {
+      const sep = id.indexOf('/');
+      return sep > 0 ? { author: id.slice(0, sep), permlink: id.slice(sep + 1) } : null;
+    })
+    .filter((p): p is { author: string; permlink: string } => p !== null);
+
+  if (pairs.length === 0) {
+    return sendOk(res, {});
+  }
+
+  const pool = getPool();
+  if (!pool || !isHafAvailable()) {
+    // Return zeros when HAF is unavailable
+    const zeros: Record<string, { review_count: number; citation_count: number }> = {};
+    for (const p of pairs) zeros[`${p.author}/${p.permlink}`] = { review_count: 0, citation_count: 0 };
+    return sendOk(res, zeros);
+  }
+
+  const cacheKey = `batch-counts:${pairs.map((p) => `${p.author}/${p.permlink}`).sort().join(',')}`;
+  const result = await hafCache.getOrSet(cacheKey, async () => {
+    const cte = buildWith(1, activeAccreditationsCteBody);
+    let paramIdx = cte.nextIdx;
+    const appTagParam = `$${paramIdx++}`;
+    const appLikeParam = `$${paramIdx++}`;
+    const queryParams: unknown[] = [...cte.params, config.appTag, `${config.appTag}/%`];
+
+    // Build VALUES list for the paper pairs
+    const valueEntries: string[] = [];
+    for (const p of pairs) {
+      valueEntries.push(`($${paramIdx++}, $${paramIdx++})`);
+      queryParams.push(p.author, p.permlink);
+    }
+    const valuesClause = valueEntries.join(', ');
+
+    const sql = `${cte.sql},
+      target_papers(author, permlink) AS (VALUES ${valuesClause})
+      SELECT
+        tp.author, tp.permlink,
+        COALESCE((
+          SELECT count(*)::int FROM ${T.comments} r
+          JOIN active_accreditations aa ON aa.account = r.author
+          WHERE r.parent_author = tp.author AND r.parent_permlink = tp.permlink
+            AND (r.json_metadata -> ${appTagParam} ->> 'type') = 'review'
+            AND r.json_metadata ->> 'app' LIKE ${appLikeParam}
+        ), 0) AS review_count,
+        COALESCE((
+          SELECT count(*)::int FROM ${T.comments} ci
+          JOIN active_accreditations aa ON aa.account = ci.author
+          WHERE ci.parent_author = '' AND ci.parent_permlink = ${appTagParam}
+            AND (ci.json_metadata -> ${appTagParam} ->> 'type') = 'paper'
+            AND ci.json_metadata ->> 'app' LIKE ${appLikeParam}
+            AND ci.json_metadata -> ${appTagParam} -> 'citations' @> jsonb_build_array(jsonb_build_object('author', tp.author, 'permlink', tp.permlink))
+        ), 0) AS citation_count
+      FROM target_papers tp`;
+
+    const queryResult = await pool.query(sql, queryParams);
+    const counts: Record<string, { review_count: number; citation_count: number }> = {};
+    for (const row of queryResult.rows) {
+      counts[`${row.author}/${row.permlink}`] = {
+        review_count: row.review_count,
+        citation_count: row.citation_count,
+      };
+    }
+    return counts;
+  }, 60_000, true); // 60s TTL, stable
+
+  sendOk(res, result);
 });
 
 // ──────────────────────────────────────────────
@@ -345,12 +418,6 @@ async function fetchPaperDetailFromHiveApi(author: string, permlink: string) {
     const pevoMeta = safePevoMeta(meta);
     const currentVersion = (pevoMeta.version as number) || 1;
     detail.versions = [{ version_number: currentVersion, created: detail.created as string, title: detail.title as string, is_content_revision: true }];
-
-    // Retraction status
-    const retraction = await getRetractionInfo(author, permlink);
-    detail.is_retracted = retraction.is_retracted;
-    detail.retraction_reason = retraction.retraction_reason ?? null;
-    detail.retraction_timestamp = retraction.retraction_timestamp ?? null;
 
     return detail;
   } catch (err) {
@@ -485,22 +552,7 @@ router.get('/:author/:permlink', async (req: Request, res: Response) => {
     // Hive API first: get_content is a single fast call (~200ms) with no DB
     // connection needed. HAF only adds versions/retraction which are rare.
     const hiveResult = await fetchPaperDetailFromHiveApi(author, permlink);
-    if (hiveResult) {
-      // Best-effort: enrich with HAF-only data (versions, retraction) if available
-      if (isHafAvailable()) {
-        try {
-          const [versions, retraction] = await Promise.all([
-            resolveVersionsFromHaf(author, permlink),
-            getRetractionInfo(author, permlink),
-          ]);
-          if (versions.length > 0) hiveResult.versions = versions;
-          hiveResult.is_retracted = retraction.is_retracted;
-          hiveResult.retraction_reason = retraction.retraction_reason ?? null;
-          hiveResult.retraction_timestamp = retraction.retraction_timestamp ?? null;
-        } catch { /* HAF enrichment is best-effort */ }
-      }
-      return hiveResult;
-    }
+    if (hiveResult) return hiveResult;
 
     // Fallback to HAF if Hive API failed
     if (isHafAvailable()) {
@@ -526,7 +578,7 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string) {
     const accreditedAccounts = await getAllAccreditedAccounts();
     const accreditedArr = [...accreditedAccounts];
 
-    const [voteResult, reviewsResult, citationResult] = await Promise.all([
+    const [voteResult, reviewsResult, citationResult, versions, retraction] = await Promise.all([
       // Accredited vote count
       pool.query(
         `SELECT count(*)::int AS net_votes FROM ${T.votes} v
@@ -558,6 +610,9 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string) {
            AND ci.json_metadata -> $2 -> 'citations' @> $1::jsonb`,
         [JSON.stringify([{ author, permlink }]), config.appTag, `${config.appTag}/%`, accreditedArr],
       ),
+      // Version history + retraction (moved from SSR-critical path)
+      resolveVersionsFromHaf(author, permlink),
+      getRetractionInfo(author, permlink),
     ]);
 
     const reviews = reviewsResult.rows.map((r: Record<string, unknown>) => {
@@ -583,6 +638,10 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string) {
       reviews,
       citation_count: citationResult.rows[0]?.cnt ?? 0,
       is_accredited: accreditedAccounts.has(author),
+      versions: versions.length > 0 ? versions : undefined,
+      is_retracted: retraction.is_retracted,
+      retraction_reason: retraction.retraction_reason ?? null,
+      retraction_timestamp: retraction.retraction_timestamp ?? null,
     };
   } catch (err) {
     logger.error({ err }, 'HAF enrichment query failed');
@@ -628,6 +687,9 @@ async function fetchEnrichmentFromHiveApi(author: string, permlink: string) {
       reviews,
       citation_count: 0, // Cannot compute via Hive API
       is_accredited: accreditedAccounts.has(author),
+      is_retracted: false,
+      retraction_reason: null,
+      retraction_timestamp: null,
     };
   } catch (err) {
     logger.error({ err }, 'Hive API enrichment failed');

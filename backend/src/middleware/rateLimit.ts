@@ -12,6 +12,7 @@ interface RateLimitConfig {
   windowMs: number;
   max: number;
   keyFn: (req: Request) => string;
+  name: string;
 }
 
 /**
@@ -21,7 +22,7 @@ interface RateLimitConfig {
  */
 export function rateLimit(config: RateLimitConfig) {
   const memStore = new Map<string, RateLimitEntry>();
-  const redisPrefix = `${appConfig.appTag}:rl:`;
+  const redisPrefix = `${appConfig.appTag}:rl:${config.name}:`;
 
   const cleanupInterval = setInterval(() => {
     const now = Date.now();

@@ -13,7 +13,7 @@ const CATEGORY_LABELS: Record<string, string> = {
   general: 'General',
 };
 
-const contactLimiter = rateLimit({ windowMs: 3_600_000, max: 5, keyFn: byIp });
+const contactLimiter = rateLimit({ name: 'contact', windowMs: 3_600_000, max: 5, keyFn: byIp });
 
 const router = Router();
 

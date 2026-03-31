@@ -1,7 +1,7 @@
 # PEvO Deployment Guide
 
 > **Owner:** Architect Agent
-> **Version:** 0.1
+> **Version:** 0.2
 
 ## Prerequisites
 
@@ -32,9 +32,8 @@ Create these accounts via any Hive account creation service. Fund with enough RC
 All configuration lives in a single `.env` file at the project root (see `.env.example` for the full list). Key production values:
 
 ```bash
-# Public URLs
+# Public URL
 APP_URL=https://pevo.science
-NEXT_PUBLIC_API_URL=https://pevo.science
 
 # Database
 POSTGRES_PASSWORD=<strong-random>
@@ -71,26 +70,27 @@ Docker Compose automatically creates the `pevo_app` database. Migrations in `bac
 
 ```bash
 cp .env.example .env
-./deploy.sh up          # uses docker-compose.yml — ports 3000/3001 exposed
+./deploy.sh up          # uses docker-compose.yml — port 3001 exposed
 ```
 
 ### Production
 
 ```bash
 cp .env.example .env
-# Edit .env — set POSTGRES_PASSWORD, NEXT_PUBLIC_API_URL, APP_URL, real keys
+# Edit .env — set POSTGRES_PASSWORD, APP_URL, real keys
 ./deploy.sh up
 ```
 
-The same `docker-compose.yml` is used for both dev and production. The stack includes:
+The stack includes 3 services:
 - **postgres** — PostgreSQL for app state (1GB memory limit)
 - **redis** — Caching, rate limiting, ORCID state (256MB limit)
-- **backend** — Node.js API server (512MB limit, health-checked)
-- **frontend** — Next.js app (256MB limit)
+- **backend** — Node.js API server + static frontend (512MB limit, health-checked)
 
-The reverse proxy (TLS termination, routing) is managed outside of Docker Compose. Configure your existing reverse proxy to route `/api/` to `localhost:3001` (pass the `/api/` prefix through, do not strip it) and `/` to `localhost:3000`.
+The backend serves both the API (`/api/*`) and the compiled Alpine.js frontend (all other routes). There is no separate frontend service.
 
-Set `NEXT_PUBLIC_API_URL` to your public base URL (e.g., `https://pevo.science`) — **not** with an `/api` suffix, as the frontend code already adds `/api/` to all routes. Set `APP_URL` to the same value.
+The reverse proxy (TLS termination, routing) is managed outside of Docker Compose. Configure your existing reverse proxy to route **all traffic** to `localhost:3001`. The backend handles both static files and API requests.
+
+Set `APP_URL` to your public base URL (e.g., `https://pevo.science`).
 
 ### 4. Set up backups
 
@@ -120,34 +120,30 @@ curl https://pevo.science/api/health
 ```bash
 cp .env.example .env
 docker compose up -d
-# Frontend: http://localhost:3000, API: http://localhost:3001
+# App: http://localhost:3001 (API + frontend served from same port)
+```
+
+For frontend development with hot reload:
+```bash
+cd frontend && npm run dev    # Vite dev server on port 5173, proxies /api to :3001
 ```
 
 ---
 
 ## Manual Deployment
 
-### Backend
+### Build and Run
 
 ```bash
-cd backend
-npm ci
-npm run build
+# Build frontend (outputs to backend/public/)
+cd frontend && npm ci && npm run build
+
+# Build and run backend (serves both API and frontend)
+cd backend && npm ci && npm run build
 NODE_ENV=production node dist/index.js
 ```
 
 Runs on `PORT` (default 3001). Place behind a reverse proxy for TLS.
-
-### Frontend
-
-```bash
-cd frontend
-npm ci
-npm run build
-npm start
-```
-
-Runs on port 3000. The `NEXT_PUBLIC_API_URL` must point to the backend.
 
 ---
 

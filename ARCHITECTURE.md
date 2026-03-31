@@ -6,17 +6,19 @@
 ┌─────────────────────────────────────────────────────────────────┐
 │                        User Browser                             │
 │  ┌──────────────┐  ┌──────────────────┐  ┌──────────────────┐  │
-│  │  Next.js App  │  │  Hive Keychain   │  │  IPFS Gateway    │  │
-│  │  (Frontend)   │  │  (Tx Signing)    │  │  (PDF Viewing)   │  │
+│  │  Alpine.js    │  │  Hive Keychain   │  │  IPFS Gateway    │  │
+│  │  SPA (Vite)   │  │  (Tx Signing)    │  │  (PDF Viewing)   │  │
 │  └──────┬───────┘  └────────┬─────────┘  └──────────────────┘  │
 └─────────┼──────────────────┼───────────────────────────────────┘
           │                  │
           │ REST API         │ Signed Transactions
+          │ (same-origin)    │
           ▼                  ▼
 ┌──────────────────────────────────────┐
 │         PEvO Backend API             │
 │  (Node.js + Express)                 │
 │                                      │
+│  - Static frontend serving           │
 │  - Accreditation service             │
 │  - IPFS pinning proxy               │
 │  - HAF query layer                   │
@@ -35,10 +37,11 @@
 
 ### Data Flow
 
-- **Reading:** Frontend → Backend API → HAF SQL (PostgreSQL with indexed Hive chain data)
-- **Writing:** Frontend → Hive Keychain (signs tx in browser) → Hive Node (broadcast)
-- **Files:** Frontend → Backend proxy → IPFS pinning service → CID returned to frontend → stored in Hive post `json_metadata`
-- **Accreditation:** Frontend → Backend → verifies identity → broadcasts `custom_json` to Hive via admin account
+- **Reading:** Browser → Backend API (same-origin) → HAF SQL (PostgreSQL with indexed Hive chain data)
+- **Writing:** Browser → Hive Keychain (signs tx in browser) → Hive Node (broadcast)
+- **Files:** Browser → Backend proxy → IPFS pinning service → CID returned → stored in Hive post `json_metadata`
+- **Accreditation:** Browser → Backend → verifies identity → broadcasts `custom_json` to Hive via admin account
+- **Static assets:** Backend serves compiled frontend from `public/` directory via `express.static`
 
 ### App Identity Configuration
 
@@ -54,7 +57,7 @@ All on-chain identifiers are configurable via environment variables so that alph
 | `PEVO_BRIDGE_POSTING_KEY` | (= `PEVO_ADMIN_POSTING_KEY`) | Posting key for bridge account. Only needed if `HIVE_BRIDGE_ACCOUNT` differs from `HIVE_ADMIN_ACCOUNT` |
 | `ACCREDITATION_AUTHORITIES` | (empty) | Comma-separated list of additional accounts authorized to broadcast accreditations. `HIVE_ADMIN_ACCOUNT` is always implicitly authorized. |
 
-The frontend derives `NEXT_PUBLIC_APP_TAG` and `NEXT_PUBLIC_APP_VERSION` from `APP_TAG` and `APP_VERSION` automatically via `next.config.mjs`. No separate frontend env vars are needed.
+The frontend reads `APP_TAG` at build time via Vite's `define` config (injected as `__APP_TAG__`). No separate frontend env vars are needed.
 
 To run an alpha instance, set `APP_TAG=pevo-alpha`. This creates a completely separate on-chain data space for both backend and frontend. When transitioning from alpha to production, change back to `pevo`.
 
@@ -431,8 +434,10 @@ The IPFS pinning service is abstracted behind an interface so providers can be s
 
 ### CORS
 
+Frontend and backend are same-origin (backend serves the compiled frontend from `public/`). CORS is only needed for external API consumers.
+
 - **Development:** Allow all origins.
-- **Production:** Restrict to the configured `APP_URL` origin only.
+- **Production:** Same-origin by default. External API consumers can be whitelisted via `APP_URL`.
 
 ### Rate Limiting
 
@@ -444,7 +449,11 @@ v0.1 uses unversioned paths (`/api/...`). Future breaking changes will use path-
 
 ### Shared Types Contract
 
-The `@pevo/contracts` package in `contracts/` is the single source of truth for all TypeScript types shared between frontend and backend. Both packages import types from `@pevo/contracts` rather than defining their own copies. The `ReputationWeights` interface includes both v1 and v2 fields; `DEFAULT_REPUTATION_WEIGHTS` provides defaults that produce v1-equivalent behavior.
+The `@pevo/contracts` package in `contracts/` defines TypeScript types consumed by the backend. The frontend (Alpine.js) does not use TypeScript — it consumes the same API shapes but without static type checking.
+
+The `DISCIPLINE_TAXONOMY` is also exported as `contracts/disciplines.json` for consumption by the frontend without TypeScript.
+
+The `ReputationWeights` interface includes both v1 and v2 fields; `DEFAULT_REPUTATION_WEIGHTS` provides defaults that produce v1-equivalent behavior.
 
 ### Authentication
 
@@ -525,12 +534,12 @@ Notifications are not stored in any application database. "Unread" state is dete
 
 ## 13. Internationalization (i18n)
 
-PEvO uses `next-intl` for frontend internationalization with a cookie-based locale selection strategy.
+PEvO uses a custom Alpine.js i18n store with a `$t()` magic property for frontend internationalization, with cookie-based locale selection.
 
 ### Locale Resolution
 
-1. Check `NEXT_LOCALE` cookie (set by language switcher)
-2. Fall back to `Accept-Language` header
+1. Check `PEVO_LOCALE` cookie (set by language switcher)
+2. Fall back to `navigator.language`
 3. Default to `en`
 
 ### Supported Locales
@@ -541,32 +550,21 @@ PEvO uses `next-intl` for frontend internationalization with a cookie-based loca
 
 ```
 frontend/
-  messages/
-    en.json        ← source of truth (complete)
-    es.json
-    de.json
-    fr.json
-    zh.json
-    ar.json
-    he.json
-    fa.json
-    it.json
-    pl.json
-    pt.json
-    cs.json
-    da.json
-    sv.json
+  messages/            ← source JSON files
+    en.json            ← source of truth (complete)
+    es.json, de.json, fr.json, zh.json, ar.json, he.json,
+    fa.json, it.json, pl.json, pt.json, cs.json, da.json, sv.json
+  public/messages/     ← copied for static serving (Vite serves from public/)
   src/
-    i18n/
-      request.ts   ← next-intl server config (locale detection)
-      routing.ts   ← locale list + default locale constant
+    i18n.js            ← Alpine store + $t() magic property
 ```
 
 ### Design Decisions
 
-- **No path-based routing** (`/en/papers`, `/de/papers`). Locale is a user preference stored in a cookie, not a URL segment. This avoids breaking existing routes, simplifies link sharing, and keeps URLs clean. SEO for non-English content can be added later via `hreflang` meta tags.
-- **Single JSON namespace** per locale. The message file is small enough (<15KB) that splitting into per-page namespaces adds complexity without measurable benefit.
-- **RTL support** for Arabic, Hebrew, and Persian: the root `<html>` tag sets `dir="rtl"` when the locale is in `RTL_LOCALES` (`ar`, `he`, `fa`). Tailwind's `rtl:` variant handles layout mirroring.
+- **Lazy-loaded per locale.** Only the active locale JSON is fetched (`/messages/{locale}.json`). No bundling of all locales.
+- **No path-based routing** (`/en/papers`, `/de/papers`). Locale is a user preference stored in a cookie, not a URL segment.
+- **Single JSON namespace** per locale. The message file is small enough (<15KB) that splitting adds complexity without measurable benefit.
+- **RTL support** for Arabic, Hebrew, and Persian: `document.documentElement.dir` is set to `rtl` when the locale is `ar`, `he`, or `fa`. Tailwind's `rtl:` variant handles layout mirroring.
 - **Paper content is NOT translated.** i18n applies only to UI chrome (navigation, buttons, labels, status messages). Paper bodies, review text, and on-chain data remain in their original language. The `language` field in paper metadata allows filtering by language.
 - **Backend is English-only.** API error messages and log output remain in English. Only the frontend is localized.
 
@@ -617,7 +615,7 @@ Frontend → CDN edge (Cloudflare/Fastly) → IPFS gateway (origin) → PDF
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `NEXT_PUBLIC_IPFS_GATEWAY_URL` | `https://ipfs.io` | IPFS gateway base URL (or CDN URL) |
+| `IPFS_GATEWAY_URL` | `https://ipfs.io` | IPFS gateway base URL (or CDN URL). Injected into frontend at build time via Vite `define`. |
 
 ## 16. Runtime Requirements
 
@@ -796,20 +794,20 @@ Scientific papers require mathematical notation. PEvO provides a WYSIWYG editor 
 
 ### Viewer (Paper Detail + Review Rendering)
 
-**Library:** [react-markdown](https://github.com/remarkjs/react-markdown) with plugins:
-- `remark-math` — parses `$...$` and `$$...$$` delimiters into math AST nodes
-- `rehype-katex` — renders math nodes to HTML via KaTeX
-- `remark-gfm` — GitHub Flavored Markdown (tables, strikethrough, task lists)
+**Library:** `marked` (in-browser Markdown → HTML) with post-processing:
+- KaTeX for math rendering (`$...$` inline, `$$...$$` display)
+- DOMPurify for HTML sanitization
+- GFM support via `marked` built-in extensions (tables, strikethrough, task lists)
 
-**CSS:** Import `katex/dist/katex.min.css` globally (or lazy-load on pages that render papers).
+**CSS:** KaTeX CSS loaded globally (`katex/dist/katex.min.css`).
 
-**Security:** `react-markdown` does not use `dangerouslySetInnerHTML` for user content — it builds a React element tree from the AST. The `rehype-katex` plugin only generates KaTeX HTML for math nodes, which is safe (KaTeX's output is a known-safe subset of HTML). DOMPurify remains available as an additional layer if needed.
+**Security:** All rendered Markdown HTML is sanitized via DOMPurify before insertion into the DOM. KaTeX output is a known-safe HTML subset. The `marked` output is always passed through DOMPurify.
 
 ### Abstract Editor
 
 The abstract field on the publish page uses the same `TiptapEditor` component as the full paper body — one component, two instances. This ensures any editor improvements (toolbar, extensions, bug fixes) apply to both fields automatically.
 
-**Configuration via props:** `TiptapEditor` accepts an optional `variant` prop:
+**Configuration via options:** The Tiptap editor accepts an optional `variant` option:
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
@@ -844,29 +842,30 @@ The `"abstract"` variant hides headings, lists, blockquotes, tables, and images 
 |----------|---------|--------|
 | Publish page abstract (`/publish`) | Tiptap WYSIWYG (`variant="abstract"`) | Done |
 | Publish page body (`/publish`) | Tiptap WYSIWYG (`variant="full"`) | Done |
-| Publish preview toggle | `react-markdown` + `remark-math` + `rehype-katex` | Done |
-| Paper detail body | `react-markdown` + `remark-math` + `rehype-katex` | Done |
-| Review body (ReviewCard) | `react-markdown` + `remark-math` + `rehype-katex` | Done |
-| Comment body (ThreadedComments) | `react-markdown` + `remark-math` + `rehype-katex` | Done |
+| Publish preview toggle | `marked` + KaTeX + DOMPurify | Done |
+| Paper detail body | `marked` + KaTeX + DOMPurify | Done |
+| Review body (ReviewCard) | `marked` + KaTeX + DOMPurify | Done |
+| Comment body (ThreadedComments) | `marked` + KaTeX + DOMPurify | Done |
 
 ### Dependencies
 
 ```
-# Editor (publish page only — code-split)
-@tiptap/react
+# Editor (publish page only — code-split via Vite vendor chunk)
+@tiptap/core
 @tiptap/starter-kit
-@tiptap/extension-mathematics (or tiptap-math-extension)
-@tiptap/extension-table
+@tiptap/extension-mathematics
+@tiptap/extension-table, @tiptap/extension-table-row, @tiptap/extension-table-cell, @tiptap/extension-table-header
 @tiptap/extension-link
 @tiptap/extension-image
 @tiptap/extension-placeholder
+@tiptap/pm
+turndown          (HTML → Markdown conversion)
+remark, remark-gfm, remark-math, remark-html  (Markdown → HTML in editor)
 
 # Rendering (all pages that display Markdown)
-react-markdown
-remark-math
-remark-gfm
-rehype-katex
-katex  (CSS only — KaTeX rendering is done by rehype-katex)
+marked            (Markdown → HTML in browser)
+katex             (math rendering)
+dompurify         (HTML sanitization)
 ```
 
 ### Implementation Notes
@@ -1043,9 +1042,9 @@ form-action 'self';
 
 ### Implementation Notes
 
-- Set via `headers()` in `next.config.js`
-- `unsafe-eval` required by Hive Keychain for signature operations
-- `unsafe-inline` required for KaTeX rendered styles and Next.js inline scripts
+- Set via `helmet` middleware in Express `app.ts`
+- `unsafe-eval` required by Alpine.js `x-data` expressions and Hive Keychain
+- `unsafe-inline` required for KaTeX rendered styles
 - `style-src` includes `cdn.jsdelivr.net` for KaTeX CSS
 - `connect-src` includes Hive API nodes and ORCID for OAuth
 - `img-src` includes IPFS gateways for paper PDFs
@@ -1074,7 +1073,7 @@ This compresses all JSON responses larger than 1KB. No frontend changes needed �
 
 - Paper listings (JSON ~20-50KB) compress to ~3-8KB
 - Paper detail responses (with full body) compress significantly
-- Static Next.js assets are already compressed by Next.js's built-in server
+- Static frontend assets (JS, CSS) are also compressed since they're served through the same Express server
 
 ## 26. Preprint Bridge
 
@@ -1345,6 +1344,6 @@ The paper detail endpoint (`GET /api/papers/:author/:permlink`) was optimized fo
    - Version history (from `operation_comment_view`)
    - Retraction status (from `operation_custom_json_view`)
 
-3. **SSR data passing:** The Next.js paper page fetches paper data server-side and passes it as `initialData` to the client component, eliminating a redundant client-side fetch. The `generateMetadata` call and page render share the same server-side request (Next.js deduplicates fetch calls within a render pass).
+3. **Client-side fetching:** The Alpine.js paper detail page fetches paper data on mount via the API. The backend caches the response, so subsequent requests for the same paper are fast.
 
 4. **Stable cache:** Paper detail uses a 5-minute stable TTL, surviving block-watcher clears. Paper content rarely changes between blocks, so volatile caching (cleared every ~3s) was wasteful.

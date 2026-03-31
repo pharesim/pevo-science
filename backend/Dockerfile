@@ -8,6 +8,12 @@ COPY contracts/package.json contracts/tsconfig.json ./contracts/
 COPY contracts/src ./contracts/src
 RUN cd contracts && npm install && npm run build
 
+# Build frontend (Vite outputs to ../backend/public/)
+COPY frontend/package.json frontend/package-lock.json* ./frontend/
+RUN cd frontend && npm ci
+COPY frontend/ ./frontend/
+RUN cd frontend && npm run build
+
 # Install backend dependencies
 COPY backend/package.json backend/package-lock.json* ./backend/
 RUN cd backend && npm install --ignore-scripts
@@ -32,6 +38,9 @@ RUN cd backend && npm install --omit=dev --ignore-scripts
 
 # Copy built backend
 COPY --from=build /app/backend/dist ./backend/dist
+
+# Copy compiled frontend (Vite build output)
+COPY --from=build /app/backend/public ./backend/public
 
 WORKDIR /app/backend
 

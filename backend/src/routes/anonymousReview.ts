@@ -12,7 +12,7 @@ import { getAccreditation } from '../routes/profile.js';
 import { logger } from '../logger.js';
 import type { AnonReviewAction } from '@pevo/contracts';
 
-const anonReviewLimiter = rateLimit({ windowMs: 60 * 60_000, max: 5, keyFn: byAccount });
+const anonReviewLimiter = rateLimit({ name: 'anon-review', windowMs: 60 * 60_000, max: 5, keyFn: byAccount });
 
 const router = Router();
 

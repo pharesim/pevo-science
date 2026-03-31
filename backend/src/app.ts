@@ -1,4 +1,5 @@
 import express from 'express';
+import path from 'node:path';
 import compression from 'compression';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -27,11 +28,11 @@ import contactRouter from './routes/contact.js';
 
 // ── Rate limiters (per API contract) ──────────────────────────────
 
-const readLimiter = rateLimit({ windowMs: 60_000, max: 120, keyFn: byIp });
-const searchLimiter = rateLimit({ windowMs: 60_000, max: 60, keyFn: byIp });
+const readLimiter = rateLimit({ name: 'read', windowMs: 60_000, max: 120, keyFn: byIp });
+const searchLimiter = rateLimit({ name: 'search', windowMs: 60_000, max: 60, keyFn: byIp });
 // Notification rate limit uses byIp at app level; per-account limiting happens
 // inside the route after verifyHiveSignature sets req.hiveUsername.
-const notificationLimiter = rateLimit({ windowMs: 300_000, max: 30, keyFn: byIp });
+const notificationLimiter = rateLimit({ name: 'notif', windowMs: 300_000, max: 30, keyFn: byIp });
 
 export function createApp() {
   const app = express();
@@ -47,10 +48,12 @@ export function createApp() {
     contentSecurityPolicy: {
       directives: {
         defaultSrc: ["'self'"],
-        scriptSrc: ["'self'"],
-        styleSrc: ["'self'", "'unsafe-inline'"],
+        scriptSrc: ["'self'", "'unsafe-eval'"], // Alpine.js needs unsafe-eval for x-data expressions
+        styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+        fontSrc: ["'self'", 'data:', 'https://fonts.gstatic.com'],
         imgSrc: ["'self'", 'data:', 'https:'],
         connectSrc: ["'self'", ...config.hiveApiNodes],
+        upgradeInsecureRequests: null, // HTTPS enforced by reverse proxy, not CSP
       },
     },
     crossOriginEmbedderPolicy: false, // Allow IPFS gateway embeds
@@ -64,15 +67,20 @@ export function createApp() {
     requestContext.run({ reqId: req.id as string }, next);
   });
 
-  // CORS: always specify explicit origin to prevent credential leakage
+  // CORS: frontend is same-origin (served from this process).
+  // Keep CORS middleware for external API consumers only.
   app.use(cors({
-    origin: config.appUrl || 'http://localhost:3000',
+    origin: config.appUrl || true, // same-origin by default; allow configured origin for external consumers
     credentials: true,
     maxAge: 86400,
     methods: ['GET', 'POST', 'PUT', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Hive-Username', 'X-Hive-Signature', 'X-Hive-Message', 'X-Hive-Timestamp'],
   }));
   app.use(express.json({ limit: '1mb' }));
+
+  // Serve compiled frontend (Vite build output in backend/public/)
+  const publicDir = path.join(__dirname, '../public');
+  app.use(express.static(publicDir));
 
   // HTTPS is enforced by the reverse proxy, not the backend.
 
@@ -105,6 +113,18 @@ export function createApp() {
       haf_available: isHafAvailable(),
       redis_available: isRedisAvailable(),
       timestamp: new Date().toISOString(),
+    });
+  });
+
+  // SPA catch-all: serve index.html for any non-API GET request.
+  // This enables client-side routing — the Alpine.js SPA handles its own routes.
+  // API 404s are NOT intercepted; they fall through to the error handler.
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/api/')) {
+      return next();
+    }
+    res.sendFile(path.join(publicDir, 'index.html'), (err) => {
+      if (err) next(); // index.html not found — fall through to error handler
     });
   });
 

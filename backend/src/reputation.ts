@@ -237,10 +237,26 @@ const EMPTY_STATS: UserStats = {
 
 export async function getUserStatsFromHiveApi(username: string): Promise<UserStats> {
   try {
-    const discussions = await hiveClient.database.getDiscussions('blog', {
-      tag: username,
-      limit: 100,
-    });
+    // Paginate in batches of 20 (Hive API max) up to 100 posts
+    const discussions: Awaited<ReturnType<typeof hiveClient.database.getDiscussions>> = [];
+    let startAuthor: string | undefined;
+    let startPermlink: string | undefined;
+    for (let page = 0; page < 5; page++) {
+      const query: Record<string, unknown> = { tag: username, limit: 20 };
+      if (startAuthor && startPermlink) {
+        query.start_author = startAuthor;
+        query.start_permlink = startPermlink;
+      }
+      const batch = await hiveClient.database.getDiscussions('blog', query as any);
+      if (batch.length === 0) break;
+      // First result of subsequent pages overlaps with last of previous page
+      const newItems = page === 0 ? batch : batch.slice(1);
+      discussions.push(...newItems);
+      if (batch.length < 20) break;
+      const last = batch[batch.length - 1];
+      startAuthor = last.author;
+      startPermlink = last.permlink;
+    }
 
     const papers = discussions.filter((d) => {
       if (d.parent_permlink !== config.appTag) return false;

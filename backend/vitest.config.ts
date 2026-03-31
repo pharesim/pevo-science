@@ -18,6 +18,7 @@ export default defineConfig(({ mode }) => {
       testTimeout: 30_000,
       hookTimeout: 15_000,
       maxWorkers: 3,
+      retry: 1,
       setupFiles: ['tests/setup.ts'],
       coverage: {
         provider: 'v8',

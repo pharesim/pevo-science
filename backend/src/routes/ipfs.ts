@@ -11,7 +11,7 @@ function sanitizeFilename(name: string): string {
   return name.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 255);
 }
 
-const ipfsUploadLimiter = rateLimit({ windowMs: 60 * 60_000, max: 10, keyFn: byAccount });
+const ipfsUploadLimiter = rateLimit({ name: 'ipfs-upload', windowMs: 60 * 60_000, max: 10, keyFn: byAccount });
 
 const router = Router();
 

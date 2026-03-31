@@ -86,6 +86,10 @@ export interface PaperEnrichment {
   reviews: ReviewInPaper[];
   citation_count: number;
   is_accredited: boolean;
+  versions?: PaperVersion[];
+  is_retracted?: boolean;
+  retraction_reason?: string | null;
+  retraction_timestamp?: string | null;
 }
 
 // ─── Discussion Comment Responses ────────────────────────────

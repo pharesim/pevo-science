@@ -23,9 +23,9 @@ import {
 const router = Router();
 
 // Per-endpoint rate limiters (per API contract)
-const lookupLimiter = rateLimit({ windowMs: 60_000, max: 20, keyFn: byIp });
-const registerLimiter = rateLimit({ windowMs: 3_600_000, max: 10, keyFn: byIp });
-const updateLimiter = rateLimit({ windowMs: 3_600_000, max: 10, keyFn: byIp });
+const lookupLimiter = rateLimit({ name: 'bridge-lookup', windowMs: 60_000, max: 20, keyFn: byIp });
+const registerLimiter = rateLimit({ name: 'bridge-register', windowMs: 3_600_000, max: 10, keyFn: byIp });
+const updateLimiter = rateLimit({ name: 'bridge-update', windowMs: 3_600_000, max: 10, keyFn: byIp });
 
 // ──────────────────────────────────────────────
 // GET /api/bridge/lookup?identifier=...
@@ -215,7 +215,7 @@ router.post('/register', registerLimiter, verifyHiveSignature, async (req: Reque
           parent_permlink: config.appTag,
           author: config.hiveBridgeAccount,
           permlink,
-          title: meta.title,
+          title: meta.title.length > 256 ? meta.title.slice(0, 253) + '...' : meta.title,
           body,
           json_metadata: JSON.stringify(jsonMetadata),
         }],
@@ -245,7 +245,8 @@ router.post('/register', registerLimiter, verifyHiveSignature, async (req: Reque
     });
   } catch (err) {
     logger.error({ err }, 'Failed to broadcast bridge paper to Hive');
-    sendError(res, 500, 'INTERNAL_ERROR', 'Failed to publish bridge paper to Hive');
+    const detail = (err as any)?.jse_shortmsg || (err as any)?.message || 'Unknown broadcast error';
+    sendError(res, 500, 'BROADCAST_FAILED', `Hive broadcast failed: ${detail}`);
   }
 });
 
@@ -340,7 +341,7 @@ router.post('/update', updateLimiter, verifyHiveSignature, async (req: Request, 
           parent_permlink: config.appTag,
           author: config.hiveBridgeAccount,
           permlink,
-          title: freshMeta.title,
+          title: freshMeta.title.length > 256 ? freshMeta.title.slice(0, 253) + '...' : freshMeta.title,
           body,
           json_metadata: JSON.stringify(jsonMetadata),
         }],
@@ -366,7 +367,8 @@ router.post('/update', updateLimiter, verifyHiveSignature, async (req: Request, 
     });
   } catch (err) {
     logger.error({ err }, 'Failed to broadcast bridge paper update to Hive');
-    sendError(res, 500, 'INTERNAL_ERROR', 'Failed to update bridge paper on Hive');
+    const detail = (err as any)?.jse_shortmsg || (err as any)?.message || 'Unknown broadcast error';
+    sendError(res, 500, 'BROADCAST_FAILED', `Hive broadcast failed: ${detail}`);
   }
 });
 

@@ -17,8 +17,8 @@ const TOKEN_EXPIRY_MS = 24 * 60 * 60 * 1000; // 24 hours
 /** How long an ORCID OAuth state parameter stays valid (seconds). */
 const ORCID_STATE_TTL_SECONDS = 600; // 10 minutes
 
-const accreditationRequestLimiter = rateLimit({ windowMs: 24 * 60 * 60_000, max: 3, keyFn: byAccount });
-const accreditationVerifyLimiter = rateLimit({ windowMs: 60_000, max: 5, keyFn: byIp });
+const accreditationRequestLimiter = rateLimit({ name: 'accred-req', windowMs: 24 * 60 * 60_000, max: 3, keyFn: byAccount });
+const accreditationVerifyLimiter = rateLimit({ name: 'accred-verify', windowMs: 60_000, max: 5, keyFn: byIp });
 
 const router = Router();
 

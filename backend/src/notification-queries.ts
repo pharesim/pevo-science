@@ -18,10 +18,10 @@ export async function fetchNotificationsFromHaf(
   if (!pool) return null;
 
   try {
-    // $1 = account, $2 = sinceBlock, $3 = limit, $4 = appTag (CTE), $5 = appTag, $6 = appTag/%
+    // $1 = account, $2 = sinceBlock, $3 = limit, $4/$5 = CTE params, $N = appTag, $N+1 = appTag/%
     const accredCte = activeAccreditationsCteBody(4);
-    const at = `$5`;  // appTag for WHERE clauses
-    const al = `$6`;  // appTag/% LIKE pattern
+    const at = `$${accredCte.nextIdx}`;       // appTag for WHERE clauses
+    const al = `$${accredCte.nextIdx + 1}`;   // appTag/% LIKE pattern
     const result = await pool.query(
       `WITH ${accredCte.sql}
 
