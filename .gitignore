@@ -22,7 +22,9 @@ pevo_design/
 
 # Agent coordination files (internal workflow)
 agents/
+docs/
 AGENTS.md
+ARCHITECTURE.md
 TASKS.md
 PROGRESS.md
 BLOCKED.md
