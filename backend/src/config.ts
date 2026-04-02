@@ -45,6 +45,8 @@ export const config = {
     return 'postgresql://hafsql_public:hafsql_public@hafsql-sql.mahdiyari.info:5432/haf_block_log';
   })(),
   appDatabaseUrl: process.env.APP_DATABASE_URL || '',
+  ipfsApiUrl: process.env.IPFS_API_URL || 'http://ipfs:5001',
+  ipfsGatewayUrl: process.env.IPFS_GATEWAY_URL || 'http://ipfs:8080',
   pinataApiKey: process.env.PINATA_API_KEY || '',
   pinataSecretKey: process.env.PINATA_SECRET_KEY || '',
   pevoAnonPostingKey: process.env.PEVO_ANON_POSTING_KEY || '',

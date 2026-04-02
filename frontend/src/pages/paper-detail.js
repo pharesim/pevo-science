@@ -125,9 +125,28 @@ export function initPaperDetailPage() {
       return this.paper.json_metadata.pevo.source || null;
     },
 
+    get ipfsGateway() {
+      return (window.__PEVO_CONFIG__?.ipfsGateway) || 'https://gateway.pinata.cloud/ipfs/';
+    },
+
     get ipfsUrl() {
       if (!this.paper?.ipfs_cid) return null;
-      return `https://gateway.pinata.cloud/ipfs/${this.paper.ipfs_cid}`;
+      return `${this.ipfsGateway}${this.paper.ipfs_cid}`;
+    },
+
+    get supplementaryFiles() {
+      return this.paper?.supplementary_files || this.paper?.json_metadata?.pevo?.supplementary_files || [];
+    },
+
+    supplementaryFileUrl(cid) {
+      return `${this.ipfsGateway}${cid}`;
+    },
+
+    formatFileSize(bytes) {
+      if (!bytes) return '';
+      if (bytes < 1024) return bytes + ' B';
+      if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+      return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
     },
 
     get currentVersion() {

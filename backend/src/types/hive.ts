@@ -11,6 +11,14 @@ export interface PevoBaseMeta {
   format: "markdown";
 }
 
+export interface SupplementaryFile {
+  cid: string;
+  filename: string;
+  type: string;        // MIME type
+  size: number;        // bytes
+  description?: string; // optional author-provided label
+}
+
 export interface PaperPevoMeta {
   type: "paper";
   /** Content version counter — incremented by the author on each edit (1 = first publication). */
@@ -26,6 +34,7 @@ export interface PaperPevoMeta {
   /** SHA-256 of (title + "\n" + body). Used to distinguish content revisions from metadata-only edits. */
   content_hash: string;
   citations: Citation[];
+  supplementary_files: SupplementaryFile[];
 }
 
 export interface ReviewPevoMeta {

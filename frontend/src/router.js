@@ -2,6 +2,7 @@ import Alpine from 'alpinejs';
 
 const ROUTES = [
   { pattern: /^\/$/,                                   name: 'home' },
+  { pattern: /^\/papers$/,                              name: 'papers' },
   { pattern: /^\/paper\/([^/]+)\/([^/]+)$/,           name: 'paper-detail',  params: ['author', 'permlink'] },
   { pattern: /^\/publish$/,                            name: 'publish' },
   { pattern: /^\/review\/([^/]+)\/([^/]+)$/,          name: 'review',        params: ['author', 'permlink'] },

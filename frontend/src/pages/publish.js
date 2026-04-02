@@ -6,6 +6,7 @@ import { createEditor } from '../editor.js';
 import { getAppTag, getAppId } from '../config.js';
 
 const DRAFT_KEY = 'pevo-draft-publish';
+const MARKDOWN_IMAGE_RE = /!\[[^\]]*\]\(([^)]+)\)/g;
 const ABSTRACT_MAX_CHARS = 2000;
 const TX_WARN_BYTES = 55000;
 const TX_HARD_BYTES = 60000;
@@ -59,6 +60,7 @@ export function initPublishPage() {
     pdfFile: null,
     pdfFileName: '',
     pdfFileSize: 0,
+    supplementaryFiles: [], // { file, fileName, fileSize, description, uploading, cid, error }
 
     draftRestored: false,
     draftSavedAt: null,
@@ -241,6 +243,7 @@ export function initPublishPage() {
       this.authorName = this.accreditation?.name || '';
       this.authorAffiliation = this.accreditation?.institution || '';
       this.authorOrcid = '';
+      this.supplementaryFiles = [];
       this.draftRestored = false;
       this.draftSavedAt = null;
       if (this._abstractEditor) this._abstractEditor.setContent('');
@@ -294,6 +297,39 @@ export function initPublishPage() {
       }
     },
 
+    handleSupplementaryFiles(e) {
+      const files = Array.from(e.target.files || []);
+      const remaining = 5 - this.supplementaryFiles.length;
+      if (remaining <= 0) {
+        Alpine.store('toast').show(this.$t('publish.maxSupplementaryFiles'), 'error');
+        return;
+      }
+      for (const file of files.slice(0, remaining)) {
+        if (file.size > 10 * 1024 * 1024) {
+          Alpine.store('toast').show(this.$t('publish.fileTooLarge', { name: file.name }), 'error');
+          continue;
+        }
+        this.supplementaryFiles.push({
+          file,
+          fileName: file.name,
+          fileSize: (file.size / 1024 / 1024).toFixed(2),
+          description: '',
+          uploading: false,
+          cid: null,
+          error: null,
+        });
+      }
+      e.target.value = '';
+    },
+
+    removeSupplementaryFile(index) {
+      this.supplementaryFiles.splice(index, 1);
+    },
+
+    updateSupplementaryDescription(index, value) {
+      this.supplementaryFiles[index].description = value;
+    },
+
     async handleConnect() {
       try {
         await Alpine.store('auth').connect();
@@ -330,6 +366,32 @@ export function initPublishPage() {
           ipfsFilename = uploadRes.data.filename;
         }
 
+        // Upload supplementary files
+        const supplementaryFiles = [];
+        if (this.supplementaryFiles.length > 0) {
+          this.step = 'uploading';
+          for (const sf of this.supplementaryFiles) {
+            sf.uploading = true;
+            sf.error = null;
+            try {
+              const res = await uploadToIpfs(sf.file);
+              sf.cid = res.data.cid;
+              supplementaryFiles.push({
+                cid: res.data.cid,
+                filename: res.data.filename,
+                type: res.data.type || sf.file.type,
+                size: res.data.size || sf.file.size,
+                description: sf.description || undefined,
+              });
+            } catch (err) {
+              sf.error = err.message || 'Upload failed';
+              throw new Error(this.$t('publish.supplementaryUploadFailed', { name: sf.fileName }));
+            } finally {
+              sf.uploading = false;
+            }
+          }
+        }
+
         const permlink = slugify(this.title) + '-' + Date.now().toString(36);
 
         const keywords = this.keywordsText
@@ -345,9 +407,16 @@ export function initPublishPage() {
         const APP_TAG = getAppTag();
         const APP_ID = getAppId();
 
+        // Extract image URLs from markdown embeds (![alt](url)), not plain links
+        const images = [];
+        for (const match of this.postBody.matchAll(MARKDOWN_IMAGE_RE)) {
+          images.push(match[1]);
+        }
+
         const jsonMetadata = {
           app: APP_ID,
           tags: [APP_TAG, 'science', this.discipline, ...keywords].filter(Boolean),
+          ...(images.length > 0 && { image: images }),
           [APP_TAG]: {
             type: 'paper',
             version: 1,
@@ -360,6 +429,7 @@ export function initPublishPage() {
             abstract_hash: abstractHash,
             document_hash: documentHash,
             content_hash: contentHash,
+            supplementary_files: supplementaryFiles,
           },
         };
 

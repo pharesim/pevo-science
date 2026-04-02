@@ -9,6 +9,7 @@ import type {
   ReputationBreakdown,
   AccreditationMethod,
 } from "./domain.js";
+import type { SupplementaryFile } from "./hive.js";
 
 // ─── Paper Responses ─────────────────────────────────────────────
 
@@ -78,6 +79,7 @@ export interface PaperDetail {
   is_retracted: boolean;
   retraction_reason?: string | null;
   retraction_timestamp?: string | null;
+  supplementary_files: SupplementaryFile[];
 }
 
 /** Accreditation-dependent enrichment loaded lazily after initial paper render. */

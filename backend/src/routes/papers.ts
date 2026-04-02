@@ -543,6 +543,7 @@ function buildPaperDetail(
     is_retracted: false,
     retraction_reason: null as string | null,
     retraction_timestamp: null as string | null,
+    supplementary_files: pevo.supplementary_files || [],
   };
 }
 

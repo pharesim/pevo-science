@@ -5,6 +5,7 @@ import { createApp } from './app.js';
 import { validateConfig } from './startup-checks.js';
 import { startBlockWatcher, stopBlockWatcher } from './block-watcher.js';
 import { startDigestScheduler, stopDigestScheduler } from './digest.js';
+import { startIpfsCleanup, stopIpfsCleanup } from './ipfs-cleanup.js';
 import { disconnectRedis } from './redis.js';
 import { checkHiveNodes } from './hive.js';
 import { logger } from './logger.js';
@@ -41,6 +42,9 @@ initAppDb()
         startDigestScheduler();
       }
 
+      // Start IPFS orphan cleanup job
+      startIpfsCleanup();
+
       // Non-blocking: check Hive API node connectivity at startup
       checkHiveNodes();
     });
@@ -56,6 +60,7 @@ async function shutdown(signal: string): Promise<void> {
 
   stopBlockWatcher();
   stopDigestScheduler();
+  stopIpfsCleanup();
 
   // Stop accepting new connections, wait up to 30s for in-flight requests
   if (server) {

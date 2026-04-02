@@ -10,7 +10,7 @@ export function initHeader() {
 
     get primaryLinks() {
       return [
-        { path: '/', label: this.$t('nav.papers') },
+        { path: '/papers', label: this.$t('nav.papers') },
         { path: '/search', label: this.$t('nav.search') },
         { path: '/researchers', label: this.$t('nav.researchers') },
       ];
