@@ -41,3 +41,5 @@ docker-compose.override.yml
 # Test output
 test-results/
 coverage/
+
+*outreach.txt
