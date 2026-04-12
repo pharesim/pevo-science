@@ -85,6 +85,38 @@ export function publishPaper(username, permlink, title, body, jsonMetadata) {
   });
 }
 
+export function editPaper(username, permlink, title, body, jsonMetadata) {
+  const operations = [
+    [
+      'comment',
+      {
+        parent_author: '',
+        parent_permlink: getAppTag(),
+        author: username,
+        permlink,
+        title,
+        body,
+        json_metadata: JSON.stringify(jsonMetadata),
+      },
+    ],
+  ];
+
+  return new Promise((resolve, reject) => {
+    if (!window.hive_keychain) {
+      return reject(new Error('Hive Keychain is not installed'));
+    }
+    window.hive_keychain.requestBroadcast(
+      username,
+      operations,
+      'posting',
+      (response) => {
+        if (response.success) resolve(response);
+        else reject(new Error(response.message));
+      }
+    );
+  });
+}
+
 export function postReview(username, permlink, paperAuthor, paperPermlink, body, jsonMetadata) {
   const operations = [
     [

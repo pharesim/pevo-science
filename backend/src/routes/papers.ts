@@ -110,6 +110,8 @@ async function fetchPapersFromHaf(req: Request): Promise<{ rows: unknown[]; tota
   if (!includeRetracted) {
     conditions.push(`NOT EXISTS (SELECT 1 FROM retracted_papers rp WHERE rp.author = c.author AND rp.permlink = c.permlink)`);
   }
+  // E3: Hide continuation posts — they are revisions of existing papers, not separate papers
+  conditions.push(`(c.json_metadata -> ${appTagParam} -> 'continues') IS NULL`);
 
   const where = conditions.join(' AND ');
   const params = [...cteParams, ...filterParams];
@@ -398,6 +400,14 @@ async function fetchPaperDetailFromHaf(author: string, permlink: string) {
     detail.retraction_reason = retraction.retraction_reason ?? null;
     detail.retraction_timestamp = retraction.retraction_timestamp ?? null;
 
+    // E7: Resolve continuation chain to set head author/permlink
+    const chain = await resolveContinuationChain(author, permlink);
+    if (chain.length > 1) {
+      const head = chain[chain.length - 1];
+      detail.head_author = head.author;
+      detail.head_permlink = head.permlink;
+    }
+
     return detail;
   } catch (err) {
     logger.error({ err }, 'HAF paper detail query failed');
@@ -440,12 +450,126 @@ interface PaperVersionEntry {
   created: string;
   title: string;
   is_content_revision: boolean;
+  author?: string;
+  permlink?: string;
+  addresses_reviews?: Array<{ author: string; permlink: string }>;
+}
+
+// ──────────────────────────────────────────────
+// E1 — Continuation chain resolution
+// ──────────────────────────────────────────────
+
+interface ChainLink {
+  author: string;
+  permlink: string;
+}
+
+/**
+ * Resolve the continuation chain starting from a canonical (root) post.
+ * Follows `json_metadata -> appTag -> 'continues'` pointers iteratively.
+ * Returns ordered array starting with the root post, ending at the chain head.
+ * Uses block_num to resolve collisions (earliest wins). 50-hop safety cap.
+ */
+async function resolveContinuationChain(author: string, permlink: string): Promise<ChainLink[]> {
+  const pool = getPool();
+  if (!pool) return [{ author, permlink }];
+
+  const chain: ChainLink[] = [{ author, permlink }];
+  let currentAuthor = author;
+  let currentPermlink = permlink;
+  const MAX_HOPS = 50;
+
+  try {
+    for (let i = 0; i < MAX_HOPS; i++) {
+      // Find any post whose continues field points to the current head
+      const result = await pool.query(
+        `SELECT c.author, c.permlink, co.block_num
+         FROM ${T.comments} c
+         JOIN ${T.commentOps} co ON co.author = c.author AND co.permlink = c.permlink
+         WHERE c.parent_author = ''
+           AND c.parent_permlink = $3
+           AND c.json_metadata -> $3 -> 'continues' ->> 'author' = $1
+           AND c.json_metadata -> $3 -> 'continues' ->> 'permlink' = $2
+         ORDER BY co.block_num ASC
+         LIMIT 1`,
+        [currentAuthor, currentPermlink, config.appTag],
+      );
+
+      if (result.rows.length === 0) break;
+
+      const next = result.rows[0];
+      currentAuthor = next.author;
+      currentPermlink = next.permlink;
+      chain.push({ author: currentAuthor, permlink: currentPermlink });
+    }
+  } catch (err) {
+    logger.error({ err }, 'Continuation chain resolution failed');
+  }
+
+  return chain;
+}
+
+/**
+ * Walk backward from a continuation post to find the canonical (root) post.
+ * Returns null if the given post is not a continuation.
+ */
+async function findCanonicalRoot(author: string, permlink: string): Promise<ChainLink | null> {
+  const pool = getPool();
+  if (!pool) return null;
+
+  try {
+    // Check if this post has a 'continues' field
+    const result = await pool.query(
+      `SELECT c.json_metadata -> $3 -> 'continues' ->> 'author' AS cont_author,
+              c.json_metadata -> $3 -> 'continues' ->> 'permlink' AS cont_permlink
+       FROM ${T.comments} c
+       WHERE c.author = $1 AND c.permlink = $2
+         AND c.parent_author = '' AND c.parent_permlink = $3
+         AND c.json_metadata -> $3 -> 'continues' IS NOT NULL`,
+      [author, permlink, config.appTag],
+    );
+
+    if (result.rows.length === 0) return null;
+
+    // Walk backward to the root
+    let currentAuthor = result.rows[0].cont_author as string;
+    let currentPermlink = result.rows[0].cont_permlink as string;
+    const MAX_HOPS = 50;
+
+    for (let i = 0; i < MAX_HOPS; i++) {
+      const parentResult = await pool.query(
+        `SELECT c.json_metadata -> $3 -> 'continues' ->> 'author' AS cont_author,
+                c.json_metadata -> $3 -> 'continues' ->> 'permlink' AS cont_permlink
+         FROM ${T.comments} c
+         WHERE c.author = $1 AND c.permlink = $2
+           AND c.parent_author = '' AND c.parent_permlink = $3`,
+        [currentAuthor, currentPermlink, config.appTag],
+      );
+
+      if (parentResult.rows.length === 0 || !parentResult.rows[0].cont_author) {
+        // currentAuthor/currentPermlink is the root
+        return { author: currentAuthor, permlink: currentPermlink };
+      }
+
+      currentAuthor = parentResult.rows[0].cont_author;
+      currentPermlink = parentResult.rows[0].cont_permlink;
+    }
+
+    return { author: currentAuthor, permlink: currentPermlink };
+  } catch (err) {
+    logger.error({ err }, 'Canonical root lookup failed');
+    return null;
+  }
 }
 
 /** A fully reconstructed version with body content. */
 interface ReconstructedVersion extends PaperVersionEntry {
   body: string;
   json_metadata: Record<string, unknown>;
+  /** Author of the post this version came from (for continuation chains). */
+  post_author: string;
+  /** Permlink of the post this version came from (for continuation chains). */
+  post_permlink: string;
 }
 
 /**
@@ -461,7 +585,10 @@ function applyHivePatch(base: string, raw: string): string {
 
 /**
  * Fetch all comment operations and reconstruct full body at each version
- * by replaying `@@` diff patches. Returns versions in chronological order.
+ * by replaying `@@` diff patches. Resolves continuation chains: fetches
+ * operations for all posts in the chain, ordered by block_num.
+ * Continuation post first operations are always full body (not diffs of
+ * the previous chain link). Returns versions in chronological order.
  */
 async function reconstructVersionsFromHaf(
   author: string,
@@ -471,46 +598,78 @@ async function reconstructVersionsFromHaf(
   if (!pool) return [];
 
   try {
+    // Resolve continuation chain to get all (author, permlink) pairs
+    const chain = await resolveContinuationChain(author, permlink);
+
+    // Build a query that fetches operations for ALL posts in the chain
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+    let paramIdx = 1;
+    for (const link of chain) {
+      conditions.push(`(co.author = $${paramIdx++} AND co.permlink = $${paramIdx++})`);
+      params.push(link.author, link.permlink);
+    }
+
     const result = await pool.query(
       `SELECT
          ROW_NUMBER() OVER (ORDER BY co.block_num)::int AS version_number,
+         co.author,
+         co.permlink,
          co.title,
          co.body,
          co.created,
          co.json_metadata
        FROM ${T.commentOps} co
-       WHERE co.author = $1
-         AND co.permlink = $2
+       WHERE ${conditions.join(' OR ')}
        ORDER BY co.block_num ASC`,
-      [author, permlink],
+      params,
     );
 
     const rows = result.rows as Array<Record<string, unknown>>;
     const versions: ReconstructedVersion[] = [];
-    let prevBody = '';
+    // Track per-post body state for diff application (diffs are per-post, not cross-post)
+    const bodyByPost = new Map<string, string>();
     let prevTitle = '';
     let lastGoodMeta: Record<string, unknown> | null = null;
+    // Track which posts we've seen their first operation for
+    const seenFirstOp = new Set<string>();
 
     for (const r of rows) {
+      const postKey = `${r.author}/${r.permlink}`;
       const rawBody = (r.body as string) || '';
       const rawTitle = (r.title as string) || '';
 
-      const body = applyHivePatch(prevBody, rawBody);
-      // Hive doesn't use @@ patches for titles, but handle it the same way
+      const isFirstOpForPost = !seenFirstOp.has(postKey);
+      seenFirstOp.add(postKey);
+
+      const prevBodyForPost = bodyByPost.get(postKey) || '';
+      let body: string;
+
+      if (isFirstOpForPost && chain.length > 1 && postKey !== `${chain[0].author}/${chain[0].permlink}`) {
+        // Continuation post first operation: always full body (not diff of previous chain link)
+        body = rawBody;
+      } else {
+        // Same-post edit: apply diff against previous body of THIS post
+        body = applyHivePatch(prevBodyForPost, rawBody);
+      }
+      bodyByPost.set(postKey, body);
+
       const title = rawTitle || prevTitle;
 
       const isContentRevision =
-        versions.length === 0 || body !== prevBody || title !== prevTitle;
+        versions.length === 0 || body !== prevBodyForPost || title !== prevTitle || isFirstOpForPost;
 
       let meta = parseMeta(r.json_metadata);
 
-      // If this version has valid PEvO metadata, remember it.
-      // If not (external edit stripped it), restore from the last version that had it.
       if (isPevoAnyPaper(meta)) {
         lastGoodMeta = meta;
       } else if (lastGoodMeta) {
         meta = { ...meta, app: lastGoodMeta.app, [config.appTag]: lastGoodMeta[config.appTag] };
       }
+
+      // Extract addresses_reviews from version metadata
+      const pevo = safePevoMeta(meta);
+      const addressesReviews = (pevo.addresses_reviews as Array<{ author: string; permlink: string }>) || undefined;
 
       versions.push({
         version_number: r.version_number as number,
@@ -519,9 +678,13 @@ async function reconstructVersionsFromHaf(
         body,
         is_content_revision: isContentRevision,
         json_metadata: meta,
+        post_author: r.author as string,
+        post_permlink: r.permlink as string,
+        author: r.author as string,
+        permlink: r.permlink as string,
+        addresses_reviews: addressesReviews,
       });
 
-      prevBody = body;
       prevTitle = title;
     }
 
@@ -538,7 +701,7 @@ async function resolveVersionsFromHaf(
   permlink: string,
 ): Promise<PaperVersionEntry[]> {
   const versions = await reconstructVersionsFromHaf(author, permlink);
-  return versions.map(({ body: _body, json_metadata: _meta, ...entry }) => entry);
+  return versions.map(({ body: _body, json_metadata: _meta, post_author: _pa, post_permlink: _pp, ...entry }) => entry);
 }
 
 async function getRetractionInfo(author: string, permlink: string): Promise<{ is_retracted: boolean; retraction_reason?: string | null; retraction_timestamp?: string | null }> {
@@ -599,15 +762,29 @@ function buildPaperDetail(
     retraction_timestamp: null as string | null,
     supplementary_files: pevo.supplementary_files || [],
     metadata_restored: false,
+    // E7: For non-continuation papers, canonical = head = self
+    canonical_author: post.author as string,
+    canonical_permlink: post.permlink as string,
+    head_author: post.author as string,
+    head_permlink: post.permlink as string,
   };
 }
 
 router.get('/:author/:permlink', async (req: Request, res: Response) => {
-  const { author, permlink } = req.params;
+  let { author, permlink } = req.params;
   const requestedVersion = req.query.version ? parseInt(req.query.version as string, 10) : null;
 
   if (requestedVersion !== null && isNaN(requestedVersion)) {
     return sendError(res, 400, 'BAD_REQUEST', 'version must be an integer');
+  }
+
+  // E4: If this is a continuation post, redirect to the canonical root paper
+  if (isHafAvailable()) {
+    const canonicalRoot = await findCanonicalRoot(author, permlink);
+    if (canonicalRoot) {
+      author = canonicalRoot.author;
+      permlink = canonicalRoot.permlink;
+    }
   }
 
   // Historical versions require HAF (Hive API only has latest).
@@ -732,21 +909,46 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string) {
       getRetractionInfo(author, permlink),
     ]);
 
+    const latestVersion = versions.length > 0 ? versions[versions.length - 1].version_number : 1;
+
     const reviews = reviewsResult.rows.map((r: Record<string, unknown>) => {
       const rMeta = parseMeta(r.json_metadata);
       const pevo = safePevoMeta(rMeta);
       const rating = pevo.rating as Record<string, number> | undefined;
+      const reviewedVersion = (pevo.reviewed_version as number) || 1;
+
+      // E5: Review staleness — outdated if paper has been updated since review
+      const outdated = reviewedVersion < latestVersion;
+
+      // E5: Find if any version explicitly addresses this review
+      const reviewAuthor = r.author as string;
+      const reviewPermlink = r.permlink as string;
+      let addressedByVersion: number | undefined;
+      for (const v of versions) {
+        if (v.addresses_reviews) {
+          const found = v.addresses_reviews.some(
+            (ar) => ar.author === reviewAuthor && ar.permlink === reviewPermlink,
+          );
+          if (found) {
+            addressedByVersion = v.version_number;
+            break;
+          }
+        }
+      }
+
       return {
-        author: r.author as string,
-        permlink: r.permlink as string,
+        author: reviewAuthor,
+        permlink: reviewPermlink,
         body: r.body as string,
         rating: rating || { methodology: 0, novelty: 0, clarity: 0, significance: 0 },
         is_anonymous: pevo.is_anonymous ?? false,
         created: r.created as string,
         net_votes: r.net_votes as number,
         reviewer_reputation: 0,
-        is_accredited: accreditedAccounts.has(r.author as string),
-        reviewed_version: (pevo.reviewed_version as number) || 1,
+        is_accredited: accreditedAccounts.has(reviewAuthor),
+        reviewed_version: reviewedVersion,
+        outdated,
+        addressed_by_version: addressedByVersion,
       };
     });
 
@@ -829,6 +1031,24 @@ router.get('/:author/:permlink/enrichment', async (req: Request, res: Response) 
 
   if (cached) return sendOk(res, cached);
   sendError(res, 404, 'NOT_FOUND', 'Paper not found');
+});
+
+// ──────────────────────────────────────────────
+// E6: POST /api/papers/:author/:permlink/invalidate
+// ──────────────────────────────────────────────
+
+const invalidateLimiter = rateLimit({ name: 'cache-invalidate', windowMs: 60_000, max: 10, keyFn: byAccount });
+
+router.post('/:author/:permlink/invalidate', verifyHiveSignature, invalidateLimiter, async (req: Request, res: Response) => {
+  const { author, permlink } = req.params;
+
+  // Invalidate all cache keys for this paper
+  await Promise.all([
+    hafCache.invalidate(`paper-detail:${author}:${permlink}`),
+    hafCache.invalidate(`paper-enrichment:${author}:${permlink}`),
+  ]);
+
+  sendOk(res, { message: 'Cache invalidated' });
 });
 
 // ──────────────────────────────────────────────

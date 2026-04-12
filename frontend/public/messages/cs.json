@@ -162,6 +162,29 @@
     "accreditationRequired": "Pro publikování článků musíte být akreditováni.",
     "getAccredited": "Získat akreditaci"
   },
+  "edit": {
+    "editButton": "Upravit článek",
+    "title": "Upravit článek",
+    "description": "Aktualizujte svou publikaci. Změny jsou zaznamenány jako nová verze.",
+    "loadingPaper": "Načítání dat článku...",
+    "loadError": "Nepodařilo se načíst článek. Zkuste to prosím znovu.",
+    "notAuthorized": "Nemáte oprávnění upravovat tento článek.",
+    "continuationNotice": "Publikovat jako revizi",
+    "continuationExplainer": "Nejste původní autor. Vaše změny budou publikovány jako nová revize, která navazuje na tento článek.",
+    "disciplineFixed": "Obor nelze po publikaci změnit.",
+    "addressReviews": "Reagovat na recenze",
+    "addressReviewsHint": "Vyberte recenze, na které tato úprava reaguje. Recenzenti uvidí, že jejich zpětná vazba byla zapracována.",
+    "saveButton": "Uložit změny",
+    "publishRevision": "Publikovat revizi",
+    "saving": "Ukládání...",
+    "stepDiffing": "Výpočet změn...",
+    "stepUploading": "Nahrávání na IPFS...",
+    "stepBroadcasting": "Vysílání do sítě...",
+    "stepSuccess": "Článek úspěšně aktualizován!",
+    "noChanges": "Nebyly zjištěny žádné změny. Obsah článku je totožný s aktuální verzí.",
+    "authorsAddOnly": "Stávající autory nelze odebrat. Můžete přidat nové spoluautory.",
+    "versionLabel": "Verze {version}"
+  },
   "review": {
     "backToPaper": "Zpět na článek",
     "title": "Napsat recenzi",
@@ -507,7 +530,9 @@
     "versionWithDate": "v{number} - {date}",
     "latest": "Nejnovější",
     "metadataOnly": "Tato verze změnila pouze metadata (např. odkazy na autory, štítky) - obsah nebyl upraven.",
-    "metadataOnlyShort": "metadata"
+    "metadataOnlyShort": "metadata",
+    "outdated": "Recenzováno ve v{version} (zastaralé)",
+    "addressedInVersion": "Řešeno ve v{version}"
   },
   "orcid": {
     "verifyButton": "Ověřit přes ORCID",

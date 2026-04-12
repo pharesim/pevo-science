@@ -162,6 +162,29 @@
     "accreditationRequired": "Você precisa ser credenciado para publicar artigos.",
     "getAccredited": "Obter credenciamento"
   },
+  "edit": {
+    "editButton": "Editar artigo",
+    "title": "Editar artigo",
+    "description": "Atualize a sua publicação. As alterações são registadas como uma nova versão.",
+    "loadingPaper": "A carregar dados do artigo...",
+    "loadError": "Falha ao carregar o artigo. Por favor, tente novamente.",
+    "notAuthorized": "Não está autorizado a editar este artigo.",
+    "continuationNotice": "Publicar como revisão",
+    "continuationExplainer": "Não é o autor original. As suas alterações serão publicadas como uma nova revisão que continua este artigo.",
+    "disciplineFixed": "A disciplina não pode ser alterada após a publicação.",
+    "addressReviews": "Responder às avaliações",
+    "addressReviewsHint": "Selecione as avaliações que esta edição aborda. Os avaliadores verão que o seu feedback foi incorporado.",
+    "saveButton": "Guardar alterações",
+    "publishRevision": "Publicar revisão",
+    "saving": "A guardar...",
+    "stepDiffing": "A calcular alterações...",
+    "stepUploading": "A enviar para o IPFS...",
+    "stepBroadcasting": "A transmitir para a rede...",
+    "stepSuccess": "Artigo atualizado com sucesso!",
+    "noChanges": "Nenhuma alteração detetada. O conteúdo do artigo é idêntico à versão atual.",
+    "authorsAddOnly": "Os autores existentes não podem ser removidos. Pode adicionar novos co-autores.",
+    "versionLabel": "Versão {version}"
+  },
   "review": {
     "backToPaper": "Voltar ao artigo",
     "title": "Escrever uma Revisao",
@@ -507,7 +530,9 @@
     "versionWithDate": "v{number} - {date}",
     "latest": "Mais recente",
     "metadataOnly": "Esta versao alterou apenas metadados (ex., links de autores, tags) - nenhum conteudo foi modificado.",
-    "metadataOnlyShort": "metadados"
+    "metadataOnlyShort": "metadados",
+    "outdated": "Avaliado na v{version} (desatualizado)",
+    "addressedInVersion": "Tratado na v{version}"
   },
   "orcid": {
     "verifyButton": "Verificar com ORCID",

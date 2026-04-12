@@ -162,6 +162,29 @@
     "accreditationRequired": "Devi essere accreditato per pubblicare articoli.",
     "getAccredited": "Ottieni l'accreditamento"
   },
+  "edit": {
+    "editButton": "Modifica articolo",
+    "title": "Modifica articolo",
+    "description": "Aggiorna la tua pubblicazione. Le modifiche vengono registrate come una nuova versione.",
+    "loadingPaper": "Caricamento dati dell'articolo...",
+    "loadError": "Impossibile caricare l'articolo. Riprova.",
+    "notAuthorized": "Non sei autorizzato a modificare questo articolo.",
+    "continuationNotice": "Pubblicazione come revisione",
+    "continuationExplainer": "Non sei l'autore originale. Le tue modifiche saranno pubblicate come una nuova revisione che prosegue questo articolo.",
+    "disciplineFixed": "La disciplina non può essere modificata dopo la pubblicazione.",
+    "addressReviews": "Rispondi alle revisioni",
+    "addressReviewsHint": "Seleziona le revisioni a cui questa modifica risponde. I revisori vedranno che il loro feedback è stato recepito.",
+    "saveButton": "Salva modifiche",
+    "publishRevision": "Pubblica revisione",
+    "saving": "Salvataggio...",
+    "stepDiffing": "Calcolo delle modifiche...",
+    "stepUploading": "Caricamento su IPFS...",
+    "stepBroadcasting": "Trasmissione alla rete...",
+    "stepSuccess": "Articolo aggiornato con successo!",
+    "noChanges": "Nessuna modifica rilevata. Il contenuto dell'articolo è identico alla versione attuale.",
+    "authorsAddOnly": "Gli autori esistenti non possono essere rimossi. Puoi aggiungere nuovi co-autori.",
+    "versionLabel": "Versione {version}"
+  },
   "review": {
     "backToPaper": "Torna all'articolo",
     "title": "Scrivi una Revisione",
@@ -507,7 +530,9 @@
     "versionWithDate": "v{number} - {date}",
     "latest": "Ultima",
     "metadataOnly": "Questa versione ha modificato solo i metadati (es. link autori, tag) - nessun contenuto è stato modificato.",
-    "metadataOnlyShort": "metadati"
+    "metadataOnlyShort": "metadati",
+    "outdated": "Revisionato nella v{version} (obsoleto)",
+    "addressedInVersion": "Affrontato nella v{version}"
   },
   "orcid": {
     "verifyButton": "Verifica con ORCID",

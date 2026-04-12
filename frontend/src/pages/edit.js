@@ -1,0 +1,412 @@
+import Alpine from 'alpinejs';
+import { fetchPaper, fetchPaperEnrichment, invalidatePaperCache, uploadToIpfs } from '../api.js';
+import { editPaper, publishPaper } from '../keychain.js';
+import { sha256File, slugify } from '../crypto.js';
+import { createEditor } from '../editor.js';
+import { getAppTag, getAppId } from '../config.js';
+import diff_match_patch from 'diff-match-patch';
+
+const ABSTRACT_MAX_CHARS = 2000;
+
+function composePostBody(abstract, fullText) {
+  if (!fullText) return '## Abstract\n\n' + abstract;
+  return '## Abstract\n\n' + abstract + '\n\n---\n\n' + fullText;
+}
+
+function computeDiff(oldText, newText) {
+  const dmp = new diff_match_patch();
+  const diffs = dmp.diff_main(oldText, newText);
+  dmp.diff_cleanupEfficiency(diffs);
+  const patches = dmp.patch_make(oldText, diffs);
+  return dmp.patch_toText(patches);
+}
+
+export function initEditPage() {
+  Alpine.data('editPage', () => ({
+    paper: null,
+    reviews: [],
+    loadingPaper: true,
+    loadError: null,
+
+    title: '',
+    abstract: '',
+    body: '',
+    discipline: '',
+    keywordsText: '',
+    authorName: '',
+    authorAffiliation: '',
+    authorOrcid: '',
+    existingCoAuthors: [],
+    newCoAuthors: [],
+    addressedReviews: [], // [{ author, permlink }]
+
+    step: 'idle',
+    errorMessage: '',
+
+    _abstractEditor: null,
+    _bodyEditor: null,
+    _draftTimer: null,
+    _initialLoadDone: false,
+    _originalBody: '',
+
+    navigate(path) {
+      Alpine.store('router').navigate(path);
+    },
+
+    get isConnected() { return Alpine.store('auth').isConnected; },
+    get isAccredited() { return Alpine.store('auth').isAccredited; },
+    get username() { return Alpine.store('auth').username; },
+    get accreditation() { return Alpine.store('auth').accreditation; },
+
+    get author() { return this.$store.router.params.author; },
+    get permlink() { return this.$store.router.params.permlink; },
+
+    get isAuthorized() {
+      const username = this.username;
+      if (!username || !this.paper) return false;
+      // Original author
+      if (username === this.paper.author) return true;
+      // Co-author
+      const authors = this.paper.authors || [];
+      if (authors.some(a => a.hive === username)) return true;
+      // Accredited users can create continuation posts
+      return this.isAccredited;
+    },
+
+    get isContinuation() {
+      if (!this.paper || !this.username) return false;
+      const isOriginalAuthor = this.username === this.paper.author;
+      const isCoAuthor = (this.paper.authors || []).some(a => a.hive === this.username);
+      return !isOriginalAuthor && !isCoAuthor;
+    },
+
+    get nextVersion() {
+      if (!this.paper?.versions?.length) return 2;
+      const max = Math.max(...this.paper.versions.map(v => v.version_number));
+      return max + 1;
+    },
+
+    get isSubmitting() {
+      return this.step !== 'idle' && this.step !== 'success' && this.step !== 'error';
+    },
+
+    get stepMessage() {
+      const msgs = {
+        idle: '',
+        diffing: this.$t('edit.stepDiffing'),
+        uploading: this.$t('edit.stepUploading'),
+        broadcasting: this.$t('edit.stepBroadcasting'),
+        success: this.$t('edit.stepSuccess'),
+        error: this.errorMessage || this.$t('common.error'),
+      };
+      return msgs[this.step] || '';
+    },
+
+    get stepClass() {
+      if (this.step === 'success') return 'bg-pevo-green-light border-pevo-green/30';
+      if (this.step === 'error') return 'bg-pevo-crimson-light border-pevo-crimson/30';
+      return 'bg-pevo-teal-light border-pevo-teal/30';
+    },
+
+    get draftKey() {
+      return `pevo-draft-edit-${this.author}-${this.permlink}`;
+    },
+
+    init() {
+      this.loadPaperData();
+    },
+
+    async loadPaperData() {
+      const author = this.author;
+      const permlink = this.permlink;
+      this.loadingPaper = true;
+      this.loadError = null;
+
+      try {
+        const [paperRes, enrichmentRes] = await Promise.allSettled([
+          fetchPaper(author, permlink),
+          fetchPaperEnrichment(author, permlink),
+        ]);
+
+        if (this.author !== author || this.permlink !== permlink) return;
+
+        if (paperRes.status === 'rejected') {
+          this.loadError = this.$t('edit.loadError');
+          return;
+        }
+
+        this.paper = paperRes.value.data;
+
+        if (enrichmentRes.status === 'fulfilled') {
+          this.reviews = enrichmentRes.value.data?.reviews || [];
+        }
+
+        this._prefillForm();
+        this._restoreDraft();
+        this._initialLoadDone = true;
+
+        this.$nextTick(() => {
+          this._mountEditors();
+        });
+
+        // Watch for changes and auto-save draft
+        this.$watch('title', () => this._scheduleDraftSave());
+        this.$watch('abstract', () => this._scheduleDraftSave());
+        this.$watch('body', () => this._scheduleDraftSave());
+        this.$watch('keywordsText', () => this._scheduleDraftSave());
+        this.$watch('authorName', () => this._scheduleDraftSave());
+        this.$watch('authorAffiliation', () => this._scheduleDraftSave());
+        this.$watch('authorOrcid', () => this._scheduleDraftSave());
+      } catch (err) {
+        if (this.author !== author || this.permlink !== permlink) return;
+        this.loadError = err?.message || this.$t('edit.loadError');
+      } finally {
+        this.loadingPaper = false;
+      }
+    },
+
+    _prefillForm() {
+      const p = this.paper;
+      if (!p) return;
+
+      this.title = p.title || '';
+
+      // Split body on first \n\n---\n\n to extract abstract vs full text
+      const fullBody = p.body || '';
+      const sep = fullBody.indexOf('\n\n---\n\n');
+      if (sep !== -1) {
+        let abstractPart = fullBody.slice(0, sep);
+        // Strip leading ## Abstract\n\n
+        abstractPart = abstractPart.replace(/^##\s*Abstract\s*\n\n/i, '');
+        this.abstract = abstractPart;
+        this.body = fullBody.slice(sep + 7);
+      } else {
+        let abstractPart = fullBody;
+        abstractPart = abstractPart.replace(/^##\s*Abstract\s*\n\n/i, '');
+        this.abstract = abstractPart;
+        this.body = '';
+      }
+
+      this._originalBody = composePostBody(this.abstract, this.body);
+
+      // Discipline
+      const pevo = p.json_metadata?.pevo || p.json_metadata?.[getAppTag()] || {};
+      this.discipline = pevo.discipline || '';
+
+      // Keywords
+      const keywords = pevo.keywords || [];
+      this.keywordsText = keywords.join(', ');
+
+      // Authors
+      const authors = pevo.authors || p.authors || [];
+      if (authors.length > 0) {
+        const primary = authors[0];
+        this.authorName = primary.name || '';
+        this.authorAffiliation = primary.affiliation || '';
+        this.authorOrcid = primary.orcid || '';
+        this.existingCoAuthors = authors.slice(1);
+      }
+    },
+
+    _restoreDraft() {
+      try {
+        const raw = localStorage.getItem(this.draftKey);
+        if (raw) {
+          const draft = JSON.parse(raw);
+          if (draft && typeof draft.title === 'string') {
+            this.title = draft.title;
+            this.abstract = draft.abstract;
+            this.body = draft.body;
+            this.keywordsText = draft.keywordsText;
+            if (draft.authorName) this.authorName = draft.authorName;
+            if (draft.authorAffiliation) this.authorAffiliation = draft.authorAffiliation;
+            if (draft.authorOrcid) this.authorOrcid = draft.authorOrcid;
+            this.newCoAuthors = draft.newCoAuthors || [];
+          }
+        }
+      } catch {
+        try { localStorage.removeItem(this.draftKey); } catch { /* */ }
+      }
+    },
+
+    _mountEditors() {
+      const abstractEl = this.$refs.abstractEditor;
+      const bodyEl = this.$refs.bodyEditor;
+
+      if (abstractEl) {
+        this._abstractEditor = createEditor(abstractEl, {
+          variant: 'abstract',
+          maxLength: ABSTRACT_MAX_CHARS,
+          placeholder: this.$t('publish.abstractPlaceholder'),
+          onChange: (md) => { this.abstract = md; },
+          initialMarkdown: this.abstract,
+        });
+      }
+
+      if (bodyEl) {
+        this._bodyEditor = createEditor(bodyEl, {
+          variant: 'full',
+          placeholder: this.$t('publish.paperContentPlaceholder'),
+          onChange: (md) => { this.body = md; },
+          username: this.username,
+          initialMarkdown: this.body,
+        });
+      }
+    },
+
+    destroy() {
+      if (this._draftTimer) { clearTimeout(this._draftTimer); this._draftTimer = null; }
+      if (this._abstractEditor) { this._abstractEditor.destroy(); this._abstractEditor = null; }
+      if (this._bodyEditor) { this._bodyEditor.destroy(); this._bodyEditor = null; }
+    },
+
+    _scheduleDraftSave() {
+      if (!this._initialLoadDone) return;
+      if (this._draftTimer) clearTimeout(this._draftTimer);
+      this._draftTimer = setTimeout(() => {
+        try {
+          const draft = {
+            title: this.title, abstract: this.abstract, body: this.body,
+            keywordsText: this.keywordsText, authorName: this.authorName,
+            authorAffiliation: this.authorAffiliation, authorOrcid: this.authorOrcid,
+            newCoAuthors: this.newCoAuthors, savedAt: Date.now(),
+          };
+          localStorage.setItem(this.draftKey, JSON.stringify(draft));
+        } catch { /* storage full */ }
+      }, 2000);
+    },
+
+    addCoAuthor() {
+      this.newCoAuthors.push({ name: '', hive: '', orcid: '', affiliation: '' });
+    },
+
+    updateNewCoAuthor(index, field, value) {
+      this.newCoAuthors[index][field] = value;
+    },
+
+    removeNewCoAuthor(index) {
+      this.newCoAuthors.splice(index, 1);
+    },
+
+    toggleAddressedReview(author, permlink, checked) {
+      if (checked) {
+        this.addressedReviews.push({ author, permlink });
+      } else {
+        this.addressedReviews = this.addressedReviews.filter(
+          r => !(r.author === author && r.permlink === permlink)
+        );
+      }
+    },
+
+    async handleSubmit() {
+      const username = this.username;
+      if (!username || !this.isConnected) return;
+      if (!this.authorName.trim()) return;
+
+      this.step = 'diffing';
+      this.errorMessage = '';
+
+      try {
+        const newPostBody = composePostBody(this.abstract, this.body);
+        const APP_TAG = getAppTag();
+        const APP_ID = getAppId();
+
+        const keywords = this.keywordsText
+          .split(',')
+          .map(k => k.trim().toLowerCase())
+          .filter(Boolean);
+
+        const allAuthors = [
+          { name: this.authorName, hive: this.isContinuation ? username : (this.paper.author), orcid: this.authorOrcid, affiliation: this.authorAffiliation },
+          ...this.existingCoAuthors,
+          ...this.newCoAuthors.filter(ca => ca.name),
+        ];
+
+        const pevoMeta = this.paper.json_metadata?.pevo || this.paper.json_metadata?.[APP_TAG] || {};
+
+        if (this.isContinuation) {
+          // Continuation post: new post with full body
+          const headAuthor = this.paper.head_author || this.paper.author;
+          const headPermlink = this.paper.head_permlink || this.paper.permlink;
+
+          const newPermlink = slugify(this.title) + '-' + Date.now().toString(36);
+
+          const jsonMetadata = {
+            app: APP_ID,
+            tags: [APP_TAG, 'science', this.discipline, ...keywords].filter(Boolean),
+            [APP_TAG]: {
+              ...pevoMeta,
+              type: 'paper',
+              version: this.nextVersion,
+              authors: allAuthors,
+              discipline: this.discipline,
+              keywords,
+              continues: { author: headAuthor, permlink: headPermlink },
+              addresses_reviews: this.addressedReviews.length > 0 ? this.addressedReviews : undefined,
+            },
+          };
+
+          this.step = 'broadcasting';
+          await publishPaper(username, newPermlink, this.title, newPostBody, jsonMetadata);
+
+          // Invalidate cache for the canonical paper
+          const canonicalAuthor = this.paper.canonical_author || this.paper.author;
+          const canonicalPermlink = this.paper.canonical_permlink || this.paper.permlink;
+          try { await invalidatePaperCache(canonicalAuthor, canonicalPermlink); } catch { /* best effort */ }
+
+          this.step = 'success';
+          try { localStorage.removeItem(this.draftKey); } catch { /* */ }
+          setTimeout(() => {
+            this.navigate(`/paper/${canonicalAuthor}/${canonicalPermlink}`);
+          }, 1500);
+        } else {
+          // Same-author edit: compute diff, broadcast single comment op
+          if (newPostBody === this._originalBody && this.title === this.paper.title) {
+            // Check if metadata changed
+            const metaChanged = JSON.stringify(keywords) !== JSON.stringify(pevoMeta.keywords || [])
+              || JSON.stringify(allAuthors) !== JSON.stringify(pevoMeta.authors || [])
+              || this.addressedReviews.length > 0;
+
+            if (!metaChanged) {
+              this.step = 'error';
+              this.errorMessage = this.$t('edit.noChanges');
+              return;
+            }
+          }
+
+          const diffText = computeDiff(this._originalBody, newPostBody);
+          // If diff is larger than full body, send full body instead
+          const broadcastBody = diffText.length >= newPostBody.length ? newPostBody : diffText;
+
+          const jsonMetadata = {
+            app: APP_ID,
+            tags: [APP_TAG, 'science', this.discipline, ...keywords].filter(Boolean),
+            [APP_TAG]: {
+              ...pevoMeta,
+              type: 'paper',
+              version: this.nextVersion,
+              authors: allAuthors,
+              discipline: this.discipline,
+              keywords,
+              addresses_reviews: this.addressedReviews.length > 0 ? this.addressedReviews : undefined,
+            },
+          };
+
+          this.step = 'broadcasting';
+          await editPaper(username, this.permlink, this.title, broadcastBody, jsonMetadata);
+
+          try { await invalidatePaperCache(this.author, this.permlink); } catch { /* best effort */ }
+
+          this.step = 'success';
+          try { localStorage.removeItem(this.draftKey); } catch { /* */ }
+          setTimeout(() => {
+            this.navigate(`/paper/${this.author}/${this.permlink}`);
+          }, 1500);
+        }
+      } catch (err) {
+        this.step = 'error';
+        this.errorMessage = err.message || 'Edit failed';
+      }
+    },
+  }));
+}

@@ -162,6 +162,29 @@
     "accreditationRequired": "עליך להיות מוסמך כדי לפרסם מאמרים.",
     "getAccredited": "קבל הסמכה"
   },
+  "edit": {
+    "editButton": "עריכת מאמר",
+    "title": "עריכת מאמר",
+    "description": "עדכן את הפרסום שלך. שינויים נרשמים כגרסה חדשה.",
+    "loadingPaper": "טוען נתוני מאמר...",
+    "loadError": "טעינת המאמר נכשלה. אנא נסה שוב.",
+    "notAuthorized": "אינך מורשה לערוך מאמר זה.",
+    "continuationNotice": "פרסום כגרסה מתוקנת",
+    "continuationExplainer": "אינך המחבר המקורי. השינויים שלך יפורסמו כגרסה מתוקנת חדשה שממשיכה מאמר זה.",
+    "disciplineFixed": "לא ניתן לשנות את התחום לאחר הפרסום.",
+    "addressReviews": "מענה לביקורות",
+    "addressReviewsHint": "בחר ביקורות שעריכה זו מטפלת בהן. הסוקרים יראו שהמשוב שלהם שולב.",
+    "saveButton": "שמור שינויים",
+    "publishRevision": "פרסם גרסה מתוקנת",
+    "saving": "שומר...",
+    "stepDiffing": "מחשב שינויים...",
+    "stepUploading": "מעלה ל-IPFS...",
+    "stepBroadcasting": "משדר לרשת...",
+    "stepSuccess": "המאמר עודכן בהצלחה!",
+    "noChanges": "לא זוהו שינויים. תוכן המאמר זהה לגרסה הנוכחית.",
+    "authorsAddOnly": "לא ניתן להסיר מחברים קיימים. ניתן להוסיף מחברים שותפים חדשים.",
+    "versionLabel": "גרסה {version}"
+  },
   "review": {
     "backToPaper": "חזרה למאמר",
     "title": "כתיבת ביקורת",
@@ -507,7 +530,9 @@
     "versionWithDate": "v{number} - {date}",
     "latest": "אחרון",
     "metadataOnly": "גרסה זו שינתה רק מטא-נתונים (למשל קישורי מחבר, תגיות) - לא בוצע שינוי בתוכן.",
-    "metadataOnlyShort": "מטא-נתונים"
+    "metadataOnlyShort": "מטא-נתונים",
+    "outdated": "נסקר בגרסה {version} (מיושן)",
+    "addressedInVersion": "טופל בגרסה {version}"
   },
   "orcid": {
     "verifyButton": "אימות באמצעות ORCID",

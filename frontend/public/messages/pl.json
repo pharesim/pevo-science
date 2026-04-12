@@ -162,6 +162,29 @@
     "accreditationRequired": "Musisz być akredytowany, aby publikować artykuły.",
     "getAccredited": "Uzyskaj akredytację"
   },
+  "edit": {
+    "editButton": "Edytuj artykuł",
+    "title": "Edytuj artykuł",
+    "description": "Zaktualizuj swoją publikację. Zmiany są rejestrowane jako nowa wersja.",
+    "loadingPaper": "Ładowanie danych artykułu...",
+    "loadError": "Nie udało się załadować artykułu. Spróbuj ponownie.",
+    "notAuthorized": "Nie masz uprawnień do edycji tego artykułu.",
+    "continuationNotice": "Publikuj jako rewizję",
+    "continuationExplainer": "Nie jesteś oryginalnym autorem. Twoje zmiany zostaną opublikowane jako nowa rewizja kontynuująca ten artykuł.",
+    "disciplineFixed": "Dyscyplina nie może być zmieniona po publikacji.",
+    "addressReviews": "Odnieś się do recenzji",
+    "addressReviewsHint": "Wybierz recenzje, do których odnosi się ta edycja. Recenzenci zobaczą, że ich uwagi zostały uwzględnione.",
+    "saveButton": "Zapisz zmiany",
+    "publishRevision": "Opublikuj rewizję",
+    "saving": "Zapisywanie...",
+    "stepDiffing": "Obliczanie zmian...",
+    "stepUploading": "Przesyłanie do IPFS...",
+    "stepBroadcasting": "Wysyłanie do sieci...",
+    "stepSuccess": "Artykuł zaktualizowany pomyślnie!",
+    "noChanges": "Nie wykryto zmian. Treść artykułu jest identyczna z bieżącą wersją.",
+    "authorsAddOnly": "Istniejących autorów nie można usunąć. Możesz dodać nowych współautorów.",
+    "versionLabel": "Wersja {version}"
+  },
   "review": {
     "backToPaper": "Powrót do pracy",
     "title": "Napisz recenzję",
@@ -507,7 +530,9 @@
     "versionWithDate": "v{number} - {date}",
     "latest": "Najnowsza",
     "metadataOnly": "Ta wersja zmieniła jedynie metadane (np. linki autorów, tagi) - treść nie została zmodyfikowana.",
-    "metadataOnlyShort": "metadane"
+    "metadataOnlyShort": "metadane",
+    "outdated": "Recenzja w v{version} (nieaktualna)",
+    "addressedInVersion": "Rozwiązano w v{version}"
   },
   "orcid": {
     "verifyButton": "Zweryfikuj przez ORCID",

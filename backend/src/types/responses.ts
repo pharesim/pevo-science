@@ -43,6 +43,10 @@ export interface ReviewInPaper {
   is_accredited: boolean;
   /** Which version of the paper this review was written against. */
   reviewed_version: number;
+  /** True when the paper has been updated since this review was written. */
+  outdated?: boolean;
+  /** Version number that explicitly addresses this review, if any. */
+  addressed_by_version?: number;
 }
 
 export interface PaperVersion {
@@ -51,6 +55,12 @@ export interface PaperVersion {
   title: string;
   /** True when this version changed the paper content (title/body), false for metadata-only edits. */
   is_content_revision: boolean;
+  /** Author of the post containing this version (differs from paper author for continuation posts). */
+  author?: string;
+  /** Permlink of the post containing this version. */
+  permlink?: string;
+  /** Reviews explicitly addressed by this version. */
+  addresses_reviews?: Array<{ author: string; permlink: string }>;
 }
 
 export interface PaperDetail {
@@ -81,6 +91,12 @@ export interface PaperDetail {
   supplementary_files: SupplementaryFile[];
   /** True when PEvO metadata was stripped by an external edit and restored from version history. */
   metadata_restored?: boolean;
+  /** Author/permlink of the canonical (root) post in a continuation chain. */
+  canonical_author?: string;
+  canonical_permlink?: string;
+  /** Author/permlink of the latest (head) post in a continuation chain. */
+  head_author?: string;
+  head_permlink?: string;
 }
 
 /** Accreditation-dependent enrichment loaded lazily after initial paper render. */

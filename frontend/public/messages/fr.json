@@ -162,6 +162,29 @@
     "accreditationRequired": "Vous devez être accrédité pour publier des articles.",
     "getAccredited": "Obtenir l'accréditation"
   },
+  "edit": {
+    "editButton": "Modifier l'article",
+    "title": "Modifier l'article",
+    "description": "Mettez à jour votre publication. Les modifications sont enregistrées comme une nouvelle version.",
+    "loadingPaper": "Chargement des données de l'article...",
+    "loadError": "Impossible de charger l'article. Veuillez réessayer.",
+    "notAuthorized": "Vous n'êtes pas autorisé à modifier cet article.",
+    "continuationNotice": "Publication en tant que révision",
+    "continuationExplainer": "Vous n'êtes pas l'auteur original. Vos modifications seront publiées comme une nouvelle révision qui poursuit cet article.",
+    "disciplineFixed": "La discipline ne peut pas être modifiée après la publication.",
+    "addressReviews": "Répondre aux évaluations",
+    "addressReviewsHint": "Sélectionnez les évaluations auxquelles cette modification répond. Les évaluateurs verront que leurs commentaires ont été pris en compte.",
+    "saveButton": "Enregistrer les modifications",
+    "publishRevision": "Publier la révision",
+    "saving": "Enregistrement...",
+    "stepDiffing": "Calcul des modifications...",
+    "stepUploading": "Téléchargement vers IPFS...",
+    "stepBroadcasting": "Diffusion sur le réseau...",
+    "stepSuccess": "Article mis à jour avec succès !",
+    "noChanges": "Aucune modification détectée. Le contenu de l'article est identique à la version actuelle.",
+    "authorsAddOnly": "Les auteurs existants ne peuvent pas être supprimés. Vous pouvez ajouter de nouveaux co-auteurs.",
+    "versionLabel": "Version {version}"
+  },
   "review": {
     "backToPaper": "Retour à l'article",
     "title": "Rédiger une évaluation",
@@ -507,7 +530,9 @@
     "versionWithDate": "v{number} - {date}",
     "latest": "Dernière",
     "metadataOnly": "Cette version n'a modifié que les métadonnées (ex. : liens d'auteurs, tags) - aucun contenu n'a été modifié.",
-    "metadataOnlyShort": "métadonnées"
+    "metadataOnlyShort": "métadonnées",
+    "outdated": "Évalué en v{version} (obsolète)",
+    "addressedInVersion": "Traité dans la v{version}"
   },
   "orcid": {
     "verifyButton": "Vérifier avec ORCID",

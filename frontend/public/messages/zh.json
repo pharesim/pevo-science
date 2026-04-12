@@ -162,6 +162,29 @@
     "accreditationRequired": "您需要获得认证才能发表论文。",
     "getAccredited": "获取认证"
   },
+  "edit": {
+    "editButton": "编辑论文",
+    "title": "编辑论文",
+    "description": "更新您的出版物。更改将记录为新版本。",
+    "loadingPaper": "正在加载论文数据...",
+    "loadError": "加载论文失败。请重试。",
+    "notAuthorized": "您无权编辑此论文。",
+    "continuationNotice": "作为修订版发布",
+    "continuationExplainer": "您不是原作者。您的更改将作为延续此论文的新修订版发布。",
+    "disciplineFixed": "发表后无法更改学科。",
+    "addressReviews": "回应评审意见",
+    "addressReviewsHint": "选择此次编辑所回应的评审。评审者将看到其反馈已被采纳。",
+    "saveButton": "保存更改",
+    "publishRevision": "发布修订版",
+    "saving": "保存中...",
+    "stepDiffing": "正在计算更改...",
+    "stepUploading": "正在上传到IPFS...",
+    "stepBroadcasting": "正在广播到网络...",
+    "stepSuccess": "论文更新成功！",
+    "noChanges": "未检测到更改。论文内容与当前版本相同。",
+    "authorsAddOnly": "现有作者不能被移除。您可以添加新的共同作者。",
+    "versionLabel": "版本 {version}"
+  },
   "review": {
     "backToPaper": "返回论文",
     "title": "撰写评审",
@@ -507,7 +530,9 @@
     "versionWithDate": "v{number} - {date}",
     "latest": "最新",
     "metadataOnly": "此版本仅更改了元数据（如作者链接、标签）--内容未做修改。",
-    "metadataOnlyShort": "元数据"
+    "metadataOnlyShort": "元数据",
+    "outdated": "评审于v{version}（已过时）",
+    "addressedInVersion": "已在v{version}中处理"
   },
   "orcid": {
     "verifyButton": "通过 ORCID 验证",

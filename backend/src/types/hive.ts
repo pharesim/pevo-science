@@ -19,6 +19,16 @@ export interface SupplementaryFile {
   description?: string; // optional author-provided label
 }
 
+export interface AddressedReview {
+  author: string;
+  permlink: string;
+}
+
+export interface ContinuationPointer {
+  author: string;
+  permlink: string;
+}
+
 export interface PaperPevoMeta {
   type: "paper";
   /** Content version counter — incremented by the author on each edit (1 = first publication). */
@@ -32,6 +42,10 @@ export interface PaperPevoMeta {
   document_hash: string | null;
   citations: Citation[];
   supplementary_files: SupplementaryFile[];
+  /** Reviews explicitly addressed by this version. */
+  addresses_reviews?: AddressedReview[];
+  /** For continuation posts: points to the current chain head being continued. */
+  continues?: ContinuationPointer;
 }
 
 export interface ReviewPevoMeta {

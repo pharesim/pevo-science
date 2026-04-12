@@ -162,6 +162,29 @@
     "accreditationRequired": "Sie müssen akkreditiert sein, um Arbeiten zu veröffentlichen.",
     "getAccredited": "Akkreditierung beantragen"
   },
+  "edit": {
+    "editButton": "Artikel bearbeiten",
+    "title": "Artikel bearbeiten",
+    "description": "Aktualisieren Sie Ihre Publikation. Änderungen werden als neue Version aufgezeichnet.",
+    "loadingPaper": "Artikeldaten werden geladen...",
+    "loadError": "Artikel konnte nicht geladen werden. Bitte versuchen Sie es erneut.",
+    "notAuthorized": "Sie sind nicht berechtigt, diesen Artikel zu bearbeiten.",
+    "continuationNotice": "Veröffentlichung als Revision",
+    "continuationExplainer": "Sie sind nicht der ursprüngliche Autor. Ihre Änderungen werden als neue Revision veröffentlicht, die diesen Artikel fortführt.",
+    "disciplineFixed": "Die Disziplin kann nach der Veröffentlichung nicht geändert werden.",
+    "addressReviews": "Gutachten adressieren",
+    "addressReviewsHint": "Wählen Sie Gutachten aus, die diese Bearbeitung berücksichtigt. Gutachter sehen, dass ihr Feedback eingearbeitet wurde.",
+    "saveButton": "Änderungen speichern",
+    "publishRevision": "Revision veröffentlichen",
+    "saving": "Speichern...",
+    "stepDiffing": "Änderungen werden berechnet...",
+    "stepUploading": "Hochladen auf IPFS...",
+    "stepBroadcasting": "Übertragung ins Netzwerk...",
+    "stepSuccess": "Artikel erfolgreich aktualisiert!",
+    "noChanges": "Keine Änderungen erkannt. Der Artikelinhalt ist identisch mit der aktuellen Version.",
+    "authorsAddOnly": "Bestehende Autoren können nicht entfernt werden. Sie können neue Co-Autoren hinzufügen.",
+    "versionLabel": "Version {version}"
+  },
   "review": {
     "backToPaper": "Zurück zur Publikation",
     "title": "Begutachtung verfassen",
@@ -507,7 +530,9 @@
     "versionWithDate": "v{number} - {date}",
     "latest": "Aktuell",
     "metadataOnly": "Diese Version hat nur Metadaten geändert (z. B. Autorenlinks, Schlagwörter) - der Inhalt wurde nicht verändert.",
-    "metadataOnlyShort": "Metadaten"
+    "metadataOnlyShort": "Metadaten",
+    "outdated": "Begutachtet in V{version} (veraltet)",
+    "addressedInVersion": "Adressiert in V{version}"
   },
   "orcid": {
     "verifyButton": "Mit ORCID verifizieren",

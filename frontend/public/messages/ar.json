@@ -162,6 +162,29 @@
     "accreditationRequired": "يجب أن تكون معتمدًا لنشر الأبحاث.",
     "getAccredited": "الحصول على الاعتماد"
   },
+  "edit": {
+    "editButton": "تعديل البحث",
+    "title": "تعديل البحث",
+    "description": "قم بتحديث منشورك. يتم تسجيل التغييرات كإصدار جديد.",
+    "loadingPaper": "جارٍ تحميل بيانات البحث...",
+    "loadError": "فشل تحميل البحث. يرجى المحاولة مرة أخرى.",
+    "notAuthorized": "غير مصرّح لك بتعديل هذا البحث.",
+    "continuationNotice": "النشر كمراجعة",
+    "continuationExplainer": "لست المؤلف الأصلي. سيتم نشر تعديلاتك كمراجعة جديدة تستكمل هذا البحث.",
+    "disciplineFixed": "لا يمكن تغيير التخصص بعد النشر.",
+    "addressReviews": "معالجة المراجعات",
+    "addressReviewsHint": "حدد المراجعات التي يعالجها هذا التعديل. سيرى المراجعون أن ملاحظاتهم قد أُدرجت.",
+    "saveButton": "حفظ التغييرات",
+    "publishRevision": "نشر المراجعة",
+    "saving": "جارٍ الحفظ...",
+    "stepDiffing": "جارٍ حساب التغييرات...",
+    "stepUploading": "جارٍ الرفع إلى IPFS...",
+    "stepBroadcasting": "جارٍ البث إلى الشبكة...",
+    "stepSuccess": "تم تحديث البحث بنجاح!",
+    "noChanges": "لم يتم اكتشاف أي تغييرات. محتوى البحث مطابق للإصدار الحالي.",
+    "authorsAddOnly": "لا يمكن إزالة المؤلفين الحاليين. يمكنك إضافة مؤلفين مشاركين جدد.",
+    "versionLabel": "الإصدار {version}"
+  },
   "review": {
     "backToPaper": "العودة إلى البحث",
     "title": "كتابة مراجعة",
@@ -507,7 +530,9 @@
     "versionWithDate": "الإصدار {number} - {date}",
     "latest": "الأحدث",
     "metadataOnly": "هذا الإصدار غيّر البيانات الوصفية فقط (مثل روابط المؤلفين، الوسوم) - لم يتم تعديل المحتوى.",
-    "metadataOnlyShort": "بيانات وصفية"
+    "metadataOnlyShort": "بيانات وصفية",
+    "outdated": "تمت المراجعة في الإصدار {version} (قديم)",
+    "addressedInVersion": "تمت المعالجة في الإصدار {version}"
   },
   "orcid": {
     "verifyButton": "التحقق عبر ORCID",

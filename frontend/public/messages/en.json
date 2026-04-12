@@ -162,6 +162,29 @@
     "accreditationRequired": "You need to be accredited to publish papers.",
     "getAccredited": "Get accredited"
   },
+  "edit": {
+    "editButton": "Edit Paper",
+    "title": "Edit Paper",
+    "description": "Update your publication. Changes are recorded as a new version.",
+    "loadingPaper": "Loading paper data...",
+    "loadError": "Failed to load paper. Please try again.",
+    "notAuthorized": "You are not authorized to edit this paper.",
+    "continuationNotice": "Publishing as a revision",
+    "continuationExplainer": "You are not the original author. Your changes will be published as a new revision that continues this paper.",
+    "disciplineFixed": "Discipline cannot be changed after publication.",
+    "addressReviews": "Address reviews",
+    "addressReviewsHint": "Select reviews that this edit addresses. Reviewers will see their feedback was incorporated.",
+    "saveButton": "Save Changes",
+    "publishRevision": "Publish Revision",
+    "saving": "Saving...",
+    "stepDiffing": "Computing changes...",
+    "stepUploading": "Uploading to IPFS...",
+    "stepBroadcasting": "Broadcasting to the network...",
+    "stepSuccess": "Paper updated successfully!",
+    "noChanges": "No changes detected. The paper content is identical to the current version.",
+    "authorsAddOnly": "Existing authors cannot be removed. You may add new co-authors.",
+    "versionLabel": "Version {version}"
+  },
   "review": {
     "backToPaper": "Back to paper",
     "title": "Write a Review",
@@ -507,7 +530,9 @@
     "versionWithDate": "v{number} - {date}",
     "latest": "Latest",
     "metadataOnly": "This version only changed metadata (e.g. author links, tags) - no content was modified.",
-    "metadataOnlyShort": "metadata"
+    "metadataOnlyShort": "metadata",
+    "outdated": "Reviewed v{version} (outdated)",
+    "addressedInVersion": "Addressed in v{version}"
   },
   "orcid": {
     "verifyButton": "Verify with ORCID",

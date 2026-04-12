@@ -162,6 +162,29 @@
     "accreditationRequired": "Du skal være akkrediteret for at publicere artikler.",
     "getAccredited": "Bliv akkrediteret"
   },
+  "edit": {
+    "editButton": "Rediger artikel",
+    "title": "Rediger artikel",
+    "description": "Opdater din publikation. Ændringer registreres som en ny version.",
+    "loadingPaper": "Indlæser artikeldata...",
+    "loadError": "Kunne ikke indlæse artiklen. Prøv venligst igen.",
+    "notAuthorized": "Du har ikke tilladelse til at redigere denne artikel.",
+    "continuationNotice": "Udgiv som revision",
+    "continuationExplainer": "Du er ikke den oprindelige forfatter. Dine ændringer vil blive udgivet som en ny revision, der fortsætter denne artikel.",
+    "disciplineFixed": "Disciplin kan ikke ændres efter udgivelse.",
+    "addressReviews": "Adresser bedømmelser",
+    "addressReviewsHint": "Vælg de bedømmelser, som denne redigering adresserer. Bedømmere vil se, at deres feedback er blevet indarbejdet.",
+    "saveButton": "Gem ændringer",
+    "publishRevision": "Udgiv revision",
+    "saving": "Gemmer...",
+    "stepDiffing": "Beregner ændringer...",
+    "stepUploading": "Uploader til IPFS...",
+    "stepBroadcasting": "Sender til netværket...",
+    "stepSuccess": "Artikel opdateret!",
+    "noChanges": "Ingen ændringer fundet. Artikelindholdet er identisk med den nuværende version.",
+    "authorsAddOnly": "Eksisterende forfattere kan ikke fjernes. Du kan tilføje nye medforfattere.",
+    "versionLabel": "Version {version}"
+  },
   "review": {
     "backToPaper": "Tilbage til artikel",
     "title": "Skriv en bedømmelse",
@@ -507,7 +530,9 @@
     "versionWithDate": "v{number} - {date}",
     "latest": "Nyeste",
     "metadataOnly": "Denne version ændrede kun metadata (f.eks. forfatterlinks, tags) - intet indhold blev ændret.",
-    "metadataOnlyShort": "metadata"
+    "metadataOnlyShort": "metadata",
+    "outdated": "Bedømt i v{version} (forældet)",
+    "addressedInVersion": "Adresseret i v{version}"
   },
   "orcid": {
     "verifyButton": "Verificer med ORCID",

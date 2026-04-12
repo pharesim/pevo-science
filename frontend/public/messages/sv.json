@@ -162,6 +162,29 @@
     "accreditationRequired": "Du måste vara ackrediterad för att publicera artiklar.",
     "getAccredited": "Bli ackrediterad"
   },
+  "edit": {
+    "editButton": "Redigera artikel",
+    "title": "Redigera artikel",
+    "description": "Uppdatera din publikation. Ändringar registreras som en ny version.",
+    "loadingPaper": "Laddar artikeldata...",
+    "loadError": "Kunde inte ladda artikeln. Försök igen.",
+    "notAuthorized": "Du har inte behörighet att redigera denna artikel.",
+    "continuationNotice": "Publicera som revision",
+    "continuationExplainer": "Du är inte den ursprungliga författaren. Dina ändringar publiceras som en ny revision som fortsätter denna artikel.",
+    "disciplineFixed": "Disciplin kan inte ändras efter publicering.",
+    "addressReviews": "Bemöt recensioner",
+    "addressReviewsHint": "Välj de recensioner som denna redigering bemöter. Recensenter kommer att se att deras feedback har beaktats.",
+    "saveButton": "Spara ändringar",
+    "publishRevision": "Publicera revision",
+    "saving": "Sparar...",
+    "stepDiffing": "Beräknar ändringar...",
+    "stepUploading": "Laddar upp till IPFS...",
+    "stepBroadcasting": "Sänder till nätverket...",
+    "stepSuccess": "Artikeln har uppdaterats!",
+    "noChanges": "Inga ändringar hittades. Artikelinnehållet är identiskt med den nuvarande versionen.",
+    "authorsAddOnly": "Befintliga författare kan inte tas bort. Du kan lägga till nya medförfattare.",
+    "versionLabel": "Version {version}"
+  },
   "review": {
     "backToPaper": "Tillbaka till artikeln",
     "title": "Skriv en recension",
@@ -507,7 +530,9 @@
     "versionWithDate": "v{number} - {date}",
     "latest": "Senaste",
     "metadataOnly": "Denna version ändrade bara metadata (t.ex. författarlänkar, taggar) - inget innehåll ändrades.",
-    "metadataOnlyShort": "metadata"
+    "metadataOnlyShort": "metadata",
+    "outdated": "Granskad i v{version} (inaktuell)",
+    "addressedInVersion": "Åtgärdad i v{version}"
   },
   "orcid": {
     "verifyButton": "Verifiera med ORCID",

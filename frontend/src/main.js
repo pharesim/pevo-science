@@ -36,6 +36,7 @@ import { initProfilePage } from './pages/profile.js';
 import { initPublishPage } from './pages/publish.js';
 import { initReviewPage } from './pages/review.js';
 import { initBridgePage } from './pages/bridge.js';
+import { initEditPage } from './pages/edit.js';
 import { initAccreditationPage } from './pages/accreditation.js';
 import { initAccreditationVerifyPage } from './pages/accreditation-verify.js';
 import { initAccreditationOrcidCallbackPage } from './pages/accreditation-orcid-callback.js';
@@ -88,6 +89,7 @@ initVouchSection();
 
 // Initialize pages — Phase 4
 initPublishPage();
+initEditPage();
 initReviewPage();
 initBridgePage();
 initAccreditationPage();

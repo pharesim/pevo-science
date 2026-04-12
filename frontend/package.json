@@ -21,6 +21,7 @@
     "@tiptap/pm": "^2.11.5",
     "@tiptap/starter-kit": "^2.11.5",
     "alpinejs": "^3.14.8",
+    "diff-match-patch": "^1.0.5",
     "dompurify": "^3.2.4",
     "katex": "^0.16.21",
     "marked": "^15.0.7",

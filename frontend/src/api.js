@@ -305,6 +305,15 @@ export function submitContactForm(data) {
   });
 }
 
+// ─── Cache Invalidation ─────────────────────────────────────────
+
+export function invalidatePaperCache(author, permlink) {
+  return authenticatedRequest(
+    `/papers/${encodeURIComponent(author)}/${encodeURIComponent(permlink)}/invalidate`,
+    { method: 'POST' }
+  );
+}
+
 // ─── Health ──────────────────────────────────────────────────────
 
 export async function fetchHealth() {

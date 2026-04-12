@@ -5,6 +5,7 @@ const ROUTES = [
   { pattern: /^\/papers$/,                              name: 'papers' },
   { pattern: /^\/paper\/([^/]+)\/([^/]+)$/,           name: 'paper-detail',  params: ['author', 'permlink'] },
   { pattern: /^\/publish$/,                            name: 'publish' },
+  { pattern: /^\/edit\/([^/]+)\/([^/]+)$/,             name: 'edit',          params: ['author', 'permlink'] },
   { pattern: /^\/review\/([^/]+)\/([^/]+)$/,          name: 'review',        params: ['author', 'permlink'] },
   { pattern: /^\/search$/,                             name: 'search' },
   { pattern: /^\/bridge$/,                             name: 'bridge' },
