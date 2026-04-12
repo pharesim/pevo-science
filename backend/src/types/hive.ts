@@ -29,10 +29,7 @@ export interface PaperPevoMeta {
   ipfs_cid: string | null;
   ipfs_filename: string | null;
   language: string;
-  abstract_hash: string;
   document_hash: string | null;
-  /** SHA-256 of (title + "\n" + body). Used to distinguish content revisions from metadata-only edits. */
-  content_hash: string;
   citations: Citation[];
   supplementary_files: SupplementaryFile[];
 }
@@ -70,9 +67,6 @@ export interface BridgePaperPevoMeta {
   discipline: string;
   keywords: string[];
   language: string;
-  abstract_hash: string;
-  /** SHA-256 of (title + "\n" + body). Used to distinguish content revisions from metadata-only edits. */
-  content_hash: string;
   citations: Citation[];
   ipfs_cid: null;
   ipfs_filename: null;

@@ -460,8 +460,6 @@ export function buildBridgeMetadata(
     discipline,
     keywords,
     language,
-    abstract_hash: sha256(meta.abstract),
-    content_hash: sha256(title + '\n' + body),
     citations: [] as unknown[],
     ipfs_cid: null,
     ipfs_filename: null,

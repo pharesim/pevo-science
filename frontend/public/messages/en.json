@@ -533,6 +533,10 @@
     "downloadStarted": "Citation file download started.",
     "exportFailed": "Failed to export citation."
   },
+  "metadataRestored": {
+    "title": "Paper metadata was modified by an external edit",
+    "description": "Some information about this paper was changed or removed by an edit on another platform. Edit this paper on PEvO to restore its full metadata and visibility in listings."
+  },
   "retraction": {
     "banner": "Retracted",
     "reason": "Reason",

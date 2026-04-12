@@ -68,7 +68,6 @@ export interface PaperDetail {
   ipfs_cid: string | null;
   ipfs_filename: string | null;
   document_hash: string | null;
-  abstract_hash: string;
   language: string;
   citations: Citation[];
   citation_count: number;
@@ -80,6 +79,8 @@ export interface PaperDetail {
   retraction_reason?: string | null;
   retraction_timestamp?: string | null;
   supplementary_files: SupplementaryFile[];
+  /** True when PEvO metadata was stripped by an external edit and restored from version history. */
+  metadata_restored?: boolean;
 }
 
 /** Accreditation-dependent enrichment loaded lazily after initial paper render. */

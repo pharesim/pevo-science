@@ -431,6 +431,10 @@ async function fetchPaperDetailFromHiveApi(author: string, permlink: string) {
 // Version history resolution (on-chain edits)
 // ──────────────────────────────────────────────
 
+import { diff_match_patch as DiffMatchPatch } from 'diff-match-patch';
+
+const dmp = new DiffMatchPatch();
+
 interface PaperVersionEntry {
   version_number: number;
   created: string;
@@ -438,55 +442,103 @@ interface PaperVersionEntry {
   is_content_revision: boolean;
 }
 
-async function resolveVersionsFromHaf(author: string, permlink: string): Promise<PaperVersionEntry[]> {
+/** A fully reconstructed version with body content. */
+interface ReconstructedVersion extends PaperVersionEntry {
+  body: string;
+  json_metadata: Record<string, unknown>;
+}
+
+/**
+ * Apply a Hive `@@`-format diff patch to a base string.
+ * If the body does NOT start with `@@`, it's treated as a full replacement.
+ */
+function applyHivePatch(base: string, raw: string): string {
+  if (!raw.startsWith('@@')) return raw;
+  const patches = dmp.patch_fromText(raw);
+  const [result] = dmp.patch_apply(patches, base);
+  return result;
+}
+
+/**
+ * Fetch all comment operations and reconstruct full body at each version
+ * by replaying `@@` diff patches. Returns versions in chronological order.
+ */
+async function reconstructVersionsFromHaf(
+  author: string,
+  permlink: string,
+): Promise<ReconstructedVersion[]> {
   const pool = getPool();
   if (!pool) return [];
 
   try {
-    // Query all comment operations on this (author, permlink) — each op is a version.
-    // (author, permlink) is unique on Hive so no parent filter needed.
-    // Compute content_hash from actual title+body so external edits (no PEvO metadata) are detected.
-    // Prefer PEvO metadata content_hash when present; fall back to SHA-256 of title+body.
     const result = await pool.query(
       `SELECT
-         COALESCE(
-           (co.json_metadata -> $3 ->> 'version')::int,
-           ROW_NUMBER() OVER (ORDER BY co.block_num)::int
-         ) AS version_number,
+         ROW_NUMBER() OVER (ORDER BY co.block_num)::int AS version_number,
          co.title,
+         co.body,
          co.created,
-         COALESCE(
-           co.json_metadata -> $3 ->> 'content_hash',
-           encode(sha256((co.title || E'\\n' || co.body)::bytea), 'hex')
-         ) AS content_hash
+         co.json_metadata
        FROM ${T.commentOps} co
        WHERE co.author = $1
          AND co.permlink = $2
        ORDER BY co.block_num ASC`,
-      [author, permlink, config.appTag],
+      [author, permlink],
     );
 
     const rows = result.rows as Array<Record<string, unknown>>;
-    let prevContentHash: string | null = null;
+    const versions: ReconstructedVersion[] = [];
+    let prevBody = '';
+    let prevTitle = '';
+    let lastGoodMeta: Record<string, unknown> | null = null;
 
-    return rows.map((r) => {
-      const contentHash = (r.content_hash as string) || null;
-      // First version is always a content revision.
-      // Subsequent versions: content revision if hash changed.
-      const isContentRevision = prevContentHash === null || contentHash === null || contentHash !== prevContentHash;
-      prevContentHash = contentHash;
+    for (const r of rows) {
+      const rawBody = (r.body as string) || '';
+      const rawTitle = (r.title as string) || '';
 
-      return {
+      const body = applyHivePatch(prevBody, rawBody);
+      // Hive doesn't use @@ patches for titles, but handle it the same way
+      const title = rawTitle || prevTitle;
+
+      const isContentRevision =
+        versions.length === 0 || body !== prevBody || title !== prevTitle;
+
+      let meta = parseMeta(r.json_metadata);
+
+      // If this version has valid PEvO metadata, remember it.
+      // If not (external edit stripped it), restore from the last version that had it.
+      if (isPevoAnyPaper(meta)) {
+        lastGoodMeta = meta;
+      } else if (lastGoodMeta) {
+        meta = { ...meta, app: lastGoodMeta.app, [config.appTag]: lastGoodMeta[config.appTag] };
+      }
+
+      versions.push({
         version_number: r.version_number as number,
         created: r.created as string,
-        title: (r.title as string) || '',
+        title,
+        body,
         is_content_revision: isContentRevision,
-      };
-    });
+        json_metadata: meta,
+      });
+
+      prevBody = body;
+      prevTitle = title;
+    }
+
+    return versions;
   } catch (err) {
-    logger.error({ err }, 'HAF version history query failed');
+    logger.error({ err }, 'HAF version reconstruction failed');
     return [];
   }
+}
+
+/** Return version metadata only (no bodies). */
+async function resolveVersionsFromHaf(
+  author: string,
+  permlink: string,
+): Promise<PaperVersionEntry[]> {
+  const versions = await reconstructVersionsFromHaf(author, permlink);
+  return versions.map(({ body: _body, json_metadata: _meta, ...entry }) => entry);
 }
 
 async function getRetractionInfo(author: string, permlink: string): Promise<{ is_retracted: boolean; retraction_reason?: string | null; retraction_timestamp?: string | null }> {
@@ -535,7 +587,6 @@ function buildPaperDetail(
     ipfs_cid: pevo.ipfs_cid || null,
     ipfs_filename: pevo.ipfs_filename || null,
     document_hash: pevo.document_hash || null,
-    abstract_hash: pevo.abstract_hash || null,
     language: pevo.language || 'en',
     citations: pevo.citations || [],
     citation_count: 0,
@@ -547,11 +598,50 @@ function buildPaperDetail(
     retraction_reason: null as string | null,
     retraction_timestamp: null as string | null,
     supplementary_files: pevo.supplementary_files || [],
+    metadata_restored: false,
   };
 }
 
 router.get('/:author/:permlink', async (req: Request, res: Response) => {
   const { author, permlink } = req.params;
+  const requestedVersion = req.query.version ? parseInt(req.query.version as string, 10) : null;
+
+  if (requestedVersion !== null && isNaN(requestedVersion)) {
+    return sendError(res, 400, 'BAD_REQUEST', 'version must be an integer');
+  }
+
+  // Historical versions require HAF (Hive API only has latest).
+  if (requestedVersion !== null && isHafAvailable()) {
+    const cacheKey = `paper-detail:${author}:${permlink}:v${requestedVersion}`;
+    const cached = await hafCache.getOrSet(cacheKey, async () => {
+      const versions = await reconstructVersionsFromHaf(author, permlink);
+      if (versions.length === 0) return null;
+
+      // Paper identity is established by the first version (original publication).
+      // External edits may overwrite json_metadata, so don't check later versions.
+      if (!isPevoAnyPaper(versions[0].json_metadata)) return null;
+
+      const target = versions.find((v) => v.version_number === requestedVersion);
+      if (!target) return null;
+
+      // Use this version's metadata (IPFS CID, authors, etc.) but fall back to
+      // the original publication's PEvO metadata for fields external edits may strip.
+      const meta = target.json_metadata;
+      const post = { author, permlink, title: target.title, body: target.body, json_metadata: meta, created: target.created, last_edited: target.created };
+      const detail = buildPaperDetail(post, meta, []);
+      detail.versions = versions.map(({ body: _b, json_metadata: _m, ...entry }) => entry);
+
+      const retraction = await getRetractionInfo(author, permlink);
+      detail.is_retracted = retraction.is_retracted;
+      detail.retraction_reason = retraction.retraction_reason ?? null;
+      detail.retraction_timestamp = retraction.retraction_timestamp ?? null;
+
+      return detail;
+    }, 30 * 60_000, true);
+
+    if (cached) return sendOk(res, cached);
+    return sendError(res, 404, 'NOT_FOUND', 'Version not found');
+  }
 
   const cacheKey = `paper-detail:${author}:${permlink}`;
   const cached = await hafCache.getOrSet(cacheKey, async () => {
@@ -562,7 +652,28 @@ router.get('/:author/:permlink', async (req: Request, res: Response) => {
 
     // Fallback to HAF if Hive API failed
     if (isHafAvailable()) {
-      return fetchPaperDetailFromHaf(author, permlink);
+      const hafResult = await fetchPaperDetailFromHaf(author, permlink);
+      if (hafResult) return hafResult;
+
+      // If current metadata was stripped by an external edit, reconstruct from
+      // version history. The first version establishes paper identity; later
+      // versions inherit PEvO metadata when the editing frontend dropped it.
+      const versions = await reconstructVersionsFromHaf(author, permlink);
+      if (versions.length > 0 && isPevoAnyPaper(versions[0].json_metadata)) {
+        const latest = versions[versions.length - 1];
+        const meta = latest.json_metadata;
+        const post = { author, permlink, title: latest.title, body: latest.body, json_metadata: meta, created: versions[0].created, last_edited: latest.created };
+        const detail = buildPaperDetail(post, meta, []);
+        detail.versions = versions.map(({ body: _b, json_metadata: _m, ...entry }) => entry);
+        detail.metadata_restored = true;
+
+        const retraction = await getRetractionInfo(author, permlink);
+        detail.is_retracted = retraction.is_retracted;
+        detail.retraction_reason = retraction.retraction_reason ?? null;
+        detail.retraction_timestamp = retraction.retraction_timestamp ?? null;
+
+        return detail;
+      }
     }
 
     return null;

@@ -1,7 +1,7 @@
 import Alpine from 'alpinejs';
 import { uploadToIpfs, fetchDisciplines } from '../api.js';
 import { publishPaper } from '../keychain.js';
-import { sha256, sha256File, slugify } from '../crypto.js';
+import { sha256File, slugify } from '../crypto.js';
 import { createEditor } from '../editor.js';
 import { getAppTag, getAppId } from '../config.js';
 
@@ -351,8 +351,6 @@ export function initPublishPage() {
       this.errorMessage = '';
 
       try {
-        const abstractHash = await sha256(this.abstract);
-        const contentHash = await sha256(this.title + '\n' + this.postBody);
 
         let ipfsCid = null;
         let ipfsFilename = null;
@@ -426,9 +424,7 @@ export function initPublishPage() {
             ipfs_cid: ipfsCid,
             ipfs_filename: ipfsFilename,
             language: 'en',
-            abstract_hash: abstractHash,
             document_hash: documentHash,
-            content_hash: contentHash,
             supplementary_files: supplementaryFiles,
           },
         };
