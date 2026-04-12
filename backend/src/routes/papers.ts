@@ -443,8 +443,10 @@ async function resolveVersionsFromHaf(author: string, permlink: string): Promise
   if (!pool) return [];
 
   try {
-    // Query all comment operations on this (author, permlink) — each op is a version
-    // Include content_hash to detect content revisions vs metadata-only edits
+    // Query all comment operations on this (author, permlink) — each op is a version.
+    // (author, permlink) is unique on Hive so no parent filter needed.
+    // Compute content_hash from actual title+body so external edits (no PEvO metadata) are detected.
+    // Prefer PEvO metadata content_hash when present; fall back to SHA-256 of title+body.
     const result = await pool.query(
       `SELECT
          COALESCE(
@@ -453,12 +455,13 @@ async function resolveVersionsFromHaf(author: string, permlink: string): Promise
          ) AS version_number,
          co.title,
          co.created,
-         co.json_metadata -> $3 ->> 'content_hash' AS content_hash
+         COALESCE(
+           co.json_metadata -> $3 ->> 'content_hash',
+           encode(sha256((co.title || E'\\n' || co.body)::bytea), 'hex')
+         ) AS content_hash
        FROM ${T.commentOps} co
        WHERE co.author = $1
          AND co.permlink = $2
-         AND co.parent_author = ''
-         AND co.parent_permlink = $3
        ORDER BY co.block_num ASC`,
       [author, permlink, config.appTag],
     );
@@ -469,7 +472,7 @@ async function resolveVersionsFromHaf(author: string, permlink: string): Promise
     return rows.map((r) => {
       const contentHash = (r.content_hash as string) || null;
       // First version is always a content revision.
-      // Subsequent versions: content revision if hash changed or is missing (pre-feature posts).
+      // Subsequent versions: content revision if hash changed.
       const isContentRevision = prevContentHash === null || contentHash === null || contentHash !== prevContentHash;
       prevContentHash = contentHash;
 
