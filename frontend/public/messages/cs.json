@@ -3,6 +3,10 @@
     "title": "PEvO – Otevřené vědecké publikování",
     "description": "Otevřené vědecké publikování a interaktivní hodnocení na trvalém, otevřeném záznamu. Neziskové, transparentní, forkovatelné."
   },
+  "betaBanner": {
+    "message": "Beta: Toto je testovací prostředí. Všechna data budou smazána před oficiálním spuštěním.",
+    "close": "Zavřít"
+  },
   "nav": {
     "papers": "Články",
     "search": "Hledat",
@@ -793,5 +797,23 @@
   },
   "aria": {
     "notifications": "Oznámení"
+  },
+  "diff": {
+    "compareVersions": "Porovnat verze",
+    "comparing": "Porovnání v{a} → v{b}",
+    "close": "Zavřít porovnání",
+    "selectVersions": "Vyberte dvě verze k porovnání",
+    "selectFirst": "Vyberte první verzi",
+    "selectSecond": "Vyberte druhou verzi",
+    "title": "Název",
+    "body": "Obsah",
+    "bodyNotDiffable": "Obsah PDF nelze porovnat — prohlédněte si verze samostatně",
+    "authors": "Autoři",
+    "supplementaryFiles": "Doplňkové soubory",
+    "citations": "Citace",
+    "keywords": "Klíčová slova",
+    "added": "Přidáno",
+    "removed": "Odebráno",
+    "noChanges": "Mezi těmito verzemi nejsou žádné viditelné změny"
   }
 }

@@ -1,5 +1,6 @@
 import Alpine from 'alpinejs';
 import { fetchPaper, fetchPaperEnrichment, fetchCitationExport, retractPaper, fetchDoi, assignDoi, updateBridgePaper, fetchPaperComments } from '../api.js';
+import { computeVersionDiff } from '../lib/version-diff.js';
 import { formatDate } from '../components/paper-card.js';
 
 export function initPaperDetailPage() {
@@ -33,6 +34,15 @@ export function initPaperDetailPage() {
 
     // Paper body collapse
     bodyExpanded: false,
+
+    // Version diff
+    diffMode: false,
+    diffVersionA: null,
+    diffVersionB: null,
+    diffResult: null,
+    diffLoading: false,
+    diffError: null,
+    pickingDiffVersions: false,
 
     // Expose helper
     formatDate,
@@ -326,6 +336,63 @@ export function initPaperDetailPage() {
       return new Date(iso).toLocaleDateString('en-US', {
         year: 'numeric', month: 'short', day: 'numeric',
       });
+    },
+
+    selectDiffVersions() {
+      if (this.diffMode) {
+        this.exitDiff();
+        return;
+      }
+      this.pickingDiffVersions = true;
+      this.diffVersionA = null;
+      this.diffVersionB = null;
+      this.diffResult = null;
+      this.diffError = null;
+    },
+
+    pickDiffVersion(versionNumber) {
+      if (!this.pickingDiffVersions) return;
+      if (this.diffVersionA === null) {
+        this.diffVersionA = versionNumber;
+      } else if (this.diffVersionB === null) {
+        if (versionNumber === this.diffVersionA) return;
+        this.diffVersionB = versionNumber;
+        // Auto-sort so A < B
+        const a = Math.min(this.diffVersionA, this.diffVersionB);
+        const b = Math.max(this.diffVersionA, this.diffVersionB);
+        this.diffVersionA = a;
+        this.diffVersionB = b;
+        this.pickingDiffVersions = false;
+        this.startDiff(a, b);
+      }
+    },
+
+    async startDiff(vA, vB) {
+      this.diffLoading = true;
+      this.diffError = null;
+      try {
+        const [resA, resB] = await Promise.all([
+          fetchPaper(this.author, this.permlink, vA),
+          fetchPaper(this.author, this.permlink, vB),
+        ]);
+        this.diffResult = computeVersionDiff(resA.data, resB.data);
+        this.diffMode = true;
+      } catch (err) {
+        this.diffError = err?.message || 'Failed to load versions for comparison';
+        this.$store.toast.show(this.diffError, 'error');
+      } finally {
+        this.diffLoading = false;
+      }
+    },
+
+    exitDiff() {
+      this.diffMode = false;
+      this.diffVersionA = null;
+      this.diffVersionB = null;
+      this.diffResult = null;
+      this.diffLoading = false;
+      this.diffError = null;
+      this.pickingDiffVersions = false;
     },
 
     navigate(path) {

@@ -3,6 +3,10 @@
     "title": "PEvO - Öppen vetenskaplig publicering",
     "description": "Öppen vetenskaplig publicering och interaktiv kollegial granskning på ett permanent, öppet register. Icke-vinstdrivande, transparent, förgreningsbar."
   },
+  "betaBanner": {
+    "message": "Beta: Detta är en testmiljö. All data kommer att raderas före den officiella lanseringen.",
+    "close": "Stäng"
+  },
   "nav": {
     "papers": "Artiklar",
     "search": "Sök",
@@ -793,5 +797,23 @@
   },
   "aria": {
     "notifications": "Aviseringar"
+  },
+  "diff": {
+    "compareVersions": "Jämför versioner",
+    "comparing": "Jämför v{a} → v{b}",
+    "close": "Stäng jämförelse",
+    "selectVersions": "Välj två versioner att jämföra",
+    "selectFirst": "Välj första versionen",
+    "selectSecond": "Välj andra versionen",
+    "title": "Titel",
+    "body": "Innehåll",
+    "bodyNotDiffable": "PDF-innehåll kan inte jämföras — visa versionerna separat",
+    "authors": "Författare",
+    "supplementaryFiles": "Kompletterande filer",
+    "citations": "Citeringar",
+    "keywords": "Nyckelord",
+    "added": "Tillagt",
+    "removed": "Borttaget",
+    "noChanges": "Inga synliga ändringar mellan dessa versioner"
   }
 }

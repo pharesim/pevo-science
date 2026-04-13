@@ -11,6 +11,20 @@
 </head>
 <body class="min-h-screen flex flex-col bg-parchment text-ink">
 
+  <!-- Beta banner -->
+  <div x-data="{ dismissed: localStorage.getItem('betaBannerDismissed') === '1' }"
+       x-show="!dismissed" x-transition
+       class="bg-amber-500 text-white text-center text-sm py-2 px-4 relative">
+    <span x-text="$t('betaBanner.message')"></span>
+    <button @click="dismissed = true; localStorage.setItem('betaBannerDismissed', '1')"
+            class="absolute right-3 top-1/2 -translate-y-1/2 text-white/80 hover:text-white transition-colors"
+            :aria-label="$t('betaBanner.close')">
+      <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+      </svg>
+    </button>
+  </div>
+
   <!-- ═══════════════════════════════════════════════ HEADER ═══════════════════════════════════════════════ -->
   <header x-data="header" class="border-b border-parchment-dark bg-white">
     <!-- Brand accent bar -->
@@ -686,11 +700,17 @@
                   <span class="text-xs font-medium text-ink-muted"><span x-text="$t('versions.label')"></span>:</span>
                   <template x-for="v in sortedVersions" :key="v.version_number">
                     <button class="inline-flex items-center gap-1.5 text-xs px-3 py-1 rounded-full border cursor-pointer"
-                          :class="v.version_number === currentVersion
-                            ? 'bg-pevo-teal text-white border-pevo-teal'
-                            : 'bg-parchment-warm text-ink-muted border-parchment-dark hover:border-pevo-teal'"
-                          :title="$t('versions.versionWithDate', { number: String(v.version_number), date: formatShortDate(v.created) })"
-                          @click="loadVersion(v.version_number)">
+                          :class="{
+                            'bg-pevo-teal text-white border-pevo-teal': !pickingDiffVersions && !diffMode && v.version_number === currentVersion,
+                            'bg-parchment-warm text-ink-muted border-parchment-dark hover:border-pevo-teal': !pickingDiffVersions && !diffMode && v.version_number !== currentVersion,
+                            'border-dashed border-ink-muted hover:border-pevo-teal bg-parchment-warm text-ink-muted cursor-cell': pickingDiffVersions && v.version_number !== diffVersionA && v.version_number !== diffVersionB,
+                            'ring-2 ring-blue-500 bg-blue-50 text-blue-800 border-blue-300': (pickingDiffVersions || diffMode) && v.version_number === diffVersionA,
+                            'ring-2 ring-green-500 bg-green-50 text-green-800 border-green-300': (pickingDiffVersions || diffMode) && v.version_number === diffVersionB
+                          }"
+                          :title="pickingDiffVersions
+                            ? (diffVersionA === null ? $t('diff.selectFirst') : $t('diff.selectSecond'))
+                            : $t('versions.versionWithDate', { number: String(v.version_number), date: formatShortDate(v.created) })"
+                          @click="pickingDiffVersions ? pickDiffVersion(v.version_number) : loadVersion(v.version_number)">
                       <span x-text="'v' + v.version_number"></span>
                       <span class="hidden sm:inline text-[0.65rem] opacity-75" x-text="formatShortDate(v.created)"></span>
                       <template x-if="!v.is_content_revision">
@@ -703,6 +723,136 @@
                               x-text="$t('versions.latest')"></span>
                       </template>
                     </button>
+                  </template>
+                  <!-- Compare versions button -->
+                  <button class="inline-flex items-center gap-1 text-xs px-3 py-1 rounded-full border cursor-pointer"
+                        :class="diffMode || pickingDiffVersions
+                          ? 'bg-ink text-white border-ink'
+                          : 'bg-white text-ink-muted border-parchment-dark hover:border-ink hover:text-ink'"
+                        @click="selectDiffVersions()"
+                        x-text="diffMode ? $t('diff.close') : (pickingDiffVersions ? $t('diff.close') : $t('diff.compareVersions'))">
+                  </button>
+                </div>
+                <!-- Pick mode hint -->
+                <p x-show="pickingDiffVersions" x-cloak class="text-xs text-ink-muted mt-1"
+                   x-text="diffVersionA === null ? $t('diff.selectFirst') : $t('diff.selectSecond')"></p>
+              </div>
+            </template>
+
+            <!-- Version diff view -->
+            <template x-if="diffMode || diffLoading">
+              <div class="mt-6 rounded-lg border border-parchment-dark bg-white shadow-sm">
+                <!-- Diff header -->
+                <div class="flex items-center justify-between px-5 py-3 border-b border-parchment-dark bg-parchment-warm rounded-t-lg">
+                  <h3 class="text-sm font-semibold text-ink" x-text="$t('diff.comparing', { a: String(diffVersionA), b: String(diffVersionB) })"></h3>
+                  <button class="text-xs text-ink-muted hover:text-ink cursor-pointer" @click="exitDiff()" x-text="$t('diff.close')"></button>
+                </div>
+
+                <!-- Loading state -->
+                <div x-show="diffLoading" class="px-5 py-8 text-center text-ink-muted text-sm">
+                  <span class="animate-pulse" x-text="$t('header.loading')"></span>
+                </div>
+
+                <!-- Diff content -->
+                <div x-show="!diffLoading && diffResult" class="divide-y divide-parchment-dark">
+                  <!-- No changes -->
+                  <template x-if="diffResult && !diffResult.title.changed && !diffResult.body.changed && !diffResult.authors.changed && !diffResult.supplementaryFiles.changed && !diffResult.citations.changed && !diffResult.keywords.changed">
+                    <div class="px-5 py-6 text-center text-ink-muted text-sm" x-text="$t('diff.noChanges')"></div>
+                  </template>
+
+                  <!-- Title diff -->
+                  <template x-if="diffResult && diffResult.title.changed">
+                    <div class="px-5 py-4">
+                      <h4 class="text-xs font-semibold text-ink-muted uppercase tracking-wide mb-2" x-text="$t('diff.title')"></h4>
+                      <p class="text-sm leading-relaxed">
+                        <template x-for="(seg, i) in diffResult.title.segments" :key="i">
+                          <span :class="{
+                            'bg-green-100 text-green-800': seg.type === 'insert',
+                            'bg-red-100 text-red-800 line-through': seg.type === 'delete'
+                          }" x-text="seg.text"></span>
+                        </template>
+                      </p>
+                    </div>
+                  </template>
+
+                  <!-- Body diff -->
+                  <template x-if="diffResult && diffResult.body.changed">
+                    <div class="px-5 py-4">
+                      <h4 class="text-xs font-semibold text-ink-muted uppercase tracking-wide mb-2" x-text="$t('diff.body')"></h4>
+                      <template x-if="!diffResult.body.diffable">
+                        <p class="text-sm text-ink-muted italic" x-text="$t('diff.bodyNotDiffable')"></p>
+                      </template>
+                      <template x-if="diffResult.body.diffable">
+                        <div class="text-sm leading-relaxed whitespace-pre-wrap max-h-[60vh] overflow-y-auto">
+                          <template x-for="(seg, i) in diffResult.body.segments" :key="i">
+                            <span :class="{
+                              'bg-green-100 text-green-800': seg.type === 'insert',
+                              'bg-red-100 text-red-800 line-through': seg.type === 'delete'
+                            }" x-text="seg.text"></span>
+                          </template>
+                        </div>
+                      </template>
+                    </div>
+                  </template>
+
+                  <!-- Authors diff -->
+                  <template x-if="diffResult && diffResult.authors.changed">
+                    <div class="px-5 py-4">
+                      <h4 class="text-xs font-semibold text-ink-muted uppercase tracking-wide mb-2" x-text="$t('diff.authors')"></h4>
+                      <ul class="space-y-1 text-sm">
+                        <template x-for="a in diffResult.authors.added" :key="'add-' + a.hive">
+                          <li class="text-green-700"><span class="font-mono mr-1">+</span> <span x-text="a.name"></span> <span class="text-ink-muted">(@<span x-text="a.hive"></span>)</span></li>
+                        </template>
+                        <template x-for="a in diffResult.authors.removed" :key="'rm-' + a.hive">
+                          <li class="text-red-700"><span class="font-mono mr-1">-</span> <span x-text="a.name"></span> <span class="text-ink-muted">(@<span x-text="a.hive"></span>)</span></li>
+                        </template>
+                      </ul>
+                    </div>
+                  </template>
+
+                  <!-- Supplementary files diff -->
+                  <template x-if="diffResult && diffResult.supplementaryFiles.changed">
+                    <div class="px-5 py-4">
+                      <h4 class="text-xs font-semibold text-ink-muted uppercase tracking-wide mb-2" x-text="$t('diff.supplementaryFiles')"></h4>
+                      <ul class="space-y-1 text-sm">
+                        <template x-for="f in diffResult.supplementaryFiles.added" :key="'add-' + f.cid">
+                          <li class="text-green-700"><span class="font-mono mr-1">+</span> <span x-text="f.filename || f.cid"></span> <span x-show="f.size" class="text-ink-muted" x-text="'(' + formatFileSize(f.size) + ')'"></span></li>
+                        </template>
+                        <template x-for="f in diffResult.supplementaryFiles.removed" :key="'rm-' + f.cid">
+                          <li class="text-red-700"><span class="font-mono mr-1">-</span> <span x-text="f.filename || f.cid"></span> <span x-show="f.size" class="text-ink-muted" x-text="'(' + formatFileSize(f.size) + ')'"></span></li>
+                        </template>
+                      </ul>
+                    </div>
+                  </template>
+
+                  <!-- Citations diff -->
+                  <template x-if="diffResult && diffResult.citations.changed">
+                    <div class="px-5 py-4">
+                      <h4 class="text-xs font-semibold text-ink-muted uppercase tracking-wide mb-2" x-text="$t('diff.citations')"></h4>
+                      <ul class="space-y-1 text-sm">
+                        <template x-for="c in diffResult.citations.added" :key="'add-' + c.author + c.permlink">
+                          <li class="text-green-700"><span class="font-mono mr-1">+</span> <span x-text="c.title || (c.author + '/' + c.permlink)"></span></li>
+                        </template>
+                        <template x-for="c in diffResult.citations.removed" :key="'rm-' + c.author + c.permlink">
+                          <li class="text-red-700"><span class="font-mono mr-1">-</span> <span x-text="c.title || (c.author + '/' + c.permlink)"></span></li>
+                        </template>
+                      </ul>
+                    </div>
+                  </template>
+
+                  <!-- Keywords diff -->
+                  <template x-if="diffResult && diffResult.keywords.changed">
+                    <div class="px-5 py-4">
+                      <h4 class="text-xs font-semibold text-ink-muted uppercase tracking-wide mb-2" x-text="$t('diff.keywords')"></h4>
+                      <div class="flex flex-wrap gap-2">
+                        <template x-for="k in diffResult.keywords.added" :key="'add-' + k">
+                          <span class="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-800">+ <span x-text="k"></span></span>
+                        </template>
+                        <template x-for="k in diffResult.keywords.removed" :key="'rm-' + k">
+                          <span class="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-red-100 text-red-800 line-through">- <span x-text="k"></span></span>
+                        </template>
+                      </div>
+                    </div>
                   </template>
                 </div>
               </div>

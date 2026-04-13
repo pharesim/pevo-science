@@ -3,6 +3,10 @@
     "title": "PEvO - Publicación científica abierta",
     "description": "Publicación científica abierta y evaluación interactiva por pares en un registro permanente y abierto. Sin fines de lucro, transparente, bifurcable."
   },
+  "betaBanner": {
+    "message": "Beta: Este es un entorno de pruebas. Todos los datos se borrarán antes del lanzamiento oficial.",
+    "close": "Cerrar"
+  },
   "nav": {
     "papers": "Artículos",
     "search": "Buscar",
@@ -793,5 +797,23 @@
   },
   "aria": {
     "notifications": "Notificaciones"
+  },
+  "diff": {
+    "compareVersions": "Comparar versiones",
+    "comparing": "Comparando v{a} → v{b}",
+    "close": "Cerrar comparación",
+    "selectVersions": "Selecciona dos versiones para comparar",
+    "selectFirst": "Selecciona la primera versión",
+    "selectSecond": "Selecciona la segunda versión",
+    "title": "Título",
+    "body": "Contenido",
+    "bodyNotDiffable": "El contenido PDF no se puede comparar — ver versiones por separado",
+    "authors": "Autores",
+    "supplementaryFiles": "Archivos complementarios",
+    "citations": "Citas",
+    "keywords": "Palabras clave",
+    "added": "Añadido",
+    "removed": "Eliminado",
+    "noChanges": "No hay cambios visibles entre estas versiones"
   }
 }

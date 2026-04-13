@@ -3,6 +3,10 @@
     "title": "PEvO - 开放科学出版平台",
     "description": "基于永久公共记录的开放科学出版与互动同行评审平台。非营利、透明、可分叉。"
   },
+  "betaBanner": {
+    "message": "Beta：这是测试环境。所有数据将在正式发布前清除。",
+    "close": "关闭"
+  },
   "nav": {
     "papers": "论文",
     "search": "搜索",
@@ -793,5 +797,23 @@
   },
   "aria": {
     "notifications": "通知"
+  },
+  "diff": {
+    "compareVersions": "比较版本",
+    "comparing": "比较 v{a} → v{b}",
+    "close": "关闭比较",
+    "selectVersions": "选择两个版本进行比较",
+    "selectFirst": "选择第一个版本",
+    "selectSecond": "选择第二个版本",
+    "title": "标题",
+    "body": "内容",
+    "bodyNotDiffable": "PDF 内容无法比较 - 请分别查看各版本",
+    "authors": "作者",
+    "supplementaryFiles": "补充文件",
+    "citations": "引用",
+    "keywords": "关键词",
+    "added": "新增",
+    "removed": "删除",
+    "noChanges": "这两个版本之间没有可见的更改"
   }
 }

@@ -3,6 +3,10 @@
     "title": "PEvO - Open Scientific Publishing",
     "description": "Open scientific publication and interactive peer evaluation on a permanent, open record. Non-profit, transparent, forkable."
   },
+  "betaBanner": {
+    "message": "Beta: This is a testing environment. All data will be wiped before the official launch.",
+    "close": "Dismiss"
+  },
   "nav": {
     "papers": "Papers",
     "search": "Search",
@@ -800,5 +804,23 @@
   },
   "aria": {
     "notifications": "Notifications"
+  },
+  "diff": {
+    "compareVersions": "Compare versions",
+    "comparing": "Comparing v{a} \u2192 v{b}",
+    "close": "Close comparison",
+    "selectVersions": "Select two versions to compare",
+    "selectFirst": "Select first version",
+    "selectSecond": "Select second version",
+    "title": "Title",
+    "body": "Content",
+    "bodyNotDiffable": "PDF content cannot be compared \u2014 view versions separately",
+    "authors": "Authors",
+    "supplementaryFiles": "Supplementary files",
+    "citations": "Citations",
+    "keywords": "Keywords",
+    "added": "Added",
+    "removed": "Removed",
+    "noChanges": "No visible changes between these versions"
   }
 }

@@ -3,6 +3,10 @@
     "title": "PEvO - Offenes wissenschaftliches Publizieren",
     "description": "Offene wissenschaftliche Publikation und interaktive Begutachtung auf einem dauerhaften, öffentlichen Register. Gemeinnützig, transparent, forkbar."
   },
+  "betaBanner": {
+    "message": "Beta: Dies ist eine Testumgebung. Alle Daten werden vor dem offiziellen Start gelöscht.",
+    "close": "Schließen"
+  },
   "nav": {
     "papers": "Publikationen",
     "search": "Suche",
@@ -793,5 +797,23 @@
   },
   "aria": {
     "notifications": "Benachrichtigungen"
+  },
+  "diff": {
+    "compareVersions": "Versionen vergleichen",
+    "comparing": "Vergleich v{a} → v{b}",
+    "close": "Vergleich schließen",
+    "selectVersions": "Zwei Versionen zum Vergleichen auswählen",
+    "selectFirst": "Erste Version auswählen",
+    "selectSecond": "Zweite Version auswählen",
+    "title": "Titel",
+    "body": "Inhalt",
+    "bodyNotDiffable": "PDF-Inhalte können nicht verglichen werden — Versionen einzeln ansehen",
+    "authors": "Autoren",
+    "supplementaryFiles": "Ergänzende Dateien",
+    "citations": "Zitationen",
+    "keywords": "Schlüsselwörter",
+    "added": "Hinzugefügt",
+    "removed": "Entfernt",
+    "noChanges": "Keine sichtbaren Änderungen zwischen diesen Versionen"
   }
 }

@@ -8,6 +8,8 @@ import helmet from 'helmet';
 import { config } from './config.js';
 import { isHafAvailable } from './db.js';
 import { isRedisAvailable } from './redis.js';
+import { hiveClient } from './hive.js';
+import { extractAbstract, parseMeta, isPevoAnyPaper } from './helpers.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { httpLogger, requestContext } from './logger.js';
 import { rateLimit, byIp } from './middleware/rateLimit.js';
@@ -145,14 +147,78 @@ export function createApp() {
     // index.html not built yet — will 404 on requests
   }
 
+  // ── SEO meta injection for paper pages ──────────────────────────
+  const paperRouteRe = /^\/paper\/([^/]+)\/([^/]+)$/;
+  const defaultTitle = 'PEvO - Open Scientific Publishing';
+  const defaultDesc = 'Open scientific publication and interactive peer evaluation on a permanent, open record. Non-profit, transparent, forkable.';
+
+  const botUaRe = /bot|crawl|spider|slurp|facebookexternalhit|linkedinbot|twitterbot|whatsapp|telegram|discord|preview|fetch|gptbot|chatgpt|claude|anthropic|perplexity|cohere|bingpreview|google-extended/i;
+
+  async function injectPaperMeta(html: string, author: string, permlink: string, reqUrl: string, isBot: boolean): Promise<string> {
+    const post = await hiveClient.database.call('get_content', [author, permlink]);
+    if (!post || !post.author || post.parent_permlink !== config.appTag) return html;
+
+    const meta = parseMeta(post.json_metadata);
+    if (!isPevoAnyPaper(meta)) return html;
+
+    const title = (post.title as string) || defaultTitle;
+    const body = post.body as string;
+    const abstract = extractAbstract(body);
+    const desc = abstract.slice(0, 200);
+
+    const ogTags = [
+      `<meta property="og:title" content="${escAttr(title)}" />`,
+      `<meta property="og:description" content="${escAttr(desc)}" />`,
+      `<meta property="og:type" content="article" />`,
+      reqUrl ? `<meta property="og:url" content="${escAttr(reqUrl)}" />` : '',
+      `<meta name="twitter:card" content="summary" />`,
+    ].filter(Boolean).join('\n  ');
+
+    let result = html
+      .replace(`<title>${defaultTitle}</title>`, `<title>${escHtml(title)} — PEvO</title>`)
+      .replace(
+        `<meta name="description" content="${defaultDesc}" />`,
+        `<meta name="description" content="${escAttr(desc)}" />\n  ${ogTags}`,
+      );
+
+    // For bots, inject the full body so they can index the content
+    if (isBot) {
+      const articleHtml = `<article style="display:none" id="seo-body"><h1>${escHtml(title)}</h1>${escHtml(body)}</article>`;
+      result = result.replace('</body>', `${articleHtml}\n</body>`);
+    }
+
+    return result;
+  }
+
+  function escAttr(s: string): string {
+    return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+  function escHtml(s: string): string {
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
   // SPA catch-all: serve index.html for any non-API GET request.
   // This enables client-side routing — the Alpine.js SPA handles its own routes.
   // API 404s are NOT intercepted; they fall through to the error handler.
-  app.get('*', (req, res, next) => {
+  app.get('*', async (req, res, next) => {
     if (req.path.startsWith('/api/')) {
       return next();
     }
     if (!indexHtml) return next();
+
+    // Inject paper-specific meta tags for SEO / link previews
+    const paperMatch = req.path.match(paperRouteRe);
+    if (paperMatch) {
+      try {
+        const fullUrl = `${req.protocol}://${req.get('host')}${req.originalUrl}`;
+        const isBot = botUaRe.test(req.get('user-agent') || '');
+        const html = await injectPaperMeta(indexHtml, paperMatch[1], paperMatch[2], fullUrl, isBot);
+        return res.type('html').send(html);
+      } catch {
+        // Fall through to generic HTML on any error
+      }
+    }
+
     res.type('html').send(indexHtml);
   });
 

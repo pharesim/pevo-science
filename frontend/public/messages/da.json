@@ -3,6 +3,10 @@
     "title": "PEvO - Åben videnskabelig publicering",
     "description": "Åben videnskabelig publicering og interaktiv fagfællebedømmelse på en permanent, åben protokol. Non-profit, transparent, forkbar."
   },
+  "betaBanner": {
+    "message": "Beta: Dette er et testmiljø. Alle data vil blive slettet før den officielle lancering.",
+    "close": "Luk"
+  },
   "nav": {
     "papers": "Artikler",
     "search": "Søg",
@@ -793,5 +797,23 @@
   },
   "aria": {
     "notifications": "Notifikationer"
+  },
+  "diff": {
+    "compareVersions": "Sammenlign versioner",
+    "comparing": "Sammenligner v{a} → v{b}",
+    "close": "Luk sammenligning",
+    "selectVersions": "Vælg to versioner at sammenligne",
+    "selectFirst": "Vælg første version",
+    "selectSecond": "Vælg anden version",
+    "title": "Titel",
+    "body": "Indhold",
+    "bodyNotDiffable": "PDF-indhold kan ikke sammenlignes — se versionerne separat",
+    "authors": "Forfattere",
+    "supplementaryFiles": "Supplerende filer",
+    "citations": "Citationer",
+    "keywords": "Nøgleord",
+    "added": "Tilføjet",
+    "removed": "Fjernet",
+    "noChanges": "Ingen synlige ændringer mellem disse versioner"
   }
 }

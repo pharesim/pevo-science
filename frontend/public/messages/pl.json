@@ -3,6 +3,10 @@
     "title": "PEvO - Otwarte Publikacje Naukowe",
     "description": "Otwarta publikacja naukowa i interaktywna ocena recenzencka w trwalym, otwartym rejestrze. Non-profit, transparentna, z mozliwoscia forku."
   },
+  "betaBanner": {
+    "message": "Beta: To jest środowisko testowe. Wszystkie dane zostaną usunięte przed oficjalnym uruchomieniem.",
+    "close": "Zamknij"
+  },
   "nav": {
     "papers": "Publikacje",
     "search": "Szukaj",
@@ -793,5 +797,23 @@
   },
   "aria": {
     "notifications": "Powiadomienia"
+  },
+  "diff": {
+    "compareVersions": "Porównaj wersje",
+    "comparing": "Porównanie v{a} → v{b}",
+    "close": "Zamknij porównanie",
+    "selectVersions": "Wybierz dwie wersje do porównania",
+    "selectFirst": "Wybierz pierwszą wersję",
+    "selectSecond": "Wybierz drugą wersję",
+    "title": "Tytuł",
+    "body": "Treść",
+    "bodyNotDiffable": "Zawartość PDF nie może być porównana — wyświetl wersje osobno",
+    "authors": "Autorzy",
+    "supplementaryFiles": "Pliki uzupełniające",
+    "citations": "Cytowania",
+    "keywords": "Słowa kluczowe",
+    "added": "Dodano",
+    "removed": "Usunięto",
+    "noChanges": "Brak widocznych zmian między tymi wersjami"
   }
 }
