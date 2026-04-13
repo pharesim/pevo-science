@@ -10,6 +10,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Merriweather:ital,wght@0,300;0,400;0,700;0,900;1,400&family=Inter:wght@300;400;500;600;700&display=swap" />
+  <style>[x-cloak] { display: none !important; }</style>
   <script type="module" src="/src/main.js"></script>
 </head>
 <body class="min-h-screen flex flex-col bg-parchment text-ink">
@@ -3748,7 +3749,7 @@
   </main>
 
   <!-- ═══════════ BROADCAST CONFIRM MODAL (light accounts) ═══════════ -->
-  <div x-show="$store.broadcastConfirm.open" x-cloak
+  <div x-data x-show="$store.broadcastConfirm.open" x-cloak
        class="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
        @keydown.escape.window="$store.broadcastConfirm.cancel()">
     <div class="bg-white rounded-xl shadow-xl max-w-sm w-full mx-4 p-6"
