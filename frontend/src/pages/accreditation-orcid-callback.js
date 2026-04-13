@@ -15,7 +15,8 @@ export function initAccreditationOrcidCallbackPage() {
       const code = Alpine.store('router').query.code;
       const state = Alpine.store('router').query.state;
 
-      if (!code || !state) {
+      if (!code || typeof code !== 'string' || code.length > 100 ||
+          !state || typeof state !== 'string' || state.length > 256) {
         this.status = 'error';
         this.errorMessage = this.$t('orcid.missingParams');
         return;

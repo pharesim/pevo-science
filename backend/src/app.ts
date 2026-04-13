@@ -276,7 +276,7 @@ export function createApp() {
 
   const botUaRe = /bot|crawl|spider|slurp|facebookexternalhit|linkedinbot|twitterbot|whatsapp|telegram|discord|preview|fetch|gptbot|chatgpt|claude|anthropic|perplexity|cohere|bingpreview|google-extended/i;
 
-  async function injectPaperMeta(html: string, author: string, permlink: string, reqUrl: string, isBot: boolean, pathWithoutLocale: string): Promise<string> {
+  async function injectPaperMeta(html: string, author: string, permlink: string, reqUrl: string, isBot: boolean, pathWithoutLocale: string, locale: string): Promise<string> {
     const post = await hiveClient.database.call('get_content', [author, permlink]);
     if (!post || !post.author || post.parent_permlink !== config.appTag) return html;
 
@@ -389,7 +389,7 @@ export function createApp() {
     if (paperMatch && SUPPORTED_LOCALES.has(paperMatch[1])) {
       try {
         const isBot = botUaRe.test(req.get('user-agent') || '');
-        const html = await injectPaperMeta(indexHtml, paperMatch[2], paperMatch[3], fullUrl, isBot, pathWithoutLocale);
+        const html = await injectPaperMeta(indexHtml, paperMatch[2], paperMatch[3], fullUrl, isBot, pathWithoutLocale, locale);
         return res.type('html').send(html);
       } catch {
         // Fall through to generic HTML on any error

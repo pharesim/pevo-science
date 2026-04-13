@@ -174,9 +174,7 @@ router.post('/request', verifyHiveSignature, accreditationRequestLimiter, valida
       return sendError(res, 500, 'INTERNAL_ERROR', 'Failed to send verification email');
     }
   } else if (process.env.NODE_ENV !== 'production') {
-    // Development only: log a truncated hash of the token (not the full token)
-    const tokenHash = crypto.createHash('sha256').update(token).digest('hex').slice(0, 8);
-    logger.info({ hive_username, tokenHash }, 'Accreditation verification token hash (dev only)');
+    logger.info({ hive_username }, 'Accreditation verification email skipped (SMTP not configured)');
   }
 
   sendOk(res, {

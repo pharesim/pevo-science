@@ -57,7 +57,15 @@ export function initAccreditationPage() {
       this.errorMessage = '';
       try {
         const data = await startOrcidVerification();
-        window.location.href = data.redirect_url;
+        try {
+          const target = new URL(data.redirect_url);
+          if (!['orcid.org', 'sandbox.orcid.org'].includes(target.hostname)) {
+            throw new Error('Unexpected redirect target');
+          }
+          window.location.href = data.redirect_url;
+        } catch {
+          throw new Error('Invalid ORCID redirect URL');
+        }
       } catch (err) {
         Alpine.store('toast').show(err.message || 'ORCID verification failed', 'error');
         this.orcidLoading = false;

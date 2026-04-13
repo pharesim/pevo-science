@@ -8,10 +8,10 @@ let pool: pg.Pool | null = null;
 
 export function getPool(): pg.Pool | null {
   if (pool) return pool;
-  if (!config.hafDatabaseUrl) return null;
+  if (config.hafDatabaseUrls.length === 0) return null;
 
   pool = new Pool({
-    connectionString: config.hafDatabaseUrl,
+    connectionString: config.hafDatabaseUrls[0],
     max: 10,
     idleTimeoutMillis: 30_000,
     connectionTimeoutMillis: 5_000,
@@ -32,7 +32,7 @@ export function getPool(): pg.Pool | null {
 }
 
 export function isHafAvailable(): boolean {
-  return !!config.hafDatabaseUrl;
+  return config.hafDatabaseUrls.length > 0;
 }
 
 export async function closeHafPool(): Promise<void> {

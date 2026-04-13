@@ -28,6 +28,12 @@ function escapeHtml(text) {
   return div.innerHTML;
 }
 
+function escapeAttr(text) {
+  return String(text).replace(/[&"'<>`]/g, (ch) => ({
+    '&': '&amp;', '"': '&quot;', "'": '&#39;', '<': '&lt;', '>': '&gt;', '`': '&#96;',
+  }[ch]));
+}
+
 function renderCommentTree(comments, depth, t) {
   if (!comments || comments.length === 0) return '';
 
@@ -44,7 +50,9 @@ function renderCommentTree(comments, depth, t) {
 
     const bodyHtml = renderMarkdown(comment.body || '');
     const repliesHtml = renderCommentTree(comment.replies || [], depth + 1, t);
-    const commentId = `comment-${comment.author}-${comment.permlink}`;
+    const safeAuthor = escapeAttr(comment.author);
+    const safePermlink = escapeAttr(comment.permlink);
+    const commentId = `comment-${safeAuthor}-${safePermlink}`;
 
     return `
       <div class="${depthClass}" id="${commentId}">
@@ -52,16 +60,16 @@ function renderCommentTree(comments, depth, t) {
           <button class="text-ink-muted hover:text-ink font-mono text-xs"
                   @click="toggleCollapse('${commentId}')"
                   x-text="collapsed['${commentId}'] ? '[+]' : '[-]'">[-]</button>
-          <a :href="$lp('/profile/${comment.author}')"
-             @click.prevent="navigate('/profile/${comment.author}')"
-             class="font-medium text-ink no-underline hover:text-pevo-teal">@${comment.author}</a>
+          <a :href="$lp('/profile/${safeAuthor}')"
+             @click.prevent="navigate('/profile/${safeAuthor}')"
+             class="font-medium text-ink no-underline hover:text-pevo-teal">@${escapeHtml(comment.author)}</a>
           ${accreditedBadge}
-          <time datetime="${comment.created}">${formatTimeAgo(comment.created)}</time>
+          <time datetime="${escapeAttr(comment.created)}">${escapeHtml(formatTimeAgo(comment.created))}</time>
         </div>
         <div x-show="!collapsed['${commentId}']">
           <div class="mt-1 text-sm text-ink-light leading-relaxed prose prose-sm max-w-none">${bodyHtml}</div>
           <div class="flex items-center gap-3 mt-1.5">
-            <div x-data="voteButtons({ author: '${comment.author}', permlink: '${comment.permlink}', netVotes: ${comment.net_votes ?? 0} })">
+            <div x-data="voteButtons({ author: '${safeAuthor}', permlink: '${safePermlink}', netVotes: ${Number(comment.net_votes) || 0} })">
               <div class="flex items-center gap-1">
                 <button class="p-1 rounded transition-colors disabled:opacity-50"
                         :class="voteState === 'up' ? 'text-pevo-green' : 'text-ink-muted hover:text-pevo-green'"
@@ -83,10 +91,10 @@ function renderCommentTree(comments, depth, t) {
             </template>
           </div>
           <div x-show="replyOpen['${commentId}']" class="mt-2">
-            <div x-data="commentComposer({ parentAuthor: '${comment.author}', parentPermlink: '${comment.permlink}' })"
-                 x-on:comment-posted.window="if ($event.detail.parentPermlink === '${comment.permlink}') { replyOpen['${commentId}'] = false; loadComments(); }">
+            <div x-data="commentComposer({ parentAuthor: '${safeAuthor}', parentPermlink: '${safePermlink}' })"
+                 x-on:comment-posted.window="if ($event.detail.parentPermlink === '${safePermlink}') { replyOpen['${commentId}'] = false; loadComments(); }">
               <textarea class="w-full rounded-md border border-parchment-dark bg-white px-3 py-2 text-sm text-ink placeholder:text-ink-muted focus:border-pevo-teal focus:outline-none focus:ring-1 focus:ring-pevo-teal resize-y"
-                        rows="2" :placeholder="$t('comments.replyTo', { author: '${comment.author}' })"
+                        rows="2" :placeholder="$t('comments.replyTo', { author: '${safeAuthor}' })"
                         x-model="body" :disabled="isSubmitting"></textarea>
               <p x-show="error" class="text-xs text-pevo-crimson mt-1" x-text="error"></p>
               <div class="flex items-center justify-end gap-2 mt-2">

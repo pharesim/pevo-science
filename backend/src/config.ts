@@ -35,14 +35,13 @@ export const config = {
     .split(',')
     .map((n) => n.trim())
     .filter(Boolean),
-  hafDatabaseUrl: (() => {
-    if ('HAF_DATABASE_URL' in process.env) return process.env.HAF_DATABASE_URL!;
-    if (process.env.NODE_ENV === 'production') {
-      // Using pino directly instead of the logger module because logger imports
-      // config, and importing logger here would create a circular dependency.
-      pino({ level: process.env.LOG_LEVEL || 'info' }).warn('[config] HAF_DATABASE_URL not set — falling back to public HAF node (hafsql-sql.mahdiyari.info). Set HAF_DATABASE_URL for production use.');
+  hafDatabaseUrls: (() => {
+    const raw = process.env.HAF_DATABASE_URL || '';
+    const urls = raw.split(',').map(u => u.trim()).filter(Boolean);
+    if (urls.length === 0) {
+      throw new Error('HAF_DATABASE_URL must be set (comma-separated for multiple nodes)');
     }
-    return 'postgresql://hafsql_public:hafsql_public@hafsql-sql.mahdiyari.info:5432/haf_block_log';
+    return urls;
   })(),
   appDatabaseUrl: process.env.APP_DATABASE_URL || '',
   ipfsApiUrl: process.env.IPFS_API_URL || 'http://ipfs:5001',
@@ -78,7 +77,14 @@ export const config = {
     return [hiveAdminAccount, ...extra];
   })(),
 
-  sessionSecret: process.env.SESSION_SECRET ?? (() => { throw new Error('SESSION_SECRET must be set'); })(),
+  sessionSecret: (() => {
+    const secret = process.env.SESSION_SECRET;
+    if (!secret) throw new Error('SESSION_SECRET must be set');
+    if (process.env.NODE_ENV === 'production' && secret.length < 32) {
+      throw new Error('SESSION_SECRET must be at least 32 characters in production');
+    }
+    return secret;
+  })(),
   unsubscribeSecret: process.env.UNSUBSCRIBE_SECRET || process.env.SESSION_SECRET || '',
 
   // App identity — configurable so alpha/testing uses different namespace

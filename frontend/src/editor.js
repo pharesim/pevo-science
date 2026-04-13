@@ -1049,6 +1049,14 @@ export class PevoEditor {
     const textInput = popover.querySelector('[data-link-text-input]');
     const url = (urlInput?.value || '').trim();
     if (!url || !this.editor) { this._closeLinkPopover(); return; }
+    try {
+      const parsed = new URL(url);
+      if (!['http:', 'https:', 'mailto:'].includes(parsed.protocol)) {
+        return;
+      }
+    } catch {
+      return;
+    }
 
     this.editor.view.focus();
     const { from, to } = this.editor.state.selection;

@@ -216,7 +216,7 @@ router.post('/upload', verifyHiveSignature, ipfsUploadLimiter, (req: Request, re
 // GET /api/ipfs/:cid — validated IPFS gateway proxy
 // ──────────────────────────────────────────────
 
-const CID_RE = /^(Qm[1-9A-HJ-NP-Za-km-z]{44}|bafy[a-z2-7]{55,})$/;
+const CID_RE = /^(Qm[1-9A-HJ-NP-Za-km-z]{44}|bafy[a-z2-7]{55,62})$/;
 
 const ipfsDownloadLimiter = rateLimit({ name: 'ipfs-download', windowMs: 60_000, max: 60, keyFn: byIp });
 

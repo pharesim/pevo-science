@@ -20,7 +20,7 @@ export function initAuth() {
     init() {
       // Restore session from localStorage
       try {
-        const saved = localStorage.getItem(SESSION_KEY);
+        const saved = sessionStorage.getItem(SESSION_KEY);
         if (saved) {
           const { token, username, expiresAt, isAccredited, accreditation } = JSON.parse(saved);
           if (token && username && new Date(expiresAt) > new Date()) {
@@ -30,11 +30,11 @@ export function initAuth() {
             this.isAccredited = isAccredited ?? false;
             this.accreditation = accreditation ?? null;
           } else {
-            localStorage.removeItem(SESSION_KEY);
+            sessionStorage.removeItem(SESSION_KEY);
           }
         }
       } catch {
-        localStorage.removeItem(SESSION_KEY);
+        sessionStorage.removeItem(SESSION_KEY);
       }
       this.isLoading = false;
 
@@ -103,7 +103,7 @@ export function initAuth() {
       this.accreditation = null;
       this.token = null;
       this._stopAccreditationPolling();
-      try { localStorage.removeItem(SESSION_KEY); } catch { /* noop */ }
+      try { sessionStorage.removeItem(SESSION_KEY); } catch { /* noop */ }
     },
 
     getSessionToken() {
@@ -112,7 +112,7 @@ export function initAuth() {
 
     _saveSession(token, username, expiresAt, isAccredited, accreditation) {
       try {
-        localStorage.setItem(SESSION_KEY, JSON.stringify({
+        sessionStorage.setItem(SESSION_KEY, JSON.stringify({
           token, username, expiresAt, isAccredited, accreditation,
         }));
       } catch { /* storage full or blocked */ }

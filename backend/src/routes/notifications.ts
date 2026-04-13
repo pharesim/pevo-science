@@ -72,6 +72,7 @@ async function fetchNotificationsFromHiveApi(
       if (opType === 'custom_json') {
         try {
           const json = JSON.parse(opData.json as string);
+          if (!json || typeof json.action !== 'string') continue;
           if (json.action === 'accredit' && json.account === account) {
             candidates.push({ type: 'accreditation_update', blockNum, timestamp, actor: '', data: json, needsAccreditationCheck: false });
           } else if (json.action === 'revoke' && json.account === account) {
