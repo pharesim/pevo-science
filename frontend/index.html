@@ -1232,8 +1232,11 @@
                   </button>
                 </template>
                 <div x-show="disciplineDropdownOpen" class="absolute z-20 mt-1 w-full max-h-60 overflow-auto rounded-lg border border-parchment-dark bg-parchment shadow-md">
-                  <template x-if="filteredTaxonomy.length === 0">
-                    <div class="px-4 py-2 text-sm text-ink-muted" x-text="$t('publish.noDisciplineMatch')"></div>
+                  <template x-if="filteredTaxonomy.length === 0 && disciplineSearch.trim()">
+                    <button type="button" class="block w-full text-left px-4 py-2 text-sm text-ink hover:bg-parchment-warm transition-colors"
+                            @click="selectDiscipline(disciplineSearch.trim())">
+                      <span x-text="$t('publish.useCustomDiscipline', { value: disciplineSearch.trim() })"></span>
+                    </button>
                   </template>
                   <template x-for="group in filteredTaxonomy" :key="group.field">
                     <div>
@@ -1241,6 +1244,14 @@
                       <template x-for="sf in group.subfields" :key="sf">
                         <button type="button" class="block w-full text-left px-4 py-2 text-sm text-ink hover:bg-parchment-warm transition-colors" x-text="sf" @click="selectDiscipline(sf)"></button>
                       </template>
+                    </div>
+                  </template>
+                  <template x-if="filteredTaxonomy.length > 0 && disciplineSearch.trim() && !filteredTaxonomy.some(g => g.subfields.some(sf => sf.toLowerCase() === disciplineSearch.trim().toLowerCase()))">
+                    <div class="border-t border-parchment-dark">
+                      <button type="button" class="block w-full text-left px-4 py-2 text-sm text-pevo-teal-dark hover:bg-parchment-warm transition-colors"
+                              @click="selectDiscipline(disciplineSearch.trim())">
+                        <span x-text="$t('publish.useCustomDiscipline', { value: disciplineSearch.trim() })"></span>
+                      </button>
                     </div>
                   </template>
                 </div>
@@ -2045,8 +2056,11 @@
                       </button>
                     </template>
                     <div x-show="disciplineDropdownOpen" class="absolute z-20 mt-1 w-full max-h-60 overflow-auto rounded-lg border border-parchment-dark bg-parchment shadow-md">
-                      <template x-if="filteredTaxonomy.length === 0">
-                        <div class="px-4 py-2 text-sm text-ink-muted" x-text="$t('bridge.noDisciplineMatch')"></div>
+                      <template x-if="filteredTaxonomy.length === 0 && disciplineSearch.trim()">
+                        <button type="button" class="block w-full text-left px-4 py-2 text-sm text-ink hover:bg-parchment-warm transition-colors"
+                                @click="selectDiscipline(disciplineSearch.trim())">
+                          <span x-text="$t('bridge.useCustomDiscipline', { value: disciplineSearch.trim() })"></span>
+                        </button>
                       </template>
                       <template x-for="group in filteredTaxonomy" :key="group.field">
                         <div>
@@ -2054,6 +2068,14 @@
                           <template x-for="sf in group.subfields" :key="sf">
                             <button type="button" class="block w-full text-left px-4 py-2 text-sm text-ink hover:bg-parchment-warm transition-colors" x-text="sf" @click="selectDiscipline(sf)"></button>
                           </template>
+                        </div>
+                      </template>
+                      <template x-if="filteredTaxonomy.length > 0 && disciplineSearch.trim() && !filteredTaxonomy.some(g => g.subfields.some(sf => sf.toLowerCase() === disciplineSearch.trim().toLowerCase()))">
+                        <div class="border-t border-parchment-dark">
+                          <button type="button" class="block w-full text-left px-4 py-2 text-sm text-pevo-teal-dark hover:bg-parchment-warm transition-colors"
+                                  @click="selectDiscipline(disciplineSearch.trim())">
+                            <span x-text="$t('bridge.useCustomDiscipline', { value: disciplineSearch.trim() })"></span>
+                          </button>
                         </div>
                       </template>
                     </div>

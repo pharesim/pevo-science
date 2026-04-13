@@ -3,7 +3,7 @@ import { getPool, isHafAvailable } from '../db.js';
 import { hiveClient } from '../hive.js';
 import { config } from '../config.js';
 import { sendOk, sendError } from '../response.js';
-import { parseMeta, isPevoPaper } from '../helpers.js';
+import { parseMeta, isPevoAnyPaper } from '../helpers.js';
 import { getAccreditedSet } from '../accreditation.js';
 import { getReputationScores } from '../reputation.js';
 import { hafCache } from '../cache.js';
@@ -37,7 +37,7 @@ async function paperExistsInHaf(author: string, permlink: string): Promise<boole
       `SELECT 1 FROM ${T.comments}
        WHERE author = $1 AND permlink = $2
          AND parent_author = '' AND parent_permlink = $3
-         AND (json_metadata -> $3 ->> 'type') = 'paper'
+         AND (json_metadata -> $3 ->> 'type') IN ('paper', 'bridge_paper')
          AND json_metadata ->> 'app' LIKE $4
        LIMIT 1`,
       [author, permlink, config.appTag, `${config.appTag}/%`],
@@ -271,7 +271,7 @@ router.get('/', async (req: Request, res: Response) => {
       return sendError(res, 404, 'NOT_FOUND', 'Paper not found');
     }
     const meta = parseMeta(post.json_metadata);
-    if (!isPevoPaper(meta)) {
+    if (!isPevoAnyPaper(meta)) {
       return sendError(res, 404, 'NOT_FOUND', 'Paper not found');
     }
   } catch (err) {

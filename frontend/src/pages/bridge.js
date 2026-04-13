@@ -65,8 +65,27 @@ export function initBridgePage() {
 
     onDisciplineInput(e) {
       this.disciplineSearch = e.target.value;
-      this.discipline = '';
+      this.discipline = e.target.value.trim();
       this.disciplineDropdownOpen = true;
+    },
+
+    prefillDiscipline(lookup) {
+      if (!lookup) return;
+      // Prefer explicit subjects from the source API
+      if (lookup.subjects && lookup.subjects.length > 0) {
+        this.selectDiscipline(lookup.subjects[0]);
+        return;
+      }
+      // Fall back to journal/source name (strip common prefixes)
+      if (lookup.source_name) {
+        const name = lookup.source_name
+          .replace(/^frontiers\s+in\s+/i, '')
+          .replace(/^journal\s+of\s+(the\s+)?/i, '')
+          .replace(/^proceedings\s+of\s+(the\s+)?/i, '');
+        if (name.length > 0 && name.length < 60) {
+          this.selectDiscipline(name.charAt(0).toUpperCase() + name.slice(1));
+        }
+      }
     },
 
     async handleConnect() {
@@ -90,6 +109,7 @@ export function initBridgePage() {
         ]);
         this.lookup = lookupRes.data;
         this.check = checkRes.data;
+        this.prefillDiscipline(this.lookup);
       } catch (err) {
         const code = err.code || '';
         this.lookupError = code === 'INTERNAL_ERROR' ? this.$t('bridge.lookupUnavailable') : this.$t('bridge.lookupFailed');

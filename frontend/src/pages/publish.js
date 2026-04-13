@@ -287,7 +287,7 @@ export function initPublishPage() {
 
     onDisciplineInput(e) {
       this.disciplineSearch = e.target.value;
-      this.discipline = '';
+      this.discipline = e.target.value.trim();
       this.disciplineDropdownOpen = true;
     },
 
