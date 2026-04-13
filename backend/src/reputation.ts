@@ -590,15 +590,48 @@ export async function getReputationScore(username: string): Promise<ReputationSc
 }
 
 /**
- * Batch-fetch reputation scores. Returns a map of username -> score.
+ * Batch-fetch reputation scores. Reads from Redis batch scores first
+ * (populated by nightly batch job), then falls back to on-demand
+ * computation only for users missing from the batch.
  */
 export async function getReputationScores(usernames: string[]): Promise<Map<string, number>> {
   const unique = [...new Set(usernames)];
-  const entries = await Promise.all(
-    unique.map(async (u) => {
-      const rep = await getReputationScore(u);
-      return [u, rep.score] as const;
-    }),
-  );
-  return new Map(entries);
+  const result = new Map<string, number>();
+  if (unique.length === 0) return result;
+
+  // Try Redis batch scores first (no HAF queries needed)
+  const redis = getRedis();
+  const missing: string[] = [];
+  if (redis) {
+    try {
+      const keys = unique.map((u) => `reputation:batch:${u}`);
+      const values = await redis.mget(keys);
+      for (let i = 0; i < unique.length; i++) {
+        if (values[i] !== null) {
+          result.set(unique[i], Number(values[i]));
+        } else {
+          missing.push(unique[i]);
+        }
+      }
+    } catch {
+      missing.push(...unique.filter((u) => !result.has(u)));
+    }
+  } else {
+    missing.push(...unique);
+  }
+
+  // On-demand computation only for users not in the batch
+  if (missing.length > 0) {
+    const entries = await Promise.all(
+      missing.map(async (u) => {
+        const rep = await getReputationScore(u);
+        return [u, rep.score] as const;
+      }),
+    );
+    for (const [u, score] of entries) {
+      result.set(u, score);
+    }
+  }
+
+  return result;
 }

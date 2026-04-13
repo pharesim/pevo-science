@@ -24,7 +24,6 @@ import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';
 import { rateLimit, byAccount } from '../middleware/rateLimit.js';
 import {
   T,
-  accreditedVoteCount,
   activeAccreditationsCteBody,
   retractedPapersCteBody,
   buildWith,
@@ -64,15 +63,19 @@ async function fetchPapersFromHaf(req: Request): Promise<{ rows: unknown[]; tota
   const includeRetracted = req.query.include_retracted === 'true'; // default false
   const source = req.query.source as string | undefined; // 'native', 'bridge', or omit for both
 
-  // Build CTEs with parameterized appTag
-  const cte = buildWith(1, activeAccreditationsCteBody, retractedPapersCteBody);
-  let paramIdx = cte.nextIdx;
-  const cteParams: unknown[] = [...cte.params];
+  // Pre-fetch cached accredited set to avoid expensive CTE on every query
+  const allAccredited = await getAllAccreditedAccounts();
+  const accreditedArr = [...allAccredited];
 
-  // appTag params for WHERE conditions
+  // Build retracted papers CTE only (lightweight); accreditation uses cached set
+  const retractedCte = buildWith(1, retractedPapersCteBody);
+  let paramIdx = retractedCte.nextIdx;
+  const baseParams: unknown[] = [...retractedCte.params];
+
+  // appTag params for WHERE conditions (shared by count and data queries)
   const appTagParam = `$${paramIdx++}`;
   const appLikeParam = `$${paramIdx++}`;
-  cteParams.push(config.appTag, `${config.appTag}/%`);
+  baseParams.push(config.appTag, `${config.appTag}/%`);
 
   const typeFilter = source === 'native'
     ? `(c.json_metadata -> ${appTagParam} ->> 'type') = 'paper'`
@@ -105,7 +108,8 @@ async function fetchPapersFromHaf(req: Request): Promise<{ rows: unknown[]; tota
     filterParams.push(language);
   }
   if (accreditedOnly) {
-    conditions.push(`c.author IN (SELECT account FROM active_accreditations)`);
+    // Use a param for the accredited array in the WHERE clause
+    conditions.push(`c.author = ANY($${paramIdx}::text[])`);
   }
   if (!includeRetracted) {
     conditions.push(`NOT EXISTS (SELECT 1 FROM retracted_papers rp WHERE rp.author = c.author AND rp.permlink = c.permlink)`);
@@ -114,7 +118,12 @@ async function fetchPapersFromHaf(req: Request): Promise<{ rows: unknown[]; tota
   conditions.push(`(c.json_metadata -> ${appTagParam} -> 'continues') IS NULL`);
 
   const where = conditions.join(' AND ');
-  const params = [...cteParams, ...filterParams];
+  // Count query params: base + filter + (accredited array if filtering by it)
+  const countParams = [...baseParams, ...filterParams];
+  if (accreditedOnly) {
+    countParams.push(accreditedArr);
+    paramIdx++; // advance past the accredited param used in WHERE
+  }
 
   const sortMap: Record<SortField, string> = {
     date: 'c.created',
@@ -128,14 +137,25 @@ async function fetchPapersFromHaf(req: Request): Promise<{ rows: unknown[]; tota
     const limitParam = `$${paramIdx++}`;
     const offsetParam = `$${paramIdx++}`;
 
+    // Accredited array param for vote count subquery (appended after limit/offset)
+    const accreditedVoteParam = `$${paramIdx++}`;
+
+    // Use cached accredited array for vote count instead of CTE-based correlated subquery
+    const voteCountSql = `(SELECT count(*)::int FROM ${T.votes} v
+      WHERE v.author = c.author AND v.permlink = c.permlink AND v.rshares > 0
+      AND v.voter = ANY(${accreditedVoteParam}::text[]))`;
+
+    // Data query params: count params + limit + offset + accredited array for votes
+    const dataParams = [...countParams, limit, offset, accreditedArr];
+
     const [countResult, dataResult] = await Promise.all([
       pool.query(
-        `${cte.sql}
+        `${retractedCte.sql}
          SELECT count(*)::int AS total FROM ${T.comments} c WHERE ${where}`,
-        params,
+        countParams,
       ),
       pool.query(
-        `${cte.sql}
+        `${retractedCte.sql}
          SELECT
           c.author,
           c.permlink,
@@ -143,7 +163,7 @@ async function fetchPapersFromHaf(req: Request): Promise<{ rows: unknown[]; tota
           LEFT(c.body, 300) AS abstract,
           c.json_metadata,
           c.created,
-          ${accreditedVoteCount('c.author', 'c.permlink')} AS net_votes,
+          ${voteCountSql} AS net_votes,
           0 AS review_count,
           0 AS citation_count,
           0 AS author_reputation
@@ -151,7 +171,7 @@ async function fetchPapersFromHaf(req: Request): Promise<{ rows: unknown[]; tota
         WHERE ${where}
         ORDER BY ${orderBy}
         LIMIT ${limitParam} OFFSET ${offsetParam}`,
-        [...params, limit, offset],
+        dataParams,
       ),
     ]);
 
