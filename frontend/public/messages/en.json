@@ -379,7 +379,7 @@
     "postFailed": "Failed to post comment"
   },
   "footer": {
-    "description": "Open scientific publication and interactive evaluation on a permanent, open record. Non-profit, MIT-licensed, forkable.",
+    "description": "Open scientific publication and interactive evaluation on a permanent, open record. Non-profit, AGPL-3.0-licensed, forkable.",
     "tagline": "open science, open access",
     "platform": "Platform",
     "paperFeed": "Paper Feed",
@@ -390,7 +390,7 @@
     "contact": "Contact",
     "resources": "Resources",
     "discord": "Discord Community",
-    "license": "PEvO is open-source software released under the MIT License."
+    "license": "PEvO is open-source software released under the AGPL-3.0 License."
   },
   "pagination": {
     "previous": "Previous",
@@ -437,7 +437,7 @@
     "accreditationTitle": "Accreditation",
     "accreditationDesc": "Anyone can read and vote on PEvO. To publish papers and write reviews, researchers verify their identity through an institutional email. This accreditation is recorded as a public attestation, building trust without centralized control.",
     "openSourceTitle": "Open Source",
-    "openSourceDesc": "PEvO is non-profit, MIT-licensed, and fully forkable. The reputation algorithm is transparent and configurable. All data lives on a permanent public record that anyone can read. There are no tokens, no paywalls, no vendor lock-in.",
+    "openSourceDesc": "PEvO is non-profit, AGPL-3.0-licensed, and fully forkable. The reputation algorithm is transparent and configurable. All data lives on a permanent public record that anyone can read. There are no tokens, no paywalls, no vendor lock-in.",
     "comparisonTitle": "How PEvO Compares",
     "comparisonSubtitle": "PEvO combines the full open, transparent, decentralized stack. Other platforms cover parts well.",
     "comparisonFooter": "Based on publicly available information as of April 2026. Sci-Hub and Sci-Net are access platforms, not publishing platforms — features outside their scope are marked n/a. Hover over any cell for details.",
@@ -470,7 +470,7 @@
     "tip_Ratings_scienceopen": "Star ratings available, but not mandatory on all content",
     "tip_Ratings_octopus": "Quality ratings on individual outputs, still evolving",
     "tip_Ratings_traditional": "Accept/revise/reject decisions — rarely quantitative or public",
-    "tip_OpenSource_pevo": "MIT-licensed, all code and algorithms are public and forkable",
+    "tip_OpenSource_pevo": "AGPL-3.0-licensed, all code and algorithms are public and forkable",
     "tip_OpenSource_octopus": "Open-source codebase on GitHub",
     "tip_Immutable_pevo": "Every publication is a signed transaction on a public, append-only record (Hive)",
     "tip_NonProfit_pevo": "No fees to publish, read, or review — funded by community",
@@ -533,7 +533,7 @@
     "immutableRecord": "Permanent Record",
     "immutableRecordDesc": "Published work cannot be altered, retracted silently, or censored after the fact.",
     "openSource": "Open Source",
-    "openSourceDesc": "MIT-licensed, non-profit, fully forkable. The reputation algorithm is transparent and configurable.",
+    "openSourceDesc": "AGPL-3.0-licensed, non-profit, fully forkable. The reputation algorithm is transparent and configurable.",
     "decentralized": "Open Infrastructure",
     "decentralizedDesc": "Built on an open protocol - like email, anyone can access the data. No single point of failure, no single entity in control.",
     "statsTitle": "Platform Activity",
@@ -612,7 +612,7 @@
     "q10": "How does the reputation system work?",
     "a10": "Reputation scores are computed from your published activity: the number and quality of publications, peer reviews written, citations received, community votes, and accreditation status. The algorithm is transparent and configurable.",
     "q11": "Is PEvO open source?",
-    "a11": "Yes. PEvO is MIT-licensed and fully forkable. The source code, reputation algorithm, and all data are public. There are no tokens, no paywalls, and no vendor lock-in.",
+    "a11": "Yes. PEvO is AGPL-3.0-licensed and fully forkable. The source code, reputation algorithm, and all data are public. There are no tokens, no paywalls, and no vendor lock-in.",
     "q12": "How do I cite a PEvO paper?",
     "a12": "Each paper has a unique identifier (author/permlink) and a permanent URL. You can cite PEvO papers like any other online publication, using the author names, title, date, and PEvO URL.",
     "ctaTitle": "Still have questions?",

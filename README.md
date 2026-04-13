@@ -1,6 +1,6 @@
 # PEvO — Publish and Evaluate Onchain
 
-A decentralized platform for open scientific publication and interactive peer evaluation, built on the [Hive](https://hive.io) network. Non-profit, MIT-licensed, forkable.
+A decentralized platform for open scientific publication and interactive peer evaluation, built on the [Hive](https://hive.io) network. Non-profit, AGPL-3.0-licensed, forkable.
 
 ## What is PEvO?
 
@@ -133,4 +133,6 @@ Full spec with all 34 endpoints: [docs/api-contract.md](docs/api-contract.md)
 
 ## License
 
-MIT
+AGPL-3.0. See [LICENSE](LICENSE).
+
+Prior versions (before this commit) were released under the MIT License.
