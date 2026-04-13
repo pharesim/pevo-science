@@ -101,7 +101,13 @@
     "publications": "Publicaciones ({count})",
     "noPapers": "Aún no se han publicado artículos.",
     "accreditedVia": "Acreditado mediante verificación de {method} el {date}",
-    "loadFailed": "Error al cargar el perfil"
+    "loadFailed": "Error al cargar el perfil",
+    "breakdown": {
+      "papers": "Publicaciones",
+      "reviews": "Revisiones",
+      "citations": "Citas",
+      "accreditation": "Acreditación"
+    }
   },
   "publish": {
     "title": "Publicar un artículo",
@@ -160,7 +166,15 @@
     "needHelp": "Need help publishing?",
     "contactUs": "Contact us",
     "accreditationRequired": "Necesitas estar acreditado para publicar artículos.",
-    "getAccredited": "Obtener acreditación"
+    "getAccredited": "Obtener acreditación",
+    "citations": "Citas",
+    "citationsHint": "Referencie otras publicaciones de PEvO en las que se basa este trabajo.",
+    "citationAuthor": "Autor (usuario Hive)",
+    "citationPermlink": "Permlink",
+    "citationTitle": "Título (opcional)",
+    "citationReputationRelevant": "Contar para la reputación del autor citado",
+    "noCitations": "No se han añadido citas.",
+    "addCitation": "+ Añadir cita"
   },
   "edit": {
     "editButton": "Editar artículo",
@@ -294,7 +308,15 @@
   "vote": {
     "upvote": "Votar a favor",
     "downvote": "Votar en contra",
-    "voteFailed": "Error en la votación"
+    "voteFailed": "Error en la votación",
+    "evaluate": "Evaluar",
+    "votes": "votos",
+    "strongEndorsement": "Apoyo fuerte",
+    "endorsement": "Apoyo",
+    "mildEndorsement": "Apoyo leve",
+    "mildConcerns": "Objeciones leves",
+    "reject": "Rechazar",
+    "strongReject": "Rechazo fuerte"
   },
   "notifications": {
     "title": "Notificaciones",
@@ -581,6 +603,9 @@
     "assigning": "Asignando DOI...",
     "assignSuccess": "DOI asignado exitosamente.",
     "assignFailed": "Error al asignar el DOI."
+  },
+  "pubpeer": {
+    "badge": "{count} comentarios en PubPeer"
   },
   "digest": {
     "title": "Resumen por correo electrónico",

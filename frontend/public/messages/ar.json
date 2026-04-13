@@ -101,7 +101,13 @@
     "publications": "المنشورات ({count})",
     "noPapers": "لم تُنشر أي أبحاث بعد.",
     "accreditedVia": "معتمد عبر التحقق من {method} بتاريخ {date}",
-    "loadFailed": "فشل تحميل الملف الشخصي"
+    "loadFailed": "فشل تحميل الملف الشخصي",
+    "breakdown": {
+      "papers": "الأبحاث",
+      "reviews": "المراجعات",
+      "citations": "الاستشهادات",
+      "accreditation": "الاعتماد"
+    }
   },
   "publish": {
     "title": "نشر بحث",
@@ -160,7 +166,15 @@
     "needHelp": "Need help publishing?",
     "contactUs": "Contact us",
     "accreditationRequired": "يجب أن تكون معتمدًا لنشر الأبحاث.",
-    "getAccredited": "الحصول على الاعتماد"
+    "getAccredited": "الحصول على الاعتماد",
+    "citations": "الاستشهادات",
+    "citationsHint": "أشر إلى أبحاث PEvO الأخرى التي يستند إليها هذا العمل.",
+    "citationAuthor": "المؤلف (اسم مستخدم Hive)",
+    "citationPermlink": "الرابط الدائم",
+    "citationTitle": "العنوان (اختياري)",
+    "citationReputationRelevant": "احتساب في سمعة المؤلف المُستشهَد به",
+    "noCitations": "لم تُضف استشهادات.",
+    "addCitation": "+ إضافة استشهاد"
   },
   "edit": {
     "editButton": "تعديل البحث",
@@ -294,7 +308,15 @@
   "vote": {
     "upvote": "تصويت إيجابي",
     "downvote": "تصويت سلبي",
-    "voteFailed": "فشل التصويت"
+    "voteFailed": "فشل التصويت",
+    "evaluate": "تقييم",
+    "votes": "أصوات",
+    "strongEndorsement": "تأييد قوي",
+    "endorsement": "تأييد",
+    "mildEndorsement": "تأييد خفيف",
+    "mildConcerns": "تحفظات خفيفة",
+    "reject": "رفض",
+    "strongReject": "رفض قوي"
   },
   "notifications": {
     "title": "الإشعارات",
@@ -581,6 +603,9 @@
     "assigning": "جارٍ تعيين DOI...",
     "assignSuccess": "تم تعيين DOI بنجاح.",
     "assignFailed": "فشل تعيين DOI."
+  },
+  "pubpeer": {
+    "badge": "{count} تعليقات على PubPeer"
   },
   "digest": {
     "title": "ملخّص البريد الإلكتروني",

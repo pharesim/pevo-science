@@ -101,7 +101,13 @@
     "publications": "Publications ({count})",
     "noPapers": "No papers published yet.",
     "accreditedVia": "Accredited via {method} verification on {date}",
-    "loadFailed": "Failed to load profile"
+    "loadFailed": "Failed to load profile",
+    "breakdown": {
+      "papers": "Papers",
+      "reviews": "Reviews",
+      "citations": "Citations",
+      "accreditation": "Accreditation"
+    }
   },
   "publish": {
     "title": "Publish a Paper",
@@ -160,7 +166,15 @@
     "needHelp": "Need help publishing?",
     "contactUs": "Contact us",
     "accreditationRequired": "You need to be accredited to publish papers.",
-    "getAccredited": "Get accredited"
+    "getAccredited": "Get accredited",
+    "citations": "Citations",
+    "citationsHint": "Reference other PEvO papers that this work builds on.",
+    "citationAuthor": "Author (Hive username)",
+    "citationPermlink": "Permlink",
+    "citationTitle": "Title (optional)",
+    "citationReputationRelevant": "Count toward cited author's reputation",
+    "noCitations": "No citations added.",
+    "addCitation": "+ Add Citation"
   },
   "edit": {
     "editButton": "Edit Paper",
@@ -294,7 +308,15 @@
   "vote": {
     "upvote": "Upvote",
     "downvote": "Downvote",
-    "voteFailed": "Vote failed"
+    "voteFailed": "Vote failed",
+    "evaluate": "Evaluate",
+    "votes": "votes",
+    "strongEndorsement": "Strong endorsement",
+    "endorsement": "Endorsement",
+    "mildEndorsement": "Mild endorsement",
+    "mildConcerns": "Mild concerns",
+    "reject": "Reject",
+    "strongReject": "Strong reject"
   },
   "notifications": {
     "title": "Notifications",
@@ -585,6 +607,9 @@
     "assigning": "Assigning DOI...",
     "assignSuccess": "DOI assigned successfully.",
     "assignFailed": "Failed to assign DOI."
+  },
+  "pubpeer": {
+    "badge": "{count} comments on PubPeer"
   },
   "digest": {
     "title": "Email Digest",

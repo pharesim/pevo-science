@@ -101,7 +101,13 @@
     "publications": "Pubblicazioni ({count})",
     "noPapers": "Nessun articolo pubblicato ancora.",
     "accreditedVia": "Accreditato tramite verifica {method} il {date}",
-    "loadFailed": "Impossibile caricare il profilo"
+    "loadFailed": "Impossibile caricare il profilo",
+    "breakdown": {
+      "papers": "Pubblicazioni",
+      "reviews": "Revisioni",
+      "citations": "Citazioni",
+      "accreditation": "Accreditamento"
+    }
   },
   "publish": {
     "title": "Pubblica un Articolo",
@@ -160,7 +166,15 @@
     "needHelp": "Need help publishing?",
     "contactUs": "Contact us",
     "accreditationRequired": "Devi essere accreditato per pubblicare articoli.",
-    "getAccredited": "Ottieni l'accreditamento"
+    "getAccredited": "Ottieni l'accreditamento",
+    "citations": "Citazioni",
+    "citationsHint": "Fai riferimento ad altre pubblicazioni PEvO su cui si basa questo lavoro.",
+    "citationAuthor": "Autore (nome utente Hive)",
+    "citationPermlink": "Permlink",
+    "citationTitle": "Titolo (facoltativo)",
+    "citationReputationRelevant": "Conteggiare per la reputazione dell'autore citato",
+    "noCitations": "Nessuna citazione aggiunta.",
+    "addCitation": "+ Aggiungi citazione"
   },
   "edit": {
     "editButton": "Modifica articolo",
@@ -294,7 +308,15 @@
   "vote": {
     "upvote": "Voto positivo",
     "downvote": "Voto negativo",
-    "voteFailed": "Voto fallito"
+    "voteFailed": "Voto fallito",
+    "evaluate": "Valuta",
+    "votes": "voti",
+    "strongEndorsement": "Forte approvazione",
+    "endorsement": "Approvazione",
+    "mildEndorsement": "Lieve approvazione",
+    "mildConcerns": "Lievi riserve",
+    "reject": "Rifiuto",
+    "strongReject": "Forte rifiuto"
   },
   "notifications": {
     "title": "Notifiche",
@@ -581,6 +603,9 @@
     "assigning": "Assegnazione DOI...",
     "assignSuccess": "DOI assegnato con successo.",
     "assignFailed": "Impossibile assegnare il DOI."
+  },
+  "pubpeer": {
+    "badge": "{count} commenti su PubPeer"
   },
   "digest": {
     "title": "Riepilogo Email",

@@ -101,7 +101,13 @@
     "publications": "Publications ({count})",
     "noPapers": "Aucun article publié pour le moment.",
     "accreditedVia": "Accrédité via vérification {method} le {date}",
-    "loadFailed": "Impossible de charger le profil"
+    "loadFailed": "Impossible de charger le profil",
+    "breakdown": {
+      "papers": "Publications",
+      "reviews": "Évaluations",
+      "citations": "Citations",
+      "accreditation": "Accréditation"
+    }
   },
   "publish": {
     "title": "Publier un article",
@@ -160,7 +166,15 @@
     "needHelp": "Need help publishing?",
     "contactUs": "Contact us",
     "accreditationRequired": "Vous devez être accrédité pour publier des articles.",
-    "getAccredited": "Obtenir l'accréditation"
+    "getAccredited": "Obtenir l'accréditation",
+    "citations": "Citations",
+    "citationsHint": "Référencez d'autres publications PEvO sur lesquelles ce travail s'appuie.",
+    "citationAuthor": "Auteur (nom d'utilisateur Hive)",
+    "citationPermlink": "Permlink",
+    "citationTitle": "Titre (facultatif)",
+    "citationReputationRelevant": "Compter pour la réputation de l'auteur cité",
+    "noCitations": "Aucune citation ajoutée.",
+    "addCitation": "+ Ajouter une citation"
   },
   "edit": {
     "editButton": "Modifier l'article",
@@ -294,7 +308,15 @@
   "vote": {
     "upvote": "Vote positif",
     "downvote": "Vote négatif",
-    "voteFailed": "Le vote a échoué"
+    "voteFailed": "Le vote a échoué",
+    "evaluate": "Évaluer",
+    "votes": "votes",
+    "strongEndorsement": "Soutien fort",
+    "endorsement": "Soutien",
+    "mildEndorsement": "Soutien modéré",
+    "mildConcerns": "Réserves modérées",
+    "reject": "Rejet",
+    "strongReject": "Rejet fort"
   },
   "notifications": {
     "title": "Notifications",
@@ -581,6 +603,9 @@
     "assigning": "Attribution du DOI...",
     "assignSuccess": "DOI attribué avec succès.",
     "assignFailed": "Impossible d'attribuer le DOI."
+  },
+  "pubpeer": {
+    "badge": "{count} commentaires sur PubPeer"
   },
   "digest": {
     "title": "Résumé par e-mail",

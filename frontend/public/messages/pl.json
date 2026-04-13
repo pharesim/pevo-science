@@ -101,7 +101,13 @@
     "publications": "Publikacje ({count})",
     "noPapers": "Brak opublikowanych prac.",
     "accreditedVia": "Akredytacja uzyskana przez weryfikację {method} dnia {date}",
-    "loadFailed": "Nie udało się załadować profilu"
+    "loadFailed": "Nie udało się załadować profilu",
+    "breakdown": {
+      "papers": "Publikacje",
+      "reviews": "Recenzje",
+      "citations": "Cytowania",
+      "accreditation": "Akredytacja"
+    }
   },
   "publish": {
     "title": "Opublikuj pracę",
@@ -160,7 +166,15 @@
     "needHelp": "Need help publishing?",
     "contactUs": "Contact us",
     "accreditationRequired": "Musisz być akredytowany, aby publikować artykuły.",
-    "getAccredited": "Uzyskaj akredytację"
+    "getAccredited": "Uzyskaj akredytację",
+    "citations": "Cytowania",
+    "citationsHint": "Odwołaj się do innych publikacji PEvO, na których opiera się ta praca.",
+    "citationAuthor": "Autor (nazwa użytkownika Hive)",
+    "citationPermlink": "Permlink",
+    "citationTitle": "Tytuł (opcjonalnie)",
+    "citationReputationRelevant": "Zaliczaj do reputacji cytowanego autora",
+    "noCitations": "Nie dodano cytowań.",
+    "addCitation": "+ Dodaj cytowanie"
   },
   "edit": {
     "editButton": "Edytuj artykuł",
@@ -294,7 +308,15 @@
   "vote": {
     "upvote": "Głos za",
     "downvote": "Głos przeciw",
-    "voteFailed": "Głosowanie nie powiodło się"
+    "voteFailed": "Głosowanie nie powiodło się",
+    "evaluate": "Oceń",
+    "votes": "głosy",
+    "strongEndorsement": "Silne poparcie",
+    "endorsement": "Poparcie",
+    "mildEndorsement": "Umiarkowane poparcie",
+    "mildConcerns": "Umiarkowane zastrzeżenia",
+    "reject": "Odrzucenie",
+    "strongReject": "Silne odrzucenie"
   },
   "notifications": {
     "title": "Powiadomienia",
@@ -581,6 +603,9 @@
     "assigning": "Przypisywanie DOI...",
     "assignSuccess": "DOI przypisane pomyślnie.",
     "assignFailed": "Nie udało się przypisać DOI."
+  },
+  "pubpeer": {
+    "badge": "{count} komentarzy na PubPeer"
   },
   "digest": {
     "title": "Podsumowanie e-mail",

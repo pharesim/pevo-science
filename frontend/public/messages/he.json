@@ -101,7 +101,13 @@
     "publications": "פרסומים ({count})",
     "noPapers": "טרם פורסמו מאמרים.",
     "accreditedVia": "הוסמך באמצעות אימות {method} בתאריך {date}",
-    "loadFailed": "טעינת הפרופיל נכשלה"
+    "loadFailed": "טעינת הפרופיל נכשלה",
+    "breakdown": {
+      "papers": "מאמרים",
+      "reviews": "ביקורות",
+      "citations": "ציטוטים",
+      "accreditation": "הסמכה"
+    }
   },
   "publish": {
     "title": "פרסום מאמר",
@@ -160,7 +166,15 @@
     "needHelp": "Need help publishing?",
     "contactUs": "Contact us",
     "accreditationRequired": "עליך להיות מוסמך כדי לפרסם מאמרים.",
-    "getAccredited": "קבל הסמכה"
+    "getAccredited": "קבל הסמכה",
+    "citations": "ציטוטים",
+    "citationsHint": "הפנו למאמרי PEvO אחרים שעבודה זו מתבססת עליהם.",
+    "citationAuthor": "מחבר (שם משתמש Hive)",
+    "citationPermlink": "קישור קבוע",
+    "citationTitle": "כותרת (אופציונלי)",
+    "citationReputationRelevant": "לספור לטובת המוניטין של המחבר המצוטט",
+    "noCitations": "לא נוספו ציטוטים.",
+    "addCitation": "+ הוסף ציטוט"
   },
   "edit": {
     "editButton": "עריכת מאמר",
@@ -294,7 +308,15 @@
   "vote": {
     "upvote": "הצבעה בעד",
     "downvote": "הצבעה נגד",
-    "voteFailed": "ההצבעה נכשלה"
+    "voteFailed": "ההצבעה נכשלה",
+    "evaluate": "הערך",
+    "votes": "קולות",
+    "strongEndorsement": "תמיכה חזקה",
+    "endorsement": "תמיכה",
+    "mildEndorsement": "תמיכה קלה",
+    "mildConcerns": "הסתייגויות קלות",
+    "reject": "דחייה",
+    "strongReject": "דחייה חזקה"
   },
   "notifications": {
     "title": "התראות",
@@ -581,6 +603,9 @@
     "assigning": "מקצה DOI...",
     "assignSuccess": "ה-DOI הוקצה בהצלחה.",
     "assignFailed": "הקצאת ה-DOI נכשלה."
+  },
+  "pubpeer": {
+    "badge": "{count} תגובות ב-PubPeer"
   },
   "digest": {
     "title": "תקציר בדוא\"ל",

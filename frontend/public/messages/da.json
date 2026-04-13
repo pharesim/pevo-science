@@ -101,7 +101,13 @@
     "publications": "Publikationer ({count})",
     "noPapers": "Ingen artikler publiceret endnu.",
     "accreditedVia": "Akkrediteret via {method}-verifikation den {date}",
-    "loadFailed": "Kunne ikke indlæse profil"
+    "loadFailed": "Kunne ikke indlæse profil",
+    "breakdown": {
+      "papers": "Artikler",
+      "reviews": "Anmeldelser",
+      "citations": "Citationer",
+      "accreditation": "Akkreditering"
+    }
   },
   "publish": {
     "title": "Publicer en artikel",
@@ -160,7 +166,15 @@
     "needHelp": "Need help publishing?",
     "contactUs": "Contact us",
     "accreditationRequired": "Du skal være akkrediteret for at publicere artikler.",
-    "getAccredited": "Bliv akkrediteret"
+    "getAccredited": "Bliv akkrediteret",
+    "citations": "Citationer",
+    "citationsHint": "Henvis til andre PEvO-publikationer, som dette arbejde bygger på.",
+    "citationAuthor": "Forfatter (Hive-brugernavn)",
+    "citationPermlink": "Permlink",
+    "citationTitle": "Titel (valgfrit)",
+    "citationReputationRelevant": "Tæl med i den citerede forfatters omdømme",
+    "noCitations": "Ingen citationer tilføjet.",
+    "addCitation": "+ Tilføj citation"
   },
   "edit": {
     "editButton": "Rediger artikel",
@@ -294,7 +308,15 @@
   "vote": {
     "upvote": "Stem op",
     "downvote": "Stem ned",
-    "voteFailed": "Afstemning mislykkedes"
+    "voteFailed": "Afstemning mislykkedes",
+    "evaluate": "Vurdér",
+    "votes": "stemmer",
+    "strongEndorsement": "Stærk tilslutning",
+    "endorsement": "Tilslutning",
+    "mildEndorsement": "Mild tilslutning",
+    "mildConcerns": "Milde forbehold",
+    "reject": "Afvisning",
+    "strongReject": "Stærk afvisning"
   },
   "notifications": {
     "title": "Notifikationer",
@@ -581,6 +603,9 @@
     "assigning": "Tildeler DOI...",
     "assignSuccess": "DOI tildelt.",
     "assignFailed": "Kunne ikke tildele DOI."
+  },
+  "pubpeer": {
+    "badge": "{count} kommentarer på PubPeer"
   },
   "digest": {
     "title": "E-mail-sammendrag",

@@ -61,6 +61,7 @@ export function initPublishPage() {
     pdfFileName: '',
     pdfFileSize: 0,
     supplementaryFiles: [], // { file, fileName, fileSize, description, uploading, cid, error }
+    citations: [], // { author, permlink, title, reputation_relevant }
 
     draftRestored: false,
     draftSavedAt: null,
@@ -148,6 +149,7 @@ export function initPublishPage() {
             this.discipline = draft.discipline;
             this.keywordsText = draft.keywordsText;
             this.coAuthors = draft.coAuthors || [];
+            this.citations = draft.citations || [];
             if (draft.authorName) this.authorName = draft.authorName;
             if (draft.authorAffiliation) this.authorAffiliation = draft.authorAffiliation;
             if (draft.authorOrcid) this.authorOrcid = draft.authorOrcid;
@@ -172,6 +174,7 @@ export function initPublishPage() {
       this.$watch('discipline', () => this._scheduleDraftSave());
       this.$watch('keywordsText', () => this._scheduleDraftSave());
       this.$watch('coAuthors', () => this._scheduleDraftSave());
+      this.$watch('citations', () => this._scheduleDraftSave());
       this.$watch('authorName', () => this._scheduleDraftSave());
       this.$watch('authorAffiliation', () => this._scheduleDraftSave());
       this.$watch('authorOrcid', () => this._scheduleDraftSave());
@@ -222,7 +225,7 @@ export function initPublishPage() {
           const draft = {
             title: this.title, abstract: this.abstract, body: this.body,
             discipline: this.discipline, keywordsText: this.keywordsText,
-            coAuthors: this.coAuthors, authorName: this.authorName,
+            coAuthors: this.coAuthors, citations: this.citations, authorName: this.authorName,
             authorAffiliation: this.authorAffiliation, authorOrcid: this.authorOrcid,
             savedAt: Date.now(),
           };
@@ -240,6 +243,7 @@ export function initPublishPage() {
       this.discipline = '';
       this.keywordsText = '';
       this.coAuthors = [];
+      this.citations = [];
       this.authorName = this.accreditation?.name || '';
       this.authorAffiliation = this.accreditation?.institution || '';
       this.authorOrcid = '';
@@ -286,6 +290,22 @@ export function initPublishPage() {
 
     removeCoAuthor(index) {
       this.coAuthors.splice(index, 1);
+    },
+
+    addCitation() {
+      this.citations.push({ author: '', permlink: '', title: '', reputation_relevant: true });
+    },
+
+    updateCitation(index, field, value) {
+      this.citations[index][field] = value;
+    },
+
+    toggleCitationRelevance(index) {
+      this.citations[index].reputation_relevant = !this.citations[index].reputation_relevant;
+    },
+
+    removeCitation(index) {
+      this.citations.splice(index, 1);
     },
 
     handlePdfChange(e) {
@@ -425,6 +445,9 @@ export function initPublishPage() {
             ipfs_filename: ipfsFilename,
             language: 'en',
             document_hash: documentHash,
+            citations: this.citations
+              .filter((c) => c.author && c.permlink)
+              .map((c) => ({ author: c.author, permlink: c.permlink, title: c.title || undefined, reputation_relevant: c.reputation_relevant })),
             supplementary_files: supplementaryFiles,
           },
         };

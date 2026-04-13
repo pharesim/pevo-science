@@ -101,7 +101,13 @@
     "publications": "Publikationer ({count})",
     "noPapers": "Inga artiklar publicerade ännu.",
     "accreditedVia": "Ackrediterad via {method}-verifiering den {date}",
-    "loadFailed": "Kunde inte ladda profilen"
+    "loadFailed": "Kunde inte ladda profilen",
+    "breakdown": {
+      "papers": "Publikationer",
+      "reviews": "Granskningar",
+      "citations": "Citeringar",
+      "accreditation": "Ackreditering"
+    }
   },
   "publish": {
     "title": "Publicera en artikel",
@@ -160,7 +166,15 @@
     "needHelp": "Need help publishing?",
     "contactUs": "Contact us",
     "accreditationRequired": "Du måste vara ackrediterad för att publicera artiklar.",
-    "getAccredited": "Bli ackrediterad"
+    "getAccredited": "Bli ackrediterad",
+    "citations": "Citeringar",
+    "citationsHint": "Hänvisa till andra PEvO-publikationer som detta arbete bygger på.",
+    "citationAuthor": "Författare (Hive-användarnamn)",
+    "citationPermlink": "Permlink",
+    "citationTitle": "Titel (valfritt)",
+    "citationReputationRelevant": "Räkna mot den citerade författarens rykte",
+    "noCitations": "Inga citeringar tillagda.",
+    "addCitation": "+ Lägg till citering"
   },
   "edit": {
     "editButton": "Redigera artikel",
@@ -294,7 +308,15 @@
   "vote": {
     "upvote": "Rösta upp",
     "downvote": "Rösta ner",
-    "voteFailed": "Röstning misslyckades"
+    "voteFailed": "Röstning misslyckades",
+    "evaluate": "Bedöm",
+    "votes": "röster",
+    "strongEndorsement": "Starkt stöd",
+    "endorsement": "Stöd",
+    "mildEndorsement": "Milt stöd",
+    "mildConcerns": "Milda invändningar",
+    "reject": "Avslag",
+    "strongReject": "Starkt avslag"
   },
   "notifications": {
     "title": "Aviseringar",
@@ -581,6 +603,9 @@
     "assigning": "Tilldelar DOI...",
     "assignSuccess": "DOI tilldelad.",
     "assignFailed": "Kunde inte tilldela DOI."
+  },
+  "pubpeer": {
+    "badge": "{count} kommentarer på PubPeer"
   },
   "digest": {
     "title": "E-postsammandrag",

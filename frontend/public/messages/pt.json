@@ -101,7 +101,13 @@
     "publications": "Publicacoes ({count})",
     "noPapers": "Nenhum artigo publicado ainda.",
     "accreditedVia": "Credenciado via verificacao por {method} em {date}",
-    "loadFailed": "Falha ao carregar perfil"
+    "loadFailed": "Falha ao carregar perfil",
+    "breakdown": {
+      "papers": "Publicações",
+      "reviews": "Revisões",
+      "citations": "Citações",
+      "accreditation": "Acreditação"
+    }
   },
   "publish": {
     "title": "Publicar um Artigo",
@@ -160,7 +166,15 @@
     "needHelp": "Need help publishing?",
     "contactUs": "Contact us",
     "accreditationRequired": "Você precisa ser credenciado para publicar artigos.",
-    "getAccredited": "Obter credenciamento"
+    "getAccredited": "Obter credenciamento",
+    "citations": "Citações",
+    "citationsHint": "Referencie outras publicações do PEvO nas quais este trabalho se baseia.",
+    "citationAuthor": "Autor (nome de utilizador Hive)",
+    "citationPermlink": "Permlink",
+    "citationTitle": "Título (opcional)",
+    "citationReputationRelevant": "Contar para a reputação do autor citado",
+    "noCitations": "Nenhuma citação adicionada.",
+    "addCitation": "+ Adicionar citação"
   },
   "edit": {
     "editButton": "Editar artigo",
@@ -294,7 +308,15 @@
   "vote": {
     "upvote": "Votar a favor",
     "downvote": "Votar contra",
-    "voteFailed": "Falha na votacao"
+    "voteFailed": "Falha na votacao",
+    "evaluate": "Avaliar",
+    "votes": "votos",
+    "strongEndorsement": "Forte endosso",
+    "endorsement": "Endosso",
+    "mildEndorsement": "Endosso leve",
+    "mildConcerns": "Objeções leves",
+    "reject": "Rejeição",
+    "strongReject": "Forte rejeição"
   },
   "notifications": {
     "title": "Notificacoes",
@@ -581,6 +603,9 @@
     "assigning": "Atribuindo DOI...",
     "assignSuccess": "DOI atribuido com sucesso.",
     "assignFailed": "Falha ao atribuir DOI."
+  },
+  "pubpeer": {
+    "badge": "{count} comentários no PubPeer"
   },
   "digest": {
     "title": "Resumo por Email",

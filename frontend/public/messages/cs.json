@@ -101,7 +101,13 @@
     "publications": "Publikace ({count})",
     "noPapers": "Zatím žádné publikované články.",
     "accreditedVia": "Akreditace prostřednictvím ověření {method} dne {date}",
-    "loadFailed": "Nepodařilo se načíst profil"
+    "loadFailed": "Nepodařilo se načíst profil",
+    "breakdown": {
+      "papers": "Publikace",
+      "reviews": "Recenze",
+      "citations": "Citace",
+      "accreditation": "Akreditace"
+    }
   },
   "publish": {
     "title": "Publikovat článek",
@@ -160,7 +166,15 @@
     "needHelp": "Need help publishing?",
     "contactUs": "Contact us",
     "accreditationRequired": "Pro publikování článků musíte být akreditováni.",
-    "getAccredited": "Získat akreditaci"
+    "getAccredited": "Získat akreditaci",
+    "citations": "Citace",
+    "citationsHint": "Odkažte na další publikace PEvO, na kterých tato práce staví.",
+    "citationAuthor": "Autor (uživatelské jméno Hive)",
+    "citationPermlink": "Permlink",
+    "citationTitle": "Název (volitelné)",
+    "citationReputationRelevant": "Započítat do reputace citovaného autora",
+    "noCitations": "Žádné citace nebyly přidány.",
+    "addCitation": "+ Přidat citaci"
   },
   "edit": {
     "editButton": "Upravit článek",
@@ -294,7 +308,15 @@
   "vote": {
     "upvote": "Hlasovat pro",
     "downvote": "Hlasovat proti",
-    "voteFailed": "Hlasování selhalo"
+    "voteFailed": "Hlasování selhalo",
+    "evaluate": "Hodnotit",
+    "votes": "hlasy",
+    "strongEndorsement": "Silný souhlas",
+    "endorsement": "Souhlas",
+    "mildEndorsement": "Mírný souhlas",
+    "mildConcerns": "Mírné výhrady",
+    "reject": "Zamítnutí",
+    "strongReject": "Silné zamítnutí"
   },
   "notifications": {
     "title": "Oznámení",
@@ -581,6 +603,9 @@
     "assigning": "Přiřazování DOI...",
     "assignSuccess": "DOI bylo úspěšně přiřazeno.",
     "assignFailed": "Nepodařilo se přiřadit DOI."
+  },
+  "pubpeer": {
+    "badge": "{count} komentářů na PubPeer"
   },
   "digest": {
     "title": "E-mailový souhrn",

@@ -56,15 +56,12 @@ const MOCK_PROFILE = {
     timestamp: "2026-01-15T08:00:00Z",
   },
   reputation: {
-    score: 78,
+    score: 58,
     breakdown: {
       papers: 30,
       reviews: 15,
-      paper_votes: 12,
-      review_votes: 5,
       citations: 8,
-      accreditation_bonus: 20,
-      account_age: 3,
+      accreditation: 5,
     },
   },
   stats: {

@@ -101,7 +101,13 @@
     "publications": "发表论文 ({count})",
     "noPapers": "尚未发表论文。",
     "accreditedVia": "通过 {method} 验证于 {date} 获得认证",
-    "loadFailed": "个人资料加载失败"
+    "loadFailed": "个人资料加载失败",
+    "breakdown": {
+      "papers": "论文",
+      "reviews": "评审",
+      "citations": "引用",
+      "accreditation": "认证"
+    }
   },
   "publish": {
     "title": "发表论文",
@@ -160,7 +166,15 @@
     "needHelp": "Need help publishing?",
     "contactUs": "Contact us",
     "accreditationRequired": "您需要获得认证才能发表论文。",
-    "getAccredited": "获取认证"
+    "getAccredited": "获取认证",
+    "citations": "引用",
+    "citationsHint": "引用本研究所依据的其他PEvO论文。",
+    "citationAuthor": "作者（Hive用户名）",
+    "citationPermlink": "Permlink",
+    "citationTitle": "标题（可选）",
+    "citationReputationRelevant": "计入被引作者的声誉",
+    "noCitations": "尚未添加引用。",
+    "addCitation": "+ 添加引用"
   },
   "edit": {
     "editButton": "编辑论文",
@@ -294,7 +308,15 @@
   "vote": {
     "upvote": "赞成",
     "downvote": "反对",
-    "voteFailed": "投票失败"
+    "voteFailed": "投票失败",
+    "evaluate": "评价",
+    "votes": "票",
+    "strongEndorsement": "强烈支持",
+    "endorsement": "支持",
+    "mildEndorsement": "轻度支持",
+    "mildConcerns": "轻度保留",
+    "reject": "拒绝",
+    "strongReject": "强烈拒绝"
   },
   "notifications": {
     "title": "通知",
@@ -581,6 +603,9 @@
     "assigning": "正在分配 DOI...",
     "assignSuccess": "DOI 分配成功。",
     "assignFailed": "DOI 分配失败。"
+  },
+  "pubpeer": {
+    "badge": "{count} 条 PubPeer 评论"
   },
   "digest": {
     "title": "邮件摘要",

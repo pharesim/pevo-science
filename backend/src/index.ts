@@ -6,6 +6,7 @@ import { validateConfig } from './startup-checks.js';
 import { startBlockWatcher, stopBlockWatcher } from './block-watcher.js';
 import { startDigestScheduler, stopDigestScheduler } from './digest.js';
 import { startIpfsCleanup, stopIpfsCleanup } from './ipfs-cleanup.js';
+import { startBatchReputation, stopBatchReputation } from './reputation-batch.js';
 import { disconnectRedis } from './redis.js';
 import { checkHiveNodes } from './hive.js';
 import { logger } from './logger.js';
@@ -45,6 +46,9 @@ initAppDb()
       // Start IPFS orphan cleanup job
       startIpfsCleanup();
 
+      // Start nightly batch reputation computation (v3 voter weight convergence)
+      startBatchReputation();
+
       // Non-blocking: check Hive API node connectivity at startup
       checkHiveNodes();
     });
@@ -61,6 +65,7 @@ async function shutdown(signal: string): Promise<void> {
   stopBlockWatcher();
   stopDigestScheduler();
   stopIpfsCleanup();
+  stopBatchReputation();
 
   // Stop accepting new connections, wait up to 30s for in-flight requests
   if (server) {

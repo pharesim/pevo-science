@@ -101,7 +101,13 @@
     "publications": "مقالات ({count})",
     "noPapers": "هنوز مقاله‌ای منتشر نشده است.",
     "accreditedVia": "اعتبارسنجی از طریق تایید {method} در {date}",
-    "loadFailed": "بارگذاری پروفایل ناموفق بود"
+    "loadFailed": "بارگذاری پروفایل ناموفق بود",
+    "breakdown": {
+      "papers": "مقالات",
+      "reviews": "بررسی‌ها",
+      "citations": "استنادها",
+      "accreditation": "اعتبارسنجی"
+    }
   },
   "publish": {
     "title": "انتشار مقاله",
@@ -160,7 +166,15 @@
     "needHelp": "Need help publishing?",
     "contactUs": "Contact us",
     "accreditationRequired": "برای انتشار مقالات باید اعتبارسنجی شده باشید.",
-    "getAccredited": "دریافت اعتبارسنجی"
+    "getAccredited": "دریافت اعتبارسنجی",
+    "citations": "استنادها",
+    "citationsHint": "به مقالات دیگر PEvO که این کار بر آنها استوار است ارجاع دهید.",
+    "citationAuthor": "نویسنده (نام کاربری Hive)",
+    "citationPermlink": "پیوند ثابت",
+    "citationTitle": "عنوان (اختیاری)",
+    "citationReputationRelevant": "در اعتبار نویسنده استناد شده محاسبه شود",
+    "noCitations": "استنادی اضافه نشده است.",
+    "addCitation": "+ افزودن استناد"
   },
   "edit": {
     "editButton": "ویرایش مقاله",
@@ -294,7 +308,15 @@
   "vote": {
     "upvote": "رای مثبت",
     "downvote": "رای منفی",
-    "voteFailed": "رای‌گیری ناموفق بود"
+    "voteFailed": "رای‌گیری ناموفق بود",
+    "evaluate": "ارزیابی",
+    "votes": "رأی‌ها",
+    "strongEndorsement": "تأیید قوی",
+    "endorsement": "تأیید",
+    "mildEndorsement": "تأیید خفیف",
+    "mildConcerns": "نگرانی‌های خفیف",
+    "reject": "رد",
+    "strongReject": "رد قوی"
   },
   "notifications": {
     "title": "اعلان‌ها",
@@ -581,6 +603,9 @@
     "assigning": "تخصیص DOI...",
     "assignSuccess": "DOI با موفقیت تخصیص یافت.",
     "assignFailed": "تخصیص DOI ناموفق بود."
+  },
+  "pubpeer": {
+    "badge": "{count} نظر در PubPeer"
   },
   "digest": {
     "title": "خلاصه ایمیلی",

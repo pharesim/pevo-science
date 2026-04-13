@@ -13,6 +13,7 @@ export interface Citation {
   author: string;
   permlink: string;
   title: string;
+  reputation_relevant?: boolean;
 }
 
 export interface Rating {
@@ -39,11 +40,8 @@ export interface Accreditation {
 export interface ReputationBreakdown {
   papers: number;
   reviews: number;
-  paper_votes: number;
-  review_votes: number;
   citations: number;
   accreditation: number;
-  account_age: number;
 }
 
 export interface ReputationScore {
@@ -56,30 +54,25 @@ export interface ReputationScore {
 export interface ReputationWeights {
   paper: number;
   review: number;
-  paper_votes_max: number;
-  review_votes_max: number;
+  downvote: number;
   citation: number;
+  citation_max: number;
   accreditation_bonus: number;
-  account_age_max: number;
-  // v2 fields — defaults produce identical scores to v1
-  self_citation_discount: number; // 0.0-1.0; 1.0 = no discount (v1 behavior)
-  review_quality_bonus_max: number; // 0 = flat per-review scoring (v1 behavior)
-  decay_rate: number; // 0.0 = no decay (v1 behavior)
+  self_citation_discount: number; // 0.0-1.0; fraction of full credit for self-cites
+  decay_rate: number;
   decay_floor: number; // minimum decay multiplier
   decay_grace_months: number; // months before decay begins
 }
 
 export const DEFAULT_REPUTATION_WEIGHTS: ReputationWeights = {
-  paper: 10,
-  review: 5,
-  paper_votes_max: 30,
-  review_votes_max: 15,
-  citation: 8,
-  accreditation_bonus: 20,
-  account_age_max: 10,
-  self_citation_discount: 1.0,
-  review_quality_bonus_max: 0,
-  decay_rate: 0.0,
+  paper: 20,
+  review: 10,
+  downvote: 2,
+  citation: 3,
+  citation_max: 15,
+  accreditation_bonus: 5,
+  self_citation_discount: 0.05,
+  decay_rate: 0.02,
   decay_floor: 0.3,
   decay_grace_months: 6,
 };

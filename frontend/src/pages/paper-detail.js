@@ -22,6 +22,9 @@ export function initPaperDetailPage() {
     doiData: null,
     doiLoading: false,
 
+    // PubPeer
+    pubpeerData: null,
+
     // Bridge sync
     syncLoading: false,
 
@@ -69,8 +72,27 @@ export function initPaperDetailPage() {
       try {
         const data = await fetchDoi(this.author, this.permlink);
         this.doiData = data;
+        this.loadPubPeer();
       } catch {
         // DOI is optional
+      }
+    },
+
+    async loadPubPeer() {
+      if (!this.doiData?.doi) return;
+      try {
+        const res = await fetch('https://pubpeer.com/v3/publications?devkey=PubPeerPEvO', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ dois: [this.doiData.doi] }),
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data.feedbacks?.length) {
+          this.pubpeerData = data.feedbacks[0];
+        }
+      } catch {
+        // PubPeer is optional enrichment
       }
     },
 

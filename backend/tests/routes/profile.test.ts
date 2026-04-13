@@ -30,11 +30,11 @@ describe('GET /api/profile/:username', () => {
     const breakdown = res.body.data.reputation.breakdown;
     expect(breakdown).toHaveProperty('papers');
     expect(breakdown).toHaveProperty('reviews');
-    expect(breakdown).toHaveProperty('paper_votes');
-    expect(breakdown).toHaveProperty('review_votes');
     expect(breakdown).toHaveProperty('citations');
     expect(breakdown).toHaveProperty('accreditation');
-    expect(breakdown).toHaveProperty('account_age');
+    expect(breakdown).not.toHaveProperty('paper_votes');
+    expect(breakdown).not.toHaveProperty('review_votes');
+    expect(breakdown).not.toHaveProperty('account_age');
   });
 });
 

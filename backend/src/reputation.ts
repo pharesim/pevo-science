@@ -1,10 +1,8 @@
 /**
  * Shared reputation computation module.
- * Extracted from profile.ts so paper/review routes can populate
- * author_reputation and reviewer_reputation fields.
  *
- * v2: supports temporal decay, review quality weighting, and
- * self-citation discounting. Defaults produce v1-identical scores.
+ * v3: reputation-weighted votes, quality multipliers, downvote penalties,
+ * quality-weighted citations, batch convergence. See reputation-algorithm-v3.md.
  */
 import pg from 'pg';
 import { getPool, isHafAvailable } from './db.js';
@@ -13,21 +11,48 @@ import { config } from './config.js';
 import { parseMeta, isPevoPaper } from './helpers.js';
 import { getAccreditedSet, getAllAccreditedAccounts } from './accreditation.js';
 import { hafCache } from './cache.js';
+import { getRedis } from './redis.js';
 import { logger } from './logger.js';
 import { DEFAULT_REPUTATION_WEIGHTS, type ReputationWeights, type ReputationScore } from './types/index.js';
 import { T } from './hafsql.js';
 
 const REPUTATION_CACHE_TTL = 60 * 60_000; // 1 hour
 
-/** Per-paper creation date for temporal decay */
-export interface PaperItem {
-  created: string;
+// ─── Types ──────────────────────────────────────────────────────
+
+/** A single vote on a paper or review. */
+export interface Vote {
+  voter: string;
+  /** Hive vote weight: -10000 to +10000 */
+  weight: number;
 }
 
-/** Per-review stats for quality weighting + temporal decay */
-export interface ReviewItem {
+/** Per-paper data for reputation computation. */
+export interface PaperItem {
+  permlink: string;
   created: string;
-  rshares: number; // accredited-voter rshares on this review
+  votes: Vote[];
+  /** Average review star rating / 5 (0.2-1.0), or null if no reviews. */
+  review_quality: number | null;
+}
+
+/** Per-review data for reputation computation. */
+export interface ReviewItem {
+  permlink: string;
+  created: string;
+  votes: Vote[];
+}
+
+/** Citation of the user's work by another paper. */
+export interface CitationItem {
+  citing_author: string;
+  citing_permlink: string;
+  citing_created: string;
+  /** Quality score of the citing paper: quality * min(weighted_upvotes, 1.0), clamped 0-1. */
+  citing_quality: number;
+  reputation_relevant: boolean;
+  /** True when the citing author is the same as the cited author (self-citation). */
+  is_self: boolean;
 }
 
 export interface UserStats {
@@ -35,138 +60,191 @@ export interface UserStats {
   review_count: number;
   citation_count: number;
   first_pevo_post: string | null;
-  paper_rshares: number;
-  review_rshares: number;
-  max_paper_rshares: number;
-  max_review_rshares: number;
-  // v2 fields
   papers: PaperItem[];
   reviews: ReviewItem[];
-  max_single_review_rshares: number;
-  external_citations: number;
+  citations: CitationItem[];
   self_citations: number;
+  external_citations: number;
 }
 
-function emptyV2Fields(): Pick<UserStats, 'papers' | 'reviews' | 'max_single_review_rshares' | 'external_citations' | 'self_citations'> {
-  return { papers: [], reviews: [], max_single_review_rshares: 0, external_citations: 0, self_citations: 0 };
+function emptyStats(): UserStats {
+  return {
+    paper_count: 0, review_count: 0, citation_count: 0, first_pevo_post: null,
+    papers: [], reviews: [], citations: [], self_citations: 0, external_citations: 0,
+  };
+}
+
+// ─── Voter Weighting ────────────────────────────────────────────
+
+/**
+ * Voter weight with activity-gated floor (R9).
+ *
+ * - Active voter (has published a paper or written a review):
+ *   0.4 + 0.6 * sqrt(rep/100), floored at 0.4, capped at 1.0.
+ * - Inactive voter (no PEvO activity):
+ *   sqrt(rep/100), no floor, capped at 1.0.
+ *   This prevents sybil attacks: an empty accredited account with
+ *   rep 5 gets weight 0.22 instead of 0.53.
+ * - If no batch score exists, returns 1.0 (bootstrap mode).
+ */
+export function voterWeight(voterRep: number | undefined, hasActivity = true): number {
+  if (voterRep === undefined) return 1.0;
+  if (hasActivity) {
+    return Math.min(1.0, Math.max(0.4, 0.4 + 0.6 * Math.sqrt(voterRep / 100)));
+  }
+  return Math.min(1.0, Math.sqrt(voterRep / 100));
 }
 
 /**
- * Fetch platform-wide max rshares for normalization.
- * Cached separately with a long TTL since this is a global stat
- * that only changes when new votes arrive on PEvO content.
+ * Vote influence = voter_weight * abs(hive_vote_percent) / 10000.
+ * Uses the active accounts set to determine the voter weight branch.
  */
-interface GlobalMaxRshares {
-  max_paper_rshares: number;
-  max_review_rshares: number;
-  max_single_review_rshares: number;
+export function voteInfluence(
+  vote: Vote,
+  reputationMap: Map<string, number>,
+  activeAccounts?: Set<string>,
+): number {
+  const hasActivity = activeAccounts ? activeAccounts.has(vote.voter) : true;
+  const vw = voterWeight(reputationMap.get(vote.voter), hasActivity);
+  const strength = Math.abs(vote.weight) / 10000;
+  return vw * strength;
 }
 
-const GLOBAL_MAX_CACHE_TTL = 4 * 60 * 60_000; // 4 hours
-
-async function getGlobalMaxRshares(): Promise<GlobalMaxRshares> {
-  return hafCache.getOrSet<GlobalMaxRshares>('reputation:global_max_rshares', async () => {
+/**
+ * Get all accounts that have published at least one PEvO paper or review.
+ * Cached as Set<string> with 1h TTL. Used for activity-gated voter weight (R9).
+ */
+export async function getActiveAccounts(): Promise<Set<string>> {
+  const arr = await hafCache.getOrSet<string[]>('active_pevo_accounts', async () => {
     const pool = getPool();
-    if (!pool) return { max_paper_rshares: 0, max_review_rshares: 0, max_single_review_rshares: 0 };
-
-    // Get cached accredited accounts to filter votes without the expensive CTE
-    const accreditedSet = await getAllAccreditedAccounts();
-    if (accreditedSet.size === 0) {
-      return { max_paper_rshares: 0, max_review_rshares: 0, max_single_review_rshares: 0 };
-    }
-    const accreditedArr = [...accreditedSet];
+    if (!pool) return [];
 
     try {
       const result = await pool.query(
-        `SELECT
-           COALESCE(MAX(paper_rs), 0) AS max_paper_rshares,
-           COALESCE(MAX(review_rs), 0) AS max_review_rshares,
-           COALESCE(MAX(single_review_rs), 0) AS max_single_review_rshares
-         FROM (
-           SELECT c.author, c.permlink,
-             COALESCE(SUM(v.rshares) FILTER (
-               WHERE c.parent_author = '' AND c.parent_permlink = $2
-                 AND (c.json_metadata -> $2 ->> 'type') = 'paper'
-             ), 0) AS paper_rs,
-             COALESCE(SUM(v.rshares) FILTER (
-               WHERE (c.json_metadata -> $2 ->> 'type') = 'review'
-             ), 0) AS review_rs,
-             COALESCE(SUM(v.rshares) FILTER (
-               WHERE (c.json_metadata -> $2 ->> 'type') = 'review'
-             ), 0) AS single_review_rs
-           FROM ${T.comments} c
-           JOIN ${T.votes} v ON v.author = c.author AND v.permlink = c.permlink
-             AND v.rshares > 0 AND v.voter = ANY($1::text[])
-           WHERE c.json_metadata ->> 'app' LIKE $3
-             AND (c.json_metadata -> $2 ->> 'type') IN ('paper', 'review')
-           GROUP BY c.author, c.permlink
-         ) sub`,
-        [accreditedArr, config.appTag, `${config.appTag}/%`],
+        `SELECT DISTINCT c.author
+         FROM ${T.comments} c
+         WHERE c.json_metadata ->> 'app' LIKE $1
+           AND (
+             (c.parent_author = '' AND c.parent_permlink = $2
+              AND (c.json_metadata -> $2 ->> 'type') = 'paper')
+             OR
+             (c.json_metadata -> $2 ->> 'type') = 'review'
+           )`,
+        [`${config.appTag}/%`, config.appTag],
       );
-
-      const row = result.rows[0];
-      return {
-        max_paper_rshares: Number(row?.max_paper_rshares) || 0,
-        max_review_rshares: Number(row?.max_review_rshares) || 0,
-        max_single_review_rshares: Number(row?.max_single_review_rshares) || 0,
-      };
+      return result.rows.map((r: { author: string }) => r.author);
     } catch (err) {
-      logger.error({ err }, 'Global max rshares query failed');
-      return { max_paper_rshares: 0, max_review_rshares: 0, max_single_review_rshares: 0 };
+      logger.warn({ err }, 'Failed to query active PEvO accounts');
+      return [];
     }
-  }, GLOBAL_MAX_CACHE_TTL, true);
+  }, REPUTATION_CACHE_TTL, true);
+  return new Set(arr);
 }
+
+/**
+ * Read batch-computed reputation scores from Redis.
+ * Returns empty map if Redis unavailable or no batch scores exist.
+ */
+export async function getBatchReputationMap(): Promise<Map<string, number>> {
+  const map = new Map<string, number>();
+  const redis = getRedis();
+  if (!redis) return map;
+
+  try {
+    const keys = await redis.keys('reputation:batch:*');
+    if (keys.length === 0) return map;
+
+    const values = await redis.mget(keys);
+    for (let i = 0; i < keys.length; i++) {
+      const username = keys[i].replace('reputation:batch:', '');
+      const score = values[i] !== null ? Number(values[i]) : undefined;
+      if (score !== undefined && !isNaN(score)) {
+        map.set(username, score);
+      }
+    }
+  } catch (err) {
+    logger.warn({ err }, 'Failed to read batch reputation scores from Redis');
+  }
+  return map;
+}
+
+// ─── HAF Queries ────────────────────────────────────────────────
 
 export async function getUserStatsFromHaf(username: string): Promise<UserStats | null> {
   const pool = getPool();
   if (!pool) return null;
 
   try {
-    // Get cached accredited accounts to filter votes without the expensive CTE
     const accreditedSet = await getAllAccreditedAccounts();
     const accreditedArr = [...accreditedSet];
 
-    // Single consolidated query: paper/review counts, dates, rshares, citations.
-    // Uses the cached accredited set via ANY($2) instead of re-running the
-    // ACTIVE_ACCREDITATIONS_CTE (which scans the entire operation_custom_json_view
-    // table with text→jsonb casts) on every call.
-    // $1 = username, $2 = accreditedArr, $3 = appTag, $4 = appTag/%
-    const result = await pool.query(
-      `WITH
-       user_papers AS (
-         SELECT c.permlink, c.created
+    // Query 1: Papers with their votes and review quality
+    const papersResult = await pool.query(
+      `WITH user_papers AS (
+         SELECT c.author, c.permlink, c.created
          FROM ${T.comments} c
          WHERE c.author = $1
            AND c.parent_author = '' AND c.parent_permlink = $3
            AND (c.json_metadata -> $3 ->> 'type') = 'paper'
            AND c.json_metadata ->> 'app' LIKE $4
+           AND (c.json_metadata -> $3 -> 'continues') IS NULL
        ),
-       user_reviews AS (
-         SELECT c.permlink, c.created
-         FROM ${T.comments} c
-         WHERE c.author = $1
+       paper_votes AS (
+         SELECT up.permlink, up.created,
+           COALESCE(json_agg(json_build_object('voter', v.voter, 'weight', v.weight))
+             FILTER (WHERE v.voter IS NOT NULL), '[]') AS votes
+         FROM user_papers up
+         LEFT JOIN ${T.votes} v
+           ON v.author = up.author AND v.permlink = up.permlink
+           AND v.voter = ANY($2::text[])
+         GROUP BY up.permlink, up.created
+       ),
+       paper_reviews AS (
+         SELECT up.permlink,
+           AVG(
+             ((c.json_metadata -> $3 -> 'rating' ->> 'methodology')::numeric +
+              (c.json_metadata -> $3 -> 'rating' ->> 'novelty')::numeric +
+              (c.json_metadata -> $3 -> 'rating' ->> 'clarity')::numeric +
+              (c.json_metadata -> $3 -> 'rating' ->> 'significance')::numeric) / 4.0
+           ) / 5.0 AS quality
+         FROM user_papers up
+         JOIN ${T.comments} c
+           ON c.parent_author = up.author AND c.parent_permlink = up.permlink
            AND (c.json_metadata -> $3 ->> 'type') = 'review'
            AND c.json_metadata ->> 'app' LIKE $4
-           AND COALESCE(c.json_metadata -> $3 ->> 'is_anonymous', 'false') != 'true'
-       ),
-       paper_vote_stats AS (
-         SELECT COALESCE(SUM(v.rshares), 0) AS total_rshares
-         FROM user_papers up
-         JOIN ${T.votes} v ON v.author = $1 AND v.permlink = up.permlink
-           AND v.rshares > 0 AND v.voter = ANY($2::text[])
-       ),
-       review_vote_stats AS (
-         SELECT ur.permlink, ur.created,
-           COALESCE(SUM(v.rshares), 0) AS rshares
-         FROM user_reviews ur
-         LEFT JOIN ${T.votes} v ON v.author = $1 AND v.permlink = ur.permlink
-           AND v.rshares > 0 AND v.voter = ANY($2::text[])
-         GROUP BY ur.permlink, ur.created
-       ),
-       citation_stats AS (
-         SELECT
-           COALESCE(SUM(CASE WHEN citing.author != $1 THEN 1 ELSE 0 END), 0)::int AS external_citations,
-           COALESCE(SUM(CASE WHEN citing.author = $1 THEN 1 ELSE 0 END), 0)::int AS self_citations
+         GROUP BY up.permlink
+       )
+       SELECT pv.permlink, pv.created, pv.votes, pr.quality
+       FROM paper_votes pv
+       LEFT JOIN paper_reviews pr ON pr.permlink = pv.permlink`,
+      [username, accreditedArr, config.appTag, `${config.appTag}/%`],
+    );
+
+    // Query 2: Reviews with their votes
+    const reviewsResult = await pool.query(
+      `SELECT ur.permlink, ur.created,
+         COALESCE(json_agg(json_build_object('voter', v.voter, 'weight', v.weight))
+           FILTER (WHERE v.voter IS NOT NULL), '[]') AS votes
+       FROM ${T.comments} ur
+       LEFT JOIN ${T.votes} v
+         ON v.author = ur.author AND v.permlink = ur.permlink
+         AND v.voter = ANY($2::text[])
+       WHERE ur.author = $1
+         AND (ur.json_metadata -> $3 ->> 'type') = 'review'
+         AND ur.json_metadata ->> 'app' LIKE $4
+         AND COALESCE(ur.json_metadata -> $3 ->> 'is_anonymous', 'false') != 'true'
+       GROUP BY ur.permlink, ur.created`,
+      [username, accreditedArr, config.appTag, `${config.appTag}/%`],
+    );
+
+    // Query 3: Citations of the user's work with citing paper quality data
+    const citationsResult = await pool.query(
+      `WITH citing_papers AS (
+         SELECT citing.author AS citing_author,
+           citing.permlink AS citing_permlink,
+           citing.created AS citing_created,
+           cit,
+           COALESCE((cit ->> 'reputation_relevant')::boolean, true) AS reputation_relevant
          FROM ${T.comments} citing
          CROSS JOIN LATERAL jsonb_array_elements(
            citing.json_metadata -> $3 -> 'citations'
@@ -177,51 +255,102 @@ export async function getUserStatsFromHaf(username: string): Promise<UserStats |
            AND jsonb_typeof(citing.json_metadata -> $3 -> 'citations') = 'array'
            AND citing.author = ANY($2::text[])
            AND (cit ->> 'author') = $1
+       ),
+       citing_paper_votes AS (
+         SELECT cp.citing_author, cp.citing_permlink, cp.citing_created,
+           cp.reputation_relevant,
+           COALESCE(json_agg(json_build_object('voter', v.voter, 'weight', v.weight))
+             FILTER (WHERE v.voter IS NOT NULL AND v.rshares > 0), '[]') AS upvotes
+         FROM citing_papers cp
+         LEFT JOIN ${T.votes} v
+           ON v.author = cp.citing_author AND v.permlink = cp.citing_permlink
+           AND v.voter = ANY($2::text[])
+           AND v.rshares > 0
+         GROUP BY cp.citing_author, cp.citing_permlink, cp.citing_created, cp.reputation_relevant
+       ),
+       citing_paper_reviews AS (
+         SELECT cpv.citing_author, cpv.citing_permlink,
+           AVG(
+             ((c.json_metadata -> $3 -> 'rating' ->> 'methodology')::numeric +
+              (c.json_metadata -> $3 -> 'rating' ->> 'novelty')::numeric +
+              (c.json_metadata -> $3 -> 'rating' ->> 'clarity')::numeric +
+              (c.json_metadata -> $3 -> 'rating' ->> 'significance')::numeric) / 4.0
+           ) / 5.0 AS quality
+         FROM citing_paper_votes cpv
+         JOIN ${T.comments} c
+           ON c.parent_author = cpv.citing_author AND c.parent_permlink = cpv.citing_permlink
+           AND (c.json_metadata -> $3 ->> 'type') = 'review'
+           AND c.json_metadata ->> 'app' LIKE $4
+         GROUP BY cpv.citing_author, cpv.citing_permlink
        )
-       SELECT
-         (SELECT count(*)::int FROM user_papers) AS paper_count,
-         (SELECT count(*)::int FROM user_reviews) AS review_count,
-         (SELECT MIN(created) FROM user_papers) AS first_post,
-         (SELECT total_rshares FROM paper_vote_stats) AS paper_rshares,
-         (SELECT COALESCE(SUM(rshares), 0) FROM review_vote_stats) AS review_rshares,
-         (SELECT external_citations FROM citation_stats) AS external_citations,
-         (SELECT self_citations FROM citation_stats) AS self_citations,
-         (SELECT json_agg(json_build_object('created', created)) FROM user_papers) AS papers_json,
-         (SELECT json_agg(json_build_object('created', created, 'rshares', rshares)) FROM review_vote_stats) AS reviews_json`,
+       SELECT cpv.citing_author, cpv.citing_permlink, cpv.citing_created,
+         cpv.reputation_relevant, cpv.upvotes,
+         cpr.quality AS review_quality
+       FROM citing_paper_votes cpv
+       LEFT JOIN citing_paper_reviews cpr
+         ON cpr.citing_author = cpv.citing_author AND cpr.citing_permlink = cpv.citing_permlink`,
       [username, accreditedArr, config.appTag, `${config.appTag}/%`],
     );
 
-    // Fetch global max rshares (separately cached, long TTL)
-    const globalMax = await getGlobalMaxRshares();
+    // Build batch reputation map and active accounts for computing citing paper quality
+    const reputationMap = await getBatchReputationMap();
+    const activeSet = await getActiveAccounts();
 
-    const row = result.rows[0];
-    const papersArr = row?.papers_json || [];
-    const reviewsArr = row?.reviews_json || [];
-    const papers: PaperItem[] = Array.isArray(papersArr) ? papersArr : [];
-    const reviews: ReviewItem[] = (Array.isArray(reviewsArr) ? reviewsArr : []).map(
-      (r: { created: string; rshares: number }) => ({
-        created: r.created,
-        rshares: Number(r.rshares) || 0,
-      }),
-    );
+    // Parse papers
+    const papers: PaperItem[] = papersResult.rows.map((row: any) => ({
+      permlink: row.permlink,
+      created: row.created,
+      votes: Array.isArray(row.votes) ? row.votes : [],
+      review_quality: row.quality !== null ? Number(row.quality) : null,
+    }));
 
-    const externalCitations = Number(row?.external_citations) || 0;
-    const selfCitations = Number(row?.self_citations) || 0;
+    // Parse reviews
+    const reviews: ReviewItem[] = reviewsResult.rows.map((row: any) => ({
+      permlink: row.permlink,
+      created: row.created,
+      votes: Array.isArray(row.votes) ? row.votes : [],
+    }));
+
+    // Parse citations and compute citing paper quality
+    let selfCitations = 0;
+    let externalCitations = 0;
+    const citations: CitationItem[] = citationsResult.rows.map((row: any) => {
+      const isSelf = row.citing_author === username;
+      if (isSelf) selfCitations++;
+      else externalCitations++;
+
+      // Compute citing paper quality: quality * min(weighted_upvotes, 1.0)
+      const upvotes: Vote[] = Array.isArray(row.upvotes) ? row.upvotes : [];
+      const reviewQuality = row.review_quality !== null ? Number(row.review_quality) : 1.0;
+      const weightedUpvotes = upvotes.reduce(
+        (sum: number, v: Vote) => sum + voteInfluence(v, reputationMap, activeSet), 0,
+      );
+      const citingQuality = Math.min(1.0, Math.max(0, reviewQuality * Math.min(weightedUpvotes, 1.0)));
+
+      return {
+        citing_author: row.citing_author,
+        citing_permlink: row.citing_permlink,
+        citing_created: row.citing_created,
+        citing_quality: citingQuality,
+        reputation_relevant: row.reputation_relevant !== false,
+        is_self: isSelf,
+      };
+    });
+
+    const firstPost = papers.length > 0
+      ? papers.reduce((min, p) => p.created < min ? p.created : min, papers[0].created)
+      : null;
 
     return {
-      paper_count: Number(row?.paper_count) || 0,
-      review_count: Number(row?.review_count) || 0,
-      citation_count: externalCitations + selfCitations,
-      first_pevo_post: row?.first_post || null,
-      paper_rshares: Number(row?.paper_rshares) || 0,
-      review_rshares: Number(row?.review_rshares) || 0,
-      max_paper_rshares: globalMax.max_paper_rshares,
-      max_review_rshares: globalMax.max_review_rshares,
+      paper_count: papers.length,
+      review_count: reviews.length,
+      citation_count: selfCitations + externalCitations,
+      first_pevo_post: firstPost,
       papers,
       reviews,
-      max_single_review_rshares: globalMax.max_single_review_rshares,
-      external_citations: externalCitations,
+      citations,
       self_citations: selfCitations,
+      external_citations: externalCitations,
     };
   } catch (err) {
     logger.error({ err }, 'HAF user stats query failed');
@@ -229,15 +358,8 @@ export async function getUserStatsFromHaf(username: string): Promise<UserStats |
   }
 }
 
-const EMPTY_STATS: UserStats = {
-  paper_count: 0, review_count: 0, citation_count: 0, first_pevo_post: null,
-  paper_rshares: 0, review_rshares: 0, max_paper_rshares: 0, max_review_rshares: 0,
-  papers: [], reviews: [], max_single_review_rshares: 0, external_citations: 0, self_citations: 0,
-};
-
 export async function getUserStatsFromHiveApi(username: string): Promise<UserStats> {
   try {
-    // Paginate in batches of 20 (Hive API max) up to 100 posts
     const discussions: Awaited<ReturnType<typeof hiveClient.database.getDiscussions>> = [];
     let startAuthor: string | undefined;
     let startPermlink: string | undefined;
@@ -249,7 +371,6 @@ export async function getUserStatsFromHiveApi(username: string): Promise<UserSta
       }
       const batch = await hiveClient.database.getDiscussions('blog', query as any);
       if (batch.length === 0) break;
-      // First result of subsequent pages overlaps with last of previous page
       const newItems = page === 0 ? batch : batch.slice(1);
       discussions.push(...newItems);
       if (batch.length < 20) break;
@@ -274,31 +395,37 @@ export async function getUserStatsFromHiveApi(username: string): Promise<UserSta
       ? papers.reduce((min, d) => d.created < min ? d.created : min, papers[0].created)
       : null;
 
-    // v2: extract per-paper dates (best-effort from Hive API)
-    const paperItems: PaperItem[] = papers.map((d) => ({ created: d.created }));
-    // v2: per-review items (no rshares available from Hive API)
-    const reviewItems: ReviewItem[] = reviews.map((d) => ({ created: d.created, rshares: 0 }));
+    // Hive API fallback: no vote details, no citation quality — minimal data
+    const paperItems: PaperItem[] = papers.map((d) => ({
+      permlink: d.permlink,
+      created: d.created,
+      votes: [],
+      review_quality: null,
+    }));
+    const reviewItems: ReviewItem[] = reviews.map((d) => ({
+      permlink: d.permlink,
+      created: d.created,
+      votes: [],
+    }));
 
     return {
       paper_count: papers.length,
       review_count: reviews.length,
       citation_count: 0,
       first_pevo_post: firstPost,
-      paper_rshares: 0,
-      review_rshares: 0,
-      max_paper_rshares: 0,
-      max_review_rshares: 0,
       papers: paperItems,
       reviews: reviewItems,
-      max_single_review_rshares: 0,
-      external_citations: 0,
+      citations: [],
       self_citations: 0,
+      external_citations: 0,
     };
   } catch (err) {
     logger.error({ err }, 'Hive API user stats query failed');
-    return { ...EMPTY_STATS };
+    return emptyStats();
   }
 }
+
+// ─── Weights ────────────────────────────────────────────────────
 
 export async function getReputationWeights(): Promise<ReputationWeights> {
   return hafCache.getOrSet<ReputationWeights>('reputation_weights', async () => {
@@ -307,10 +434,6 @@ export async function getReputationWeights(): Promise<ReputationWeights> {
 
     let client: pg.PoolClient | undefined;
     try {
-      // The full query scans operation_custom_json_view with text→jsonb casts
-      // and is expensive when no update_weights has ever been broadcast.
-      // Optimisation: first do a cheap EXISTS check with a tight timeout.
-      // If no matching row exists, skip the expensive ORDER BY query entirely.
       client = await pool.connect();
       await client.query('BEGIN');
       await client.query('SET LOCAL statement_timeout = 2000');
@@ -329,7 +452,6 @@ export async function getReputationWeights(): Promise<ReputationWeights> {
         return DEFAULT_REPUTATION_WEIGHTS;
       }
 
-      // At least one update_weights row exists — fetch the latest.
       await client.query('SET LOCAL statement_timeout = 5000');
       const result = await client.query(
         `SELECT cj.json FROM ${T.customJson} cj
@@ -360,9 +482,8 @@ export async function getReputationWeights(): Promise<ReputationWeights> {
   }, 30 * 60_000, true);
 }
 
-/**
- * Temporal decay multiplier. Mirrors pevo.decay() SQL function.
- */
+// ─── Temporal Decay ─────────────────────────────────────────────
+
 export function decay(ageMonths: number, w: ReputationWeights): number {
   if (w.decay_rate === 0) return 1.0;
   if (ageMonths <= w.decay_grace_months) return 1.0;
@@ -373,53 +494,73 @@ function ageInMonths(created: string): number {
   return (Date.now() - new Date(created).getTime()) / (1000 * 60 * 60 * 24 * 30);
 }
 
-export async function computeReputation(stats: UserStats, isAccredited: boolean, weightsOverride?: ReputationWeights): Promise<ReputationScore> {
+// ─── Reputation Computation (v3) ────────────────────────────────
+
+/**
+ * Compute reputation score using v3 algorithm.
+ *
+ * @param stats          User's papers, reviews, and citations with vote data
+ * @param isAccredited   Whether the user is accredited
+ * @param weightsOverride Optional weight override (uses on-chain weights if not provided)
+ * @param reputationMap  Prior-cycle batch scores for voter weighting (empty = bootstrap)
+ * @param activeAccounts Set of accounts with PEvO activity (for activity-gated voter weight)
+ */
+export async function computeReputation(
+  stats: UserStats,
+  isAccredited: boolean,
+  weightsOverride?: ReputationWeights,
+  reputationMap?: Map<string, number>,
+  activeAccounts?: Set<string>,
+): Promise<ReputationScore> {
   const w = weightsOverride ?? await getReputationWeights();
+  const repMap = reputationMap ?? await getBatchReputationMap();
+  const activeSet = activeAccounts ?? await getActiveAccounts();
 
-  // v2: per-paper score with temporal decay
-  let papersScore: number;
-  if (stats.papers.length > 0) {
-    papersScore = stats.papers.reduce(
-      (sum, p) => sum + w.paper * decay(ageInMonths(p.created), w), 0,
-    );
-  } else {
-    // Fallback: no per-paper data (Hive API fallback with empty papers list)
-    papersScore = stats.paper_count * w.paper;
+  // ── Papers ──
+  let papersScore = 0;
+  for (const p of stats.papers) {
+    const upvotes = p.votes.filter((v) => v.weight > 0);
+    const downvotes = p.votes.filter((v) => v.weight < 0);
+
+    const weightedUpvotes = upvotes.reduce((sum, v) => sum + voteInfluence(v, repMap, activeSet), 0);
+    const weightedDownvotes = downvotes.reduce((sum, v) => sum + voteInfluence(v, repMap, activeSet), 0);
+
+    const quality = p.review_quality !== null ? p.review_quality : 1.0;
+    const raw = quality * Math.min(weightedUpvotes, w.paper) - weightedDownvotes * w.downvote;
+    const clamped = Math.max(-w.paper, Math.min(w.paper, raw));
+
+    papersScore += clamped * decay(ageInMonths(p.created), w);
   }
 
-  // v2: per-review quality-weighted score with temporal decay
-  let reviewsScore: number;
-  if (stats.reviews.length > 0) {
-    reviewsScore = stats.reviews.reduce((sum, r) => {
-      const normalized = stats.max_single_review_rshares > 0
-        ? r.rshares / stats.max_single_review_rshares
-        : 0;
-      const qualityBonus = Math.min(normalized * w.review_quality_bonus_max, w.review_quality_bonus_max);
-      return sum + (w.review + qualityBonus) * decay(ageInMonths(r.created), w);
-    }, 0);
-  } else {
-    reviewsScore = stats.review_count * w.review;
+  // ── Reviews ──
+  let reviewsScore = 0;
+  for (const r of stats.reviews) {
+    const upvotes = r.votes.filter((v) => v.weight > 0);
+    const downvotes = r.votes.filter((v) => v.weight < 0);
+
+    const weightedUpvotes = upvotes.reduce((sum, v) => sum + voteInfluence(v, repMap, activeSet), 0);
+    const weightedDownvotes = downvotes.reduce((sum, v) => sum + voteInfluence(v, repMap, activeSet), 0);
+
+    const raw = Math.min(weightedUpvotes, w.review) - weightedDownvotes * w.downvote;
+    const clamped = Math.max(-w.review, Math.min(w.review, raw));
+
+    reviewsScore += clamped * decay(ageInMonths(r.created), w);
   }
 
-  const paperVotes = stats.max_paper_rshares > 0
-    ? Math.min(Math.round(stats.paper_rshares / stats.max_paper_rshares * w.paper_votes_max), w.paper_votes_max)
-    : 0;
-  const reviewVotes = stats.max_review_rshares > 0
-    ? Math.min(Math.round(stats.review_rshares / stats.max_review_rshares * w.review_votes_max), w.review_votes_max)
-    : 0;
-
-  // v2: self-citation discounting
-  const adjustedCitations = stats.external_citations + stats.self_citations * w.self_citation_discount;
-  const citationsScore = (adjustedCitations > 0 ? adjustedCitations : stats.citation_count) * w.citation;
+  // ── Citations (quality-weighted, self-citation discounted, capped) ──
+  let citationScore = 0;
+  for (const c of stats.citations) {
+    if (!c.reputation_relevant) continue;
+    const citingAge = ageInMonths(c.citing_created);
+    const decayMult = decay(citingAge, w);
+    const weightMult = c.is_self ? w.self_citation_discount : w.citation;
+    citationScore += c.citing_quality * weightMult * decayMult;
+  }
+  citationScore = Math.min(citationScore, w.citation_max);
 
   const accreditationScore = isAccredited ? w.accreditation_bonus : 0;
 
-  let accountAge = 0;
-  if (stats.first_pevo_post) {
-    accountAge = Math.min(Math.floor(ageInMonths(stats.first_pevo_post)), w.account_age_max);
-  }
-
-  const raw = papersScore + reviewsScore + paperVotes + reviewVotes + citationsScore + accreditationScore + accountAge;
+  const raw = papersScore + reviewsScore + citationScore + accreditationScore;
   const score = Math.min(100, Math.max(0, Math.round(raw)));
 
   return {
@@ -427,14 +568,13 @@ export async function computeReputation(stats: UserStats, isAccredited: boolean,
     breakdown: {
       papers: Math.round(papersScore),
       reviews: Math.round(reviewsScore),
-      paper_votes: paperVotes,
-      review_votes: reviewVotes,
-      citations: Math.round(citationsScore),
+      citations: Math.round(citationScore),
       accreditation: accreditationScore,
-      account_age: accountAge,
     },
   };
 }
+
+// ─── Public API ─────────────────────────────────────────────────
 
 /**
  * Get cached reputation score for a single user (1h TTL).

@@ -101,7 +101,13 @@
     "publications": "Veröffentlichungen ({count})",
     "noPapers": "Noch keine Publikationen veröffentlicht.",
     "accreditedVia": "Akkreditiert über {method}-Verifizierung am {date}",
-    "loadFailed": "Profil konnte nicht geladen werden"
+    "loadFailed": "Profil konnte nicht geladen werden",
+    "breakdown": {
+      "papers": "Veröffentlichungen",
+      "reviews": "Gutachten",
+      "citations": "Zitierungen",
+      "accreditation": "Akkreditierung"
+    }
   },
   "publish": {
     "title": "Publikation veröffentlichen",
@@ -160,7 +166,15 @@
     "needHelp": "Need help publishing?",
     "contactUs": "Contact us",
     "accreditationRequired": "Sie müssen akkreditiert sein, um Arbeiten zu veröffentlichen.",
-    "getAccredited": "Akkreditierung beantragen"
+    "getAccredited": "Akkreditierung beantragen",
+    "citations": "Zitierungen",
+    "citationsHint": "Verweisen Sie auf andere PEvO-Veröffentlichungen, auf denen diese Arbeit aufbaut.",
+    "citationAuthor": "Autor (Hive-Benutzername)",
+    "citationPermlink": "Permlink",
+    "citationTitle": "Titel (optional)",
+    "citationReputationRelevant": "Für die Reputation des zitierten Autors zählen",
+    "noCitations": "Keine Zitierungen hinzugefügt.",
+    "addCitation": "+ Zitierung hinzufügen"
   },
   "edit": {
     "editButton": "Artikel bearbeiten",
@@ -294,7 +308,15 @@
   "vote": {
     "upvote": "Positiv bewerten",
     "downvote": "Negativ bewerten",
-    "voteFailed": "Abstimmung fehlgeschlagen"
+    "voteFailed": "Abstimmung fehlgeschlagen",
+    "evaluate": "Bewerten",
+    "votes": "Stimmen",
+    "strongEndorsement": "Starke Zustimmung",
+    "endorsement": "Zustimmung",
+    "mildEndorsement": "Leichte Zustimmung",
+    "mildConcerns": "Leichte Bedenken",
+    "reject": "Ablehnung",
+    "strongReject": "Starke Ablehnung"
   },
   "notifications": {
     "title": "Benachrichtigungen",
@@ -581,6 +603,9 @@
     "assigning": "DOI wird zugewiesen...",
     "assignSuccess": "DOI erfolgreich zugewiesen.",
     "assignFailed": "DOI-Zuweisung fehlgeschlagen."
+  },
+  "pubpeer": {
+    "badge": "{count} Kommentare auf PubPeer"
   },
   "digest": {
     "title": "E-Mail-Zusammenfassung",

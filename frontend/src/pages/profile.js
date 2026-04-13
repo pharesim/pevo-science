@@ -44,7 +44,9 @@ export function initProfilePage() {
 
     get breakdownEntries() {
       if (!this.profile?.reputation?.breakdown) return [];
-      return Object.entries(this.profile.reputation.breakdown);
+      const deprecated = ['paper_votes', 'review_votes', 'account_age'];
+      return Object.entries(this.profile.reputation.breakdown)
+        .filter(([key]) => !deprecated.includes(key));
     },
 
     breakdownPct(value) {
