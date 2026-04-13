@@ -1,6 +1,7 @@
 import Alpine from 'alpinejs';
 import { fetchVouchStatus, notifyVouch, notifyRetractVouch } from '../api.js';
-import { broadcastVouch, broadcastRetractVouch } from '../keychain.js';
+import { broadcastOps } from '../signer.js';
+import { getAppTag } from '../config.js';
 
 export function initVouchSection() {
   Alpine.data('vouchSection', (opts = {}) => ({
@@ -22,12 +23,16 @@ export function initVouchSection() {
       return this.vouchStatus?.vouches?.some((v) => v.voucher === this.username) ?? false;
     },
 
+    get isLightAccount() {
+      return Alpine.store('auth').custody === 'light';
+    },
+
     get canVouch() {
-      return this.isConnected && this.username !== this.targetUsername && !this.currentUserHasVouched && !this.isTargetAccredited;
+      return this.isConnected && !this.isLightAccount && this.username !== this.targetUsername && !this.currentUserHasVouched && !this.isTargetAccredited;
     },
 
     get canRetract() {
-      return this.isConnected && this.currentUserHasVouched;
+      return this.isConnected && !this.isLightAccount && this.currentUserHasVouched;
     },
 
     relationshipLabel(r) {
@@ -63,7 +68,19 @@ export function initVouchSection() {
       this.step = 'signing';
       this.message = '';
       try {
-        await broadcastVouch(this.username, this.targetUsername, this.relationship);
+        const APP_TAG = getAppTag();
+        await broadcastOps(this.username, [['custom_json', {
+          required_auths: [],
+          required_posting_auths: [this.username],
+          id: APP_TAG,
+          json: JSON.stringify({
+            action: 'vouch',
+            voucher: this.username,
+            vouchee: this.targetUsername,
+            relationship: this.relationship,
+            timestamp: new Date().toISOString(),
+          }),
+        }]]);
         try {
           const res = await notifyVouch(this.targetUsername);
           const accMsg = res.data.accredited
@@ -87,7 +104,19 @@ export function initVouchSection() {
       this.step = 'signing';
       this.message = '';
       try {
-        await broadcastRetractVouch(this.username, this.targetUsername, this.retractReason || 'Retracted');
+        const APP_TAG2 = getAppTag();
+        await broadcastOps(this.username, [['custom_json', {
+          required_auths: [],
+          required_posting_auths: [this.username],
+          id: APP_TAG2,
+          json: JSON.stringify({
+            action: 'retract_vouch',
+            voucher: this.username,
+            vouchee: this.targetUsername,
+            reason: this.retractReason || 'Retracted',
+            timestamp: new Date().toISOString(),
+          }),
+        }]]);
         try {
           const res = await notifyRetractVouch(this.targetUsername);
           const revocations = res.data.revocations;

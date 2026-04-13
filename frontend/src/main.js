@@ -40,12 +40,18 @@ import { initEditPage } from './pages/edit.js';
 import { initAccreditationPage } from './pages/accreditation.js';
 import { initAccreditationVerifyPage } from './pages/accreditation-verify.js';
 import { initAccreditationOrcidCallbackPage } from './pages/accreditation-orcid-callback.js';
+import { initSignupPage } from './pages/signup.js';
+import { initSignupVerifyPage } from './pages/signup-verify.js';
+import { initLoginPage } from './pages/login.js';
+import { initResetPasswordPage } from './pages/reset-password.js';
+import { initSettingsPage } from './pages/settings.js';
 
 // Components — Phase 4
 import { initThreadedComments } from './components/threaded-comments.js';
 import { initCommentComposer } from './components/comment-composer.js';
 import { initVoteButtons } from './components/vote-buttons.js';
 import { initVouchSection } from './components/vouch-section.js';
+import { initBroadcastConfirm } from './components/broadcast-confirm.js';
 
 // Make Alpine available globally for debugging
 window.Alpine = Alpine;
@@ -86,6 +92,7 @@ initThreadedComments();
 initCommentComposer();
 initVoteButtons();
 initVouchSection();
+initBroadcastConfirm();
 
 // Initialize pages — Phase 4
 initPublishPage();
@@ -95,6 +102,11 @@ initBridgePage();
 initAccreditationPage();
 initAccreditationVerifyPage();
 initAccreditationOrcidCallbackPage();
+initSignupPage();
+initSignupVerifyPage();
+initLoginPage();
+initResetPasswordPage();
+initSettingsPage();
 
 // Load i18n messages, sync locale with router, then start Alpine
 initI18n().then(() => {

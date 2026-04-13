@@ -1,6 +1,6 @@
 import Alpine from 'alpinejs';
 import { uploadToIpfs, fetchDisciplines } from '../api.js';
-import { publishPaper } from '../keychain.js';
+import { broadcastOps } from '../signer.js';
 import { sha256File, slugify } from '../crypto.js';
 import { createEditor } from '../editor.js';
 import { getAppTag, getAppId } from '../config.js';
@@ -511,8 +511,35 @@ export function initPublishPage() {
           },
         };
 
+        const confirmed = await Alpine.store('broadcastConfirm').request({
+          title: this.$t('confirm.publishTitle'),
+          message: this.$t('confirm.publishMessage', { title: this.title }),
+          confirmLabel: this.$t('confirm.publish'),
+        });
+        if (!confirmed) { this.step = 'idle'; return; }
+
         this.step = 'broadcasting';
-        await publishPaper(username, permlink, this.title, this.postBody, jsonMetadata);
+        const operations = [
+          ['comment', {
+            parent_author: '',
+            parent_permlink: APP_TAG,
+            author: username,
+            permlink,
+            title: this.title,
+            body: this.postBody,
+            json_metadata: JSON.stringify(jsonMetadata),
+          }],
+          ['comment_options', {
+            author: username,
+            permlink,
+            max_accepted_payout: '1000000.000 HBD',
+            percent_hbd: 0,
+            allow_votes: true,
+            allow_curation_rewards: true,
+            extensions: [],
+          }],
+        ];
+        await broadcastOps(username, operations);
 
         this.step = 'success';
         try { localStorage.removeItem(DRAFT_KEY); } catch { /* */ }

@@ -1,6 +1,6 @@
 import Alpine from 'alpinejs';
 import { fetchPaper, fetchPaperEnrichment, invalidatePaperCache, uploadToIpfs } from '../api.js';
-import { editPaper, publishPaper } from '../keychain.js';
+import { broadcastOps } from '../signer.js';
 import { sha256File, slugify } from '../crypto.js';
 import { createEditor } from '../editor.js';
 import { getAppTag, getAppId } from '../config.js';
@@ -506,7 +506,27 @@ export function initEditPage() {
           };
 
           this.step = 'broadcasting';
-          await publishPaper(username, newPermlink, this.title, newPostBody, jsonMetadata);
+          const continuationOps = [
+            ['comment', {
+              parent_author: '',
+              parent_permlink: APP_TAG,
+              author: username,
+              permlink: newPermlink,
+              title: this.title,
+              body: newPostBody,
+              json_metadata: JSON.stringify(jsonMetadata),
+            }],
+            ['comment_options', {
+              author: username,
+              permlink: newPermlink,
+              max_accepted_payout: '1000000.000 HBD',
+              percent_hbd: 0,
+              allow_votes: true,
+              allow_curation_rewards: true,
+              extensions: [],
+            }],
+          ];
+          await broadcastOps(username, continuationOps);
 
           // Invalidate cache for the canonical paper
           const canonicalAuthor = this.paper.canonical_author || this.paper.author;
@@ -557,7 +577,18 @@ export function initEditPage() {
           };
 
           this.step = 'broadcasting';
-          await editPaper(username, this.permlink, this.title, broadcastBody, jsonMetadata);
+          const editOps = [
+            ['comment', {
+              parent_author: '',
+              parent_permlink: APP_TAG,
+              author: username,
+              permlink: this.permlink,
+              title: this.title,
+              body: broadcastBody,
+              json_metadata: JSON.stringify(jsonMetadata),
+            }],
+          ];
+          await broadcastOps(username, editOps);
 
           try { await invalidatePaperCache(this.author, this.permlink); } catch { /* best effort */ }
 

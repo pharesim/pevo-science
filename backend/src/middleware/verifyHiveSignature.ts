@@ -7,6 +7,7 @@ import { sendError } from '../response.js';
 import { logger } from '../logger.js';
 import { config } from '../config.js';
 import { getRedis, isRedisAvailable } from '../redis.js';
+import { getAppPool } from '../app-db.js';
 
 /**
  * Middleware that verifies a Hive Keychain signature.
@@ -59,6 +60,7 @@ declare global {
   namespace Express {
     interface Request {
       hiveUsername?: string;
+      hiveCustody?: 'light' | 'self';
     }
   }
 }
@@ -69,8 +71,31 @@ export async function verifyHiveSignature(req: Request, res: Response, next: Nex
   if (authHeader?.startsWith('Bearer ')) {
     const token = authHeader.slice(7);
     try {
-      const payload = jwt.verify(token, config.sessionSecret) as { sub: string };
+      const payload = jwt.verify(token, config.sessionSecret) as { sub: string; custody?: 'light' | 'self'; iat?: number };
       req.hiveUsername = payload.sub;
+      req.hiveCustody = payload.custody || 'self';
+
+      // Check session invalidation for light accounts (password reset invalidates all prior JWTs)
+      if (payload.iat) {
+        const pool = getAppPool();
+        if (pool) {
+          try {
+            const { rows } = await pool.query<{ sessions_invalidated_at: Date | null }>(
+              'SELECT sessions_invalidated_at FROM light_accounts WHERE username = $1',
+              [payload.sub],
+            );
+            if (rows.length > 0 && rows[0].sessions_invalidated_at) {
+              const invalidatedAt = Math.floor(rows[0].sessions_invalidated_at.getTime() / 1000);
+              if (payload.iat < invalidatedAt) {
+                return sendError(res, 401, 'SESSION_INVALIDATED', 'Session has been invalidated. Please log in again.');
+              }
+            }
+          } catch (dbErr) {
+            logger.warn({ err: dbErr }, 'Session invalidation check failed — allowing request');
+          }
+        }
+      }
+
       return next();
     } catch (err) {
       logger.debug({ err }, 'JWT verification failed, falling back to Hive signature check');
@@ -145,6 +170,7 @@ export async function verifyHiveSignature(req: Request, res: Response, next: Nex
     if (!isRedisAvailable()) recordSignatureInMemory(signature);
 
     req.hiveUsername = username;
+    req.hiveCustody = 'self';
     next();
   } catch (err) {
     logger.error({ err: (err as Error).message }, 'Signature verification failed');

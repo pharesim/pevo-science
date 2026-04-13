@@ -2408,6 +2408,92 @@
               </div>
             </div>
 
+            <!-- Web of Trust vouching -->
+            <template x-if="!profile.is_accredited && profile.username !== $store.auth.username">
+              <div x-data="vouchSection({ targetUsername: profile.username, isTargetAccredited: profile.is_accredited })" class="card mb-8">
+                <h2 class="text-section-title text-ink font-serif mb-4" x-text="$t('wot.title')"></h2>
+
+                <!-- Vouch count progress -->
+                <div class="flex items-center gap-3 mb-4">
+                  <div class="flex-1 h-2 bg-parchment-warm rounded-full overflow-hidden">
+                    <div class="h-full bg-pevo-teal rounded-full transition-all" :style="`width: ${Math.min(100, ((vouchStatus?.vouch_count ?? 0) / (vouchStatus?.threshold ?? 3)) * 100)}%`"></div>
+                  </div>
+                  <span class="text-sm text-ink-muted whitespace-nowrap" x-text="$t('wot.vouches', { count: vouchStatus?.vouch_count ?? 0, threshold: vouchStatus?.threshold ?? 3 })"></span>
+                </div>
+
+                <!-- Existing vouchers -->
+                <template x-if="vouchStatus?.vouches?.length > 0">
+                  <div class="mb-4">
+                    <p class="text-xs font-medium text-ink-muted mb-2" x-text="$t('wot.vouchedBy')"></p>
+                    <div class="flex flex-wrap gap-2">
+                      <template x-for="v in vouchStatus.vouches" :key="v.voucher">
+                        <a :href="$lp('/profile/' + v.voucher)" @click.prevent="navigate('/profile/' + v.voucher)"
+                           class="inline-flex items-center gap-1 px-2 py-1 rounded bg-parchment-warm text-xs text-ink hover:text-pevo-teal no-underline">
+                          <span x-text="'@' + v.voucher"></span>
+                          <span class="text-ink-muted capitalize" x-text="'(' + relationshipLabel(v.relationship) + ')'"></span>
+                        </a>
+                      </template>
+                    </div>
+                  </div>
+                </template>
+
+                <!-- Light account message -->
+                <template x-if="isConnected && isLightAccount && !currentUserHasVouched">
+                  <p class="text-sm text-ink-muted italic" x-text="$t('wot.keychainRequiredToVouch')"></p>
+                </template>
+
+                <!-- Not connected -->
+                <template x-if="!isConnected">
+                  <p class="text-sm text-ink-muted" x-text="$t('wot.connectToVouch')"></p>
+                </template>
+
+                <!-- Vouch form -->
+                <template x-if="canVouch">
+                  <div>
+                    <p class="text-sm text-ink-muted mb-3" x-text="$t('wot.vouchPrompt')"></p>
+                    <div class="flex flex-wrap items-end gap-3">
+                      <div>
+                        <label class="text-xs text-ink-muted block mb-1">Relationship</label>
+                        <select x-model="relationship" class="input text-sm py-1.5">
+                          <option value="colleague" x-text="$t('wot.colleague')"></option>
+                          <option value="advisor" x-text="$t('wot.advisor')"></option>
+                          <option value="collaborator" x-text="$t('wot.collaborator')"></option>
+                        </select>
+                      </div>
+                      <button @click="handleVouch" :disabled="step === 'signing'" class="btn-primary text-sm">
+                        <span x-show="step !== 'signing'" x-text="$t('wot.vouchButton')"></span>
+                        <span x-show="step === 'signing'" x-text="$t('wot.signing')"></span>
+                      </button>
+                    </div>
+                  </div>
+                </template>
+
+                <!-- Retract -->
+                <template x-if="canRetract">
+                  <div>
+                    <template x-if="!showRetract">
+                      <button @click="showRetract = true" class="text-sm text-pevo-crimson hover:underline" x-text="$t('wot.retractVouch')"></button>
+                    </template>
+                    <template x-if="showRetract">
+                      <div class="mt-2 p-3 bg-red-50 rounded border border-red-200">
+                        <p class="text-sm text-ink mb-2" x-text="$t('wot.retractConfirm')"></p>
+                        <input type="text" x-model="retractReason" :placeholder="$t('wot.retractReasonPlaceholder')" class="input text-sm mb-2 w-full" />
+                        <div class="flex gap-2">
+                          <button @click="handleRetract" :disabled="step === 'signing'" class="btn-danger text-sm" x-text="$t('wot.confirmRetract')"></button>
+                          <button @click="showRetract = false" class="btn-secondary text-sm" x-text="$t('wot.cancel')"></button>
+                        </div>
+                      </div>
+                    </template>
+                  </div>
+                </template>
+
+                <!-- Status messages -->
+                <template x-if="message">
+                  <p class="mt-3 text-sm" :class="step === 'error' ? 'text-pevo-crimson' : 'text-pevo-green'" x-text="message"></p>
+                </template>
+              </div>
+            </template>
+
             <!-- User's papers -->
             <section>
               <h2 class="text-section-title text-ink font-serif mb-4" x-text="$t('profile.publications', { count: userPapers.length })"></h2>
@@ -3142,7 +3228,543 @@
       </div>
     </template>
 
+    <!-- SIGNUP -->
+    <template x-if="$store.router.route === 'signup'">
+      <div x-data="signupPage" class="container-narrow py-8">
+        <!-- Already signed in -->
+        <template x-if="isConnected">
+          <div class="text-center py-16">
+            <p class="text-ink-muted mb-4" x-text="$t('signup.alreadySignedIn')"></p>
+            <button @click="navigate('/papers')" class="btn-primary" x-text="$t('signup.goToPapers')"></button>
+          </div>
+        </template>
+
+        <!-- Signup form -->
+        <template x-if="!isConnected && !submitted">
+          <div class="max-w-md mx-auto">
+            <h1 class="text-3xl font-bold text-ink mb-2" x-text="$t('signup.title')"></h1>
+            <p class="text-ink-muted mb-6" x-text="$t('signup.subtitle')"></p>
+
+            <!-- Error -->
+            <div x-show="error" class="bg-red-50 border border-red-200 rounded-lg p-4 mb-6">
+              <p class="text-red-700 text-sm" x-text="error"></p>
+            </div>
+
+            <form @submit.prevent="handleSubmit" class="space-y-5">
+              <!-- Email -->
+              <div>
+                <label class="block text-sm font-medium text-ink mb-1" x-text="$t('signup.email')"></label>
+                <input type="email" x-model="email" required
+                       class="w-full border border-parchment-dark rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-pevo-teal focus:border-pevo-teal"
+                       :placeholder="$t('signup.emailPlaceholder')">
+                <p class="text-xs text-ink-muted mt-1" x-text="$t('signup.emailHint')"></p>
+              </div>
+
+              <!-- Display Name -->
+              <div>
+                <label class="block text-sm font-medium text-ink mb-1" x-text="$t('signup.displayName')"></label>
+                <input type="text" x-model="displayName" required
+                       class="w-full border border-parchment-dark rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-pevo-teal focus:border-pevo-teal"
+                       :placeholder="$t('signup.displayNamePlaceholder')">
+              </div>
+
+              <!-- Link existing account toggle -->
+              <div class="flex items-center gap-2">
+                <input type="checkbox" id="linkExisting" x-model="linkExisting"
+                       class="rounded border-parchment-dark text-pevo-teal focus:ring-pevo-teal">
+                <label for="linkExisting" class="text-sm text-ink" x-text="$t('signup.linkExisting')"></label>
+              </div>
+
+              <!-- Username picker (new account) -->
+              <div x-show="!linkExisting">
+                <label class="block text-sm font-medium text-ink mb-1" x-text="$t('signup.username')"></label>
+                <div class="relative">
+                  <input type="text" x-model="username" maxlength="16"
+                         class="w-full border border-parchment-dark rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-pevo-teal focus:border-pevo-teal lowercase"
+                         :placeholder="$t('signup.usernamePlaceholder')"
+                         @input="username = username.toLowerCase()">
+                  <!-- Status indicators -->
+                  <div class="absolute right-3 top-1/2 -translate-y-1/2">
+                    <span x-show="usernameStatus === 'checking'" class="text-ink-muted text-xs">...</span>
+                    <span x-show="usernameStatus === 'available'" class="text-pevo-green text-sm">&#10003;</span>
+                    <span x-show="usernameStatus === 'taken'" class="text-pevo-crimson text-sm">&#10007;</span>
+                    <span x-show="usernameStatus === 'invalid'" class="text-amber-500 text-sm">&#10007;</span>
+                  </div>
+                </div>
+                <p x-show="usernameStatus === 'taken'" class="text-xs text-pevo-crimson mt-1" x-text="$t('signup.usernameTaken')"></p>
+                <p x-show="usernameStatus === 'invalid' && username" class="text-xs text-amber-500 mt-1" x-text="$t('signup.usernameInvalid')"></p>
+                <p x-show="!usernameStatus || usernameStatus === 'available'" class="text-xs text-ink-muted mt-1" x-text="$t('signup.usernameHint')"></p>
+              </div>
+
+              <!-- Linked username (existing account) -->
+              <div x-show="linkExisting">
+                <label class="block text-sm font-medium text-ink mb-1" x-text="$t('signup.linkedUsername')"></label>
+                <input type="text" x-model="linkedUsername" maxlength="16"
+                       class="w-full border border-parchment-dark rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-pevo-teal focus:border-pevo-teal lowercase"
+                       :placeholder="$t('signup.linkedUsernamePlaceholder')"
+                       @input="linkedUsername = linkedUsername.toLowerCase()">
+                <p class="text-xs text-ink-muted mt-1" x-text="$t('signup.linkedUsernameHint')"></p>
+              </div>
+
+              <!-- Password -->
+              <div>
+                <label class="block text-sm font-medium text-ink mb-1" x-text="$t('signup.password')"></label>
+                <input type="password" x-model="password" required minlength="10"
+                       class="w-full border border-parchment-dark rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-pevo-teal focus:border-pevo-teal">
+                <p class="text-xs text-ink-muted mt-1" x-text="$t('signup.passwordHint')"></p>
+              </div>
+
+              <!-- Confirm Password -->
+              <div>
+                <label class="block text-sm font-medium text-ink mb-1" x-text="$t('signup.passwordConfirm')"></label>
+                <input type="password" x-model="passwordConfirm" required
+                       class="w-full border border-parchment-dark rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-pevo-teal focus:border-pevo-teal"
+                       :class="passwordConfirm && !passwordsMatch ? 'border-pevo-crimson' : ''">
+                <p x-show="passwordConfirm && !passwordsMatch" class="text-xs text-pevo-crimson mt-1" x-text="$t('signup.passwordMismatch')"></p>
+              </div>
+
+              <!-- Submit -->
+              <button type="submit" :disabled="!canSubmit || isSubmitting"
+                      class="w-full btn-primary py-2.5 disabled:opacity-50 disabled:cursor-not-allowed">
+                <span x-show="!isSubmitting" x-text="$t('signup.submit')"></span>
+                <span x-show="isSubmitting" x-text="$t('signup.submitting')"></span>
+              </button>
+            </form>
+
+            <!-- Login link -->
+            <p class="text-center text-sm text-ink-muted mt-6">
+              <span x-text="$t('signup.hasAccount')"></span>
+              <a :href="$lp('/login')" @click.prevent="navigate('/login')" class="text-pevo-teal hover:underline" x-text="$t('signup.signIn')"></a>
+            </p>
+
+            <!-- Keychain link -->
+            <p class="text-center text-sm text-ink-muted mt-2">
+              <span x-text="$t('signup.hasKeychain')"></span>
+              <a :href="$lp('/')" @click.prevent="navigate('/')" class="text-pevo-teal hover:underline" x-text="$t('signup.connectKeychain')"></a>
+            </p>
+          </div>
+        </template>
+
+        <!-- Success / check email -->
+        <template x-if="!isConnected && submitted">
+          <div class="max-w-md mx-auto text-center py-16">
+            <div class="w-16 h-16 bg-pevo-green/10 rounded-full flex items-center justify-center mx-auto mb-6">
+              <svg class="w-8 h-8 text-pevo-green" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>
+            </div>
+            <h2 class="text-2xl font-bold text-ink mb-2" x-text="$t('signup.checkEmail')"></h2>
+            <p class="text-ink-muted" x-text="$t('signup.checkEmailDescription')"></p>
+          </div>
+        </template>
+      </div>
+    </template>
+
+    <!-- SIGNUP VERIFY / SEED PHRASE -->
+    <template x-if="$store.router.route === 'signup-verify'">
+      <div x-data="signupVerifyPage" class="container-narrow py-8">
+        <div class="max-w-lg mx-auto">
+
+          <!-- Verifying email token -->
+          <div x-show="phase === 'verifying'" class="text-center py-16">
+            <div class="animate-pulse">
+              <div class="w-12 h-12 bg-parchment-dark rounded-full mx-auto mb-4"></div>
+              <p class="text-ink-muted" x-text="$t('seedPhrase.verifying')"></p>
+            </div>
+          </div>
+
+          <!-- Error -->
+          <div x-show="phase === 'error'" class="text-center py-16">
+            <div class="w-16 h-16 bg-red-50 rounded-full flex items-center justify-center mx-auto mb-6">
+              <svg class="w-8 h-8 text-pevo-crimson" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+            </div>
+            <h2 class="text-2xl font-bold text-ink mb-2" x-text="$t('seedPhrase.errorTitle')"></h2>
+            <p class="text-ink-muted mb-4" x-text="error"></p>
+            <a :href="$lp('/signup')" @click.prevent="navigate('/signup')" class="text-pevo-teal hover:underline" x-text="$t('seedPhrase.tryAgain')"></a>
+          </div>
+
+          <!-- Seed phrase display -->
+          <div x-show="phase === 'seed'">
+            <h1 class="text-2xl font-bold text-ink mb-2" x-text="$t('seedPhrase.title')"></h1>
+            <p class="text-ink-muted mb-6" x-text="$t('seedPhrase.description')"></p>
+
+            <div class="bg-amber-50 border border-amber-200 rounded-lg p-4 mb-6">
+              <p class="text-amber-800 text-sm font-medium" x-text="$t('seedPhrase.warning')"></p>
+            </div>
+
+            <!-- Word grid -->
+            <div class="grid grid-cols-3 gap-3 mb-8">
+              <template x-for="(word, i) in seedWords" :key="i">
+                <div class="bg-white border border-parchment-dark rounded-lg px-3 py-2 text-center">
+                  <span class="text-xs text-ink-muted" x-text="(i + 1) + '.'"></span>
+                  <span class="ml-1 font-mono text-sm text-ink font-medium" x-text="word"></span>
+                </div>
+              </template>
+            </div>
+
+            <button @click="proceedToConfirm()" class="w-full btn-primary py-2.5" x-text="$t('seedPhrase.iWroteItDown')"></button>
+          </div>
+
+          <!-- Confirmation step -->
+          <div x-show="phase === 'confirm'">
+            <h2 class="text-2xl font-bold text-ink mb-2" x-text="$t('seedPhrase.confirmTitle')"></h2>
+            <p class="text-ink-muted mb-6" x-text="$t('seedPhrase.confirmDescription')"></p>
+
+            <div x-show="error" class="bg-red-50 border border-red-200 rounded-lg p-4 mb-6">
+              <p class="text-red-700 text-sm" x-text="error"></p>
+            </div>
+
+            <div class="space-y-4 mb-8">
+              <template x-for="idx in confirmIndices" :key="idx">
+                <div>
+                  <label class="block text-sm font-medium text-ink mb-1">
+                    <span x-text="$t('seedPhrase.wordNumber', { number: idx + 1 })"></span>
+                  </label>
+                  <input type="text" x-model="confirmInputs[idx]"
+                         class="w-full border border-parchment-dark rounded-lg px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-pevo-teal focus:border-pevo-teal"
+                         autocomplete="off" autocapitalize="off" spellcheck="false">
+                </div>
+              </template>
+            </div>
+
+            <button @click="submitConfirmation()" :disabled="!confirmCorrect || isConfirming"
+                    class="w-full btn-primary py-2.5 disabled:opacity-50 disabled:cursor-not-allowed">
+              <span x-show="!isConfirming" x-text="$t('seedPhrase.confirm')"></span>
+              <span x-show="isConfirming" x-text="$t('seedPhrase.creating')"></span>
+            </button>
+          </div>
+
+          <!-- Link existing account: Keychain step (LA24) -->
+          <div x-show="phase === 'link-keychain'">
+            <h2 class="text-2xl font-bold text-ink mb-2" x-text="$t('seedPhrase.linkTitle')"></h2>
+            <p class="text-ink-muted mb-6" x-text="$t('seedPhrase.linkDescription')"></p>
+
+            <div x-show="error" class="bg-red-50 border border-red-200 rounded-lg p-4 mb-6">
+              <p class="text-red-700 text-sm" x-text="error"></p>
+            </div>
+
+            <button @click="handleLinkAccount()" :disabled="isConfirming"
+                    class="w-full btn-primary py-2.5 disabled:opacity-50 disabled:cursor-not-allowed">
+              <span x-show="!isConfirming" x-text="$t('seedPhrase.linkButton')"></span>
+              <span x-show="isConfirming" x-text="$t('seedPhrase.linking')"></span>
+            </button>
+          </div>
+
+          <!-- Done -->
+          <div x-show="phase === 'done'" class="text-center py-16">
+            <div class="w-16 h-16 bg-pevo-green/10 rounded-full flex items-center justify-center mx-auto mb-6">
+              <svg class="w-8 h-8 text-pevo-green" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+            </div>
+            <h2 class="text-2xl font-bold text-ink mb-2" x-text="$t('seedPhrase.doneTitle')"></h2>
+            <p class="text-ink-muted mb-6" x-text="$t('seedPhrase.doneDescription')"></p>
+            <button @click="navigate('/papers')" class="btn-primary" x-text="$t('seedPhrase.goToPapers')"></button>
+          </div>
+
+        </div>
+      </div>
+    </template>
+
+    <!-- LOGIN -->
+    <template x-if="$store.router.route === 'login'">
+      <div x-data="loginPage" class="container-narrow py-8">
+        <!-- Already signed in -->
+        <template x-if="isConnected">
+          <div class="text-center py-16">
+            <p class="text-ink-muted mb-4" x-text="$t('login.alreadySignedIn')"></p>
+            <button @click="navigate('/papers')" class="btn-primary" x-text="$t('login.goToPapers')"></button>
+          </div>
+        </template>
+
+        <!-- Login form -->
+        <template x-if="!isConnected">
+          <div class="max-w-md mx-auto">
+            <h1 class="text-3xl font-bold text-ink mb-2" x-text="$t('login.title')"></h1>
+            <p class="text-ink-muted mb-6" x-text="$t('login.subtitle')"></p>
+
+            <!-- Error -->
+            <div x-show="error" class="bg-red-50 border border-red-200 rounded-lg p-4 mb-6">
+              <p class="text-red-700 text-sm" x-text="error"></p>
+            </div>
+
+            <form @submit.prevent="handleSubmit" class="space-y-5">
+              <!-- Email or username -->
+              <div>
+                <label class="block text-sm font-medium text-ink mb-1" x-text="$t('login.emailOrUsername')"></label>
+                <input type="text" x-model="emailOrUsername" required
+                       class="w-full border border-parchment-dark rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-pevo-teal focus:border-pevo-teal"
+                       :placeholder="$t('login.emailOrUsernamePlaceholder')">
+              </div>
+
+              <!-- Password -->
+              <div>
+                <label class="block text-sm font-medium text-ink mb-1" x-text="$t('login.password')"></label>
+                <input type="password" x-model="password" required
+                       class="w-full border border-parchment-dark rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-pevo-teal focus:border-pevo-teal">
+                <div class="text-right mt-1">
+                  <a :href="$lp('/reset-password')" @click.prevent="navigate('/reset-password')"
+                     class="text-xs text-pevo-teal hover:underline" x-text="$t('login.forgotPassword')"></a>
+                </div>
+              </div>
+
+              <!-- Submit -->
+              <button type="submit" :disabled="!canSubmit || isSubmitting"
+                      class="w-full btn-primary py-2.5 disabled:opacity-50 disabled:cursor-not-allowed">
+                <span x-show="!isSubmitting" x-text="$t('login.submit')"></span>
+                <span x-show="isSubmitting" x-text="$t('login.submitting')"></span>
+              </button>
+            </form>
+
+            <!-- Signup link -->
+            <p class="text-center text-sm text-ink-muted mt-6">
+              <span x-text="$t('login.noAccount')"></span>
+              <a :href="$lp('/signup')" @click.prevent="navigate('/signup')" class="text-pevo-teal hover:underline" x-text="$t('login.signUp')"></a>
+            </p>
+
+            <!-- Keychain link -->
+            <p class="text-center text-sm text-ink-muted mt-2">
+              <span x-text="$t('login.hasKeychain')"></span>
+              <a :href="$lp('/')" @click.prevent="navigate('/')" class="text-pevo-teal hover:underline" x-text="$t('login.connectKeychain')"></a>
+            </p>
+          </div>
+        </template>
+      </div>
+    </template>
+
+    <!-- RESET PASSWORD -->
+    <template x-if="$store.router.route === 'reset-password'">
+      <div x-data="resetPasswordPage" class="container-narrow py-8">
+        <div class="max-w-md mx-auto">
+
+          <!-- REQUEST RESET (enter email) -->
+          <template x-if="mode === 'request' && !requestSent">
+            <div>
+              <h1 class="text-3xl font-bold text-ink mb-2" x-text="$t('resetPassword.requestTitle')"></h1>
+              <p class="text-ink-muted mb-6" x-text="$t('resetPassword.requestDescription')"></p>
+
+              <div x-show="requestError" class="bg-red-50 border border-red-200 rounded-lg p-4 mb-6">
+                <p class="text-red-700 text-sm" x-text="requestError"></p>
+              </div>
+
+              <form @submit.prevent="handleRequestReset" class="space-y-5">
+                <div>
+                  <label class="block text-sm font-medium text-ink mb-1" x-text="$t('resetPassword.email')"></label>
+                  <input type="email" x-model="email" required
+                         class="w-full border border-parchment-dark rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-pevo-teal focus:border-pevo-teal"
+                         :placeholder="$t('resetPassword.emailPlaceholder')">
+                </div>
+                <button type="submit" :disabled="!email.trim() || requestSubmitting"
+                        class="w-full btn-primary py-2.5 disabled:opacity-50 disabled:cursor-not-allowed">
+                  <span x-show="!requestSubmitting" x-text="$t('resetPassword.sendLink')"></span>
+                  <span x-show="requestSubmitting" x-text="$t('resetPassword.sending')"></span>
+                </button>
+              </form>
+
+              <p class="text-center text-sm text-ink-muted mt-6">
+                <a :href="$lp('/login')" @click.prevent="navigate('/login')" class="text-pevo-teal hover:underline" x-text="$t('resetPassword.backToLogin')"></a>
+              </p>
+            </div>
+          </template>
+
+          <!-- REQUEST SENT (check email) -->
+          <template x-if="mode === 'request' && requestSent">
+            <div class="text-center py-16">
+              <div class="w-16 h-16 bg-pevo-green/10 rounded-full flex items-center justify-center mx-auto mb-6">
+                <svg class="w-8 h-8 text-pevo-green" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>
+              </div>
+              <h2 class="text-2xl font-bold text-ink mb-2" x-text="$t('resetPassword.checkEmail')"></h2>
+              <p class="text-ink-muted" x-text="$t('resetPassword.checkEmailDescription')"></p>
+            </div>
+          </template>
+
+          <!-- SET NEW PASSWORD -->
+          <template x-if="mode === 'reset' && !resetDone">
+            <div>
+              <h1 class="text-3xl font-bold text-ink mb-2" x-text="$t('resetPassword.resetTitle')"></h1>
+              <p class="text-ink-muted mb-6" x-text="$t('resetPassword.resetDescription')"></p>
+
+              <div x-show="resetError" class="bg-red-50 border border-red-200 rounded-lg p-4 mb-6">
+                <p class="text-red-700 text-sm" x-text="resetError"></p>
+              </div>
+
+              <form @submit.prevent="handleReset" class="space-y-5">
+                <div>
+                  <label class="block text-sm font-medium text-ink mb-1" x-text="$t('resetPassword.newPassword')"></label>
+                  <input type="password" x-model="password" required minlength="10"
+                         class="w-full border border-parchment-dark rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-pevo-teal focus:border-pevo-teal">
+                  <p class="text-xs text-ink-muted mt-1" x-text="$t('resetPassword.passwordHint')"></p>
+                </div>
+                <div>
+                  <label class="block text-sm font-medium text-ink mb-1" x-text="$t('resetPassword.confirmPassword')"></label>
+                  <input type="password" x-model="passwordConfirm" required
+                         class="w-full border border-parchment-dark rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-pevo-teal focus:border-pevo-teal"
+                         :class="passwordConfirm && !passwordsMatch ? 'border-pevo-crimson' : ''">
+                  <p x-show="passwordConfirm && !passwordsMatch" class="text-xs text-pevo-crimson mt-1" x-text="$t('resetPassword.passwordMismatch')"></p>
+                </div>
+                <button type="submit" :disabled="!canReset || resetSubmitting"
+                        class="w-full btn-primary py-2.5 disabled:opacity-50 disabled:cursor-not-allowed">
+                  <span x-show="!resetSubmitting" x-text="$t('resetPassword.resetButton')"></span>
+                  <span x-show="resetSubmitting" x-text="$t('resetPassword.resetting')"></span>
+                </button>
+              </form>
+            </div>
+          </template>
+
+          <!-- RESET DONE -->
+          <template x-if="mode === 'reset' && resetDone">
+            <div class="text-center py-16">
+              <div class="w-16 h-16 bg-pevo-green/10 rounded-full flex items-center justify-center mx-auto mb-6">
+                <svg class="w-6 h-6 text-pevo-green" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+              </div>
+              <h2 class="text-2xl font-bold text-ink mb-2" x-text="$t('resetPassword.doneTitle')"></h2>
+              <p class="text-ink-muted mb-6" x-text="$t('resetPassword.doneDescription')"></p>
+              <button @click="navigate('/login')" class="btn-primary" x-text="$t('resetPassword.goToLogin')"></button>
+            </div>
+          </template>
+
+        </div>
+      </div>
+    </template>
+
+    <!-- SETTINGS -->
+    <template x-if="$store.router.route === 'settings'">
+      <div x-data="settingsPage" class="container-narrow py-8">
+        <!-- Not signed in -->
+        <template x-if="!isConnected">
+          <div class="text-center py-16">
+            <p class="text-ink-muted mb-4" x-text="$t('settings.signInRequired')"></p>
+            <button @click="navigate('/login')" class="btn-primary" x-text="$t('settings.signIn')"></button>
+          </div>
+        </template>
+
+        <template x-if="isConnected">
+          <div class="max-w-lg mx-auto">
+            <h1 class="text-3xl font-bold text-ink mb-8" x-text="$t('settings.title')"></h1>
+
+            <!-- Upgrade section (only for light accounts) -->
+            <template x-if="isLight">
+              <div class="border border-parchment-dark rounded-xl p-6">
+                <h2 class="text-xl font-bold text-ink mb-2" x-text="$t('upgrade.title')"></h2>
+                <p class="text-sm text-ink-muted mb-6" x-text="$t('upgrade.description')"></p>
+
+                <!-- Idle: start button -->
+                <div x-show="upgradePhase === 'idle'">
+                  <button @click="startUpgrade()" class="btn-primary" x-text="$t('upgrade.start')"></button>
+                </div>
+
+                <!-- Error -->
+                <div x-show="upgradePhase === 'error'">
+                  <div class="bg-red-50 border border-red-200 rounded-lg p-4 mb-4">
+                    <p class="text-red-700 text-sm" x-text="upgradeError"></p>
+                  </div>
+                  <button @click="resetUpgrade()" class="text-pevo-teal hover:underline text-sm" x-text="$t('upgrade.tryAgain')"></button>
+                </div>
+
+                <!-- Step 1: New seed phrase display -->
+                <div x-show="upgradePhase === 'new-seed'">
+                  <div class="bg-amber-50 border border-amber-200 rounded-lg p-4 mb-4">
+                    <p class="text-amber-800 text-sm font-medium" x-text="$t('upgrade.newSeedWarning')"></p>
+                  </div>
+                  <div class="grid grid-cols-3 gap-3 mb-6">
+                    <template x-for="(word, i) in newSeedWords" :key="i">
+                      <div class="bg-white border border-parchment-dark rounded-lg px-3 py-2 text-center">
+                        <span class="text-xs text-ink-muted" x-text="(i + 1) + '.'"></span>
+                        <span class="ml-1 font-mono text-sm text-ink font-medium" x-text="word"></span>
+                      </div>
+                    </template>
+                  </div>
+                  <button @click="proceedToConfirmNew()" class="w-full btn-primary py-2.5" x-text="$t('upgrade.iWroteItDown')"></button>
+                </div>
+
+                <!-- Step 2: Confirm new seed phrase -->
+                <div x-show="upgradePhase === 'confirm-new'">
+                  <p class="text-ink-muted text-sm mb-4" x-text="$t('upgrade.confirmNewDescription')"></p>
+                  <div class="space-y-4 mb-6">
+                    <template x-for="idx in confirmIndices" :key="idx">
+                      <div>
+                        <label class="block text-sm font-medium text-ink mb-1">
+                          <span x-text="$t('seedPhrase.wordNumber', { number: idx + 1 })"></span>
+                        </label>
+                        <input type="text" x-model="confirmInputs[idx]"
+                               class="w-full border border-parchment-dark rounded-lg px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-pevo-teal focus:border-pevo-teal"
+                               autocomplete="off" autocapitalize="off" spellcheck="false">
+                      </div>
+                    </template>
+                  </div>
+                  <button @click="proceedToOldSeed()" :disabled="!confirmCorrect"
+                          class="w-full btn-primary py-2.5 disabled:opacity-50 disabled:cursor-not-allowed"
+                          x-text="$t('upgrade.next')"></button>
+                </div>
+
+                <!-- Step 3: Enter old seed phrase + password -->
+                <div x-show="upgradePhase === 'enter-old'">
+                  <div class="space-y-4 mb-6">
+                    <div>
+                      <label class="block text-sm font-medium text-ink mb-1" x-text="$t('upgrade.oldSeedLabel')"></label>
+                      <textarea x-model="oldSeedPhrase" rows="3"
+                                class="w-full border border-parchment-dark rounded-lg px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-pevo-teal focus:border-pevo-teal"
+                                :placeholder="$t('upgrade.oldSeedPlaceholder')"
+                                autocomplete="off" autocapitalize="off" spellcheck="false"></textarea>
+                    </div>
+                    <div>
+                      <label class="block text-sm font-medium text-ink mb-1" x-text="$t('upgrade.passwordLabel')"></label>
+                      <input type="password" x-model="upgradePassword"
+                             class="w-full border border-parchment-dark rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-pevo-teal focus:border-pevo-teal">
+                    </div>
+                  </div>
+                  <button @click="executeUpgrade()" :disabled="!oldSeedPhrase.trim() || !upgradePassword"
+                          class="w-full btn-primary py-2.5 disabled:opacity-50 disabled:cursor-not-allowed"
+                          x-text="$t('upgrade.execute')"></button>
+                </div>
+
+                <!-- Upgrading spinner -->
+                <div x-show="upgradePhase === 'upgrading'" class="text-center py-8">
+                  <div class="animate-pulse">
+                    <div class="w-12 h-12 bg-parchment-dark rounded-full mx-auto mb-4"></div>
+                    <p class="text-ink-muted" x-text="$t('upgrade.upgrading')"></p>
+                  </div>
+                </div>
+
+                <!-- Done -->
+                <div x-show="upgradePhase === 'done'" class="text-center py-4">
+                  <div class="w-12 h-12 bg-pevo-green/10 rounded-full flex items-center justify-center mx-auto mb-4">
+                    <svg class="w-6 h-6 text-pevo-green" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+                  </div>
+                  <p class="text-ink font-medium mb-2" x-text="$t('upgrade.doneTitle')"></p>
+                  <p class="text-sm text-ink-muted" x-text="$t('upgrade.doneDescription')"></p>
+                </div>
+              </div>
+            </template>
+
+            <!-- Already self-custody -->
+            <template x-if="!isLight">
+              <div class="border border-parchment-dark rounded-xl p-6">
+                <h2 class="text-xl font-bold text-ink mb-2" x-text="$t('settings.accountType')"></h2>
+                <p class="text-sm text-ink-muted" x-text="$t('settings.selfCustody')"></p>
+              </div>
+            </template>
+          </div>
+        </template>
+      </div>
+    </template>
+
   </main>
+
+  <!-- ═══════════ BROADCAST CONFIRM MODAL (light accounts) ═══════════ -->
+  <div x-show="$store.broadcastConfirm.open" x-cloak
+       class="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+       @keydown.escape.window="$store.broadcastConfirm.cancel()">
+    <div class="bg-white rounded-xl shadow-xl max-w-sm w-full mx-4 p-6"
+         @click.outside="$store.broadcastConfirm.cancel()">
+      <h3 class="text-lg font-bold text-ink mb-2" x-text="$store.broadcastConfirm.title"></h3>
+      <p class="text-sm text-ink-muted mb-6" x-text="$store.broadcastConfirm.message"></p>
+      <div class="flex gap-3 justify-end">
+        <button @click="$store.broadcastConfirm.cancel()"
+                class="px-4 py-2 text-sm font-medium text-ink-muted hover:text-ink border border-parchment-dark rounded-lg"
+                x-text="$t('confirm.cancel')"></button>
+        <button @click="$store.broadcastConfirm.confirm()"
+                class="px-4 py-2 text-sm font-medium text-white bg-pevo-teal hover:bg-pevo-teal-dark rounded-lg"
+                x-text="$store.broadcastConfirm.confirmLabel"></button>
+      </div>
+    </div>
+  </div>
 
   <!-- ═══════════════════════════════════════════════ FOOTER ═══════════════════════════════════════════════ -->
   <footer x-data="footer" class="border-t border-parchment-dark bg-white mt-auto">

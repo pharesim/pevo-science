@@ -16,6 +16,11 @@ const ROUTE_TITLES = {
   'faq':                   'FAQ — PEvO',
   'getting-started':       'Getting Started — PEvO',
   'contact':               'Contact — PEvO',
+  'signup':                'Sign Up — PEvO',
+  'signup-verify':         'Verify Email — PEvO',
+  'login':                 'Sign In — PEvO',
+  'reset-password':        'Reset Password — PEvO',
+  'settings':              'Settings — PEvO',
 };
 
 function updateTitle(routeName) {
@@ -42,6 +47,11 @@ const ROUTES = [
   { pattern: /^\/faq$/,                                name: 'faq' },
   { pattern: /^\/getting-started$/,                    name: 'getting-started' },
   { pattern: /^\/contact$/,                            name: 'contact' },
+  { pattern: /^\/signup$/,                             name: 'signup' },
+  { pattern: /^\/signup\/verify$/,                     name: 'signup-verify' },
+  { pattern: /^\/login$/,                              name: 'login' },
+  { pattern: /^\/reset-password$/,                     name: 'reset-password' },
+  { pattern: /^\/settings$/,                           name: 'settings' },
 ];
 
 function parsePath(url) {

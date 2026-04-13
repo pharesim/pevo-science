@@ -52,6 +52,8 @@ export const config = {
   pevoAnonPostingKey: process.env.PEVO_ANON_POSTING_KEY || '',
   pevoAdminPostingKey: process.env.PEVO_ADMIN_POSTING_KEY || '',
   pevoBridgePostingKey: resolveBridgePostingKey(),
+  custodyEncryptionKey: process.env.CUSTODY_ENCRYPTION_KEY || '',
+  hiveOnboardAccount: process.env.HIVE_ONBOARD_ACCOUNT || hiveAdminAccount,
   anonReviewEncryptionKey: process.env.ANON_REVIEW_ENCRYPTION_KEY || '',
   anonReviewEncryptionKeyPrev: process.env.ANON_REVIEW_ENCRYPTION_KEY_PREV || '',
   anonReviewKeyVersion: parseInt(process.env.ANON_REVIEW_KEY_VERSION || '1', 10),

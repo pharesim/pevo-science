@@ -13,6 +13,7 @@ export function initAuth() {
     isAccredited: false,
     accreditation: null,
     token: null,
+    custody: null,
 
     // Internal: accreditation polling interval
     _accreditationInterval: null,
@@ -22,13 +23,14 @@ export function initAuth() {
       try {
         const saved = sessionStorage.getItem(SESSION_KEY);
         if (saved) {
-          const { token, username, expiresAt, isAccredited, accreditation } = JSON.parse(saved);
+          const { token, username, expiresAt, isAccredited, accreditation, custody } = JSON.parse(saved);
           if (token && username && new Date(expiresAt) > new Date()) {
             this.token = token;
             this.username = username;
             this.isConnected = true;
             this.isAccredited = isAccredited ?? false;
             this.accreditation = accreditation ?? null;
+            this.custody = custody ?? 'self';
           } else {
             sessionStorage.removeItem(SESSION_KEY);
           }
@@ -85,8 +87,9 @@ export function initAuth() {
         this.isConnected = true;
         this.isAccredited = false;
         this.accreditation = null;
+        this.custody = body.data.custody ?? 'self';
 
-        this._saveSession(body.data.token, inputUsername, body.data.expires_at, false, null);
+        this._saveSession(body.data.token, inputUsername, body.data.expires_at, false, null, this.custody);
 
         // Fetch accreditation in background
         this._checkAccreditation(inputUsername, body.data.token, body.data.expires_at);
@@ -102,6 +105,7 @@ export function initAuth() {
       this.isAccredited = false;
       this.accreditation = null;
       this.token = null;
+      this.custody = null;
       this._stopAccreditationPolling();
       try { sessionStorage.removeItem(SESSION_KEY); } catch { /* noop */ }
     },
@@ -110,10 +114,11 @@ export function initAuth() {
       return this.token;
     },
 
-    _saveSession(token, username, expiresAt, isAccredited, accreditation) {
+    _saveSession(token, username, expiresAt, isAccredited, accreditation, custody) {
       try {
         sessionStorage.setItem(SESSION_KEY, JSON.stringify({
           token, username, expiresAt, isAccredited, accreditation,
+          custody: custody ?? this.custody ?? 'self',
         }));
       } catch { /* storage full or blocked */ }
     },

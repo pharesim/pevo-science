@@ -10,6 +10,8 @@ import { startBatchReputation, stopBatchReputation } from './reputation-batch.js
 import { disconnectRedis } from './redis.js';
 import { checkHiveNodes } from './hive.js';
 import { startRetractionCache } from './routes/papers.js';
+import { startAccountClaimer, stopAccountClaimer } from './account-creation.js';
+import { startSignupCleanup, stopSignupCleanup } from './signup-cleanup.js';
 import { logger } from './logger.js';
 import type { Server } from 'http';
 
@@ -53,6 +55,12 @@ initAppDb()
       // Start nightly batch reputation computation (v3 voter weight convergence)
       startBatchReputation();
 
+      // Start account creation token claimer (every 6h)
+      startAccountClaimer();
+
+      // Start pending signup cleanup (every 1h)
+      startSignupCleanup();
+
       // Non-blocking: check Hive API node connectivity at startup
       checkHiveNodes();
     });
@@ -70,6 +78,8 @@ async function shutdown(signal: string): Promise<void> {
   stopDigestScheduler();
   stopIpfsCleanup();
   stopBatchReputation();
+  stopAccountClaimer();
+  stopSignupCleanup();
 
   // Stop accepting new connections, wait up to 30s for in-flight requests
   if (server) {

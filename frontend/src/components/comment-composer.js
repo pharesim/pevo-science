@@ -1,5 +1,6 @@
 import Alpine from 'alpinejs';
-import { postComment } from '../keychain.js';
+import { broadcastOps } from '../signer.js';
+import { getAppTag, getAppId } from '../config.js';
 
 function generatePermlink(parentPermlink) {
   const timestamp = Date.now();
@@ -27,8 +28,43 @@ export function initCommentComposer() {
       this.error = null;
 
       try {
+        const commentConfirmed = await Alpine.store('broadcastConfirm').request({
+          title: this.$t('confirm.commentTitle'),
+          message: this.$t('confirm.commentMessage'),
+          confirmLabel: this.$t('confirm.comment'),
+        });
+        if (!commentConfirmed) { this.isSubmitting = false; return; }
+
         const permlink = generatePermlink(this.parentPermlink);
-        await postComment(this.username, permlink, this.parentAuthor, this.parentPermlink, trimmed);
+        const APP_TAG = getAppTag();
+        const APP_ID = getAppId();
+        const jsonMetadata = {
+          app: APP_ID,
+          tags: [APP_TAG],
+          format: 'markdown',
+          [APP_TAG]: { type: 'comment', version: 1 },
+        };
+        const operations = [
+          ['comment', {
+            parent_author: this.parentAuthor,
+            parent_permlink: this.parentPermlink,
+            author: this.username,
+            permlink,
+            title: '',
+            body: trimmed,
+            json_metadata: JSON.stringify(jsonMetadata),
+          }],
+          ['comment_options', {
+            author: this.username,
+            permlink,
+            max_accepted_payout: '1000000.000 HBD',
+            percent_hbd: 0,
+            allow_votes: true,
+            allow_curation_rewards: true,
+            extensions: [],
+          }],
+        ];
+        await broadcastOps(this.username, operations);
         this.body = '';
         // Dispatch event so parent can refresh
         this.$dispatch('comment-posted', { parentPermlink: this.parentPermlink });

@@ -1,6 +1,6 @@
 import Alpine from 'alpinejs';
 import { fetchPaper, submitAnonymousReview } from '../api.js';
-import { postReview } from '../keychain.js';
+import { broadcastOps } from '../signer.js';
 import { slugify } from '../crypto.js';
 import { getAppTag, getAppId } from '../config.js';
 
@@ -130,7 +130,34 @@ export function initReviewPage() {
             },
           };
 
-          await postReview(username, reviewPermlink, this.author, this.permlink, this.reviewBody, jsonMetadata);
+          const confirmed = await Alpine.store('broadcastConfirm').request({
+            title: this.$t('confirm.reviewTitle'),
+            message: this.$t('confirm.reviewMessage', { title: this.paper?.title || '' }),
+            confirmLabel: this.$t('confirm.review'),
+          });
+          if (!confirmed) { this.step = 'idle'; return; }
+
+          const reviewOps = [
+            ['comment', {
+              parent_author: this.author,
+              parent_permlink: this.permlink,
+              author: username,
+              permlink: reviewPermlink,
+              title: '',
+              body: this.reviewBody,
+              json_metadata: JSON.stringify(jsonMetadata),
+            }],
+            ['comment_options', {
+              author: username,
+              permlink: reviewPermlink,
+              max_accepted_payout: '1000000.000 HBD',
+              percent_hbd: 0,
+              allow_votes: true,
+              allow_curation_rewards: true,
+              extensions: [],
+            }],
+          ];
+          await broadcastOps(username, reviewOps);
         }
 
         this.step = 'success';

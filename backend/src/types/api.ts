@@ -27,7 +27,11 @@ export type ErrorCode =
   | "FILE_TOO_LARGE"
   | "INVALID_FILE_TYPE"
   | "RATE_LIMITED"
+  | "ACCOUNT_LOCKED"
   | "BROADCAST_FAILED"
+  | "ALREADY_UPGRADED"
+  | "SESSION_INVALIDATED"
+  | "INVALID_TOKEN"
   | "INTERNAL_ERROR";
 
 export interface PaginationMeta {

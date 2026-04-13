@@ -30,8 +30,8 @@ data)     limiting) storage)
 - **Network:** Hive (reading via HAF SQL, writing via Hive Keychain)
 - **File storage:** IPFS (self-hosted Kubo node)
 - **Cache / rate limiting:** Redis
-- **Auth:** Hive Keychain (initial sign-in) + JWT session tokens (subsequent requests)
-- **i18n:** 14 languages
+- **Auth:** Hive Keychain (self-custody) or email/password light accounts (custodial) + JWT session tokens
+- **i18n:** 16 languages
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for full system design.
 
@@ -42,8 +42,8 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for full system design.
   - PostgreSQL
   - Redis
 - [HAF SQL](https://gitlab.syncad.com/hive/haf) node (for production) or a Hive API node (for development)
-- [Hive Keychain](https://hive-keychain.com/) browser extension
-- Hive accounts: `pevo.admin` (accreditation + bridge posting) and `pevo.anon` (anonymous reviews)
+- [Hive Keychain](https://hive-keychain.com/) browser extension (for self-custody accounts; not needed for light accounts)
+- Hive accounts: `pevo.admin` (accreditation + bridge posting), `pevo.anon` (anonymous reviews), and an onboarding account for light account creation (RC-delegated)
 
 ## Quick Start
 
@@ -76,7 +76,14 @@ ANON_REVIEW_ENCRYPTION_KEY=<64 hex chars>
 # Required in production: random 32+ char string for session JWTs
 SESSION_SECRET=<random string>
 
-# Optional: SMTP for accreditation emails
+# Required for light accounts: custodial key encryption (32-byte hex)
+CUSTODY_ENCRYPTION_KEY=<64 hex chars>
+
+# Required for light accounts: Hive account for claiming account tokens
+HIVE_ONBOARD_ACCOUNT=pevo.onboard
+HIVE_ONBOARD_ACTIVE_KEY=5K...
+
+# Required: SMTP for verification and reset emails
 SMTP_HOST=smtp.example.com
 SMTP_PORT=587
 SMTP_USER=...
@@ -104,6 +111,7 @@ pevo/
 - **Accredited-only data:** Only votes, reviews, and citations from accredited researchers count in reputation and rankings. Unaccredited users can read and vote on Hive (affecting rewards) but are filtered from PEvO's scientific discussion view.
 - **Reputation is computed, not stored:** Scores are derived from on-chain data via SQL. Anyone running the same queries gets the same results. Voter reputation weighting creates a quality feedback loop; anti-sybil measures include activity-gating, downvote penalties, and citation caps.
 - **Privacy for reviewers:** Anonymous reviews posted via a proxy account with encrypted mappings and a 6-month TTL.
+- **Light accounts:** Scientists with institutional emails can sign up without Hive Keychain. PEvO creates a real Hive account, holds the keys, and signs operations server-side. Users upgrade to self-custody with Hive Keychain at any time.
 - **Progressive decentralization:** Accreditation starts centralized (email verification + ORCID), designed to move to web-of-trust and DAO governance.
 - **Preprint bridge:** Import existing papers from arXiv, PubMed, bioRxiv, medRxiv, Semantic Scholar, or ResearchGate by pasting a URL or identifier. The paper stays on its original platform; PEvO creates a reference for peer review.
 - **Structured evaluation:** Accredited reviewers choose from 6 vote levels (Strong endorsement to Strong reject). Non-accredited users can still upvote/downvote simply. Citation relevance is togglable per-citation.
@@ -120,6 +128,10 @@ pevo/
 | `GET /api/stats` | Platform-wide statistics |
 | `GET /api/notifications` | User notifications (block-cursor pagination) |
 | `POST /api/auth/session` | Session login (Keychain sign-in → JWT) |
+| `POST /api/auth/signup` | Light account signup (institutional email only) |
+| `POST /api/auth/login` | Light account password login |
+| `POST /api/custody/broadcast` | Sign and broadcast operations for light accounts |
+| `POST /api/custody/upgrade` | Finalize upgrade to self-custody |
 | `POST /api/accreditation/request` | Request accreditation via email |
 | `POST /api/accreditation/orcid/start` | Accreditation via ORCID OAuth |
 | `POST /api/ipfs/upload` | Upload file to IPFS (PDF, images, CSV, ZIP) |
@@ -129,7 +141,7 @@ pevo/
 | `POST /api/bridge/register` | Register preprint for peer review on PEvO |
 | `GET /api/wot/:username` | Web of Trust vouch status |
 
-Full spec with all 34 endpoints: [docs/api-contract.md](docs/api-contract.md)
+Full spec with all 40 endpoints: [docs/api-contract.md](docs/api-contract.md)
 
 ## License
 

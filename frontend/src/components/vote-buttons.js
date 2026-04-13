@@ -1,5 +1,5 @@
 import Alpine from 'alpinejs';
-import { vote } from '../keychain.js';
+import { broadcastOps } from '../signer.js';
 
 const VOTE_LEVELS = [
   { label: 'vote.strongEndorsement', weight: 10000, cls: 'text-emerald-700 bg-emerald-50 border-emerald-200 hover:bg-emerald-100' },
@@ -57,9 +57,17 @@ export function initVoteButtons() {
         return;
       }
 
+      const level = VOTE_LEVELS.find((l) => l.weight === weight);
+      const confirmed = await Alpine.store('broadcastConfirm').request({
+        title: this.$t('confirm.voteTitle'),
+        message: this.$t('confirm.voteMessage', { strength: level ? this.$t(level.label) : '' }),
+        confirmLabel: this.$t('confirm.vote'),
+      });
+      if (!confirmed) return;
+
       this.isVoting = true;
       try {
-        await vote(this.username, this.author, this.permlink, weight);
+        await broadcastOps(this.username, [['vote', { voter: this.username, author: this.author, permlink: this.permlink, weight }]]);
         const previousState = this.voteState;
         const direction = weight > 0 ? 'up' : 'down';
         this.voteState = direction;
@@ -94,9 +102,16 @@ export function initVoteButtons() {
       const direction = weight > 0 ? 'up' : 'down';
       if (this.voteState === direction) return;
 
+      const simpleConfirmed = await Alpine.store('broadcastConfirm').request({
+        title: this.$t('confirm.voteTitle'),
+        message: this.$t('confirm.voteSimpleMessage', { direction: this.$t('vote.' + direction) }),
+        confirmLabel: this.$t('confirm.vote'),
+      });
+      if (!simpleConfirmed) return;
+
       this.isVoting = true;
       try {
-        await vote(this.username, this.author, this.permlink, weight);
+        await broadcastOps(this.username, [['vote', { voter: this.username, author: this.author, permlink: this.permlink, weight }]]);
         const previousState = this.voteState;
         this.voteState = direction;
         this.currentWeight = weight;

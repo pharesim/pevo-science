@@ -315,6 +315,64 @@ export function invalidatePaperCache(author, permlink) {
   );
 }
 
+// ─── Light Account Auth ─────────────────────────────────────────
+
+export function checkUsernameAvailability(username) {
+  return request(`/auth/username-available${buildQuery({ username })}`);
+}
+
+export function submitSignup(data) {
+  return request('/auth/signup', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+}
+
+export function verifyEmail(token) {
+  return request(`/auth/verify-email${buildQuery({ token })}`);
+}
+
+export function confirmSeedPhrase(token, words) {
+  return request('/auth/confirm-seed', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token, words }),
+  });
+}
+
+export function loginWithPassword(emailOrUsername, password) {
+  return request('/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email_or_username: emailOrUsername, password }),
+  });
+}
+
+export function requestPasswordReset(email) {
+  return request('/auth/reset-request', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email }),
+  });
+}
+
+export function resetPassword(token, password) {
+  return request('/auth/reset', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token, password }),
+  });
+}
+
+export function linkExistingAccount(token) {
+  return request('/auth/link-account', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token }),
+  });
+}
+
 // ─── Health ──────────────────────────────────────────────────────
 
 export async function fetchHealth() {
