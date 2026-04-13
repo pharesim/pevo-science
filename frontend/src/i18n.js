@@ -1,6 +1,6 @@
 import Alpine from 'alpinejs';
 
-export const SUPPORTED_LOCALES = ['ar', 'cs', 'da', 'de', 'en', 'es', 'fa', 'fr', 'he', 'it', 'pl', 'pt', 'sv', 'zh'];
+export const SUPPORTED_LOCALES = ['ar', 'cs', 'da', 'de', 'en', 'es', 'fa', 'fr', 'he', 'it', 'nl', 'pl', 'pt', 'sv', 'tr', 'zh'];
 export const DEFAULT_LOCALE = 'en';
 export const RTL_LOCALES = ['ar', 'he', 'fa'];
 

@@ -230,7 +230,7 @@ export function createApp() {
   };
 
   // ── Locale routing ───────────────────────────────────────────────
-  const SUPPORTED_LOCALES = new Set(['ar', 'cs', 'da', 'de', 'en', 'es', 'fa', 'fr', 'he', 'it', 'pl', 'pt', 'sv', 'zh']);
+  const SUPPORTED_LOCALES = new Set(['ar', 'cs', 'da', 'de', 'en', 'es', 'fa', 'fr', 'he', 'it', 'nl', 'pl', 'pt', 'sv', 'tr', 'zh']);
   const SUPPORTED_LOCALES_ARR = [...SUPPORTED_LOCALES];
   // Paths that must never get a locale redirect
   const NO_LOCALE_PREFIXES = new Set(['api', 'assets', 'messages']);

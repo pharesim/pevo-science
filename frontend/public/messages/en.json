@@ -800,7 +800,9 @@
     "pl": "Polski",
     "cs": "Čeština",
     "sv": "Svenska",
-    "da": "Dansk"
+    "da": "Dansk",
+    "tr": "Türkçe",
+    "nl": "Nederlands"
   },
   "aria": {
     "notifications": "Notifications"
