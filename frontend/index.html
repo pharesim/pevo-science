@@ -7,6 +7,9 @@
   <meta name="description" content="Open scientific publication and interactive peer evaluation on a permanent, open record. Non-profit, transparent, forkable." />
   <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
   <link rel="manifest" href="/manifest.json" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Merriweather:ital,wght@0,300;0,400;0,700;0,900;1,400&family=Inter:wght@300;400;500;600;700&display=swap" />
   <script type="module" src="/src/main.js"></script>
 </head>
 <body class="min-h-screen flex flex-col bg-parchment text-ink">
@@ -33,7 +36,7 @@
     <div class="container-narrow">
       <div class="flex h-16 items-center justify-between">
         <!-- Logo -->
-        <a href="/" @click.prevent="navigate('/')" class="flex items-center gap-2.5 no-underline">
+        <a :href="$lp('/')" @click.prevent="navigate('/')" class="flex items-center gap-2.5 no-underline">
           <img src="/images/pevo-logo.png" alt="PEvO logo" width="36" height="36" class="rounded-sm" />
           <div class="flex flex-col">
             <span class="text-lg font-bold text-ink leading-tight tracking-tight">pevo</span>
@@ -118,7 +121,7 @@
               <!-- User menu dropdown -->
               <div x-show="userMenuOpen" x-transition class="absolute right-0 rtl:right-auto rtl:left-0 top-full mt-2 w-80 rounded-lg border border-parchment-dark bg-white shadow-lg z-50">
                 <!-- Profile link -->
-                <a :href="'/profile/' + $store.auth.username"
+                <a :href="$lp('/profile/' + $store.auth.username)"
                    @click.prevent="navigate('/profile/' + $store.auth.username); userMenuOpen = false"
                    class="flex items-center gap-2 px-4 py-3 text-sm font-medium text-pevo-teal no-underline hover:bg-pevo-teal-light transition-colors rounded-t-lg">
                   <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z" /></svg>
@@ -200,7 +203,7 @@
           <template x-if="!$store.auth.isLoading && $store.auth.isKeychainInstalled && $store.auth.isConnected">
             <div class="space-y-2">
               <div class="flex items-center justify-between">
-                <a :href="'/profile/' + $store.auth.username"
+                <a :href="$lp('/profile/' + $store.auth.username)"
                    @click.prevent="navigate('/profile/' + $store.auth.username)"
                    class="text-sm font-medium text-pevo-teal no-underline"
                    x-text="'@' + $store.auth.username"></a>
@@ -235,8 +238,8 @@
                     <h1 class="text-4xl sm:text-5xl font-bold text-ink mb-4 leading-tight" x-html="$t('common.heroTitle')"></h1>
                     <p class="text-lg text-ink-muted mb-6 max-w-lg" x-text="$t('common.heroDescription')"></p>
                     <div class="flex flex-wrap gap-3">
-                      <a href="/papers" @click.prevent="navigate('/papers')" class="btn-primary no-underline" x-text="$t('landing.browsePapers')"></a>
-                      <a href="/about" @click.prevent="navigate('/about')" class="btn-secondary no-underline" x-text="$t('home.learnMore')"></a>
+                      <a :href="$lp('/papers')" @click.prevent="navigate('/papers')" class="btn-primary no-underline" x-text="$t('landing.browsePapers')"></a>
+                      <a :href="$lp('/about')" @click.prevent="navigate('/about')" class="btn-secondary no-underline" x-text="$t('home.learnMore')"></a>
                     </div>
                   </div>
                   <div class="shrink-0 hidden md:block">
@@ -284,8 +287,8 @@
                     <h1 class="text-4xl sm:text-5xl font-bold text-ink mb-4 leading-tight" x-html="$t('common.heroTitle')"></h1>
                     <p class="text-lg text-ink-muted mb-6 max-w-lg" x-text="$t('common.heroDescription')"></p>
                     <div class="flex flex-wrap gap-3">
-                      <a href="/publish" @click.prevent="navigate('/publish')" class="btn-primary no-underline" x-text="$t('home.publishPaper')"></a>
-                      <a href="/about" @click.prevent="navigate('/about')" class="btn-secondary no-underline" x-text="$t('home.learnMore')"></a>
+                      <a :href="$lp('/publish')" @click.prevent="navigate('/publish')" class="btn-primary no-underline" x-text="$t('home.publishPaper')"></a>
+                      <a :href="$lp('/about')" @click.prevent="navigate('/about')" class="btn-secondary no-underline" x-text="$t('home.learnMore')"></a>
                     </div>
                   </div>
                   <div class="shrink-0 hidden md:block">
@@ -381,7 +384,7 @@
 
                         <!-- Title -->
                         <h3 class="text-paper-title leading-snug mb-2">
-                          <a :href="'/paper/' + paper.author + '/' + paper.permlink"
+                          <a :href="$lp('/paper/' + paper.author + '/' + paper.permlink)"
                              @click.prevent="navigate('/paper/' + paper.author + '/' + paper.permlink)"
                              class="text-ink hover:text-pevo-teal no-underline" x-text="paper.title"></a>
                         </h3>
@@ -548,7 +551,7 @@
 
                     <!-- Title -->
                     <h3 class="text-paper-title leading-snug mb-2">
-                      <a :href="'/paper/' + paper.author + '/' + paper.permlink"
+                      <a :href="$lp('/paper/' + paper.author + '/' + paper.permlink)"
                          @click.prevent="navigate('/paper/' + paper.author + '/' + paper.permlink)"
                          class="text-ink hover:text-pevo-teal no-underline" x-text="paper.title"></a>
                     </h3>
@@ -649,7 +652,7 @@
             <p class="text-ink-muted mb-4" x-text="$t('paperDetail.notFoundDescription', { author: author, permlink: permlink })"></p>
             <div class="flex justify-center gap-3">
               <button @click="loadPaper()" class="btn-secondary" x-text="$t('paperDetail.retry')"></button>
-              <a href="/" @click.prevent="navigate('/')" class="btn-primary no-underline" x-text="$t('paperDetail.backToPapers')"></a>
+              <a :href="$lp('/')" @click.prevent="navigate('/')" class="btn-primary no-underline" x-text="$t('paperDetail.backToPapers')"></a>
             </div>
           </div>
         </template>
@@ -658,7 +661,7 @@
         <template x-if="!loading && !error && paper">
           <div>
             <!-- Back link -->
-            <a href="/" @click.prevent="navigate('/')" class="text-sm text-pevo-teal hover:text-pevo-teal-dark no-underline">
+            <a :href="$lp('/')" @click.prevent="navigate('/')" class="text-sm text-pevo-teal hover:text-pevo-teal-dark no-underline">
               &larr; <span x-text="$t('paperDetail.backToPapers')"></span>
             </a>
 
@@ -913,7 +916,7 @@
                   </button>
                   <!-- Edit button (author/co-author) -->
                   <template x-if="isOwnPaper && !paper.is_retracted">
-                    <a :href="'/edit/' + (paper.canonical_author || paper.author) + '/' + (paper.canonical_permlink || paper.permlink)"
+                    <a :href="$lp('/edit/' + (paper.canonical_author || paper.author) + '/' + (paper.canonical_permlink || paper.permlink))"
                        @click.prevent="navigate('/edit/' + (paper.canonical_author || paper.author) + '/' + (paper.canonical_permlink || paper.permlink))"
                        class="btn-secondary text-sm no-underline" x-text="$t('edit.editButton')"></a>
                   </template>
@@ -947,7 +950,7 @@
               <!-- Authors -->
               <div class="flex flex-wrap items-center gap-x-3 gap-y-1 mb-4">
                 <template x-for="a in paper.authors" :key="a.hive">
-                  <a :href="'/profile/' + a.hive" @click.prevent="navigate('/profile/' + a.hive)" class="text-sm no-underline hover:underline">
+                  <a :href="$lp('/profile/' + a.hive)" @click.prevent="navigate('/profile/' + a.hive)" class="text-sm no-underline hover:underline">
                     <span class="text-ink font-medium" x-text="a.name"></span>
                     <template x-if="a.affiliation">
                       <span class="text-ink-muted ml-1" x-text="'(' + a.affiliation + ')'"></span>
@@ -1093,7 +1096,7 @@
                 <h2 class="text-section-title text-ink font-serif mb-4" x-text="$t('paperDetail.referencesTitle')"></h2>
                 <div class="space-y-2">
                   <template x-for="c in paper.citations" :key="c.author + '/' + c.permlink">
-                    <a :href="'/paper/' + c.author + '/' + c.permlink" @click.prevent="navigate('/paper/' + c.author + '/' + c.permlink)"
+                    <a :href="$lp('/paper/' + c.author + '/' + c.permlink)" @click.prevent="navigate('/paper/' + c.author + '/' + c.permlink)"
                        class="card block no-underline hover:shadow-sm transition-shadow">
                       <p class="text-sm font-medium text-ink" x-text="c.title"></p>
                       <p class="text-xs text-ink-muted mt-1" x-text="'@' + c.author"></p>
@@ -1127,7 +1130,7 @@
               <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
                 <h2 class="text-section-title text-ink font-serif" x-text="$t('paperDetail.peerReviewsTitle', { count: paper.reviews ? paper.reviews.length : 0 })"></h2>
                 <a x-show="!isOwnPaper"
-                   :href="'/review/' + paper.author + '/' + paper.permlink"
+                   :href="$lp('/review/' + paper.author + '/' + paper.permlink)"
                    @click.prevent="navigate('/review/' + paper.author + '/' + paper.permlink)"
                    class="btn-primary text-sm w-full sm:w-auto text-center shrink-0 no-underline" x-text="$t('paperDetail.writeReview')"></a>
               </div>
@@ -1247,7 +1250,7 @@
                   <template x-if="!isOwnPaper">
                     <div>
                       <p class="text-ink-muted mb-3" x-text="$t('paperDetail.noReviews')"></p>
-                      <a :href="'/review/' + paper.author + '/' + paper.permlink"
+                      <a :href="$lp('/review/' + paper.author + '/' + paper.permlink)"
                          @click.prevent="navigate('/review/' + paper.author + '/' + paper.permlink)"
                          class="btn-primary text-sm no-underline" x-text="$t('paperDetail.writeReview')"></a>
                     </div>
@@ -1339,7 +1342,7 @@
               <svg class="h-5 w-5 text-pevo-crimson shrink-0 mt-0.5" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.168 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 8a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd" /></svg>
               <div>
                 <p class="font-medium text-ink text-sm" x-text="$t('publish.accreditationRequired')"></p>
-                <a href="/accreditation" @click.prevent="navigate('/accreditation')" class="btn-primary text-xs mt-2 no-underline inline-block" x-text="$t('publish.getAccredited')"></a>
+                <a :href="$lp('/accreditation')" @click.prevent="navigate('/accreditation')" class="btn-primary text-xs mt-2 no-underline inline-block" x-text="$t('publish.getAccredited')"></a>
               </div>
             </div>
           </div>
@@ -1574,17 +1577,17 @@
                       x-text="isSubmitting ? $t('publish.publishing') : $t('publish.publishButton')"></button>
             </template>
             <template x-if="!isAccredited && !isConnected">
-              <a href="/getting-started" @click.prevent="navigate('/getting-started')" class="btn-primary w-full sm:w-auto shrink-0 text-center no-underline" x-text="$t('publish.publishButton')"></a>
+              <a :href="$lp('/getting-started')" @click.prevent="navigate('/getting-started')" class="btn-primary w-full sm:w-auto shrink-0 text-center no-underline" x-text="$t('publish.publishButton')"></a>
             </template>
             <template x-if="!isAccredited && isConnected">
-              <a href="/accreditation" @click.prevent="navigate('/accreditation')" class="btn-primary w-full sm:w-auto shrink-0 text-center no-underline" x-text="$t('publish.getAccredited')"></a>
+              <a :href="$lp('/accreditation')" @click.prevent="navigate('/accreditation')" class="btn-primary w-full sm:w-auto shrink-0 text-center no-underline" x-text="$t('publish.getAccredited')"></a>
             </template>
           </div>
         </form>
 
         <p class="text-sm text-ink-muted mt-4">
           <span x-text="$t('publish.needHelp')"></span>
-          <a href="/contact?category=keychain" @click.prevent="navigate('/contact?category=keychain')" class="text-pevo-teal hover:underline" x-text="$t('publish.contactUs')"></a>
+          <a :href="$lp('/contact?category=keychain')" @click.prevent="navigate('/contact?category=keychain')" class="text-pevo-teal hover:underline" x-text="$t('publish.contactUs')"></a>
         </p>
       </div>
     </template>
@@ -1612,7 +1615,7 @@
         <template x-if="!loadingPaper && !loadError && !isAuthorized">
           <div class="card bg-pevo-crimson-light border-pevo-crimson/30 text-center py-8">
             <p class="text-sm text-pevo-crimson font-medium" x-text="$t('edit.notAuthorized')"></p>
-            <a :href="'/paper/' + author + '/' + permlink" @click.prevent="navigate('/paper/' + author + '/' + permlink)"
+            <a :href="$lp('/paper/' + author + '/' + permlink)" @click.prevent="navigate('/paper/' + author + '/' + permlink)"
                class="btn-secondary text-xs mt-3 no-underline inline-block" x-text="$t('paperDetail.backToPapers')"></a>
           </div>
         </template>
@@ -1620,7 +1623,7 @@
         <!-- Edit form -->
         <template x-if="!loadingPaper && !loadError && isAuthorized && paper">
           <div>
-            <a :href="'/paper/' + (paper.canonical_author || paper.author) + '/' + (paper.canonical_permlink || paper.permlink)"
+            <a :href="$lp('/paper/' + (paper.canonical_author || paper.author) + '/' + (paper.canonical_permlink || paper.permlink))"
                @click.prevent="navigate('/paper/' + (paper.canonical_author || paper.author) + '/' + (paper.canonical_permlink || paper.permlink))"
                class="text-sm text-pevo-teal hover:text-pevo-teal-dark no-underline">&larr; <span x-text="$t('paperDetail.backToPapers')"></span></a>
 
@@ -1868,7 +1871,7 @@
     <!-- REVIEW -->
     <template x-if="$store.router.route === 'review'">
       <div x-data="reviewPage" class="container-narrow py-8">
-        <a :href="'/paper/' + author + '/' + permlink" @click.prevent="navigate('/paper/' + author + '/' + permlink)" class="text-sm text-pevo-teal hover:text-pevo-teal-dark no-underline">&larr; <span x-text="$t('review.backToPaper')"></span></a>
+        <a :href="$lp('/paper/' + author + '/' + permlink)" @click.prevent="navigate('/paper/' + author + '/' + permlink)" class="text-sm text-pevo-teal hover:text-pevo-teal-dark no-underline">&larr; <span x-text="$t('review.backToPaper')"></span></a>
 
         <h1 class="text-3xl font-bold text-ink mt-4 mb-2" x-text="$t('review.title')"></h1>
         <p class="text-ink-muted mb-2" x-text="$t('review.reviewing')"></p>
@@ -1876,7 +1879,7 @@
           <p class="text-sm text-ink-muted mb-8" x-text="$t('review.loadingPaper')"></p>
         </template>
         <template x-if="!loadingPaper">
-          <a :href="'/paper/' + author + '/' + permlink" @click.prevent="navigate('/paper/' + author + '/' + permlink)" class="text-sm font-medium text-pevo-teal no-underline hover:underline mb-8 block" x-text="paperTitle"></a>
+          <a :href="$lp('/paper/' + author + '/' + permlink)" @click.prevent="navigate('/paper/' + author + '/' + permlink)" class="text-sm font-medium text-pevo-teal no-underline hover:underline mb-8 block" x-text="paperTitle"></a>
         </template>
 
         <!-- Not connected warning -->
@@ -1900,7 +1903,7 @@
               <svg class="h-5 w-5 text-pevo-crimson shrink-0 mt-0.5" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.168 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 8a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd" /></svg>
               <div>
                 <p class="font-medium text-ink text-sm" x-text="$t('review.accreditationRequired')"></p>
-                <a href="/accreditation" @click.prevent="navigate('/accreditation')" class="btn-primary text-xs mt-2 no-underline inline-block" x-text="$t('review.getAccredited')"></a>
+                <a :href="$lp('/accreditation')" @click.prevent="navigate('/accreditation')" class="btn-primary text-xs mt-2 no-underline inline-block" x-text="$t('review.getAccredited')"></a>
               </div>
             </div>
           </div>
@@ -2073,7 +2076,7 @@
                         </template>
                       </div>
                       <h2 class="text-lg font-serif font-semibold mb-1">
-                        <a :href="'/paper/' + result.author + '/' + result.permlink"
+                        <a :href="$lp('/paper/' + result.author + '/' + result.permlink)"
                            @click.prevent="navigate('/paper/' + result.author + '/' + result.permlink)"
                            class="text-ink hover:text-pevo-teal no-underline" x-text="result.title"></a>
                       </h2>
@@ -2184,7 +2187,7 @@
                 <template x-if="isDuplicate && check">
                   <div class="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 mt-4">
                     <p class="text-sm font-medium text-amber-800 mb-1" x-text="$t('bridge.duplicateWarning')"></p>
-                    <a :href="'/paper/' + check.author + '/' + check.permlink" @click.prevent="navigate('/paper/' + check.author + '/' + check.permlink)" class="text-sm text-pevo-teal hover:underline" x-text="$t('bridge.viewExisting')"></a>
+                    <a :href="$lp('/paper/' + check.author + '/' + check.permlink)" @click.prevent="navigate('/paper/' + check.author + '/' + check.permlink)" class="text-sm text-pevo-teal hover:underline" x-text="$t('bridge.viewExisting')"></a>
                   </div>
                 </template>
               </div>
@@ -2281,7 +2284,7 @@
           <div class="card text-center py-12">
             <h1 class="text-2xl font-bold text-ink mb-2" x-text="$t('profile.notFoundTitle')"></h1>
             <p class="text-ink-muted mb-4" x-text="error"></p>
-            <a href="/" @click.prevent="navigate('/')" class="btn-primary no-underline" x-text="$t('common.backToPapers')"></a>
+            <a :href="$lp('/')" @click.prevent="navigate('/')" class="btn-primary no-underline" x-text="$t('common.backToPapers')"></a>
           </div>
         </template>
 
@@ -2386,7 +2389,7 @@
                         <time :datetime="paper.created" x-text="formatDate(paper.created)"></time>
                       </div>
                       <h3 class="text-paper-title leading-snug mb-2">
-                        <a :href="'/paper/' + paper.author + '/' + paper.permlink"
+                        <a :href="$lp('/paper/' + paper.author + '/' + paper.permlink)"
                            @click.prevent="navigate('/paper/' + paper.author + '/' + paper.permlink)"
                            class="text-ink hover:text-pevo-teal no-underline" x-text="paper.title"></a>
                       </h3>
@@ -2515,7 +2518,7 @@
 
           <p class="text-sm text-ink-muted mt-4">
             <span x-text="$t('accreditation.needHelp')"></span>
-            <a href="/contact?category=accreditation" @click.prevent="navigate('/contact?category=accreditation')" class="text-pevo-teal hover:underline" x-text="$t('accreditation.contactUs')"></a>
+            <a :href="$lp('/contact?category=accreditation')" @click.prevent="navigate('/contact?category=accreditation')" class="text-pevo-teal hover:underline" x-text="$t('accreditation.contactUs')"></a>
           </p>
         </div>
       </div>
@@ -2538,8 +2541,8 @@
             <h1 class="text-2xl font-bold text-ink mb-2" x-text="$t('verify.confirmedTitle')"></h1>
             <p class="text-ink-muted mb-6" x-text="$t('verify.confirmedMessage', { username: '@' + resultUsername })"></p>
             <div class="flex gap-3 justify-center">
-              <a :href="'/profile/' + resultUsername" @click.prevent="navigate('/profile/' + resultUsername)" class="btn-primary no-underline" x-text="$t('verify.viewProfile')"></a>
-              <a href="/" @click.prevent="navigate('/')" class="btn-secondary no-underline" x-text="$t('verify.browsePapers')"></a>
+              <a :href="$lp('/profile/' + resultUsername)" @click.prevent="navigate('/profile/' + resultUsername)" class="btn-primary no-underline" x-text="$t('verify.viewProfile')"></a>
+              <a :href="$lp('/')" @click.prevent="navigate('/')" class="btn-secondary no-underline" x-text="$t('verify.browsePapers')"></a>
             </div>
           </div>
         </template>
@@ -2550,7 +2553,7 @@
             </div>
             <h1 class="text-2xl font-bold text-ink mb-2" x-text="$t('verify.failedTitle')"></h1>
             <p class="text-ink-muted mb-6" x-text="errorMessage"></p>
-            <a href="/accreditation" @click.prevent="navigate('/accreditation')" class="btn-primary no-underline" x-text="$t('verify.requestNew')"></a>
+            <a :href="$lp('/accreditation')" @click.prevent="navigate('/accreditation')" class="btn-primary no-underline" x-text="$t('verify.requestNew')"></a>
           </div>
         </template>
       </div>
@@ -2580,14 +2583,14 @@
             <template x-if="orcidId">
               <p class="text-sm text-ink-muted"><span x-text="$t('orcid.orcidId')"></span>: <span x-text="orcidId"></span></p>
             </template>
-            <a href="/profile" @click.prevent="navigate('/profile/' + username)" class="btn-primary inline-block mt-4 no-underline" x-text="$t('orcid.viewProfile')"></a>
+            <a :href="$lp('/profile/' + username)" @click.prevent="navigate('/profile/' + username)" class="btn-primary inline-block mt-4 no-underline" x-text="$t('orcid.viewProfile')"></a>
           </div>
         </template>
 
         <template x-if="status === 'error'">
           <div class="card bg-pevo-crimson-light border border-pevo-crimson/30">
             <p class="text-sm font-medium text-pevo-crimson-dark mb-2" x-text="errorMessage"></p>
-            <a href="/accreditation" @click.prevent="navigate('/accreditation')" class="btn-secondary inline-block mt-4 no-underline" x-text="$t('orcid.tryAgain')"></a>
+            <a :href="$lp('/accreditation')" @click.prevent="navigate('/accreditation')" class="btn-secondary inline-block mt-4 no-underline" x-text="$t('orcid.tryAgain')"></a>
           </div>
         </template>
       </div>
@@ -2656,7 +2659,7 @@
                 <div class="card">
                   <div class="mb-2">
                     <h2 class="text-lg font-bold text-ink font-serif" x-text="r.name"></h2>
-                    <a :href="'/profile/' + r.username" @click.prevent="navigate('/profile/' + r.username)"
+                    <a :href="$lp('/profile/' + r.username)" @click.prevent="navigate('/profile/' + r.username)"
                        class="text-sm text-pevo-teal hover:underline" x-text="'@' + r.username"></a>
                   </div>
                   <div class="space-y-1 text-sm text-ink-light">
@@ -2742,8 +2745,11 @@
       <div x-data="aboutPage" class="container-narrow py-8">
         <!-- Hero -->
         <div class="relative rounded-xl overflow-hidden mb-10">
-          <img src="/images/hero-banner.png" alt="The Future of Scientific Publishing - pevo.science"
-               class="w-full h-auto" />
+          <picture>
+            <source srcset="/images/hero-banner.webp" type="image/webp" />
+            <img src="/images/hero-banner.png" alt="The Future of Scientific Publishing - pevo.science"
+                 class="w-full h-auto" loading="lazy" decoding="async" />
+          </picture>
         </div>
 
         <div class="max-w-reading mx-auto">
@@ -2782,9 +2788,12 @@
             <section class="not-prose">
               <h2 class="text-section-title text-ink font-serif mb-4" x-text="$t('about.howItWorks')"></h2>
               <div class="rounded-xl overflow-hidden border border-parchment-dark">
-                <img src="/images/infographic-publishing.jpg"
-                     alt="PEvO publishing process"
-                     class="w-full h-auto" />
+                <picture>
+                  <source srcset="/images/infographic-publishing.webp" type="image/webp" />
+                  <img src="/images/infographic-publishing.jpg"
+                       alt="PEvO publishing process"
+                       class="w-full h-auto" loading="lazy" decoding="async" />
+                </picture>
               </div>
               <p class="text-xs text-ink-muted mt-2 text-center" x-text="$t('about.howItWorksCaption')"></p>
             </section>
@@ -2811,9 +2820,12 @@
             <section class="not-prose">
               <h2 class="text-section-title text-ink font-serif mb-4" x-text="$t('about.architectureTitle')"></h2>
               <div class="rounded-xl overflow-hidden border border-parchment-dark">
-                <img src="/images/infographic-architecture.jpg"
-                     alt="PEvO architecture"
-                     class="w-full h-auto" />
+                <picture>
+                  <source srcset="/images/infographic-architecture.webp" type="image/webp" />
+                  <img src="/images/infographic-architecture.jpg"
+                       alt="PEvO architecture"
+                       class="w-full h-auto" loading="lazy" decoding="async" />
+                </picture>
               </div>
               <p class="text-xs text-ink-muted mt-2 text-center" x-text="$t('about.architectureCaption')"></p>
             </section>
@@ -2924,7 +2936,7 @@
           <div class="card p-6 text-center mt-8">
             <p class="text-lg font-semibold text-ink mb-2" x-text="$t('faq.ctaTitle')"></p>
             <p class="text-sm text-ink-muted mb-4" x-text="$t('faq.ctaDescription')"></p>
-            <a href="/contact" @click.prevent="$store.router.navigate('/contact')"
+            <a :href="$lp('/contact')" @click.prevent="$store.router.navigate('/contact')"
                class="btn-primary inline-block no-underline" x-text="$t('faq.ctaButton')"></a>
           </div>
         </div>
@@ -3113,13 +3125,13 @@
         <div>
           <p class="font-sans text-sm font-semibold text-ink mb-3" x-text="$t('footer.platform')"></p>
           <ul class="space-y-2 text-sm">
-            <li><a href="/" @click.prevent="navigate('/')" class="text-ink-muted hover:text-pevo-teal no-underline" x-text="$t('footer.paperFeed')"></a></li>
-            <li><a href="/publish" @click.prevent="navigate('/publish')" class="text-ink-muted hover:text-pevo-teal no-underline" x-text="$t('footer.publishPaper')"></a></li>
-            <li><a href="/accreditation" @click.prevent="navigate('/accreditation')" class="text-ink-muted hover:text-pevo-teal no-underline" x-text="$t('nav.accreditation')"></a></li>
-            <li><a href="/about" @click.prevent="navigate('/about')" class="text-ink-muted hover:text-pevo-teal no-underline" x-text="$t('footer.aboutPevo')"></a></li>
-            <li><a href="/getting-started" @click.prevent="navigate('/getting-started')" class="text-ink-muted hover:text-pevo-teal no-underline" x-text="$t('footer.gettingStarted')"></a></li>
-            <li><a href="/faq" @click.prevent="navigate('/faq')" class="text-ink-muted hover:text-pevo-teal no-underline" x-text="$t('footer.faq')"></a></li>
-            <li><a href="/contact" @click.prevent="navigate('/contact')" class="text-ink-muted hover:text-pevo-teal no-underline" x-text="$t('footer.contact')"></a></li>
+            <li><a :href="$lp('/')" @click.prevent="navigate('/')" class="text-ink-muted hover:text-pevo-teal no-underline" x-text="$t('footer.paperFeed')"></a></li>
+            <li><a :href="$lp('/publish')" @click.prevent="navigate('/publish')" class="text-ink-muted hover:text-pevo-teal no-underline" x-text="$t('footer.publishPaper')"></a></li>
+            <li><a :href="$lp('/accreditation')" @click.prevent="navigate('/accreditation')" class="text-ink-muted hover:text-pevo-teal no-underline" x-text="$t('nav.accreditation')"></a></li>
+            <li><a :href="$lp('/about')" @click.prevent="navigate('/about')" class="text-ink-muted hover:text-pevo-teal no-underline" x-text="$t('footer.aboutPevo')"></a></li>
+            <li><a :href="$lp('/getting-started')" @click.prevent="navigate('/getting-started')" class="text-ink-muted hover:text-pevo-teal no-underline" x-text="$t('footer.gettingStarted')"></a></li>
+            <li><a :href="$lp('/faq')" @click.prevent="navigate('/faq')" class="text-ink-muted hover:text-pevo-teal no-underline" x-text="$t('footer.faq')"></a></li>
+            <li><a :href="$lp('/contact')" @click.prevent="navigate('/contact')" class="text-ink-muted hover:text-pevo-teal no-underline" x-text="$t('footer.contact')"></a></li>
           </ul>
         </div>
 
@@ -3245,7 +3257,7 @@
 
           <p class="text-sm text-ink/60 mt-3">
             Don't have an account?
-            <a href="/getting-started" class="text-pevo-teal hover:underline font-medium" @click="cancel()">Get started</a>
+            <a :href="$lp('/getting-started')" class="text-pevo-teal hover:underline font-medium" @click="cancel()">Get started</a>
           </p>
 
           <div class="flex justify-end gap-3 mt-5">

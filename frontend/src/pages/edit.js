@@ -480,6 +480,7 @@ export function initEditPage() {
 
           const jsonMetadata = {
             app: APP_ID,
+            canonical_url: `${window.location.origin}/paper/${username}/${newPermlink}`,
             tags: [APP_TAG, 'science', this.discipline, ...keywords].filter(Boolean),
             [APP_TAG]: {
               ...pevoMeta,
@@ -531,6 +532,7 @@ export function initEditPage() {
 
           const jsonMetadata = {
             app: APP_ID,
+            canonical_url: `${window.location.origin}/paper/${this.author}/${this.permlink}`,
             tags: [APP_TAG, 'science', this.discipline, ...keywords].filter(Boolean),
             [APP_TAG]: {
               ...pevoMeta,

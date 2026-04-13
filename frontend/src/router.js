@@ -1,4 +1,27 @@
 import Alpine from 'alpinejs';
+import { SUPPORTED_LOCALES, DEFAULT_LOCALE } from './i18n.js';
+
+// Static route titles (dynamic pages like paper-detail/profile set their own)
+const ROUTE_TITLES = {
+  'home':                  'PEvO - Open Scientific Publishing',
+  'papers':                'Papers — PEvO',
+  'publish':               'Publish — PEvO',
+  'search':                'Search — PEvO',
+  'bridge':                'Bridge — PEvO',
+  'accreditation':         'Accreditation — PEvO',
+  'accreditation-verify':  'Verify Accreditation — PEvO',
+  'researchers':           'Researchers — PEvO',
+  'stats':                 'Statistics — PEvO',
+  'about':                 'About — PEvO',
+  'faq':                   'FAQ — PEvO',
+  'getting-started':       'Getting Started — PEvO',
+  'contact':               'Contact — PEvO',
+};
+
+function updateTitle(routeName) {
+  const title = ROUTE_TITLES[routeName];
+  if (title) document.title = title;
+}
 
 const ROUTES = [
   { pattern: /^\/$/,                                   name: 'home' },
@@ -40,6 +63,16 @@ function parsePath(url) {
     }
   }
 
+  // Extract locale from first path segment
+  let locale = null;
+  const segments = path.split('/'); // ['', 'en', 'papers', ...]
+  if (segments.length >= 2 && SUPPORTED_LOCALES.includes(segments[1])) {
+    locale = segments[1];
+    // Strip locale prefix: '/en/papers' → '/papers', '/en' → '/'
+    path = '/' + segments.slice(2).join('/') || '/';
+    if (path !== '/' && path.endsWith('/')) path = path.slice(0, -1);
+  }
+
   // Match route
   for (const route of ROUTES) {
     const m = path.match(route.pattern);
@@ -50,12 +83,12 @@ function parsePath(url) {
           params[name] = decodeURIComponent(m[i + 1]);
         });
       }
-      return { route: route.name, params, query };
+      return { route: route.name, params, query, locale };
     }
   }
 
   // Fallback: 404 → home
-  return { route: 'home', params: {}, query };
+  return { route: 'home', params: {}, query, locale };
 }
 
 export function initRouter() {
@@ -65,16 +98,26 @@ export function initRouter() {
     route: initial.route,
     params: initial.params,
     query: initial.query,
+    locale: initial.locale || DEFAULT_LOCALE,
 
     navigate(path) {
+      // Auto-prepend locale if path doesn't already start with a valid locale
+      const segments = path.split('?')[0].split('/');
+      if (!(segments.length >= 2 && SUPPORTED_LOCALES.includes(segments[1]))) {
+        path = '/' + this.locale + (path.startsWith('/') ? path : '/' + path);
+      }
       window.history.pushState(null, '', path);
       const parsed = parsePath(path);
       this.route = parsed.route;
       this.params = parsed.params;
       this.query = parsed.query;
+      if (parsed.locale) this.locale = parsed.locale;
+      updateTitle(parsed.route);
       window.scrollTo(0, 0);
     },
   });
+
+  updateTitle(initial.route);
 
   window.addEventListener('popstate', () => {
     const parsed = parsePath(window.location.pathname + window.location.search);
@@ -82,6 +125,15 @@ export function initRouter() {
     store.route = parsed.route;
     store.params = parsed.params;
     store.query = parsed.query;
+    if (parsed.locale && parsed.locale !== store.locale) {
+      store.locale = parsed.locale;
+      // Sync i18n store if locale changed via back/forward navigation
+      const i18n = Alpine.store('i18n');
+      if (i18n && i18n.locale !== parsed.locale) {
+        i18n.setLocale(parsed.locale);
+      }
+    }
+    updateTitle(parsed.route);
     window.scrollTo(0, 0);
   });
 }

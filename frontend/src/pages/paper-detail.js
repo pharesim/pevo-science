@@ -68,6 +68,7 @@ export function initPaperDetailPage() {
         const res = await fetchPaper(author, permlink);
         if (this.author !== author || this.permlink !== permlink) return;
         this.paper = res.data;
+        if (this.paper.title) document.title = `${this.paper.title} — PEvO`;
         // Load enrichment (DOI) lazily
         this.loadDoi();
       } catch (err) {

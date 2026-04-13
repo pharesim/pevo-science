@@ -52,7 +52,7 @@ function renderCommentTree(comments, depth, t) {
           <button class="text-ink-muted hover:text-ink font-mono text-xs"
                   @click="toggleCollapse('${commentId}')"
                   x-text="collapsed['${commentId}'] ? '[+]' : '[-]'">[-]</button>
-          <a href="/profile/${comment.author}"
+          <a :href="$lp('/profile/${comment.author}')"
              @click.prevent="navigate('/profile/${comment.author}')"
              class="font-medium text-ink no-underline hover:text-pevo-teal">@${comment.author}</a>
           ${accreditedBadge}

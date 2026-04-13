@@ -16,17 +16,23 @@ function setCookieLocale(locale) {
 }
 
 function detectLocale() {
-  // 1. Cookie
+  // 1. URL path first segment
+  const segments = window.location.pathname.split('/');
+  if (segments.length >= 2 && SUPPORTED_LOCALES.includes(segments[1])) {
+    return segments[1];
+  }
+
+  // 2. Cookie
   const cookieLocale = getCookieLocale();
   if (cookieLocale && SUPPORTED_LOCALES.includes(cookieLocale)) return cookieLocale;
 
-  // 2. navigator.language
+  // 3. navigator.language
   if (typeof navigator !== 'undefined' && navigator.language) {
     const lang = navigator.language.split('-')[0];
     if (SUPPORTED_LOCALES.includes(lang)) return lang;
   }
 
-  // 3. Default
+  // 4. Default
   return DEFAULT_LOCALE;
 }
 
@@ -72,6 +78,24 @@ export function initI18n() {
       const isRtl = RTL_LOCALES.includes(newLocale);
       document.documentElement.dir = isRtl ? 'rtl' : 'ltr';
       document.documentElement.lang = newLocale;
+
+      // Swap locale prefix in current URL
+      const path = window.location.pathname;
+      const segments = path.split('/');
+      let newPath;
+      if (segments.length >= 2 && SUPPORTED_LOCALES.includes(segments[1])) {
+        segments[1] = newLocale;
+        newPath = segments.join('/');
+      } else {
+        newPath = '/' + newLocale + (path === '/' ? '/' : path);
+      }
+      // Preserve query string
+      newPath += window.location.search;
+      window.history.replaceState(null, '', newPath);
+
+      // Sync router store locale
+      const router = Alpine.store('router');
+      if (router) router.locale = newLocale;
     },
 
     async _loadMessages(loc) {
@@ -105,6 +129,11 @@ export function initI18n() {
       if (template === undefined) return key;
       return interpolate(template, params);
     };
+  });
+
+  // Register $lp (locale path) magic helper
+  Alpine.magic('lp', () => {
+    return (path) => '/' + Alpine.store('i18n').locale + (path.startsWith('/') ? path : '/' + path);
   });
 
   // Load initial messages and set direction

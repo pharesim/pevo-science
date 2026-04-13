@@ -446,6 +446,8 @@ export function buildBridgeMetadata(
   version: number,
   title: string,
   body: string,
+  postAuthor: string,
+  postPermlink: string,
 ) {
   const authors = meta.authors.map((a) => ({
     name: a.name,
@@ -479,6 +481,7 @@ export function buildBridgeMetadata(
 
   return {
     app: config.appId,
+    canonical_url: `${config.appUrl}/paper/${postAuthor}/${postPermlink}`,
     tags: [config.appTag, 'science', discipline.toLowerCase().replace(/\s+/g, '-')].filter(Boolean),
     [config.appTag]: pevo,
   };

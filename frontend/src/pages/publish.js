@@ -491,6 +491,7 @@ export function initPublishPage() {
 
         const jsonMetadata = {
           app: APP_ID,
+          canonical_url: `${window.location.origin}/paper/${username}/${permlink}`,
           tags: [APP_TAG, 'science', this.discipline, ...keywords].filter(Boolean),
           ...(images.length > 0 && { image: images }),
           [APP_TAG]: {

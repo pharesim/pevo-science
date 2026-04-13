@@ -96,8 +96,13 @@ initAccreditationPage();
 initAccreditationVerifyPage();
 initAccreditationOrcidCallbackPage();
 
-// Load i18n messages, then start Alpine
+// Load i18n messages, sync locale with router, then start Alpine
 initI18n().then(() => {
+  const router = Alpine.store('router');
+  const i18n = Alpine.store('i18n');
+  if (router && i18n && router.locale !== i18n.locale) {
+    router.locale = i18n.locale;
+  }
   Alpine.start();
 });
 

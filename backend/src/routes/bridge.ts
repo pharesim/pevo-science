@@ -204,6 +204,8 @@ router.post('/register', registerLimiter, verifyHiveSignature, async (req: Reque
     1,
     meta.title,
     body,
+    config.hiveBridgeAccount,
+    permlink,
   );
 
   try {
@@ -330,6 +332,8 @@ router.post('/update', updateLimiter, verifyHiveSignature, async (req: Request, 
     newVersion,
     freshMeta.title,
     body,
+    config.hiveBridgeAccount,
+    permlink,
   );
 
   try {

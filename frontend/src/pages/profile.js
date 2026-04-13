@@ -30,6 +30,7 @@ export function initProfilePage() {
         ]);
         this.profile = profileRes.data;
         this.userPapers = papersRes.data || [];
+        if (this.username) document.title = `${this.username} — PEvO`;
       } catch (err) {
         this.error = err?.message || this.$t('profile.loadFailed');
       } finally {

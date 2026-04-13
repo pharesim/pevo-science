@@ -6,7 +6,7 @@ import compression from 'compression';
 import cors from 'cors';
 import helmet from 'helmet';
 import { config } from './config.js';
-import { isHafAvailable } from './db.js';
+import { getPool, isHafAvailable } from './db.js';
 import { isRedisAvailable } from './redis.js';
 import { hiveClient } from './hive.js';
 import { extractAbstract, parseMeta, isPevoAnyPaper } from './helpers.js';
@@ -134,6 +134,67 @@ export function createApp() {
     });
   });
 
+  // ── robots.txt ─────────────────────────────────────────────────
+  app.get('/robots.txt', (_req, res) => {
+    const baseUrl = config.appUrl.replace(/\/$/, '');
+    res.type('text/plain').send(
+      `User-agent: *\nAllow: /\n\nSitemap: ${baseUrl}/sitemap.xml\n`,
+    );
+  });
+
+  // ── sitemap.xml ───────────────────────────────────────────────
+  const staticPaths = ['/', '/papers', '/about', '/faq', '/getting-started', '/contact', '/researchers', '/stats', '/search', '/accreditation', '/bridge', '/publish'];
+
+  app.get('/sitemap.xml', async (_req, res) => {
+    const baseUrl = config.appUrl.replace(/\/$/, '');
+    const urls: string[] = [];
+
+    // Build hreflang alternates for a given path (without locale)
+    const hreflangLinks = (path: string) =>
+      SUPPORTED_LOCALES_ARR.map(
+        loc => `    <xhtml:link rel="alternate" hreflang="${loc}" href="${escHtml(baseUrl)}/${loc}${path}" />`,
+      ).concat(
+        `    <xhtml:link rel="alternate" hreflang="x-default" href="${escHtml(baseUrl)}/en${path}" />`,
+      ).join('\n');
+
+    const url = (path: string, freq: string, priority: string, lastmod?: string) => {
+      let entry = `  <url>\n    <loc>${escHtml(baseUrl)}/en${path}</loc>\n    <changefreq>${freq}</changefreq>\n    <priority>${priority}</priority>`;
+      if (lastmod) entry += `\n    <lastmod>${lastmod}</lastmod>`;
+      entry += `\n${hreflangLinks(path)}`;
+      return entry + '\n  </url>';
+    };
+
+    // Static pages
+    for (const p of staticPaths) {
+      urls.push(url(p, p === '/' || p === '/papers' ? 'daily' : 'monthly', p === '/' ? '1.0' : '0.5'));
+    }
+
+    // Dynamic paper pages from HAF
+    try {
+      const pool = getPool();
+      if (pool) {
+        const { rows } = await pool.query<{ author: string; permlink: string; updated: string }>(
+          `SELECT c.author, c.permlink, c.last_update::date::text AS updated
+           FROM hive.comments_view c
+           WHERE c.parent_author = '' AND c.parent_permlink = $1
+             AND c.json_metadata ->> 'app' LIKE $2
+             AND (c.json_metadata -> $1 ->> 'type') IN ('paper', 'bridge_paper')
+           ORDER BY c.last_update DESC
+           LIMIT 5000`,
+          [config.appTag, `${config.appTag}/%`],
+        );
+        for (const r of rows) {
+          urls.push(url(`/paper/${r.author}/${r.permlink}`, 'weekly', '0.8', r.updated));
+        }
+      }
+    } catch {
+      // Serve sitemap with static pages only if HAF is unavailable
+    }
+
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml">\n${urls.join('\n')}\n</urlset>`;
+    res.type('application/xml').send(xml);
+  });
+
   // Inline config script tag (content + hash computed above for CSP)
   const configScript = `<script>${configScriptContent}</script>`;
 
@@ -147,14 +208,75 @@ export function createApp() {
     // index.html not built yet — will 404 on requests
   }
 
-  // ── SEO meta injection for paper pages ──────────────────────────
-  const paperRouteRe = /^\/paper\/([^/]+)\/([^/]+)$/;
+  // ── SEO meta injection ──────────────────────────────────────────
+  const paperRouteRe = /^\/([a-z]{2})\/paper\/([^/]+)\/([^/]+)$/;
+  const profileRouteRe = /^\/([a-z]{2})\/profile\/([^/]+)$/;
   const defaultTitle = 'PEvO - Open Scientific Publishing';
   const defaultDesc = 'Open scientific publication and interactive peer evaluation on a permanent, open record. Non-profit, transparent, forkable.';
 
+  // Static page meta for SEO (title suffix " — PEvO" added automatically)
+  const staticPageMeta: Record<string, { title: string; desc: string }> = {
+    '/about':           { title: 'About', desc: 'Learn how PEvO brings transparent, permanent scientific publishing and peer review to an open record.' },
+    '/faq':             { title: 'FAQ', desc: 'Frequently asked questions about publishing, reviewing, and evaluating scientific work on PEvO.' },
+    '/getting-started': { title: 'Getting Started', desc: 'How to set up your account, publish your first paper, and start reviewing on PEvO.' },
+    '/contact':         { title: 'Contact', desc: 'Get in touch with the PEvO team for questions, feedback, or collaboration.' },
+    '/papers':          { title: 'Papers', desc: 'Browse open-access scientific papers published and peer-reviewed on PEvO.' },
+    '/search':          { title: 'Search', desc: 'Search scientific papers, authors, and reviews on PEvO.' },
+    '/researchers':     { title: 'Researchers', desc: 'Explore accredited researchers and their contributions on PEvO.' },
+    '/stats':           { title: 'Statistics', desc: 'Platform statistics: papers published, reviews submitted, and researcher activity on PEvO.' },
+    '/accreditation':   { title: 'Accreditation', desc: 'Verify your researcher identity to participate in peer review on PEvO.' },
+    '/bridge':          { title: 'Bridge', desc: 'Import and discuss existing scientific papers from external sources on PEvO.' },
+    '/publish':         { title: 'Publish', desc: 'Submit your scientific paper for open peer review on PEvO.' },
+  };
+
+  // ── Locale routing ───────────────────────────────────────────────
+  const SUPPORTED_LOCALES = new Set(['ar', 'cs', 'da', 'de', 'en', 'es', 'fa', 'fr', 'he', 'it', 'pl', 'pt', 'sv', 'zh']);
+  const SUPPORTED_LOCALES_ARR = [...SUPPORTED_LOCALES];
+  // Paths that must never get a locale redirect
+  const NO_LOCALE_PREFIXES = new Set(['api', 'assets', 'messages']);
+  const NO_LOCALE_FILES = new Set(['robots.txt', 'sitemap.xml', 'favicon.ico']);
+
+  function detectLocale(req: express.Request): string {
+    // 1. Cookie
+    const cookie = req.cookies?.PEVO_LOCALE || parseCookie(req.headers.cookie, 'PEVO_LOCALE');
+    if (cookie && SUPPORTED_LOCALES.has(cookie)) return cookie;
+    // 2. Accept-Language header
+    const accept = req.get('accept-language');
+    if (accept) {
+      const langs = accept
+        .split(',')
+        .map(part => {
+          const [lang, qPart] = part.trim().split(';');
+          const q = qPart ? parseFloat(qPart.replace('q=', '')) : 1;
+          return { code: lang.trim().slice(0, 2).toLowerCase(), q };
+        })
+        .sort((a, b) => b.q - a.q);
+      for (const l of langs) {
+        if (SUPPORTED_LOCALES.has(l.code)) return l.code;
+      }
+    }
+    // 3. Fallback
+    return 'en';
+  }
+
+  function parseCookie(header: string | undefined, name: string): string | undefined {
+    if (!header) return undefined;
+    const match = header.match(new RegExp(`(?:^|;\\s*)${name}=([^;]*)`));
+    return match ? decodeURIComponent(match[1]) : undefined;
+  }
+
+  function buildHreflangTags(path: string): string {
+    const baseUrl = config.appUrl.replace(/\/$/, '');
+    const tags = SUPPORTED_LOCALES_ARR.map(
+      loc => `<link rel="alternate" hreflang="${loc}" href="${baseUrl}/${loc}${path}" />`,
+    );
+    tags.push(`<link rel="alternate" hreflang="x-default" href="${baseUrl}/en${path}" />`);
+    return tags.join('\n  ');
+  }
+
   const botUaRe = /bot|crawl|spider|slurp|facebookexternalhit|linkedinbot|twitterbot|whatsapp|telegram|discord|preview|fetch|gptbot|chatgpt|claude|anthropic|perplexity|cohere|bingpreview|google-extended/i;
 
-  async function injectPaperMeta(html: string, author: string, permlink: string, reqUrl: string, isBot: boolean): Promise<string> {
+  async function injectPaperMeta(html: string, author: string, permlink: string, reqUrl: string, isBot: boolean, pathWithoutLocale: string): Promise<string> {
     const post = await hiveClient.database.call('get_content', [author, permlink]);
     if (!post || !post.author || post.parent_permlink !== config.appTag) return html;
 
@@ -172,13 +294,43 @@ export function createApp() {
       `<meta property="og:type" content="article" />`,
       reqUrl ? `<meta property="og:url" content="${escAttr(reqUrl)}" />` : '',
       `<meta name="twitter:card" content="summary" />`,
+      reqUrl ? `<link rel="canonical" href="${escAttr(reqUrl)}" />` : '',
     ].filter(Boolean).join('\n  ');
+
+    // JSON-LD structured data for scholarly articles
+    const pevoMeta = (meta[config.appTag] || {}) as Record<string, unknown>;
+    const jsonLd: Record<string, unknown> = {
+      '@context': 'https://schema.org',
+      '@type': 'ScholarlyArticle',
+      headline: title,
+      description: desc,
+      author: { '@type': 'Person', name: author },
+      datePublished: (post.created as string || '').split('T')[0],
+      dateModified: (post.last_update as string || '').split('T')[0],
+      publisher: { '@type': 'Organization', name: 'PEvO', url: config.appUrl },
+    };
+    if (reqUrl) jsonLd.url = reqUrl;
+    if (pevoMeta.discipline) jsonLd.about = pevoMeta.discipline;
+    if (Array.isArray(pevoMeta.keywords) && pevoMeta.keywords.length) jsonLd.keywords = pevoMeta.keywords;
+
+    const baseUrl = config.appUrl.replace(/\/$/, '');
+    const breadcrumb = {
+      '@context': 'https://schema.org',
+      '@type': 'BreadcrumbList',
+      itemListElement: [
+        { '@type': 'ListItem', position: 1, name: 'Papers', item: `${baseUrl}/${locale}/papers` },
+        { '@type': 'ListItem', position: 2, name: title },
+      ],
+    };
+    const jsonLdScript = `<script type="application/ld+json">${JSON.stringify(jsonLd)}</script>\n  <script type="application/ld+json">${JSON.stringify(breadcrumb)}</script>`;
+
+    const hreflangTags = buildHreflangTags(pathWithoutLocale);
 
     let result = html
       .replace(`<title>${defaultTitle}</title>`, `<title>${escHtml(title)} — PEvO</title>`)
       .replace(
         `<meta name="description" content="${defaultDesc}" />`,
-        `<meta name="description" content="${escAttr(desc)}" />\n  ${ogTags}`,
+        `<meta name="description" content="${escAttr(desc)}" />\n  ${ogTags}\n  ${jsonLdScript}\n  ${hreflangTags}`,
       );
 
     // For bots, inject the full body so they can index the content
@@ -206,20 +358,105 @@ export function createApp() {
     }
     if (!indexHtml) return next();
 
+    // ── Locale extraction (L6) ────────────────────────────────────
+    const segments = req.path.replace(/^\//, '').split('/');
+    const firstSeg = segments[0]?.toLowerCase() || '';
+
+    // Skip locale logic for static files and special routes
+    if (NO_LOCALE_PREFIXES.has(firstSeg) || NO_LOCALE_FILES.has(firstSeg)) {
+      return next();
+    }
+
+    let locale: string;
+    let pathWithoutLocale: string; // path with locale stripped, e.g. /paper/alice/foo
+
+    if (SUPPORTED_LOCALES.has(firstSeg)) {
+      locale = firstSeg;
+      pathWithoutLocale = '/' + segments.slice(1).join('/') || '/';
+    } else {
+      // Bare path — 302 redirect to locale-prefixed version
+      const detected = detectLocale(req);
+      const qs = req.originalUrl.includes('?') ? req.originalUrl.slice(req.originalUrl.indexOf('?')) : '';
+      return res.redirect(302, `/${detected}${req.path}${qs}`);
+    }
+
+    // ── SEO meta injection (L7) ───────────────────────────────────
+    const fullUrl = `${req.protocol}://${req.get('host')}${req.originalUrl}`;
+    const hreflangTags = buildHreflangTags(pathWithoutLocale);
+
     // Inject paper-specific meta tags for SEO / link previews
     const paperMatch = req.path.match(paperRouteRe);
-    if (paperMatch) {
+    if (paperMatch && SUPPORTED_LOCALES.has(paperMatch[1])) {
       try {
-        const fullUrl = `${req.protocol}://${req.get('host')}${req.originalUrl}`;
         const isBot = botUaRe.test(req.get('user-agent') || '');
-        const html = await injectPaperMeta(indexHtml, paperMatch[1], paperMatch[2], fullUrl, isBot);
+        const html = await injectPaperMeta(indexHtml, paperMatch[2], paperMatch[3], fullUrl, isBot, pathWithoutLocale);
         return res.type('html').send(html);
       } catch {
         // Fall through to generic HTML on any error
       }
     }
 
-    res.type('html').send(indexHtml);
+    // Inject meta for profile pages
+    const profileMatch = req.path.match(profileRouteRe);
+    if (profileMatch && SUPPORTED_LOCALES.has(profileMatch[1])) {
+      try {
+        const username = decodeURIComponent(profileMatch[2]);
+        const pageTitle = `${username} — PEvO`;
+        const desc = `Researcher profile for ${username} on PEvO — publications, reviews, and reputation.`;
+        const ogTags = [
+          `<meta property="og:title" content="${escAttr(pageTitle)}" />`,
+          `<meta property="og:description" content="${escAttr(desc)}" />`,
+          `<meta property="og:type" content="profile" />`,
+          `<meta property="og:url" content="${escAttr(fullUrl)}" />`,
+          `<meta name="twitter:card" content="summary" />`,
+          `<link rel="canonical" href="${escAttr(fullUrl)}" />`,
+        ].join('\n  ');
+
+        const personLd = {
+          '@context': 'https://schema.org',
+          '@type': 'Person',
+          name: username,
+          url: fullUrl,
+        };
+        const personLdScript = `<script type="application/ld+json">${JSON.stringify(personLd)}</script>`;
+
+        const html = indexHtml
+          .replace(`<title>${defaultTitle}</title>`, `<title>${escHtml(pageTitle)}</title>`)
+          .replace(
+            `<meta name="description" content="${defaultDesc}" />`,
+            `<meta name="description" content="${escAttr(desc)}" />\n  ${ogTags}\n  ${personLdScript}\n  ${hreflangTags}`,
+          );
+        return res.type('html').send(html);
+      } catch {
+        // Fall through to generic HTML
+      }
+    }
+
+    // Inject title + meta for static pages (lookup by path without locale)
+    const pageMeta = staticPageMeta[pathWithoutLocale];
+    if (pageMeta) {
+      const pageTitle = `${pageMeta.title} — PEvO`;
+      const ogTags = [
+        `<meta property="og:title" content="${escAttr(pageTitle)}" />`,
+        `<meta property="og:description" content="${escAttr(pageMeta.desc)}" />`,
+        `<meta property="og:type" content="website" />`,
+        `<meta property="og:url" content="${escAttr(fullUrl)}" />`,
+        `<meta name="twitter:card" content="summary" />`,
+        `<link rel="canonical" href="${escAttr(fullUrl)}" />`,
+      ].join('\n  ');
+
+      const html = indexHtml
+        .replace(`<title>${defaultTitle}</title>`, `<title>${escHtml(pageTitle)}</title>`)
+        .replace(
+          `<meta name="description" content="${defaultDesc}" />`,
+          `<meta name="description" content="${escAttr(pageMeta.desc)}" />\n  ${ogTags}\n  ${hreflangTags}`,
+        );
+      return res.type('html').send(html);
+    }
+
+    // Generic page — still inject hreflang
+    const html = indexHtml.replace('</head>', `  ${hreflangTags}\n</head>`);
+    res.type('html').send(html);
   });
 
   // Error handler
