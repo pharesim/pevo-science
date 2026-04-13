@@ -618,7 +618,7 @@ async function reconstructVersionsFromHaf(
          co.permlink,
          co.title,
          co.body,
-         co.created,
+         co.timestamp AS created,
          co.json_metadata
        FROM ${T.commentOps} co
        WHERE ${conditions.join(' OR ')}
