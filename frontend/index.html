@@ -2545,46 +2545,51 @@
               <p x-text="$t('about.openSourceDesc')"></p>
             </section>
 
-            <section class="not-prose">
+            <section class="not-prose" x-data="{
+              platforms: ['pevo','arxiv','f1000','scienceopen','pubpeer','octopus','scihub','scinet','traditional'],
+              headers: ['PEvO','cmpArxiv','cmpF1000','cmpScienceOpen','cmpPubPeer','cmpOctopus','cmpScihub','cmpScinet','cmpTraditional'],
+              rows: [
+                { key: 'cmpPublishing',   vals: ['yes','partial','no','partial','na','yes','na','na','no'] },
+                { key: 'cmpRatings',      vals: ['yes','no','yes','partial','no','partial','na','na','partial'] },
+                { key: 'cmpOpenSource',    vals: ['yes','no','no','no','no','yes','no','no','no'] },
+                { key: 'cmpImmutable',     vals: ['yes','no','no','no','no','no','no','no','no'] },
+                { key: 'cmpNonProfit',     vals: ['yes','yes','partial','no','yes','yes','yes','yes','no'] },
+                { key: 'cmpTransparent',   vals: ['yes','no','yes','yes','yes','yes','na','na','no'] },
+                { key: 'cmpVersioning',    vals: ['yes','yes','partial','partial','na','partial','na','na','partial'] },
+                { key: 'cmpOrcid',         vals: ['partial','yes','yes','yes','no','yes','no','no','yes'] },
+                { key: 'cmpAccreditation', vals: ['yes','na','partial','partial','no','no','na','na','partial'] },
+                { key: 'cmpAnonymous',     vals: ['yes','na','partial','partial','yes','partial','na','yes','yes'] }
+              ],
+              tip(rowKey, platIdx) {
+                const k = 'about.tip_' + rowKey.replace('cmp','') + '_' + this.platforms[platIdx];
+                const t = $t(k);
+                return t !== k ? t : '';
+              },
+              sym(v) { return v === 'yes' ? '✓' : v === 'partial' ? '✓' : v === 'no' ? '✗' : '—'; },
+              cls(v) { return v === 'yes' ? 'text-pevo-green' : v === 'partial' ? 'text-amber-500' : v === 'no' ? 'text-pevo-crimson' : 'text-ink-muted'; }
+            }">
               <h2 class="text-section-title text-ink font-serif mb-4" x-text="$t('about.comparisonTitle')"></h2>
               <p class="text-sm text-ink-muted mb-4" x-text="$t('about.comparisonSubtitle')"></p>
               <div class="overflow-x-auto -mx-4 px-4">
                 <table class="w-full text-sm border-collapse">
                   <thead>
                     <tr class="border-b border-parchment-dark">
-                      <th class="text-left py-2 px-3 font-medium text-ink sticky left-0 bg-white"></th>
-                      <th class="py-2 px-3 font-medium text-ink bg-pevo-teal-light/30" x-text="'PEvO'"></th>
-                      <th class="py-2 px-3 font-medium text-ink-muted" x-text="$t('about.cmpArxiv')"></th>
-                      <th class="py-2 px-3 font-medium text-ink-muted" x-text="$t('about.cmpF1000')"></th>
-                      <th class="py-2 px-3 font-medium text-ink-muted" x-text="$t('about.cmpScienceOpen')"></th>
-                      <th class="py-2 px-3 font-medium text-ink-muted" x-text="$t('about.cmpPubPeer')"></th>
-                      <th class="py-2 px-3 font-medium text-ink-muted" x-text="$t('about.cmpOctopus')"></th>
-                      <th class="py-2 px-3 font-medium text-ink-muted" x-text="$t('about.cmpTraditional')"></th>
+                      <th class="text-left py-2 px-3 font-medium text-ink sticky left-0 bg-white z-10"></th>
+                      <template x-for="(h, i) in headers" :key="h">
+                        <th class="py-2 px-3 font-medium whitespace-nowrap"
+                            :class="i === 0 ? 'text-ink bg-pevo-teal-light/30' : 'text-ink-muted'"
+                            x-text="i === 0 ? h : $t('about.' + h)"></th>
+                      </template>
                     </tr>
                   </thead>
                   <tbody class="divide-y divide-parchment">
-                    <template x-for="row in [
-                      { key: 'cmpPublishing',  vals: ['yes','partial','no','partial','na','yes','no'] },
-                      { key: 'cmpRatings',     vals: ['yes','no','yes','partial','no','partial','partial'] },
-                      { key: 'cmpOpenSource',   vals: ['yes','no','no','no','no','yes','no'] },
-                      { key: 'cmpImmutable',    vals: ['yes','no','no','no','no','no','no'] },
-                      { key: 'cmpNonProfit',    vals: ['yes','yes','partial','no','yes','yes','no'] },
-                      { key: 'cmpTransparent',  vals: ['yes','no','yes','yes','yes','yes','no'] },
-                      { key: 'cmpVersioning',   vals: ['yes','yes','partial','partial','na','partial','partial'] },
-                      { key: 'cmpOrcid',        vals: ['partial','yes','yes','yes','no','yes','yes'] },
-                      { key: 'cmpAccreditation',vals: ['yes','na','partial','partial','no','no','partial'] },
-                      { key: 'cmpAnonymous',    vals: ['yes','na','partial','partial','yes','partial','yes'] }
-                    ]" :key="row.key">
+                    <template x-for="row in rows" :key="row.key">
                       <tr>
-                        <td class="py-2 px-3 font-medium text-ink sticky left-0 bg-white" x-text="$t('about.' + row.key)"></td>
-                        <td class="py-2 px-3 text-center bg-pevo-teal-light/30">
-                          <span :class="row.vals[0] === 'yes' ? 'text-pevo-green' : row.vals[0] === 'partial' ? 'text-amber-500' : row.vals[0] === 'no' ? 'text-pevo-crimson' : 'text-ink-muted'"
-                                x-text="row.vals[0] === 'yes' ? '✓' : row.vals[0] === 'partial' ? '✓' : row.vals[0] === 'no' ? '✗' : '—'"></span>
-                        </td>
-                        <template x-for="(v, i) in row.vals.slice(1)" :key="i">
-                          <td class="py-2 px-3 text-center">
-                            <span :class="v === 'yes' ? 'text-pevo-green' : v === 'partial' ? 'text-amber-500' : v === 'no' ? 'text-pevo-crimson' : 'text-ink-muted'"
-                                  x-text="v === 'yes' ? '✓' : v === 'partial' ? '✓' : v === 'no' ? '✗' : '—'"></span>
+                        <td class="py-2 px-3 font-medium text-ink sticky left-0 bg-white z-10" x-text="$t('about.' + row.key)"></td>
+                        <template x-for="(v, i) in row.vals" :key="i">
+                          <td class="py-2 px-3 text-center cursor-default" :class="i === 0 ? 'bg-pevo-teal-light/30' : ''"
+                              :title="tip(row.key, i)">
+                            <span :class="cls(v)" x-text="sym(v)"></span>
                           </td>
                         </template>
                       </tr>
