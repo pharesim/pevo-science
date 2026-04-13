@@ -823,12 +823,7 @@ router.get('/:author/:permlink', async (req: Request, res: Response) => {
 
   const cacheKey = `paper-detail:${author}:${permlink}`;
   const cached = await hafCache.getOrSet(cacheKey, async () => {
-    // Hive API first: get_content is a single fast call (~200ms) with no DB
-    // connection needed. HAF only adds versions/retraction which are rare.
-    const hiveResult = await fetchPaperDetailFromHiveApi(author, permlink);
-    if (hiveResult) return hiveResult;
-
-    // Fallback to HAF if Hive API failed
+    // HAF first: local PostgreSQL is faster than remote Hive API calls.
     if (isHafAvailable()) {
       const hafResult = await fetchPaperDetailFromHaf(author, permlink);
       if (hafResult) return hafResult;
@@ -853,6 +848,10 @@ router.get('/:author/:permlink', async (req: Request, res: Response) => {
         return detail;
       }
     }
+
+    // Fallback to Hive API if HAF is unavailable (no version history)
+    const hiveResult = await fetchPaperDetailFromHiveApi(author, permlink);
+    if (hiveResult) return hiveResult;
 
     return null;
   }, 30 * 60_000, true);
