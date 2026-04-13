@@ -123,12 +123,13 @@ pevo/
 | `POST /api/accreditation/request` | Request accreditation via email |
 | `POST /api/accreditation/orcid/start` | Accreditation via ORCID OAuth |
 | `POST /api/ipfs/upload` | Upload file to IPFS (PDF, images, CSV, ZIP) |
+| `GET /api/ipfs/:cid` | Download IPFS file (validated against known papers) |
 | `POST /api/reviews/anonymous` | Submit anonymous review |
 | `GET /api/bridge/lookup` | Import preprint metadata (arXiv, PubMed, bioRxiv, ResearchGate, Semantic Scholar) |
 | `POST /api/bridge/register` | Register preprint for peer review on PEvO |
 | `GET /api/wot/:username` | Web of Trust vouch status |
 
-Full spec with all 33 endpoints: [docs/api-contract.md](docs/api-contract.md)
+Full spec with all 34 endpoints: [docs/api-contract.md](docs/api-contract.md)
 
 ## License
 

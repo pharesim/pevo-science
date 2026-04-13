@@ -9,7 +9,7 @@ import { startIpfsCleanup, stopIpfsCleanup } from './ipfs-cleanup.js';
 import { startBatchReputation, stopBatchReputation } from './reputation-batch.js';
 import { disconnectRedis } from './redis.js';
 import { checkHiveNodes } from './hive.js';
-import { preloadRetractionCache } from './routes/papers.js';
+import { startRetractionCache } from './routes/papers.js';
 import { logger } from './logger.js';
 import type { Server } from 'http';
 
@@ -31,7 +31,10 @@ const app = createApp();
 let server: Server;
 
 initAppDb()
-  .then(() => {
+  .then(async () => {
+    // Start periodic cache refreshes before accepting traffic
+    await startRetractionCache();
+
     server = app.listen(config.port, () => {
       logger.info({ port: config.port, haf: isHafAvailable(), appDb: !!config.appDatabaseUrl }, 'PEvO backend started');
 
@@ -50,8 +53,7 @@ initAppDb()
       // Start nightly batch reputation computation (v3 voter weight convergence)
       startBatchReputation();
 
-      // Non-blocking: preload caches and check connectivity at startup
-      preloadRetractionCache();
+      // Non-blocking: check Hive API node connectivity at startup
       checkHiveNodes();
     });
   })

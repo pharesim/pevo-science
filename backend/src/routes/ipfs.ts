@@ -18,7 +18,7 @@ const ipfsUploadLimiter = rateLimit({ name: 'ipfs-upload', windowMs: 60 * 60_000
 
 const router = Router();
 
-const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+const MAX_FILE_SIZE = config.maxUploadSize;
 
 // ──────────────────────────────────────────────
 // Accepted MIME types and magic bytes validation
@@ -158,7 +158,7 @@ router.post('/upload', verifyHiveSignature, ipfsUploadLimiter, (req: Request, re
         return sendError(res, 422, 'INVALID_FILE_TYPE', ACCEPTED_TYPES_MSG);
       }
       if (err.code === 'LIMIT_FILE_SIZE') {
-        return sendError(res, 413, 'FILE_TOO_LARGE', 'File exceeds 10MB limit');
+        return sendError(res, 413, 'FILE_TOO_LARGE', `File exceeds ${Math.round(config.maxUploadSize / (1024 * 1024))}MB limit`);
       }
       return sendError(res, 400, 'BAD_REQUEST', err.message);
     }

@@ -735,13 +735,9 @@ async function loadRetractedPapers(): Promise<RetractionEntry[]> {
   }));
 }
 
-async function getRetractedPapers(): Promise<RetractionEntry[]> {
-  return hafCache.getOrSet('retracted-papers', loadRetractedPapers, 5 * 60_000, true);
-}
-
 async function getRetractionInfo(author: string, permlink: string): Promise<{ is_retracted: boolean; retraction_reason?: string | null; retraction_timestamp?: string | null }> {
   try {
-    const allRetracted = await getRetractedPapers();
+    const allRetracted = await hafCache.get<RetractionEntry[]>('retracted-papers') ?? [];
     const entry = allRetracted.find((r) => r.author === author && r.permlink === permlink);
     if (entry) {
       return { is_retracted: true, retraction_reason: entry.reason, retraction_timestamp: entry.timestamp };
@@ -752,14 +748,9 @@ async function getRetractionInfo(author: string, permlink: string): Promise<{ is
   return { is_retracted: false, retraction_reason: null, retraction_timestamp: null };
 }
 
-/** Preload retracted papers cache at startup. */
-export async function preloadRetractionCache(): Promise<void> {
-  try {
-    const entries = await getRetractedPapers();
-    logger.info({ count: entries.length }, 'Retracted papers cache preloaded');
-  } catch (err) {
-    logger.warn({ err }, 'Failed to preload retracted papers cache');
-  }
+/** Register periodic refresh for retracted papers cache. */
+export function startRetractionCache(): void {
+  hafCache.registerPeriodicRefresh('retracted-papers', loadRetractedPapers, 24 * 60 * 60_000);
 }
 
 function buildPaperDetail(
@@ -1233,6 +1224,8 @@ router.post('/:author/:permlink/retract', verifyHiveSignature, retractLimiter, a
       { id: config.appTag, json: JSON.stringify(payload), required_auths: [], required_posting_auths: [config.hiveAdminAccount] },
       key,
     );
+    // Invalidate retraction cache so the change is visible immediately
+    hafCache.invalidate('retracted-papers');
     sendOk(res, { message: 'Paper retracted', tx_id: result.id });
   } catch (err) {
     logger.error({ err: (err as Error).message }, 'Failed to broadcast retraction');

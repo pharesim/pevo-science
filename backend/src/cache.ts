@@ -136,6 +136,42 @@ export class QueryCache {
       try { await redis.del(this.prefix + key); } catch (err) { logger.debug({ err, key }, 'Redis cache invalidate failed'); }
     }
     this.memStore.delete(key);
+
+    // If a periodic refresh is registered, trigger a background reload
+    const entry = this.periodicEntries.get(key);
+    if (entry) {
+      entry.reload().catch((err) => logger.debug({ err, key }, 'Background reload after invalidate failed'));
+    }
+  }
+
+  private periodicEntries = new Map<string, { reload: () => Promise<void> }>();
+
+  /**
+   * Register a key for periodic background refresh.
+   * Loads immediately (returns a promise for the initial load),
+   * then reloads every `intervalMs` in the background.
+   * Calling `invalidate(key)` also triggers an immediate background reload.
+   */
+  async registerPeriodicRefresh<T>(key: string, fn: () => Promise<T>, intervalMs: number, stable = true): Promise<void> {
+    const reload = async () => {
+      try {
+        const data = await fn();
+        if (data !== null && data !== undefined) {
+          await this.set(key, data, intervalMs * 2, stable);
+        }
+      } catch (err) {
+        logger.warn({ err, key }, 'Periodic cache refresh failed');
+      }
+    };
+
+    this.periodicEntries.set(key, { reload });
+
+    // Initial load (awaited so callers can block on it)
+    await reload();
+
+    // Periodic refresh
+    const timer = setInterval(reload, intervalMs);
+    timer.unref();
   }
 
   /** Clear ALL entries including stable ones. */

@@ -47,6 +47,7 @@ export const config = {
   appDatabaseUrl: process.env.APP_DATABASE_URL || '',
   ipfsApiUrl: process.env.IPFS_API_URL || 'http://ipfs:5001',
   ipfsGatewayUrl: process.env.IPFS_GATEWAY_URL || 'http://ipfs:8080',
+  maxUploadSize: parseInt(process.env.MAX_UPLOAD_SIZE || String(10 * 1024 * 1024), 10),
   pinataApiKey: process.env.PINATA_API_KEY || '',
   pinataSecretKey: process.env.PINATA_SECRET_KEY || '',
   pevoAnonPostingKey: process.env.PEVO_ANON_POSTING_KEY || '',
