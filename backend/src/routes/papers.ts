@@ -749,8 +749,9 @@ async function getRetractionInfo(author: string, permlink: string): Promise<{ is
 }
 
 /** Register periodic refresh for retracted papers cache. */
-export function startRetractionCache(): void {
-  hafCache.registerPeriodicRefresh('retracted-papers', loadRetractedPapers, 24 * 60 * 60_000);
+export async function startRetractionCache(): Promise<void> {
+  await hafCache.registerPeriodicRefresh('retracted-papers', loadRetractedPapers, 24 * 60 * 60_000);
+  logger.info('Retracted papers cache loaded');
 }
 
 function buildPaperDetail(
