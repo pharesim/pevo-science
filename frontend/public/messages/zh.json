@@ -513,7 +513,7 @@
     "step1Description": "Hive Keychain 是一个安全管理您账户密钥的浏览器扩展。在 PEvO 上签署发表和评审操作时需要使用它。",
     "step1Link": "安装 Hive Keychain",
     "step2Title": "2. 创建 Hive 账户",
-    "step2Description": "您需要一个免费的 Hive 账户才能在 PEvO 上进行操作。如果您还没有账户，可以通过多个服务创建，或者加入我们的 <discord>Discord</discord>，我们将全程为您提供指导。",
+    "step2Description": "您需要一个免费的 Hive 账户才能在 PEvO 上进行操作。如果您还没有账户，可以通过多个服务创建，或者加入我们的 Discord，我们将全程为您提供指导。",
     "step2Link": "在 Hive 上创建账户",
     "step3Title": "3. 登录",
     "step3Description": "点击页面顶部的「登录」按钮。输入您的 Hive 用户名并签署验证请求以证明账户所有权。",

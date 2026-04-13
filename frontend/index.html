@@ -2786,11 +2786,17 @@
                   <p class="font-medium text-ink" x-text="$t('contact.emailUs')"></p>
                   <a href="mailto:support@pevo.science" class="text-pevo-teal hover:underline break-all">support@pevo.science</a>
                 </li>
-                <li>
+                <li x-show="githubIssuesUrl">
                   <p class="font-medium text-ink" x-text="$t('contact.githubIssues')"></p>
                   <p class="text-ink-muted text-xs mb-1" x-text="$t('contact.githubIssuesDesc')"></p>
-                  <a href="https://github.com/pharesim/pevo-science/issues" target="_blank" rel="noopener noreferrer"
+                  <a :href="githubIssuesUrl" target="_blank" rel="noopener noreferrer"
                      class="text-pevo-teal hover:underline">GitHub Issues</a>
+                </li>
+                <li x-show="discordUrl">
+                  <p class="font-medium text-ink" x-text="$t('contact.discordCommunity')"></p>
+                  <p class="text-ink-muted text-xs mb-1" x-text="$t('contact.discordDesc')"></p>
+                  <a :href="discordUrl" target="_blank" rel="noopener noreferrer"
+                     class="text-pevo-teal hover:underline">Discord</a>
                 </li>
               </ul>
             </div>
@@ -2833,9 +2839,10 @@
         <div>
           <p class="font-sans text-sm font-semibold text-ink mb-3" x-text="$t('footer.resources')"></p>
           <ul class="space-y-2 text-sm">
-            <li><a href="https://github.com/pharesim/pevo-science" target="_blank" rel="noopener noreferrer" class="text-ink-muted hover:text-pevo-teal no-underline">GitHub</a></li>
+            <li x-show="githubUrl"><a :href="githubUrl" target="_blank" rel="noopener noreferrer" class="text-ink-muted hover:text-pevo-teal no-underline">GitHub</a></li>
             <li><a href="https://hive.io" target="_blank" rel="noopener noreferrer" class="text-ink-muted hover:text-pevo-teal no-underline">Hive Network</a></li>
             <li><a href="https://hive-keychain.com/" target="_blank" rel="noopener noreferrer" class="text-ink-muted hover:text-pevo-teal no-underline">Hive Keychain</a></li>
+            <li x-show="discordUrl"><a :href="discordUrl" target="_blank" rel="noopener noreferrer" class="text-ink-muted hover:text-pevo-teal no-underline" x-text="$t('footer.discord')"></a></li>
           </ul>
         </div>
       </div>

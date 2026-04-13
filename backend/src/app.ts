@@ -1,5 +1,6 @@
 import express from 'express';
 import path from 'node:path';
+import fs from 'node:fs';
 import compression from 'compression';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -116,6 +117,27 @@ export function createApp() {
     });
   });
 
+  // Build the __PEVO_CONFIG__ script tag once at startup.
+  // This injects public env vars into the frontend without a separate API call.
+  const pevoConfig: Record<string, string> = {};
+  if (config.appTag) pevoConfig.appTag = config.appTag;
+  if (config.appVersion) pevoConfig.appVersion = config.appVersion;
+  if (config.discordUrl) pevoConfig.discordUrl = config.discordUrl;
+  if (config.githubUrl) pevoConfig.githubUrl = config.githubUrl;
+  if (config.ipfsGatewayUrl) pevoConfig.ipfsGateway = config.ipfsGatewayUrl;
+
+  const configScript = `<script>window.__PEVO_CONFIG__=${JSON.stringify(pevoConfig)};</script>`;
+
+  // Read index.html once and inject config before </head>
+  const indexPath = path.join(publicDir, 'index.html');
+  let indexHtml: string | null = null;
+  try {
+    const raw = fs.readFileSync(indexPath, 'utf-8');
+    indexHtml = raw.replace('</head>', `${configScript}\n</head>`);
+  } catch {
+    // index.html not built yet — will 404 on requests
+  }
+
   // SPA catch-all: serve index.html for any non-API GET request.
   // This enables client-side routing — the Alpine.js SPA handles its own routes.
   // API 404s are NOT intercepted; they fall through to the error handler.
@@ -123,9 +145,8 @@ export function createApp() {
     if (req.path.startsWith('/api/')) {
       return next();
     }
-    res.sendFile(path.join(publicDir, 'index.html'), (err) => {
-      if (err) next(); // index.html not found — fall through to error handler
-    });
+    if (!indexHtml) return next();
+    res.type('html').send(indexHtml);
   });
 
   // Error handler

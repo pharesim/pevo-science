@@ -10,3 +10,11 @@ export function getAppVersion() {
 export function getAppId() {
   return `${getAppTag()}/${getAppVersion()}`;
 }
+
+export function getDiscordUrl() {
+  return (window.__PEVO_CONFIG__ && window.__PEVO_CONFIG__.discordUrl) || '';
+}
+
+export function getGithubUrl() {
+  return (window.__PEVO_CONFIG__ && window.__PEVO_CONFIG__.githubUrl) || '';
+}

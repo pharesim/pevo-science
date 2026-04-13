@@ -87,4 +87,8 @@ export const config = {
   appTag,
   appVersion,
   appId: `${appTag}/${appVersion}`,
+
+  // Public URLs (injected into frontend via __PEVO_CONFIG__)
+  discordUrl: process.env.DISCORD_URL || '',
+  githubUrl: process.env.GITHUB_URL || '',
 };

@@ -513,7 +513,7 @@
     "step1Description": "Hive Keychain is a browser extension that securely manages your account keys. It is required to sign publications and reviews on PEvO.",
     "step1Link": "Install Hive Keychain",
     "step2Title": "2. Create a Hive Account",
-    "step2Description": "You need a free Hive account to interact with PEvO. If you do not have one, you can create one through several services, or join our <discord>Discord</discord> and we will walk you through it.",
+    "step2Description": "You need a free Hive account to interact with PEvO. If you do not have one, you can create one through several services, or join our Discord and we will walk you through it.",
     "step2Link": "Create Account on Hive",
     "step3Title": "3. Sign In",
     "step3Description": "Click the \"Sign In\" button in the header. Enter your Hive username and sign a challenge to prove account ownership.",

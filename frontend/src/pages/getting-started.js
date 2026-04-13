@@ -1,7 +1,9 @@
 import Alpine from 'alpinejs';
+import { getDiscordUrl } from '../config.js';
 
 export function initGettingStartedPage() {
   Alpine.data('gettingStartedPage', () => ({
+    discordUrl: getDiscordUrl(),
     steps: [
       { key: 'step1', link: { href: 'https://hive-keychain.com/', external: true, labelKey: 'gettingStarted.step1Link' }, dotClass: 'bg-pevo-teal' },
       { key: 'step2', link: { href: 'https://signup.hive.io/', external: true, labelKey: 'gettingStarted.step2Link' }, dotClass: 'bg-pevo-green' },

@@ -1,8 +1,12 @@
 import Alpine from 'alpinejs';
 import { submitContactForm } from '../api.js';
+import { getDiscordUrl, getGithubUrl } from '../config.js';
 
 export function initContactPage() {
   Alpine.data('contactPage', () => ({
+    discordUrl: getDiscordUrl(),
+    githubUrl: getGithubUrl(),
+    get githubIssuesUrl() { return this.githubUrl ? this.githubUrl + '/issues' : ''; },
     category: 'general',
     email: '',
     subject: '',

@@ -513,7 +513,7 @@
     "step1Description": "Hive Keychain er en browserudvidelse, der sikkert administrerer dine kontonøgler. Den er nødvendig for at signere publikationer og bedømmelser på PEvO.",
     "step1Link": "Installer Hive Keychain",
     "step2Title": "2. Opret en Hive-konto",
-    "step2Description": "Du skal bruge en gratis Hive-konto for at interagere med PEvO. Hvis du ikke har en, kan du oprette en via flere tjenester, eller tilmeld dig vores <discord>Discord</discord>, så guider vi dig igennem det.",
+    "step2Description": "Du skal bruge en gratis Hive-konto for at interagere med PEvO. Hvis du ikke har en, kan du oprette en via flere tjenester, eller tilmeld dig vores Discord, så guider vi dig igennem det.",
     "step2Link": "Opret konto på Hive",
     "step3Title": "3. Log ind",
     "step3Description": "Klik på \"Log ind\"-knappen i headeren. Indtast dit Hive-brugernavn og signer en udfordring for at bevise kontoejerskab.",
