@@ -1,6 +1,7 @@
 import { Router, type Request, type Response } from 'express';
 import { getPool, isHafAvailable } from '../db.js';
 import { hiveClient } from '../hive.js';
+import { config } from '../config.js';
 import { sendOk, sendError } from '../response.js';
 import { parseMeta, isPevoReview } from '../helpers.js';
 import { getAccreditedSet } from '../accreditation.js';
@@ -19,7 +20,7 @@ function buildReviewDetail(
   meta: Record<string, unknown>,
   parentTitle: string,
 ) {
-  const pevo = (meta.pevo || {}) as Record<string, unknown>;
+  const pevo = (meta[config.appTag] || {}) as Record<string, unknown>;
   const rating = pevo.rating as Record<string, number> | undefined;
   return {
     author: post.author,

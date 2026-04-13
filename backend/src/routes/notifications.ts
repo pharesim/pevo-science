@@ -57,7 +57,7 @@ async function fetchNotificationsFromHiveApi(
         if (isPevoReview(meta)) {
           actorsToCheck.add(author);
           candidates.push({ type: 'new_review', blockNum, timestamp, actor: author, data: opData, needsAccreditationCheck: true });
-        } else if (meta.pevo && (meta.pevo as Record<string, unknown>).type === 'comment') {
+        } else if (meta[config.appTag] && (meta[config.appTag] as Record<string, unknown>).type === 'comment') {
           actorsToCheck.add(author);
           candidates.push({ type: 'new_reply', blockNum, timestamp, actor: author, data: opData, needsAccreditationCheck: true });
         }

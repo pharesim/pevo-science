@@ -174,8 +174,8 @@ async function fetchCommentsFromHaf(
 // ──────────────────────────────────────────────
 
 function isPevoComment(meta: Record<string, unknown>): boolean {
-  const pevo = meta.pevo as Record<string, unknown> | undefined;
-  return pevo?.type === 'comment' && typeof meta.app === 'string' && (meta.app as string).startsWith(`${config.appTag}/`);
+  const appMeta = meta[config.appTag] as Record<string, unknown> | undefined;
+  return appMeta?.type === 'comment' && typeof meta.app === 'string' && (meta.app as string).startsWith(`${config.appTag}/`);
 }
 
 async function fetchCommentsFromHiveApi(

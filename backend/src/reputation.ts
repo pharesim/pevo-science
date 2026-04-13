@@ -393,8 +393,8 @@ export async function getUserStatsFromHiveApi(username: string): Promise<UserSta
 
     const reviews = discussions.filter((d) => {
       const meta = parseMeta(d.json_metadata);
-      const pevo = (meta.pevo || {}) as Record<string, unknown>;
-      return pevo.type === 'review';
+      const appMeta = (meta[config.appTag] || {}) as Record<string, unknown>;
+      return appMeta.type === 'review';
     });
 
     const firstPost = papers.length > 0

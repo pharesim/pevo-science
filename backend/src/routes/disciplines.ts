@@ -50,7 +50,7 @@ async function fetchDisciplinesFromHiveApi() {
     for (const d of discussions) {
       const meta = parseMeta(d.json_metadata);
       if (!isPevoPaper(meta)) continue;
-      const pevo = (meta.pevo || {}) as Record<string, unknown>;
+      const pevo = (meta[config.appTag] || {}) as Record<string, unknown>;
       const disc = pevo.discipline as string | undefined;
       if (disc) counts.set(disc, (counts.get(disc) || 0) + 1);
     }

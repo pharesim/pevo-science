@@ -219,14 +219,14 @@ async function fetchPapersFromHiveApi(req: Request): Promise<{ rows: unknown[]; 
     if (discipline) {
       papers = papers.filter((d) => {
         const meta = parseMeta(d.json_metadata);
-        return (meta.pevo as Record<string, unknown>)?.discipline === discipline;
+        return (meta[config.appTag] as Record<string, unknown>)?.discipline === discipline;
       });
     }
     if (req.query.language) {
       const lang = req.query.language as string;
       papers = papers.filter((d) => {
         const meta = parseMeta(d.json_metadata);
-        return (meta.pevo as Record<string, unknown>)?.language === lang;
+        return (meta[config.appTag] as Record<string, unknown>)?.language === lang;
       });
     }
 
