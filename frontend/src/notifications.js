@@ -92,7 +92,7 @@ export function initNotifications() {
             const merged = [...batch.events, ...this.events];
             const seen = new Set();
             this.events = merged.filter((e) => {
-              const key = `${e.block_num}_${e.type}_${'actor' in e ? e.actor : 'system'}`;
+              const key = `${e.block_num}_${e.type}_${'actor' in e ? e.actor : 'system'}_${e.permlink || ''}`;
               if (seen.has(key)) return false;
               seen.add(key);
               return true;

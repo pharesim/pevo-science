@@ -651,6 +651,8 @@ export class PevoEditor {
     if (markdown) {
       const html = markdownToHtml(markdown);
       this.editor.commands.setContent(html, false);
+    } else {
+      this.editor.commands.clearContent(false);
     }
   }
 
@@ -1106,9 +1108,12 @@ export class PevoEditor {
       const auth = Alpine?.store?.('auth');
 
       if (!auth?.username) {
-        const reader = new FileReader();
-        reader.onload = () => this._cmd()?.setImage({ src: reader.result }).run();
-        reader.readAsDataURL(file);
+        // Cannot upload without authentication — show error instead of embedding
+        // base64 data URLs which would exceed the Hive transaction size limit
+        try {
+          const Alpine = (await import('alpinejs')).default;
+          Alpine.store('toast')?.show('Please connect your wallet to upload images', 'error');
+        } catch { /* toast unavailable */ }
         return;
       }
 
@@ -1118,10 +1123,11 @@ export class PevoEditor {
         const ipfsUrl = `${gateway.replace(/\/+$/, '')}/${result.data.cid}`;
         this._cmd()?.setImage({ src: ipfsUrl }).run();
       }
-    } catch {
-      const reader = new FileReader();
-      reader.onload = () => this._cmd()?.setImage({ src: reader.result }).run();
-      reader.readAsDataURL(file);
+    } catch (err) {
+      try {
+        const Alpine = (await import('alpinejs')).default;
+        Alpine.store('toast')?.show(err?.message || 'Image upload failed', 'error');
+      } catch { /* toast unavailable */ }
     } finally {
       this.isUploading = false;
       if (imgBtn) imgBtn.textContent = 'Image';

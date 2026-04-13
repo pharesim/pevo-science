@@ -70,6 +70,16 @@ export function initSearchPage() {
 
     handleSubmit() {
       this.currentPage = 1;
+      // Update URL so searches are bookmarkable and back/forward works
+      const params = new URLSearchParams();
+      if (this.query.trim()) params.set('q', this.query.trim());
+      if (this.typeFilter !== 'all') params.set('type', this.typeFilter);
+      if (this.sourceFilter) params.set('source', this.sourceFilter);
+      if (this.disciplineFilter) params.set('discipline', this.disciplineFilter);
+      const qs = params.toString();
+      const locale = this.$store.i18n.locale;
+      const newUrl = `/${locale}/search${qs ? '?' + qs : ''}`;
+      window.history.pushState(null, '', newUrl);
       this.doSearch(this.query, 1);
     },
 

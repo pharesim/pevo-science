@@ -124,10 +124,18 @@ export function initAuth() {
         if (accRes.data) {
           this.isAccredited = accRes.data.is_accredited;
           this.accreditation = accRes.data.accreditation;
+          // Preserve existing session expiry if not explicitly provided
+          let resolvedExpiry = expiresAt;
+          if (!resolvedExpiry) {
+            try {
+              const saved = sessionStorage.getItem(SESSION_KEY);
+              if (saved) resolvedExpiry = JSON.parse(saved).expiresAt;
+            } catch { /* ignore */ }
+          }
           this._saveSession(
             token || this.token,
             username,
-            expiresAt || undefined,
+            resolvedExpiry,
             this.isAccredited,
             this.accreditation
           );
@@ -143,7 +151,7 @@ export function initAuth() {
           this._stopAccreditationPolling();
           return;
         }
-        this._checkAccreditation(this.username);
+        this._checkAccreditation(this.username, this.token);
       }, 60000);
     },
 

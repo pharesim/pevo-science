@@ -326,7 +326,16 @@ export function initEditPage() {
     handleSupplementaryFiles(event) {
       const files = Array.from(event.target.files || []);
       const remaining = 5 - this.supplementaryFiles.length - this.existingSupplementaryFiles.length;
+      if (remaining <= 0) {
+        Alpine.store('toast').show(this.$t('publish.maxSupplementaryFiles'), 'error');
+        event.target.value = '';
+        return;
+      }
       for (const file of files.slice(0, remaining)) {
+        if (file.size > 10 * 1024 * 1024) {
+          Alpine.store('toast').show(this.$t('publish.fileTooLarge', { name: file.name }), 'error');
+          continue;
+        }
         this.supplementaryFiles.push({
           file,
           fileName: file.name,

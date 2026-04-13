@@ -76,12 +76,16 @@ export function initReviewPage() {
     },
 
     async loadPaper() {
+      const author = this.author;
+      const permlink = this.permlink;
       this.loadingPaper = true;
       try {
-        const res = await fetchPaper(this.author, this.permlink);
+        const res = await fetchPaper(author, permlink);
+        if (this.author !== author || this.permlink !== permlink) return;
         this.paper = res.data;
-      } catch { /* non-critical */ }
-      this.loadingPaper = false;
+      } catch { /* non-critical */ } finally {
+        this.loadingPaper = false;
+      }
     },
 
     async handleConnect() {

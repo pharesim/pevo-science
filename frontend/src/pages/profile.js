@@ -21,17 +21,20 @@ export function initProfilePage() {
     },
 
     async loadProfile() {
+      const username = this.username;
       this.loading = true;
       this.error = null;
       try {
         const [profileRes, papersRes] = await Promise.all([
-          fetchProfile(this.username),
-          fetchProfilePapers(this.username).catch(() => ({ data: [] })),
+          fetchProfile(username),
+          fetchProfilePapers(username).catch(() => ({ data: [] })),
         ]);
+        if (this.username !== username) return;
         this.profile = profileRes.data;
         this.userPapers = papersRes.data || [];
-        if (this.username) document.title = `${this.username} — PEvO`;
+        if (username) document.title = `${username} — PEvO`;
       } catch (err) {
+        if (this.username !== username) return;
         this.error = err?.message || this.$t('profile.loadFailed');
       } finally {
         this.loading = false;

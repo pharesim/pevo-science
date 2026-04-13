@@ -125,14 +125,16 @@ export function initPaperDetailPage() {
 
     get averageRatings() {
       if (!this.paper?.reviews?.length) return null;
+      const reviewsWithRatings = this.paper.reviews.filter(r => r.rating);
+      if (!reviewsWithRatings.length) return null;
       const sum = { methodology: 0, novelty: 0, clarity: 0, significance: 0 };
-      for (const r of this.paper.reviews) {
-        sum.methodology += r.rating.methodology;
-        sum.novelty += r.rating.novelty;
-        sum.clarity += r.rating.clarity;
-        sum.significance += r.rating.significance;
+      for (const r of reviewsWithRatings) {
+        sum.methodology += r.rating.methodology || 0;
+        sum.novelty += r.rating.novelty || 0;
+        sum.clarity += r.rating.clarity || 0;
+        sum.significance += r.rating.significance || 0;
       }
-      const n = this.paper.reviews.length;
+      const n = reviewsWithRatings.length;
       return {
         methodology: Math.round((sum.methodology / n) * 10) / 10,
         novelty: Math.round((sum.novelty / n) * 10) / 10,
@@ -203,12 +205,16 @@ export function initPaperDetailPage() {
 
     async loadVersion(version) {
       if (version === this.currentVersion) return;
+      const author = this.author;
+      const permlink = this.permlink;
       this.loading = true;
       try {
-        const res = await fetchPaper(this.author, this.permlink, version);
+        const res = await fetchPaper(author, permlink, version);
+        if (this.author !== author || this.permlink !== permlink) return;
         this.paper = res.data;
         this.viewingVersion = version;
       } catch (err) {
+        if (this.author !== author || this.permlink !== permlink) return;
         this.$store.toast.show(err?.message || 'Failed to load version', 'error');
       } finally {
         this.loading = false;
