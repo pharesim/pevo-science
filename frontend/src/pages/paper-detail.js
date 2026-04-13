@@ -204,6 +204,31 @@ export function initPaperDetailPage() {
       }
     },
 
+    // Add to citation collection
+    addToCollection() {
+      if (!this.paper) return;
+      const key = 'pevo-citation-collection';
+      let collection = [];
+      try {
+        const raw = localStorage.getItem(key);
+        if (raw) collection = JSON.parse(raw);
+      } catch { collection = []; }
+
+      const entry = { author: this.paper.author, permlink: this.paper.permlink, title: this.paper.title };
+      const exists = collection.some(c => c.author === entry.author && c.permlink === entry.permlink);
+      if (exists) {
+        this.$store.toast.show(this.$t('citation.alreadyInCollection'), 'info');
+        return;
+      }
+      collection.push(entry);
+      try {
+        localStorage.setItem(key, JSON.stringify(collection));
+        this.$store.toast.show(this.$t('citation.addedToCollection'), 'success');
+      } catch {
+        this.$store.toast.show('Storage full', 'error');
+      }
+    },
+
     // Citation export
     async handleCitationExport(format) {
       this.citeLoading = true;

@@ -63,10 +63,13 @@ export function initPublishPage() {
     supplementaryFiles: [], // { file, fileName, fileSize, description, uploading, cid, error }
     citations: [], // { author, permlink, title, reputation_relevant }
 
+    dragIndex: null,
+
     draftRestored: false,
     draftSavedAt: null,
     _draftTimer: null,
     _initialLoadDone: false,
+    _storageListener: null,
 
     step: 'idle', // idle | hashing | uploading | broadcasting | success | error
     errorMessage: '',
@@ -162,6 +165,17 @@ export function initPublishPage() {
       }
       this._initialLoadDone = true;
 
+      // Merge citation collection from localStorage
+      this._mergeCitationCollection();
+
+      // Listen for cross-tab citation collection changes
+      this._storageListener = (e) => {
+        if (e.key === 'pevo-citation-collection' && e.newValue) {
+          this._mergeCitationCollection();
+        }
+      };
+      window.addEventListener('storage', this._storageListener);
+
       // Mount standalone editors (outside Alpine reactivity)
       this.$nextTick(() => {
         this._mountEditors();
@@ -210,6 +224,7 @@ export function initPublishPage() {
       if (this._draftTimer) { clearTimeout(this._draftTimer); this._draftTimer = null; }
       if (this._abstractEditor) { this._abstractEditor.destroy(); this._abstractEditor = null; }
       if (this._bodyEditor) { this._bodyEditor.destroy(); this._bodyEditor = null; }
+      if (this._storageListener) { window.removeEventListener('storage', this._storageListener); this._storageListener = null; }
     },
 
     _scheduleDraftSave() {
@@ -306,6 +321,38 @@ export function initPublishPage() {
 
     removeCitation(index) {
       this.citations.splice(index, 1);
+    },
+
+    _mergeCitationCollection() {
+      const key = 'pevo-citation-collection';
+      try {
+        const raw = localStorage.getItem(key);
+        if (!raw) return;
+        const collection = JSON.parse(raw);
+        if (!Array.isArray(collection) || collection.length === 0) return;
+        for (const entry of collection) {
+          const exists = this.citations.some(c => c.author === entry.author && c.permlink === entry.permlink);
+          if (!exists) {
+            this.citations.push({ author: entry.author, permlink: entry.permlink, title: entry.title || '', reputation_relevant: true });
+          }
+        }
+        localStorage.removeItem(key);
+      } catch { /* ignore */ }
+    },
+
+    dragCitationStart(index) {
+      this.dragIndex = index;
+    },
+
+    dragCitationOver(event, index) {
+      event.preventDefault();
+    },
+
+    dragCitationDrop(index) {
+      if (this.dragIndex === null || this.dragIndex === index) { this.dragIndex = null; return; }
+      const item = this.citations.splice(this.dragIndex, 1)[0];
+      this.citations.splice(index, 0, item);
+      this.dragIndex = null;
     },
 
     handlePdfChange(e) {

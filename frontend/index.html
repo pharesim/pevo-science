@@ -756,6 +756,11 @@
                       <button type="button" class="block w-full text-left px-4 py-2 text-sm text-ink hover:bg-parchment-warm transition-colors rounded-b-lg" @click="handleCitationExport('ris')" x-text="$t('citation.risFormat')"></button>
                     </div>
                   </div>
+                  <!-- Add to citation collection -->
+                  <button type="button" class="btn-secondary text-sm flex items-center gap-1.5" @click="addToCollection()">
+                    <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor"><path d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" /></svg>
+                    <span x-text="$t('citation.addToCollection')"></span>
+                  </button>
                   <!-- Edit button (author/co-author) -->
                   <template x-if="isOwnPaper && !paper.is_retracted">
                     <a :href="'/edit/' + (paper.canonical_author || paper.author) + '/' + (paper.canonical_permlink || paper.permlink)"
@@ -1357,21 +1362,30 @@
             <p class="text-xs text-ink-muted mb-3" x-text="$t('publish.citationsHint')"></p>
             <template x-if="citations.length > 0">
               <div class="space-y-3">
-                <template x-for="(cit, i) in citations" :key="i">
-                  <div class="p-3 bg-parchment rounded-lg space-y-2">
-                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                      <input type="text" class="select-control text-xs" :placeholder="$t('publish.citationAuthor')" :value="cit.author" @input="updateCitation(i, 'author', $event.target.value)" />
-                      <input type="text" class="select-control text-xs" :placeholder="$t('publish.citationPermlink')" :value="cit.permlink" @input="updateCitation(i, 'permlink', $event.target.value)" />
-                      <input type="text" class="select-control text-xs" :placeholder="$t('publish.citationTitle')" :value="cit.title" @input="updateCitation(i, 'title', $event.target.value)" />
+                <template x-for="(cit, i) in citations" :key="'pub-cit-' + i">
+                  <div class="p-3 bg-parchment rounded-lg space-y-2 flex gap-2"
+                       draggable="true"
+                       @dragstart="dragCitationStart(i)"
+                       @dragover="dragCitationOver($event, i)"
+                       @drop="dragCitationDrop(i)">
+                    <div class="flex items-center cursor-grab text-ink-muted hover:text-ink shrink-0 pt-1" title="Drag to reorder">
+                      <svg class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path d="M7 2a2 2 0 10.001 4.001A2 2 0 007 2zm0 6a2 2 0 10.001 4.001A2 2 0 007 8zm0 6a2 2 0 10.001 4.001A2 2 0 007 14zm6-8a2 2 0 10-.001-4.001A2 2 0 0013 6zm0 2a2 2 0 10.001 4.001A2 2 0 0013 8zm0 6a2 2 0 10.001 4.001A2 2 0 0013 14z" /></svg>
                     </div>
-                    <div class="flex items-center justify-between">
-                      <label class="flex items-center gap-2 text-xs text-ink-muted cursor-pointer">
-                        <input type="checkbox" class="rounded border-parchment-dark text-pevo-teal focus:ring-pevo-teal" :checked="cit.reputation_relevant" @change="toggleCitationRelevance(i)" />
-                        <span x-text="$t('publish.citationReputationRelevant')"></span>
-                      </label>
-                      <button type="button" class="text-ink-muted hover:text-ink px-1" @click="removeCitation(i)">
-                        <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd" /></svg>
-                      </button>
+                    <div class="flex-1 space-y-2">
+                      <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                        <input type="text" class="select-control text-xs" :placeholder="$t('publish.citationAuthor')" :value="cit.author" @input="updateCitation(i, 'author', $event.target.value)" />
+                        <input type="text" class="select-control text-xs" :placeholder="$t('publish.citationPermlink')" :value="cit.permlink" @input="updateCitation(i, 'permlink', $event.target.value)" />
+                        <input type="text" class="select-control text-xs" :placeholder="$t('publish.citationTitle')" :value="cit.title" @input="updateCitation(i, 'title', $event.target.value)" />
+                      </div>
+                      <div class="flex items-center justify-between">
+                        <label class="flex items-center gap-2 text-xs text-ink-muted cursor-pointer">
+                          <input type="checkbox" class="rounded border-parchment-dark text-pevo-teal focus:ring-pevo-teal" :checked="cit.reputation_relevant" @change="toggleCitationRelevance(i)" />
+                          <span x-text="$t('publish.citationReputationRelevant')"></span>
+                        </label>
+                        <button type="button" class="text-ink-muted hover:text-ink px-1" @click="removeCitation(i)">
+                          <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd" /></svg>
+                        </button>
+                      </div>
                     </div>
                   </div>
                 </template>
@@ -1619,21 +1633,30 @@
                 <p class="text-xs text-ink-muted mb-3" x-text="$t('publish.citationsHint')"></p>
                 <template x-if="citations.length > 0">
                   <div class="space-y-3">
-                    <template x-for="(cit, i) in citations" :key="'cit-' + i">
-                      <div class="p-3 bg-parchment rounded-lg space-y-2">
-                        <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                          <input type="text" class="select-control text-xs" :placeholder="$t('publish.citationAuthor')" :value="cit.author" @input="updateCitation(i, 'author', $event.target.value)" />
-                          <input type="text" class="select-control text-xs" :placeholder="$t('publish.citationPermlink')" :value="cit.permlink" @input="updateCitation(i, 'permlink', $event.target.value)" />
-                          <input type="text" class="select-control text-xs" :placeholder="$t('publish.citationTitle')" :value="cit.title" @input="updateCitation(i, 'title', $event.target.value)" />
+                    <template x-for="(cit, i) in citations" :key="'edit-cit-' + i">
+                      <div class="p-3 bg-parchment rounded-lg space-y-2 flex gap-2"
+                           draggable="true"
+                           @dragstart="dragCitationStart(i)"
+                           @dragover="dragCitationOver($event, i)"
+                           @drop="dragCitationDrop(i)">
+                        <div class="flex items-center cursor-grab text-ink-muted hover:text-ink shrink-0 pt-1" title="Drag to reorder">
+                          <svg class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path d="M7 2a2 2 0 10.001 4.001A2 2 0 007 2zm0 6a2 2 0 10.001 4.001A2 2 0 007 8zm0 6a2 2 0 10.001 4.001A2 2 0 007 14zm6-8a2 2 0 10-.001-4.001A2 2 0 0013 6zm0 2a2 2 0 10.001 4.001A2 2 0 0013 8zm0 6a2 2 0 10.001 4.001A2 2 0 0013 14z" /></svg>
                         </div>
-                        <div class="flex items-center justify-between">
-                          <label class="flex items-center gap-2 text-xs text-ink-muted cursor-pointer">
-                            <input type="checkbox" class="rounded border-parchment-dark text-pevo-teal focus:ring-pevo-teal" :checked="cit.reputation_relevant" @change="toggleCitationRelevance(i)" />
-                            <span x-text="$t('publish.citationReputationRelevant')"></span>
-                          </label>
-                          <button type="button" class="text-ink-muted hover:text-ink px-1" @click="removeCitation(i)">
-                            <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd" /></svg>
-                          </button>
+                        <div class="flex-1 space-y-2">
+                          <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                            <input type="text" class="select-control text-xs" :placeholder="$t('publish.citationAuthor')" :value="cit.author" @input="updateCitation(i, 'author', $event.target.value)" />
+                            <input type="text" class="select-control text-xs" :placeholder="$t('publish.citationPermlink')" :value="cit.permlink" @input="updateCitation(i, 'permlink', $event.target.value)" />
+                            <input type="text" class="select-control text-xs" :placeholder="$t('publish.citationTitle')" :value="cit.title" @input="updateCitation(i, 'title', $event.target.value)" />
+                          </div>
+                          <div class="flex items-center justify-between">
+                            <label class="flex items-center gap-2 text-xs text-ink-muted cursor-pointer">
+                              <input type="checkbox" class="rounded border-parchment-dark text-pevo-teal focus:ring-pevo-teal" :checked="cit.reputation_relevant" @change="toggleCitationRelevance(i)" />
+                              <span x-text="$t('publish.citationReputationRelevant')"></span>
+                            </label>
+                            <button type="button" class="text-ink-muted hover:text-ink px-1" @click="removeCitation(i)">
+                              <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd" /></svg>
+                            </button>
+                          </div>
                         </div>
                       </div>
                     </template>

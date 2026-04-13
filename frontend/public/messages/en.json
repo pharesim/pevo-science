@@ -650,7 +650,10 @@
     "risFormat": "RIS (download .ris)",
     "copiedToClipboard": "APA citation copied to clipboard.",
     "downloadStarted": "Citation file download started.",
-    "exportFailed": "Failed to export citation."
+    "exportFailed": "Failed to export citation.",
+    "addToCollection": "Cite in your paper",
+    "addedToCollection": "Added to citation collection.",
+    "alreadyInCollection": "This paper is already in your citation collection."
   },
   "metadataRestored": {
     "title": "Paper metadata was modified by an external edit",
