@@ -705,28 +705,61 @@ async function resolveVersionsFromHaf(
   return versions.map(({ body: _body, json_metadata: _meta, post_author: _pa, post_permlink: _pp, ...entry }) => entry);
 }
 
-async function getRetractionInfo(author: string, permlink: string): Promise<{ is_retracted: boolean; retraction_reason?: string | null; retraction_timestamp?: string | null }> {
+interface RetractionEntry {
+  author: string;
+  permlink: string;
+  reason: string | null;
+  timestamp: string | null;
+}
+
+async function loadRetractedPapers(): Promise<RetractionEntry[]> {
   const pool = getPool();
-  if (pool) {
-    try {
-      const result = await pool.query(
-        `SELECT cj.json::jsonb ->> 'reason' AS reason, cj.json::jsonb ->> 'timestamp' AS ts
-         FROM ${T.customJson} cj
-         WHERE cj.custom_id = $3
-           AND cj.json::jsonb ->> 'action' = 'retract_paper'
-           AND cj.json::jsonb ->> 'author' = $1
-           AND cj.json::jsonb ->> 'permlink' = $2
-         ORDER BY cj.block_num DESC LIMIT 1`,
-        [author, permlink, config.appTag],
-      );
-      if (result.rows.length > 0) {
-        return { is_retracted: true, retraction_reason: result.rows[0].reason, retraction_timestamp: result.rows[0].ts };
-      }
-    } catch (err) {
-      logger.error({ err }, 'HAF retraction info query failed');
+  if (!pool) return [];
+
+  const result = await pool.query(
+    `SELECT
+       cj.json::jsonb ->> 'author' AS author,
+       cj.json::jsonb ->> 'permlink' AS permlink,
+       cj.json::jsonb ->> 'reason' AS reason,
+       cj.json::jsonb ->> 'timestamp' AS ts
+     FROM ${T.customJson} cj
+     WHERE cj.custom_id = $1
+       AND cj.json::jsonb ->> 'action' = 'retract_paper'`,
+    [config.appTag],
+  );
+  return result.rows.map((r: Record<string, unknown>) => ({
+    author: r.author as string,
+    permlink: r.permlink as string,
+    reason: (r.reason as string) || null,
+    timestamp: (r.ts as string) || null,
+  }));
+}
+
+async function getRetractedPapers(): Promise<RetractionEntry[]> {
+  return hafCache.getOrSet('retracted-papers', loadRetractedPapers, 5 * 60_000, true);
+}
+
+async function getRetractionInfo(author: string, permlink: string): Promise<{ is_retracted: boolean; retraction_reason?: string | null; retraction_timestamp?: string | null }> {
+  try {
+    const allRetracted = await getRetractedPapers();
+    const entry = allRetracted.find((r) => r.author === author && r.permlink === permlink);
+    if (entry) {
+      return { is_retracted: true, retraction_reason: entry.reason, retraction_timestamp: entry.timestamp };
     }
+  } catch (err) {
+    logger.error({ err }, 'Failed to load retracted papers');
   }
   return { is_retracted: false, retraction_reason: null, retraction_timestamp: null };
+}
+
+/** Preload retracted papers cache at startup. */
+export async function preloadRetractionCache(): Promise<void> {
+  try {
+    const entries = await getRetractedPapers();
+    logger.info({ count: entries.length }, 'Retracted papers cache preloaded');
+  } catch (err) {
+    logger.warn({ err }, 'Failed to preload retracted papers cache');
+  }
 }
 
 function buildPaperDetail(

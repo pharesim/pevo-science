@@ -9,6 +9,7 @@ import { startIpfsCleanup, stopIpfsCleanup } from './ipfs-cleanup.js';
 import { startBatchReputation, stopBatchReputation } from './reputation-batch.js';
 import { disconnectRedis } from './redis.js';
 import { checkHiveNodes } from './hive.js';
+import { preloadRetractionCache } from './routes/papers.js';
 import { logger } from './logger.js';
 import type { Server } from 'http';
 
@@ -49,7 +50,8 @@ initAppDb()
       // Start nightly batch reputation computation (v3 voter weight convergence)
       startBatchReputation();
 
-      // Non-blocking: check Hive API node connectivity at startup
+      // Non-blocking: preload caches and check connectivity at startup
+      preloadRetractionCache();
       checkHiveNodes();
     });
   })
