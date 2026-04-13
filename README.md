@@ -102,10 +102,11 @@ pevo/
 
 - **Hive-native:** Posts are Hive posts, comments are Hive comments, votes are Hive votes. No custom token.
 - **Accredited-only data:** Only votes, reviews, and citations from accredited researchers count in reputation and rankings. Unaccredited users can read and vote on Hive (affecting rewards) but are filtered from PEvO's scientific discussion view.
-- **Reputation is computed, not stored:** Scores are derived from on-chain data via SQL. Anyone running the same queries gets the same results.
+- **Reputation is computed, not stored:** Scores are derived from on-chain data via SQL. Anyone running the same queries gets the same results. Voter reputation weighting creates a quality feedback loop; anti-sybil measures include activity-gating, downvote penalties, and citation caps.
 - **Privacy for reviewers:** Anonymous reviews posted via a proxy account with encrypted mappings and a 6-month TTL.
 - **Progressive decentralization:** Accreditation starts centralized (email verification + ORCID), designed to move to web-of-trust and DAO governance.
 - **Preprint bridge:** Import existing papers from arXiv, PubMed, bioRxiv, medRxiv, Semantic Scholar, or ResearchGate by pasting a URL or identifier. The paper stays on its original platform; PEvO creates a reference for peer review.
+- **Structured evaluation:** Accredited reviewers choose from 6 vote levels (Strong endorsement to Strong reject). Non-accredited users can still upvote/downvote simply. Citation relevance is togglable per-citation.
 
 ## API Overview
 
