@@ -6,40 +6,16 @@
  * at `reputation:batch:{username}` (no TTL, overwritten each run).
  */
 
-import { getPool, isHafAvailable } from './db.js';
+import { isHafAvailable } from './db.js';
 import { getRedis } from './redis.js';
-import { config } from './config.js';
 import { logger } from './logger.js';
 import { getAllAccreditedAccounts, getAccreditedSet } from './accreditation.js';
 import { getUserStatsFromHaf, getUserStatsFromHiveApi, computeReputation, getBatchReputationMap, getActiveAccounts } from './reputation.js';
-import { T } from './hafsql.js';
 
 const DEFAULT_INTERVAL_MS = 24 * 60 * 60_000; // 24 hours
 const CONVERGENCE_ITERATIONS = 3;
 
 let batchTimer: ReturnType<typeof setInterval> | null = null;
-
-/**
- * Get all usernames that have published or reviewed on PEvO.
- */
-async function getActiveUsers(): Promise<string[]> {
-  const pool = getPool();
-  if (!pool) return [];
-
-  try {
-    const result = await pool.query(
-      `SELECT DISTINCT c.author
-       FROM ${T.comments} c
-       WHERE c.json_metadata ->> 'app' LIKE $1
-         AND (c.json_metadata -> $2 ->> 'type') IN ('paper', 'review')`,
-      [`${config.appTag}/%`, config.appTag],
-    );
-    return result.rows.map((r: { author: string }) => r.author);
-  } catch (err) {
-    logger.error({ err }, 'Failed to query active users for batch reputation');
-    return [];
-  }
-}
 
 /**
  * Run one full batch computation cycle with convergence iterations.
@@ -54,15 +30,15 @@ export async function runBatchComputation(): Promise<void> {
     return;
   }
 
-  const users = await getActiveUsers();
-  if (users.length === 0) {
+  const activeAccounts = await getActiveAccounts();
+  if (activeAccounts.size === 0) {
     logger.info('No active users found — batch computation skipped');
     return;
   }
 
+  const users = [...activeAccounts];
   const accreditedSet = await getAllAccreditedAccounts();
-  const activeAccounts = await getActiveAccounts();
-  logger.info({ userCount: users.length, accreditedCount: accreditedSet.size, activeCount: activeAccounts.size }, 'Batch reputation: users loaded');
+  logger.info({ userCount: users.length, accreditedCount: accreditedSet.size }, 'Batch reputation: users loaded');
 
   // Convergence loop: each iteration uses the previous iteration's scores as voter weights
   let reputationMap = await getBatchReputationMap();
