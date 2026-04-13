@@ -635,3 +635,30 @@ export async function getReputationScores(usernames: string[]): Promise<Map<stri
 
   return result;
 }
+
+/**
+ * Fast batch-only reputation lookup. Reads Redis batch scores only —
+ * returns 0 for users not yet computed. No HAF queries, no blocking.
+ * Use this for list endpoints where speed matters more than completeness.
+ */
+export async function getBatchReputationScores(usernames: string[]): Promise<Map<string, number>> {
+  const unique = [...new Set(usernames)];
+  const result = new Map<string, number>();
+  if (unique.length === 0) return result;
+
+  const redis = getRedis();
+  if (!redis) return result;
+
+  try {
+    const keys = unique.map((u) => `reputation:batch:${u}`);
+    const values = await redis.mget(keys);
+    for (let i = 0; i < unique.length; i++) {
+      if (values[i] !== null) {
+        result.set(unique[i], Number(values[i]));
+      }
+    }
+  } catch {
+    // Redis unavailable — return empty map, all scores default to 0
+  }
+  return result;
+}

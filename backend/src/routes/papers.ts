@@ -17,13 +17,14 @@ import {
   type SortField,
 } from '../helpers.js';
 import { getAccreditedSet, getAllAccreditedAccounts } from '../accreditation.js';
-import { getReputationScores } from '../reputation.js';
+import { getReputationScores, getBatchReputationScores } from '../reputation.js';
 import { hafCache } from '../cache.js';
 import { logger } from '../logger.js';
 import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';
 import { rateLimit, byAccount } from '../middleware/rateLimit.js';
 import {
   T,
+  accreditedVoteCount,
   activeAccreditationsCteBody,
   retractedPapersCteBody,
   buildWith,
@@ -63,19 +64,15 @@ async function fetchPapersFromHaf(req: Request): Promise<{ rows: unknown[]; tota
   const includeRetracted = req.query.include_retracted === 'true'; // default false
   const source = req.query.source as string | undefined; // 'native', 'bridge', or omit for both
 
-  // Pre-fetch cached accredited set to avoid expensive CTE on every query
-  const allAccredited = await getAllAccreditedAccounts();
-  const accreditedArr = [...allAccredited];
+  // Build CTEs with parameterized appTag
+  const cte = buildWith(1, activeAccreditationsCteBody, retractedPapersCteBody);
+  let paramIdx = cte.nextIdx;
+  const cteParams: unknown[] = [...cte.params];
 
-  // Build retracted papers CTE only (lightweight); accreditation uses cached set
-  const retractedCte = buildWith(1, retractedPapersCteBody);
-  let paramIdx = retractedCte.nextIdx;
-  const baseParams: unknown[] = [...retractedCte.params];
-
-  // appTag params for WHERE conditions (shared by count and data queries)
+  // appTag params for WHERE conditions
   const appTagParam = `$${paramIdx++}`;
   const appLikeParam = `$${paramIdx++}`;
-  baseParams.push(config.appTag, `${config.appTag}/%`);
+  cteParams.push(config.appTag, `${config.appTag}/%`);
 
   const typeFilter = source === 'native'
     ? `(c.json_metadata -> ${appTagParam} ->> 'type') = 'paper'`
@@ -108,8 +105,7 @@ async function fetchPapersFromHaf(req: Request): Promise<{ rows: unknown[]; tota
     filterParams.push(language);
   }
   if (accreditedOnly) {
-    // Use a param for the accredited array in the WHERE clause
-    conditions.push(`c.author = ANY($${paramIdx}::text[])`);
+    conditions.push(`c.author IN (SELECT account FROM active_accreditations)`);
   }
   if (!includeRetracted) {
     conditions.push(`NOT EXISTS (SELECT 1 FROM retracted_papers rp WHERE rp.author = c.author AND rp.permlink = c.permlink)`);
@@ -118,12 +114,7 @@ async function fetchPapersFromHaf(req: Request): Promise<{ rows: unknown[]; tota
   conditions.push(`(c.json_metadata -> ${appTagParam} -> 'continues') IS NULL`);
 
   const where = conditions.join(' AND ');
-  // Count query params: base + filter + (accredited array if filtering by it)
-  const countParams = [...baseParams, ...filterParams];
-  if (accreditedOnly) {
-    countParams.push(accreditedArr);
-    paramIdx++; // advance past the accredited param used in WHERE
-  }
+  const params = [...cteParams, ...filterParams];
 
   const sortMap: Record<SortField, string> = {
     date: 'c.created',
@@ -137,25 +128,14 @@ async function fetchPapersFromHaf(req: Request): Promise<{ rows: unknown[]; tota
     const limitParam = `$${paramIdx++}`;
     const offsetParam = `$${paramIdx++}`;
 
-    // Accredited array param for vote count subquery (appended after limit/offset)
-    const accreditedVoteParam = `$${paramIdx++}`;
-
-    // Use cached accredited array for vote count instead of CTE-based correlated subquery
-    const voteCountSql = `(SELECT count(*)::int FROM ${T.votes} v
-      WHERE v.author = c.author AND v.permlink = c.permlink AND v.rshares > 0
-      AND v.voter = ANY(${accreditedVoteParam}::text[]))`;
-
-    // Data query params: count params + limit + offset + accredited array for votes
-    const dataParams = [...countParams, limit, offset, accreditedArr];
-
     const [countResult, dataResult] = await Promise.all([
       pool.query(
-        `${retractedCte.sql}
+        `${cte.sql}
          SELECT count(*)::int AS total FROM ${T.comments} c WHERE ${where}`,
-        countParams,
+        params,
       ),
       pool.query(
-        `${retractedCte.sql}
+        `${cte.sql}
          SELECT
           c.author,
           c.permlink,
@@ -163,7 +143,7 @@ async function fetchPapersFromHaf(req: Request): Promise<{ rows: unknown[]; tota
           LEFT(c.body, 300) AS abstract,
           c.json_metadata,
           c.created,
-          ${voteCountSql} AS net_votes,
+          ${accreditedVoteCount('c.author', 'c.permlink')} AS net_votes,
           0 AS review_count,
           0 AS citation_count,
           0 AS author_reputation
@@ -171,16 +151,17 @@ async function fetchPapersFromHaf(req: Request): Promise<{ rows: unknown[]; tota
         WHERE ${where}
         ORDER BY ${orderBy}
         LIMIT ${limitParam} OFFSET ${offsetParam}`,
-        dataParams,
+        [...params, limit, offset],
       ),
     ]);
 
     const total = countResult.rows[0]?.total ?? 0;
     const authors = dataResult.rows.map((r: Record<string, unknown>) => r.author as string);
-    const [accreditedSet, reputationMap] = await Promise.all([
-      getAccreditedSet(authors),
-      getReputationScores(authors),
-    ]);
+
+    // Use batch reputation scores only (no on-demand HAF computation).
+    // Returns 0 for users not yet in the batch — profile page has full scores.
+    const batchScores = await getBatchReputationScores(authors);
+    const accreditedSet = await getAccreditedSet(authors);
 
     const rows = dataResult.rows.map((r: Record<string, unknown>) => {
       const meta = parseMeta(r.json_metadata);
@@ -198,7 +179,7 @@ async function fetchPapersFromHaf(req: Request): Promise<{ rows: unknown[]; tota
         net_votes: r.net_votes,
         review_count: (r.review_count as number) ?? 0,
         citation_count: (r.citation_count as number) ?? 0,
-        author_reputation: reputationMap.get(r.author as string) ?? 0,
+        author_reputation: batchScores.get(r.author as string) ?? 0,
         is_accredited: accreditedSet.has(r.author as string),
       };
     });
@@ -257,15 +238,15 @@ async function fetchPapersFromHiveApi(req: Request): Promise<{ rows: unknown[]; 
       );
     });
 
-    // Enrich with accreditation and reputation
+    // Enrich with accreditation and batch reputation (no on-demand computation)
     const authorNames = rows.map((r) => r.author);
-    const [accreditedSet, reputationMap] = await Promise.all([
+    const [accreditedSet, batchScores] = await Promise.all([
       getAccreditedSet(authorNames),
-      getReputationScores(authorNames),
+      getBatchReputationScores(authorNames),
     ]);
     for (const row of rows) {
       row.is_accredited = accreditedSet.has(row.author);
-      row.author_reputation = reputationMap.get(row.author) ?? 0;
+      row.author_reputation = batchScores.get(row.author) ?? 0;
     }
 
     return { rows, total: rows.length };
