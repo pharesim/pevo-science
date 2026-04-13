@@ -112,7 +112,7 @@ export function initReviewPage() {
             rating: this.ratings,
           });
         } else {
-          const reviewPermlink = `re-${this.author}-${slugify(this.permlink)}-${Date.now().toString(36)}`;
+          const reviewPermlink = `re-${slugify(this.author)}-${slugify(this.permlink)}-${Date.now().toString(36)}`;
           const paperVersion = this.paper?.versions?.[this.paper.versions.length - 1]?.version_number ?? 1;
           const APP_TAG = getAppTag();
           const APP_ID = getAppId();

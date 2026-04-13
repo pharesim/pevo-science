@@ -151,7 +151,8 @@ router.post('/anonymous', verifyHiveSignature, anonReviewLimiter, validate(anony
 
   // Generate unique permlink
   const timestamp = Date.now();
-  const permlink = `re-${paper_author}-${paper_permlink}-anon-${timestamp}`;
+  const safeAuthor = paper_author.replace(/[^a-z0-9-]/g, '-');
+  const permlink = `re-${safeAuthor}-${paper_permlink}-anon-${timestamp}`;
 
   const jsonMetadata = {
     app: config.appId,
