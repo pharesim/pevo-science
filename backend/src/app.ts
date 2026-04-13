@@ -1,6 +1,7 @@
 import express from 'express';
 import path from 'node:path';
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import compression from 'compression';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -44,16 +45,26 @@ export function createApp() {
   // Response compression (gzip/br for responses > 1KB)
   app.use(compression({ threshold: 1024 }));
 
+  // Build inline config script content for CSP hash computation
+  const pevoConfig: Record<string, string> = {};
+  if (config.appTag) pevoConfig.appTag = config.appTag;
+  if (config.appVersion) pevoConfig.appVersion = config.appVersion;
+  if (config.discordUrl) pevoConfig.discordUrl = config.discordUrl;
+  if (config.githubUrl) pevoConfig.githubUrl = config.githubUrl;
+  if (config.ipfsGatewayUrl) pevoConfig.ipfsGateway = config.ipfsGatewayUrl;
+  const configScriptContent = `window.__PEVO_CONFIG__=${JSON.stringify(pevoConfig)};`;
+  const configScriptHash = crypto.createHash('sha256').update(configScriptContent).digest('base64');
+
   // Security headers
   app.use(helmet({
     contentSecurityPolicy: {
       directives: {
         defaultSrc: ["'self'"],
-        scriptSrc: ["'self'", "'unsafe-eval'"], // Alpine.js needs unsafe-eval for x-data expressions
+        scriptSrc: ["'self'", "'unsafe-eval'", `'sha256-${configScriptHash}'`], // Alpine.js needs unsafe-eval; hash for inline config
         styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
         fontSrc: ["'self'", 'data:', 'https://fonts.gstatic.com'],
         imgSrc: ["'self'", 'data:', 'https:'],
-        connectSrc: ["'self'", ...config.hiveApiNodes],
+        connectSrc: ["'self'", ...config.hiveApiNodes, 'https://pubpeer.com'],
         upgradeInsecureRequests: null, // HTTPS enforced by reverse proxy, not CSP
       },
     },
@@ -117,16 +128,8 @@ export function createApp() {
     });
   });
 
-  // Build the __PEVO_CONFIG__ script tag once at startup.
-  // This injects public env vars into the frontend without a separate API call.
-  const pevoConfig: Record<string, string> = {};
-  if (config.appTag) pevoConfig.appTag = config.appTag;
-  if (config.appVersion) pevoConfig.appVersion = config.appVersion;
-  if (config.discordUrl) pevoConfig.discordUrl = config.discordUrl;
-  if (config.githubUrl) pevoConfig.githubUrl = config.githubUrl;
-  if (config.ipfsGatewayUrl) pevoConfig.ipfsGateway = config.ipfsGatewayUrl;
-
-  const configScript = `<script>window.__PEVO_CONFIG__=${JSON.stringify(pevoConfig)};</script>`;
+  // Inline config script tag (content + hash computed above for CSP)
+  const configScript = `<script>${configScriptContent}</script>`;
 
   // Read index.html once and inject config before </head>
   const indexPath = path.join(publicDir, 'index.html');
