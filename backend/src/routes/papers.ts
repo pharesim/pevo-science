@@ -896,6 +896,10 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string) {
   try {
     const accreditedAccounts = await getAllAccreditedAccounts();
     const accreditedArr = [...accreditedAccounts];
+    // Include anonymous posting account so anonymous reviews appear
+    const reviewAuthors = config.hiveAnonAccount
+      ? [...accreditedArr, config.hiveAnonAccount]
+      : accreditedArr;
 
     const [voteResult, reviewsResult, citationResult, versions, retraction] = await Promise.all([
       // Accredited vote count (excluding self-votes)
@@ -906,7 +910,7 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string) {
            AND v.voter != v.author`,
         [author, permlink, accreditedArr],
       ),
-      // Reviews from accredited reviewers with accredited vote count (excluding self-votes)
+      // Reviews from accredited reviewers (+ anon account) with accredited vote count
       pool.query(
         `SELECT c.author, c.permlink, c.body, c.json_metadata, c.created,
                 (SELECT count(*)::int FROM ${T.votes} v
@@ -915,11 +919,11 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string) {
                    AND v.voter != v.author) AS net_votes
          FROM ${T.comments} c
          WHERE c.parent_author = $1 AND c.parent_permlink = $2
-           AND c.author = ANY($5::text[])
+           AND c.author = ANY($6::text[])
            AND (c.json_metadata -> $3 ->> 'type') = 'review'
            AND c.json_metadata ->> 'app' LIKE $4
          ORDER BY c.created DESC`,
-        [author, permlink, config.appTag, `${config.appTag}/%`, accreditedArr],
+        [author, permlink, config.appTag, `${config.appTag}/%`, accreditedArr, reviewAuthors],
       ),
       // Citation count from accredited authors
       pool.query(
@@ -972,7 +976,7 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string) {
         created: r.created as string,
         net_votes: r.net_votes as number,
         reviewer_reputation: 0,
-        is_accredited: accreditedAccounts.has(reviewAuthor),
+        is_accredited: accreditedAccounts.has(reviewAuthor) || (pevo.is_anonymous === true),
         reviewed_version: reviewedVersion,
         outdated,
         addressed_by_version: addressedByVersion,
@@ -1008,7 +1012,8 @@ async function fetchEnrichmentFromHiveApi(author: string, permlink: string) {
     const reviews = (replies || [])
       .filter((r: Record<string, unknown>) => {
         const rMeta = parseMeta(r.json_metadata);
-        return isPevoReview(rMeta) && accreditedAccounts.has(r.author as string);
+        const rAuthor = r.author as string;
+        return isPevoReview(rMeta) && (accreditedAccounts.has(rAuthor) || rAuthor === config.hiveAnonAccount);
       })
       .map((r: Record<string, unknown>) => {
         const rMeta = parseMeta(r.json_metadata);
@@ -1023,7 +1028,7 @@ async function fetchEnrichmentFromHiveApi(author: string, permlink: string) {
           created: r.created as string,
           net_votes: r.net_votes as number,
           reviewer_reputation: 0,
-          is_accredited: true,
+          is_accredited: accreditedAccounts.has(r.author as string) || (pevo.is_anonymous === true),
           reviewed_version: (pevo.reviewed_version as number) || 1,
         };
       });
