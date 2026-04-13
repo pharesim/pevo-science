@@ -178,8 +178,8 @@ export async function getUserStatsFromHaf(username: string): Promise<UserStats |
     const accreditedSet = await getAllAccreditedAccounts();
     const accreditedArr = [...accreditedSet];
 
-    // Query 1: Papers with their votes and review quality
-    const papersResult = await pool.query(
+    // Run all 3 HAF queries + reputation map + active accounts in parallel
+    const papersQuery = pool.query(
       `WITH user_papers AS (
          SELECT c.author, c.permlink, c.created, c.json_metadata
          FROM ${T.comments} c
@@ -225,8 +225,7 @@ export async function getUserStatsFromHaf(username: string): Promise<UserStats |
       [username, accreditedArr, config.appTag, `${config.appTag}/%`],
     );
 
-    // Query 2: Reviews with their votes
-    const reviewsResult = await pool.query(
+    const reviewsQuery = pool.query(
       `SELECT ur.permlink, ur.created,
          COALESCE(json_agg(json_build_object('voter', v.voter, 'weight', v.weight))
            FILTER (WHERE v.voter IS NOT NULL), '[]') AS votes
@@ -243,8 +242,7 @@ export async function getUserStatsFromHaf(username: string): Promise<UserStats |
       [username, accreditedArr, config.appTag, `${config.appTag}/%`],
     );
 
-    // Query 3: Citations of the user's work with citing paper quality data
-    const citationsResult = await pool.query(
+    const citationsQuery = pool.query(
       `WITH citing_papers AS (
          SELECT citing.author AS citing_author,
            citing.permlink AS citing_permlink,
@@ -299,9 +297,10 @@ export async function getUserStatsFromHaf(username: string): Promise<UserStats |
       [username, accreditedArr, config.appTag, `${config.appTag}/%`],
     );
 
-    // Build batch reputation map and active accounts for computing citing paper quality
-    const reputationMap = await getBatchReputationMap();
-    const activeSet = await getActiveAccounts();
+    // Await all queries and lookups in parallel
+    const [papersResult, reviewsResult, citationsResult, reputationMap, activeSet] = await Promise.all([
+      papersQuery, reviewsQuery, citationsQuery, getBatchReputationMap(), getActiveAccounts(),
+    ]);
 
     // Parse papers
     const papers: PaperItem[] = papersResult.rows.map((row: any) => ({

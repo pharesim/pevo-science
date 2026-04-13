@@ -14,6 +14,8 @@ import {
   getUserStatsFromHaf,
   getUserStatsFromHiveApi,
   computeReputation,
+  getBatchReputationMap,
+  getActiveAccounts,
 } from '../reputation.js';
 import { hafCache } from '../cache.js';
 import { T } from '../hafsql.js';
@@ -81,11 +83,13 @@ router.get('/:username', async (req: Request, res: Response) => {
   const { username } = req.params;
 
   const data = await hafCache.getOrSet(`profile:${username}`, async () => {
-    // Fire all independent lookups in parallel (account check, accreditation, stats)
-    const [accountResult, accreditation, hafStats] = await Promise.all([
+    // Fire all independent lookups in parallel (account check, accreditation, stats, reputation data)
+    const [accountResult, accreditation, hafStats, reputationMap, activeAccounts] = await Promise.all([
       hiveClient.database.getAccounts([username]),
       getAccreditation(username),
       isHafAvailable() ? getUserStatsFromHaf(username) : Promise.resolve(null),
+      getBatchReputationMap(),
+      getActiveAccounts(),
     ]);
 
     const [account] = accountResult;
@@ -93,7 +97,7 @@ router.get('/:username', async (req: Request, res: Response) => {
 
     const isAccredited = !!accreditation;
     const stats = hafStats ?? await getUserStatsFromHiveApi(username);
-    const reputation = await computeReputation(stats, isAccredited);
+    const reputation = await computeReputation(stats, isAccredited, undefined, reputationMap, activeAccounts);
 
     return {
       username,
