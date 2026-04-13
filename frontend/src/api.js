@@ -71,8 +71,9 @@ export function fetchPaperBatchCounts(papers) {
   return request(`/papers/batch-counts?ids=${encodeURIComponent(ids)}`);
 }
 
-export function fetchPaper(author, permlink) {
-  return request(`/papers/${encodeURIComponent(author)}/${encodeURIComponent(permlink)}`);
+export function fetchPaper(author, permlink, version) {
+  const q = version ? `?version=${version}` : '';
+  return request(`/papers/${encodeURIComponent(author)}/${encodeURIComponent(permlink)}${q}`);
 }
 
 export function fetchPaperEnrichment(author, permlink) {

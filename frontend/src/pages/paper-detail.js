@@ -25,6 +25,9 @@ export function initPaperDetailPage() {
     // PubPeer
     pubpeerData: null,
 
+    // Version switching
+    viewingVersion: null,
+
     // Bridge sync
     syncLoading: false,
 
@@ -172,6 +175,7 @@ export function initPaperDetailPage() {
     },
 
     get currentVersion() {
+      if (this.viewingVersion) return this.viewingVersion;
       if (!this.paper?.versions?.length) return 1;
       return this.paper.versions[this.paper.versions.length - 1]?.version_number ?? 1;
     },
@@ -184,6 +188,20 @@ export function initPaperDetailPage() {
     get latestVersion() {
       const sorted = this.sortedVersions;
       return sorted.length ? sorted[sorted.length - 1].version_number : 1;
+    },
+
+    async loadVersion(version) {
+      if (version === this.currentVersion) return;
+      this.loading = true;
+      try {
+        const res = await fetchPaper(this.author, this.permlink, version);
+        this.paper = res.data;
+        this.viewingVersion = version;
+      } catch (err) {
+        this.$store.toast.show(err?.message || 'Failed to load version', 'error');
+      } finally {
+        this.loading = false;
+      }
     },
 
     // Citation export

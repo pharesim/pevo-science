@@ -685,11 +685,12 @@
                 <div class="flex flex-wrap items-center gap-2">
                   <span class="text-xs font-medium text-ink-muted"><span x-text="$t('versions.label')"></span>:</span>
                   <template x-for="v in sortedVersions" :key="v.version_number">
-                    <span class="inline-flex items-center gap-1.5 text-xs px-3 py-1 rounded-full border"
+                    <button class="inline-flex items-center gap-1.5 text-xs px-3 py-1 rounded-full border cursor-pointer"
                           :class="v.version_number === currentVersion
                             ? 'bg-pevo-teal text-white border-pevo-teal'
-                            : 'bg-parchment-warm text-ink-muted border-parchment-dark'"
-                          :title="$t('versions.versionWithDate', { number: String(v.version_number), date: formatShortDate(v.created) })">
+                            : 'bg-parchment-warm text-ink-muted border-parchment-dark hover:border-pevo-teal'"
+                          :title="$t('versions.versionWithDate', { number: String(v.version_number), date: formatShortDate(v.created) })"
+                          @click="loadVersion(v.version_number)">
                       <span x-text="'v' + v.version_number"></span>
                       <span class="hidden sm:inline text-[0.65rem] opacity-75" x-text="formatShortDate(v.created)"></span>
                       <template x-if="!v.is_content_revision">
@@ -701,7 +702,7 @@
                               :class="v.version_number === currentVersion ? 'text-white/80' : 'text-pevo-teal'"
                               x-text="$t('versions.latest')"></span>
                       </template>
-                    </span>
+                    </button>
                   </template>
                 </div>
               </div>
