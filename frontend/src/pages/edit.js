@@ -362,7 +362,18 @@ export function initEditPage() {
     },
 
     removeCitation(index) {
-      this.citations.splice(index, 1);
+      const removed = this.citations.splice(index, 1)[0];
+      if (removed?.author && removed?.permlink) {
+        try {
+          const key = 'pevo-citation-collection';
+          const raw = localStorage.getItem(key);
+          if (raw) {
+            const collection = JSON.parse(raw).filter(c => !(c.author === removed.author && c.permlink === removed.permlink));
+            if (collection.length > 0) localStorage.setItem(key, JSON.stringify(collection));
+            else localStorage.removeItem(key);
+          }
+        } catch { /* ignore */ }
+      }
     },
 
     _mergeCitationCollection() {
