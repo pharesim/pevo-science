@@ -69,7 +69,8 @@ export function initPaperDetailPage() {
         if (this.author !== author || this.permlink !== permlink) return;
         this.paper = res.data;
         if (this.paper.title) document.title = `${this.paper.title} — PEvO`;
-        // Load enrichment (DOI) lazily
+        // Load enrichment lazily (reviews, votes, versions, DOI)
+        this.loadEnrichment();
         this.loadDoi();
       } catch (err) {
         if (this.author !== author || this.permlink !== permlink) return;
@@ -78,6 +79,30 @@ export function initPaperDetailPage() {
           : (err?.message || this.$t('paperDetail.errorLoadingTitle'));
       } finally {
         this.loading = false;
+      }
+    },
+
+    async loadEnrichment() {
+      if (!this.paper) return;
+      const author = this.author;
+      const permlink = this.permlink;
+      try {
+        const res = await fetchPaperEnrichment(author, permlink);
+        if (this.author !== author || this.permlink !== permlink) return;
+        const d = res.data;
+        this.paper.reviews = d.reviews || [];
+        this.paper.net_votes = d.net_votes ?? this.paper.net_votes;
+        this.paper.citation_count = d.citation_count ?? this.paper.citation_count;
+        this.paper.is_accredited = d.is_accredited ?? this.paper.is_accredited;
+        if (d.versions) this.paper.versions = d.versions;
+        if (d.is_retracted !== undefined) {
+          this.paper.is_retracted = d.is_retracted;
+          this.paper.retraction_reason = d.retraction_reason;
+          this.paper.retraction_timestamp = d.retraction_timestamp;
+        }
+        this.enrichmentLoaded = true;
+      } catch {
+        // Enrichment is non-critical; paper still shows without it
       }
     },
 
