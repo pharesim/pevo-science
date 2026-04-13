@@ -240,7 +240,10 @@
     "submissionFailed": "فشل تقديم المراجعة",
     "accreditationRequired": "يجب أن تكون معتمدًا لتقديم المراجعات.",
     "getAccredited": "الحصول على الاعتماد",
-    "cannotReviewOwn": "لا يمكنك مراجعة ورقتك البحثية."
+    "cannotReviewOwn": "لا يمكنك مراجعة ورقتك البحثية.",
+    "commentsToggle": "{count, plural, one {تعليق واحد} other {# تعليقات}}",
+    "noComments": "لا توجد تعليقات بعد",
+    "replyToReview": "الرد على هذه المراجعة..."
   },
   "accreditation": {
     "title": "اعتماد الباحثين",

@@ -240,7 +240,10 @@
     "submissionFailed": "Falha na submissao da revisao",
     "accreditationRequired": "Você precisa ser credenciado para enviar revisões.",
     "getAccredited": "Obter credenciamento",
-    "cannotReviewOwn": "Não pode avaliar o seu próprio artigo."
+    "cannotReviewOwn": "Não pode avaliar o seu próprio artigo.",
+    "commentsToggle": "{count, plural, one {# comentário} other {# comentários}}",
+    "noComments": "Ainda sem comentários",
+    "replyToReview": "Responder a esta revisão..."
   },
   "accreditation": {
     "title": "Credenciamento de Pesquisador",

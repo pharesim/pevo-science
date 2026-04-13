@@ -240,7 +240,10 @@
     "submissionFailed": "Değerlendirme gönderilemedi",
     "accreditationRequired": "Değerlendirme göndermek için akredite olmanız gerekir.",
     "getAccredited": "Akredite olun",
-    "cannotReviewOwn": "Kendi makalenizi değerlendiremezsiniz."
+    "cannotReviewOwn": "Kendi makalenizi değerlendiremezsiniz.",
+    "commentsToggle": "{count, plural, one {# yorum} other {# yorum}}",
+    "noComments": "Henüz yorum yok",
+    "replyToReview": "Bu incelemeye yanıt ver..."
   },
   "accreditation": {
     "title": "Araştırmacı Akreditasyonu",

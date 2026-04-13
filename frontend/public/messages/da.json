@@ -240,7 +240,10 @@
     "submissionFailed": "Indsendelse af bedømmelse mislykkedes",
     "accreditationRequired": "Du skal være akkrediteret for at indsende bedømmelser.",
     "getAccredited": "Bliv akkrediteret",
-    "cannotReviewOwn": "Du kan ikke anmelde din egen artikel."
+    "cannotReviewOwn": "Du kan ikke anmelde din egen artikel.",
+    "commentsToggle": "{count, plural, one {# kommentar} other {# kommentarer}}",
+    "noComments": "Ingen kommentarer endnu",
+    "replyToReview": "Svar på denne anmeldelse..."
   },
   "accreditation": {
     "title": "Forskerakkreditering",

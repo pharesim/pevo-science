@@ -240,7 +240,10 @@
     "submissionFailed": "Review submission failed",
     "accreditationRequired": "You need to be accredited to submit reviews.",
     "getAccredited": "Get accredited",
-    "cannotReviewOwn": "You cannot review your own paper."
+    "cannotReviewOwn": "You cannot review your own paper.",
+    "commentsToggle": "{count, plural, one {# comment} other {# comments}}",
+    "noComments": "No comments yet",
+    "replyToReview": "Reply to this review..."
   },
   "accreditation": {
     "title": "Researcher Accreditation",

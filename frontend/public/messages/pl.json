@@ -240,7 +240,10 @@
     "submissionFailed": "Przesyłanie recenzji nie powiodło się",
     "accreditationRequired": "Musisz być akredytowany, aby przesyłać recenzje.",
     "getAccredited": "Uzyskaj akredytację",
-    "cannotReviewOwn": "Nie możesz recenzować własnego artykułu."
+    "cannotReviewOwn": "Nie możesz recenzować własnego artykułu.",
+    "commentsToggle": "{count, plural, one {# komentarz} other {# komentarzy}}",
+    "noComments": "Brak komentarzy",
+    "replyToReview": "Odpowiedz na tę recenzję..."
   },
   "accreditation": {
     "title": "Akredytacja naukowca",

@@ -240,7 +240,10 @@
     "submissionFailed": "Einreichung der Begutachtung fehlgeschlagen",
     "accreditationRequired": "Sie müssen akkreditiert sein, um Gutachten einzureichen.",
     "getAccredited": "Akkreditierung beantragen",
-    "cannotReviewOwn": "Sie können Ihre eigene Publikation nicht begutachten."
+    "cannotReviewOwn": "Sie können Ihre eigene Publikation nicht begutachten.",
+    "commentsToggle": "{count, plural, one {# Kommentar} other {# Kommentare}}",
+    "noComments": "Noch keine Kommentare",
+    "replyToReview": "Auf diese Bewertung antworten..."
   },
   "accreditation": {
     "title": "Akkreditierung für Forschende",

@@ -240,7 +240,10 @@
     "submissionFailed": "הגשת הביקורת נכשלה",
     "accreditationRequired": "עליך להיות מוסמך כדי להגיש ביקורות.",
     "getAccredited": "קבל הסמכה",
-    "cannotReviewOwn": "אינך יכול לסקור את המאמר שלך."
+    "cannotReviewOwn": "אינך יכול לסקור את המאמר שלך.",
+    "commentsToggle": "{count, plural, one {תגובה אחת} other {# תגובות}}",
+    "noComments": "אין תגובות עדיין",
+    "replyToReview": "הגב לסקירה זו..."
   },
   "accreditation": {
     "title": "הסמכת חוקרים",

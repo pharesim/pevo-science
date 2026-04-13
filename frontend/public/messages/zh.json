@@ -240,7 +240,10 @@
     "submissionFailed": "评审提交失败",
     "accreditationRequired": "您需要获得认证才能提交评审。",
     "getAccredited": "获取认证",
-    "cannotReviewOwn": "您不能评审自己的论文。"
+    "cannotReviewOwn": "您不能评审自己的论文。",
+    "commentsToggle": "{count, plural, one {# 条评论} other {# 条评论}}",
+    "noComments": "暂无评论",
+    "replyToReview": "回复此评审..."
   },
   "accreditation": {
     "title": "研究人员认证",

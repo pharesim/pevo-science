@@ -240,7 +240,10 @@
     "submissionFailed": "Invio della revisione fallito",
     "accreditationRequired": "Devi essere accreditato per inviare revisioni.",
     "getAccredited": "Ottieni l'accreditamento",
-    "cannotReviewOwn": "Non puoi recensire il tuo stesso articolo."
+    "cannotReviewOwn": "Non puoi recensire il tuo stesso articolo.",
+    "commentsToggle": "{count, plural, one {# commento} other {# commenti}}",
+    "noComments": "Nessun commento ancora",
+    "replyToReview": "Rispondi a questa recensione..."
   },
   "accreditation": {
     "title": "Accreditamento Ricercatori",

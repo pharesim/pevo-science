@@ -240,7 +240,10 @@
     "submissionFailed": "Inskickning av recension misslyckades",
     "accreditationRequired": "Du måste vara ackrediterad för att skicka in recensioner.",
     "getAccredited": "Bli ackrediterad",
-    "cannotReviewOwn": "Du kan inte granska din egen artikel."
+    "cannotReviewOwn": "Du kan inte granska din egen artikel.",
+    "commentsToggle": "{count, plural, one {# kommentar} other {# kommentarer}}",
+    "noComments": "Inga kommentarer ännu",
+    "replyToReview": "Svara på denna granskning..."
   },
   "accreditation": {
     "title": "Forskarackreditering",

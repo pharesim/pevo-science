@@ -240,7 +240,10 @@
     "submissionFailed": "ارسال داوری ناموفق بود",
     "accreditationRequired": "برای ارسال داوری باید اعتبارسنجی شده باشید.",
     "getAccredited": "دریافت اعتبارسنجی",
-    "cannotReviewOwn": "شما نمی‌توانید مقاله خود را بررسی کنید."
+    "cannotReviewOwn": "شما نمی‌توانید مقاله خود را بررسی کنید.",
+    "commentsToggle": "{count, plural, one {# نظر} other {# نظر}}",
+    "noComments": "هنوز نظری ثبت نشده",
+    "replyToReview": "پاسخ به این بررسی..."
   },
   "accreditation": {
     "title": "اعتبارسنجی پژوهشگر",

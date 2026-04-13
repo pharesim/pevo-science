@@ -240,7 +240,10 @@
     "submissionFailed": "La soumission de l'évaluation a échoué",
     "accreditationRequired": "Vous devez être accrédité pour soumettre des évaluations.",
     "getAccredited": "Obtenir l'accréditation",
-    "cannotReviewOwn": "Vous ne pouvez pas évaluer votre propre article."
+    "cannotReviewOwn": "Vous ne pouvez pas évaluer votre propre article.",
+    "commentsToggle": "{count, plural, one {# commentaire} other {# commentaires}}",
+    "noComments": "Aucun commentaire pour l'instant",
+    "replyToReview": "Répondre à cet avis..."
   },
   "accreditation": {
     "title": "Accréditation des chercheurs",

@@ -240,7 +240,10 @@
     "submissionFailed": "Odeslání recenze selhalo",
     "accreditationRequired": "Pro odesílání recenzí musíte být akreditováni.",
     "getAccredited": "Získat akreditaci",
-    "cannotReviewOwn": "Nemůžete recenzovat vlastní článek."
+    "cannotReviewOwn": "Nemůžete recenzovat vlastní článek.",
+    "commentsToggle": "{count, plural, one {# komentář} other {# komentářů}}",
+    "noComments": "Zatím žádné komentáře",
+    "replyToReview": "Odpovědět na tuto recenzi..."
   },
   "accreditation": {
     "title": "Akreditace výzkumníka",

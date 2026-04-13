@@ -240,7 +240,10 @@
     "submissionFailed": "Indienen van review mislukt",
     "accreditationRequired": "U moet geaccrediteerd zijn om reviews in te dienen.",
     "getAccredited": "Accreditatie aanvragen",
-    "cannotReviewOwn": "U kunt uw eigen artikel niet reviewen."
+    "cannotReviewOwn": "U kunt uw eigen artikel niet reviewen.",
+    "commentsToggle": "{count, plural, one {# reactie} other {# reacties}}",
+    "noComments": "Nog geen reacties",
+    "replyToReview": "Reageer op deze beoordeling..."
   },
   "accreditation": {
     "title": "Accreditatie voor onderzoekers",

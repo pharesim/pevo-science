@@ -240,7 +240,10 @@
     "submissionFailed": "Error al enviar la revisión",
     "accreditationRequired": "Necesitas estar acreditado para enviar revisiones.",
     "getAccredited": "Obtener acreditación",
-    "cannotReviewOwn": "No puede revisar su propio artículo."
+    "cannotReviewOwn": "No puede revisar su propio artículo.",
+    "commentsToggle": "{count, plural, one {# comentario} other {# comentarios}}",
+    "noComments": "Aún no hay comentarios",
+    "replyToReview": "Responder a esta revisión..."
   },
   "accreditation": {
     "title": "Acreditación de investigadores",
