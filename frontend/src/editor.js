@@ -1106,7 +1106,7 @@ export class PevoEditor {
 
       const result = await uploadToIpfs(file);
       if (result.data?.cid) {
-        const gateway = (window.__PEVO_CONFIG__?.ipfsGateway) || 'https://gateway.pinata.cloud/ipfs/';
+        const gateway = (window.__PEVO_CONFIG__?.ipfsGateway) || '/api/ipfs/';
         const ipfsUrl = `${gateway.replace(/\/+$/, '')}/${result.data.cid}`;
         this._cmd()?.setImage({ src: ipfsUrl }).run();
       }

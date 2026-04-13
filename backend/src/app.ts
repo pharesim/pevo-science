@@ -51,7 +51,11 @@ export function createApp() {
   if (config.appVersion) pevoConfig.appVersion = config.appVersion;
   if (config.discordUrl) pevoConfig.discordUrl = config.discordUrl;
   if (config.githubUrl) pevoConfig.githubUrl = config.githubUrl;
-  if (config.ipfsGatewayUrl) pevoConfig.ipfsGateway = config.ipfsGatewayUrl;
+  // Only inject ipfsGateway if it's a public URL (not an internal Docker hostname).
+  // When unset, the frontend falls back to /api/ipfs/ which proxies through the backend.
+  if (config.ipfsGatewayUrl && /^https?:\/\/(?!ipfs[:/])/.test(config.ipfsGatewayUrl)) {
+    pevoConfig.ipfsGateway = config.ipfsGatewayUrl;
+  }
   const configScriptContent = `window.__PEVO_CONFIG__=${JSON.stringify(pevoConfig)};`;
   const configScriptHash = crypto.createHash('sha256').update(configScriptContent).digest('base64');
 

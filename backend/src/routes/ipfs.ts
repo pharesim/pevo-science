@@ -2,9 +2,11 @@ import { Router, type Request, type Response } from 'express';
 import { config } from '../config.js';
 import { sendOk, sendError } from '../response.js';
 import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';
-import { rateLimit, byAccount } from '../middleware/rateLimit.js';
+import { rateLimit, byAccount, byIp } from '../middleware/rateLimit.js';
 import { getAccreditation } from './profile.js';
 import { getRedis } from '../redis.js';
+import { getPool, isHafAvailable } from '../db.js';
+import { T } from '../hafsql.js';
 import { logger } from '../logger.js';
 import multer from 'multer';
 
@@ -85,7 +87,7 @@ interface PinResult {
   size: number;
 }
 
-async function pinToIpfs(buffer: Buffer, filename: string): Promise<PinResult> {
+async function pinToKubo(buffer: Buffer, filename: string): Promise<PinResult> {
   const formData = new FormData();
   formData.append('file', new Blob([new Uint8Array(buffer)]), filename);
 
@@ -97,11 +99,52 @@ async function pinToIpfs(buffer: Buffer, filename: string): Promise<PinResult> {
 
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(`IPFS API error: ${response.status} ${text}`);
+    throw new Error(`Kubo API error: ${response.status} ${text}`);
   }
 
   const data = await response.json() as { Hash: string; Size: string };
   return { cid: data.Hash, size: parseInt(data.Size, 10) };
+}
+
+async function pinToPinata(buffer: Buffer, filename: string): Promise<PinResult> {
+  const formData = new FormData();
+  formData.append('file', new Blob([new Uint8Array(buffer)]), filename);
+  formData.append('pinataMetadata', JSON.stringify({ name: filename }));
+
+  const response = await fetch('https://api.pinata.cloud/pinning/pinFileToIPFS', {
+    method: 'POST',
+    headers: {
+      pinata_api_key: config.pinataApiKey,
+      pinata_secret_api_key: config.pinataSecretKey,
+    },
+    body: formData,
+    signal: AbortSignal.timeout(30_000),
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Pinata API error: ${response.status} ${text}`);
+  }
+
+  const data = await response.json() as { IpfsHash: string; PinSize: number };
+  return { cid: data.IpfsHash, size: data.PinSize };
+}
+
+async function pinToIpfs(buffer: Buffer, filename: string): Promise<PinResult> {
+  if (config.ipfsApiUrl) {
+    try {
+      return await pinToKubo(buffer, filename);
+    } catch (err) {
+      if (!config.pinataApiKey) throw err;
+      logger.warn({ err: (err as Error).message }, 'Kubo upload failed, falling back to Pinata');
+    }
+  }
+
+  if (config.pinataApiKey && config.pinataSecretKey) {
+    return await pinToPinata(buffer, filename);
+  }
+
+  throw new Error('No IPFS backend available — configure IPFS_API_URL or Pinata keys');
 }
 
 // ──────────────────────────────────────────────
@@ -135,8 +178,8 @@ router.post('/upload', verifyHiveSignature, ipfsUploadLimiter, (req: Request, re
       return sendError(res, 403, 'FORBIDDEN', 'Only accredited researchers can upload files');
     }
 
-    if (!config.ipfsApiUrl) {
-      return sendError(res, 500, 'INTERNAL_ERROR', 'IPFS node not configured');
+    if (!config.ipfsApiUrl && !config.pinataApiKey) {
+      return sendError(res, 500, 'INTERNAL_ERROR', 'IPFS not configured — set IPFS_API_URL or Pinata keys');
     }
 
     try {
@@ -167,6 +210,101 @@ router.post('/upload', verifyHiveSignature, ipfsUploadLimiter, (req: Request, re
       sendError(res, 500, 'INTERNAL_ERROR', 'Failed to pin file to IPFS');
     }
   });
+});
+
+// ──────────────────────────────────────────────
+// GET /api/ipfs/:cid — validated IPFS gateway proxy
+// ──────────────────────────────────────────────
+
+const CID_RE = /^(Qm[1-9A-HJ-NP-Za-km-z]{44}|bafy[a-z2-7]{55,})$/;
+
+const ipfsDownloadLimiter = rateLimit({ name: 'ipfs-download', windowMs: 60_000, max: 60, keyFn: byIp });
+
+async function cidIsKnown(cid: string): Promise<boolean> {
+  // Check Redis pending uploads first (fast path)
+  const redis = getRedis();
+  if (redis) {
+    const pending = await redis.get(`ipfs:pending:${cid}`);
+    if (pending) return true;
+  }
+
+  // Check HAF for published references
+  if (!isHafAvailable()) return false;
+  const pool = getPool();
+  if (!pool) return false;
+
+  const result = await pool.query(
+    `SELECT 1 FROM ${T.comments} c
+     WHERE c.json_metadata @> $1::jsonb
+        OR c.json_metadata @> $2::jsonb
+        OR EXISTS (
+          SELECT 1 FROM jsonb_array_elements_text(c.json_metadata->'image') img
+          WHERE img LIKE '%' || $3 || '%'
+        )
+     LIMIT 1`,
+    [
+      JSON.stringify({ pevo: { ipfs_cid: cid } }),
+      JSON.stringify({ pevo: { supplementary_files: [{ cid }] } }),
+      cid,
+    ],
+  );
+
+  return result.rowCount !== null && result.rowCount > 0;
+}
+
+router.get('/:cid', ipfsDownloadLimiter, async (req: Request, res: Response) => {
+  const { cid } = req.params;
+
+  if (!CID_RE.test(cid)) {
+    return sendError(res, 400, 'BAD_REQUEST', 'Invalid CID format');
+  }
+
+  try {
+    const known = await cidIsKnown(cid);
+    if (!known) {
+      return sendError(res, 404, 'NOT_FOUND', 'Unknown CID');
+    }
+
+    // Build the gateway URL — if the configured URL already contains /ipfs/,
+    // append the CID directly; otherwise add /ipfs/ before the CID.
+    function gatewayUrlFor(cid: string): string | null {
+      if (!config.ipfsGatewayUrl) return null;
+      const base = config.ipfsGatewayUrl.replace(/\/+$/, '');
+      return base.endsWith('/ipfs') ? `${base}/${cid}` : `${base}/ipfs/${cid}`;
+    }
+
+    // Proxy from gateway if available
+    const gwUrl = gatewayUrlFor(cid);
+    if (gwUrl) {
+      const upstream = await fetch(gwUrl, {
+        signal: AbortSignal.timeout(30_000),
+      });
+
+      if (upstream.ok && upstream.body) {
+        const contentType = upstream.headers.get('content-type');
+        if (contentType) res.setHeader('Content-Type', contentType);
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+
+        const reader = upstream.body.getReader();
+        const pump = async () => {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) { res.end(); return; }
+            if (!res.write(value)) {
+              await new Promise<void>((resolve) => res.once('drain', resolve));
+            }
+          }
+        };
+        await pump();
+        return;
+      }
+    }
+
+    sendError(res, 502, 'INTERNAL_ERROR', 'IPFS gateway unavailable');
+  } catch (err) {
+    logger.error({ err: (err as Error).message, cid }, 'IPFS download proxy failed');
+    sendError(res, 502, 'INTERNAL_ERROR', 'Failed to fetch from IPFS');
+  }
 });
 
 export default router;

@@ -15,8 +15,6 @@ export function validateConfig(): void {
     { key: 'PEVO_ADMIN_POSTING_KEY', value: config.pevoAdminPostingKey, required: false, description: `Posting key for admin account (${config.hiveAdminAccount}) — accreditation & bridge posting disabled without it` },
     { key: 'PEVO_ANON_POSTING_KEY', value: config.pevoAnonPostingKey, required: false, description: `Posting key for anon account (${config.hiveAnonAccount}) — anonymous reviews disabled without it` },
     { key: 'ANON_REVIEW_ENCRYPTION_KEY', value: config.anonReviewEncryptionKey, required: false, description: 'Anonymous review encryption — anonymous reviews disabled without it' },
-    { key: 'PINATA_API_KEY', value: config.pinataApiKey, required: false, description: 'IPFS pinning' },
-    { key: 'PINATA_SECRET_KEY', value: config.pinataSecretKey, required: false, description: 'IPFS pinning' },
     { key: 'SMTP_HOST', value: config.smtpHost, required: false, description: 'Email verification' },
   ];
 

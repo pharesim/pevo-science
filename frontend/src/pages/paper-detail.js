@@ -148,7 +148,7 @@ export function initPaperDetailPage() {
     },
 
     get ipfsGateway() {
-      return (window.__PEVO_CONFIG__?.ipfsGateway) || 'https://gateway.pinata.cloud/ipfs/';
+      return (window.__PEVO_CONFIG__?.ipfsGateway) || '/api/ipfs/';
     },
 
     get ipfsUrl() {
