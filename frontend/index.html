@@ -1558,6 +1558,93 @@
                 <p class="text-xs text-ink-muted mt-2" x-text="$t('publish.markdownHint')"></p>
               </div>
 
+              <!-- Supplementary Files -->
+              <div class="card">
+                <label class="text-sm font-semibold text-ink mb-2 block" x-text="$t('publish.supplementaryFiles')"></label>
+                <p class="text-xs text-ink-muted mb-3" x-text="$t('publish.supplementaryFilesHint')"></p>
+
+                <!-- Existing files (read-only) -->
+                <template x-if="existingSupplementaryFiles.length > 0">
+                  <div class="space-y-2 mb-3">
+                    <template x-for="(sf, i) in existingSupplementaryFiles" :key="'existing-sf-' + i">
+                      <div class="flex items-center gap-2 p-3 bg-parchment rounded-md border border-parchment-dark opacity-75">
+                        <span class="text-sm font-medium text-ink truncate" x-text="sf.filename"></span>
+                        <span class="text-xs text-pevo-green shrink-0">&#10003;</span>
+                        <span class="text-xs text-ink-muted" x-text="sf.description || ''"></span>
+                      </div>
+                    </template>
+                  </div>
+                </template>
+
+                <!-- New files -->
+                <template x-if="supplementaryFiles.length > 0">
+                  <div class="space-y-2 mb-3">
+                    <template x-for="(sf, i) in supplementaryFiles" :key="'new-sf-' + i">
+                      <div class="flex flex-col gap-2 p-3 bg-parchment rounded-md border border-parchment-dark">
+                        <div class="flex items-center justify-between gap-2">
+                          <div class="flex items-center gap-2 min-w-0">
+                            <span class="text-sm font-medium text-ink truncate" x-text="sf.fileName"></span>
+                            <span class="text-xs text-ink-muted shrink-0" x-text="sf.fileSize + ' MB'"></span>
+                            <template x-if="sf.cid">
+                              <span class="text-xs text-pevo-green shrink-0">&#10003;</span>
+                            </template>
+                            <template x-if="sf.uploading">
+                              <span class="text-xs text-pevo-teal shrink-0" x-text="$t('publish.uploading')"></span>
+                            </template>
+                            <template x-if="sf.error">
+                              <span class="text-xs text-pevo-crimson shrink-0" x-text="sf.error"></span>
+                            </template>
+                          </div>
+                          <button type="button" class="text-xs text-pevo-crimson hover:text-pevo-crimson-dark shrink-0" @click="removeSupplementaryFile(i)" x-text="$t('publish.removeFile')"></button>
+                        </div>
+                        <input type="text" class="input text-sm" :placeholder="$t('publish.fileDescriptionPlaceholder')" :value="sf.description" @input="updateSupplementaryDescription(i, $event.target.value)" />
+                      </div>
+                    </template>
+                  </div>
+                </template>
+
+                <template x-if="(supplementaryFiles.length + existingSupplementaryFiles.length) < 5">
+                  <div>
+                    <label class="inline-flex items-center gap-2 cursor-pointer text-sm text-pevo-teal hover:text-pevo-teal-dark">
+                      <span x-text="$t('publish.addSupplementaryFile')"></span>
+                      <input type="file" class="hidden" multiple accept=".pdf,.png,.jpg,.jpeg,.gif,.webp,.svg,.csv,.zip" @change="handleSupplementaryFiles($event)" />
+                    </label>
+                  </div>
+                </template>
+              </div>
+
+              <!-- Citations -->
+              <div class="card">
+                <label class="text-sm font-semibold text-ink mb-2 block" x-text="$t('publish.citations')"></label>
+                <p class="text-xs text-ink-muted mb-3" x-text="$t('publish.citationsHint')"></p>
+                <template x-if="citations.length > 0">
+                  <div class="space-y-3">
+                    <template x-for="(cit, i) in citations" :key="'cit-' + i">
+                      <div class="p-3 bg-parchment rounded-lg space-y-2">
+                        <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                          <input type="text" class="select-control text-xs" :placeholder="$t('publish.citationAuthor')" :value="cit.author" @input="updateCitation(i, 'author', $event.target.value)" />
+                          <input type="text" class="select-control text-xs" :placeholder="$t('publish.citationPermlink')" :value="cit.permlink" @input="updateCitation(i, 'permlink', $event.target.value)" />
+                          <input type="text" class="select-control text-xs" :placeholder="$t('publish.citationTitle')" :value="cit.title" @input="updateCitation(i, 'title', $event.target.value)" />
+                        </div>
+                        <div class="flex items-center justify-between">
+                          <label class="flex items-center gap-2 text-xs text-ink-muted cursor-pointer">
+                            <input type="checkbox" class="rounded border-parchment-dark text-pevo-teal focus:ring-pevo-teal" :checked="cit.reputation_relevant" @change="toggleCitationRelevance(i)" />
+                            <span x-text="$t('publish.citationReputationRelevant')"></span>
+                          </label>
+                          <button type="button" class="text-ink-muted hover:text-ink px-1" @click="removeCitation(i)">
+                            <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd" /></svg>
+                          </button>
+                        </div>
+                      </div>
+                    </template>
+                  </div>
+                </template>
+                <template x-if="citations.length === 0">
+                  <p class="text-xs text-ink-muted italic" x-text="$t('publish.noCitations')"></p>
+                </template>
+                <button type="button" class="text-sm text-pevo-teal hover:text-pevo-teal-dark mt-3" @click="addCitation()" x-text="$t('publish.addCitation')"></button>
+              </div>
+
               <!-- Address reviews checklist -->
               <template x-if="reviews.length > 0">
                 <div class="card">

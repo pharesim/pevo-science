@@ -40,6 +40,13 @@ export function initEditPage() {
     newCoAuthors: [],
     addressedReviews: [], // [{ author, permlink }]
 
+    // Supplementary files
+    supplementaryFiles: [], // { file, fileName, fileSize, description, uploading, cid, error }
+    existingSupplementaryFiles: [], // from paper metadata (read-only display)
+
+    // Citations
+    citations: [], // { author, permlink, title, reputation_relevant }
+
     step: 'idle',
     errorMessage: '',
 
@@ -157,6 +164,7 @@ export function initEditPage() {
         this.$watch('authorName', () => this._scheduleDraftSave());
         this.$watch('authorAffiliation', () => this._scheduleDraftSave());
         this.$watch('authorOrcid', () => this._scheduleDraftSave());
+        this.$watch('citations', () => this._scheduleDraftSave());
       } catch (err) {
         if (this.author !== author || this.permlink !== permlink) return;
         this.loadError = err?.message || this.$t('edit.loadError');
@@ -197,6 +205,17 @@ export function initEditPage() {
       const keywords = pevo.keywords || [];
       this.keywordsText = keywords.join(', ');
 
+      // Citations
+      this.citations = (pevo.citations || []).map(c => ({
+        author: c.author || '',
+        permlink: c.permlink || '',
+        title: c.title || '',
+        reputation_relevant: c.reputation_relevant !== false,
+      }));
+
+      // Supplementary files (existing, read-only)
+      this.existingSupplementaryFiles = pevo.supplementary_files || p.supplementary_files || [];
+
       // Authors
       const authors = pevo.authors || p.authors || [];
       if (authors.length > 0) {
@@ -222,6 +241,7 @@ export function initEditPage() {
             if (draft.authorAffiliation) this.authorAffiliation = draft.authorAffiliation;
             if (draft.authorOrcid) this.authorOrcid = draft.authorOrcid;
             this.newCoAuthors = draft.newCoAuthors || [];
+            if (draft.citations) this.citations = draft.citations;
           }
         }
       } catch {
@@ -269,7 +289,7 @@ export function initEditPage() {
             title: this.title, abstract: this.abstract, body: this.body,
             keywordsText: this.keywordsText, authorName: this.authorName,
             authorAffiliation: this.authorAffiliation, authorOrcid: this.authorOrcid,
-            newCoAuthors: this.newCoAuthors, savedAt: Date.now(),
+            newCoAuthors: this.newCoAuthors, citations: this.citations, savedAt: Date.now(),
           };
           localStorage.setItem(this.draftKey, JSON.stringify(draft));
         } catch { /* storage full */ }
@@ -286,6 +306,49 @@ export function initEditPage() {
 
     removeNewCoAuthor(index) {
       this.newCoAuthors.splice(index, 1);
+    },
+
+    // Supplementary files
+    handleSupplementaryFiles(event) {
+      const files = Array.from(event.target.files || []);
+      const remaining = 5 - this.supplementaryFiles.length - this.existingSupplementaryFiles.length;
+      for (const file of files.slice(0, remaining)) {
+        this.supplementaryFiles.push({
+          file,
+          fileName: file.name,
+          fileSize: (file.size / (1024 * 1024)).toFixed(2),
+          description: '',
+          uploading: false,
+          cid: null,
+          error: null,
+        });
+      }
+      event.target.value = '';
+    },
+
+    removeSupplementaryFile(index) {
+      this.supplementaryFiles.splice(index, 1);
+    },
+
+    updateSupplementaryDescription(index, value) {
+      this.supplementaryFiles[index].description = value;
+    },
+
+    // Citations
+    addCitation() {
+      this.citations.push({ author: '', permlink: '', title: '', reputation_relevant: true });
+    },
+
+    updateCitation(index, field, value) {
+      this.citations[index][field] = value;
+    },
+
+    toggleCitationRelevance(index) {
+      this.citations[index].reputation_relevant = !this.citations[index].reputation_relevant;
+    },
+
+    removeCitation(index) {
+      this.citations.splice(index, 1);
     },
 
     toggleAddressedReview(author, permlink, checked) {
@@ -322,6 +385,33 @@ export function initEditPage() {
           ...this.newCoAuthors.filter(ca => ca.name),
         ];
 
+        // Upload new supplementary files
+        const uploadedSupplementary = [...this.existingSupplementaryFiles];
+        if (this.supplementaryFiles.length > 0) {
+          this.step = 'uploading';
+          for (const sf of this.supplementaryFiles) {
+            sf.uploading = true;
+            try {
+              const res = await uploadToIpfs(sf.file);
+              sf.cid = res.data.cid;
+              uploadedSupplementary.push({
+                cid: res.data.cid,
+                filename: sf.fileName,
+                size: sf.file.size,
+                description: sf.description,
+                type: sf.file.type,
+              });
+            } catch {
+              sf.error = this.$t('publish.supplementaryUploadFailed', { name: sf.fileName });
+              throw new Error(sf.error);
+            } finally {
+              sf.uploading = false;
+            }
+          }
+        }
+
+        const citationsData = this.citations.filter(c => c.author && c.permlink);
+
         const pevoMeta = this.paper.json_metadata?.pevo || this.paper.json_metadata?.[APP_TAG] || {};
 
         if (this.isContinuation) {
@@ -343,6 +433,8 @@ export function initEditPage() {
               keywords,
               continues: { author: headAuthor, permlink: headPermlink },
               addresses_reviews: this.addressedReviews.length > 0 ? this.addressedReviews : undefined,
+              citations: citationsData.length > 0 ? citationsData : undefined,
+              supplementary_files: uploadedSupplementary.length > 0 ? uploadedSupplementary : undefined,
             },
           };
 
@@ -365,6 +457,8 @@ export function initEditPage() {
             // Check if metadata changed
             const metaChanged = JSON.stringify(keywords) !== JSON.stringify(pevoMeta.keywords || [])
               || JSON.stringify(allAuthors) !== JSON.stringify(pevoMeta.authors || [])
+              || JSON.stringify(citationsData) !== JSON.stringify(pevoMeta.citations || [])
+              || this.supplementaryFiles.length > 0
               || this.addressedReviews.length > 0;
 
             if (!metaChanged) {
@@ -389,6 +483,8 @@ export function initEditPage() {
               discipline: this.discipline,
               keywords,
               addresses_reviews: this.addressedReviews.length > 0 ? this.addressedReviews : undefined,
+              citations: citationsData.length > 0 ? citationsData : undefined,
+              supplementary_files: uploadedSupplementary.length > 0 ? uploadedSupplementary : undefined,
             },
           };
 
