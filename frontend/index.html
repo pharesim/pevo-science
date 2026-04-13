@@ -1239,6 +1239,43 @@
 
                       <!-- Review body -->
                       <div class="text-sm text-ink-light leading-relaxed prose prose-sm max-w-none" x-markdown="rev.body"></div>
+
+                      <!-- Review comments (lazy-loaded) -->
+                      <div class="mt-4 pt-3 border-t border-parchment-dark/30" x-data="{ showComments: false }">
+                        <button type="button"
+                                class="text-xs text-ink-muted hover:text-pevo-teal transition-colors flex items-center gap-1"
+                                @click="showComments = !showComments">
+                          <svg class="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M2 5a2 2 0 012-2h12a2 2 0 012 2v7a2 2 0 01-2 2H6l-4 4V5z" clip-rule="evenodd" /></svg>
+                          <span x-text="$t('comments.reply')"></span>
+                        </button>
+                        <template x-if="showComments">
+                          <div class="mt-3" x-data="threadedComments({ paperAuthor: rev.author, paperPermlink: rev.permlink })"
+                               x-on:comment-posted.window="loadComments()">
+                            <!-- Loading -->
+                            <p x-show="loading" class="text-xs text-ink-muted" x-text="$t('comments.loading')"></p>
+                            <!-- Error -->
+                            <p x-show="error" class="text-xs text-pevo-crimson" x-text="error"></p>
+                            <!-- Comment count -->
+                            <p x-show="!loading && totalCount === 0" class="text-xs text-ink-muted" x-text="$t('review.noComments')"></p>
+                            <p x-show="!loading && totalCount > 0" class="text-xs text-ink-muted mb-2" x-text="$t('review.commentsToggle', { count: totalCount })"></p>
+                            <!-- Comment tree -->
+                            <div x-show="!loading && totalCount > 0" x-html="commentsHtml" class="space-y-3"></div>
+                            <!-- Composer -->
+                            <template x-if="$store.auth.isConnected">
+                              <div class="mt-3" x-data="commentComposer({ parentAuthor: rev.author, parentPermlink: rev.permlink })">
+                                <textarea class="w-full rounded-md border border-parchment-dark bg-white px-3 py-2 text-sm text-ink placeholder:text-ink-muted focus:border-pevo-teal focus:outline-none focus:ring-1 focus:ring-pevo-teal resize-y"
+                                          rows="2" :placeholder="$t('comments.replyTo', { author: rev.is_anonymous ? $t('review.anonymousReviewer') : rev.author })"
+                                          x-model="body" :disabled="isSubmitting"></textarea>
+                                <p x-show="error" class="text-xs text-pevo-crimson mt-1" x-text="error"></p>
+                                <div class="flex items-center justify-end gap-2 mt-2">
+                                  <button class="btn-primary text-xs" @click="handleSubmit()" :disabled="isSubmitting || !body.trim()"
+                                          x-text="isSubmitting ? $t('comments.posting') : $t('comments.postComment')"></button>
+                                </div>
+                              </div>
+                            </template>
+                          </div>
+                        </template>
+                      </div>
                     </div>
                   </template>
                 </div>
