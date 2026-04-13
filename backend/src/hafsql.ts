@@ -242,7 +242,8 @@ export function isPevoCommentSql(startIdx = 1): SqlFragment {
 export function accreditedVoteCount(authorExpr: string, permlinkExpr: string): string {
   return `(SELECT count(*)::int FROM ${T.votes} v
     JOIN active_accreditations aa ON aa.account = v.voter
-    WHERE v.author = ${authorExpr} AND v.permlink = ${permlinkExpr} AND v.rshares > 0)`;
+    WHERE v.author = ${authorExpr} AND v.permlink = ${permlinkExpr} AND v.rshares > 0
+      AND v.voter != ${authorExpr})`;
 }
 
 /**
@@ -251,7 +252,8 @@ export function accreditedVoteCount(authorExpr: string, permlinkExpr: string): s
 export function accreditedRshares(authorExpr: string, permlinkExpr: string): string {
   return `COALESCE((SELECT sum(v.rshares) FROM ${T.votes} v
     JOIN active_accreditations aa ON aa.account = v.voter
-    WHERE v.author = ${authorExpr} AND v.permlink = ${permlinkExpr} AND v.rshares > 0), 0)`;
+    WHERE v.author = ${authorExpr} AND v.permlink = ${permlinkExpr} AND v.rshares > 0
+      AND v.voter != ${authorExpr}), 0)`;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────

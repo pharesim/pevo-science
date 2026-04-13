@@ -181,7 +181,7 @@ export async function getUserStatsFromHaf(username: string): Promise<UserStats |
     // Query 1: Papers with their votes and review quality
     const papersResult = await pool.query(
       `WITH user_papers AS (
-         SELECT c.author, c.permlink, c.created
+         SELECT c.author, c.permlink, c.created, c.json_metadata
          FROM ${T.comments} c
          WHERE c.author = $1
            AND c.parent_author = '' AND c.parent_permlink = $3
@@ -197,6 +197,11 @@ export async function getUserStatsFromHaf(username: string): Promise<UserStats |
          LEFT JOIN ${T.votes} v
            ON v.author = up.author AND v.permlink = up.permlink
            AND v.voter = ANY($2::text[])
+           AND v.voter != up.author
+           AND NOT EXISTS (
+             SELECT 1 FROM jsonb_array_elements(up.json_metadata -> $3 -> 'authors') a
+             WHERE a ->> 'hive' = v.voter
+           )
          GROUP BY up.permlink, up.created
        ),
        paper_reviews AS (
@@ -229,6 +234,7 @@ export async function getUserStatsFromHaf(username: string): Promise<UserStats |
        LEFT JOIN ${T.votes} v
          ON v.author = ur.author AND v.permlink = ur.permlink
          AND v.voter = ANY($2::text[])
+         AND v.voter != ur.author
        WHERE ur.author = $1
          AND (ur.json_metadata -> $3 ->> 'type') = 'review'
          AND ur.json_metadata ->> 'app' LIKE $4
@@ -266,6 +272,7 @@ export async function getUserStatsFromHaf(username: string): Promise<UserStats |
            ON v.author = cp.citing_author AND v.permlink = cp.citing_permlink
            AND v.voter = ANY($2::text[])
            AND v.rshares > 0
+           AND v.voter != cp.citing_author
          GROUP BY cp.citing_author, cp.citing_permlink, cp.citing_created, cp.reputation_relevant
        ),
        citing_paper_reviews AS (

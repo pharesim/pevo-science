@@ -898,19 +898,21 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string) {
     const accreditedArr = [...accreditedAccounts];
 
     const [voteResult, reviewsResult, citationResult, versions, retraction] = await Promise.all([
-      // Accredited vote count
+      // Accredited vote count (excluding self-votes)
       pool.query(
         `SELECT count(*)::int AS net_votes FROM ${T.votes} v
          WHERE v.author = $1 AND v.permlink = $2
-           AND v.rshares > 0 AND v.voter = ANY($3::text[])`,
+           AND v.rshares > 0 AND v.voter = ANY($3::text[])
+           AND v.voter != v.author`,
         [author, permlink, accreditedArr],
       ),
-      // Reviews from accredited reviewers with accredited vote count
+      // Reviews from accredited reviewers with accredited vote count (excluding self-votes)
       pool.query(
         `SELECT c.author, c.permlink, c.body, c.json_metadata, c.created,
                 (SELECT count(*)::int FROM ${T.votes} v
                  WHERE v.author = c.author AND v.permlink = c.permlink
-                   AND v.rshares > 0 AND v.voter = ANY($5::text[])) AS net_votes
+                   AND v.rshares > 0 AND v.voter = ANY($5::text[])
+                   AND v.voter != v.author) AS net_votes
          FROM ${T.comments} c
          WHERE c.parent_author = $1 AND c.parent_permlink = $2
            AND c.author = ANY($5::text[])
