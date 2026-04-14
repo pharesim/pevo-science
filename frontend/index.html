@@ -97,11 +97,7 @@
           <template x-if="$store.auth.isLoading">
             <span class="text-sm text-ink-muted" x-text="$t('header.loading')"></span>
           </template>
-          <template x-if="!$store.auth.isLoading && !$store.auth.isKeychainInstalled">
-            <a href="https://hive-keychain.com/" target="_blank" rel="noopener noreferrer"
-               class="btn-secondary text-sm no-underline" x-text="$t('header.installKeychain')"></a>
-          </template>
-          <template x-if="!$store.auth.isLoading && $store.auth.isKeychainInstalled && $store.auth.isConnected">
+          <template x-if="!$store.auth.isLoading && $store.auth.isConnected">
             <div class="relative" @click.outside="userMenuOpen = false">
               <!-- User menu trigger: bell + @username + chevron -->
               <button class="flex items-center gap-2 rounded-md border border-parchment-dark bg-white px-2.5 py-1.5 text-sm font-medium text-ink hover:border-pevo-teal transition-colors"
@@ -150,8 +146,8 @@
               </div>
             </div>
           </template>
-          <template x-if="!$store.auth.isLoading && $store.auth.isKeychainInstalled && !$store.auth.isConnected">
-            <button class="btn-primary text-sm" @click="handleConnect()" x-text="$t('header.connectWallet')"></button>
+          <template x-if="!$store.auth.isLoading && !$store.auth.isConnected">
+            <button class="btn-primary text-sm" @click="handleSignIn()" x-text="$t('signIn.signInButton')"></button>
           </template>
         </div>
 
@@ -197,11 +193,7 @@
           <template x-if="$store.auth.isLoading">
             <span class="text-sm text-ink-muted" x-text="$t('header.loading')"></span>
           </template>
-          <template x-if="!$store.auth.isLoading && !$store.auth.isKeychainInstalled">
-            <a href="https://hive-keychain.com/" target="_blank" rel="noopener noreferrer"
-               class="btn-secondary text-sm w-full block text-center no-underline" x-text="$t('header.installKeychain')"></a>
-          </template>
-          <template x-if="!$store.auth.isLoading && $store.auth.isKeychainInstalled && $store.auth.isConnected">
+          <template x-if="!$store.auth.isLoading && $store.auth.isConnected">
             <div class="space-y-2">
               <div class="flex items-center justify-between">
                 <a :href="$lp('/profile/' + $store.auth.username)"
@@ -212,8 +204,8 @@
               <button class="btn-secondary text-sm w-full" @click="handleDisconnect()" x-text="$t('header.disconnect')"></button>
             </div>
           </template>
-          <template x-if="!$store.auth.isLoading && $store.auth.isKeychainInstalled && !$store.auth.isConnected">
-            <button class="btn-primary text-sm w-full" @click="handleConnect()" x-text="$t('header.connectWallet')"></button>
+          <template x-if="!$store.auth.isLoading && !$store.auth.isConnected">
+            <button class="btn-primary text-sm w-full" @click="handleSignIn()" x-text="$t('signIn.signInButton')"></button>
           </template>
         </div>
       </nav>
@@ -1365,9 +1357,9 @@
             <div class="flex items-start gap-3">
               <svg class="h-5 w-5 text-pevo-crimson shrink-0 mt-0.5" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.168 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 8a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd" /></svg>
               <div>
-                <p class="font-medium text-ink text-sm" x-text="$t('publish.walletNotConnected')"></p>
+                <p class="font-medium text-ink text-sm" x-text="$t('signIn.signInToPublish')"></p>
                 <p class="text-xs text-ink-muted mt-1" x-text="$t('publish.walletHint')"></p>
-                <button class="btn-primary text-xs mt-2" @click="handleConnect()" x-text="$t('common.connectWallet')"></button>
+                <button class="btn-primary text-xs mt-2" @click="handleConnect()" x-text="$t('signIn.signInButton')"></button>
               </div>
             </div>
           </div>
@@ -1926,9 +1918,9 @@
             <div class="flex items-start gap-3">
               <svg class="h-5 w-5 text-pevo-crimson shrink-0 mt-0.5" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.168 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 8a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd" /></svg>
               <div>
-                <p class="font-medium text-ink text-sm" x-text="$t('review.walletNotConnected')"></p>
+                <p class="font-medium text-ink text-sm" x-text="$t('signIn.signInToReview')"></p>
                 <p class="text-xs text-ink-muted mt-1" x-text="$t('review.walletHint')"></p>
-                <button class="btn-primary text-xs mt-2" @click="handleConnect()" x-text="$t('common.connectWallet')"></button>
+                <button class="btn-primary text-xs mt-2" @click="handleConnect()" x-text="$t('signIn.signInButton')"></button>
               </div>
             </div>
           </div>
@@ -2175,7 +2167,7 @@
         <template x-if="!isConnected">
           <div class="card text-center py-12">
             <p class="text-ink-muted mb-4" x-text="$t('bridge.walletHint')"></p>
-            <button class="btn-primary" @click="handleConnect()" x-text="$t('common.connectWallet')"></button>
+            <button class="btn-primary" @click="handleConnect()" x-text="$t('signIn.signInButton')"></button>
           </div>
         </template>
 
@@ -2579,9 +2571,9 @@
               <div class="flex items-start gap-3">
                 <svg class="h-5 w-5 text-pevo-crimson shrink-0 mt-0.5" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.168 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 8a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd" /></svg>
                 <div>
-                  <p class="font-medium text-ink text-sm" x-text="$t('accreditation.walletNotConnected')"></p>
+                  <p class="font-medium text-ink text-sm" x-text="$t('signIn.signInToContinue')"></p>
                   <p class="text-xs text-ink-muted mt-1" x-text="$t('accreditation.walletHint')"></p>
-                  <button class="btn-primary text-xs mt-2" @click="handleConnect()" x-text="$t('common.connectWallet')"></button>
+                  <button class="btn-primary text-xs mt-2" @click="handleConnect()" x-text="$t('signIn.signInButton')"></button>
                 </div>
               </div>
             </div>
@@ -2631,7 +2623,7 @@
             </div>
             <div class="pt-2 flex flex-col sm:flex-row gap-3">
               <button type="submit" class="btn-primary" :disabled="!isConnected || isSubmitting || step === 'success'"
-                      x-text="!isConnected ? $t('accreditation.connectToBegin') : isSubmitting ? $t('accreditation.submittingRequest') : $t('accreditation.submitButton')"></button>
+                      x-text="!isConnected ? $t('signIn.signInToContinue') : isSubmitting ? $t('accreditation.submittingRequest') : $t('accreditation.submitButton')"></button>
               <span class="text-sm text-ink-muted self-center" x-text="$t('orcid.or')"></span>
               <button type="button" class="btn-secondary flex items-center gap-2" :disabled="!isConnected || orcidLoading || step === 'success'" @click="handleOrcidVerify()">
                 <svg class="h-4 w-4" viewBox="0 0 256 256" fill="none"><path d="M256 128C256 198.692 198.692 256 128 256C57.3076 256 0 198.692 0 128C0 57.3076 57.3076 0 128 0C198.692 0 256 57.3076 256 128Z" fill="#A6CE39"/><path d="M86.3 186.2H70.9V79.1H86.3V186.2ZM78.6 56.1C73.5 56.1 69.4 60.2 69.4 65.3C69.4 70.4 73.5 74.5 78.6 74.5C83.7 74.5 87.8 70.4 87.8 65.3C87.8 60.2 83.7 56.1 78.6 56.1ZM108.5 79.1H150.3C185 79.1 200.5 102.7 200.5 132.6C200.5 165.2 181.5 186.2 150.3 186.2H108.5V79.1ZM124 172.5H148.6C175.2 172.5 184.6 153.3 184.6 132.6C184.6 110.6 173.8 92.8 148.6 92.8H124V172.5Z" fill="white"/></svg>
@@ -2691,7 +2683,7 @@
         <template x-if="!isConnected">
           <div class="card">
             <p class="text-ink-muted mb-4" x-text="$t('orcid.connectToComplete')"></p>
-            <button class="btn-primary" @click="handleConnect()" x-text="$t('orcid.connectWallet')"></button>
+            <button class="btn-primary" @click="handleConnect()" x-text="$t('signIn.signInButton')"></button>
           </div>
         </template>
 
@@ -3081,6 +3073,17 @@
 
         <!-- Steps -->
         <div class="container-narrow py-10">
+          <!-- Path switcher -->
+          <div class="flex gap-3 mb-8">
+            <button class="px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+                    :class="path === 'quick' ? 'bg-pevo-teal text-white' : 'bg-parchment-warm text-ink-muted hover:text-ink'"
+                    @click="path = 'quick'" x-text="$t('gettingStarted.quickPath')"></button>
+            <button class="px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+                    :class="path === 'keychain' ? 'bg-pevo-teal text-white' : 'bg-parchment-warm text-ink-muted hover:text-ink'"
+                    @click="path = 'keychain'" x-text="$t('gettingStarted.keychainPath')"></button>
+          </div>
+          <p class="text-sm text-ink-muted mb-6" x-text="path === 'quick' ? $t('gettingStarted.quickPathDescription') : $t('gettingStarted.keychainPathDescription')"></p>
+
           <div class="space-y-8">
             <template x-for="s in steps" :key="s.key">
               <div class="card">
@@ -3895,35 +3898,137 @@
   </div>
 
   <!-- ═══════════════════════════════════════════════ USERNAME MODAL ═══════════════════════════════════ -->
-  <div x-data="usernameModal">
+  <div x-data="signInModal">
     <template x-if="open">
       <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
            @click="handleBackdropClick($event)" @keydown.window="handleKeydown($event)"
-           role="dialog" aria-modal="true" aria-labelledby="username-modal-title">
+           role="dialog" aria-modal="true" aria-labelledby="signin-modal-title">
         <div class="bg-white rounded-lg shadow-xl w-full max-w-sm mx-4 p-6">
-          <h2 id="username-modal-title" class="text-lg font-semibold text-ink mb-4">Enter your Hive username</h2>
 
-          <label for="hive-username-input" class="sr-only">Hive username</label>
-          <input id="hive-username-input" x-ref="usernameInput" type="text"
-                 class="w-full px-3 py-2 border border-parchment-dark rounded-md text-sm text-ink focus:outline-none focus:ring-2 focus:ring-pevo-teal focus:border-transparent"
-                 placeholder="e.g. satoshi"
-                 x-model="value"
-                 @input="error = null"
-                 @keydown="handleInputKeydown($event)" />
+          <!-- Mode: choose -->
+          <template x-if="mode === 'choose'">
+            <div>
+              <h2 id="signin-modal-title" class="text-lg font-semibold text-ink mb-6" x-text="$t('signIn.title')"></h2>
 
-          <template x-if="error">
-            <p class="text-sm text-pevo-crimson mt-1" x-text="error"></p>
+              <!-- Email/password option -->
+              <button type="button" class="w-full text-left p-4 rounded-lg border border-parchment-dark hover:border-pevo-teal hover:bg-pevo-teal-light/20 transition-colors mb-3"
+                      @click="mode = 'email'">
+                <div class="flex items-center gap-3">
+                  <svg class="h-6 w-6 text-pevo-teal shrink-0" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M21.75 6.75v10.5a2.25 2.25 0 01-2.25 2.25h-15a2.25 2.25 0 01-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25m19.5 0v.243a2.25 2.25 0 01-1.07 1.916l-7.5 4.615a2.25 2.25 0 01-2.36 0L3.32 8.91a2.25 2.25 0 01-1.07-1.916V6.75" />
+                  </svg>
+                  <div>
+                    <p class="font-medium text-ink text-sm" x-text="$t('signIn.emailOption')"></p>
+                    <p class="text-xs text-ink-muted mt-0.5" x-text="$t('signIn.emailDescription')"></p>
+                  </div>
+                </div>
+              </button>
+
+              <!-- Keychain option -->
+              <button type="button" class="w-full text-left p-4 rounded-lg border border-parchment-dark hover:border-pevo-teal hover:bg-pevo-teal-light/20 transition-colors"
+                      @click="mode = 'keychain'">
+                <div class="flex items-center gap-3">
+                  <svg class="h-6 w-6 text-pevo-teal shrink-0" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 5.25a3 3 0 013 3m3 0a6 6 0 01-7.029 5.912c-.563-.097-1.159.026-1.563.43L10.5 17.25H8.25v2.25H6v2.25H2.25v-2.818c0-.597.237-1.17.659-1.591l6.499-6.499c.404-.404.527-1 .43-1.563A6 6 0 1121.75 8.25z" />
+                  </svg>
+                  <div>
+                    <p class="font-medium text-ink text-sm" x-text="$t('signIn.keychainOption')"></p>
+                    <p class="text-xs text-ink-muted mt-0.5" x-text="$t('signIn.keychainDescription')"></p>
+                  </div>
+                </div>
+              </button>
+
+              <p class="text-sm text-ink/60 mt-4 text-center">
+                <span x-text="$t('signIn.noAccount')"></span>
+                <a :href="$lp('/signup')" class="text-pevo-teal hover:underline font-medium"
+                   @click.prevent="cancel(); $store.router.navigate('/signup')" x-text="$t('signIn.signUp')"></a>
+              </p>
+
+              <div class="flex justify-end mt-4">
+                <button type="button" class="btn-secondary text-sm px-4 py-2" @click="cancel()" x-text="$t('confirm.cancel')"></button>
+              </div>
+            </div>
           </template>
 
-          <p class="text-sm text-ink/60 mt-3">
-            Don't have an account?
-            <a :href="$lp('/getting-started')" class="text-pevo-teal hover:underline font-medium" @click="cancel()">Get started</a>
-          </p>
+          <!-- Mode: email login -->
+          <template x-if="mode === 'email'">
+            <div>
+              <button type="button" class="text-sm text-ink-muted hover:text-ink mb-4 flex items-center gap-1" @click="mode = 'choose'; emailError = null">
+                <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 19.5L8.25 12l7.5-7.5" /></svg>
+                <span x-text="$t('signIn.back')"></span>
+              </button>
+              <h2 class="text-lg font-semibold text-ink mb-4" x-text="$t('signIn.emailTitle')"></h2>
 
-          <div class="flex justify-end gap-3 mt-5">
-            <button type="button" class="btn-secondary text-sm px-4 py-2" @click="cancel()">Cancel</button>
-            <button type="button" class="btn-primary text-sm px-4 py-2" @click="confirm()">Connect</button>
-          </div>
+              <label class="block text-xs font-medium text-ink-muted mb-1" x-text="$t('login.emailOrUsername')"></label>
+              <input type="text" x-model="emailValue" x-ref="emailInput"
+                     class="w-full px-3 py-2 border border-parchment-dark rounded-md text-sm text-ink focus:outline-none focus:ring-2 focus:ring-pevo-teal focus:border-transparent mb-3"
+                     @input="emailError = null"
+                     @keydown.enter="handleEmailLogin()" />
+
+              <label class="block text-xs font-medium text-ink-muted mb-1" x-text="$t('login.password')"></label>
+              <input type="password" x-model="passwordValue"
+                     class="w-full px-3 py-2 border border-parchment-dark rounded-md text-sm text-ink focus:outline-none focus:ring-2 focus:ring-pevo-teal focus:border-transparent"
+                     @keydown.enter="handleEmailLogin()" />
+
+              <template x-if="emailError">
+                <p class="text-sm text-pevo-crimson mt-2" x-text="emailError"></p>
+              </template>
+
+              <p class="text-xs text-ink-muted mt-3">
+                <a :href="$lp('/reset-password')" class="text-pevo-teal hover:underline"
+                   @click.prevent="cancel(); $store.router.navigate('/reset-password')" x-text="$t('login.forgotPassword')"></a>
+              </p>
+
+              <div class="flex justify-end gap-3 mt-5">
+                <button type="button" class="btn-secondary text-sm px-4 py-2" @click="cancel()" x-text="$t('confirm.cancel')"></button>
+                <button type="button" class="btn-primary text-sm px-4 py-2" :disabled="emailLoading" @click="handleEmailLogin()">
+                  <span x-show="!emailLoading" x-text="$t('signIn.signInButton')"></span>
+                  <span x-show="emailLoading" x-text="$t('signIn.signingIn')"></span>
+                </button>
+              </div>
+            </div>
+          </template>
+
+          <!-- Mode: keychain -->
+          <template x-if="mode === 'keychain'">
+            <div>
+              <button type="button" class="text-sm text-ink-muted hover:text-ink mb-4 flex items-center gap-1" @click="mode = 'choose'; error = null">
+                <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 19.5L8.25 12l7.5-7.5" /></svg>
+                <span x-text="$t('signIn.back')"></span>
+              </button>
+              <h2 class="text-lg font-semibold text-ink mb-4" x-text="$t('signIn.keychainTitle')"></h2>
+
+              <template x-if="!$store.auth.isKeychainInstalled">
+                <div class="text-center py-4">
+                  <p class="text-sm text-ink-muted mb-3" x-text="$t('signIn.keychainNotInstalled')"></p>
+                  <a href="https://hive-keychain.com/" target="_blank" rel="noopener noreferrer"
+                     class="btn-primary text-sm no-underline" x-text="$t('header.installKeychain')"></a>
+                </div>
+              </template>
+
+              <template x-if="$store.auth.isKeychainInstalled">
+                <div>
+                  <label for="keychain-username-input" class="block text-xs font-medium text-ink-muted mb-1" x-text="$t('signIn.hiveUsername')"></label>
+                  <input id="keychain-username-input" x-ref="keychainInput" type="text"
+                         class="w-full px-3 py-2 border border-parchment-dark rounded-md text-sm text-ink focus:outline-none focus:ring-2 focus:ring-pevo-teal focus:border-transparent"
+                         placeholder="e.g. satoshi"
+                         x-model="value"
+                         @input="error = null"
+                         @keydown.enter="confirm()" />
+
+                  <template x-if="error">
+                    <p class="text-sm text-pevo-crimson mt-2" x-text="error"></p>
+                  </template>
+
+                  <div class="flex justify-end gap-3 mt-5">
+                    <button type="button" class="btn-secondary text-sm px-4 py-2" @click="cancel()" x-text="$t('confirm.cancel')"></button>
+                    <button type="button" class="btn-primary text-sm px-4 py-2" @click="confirm()" x-text="$t('signIn.connect')"></button>
+                  </div>
+                </div>
+              </template>
+            </div>
+          </template>
+
         </div>
       </div>
     </template>

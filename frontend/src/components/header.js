@@ -55,7 +55,7 @@ export function initHeader() {
       this.moreOpen = false;
     },
 
-    async handleConnect() {
+    async handleSignIn() {
       try {
         await this.$store.auth.connect();
       } catch (err) {
@@ -63,6 +63,9 @@ export function initHeader() {
         this.$store.toast.show(msg, 'error');
       }
     },
+
+    // Keep old name as alias for any remaining references
+    async handleConnect() { return this.handleSignIn(); },
 
     handleDisconnect() {
       this.$store.auth.disconnect();

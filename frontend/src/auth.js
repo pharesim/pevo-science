@@ -53,15 +53,12 @@ export function initAuth() {
     },
 
     async connect() {
-      if (!isKeychainInstalled()) {
-        throw new Error('Hive Keychain is not installed');
-      }
-
-      // Prompt for username via modal
-      const el = document.querySelector('[x-data="usernameModal"]');
+      // Open sign-in modal — may resolve with username (Keychain path) or null (email path or cancel)
+      const el = document.querySelector('[x-data="signInModal"]');
       const modal = el && Alpine.$data(el);
-      if (!modal) throw new Error('Username modal not found');
+      if (!modal) throw new Error('Sign-in modal not found');
       const inputUsername = await modal.prompt();
+      // null means either cancelled or already logged in via email path
       if (!inputUsername) return;
 
       // Verify account ownership with a random challenge
@@ -96,6 +93,21 @@ export function initAuth() {
         this._startAccreditationPolling();
       } else {
         throw new Error('Authentication failed');
+      }
+    },
+
+    // Set auth state from a login/session API response (used by sign-in modal email path)
+    loginFromResponse(data) {
+      this.token = data.token;
+      this.username = data.username;
+      this.isConnected = true;
+      this.isAccredited = data.is_accredited ?? false;
+      this.accreditation = data.accreditation ?? null;
+      this.custody = data.custody ?? 'self';
+      this._saveSession(data.token, data.username, data.expires_at, this.isAccredited, this.accreditation, this.custody);
+      if (!this.isAccredited) {
+        this._checkAccreditation(data.username, data.token, data.expires_at);
+        this._startAccreditationPolling();
       }
     },
 

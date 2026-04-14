@@ -256,7 +256,7 @@ router.post('/login', loginLimiter, async (req: Request, res: Response) => {
     );
     const expiresAt = new Date(Date.now() + SESSION_EXPIRY_MS).toISOString();
 
-    sendOk(res, { token, expires_at: expiresAt, custody });
+    sendOk(res, { token, expires_at: expiresAt, custody, username: account.username });
   } catch (err) {
     logger.error({ err }, 'Login failed');
     sendError(res, 500, 'INTERNAL_ERROR', 'Login failed');

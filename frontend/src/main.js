@@ -16,7 +16,7 @@ import { initHeader } from './components/header.js';
 import { initFooter } from './components/footer.js';
 import { initMarkdownRenderer } from './components/markdown-renderer.js';
 import { initOnboardingModal } from './components/onboarding-modal.js';
-import { initUsernameModal } from './components/username-modal.js';
+import { initSignInModal } from './components/sign-in-modal.js';
 
 // Pages — Phase 2 (simple)
 import { initAboutPage } from './pages/about.js';
@@ -71,7 +71,7 @@ initHeader();
 initFooter();
 initMarkdownRenderer();
 initOnboardingModal();
-initUsernameModal();
+initSignInModal();
 
 // Initialize pages — Phase 2
 initAboutPage();
