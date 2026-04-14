@@ -329,6 +329,14 @@ export function submitSignup(data) {
   });
 }
 
+export function resumeSignup(email, password) {
+  return request('/auth/resume-signup', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password }),
+  });
+}
+
 export function verifyEmail(token) {
   return request('/auth/verify', {
     method: 'POST',

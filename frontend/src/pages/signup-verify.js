@@ -1,5 +1,5 @@
 import Alpine from 'alpinejs';
-import { verifyEmail, confirmSeedPhrase, linkExistingAccount } from '../api.js';
+import { verifyEmail, resumeSignup, confirmSeedPhrase, linkExistingAccount } from '../api.js';
 
 // Number of words the user must re-enter to confirm retention
 const CONFIRM_WORD_COUNT = 3;
@@ -24,6 +24,11 @@ export function initSignupVerifyPage() {
     seedPhrase: null,
     seedWords: [],
     isLinkFlow: false,
+
+    // Resume flow (shown on error phase)
+    resumeEmail: '',
+    resumePassword: '',
+    isResuming: false,
 
     // Confirmation step
     confirmIndices: [],
@@ -142,6 +147,31 @@ export function initSignupVerifyPage() {
       } catch (err) {
         this.error = err.message;
         this.isConfirming = false;
+      }
+    },
+
+    async handleResume() {
+      if (!this.resumeEmail || !this.resumePassword || this.isResuming) return;
+      this.isResuming = true;
+      this.error = null;
+
+      try {
+        const res = await resumeSignup(this.resumeEmail, this.resumePassword);
+        this.token = res.data.challenge || res.data.token;
+
+        if (res.data.flow === 'link') {
+          this.isLinkFlow = true;
+          this.phase = 'link-keychain';
+          return;
+        }
+
+        this.seedPhrase = res.data.seed_phrase;
+        this.seedWords = this.seedPhrase.split(' ');
+        this.phase = 'seed';
+      } catch (err) {
+        this.error = err.message;
+      } finally {
+        this.isResuming = false;
       }
     },
 

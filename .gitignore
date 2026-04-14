@@ -42,3 +42,4 @@ test-results/
 coverage/
 
 *outreach.txt
+/claim_accounts*

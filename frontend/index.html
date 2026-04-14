@@ -3397,13 +3397,45 @@
           </div>
 
           <!-- Error -->
-          <div x-show="phase === 'error'" class="text-center py-16">
-            <div class="w-16 h-16 bg-red-50 rounded-full flex items-center justify-center mx-auto mb-6">
-              <svg class="w-8 h-8 text-pevo-crimson" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+          <div x-show="phase === 'error'" class="py-16">
+            <div class="text-center mb-8">
+              <div class="w-16 h-16 bg-red-50 rounded-full flex items-center justify-center mx-auto mb-6">
+                <svg class="w-8 h-8 text-pevo-crimson" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+              </div>
+              <h2 class="text-2xl font-bold text-ink mb-2" x-text="$t('seedPhrase.errorTitle')"></h2>
+              <p class="text-ink-muted mb-4" x-text="error"></p>
             </div>
-            <h2 class="text-2xl font-bold text-ink mb-2" x-text="$t('seedPhrase.errorTitle')"></h2>
-            <p class="text-ink-muted mb-4" x-text="error"></p>
-            <a :href="$lp('/signup')" @click.prevent="navigate('/signup')" class="text-pevo-teal hover:underline" x-text="$t('seedPhrase.tryAgain')"></a>
+
+            <!-- Resume signup form -->
+            <div class="max-w-sm mx-auto bg-parchment-light border border-parchment-dark rounded-lg p-6">
+              <h3 class="text-lg font-semibold text-ink mb-1" x-text="$t('seedPhrase.resumeTitle')"></h3>
+              <p class="text-sm text-ink-muted mb-4" x-text="$t('seedPhrase.resumeDescription')"></p>
+
+              <div x-show="error && isResuming === false && resumeEmail" class="bg-red-50 border border-red-200 rounded-lg p-3 mb-4">
+                <p class="text-red-700 text-sm" x-text="error"></p>
+              </div>
+
+              <form @submit.prevent="handleResume" class="space-y-3">
+                <div>
+                  <label class="block text-sm font-medium text-ink mb-1" x-text="$t('signup.email')"></label>
+                  <input type="email" x-model="resumeEmail" required
+                         class="w-full border border-parchment-dark rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-pevo-teal focus:border-pevo-teal">
+                </div>
+                <div>
+                  <label class="block text-sm font-medium text-ink mb-1" x-text="$t('signup.password')"></label>
+                  <input type="password" x-model="resumePassword" required
+                         class="w-full border border-parchment-dark rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-pevo-teal focus:border-pevo-teal">
+                </div>
+                <button type="submit" class="btn-primary w-full" :disabled="isResuming || !resumeEmail || !resumePassword">
+                  <span x-show="!isResuming" x-text="$t('seedPhrase.resumeButton')"></span>
+                  <span x-show="isResuming" x-text="$t('seedPhrase.resuming')"></span>
+                </button>
+              </form>
+
+              <div class="text-center mt-4">
+                <a :href="$lp('/signup')" @click.prevent="navigate('/signup')" class="text-sm text-pevo-teal hover:underline" x-text="$t('seedPhrase.startOver')"></a>
+              </div>
+            </div>
           </div>
 
           <!-- Seed phrase display -->

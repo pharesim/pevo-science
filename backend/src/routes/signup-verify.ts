@@ -1,6 +1,7 @@
 import { Router, type Request, type Response } from 'express';
 import crypto from 'node:crypto';
 import jwt from 'jsonwebtoken';
+import argon2 from 'argon2';
 import { PrivateKey } from '@hiveio/dhive';
 import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';
 import { sendOk, sendError } from '../response.js';
@@ -16,8 +17,10 @@ import { logger } from '../logger.js';
 const router = Router();
 const SESSION_EXPIRY = '24h';
 const SESSION_EXPIRY_MS = 24 * 60 * 60 * 1000;
+const SIGNUP_TOKEN_EXPIRY_MS = 24 * 60 * 60 * 1000;
 
 const verifyLimiter = rateLimit({ name: 'signup-verify', windowMs: 3_600_000, max: 10, keyFn: byIp });
+const resumeLimiter = rateLimit({ name: 'signup-resume', windowMs: 3_600_000, max: 5, keyFn: byIp });
 const confirmLimiter = rateLimit({ name: 'signup-confirm', windowMs: 3_600_000, max: 10, keyFn: byIp });
 const linkLimiter = rateLimit({ name: 'signup-link', windowMs: 3_600_000, max: 10, keyFn: byIp });
 
@@ -95,6 +98,87 @@ router.post('/verify', verifyLimiter, async (req: Request, res: Response) => {
   } catch (err) {
     logger.error({ err }, 'Email verification failed');
     sendError(res, 500, 'INTERNAL_ERROR', 'Verification failed');
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+// POST /api/auth/resume-signup — Resume an abandoned signup
+// Email was already verified but user didn't complete confirm/link step.
+// Authenticates via email + password, re-generates seed phrase or challenge.
+// ─────────────────────────────────────────────────────────────
+router.post('/resume-signup', resumeLimiter, async (req: Request, res: Response) => {
+  const pool = getAppPool();
+  if (!pool) return sendError(res, 503, 'INTERNAL_ERROR', 'Service not available');
+
+  const { email, password } = req.body || {};
+  if (!email || typeof email !== 'string') {
+    return sendError(res, 400, 'VALIDATION_ERROR', 'Email is required');
+  }
+  if (!password || typeof password !== 'string') {
+    return sendError(res, 400, 'VALIDATION_ERROR', 'Password is required');
+  }
+
+  const normalizedEmail = email.trim().toLowerCase();
+
+  try {
+    const { rows } = await pool.query<{
+      id: number;
+      username: string;
+      email: string;
+      password_hash: string;
+      linked_username: string | null;
+      verify_token: string;
+    }>(
+      'SELECT id, username, email, password_hash, linked_username, verify_token FROM pending_signups WHERE email = $1',
+      [normalizedEmail],
+    );
+
+    if (rows.length === 0) {
+      return sendError(res, 400, 'BAD_REQUEST', 'Invalid email or password');
+    }
+
+    const pending = rows[0];
+
+    // Verify password
+    const passwordValid = await argon2.verify(pending.password_hash, password);
+    if (!passwordValid) {
+      return sendError(res, 400, 'BAD_REQUEST', 'Invalid email or password');
+    }
+
+    // Reset expiry
+    const expiresAt = new Date(Date.now() + SIGNUP_TOKEN_EXPIRY_MS);
+
+    if (pending.linked_username) {
+      const challenge = crypto.randomBytes(32).toString('hex');
+      await pool.query(
+        'UPDATE pending_signups SET verify_token = $1, expires_at = $2 WHERE id = $3',
+        [`challenge:${challenge}`, expiresAt, pending.id],
+      );
+
+      return sendOk(res, {
+        flow: 'link',
+        username: pending.username,
+        linked_username: pending.linked_username,
+        challenge,
+      });
+    }
+
+    // New account flow: generate fresh seed phrase
+    const { mnemonic, keys } = await generateKeysFromNewSeed(pending.username);
+    const mnemonicHash = crypto.createHash('sha256').update(mnemonic).digest('hex');
+    await pool.query(
+      'UPDATE pending_signups SET verify_token = $1, expires_at = $2 WHERE id = $3',
+      [`confirmed:${mnemonicHash}:${JSON.stringify(keys)}`, expiresAt, pending.id],
+    );
+
+    sendOk(res, {
+      flow: 'new',
+      username: pending.username,
+      seed_phrase: mnemonic,
+    });
+  } catch (err) {
+    logger.error({ err }, 'Resume signup failed');
+    sendError(res, 500, 'INTERNAL_ERROR', 'Resume failed');
   }
 });
 

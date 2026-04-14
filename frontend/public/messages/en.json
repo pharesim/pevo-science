@@ -932,7 +932,12 @@
     "linking": "Verifying\u2026",
     "doneTitle": "Welcome to PEvO!",
     "doneDescription": "Your account is ready. You\u2019re signed in and accredited.",
-    "goToPapers": "Browse Papers"
+    "goToPapers": "Browse Papers",
+    "resumeTitle": "Resume Signup",
+    "resumeDescription": "Already verified your email? Enter your credentials to continue where you left off.",
+    "resumeButton": "Continue Signup",
+    "resuming": "Resuming\u2026",
+    "startOver": "Start a new signup instead"
   },
   "confirm": {
     "cancel": "Cancel",
