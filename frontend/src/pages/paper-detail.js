@@ -371,7 +371,7 @@ export function initPaperDetailPage() {
     },
 
     selectDiffVersions() {
-      if (this.diffMode) {
+      if (this.diffMode || this.pickingDiffVersions) {
         this.exitDiff();
         return;
       }
