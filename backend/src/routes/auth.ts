@@ -192,13 +192,11 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
         });
 
         const verifyUrl = `${config.appUrl}/signup/verify?token=${verifyToken}`;
-        const safeUrl = escapeHtml(verifyUrl);
         await transporter.sendMail({
           from: config.smtpFrom,
           to: normalizedEmail,
-          subject: 'PEvO — Verify Your Email',
-          text: `Welcome to PEvO!\n\nPlease verify your email to complete your registration:\n\n${verifyUrl}\n\nThis link expires in 24 hours.\n\n— PEvO`,
-          html: `<p>Welcome to PEvO!</p><p>Please verify your email to complete your registration:</p><p><a href="${safeUrl}">${safeUrl}</a></p><p>This link expires in 24 hours.</p><p>— PEvO</p>`,
+          subject: 'PEvO - Verify your email',
+          text: `Welcome to PEvO!\n\nPlease verify your email to complete your registration:\n\n${verifyUrl}\n\nThis link expires in 24 hours.\n\nIf you did not sign up for PEvO, you can safely ignore this email.\n\nPEvO - Open Scientific Publishing\nhttps://pevo.science`,
         });
       } catch (mailErr) {
         logger.error({ err: (mailErr as Error).message }, 'Failed to send verification email');
@@ -345,13 +343,11 @@ router.post('/reset-request', resetRequestLimiter, async (req: Request, res: Res
         });
 
         const resetUrl = `${config.appUrl}/auth/reset?token=${resetToken}`;
-        const safeUrl = escapeHtml(resetUrl);
         await transporter.sendMail({
           from: config.smtpFrom,
           to: normalizedEmail,
-          subject: 'PEvO — Password Reset',
-          text: `You requested a password reset for your PEvO account.\n\nReset your password:\n\n${resetUrl}\n\nThis link expires in 1 hour. If you didn't request this, you can safely ignore this email.\n\n— PEvO`,
-          html: `<p>You requested a password reset for your PEvO account.</p><p>Reset your password:</p><p><a href="${safeUrl}">${safeUrl}</a></p><p>This link expires in 1 hour. If you didn't request this, you can safely ignore this email.</p><p>— PEvO</p>`,
+          subject: 'PEvO - Password reset',
+          text: `You requested a password reset for your PEvO account.\n\nReset your password here:\n\n${resetUrl}\n\nThis link expires in 1 hour. If you did not request this, you can safely ignore this email.\n\nPEvO - Open Scientific Publishing\nhttps://pevo.science`,
         });
       } catch (mailErr) {
         logger.error({ err: (mailErr as Error).message }, 'Failed to send reset email');
@@ -451,14 +447,6 @@ function maskEmail(email: string): string {
   const tld = domain.slice(domain.lastIndexOf('.'));
   const maskedLocal = local.length <= 2 ? '***' : local[0] + '***' + local[local.length - 1];
   return `${maskedLocal}@***${tld}`;
-}
-
-function escapeHtml(str: string): string {
-  return str
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
 }
 
 export default router;

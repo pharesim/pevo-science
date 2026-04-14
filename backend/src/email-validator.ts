@@ -1,83 +1,64 @@
 /**
- * Default institutional email domain patterns from the spec (§3.3).
- * Matches against the full domain (everything after @).
+ * Institutional email validator.
  *
- * Types:
- * - suffix:  domain ends with this string (e.g. ".edu")
- * - exact:   domain matches exactly (e.g. "cern.ch")
- * - pattern: regex against the domain (e.g. German university patterns)
+ * Uses the JetBrains/swot academic domain database (data/academic-domains.json)
+ * plus configurable extra domains via INSTITUTIONAL_EMAIL_DOMAINS env var.
+ *
+ * Regenerate the data file: scripts/update-academic-domains.sh
  */
-interface DomainRule {
-  type: 'suffix' | 'exact' | 'pattern';
-  value: string;
-  regex?: RegExp;
+
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+
+interface AcademicDomains {
+  tlds: string[];
+  domains: string[];
 }
 
-const DEFAULT_RULES: DomainRule[] = [
-  // US universities
-  { type: 'suffix', value: '.edu' },
+// ── Load domain data ───────────────────────────
 
-  // Country-specific academic (.ac.*)
-  ...'.ac.uk,.ac.jp,.ac.kr,.ac.in,.ac.za,.ac.nz,.ac.at,.ac.be,.ac.il,.ac.th,.ac.tz'
-    .split(',').map(s => ({ type: 'suffix' as const, value: s })),
+let domainSet: Set<string> | null = null;
+let tldSuffixes: string[] | null = null;
+let extraSuffixes: string[] | null = null;
 
-  // Country-specific edu (edu.*)
-  ...'.edu.au,.edu.cn,.edu.br,.edu.mx,.edu.ar,.edu.co,.edu.pe,.edu.tr,.edu.pl,.edu.eg,.edu.ng,.edu.sg,.edu.hk,.edu.tw,.edu.my,.edu.ph,.edu.vn'
-    .split(',').map(s => ({ type: 'suffix' as const, value: s })),
+function load(): { domains: Set<string>; tlds: string[]; extra: string[] } {
+  if (domainSet && tldSuffixes && extraSuffixes) {
+    return { domains: domainSet, tlds: tldSuffixes, extra: extraSuffixes };
+  }
 
-  // German universities — pattern match
-  { type: 'pattern', value: 'uni-*.de', regex: /^uni-[a-z0-9-]+\.de$/ },
-  { type: 'pattern', value: 'tu-*.de', regex: /^tu-[a-z0-9-]+\.de$/ },
-  { type: 'pattern', value: 'fh-*.de', regex: /^fh-[a-z0-9-]+\.de$/ },
-  { type: 'pattern', value: 'hs-*.de', regex: /^hs-[a-z0-9-]+\.de$/ },
+  const dataPath = resolve(__dirname, '..', 'data', 'academic-domains.json');
+  const raw: AcademicDomains = JSON.parse(readFileSync(dataPath, 'utf8'));
 
-  // French universities — pattern match
-  { type: 'pattern', value: 'u-*.fr', regex: /^u-[a-z0-9-]+\.fr$/ },
-  { type: 'pattern', value: 'univ-*.fr', regex: /^univ-[a-z0-9-]+\.fr$/ },
+  domainSet = new Set(raw.domains);
+  tldSuffixes = raw.tlds.map((t) => (t.startsWith('.') ? t : `.${t}`));
+  extraSuffixes = [];
 
-  // Research institutes
-  { type: 'exact', value: 'csic.es' },
-  { type: 'exact', value: 'cnrs.fr' },
-  { type: 'exact', value: 'mpg.de' },
-  { type: 'exact', value: 'nih.gov' },
-  { type: 'exact', value: 'cern.ch' },
-  { type: 'suffix', value: '.research.' },  // research.* TLDs
-
-  // National labs (.gov subdomains)
-  { type: 'suffix', value: '.gov' },
-];
-
-let cachedRules: DomainRule[] | null = null;
-
-/**
- * Load rules: default set + any extra domains from INSTITUTIONAL_EMAIL_DOMAINS env var.
- * Extra domains are comma-separated suffixes (e.g. ".ethz.ch,.epfl.ch").
- */
-function getRules(): DomainRule[] {
-  if (cachedRules) return cachedRules;
-
-  const rules = [...DEFAULT_RULES];
-
-  const extra = process.env.INSTITUTIONAL_EMAIL_DOMAINS || '';
-  if (extra) {
-    for (const raw of extra.split(',')) {
-      const d = raw.trim().toLowerCase();
+  // INSTITUTIONAL_EMAIL_DOMAINS: comma-separated list of extra domains/suffixes
+  // Entries starting with "." are treated as suffixes (e.g. ".gov", ".gc.ca")
+  // Other entries are exact domains (e.g. "fraunhofer.de", "cern.ch")
+  const envExtra = process.env.INSTITUTIONAL_EMAIL_DOMAINS || '';
+  if (envExtra) {
+    for (const entry of envExtra.split(',')) {
+      const d = entry.trim().toLowerCase();
       if (!d) continue;
-      // If it starts with a dot, treat as suffix; otherwise exact match
-      rules.push(d.startsWith('.')
-        ? { type: 'suffix', value: d }
-        : { type: 'exact', value: d }
-      );
+      if (d.startsWith('.')) {
+        extraSuffixes.push(d);
+      } else {
+        domainSet.add(d);
+      }
     }
   }
 
-  cachedRules = rules;
-  return rules;
+  return { domains: domainSet, tlds: tldSuffixes, extra: extraSuffixes };
 }
 
 /**
  * Check whether an email address belongs to an institutional domain.
- * Returns true if the domain matches any rule.
+ * Checks against:
+ * 1. Exact domain match in swot database (e.g. "uni-freiburg.de")
+ * 2. Parent domain match (e.g. "cs.uni-freiburg.de" matches "uni-freiburg.de")
+ * 3. TLD suffix match from swot tlds.txt (e.g. "ac.za", "edu.cn")
+ * 4. Extra domains/suffixes from INSTITUTIONAL_EMAIL_DOMAINS env var
  */
 export function isInstitutionalEmail(email: string): boolean {
   const atIdx = email.lastIndexOf('@');
@@ -85,23 +66,33 @@ export function isInstitutionalEmail(email: string): boolean {
   const domain = email.slice(atIdx + 1).toLowerCase();
   if (!domain || domain.includes('..') || !domain.includes('.')) return false;
 
-  for (const rule of getRules()) {
-    switch (rule.type) {
-      case 'suffix':
-        if (domain.endsWith(rule.value) || domain === rule.value.slice(1)) return true;
-        break;
-      case 'exact':
-        if (domain === rule.value || domain.endsWith(`.${rule.value}`)) return true;
-        break;
-      case 'pattern':
-        if (rule.regex!.test(domain)) return true;
-        break;
-    }
+  const { domains, tlds, extra } = load();
+
+  // Check exact domain and all parent domains
+  // e.g. for "dept.cs.uni-freiburg.de" check:
+  //   "dept.cs.uni-freiburg.de", "cs.uni-freiburg.de", "uni-freiburg.de"
+  const parts = domain.split('.');
+  for (let i = 0; i < parts.length - 1; i++) {
+    const candidate = parts.slice(i).join('.');
+    if (domains.has(candidate)) return true;
   }
+
+  // Check TLD suffixes (e.g. ".ac.za", ".edu.cn")
+  for (const suffix of tlds) {
+    if (domain.endsWith(suffix) || domain === suffix.slice(1)) return true;
+  }
+
+  // Check extra suffixes (.gov, .gc.ca, .mil, env-configured)
+  for (const suffix of extra) {
+    if (domain.endsWith(suffix) || domain === suffix.slice(1)) return true;
+  }
+
   return false;
 }
 
-/** Reset cached rules (for testing). */
+/** Reset cached data (for testing). */
 export function _resetRulesCache(): void {
-  cachedRules = null;
+  domainSet = null;
+  tldSuffixes = null;
+  extraSuffixes = null;
 }

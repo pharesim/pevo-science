@@ -8,6 +8,7 @@ node_modules/
 # Build outputs
 dist/
 backend/public/
+backend/data/
 pinner/pevo-pinner
 
 # IDE / tooling

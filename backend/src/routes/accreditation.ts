@@ -10,6 +10,7 @@ import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';
 import { validate, accreditationRequestSchema, accreditationVerifySchema } from '../validation.js';
 import { rateLimit, byAccount, byIp } from '../middleware/rateLimit.js';
 import { logger } from '../logger.js';
+import { isInstitutionalEmail } from '../email-validator.js';
 
 /** How long a verification token stays valid before it expires. */
 const TOKEN_EXPIRY_MS = 24 * 60 * 60 * 1000; // 24 hours
@@ -93,24 +94,6 @@ function maskEmail(email: string): string {
   return `${maskedLocal}@***${tld}`;
 }
 
-function escapeHtml(str: string): string {
-  return str
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#x27;');
-}
-
-// Extended free email domain blocklist
-const FREE_EMAIL_DOMAINS = new Set([
-  'gmail.com', 'yahoo.com', 'hotmail.com', 'outlook.com', 'protonmail.com', 'aol.com',
-  'mail.com', 'zoho.com', 'yandex.com', 'icloud.com', 'live.com', 'msn.com',
-  'gmx.com', 'gmx.net', 'tutanota.com', 'fastmail.com', 'hushmail.com',
-  'guerrillamail.com', 'mailinator.com', 'tempmail.com', 'throwaway.email',
-  'sharklasers.com', 'guerrillamailblock.com', 'grr.la', 'dispostable.com',
-  'yopmail.com', '10minutemail.com', 'trashmail.com', 'maildrop.cc',
-]);
 
 // ──────────────────────────────────────────────
 // POST /api/accreditation/request
@@ -120,15 +103,8 @@ router.post('/request', verifyHiveSignature, accreditationRequestLimiter, valida
   const hive_username = req.hiveUsername!;
   const { full_name, institution, field, email, orcid } = req.body;
 
-  // Email format is already validated by Zod's z.string().email() in the
-  // validation middleware. This check ensures the domain is institutional.
-  const domain = email.split('@')[1]?.toLowerCase();
-  if (!domain) {
-    // Defensive: should never reach here after Zod validation
-    return sendError(res, 400, 'BAD_REQUEST', 'Invalid email address');
-  }
-  if (FREE_EMAIL_DOMAINS.has(domain)) {
-    return sendError(res, 422, 'VALIDATION_ERROR', 'Please use an institutional email address');
+  if (!isInstitutionalEmail(email)) {
+    return sendError(res, 422, 'VALIDATION_ERROR', 'Only institutional email addresses are accepted');
   }
 
   // Generate verification token
@@ -158,15 +134,12 @@ router.post('/request', verifyHiveSignature, accreditationRequestLimiter, valida
         auth: config.smtpUser ? { user: config.smtpUser, pass: config.smtpPass } : undefined,
       });
 
-      const safeName = escapeHtml(full_name);
       const verifyUrl = `${config.appUrl}/accreditation/verify?token=${token}`;
-      const safeUrl = escapeHtml(verifyUrl);
       await transporter.sendMail({
         from: config.smtpFrom,
         to: email,
-        subject: 'PEvO Accreditation — Verify Your Email',
-        text: `Hello ${full_name},\n\nPlease verify your email to complete your PEvO accreditation:\n\n${verifyUrl}\n\nThis link expires in 24 hours.\n\n— PEvO`,
-        html: `<p>Hello ${safeName},</p><p>Please verify your email to complete your PEvO accreditation:</p><p><a href="${safeUrl}">${safeUrl}</a></p><p>This link expires in 24 hours.</p><p>— PEvO</p>`,
+        subject: 'PEvO - Verify your accreditation',
+        text: `Hello ${full_name},\n\nPlease verify your email to complete your PEvO accreditation:\n\n${verifyUrl}\n\nThis link expires in 24 hours.\n\nPEvO - Open Scientific Publishing\nhttps://pevo.science`,
       });
     } catch (mailErr) {
       logger.error({ err: (mailErr as Error).message }, 'Failed to send verification email');

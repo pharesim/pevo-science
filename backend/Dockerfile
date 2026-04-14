@@ -16,7 +16,13 @@ RUN cd backend && npm install --ignore-scripts
 # Build backend
 COPY backend/tsconfig.json ./backend/
 COPY backend/src ./backend/src
+COPY backend/scripts ./backend/scripts
 RUN cd backend && npx tsc
+
+# Generate academic domain database from JetBrains/swot
+RUN apk add --no-cache git bash \
+    && cd backend && bash scripts/update-academic-domains.sh \
+    && apk del git bash
 
 # ── Production stage ─────────────────────────────────────────
 FROM node:20-alpine
@@ -27,8 +33,9 @@ WORKDIR /app
 COPY backend/package.json backend/package-lock.json* ./backend/
 RUN cd backend && npm install --omit=dev --ignore-scripts
 
-# Copy built backend
+# Copy built backend + academic domain data
 COPY --from=build /app/backend/dist ./backend/dist
+COPY --from=build /app/backend/data ./backend/data
 
 # Copy compiled frontend (Vite build output)
 COPY --from=build /app/backend/public ./backend/public

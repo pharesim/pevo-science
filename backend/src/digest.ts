@@ -26,14 +26,6 @@ interface DigestUser {
 
 // ── Helpers ─────────────────────────────────────
 
-function escapeHtml(str: string): string {
-  return str
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
-
 function generateUnsubscribeToken(username: string): string {
   const secret = config.unsubscribeSecret || config.sessionSecret;
   return crypto.createHmac('sha256', secret).update(`unsubscribe:${username}`).digest('hex');
@@ -97,33 +89,6 @@ async function updateLastDigestBlock(username: string, blockNum: number): Promis
   );
 }
 
-// ── Email rendering ─────────────────────────────
-
-function renderDigestHtml(username: string, events: NotificationEvent[]): string {
-  const safeUser = escapeHtml(username);
-  const unsubToken = generateUnsubscribeToken(username);
-  const unsubUrl = `${config.appUrl}/api/profile/${encodeURIComponent(username)}/notification-preferences/unsubscribe?token=${unsubToken}`;
-
-  const eventHtml = events
-    .map((e) => {
-      const desc = escapeHtml(describeEvent(e));
-      const date = escapeHtml(new Date(e.timestamp).toLocaleDateString());
-      return `<li>${desc} — <em>${date}</em></li>`;
-    })
-    .join('\n');
-
-  return `
-    <h2>PEvO Activity Digest for ${safeUser}</h2>
-    <p>Here's what happened since your last digest:</p>
-    <ul>${eventHtml}</ul>
-    <p><a href="${config.appUrl}/profile/${encodeURIComponent(username)}">View your profile</a></p>
-    <hr>
-    <p style="font-size: 12px; color: #666;">
-      <a href="${escapeHtml(unsubUrl)}">Unsubscribe from digest emails</a>
-    </p>
-  `.trim();
-}
-
 // ── Email sending ───────────────────────────────
 
 async function sendDigestEmail(user: DigestUser, events: NotificationEvent[]): Promise<void> {
@@ -139,15 +104,36 @@ async function sendDigestEmail(user: DigestUser, events: NotificationEvent[]): P
     auth: config.smtpUser ? { user: config.smtpUser, pass: config.smtpPass } : undefined,
   });
 
-  const html = renderDigestHtml(user.username, events);
   const frequency = user.digest_frequency === 'daily' ? 'Daily' : 'Weekly';
+  const unsubToken = generateUnsubscribeToken(user.username);
+  const unsubUrl = `${config.appUrl}/api/profile/${encodeURIComponent(user.username)}/notification-preferences/unsubscribe?token=${unsubToken}`;
+  const profileUrl = `${config.appUrl}/profile/${encodeURIComponent(user.username)}`;
+
+  const body = [
+    `${frequency} Activity Digest for ${user.username}`,
+    '',
+    'Here is what happened since your last digest:',
+    '',
+    ...events.map((e) => `- ${describeEvent(e)}`),
+    '',
+    `View your profile: ${profileUrl}`,
+    '',
+    '---',
+    `Unsubscribe: ${unsubUrl}`,
+    '',
+    'PEvO - Open Scientific Publishing',
+    'https://pevo.science',
+  ].join('\n');
 
   await transporter.sendMail({
     from: config.smtpFrom,
     to: user.email,
-    subject: `PEvO ${frequency} Activity Digest`,
-    html,
-    text: events.map((e) => describeEvent(e)).join('\n'),
+    subject: `PEvO - ${frequency} activity digest`,
+    text: body,
+    headers: {
+      'List-Unsubscribe': `<${unsubUrl}>`,
+      'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
+    },
   });
 }
 
