@@ -97,9 +97,10 @@ export function initSignupVerifyPage() {
           this.phase = 'error';
           this.error = this.$t('seedPhrase.unexpectedResponse');
         }
-      } catch (err) {
+      } catch {
+        // Token already consumed (second click) or expired — show resume form
         this.phase = 'error';
-        this.error = err.message;
+        this.error = null;
       }
     },
 

@@ -87,7 +87,7 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
       iv_posting: Buffer;
       upgraded_at: string | null;
     }>(
-      'SELECT posting_key_enc, iv_posting, upgraded_at FROM light_accounts WHERE username = $1',
+      'SELECT posting_key_enc, iv_posting, upgraded_at FROM accounts WHERE username = $1',
       [username],
     );
 
@@ -154,7 +154,7 @@ router.post('/upgrade', verifyHiveSignature, upgradeLimiter, async (req: Request
       posting_key_enc: Buffer | null;
       upgraded_at: string | null;
     }>(
-      'SELECT password_hash, posting_key_enc, upgraded_at FROM light_accounts WHERE username = $1',
+      'SELECT password_hash, posting_key_enc, upgraded_at FROM accounts WHERE username = $1',
       [username],
     );
 
@@ -176,7 +176,7 @@ router.post('/upgrade', verifyHiveSignature, upgradeLimiter, async (req: Request
 
     // Overwrite and NULL encrypted keys, set upgraded_at
     await pool.query(
-      `UPDATE light_accounts
+      `UPDATE accounts
        SET posting_key_enc = NULL, iv_posting = NULL,
            memo_key_enc = NULL, iv_memo = NULL,
            upgraded_at = NOW()

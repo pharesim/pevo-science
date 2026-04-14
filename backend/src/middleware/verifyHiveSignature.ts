@@ -81,7 +81,7 @@ export async function verifyHiveSignature(req: Request, res: Response, next: Nex
         if (pool) {
           try {
             const { rows } = await pool.query<{ sessions_invalidated_at: Date | null }>(
-              'SELECT sessions_invalidated_at FROM light_accounts WHERE username = $1',
+              'SELECT sessions_invalidated_at FROM accounts WHERE username = $1',
               [payload.sub],
             );
             if (rows.length > 0 && rows[0].sessions_invalidated_at) {

@@ -46,39 +46,37 @@ export async function initAppDb(): Promise<void> {
     ALTER TABLE notification_preferences
       ADD COLUMN IF NOT EXISTS last_digest_block BIGINT NOT NULL DEFAULT 0;
 
-    -- Light accounts tables
-    CREATE TABLE IF NOT EXISTS pending_signups (
-      id               SERIAL PRIMARY KEY,
-      email            TEXT NOT NULL UNIQUE,
-      password_hash    TEXT NOT NULL,
-      full_name        TEXT NOT NULL DEFAULT '',
-      institution      TEXT NOT NULL DEFAULT '',
-      field            TEXT NOT NULL DEFAULT '',
-      orcid            TEXT,
-      verify_token     TEXT NOT NULL,
-      expires_at       TIMESTAMPTZ NOT NULL,
-      created_at       TIMESTAMPTZ DEFAULT NOW()
+    -- Unified accounts table (migration 007 merged pending_signups + light_accounts)
+    CREATE TABLE IF NOT EXISTS accounts (
+      id                      SERIAL PRIMARY KEY,
+      email                   TEXT NOT NULL UNIQUE,
+      password_hash           TEXT NOT NULL,
+      full_name               TEXT NOT NULL DEFAULT '',
+      institution             TEXT NOT NULL DEFAULT '',
+      field                   TEXT NOT NULL DEFAULT '',
+      orcid                   TEXT,
+      username                TEXT UNIQUE,
+      verify_token            TEXT,
+      custody                 TEXT,
+      posting_key_enc         BYTEA,
+      memo_key_enc            BYTEA,
+      iv_posting              BYTEA,
+      iv_memo                 BYTEA,
+      upgraded_at             TIMESTAMPTZ,
+      reset_token             TEXT,
+      reset_token_expires_at  TIMESTAMPTZ,
+      sessions_invalidated_at TIMESTAMPTZ,
+      expires_at              TIMESTAMPTZ,
+      created_at              TIMESTAMPTZ DEFAULT NOW()
     );
 
-    -- Migration 005/006 cleanup: drop columns from previous schema versions
-    ALTER TABLE pending_signups DROP COLUMN IF EXISTS linked_username;
-    ALTER TABLE pending_signups DROP COLUMN IF EXISTS username;
-    ALTER TABLE pending_signups DROP COLUMN IF EXISTS link_flow;
-    DROP INDEX IF EXISTS pending_signups_username_key;
+    CREATE INDEX IF NOT EXISTS idx_accounts_email ON accounts(email);
+    CREATE INDEX IF NOT EXISTS idx_accounts_username ON accounts(username);
+    CREATE INDEX IF NOT EXISTS idx_accounts_verify_token ON accounts(verify_token);
 
-    CREATE TABLE IF NOT EXISTS light_accounts (
-      username         TEXT PRIMARY KEY,
-      password_hash    TEXT NOT NULL,
-      email            TEXT NOT NULL UNIQUE,
-      posting_key_enc  BYTEA,
-      memo_key_enc     BYTEA,
-      iv_posting       BYTEA,
-      iv_memo          BYTEA,
-      upgraded_at      TIMESTAMPTZ,
-      created_at       TIMESTAMPTZ DEFAULT NOW()
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_light_accounts_email ON light_accounts(email);
+    -- Drop old tables if they exist (migration 007)
+    DROP TABLE IF EXISTS pending_signups;
+    DROP TABLE IF EXISTS light_accounts;
 
     CREATE TABLE IF NOT EXISTS custody_audit_log (
       id              SERIAL PRIMARY KEY,
@@ -89,10 +87,6 @@ export async function initAppDb(): Promise<void> {
       created_at      TIMESTAMPTZ DEFAULT NOW()
     );
 
-    -- Password reset columns (migration 004)
-    ALTER TABLE light_accounts ADD COLUMN IF NOT EXISTS reset_token TEXT;
-    ALTER TABLE light_accounts ADD COLUMN IF NOT EXISTS reset_token_expires_at TIMESTAMPTZ;
-    ALTER TABLE light_accounts ADD COLUMN IF NOT EXISTS sessions_invalidated_at TIMESTAMPTZ;
 
     CREATE INDEX IF NOT EXISTS idx_custody_audit_username ON custody_audit_log(username);
     CREATE INDEX IF NOT EXISTS idx_custody_audit_created ON custody_audit_log(created_at);

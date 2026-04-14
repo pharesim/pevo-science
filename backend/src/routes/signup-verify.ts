@@ -29,7 +29,7 @@ const linkLimiter = rateLimit({ name: 'signup-link', windowMs: 3_600_000, max: 1
 
 // ─────────────────────────────────────────────────────────────
 // POST /api/auth/verify — Verify email token (SF3)
-// Marks pending signup as confirmed, returns { flow: 'choose' }
+// Marks account as confirmed, returns { flow: 'choose' }
 // ─────────────────────────────────────────────────────────────
 router.post('/verify', verifyLimiter, async (req: Request, res: Response) => {
   const pool = getAppPool();
@@ -46,7 +46,7 @@ router.post('/verify', verifyLimiter, async (req: Request, res: Response) => {
       email: string;
       expires_at: Date;
     }>(
-      'SELECT id, email, expires_at FROM pending_signups WHERE verify_token = $1',
+      'SELECT id, email, expires_at FROM accounts WHERE verify_token = $1',
       [token],
     );
 
@@ -54,20 +54,20 @@ router.post('/verify', verifyLimiter, async (req: Request, res: Response) => {
       return sendError(res, 400, 'BAD_REQUEST', 'Invalid or expired verification token');
     }
 
-    const pending = rows[0];
-    if (new Date() > new Date(pending.expires_at)) {
-      await pool.query('DELETE FROM pending_signups WHERE id = $1', [pending.id]);
+    const account = rows[0];
+    if (new Date() > new Date(account.expires_at)) {
+      await pool.query('DELETE FROM accounts WHERE id = $1', [account.id]);
       return sendError(res, 400, 'BAD_REQUEST', 'Verification token has expired');
     }
 
     // Mark as confirmed with a random token
     const confirmed = `confirmed:${crypto.randomBytes(32).toString('hex')}`;
     await pool.query(
-      'UPDATE pending_signups SET verify_token = $1 WHERE id = $2',
-      [confirmed, pending.id],
+      'UPDATE accounts SET verify_token = $1 WHERE id = $2',
+      [confirmed, account.id],
     );
 
-    sendOk(res, { flow: 'choose', email: pending.email, auth_token: confirmed });
+    sendOk(res, { flow: 'choose', email: account.email, auth_token: confirmed });
   } catch (err) {
     logger.error({ err }, 'Email verification failed');
     sendError(res, 500, 'INTERNAL_ERROR', 'Verification failed');
@@ -96,9 +96,9 @@ router.post('/resume-signup', resumeLimiter, async (req: Request, res: Response)
     const { rows } = await pool.query<{
       id: number;
       password_hash: string;
-      verify_token: string;
+      verify_token: string | null;
     }>(
-      'SELECT id, password_hash, verify_token FROM pending_signups WHERE email = $1',
+      'SELECT id, password_hash, verify_token FROM accounts WHERE email = $1',
       [normalizedEmail],
     );
 
@@ -106,15 +106,15 @@ router.post('/resume-signup', resumeLimiter, async (req: Request, res: Response)
       return sendError(res, 400, 'BAD_REQUEST', 'Invalid email or password');
     }
 
-    const pending = rows[0];
+    const account = rows[0];
 
-    // Only allow resume if email was already verified
-    if (!pending.verify_token.startsWith('confirmed:')) {
+    // Only allow resume if email was already verified but account not yet active
+    if (!account.verify_token || !account.verify_token.startsWith('confirmed:')) {
       return sendError(res, 400, 'BAD_REQUEST', 'Invalid email or password');
     }
 
     // Verify password
-    const passwordValid = await argon2.verify(pending.password_hash, password);
+    const passwordValid = await argon2.verify(account.password_hash, password);
     if (!passwordValid) {
       return sendError(res, 400, 'BAD_REQUEST', 'Invalid email or password');
     }
@@ -122,11 +122,11 @@ router.post('/resume-signup', resumeLimiter, async (req: Request, res: Response)
     // Reset expiry
     const expiresAt = new Date(Date.now() + SIGNUP_TOKEN_EXPIRY_MS);
     await pool.query(
-      'UPDATE pending_signups SET expires_at = $1 WHERE id = $2',
-      [expiresAt, pending.id],
+      'UPDATE accounts SET expires_at = $1 WHERE id = $2',
+      [expiresAt, account.id],
     );
 
-    sendOk(res, { flow: 'choose', email: normalizedEmail, auth_token: pending.verify_token });
+    sendOk(res, { flow: 'choose', email: normalizedEmail, auth_token: account.verify_token });
   } catch (err) {
     logger.error({ err }, 'Resume signup failed');
     sendError(res, 500, 'INTERNAL_ERROR', 'Resume failed');
@@ -179,7 +179,7 @@ router.post('/confirm', confirmLimiter, async (req: Request, res: Response) => {
   }
 
   try {
-    // Look up pending signup by auth token
+    // Look up account by auth token (must be in confirmed state)
     const { rows } = await pool.query<{
       id: number;
       email: string;
@@ -190,7 +190,7 @@ router.post('/confirm', confirmLimiter, async (req: Request, res: Response) => {
       orcid: string | null;
     }>(
       `SELECT id, email, password_hash, full_name, institution, field, orcid
-       FROM pending_signups WHERE verify_token = $1`,
+       FROM accounts WHERE verify_token = $1`,
       [auth_token],
     );
 
@@ -198,7 +198,7 @@ router.post('/confirm', confirmLimiter, async (req: Request, res: Response) => {
       return sendError(res, 400, 'BAD_REQUEST', 'Invalid or expired auth token');
     }
 
-    const pending = rows[0];
+    const account = rows[0];
 
     // Check Hive username availability
     const [existingAccount] = await hiveClient.database.getAccounts([normalizedUsername]);
@@ -219,18 +219,18 @@ router.post('/confirm', confirmLimiter, async (req: Request, res: Response) => {
     const postingEnc = encryptKey(normalizedUsername, posting_private);
     const memoEnc = encryptKey(normalizedUsername, memo_private);
 
-    // Create light_accounts row
+    // Activate the account: set username, keys, custody, clear verify_token
     await pool.query(
-      `INSERT INTO light_accounts (username, password_hash, email, posting_key_enc, iv_posting, memo_key_enc, iv_memo)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      `UPDATE accounts
+       SET username = $1, custody = 'light', verify_token = NULL,
+           posting_key_enc = $2, iv_posting = $3,
+           memo_key_enc = $4, iv_memo = $5
+       WHERE id = $6`,
       [
         normalizedUsername,
-        pending.password_hash,
-        pending.email,
-        postingEnc.ciphertext,
-        postingEnc.iv,
-        memoEnc.ciphertext,
-        memoEnc.iv,
+        postingEnc.ciphertext, postingEnc.iv,
+        memoEnc.ciphertext, memoEnc.iv,
+        account.id,
       ],
     );
 
@@ -239,7 +239,7 @@ router.post('/confirm', confirmLimiter, async (req: Request, res: Response) => {
       try {
         const evidenceHash = crypto
           .createHash('sha256')
-          .update(`${pending.email}:${normalizedUsername}:signup`)
+          .update(`${account.email}:${normalizedUsername}:signup`)
           .digest('hex');
 
         const adminKey = PrivateKey.fromString(config.pevoAdminPostingKey);
@@ -249,10 +249,10 @@ router.post('/confirm', confirmLimiter, async (req: Request, res: Response) => {
             json: JSON.stringify({
               action: 'accredit',
               account: normalizedUsername,
-              name: pending.full_name || normalizedUsername,
-              institution: pending.institution || '',
-              field: pending.field || '',
-              orcid: pending.orcid || '',
+              name: account.full_name || normalizedUsername,
+              institution: account.institution || '',
+              field: account.field || '',
+              orcid: account.orcid || '',
               method: 'email',
               evidence_hash: evidenceHash,
               timestamp: new Date().toISOString(),
@@ -266,9 +266,6 @@ router.post('/confirm', confirmLimiter, async (req: Request, res: Response) => {
         logger.error({ err: (accErr as Error).message }, 'Failed to broadcast accreditation — account created but not accredited');
       }
     }
-
-    // Delete pending signup
-    await pool.query('DELETE FROM pending_signups WHERE id = $1', [pending.id]);
 
     // Issue JWT session
     const jwtToken = jwt.sign(
@@ -311,7 +308,7 @@ router.post('/link', linkLimiter, verifyHiveSignature, async (req: Request, res:
   }
 
   try {
-    // Look up pending signup by auth token
+    // Look up account by auth token (must be in confirmed state)
     const { rows } = await pool.query<{
       id: number;
       email: string;
@@ -322,7 +319,7 @@ router.post('/link', linkLimiter, verifyHiveSignature, async (req: Request, res:
       orcid: string | null;
     }>(
       `SELECT id, email, password_hash, full_name, institution, field, orcid
-       FROM pending_signups WHERE verify_token = $1`,
+       FROM accounts WHERE verify_token = $1`,
       [auth_token],
     );
 
@@ -330,29 +327,30 @@ router.post('/link', linkLimiter, verifyHiveSignature, async (req: Request, res:
       return sendError(res, 400, 'BAD_REQUEST', 'Invalid or expired link request');
     }
 
-    const pending = rows[0];
+    const account = rows[0];
 
     // Verify the Hive account exists
-    const [account] = await hiveClient.database.getAccounts([hiveUsername]);
-    if (!account) {
+    const [hiveAccount] = await hiveClient.database.getAccounts([hiveUsername]);
+    if (!hiveAccount) {
       return sendError(res, 404, 'NOT_FOUND', 'Hive account not found');
     }
 
     // Check the Hive account isn't already registered
     const { rows: existing } = await pool.query<{ username: string }>(
-      'SELECT username FROM light_accounts WHERE username = $1',
+      'SELECT username FROM accounts WHERE username = $1',
       [hiveUsername],
     );
     if (existing.length > 0) {
       return sendError(res, 409, 'DUPLICATE', 'This Hive account is already linked');
     }
 
-    // Create light_accounts row with no encrypted keys (self-custody from start)
+    // Activate: set username, custody=self, upgraded_at, clear verify_token
     const now = new Date();
     await pool.query(
-      `INSERT INTO light_accounts (username, password_hash, email, upgraded_at, created_at)
-       VALUES ($1, $2, $3, $4, $5)`,
-      [hiveUsername, pending.password_hash, pending.email, now, now],
+      `UPDATE accounts
+       SET username = $1, custody = 'self', verify_token = NULL, upgraded_at = $2
+       WHERE id = $3`,
+      [hiveUsername, now, account.id],
     );
 
     // Broadcast accreditation custom_json
@@ -360,7 +358,7 @@ router.post('/link', linkLimiter, verifyHiveSignature, async (req: Request, res:
       try {
         const evidenceHash = crypto
           .createHash('sha256')
-          .update(`${pending.email}:${hiveUsername}:link`)
+          .update(`${account.email}:${hiveUsername}:link`)
           .digest('hex');
 
         const adminKey = PrivateKey.fromString(config.pevoAdminPostingKey);
@@ -370,10 +368,10 @@ router.post('/link', linkLimiter, verifyHiveSignature, async (req: Request, res:
             json: JSON.stringify({
               action: 'accredit',
               account: hiveUsername,
-              name: pending.full_name || hiveUsername,
-              institution: pending.institution || '',
-              field: pending.field || '',
-              orcid: pending.orcid || '',
+              name: account.full_name || hiveUsername,
+              institution: account.institution || '',
+              field: account.field || '',
+              orcid: account.orcid || '',
               method: 'email',
               evidence_hash: evidenceHash,
               timestamp: new Date().toISOString(),
@@ -387,9 +385,6 @@ router.post('/link', linkLimiter, verifyHiveSignature, async (req: Request, res:
         logger.error({ err: (accErr as Error).message }, 'Failed to broadcast accreditation for linked account');
       }
     }
-
-    // Delete pending signup
-    await pool.query('DELETE FROM pending_signups WHERE id = $1', [pending.id]);
 
     // Issue JWT session
     const jwtToken = jwt.sign(

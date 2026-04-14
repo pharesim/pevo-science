@@ -102,22 +102,19 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
   }
 
   try {
-    // Check email not already registered
-    const { rows: emailRows } = await pool.query<{ username: string }>(
-      'SELECT username FROM light_accounts WHERE email = $1',
+    // Check email not already registered or pending
+    const { rows: existingRows } = await pool.query<{ verify_token: string | null }>(
+      'SELECT verify_token FROM accounts WHERE email = $1',
       [normalizedEmail],
     );
-    if (emailRows.length > 0) {
-      return sendError(res, 409, 'DUPLICATE', 'Email already registered');
-    }
-
-    // Check no pending signup with this email
-    const { rows: pendingEmail } = await pool.query<{ id: number }>(
-      'SELECT id FROM pending_signups WHERE email = $1 AND expires_at > NOW()',
-      [normalizedEmail],
-    );
-    if (pendingEmail.length > 0) {
-      return sendError(res, 409, 'DUPLICATE', 'A verification email has already been sent to this address');
+    if (existingRows.length > 0) {
+      if (existingRows[0].verify_token === null) {
+        return sendError(res, 409, 'DUPLICATE', 'Email already registered');
+      }
+      if (existingRows[0].verify_token.startsWith('confirmed:')) {
+        return sendError(res, 409, 'DUPLICATE', 'Email already verified. Please log in to continue.');
+      }
+      // Unverified — allow overwrite via ON CONFLICT below
     }
 
     // Hash password with argon2id
@@ -127,10 +124,10 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
     const verifyToken = crypto.randomBytes(32).toString('hex');
     const expiresAt = new Date(Date.now() + SIGNUP_TOKEN_EXPIRY_MS);
 
-    // Store pending signup with accreditation fields
+    // Store signup in accounts table
     const safeOrcid = orcid && typeof orcid === 'string' ? orcid.trim() : null;
     await pool.query(
-      `INSERT INTO pending_signups (email, password_hash, full_name, institution, field, orcid, verify_token, expires_at)
+      `INSERT INTO accounts (email, password_hash, full_name, institution, field, orcid, verify_token, expires_at)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        ON CONFLICT (email) DO UPDATE SET
          password_hash = EXCLUDED.password_hash,
@@ -163,8 +160,8 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
         });
       } catch (mailErr) {
         logger.error({ err: (mailErr as Error).message }, 'Failed to send verification email');
-        // Delete the pending signup since we couldn't send the email
-        await pool.query('DELETE FROM pending_signups WHERE verify_token = $1', [verifyToken]);
+        // Delete the account row since we couldn't send the email
+        await pool.query('DELETE FROM accounts WHERE verify_token = $1', [verifyToken]);
         return sendError(res, 500, 'INTERNAL_ERROR', 'Failed to send verification email');
       }
     } else if (process.env.NODE_ENV !== 'production') {
@@ -205,9 +202,9 @@ router.post('/resend-verification', resendLimiter, async (req: Request, res: Res
     const { rows } = await pool.query<{
       id: number;
       password_hash: string;
-      verify_token: string;
+      verify_token: string | null;
     }>(
-      'SELECT id, password_hash, verify_token FROM pending_signups WHERE email = $1',
+      'SELECT id, password_hash, verify_token FROM accounts WHERE email = $1',
       [normalizedEmail],
     );
 
@@ -216,15 +213,18 @@ router.post('/resend-verification', resendLimiter, async (req: Request, res: Res
       return sendOk(res, { message: 'If that email has a pending signup, a new verification link has been sent.' });
     }
 
-    const pending = rows[0];
+    const account = rows[0];
 
-    const passwordValid = await argon2.verify(pending.password_hash, password);
+    const passwordValid = await argon2.verify(account.password_hash, password);
     if (!passwordValid) {
       return sendOk(res, { message: 'If that email has a pending signup, a new verification link has been sent.' });
     }
 
-    // Already confirmed — no need to resend
-    if (pending.verify_token.startsWith('confirmed:')) {
+    // Already active or confirmed — no need to resend
+    if (!account.verify_token) {
+      return sendOk(res, { message: 'Your account is already active. Please log in.' });
+    }
+    if (account.verify_token.startsWith('confirmed:')) {
       return sendOk(res, { message: 'Your email is already verified. Please log in to continue your signup.' });
     }
 
@@ -232,8 +232,8 @@ router.post('/resend-verification', resendLimiter, async (req: Request, res: Res
     const newToken = crypto.randomBytes(32).toString('hex');
     const expiresAt = new Date(Date.now() + SIGNUP_TOKEN_EXPIRY_MS);
     await pool.query(
-      'UPDATE pending_signups SET verify_token = $1, expires_at = $2 WHERE id = $3',
-      [newToken, expiresAt, pending.id],
+      'UPDATE accounts SET verify_token = $1, expires_at = $2 WHERE id = $3',
+      [newToken, expiresAt, account.id],
     );
 
     if (config.smtpHost) {
@@ -285,81 +285,71 @@ router.post('/login', loginLimiter, async (req: Request, res: Response) => {
   const normalized = loginId.trim().toLowerCase();
 
   try {
-    // Look up by username or email
+    // Single-table lookup by username or email
     const { rows } = await pool.query<{
-      username: string;
+      id: number;
+      email: string;
+      username: string | null;
       password_hash: string;
+      verify_token: string | null;
+      custody: string | null;
       upgraded_at: string | null;
+      expires_at: Date | null;
       login_failures: number;
     }>(
-      `SELECT username, password_hash, upgraded_at,
+      `SELECT a.id, a.email, a.username, a.password_hash, a.verify_token,
+              a.custody, a.upgraded_at, a.expires_at,
               COALESCE((SELECT COUNT(*) FROM custody_audit_log
-                WHERE custody_audit_log.username = light_accounts.username
+                WHERE custody_audit_log.username = a.username
                   AND operation_type = 'login_failure'
                   AND created_at > NOW() - INTERVAL '1 hour'), 0)::int AS login_failures
-       FROM light_accounts
-       WHERE username = $1 OR email = $1`,
+       FROM accounts a
+       WHERE a.username = $1 OR a.email = $1`,
       [normalized],
     );
 
     if (rows.length === 0) {
-      // No light_accounts match — check pending_signups
-      const { rows: pendingRows } = await pool.query<{
-        id: number;
-        email: string;
-        password_hash: string;
-        verify_token: string;
-        expires_at: Date;
-      }>(
-        'SELECT id, email, password_hash, verify_token, expires_at FROM pending_signups WHERE email = $1',
-        [normalized],
-      );
-
-      if (pendingRows.length > 0) {
-        const pending = pendingRows[0];
-        const pendingPasswordValid = await argon2.verify(pending.password_hash, password);
-        if (pendingPasswordValid) {
-          if (pending.verify_token.startsWith('confirmed:')) {
-            // Email verified but never completed — let them continue
-            return res.status(409).json({
-              status: 'error',
-              error: { code: 'PENDING_SIGNUP', message: 'Your signup is not complete yet.' },
-              data: { auth_token: pending.verify_token, email: pending.email },
-            });
-          }
-          // Not confirmed — check expiry
-          if (new Date() > new Date(pending.expires_at)) {
-            await pool.query('DELETE FROM pending_signups WHERE id = $1', [pending.id]);
-            return sendError(res, 410, 'SIGNUP_EXPIRED', 'Your signup has expired. Please sign up again.');
-          }
-          // Not yet verified — offer to resend
-          return sendError(res, 409, 'PENDING_UNVERIFIED', 'Your email has not been verified yet.');
-        }
-      }
-
       return sendError(res, 401, 'UNAUTHORIZED', 'Invalid credentials');
     }
 
     const account = rows[0];
 
-    // Check account lockout (20 failures in the last hour)
+    // Verify password first (before revealing account state)
+    const valid = await argon2.verify(account.password_hash, password);
+    if (!valid) {
+      if (account.username) {
+        await pool.query(
+          'INSERT INTO custody_audit_log (username, operation_type) VALUES ($1, $2)',
+          [account.username, 'login_failure'],
+        );
+      }
+      return sendError(res, 401, 'UNAUTHORIZED', 'Invalid credentials');
+    }
+
+    // Account not yet active — handle pending states
+    if (account.verify_token !== null) {
+      if (account.verify_token.startsWith('confirmed:')) {
+        // Email verified but signup not completed — let them continue
+        return res.status(409).json({
+          status: 'error',
+          error: { code: 'PENDING_SIGNUP', message: 'Your signup is not complete yet.' },
+          data: { auth_token: account.verify_token, email: account.email },
+        });
+      }
+      // Unverified — check expiry
+      if (account.expires_at && new Date() > new Date(account.expires_at)) {
+        await pool.query('DELETE FROM accounts WHERE id = $1', [account.id]);
+        return sendError(res, 410, 'SIGNUP_EXPIRED', 'Your signup has expired. Please sign up again.');
+      }
+      return sendError(res, 409, 'PENDING_UNVERIFIED', 'Your email has not been verified yet.');
+    }
+
+    // Active account — check lockout
     if (account.login_failures >= MAX_LOGIN_FAILURES) {
       return sendError(res, 403, 'ACCOUNT_LOCKED', 'Account temporarily locked due to too many failed attempts. Reset your password or try again later.');
     }
 
-    // Verify password
-    const valid = await argon2.verify(account.password_hash, password);
-    if (!valid) {
-      // Log failed attempt for lockout tracking
-      await pool.query(
-        'INSERT INTO custody_audit_log (username, operation_type) VALUES ($1, $2)',
-        [account.username, 'login_failure'],
-      );
-      return sendError(res, 401, 'UNAUTHORIZED', 'Invalid credentials');
-    }
-
-    // Determine custody mode
-    const custody = account.upgraded_at ? 'self' : 'light';
+    const custody = account.upgraded_at ? 'self' : (account.custody || 'light');
 
     const token = jwt.sign(
       { sub: account.username, custody },
@@ -391,8 +381,8 @@ router.post('/reset-request', resetRequestLimiter, async (req: Request, res: Res
 
   try {
     // Look up account by email
-    const { rows } = await pool.query<{ username: string }>(
-      'SELECT username FROM light_accounts WHERE email = $1',
+    const { rows } = await pool.query<{ id: number; username: string | null }>(
+      'SELECT id, username FROM accounts WHERE email = $1',
       [normalizedEmail],
     );
 
@@ -402,15 +392,15 @@ router.post('/reset-request', resetRequestLimiter, async (req: Request, res: Res
       return;
     }
 
-    const { username } = rows[0];
+    const account = rows[0];
 
     // Generate reset token
     const resetToken = crypto.randomBytes(32).toString('hex');
     const expiresAt = new Date(Date.now() + RESET_TOKEN_EXPIRY_MS);
 
     await pool.query(
-      'UPDATE light_accounts SET reset_token = $1, reset_token_expires_at = $2 WHERE username = $3',
-      [resetToken, expiresAt, username],
+      'UPDATE accounts SET reset_token = $1, reset_token_expires_at = $2 WHERE id = $3',
+      [resetToken, expiresAt, account.id],
     );
 
     // Send reset email
@@ -434,13 +424,13 @@ router.post('/reset-request', resetRequestLimiter, async (req: Request, res: Res
         logger.error({ err: (mailErr as Error).message }, 'Failed to send reset email');
         // Clear the token since we couldn't send the email
         await pool.query(
-          'UPDATE light_accounts SET reset_token = NULL, reset_token_expires_at = NULL WHERE username = $1',
-          [username],
+          'UPDATE accounts SET reset_token = NULL, reset_token_expires_at = NULL WHERE id = $1',
+          [account.id],
         );
         return sendError(res, 500, 'INTERNAL_ERROR', 'Failed to send reset email');
       }
     } else if (process.env.NODE_ENV !== 'production') {
-      logger.info({ username, resetToken }, 'Reset email skipped (SMTP not configured)');
+      logger.info({ id: account.id, resetToken }, 'Reset email skipped (SMTP not configured)');
     }
 
     sendOk(res, { message: 'If an account exists with that email, a reset link has been sent.' });
@@ -469,12 +459,13 @@ router.post('/reset', resetLimiter, async (req: Request, res: Response) => {
   }
 
   try {
-    // Look up the token — use timing-safe comparison via SQL
+    // Look up the token
     const { rows } = await pool.query<{
-      username: string;
+      id: number;
+      username: string | null;
       reset_token_expires_at: Date;
     }>(
-      'SELECT username, reset_token_expires_at FROM light_accounts WHERE reset_token = $1',
+      'SELECT id, username, reset_token_expires_at FROM accounts WHERE reset_token = $1',
       [token],
     );
 
@@ -486,8 +477,8 @@ router.post('/reset', resetLimiter, async (req: Request, res: Response) => {
     if (new Date() > account.reset_token_expires_at) {
       // Clear expired token
       await pool.query(
-        'UPDATE light_accounts SET reset_token = NULL, reset_token_expires_at = NULL WHERE username = $1',
-        [account.username],
+        'UPDATE accounts SET reset_token = NULL, reset_token_expires_at = NULL WHERE id = $1',
+        [account.id],
       );
       return sendError(res, 400, 'INVALID_TOKEN', 'Reset token has expired');
     }
@@ -497,20 +488,22 @@ router.post('/reset', resetLimiter, async (req: Request, res: Response) => {
 
     // Update password, clear reset token, invalidate all existing sessions
     await pool.query(
-      `UPDATE light_accounts
+      `UPDATE accounts
        SET password_hash = $1,
            reset_token = NULL,
            reset_token_expires_at = NULL,
            sessions_invalidated_at = NOW()
-       WHERE username = $2`,
-      [passwordHash, account.username],
+       WHERE id = $2`,
+      [passwordHash, account.id],
     );
 
     // Audit log (non-blocking)
-    pool.query(
-      'INSERT INTO custody_audit_log (username, operation_type) VALUES ($1, $2)',
-      [account.username, 'password_reset'],
-    ).catch(() => {});
+    if (account.username) {
+      pool.query(
+        'INSERT INTO custody_audit_log (username, operation_type) VALUES ($1, $2)',
+        [account.username, 'password_reset'],
+      ).catch(() => {});
+    }
 
     sendOk(res, { message: 'Password has been reset. Please log in with your new password.' });
   } catch (err) {

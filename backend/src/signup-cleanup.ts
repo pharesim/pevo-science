@@ -5,9 +5,9 @@ const CLEANUP_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 let cleanupTimer: ReturnType<typeof setInterval> | null = null;
 
 /**
- * Delete expired pending signups.
- * - Unverified rows: deleted after expires_at (24h from signup).
- * - Verified but incomplete rows: kept for 30 days from signup, then deleted.
+ * Delete expired unfinished signups from accounts table.
+ * - Unverified rows (verify_token is a hex token): deleted after expires_at (24h from signup).
+ * - Verified but incomplete rows (verify_token starts with 'confirmed:'): kept for 30 days, then deleted.
  */
 async function cleanupExpiredSignups(): Promise<void> {
   const pool = getAppPool();
@@ -15,9 +15,9 @@ async function cleanupExpiredSignups(): Promise<void> {
 
   try {
     const { rowCount } = await pool.query(
-      `DELETE FROM pending_signups WHERE
-       (expires_at < NOW() AND verify_token NOT LIKE 'confirmed:%' AND verify_token NOT LIKE 'challenge:%')
-       OR created_at < NOW() - INTERVAL '30 days'`,
+      `DELETE FROM accounts WHERE verify_token IS NOT NULL AND (
+       (expires_at < NOW() AND verify_token NOT LIKE 'confirmed:%')
+       OR created_at < NOW() - INTERVAL '30 days')`,
     );
     if (rowCount && rowCount > 0) {
       logger.info({ deleted: rowCount }, 'Cleaned up expired pending signups');
