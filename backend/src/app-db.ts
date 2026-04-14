@@ -62,6 +62,13 @@ export async function initAppDb(): Promise<void> {
       created_at       TIMESTAMPTZ DEFAULT NOW()
     );
 
+    -- Add columns if table already exists from previous schema
+    ALTER TABLE pending_signups ADD COLUMN IF NOT EXISTS linked_username TEXT;
+    ALTER TABLE pending_signups ADD COLUMN IF NOT EXISTS full_name TEXT NOT NULL DEFAULT '';
+    ALTER TABLE pending_signups ADD COLUMN IF NOT EXISTS institution TEXT NOT NULL DEFAULT '';
+    ALTER TABLE pending_signups ADD COLUMN IF NOT EXISTS field TEXT NOT NULL DEFAULT '';
+    ALTER TABLE pending_signups ADD COLUMN IF NOT EXISTS orcid TEXT;
+
     CREATE TABLE IF NOT EXISTS light_accounts (
       username         TEXT PRIMARY KEY,
       password_hash    TEXT NOT NULL,
