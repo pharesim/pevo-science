@@ -1,9 +1,133 @@
 @import url('https://fonts.googleapis.com/css2?family=Merriweather:ital,wght@0,300;0,400;0,700;0,900;1,400&family=Inter:wght@300;400;500;600;700&display=swap');
 @import 'katex/dist/katex.min.css';
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
 
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@theme {
+  /* Colors */
+  --color-background: #FAFAF8;
+  --color-foreground: #2D2D2D;
+
+  --color-pevo-green: #8BA83E;
+  --color-pevo-green-dark: #6B8A2E;
+  --color-pevo-green-light: #EDF3DB;
+  --color-pevo-teal: #1B7A6D;
+  --color-pevo-teal-dark: #14605A;
+  --color-pevo-teal-light: #E0F0EE;
+  --color-pevo-crimson: #B31B4B;
+  --color-pevo-crimson-dark: #8E1A3C;
+  --color-pevo-crimson-light: #F8E4EB;
+
+  --color-ink: #2D2D2D;
+  --color-ink-light: #4A4A4A;
+  --color-ink-muted: #6B7280;
+
+  --color-parchment: #FAFAF8;
+  --color-parchment-warm: #F2F0EB;
+  --color-parchment-dark: #E0DDD5;
+
+  --color-accent: #1B7A6D;
+  --color-accent-hover: #14605A;
+  --color-accent-light: #E0F0EE;
+
+  --color-success: #8BA83E;
+  --color-warning: #B31B4B;
+
+  /* Fonts */
+  --font-serif: 'Merriweather', 'Georgia', 'Cambria', 'Times New Roman', 'Times', serif;
+  --font-sans: 'Inter', 'system-ui', '-apple-system', 'Segoe UI', 'Roboto', 'Helvetica Neue', 'Arial', sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+
+  /* Font sizes */
+  --text-paper-title: 1.75rem;
+  --text-paper-title--line-height: 2.25rem;
+  --text-section-title: 1.25rem;
+  --text-section-title--line-height: 1.75rem;
+
+  /* Max widths */
+  --container-reading: 72ch;
+  --container-content: 960px;
+
+  /* Spacing */
+  --spacing-18: 4.5rem;
+}
+
+/* Typography plugin customization */
+@layer base {
+  .prose {
+    --tw-prose-body: #4A4A4A;
+    --tw-prose-headings: #2D2D2D;
+    --tw-prose-links: #1B7A6D;
+    --tw-prose-bold: #2D2D2D;
+    --tw-prose-quotes: #6B7280;
+    --tw-prose-quote-borders: rgba(27, 122, 109, 0.4);
+    --tw-prose-code: #2D2D2D;
+    --tw-prose-pre-code: #2D2D2D;
+    --tw-prose-pre-bg: #F2F0EB;
+    --tw-prose-th-borders: #E0DDD5;
+    --tw-prose-td-borders: #E0DDD5;
+    --tw-prose-hr: #E0DDD5;
+    max-width: 72ch;
+    line-height: 1.75;
+  }
+
+  .prose :is(h1, h2, h3, h4) {
+    font-family: var(--font-serif);
+  }
+
+  .prose h2 {
+    font-size: 1.5rem;
+    margin-top: 2em;
+    margin-bottom: 0.75em;
+    font-weight: 700;
+  }
+
+  .prose h3 {
+    font-size: 1.25rem;
+    margin-top: 1.75em;
+    margin-bottom: 0.5em;
+    font-weight: 600;
+  }
+
+  .prose h4 {
+    font-size: 1.1rem;
+    margin-top: 1.5em;
+    margin-bottom: 0.5em;
+    font-weight: 600;
+  }
+
+  .prose a:hover {
+    color: #14605A;
+  }
+
+  .prose code {
+    background-color: #F2F0EB;
+    border-radius: 0.25rem;
+    padding: 0.15em 0.35em;
+    font-weight: 400;
+  }
+
+  .prose code::before,
+  .prose code::after {
+    content: "";
+  }
+
+  .prose pre code {
+    background-color: transparent;
+    padding: 0;
+  }
+
+  .prose pre {
+    background-color: #F2F0EB;
+    color: #2D2D2D;
+    border-radius: 0.5rem;
+    border: 1px solid #E0DDD5;
+  }
+
+  .prose thead th {
+    font-weight: 600;
+  }
+}
 
 :root {
   --background: #FAFAF8;
@@ -47,11 +171,11 @@ highlight {
   }
 
   .badge-accredited {
-    @apply badge bg-pevo-green-light text-pevo-green-dark;
+    @apply inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-pevo-green-light text-pevo-green-dark;
   }
 
   .badge-discipline {
-    @apply badge bg-pevo-teal-light text-pevo-teal border border-pevo-teal/20;
+    @apply inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-pevo-teal-light text-pevo-teal border border-pevo-teal/20;
   }
 
   .btn {
@@ -59,15 +183,15 @@ highlight {
   }
 
   .btn-primary {
-    @apply btn bg-pevo-teal text-white hover:bg-pevo-teal-dark hover:text-white;
+    @apply inline-flex items-center justify-center px-4 py-2 min-h-[44px] rounded-md font-medium text-sm transition-colors focus:outline-none focus:ring-2 focus:ring-accent focus:ring-offset-2 bg-pevo-teal text-white hover:bg-pevo-teal-dark hover:text-white;
   }
 
   .btn-secondary {
-    @apply btn bg-white text-ink border border-parchment-dark hover:bg-parchment-warm;
+    @apply inline-flex items-center justify-center px-4 py-2 min-h-[44px] rounded-md font-medium text-sm transition-colors focus:outline-none focus:ring-2 focus:ring-accent focus:ring-offset-2 bg-white text-ink border border-parchment-dark hover:bg-parchment-warm;
   }
 
   .btn-accent-green {
-    @apply btn bg-pevo-green text-white hover:bg-pevo-green-dark;
+    @apply inline-flex items-center justify-center px-4 py-2 min-h-[44px] rounded-md font-medium text-sm transition-colors focus:outline-none focus:ring-2 focus:ring-accent focus:ring-offset-2 bg-pevo-green text-white hover:bg-pevo-green-dark;
   }
 
   .card {
