@@ -54,8 +54,13 @@ export function initSignupPage() {
     init() {
       this.$watch('username', (val) => {
         clearTimeout(this._usernameTimer);
-        if (!val || !isValidUsername(val)) {
-          this.usernameStatus = val ? 'invalid' : null;
+        if (!val) {
+          this.usernameStatus = null;
+          return;
+        }
+        if (!isValidUsername(val)) {
+          // Don't show invalid while user is still typing short usernames
+          this.usernameStatus = val.length >= MIN_USERNAME ? 'invalid' : null;
           return;
         }
         this.usernameStatus = 'checking';
