@@ -243,7 +243,8 @@ async function fetchCommentsFromHiveApi(
 // ──────────────────────────────────────────────
 
 router.get('/', async (req: Request, res: Response) => {
-  const { author, permlink } = req.params;
+  const author = req.params.author as string;
+  const permlink = req.params.permlink as string;
   const params = parseCommentParams(req);
 
   // Verify paper exists

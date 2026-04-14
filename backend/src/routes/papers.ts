@@ -797,7 +797,8 @@ function buildPaperDetail(
 }
 
 router.get('/:author/:permlink', async (req: Request, res: Response) => {
-  let { author, permlink } = req.params;
+  let author = req.params.author as string;
+  let permlink = req.params.permlink as string;
   const requestedVersion = req.query.version ? parseInt(req.query.version as string, 10) : null;
 
   if (requestedVersion !== null && isNaN(requestedVersion)) {
@@ -1049,7 +1050,8 @@ async function fetchEnrichmentFromHiveApi(author: string, permlink: string) {
 }
 
 router.get('/:author/:permlink/enrichment', async (req: Request, res: Response) => {
-  const { author, permlink } = req.params;
+  const author = req.params.author as string;
+  const permlink = req.params.permlink as string;
 
   const cacheKey = `paper-enrichment:${author}:${permlink}`;
   const cached = await hafCache.getOrSet(cacheKey, async () => {
@@ -1072,7 +1074,8 @@ router.get('/:author/:permlink/enrichment', async (req: Request, res: Response) 
 const invalidateLimiter = rateLimit({ name: 'cache-invalidate', windowMs: 60_000, max: 10, keyFn: byAccount });
 
 router.post('/:author/:permlink/invalidate', verifyHiveSignature, invalidateLimiter, async (req: Request, res: Response) => {
-  const { author, permlink } = req.params;
+  const author = req.params.author as string;
+  const permlink = req.params.permlink as string;
 
   // Invalidate all cache keys for this paper
   await Promise.all([
@@ -1133,7 +1136,8 @@ async function fetchCitationsFromHaf(author: string, permlink: string, limit: nu
 }
 
 router.get('/:author/:permlink/citations', async (req: Request, res: Response) => {
-  const { author, permlink } = req.params;
+  const author = req.params.author as string;
+  const permlink = req.params.permlink as string;
   const { page, limit, offset } = parsePageLimit(req);
 
   // Citations require HAF — reverse JSONB lookup cannot be done via Hive API
@@ -1172,7 +1176,8 @@ async function isRetracted(author: string, permlink: string): Promise<boolean> {
 }
 
 router.post('/:author/:permlink/retract', verifyHiveSignature, retractLimiter, async (req: Request, res: Response) => {
-  const { author, permlink } = req.params;
+  const author = req.params.author as string;
+  const permlink = req.params.permlink as string;
   const username = req.hiveUsername!;
   const reason = (req.body.reason as string) || '';
 
@@ -1314,7 +1319,8 @@ function generateApa(detail: Record<string, unknown>): string {
 }
 
 router.get('/:author/:permlink/cite', async (req: Request, res: Response) => {
-  const { author, permlink } = req.params;
+  const author = req.params.author as string;
+  const permlink = req.params.permlink as string;
   const format = (req.query.format as string || '').toLowerCase();
 
   if (!VALID_CITE_FORMATS.has(format)) {
@@ -1374,7 +1380,8 @@ async function getExistingDoi(author: string, permlink: string): Promise<{ doi: 
 }
 
 router.get('/:author/:permlink/doi', async (req: Request, res: Response) => {
-  const { author, permlink } = req.params;
+  const author = req.params.author as string;
+  const permlink = req.params.permlink as string;
 
   const existing = await getExistingDoi(author, permlink);
   if (existing) {
@@ -1390,7 +1397,8 @@ router.get('/:author/:permlink/doi', async (req: Request, res: Response) => {
 });
 
 router.post('/:author/:permlink/doi', verifyHiveSignature, doiAssignLimiter, async (req: Request, res: Response) => {
-  const { author, permlink } = req.params;
+  const author = req.params.author as string;
+  const permlink = req.params.permlink as string;
   const username = req.hiveUsername!;
 
   if (username !== author) {

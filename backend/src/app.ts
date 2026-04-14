@@ -356,7 +356,7 @@ export function createApp() {
   // SPA catch-all: serve index.html for any non-API GET request.
   // This enables client-side routing — the Alpine.js SPA handles its own routes.
   // API 404s are NOT intercepted; they fall through to the error handler.
-  app.get('*', async (req, res, next) => {
+  app.get('{*splat}', async (req, res, next) => {
     if (req.path.startsWith('/api/')) {
       return next();
     }

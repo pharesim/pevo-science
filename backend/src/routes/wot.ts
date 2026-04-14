@@ -20,7 +20,7 @@ const router = Router();
 // ──────────────────────────────────────────────
 
 router.get('/:username', async (req: Request, res: Response) => {
-  const { username } = req.params;
+  const username = req.params.username as string;
 
   if (!isHafAvailable()) {
     return sendError(res, 500, 'INTERNAL_ERROR', 'HAF database required for WoT queries');

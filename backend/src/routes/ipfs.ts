@@ -253,7 +253,7 @@ async function cidIsKnown(cid: string): Promise<boolean> {
 }
 
 router.get('/:cid', ipfsDownloadLimiter, async (req: Request, res: Response) => {
-  const { cid } = req.params;
+  const cid = req.params.cid as string;
 
   if (!CID_RE.test(cid)) {
     return sendError(res, 400, 'BAD_REQUEST', 'Invalid CID format');

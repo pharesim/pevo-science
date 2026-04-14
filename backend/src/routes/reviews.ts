@@ -112,7 +112,8 @@ async function enrichReviewDetail(review: Record<string, unknown>): Promise<Reco
 }
 
 router.get('/:author/:permlink', async (req: Request, res: Response) => {
-  const { author, permlink } = req.params;
+  const author = req.params.author as string;
+  const permlink = req.params.permlink as string;
 
   // Simple read: Hive API first (single comment + parent title)
   const hiveResult = await fetchReviewFromHiveApi(author, permlink);

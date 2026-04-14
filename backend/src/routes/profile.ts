@@ -80,7 +80,7 @@ async function getAccreditation(username: string) {
 // ──────────────────────────────────────────────
 
 router.get('/:username', async (req: Request, res: Response) => {
-  const { username } = req.params;
+  const username = req.params.username as string;
 
   const data = await hafCache.getOrSet(`profile:${username}`, async () => {
     // Fire all independent lookups in parallel (account check, accreditation, stats, reputation data)
@@ -194,7 +194,7 @@ async function fetchUserPapersFromHiveApi(username: string, limit: number) {
 }
 
 router.get('/:username/papers', async (req: Request, res: Response) => {
-  const { username } = req.params;
+  const username = req.params.username as string;
   const { page, limit, offset } = parsePageLimit(req);
   const order = parseOrder(req);
   const sort = (req.query.sort as string) === 'votes' ? 'net_votes' : 'created';
@@ -224,7 +224,7 @@ router.get('/:username/papers', async (req: Request, res: Response) => {
 // ──────────────────────────────────────────────
 
 router.get('/:username/notification-preferences', verifyHiveSignature, async (req: Request, res: Response) => {
-  const { username } = req.params;
+  const username = req.params.username as string;
 
   if (req.hiveUsername !== username) {
     return sendError(res, 403, 'FORBIDDEN', 'Can only view your own notification preferences');
@@ -274,7 +274,7 @@ const notificationPrefsSchema = z.object({
 });
 
 router.put('/:username/notification-preferences', verifyHiveSignature, validate(notificationPrefsSchema), async (req: Request, res: Response) => {
-  const { username } = req.params;
+  const username = req.params.username as string;
 
   if (req.hiveUsername !== username) {
     return sendError(res, 403, 'FORBIDDEN', 'Can only update your own notification preferences');
@@ -328,7 +328,7 @@ router.put('/:username/notification-preferences', verifyHiveSignature, validate(
 // ──────────────────────────────────────────────
 
 router.get('/:username/notification-preferences/unsubscribe', async (req: Request, res: Response) => {
-  const { username } = req.params;
+  const username = req.params.username as string;
   const token = req.query.token as string;
 
   if (!token) {

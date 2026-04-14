@@ -159,7 +159,7 @@ async function fetchAccreditationStatusFromHaf(username: string) {
 }
 
 router.get('/:username', async (req: Request, res: Response) => {
-  const { username } = req.params;
+  const username = req.params.username as string;
 
   if (isHafAvailable()) {
     const cacheKey = `accreditation-status:${username}`;
