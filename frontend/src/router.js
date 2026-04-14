@@ -49,6 +49,7 @@ const ROUTES = [
   { pattern: /^\/contact$/,                            name: 'contact' },
   { pattern: /^\/signup$/,                             name: 'signup' },
   { pattern: /^\/signup\/verify$/,                     name: 'signup-verify' },
+  { pattern: /^\/auth\/verify$/,                       name: 'signup-verify' },
   { pattern: /^\/login$/,                              name: 'login' },
   { pattern: /^\/reset-password$/,                     name: 'reset-password' },
   { pattern: /^\/settings$/,                           name: 'settings' },
