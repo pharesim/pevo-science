@@ -45,13 +45,34 @@ router.post('/session', verifyHiveSignature, sessionLimiter, (req: Request, res:
 });
 
 // ─────────────────────────────────────────────────────────────
+// GET /api/auth/username-available — Check Hive username availability
+// ─────────────────────────────────────────────────────────────
+router.get('/username-available', async (req: Request, res: Response) => {
+  const { username } = req.query;
+  if (!username || typeof username !== 'string') {
+    return sendError(res, 400, 'VALIDATION_ERROR', 'Username is required');
+  }
+  const normalized = username.trim().toLowerCase();
+  if (!USERNAME_RE.test(normalized) || BAD_SEGMENT_RE.test(normalized)) {
+    return sendOk(res, { available: false, reason: 'invalid_format' });
+  }
+  try {
+    const [account] = await hiveClient.database.getAccounts([normalized]);
+    sendOk(res, { available: !account, reason: account ? 'taken' : null });
+  } catch (err) {
+    logger.error({ err }, 'Username availability check failed');
+    sendError(res, 500, 'INTERNAL_ERROR', 'Could not check username availability');
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
 // POST /api/auth/signup — Light account signup (LA6)
 // ─────────────────────────────────────────────────────────────
 router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
   const pool = getAppPool();
   if (!pool) return sendError(res, 503, 'INTERNAL_ERROR', 'Registration not available');
 
-  const { email, password, username, linked_username } = req.body || {};
+  const { email, password, username, linked_username, full_name, institution, field, orcid } = req.body || {};
 
   // Validate required fields
   if (!email || typeof email !== 'string') {
@@ -65,6 +86,15 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
   }
   if (!username || typeof username !== 'string') {
     return sendError(res, 400, 'VALIDATION_ERROR', 'Username is required');
+  }
+  if (!full_name || typeof full_name !== 'string') {
+    return sendError(res, 400, 'VALIDATION_ERROR', 'Full name is required');
+  }
+  if (!institution || typeof institution !== 'string') {
+    return sendError(res, 400, 'VALIDATION_ERROR', 'Institution is required');
+  }
+  if (!field || typeof field !== 'string') {
+    return sendError(res, 400, 'VALIDATION_ERROR', 'Field of research is required');
   }
 
   const normalizedEmail = email.trim().toLowerCase();
@@ -135,18 +165,23 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
     const verifyToken = crypto.randomBytes(32).toString('hex');
     const expiresAt = new Date(Date.now() + SIGNUP_TOKEN_EXPIRY_MS);
 
-    // Store pending signup
+    // Store pending signup with accreditation fields
+    const safeOrcid = orcid && typeof orcid === 'string' ? orcid.trim() : null;
     await pool.query(
-      `INSERT INTO pending_signups (username, email, password_hash, linked_username, verify_token, expires_at)
-       VALUES ($1, $2, $3, $4, $5, $6)
+      `INSERT INTO pending_signups (username, email, password_hash, linked_username, full_name, institution, field, orcid, verify_token, expires_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        ON CONFLICT (username) DO UPDATE SET
          email = EXCLUDED.email,
          password_hash = EXCLUDED.password_hash,
          linked_username = EXCLUDED.linked_username,
+         full_name = EXCLUDED.full_name,
+         institution = EXCLUDED.institution,
+         field = EXCLUDED.field,
+         orcid = EXCLUDED.orcid,
          verify_token = EXCLUDED.verify_token,
          expires_at = EXCLUDED.expires_at,
          created_at = NOW()`,
-      [normalizedUsername, normalizedEmail, passwordHash, linkedUsername, verifyToken, expiresAt],
+      [normalizedUsername, normalizedEmail, passwordHash, linkedUsername, full_name.trim(), institution.trim(), field.trim(), safeOrcid, verifyToken, expiresAt],
     );
 
     // Send verification email

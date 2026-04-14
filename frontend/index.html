@@ -3264,12 +3264,34 @@
                 <p class="text-xs text-ink-muted mt-1" x-text="$t('signup.emailHint')"></p>
               </div>
 
-              <!-- Display Name -->
-              <div>
-                <label class="block text-sm font-medium text-ink mb-1" x-text="$t('signup.displayName')"></label>
-                <input type="text" x-model="displayName" required
-                       class="w-full border border-parchment-dark rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-pevo-teal focus:border-pevo-teal"
-                       :placeholder="$t('signup.displayNamePlaceholder')">
+              <!-- Researcher info -->
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label class="block text-sm font-medium text-ink mb-1" x-text="$t('signup.fullName')"></label>
+                  <input type="text" x-model="fullName" required
+                         class="w-full border border-parchment-dark rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-pevo-teal focus:border-pevo-teal"
+                         :placeholder="$t('signup.fullNamePlaceholder')">
+                </div>
+                <div>
+                  <label class="block text-sm font-medium text-ink mb-1" x-text="$t('signup.institution')"></label>
+                  <input type="text" x-model="institution" required
+                         class="w-full border border-parchment-dark rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-pevo-teal focus:border-pevo-teal"
+                         :placeholder="$t('signup.institutionPlaceholder')">
+                </div>
+              </div>
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label class="block text-sm font-medium text-ink mb-1" x-text="$t('signup.field')"></label>
+                  <input type="text" x-model="field" required
+                         class="w-full border border-parchment-dark rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-pevo-teal focus:border-pevo-teal"
+                         :placeholder="$t('signup.fieldPlaceholder')">
+                </div>
+                <div>
+                  <label class="block text-sm font-medium text-ink mb-1" x-text="$t('signup.orcid')"></label>
+                  <input type="text" x-model="orcid"
+                         class="w-full border border-parchment-dark rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-pevo-teal focus:border-pevo-teal"
+                         placeholder="0000-0001-2345-6789">
+                </div>
               </div>
 
               <!-- Link existing account toggle -->
@@ -3287,7 +3309,6 @@
                          class="w-full border border-parchment-dark rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-pevo-teal focus:border-pevo-teal lowercase"
                          :placeholder="$t('signup.usernamePlaceholder')"
                          @input="username = username.toLowerCase()">
-                  <!-- Status indicators -->
                   <div class="absolute right-3 top-1/2 -translate-y-1/2">
                     <span x-show="usernameStatus === 'checking'" class="text-ink-muted text-xs">...</span>
                     <span x-show="usernameStatus === 'available'" class="text-pevo-green text-sm">&#10003;</span>
@@ -3296,8 +3317,8 @@
                   </div>
                 </div>
                 <p x-show="usernameStatus === 'taken'" class="text-xs text-pevo-crimson mt-1" x-text="$t('signup.usernameTaken')"></p>
-                <p x-show="usernameStatus === 'invalid' && username" class="text-xs text-amber-500 mt-1" x-text="$t('signup.usernameInvalid')"></p>
-                <p x-show="!usernameStatus || usernameStatus === 'available'" class="text-xs text-ink-muted mt-1" x-text="$t('signup.usernameHint')"></p>
+                <p x-show="usernameStatus === 'invalid'" class="text-xs text-amber-500 mt-1" x-text="$t('signup.usernameInvalid')"></p>
+                <p x-show="!usernameStatus || usernameStatus === 'available' || usernameStatus === 'checking'" class="text-xs text-ink-muted mt-1" x-text="$t('signup.usernameHint')"></p>
               </div>
 
               <!-- Linked username (existing account) -->

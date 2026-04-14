@@ -53,6 +53,10 @@ export async function initAppDb(): Promise<void> {
       email            TEXT NOT NULL UNIQUE,
       password_hash    TEXT NOT NULL,
       linked_username  TEXT,
+      full_name        TEXT NOT NULL DEFAULT '',
+      institution      TEXT NOT NULL DEFAULT '',
+      field            TEXT NOT NULL DEFAULT '',
+      orcid            TEXT,
       verify_token     TEXT NOT NULL,
       expires_at       TIMESTAMPTZ NOT NULL,
       created_at       TIMESTAMPTZ DEFAULT NOW()

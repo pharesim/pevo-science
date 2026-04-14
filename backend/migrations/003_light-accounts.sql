@@ -6,6 +6,10 @@ CREATE TABLE pending_signups (
   email            TEXT NOT NULL UNIQUE,
   password_hash    TEXT NOT NULL,
   linked_username  TEXT,
+  full_name        TEXT NOT NULL,
+  institution      TEXT NOT NULL,
+  field            TEXT NOT NULL,
+  orcid            TEXT,
   verify_token     TEXT NOT NULL,
   expires_at       TIMESTAMPTZ NOT NULL,
   created_at       TIMESTAMPTZ DEFAULT NOW()

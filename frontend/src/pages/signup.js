@@ -15,14 +15,17 @@ function isValidUsername(u) {
 export function initSignupPage() {
   Alpine.data('signupPage', () => ({
     email: '',
+    fullName: '',
+    institution: '',
+    field: '',
+    orcid: '',
     password: '',
     passwordConfirm: '',
-    displayName: '',
     username: '',
     linkExisting: false,
     linkedUsername: '',
 
-    usernameStatus: null, // null | 'checking' | 'available' | 'taken' | 'invalid'
+    usernameStatus: null, // null | 'checking' | 'available' | 'taken' | 'error'
     _usernameTimer: null,
 
     isSubmitting: false,
@@ -44,7 +47,7 @@ export function initSignupPage() {
     },
 
     get canSubmit() {
-      if (!this.email || !this.passwordValid || !this.passwordsMatch || !this.displayName) return false;
+      if (!this.email || !this.fullName || !this.institution || !this.field || !this.passwordValid || !this.passwordsMatch) return false;
       if (this.linkExisting) {
         return this.linkedUsername.length >= MIN_USERNAME;
       }
@@ -59,7 +62,6 @@ export function initSignupPage() {
           return;
         }
         if (!isValidUsername(val)) {
-          // Don't show invalid while user is still typing short usernames
           this.usernameStatus = val.length >= MIN_USERNAME ? 'invalid' : null;
           return;
         }
@@ -71,12 +73,11 @@ export function initSignupPage() {
     async checkUsername(val) {
       try {
         const res = await checkUsernameAvailability(val);
-        // Only update if the username hasn't changed while we were checking
         if (this.username === val) {
           this.usernameStatus = res.data?.available ? 'available' : 'taken';
         }
       } catch {
-        if (this.username === val) this.usernameStatus = 'invalid';
+        if (this.username === val) this.usernameStatus = 'error';
       }
     },
 
@@ -89,11 +90,15 @@ export function initSignupPage() {
         const payload = {
           email: this.email.trim(),
           password: this.password,
-          display_name: this.displayName.trim(),
+          full_name: this.fullName.trim(),
+          institution: this.institution.trim(),
+          field: this.field.trim(),
+          orcid: this.orcid.trim() || undefined,
         };
 
         if (this.linkExisting) {
           payload.linked_username = this.linkedUsername.trim().toLowerCase();
+          payload.username = this.linkedUsername.trim().toLowerCase();
         } else {
           payload.username = this.username.trim().toLowerCase();
         }
