@@ -46,7 +46,7 @@ export async function initAppDb(): Promise<void> {
     ALTER TABLE notification_preferences
       ADD COLUMN IF NOT EXISTS last_digest_block BIGINT NOT NULL DEFAULT 0;
 
-    -- Unified accounts table (migration 007 merged pending_signups + light_accounts)
+    -- Unified accounts table (see migrations/002_accounts.sql)
     CREATE TABLE IF NOT EXISTS accounts (
       id                      SERIAL PRIMARY KEY,
       email                   TEXT NOT NULL UNIQUE,
@@ -73,10 +73,6 @@ export async function initAppDb(): Promise<void> {
     CREATE INDEX IF NOT EXISTS idx_accounts_email ON accounts(email);
     CREATE INDEX IF NOT EXISTS idx_accounts_username ON accounts(username);
     CREATE INDEX IF NOT EXISTS idx_accounts_verify_token ON accounts(verify_token);
-
-    -- Drop old tables if they exist (migration 007)
-    DROP TABLE IF EXISTS pending_signups;
-    DROP TABLE IF EXISTS light_accounts;
 
     CREATE TABLE IF NOT EXISTS custody_audit_log (
       id              SERIAL PRIMARY KEY,
