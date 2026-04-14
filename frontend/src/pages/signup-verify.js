@@ -1,9 +1,15 @@
 import Alpine from 'alpinejs';
-import { verifyEmail, resumeSignup, confirmSeedPhrase, linkExistingAccount } from '../api.js';
+import { verifyEmail, resumeSignup, confirmAccount, linkExistingAccount, checkUsernameAvailability } from '../api.js';
+import { generateMnemonic, validateMnemonic, deriveAllKeys } from '../hive-keys.js';
 import { signMessage, isKeychainInstalled } from '../keychain.js';
 
 // Number of words the user must re-enter to confirm retention
 const CONFIRM_WORD_COUNT = 3;
+
+// Username format: 3-16 chars, lowercase a-z, 0-9, dots/hyphens not at start/end
+const USERNAME_RE = /^[a-z][a-z0-9]*([.-][a-z0-9]+)*$/;
+const MIN_USERNAME = 3;
+const MAX_USERNAME = 16;
 
 function pickRandomIndices(total, count) {
   const indices = [];
@@ -14,19 +20,31 @@ function pickRandomIndices(total, count) {
   return indices.sort((a, b) => a - b);
 }
 
+function isValidUsername(u) {
+  return u.length >= MIN_USERNAME && u.length <= MAX_USERNAME && USERNAME_RE.test(u);
+}
+
 export function initSignupVerifyPage() {
   Alpine.data('signupVerifyPage', () => ({
-    // Phases: 'verifying' | 'seed' | 'confirm' | 'link-keychain' | 'creating' | 'done' | 'error'
+    // Phases: 'verifying' | 'choose' | 'create-seed' | 'create-confirm' | 'create-username' | 'create-submitting' | 'link-keychain' | 'done' | 'error'
     phase: 'verifying',
     error: null,
 
-    // From email verification response
-    token: null,
-    seedPhrase: null,
+    // Mnemonic (generated client-side)
+    mnemonic: null,
     seedWords: [],
-    isLinkFlow: false,
 
-    // Link flow: Hive username entered at link step
+    // Email + password for confirm/link endpoints (re-entered or from resume)
+    email: '',
+    password: '',
+
+    // Create flow: username step
+    username: '',
+    usernameStatus: null, // null | 'checking' | 'available' | 'taken' | 'error'
+    _usernameTimer: null,
+    isSubmitting: false,
+
+    // Link flow: Hive username
     hiveUsername: '',
 
     // Resume flow (shown on error phase)
@@ -37,7 +55,10 @@ export function initSignupVerifyPage() {
     // Confirmation step
     confirmIndices: [],
     confirmInputs: {},
-    isConfirming: false,
+
+    get usernameFormatValid() {
+      return isValidUsername(this.username);
+    },
 
     get confirmCorrect() {
       return this.confirmIndices.every(
@@ -59,46 +80,100 @@ export function initSignupVerifyPage() {
     async verifyToken(emailToken) {
       try {
         const res = await verifyEmail(emailToken);
-        this.token = res.data.challenge || res.data.token;
-
-        if (res.data.flow === 'link') {
-          // LA24 link-existing flow: no seed phrase, redirect to Keychain signing
-          this.isLinkFlow = true;
-          this.phase = 'link-keychain';
-          return;
+        if (res.data.flow === 'choose') {
+          this.phase = 'choose';
+        } else {
+          this.phase = 'error';
+          this.error = this.$t('seedPhrase.unexpectedResponse');
         }
-
-        // Normal flow: backend returns the seed phrase
-        this.seedPhrase = res.data.seed_phrase;
-        this.seedWords = this.seedPhrase.split(' ');
-        this.phase = 'seed';
       } catch (err) {
         this.phase = 'error';
         this.error = err.message;
       }
     },
 
+    // ─── Choose phase ──────────────────────────────────────────
+
+    chooseCreate() {
+      this.mnemonic = generateMnemonic();
+      this.seedWords = this.mnemonic.split(' ');
+      this.phase = 'create-seed';
+    },
+
+    chooseLink() {
+      this.phase = 'link-keychain';
+    },
+
+    // ─── Create flow: seed → confirm → username → submit ──────
+
     proceedToConfirm() {
       this.confirmIndices = pickRandomIndices(this.seedWords.length, CONFIRM_WORD_COUNT);
       this.confirmInputs = {};
       this.confirmIndices.forEach((i) => { this.confirmInputs[i] = ''; });
-      this.phase = 'confirm';
+      this.phase = 'create-confirm';
     },
 
-    async submitConfirmation() {
-      if (!this.confirmCorrect || this.isConfirming) return;
-      this.isConfirming = true;
+    proceedToUsername() {
+      if (!this.confirmCorrect) return;
+      this.phase = 'create-username';
+    },
+
+    watchUsername() {
+      this.$watch('username', (val) => {
+        clearTimeout(this._usernameTimer);
+        if (!val) {
+          this.usernameStatus = null;
+          return;
+        }
+        const normalized = val.trim().toLowerCase();
+        if (!isValidUsername(normalized)) {
+          this.usernameStatus = normalized.length >= MIN_USERNAME ? 'invalid' : null;
+          return;
+        }
+        this.usernameStatus = 'checking';
+        this._usernameTimer = setTimeout(() => this._checkUsername(normalized), 400);
+      });
+    },
+
+    async _checkUsername(val) {
+      try {
+        const res = await checkUsernameAvailability(val);
+        if (this.username.trim().toLowerCase() === val) {
+          this.usernameStatus = res.data?.available ? 'available' : 'taken';
+        }
+      } catch {
+        if (this.username.trim().toLowerCase() === val) this.usernameStatus = 'error';
+      }
+    },
+
+    async submitCreateAccount() {
+      const normalizedUsername = this.username.trim().toLowerCase();
+      if (!isValidUsername(normalizedUsername) || this.usernameStatus !== 'available' || this.isSubmitting) return;
+      if (!this.email || !this.password) {
+        this.error = this.$t('seedPhrase.credentialsRequired');
+        return;
+      }
+
+      this.isSubmitting = true;
       this.error = null;
+      this.phase = 'create-submitting';
 
       try {
-        // Send the confirmed words back to the backend
-        const words = this.confirmIndices.map((i) => ({
-          index: i,
-          word: this.confirmInputs[i].trim().toLowerCase(),
-        }));
-        const res = await confirmSeedPhrase(this.token, words);
+        // Derive all keys from mnemonic + username
+        const allKeys = await deriveAllKeys(this.mnemonic, normalizedUsername);
 
-        // Backend creates the account and returns a session
+        const keys = {
+          owner_public: allKeys.owner.public,
+          active_public: allKeys.active.public,
+          posting_public: allKeys.posting.public,
+          memo_public: allKeys.memo.public,
+          posting_private: allKeys.posting.private,
+          memo_private: allKeys.memo.private,
+        };
+
+        const res = await confirmAccount(this.email, this.password, normalizedUsername, keys);
+
+        // Set auth state
         const auth = Alpine.store('auth');
         auth.token = res.data.token;
         auth.username = res.data.username;
@@ -107,7 +182,6 @@ export function initSignupVerifyPage() {
         auth.accreditation = res.data.accreditation ?? null;
         auth.custody = 'light';
 
-        // Save session
         auth._saveSession(
           res.data.token,
           res.data.username,
@@ -120,23 +194,33 @@ export function initSignupVerifyPage() {
         this.phase = 'done';
       } catch (err) {
         this.error = err.message;
-        this.isConfirming = false;
+        this.phase = 'create-username';
+      } finally {
+        this.isSubmitting = false;
       }
     },
 
+    // ─── Link flow ─────────────────────────────────────────────
+
     async handleLinkAccount() {
-      if (!this.hiveUsername || this.isConfirming) return;
+      if (!this.hiveUsername || this.isSubmitting) return;
+      if (!this.email || !this.password) {
+        this.error = this.$t('seedPhrase.credentialsRequired');
+        return;
+      }
       if (!isKeychainInstalled()) {
         this.error = this.$t('seedPhrase.keychainRequired');
         return;
       }
 
-      this.isConfirming = true;
+      this.isSubmitting = true;
       this.error = null;
       try {
         const username = this.hiveUsername.trim().toLowerCase();
-        const { signature } = await signMessage(username, this.token);
-        const res = await linkExistingAccount(this.token, username, signature);
+        const message = `${this.email}:link`;
+        const { signature } = await signMessage(username, message);
+        const res = await linkExistingAccount(this.email, this.password, username, signature);
+
         const auth = Alpine.store('auth');
         auth.token = res.data.token;
         auth.username = res.data.username;
@@ -157,9 +241,12 @@ export function initSignupVerifyPage() {
         this.phase = 'done';
       } catch (err) {
         this.error = err.message;
-        this.isConfirming = false;
+      } finally {
+        this.isSubmitting = false;
       }
     },
+
+    // ─── Resume flow ───────────────────────────────────────────
 
     async handleResume() {
       if (!this.resumeEmail || !this.resumePassword || this.isResuming) return;
@@ -168,17 +255,14 @@ export function initSignupVerifyPage() {
 
       try {
         const res = await resumeSignup(this.resumeEmail, this.resumePassword);
-        this.token = res.data.challenge || res.data.token;
-
-        if (res.data.flow === 'link') {
-          this.isLinkFlow = true;
-          this.phase = 'link-keychain';
-          return;
+        if (res.data.flow === 'choose') {
+          // Store credentials for later use in confirm/link
+          this.email = this.resumeEmail.trim().toLowerCase();
+          this.password = this.resumePassword;
+          this.phase = 'choose';
+        } else {
+          this.error = this.$t('seedPhrase.unexpectedResponse');
         }
-
-        this.seedPhrase = res.data.seed_phrase;
-        this.seedWords = this.seedPhrase.split(' ');
-        this.phase = 'seed';
       } catch (err) {
         this.error = err.message;
       } finally {

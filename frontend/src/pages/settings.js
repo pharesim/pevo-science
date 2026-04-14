@@ -96,18 +96,17 @@ export function initSettingsPage() {
         }
 
         // Derive keys from old and new seed phrases
-        // hive-keys.js must export deriveHiveKeys + deriveHivePublicKeys
         const hiveKeysPath = '../hive-keys.js';
         const hiveKeys = await import(/* @vite-ignore */ hiveKeysPath);
+        const dhivePkg = '@hiveio/dhive';
+        const dhive = await import(/* @vite-ignore */ dhivePkg);
         const oldSeed = mnemonicToSeedSync(oldWords);
         const oldKeys = hiveKeys.deriveHiveKeys(oldSeed, this.username);
         const newSeed = mnemonicToSeedSync(this.newSeedPhrase);
         const newKeys = hiveKeys.deriveHiveKeys(newSeed, this.username);
-        const newPubKeys = hiveKeys.deriveHivePublicKeys(newKeys);
+        const newPubKeys = await hiveKeys.deriveHivePublicKeys(newKeys);
 
         // Broadcast account_update signed with old owner key
-        const dhivePkg = '@hiveio/dhive';
-        const dhive = await import(/* @vite-ignore */ dhivePkg);
         const client = new dhive.Client(['https://api.hive.blog']);
 
         const ownerKey = dhive.PrivateKey.fromString(oldKeys.owner);

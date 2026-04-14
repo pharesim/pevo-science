@@ -345,15 +345,15 @@ export function verifyEmail(token) {
   });
 }
 
-export function confirmSeedPhrase(token, words) {
+export function confirmAccount(email, password, username, keys) {
   return request('/auth/confirm', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ token, words }),
+    body: JSON.stringify({ email, password, username, keys }),
   });
 }
 
-export function linkExistingAccount(challenge, username, signature) {
+export function linkExistingAccount(email, password, username, signature) {
   const timestamp = new Date().toISOString();
   return request('/auth/link', {
     method: 'POST',
@@ -361,10 +361,10 @@ export function linkExistingAccount(challenge, username, signature) {
       'Content-Type': 'application/json',
       'X-Hive-Username': username,
       'X-Hive-Signature': signature,
-      'X-Hive-Message': challenge,
+      'X-Hive-Message': `${email}:link`,
       'X-Hive-Timestamp': timestamp,
     },
-    body: JSON.stringify({ challenge }),
+    body: JSON.stringify({ email, password }),
   });
 }
 

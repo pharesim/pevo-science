@@ -938,7 +938,18 @@
     "resumeDescription": "Already verified your email? Enter your credentials to continue where you left off.",
     "resumeButton": "Continue Signup",
     "resuming": "Resuming\u2026",
-    "startOver": "Start a new signup instead"
+    "startOver": "Start a new signup instead",
+    "emailVerified": "Email Verified",
+    "chooseDescription": "How would you like to connect to PEvO?",
+    "chooseCreate": "Create new account",
+    "chooseCreateHint": "We'll generate a recovery phrase and set up a new account for you.",
+    "chooseLink": "I have a Hive account",
+    "chooseLinkHint": "Link your existing Hive account using Hive Keychain.",
+    "chooseUsername": "Choose Your Username",
+    "chooseUsernameDescription": "Pick a username for your new account. This will be your public identity on PEvO.",
+    "createAccount": "Create Account",
+    "credentialsRequired": "Please enter your email and password to continue.",
+    "unexpectedResponse": "Unexpected response from server."
   },
   "confirm": {
     "cancel": "Cancel",

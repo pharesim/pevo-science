@@ -49,10 +49,8 @@ export async function initAppDb(): Promise<void> {
     -- Light accounts tables
     CREATE TABLE IF NOT EXISTS pending_signups (
       id               SERIAL PRIMARY KEY,
-      username         TEXT UNIQUE,
       email            TEXT NOT NULL UNIQUE,
       password_hash    TEXT NOT NULL,
-      link_flow        BOOLEAN NOT NULL DEFAULT FALSE,
       full_name        TEXT NOT NULL DEFAULT '',
       institution      TEXT NOT NULL DEFAULT '',
       field            TEXT NOT NULL DEFAULT '',
@@ -62,16 +60,11 @@ export async function initAppDb(): Promise<void> {
       created_at       TIMESTAMPTZ DEFAULT NOW()
     );
 
-    -- Add columns if table already exists from previous schema
-    ALTER TABLE pending_signups ADD COLUMN IF NOT EXISTS full_name TEXT NOT NULL DEFAULT '';
-    ALTER TABLE pending_signups ADD COLUMN IF NOT EXISTS institution TEXT NOT NULL DEFAULT '';
-    ALTER TABLE pending_signups ADD COLUMN IF NOT EXISTS field TEXT NOT NULL DEFAULT '';
-    ALTER TABLE pending_signups ADD COLUMN IF NOT EXISTS orcid TEXT;
-    ALTER TABLE pending_signups ADD COLUMN IF NOT EXISTS link_flow BOOLEAN NOT NULL DEFAULT FALSE;
-
-    -- Migration 005: drop linked_username, make username nullable
+    -- Migration 005/006 cleanup: drop columns from previous schema versions
     ALTER TABLE pending_signups DROP COLUMN IF EXISTS linked_username;
-    ALTER TABLE pending_signups ALTER COLUMN username DROP NOT NULL;
+    ALTER TABLE pending_signups DROP COLUMN IF EXISTS username;
+    ALTER TABLE pending_signups DROP COLUMN IF EXISTS link_flow;
+    DROP INDEX IF EXISTS pending_signups_username_key;
 
     CREATE TABLE IF NOT EXISTS light_accounts (
       username         TEXT PRIMARY KEY,

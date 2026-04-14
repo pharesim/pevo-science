@@ -9,6 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@scure/bip39": "^2.0.1",
     "@tailwindcss/vite": "^4.2.2",
     "@tiptap/core": "^3.22.3",
     "@tiptap/extension-image": "^3.22.3",
