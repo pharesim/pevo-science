@@ -35,7 +35,10 @@ export function initSignupPage() {
     get isConnected() { return Alpine.store('auth').isConnected; },
 
     get passwordValid() {
-      return this.password.length >= MIN_PASSWORD;
+      return this.password.length >= MIN_PASSWORD
+        && /[a-z]/.test(this.password)
+        && /[A-Z]/.test(this.password)
+        && /[0-9]/.test(this.password);
     },
 
     get passwordsMatch() {
