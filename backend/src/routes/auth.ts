@@ -72,7 +72,8 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
   const pool = getAppPool();
   if (!pool) return sendError(res, 503, 'INTERNAL_ERROR', 'Registration not available');
 
-  const { email, password, username, linked_username, full_name, institution, field, orcid } = req.body || {};
+  const { email, password, username, link_existing, full_name, institution, field, orcid } = req.body || {};
+  const linkFlow = link_existing === true;
 
   // Validate required fields
   if (!email || typeof email !== 'string') {
@@ -84,7 +85,7 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
   if (!/[a-z]/.test(password) || !/[A-Z]/.test(password) || !/[0-9]/.test(password)) {
     return sendError(res, 400, 'VALIDATION_ERROR', 'Password must contain lowercase letters, uppercase letters, and numbers');
   }
-  if (!username || typeof username !== 'string') {
+  if (!linkFlow && (!username || typeof username !== 'string')) {
     return sendError(res, 400, 'VALIDATION_ERROR', 'Username is required');
   }
   if (!full_name || typeof full_name !== 'string') {
@@ -98,22 +99,17 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
   }
 
   const normalizedEmail = email.trim().toLowerCase();
-  const normalizedUsername = username.trim().toLowerCase();
+  const normalizedUsername = !linkFlow && username ? username.trim().toLowerCase() : null;
 
   // Validate institutional email domain
   if (!isInstitutionalEmail(normalizedEmail)) {
     return sendError(res, 422, 'VALIDATION_ERROR', 'Only institutional email addresses are accepted');
   }
 
-  // Validate username format
-  if (!USERNAME_RE.test(normalizedUsername) || BAD_SEGMENT_RE.test(normalizedUsername)) {
+  // Validate username format (new accounts only)
+  if (normalizedUsername && (!USERNAME_RE.test(normalizedUsername) || BAD_SEGMENT_RE.test(normalizedUsername))) {
     return sendError(res, 400, 'VALIDATION_ERROR', 'Username must be 3-16 characters, lowercase letters/numbers/dots/hyphens, not starting or ending with dots/hyphens');
   }
-
-  // For linked accounts, the linked_username must be different from the chosen username
-  const linkedUsername = linked_username && typeof linked_username === 'string'
-    ? linked_username.trim().toLowerCase()
-    : null;
 
   try {
     // Check email not already registered
@@ -134,28 +130,21 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
       return sendError(res, 409, 'DUPLICATE', 'A verification email has already been sent to this address');
     }
 
-    // Check username availability on Hive (for new accounts only)
-    const targetUsername = linkedUsername || normalizedUsername;
-    const [account] = await hiveClient.database.getAccounts([targetUsername]);
-    if (linkedUsername) {
-      // Linking: account must exist
-      if (!account) {
-        return sendError(res, 404, 'NOT_FOUND', 'Hive account not found');
-      }
-    } else {
-      // New account: username must be available
+    if (normalizedUsername) {
+      // New account: check username availability on Hive
+      const [account] = await hiveClient.database.getAccounts([normalizedUsername]);
       if (account) {
         return sendError(res, 409, 'DUPLICATE', 'Username is already taken on Hive');
       }
-    }
 
-    // Check no pending signup with this username
-    const { rows: pendingUser } = await pool.query<{ id: number }>(
-      'SELECT id FROM pending_signups WHERE username = $1 AND expires_at > NOW()',
-      [normalizedUsername],
-    );
-    if (pendingUser.length > 0) {
-      return sendError(res, 409, 'DUPLICATE', 'Username already has a pending signup');
+      // Check no pending signup with this username
+      const { rows: pendingUser } = await pool.query<{ id: number }>(
+        'SELECT id FROM pending_signups WHERE username = $1 AND expires_at > NOW()',
+        [normalizedUsername],
+      );
+      if (pendingUser.length > 0) {
+        return sendError(res, 409, 'DUPLICATE', 'Username already has a pending signup');
+      }
     }
 
     // Hash password with argon2id
@@ -167,22 +156,30 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
 
     // Store pending signup with accreditation fields
     const safeOrcid = orcid && typeof orcid === 'string' ? orcid.trim() : null;
-    await pool.query(
-      `INSERT INTO pending_signups (username, email, password_hash, linked_username, full_name, institution, field, orcid, verify_token, expires_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-       ON CONFLICT (username) DO UPDATE SET
-         email = EXCLUDED.email,
-         password_hash = EXCLUDED.password_hash,
-         linked_username = EXCLUDED.linked_username,
-         full_name = EXCLUDED.full_name,
-         institution = EXCLUDED.institution,
-         field = EXCLUDED.field,
-         orcid = EXCLUDED.orcid,
-         verify_token = EXCLUDED.verify_token,
-         expires_at = EXCLUDED.expires_at,
-         created_at = NOW()`,
-      [normalizedUsername, normalizedEmail, passwordHash, linkedUsername, full_name.trim(), institution.trim(), field.trim(), safeOrcid, verifyToken, expiresAt],
-    );
+    if (normalizedUsername) {
+      await pool.query(
+        `INSERT INTO pending_signups (username, email, password_hash, link_flow, full_name, institution, field, orcid, verify_token, expires_at)
+         VALUES ($1, $2, $3, FALSE, $4, $5, $6, $7, $8, $9)
+         ON CONFLICT (username) DO UPDATE SET
+           email = EXCLUDED.email,
+           password_hash = EXCLUDED.password_hash,
+           full_name = EXCLUDED.full_name,
+           institution = EXCLUDED.institution,
+           field = EXCLUDED.field,
+           orcid = EXCLUDED.orcid,
+           verify_token = EXCLUDED.verify_token,
+           expires_at = EXCLUDED.expires_at,
+           created_at = NOW()`,
+        [normalizedUsername, normalizedEmail, passwordHash, full_name.trim(), institution.trim(), field.trim(), safeOrcid, verifyToken, expiresAt],
+      );
+    } else {
+      // Link flow: no username yet, insert by email (unique constraint)
+      await pool.query(
+        `INSERT INTO pending_signups (username, email, password_hash, link_flow, full_name, institution, field, orcid, verify_token, expires_at)
+         VALUES (NULL, $1, $2, TRUE, $3, $4, $5, $6, $7, $8)`,
+        [normalizedEmail, passwordHash, full_name.trim(), institution.trim(), field.trim(), safeOrcid, verifyToken, expiresAt],
+      );
+    }
 
     // Send verification email
     if (config.smtpHost) {

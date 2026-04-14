@@ -41,13 +41,13 @@ router.post('/verify', verifyLimiter, async (req: Request, res: Response) => {
   try {
     const { rows } = await pool.query<{
       id: number;
-      username: string;
+      username: string | null;
       email: string;
       password_hash: string;
-      linked_username: string | null;
+      link_flow: boolean;
       expires_at: Date;
     }>(
-      'SELECT id, username, email, password_hash, linked_username, expires_at FROM pending_signups WHERE verify_token = $1',
+      'SELECT id, username, email, password_hash, link_flow, expires_at FROM pending_signups WHERE verify_token = $1',
       [token],
     );
 
@@ -61,10 +61,9 @@ router.post('/verify', verifyLimiter, async (req: Request, res: Response) => {
       return sendError(res, 400, 'BAD_REQUEST', 'Verification token has expired');
     }
 
-    if (pending.linked_username) {
-      // Linked account flow (LA23): return a challenge for Keychain signature
+    if (pending.link_flow) {
+      // Linked account flow: return a challenge for Keychain signature
       const challenge = crypto.randomBytes(32).toString('hex');
-      // Store challenge temporarily (reuse verify_token column)
       await pool.query(
         'UPDATE pending_signups SET verify_token = $1 WHERE id = $2',
         [`challenge:${challenge}`, pending.id],
@@ -73,17 +72,17 @@ router.post('/verify', verifyLimiter, async (req: Request, res: Response) => {
       return sendOk(res, {
         flow: 'link',
         username: pending.username,
-        linked_username: pending.linked_username,
         challenge,
       });
     }
 
-    // New account flow: generate seed phrase
+    // New account flow: generate seed phrase (username is always set for non-link flows)
+    if (!pending.username) {
+      return sendError(res, 400, 'BAD_REQUEST', 'Invalid signup state');
+    }
+
     const { mnemonic, keys } = await generateKeysFromNewSeed(pending.username);
 
-    // Store the seed phrase info temporarily (encrypted in memory, not persisted)
-    // The confirm endpoint will need the token + seed phrase words to proceed
-    // We store a hash of the mnemonic to verify re-entry
     const mnemonicHash = crypto.createHash('sha256').update(mnemonic).digest('hex');
     await pool.query(
       'UPDATE pending_signups SET verify_token = $1 WHERE id = $2',
@@ -123,13 +122,13 @@ router.post('/resume-signup', resumeLimiter, async (req: Request, res: Response)
   try {
     const { rows } = await pool.query<{
       id: number;
-      username: string;
+      username: string | null;
       email: string;
       password_hash: string;
-      linked_username: string | null;
+      link_flow: boolean;
       verify_token: string;
     }>(
-      'SELECT id, username, email, password_hash, linked_username, verify_token FROM pending_signups WHERE email = $1',
+      'SELECT id, username, email, password_hash, link_flow, verify_token FROM pending_signups WHERE email = $1',
       [normalizedEmail],
     );
 
@@ -138,6 +137,11 @@ router.post('/resume-signup', resumeLimiter, async (req: Request, res: Response)
     }
 
     const pending = rows[0];
+
+    // Only allow resume if email was already verified (token consumed)
+    if (!pending.verify_token.startsWith('confirmed:') && !pending.verify_token.startsWith('challenge:')) {
+      return sendError(res, 400, 'BAD_REQUEST', 'Invalid email or password');
+    }
 
     // Verify password
     const passwordValid = await argon2.verify(pending.password_hash, password);
@@ -148,7 +152,7 @@ router.post('/resume-signup', resumeLimiter, async (req: Request, res: Response)
     // Reset expiry
     const expiresAt = new Date(Date.now() + SIGNUP_TOKEN_EXPIRY_MS);
 
-    if (pending.linked_username) {
+    if (pending.link_flow) {
       const challenge = crypto.randomBytes(32).toString('hex');
       await pool.query(
         'UPDATE pending_signups SET verify_token = $1, expires_at = $2 WHERE id = $3',
@@ -158,12 +162,15 @@ router.post('/resume-signup', resumeLimiter, async (req: Request, res: Response)
       return sendOk(res, {
         flow: 'link',
         username: pending.username,
-        linked_username: pending.linked_username,
         challenge,
       });
     }
 
-    // New account flow: generate fresh seed phrase
+    // New account flow: generate fresh seed phrase (username always set for non-link flows)
+    if (!pending.username) {
+      return sendError(res, 400, 'BAD_REQUEST', 'Invalid signup state');
+    }
+
     const { mnemonic, keys } = await generateKeysFromNewSeed(pending.username);
     const mnemonicHash = crypto.createHash('sha256').update(mnemonic).digest('hex');
     await pool.query(
@@ -326,31 +333,28 @@ router.post('/link', linkLimiter, verifyHiveSignature, async (req: Request, res:
   const pool = getAppPool();
   if (!pool) return sendError(res, 503, 'INTERNAL_ERROR', 'Service not available');
 
-  const { username, challenge } = req.body || {};
-  if (!username || typeof username !== 'string') {
-    return sendError(res, 400, 'VALIDATION_ERROR', 'Username is required');
-  }
+  const { challenge } = req.body || {};
   if (!challenge || typeof challenge !== 'string') {
     return sendError(res, 400, 'VALIDATION_ERROR', 'Challenge is required');
   }
 
-  const normalizedUsername = username.trim().toLowerCase();
-
-  // The Keychain signature must be from the linked account
-  const signingUsername = req.hiveUsername;
+  // Hive username comes from Keychain signature, not from the signup form
+  const hiveUsername = req.hiveUsername;
+  if (!hiveUsername) {
+    return sendError(res, 400, 'VALIDATION_ERROR', 'Keychain signature is required');
+  }
 
   try {
+    // Look up pending signup by challenge token only
     const { rows } = await pool.query<{
       id: number;
-      username: string;
       email: string;
       password_hash: string;
-      linked_username: string;
-      verify_token: string;
+      link_flow: boolean;
     }>(
-      `SELECT id, username, email, password_hash, linked_username, verify_token
-       FROM pending_signups WHERE username = $1 AND verify_token = $2`,
-      [normalizedUsername, `challenge:${challenge}`],
+      `SELECT id, email, password_hash, link_flow
+       FROM pending_signups WHERE verify_token = $1`,
+      [`challenge:${challenge}`],
     );
 
     if (rows.length === 0) {
@@ -359,9 +363,23 @@ router.post('/link', linkLimiter, verifyHiveSignature, async (req: Request, res:
 
     const pending = rows[0];
 
-    // Verify the signing user matches the linked account
-    if (signingUsername !== pending.linked_username) {
-      return sendError(res, 403, 'FORBIDDEN', `Signature must be from ${pending.linked_username}`);
+    if (!pending.link_flow) {
+      return sendError(res, 400, 'BAD_REQUEST', 'This signup is not a link flow');
+    }
+
+    // Verify the Hive account exists
+    const [account] = await hiveClient.database.getAccounts([hiveUsername]);
+    if (!account) {
+      return sendError(res, 404, 'NOT_FOUND', 'Hive account not found');
+    }
+
+    // Check the Hive account isn't already registered
+    const { rows: existing } = await pool.query<{ username: string }>(
+      'SELECT username FROM light_accounts WHERE username = $1',
+      [hiveUsername],
+    );
+    if (existing.length > 0) {
+      return sendError(res, 409, 'DUPLICATE', 'This Hive account is already linked');
     }
 
     // Create light_accounts row with no encrypted keys (self-custody from start)
@@ -369,7 +387,7 @@ router.post('/link', linkLimiter, verifyHiveSignature, async (req: Request, res:
     await pool.query(
       `INSERT INTO light_accounts (username, password_hash, email, upgraded_at, created_at)
        VALUES ($1, $2, $3, $4, $5)`,
-      [pending.linked_username, pending.password_hash, pending.email, now, now],
+      [hiveUsername, pending.password_hash, pending.email, now, now],
     );
 
     // Broadcast accreditation custom_json
@@ -377,7 +395,7 @@ router.post('/link', linkLimiter, verifyHiveSignature, async (req: Request, res:
       try {
         const evidenceHash = crypto
           .createHash('sha256')
-          .update(`${pending.email}:${pending.linked_username}:link`)
+          .update(`${pending.email}:${hiveUsername}:link`)
           .digest('hex');
 
         const adminKey = PrivateKey.fromString(config.pevoAdminPostingKey);
@@ -386,8 +404,8 @@ router.post('/link', linkLimiter, verifyHiveSignature, async (req: Request, res:
             id: config.appTag,
             json: JSON.stringify({
               action: 'accredit',
-              account: pending.linked_username,
-              name: pending.linked_username,
+              account: hiveUsername,
+              name: hiveUsername,
               institution: '',
               field: '',
               method: 'email',
@@ -409,7 +427,7 @@ router.post('/link', linkLimiter, verifyHiveSignature, async (req: Request, res:
 
     // Issue JWT session
     const jwtToken = jwt.sign(
-      { sub: pending.linked_username, custody: 'self' },
+      { sub: hiveUsername, custody: 'self' },
       config.sessionSecret,
       { expiresIn: SESSION_EXPIRY },
     );
@@ -419,7 +437,7 @@ router.post('/link', linkLimiter, verifyHiveSignature, async (req: Request, res:
       token: jwtToken,
       expires_at: expiresAt,
       custody: 'self',
-      username: pending.linked_username,
+      username: hiveUsername,
     });
   } catch (err) {
     logger.error({ err }, 'Account linking failed');

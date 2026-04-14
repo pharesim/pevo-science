@@ -1,5 +1,6 @@
 import Alpine from 'alpinejs';
 import { verifyEmail, resumeSignup, confirmSeedPhrase, linkExistingAccount } from '../api.js';
+import { signMessage, isKeychainInstalled } from '../keychain.js';
 
 // Number of words the user must re-enter to confirm retention
 const CONFIRM_WORD_COUNT = 3;
@@ -24,6 +25,9 @@ export function initSignupVerifyPage() {
     seedPhrase: null,
     seedWords: [],
     isLinkFlow: false,
+
+    // Link flow: Hive username entered at link step
+    hiveUsername: '',
 
     // Resume flow (shown on error phase)
     resumeEmail: '',
@@ -121,11 +125,18 @@ export function initSignupVerifyPage() {
     },
 
     async handleLinkAccount() {
-      // LA24: will trigger Keychain signature flow
+      if (!this.hiveUsername || this.isConfirming) return;
+      if (!isKeychainInstalled()) {
+        this.error = this.$t('seedPhrase.keychainRequired');
+        return;
+      }
+
       this.isConfirming = true;
       this.error = null;
       try {
-        const res = await linkExistingAccount(this.token);
+        const username = this.hiveUsername.trim().toLowerCase();
+        const { signature } = await signMessage(username, this.token);
+        const res = await linkExistingAccount(this.token, username, signature);
         const auth = Alpine.store('auth');
         auth.token = res.data.token;
         auth.username = res.data.username;

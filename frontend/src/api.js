@@ -353,11 +353,18 @@ export function confirmSeedPhrase(token, words) {
   });
 }
 
-export function linkExistingAccount(token) {
-  return authenticatedRequest('/auth/link', {
+export function linkExistingAccount(challenge, username, signature) {
+  const timestamp = new Date().toISOString();
+  return request('/auth/link', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ token }),
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Hive-Username': username,
+      'X-Hive-Signature': signature,
+      'X-Hive-Message': challenge,
+      'X-Hive-Timestamp': timestamp,
+    },
+    body: JSON.stringify({ challenge }),
   });
 }
 

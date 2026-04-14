@@ -46,8 +46,10 @@ async function claimAccountTokens(): Promise<void> {
       await hiveClient.broadcast.sendOperations(buildClaimOps(batchSize), key);
 
       // Record each token individually so the count stays accurate
-      const values = Array.from({ length: batchSize }, () => '(DEFAULT)').join(',');
-      await pool.query(`INSERT INTO account_creation_tokens VALUES ${values}`);
+      await pool.query(
+        'INSERT INTO account_creation_tokens SELECT FROM generate_series(1, $1)',
+        [batchSize],
+      );
       claimed += batchSize;
     } catch {
       // Not enough RC for this batch size — try smaller

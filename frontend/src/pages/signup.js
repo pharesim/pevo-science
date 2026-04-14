@@ -23,7 +23,6 @@ export function initSignupPage() {
     passwordConfirm: '',
     username: '',
     linkExisting: false,
-    linkedUsername: '',
 
     usernameStatus: null, // null | 'checking' | 'available' | 'taken' | 'error'
     _usernameTimer: null,
@@ -51,9 +50,7 @@ export function initSignupPage() {
 
     get canSubmit() {
       if (!this.email || !this.fullName || !this.institution || !this.field || !this.passwordValid || !this.passwordsMatch) return false;
-      if (this.linkExisting) {
-        return this.linkedUsername.length >= MIN_USERNAME;
-      }
+      if (this.linkExisting) return true;
       return this.usernameStatus === 'available';
     },
 
@@ -100,8 +97,7 @@ export function initSignupPage() {
         };
 
         if (this.linkExisting) {
-          payload.linked_username = this.linkedUsername.trim().toLowerCase();
-          payload.username = this.linkedUsername.trim().toLowerCase();
+          payload.link_existing = true;
         } else {
           payload.username = this.username.trim().toLowerCase();
         }
