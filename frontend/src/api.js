@@ -330,14 +330,26 @@ export function submitSignup(data) {
 }
 
 export function verifyEmail(token) {
-  return request(`/auth/verify-email${buildQuery({ token })}`);
+  return request('/auth/verify', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token }),
+  });
 }
 
 export function confirmSeedPhrase(token, words) {
-  return request('/auth/confirm-seed', {
+  return request('/auth/confirm', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ token, words }),
+  });
+}
+
+export function linkExistingAccount(token) {
+  return authenticatedRequest('/auth/link', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token }),
   });
 }
 
@@ -362,14 +374,6 @@ export function resetPassword(token, password) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ token, password }),
-  });
-}
-
-export function linkExistingAccount(token) {
-  return request('/auth/link-account', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ token }),
   });
 }
 
