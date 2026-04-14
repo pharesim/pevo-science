@@ -194,7 +194,7 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
           auth: config.smtpUser ? { user: config.smtpUser, pass: config.smtpPass } : undefined,
         });
 
-        const verifyUrl = `${config.appUrl}/auth/verify?token=${verifyToken}`;
+        const verifyUrl = `${config.appUrl}/signup/verify?token=${verifyToken}`;
         const safeUrl = escapeHtml(verifyUrl);
         await transporter.sendMail({
           from: config.smtpFrom,
@@ -230,16 +230,17 @@ router.post('/login', loginLimiter, async (req: Request, res: Response) => {
   const pool = getAppPool();
   if (!pool) return sendError(res, 503, 'INTERNAL_ERROR', 'Login not available');
 
-  const { username, password } = req.body || {};
+  const { username, email_or_username, password } = req.body || {};
+  const loginId = email_or_username || username;
 
-  if (!username || typeof username !== 'string') {
+  if (!loginId || typeof loginId !== 'string') {
     return sendError(res, 400, 'VALIDATION_ERROR', 'Username or email is required');
   }
   if (!password || typeof password !== 'string') {
     return sendError(res, 400, 'VALIDATION_ERROR', 'Password is required');
   }
 
-  const normalized = username.trim().toLowerCase();
+  const normalized = loginId.trim().toLowerCase();
 
   try {
     // Look up by username or email
