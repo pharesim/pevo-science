@@ -77,6 +77,20 @@ export function initSignInModal() {
           this._resolve = null;
         }
       } catch (err) {
+        if (err.code === 'PENDING_SIGNUP' && err.data) {
+          this.open = false;
+          this.mode = 'choose';
+          if (this._resolve) {
+            this._resolve(null);
+            this._resolve = null;
+          }
+          const params = new URLSearchParams({
+            auth_token: err.data.auth_token,
+            email: err.data.email,
+          });
+          Alpine.store('router').navigate(`/signup/verify?${params}`);
+          return;
+        }
         this.emailError = err.message || this.$t('signIn.loginFailed');
       } finally {
         this.emailLoading = false;
