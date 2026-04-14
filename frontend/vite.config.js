@@ -12,8 +12,7 @@ export default defineConfig({
           vendor: ['alpinejs'],
           editor: [
             '@tiptap/core', '@tiptap/starter-kit',
-            '@tiptap/extension-table', '@tiptap/extension-table-row',
-            '@tiptap/extension-table-cell', '@tiptap/extension-table-header',
+            '@tiptap/extension-table',
             '@tiptap/extension-link', '@tiptap/extension-image',
             '@tiptap/extension-placeholder', '@tiptap/extension-mathematics',
             'turndown', 'remark', 'remark-gfm', 'remark-math', 'remark-html',

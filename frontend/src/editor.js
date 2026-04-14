@@ -2,10 +2,7 @@ import { Editor } from '@tiptap/core';
 import { Extension } from '@tiptap/core';
 import { Plugin } from '@tiptap/pm/state';
 import StarterKit from '@tiptap/starter-kit';
-import Table from '@tiptap/extension-table';
-import TableRow from '@tiptap/extension-table-row';
-import TableCell from '@tiptap/extension-table-cell';
-import TableHeader from '@tiptap/extension-table-header';
+import { Table, TableRow, TableCell, TableHeader } from '@tiptap/extension-table';
 import Link from '@tiptap/extension-link';
 import Image from '@tiptap/extension-image';
 import Placeholder from '@tiptap/extension-placeholder';
@@ -650,7 +647,7 @@ export class PevoEditor {
     if (!this.editor) return;
     if (markdown) {
       const html = markdownToHtml(markdown);
-      this.editor.commands.setContent(html, false);
+      this.editor.commands.setContent(html, { emitUpdate: false });
     } else {
       this.editor.commands.clearContent(false);
     }
@@ -826,7 +823,7 @@ export class PevoEditor {
     if (this.markdownMode) {
       // Switching back to visual
       const html = markdownToHtml(this.markdownSource);
-      this.editor.commands.setContent(html, false);
+      this.editor.commands.setContent(html, { emitUpdate: false });
       this.markdownMode = false;
       this._els.mdWrap.style.display = 'none';
       this._els.visualWrap.style.display = '';
