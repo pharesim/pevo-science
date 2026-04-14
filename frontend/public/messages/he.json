@@ -896,7 +896,12 @@
     "hasKeychain": "יש לכם Hive Keychain?",
     "connectKeychain": "התחברות עם Keychain",
     "alreadySignedIn": "אתם כבר מחוברים.",
-    "goToPapers": "למאמרים"
+    "goToPapers": "למאמרים",
+    "pendingUnverified": "הדוא\"ל שלכם עדיין לא אומת. לחצו למטה כדי לקבל קישור אימות חדש.",
+    "resendVerification": "שליחת דוא\"ל אימות מחדש",
+    "resending": "שולח…",
+    "verificationResent": "קישור אימות חדש נשלח לדוא\"ל שלכם.",
+    "signUpAgain": "הרשמה מחדש"
   },
   "seedPhrase": {
     "verifying": "מאמת את הדוא\"ל שלכם…",

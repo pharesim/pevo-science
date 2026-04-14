@@ -903,7 +903,12 @@
     "hasKeychain": "Heb je Hive Keychain?",
     "connectKeychain": "Verbinden met Keychain",
     "alreadySignedIn": "Je bent al ingelogd.",
-    "goToPapers": "Naar publicaties"
+    "goToPapers": "Naar publicaties",
+    "pendingUnverified": "Je e-mailadres is nog niet geverifieerd. Klik hieronder om een nieuwe verificatielink te ontvangen.",
+    "resendVerification": "Verificatiemail opnieuw versturen",
+    "resending": "Verzenden…",
+    "verificationResent": "Er is een nieuwe verificatielink naar je e-mailadres gestuurd.",
+    "signUpAgain": "Opnieuw registreren"
   },
   "seedPhrase": {
     "verifying": "Je e-mailadres verifiëren…",

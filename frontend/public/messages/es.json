@@ -896,7 +896,12 @@
     "hasKeychain": "¿Tienes Hive Keychain?",
     "connectKeychain": "Conectar con Keychain",
     "alreadySignedIn": "Ya has iniciado sesión.",
-    "goToPapers": "Ir a los artículos"
+    "goToPapers": "Ir a los artículos",
+    "pendingUnverified": "Tu correo electrónico aún no ha sido verificado. Haz clic abajo para recibir un nuevo enlace de verificación.",
+    "resendVerification": "Reenviar correo de verificación",
+    "resending": "Enviando…",
+    "verificationResent": "Se ha enviado un nuevo enlace de verificación a tu correo electrónico.",
+    "signUpAgain": "Registrarse de nuevo"
   },
   "seedPhrase": {
     "verifying": "Verificando tu correo…",

@@ -34,9 +34,9 @@ export function initSignupVerifyPage() {
     mnemonic: null,
     seedWords: [],
 
-    // Email + password for confirm/link endpoints (re-entered or from resume)
+    // Auth token returned by verify/resume — used to authenticate confirm/link
+    authToken: null,
     email: '',
-    password: '',
 
     // Create flow: username step
     username: '',
@@ -67,8 +67,17 @@ export function initSignupVerifyPage() {
     },
 
     init() {
-      const params = new URLSearchParams(window.location.search);
-      const emailToken = params.get('token');
+      const query = Alpine.store('router').query || {};
+
+      // Resuming from login redirect — already have auth_token
+      if (query.auth_token && query.email) {
+        this.authToken = query.auth_token;
+        this.email = query.email;
+        this.phase = 'choose';
+        return;
+      }
+
+      const emailToken = query.token;
       if (!emailToken) {
         this.phase = 'error';
         this.error = this.$t('seedPhrase.invalidLink');
@@ -81,6 +90,8 @@ export function initSignupVerifyPage() {
       try {
         const res = await verifyEmail(emailToken);
         if (res.data.flow === 'choose') {
+          this.authToken = res.data.auth_token;
+          this.email = res.data.email;
           this.phase = 'choose';
         } else {
           this.phase = 'error';
@@ -149,7 +160,7 @@ export function initSignupVerifyPage() {
     async submitCreateAccount() {
       const normalizedUsername = this.username.trim().toLowerCase();
       if (!isValidUsername(normalizedUsername) || this.usernameStatus !== 'available' || this.isSubmitting) return;
-      if (!this.email || !this.password) {
+      if (!this.authToken) {
         this.error = this.$t('seedPhrase.credentialsRequired');
         return;
       }
@@ -171,7 +182,7 @@ export function initSignupVerifyPage() {
           memo_private: allKeys.memo.private,
         };
 
-        const res = await confirmAccount(this.email, this.password, normalizedUsername, keys);
+        const res = await confirmAccount(this.authToken, normalizedUsername, keys);
 
         // Set auth state
         const auth = Alpine.store('auth');
@@ -204,7 +215,7 @@ export function initSignupVerifyPage() {
 
     async handleLinkAccount() {
       if (!this.hiveUsername || this.isSubmitting) return;
-      if (!this.email || !this.password) {
+      if (!this.authToken) {
         this.error = this.$t('seedPhrase.credentialsRequired');
         return;
       }
@@ -219,7 +230,7 @@ export function initSignupVerifyPage() {
         const username = this.hiveUsername.trim().toLowerCase();
         const message = `${this.email}:link`;
         const { signature } = await signMessage(username, message);
-        const res = await linkExistingAccount(this.email, this.password, username, signature);
+        const res = await linkExistingAccount(this.authToken, this.email, username, signature);
 
         const auth = Alpine.store('auth');
         auth.token = res.data.token;
@@ -256,9 +267,8 @@ export function initSignupVerifyPage() {
       try {
         const res = await resumeSignup(this.resumeEmail, this.resumePassword);
         if (res.data.flow === 'choose') {
-          // Store credentials for later use in confirm/link
-          this.email = this.resumeEmail.trim().toLowerCase();
-          this.password = this.resumePassword;
+          this.authToken = res.data.auth_token;
+          this.email = res.data.email;
           this.phase = 'choose';
         } else {
           this.error = this.$t('seedPhrase.unexpectedResponse');

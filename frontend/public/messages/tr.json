@@ -903,7 +903,12 @@
     "hasKeychain": "Hive Keychain yüklü mü?",
     "connectKeychain": "Keychain ile bağlan",
     "alreadySignedIn": "Zaten giriş yapmış durumdasınız.",
-    "goToPapers": "Makalelere Git"
+    "goToPapers": "Makalelere Git",
+    "pendingUnverified": "E-postanız henüz doğrulanmadı. Yeni bir doğrulama bağlantısı almak için aşağıya tıklayın.",
+    "resendVerification": "Doğrulama e-postasını yeniden gönder",
+    "resending": "Gönderiliyor…",
+    "verificationResent": "E-postanıza yeni bir doğrulama bağlantısı gönderildi.",
+    "signUpAgain": "Tekrar kaydol"
   },
   "seedPhrase": {
     "verifying": "E-postanız doğrulanıyor…",

@@ -896,7 +896,12 @@
     "hasKeychain": "Hive Keychain دارید؟",
     "connectKeychain": "اتصال با Keychain",
     "alreadySignedIn": "شما قبلاً وارد شده‌اید.",
-    "goToPapers": "رفتن به مقالات"
+    "goToPapers": "رفتن به مقالات",
+    "pendingUnverified": "ایمیل شما هنوز تأیید نشده است. برای دریافت لینک تأیید جدید، روی دکمه زیر کلیک کنید.",
+    "resendVerification": "ارسال مجدد ایمیل تأیید",
+    "resending": "در حال ارسال…",
+    "verificationResent": "یک لینک تأیید جدید به ایمیل شما ارسال شد.",
+    "signUpAgain": "ثبت‌نام مجدد"
   },
   "seedPhrase": {
     "verifying": "در حال تأیید ایمیل شما…",

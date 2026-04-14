@@ -109,7 +109,7 @@ export function initSettingsPage() {
         // Broadcast account_update signed with old owner key
         const client = new dhive.Client(['https://api.hive.blog']);
 
-        const ownerKey = dhive.PrivateKey.fromString(oldKeys.owner);
+        const ownerKey = dhive.PrivateKey.fromSeed(oldKeys.owner);
         const op = {
           account: this.username,
           owner: { weight_threshold: 1, account_auths: [], key_auths: [[newPubKeys.owner, 1]] },

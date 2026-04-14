@@ -1,5 +1,5 @@
 import Alpine from 'alpinejs';
-import { loginWithPassword } from '../api.js';
+import { loginWithPassword, resendVerification } from '../api.js';
 
 export function initLoginPage() {
   Alpine.data('loginPage', () => ({
@@ -7,6 +7,11 @@ export function initLoginPage() {
     password: '',
     isSubmitting: false,
     error: null,
+
+    // Pending signup states detected by login
+    pendingState: null, // null | 'unverified' | 'expired'
+    isResending: false,
+    resendSuccess: false,
 
     get isConnected() { return Alpine.store('auth').isConnected; },
 
@@ -18,6 +23,8 @@ export function initLoginPage() {
       if (!this.canSubmit || this.isSubmitting) return;
       this.isSubmitting = true;
       this.error = null;
+      this.pendingState = null;
+      this.resendSuccess = false;
 
       try {
         const res = await loginWithPassword(
@@ -44,9 +51,42 @@ export function initLoginPage() {
 
         Alpine.store('router').navigate('/papers');
       } catch (err) {
+        if (err.code === 'PENDING_SIGNUP' && err.data) {
+          // Verified but incomplete — redirect to choose phase with auth_token
+          const params = new URLSearchParams({
+            auth_token: err.data.auth_token,
+            email: err.data.email,
+          });
+          Alpine.store('router').navigate(`/signup/verify?${params}`);
+          return;
+        }
+        if (err.code === 'PENDING_UNVERIFIED') {
+          this.pendingState = 'unverified';
+          this.error = err.message;
+          return;
+        }
+        if (err.code === 'SIGNUP_EXPIRED') {
+          this.pendingState = 'expired';
+          this.error = err.message;
+          return;
+        }
         this.error = err.message;
       } finally {
         this.isSubmitting = false;
+      }
+    },
+
+    async handleResendVerification() {
+      if (this.isResending) return;
+      this.isResending = true;
+      try {
+        await resendVerification(this.emailOrUsername.trim(), this.password);
+        this.resendSuccess = true;
+        this.error = null;
+      } catch (err) {
+        this.error = err.message;
+      } finally {
+        this.isResending = false;
       }
     },
 

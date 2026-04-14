@@ -896,7 +896,12 @@
     "hasKeychain": "Vous avez Hive Keychain ?",
     "connectKeychain": "Se connecter avec Keychain",
     "alreadySignedIn": "Vous êtes déjà connecté.",
-    "goToPapers": "Voir les articles"
+    "goToPapers": "Voir les articles",
+    "pendingUnverified": "Votre adresse e-mail n\u2019a pas encore été vérifiée. Cliquez ci-dessous pour recevoir un nouveau lien de vérification.",
+    "resendVerification": "Renvoyer l\u2019e-mail de vérification",
+    "resending": "Envoi en cours…",
+    "verificationResent": "Un nouveau lien de vérification a été envoyé à votre adresse e-mail.",
+    "signUpAgain": "S\u2019inscrire à nouveau"
   },
   "seedPhrase": {
     "verifying": "Vérification de votre e-mail…",

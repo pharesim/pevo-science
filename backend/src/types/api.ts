@@ -32,6 +32,9 @@ export type ErrorCode =
   | "ALREADY_UPGRADED"
   | "SESSION_INVALIDATED"
   | "INVALID_TOKEN"
+  | "PENDING_SIGNUP"
+  | "PENDING_UNVERIFIED"
+  | "SIGNUP_EXPIRED"
   | "INTERNAL_ERROR";
 
 export interface PaginationMeta {

@@ -4,9 +4,10 @@ const BASE_URL = '/api';
 const DEFAULT_TIMEOUT_MS = 30000;
 
 export class ApiRequestError extends Error {
-  constructor(code, message) {
+  constructor(code, message, data) {
     super(message);
     this.code = code;
+    this.data = data || null;
     this.name = 'ApiRequestError';
   }
 }
@@ -31,7 +32,7 @@ async function request(path, init) {
     let errorBody = null;
     try { errorBody = await res.json(); } catch { /* not JSON */ }
     if (errorBody && errorBody.status === 'error') {
-      throw new ApiRequestError(errorBody.error.code, errorBody.error.message);
+      throw new ApiRequestError(errorBody.error.code, errorBody.error.message, errorBody.data);
     }
     throw new ApiRequestError('INTERNAL_ERROR', `Request failed with status ${res.status}`);
   }
@@ -337,6 +338,14 @@ export function resumeSignup(email, password) {
   });
 }
 
+export function resendVerification(email, password) {
+  return request('/auth/resend-verification', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password }),
+  });
+}
+
 export function verifyEmail(token) {
   return request('/auth/verify', {
     method: 'POST',
@@ -345,15 +354,15 @@ export function verifyEmail(token) {
   });
 }
 
-export function confirmAccount(email, password, username, keys) {
+export function confirmAccount(authToken, username, keys) {
   return request('/auth/confirm', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, password, username, keys }),
+    body: JSON.stringify({ auth_token: authToken, username, keys }),
   });
 }
 
-export function linkExistingAccount(email, password, username, signature) {
+export function linkExistingAccount(authToken, email, username, signature) {
   const timestamp = new Date().toISOString();
   return request('/auth/link', {
     method: 'POST',
@@ -364,7 +373,7 @@ export function linkExistingAccount(email, password, username, signature) {
       'X-Hive-Message': `${email}:link`,
       'X-Hive-Timestamp': timestamp,
     },
-    body: JSON.stringify({ email, password }),
+    body: JSON.stringify({ auth_token: authToken }),
   });
 }
 

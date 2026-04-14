@@ -896,7 +896,12 @@
     "hasKeychain": "已安装 Hive Keychain？",
     "connectKeychain": "使用 Keychain 连接",
     "alreadySignedIn": "您已登录。",
-    "goToPapers": "浏览论文"
+    "goToPapers": "浏览论文",
+    "pendingUnverified": "您的邮箱尚未验证。请点击下方按钮获取新的验证链接。",
+    "resendVerification": "重新发送验证邮件",
+    "resending": "发送中…",
+    "verificationResent": "新的验证链接已发送至您的邮箱。",
+    "signUpAgain": "重新注册"
   },
   "seedPhrase": {
     "verifying": "正在验证邮箱…",

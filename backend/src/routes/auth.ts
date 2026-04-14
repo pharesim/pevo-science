@@ -182,6 +182,90 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
 });
 
 // ─────────────────────────────────────────────────────────────
+// POST /api/auth/resend-verification — Resend verification email
+// Requires email + password to prevent abuse
+// ─────────────────────────────────────────────────────────────
+const resendLimiter = rateLimit({ name: 'auth-resend', windowMs: 3_600_000, max: 3, keyFn: byIp });
+
+router.post('/resend-verification', resendLimiter, async (req: Request, res: Response) => {
+  const pool = getAppPool();
+  if (!pool) return sendError(res, 503, 'INTERNAL_ERROR', 'Service not available');
+
+  const { email, password } = req.body || {};
+  if (!email || typeof email !== 'string') {
+    return sendError(res, 400, 'VALIDATION_ERROR', 'Email is required');
+  }
+  if (!password || typeof password !== 'string') {
+    return sendError(res, 400, 'VALIDATION_ERROR', 'Password is required');
+  }
+
+  const normalizedEmail = email.trim().toLowerCase();
+
+  try {
+    const { rows } = await pool.query<{
+      id: number;
+      password_hash: string;
+      verify_token: string;
+    }>(
+      'SELECT id, password_hash, verify_token FROM pending_signups WHERE email = $1',
+      [normalizedEmail],
+    );
+
+    if (rows.length === 0) {
+      // Constant-time response to prevent email enumeration
+      return sendOk(res, { message: 'If that email has a pending signup, a new verification link has been sent.' });
+    }
+
+    const pending = rows[0];
+
+    const passwordValid = await argon2.verify(pending.password_hash, password);
+    if (!passwordValid) {
+      return sendOk(res, { message: 'If that email has a pending signup, a new verification link has been sent.' });
+    }
+
+    // Already confirmed — no need to resend
+    if (pending.verify_token.startsWith('confirmed:')) {
+      return sendOk(res, { message: 'Your email is already verified. Please log in to continue your signup.' });
+    }
+
+    // Generate new token and reset expiry
+    const newToken = crypto.randomBytes(32).toString('hex');
+    const expiresAt = new Date(Date.now() + SIGNUP_TOKEN_EXPIRY_MS);
+    await pool.query(
+      'UPDATE pending_signups SET verify_token = $1, expires_at = $2 WHERE id = $3',
+      [newToken, expiresAt, pending.id],
+    );
+
+    if (config.smtpHost) {
+      try {
+        const transporter = nodemailer.createTransport({
+          host: config.smtpHost,
+          port: config.smtpPort,
+          secure: config.smtpPort === 465,
+          auth: config.smtpUser ? { user: config.smtpUser, pass: config.smtpPass } : undefined,
+        });
+
+        const verifyUrl = `${config.appUrl}/signup/verify?token=${newToken}`;
+        await transporter.sendMail({
+          from: config.smtpFrom,
+          to: normalizedEmail,
+          subject: 'PEvO - Verify your email',
+          text: `Welcome to PEvO!\n\nPlease verify your email to complete your registration:\n\n${verifyUrl}\n\nThis link expires in 24 hours.\n\nIf you did not sign up for PEvO, you can safely ignore this email.\n\nPEvO - Open Scientific Publishing\nhttps://pevo.science`,
+        });
+      } catch (mailErr) {
+        logger.error({ err: (mailErr as Error).message }, 'Failed to resend verification email');
+        return sendError(res, 500, 'INTERNAL_ERROR', 'Failed to send verification email');
+      }
+    }
+
+    sendOk(res, { message: 'If that email has a pending signup, a new verification link has been sent.' });
+  } catch (err) {
+    logger.error({ err }, 'Resend verification failed');
+    sendError(res, 500, 'INTERNAL_ERROR', 'Failed to resend verification email');
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
 // POST /api/auth/login — Password-based login (LA8)
 // ─────────────────────────────────────────────────────────────
 router.post('/login', loginLimiter, async (req: Request, res: Response) => {
@@ -219,6 +303,40 @@ router.post('/login', loginLimiter, async (req: Request, res: Response) => {
     );
 
     if (rows.length === 0) {
+      // No light_accounts match — check pending_signups
+      const { rows: pendingRows } = await pool.query<{
+        id: number;
+        email: string;
+        password_hash: string;
+        verify_token: string;
+        expires_at: Date;
+      }>(
+        'SELECT id, email, password_hash, verify_token, expires_at FROM pending_signups WHERE email = $1',
+        [normalized],
+      );
+
+      if (pendingRows.length > 0) {
+        const pending = pendingRows[0];
+        const pendingPasswordValid = await argon2.verify(pending.password_hash, password);
+        if (pendingPasswordValid) {
+          if (pending.verify_token.startsWith('confirmed:')) {
+            // Email verified but never completed — let them continue
+            return res.status(409).json({
+              status: 'error',
+              error: { code: 'PENDING_SIGNUP', message: 'Your signup is not complete yet.' },
+              data: { auth_token: pending.verify_token, email: pending.email },
+            });
+          }
+          // Not confirmed — check expiry
+          if (new Date() > new Date(pending.expires_at)) {
+            await pool.query('DELETE FROM pending_signups WHERE id = $1', [pending.id]);
+            return sendError(res, 410, 'SIGNUP_EXPIRED', 'Your signup has expired. Please sign up again.');
+          }
+          // Not yet verified — offer to resend
+          return sendError(res, 409, 'PENDING_UNVERIFIED', 'Your email has not been verified yet.');
+        }
+      }
+
       return sendError(res, 401, 'UNAUTHORIZED', 'Invalid credentials');
     }
 

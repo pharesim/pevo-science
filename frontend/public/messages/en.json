@@ -907,7 +907,12 @@
     "hasKeychain": "Have Hive Keychain?",
     "connectKeychain": "Connect with Keychain",
     "alreadySignedIn": "You are already signed in.",
-    "goToPapers": "Go to Papers"
+    "goToPapers": "Go to Papers",
+    "pendingUnverified": "Your email hasn\u2019t been verified yet. Click below to receive a new verification link.",
+    "resendVerification": "Resend verification email",
+    "resending": "Sending\u2026",
+    "verificationResent": "A new verification link has been sent to your email.",
+    "signUpAgain": "Sign up again"
   },
   "seedPhrase": {
     "verifying": "Verifying your email\u2026",

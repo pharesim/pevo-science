@@ -3411,31 +3411,17 @@
               <p class="text-ink-muted" x-text="$t('seedPhrase.chooseDescription')"></p>
             </div>
 
-            <!-- Email + password for subsequent steps -->
-            <div class="space-y-3 mb-6" x-show="!email">
-              <div>
-                <label class="block text-sm font-medium text-ink mb-1" x-text="$t('signup.email')"></label>
-                <input type="email" x-model="email" required
-                       class="w-full border border-parchment-dark rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-pevo-teal focus:border-pevo-teal">
-              </div>
-              <div>
-                <label class="block text-sm font-medium text-ink mb-1" x-text="$t('signup.password')"></label>
-                <input type="password" x-model="password" required
-                       class="w-full border border-parchment-dark rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-pevo-teal focus:border-pevo-teal">
-              </div>
-            </div>
-
             <div class="grid gap-4 sm:grid-cols-2">
-              <button @click="chooseCreate()" :disabled="!email || !password"
-                      class="bg-white border-2 border-pevo-teal rounded-xl p-6 text-center hover:bg-pevo-teal/5 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+              <button @click="chooseCreate()"
+                      class="bg-white border-2 border-pevo-teal rounded-xl p-6 text-center hover:bg-pevo-teal/5 transition-colors">
                 <div class="w-12 h-12 bg-pevo-teal/10 rounded-full flex items-center justify-center mx-auto mb-3">
                   <svg class="w-6 h-6 text-pevo-teal" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
                 </div>
                 <h3 class="font-semibold text-ink mb-1" x-text="$t('seedPhrase.chooseCreate')"></h3>
                 <p class="text-xs text-ink-muted" x-text="$t('seedPhrase.chooseCreateHint')"></p>
               </button>
-              <button @click="chooseLink()" :disabled="!email || !password"
-                      class="bg-white border-2 border-parchment-dark rounded-xl p-6 text-center hover:bg-parchment-light transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+              <button @click="chooseLink()"
+                      class="bg-white border-2 border-parchment-dark rounded-xl p-6 text-center hover:bg-parchment-light transition-colors">
                 <div class="w-12 h-12 bg-parchment-light rounded-full flex items-center justify-center mx-auto mb-3">
                   <svg class="w-6 h-6 text-ink" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/></svg>
                 </div>
@@ -3589,9 +3575,30 @@
             <h1 class="text-3xl font-bold text-ink mb-2" x-text="$t('login.title')"></h1>
             <p class="text-ink-muted mb-6" x-text="$t('login.subtitle')"></p>
 
-            <!-- Error -->
-            <div x-show="error" class="bg-red-50 border border-red-200 rounded-lg p-4 mb-6">
+            <!-- Error (generic) -->
+            <div x-show="error && !pendingState" class="bg-red-50 border border-red-200 rounded-lg p-4 mb-6">
               <p class="text-red-700 text-sm" x-text="error"></p>
+            </div>
+
+            <!-- Pending unverified: offer resend -->
+            <div x-show="pendingState === 'unverified' && !resendSuccess" class="bg-amber-50 border border-amber-200 rounded-lg p-4 mb-6">
+              <p class="text-amber-800 text-sm mb-3" x-text="$t('login.pendingUnverified')"></p>
+              <button type="button" @click="handleResendVerification()" :disabled="isResending"
+                      class="btn-primary text-sm py-1.5 px-4 disabled:opacity-50">
+                <span x-show="!isResending" x-text="$t('login.resendVerification')"></span>
+                <span x-show="isResending" x-text="$t('login.resending')"></span>
+              </button>
+            </div>
+
+            <!-- Resend success -->
+            <div x-show="resendSuccess" class="bg-green-50 border border-green-200 rounded-lg p-4 mb-6">
+              <p class="text-green-700 text-sm" x-text="$t('login.verificationResent')"></p>
+            </div>
+
+            <!-- Signup expired: link to signup -->
+            <div x-show="pendingState === 'expired'" class="bg-red-50 border border-red-200 rounded-lg p-4 mb-6">
+              <p class="text-red-700 text-sm mb-3" x-text="error"></p>
+              <a :href="$lp('/signup')" @click.prevent="navigate('/signup')" class="text-pevo-teal hover:underline text-sm font-medium" x-text="$t('login.signUpAgain')"></a>
             </div>
 
             <form @submit.prevent="handleSubmit" class="space-y-5">

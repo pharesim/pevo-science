@@ -67,7 +67,7 @@ router.post('/verify', verifyLimiter, async (req: Request, res: Response) => {
       [confirmed, pending.id],
     );
 
-    sendOk(res, { flow: 'choose' });
+    sendOk(res, { flow: 'choose', email: pending.email, auth_token: confirmed });
   } catch (err) {
     logger.error({ err }, 'Email verification failed');
     sendError(res, 500, 'INTERNAL_ERROR', 'Verification failed');
@@ -126,7 +126,7 @@ router.post('/resume-signup', resumeLimiter, async (req: Request, res: Response)
       [expiresAt, pending.id],
     );
 
-    sendOk(res, { flow: 'choose' });
+    sendOk(res, { flow: 'choose', email: normalizedEmail, auth_token: pending.verify_token });
   } catch (err) {
     logger.error({ err }, 'Resume signup failed');
     sendError(res, 500, 'INTERNAL_ERROR', 'Resume failed');
@@ -135,20 +135,17 @@ router.post('/resume-signup', resumeLimiter, async (req: Request, res: Response)
 
 // ─────────────────────────────────────────────────────────────
 // POST /api/auth/confirm — Create new Hive account with client-provided keys (SF4)
-// Request: { email, password, username, keys: { owner_public, active_public, posting_public, memo_public, posting_private, memo_private } }
+// Request: { auth_token, username, keys: { owner_public, active_public, posting_public, memo_public, posting_private, memo_private } }
 // ─────────────────────────────────────────────────────────────
 router.post('/confirm', confirmLimiter, async (req: Request, res: Response) => {
   const pool = getAppPool();
   if (!pool) return sendError(res, 503, 'INTERNAL_ERROR', 'Service not available');
 
-  const { email, password, username, keys } = req.body || {};
+  const { auth_token, username, keys } = req.body || {};
 
   // Validate required fields
-  if (!email || typeof email !== 'string') {
-    return sendError(res, 400, 'VALIDATION_ERROR', 'Email is required');
-  }
-  if (!password || typeof password !== 'string') {
-    return sendError(res, 400, 'VALIDATION_ERROR', 'Password is required');
+  if (!auth_token || typeof auth_token !== 'string') {
+    return sendError(res, 400, 'VALIDATION_ERROR', 'Auth token is required');
   }
   if (!username || typeof username !== 'string') {
     return sendError(res, 400, 'VALIDATION_ERROR', 'Username is required');
@@ -162,7 +159,6 @@ router.post('/confirm', confirmLimiter, async (req: Request, res: Response) => {
     return sendError(res, 400, 'VALIDATION_ERROR', 'All key fields are required (owner_public, active_public, posting_public, memo_public, posting_private, memo_private)');
   }
 
-  const normalizedEmail = email.trim().toLowerCase();
   const normalizedUsername = username.trim().toLowerCase();
 
   // Validate username format
@@ -183,7 +179,7 @@ router.post('/confirm', confirmLimiter, async (req: Request, res: Response) => {
   }
 
   try {
-    // Look up pending signup by email where verified
+    // Look up pending signup by auth token
     const { rows } = await pool.query<{
       id: number;
       email: string;
@@ -191,23 +187,18 @@ router.post('/confirm', confirmLimiter, async (req: Request, res: Response) => {
       full_name: string;
       institution: string;
       field: string;
+      orcid: string | null;
     }>(
-      `SELECT id, email, password_hash, full_name, institution, field
-       FROM pending_signups WHERE email = $1 AND verify_token LIKE 'confirmed:%'`,
-      [normalizedEmail],
+      `SELECT id, email, password_hash, full_name, institution, field, orcid
+       FROM pending_signups WHERE verify_token = $1`,
+      [auth_token],
     );
 
     if (rows.length === 0) {
-      return sendError(res, 400, 'BAD_REQUEST', 'No pending confirmed signup for this email');
+      return sendError(res, 400, 'BAD_REQUEST', 'Invalid or expired auth token');
     }
 
     const pending = rows[0];
-
-    // Verify password
-    const passwordValid = await argon2.verify(pending.password_hash, password);
-    if (!passwordValid) {
-      return sendError(res, 401, 'UNAUTHORIZED', 'Invalid password');
-    }
 
     // Check Hive username availability
     const [existingAccount] = await hiveClient.database.getAccounts([normalizedUsername]);
@@ -261,6 +252,7 @@ router.post('/confirm', confirmLimiter, async (req: Request, res: Response) => {
               name: pending.full_name || normalizedUsername,
               institution: pending.institution || '',
               field: pending.field || '',
+              orcid: pending.orcid || '',
               method: 'email',
               evidence_hash: evidenceHash,
               timestamp: new Date().toISOString(),
@@ -301,18 +293,15 @@ router.post('/confirm', confirmLimiter, async (req: Request, res: Response) => {
 
 // ─────────────────────────────────────────────────────────────
 // POST /api/auth/link — Link existing Hive account after email verification (SF6)
-// Requires email + password auth + Keychain signature proving Hive account ownership
+// Requires auth_token + Keychain signature proving Hive account ownership
 // ─────────────────────────────────────────────────────────────
 router.post('/link', linkLimiter, verifyHiveSignature, async (req: Request, res: Response) => {
   const pool = getAppPool();
   if (!pool) return sendError(res, 503, 'INTERNAL_ERROR', 'Service not available');
 
-  const { email, password } = req.body || {};
-  if (!email || typeof email !== 'string') {
-    return sendError(res, 400, 'VALIDATION_ERROR', 'Email is required');
-  }
-  if (!password || typeof password !== 'string') {
-    return sendError(res, 400, 'VALIDATION_ERROR', 'Password is required');
+  const { auth_token } = req.body || {};
+  if (!auth_token || typeof auth_token !== 'string') {
+    return sendError(res, 400, 'VALIDATION_ERROR', 'Auth token is required');
   }
 
   // Hive username comes from Keychain signature
@@ -321,10 +310,8 @@ router.post('/link', linkLimiter, verifyHiveSignature, async (req: Request, res:
     return sendError(res, 400, 'VALIDATION_ERROR', 'Keychain signature is required');
   }
 
-  const normalizedEmail = email.trim().toLowerCase();
-
   try {
-    // Look up pending signup by email where verified
+    // Look up pending signup by auth token
     const { rows } = await pool.query<{
       id: number;
       email: string;
@@ -332,10 +319,11 @@ router.post('/link', linkLimiter, verifyHiveSignature, async (req: Request, res:
       full_name: string;
       institution: string;
       field: string;
+      orcid: string | null;
     }>(
-      `SELECT id, email, password_hash, full_name, institution, field
-       FROM pending_signups WHERE email = $1 AND verify_token LIKE 'confirmed:%'`,
-      [normalizedEmail],
+      `SELECT id, email, password_hash, full_name, institution, field, orcid
+       FROM pending_signups WHERE verify_token = $1`,
+      [auth_token],
     );
 
     if (rows.length === 0) {
@@ -343,12 +331,6 @@ router.post('/link', linkLimiter, verifyHiveSignature, async (req: Request, res:
     }
 
     const pending = rows[0];
-
-    // Verify password
-    const passwordValid = await argon2.verify(pending.password_hash, password);
-    if (!passwordValid) {
-      return sendError(res, 401, 'UNAUTHORIZED', 'Invalid password');
-    }
 
     // Verify the Hive account exists
     const [account] = await hiveClient.database.getAccounts([hiveUsername]);
@@ -391,6 +373,7 @@ router.post('/link', linkLimiter, verifyHiveSignature, async (req: Request, res:
               name: pending.full_name || hiveUsername,
               institution: pending.institution || '',
               field: pending.field || '',
+              orcid: pending.orcid || '',
               method: 'email',
               evidence_hash: evidenceHash,
               timestamp: new Date().toISOString(),

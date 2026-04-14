@@ -896,7 +896,12 @@
     "hasKeychain": "Máte Hive Keychain?",
     "connectKeychain": "Připojit přes Keychain",
     "alreadySignedIn": "Již jste přihlášeni.",
-    "goToPapers": "Přejít na články"
+    "goToPapers": "Přejít na články",
+    "pendingUnverified": "Váš e-mail ještě nebyl ověřen. Klikněte níže pro zaslání nového ověřovacího odkazu.",
+    "resendVerification": "Znovu odeslat ověřovací e-mail",
+    "resending": "Odesílání…",
+    "verificationResent": "Na váš e-mail byl odeslán nový ověřovací odkaz.",
+    "signUpAgain": "Zaregistrovat se znovu"
   },
   "seedPhrase": {
     "verifying": "Ověřování vašeho e-mailu…",

@@ -896,7 +896,12 @@
     "hasKeychain": "Har du Hive Keychain?",
     "connectKeychain": "Anslut med Keychain",
     "alreadySignedIn": "Du är redan inloggad.",
-    "goToPapers": "Gå till publikationer"
+    "goToPapers": "Gå till publikationer",
+    "pendingUnverified": "Din e-postadress har inte verifierats ännu. Klicka nedan för att få en ny verifieringslänk.",
+    "resendVerification": "Skicka verifieringsmail igen",
+    "resending": "Skickar…",
+    "verificationResent": "En ny verifieringslänk har skickats till din e-post.",
+    "signUpAgain": "Registrera dig igen"
   },
   "seedPhrase": {
     "verifying": "Verifierar din e-post…",

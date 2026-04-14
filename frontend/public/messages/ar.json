@@ -896,7 +896,12 @@
     "hasKeychain": "لديك Hive Keychain؟",
     "connectKeychain": "الاتصال عبر Keychain",
     "alreadySignedIn": "أنت مسجّل الدخول بالفعل.",
-    "goToPapers": "تصفح الأوراق البحثية"
+    "goToPapers": "تصفح الأوراق البحثية",
+    "pendingUnverified": "لم يتم التحقق من بريدك الإلكتروني بعد. انقر أدناه لتلقي رابط تحقق جديد.",
+    "resendVerification": "إعادة إرسال بريد التحقق",
+    "resending": "جارٍ الإرسال…",
+    "verificationResent": "تم إرسال رابط تحقق جديد إلى بريدك الإلكتروني.",
+    "signUpAgain": "التسجيل مرة أخرى"
   },
   "seedPhrase": {
     "verifying": "جارٍ التحقق من بريدك الإلكتروني…",
