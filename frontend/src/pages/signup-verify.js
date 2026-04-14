@@ -50,9 +50,9 @@ export function initSignupVerifyPage() {
     async verifyToken(emailToken) {
       try {
         const res = await verifyEmail(emailToken);
-        this.token = res.data.token;
+        this.token = res.data.challenge || res.data.token;
 
-        if (res.data.link_existing) {
+        if (res.data.flow === 'link') {
           // LA24 link-existing flow: no seed phrase, redirect to Keychain signing
           this.isLinkFlow = true;
           this.phase = 'link-keychain';
