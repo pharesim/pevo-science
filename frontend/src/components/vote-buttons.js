@@ -38,6 +38,7 @@ export function initVoteButtons() {
       const myVote = this.voters.find((v) => v.voter === this.username);
       if (myVote) {
         this.voteState = myVote.weight > 0 ? 'up' : 'down';
+        this.currentWeight = myVote.weight;
       }
     },
 

@@ -233,7 +233,7 @@ async function fetchPapersFromHiveApi(req: Request): Promise<{ rows: unknown[]; 
     const rows = papers.map((d) => {
       const meta = parseMeta(d.json_metadata);
       return toPaperSummary(
-        { author: d.author, permlink: d.permlink, title: d.title, body: d.body, created: d.created, net_votes: d.active_votes?.length ?? 0 },
+        { author: d.author, permlink: d.permlink, title: d.title, body: d.body, created: d.created, net_votes: 0 },
         meta,
       );
     });
@@ -425,6 +425,8 @@ async function fetchPaperDetailFromHiveApi(author: string, permlink: string) {
     if (!isPevoAnyPaper(meta)) return null;
 
     const detail = buildPaperDetail(post, meta, []);
+    // Don't use Hive's unfiltered net_votes — enrichment provides accredited-only count
+    detail.net_votes = 0;
 
     // Version history (Hive API only returns latest — use pevo.version from metadata)
     const pevoMeta = safePevoMeta(meta);

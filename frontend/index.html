@@ -991,7 +991,8 @@
                 </template>
               </div>
 
-              <!-- Vote -->
+              <!-- Vote (wait for enrichment so we get accredited-only counts + voter list) -->
+              <template x-if="enrichmentLoaded">
               <div class="mt-4" x-data="voteButtons({ author: paper.author, permlink: paper.permlink, netVotes: paper.net_votes, voters: paper.voters || [] })" @click.outside="selectorOpen = false">
                 <!-- Accredited: vote strength selector -->
                 <template x-if="isAccredited">
@@ -1038,6 +1039,7 @@
                   </div>
                 </template>
               </div>
+              </template>
 
               <!-- DOI -->
               <template x-if="doiData && doiData.status === 'registered' && doiData.doi">

@@ -181,7 +181,7 @@ async function fetchUserPapersFromHiveApi(username: string, limit: number) {
     const rows = papers.map((d) => {
       const meta = parseMeta(d.json_metadata);
       return toPaperSummary(
-        { author: d.author, permlink: d.permlink, title: d.title, body: d.body, created: d.created, net_votes: d.active_votes?.length ?? 0 },
+        { author: d.author, permlink: d.permlink, title: d.title, body: d.body, created: d.created, net_votes: 0 },
         meta,
       );
     });
