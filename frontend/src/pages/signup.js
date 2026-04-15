@@ -1,5 +1,5 @@
 import Alpine from 'alpinejs';
-import { submitSignup } from '../api.js';
+import { submitSignup, loginWithPassword } from '../api.js';
 
 const MIN_PASSWORD = 10;
 
@@ -50,7 +50,28 @@ export function initSignupPage() {
         });
         this.submitted = true;
       } catch (err) {
-        this.error = err.message;
+        if (err.code === 'DUPLICATE' && this.email && this.password) {
+          // Already registered — try to log in with the provided credentials
+          try {
+            const res = await loginWithPassword(this.email.trim(), this.password);
+            const auth = Alpine.store('auth');
+            auth.loginFromResponse(res.data);
+            Alpine.store('router').navigate('/papers');
+            return;
+          } catch (loginErr) {
+            if (loginErr.code === 'PENDING_SIGNUP' && loginErr.data) {
+              const params = new URLSearchParams({
+                auth_token: loginErr.data.auth_token,
+                email: loginErr.data.email,
+              });
+              Alpine.store('router').navigate(`/signup/verify?${params}`);
+              return;
+            }
+            this.error = loginErr.message;
+          }
+        } else {
+          this.error = err.message;
+        }
       } finally {
         this.isSubmitting = false;
       }
