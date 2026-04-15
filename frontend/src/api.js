@@ -416,6 +416,16 @@ export function resetPassword(token, password) {
   });
 }
 
+// ─── Blog ───────────────────────────────────────────────────────
+
+export function fetchBlogPosts(params = {}) {
+  return request(`/blog${buildQuery(params)}`);
+}
+
+export function fetchBlogPost(permlink) {
+  return request(`/blog/${encodeURIComponent(permlink)}`);
+}
+
 // ─── Health ──────────────────────────────────────────────────────
 
 export async function fetchHealth() {

@@ -17,7 +17,8 @@
     "about": "About",
     "gettingStarted": "Getting Started",
     "faq": "FAQ",
-    "more": "More"
+    "more": "More",
+    "blog": "Blog"
   },
   "header": {
     "tagline": "open science, open access",
@@ -796,6 +797,14 @@
     "githubIssuesDesc": "Report bugs or request features on GitHub.",
     "discordCommunity": "Discord Community",
     "discordDesc": "Join our Discord for real-time help and discussion."
+  },
+  "blog": {
+    "title": "Blog",
+    "description": "News, updates, and insights from the PEvO team.",
+    "errorLoading": "Could not load blog posts. Please try again.",
+    "retry": "Retry",
+    "noPosts": "No blog posts yet. Check back soon!",
+    "backToBlog": "Back to Blog"
   },
   "locale": {
     "en": "English",

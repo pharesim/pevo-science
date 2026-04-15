@@ -29,6 +29,7 @@ export function initHeader() {
         { path: '/getting-started', label: this.$t('nav.gettingStarted') },
         { path: '/faq', label: this.$t('nav.faq') },
         { path: '/about', label: this.$t('nav.about') },
+        { path: '/blog', label: this.$t('nav.blog') },
       );
       return links;
     },

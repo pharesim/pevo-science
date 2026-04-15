@@ -23,6 +23,7 @@ import { initAboutPage } from './pages/about.js';
 import { initFaqPage } from './pages/faq.js';
 import { initGettingStartedPage } from './pages/getting-started.js';
 import { initContactPage } from './pages/contact.js';
+import { initBlogPage } from './pages/blog.js';
 
 // Pages — Phase 3 (data)
 import { initHomePage } from './pages/home.js';
@@ -79,6 +80,7 @@ initAboutPage();
 initFaqPage();
 initGettingStartedPage();
 initContactPage();
+initBlogPage();
 
 // Initialize pages — Phase 3
 initHomePage();

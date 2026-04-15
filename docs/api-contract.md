@@ -1591,6 +1591,70 @@ Only the original registerer (matched via `pevo.source.registered_by` in the exi
 
 ---
 
+### GET /api/blog
+
+List blog posts. Returns posts by the configured blog author under the blog tag. Not paginated (returns all matching posts up to `limit`). Rate-limited.
+
+**Query Parameters:**
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `limit` | number | 20 | Max posts to return (1–100) |
+
+**Response:**
+
+```json
+{
+  "status": "ok",
+  "data": [
+    {
+      "author": "pevo.science",
+      "permlink": "welcome-to-pevo",
+      "title": "Welcome to PEvO",
+      "body": "Full Markdown body...",
+      "created": "2026-04-15T10:00:00",
+      "tags": ["pevo-blog", "announcement"]
+    }
+  ]
+}
+```
+
+---
+
+### GET /api/blog/:permlink
+
+Fetch a single blog post by permlink. Returns 404 if the post does not exist or does not belong to the blog.
+
+**Path Parameters:**
+
+| Param | Type | Description |
+|-------|------|-------------|
+| `permlink` | string | Post permlink |
+
+**Response:**
+
+```json
+{
+  "status": "ok",
+  "data": {
+    "author": "pevo.science",
+    "permlink": "welcome-to-pevo",
+    "title": "Welcome to PEvO",
+    "body": "Full Markdown body...",
+    "created": "2026-04-15T10:00:00",
+    "tags": ["pevo-blog", "announcement"]
+  }
+}
+```
+
+**Errors:**
+
+| Code | Status | When |
+|------|--------|------|
+| `NOT_FOUND` | 404 | Permlink not found or not a blog post |
+
+---
+
 ### GET /api/health
 
 Server health check. Not paginated.

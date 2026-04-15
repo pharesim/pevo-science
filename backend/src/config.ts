@@ -99,6 +99,10 @@ export const config = {
   appVersion,
   appId: `${appTag}/${appVersion}`,
 
+  // Blog
+  blogAuthor: process.env.BLOG_AUTHOR || 'pevo.science',
+  blogTag: process.env.BLOG_TAG || 'pevo-blog',
+
   // Public URLs (injected into frontend via __PEVO_CONFIG__)
   discordUrl: process.env.DISCORD_URL || '',
   githubUrl: process.env.GITHUB_URL || '',
