@@ -149,7 +149,7 @@ export function createApp() {
   });
 
   // ── sitemap.xml ───────────────────────────────────────────────
-  const staticPaths = ['/', '/papers', '/about', '/faq', '/getting-started', '/contact', '/researchers', '/stats', '/search', '/accreditation', '/bridge', '/publish'];
+  const staticPaths = ['/', '/papers', '/about', '/faq', '/getting-started', '/contact', '/researchers', '/stats', '/search', '/accreditation', '/bridge', '/publish', '/blog'];
 
   app.get('/sitemap.xml', async (_req, res) => {
     const baseUrl = config.appUrl.replace(/\/$/, '');
