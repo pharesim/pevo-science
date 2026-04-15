@@ -1,5 +1,6 @@
 import Alpine from 'alpinejs';
 import { broadcastOps } from '../signer.js';
+import { invalidatePaperCache } from '../api.js';
 
 const VOTE_LEVELS = [
   { label: 'vote.strongEndorsement', weight: 10000, cls: 'text-emerald-700 bg-emerald-50 border-emerald-200 hover:bg-emerald-100' },
@@ -24,6 +25,21 @@ export function initVoteButtons() {
     get isAccredited() { return Alpine.store('auth').isAccredited; },
     get username() { return Alpine.store('auth').username; },
     get voteLevels() { return VOTE_LEVELS; },
+
+    voters: opts.voters || [],
+
+    init() {
+      this.$watch('username', () => this._restoreVoteState());
+      this._restoreVoteState();
+    },
+
+    _restoreVoteState() {
+      if (!this.username || !this.voters.length) return;
+      const myVote = this.voters.find((v) => v.voter === this.username);
+      if (myVote) {
+        this.voteState = myVote.rshares > 0 ? 'up' : 'down';
+      }
+    },
 
     navigate(path) { Alpine.store('router').navigate(path); },
 
@@ -78,6 +94,7 @@ export function initVoteButtons() {
         else if (previousState === 'up' && direction === 'down') delta = -2;
         else if (previousState === 'down' && direction === 'up') delta = 2;
         this.displayVotes += delta;
+        invalidatePaperCache(this.author, this.permlink).catch(() => {});
       } catch (err) {
         Alpine.store('toast').show(err.message || this.$t('vote.voteFailed'), 'error');
       } finally {
@@ -120,6 +137,7 @@ export function initVoteButtons() {
         else if (previousState === 'up' && direction === 'down') delta = -2;
         else if (previousState === 'down' && direction === 'up') delta = 2;
         this.displayVotes += delta;
+        invalidatePaperCache(this.author, this.permlink).catch(() => {});
       } catch (err) {
         Alpine.store('toast').show(err.message || this.$t('vote.voteFailed'), 'error');
       } finally {

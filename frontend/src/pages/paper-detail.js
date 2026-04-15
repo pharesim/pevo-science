@@ -92,6 +92,7 @@ export function initPaperDetailPage() {
         const d = res.data;
         this.paper.reviews = d.reviews || [];
         this.paper.net_votes = d.net_votes ?? this.paper.net_votes;
+        this.paper.voters = d.voters || [];
         this.paper.citation_count = d.citation_count ?? this.paper.citation_count;
         this.paper.is_accredited = d.is_accredited ?? this.paper.is_accredited;
         if (d.versions) this.paper.versions = d.versions;

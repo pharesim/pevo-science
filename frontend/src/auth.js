@@ -19,25 +19,7 @@ export function initAuth() {
     _accreditationInterval: null,
 
     init() {
-      // Restore session from localStorage
-      try {
-        const saved = sessionStorage.getItem(SESSION_KEY);
-        if (saved) {
-          const { token, username, expiresAt, isAccredited, accreditation, custody } = JSON.parse(saved);
-          if (token && username && new Date(expiresAt) > new Date()) {
-            this.token = token;
-            this.username = username;
-            this.isConnected = true;
-            this.isAccredited = isAccredited ?? false;
-            this.accreditation = accreditation ?? null;
-            this.custody = custody ?? 'self';
-          } else {
-            sessionStorage.removeItem(SESSION_KEY);
-          }
-        }
-      } catch {
-        sessionStorage.removeItem(SESSION_KEY);
-      }
+      this._restoreSession();
       this.isLoading = false;
 
       // Detect Keychain in background
@@ -48,8 +30,15 @@ export function initAuth() {
       // Start accreditation polling if connected but not yet accredited
       this._startAccreditationPolling();
 
-      // Clean up polling on page unload
-      window.addEventListener('beforeunload', () => this._stopAccreditationPolling());
+      // Sync login/logout across tabs
+      this._boundStorageHandler = (e) => this._handleStorageEvent(e);
+      window.addEventListener('storage', this._boundStorageHandler);
+
+      // Clean up on page unload
+      window.addEventListener('beforeunload', () => {
+        this._stopAccreditationPolling();
+        window.removeEventListener('storage', this._boundStorageHandler);
+      });
     },
 
     async connect() {
@@ -119,16 +108,45 @@ export function initAuth() {
       this.token = null;
       this.custody = null;
       this._stopAccreditationPolling();
-      try { sessionStorage.removeItem(SESSION_KEY); } catch { /* noop */ }
+      try { localStorage.removeItem(SESSION_KEY); } catch { /* noop */ }
     },
 
     getSessionToken() {
       return this.token;
     },
 
+    _restoreSession() {
+      try {
+        const saved = localStorage.getItem(SESSION_KEY);
+        if (saved) {
+          const { token, username, expiresAt, isAccredited, accreditation, custody } = JSON.parse(saved);
+          if (token && username && new Date(expiresAt) > new Date()) {
+            this.token = token;
+            this.username = username;
+            this.isConnected = true;
+            this.isAccredited = isAccredited ?? false;
+            this.accreditation = accreditation ?? null;
+            this.custody = custody ?? 'self';
+            return;
+          }
+        }
+      } catch { /* corrupt data */ }
+      localStorage.removeItem(SESSION_KEY);
+    },
+
+    _handleStorageEvent(e) {
+      if (e.key !== SESSION_KEY) return;
+      if (e.newValue) {
+        this._restoreSession();
+        this._startAccreditationPolling();
+      } else {
+        this.disconnect();
+      }
+    },
+
     _saveSession(token, username, expiresAt, isAccredited, accreditation, custody) {
       try {
-        sessionStorage.setItem(SESSION_KEY, JSON.stringify({
+        localStorage.setItem(SESSION_KEY, JSON.stringify({
           token, username, expiresAt, isAccredited, accreditation,
           custody: custody ?? this.custody ?? 'self',
         }));
@@ -145,7 +163,7 @@ export function initAuth() {
           let resolvedExpiry = expiresAt;
           if (!resolvedExpiry) {
             try {
-              const saved = sessionStorage.getItem(SESSION_KEY);
+              const saved = localStorage.getItem(SESSION_KEY);
               if (saved) resolvedExpiry = JSON.parse(saved).expiresAt;
             } catch { /* ignore */ }
           }

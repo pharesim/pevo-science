@@ -903,11 +903,11 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string) {
       : accreditedArr;
 
     const [voteResult, reviewsResult, citationResult, versions, retraction] = await Promise.all([
-      // Accredited vote count (excluding self-votes)
+      // Accredited voters (excluding self-votes)
       pool.query(
-        `SELECT count(*)::int AS net_votes FROM ${T.votes} v
+        `SELECT v.voter, v.rshares FROM ${T.votes} v
          WHERE v.author = $1 AND v.permlink = $2
-           AND v.rshares > 0 AND v.voter = ANY($3::text[])
+           AND v.voter = ANY($3::text[])
            AND v.voter != v.author`,
         [author, permlink, accreditedArr],
       ),
@@ -984,8 +984,15 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string) {
       };
     });
 
+    const voters = voteResult.rows.map((r: Record<string, unknown>) => ({
+      voter: r.voter as string,
+      rshares: Number(r.rshares),
+    }));
+    const net_votes = voters.filter((v) => v.rshares > 0).length;
+
     return {
-      net_votes: voteResult.rows[0]?.net_votes ?? 0,
+      net_votes,
+      voters,
       reviews,
       citation_count: citationResult.rows[0]?.cnt ?? 0,
       is_accredited: accreditedAccounts.has(author),
@@ -1034,8 +1041,15 @@ async function fetchEnrichmentFromHiveApi(author: string, permlink: string) {
         };
       });
 
+    const activeVotes: Array<{ voter: string; rshares: string }> = post.active_votes || [];
+    const voters = activeVotes
+      .filter((v) => accreditedAccounts.has(v.voter) && v.voter !== author)
+      .map((v) => ({ voter: v.voter, rshares: Number(v.rshares) }));
+    const netVotes = voters.filter((v) => v.rshares > 0).length;
+
     return {
-      net_votes: parseInt(post.net_votes, 10) || 0,
+      net_votes: netVotes,
+      voters,
       reviews,
       citation_count: 0, // Cannot compute via Hive API
       is_accredited: accreditedAccounts.has(author),
