@@ -857,7 +857,8 @@
     "alreadySignedIn": "Vous êtes déjà connecté.",
     "goToPapers": "Voir les articles",
     "checkEmail": "Vérifiez votre e-mail",
-    "checkEmailDescription": "Nous vous avons envoyé un lien de vérification. Cliquez dessus pour finaliser votre inscription."
+    "checkEmailDescription": "Nous vous avons envoyé un lien de vérification. Cliquez dessus pour finaliser votre inscription.",
+    "alreadyRegistered": "Un compte avec cet e-mail existe déjà. Veuillez vous connecter avec votre mot de passe."
   },
   "signIn": {
     "title": "Se connecter à PEvO",

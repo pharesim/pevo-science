@@ -857,7 +857,8 @@
     "alreadySignedIn": "Již jste přihlášeni.",
     "goToPapers": "Přejít na články",
     "checkEmail": "Zkontrolujte svůj e-mail",
-    "checkEmailDescription": "Na váš e-mail jsme odeslali ověřovací odkaz. Klikněte na něj a dokončete registraci."
+    "checkEmailDescription": "Na váš e-mail jsme odeslali ověřovací odkaz. Klikněte na něj a dokončete registraci.",
+    "alreadyRegistered": "Účet s tímto e-mailem již existuje. Přihlaste se prosím pomocí svého hesla."
   },
   "signIn": {
     "title": "Přihlásit se do PEvO",

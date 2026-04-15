@@ -857,7 +857,8 @@
     "alreadySignedIn": "Sie sind bereits angemeldet.",
     "goToPapers": "Zu den Artikeln",
     "checkEmail": "Prüfen Sie Ihre E-Mails",
-    "checkEmailDescription": "Wir haben Ihnen einen Bestätigungslink gesendet. Klicken Sie darauf, um Ihre Registrierung abzuschließen."
+    "checkEmailDescription": "Wir haben Ihnen einen Bestätigungslink gesendet. Klicken Sie darauf, um Ihre Registrierung abzuschließen.",
+    "alreadyRegistered": "Ein Konto mit dieser E-Mail-Adresse existiert bereits. Bitte melden Sie sich mit Ihrem Passwort an."
   },
   "signIn": {
     "title": "Bei PEvO anmelden",

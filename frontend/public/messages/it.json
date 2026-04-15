@@ -857,7 +857,8 @@
     "alreadySignedIn": "Hai già effettuato l’accesso.",
     "goToPapers": "Vai agli articoli",
     "checkEmail": "Controlla la tua e-mail",
-    "checkEmailDescription": "Ti abbiamo inviato un link di verifica. Cliccaci sopra per completare la registrazione."
+    "checkEmailDescription": "Ti abbiamo inviato un link di verifica. Cliccaci sopra per completare la registrazione.",
+    "alreadyRegistered": "Esiste già un account con questa e-mail. Accedi con la tua password."
   },
   "signIn": {
     "title": "Accedi a PEvO",

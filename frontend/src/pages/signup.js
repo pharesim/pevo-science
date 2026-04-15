@@ -67,7 +67,7 @@ export function initSignupPage() {
               Alpine.store('router').navigate(`/signup/verify?${params}`);
               return;
             }
-            this.error = loginErr.message;
+            this.error = this.$t('signup.alreadyRegistered');
           }
         } else {
           this.error = err.message;
