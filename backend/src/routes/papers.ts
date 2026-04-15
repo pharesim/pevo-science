@@ -903,21 +903,24 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string) {
       : accreditedArr;
 
     const [voteResult, reviewsResult, citationResult, versions, retraction] = await Promise.all([
-      // Accredited voters (excluding self-votes)
+      // Accredited voters (excluding self-votes) — use vote operations to survive payout
       pool.query(
-        `SELECT v.voter, v.rshares FROM ${T.votes} v
+        `SELECT DISTINCT ON (v.voter) v.voter, v.weight FROM ${T.voteOps} v
          WHERE v.author = $1 AND v.permlink = $2
            AND v.voter = ANY($3::text[])
-           AND v.voter != v.author`,
+           AND v.voter != v.author
+         ORDER BY v.voter, v.block_num DESC`,
         [author, permlink, accreditedArr],
       ),
       // Reviews from accredited reviewers (+ anon account) with accredited vote count
       pool.query(
         `SELECT c.author, c.permlink, c.body, c.json_metadata, c.created,
-                (SELECT count(*)::int FROM ${T.votes} v
-                 WHERE v.author = c.author AND v.permlink = c.permlink
-                   AND v.rshares > 0 AND v.voter = ANY($5::text[])
-                   AND v.voter != v.author) AS net_votes
+                (SELECT count(*)::int FROM (
+                   SELECT DISTINCT ON (v.voter) v.weight FROM ${T.voteOps} v
+                   WHERE v.author = c.author AND v.permlink = c.permlink
+                     AND v.voter = ANY($5::text[]) AND v.voter != v.author
+                   ORDER BY v.voter, v.block_num DESC
+                 ) lv WHERE lv.weight > 0) AS net_votes
          FROM ${T.comments} c
          WHERE c.parent_author = $1 AND c.parent_permlink = $2
            AND c.author = ANY($6::text[])
@@ -986,9 +989,9 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string) {
 
     const voters = voteResult.rows.map((r: Record<string, unknown>) => ({
       voter: r.voter as string,
-      rshares: Number(r.rshares),
+      weight: Number(r.weight),
     }));
-    const net_votes = voters.filter((v) => v.rshares > 0).length;
+    const net_votes = voters.filter((v) => v.weight > 0).length;
 
     return {
       net_votes,
@@ -1041,11 +1044,11 @@ async function fetchEnrichmentFromHiveApi(author: string, permlink: string) {
         };
       });
 
-    const activeVotes: Array<{ voter: string; rshares: string }> = post.active_votes || [];
+    const activeVotes: Array<{ voter: string; percent: number }> = post.active_votes || [];
     const voters = activeVotes
       .filter((v) => accreditedAccounts.has(v.voter) && v.voter !== author)
-      .map((v) => ({ voter: v.voter, rshares: Number(v.rshares) }));
-    const netVotes = voters.filter((v) => v.rshares > 0).length;
+      .map((v) => ({ voter: v.voter, weight: v.percent }));
+    const netVotes = voters.filter((v) => v.weight > 0).length;
 
     return {
       net_votes: netVotes,

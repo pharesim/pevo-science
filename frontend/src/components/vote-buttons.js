@@ -37,7 +37,7 @@ export function initVoteButtons() {
       if (!this.username || !this.voters.length) return;
       const myVote = this.voters.find((v) => v.voter === this.username);
       if (myVote) {
-        this.voteState = myVote.rshares > 0 ? 'up' : 'down';
+        this.voteState = myVote.weight > 0 ? 'up' : 'down';
       }
     },
 

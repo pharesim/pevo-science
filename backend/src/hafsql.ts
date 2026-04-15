@@ -240,20 +240,27 @@ export function isPevoCommentSql(startIdx = 1): SqlFragment {
  * @param permlinkExpr - SQL expression for the permlink (e.g., 'c.permlink')
  */
 export function accreditedVoteCount(authorExpr: string, permlinkExpr: string): string {
-  return `(SELECT count(*)::int FROM ${T.votes} v
+  return `(SELECT count(*)::int FROM (
+    SELECT DISTINCT ON (v.voter) v.weight FROM ${T.voteOps} v
     JOIN active_accreditations aa ON aa.account = v.voter
-    WHERE v.author = ${authorExpr} AND v.permlink = ${permlinkExpr} AND v.rshares > 0
-      AND v.voter != ${authorExpr})`;
+    WHERE v.author = ${authorExpr} AND v.permlink = ${permlinkExpr}
+      AND v.voter != ${authorExpr}
+    ORDER BY v.voter, v.block_num DESC
+  ) lv WHERE lv.weight > 0)`;
 }
 
 /**
- * Subquery that sums accredited rshares for a given (author, permlink).
+ * Subquery that sums accredited vote weights for a given (author, permlink).
+ * Uses vote operations (not effective view) so weights survive post payout.
  */
 export function accreditedRshares(authorExpr: string, permlinkExpr: string): string {
-  return `COALESCE((SELECT sum(v.rshares) FROM ${T.votes} v
+  return `COALESCE((SELECT sum(lv.weight) FROM (
+    SELECT DISTINCT ON (v.voter) v.weight FROM ${T.voteOps} v
     JOIN active_accreditations aa ON aa.account = v.voter
-    WHERE v.author = ${authorExpr} AND v.permlink = ${permlinkExpr} AND v.rshares > 0
-      AND v.voter != ${authorExpr}), 0)`;
+    WHERE v.author = ${authorExpr} AND v.permlink = ${permlinkExpr}
+      AND v.voter != ${authorExpr}
+    ORDER BY v.voter, v.block_num DESC
+  ) lv WHERE lv.weight > 0), 0)`;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────

@@ -202,9 +202,11 @@ export async function getUserStatsFromHaf(username: string): Promise<UserStats |
            COALESCE(json_agg(json_build_object('voter', v.voter, 'weight', v.weight))
              FILTER (WHERE v.voter IS NOT NULL), '[]') AS votes
          FROM user_papers up
-         LEFT JOIN ${T.votes} v
-           ON v.author = up.author AND v.permlink = up.permlink
-           AND v.voter = ANY($2::text[])
+         LEFT JOIN (
+           SELECT DISTINCT ON (vo.voter, vo.author, vo.permlink) vo.voter, vo.author, vo.permlink, vo.weight
+           FROM ${T.voteOps} vo WHERE vo.voter = ANY($2::text[])
+           ORDER BY vo.voter, vo.author, vo.permlink, vo.block_num DESC
+         ) v ON v.author = up.author AND v.permlink = up.permlink
            AND v.voter != up.author
            AND NOT EXISTS (
              SELECT 1 FROM jsonb_array_elements(up.json_metadata -> $3 -> 'authors') a
@@ -238,9 +240,11 @@ export async function getUserStatsFromHaf(username: string): Promise<UserStats |
          COALESCE(json_agg(json_build_object('voter', v.voter, 'weight', v.weight))
            FILTER (WHERE v.voter IS NOT NULL), '[]') AS votes
        FROM ${T.comments} ur
-       LEFT JOIN ${T.votes} v
-         ON v.author = ur.author AND v.permlink = ur.permlink
-         AND v.voter = ANY($2::text[])
+       LEFT JOIN (
+         SELECT DISTINCT ON (vo.voter, vo.author, vo.permlink) vo.voter, vo.author, vo.permlink, vo.weight
+         FROM ${T.voteOps} vo WHERE vo.voter = ANY($2::text[])
+         ORDER BY vo.voter, vo.author, vo.permlink, vo.block_num DESC
+       ) v ON v.author = ur.author AND v.permlink = ur.permlink
          AND v.voter != ur.author
        WHERE ur.author = $1
          AND (ur.json_metadata -> $3 ->> 'type') = 'review'
@@ -272,12 +276,14 @@ export async function getUserStatsFromHaf(username: string): Promise<UserStats |
          SELECT cp.citing_author, cp.citing_permlink, cp.citing_created,
            cp.reputation_relevant,
            COALESCE(json_agg(json_build_object('voter', v.voter, 'weight', v.weight))
-             FILTER (WHERE v.voter IS NOT NULL AND v.rshares > 0), '[]') AS upvotes
+             FILTER (WHERE v.voter IS NOT NULL AND v.weight > 0), '[]') AS upvotes
          FROM citing_papers cp
-         LEFT JOIN ${T.votes} v
-           ON v.author = cp.citing_author AND v.permlink = cp.citing_permlink
-           AND v.voter = ANY($2::text[])
-           AND v.rshares > 0
+         LEFT JOIN (
+           SELECT DISTINCT ON (vo.voter, vo.author, vo.permlink) vo.voter, vo.author, vo.permlink, vo.weight
+           FROM ${T.voteOps} vo WHERE vo.voter = ANY($2::text[])
+           ORDER BY vo.voter, vo.author, vo.permlink, vo.block_num DESC
+         ) v ON v.author = cp.citing_author AND v.permlink = cp.citing_permlink
+           AND v.weight > 0
            AND v.voter != cp.citing_author
          GROUP BY cp.citing_author, cp.citing_permlink, cp.citing_created, cp.reputation_relevant
        ),

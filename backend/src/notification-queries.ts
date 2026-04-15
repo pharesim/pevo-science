@@ -26,6 +26,7 @@ export async function fetchNotificationsFromHaf(
       `WITH ${accredCte.sql}
 
       -- 1. New reviews on your papers (accredited reviewers only)
+      --    Includes bridged papers where you are the registered_by user
       SELECT
         'new_review'::text AS event_type,
         co.block_num,
@@ -45,14 +46,18 @@ export async function fetchNotificationsFromHaf(
       FROM ${T.commentOps} co
       LEFT JOIN ${T.comments} p ON p.author = co.parent_author AND p.permlink = co.parent_permlink
       JOIN active_accreditations aa_r ON aa_r.account = co.author
-      WHERE co.parent_author = $1
-        AND co.block_num > $2
+      WHERE co.block_num > $2
         AND (co.json_metadata -> ${at} ->> 'type') = 'review'
         AND co.json_metadata ->> 'app' LIKE ${al}
+        AND (
+          co.parent_author = $1
+          OR p.json_metadata -> ${at} -> 'source' ->> 'registered_by' = $1
+        )
 
       UNION ALL
 
       -- 2. New accredited votes on your papers/reviews
+      --    Includes bridged papers where you are the registered_by user
       SELECT
         'new_vote'::text,
         v.block_num,
@@ -65,11 +70,15 @@ export async function fetchNotificationsFromHaf(
         'paper',
         v.weight::int,
         NULL, NULL, NULL, NULL, NULL
-      FROM ${T.votes} v
+      FROM ${T.voteOps} v
       JOIN active_accreditations aa ON aa.account = v.voter
-      WHERE v.author = $1
-        AND v.block_num > $2
-        AND v.rshares > 0
+      LEFT JOIN ${T.comments} vp ON vp.author = v.author AND vp.permlink = v.permlink
+      WHERE v.block_num > $2
+        AND v.weight != 0
+        AND (
+          v.author = $1
+          OR vp.json_metadata -> ${at} -> 'source' ->> 'registered_by' = $1
+        )
 
       UNION ALL
 
@@ -149,10 +158,13 @@ export async function fetchNotificationsFromHaf(
       ) AS cited_ref
       LEFT JOIN ${T.comments} cited_paper
         ON cited_paper.author = cited_ref.author AND cited_paper.permlink = cited_ref.permlink
-      WHERE cited_ref.author = $1
-        AND citing.block_num > $2
+      WHERE citing.block_num > $2
         AND citing.author <> $1
         AND (citing.json_metadata -> ${at} ->> 'type') = 'paper'
+        AND (
+          cited_ref.author = $1
+          OR cited_paper.json_metadata -> ${at} -> 'source' ->> 'registered_by' = $1
+        )
         AND citing.json_metadata ->> 'app' LIKE ${al}
 
       ORDER BY block_num ASC
