@@ -29,11 +29,11 @@ async function fetchAccreditationsFromHaf(
     let paramIdx = 2;
 
     if (field) {
-      conditions.push(`latest.field LIKE $${paramIdx++}`);
+      conditions.push(`latest.field ILIKE $${paramIdx++}`);
       params.push(`${field}%`);
     }
     if (institution) {
-      conditions.push(`latest.institution LIKE $${paramIdx++}`);
+      conditions.push(`latest.institution ILIKE $${paramIdx++}`);
       params.push(`${institution}%`);
     }
 

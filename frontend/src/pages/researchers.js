@@ -1,5 +1,5 @@
 import Alpine from 'alpinejs';
-import { fetchAccreditations, fetchDisciplines } from '../api.js';
+import { fetchAccreditations } from '../api.js';
 import { formatDate } from '../components/paper-card.js';
 
 const ITEMS_PER_PAGE = 12;
@@ -7,7 +7,6 @@ const ITEMS_PER_PAGE = 12;
 export function initResearchersPage() {
   Alpine.data('researchersPage', () => ({
     researchers: [],
-    disciplines: [],
     fieldFilter: '',
     institutionFilter: '',
     currentPage: 1,
@@ -18,17 +17,7 @@ export function initResearchersPage() {
     formatDate,
 
     init() {
-      this.loadDisciplines();
       this.loadResearchers();
-    },
-
-    async loadDisciplines() {
-      try {
-        const res = await fetchDisciplines();
-        this.disciplines = (res.data || []).map(d => d.name);
-      } catch {
-        // Non-critical
-      }
     },
 
     async loadResearchers() {

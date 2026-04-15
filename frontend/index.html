@@ -2739,12 +2739,8 @@
           <div class="flex flex-col sm:flex-row gap-4">
             <div class="flex-1">
               <label for="researchers-field" class="block text-sm font-medium text-ink-light mb-1" x-text="$t('researchers.fieldLabel')"></label>
-              <select id="researchers-field" class="select-control" x-model="fieldFilter" @change="onFieldChange()">
-                <option value="" x-text="$t('researchers.allFields')"></option>
-                <template x-for="d in disciplines" :key="d">
-                  <option :value="d" x-text="d"></option>
-                </template>
-              </select>
+              <input id="researchers-field" type="text" class="select-control" :placeholder="$t('researchers.fieldPlaceholder')"
+                     x-model="fieldFilter" @input.debounce.500ms="onFieldChange()" />
             </div>
             <div class="flex-1">
               <label for="researchers-institution" class="block text-sm font-medium text-ink-light mb-1" x-text="$t('researchers.institutionLabel')"></label>

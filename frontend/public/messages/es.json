@@ -284,7 +284,7 @@
     "title": "Investigadores acreditados",
     "description": "Científicos verificados que contribuyen a la revisión por pares abierta en PEvO.",
     "fieldLabel": "Campo",
-    "allFields": "Todos los campos",
+    "fieldPlaceholder": "Buscar por campo...",
     "institutionLabel": "Institución",
     "institutionPlaceholder": "Buscar por institución...",
     "noResearchers": "No se encontraron investigadores acreditados que coincidan con sus filtros.",

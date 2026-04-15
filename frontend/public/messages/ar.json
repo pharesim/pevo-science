@@ -284,7 +284,7 @@
     "title": "الباحثون المعتمدون",
     "description": "علماء موثّقون يساهمون في مراجعة الأقران المفتوحة على PEvO.",
     "fieldLabel": "المجال",
-    "allFields": "جميع المجالات",
+    "fieldPlaceholder": "البحث حسب المجال...",
     "institutionLabel": "المؤسسة",
     "institutionPlaceholder": "ابحث حسب المؤسسة...",
     "noResearchers": "لم يتم العثور على باحثين معتمدين مطابقين لمعاييرك.",

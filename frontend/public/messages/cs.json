@@ -284,7 +284,7 @@
     "title": "Akreditovaní výzkumníci",
     "description": "Ověření vědci přispívající k otevřenému recenznímu řízení na PEvO.",
     "fieldLabel": "Obor",
-    "allFields": "Všechny obory",
+    "fieldPlaceholder": "Hledat podle oboru...",
     "institutionLabel": "Instituce",
     "institutionPlaceholder": "Hledat podle instituce...",
     "noResearchers": "Nebyli nalezeni žádní akreditovaní výzkumníci odpovídající vašim filtrům.",

@@ -284,7 +284,7 @@
     "title": "Ackrediterade forskare",
     "description": "Verifierade forskare som bidrar till öppen kollegial granskning på PEvO.",
     "fieldLabel": "Område",
-    "allFields": "Alla områden",
+    "fieldPlaceholder": "Sök efter område...",
     "institutionLabel": "Institution",
     "institutionPlaceholder": "Sök efter institution...",
     "noResearchers": "Inga ackrediterade forskare hittades som matchar dina filter.",

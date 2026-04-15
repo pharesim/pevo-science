@@ -284,7 +284,7 @@
     "title": "پژوهشگران معتبر",
     "description": "دانشمندان تایید شده‌ای که در داوری آزاد همتا در PEvO مشارکت می‌کنند.",
     "fieldLabel": "حوزه",
-    "allFields": "همه حوزه‌ها",
+    "fieldPlaceholder": "جستجو بر اساس حوزه...",
     "institutionLabel": "موسسه",
     "institutionPlaceholder": "جستجو بر اساس موسسه...",
     "noResearchers": "پژوهشگر معتبری مطابق فیلترهای شما یافت نشد.",

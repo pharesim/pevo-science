@@ -284,7 +284,7 @@
     "title": "Akredytowani naukowcy",
     "description": "Zweryfikowani naukowcy uczestniczący w otwartej recenzji na PEvO.",
     "fieldLabel": "Dziedzina",
-    "allFields": "Wszystkie dziedziny",
+    "fieldPlaceholder": "Szukaj wg dziedziny...",
     "institutionLabel": "Instytucja",
     "institutionPlaceholder": "Szukaj wg instytucji...",
     "noResearchers": "Nie znaleziono akredytowanych naukowców pasujących do filtrów.",

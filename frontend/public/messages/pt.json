@@ -284,7 +284,7 @@
     "title": "Pesquisadores Credenciados",
     "description": "Cientistas verificados contribuindo para a revisao aberta por pares no PEvO.",
     "fieldLabel": "Area",
-    "allFields": "Todas as areas",
+    "fieldPlaceholder": "Buscar por area...",
     "institutionLabel": "Instituicao",
     "institutionPlaceholder": "Buscar por instituicao...",
     "noResearchers": "Nenhum pesquisador credenciado encontrado com os filtros selecionados.",

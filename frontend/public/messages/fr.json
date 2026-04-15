@@ -284,7 +284,7 @@
     "title": "Chercheurs accrédités",
     "description": "Scientifiques vérifiés contribuant à l'évaluation ouverte par les pairs sur PEvO.",
     "fieldLabel": "Domaine",
-    "allFields": "Tous les domaines",
+    "fieldPlaceholder": "Rechercher par domaine...",
     "institutionLabel": "Établissement",
     "institutionPlaceholder": "Rechercher par établissement...",
     "noResearchers": "Aucun chercheur accrédité ne correspond à vos filtres.",

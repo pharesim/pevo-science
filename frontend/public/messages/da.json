@@ -284,7 +284,7 @@
     "title": "Akkrediterede forskere",
     "description": "Verificerede forskere, der bidrager til åben fagfællebedømmelse på PEvO.",
     "fieldLabel": "Fagområde",
-    "allFields": "Alle fagområder",
+    "fieldPlaceholder": "Søg efter fagområde...",
     "institutionLabel": "Institution",
     "institutionPlaceholder": "Søg efter institution...",
     "noResearchers": "Ingen akkrediterede forskere fundet, der matcher dine filtre.",

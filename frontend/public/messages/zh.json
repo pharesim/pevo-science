@@ -284,7 +284,7 @@
     "title": "已认证研究人员",
     "description": "在 PEvO 上参与开放同行评审的已验证科学家。",
     "fieldLabel": "领域",
-    "allFields": "所有领域",
+    "fieldPlaceholder": "按领域搜索...",
     "institutionLabel": "机构",
     "institutionPlaceholder": "按机构搜索...",
     "noResearchers": "未找到符合筛选条件的已认证研究人员。",

@@ -284,7 +284,7 @@
     "title": "Geaccrediteerde onderzoekers",
     "description": "Geverifieerde wetenschappers die bijdragen aan open peer review op PEvO.",
     "fieldLabel": "Vakgebied",
-    "allFields": "Alle vakgebieden",
+    "fieldPlaceholder": "Zoek op vakgebied...",
     "institutionLabel": "Instelling",
     "institutionPlaceholder": "Zoek op instelling...",
     "noResearchers": "Geen geaccrediteerde onderzoekers gevonden die aan uw filters voldoen.",

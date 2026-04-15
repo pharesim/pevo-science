@@ -285,7 +285,7 @@
     "title": "Accredited Researchers",
     "description": "Verified scientists contributing to open peer review on PEvO.",
     "fieldLabel": "Field",
-    "allFields": "All fields",
+    "fieldPlaceholder": "Search by field...",
     "institutionLabel": "Institution",
     "institutionPlaceholder": "Search by institution...",
     "noResearchers": "No accredited researchers found matching your filters.",

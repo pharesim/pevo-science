@@ -284,7 +284,7 @@
     "title": "Akkreditierte Forschende",
     "description": "Verifizierte Wissenschaftlerinnen und Wissenschaftler, die zur offenen Begutachtung auf PEvO beitragen.",
     "fieldLabel": "Fachgebiet",
-    "allFields": "Alle Fachgebiete",
+    "fieldPlaceholder": "Nach Fachgebiet suchen...",
     "institutionLabel": "Institution",
     "institutionPlaceholder": "Nach Institution suchen...",
     "noResearchers": "Keine akkreditierten Forschenden gefunden, die Ihren Filtern entsprechen.",
