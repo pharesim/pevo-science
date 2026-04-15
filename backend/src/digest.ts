@@ -44,7 +44,9 @@ function describeEvent(event: NotificationEvent): string {
     case 'new_review':
       return `${event.actor} reviewed your paper "${event.paper_title}"`;
     case 'new_vote':
-      return `${event.actor} endorsed your ${event.target_type}`;
+      return event.weight < 0
+        ? `${event.actor} raised concerns about your ${event.target_type}`
+        : `${event.actor} endorsed your ${event.target_type}`;
     case 'new_vouch':
       return `${event.actor} vouched for you`;
     case 'new_reply':

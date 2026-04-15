@@ -85,10 +85,16 @@ export function initHeader() {
 
     formatNotification(event) {
       if (!event || !event.type) return '';
+      if (event.type === 'new_vote') {
+        const key = event.weight < 0 ? 'notifications.newDownvote' : 'notifications.newVote';
+        return this.$t(key, {
+          actor: event.actor || '',
+          targetType: event.targetType || '',
+        });
+      }
       const typeMap = {
         new_review: 'notifications.newReview',
         new_citation: 'notifications.newCitation',
-        new_vote: 'notifications.newVote',
         new_vouch: 'notifications.newVouch',
         new_reply: 'notifications.newReply',
       };
