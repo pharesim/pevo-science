@@ -16,8 +16,7 @@ const ROLES = ['owner', 'active', 'posting', 'memo'];
 let _dhive = null;
 async function loadDhive() {
   if (!_dhive) {
-    const pkg = '@hiveio/dhive';
-    _dhive = await import(/* @vite-ignore */ pkg);
+    _dhive = await import('@hiveio/dhive');
   }
   return _dhive;
 }

@@ -96,10 +96,8 @@ export function initSettingsPage() {
         }
 
         // Derive keys from old and new seed phrases
-        const hiveKeysPath = '../hive-keys.js';
-        const hiveKeys = await import(/* @vite-ignore */ hiveKeysPath);
-        const dhivePkg = '@hiveio/dhive';
-        const dhive = await import(/* @vite-ignore */ dhivePkg);
+        const hiveKeys = await import('../hive-keys.js');
+        const dhive = await import('@hiveio/dhive');
         const oldSeed = mnemonicToSeedSync(oldWords);
         const oldKeys = hiveKeys.deriveHiveKeys(oldSeed, this.username);
         const newSeed = mnemonicToSeedSync(this.newSeedPhrase);
