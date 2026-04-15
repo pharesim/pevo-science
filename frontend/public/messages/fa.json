@@ -324,7 +324,11 @@
     "mildEndorsement": "تأیید خفیف",
     "mildConcerns": "نگرانی‌های خفیف",
     "reject": "رد",
-    "strongReject": "رد قوی"
+    "strongReject": "رد قوی",
+    "staleBanner": "این مقاله از زمان رأی‌گیری شما بازنگری شده است. تغییرات را بررسی کنید و رأی خود را به‌روز کنید.",
+    "votesWithStale": "{active} رأی ({stale} در انتظار ارزیابی مجدد)",
+    "staleAtVersion": "{count} رأی در انتظار ارزیابی مجدد از این بازنگری",
+    "pendingShort": "معلّق"
   },
   "notifications": {
     "title": "اعلان‌ها",

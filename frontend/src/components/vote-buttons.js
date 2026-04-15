@@ -20,6 +20,8 @@ export function initVoteButtons() {
     displayVotes: opts.netVotes ?? 0,
     isVoting: false,
     selectorOpen: false,
+    created: opts.created || null,
+    versions: opts.versions || null,
 
     get isConnected() { return Alpine.store('auth').isConnected; },
     get isAccredited() { return Alpine.store('auth').isAccredited; },
@@ -27,6 +29,40 @@ export function initVoteButtons() {
     get voteLevels() { return VOTE_LEVELS; },
 
     voters: opts.voters || [],
+
+    get myVoteIsStale() {
+      if (!this.username || !this.voters.length) return false;
+      const myVote = this.voters.find((v) => v.voter === this.username);
+      return myVote?.stale === true;
+    },
+
+    get staleVoteCount() {
+      return this.voters.filter((v) => v.stale === true).length;
+    },
+
+    get activeVoteCount() {
+      return this.voters.filter((v) => v.stale !== true).length;
+    },
+
+    _isPastPayout() {
+      if (!this.created) return false;
+      const payoutEnd = new Date(this.created + 'Z').getTime() + 7 * 24 * 60 * 60 * 1000;
+      return Date.now() > payoutEnd;
+    },
+
+    _latestVersion() {
+      if (!this.versions || !this.versions.length) return 1;
+      return this.versions[this.versions.length - 1].version_number ?? 1;
+    },
+
+    _updateLocalVoter(weight) {
+      const existing = this.voters.find((v) => v.voter === this.username);
+      if (existing) {
+        existing.weight = weight;
+        existing.stale = false;
+        existing.effective_weight = weight;
+      }
+    },
 
     init() {
       this.$watch('username', () => this._restoreVoteState());
@@ -48,6 +84,26 @@ export function initVoteButtons() {
       if (this.voteState === 'none') return null;
       const level = VOTE_LEVELS.find((l) => l.weight === this.currentWeight);
       return level ? this.$t(level.label) : null;
+    },
+
+    voteCountLabel() {
+      if (this.staleVoteCount > 0) {
+        return this.$t('vote.votesWithStale', { active: this.activeVoteCount, stale: this.staleVoteCount });
+      }
+      return this.displayVotes + ' ' + this.$t('vote.votes');
+    },
+
+    async _broadcastVote(weight) {
+      if (this._isPastPayout()) {
+        await broadcastOps(this.username, [['custom_json', {
+          required_auths: [],
+          required_posting_auths: [this.username],
+          id: 'pevo',
+          json: JSON.stringify({ action: 'revote', author: this.author, permlink: this.permlink, weight, version: this._latestVersion() }),
+        }]]);
+      } else {
+        await broadcastOps(this.username, [['vote', { voter: this.username, author: this.author, permlink: this.permlink, weight }]]);
+      }
     },
 
     async handleVote(weight) {
@@ -84,11 +140,12 @@ export function initVoteButtons() {
 
       this.isVoting = true;
       try {
-        await broadcastOps(this.username, [['vote', { voter: this.username, author: this.author, permlink: this.permlink, weight }]]);
+        await this._broadcastVote(weight);
         const previousState = this.voteState;
         const direction = weight > 0 ? 'up' : 'down';
         this.voteState = direction;
         this.currentWeight = weight;
+        this._updateLocalVoter(weight);
 
         let delta = 0;
         if (previousState === 'none') delta = direction === 'up' ? 1 : -1;
@@ -129,10 +186,11 @@ export function initVoteButtons() {
 
       this.isVoting = true;
       try {
-        await broadcastOps(this.username, [['vote', { voter: this.username, author: this.author, permlink: this.permlink, weight }]]);
+        await this._broadcastVote(weight);
         const previousState = this.voteState;
         this.voteState = direction;
         this.currentWeight = weight;
+        this._updateLocalVoter(weight);
         let delta = 0;
         if (previousState === 'none') delta = direction === 'up' ? 1 : -1;
         else if (previousState === 'up' && direction === 'down') delta = -2;

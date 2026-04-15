@@ -324,7 +324,11 @@
     "mildEndorsement": "Lieve approvazione",
     "mildConcerns": "Lievi riserve",
     "reject": "Rifiuto",
-    "strongReject": "Forte rifiuto"
+    "strongReject": "Forte rifiuto",
+    "staleBanner": "Questo articolo è stato rivisto da quando hai votato. Esamina le modifiche e aggiorna il tuo voto.",
+    "votesWithStale": "{active} voti ({stale} in attesa di rivalutazione)",
+    "staleAtVersion": "{count} voti in attesa di rivalutazione da questa revisione",
+    "pendingShort": "obsoleto"
   },
   "notifications": {
     "title": "Notifiche",

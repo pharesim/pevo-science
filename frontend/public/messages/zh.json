@@ -324,7 +324,11 @@
     "mildEndorsement": "轻度支持",
     "mildConcerns": "轻度保留",
     "reject": "拒绝",
-    "strongReject": "强烈拒绝"
+    "strongReject": "强烈拒绝",
+    "staleBanner": "自您投票以来，这篇论文已被修订。请查看更改并更新您的投票。",
+    "votesWithStale": "{active} 票（{stale} 待重新评估）",
+    "staleAtVersion": "{count} 票自此修订以来待重新评估",
+    "pendingShort": "待更新"
   },
   "notifications": {
     "title": "通知",

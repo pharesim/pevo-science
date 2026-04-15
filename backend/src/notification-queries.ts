@@ -23,10 +23,20 @@ export async function fetchNotificationsFromHaf(
     const at = `$${accredCte.nextIdx}`;       // appTag for WHERE clauses
     const al = `$${accredCte.nextIdx + 1}`;   // appTag/% LIKE pattern
     const result = await pool.query(
-      `WITH ${accredCte.sql}
+      `WITH ${accredCte.sql},
 
-      -- 1. New reviews on your papers (accredited reviewers only)
-      --    Includes bridged papers where you are the registered_by user
+      -- Pre-resolve bridge papers registered by this user (tiny result set).
+      -- This avoids LEFT JOINing every vote/review/citation to comments just
+      -- to check the registered_by field, which times out on old sinceBlock values.
+      user_bridge_papers AS (
+        SELECT c.author, c.permlink
+        FROM ${T.comments} c
+        WHERE c.parent_author = '' AND c.parent_permlink = ${at}
+          AND c.json_metadata -> ${at} -> 'source' ->> 'registered_by' = $1
+          AND c.json_metadata ->> 'app' LIKE ${al}
+      )
+
+      -- 1a. New reviews on your own papers (accredited reviewers only)
       SELECT
         'new_review'::text AS event_type,
         co.block_num,
@@ -46,18 +56,35 @@ export async function fetchNotificationsFromHaf(
       FROM ${T.commentOps} co
       LEFT JOIN ${T.comments} p ON p.author = co.parent_author AND p.permlink = co.parent_permlink
       JOIN active_accreditations aa_r ON aa_r.account = co.author
-      WHERE co.block_num > $2
+      WHERE co.parent_author = $1
+        AND co.block_num > $2
         AND (co.json_metadata -> ${at} ->> 'type') = 'review'
         AND co.json_metadata ->> 'app' LIKE ${al}
-        AND (
-          co.parent_author = $1
-          OR p.json_metadata -> ${at} -> 'source' ->> 'registered_by' = $1
-        )
 
       UNION ALL
 
-      -- 2. New accredited votes on your papers/reviews
-      --    Includes bridged papers where you are the registered_by user
+      -- 1b. New reviews on your bridge papers
+      SELECT
+        'new_review'::text,
+        co.block_num,
+        co.timestamp,
+        co.author,
+        co.parent_author,
+        co.parent_permlink,
+        COALESCE(p.title, '') AS paper_title,
+        co.permlink,
+        NULL, NULL, NULL, NULL, NULL, NULL, NULL
+      FROM ${T.commentOps} co
+      JOIN user_bridge_papers bp ON bp.author = co.parent_author AND bp.permlink = co.parent_permlink
+      LEFT JOIN ${T.comments} p ON p.author = co.parent_author AND p.permlink = co.parent_permlink
+      JOIN active_accreditations aa_r ON aa_r.account = co.author
+      WHERE co.block_num > $2
+        AND (co.json_metadata -> ${at} ->> 'type') = 'review'
+        AND co.json_metadata ->> 'app' LIKE ${al}
+
+      UNION ALL
+
+      -- 2a. New accredited votes on your own papers/reviews
       SELECT
         'new_vote'::text,
         v.block_num,
@@ -72,13 +99,30 @@ export async function fetchNotificationsFromHaf(
         NULL, NULL, NULL, NULL, NULL
       FROM ${T.voteOps} v
       JOIN active_accreditations aa ON aa.account = v.voter
-      LEFT JOIN ${T.comments} vp ON vp.author = v.author AND vp.permlink = v.permlink
+      WHERE v.author = $1
+        AND v.block_num > $2
+        AND v.weight != 0
+
+      UNION ALL
+
+      -- 2b. New accredited votes on your bridge papers
+      SELECT
+        'new_vote'::text,
+        v.block_num,
+        v.timestamp,
+        v.voter,
+        v.author,
+        v.permlink,
+        NULL,
+        NULL,
+        'paper',
+        v.weight::int,
+        NULL, NULL, NULL, NULL, NULL
+      FROM ${T.voteOps} v
+      JOIN active_accreditations aa ON aa.account = v.voter
+      JOIN user_bridge_papers bp ON bp.author = v.author AND bp.permlink = v.permlink
       WHERE v.block_num > $2
         AND v.weight != 0
-        AND (
-          v.author = $1
-          OR vp.json_metadata -> ${at} -> 'source' ->> 'registered_by' = $1
-        )
 
       UNION ALL
 
@@ -137,7 +181,7 @@ export async function fetchNotificationsFromHaf(
 
       UNION ALL
 
-      -- 6. New citations of your papers (accredited citing authors only)
+      -- 6a. New citations of your own papers (accredited citing authors only)
       SELECT
         'new_citation'::text,
         citing.block_num,
@@ -160,11 +204,37 @@ export async function fetchNotificationsFromHaf(
         ON cited_paper.author = cited_ref.author AND cited_paper.permlink = cited_ref.permlink
       WHERE citing.block_num > $2
         AND citing.author <> $1
+        AND cited_ref.author = $1
         AND (citing.json_metadata -> ${at} ->> 'type') = 'paper'
-        AND (
-          cited_ref.author = $1
-          OR cited_paper.json_metadata -> ${at} -> 'source' ->> 'registered_by' = $1
-        )
+        AND citing.json_metadata ->> 'app' LIKE ${al}
+
+      UNION ALL
+
+      -- 6b. New citations of your bridge papers
+      SELECT
+        'new_citation'::text,
+        citing.block_num,
+        citing.timestamp,
+        citing.author,
+        cited_ref.author AS paper_author,
+        cited_ref.permlink AS paper_permlink,
+        COALESCE(cited_paper.title, '') AS paper_title,
+        citing.permlink,
+        NULL, NULL, NULL, NULL, NULL, NULL, NULL
+      FROM ${T.commentOps} citing
+      JOIN active_accreditations aa_ct ON aa_ct.account = citing.author
+      CROSS JOIN LATERAL jsonb_array_elements(
+        citing.json_metadata -> ${at} -> 'citations'
+      ) AS cite_elem
+      CROSS JOIN LATERAL (
+        SELECT cite_elem ->> 'author' AS author, cite_elem ->> 'permlink' AS permlink
+      ) AS cited_ref
+      JOIN user_bridge_papers bp ON bp.author = cited_ref.author AND bp.permlink = cited_ref.permlink
+      LEFT JOIN ${T.comments} cited_paper
+        ON cited_paper.author = cited_ref.author AND cited_paper.permlink = cited_ref.permlink
+      WHERE citing.block_num > $2
+        AND citing.author <> $1
+        AND (citing.json_metadata -> ${at} ->> 'type') = 'paper'
         AND citing.json_metadata ->> 'app' LIKE ${al}
 
       ORDER BY block_num ASC

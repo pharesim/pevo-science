@@ -324,7 +324,11 @@
     "mildEndorsement": "Lichte aanbeveling",
     "mildConcerns": "Lichte bezwaren",
     "reject": "Afwijzen",
-    "strongReject": "Sterk afwijzen"
+    "strongReject": "Sterk afwijzen",
+    "staleBanner": "Dit artikel is herzien sinds uw stem. Bekijk de wijzigingen en werk uw stem bij.",
+    "votesWithStale": "{active} stemmen ({stale} in afwachting van herbeoordeling)",
+    "staleAtVersion": "{count} stemmen in afwachting van herbeoordeling sinds deze revisie",
+    "pendingShort": "verouderd"
   },
   "notifications": {
     "title": "Meldingen",

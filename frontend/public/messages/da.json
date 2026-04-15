@@ -324,7 +324,11 @@
     "mildEndorsement": "Mild tilslutning",
     "mildConcerns": "Milde forbehold",
     "reject": "Afvisning",
-    "strongReject": "Stærk afvisning"
+    "strongReject": "Stærk afvisning",
+    "staleBanner": "Denne artikel er blevet revideret siden du stemte. Gennemgå ændringerne og opdater din stemme.",
+    "votesWithStale": "{active} stemmer ({stale} afventer revurdering)",
+    "staleAtVersion": "{count} stemmer afventer revurdering siden denne revision",
+    "pendingShort": "forældet"
   },
   "notifications": {
     "title": "Notifikationer",

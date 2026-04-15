@@ -324,7 +324,11 @@
     "mildEndorsement": "تأييد خفيف",
     "mildConcerns": "تحفظات خفيفة",
     "reject": "رفض",
-    "strongReject": "رفض قوي"
+    "strongReject": "رفض قوي",
+    "staleBanner": "تمت مراجعة هذه الورقة منذ تصويتك. راجع التغييرات وحدّث تصويتك.",
+    "votesWithStale": "{active} أصوات ({stale} بانتظار إعادة التقييم)",
+    "staleAtVersion": "{count} أصوات بانتظار إعادة التقييم منذ هذه المراجعة",
+    "pendingShort": "معلّقة"
   },
   "notifications": {
     "title": "الإشعارات",

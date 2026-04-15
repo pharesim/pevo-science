@@ -205,11 +205,11 @@ export async function getUserStatsFromHaf(username: string): Promise<UserStats |
        ),
        paper_votes AS (
          SELECT up.permlink, up.created,
-           COALESCE(json_agg(json_build_object('voter', v.voter, 'weight', v.weight))
+           COALESCE(json_agg(json_build_object('voter', v.voter, 'weight', v.weight, 'timestamp', v.timestamp))
              FILTER (WHERE v.voter IS NOT NULL), '[]') AS votes
          FROM user_papers up
          LEFT JOIN (
-           SELECT DISTINCT ON (vo.voter, vo.permlink) vo.voter, vo.author, vo.permlink, vo.weight
+           SELECT DISTINCT ON (vo.voter, vo.permlink) vo.voter, vo.author, vo.permlink, vo.weight, vo.timestamp
            FROM ${T.voteOps} vo
            WHERE vo.voter = ANY($2::text[])
              AND vo.author = $1
@@ -329,18 +329,107 @@ export async function getUserStatsFromHaf(username: string): Promise<UserStats |
       [username, accreditedArr, config.appTag, `${config.appTag}/%`],
     );
 
+    // §31: Latest revision timestamp per paper (papers with >1 comment operations)
+    const revisionsQuery = pool.query(
+      `SELECT co.permlink, MAX(co.timestamp) AS latest_revision_ts
+       FROM ${T.commentOps} co
+       WHERE co.author = $1
+         AND co.parent_author = '' AND co.parent_permlink = $2
+       GROUP BY co.permlink
+       HAVING COUNT(*) > 1`,
+      [username, config.appTag],
+    );
+
+    // §31: All revotes on this user's papers (batched)
+    const revotesQuery = pool.query(
+      `SELECT cj.json::jsonb ->> 'permlink' AS permlink,
+              cj.required_posting_auths ->> 0 AS voter,
+              (cj.json::jsonb ->> 'weight')::int AS weight,
+              cj.json::jsonb ->> 'version' AS version,
+              cj.timestamp AS revote_ts
+       FROM ${T.customJson} cj
+       WHERE cj.custom_id = $1
+         AND cj.json::jsonb ->> 'action' = 'revote'
+         AND cj.json::jsonb ->> 'author' = $2
+       ORDER BY cj.block_num DESC`,
+      [config.appTag, username],
+    );
+
     // Await all queries and lookups in parallel
-    const [papersResult, reviewsResult, citationsResult, reputationMap, activeSet] = await Promise.all([
-      papersQuery, reviewsQuery, citationsQuery, getBatchReputationMap(), getActiveAccounts(),
+    const [papersResult, reviewsResult, citationsResult, reputationMap, activeSet, revisionsResult, revotesResult] = await Promise.all([
+      papersQuery, reviewsQuery, citationsQuery, getBatchReputationMap(), getActiveAccounts(), revisionsQuery, revotesQuery,
     ]);
 
-    // Parse papers
-    const papers: PaperItem[] = papersResult.rows.map((row: any) => ({
-      permlink: row.permlink,
-      created: row.created,
-      votes: Array.isArray(row.votes) ? row.votes : [],
-      review_quality: row.quality !== null ? Number(row.quality) : null,
-    }));
+    // §31: Build revision timestamp map (permlink → latest revision Date)
+    const revisionMap = new Map<string, Date>();
+    for (const r of revisionsResult.rows) {
+      revisionMap.set(r.permlink as string, new Date(r.latest_revision_ts as string));
+    }
+
+    // §31: Build revote map (permlink → voter → {weight, timestamp}), latest revote per voter per paper
+    // Validates §3.1 schema: voter, weight range, required fields
+    const revoteMap = new Map<string, Map<string, { weight: number; timestamp: Date }>>();
+    for (const r of revotesResult.rows) {
+      const pl = r.permlink as string;
+      const voter = r.voter as string;
+      const weight = Number(r.weight);
+      const version = r.version;
+      // §3.1 validation: required fields (author/permlink/version) and weight range
+      if (!voter || !pl || version == null || isNaN(weight) || weight < -10000 || weight > 10000) {
+        logger.debug({ voter, permlink: pl, weight }, 'Ignoring invalid revote custom_json');
+        continue;
+      }
+      if (!revoteMap.has(pl)) revoteMap.set(pl, new Map());
+      const paperRevotes = revoteMap.get(pl)!;
+      // Already ordered by block_num DESC — keep only the latest per voter
+      if (!paperRevotes.has(voter)) {
+        paperRevotes.set(voter, { weight, timestamp: new Date(r.revote_ts as string) });
+      }
+    }
+
+    // Parse papers — apply §31 vote staleness
+    const papers: PaperItem[] = papersResult.rows.map((row: any) => {
+      const rawVotes: Array<{ voter: string; weight: number; timestamp: string }> =
+        Array.isArray(row.votes) ? row.votes : [];
+      const latestRevisionTs = revisionMap.get(row.permlink) ?? null;
+      const paperRevotes = revoteMap.get(row.permlink) ?? null;
+
+      // Build set of voters with native votes for §3.1 phantom revote check
+      const nativeVoters = new Set(rawVotes.map((v) => v.voter));
+
+      const votes: Vote[] = rawVotes.map((v) => {
+        if (!latestRevisionTs) {
+          // No content revisions — vote is not stale
+          return { voter: v.voter, weight: v.weight };
+        }
+        const nativeTs = new Date(v.timestamp);
+        // §3.1: Only accept revotes from voters with a prior native vote
+        const revote = paperRevotes?.get(v.voter);
+        // §31 vote resolution: if both signals are post-revision, use the later timestamp
+        if (revote && revote.timestamp > latestRevisionTs) {
+          if (nativeTs > latestRevisionTs && nativeTs > revote.timestamp) {
+            return { voter: v.voter, weight: v.weight };
+          }
+          return { voter: v.voter, weight: revote.weight };
+        }
+        if (nativeTs > latestRevisionTs) {
+          return { voter: v.voter, weight: v.weight };
+        }
+        // Stale: vote predates latest content revision with no post-revision re-vote
+        return { voter: v.voter, weight: 0 };
+      });
+
+      // §3.1: Ignore phantom revotes (revotes from users without a prior native vote)
+      // These are already excluded because we only iterate rawVotes (native voters),
+      // so revotes without a corresponding native vote are never applied.
+
+      return {
+        permlink: row.permlink,
+        created: row.created,
+        votes,
+        review_quality: row.quality !== null ? Number(row.quality) : null,
+      };
+    });
 
     // Parse reviews
     const reviews: ReviewItem[] = reviewsResult.rows.map((row: any) => ({

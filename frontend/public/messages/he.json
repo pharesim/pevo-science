@@ -324,7 +324,11 @@
     "mildEndorsement": "תמיכה קלה",
     "mildConcerns": "הסתייגויות קלות",
     "reject": "דחייה",
-    "strongReject": "דחייה חזקה"
+    "strongReject": "דחייה חזקה",
+    "staleBanner": "מאמר זה עודכן מאז שהצבעת. בדוק את השינויים ועדכן את הצבעתך.",
+    "votesWithStale": "{active} הצבעות ({stale} ממתינות להערכה מחדש)",
+    "staleAtVersion": "{count} הצבעות ממתינות להערכה מחדש מאז גרסה זו",
+    "pendingShort": "ממתין"
   },
   "notifications": {
     "title": "התראות",

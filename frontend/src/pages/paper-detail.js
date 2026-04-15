@@ -229,6 +229,22 @@ export function initPaperDetailPage() {
       return sorted.length ? sorted[sorted.length - 1].version_number : 1;
     },
 
+    staleVotesAtVersion(versionNumber) {
+      const voters = this.paper?.voters;
+      if (!voters?.length) return 0;
+      // Find the latest content revision at or before this version
+      const latestContentRevision = this.sortedVersions
+        .filter((v) => v.is_content_revision && v.version_number <= versionNumber)
+        .pop();
+      if (!latestContentRevision || latestContentRevision.version_number <= 1) return 0;
+      // For the latest content revision, stale count comes from the voters array
+      if (versionNumber === this.latestVersion) {
+        return voters.filter((v) => v.stale === true).length;
+      }
+      // For older revisions, we don't have historical staleness data
+      return 0;
+    },
+
     async loadVersion(version) {
       if (version === this.currentVersion) return;
       const author = this.author;

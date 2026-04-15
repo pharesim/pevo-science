@@ -324,7 +324,11 @@
     "mildEndorsement": "Leichte Zustimmung",
     "mildConcerns": "Leichte Bedenken",
     "reject": "Ablehnung",
-    "strongReject": "Starke Ablehnung"
+    "strongReject": "Starke Ablehnung",
+    "staleBanner": "Dieses Paper wurde seit Ihrer Abstimmung überarbeitet. Überprüfen Sie die Änderungen und aktualisieren Sie Ihre Bewertung.",
+    "votesWithStale": "{active} Stimmen ({stale} ausstehende Neubewertung)",
+    "staleAtVersion": "{count} Stimmen warten seit dieser Überarbeitung auf Neubewertung",
+    "pendingShort": "ausstehend"
   },
   "notifications": {
     "title": "Benachrichtigungen",

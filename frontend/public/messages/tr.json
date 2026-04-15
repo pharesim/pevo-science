@@ -324,7 +324,11 @@
     "mildEndorsement": "Hafif onay",
     "mildConcerns": "Hafif çekinceler",
     "reject": "Ret",
-    "strongReject": "Güçlü ret"
+    "strongReject": "Güçlü ret",
+    "staleBanner": "Bu makale oyunuzdan bu yana revize edildi. Değişiklikleri inceleyin ve oyunuzu güncelleyin.",
+    "votesWithStale": "{active} oy ({stale} yeniden değerlendirme bekliyor)",
+    "staleAtVersion": "{count} oy bu revizyondan beri yeniden değerlendirme bekliyor",
+    "pendingShort": "beklemede"
   },
   "notifications": {
     "title": "Bildirimler",

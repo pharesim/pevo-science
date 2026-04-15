@@ -39,7 +39,7 @@ async function fetchAccreditationsFromHaf(
 
     const filterConditions = conditions.map((c) => `AND ${c}`).join(' ');
 
-    const query = `
+    const dataResult = await pool.query(`
       WITH ranked AS (
         SELECT
           cj.json::jsonb ->> 'action' AS action,
@@ -54,39 +54,20 @@ async function fetchAccreditationsFromHaf(
         WHERE cj.custom_id = $1
           AND cj.json::jsonb ->> 'action' IN ('accredit', 'revoke')
       )
-      SELECT account AS username, name, institution, field, method, timestamp
+      SELECT account AS username, name, institution, field, method, timestamp,
+        count(*) OVER ()::int AS total
       FROM ranked AS latest
       WHERE rn = 1 AND action = 'accredit'
       ${filterConditions}
-      ORDER BY timestamp DESC`;
-
-    // Count total
-    const countQuery = `
-      WITH ranked AS (
-        SELECT
-          cj.json::jsonb ->> 'action' AS action,
-          cj.json::jsonb ->> 'account' AS account,
-          cj.json::jsonb ->> 'institution' AS institution,
-          cj.json::jsonb ->> 'field' AS field,
-          ROW_NUMBER() OVER (PARTITION BY cj.json::jsonb ->> 'account' ORDER BY cj.block_num DESC) AS rn
-        FROM ${T.customJson} cj
-        WHERE cj.custom_id = $1
-          AND cj.json::jsonb ->> 'action' IN ('accredit', 'revoke')
-      )
-      SELECT count(*)::int AS total
-      FROM ranked AS latest
-      WHERE rn = 1 AND action = 'accredit'
-      ${filterConditions}`;
-
-    const countResult = await pool.query(countQuery, params);
-    const total = countResult.rows[0]?.total ?? 0;
-
-    const dataResult = await pool.query(
-      `${query} LIMIT $${paramIdx++} OFFSET $${paramIdx++}`,
+      ORDER BY timestamp DESC
+      LIMIT $${paramIdx++} OFFSET $${paramIdx++}`,
       [...params, limit, offset],
     );
 
-    return { rows: dataResult.rows, total };
+    const total = dataResult.rows[0]?.total ?? 0;
+    const rows = dataResult.rows.map(({ total: _t, ...rest }) => rest);
+
+    return { rows, total };
   } catch (err) {
     logger.error({ err }, 'HAF accreditations query failed');
     return null;

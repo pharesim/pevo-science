@@ -324,7 +324,11 @@
     "mildEndorsement": "Apoyo leve",
     "mildConcerns": "Objeciones leves",
     "reject": "Rechazar",
-    "strongReject": "Rechazo fuerte"
+    "strongReject": "Rechazo fuerte",
+    "staleBanner": "Este artículo ha sido revisado desde que votaste. Revisa los cambios y actualiza tu voto.",
+    "votesWithStale": "{active} votos ({stale} pendientes de reevaluación)",
+    "staleAtVersion": "{count} votos pendientes de reevaluación desde esta revisión",
+    "pendingShort": "pendiente"
   },
   "notifications": {
     "title": "Notificaciones",

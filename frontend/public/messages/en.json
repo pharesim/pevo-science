@@ -325,7 +325,11 @@
     "mildEndorsement": "Mild endorsement",
     "mildConcerns": "Mild concerns",
     "reject": "Reject",
-    "strongReject": "Strong reject"
+    "strongReject": "Strong reject",
+    "staleBanner": "This paper has been revised since you voted. Review the changes and update your vote.",
+    "votesWithStale": "{active} votes ({stale} pending re-evaluation)",
+    "staleAtVersion": "{count} votes pending re-evaluation since this revision",
+    "pendingShort": "stale"
   },
   "notifications": {
     "title": "Notifications",

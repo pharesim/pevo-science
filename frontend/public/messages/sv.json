@@ -324,7 +324,11 @@
     "mildEndorsement": "Milt stöd",
     "mildConcerns": "Milda invändningar",
     "reject": "Avslag",
-    "strongReject": "Starkt avslag"
+    "strongReject": "Starkt avslag",
+    "staleBanner": "Denna artikel har reviderats sedan du röstade. Granska ändringarna och uppdatera din röst.",
+    "votesWithStale": "{active} röster ({stale} inväntar omvärdering)",
+    "staleAtVersion": "{count} röster inväntar omvärdering sedan denna revision",
+    "pendingShort": "inaktuell"
   },
   "notifications": {
     "title": "Aviseringar",

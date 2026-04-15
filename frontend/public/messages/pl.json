@@ -324,7 +324,11 @@
     "mildEndorsement": "Umiarkowane poparcie",
     "mildConcerns": "Umiarkowane zastrzeżenia",
     "reject": "Odrzucenie",
-    "strongReject": "Silne odrzucenie"
+    "strongReject": "Silne odrzucenie",
+    "staleBanner": "Ten artykuł został zrewidowany od czasu Twojego głosowania. Przejrzyj zmiany i zaktualizuj swój głos.",
+    "votesWithStale": "{active} głosów ({stale} oczekujących na ponowną ocenę)",
+    "staleAtVersion": "{count} głosów oczekujących na ponowną ocenę od tej rewizji",
+    "pendingShort": "nieaktualne"
   },
   "notifications": {
     "title": "Powiadomienia",

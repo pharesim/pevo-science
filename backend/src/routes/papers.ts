@@ -907,7 +907,7 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string) {
     const [voteResult, reviewsResult, citationResult, versions, retraction] = await Promise.all([
       // Accredited voters (excluding self-votes) — use vote operations to survive payout
       pool.query(
-        `SELECT DISTINCT ON (v.voter) v.voter, v.weight FROM ${T.voteOps} v
+        `SELECT DISTINCT ON (v.voter) v.voter, v.weight, v.timestamp FROM ${T.voteOps} v
          WHERE v.author = $1 AND v.permlink = $2
            AND v.voter = ANY($3::text[])
            AND v.voter != v.author
@@ -947,6 +947,52 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string) {
     ]);
 
     const latestVersion = versions.length > 0 ? versions[versions.length - 1].version_number : 1;
+
+    // §31: Vote staleness — find latest content revision timestamp
+    const contentRevisions = versions.filter((v) => v.is_content_revision && v.version_number > 1);
+    const latestRevisionTs = contentRevisions.length > 0
+      ? new Date(contentRevisions[contentRevisions.length - 1].created)
+      : null;
+
+    // §31: If there are content revisions, batch-query revote custom_json ops
+    let revoteMap: Map<string, { weight: number; timestamp: Date }> | null = null;
+    if (latestRevisionTs && voteResult.rows.length > 0) {
+      const revoteResult = await pool.query(
+        `SELECT cj.required_posting_auths ->> 0 AS voter,
+                (cj.json::jsonb ->> 'weight')::int AS weight,
+                cj.json::jsonb ->> 'version' AS version,
+                cj.timestamp AS revote_ts
+         FROM ${T.customJson} cj
+         WHERE cj.custom_id = $1
+           AND cj.json::jsonb ->> 'action' = 'revote'
+           AND cj.json::jsonb ->> 'author' = $2
+           AND cj.json::jsonb ->> 'permlink' = $3
+         ORDER BY cj.block_num DESC`,
+        [config.appTag, author, permlink],
+      );
+      // §3.1: Build set of native voters for phantom revote check
+      const nativeVoters = new Set(voteResult.rows.map((r: Record<string, unknown>) => r.voter as string));
+      revoteMap = new Map();
+      for (const r of revoteResult.rows) {
+        const voter = r.voter as string;
+        const weight = Number(r.weight);
+        const version = r.version;
+        // §3.1 validation: required fields (author/permlink/version) and weight range
+        if (!voter || version == null || isNaN(weight) || weight < -10000 || weight > 10000) {
+          logger.debug({ voter, weight, author, permlink }, 'Ignoring invalid revote custom_json');
+          continue;
+        }
+        // §3.1: Ignore phantom revotes (voter must have a prior native Hive vote)
+        if (!nativeVoters.has(voter)) {
+          logger.debug({ voter, author, permlink }, 'Ignoring phantom revote — no prior native vote');
+          continue;
+        }
+        // Keep only the latest revote per voter (already ordered by block_num DESC)
+        if (!revoteMap.has(voter)) {
+          revoteMap.set(voter, { weight, timestamp: new Date(r.revote_ts as string) });
+        }
+      }
+    }
 
     const reviews = reviewsResult.rows.map((r: Record<string, unknown>) => {
       const rMeta = parseMeta(r.json_metadata);
@@ -989,11 +1035,32 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string) {
       };
     });
 
-    const voters = voteResult.rows.map((r: Record<string, unknown>) => ({
-      voter: r.voter as string,
-      weight: Number(r.weight),
-    }));
-    const net_votes = voters.filter((v) => v.weight > 0).length;
+    // §31: Compute staleness per voter
+    const voters = voteResult.rows.map((r: Record<string, unknown>) => {
+      const voter = r.voter as string;
+      const nativeWeight = Number(r.weight);
+      const nativeTs = new Date(r.timestamp as string);
+
+      if (!latestRevisionTs) {
+        // No content revisions — all votes are non-stale
+        return { voter, weight: nativeWeight, stale: false, effective_weight: nativeWeight };
+      }
+
+      const revote = revoteMap?.get(voter);
+      // §31 vote resolution: if both signals are post-revision, use the later timestamp
+      if (revote && revote.timestamp > latestRevisionTs) {
+        if (nativeTs > latestRevisionTs && nativeTs > revote.timestamp) {
+          return { voter, weight: nativeWeight, stale: false, effective_weight: nativeWeight };
+        }
+        return { voter, weight: revote.weight, stale: false, effective_weight: revote.weight };
+      }
+      if (nativeTs > latestRevisionTs) {
+        return { voter, weight: nativeWeight, stale: false, effective_weight: nativeWeight };
+      }
+      // Vote predates latest content revision with no post-revision re-vote
+      return { voter, weight: nativeWeight, stale: true, effective_weight: 0 };
+    });
+    const net_votes = voters.filter((v) => v.effective_weight > 0).length;
 
     return {
       net_votes,
@@ -1046,10 +1113,11 @@ async function fetchEnrichmentFromHiveApi(author: string, permlink: string) {
         };
       });
 
+    // §31: Hive API fallback — no version history available, assume non-stale
     const activeVotes: Array<{ voter: string; percent: number }> = post.active_votes || [];
     const voters = activeVotes
       .filter((v) => accreditedAccounts.has(v.voter) && v.voter !== author)
-      .map((v) => ({ voter: v.voter, weight: v.percent }));
+      .map((v) => ({ voter: v.voter, weight: v.percent, stale: false, effective_weight: v.percent }));
     const netVotes = voters.filter((v) => v.weight > 0).length;
 
     return {

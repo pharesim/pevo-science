@@ -324,7 +324,11 @@
     "mildEndorsement": "Mírný souhlas",
     "mildConcerns": "Mírné výhrady",
     "reject": "Zamítnutí",
-    "strongReject": "Silné zamítnutí"
+    "strongReject": "Silné zamítnutí",
+    "staleBanner": "Tento článek byl od vašeho hlasování revidován. Zkontrolujte změny a aktualizujte svůj hlas.",
+    "votesWithStale": "{active} hlasů ({stale} čeká na přehodnocení)",
+    "staleAtVersion": "{count} hlasů čeká na přehodnocení od této revize",
+    "pendingShort": "neaktuální"
   },
   "notifications": {
     "title": "Oznámení",
