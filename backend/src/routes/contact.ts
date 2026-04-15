@@ -47,8 +47,9 @@ router.post('/', contactLimiter, validate(contactSchema), async (req: Request, r
       logger.error({ err: (mailErr as Error).message }, 'Failed to send contact form email');
       return sendError(res, 500, 'INTERNAL_ERROR', 'Failed to send message');
     }
-  } else if (process.env.NODE_ENV !== 'production') {
-    logger.info({ category, email, subject, message }, 'Contact form submission (dev only — SMTP not configured)');
+  } else {
+    logger.error('SMTP not configured — cannot send contact form email');
+    return sendError(res, 500, 'INTERNAL_ERROR', 'Email service not configured');
   }
 
   sendOk(res, { message: 'sent' });

@@ -185,8 +185,10 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
         await pool.query('DELETE FROM accounts WHERE verify_token = $1', [verifyToken]);
         return sendError(res, 500, 'INTERNAL_ERROR', 'Failed to send verification email');
       }
-    } else if (process.env.NODE_ENV !== 'production') {
-      logger.info({ email: normalizedEmail, verifyToken }, 'Verification email skipped (SMTP not configured)');
+    } else {
+      logger.error({ email: normalizedEmail }, 'SMTP not configured — cannot send verification email');
+      await pool.query('DELETE FROM accounts WHERE verify_token = $1', [verifyToken]);
+      return sendError(res, 500, 'INTERNAL_ERROR', 'Email service not configured');
     }
 
     sendOk(res, {
@@ -450,8 +452,13 @@ router.post('/reset-request', resetRequestLimiter, async (req: Request, res: Res
         );
         return sendError(res, 500, 'INTERNAL_ERROR', 'Failed to send reset email');
       }
-    } else if (process.env.NODE_ENV !== 'production') {
-      logger.info({ id: account.id, resetToken }, 'Reset email skipped (SMTP not configured)');
+    } else {
+      logger.error({ id: account.id }, 'SMTP not configured — cannot send reset email');
+      await pool.query(
+        'UPDATE accounts SET reset_token = NULL, reset_token_expires_at = NULL WHERE id = $1',
+        [account.id],
+      );
+      return sendError(res, 500, 'INTERNAL_ERROR', 'Email service not configured');
     }
 
     sendOk(res, { message: 'If an account exists with that email, a reset link has been sent.' });

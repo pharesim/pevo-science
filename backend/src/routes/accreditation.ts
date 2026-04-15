@@ -146,8 +146,10 @@ router.post('/request', verifyHiveSignature, accreditationRequestLimiter, valida
       await deleteToken(token);
       return sendError(res, 500, 'INTERNAL_ERROR', 'Failed to send verification email');
     }
-  } else if (process.env.NODE_ENV !== 'production') {
-    logger.info({ hive_username }, 'Accreditation verification email skipped (SMTP not configured)');
+  } else {
+    logger.error({ hive_username }, 'SMTP not configured — cannot send verification email');
+    await deleteToken(token);
+    return sendError(res, 500, 'INTERNAL_ERROR', 'Email service not configured');
   }
 
   sendOk(res, {
