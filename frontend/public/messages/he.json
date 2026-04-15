@@ -102,8 +102,17 @@
     "citationsLabel": "ציטוטים",
     "firstPost": "פרסום ראשון ב-PEvO: ‏{date}",
     "reputationBreakdown": "פירוט מוניטין",
-    "publications": "פרסומים ({count})",
+    "tabPublications": "פרסומים",
+    "tabReviews": "סקירות",
     "noPapers": "טרם פורסמו מאמרים.",
+    "noReviews": "טרם נכתבו סקירות.",
+    "anonymousReview": "סקירה אנונימית",
+    "rating": {
+      "methodology": "מתודולוגיה",
+      "novelty": "חדשנות",
+      "clarity": "בהירות",
+      "significance": "משמעות"
+    },
     "accreditedVia": "הוסמך באמצעות אימות {method} בתאריך {date}",
     "loadFailed": "טעינת הפרופיל נכשלה",
     "breakdown": {

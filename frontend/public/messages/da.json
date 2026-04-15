@@ -102,8 +102,17 @@
     "citationsLabel": "Citationer",
     "firstPost": "Første PEvO-opslag: {date}",
     "reputationBreakdown": "Omdømmeoversigt",
-    "publications": "Publikationer ({count})",
+    "tabPublications": "Publikationer",
+    "tabReviews": "Anmeldelser",
     "noPapers": "Ingen artikler publiceret endnu.",
+    "noReviews": "Ingen anmeldelser skrevet endnu.",
+    "anonymousReview": "Anonym anmeldelse",
+    "rating": {
+      "methodology": "Metodik",
+      "novelty": "Nyhed",
+      "clarity": "Klarhed",
+      "significance": "Betydning"
+    },
     "accreditedVia": "Akkrediteret via {method}-verifikation den {date}",
     "loadFailed": "Kunne ikke indlæse profil",
     "breakdown": {

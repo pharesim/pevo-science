@@ -103,8 +103,17 @@
     "citationsLabel": "Citations",
     "firstPost": "First PEvO post: {date}",
     "reputationBreakdown": "Reputation Breakdown",
-    "publications": "Publications ({count})",
+    "tabPublications": "Publications",
+    "tabReviews": "Reviews",
     "noPapers": "No papers published yet.",
+    "noReviews": "No reviews written yet.",
+    "anonymousReview": "Anonymous review",
+    "rating": {
+      "methodology": "Methodology",
+      "novelty": "Novelty",
+      "clarity": "Clarity",
+      "significance": "Significance"
+    },
     "accreditedVia": "Accredited via {method} verification on {date}",
     "loadFailed": "Failed to load profile",
     "breakdown": {

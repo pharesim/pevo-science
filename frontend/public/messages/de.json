@@ -102,8 +102,17 @@
     "citationsLabel": "Zitationen",
     "firstPost": "Erster PEvO-Beitrag: {date}",
     "reputationBreakdown": "Aufschlüsselung der Reputation",
-    "publications": "Veröffentlichungen ({count})",
+    "tabPublications": "Veröffentlichungen",
+    "tabReviews": "Gutachten",
     "noPapers": "Noch keine Publikationen veröffentlicht.",
+    "noReviews": "Noch keine Gutachten verfasst.",
+    "anonymousReview": "Anonymes Gutachten",
+    "rating": {
+      "methodology": "Methodik",
+      "novelty": "Neuheit",
+      "clarity": "Klarheit",
+      "significance": "Bedeutung"
+    },
     "accreditedVia": "Akkreditiert über {method}-Verifizierung am {date}",
     "loadFailed": "Profil konnte nicht geladen werden",
     "breakdown": {

@@ -4,7 +4,7 @@ import { getPool, isHafAvailable } from '../db.js';
 import { hiveClient } from '../hive.js';
 import { config } from '../config.js';
 import { sendOk, sendError } from '../response.js';
-import { parseMeta, isPevoPaper, parsePageLimit, parseOrder, toPaperSummary } from '../helpers.js';
+import { parseMeta, isPevoPaper, isPevoReview, parsePageLimit, parseOrder, toPaperSummary } from '../helpers.js';
 import { logger } from '../logger.js';
 import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';
 import { validate } from '../validation.js';
@@ -18,7 +18,7 @@ import {
   getActiveAccounts,
 } from '../reputation.js';
 import { hafCache } from '../cache.js';
-import { T } from '../hafsql.js';
+import { T, isPevoReviewSql } from '../hafsql.js';
 
 const router = Router();
 
@@ -214,6 +214,139 @@ router.get('/:username/papers', async (req: Request, res: Response) => {
     }
 
     return { rows: [], total: 0 };
+  });
+
+  sendOk(res, result.rows, { page, limit, total: result.total });
+});
+
+// ──────────────────────────────────────────────
+// GET /api/profile/:username/reviews
+// ──────────────────────────────────────────────
+
+function buildReviewSummary(
+  post: { author: string; permlink: string; body: string; created: string },
+  meta: Record<string, unknown>,
+  paperAuthor: string,
+  paperPermlink: string,
+  paperTitle: string,
+) {
+  const pevo = (meta[config.appTag] || {}) as Record<string, unknown>;
+  const rating = pevo.rating as Record<string, number> | undefined;
+  return {
+    author: post.author,
+    permlink: post.permlink,
+    body: post.body.slice(0, 300),
+    rating: rating || { methodology: 0, novelty: 0, clarity: 0, significance: 0 },
+    is_anonymous: pevo.is_anonymous ?? false,
+    paper: {
+      author: paperAuthor,
+      permlink: paperPermlink,
+      title: paperTitle,
+    },
+    created: post.created,
+  };
+}
+
+async function fetchUserReviewsFromHaf(username: string, limit: number, offset: number, order: string) {
+  const pool = getPool();
+  if (!pool) return null;
+
+  try {
+    const reviewFilter = isPevoReviewSql(2);
+
+    const countResult = await pool.query(
+      `SELECT count(*)::int AS total FROM ${T.comments} c
+       WHERE c.author = $1 AND c.parent_author != ''
+         AND ${reviewFilter.sql}`,
+      [username, ...reviewFilter.params],
+    );
+    const total = countResult.rows[0]?.total ?? 0;
+
+    const dataResult = await pool.query(
+      `SELECT c.author, c.permlink, LEFT(c.body, 300) AS body,
+              c.json_metadata, c.created,
+              c.parent_author, c.parent_permlink,
+              p.title AS paper_title
+       FROM ${T.comments} c
+       LEFT JOIN ${T.comments} p ON p.author = c.parent_author AND p.permlink = c.parent_permlink
+       WHERE c.author = $1 AND c.parent_author != ''
+         AND ${reviewFilter.sql}
+       ORDER BY c.created ${order === 'asc' ? 'ASC' : 'DESC'}
+       LIMIT $${reviewFilter.nextIdx} OFFSET $${reviewFilter.nextIdx + 1}`,
+      [username, ...reviewFilter.params, limit, offset],
+    );
+
+    const rows = dataResult.rows.map((r: Record<string, unknown>) => {
+      const meta = parseMeta(r.json_metadata);
+      return buildReviewSummary(
+        { author: r.author as string, permlink: r.permlink as string, body: r.body as string, created: r.created as string },
+        meta,
+        r.parent_author as string,
+        r.parent_permlink as string,
+        (r.paper_title as string) || '',
+      );
+    });
+
+    return { rows, total };
+  } catch (err) {
+    logger.error({ err }, 'HAF user reviews query failed');
+    return null;
+  }
+}
+
+async function fetchUserReviewsFromHiveApi(username: string, limit: number) {
+  try {
+    const discussions = await hiveClient.database.getDiscussions('comments', {
+      tag: username,
+      limit: Math.min(limit, 100),
+    });
+
+    const reviews = discussions.filter((d) => {
+      const meta = parseMeta(d.json_metadata);
+      return isPevoReview(meta);
+    });
+
+    // Fetch parent post titles
+    const rows = await Promise.all(
+      reviews.map(async (d) => {
+        const meta = parseMeta(d.json_metadata);
+        let paperTitle = '';
+        try {
+          const parent = await hiveClient.database.call('get_content', [d.parent_author, d.parent_permlink]);
+          if (parent) paperTitle = parent.title || '';
+        } catch {
+          // parent title unavailable
+        }
+        return buildReviewSummary(
+          { author: d.author, permlink: d.permlink, body: d.body, created: d.created },
+          meta,
+          d.parent_author,
+          d.parent_permlink,
+          paperTitle,
+        );
+      }),
+    );
+
+    return { rows, total: rows.length };
+  } catch (err) {
+    logger.error({ err }, 'Hive API user reviews query failed');
+    return { rows: [], total: 0 };
+  }
+}
+
+router.get('/:username/reviews', async (req: Request, res: Response) => {
+  const username = req.params.username as string;
+  const { page, limit, offset } = parsePageLimit(req);
+  const order = parseOrder(req);
+
+  const cacheKey = `profile-reviews:${username}:${JSON.stringify({ order, page, limit })}`;
+  const result = await hafCache.getOrSet(cacheKey, async () => {
+    if (isHafAvailable()) {
+      const hafResult = await fetchUserReviewsFromHaf(username, limit, offset, order);
+      if (hafResult) return hafResult;
+    }
+
+    return fetchUserReviewsFromHiveApi(username, limit);
   });
 
   sendOk(res, result.rows, { page, limit, total: result.total });

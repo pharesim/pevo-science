@@ -99,6 +99,10 @@ export function fetchProfilePapers(username, params = {}) {
   return request(`/profile/${encodeURIComponent(username)}/papers${buildQuery(params)}`);
 }
 
+export function fetchProfileReviews(username, params = {}) {
+  return request(`/profile/${encodeURIComponent(username)}/reviews${buildQuery(params)}`);
+}
+
 // ─── Search ──────────────────────────────────────────────────────
 
 export function searchPapers(params) {

@@ -102,8 +102,17 @@
     "citationsLabel": "Citaties",
     "firstPost": "Eerste PEvO-publicatie: {date}",
     "reputationBreakdown": "Reputatie-overzicht",
-    "publications": "Publicaties ({count})",
+    "tabPublications": "Publicaties",
+    "tabReviews": "Beoordelingen",
     "noPapers": "Nog geen publicaties.",
+    "noReviews": "Nog geen beoordelingen geschreven.",
+    "anonymousReview": "Anonieme beoordeling",
+    "rating": {
+      "methodology": "Methodologie",
+      "novelty": "Nieuwheid",
+      "clarity": "Helderheid",
+      "significance": "Betekenis"
+    },
     "accreditedVia": "Geaccrediteerd via {method}-verificatie op {date}",
     "loadFailed": "Profiel laden mislukt",
     "breakdown": {

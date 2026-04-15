@@ -1,11 +1,15 @@
 import Alpine from 'alpinejs';
-import { fetchProfile, fetchProfilePapers } from '../api.js';
+import { fetchProfile, fetchProfilePapers, fetchProfileReviews } from '../api.js';
 import { truncateText, formatDate } from '../components/paper-card.js';
 
 export function initProfilePage() {
   Alpine.data('profilePage', () => ({
     profile: null,
     userPapers: [],
+    userReviews: [],
+    reviewsLoaded: false,
+    reviewsLoading: false,
+    activeTab: 'publications',
     loading: true,
     error: null,
 
@@ -55,6 +59,34 @@ export function initProfilePage() {
 
     breakdownPct(value) {
       return this.maxBreakdownValue > 0 ? (value / this.maxBreakdownValue) * 100 : 0;
+    },
+
+    switchTab(tab) {
+      this.activeTab = tab;
+      if (tab === 'reviews' && !this.reviewsLoaded) {
+        this.loadReviews();
+      }
+    },
+
+    async loadReviews() {
+      const username = this.username;
+      this.reviewsLoading = true;
+      try {
+        const res = await fetchProfileReviews(username);
+        if (this.username !== username) return;
+        this.userReviews = res.data || [];
+        this.reviewsLoaded = true;
+      } catch (err) {
+        if (this.username !== username) return;
+        this.userReviews = [];
+        this.reviewsLoaded = true;
+      } finally {
+        this.reviewsLoading = false;
+      }
+    },
+
+    ratingLabel(key) {
+      return this.$t('profile.rating.' + key) || key.charAt(0).toUpperCase() + key.slice(1);
     },
 
     navigate(path) {

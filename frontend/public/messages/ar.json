@@ -102,8 +102,17 @@
     "citationsLabel": "الاقتباسات",
     "firstPost": "أول منشور على PEvO: {date}",
     "reputationBreakdown": "تفصيل درجة السمعة",
-    "publications": "المنشورات ({count})",
+    "tabPublications": "المنشورات",
+    "tabReviews": "المراجعات",
     "noPapers": "لم تُنشر أي أبحاث بعد.",
+    "noReviews": "لم تُكتب أي مراجعات بعد.",
+    "anonymousReview": "مراجعة مجهولة",
+    "rating": {
+      "methodology": "المنهجية",
+      "novelty": "الأصالة",
+      "clarity": "الوضوح",
+      "significance": "الأهمية"
+    },
     "accreditedVia": "معتمد عبر التحقق من {method} بتاريخ {date}",
     "loadFailed": "فشل تحميل الملف الشخصي",
     "breakdown": {

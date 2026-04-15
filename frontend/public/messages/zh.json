@@ -102,8 +102,17 @@
     "citationsLabel": "引用",
     "firstPost": "首次 PEvO 发表：{date}",
     "reputationBreakdown": "声誉评分详情",
-    "publications": "发表论文 ({count})",
+    "tabPublications": "发表论文",
+    "tabReviews": "评审",
     "noPapers": "尚未发表论文。",
+    "noReviews": "尚未撰写评审。",
+    "anonymousReview": "匿名评审",
+    "rating": {
+      "methodology": "方法论",
+      "novelty": "创新性",
+      "clarity": "清晰度",
+      "significance": "重要性"
+    },
     "accreditedVia": "通过 {method} 验证于 {date} 获得认证",
     "loadFailed": "个人资料加载失败",
     "breakdown": {

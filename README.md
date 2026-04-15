@@ -144,6 +144,10 @@ pevo/
 
 Full spec with all 40 endpoints: [docs/api-contract.md](docs/api-contract.md)
 
+## Development
+
+This project uses AI coding assistants for implementation. Architecture, standards research, and all review/integration decisions are made by the lead developer.
+
 ## License
 
 AGPL-3.0. See [LICENSE](LICENSE).

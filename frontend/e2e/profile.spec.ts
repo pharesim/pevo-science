@@ -36,7 +36,9 @@ test.describe("Profile", () => {
   test("displays user publications", async ({ page }) => {
     await page.goto("/profile/alice");
 
-    await expect(page.getByText("Publications (1)")).toBeVisible();
+    // Publications tab is active by default
+    await expect(page.getByRole("button", { name: "Publications" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Reviews" })).toBeVisible();
     await expect(page.getByText("Neural Network Plasticity in Adult Brains")).toBeVisible();
   });
 

@@ -102,8 +102,17 @@
     "citationsLabel": "Atıflar",
     "firstPost": "İlk PEvO gönderisi: {date}",
     "reputationBreakdown": "İtibar Dağılımı",
-    "publications": "Yayınlar ({count})",
+    "tabPublications": "Yayınlar",
+    "tabReviews": "Değerlendirmeler",
     "noPapers": "Henüz yayınlanmış makale yok.",
+    "noReviews": "Henüz yazılmış değerlendirme yok.",
+    "anonymousReview": "Anonim değerlendirme",
+    "rating": {
+      "methodology": "Metodoloji",
+      "novelty": "Yenilik",
+      "clarity": "Açıklık",
+      "significance": "Önem"
+    },
     "accreditedVia": "{date} tarihinde {method} doğrulaması ile akredite edildi",
     "loadFailed": "Profil yüklenemedi",
     "breakdown": {

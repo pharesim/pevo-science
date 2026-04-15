@@ -102,8 +102,17 @@
     "citationsLabel": "Citeringar",
     "firstPost": "Första PEvO-inlägg: {date}",
     "reputationBreakdown": "Uppdelning av rykte",
-    "publications": "Publikationer ({count})",
+    "tabPublications": "Publikationer",
+    "tabReviews": "Granskningar",
     "noPapers": "Inga artiklar publicerade ännu.",
+    "noReviews": "Inga granskningar skrivna ännu.",
+    "anonymousReview": "Anonym granskning",
+    "rating": {
+      "methodology": "Metodik",
+      "novelty": "Nyhet",
+      "clarity": "Tydlighet",
+      "significance": "Betydelse"
+    },
     "accreditedVia": "Ackrediterad via {method}-verifiering den {date}",
     "loadFailed": "Kunde inte ladda profilen",
     "breakdown": {

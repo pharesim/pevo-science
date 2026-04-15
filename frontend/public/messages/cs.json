@@ -102,8 +102,17 @@
     "citationsLabel": "Citace",
     "firstPost": "První příspěvek na PEvO: {date}",
     "reputationBreakdown": "Rozklad reputace",
-    "publications": "Publikace ({count})",
+    "tabPublications": "Publikace",
+    "tabReviews": "Recenze",
     "noPapers": "Zatím žádné publikované články.",
+    "noReviews": "Zatím žádné napsané recenze.",
+    "anonymousReview": "Anonymní recenze",
+    "rating": {
+      "methodology": "Metodologie",
+      "novelty": "Novost",
+      "clarity": "Srozumitelnost",
+      "significance": "Význam"
+    },
     "accreditedVia": "Akreditace prostřednictvím ověření {method} dne {date}",
     "loadFailed": "Nepodařilo se načíst profil",
     "breakdown": {

@@ -102,8 +102,17 @@
     "citationsLabel": "استنادها",
     "firstPost": "اولین ارسال در PEvO: {date}",
     "reputationBreakdown": "جزئیات اعتبار",
-    "publications": "مقالات ({count})",
+    "tabPublications": "مقالات",
+    "tabReviews": "بررسی‌ها",
     "noPapers": "هنوز مقاله‌ای منتشر نشده است.",
+    "noReviews": "هنوز بررسی‌ای نوشته نشده است.",
+    "anonymousReview": "بررسی ناشناس",
+    "rating": {
+      "methodology": "روش‌شناسی",
+      "novelty": "نوآوری",
+      "clarity": "وضوح",
+      "significance": "اهمیت"
+    },
     "accreditedVia": "اعتبارسنجی از طریق تایید {method} در {date}",
     "loadFailed": "بارگذاری پروفایل ناموفق بود",
     "breakdown": {

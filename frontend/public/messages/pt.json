@@ -102,8 +102,17 @@
     "citationsLabel": "Citacoes",
     "firstPost": "Primeira publicacao no PEvO: {date}",
     "reputationBreakdown": "Detalhamento da Reputacao",
-    "publications": "Publicacoes ({count})",
+    "tabPublications": "Publicações",
+    "tabReviews": "Avaliações",
     "noPapers": "Nenhum artigo publicado ainda.",
+    "noReviews": "Nenhuma avaliação escrita ainda.",
+    "anonymousReview": "Avaliação anônima",
+    "rating": {
+      "methodology": "Metodologia",
+      "novelty": "Novidade",
+      "clarity": "Clareza",
+      "significance": "Relevância"
+    },
     "accreditedVia": "Credenciado via verificacao por {method} em {date}",
     "loadFailed": "Falha ao carregar perfil",
     "breakdown": {
