@@ -75,11 +75,6 @@ export function initSignupPage() {
             email: loginErr.data.email,
           });
           Alpine.store('router').navigate(`/signup/verify?${params}`);
-        } else if (loginErr.code === 'PENDING_UNVERIFIED') {
-          this.submitted = true;
-        } else if (loginErr.code === 'SIGNUP_EXPIRED') {
-          // Account was deleted — re-submit will work now
-          this.error = loginErr.message;
         } else {
           Alpine.store('router').navigate('/login');
         }
