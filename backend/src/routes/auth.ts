@@ -9,6 +9,7 @@ import { config } from '../config.js';
 import { rateLimit, byIp, byAccount } from '../middleware/rateLimit.js';
 import { isInstitutionalEmail } from '../email-validator.js';
 import { getAppPool } from '../app-db.js';
+import { getRedis, isRedisAvailable } from '../redis.js';
 import { hiveClient } from '../hive.js';
 import { logger } from '../logger.js';
 
@@ -72,7 +73,7 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
   const pool = getAppPool();
   if (!pool) return sendError(res, 503, 'INTERNAL_ERROR', 'Registration not available');
 
-  const { email, password, full_name, institution, field, orcid } = req.body || {};
+  const { email, password, full_name, institution, field, orcid_token } = req.body || {};
 
   // Validate required fields
   if (!email || typeof email !== 'string') {
@@ -95,10 +96,31 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
   }
 
   const normalizedEmail = email.trim().toLowerCase();
+  const isInstitutional = isInstitutionalEmail(normalizedEmail);
 
-  // Validate institutional email domain
-  if (!isInstitutionalEmail(normalizedEmail)) {
-    return sendError(res, 422, 'VALIDATION_ERROR', 'Only institutional email addresses are accepted');
+  // Validate orcid_token if provided — retrieve verified ORCID iD
+  let verifiedOrcid: string | null = null;
+  if (orcid_token && typeof orcid_token === 'string') {
+    const redis = getRedis();
+    if (redis && isRedisAvailable()) {
+      const raw = await redis.get(`signup_orcid_verified:${orcid_token}`);
+      if (raw) {
+        await redis.del(`signup_orcid_verified:${orcid_token}`);
+        const parsed = JSON.parse(raw) as { orcid_id: string; works_count: number };
+        verifiedOrcid = parsed.orcid_id;
+      }
+    } else {
+      const entry = signupOrcidVerified.get(orcid_token);
+      if (entry && entry.expires > Date.now()) {
+        verifiedOrcid = entry.orcid_id;
+      }
+      signupOrcidVerified.delete(orcid_token);
+    }
+  }
+
+  // Accreditation gate: institutional email OR verified ORCID required
+  if (!isInstitutional && !verifiedOrcid) {
+    return sendError(res, 422, 'VALIDATION_ERROR', 'Either an institutional email or ORCID verification is required');
   }
 
   try {
@@ -125,7 +147,6 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
     const expiresAt = new Date(Date.now() + SIGNUP_TOKEN_EXPIRY_MS);
 
     // Store signup in accounts table
-    const safeOrcid = orcid && typeof orcid === 'string' ? orcid.trim() : null;
     await pool.query(
       `INSERT INTO accounts (email, password_hash, full_name, institution, field, orcid, verify_token, expires_at)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -138,7 +159,7 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
          verify_token = EXCLUDED.verify_token,
          expires_at = EXCLUDED.expires_at,
          created_at = NOW()`,
-      [normalizedEmail, passwordHash, full_name.trim(), institution.trim(), field.trim(), safeOrcid, verifyToken, expiresAt],
+      [normalizedEmail, passwordHash, full_name.trim(), institution.trim(), field.trim(), verifiedOrcid, verifyToken, expiresAt],
     );
 
     // Send verification email
@@ -509,6 +530,155 @@ router.post('/reset', resetLimiter, async (req: Request, res: Response) => {
   } catch (err) {
     logger.error({ err }, 'Password reset failed');
     sendError(res, 500, 'INTERNAL_ERROR', 'Password reset failed');
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+// POST /api/auth/orcid/start — Initiate ORCID OAuth for signup
+// ─────────────────────────────────────────────────────────────
+const orcidStartLimiter = rateLimit({ name: 'auth-orcid-start', windowMs: 60_000, max: 10, keyFn: byIp });
+
+// In-memory fallback for ORCID signup state
+const signupOrcidStates = new Map<string, { timestamp: number; expires: number }>();
+
+router.post('/orcid/start', orcidStartLimiter, async (_req: Request, res: Response) => {
+  if (!config.orcidClientId || !config.orcidClientSecret || !config.orcidSignupRedirectUri) {
+    return sendError(res, 500, 'INTERNAL_ERROR', 'ORCID integration is not configured');
+  }
+
+  const state = crypto.randomBytes(16).toString('hex');
+  const stateKey = `signup_orcid_state:${state}`;
+  const ttl = 600; // 10 minutes
+
+  const redis = getRedis();
+  if (redis && isRedisAvailable()) {
+    await redis.set(stateKey, String(Date.now()), 'EX', ttl);
+  } else {
+    signupOrcidStates.set(state, { timestamp: Date.now(), expires: Date.now() + ttl * 1000 });
+  }
+
+  const redirectUrl = `${config.orcidBaseUrl}/oauth/authorize?` +
+    `client_id=${encodeURIComponent(config.orcidClientId)}` +
+    `&response_type=code` +
+    `&scope=${encodeURIComponent('/authenticate /read-limited')}` +
+    `&redirect_uri=${encodeURIComponent(config.orcidSignupRedirectUri)}` +
+    `&state=${state}`;
+
+  sendOk(res, { redirect_url: redirectUrl });
+});
+
+// ─────────────────────────────────────────────────────────────
+// POST /api/auth/orcid/callback — Complete signup ORCID OAuth
+// ─────────────────────────────────────────────────────────────
+const orcidCallbackLimiter = rateLimit({ name: 'auth-orcid-callback', windowMs: 60_000, max: 10, keyFn: byIp });
+
+// In-memory fallback for verified ORCID nonces
+const signupOrcidVerified = new Map<string, { orcid_id: string; works_count: number; expires: number }>();
+
+router.post('/orcid/callback', orcidCallbackLimiter, async (req: Request, res: Response) => {
+  if (!config.orcidClientId || !config.orcidClientSecret || !config.orcidSignupRedirectUri) {
+    return sendError(res, 500, 'INTERNAL_ERROR', 'ORCID integration is not configured');
+  }
+
+  const { code, state } = req.body as { code?: string; state?: string };
+  if (!code || !state) {
+    return sendError(res, 400, 'BAD_REQUEST', 'code and state are required');
+  }
+
+  // Validate state
+  let stateValid = false;
+  const redis = getRedis();
+  if (redis && isRedisAvailable()) {
+    const stored = await redis.get(`signup_orcid_state:${state}`);
+    if (stored) {
+      await redis.del(`signup_orcid_state:${state}`);
+      stateValid = true;
+    }
+  } else {
+    const entry = signupOrcidStates.get(state);
+    if (entry && entry.expires > Date.now()) {
+      stateValid = true;
+    }
+    signupOrcidStates.delete(state);
+  }
+
+  if (!stateValid) {
+    return sendError(res, 400, 'BAD_REQUEST', 'Invalid or expired state parameter');
+  }
+
+  try {
+    // Exchange code for access token
+    const tokenRes = await fetch(`${config.orcidBaseUrl}/oauth/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
+      body: new URLSearchParams({
+        client_id: config.orcidClientId,
+        client_secret: config.orcidClientSecret,
+        grant_type: 'authorization_code',
+        code,
+        redirect_uri: config.orcidSignupRedirectUri,
+      }),
+    });
+
+    if (!tokenRes.ok) {
+      const errBody = await tokenRes.text();
+      logger.error({ status: tokenRes.status, body: errBody }, 'ORCID token exchange failed');
+      return sendError(res, 400, 'BAD_REQUEST', 'Failed to exchange authorization code');
+    }
+
+    const tokenData = await tokenRes.json() as { orcid: string; access_token?: string };
+    const orcidId = tokenData.orcid;
+    if (!orcidId) {
+      return sendError(res, 400, 'BAD_REQUEST', 'ORCID response missing orcid field');
+    }
+
+    // Fetch works from ORCID public API
+    const worksRes = await fetch(`https://pub.orcid.org/v3.0/${orcidId}/works`, {
+      headers: { Accept: 'application/json' },
+    });
+
+    if (!worksRes.ok) {
+      logger.error({ status: worksRes.status, orcidId }, 'ORCID works fetch failed');
+      return sendError(res, 500, 'INTERNAL_ERROR', 'Failed to fetch ORCID works');
+    }
+
+    const worksData = await worksRes.json() as { group?: Array<{ 'work-summary'?: Array<{ source?: { 'source-orcid'?: { path?: string } }; 'put-code'?: number }> }> };
+
+    // Count works where source ORCID differs from profile owner (externally sourced).
+    // Self-asserted works have source-orcid.path === the profile owner's ORCID iD.
+    // External sources (Crossref, Scopus, DataCite) have a different source-orcid.path.
+    let externalWorksCount = 0;
+    if (worksData.group) {
+      for (const group of worksData.group) {
+        const summaries = group['work-summary'] || [];
+        const hasExternalSource = summaries.some((s) => {
+          const sourceOrcid = s.source?.['source-orcid']?.path;
+          return sourceOrcid && sourceOrcid !== orcidId;
+        });
+        if (hasExternalSource) externalWorksCount++;
+      }
+    }
+
+    if (externalWorksCount < config.orcidMinWorks) {
+      return sendError(res, 422, 'VALIDATION_ERROR',
+        `ORCID profile has ${externalWorksCount} externally-sourced work(s), but at least ${config.orcidMinWorks} are required`);
+    }
+
+    // Store verified ORCID with nonce
+    const nonce = crypto.randomBytes(16).toString('hex');
+    const verifiedTtl = 1800; // 30 minutes
+    const verifiedData = { orcid_id: orcidId, works_count: externalWorksCount };
+
+    if (redis && isRedisAvailable()) {
+      await redis.set(`signup_orcid_verified:${nonce}`, JSON.stringify(verifiedData), 'EX', verifiedTtl);
+    } else {
+      signupOrcidVerified.set(nonce, { ...verifiedData, expires: Date.now() + verifiedTtl * 1000 });
+    }
+
+    sendOk(res, { orcid_token: nonce, orcid_id: orcidId, works_count: externalWorksCount });
+  } catch (err) {
+    logger.error({ err }, 'ORCID callback failed');
+    sendError(res, 500, 'INTERNAL_ERROR', 'ORCID verification failed');
   }
 });
 

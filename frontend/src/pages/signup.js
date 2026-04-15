@@ -1,5 +1,5 @@
 import Alpine from 'alpinejs';
-import { submitSignup, loginWithPassword, resendVerification } from '../api.js';
+import { submitSignup, loginWithPassword, resendVerification, startSignupOrcid } from '../api.js';
 
 const MIN_PASSWORD = 10;
 
@@ -9,7 +9,8 @@ export function initSignupPage() {
     fullName: '',
     institution: '',
     field: '',
-    orcid: '',
+    orcidToken: '',
+    orcidId: '',
     password: '',
     passwordConfirm: '',
 
@@ -18,6 +19,7 @@ export function initSignupPage() {
     error: null,
     isResending: false,
     resendSuccess: false,
+    orcidLoading: false,
 
     get isConnected() { return Alpine.store('auth').isConnected; },
 
@@ -36,6 +38,62 @@ export function initSignupPage() {
       return this.email && this.fullName && this.institution && this.field && this.passwordValid && this.passwordsMatch;
     },
 
+    init() {
+      // Restore form state after ORCID OAuth redirect
+      const draft = localStorage.getItem('pevo_signup_draft');
+      if (draft) {
+        try {
+          const saved = JSON.parse(draft);
+          this.email = saved.email || '';
+          this.fullName = saved.fullName || '';
+          this.institution = saved.institution || '';
+          this.field = saved.field || '';
+          this.password = saved.password || '';
+          this.passwordConfirm = saved.passwordConfirm || '';
+        } catch { /* ignore corrupt data */ }
+        localStorage.removeItem('pevo_signup_draft');
+      }
+
+      // Restore verified ORCID from callback
+      const orcidToken = localStorage.getItem('pevo_signup_orcid_token');
+      const orcidId = localStorage.getItem('pevo_signup_orcid_id');
+      if (orcidToken && orcidId) {
+        this.orcidToken = orcidToken;
+        this.orcidId = orcidId;
+        localStorage.removeItem('pevo_signup_orcid_token');
+        localStorage.removeItem('pevo_signup_orcid_id');
+      }
+    },
+
+    async handleOrcidVerify() {
+      if (this.orcidLoading) return;
+      this.orcidLoading = true;
+      this.error = null;
+
+      // Save form state before redirecting
+      localStorage.setItem('pevo_signup_draft', JSON.stringify({
+        email: this.email,
+        fullName: this.fullName,
+        institution: this.institution,
+        field: this.field,
+        password: this.password,
+        passwordConfirm: this.passwordConfirm,
+      }));
+
+      try {
+        const data = await startSignupOrcid();
+        window.location.href = data.redirect_url;
+      } catch (err) {
+        this.orcidLoading = false;
+        this.error = err.message;
+      }
+    },
+
+    clearOrcid() {
+      this.orcidToken = '';
+      this.orcidId = '';
+    },
+
     async handleSubmit() {
       if (!this.canSubmit || this.isSubmitting) return;
       this.isSubmitting = true;
@@ -48,12 +106,14 @@ export function initSignupPage() {
           full_name: this.fullName.trim(),
           institution: this.institution.trim(),
           field: this.field.trim(),
-          orcid: this.orcid.trim() || undefined,
+          orcid_token: this.orcidToken || undefined,
         });
         this.submitted = true;
       } catch (err) {
         if (err.code === 'DUPLICATE' && this.email && this.password) {
           await this._resolveExistingAccount();
+        } else if (err.code === 'VALIDATION_ERROR' && !this.orcidToken) {
+          this.error = this.$t('signup.orcidOrInstitutional');
         } else {
           this.error = err.message;
         }

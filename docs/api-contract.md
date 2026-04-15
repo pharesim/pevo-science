@@ -90,7 +90,7 @@ Create a session token. The client signs a challenge with Hive Keychain at login
 
 ### POST /api/auth/signup
 
-Register a light account. Only institutional email addresses are accepted. No Hive account is created at this stage — the user must verify their email first.
+Register a light account. Accreditation requires **either** an institutional email address **or** a verified ORCID with sufficient publications (configured via `ORCID_MIN_WORKS`, default 3). Non-institutional emails are accepted when a valid `orcid_token` is provided.
 
 **Body:**
 
@@ -99,14 +99,16 @@ Register a light account. Only institutional email addresses are accepted. No Hi
   "email": "researcher@university.edu",
   "password": "SecurePass123",
   "username": "researcher1",
-  "linked_username": "existing-hive-user"  // optional — link existing Hive account instead of creating new
+  "linked_username": "existing-hive-user",  // optional — link existing Hive account instead of creating new
+  "orcid_token": "abc123..."                // optional — nonce from /api/auth/orcid/callback
 }
 ```
 
-- `email` must be from an institutional domain (`.edu`, `.ac.*`, `.edu.*`, research institutes, etc.)
+- `email` — any valid email. If not from an institutional domain, `orcid_token` is required.
 - `password` must be at least 10 characters with lowercase, uppercase, and numbers
 - `username` must be Hive-compatible (3-16 chars, lowercase a-z, 0-9, dots/hyphens)
 - `linked_username` (optional) — if set, the user links an existing Hive account instead of creating a new one; the username must already exist on Hive
+- `orcid_token` (optional) — one-time nonce returned by `/api/auth/orcid/callback`. Backend validates against Redis and retrieves the verified ORCID iD. Consumed on use.
 
 **Response `data`:**
 
@@ -120,9 +122,62 @@ Register a light account. Only institutional email addresses are accepted. No Hi
 **Rate limit:** 10 requests per IP per hour.
 
 **Errors:**
-- `VALIDATION_ERROR` — invalid email domain, password too weak, or invalid username format
+- `VALIDATION_ERROR` — non-institutional email without valid `orcid_token`, password too weak, or invalid username format
 - `DUPLICATE` — email or username already registered or pending
 - `NOT_FOUND` — linked Hive account does not exist
+
+---
+
+### POST /api/auth/orcid/start
+
+Initiate ORCID OAuth for the signup flow. No authentication required. Generates a state parameter stored in Redis and returns the ORCID authorization URL.
+
+**Body:** _(none)_
+
+**Response `data`:**
+
+```json
+{
+  "redirect_url": "https://orcid.org/oauth/authorize?client_id=...&response_type=code&scope=/authenticate+/read-limited&redirect_uri=...&state=..."
+}
+```
+
+**Rate limit:** 10 requests per IP per minute.
+
+**Errors:**
+- `INTERNAL_ERROR` — ORCID integration not configured
+
+---
+
+### POST /api/auth/orcid/callback
+
+Complete the signup ORCID OAuth flow. Exchanges the authorization code for an access token, fetches the ORCID profile via the public API, and checks that the profile has at least `ORCID_MIN_WORKS` (default 3) works with an external source (Crossref, DataCite, Scopus — not self-asserted). On success, stores the verified ORCID iD in Redis keyed by a one-time nonce and returns that nonce.
+
+**Body:**
+
+```json
+{
+  "code": "<ORCID authorization code>",
+  "state": "<state from OAuth redirect>"
+}
+```
+
+**Response `data`:**
+
+```json
+{
+  "orcid_token": "<one-time nonce>",
+  "orcid_id": "0000-0001-2345-6789",
+  "works_count": 5
+}
+```
+
+The `orcid_token` is valid for 30 minutes and consumed when used in `/api/auth/signup`. The `orcid_id` and `works_count` are returned for display purposes only — the backend re-reads the verified ORCID iD from Redis using the nonce, never trusting the client.
+
+**Errors:**
+- `BAD_REQUEST` — invalid/expired state or authorization code
+- `VALIDATION_ERROR` — ORCID profile has fewer than `ORCID_MIN_WORKS` externally-sourced works
+- `INTERNAL_ERROR` — ORCID API unreachable
 
 ---
 

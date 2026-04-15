@@ -68,6 +68,8 @@ export const config = {
   orcidClientId: process.env.ORCID_CLIENT_ID || '',
   orcidClientSecret: process.env.ORCID_CLIENT_SECRET || '',
   orcidRedirectUri: process.env.ORCID_REDIRECT_URI || '',
+  orcidSignupRedirectUri: process.env.ORCID_SIGNUP_REDIRECT_URI || '',
+  orcidMinWorks: parseInt(process.env.ORCID_MIN_WORKS || '3', 10),
   orcidBaseUrl: process.env.NODE_ENV === 'production' ? 'https://orcid.org' : 'https://sandbox.orcid.org',
   dataciteRepositoryId: process.env.DATACITE_REPOSITORY_ID || '',
   datacitePassword: process.env.DATACITE_PASSWORD || '',

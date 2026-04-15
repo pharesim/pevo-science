@@ -196,7 +196,22 @@ export function fetchPlatformStats() {
   return request('/stats');
 }
 
-// ─── ORCID ───────────────────────────────────────────────────────
+// ─── ORCID (Signup) ─────────────────────────────────────────────
+
+export async function startSignupOrcid() {
+  const res = await request('/auth/orcid/start', { method: 'POST' });
+  return res.data;
+}
+
+export function completeSignupOrcid(code, state) {
+  return request('/auth/orcid/callback', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ code, state }),
+  });
+}
+
+// ─── ORCID (Accreditation) ──────────────────────────────────────
 
 export async function startOrcidVerification() {
   const res = await authenticatedRequest('/accreditation/orcid/start');
