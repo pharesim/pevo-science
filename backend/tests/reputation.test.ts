@@ -361,8 +361,8 @@ describe('computeReputation() v3: citations', () => {
       }],
     };
     const result = await computeReputation(stats, false, W, emptyRepMap, allActive);
-    // 1.0 * 0.05 * 1.0 (decay) = 0.05, rounds to 0
-    expect(result.breakdown.citations).toBe(0);
+    // 1.0 * 0.05 * 1.0 (decay) = 0.05, rounds to 0.1 (one decimal)
+    expect(result.breakdown.citations).toBe(0.1);
   });
 
   it('citation cap (citation_max: 15)', async () => {

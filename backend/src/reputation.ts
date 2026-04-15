@@ -203,10 +203,13 @@ export async function getUserStatsFromHaf(username: string): Promise<UserStats |
              FILTER (WHERE v.voter IS NOT NULL), '[]') AS votes
          FROM user_papers up
          LEFT JOIN (
-           SELECT DISTINCT ON (vo.voter, vo.author, vo.permlink) vo.voter, vo.author, vo.permlink, vo.weight
-           FROM ${T.voteOps} vo WHERE vo.voter = ANY($2::text[])
-           ORDER BY vo.voter, vo.author, vo.permlink, vo.block_num DESC
-         ) v ON v.author = up.author AND v.permlink = up.permlink
+           SELECT DISTINCT ON (vo.voter, vo.permlink) vo.voter, vo.author, vo.permlink, vo.weight
+           FROM ${T.voteOps} vo
+           WHERE vo.voter = ANY($2::text[])
+             AND vo.author = $1
+             AND vo.permlink = ANY(SELECT permlink FROM user_papers)
+           ORDER BY vo.voter, vo.permlink, vo.block_num DESC
+         ) v ON v.permlink = up.permlink
            AND v.voter != up.author
            AND NOT EXISTS (
              SELECT 1 FROM jsonb_array_elements(up.json_metadata -> $3 -> 'authors') a
@@ -236,20 +239,27 @@ export async function getUserStatsFromHaf(username: string): Promise<UserStats |
     );
 
     const reviewsQuery = pool.query(
-      `SELECT ur.permlink, ur.created,
+      `WITH user_reviews AS (
+         SELECT ur.author, ur.permlink, ur.created
+         FROM ${T.comments} ur
+         WHERE ur.author = $1
+           AND (ur.json_metadata -> $3 ->> 'type') = 'review'
+           AND ur.json_metadata ->> 'app' LIKE $4
+           AND COALESCE(ur.json_metadata -> $3 ->> 'is_anonymous', 'false') != 'true'
+       )
+       SELECT ur.permlink, ur.created,
          COALESCE(json_agg(json_build_object('voter', v.voter, 'weight', v.weight))
            FILTER (WHERE v.voter IS NOT NULL), '[]') AS votes
-       FROM ${T.comments} ur
+       FROM user_reviews ur
        LEFT JOIN (
-         SELECT DISTINCT ON (vo.voter, vo.author, vo.permlink) vo.voter, vo.author, vo.permlink, vo.weight
-         FROM ${T.voteOps} vo WHERE vo.voter = ANY($2::text[])
-         ORDER BY vo.voter, vo.author, vo.permlink, vo.block_num DESC
-       ) v ON v.author = ur.author AND v.permlink = ur.permlink
-         AND v.voter != ur.author
-       WHERE ur.author = $1
-         AND (ur.json_metadata -> $3 ->> 'type') = 'review'
-         AND ur.json_metadata ->> 'app' LIKE $4
-         AND COALESCE(ur.json_metadata -> $3 ->> 'is_anonymous', 'false') != 'true'
+         SELECT DISTINCT ON (vo.voter, vo.permlink) vo.voter, vo.permlink, vo.weight
+         FROM ${T.voteOps} vo
+         WHERE vo.voter = ANY($2::text[])
+           AND vo.author = $1
+           AND vo.permlink = ANY(SELECT permlink FROM user_reviews)
+         ORDER BY vo.voter, vo.permlink, vo.block_num DESC
+       ) v ON v.permlink = ur.permlink
+         AND v.voter != $1
        GROUP BY ur.permlink, ur.created`,
       [username, accreditedArr, config.appTag, `${config.appTag}/%`],
     );
@@ -280,7 +290,9 @@ export async function getUserStatsFromHaf(username: string): Promise<UserStats |
          FROM citing_papers cp
          LEFT JOIN (
            SELECT DISTINCT ON (vo.voter, vo.author, vo.permlink) vo.voter, vo.author, vo.permlink, vo.weight
-           FROM ${T.voteOps} vo WHERE vo.voter = ANY($2::text[])
+           FROM ${T.voteOps} vo
+           WHERE vo.voter = ANY($2::text[])
+             AND (vo.author, vo.permlink) IN (SELECT citing_author, citing_permlink FROM citing_papers)
            ORDER BY vo.voter, vo.author, vo.permlink, vo.block_num DESC
          ) v ON v.author = cp.citing_author AND v.permlink = cp.citing_permlink
            AND v.weight > 0
@@ -524,6 +536,11 @@ function ageInMonths(created: string): number {
   return (Date.now() - new Date(created).getTime()) / (1000 * 60 * 60 * 24 * 30);
 }
 
+/** Round to one decimal place. */
+function round1(n: number): number {
+  return Math.round(n * 10) / 10;
+}
+
 // ─── Reputation Computation (v3) ────────────────────────────────
 
 /**
@@ -591,14 +608,14 @@ export async function computeReputation(
   const accreditationScore = isAccredited ? w.accreditation_bonus : 0;
 
   const raw = papersScore + reviewsScore + citationScore + accreditationScore;
-  const score = Math.min(100, Math.max(0, Math.round(raw)));
+  const score = Math.min(100, Math.max(0, round1(raw)));
 
   return {
     score,
     breakdown: {
-      papers: Math.round(papersScore),
-      reviews: Math.round(reviewsScore),
-      citations: Math.round(citationScore),
+      papers: round1(papersScore),
+      reviews: round1(reviewsScore),
+      citations: round1(citationScore),
       accreditation: accreditationScore,
     },
   };
