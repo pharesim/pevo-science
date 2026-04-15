@@ -152,4 +152,4 @@ This project uses AI coding assistants for implementation. Architecture, standar
 
 AGPL-3.0. See [LICENSE](LICENSE).
 
-Prior versions (before this commit) were released under the MIT License.
+Prior versions (before 3554a6c) were released under the MIT License.
