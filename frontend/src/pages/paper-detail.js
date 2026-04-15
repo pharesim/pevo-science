@@ -102,9 +102,20 @@ export function initPaperDetailPage() {
           this.paper.retraction_timestamp = d.retraction_timestamp;
         }
         this.enrichmentLoaded = true;
+        // Scroll to review if URL has a hash fragment
+        this.scrollToHashReview();
       } catch {
         // Enrichment is non-critical; paper still shows without it
       }
+    },
+
+    scrollToHashReview() {
+      const hash = window.location.hash;
+      if (!hash || !hash.startsWith('#review-')) return;
+      requestAnimationFrame(() => {
+        const el = document.getElementById(hash.slice(1));
+        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      });
     },
 
     async loadDoi() {

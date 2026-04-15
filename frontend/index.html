@@ -1166,7 +1166,7 @@
               <template x-if="paper.reviews && paper.reviews.length > 0">
                 <div class="space-y-4">
                   <template x-for="rev in paper.reviews" :key="rev.permlink">
-                    <div class="card">
+                    <div class="card" :id="'review-' + rev.author.replace(/[\/.]/g, '-') + '-' + rev.permlink.replace(/[\/.]/g, '-')">
                       <!-- Review header -->
                       <div class="flex items-start justify-between mb-4">
                         <div>
@@ -2579,8 +2579,8 @@
                             <time :datetime="review.created" x-text="formatDate(review.created)"></time>
                           </div>
                           <h3 class="text-paper-title leading-snug mb-2">
-                            <a :href="$lp('/paper/' + review.paper.author + '/' + review.paper.permlink)"
-                               @click.prevent="navigate('/paper/' + review.paper.author + '/' + review.paper.permlink)"
+                            <a :href="$lp('/paper/' + review.paper.author + '/' + review.paper.permlink + '#review-' + review.author.replace(/[\/.]/g, '-') + '-' + review.permlink.replace(/[\/.]/g, '-'))"
+                               @click.prevent="navigate('/paper/' + review.paper.author + '/' + review.paper.permlink + '#review-' + review.author.replace(/[\/.]/g, '-') + '-' + review.permlink.replace(/[\/.]/g, '-'))"
                                class="text-ink hover:text-pevo-teal no-underline" x-text="review.paper.title"></a>
                           </h3>
                           <template x-if="review.rating">

@@ -117,19 +117,27 @@ export function initRouter() {
     locale: initial.locale || DEFAULT_LOCALE,
 
     navigate(path) {
+      // Separate hash fragment before processing
+      let hash = '';
+      const hashIdx = path.indexOf('#');
+      if (hashIdx >= 0) {
+        hash = path.slice(hashIdx);
+        path = path.slice(0, hashIdx);
+      }
+
       // Auto-prepend locale if path doesn't already start with a valid locale
       const segments = path.split('?')[0].split('/');
       if (!(segments.length >= 2 && SUPPORTED_LOCALES.includes(segments[1]))) {
         path = '/' + this.locale + (path.startsWith('/') ? path : '/' + path);
       }
-      window.history.pushState(null, '', path);
+      window.history.pushState(null, '', path + hash);
       const parsed = parsePath(path);
       this.route = parsed.route;
       this.params = parsed.params;
       this.query = parsed.query;
       if (parsed.locale) this.locale = parsed.locale;
       updateTitle(parsed.route);
-      window.scrollTo(0, 0);
+      if (!hash) window.scrollTo(0, 0);
     },
   });
 
