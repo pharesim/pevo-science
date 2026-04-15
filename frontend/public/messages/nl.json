@@ -4,7 +4,7 @@
     "description": "Open wetenschappelijke publicatie en interactieve peer-evaluatie op een permanent, open register. Non-profit, transparant, forkbaar."
   },
   "betaBanner": {
-    "message": "Bèta: Dit is een testomgeving. Alle gegevens worden gewist vóór de officiële lancering.",
+    "message": "Bèta: Dit is een testomgeving. Inhoud die hier wordt geplaatst blijft permanent bestaan maar onder een test-tag — deze verschijnt niet op het live platform na de lancering.",
     "close": "Sluiten"
   },
   "nav": {

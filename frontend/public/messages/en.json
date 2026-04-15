@@ -4,7 +4,7 @@
     "description": "Open scientific publication and interactive peer evaluation on a permanent, open record. Non-profit, transparent, forkable."
   },
   "betaBanner": {
-    "message": "Beta: This is a testing environment. All data will be wiped before the official launch.",
+    "message": "Beta: This is a testing environment. Content posted here is permanent but published under a test tag — it won't appear on the live platform after launch.",
     "close": "Dismiss"
   },
   "nav": {

@@ -4,7 +4,7 @@
     "description": "Otevřené vědecké publikování a interaktivní hodnocení na trvalém, otevřeném záznamu. Neziskové, transparentní, forkovatelné."
   },
   "betaBanner": {
-    "message": "Beta: Toto je testovací prostředí. Všechna data budou smazána před oficiálním spuštěním.",
+    "message": "Beta: Toto je testovací prostředí. Obsah zveřejněný zde zůstává trvale, ale pod testovacím tagem — na ostré platformě se po spuštění nezobrazí.",
     "close": "Zavřít"
   },
   "nav": {

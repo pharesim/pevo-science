@@ -4,7 +4,7 @@
     "description": "Publication scientifique ouverte et évaluation interactive par les pairs sur un registre permanent et ouvert. Non lucratif, transparent, duplicable."
   },
   "betaBanner": {
-    "message": "Bêta : Ceci est un environnement de test. Toutes les données seront effacées avant le lancement officiel.",
+    "message": "Bêta : Ceci est un environnement de test. Le contenu publié ici est permanent mais sous un tag de test — il n'apparaîtra pas sur la plateforme en production après le lancement.",
     "close": "Fermer"
   },
   "nav": {

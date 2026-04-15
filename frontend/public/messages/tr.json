@@ -4,7 +4,7 @@
     "description": "Kalıcı ve açık bir kayıt üzerinde açık bilimsel yayın ve etkileşimli hakem değerlendirmesi. Kâr amacı gütmeyen, şeffaf, çatallanabilir."
   },
   "betaBanner": {
-    "message": "Beta: Bu bir test ortamıdır. Resmi lansmandan önce tüm veriler silinecektir.",
+    "message": "Beta: Bu bir test ortamıdır. Burada yayınlanan içerik kalıcıdır ancak bir test etiketi altında yayınlanır — lansmandan sonra canlı platformda görünmeyecektir.",
     "close": "Kapat"
   },
   "nav": {

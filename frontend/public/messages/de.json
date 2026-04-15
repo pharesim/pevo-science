@@ -4,7 +4,7 @@
     "description": "Offene wissenschaftliche Publikation und interaktive Begutachtung auf einem dauerhaften, öffentlichen Register. Gemeinnützig, transparent, forkbar."
   },
   "betaBanner": {
-    "message": "Beta: Dies ist eine Testumgebung. Alle Daten werden vor dem offiziellen Start gelöscht.",
+    "message": "Beta: Dies ist eine Testumgebung. Hier veröffentlichte Inhalte bleiben dauerhaft erhalten, erscheinen aber unter einem Test-Tag — sie werden nach dem Start nicht auf der Live-Plattform angezeigt.",
     "close": "Schließen"
   },
   "nav": {

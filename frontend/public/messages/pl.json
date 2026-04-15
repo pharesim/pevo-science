@@ -4,7 +4,7 @@
     "description": "Otwarta publikacja naukowa i interaktywna ocena recenzencka w trwalym, otwartym rejestrze. Non-profit, transparentna, z mozliwoscia forku."
   },
   "betaBanner": {
-    "message": "Beta: To jest środowisko testowe. Wszystkie dane zostaną usunięte przed oficjalnym uruchomieniem.",
+    "message": "Beta: To jest środowisko testowe. Treści opublikowane tutaj są trwałe, ale oznaczone tagiem testowym — nie pojawią się na platformie produkcyjnej po uruchomieniu.",
     "close": "Zamknij"
   },
   "nav": {

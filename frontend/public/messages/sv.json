@@ -4,7 +4,7 @@
     "description": "Öppen vetenskaplig publicering och interaktiv kollegial granskning på ett permanent, öppet register. Icke-vinstdrivande, transparent, förgreningsbar."
   },
   "betaBanner": {
-    "message": "Beta: Detta är en testmiljö. All data kommer att raderas före den officiella lanseringen.",
+    "message": "Beta: Detta är en testmiljö. Innehåll som publiceras här är permanent men under en test-tagg — det kommer inte att visas på den officiella plattformen efter lanseringen.",
     "close": "Stäng"
   },
   "nav": {

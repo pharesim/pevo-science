@@ -4,7 +4,7 @@
     "description": "Åben videnskabelig publicering og interaktiv fagfællebedømmelse på en permanent, åben protokol. Non-profit, transparent, forkbar."
   },
   "betaBanner": {
-    "message": "Beta: Dette er et testmiljø. Alle data vil blive slettet før den officielle lancering.",
+    "message": "Beta: Dette er et testmiljø. Indhold postet her er permanent, men publiceret under et test-tag — det vil ikke vises på den officielle platform efter lanceringen.",
     "close": "Luk"
   },
   "nav": {

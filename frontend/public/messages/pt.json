@@ -4,7 +4,7 @@
     "description": "Publicacao cientifica aberta e avaliacao interativa por pares em um registro permanente e aberto. Sem fins lucrativos, transparente, replicavel."
   },
   "betaBanner": {
-    "message": "Beta: Este é um ambiente de teste. Todos os dados serão apagados antes do lançamento oficial.",
+    "message": "Beta: Este é um ambiente de teste. O conteúdo publicado aqui é permanente mas publicado sob uma tag de teste — não aparecerá na plataforma oficial após o lançamento.",
     "close": "Fechar"
   },
   "nav": {
