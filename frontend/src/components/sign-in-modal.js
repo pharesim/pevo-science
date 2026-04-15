@@ -1,10 +1,10 @@
 import Alpine from 'alpinejs';
-import { loginWithPassword } from '../api.js';
+import { loginWithPassword, resendVerification } from '../api.js';
 
 export function initSignInModal() {
   Alpine.data('signInModal', () => ({
     open: false,
-    mode: 'choose', // 'choose', 'email', 'keychain'
+    mode: 'choose', // 'choose', 'email', 'keychain', 'unverified'
     // Keychain fields
     value: '',
     error: null,
@@ -14,6 +14,9 @@ export function initSignInModal() {
     passwordValue: '',
     emailError: null,
     emailLoading: false,
+    // Resend verification
+    isResending: false,
+    resendSuccess: false,
 
     /**
      * Open the modal in chooser mode.
@@ -28,6 +31,8 @@ export function initSignInModal() {
         this.passwordValue = '';
         this.emailError = null;
         this.emailLoading = false;
+        this.isResending = false;
+        this.resendSuccess = false;
         this.mode = 'choose';
         this._resolve = resolve;
         this.open = true;
@@ -92,18 +97,25 @@ export function initSignInModal() {
           return;
         }
         if (err.code === 'PENDING_UNVERIFIED') {
-          this.open = false;
-          this.mode = 'choose';
-          if (this._resolve) {
-            this._resolve(null);
-            this._resolve = null;
-          }
-          Alpine.store('router').navigate('/login?pending=unverified');
+          this.mode = 'unverified';
           return;
         }
         this.emailError = err.message || this.$t('signIn.loginFailed');
       } finally {
         this.emailLoading = false;
+      }
+    },
+
+    async handleResendVerification() {
+      if (this.isResending) return;
+      this.isResending = true;
+      try {
+        await resendVerification(this.emailValue.trim(), this.passwordValue);
+        this.resendSuccess = true;
+      } catch (err) {
+        this.emailError = err.message;
+      } finally {
+        this.isResending = false;
       }
     },
 

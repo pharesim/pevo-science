@@ -13,14 +13,6 @@ export function initLoginPage() {
     isResending: false,
     resendSuccess: false,
 
-    init() {
-      const query = Alpine.store('router').query || {};
-      if (query.pending === 'unverified') {
-        this.pendingState = 'unverified';
-        this.error = this.$t('login.pendingUnverified');
-      }
-    },
-
     get isConnected() { return Alpine.store('auth').isConnected; },
 
     get canSubmit() {
