@@ -110,35 +110,43 @@ export function voteInfluence(
   return vw * strength;
 }
 
+async function loadActiveAccounts(): Promise<string[]> {
+  const pool = getPool();
+  if (!pool) return [];
+
+  try {
+    const result = await pool.query(
+      `SELECT DISTINCT c.author
+       FROM ${T.comments} c
+       WHERE c.json_metadata ->> 'app' LIKE $1
+         AND (
+           (c.parent_author = '' AND c.parent_permlink = $2
+            AND (c.json_metadata -> $2 ->> 'type') = 'paper')
+           OR
+           (c.json_metadata -> $2 ->> 'type') = 'review'
+         )`,
+      [`${config.appTag}/%`, config.appTag],
+    );
+    return result.rows.map((r: { author: string }) => r.author);
+  } catch (err) {
+    logger.warn({ err }, 'Failed to query active PEvO accounts');
+    return [];
+  }
+}
+
 /**
  * Get all accounts that have published at least one PEvO paper or review.
  * Cached as Set<string> with 1h TTL. Used for activity-gated voter weight (R9).
  */
 export async function getActiveAccounts(): Promise<Set<string>> {
-  const arr = await hafCache.getOrSet<string[]>('active_pevo_accounts', async () => {
-    const pool = getPool();
-    if (!pool) return [];
-
-    try {
-      const result = await pool.query(
-        `SELECT DISTINCT c.author
-         FROM ${T.comments} c
-         WHERE c.json_metadata ->> 'app' LIKE $1
-           AND (
-             (c.parent_author = '' AND c.parent_permlink = $2
-              AND (c.json_metadata -> $2 ->> 'type') = 'paper')
-             OR
-             (c.json_metadata -> $2 ->> 'type') = 'review'
-           )`,
-        [`${config.appTag}/%`, config.appTag],
-      );
-      return result.rows.map((r: { author: string }) => r.author);
-    } catch (err) {
-      logger.warn({ err }, 'Failed to query active PEvO accounts');
-      return [];
-    }
-  }, REPUTATION_CACHE_TTL, true);
+  const arr = await hafCache.getOrSet<string[]>('active_pevo_accounts', loadActiveAccounts, REPUTATION_CACHE_TTL, true);
   return new Set(arr);
+}
+
+/** Warm the active accounts cache at startup via periodic refresh. */
+export async function startActiveAccountsCache(): Promise<void> {
+  await hafCache.registerPeriodicRefresh('active_pevo_accounts', loadActiveAccounts, REPUTATION_CACHE_TTL);
+  logger.info('Active accounts cache loaded');
 }
 
 /**
@@ -433,59 +441,69 @@ export async function getUserStatsFromHiveApi(username: string): Promise<UserSta
 
 // ─── Weights ────────────────────────────────────────────────────
 
-export async function getReputationWeights(): Promise<ReputationWeights> {
-  return hafCache.getOrSet<ReputationWeights>('reputation_weights', async () => {
-    const pool = getPool();
-    if (!pool) return DEFAULT_REPUTATION_WEIGHTS;
+const WEIGHTS_TTL = 30 * 60_000;
 
-    let client: pg.PoolClient | undefined;
-    try {
-      client = await pool.connect();
-      await client.query('BEGIN');
-      await client.query('SET LOCAL statement_timeout = 2000');
+async function loadReputationWeights(): Promise<ReputationWeights> {
+  const pool = getPool();
+  if (!pool) return DEFAULT_REPUTATION_WEIGHTS;
 
-      const exists = await client.query(
-        `SELECT 1 FROM ${T.customJson} cj
-         WHERE cj.custom_id = $1
-           AND cj.json LIKE '%update_weights%'
-         LIMIT 1`,
-        [config.appTag],
-      );
+  let client: pg.PoolClient | undefined;
+  try {
+    client = await pool.connect();
+    await client.query('BEGIN');
+    await client.query('SET LOCAL statement_timeout = 2000');
 
-      if (exists.rows.length === 0) {
-        await client.query('COMMIT');
-        client.release();
-        return DEFAULT_REPUTATION_WEIGHTS;
-      }
+    const exists = await client.query(
+      `SELECT 1 FROM ${T.customJson} cj
+       WHERE cj.custom_id = $1
+         AND cj.json LIKE '%update_weights%'
+       LIMIT 1`,
+      [config.appTag],
+    );
 
-      await client.query('SET LOCAL statement_timeout = 5000');
-      const result = await client.query(
-        `SELECT cj.json FROM ${T.customJson} cj
-         WHERE cj.custom_id = $1
-           AND cj.json::jsonb ->> 'action' = 'update_weights'
-         ORDER BY cj.block_num DESC
-         LIMIT 1`,
-        [config.appTag],
-      );
+    if (exists.rows.length === 0) {
       await client.query('COMMIT');
       client.release();
-
-      if (result.rows.length === 0) return DEFAULT_REPUTATION_WEIGHTS;
-
-      const payload = typeof result.rows[0].json === 'string'
-        ? JSON.parse(result.rows[0].json)
-        : result.rows[0].json;
-
-      return { ...DEFAULT_REPUTATION_WEIGHTS, ...payload.weights };
-    } catch (err) {
-      if (client) {
-        await client.query('ROLLBACK').catch(() => {});
-        client.release();
-      }
-      logger.warn({ err }, 'Reputation weights query failed, using defaults');
       return DEFAULT_REPUTATION_WEIGHTS;
     }
-  }, 30 * 60_000, true);
+
+    await client.query('SET LOCAL statement_timeout = 5000');
+    const result = await client.query(
+      `SELECT cj.json FROM ${T.customJson} cj
+       WHERE cj.custom_id = $1
+         AND cj.json::jsonb ->> 'action' = 'update_weights'
+       ORDER BY cj.block_num DESC
+       LIMIT 1`,
+      [config.appTag],
+    );
+    await client.query('COMMIT');
+    client.release();
+
+    if (result.rows.length === 0) return DEFAULT_REPUTATION_WEIGHTS;
+
+    const payload = typeof result.rows[0].json === 'string'
+      ? JSON.parse(result.rows[0].json)
+      : result.rows[0].json;
+
+    return { ...DEFAULT_REPUTATION_WEIGHTS, ...payload.weights };
+  } catch (err) {
+    if (client) {
+      await client.query('ROLLBACK').catch(() => {});
+      client.release();
+    }
+    logger.warn({ err }, 'Reputation weights query failed, using defaults');
+    return DEFAULT_REPUTATION_WEIGHTS;
+  }
+}
+
+export async function getReputationWeights(): Promise<ReputationWeights> {
+  return hafCache.getOrSet<ReputationWeights>('reputation_weights', loadReputationWeights, WEIGHTS_TTL, true);
+}
+
+/** Warm the reputation weights cache at startup via periodic refresh. */
+export async function startReputationWeightsCache(): Promise<void> {
+  await hafCache.registerPeriodicRefresh('reputation_weights', loadReputationWeights, WEIGHTS_TTL);
+  logger.info('Reputation weights cache loaded');
 }
 
 // ─── Temporal Decay ─────────────────────────────────────────────

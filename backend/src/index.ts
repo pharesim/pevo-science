@@ -10,6 +10,8 @@ import { startBatchReputation, stopBatchReputation } from './reputation-batch.js
 import { disconnectRedis } from './redis.js';
 import { checkHiveNodes } from './hive.js';
 import { startRetractionCache } from './routes/papers.js';
+import { startActiveAccountsCache, startReputationWeightsCache } from './reputation.js';
+import { startWotThresholdCache } from './wot.js';
 import { startAccountClaimer, stopAccountClaimer } from './account-creation.js';
 import { startSignupCleanup, stopSignupCleanup } from './signup-cleanup.js';
 import { logger } from './logger.js';
@@ -34,8 +36,13 @@ let server: Server;
 
 initAppDb()
   .then(async () => {
-    // Start periodic cache refreshes before accepting traffic
-    await startRetractionCache();
+    // Warm expensive HAF caches before accepting traffic
+    await Promise.all([
+      startRetractionCache(),
+      startActiveAccountsCache(),
+      startReputationWeightsCache(),
+      startWotThresholdCache(),
+    ]);
 
     server = app.listen(config.port, () => {
       logger.info({ port: config.port, haf: isHafAvailable(), appDb: !!config.appDatabaseUrl }, 'PEvO backend started');

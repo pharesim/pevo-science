@@ -17,50 +17,60 @@ import { T, activeAccreditationsCteBody, activeVouchesCteBody, buildWith } from 
 const DEFAULT_WOT_THRESHOLD = 3;
 const MAX_REVOCATION_DEPTH = 20;
 
+const WOT_THRESHOLD_TTL = 30 * 60_000;
+
+async function loadWotThreshold(): Promise<number> {
+  const pool = getPool();
+  if (!pool) return DEFAULT_WOT_THRESHOLD;
+
+  let client: pg.PoolClient | undefined;
+  try {
+    // Use a short timeout — this scans the massive operation_custom_json_view
+    // table with text→jsonb casts. Fail fast and use default threshold.
+    client = await pool.connect();
+    await client.query('BEGIN');
+    await client.query('SET LOCAL statement_timeout = 5000');
+
+    const result = await client.query(
+      `SELECT json FROM ${T.customJson}
+       WHERE custom_id = $1
+         AND json::jsonb ->> 'action' = 'update_params'
+       ORDER BY block_num DESC
+       LIMIT 1`,
+      [config.appTag],
+    );
+    await client.query('COMMIT');
+    client.release();
+
+    if (result.rows.length === 0) return DEFAULT_WOT_THRESHOLD;
+
+    const payload = typeof result.rows[0].json === 'string'
+      ? JSON.parse(result.rows[0].json)
+      : result.rows[0].json;
+
+    return payload.params?.min_accreditations_for_wot ?? DEFAULT_WOT_THRESHOLD;
+  } catch (err) {
+    if (client) {
+      await client.query('ROLLBACK').catch(() => {});
+      client.release();
+    }
+    logger.warn({ err }, 'WoT threshold query failed, using default');
+    return DEFAULT_WOT_THRESHOLD;
+  }
+}
+
 /**
  * Get the current WoT threshold from on-chain platform params.
  * Falls back to the default (3) if not configured.
  */
 export async function getWotThreshold(): Promise<number> {
-  return hafCache.getOrSet<number>('wot_threshold', async () => {
-    const pool = getPool();
-    if (!pool) return DEFAULT_WOT_THRESHOLD;
+  return hafCache.getOrSet<number>('wot_threshold', loadWotThreshold, WOT_THRESHOLD_TTL, true);
+}
 
-    let client: pg.PoolClient | undefined;
-    try {
-      // Use a short timeout — this scans the massive operation_custom_json_view
-      // table with text→jsonb casts. Fail fast and use default threshold.
-      client = await pool.connect();
-      await client.query('BEGIN');
-      await client.query('SET LOCAL statement_timeout = 5000');
-
-      const result = await client.query(
-        `SELECT json FROM ${T.customJson}
-         WHERE custom_id = $1
-           AND json::jsonb ->> 'action' = 'update_params'
-         ORDER BY block_num DESC
-         LIMIT 1`,
-        [config.appTag],
-      );
-      await client.query('COMMIT');
-      client.release();
-
-      if (result.rows.length === 0) return DEFAULT_WOT_THRESHOLD;
-
-      const payload = typeof result.rows[0].json === 'string'
-        ? JSON.parse(result.rows[0].json)
-        : result.rows[0].json;
-
-      return payload.params?.min_accreditations_for_wot ?? DEFAULT_WOT_THRESHOLD;
-    } catch (err) {
-      if (client) {
-        await client.query('ROLLBACK').catch(() => {});
-        client.release();
-      }
-      logger.warn({ err }, 'WoT threshold query failed, using default');
-      return DEFAULT_WOT_THRESHOLD;
-    }
-  }, 30 * 60_000, true);
+/** Warm the WoT threshold cache at startup via periodic refresh. */
+export async function startWotThresholdCache(): Promise<void> {
+  await hafCache.registerPeriodicRefresh('wot_threshold', loadWotThreshold, WOT_THRESHOLD_TTL);
+  logger.info('WoT threshold cache loaded');
 }
 
 export interface VouchInfo {
