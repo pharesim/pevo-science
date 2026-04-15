@@ -36,15 +36,16 @@ let server: Server;
 
 initAppDb()
   .then(async () => {
-    // Warm expensive HAF caches before accepting traffic
-    await Promise.all([
-      startRetractionCache(),
-      startActiveAccountsCache(),
-      startReputationWeightsCache(),
-      startWotThresholdCache(),
-    ]);
+    // Start periodic cache refreshes before accepting traffic
+    await startRetractionCache();
 
     server = app.listen(config.port, () => {
+      // Warm expensive shared HAF caches in the background (non-blocking)
+      Promise.all([
+        startActiveAccountsCache(),
+        startReputationWeightsCache(),
+        startWotThresholdCache(),
+      ]).catch((err) => logger.warn({ err }, 'Background cache warmup failed'));
       logger.info({ port: config.port, haf: isHafAvailable(), appDb: !!config.appDatabaseUrl }, 'PEvO backend started');
 
       if (isHafAvailable()) {
