@@ -98,7 +98,7 @@ export function initSignInModal() {
             this._resolve(null);
             this._resolve = null;
           }
-          Alpine.store('router').navigate('/login');
+          Alpine.store('router').navigate('/login?pending=unverified');
           return;
         }
         this.emailError = err.message || this.$t('signIn.loginFailed');
