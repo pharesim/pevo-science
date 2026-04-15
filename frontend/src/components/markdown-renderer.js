@@ -32,12 +32,24 @@ function processMath(text) {
 }
 
 /**
+ * Convert markdown images inside HTML tags to <img> before marked runs.
+ * Hive editors commonly wrap images in <center> or <div> tags, which
+ * marked treats as raw HTML blocks and skips markdown parsing inside them.
+ */
+function preprocessHiveHtml(text) {
+  if (!text) return '';
+  return text.replace(/(<[^>]+>)\s*!\[([^\]]*)\]\(([^)]+)\)\s*(<\/[^>]+>)/g,
+    (_match, open, alt, src, close) => `${open}<img src="${src}" alt="${alt}">${close}`);
+}
+
+/**
  * Render markdown to sanitised HTML.
  */
 export function renderMarkdown(content) {
   if (!content) return '';
   const withMath = processMath(content);
-  const rawHtml = marked.parse(withMath, { breaks: true, gfm: true });
+  const preprocessed = preprocessHiveHtml(withMath);
+  const rawHtml = marked.parse(preprocessed, { breaks: true, gfm: true });
   return DOMPurify.sanitize(rawHtml, {
     ADD_TAGS: ['semantics', 'annotation', 'mrow', 'mi', 'mo', 'mn', 'msup', 'msub',
                'mfrac', 'mover', 'munder', 'msqrt', 'mtext', 'mspace', 'mtable',
