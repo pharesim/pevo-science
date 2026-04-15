@@ -18,7 +18,7 @@ export function initBlogPage() {
       this.loading = true;
       this.error = null;
       try {
-        const res = await fetchBlogPosts({ limit: 50 });
+        const res = await fetchBlogPosts({ limit: 20 });
         this.posts = res.data || [];
       } catch {
         this.error = this.$t('blog.errorLoading');

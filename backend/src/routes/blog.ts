@@ -31,9 +31,10 @@ function toBlogPost(d: { author: string; permlink: string; title: string; body: 
 }
 
 async function fetchBlogPosts(limit: number): Promise<BlogPost[]> {
+  // Hive API caps getDiscussions limit at 20
   const discussions = await hiveClient.database.getDiscussions('blog', {
     tag: config.blogAuthor,
-    limit: Math.min(limit, 100),
+    limit: Math.min(limit, 20),
   });
 
   return discussions
@@ -46,7 +47,7 @@ async function fetchBlogPosts(limit: number): Promise<BlogPost[]> {
 // ──────────────────────────────────────────────
 
 router.get('/', async (req: Request, res: Response) => {
-  const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string, 10) || 20));
+  const limit = Math.min(20, Math.max(1, parseInt(req.query.limit as string, 10) || 20));
 
   try {
     const posts = await hafCache.getOrSet(
