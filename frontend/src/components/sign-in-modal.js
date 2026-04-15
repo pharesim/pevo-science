@@ -91,6 +91,16 @@ export function initSignInModal() {
           Alpine.store('router').navigate(`/signup/verify?${params}`);
           return;
         }
+        if (err.code === 'PENDING_UNVERIFIED') {
+          this.open = false;
+          this.mode = 'choose';
+          if (this._resolve) {
+            this._resolve(null);
+            this._resolve = null;
+          }
+          Alpine.store('router').navigate('/login');
+          return;
+        }
         this.emailError = err.message || this.$t('signIn.loginFailed');
       } finally {
         this.emailLoading = false;

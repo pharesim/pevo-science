@@ -864,8 +864,7 @@
     "alreadySignedIn": "Je bent al ingelogd.",
     "goToPapers": "Naar publicaties",
     "checkEmail": "Controleer je e-mail",
-    "checkEmailDescription": "We hebben een verificatielink naar je e-mailadres gestuurd. Klik erop om je registratie te voltooien.",
-    "alreadyRegistered": "Er bestaat al een account met dit e-mailadres. Log in met je wachtwoord."
+    "checkEmailDescription": "We hebben een verificatielink naar je e-mailadres gestuurd. Klik erop om je registratie te voltooien."
   },
   "signIn": {
     "title": "Inloggen bij PEvO",

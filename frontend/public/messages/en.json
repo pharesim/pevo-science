@@ -868,8 +868,7 @@
     "alreadySignedIn": "You are already signed in.",
     "goToPapers": "Go to Papers",
     "checkEmail": "Check your email",
-    "checkEmailDescription": "We\u2019ve sent a verification link to your email. Click it to complete your registration.",
-    "alreadyRegistered": "An account with this email already exists. Please sign in with your password."
+    "checkEmailDescription": "We\u2019ve sent a verification link to your email. Click it to complete your registration."
   },
   "signIn": {
     "title": "Sign in to PEvO",

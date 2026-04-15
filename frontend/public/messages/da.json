@@ -857,8 +857,7 @@
     "alreadySignedIn": "Du er allerede logget ind.",
     "goToPapers": "Gå til publikationer",
     "checkEmail": "Tjek din e-mail",
-    "checkEmailDescription": "Vi har sendt et bekræftelseslink til din e-mail. Klik på det for at færdiggøre din registrering.",
-    "alreadyRegistered": "Der findes allerede en konto med denne e-mail. Log venligst ind med din adgangskode."
+    "checkEmailDescription": "Vi har sendt et bekræftelseslink til din e-mail. Klik på det for at færdiggøre din registrering."
   },
   "signIn": {
     "title": "Log ind på PEvO",

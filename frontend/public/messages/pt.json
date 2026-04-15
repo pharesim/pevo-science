@@ -857,8 +857,7 @@
     "alreadySignedIn": "Já tem sessão iniciada.",
     "goToPapers": "Ir para publicações",
     "checkEmail": "Verifique o seu e-mail",
-    "checkEmailDescription": "Enviámos uma ligação de verificação para o seu e-mail. Clique nela para concluir o registo.",
-    "alreadyRegistered": "Já existe uma conta com este e-mail. Por favor, inicie sessão com a sua palavra-passe."
+    "checkEmailDescription": "Enviámos uma ligação de verificação para o seu e-mail. Clique nela para concluir o registo."
   },
   "signIn": {
     "title": "Iniciar sessão no PEvO",

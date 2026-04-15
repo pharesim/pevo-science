@@ -1,5 +1,5 @@
 import Alpine from 'alpinejs';
-import { submitSignup, loginWithPassword } from '../api.js';
+import { submitSignup, loginWithPassword, resendVerification } from '../api.js';
 
 const MIN_PASSWORD = 10;
 
@@ -16,6 +16,8 @@ export function initSignupPage() {
     isSubmitting: false,
     submitted: false,
     error: null,
+    isResending: false,
+    resendSuccess: false,
 
     get isConnected() { return Alpine.store('auth').isConnected; },
 
@@ -51,29 +53,49 @@ export function initSignupPage() {
         this.submitted = true;
       } catch (err) {
         if (err.code === 'DUPLICATE' && this.email && this.password) {
-          // Already registered — try to log in with the provided credentials
-          try {
-            const res = await loginWithPassword(this.email.trim(), this.password);
-            const auth = Alpine.store('auth');
-            auth.loginFromResponse(res.data);
-            Alpine.store('router').navigate('/papers');
-            return;
-          } catch (loginErr) {
-            if (loginErr.code === 'PENDING_SIGNUP' && loginErr.data) {
-              const params = new URLSearchParams({
-                auth_token: loginErr.data.auth_token,
-                email: loginErr.data.email,
-              });
-              Alpine.store('router').navigate(`/signup/verify?${params}`);
-              return;
-            }
-            this.error = this.$t('signup.alreadyRegistered');
-          }
+          await this._resolveExistingAccount();
         } else {
           this.error = err.message;
         }
       } finally {
         this.isSubmitting = false;
+      }
+    },
+
+    async _resolveExistingAccount() {
+      try {
+        const res = await loginWithPassword(this.email.trim(), this.password);
+        const auth = Alpine.store('auth');
+        auth.loginFromResponse(res.data);
+        Alpine.store('router').navigate('/papers');
+      } catch (loginErr) {
+        if (loginErr.code === 'PENDING_SIGNUP' && loginErr.data) {
+          const params = new URLSearchParams({
+            auth_token: loginErr.data.auth_token,
+            email: loginErr.data.email,
+          });
+          Alpine.store('router').navigate(`/signup/verify?${params}`);
+        } else if (loginErr.code === 'PENDING_UNVERIFIED') {
+          this.submitted = true;
+        } else if (loginErr.code === 'SIGNUP_EXPIRED') {
+          // Account was deleted — re-submit will work now
+          this.error = loginErr.message;
+        } else {
+          Alpine.store('router').navigate('/login');
+        }
+      }
+    },
+
+    async handleResendVerification() {
+      if (this.isResending) return;
+      this.isResending = true;
+      try {
+        await resendVerification(this.email.trim(), this.password);
+        this.resendSuccess = true;
+      } catch (err) {
+        this.error = err.message;
+      } finally {
+        this.isResending = false;
       }
     },
 

@@ -857,8 +857,7 @@
     "alreadySignedIn": "您已登录。",
     "goToPapers": "浏览论文",
     "checkEmail": "请查收邮件",
-    "checkEmailDescription": "我们已向您的邮箱发送了验证链接，请点击链接完成注册。",
-    "alreadyRegistered": "该邮箱已注册账户。请使用您的密码登录。"
+    "checkEmailDescription": "我们已向您的邮箱发送了验证链接，请点击链接完成注册。"
   },
   "signIn": {
     "title": "登录 PEvO",

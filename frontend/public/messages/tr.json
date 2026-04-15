@@ -864,8 +864,7 @@
     "alreadySignedIn": "Zaten giriş yapmış durumdasınız.",
     "goToPapers": "Makalelere Git",
     "checkEmail": "E-postanızı kontrol edin",
-    "checkEmailDescription": "E-postanıza bir doğrulama bağlantısı gönderdik. Kaydınızı tamamlamak için bağlantıya tıklayın.",
-    "alreadyRegistered": "Bu e-posta adresiyle zaten bir hesap mevcut. Lütfen şifrenizle giriş yapın."
+    "checkEmailDescription": "E-postanıza bir doğrulama bağlantısı gönderdik. Kaydınızı tamamlamak için bağlantıya tıklayın."
   },
   "signIn": {
     "title": "PEvO'ya giriş yap",

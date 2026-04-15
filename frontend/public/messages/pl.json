@@ -857,8 +857,7 @@
     "alreadySignedIn": "Jesteś już zalogowany.",
     "goToPapers": "Przejdź do artykułów",
     "checkEmail": "Sprawdź swoją skrzynkę",
-    "checkEmailDescription": "Wysłaliśmy link weryfikacyjny na Twój adres e-mail. Kliknij go, aby dokończyć rejestrację.",
-    "alreadyRegistered": "Konto z tym adresem e-mail już istnieje. Zaloguj się za pomocą swojego hasła."
+    "checkEmailDescription": "Wysłaliśmy link weryfikacyjny na Twój adres e-mail. Kliknij go, aby dokończyć rejestrację."
   },
   "signIn": {
     "title": "Zaloguj się do PEvO",

@@ -3340,7 +3340,15 @@
               <svg class="w-8 h-8 text-pevo-green" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>
             </div>
             <h2 class="text-2xl font-bold text-ink mb-2" x-text="$t('signup.checkEmail')"></h2>
-            <p class="text-ink-muted" x-text="$t('signup.checkEmailDescription')"></p>
+            <p class="text-ink-muted mb-6" x-text="$t('signup.checkEmailDescription')"></p>
+            <div x-show="resendSuccess" class="bg-green-50 border border-green-200 rounded-lg p-4 mb-4">
+              <p class="text-green-700 text-sm" x-text="$t('login.verificationResent')"></p>
+            </div>
+            <button x-show="!resendSuccess" type="button" @click="handleResendVerification()" :disabled="isResending"
+                    class="text-sm text-pevo-teal hover:underline disabled:opacity-50">
+              <span x-show="!isResending" x-text="$t('login.resendVerification')"></span>
+              <span x-show="isResending" x-text="$t('login.resending')"></span>
+            </button>
           </div>
         </template>
       </div>
