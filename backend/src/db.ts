@@ -12,7 +12,7 @@ export function getPool(): pg.Pool | null {
 
   pool = new Pool({
     connectionString: config.hafDatabaseUrls[0],
-    max: 10,
+    max: 3,
     idleTimeoutMillis: 30_000,
     connectionTimeoutMillis: 5_000,
   });

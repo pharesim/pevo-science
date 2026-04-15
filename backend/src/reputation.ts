@@ -115,17 +115,23 @@ async function loadActiveAccounts(): Promise<string[]> {
   if (!pool) return [];
 
   try {
+    // Use UNION to avoid full-table scan: papers are found by parent_permlink (indexed),
+    // reviews are found by joining through their parent paper.
     const result = await pool.query(
-      `SELECT DISTINCT c.author
-       FROM ${T.comments} c
-       WHERE c.json_metadata ->> 'app' LIKE $1
-         AND (
-           (c.parent_author = '' AND c.parent_permlink = $2
-            AND (c.json_metadata -> $2 ->> 'type') = 'paper')
-           OR
-           (c.json_metadata -> $2 ->> 'type') = 'review'
-         )`,
-      [`${config.appTag}/%`, config.appTag],
+      `SELECT DISTINCT author FROM (
+         SELECT c.author FROM ${T.comments} c
+         WHERE c.parent_author = '' AND c.parent_permlink = $1
+           AND (c.json_metadata -> $1 ->> 'type') IN ('paper', 'bridge_paper')
+           AND c.json_metadata ->> 'app' LIKE $2
+         UNION ALL
+         SELECT c.author FROM ${T.comments} c
+         JOIN ${T.comments} p ON p.author = c.parent_author AND p.permlink = c.parent_permlink
+         WHERE p.parent_author = '' AND p.parent_permlink = $1
+           AND p.json_metadata ->> 'app' LIKE $2
+           AND (c.json_metadata -> $1 ->> 'type') = 'review'
+           AND c.json_metadata ->> 'app' LIKE $2
+       ) t`,
+      [config.appTag, `${config.appTag}/%`],
     );
     return result.rows.map((r: { author: string }) => r.author);
   } catch (err) {
