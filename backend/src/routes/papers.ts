@@ -163,9 +163,11 @@ async function fetchPapersFromHaf(req: Request): Promise<{ rows: unknown[]; tota
     const batchScores = await getBatchReputationScores(authors);
     const accreditedSet = await getAccreditedSet(authors);
 
+    const allAccredited = await getAllAccreditedAccounts();
     const rows = dataResult.rows.map((r: Record<string, unknown>) => {
       const meta = parseMeta(r.json_metadata);
       const pevo = safePevoMeta(meta);
+      const pevoAuthors: Array<{ hive?: string }> = (pevo.authors || []) as Array<{ hive?: string }>;
       return {
         author: r.author,
         permlink: r.permlink,
@@ -173,7 +175,7 @@ async function fetchPapersFromHaf(req: Request): Promise<{ rows: unknown[]; tota
         abstract: r.abstract,
         discipline: pevo.discipline || null,
         keywords: pevo.keywords || [],
-        authors: pevo.authors || [],
+        authors: pevoAuthors,
         ipfs_cid: pevo.ipfs_cid || null,
         created: r.created,
         net_votes: r.net_votes,
@@ -181,6 +183,9 @@ async function fetchPapersFromHaf(req: Request): Promise<{ rows: unknown[]; tota
         citation_count: (r.citation_count as number) ?? 0,
         author_reputation: batchScores.get(r.author as string) ?? 0,
         is_accredited: accreditedSet.has(r.author as string),
+        accredited_authors: pevoAuthors
+          .filter(a => a.hive && allAccredited.has(a.hive))
+          .map(a => a.hive!),
       };
     });
 
@@ -240,13 +245,17 @@ async function fetchPapersFromHiveApi(req: Request): Promise<{ rows: unknown[]; 
 
     // Enrich with accreditation and batch reputation (no on-demand computation)
     const authorNames = rows.map((r) => r.author);
-    const [accreditedSet, batchScores] = await Promise.all([
+    const [accreditedSet, batchScores, allAccredited] = await Promise.all([
       getAccreditedSet(authorNames),
       getBatchReputationScores(authorNames),
+      getAllAccreditedAccounts(),
     ]);
     for (const row of rows) {
       row.is_accredited = accreditedSet.has(row.author);
       row.author_reputation = batchScores.get(row.author) ?? 0;
+      row.accredited_authors = (row.authors as Array<{ hive?: string }>)
+        .filter(a => a.hive && allAccredited.has(a.hive))
+        .map(a => a.hive!);
     }
 
     return { rows, total: rows.length };

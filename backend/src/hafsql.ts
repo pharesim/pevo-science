@@ -210,7 +210,7 @@ export async function getGenesisBlock(pool: { query: (sql: string, params: unkno
 
   // Fallback: use current head block — nothing PEvO-related can exist before now
   try {
-    const headResult = await pool.query(`SELECT MAX(block_num) AS head FROM ${T.blocks}`);
+    const headResult = await pool.query(`SELECT MAX(block_num) AS head FROM ${T.blocks}`, []);
     const head = Number(headResult.rows[0]?.head);
     if (head && head > 0) {
       genesisBlock = head;

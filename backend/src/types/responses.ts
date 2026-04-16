@@ -28,6 +28,7 @@ export interface PaperSummary {
   citation_count: number;
   author_reputation: number;
   is_accredited: boolean;
+  accredited_authors: string[];
   source_type: "native" | "arxiv" | "crossref";
 }
 

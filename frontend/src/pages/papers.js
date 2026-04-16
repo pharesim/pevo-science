@@ -93,14 +93,21 @@ const template = `
                     </h3>
 
                     <!-- Authors -->
-                    <div class="flex flex-wrap items-center gap-x-2 gap-y-1 mb-3">
-                      <p class="text-sm text-ink-light" x-text="paper.authors.map(a => a.name).join(', ')"></p>
-                      <template x-if="paper.is_accredited">
-                        <span class="badge-accredited" :title="$t('badge.accreditedTitle')">
-                          <svg class="mr-1 h-3 w-3" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                            <path fill-rule="evenodd" d="M16.403 12.652a3 3 0 010-5.304 3 3 0 00-3.75-3.751 3 3 0 00-5.305 0 3 3 0 00-3.751 3.75 3 3 0 000 5.305 3 3 0 003.75 3.751 3 3 0 005.305 0 3 3 0 003.751-3.75zm-2.546-4.46a.75.75 0 00-1.214-.882l-3.483 4.79-1.88-1.88a.75.75 0 10-1.06 1.061l2.5 2.5a.75.75 0 001.137-.089l4-5.5z" clip-rule="evenodd" />
-                          </svg>
-                          <span x-text="$t('badge.accredited')"></span>
+                    <div class="flex flex-wrap items-center gap-x-2 gap-y-1 mb-3 text-sm text-ink-light">
+                      <template x-for="(a, i) in paper.authors" :key="a.hive || a.name">
+                        <span class="inline-flex items-center">
+                          <template x-if="a.hive && (paper.accredited_authors || []).includes(a.hive)">
+                            <span class="inline-flex items-center">
+                              <a :href="$lp('/profile/' + a.hive)" @click.prevent="navigate('/profile/' + a.hive)" class="no-underline hover:underline text-ink-light" x-text="a.name"></a>
+                              <svg class="ml-0.5 h-3 w-3 text-pevo-green" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true" :title="$t('badge.accreditedTitle')">
+                                <path fill-rule="evenodd" d="M16.403 12.652a3 3 0 010-5.304 3 3 0 00-3.75-3.751 3 3 0 00-5.305 0 3 3 0 00-3.751 3.75 3 3 0 000 5.305 3 3 0 003.75 3.751 3 3 0 005.305 0 3 3 0 003.751-3.75zm-2.546-4.46a.75.75 0 00-1.214-.882l-3.483 4.79-1.88-1.88a.75.75 0 10-1.06 1.061l2.5 2.5a.75.75 0 001.137-.089l4-5.5z" clip-rule="evenodd" />
+                              </svg>
+                            </span>
+                          </template>
+                          <template x-if="!a.hive || !(paper.accredited_authors || []).includes(a.hive)">
+                            <span x-text="a.name"></span>
+                          </template>
+                          <span x-show="i < paper.authors.length - 1" class="mr-1">,</span>
                         </span>
                       </template>
                     </div>

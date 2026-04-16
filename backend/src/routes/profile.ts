@@ -5,6 +5,8 @@ import { hiveClient } from '../hive.js';
 import { config } from '../config.js';
 import { sendOk, sendError } from '../response.js';
 import { parseMeta, isPevoPaper, isPevoReview, parsePageLimit, parseOrder, toPaperSummary } from '../helpers.js';
+import { getAccreditedSet, getAllAccreditedAccounts } from '../accreditation.js';
+import { getBatchReputationScores } from '../reputation.js';
 import { logger } from '../logger.js';
 import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';
 import { validate } from '../validation.js';
@@ -232,6 +234,23 @@ router.get('/:username/papers', async (req: Request, res: Response) => {
 
     return { rows: [], total: 0 };
   });
+
+  // Enrich with accreditation and reputation
+  if (result.rows.length > 0) {
+    const authorNames = result.rows.map((r) => r.author);
+    const [accreditedSet, batchScores, allAccredited] = await Promise.all([
+      getAccreditedSet(authorNames),
+      getBatchReputationScores(authorNames),
+      getAllAccreditedAccounts(),
+    ]);
+    for (const row of result.rows) {
+      row.is_accredited = accreditedSet.has(row.author);
+      row.author_reputation = batchScores.get(row.author) ?? 0;
+      row.accredited_authors = (row.authors || [])
+        .filter((a) => a.hive && allAccredited.has(a.hive))
+        .map((a) => a.hive!);
+    }
+  }
 
   sendOk(res, result.rows, { page, limit, total: result.total });
 });
