@@ -106,6 +106,7 @@ export interface PaperEnrichment {
   reviews: ReviewInPaper[];
   citation_count: number;
   is_accredited: boolean;
+  accredited_authors: string[];
   versions?: PaperVersion[];
   is_retracted?: boolean;
   retraction_reason?: string | null;

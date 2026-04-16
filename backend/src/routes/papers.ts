@@ -328,7 +328,8 @@ router.get('/batch-counts', async (req: Request, res: Response) => {
     let paramIdx = cte.nextIdx;
     const appTagParam = `$${paramIdx++}`;
     const appLikeParam = `$${paramIdx++}`;
-    const queryParams: unknown[] = [...cte.params, config.appTag, `${config.appTag}/%`];
+    const anonParam = `$${paramIdx++}`;
+    const queryParams: unknown[] = [...cte.params, config.appTag, `${config.appTag}/%`, config.hiveAnonAccount || ''];
 
     // Build VALUES list for the paper pairs
     const valueEntries: string[] = [];
@@ -344,10 +345,10 @@ router.get('/batch-counts', async (req: Request, res: Response) => {
         tp.author, tp.permlink,
         COALESCE((
           SELECT count(*)::int FROM ${T.comments} r
-          JOIN active_accreditations aa ON aa.account = r.author
           WHERE r.parent_author = tp.author AND r.parent_permlink = tp.permlink
             AND (r.json_metadata -> ${appTagParam} ->> 'type') = 'review'
             AND r.json_metadata ->> 'app' LIKE ${appLikeParam}
+            AND (EXISTS (SELECT 1 FROM active_accreditations aa WHERE aa.account = r.author) OR r.author = ${anonParam})
         ), 0) AS review_count,
         COALESCE((
           SELECT count(*)::int FROM ${T.comments} ci
@@ -927,12 +928,12 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string) {
       // Reviews from accredited reviewers (+ anon account) with accredited vote count
       pool.query(
         `SELECT c.author, c.permlink, c.body, c.json_metadata, c.created,
-                (SELECT count(*)::int FROM (
+                (SELECT COALESCE(SUM(CASE WHEN lv.weight > 0 THEN 1 WHEN lv.weight < 0 THEN -1 ELSE 0 END), 0)::int FROM (
                    SELECT DISTINCT ON (v.voter) v.weight FROM ${T.voteOps} v
                    WHERE v.author = c.author AND v.permlink = c.permlink
                      AND v.voter = ANY($5::text[]) AND v.voter != v.author
                    ORDER BY v.voter, v.block_num DESC
-                 ) lv WHERE lv.weight > 0) AS net_votes
+                 ) lv WHERE lv.weight != 0) AS net_votes
          FROM ${T.comments} c
          WHERE c.parent_author = $1 AND c.parent_permlink = $2
            AND c.author = ANY($6::text[])
@@ -1077,7 +1078,7 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string) {
       // Vote predates latest content revision with no post-revision re-vote
       return { voter, weight: nativeWeight, stale: true, effective_weight: 0 };
     });
-    const net_votes = voters.filter((v) => v.effective_weight > 0).length;
+    const net_votes = voters.reduce((sum, v) => sum + (v.effective_weight > 0 ? 1 : v.effective_weight < 0 ? -1 : 0), 0);
 
     // AUTH-1: Per-author accreditation from post metadata
     const postMeta = postMetaResult.rows[0] ? parseMeta(postMetaResult.rows[0].json_metadata) : {};
@@ -1143,7 +1144,7 @@ async function fetchEnrichmentFromHiveApi(author: string, permlink: string) {
     const voters = activeVotes
       .filter((v) => accreditedAccounts.has(v.voter) && v.voter !== author)
       .map((v) => ({ voter: v.voter, weight: v.percent, stale: false, effective_weight: v.percent }));
-    const netVotes = voters.filter((v) => v.weight > 0).length;
+    const netVotes = voters.reduce((sum, v) => sum + (v.weight > 0 ? 1 : v.weight < 0 ? -1 : 0), 0);
 
     // AUTH-1: Per-author accreditation from post metadata
     const postMeta = parseMeta(post.json_metadata);

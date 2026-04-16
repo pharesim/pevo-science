@@ -495,7 +495,8 @@ List PEvO papers with filtering and sorting.
   "review_count": 3,
   "citation_count": 7,
   "author_reputation": 68,
-  "is_accredited": true
+  "is_accredited": true,
+  "accredited_authors": ["scientist1"]
 }
 ```
 
@@ -539,6 +540,7 @@ Single paper with full content and reviews.
   "citation_count": 7,
   "author_reputation": 68,
   "is_accredited": true,
+  "accredited_authors": ["scientist1"],
   "reviews": [
     {
       "author": "reviewer1",

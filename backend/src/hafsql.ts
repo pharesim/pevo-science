@@ -244,13 +244,13 @@ export function getCachedGenesisBlock(): number {
  * @param permlinkExpr - SQL expression for the permlink (e.g., 'c.permlink')
  */
 export function accreditedVoteCount(authorExpr: string, permlinkExpr: string): string {
-  return `(SELECT count(*)::int FROM (
+  return `(SELECT COALESCE(SUM(CASE WHEN lv.weight > 0 THEN 1 WHEN lv.weight < 0 THEN -1 ELSE 0 END), 0)::int FROM (
     SELECT DISTINCT ON (v.voter) v.weight FROM ${T.voteOps} v
     JOIN active_accreditations aa ON aa.account = v.voter
     WHERE v.author = ${authorExpr} AND v.permlink = ${permlinkExpr}
       AND v.voter != ${authorExpr}
     ORDER BY v.voter, v.block_num DESC
-  ) lv WHERE lv.weight > 0)`;
+  ) lv WHERE lv.weight != 0)`;
 }
 
 /**
