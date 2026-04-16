@@ -287,7 +287,18 @@
     "checkEmail": "Controleer uw e-mail voor de verificatielink.",
     "tryAgain": "Opnieuw proberen",
     "needHelp": "Problemen met accreditatie?",
-    "contactUs": "Neem contact met ons op voor hulp"
+    "contactUs": "Neem contact met ons op voor hulp",
+    "statusTitle": "U bent geaccrediteerd",
+    "statusName": "Naam",
+    "statusInstitution": "Instelling",
+    "statusField": "Vakgebied",
+    "statusMethod": "Verificatiemethode",
+    "statusSince": "Geaccrediteerd sinds",
+    "vouchTitle": "Help collega's geaccrediteerd te worden",
+    "vouchDescription": "Geaccrediteerde onderzoekers kunnen instaan voor collega's die geen institutioneel e-mailadres hebben. Zoek ze op gebruikersnaam en bezoek hun profiel om in te staan.",
+    "searchPlaceholder": "Zoek op gebruikersnaam...",
+    "searching": "Zoeken...",
+    "noResults": "Geen accounts gevonden."
   },
   "researchers": {
     "title": "Geaccrediteerde onderzoekers",

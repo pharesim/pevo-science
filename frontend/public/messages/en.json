@@ -296,8 +296,10 @@
     "statusMethod": "Verification method",
     "statusSince": "Accredited since",
     "vouchTitle": "Help colleagues get accredited",
-    "vouchDescription": "Accredited researchers can vouch for colleagues who do not have an institutional email. Visit their profile page to vouch.",
-    "browseResearchers": "Browse researchers"
+    "vouchDescription": "Accredited researchers can vouch for colleagues who do not have an institutional email. Find them by username and visit their profile to vouch.",
+    "searchPlaceholder": "Search by username...",
+    "searching": "Searching...",
+    "noResults": "No accounts found."
   },
   "researchers": {
     "title": "Accredited Researchers",

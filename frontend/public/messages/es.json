@@ -287,7 +287,18 @@
     "checkEmail": "Revise su correo electrónico para encontrar el enlace de verificación.",
     "tryAgain": "Intentar de nuevo",
     "needHelp": "Having trouble with accreditation?",
-    "contactUs": "Contact us for help"
+    "contactUs": "Contact us for help",
+    "statusTitle": "Usted está acreditado",
+    "statusName": "Nombre",
+    "statusInstitution": "Institución",
+    "statusField": "Campo",
+    "statusMethod": "Método de verificación",
+    "statusSince": "Acreditado desde",
+    "vouchTitle": "Ayude a sus colegas a acreditarse",
+    "vouchDescription": "Los investigadores acreditados pueden avalar a colegas que no tienen un correo electrónico institucional. Búsquelos por nombre de usuario y visite su perfil para avalarlos.",
+    "searchPlaceholder": "Buscar por nombre de usuario...",
+    "searching": "Buscando...",
+    "noResults": "No se encontraron cuentas."
   },
   "researchers": {
     "title": "Investigadores acreditados",

@@ -287,7 +287,18 @@
     "checkEmail": "Verifique seu email para o link de verificacao.",
     "tryAgain": "Tentar Novamente",
     "needHelp": "Having trouble with accreditation?",
-    "contactUs": "Contact us for help"
+    "contactUs": "Contact us for help",
+    "statusTitle": "Você está credenciado",
+    "statusName": "Nome",
+    "statusInstitution": "Instituição",
+    "statusField": "Área",
+    "statusMethod": "Método de verificação",
+    "statusSince": "Credenciado desde",
+    "vouchTitle": "Ajude colegas a se credenciarem",
+    "vouchDescription": "Pesquisadores credenciados podem atestar por colegas que não possuem e-mail institucional. Pesquise pelo nome de usuário e visite o perfil para atestar.",
+    "searchPlaceholder": "Pesquisar por nome de usuário...",
+    "searching": "Pesquisando...",
+    "noResults": "Nenhuma conta encontrada."
   },
   "researchers": {
     "title": "Pesquisadores Credenciados",

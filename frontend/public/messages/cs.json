@@ -287,7 +287,18 @@
     "checkEmail": "Zkontrolujte svůj e-mail pro ověřovací odkaz.",
     "tryAgain": "Zkusit znovu",
     "needHelp": "Having trouble with accreditation?",
-    "contactUs": "Contact us for help"
+    "contactUs": "Contact us for help",
+    "statusTitle": "Jste akreditováni",
+    "statusName": "Jméno",
+    "statusInstitution": "Instituce",
+    "statusField": "Obor",
+    "statusMethod": "Metoda ověření",
+    "statusSince": "Akreditováno od",
+    "vouchTitle": "Pomozte kolegům získat akreditaci",
+    "vouchDescription": "Akreditovaní výzkumníci mohou ručit za kolegy, kteří nemají institucionální e-mail. Vyhledejte je podle uživatelského jména a navštivte jejich profil, abyste za ně ručili.",
+    "searchPlaceholder": "Hledat podle uživatelského jména...",
+    "searching": "Vyhledávání...",
+    "noResults": "Nebyly nalezeny žádné účty."
   },
   "researchers": {
     "title": "Akreditovaní výzkumníci",

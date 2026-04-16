@@ -287,7 +287,18 @@
     "checkEmail": "ایمیل خود را برای لینک تاییدیه بررسی کنید.",
     "tryAgain": "تلاش مجدد",
     "needHelp": "Having trouble with accreditation?",
-    "contactUs": "Contact us for help"
+    "contactUs": "Contact us for help",
+    "statusTitle": "شما اعتبارسنجی شده‌اید",
+    "statusName": "نام",
+    "statusInstitution": "موسسه",
+    "statusField": "رشته",
+    "statusMethod": "روش تایید",
+    "statusSince": "اعتبارسنجی شده از",
+    "vouchTitle": "به همکاران خود برای اعتبارسنجی کمک کنید",
+    "vouchDescription": "پژوهشگران اعتبارسنجی‌شده می‌توانند برای همکارانی که ایمیل سازمانی ندارند ضمانت کنند. با نام کاربری جستجو کنید و برای ضمانت به پروفایل آن‌ها مراجعه کنید.",
+    "searchPlaceholder": "جستجو بر اساس نام کاربری...",
+    "searching": "در حال جستجو...",
+    "noResults": "هیچ حسابی یافت نشد."
   },
   "researchers": {
     "title": "پژوهشگران معتبر",

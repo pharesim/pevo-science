@@ -287,7 +287,18 @@
     "checkEmail": "Tjek din e-mail for verifikationslinket.",
     "tryAgain": "Prøv igen",
     "needHelp": "Having trouble with accreditation?",
-    "contactUs": "Contact us for help"
+    "contactUs": "Contact us for help",
+    "statusTitle": "Du er akkrediteret",
+    "statusName": "Navn",
+    "statusInstitution": "Institution",
+    "statusField": "Fagområde",
+    "statusMethod": "Verificeringsmetode",
+    "statusSince": "Akkrediteret siden",
+    "vouchTitle": "Hjælp kolleger med at blive akkrediteret",
+    "vouchDescription": "Akkrediterede forskere kan gå i god for kolleger, der ikke har en institutionel e-mailadresse. Søg efter brugernavn og besøg deres profil for at gå i god.",
+    "searchPlaceholder": "Søg efter brugernavn...",
+    "searching": "Søger...",
+    "noResults": "Ingen konti fundet."
   },
   "researchers": {
     "title": "Akkrediterede forskere",

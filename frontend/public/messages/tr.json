@@ -287,7 +287,18 @@
     "checkEmail": "Doğrulama bağlantısı için e-postanızı kontrol edin.",
     "tryAgain": "Tekrar Dene",
     "needHelp": "Akreditasyonla ilgili sorun mu yaşıyorsunuz?",
-    "contactUs": "Yardım için bize ulaşın"
+    "contactUs": "Yardım için bize ulaşın",
+    "statusTitle": "Akredite oldunuz",
+    "statusName": "Ad",
+    "statusInstitution": "Kurum",
+    "statusField": "Alan",
+    "statusMethod": "Doğrulama yöntemi",
+    "statusSince": "Akredite olma tarihi",
+    "vouchTitle": "Meslektaşlarınızın akredite olmasına yardım edin",
+    "vouchDescription": "Akredite araştırmacılar, kurumsal e-postası olmayan meslektaşları için kefil olabilir. Kullanıcı adına göre arayın ve kefil olmak için profillerini ziyaret edin.",
+    "searchPlaceholder": "Kullanıcı adına göre ara...",
+    "searching": "Aranıyor...",
+    "noResults": "Hesap bulunamadı."
   },
   "researchers": {
     "title": "Akredite Araştırmacılar",

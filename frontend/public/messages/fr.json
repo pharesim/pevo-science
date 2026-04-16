@@ -287,7 +287,18 @@
     "checkEmail": "Consultez vos e-mails pour le lien de vérification.",
     "tryAgain": "Réessayer",
     "needHelp": "Having trouble with accreditation?",
-    "contactUs": "Contact us for help"
+    "contactUs": "Contact us for help",
+    "statusTitle": "Vous êtes accrédité",
+    "statusName": "Nom",
+    "statusInstitution": "Institution",
+    "statusField": "Domaine",
+    "statusMethod": "Méthode de vérification",
+    "statusSince": "Accrédité depuis",
+    "vouchTitle": "Aidez vos collègues à s'accréditer",
+    "vouchDescription": "Les chercheurs accrédités peuvent se porter garants de collègues qui n'ont pas d'adresse e-mail institutionnelle. Recherchez-les par nom d'utilisateur et visitez leur profil pour les parrainer.",
+    "searchPlaceholder": "Rechercher par nom d'utilisateur...",
+    "searching": "Recherche en cours...",
+    "noResults": "Aucun compte trouvé."
   },
   "researchers": {
     "title": "Chercheurs accrédités",

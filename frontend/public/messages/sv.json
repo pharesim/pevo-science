@@ -287,7 +287,18 @@
     "checkEmail": "Kontrollera din e-post för verifieringslänken.",
     "tryAgain": "Försök igen",
     "needHelp": "Having trouble with accreditation?",
-    "contactUs": "Contact us for help"
+    "contactUs": "Contact us for help",
+    "statusTitle": "Du är ackrediterad",
+    "statusName": "Namn",
+    "statusInstitution": "Institution",
+    "statusField": "Ämnesområde",
+    "statusMethod": "Verifieringsmetod",
+    "statusSince": "Ackrediterad sedan",
+    "vouchTitle": "Hjälp kollegor att bli ackrediterade",
+    "vouchDescription": "Ackrediterade forskare kan gå i god för kollegor som inte har en institutionell e-postadress. Sök efter användarnamn och besök deras profil för att gå i god.",
+    "searchPlaceholder": "Sök efter användarnamn...",
+    "searching": "Söker...",
+    "noResults": "Inga konton hittades."
   },
   "researchers": {
     "title": "Ackrediterade forskare",

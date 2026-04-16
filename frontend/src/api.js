@@ -416,6 +416,13 @@ export function resetPassword(token, password) {
   });
 }
 
+// ─── Account Search ─────────────────────────────────────────────
+
+export async function searchAccounts(q) {
+  const res = await request(`/accounts/search?q=${encodeURIComponent(q)}&limit=5`);
+  return res.accounts;
+}
+
 // ─── Blog ───────────────────────────────────────────────────────
 
 export function fetchBlogPosts(params = {}) {

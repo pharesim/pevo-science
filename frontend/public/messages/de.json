@@ -287,7 +287,18 @@
     "checkEmail": "Prüfen Sie Ihren Posteingang auf den Verifizierungslink.",
     "tryAgain": "Erneut versuchen",
     "needHelp": "Having trouble with accreditation?",
-    "contactUs": "Contact us for help"
+    "contactUs": "Contact us for help",
+    "statusTitle": "Sie sind akkreditiert",
+    "statusName": "Name",
+    "statusInstitution": "Institution",
+    "statusField": "Fachgebiet",
+    "statusMethod": "Verifizierungsmethode",
+    "statusSince": "Akkreditiert seit",
+    "vouchTitle": "Helfen Sie Kollegen bei der Akkreditierung",
+    "vouchDescription": "Akkreditierte Forschende können für Kollegen bürgen, die keine institutionelle E-Mail-Adresse haben. Suchen Sie nach Benutzernamen und besuchen Sie deren Profil, um zu bürgen.",
+    "searchPlaceholder": "Nach Benutzername suchen...",
+    "searching": "Suche läuft...",
+    "noResults": "Keine Konten gefunden."
   },
   "researchers": {
     "title": "Akkreditierte Forschende",

@@ -1,5 +1,5 @@
 import Alpine from 'alpinejs';
-import { requestAccreditation, startOrcidVerification } from '../api.js';
+import { requestAccreditation, startOrcidVerification, searchAccounts } from '../api.js';
 import { formatDate } from '../components/paper-card.js';
 
 const template = `
@@ -65,7 +65,29 @@ const template = `
             <div class="mt-6 pt-4 border-t border-parchment-dark">
               <h3 class="text-sm font-semibold text-ink mb-1" x-text="$t('accreditation.vouchTitle')"></h3>
               <p class="text-sm text-ink-muted mb-3" x-text="$t('accreditation.vouchDescription')"></p>
-              <a :href="$lp('/researchers')" @click.prevent="navigate('/researchers')" class="btn-secondary text-sm" x-text="$t('accreditation.browseResearchers')"></a>
+
+              <div class="relative">
+                <div class="relative">
+                  <svg class="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-ink-muted pointer-events-none" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M9 3.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM2 9a7 7 0 1112.452 4.391l3.328 3.329a.75.75 0 11-1.06 1.06l-3.329-3.328A7 7 0 012 9z" clip-rule="evenodd" /></svg>
+                  <input type="text" class="select-control pl-9" :placeholder="$t('accreditation.searchPlaceholder')" x-model="vouchQuery" @input="searchColleagues()" />
+                </div>
+
+                <p x-show="vouchSearching" class="text-xs text-ink-muted mt-2" x-text="$t('accreditation.searching')"></p>
+
+                <ul x-show="vouchResults.length > 0 && vouchQuery.length >= 2" class="mt-2 border border-parchment-dark rounded-lg divide-y divide-parchment-dark overflow-hidden">
+                  <template x-for="account in vouchResults" :key="account.username">
+                    <li>
+                      <a :href="$lp('/profile/' + account.username)" @click.prevent="navigate('/profile/' + account.username)" class="flex items-center gap-3 px-3 py-2 hover:bg-parchment-dark/50 transition-colors cursor-pointer">
+                        <img :src="'https://images.hive.blog/u/' + account.username + '/avatar/small'" class="w-8 h-8 rounded-full object-cover shrink-0" :alt="account.username" @error="avatarFallback($event, account.username)" />
+                        <span class="text-sm text-ink" x-text="account.username"></span>
+                        <svg x-show="account.is_accredited" class="h-4 w-4 text-pevo-green-dark shrink-0" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.857-9.809a.75.75 0 00-1.214-.882l-3.483 4.79-1.88-1.88a.75.75 0 10-1.06 1.061l2.5 2.5a.75.75 0 001.137-.089l4-5.5z" clip-rule="evenodd" /></svg>
+                      </a>
+                    </li>
+                  </template>
+                </ul>
+
+                <p x-show="vouchQuery.length >= 2 && !vouchSearching && vouchResults.length === 0 && vouchSearched" class="text-xs text-ink-muted mt-2" x-text="$t('accreditation.noResults')"></p>
+              </div>
             </div>
           </div>
         </template>
@@ -166,6 +188,12 @@ export function initAccreditationPage() {
     errorMessage: '',
     orcidLoading: false,
 
+    vouchQuery: '',
+    vouchResults: [],
+    vouchSearching: false,
+    vouchSearched: false,
+    vouchDebounce: null,
+
     navigate(path) { Alpine.store('router').navigate(path); },
     get isConnected() { return Alpine.store('auth').isConnected; },
     get username() { return Alpine.store('auth').username; },
@@ -179,6 +207,32 @@ export function initAccreditationPage() {
       if (method === 'orcid') return 'ORCID';
       if (method === 'wot') return 'Web of Trust';
       return method || '';
+    },
+
+    searchColleagues() {
+      clearTimeout(this.vouchDebounce);
+      const q = this.vouchQuery.trim();
+      if (q.length < 2) {
+        this.vouchResults = [];
+        this.vouchSearched = false;
+        return;
+      }
+      this.vouchDebounce = setTimeout(async () => {
+        this.vouchSearching = true;
+        try {
+          this.vouchResults = await searchAccounts(q);
+        } catch {
+          this.vouchResults = [];
+        }
+        this.vouchSearching = false;
+        this.vouchSearched = true;
+      }, 300);
+    },
+
+    avatarFallback(event, username) {
+      const letter = username.charAt(0).toUpperCase();
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><rect width="32" height="32" rx="16" fill="%23d4c9a8"/><text x="50%" y="50%" dy=".35em" text-anchor="middle" font-size="14" fill="%23666" font-family="sans-serif">${letter}</text></svg>`;
+      event.target.src = `data:image/svg+xml,${svg}`;
     },
 
     async handleConnect() {

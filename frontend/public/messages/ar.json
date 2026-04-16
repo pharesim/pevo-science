@@ -287,7 +287,18 @@
     "checkEmail": "تحقّق من بريدك الإلكتروني للحصول على رابط التحقق.",
     "tryAgain": "حاول مرة أخرى",
     "needHelp": "Having trouble with accreditation?",
-    "contactUs": "Contact us for help"
+    "contactUs": "Contact us for help",
+    "statusTitle": "أنت معتمد",
+    "statusName": "الاسم",
+    "statusInstitution": "المؤسسة",
+    "statusField": "المجال",
+    "statusMethod": "طريقة التحقق",
+    "statusSince": "معتمد منذ",
+    "vouchTitle": "ساعد زملاءك في الحصول على الاعتماد",
+    "vouchDescription": "يمكن للباحثين المعتمدين أن يشهدوا لزملاء ليس لديهم بريد إلكتروني مؤسسي. ابحث عنهم باسم المستخدم وقم بزيارة ملفهم الشخصي للشهادة.",
+    "searchPlaceholder": "البحث باسم المستخدم...",
+    "searching": "جارٍ البحث...",
+    "noResults": "لم يتم العثور على حسابات."
   },
   "researchers": {
     "title": "الباحثون المعتمدون",

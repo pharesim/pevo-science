@@ -287,7 +287,18 @@
     "checkEmail": "בדקו את הדוא\"ל שלכם לקישור האימות.",
     "tryAgain": "נסו שנית",
     "needHelp": "Having trouble with accreditation?",
-    "contactUs": "Contact us for help"
+    "contactUs": "Contact us for help",
+    "statusTitle": "הינך מוסמך",
+    "statusName": "שם",
+    "statusInstitution": "מוסד",
+    "statusField": "תחום",
+    "statusMethod": "שיטת אימות",
+    "statusSince": "מוסמך מאז",
+    "vouchTitle": "עזרו לעמיתים להתמסד",
+    "vouchDescription": "חוקרים מוסמכים יכולים לערוב לעמיתים שאין להם דוא\"ל מוסדי. חפשו לפי שם משתמש ובקרו בפרופיל שלהם כדי לערוב.",
+    "searchPlaceholder": "חיפוש לפי שם משתמש...",
+    "searching": "מחפש...",
+    "noResults": "לא נמצאו חשבונות."
   },
   "researchers": {
     "title": "חוקרים מוסמכים",

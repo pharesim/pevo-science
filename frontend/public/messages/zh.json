@@ -287,7 +287,18 @@
     "checkEmail": "请查收您的邮箱以获取验证链接。",
     "tryAgain": "重试",
     "needHelp": "Having trouble with accreditation?",
-    "contactUs": "Contact us for help"
+    "contactUs": "Contact us for help",
+    "statusTitle": "您已获得认证",
+    "statusName": "姓名",
+    "statusInstitution": "机构",
+    "statusField": "领域",
+    "statusMethod": "验证方式",
+    "statusSince": "认证时间",
+    "vouchTitle": "帮助同事获得认证",
+    "vouchDescription": "已认证的研究人员可以为没有机构电子邮件的同事担保。按用户名搜索并访问他们的个人资料进行担保。",
+    "searchPlaceholder": "按用户名搜索...",
+    "searching": "搜索中...",
+    "noResults": "未找到账户。"
   },
   "researchers": {
     "title": "已认证研究人员",

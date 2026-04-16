@@ -287,7 +287,18 @@
     "checkEmail": "Sprawdź swoją skrzynkę e-mail - link weryfikacyjny został wysłany.",
     "tryAgain": "Spróbuj ponownie",
     "needHelp": "Having trouble with accreditation?",
-    "contactUs": "Contact us for help"
+    "contactUs": "Contact us for help",
+    "statusTitle": "Jesteś akredytowany",
+    "statusName": "Imię i nazwisko",
+    "statusInstitution": "Instytucja",
+    "statusField": "Dziedzina",
+    "statusMethod": "Metoda weryfikacji",
+    "statusSince": "Akredytowany od",
+    "vouchTitle": "Pomóż kolegom uzyskać akredytację",
+    "vouchDescription": "Akredytowani badacze mogą poręczyć za kolegów, którzy nie mają instytucjonalnego adresu e-mail. Wyszukaj ich po nazwie użytkownika i odwiedź ich profil, aby poręczyć.",
+    "searchPlaceholder": "Szukaj po nazwie użytkownika...",
+    "searching": "Wyszukiwanie...",
+    "noResults": "Nie znaleziono kont."
   },
   "researchers": {
     "title": "Akredytowani naukowcy",
