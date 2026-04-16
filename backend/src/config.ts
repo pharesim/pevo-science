@@ -53,6 +53,7 @@ export const config = {
   pevoBridgePostingKey: resolveBridgePostingKey(),
   custodyEncryptionKey: process.env.CUSTODY_ENCRYPTION_KEY || '',
   hiveOnboardAccount: process.env.HIVE_ONBOARD_ACCOUNT || hiveAdminAccount,
+  claimAccountTokens: (process.env.CLAIM_ACCOUNT_TOKENS || 'true').toLowerCase() !== 'false',
   anonReviewEncryptionKey: process.env.ANON_REVIEW_ENCRYPTION_KEY || '',
   anonReviewEncryptionKeyPrev: process.env.ANON_REVIEW_ENCRYPTION_KEY_PREV || '',
   anonReviewKeyVersion: parseInt(process.env.ANON_REVIEW_KEY_VERSION || '1', 10),

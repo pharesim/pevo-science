@@ -147,6 +147,10 @@ export async function createClaimedAccount(
  * Claims as many tokens as RC allows in each cycle.
  */
 export function startAccountClaimer(): void {
+  if (!config.claimAccountTokens) {
+    logger.info('Account token claiming disabled (CLAIM_ACCOUNT_TOKENS=false)');
+    return;
+  }
   if (!config.hiveOnboardAccount || !process.env.HIVE_ONBOARD_ACTIVE_KEY) {
     logger.info('Account claimer disabled — HIVE_ONBOARD_ACCOUNT or HIVE_ONBOARD_ACTIVE_KEY not set');
     return;
