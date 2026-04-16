@@ -21,6 +21,283 @@ function computeDiff(oldText, newText) {
   return dmp.patch_toText(patches);
 }
 
+const template = `
+      <div x-data="editPage" class="container-narrow py-8">
+        <!-- Loading state -->
+        <template x-if="loadingPaper">
+          <div class="card text-center py-12">
+            <div class="inline-block animate-spin rounded-full h-8 w-8 border-2 border-pevo-teal border-t-transparent mb-4"></div>
+            <p class="text-ink-muted" x-text="$t('edit.loadingPaper')"></p>
+          </div>
+        </template>
+
+        <!-- Load error -->
+        <template x-if="loadError">
+          <div class="card bg-pevo-crimson-light border-pevo-crimson/30 text-center py-8">
+            <p class="text-sm text-pevo-crimson font-medium" x-text="loadError"></p>
+            <button class="btn-secondary text-xs mt-3" @click="loadPaperData()" x-text="$t('common.retry')"></button>
+          </div>
+        </template>
+
+        <!-- Not authorized -->
+        <template x-if="!loadingPaper && !loadError && !isAuthorized">
+          <div class="card bg-pevo-crimson-light border-pevo-crimson/30 text-center py-8">
+            <p class="text-sm text-pevo-crimson font-medium" x-text="$t('edit.notAuthorized')"></p>
+            <a :href="$lp('/paper/' + author + '/' + permlink)" @click.prevent="navigate('/paper/' + author + '/' + permlink)"
+               class="btn-secondary text-xs mt-3 no-underline inline-block" x-text="$t('paperDetail.backToPapers')"></a>
+          </div>
+        </template>
+
+        <!-- Edit form -->
+        <template x-if="!loadingPaper && !loadError && isAuthorized && paper">
+          <div>
+            <a :href="$lp('/paper/' + (paper.canonical_author || paper.author) + '/' + (paper.canonical_permlink || paper.permlink))"
+               @click.prevent="navigate('/paper/' + (paper.canonical_author || paper.author) + '/' + (paper.canonical_permlink || paper.permlink))"
+               class="text-sm text-pevo-teal hover:text-pevo-teal-dark no-underline">&larr; <span x-text="$t('paperDetail.backToPapers')"></span></a>
+
+            <h1 class="text-3xl font-bold text-ink mt-4 mb-2" x-text="$t('edit.title')"></h1>
+            <p class="text-ink-muted mb-8" x-text="$t('edit.description')"></p>
+
+            <!-- Continuation banner -->
+            <template x-if="isContinuation">
+              <div class="card bg-pevo-teal-light border-pevo-teal/30 mb-6">
+                <p class="text-sm font-medium text-ink" x-text="$t('edit.continuationNotice')"></p>
+                <p class="text-xs text-ink-muted mt-1" x-text="$t('edit.continuationExplainer')"></p>
+              </div>
+            </template>
+
+            <!-- Progress indicator -->
+            <template x-if="step !== 'idle'">
+              <div class="card mb-6" :class="stepClass">
+                <p class="text-sm font-medium" x-text="stepMessage"></p>
+                <template x-if="step === 'error'">
+                  <button class="btn-secondary text-xs mt-2" @click="step = 'idle'">OK</button>
+                </template>
+              </div>
+            </template>
+
+            <form @submit.prevent="handleSubmit()" class="space-y-6">
+              <!-- Title -->
+              <div class="card">
+                <label for="edit-title" class="block text-sm font-semibold text-ink mb-2" x-text="$t('publish.paperTitle')"></label>
+                <input id="edit-title" type="text" class="select-control text-base" :placeholder="$t('publish.titlePlaceholder')" x-model="title" required />
+              </div>
+
+              <!-- Abstract -->
+              <div class="card">
+                <label class="block text-sm font-semibold text-ink mb-2" x-text="$t('publish.abstract')"></label>
+                <div x-ref="abstractEditor"></div>
+                <p class="text-xs text-ink-muted mt-1" x-text="$t('publish.abstractHint')"></p>
+              </div>
+
+              <!-- Discipline + Keywords -->
+              <div class="card">
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label class="block text-sm font-semibold text-ink mb-2" x-text="$t('filters.discipline')"></label>
+                    <input type="text" class="select-control bg-parchment-warm cursor-not-allowed" :value="discipline" disabled />
+                    <p class="text-xs text-ink-muted mt-1" x-text="$t('edit.disciplineFixed')"></p>
+                  </div>
+                  <div>
+                    <label for="edit-keywords" class="block text-sm font-semibold text-ink mb-2" x-text="$t('publish.keywords')"></label>
+                    <input id="edit-keywords" type="text" class="select-control" :placeholder="$t('publish.keywordsPlaceholder')" x-model="keywordsText" />
+                    <p class="text-xs text-ink-muted mt-1" x-text="$t('publish.keywordsHint')"></p>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Primary author -->
+              <div class="card">
+                <label class="block text-sm font-semibold text-ink mb-3" x-text="$t('publish.yourInfo')"></label>
+                <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                  <div>
+                    <label for="edit-author-name" class="block text-xs font-medium text-ink-muted mb-1"><span x-text="$t('publish.yourName')"></span> *</label>
+                    <input id="edit-author-name" type="text" class="select-control" :placeholder="$t('publish.fullName')" x-model="authorName" required />
+                  </div>
+                  <div>
+                    <label for="edit-author-affiliation" class="block text-xs font-medium text-ink-muted mb-1" x-text="$t('publish.affiliation')"></label>
+                    <input id="edit-author-affiliation" type="text" class="select-control" :placeholder="$t('publish.affiliation')" x-model="authorAffiliation" />
+                  </div>
+                  <div>
+                    <label for="edit-author-orcid" class="block text-xs font-medium text-ink-muted mb-1" x-text="$t('publish.orcidOptional')"></label>
+                    <input id="edit-author-orcid" type="text" class="select-control" placeholder="0000-0001-2345-6789" x-model="authorOrcid" />
+                  </div>
+                </div>
+              </div>
+
+              <!-- Co-authors (add-only) -->
+              <div class="card">
+                <div class="flex items-center justify-between mb-3">
+                  <label class="text-sm font-semibold text-ink" x-text="$t('publish.coAuthors')"></label>
+                  <button type="button" class="btn-secondary text-xs" @click="addCoAuthor()" x-text="$t('publish.addCoAuthor')"></button>
+                </div>
+                <p class="text-xs text-ink-muted mb-3" x-text="$t('edit.authorsAddOnly')"></p>
+                <!-- Existing authors (read-only) -->
+                <template x-for="(ca, i) in existingCoAuthors" :key="'existing-' + i">
+                  <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2 mt-3 p-3 bg-parchment rounded-lg opacity-75">
+                    <input type="text" class="select-control text-xs bg-parchment-warm cursor-not-allowed" :value="ca.name" disabled />
+                    <input type="text" class="select-control text-xs bg-parchment-warm cursor-not-allowed" :value="ca.hive || ''" disabled />
+                    <input type="text" class="select-control text-xs bg-parchment-warm cursor-not-allowed" :value="ca.orcid || ''" disabled />
+                    <input type="text" class="select-control text-xs bg-parchment-warm cursor-not-allowed" :value="ca.affiliation || ''" disabled />
+                  </div>
+                </template>
+                <!-- New co-authors (editable + removable) -->
+                <template x-for="(ca, i) in newCoAuthors" :key="'new-' + i">
+                  <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2 mt-3 p-3 bg-parchment rounded-lg">
+                    <input type="text" class="select-control text-xs" :placeholder="$t('publish.fullName')" :value="ca.name" @input="updateNewCoAuthor(i, 'name', $event.target.value)" />
+                    <input type="text" class="select-control text-xs" :placeholder="$t('publish.hiveUsername')" :value="ca.hive" @input="updateNewCoAuthor(i, 'hive', $event.target.value)" />
+                    <input type="text" class="select-control text-xs" :placeholder="$t('publish.orcidOptional')" :value="ca.orcid" @input="updateNewCoAuthor(i, 'orcid', $event.target.value)" />
+                    <div class="flex gap-2">
+                      <input type="text" class="select-control text-xs flex-1" :placeholder="$t('publish.affiliation')" :value="ca.affiliation" @input="updateNewCoAuthor(i, 'affiliation', $event.target.value)" />
+                      <button type="button" class="text-ink-muted hover:text-ink shrink-0 px-1" @click="removeNewCoAuthor(i)">
+                        <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd" /></svg>
+                      </button>
+                    </div>
+                  </div>
+                </template>
+              </div>
+
+              <!-- Paper body (full editor) -->
+              <div class="card">
+                <label class="text-sm font-semibold text-ink mb-2 block" x-text="$t('publish.paperContent')"></label>
+                <div x-ref="bodyEditor"></div>
+                <p class="text-xs text-ink-muted mt-2" x-text="$t('publish.markdownHint')"></p>
+              </div>
+
+              <!-- Supplementary Files -->
+              <div class="card">
+                <label class="text-sm font-semibold text-ink mb-2 block" x-text="$t('publish.supplementaryFiles')"></label>
+                <p class="text-xs text-ink-muted mb-3" x-text="$t('publish.supplementaryFilesHint')"></p>
+
+                <!-- Existing files (read-only) -->
+                <template x-if="existingSupplementaryFiles.length > 0">
+                  <div class="space-y-2 mb-3">
+                    <template x-for="(sf, i) in existingSupplementaryFiles" :key="'existing-sf-' + i">
+                      <div class="flex items-center gap-2 p-3 bg-parchment rounded-md border border-parchment-dark opacity-75">
+                        <span class="text-sm font-medium text-ink truncate" x-text="sf.filename"></span>
+                        <span class="text-xs text-pevo-green shrink-0">&#10003;</span>
+                        <span class="text-xs text-ink-muted" x-text="sf.description || ''"></span>
+                      </div>
+                    </template>
+                  </div>
+                </template>
+
+                <!-- New files -->
+                <template x-if="supplementaryFiles.length > 0">
+                  <div class="space-y-2 mb-3">
+                    <template x-for="(sf, i) in supplementaryFiles" :key="'new-sf-' + i">
+                      <div class="flex flex-col gap-2 p-3 bg-parchment rounded-md border border-parchment-dark">
+                        <div class="flex items-center justify-between gap-2">
+                          <div class="flex items-center gap-2 min-w-0">
+                            <span class="text-sm font-medium text-ink truncate" x-text="sf.fileName"></span>
+                            <span class="text-xs text-ink-muted shrink-0" x-text="sf.fileSize + ' MB'"></span>
+                            <template x-if="sf.cid">
+                              <span class="text-xs text-pevo-green shrink-0">&#10003;</span>
+                            </template>
+                            <template x-if="sf.uploading">
+                              <span class="text-xs text-pevo-teal shrink-0" x-text="$t('publish.uploading')"></span>
+                            </template>
+                            <template x-if="sf.error">
+                              <span class="text-xs text-pevo-crimson shrink-0" x-text="sf.error"></span>
+                            </template>
+                          </div>
+                          <button type="button" class="text-xs text-pevo-crimson hover:text-pevo-crimson-dark shrink-0" @click="removeSupplementaryFile(i)" x-text="$t('publish.removeFile')"></button>
+                        </div>
+                        <input type="text" class="input text-sm" :placeholder="$t('publish.fileDescriptionPlaceholder')" :value="sf.description" @input="updateSupplementaryDescription(i, $event.target.value)" />
+                      </div>
+                    </template>
+                  </div>
+                </template>
+
+                <template x-if="(supplementaryFiles.length + existingSupplementaryFiles.length) < 5">
+                  <div>
+                    <label class="inline-flex items-center gap-2 cursor-pointer text-sm text-pevo-teal hover:text-pevo-teal-dark">
+                      <span x-text="$t('publish.addSupplementaryFile')"></span>
+                      <input type="file" class="hidden" multiple accept=".pdf,.png,.jpg,.jpeg,.gif,.webp,.svg,.csv,.zip" @change="handleSupplementaryFiles($event)" />
+                    </label>
+                  </div>
+                </template>
+              </div>
+
+              <!-- Citations -->
+              <div class="card">
+                <label class="text-sm font-semibold text-ink mb-2 block" x-text="$t('publish.citations')"></label>
+                <p class="text-xs text-ink-muted mb-3" x-text="$t('publish.citationsHint')"></p>
+                <template x-if="citations.length > 0">
+                  <div class="space-y-3">
+                    <template x-for="(cit, i) in citations" :key="'edit-cit-' + i">
+                      <div class="p-3 bg-parchment rounded-lg space-y-2 flex gap-2"
+                           draggable="true"
+                           @dragstart="dragCitationStart(i)"
+                           @dragover="dragCitationOver($event, i)"
+                           @drop="dragCitationDrop(i)">
+                        <div class="flex items-center cursor-grab text-ink-muted hover:text-ink shrink-0 pt-1" title="Drag to reorder">
+                          <svg class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path d="M7 2a2 2 0 10.001 4.001A2 2 0 007 2zm0 6a2 2 0 10.001 4.001A2 2 0 007 8zm0 6a2 2 0 10.001 4.001A2 2 0 007 14zm6-8a2 2 0 10-.001-4.001A2 2 0 0013 6zm0 2a2 2 0 10.001 4.001A2 2 0 0013 8zm0 6a2 2 0 10.001 4.001A2 2 0 0013 14z" /></svg>
+                        </div>
+                        <div class="flex-1 space-y-2">
+                          <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                            <input type="text" class="select-control text-xs" :placeholder="$t('publish.citationAuthor')" :value="cit.author" @input="updateCitation(i, 'author', $event.target.value)" />
+                            <input type="text" class="select-control text-xs" :placeholder="$t('publish.citationPermlink')" :value="cit.permlink" @input="updateCitation(i, 'permlink', $event.target.value)" />
+                            <input type="text" class="select-control text-xs" :placeholder="$t('publish.citationTitle')" :value="cit.title" @input="updateCitation(i, 'title', $event.target.value)" />
+                          </div>
+                          <div class="flex items-center justify-between">
+                            <label class="flex items-center gap-2 text-xs text-ink-muted cursor-pointer">
+                              <input type="checkbox" class="rounded border-parchment-dark text-pevo-teal focus:ring-pevo-teal" :checked="cit.reputation_relevant" @change="toggleCitationRelevance(i)" />
+                              <span x-text="$t('publish.citationReputationRelevant')"></span>
+                            </label>
+                            <button type="button" class="text-ink-muted hover:text-ink px-1" @click="removeCitation(i)">
+                              <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd" /></svg>
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    </template>
+                  </div>
+                </template>
+                <template x-if="citations.length === 0">
+                  <p class="text-xs text-ink-muted italic" x-text="$t('publish.noCitations')"></p>
+                </template>
+                <button type="button" class="text-sm text-pevo-teal hover:text-pevo-teal-dark mt-3" @click="addCitation()" x-text="$t('publish.addCitation')"></button>
+              </div>
+
+              <!-- Address reviews checklist -->
+              <template x-if="reviews.length > 0">
+                <div class="card">
+                  <label class="block text-sm font-semibold text-ink mb-2" x-text="$t('edit.addressReviews')"></label>
+                  <p class="text-xs text-ink-muted mb-3" x-text="$t('edit.addressReviewsHint')"></p>
+                  <div class="space-y-2">
+                    <template x-for="rev in reviews" :key="rev.permlink">
+                      <label class="flex items-start gap-3 p-3 rounded-lg hover:bg-parchment transition-colors cursor-pointer">
+                        <input type="checkbox" class="mt-1 rounded border-parchment-dark text-pevo-teal focus:ring-pevo-teal"
+                               :value="rev.author + '/' + rev.permlink"
+                               @change="toggleAddressedReview(rev.author, rev.permlink, $event.target.checked)" />
+                        <div class="min-w-0">
+                          <span class="text-sm font-medium text-ink" x-text="rev.is_anonymous ? $t('review.anonymousReviewer') : ('@' + rev.author)"></span>
+                          <template x-if="rev.reviewed_version">
+                            <span class="text-xs text-ink-muted ml-1" x-text="'v' + rev.reviewed_version"></span>
+                          </template>
+                          <p class="text-xs text-ink-muted mt-0.5 line-clamp-2" x-text="rev.body?.substring(0, 120) + (rev.body?.length > 120 ? '...' : '')"></p>
+                        </div>
+                      </label>
+                    </template>
+                  </div>
+                </div>
+              </template>
+
+              <!-- Submit -->
+              <div class="flex flex-col-reverse sm:flex-row items-start sm:items-center justify-between gap-3">
+                <p class="text-xs text-ink-muted" x-text="$t('edit.versionLabel', { version: String(nextVersion) })"></p>
+                <button type="submit" class="btn-primary w-full sm:w-auto shrink-0" :disabled="isSubmitting"
+                        x-text="isSubmitting ? $t('edit.saving') : (isContinuation ? $t('edit.publishRevision') : $t('edit.saveButton'))"></button>
+              </div>
+            </form>
+          </div>
+        </template>
+      </div>
+`;
+
+export { template as editPageTemplate };
+
 export function initEditPage() {
   Alpine.data('editPage', () => ({
     paper: null,

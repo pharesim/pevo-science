@@ -3,6 +3,219 @@ import { verifyEmail, resumeSignup, confirmAccount, linkExistingAccount, checkUs
 import { generateMnemonic, validateMnemonic, deriveAllKeys } from '../hive-keys.js';
 import { signMessage, isKeychainInstalled } from '../keychain.js';
 
+const template = `
+      <div x-data="signupVerifyPage" class="container-narrow py-8">
+        <div class="max-w-lg mx-auto">
+
+          <!-- Verifying email token -->
+          <div x-show="phase === 'verifying'" class="text-center py-16">
+            <div class="animate-pulse">
+              <div class="w-12 h-12 bg-parchment-dark rounded-full mx-auto mb-4"></div>
+              <p class="text-ink-muted" x-text="$t('seedPhrase.verifying')"></p>
+            </div>
+          </div>
+
+          <!-- Error / Resume -->
+          <div x-show="phase === 'error'" class="py-16">
+            <div class="text-center mb-8">
+              <h2 class="text-2xl font-bold text-ink mb-2" x-text="$t('seedPhrase.resumeTitle')"></h2>
+              <p class="text-ink-muted mb-4" x-text="$t('seedPhrase.resumeDescription')"></p>
+            </div>
+
+            <!-- Resume signup form -->
+            <div class="max-w-sm mx-auto bg-parchment-light border border-parchment-dark rounded-lg p-6">
+
+              <div x-show="error" class="bg-red-50 border border-red-200 rounded-lg p-3 mb-4">
+                <p class="text-red-700 text-sm" x-text="error"></p>
+              </div>
+
+              <form @submit.prevent="handleResume" class="space-y-3">
+                <div>
+                  <label class="block text-sm font-medium text-ink mb-1" x-text="$t('signup.email')"></label>
+                  <input type="email" x-model="resumeEmail" required
+                         class="w-full border border-parchment-dark rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-pevo-teal focus:border-pevo-teal">
+                </div>
+                <div>
+                  <label class="block text-sm font-medium text-ink mb-1" x-text="$t('signup.password')"></label>
+                  <input type="password" x-model="resumePassword" required
+                         class="w-full border border-parchment-dark rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-pevo-teal focus:border-pevo-teal">
+                </div>
+                <button type="submit" class="btn-primary w-full" :disabled="isResuming || !resumeEmail || !resumePassword">
+                  <span x-show="!isResuming" x-text="$t('seedPhrase.resumeButton')"></span>
+                  <span x-show="isResuming" x-text="$t('seedPhrase.resuming')"></span>
+                </button>
+              </form>
+
+              <div class="flex justify-between mt-4">
+                <a :href="$lp('/reset-password')" @click.prevent="navigate('/reset-password')"
+                   class="text-sm text-pevo-teal hover:underline" x-text="$t('login.forgotPassword')"></a>
+                <a :href="$lp('/signup')" @click.prevent="navigate('/signup')" class="text-sm text-pevo-teal hover:underline" x-text="$t('seedPhrase.startOver')"></a>
+              </div>
+            </div>
+          </div>
+
+          <!-- Choose: create new account or link existing -->
+          <div x-show="phase === 'choose'" class="py-8">
+            <div class="text-center mb-8">
+              <div class="w-16 h-16 bg-pevo-green/10 rounded-full flex items-center justify-center mx-auto mb-6">
+                <svg class="w-8 h-8 text-pevo-green" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+              </div>
+              <h2 class="text-2xl font-bold text-ink mb-2" x-text="$t('seedPhrase.emailVerified')"></h2>
+              <p class="text-ink-muted" x-text="$t('seedPhrase.chooseDescription')"></p>
+            </div>
+
+            <div class="grid gap-4 sm:grid-cols-2">
+              <button @click="chooseCreate()"
+                      class="bg-white border-2 border-pevo-teal rounded-xl p-6 text-center hover:bg-pevo-teal/5 transition-colors">
+                <div class="w-12 h-12 bg-pevo-teal/10 rounded-full flex items-center justify-center mx-auto mb-3">
+                  <svg class="w-6 h-6 text-pevo-teal" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+                </div>
+                <h3 class="font-semibold text-ink mb-1" x-text="$t('seedPhrase.chooseCreate')"></h3>
+                <p class="text-xs text-ink-muted" x-text="$t('seedPhrase.chooseCreateHint')"></p>
+              </button>
+              <button @click="chooseLink()"
+                      class="bg-white border-2 border-parchment-dark rounded-xl p-6 text-center hover:bg-parchment-light transition-colors">
+                <div class="w-12 h-12 bg-parchment-light rounded-full flex items-center justify-center mx-auto mb-3">
+                  <svg class="w-6 h-6 text-ink" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/></svg>
+                </div>
+                <h3 class="font-semibold text-ink mb-1" x-text="$t('seedPhrase.chooseLink')"></h3>
+                <p class="text-xs text-ink-muted" x-text="$t('seedPhrase.chooseLinkHint')"></p>
+              </button>
+            </div>
+          </div>
+
+          <!-- Create flow: Seed phrase display -->
+          <div x-show="phase === 'create-seed'">
+            <h1 class="text-2xl font-bold text-ink mb-2" x-text="$t('seedPhrase.title')"></h1>
+            <p class="text-ink-muted mb-6" x-text="$t('seedPhrase.description')"></p>
+
+            <div class="bg-amber-50 border border-amber-200 rounded-lg p-4 mb-6">
+              <p class="text-amber-800 text-sm font-medium" x-text="$t('seedPhrase.warning')"></p>
+            </div>
+
+            <!-- Word grid -->
+            <div class="grid grid-cols-3 gap-3 mb-8">
+              <template x-for="(word, i) in seedWords" :key="i">
+                <div class="bg-white border border-parchment-dark rounded-lg px-3 py-2 text-center">
+                  <span class="text-xs text-ink-muted" x-text="(i + 1) + '.'"></span>
+                  <span class="ml-1 font-mono text-sm text-ink font-medium" x-text="word"></span>
+                </div>
+              </template>
+            </div>
+
+            <button @click="proceedToConfirm()" class="w-full btn-primary py-2.5" x-text="$t('seedPhrase.iWroteItDown')"></button>
+          </div>
+
+          <!-- Create flow: Confirm seed phrase -->
+          <div x-show="phase === 'create-confirm'">
+            <h2 class="text-2xl font-bold text-ink mb-2" x-text="$t('seedPhrase.confirmTitle')"></h2>
+            <p class="text-ink-muted mb-6" x-text="$t('seedPhrase.confirmDescription')"></p>
+
+            <div class="space-y-4 mb-8">
+              <template x-for="idx in confirmIndices" :key="idx">
+                <div>
+                  <label class="block text-sm font-medium text-ink mb-1">
+                    <span x-text="$t('seedPhrase.wordNumber', { number: idx + 1 })"></span>
+                  </label>
+                  <input type="text" x-model="confirmInputs[idx]"
+                         class="w-full border border-parchment-dark rounded-lg px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-pevo-teal focus:border-pevo-teal"
+                         autocomplete="off" autocapitalize="off" spellcheck="false">
+                </div>
+              </template>
+            </div>
+
+            <button @click="proceedToUsername()" :disabled="!confirmCorrect"
+                    class="w-full btn-primary py-2.5 disabled:opacity-50 disabled:cursor-not-allowed"
+                    x-text="$t('seedPhrase.confirm')">
+            </button>
+            <button @click="phase = 'create-seed'"
+                    class="w-full mt-3 text-sm text-ink-muted hover:text-ink underline"
+                    x-text="$t('seedPhrase.showWordsAgain')">
+            </button>
+          </div>
+
+          <!-- Create flow: Choose username -->
+          <div x-show="phase === 'create-username'" x-init="watchUsername()">
+            <h2 class="text-2xl font-bold text-ink mb-2" x-text="$t('seedPhrase.chooseUsername')"></h2>
+            <p class="text-ink-muted mb-6" x-text="$t('seedPhrase.chooseUsernameDescription')"></p>
+
+            <div x-show="error" class="bg-red-50 border border-red-200 rounded-lg p-4 mb-6">
+              <p class="text-red-700 text-sm" x-text="error"></p>
+            </div>
+
+            <div class="mb-6">
+              <label class="block text-sm font-medium text-ink mb-1" x-text="$t('signup.username')"></label>
+              <div class="relative">
+                <input type="text" x-model="username" maxlength="16"
+                       class="w-full border border-parchment-dark rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-pevo-teal focus:border-pevo-teal lowercase"
+                       :placeholder="$t('signup.usernamePlaceholder')"
+                       @input="username = username.toLowerCase()">
+                <div class="absolute right-3 top-1/2 -translate-y-1/2">
+                  <span x-show="usernameStatus === 'checking'" class="text-ink-muted text-xs">...</span>
+                  <span x-show="usernameStatus === 'available'" class="text-pevo-green text-sm">&#10003;</span>
+                  <span x-show="usernameStatus === 'taken'" class="text-pevo-crimson text-sm">&#10007;</span>
+                  <span x-show="usernameStatus === 'invalid'" class="text-amber-500 text-sm">&#10007;</span>
+                </div>
+              </div>
+              <p x-show="usernameStatus === 'taken'" class="text-xs text-pevo-crimson mt-1" x-text="$t('signup.usernameTaken')"></p>
+              <p x-show="usernameStatus === 'invalid'" class="text-xs text-amber-500 mt-1" x-text="$t('signup.usernameInvalid')"></p>
+              <p x-show="!usernameStatus || usernameStatus === 'available' || usernameStatus === 'checking'" class="text-xs text-ink-muted mt-1" x-text="$t('signup.usernameHint')"></p>
+            </div>
+
+            <button @click="submitCreateAccount()" :disabled="usernameStatus !== 'available' || isSubmitting"
+                    class="w-full btn-primary py-2.5 disabled:opacity-50 disabled:cursor-not-allowed"
+                    x-text="$t('seedPhrase.createAccount')">
+            </button>
+          </div>
+
+          <!-- Create flow: Submitting -->
+          <div x-show="phase === 'create-submitting'" class="text-center py-16">
+            <div class="animate-pulse">
+              <div class="w-12 h-12 bg-pevo-teal/20 rounded-full mx-auto mb-4"></div>
+              <p class="text-ink-muted" x-text="$t('seedPhrase.creating')"></p>
+            </div>
+          </div>
+
+          <!-- Link existing account: Keychain step -->
+          <div x-show="phase === 'link-keychain'">
+            <h2 class="text-2xl font-bold text-ink mb-2" x-text="$t('seedPhrase.linkTitle')"></h2>
+            <p class="text-ink-muted mb-6" x-text="$t('seedPhrase.linkDescription')"></p>
+
+            <div x-show="error" class="bg-red-50 border border-red-200 rounded-lg p-4 mb-6">
+              <p class="text-red-700 text-sm" x-text="error"></p>
+            </div>
+
+            <div class="mb-4">
+              <label class="block text-sm font-medium text-ink mb-1" x-text="$t('seedPhrase.hiveUsername')"></label>
+              <input type="text" x-model="hiveUsername" maxlength="16"
+                     class="w-full border border-parchment-dark rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-pevo-teal focus:border-pevo-teal lowercase"
+                     :placeholder="$t('seedPhrase.hiveUsernamePlaceholder')"
+                     @input="hiveUsername = hiveUsername.toLowerCase()">
+              <p class="text-xs text-ink-muted mt-1" x-text="$t('seedPhrase.hiveUsernameHint')"></p>
+            </div>
+
+            <button @click="handleLinkAccount()" :disabled="isSubmitting || !hiveUsername.trim()"
+                    class="w-full btn-primary py-2.5 disabled:opacity-50 disabled:cursor-not-allowed">
+              <span x-show="!isSubmitting" x-text="$t('seedPhrase.linkButton')"></span>
+              <span x-show="isSubmitting" x-text="$t('seedPhrase.linking')"></span>
+            </button>
+          </div>
+
+          <!-- Done -->
+          <div x-show="phase === 'done'" class="text-center py-16">
+            <div class="w-16 h-16 bg-pevo-green/10 rounded-full flex items-center justify-center mx-auto mb-6">
+              <svg class="w-8 h-8 text-pevo-green" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+            </div>
+            <h2 class="text-2xl font-bold text-ink mb-2" x-text="$t('seedPhrase.doneTitle')"></h2>
+            <p class="text-ink-muted mb-6" x-text="$t('seedPhrase.doneDescription')"></p>
+            <button @click="navigate('/papers')" class="btn-primary" x-text="$t('seedPhrase.goToPapers')"></button>
+          </div>
+
+        </div>
+      </div>`;
+
+export { template as signupVerifyPageTemplate };
+
 // Number of words the user must re-enter to confirm retention
 const CONFIRM_WORD_COUNT = 3;
 

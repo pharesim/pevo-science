@@ -17,36 +17,10 @@ import { initFooter } from './components/footer.js';
 import { initMarkdownRenderer } from './components/markdown-renderer.js';
 import { initOnboardingModal } from './components/onboarding-modal.js';
 import { initSignInModal } from './components/sign-in-modal.js';
+import { initPageMount } from './components/page-mount.js';
 
-// Pages — Phase 2 (simple)
-import { initAboutPage } from './pages/about.js';
-import { initFaqPage } from './pages/faq.js';
-import { initGettingStartedPage } from './pages/getting-started.js';
-import { initContactPage } from './pages/contact.js';
-import { initBlogPage } from './pages/blog.js';
-
-// Pages — Phase 3 (data)
-import { initHomePage } from './pages/home.js';
-import { initPaperDetailPage } from './pages/paper-detail.js';
-import { initSearchPage } from './pages/search.js';
-import { initResearchersPage } from './pages/researchers.js';
-import { initStatsPage } from './pages/stats.js';
-import { initProfilePage } from './pages/profile.js';
-
-// Pages — Phase 4 (complex interactive)
-import { initPublishPage } from './pages/publish.js';
-import { initReviewPage } from './pages/review.js';
-import { initBridgePage } from './pages/bridge.js';
-import { initEditPage } from './pages/edit.js';
-import { initAccreditationPage } from './pages/accreditation.js';
-import { initAccreditationVerifyPage } from './pages/accreditation-verify.js';
-import { initAccreditationOrcidCallbackPage } from './pages/accreditation-orcid-callback.js';
-import { initSignupPage } from './pages/signup.js';
-import { initSignupOrcidCallbackPage } from './pages/signup-orcid-callback.js';
-import { initSignupVerifyPage } from './pages/signup-verify.js';
-import { initLoginPage } from './pages/login.js';
-import { initResetPasswordPage } from './pages/reset-password.js';
-import { initSettingsPage } from './pages/settings.js';
+// Page registry (all 26 pages)
+import { pages } from './pages/index.js';
 
 // Components — Phase 4
 import { initThreadedComments } from './components/threaded-comments.js';
@@ -74,21 +48,10 @@ initFooter();
 initMarkdownRenderer();
 initOnboardingModal();
 initSignInModal();
+initPageMount();
 
-// Initialize pages — Phase 2
-initAboutPage();
-initFaqPage();
-initGettingStartedPage();
-initContactPage();
-initBlogPage();
-
-// Initialize pages — Phase 3
-initHomePage();
-initPaperDetailPage();
-initSearchPage();
-initResearchersPage();
-initStatsPage();
-initProfilePage();
+// Initialize all pages from registry
+Object.values(pages).forEach(p => p.init());
 
 // Initialize components — Phase 4
 initThreadedComments();
@@ -96,21 +59,6 @@ initCommentComposer();
 initVoteButtons();
 initVouchSection();
 initBroadcastConfirm();
-
-// Initialize pages — Phase 4
-initPublishPage();
-initEditPage();
-initReviewPage();
-initBridgePage();
-initAccreditationPage();
-initAccreditationVerifyPage();
-initAccreditationOrcidCallbackPage();
-initSignupPage();
-initSignupOrcidCallbackPage();
-initSignupVerifyPage();
-initLoginPage();
-initResetPasswordPage();
-initSettingsPage();
 
 // Load i18n messages, sync locale with router, then start Alpine
 initI18n().then(() => {

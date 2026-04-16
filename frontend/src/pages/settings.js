@@ -4,6 +4,129 @@ import { isKeychainInstalled } from '../keychain.js';
 // Number of words to re-enter for confirmation
 const CONFIRM_WORD_COUNT = 3;
 
+const template = `
+      <div x-data="settingsPage" class="container-narrow py-8">
+        <!-- Not signed in -->
+        <template x-if="!isConnected">
+          <div class="text-center py-16">
+            <p class="text-ink-muted mb-4" x-text="$t('settings.signInRequired')"></p>
+            <button @click="navigate('/login')" class="btn-primary" x-text="$t('settings.signIn')"></button>
+          </div>
+        </template>
+
+        <template x-if="isConnected">
+          <div class="max-w-lg mx-auto">
+            <h1 class="text-3xl font-bold text-ink mb-8" x-text="$t('settings.title')"></h1>
+
+            <!-- Upgrade section (only for light accounts) -->
+            <template x-if="isLight">
+              <div class="border border-parchment-dark rounded-xl p-6">
+                <h2 class="text-xl font-bold text-ink mb-2" x-text="$t('upgrade.title')"></h2>
+                <p class="text-sm text-ink-muted mb-6" x-text="$t('upgrade.description')"></p>
+
+                <!-- Idle: start button -->
+                <div x-show="upgradePhase === 'idle'">
+                  <button @click="startUpgrade()" class="btn-primary" x-text="$t('upgrade.start')"></button>
+                </div>
+
+                <!-- Error -->
+                <div x-show="upgradePhase === 'error'">
+                  <div class="bg-red-50 border border-red-200 rounded-lg p-4 mb-4">
+                    <p class="text-red-700 text-sm" x-text="upgradeError"></p>
+                  </div>
+                  <button @click="resetUpgrade()" class="text-pevo-teal hover:underline text-sm" x-text="$t('upgrade.tryAgain')"></button>
+                </div>
+
+                <!-- Step 1: New seed phrase display -->
+                <div x-show="upgradePhase === 'new-seed'">
+                  <div class="bg-amber-50 border border-amber-200 rounded-lg p-4 mb-4">
+                    <p class="text-amber-800 text-sm font-medium" x-text="$t('upgrade.newSeedWarning')"></p>
+                  </div>
+                  <div class="grid grid-cols-3 gap-3 mb-6">
+                    <template x-for="(word, i) in newSeedWords" :key="i">
+                      <div class="bg-white border border-parchment-dark rounded-lg px-3 py-2 text-center">
+                        <span class="text-xs text-ink-muted" x-text="(i + 1) + '.'"></span>
+                        <span class="ml-1 font-mono text-sm text-ink font-medium" x-text="word"></span>
+                      </div>
+                    </template>
+                  </div>
+                  <button @click="proceedToConfirmNew()" class="w-full btn-primary py-2.5" x-text="$t('upgrade.iWroteItDown')"></button>
+                </div>
+
+                <!-- Step 2: Confirm new seed phrase -->
+                <div x-show="upgradePhase === 'confirm-new'">
+                  <p class="text-ink-muted text-sm mb-4" x-text="$t('upgrade.confirmNewDescription')"></p>
+                  <div class="space-y-4 mb-6">
+                    <template x-for="idx in confirmIndices" :key="idx">
+                      <div>
+                        <label class="block text-sm font-medium text-ink mb-1">
+                          <span x-text="$t('seedPhrase.wordNumber', { number: idx + 1 })"></span>
+                        </label>
+                        <input type="text" x-model="confirmInputs[idx]"
+                               class="w-full border border-parchment-dark rounded-lg px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-pevo-teal focus:border-pevo-teal"
+                               autocomplete="off" autocapitalize="off" spellcheck="false">
+                      </div>
+                    </template>
+                  </div>
+                  <button @click="proceedToOldSeed()" :disabled="!confirmCorrect"
+                          class="w-full btn-primary py-2.5 disabled:opacity-50 disabled:cursor-not-allowed"
+                          x-text="$t('upgrade.next')"></button>
+                </div>
+
+                <!-- Step 3: Enter old seed phrase + password -->
+                <div x-show="upgradePhase === 'enter-old'">
+                  <div class="space-y-4 mb-6">
+                    <div>
+                      <label class="block text-sm font-medium text-ink mb-1" x-text="$t('upgrade.oldSeedLabel')"></label>
+                      <textarea x-model="oldSeedPhrase" rows="3"
+                                class="w-full border border-parchment-dark rounded-lg px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-pevo-teal focus:border-pevo-teal"
+                                :placeholder="$t('upgrade.oldSeedPlaceholder')"
+                                autocomplete="off" autocapitalize="off" spellcheck="false"></textarea>
+                    </div>
+                    <div>
+                      <label class="block text-sm font-medium text-ink mb-1" x-text="$t('upgrade.passwordLabel')"></label>
+                      <input type="password" x-model="upgradePassword"
+                             class="w-full border border-parchment-dark rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-pevo-teal focus:border-pevo-teal">
+                    </div>
+                  </div>
+                  <button @click="executeUpgrade()" :disabled="!oldSeedPhrase.trim() || !upgradePassword"
+                          class="w-full btn-primary py-2.5 disabled:opacity-50 disabled:cursor-not-allowed"
+                          x-text="$t('upgrade.execute')"></button>
+                </div>
+
+                <!-- Upgrading spinner -->
+                <div x-show="upgradePhase === 'upgrading'" class="text-center py-8">
+                  <div class="animate-pulse">
+                    <div class="w-12 h-12 bg-parchment-dark rounded-full mx-auto mb-4"></div>
+                    <p class="text-ink-muted" x-text="$t('upgrade.upgrading')"></p>
+                  </div>
+                </div>
+
+                <!-- Done -->
+                <div x-show="upgradePhase === 'done'" class="text-center py-4">
+                  <div class="w-12 h-12 bg-pevo-green/10 rounded-full flex items-center justify-center mx-auto mb-4">
+                    <svg class="w-6 h-6 text-pevo-green" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+                  </div>
+                  <p class="text-ink font-medium mb-2" x-text="$t('upgrade.doneTitle')"></p>
+                  <p class="text-sm text-ink-muted" x-text="$t('upgrade.doneDescription')"></p>
+                </div>
+              </div>
+            </template>
+
+            <!-- Already self-custody -->
+            <template x-if="!isLight">
+              <div class="border border-parchment-dark rounded-xl p-6">
+                <h2 class="text-xl font-bold text-ink mb-2" x-text="$t('settings.accountType')"></h2>
+                <p class="text-sm text-ink-muted" x-text="$t('settings.selfCustody')"></p>
+              </div>
+            </template>
+          </div>
+        </template>
+      </div>
+`;
+
+export { template as settingsPageTemplate };
+
 function pickRandomIndices(total, count) {
   const indices = [];
   while (indices.length < count) {

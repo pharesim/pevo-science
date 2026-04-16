@@ -10,6 +10,147 @@ const DISCIPLINE_TAXONOMY = [
   { field: 'Humanities and Arts', subfields: ['History', 'Philosophy', 'Languages and Literature', 'Arts', 'Theology'] },
 ];
 
+const template = `
+      <div x-data="bridgePage" class="container-narrow py-8">
+        <h1 class="text-3xl font-bold text-ink font-serif mb-2" x-text="$t('bridge.title')"></h1>
+        <p class="text-ink-muted mb-6" x-text="$t('bridge.description')"></p>
+
+        <!-- Not connected -->
+        <template x-if="!isConnected">
+          <div class="card text-center py-12">
+            <p class="text-ink-muted mb-4" x-text="$t('bridge.walletHint')"></p>
+            <button class="btn-primary" @click="handleConnect()" x-text="$t('signIn.signInButton')"></button>
+          </div>
+        </template>
+
+        <template x-if="isConnected">
+          <div>
+            <!-- Step 1: Identifier input -->
+            <div class="card mb-6">
+              <label for="bridge-id" class="block text-sm font-semibold text-ink mb-2" x-text="$t('bridge.identifierLabel')"></label>
+              <div class="flex gap-3">
+                <input id="bridge-id" type="text" class="select-control flex-1" :placeholder="$t('bridge.identifierPlaceholder')"
+                       x-model="identifier" @keydown.enter="handleLookup()" :disabled="lookingUp" />
+                <button class="btn-primary text-sm whitespace-nowrap" @click="handleLookup()" :disabled="lookingUp || !identifier.trim()"
+                        x-text="lookingUp ? $t('bridge.lookingUp') : $t('bridge.lookupButton')"></button>
+              </div>
+              <template x-if="lookupError">
+                <p class="text-sm text-pevo-crimson mt-2" x-text="lookupError"></p>
+              </template>
+            </div>
+
+            <!-- Step 2: Preview -->
+            <template x-if="lookup">
+              <div class="card mb-6">
+                <h2 class="text-lg font-semibold text-ink mb-4" x-text="$t('bridge.previewTitle')"></h2>
+                <h3 class="text-base font-semibold text-ink mb-2" x-text="lookup.title"></h3>
+                <div class="text-sm text-ink-light mb-3">
+                  <span class="font-medium text-ink-muted" x-text="$t('bridge.authors') + ':'"></span>
+                  <span x-text="lookup.authors.map(a => a.name).join(', ')"></span>
+                </div>
+                <div class="text-sm text-ink-muted mb-3 line-clamp-4">
+                  <span class="font-medium" x-text="$t('bridge.abstract') + ':'"></span>
+                  <span x-text="lookup.abstract"></span>
+                </div>
+                <div class="flex flex-wrap gap-4 text-sm text-ink-muted mb-3">
+                  <span>
+                    <span class="font-medium" x-text="$t('bridge.published') + ':'"></span>
+                    <span x-text="new Date(lookup.published_date).toLocaleDateString()"></span>
+                  </span>
+                  <span>
+                    <span class="font-medium" x-text="$t('bridge.source') + ':'"></span>
+                    <a :href="lookup.source_url" target="_blank" rel="noopener noreferrer" class="text-pevo-teal hover:underline" x-text="lookup.source_name"></a>
+                  </span>
+                  <template x-if="lookup.pdf_url">
+                    <a :href="lookup.pdf_url" target="_blank" rel="noopener noreferrer" class="text-pevo-teal hover:underline" x-text="$t('bridge.pdfLink')"></a>
+                  </template>
+                </div>
+                <!-- Duplicate warning -->
+                <template x-if="isDuplicate && check">
+                  <div class="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 mt-4">
+                    <p class="text-sm font-medium text-amber-800 mb-1" x-text="$t('bridge.duplicateWarning')"></p>
+                    <a :href="$lp('/paper/' + check.author + '/' + check.permlink)" @click.prevent="navigate('/paper/' + check.author + '/' + check.permlink)" class="text-sm text-pevo-teal hover:underline" x-text="$t('bridge.viewExisting')"></a>
+                  </div>
+                </template>
+              </div>
+            </template>
+
+            <!-- Step 3: Registration form -->
+            <template x-if="lookup && !isDuplicate">
+              <div class="card">
+                <h2 class="text-lg font-semibold text-ink mb-4" x-text="$t('bridge.registerTitle')"></h2>
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
+                  <!-- Discipline picker -->
+                  <div class="relative" @click.outside="disciplineDropdownOpen = false">
+                    <label for="bridge-discipline" class="block text-sm font-semibold text-ink mb-2" x-text="$t('bridge.disciplineLabel')"></label>
+                    <input id="bridge-discipline" type="text" class="select-control" :placeholder="$t('bridge.disciplinePlaceholder')"
+                           :value="disciplineDisplayValue" @input="onDisciplineInput($event)" @focus="disciplineDropdownOpen = true" autocomplete="off" required />
+                    <template x-if="discipline && !disciplineDropdownOpen">
+                      <button type="button" class="absolute right-2 top-9 text-ink-muted hover:text-ink" @click="clearDiscipline()">
+                        <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd" /></svg>
+                      </button>
+                    </template>
+                    <div x-show="disciplineDropdownOpen" class="absolute z-20 mt-1 w-full max-h-60 overflow-auto rounded-lg border border-parchment-dark bg-parchment shadow-md">
+                      <template x-if="filteredTaxonomy.length === 0 && disciplineSearch.trim()">
+                        <button type="button" class="block w-full text-left px-4 py-2 text-sm text-ink hover:bg-parchment-warm transition-colors"
+                                @click="selectDiscipline(disciplineSearch.trim())">
+                          <span x-text="$t('bridge.useCustomDiscipline', { value: disciplineSearch.trim() })"></span>
+                        </button>
+                      </template>
+                      <template x-for="group in filteredTaxonomy" :key="group.field">
+                        <div>
+                          <div class="px-4 py-1.5 text-xs font-semibold text-ink-muted uppercase tracking-wide bg-parchment-warm" x-text="group.field"></div>
+                          <template x-for="sf in group.subfields" :key="sf">
+                            <button type="button" class="block w-full text-left px-4 py-2 text-sm text-ink hover:bg-parchment-warm transition-colors" x-text="sf" @click="selectDiscipline(sf)"></button>
+                          </template>
+                        </div>
+                      </template>
+                      <template x-if="filteredTaxonomy.length > 0 && disciplineSearch.trim() && !filteredTaxonomy.some(g => g.subfields.some(sf => sf.toLowerCase() === disciplineSearch.trim().toLowerCase()))">
+                        <div class="border-t border-parchment-dark">
+                          <button type="button" class="block w-full text-left px-4 py-2 text-sm text-pevo-teal-dark hover:bg-parchment-warm transition-colors"
+                                  @click="selectDiscipline(disciplineSearch.trim())">
+                            <span x-text="$t('bridge.useCustomDiscipline', { value: disciplineSearch.trim() })"></span>
+                          </button>
+                        </div>
+                      </template>
+                    </div>
+                  </div>
+                  <!-- Keywords -->
+                  <div>
+                    <label for="bridge-keywords" class="block text-sm font-semibold text-ink mb-2" x-text="$t('bridge.keywordsLabel')"></label>
+                    <input id="bridge-keywords" type="text" class="select-control" :placeholder="$t('bridge.keywordsPlaceholder')" x-model="keywordsText" />
+                  </div>
+                </div>
+                <!-- Language -->
+                <div class="mb-6">
+                  <label for="bridge-language" class="block text-sm font-semibold text-ink mb-2" x-text="$t('bridge.languageLabel')"></label>
+                  <input id="bridge-language" type="text" class="select-control max-w-xs" :placeholder="$t('bridge.languagePlaceholder')" x-model="language" />
+                </div>
+                <!-- Status / Submit -->
+                <template x-if="step === 'idle'">
+                  <button class="btn-primary" @click="handleRegister()" :disabled="!canRegister" x-text="$t('bridge.registerButton')"></button>
+                </template>
+                <template x-if="step === 'registering'">
+                  <p class="text-sm text-ink-muted" x-text="$t('bridge.stepRegistering')"></p>
+                </template>
+                <template x-if="step === 'success'">
+                  <p class="text-sm text-pevo-green font-medium" x-text="$t('bridge.stepSuccess')"></p>
+                </template>
+                <template x-if="step === 'error'">
+                  <div>
+                    <p class="text-sm text-pevo-crimson mb-2" x-text="errorMessage"></p>
+                    <button class="btn-secondary text-sm" @click="step = 'idle'" x-text="$t('bridge.tryAgain')"></button>
+                  </div>
+                </template>
+              </div>
+            </template>
+          </div>
+        </template>
+      </div>
+`;
+
+export { template as bridgePageTemplate };
+
 export function initBridgePage() {
   Alpine.data('bridgePage', () => ({
     identifier: '',
