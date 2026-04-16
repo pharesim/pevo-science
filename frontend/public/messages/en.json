@@ -288,7 +288,16 @@
     "checkEmail": "Check your email for the verification link.",
     "tryAgain": "Try Again",
     "needHelp": "Having trouble with accreditation?",
-    "contactUs": "Contact us for help"
+    "contactUs": "Contact us for help",
+    "statusTitle": "You are accredited",
+    "statusName": "Name",
+    "statusInstitution": "Institution",
+    "statusField": "Field",
+    "statusMethod": "Verification method",
+    "statusSince": "Accredited since",
+    "vouchTitle": "Help colleagues get accredited",
+    "vouchDescription": "Accredited researchers can vouch for colleagues who do not have an institutional email. Visit their profile page to vouch.",
+    "browseResearchers": "Browse researchers"
   },
   "researchers": {
     "title": "Accredited Researchers",
