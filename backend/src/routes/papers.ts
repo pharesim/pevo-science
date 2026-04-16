@@ -17,7 +17,7 @@ import {
   type SortField,
 } from '../helpers.js';
 import { getAccreditedSet, getAllAccreditedAccounts } from '../accreditation.js';
-import { getReputationScores, getBatchReputationScores } from '../reputation.js';
+import { getBatchReputationScores } from '../reputation.js';
 import { hafCache } from '../cache.js';
 import { logger } from '../logger.js';
 import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';
@@ -28,7 +28,7 @@ import {
   activeAccreditationsCteBody,
   retractedPapersCteBody,
   buildWith,
-  type SqlFragment,
+  getCachedGenesisBlock,
 } from '../hafsql.js';
 
 const router = Router();
@@ -726,8 +726,9 @@ async function loadRetractedPapers(): Promise<RetractionEntry[]> {
        cj.json::jsonb ->> 'timestamp' AS ts
      FROM ${T.customJson} cj
      WHERE cj.custom_id = $1
-       AND cj.json::jsonb ->> 'action' = 'retract_paper'`,
-    [config.appTag],
+       AND cj.json::jsonb ->> 'action' = 'retract_paper'
+       AND cj.block_num >= $2`,
+    [config.appTag, getCachedGenesisBlock()],
   );
   return result.rows.map((r: Record<string, unknown>) => ({
     author: r.author as string,
@@ -904,7 +905,7 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string) {
       ? [...accreditedArr, config.hiveAnonAccount]
       : accreditedArr;
 
-    const [voteResult, reviewsResult, citationResult, versions, retraction] = await Promise.all([
+    const [voteResult, reviewsResult, citationResult, versions, retraction, postMetaResult] = await Promise.all([
       // Accredited voters (excluding self-votes) — use vote operations to survive payout
       pool.query(
         `SELECT DISTINCT ON (v.voter) v.voter, v.weight, v.timestamp FROM ${T.voteOps} v
@@ -944,6 +945,12 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string) {
       // Version history + retraction (moved from SSR-critical path)
       resolveVersionsFromHaf(author, permlink),
       getRetractionInfo(author, permlink),
+      // Post metadata for co-author list
+      pool.query(
+        `SELECT json_metadata FROM ${T.comments}
+         WHERE author = $1 AND permlink = $2 LIMIT 1`,
+        [author, permlink],
+      ),
     ]);
 
     const latestVersion = versions.length > 0 ? versions[versions.length - 1].version_number : 1;
@@ -967,8 +974,9 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string) {
            AND cj.json::jsonb ->> 'action' = 'revote'
            AND cj.json::jsonb ->> 'author' = $2
            AND cj.json::jsonb ->> 'permlink' = $3
+           AND cj.block_num >= $4
          ORDER BY cj.block_num DESC`,
-        [config.appTag, author, permlink],
+        [config.appTag, author, permlink, getCachedGenesisBlock()],
       );
       // §3.1: Build set of native voters for phantom revote check
       const nativeVoters = new Set(voteResult.rows.map((r: Record<string, unknown>) => r.voter as string));
@@ -1062,12 +1070,20 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string) {
     });
     const net_votes = voters.filter((v) => v.effective_weight > 0).length;
 
+    // AUTH-1: Per-author accreditation from post metadata
+    const postMeta = postMetaResult.rows[0] ? parseMeta(postMetaResult.rows[0].json_metadata) : {};
+    const pevoAuthors: Array<{ hive?: string }> = safePevoMeta(postMeta).authors as Array<{ hive?: string }> || [];
+    const accredited_authors = pevoAuthors
+      .filter(a => a.hive && accreditedAccounts.has(a.hive))
+      .map(a => a.hive!);
+
     return {
       net_votes,
       voters,
       reviews,
       citation_count: citationResult.rows[0]?.cnt ?? 0,
       is_accredited: accreditedAccounts.has(author),
+      accredited_authors,
       versions: versions.length > 0 ? versions : undefined,
       is_retracted: retraction.is_retracted,
       retraction_reason: retraction.retraction_reason ?? null,
@@ -1120,12 +1136,20 @@ async function fetchEnrichmentFromHiveApi(author: string, permlink: string) {
       .map((v) => ({ voter: v.voter, weight: v.percent, stale: false, effective_weight: v.percent }));
     const netVotes = voters.filter((v) => v.weight > 0).length;
 
+    // AUTH-1: Per-author accreditation from post metadata
+    const postMeta = parseMeta(post.json_metadata);
+    const pevoAuthors: Array<{ hive?: string }> = safePevoMeta(postMeta).authors as Array<{ hive?: string }> || [];
+    const accredited_authors = pevoAuthors
+      .filter(a => a.hive && accreditedAccounts.has(a.hive))
+      .map(a => a.hive!);
+
     return {
       net_votes: netVotes,
       voters,
       reviews,
       citation_count: 0, // Cannot compute via Hive API
       is_accredited: accreditedAccounts.has(author),
+      accredited_authors,
       is_retracted: false,
       retraction_reason: null,
       retraction_timestamp: null,
@@ -1454,8 +1478,9 @@ async function getExistingDoi(author: string, permlink: string): Promise<{ doi: 
          AND cj.json::jsonb ->> 'action' = 'assign_doi'
          AND cj.json::jsonb ->> 'author' = $1
          AND cj.json::jsonb ->> 'permlink' = $2
+         AND cj.block_num >= $4
        ORDER BY cj.block_num DESC LIMIT 1`,
-      [author, permlink, config.appTag],
+      [author, permlink, config.appTag, getCachedGenesisBlock()],
     );
     if (result.rows.length > 0) {
       return result.rows[0];

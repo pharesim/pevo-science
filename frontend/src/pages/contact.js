@@ -120,8 +120,6 @@ export function initContactPage() {
     step: 'idle', // idle | submitting | success | error
     errorMessage: '',
 
-    categories: ['bug', 'accreditation', 'keychain', 'general'],
-
     async handleSubmit() {
       if (this.website) return; // honeypot triggered
 

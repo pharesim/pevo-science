@@ -3,7 +3,7 @@ import { hiveClient } from './hive.js';
 import { config } from './config.js';
 import { logger } from './logger.js';
 import { hafCache } from './cache.js';
-import { T, activeAccreditationsCteBody } from './hafsql.js';
+import { T, activeAccreditationsCteBody, getCachedGenesisBlock } from './hafsql.js';
 
 /**
  * Batch-check accreditation status for multiple accounts.
@@ -20,10 +20,9 @@ export async function getAccreditedSet(usernames: string[]): Promise<Set<string>
   if (pool) {
     try {
       const unique = [...new Set(usernames)];
-      const placeholders = unique.map((_, i) => `$${i + 1}`).join(', ');
 
-      // $1 = appTag, $2 = whitelist, $3+ = usernames
-      const userPlaceholders = unique.map((_, i) => `$${i + 3}`).join(', ');
+      // $1 = appTag, $2 = whitelist, $3 = genesis, $4+ = usernames
+      const userPlaceholders = unique.map((_, i) => `$${i + 4}`).join(', ');
       const result = await pool.query(
         `WITH ranked AS (
           SELECT
@@ -34,10 +33,11 @@ export async function getAccreditedSet(usernames: string[]): Promise<Set<string>
           WHERE cj.custom_id = $1
             AND cj.json::jsonb ->> 'action' IN ('accredit', 'revoke')
             AND cj.required_posting_auths ?| $2::text[]
+            AND cj.block_num >= $3
             AND cj.json::jsonb ->> 'account' IN (${userPlaceholders})
         )
         SELECT account FROM ranked WHERE rn = 1 AND action = 'accredit'`,
-        [config.appTag, config.accreditationAuthorities, ...unique],
+        [config.appTag, config.accreditationAuthorities, getCachedGenesisBlock(), ...unique],
       );
 
       return new Set(result.rows.map((r: { account: string }) => r.account));

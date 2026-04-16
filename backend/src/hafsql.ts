@@ -26,6 +26,7 @@
  */
 
 import { config } from './config.js';
+import { logger } from './logger.js';
 
 // ─── SQL fragment type ───────────────────────────────────────────
 
@@ -76,14 +77,15 @@ export function activeAccreditationsCteBody(startIdx = 1): SqlFragment {
     WHERE cj.custom_id = $${p}
       AND cj.json::jsonb ->> 'action' IN ('accredit', 'revoke')
       AND cj.required_posting_auths ?| $${p + 1}::text[]
+      AND cj.block_num >= $${p + 2}
   ),
   active_accreditations AS (
     SELECT account, researcher_name, institution, field, method, event_timestamp, event_id
     FROM accred_ranked
     WHERE rn = 1 AND action = 'accredit'
   )`,
-    params: [config.appTag, config.accreditationAuthorities],
-    nextIdx: p + 2,
+    params: [config.appTag, config.accreditationAuthorities, getCachedGenesisBlock()],
+    nextIdx: p + 3,
   };
 }
 
@@ -122,14 +124,15 @@ export function activeVouchesCteBody(startIdx = 1): SqlFragment {
     FROM ${T.customJson} cj
     WHERE cj.custom_id = $${p}
       AND cj.json::jsonb ->> 'action' IN ('vouch', 'unvouch')
+      AND cj.block_num >= $${p + 1}
   ),
   active_vouches AS (
     SELECT voucher, vouchee, relationship, event_timestamp
     FROM vouch_ranked
     WHERE rn = 1 AND action = 'vouch'
   )`,
-    params: [config.appTag],
-    nextIdx: p + 1,
+    params: [config.appTag, getCachedGenesisBlock()],
+    nextIdx: p + 2,
   };
 }
 
@@ -152,57 +155,14 @@ export function retractedPapersCteBody(startIdx = 1): SqlFragment {
     FROM ${T.customJson} cj
     WHERE cj.custom_id = $${p}
       AND cj.json::jsonb ->> 'action' = 'retract_paper'
+      AND cj.block_num >= $${p + 1}
   )`,
-    params: [config.appTag],
-    nextIdx: p + 1,
+    params: [config.appTag, getCachedGenesisBlock()],
+    nextIdx: p + 2,
   };
 }
 
 // ─── PEvO content filters ────────────────────────────────────────
-
-/**
- * WHERE clause fragment to identify PEvO papers in hafsql.comments.
- * Uses `c.` as the table alias.
- *
- * @param startIdx - first available $N parameter index
- */
-export function isPevoPaperSql(startIdx = 1): SqlFragment {
-  const p = startIdx;
-  return {
-    sql: `
-  c.parent_author = '' AND c.parent_permlink = $${p}
-  AND (c.json_metadata -> $${p} ->> 'type') = 'paper'
-  AND c.json_metadata ->> 'app' LIKE $${p + 1}`,
-    params: [config.appTag, `${config.appTag}/%`],
-    nextIdx: p + 2,
-  };
-}
-
-/** WHERE clause fragment to identify PEvO bridge papers in hafsql.comments */
-export function isPevoBridgePaperSql(startIdx = 1): SqlFragment {
-  const p = startIdx;
-  return {
-    sql: `
-  c.parent_author = '' AND c.parent_permlink = $${p}
-  AND (c.json_metadata -> $${p} ->> 'type') = 'bridge_paper'
-  AND c.json_metadata ->> 'app' LIKE $${p + 1}`,
-    params: [config.appTag, `${config.appTag}/%`],
-    nextIdx: p + 2,
-  };
-}
-
-/** WHERE clause fragment to identify any PEvO paper (native or bridge) in hafsql.comments */
-export function isPevoAnyPaperSql(startIdx = 1): SqlFragment {
-  const p = startIdx;
-  return {
-    sql: `
-  c.parent_author = '' AND c.parent_permlink = $${p}
-  AND (c.json_metadata -> $${p} ->> 'type') IN ('paper', 'bridge_paper')
-  AND c.json_metadata ->> 'app' LIKE $${p + 1}`,
-    params: [config.appTag, `${config.appTag}/%`],
-    nextIdx: p + 2,
-  };
-}
 
 /** WHERE clause fragment to identify PEvO reviews in hafsql.comments */
 export function isPevoReviewSql(startIdx = 1): SqlFragment {
@@ -216,16 +176,60 @@ export function isPevoReviewSql(startIdx = 1): SqlFragment {
   };
 }
 
-/** WHERE clause fragment to identify PEvO discussion comments in hafsql.comments */
-export function isPevoCommentSql(startIdx = 1): SqlFragment {
-  const p = startIdx;
-  return {
-    sql: `
-  (c.json_metadata -> $${p} ->> 'type') = 'comment'
-  AND c.json_metadata ->> 'app' LIKE $${p + 1}`,
-    params: [config.appTag, `${config.appTag}/%`],
-    nextIdx: p + 2,
-  };
+// ─── Genesis block ──────────────────────────────────────────────
+
+/**
+ * The block number of the first accreditation custom_json in this namespace.
+ * Nothing PEvO-related exists before this block — use it as a floor for all
+ * queries that accept a since_block parameter.
+ *
+ * Discovered once from HAF on first call, then cached permanently.
+ */
+let genesisBlock: number | null = null;
+
+export async function getGenesisBlock(pool: { query: (sql: string, params: unknown[]) => Promise<{ rows: Record<string, unknown>[] }> }): Promise<number> {
+  if (genesisBlock !== null) return genesisBlock;
+
+  try {
+    const result = await pool.query(
+      `SELECT MIN(cj.block_num) AS genesis
+       FROM ${T.customJson} cj
+       WHERE cj.custom_id = $1
+         AND cj.json::jsonb ->> 'action' = 'accredit'`,
+      [config.appTag],
+    );
+    const block = Number(result.rows[0]?.genesis);
+    if (block && block > 0) {
+      genesisBlock = block;
+      logger.info({ genesisBlock }, 'PEvO genesis block discovered');
+      return genesisBlock;
+    }
+  } catch (err) {
+    logger.error({ err }, 'Failed to query genesis block');
+  }
+
+  // Fallback: use current head block — nothing PEvO-related can exist before now
+  try {
+    const headResult = await pool.query(`SELECT MAX(block_num) AS head FROM ${T.blocks}`);
+    const head = Number(headResult.rows[0]?.head);
+    if (head && head > 0) {
+      genesisBlock = head;
+      logger.info({ genesisBlock: head }, 'No accreditations yet — using head block as genesis floor');
+      return genesisBlock;
+    }
+  } catch (headErr) {
+    logger.error({ err: headErr }, 'Failed to query head block for genesis fallback');
+  }
+
+  return 0;
+}
+
+/**
+ * Synchronous access to the cached genesis block number.
+ * Returns 0 if not yet initialized (getGenesisBlock hasn't been called).
+ */
+export function getCachedGenesisBlock(): number {
+  return genesisBlock ?? 0;
 }
 
 // ─── Vote count subquery ─────────────────────────────────────────
@@ -247,37 +251,6 @@ export function accreditedVoteCount(authorExpr: string, permlinkExpr: string): s
       AND v.voter != ${authorExpr}
     ORDER BY v.voter, v.block_num DESC
   ) lv WHERE lv.weight > 0)`;
-}
-
-/**
- * Subquery that sums accredited vote weights for a given (author, permlink).
- * Uses vote operations (not effective view) so weights survive post payout.
- */
-export function accreditedRshares(authorExpr: string, permlinkExpr: string): string {
-  return `COALESCE((SELECT sum(lv.weight) FROM (
-    SELECT DISTINCT ON (v.voter) v.weight FROM ${T.voteOps} v
-    JOIN active_accreditations aa ON aa.account = v.voter
-    WHERE v.author = ${authorExpr} AND v.permlink = ${permlinkExpr}
-      AND v.voter != ${authorExpr}
-    ORDER BY v.voter, v.block_num DESC
-  ) lv WHERE lv.weight > 0), 0)`;
-}
-
-// ─── Helpers ─────────────────────────────────────────────────────
-
-/**
- * Merge multiple SqlFragments sequentially, adjusting parameter indices.
- * Useful when combining CTEs in a single WITH block.
- */
-export function mergeFragments(...fragments: SqlFragment[]): SqlFragment {
-  const allParams: unknown[] = [];
-  const sqlParts: string[] = [];
-  for (const f of fragments) {
-    allParams.push(...f.params);
-    sqlParts.push(f.sql);
-  }
-  const lastFrag = fragments[fragments.length - 1];
-  return { sql: sqlParts.join(', '), params: allParams, nextIdx: lastFrag?.nextIdx ?? 1 };
 }
 
 /**

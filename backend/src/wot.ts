@@ -12,7 +12,7 @@ import { config } from './config.js';
 import { getAccreditedSet } from './accreditation.js';
 import { logger } from './logger.js';
 import { hafCache } from './cache.js';
-import { T, activeAccreditationsCteBody, activeVouchesCteBody, buildWith } from './hafsql.js';
+import { T, activeAccreditationsCteBody, activeVouchesCteBody, buildWith, getCachedGenesisBlock } from './hafsql.js';
 
 const DEFAULT_WOT_THRESHOLD = 3;
 const MAX_REVOCATION_DEPTH = 20;
@@ -35,9 +35,10 @@ async function loadWotThreshold(): Promise<number> {
       `SELECT json FROM ${T.customJson}
        WHERE custom_id = $1
          AND json::jsonb ->> 'action' = 'update_params'
+         AND block_num >= $2
        ORDER BY block_num DESC
        LIMIT 1`,
-      [config.appTag],
+      [config.appTag, getCachedGenesisBlock()],
     );
     await client.query('COMMIT');
     client.release();

@@ -13,6 +13,8 @@ import { getAppPool } from './app-db.js';
 import { config } from './config.js';
 import { logger } from './logger.js';
 import { fetchNotificationsFromHaf } from './notification-queries.js';
+import { getGenesisBlock } from './hafsql.js';
+import { getPool } from './db.js';
 import type { NotificationEvent } from './types/index.js';
 
 // ── Types ───────────────────────────────────────
@@ -147,9 +149,16 @@ export async function runDigest(frequency: 'daily' | 'weekly'): Promise<{ sent: 
 
   const users = await getDigestUsers(frequency);
 
+  // Clamp to namespace genesis — no PEvO data exists before the first accreditation
+  const pool = getPool();
+  const genesis = pool ? await getGenesisBlock(pool) : 0;
+
   for (const user of users) {
     try {
-      const batch = await fetchNotificationsFromHaf(user.username, user.last_digest_block, 200);
+      const sinceBlock = genesis > 0 && user.last_digest_block < genesis
+        ? genesis - 1
+        : user.last_digest_block;
+      const batch = await fetchNotificationsFromHaf(user.username, sinceBlock, 200);
 
       if (!batch || batch.events.length === 0) {
         skipped++;

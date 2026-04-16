@@ -1,5 +1,5 @@
 import Alpine from 'alpinejs';
-import { fetchPaper, fetchPaperEnrichment, fetchCitationExport, retractPaper, fetchDoi, assignDoi, updateBridgePaper, fetchPaperComments } from '../api.js';
+import { fetchPaper, fetchPaperEnrichment, fetchCitationExport, retractPaper, fetchDoi, assignDoi, updateBridgePaper } from '../api.js';
 import { computeVersionDiff } from '../lib/version-diff.js';
 import { formatDate } from '../components/paper-card.js';
 
@@ -328,20 +328,24 @@ const template = `
 
               <!-- Authors -->
               <div class="flex flex-wrap items-center gap-x-3 gap-y-1 mb-4">
-                <template x-for="a in paper.authors" :key="a.hive">
-                  <a :href="$lp('/profile/' + a.hive)" @click.prevent="navigate('/profile/' + a.hive)" class="text-sm no-underline hover:underline">
-                    <span class="text-ink font-medium" x-text="a.name"></span>
+                <template x-for="a in paper.authors" :key="a.hive || a.name">
+                  <span class="inline-flex items-center text-sm">
+                    <template x-if="a.hive && (paper.accredited_authors || []).includes(a.hive)">
+                      <span class="inline-flex items-center">
+                        <a :href="$lp('/profile/' + a.hive)" @click.prevent="navigate('/profile/' + a.hive)" class="no-underline hover:underline">
+                          <span class="text-ink font-medium" x-text="a.name"></span>
+                        </a>
+                        <svg class="ml-0.5 h-3 w-3 text-pevo-accent" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true" :title="$t('badge.accreditedTitle')">
+                          <path fill-rule="evenodd" d="M16.403 12.652a3 3 0 010-5.304 3 3 0 00-3.75-3.751 3 3 0 00-5.305 0 3 3 0 00-3.751 3.75 3 3 0 000 5.305 3 3 0 003.75 3.751 3 3 0 005.305 0 3 3 0 003.751-3.75zm-2.546-4.46a.75.75 0 00-1.214-.882l-3.483 4.79-1.88-1.88a.75.75 0 10-1.06 1.061l2.5 2.5a.75.75 0 001.137-.089l4-5.5z" clip-rule="evenodd" />
+                        </svg>
+                      </span>
+                    </template>
+                    <template x-if="!a.hive || !(paper.accredited_authors || []).includes(a.hive)">
+                      <span class="text-ink font-medium" x-text="a.name"></span>
+                    </template>
                     <template x-if="a.affiliation">
                       <span class="text-ink-muted ml-1" x-text="'(' + a.affiliation + ')'"></span>
                     </template>
-                  </a>
-                </template>
-                <template x-if="paper.is_accredited">
-                  <span class="badge-accredited" :title="$t('badge.accreditedTitle')">
-                    <svg class="mr-1 h-3 w-3" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                      <path fill-rule="evenodd" d="M16.403 12.652a3 3 0 010-5.304 3 3 0 00-3.75-3.751 3 3 0 00-5.305 0 3 3 0 00-3.751 3.75 3 3 0 000 5.305 3 3 0 003.75 3.751 3 3 0 005.305 0 3 3 0 003.751-3.75zm-2.546-4.46a.75.75 0 00-1.214-.882l-3.483 4.79-1.88-1.88a.75.75 0 10-1.06 1.061l2.5 2.5a.75.75 0 001.137-.089l4-5.5z" clip-rule="evenodd" />
-                    </svg>
-                    <span x-text="$t('badge.accredited')"></span>
                   </span>
                 </template>
               </div>
@@ -825,6 +829,7 @@ export function initPaperDetailPage() {
         this.paper.voters = d.voters || [];
         this.paper.citation_count = d.citation_count ?? this.paper.citation_count;
         this.paper.is_accredited = d.is_accredited ?? this.paper.is_accredited;
+        this.paper.accredited_authors = d.accredited_authors || [];
         if (d.versions) this.paper.versions = d.versions;
         if (d.is_retracted !== undefined) {
           this.paper.is_retracted = d.is_retracted;
@@ -883,11 +888,6 @@ export function initPaperDetailPage() {
       if (username === this.paper.author) return true;
       const authors = this.paper.authors || [];
       return authors.some(a => a.hive === username);
-    },
-
-    get authorNames() {
-      if (!this.paper?.authors) return '';
-      return this.paper.authors.map(a => a.name).join(', ');
     },
 
     get averageRatings() {

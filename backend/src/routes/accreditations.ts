@@ -1,11 +1,10 @@
 import { Router, type Request, type Response } from 'express';
 import { getPool, isHafAvailable } from '../db.js';
 import { config } from '../config.js';
-import { sendOk, sendError } from '../response.js';
-import { parsePageLimit } from '../helpers.js';
+import { sendOk } from '../response.js';
 import { hafCache } from '../cache.js';
 import { logger } from '../logger.js';
-import { T } from '../hafsql.js';
+import { T, getCachedGenesisBlock } from '../hafsql.js';
 
 const router = Router();
 
@@ -53,6 +52,7 @@ async function fetchAccreditationsFromHaf(
         FROM ${T.customJson} cj
         WHERE cj.custom_id = $1
           AND cj.json::jsonb ->> 'action' IN ('accredit', 'revoke')
+          AND cj.block_num >= $${paramIdx++}
       )
       SELECT account AS username, name, institution, field, method, timestamp,
         count(*) OVER ()::int AS total
@@ -61,7 +61,7 @@ async function fetchAccreditationsFromHaf(
       ${filterConditions}
       ORDER BY timestamp DESC
       LIMIT $${paramIdx++} OFFSET $${paramIdx++}`,
-      [...params, limit, offset],
+      [...params, getCachedGenesisBlock(), limit, offset],
     );
 
     const total = dataResult.rows[0]?.total ?? 0;
@@ -105,9 +105,10 @@ async function fetchAccreditationStatusFromHaf(username: string) {
        WHERE cj.custom_id = $2
          AND cj.json::jsonb ->> 'action' IN ('accredit', 'revoke')
          AND cj.json::jsonb ->> 'account' = $1
+         AND cj.block_num >= $3
        ORDER BY cj.block_num DESC
        LIMIT 1`,
-      [username, config.appTag],
+      [username, config.appTag, getCachedGenesisBlock()],
     );
 
     if (result.rows.length === 0) {

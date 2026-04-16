@@ -1,5 +1,3 @@
-import Alpine from 'alpinejs';
-
 export function initRatingBar() {
   // Rating bar is template-driven. The percentage width is computed inline.
   // Usage in templates:

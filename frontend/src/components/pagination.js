@@ -1,5 +1,3 @@
-import Alpine from 'alpinejs';
-
 export function initPagination() {
   Alpine.data('pagination', (totalPages, currentPage, onPageChange) => ({
     totalPages,

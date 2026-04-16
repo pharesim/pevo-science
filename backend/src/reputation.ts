@@ -14,7 +14,7 @@ import { hafCache } from './cache.js';
 import { getRedis } from './redis.js';
 import { logger } from './logger.js';
 import { DEFAULT_REPUTATION_WEIGHTS, type ReputationWeights, type ReputationScore } from './types/index.js';
-import { T } from './hafsql.js';
+import { T, getCachedGenesisBlock } from './hafsql.js';
 
 const REPUTATION_CACHE_TTL = 60 * 60_000; // 1 hour
 
@@ -351,8 +351,9 @@ export async function getUserStatsFromHaf(username: string): Promise<UserStats |
        WHERE cj.custom_id = $1
          AND cj.json::jsonb ->> 'action' = 'revote'
          AND cj.json::jsonb ->> 'author' = $2
+         AND cj.block_num >= $3
        ORDER BY cj.block_num DESC`,
-      [config.appTag, username],
+      [config.appTag, username, getCachedGenesisBlock()],
     );
 
     // Await all queries and lookups in parallel
@@ -394,9 +395,6 @@ export async function getUserStatsFromHaf(username: string): Promise<UserStats |
       const latestRevisionTs = revisionMap.get(row.permlink) ?? null;
       const paperRevotes = revoteMap.get(row.permlink) ?? null;
 
-      // Build set of voters with native votes for §3.1 phantom revote check
-      const nativeVoters = new Set(rawVotes.map((v) => v.voter));
-
       const votes: Vote[] = rawVotes.map((v) => {
         if (!latestRevisionTs) {
           // No content revisions — vote is not stale
@@ -418,10 +416,6 @@ export async function getUserStatsFromHaf(username: string): Promise<UserStats |
         // Stale: vote predates latest content revision with no post-revision re-vote
         return { voter: v.voter, weight: 0 };
       });
-
-      // §3.1: Ignore phantom revotes (revotes from users without a prior native vote)
-      // These are already excluded because we only iterate rawVotes (native voters),
-      // so revotes without a corresponding native vote are never applied.
 
       return {
         permlink: row.permlink,
@@ -570,8 +564,9 @@ async function loadReputationWeights(): Promise<ReputationWeights> {
       `SELECT 1 FROM ${T.customJson} cj
        WHERE cj.custom_id = $1
          AND cj.json LIKE '%update_weights%'
+         AND cj.block_num >= $2
        LIMIT 1`,
-      [config.appTag],
+      [config.appTag, getCachedGenesisBlock()],
     );
 
     if (exists.rows.length === 0) {
@@ -585,9 +580,10 @@ async function loadReputationWeights(): Promise<ReputationWeights> {
       `SELECT cj.json FROM ${T.customJson} cj
        WHERE cj.custom_id = $1
          AND cj.json::jsonb ->> 'action' = 'update_weights'
+         AND cj.block_num >= $2
        ORDER BY cj.block_num DESC
        LIMIT 1`,
-      [config.appTag],
+      [config.appTag, getCachedGenesisBlock()],
     );
     await client.query('COMMIT');
     client.release();

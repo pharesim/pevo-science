@@ -5,14 +5,9 @@
  * permlinks, and constructs Hive comment operations for bridge papers.
  */
 
-import crypto from 'node:crypto';
 import { config } from './config.js';
 import { logger } from './logger.js';
 import type { BridgeLookupResult, BridgeLookupAuthor } from './types/index.js';
-
-function sha256(input: string): string {
-  return crypto.createHash('sha256').update(input).digest('hex');
-}
 
 // ─── Identifier parsing ──────────────────────────────────────────
 

@@ -167,5 +167,5 @@ const template = `
 export { template as papersPageTemplate };
 
 export function initPapersPage() {
-  Alpine.data('papersPage', () => ({}));
+  // Papers page reuses the homePage Alpine component
 }

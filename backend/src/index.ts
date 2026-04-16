@@ -1,5 +1,5 @@
 import { config } from './config.js';
-import { isHafAvailable, closeHafPool } from './db.js';
+import { isHafAvailable, closeHafPool, getPool } from './db.js';
 import { initAppDb, closeAppPool } from './app-db.js';
 import { createApp } from './app.js';
 import { validateConfig } from './startup-checks.js';
@@ -10,6 +10,7 @@ import { startBatchReputation, stopBatchReputation } from './reputation-batch.js
 import { disconnectRedis } from './redis.js';
 import { checkHiveNodes } from './hive.js';
 import { startRetractionCache } from './routes/papers.js';
+import { getGenesisBlock } from './hafsql.js';
 import { startActiveAccountsCache, startReputationWeightsCache } from './reputation.js';
 import { startWotThresholdCache } from './wot.js';
 import { startAccountClaimer, stopAccountClaimer } from './account-creation.js';
@@ -36,6 +37,10 @@ let server: Server;
 
 initAppDb()
   .then(async () => {
+    // Warm genesis block cache before accepting traffic
+    const hafPool = getPool();
+    if (hafPool) await getGenesisBlock(hafPool);
+
     // Start periodic cache refreshes before accepting traffic
     await startRetractionCache();
 

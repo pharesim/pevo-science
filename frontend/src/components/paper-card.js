@@ -1,5 +1,3 @@
-import Alpine from 'alpinejs';
-
 export function initPaperCard() {
   // Paper card is template-driven. All data comes from the parent x-for loop.
   // Helper registered as a global Alpine magic for date formatting.

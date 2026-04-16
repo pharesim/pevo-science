@@ -114,12 +114,5 @@ export function initHeader() {
       });
     },
 
-    closeMoreOnClickOutside(event) {
-      if (this.moreOpen) this.moreOpen = false;
-    },
-
-    closeLangOnClickOutside(event) {
-      if (this.langOpen) this.langOpen = false;
-    },
   }));
 }

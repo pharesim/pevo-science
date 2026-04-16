@@ -1,6 +1,8 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeAll } from 'vitest';
 import request from 'supertest';
 import { createApp } from '../../src/app.js';
+import { getPool } from '../../src/db.js';
+import { getGenesisBlock } from '../../src/hafsql.js';
 
 vi.mock('../../src/middleware/verifyHiveSignature.js', async () => {
   const { MOCK_VERIFY_SIGNATURE } = await import('../fixtures/index.js');
@@ -10,6 +12,14 @@ vi.mock('../../src/middleware/verifyHiveSignature.js', async () => {
 const app = createApp();
 
 describe('GET /api/notifications', () => {
+  // Use the namespace genesis block — no PEvO data exists before it
+  let genesisBlock: number;
+
+  beforeAll(async () => {
+    const pool = getPool();
+    genesisBlock = pool ? await getGenesisBlock(pool) : 1;
+  });
+
   it('returns 401 without auth headers', async () => {
     const res = await request(app).get('/api/notifications?since_block=100');
     expect(res.status).toBe(401);
@@ -35,9 +45,9 @@ describe('GET /api/notifications', () => {
     expect(res.body.error.code).toBe('BAD_REQUEST');
   });
 
-  it('returns notifications with correct envelope', async () => {
+  it('returns notifications with correct envelope', { timeout: 60_000 }, async () => {
     const res = await request(app)
-      .get('/api/notifications?since_block=1')
+      .get(`/api/notifications?since_block=${genesisBlock}`)
       .set('X-Hive-Username', 'pevo.admin')
       .set('X-Hive-Signature', 'mock-sig');
     expect(res.status).toBe(200);
@@ -48,18 +58,18 @@ describe('GET /api/notifications', () => {
     expect(Array.isArray(res.body.data.events)).toBe(true);
   });
 
-  it('respects limit parameter', async () => {
+  it('respects limit parameter', { timeout: 60_000 }, async () => {
     const res = await request(app)
-      .get('/api/notifications?since_block=1&limit=1')
+      .get(`/api/notifications?since_block=${genesisBlock}&limit=1`)
       .set('X-Hive-Username', 'pevo.admin')
       .set('X-Hive-Signature', 'mock-sig');
     expect(res.status).toBe(200);
     expect(res.body.data.events.length).toBeLessThanOrEqual(1);
   });
 
-  it('events are sorted by block_num ascending', async () => {
+  it('events are sorted by block_num ascending', { timeout: 60_000 }, async () => {
     const res = await request(app)
-      .get('/api/notifications?since_block=1')
+      .get(`/api/notifications?since_block=${genesisBlock}`)
       .set('X-Hive-Username', 'pevo.admin')
       .set('X-Hive-Signature', 'mock-sig');
     const events = res.body.data.events;

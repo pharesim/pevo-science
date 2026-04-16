@@ -1,4 +1,3 @@
-import pino from 'pino';
 
 if (!process.env.APP_TAG) {
   throw new Error('APP_TAG must be set in .env');

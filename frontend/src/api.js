@@ -85,10 +85,6 @@ export function fetchPaperComments(author, permlink, params = {}) {
   return request(`/papers/${encodeURIComponent(author)}/${encodeURIComponent(permlink)}/comments${buildQuery(params)}`);
 }
 
-export function fetchPaperCitations(author, permlink, params = {}) {
-  return request(`/papers/${encodeURIComponent(author)}/${encodeURIComponent(permlink)}/citations${buildQuery(params)}`);
-}
-
 // ─── Profile ─────────────────────────────────────────────────────
 
 export function fetchProfile(username) {
@@ -430,10 +426,3 @@ export function fetchBlogPost(permlink) {
   return request(`/blog/${encodeURIComponent(permlink)}`);
 }
 
-// ─── Health ──────────────────────────────────────────────────────
-
-export async function fetchHealth() {
-  const res = await fetch(`${BASE_URL}/health`);
-  if (!res.ok) throw new ApiRequestError('HEALTH_CHECK_FAILED', `Health check failed with status ${res.status}`);
-  return res.json();
-}

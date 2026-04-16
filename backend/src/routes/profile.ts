@@ -18,7 +18,7 @@ import {
   getActiveAccounts,
 } from '../reputation.js';
 import { hafCache } from '../cache.js';
-import { T, isPevoReviewSql } from '../hafsql.js';
+import { T, isPevoReviewSql, getCachedGenesisBlock } from '../hafsql.js';
 
 const router = Router();
 
@@ -36,9 +36,10 @@ async function getAccreditationFromHaf(username: string) {
        WHERE cj.custom_id = $2
          AND cj.json::jsonb ->> 'action' IN ('accredit', 'revoke')
          AND cj.json::jsonb ->> 'account' = $1
+         AND cj.block_num >= $3
        ORDER BY cj.block_num DESC
        LIMIT 1`,
-      [username, config.appTag],
+      [username, config.appTag, getCachedGenesisBlock()],
     );
     if (result.rows.length === 0) return null;
 
@@ -83,25 +84,41 @@ router.get('/:username', async (req: Request, res: Response) => {
   const username = req.params.username as string;
 
   const data = await hafCache.getOrSet(`profile:${username}`, async () => {
-    // Fire all independent lookups in parallel (account check, accreditation, stats, reputation data)
-    const [accountResult, accreditation, hafStats, reputationMap, activeAccounts] = await Promise.all([
+    // Check account existence and accreditation first
+    const [accountResult, accreditation] = await Promise.all([
       hiveClient.database.getAccounts([username]),
       getAccreditation(username),
-      isHafAvailable() ? getUserStatsFromHaf(username) : Promise.resolve(null),
-      getBatchReputationMap(),
-      getActiveAccounts(),
     ]);
 
     const [account] = accountResult;
     if (!account) return null;
 
     const isAccredited = !!accreditation;
+
+    // Non-accredited: return immediately with zeroed stats, skip expensive HAF/reputation queries
+    if (!isAccredited) {
+      return {
+        username,
+        is_accredited: false,
+        accreditation: null,
+        reputation: { score: 0, breakdown: { papers: 0, reviews: 0, citations: 0, accreditation: 0 } },
+        stats: { paper_count: 0, review_count: 0, citation_count: 0, first_pevo_post: null },
+      };
+    }
+
+    // Accredited: run the expensive lookups
+    const [hafStats, reputationMap, activeAccounts] = await Promise.all([
+      isHafAvailable() ? getUserStatsFromHaf(username) : Promise.resolve(null),
+      getBatchReputationMap(),
+      getActiveAccounts(),
+    ]);
+
     const stats = hafStats ?? await getUserStatsFromHiveApi(username);
     const reputation = await computeReputation(stats, isAccredited, undefined, reputationMap, activeAccounts);
 
     return {
       username,
-      is_accredited: isAccredited,
+      is_accredited: true,
       accreditation: accreditation || null,
       reputation,
       stats: {
