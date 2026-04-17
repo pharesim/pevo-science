@@ -41,7 +41,7 @@ function sendVerificationEmail(to: string, token: string): Promise<void> {
     auth: config.smtpUser ? { user: config.smtpUser, pass: config.smtpPass } : undefined,
   });
 
-  const verifyUrl = `${config.appUrl}/#/settings/verify-email/${token}`;
+  const verifyUrl = `${config.appUrl}/settings/verify-email/${token}`;
   return transporter.sendMail({
     from: config.smtpFrom,
     to,
