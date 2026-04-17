@@ -8,6 +8,8 @@
 .git
 
 # Test artifacts
+**/tests
+**/vitest.config.ts
 **/playwright-report
 **/test-results
 **/.playwright
