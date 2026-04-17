@@ -957,7 +957,7 @@
     "accountType": "סוג חשבון",
     "selfCustody": "החשבון שלכם בניהול עצמי מלא דרך Hive Keychain. יש לכם שליטה מלאה על המפתחות שלכם.",
     "emailTitle": "דוא\"ל",
-    "emailAddDescription": "הוסיפו כתובת דוא\"ל כדי לקבל התראות ולאפשר שחזור חשבון.",
+    "emailAddDescription": "הוסיפו כתובת דוא\"ל כדי לקבל התראות.",
     "emailChangeDescription": "שנו את כתובת הדוא\"ל שלכם. הודעת אימות תישלח לכתובת החדשה.",
     "emailVerified": "מאומת",
     "emailPending": "ממתין לאימות",

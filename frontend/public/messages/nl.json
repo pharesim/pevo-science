@@ -961,7 +961,7 @@
     "accountType": "Accounttype",
     "selfCustody": "Je account is zelfbeheerd via Hive Keychain. Je hebt volledige controle over je sleutels.",
     "emailTitle": "E-mail",
-    "emailAddDescription": "Voeg een e-mailadres toe om meldingen te ontvangen en accountherstel mogelijk te maken.",
+    "emailAddDescription": "Voeg een e-mailadres toe om meldingen te ontvangen.",
     "emailChangeDescription": "Wijzig je e-mailadres. Er wordt een verificatie-e-mail naar het nieuwe adres gestuurd.",
     "emailVerified": "Geverifieerd",
     "emailPending": "Verificatie in afwachting",

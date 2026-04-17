@@ -961,7 +961,7 @@
     "accountType": "Hesap Türü",
     "selfCustody": "Hesabınız Hive Keychain aracılığıyla tamamen sizin kontrolünüzde. Anahtarlarınız üzerinde tam yetkiniz var.",
     "emailTitle": "E-posta",
-    "emailAddDescription": "Bildirim almak ve hesap kurtarmayı etkinleştirmek için bir e-posta adresi ekleyin.",
+    "emailAddDescription": "Bildirim almak için bir e-posta adresi ekleyin.",
     "emailChangeDescription": "E-posta adresinizi değiştirin. Yeni adrese bir doğrulama e-postası gönderilecektir.",
     "emailVerified": "Doğrulanmış",
     "emailPending": "Doğrulama bekleniyor",

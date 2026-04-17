@@ -957,7 +957,7 @@
     "accountType": "Kontotyp",
     "selfCustody": "Ihr Konto wird über Hive Keychain eigenverwaltet. Sie haben die volle Kontrolle über Ihre Schlüssel.",
     "emailTitle": "E-Mail",
-    "emailAddDescription": "Fügen Sie eine E-Mail-Adresse hinzu, um Benachrichtigungen zu erhalten und die Kontowiederherstellung zu ermöglichen.",
+    "emailAddDescription": "Fügen Sie eine E-Mail-Adresse hinzu, um Benachrichtigungen zu erhalten.",
     "emailChangeDescription": "Ändern Sie Ihre E-Mail-Adresse. Eine Bestätigungs-E-Mail wird an die neue Adresse gesendet.",
     "emailVerified": "Bestätigt",
     "emailPending": "Bestätigung ausstehend",

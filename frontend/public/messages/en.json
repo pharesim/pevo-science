@@ -978,7 +978,7 @@
     "accountType": "Account Type",
     "selfCustody": "Your account is self-custodied via Hive Keychain. You have full control over your keys.",
     "emailTitle": "Email",
-    "emailAddDescription": "Add an email address to receive notifications and enable account recovery.",
+    "emailAddDescription": "Add an email address to receive notifications.",
     "emailChangeDescription": "Change your email address. A verification email will be sent to the new address.",
     "emailVerified": "Verified",
     "emailPending": "Verification pending",

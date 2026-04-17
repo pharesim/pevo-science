@@ -957,7 +957,7 @@
     "accountType": "Typ účtu",
     "selfCustody": "Váš účet je plně pod vaší správou prostřednictvím Hive Keychain. Máte plnou kontrolu nad svými klíči.",
     "emailTitle": "E-mail",
-    "emailAddDescription": "Přidejte e-mailovou adresu pro příjem oznámení a možnost obnovení účtu.",
+    "emailAddDescription": "Přidejte e-mailovou adresu pro příjem oznámení.",
     "emailChangeDescription": "Změňte svou e-mailovou adresu. Na novou adresu bude odeslán ověřovací e-mail.",
     "emailVerified": "Ověřeno",
     "emailPending": "Čeká na ověření",

@@ -957,7 +957,7 @@
     "accountType": "Kontotype",
     "selfCustody": "Din konto er selvforvaltet via Hive Keychain. Du har fuld kontrol over dine nøgler.",
     "emailTitle": "E-mail",
-    "emailAddDescription": "Tilføj en e-mailadresse for at modtage notifikationer og aktivere kontogendannelse.",
+    "emailAddDescription": "Tilføj en e-mailadresse for at modtage notifikationer.",
     "emailChangeDescription": "Skift din e-mailadresse. En bekræftelsesmail sendes til den nye adresse.",
     "emailVerified": "Bekræftet",
     "emailPending": "Afventer bekræftelse",

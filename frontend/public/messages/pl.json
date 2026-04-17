@@ -957,7 +957,7 @@
     "accountType": "Typ konta",
     "selfCustody": "Twoje konto jest w pełni pod Twoją kontrolą dzięki Hive Keychain. Masz pełną władzę nad swoimi kluczami.",
     "emailTitle": "E-mail",
-    "emailAddDescription": "Dodaj adres e-mail, aby otrzymywać powiadomienia i umożliwić odzyskiwanie konta.",
+    "emailAddDescription": "Dodaj adres e-mail, aby otrzymywać powiadomienia.",
     "emailChangeDescription": "Zmień swój adres e-mail. Na nowy adres zostanie wysłany e-mail weryfikacyjny.",
     "emailVerified": "Zweryfikowany",
     "emailPending": "Oczekuje na weryfikację",

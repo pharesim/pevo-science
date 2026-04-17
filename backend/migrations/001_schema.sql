@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS notification_preferences (
 CREATE TABLE IF NOT EXISTS accounts (
   id                      SERIAL PRIMARY KEY,
   email                   TEXT NOT NULL UNIQUE,
-  password_hash           TEXT NOT NULL,
+  password_hash           TEXT,
   full_name               TEXT NOT NULL DEFAULT '',
   institution             TEXT NOT NULL DEFAULT '',
   field                   TEXT NOT NULL DEFAULT '',
@@ -35,6 +35,9 @@ CREATE TABLE IF NOT EXISTS accounts (
   reset_token             TEXT,
   reset_token_expires_at  TIMESTAMPTZ,
   sessions_invalidated_at TIMESTAMPTZ,
+  pending_email           TEXT,
+  pending_email_token     TEXT,
+  pending_email_expires_at TIMESTAMPTZ,
   expires_at              TIMESTAMPTZ,
   created_at              TIMESTAMPTZ DEFAULT NOW()
 );
@@ -61,3 +64,10 @@ CREATE TABLE IF NOT EXISTS account_creation_tokens (
   used_at         TIMESTAMPTZ,
   used_for        TEXT
 );
+
+-- Idempotent ALTER statements for existing databases
+-- (CREATE TABLE IF NOT EXISTS won't modify existing tables)
+ALTER TABLE accounts ALTER COLUMN password_hash DROP NOT NULL;
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS pending_email TEXT;
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS pending_email_token TEXT;
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS pending_email_expires_at TIMESTAMPTZ;

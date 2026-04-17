@@ -957,7 +957,7 @@
     "accountType": "Tipo de cuenta",
     "selfCustody": "Tu cuenta está bajo custodia propia a través de Hive Keychain. Tienes el control total de tus claves.",
     "emailTitle": "Correo electrónico",
-    "emailAddDescription": "Añade una dirección de correo electrónico para recibir notificaciones y habilitar la recuperación de la cuenta.",
+    "emailAddDescription": "Añade una dirección de correo electrónico para recibir notificaciones.",
     "emailChangeDescription": "Cambia tu dirección de correo electrónico. Se enviará un correo de verificación a la nueva dirección.",
     "emailVerified": "Verificado",
     "emailPending": "Verificación pendiente",

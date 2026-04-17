@@ -84,7 +84,10 @@ cmd_down() {
 
 cmd_migrate() {
   log "Running database migrations..."
-  $COMPOSE exec -T backend npm run migrate:up
+  for f in backend/migrations/*.sql; do
+    log "  Applying $(basename "$f")..."
+    $COMPOSE exec -T postgres psql -U pevo -d pevo_app -f "/docker-entrypoint-initdb.d/$(basename "$f")"
+  done
   log "Migrations complete"
 }
 
@@ -97,6 +100,8 @@ cmd_restart() {
   $COMPOSE down
   DOCKER_BUILDKIT=1 COMPOSE_DOCKER_CLI_BUILD=1 $COMPOSE build
   cmd_up
+  log "Applying migrations..."
+  cmd_migrate
 }
 
 cmd_status() {

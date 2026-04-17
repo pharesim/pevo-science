@@ -957,7 +957,7 @@
     "accountType": "Tipo di account",
     "selfCustody": "Il tuo account è autogestito tramite Hive Keychain. Hai il controllo completo delle tue chiavi.",
     "emailTitle": "E-mail",
-    "emailAddDescription": "Aggiungi un indirizzo e-mail per ricevere notifiche e abilitare il recupero dell'account.",
+    "emailAddDescription": "Aggiungi un indirizzo e-mail per ricevere notifiche.",
     "emailChangeDescription": "Modifica il tuo indirizzo e-mail. Un'e-mail di verifica verrà inviata al nuovo indirizzo.",
     "emailVerified": "Verificato",
     "emailPending": "Verifica in attesa",

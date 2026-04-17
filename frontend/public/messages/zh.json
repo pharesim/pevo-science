@@ -957,7 +957,7 @@
     "accountType": "账户类型",
     "selfCustody": "您的账户通过 Hive Keychain 完全自主托管，您拥有密钥的完全控制权。",
     "emailTitle": "电子邮箱",
-    "emailAddDescription": "添加电子邮箱地址以接收通知并启用账户恢复。",
+    "emailAddDescription": "添加电子邮箱地址以接收通知。",
     "emailChangeDescription": "更改您的电子邮箱地址。验证邮件将发送到新地址。",
     "emailVerified": "已验证",
     "emailPending": "等待验证",
