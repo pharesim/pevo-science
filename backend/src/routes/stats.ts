@@ -12,6 +12,8 @@ const router = Router();
 // GET /api/stats
 // ──────────────────────────────────────────────
 
+const STATS_REFRESH_INTERVAL = 300_000; // 5 minutes
+
 async function fetchStatsFromHaf() {
   const pool = getPool();
   if (!pool) return null;
@@ -79,23 +81,29 @@ async function fetchStatsFromHaf() {
   }
 }
 
+const ZERO_STATS = {
+  total_papers: 0,
+  total_reviews: 0,
+  total_accredited_researchers: 0,
+  total_citations: 0,
+  active_disciplines: 0,
+  papers_last_30_days: 0,
+  reviews_last_30_days: 0,
+  total_bridge_papers: 0,
+};
+
 router.get('/', async (_req: Request, res: Response) => {
   if (isHafAvailable()) {
-    const result = await hafCache.getOrSet('stats', fetchStatsFromHaf, 60_000, true);
+    const result = await hafCache.get('stats');
     if (result) return sendOk(res, result);
   }
 
-  // Without HAF, return zeros
-  sendOk(res, {
-    total_papers: 0,
-    total_reviews: 0,
-    total_accredited_researchers: 0,
-    total_citations: 0,
-    active_disciplines: 0,
-    papers_last_30_days: 0,
-    reviews_last_30_days: 0,
-    total_bridge_papers: 0,
-  });
+  sendOk(res, ZERO_STATS);
 });
+
+/** Warm the stats cache at startup via periodic refresh. */
+export async function startStatsCache(): Promise<void> {
+  await hafCache.registerPeriodicRefresh('stats', fetchStatsFromHaf, STATS_REFRESH_INTERVAL);
+}
 
 export default router;

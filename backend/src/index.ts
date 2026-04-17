@@ -10,6 +10,7 @@ import { startBatchReputation, stopBatchReputation } from './reputation-batch.js
 import { disconnectRedis } from './redis.js';
 import { checkHiveNodes } from './hive.js';
 import { startRetractionCache } from './routes/papers.js';
+import { startStatsCache } from './routes/stats.js';
 import { getGenesisBlock } from './hafsql.js';
 import { startActiveAccountsCache, startReputationWeightsCache } from './reputation.js';
 import { startWotThresholdCache } from './wot.js';
@@ -50,6 +51,7 @@ initAppDb()
         startActiveAccountsCache(),
         startReputationWeightsCache(),
         startWotThresholdCache(),
+        startStatsCache(),
       ]).catch((err) => logger.warn({ err }, 'Background cache warmup failed'));
       logger.info({ port: config.port, haf: isHafAvailable(), appDb: !!config.appDatabaseUrl }, 'PEvO backend started');
 
