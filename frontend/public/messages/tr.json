@@ -585,13 +585,13 @@
     "a11": "Makaleler doğrudan Markdown ile (LaTeX matematik desteğiyle) yazılabilir veya PDF olarak yüklenebilir. Ayrıca görsel, veri seti ve ZIP arşivi gibi ek dosyalar ekleyebilirsiniz. PDF'ler ve ekler kalıcı, dağıtık erişim için IPFS üzerinde depolanır.",
     "q12": "İtibar sistemi nasıl çalışır?",
     "a12": "İtibar puanları yayınlanmış etkinliğinizden hesaplanır: yayınların sayısı ve kalitesi, yazılan hakem değerlendirmeleri, alınan atıflar, topluluk oyları ve akreditasyon durumu. Daha yüksek itibara sahip araştırmacıların oyları daha fazla ağırlık taşır. Algoritma şeffaf, tekrarlanabilir ve yapılandırılabilirdir.",
-    "ctaTitle": "Hâlâ sorularınız mı var?",
-    "ctaDescription": "Yardım etmek için buradayız. Doğrudan bize ulaşın.",
-    "ctaButton": "Bize Ulaşın",
     "q13": "PEvO açık kaynak mı?",
     "a13": "Evet. PEvO, AGPL-3.0 lisanslıdır ve tamamen çatallanabilir. Kaynak kodu, itibar algoritması ve tüm veriler herkese açıktır. Token, ücretli erişim duvarı ve satıcı bağımlılığı yoktur.",
     "q14": "PEvO makalesine nasıl atıf yapılır?",
-    "a14": "Her makale benzersiz bir tanımlayıcıya (yazar/permlink) ve kalıcı bir URL'ye sahiptir. Makale sayfasından doğrudan APA, BibTeX veya RIS biçiminde atıf dışa aktarabilir ya da PEvO makalelerine diğer çevrimiçi yayınlar gibi atıf yapabilirsiniz."
+    "a14": "Her makale benzersiz bir tanımlayıcıya (yazar/permlink) ve kalıcı bir URL'ye sahiptir. Makale sayfasından doğrudan APA, BibTeX veya RIS biçiminde atıf dışa aktarabilir ya da PEvO makalelerine diğer çevrimiçi yayınlar gibi atıf yapabilirsiniz.",
+    "ctaTitle": "Hâlâ sorularınız mı var?",
+    "ctaDescription": "Yardım etmek için buradayız. Doğrudan bize ulaşın.",
+    "ctaButton": "Bize Ulaşın"
   },
   "versions": {
     "label": "Sürüm",

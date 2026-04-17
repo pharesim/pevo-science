@@ -585,13 +585,13 @@
     "a11": "Les articles peuvent être rédigés directement en Markdown (avec prise en charge des formules LaTeX) ou importés en tant que PDF. Vous pouvez aussi joindre des fichiers supplémentaires comme des images, des jeux de données et des archives ZIP. Les PDF et les pièces jointes sont stockés sur IPFS pour un accès permanent et distribué.",
     "q12": "Comment fonctionne le système de réputation ?",
     "a12": "Les scores de réputation sont calculés à partir de votre activité publiée : le nombre et la qualité des publications, les évaluations par les pairs rédigées, les citations reçues, les votes de la communauté et le statut d'accréditation. Les votes des chercheurs ayant une réputation plus élevée ont un poids plus important. L'algorithme est transparent, reproductible et configurable.",
-    "ctaTitle": "Encore des questions ?",
-    "ctaDescription": "Nous sommes là pour vous aider. Contactez-nous directement.",
-    "ctaButton": "Contactez-nous",
     "q13": "PEvO est-il open source ?",
     "a13": "Oui. PEvO est sous licence AGPL-3.0 et entièrement duplicable. Le code source, l'algorithme de réputation et toutes les données sont publics. Il n'y a ni jetons, ni abonnements payants, ni dépendance à un fournisseur.",
     "q14": "Comment citer un article PEvO ?",
-    "a14": "Chaque article possède un identifiant unique (auteur/permlink) et une URL permanente. Vous pouvez exporter les citations au format APA, BibTeX ou RIS directement depuis la page de l'article, ou citer les articles PEvO comme toute autre publication en ligne."
+    "a14": "Chaque article possède un identifiant unique (auteur/permlink) et une URL permanente. Vous pouvez exporter les citations au format APA, BibTeX ou RIS directement depuis la page de l'article, ou citer les articles PEvO comme toute autre publication en ligne.",
+    "ctaTitle": "Encore des questions ?",
+    "ctaDescription": "Nous sommes là pour vous aider. Contactez-nous directement.",
+    "ctaButton": "Contactez-nous"
   },
   "versions": {
     "label": "Versions",

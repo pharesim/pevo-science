@@ -585,13 +585,13 @@
     "a11": "Os artigos podem ser escritos diretamente em Markdown (com suporte a matemática LaTeX) ou carregados como PDF. Também pode anexar ficheiros suplementares como imagens, conjuntos de dados e arquivos ZIP. Os PDFs e anexos são armazenados no IPFS para acesso permanente e distribuído.",
     "q12": "Como funciona o sistema de reputação?",
     "a12": "As pontuações de reputação são calculadas a partir da sua atividade publicada: o número e qualidade das publicações, avaliações por pares escritas, citações recebidas, votos da comunidade e estado de credenciamento. Votos de investigadores com maior reputação têm mais peso. O algoritmo é transparente, reproduzível e configurável.",
-    "ctaTitle": "Ainda tem perguntas?",
-    "ctaDescription": "Estamos aqui para ajudar. Entre em contato conosco diretamente.",
-    "ctaButton": "Fale conosco",
     "q13": "O PEvO é open source?",
     "a13": "Sim. O PEvO é licenciado sob AGPL-3.0 e totalmente replicável. O código-fonte, o algoritmo de reputação e todos os dados são públicos. Não há tokens, paywalls nem dependência de fornecedor.",
     "q14": "Como cito um artigo do PEvO?",
-    "a14": "Cada artigo tem um identificador único (autor/permlink) e um URL permanente. Pode exportar citações em formato APA, BibTeX ou RIS diretamente da página do artigo, ou citar artigos do PEvO como qualquer outra publicação online."
+    "a14": "Cada artigo tem um identificador único (autor/permlink) e um URL permanente. Pode exportar citações em formato APA, BibTeX ou RIS diretamente da página do artigo, ou citar artigos do PEvO como qualquer outra publicação online.",
+    "ctaTitle": "Ainda tem perguntas?",
+    "ctaDescription": "Estamos aqui para ajudar. Entre em contato conosco diretamente.",
+    "ctaButton": "Fale conosco"
   },
   "versions": {
     "label": "Versao",

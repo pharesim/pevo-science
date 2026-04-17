@@ -585,13 +585,13 @@
     "a11": "Publikationen können direkt in Markdown (mit LaTeX-Unterstützung für mathematische Formeln) verfasst oder als PDF hochgeladen werden. Sie können auch ergänzende Dateien wie Bilder, Datensätze und ZIP-Archive anhängen. PDFs und Anhänge werden auf IPFS für dauerhaften, verteilten Zugriff gespeichert.",
     "q12": "Wie funktioniert das Reputationssystem?",
     "a12": "Reputationswerte werden aus Ihrer veröffentlichten Aktivität berechnet: Anzahl und Qualität der Veröffentlichungen, verfasste Peer-Reviews, erhaltene Zitationen, Abstimmungen der Gemeinschaft und Akkreditierungsstatus. Stimmen von Forschenden mit höherer Reputation haben mehr Gewicht. Der Algorithmus ist transparent, reproduzierbar und konfigurierbar.",
-    "ctaTitle": "Noch Fragen?",
-    "ctaDescription": "Wir helfen gerne. Kontaktieren Sie uns direkt.",
-    "ctaButton": "Kontakt",
     "q13": "Ist PEvO quelloffen?",
     "a13": "Ja. PEvO ist AGPL-3.0-lizenziert und vollständig forkbar. Der Quellcode, der Reputationsalgorithmus und alle Daten sind öffentlich. Es gibt keine Token, keine Bezahlschranken und keine Herstellerbindung.",
     "q14": "Wie zitiere ich eine PEvO-Publikation?",
-    "a14": "Jede Publikation hat eine eindeutige Kennung (Autor/Permlink) und eine dauerhafte URL. Sie können Zitierungen im APA-, BibTeX- oder RIS-Format direkt von der Artikelseite exportieren oder PEvO-Publikationen wie jede andere Online-Veröffentlichung zitieren."
+    "a14": "Jede Publikation hat eine eindeutige Kennung (Autor/Permlink) und eine dauerhafte URL. Sie können Zitierungen im APA-, BibTeX- oder RIS-Format direkt von der Artikelseite exportieren oder PEvO-Publikationen wie jede andere Online-Veröffentlichung zitieren.",
+    "ctaTitle": "Noch Fragen?",
+    "ctaDescription": "Wir helfen gerne. Kontaktieren Sie uns direkt.",
+    "ctaButton": "Kontakt"
   },
   "versions": {
     "label": "Versionen",

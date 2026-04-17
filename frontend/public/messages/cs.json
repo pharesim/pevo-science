@@ -585,13 +585,13 @@
     "a11": "Články mohou být psány přímo v Markdownu (s podporou matematiky LaTeX) nebo nahrány jako PDF. Můžete také přiložit doplňkové soubory, jako jsou obrázky, datové sady a ZIP archivy. PDF a přílohy jsou uloženy na IPFS pro trvalý, distribuovaný přístup.",
     "q12": "Jak funguje systém reputace?",
     "a12": "Skóre reputace se vypočítává z vaší publikované aktivity: počtu a kvality publikací, napsaných recenzí, obdržených citací, hlasů komunity a stavu akreditace. Hlasy od výzkumníků s vyšší reputací mají větší váhu. Algoritmus je transparentní, reprodukovatelný a konfigurovatelný.",
-    "ctaTitle": "Máte další otázky?",
-    "ctaDescription": "Jsme tu, abychom pomohli. Kontaktujte nás přímo.",
-    "ctaButton": "Kontaktujte nás",
     "q13": "Je PEvO open source?",
     "a13": "Ano. PEvO je licencováno pod AGPL-3.0 a je plně forkovatelné. Zdrojový kód, algoritmus reputace a všechna data jsou veřejná. Žádné tokeny, žádné platební brány, žádná závislost na dodavateli.",
     "q14": "Jak mohu citovat článek z PEvO?",
-    "a14": "Každý článek má jedinečný identifikátor (autor/permlink) a trvalou URL. Citace můžete exportovat ve formátu APA, BibTeX nebo RIS přímo ze stránky článku, nebo citovat články z PEvO jako jakoukoli jinou online publikaci."
+    "a14": "Každý článek má jedinečný identifikátor (autor/permlink) a trvalou URL. Citace můžete exportovat ve formátu APA, BibTeX nebo RIS přímo ze stránky článku, nebo citovat články z PEvO jako jakoukoli jinou online publikaci.",
+    "ctaTitle": "Máte další otázky?",
+    "ctaDescription": "Jsme tu, abychom pomohli. Kontaktujte nás přímo.",
+    "ctaButton": "Kontaktujte nás"
   },
   "versions": {
     "label": "Verze",

@@ -585,13 +585,13 @@
     "a11": "Artikelen kunnen rechtstreeks in Markdown worden geschreven (met LaTeX-wiskundeondersteuning) of als PDF worden geupload. U kunt ook aanvullende bestanden bijvoegen zoals afbeeldingen, datasets en ZIP-archieven. PDF's en bijlagen worden opgeslagen op IPFS voor permanente, gedistribueerde toegang.",
     "q12": "Hoe werkt het reputatiesysteem?",
     "a12": "Reputatiescores worden berekend op basis van uw gepubliceerde activiteit: het aantal en de kwaliteit van publicaties, geschreven peer reviews, ontvangen citaties, stemmen van de gemeenschap en accreditatiestatus. Stemmen van onderzoekers met een hogere reputatie wegen zwaarder. Het algoritme is transparant, reproduceerbaar en configureerbaar.",
-    "ctaTitle": "Nog vragen?",
-    "ctaDescription": "Wij helpen u graag. Neem rechtstreeks contact met ons op.",
-    "ctaButton": "Neem contact op",
     "q13": "Is PEvO open source?",
     "a13": "Ja. PEvO is AGPL-3.0-gelicentieerd en volledig forkbaar. De broncode, het reputatie-algoritme en alle gegevens zijn openbaar. Er zijn geen tokens, geen betaalmuren en geen leveranciersafhankelijkheid.",
     "q14": "Hoe citeer ik een PEvO-artikel?",
-    "a14": "Elk artikel heeft een unieke identificatie (auteur/permlink) en een permanente URL. U kunt citaties exporteren in APA-, BibTeX- of RIS-formaat rechtstreeks vanuit de artikelpagina, of PEvO-artikelen citeren zoals elke andere onlinepublicatie."
+    "a14": "Elk artikel heeft een unieke identificatie (auteur/permlink) en een permanente URL. U kunt citaties exporteren in APA-, BibTeX- of RIS-formaat rechtstreeks vanuit de artikelpagina, of PEvO-artikelen citeren zoals elke andere onlinepublicatie.",
+    "ctaTitle": "Nog vragen?",
+    "ctaDescription": "Wij helpen u graag. Neem rechtstreeks contact met ons op.",
+    "ctaButton": "Neem contact op"
   },
   "versions": {
     "label": "Versie",
