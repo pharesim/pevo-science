@@ -1,5 +1,6 @@
 import Alpine from 'alpinejs';
 import { isKeychainInstalled } from '../keychain.js';
+import { fetchEmailStatus, submitEmail, deleteEmail } from '../api.js';
 
 // Number of words to re-enter for confirmation
 const CONFIRM_WORD_COUNT = 3;
@@ -120,6 +121,125 @@ const template = `
                 <p class="text-sm text-ink-muted" x-text="$t('settings.selfCustody')"></p>
               </div>
             </template>
+
+            <!-- Email section -->
+            <div class="border border-parchment-dark rounded-xl p-6 mt-6">
+              <h2 class="text-xl font-bold text-ink mb-2" x-text="$t('settings.emailTitle')"></h2>
+
+              <!-- Loading -->
+              <div x-show="emailLoading" class="py-4">
+                <div class="animate-pulse h-4 bg-parchment-dark rounded w-48"></div>
+              </div>
+
+              <template x-if="!emailLoading && emailStatus">
+                <div>
+                  <!-- State 1: No email -->
+                  <template x-if="!emailStatus.hasEmail">
+                    <div>
+                      <p class="text-sm text-ink-muted mb-4" x-text="$t('settings.emailAddDescription')"></p>
+                      <form @submit.prevent="handleEmailSubmit()" class="flex gap-3">
+                        <input type="email" x-model="newEmail" required
+                               class="flex-1 border border-parchment-dark rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-pevo-teal focus:border-pevo-teal"
+                               :placeholder="$t('settings.emailPlaceholder')">
+                        <button type="submit" class="btn-primary whitespace-nowrap" :disabled="emailSubmitting || !newEmail.trim()"
+                                x-text="$t('settings.emailAdd')"></button>
+                      </form>
+                      <p x-show="emailMessage" class="text-sm text-pevo-green mt-2" x-text="emailMessage"></p>
+                      <p x-show="emailError" class="text-sm text-red-600 mt-2" x-text="emailError"></p>
+                    </div>
+                  </template>
+
+                  <!-- State 2: Has email, verified -->
+                  <template x-if="emailStatus.hasEmail && emailStatus.verified">
+                    <div>
+                      <div class="flex items-center gap-2 mb-4">
+                        <span class="text-sm text-ink" x-text="$t('settings.emailMasked', { email: emailStatus.email })"></span>
+                        <span class="text-xs font-medium text-pevo-green" x-text="$t('settings.emailVerified')"></span>
+                      </div>
+
+                      <!-- Change form (hidden by default) -->
+                      <div x-show="showChangeForm" class="mb-4">
+                        <p class="text-sm text-ink-muted mb-2" x-text="$t('settings.emailChangeDescription')"></p>
+                        <form @submit.prevent="handleEmailSubmit()" class="flex gap-3">
+                          <input type="email" x-model="newEmail" required
+                                 class="flex-1 border border-parchment-dark rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-pevo-teal focus:border-pevo-teal"
+                                 :placeholder="$t('settings.emailPlaceholder')">
+                          <button type="submit" class="btn-primary whitespace-nowrap" :disabled="emailSubmitting || !newEmail.trim()"
+                                  x-text="$t('settings.emailSendVerification')"></button>
+                        </form>
+                        <p x-show="emailMessage" class="text-sm text-pevo-green mt-2" x-text="emailMessage"></p>
+                        <p x-show="emailError" class="text-sm text-red-600 mt-2" x-text="emailError"></p>
+                      </div>
+
+                      <div class="flex gap-4">
+                        <button x-show="!showChangeForm" @click="showChangeForm = true; newEmail = ''; emailMessage = null; emailError = null"
+                                class="text-sm text-pevo-teal hover:underline" x-text="$t('settings.emailChange')"></button>
+                        <button @click="showDeleteConfirm = !showDeleteConfirm"
+                                class="text-sm text-red-600 hover:underline" x-text="$t('settings.emailDelete')"></button>
+                      </div>
+
+                      <!-- Delete confirmation -->
+                      <div x-show="showDeleteConfirm" class="mt-4 bg-red-50 border border-red-200 rounded-lg p-4">
+                        <p class="text-sm text-red-700 mb-3"
+                           x-text="custody === 'light' ? $t('settings.deleteWarningLight') : $t('settings.deleteWarningSelf')"></p>
+                        <div class="flex gap-3">
+                          <button @click="handleEmailDelete()" :disabled="deleting"
+                                  class="px-4 py-2 bg-red-600 text-white text-sm font-medium rounded-lg hover:bg-red-700 disabled:opacity-50"
+                                  x-text="$t('settings.emailDeleteConfirm')"></button>
+                          <button @click="showDeleteConfirm = false"
+                                  class="text-sm text-ink-muted hover:underline" x-text="$t('common.cancel')"></button>
+                        </div>
+                      </div>
+                    </div>
+                  </template>
+
+                  <!-- State 3: Has email, not verified -->
+                  <template x-if="emailStatus.hasEmail && !emailStatus.verified">
+                    <div>
+                      <div class="flex items-center gap-2 mb-4">
+                        <span class="text-sm text-ink" x-text="$t('settings.emailMasked', { email: emailStatus.email })"></span>
+                        <span class="text-xs font-medium text-amber-600" x-text="$t('settings.emailPending')"></span>
+                      </div>
+
+                      <!-- Resend form (hidden by default) -->
+                      <div x-show="showChangeForm" class="mb-4">
+                        <p class="text-sm text-ink-muted mb-2" x-text="$t('settings.emailChangeDescription')"></p>
+                        <form @submit.prevent="handleEmailSubmit()" class="flex gap-3">
+                          <input type="email" x-model="newEmail" required
+                                 class="flex-1 border border-parchment-dark rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-pevo-teal focus:border-pevo-teal"
+                                 :placeholder="$t('settings.emailPlaceholder')">
+                          <button type="submit" class="btn-primary whitespace-nowrap" :disabled="emailSubmitting || !newEmail.trim()"
+                                  x-text="$t('settings.emailSendVerification')"></button>
+                        </form>
+                      </div>
+
+                      <div class="flex gap-4">
+                        <button x-show="!showChangeForm" @click="handleEmailResend()"
+                                class="text-sm text-pevo-teal hover:underline" x-text="$t('settings.emailResend')"></button>
+                        <button @click="showDeleteConfirm = !showDeleteConfirm"
+                                class="text-sm text-red-600 hover:underline" x-text="$t('settings.emailDelete')"></button>
+                      </div>
+
+                      <p x-show="emailMessage" class="text-sm text-pevo-green mt-2" x-text="emailMessage"></p>
+                      <p x-show="emailError" class="text-sm text-red-600 mt-2" x-text="emailError"></p>
+
+                      <!-- Delete confirmation -->
+                      <div x-show="showDeleteConfirm" class="mt-4 bg-red-50 border border-red-200 rounded-lg p-4">
+                        <p class="text-sm text-red-700 mb-3"
+                           x-text="custody === 'light' ? $t('settings.deleteWarningLight') : $t('settings.deleteWarningSelf')"></p>
+                        <div class="flex gap-3">
+                          <button @click="handleEmailDelete()" :disabled="deleting"
+                                  class="px-4 py-2 bg-red-600 text-white text-sm font-medium rounded-lg hover:bg-red-700 disabled:opacity-50"
+                                  x-text="$t('settings.emailDeleteConfirm')"></button>
+                          <button @click="showDeleteConfirm = false"
+                                  class="text-sm text-ink-muted hover:underline" x-text="$t('common.cancel')"></button>
+                        </div>
+                      </div>
+                    </div>
+                  </template>
+                </div>
+              </template>
+            </div>
           </div>
         </template>
       </div>
@@ -143,6 +263,17 @@ export function initSettingsPage() {
     get custody() { return Alpine.store('auth').custody; },
     get isLight() { return this.custody === 'light'; },
 
+    // Email management state
+    emailStatus: null,
+    emailLoading: true,
+    newEmail: '',
+    emailSubmitting: false,
+    emailMessage: null,
+    emailError: null,
+    showDeleteConfirm: false,
+    showChangeForm: false,
+    deleting: false,
+
     // Upgrade flow state
     // Phases: 'idle' | 'new-seed' | 'confirm-new' | 'enter-old' | 'upgrading' | 'done' | 'error'
     upgradePhase: 'idle',
@@ -164,6 +295,74 @@ export function initSettingsPage() {
       return this.confirmIndices.every(
         (i) => this.confirmInputs[i]?.trim().toLowerCase() === this.newSeedWords[i]
       );
+    },
+
+    init() {
+      if (this.isConnected) {
+        this.loadEmailStatus();
+      }
+      this.$watch('isConnected', (connected) => {
+        if (connected) this.loadEmailStatus();
+      });
+    },
+
+    async loadEmailStatus() {
+      this.emailLoading = true;
+      try {
+        const res = await fetchEmailStatus();
+        this.emailStatus = res.data;
+      } catch {
+        this.emailStatus = { hasEmail: false, custody: 'self' };
+      } finally {
+        this.emailLoading = false;
+      }
+    },
+
+    async handleEmailSubmit() {
+      if (!this.newEmail.trim() || this.emailSubmitting) return;
+      this.emailSubmitting = true;
+      this.emailMessage = null;
+      this.emailError = null;
+      try {
+        await submitEmail(this.newEmail.trim());
+        this.emailMessage = this.$t('settings.emailVerificationSent');
+        this.newEmail = '';
+        this.showChangeForm = false;
+        await this.loadEmailStatus();
+      } catch (err) {
+        if (err.code === 'DUPLICATE') {
+          this.emailError = this.$t('settings.emailAlreadyInUse');
+        } else {
+          this.emailError = err.message || this.$t('common.connectionFailed');
+        }
+      } finally {
+        this.emailSubmitting = false;
+      }
+    },
+
+    handleEmailResend() {
+      this.emailMessage = null;
+      this.emailError = null;
+      this.newEmail = '';
+      this.showChangeForm = true;
+    },
+
+    async handleEmailDelete() {
+      if (this.deleting) return;
+      this.deleting = true;
+      try {
+        await deleteEmail(true);
+        this.emailStatus = { hasEmail: false, custody: this.custody };
+        this.showDeleteConfirm = false;
+        this.showChangeForm = false;
+        this.emailMessage = null;
+        this.emailError = null;
+        Alpine.store('toast').show(this.$t('settings.emailDeleted'), 'success');
+      } catch (err) {
+        this.emailError = err.message || this.$t('common.connectionFailed');
+      } finally {
+        this.deleting = false;
+      }
     },
 
     startUpgrade() {

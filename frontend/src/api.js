@@ -410,6 +410,32 @@ export async function searchAccounts(q) {
   return res.accounts;
 }
 
+// ─── Email Settings ─────────────────────────────────────────
+
+export function fetchEmailStatus() {
+  return authenticatedRequest('/settings/email');
+}
+
+export function submitEmail(email) {
+  return authenticatedRequest('/settings/email', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email }),
+  });
+}
+
+export function verifyEmailToken(token) {
+  return request(`/settings/email/verify/${encodeURIComponent(token)}`);
+}
+
+export function deleteEmail(confirm) {
+  return authenticatedRequest('/settings/email', {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ confirm }),
+  });
+}
+
 // ─── Blog ───────────────────────────────────────────────────────
 
 export function fetchBlogPosts(params = {}) {

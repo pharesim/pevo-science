@@ -23,6 +23,7 @@ const ROUTE_TITLES = {
   'login':                 'Sign In — PEvO',
   'reset-password':        'Reset Password — PEvO',
   'settings':              'Settings — PEvO',
+  'settings-verify-email': 'Verify Email — PEvO',
 };
 
 function updateTitle(routeName) {
@@ -58,6 +59,7 @@ const ROUTES = [
   { pattern: /^\/login$/,                              name: 'login' },
   { pattern: /^\/reset-password$/,                     name: 'reset-password' },
   { pattern: /^\/settings$/,                           name: 'settings' },
+  { pattern: /^\/settings\/verify-email\/([^/]+)$/,   name: 'settings-verify-email', params: ['token'] },
 ];
 
 function parsePath(url) {

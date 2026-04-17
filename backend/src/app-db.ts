@@ -50,7 +50,7 @@ export async function initAppDb(): Promise<void> {
     CREATE TABLE IF NOT EXISTS accounts (
       id                      SERIAL PRIMARY KEY,
       email                   TEXT NOT NULL UNIQUE,
-      password_hash           TEXT NOT NULL,
+      password_hash           TEXT,
       full_name               TEXT NOT NULL DEFAULT '',
       institution             TEXT NOT NULL DEFAULT '',
       field                   TEXT NOT NULL DEFAULT '',
@@ -63,6 +63,9 @@ export async function initAppDb(): Promise<void> {
       iv_posting              BYTEA,
       iv_memo                 BYTEA,
       upgraded_at             TIMESTAMPTZ,
+      pending_email           TEXT,
+      pending_email_token     TEXT,
+      pending_email_expires_at TIMESTAMPTZ,
       reset_token             TEXT,
       reset_token_expires_at  TIMESTAMPTZ,
       sessions_invalidated_at TIMESTAMPTZ,

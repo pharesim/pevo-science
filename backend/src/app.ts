@@ -33,6 +33,7 @@ import custodyRouter from './routes/custody.js';
 import contactRouter from './routes/contact.js';
 import blogRouter from './routes/blog.js';
 import accountsRouter from './routes/accounts.js';
+import settingsRouter from './routes/settings.js';
 
 // ── Rate limiters (per API contract) ──────────────────────────────
 
@@ -95,7 +96,7 @@ export function createApp() {
     origin: config.appUrl || false, // deny cross-origin by default; allow configured origin for external consumers
     credentials: true,
     maxAge: 86400,
-    methods: ['GET', 'POST', 'PUT', 'OPTIONS'],
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Hive-Username', 'X-Hive-Signature', 'X-Hive-Message', 'X-Hive-Timestamp'],
   }));
   app.use(express.json({ limit: '1mb' }));
@@ -130,6 +131,7 @@ export function createApp() {
   app.use('/api/bridge', bridgeRouter);
   app.use('/api/contact', contactRouter);
   app.use('/api/accounts', readLimiter, accountsRouter);
+  app.use('/api/settings', settingsRouter);
   app.use('/api/blog', readLimiter, blogRouter);
 
   // Health check

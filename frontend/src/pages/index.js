@@ -27,6 +27,7 @@ import { initSignupVerifyPage, signupVerifyPageTemplate } from './signup-verify.
 import { initLoginPage, loginPageTemplate } from './login.js';
 import { initResetPasswordPage, resetPasswordPageTemplate } from './reset-password.js';
 import { initSettingsPage, settingsPageTemplate } from './settings.js';
+import { initSettingsVerifyEmailPage, settingsVerifyEmailPageTemplate } from './settings-verify-email.js';
 
 export const pages = {
   'home':                        { init: initHomePage, template: homePageTemplate },
@@ -55,4 +56,5 @@ export const pages = {
   'login':                       { init: initLoginPage, template: loginPageTemplate },
   'reset-password':              { init: initResetPasswordPage, template: resetPasswordPageTemplate },
   'settings':                    { init: initSettingsPage, template: settingsPageTemplate },
+  'settings-verify-email':       { init: initSettingsVerifyEmailPage, template: settingsVerifyEmailPageTemplate },
 };
