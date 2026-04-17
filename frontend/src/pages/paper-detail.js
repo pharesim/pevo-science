@@ -1,5 +1,5 @@
 import Alpine from 'alpinejs';
-import { fetchPaper, fetchPaperEnrichment, fetchCitationExport, retractPaper, fetchDoi, assignDoi, updateBridgePaper } from '../api.js';
+import { fetchPaper, fetchPaperEnrichment, fetchCitationExport, retractPaper, updateBridgePaper } from '../api.js';
 import { computeVersionDiff } from '../lib/version-diff.js';
 import { formatDate } from '../components/paper-card.js';
 
@@ -437,37 +437,6 @@ const template = `
               </div>
               </template>
 
-              <!-- DOI -->
-              <template x-if="doiData && doiData.status === 'registered' && doiData.doi">
-                <div class="flex items-center gap-2 mt-4 text-sm">
-                  <span class="font-medium text-ink" x-text="$t('doi.label') + ':'"></span>
-                  <a :href="doiData.doi_url || ('https://doi.org/' + doiData.doi)" target="_blank" rel="noopener noreferrer"
-                     class="text-pevo-teal hover:text-pevo-teal-dark no-underline" x-text="doiData.doi"></a>
-                  <button type="button" class="text-ink-muted hover:text-ink transition-colors" :title="$t('doi.copyDoi')" @click="copyDoi()">
-                    <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor"><path d="M8 2a1 1 0 000 2h2a1 1 0 100-2H8z" /><path d="M3 5a2 2 0 012-2 3 3 0 003 3h2a3 3 0 003-3 2 2 0 012 2v6h-4.586l1.293-1.293a1 1 0 00-1.414-1.414l-3 3a1 1 0 000 1.414l3 3a1 1 0 001.414-1.414L10.414 13H15v3a2 2 0 01-2 2H5a2 2 0 01-2-2V5zM15 11h2a1 1 0 110 2h-2v-2z" /></svg>
-                  </button>
-                </div>
-              </template>
-
-              <!-- Assign DOI button -->
-              <template x-if="$store.auth.isConnected && $store.auth.username === paper.author && !paper.is_retracted && doiData && doiData.status === 'unregistered'">
-                <div class="mt-4">
-                  <button type="button" class="btn-secondary text-sm flex items-center gap-1.5" @click="handleAssignDoi()" :disabled="doiLoading"
-                          x-text="doiLoading ? $t('doi.assigning') : $t('doi.assignButton')"></button>
-                </div>
-              </template>
-
-              <!-- PubPeer -->
-              <template x-if="pubpeerData && pubpeerData.total_comments > 0">
-                <div class="flex items-center gap-2 mt-2 text-sm">
-                  <a :href="pubpeerData.url" target="_blank" rel="noopener noreferrer"
-                     class="inline-flex items-center gap-1.5 text-pevo-teal hover:text-pevo-teal-dark no-underline">
-                    <span class="font-medium" x-text="$t('pubpeer.badge', { count: pubpeerData.total_comments })"></span>
-                    <svg class="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M4.25 5.5a.75.75 0 00-.75.75v8.5c0 .414.336.75.75.75h8.5a.75.75 0 00.75-.75v-4a.75.75 0 011.5 0v4A2.25 2.25 0 0112.75 17h-8.5A2.25 2.25 0 012 14.75v-8.5A2.25 2.25 0 014.25 4h5a.75.75 0 010 1.5h-5zm7.5-3.25a.75.75 0 01.75-.75h4.5a.75.75 0 01.75.75v4.5a.75.75 0 01-1.5 0V4.06l-6.22 6.22a.75.75 0 11-1.06-1.06L14.94 3H12.5a.75.75 0 01-.75-.75z" clip-rule="evenodd"/></svg>
-                  </a>
-                </div>
-              </template>
-
               <!-- Abstract (always visible) -->
               <div class="mt-6 prose prose-ink max-w-reading text-ink-light text-[0.95rem] leading-relaxed" x-markdown="paper.abstract"></div>
 
@@ -750,12 +719,6 @@ export function initPaperDetailPage() {
     retractReason: '',
     retractLoading: false,
 
-    // DOI
-    doiData: null,
-    doiLoading: false,
-
-    // PubPeer
-    pubpeerData: null,
 
     // Version switching
     viewingVersion: null,
@@ -802,7 +765,6 @@ export function initPaperDetailPage() {
         if (this.paper.title) document.title = `${this.paper.title} — PEvO`;
         // Load enrichment lazily (reviews, votes, versions, DOI)
         this.loadEnrichment();
-        this.loadDoi();
       } catch (err) {
         if (this.author !== author || this.permlink !== permlink) return;
         this.error = err?.message === 'Not found'
@@ -837,7 +799,7 @@ export function initPaperDetailPage() {
         // Scroll to review if URL has a hash fragment
         this.scrollToHashReview();
       } catch {
-        // Enrichment is non-critical; paper still shows without it
+        console.warn('Paper enrichment failed');
       }
     },
 
@@ -848,35 +810,6 @@ export function initPaperDetailPage() {
         const el = document.getElementById(hash.slice(1));
         if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
       });
-    },
-
-    async loadDoi() {
-      if (!this.paper) return;
-      try {
-        const data = await fetchDoi(this.author, this.permlink);
-        this.doiData = data;
-        this.loadPubPeer();
-      } catch {
-        // DOI is optional
-      }
-    },
-
-    async loadPubPeer() {
-      if (!this.doiData?.doi) return;
-      try {
-        const res = await fetch('https://pubpeer.com/v3/publications?devkey=PubPeerPEvO', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ dois: [this.doiData.doi] }),
-        });
-        if (!res.ok) return;
-        const data = await res.json();
-        if (data.feedbacks?.length) {
-          this.pubpeerData = data.feedbacks[0];
-        }
-      } catch {
-        // PubPeer is optional enrichment
-      }
     },
 
     get isOwnPaper() {
@@ -1006,10 +939,8 @@ export function initPaperDetailPage() {
       if (!this.paper) return;
       const key = 'pevo-citation-collection';
       let collection = [];
-      try {
-        const raw = localStorage.getItem(key);
-        if (raw) collection = JSON.parse(raw);
-      } catch { collection = []; }
+      const raw = localStorage.getItem(key);
+      if (raw) collection = JSON.parse(raw);
 
       const entry = { author: this.paper.author, permlink: this.paper.permlink, title: this.paper.title };
       const exists = collection.some(c => c.author === entry.author && c.permlink === entry.permlink);
@@ -1018,12 +949,8 @@ export function initPaperDetailPage() {
         return;
       }
       collection.push(entry);
-      try {
-        localStorage.setItem(key, JSON.stringify(collection));
-        this.$store.toast.show(this.$t('citation.addedToCollection'), 'success');
-      } catch {
-        this.$store.toast.show(this.$t('common.storageFull'), 'error');
-      }
+      localStorage.setItem(key, JSON.stringify(collection));
+      this.$store.toast.show(this.$t('citation.addedToCollection'), 'success');
     },
 
     // Citation export
@@ -1072,28 +999,6 @@ export function initPaperDetailPage() {
         this.$store.toast.show(err?.message || this.$t('retraction.failed'), 'error');
       } finally {
         this.retractLoading = false;
-      }
-    },
-
-    // DOI
-    async handleAssignDoi() {
-      if (!this.$store.auth.username) return;
-      this.doiLoading = true;
-      try {
-        const result = await assignDoi(this.author, this.permlink);
-        this.doiData = result;
-        this.$store.toast.show(this.$t('doi.assignSuccess'), 'success');
-      } catch (err) {
-        this.$store.toast.show(err?.message || this.$t('doi.assignFailed'), 'error');
-      } finally {
-        this.doiLoading = false;
-      }
-    },
-
-    async copyDoi() {
-      if (this.doiData?.doi) {
-        await navigator.clipboard.writeText(this.doiData.doi);
-        this.$store.toast.show(this.$t('doi.doiCopied'), 'success');
       }
     },
 

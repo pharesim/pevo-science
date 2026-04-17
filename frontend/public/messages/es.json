@@ -641,18 +641,6 @@
     "success": "El artículo ha sido retractado exitosamente.",
     "failed": "Error al retractar el artículo."
   },
-  "doi": {
-    "label": "DOI",
-    "copyDoi": "Copiar DOI",
-    "doiCopied": "DOI copiado al portapapeles.",
-    "assignButton": "Asignar DOI",
-    "assigning": "Asignando DOI...",
-    "assignSuccess": "DOI asignado exitosamente.",
-    "assignFailed": "Error al asignar el DOI."
-  },
-  "pubpeer": {
-    "badge": "{count} comentarios en PubPeer"
-  },
   "bridge": {
     "navLabel": "Registrar preimpresión",
     "title": "Registrar una preimpresión",
@@ -705,7 +693,6 @@
     "uploadFailed": "Error en la carga",
     "publishingFailed": "Error en la publicación",
     "loadVersionFailed": "Error al cargar la versión",
-    "storageFull": "Almacenamiento lleno",
     "diffLoadFailed": "Error al cargar las versiones para comparar",
     "registrationFailed": "Error en el registro",
     "editFailed": "Error en la edición",

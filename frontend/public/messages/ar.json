@@ -641,18 +641,6 @@
     "success": "تم سحب البحث بنجاح.",
     "failed": "فشل سحب البحث."
   },
-  "doi": {
-    "label": "DOI",
-    "copyDoi": "نسخ DOI",
-    "doiCopied": "تم نسخ DOI إلى الحافظة.",
-    "assignButton": "تعيين DOI",
-    "assigning": "جارٍ تعيين DOI...",
-    "assignSuccess": "تم تعيين DOI بنجاح.",
-    "assignFailed": "فشل تعيين DOI."
-  },
-  "pubpeer": {
-    "badge": "{count} تعليقات على PubPeer"
-  },
   "bridge": {
     "navLabel": "تسجيل مسودة منشورة",
     "title": "تسجيل مسودة منشورة",
@@ -705,7 +693,6 @@
     "uploadFailed": "فشل الرفع",
     "publishingFailed": "فشل النشر",
     "loadVersionFailed": "تعذّر تحميل الإصدار",
-    "storageFull": "مساحة التخزين ممتلئة",
     "diffLoadFailed": "تعذّر تحميل الإصدارات للمقارنة",
     "registrationFailed": "فشل التسجيل",
     "editFailed": "فشل التعديل",

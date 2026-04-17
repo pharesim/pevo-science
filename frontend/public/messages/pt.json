@@ -641,18 +641,6 @@
     "success": "Artigo retratado com sucesso.",
     "failed": "Falha ao retratar artigo."
   },
-  "doi": {
-    "label": "DOI",
-    "copyDoi": "Copiar DOI",
-    "doiCopied": "DOI copiado para a area de transferencia.",
-    "assignButton": "Atribuir DOI",
-    "assigning": "Atribuindo DOI...",
-    "assignSuccess": "DOI atribuido com sucesso.",
-    "assignFailed": "Falha ao atribuir DOI."
-  },
-  "pubpeer": {
-    "badge": "{count} comentários no PubPeer"
-  },
   "bridge": {
     "navLabel": "Registrar Preprint",
     "title": "Registrar um Preprint",
@@ -705,7 +693,6 @@
     "uploadFailed": "Falha no carregamento",
     "publishingFailed": "Falha na publicação",
     "loadVersionFailed": "Falha ao carregar versão",
-    "storageFull": "Armazenamento cheio",
     "diffLoadFailed": "Falha ao carregar versões para comparação",
     "registrationFailed": "Falha no registo",
     "editFailed": "Falha na edição",

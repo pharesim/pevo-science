@@ -641,18 +641,6 @@
     "success": "Artiklen er blevet trukket tilbage.",
     "failed": "Kunne ikke trække artiklen tilbage."
   },
-  "doi": {
-    "label": "DOI",
-    "copyDoi": "Kopiér DOI",
-    "doiCopied": "DOI kopieret til udklipsholder.",
-    "assignButton": "Tildel DOI",
-    "assigning": "Tildeler DOI...",
-    "assignSuccess": "DOI tildelt.",
-    "assignFailed": "Kunne ikke tildele DOI."
-  },
-  "pubpeer": {
-    "badge": "{count} kommentarer på PubPeer"
-  },
   "bridge": {
     "navLabel": "Registrer preprint",
     "title": "Registrer et preprint",
@@ -705,7 +693,6 @@
     "uploadFailed": "Upload mislykkedes",
     "publishingFailed": "Publicering mislykkedes",
     "loadVersionFailed": "Kunne ikke indlæse version",
-    "storageFull": "Lageret er fuldt",
     "diffLoadFailed": "Kunne ikke indlæse versioner til sammenligning",
     "registrationFailed": "Registrering mislykkedes",
     "editFailed": "Redigering mislykkedes",

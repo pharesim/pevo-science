@@ -283,7 +283,7 @@ export function initAccreditationPage() {
           throw new Error('Invalid ORCID redirect URL');
         }
       } catch (err) {
-        Alpine.store('toast').show(err.message || this.$t('common.orcidFailed'), 'error');
+        Alpine.store('toast').show(err.message || 'ORCID verification failed', 'error');
         this.orcidLoading = false;
       }
     },

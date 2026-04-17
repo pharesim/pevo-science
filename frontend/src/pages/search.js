@@ -172,12 +172,8 @@ export function initSearchPage() {
     },
 
     async loadDisciplines() {
-      try {
-        const res = await fetchDisciplines();
-        this.disciplines = res.data || [];
-      } catch {
-        // Non-critical
-      }
+      const res = await fetchDisciplines();
+      this.disciplines = res.data || [];
     },
 
     async doSearch(q, page) {

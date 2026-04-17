@@ -275,12 +275,8 @@ export function initHomePage() {
     },
 
     async loadDisciplines() {
-      try {
-        const res = await fetchDisciplines();
-        this.disciplines = res.data || [];
-      } catch {
-        // Non-critical
-      }
+      const res = await fetchDisciplines();
+      this.disciplines = res.data || [];
     },
 
     async loadPapers() {
@@ -311,20 +307,16 @@ export function initHomePage() {
 
     async enrichPapers(papers) {
       if (!papers.length) return;
-      try {
-        const res = await fetchPaperBatchCounts(papers);
-        if (res.data) {
-          for (const paper of this.papers) {
-            const key = `${paper.author}/${paper.permlink}`;
-            const counts = res.data[key];
-            if (counts) {
-              paper.review_count = counts.review_count;
-              paper.citation_count = counts.citation_count;
-            }
+      const res = await fetchPaperBatchCounts(papers);
+      if (res.data) {
+        for (const paper of this.papers) {
+          const key = `${paper.author}/${paper.permlink}`;
+          const counts = res.data[key];
+          if (counts) {
+            paper.review_count = counts.review_count;
+            paper.citation_count = counts.citation_count;
           }
         }
-      } catch {
-        // Non-critical: cards show 0 as fallback
       }
     },
 

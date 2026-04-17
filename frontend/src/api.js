@@ -251,19 +251,6 @@ export async function retractPaper(author, permlink, reason) {
 
 // ─── DOI ─────────────────────────────────────────────────────────
 
-export async function fetchDoi(author, permlink) {
-  const res = await request(
-    `/papers/${encodeURIComponent(author)}/${encodeURIComponent(permlink)}/doi`
-  );
-  return res.data;
-}
-
-export async function assignDoi(author, permlink) {
-  const res = await authenticatedRequest(
-    `/papers/${encodeURIComponent(author)}/${encodeURIComponent(permlink)}/doi?assign=true`
-  );
-  return res.data;
-}
 
 // ─── Notification Preferences ────────────────────────────────────
 

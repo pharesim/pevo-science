@@ -641,18 +641,6 @@
     "success": "L'articolo è stato ritirato con successo.",
     "failed": "Impossibile ritirare l'articolo."
   },
-  "doi": {
-    "label": "DOI",
-    "copyDoi": "Copia DOI",
-    "doiCopied": "DOI copiato negli appunti.",
-    "assignButton": "Assegna DOI",
-    "assigning": "Assegnazione DOI...",
-    "assignSuccess": "DOI assegnato con successo.",
-    "assignFailed": "Impossibile assegnare il DOI."
-  },
-  "pubpeer": {
-    "badge": "{count} commenti su PubPeer"
-  },
   "bridge": {
     "navLabel": "Registra Preprint",
     "title": "Registra un Preprint",
@@ -705,7 +693,6 @@
     "uploadFailed": "Caricamento non riuscito",
     "publishingFailed": "Pubblicazione non riuscita",
     "loadVersionFailed": "Impossibile caricare la versione",
-    "storageFull": "Spazio di archiviazione esaurito",
     "diffLoadFailed": "Impossibile caricare le versioni per il confronto",
     "registrationFailed": "Registrazione non riuscita",
     "editFailed": "Modifica non riuscita",

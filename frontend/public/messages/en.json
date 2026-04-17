@@ -645,18 +645,6 @@
     "success": "Paper has been retracted successfully.",
     "failed": "Failed to retract paper."
   },
-  "doi": {
-    "label": "DOI",
-    "copyDoi": "Copy DOI",
-    "doiCopied": "DOI copied to clipboard.",
-    "assignButton": "Assign DOI",
-    "assigning": "Assigning DOI...",
-    "assignSuccess": "DOI assigned successfully.",
-    "assignFailed": "Failed to assign DOI."
-  },
-  "pubpeer": {
-    "badge": "{count} comments on PubPeer"
-  },
   "bridge": {
     "navLabel": "Register Preprint",
     "title": "Register a Preprint",
@@ -709,7 +697,6 @@
     "uploadFailed": "Upload failed",
     "publishingFailed": "Publishing failed",
     "loadVersionFailed": "Failed to load version",
-    "storageFull": "Storage full",
     "diffLoadFailed": "Failed to load versions for comparison",
     "registrationFailed": "Registration failed",
     "editFailed": "Edit failed",

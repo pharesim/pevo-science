@@ -449,7 +449,8 @@ export function initPublishPage() {
           }
         }
       } catch {
-        try { localStorage.removeItem(DRAFT_KEY); } catch { /* */ }
+        localStorage.removeItem(DRAFT_KEY);
+        console.warn('Draft recovery failed');
       }
       this._initialLoadDone = true;
 
@@ -521,25 +522,23 @@ export function initPublishPage() {
       this._draftTimer = setTimeout(() => {
         const hasContent = this.title.trim() || this.abstract.trim() || this.body.trim();
         if (!hasContent) {
-          try { localStorage.removeItem(DRAFT_KEY); } catch { /* */ }
+          localStorage.removeItem(DRAFT_KEY);
           return;
         }
-        try {
-          const draft = {
-            title: this.title, abstract: this.abstract, body: this.body,
-            discipline: this.discipline, keywordsText: this.keywordsText,
-            coAuthors: this.coAuthors, citations: this.citations, authorName: this.authorName,
-            authorAffiliation: this.authorAffiliation, authorOrcid: this.authorOrcid,
-            savedAt: Date.now(),
-          };
-          localStorage.setItem(DRAFT_KEY, JSON.stringify(draft));
-          this.draftSavedAt = draft.savedAt;
-        } catch { /* storage full */ }
+        const draft = {
+          title: this.title, abstract: this.abstract, body: this.body,
+          discipline: this.discipline, keywordsText: this.keywordsText,
+          coAuthors: this.coAuthors, citations: this.citations, authorName: this.authorName,
+          authorAffiliation: this.authorAffiliation, authorOrcid: this.authorOrcid,
+          savedAt: Date.now(),
+        };
+        localStorage.setItem(DRAFT_KEY, JSON.stringify(draft));
+        this.draftSavedAt = draft.savedAt;
       }, 2000);
     },
 
     discardDraft() {
-      try { localStorage.removeItem(DRAFT_KEY); } catch { /* */ }
+      localStorage.removeItem(DRAFT_KEY);
       this.title = '';
       this.abstract = '';
       this.body = '';
@@ -610,33 +609,29 @@ export function initPublishPage() {
     removeCitation(index) {
       const removed = this.citations.splice(index, 1)[0];
       if (removed?.author && removed?.permlink) {
-        try {
-          const key = 'pevo-citation-collection';
-          const raw = localStorage.getItem(key);
-          if (raw) {
-            const collection = JSON.parse(raw).filter(c => !(c.author === removed.author && c.permlink === removed.permlink));
-            if (collection.length > 0) localStorage.setItem(key, JSON.stringify(collection));
-            else localStorage.removeItem(key);
-          }
-        } catch { /* ignore */ }
+        const key = 'pevo-citation-collection';
+        const raw = localStorage.getItem(key);
+        if (raw) {
+          const collection = JSON.parse(raw).filter(c => !(c.author === removed.author && c.permlink === removed.permlink));
+          if (collection.length > 0) localStorage.setItem(key, JSON.stringify(collection));
+          else localStorage.removeItem(key);
+        }
       }
     },
 
     _mergeCitationCollection() {
       const key = 'pevo-citation-collection';
-      try {
-        const raw = localStorage.getItem(key);
-        if (!raw) return;
-        const collection = JSON.parse(raw);
-        if (!Array.isArray(collection) || collection.length === 0) return;
-        for (const entry of collection) {
-          const exists = this.citations.some(c => c.author === entry.author && c.permlink === entry.permlink);
-          if (!exists) {
-            this.citations.push({ author: entry.author, permlink: entry.permlink, title: entry.title || '', reputation_relevant: true });
-          }
+      const raw = localStorage.getItem(key);
+      if (!raw) return;
+      const collection = JSON.parse(raw);
+      if (!Array.isArray(collection) || collection.length === 0) return;
+      for (const entry of collection) {
+        const exists = this.citations.some(c => c.author === entry.author && c.permlink === entry.permlink);
+        if (!exists) {
+          this.citations.push({ author: entry.author, permlink: entry.permlink, title: entry.title || '', reputation_relevant: true });
         }
-        localStorage.removeItem(key);
-      } catch { /* ignore */ }
+      }
+      localStorage.removeItem(key);
     },
 
     dragCitationStart(index) {
@@ -830,7 +825,7 @@ export function initPublishPage() {
         await broadcastOps(username, operations);
 
         this.step = 'success';
-        try { localStorage.removeItem(DRAFT_KEY); } catch { /* */ }
+        localStorage.removeItem(DRAFT_KEY);
         setTimeout(() => {
           this.navigate(`/paper/${username}/${permlink}`);
         }, 1500);

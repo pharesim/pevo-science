@@ -641,18 +641,6 @@
     "success": "论文已成功撤回。",
     "failed": "论文撤回失败。"
   },
-  "doi": {
-    "label": "DOI",
-    "copyDoi": "复制 DOI",
-    "doiCopied": "DOI 已复制到剪贴板。",
-    "assignButton": "分配 DOI",
-    "assigning": "正在分配 DOI...",
-    "assignSuccess": "DOI 分配成功。",
-    "assignFailed": "DOI 分配失败。"
-  },
-  "pubpeer": {
-    "badge": "{count} 条 PubPeer 评论"
-  },
   "bridge": {
     "navLabel": "注册预印本",
     "title": "注册预印本",
@@ -705,7 +693,6 @@
     "uploadFailed": "上传失败",
     "publishingFailed": "发表失败",
     "loadVersionFailed": "版本加载失败",
-    "storageFull": "存储空间已满",
     "diffLoadFailed": "无法加载版本进行比较",
     "registrationFailed": "注册失败",
     "editFailed": "编辑失败",

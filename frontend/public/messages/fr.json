@@ -641,18 +641,6 @@
     "success": "L'article a été rétracté avec succès.",
     "failed": "Impossible de rétracter l'article."
   },
-  "doi": {
-    "label": "DOI",
-    "copyDoi": "Copier le DOI",
-    "doiCopied": "DOI copié dans le presse-papiers.",
-    "assignButton": "Attribuer un DOI",
-    "assigning": "Attribution du DOI...",
-    "assignSuccess": "DOI attribué avec succès.",
-    "assignFailed": "Impossible d'attribuer le DOI."
-  },
-  "pubpeer": {
-    "badge": "{count} commentaires sur PubPeer"
-  },
   "bridge": {
     "navLabel": "Enregistrer une prépublication",
     "title": "Enregistrer une prépublication",
@@ -705,7 +693,6 @@
     "uploadFailed": "Echec du téléversement",
     "publishingFailed": "Echec de la publication",
     "loadVersionFailed": "Impossible de charger la version",
-    "storageFull": "Stockage plein",
     "diffLoadFailed": "Impossible de charger les versions pour la comparaison",
     "registrationFailed": "Echec de l'inscription",
     "editFailed": "Echec de la modification",

@@ -645,18 +645,6 @@
     "success": "Makale başarıyla geri çekildi.",
     "failed": "Makale geri çekilemedi."
   },
-  "doi": {
-    "label": "DOI",
-    "copyDoi": "DOI Kopyala",
-    "doiCopied": "DOI panoya kopyalandı.",
-    "assignButton": "DOI Ata",
-    "assigning": "DOI atanıyor...",
-    "assignSuccess": "DOI başarıyla atandı.",
-    "assignFailed": "DOI atanamadı."
-  },
-  "pubpeer": {
-    "badge": "PubPeer üzerinde {count} yorum"
-  },
   "bridge": {
     "navLabel": "Ön Baskı Kaydet",
     "title": "Ön Baskı Kaydet",
@@ -709,7 +697,6 @@
     "uploadFailed": "Yükleme başarısız",
     "publishingFailed": "Yayınlama başarısız",
     "loadVersionFailed": "Sürüm yüklenemedi",
-    "storageFull": "Depolama alanı dolu",
     "diffLoadFailed": "Karşılaştırma için sürümler yüklenemedi",
     "registrationFailed": "Kayıt başarısız",
     "editFailed": "Düzenleme başarısız",

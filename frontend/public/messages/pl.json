@@ -641,18 +641,6 @@
     "success": "Praca została pomyślnie wycofana.",
     "failed": "Nie udało się wycofać pracy."
   },
-  "doi": {
-    "label": "DOI",
-    "copyDoi": "Kopiuj DOI",
-    "doiCopied": "DOI skopiowane do schowka.",
-    "assignButton": "Przypisz DOI",
-    "assigning": "Przypisywanie DOI...",
-    "assignSuccess": "DOI przypisane pomyślnie.",
-    "assignFailed": "Nie udało się przypisać DOI."
-  },
-  "pubpeer": {
-    "badge": "{count} komentarzy na PubPeer"
-  },
   "bridge": {
     "navLabel": "Zarejestruj preprint",
     "title": "Zarejestruj preprint",
@@ -705,7 +693,6 @@
     "uploadFailed": "Przesyłanie nie powiodło się",
     "publishingFailed": "Publikowanie nie powiodło się",
     "loadVersionFailed": "Nie udało się załadować wersji",
-    "storageFull": "Brak miejsca w pamięci",
     "diffLoadFailed": "Nie udało się załadować wersji do porównania",
     "registrationFailed": "Rejestracja nie powiodła się",
     "editFailed": "Edycja nie powiodła się",

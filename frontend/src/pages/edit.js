@@ -535,7 +535,8 @@ export function initEditPage() {
           }
         }
       } catch {
-        try { localStorage.removeItem(this.draftKey); } catch { /* */ }
+        localStorage.removeItem(this.draftKey);
+        console.warn('Draft recovery failed');
       }
     },
 
@@ -575,15 +576,13 @@ export function initEditPage() {
       if (!this._initialLoadDone) return;
       if (this._draftTimer) clearTimeout(this._draftTimer);
       this._draftTimer = setTimeout(() => {
-        try {
-          const draft = {
-            title: this.title, abstract: this.abstract, body: this.body,
-            keywordsText: this.keywordsText, authorName: this.authorName,
-            authorAffiliation: this.authorAffiliation, authorOrcid: this.authorOrcid,
-            newCoAuthors: this.newCoAuthors, citations: this.citations, savedAt: Date.now(),
-          };
-          localStorage.setItem(this.draftKey, JSON.stringify(draft));
-        } catch { /* storage full */ }
+        const draft = {
+          title: this.title, abstract: this.abstract, body: this.body,
+          keywordsText: this.keywordsText, authorName: this.authorName,
+          authorAffiliation: this.authorAffiliation, authorOrcid: this.authorOrcid,
+          newCoAuthors: this.newCoAuthors, citations: this.citations, savedAt: Date.now(),
+        };
+        localStorage.setItem(this.draftKey, JSON.stringify(draft));
       }, 2000);
     },
 
@@ -650,33 +649,29 @@ export function initEditPage() {
     removeCitation(index) {
       const removed = this.citations.splice(index, 1)[0];
       if (removed?.author && removed?.permlink) {
-        try {
-          const key = 'pevo-citation-collection';
-          const raw = localStorage.getItem(key);
-          if (raw) {
-            const collection = JSON.parse(raw).filter(c => !(c.author === removed.author && c.permlink === removed.permlink));
-            if (collection.length > 0) localStorage.setItem(key, JSON.stringify(collection));
-            else localStorage.removeItem(key);
-          }
-        } catch { /* ignore */ }
+        const key = 'pevo-citation-collection';
+        const raw = localStorage.getItem(key);
+        if (raw) {
+          const collection = JSON.parse(raw).filter(c => !(c.author === removed.author && c.permlink === removed.permlink));
+          if (collection.length > 0) localStorage.setItem(key, JSON.stringify(collection));
+          else localStorage.removeItem(key);
+        }
       }
     },
 
     _mergeCitationCollection() {
       const key = 'pevo-citation-collection';
-      try {
-        const raw = localStorage.getItem(key);
-        if (!raw) return;
-        const collection = JSON.parse(raw);
-        if (!Array.isArray(collection) || collection.length === 0) return;
-        for (const entry of collection) {
-          const exists = this.citations.some(c => c.author === entry.author && c.permlink === entry.permlink);
-          if (!exists) {
-            this.citations.push({ author: entry.author, permlink: entry.permlink, title: entry.title || '', reputation_relevant: true });
-          }
+      const raw = localStorage.getItem(key);
+      if (!raw) return;
+      const collection = JSON.parse(raw);
+      if (!Array.isArray(collection) || collection.length === 0) return;
+      for (const entry of collection) {
+        const exists = this.citations.some(c => c.author === entry.author && c.permlink === entry.permlink);
+        if (!exists) {
+          this.citations.push({ author: entry.author, permlink: entry.permlink, title: entry.title || '', reputation_relevant: true });
         }
-        localStorage.removeItem(key);
-      } catch { /* ignore */ }
+      }
+      localStorage.removeItem(key);
     },
 
     dragCitationStart(index) {
@@ -808,10 +803,10 @@ export function initEditPage() {
           // Invalidate cache for the canonical paper
           const canonicalAuthor = this.paper.canonical_author || this.paper.author;
           const canonicalPermlink = this.paper.canonical_permlink || this.paper.permlink;
-          try { await invalidatePaperCache(canonicalAuthor, canonicalPermlink); } catch { /* best effort */ }
+          await invalidatePaperCache(canonicalAuthor, canonicalPermlink);
 
           this.step = 'success';
-          try { localStorage.removeItem(this.draftKey); } catch { /* */ }
+          localStorage.removeItem(this.draftKey);
           setTimeout(() => {
             this.navigate(`/paper/${canonicalAuthor}/${canonicalPermlink}`);
           }, 1500);
@@ -867,10 +862,10 @@ export function initEditPage() {
           ];
           await broadcastOps(username, editOps);
 
-          try { await invalidatePaperCache(this.author, this.permlink); } catch { /* best effort */ }
+          await invalidatePaperCache(this.author, this.permlink);
 
           this.step = 'success';
-          try { localStorage.removeItem(this.draftKey); } catch { /* */ }
+          localStorage.removeItem(this.draftKey);
           setTimeout(() => {
             this.navigate(`/paper/${this.author}/${this.permlink}`);
           }, 1500);

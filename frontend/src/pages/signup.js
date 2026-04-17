@@ -179,15 +179,13 @@ export function initSignupPage() {
       // Restore form state after ORCID OAuth redirect
       const draft = localStorage.getItem('pevo_signup_draft');
       if (draft) {
-        try {
-          const saved = JSON.parse(draft);
-          this.email = saved.email || '';
-          this.fullName = saved.fullName || '';
-          this.institution = saved.institution || '';
-          this.field = saved.field || '';
-          this.password = saved.password || '';
-          this.passwordConfirm = saved.passwordConfirm || '';
-        } catch { /* ignore corrupt data */ }
+        const saved = JSON.parse(draft);
+        this.email = saved.email || '';
+        this.fullName = saved.fullName || '';
+        this.institution = saved.institution || '';
+        this.field = saved.field || '';
+        this.password = saved.password || '';
+        this.passwordConfirm = saved.passwordConfirm || '';
         localStorage.removeItem('pevo_signup_draft');
       }
 

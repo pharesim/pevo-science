@@ -641,18 +641,6 @@
     "success": "המאמר הוסר בהצלחה.",
     "failed": "הסרת המאמר נכשלה."
   },
-  "doi": {
-    "label": "DOI",
-    "copyDoi": "העתקת DOI",
-    "doiCopied": "ה-DOI הועתק ללוח.",
-    "assignButton": "הקצאת DOI",
-    "assigning": "מקצה DOI...",
-    "assignSuccess": "ה-DOI הוקצה בהצלחה.",
-    "assignFailed": "הקצאת ה-DOI נכשלה."
-  },
-  "pubpeer": {
-    "badge": "{count} תגובות ב-PubPeer"
-  },
   "bridge": {
     "navLabel": "רישום טרום-פרסום",
     "title": "רישום טרום-פרסום",
@@ -705,7 +693,6 @@
     "uploadFailed": "ההעלאה נכשלה",
     "publishingFailed": "הפרסום נכשל",
     "loadVersionFailed": "טעינת הגרסה נכשלה",
-    "storageFull": "האחסון מלא",
     "diffLoadFailed": "טעינת הגרסאות להשוואה נכשלה",
     "registrationFailed": "ההרשמה נכשלה",
     "editFailed": "העריכה נכשלה",

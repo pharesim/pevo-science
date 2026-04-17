@@ -641,18 +641,6 @@
     "success": "Článek byl úspěšně stažen.",
     "failed": "Nepodařilo se stáhnout článek."
   },
-  "doi": {
-    "label": "DOI",
-    "copyDoi": "Kopírovat DOI",
-    "doiCopied": "DOI zkopírováno do schránky.",
-    "assignButton": "Přiřadit DOI",
-    "assigning": "Přiřazování DOI...",
-    "assignSuccess": "DOI bylo úspěšně přiřazeno.",
-    "assignFailed": "Nepodařilo se přiřadit DOI."
-  },
-  "pubpeer": {
-    "badge": "{count} komentářů na PubPeer"
-  },
   "bridge": {
     "navLabel": "Registrovat preprint",
     "title": "Registrovat preprint",
@@ -705,7 +693,6 @@
     "uploadFailed": "Nahrávání selhalo",
     "publishingFailed": "Publikování selhalo",
     "loadVersionFailed": "Nepodařilo se načíst verzi",
-    "storageFull": "Úložiště je plné",
     "diffLoadFailed": "Nepodařilo se načíst verze pro porovnání",
     "registrationFailed": "Registrace selhala",
     "editFailed": "Úprava selhala",

@@ -645,18 +645,6 @@
     "success": "Artikel is succesvol ingetrokken.",
     "failed": "Artikel intrekken mislukt."
   },
-  "doi": {
-    "label": "DOI",
-    "copyDoi": "DOI kopiëren",
-    "doiCopied": "DOI gekopieerd naar klembord.",
-    "assignButton": "DOI toewijzen",
-    "assigning": "DOI toewijzen...",
-    "assignSuccess": "DOI succesvol toegewezen.",
-    "assignFailed": "DOI toewijzen mislukt."
-  },
-  "pubpeer": {
-    "badge": "{count} opmerkingen op PubPeer"
-  },
   "bridge": {
     "navLabel": "Preprint registreren",
     "title": "Registreer een preprint",
@@ -709,7 +697,6 @@
     "uploadFailed": "Upload mislukt",
     "publishingFailed": "Publiceren mislukt",
     "loadVersionFailed": "Versie laden mislukt",
-    "storageFull": "Opslag vol",
     "diffLoadFailed": "Versies laden voor vergelijking mislukt",
     "registrationFailed": "Registratie mislukt",
     "editFailed": "Bewerking mislukt",

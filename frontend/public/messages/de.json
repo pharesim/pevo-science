@@ -641,18 +641,6 @@
     "success": "Publikation wurde erfolgreich zurückgezogen.",
     "failed": "Zurückziehung der Publikation fehlgeschlagen."
   },
-  "doi": {
-    "label": "DOI",
-    "copyDoi": "DOI kopieren",
-    "doiCopied": "DOI in die Zwischenablage kopiert.",
-    "assignButton": "DOI zuweisen",
-    "assigning": "DOI wird zugewiesen...",
-    "assignSuccess": "DOI erfolgreich zugewiesen.",
-    "assignFailed": "DOI-Zuweisung fehlgeschlagen."
-  },
-  "pubpeer": {
-    "badge": "{count} Kommentare auf PubPeer"
-  },
   "bridge": {
     "navLabel": "Preprint registrieren",
     "title": "Preprint registrieren",
@@ -705,7 +693,6 @@
     "uploadFailed": "Upload fehlgeschlagen",
     "publishingFailed": "Veröffentlichung fehlgeschlagen",
     "loadVersionFailed": "Version konnte nicht geladen werden",
-    "storageFull": "Speicher voll",
     "diffLoadFailed": "Versionen für den Vergleich konnten nicht geladen werden",
     "registrationFailed": "Registrierung fehlgeschlagen",
     "editFailed": "Bearbeitung fehlgeschlagen",

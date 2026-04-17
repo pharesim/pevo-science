@@ -641,18 +641,6 @@
     "success": "مقاله با موفقیت بازپس‌گرفته شد.",
     "failed": "بازپس‌گیری مقاله ناموفق بود."
   },
-  "doi": {
-    "label": "DOI",
-    "copyDoi": "کپی DOI",
-    "doiCopied": "DOI در کلیپ‌بورد کپی شد.",
-    "assignButton": "تخصیص DOI",
-    "assigning": "تخصیص DOI...",
-    "assignSuccess": "DOI با موفقیت تخصیص یافت.",
-    "assignFailed": "تخصیص DOI ناموفق بود."
-  },
-  "pubpeer": {
-    "badge": "{count} نظر در PubPeer"
-  },
   "bridge": {
     "navLabel": "ثبت پیش‌چاپ",
     "title": "ثبت یک پیش‌چاپ",
@@ -705,7 +693,6 @@
     "uploadFailed": "بارگذاری ناموفق بود",
     "publishingFailed": "انتشار ناموفق بود",
     "loadVersionFailed": "بارگذاری نسخه ناموفق بود",
-    "storageFull": "فضای ذخیره‌سازی پر است",
     "diffLoadFailed": "بارگذاری نسخه‌ها برای مقایسه ناموفق بود",
     "registrationFailed": "ثبت‌نام ناموفق بود",
     "editFailed": "ویرایش ناموفق بود",

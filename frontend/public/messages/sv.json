@@ -641,18 +641,6 @@
     "success": "Artikeln har dragits tillbaka.",
     "failed": "Kunde inte dra tillbaka artikeln."
   },
-  "doi": {
-    "label": "DOI",
-    "copyDoi": "Kopiera DOI",
-    "doiCopied": "DOI kopierad till urklipp.",
-    "assignButton": "Tilldela DOI",
-    "assigning": "Tilldelar DOI...",
-    "assignSuccess": "DOI tilldelad.",
-    "assignFailed": "Kunde inte tilldela DOI."
-  },
-  "pubpeer": {
-    "badge": "{count} kommentarer på PubPeer"
-  },
   "bridge": {
     "navLabel": "Registrera förhandsutskrift",
     "title": "Registrera en förhandsutskrift",
@@ -705,7 +693,6 @@
     "uploadFailed": "Uppladdning misslyckades",
     "publishingFailed": "Publicering misslyckades",
     "loadVersionFailed": "Kunde inte ladda version",
-    "storageFull": "Lagringsutrymmet är fullt",
     "diffLoadFailed": "Kunde inte ladda versioner för jämförelse",
     "registrationFailed": "Registrering misslyckades",
     "editFailed": "Redigering misslyckades",

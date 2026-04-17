@@ -8,7 +8,7 @@ const template = `
         <template x-if="!isConnected">
           <div class="card">
             <p class="text-ink-muted mb-4" x-text="$t('orcid.connectToComplete')"></p>
-            <button class="btn-primary" @click="handleConnect()" x-text="$t('signIn.signInButton')"></button>
+            <button class="btn-primary" @click="Alpine.store('auth').connect()" x-text="$t('signIn.signInButton')"></button>
           </div>
         </template>
 
@@ -84,12 +84,6 @@ export function initAccreditationOrcidCallbackPage() {
         this.status = 'error';
         this.errorMessage = err.message || this.$t('orcid.verificationFailed');
       }
-    },
-
-    async handleConnect() {
-      try {
-        await Alpine.store('auth').connect();
-      } catch { /* handled by watcher */ }
     },
   }));
 }

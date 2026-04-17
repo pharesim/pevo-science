@@ -244,16 +244,12 @@ export function initSettingsPage() {
 
         // Import new posting key into Keychain
         if (isKeychainInstalled()) {
-          try {
-            await new Promise((resolve, reject) => {
-              window.hive_keychain.requestAddAccountAuthority(
-                this.username, newKeys.posting, 'posting',
-                (res) => res.success ? resolve(res) : reject(new Error(res.message))
-              );
-            });
-          } catch {
-            // User may need to import manually — not a failure
-          }
+          await new Promise((resolve, reject) => {
+            window.hive_keychain.requestAddAccountAuthority(
+              this.username, newKeys.posting, 'posting',
+              (res) => res.success ? resolve(res) : reject(new Error(res.message))
+            );
+          });
         }
 
         // Notify backend to clean up stored keys
