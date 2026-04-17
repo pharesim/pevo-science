@@ -31,7 +31,7 @@ const template = `
         <template x-if="status === 'error'">
           <div class="card bg-pevo-crimson-light border border-pevo-crimson/30">
             <p class="text-sm font-medium text-pevo-crimson-dark mb-2" x-text="errorMessage"></p>
-            <a :href="$lp('/accreditation')" @click.prevent="navigate('/accreditation')" class="btn-secondary inline-block mt-4 no-underline" x-text="$t('orcid.tryAgain')"></a>
+            <a :href="$lp('/accreditation')" @click.prevent="navigate('/accreditation')" class="btn-secondary inline-block mt-4 no-underline" x-text="$t('common.tryAgain')"></a>
           </div>
         </template>
       </div>

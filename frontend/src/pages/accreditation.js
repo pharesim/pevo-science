@@ -104,7 +104,7 @@ const template = `
                   <svg class="h-5 w-5 text-pevo-crimson shrink-0 mt-0.5" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.168 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 8a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd" /></svg>
                   <div>
                     <p class="font-medium text-ink text-sm" x-text="$t('signIn.signInToContinue')"></p>
-                    <p class="text-xs text-ink-muted mt-1" x-text="$t('accreditation.walletHint')"></p>
+                    <p class="text-xs text-ink-muted mt-1" x-text="$t('accreditation.signInHint')"></p>
                     <button class="btn-primary text-xs mt-2" @click="handleConnect()" x-text="$t('signIn.signInButton')"></button>
                   </div>
                 </div>
@@ -123,7 +123,7 @@ const template = `
             <template x-if="step === 'error'">
               <div class="bg-pevo-crimson-light border border-pevo-crimson/30 rounded-lg p-4 mb-6">
                 <p class="text-sm font-medium text-pevo-crimson-dark" x-text="errorMessage"></p>
-                <button class="btn-secondary text-xs mt-2" @click="step = 'idle'" x-text="$t('accreditation.tryAgain')"></button>
+                <button class="btn-secondary text-xs mt-2" @click="step = 'idle'" x-text="$t('common.tryAgain')"></button>
               </div>
             </template>
 
@@ -203,9 +203,9 @@ export function initAccreditationPage() {
 
     formatDate,
     methodLabel(method) {
-      if (method === 'email') return 'Email verification';
-      if (method === 'orcid') return 'ORCID';
-      if (method === 'wot') return 'Web of Trust';
+      if (method === 'email') return this.$t('researchers.emailVerification');
+      if (method === 'orcid') return this.$t('researchers.orcid');
+      if (method === 'wot') return this.$t('researchers.webOfTrust');
       return method || '';
     },
 
@@ -263,7 +263,7 @@ export function initAccreditationPage() {
         this.resultMessage = res.data.message;
       } catch (err) {
         this.step = 'error';
-        this.errorMessage = err.message || 'Accreditation request failed';
+        this.errorMessage = err.message || this.$t('common.accreditationFailed');
       }
     },
 
@@ -283,7 +283,7 @@ export function initAccreditationPage() {
           throw new Error('Invalid ORCID redirect URL');
         }
       } catch (err) {
-        Alpine.store('toast').show(err.message || 'ORCID verification failed', 'error');
+        Alpine.store('toast').show(err.message || this.$t('common.orcidFailed'), 'error');
         this.orcidLoading = false;
       }
     },

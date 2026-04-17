@@ -2,15 +2,15 @@ import Alpine from 'alpinejs';
 import { fetchPaperComments } from '../api.js';
 import { renderMarkdown } from './markdown-renderer.js';
 
-function formatTimeAgo(iso) {
+function formatTimeAgo(iso, t) {
   const diff = Date.now() - new Date(iso).getTime();
   const minutes = Math.floor(diff / 60000);
-  if (minutes < 1) return 'just now';
-  if (minutes < 60) return `${minutes}m ago`;
+  if (minutes < 1) return t('time.justNow');
+  if (minutes < 60) return t('time.minutesShort', { count: minutes });
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
+  if (hours < 24) return t('time.hoursShort', { count: hours });
   const days = Math.floor(hours / 24);
-  if (days < 30) return `${days}d ago`;
+  if (days < 30) return t('time.daysShort', { count: days });
   return new Date(iso).toLocaleDateString();
 }
 
@@ -64,7 +64,7 @@ function renderCommentTree(comments, depth, t) {
              @click.prevent="navigate('/profile/${safeAuthor}')"
              class="font-medium text-ink no-underline hover:text-pevo-teal">@${escapeHtml(comment.author)}</a>
           ${accreditedBadge}
-          <time datetime="${escapeAttr(comment.created)}">${escapeHtml(formatTimeAgo(comment.created))}</time>
+          <time datetime="${escapeAttr(comment.created)}">${escapeHtml(formatTimeAgo(comment.created, t))}</time>
         </div>
         <div x-show="!collapsed['${commentId}']">
           <div class="mt-1 text-sm text-ink-light leading-relaxed prose prose-sm max-w-none">${bodyHtml}</div>
@@ -98,7 +98,7 @@ function renderCommentTree(comments, depth, t) {
                         x-model="body" :disabled="isSubmitting"></textarea>
               <p x-show="error" class="text-xs text-pevo-crimson mt-1" x-text="error"></p>
               <div class="flex items-center justify-end gap-2 mt-2">
-                <button class="btn-secondary text-xs" @click="replyOpen['${commentId}'] = false" :disabled="isSubmitting" x-text="$t('comments.cancel')"></button>
+                <button class="btn-secondary text-xs" @click="replyOpen['${commentId}'] = false" :disabled="isSubmitting" x-text="$t('common.cancel')"></button>
                 <button class="btn-primary text-xs" @click="handleSubmit()" :disabled="isSubmitting || !body.trim()"
                         x-text="isSubmitting ? $t('comments.posting') : $t('comments.postComment')"></button>
               </div>

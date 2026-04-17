@@ -25,8 +25,8 @@ const template = `
             <h1 class="text-2xl font-bold text-ink mb-2" x-text="error"></h1>
             <p class="text-ink-muted mb-4" x-text="$t('paperDetail.notFoundDescription', { author: author, permlink: permlink })"></p>
             <div class="flex justify-center gap-3">
-              <button @click="loadPaper()" class="btn-secondary" x-text="$t('paperDetail.retry')"></button>
-              <a :href="$lp('/')" @click.prevent="navigate('/')" class="btn-primary no-underline" x-text="$t('paperDetail.backToPapers')"></a>
+              <button @click="loadPaper()" class="btn-secondary" x-text="$t('common.retry')"></button>
+              <a :href="$lp('/')" @click.prevent="navigate('/')" class="btn-primary no-underline" x-text="$t('common.backToPapers')"></a>
             </div>
           </div>
         </template>
@@ -36,7 +36,7 @@ const template = `
           <div>
             <!-- Back link -->
             <a :href="$lp('/')" @click.prevent="navigate('/')" class="text-sm text-pevo-teal hover:text-pevo-teal-dark no-underline">
-              &larr; <span x-text="$t('paperDetail.backToPapers')"></span>
+              &larr; <span x-text="$t('common.backToPapers')"></span>
             </a>
 
             <!-- Retraction banner -->
@@ -318,7 +318,7 @@ const template = `
                       <textarea id="retract-reason" class="select-control w-full" rows="3" :placeholder="$t('retraction.reasonPlaceholder')" x-model="retractReason" required></textarea>
                     </div>
                     <div class="flex justify-end gap-3">
-                      <button type="button" class="btn-secondary text-sm" @click="retractDialogOpen = false; retractReason = ''" :disabled="retractLoading" x-text="$t('retraction.cancel')"></button>
+                      <button type="button" class="btn-secondary text-sm" @click="retractDialogOpen = false; retractReason = ''" :disabled="retractLoading" x-text="$t('common.cancel')"></button>
                       <button type="button" class="btn-primary text-sm bg-pevo-crimson hover:bg-pevo-crimson-dark" @click="handleRetract()" :disabled="retractLoading || !retractReason.trim()"
                               x-text="retractLoading ? $t('retraction.retracting') : $t('retraction.confirmRetract')"></button>
                     </div>
@@ -361,17 +361,14 @@ const template = `
 
               <!-- Metrics bar -->
               <div class="flex flex-wrap items-center gap-5 text-sm text-ink-muted pb-6 border-b border-parchment-dark">
-                <span class="flex items-center gap-1" title="Reviews">
+                <span class="flex items-center gap-1" :title="$t('aria.reviews')">
                   <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M18 10c0 3.866-3.582 7-8 7a8.841 8.841 0 01-4.083-.98L2 17l1.338-3.123C2.493 12.767 2 11.434 2 10c0-3.866 3.582-7 8-7s8 3.134 8 7zM7 9H5v2h2V9zm8 0h-2v2h2V9zm-5 0H8v2h2V9z" clip-rule="evenodd" /></svg>
                   <span x-text="$t('paperDetail.reviews', { count: paper.reviews ? paper.reviews.length : 0 })"></span>
                 </span>
-                <span class="flex items-center gap-1" title="Citations">
+                <span class="flex items-center gap-1" :title="$t('aria.citations')">
                   <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor"><path d="M9 4.804A7.968 7.968 0 005.5 4c-1.255 0-2.443.29-3.5.804v10A7.969 7.969 0 015.5 14c1.669 0 3.218.51 4.5 1.385A7.962 7.962 0 0114.5 14c1.255 0 2.443.29 3.5.804v-10A7.968 7.968 0 0014.5 4c-1.255 0-2.443.29-3.5.804V14a1 1 0 11-2 0V4.804z" /></svg>
                   <span x-text="$t('paperDetail.citations', { count: paper.citation_count ?? 0 })"></span>
                 </span>
-                <template x-if="paper.pending_payout_value">
-                  <span class="text-ink-muted" x-text="$t('paperDetail.payout', { value: paper.pending_payout_value })"></span>
-                </template>
                 <template x-if="ipfsUrl">
                   <a :href="ipfsUrl" target="_blank" rel="noopener noreferrer"
                      class="flex items-center gap-1 ml-auto rtl:ml-0 rtl:mr-auto text-pevo-teal no-underline hover:text-pevo-teal-dark">
@@ -998,7 +995,7 @@ export function initPaperDetailPage() {
         this.viewingVersion = version;
       } catch (err) {
         if (this.author !== author || this.permlink !== permlink) return;
-        this.$store.toast.show(err?.message || 'Failed to load version', 'error');
+        this.$store.toast.show(err?.message || this.$t('common.loadVersionFailed'), 'error');
       } finally {
         this.loading = false;
       }
@@ -1025,7 +1022,7 @@ export function initPaperDetailPage() {
         localStorage.setItem(key, JSON.stringify(collection));
         this.$store.toast.show(this.$t('citation.addedToCollection'), 'success');
       } catch {
-        this.$store.toast.show('Storage full', 'error');
+        this.$store.toast.show(this.$t('common.storageFull'), 'error');
       }
     },
 
@@ -1123,7 +1120,7 @@ export function initPaperDetailPage() {
 
     formatShortDate(iso) {
       if (!iso) return '';
-      return new Date(iso).toLocaleDateString('en-US', {
+      return new Date(iso).toLocaleDateString(Alpine.store('i18n').locale, {
         year: 'numeric', month: 'short', day: 'numeric',
       });
     },
@@ -1168,7 +1165,7 @@ export function initPaperDetailPage() {
         this.diffResult = computeVersionDiff(resA.data, resB.data);
         this.diffMode = true;
       } catch (err) {
-        this.diffError = err?.message || 'Failed to load versions for comparison';
+        this.diffError = err?.message || this.$t('common.diffLoadFailed');
         this.$store.toast.show(this.diffError, 'error');
       } finally {
         this.diffLoading = false;

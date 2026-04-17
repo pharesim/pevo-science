@@ -15,7 +15,6 @@ import { initNotifications } from './notifications.js';
 import { initHeader } from './components/header.js';
 import { initFooter } from './components/footer.js';
 import { initMarkdownRenderer } from './components/markdown-renderer.js';
-import { initOnboardingModal } from './components/onboarding-modal.js';
 import { initSignInModal } from './components/sign-in-modal.js';
 import { initPageMount } from './components/page-mount.js';
 
@@ -46,7 +45,6 @@ initAuth();
 initHeader();
 initFooter();
 initMarkdownRenderer();
-initOnboardingModal();
 initSignInModal();
 initPageMount();
 

@@ -22,16 +22,16 @@ const DISCIPLINE_TAXONOMY = [
 ];
 
 
-function relativeTime(timestamp) {
+function relativeTime(timestamp, t) {
   const seconds = Math.floor((Date.now() - timestamp) / 1000);
-  if (seconds < 60) return 'just now';
+  if (seconds < 60) return t('time.justNow');
   const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes} minute${minutes === 1 ? '' : 's'} ago`;
+  if (minutes < 60) return t('time.minutesLong', { count: minutes });
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours} hour${hours === 1 ? '' : 's'} ago`;
+  if (hours < 24) return t('time.hoursLong', { count: hours });
   const days = Math.floor(hours / 24);
-  if (days === 1) return 'yesterday';
-  return `${days} days ago`;
+  if (days === 1) return t('time.yesterday');
+  return t('time.daysLong', { count: days });
 }
 
 function composePostBody(abstract, fullText) {
@@ -53,8 +53,8 @@ const template = `
         <template x-if="draftRestored && draftSavedAt">
           <div class="card bg-pevo-teal-light border-pevo-teal/30 mb-6">
             <div class="flex items-center justify-between">
-              <p class="text-sm text-ink">Draft restored from <span x-text="draftTimeAgo()"></span>.</p>
-              <button type="button" class="text-sm font-medium text-pevo-teal hover:text-pevo-teal-dark" @click="discardDraft()">Discard</button>
+              <p class="text-sm text-ink" x-text="$t('publish.draftRestored', { time: draftTimeAgo() })"></p>
+              <button type="button" class="text-sm font-medium text-pevo-teal hover:text-pevo-teal-dark" @click="discardDraft()" x-text="$t('common.discard')"></button>
             </div>
           </div>
         </template>
@@ -66,7 +66,7 @@ const template = `
               <svg class="h-5 w-5 text-pevo-crimson shrink-0 mt-0.5" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.168 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 8a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd" /></svg>
               <div>
                 <p class="font-medium text-ink text-sm" x-text="$t('signIn.signInToPublish')"></p>
-                <p class="text-xs text-ink-muted mt-1" x-text="$t('publish.walletHint')"></p>
+                <p class="text-xs text-ink-muted mt-1" x-text="$t('publish.signInHint')"></p>
                 <button class="btn-primary text-xs mt-2" @click="handleConnect()" x-text="$t('signIn.signInButton')"></button>
               </div>
             </div>
@@ -80,7 +80,7 @@ const template = `
               <svg class="h-5 w-5 text-pevo-crimson shrink-0 mt-0.5" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.168 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 8a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd" /></svg>
               <div>
                 <p class="font-medium text-ink text-sm" x-text="$t('publish.accreditationRequired')"></p>
-                <a :href="$lp('/accreditation')" @click.prevent="navigate('/accreditation')" class="btn-primary text-xs mt-2 no-underline inline-block" x-text="$t('publish.getAccredited')"></a>
+                <a :href="$lp('/accreditation')" @click.prevent="navigate('/accreditation')" class="btn-primary text-xs mt-2 no-underline inline-block" x-text="$t('common.getAccredited')"></a>
               </div>
             </div>
           </div>
@@ -91,7 +91,7 @@ const template = `
           <div class="card mb-6" :class="stepClass">
             <p class="text-sm font-medium" x-text="stepMessage"></p>
             <template x-if="step === 'error'">
-              <button class="btn-secondary text-xs mt-2" @click="step = 'idle'" x-text="$t('publish.tryAgain')"></button>
+              <button class="btn-secondary text-xs mt-2" @click="step = 'idle'" x-text="$t('common.tryAgain')"></button>
             </template>
           </div>
         </template>
@@ -211,7 +211,7 @@ const template = `
             <p class="text-xs text-ink-muted mb-3" x-text="$t('publish.pdfHint')"></p>
             <input id="pdf-upload" type="file" accept=".pdf" class="block text-sm text-ink-muted file:mr-4 file:py-2 file:px-4 file:rounded-md file:border file:border-parchment-dark file:text-sm file:font-medium file:bg-white file:text-ink hover:file:bg-parchment-warm file:cursor-pointer file:transition-colors" @change="handlePdfChange($event)" />
             <template x-if="pdfFile">
-              <p class="text-xs text-pevo-green mt-2">Selected: <span x-text="pdfFileName"></span> (<span x-text="pdfFileSize"></span> MB)</p>
+              <p class="text-xs text-pevo-green mt-2" x-text="$t('publish.pdfSelected', { name: pdfFileName, size: pdfFileSize })"></p>
             </template>
           </div>
 
@@ -270,7 +270,7 @@ const template = `
                        @dragstart="dragCitationStart(i)"
                        @dragover="dragCitationOver($event, i)"
                        @drop="dragCitationDrop(i)">
-                    <div class="flex items-center cursor-grab text-ink-muted hover:text-ink shrink-0 pt-1" title="Drag to reorder">
+                    <div class="flex items-center cursor-grab text-ink-muted hover:text-ink shrink-0 pt-1" :title="$t('aria.dragToReorder')">
                       <svg class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path d="M7 2a2 2 0 10.001 4.001A2 2 0 007 2zm0 6a2 2 0 10.001 4.001A2 2 0 007 8zm0 6a2 2 0 10.001 4.001A2 2 0 007 14zm6-8a2 2 0 10-.001-4.001A2 2 0 0013 6zm0 2a2 2 0 10.001 4.001A2 2 0 0013 8zm0 6a2 2 0 10.001 4.001A2 2 0 0013 14z" /></svg>
                     </div>
                     <div class="flex-1 space-y-2">
@@ -318,7 +318,7 @@ const template = `
               <a :href="$lp('/getting-started')" @click.prevent="navigate('/getting-started')" class="btn-primary w-full sm:w-auto shrink-0 text-center no-underline" x-text="$t('publish.publishButton')"></a>
             </template>
             <template x-if="!isAccredited && isConnected">
-              <a :href="$lp('/accreditation')" @click.prevent="navigate('/accreditation')" class="btn-primary w-full sm:w-auto shrink-0 text-center no-underline" x-text="$t('publish.getAccredited')"></a>
+              <a :href="$lp('/accreditation')" @click.prevent="navigate('/accreditation')" class="btn-primary w-full sm:w-auto shrink-0 text-center no-underline" x-text="$t('common.getAccredited')"></a>
             </template>
           </div>
         </form>
@@ -559,7 +559,7 @@ export function initPublishPage() {
 
     draftTimeAgo() {
       if (!this.draftSavedAt) return '';
-      return relativeTime(this.draftSavedAt);
+      return relativeTime(this.draftSavedAt, this.$t);
     },
 
     selectDiscipline(sf) {
@@ -748,7 +748,7 @@ export function initPublishPage() {
                 description: sf.description || undefined,
               });
             } catch (err) {
-              sf.error = err.message || 'Upload failed';
+              sf.error = err.message || this.$t('common.uploadFailed');
               throw new Error(this.$t('publish.supplementaryUploadFailed', { name: sf.fileName }));
             } finally {
               sf.uploading = false;
@@ -836,7 +836,7 @@ export function initPublishPage() {
         }, 1500);
       } catch (err) {
         this.step = 'error';
-        this.errorMessage = err.message || 'Publishing failed';
+        this.errorMessage = err.message || this.$t('common.publishingFailed');
       }
     },
   }));

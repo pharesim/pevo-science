@@ -330,16 +330,25 @@ export class PevoEditor {
     return this.variant === 'abstract';
   }
 
+  /** Shorthand for i18n lookups. Keys without a dot are prefixed with 'editor.'. */
+  _t(key) {
+    try {
+      const Alpine = window.Alpine;
+      const fullKey = key.includes('.') ? key : 'editor.' + key;
+      return Alpine?.store('i18n')?.t(fullKey) || key;
+    } catch { return key; }
+  }
+
   // --- DOM rendering ---
 
   _render() {
     const isAbstract = this.isAbstract;
     const minH = isAbstract ? 'min-h-[120px]' : 'min-h-[280px]';
-    const mdPlaceholder = this.placeholder || (isAbstract ? 'Write your abstract here...' : 'Write your paper body here...');
+    const mdPlaceholder = this.placeholder || (isAbstract ? this._t('placeholderAbstract') : this._t('placeholderBody'));
 
     this.container.innerHTML = /* html */ `
       <div class="border border-parchment-dark rounded-lg overflow-hidden bg-white" data-editor-shell>
-        <div role="toolbar" aria-label="Text formatting" class="flex flex-wrap items-center gap-0.5 px-2 py-1.5 border-b border-parchment-dark bg-parchment">
+        <div role="toolbar" aria-label="${this._esc(this._t('toolbarLabel'))}" class="flex flex-wrap items-center gap-0.5 px-2 py-1.5 border-b border-parchment-dark bg-parchment">
           ${this._toolbarHtml()}
         </div>
         <div data-md-wrap style="display:none">
@@ -391,27 +400,27 @@ export class PevoEditor {
     const sep = () => '<div class="w-px h-5 bg-parchment-dark mx-1"></div>';
 
     let html = '';
-    html += btn('bold', '<strong>B</strong>', 'Bold', true);
-    html += btn('italic', '<em>I</em>', 'Italic', true);
-    html += btn('strike', '<s>S</s>', 'Strikethrough', true);
+    html += btn('bold', '<strong>B</strong>', this._t('bold'), true);
+    html += btn('italic', '<em>I</em>', this._t('italic'), true);
+    html += btn('strike', '<s>S</s>', this._t('strikethrough'), true);
     html += sep();
 
     if (!isAbstract) {
-      html += btn('heading-2', 'H2', 'Heading 2');
-      html += btn('heading-3', 'H3', 'Heading 3');
-      html += btn('heading-4', 'H4', 'Heading 4');
-      html += btn('bulletList', '&bull; List', 'Bullet List');
-      html += btn('orderedList', '1. List', 'Ordered List');
-      html += btn('blockquote', '&ldquo; Quote', 'Blockquote');
+      html += btn('heading-2', 'H2', this._t('heading2'));
+      html += btn('heading-3', 'H3', this._t('heading3'));
+      html += btn('heading-4', 'H4', this._t('heading4'));
+      html += btn('bulletList', '&bull; List', this._t('bulletList'));
+      html += btn('orderedList', '1. List', this._t('orderedList'));
+      html += btn('blockquote', '&ldquo; Quote', this._t('blockquote'));
       html += sep();
     }
 
-    html += btn('inlineMath', '$ Math', 'Inline Math ($...$)');
-    html += btn('blockMath', '$$ Block', 'Display Math ($$...$$)');
+    html += btn('inlineMath', '$ Math', this._t('inlineMath'));
+    html += btn('blockMath', '$$ Block', this._t('blockMath'));
 
     // Link button needs a relative wrapper for popover positioning
     html += `<div class="relative" data-link-wrap>`;
-    html += btn('link', 'Link', 'Insert Link');
+    html += btn('link', 'Link', this._t('insertLink'));
     html += `</div>`;
 
     html += sep();
@@ -419,25 +428,25 @@ export class PevoEditor {
     if (!isAbstract) {
       // Table button with picker
       html += `<div class="relative" data-table-wrap>`;
-      html += btn('table', 'Table', 'Insert Table');
+      html += btn('table', 'Table', this._t('insertTable'));
       html += `<div data-table-picker style="display:none" class="absolute top-full left-0 mt-1 bg-white border border-parchment-dark rounded-lg shadow-lg p-3 z-50">
-        <div data-table-label class="text-xs text-ink-muted mb-2 text-center">Select size</div>
+        <div data-table-label class="text-xs text-ink-muted mb-2 text-center">${this._esc(this._t('selectSize'))}</div>
         <div class="grid gap-1" style="grid-template-columns: repeat(8, 1fr)">${this._tableGridHtml()}</div>
       </div>`;
       html += `</div>`;
 
       html += sep();
-      html += btn('image', 'Image', 'Upload Image');
+      html += btn('image', 'Image', this._t('uploadImage'));
     }
 
     html += sep();
-    html += btn('markdownToggle', '&lt;/&gt;', 'Switch editor mode');
+    html += btn('markdownToggle', '&lt;/&gt;', this._t('switchMode'));
     html += sep();
-    html += btn('undo', 'Undo', 'Undo');
-    html += btn('redo', 'Redo', 'Redo');
+    html += btn('undo', 'Undo', this._t('undo'));
+    html += btn('redo', 'Redo', this._t('redo'));
 
     if (!isAbstract) {
-      html += btn('fullscreen', '\u229E', 'Full-screen');
+      html += btn('fullscreen', '\u229E', this._t('fullscreen'));
     }
 
     return html;
@@ -805,7 +814,7 @@ export class PevoEditor {
     if (this.maxLength != null) {
       text = `${this.charCount} / ${this.maxLength}`;
     } else if (this.remainingChars != null) {
-      text = `${this.remainingChars.toLocaleString()} characters remaining`;
+      text = `${this.remainingChars.toLocaleString()} ${this._t('charactersRemaining')}`;
     } else {
       text = String(this.charCount);
     }
@@ -860,7 +869,7 @@ export class PevoEditor {
     const btn = this._els.toolbar.querySelector('[data-action="fullscreen"]');
     if (btn) {
       btn.textContent = this.isFullscreen ? '\u2295' : '\u229E';
-      btn.title = this.isFullscreen ? 'Exit full-screen' : 'Full-screen';
+      btn.title = this.isFullscreen ? this._t('exitFullscreen') : this._t('fullscreen');
       if (this.isFullscreen) {
         btn.classList.remove(...BTN_INACTIVE.split(' '));
         btn.classList.add(...BTN_ACTIVE.split(' '));
@@ -931,14 +940,14 @@ export class PevoEditor {
     modal.style.display = '';
     modal.innerHTML = `
       <div class="bg-white rounded-lg shadow-xl border border-parchment-dark p-5 w-full max-w-lg mx-4" data-math-inner>
-        <h3 class="text-sm font-semibold text-ink mb-3">${isBlock ? 'Block Math ($$...$$)' : 'Inline Math ($...$)'}</h3>
+        <h3 class="text-sm font-semibold text-ink mb-3">${isBlock ? this._esc(this._t('mathBlockTitle')) : this._esc(this._t('mathInlineTitle'))}</h3>
         <textarea data-math-input placeholder="${isBlock ? '\\\\int_0^\\\\infty f(x)\\\\,dx' : 'x^2 + y^2 = r^2'}"
           class="w-full font-mono text-sm border border-parchment-dark rounded-md px-3 py-2 min-h-[80px] focus:border-pevo-teal focus:ring-1 focus:ring-pevo-teal focus:outline-none resize-y"></textarea>
         <div class="flex justify-end gap-2 mt-3">
-          <button type="button" data-math-cancel class="px-3 py-1.5 text-sm rounded-md border border-parchment-dark text-ink-muted hover:bg-parchment-warm">Cancel</button>
-          <button type="button" data-math-submit class="px-3 py-1.5 text-sm rounded-md bg-pevo-teal text-white hover:bg-pevo-teal-dark">Insert</button>
+          <button type="button" data-math-cancel class="px-3 py-1.5 text-sm rounded-md border border-parchment-dark text-ink-muted hover:bg-parchment-warm">${this._esc(this._t('common.cancel'))}</button>
+          <button type="button" data-math-submit class="px-3 py-1.5 text-sm rounded-md bg-pevo-teal text-white hover:bg-pevo-teal-dark">${this._esc(this._t('mathInsert'))}</button>
         </div>
-        <p class="text-xs text-ink-light mt-2">Press Ctrl+Enter to insert</p>
+        <p class="text-xs text-ink-light mt-2">${this._esc(this._t('mathHint'))}</p>
       </div>
     `;
 
@@ -1004,22 +1013,22 @@ export class PevoEditor {
 
     let html = '';
     if (!hasSelection && !currentHref) {
-      html += `<label class="text-xs text-ink-muted mb-1 block">Text</label>
-        <input type="text" data-link-text-input placeholder="Link text"
+      html += `<label class="text-xs text-ink-muted mb-1 block">${this._esc(this._t('linkTextLabel'))}</label>
+        <input type="text" data-link-text-input placeholder="${this._esc(this._t('linkTextPlaceholder'))}"
           class="w-full text-sm border border-parchment-dark rounded-md px-3 py-1.5 mb-2 focus:border-pevo-teal focus:ring-1 focus:ring-pevo-teal focus:outline-none" />`;
     }
-    html += `<label class="text-xs text-ink-muted mb-1 block">URL</label>
+    html += `<label class="text-xs text-ink-muted mb-1 block">${this._esc(this._t('linkUrlLabel'))}</label>
       <input type="url" data-link-url-input placeholder="https://example.com" value="${this._esc(currentHref)}"
         class="w-full text-sm border border-parchment-dark rounded-md px-3 py-1.5 focus:border-pevo-teal focus:ring-1 focus:ring-pevo-teal focus:outline-none" />`;
     html += `<div class="flex justify-between mt-2">`;
     if (currentHref) {
-      html += `<button type="button" data-link-remove class="text-xs text-pevo-crimson hover:text-pevo-crimson-dark">Remove link</button>`;
+      html += `<button type="button" data-link-remove class="text-xs text-pevo-crimson hover:text-pevo-crimson-dark">${this._esc(this._t('removeLink'))}</button>`;
     } else {
       html += `<span></span>`;
     }
     html += `<div class="flex gap-2">
-      <button type="button" data-link-cancel class="px-2 py-1 text-xs rounded border border-parchment-dark text-ink-muted hover:bg-parchment-warm">Cancel</button>
-      <button type="button" data-link-apply class="px-2 py-1 text-xs rounded bg-pevo-teal text-white hover:bg-pevo-teal-dark">Apply</button>
+      <button type="button" data-link-cancel class="px-2 py-1 text-xs rounded border border-parchment-dark text-ink-muted hover:bg-parchment-warm">${this._esc(this._t('common.cancel'))}</button>
+      <button type="button" data-link-apply class="px-2 py-1 text-xs rounded bg-pevo-teal text-white hover:bg-pevo-teal-dark">${this._esc(this._t('linkApply'))}</button>
     </div></div>`;
 
     popover.innerHTML = html;
@@ -1109,7 +1118,7 @@ export class PevoEditor {
         // base64 data URLs which would exceed the Hive transaction size limit
         try {
           const Alpine = (await import('alpinejs')).default;
-          Alpine.store('toast')?.show('Please connect your wallet to upload images', 'error');
+          Alpine.store('toast')?.show(Alpine.store('i18n')?.t('signIn.signInToContinue') || 'Sign in to continue', 'error');
         } catch { /* toast unavailable */ }
         return;
       }
@@ -1123,7 +1132,7 @@ export class PevoEditor {
     } catch (err) {
       try {
         const Alpine = (await import('alpinejs')).default;
-        Alpine.store('toast')?.show(err?.message || 'Image upload failed', 'error');
+        Alpine.store('toast')?.show(err?.message || this._t('imageUploadFailed'), 'error');
       } catch { /* toast unavailable */ }
     } finally {
       this.isUploading = false;

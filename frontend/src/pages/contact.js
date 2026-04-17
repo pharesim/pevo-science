@@ -90,13 +90,13 @@ const template = `
                   <p class="font-medium text-ink" x-text="$t('contact.githubIssues')"></p>
                   <p class="text-ink-muted text-xs mb-1" x-text="$t('contact.githubIssuesDesc')"></p>
                   <a :href="githubIssuesUrl" target="_blank" rel="noopener noreferrer"
-                     class="text-pevo-teal hover:underline">GitHub Issues</a>
+                     class="text-pevo-teal hover:underline" x-text="$t('contact.githubIssues')"></a>
                 </li>
                 <li x-show="discordUrl">
                   <p class="font-medium text-ink" x-text="$t('contact.discordCommunity')"></p>
                   <p class="text-ink-muted text-xs mb-1" x-text="$t('contact.discordDesc')"></p>
                   <a :href="discordUrl" target="_blank" rel="noopener noreferrer"
-                     class="text-pevo-teal hover:underline">Discord</a>
+                     class="text-pevo-teal hover:underline" x-text="$t('contact.discordCommunity')"></a>
                 </li>
               </ul>
             </div>

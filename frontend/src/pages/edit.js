@@ -44,7 +44,7 @@ const template = `
           <div class="card bg-pevo-crimson-light border-pevo-crimson/30 text-center py-8">
             <p class="text-sm text-pevo-crimson font-medium" x-text="$t('edit.notAuthorized')"></p>
             <a :href="$lp('/paper/' + author + '/' + permlink)" @click.prevent="navigate('/paper/' + author + '/' + permlink)"
-               class="btn-secondary text-xs mt-3 no-underline inline-block" x-text="$t('paperDetail.backToPapers')"></a>
+               class="btn-secondary text-xs mt-3 no-underline inline-block" x-text="$t('common.backToPapers')"></a>
           </div>
         </template>
 
@@ -53,7 +53,7 @@ const template = `
           <div>
             <a :href="$lp('/paper/' + (paper.canonical_author || paper.author) + '/' + (paper.canonical_permlink || paper.permlink))"
                @click.prevent="navigate('/paper/' + (paper.canonical_author || paper.author) + '/' + (paper.canonical_permlink || paper.permlink))"
-               class="text-sm text-pevo-teal hover:text-pevo-teal-dark no-underline">&larr; <span x-text="$t('paperDetail.backToPapers')"></span></a>
+               class="text-sm text-pevo-teal hover:text-pevo-teal-dark no-underline">&larr; <span x-text="$t('common.backToPapers')"></span></a>
 
             <h1 class="text-3xl font-bold text-ink mt-4 mb-2" x-text="$t('edit.title')"></h1>
             <p class="text-ink-muted mb-8" x-text="$t('edit.description')"></p>
@@ -71,7 +71,7 @@ const template = `
               <div class="card mb-6" :class="stepClass">
                 <p class="text-sm font-medium" x-text="stepMessage"></p>
                 <template x-if="step === 'error'">
-                  <button class="btn-secondary text-xs mt-2" @click="step = 'idle'">OK</button>
+                  <button class="btn-secondary text-xs mt-2" @click="step = 'idle'" x-text="$t('common.ok')"></button>
                 </template>
               </div>
             </template>
@@ -231,7 +231,7 @@ const template = `
                            @dragstart="dragCitationStart(i)"
                            @dragover="dragCitationOver($event, i)"
                            @drop="dragCitationDrop(i)">
-                        <div class="flex items-center cursor-grab text-ink-muted hover:text-ink shrink-0 pt-1" title="Drag to reorder">
+                        <div class="flex items-center cursor-grab text-ink-muted hover:text-ink shrink-0 pt-1" :title="$t('aria.dragToReorder')">
                           <svg class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path d="M7 2a2 2 0 10.001 4.001A2 2 0 007 2zm0 6a2 2 0 10.001 4.001A2 2 0 007 8zm0 6a2 2 0 10.001 4.001A2 2 0 007 14zm6-8a2 2 0 10-.001-4.001A2 2 0 0013 6zm0 2a2 2 0 10.001 4.001A2 2 0 0013 8zm0 6a2 2 0 10.001 4.001A2 2 0 0013 14z" /></svg>
                         </div>
                         <div class="flex-1 space-y-2">
@@ -877,7 +877,7 @@ export function initEditPage() {
         }
       } catch (err) {
         this.step = 'error';
-        this.errorMessage = err.message || 'Edit failed';
+        this.errorMessage = err.message || this.$t('common.editFailed');
       }
     },
   }));

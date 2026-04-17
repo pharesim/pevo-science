@@ -8,8 +8,8 @@ const template = `
         <!-- Already signed in -->
         <template x-if="isConnected">
           <div class="text-center py-16">
-            <p class="text-ink-muted mb-4" x-text="$t('signup.alreadySignedIn')"></p>
-            <button @click="navigate('/papers')" class="btn-primary" x-text="$t('signup.goToPapers')"></button>
+            <p class="text-ink-muted mb-4" x-text="$t('common.alreadySignedIn')"></p>
+            <button @click="navigate('/papers')" class="btn-primary" x-text="$t('common.goToPapers')"></button>
           </div>
         </template>
 
@@ -63,7 +63,7 @@ const template = `
                     <div class="flex items-center gap-2 bg-green-50 border border-green-200 rounded-lg px-3 py-2">
                       <svg class="w-4 h-4 text-pevo-green flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
                       <span class="text-sm text-green-800 truncate" x-text="orcidId"></span>
-                      <button type="button" @click="clearOrcid()" class="ml-auto text-green-600 hover:text-green-800" aria-label="Clear ORCID">
+                      <button type="button" @click="clearOrcid()" class="ml-auto text-green-600 hover:text-green-800" :aria-label="$t('aria.clearOrcid')">
                         <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
                       </button>
                     </div>
@@ -112,8 +112,8 @@ const template = `
 
             <!-- Keychain link -->
             <p class="text-center text-sm text-ink-muted mt-2">
-              <span x-text="$t('signup.hasKeychain')"></span>
-              <a :href="$lp('/')" @click.prevent="navigate('/')" class="text-pevo-teal hover:underline" x-text="$t('signup.connectKeychain')"></a>
+              <span x-text="$t('common.hasKeychain')"></span>
+              <a :href="$lp('/')" @click.prevent="navigate('/')" class="text-pevo-teal hover:underline" x-text="$t('common.connectKeychain')"></a>
             </p>
           </div>
         </template>

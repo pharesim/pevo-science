@@ -93,6 +93,10 @@ export function initI18n() {
       newPath += window.location.search;
       window.history.replaceState(null, '', newPath);
 
+      // Update document title from locale
+      const title = getNestedValue(this.messages, 'metadata.title');
+      if (title) document.title = title;
+
       // Sync router store locale
       const router = Alpine.store('router');
       if (router) router.locale = newLocale;
@@ -142,6 +146,9 @@ export function initI18n() {
   document.documentElement.dir = isRtl ? 'rtl' : 'ltr';
   document.documentElement.lang = locale;
 
-  // Return the loading promise so main.js can await it
-  return store._loadMessages(locale);
+  // Load initial messages, then set document title
+  return store._loadMessages(locale).then(() => {
+    const title = getNestedValue(store.messages, 'metadata.title');
+    if (title) document.title = title;
+  });
 }

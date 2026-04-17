@@ -80,7 +80,7 @@ const template = `
 
             <!-- Pagination -->
             <template x-if="totalPages > 1">
-              <nav class="flex items-center justify-center gap-1 mt-8" aria-label="Pagination">
+              <nav class="flex items-center justify-center gap-1 mt-8" :aria-label="$t('aria.pagination')">
                 <button class="btn-secondary px-3 py-1.5 text-sm" :disabled="currentPage === 1" @click="goToPage(currentPage - 1)" x-text="$t('pagination.previous')"></button>
                 <template x-for="(page, i) in paginationPages" :key="'rp' + i">
                   <template x-if="page === '...'">

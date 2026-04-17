@@ -25,7 +25,7 @@ const template = `
         <template x-if="!loading && error">
           <div class="card text-center py-12">
             <p class="text-ink-muted mb-4" x-text="error"></p>
-            <button class="btn-primary" @click="loadPosts()" x-text="$t('blog.retry')"></button>
+            <button class="btn-primary" @click="loadPosts()" x-text="$t('common.retry')"></button>
           </div>
         </template>
 

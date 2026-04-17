@@ -20,7 +20,7 @@ export function initBroadcastConfirm() {
 
       this.title = title;
       this.message = message;
-      this.confirmLabel = confirmLabel || 'Confirm';
+      this.confirmLabel = confirmLabel || Alpine.store('i18n').messages?.common?.confirm || 'Confirm';
       this.open = true;
 
       return new Promise((resolve) => {

@@ -113,7 +113,7 @@ export function initVouchSection() {
             action: 'retract_vouch',
             voucher: this.username,
             vouchee: this.targetUsername,
-            reason: this.retractReason || 'Retracted',
+            reason: this.retractReason || this.$t('retraction.banner'),
             timestamp: new Date().toISOString(),
           }),
         }]]);

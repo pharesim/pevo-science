@@ -38,7 +38,7 @@
       <div class="flex h-16 items-center justify-between">
         <!-- Logo -->
         <a :href="$lp('/')" @click.prevent="navigate('/')" class="flex items-center gap-2.5 no-underline">
-          <img src="/images/pevo-logo.png" alt="PEvO logo" width="36" height="36" class="rounded-sm" />
+          <img src="/images/pevo-logo.png" :alt="$t('aria.pevoLogo')" width="36" height="36" class="rounded-sm" />
           <div class="flex flex-col">
             <span class="text-lg font-bold text-ink leading-tight tracking-tight">pevo</span>
             <span class="hidden sm:block text-[10px] text-ink-muted leading-tight" x-text="$t('header.tagline')"></span>
@@ -154,7 +154,7 @@
         <!-- Mobile menu button -->
         <button class="md:hidden p-2 text-ink-muted hover:text-ink"
                 @click="mobileMenuOpen = !mobileMenuOpen"
-                aria-label="Toggle navigation menu" :aria-expanded="mobileMenuOpen">
+                :aria-label="$t('aria.toggleMenu')" :aria-expanded="mobileMenuOpen">
           <svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
             <path x-show="mobileMenuOpen" stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
             <path x-show="!mobileMenuOpen" stroke-linecap="round" stroke-linejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" />
@@ -227,7 +227,7 @@
       <div class="flex gap-3 justify-end">
         <button @click="$store.broadcastConfirm.cancel()"
                 class="px-4 py-2 text-sm font-medium text-ink-muted hover:text-ink border border-parchment-dark rounded-lg"
-                x-text="$t('confirm.cancel')"></button>
+                x-text="$t('common.cancel')"></button>
         <button @click="$store.broadcastConfirm.confirm()"
                 class="px-4 py-2 text-sm font-medium text-white bg-pevo-teal hover:bg-pevo-teal-dark rounded-lg"
                 x-text="$store.broadcastConfirm.confirmLabel"></button>
@@ -242,7 +242,7 @@
         <!-- Brand -->
         <div>
           <div class="flex items-center gap-2 mb-3">
-            <img src="/images/pevo-logo.png" alt="PEvO logo" width="28" height="28" class="rounded-sm" />
+            <img src="/images/pevo-logo.png" :alt="$t('aria.pevoLogo')" width="28" height="28" class="rounded-sm" />
             <span class="text-lg font-bold text-ink">pevo</span>
           </div>
           <p class="text-sm text-ink-muted leading-relaxed" x-text="$t('footer.description')"></p>
@@ -268,9 +268,9 @@
         <div>
           <p class="font-sans text-sm font-semibold text-ink mb-3" x-text="$t('footer.resources')"></p>
           <ul class="space-y-2 text-sm">
-            <li x-show="githubUrl"><a :href="githubUrl" target="_blank" rel="noopener noreferrer" class="text-ink-muted hover:text-pevo-teal no-underline">GitHub</a></li>
-            <li><a href="https://hive.io" target="_blank" rel="noopener noreferrer" class="text-ink-muted hover:text-pevo-teal no-underline">Hive Network</a></li>
-            <li><a href="https://hive-keychain.com/" target="_blank" rel="noopener noreferrer" class="text-ink-muted hover:text-pevo-teal no-underline">Hive Keychain</a></li>
+            <li x-show="githubUrl"><a :href="githubUrl" target="_blank" rel="noopener noreferrer" class="text-ink-muted hover:text-pevo-teal no-underline" x-text="$t('footer.github')"></a></li>
+            <li><a href="https://hive.io" target="_blank" rel="noopener noreferrer" class="text-ink-muted hover:text-pevo-teal no-underline" x-text="$t('footer.hiveNetwork')"></a></li>
+            <li><a href="https://hive-keychain.com/" target="_blank" rel="noopener noreferrer" class="text-ink-muted hover:text-pevo-teal no-underline" x-text="$t('footer.hiveKeychain')"></a></li>
             <li x-show="discordUrl"><a :href="discordUrl" target="_blank" rel="noopener noreferrer" class="text-ink-muted hover:text-pevo-teal no-underline" x-text="$t('footer.discord')"></a></li>
           </ul>
         </div>
@@ -281,7 +281,7 @@
         <p class="text-xs text-ink-muted" x-text="$t('footer.license')"></p>
         <a href="https://hive.io" target="_blank" rel="noopener noreferrer"
            class="flex items-center gap-1.5 text-xs text-ink-muted hover:text-pevo-teal no-underline">
-          <img src="/images/hive-logo.svg" alt="Hive logo" width="16" height="16" style="width:16px;height:auto" />
+          <img src="/images/hive-logo.svg" :alt="$t('aria.hiveLogo')" width="16" height="16" style="width:16px;height:auto" />
           Powered by Hive
         </a>
         <p class="text-xs text-ink-muted">pevo.science</p>
@@ -290,78 +290,6 @@
     <!-- Bottom brand bar -->
     <div class="h-1 bg-linear-to-r from-pevo-green via-pevo-teal to-pevo-crimson"></div>
   </footer>
-
-  <!-- ═══════════════════════════════════════════════ ONBOARDING MODAL ═══════════════════════════════════ -->
-  <div x-data="onboardingModal">
-    <template x-if="open">
-      <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
-           @click="handleBackdropClick($event)" @keydown.window="handleKeydown($event)"
-           role="dialog" aria-modal="true" aria-labelledby="onboarding-modal-title">
-        <div class="bg-white rounded-lg shadow-lg max-w-lg w-full p-6 sm:p-8 relative">
-          <!-- Close button -->
-          <button class="absolute top-3 right-3 rtl:right-auto rtl:left-3 text-ink-muted hover:text-ink p-1"
-                  @click="dismiss()" aria-label="Close">
-            <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
-              <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
-
-          <h2 id="onboarding-modal-title" class="text-2xl font-bold text-ink mb-2" x-text="$t('onboarding.title')"></h2>
-          <p class="text-sm text-ink-muted mb-6" x-text="$t('onboarding.description')"></p>
-
-          <div class="space-y-4">
-            <!-- Accreditation — only when not accredited -->
-            <template x-if="!isAccredited">
-              <div class="flex items-start gap-3">
-                <div class="flex-shrink-0 w-10 h-10 rounded-full bg-pevo-crimson-light flex items-center justify-center">
-                  <svg class="w-5 h-5 text-pevo-crimson" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
-                    <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z" />
-                  </svg>
-                </div>
-                <div class="flex-1">
-                  <h3 class="text-sm font-semibold text-ink" x-text="$t('onboarding.accreditTitle')"></h3>
-                  <p class="text-xs text-ink-muted" x-text="$t('onboarding.accreditDescription')"></p>
-                </div>
-                <button class="btn-primary text-xs no-underline" @click="navigateAndDismiss('/accreditation')" x-text="$t('onboarding.accreditButton')"></button>
-              </div>
-            </template>
-
-            <!-- Browse -->
-            <div class="flex items-start gap-3">
-              <div class="flex-shrink-0 w-10 h-10 rounded-full bg-pevo-teal-light flex items-center justify-center">
-                <svg class="w-5 h-5 text-pevo-teal" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
-                  <path stroke-linecap="round" stroke-linejoin="round" d="M12 6.042A8.967 8.967 0 006 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 016 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 016-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0018 18a8.967 8.967 0 00-6 2.292m0-14.25v14.25" />
-                </svg>
-              </div>
-              <div class="flex-1">
-                <h3 class="text-sm font-semibold text-ink" x-text="$t('onboarding.browseTitle')"></h3>
-                <p class="text-xs text-ink-muted" x-text="$t('onboarding.browseDescription')"></p>
-              </div>
-              <button class="btn-primary text-xs no-underline" @click="navigateAndDismiss('/')" x-text="$t('onboarding.browseButton')"></button>
-            </div>
-
-            <!-- Publish -->
-            <div class="flex items-start gap-3">
-              <div class="flex-shrink-0 w-10 h-10 rounded-full bg-pevo-green-light flex items-center justify-center">
-                <svg class="w-5 h-5 text-pevo-green" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
-                  <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
-                </svg>
-              </div>
-              <div class="flex-1">
-                <h3 class="text-sm font-semibold text-ink" x-text="$t('onboarding.publishTitle')"></h3>
-                <p class="text-xs text-ink-muted" x-text="$t('onboarding.publishDescription')"></p>
-              </div>
-              <button class="btn-primary text-xs no-underline" @click="navigateAndDismiss('/publish')" x-text="$t('onboarding.publishButton')"></button>
-            </div>
-          </div>
-
-          <div class="mt-6 text-center">
-            <button class="text-sm text-ink-muted hover:text-pevo-teal transition-colors" @click="dismiss()" x-text="$t('onboarding.dismissButton')"></button>
-          </div>
-        </div>
-      </div>
-    </template>
-  </div>
 
   <!-- ═══════════════════════════════════════════════ USERNAME MODAL ═══════════════════════════════════ -->
   <div x-data="signInModal">
@@ -398,20 +326,20 @@
                     <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 5.25a3 3 0 013 3m3 0a6 6 0 01-7.029 5.912c-.563-.097-1.159.026-1.563.43L10.5 17.25H8.25v2.25H6v2.25H2.25v-2.818c0-.597.237-1.17.659-1.591l6.499-6.499c.404-.404.527-1 .43-1.563A6 6 0 1121.75 8.25z" />
                   </svg>
                   <div>
-                    <p class="font-medium text-ink text-sm" x-text="$t('signIn.keychainOption')"></p>
-                    <p class="text-xs text-ink-muted mt-0.5" x-text="$t('signIn.keychainDescription')"></p>
+                    <p class="font-medium text-ink text-sm" x-text="$t('signIn.browserExtensionOption')"></p>
+                    <p class="text-xs text-ink-muted mt-0.5" x-text="$t('signIn.browserExtensionDescription')"></p>
                   </div>
                 </div>
               </button>
 
               <p class="text-sm text-ink/60 mt-4 text-center">
-                <span x-text="$t('signIn.noAccount')"></span>
+                <span x-text="$t('common.noAccount')"></span>
                 <a :href="$lp('/signup')" class="text-pevo-teal hover:underline font-medium"
-                   @click.prevent="cancel(); $store.router.navigate('/signup')" x-text="$t('signIn.signUp')"></a>
+                   @click.prevent="cancel(); $store.router.navigate('/signup')" x-text="$t('common.signUp')"></a>
               </p>
 
               <div class="flex justify-end mt-4">
-                <button type="button" class="btn-secondary text-sm px-4 py-2" @click="cancel()" x-text="$t('confirm.cancel')"></button>
+                <button type="button" class="btn-secondary text-sm px-4 py-2" @click="cancel()" x-text="$t('common.cancel')"></button>
               </div>
             </div>
           </template>
@@ -446,7 +374,7 @@
               </p>
 
               <div class="flex justify-end gap-3 mt-5">
-                <button type="button" class="btn-secondary text-sm px-4 py-2" @click="cancel()" x-text="$t('confirm.cancel')"></button>
+                <button type="button" class="btn-secondary text-sm px-4 py-2" @click="cancel()" x-text="$t('common.cancel')"></button>
                 <button type="button" class="btn-primary text-sm px-4 py-2" :disabled="emailLoading" @click="handleEmailLogin()">
                   <span x-show="!emailLoading" x-text="$t('signIn.signInButton')"></span>
                   <span x-show="emailLoading" x-text="$t('signIn.signingIn')"></span>
@@ -467,7 +395,7 @@
                 </div>
               </template>
               <div class="flex justify-end gap-3 mt-4">
-                <button type="button" class="btn-secondary text-sm px-4 py-2" @click="cancel()" x-text="$t('confirm.cancel')"></button>
+                <button type="button" class="btn-secondary text-sm px-4 py-2" @click="cancel()" x-text="$t('common.cancel')"></button>
                 <button x-show="!resendSuccess" type="button" class="btn-primary text-sm px-4 py-2" :disabled="isResending" @click="handleResendVerification()">
                   <span x-show="!isResending" x-text="$t('login.resendVerification')"></span>
                   <span x-show="isResending" x-text="$t('login.resending')"></span>
@@ -483,13 +411,13 @@
                 <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 19.5L8.25 12l7.5-7.5" /></svg>
                 <span x-text="$t('signIn.back')"></span>
               </button>
-              <h2 class="text-lg font-semibold text-ink mb-4" x-text="$t('signIn.keychainTitle')"></h2>
+              <h2 class="text-lg font-semibold text-ink mb-4" x-text="$t('signIn.browserExtensionTitle')"></h2>
 
               <template x-if="!$store.auth.isKeychainInstalled">
                 <div class="text-center py-4">
-                  <p class="text-sm text-ink-muted mb-3" x-text="$t('signIn.keychainNotInstalled')"></p>
+                  <p class="text-sm text-ink-muted mb-3" x-text="$t('signIn.browserExtensionNotInstalled')"></p>
                   <a href="https://hive-keychain.com/" target="_blank" rel="noopener noreferrer"
-                     class="btn-primary text-sm no-underline" x-text="$t('header.installKeychain')"></a>
+                     class="btn-primary text-sm no-underline" x-text="$t('header.installBrowserExtension')"></a>
                 </div>
               </template>
 
@@ -498,7 +426,7 @@
                   <label for="keychain-username-input" class="block text-xs font-medium text-ink-muted mb-1" x-text="$t('signIn.hiveUsername')"></label>
                   <input id="keychain-username-input" x-ref="keychainInput" type="text"
                          class="w-full px-3 py-2 border border-parchment-dark rounded-md text-sm text-ink focus:outline-none focus:ring-2 focus:ring-pevo-teal focus:border-transparent"
-                         placeholder="e.g. satoshi"
+                         :placeholder="$t('signIn.usernamePlaceholder')"
                          x-model="value"
                          @input="error = null"
                          @keydown.enter="confirm()" />
@@ -508,7 +436,7 @@
                   </template>
 
                   <div class="flex justify-end gap-3 mt-5">
-                    <button type="button" class="btn-secondary text-sm px-4 py-2" @click="cancel()" x-text="$t('confirm.cancel')"></button>
+                    <button type="button" class="btn-secondary text-sm px-4 py-2" @click="cancel()" x-text="$t('common.cancel')"></button>
                     <button type="button" class="btn-primary text-sm px-4 py-2" @click="confirm()" x-text="$t('signIn.connect')"></button>
                   </div>
                 </div>
@@ -557,7 +485,7 @@
         </span>
         <p class="text-sm flex-1" x-text="item.message"></p>
         <button @click="$store.toast.dismiss(item.id)"
-                class="shrink-0 text-ink-muted hover:text-ink transition-colors p-0.5" aria-label="Dismiss">
+                class="shrink-0 text-ink-muted hover:text-ink transition-colors p-0.5" :aria-label="$t('aria.dismiss')">
           <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
             <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd" />
           </svg>

@@ -34,7 +34,7 @@ const template = `
                   <div class="bg-red-50 border border-red-200 rounded-lg p-4 mb-4">
                     <p class="text-red-700 text-sm" x-text="upgradeError"></p>
                   </div>
-                  <button @click="resetUpgrade()" class="text-pevo-teal hover:underline text-sm" x-text="$t('upgrade.tryAgain')"></button>
+                  <button @click="resetUpgrade()" class="text-pevo-teal hover:underline text-sm" x-text="$t('common.tryAgain')"></button>
                 </div>
 
                 <!-- Step 1: New seed phrase display -->
@@ -304,7 +304,7 @@ export function initSettingsPage() {
       // eslint-disable-next-line no-undef
       if (typeof scureBip39 !== 'undefined') return scureBip39;
       // Try dynamic import as fallback
-      throw new Error('BIP39 library not loaded');
+      throw new Error(this.$t('common.bip39NotLoaded'));
     },
 
     navigate(path) {

@@ -6,8 +6,8 @@ const template = `
         <!-- Already signed in -->
         <template x-if="isConnected">
           <div class="text-center py-16">
-            <p class="text-ink-muted mb-4" x-text="$t('login.alreadySignedIn')"></p>
-            <button @click="navigate('/papers')" class="btn-primary" x-text="$t('login.goToPapers')"></button>
+            <p class="text-ink-muted mb-4" x-text="$t('common.alreadySignedIn')"></p>
+            <button @click="navigate('/papers')" class="btn-primary" x-text="$t('common.goToPapers')"></button>
           </div>
         </template>
 
@@ -73,14 +73,14 @@ const template = `
 
             <!-- Signup link -->
             <p class="text-center text-sm text-ink-muted mt-6">
-              <span x-text="$t('login.noAccount')"></span>
-              <a :href="$lp('/signup')" @click.prevent="navigate('/signup')" class="text-pevo-teal hover:underline" x-text="$t('login.signUp')"></a>
+              <span x-text="$t('common.noAccount')"></span>
+              <a :href="$lp('/signup')" @click.prevent="navigate('/signup')" class="text-pevo-teal hover:underline" x-text="$t('common.signUp')"></a>
             </p>
 
             <!-- Keychain link -->
             <p class="text-center text-sm text-ink-muted mt-2">
-              <span x-text="$t('login.hasKeychain')"></span>
-              <a :href="$lp('/')" @click.prevent="navigate('/')" class="text-pevo-teal hover:underline" x-text="$t('login.connectKeychain')"></a>
+              <span x-text="$t('common.hasKeychain')"></span>
+              <a :href="$lp('/')" @click.prevent="navigate('/')" class="text-pevo-teal hover:underline" x-text="$t('common.connectKeychain')"></a>
             </p>
           </div>
         </template>

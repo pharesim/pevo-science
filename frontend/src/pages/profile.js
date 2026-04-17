@@ -58,7 +58,7 @@ const template = `
                 <div class="mt-4 pt-4 border-t border-parchment-dark text-xs text-ink-muted flex items-center gap-2 flex-wrap">
                   <span x-text="$t('profile.accreditedVia', { method: profile.accreditation.method, date: formatDate(profile.accreditation.timestamp) })"></span>
                   <template x-if="profile.accreditation.field">
-                    <span> -- field: <span class="capitalize" x-text="profile.accreditation.field"></span></span>
+                    <span> &middot; <span class="capitalize" x-text="profile.accreditation.field"></span></span>
                   </template>
                 </div>
               </template>
@@ -177,7 +177,7 @@ const template = `
                         <input type="text" x-model="retractReason" :placeholder="$t('wot.retractReasonPlaceholder')" class="input text-sm mb-2 w-full" />
                         <div class="flex gap-2">
                           <button @click="handleRetract" :disabled="step === 'signing'" class="btn-danger text-sm" x-text="$t('wot.confirmRetract')"></button>
-                          <button @click="showRetract = false" class="btn-secondary text-sm" x-text="$t('wot.cancel')"></button>
+                          <button @click="showRetract = false" class="btn-secondary text-sm" x-text="$t('common.cancel')"></button>
                         </div>
                       </div>
                     </template>

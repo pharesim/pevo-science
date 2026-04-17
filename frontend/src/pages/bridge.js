@@ -18,7 +18,7 @@ const template = `
         <!-- Not connected -->
         <template x-if="!isConnected">
           <div class="card text-center py-12">
-            <p class="text-ink-muted mb-4" x-text="$t('bridge.walletHint')"></p>
+            <p class="text-ink-muted mb-4" x-text="$t('bridge.signInHint')"></p>
             <button class="btn-primary" @click="handleConnect()" x-text="$t('signIn.signInButton')"></button>
           </div>
         </template>
@@ -139,7 +139,7 @@ const template = `
                 <template x-if="step === 'error'">
                   <div>
                     <p class="text-sm text-pevo-crimson mb-2" x-text="errorMessage"></p>
-                    <button class="btn-secondary text-sm" @click="step = 'idle'" x-text="$t('bridge.tryAgain')"></button>
+                    <button class="btn-secondary text-sm" @click="step = 'idle'" x-text="$t('common.tryAgain')"></button>
                   </div>
                 </template>
               </div>
@@ -279,7 +279,7 @@ export function initBridgePage() {
         }, 1500);
       } catch (err) {
         this.step = 'error';
-        this.errorMessage = err.message || 'Registration failed';
+        this.errorMessage = err.message || this.$t('common.registrationFailed');
       }
     },
   }));
