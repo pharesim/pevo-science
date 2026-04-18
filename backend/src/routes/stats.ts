@@ -23,7 +23,8 @@ async function fetchStatsFromHaf() {
     const at = `$${cte.nextIdx}`;      // appTag
     const al = `$${cte.nextIdx + 1}`;  // appTag/%
     const anon = `$${cte.nextIdx + 2}`; // anonymous review account
-    const params = [...cte.params, config.appTag, `${config.appTag}/%`, config.hiveAnonAccount];
+    const papersParams = [...cte.params, config.appTag, `${config.appTag}/%`];
+    const reviewsParams = [...cte.params, config.appTag, `${config.appTag}/%`, config.hiveAnonAccount];
 
     // Two queries in parallel: papers (single scan with conditional aggregation) + reviews
     const [papersResult, reviewsResult] = await Promise.all([
@@ -53,7 +54,7 @@ async function fetchStatsFromHaf() {
             WHERE jsonb_typeof(ci.json_metadata -> ${at} -> 'citations') = 'array'
           ), 0) AS total_citations
         FROM papers
-      `, params),
+      `, papersParams),
       pool.query(`
         ${cte.sql}
         SELECT
@@ -64,7 +65,7 @@ async function fetchStatsFromHaf() {
           AND c.json_metadata ->> 'app' LIKE ${al}
           AND (EXISTS (SELECT 1 FROM active_accreditations aa WHERE aa.account = c.author)
                OR c.author = ${anon})
-      `, params),
+      `, reviewsParams),
     ]);
 
     const p = papersResult.rows[0];
