@@ -21,7 +21,6 @@
   },
   "header": {
     "tagline": "מדע פתוח, גישה פתוחה",
-    "loading": "טוען...",
     "disconnect": "התנתקות",
     "installBrowserExtension": "התקנת Keychain"
   },
@@ -315,10 +314,21 @@
     "mildConcerns": "הסתייגויות קלות",
     "reject": "דחייה",
     "strongReject": "דחייה חזקה",
+    "retract": "משיכת הצבעה",
     "staleBanner": "מאמר זה עודכן מאז שהצבעת. בדוק את השינויים ועדכן את הצבעתך.",
     "votesWithStale": "{active} הצבעות ({stale} ממתינות להערכה מחדש)",
+    "votesWithStrength": "{count} הצבעות, {strength}",
     "staleAtVersion": "{count} הצבעות ממתינות להערכה מחדש מאז גרסה זו",
-    "pendingShort": "ממתין"
+    "pendingShort": "ממתין",
+    "strength": {
+      "strong_endorsement": "תמיכה חזקה",
+      "endorsement": "תמיכה",
+      "mild_endorsement": "תמיכה קלה",
+      "mixed": "מעורב",
+      "mild_concerns": "הסתייגויות קלות",
+      "concerns": "הסתייגויות",
+      "strong_concerns": "הסתייגויות חזקות"
+    }
   },
   "notifications": {
     "title": "התראות",
@@ -691,6 +701,7 @@
     "discard": "מחיקה",
     "close": "סגור",
     "cancel": "ביטול",
+    "loading": "טוען...",
     "uploadFailed": "ההעלאה נכשלה",
     "publishingFailed": "הפרסום נכשל",
     "loadVersionFailed": "טעינת הגרסה נכשלה",
@@ -758,6 +769,7 @@
     "pagination": "ניווט עמודים",
     "clearOrcid": "נקה ORCID",
     "dragToReorder": "גרור לסידור מחדש",
+    "votes": "הצבעות",
     "reviews": "ביקורות",
     "citations": "ציטוטים",
     "pdf": "PDF",
@@ -905,6 +917,8 @@
     "voteTitle": "אישור הצבעה",
     "voteMessage": "אתם עומדים להצביע: {strength}.",
     "voteSimpleMessage": "אתם עומדים להצביע {direction}.",
+    "retractMessage": "אתה עומד למשוך את הצבעתך.",
+    "retract": "משיכת הצבעה",
     "vote": "אישור הצבעה",
     "commentTitle": "פרסום תגובה",
     "commentMessage": "אתם עומדים לפרסם תגובה.",

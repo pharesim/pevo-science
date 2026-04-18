@@ -21,7 +21,6 @@
   },
   "header": {
     "tagline": "åben videnskab, fri adgang",
-    "loading": "Indlæser...",
     "disconnect": "Log ud",
     "installBrowserExtension": "Installer Keychain"
   },
@@ -315,10 +314,21 @@
     "mildConcerns": "Milde forbehold",
     "reject": "Afvisning",
     "strongReject": "Stærk afvisning",
+    "retract": "Træk stemme tilbage",
     "staleBanner": "Denne artikel er blevet revideret siden du stemte. Gennemgå ændringerne og opdater din stemme.",
     "votesWithStale": "{active} stemmer ({stale} afventer revurdering)",
+    "votesWithStrength": "{count} stemmer, {strength}",
     "staleAtVersion": "{count} stemmer afventer revurdering siden denne revision",
-    "pendingShort": "forældet"
+    "pendingShort": "forældet",
+    "strength": {
+      "strong_endorsement": "stærk opbakning",
+      "endorsement": "opbakning",
+      "mild_endorsement": "let opbakning",
+      "mixed": "blandet",
+      "mild_concerns": "lette forbehold",
+      "concerns": "forbehold",
+      "strong_concerns": "stærke forbehold"
+    }
   },
   "notifications": {
     "title": "Notifikationer",
@@ -691,6 +701,7 @@
     "discard": "Kassér",
     "close": "Luk",
     "cancel": "Annuller",
+    "loading": "Indlæser...",
     "uploadFailed": "Upload mislykkedes",
     "publishingFailed": "Publicering mislykkedes",
     "loadVersionFailed": "Kunne ikke indlæse version",
@@ -758,6 +769,7 @@
     "pagination": "Sidenavigation",
     "clearOrcid": "Ryd ORCID",
     "dragToReorder": "Træk for at omarrangere",
+    "votes": "Stemmer",
     "reviews": "Anmeldelser",
     "citations": "Citationer",
     "pdf": "PDF",
@@ -905,6 +917,8 @@
     "voteTitle": "Bekræft stemme",
     "voteMessage": "Du er ved at afgive en stemme: {strength}.",
     "voteSimpleMessage": "Du er ved at stemme {direction}.",
+    "retractMessage": "Du er ved at trække din stemme tilbage.",
+    "retract": "Træk stemme tilbage",
     "vote": "Bekræft stemme",
     "commentTitle": "Skriv kommentar",
     "commentMessage": "Du er ved at skrive en kommentar.",

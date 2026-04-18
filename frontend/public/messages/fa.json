@@ -21,7 +21,6 @@
   },
   "header": {
     "tagline": "علم آزاد، دسترسی آزاد",
-    "loading": "در حال بارگذاری...",
     "disconnect": "خروج",
     "installBrowserExtension": "نصب Keychain"
   },
@@ -315,10 +314,21 @@
     "mildConcerns": "نگرانی‌های خفیف",
     "reject": "رد",
     "strongReject": "رد قوی",
+    "retract": "پس گرفتن رأی",
     "staleBanner": "این مقاله از زمان رأی‌گیری شما بازنگری شده است. تغییرات را بررسی کنید و رأی خود را به‌روز کنید.",
     "votesWithStale": "{active} رأی ({stale} در انتظار ارزیابی مجدد)",
+    "votesWithStrength": "{count} رأی، {strength}",
     "staleAtVersion": "{count} رأی در انتظار ارزیابی مجدد از این بازنگری",
-    "pendingShort": "معلّق"
+    "pendingShort": "معلّق",
+    "strength": {
+      "strong_endorsement": "تأیید قوی",
+      "endorsement": "تأیید",
+      "mild_endorsement": "تأیید خفیف",
+      "mixed": "مختلط",
+      "mild_concerns": "نگرانی‌های خفیف",
+      "concerns": "نگرانی‌ها",
+      "strong_concerns": "نگرانی‌های شدید"
+    }
   },
   "notifications": {
     "title": "اعلان‌ها",
@@ -691,6 +701,7 @@
     "discard": "حذف",
     "close": "بستن",
     "cancel": "لغو",
+    "loading": "در حال بارگذاری...",
     "uploadFailed": "بارگذاری ناموفق بود",
     "publishingFailed": "انتشار ناموفق بود",
     "loadVersionFailed": "بارگذاری نسخه ناموفق بود",
@@ -758,6 +769,7 @@
     "pagination": "صفحه‌بندی",
     "clearOrcid": "پاک کردن ORCID",
     "dragToReorder": "بکشید برای تغییر ترتیب",
+    "votes": "رأی‌ها",
     "reviews": "بررسی‌ها",
     "citations": "ارجاعات",
     "pdf": "PDF",
@@ -905,6 +917,8 @@
     "voteTitle": "تأیید رأی",
     "voteMessage": "شما در حال ثبت رأی هستید: {strength}.",
     "voteSimpleMessage": "شما در حال رأی دادن {direction} هستید.",
+    "retractMessage": "شما در حال پس گرفتن رأی خود هستید.",
+    "retract": "پس گرفتن رأی",
     "vote": "تأیید رأی",
     "commentTitle": "ارسال نظر",
     "commentMessage": "شما در حال ارسال یک نظر هستید.",

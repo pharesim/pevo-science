@@ -21,7 +21,6 @@
   },
   "header": {
     "tagline": "open science, open access",
-    "loading": "Loading...",
     "disconnect": "Disconnect",
     "installBrowserExtension": "Install Keychain"
   },
@@ -315,10 +314,21 @@
     "mildConcerns": "Mild concerns",
     "reject": "Reject",
     "strongReject": "Strong reject",
+    "retract": "Retract vote",
     "staleBanner": "This paper has been revised since you voted. Review the changes and update your vote.",
     "votesWithStale": "{active} votes ({stale} pending re-evaluation)",
+    "votesWithStrength": "{count} votes, {strength}",
     "staleAtVersion": "{count} votes pending re-evaluation since this revision",
-    "pendingShort": "stale"
+    "pendingShort": "stale",
+    "strength": {
+      "strong_endorsement": "strong endorsement",
+      "endorsement": "endorsement",
+      "mild_endorsement": "mild endorsement",
+      "mixed": "mixed",
+      "mild_concerns": "mild concerns",
+      "concerns": "concerns",
+      "strong_concerns": "strong concerns"
+    }
   },
   "notifications": {
     "title": "Notifications",
@@ -695,6 +705,7 @@
     "discard": "Discard",
     "close": "Close",
     "cancel": "Cancel",
+    "loading": "Loading...",
     "uploadFailed": "Upload failed",
     "publishingFailed": "Publishing failed",
     "loadVersionFailed": "Failed to load version",
@@ -779,6 +790,7 @@
     "pagination": "Pagination",
     "clearOrcid": "Clear ORCID",
     "dragToReorder": "Drag to reorder",
+    "votes": "Votes",
     "reviews": "Reviews",
     "citations": "Citations",
     "pdf": "PDF",
@@ -926,6 +938,8 @@
     "voteTitle": "Confirm Vote",
     "voteMessage": "You are about to cast a vote: {strength}.",
     "voteSimpleMessage": "You are about to vote {direction}.",
+    "retractMessage": "You are about to retract your vote.",
+    "retract": "Retract Vote",
     "vote": "Confirm Vote",
     "commentTitle": "Post Comment",
     "commentMessage": "You are about to post a comment.",

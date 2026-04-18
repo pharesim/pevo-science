@@ -21,7 +21,6 @@
   },
   "header": {
     "tagline": "açık bilim, açık erişim",
-    "loading": "Yükleniyor...",
     "disconnect": "Bağlantıyı Kes",
     "installBrowserExtension": "Keychain Yükle"
   },
@@ -315,10 +314,21 @@
     "mildConcerns": "Hafif çekinceler",
     "reject": "Ret",
     "strongReject": "Güçlü ret",
+    "retract": "Oyu geri çek",
     "staleBanner": "Bu makale oyunuzdan bu yana revize edildi. Değişiklikleri inceleyin ve oyunuzu güncelleyin.",
     "votesWithStale": "{active} oy ({stale} yeniden değerlendirme bekliyor)",
+    "votesWithStrength": "{count} oy, {strength}",
     "staleAtVersion": "{count} oy bu revizyondan beri yeniden değerlendirme bekliyor",
-    "pendingShort": "beklemede"
+    "pendingShort": "beklemede",
+    "strength": {
+      "strong_endorsement": "güçlü onay",
+      "endorsement": "onay",
+      "mild_endorsement": "hafif onay",
+      "mixed": "karışık",
+      "mild_concerns": "hafif endişe",
+      "concerns": "endişe",
+      "strong_concerns": "güçlü endişe"
+    }
   },
   "notifications": {
     "title": "Bildirimler",
@@ -695,6 +705,7 @@
     "discard": "Sil",
     "close": "Kapat",
     "cancel": "İptal",
+    "loading": "Yükleniyor...",
     "uploadFailed": "Yükleme başarısız",
     "publishingFailed": "Yayınlama başarısız",
     "loadVersionFailed": "Sürüm yüklenemedi",
@@ -762,6 +773,7 @@
     "pagination": "Sayfalama",
     "clearOrcid": "ORCID'i temizle",
     "dragToReorder": "Yeniden sıralamak için sürükle",
+    "votes": "Oylar",
     "reviews": "İncelemeler",
     "citations": "Atıflar",
     "pdf": "PDF",
@@ -909,6 +921,8 @@
     "voteTitle": "Oyu Onayla",
     "voteMessage": "Oy vermek üzeresiniz: {strength}.",
     "voteSimpleMessage": "{direction} oy vermek üzeresiniz.",
+    "retractMessage": "Oyunuzu geri çekmek üzeresiniz.",
+    "retract": "Oyu geri çek",
     "vote": "Oyu Onayla",
     "commentTitle": "Yorum Yayınla",
     "commentMessage": "Bir yorum yayınlamak üzeresiniz.",

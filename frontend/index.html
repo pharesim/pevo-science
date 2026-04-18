@@ -94,10 +94,7 @@
           </div>
 
           <!-- Auth state -->
-          <template x-if="$store.auth.isLoading">
-            <span class="text-sm text-ink-muted" x-text="$t('header.loading')"></span>
-          </template>
-          <template x-if="!$store.auth.isLoading && $store.auth.isConnected">
+          <template x-if="$store.auth.isConnected">
             <div class="relative" @click.outside="userMenuOpen = false">
               <!-- User menu trigger: bell + @username + chevron -->
               <button class="flex items-center gap-2 rounded-md border border-parchment-dark bg-white px-2.5 py-1.5 text-sm font-medium text-ink hover:border-pevo-teal transition-colors"
@@ -152,7 +149,7 @@
               </div>
             </div>
           </template>
-          <template x-if="!$store.auth.isLoading && !$store.auth.isConnected">
+          <template x-if="!$store.auth.isConnected">
             <button class="btn-primary text-sm" @click="handleSignIn()" x-text="$t('signIn.signInButton')"></button>
           </template>
         </div>
@@ -196,10 +193,7 @@
         </div>
         <!-- Mobile auth -->
         <div class="pt-2 px-2">
-          <template x-if="$store.auth.isLoading">
-            <span class="text-sm text-ink-muted" x-text="$t('header.loading')"></span>
-          </template>
-          <template x-if="!$store.auth.isLoading && $store.auth.isConnected">
+          <template x-if="$store.auth.isConnected">
             <div class="space-y-2">
               <div class="flex items-center justify-between">
                 <a :href="$lp('/profile/' + $store.auth.username)"
@@ -213,7 +207,7 @@
               <button class="btn-secondary text-sm w-full" @click="handleDisconnect()" x-text="$t('header.disconnect')"></button>
             </div>
           </template>
-          <template x-if="!$store.auth.isLoading && !$store.auth.isConnected">
+          <template x-if="!$store.auth.isConnected">
             <button class="btn-primary text-sm w-full" @click="handleSignIn()" x-text="$t('signIn.signInButton')"></button>
           </template>
         </div>

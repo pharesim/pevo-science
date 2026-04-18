@@ -21,7 +21,6 @@
   },
   "header": {
     "tagline": "open wetenschap, open toegang",
-    "loading": "Laden...",
     "disconnect": "Afmelden",
     "installBrowserExtension": "Keychain installeren"
   },
@@ -315,10 +314,21 @@
     "mildConcerns": "Lichte bezwaren",
     "reject": "Afwijzen",
     "strongReject": "Sterk afwijzen",
+    "retract": "Stem intrekken",
     "staleBanner": "Dit artikel is herzien sinds uw stem. Bekijk de wijzigingen en werk uw stem bij.",
     "votesWithStale": "{active} stemmen ({stale} in afwachting van herbeoordeling)",
+    "votesWithStrength": "{count} stemmen, {strength}",
     "staleAtVersion": "{count} stemmen in afwachting van herbeoordeling sinds deze revisie",
-    "pendingShort": "verouderd"
+    "pendingShort": "verouderd",
+    "strength": {
+      "strong_endorsement": "sterke goedkeuring",
+      "endorsement": "goedkeuring",
+      "mild_endorsement": "lichte goedkeuring",
+      "mixed": "gemengd",
+      "mild_concerns": "lichte bezwaren",
+      "concerns": "bezwaren",
+      "strong_concerns": "sterke bezwaren"
+    }
   },
   "notifications": {
     "title": "Meldingen",
@@ -695,6 +705,7 @@
     "discard": "Verwijderen",
     "close": "Sluiten",
     "cancel": "Annuleren",
+    "loading": "Laden...",
     "uploadFailed": "Upload mislukt",
     "publishingFailed": "Publiceren mislukt",
     "loadVersionFailed": "Versie laden mislukt",
@@ -762,6 +773,7 @@
     "pagination": "Paginering",
     "clearOrcid": "ORCID wissen",
     "dragToReorder": "Sleep om te herordenen",
+    "votes": "Stemmen",
     "reviews": "Beoordelingen",
     "citations": "Citaties",
     "pdf": "PDF",
@@ -909,6 +921,8 @@
     "voteTitle": "Stem bevestigen",
     "voteMessage": "Je staat op het punt te stemmen: {strength}.",
     "voteSimpleMessage": "Je staat op het punt {direction} te stemmen.",
+    "retractMessage": "U staat op het punt uw stem in te trekken.",
+    "retract": "Stem intrekken",
     "vote": "Stem bevestigen",
     "commentTitle": "Reactie plaatsen",
     "commentMessage": "Je staat op het punt een reactie te plaatsen.",

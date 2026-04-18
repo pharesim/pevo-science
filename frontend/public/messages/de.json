@@ -21,7 +21,6 @@
   },
   "header": {
     "tagline": "offene Wissenschaft, freier Zugang",
-    "loading": "Laden...",
     "disconnect": "Abmelden",
     "installBrowserExtension": "Keychain installieren"
   },
@@ -315,10 +314,21 @@
     "mildConcerns": "Leichte Bedenken",
     "reject": "Ablehnung",
     "strongReject": "Starke Ablehnung",
+    "retract": "Bewertung zurückziehen",
     "staleBanner": "Dieses Paper wurde seit Ihrer Abstimmung überarbeitet. Überprüfen Sie die Änderungen und aktualisieren Sie Ihre Bewertung.",
     "votesWithStale": "{active} Stimmen ({stale} ausstehende Neubewertung)",
+    "votesWithStrength": "{count} Stimmen, {strength}",
     "staleAtVersion": "{count} Stimmen warten seit dieser Überarbeitung auf Neubewertung",
-    "pendingShort": "ausstehend"
+    "pendingShort": "ausstehend",
+    "strength": {
+      "strong_endorsement": "starke Zustimmung",
+      "endorsement": "Zustimmung",
+      "mild_endorsement": "leichte Zustimmung",
+      "mixed": "gemischt",
+      "mild_concerns": "leichte Bedenken",
+      "concerns": "Bedenken",
+      "strong_concerns": "starke Bedenken"
+    }
   },
   "notifications": {
     "title": "Benachrichtigungen",
@@ -691,6 +701,7 @@
     "discard": "Verwerfen",
     "close": "Schließen",
     "cancel": "Abbrechen",
+    "loading": "Laden...",
     "uploadFailed": "Upload fehlgeschlagen",
     "publishingFailed": "Veröffentlichung fehlgeschlagen",
     "loadVersionFailed": "Version konnte nicht geladen werden",
@@ -758,6 +769,7 @@
     "pagination": "Seitennavigation",
     "clearOrcid": "ORCID löschen",
     "dragToReorder": "Ziehen zum Neuordnen",
+    "votes": "Stimmen",
     "reviews": "Begutachtungen",
     "citations": "Zitierungen",
     "pdf": "PDF",
@@ -905,6 +917,8 @@
     "voteTitle": "Abstimmung bestätigen",
     "voteMessage": "Sie sind dabei, abzustimmen: {strength}.",
     "voteSimpleMessage": "Sie sind dabei, {direction} abzustimmen.",
+    "retractMessage": "Sie sind dabei, Ihre Bewertung zurückzuziehen.",
+    "retract": "Bewertung zurückziehen",
     "vote": "Abstimmung bestätigen",
     "commentTitle": "Kommentar veröffentlichen",
     "commentMessage": "Sie sind dabei, einen Kommentar zu veröffentlichen.",

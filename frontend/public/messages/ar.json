@@ -21,7 +21,6 @@
   },
   "header": {
     "tagline": "العلم المفتوح، الوصول المفتوح",
-    "loading": "جارٍ التحميل...",
     "disconnect": "قطع الاتصال",
     "installBrowserExtension": "تثبيت Keychain"
   },
@@ -315,10 +314,21 @@
     "mildConcerns": "تحفظات خفيفة",
     "reject": "رفض",
     "strongReject": "رفض قوي",
+    "retract": "سحب التصويت",
     "staleBanner": "تمت مراجعة هذه الورقة منذ تصويتك. راجع التغييرات وحدّث تصويتك.",
     "votesWithStale": "{active} أصوات ({stale} بانتظار إعادة التقييم)",
+    "votesWithStrength": "{count} أصوات، {strength}",
     "staleAtVersion": "{count} أصوات بانتظار إعادة التقييم منذ هذه المراجعة",
-    "pendingShort": "معلّقة"
+    "pendingShort": "معلّقة",
+    "strength": {
+      "strong_endorsement": "تأييد قوي",
+      "endorsement": "تأييد",
+      "mild_endorsement": "تأييد خفيف",
+      "mixed": "مختلط",
+      "mild_concerns": "مخاوف خفيفة",
+      "concerns": "مخاوف",
+      "strong_concerns": "مخاوف قوية"
+    }
   },
   "notifications": {
     "title": "الإشعارات",
@@ -691,6 +701,7 @@
     "discard": "تجاهل",
     "close": "إغلاق",
     "cancel": "إلغاء",
+    "loading": "جارٍ التحميل...",
     "uploadFailed": "فشل الرفع",
     "publishingFailed": "فشل النشر",
     "loadVersionFailed": "تعذّر تحميل الإصدار",
@@ -758,6 +769,7 @@
     "pagination": "التنقل بين الصفحات",
     "clearOrcid": "مسح ORCID",
     "dragToReorder": "اسحب لإعادة الترتيب",
+    "votes": "أصوات",
     "reviews": "المراجعات",
     "citations": "الاستشهادات",
     "pdf": "PDF",
@@ -905,6 +917,8 @@
     "voteTitle": "تأكيد التصويت",
     "voteMessage": "أنت على وشك التصويت: {strength}.",
     "voteSimpleMessage": "أنت على وشك التصويت {direction}.",
+    "retractMessage": "أنت على وشك سحب تصويتك.",
+    "retract": "سحب التصويت",
     "vote": "تأكيد التصويت",
     "commentTitle": "نشر تعليق",
     "commentMessage": "أنت على وشك نشر تعليق.",

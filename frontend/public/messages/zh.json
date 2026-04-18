@@ -21,7 +21,6 @@
   },
   "header": {
     "tagline": "开放科学，开放获取",
-    "loading": "加载中...",
     "disconnect": "断开连接",
     "installBrowserExtension": "安装 Keychain"
   },
@@ -315,10 +314,21 @@
     "mildConcerns": "轻度保留",
     "reject": "拒绝",
     "strongReject": "强烈拒绝",
+    "retract": "撤回投票",
     "staleBanner": "自您投票以来，这篇论文已被修订。请查看更改并更新您的投票。",
     "votesWithStale": "{active} 票（{stale} 待重新评估）",
+    "votesWithStrength": "{count} 票，{strength}",
     "staleAtVersion": "{count} 票自此修订以来待重新评估",
-    "pendingShort": "待更新"
+    "pendingShort": "待更新",
+    "strength": {
+      "strong_endorsement": "强烈支持",
+      "endorsement": "支持",
+      "mild_endorsement": "轻度支持",
+      "mixed": "看法不一",
+      "mild_concerns": "轻度担忧",
+      "concerns": "担忧",
+      "strong_concerns": "强烈担忧"
+    }
   },
   "notifications": {
     "title": "通知",
@@ -691,6 +701,7 @@
     "discard": "丢弃",
     "close": "关闭",
     "cancel": "取消",
+    "loading": "加载中...",
     "uploadFailed": "上传失败",
     "publishingFailed": "发表失败",
     "loadVersionFailed": "版本加载失败",
@@ -758,6 +769,7 @@
     "pagination": "分页",
     "clearOrcid": "清除ORCID",
     "dragToReorder": "拖动以重新排序",
+    "votes": "投票",
     "reviews": "评审",
     "citations": "引用",
     "pdf": "PDF",
@@ -905,6 +917,8 @@
     "voteTitle": "确认投票",
     "voteMessage": "您即将投票：{strength}。",
     "voteSimpleMessage": "您即将投{direction}票。",
+    "retractMessage": "您即将撤回您的投票。",
+    "retract": "撤回投票",
     "vote": "确认投票",
     "commentTitle": "发表评论",
     "commentMessage": "您即将发表一条评论。",

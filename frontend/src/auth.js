@@ -13,9 +13,9 @@ export function initAuth() {
     isAccredited: false,
     accreditation: null,
     token: null,
+    expiresAt: null,
     custody: null,
 
-    // Internal: accreditation polling interval
     _accreditationInterval: null,
 
     init() {
@@ -47,14 +47,11 @@ export function initAuth() {
       const modal = el && Alpine.$data(el);
       if (!modal) throw new Error('Sign-in modal not found');
       const inputUsername = await modal.prompt();
-      // null means either cancelled or already logged in via email path
       if (!inputUsername) return;
 
-      // Verify account ownership with a random challenge
       const challenge = `pevo-auth-${Date.now()}-${Math.random().toString(36).slice(2)}`;
       const { signature } = await signMessage(inputUsername, challenge);
 
-      // Exchange signature for session JWT
       const timestamp = new Date().toISOString();
       const res = await fetch('/api/auth/session', {
         method: 'POST',
@@ -69,16 +66,14 @@ export function initAuth() {
       if (res.ok) {
         const body = await res.json();
         this.token = body.data.token;
+        this.expiresAt = body.data.expires_at;
         this.username = inputUsername;
         this.isConnected = true;
         this.isAccredited = false;
         this.accreditation = null;
         this.custody = body.data.custody ?? 'self';
 
-        this._saveSession(body.data.token, inputUsername, body.data.expires_at, false, null, this.custody);
-
-        // Fetch accreditation in background
-        this._checkAccreditation(inputUsername, body.data.token, body.data.expires_at);
+        this._saveSession();
         this._startAccreditationPolling();
       } else {
         throw new Error('Authentication failed');
@@ -90,14 +85,12 @@ export function initAuth() {
       this.token = data.token;
       this.username = data.username;
       this.isConnected = true;
+      this.expiresAt = data.expires_at;
       this.isAccredited = data.is_accredited ?? false;
       this.accreditation = data.accreditation ?? null;
       this.custody = data.custody ?? 'self';
-      this._saveSession(data.token, data.username, data.expires_at, this.isAccredited, this.accreditation, this.custody);
-      if (!this.isAccredited) {
-        this._checkAccreditation(data.username, data.token, data.expires_at);
-        this._startAccreditationPolling();
-      }
+      this._saveSession();
+      this._startAccreditationPolling();
     },
 
     disconnect() {
@@ -106,6 +99,7 @@ export function initAuth() {
       this.isAccredited = false;
       this.accreditation = null;
       this.token = null;
+      this.expiresAt = null;
       this.custody = null;
       this._stopAccreditationPolling();
       localStorage.removeItem(SESSION_KEY);
@@ -126,6 +120,7 @@ export function initAuth() {
           this.isAccredited = isAccredited ?? false;
           this.accreditation = accreditation ?? null;
           this.custody = custody ?? 'self';
+          this.expiresAt = expiresAt;
           return;
         }
       }
@@ -142,15 +137,19 @@ export function initAuth() {
       }
     },
 
-    _saveSession(token, username, expiresAt, isAccredited, accreditation, custody) {
+    _saveSession() {
       localStorage.setItem(SESSION_KEY, JSON.stringify({
-        token, username, expiresAt, isAccredited, accreditation,
-        custody: custody ?? this.custody ?? 'self',
+        token: this.token, 
+        username: this.username, 
+        expiresAt: this.expiresAt, 
+        isAccredited: this.isAccredited,
+        accreditation: this.accreditation, 
+        custody: this.custody,
       }));
     },
 
-    async _checkAccreditation(username, token, expiresAt) {
-      const accRes = await fetchAccreditationStatus(username);
+    async _checkAccreditation() {
+      const accRes = await fetchAccreditationStatus(this.username);
       if (accRes.data) {
         this.isAccredited = accRes.data.is_accredited;
         this.accreditation = accRes.data.accreditation;
@@ -160,25 +159,18 @@ export function initAuth() {
           const saved = localStorage.getItem(SESSION_KEY);
           if (saved) resolvedExpiry = JSON.parse(saved).expiresAt;
         }
-        this._saveSession(
-          token || this.token,
-          username,
-          resolvedExpiry,
-          this.isAccredited,
-          this.accreditation
-        );
+        this._saveSession();
       }
     },
 
     _startAccreditationPolling() {
       this._stopAccreditationPolling();
-      if (!this.username || this.isAccredited) return;
       this._accreditationInterval = setInterval(() => {
         if (!this.username || this.isAccredited) {
           this._stopAccreditationPolling();
           return;
         }
-        this._checkAccreditation(this.username, this.token);
+        this._checkAccreditation();
       }, 60000);
     },
 

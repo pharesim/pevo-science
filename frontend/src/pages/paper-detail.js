@@ -133,7 +133,7 @@ const template = `
 
                 <!-- Loading state -->
                 <div x-show="diffLoading" class="px-5 py-8 text-center text-ink-muted text-sm">
-                  <span class="animate-pulse" x-text="$t('header.loading')"></span>
+                  <span class="animate-pulse" x-text="$t('common.loading')"></span>
                 </div>
 
                 <!-- Diff content -->
@@ -381,7 +381,7 @@ const template = `
 
               <!-- Vote (wait for enrichment so we get accredited-only counts + voter list) -->
               <template x-if="enrichmentLoaded">
-              <div class="mt-4" x-data="voteButtons({ author: paper.author, permlink: paper.permlink, netVotes: paper.net_votes, voters: paper.voters || [], created: paper.created, versions: paper.versions })" @click.outside="selectorOpen = false">
+              <div class="mt-4" x-data="voteButtons({ author: paper.author, permlink: paper.permlink, netVotes: paper.net_votes, voteStrength: paper.vote_strength, voters: paper.voters || [], created: paper.created, versions: paper.versions })" @click.outside="selectorOpen = false">
                 <!-- Stale vote banner for current user -->
                 <template x-if="myVoteIsStale">
                   <div class="mb-3 px-3 py-2 rounded-lg bg-amber-50 border border-amber-200 text-sm text-amber-800">
@@ -412,6 +412,12 @@ const template = `
                                   :class="level.cls + (currentWeight === level.weight ? ' font-semibold ring-1 ring-inset ring-current' : '')"
                                   @click="handleVote(level.weight)" :disabled="isVoting">
                             <span x-text="$t(level.label)"></span>
+                          </button>
+                        </template>
+                        <template x-if="voteState !== 'none'">
+                          <button type="button" class="block w-full text-left px-4 py-2 text-sm text-ink-muted border-t border-parchment-dark/30 hover:bg-parchment-dark/10 transition-colors"
+                                  @click="handleVote(0)" :disabled="isVoting">
+                            <span x-text="$t('vote.retract')"></span>
                           </button>
                         </template>
                       </div>
@@ -564,6 +570,12 @@ const template = `
                                           :class="level.cls + (currentWeight === level.weight ? ' font-semibold ring-1 ring-inset ring-current' : '')"
                                           @click="handleVote(level.weight)" :disabled="isVoting">
                                     <span x-text="$t(level.label)"></span>
+                                  </button>
+                                </template>
+                                <template x-if="voteState !== 'none'">
+                                  <button type="button" class="block w-full text-left px-3 py-1.5 text-xs text-ink-muted border-t border-parchment-dark/30 hover:bg-parchment-dark/10 transition-colors"
+                                          @click="handleVote(0)" :disabled="isVoting">
+                                    <span x-text="$t('vote.retract')"></span>
                                   </button>
                                 </template>
                               </div>
@@ -786,6 +798,7 @@ export function initPaperDetailPage() {
         const d = res.data;
         this.paper.reviews = d.reviews || [];
         this.paper.net_votes = d.net_votes ?? this.paper.net_votes;
+        this.paper.vote_strength = d.vote_strength || null;
         this.paper.voters = d.voters || [];
         this.enrichmentLoaded = true;
         // Scroll to review if URL has a hash fragment

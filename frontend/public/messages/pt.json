@@ -21,7 +21,6 @@
   },
   "header": {
     "tagline": "ciencia aberta, acesso aberto",
-    "loading": "Carregando...",
     "disconnect": "Desconectar",
     "installBrowserExtension": "Instalar Keychain"
   },
@@ -315,10 +314,21 @@
     "mildConcerns": "Objeções leves",
     "reject": "Rejeição",
     "strongReject": "Forte rejeição",
+    "retract": "Retirar voto",
     "staleBanner": "Este artigo foi revisto desde o seu voto. Reveja as alterações e atualize o seu voto.",
     "votesWithStale": "{active} votos ({stale} pendentes de reavaliação)",
+    "votesWithStrength": "{count} votos, {strength}",
     "staleAtVersion": "{count} votos pendentes de reavaliação desde esta revisão",
-    "pendingShort": "pendente"
+    "pendingShort": "pendente",
+    "strength": {
+      "strong_endorsement": "forte aprovação",
+      "endorsement": "aprovação",
+      "mild_endorsement": "aprovação leve",
+      "mixed": "misto",
+      "mild_concerns": "reservas leves",
+      "concerns": "reservas",
+      "strong_concerns": "fortes reservas"
+    }
   },
   "notifications": {
     "title": "Notificacoes",
@@ -691,6 +701,7 @@
     "discard": "Descartar",
     "close": "Fechar",
     "cancel": "Cancelar",
+    "loading": "Carregando...",
     "uploadFailed": "Falha no carregamento",
     "publishingFailed": "Falha na publicação",
     "loadVersionFailed": "Falha ao carregar versão",
@@ -758,6 +769,7 @@
     "pagination": "Paginação",
     "clearOrcid": "Limpar ORCID",
     "dragToReorder": "Arraste para reordenar",
+    "votes": "Votos",
     "reviews": "Avaliações",
     "citations": "Citações",
     "pdf": "PDF",
@@ -905,6 +917,8 @@
     "voteTitle": "Confirmar voto",
     "voteMessage": "Está prestes a votar: {strength}.",
     "voteSimpleMessage": "Está prestes a votar {direction}.",
+    "retractMessage": "Está prestes a retirar o seu voto.",
+    "retract": "Retirar voto",
     "vote": "Confirmar voto",
     "commentTitle": "Publicar comentário",
     "commentMessage": "Está prestes a publicar um comentário.",

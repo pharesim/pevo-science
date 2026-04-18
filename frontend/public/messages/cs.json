@@ -21,7 +21,6 @@
   },
   "header": {
     "tagline": "otevřená věda, otevřený přístup",
-    "loading": "Načítání...",
     "disconnect": "Odpojit",
     "installBrowserExtension": "Nainstalovat Keychain"
   },
@@ -315,10 +314,21 @@
     "mildConcerns": "Mírné výhrady",
     "reject": "Zamítnutí",
     "strongReject": "Silné zamítnutí",
+    "retract": "Stáhnout hlas",
     "staleBanner": "Tento článek byl od vašeho hlasování revidován. Zkontrolujte změny a aktualizujte svůj hlas.",
     "votesWithStale": "{active} hlasů ({stale} čeká na přehodnocení)",
+    "votesWithStrength": "{count} hlasů, {strength}",
     "staleAtVersion": "{count} hlasů čeká na přehodnocení od této revize",
-    "pendingShort": "neaktuální"
+    "pendingShort": "neaktuální",
+    "strength": {
+      "strong_endorsement": "silné schválení",
+      "endorsement": "schválení",
+      "mild_endorsement": "mírné schválení",
+      "mixed": "smíšené",
+      "mild_concerns": "mírné výhrady",
+      "concerns": "výhrady",
+      "strong_concerns": "silné výhrady"
+    }
   },
   "notifications": {
     "title": "Oznámení",
@@ -691,6 +701,7 @@
     "discard": "Zahodit",
     "close": "Zavřít",
     "cancel": "Zrušit",
+    "loading": "Načítání...",
     "uploadFailed": "Nahrávání selhalo",
     "publishingFailed": "Publikování selhalo",
     "loadVersionFailed": "Nepodařilo se načíst verzi",
@@ -758,6 +769,7 @@
     "pagination": "Stránkování",
     "clearOrcid": "Vymazat ORCID",
     "dragToReorder": "Přetáhněte pro změnu pořadí",
+    "votes": "Hlasy",
     "reviews": "Recenze",
     "citations": "Citace",
     "pdf": "PDF",
@@ -905,6 +917,8 @@
     "voteTitle": "Potvrdit hlas",
     "voteMessage": "Chystáte se odevzdat hlas: {strength}.",
     "voteSimpleMessage": "Chystáte se hlasovat {direction}.",
+    "retractMessage": "Chystáte se stáhnout svůj hlas.",
+    "retract": "Stáhnout hlas",
     "vote": "Potvrdit hlas",
     "commentTitle": "Přidat komentář",
     "commentMessage": "Chystáte se přidat komentář.",

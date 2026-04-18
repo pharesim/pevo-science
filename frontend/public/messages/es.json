@@ -21,7 +21,6 @@
   },
   "header": {
     "tagline": "ciencia abierta, acceso abierto",
-    "loading": "Cargando...",
     "disconnect": "Desconectar",
     "installBrowserExtension": "Instalar Keychain"
   },
@@ -315,10 +314,21 @@
     "mildConcerns": "Objeciones leves",
     "reject": "Rechazar",
     "strongReject": "Rechazo fuerte",
+    "retract": "Retirar voto",
     "staleBanner": "Este artículo ha sido revisado desde que votaste. Revisa los cambios y actualiza tu voto.",
     "votesWithStale": "{active} votos ({stale} pendientes de reevaluación)",
+    "votesWithStrength": "{count} votos, {strength}",
     "staleAtVersion": "{count} votos pendientes de reevaluación desde esta revisión",
-    "pendingShort": "pendiente"
+    "pendingShort": "pendiente",
+    "strength": {
+      "strong_endorsement": "fuerte aprobación",
+      "endorsement": "aprobación",
+      "mild_endorsement": "aprobación leve",
+      "mixed": "mixto",
+      "mild_concerns": "reservas leves",
+      "concerns": "reservas",
+      "strong_concerns": "fuertes reservas"
+    }
   },
   "notifications": {
     "title": "Notificaciones",
@@ -691,6 +701,7 @@
     "discard": "Descartar",
     "close": "Cerrar",
     "cancel": "Cancelar",
+    "loading": "Cargando...",
     "uploadFailed": "Error en la carga",
     "publishingFailed": "Error en la publicación",
     "loadVersionFailed": "Error al cargar la versión",
@@ -758,6 +769,7 @@
     "pagination": "Paginación",
     "clearOrcid": "Borrar ORCID",
     "dragToReorder": "Arrastrar para reordenar",
+    "votes": "Votos",
     "reviews": "Revisiones",
     "citations": "Citas",
     "pdf": "PDF",
@@ -905,6 +917,8 @@
     "voteTitle": "Confirmar voto",
     "voteMessage": "Estás a punto de votar: {strength}.",
     "voteSimpleMessage": "Estás a punto de votar {direction}.",
+    "retractMessage": "Está a punto de retirar su voto.",
+    "retract": "Retirar voto",
     "vote": "Confirmar voto",
     "commentTitle": "Publicar comentario",
     "commentMessage": "Estás a punto de publicar un comentario.",

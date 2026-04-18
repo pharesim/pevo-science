@@ -21,7 +21,6 @@
   },
   "header": {
     "tagline": "science ouverte, accès libre",
-    "loading": "Chargement...",
     "disconnect": "Se déconnecter",
     "installBrowserExtension": "Installer Keychain"
   },
@@ -315,10 +314,21 @@
     "mildConcerns": "Réserves modérées",
     "reject": "Rejet",
     "strongReject": "Rejet fort",
+    "retract": "Retirer le vote",
     "staleBanner": "Cet article a été révisé depuis votre vote. Examinez les modifications et mettez à jour votre vote.",
     "votesWithStale": "{active} votes ({stale} en attente de réévaluation)",
+    "votesWithStrength": "{count} votes, {strength}",
     "staleAtVersion": "{count} votes en attente de réévaluation depuis cette révision",
-    "pendingShort": "obsolète"
+    "pendingShort": "obsolète",
+    "strength": {
+      "strong_endorsement": "forte approbation",
+      "endorsement": "approbation",
+      "mild_endorsement": "approbation modérée",
+      "mixed": "mitigé",
+      "mild_concerns": "réserves modérées",
+      "concerns": "réserves",
+      "strong_concerns": "fortes réserves"
+    }
   },
   "notifications": {
     "title": "Notifications",
@@ -691,6 +701,7 @@
     "discard": "Supprimer",
     "close": "Fermer",
     "cancel": "Annuler",
+    "loading": "Chargement...",
     "uploadFailed": "Echec du téléversement",
     "publishingFailed": "Echec de la publication",
     "loadVersionFailed": "Impossible de charger la version",
@@ -758,6 +769,7 @@
     "pagination": "Pagination",
     "clearOrcid": "Effacer ORCID",
     "dragToReorder": "Glisser pour réordonner",
+    "votes": "Votes",
     "reviews": "Évaluations",
     "citations": "Citations",
     "pdf": "PDF",
@@ -905,6 +917,8 @@
     "voteTitle": "Confirmer le vote",
     "voteMessage": "Vous êtes sur le point de voter : {strength}.",
     "voteSimpleMessage": "Vous êtes sur le point de voter {direction}.",
+    "retractMessage": "Vous êtes sur le point de retirer votre vote.",
+    "retract": "Retirer le vote",
     "vote": "Confirmer le vote",
     "commentTitle": "Publier un commentaire",
     "commentMessage": "Vous êtes sur le point de publier un commentaire.",

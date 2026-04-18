@@ -21,7 +21,6 @@
   },
   "header": {
     "tagline": "scienza aperta, accesso libero",
-    "loading": "Caricamento...",
     "disconnect": "Disconnetti",
     "installBrowserExtension": "Installa Keychain"
   },
@@ -315,10 +314,21 @@
     "mildConcerns": "Lievi riserve",
     "reject": "Rifiuto",
     "strongReject": "Forte rifiuto",
+    "retract": "Ritira voto",
     "staleBanner": "Questo articolo è stato rivisto da quando hai votato. Esamina le modifiche e aggiorna il tuo voto.",
     "votesWithStale": "{active} voti ({stale} in attesa di rivalutazione)",
+    "votesWithStrength": "{count} voti, {strength}",
     "staleAtVersion": "{count} voti in attesa di rivalutazione da questa revisione",
-    "pendingShort": "obsoleto"
+    "pendingShort": "obsoleto",
+    "strength": {
+      "strong_endorsement": "forte approvazione",
+      "endorsement": "approvazione",
+      "mild_endorsement": "lieve approvazione",
+      "mixed": "misto",
+      "mild_concerns": "lievi riserve",
+      "concerns": "riserve",
+      "strong_concerns": "forti riserve"
+    }
   },
   "notifications": {
     "title": "Notifiche",
@@ -691,6 +701,7 @@
     "discard": "Scarta",
     "close": "Chiudi",
     "cancel": "Annulla",
+    "loading": "Caricamento...",
     "uploadFailed": "Caricamento non riuscito",
     "publishingFailed": "Pubblicazione non riuscita",
     "loadVersionFailed": "Impossibile caricare la versione",
@@ -758,6 +769,7 @@
     "pagination": "Paginazione",
     "clearOrcid": "Cancella ORCID",
     "dragToReorder": "Trascina per riordinare",
+    "votes": "Voti",
     "reviews": "Recensioni",
     "citations": "Citazioni",
     "pdf": "PDF",
@@ -905,6 +917,8 @@
     "voteTitle": "Conferma voto",
     "voteMessage": "Stai per votare: {strength}.",
     "voteSimpleMessage": "Stai per votare {direction}.",
+    "retractMessage": "Stai per ritirare il tuo voto.",
+    "retract": "Ritira voto",
     "vote": "Conferma voto",
     "commentTitle": "Pubblica commento",
     "commentMessage": "Stai per pubblicare un commento.",

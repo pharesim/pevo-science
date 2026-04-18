@@ -21,7 +21,6 @@
   },
   "header": {
     "tagline": "otwarta nauka, otwarty dostęp",
-    "loading": "Ładowanie...",
     "disconnect": "Rozłącz",
     "installBrowserExtension": "Zainstaluj Keychain"
   },
@@ -315,10 +314,21 @@
     "mildConcerns": "Umiarkowane zastrzeżenia",
     "reject": "Odrzucenie",
     "strongReject": "Silne odrzucenie",
+    "retract": "Wycofaj głos",
     "staleBanner": "Ten artykuł został zrewidowany od czasu Twojego głosowania. Przejrzyj zmiany i zaktualizuj swój głos.",
     "votesWithStale": "{active} głosów ({stale} oczekujących na ponowną ocenę)",
+    "votesWithStrength": "{count} głosów, {strength}",
     "staleAtVersion": "{count} głosów oczekujących na ponowną ocenę od tej rewizji",
-    "pendingShort": "nieaktualne"
+    "pendingShort": "nieaktualne",
+    "strength": {
+      "strong_endorsement": "silne poparcie",
+      "endorsement": "poparcie",
+      "mild_endorsement": "umiarkowane poparcie",
+      "mixed": "mieszane",
+      "mild_concerns": "umiarkowane zastrzeżenia",
+      "concerns": "zastrzeżenia",
+      "strong_concerns": "silne zastrzeżenia"
+    }
   },
   "notifications": {
     "title": "Powiadomienia",
@@ -691,6 +701,7 @@
     "discard": "Odrzuć",
     "close": "Zamknij",
     "cancel": "Anuluj",
+    "loading": "Ładowanie...",
     "uploadFailed": "Przesyłanie nie powiodło się",
     "publishingFailed": "Publikowanie nie powiodło się",
     "loadVersionFailed": "Nie udało się załadować wersji",
@@ -758,6 +769,7 @@
     "pagination": "Paginacja",
     "clearOrcid": "Wyczyść ORCID",
     "dragToReorder": "Przeciągnij, aby zmienić kolejność",
+    "votes": "Głosy",
     "reviews": "Recenzje",
     "citations": "Cytowania",
     "pdf": "PDF",
@@ -905,6 +917,8 @@
     "voteTitle": "Potwierdź głos",
     "voteMessage": "Zamierzasz oddać głos: {strength}.",
     "voteSimpleMessage": "Zamierzasz zagłosować {direction}.",
+    "retractMessage": "Zamierzasz wycofać swój głos.",
+    "retract": "Wycofaj głos",
     "vote": "Potwierdź głos",
     "commentTitle": "Opublikuj komentarz",
     "commentMessage": "Zamierzasz opublikować komentarz.",
