@@ -1,5 +1,5 @@
 import Alpine from 'alpinejs';
-import { fetchPapers, fetchPaperBatchCounts, fetchDisciplines } from '../api.js';
+import { fetchPapers, fetchPaperBatchCounts, fetchExternalCitations, fetchDisciplines } from '../api.js';
 import { truncateText, formatDate } from '../components/paper-card.js';
 
 const ITEMS_PER_PAGE = 10;
@@ -208,12 +208,10 @@ const template = `
                             <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M18 10c0 3.866-3.582 7-8 7a8.841 8.841 0 01-4.083-.98L2 17l1.338-3.123C2.493 12.767 2 11.434 2 10c0-3.866 3.582-7 8-7s8 3.134 8 7zM7 9H5v2h2V9zm8 0h-2v2h2V9zm-5 0H8v2h2V9z" clip-rule="evenodd" /></svg>
                             <span x-text="(paper.review_count ?? 0) + ' '"></span>
                           </span>
-                          <template x-if="!paper.source_type || paper.source_type === 'native'">
-                            <span class="flex items-center gap-1" :title="$t('aria.citations')">
-                              <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor"><path d="M9 4.804A7.968 7.968 0 005.5 4c-1.255 0-2.443.29-3.5.804v10A7.969 7.969 0 015.5 14c1.669 0 3.218.51 4.5 1.385A7.962 7.962 0 0114.5 14c1.255 0 2.443.29 3.5.804v-10A7.968 7.968 0 0014.5 4c-1.255 0-2.443.29-3.5.804V14a1 1 0 11-2 0V4.804z" /></svg>
-                              <span x-text="paper.citation_count ?? 0"></span>
-                            </span>
-                          </template>
+                          <span class="flex items-center gap-1" :title="$t('aria.citations')">
+                            <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor"><path d="M9 4.804A7.968 7.968 0 005.5 4c-1.255 0-2.443.29-3.5.804v10A7.969 7.969 0 015.5 14c1.669 0 3.218.51 4.5 1.385A7.962 7.962 0 0114.5 14c1.255 0 2.443.29 3.5.804v-10A7.968 7.968 0 0014.5 4c-1.255 0-2.443.29-3.5.804V14a1 1 0 11-2 0V4.804z" /></svg>
+                            <span x-text="paper.citation_count ?? 0"></span>
+                          </span>
                           <template x-if="paper.ipfs_cid">
                             <span class="flex items-center gap-1 ml-auto rtl:ml-0 rtl:mr-auto" :title="$t('aria.pdf')">
                               <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z" clip-rule="evenodd" /></svg>
@@ -317,6 +315,21 @@ export function initHomePage() {
           if (counts) {
             paper.review_count = counts.review_count;
             paper.citation_count = counts.citation_count;
+          }
+        }
+      }
+
+      // Fetch external citation counts for bridge papers
+      const bridgeDois = this.papers
+        .filter((p) => p.doi && p.source_type && p.source_type !== 'native')
+        .map((p) => p.doi);
+      if (bridgeDois.length > 0) {
+        const extRes = await fetchExternalCitations(bridgeDois);
+        if (extRes.data) {
+          for (const paper of this.papers) {
+            if (paper.doi && extRes.data[paper.doi] !== undefined) {
+              paper.citation_count = extRes.data[paper.doi];
+            }
           }
         }
       }

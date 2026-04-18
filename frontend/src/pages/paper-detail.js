@@ -1,5 +1,5 @@
 import Alpine from 'alpinejs';
-import { fetchPaper, fetchPaperEnrichment, fetchCitationExport, retractPaper, updateBridgePaper } from '../api.js';
+import { fetchPaper, fetchPaperEnrichment, fetchExternalCitations, fetchCitationExport, retractPaper, updateBridgePaper } from '../api.js';
 import { computeVersionDiff } from '../lib/version-diff.js';
 import { formatDate } from '../components/paper-card.js';
 
@@ -796,6 +796,17 @@ export function initPaperDetailPage() {
           this.paper.retraction_timestamp = d.retraction_timestamp;
         }
         this.enrichmentLoaded = true;
+
+        // Fetch external citation count for bridge papers
+        if (this.isBridgePaper && this.bridgeSource?.doi) {
+          try {
+            const extRes = await fetchExternalCitations([this.bridgeSource.doi]);
+            if (extRes.data && extRes.data[this.bridgeSource.doi] !== undefined) {
+              this.paper.citation_count = extRes.data[this.bridgeSource.doi];
+            }
+          } catch { /* ignore */ }
+        }
+
         // Scroll to review if URL has a hash fragment
         this.scrollToHashReview();
       } catch {

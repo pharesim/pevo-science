@@ -72,6 +72,10 @@ export function fetchPaperBatchCounts(papers) {
   return request(`/papers/batch-counts?ids=${encodeURIComponent(ids)}`);
 }
 
+export function fetchExternalCitations(dois) {
+  return request(`/papers/external-citations?dois=${encodeURIComponent(dois.join(','))}`);
+}
+
 export function fetchPaper(author, permlink, version) {
   const q = version ? `?version=${version}` : '';
   return request(`/papers/${encodeURIComponent(author)}/${encodeURIComponent(permlink)}${q}`);

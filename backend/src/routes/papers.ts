@@ -124,6 +124,11 @@ async function fetchPapersFromHaf(req: Request): Promise<{ rows: unknown[]; tota
   const safeOrder = order === 'asc' ? 'ASC' : 'DESC';
   const orderBy = `${sortMap[sort]} ${safeOrder}`;
 
+  // Only compute the expensive vote subquery when sorting by votes
+  const voteSelect = sort === 'votes'
+    ? `${accreditedVoteCount('c.author', 'c.permlink')} AS net_votes`
+    : '0 AS net_votes';
+
   try {
     const limitParam = `$${paramIdx++}`;
     const offsetParam = `$${paramIdx++}`;
@@ -143,7 +148,7 @@ async function fetchPapersFromHaf(req: Request): Promise<{ rows: unknown[]; tota
           LEFT(c.body, 300) AS abstract,
           c.json_metadata,
           c.created,
-          ${accreditedVoteCount('c.author', 'c.permlink')} AS net_votes,
+          ${voteSelect},
           0 AS review_count,
           0 AS citation_count,
           0 AS author_reputation
@@ -186,6 +191,12 @@ async function fetchPapersFromHaf(req: Request): Promise<{ rows: unknown[]; tota
         accredited_authors: pevoAuthors
           .filter(a => a.hive && allAccredited.has(a.hive))
           .map(a => a.hive!),
+        source_type: pevo.type === 'bridge_paper'
+          ? ((pevo.source as Record<string, unknown>)?.type as 'arxiv' | 'crossref') || 'arxiv'
+          : 'native',
+        doi: pevo.type === 'bridge_paper'
+          ? ((pevo.source as Record<string, unknown>)?.doi as string) || null
+          : null,
       };
     });
 
@@ -372,6 +383,64 @@ router.get('/batch-counts', async (req: Request, res: Response) => {
   }, 60_000, true); // 60s TTL, stable
 
   sendOk(res, result);
+});
+
+// ──────────────────────────────────────────────
+// GET /api/papers/external-citations — Semantic Scholar citation counts by DOI
+// ──────────────────────────────────────────────
+
+router.get('/external-citations', async (req: Request, res: Response) => {
+  const doisParam = (req.query.dois as string) || '';
+  const dois = doisParam
+    .split(',')
+    .map((d) => d.trim())
+    .filter(Boolean)
+    .slice(0, 20);
+
+  if (dois.length === 0) {
+    return sendOk(res, {});
+  }
+
+  const results: Record<string, number> = {};
+  const uncached: string[] = [];
+
+  // Check cache first
+  for (const doi of dois) {
+    const cached = await hafCache.get<number>(`ext-citations:${doi}`);
+    if (cached !== undefined) {
+      results[doi] = cached;
+    } else {
+      uncached.push(doi);
+    }
+  }
+
+  // Fetch uncached from Semantic Scholar (batch endpoint)
+  if (uncached.length > 0) {
+    try {
+      const response = await fetch('https://api.semanticscholar.org/graph/v1/paper/batch?fields=citationCount', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: uncached.map((d) => `DOI:${d}`) }),
+      });
+
+      if (response.ok) {
+        const data = await response.json() as Array<{ citationCount?: number } | null>;
+        for (let i = 0; i < uncached.length; i++) {
+          const count = data[i]?.citationCount ?? 0;
+          results[uncached[i]] = count;
+          await hafCache.set(`ext-citations:${uncached[i]}`, count, 86_400_000); // 24h
+        }
+      } else {
+        logger.warn({ status: response.status }, 'Semantic Scholar batch request failed');
+        for (const doi of uncached) results[doi] = 0;
+      }
+    } catch (err) {
+      logger.warn({ err }, 'Semantic Scholar fetch failed');
+      for (const doi of uncached) results[doi] = 0;
+    }
+  }
+
+  sendOk(res, results);
 });
 
 // ──────────────────────────────────────────────

@@ -87,5 +87,8 @@ export function toPaperSummary(post: {
     source_type: pevo.type === 'bridge_paper'
       ? ((pevo.source as Record<string, unknown>)?.type as 'arxiv' | 'crossref') || 'arxiv'
       : 'native',
+    doi: (pevo.type === 'bridge_paper'
+      ? ((pevo.source as Record<string, unknown>)?.doi as string) || null
+      : null),
   };
 }
