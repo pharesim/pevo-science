@@ -25,11 +25,11 @@ export function initHeader() {
       }
       links.push(
         { path: '/accreditation', label: this.$t('nav.accreditation') },
-        { path: '/stats', label: this.$t('nav.stats') },
         { path: '/getting-started', label: this.$t('nav.gettingStarted') },
         { path: '/faq', label: this.$t('nav.faq') },
         { path: '/about', label: this.$t('nav.about') },
         { path: '/blog', label: this.$t('nav.blog') },
+        { path: '/stats', label: this.$t('nav.stats') },
       );
       return links;
     },
