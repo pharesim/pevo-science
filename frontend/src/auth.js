@@ -47,6 +47,8 @@ export function initAuth() {
       const inputUsername = await modal.prompt();
       if (!inputUsername) return;
 
+      const accreditationPromise = fetchAccreditationStatus(inputUsername).catch(() => null);
+
       const challenge = `pevo-auth-${Date.now()}-${Math.random().toString(36).slice(2)}`;
       const { signature } = await signMessage(inputUsername, challenge);
 
@@ -67,9 +69,16 @@ export function initAuth() {
         this.expiresAt = body.data.expires_at;
         this.username = inputUsername;
         this.isConnected = true;
-        this.isAccredited = false;
-        this.accreditation = null;
         this.custody = body.data.custody ?? 'self';
+
+        const accRes = await accreditationPromise;
+        if (accRes?.data) {
+          this.isAccredited = accRes.data.is_accredited;
+          this.accreditation = accRes.data.accreditation;
+        } else {
+          this.isAccredited = false;
+          this.accreditation = null;
+        }
 
         this._saveSession();
         this._startAccreditationPolling();
