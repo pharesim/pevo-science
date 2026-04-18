@@ -22,7 +22,8 @@ async function fetchStatsFromHaf() {
     const cte = activeAccreditationsCte();
     const at = `$${cte.nextIdx}`;      // appTag
     const al = `$${cte.nextIdx + 1}`;  // appTag/%
-    const params = [...cte.params, config.appTag, `${config.appTag}/%`];
+    const anon = `$${cte.nextIdx + 2}`; // anonymous review account
+    const params = [...cte.params, config.appTag, `${config.appTag}/%`, config.hiveAnonAccount];
 
     // Two queries in parallel: papers (single scan with conditional aggregation) + reviews
     const [papersResult, reviewsResult] = await Promise.all([
@@ -31,10 +32,12 @@ async function fetchStatsFromHaf() {
         papers AS (
           SELECT c.json_metadata, c.created
           FROM ${T.comments} c
-          JOIN active_accreditations aa ON aa.account = c.author
+          LEFT JOIN active_accreditations aa ON aa.account = c.author
           WHERE c.parent_author = '' AND c.parent_permlink = ${at}
             AND (c.json_metadata -> ${at} ->> 'type') IN ('paper', 'bridge_paper')
             AND c.json_metadata ->> 'app' LIKE ${al}
+            AND (aa.account IS NOT NULL
+                 OR (c.json_metadata -> ${at} ->> 'type') = 'bridge_paper')
         )
         SELECT
           (SELECT count(*)::int FROM active_accreditations) AS total_accredited_researchers,
@@ -57,9 +60,10 @@ async function fetchStatsFromHaf() {
           count(*)::int AS total_reviews,
           count(*) FILTER (WHERE c.created >= now() - interval '30 days')::int AS reviews_last_30_days
         FROM ${T.comments} c
-        JOIN active_accreditations aa ON aa.account = c.author
         WHERE (c.json_metadata -> ${at} ->> 'type') = 'review'
           AND c.json_metadata ->> 'app' LIKE ${al}
+          AND (EXISTS (SELECT 1 FROM active_accreditations aa WHERE aa.account = c.author)
+               OR c.author = ${anon})
       `, params),
     ]);
 
