@@ -1,4 +1,5 @@
 import diff_match_patch from 'diff-match-patch';
+import { getAppTag } from '../config.js';
 
 const DIFF_DELETE = -1;
 const DIFF_INSERT = 1;
@@ -42,14 +43,14 @@ export function computeVersionDiff(versionA, versionB) {
   );
 
   const supplementaryFiles = setDiff(
-    versionA.supplementary_files || versionA.json_metadata?.pevo?.supplementary_files || [],
-    versionB.supplementary_files || versionB.json_metadata?.pevo?.supplementary_files || [],
+    versionA.supplementary_files || versionA.json_metadata?.[getAppTag()]?.supplementary_files || [],
+    versionB.supplementary_files || versionB.json_metadata?.[getAppTag()]?.supplementary_files || [],
     f => f.cid
   );
 
   const citations = setDiff(
-    versionA.citations || versionA.json_metadata?.pevo?.citations || [],
-    versionB.citations || versionB.json_metadata?.pevo?.citations || [],
+    versionA.citations || versionA.json_metadata?.[getAppTag()]?.citations || [],
+    versionB.citations || versionB.json_metadata?.[getAppTag()]?.citations || [],
     c => `${c.author}|${c.permlink}`
   );
 

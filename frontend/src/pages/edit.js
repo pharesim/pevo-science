@@ -488,7 +488,7 @@ export function initEditPage() {
       this._originalBody = composePostBody(this.abstract, this.body);
 
       // Discipline
-      const pevo = p.json_metadata?.pevo || p.json_metadata?.[getAppTag()] || {};
+      const pevo = p.json_metadata?.[getAppTag()] || {};
       this.discipline = pevo.discipline || '';
 
       // Keywords
@@ -750,7 +750,7 @@ export function initEditPage() {
 
         const citationsData = this.citations.filter(c => c.author && c.permlink);
 
-        const pevoMeta = this.paper.json_metadata?.pevo || this.paper.json_metadata?.[APP_TAG] || {};
+        const pevoMeta = this.paper.json_metadata?.[APP_TAG] || {};
 
         if (this.isContinuation) {
           // Continuation post: new post with full body

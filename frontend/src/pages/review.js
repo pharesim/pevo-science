@@ -148,7 +148,7 @@ export function initReviewPage() {
     get isOwnPaper() {
       if (!this.username) return false;
       if (this.username === this.author) return true;
-      const authors = this.paper?.authors || this.paper?.json_metadata?.pevo?.authors || [];
+      const authors = this.paper?.authors || this.paper?.json_metadata?.[getAppTag()]?.authors || [];
       return authors.some(a => a.hive === this.username);
     },
 
