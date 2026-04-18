@@ -44,6 +44,10 @@ const template = `
                 </div>
               </div>
             </template>
+            <div class="card text-center">
+              <div class="text-4xl font-bold text-ink font-serif" x-text="statValue('active_disciplines')"></div>
+              <div class="text-sm text-ink-muted mt-2" x-text="$t('stats.activeDisciplines')"></div>
+            </div>
           </div>
         </template>
       </div>
@@ -61,13 +65,12 @@ export function initStatsPage() {
       if (!this.stats) return [];
       return [
         { key: 'total_papers', label: this.$t('stats.totalPapers') },
-        { key: 'total_reviews', label: this.$t('stats.totalReviews') },
-        { key: 'total_accredited_researchers', label: this.$t('stats.accreditedResearchers') },
-        { key: 'total_citations', label: this.$t('stats.totalCitations') },
-        { key: 'active_disciplines', label: this.$t('stats.activeDisciplines') },
-        { key: 'total_bridge_papers', label: this.$t('stats.totalBridgePapers') },
         { key: 'papers_last_30_days', label: this.$t('stats.papersLast30') },
+        { key: 'total_bridge_papers', label: this.$t('stats.totalBridgePapers') },
+        { key: 'total_reviews', label: this.$t('stats.totalReviews') },
         { key: 'reviews_last_30_days', label: this.$t('stats.reviewsLast30') },
+        { key: 'total_citations', label: this.$t('stats.totalCitations') },
+        { key: 'total_accredited_researchers', label: this.$t('stats.accreditedResearchers') },
       ];
     },
 
