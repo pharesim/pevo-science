@@ -40,7 +40,7 @@ const template = `
                 <div class="text-4xl font-bold text-ink font-serif" x-text="Number(stats.highest_reputation_score).toLocaleString(undefined, {maximumFractionDigits: 1})"></div>
                 <div class="text-sm text-ink-muted mt-2">
                   <span x-text="$t('stats.highestReputation')"></span>
-                  <a :href="'/#/researcher/' + stats.highest_reputation_user" class="text-pevo-green hover:underline" x-text="'@' + stats.highest_reputation_user"></a>
+                  <a :href="$lp('/profile/' + stats.highest_reputation_user)" @click.prevent="$store.router.navigate('/profile/' + stats.highest_reputation_user)" class="text-pevo-green hover:underline" x-text="'@' + stats.highest_reputation_user"></a>
                 </div>
               </div>
             </template>
