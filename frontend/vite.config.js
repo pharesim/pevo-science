@@ -3,6 +3,7 @@ import { resolve } from 'path';
 import tailwindcss from '@tailwindcss/vite';
 
 const vendorModules = ['alpinejs'];
+const hiveModules = ['@hiveio/dhive'];
 const editorModules = [
   '@tiptap/core', '@tiptap/starter-kit',
   '@tiptap/extension-table',
@@ -23,6 +24,7 @@ export default defineConfig({
         manualChunks(id) {
           if (vendorModules.some((m) => id.includes(`node_modules/${m}`))) return 'vendor';
           if (editorModules.some((m) => id.includes(`node_modules/${m}`))) return 'editor';
+          if (hiveModules.some((m) => id.includes(`node_modules/${m}`))) return 'hive';
         },
       },
     },

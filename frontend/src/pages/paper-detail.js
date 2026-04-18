@@ -787,15 +787,6 @@ export function initPaperDetailPage() {
         this.paper.reviews = d.reviews || [];
         this.paper.net_votes = d.net_votes ?? this.paper.net_votes;
         this.paper.voters = d.voters || [];
-        this.paper.citation_count = d.citation_count ?? this.paper.citation_count;
-        this.paper.is_accredited = d.is_accredited ?? this.paper.is_accredited;
-        this.paper.accredited_authors = d.accredited_authors || [];
-        if (d.versions) this.paper.versions = d.versions;
-        if (d.is_retracted !== undefined) {
-          this.paper.is_retracted = d.is_retracted;
-          this.paper.retraction_reason = d.retraction_reason;
-          this.paper.retraction_timestamp = d.retraction_timestamp;
-        }
         this.enrichmentLoaded = true;
         // Scroll to review if URL has a hash fragment
         this.scrollToHashReview();

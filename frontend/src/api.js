@@ -67,11 +67,6 @@ export function fetchPapers(params = {}) {
   return request(`/papers${buildQuery(params)}`);
 }
 
-export function fetchPaperBatchCounts(papers) {
-  const ids = papers.map((p) => `${p.author}/${p.permlink}`).join(',');
-  return request(`/papers/batch-counts?ids=${encodeURIComponent(ids)}`);
-}
-
 export function fetchPaper(author, permlink, version) {
   const q = version ? `?version=${version}` : '';
   return request(`/papers/${encodeURIComponent(author)}/${encodeURIComponent(permlink)}${q}`);

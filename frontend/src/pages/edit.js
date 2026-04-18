@@ -2,7 +2,7 @@ import Alpine from 'alpinejs';
 import { fetchPaper, fetchPaperEnrichment, invalidatePaperCache, uploadToIpfs } from '../api.js';
 import { broadcastOps } from '../signer.js';
 import { sha256File, slugify } from '../crypto.js';
-import { createEditor } from '../editor.js';
+
 import { getAppTag, getAppId } from '../config.js';
 import diff_match_patch from 'diff-match-patch';
 
@@ -540,7 +540,8 @@ export function initEditPage() {
       }
     },
 
-    _mountEditors() {
+    async _mountEditors() {
+      const { createEditor } = await import('../editor.js');
       const abstractEl = this.$refs.abstractEditor;
       const bodyEl = this.$refs.bodyEditor;
 

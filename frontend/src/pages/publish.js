@@ -2,7 +2,7 @@ import Alpine from 'alpinejs';
 import { uploadToIpfs, fetchDisciplines } from '../api.js';
 import { broadcastOps } from '../signer.js';
 import { sha256File, slugify } from '../crypto.js';
-import { createEditor } from '../editor.js';
+
 import { getAppTag, getAppId } from '../config.js';
 
 const DRAFT_KEY = 'pevo-draft-publish';
@@ -483,7 +483,8 @@ export function initPublishPage() {
       this.$watch('authorOrcid', () => this._scheduleDraftSave());
     },
 
-    _mountEditors() {
+    async _mountEditors() {
+      const { createEditor } = await import('../editor.js');
       const abstractEl = this.$refs.abstractEditor;
       const bodyEl = this.$refs.bodyEditor;
 

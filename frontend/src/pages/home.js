@@ -1,5 +1,5 @@
 import Alpine from 'alpinejs';
-import { fetchPapers, fetchPaperBatchCounts, fetchDisciplines } from '../api.js';
+import { fetchPapers, fetchDisciplines } from '../api.js';
 import { truncateText, formatDate } from '../components/paper-card.js';
 
 const ITEMS_PER_PAGE = 10;
@@ -297,28 +297,11 @@ export function initHomePage() {
           this.totalPages = Math.ceil(res.meta.total / res.meta.limit) || 1;
         }
         this.loading = false;
-        this.enrichPapers(this.papers);
       } catch {
         this.error = this.$t('home.errorLoading');
         this.papers = [];
         this.loading = false;
       }
-    },
-
-    async enrichPapers(papers) {
-      if (!papers.length) return;
-      const res = await fetchPaperBatchCounts(papers);
-      if (res.data) {
-        for (const paper of this.papers) {
-          const key = `${paper.author}/${paper.permlink}`;
-          const counts = res.data[key];
-          if (counts) {
-            paper.review_count = counts.review_count;
-            paper.citation_count = counts.citation_count;
-          }
-        }
-      }
-
     },
 
     onDisciplineChange() {
