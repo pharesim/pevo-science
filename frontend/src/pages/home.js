@@ -1,5 +1,5 @@
 import Alpine from 'alpinejs';
-import { fetchPapers, fetchPaperBatchCounts, fetchExternalCitations, fetchDisciplines } from '../api.js';
+import { fetchPapers, fetchPaperBatchCounts, fetchDisciplines } from '../api.js';
 import { truncateText, formatDate } from '../components/paper-card.js';
 
 const ITEMS_PER_PAGE = 10;
@@ -319,20 +319,6 @@ export function initHomePage() {
         }
       }
 
-      // Fetch external citation counts for bridge papers
-      const bridgeDois = this.papers
-        .filter((p) => p.doi && p.source_type && p.source_type !== 'native')
-        .map((p) => p.doi);
-      if (bridgeDois.length > 0) {
-        const extRes = await fetchExternalCitations(bridgeDois);
-        if (extRes.data) {
-          for (const paper of this.papers) {
-            if (paper.doi && extRes.data[paper.doi] !== undefined) {
-              paper.citation_count = extRes.data[paper.doi];
-            }
-          }
-        }
-      }
     },
 
     onDisciplineChange() {

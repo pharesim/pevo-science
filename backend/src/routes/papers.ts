@@ -200,6 +200,17 @@ async function fetchPapersFromHaf(req: Request): Promise<{ rows: unknown[]; tota
       };
     });
 
+    // Enrich bridge papers with external citation counts
+    const bridgeDois = rows.filter(r => r.doi).map(r => r.doi!);
+    if (bridgeDois.length > 0) {
+      const extCounts = await fetchExternalCitationCounts(bridgeDois);
+      for (const row of rows) {
+        if (row.doi && extCounts[row.doi] !== undefined) {
+          row.citation_count = extCounts[row.doi];
+        }
+      }
+    }
+
     return { rows, total };
   } catch (err) {
     logger.error({ err }, 'HAF query failed, falling back to Hive API');
@@ -267,6 +278,17 @@ async function fetchPapersFromHiveApi(req: Request): Promise<{ rows: unknown[]; 
       row.accredited_authors = (row.authors as Array<{ hive?: string }>)
         .filter(a => a.hive && allAccredited.has(a.hive))
         .map(a => a.hive!);
+    }
+
+    // Enrich bridge papers with external citation counts
+    const bridgeDois = rows.filter(r => r.doi).map(r => r.doi!);
+    if (bridgeDois.length > 0) {
+      const extCounts = await fetchExternalCitationCounts(bridgeDois);
+      for (const row of rows) {
+        if (row.doi && extCounts[row.doi] !== undefined) {
+          row.citation_count = extCounts[row.doi];
+        }
+      }
     }
 
     return { rows, total: rows.length };
@@ -386,25 +408,15 @@ router.get('/batch-counts', async (req: Request, res: Response) => {
 });
 
 // ──────────────────────────────────────────────
-// GET /api/papers/external-citations — Semantic Scholar citation counts by DOI
+// Semantic Scholar external citation counts (cached 24h)
 // ──────────────────────────────────────────────
 
-router.get('/external-citations', async (req: Request, res: Response) => {
-  const doisParam = (req.query.dois as string) || '';
-  const dois = doisParam
-    .split(',')
-    .map((d) => d.trim())
-    .filter(Boolean)
-    .slice(0, 20);
-
-  if (dois.length === 0) {
-    return sendOk(res, {});
-  }
+async function fetchExternalCitationCounts(dois: string[]): Promise<Record<string, number>> {
+  if (dois.length === 0) return {};
 
   const results: Record<string, number> = {};
   const uncached: string[] = [];
 
-  // Check cache first
   for (const doi of dois) {
     const cached = await hafCache.get<number>(`ext-citations:${doi}`);
     if (cached !== undefined) {
@@ -414,7 +426,6 @@ router.get('/external-citations', async (req: Request, res: Response) => {
     }
   }
 
-  // Fetch uncached from Semantic Scholar (batch endpoint)
   if (uncached.length > 0) {
     try {
       const response = await fetch('https://api.semanticscholar.org/graph/v1/paper/batch?fields=citationCount', {
@@ -440,8 +451,8 @@ router.get('/external-citations', async (req: Request, res: Response) => {
     }
   }
 
-  sendOk(res, results);
-});
+  return results;
+}
 
 // ──────────────────────────────────────────────
 // GET /api/papers/:author/:permlink — single paper
@@ -1253,8 +1264,27 @@ router.get('/:author/:permlink/enrichment', async (req: Request, res: Response) 
     return fetchEnrichmentFromHiveApi(author, permlink);
   }, 5 * 60_000, true);
 
-  if (cached) return sendOk(res, cached);
-  sendError(res, 404, 'NOT_FOUND', 'Paper not found');
+  if (!cached) return sendError(res, 404, 'NOT_FOUND', 'Paper not found');
+
+  // For bridge papers, override citation_count with Semantic Scholar data
+  try {
+    const post = await hiveClient.database.call('get_content', [author, permlink]);
+    if (post?.author) {
+      const meta = parseMeta(post.json_metadata);
+      const pevo = safePevoMeta(meta);
+      if (pevo.type === 'bridge_paper') {
+        const doi = ((pevo.source as Record<string, unknown>)?.doi as string) || null;
+        if (doi) {
+          const extCounts = await fetchExternalCitationCounts([doi]);
+          if (extCounts[doi] !== undefined) {
+            (cached as Record<string, unknown>).citation_count = extCounts[doi];
+          }
+        }
+      }
+    }
+  } catch { /* ignore — return cached enrichment as-is */ }
+
+  sendOk(res, cached);
 });
 
 // ──────────────────────────────────────────────
