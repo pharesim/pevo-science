@@ -23,62 +23,58 @@ async function fetchStatsFromHaf() {
     const at = `$${cte.nextIdx}`;      // appTag
     const al = `$${cte.nextIdx + 1}`;  // appTag/%
     const anon = `$${cte.nextIdx + 2}`; // anonymous review account
-    const papersParams = [...cte.params, config.appTag, `${config.appTag}/%`];
-    const reviewsParams = [...cte.params, config.appTag, `${config.appTag}/%`, config.hiveAnonAccount];
+    const params = [...cte.params, config.appTag, `${config.appTag}/%`, config.hiveAnonAccount];
 
-    // Two queries in parallel: papers (single scan with conditional aggregation) + reviews
-    const [papersResult, reviewsResult] = await Promise.all([
-      pool.query(`
-        ${cte.sql},
-        papers AS (
-          SELECT c.json_metadata, c.created
-          FROM ${T.comments} c
-          LEFT JOIN active_accreditations aa ON aa.account = c.author
-          WHERE c.parent_author = '' AND c.parent_permlink = ${at}
-            AND (c.json_metadata -> ${at} ->> 'type') IN ('paper', 'bridge_paper')
-            AND c.json_metadata ->> 'app' LIKE ${al}
-            AND (aa.account IS NOT NULL
-                 OR (c.json_metadata -> ${at} ->> 'type') = 'bridge_paper')
-        )
-        SELECT
-          (SELECT count(*)::int FROM active_accreditations) AS total_accredited_researchers,
-          count(*) FILTER (WHERE (json_metadata -> ${at} ->> 'type') = 'paper')::int AS total_papers,
-          count(*) FILTER (WHERE (json_metadata -> ${at} ->> 'type') = 'bridge_paper')::int AS total_bridge_papers,
-          count(*) FILTER (WHERE (json_metadata -> ${at} ->> 'type') = 'paper'
-            AND created >= now() - interval '30 days')::int AS papers_last_30_days,
-          count(DISTINCT (json_metadata -> ${at} ->> 'discipline'))
-            FILTER (WHERE (json_metadata -> ${at} ->> 'discipline') IS NOT NULL)::int AS active_disciplines,
-          COALESCE((
-            SELECT count(*)::int FROM papers ci,
-              jsonb_array_elements(ci.json_metadata -> ${at} -> 'citations') AS cit
-            WHERE jsonb_typeof(ci.json_metadata -> ${at} -> 'citations') = 'array'
-          ), 0) AS total_citations
-        FROM papers
-      `, papersParams),
-      pool.query(`
-        ${cte.sql}
-        SELECT
-          count(*)::int AS total_reviews,
-          count(*) FILTER (WHERE c.created >= now() - interval '30 days')::int AS reviews_last_30_days
+    // Single query: papers CTE narrows to PEvO posts, reviews CTE joins through
+    // papers (children of known papers) to avoid a full hafsql.comments scan.
+    const result = await pool.query(`
+      ${cte.sql},
+      papers AS (
+        SELECT c.author, c.permlink, c.json_metadata, c.created
         FROM ${T.comments} c
-        WHERE (c.json_metadata -> ${at} ->> 'type') = 'review'
+        LEFT JOIN active_accreditations aa ON aa.account = c.author
+        WHERE c.parent_author = '' AND c.parent_permlink = ${at}
+          AND (c.json_metadata -> ${at} ->> 'type') IN ('paper', 'bridge_paper')
           AND c.json_metadata ->> 'app' LIKE ${al}
-          AND (EXISTS (SELECT 1 FROM active_accreditations aa WHERE aa.account = c.author)
-               OR c.author = ${anon})
-      `, reviewsParams),
-    ]);
+          AND (aa.account IS NOT NULL
+               OR (c.json_metadata -> ${at} ->> 'type') = 'bridge_paper')
+      ),
+      reviews AS (
+        SELECT r.created
+        FROM ${T.comments} r
+        INNER JOIN papers p ON r.parent_author = p.author AND r.parent_permlink = p.permlink
+        WHERE (r.json_metadata -> ${at} ->> 'type') = 'review'
+          AND r.json_metadata ->> 'app' LIKE ${al}
+          AND (EXISTS (SELECT 1 FROM active_accreditations aa WHERE aa.account = r.author)
+               OR r.author = ${anon})
+      )
+      SELECT
+        (SELECT count(*)::int FROM active_accreditations) AS total_accredited_researchers,
+        (SELECT count(*)::int FROM papers WHERE (json_metadata -> ${at} ->> 'type') = 'paper') AS total_papers,
+        (SELECT count(*)::int FROM papers WHERE (json_metadata -> ${at} ->> 'type') = 'bridge_paper') AS total_bridge_papers,
+        (SELECT count(*)::int FROM papers WHERE (json_metadata -> ${at} ->> 'type') = 'paper'
+          AND created >= now() - interval '30 days') AS papers_last_30_days,
+        (SELECT count(DISTINCT (json_metadata -> ${at} ->> 'discipline'))::int FROM papers
+          WHERE (json_metadata -> ${at} ->> 'discipline') IS NOT NULL) AS active_disciplines,
+        COALESCE((
+          SELECT count(*)::int FROM papers ci,
+            jsonb_array_elements(ci.json_metadata -> ${at} -> 'citations') AS cit
+          WHERE jsonb_typeof(ci.json_metadata -> ${at} -> 'citations') = 'array'
+        ), 0) AS total_citations,
+        (SELECT count(*)::int FROM reviews) AS total_reviews,
+        (SELECT count(*)::int FROM reviews WHERE created >= now() - interval '30 days') AS reviews_last_30_days
+    `, params);
 
-    const p = papersResult.rows[0];
-    const r = reviewsResult.rows[0];
+    const row = result.rows[0];
     return {
-      total_papers: p.total_papers,
-      total_reviews: r.total_reviews,
-      total_accredited_researchers: p.total_accredited_researchers,
-      total_citations: p.total_citations,
-      active_disciplines: p.active_disciplines,
-      papers_last_30_days: p.papers_last_30_days,
-      reviews_last_30_days: r.reviews_last_30_days,
-      total_bridge_papers: p.total_bridge_papers,
+      total_papers: row.total_papers,
+      total_reviews: row.total_reviews,
+      total_accredited_researchers: row.total_accredited_researchers,
+      total_citations: row.total_citations,
+      active_disciplines: row.active_disciplines,
+      papers_last_30_days: row.papers_last_30_days,
+      reviews_last_30_days: row.reviews_last_30_days,
+      total_bridge_papers: row.total_bridge_papers,
     };
   } catch (err) {
     logger.error({ err }, 'HAF stats query failed');
