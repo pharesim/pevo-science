@@ -153,18 +153,13 @@ export function initAuth() {
       if (accRes.data) {
         this.isAccredited = accRes.data.is_accredited;
         this.accreditation = accRes.data.accreditation;
-        // Preserve existing session expiry if not explicitly provided
-        let resolvedExpiry = expiresAt;
-        if (!resolvedExpiry) {
-          const saved = localStorage.getItem(SESSION_KEY);
-          if (saved) resolvedExpiry = JSON.parse(saved).expiresAt;
-        }
         this._saveSession();
       }
     },
 
     _startAccreditationPolling() {
       this._stopAccreditationPolling();
+      this._checkAccreditation();
       this._accreditationInterval = setInterval(() => {
         if (!this.username || this.isAccredited) {
           this._stopAccreditationPolling();
