@@ -1,5 +1,6 @@
 import Alpine from 'alpinejs';
 import { fetchPaper, fetchPaperEnrichment, fetchExternalCitations, fetchCitationExport, retractPaper, updateBridgePaper } from '../api.js';
+import { getAppTag } from '../config.js';
 import { computeVersionDiff } from '../lib/version-diff.js';
 import { formatDate } from '../components/paper-card.js';
 
@@ -863,12 +864,12 @@ export function initPaperDetailPage() {
     },
 
     get isBridgePaper() {
-      return this.paper?.json_metadata?.pevo?.type === 'bridge_paper';
+      return this.paper?.json_metadata?.[getAppTag()]?.type === 'bridge_paper';
     },
 
     get bridgeSource() {
       if (!this.isBridgePaper) return null;
-      return this.paper.json_metadata.pevo.source || null;
+      return this.paper.json_metadata[getAppTag()].source || null;
     },
 
     get ipfsGateway() {
@@ -881,7 +882,7 @@ export function initPaperDetailPage() {
     },
 
     get supplementaryFiles() {
-      return this.paper?.supplementary_files || this.paper?.json_metadata?.pevo?.supplementary_files || [];
+      return this.paper?.supplementary_files || this.paper?.json_metadata?.[getAppTag()]?.supplementary_files || [];
     },
 
     supplementaryFileUrl(cid) {
