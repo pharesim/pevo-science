@@ -377,6 +377,57 @@ Invalidates all existing sessions for the account.
 
 ---
 
+### POST /api/auth/recover
+
+Recover a light account when the user has lost access to their email. Requires either a seed-phrase-derived memo key or a verified ORCID token as proof of identity.
+
+**Body (seed phrase recovery):**
+
+```json
+{
+  "username": "researcher1",
+  "memo_key": "5J...",
+  "new_email": "new@university.edu",
+  "new_password": "NewSecurePass456"
+}
+```
+
+**Body (ORCID recovery):**
+
+```json
+{
+  "username": "researcher1",
+  "orcid_token": "abc123...",
+  "new_email": "new@university.edu",
+  "new_password": "NewSecurePass456"
+}
+```
+
+For ORCID recovery, obtain `orcid_token` via the existing `POST /api/auth/orcid/start` and `POST /api/auth/orcid/callback` flow first. The backend verifies the ORCID iD from the token matches the account's stored ORCID.
+
+**Response `data`:**
+
+```json
+{
+  "token": "eyJhbG...",
+  "expires_at": "2026-04-19T12:00:00.000Z",
+  "custody": "light",
+  "username": "researcher1"
+}
+```
+
+Updates email, resets password, invalidates all existing sessions, and returns a new JWT.
+
+**Rate limit:** 10 requests per IP per hour.
+
+**Errors:**
+- `VALIDATION_ERROR` — missing fields, weak password, or no recovery method provided
+- `NOT_FOUND` — no active account with that username
+- `UNAUTHORIZED` — memo key mismatch, no ORCID on account, invalid/expired ORCID token, or ORCID mismatch
+- `DUPLICATE` — new email already in use by another account
+
+---
+
 ### POST /api/custody/broadcast
 
 Sign and broadcast Hive operations for light accounts. Only `comment` and `vote` operations are permitted.

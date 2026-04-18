@@ -872,7 +872,8 @@
     "resendVerification": "Resend verification email",
     "resending": "Sending…",
     "verificationResent": "A new verification link has been sent to your email.",
-    "signUpAgain": "Sign up again"
+    "signUpAgain": "Sign up again",
+    "lostEmailAccess": "Lost access to your email?"
   },
   "seedPhrase": {
     "verifying": "Verifying your email…",
@@ -971,6 +972,35 @@
     "doneTitle": "Password Reset",
     "doneDescription": "Your password has been updated. You can now sign in with your new password.",
     "goToLogin": "Sign in"
+  },
+  "recover": {
+    "title": "Recover your account",
+    "description": "Lost access to your email? Use your recovery phrase or ORCID to regain access to your account.",
+    "username": "Username",
+    "usernamePlaceholder": "your-username",
+    "usernameHint": "The username you chose when you created your account.",
+    "methodSeed": "Recovery Phrase",
+    "methodOrcid": "ORCID",
+    "seedPhrase": "Recovery Phrase",
+    "seedPhrasePlaceholder": "Enter your 12-word recovery phrase separated by spaces",
+    "seedPhraseHint": "The 12-word phrase you received when you created your account.",
+    "seedPhraseInvalid": "Invalid recovery phrase. Please check and try again.",
+    "newEmail": "New Email",
+    "newEmailPlaceholder": "your-new-email@university.edu",
+    "newPassword": "New Password",
+    "newPasswordConfirm": "Confirm New Password",
+    "passwordHint": "At least 10 characters with lowercase, uppercase, and numbers.",
+    "passwordMismatch": "Passwords do not match.",
+    "submit": "Recover Account",
+    "submitting": "Recovering...",
+    "orcidVerifyButton": "Verify with ORCID",
+    "orcidVerifying": "Redirecting to ORCID...",
+    "orcidVerified": "ORCID verified",
+    "checkingOrcid": "Checking ORCID eligibility...",
+    "doneTitle": "Account Recovered",
+    "doneDescription": "Your account has been recovered with the new email and password. Please sign in with your new credentials.",
+    "goToLogin": "Sign in",
+    "backToLogin": "Back to sign in"
   },
   "settings": {
     "title": "Settings",

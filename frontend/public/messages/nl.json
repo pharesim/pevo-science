@@ -855,7 +855,8 @@
     "resendVerification": "Verificatiemail opnieuw versturen",
     "resending": "Verzenden…",
     "verificationResent": "Er is een nieuwe verificatielink naar je e-mailadres gestuurd.",
-    "signUpAgain": "Opnieuw registreren"
+    "signUpAgain": "Opnieuw registreren",
+    "lostEmailAccess": "Geen toegang meer tot je e-mailadres?"
   },
   "seedPhrase": {
     "verifying": "Je e-mailadres verifiëren…",
@@ -954,6 +955,35 @@
     "doneTitle": "Wachtwoord opnieuw ingesteld",
     "doneDescription": "Je wachtwoord is bijgewerkt. Je kunt nu inloggen met je nieuwe wachtwoord.",
     "goToLogin": "Inloggen"
+  },
+  "recover": {
+    "title": "Herstel je account",
+    "description": "Geen toegang meer tot je e-mailadres? Gebruik je herstelzin of ORCID om weer toegang te krijgen tot je account.",
+    "username": "Gebruikersnaam",
+    "usernamePlaceholder": "your-username",
+    "usernameHint": "De gebruikersnaam die je hebt gekozen toen je je account aanmaakte.",
+    "methodSeed": "Herstelzin",
+    "methodOrcid": "ORCID",
+    "seedPhrase": "Herstelzin",
+    "seedPhrasePlaceholder": "Voer je herstelzin van 12 woorden in, gescheiden door spaties",
+    "seedPhraseHint": "De zin van 12 woorden die je ontving toen je je account aanmaakte.",
+    "seedPhraseInvalid": "Ongeldige herstelzin. Controleer en probeer het opnieuw.",
+    "newEmail": "Nieuw e-mailadres",
+    "newEmailPlaceholder": "your-new-email@university.edu",
+    "newPassword": "Nieuw wachtwoord",
+    "newPasswordConfirm": "Bevestig nieuw wachtwoord",
+    "passwordHint": "Minimaal 10 tekens met kleine letters, hoofdletters en cijfers.",
+    "passwordMismatch": "Wachtwoorden komen niet overeen.",
+    "submit": "Account herstellen",
+    "submitting": "Herstellen...",
+    "orcidVerifyButton": "Verifieer met ORCID",
+    "orcidVerifying": "Doorverwijzen naar ORCID...",
+    "orcidVerified": "ORCID geverifieerd",
+    "checkingOrcid": "ORCID-geschiktheid controleren...",
+    "doneTitle": "Account hersteld",
+    "doneDescription": "Je account is hersteld met het nieuwe e-mailadres en wachtwoord. Log in met je nieuwe inloggegevens.",
+    "goToLogin": "Inloggen",
+    "backToLogin": "Terug naar inloggen"
   },
   "settings": {
     "title": "Instellingen",

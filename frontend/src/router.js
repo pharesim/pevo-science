@@ -22,6 +22,7 @@ const ROUTE_TITLES = {
   'signup-verify':         'Verify Email — PEvO',
   'login':                 'Sign In — PEvO',
   'reset-password':        'Reset Password — PEvO',
+  'recover':               'Recover Account — PEvO',
   'settings':              'Settings — PEvO',
   'settings-verify-email': 'Verify Email — PEvO',
 };
@@ -58,6 +59,7 @@ const ROUTES = [
   { pattern: /^\/auth\/verify$/,                       name: 'signup-verify' },
   { pattern: /^\/login$/,                              name: 'login' },
   { pattern: /^\/reset-password$/,                     name: 'reset-password' },
+  { pattern: /^\/recover$/,                            name: 'recover' },
   { pattern: /^\/settings$/,                           name: 'settings' },
   { pattern: /^\/settings\/verify-email\/([^/]+)$/,   name: 'settings-verify-email', params: ['token'] },
 ];

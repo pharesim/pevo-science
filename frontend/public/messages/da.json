@@ -851,7 +851,8 @@
     "resendVerification": "Send bekræftelsesmail igen",
     "resending": "Sender…",
     "verificationResent": "Et nyt bekræftelseslink er sendt til din e-mail.",
-    "signUpAgain": "Tilmeld dig igen"
+    "signUpAgain": "Tilmeld dig igen",
+    "lostEmailAccess": "Mistet adgang til din e-mail?"
   },
   "seedPhrase": {
     "verifying": "Bekræfter din e-mail…",
@@ -950,6 +951,35 @@
     "doneTitle": "Adgangskode nulstillet",
     "doneDescription": "Din adgangskode er blevet opdateret. Du kan nu logge ind med din nye adgangskode.",
     "goToLogin": "Log ind"
+  },
+  "recover": {
+    "title": "Gendan din konto",
+    "description": "Mistet adgang til din e-mail? Brug din gendannelsesfrase eller ORCID til at genvinde adgang til din konto.",
+    "username": "Brugernavn",
+    "usernamePlaceholder": "your-username",
+    "usernameHint": "Det brugernavn du valgte, da du oprettede din konto.",
+    "methodSeed": "Gendannelsesfrase",
+    "methodOrcid": "ORCID",
+    "seedPhrase": "Gendannelsesfrase",
+    "seedPhrasePlaceholder": "Indtast din 12-ords gendannelsesfrase adskilt med mellemrum",
+    "seedPhraseHint": "Den 12-ords frase du modtog, da du oprettede din konto.",
+    "seedPhraseInvalid": "Ugyldig gendannelsesfrase. Kontroller venligst og prøv igen.",
+    "newEmail": "Ny e-mail",
+    "newEmailPlaceholder": "your-new-email@university.edu",
+    "newPassword": "Ny adgangskode",
+    "newPasswordConfirm": "Bekræft ny adgangskode",
+    "passwordHint": "Mindst 10 tegn med små bogstaver, store bogstaver og tal.",
+    "passwordMismatch": "Adgangskoderne stemmer ikke overens.",
+    "submit": "Gendan konto",
+    "submitting": "Gendanner…",
+    "orcidVerifyButton": "Bekræft med ORCID",
+    "orcidVerifying": "Omdirigerer til ORCID…",
+    "orcidVerified": "ORCID bekræftet",
+    "checkingOrcid": "Kontrollerer ORCID-berettigelse…",
+    "doneTitle": "Konto gendannet",
+    "doneDescription": "Din konto er blevet gendannet med den nye e-mail og adgangskode. Log venligst ind med dine nye loginoplysninger.",
+    "goToLogin": "Log ind",
+    "backToLogin": "Tilbage til login"
   },
   "settings": {
     "title": "Indstillinger",

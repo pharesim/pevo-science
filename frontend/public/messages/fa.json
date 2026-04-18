@@ -851,7 +851,8 @@
     "resendVerification": "ارسال مجدد ایمیل تأیید",
     "resending": "در حال ارسال…",
     "verificationResent": "یک لینک تأیید جدید به ایمیل شما ارسال شد.",
-    "signUpAgain": "ثبت‌نام مجدد"
+    "signUpAgain": "ثبت‌نام مجدد",
+    "lostEmailAccess": "دسترسی به ایمیل خود را از دست داده‌اید؟"
   },
   "seedPhrase": {
     "verifying": "در حال تأیید ایمیل شما…",
@@ -950,6 +951,35 @@
     "doneTitle": "رمز عبور بازنشانی شد",
     "doneDescription": "رمز عبور شما به‌روزرسانی شد. اکنون می‌توانید با رمز عبور جدید وارد شوید.",
     "goToLogin": "ورود"
+  },
+  "recover": {
+    "title": "بازیابی حساب کاربری",
+    "description": "دسترسی به ایمیل خود را از دست داده‌اید؟ از عبارت بازیابی یا ORCID خود برای بازگرداندن دسترسی به حسابتان استفاده کنید.",
+    "username": "نام کاربری",
+    "usernamePlaceholder": "your-username",
+    "usernameHint": "نام کاربری که هنگام ایجاد حساب انتخاب کردید.",
+    "methodSeed": "عبارت بازیابی",
+    "methodOrcid": "ORCID",
+    "seedPhrase": "عبارت بازیابی",
+    "seedPhrasePlaceholder": "عبارت بازیابی ۱۲ کلمه‌ای خود را با فاصله وارد کنید",
+    "seedPhraseHint": "عبارت ۱۲ کلمه‌ای که هنگام ایجاد حساب دریافت کردید.",
+    "seedPhraseInvalid": "عبارت بازیابی نامعتبر است. لطفا بررسی کرده و دوباره امتحان کنید.",
+    "newEmail": "ایمیل جدید",
+    "newEmailPlaceholder": "your-new-email@university.edu",
+    "newPassword": "رمز عبور جدید",
+    "newPasswordConfirm": "تایید رمز عبور جدید",
+    "passwordHint": "حداقل ۱۰ کاراکتر شامل حروف کوچک، بزرگ و اعداد.",
+    "passwordMismatch": "رمزهای عبور مطابقت ندارند.",
+    "submit": "بازیابی حساب",
+    "submitting": "در حال بازیابی...",
+    "orcidVerifyButton": "تایید با ORCID",
+    "orcidVerifying": "در حال انتقال به ORCID...",
+    "orcidVerified": "ORCID تایید شد",
+    "checkingOrcid": "در حال بررسی واجد شرایط بودن ORCID...",
+    "doneTitle": "حساب بازیابی شد",
+    "doneDescription": "حساب شما با ایمیل و رمز عبور جدید بازیابی شد. لطفا با اطلاعات جدید وارد شوید.",
+    "goToLogin": "ورود",
+    "backToLogin": "بازگشت به ورود"
   },
   "settings": {
     "title": "تنظیمات",

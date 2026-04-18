@@ -82,6 +82,11 @@ const template = `
               <span x-text="$t('common.hasKeychain')"></span>
               <a :href="$lp('/')" @click.prevent="navigate('/')" class="text-pevo-teal hover:underline" x-text="$t('common.connectKeychain')"></a>
             </p>
+
+            <!-- Recovery link -->
+            <p class="text-center text-sm text-ink-muted mt-2">
+              <a :href="$lp('/recover')" @click.prevent="navigate('/recover')" class="text-pevo-teal hover:underline" x-text="$t('login.lostEmailAccess')"></a>
+            </p>
           </div>
         </template>
       </div>

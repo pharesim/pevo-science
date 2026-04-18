@@ -12,6 +12,7 @@ import { getAppPool } from '../app-db.js';
 import { getRedis, isRedisAvailable } from '../redis.js';
 import { hiveClient } from '../hive.js';
 import { logger } from '../logger.js';
+import { decryptKey } from '../custody-crypto.js';
 
 const router = Router();
 const SESSION_EXPIRY = '24h';
@@ -686,6 +687,168 @@ router.post('/orcid/callback', orcidCallbackLimiter, async (req: Request, res: R
   } catch (err) {
     logger.error({ err }, 'ORCID callback failed');
     sendError(res, 500, 'INTERNAL_ERROR', 'ORCID verification failed');
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+// POST /api/auth/recover — Account recovery (seed phrase or ORCID)
+// ─────────────────────────────────────────────────────────────
+const recoverLimiter = rateLimit({ name: 'auth-recover', windowMs: 3_600_000, max: 10, keyFn: byIp });
+
+router.post('/recover', recoverLimiter, async (req: Request, res: Response) => {
+  const pool = getAppPool();
+  if (!pool) return sendError(res, 503, 'INTERNAL_ERROR', 'Service not available');
+
+  const { username, memo_key, orcid_token, new_email, new_password } = req.body || {};
+
+  // Validate required fields
+  if (!username || typeof username !== 'string') {
+    return sendError(res, 400, 'VALIDATION_ERROR', 'Username is required');
+  }
+  if (!new_email || typeof new_email !== 'string') {
+    return sendError(res, 400, 'VALIDATION_ERROR', 'New email is required');
+  }
+  if (!new_password || typeof new_password !== 'string' || new_password.length < 10) {
+    return sendError(res, 400, 'VALIDATION_ERROR', 'Password must be at least 10 characters');
+  }
+  if (!/[a-z]/.test(new_password) || !/[A-Z]/.test(new_password) || !/[0-9]/.test(new_password)) {
+    return sendError(res, 400, 'VALIDATION_ERROR', 'Password must contain lowercase letters, uppercase letters, and numbers');
+  }
+  if (!memo_key && !orcid_token) {
+    return sendError(res, 400, 'VALIDATION_ERROR', 'Either memo_key or orcid_token is required for recovery');
+  }
+
+  const normalizedUsername = username.trim().toLowerCase();
+  const normalizedEmail = new_email.trim().toLowerCase();
+
+  try {
+    // Look up active account by username
+    const { rows } = await pool.query<{
+      id: number;
+      username: string;
+      memo_key_enc: Buffer | null;
+      iv_memo: Buffer | null;
+      orcid: string | null;
+      custody: string | null;
+      upgraded_at: string | null;
+    }>(
+      `SELECT id, username, memo_key_enc, iv_memo, orcid, custody, upgraded_at
+       FROM accounts WHERE username = $1 AND verify_token IS NULL`,
+      [normalizedUsername],
+    );
+
+    if (rows.length === 0) {
+      return sendError(res, 404, 'NOT_FOUND', 'Account not found');
+    }
+
+    const account = rows[0];
+
+    // ── Method A: Seed-phrase recovery via memo key comparison ──
+    if (memo_key && typeof memo_key === 'string') {
+      if (!account.memo_key_enc || !account.iv_memo) {
+        return sendError(res, 401, 'UNAUTHORIZED', 'Account does not support seed phrase recovery');
+      }
+
+      let storedMemoKey: string;
+      try {
+        storedMemoKey = decryptKey(account.username, account.memo_key_enc, account.iv_memo);
+      } catch (err) {
+        logger.error({ err, username: account.username }, 'Failed to decrypt memo key during recovery');
+        return sendError(res, 500, 'INTERNAL_ERROR', 'Recovery failed');
+      }
+
+      // Constant-time comparison (handle different lengths safely)
+      const providedBuf = Buffer.from(memo_key, 'utf8');
+      const storedBuf = Buffer.from(storedMemoKey, 'utf8');
+      const match = providedBuf.length === storedBuf.length &&
+        crypto.timingSafeEqual(providedBuf, storedBuf);
+
+      if (!match) {
+        pool.query(
+          'INSERT INTO custody_audit_log (username, operation_type) VALUES ($1, $2)',
+          [account.username, 'recovery_failure'],
+        ).catch(() => {});
+        return sendError(res, 401, 'UNAUTHORIZED', 'Invalid recovery credentials');
+      }
+    }
+    // ── Method B: ORCID recovery ──
+    else if (orcid_token && typeof orcid_token === 'string') {
+      if (!account.orcid) {
+        return sendError(res, 401, 'UNAUTHORIZED', 'Account does not have a verified ORCID');
+      }
+
+      // Look up verified ORCID from nonce (same store as signup flow)
+      let verifiedOrcidId: string | null = null;
+      const redis = getRedis();
+      if (redis && isRedisAvailable()) {
+        const raw = await redis.get(`signup_orcid_verified:${orcid_token}`);
+        if (raw) {
+          await redis.del(`signup_orcid_verified:${orcid_token}`);
+          const parsed = JSON.parse(raw) as { orcid_id: string };
+          verifiedOrcidId = parsed.orcid_id;
+        }
+      } else {
+        const entry = signupOrcidVerified.get(orcid_token);
+        if (entry && entry.expires > Date.now()) {
+          verifiedOrcidId = entry.orcid_id;
+        }
+        signupOrcidVerified.delete(orcid_token);
+      }
+
+      if (!verifiedOrcidId) {
+        return sendError(res, 401, 'UNAUTHORIZED', 'Invalid or expired ORCID token');
+      }
+
+      if (verifiedOrcidId !== account.orcid) {
+        pool.query(
+          'INSERT INTO custody_audit_log (username, operation_type) VALUES ($1, $2)',
+          [account.username, 'recovery_failure'],
+        ).catch(() => {});
+        return sendError(res, 401, 'UNAUTHORIZED', 'ORCID does not match account');
+      }
+    }
+
+    // Check new email isn't taken by another active account
+    const { rows: emailRows } = await pool.query<{ id: number }>(
+      'SELECT id FROM accounts WHERE email = $1 AND id != $2',
+      [normalizedEmail, account.id],
+    );
+    if (emailRows.length > 0) {
+      return sendError(res, 409, 'DUPLICATE', 'Email already in use');
+    }
+
+    // Hash new password
+    const passwordHash = await argon2.hash(new_password, { type: argon2.argon2id });
+
+    // Update account: new password, new email, invalidate all sessions
+    await pool.query(
+      `UPDATE accounts
+       SET password_hash = $1,
+           email = $2,
+           sessions_invalidated_at = NOW()
+       WHERE id = $3`,
+      [passwordHash, normalizedEmail, account.id],
+    );
+
+    // Audit log
+    pool.query(
+      'INSERT INTO custody_audit_log (username, operation_type) VALUES ($1, $2)',
+      [account.username, 'account_recovery'],
+    ).catch(() => {});
+
+    // Issue new JWT
+    const custody = account.upgraded_at ? 'self' : (account.custody || 'light');
+    const token = jwt.sign(
+      { sub: account.username, custody },
+      config.sessionSecret,
+      { expiresIn: SESSION_EXPIRY },
+    );
+    const expiresAt = new Date(Date.now() + SESSION_EXPIRY_MS).toISOString();
+
+    sendOk(res, { token, expires_at: expiresAt, custody, username: account.username });
+  } catch (err) {
+    logger.error({ err }, 'Account recovery failed');
+    sendError(res, 500, 'INTERNAL_ERROR', 'Account recovery failed');
   }
 });
 

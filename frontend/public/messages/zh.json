@@ -851,7 +851,8 @@
     "resendVerification": "重新发送验证邮件",
     "resending": "发送中…",
     "verificationResent": "新的验证链接已发送至您的邮箱。",
-    "signUpAgain": "重新注册"
+    "signUpAgain": "重新注册",
+    "lostEmailAccess": "无法访问您的邮箱？"
   },
   "seedPhrase": {
     "verifying": "正在验证邮箱…",
@@ -950,6 +951,35 @@
     "doneTitle": "密码已重置",
     "doneDescription": "密码已更新，您现在可以使用新密码登录。",
     "goToLogin": "登录"
+  },
+  "recover": {
+    "title": "恢复您的账户",
+    "description": "无法访问您的邮箱？使用恢复助记词或 ORCID 重新获取账户访问权限。",
+    "username": "用户名",
+    "usernamePlaceholder": "your-username",
+    "usernameHint": "您创建账户时选择的用户名。",
+    "methodSeed": "恢复助记词",
+    "methodOrcid": "ORCID",
+    "seedPhrase": "恢复助记词",
+    "seedPhrasePlaceholder": "输入12个单词的恢复助记词，以空格分隔",
+    "seedPhraseHint": "您创建账户时收到的12个单词的助记词。",
+    "seedPhraseInvalid": "恢复助记词无效，请检查后重试。",
+    "newEmail": "新邮箱",
+    "newEmailPlaceholder": "your-new-email@university.edu",
+    "newPassword": "新密码",
+    "newPasswordConfirm": "确认新密码",
+    "passwordHint": "至少10个字符，包含小写字母、大写字母和数字。",
+    "passwordMismatch": "两次输入的密码不一致。",
+    "submit": "恢复账户",
+    "submitting": "恢复中...",
+    "orcidVerifyButton": "通过 ORCID 验证",
+    "orcidVerifying": "正在跳转至 ORCID...",
+    "orcidVerified": "ORCID 已验证",
+    "checkingOrcid": "正在检查 ORCID 资格...",
+    "doneTitle": "账户已恢复",
+    "doneDescription": "您的账户已使用新邮箱和密码恢复。请使用新的凭据登录。",
+    "goToLogin": "登录",
+    "backToLogin": "返回登录"
   },
   "settings": {
     "title": "设置",

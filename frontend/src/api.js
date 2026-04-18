@@ -398,6 +398,24 @@ export function resetPassword(token, password) {
   });
 }
 
+// ─── Account Recovery ───────────────────────────────────────────
+
+export function recoverWithSeedPhrase(username, memoKey, newEmail, newPassword) {
+  return request('/auth/recover', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, memo_key: memoKey, new_email: newEmail, new_password: newPassword }),
+  });
+}
+
+export function recoverWithOrcid(username, orcidToken, newEmail, newPassword) {
+  return request('/auth/recover', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, orcid_token: orcidToken, new_email: newEmail, new_password: newPassword }),
+  });
+}
+
 // ─── Account Search ─────────────────────────────────────────────
 
 export async function searchAccounts(q) {

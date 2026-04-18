@@ -851,7 +851,8 @@
     "resendVerification": "إعادة إرسال بريد التحقق",
     "resending": "جارٍ الإرسال…",
     "verificationResent": "تم إرسال رابط تحقق جديد إلى بريدك الإلكتروني.",
-    "signUpAgain": "التسجيل مرة أخرى"
+    "signUpAgain": "التسجيل مرة أخرى",
+    "lostEmailAccess": "فقدت الوصول إلى بريدك الإلكتروني؟"
   },
   "seedPhrase": {
     "verifying": "جارٍ التحقق من بريدك الإلكتروني…",
@@ -950,6 +951,35 @@
     "doneTitle": "تمت إعادة تعيين كلمة المرور",
     "doneDescription": "تم تحديث كلمة المرور. يمكنك الآن تسجيل الدخول بكلمة المرور الجديدة.",
     "goToLogin": "تسجيل الدخول"
+  },
+  "recover": {
+    "title": "استعادة حسابك",
+    "description": "فقدت الوصول إلى بريدك الإلكتروني؟ استخدم عبارة الاسترداد أو ORCID لاستعادة الوصول إلى حسابك.",
+    "username": "اسم المستخدم",
+    "usernamePlaceholder": "your-username",
+    "usernameHint": "اسم المستخدم الذي اخترته عند إنشاء حسابك.",
+    "methodSeed": "عبارة الاسترداد",
+    "methodOrcid": "ORCID",
+    "seedPhrase": "عبارة الاسترداد",
+    "seedPhrasePlaceholder": "أدخل عبارة الاسترداد المكونة من 12 كلمة مفصولة بمسافات",
+    "seedPhraseHint": "العبارة المكونة من 12 كلمة التي تلقيتها عند إنشاء حسابك.",
+    "seedPhraseInvalid": "عبارة الاسترداد غير صالحة. يرجى التحقق والمحاولة مرة أخرى.",
+    "newEmail": "البريد الإلكتروني الجديد",
+    "newEmailPlaceholder": "your-new-email@university.edu",
+    "newPassword": "كلمة المرور الجديدة",
+    "newPasswordConfirm": "تأكيد كلمة المرور الجديدة",
+    "passwordHint": "10 أحرف على الأقل تتضمن أحرفًا صغيرة وكبيرة وأرقامًا.",
+    "passwordMismatch": "كلمتا المرور غير متطابقتين.",
+    "submit": "استعادة الحساب",
+    "submitting": "جارٍ الاستعادة…",
+    "orcidVerifyButton": "التحقق عبر ORCID",
+    "orcidVerifying": "جارٍ التوجيه إلى ORCID…",
+    "orcidVerified": "تم التحقق من ORCID",
+    "checkingOrcid": "جارٍ التحقق من أهلية ORCID…",
+    "doneTitle": "تمت استعادة الحساب",
+    "doneDescription": "تمت استعادة حسابك بالبريد الإلكتروني وكلمة المرور الجديدين. يرجى تسجيل الدخول ببيانات الاعتماد الجديدة.",
+    "goToLogin": "تسجيل الدخول",
+    "backToLogin": "العودة إلى تسجيل الدخول"
   },
   "settings": {
     "title": "الإعدادات",

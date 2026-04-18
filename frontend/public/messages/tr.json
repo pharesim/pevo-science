@@ -855,7 +855,8 @@
     "resendVerification": "Doğrulama e-postasını yeniden gönder",
     "resending": "Gönderiliyor…",
     "verificationResent": "E-postanıza yeni bir doğrulama bağlantısı gönderildi.",
-    "signUpAgain": "Tekrar kaydol"
+    "signUpAgain": "Tekrar kaydol",
+    "lostEmailAccess": "E-postanıza erişiminizi mi kaybettiniz?"
   },
   "seedPhrase": {
     "verifying": "E-postanız doğrulanıyor…",
@@ -954,6 +955,35 @@
     "doneTitle": "Şifre Sıfırlandı",
     "doneDescription": "Şifreniz güncellendi. Artık yeni şifrenizle giriş yapabilirsiniz.",
     "goToLogin": "Giriş yap"
+  },
+  "recover": {
+    "title": "Hesabınızı kurtarın",
+    "description": "E-postanıza erişiminizi mi kaybettiniz? Hesabınıza yeniden erişmek için kurtarma ifadenizi veya ORCID'inizi kullanın.",
+    "username": "Kullanıcı adı",
+    "usernamePlaceholder": "your-username",
+    "usernameHint": "Hesabınızı oluştururken seçtiğiniz kullanıcı adı.",
+    "methodSeed": "Kurtarma İfadesi",
+    "methodOrcid": "ORCID",
+    "seedPhrase": "Kurtarma İfadesi",
+    "seedPhrasePlaceholder": "12 kelimelik kurtarma ifadenizi boşluklarla ayırarak girin",
+    "seedPhraseHint": "Hesabınızı oluştururken aldığınız 12 kelimelik ifade.",
+    "seedPhraseInvalid": "Geçersiz kurtarma ifadesi. Lütfen kontrol edip tekrar deneyin.",
+    "newEmail": "Yeni E-posta",
+    "newEmailPlaceholder": "your-new-email@university.edu",
+    "newPassword": "Yeni Şifre",
+    "newPasswordConfirm": "Yeni Şifreyi Onayla",
+    "passwordHint": "En az 10 karakter, küçük harf, büyük harf ve rakam içermelidir.",
+    "passwordMismatch": "Şifreler eşleşmiyor.",
+    "submit": "Hesabı Kurtar",
+    "submitting": "Kurtarılıyor...",
+    "orcidVerifyButton": "ORCID ile Doğrula",
+    "orcidVerifying": "ORCID'e yönlendiriliyor...",
+    "orcidVerified": "ORCID doğrulandı",
+    "checkingOrcid": "ORCID uygunluğu kontrol ediliyor...",
+    "doneTitle": "Hesap Kurtarıldı",
+    "doneDescription": "Hesabınız yeni e-posta ve şifre ile kurtarıldı. Lütfen yeni bilgilerinizle giriş yapın.",
+    "goToLogin": "Giriş yap",
+    "backToLogin": "Giriş sayfasına dön"
   },
   "settings": {
     "title": "Ayarlar",

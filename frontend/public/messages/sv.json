@@ -851,7 +851,8 @@
     "resendVerification": "Skicka verifieringsmail igen",
     "resending": "Skickar…",
     "verificationResent": "En ny verifieringslänk har skickats till din e-post.",
-    "signUpAgain": "Registrera dig igen"
+    "signUpAgain": "Registrera dig igen",
+    "lostEmailAccess": "Har du förlorat åtkomsten till din e-post?"
   },
   "seedPhrase": {
     "verifying": "Verifierar din e-post…",
@@ -950,6 +951,35 @@
     "doneTitle": "Lösenordet återställt",
     "doneDescription": "Ditt lösenord har uppdaterats. Du kan nu logga in med ditt nya lösenord.",
     "goToLogin": "Logga in"
+  },
+  "recover": {
+    "title": "Återställ ditt konto",
+    "description": "Har du förlorat åtkomsten till din e-post? Använd din återställningsfras eller ORCID för att återfå åtkomst till ditt konto.",
+    "username": "Användarnamn",
+    "usernamePlaceholder": "your-username",
+    "usernameHint": "Användarnamnet du valde när du skapade ditt konto.",
+    "methodSeed": "Återställningsfras",
+    "methodOrcid": "ORCID",
+    "seedPhrase": "Återställningsfras",
+    "seedPhrasePlaceholder": "Ange din återställningsfras på 12 ord separerade med mellanslag",
+    "seedPhraseHint": "Den 12-ordsfras du fick när du skapade ditt konto.",
+    "seedPhraseInvalid": "Ogiltig återställningsfras. Kontrollera och försök igen.",
+    "newEmail": "Ny e-post",
+    "newEmailPlaceholder": "your-new-email@university.edu",
+    "newPassword": "Nytt lösenord",
+    "newPasswordConfirm": "Bekräfta nytt lösenord",
+    "passwordHint": "Minst 10 tecken med gemener, versaler och siffror.",
+    "passwordMismatch": "Lösenorden matchar inte.",
+    "submit": "Återställ konto",
+    "submitting": "Återställer...",
+    "orcidVerifyButton": "Verifiera med ORCID",
+    "orcidVerifying": "Omdirigerar till ORCID...",
+    "orcidVerified": "ORCID verifierad",
+    "checkingOrcid": "Kontrollerar ORCID-behörighet...",
+    "doneTitle": "Konto återställt",
+    "doneDescription": "Ditt konto har återställts med den nya e-postadressen och lösenordet. Logga in med dina nya uppgifter.",
+    "goToLogin": "Logga in",
+    "backToLogin": "Tillbaka till inloggning"
   },
   "settings": {
     "title": "Inställningar",

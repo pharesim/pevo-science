@@ -851,7 +851,8 @@
     "resendVerification": "Znovu odeslat ověřovací e-mail",
     "resending": "Odesílání…",
     "verificationResent": "Na váš e-mail byl odeslán nový ověřovací odkaz.",
-    "signUpAgain": "Zaregistrovat se znovu"
+    "signUpAgain": "Zaregistrovat se znovu",
+    "lostEmailAccess": "Ztratili jste přístup k e-mailu?"
   },
   "seedPhrase": {
     "verifying": "Ověřování vašeho e-mailu…",
@@ -950,6 +951,35 @@
     "doneTitle": "Heslo obnoveno",
     "doneDescription": "Vaše heslo bylo aktualizováno. Nyní se můžete přihlásit s novým heslem.",
     "goToLogin": "Přihlásit se"
+  },
+  "recover": {
+    "title": "Obnovení účtu",
+    "description": "Ztratili jste přístup k e-mailu? Použijte obnovovací frázi nebo ORCID k opětovnému získání přístupu k účtu.",
+    "username": "Uživatelské jméno",
+    "usernamePlaceholder": "your-username",
+    "usernameHint": "Uživatelské jméno, které jste si zvolili při vytváření účtu.",
+    "methodSeed": "Obnovovací fráze",
+    "methodOrcid": "ORCID",
+    "seedPhrase": "Obnovovací fráze",
+    "seedPhrasePlaceholder": "Zadejte svou 12slovnou obnovovací frázi oddělenou mezerami",
+    "seedPhraseHint": "12slovná fráze, kterou jste obdrželi při vytváření účtu.",
+    "seedPhraseInvalid": "Neplatná obnovovací fráze. Zkontrolujte ji a zkuste to znovu.",
+    "newEmail": "Nový e-mail",
+    "newEmailPlaceholder": "your-new-email@university.edu",
+    "newPassword": "Nové heslo",
+    "newPasswordConfirm": "Potvrzení nového hesla",
+    "passwordHint": "Alespoň 10 znaků s malými písmeny, velkými písmeny a číslicemi.",
+    "passwordMismatch": "Hesla se neshodují.",
+    "submit": "Obnovit účet",
+    "submitting": "Obnovování…",
+    "orcidVerifyButton": "Ověřit přes ORCID",
+    "orcidVerifying": "Přesměrování na ORCID…",
+    "orcidVerified": "ORCID ověřen",
+    "checkingOrcid": "Kontrola oprávněnosti ORCID…",
+    "doneTitle": "Účet obnoven",
+    "doneDescription": "Váš účet byl obnoven s novým e-mailem a heslem. Přihlaste se prosím s novými přihlašovacími údaji.",
+    "goToLogin": "Přihlásit se",
+    "backToLogin": "Zpět na přihlášení"
   },
   "settings": {
     "title": "Nastavení",

@@ -851,7 +851,8 @@
     "resendVerification": "Wyślij ponownie e-mail weryfikacyjny",
     "resending": "Wysyłanie…",
     "verificationResent": "Nowy link weryfikacyjny został wysłany na Twój adres e-mail.",
-    "signUpAgain": "Zarejestruj się ponownie"
+    "signUpAgain": "Zarejestruj się ponownie",
+    "lostEmailAccess": "Utracono dostęp do e-maila?"
   },
   "seedPhrase": {
     "verifying": "Weryfikacja adresu e-mail…",
@@ -950,6 +951,35 @@
     "doneTitle": "Hasło zresetowane",
     "doneDescription": "Twoje hasło zostało zaktualizowane. Możesz teraz zalogować się nowym hasłem.",
     "goToLogin": "Zaloguj się"
+  },
+  "recover": {
+    "title": "Odzyskaj swoje konto",
+    "description": "Utracono dostęp do e-maila? Użyj frazy odzyskiwania lub ORCID, aby odzyskać dostęp do swojego konta.",
+    "username": "Nazwa użytkownika",
+    "usernamePlaceholder": "your-username",
+    "usernameHint": "Nazwa użytkownika wybrana podczas tworzenia konta.",
+    "methodSeed": "Fraza odzyskiwania",
+    "methodOrcid": "ORCID",
+    "seedPhrase": "Fraza odzyskiwania",
+    "seedPhrasePlaceholder": "Wpisz 12-wyrazową frazę odzyskiwania oddzieloną spacjami",
+    "seedPhraseHint": "12-wyrazowa fraza otrzymana podczas tworzenia konta.",
+    "seedPhraseInvalid": "Nieprawidłowa fraza odzyskiwania. Sprawdź i spróbuj ponownie.",
+    "newEmail": "Nowy e-mail",
+    "newEmailPlaceholder": "your-new-email@university.edu",
+    "newPassword": "Nowe hasło",
+    "newPasswordConfirm": "Potwierdź nowe hasło",
+    "passwordHint": "Co najmniej 10 znaków z małymi literami, wielkimi literami i cyframi.",
+    "passwordMismatch": "Hasła nie są zgodne.",
+    "submit": "Odzyskaj konto",
+    "submitting": "Odzyskiwanie...",
+    "orcidVerifyButton": "Zweryfikuj przez ORCID",
+    "orcidVerifying": "Przekierowanie do ORCID...",
+    "orcidVerified": "ORCID zweryfikowany",
+    "checkingOrcid": "Sprawdzanie uprawnień ORCID...",
+    "doneTitle": "Konto odzyskane",
+    "doneDescription": "Twoje konto zostało odzyskane z nowym e-mailem i hasłem. Zaloguj się przy użyciu nowych danych.",
+    "goToLogin": "Zaloguj się",
+    "backToLogin": "Powrót do logowania"
   },
   "settings": {
     "title": "Ustawienia",

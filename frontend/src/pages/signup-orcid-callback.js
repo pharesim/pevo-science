@@ -51,8 +51,10 @@ export function initSignupOrcidCallbackPage() {
         localStorage.setItem('pevo_signup_orcid_token', res.data.orcid_token);
         localStorage.setItem('pevo_signup_orcid_id', res.data.orcid_id);
         this.status = 'success';
-        // Redirect back to signup form
-        this.navigate('/signup');
+        // Redirect back to the originating form (signup or recover)
+        const returnTo = localStorage.getItem('pevo_orcid_return_to');
+        localStorage.removeItem('pevo_orcid_return_to');
+        this.navigate(returnTo === 'recover' ? '/recover' : '/signup');
       } catch (err) {
         this.status = 'error';
         if (err.code === 'VALIDATION_ERROR') {

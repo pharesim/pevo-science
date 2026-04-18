@@ -851,7 +851,8 @@
     "resendVerification": "Bestätigungsmail erneut senden",
     "resending": "Wird gesendet…",
     "verificationResent": "Ein neuer Bestätigungslink wurde an Ihre E-Mail gesendet.",
-    "signUpAgain": "Erneut registrieren"
+    "signUpAgain": "Erneut registrieren",
+    "lostEmailAccess": "Keinen Zugriff mehr auf Ihre E-Mail?"
   },
   "seedPhrase": {
     "verifying": "E-Mail wird verifiziert…",
@@ -950,6 +951,35 @@
     "doneTitle": "Passwort zurückgesetzt",
     "doneDescription": "Ihr Passwort wurde aktualisiert. Sie können sich jetzt mit Ihrem neuen Passwort anmelden.",
     "goToLogin": "Anmelden"
+  },
+  "recover": {
+    "title": "Konto wiederherstellen",
+    "description": "Keinen Zugriff mehr auf Ihre E-Mail? Verwenden Sie Ihre Wiederherstellungsphrase oder ORCID, um den Zugang zu Ihrem Konto wiederherzustellen.",
+    "username": "Benutzername",
+    "usernamePlaceholder": "your-username",
+    "usernameHint": "Der Benutzername, den Sie bei der Kontoerstellung gewählt haben.",
+    "methodSeed": "Wiederherstellungsphrase",
+    "methodOrcid": "ORCID",
+    "seedPhrase": "Wiederherstellungsphrase",
+    "seedPhrasePlaceholder": "Geben Sie Ihre 12-Wort-Wiederherstellungsphrase durch Leerzeichen getrennt ein",
+    "seedPhraseHint": "Die 12-Wort-Phrase, die Sie bei der Kontoerstellung erhalten haben.",
+    "seedPhraseInvalid": "Ungültige Wiederherstellungsphrase. Bitte überprüfen und erneut versuchen.",
+    "newEmail": "Neue E-Mail",
+    "newEmailPlaceholder": "your-new-email@university.edu",
+    "newPassword": "Neues Passwort",
+    "newPasswordConfirm": "Neues Passwort bestätigen",
+    "passwordHint": "Mindestens 10 Zeichen mit Kleinbuchstaben, Großbuchstaben und Zahlen.",
+    "passwordMismatch": "Die Passwörter stimmen nicht überein.",
+    "submit": "Konto wiederherstellen",
+    "submitting": "Wiederherstellung…",
+    "orcidVerifyButton": "Mit ORCID verifizieren",
+    "orcidVerifying": "Weiterleitung zu ORCID…",
+    "orcidVerified": "ORCID verifiziert",
+    "checkingOrcid": "ORCID-Berechtigung wird geprüft…",
+    "doneTitle": "Konto wiederhergestellt",
+    "doneDescription": "Ihr Konto wurde mit der neuen E-Mail-Adresse und dem neuen Passwort wiederhergestellt. Bitte melden Sie sich mit Ihren neuen Zugangsdaten an.",
+    "goToLogin": "Anmelden",
+    "backToLogin": "Zurück zur Anmeldung"
   },
   "settings": {
     "title": "Einstellungen",

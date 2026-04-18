@@ -26,6 +26,7 @@ import { initSignupOrcidCallbackPage, signupOrcidCallbackPageTemplate } from './
 import { initSignupVerifyPage, signupVerifyPageTemplate } from './signup-verify.js';
 import { initLoginPage, loginPageTemplate } from './login.js';
 import { initResetPasswordPage, resetPasswordPageTemplate } from './reset-password.js';
+import { initRecoverPage, recoverPageTemplate } from './recover.js';
 import { initSettingsPage, settingsPageTemplate } from './settings.js';
 import { initSettingsVerifyEmailPage, settingsVerifyEmailPageTemplate } from './settings-verify-email.js';
 
@@ -55,6 +56,7 @@ export const pages = {
   'signup-verify':               { init: initSignupVerifyPage, template: signupVerifyPageTemplate },
   'login':                       { init: initLoginPage, template: loginPageTemplate },
   'reset-password':              { init: initResetPasswordPage, template: resetPasswordPageTemplate },
+  'recover':                     { init: initRecoverPage, template: recoverPageTemplate },
   'settings':                    { init: initSettingsPage, template: settingsPageTemplate },
   'settings-verify-email':       { init: initSettingsVerifyEmailPage, template: settingsVerifyEmailPageTemplate },
 };

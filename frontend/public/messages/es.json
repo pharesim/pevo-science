@@ -851,7 +851,8 @@
     "resendVerification": "Reenviar correo de verificación",
     "resending": "Enviando…",
     "verificationResent": "Se ha enviado un nuevo enlace de verificación a tu correo electrónico.",
-    "signUpAgain": "Registrarse de nuevo"
+    "signUpAgain": "Registrarse de nuevo",
+    "lostEmailAccess": "¿Perdiste el acceso a tu correo electrónico?"
   },
   "seedPhrase": {
     "verifying": "Verificando tu correo…",
@@ -950,6 +951,35 @@
     "doneTitle": "Contraseña restablecida",
     "doneDescription": "Tu contraseña ha sido actualizada. Ya puedes iniciar sesión con tu nueva contraseña.",
     "goToLogin": "Iniciar sesión"
+  },
+  "recover": {
+    "title": "Recuperar tu cuenta",
+    "description": "¿Perdiste el acceso a tu correo electrónico? Usa tu frase de recuperación o ORCID para recuperar el acceso a tu cuenta.",
+    "username": "Nombre de usuario",
+    "usernamePlaceholder": "your-username",
+    "usernameHint": "El nombre de usuario que elegiste al crear tu cuenta.",
+    "methodSeed": "Frase de recuperación",
+    "methodOrcid": "ORCID",
+    "seedPhrase": "Frase de recuperación",
+    "seedPhrasePlaceholder": "Ingresa tu frase de recuperación de 12 palabras separadas por espacios",
+    "seedPhraseHint": "La frase de 12 palabras que recibiste al crear tu cuenta.",
+    "seedPhraseInvalid": "Frase de recuperación no válida. Por favor, verifica e intenta de nuevo.",
+    "newEmail": "Nuevo correo electrónico",
+    "newEmailPlaceholder": "your-new-email@university.edu",
+    "newPassword": "Nueva contraseña",
+    "newPasswordConfirm": "Confirmar nueva contraseña",
+    "passwordHint": "Al menos 10 caracteres con minúsculas, mayúsculas y números.",
+    "passwordMismatch": "Las contraseñas no coinciden.",
+    "submit": "Recuperar cuenta",
+    "submitting": "Recuperando…",
+    "orcidVerifyButton": "Verificar con ORCID",
+    "orcidVerifying": "Redirigiendo a ORCID…",
+    "orcidVerified": "ORCID verificado",
+    "checkingOrcid": "Comprobando elegibilidad de ORCID…",
+    "doneTitle": "Cuenta recuperada",
+    "doneDescription": "Tu cuenta ha sido recuperada con el nuevo correo electrónico y contraseña. Por favor, inicia sesión con tus nuevas credenciales.",
+    "goToLogin": "Iniciar sesión",
+    "backToLogin": "Volver al inicio de sesión"
   },
   "settings": {
     "title": "Ajustes",

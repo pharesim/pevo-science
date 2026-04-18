@@ -851,7 +851,8 @@
     "resendVerification": "שליחת דוא\"ל אימות מחדש",
     "resending": "שולח…",
     "verificationResent": "קישור אימות חדש נשלח לדוא\"ל שלכם.",
-    "signUpAgain": "הרשמה מחדש"
+    "signUpAgain": "הרשמה מחדש",
+    "lostEmailAccess": "איבדתם גישה לדוא\"ל שלכם?"
   },
   "seedPhrase": {
     "verifying": "מאמת את הדוא\"ל שלכם…",
@@ -950,6 +951,35 @@
     "doneTitle": "הסיסמה אופסה",
     "doneDescription": "הסיסמה שלכם עודכנה. כעת תוכלו להתחבר עם הסיסמה החדשה.",
     "goToLogin": "התחברות"
+  },
+  "recover": {
+    "title": "שחזור החשבון שלכם",
+    "description": "איבדתם גישה לדוא\"ל שלכם? השתמשו בביטוי השחזור או ב-ORCID כדי לקבל בחזרה גישה לחשבון שלכם.",
+    "username": "שם משתמש",
+    "usernamePlaceholder": "your-username",
+    "usernameHint": "שם המשתמש שבחרתם כשיצרתם את החשבון.",
+    "methodSeed": "ביטוי שחזור",
+    "methodOrcid": "ORCID",
+    "seedPhrase": "ביטוי שחזור",
+    "seedPhrasePlaceholder": "הזינו את ביטוי השחזור בן 12 המילים מופרדות ברווחים",
+    "seedPhraseHint": "ביטוי בן 12 המילים שקיבלתם כשיצרתם את החשבון.",
+    "seedPhraseInvalid": "ביטוי שחזור לא תקין. אנא בדקו ונסו שוב.",
+    "newEmail": "דוא\"ל חדש",
+    "newEmailPlaceholder": "your-new-email@university.edu",
+    "newPassword": "סיסמה חדשה",
+    "newPasswordConfirm": "אישור סיסמה חדשה",
+    "passwordHint": "לפחות 10 תווים עם אותיות קטנות, גדולות ומספרים.",
+    "passwordMismatch": "הסיסמאות אינן תואמות.",
+    "submit": "שחזור חשבון",
+    "submitting": "משחזר...",
+    "orcidVerifyButton": "אימות באמצעות ORCID",
+    "orcidVerifying": "מפנה ל-ORCID...",
+    "orcidVerified": "ORCID אומת",
+    "checkingOrcid": "בודק זכאות ORCID...",
+    "doneTitle": "החשבון שוחזר",
+    "doneDescription": "החשבון שלכם שוחזר עם הדוא\"ל והסיסמה החדשים. אנא התחברו עם הפרטים החדשים.",
+    "goToLogin": "התחברות",
+    "backToLogin": "חזרה להתחברות"
   },
   "settings": {
     "title": "הגדרות",

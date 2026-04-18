@@ -851,7 +851,8 @@
     "resendVerification": "Renvoyer l’e-mail de vérification",
     "resending": "Envoi en cours…",
     "verificationResent": "Un nouveau lien de vérification a été envoyé à votre adresse e-mail.",
-    "signUpAgain": "S’inscrire à nouveau"
+    "signUpAgain": "S’inscrire à nouveau",
+    "lostEmailAccess": "Vous avez perdu l’accès à votre e-mail ?"
   },
   "seedPhrase": {
     "verifying": "Vérification de votre e-mail…",
@@ -950,6 +951,35 @@
     "doneTitle": "Mot de passe réinitialisé",
     "doneDescription": "Votre mot de passe a été mis à jour. Vous pouvez maintenant vous connecter avec votre nouveau mot de passe.",
     "goToLogin": "Se connecter"
+  },
+  "recover": {
+    "title": "Récupérer votre compte",
+    "description": "Vous avez perdu l'accès à votre e-mail ? Utilisez votre phrase de récupération ou ORCID pour retrouver l'accès à votre compte.",
+    "username": "Nom d'utilisateur",
+    "usernamePlaceholder": "your-username",
+    "usernameHint": "Le nom d'utilisateur que vous avez choisi lors de la création de votre compte.",
+    "methodSeed": "Phrase de récupération",
+    "methodOrcid": "ORCID",
+    "seedPhrase": "Phrase de récupération",
+    "seedPhrasePlaceholder": "Entrez votre phrase de récupération de 12 mots séparés par des espaces",
+    "seedPhraseHint": "La phrase de 12 mots que vous avez reçue lors de la création de votre compte.",
+    "seedPhraseInvalid": "Phrase de récupération invalide. Veuillez vérifier et réessayer.",
+    "newEmail": "Nouvel e-mail",
+    "newEmailPlaceholder": "your-new-email@university.edu",
+    "newPassword": "Nouveau mot de passe",
+    "newPasswordConfirm": "Confirmer le nouveau mot de passe",
+    "passwordHint": "Au moins 10 caractères avec des minuscules, des majuscules et des chiffres.",
+    "passwordMismatch": "Les mots de passe ne correspondent pas.",
+    "submit": "Récupérer le compte",
+    "submitting": "Récupération en cours...",
+    "orcidVerifyButton": "Vérifier avec ORCID",
+    "orcidVerifying": "Redirection vers ORCID...",
+    "orcidVerified": "ORCID vérifié",
+    "checkingOrcid": "Vérification de l'éligibilité ORCID...",
+    "doneTitle": "Compte récupéré",
+    "doneDescription": "Votre compte a été récupéré avec le nouvel e-mail et mot de passe. Veuillez vous connecter avec vos nouveaux identifiants.",
+    "goToLogin": "Se connecter",
+    "backToLogin": "Retour à la connexion"
   },
   "settings": {
     "title": "Paramètres",

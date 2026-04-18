@@ -851,7 +851,8 @@
     "resendVerification": "Reenviar e-mail de verificação",
     "resending": "A enviar…",
     "verificationResent": "Um novo link de verificação foi enviado para o seu e-mail.",
-    "signUpAgain": "Registar novamente"
+    "signUpAgain": "Registar novamente",
+    "lostEmailAccess": "Perdeu o acesso ao seu e-mail?"
   },
   "seedPhrase": {
     "verifying": "A verificar o seu e-mail…",
@@ -950,6 +951,35 @@
     "doneTitle": "Palavra-passe redefinida",
     "doneDescription": "A sua palavra-passe foi atualizada. Já pode iniciar sessão com a sua nova palavra-passe.",
     "goToLogin": "Iniciar sessão"
+  },
+  "recover": {
+    "title": "Recuperar a sua conta",
+    "description": "Perdeu o acesso ao seu e-mail? Use a sua frase de recuperação ou ORCID para recuperar o acesso à sua conta.",
+    "username": "Nome de utilizador",
+    "usernamePlaceholder": "your-username",
+    "usernameHint": "O nome de utilizador que escolheu ao criar a sua conta.",
+    "methodSeed": "Frase de recuperação",
+    "methodOrcid": "ORCID",
+    "seedPhrase": "Frase de recuperação",
+    "seedPhrasePlaceholder": "Introduza a sua frase de recuperação de 12 palavras separadas por espaços",
+    "seedPhraseHint": "A frase de 12 palavras que recebeu ao criar a sua conta.",
+    "seedPhraseInvalid": "Frase de recuperação inválida. Verifique e tente novamente.",
+    "newEmail": "Novo e-mail",
+    "newEmailPlaceholder": "your-new-email@university.edu",
+    "newPassword": "Nova palavra-passe",
+    "newPasswordConfirm": "Confirmar nova palavra-passe",
+    "passwordHint": "Pelo menos 10 caracteres com minúsculas, maiúsculas e números.",
+    "passwordMismatch": "As palavras-passe não coincidem.",
+    "submit": "Recuperar conta",
+    "submitting": "A recuperar...",
+    "orcidVerifyButton": "Verificar com ORCID",
+    "orcidVerifying": "A redirecionar para ORCID...",
+    "orcidVerified": "ORCID verificado",
+    "checkingOrcid": "A verificar elegibilidade ORCID...",
+    "doneTitle": "Conta recuperada",
+    "doneDescription": "A sua conta foi recuperada com o novo e-mail e palavra-passe. Inicie sessão com as suas novas credenciais.",
+    "goToLogin": "Iniciar sessão",
+    "backToLogin": "Voltar ao início de sessão"
   },
   "settings": {
     "title": "Definições",

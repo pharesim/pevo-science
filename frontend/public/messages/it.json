@@ -851,7 +851,8 @@
     "resendVerification": "Rinvia e-mail di verifica",
     "resending": "Invio in corso…",
     "verificationResent": "Un nuovo link di verifica è stato inviato alla tua e-mail.",
-    "signUpAgain": "Registrati di nuovo"
+    "signUpAgain": "Registrati di nuovo",
+    "lostEmailAccess": "Hai perso l'accesso alla tua e-mail?"
   },
   "seedPhrase": {
     "verifying": "Verifica dell’e-mail in corso…",
@@ -950,6 +951,35 @@
     "doneTitle": "Password reimpostata",
     "doneDescription": "La tua password è stata aggiornata. Ora puoi accedere con la nuova password.",
     "goToLogin": "Accedi"
+  },
+  "recover": {
+    "title": "Recupera il tuo account",
+    "description": "Hai perso l'accesso alla tua e-mail? Usa la tua frase di recupero o ORCID per riottenere l'accesso al tuo account.",
+    "username": "Nome utente",
+    "usernamePlaceholder": "your-username",
+    "usernameHint": "Il nome utente che hai scelto quando hai creato il tuo account.",
+    "methodSeed": "Frase di recupero",
+    "methodOrcid": "ORCID",
+    "seedPhrase": "Frase di recupero",
+    "seedPhrasePlaceholder": "Inserisci la tua frase di recupero di 12 parole separata da spazi",
+    "seedPhraseHint": "La frase di 12 parole che hai ricevuto quando hai creato il tuo account.",
+    "seedPhraseInvalid": "Frase di recupero non valida. Controlla e riprova.",
+    "newEmail": "Nuova e-mail",
+    "newEmailPlaceholder": "your-new-email@university.edu",
+    "newPassword": "Nuova password",
+    "newPasswordConfirm": "Conferma nuova password",
+    "passwordHint": "Almeno 10 caratteri con lettere minuscole, maiuscole e numeri.",
+    "passwordMismatch": "Le password non corrispondono.",
+    "submit": "Recupera account",
+    "submitting": "Recupero in corso...",
+    "orcidVerifyButton": "Verifica con ORCID",
+    "orcidVerifying": "Reindirizzamento a ORCID...",
+    "orcidVerified": "ORCID verificato",
+    "checkingOrcid": "Verifica dell'idoneità ORCID...",
+    "doneTitle": "Account recuperato",
+    "doneDescription": "Il tuo account è stato recuperato con la nuova e-mail e password. Accedi con le nuove credenziali.",
+    "goToLogin": "Accedi",
+    "backToLogin": "Torna all'accesso"
   },
   "settings": {
     "title": "Impostazioni",
