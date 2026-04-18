@@ -296,6 +296,7 @@
     "papersLast30": "Makaleler (Son 30 Gün)",
     "reviewsLast30": "Değerlendirmeler (Son 30 Gün)",
     "totalBridgePapers": "Kayıtlı Ön Baskılar",
+    "highestReputation": "En yüksek itibar:",
     "loadFailed": "Platform istatistikleri yüklenemedi."
   },
   "badge": {

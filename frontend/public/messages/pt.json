@@ -296,6 +296,7 @@
     "papersLast30": "Artigos (Ultimos 30 Dias)",
     "reviewsLast30": "Revisoes (Ultimos 30 Dias)",
     "totalBridgePapers": "Preprints Registrados",
+    "highestReputation": "Maior reputação:",
     "loadFailed": "Falha ao carregar estatisticas da plataforma."
   },
   "badge": {

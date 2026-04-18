@@ -5,6 +5,7 @@ import { sendOk } from '../response.js';
 import { hafCache } from '../cache.js';
 import { logger } from '../logger.js';
 import { T, activeAccreditationsCte } from '../hafsql.js';
+import { getBatchReputationMap } from '../reputation.js';
 
 const router = Router();
 
@@ -66,6 +67,18 @@ async function fetchStatsFromHaf() {
     `, params);
 
     const row = result.rows[0];
+
+    // Find highest reputation from Redis batch scores
+    let highest_reputation_user: string | null = null;
+    let highest_reputation_score = 0;
+    const repMap = await getBatchReputationMap();
+    for (const [username, score] of repMap) {
+      if (score > highest_reputation_score) {
+        highest_reputation_score = score;
+        highest_reputation_user = username;
+      }
+    }
+
     return {
       total_papers: row.total_papers,
       total_reviews: row.total_reviews,
@@ -75,6 +88,8 @@ async function fetchStatsFromHaf() {
       papers_last_30_days: row.papers_last_30_days,
       reviews_last_30_days: row.reviews_last_30_days,
       total_bridge_papers: row.total_bridge_papers,
+      highest_reputation_user,
+      highest_reputation_score,
     };
   } catch (err) {
     logger.error({ err }, 'HAF stats query failed');
@@ -91,6 +106,8 @@ const ZERO_STATS = {
   papers_last_30_days: 0,
   reviews_last_30_days: 0,
   total_bridge_papers: 0,
+  highest_reputation_user: null as string | null,
+  highest_reputation_score: 0,
 };
 
 router.get('/', async (_req: Request, res: Response) => {

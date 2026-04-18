@@ -296,6 +296,7 @@
     "papersLast30": "论文（近 30 天）",
     "reviewsLast30": "评审（近 30 天）",
     "totalBridgePapers": "已注册预印本",
+    "highestReputation": "最高声誉：",
     "loadFailed": "平台统计数据加载失败。"
   },
   "badge": {

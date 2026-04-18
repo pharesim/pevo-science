@@ -296,6 +296,7 @@
     "papersLast30": "Artiklar (senaste 30 dagarna)",
     "reviewsLast30": "Recensioner (senaste 30 dagarna)",
     "totalBridgePapers": "Registrerade förhandsutskrifter",
+    "highestReputation": "Högsta rykte:",
     "loadFailed": "Kunde inte ladda plattformsstatistik."
   },
   "badge": {

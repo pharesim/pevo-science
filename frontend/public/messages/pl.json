@@ -296,6 +296,7 @@
     "papersLast30": "Publikacje (ostatnie 30 dni)",
     "reviewsLast30": "Recenzje (ostatnie 30 dni)",
     "totalBridgePapers": "Zarejestrowane preprinty",
+    "highestReputation": "Najwyższa reputacja:",
     "loadFailed": "Nie udało się załadować statystyk platformy."
   },
   "badge": {

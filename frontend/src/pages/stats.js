@@ -9,7 +9,7 @@ const template = `
         <!-- Loading -->
         <template x-if="loading">
           <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-            <template x-for="i in 8" :key="i">
+            <template x-for="i in 9" :key="i">
               <div class="card text-center animate-pulse">
                 <div class="h-10 bg-parchment-warm rounded w-20 mx-auto mb-2"></div>
                 <div class="h-4 bg-parchment-warm rounded w-32 mx-auto"></div>
@@ -33,6 +33,15 @@ const template = `
               <div class="card text-center">
                 <div class="text-4xl font-bold text-ink font-serif" x-text="statValue(card.key)"></div>
                 <div class="text-sm text-ink-muted mt-2" x-text="card.label"></div>
+              </div>
+            </template>
+            <template x-if="stats.highest_reputation_user">
+              <div class="card text-center">
+                <div class="text-4xl font-bold text-ink font-serif" x-text="Number(stats.highest_reputation_score).toLocaleString(undefined, {maximumFractionDigits: 1})"></div>
+                <div class="text-sm text-ink-muted mt-2">
+                  <span x-text="$t('stats.highestReputation')"></span>
+                  <a :href="'/#/researcher/' + stats.highest_reputation_user" class="text-pevo-green hover:underline" x-text="'@' + stats.highest_reputation_user"></a>
+                </div>
               </div>
             </template>
           </div>

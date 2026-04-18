@@ -296,6 +296,7 @@
     "papersLast30": "Artikler (sidste 30 dage)",
     "reviewsLast30": "Bedømmelser (sidste 30 dage)",
     "totalBridgePapers": "Registrerede preprints",
+    "highestReputation": "Højeste omdømme:",
     "loadFailed": "Kunne ikke indlæse platformstatistik."
   },
   "badge": {
