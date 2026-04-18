@@ -1,6 +1,7 @@
 import Alpine from 'alpinejs';
 import { isKeychainInstalled } from '../keychain.js';
 import { fetchEmailStatus, submitEmail, deleteEmail } from '../api.js';
+import { deriveHiveKeys, deriveHivePublicKeys } from '../hive-keys.js';
 
 // Number of words to re-enter for confirmation
 const CONFIRM_WORD_COUNT = 3;
@@ -418,13 +419,12 @@ export function initSettingsPage() {
         }
 
         // Derive keys from old and new seed phrases
-        const hiveKeys = await import('../hive-keys.js');
         const dhive = await import('@hiveio/dhive');
         const oldSeed = mnemonicToSeedSync(oldWords);
-        const oldKeys = hiveKeys.deriveHiveKeys(oldSeed, this.username);
+        const oldKeys = deriveHiveKeys(oldSeed, this.username);
         const newSeed = mnemonicToSeedSync(this.newSeedPhrase);
-        const newKeys = hiveKeys.deriveHiveKeys(newSeed, this.username);
-        const newPubKeys = await hiveKeys.deriveHivePublicKeys(newKeys);
+        const newKeys = deriveHiveKeys(newSeed, this.username);
+        const newPubKeys = await deriveHivePublicKeys(newKeys);
 
         // Broadcast account_update signed with old owner key
         const client = new dhive.Client(['https://api.hive.blog']);
