@@ -22,12 +22,10 @@ export function initAuth() {
       this._restoreSession();
       this.isLoading = false;
 
-      // Detect Keychain in background
       waitForKeychain(3000).then((installed) => {
         this.isKeychainInstalled = installed;
       });
 
-      // Start accreditation polling if connected but not yet accredited
       this._startAccreditationPolling();
 
       // Sync login/logout across tabs
