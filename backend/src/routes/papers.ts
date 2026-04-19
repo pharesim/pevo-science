@@ -479,7 +479,7 @@ async function fetchPaperDetailFromHaf(author: string, permlink: string) {
     // Fast path: fetch paper content + versions + retraction only.
     // Accreditation-dependent data (votes, reviews, citations) is loaded
     // lazily via the /enrichment endpoint.
-    const [paperResult, versions, retraction] = await Promise.all([
+    const [paperResult, fullVersions, retraction] = await Promise.all([
       pool.query(
         `SELECT c.author, c.permlink, c.title, c.body, c.json_metadata,
                 c.created, c.last_edited
@@ -488,7 +488,7 @@ async function fetchPaperDetailFromHaf(author: string, permlink: string) {
            AND c.parent_author = '' AND c.parent_permlink = $3`,
         [author, permlink, config.appTag],
       ),
-      resolveVersionsFromHaf(author, permlink),
+      reconstructVersionsFromHaf(author, permlink),
       getRetractionInfo(author, permlink),
     ]);
 
@@ -499,23 +499,51 @@ async function fetchPaperDetailFromHaf(author: string, permlink: string) {
     if (!isPevoAnyPaper(meta)) return null;
 
     const detail = buildPaperDetail(row, meta, []);
+    const versions = fullVersions.map(({ body: _body, json_metadata: _meta, post_author: _pa, post_permlink: _pp, ...entry }) => entry);
     detail.versions = versions.length > 0 ? versions : [{ version_number: 1, block_num: 0, created: detail.created as string, title: detail.title as string, is_content_revision: true }];
     detail.is_retracted = retraction.is_retracted;
     detail.retraction_reason = retraction.retraction_reason ?? null;
     detail.retraction_timestamp = retraction.retraction_timestamp ?? null;
 
     // E7: Resolve continuation chain to set head author/permlink
+    // and use the latest version's content/metadata as the displayed paper
     const chain = await resolveContinuationChain(author, permlink);
     if (chain.length > 1) {
       const head = chain[chain.length - 1];
       detail.head_author = head.author;
       detail.head_permlink = head.permlink;
+
+      // Replace displayed content with the latest version from the chain
+      if (fullVersions.length > 0) {
+        const latest = fullVersions[fullVersions.length - 1];
+        detail.title = latest.title;
+        detail.body = latest.body;
+        detail.abstract = extractAbstract(latest.body);
+        detail.last_update = latest.created;
+
+        // Update metadata-derived fields from the head version
+        const headMeta = latest.json_metadata;
+        if (isPevoAnyPaper(headMeta)) {
+          detail.json_metadata = headMeta;
+          const headPevo = safePevoMeta(headMeta);
+          detail.authors = headPevo.authors || [];
+          detail.discipline = headPevo.discipline || null;
+          detail.keywords = headPevo.keywords || [];
+          detail.citations = headPevo.citations || [];
+          detail.ipfs_cid = headPevo.ipfs_cid || null;
+          detail.ipfs_filename = headPevo.ipfs_filename || null;
+          detail.document_hash = headPevo.document_hash || null;
+          detail.language = headPevo.language || 'en';
+          detail.supplementary_files = headPevo.supplementary_files || [];
+        }
+      }
     }
 
     // Accreditation: is_accredited + accredited_authors
     const allAccredited = await getAllAccreditedAccounts();
     detail.is_accredited = allAccredited.has(author);
-    const pevoAuthors: Array<{ hive?: string }> = (safePevoMeta(meta).authors || []) as Array<{ hive?: string }>;
+    const detailMeta = detail.json_metadata as Record<string, unknown>;
+    const pevoAuthors: Array<{ hive?: string }> = (safePevoMeta(detailMeta).authors || []) as Array<{ hive?: string }>;
     detail.accredited_authors = pevoAuthors
       .filter(a => a.hive && allAccredited.has(a.hive))
       .map(a => a.hive!);

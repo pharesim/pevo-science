@@ -363,9 +363,15 @@ export function initEditPage() {
 
     get isContinuation() {
       if (!this.paper || !this.username) return false;
-      const isOriginalAuthor = this.username === this.paper.author;
-      const isCoAuthor = (this.paper.authors || []).some(a => a.hive === this.username);
-      return !isOriginalAuthor && !isCoAuthor;
+      // If a continuation chain exists, the displayed content comes from
+      // the chain head. Editing the root post in-place would produce a
+      // broken diff (Hive applies diffs against the post's own body, not
+      // the head's). So everyone must use a continuation post, unless
+      // the user is the original author AND no chain exists yet.
+      const hasChain = this.paper.head_author !== this.paper.author
+        || this.paper.head_permlink !== this.paper.permlink;
+      if (hasChain) return true;
+      return this.username !== this.paper.author;
     },
 
     get nextVersion() {
