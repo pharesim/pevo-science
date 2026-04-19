@@ -586,8 +586,8 @@ export class PevoEditor {
       }),
       Placeholder.configure({
         placeholder: this.placeholder ?? (isAbstract
-          ? 'Write your abstract here...'
-          : 'Write your paper body here. Use the toolbar for formatting, math, and tables...'),
+          ? this._t('placeholderAbstract')
+          : this._t('placeholderBodyFull')),
       }),
       Mathematics.configure({
         katexOptions: { throwOnError: false },
@@ -651,6 +651,19 @@ export class PevoEditor {
       if (e.key === 'Escape' && this.isFullscreen) this._toggleFullscreen();
     };
     document.addEventListener('keydown', this._escHandler);
+
+    // Refresh tooltips when i18n messages load or locale changes
+    this._refreshTooltips();
+    try {
+      const Alpine = window.Alpine;
+      if (Alpine?.effect) {
+        this._i18nEffect = Alpine.effect(() => {
+          const _msgs = Alpine.store('i18n')?.messages;
+          void _msgs; // track reactivity
+          this._refreshTooltips();
+        });
+      }
+    } catch { /* Alpine not available */ }
   }
 
   // --- Public API ---
@@ -684,6 +697,10 @@ export class PevoEditor {
     }
     if (this._escHandler) document.removeEventListener('keydown', this._escHandler);
     if (this._outsideClickHandler) document.removeEventListener('click', this._outsideClickHandler);
+    if (this._i18nEffect) {
+      try { this._i18nEffect.effect?.stop(); } catch { /* noop */ }
+      this._i18nEffect = null;
+    }
     this.container.innerHTML = '';
   }
 
@@ -772,6 +789,25 @@ export class PevoEditor {
         this._toggleFullscreen();
         break;
     }
+  }
+
+  // --- Tooltip i18n refresh ---
+
+  static _tooltipKeys = {
+    bold: 'bold', italic: 'italic', strike: 'strikethrough',
+    'heading-2': 'heading2', 'heading-3': 'heading3', 'heading-4': 'heading4',
+    bulletList: 'bulletList', orderedList: 'orderedList', blockquote: 'blockquote',
+    inlineMath: 'inlineMath', blockMath: 'blockMath', link: 'insertLink',
+    table: 'insertTable', image: 'uploadImage', markdownToggle: 'switchMode',
+    undo: 'undo', redo: 'redo', fullscreen: 'fullscreen',
+  };
+
+  _refreshTooltips() {
+    if (!this._els.toolbar) return;
+    this._els.toolbar.querySelectorAll('[data-action]').forEach((btn) => {
+      const key = PevoEditor._tooltipKeys[btn.dataset.action];
+      if (key) btn.title = this._t(key);
+    });
   }
 
   // --- Active state updates ---

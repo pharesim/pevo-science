@@ -503,7 +503,7 @@ export function initPublishPage() {
       if (bodyEl) {
         this._bodyEditor = createEditor(bodyEl, {
           variant: 'full',
-          placeholder: this.$t('publish.paperContentPlaceholder'),
+          placeholder: this.$t('editor.placeholderBody'),
           onChange: (md) => { this.body = md; },
           username: this.username,
           remainingChars: TX_HARD_BYTES - this.txEstimate,

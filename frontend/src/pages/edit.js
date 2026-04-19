@@ -566,7 +566,7 @@ export function initEditPage() {
       if (bodyEl) {
         this._bodyEditor = createEditor(bodyEl, {
           variant: 'full',
-          placeholder: this.$t('publish.paperContentPlaceholder'),
+          placeholder: this.$t('editor.placeholderBody'),
           onChange: (md) => { this.body = md; },
           username: this.username,
           initialMarkdown: this.body,
