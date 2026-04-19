@@ -38,6 +38,10 @@ async function fetchAccreditationsFromHaf(
 
     const filterConditions = conditions.map((c) => `AND ${c}`).join(' ');
 
+    // $paramIdx for accreditationAuthorities, then genesis block, limit, offset
+    const authIdx = paramIdx++;
+    params.push(config.accreditationAuthorities);
+
     const dataResult = await pool.query(`
       WITH ranked AS (
         SELECT
@@ -52,6 +56,7 @@ async function fetchAccreditationsFromHaf(
         FROM ${T.customJson} cj
         WHERE cj.custom_id = $1
           AND cj.json::jsonb ->> 'action' IN ('accredit', 'revoke')
+          AND cj.required_posting_auths ?| $${authIdx}::text[]
           AND cj.block_num >= $${paramIdx++}
       )
       SELECT account AS username, name, institution, field, method, timestamp,
@@ -104,11 +109,12 @@ async function fetchAccreditationStatusFromHaf(username: string) {
       `SELECT cj.json FROM ${T.customJson} cj
        WHERE cj.custom_id = $2
          AND cj.json::jsonb ->> 'action' IN ('accredit', 'revoke')
+         AND cj.required_posting_auths ?| $4::text[]
          AND cj.json::jsonb ->> 'account' = $1
          AND cj.block_num >= $3
        ORDER BY cj.block_num DESC
        LIMIT 1`,
-      [username, config.appTag, getCachedGenesisBlock()],
+      [username, config.appTag, getCachedGenesisBlock(), config.accreditationAuthorities],
     );
 
     if (result.rows.length === 0) {
