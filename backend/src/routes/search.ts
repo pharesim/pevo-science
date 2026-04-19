@@ -87,6 +87,9 @@ async function searchFromHaf(
       conditions.push(`NOT EXISTS (SELECT 1 FROM retracted_papers rp WHERE rp.author = c.author AND rp.permlink = c.permlink)`);
     }
 
+    // Exclude continuation posts (revisions of existing papers)
+    conditions.push(`(c.json_metadata -> ${appTagParam} -> 'continues') IS NULL`);
+
     const where = conditions.join(' AND ');
 
     // Use ILIKE instead of to_tsvector/plainto_tsquery because we cannot

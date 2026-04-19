@@ -153,7 +153,8 @@ async function fetchUserPapersFromHaf(username: string, limit: number, offset: n
       `SELECT count(*)::int AS total FROM ${T.comments}
        WHERE author = $1 AND parent_author = '' AND parent_permlink = $2
          AND (json_metadata -> $2 ->> 'type') = 'paper'
-         AND json_metadata ->> 'app' LIKE $3`,
+         AND json_metadata ->> 'app' LIKE $3
+         AND (json_metadata -> $2 -> 'continues') IS NULL`,
       [username, config.appTag, `${config.appTag}/%`],
     );
     const total = countResult.rows[0]?.total ?? 0;
@@ -165,6 +166,7 @@ async function fetchUserPapersFromHaf(username: string, limit: number, offset: n
        WHERE author = $1 AND parent_author = '' AND parent_permlink = $2
          AND (json_metadata -> $2 ->> 'type') = 'paper'
          AND json_metadata ->> 'app' LIKE $3
+         AND (json_metadata -> $2 -> 'continues') IS NULL
        ORDER BY ${sortCol === 'net_votes' ? 'total_rshares' : 'created'} ${order === 'asc' ? 'ASC' : 'DESC'}
        LIMIT $4 OFFSET $5`,
       [username, config.appTag, `${config.appTag}/%`, limit, offset],
@@ -195,7 +197,11 @@ async function fetchUserPapersFromHiveApi(username: string, limit: number) {
     const papers = discussions.filter((d) => {
       if (d.parent_permlink !== config.appTag) return false;
       const meta = parseMeta(d.json_metadata);
-      return isPevoPaper(meta);
+      if (!isPevoPaper(meta)) return false;
+      // Exclude continuation posts (revisions of existing papers)
+      const pevo = meta[config.appTag] as Record<string, unknown> | undefined;
+      if (pevo?.continues) return false;
+      return true;
     });
 
     const rows = papers.map((d) => {

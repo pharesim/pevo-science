@@ -37,6 +37,7 @@ async function fetchStatsFromHaf() {
         WHERE c.parent_author = '' AND c.parent_permlink = ${at}
           AND (c.json_metadata -> ${at} ->> 'type') IN ('paper', 'bridge_paper')
           AND c.json_metadata ->> 'app' LIKE ${al}
+          AND (c.json_metadata -> ${at} -> 'continues') IS NULL
           AND (aa.account IS NOT NULL
                OR (c.json_metadata -> ${at} ->> 'type') = 'bridge_paper')
       ),
