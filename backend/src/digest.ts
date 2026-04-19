@@ -15,7 +15,7 @@ import { logger } from './logger.js';
 import { fetchNotificationsFromHaf } from './notification-queries.js';
 import { getGenesisBlock } from './hafsql.js';
 import { getPool } from './db.js';
-import type { NotificationEvent } from './types/index.js';
+import type { NotificationEvent } from './notification-queries.js';
 
 // ── Types ───────────────────────────────────────
 

@@ -7,7 +7,84 @@ import { getPool } from './db.js';
 import { config } from './config.js';
 import { logger } from './logger.js';
 import { T, activeAccreditationsCteBody } from './hafsql.js';
-import type { NotificationEvent, NotificationBatch } from './types/index.js';
+// ─── Notification Types ──────────────────────────────────────────
+
+export type NotificationEventType =
+  | "new_review"
+  | "new_citation"
+  | "new_vote"
+  | "accreditation_update"
+  | "new_vouch"
+  | "new_reply";
+
+export interface BaseNotificationEvent {
+  type: NotificationEventType;
+  block_num: number;
+  timestamp: string;
+}
+
+export interface NewReviewEvent extends BaseNotificationEvent {
+  type: "new_review";
+  actor: string;
+  paper_author: string;
+  paper_permlink: string;
+  paper_title: string;
+  permlink: string;
+}
+
+export interface NewCitationEvent extends BaseNotificationEvent {
+  type: "new_citation";
+  actor: string;
+  paper_author: string;
+  paper_permlink: string;
+  paper_title: string;
+  citing_permlink: string;
+}
+
+export interface NewVoteEvent extends BaseNotificationEvent {
+  type: "new_vote";
+  actor: string;
+  target_author: string;
+  target_permlink: string;
+  target_type: "paper" | "review";
+  weight: number;
+}
+
+export interface AccreditationUpdateEvent extends BaseNotificationEvent {
+  type: "accreditation_update";
+  action: "accredit" | "revoke";
+  method?: string;
+}
+
+export interface NewVouchEvent extends BaseNotificationEvent {
+  type: "new_vouch";
+  actor: string;
+  relationship: string;
+}
+
+export interface NewReplyEvent extends BaseNotificationEvent {
+  type: "new_reply";
+  actor: string;
+  parent_author: string;
+  parent_permlink: string;
+  paper_author: string;
+  paper_permlink: string;
+  permlink: string;
+}
+
+export type NotificationEvent =
+  | NewReviewEvent
+  | NewCitationEvent
+  | NewVoteEvent
+  | AccreditationUpdateEvent
+  | NewVouchEvent
+  | NewReplyEvent;
+
+export interface NotificationBatch {
+  events: NotificationEvent[];
+  latest_block: number;
+  has_more: boolean;
+}
 
 export async function fetchNotificationsFromHaf(
   account: string,

@@ -7,7 +7,26 @@
 
 import { config } from './config.js';
 import { logger } from './logger.js';
-import type { BridgeLookupResult, BridgeLookupAuthor } from './types/index.js';
+export interface BridgeLookupAuthor {
+  name: string;
+  orcid: string | null;
+  affiliation: string | null;
+}
+
+export interface BridgeLookupResult {
+  source_type: "arxiv" | "crossref";
+  doi: string | null;
+  arxiv_id: string | null;
+  title: string;
+  authors: BridgeLookupAuthor[];
+  abstract: string;
+  published_date: string;
+  source_name: string;
+  source_url: string;
+  pdf_url: string | null;
+  license: string | null;
+  subjects: string[];
+}
 
 // ─── Identifier parsing ──────────────────────────────────────────
 

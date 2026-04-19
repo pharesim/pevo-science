@@ -1,5 +1,26 @@
 import type { Request } from 'express';
-import type { PaperSummary, PaperSortOption } from './types/index.js';
+import type { PaperAuthor, PaperSortOption } from './types/index.js';
+
+export interface PaperSummary {
+  author: string;
+  permlink: string;
+  title: string;
+  abstract: string;
+  discipline: string;
+  keywords: string[];
+  authors: PaperAuthor[];
+  ipfs_cid: string | null;
+  created: string;
+  net_votes: number;
+  vote_strength: string | null;
+  review_count: number;
+  citation_count: number;
+  author_reputation: number;
+  is_accredited: boolean;
+  accredited_authors: string[];
+  source_type: "native" | "arxiv" | "crossref";
+  doi: string | null;
+}
 import { config } from './config.js';
 import { logger } from './logger.js';
 
