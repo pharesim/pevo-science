@@ -1,6 +1,7 @@
 import Alpine from 'alpinejs';
 import { broadcastOps } from '../signer.js';
 import { invalidatePaperCache } from '../api.js';
+import { getAppTag } from '../config.js';
 
 const VOTE_LEVELS = [
   { label: 'vote.strongEndorsement', weight: 10000, cls: 'text-emerald-700 bg-emerald-50 border-emerald-200 hover:bg-emerald-100' },
@@ -102,11 +103,13 @@ export function initVoteButtons() {
     },
 
     async _broadcastVote(weight) {
-      if (this._isPastPayout()) {
+      // Past payout window and user has already voted: Hive won't accept a
+      // native vote weight change, so use custom_json revote instead.
+      if (this._isPastPayout() && this.voteState !== 'none') {
         await broadcastOps(this.username, [['custom_json', {
           required_auths: [],
           required_posting_auths: [this.username],
-          id: 'pevo',
+          id: getAppTag(),
           json: JSON.stringify({ action: 'revote', author: this.author, permlink: this.permlink, weight, version: this._latestVersion() }),
         }]]);
       } else {

@@ -15,7 +15,7 @@ import { logger } from '../logger.js';
 const router = Router();
 
 // Allowed Hive operations for custodial broadcast
-const ALLOWED_OPS = new Set(['comment', 'vote']);
+const ALLOWED_OPS = new Set(['comment', 'vote', 'custom_json']);
 
 const broadcastLimiter = rateLimit({ name: 'custody-broadcast', windowMs: 60_000, max: 30, keyFn: byAccount });
 const upgradeLimiter = rateLimit({ name: 'custody-upgrade', windowMs: 3_600_000, max: 1, keyFn: byAccount });
@@ -51,7 +51,7 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
 
     // Check operation is in allowlist
     if (!ALLOWED_OPS.has(opType)) {
-      return sendError(res, 403, 'FORBIDDEN', `Operation '${opType}' is not allowed for custodial accounts. Only 'comment' and 'vote' are permitted.`);
+      return sendError(res, 403, 'FORBIDDEN', `Operation '${opType}' is not allowed for custodial accounts`);
     }
 
     // Enforce author/voter matches JWT subject
@@ -73,6 +73,23 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
     } else if (opType === 'vote') {
       if (opParams.voter !== username) {
         return sendError(res, 403, 'FORBIDDEN', `Voter must be '${username}'`);
+      }
+    } else if (opType === 'custom_json') {
+      // Only allow revote custom_json, and enforce sender is the authenticated user
+      const auths = opParams.required_posting_auths;
+      if (!Array.isArray(auths) || auths.length !== 1 || auths[0] !== username) {
+        return sendError(res, 403, 'FORBIDDEN', `required_posting_auths must be ['${username}']`);
+      }
+      if (opParams.id !== config.appTag) {
+        return sendError(res, 400, 'VALIDATION_ERROR', `custom_json id must be '${config.appTag}'`);
+      }
+      try {
+        const payload = typeof opParams.json === 'string' ? JSON.parse(opParams.json) : opParams.json;
+        if (payload.action !== 'revote') {
+          return sendError(res, 403, 'FORBIDDEN', 'Only revote custom_json is allowed for custodial accounts');
+        }
+      } catch {
+        return sendError(res, 400, 'VALIDATION_ERROR', 'Invalid custom_json payload');
       }
     }
   }
