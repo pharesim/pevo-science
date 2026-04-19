@@ -12,6 +12,7 @@ export interface MockHivePost {
   permlink: string;
   title: string;
   body: string;
+  format: string;
   created: string;
   net_votes: number;
   children?: number;
