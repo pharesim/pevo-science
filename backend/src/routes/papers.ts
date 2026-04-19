@@ -196,7 +196,7 @@ async function fetchPapersFromHaf(req: Request): Promise<{ rows: unknown[]; tota
   const keyword = req.query.keyword as string | undefined;
   const author = req.query.author as string | undefined;
   const language = req.query.language as string | undefined;
-  const accreditedOnly = req.query.accredited_only === 'true'; // default false
+  const accreditedOnly = req.query.accredited_only !== 'false'; // default true
   const includeRetracted = req.query.include_retracted === 'true'; // default false
   const source = req.query.source as string | undefined; // 'native', 'bridge', or omit for both
 

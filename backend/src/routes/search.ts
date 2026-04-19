@@ -160,7 +160,7 @@ router.get('/', async (req: Request, res: Response) => {
   const discipline = req.query.discipline as string | undefined;
   const language = req.query.language as string | undefined;
   const source = req.query.source as string | undefined;
-  const accreditedOnly = req.query.accredited_only === 'true'; // default false
+  const accreditedOnly = req.query.accredited_only !== 'false'; // default true
   const includeRetracted = req.query.include_retracted === 'true'; // default false
   const sort = (req.query.sort as string) === 'date' ? 'date' : 'relevance';
   const { page, limit, offset } = parsePageLimit(req);
