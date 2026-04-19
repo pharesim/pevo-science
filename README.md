@@ -31,7 +31,7 @@ data)     limiting) storage)
 - **Auth:** Hive Keychain (self-custody) or email/password light accounts (custodial) + JWT session tokens
 - **i18n:** 16 languages
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for full system design.
+See [ARCHITECTURE.md](agents/docs/ARCHITECTURE.md) for full system design.
 
 ## Prerequisites
 
@@ -77,7 +77,7 @@ SESSION_SECRET=<random string>
 CUSTODY_ENCRYPTION_KEY=<64 hex chars>
 
 # Required for light accounts: Hive account for claiming account tokens
-HIVE_ONBOARD_ACCOUNT=pevo.onboard
+HIVE_ONBOARD_ACCOUNT=pevo.onboarding
 HIVE_ONBOARD_ACTIVE_KEY=5K...
 
 # Required: SMTP for verification and reset emails
@@ -110,20 +110,21 @@ pevo/
 - **Privacy for reviewers:** Anonymous reviews posted via a proxy account with encrypted mappings and a 6-month TTL.
 - **Light accounts:** Scientists with institutional emails can sign up without Hive Keychain. PEvO creates a real Hive account, holds the keys, and signs operations server-side. Users upgrade to self-custody with Hive Keychain at any time.
 - **Progressive decentralization:** Accreditation starts centralized (email verification + ORCID), designed to move to web-of-trust and DAO governance.
-- **Preprint bridge:** Import existing papers from arXiv, PubMed, bioRxiv, medRxiv, Semantic Scholar, or ResearchGate by pasting a URL or identifier. The paper stays on its original platform; PEvO creates a reference for peer review.
-- **Structured evaluation:** Accredited reviewers choose from 6 vote levels (Strong endorsement to Strong reject). Non-accredited users can still upvote/downvote simply. Citation relevance is togglable per-citation.
+- **Preprint bridge:** Import existing papers by pasting an arXiv ID, DOI, or URL (PubMed, bioRxiv, medRxiv, Semantic Scholar, ResearchGate links are resolved to their DOI automatically). The paper stays on its original platform; PEvO creates a reference for peer review.
+- **Structured evaluation:** Accredited reviewers choose from 6 vote levels (strong endorsement to strong reject), with a neutral tier when votes balance out. Non-accredited users can still upvote/downvote simply. Citation relevance is togglable per-citation.
 - **Votes persist across revisions:** When a paper is revised, existing votes remain valid. The system relies on downvotes, new reviews, and the quality multiplier as corrective mechanisms rather than penalizing authors who revise.
 
 ## Deployment
 
 ### Hive Accounts
 
-Two Hive accounts must be created before deployment:
+Three Hive accounts must be created before deployment:
 
 | Account | Purpose | Key Requirements |
 |---------|---------|-----------------|
 | `pevo.admin` | Broadcasts accreditation `custom_json` | Posting key stored in backend env |
 | `pevo.anon` | Posts anonymous reviews | Posting key stored in backend env |
+| `pevo.onboarding` | Creates light accounts via `create_claimed_account` | Active key stored in backend env |
 
 Create these accounts via any Hive account creation service. Fund with enough RC (Resource Credits) for expected transaction volume. Delegate HP if needed.
 
