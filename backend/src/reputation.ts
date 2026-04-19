@@ -386,15 +386,16 @@ export async function getUserStatsFromHaf(username: string): Promise<UserStats |
       const latestRevisionTs = revisionMap.get(row.permlink) ?? null;
       const paperRevotes = revoteMap.get(row.permlink) ?? null;
 
+      const nativeVoters = new Set<string>();
       const votes: Vote[] = rawVotes.map((v) => {
+        nativeVoters.add(v.voter);
         if (!latestRevisionTs) {
           // No content revisions — vote is not stale
           return { voter: v.voter, weight: v.weight };
         }
         const nativeTs = new Date(v.timestamp);
-        // §3.1: Only accept revotes from voters with a prior native vote
         const revote = paperRevotes?.get(v.voter);
-        // §31 vote resolution: if both signals are post-revision, use the later timestamp
+        // Vote resolution: if both signals are post-revision, use the later timestamp
         if (revote && revote.timestamp > latestRevisionTs) {
           if (nativeTs > latestRevisionTs && nativeTs > revote.timestamp) {
             return { voter: v.voter, weight: v.weight };
@@ -407,6 +408,16 @@ export async function getUserStatsFromHaf(username: string): Promise<UserStats |
         // Stale: vote predates latest content revision with no post-revision re-vote
         return { voter: v.voter, weight: 0 };
       });
+
+      // Include revote-only voters (no prior native vote)
+      if (paperRevotes) {
+        for (const [voter, revote] of paperRevotes) {
+          if (nativeVoters.has(voter)) continue;
+          if (revote.weight === 0) continue;
+          const stale = latestRevisionTs ? revote.timestamp <= latestRevisionTs : false;
+          votes.push({ voter, weight: stale ? 0 : revote.weight });
+        }
+      }
 
       return {
         permlink: row.permlink,

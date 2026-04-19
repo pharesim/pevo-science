@@ -6,9 +6,9 @@ import type { PaperAuthor, Citation, Rating, AccreditationMethod, ReputationWeig
 // ─── Post json_metadata Shapes ───────────────────────────────────
 
 export interface PevoBaseMeta {
-  app: string; // "pevo/0.1"
+  app: string; // "<APP_TAG>/0.1"
   tags: string[];
-  format: "markdown";
+  [appTag: string]: unknown; // PEvO-specific metadata keyed by APP_TAG
 }
 
 export interface SupplementaryFile {
@@ -89,7 +89,8 @@ export interface BridgePaperPevoMeta {
 }
 
 export interface BridgePaperJsonMetadata extends PevoBaseMeta {
-  pevo: BridgePaperPevoMeta;
+  canonical_url: string;
+  // APP_TAG key maps to BridgePaperPevoMeta at runtime
 }
 
 export interface CommentPevoMeta {
@@ -100,15 +101,18 @@ export interface CommentPevoMeta {
 export type PevoMeta = PaperPevoMeta | ReviewPevoMeta | BridgePaperPevoMeta | CommentPevoMeta;
 
 export interface PaperJsonMetadata extends PevoBaseMeta {
-  pevo: PaperPevoMeta;
+  canonical_url: string;
+  image?: string[];
+  // APP_TAG key maps to PaperPevoMeta at runtime
 }
 
 export interface ReviewJsonMetadata extends PevoBaseMeta {
-  pevo: ReviewPevoMeta;
+  // APP_TAG key maps to ReviewPevoMeta at runtime
 }
 
 export interface CommentJsonMetadata extends PevoBaseMeta {
-  pevo: CommentPevoMeta;
+  format: "markdown";
+  // APP_TAG key maps to CommentPevoMeta at runtime
 }
 
 // ─── custom_json Payloads ────────────────────────────────────────
@@ -187,13 +191,12 @@ export interface RetractPaperAction {
   timestamp: string;
 }
 
-export interface AssignDoiAction {
-  action: "assign_doi";
+export interface RevoteAction {
+  action: "revote";
   author: string;
   permlink: string;
-  doi: string;
-  doi_url: string;
-  timestamp: string;
+  weight: number;    // -10000 to 10000, same scale as Hive votes; 0 retracts
+  version: number;   // paper version at time of re-vote
 }
 
 export type PevoCustomJsonAction =
@@ -205,4 +208,4 @@ export type PevoCustomJsonAction =
   | VouchAction
   | RetractVouchAction
   | RetractPaperAction
-  | AssignDoiAction;
+  | RevoteAction;

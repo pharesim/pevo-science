@@ -6,18 +6,12 @@ import { config } from '../config.js';
 import { sendOk, sendError } from '../response.js';
 import { parseMeta, isPevoPaper, isPevoReview, parsePageLimit, parseOrder, toPaperSummary } from '../helpers.js';
 import { getAccreditedSet, getAllAccreditedAccounts } from '../accreditation.js';
-import { getBatchReputationScores } from '../reputation.js';
+import { getBatchReputationScores, getReputationScore } from '../reputation.js';
 import { logger } from '../logger.js';
 import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';
 import { validate } from '../validation.js';
 import { getLastBlock } from '../block-watcher.js';
 import { getAppPool } from '../app-db.js';
-import {
-  getUserStatsFromHaf,
-  computeReputation,
-  getBatchReputationMap,
-  getActiveAccounts,
-} from '../reputation.js';
 import { hafCache } from '../cache.js';
 import { T, isPevoReviewSql, getCachedGenesisBlock } from '../hafsql.js';
 
@@ -107,29 +101,18 @@ router.get('/:username', async (req: Request, res: Response) => {
       };
     }
 
-    // Accredited: run the expensive lookups
-    const [hafStats, reputationMap, activeAccounts] = await Promise.all([
-      isHafAvailable() ? getUserStatsFromHaf(username) : Promise.resolve(null),
-      getBatchReputationMap(),
-      getActiveAccounts(),
+    // Accredited: reputation (SQL, cached) + lightweight stats in parallel
+    const [reputation, profileStats] = await Promise.all([
+      getReputationScore(username),
+      getProfileStats(username),
     ]);
-
-    const stats = hafStats;
-    const reputation = stats
-      ? await computeReputation(stats, isAccredited, undefined, reputationMap, activeAccounts)
-      : { score: 0, breakdown: { papers: 0, reviews: 0, citations: 0, accreditation: 0 } };
 
     return {
       username,
       is_accredited: true,
       accreditation: accreditation || null,
       reputation,
-      stats: {
-        paper_count: stats?.paper_count ?? 0,
-        review_count: stats?.review_count ?? 0,
-        citation_count: stats?.citation_count ?? 0,
-        first_pevo_post: stats?.first_pevo_post ?? null,
-      },
+      stats: profileStats,
     };
   }, 5 * 60_000, true);
 
