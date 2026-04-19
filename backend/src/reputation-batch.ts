@@ -1,7 +1,7 @@
 /**
  * Deterministic cycle-based batch reputation computation.
  *
- * Reputation is computed per block-based cycle (default 201,600 blocks, ~7 days).
+ * Reputation is computed per block-based cycle (default 28,800 blocks, ~1 day).
  * Each cycle uses the previous cycle's scores as voter weights (no convergence
  * iterations). Results are stored in Redis at `reputation:batch:{username}`
  * (no TTL, overwritten each cycle).
