@@ -64,14 +64,14 @@ export const config = {
   smtpFrom: process.env.SMTP_FROM || 'noreply@pevo.science',
   contactEmail: process.env.CONTACT_EMAIL || process.env.SMTP_FROM || 'support@pevo.science',
   appUrl: process.env.APP_URL || 'http://localhost:3000',
-  redisUrl: process.env.REDIS_URL || '',
+  redisUrl: process.env.REDIS_URL ||
+    (process.env.REDIS_PASSWORD ? `redis://:${process.env.REDIS_PASSWORD}@redis:6379` : ''),
   orcidClientId: process.env.ORCID_CLIENT_ID || '',
   orcidClientSecret: process.env.ORCID_CLIENT_SECRET || '',
   orcidRedirectUri: process.env.ORCID_REDIRECT_URI || '',
   orcidSignupRedirectUri: process.env.ORCID_SIGNUP_REDIRECT_URI || '',
   orcidMinWorks: parseInt(process.env.ORCID_MIN_WORKS || '3', 10),
   orcidBaseUrl: process.env.NODE_ENV === 'production' ? 'https://orcid.org' : 'https://sandbox.orcid.org',
-
   accreditationAuthorities: (() => {
     const extra = (process.env.ACCREDITATION_AUTHORITIES || '').split(',').map(s => s.trim()).filter(Boolean);
     return [hiveAdminAccount, ...extra];

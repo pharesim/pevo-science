@@ -15,6 +15,13 @@ import { T, activeAccreditationsCteBody, getCachedGenesisBlock } from './hafsql.
 export async function getAccreditedSet(usernames: string[]): Promise<Set<string>> {
   if (usernames.length === 0) return new Set();
 
+  // Fast path: if the full accredited set is already cached, filter locally
+  const cachedAll = await hafCache.get<string[]>('accredited_accounts_all');
+  if (cachedAll !== undefined) {
+    const allSet = new Set(cachedAll);
+    return new Set(usernames.filter((u) => allSet.has(u)));
+  }
+
   // Try HAF first — efficient single batch query
   const pool = getPool();
   if (pool) {
