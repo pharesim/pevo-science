@@ -144,6 +144,10 @@ router.post('/register', registerLimiter, verifyHiveSignature, async (req: Reque
     return sendError(res, 400, 'BAD_REQUEST', 'Field "identifier" is required');
   }
 
+  if (!discipline || typeof discipline !== 'string' || discipline.trim().length === 0) {
+    return sendError(res, 400, 'BAD_REQUEST', 'Field "discipline" is required');
+  }
+
   // Verify accreditation
   const accreditedSet = await getAccreditedSet([username]);
   if (!accreditedSet.has(username)) {
