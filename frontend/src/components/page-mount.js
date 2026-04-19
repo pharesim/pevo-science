@@ -4,6 +4,7 @@ import { pages } from '../pages/index.js';
 export function initPageMount() {
   Alpine.data('pageMount', () => ({
     _container: null,
+    _currentRoute: null,
 
     init() {
       // Create a dedicated container for dynamically-rendered pages.
@@ -14,6 +15,12 @@ export function initPageMount() {
 
       Alpine.effect(() => {
         const route = Alpine.store('router').route;
+        // Guard: skip if the route hasn't actually changed.
+        // Alpine.initTree() inside renderPage can leak reactive reads
+        // (e.g. $store.auth, x-model, x-if="loading") into this effect's
+        // dependency set, causing spurious re-renders that reset page state.
+        if (route === this._currentRoute) return;
+        this._currentRoute = route;
         this.renderPage(route);
       });
     },
