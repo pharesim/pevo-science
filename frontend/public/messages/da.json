@@ -315,11 +315,7 @@
     "reject": "Afvisning",
     "strongReject": "Stærk afvisning",
     "retract": "Træk stemme tilbage",
-    "staleBanner": "Denne artikel er blevet revideret siden du stemte. Gennemgå ændringerne og opdater din stemme.",
-    "votesWithStale": "{active} stemmer ({stale} afventer revurdering)",
     "votesWithStrength": "{count} stemmer, {strength}",
-    "staleAtVersion": "{count} stemmer afventer revurdering siden denne revision",
-    "pendingShort": "forældet",
     "strength": {
       "strong_endorsement": "stærk opbakning",
       "endorsement": "opbakning",

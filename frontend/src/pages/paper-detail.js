@@ -95,11 +95,6 @@ const template = `
                         <span class="text-[0.6rem] italic" :class="v.version_number === currentVersion ? 'text-white/70' : 'text-ink-muted'"
                               :title="$t('versions.metadataOnly')" x-text="$t('versions.metadataOnlyShort')"></span>
                       </template>
-                      <template x-if="v.is_content_revision && v.version_number > 1 && staleVotesAtVersion(v.version_number) > 0">
-                        <span class="text-[0.6rem] text-amber-600" :class="v.version_number === currentVersion ? 'text-amber-200' : ''"
-                              :title="$t('vote.staleAtVersion', { count: staleVotesAtVersion(v.version_number) })"
-                              x-text="staleVotesAtVersion(v.version_number) + ' ' + $t('vote.pendingShort')"></span>
-                      </template>
                       <template x-if="v.version_number === latestVersion">
                         <span class="text-[0.6rem] font-semibold uppercase tracking-wide"
                               :class="v.version_number === currentVersion ? 'text-white/80' : 'text-pevo-teal'"
@@ -382,18 +377,11 @@ const template = `
               <!-- Vote (wait for enrichment so we get accredited-only counts + voter list) -->
               <template x-if="enrichmentLoaded">
               <div class="mt-4" x-data="voteButtons({ author: paper.author, permlink: paper.permlink, netVotes: paper.net_votes, voteStrength: paper.vote_strength, voters: paper.voters || [], created: paper.created, versions: paper.versions })" @click.outside="selectorOpen = false">
-                <!-- Stale vote banner for current user -->
-                <template x-if="myVoteIsStale">
-                  <div class="mb-3 px-3 py-2 rounded-lg bg-amber-50 border border-amber-200 text-sm text-amber-800">
-                    <span x-text="$t('vote.staleBanner')"></span>
-                  </div>
-                </template>
                 <!-- Accredited: vote strength selector -->
                 <template x-if="isAccredited">
                   <div class="flex items-center gap-3">
                     <div class="relative">
                       <button type="button" class="btn-secondary text-sm flex items-center gap-1.5"
-                              :class="myVoteIsStale ? 'opacity-60 ring-1 ring-amber-300' : ''"
                               @click="selectorOpen = !selectorOpen" :disabled="isVoting">
                         <template x-if="isVoting">
                           <span class="inline-block animate-spin h-4 w-4 border-2 border-pevo-teal border-t-transparent rounded-full"></span>
@@ -429,13 +417,13 @@ const template = `
                 <template x-if="!isAccredited">
                   <div class="flex items-center gap-2">
                     <button type="button" class="p-1.5 rounded transition-colors"
-                            :class="voteState === 'up' ? (myVoteIsStale ? 'text-pevo-teal/50 bg-pevo-teal-light/50' : 'text-pevo-teal bg-pevo-teal-light') : 'text-ink-muted hover:text-pevo-teal'"
+                            :class="voteState === 'up' ? 'text-pevo-teal bg-pevo-teal-light' : 'text-ink-muted hover:text-pevo-teal'"
                             @click="handleSimpleVote(10000)" :disabled="isVoting" :title="$t('vote.upvote')">
                       <svg class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path d="M10 3l-7 7h4v7h6v-7h4L10 3z" /></svg>
                     </button>
                     <span class="text-sm font-medium text-ink" x-text="displayVotes"></span>
                     <button type="button" class="p-1.5 rounded transition-colors"
-                            :class="voteState === 'down' ? (myVoteIsStale ? 'text-pevo-crimson/50 bg-pevo-crimson-light/50' : 'text-pevo-crimson bg-pevo-crimson-light') : 'text-ink-muted hover:text-pevo-crimson'"
+                            :class="voteState === 'down' ? 'text-pevo-crimson bg-pevo-crimson-light' : 'text-ink-muted hover:text-pevo-crimson'"
                             @click="handleSimpleVote(-10000)" :disabled="isVoting" :title="$t('vote.downvote')">
                       <svg class="h-5 w-5 rotate-180" viewBox="0 0 20 20" fill="currentColor"><path d="M10 3l-7 7h4v7h6v-7h4L10 3z" /></svg>
                     </button>
@@ -903,22 +891,6 @@ export function initPaperDetailPage() {
     get latestVersion() {
       const sorted = this.sortedVersions;
       return sorted.length ? sorted[sorted.length - 1].version_number : 1;
-    },
-
-    staleVotesAtVersion(versionNumber) {
-      const voters = this.paper?.voters;
-      if (!voters?.length) return 0;
-      // Find the latest content revision at or before this version
-      const latestContentRevision = this.sortedVersions
-        .filter((v) => v.is_content_revision && v.version_number <= versionNumber)
-        .pop();
-      if (!latestContentRevision || latestContentRevision.version_number <= 1) return 0;
-      // For the latest content revision, stale count comes from the voters array
-      if (versionNumber === this.latestVersion) {
-        return voters.filter((v) => v.stale === true).length;
-      }
-      // For older revisions, we don't have historical staleness data
-      return 0;
     },
 
     async loadVersion(version) {

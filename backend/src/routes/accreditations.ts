@@ -87,7 +87,7 @@ router.get('/', async (req: Request, res: Response) => {
     if (result) return sendOk(res, result.rows, { page, limit, total: result.total });
   }
 
-  // No Hive API fallback for custom_json aggregation — return empty
+  // HAF unavailable — return empty
   sendOk(res, [], { page, limit, total: 0 });
 });
 

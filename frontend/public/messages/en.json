@@ -315,11 +315,7 @@
     "reject": "Reject",
     "strongReject": "Strong reject",
     "retract": "Retract vote",
-    "staleBanner": "This paper has been revised since you voted. Review the changes and update your vote.",
-    "votesWithStale": "{active} votes ({stale} pending re-evaluation)",
     "votesWithStrength": "{count} votes, {strength}",
-    "staleAtVersion": "{count} votes pending re-evaluation since this revision",
-    "pendingShort": "stale",
     "strength": {
       "strong_endorsement": "strong endorsement",
       "endorsement": "endorsement",

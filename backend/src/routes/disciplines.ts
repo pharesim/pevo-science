@@ -1,9 +1,7 @@
 import { Router, type Request, type Response } from 'express';
-import { getPool, isHafAvailable } from '../db.js';
-import { hiveClient } from '../hive.js';
+import { getPool } from '../db.js';
 import { config } from '../config.js';
 import { sendOk } from '../response.js';
-import { parseMeta, isPevoAnyPaper } from '../helpers.js';
 import { hafCache } from '../cache.js';
 import { logger } from '../logger.js';
 import { T } from '../hafsql.js';
@@ -35,42 +33,12 @@ async function fetchDisciplinesFromHaf() {
     return result.rows;
   } catch (err) {
     logger.error({ err }, 'HAF disciplines query failed');
-    return null;
-  }
-}
-
-async function fetchDisciplinesFromHiveApi() {
-  try {
-    const discussions = await hiveClient.database.getDiscussions('created', {
-      tag: config.appTag,
-      limit: 100,
-    });
-
-    const counts = new Map<string, number>();
-    for (const d of discussions) {
-      const meta = parseMeta(d.json_metadata);
-      if (!isPevoAnyPaper(meta)) continue;
-      const pevo = (meta[config.appTag] || {}) as Record<string, unknown>;
-      const disc = pevo.discipline as string | undefined;
-      if (disc) counts.set(disc, (counts.get(disc) || 0) + 1);
-    }
-
-    return Array.from(counts.entries())
-      .map(([name, paper_count]) => ({ name, paper_count }))
-      .sort((a, b) => b.paper_count - a.paper_count);
-  } catch (err) {
-    logger.error({ err }, 'Hive API disciplines query failed');
     return [];
   }
 }
 
 router.get('/', async (_req: Request, res: Response) => {
-  if (isHafAvailable()) {
-    const result = await hafCache.getOrSet('disciplines', fetchDisciplinesFromHaf, 60_000, true);
-    if (result) return sendOk(res, result);
-  }
-
-  const result = await fetchDisciplinesFromHiveApi();
+  const result = await hafCache.getOrSet('disciplines', fetchDisciplinesFromHaf, 60_000, true);
   sendOk(res, result);
 });
 

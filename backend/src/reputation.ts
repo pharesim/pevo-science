@@ -269,16 +269,6 @@ export async function computeReputationBatch(
           AND (c.json_metadata -> $3 -> 'continues') IS NULL
       ),
 
-      paper_revisions AS (
-        SELECT co.author, co.permlink, MAX(co.block_num) AS latest_revision_block
-        FROM ${T.commentOps} co
-        WHERE co.author IN (SELECT username FROM target_users)
-          AND co.parent_author = '' AND co.parent_permlink = $3
-          AND co.block_num < $6
-        GROUP BY co.author, co.permlink
-        HAVING COUNT(*) > 1
-      ),
-
       paper_vote_signals AS (
         SELECT voter, author, permlink, weight, block_num FROM (
           SELECT vo.voter, vo.author, vo.permlink, vo.weight, vo.block_num
@@ -313,14 +303,12 @@ export async function computeReputationBatch(
         SELECT plv.voter, plv.author, plv.permlink, plv.weight, plv.block_num
         FROM paper_latest_votes plv
         JOIN user_papers up ON up.author = plv.author AND up.permlink = plv.permlink
-        LEFT JOIN paper_revisions prev ON prev.author = plv.author AND prev.permlink = plv.permlink
         WHERE plv.voter != up.author
           AND plv.weight != 0
           AND NOT EXISTS (
             SELECT 1 FROM jsonb_array_elements(up.json_metadata -> $3 -> 'authors') a
             WHERE a ->> 'hive' = plv.voter
           )
-          AND (prev.latest_revision_block IS NULL OR plv.block_num > prev.latest_revision_block)
       ),
 
       paper_reviews AS (

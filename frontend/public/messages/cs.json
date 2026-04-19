@@ -315,11 +315,7 @@
     "reject": "Zamítnutí",
     "strongReject": "Silné zamítnutí",
     "retract": "Stáhnout hlas",
-    "staleBanner": "Tento článek byl od vašeho hlasování revidován. Zkontrolujte změny a aktualizujte svůj hlas.",
-    "votesWithStale": "{active} hlasů ({stale} čeká na přehodnocení)",
     "votesWithStrength": "{count} hlasů, {strength}",
-    "staleAtVersion": "{count} hlasů čeká na přehodnocení od této revize",
-    "pendingShort": "neaktuální",
     "strength": {
       "strong_endorsement": "silné schválení",
       "endorsement": "schválení",

@@ -315,11 +315,7 @@
     "reject": "דחייה",
     "strongReject": "דחייה חזקה",
     "retract": "משיכת הצבעה",
-    "staleBanner": "מאמר זה עודכן מאז שהצבעת. בדוק את השינויים ועדכן את הצבעתך.",
-    "votesWithStale": "{active} הצבעות ({stale} ממתינות להערכה מחדש)",
     "votesWithStrength": "{count} הצבעות, {strength}",
-    "staleAtVersion": "{count} הצבעות ממתינות להערכה מחדש מאז גרסה זו",
-    "pendingShort": "ממתין",
     "strength": {
       "strong_endorsement": "תמיכה חזקה",
       "endorsement": "תמיכה",

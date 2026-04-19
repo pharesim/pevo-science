@@ -315,11 +315,7 @@
     "reject": "拒绝",
     "strongReject": "强烈拒绝",
     "retract": "撤回投票",
-    "staleBanner": "自您投票以来，这篇论文已被修订。请查看更改并更新您的投票。",
-    "votesWithStale": "{active} 票（{stale} 待重新评估）",
     "votesWithStrength": "{count} 票，{strength}",
-    "staleAtVersion": "{count} 票自此修订以来待重新评估",
-    "pendingShort": "待更新",
     "strength": {
       "strong_endorsement": "强烈支持",
       "endorsement": "支持",

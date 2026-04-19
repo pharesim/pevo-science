@@ -112,7 +112,7 @@ pevo/
 - **Progressive decentralization:** Accreditation starts centralized (email verification + ORCID), designed to move to web-of-trust and DAO governance.
 - **Preprint bridge:** Import existing papers from arXiv, PubMed, bioRxiv, medRxiv, Semantic Scholar, or ResearchGate by pasting a URL or identifier. The paper stays on its original platform; PEvO creates a reference for peer review.
 - **Structured evaluation:** Accredited reviewers choose from 6 vote levels (Strong endorsement to Strong reject). Non-accredited users can still upvote/downvote simply. Citation relevance is togglable per-citation.
-- **Vote staleness:** When a paper is revised, prior votes become stale and are excluded from reputation scoring until voters re-evaluate. Voters can re-vote via Hive or `custom_json` after the payout window closes.
+- **Votes persist across revisions:** When a paper is revised, existing votes remain valid. The system relies on downvotes, new reviews, and the quality multiplier as corrective mechanisms rather than penalizing authors who revise.
 
 ## Deployment
 

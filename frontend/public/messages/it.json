@@ -315,11 +315,7 @@
     "reject": "Rifiuto",
     "strongReject": "Forte rifiuto",
     "retract": "Ritira voto",
-    "staleBanner": "Questo articolo è stato rivisto da quando hai votato. Esamina le modifiche e aggiorna il tuo voto.",
-    "votesWithStale": "{active} voti ({stale} in attesa di rivalutazione)",
     "votesWithStrength": "{count} voti, {strength}",
-    "staleAtVersion": "{count} voti in attesa di rivalutazione da questa revisione",
-    "pendingShort": "obsoleto",
     "strength": {
       "strong_endorsement": "forte approvazione",
       "endorsement": "approvazione",

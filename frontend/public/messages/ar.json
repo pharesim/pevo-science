@@ -315,11 +315,7 @@
     "reject": "رفض",
     "strongReject": "رفض قوي",
     "retract": "سحب التصويت",
-    "staleBanner": "تمت مراجعة هذه الورقة منذ تصويتك. راجع التغييرات وحدّث تصويتك.",
-    "votesWithStale": "{active} أصوات ({stale} بانتظار إعادة التقييم)",
     "votesWithStrength": "{count} أصوات، {strength}",
-    "staleAtVersion": "{count} أصوات بانتظار إعادة التقييم منذ هذه المراجعة",
-    "pendingShort": "معلّقة",
     "strength": {
       "strong_endorsement": "تأييد قوي",
       "endorsement": "تأييد",

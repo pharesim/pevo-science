@@ -1,6 +1,5 @@
 import { Router, type Request, type Response } from 'express';
-import { getPool, isHafAvailable } from '../db.js';
-import { hiveClient } from '../hive.js';
+import { getPool } from '../db.js';
 import { config } from '../config.js';
 import { sendOk, sendError } from '../response.js';
 import { parseMeta, isPevoReview } from '../helpers.js';
@@ -76,28 +75,6 @@ async function fetchReviewFromHaf(author: string, permlink: string) {
   }
 }
 
-async function fetchReviewFromHiveApi(author: string, permlink: string) {
-  try {
-    const post = await hiveClient.database.call('get_content', [author, permlink]);
-    if (!post || !post.author) return null;
-
-    const meta = parseMeta(post.json_metadata);
-    if (!isPevoReview(meta)) return null;
-
-    // Fetch parent paper for title
-    let parentTitle = '';
-    try {
-      const parent = await hiveClient.database.call('get_content', [post.parent_author, post.parent_permlink]);
-      parentTitle = parent?.title || '';
-    } catch (err) { logger.warn({ err }, 'Failed to fetch parent paper title for review'); }
-
-    return buildReviewDetail(post, meta, parentTitle);
-  } catch (err) {
-    logger.error({ err }, 'Hive API review query failed');
-    return null;
-  }
-}
-
 async function enrichReviewDetail(review: Record<string, unknown>): Promise<Record<string, unknown>> {
   const reviewAuthor = review.author as string;
   const [accreditedSet, reputation] = await Promise.all([
@@ -115,15 +92,8 @@ router.get('/:author/:permlink', async (req: Request, res: Response) => {
   const author = req.params.author as string;
   const permlink = req.params.permlink as string;
 
-  // Simple read: Hive API first (single comment + parent title)
-  const hiveResult = await fetchReviewFromHiveApi(author, permlink);
-  if (hiveResult) return sendOk(res, await enrichReviewDetail(hiveResult));
-
-  // HAF fallback
-  if (isHafAvailable()) {
-    const hafResult = await fetchReviewFromHaf(author, permlink);
-    if (hafResult) return sendOk(res, await enrichReviewDetail(hafResult));
-  }
+  const hafResult = await fetchReviewFromHaf(author, permlink);
+  if (hafResult) return sendOk(res, await enrichReviewDetail(hafResult));
 
   sendError(res, 404, 'NOT_FOUND', 'Review not found');
 });

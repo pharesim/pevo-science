@@ -1,5 +1,5 @@
 import Alpine from 'alpinejs';
-import { verifyEmail, resumeSignup, confirmAccount, linkExistingAccount, checkUsernameAvailability } from '../api.js';
+import { verifyEmail, resumeSignup, confirmAccount, linkExistingAccount } from '../api.js';
 import { generateMnemonic, validateMnemonic, deriveAllKeys } from '../hive-keys.js';
 import { signMessage, isKeychainInstalled } from '../keychain.js';
 
@@ -362,9 +362,11 @@ export function initSignupVerifyPage() {
 
     async _checkUsername(val) {
       try {
-        const res = await checkUsernameAvailability(val);
+        const { Client } = await import('@hiveio/dhive');
+        const client = new Client(['https://api.hive.blog', 'https://api.deathwing.me']);
+        const accounts = await client.database.getAccounts([val]);
         if (this.username.trim().toLowerCase() === val) {
-          this.usernameStatus = res.data?.available ? 'available' : 'taken';
+          this.usernameStatus = accounts.length === 0 ? 'available' : 'taken';
         }
       } catch {
         if (this.username.trim().toLowerCase() === val) this.usernameStatus = 'error';

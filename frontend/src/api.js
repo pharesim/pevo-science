@@ -315,10 +315,6 @@ export function invalidatePaperCache(author, permlink) {
 
 // ─── Light Account Auth ─────────────────────────────────────────
 
-export function checkUsernameAvailability(username) {
-  return request(`/auth/username-available${buildQuery({ username })}`);
-}
-
 export function submitSignup(data) {
   return request('/auth/signup', {
     method: 'POST',

@@ -10,7 +10,6 @@ import { rateLimit, byIp, byAccount } from '../middleware/rateLimit.js';
 import { isInstitutionalEmail } from '../email-validator.js';
 import { getAppPool } from '../app-db.js';
 import { getRedis, isRedisAvailable } from '../redis.js';
-import { hiveClient } from '../hive.js';
 import { logger } from '../logger.js';
 import { decryptKey } from '../custody-crypto.js';
 
@@ -20,10 +19,6 @@ const SESSION_EXPIRY_MS = 24 * 60 * 60 * 1000;
 const SIGNUP_TOKEN_EXPIRY_MS = 24 * 60 * 60 * 1000; // 24 hours
 const RESET_TOKEN_EXPIRY_MS = 60 * 60 * 1000; // 1 hour
 const MAX_LOGIN_FAILURES = 20;
-
-// Username format: 3-16 chars, lowercase a-z, 0-9, dots/hyphens not at start/end
-const USERNAME_RE = /^[a-z][a-z0-9.-]{1,14}[a-z0-9]$/;
-const BAD_SEGMENT_RE = /[.-]{2}/; // No consecutive dots/hyphens
 
 // Rate limiters
 const sessionLimiter = rateLimit({ name: 'auth-session', windowMs: 3_600_000, max: 10, keyFn: byAccount });
@@ -44,27 +39,6 @@ router.post('/session', verifyHiveSignature, sessionLimiter, (req: Request, res:
   );
   const expiresAt = new Date(Date.now() + SESSION_EXPIRY_MS).toISOString();
   sendOk(res, { token, expires_at: expiresAt, custody });
-});
-
-// ─────────────────────────────────────────────────────────────
-// GET /api/auth/username-available — Check Hive username availability
-// ─────────────────────────────────────────────────────────────
-router.get('/username-available', async (req: Request, res: Response) => {
-  const { username } = req.query;
-  if (!username || typeof username !== 'string') {
-    return sendError(res, 400, 'VALIDATION_ERROR', 'Username is required');
-  }
-  const normalized = username.trim().toLowerCase();
-  if (!USERNAME_RE.test(normalized) || BAD_SEGMENT_RE.test(normalized)) {
-    return sendOk(res, { available: false, reason: 'invalid_format' });
-  }
-  try {
-    const [account] = await hiveClient.database.getAccounts([normalized]);
-    sendOk(res, { available: !account, reason: account ? 'taken' : null });
-  } catch (err) {
-    logger.error({ err }, 'Username availability check failed');
-    sendError(res, 500, 'INTERNAL_ERROR', 'Could not check username availability');
-  }
 });
 
 // ─────────────────────────────────────────────────────────────

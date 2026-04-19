@@ -1,10 +1,10 @@
 import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
-import { getPool, isHafAvailable } from '../db.js';
+import { getPool } from '../db.js';
 import { hiveClient } from '../hive.js';
 import { config } from '../config.js';
 import { sendOk, sendError } from '../response.js';
-import { parseMeta, isPevoPaper, isPevoReview, parsePageLimit, parseOrder, toPaperSummary } from '../helpers.js';
+import { parseMeta, parsePageLimit, parseOrder, toPaperSummary } from '../helpers.js';
 import { getAccreditedSet, getAllAccreditedAccounts } from '../accreditation.js';
 import { getBatchReputationScores, getReputationScore } from '../reputation.js';
 import { logger } from '../logger.js';
@@ -23,7 +23,7 @@ const router = Router();
 
 async function getAccreditationFromHaf(username: string) {
   const pool = getPool();
-  if (!pool) return undefined; // signal to try fallback
+  if (!pool) return undefined; // no HAF available
 
   try {
     const result = await pool.query(
@@ -57,18 +57,10 @@ async function getAccreditationFromHaf(username: string) {
   }
 }
 
-async function getAccreditationFromHiveApi(username: string) {
-  // custom_json lookup via condenser API is limited; return null for now
-  // In production HAF is the primary data source for custom_json
-  return null;
-}
-
 async function getAccreditation(username: string) {
-  if (isHafAvailable()) {
-    const result = await getAccreditationFromHaf(username);
-    if (result !== undefined) return result;
-  }
-  return getAccreditationFromHiveApi(username);
+  const result = await getAccreditationFromHaf(username);
+  if (result !== undefined) return result;
+  return null;
 }
 
 // ──────────────────────────────────────────────
@@ -230,38 +222,6 @@ async function fetchUserPapersFromHaf(username: string, limit: number, offset: n
   }
 }
 
-async function fetchUserPapersFromHiveApi(username: string, limit: number) {
-  try {
-    const discussions = await hiveClient.database.getDiscussions('blog', {
-      tag: username,
-      limit: Math.min(limit, 100),
-    });
-
-    const papers = discussions.filter((d) => {
-      if (d.parent_permlink !== config.appTag) return false;
-      const meta = parseMeta(d.json_metadata);
-      if (!isPevoPaper(meta)) return false;
-      // Exclude continuation posts (revisions of existing papers)
-      const pevo = meta[config.appTag] as Record<string, unknown> | undefined;
-      if (pevo?.continues) return false;
-      return true;
-    });
-
-    const rows = papers.map((d) => {
-      const meta = parseMeta(d.json_metadata);
-      return toPaperSummary(
-        { author: d.author, permlink: d.permlink, title: d.title, body: d.body, created: d.created, net_votes: 0 },
-        meta,
-      );
-    });
-
-    return { rows, total: rows.length };
-  } catch (err) {
-    logger.error({ err }, 'Hive API user papers query failed');
-    return { rows: [], total: 0 };
-  }
-}
-
 router.get('/:username/papers', async (req: Request, res: Response) => {
   const username = req.params.username as string;
   const { page, limit, offset } = parsePageLimit(req);
@@ -270,18 +230,8 @@ router.get('/:username/papers', async (req: Request, res: Response) => {
 
   const cacheKey = `profile-papers:${username}:${JSON.stringify({ sort, order, page, limit })}`;
   const result = await hafCache.getOrSet(cacheKey, async () => {
-    // Simple read: Hive API first (user's posts by blog)
-    const hiveResult = await fetchUserPapersFromHiveApi(username, limit);
-    if (hiveResult.rows.length > 0) {
-      return hiveResult;
-    }
-
-    // HAF fallback (better pagination + sorting)
-    if (isHafAvailable()) {
-      const hafResult = await fetchUserPapersFromHaf(username, limit, offset, sort, order);
-      if (hafResult) return hafResult;
-    }
-
+    const hafResult = await fetchUserPapersFromHaf(username, limit, offset, sort, order);
+    if (hafResult) return hafResult;
     return { rows: [], total: 0 };
   });
 
@@ -380,46 +330,6 @@ async function fetchUserReviewsFromHaf(username: string, limit: number, offset: 
   }
 }
 
-async function fetchUserReviewsFromHiveApi(username: string, limit: number) {
-  try {
-    const discussions = await hiveClient.database.getDiscussions('comments', {
-      tag: username,
-      limit: Math.min(limit, 100),
-    });
-
-    const reviews = discussions.filter((d) => {
-      const meta = parseMeta(d.json_metadata);
-      return isPevoReview(meta);
-    });
-
-    // Fetch parent post titles
-    const rows = await Promise.all(
-      reviews.map(async (d) => {
-        const meta = parseMeta(d.json_metadata);
-        let paperTitle = '';
-        try {
-          const parent = await hiveClient.database.call('get_content', [d.parent_author, d.parent_permlink]);
-          if (parent) paperTitle = parent.title || '';
-        } catch {
-          // parent title unavailable
-        }
-        return buildReviewSummary(
-          { author: d.author, permlink: d.permlink, body: d.body, created: d.created },
-          meta,
-          d.parent_author,
-          d.parent_permlink,
-          paperTitle,
-        );
-      }),
-    );
-
-    return { rows, total: rows.length };
-  } catch (err) {
-    logger.error({ err }, 'Hive API user reviews query failed');
-    return { rows: [], total: 0 };
-  }
-}
-
 router.get('/:username/reviews', async (req: Request, res: Response) => {
   const username = req.params.username as string;
   const { page, limit, offset } = parsePageLimit(req);
@@ -427,12 +337,9 @@ router.get('/:username/reviews', async (req: Request, res: Response) => {
 
   const cacheKey = `profile-reviews:${username}:${JSON.stringify({ order, page, limit })}`;
   const result = await hafCache.getOrSet(cacheKey, async () => {
-    if (isHafAvailable()) {
-      const hafResult = await fetchUserReviewsFromHaf(username, limit, offset, order);
-      if (hafResult) return hafResult;
-    }
-
-    return fetchUserReviewsFromHiveApi(username, limit);
+    const hafResult = await fetchUserReviewsFromHaf(username, limit, offset, order);
+    if (hafResult) return hafResult;
+    return { rows: [], total: 0 };
   });
 
   sendOk(res, result.rows, { page, limit, total: result.total });

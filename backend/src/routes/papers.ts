@@ -1,18 +1,15 @@
 import { Router, type Request, type Response } from 'express';
 import { PrivateKey } from '@hiveio/dhive';
-import { getPool, isHafAvailable } from '../db.js';
+import { getPool } from '../db.js';
 import { hiveClient } from '../hive.js';
 import { config } from '../config.js';
 import { sendOk, sendError } from '../response.js';
 import {
   parseMeta,
-  isPevoPaper,
   isPevoAnyPaper,
-  isPevoReview,
   parsePageLimit,
   parseSort,
   parseOrder,
-  toPaperSummary,
   extractAbstract,
   type SortField,
 } from '../helpers.js';
@@ -388,88 +385,8 @@ async function fetchPapersFromHaf(req: Request): Promise<{ rows: unknown[]; tota
 
     return { rows, total };
   } catch (err) {
-    logger.error({ err }, 'HAF query failed, falling back to Hive API');
+    logger.error({ err }, 'HAF papers query failed');
     return null;
-  }
-}
-
-// ──────────────────────────────────────────────
-// Hive API fallback (dhive)
-// ──────────────────────────────────────────────
-
-async function fetchPapersFromHiveApi(req: Request): Promise<{ rows: unknown[]; total: number }> {
-  const { limit } = parsePageLimit(req);
-  const author = req.query.author as string | undefined;
-  const discipline = req.query.discipline as string | undefined;
-
-  try {
-    const discussions = await hiveClient.database.getDiscussions('created', {
-      tag: config.appTag,
-      limit: Math.min(limit, 100),
-    });
-
-    const source = req.query.source as string | undefined;
-    let papers = discussions.filter((d) => {
-      const meta = parseMeta(d.json_metadata);
-      if (!isPevoAnyPaper(meta)) return false;
-      if (source === 'native') return isPevoPaper(meta);
-      if (source === 'bridge') return !isPevoPaper(meta);
-      return true;
-    });
-
-    if (author) papers = papers.filter((d) => d.author === author);
-    if (discipline) {
-      papers = papers.filter((d) => {
-        const meta = parseMeta(d.json_metadata);
-        return (meta[config.appTag] as Record<string, unknown>)?.discipline === discipline;
-      });
-    }
-    if (req.query.language) {
-      const lang = req.query.language as string;
-      papers = papers.filter((d) => {
-        const meta = parseMeta(d.json_metadata);
-        return (meta[config.appTag] as Record<string, unknown>)?.language === lang;
-      });
-    }
-
-    const rows = papers.map((d) => {
-      const meta = parseMeta(d.json_metadata);
-      return toPaperSummary(
-        { author: d.author, permlink: d.permlink, title: d.title, body: d.body, created: d.created, net_votes: 0 },
-        meta,
-      );
-    });
-
-    // Enrich with accreditation and batch reputation (no on-demand computation)
-    const authorNames = rows.map((r) => r.author);
-    const [accreditedSet, batchScores, allAccredited] = await Promise.all([
-      getAccreditedSet(authorNames),
-      getBatchReputationScores(authorNames),
-      getAllAccreditedAccounts(),
-    ]);
-    for (const row of rows) {
-      row.is_accredited = accreditedSet.has(row.author);
-      row.author_reputation = batchScores.get(row.author) ?? 0;
-      row.accredited_authors = (row.authors as Array<{ hive?: string }>)
-        .filter(a => a.hive && allAccredited.has(a.hive))
-        .map(a => a.hive!);
-    }
-
-    // Enrich bridge papers with external citation counts
-    const bridgeDois = rows.filter(r => r.doi).map(r => r.doi!);
-    if (bridgeDois.length > 0) {
-      const extCounts = await fetchExternalCitationCounts(bridgeDois);
-      for (const row of rows) {
-        if (row.doi && extCounts[row.doi] !== undefined) {
-          row.citation_count = extCounts[row.doi];
-        }
-      }
-    }
-
-    return { rows, total: rows.length };
-  } catch (err) {
-    logger.error({ err }, 'Hive API query failed');
-    return { rows: [], total: 0 };
   }
 }
 
@@ -479,26 +396,22 @@ async function fetchPapersFromHiveApi(req: Request): Promise<{ rows: unknown[]; 
 
 router.get('/', async (req: Request, res: Response) => {
   const { page, limit } = parsePageLimit(req);
-
-  if (isHafAvailable()) {
-    const sort = parseSort(req);
-    const order = parseOrder(req);
-    const discipline = req.query.discipline || '';
-    const keyword = req.query.keyword || '';
-    const author = req.query.author || '';
-    const language = req.query.language || '';
-    const accreditedOnly = req.query.accredited_only !== 'false'; // default true
-    const includeRetracted = req.query.include_retracted === 'true';
-    const source = req.query.source || '';
-    const cacheKey = `papers:p=${page}:l=${limit}:s=${sort}:o=${order}:d=${discipline}:k=${keyword}:a=${author}:lang=${language}:ao=${accreditedOnly}:ir=${includeRetracted}:src=${source}`;
-    const result = await hafCache.getOrSetSWR(cacheKey, () => fetchPapersFromHaf(req));
-    if (result) {
-      return sendOk(res, result.rows, { page, limit, total: result.total });
-    }
+  const sort = parseSort(req);
+  const order = parseOrder(req);
+  const discipline = req.query.discipline || '';
+  const keyword = req.query.keyword || '';
+  const author = req.query.author || '';
+  const language = req.query.language || '';
+  const accreditedOnly = req.query.accredited_only !== 'false'; // default true
+  const includeRetracted = req.query.include_retracted === 'true';
+  const source = req.query.source || '';
+  const cacheKey = `papers:p=${page}:l=${limit}:s=${sort}:o=${order}:d=${discipline}:k=${keyword}:a=${author}:lang=${language}:ao=${accreditedOnly}:ir=${includeRetracted}:src=${source}`;
+  const result = await hafCache.getOrSetSWR(cacheKey, () => fetchPapersFromHaf(req));
+  if (result) {
+    return sendOk(res, result.rows, { page, limit, total: result.total });
   }
 
-  const hiveResult = await fetchPapersFromHiveApi(req);
-  sendOk(res, hiveResult.rows, { page, limit, total: hiveResult.total });
+  sendOk(res, [], { page, limit, total: 0 });
 });
 
 // ──────────────────────────────────────────────
@@ -632,47 +545,6 @@ async function fetchPaperDetailFromHaf(author: string, permlink: string) {
     return detail;
   } catch (err) {
     logger.error({ err }, 'HAF paper detail query failed');
-    return null;
-  }
-}
-
-async function fetchPaperDetailFromHiveApi(author: string, permlink: string) {
-  try {
-    const post = await hiveClient.database.call('get_content', [author, permlink]);
-    if (!post || !post.author || post.parent_permlink !== config.appTag) return null;
-
-    const meta = parseMeta(post.json_metadata);
-    if (!isPevoAnyPaper(meta)) return null;
-
-    const detail = buildPaperDetail(post, meta, []);
-    // Don't use Hive's unfiltered net_votes — enrichment provides accredited-only count
-    detail.net_votes = 0;
-
-    // Version history (Hive API only returns latest — use pevo.version from metadata)
-    const pevoMeta = safePevoMeta(meta);
-    const currentVersion = (pevoMeta.version as number) || 1;
-    detail.versions = [{ version_number: currentVersion, created: detail.created as string, title: detail.title as string, is_content_revision: true }];
-
-    // Accreditation: is_accredited + accredited_authors
-    const allAccredited = await getAllAccreditedAccounts();
-    detail.is_accredited = allAccredited.has(author);
-    const pevoAuthors: Array<{ hive?: string }> = (pevoMeta.authors || []) as Array<{ hive?: string }>;
-    detail.accredited_authors = pevoAuthors
-      .filter(a => a.hive && allAccredited.has(a.hive))
-      .map(a => a.hive!);
-
-    // External citation count for bridge papers
-    if (pevoMeta.type === 'bridge_paper') {
-      const doi = ((pevoMeta.source as Record<string, unknown>)?.doi as string) || null;
-      if (doi) {
-        const extCounts = await fetchExternalCitationCounts([doi]);
-        if (extCounts[doi] !== undefined) detail.citation_count = extCounts[doi];
-      }
-    }
-
-    return detail;
-  } catch (err) {
-    logger.error({ err }, 'Hive API paper detail failed');
     return null;
   }
 }
@@ -1047,16 +919,13 @@ router.get('/:author/:permlink', async (req: Request, res: Response) => {
   }
 
   // E4: If this is a continuation post, redirect to the canonical root paper
-  if (isHafAvailable()) {
-    const canonicalRoot = await findCanonicalRoot(author, permlink);
-    if (canonicalRoot) {
-      author = canonicalRoot.author;
-      permlink = canonicalRoot.permlink;
-    }
+  const canonicalRoot = await findCanonicalRoot(author, permlink);
+  if (canonicalRoot) {
+    author = canonicalRoot.author;
+    permlink = canonicalRoot.permlink;
   }
 
-  // Historical versions require HAF (Hive API only has latest).
-  if (requestedVersion !== null && isHafAvailable()) {
+  if (requestedVersion !== null) {
     const cacheKey = `paper-detail:${author}:${permlink}:v${requestedVersion}`;
     const cached = await hafCache.getOrSet(cacheKey, async () => {
       const versions = await reconstructVersionsFromHaf(author, permlink);
@@ -1090,35 +959,28 @@ router.get('/:author/:permlink', async (req: Request, res: Response) => {
 
   const cacheKey = `paper-detail:${author}:${permlink}`;
   const cached = await hafCache.getOrSet(cacheKey, async () => {
-    // HAF first: local PostgreSQL is faster than remote Hive API calls.
-    if (isHafAvailable()) {
-      const hafResult = await fetchPaperDetailFromHaf(author, permlink);
-      if (hafResult) return hafResult;
+    const hafResult = await fetchPaperDetailFromHaf(author, permlink);
+    if (hafResult) return hafResult;
 
-      // If current metadata was stripped by an external edit, reconstruct from
-      // version history. The first version establishes paper identity; later
-      // versions inherit PEvO metadata when the editing frontend dropped it.
-      const versions = await reconstructVersionsFromHaf(author, permlink);
-      if (versions.length > 0 && isPevoAnyPaper(versions[0].json_metadata)) {
-        const latest = versions[versions.length - 1];
-        const meta = latest.json_metadata;
-        const post = { author, permlink, title: latest.title, body: latest.body, json_metadata: meta, created: versions[0].created, last_edited: latest.created };
-        const detail = buildPaperDetail(post, meta, []);
-        detail.versions = versions.map(({ body: _b, json_metadata: _m, ...entry }) => entry);
-        detail.metadata_restored = true;
+    // If current metadata was stripped by an external edit, reconstruct from
+    // version history. The first version establishes paper identity; later
+    // versions inherit PEvO metadata when the editing frontend dropped it.
+    const versions = await reconstructVersionsFromHaf(author, permlink);
+    if (versions.length > 0 && isPevoAnyPaper(versions[0].json_metadata)) {
+      const latest = versions[versions.length - 1];
+      const meta = latest.json_metadata;
+      const post = { author, permlink, title: latest.title, body: latest.body, json_metadata: meta, created: versions[0].created, last_edited: latest.created };
+      const detail = buildPaperDetail(post, meta, []);
+      detail.versions = versions.map(({ body: _b, json_metadata: _m, ...entry }) => entry);
+      detail.metadata_restored = true;
 
-        const retraction = await getRetractionInfo(author, permlink);
-        detail.is_retracted = retraction.is_retracted;
-        detail.retraction_reason = retraction.retraction_reason ?? null;
-        detail.retraction_timestamp = retraction.retraction_timestamp ?? null;
+      const retraction = await getRetractionInfo(author, permlink);
+      detail.is_retracted = retraction.is_retracted;
+      detail.retraction_reason = retraction.retraction_reason ?? null;
+      detail.retraction_timestamp = retraction.retraction_timestamp ?? null;
 
-        return detail;
-      }
+      return detail;
     }
-
-    // Fallback to Hive API if HAF is unavailable (no version history)
-    const hiveResult = await fetchPaperDetailFromHiveApi(author, permlink);
-    if (hiveResult) return hiveResult;
 
     return null;
   }, 30 * 60_000, true);
@@ -1170,17 +1032,11 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string) {
          ORDER BY c.created DESC`,
         [author, permlink, config.appTag, `${config.appTag}/%`, accreditedArr, reviewAuthors],
       ),
-      // Version history (needed internally for vote/review staleness computation)
+      // Version history (needed for review outdated computation)
       resolveVersionsFromHaf(author, permlink),
     ]);
 
     const latestVersion = versions.length > 0 ? versions[versions.length - 1].version_number : 1;
-
-    // §31: Vote staleness — find latest content revision timestamp
-    const contentRevisions = versions.filter((v) => v.is_content_revision && v.version_number > 1);
-    const latestRevisionTs = contentRevisions.length > 0
-      ? new Date(contentRevisions[contentRevisions.length - 1].created)
-      : null;
 
     // Always query revote custom_json ops for this paper
     const revoteResult = await pool.query(
@@ -1222,7 +1078,7 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string) {
       const rating = pevo.rating as Record<string, number> | undefined;
       const reviewedVersion = (pevo.reviewed_version as number) || 1;
 
-      // E5: Review staleness — outdated if paper has been updated since review
+      // E5: Review outdated — if paper has been updated since review
       const outdated = reviewedVersion < latestVersion;
 
       // E5: Find if any version explicitly addresses this review
@@ -1260,13 +1116,12 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string) {
     // Vote resolution: for each voter, pick the signal with the highest block_num
     // across native votes and revote custom_json. Handle weight=0 as retraction.
     const processedVoters = new Set<string>();
-    const voters: Array<{ voter: string; weight: number; stale: boolean; effective_weight: number }> = [];
+    const voters: Array<{ voter: string; weight: number; effective_weight: number }> = [];
 
     // Process voters with native votes
     for (const r of voteResult.rows) {
       const voter = r.voter as string;
       const nativeWeight = Number(r.weight);
-      const nativeTs = new Date(r.timestamp as string);
       const nativeBlock = Number(r.block_num);
       processedVoters.add(voter);
 
@@ -1274,22 +1129,14 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string) {
       // Pick latest signal by block_num
       const useRevote = revote && revote.block_num > nativeBlock;
       const effectiveSignalWeight = useRevote ? revote.weight : nativeWeight;
-      const effectiveTs = useRevote ? revote.timestamp : nativeTs;
 
       // weight=0 means retracted
       if (effectiveSignalWeight === 0) continue;
 
-      // Staleness: only relevant when paper has content revisions
-      let stale = false;
-      if (latestRevisionTs && effectiveTs <= latestRevisionTs) {
-        stale = true;
-      }
-
       voters.push({
         voter,
         weight: effectiveSignalWeight,
-        stale,
-        effective_weight: stale ? 0 : effectiveSignalWeight,
+        effective_weight: effectiveSignalWeight,
       });
     }
 
@@ -1298,16 +1145,10 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string) {
       if (processedVoters.has(voter)) continue;
       if (revote.weight === 0) continue;
 
-      let stale = false;
-      if (latestRevisionTs && revote.timestamp <= latestRevisionTs) {
-        stale = true;
-      }
-
       voters.push({
         voter,
         weight: revote.weight,
-        stale,
-        effective_weight: stale ? 0 : revote.weight,
+        effective_weight: revote.weight,
       });
     }
 
@@ -1330,71 +1171,14 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string) {
   }
 }
 
-async function fetchEnrichmentFromHiveApi(author: string, permlink: string) {
-  try {
-    const [post, replies, accreditedAccounts] = await Promise.all([
-      hiveClient.database.call('get_content', [author, permlink]),
-      hiveClient.database.call('get_content_replies', [author, permlink]),
-      getAllAccreditedAccounts(),
-    ]);
-
-    if (!post || !post.author) return null;
-
-    const reviews = (replies || [])
-      .filter((r: Record<string, unknown>) => {
-        const rMeta = parseMeta(r.json_metadata);
-        const rAuthor = r.author as string;
-        return isPevoReview(rMeta) && (accreditedAccounts.has(rAuthor) || rAuthor === config.hiveAnonAccount);
-      })
-      .map((r: Record<string, unknown>) => {
-        const rMeta = parseMeta(r.json_metadata);
-        const pevo = safePevoMeta(rMeta);
-        const rating = pevo.rating as Record<string, number> | undefined;
-        return {
-          author: r.author as string,
-          permlink: r.permlink as string,
-          body: r.body as string,
-          rating: rating || { methodology: 0, novelty: 0, clarity: 0, significance: 0 },
-          is_anonymous: pevo.is_anonymous ?? false,
-          created: r.created as string,
-          net_votes: r.net_votes as number,
-          reviewer_reputation: 0,
-          is_accredited: accreditedAccounts.has(r.author as string) || (pevo.is_anonymous === true),
-          reviewed_version: (pevo.reviewed_version as number) || 1,
-        };
-      });
-
-    // §31: Hive API fallback — no version history available, assume non-stale
-    const activeVotes: Array<{ voter: string; percent: number }> = post.active_votes || [];
-    const voters = activeVotes
-      .filter((v) => accreditedAccounts.has(v.voter) && v.voter !== author)
-      .map((v) => ({ voter: v.voter, weight: v.percent, stale: false, effective_weight: v.percent }));
-    const netVotes = voters.reduce((sum, v) => sum + (v.weight > 0 ? 1 : v.weight < 0 ? -1 : 0), 0);
-
-    return {
-      net_votes: netVotes,
-      voters,
-      reviews,
-    };
-  } catch (err) {
-    logger.error({ err }, 'Hive API enrichment failed');
-    return null;
-  }
-}
-
 router.get('/:author/:permlink/enrichment', async (req: Request, res: Response) => {
   const author = req.params.author as string;
   const permlink = req.params.permlink as string;
 
   const cacheKey = `paper-enrichment:${author}:${permlink}`;
-  const cached = await hafCache.getOrSet(cacheKey, async () => {
-    if (isHafAvailable()) {
-      const result = await fetchEnrichmentFromHaf(author, permlink);
-      if (result) return result;
-    }
-
-    return fetchEnrichmentFromHiveApi(author, permlink);
-  }, 5 * 60_000, true);
+  const cached = await hafCache.getOrSet(cacheKey, () =>
+    fetchEnrichmentFromHaf(author, permlink),
+  5 * 60_000, true);
 
   if (!cached) return sendError(res, 404, 'NOT_FOUND', 'Paper not found');
   sendOk(res, cached);
@@ -1451,13 +1235,7 @@ router.post('/:author/:permlink/retract', verifyHiveSignature, retractLimiter, a
   const reason = (req.body.reason as string) || '';
 
   // Check paper exists
-  let detail: Record<string, unknown> | null = null;
-  if (isHafAvailable()) {
-    detail = await fetchPaperDetailFromHaf(author, permlink) as Record<string, unknown> | null;
-  }
-  if (!detail) {
-    detail = await fetchPaperDetailFromHiveApi(author, permlink) as Record<string, unknown> | null;
-  }
+  const detail = await fetchPaperDetailFromHaf(author, permlink) as Record<string, unknown> | null;
   if (!detail) {
     return sendError(res, 404, 'NOT_FOUND', 'Paper not found');
   }
@@ -1597,13 +1375,7 @@ router.get('/:author/:permlink/cite', async (req: Request, res: Response) => {
   }
 
   // Reuse paper detail fetch logic
-  let detail: Record<string, unknown> | null = null;
-  if (isHafAvailable()) {
-    detail = await fetchPaperDetailFromHaf(author, permlink) as Record<string, unknown> | null;
-  }
-  if (!detail) {
-    detail = await fetchPaperDetailFromHiveApi(author, permlink) as Record<string, unknown> | null;
-  }
+  const detail = await fetchPaperDetailFromHaf(author, permlink) as Record<string, unknown> | null;
   if (!detail) {
     return sendError(res, 404, 'NOT_FOUND', 'Paper not found');
   }

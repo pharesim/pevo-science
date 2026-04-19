@@ -315,11 +315,7 @@
     "reject": "Ret",
     "strongReject": "Güçlü ret",
     "retract": "Oyu geri çek",
-    "staleBanner": "Bu makale oyunuzdan bu yana revize edildi. Değişiklikleri inceleyin ve oyunuzu güncelleyin.",
-    "votesWithStale": "{active} oy ({stale} yeniden değerlendirme bekliyor)",
     "votesWithStrength": "{count} oy, {strength}",
-    "staleAtVersion": "{count} oy bu revizyondan beri yeniden değerlendirme bekliyor",
-    "pendingShort": "beklemede",
     "strength": {
       "strong_endorsement": "güçlü onay",
       "endorsement": "onay",

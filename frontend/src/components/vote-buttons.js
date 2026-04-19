@@ -32,18 +32,8 @@ export function initVoteButtons() {
 
     voters: opts.voters || [],
 
-    get myVoteIsStale() {
-      if (!this.username || !this.voters.length) return false;
-      const myVote = this.voters.find((v) => v.voter === this.username);
-      return myVote?.stale === true;
-    },
-
-    get staleVoteCount() {
-      return this.voters.filter((v) => v.stale === true).length;
-    },
-
     get activeVoteCount() {
-      return this.voters.filter((v) => v.stale !== true).length;
+      return this.voters.filter((v) => v.weight !== 0).length;
     },
 
     _isPastPayout() {
@@ -63,7 +53,6 @@ export function initVoteButtons() {
         this.voters = this.voters.filter((v) => v.voter !== this.username);
       } else if (existing) {
         existing.weight = weight;
-        existing.stale = false;
         existing.effective_weight = weight;
       }
     },
@@ -95,9 +84,6 @@ export function initVoteButtons() {
     },
 
     voteCountLabel() {
-      if (this.staleVoteCount > 0) {
-        return this.$t('vote.votesWithStale', { active: this.activeVoteCount, stale: this.staleVoteCount });
-      }
       const strength = this.strengthLabel();
       return this.$t('vote.votesWithStrength', { count: this.displayVotes, strength });
     },

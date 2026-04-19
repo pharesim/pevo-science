@@ -25,7 +25,7 @@ export async function checkHiveNodes(): Promise<void> {
   } catch (err) {
     logger.warn(
       { err, nodes: config.hiveApiNodes, reqId: getRequestId() },
-      'Hive API nodes unreachable at startup — Hive API fallback will be unavailable until nodes recover',
+      'Hive API nodes unreachable at startup — broadcasts will fail until nodes recover',
     );
   }
 }

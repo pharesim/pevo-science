@@ -1,9 +1,7 @@
 import { Router, type Request, type Response } from 'express';
-import { getPool, isHafAvailable } from '../db.js';
-import { hiveClient } from '../hive.js';
+import { getPool } from '../db.js';
 import { config } from '../config.js';
 import { sendOk, sendError } from '../response.js';
-import { parseMeta, isPevoAnyPaper } from '../helpers.js';
 import { getAccreditedSet } from '../accreditation.js';
 import { getReputationScores } from '../reputation.js';
 import { hafCache } from '../cache.js';
@@ -170,75 +168,6 @@ async function fetchCommentsFromHaf(
 }
 
 // ──────────────────────────────────────────────
-// Hive API fallback
-// ──────────────────────────────────────────────
-
-function isPevoComment(meta: Record<string, unknown>): boolean {
-  const appMeta = meta[config.appTag] as Record<string, unknown> | undefined;
-  return appMeta?.type === 'comment' && typeof meta.app === 'string' && (meta.app as string).startsWith(`${config.appTag}/`);
-}
-
-async function fetchCommentsFromHiveApi(
-  paperAuthor: string,
-  paperPermlink: string,
-  params: ReturnType<typeof parseCommentParams>,
-) {
-  const { limit, offset, accreditedOnly } = params;
-
-  try {
-    const allComments: Array<Record<string, unknown>> = [];
-
-    async function fetchReplies(author: string, permlink: string, depth: number) {
-      if (depth > 10) return; // safety limit for Hive API
-      const replies: Array<Record<string, unknown>> = await hiveClient.database.call(
-        'get_content_replies',
-        [author, permlink],
-      );
-      for (const reply of replies) {
-        const meta = parseMeta(reply.json_metadata);
-        if (isPevoComment(meta)) {
-          allComments.push(reply);
-          await fetchReplies(reply.author as string, reply.permlink as string, depth + 1);
-        }
-      }
-    }
-
-    await fetchReplies(paperAuthor, paperPermlink, 0);
-
-    const authors = [...new Set(allComments.map((c) => c.author as string))];
-    const [accreditedSet, reputationMap] = await Promise.all([
-      getAccreditedSet(authors),
-      getReputationScores(authors),
-    ]);
-
-    let filtered = allComments;
-    if (accreditedOnly) {
-      filtered = allComments.filter((c) => accreditedSet.has(c.author as string));
-    }
-
-    const total = filtered.length;
-    const paged = filtered.slice(offset, offset + limit);
-
-    const rows = paged.map((c) => ({
-      author: c.author,
-      permlink: c.permlink,
-      body: c.body,
-      created: c.created,
-      net_votes: (c.net_votes as number) ?? 0,
-      is_accredited: accreditedSet.has(c.author as string),
-      author_reputation: reputationMap.get(c.author as string) ?? 0,
-      parent_author: c.parent_author,
-      parent_permlink: c.parent_permlink,
-    }));
-
-    return { rows, total };
-  } catch (err) {
-    logger.error({ err }, 'Hive API comments query failed');
-    return { rows: [], total: 0 };
-  }
-}
-
-// ──────────────────────────────────────────────
 // GET /api/papers/:author/:permlink/comments
 // ──────────────────────────────────────────────
 
@@ -247,41 +176,20 @@ router.get('/', async (req: Request, res: Response) => {
   const permlink = req.params.permlink as string;
   const params = parseCommentParams(req);
 
-  // Verify paper exists
-  if (isHafAvailable()) {
-    const exists = await paperExistsInHaf(author, permlink);
-    if (exists === false) {
-      return sendError(res, 404, 'NOT_FOUND', 'Paper not found');
-    }
-
-    if (exists === true) {
-      const cacheKey = `comments:${author}:${permlink}:p=${params.page}:l=${params.limit}:s=${params.sort}:o=${params.order}:ao=${params.accreditedOnly}`;
-      const result = await hafCache.getOrSet(cacheKey, () =>
-        fetchCommentsFromHaf(author, permlink, params),
-      );
-      if (result) {
-        return sendOk(res, result.rows, { page: params.page, limit: params.limit, total: result.total });
-      }
-    }
-  }
-
-  // Hive API fallback — verify paper exists via get_content
-  try {
-    const post = await hiveClient.database.call('get_content', [author, permlink]);
-    if (!post || !post.author || post.parent_permlink !== config.appTag) {
-      return sendError(res, 404, 'NOT_FOUND', 'Paper not found');
-    }
-    const meta = parseMeta(post.json_metadata);
-    if (!isPevoAnyPaper(meta)) {
-      return sendError(res, 404, 'NOT_FOUND', 'Paper not found');
-    }
-  } catch (err) {
-    logger.warn({ err }, 'Hive API paper existence check failed');
+  const exists = await paperExistsInHaf(author, permlink);
+  if (exists === false || exists === null) {
     return sendError(res, 404, 'NOT_FOUND', 'Paper not found');
   }
 
-  const result = await fetchCommentsFromHiveApi(author, permlink, params);
-  sendOk(res, result.rows, { page: params.page, limit: params.limit, total: result.total });
+  const cacheKey = `comments:${author}:${permlink}:p=${params.page}:l=${params.limit}:s=${params.sort}:o=${params.order}:ao=${params.accreditedOnly}`;
+  const result = await hafCache.getOrSet(cacheKey, () =>
+    fetchCommentsFromHaf(author, permlink, params),
+  );
+  if (result) {
+    return sendOk(res, result.rows, { page: params.page, limit: params.limit, total: result.total });
+  }
+
+  sendOk(res, [], { page: params.page, limit: params.limit, total: 0 });
 });
 
 export default router;
