@@ -585,7 +585,7 @@ export class PevoEditor {
         },
       }),
       Placeholder.configure({
-        placeholder: this.placeholder ?? (isAbstract
+        placeholder: () => this.placeholder ?? (isAbstract
           ? this._t('placeholderAbstract')
           : this._t('placeholderBodyFull')),
       }),
@@ -661,6 +661,11 @@ export class PevoEditor {
           const _msgs = Alpine.store('i18n')?.messages;
           void _msgs; // track reactivity
           this._refreshTooltips();
+          if (this._els.mdTextarea) {
+            this._els.mdTextarea.placeholder = this.placeholder
+              || (this.isAbstract ? this._t('placeholderAbstract') : this._t('placeholderBody'));
+          }
+          if (this.editor) this.editor.view.dispatch(this.editor.state.tr);
         });
       }
     } catch { /* Alpine not available */ }
