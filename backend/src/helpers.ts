@@ -14,6 +14,7 @@ export interface PaperSummary {
   net_votes: number;
   vote_strength: string | null;
   review_count: number;
+  avg_rating: number;
   citation_count: number;
   author_reputation: number;
   is_accredited: boolean;
@@ -102,6 +103,7 @@ export function toPaperSummary(post: {
     net_votes: post.net_votes,
     vote_strength: null,
     review_count: 0,
+    avg_rating: 0,
     citation_count: 0,
     author_reputation: 0,
     is_accredited: false,

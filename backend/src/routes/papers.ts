@@ -279,6 +279,24 @@ async function fetchPapersFromHaf(req: Request): Promise<{ rows: unknown[]; tota
       AND (EXISTS (SELECT 1 FROM active_accreditations aa WHERE aa.account = r.author) OR r.author = ${anonParam})
   ), 0) AS review_count`;
 
+  // Average review rating: mean of all four rating dimensions across accredited reviews
+  const avgRatingSelect = `COALESCE((
+    SELECT round(avg(val)::numeric, 1)::float FROM (
+      SELECT (
+        (rv.json_metadata -> ${appTagParam} -> 'rating' ->> 'methodology')::float +
+        (rv.json_metadata -> ${appTagParam} -> 'rating' ->> 'novelty')::float +
+        (rv.json_metadata -> ${appTagParam} -> 'rating' ->> 'clarity')::float +
+        (rv.json_metadata -> ${appTagParam} -> 'rating' ->> 'significance')::float
+      ) / 4.0 AS val
+      FROM ${T.comments} rv
+      WHERE rv.parent_author = c.author AND rv.parent_permlink = c.permlink
+        AND (rv.json_metadata -> ${appTagParam} ->> 'type') = 'review'
+        AND rv.json_metadata ->> 'app' LIKE ${appLikeParam}
+        AND (EXISTS (SELECT 1 FROM active_accreditations aa WHERE aa.account = rv.author) OR rv.author = ${anonParam})
+        AND rv.json_metadata -> ${appTagParam} -> 'rating' IS NOT NULL
+    ) sub
+  ), 0) AS avg_rating`;
+
   // Citation count: accredited papers that cite this one (native papers only; bridge papers use Semantic Scholar)
   const citationCountSelect = `COALESCE((
     SELECT count(*)::int FROM ${T.comments} ci
@@ -311,6 +329,7 @@ async function fetchPapersFromHaf(req: Request): Promise<{ rows: unknown[]; tota
           ${voteSelect},
           ${reviewCountSelect},
           ${citationCountSelect},
+          ${avgRatingSelect},
           0 AS author_reputation
         FROM ${T.comments} c
         WHERE ${where}
@@ -358,6 +377,7 @@ async function fetchPapersFromHaf(req: Request): Promise<{ rows: unknown[]; tota
         net_votes: resolved?.net_votes ?? (r.net_votes as number),
         vote_strength: resolved?.vote_strength ?? null,
         review_count: (r.review_count as number) ?? 0,
+        avg_rating: (r.avg_rating as number) ?? 0,
         citation_count: (r.citation_count as number) ?? 0,
         author_reputation: batchScores.get(r.author as string) ?? 0,
         is_accredited: accreditedSet.has(r.author as string),
