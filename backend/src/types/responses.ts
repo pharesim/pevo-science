@@ -452,15 +452,6 @@ export interface RetractPaperResponse {
 
 // ─── DOI ─────────────────────────────────────────────────────
 
-export type DoiStatus = "registered" | "unregistered";
-
-export interface DoiResponse {
-  doi: string | null;
-  doi_url: string | null;
-  status: DoiStatus;
-  registered_at: string | null;
-}
-
 // ─── Notification Preferences ────────────────────────────────
 
 export type DigestFrequency = "daily" | "weekly";

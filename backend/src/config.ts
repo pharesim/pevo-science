@@ -71,10 +71,6 @@ export const config = {
   orcidSignupRedirectUri: process.env.ORCID_SIGNUP_REDIRECT_URI || '',
   orcidMinWorks: parseInt(process.env.ORCID_MIN_WORKS || '3', 10),
   orcidBaseUrl: process.env.NODE_ENV === 'production' ? 'https://orcid.org' : 'https://sandbox.orcid.org',
-  dataciteRepositoryId: process.env.DATACITE_REPOSITORY_ID || '',
-  datacitePassword: process.env.DATACITE_PASSWORD || '',
-  dataciteDoiPrefix: process.env.DATACITE_DOI_PREFIX || '',
-  dataciteApiUrl: process.env.DATACITE_API_URL || 'https://api.datacite.org',
 
   accreditationAuthorities: (() => {
     const extra = (process.env.ACCREDITATION_AUTHORITIES || '').split(',').map(s => s.trim()).filter(Boolean);
