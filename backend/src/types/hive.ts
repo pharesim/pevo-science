@@ -1,4 +1,4 @@
-// PEvO Hive-specific types — from docs/hive-schemas.md
+// PEvO Hive-specific types
 // Defines the json_metadata shapes and custom_json payloads.
 
 import type { PaperAuthor, Citation, Rating, AccreditationMethod, ReputationWeights } from "./domain.js";

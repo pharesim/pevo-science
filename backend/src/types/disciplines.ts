@@ -1,5 +1,4 @@
-// PEvO Discipline Taxonomy — based on OECD Fields of Research (Frascati Manual)
-// See ARCHITECTURE.md §21
+// PEvO Discipline Taxonomy - based on OECD Fields of Research (Frascati Manual)
 
 export interface DisciplineField {
   field: string;

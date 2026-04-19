@@ -4,9 +4,7 @@ A decentralized platform for open scientific publication and interactive peer ev
 
 ## What is PEvO?
 
-Scientists publish papers and peer reviews directly to Hive. Reputation scores are computed transparently from on-chain activity. Accredited researchers are verified through institutional email or ORCID. Large files are stored on IPFS. No paywalls, no gatekeepers, no publisher fees.
-
-See [docs/whitepaper-vision.md](docs/whitepaper-vision.md) for the full vision.
+Scientists publish or import papers and peer reviews directly to Hive. Reputation scores are computed transparently from on-chain activity. Accredited researchers are verified through institutional email, ORCID or a Web of Trust. Large files are stored on IPFS. No paywalls, no gatekeepers, no publisher fees.
 
 ## Architecture
 
@@ -41,9 +39,8 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for full system design.
   - Node.js 20+
   - PostgreSQL
   - Redis
-- [HAF SQL](https://gitlab.syncad.com/hive/haf) node (for production) or a Hive API node (for development)
-- [Hive Keychain](https://hive-keychain.com/) browser extension (for self-custody accounts; not needed for light accounts)
-- Hive accounts: `pevo.admin` (accreditation + bridge posting), `pevo.anon` (anonymous reviews), and an onboarding account for light account creation (RC-delegated)
+- [HAF SQL](https://gitlab.syncad.com/hive/haf) node and a Hive API node (for development)
+- Hive accounts: `pevo.admin` (accreditation + bridge posting), `pevo.anon` (anonymous reviews), `pevo.onboarding` (onboarding account for light account creation)
 
 ## Quick Start
 
@@ -52,10 +49,10 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for full system design.
 ```bash
 git clone <repo-url> pevo && cd pevo
 cp .env.example .env   # edit with your credentials
-docker compose up --build
+./deploy.sh restart
 ```
 
-This starts four services: PostgreSQL, Redis, Kubo (IPFS), and the backend (which serves the frontend). The app runs at `http://localhost:3001`.
+This builds and starts four services: PostgreSQL, Redis, Kubo (IPFS), and the backend (which serves the frontend). The app runs at `http://localhost:3001`.
 
 ### Configure environment
 
@@ -117,36 +114,87 @@ pevo/
 - **Structured evaluation:** Accredited reviewers choose from 6 vote levels (Strong endorsement to Strong reject). Non-accredited users can still upvote/downvote simply. Citation relevance is togglable per-citation.
 - **Vote staleness:** When a paper is revised, prior votes become stale and are excluded from reputation scoring until voters re-evaluate. Voters can re-vote via Hive or `custom_json` after the payout window closes.
 
-## API Overview
+## Deployment
 
-| Endpoint | Description |
-|----------|-------------|
-| `GET /api/papers` | List papers (filterable by discipline, source, sortable) |
-| `GET /api/papers/:author/:permlink` | Paper detail with reviews and citations |
-| `GET /api/profile/:username` | Researcher profile + reputation breakdown |
-| `GET /api/search?q=...` | Full-text search with filters |
-| `GET /api/researchers` | Researcher directory |
-| `GET /api/stats` | Platform-wide statistics |
-| `GET /api/notifications` | User notifications (block-cursor pagination) |
-| `POST /api/auth/session` | Session login (Keychain sign-in → JWT) |
-| `POST /api/auth/signup` | Light account signup (institutional email only) |
-| `POST /api/auth/login` | Light account password login |
-| `POST /api/custody/broadcast` | Sign and broadcast operations for light accounts |
-| `POST /api/custody/upgrade` | Finalize upgrade to self-custody |
-| `POST /api/accreditation/request` | Request accreditation via email |
-| `POST /api/accreditation/orcid/start` | Accreditation via ORCID OAuth |
-| `POST /api/ipfs/upload` | Upload file to IPFS (PDF, images, CSV, ZIP) |
-| `GET /api/ipfs/:cid` | Download IPFS file (validated against known papers) |
-| `POST /api/reviews/anonymous` | Submit anonymous review |
-| `GET /api/bridge/lookup` | Import preprint metadata (arXiv, PubMed, bioRxiv, ResearchGate, Semantic Scholar) |
-| `POST /api/bridge/register` | Register preprint for peer review on PEvO |
-| `GET /api/wot/:username` | Web of Trust vouch status |
+### Hive Accounts
 
-Full spec with all 40 endpoints: [docs/api-contract.md](docs/api-contract.md)
+Two Hive accounts must be created before deployment:
+
+| Account | Purpose | Key Requirements |
+|---------|---------|-----------------|
+| `pevo.admin` | Broadcasts accreditation `custom_json` | Posting key stored in backend env |
+| `pevo.anon` | Posts anonymous reviews | Posting key stored in backend env |
+
+Create these accounts via any Hive account creation service. Fund with enough RC (Resource Credits) for expected transaction volume. Delegate HP if needed.
+
+### Docker Stack
+
+The stack includes 4 services:
+- **postgres** — PostgreSQL for app state (1GB memory limit)
+- **redis** — Caching, rate limiting, ORCID state (256MB limit)
+- **ipfs** — Kubo node for file storage (1GB memory limit)
+- **backend** — Node.js API server + static frontend (health-checked)
+
+The backend serves both the API (`/api/*`) and the compiled Alpine.js frontend (all other routes). There is no separate frontend service.
+
+### Database
+
+The backend queries the HAF node using inline CTEs against the raw `hafsql.*` tables. **No `pevo` schema or CREATE privilege is required** on the HAF node. Set `HAF_DATABASE_URL` in `.env` (read-only access is sufficient).
+
+Docker Compose automatically creates the `pevo_app` database. Migrations in `backend/migrations/` run on first start.
+
+### Production
+
+The reverse proxy (TLS termination, routing) is managed outside of Docker Compose. Configure your reverse proxy to route all traffic to `localhost:3001`. Set `APP_URL` to your public base URL (e.g., `https://pevo.science`).
+
+### Manual Deployment
+
+```bash
+# Build frontend (outputs to backend/public/)
+cd frontend && npm ci && npm run build
+
+# Build and run backend (serves both API and frontend)
+cd backend && npm ci && npm run build
+NODE_ENV=production node dist/index.js
+```
+
+### Health Check
+
+```bash
+curl https://pevo.science/api/health
+# Expected: {"status":"ok","haf_available":true,"redis_available":true,"timestamp":"..."}
+```
+
+### Backups
+
+The `scripts/backup.sh` script dumps the `pevo_app` database daily and retains the last 7 backups.
+
+```bash
+# Install the daily backup cron job
+sudo cp scripts/backup.sh /usr/local/bin/pevo-backup
+sudo chmod +x /usr/local/bin/pevo-backup
+
+# Add cron entry (daily at 03:00)
+echo "0 3 * * * root APP_DATABASE_URL=postgresql://pevo:PASS@localhost:5432/pevo_app /usr/local/bin/pevo-backup >> /var/log/pevo-backup.log 2>&1" | sudo tee /etc/cron.d/pevo-backup
+```
+
+Restore: `gunzip -c /var/backups/pevo/pevo_app_YYYYMMDD.sql.gz | psql $APP_DATABASE_URL`
+
+### Security Checklist
+
+- [ ] All private keys stored in environment variables, never in code or version control
+- [ ] `.env` files excluded from git (`.gitignore`)
+- [ ] CORS restricted to `APP_URL` in production
+- [ ] TLS termination at reverse proxy
+- [ ] Rate limiting enabled on all public endpoints
+- [ ] Redis authentication enabled if exposed
+- [ ] HAF database user has read-only access to `hafsql.*` schema
+- [ ] IPFS gateway proxied through backend, never expose raw Kubo gateway
+- [ ] Anonymous review encryption key is unique, random 32 bytes
 
 ## Development
 
-This project uses AI coding assistants for implementation. Architecture, standards research, and all review/integration decisions are made by the lead developer.
+This project uses AI coding assistance (Claude Code) for implementation. Architecture, standards research, and all review/integration decisions are made by the lead developer.
 
 ## License
 

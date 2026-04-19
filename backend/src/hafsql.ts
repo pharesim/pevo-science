@@ -2,8 +2,8 @@
  * HafSQL query fragments.
  *
  * Since we cannot create views on the public HafSQL database, these
- * functions provide reusable SQL snippets that replace the speculative
- * `pevo.*` views from docs/haf-views.sql.
+ * functions provide reusable SQL snippets (inline CTEs) for querying
+ * PEvO data from the raw hafsql.* tables.
  *
  * All fragments use parameterized queries for config.appTag (defense-in-depth).
  * Each builder function accepts a `startIdx` (the next available $N parameter

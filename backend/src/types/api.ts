@@ -1,4 +1,4 @@
-// PEvO API Types — canonical definitions from docs/api-contract.md
+// PEvO API Types — canonical definitions
 // Both frontend and backend should import from this package.
 
 // ─── Common Envelope ─────────────────────────────────────────────

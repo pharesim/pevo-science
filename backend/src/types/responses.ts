@@ -1,4 +1,4 @@
-// PEvO API Response Shapes — from docs/api-contract.md
+// PEvO API Response Shapes
 // These define exactly what the API returns for each endpoint.
 
 import type {
