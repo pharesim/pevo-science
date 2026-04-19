@@ -78,7 +78,9 @@
     "resultsFound": "{count, plural, one {# resultaat} other {# resultaten}} gevonden",
     "noResults": "Geen resultaten gevonden voor uw zoekopdracht.",
     "initialPrompt": "Voer een zoekopdracht in om publicaties en reviews te vinden.",
-    "searchFailed": "Zoeken mislukt. Probeer het opnieuw."
+    "searchFailed": "Zoeken mislukt. Probeer het opnieuw.",
+    "reviewOn": "Beoordeling van @{author}/{permlink}",
+    "reviewBy": "Beoordeling door @{author}"
   },
   "profile": {
     "notFoundTitle": "Onderzoeker niet gevonden",
@@ -315,6 +317,7 @@
     "reject": "Afwijzen",
     "strongReject": "Sterk afwijzen",
     "retract": "Stem intrekken",
+    "outdatedNotice": "Uw beoordeling is voor v{votedVersion}. Het artikel is bijgewerkt naar v{latestVersion}.",
     "votesWithStrength": "{count} stemmen, {strength}",
     "strength": {
       "strong_endorsement": "sterke goedkeuring",

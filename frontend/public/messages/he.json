@@ -78,7 +78,9 @@
     "resultsFound": "{count, plural, one {נמצאה תוצאה #} other {נמצאו # תוצאות}}",
     "noResults": "לא נמצאו תוצאות לחיפוש שלכם.",
     "initialPrompt": "הזינו שאילתת חיפוש כדי למצוא מאמרים וביקורות.",
-    "searchFailed": "החיפוש נכשל. אנא נסו שנית."
+    "searchFailed": "החיפוש נכשל. אנא נסו שנית.",
+    "reviewOn": "סקירה על @{author}/{permlink}",
+    "reviewBy": "סקירה מאת @{author}"
   },
   "profile": {
     "notFoundTitle": "החוקר לא נמצא",
@@ -315,6 +317,7 @@
     "reject": "דחייה",
     "strongReject": "דחייה חזקה",
     "retract": "משיכת הצבעה",
+    "outdatedNotice": "ההערכה שלך היא עבור v{votedVersion}. המאמר עודכן לגרסה v{latestVersion}.",
     "votesWithStrength": "{count} הצבעות, {strength}",
     "strength": {
       "strong_endorsement": "תמיכה חזקה",

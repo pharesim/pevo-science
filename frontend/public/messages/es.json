@@ -78,7 +78,9 @@
     "resultsFound": "{count, plural, one {# resultado} other {# resultados}} encontrados",
     "noResults": "No se encontraron resultados para su búsqueda.",
     "initialPrompt": "Introduzca un término de búsqueda para encontrar artículos y revisiones.",
-    "searchFailed": "La búsqueda falló. Inténtelo de nuevo."
+    "searchFailed": "La búsqueda falló. Inténtelo de nuevo.",
+    "reviewOn": "Revisión de @{author}/{permlink}",
+    "reviewBy": "Revisión por @{author}"
   },
   "profile": {
     "notFoundTitle": "Investigador no encontrado",
@@ -315,6 +317,7 @@
     "reject": "Rechazar",
     "strongReject": "Rechazo fuerte",
     "retract": "Retirar voto",
+    "outdatedNotice": "Su evaluación es para v{votedVersion}. El artículo ha sido actualizado a v{latestVersion}.",
     "votesWithStrength": "{count} votos, {strength}",
     "strength": {
       "strong_endorsement": "fuerte aprobación",

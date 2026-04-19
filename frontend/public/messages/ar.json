@@ -78,7 +78,9 @@
     "resultsFound": "{count, plural, one {نتيجة واحدة} other {# نتيجة}} تم العثور عليها",
     "noResults": "لم يتم العثور على نتائج لبحثك.",
     "initialPrompt": "أدخل استعلام بحث للعثور على الأبحاث والمراجعات.",
-    "searchFailed": "فشل البحث. يرجى المحاولة مرة أخرى."
+    "searchFailed": "فشل البحث. يرجى المحاولة مرة أخرى.",
+    "reviewOn": "مراجعة على @{author}/{permlink}",
+    "reviewBy": "مراجعة بواسطة @{author}"
   },
   "profile": {
     "notFoundTitle": "الباحث غير موجود",
@@ -315,6 +317,7 @@
     "reject": "رفض",
     "strongReject": "رفض قوي",
     "retract": "سحب التصويت",
+    "outdatedNotice": "تقييمك للإصدار v{votedVersion}. تم تحديث الورقة إلى الإصدار v{latestVersion}.",
     "votesWithStrength": "{count} أصوات، {strength}",
     "strength": {
       "strong_endorsement": "تأييد قوي",

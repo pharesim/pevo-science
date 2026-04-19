@@ -78,7 +78,9 @@
     "resultsFound": "{count, plural, one {# نتیجه} other {# نتیجه}} یافت شد",
     "noResults": "نتیجه‌ای برای جستجوی شما یافت نشد.",
     "initialPrompt": "عبارت مورد نظر را وارد کنید تا مقالات و داوری‌ها را بیابید.",
-    "searchFailed": "جستجو ناموفق بود. لطفا دوباره تلاش کنید."
+    "searchFailed": "جستجو ناموفق بود. لطفا دوباره تلاش کنید.",
+    "reviewOn": "بررسی @{author}/{permlink}",
+    "reviewBy": "بررسی توسط @{author}"
   },
   "profile": {
     "notFoundTitle": "پژوهشگر یافت نشد",
@@ -315,6 +317,7 @@
     "reject": "رد",
     "strongReject": "رد قوی",
     "retract": "پس گرفتن رأی",
+    "outdatedNotice": "ارزیابی شما برای نسخه v{votedVersion} است. مقاله به نسخه v{latestVersion} به‌روزرسانی شده است.",
     "votesWithStrength": "{count} رأی، {strength}",
     "strength": {
       "strong_endorsement": "تأیید قوی",

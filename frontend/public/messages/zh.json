@@ -78,7 +78,9 @@
     "resultsFound": "找到 {count, plural, one {# 个结果} other {# 个结果}}",
     "noResults": "未找到相关搜索结果。",
     "initialPrompt": "输入搜索关键词以查找论文和评审。",
-    "searchFailed": "搜索失败，请重试。"
+    "searchFailed": "搜索失败，请重试。",
+    "reviewOn": "对 @{author}/{permlink} 的评审",
+    "reviewBy": "@{author} 的评审"
   },
   "profile": {
     "notFoundTitle": "研究人员未找到",
@@ -315,6 +317,7 @@
     "reject": "拒绝",
     "strongReject": "强烈拒绝",
     "retract": "撤回投票",
+    "outdatedNotice": "您的评价针对的是 v{votedVersion}。论文已更新至 v{latestVersion}。",
     "votesWithStrength": "{count} 票，{strength}",
     "strength": {
       "strong_endorsement": "强烈支持",

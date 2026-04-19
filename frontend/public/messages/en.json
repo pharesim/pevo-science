@@ -78,7 +78,9 @@
     "resultsFound": "{count, plural, one {# result} other {# results}} found",
     "noResults": "No results found for your search.",
     "initialPrompt": "Enter a search query to find papers and reviews.",
-    "searchFailed": "Search failed. Please try again."
+    "searchFailed": "Search failed. Please try again.",
+    "reviewOn": "Review on @{author}/{permlink}",
+    "reviewBy": "Review by @{author}"
   },
   "profile": {
     "notFoundTitle": "Researcher Not Found",
@@ -315,6 +317,7 @@
     "reject": "Reject",
     "strongReject": "Strong reject",
     "retract": "Retract vote",
+    "outdatedNotice": "Your evaluation is for v{votedVersion}. The paper has been updated to v{latestVersion}.",
     "votesWithStrength": "{count} votes, {strength}",
     "strength": {
       "strong_endorsement": "strong endorsement",

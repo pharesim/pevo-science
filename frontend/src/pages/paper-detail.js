@@ -429,6 +429,9 @@ const template = `
                     </button>
                   </div>
                 </template>
+                <template x-if="voteIsOutdated">
+                  <p class="text-xs text-amber-600 mt-1.5" x-text="$t('vote.outdatedNotice', { votedVersion: myVotedVersion, latestVersion: _latestVersion() })"></p>
+                </template>
               </div>
               </template>
 

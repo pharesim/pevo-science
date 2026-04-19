@@ -78,7 +78,9 @@
     "resultsFound": "{count, plural, one {# sonuç} other {# sonuç}} bulundu",
     "noResults": "Aramanız için sonuç bulunamadı.",
     "initialPrompt": "Makale ve değerlendirme bulmak için bir arama sorgusu girin.",
-    "searchFailed": "Arama başarısız oldu. Lütfen tekrar deneyin."
+    "searchFailed": "Arama başarısız oldu. Lütfen tekrar deneyin.",
+    "reviewOn": "İnceleme: @{author}/{permlink}",
+    "reviewBy": "@{author} tarafından inceleme"
   },
   "profile": {
     "notFoundTitle": "Araştırmacı Bulunamadı",
@@ -315,6 +317,7 @@
     "reject": "Ret",
     "strongReject": "Güçlü ret",
     "retract": "Oyu geri çek",
+    "outdatedNotice": "Değerlendirmeniz v{votedVersion} içindir. Makale v{latestVersion} sürümüne güncellenmiştir.",
     "votesWithStrength": "{count} oy, {strength}",
     "strength": {
       "strong_endorsement": "güçlü onay",

@@ -78,7 +78,9 @@
     "resultsFound": "{count, plural, one {# výsledek} few {# výsledky} other {# výsledků}} nalezeno",
     "noResults": "Pro váš dotaz nebyly nalezeny žádné výsledky.",
     "initialPrompt": "Zadejte vyhledávací dotaz pro nalezení článků a recenzí.",
-    "searchFailed": "Vyhledávání selhalo. Zkuste to prosím znovu."
+    "searchFailed": "Vyhledávání selhalo. Zkuste to prosím znovu.",
+    "reviewOn": "Recenze na @{author}/{permlink}",
+    "reviewBy": "Recenze od @{author}"
   },
   "profile": {
     "notFoundTitle": "Výzkumník nenalezen",
@@ -315,6 +317,7 @@
     "reject": "Zamítnutí",
     "strongReject": "Silné zamítnutí",
     "retract": "Stáhnout hlas",
+    "outdatedNotice": "Vaše hodnocení je pro v{votedVersion}. Článek byl aktualizován na v{latestVersion}.",
     "votesWithStrength": "{count} hlasů, {strength}",
     "strength": {
       "strong_endorsement": "silné schválení",

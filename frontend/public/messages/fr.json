@@ -78,7 +78,9 @@
     "resultsFound": "{count, plural, one {# résultat} other {# résultats}} trouvé(s)",
     "noResults": "Aucun résultat pour votre recherche.",
     "initialPrompt": "Saisissez un terme de recherche pour trouver des articles et des évaluations.",
-    "searchFailed": "La recherche a échoué. Veuillez réessayer."
+    "searchFailed": "La recherche a échoué. Veuillez réessayer.",
+    "reviewOn": "Évaluation de @{author}/{permlink}",
+    "reviewBy": "Évaluation par @{author}"
   },
   "profile": {
     "notFoundTitle": "Chercheur introuvable",
@@ -315,6 +317,7 @@
     "reject": "Rejet",
     "strongReject": "Rejet fort",
     "retract": "Retirer le vote",
+    "outdatedNotice": "Votre évaluation porte sur la v{votedVersion}. L'article a été mis à jour en v{latestVersion}.",
     "votesWithStrength": "{count} votes, {strength}",
     "strength": {
       "strong_endorsement": "forte approbation",

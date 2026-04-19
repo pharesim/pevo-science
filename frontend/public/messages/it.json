@@ -78,7 +78,9 @@
     "resultsFound": "{count, plural, one {# risultato trovato} other {# risultati trovati}}",
     "noResults": "Nessun risultato trovato per la tua ricerca.",
     "initialPrompt": "Inserisci una query di ricerca per trovare articoli e revisioni.",
-    "searchFailed": "Ricerca fallita. Riprova."
+    "searchFailed": "Ricerca fallita. Riprova.",
+    "reviewOn": "Recensione di @{author}/{permlink}",
+    "reviewBy": "Recensione di @{author}"
   },
   "profile": {
     "notFoundTitle": "Ricercatore Non Trovato",
@@ -315,6 +317,7 @@
     "reject": "Rifiuto",
     "strongReject": "Forte rifiuto",
     "retract": "Ritira voto",
+    "outdatedNotice": "La tua valutazione è per v{votedVersion}. L'articolo è stato aggiornato alla v{latestVersion}.",
     "votesWithStrength": "{count} voti, {strength}",
     "strength": {
       "strong_endorsement": "forte approvazione",

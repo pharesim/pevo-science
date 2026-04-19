@@ -78,7 +78,9 @@
     "resultsFound": "{count, plural, one {# Ergebnis} other {# Ergebnisse}} gefunden",
     "noResults": "Keine Ergebnisse für Ihre Suche gefunden.",
     "initialPrompt": "Geben Sie einen Suchbegriff ein, um Publikationen und Begutachtungen zu finden.",
-    "searchFailed": "Suche fehlgeschlagen. Bitte versuchen Sie es erneut."
+    "searchFailed": "Suche fehlgeschlagen. Bitte versuchen Sie es erneut.",
+    "reviewOn": "Gutachten zu @{author}/{permlink}",
+    "reviewBy": "Gutachten von @{author}"
   },
   "profile": {
     "notFoundTitle": "Forschende Person nicht gefunden",
@@ -315,6 +317,7 @@
     "reject": "Ablehnung",
     "strongReject": "Starke Ablehnung",
     "retract": "Bewertung zurückziehen",
+    "outdatedNotice": "Ihre Bewertung bezieht sich auf v{votedVersion}. Der Artikel wurde auf v{latestVersion} aktualisiert.",
     "votesWithStrength": "{count} Stimmen, {strength}",
     "strength": {
       "strong_endorsement": "starke Zustimmung",

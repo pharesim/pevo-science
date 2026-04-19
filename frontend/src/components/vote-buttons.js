@@ -32,6 +32,16 @@ export function initVoteButtons() {
 
     voters: opts.voters || [],
 
+    get myVotedVersion() {
+      if (!this.username) return null;
+      const entry = this.voters.find((v) => v.voter === this.username);
+      return entry ? (entry.voted_version ?? null) : null;
+    },
+
+    get voteIsOutdated() {
+      return this.myVotedVersion !== null && this.myVotedVersion < this._latestVersion();
+    },
+
     get activeVoteCount() {
       return this.voters.filter((v) => v.weight !== 0).length;
     },

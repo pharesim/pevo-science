@@ -78,7 +78,9 @@
     "resultsFound": "{count, plural, one {# resultat} other {# resultat}} hittade",
     "noResults": "Inga resultat hittades för din sökning.",
     "initialPrompt": "Ange en sökfråga för att hitta artiklar och recensioner.",
-    "searchFailed": "Sökningen misslyckades. Försök igen."
+    "searchFailed": "Sökningen misslyckades. Försök igen.",
+    "reviewOn": "Recension av @{author}/{permlink}",
+    "reviewBy": "Recension av @{author}"
   },
   "profile": {
     "notFoundTitle": "Forskaren hittades inte",
@@ -315,6 +317,7 @@
     "reject": "Avslag",
     "strongReject": "Starkt avslag",
     "retract": "Dra tillbaka röst",
+    "outdatedNotice": "Din utvärdering gäller v{votedVersion}. Artikeln har uppdaterats till v{latestVersion}.",
     "votesWithStrength": "{count} röster, {strength}",
     "strength": {
       "strong_endorsement": "starkt stöd",

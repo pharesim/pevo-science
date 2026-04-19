@@ -78,7 +78,9 @@
     "resultsFound": "{count, plural, one {# wynik} few {# wyniki} many {# wyników} other {# wyników}}",
     "noResults": "Nie znaleziono wyników dla tego zapytania.",
     "initialPrompt": "Wpisz zapytanie, aby wyszukać publikacje i recenzje.",
-    "searchFailed": "Wyszukiwanie nie powiodło się. Spróbuj ponownie."
+    "searchFailed": "Wyszukiwanie nie powiodło się. Spróbuj ponownie.",
+    "reviewOn": "Recenzja @{author}/{permlink}",
+    "reviewBy": "Recenzja autorstwa @{author}"
   },
   "profile": {
     "notFoundTitle": "Nie znaleziono naukowca",
@@ -315,6 +317,7 @@
     "reject": "Odrzucenie",
     "strongReject": "Silne odrzucenie",
     "retract": "Wycofaj głos",
+    "outdatedNotice": "Twoja ocena dotyczy v{votedVersion}. Artykuł został zaktualizowany do v{latestVersion}.",
     "votesWithStrength": "{count} głosów, {strength}",
     "strength": {
       "strong_endorsement": "silne poparcie",

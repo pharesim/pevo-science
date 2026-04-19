@@ -78,7 +78,9 @@
     "resultsFound": "{count, plural, one {# resultat} other {# resultater}} fundet",
     "noResults": "Ingen resultater fundet for din søgning.",
     "initialPrompt": "Indtast en søgning for at finde artikler og bedømmelser.",
-    "searchFailed": "Søgningen mislykkedes. Prøv venligst igen."
+    "searchFailed": "Søgningen mislykkedes. Prøv venligst igen.",
+    "reviewOn": "Anmeldelse af @{author}/{permlink}",
+    "reviewBy": "Anmeldelse af @{author}"
   },
   "profile": {
     "notFoundTitle": "Forsker ikke fundet",
@@ -315,6 +317,7 @@
     "reject": "Afvisning",
     "strongReject": "Stærk afvisning",
     "retract": "Træk stemme tilbage",
+    "outdatedNotice": "Din vurdering er for v{votedVersion}. Artiklen er opdateret til v{latestVersion}.",
     "votesWithStrength": "{count} stemmer, {strength}",
     "strength": {
       "strong_endorsement": "stærk opbakning",
