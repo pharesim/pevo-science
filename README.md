@@ -95,7 +95,8 @@ See `.env.example` for the full list of options (Redis, ORCID OAuth, DataCite DO
 pevo/
   .env.example            Environment template (single file for all services)
   docker-compose.yml      Full stack (postgres, redis, ipfs, backend)
-  ARCHITECTURE.md         System design (single source of truth)
+  agents/docs/            Architecture docs, API contracts, task tracking
+    ARCHITECTURE.md       System design (single source of truth)
   backend/                Node.js + Express API (types in src/types/)
   frontend/               Alpine.js SPA (Vite build, served by backend)
   pinner/                 Community pinner — standalone Go binary with embedded IPFS node
@@ -193,9 +194,20 @@ Restore: `gunzip -c /var/backups/pevo/pevo_app_YYYYMMDD.sql.gz | psql $APP_DATAB
 - [ ] IPFS gateway proxied through backend, never expose raw Kubo gateway
 - [ ] Anonymous review encryption key is unique, random 32 bytes
 
-## Development
+## AI usage in development
 
 This project uses AI coding assistance (Claude Code) for implementation. Architecture, standards research, and all review/integration decisions are made by the lead developer.
+
+The agent configuration is committed for transparency:
+
+- [CLAUDE.md](CLAUDE.md) — project-wide instructions for all AI agents
+- [agents/architect/](agents/architect/), [agents/backend/](agents/backend/), [agents/ui/](agents/ui/), [agents/pinner/](agents/pinner/) — role-specific agent instructions
+- [agents/docs/ARCHITECTURE.md](agents/docs/ARCHITECTURE.md) — system design
+- [agents/docs/api-contracts/](agents/docs/api-contracts/) — API contract specifications
+- [agents/docs/TASKS.md](agents/docs/TASKS.md) — task tracking between agents
+- [agents/docs/reputation-algorithm.md](agents/docs/reputation-algorithm.md) — reputation scoring algorithm
+- [agents/docs/hive-schemas.md](agents/docs/hive-schemas.md) — Hive custom_json schemas
+- [agents/tools/reputation-sim.ts](agents/tools/reputation-sim.ts) — reputation simulation tool
 
 ## License
 

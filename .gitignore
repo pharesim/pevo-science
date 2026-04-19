@@ -23,12 +23,7 @@ Thumbs.db
 pevo_design/
 
 # Agent coordination files (internal workflow)
-agents/
-AGENTS.md
-ARCHITECTURE.md
-TASKS.md
-BLOCKED.md
-CLAUDE.md
+agents/docs/blog/
 Whitepaper*.docx
 
 # Docker local overrides
