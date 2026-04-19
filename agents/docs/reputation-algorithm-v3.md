@@ -1,9 +1,9 @@
-# PEvO Reputation Algorithm — v0.4
+# PEvO Reputation Algorithm — v0.5
 
 > **Owner:** Architect Agent
-> **Version:** 0.4
-> **Date:** 2026-04-18
-> **Status:** Implemented. All-SQL computation is the sole path. No JS reference implementation.
+> **Version:** 0.5
+> **Date:** 2026-04-19
+> **Status:** Implemented. Single all-users SQL query per batch cycle. No JS computation.
 
 ---
 
@@ -280,22 +280,22 @@ decay(age_months) =
     "decay_grace_months": 6,
     "cycle_blocks": 28800
   },
-  "rationale": "v0.4 — deterministic cycle-based computation, all-SQL reputation",
+  "rationale": "v0.5 — single batch query per cycle, weights CTE",
   "timestamp": "<ISO 8601>"
 }
 ```
 
 ---
 
-## Canonical SQL Query — Full Reputation Computation
+## Canonical SQL Query
 
-This SQL query **is** the algorithm definition. It computes the complete reputation score for a single user in one query. Anyone with HAF access can run it and get identical scores given the same inputs.
+This SQL query **is** the algorithm definition. It computes reputation scores for all target users in a single pass. Shared CTEs (cycle_ref, prev_scores, active_accounts, voter_weights) run once regardless of user count. Anyone with HAF access can run it and get identical scores given the same inputs.
 
 ### Parameters
 
 | Param | Type | Description |
 |-------|------|-------------|
-| `$1` | `text` | Username (the user whose reputation is being computed) |
+| `$1` | `text[]` | Target usernames (users whose reputation is being computed) |
 | `$2` | `text[]` | Array of all accredited account names |
 | `$3` | `text` | `APP_TAG` (e.g., `pevotest`) |
 | `$4` | `text` | `APP_TAG/%` (app LIKE pattern, e.g., `pevotest/%`) |
@@ -312,30 +312,49 @@ This SQL query **is** the algorithm definition. It computes the complete reputat
 | `$15` | `numeric` | `W_decay_rate` (default 0.02) |
 | `$16` | `numeric` | `W_decay_floor` (default 0.3) |
 | `$17` | `numeric` | `W_decay_grace_months` (default 6) |
-| `$18` | `boolean` | `is_accredited`: whether `$1` is in the accredited set |
 
 ### Return
 
+One row per target user:
 ```json
-{"score": 54.0, "papers": 12.0, "reviews": 8.0, "citations": 4.0, "accreditation": 5}
+{"username": "alice", "score": 29.0, "papers": 12.0, "reviews": 8.0, "citations": 4.0, "accreditation": 5}
 ```
 
 ### Query
 
 ```sql
 -- ═══════════════════════════════════════════════════════════════════
--- PEvO Reputation — Canonical SQL Query (v0.4)
+-- PEvO Reputation — Canonical SQL Query (v0.5)
 --
--- Computes the full reputation score for user $1.
+-- Computes reputation scores for all target users in one pass.
 -- Deterministic: same inputs → same output, no time-based functions.
 -- ═══════════════════════════════════════════════════════════════════
 
 WITH
 
+-- ── Cast weight parameters once ─────────────────────────────────
+w AS (SELECT
+  $8::numeric  AS paper,
+  $9::numeric  AS review,
+  $10::numeric AS downvote,
+  $11::numeric AS citation,
+  $12::numeric AS citation_max,
+  $13::numeric AS accreditation_bonus,
+  $14::numeric AS self_citation_discount,
+  $15::numeric AS decay_rate,
+  $16::numeric AS decay_floor,
+  $17::numeric AS decay_grace_months
+),
+
+-- ── Target users ────────────────────────────────────────────────
+target_users AS (
+  SELECT unnest AS username FROM unnest($1::text[])
+),
+
 -- ── Reference timestamp from cycle_end_block ────────────────────
 -- Used for age-based decay. No NOW() or time functions.
 cycle_ref AS (
-  SELECT b.created_at AS ref_ts
+  SELECT b.timestamp AS ref_ts
   FROM hafsql.haf_blocks b
   WHERE b.block_num = $6 - 1
 ),
@@ -371,7 +390,7 @@ active_accounts AS (
 -- Not in prev_scores:        1.0 (bootstrap/new account)
 voter_weights AS (
   SELECT
-    a.unnest AS voter,
+    a.voter,
     CASE
       WHEN ps.rep IS NULL THEN 1.0  -- not in prev scores → bootstrap
       WHEN aa.author IS NOT NULL THEN  -- active voter
@@ -379,76 +398,78 @@ voter_weights AS (
       ELSE  -- inactive voter
         LEAST(1.0, sqrt(ps.rep / 100.0))
     END AS vw
-  FROM unnest($2::text[]) a
-  LEFT JOIN prev_scores ps ON ps.username = a.unnest
-  LEFT JOIN active_accounts aa ON aa.author = a.unnest
+  FROM unnest($2::text[]) AS a(voter)
+  LEFT JOIN prev_scores ps ON ps.username = a.voter
+  LEFT JOIN active_accounts aa ON aa.author = a.voter
 ),
 
--- ═══════════════════════════════════════════════════════════════════
--- PAPERS
--- ═══════════════════════════════════════════════════════════════════
-
+-- ═══ PAPERS ═══
 user_papers AS (
   SELECT c.author, c.permlink, c.created, c.json_metadata
   FROM hafsql.comments c
-  WHERE c.author = $1
+  WHERE c.author IN (SELECT username FROM target_users)
     AND c.parent_author = '' AND c.parent_permlink = $3
     AND (c.json_metadata -> $3 ->> 'type') = 'paper'
     AND c.json_metadata ->> 'app' LIKE $4
-    AND (c.json_metadata -> $3 -> 'continues') IS NULL  -- exclude continuation posts
+    AND (c.json_metadata -> $3 -> 'continues') IS NULL
 ),
 
--- All vote signals on user's papers (native + revote), latest per voter per paper
+paper_revisions AS (
+  SELECT co.author, co.permlink, MAX(co.block_num) AS latest_revision_block
+  FROM hafsql.operation_comment_view co
+  WHERE co.author IN (SELECT username FROM target_users)
+    AND co.parent_author = '' AND co.parent_permlink = $3
+    AND co.block_num < $6
+  GROUP BY co.author, co.permlink
+  HAVING COUNT(*) > 1
+),
+
 paper_vote_signals AS (
-  SELECT voter, permlink, weight, block_num FROM (
-    -- Native Hive votes
-    SELECT vo.voter, vo.permlink, vo.weight, vo.block_num
+  SELECT voter, author, permlink, weight, block_num FROM (
+    SELECT vo.voter, vo.author, vo.permlink, vo.weight, vo.block_num
     FROM hafsql.operation_vote_view vo
     WHERE vo.voter = ANY($2::text[])
-      AND vo.author = $1
-      AND vo.permlink IN (SELECT permlink FROM user_papers)
-      AND vo.block_num >= $7
-      AND vo.block_num < $6
+      AND vo.author IN (SELECT username FROM target_users)
+      AND EXISTS (SELECT 1 FROM user_papers up WHERE up.author = vo.author AND up.permlink = vo.permlink)
+      AND vo.block_num >= $7 AND vo.block_num < $6
     UNION ALL
-    -- Revote custom_json
     SELECT
       cj.required_posting_auths ->> 0 AS voter,
+      cj.json::jsonb ->> 'author' AS author,
       cj.json::jsonb ->> 'permlink' AS permlink,
       (cj.json::jsonb ->> 'weight')::int AS weight,
       cj.block_num
     FROM hafsql.operation_custom_json_view cj
     WHERE cj.custom_id = $3
       AND cj.json::jsonb ->> 'action' = 'revote'
-      AND cj.json::jsonb ->> 'author' = $1
-      AND cj.block_num >= $7
-      AND cj.block_num < $6
+      AND cj.json::jsonb ->> 'author' IN (SELECT username FROM target_users)
+      AND cj.block_num >= $7 AND cj.block_num < $6
       AND cj.required_posting_auths ->> 0 = ANY($2::text[])
   ) all_signals
 ),
 
--- Latest signal per voter per paper (highest block_num wins)
 paper_latest_votes AS (
-  SELECT DISTINCT ON (voter, permlink) voter, permlink, weight, block_num
+  SELECT DISTINCT ON (voter, author, permlink) voter, author, permlink, weight, block_num
   FROM paper_vote_signals
-  ORDER BY voter, permlink, block_num DESC
+  ORDER BY voter, author, permlink, block_num DESC
 ),
 
--- Resolved paper votes: exclude self-votes, co-author votes, retracted (weight=0)
 paper_resolved_votes AS (
-  SELECT plv.voter, plv.permlink, plv.weight
+  SELECT plv.voter, plv.author, plv.permlink, plv.weight, plv.block_num
   FROM paper_latest_votes plv
-  JOIN user_papers up ON up.permlink = plv.permlink
+  JOIN user_papers up ON up.author = plv.author AND up.permlink = plv.permlink
+  LEFT JOIN paper_revisions prev ON prev.author = plv.author AND prev.permlink = plv.permlink
   WHERE plv.voter != up.author
-    AND plv.weight != 0  -- exclude retractions
+    AND plv.weight != 0
     AND NOT EXISTS (
       SELECT 1 FROM jsonb_array_elements(up.json_metadata -> $3 -> 'authors') a
       WHERE a ->> 'hive' = plv.voter
     )
+    AND (prev.latest_revision_block IS NULL OR plv.block_num > prev.latest_revision_block)
 ),
 
--- Paper review quality: avg star rating / 5
 paper_reviews AS (
-  SELECT up.permlink,
+  SELECT up.author, up.permlink,
     AVG(
       ((c.json_metadata -> $3 -> 'rating' ->> 'methodology')::numeric +
        (c.json_metadata -> $3 -> 'rating' ->> 'novelty')::numeric +
@@ -460,133 +481,122 @@ paper_reviews AS (
     ON c.parent_author = up.author AND c.parent_permlink = up.permlink
     AND (c.json_metadata -> $3 ->> 'type') = 'review'
     AND c.json_metadata ->> 'app' LIKE $4
-  GROUP BY up.permlink
+  GROUP BY up.author, up.permlink
 ),
 
--- Per-paper weighted votes (using voter_weights)
 paper_vote_agg AS (
-  SELECT
-    prv.permlink,
+  SELECT prv.author, prv.permlink,
     COALESCE(SUM(vw.vw * ABS(prv.weight) / 10000.0) FILTER (WHERE prv.weight > 0), 0) AS weighted_up,
     COALESCE(SUM(vw.vw * ABS(prv.weight) / 10000.0) FILTER (WHERE prv.weight < 0), 0) AS weighted_down
   FROM paper_resolved_votes prv
   JOIN voter_weights vw ON vw.voter = prv.voter
-  GROUP BY prv.permlink
+  GROUP BY prv.author, prv.permlink
 ),
 
--- Per-paper reputation contribution
 paper_scores AS (
-  SELECT
-    up.permlink,
-    GREATEST(-$8, LEAST($8,
-      COALESCE(pr.quality, 1.0) * LEAST(COALESCE(pva.weighted_up, 0), $8)
-      - COALESCE(pva.weighted_down, 0) * $10
-    )) * GREATEST($16,
+  SELECT up.author, up.permlink,
+    GREATEST(-w.paper, LEAST(w.paper,
+      COALESCE(pr.quality, 1.0) * LEAST(COALESCE(pva.weighted_up, 0), w.paper)
+      - COALESCE(pva.weighted_down, 0) * w.downvote
+    )) * GREATEST(w.decay_floor,
       CASE
-        WHEN EXTRACT(EPOCH FROM (cr.ref_ts - up.created)) / (86400.0 * 30) <= $17 THEN 1.0
-        ELSE GREATEST($16,
-          1.0 - ((EXTRACT(EPOCH FROM (cr.ref_ts - up.created)) / (86400.0 * 30) - $17) * $15)
+        WHEN EXTRACT(EPOCH FROM (cr.ref_ts - up.created)) / (86400.0 * 30) <= w.decay_grace_months THEN 1.0
+        ELSE GREATEST(w.decay_floor,
+          1.0 - ((EXTRACT(EPOCH FROM (cr.ref_ts - up.created)) / (86400.0 * 30) - w.decay_grace_months) * w.decay_rate)
         )
       END
     ) AS score
   FROM user_papers up
   CROSS JOIN cycle_ref cr
-  LEFT JOIN paper_reviews pr ON pr.permlink = up.permlink
-  LEFT JOIN paper_vote_agg pva ON pva.permlink = up.permlink
+  CROSS JOIN w
+  LEFT JOIN paper_reviews pr ON pr.author = up.author AND pr.permlink = up.permlink
+  LEFT JOIN paper_vote_agg pva ON pva.author = up.author AND pva.permlink = up.permlink
 ),
 
--- ═══════════════════════════════════════════════════════════════════
--- REVIEWS
--- ═══════════════════════════════════════════════════════════════════
-
+-- ═══ REVIEWS ═══
 user_reviews AS (
   SELECT c.author, c.permlink, c.created
   FROM hafsql.comments c
-  WHERE c.author = $1
+  WHERE c.author IN (SELECT username FROM target_users)
     AND (c.json_metadata -> $3 ->> 'type') = 'review'
     AND c.json_metadata ->> 'app' LIKE $4
     AND COALESCE(c.json_metadata -> $3 ->> 'is_anonymous', 'false') != 'true'
 ),
 
--- All vote signals on user's reviews (native + revote), latest per voter per review
 review_vote_signals AS (
-  SELECT voter, permlink, weight, block_num FROM (
-    SELECT vo.voter, vo.permlink, vo.weight, vo.block_num
+  SELECT voter, author, permlink, weight, block_num FROM (
+    SELECT vo.voter, vo.author, vo.permlink, vo.weight, vo.block_num
     FROM hafsql.operation_vote_view vo
     WHERE vo.voter = ANY($2::text[])
-      AND vo.author = $1
-      AND vo.permlink IN (SELECT permlink FROM user_reviews)
-      AND vo.block_num >= $7
-      AND vo.block_num < $6
+      AND vo.author IN (SELECT username FROM target_users)
+      AND EXISTS (SELECT 1 FROM user_reviews ur WHERE ur.author = vo.author AND ur.permlink = vo.permlink)
+      AND vo.block_num >= $7 AND vo.block_num < $6
     UNION ALL
     SELECT
       cj.required_posting_auths ->> 0 AS voter,
+      cj.json::jsonb ->> 'author' AS author,
       cj.json::jsonb ->> 'permlink' AS permlink,
       (cj.json::jsonb ->> 'weight')::int AS weight,
       cj.block_num
     FROM hafsql.operation_custom_json_view cj
     WHERE cj.custom_id = $3
       AND cj.json::jsonb ->> 'action' = 'revote'
-      AND cj.json::jsonb ->> 'author' = $1
-      AND cj.block_num >= $7
-      AND cj.block_num < $6
+      AND cj.json::jsonb ->> 'author' IN (SELECT username FROM target_users)
+      AND cj.block_num >= $7 AND cj.block_num < $6
       AND cj.required_posting_auths ->> 0 = ANY($2::text[])
   ) all_signals
 ),
 
 review_latest_votes AS (
-  SELECT DISTINCT ON (voter, permlink) voter, permlink, weight
+  SELECT DISTINCT ON (voter, author, permlink) voter, author, permlink, weight
   FROM review_vote_signals
-  ORDER BY voter, permlink, block_num DESC
+  ORDER BY voter, author, permlink, block_num DESC
 ),
 
 review_resolved_votes AS (
-  SELECT rlv.voter, rlv.permlink, rlv.weight
+  SELECT rlv.voter, rlv.author, rlv.permlink, rlv.weight
   FROM review_latest_votes rlv
-  WHERE rlv.voter != $1  -- exclude self-votes
-    AND rlv.weight != 0  -- exclude retractions
+  JOIN user_reviews ur ON ur.author = rlv.author AND ur.permlink = rlv.permlink
+  WHERE rlv.voter != rlv.author
+    AND rlv.weight != 0
 ),
 
 review_vote_agg AS (
-  SELECT
-    rrv.permlink,
+  SELECT rrv.author, rrv.permlink,
     COALESCE(SUM(vw.vw * ABS(rrv.weight) / 10000.0) FILTER (WHERE rrv.weight > 0), 0) AS weighted_up,
     COALESCE(SUM(vw.vw * ABS(rrv.weight) / 10000.0) FILTER (WHERE rrv.weight < 0), 0) AS weighted_down
   FROM review_resolved_votes rrv
   JOIN voter_weights vw ON vw.voter = rrv.voter
-  GROUP BY rrv.permlink
+  GROUP BY rrv.author, rrv.permlink
 ),
 
 review_scores AS (
-  SELECT
-    ur.permlink,
-    GREATEST(-$9, LEAST($9,
-      LEAST(COALESCE(rva.weighted_up, 0), $9)
-      - COALESCE(rva.weighted_down, 0) * $10
-    )) * GREATEST($16,
+  SELECT ur.author, ur.permlink,
+    GREATEST(-w.review, LEAST(w.review,
+      LEAST(COALESCE(rva.weighted_up, 0), w.review)
+      - COALESCE(rva.weighted_down, 0) * w.downvote
+    )) * GREATEST(w.decay_floor,
       CASE
-        WHEN EXTRACT(EPOCH FROM (cr.ref_ts - ur.created)) / (86400.0 * 30) <= $17 THEN 1.0
-        ELSE GREATEST($16,
-          1.0 - ((EXTRACT(EPOCH FROM (cr.ref_ts - ur.created)) / (86400.0 * 30) - $17) * $15)
+        WHEN EXTRACT(EPOCH FROM (cr.ref_ts - ur.created)) / (86400.0 * 30) <= w.decay_grace_months THEN 1.0
+        ELSE GREATEST(w.decay_floor,
+          1.0 - ((EXTRACT(EPOCH FROM (cr.ref_ts - ur.created)) / (86400.0 * 30) - w.decay_grace_months) * w.decay_rate)
         )
       END
     ) AS score
   FROM user_reviews ur
   CROSS JOIN cycle_ref cr
-  LEFT JOIN review_vote_agg rva ON rva.permlink = ur.permlink
+  CROSS JOIN w
+  LEFT JOIN review_vote_agg rva ON rva.author = ur.author AND rva.permlink = ur.permlink
 ),
 
--- ═══════════════════════════════════════════════════════════════════
--- CITATIONS
--- ═══════════════════════════════════════════════════════════════════
-
--- Papers that cite $1's work (from accredited authors only)
+-- ═══ CITATIONS ═══
 citing_papers AS (
   SELECT
     citing.author AS citing_author,
     citing.permlink AS citing_permlink,
     citing.created AS citing_created,
     citing.json_metadata AS citing_meta,
+    cit ->> 'author' AS cited_author,
     COALESCE((cit ->> 'reputation_relevant')::boolean, true) AS reputation_relevant
   FROM hafsql.comments citing
   CROSS JOIN LATERAL jsonb_array_elements(
@@ -597,19 +607,17 @@ citing_papers AS (
     AND citing.json_metadata ->> 'app' LIKE $4
     AND jsonb_typeof(citing.json_metadata -> $3 -> 'citations') = 'array'
     AND citing.author = ANY($2::text[])
-    AND (cit ->> 'author') = $1
+    AND (cit ->> 'author') IN (SELECT username FROM target_users)
     AND COALESCE((cit ->> 'reputation_relevant')::boolean, true) = true
 ),
 
--- Votes on citing papers (for citation quality: quality * min(weighted_upvotes, 1.0))
 citing_vote_signals AS (
   SELECT voter, permlink, author, weight, block_num FROM (
     SELECT vo.voter, vo.permlink, vo.author, vo.weight, vo.block_num
     FROM hafsql.operation_vote_view vo
     WHERE vo.voter = ANY($2::text[])
       AND (vo.author, vo.permlink) IN (SELECT citing_author, citing_permlink FROM citing_papers)
-      AND vo.block_num >= $7
-      AND vo.block_num < $6
+      AND vo.block_num >= $7 AND vo.block_num < $6
     UNION ALL
     SELECT
       cj.required_posting_auths ->> 0 AS voter,
@@ -620,8 +628,7 @@ citing_vote_signals AS (
     FROM hafsql.operation_custom_json_view cj
     WHERE cj.custom_id = $3
       AND cj.json::jsonb ->> 'action' = 'revote'
-      AND cj.block_num >= $7
-      AND cj.block_num < $6
+      AND cj.block_num >= $7 AND cj.block_num < $6
       AND cj.required_posting_auths ->> 0 = ANY($2::text[])
       AND (cj.json::jsonb ->> 'author', cj.json::jsonb ->> 'permlink')
         IN (SELECT citing_author, citing_permlink FROM citing_papers)
@@ -634,16 +641,14 @@ citing_latest_votes AS (
   ORDER BY voter, author, permlink, block_num DESC
 ),
 
--- Upvote-weighted quality of citing papers
 citing_paper_quality AS (
   SELECT
+    cp.cited_author,
     cp.citing_author,
     cp.citing_permlink,
     cp.citing_created,
-    cp.citing_author = $1 AS is_self,
-    -- review quality of citing paper
+    cp.citing_author = cp.cited_author AS is_self,
     COALESCE(cpr.quality, 1.0) AS review_quality,
-    -- weighted upvotes on citing paper (only upvotes, excluding self-votes)
     COALESCE(SUM(vw.vw * ABS(clv.weight) / 10000.0)
       FILTER (WHERE clv.weight > 0 AND clv.voter != cp.citing_author AND clv.weight != 0), 0
     ) AS weighted_upvotes
@@ -667,39 +672,49 @@ citing_paper_quality AS (
   LEFT JOIN citing_latest_votes clv
     ON clv.author = cp.citing_author AND clv.permlink = cp.citing_permlink
   LEFT JOIN voter_weights vw ON vw.voter = clv.voter
-  GROUP BY cp.citing_author, cp.citing_permlink, cp.citing_created, cpr.quality
+  GROUP BY cp.cited_author, cp.citing_author, cp.citing_permlink, cp.citing_created, cpr.quality
 ),
 
 citation_scores AS (
-  SELECT LEAST($12, SUM(
-    GREATEST(0, LEAST(1.0, cpq.review_quality * LEAST(cpq.weighted_upvotes, 1.0)))
-    * CASE WHEN cpq.is_self THEN $14 ELSE $11 END
-    * GREATEST($16,
-        CASE
-          WHEN EXTRACT(EPOCH FROM (cr.ref_ts - cpq.citing_created)) / (86400.0 * 30) <= $17 THEN 1.0
-          ELSE GREATEST($16,
-            1.0 - ((EXTRACT(EPOCH FROM (cr.ref_ts - cpq.citing_created)) / (86400.0 * 30) - $17) * $15)
-          )
-        END
-      )
-  )) AS score
+  SELECT cpq.cited_author AS author,
+    LEAST(w.citation_max, COALESCE(SUM(
+      GREATEST(0, LEAST(1.0, cpq.review_quality * LEAST(cpq.weighted_upvotes, 1.0)))
+      * CASE WHEN cpq.is_self THEN w.self_citation_discount ELSE w.citation END
+      * GREATEST(w.decay_floor,
+          CASE
+            WHEN EXTRACT(EPOCH FROM (cr.ref_ts - cpq.citing_created)) / (86400.0 * 30) <= w.decay_grace_months THEN 1.0
+            ELSE GREATEST(w.decay_floor,
+              1.0 - ((EXTRACT(EPOCH FROM (cr.ref_ts - cpq.citing_created)) / (86400.0 * 30) - w.decay_grace_months) * w.decay_rate)
+            )
+          END
+        )
+    ), 0)) AS score
   FROM citing_paper_quality cpq
   CROSS JOIN cycle_ref cr
+  CROSS JOIN w
+  GROUP BY cpq.cited_author, w.citation_max, w.self_citation_discount, w.citation,
+           w.decay_floor, w.decay_grace_months, w.decay_rate
 ),
 
--- ═══════════════════════════════════════════════════════════════════
--- FINAL AGGREGATION
--- ═══════════════════════════════════════════════════════════════════
-
+-- ═══ FINAL AGGREGATION ═══
 totals AS (
   SELECT
-    COALESCE((SELECT SUM(score) FROM paper_scores), 0) AS papers,
-    COALESCE((SELECT SUM(score) FROM review_scores), 0) AS reviews,
-    COALESCE((SELECT score FROM citation_scores), 0) AS citations,
-    CASE WHEN $18 THEN $13 ELSE 0 END AS accreditation
+    tu.username,
+    COALESCE(ps_agg.papers, 0) AS papers,
+    COALESCE(rs_agg.reviews, 0) AS reviews,
+    COALESCE(cs.score, 0) AS citations,
+    CASE WHEN tu.username = ANY($2::text[]) THEN w.accreditation_bonus ELSE 0 END AS accreditation
+  FROM target_users tu
+  CROSS JOIN w
+  LEFT JOIN (SELECT author, SUM(score) AS papers FROM paper_scores GROUP BY author) ps_agg
+    ON ps_agg.author = tu.username
+  LEFT JOIN (SELECT author, SUM(score) AS reviews FROM review_scores GROUP BY author) rs_agg
+    ON rs_agg.author = tu.username
+  LEFT JOIN citation_scores cs ON cs.author = tu.username
 )
 
 SELECT
+  username,
   LEAST(100, GREATEST(0, ROUND((papers + reviews + citations + accreditation)::numeric, 1))) AS score,
   ROUND(papers::numeric, 1) AS papers,
   ROUND(reviews::numeric, 1) AS reviews,
@@ -712,13 +727,13 @@ FROM totals;
 
 1. **No time functions.** The query derives age from `cycle_ref.ref_ts` (the timestamp of the block before `cycle_end_block`), not from `NOW()`. This makes results reproducible at any time.
 
-2. **Vote resolution.** Native votes and revote custom_json are UNIONed, then `DISTINCT ON (voter, permlink) ORDER BY block_num DESC` picks the latest signal. Weight=0 signals are excluded (retractions). This implements VOTE-1B (no phantom restriction), VOTE-1C (always query revotes), and VOTE-1D (weight=0 retraction).
+2. **Vote resolution.** Native votes and revote custom_json are UNIONed, then `DISTINCT ON (voter, author, permlink) ORDER BY block_num DESC` picks the latest signal. Weight=0 signals are excluded (retractions).
 
 3. **Voter weights from prior cycle.** The `$5` jsonb parameter carries the previous cycle's scores. The `voter_weights` CTE computes the activity-gated weight for each accredited voter. Voters not in `$5` get weight 1.0 (new accounts or bootstrap).
 
-4. **Decay formula.** `GREATEST(W_decay_floor, 1.0 - ((age_months - W_decay_grace_months) * W_decay_rate))` with `age_months = EXTRACT(EPOCH FROM (ref_ts - created)) / (86400 * 30)`. Grace period applies: if `age_months <= W_decay_grace_months`, decay = 1.0.
+4. **Decay formula.** `GREATEST(w.decay_floor, 1.0 - ((age_months - w.decay_grace_months) * w.decay_rate))` with `age_months = EXTRACT(EPOCH FROM (ref_ts - created)) / (86400 * 30)`. Grace period applies: if `age_months <= w.decay_grace_months`, decay = 1.0.
 
-5. **Self-vote exclusion.** Paper votes exclude the author and co-authors (via `jsonb_array_elements` check on `authors[].hive`). Review votes exclude the reviewer (`voter != $1`). Citation upvotes exclude the citing author.
+5. **Self-vote exclusion.** Paper votes exclude the author and co-authors (via `jsonb_array_elements` check on `authors[].hive`). Review votes exclude the reviewer (`voter != author`). Citation upvotes exclude the citing author.
 
 6. **Continuation posts excluded.** `(json_metadata -> $3 -> 'continues') IS NULL` in the `user_papers` CTE.
 
@@ -727,4 +742,6 @@ FROM totals;
 8. **Block boundary enforcement.** All vote queries include `AND block_num < $6` to ensure only data within the cycle boundary is considered.
 
 9. **Votes persist across revisions.** Votes are never invalidated by paper edits. The system relies on downvotes, new reviews, and the quality multiplier as corrective mechanisms rather than penalizing authors who revise.
+
+10. **Citation COALESCE.** `LEAST(w.citation_max, COALESCE(SUM(...), 0))` prevents Postgres `LEAST(N, NULL) = N` from awarding phantom citation points when no citations exist.
 

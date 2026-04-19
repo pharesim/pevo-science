@@ -160,19 +160,23 @@ export async function startReputationWeightsCache(): Promise<void> {
 // ─── SQL Reputation Computation ───────────────────────────────
 
 /**
- * Compute reputation for a single user using the canonical all-SQL query.
+ * Compute reputation for multiple users in a single SQL query.
+ * Shared CTEs (voter_weights, active_accounts, etc.) run once.
  *
- * @param username         The user whose reputation is being computed
- * @param prevScores       Previous cycle scores as jsonb (empty object for cycle 0)
- * @param cycleEndBlock    Only data with block_num < cycleEndBlock is included (0 = use head block)
+ * Parameters: $1 = target usernames, $2 = accredited, $3 = app_tag,
+ * $4 = app_like, $5 = prev scores jsonb, $6 = cycle_end_block,
+ * $7 = genesis block, $8-$17 = weights (cast once in `w` CTE).
  */
-export async function computeReputationSql(
-  username: string,
+export async function computeReputationBatch(
+  usernames: string[],
   prevScores?: Record<string, number>,
   cycleEndBlock?: number,
-): Promise<ReputationScore | null> {
+): Promise<Map<string, ReputationScore>> {
+  const results = new Map<string, ReputationScore>();
+  if (usernames.length === 0) return results;
+
   const pool = getPool();
-  if (!pool) return null;
+  if (!pool) return results;
 
   try {
     const [accreditedAccounts, weights] = await Promise.all([
@@ -181,24 +185,39 @@ export async function computeReputationSql(
     ]);
 
     const accreditedArr = [...accreditedAccounts];
-    const isAccredited = accreditedAccounts.has(username);
 
-    // If no cycleEndBlock provided, use head block
     let endBlock = cycleEndBlock;
     if (!endBlock) {
       const headResult = await pool.query(`SELECT MAX(block_num) AS head FROM ${T.blocks}`, []);
       endBlock = Number(headResult.rows[0]?.head ?? 0);
-      if (endBlock === 0) return null;
+      if (endBlock === 0) return results;
     }
 
-    // Use provided prev scores or fetch from batch
     const prevJson = prevScores ?? Object.fromEntries(await getBatchReputationMap());
 
     const result = await pool.query(
       `WITH
 
+      -- Cast weight parameters once
+      w AS (SELECT
+        $8::numeric  AS paper,
+        $9::numeric  AS review,
+        $10::numeric AS downvote,
+        $11::numeric AS citation,
+        $12::numeric AS citation_max,
+        $13::numeric AS accreditation_bonus,
+        $14::numeric AS self_citation_discount,
+        $15::numeric AS decay_rate,
+        $16::numeric AS decay_floor,
+        $17::numeric AS decay_grace_months
+      ),
+
+      target_users AS (
+        SELECT unnest AS username FROM unnest($1::text[])
+      ),
+
       cycle_ref AS (
-        SELECT b.created_at AS ref_ts
+        SELECT b.timestamp AS ref_ts
         FROM ${T.blocks} b
         WHERE b.block_num = $6 - 1
       ),
@@ -226,7 +245,7 @@ export async function computeReputationSql(
 
       voter_weights AS (
         SELECT
-          a.unnest AS voter,
+          a.voter,
           CASE
             WHEN ps.rep IS NULL THEN 1.0
             WHEN aa.author IS NOT NULL THEN
@@ -234,69 +253,67 @@ export async function computeReputationSql(
             ELSE
               LEAST(1.0, sqrt(ps.rep / 100.0))
           END AS vw
-        FROM unnest($2::text[]) a
-        LEFT JOIN prev_scores ps ON ps.username = a.unnest
-        LEFT JOIN active_accounts aa ON aa.author = a.unnest
+        FROM unnest($2::text[]) AS a(voter)
+        LEFT JOIN prev_scores ps ON ps.username = a.voter
+        LEFT JOIN active_accounts aa ON aa.author = a.voter
       ),
 
-      -- PAPERS
+      -- ═══ PAPERS ═══
       user_papers AS (
         SELECT c.author, c.permlink, c.created, c.json_metadata
         FROM ${T.comments} c
-        WHERE c.author = $1
+        WHERE c.author IN (SELECT username FROM target_users)
           AND c.parent_author = '' AND c.parent_permlink = $3
           AND (c.json_metadata -> $3 ->> 'type') = 'paper'
           AND c.json_metadata ->> 'app' LIKE $4
           AND (c.json_metadata -> $3 -> 'continues') IS NULL
       ),
 
-      -- Vote staleness: latest revision block per paper
       paper_revisions AS (
-        SELECT co.permlink, MAX(co.block_num) AS latest_revision_block
+        SELECT co.author, co.permlink, MAX(co.block_num) AS latest_revision_block
         FROM ${T.commentOps} co
-        WHERE co.author = $1
+        WHERE co.author IN (SELECT username FROM target_users)
           AND co.parent_author = '' AND co.parent_permlink = $3
           AND co.block_num < $6
-        GROUP BY co.permlink
+        GROUP BY co.author, co.permlink
         HAVING COUNT(*) > 1
       ),
 
       paper_vote_signals AS (
-        SELECT voter, permlink, weight, block_num FROM (
-          SELECT vo.voter, vo.permlink, vo.weight, vo.block_num
+        SELECT voter, author, permlink, weight, block_num FROM (
+          SELECT vo.voter, vo.author, vo.permlink, vo.weight, vo.block_num
           FROM ${T.voteOps} vo
           WHERE vo.voter = ANY($2::text[])
-            AND vo.author = $1
-            AND vo.permlink IN (SELECT permlink FROM user_papers)
-            AND vo.block_num >= $7
-            AND vo.block_num < $6
+            AND vo.author IN (SELECT username FROM target_users)
+            AND EXISTS (SELECT 1 FROM user_papers up WHERE up.author = vo.author AND up.permlink = vo.permlink)
+            AND vo.block_num >= $7 AND vo.block_num < $6
           UNION ALL
           SELECT
             cj.required_posting_auths ->> 0 AS voter,
+            cj.json::jsonb ->> 'author' AS author,
             cj.json::jsonb ->> 'permlink' AS permlink,
             (cj.json::jsonb ->> 'weight')::int AS weight,
             cj.block_num
           FROM ${T.customJson} cj
           WHERE cj.custom_id = $3
             AND cj.json::jsonb ->> 'action' = 'revote'
-            AND cj.json::jsonb ->> 'author' = $1
-            AND cj.block_num >= $7
-            AND cj.block_num < $6
+            AND cj.json::jsonb ->> 'author' IN (SELECT username FROM target_users)
+            AND cj.block_num >= $7 AND cj.block_num < $6
             AND cj.required_posting_auths ->> 0 = ANY($2::text[])
         ) all_signals
       ),
 
       paper_latest_votes AS (
-        SELECT DISTINCT ON (voter, permlink) voter, permlink, weight, block_num
+        SELECT DISTINCT ON (voter, author, permlink) voter, author, permlink, weight, block_num
         FROM paper_vote_signals
-        ORDER BY voter, permlink, block_num DESC
+        ORDER BY voter, author, permlink, block_num DESC
       ),
 
       paper_resolved_votes AS (
-        SELECT plv.voter, plv.permlink, plv.weight
+        SELECT plv.voter, plv.author, plv.permlink, plv.weight, plv.block_num
         FROM paper_latest_votes plv
-        JOIN user_papers up ON up.permlink = plv.permlink
-        LEFT JOIN paper_revisions prev ON prev.permlink = plv.permlink
+        JOIN user_papers up ON up.author = plv.author AND up.permlink = plv.permlink
+        LEFT JOIN paper_revisions prev ON prev.author = plv.author AND prev.permlink = plv.permlink
         WHERE plv.voter != up.author
           AND plv.weight != 0
           AND NOT EXISTS (
@@ -307,7 +324,7 @@ export async function computeReputationSql(
       ),
 
       paper_reviews AS (
-        SELECT up.permlink,
+        SELECT up.author, up.permlink,
           AVG(
             ((c.json_metadata -> $3 -> 'rating' ->> 'methodology')::numeric +
              (c.json_metadata -> $3 -> 'rating' ->> 'novelty')::numeric +
@@ -319,123 +336,122 @@ export async function computeReputationSql(
           ON c.parent_author = up.author AND c.parent_permlink = up.permlink
           AND (c.json_metadata -> $3 ->> 'type') = 'review'
           AND c.json_metadata ->> 'app' LIKE $4
-        GROUP BY up.permlink
+        GROUP BY up.author, up.permlink
       ),
 
       paper_vote_agg AS (
-        SELECT
-          prv.permlink,
+        SELECT prv.author, prv.permlink,
           COALESCE(SUM(vw.vw * ABS(prv.weight) / 10000.0) FILTER (WHERE prv.weight > 0), 0) AS weighted_up,
           COALESCE(SUM(vw.vw * ABS(prv.weight) / 10000.0) FILTER (WHERE prv.weight < 0), 0) AS weighted_down
         FROM paper_resolved_votes prv
         JOIN voter_weights vw ON vw.voter = prv.voter
-        GROUP BY prv.permlink
+        GROUP BY prv.author, prv.permlink
       ),
 
       paper_scores AS (
-        SELECT
-          up.permlink,
-          GREATEST(-$8, LEAST($8,
-            COALESCE(pr.quality, 1.0) * LEAST(COALESCE(pva.weighted_up, 0), $8)
-            - COALESCE(pva.weighted_down, 0) * $10
-          )) * GREATEST($16,
+        SELECT up.author, up.permlink,
+          GREATEST(-w.paper, LEAST(w.paper,
+            COALESCE(pr.quality, 1.0) * LEAST(COALESCE(pva.weighted_up, 0), w.paper)
+            - COALESCE(pva.weighted_down, 0) * w.downvote
+          )) * GREATEST(w.decay_floor,
             CASE
-              WHEN EXTRACT(EPOCH FROM (cr.ref_ts - up.created)) / (86400.0 * 30) <= $17 THEN 1.0
-              ELSE GREATEST($16,
-                1.0 - ((EXTRACT(EPOCH FROM (cr.ref_ts - up.created)) / (86400.0 * 30) - $17) * $15)
+              WHEN EXTRACT(EPOCH FROM (cr.ref_ts - up.created)) / (86400.0 * 30) <= w.decay_grace_months THEN 1.0
+              ELSE GREATEST(w.decay_floor,
+                1.0 - ((EXTRACT(EPOCH FROM (cr.ref_ts - up.created)) / (86400.0 * 30) - w.decay_grace_months) * w.decay_rate)
               )
             END
           ) AS score
         FROM user_papers up
         CROSS JOIN cycle_ref cr
-        LEFT JOIN paper_reviews pr ON pr.permlink = up.permlink
-        LEFT JOIN paper_vote_agg pva ON pva.permlink = up.permlink
+        CROSS JOIN w
+        LEFT JOIN paper_reviews pr ON pr.author = up.author AND pr.permlink = up.permlink
+        LEFT JOIN paper_vote_agg pva ON pva.author = up.author AND pva.permlink = up.permlink
       ),
 
-      -- REVIEWS
+      -- ═══ REVIEWS ═══
       user_reviews AS (
         SELECT c.author, c.permlink, c.created
         FROM ${T.comments} c
-        WHERE c.author = $1
+        WHERE c.author IN (SELECT username FROM target_users)
           AND (c.json_metadata -> $3 ->> 'type') = 'review'
           AND c.json_metadata ->> 'app' LIKE $4
           AND COALESCE(c.json_metadata -> $3 ->> 'is_anonymous', 'false') != 'true'
       ),
 
       review_vote_signals AS (
-        SELECT voter, permlink, weight, block_num FROM (
-          SELECT vo.voter, vo.permlink, vo.weight, vo.block_num
+        SELECT voter, author, permlink, weight, block_num FROM (
+          SELECT vo.voter, vo.author, vo.permlink, vo.weight, vo.block_num
           FROM ${T.voteOps} vo
           WHERE vo.voter = ANY($2::text[])
-            AND vo.author = $1
-            AND vo.permlink IN (SELECT permlink FROM user_reviews)
-            AND vo.block_num >= $7
-            AND vo.block_num < $6
+            AND vo.author IN (SELECT username FROM target_users)
+            AND EXISTS (SELECT 1 FROM user_reviews ur WHERE ur.author = vo.author AND ur.permlink = vo.permlink)
+            AND vo.block_num >= $7 AND vo.block_num < $6
           UNION ALL
           SELECT
             cj.required_posting_auths ->> 0 AS voter,
+            cj.json::jsonb ->> 'author' AS author,
             cj.json::jsonb ->> 'permlink' AS permlink,
             (cj.json::jsonb ->> 'weight')::int AS weight,
             cj.block_num
           FROM ${T.customJson} cj
           WHERE cj.custom_id = $3
             AND cj.json::jsonb ->> 'action' = 'revote'
-            AND cj.json::jsonb ->> 'author' = $1
-            AND cj.block_num >= $7
-            AND cj.block_num < $6
+            AND cj.json::jsonb ->> 'author' IN (SELECT username FROM target_users)
+            AND cj.block_num >= $7 AND cj.block_num < $6
             AND cj.required_posting_auths ->> 0 = ANY($2::text[])
         ) all_signals
       ),
 
       review_latest_votes AS (
-        SELECT DISTINCT ON (voter, permlink) voter, permlink, weight
+        SELECT DISTINCT ON (voter, author, permlink) voter, author, permlink, weight
         FROM review_vote_signals
-        ORDER BY voter, permlink, block_num DESC
+        ORDER BY voter, author, permlink, block_num DESC
       ),
 
       review_resolved_votes AS (
-        SELECT rlv.voter, rlv.permlink, rlv.weight
+        SELECT rlv.voter, rlv.author, rlv.permlink, rlv.weight
         FROM review_latest_votes rlv
-        WHERE rlv.voter != $1
+        JOIN user_reviews ur ON ur.author = rlv.author AND ur.permlink = rlv.permlink
+        WHERE rlv.voter != rlv.author
           AND rlv.weight != 0
       ),
 
       review_vote_agg AS (
-        SELECT
-          rrv.permlink,
+        SELECT rrv.author, rrv.permlink,
           COALESCE(SUM(vw.vw * ABS(rrv.weight) / 10000.0) FILTER (WHERE rrv.weight > 0), 0) AS weighted_up,
           COALESCE(SUM(vw.vw * ABS(rrv.weight) / 10000.0) FILTER (WHERE rrv.weight < 0), 0) AS weighted_down
         FROM review_resolved_votes rrv
         JOIN voter_weights vw ON vw.voter = rrv.voter
-        GROUP BY rrv.permlink
+        GROUP BY rrv.author, rrv.permlink
       ),
 
       review_scores AS (
-        SELECT
-          ur.permlink,
-          GREATEST(-$9, LEAST($9,
-            LEAST(COALESCE(rva.weighted_up, 0), $9)
-            - COALESCE(rva.weighted_down, 0) * $10
-          )) * GREATEST($16,
+        SELECT ur.author, ur.permlink,
+          GREATEST(-w.review, LEAST(w.review,
+            LEAST(COALESCE(rva.weighted_up, 0), w.review)
+            - COALESCE(rva.weighted_down, 0) * w.downvote
+          )) * GREATEST(w.decay_floor,
             CASE
-              WHEN EXTRACT(EPOCH FROM (cr.ref_ts - ur.created)) / (86400.0 * 30) <= $17 THEN 1.0
-              ELSE GREATEST($16,
-                1.0 - ((EXTRACT(EPOCH FROM (cr.ref_ts - ur.created)) / (86400.0 * 30) - $17) * $15)
+              WHEN EXTRACT(EPOCH FROM (cr.ref_ts - ur.created)) / (86400.0 * 30) <= w.decay_grace_months THEN 1.0
+              ELSE GREATEST(w.decay_floor,
+                1.0 - ((EXTRACT(EPOCH FROM (cr.ref_ts - ur.created)) / (86400.0 * 30) - w.decay_grace_months) * w.decay_rate)
               )
             END
           ) AS score
         FROM user_reviews ur
         CROSS JOIN cycle_ref cr
-        LEFT JOIN review_vote_agg rva ON rva.permlink = ur.permlink
+        CROSS JOIN w
+        LEFT JOIN review_vote_agg rva ON rva.author = ur.author AND rva.permlink = ur.permlink
       ),
 
-      -- CITATIONS
+      -- ═══ CITATIONS ═══
       citing_papers AS (
         SELECT
           citing.author AS citing_author,
           citing.permlink AS citing_permlink,
           citing.created AS citing_created,
           citing.json_metadata AS citing_meta,
+          cit ->> 'author' AS cited_author,
           COALESCE((cit ->> 'reputation_relevant')::boolean, true) AS reputation_relevant
         FROM ${T.comments} citing
         CROSS JOIN LATERAL jsonb_array_elements(
@@ -446,7 +462,7 @@ export async function computeReputationSql(
           AND citing.json_metadata ->> 'app' LIKE $4
           AND jsonb_typeof(citing.json_metadata -> $3 -> 'citations') = 'array'
           AND citing.author = ANY($2::text[])
-          AND (cit ->> 'author') = $1
+          AND (cit ->> 'author') IN (SELECT username FROM target_users)
           AND COALESCE((cit ->> 'reputation_relevant')::boolean, true) = true
       ),
 
@@ -456,8 +472,7 @@ export async function computeReputationSql(
           FROM ${T.voteOps} vo
           WHERE vo.voter = ANY($2::text[])
             AND (vo.author, vo.permlink) IN (SELECT citing_author, citing_permlink FROM citing_papers)
-            AND vo.block_num >= $7
-            AND vo.block_num < $6
+            AND vo.block_num >= $7 AND vo.block_num < $6
           UNION ALL
           SELECT
             cj.required_posting_auths ->> 0 AS voter,
@@ -468,8 +483,7 @@ export async function computeReputationSql(
           FROM ${T.customJson} cj
           WHERE cj.custom_id = $3
             AND cj.json::jsonb ->> 'action' = 'revote'
-            AND cj.block_num >= $7
-            AND cj.block_num < $6
+            AND cj.block_num >= $7 AND cj.block_num < $6
             AND cj.required_posting_auths ->> 0 = ANY($2::text[])
             AND (cj.json::jsonb ->> 'author', cj.json::jsonb ->> 'permlink')
               IN (SELECT citing_author, citing_permlink FROM citing_papers)
@@ -484,10 +498,11 @@ export async function computeReputationSql(
 
       citing_paper_quality AS (
         SELECT
+          cp.cited_author,
           cp.citing_author,
           cp.citing_permlink,
           cp.citing_created,
-          cp.citing_author = $1 AS is_self,
+          cp.citing_author = cp.cited_author AS is_self,
           COALESCE(cpr.quality, 1.0) AS review_quality,
           COALESCE(SUM(vw.vw * ABS(clv.weight) / 10000.0)
             FILTER (WHERE clv.weight > 0 AND clv.voter != cp.citing_author AND clv.weight != 0), 0
@@ -512,36 +527,49 @@ export async function computeReputationSql(
         LEFT JOIN citing_latest_votes clv
           ON clv.author = cp.citing_author AND clv.permlink = cp.citing_permlink
         LEFT JOIN voter_weights vw ON vw.voter = clv.voter
-        GROUP BY cp.citing_author, cp.citing_permlink, cp.citing_created, cpr.quality
+        GROUP BY cp.cited_author, cp.citing_author, cp.citing_permlink, cp.citing_created, cpr.quality
       ),
 
       citation_scores AS (
-        SELECT LEAST($12, SUM(
-          GREATEST(0, LEAST(1.0, cpq.review_quality * LEAST(cpq.weighted_upvotes, 1.0)))
-          * CASE WHEN cpq.is_self THEN $14 ELSE $11 END
-          * GREATEST($16,
-              CASE
-                WHEN EXTRACT(EPOCH FROM (cr.ref_ts - cpq.citing_created)) / (86400.0 * 30) <= $17 THEN 1.0
-                ELSE GREATEST($16,
-                  1.0 - ((EXTRACT(EPOCH FROM (cr.ref_ts - cpq.citing_created)) / (86400.0 * 30) - $17) * $15)
-                )
-              END
-            )
-        )) AS score
+        SELECT cpq.cited_author AS author,
+          LEAST(w.citation_max, COALESCE(SUM(
+            GREATEST(0, LEAST(1.0, cpq.review_quality * LEAST(cpq.weighted_upvotes, 1.0)))
+            * CASE WHEN cpq.is_self THEN w.self_citation_discount ELSE w.citation END
+            * GREATEST(w.decay_floor,
+                CASE
+                  WHEN EXTRACT(EPOCH FROM (cr.ref_ts - cpq.citing_created)) / (86400.0 * 30) <= w.decay_grace_months THEN 1.0
+                  ELSE GREATEST(w.decay_floor,
+                    1.0 - ((EXTRACT(EPOCH FROM (cr.ref_ts - cpq.citing_created)) / (86400.0 * 30) - w.decay_grace_months) * w.decay_rate)
+                  )
+                END
+              )
+          ), 0)) AS score
         FROM citing_paper_quality cpq
         CROSS JOIN cycle_ref cr
+        CROSS JOIN w
+        GROUP BY cpq.cited_author, w.citation_max, w.self_citation_discount, w.citation,
+                 w.decay_floor, w.decay_grace_months, w.decay_rate
       ),
 
-      -- FINAL AGGREGATION
+      -- ═══ FINAL AGGREGATION ═══
       totals AS (
         SELECT
-          COALESCE((SELECT SUM(score) FROM paper_scores), 0) AS papers,
-          COALESCE((SELECT SUM(score) FROM review_scores), 0) AS reviews,
-          COALESCE((SELECT score FROM citation_scores), 0) AS citations,
-          CASE WHEN $18 THEN $13 ELSE 0 END AS accreditation
+          tu.username,
+          COALESCE(ps_agg.papers, 0) AS papers,
+          COALESCE(rs_agg.reviews, 0) AS reviews,
+          COALESCE(cs.score, 0) AS citations,
+          CASE WHEN tu.username = ANY($2::text[]) THEN w.accreditation_bonus ELSE 0 END AS accreditation
+        FROM target_users tu
+        CROSS JOIN w
+        LEFT JOIN (SELECT author, SUM(score) AS papers FROM paper_scores GROUP BY author) ps_agg
+          ON ps_agg.author = tu.username
+        LEFT JOIN (SELECT author, SUM(score) AS reviews FROM review_scores GROUP BY author) rs_agg
+          ON rs_agg.author = tu.username
+        LEFT JOIN citation_scores cs ON cs.author = tu.username
       )
 
       SELECT
+        username,
         LEAST(100, GREATEST(0, ROUND((papers + reviews + citations + accreditation)::numeric, 1))) AS score,
         ROUND(papers::numeric, 1) AS papers,
         ROUND(reviews::numeric, 1) AS reviews,
@@ -549,7 +577,7 @@ export async function computeReputationSql(
         accreditation::numeric AS accreditation
       FROM totals`,
       [
-        username,                         // $1
+        usernames,                        // $1
         accreditedArr,                    // $2
         config.appTag,                    // $3
         `${config.appTag}/%`,             // $4
@@ -566,26 +594,38 @@ export async function computeReputationSql(
         weights.decay_rate,               // $15
         weights.decay_floor,              // $16
         weights.decay_grace_months,       // $17
-        isAccredited,                     // $18
       ],
     );
 
-    const row = result.rows[0];
-    if (!row) return null;
+    for (const row of result.rows) {
+      results.set(row.username, {
+        score: Number(row.score),
+        breakdown: {
+          papers: Number(row.papers),
+          reviews: Number(row.reviews),
+          citations: Number(row.citations),
+          accreditation: Number(row.accreditation),
+        },
+      });
+    }
 
-    return {
-      score: Number(row.score),
-      breakdown: {
-        papers: Number(row.papers),
-        reviews: Number(row.reviews),
-        citations: Number(row.citations),
-        accreditation: Number(row.accreditation),
-      },
-    };
+    return results;
   } catch (err) {
-    logger.error({ err }, 'SQL reputation computation failed');
-    return null;
+    logger.error({ err }, 'Batch SQL reputation computation failed');
+    return results;
   }
+}
+
+/**
+ * Compute reputation for a single user. Delegates to computeReputationBatch.
+ */
+export async function computeReputationSql(
+  username: string,
+  prevScores?: Record<string, number>,
+  cycleEndBlock?: number,
+): Promise<ReputationScore | null> {
+  const results = await computeReputationBatch([username], prevScores, cycleEndBlock);
+  return results.get(username) ?? null;
 }
 
 // ─── Public API ─────────────────────────────────────────────────

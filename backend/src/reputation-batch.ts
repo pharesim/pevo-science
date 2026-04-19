@@ -12,14 +12,11 @@
 import { getPool, isHafAvailable } from './db.js';
 import { getRedis } from './redis.js';
 import { logger } from './logger.js';
-import { getAllAccreditedAccounts } from './accreditation.js';
-import { computeReputationSql, getActiveAccounts, getReputationWeights } from './reputation.js';
+import { computeReputationBatch, getActiveAccounts, getReputationWeights } from './reputation.js';
 import { getCachedGenesisBlock, T } from './hafsql.js';
 
 const DEFAULT_CHECK_INTERVAL_MS = 60 * 60_000; // 1 hour
 const DEFAULT_MAX_DURATION_MS = 30 * 60_000; // 30 minutes
-const DEFAULT_CONCURRENCY = 5;
-const SLOW_HAF_THRESHOLD_MS = 5_000;
 
 const REDIS_KEY_LAST_CYCLE = 'reputation:cycle:last';
 
@@ -128,7 +125,6 @@ export async function runBatchComputation(maxDurationMs = DEFAULT_MAX_DURATION_M
       }
 
       const users = [...activeAccounts];
-      const accreditedSet = await getAllAccreditedAccounts();
       logger.info({
         cycle,
         totalCycles,
@@ -136,54 +132,14 @@ export async function runBatchComputation(maxDurationMs = DEFAULT_MAX_DURATION_M
         cycleEndBlock,
       }, `Computing cycle ${cycle} of ${currentCycle}`);
 
+      // Single query computes all users at once
+      const batchResults = await computeReputationBatch(users, prevScores, cycleEndBlock);
+
       const newScores = new Map<string, number>();
-      let concurrency = DEFAULT_CONCURRENCY;
-      let totalUserMs = 0;
-      let usersProcessed = 0;
-      let timeCapped = false;
-
-      for (let i = 0; i < users.length; i += concurrency) {
-        if (Date.now() - startTime >= maxDurationMs) {
-          logger.warn({
-            cycle,
-            usersComputed: newScores.size,
-            usersSkipped: users.length - i,
-          }, 'Batch reputation: time cap reached mid-cycle, writing partial results');
-          timeCapped = true;
-          break;
-        }
-
-        const chunk = users.slice(i, i + concurrency);
-        const chunkResults = await Promise.all(
-          chunk.map(async (username) => {
-            const userStart = Date.now();
-            try {
-              const result = await computeReputationSql(username, prevScores, cycleEndBlock);
-              return { username, score: result?.score ?? null, durationMs: Date.now() - userStart };
-            } catch (err) {
-              logger.warn({ err, username }, 'Batch reputation: failed for user, skipping');
-              return { username, score: null, durationMs: Date.now() - userStart };
-            }
-          }),
-        );
-
-        for (const { username, score, durationMs } of chunkResults) {
-          if (score !== null) {
-            newScores.set(username, score);
-          }
-          totalUserMs += durationMs;
-          usersProcessed++;
-        }
-
-        // Slow HAF degradation: reduce concurrency if rolling avg exceeds threshold
-        if (usersProcessed > 0) {
-          const avgMs = totalUserMs / usersProcessed;
-          if (avgMs > SLOW_HAF_THRESHOLD_MS && concurrency > 1) {
-            logger.warn({ avgMs: Math.round(avgMs), previousConcurrency: concurrency }, 'Batch reputation: slow HAF detected, reducing concurrency to 1');
-            concurrency = 1;
-          }
-        }
+      for (const [username, result] of batchResults) {
+        newScores.set(username, result.score);
       }
+      const timeCapped = Date.now() - startTime >= maxDurationMs;
 
       // Store this cycle's scores in Redis
       const pipeline = redis.pipeline();
