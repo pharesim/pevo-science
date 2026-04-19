@@ -272,6 +272,7 @@ async function fetchFromCrossRef(doi: string): Promise<BridgeLookupResult | null
   const dp = dateParts?.['date-parts']?.[0] || [];
   const publishedDate = dp.length >= 3
     ? `${dp[0]}-${String(dp[1]).padStart(2, '0')}-${String(dp[2]).padStart(2, '0')}`
+    : dp.length >= 2 ? `${dp[0]}-${String(dp[1]).padStart(2, '0')}-01`
     : dp.length >= 1 ? `${dp[0]}-01-01` : '';
 
   // Source URL
