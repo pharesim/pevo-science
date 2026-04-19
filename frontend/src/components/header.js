@@ -21,9 +21,9 @@ export function initHeader() {
         { path: '/publish', label: this.$t('nav.publish') },
         { path: '/bridge', label: this.$t('bridge.navLabel') },
         { path: '/accreditation', label: this.$t('nav.accreditation') },
+        { path: '/about', label: this.$t('nav.about') },
         { path: '/getting-started', label: this.$t('nav.gettingStarted') },
         { path: '/faq', label: this.$t('nav.faq') },
-        { path: '/about', label: this.$t('nav.about') },
         { path: '/blog', label: this.$t('nav.blog') },
         { path: '/stats', label: this.$t('nav.stats') },
       ];
