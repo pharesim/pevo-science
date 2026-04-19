@@ -493,7 +493,7 @@ async function fetchPaperDetailFromHaf(author: string, permlink: string) {
     if (!isPevoAnyPaper(meta)) return null;
 
     const detail = buildPaperDetail(row, meta, []);
-    detail.versions = versions.length > 0 ? versions : [{ version_number: 1, created: detail.created as string, title: detail.title as string, is_content_revision: true }];
+    detail.versions = versions.length > 0 ? versions : [{ version_number: 1, block_num: 0, created: detail.created as string, title: detail.title as string, is_content_revision: true }];
     detail.is_retracted = retraction.is_retracted;
     detail.retraction_reason = retraction.retraction_reason ?? null;
     detail.retraction_timestamp = retraction.retraction_timestamp ?? null;
@@ -559,6 +559,7 @@ const dmp = new DiffMatchPatch();
 
 interface PaperVersionEntry {
   version_number: number;
+  block_num: number;
   created: string;
   title: string;
   is_content_revision: boolean;
@@ -725,6 +726,7 @@ async function reconstructVersionsFromHaf(
     const result = await pool.query(
       `SELECT
          ROW_NUMBER() OVER (ORDER BY co.block_num)::int AS version_number,
+         co.block_num,
          co.author,
          co.permlink,
          co.title,
@@ -785,6 +787,7 @@ async function reconstructVersionsFromHaf(
 
       versions.push({
         version_number: r.version_number as number,
+        block_num: Number(r.block_num),
         created: r.created as string,
         title,
         body,
@@ -1054,7 +1057,7 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string) {
        ORDER BY cj.block_num DESC`,
       [config.appTag, author, permlink, getCachedGenesisBlock()],
     );
-    const revoteMap = new Map<string, { weight: number; timestamp: Date; block_num: number }>();
+    const revoteMap = new Map<string, { weight: number; timestamp: Date; block_num: number; version: number }>();
     for (const r of revoteResult.rows) {
       const voter = r.voter as string;
       const weight = Number(r.weight);
@@ -1068,7 +1071,7 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string) {
       if (!accreditedAccounts.has(voter) || voter === author) continue;
       // Keep only the latest revote per voter (already ordered by block_num DESC)
       if (!revoteMap.has(voter)) {
-        revoteMap.set(voter, { weight, timestamp: new Date(r.revote_ts as string), block_num: Number(r.block_num) });
+        revoteMap.set(voter, { weight, timestamp: new Date(r.revote_ts as string), block_num: Number(r.block_num), version: Number(version) });
       }
     }
 
@@ -1076,7 +1079,14 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string) {
       const rMeta = parseMeta(r.json_metadata);
       const pevo = safePevoMeta(rMeta);
       const rating = pevo.rating as Record<string, number> | undefined;
-      const reviewedVersion = (pevo.reviewed_version as number) || 1;
+      // Compute reviewed_version from timestamps: latest version created before this review
+      const reviewCreated = new Date(r.created as string);
+      let reviewedVersion = 1;
+      for (const v of versions) {
+        if (new Date(v.created) <= reviewCreated) {
+          reviewedVersion = v.version_number;
+        }
+      }
 
       // E5: Review outdated — if paper has been updated since review
       const outdated = reviewedVersion < latestVersion;
@@ -1116,7 +1126,22 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string) {
     // Vote resolution: for each voter, pick the signal with the highest block_num
     // across native votes and revote custom_json. Handle weight=0 as retraction.
     const processedVoters = new Set<string>();
-    const voters: Array<{ voter: string; weight: number; effective_weight: number }> = [];
+    const voters: Array<{ voter: string; weight: number; effective_weight: number; voted_version: number }> = [];
+
+    // Build sorted version block_nums for voted_version inference
+    const versionBlocks = versions
+      .map(v => ({ version_number: v.version_number, block_num: v.block_num }))
+      .sort((a, b) => a.block_num - b.block_num);
+
+    // Infer voted version from a vote's block_num: latest version where version_block <= vote_block
+    function inferVotedVersion(voteBlockNum: number): number {
+      let result = 1;
+      for (const vb of versionBlocks) {
+        if (vb.block_num <= voteBlockNum) result = vb.version_number;
+        else break;
+      }
+      return result;
+    }
 
     // Process voters with native votes
     for (const r of voteResult.rows) {
@@ -1133,10 +1158,14 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string) {
       // weight=0 means retracted
       if (effectiveSignalWeight === 0) continue;
 
+      // Determine voted_version: revote has explicit version, native uses block_num inference
+      const votedVersion = useRevote ? revote.version : inferVotedVersion(nativeBlock);
+
       voters.push({
         voter,
         weight: effectiveSignalWeight,
         effective_weight: effectiveSignalWeight,
+        voted_version: votedVersion,
       });
     }
 
@@ -1149,6 +1178,7 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string) {
         voter,
         weight: revote.weight,
         effective_weight: revote.weight,
+        voted_version: revote.version,
       });
     }
 

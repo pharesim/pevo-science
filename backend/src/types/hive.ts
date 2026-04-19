@@ -54,8 +54,6 @@ export interface ReviewPevoMeta {
   rating: Rating;
   is_anonymous: boolean;
   reviewer_attestation_id: string | null;
-  /** Which version of the paper this review was written against. */
-  reviewed_version: number;
 }
 
 // ─── Bridge Paper Source ──────────────────────────────────────────

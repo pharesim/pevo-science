@@ -230,7 +230,6 @@ export function initReviewPage() {
           });
         } else {
           const reviewPermlink = `re-${slugify(this.author)}-${slugify(this.permlink)}-${Date.now().toString(36)}`;
-          const paperVersion = this.paper?.versions?.[this.paper.versions.length - 1]?.version_number ?? 1;
           const APP_TAG = getAppTag();
           const APP_ID = getAppId();
 
@@ -243,7 +242,6 @@ export function initReviewPage() {
               rating: this.ratings,
               is_anonymous: false,
               reviewer_attestation_id: null,
-              reviewed_version: paperVersion,
             },
           };
 

@@ -117,7 +117,6 @@ router.post('/anonymous', verifyHiveSignature, anonReviewLimiter, validate(anony
   if (username === paper_author) {
     return sendError(res, 403, 'FORBIDDEN', 'Authors cannot review their own papers');
   }
-  let paperVersion: number = 1;
   try {
     const post = await hiveClient.call('condenser_api', 'get_content', [paper_author, paper_permlink]);
     if (post && post.json_metadata) {
@@ -126,9 +125,6 @@ router.post('/anonymous', verifyHiveSignature, anonReviewLimiter, validate(anony
       const authors: Array<{ hive?: string }> = pevoMeta?.authors || [];
       if (authors.some(a => a.hive === username)) {
         return sendError(res, 403, 'FORBIDDEN', 'Authors cannot review their own papers');
-      }
-      if (typeof pevoMeta?.version === 'number') {
-        paperVersion = pevoMeta.version;
       }
     }
   } catch {
@@ -167,7 +163,6 @@ router.post('/anonymous', verifyHiveSignature, anonReviewLimiter, validate(anony
       rating,
       is_anonymous: true,
       reviewer_attestation_id: null,
-      reviewed_version: paperVersion,
     },
   };
 
