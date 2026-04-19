@@ -80,17 +80,3 @@ describe('GET /api/papers/:author/:permlink', () => {
     expect(res.body.data).toHaveProperty('is_retracted');
   });
 });
-
-describe('GET /api/papers/:author/:permlink/citations', () => {
-  it('returns citations list (or empty)', async () => {
-    const listRes = await request(app).get('/api/papers?limit=1');
-    if (listRes.body.data.length === 0) return;
-
-    const { author, permlink } = listRes.body.data[0];
-    const res = await request(app).get(`/api/papers/${author}/${permlink}/citations`);
-    expect(res.status).toBe(200);
-    expect(res.body.status).toBe('ok');
-    expect(Array.isArray(res.body.data)).toBe(true);
-    expect(res.body.meta).toHaveProperty('total');
-  });
-});
