@@ -38,3 +38,5 @@ coverage/
 
 *outreach.txt
 /claim_accounts*
+
+*.pem
