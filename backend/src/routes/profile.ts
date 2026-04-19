@@ -72,6 +72,66 @@ async function getAccreditation(username: string) {
 }
 
 // ──────────────────────────────────────────────
+// Helpers — profile stats (lightweight counts)
+// ──────────────────────────────────────────────
+
+async function getProfileStats(username: string) {
+  const pool = getPool();
+  if (!pool) return { paper_count: 0, review_count: 0, citation_count: 0, first_pevo_post: null };
+
+  try {
+    const result = await pool.query(
+      `WITH user_papers AS (
+         SELECT c.created
+         FROM ${T.comments} c
+         WHERE c.author = $1
+           AND c.parent_author = '' AND c.parent_permlink = $2
+           AND (c.json_metadata -> $2 ->> 'type') = 'paper'
+           AND c.json_metadata ->> 'app' LIKE $3
+           AND (c.json_metadata -> $2 -> 'continues') IS NULL
+       ),
+       user_reviews AS (
+         SELECT 1
+         FROM ${T.comments} c
+         WHERE c.author = $1
+           AND (c.json_metadata -> $2 ->> 'type') = 'review'
+           AND c.json_metadata ->> 'app' LIKE $3
+           AND COALESCE(c.json_metadata -> $2 ->> 'is_anonymous', 'false') != 'true'
+       ),
+       citations AS (
+         SELECT 1
+         FROM ${T.comments} citing
+         CROSS JOIN LATERAL jsonb_array_elements(
+           citing.json_metadata -> $2 -> 'citations'
+         ) AS cit
+         WHERE citing.parent_author = '' AND citing.parent_permlink = $2
+           AND (citing.json_metadata -> $2 ->> 'type') = 'paper'
+           AND citing.json_metadata ->> 'app' LIKE $3
+           AND jsonb_typeof(citing.json_metadata -> $2 -> 'citations') = 'array'
+           AND (cit ->> 'author') = $1
+       )
+       SELECT
+         (SELECT COUNT(*) FROM user_papers) AS paper_count,
+         (SELECT MIN(created) FROM user_papers) AS first_pevo_post,
+         (SELECT COUNT(*) FROM user_reviews) AS review_count,
+         (SELECT COUNT(*) FROM citations) AS citation_count`,
+      [username, config.appTag, `${config.appTag}/%`],
+    );
+
+    const row = result.rows[0];
+    return {
+      paper_count: Number(row?.paper_count ?? 0),
+      review_count: Number(row?.review_count ?? 0),
+      citation_count: Number(row?.citation_count ?? 0),
+      first_pevo_post: row?.first_pevo_post ?? null,
+    };
+  } catch (err) {
+    logger.warn({ err }, 'Profile stats query failed');
+    return { paper_count: 0, review_count: 0, citation_count: 0, first_pevo_post: null };
+  }
+}
+
+// ──────────────────────────────────────────────
 // GET /api/profile/:username
 // ──────────────────────────────────────────────
 
