@@ -104,34 +104,39 @@ async function searchFromHaf(
       ? 'c.created DESC'
       : `(CASE WHEN c.title ILIKE ${ilikeParam} THEN 1 ELSE 0 END) DESC, c.created DESC`;
 
-    const countResult = await pool.query(
-      `${cte.sql}
-       SELECT count(*)::int AS total
-       FROM ${T.comments} c
-       WHERE ${where}
-         AND ${textMatch}`,
-      [...params, ilikePattern],
-    );
-    const total = countResult.rows[0]?.total ?? 0;
-
     const snippetExpr = `substring(c.body from 1 for 300)`;
 
-    const dataResult = await pool.query(
-      `${cte.sql}
-       SELECT
-        (c.json_metadata -> ${appTagParam} ->> 'type') AS type,
-        c.author,
-        c.permlink,
-        c.title,
-        ${snippetExpr} AS snippet,
-        c.created
-       FROM ${T.comments} c
-       WHERE ${where}
-         AND ${textMatch}
-       ORDER BY ${orderBy}
-       LIMIT $${paramIdx++} OFFSET $${paramIdx++}`,
-      [...params, ilikePattern, limit, offset],
-    );
+    const limitParam = `$${paramIdx++}`;
+    const offsetParam = `$${paramIdx++}`;
+
+    const [countResult, dataResult] = await Promise.all([
+      pool.query(
+        `${cte.sql}
+         SELECT count(*)::int AS total
+         FROM ${T.comments} c
+         WHERE ${where}
+           AND ${textMatch}`,
+        [...params, ilikePattern],
+      ),
+      pool.query(
+        `${cte.sql}
+         SELECT
+          (c.json_metadata -> ${appTagParam} ->> 'type') AS type,
+          c.author,
+          c.permlink,
+          c.title,
+          ${snippetExpr} AS snippet,
+          c.created
+         FROM ${T.comments} c
+         WHERE ${where}
+           AND ${textMatch}
+         ORDER BY ${orderBy}
+         LIMIT ${limitParam} OFFSET ${offsetParam}`,
+        [...params, ilikePattern, limit, offset],
+      ),
+    ]);
+
+    const total = countResult.rows[0]?.total ?? 0;
 
     const authors = dataResult.rows.map((r: Record<string, unknown>) => r.author as string);
     const accreditedSet = await getAccreditedSet(authors);
