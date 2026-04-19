@@ -41,7 +41,6 @@ export function initCommentComposer() {
         const jsonMetadata = {
           app: APP_ID,
           tags: [APP_TAG],
-          format: 'markdown',
           [APP_TAG]: { type: 'comment', version: 1 },
         };
         const operations = [

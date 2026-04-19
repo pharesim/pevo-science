@@ -111,7 +111,6 @@ export interface ReviewJsonMetadata extends PevoBaseMeta {
 }
 
 export interface CommentJsonMetadata extends PevoBaseMeta {
-  format: "markdown";
   // APP_TAG key maps to CommentPevoMeta at runtime
 }
 
