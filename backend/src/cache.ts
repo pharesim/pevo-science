@@ -3,7 +3,6 @@
  * Falls back to in-memory Map when Redis is not available.
  */
 import { getRedis } from './redis.js';
-import { config } from './config.js';
 import { logger } from './logger.js';
 
 interface MemoryCacheEntry<T> {
@@ -18,7 +17,7 @@ export class QueryCache {
   private defaultTtlMs: number;
   private prefix: string;
 
-  constructor(defaultTtlMs = 30_000, prefix = `${config.appTag}:cache:`) {
+  constructor(defaultTtlMs = 30_000, prefix = 'cache:') {
     this.defaultTtlMs = defaultTtlMs;
     this.prefix = prefix;
 

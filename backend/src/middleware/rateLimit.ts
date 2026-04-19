@@ -1,7 +1,6 @@
 import type { Request, Response, NextFunction } from 'express';
 import { sendError } from '../response.js';
 import { getRedis } from '../redis.js';
-import { config as appConfig } from '../config.js';
 import { logger } from '../logger.js';
 
 interface RateLimitEntry {
@@ -22,7 +21,7 @@ interface RateLimitConfig {
  */
 export function rateLimit(config: RateLimitConfig) {
   const memStore = new Map<string, RateLimitEntry>();
-  const redisPrefix = `${appConfig.appTag}:rl:${config.name}:`;
+  const redisPrefix = `rl:${config.name}:`;
 
   const cleanupInterval = setInterval(() => {
     const now = Date.now();
