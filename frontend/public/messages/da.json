@@ -1019,7 +1019,14 @@
     "emailDeleted": "E-mail og tilknyttede data er slettet.",
     "emailAlreadyInUse": "Denne e-mailadresse er allerede tilknyttet en anden konto.",
     "emailTokenExpired": "Bekræftelseslinket er udløbet. Anmod om et nyt.",
-    "emailResend": "Send bekræftelse igen"
+    "emailResend": "Send bekræftelse igen",
+    "orcidTitle": "ORCID",
+    "orcidLinkDescription": "Tilknyt dit ORCID iD for at verificere din forskeridentitet.",
+    "orcidLink": "Tilknyt ORCID",
+    "orcidUpdate": "Opdater ORCID",
+    "orcidVerified": "Verificeret",
+    "orcidRedirecting": "Omdirigerer til ORCID...",
+    "orcidLinkSuccess": "ORCID tilknyttet."
   },
   "metadataRestored": {
     "title": "Artikelmetadata blev ændret af en ekstern redigering",
@@ -1078,6 +1085,21 @@
     "removeLink": "Fjern link",
     "linkApply": "Anvend",
     "imageUploadFailed": "Upload af billede mislykkedes"
+  },
+  "claims": {
+    "confirmed": "Bekræftet",
+    "pending": "Afventer",
+    "claimButton": "Gør krav",
+    "claimAuthorship": "Gør krav på forfatterskab",
+    "claiming": "Sender...",
+    "approve": "Godkend",
+    "reject": "Afvis",
+    "claimSubmitted": "Krav på forfatterskab indsendt. Det vises som afventende, indtil det er godkendt.",
+    "claimFailed": "Kunne ikke indsende krav på forfatterskab.",
+    "approveSuccess": "Krav på forfatterskab godkendt.",
+    "approveFailed": "Kunne ikke godkende krav på forfatterskab.",
+    "rejectSuccess": "Krav på forfatterskab afvist.",
+    "rejectFailed": "Kunne ikke afvise krav på forfatterskab."
   },
   "landing": {
     "publishPaper": "Publicer en artikel",

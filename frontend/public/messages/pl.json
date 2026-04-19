@@ -1019,7 +1019,14 @@
     "emailDeleted": "Adres e-mail i powiązane dane zostały usunięte.",
     "emailAlreadyInUse": "Ten adres e-mail jest już powiązany z innym kontem.",
     "emailTokenExpired": "Link weryfikacyjny wygasł. Poproś o nowy.",
-    "emailResend": "Wyślij weryfikację ponownie"
+    "emailResend": "Wyślij weryfikację ponownie",
+    "orcidTitle": "ORCID",
+    "orcidLinkDescription": "Powiąż swój ORCID iD, aby zweryfikować swoją tożsamość badacza.",
+    "orcidLink": "Powiąż ORCID",
+    "orcidUpdate": "Zaktualizuj ORCID",
+    "orcidVerified": "Zweryfikowano",
+    "orcidRedirecting": "Przekierowanie do ORCID...",
+    "orcidLinkSuccess": "ORCID powiązany pomyślnie."
   },
   "metadataRestored": {
     "title": "Metadane artykułu zostały zmodyfikowane przez zewnętrzną edycję",
@@ -1078,6 +1085,21 @@
     "removeLink": "Usuń link",
     "linkApply": "Zastosuj",
     "imageUploadFailed": "Przesyłanie obrazu nie powiodło się"
+  },
+  "claims": {
+    "confirmed": "Potwierdzone",
+    "pending": "Oczekujące",
+    "claimButton": "Zgłoś",
+    "claimAuthorship": "Zgłoś autorstwo",
+    "claiming": "Wysyłanie...",
+    "approve": "Zatwierdź",
+    "reject": "Odrzuć",
+    "claimSubmitted": "Zgłoszenie autorstwa wysłane. Będzie wyświetlane jako oczekujące do zatwierdzenia.",
+    "claimFailed": "Nie udało się wysłać zgłoszenia autorstwa.",
+    "approveSuccess": "Zgłoszenie autorstwa zatwierdzone.",
+    "approveFailed": "Nie udało się zatwierdzić zgłoszenia autorstwa.",
+    "rejectSuccess": "Zgłoszenie autorstwa odrzucone.",
+    "rejectFailed": "Nie udało się odrzucić zgłoszenia autorstwa."
   },
   "landing": {
     "publishPaper": "Opublikuj pracę",

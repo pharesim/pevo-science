@@ -1019,7 +1019,14 @@
     "emailDeleted": "E-mail e dados associados eliminados.",
     "emailAlreadyInUse": "Este endereço de e-mail já está associado a outra conta.",
     "emailTokenExpired": "A ligação de verificação expirou. Solicite uma nova.",
-    "emailResend": "Reenviar verificação"
+    "emailResend": "Reenviar verificação",
+    "orcidTitle": "ORCID",
+    "orcidLinkDescription": "Associe o seu ORCID iD para verificar a sua identidade como investigador.",
+    "orcidLink": "Associar ORCID",
+    "orcidUpdate": "Atualizar ORCID",
+    "orcidVerified": "Verificado",
+    "orcidRedirecting": "A redirecionar para o ORCID...",
+    "orcidLinkSuccess": "ORCID associado com sucesso."
   },
   "metadataRestored": {
     "title": "Metadados do artigo foram modificados por uma edição externa",
@@ -1078,6 +1085,21 @@
     "removeLink": "Remover link",
     "linkApply": "Aplicar",
     "imageUploadFailed": "Falha ao carregar imagem"
+  },
+  "claims": {
+    "confirmed": "Confirmado",
+    "pending": "Pendente",
+    "claimButton": "Reivindicar",
+    "claimAuthorship": "Reivindicar autoria",
+    "claiming": "Enviando...",
+    "approve": "Aprovar",
+    "reject": "Rejeitar",
+    "claimSubmitted": "Reivindicação de autoria enviada. Aparecerá como pendente até ser aprovada.",
+    "claimFailed": "Falha ao enviar reivindicação de autoria.",
+    "approveSuccess": "Reivindicação de autoria aprovada.",
+    "approveFailed": "Falha ao aprovar reivindicação de autoria.",
+    "rejectSuccess": "Reivindicação de autoria rejeitada.",
+    "rejectFailed": "Falha ao rejeitar reivindicação de autoria."
   },
   "landing": {
     "publishPaper": "Publicar um Artigo",

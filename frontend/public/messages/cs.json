@@ -1019,7 +1019,14 @@
     "emailDeleted": "E-mail a související údaje byly smazány.",
     "emailAlreadyInUse": "Tato e-mailová adresa je již přiřazena k jinému účtu.",
     "emailTokenExpired": "Ověřovací odkaz vypršel. Vyžádejte si nový.",
-    "emailResend": "Znovu odeslat ověření"
+    "emailResend": "Znovu odeslat ověření",
+    "orcidTitle": "ORCID",
+    "orcidLinkDescription": "Propojte svůj ORCID iD a ověřte svou identitu výzkumníka.",
+    "orcidLink": "Propojit ORCID",
+    "orcidUpdate": "Aktualizovat ORCID",
+    "orcidVerified": "Ověřeno",
+    "orcidRedirecting": "Přesměrování na ORCID...",
+    "orcidLinkSuccess": "ORCID byl úspěšně propojen."
   },
   "metadataRestored": {
     "title": "Metadata článku byla upravena externím zásahem",
@@ -1078,6 +1085,21 @@
     "removeLink": "Odstranit odkaz",
     "linkApply": "Použít",
     "imageUploadFailed": "Nahrávání obrázku se nezdařilo"
+  },
+  "claims": {
+    "confirmed": "Potvrzeno",
+    "pending": "Čeká na schválení",
+    "claimButton": "Nárokovat",
+    "claimAuthorship": "Nárokovat autorství",
+    "claiming": "Odesílání...",
+    "approve": "Schválit",
+    "reject": "Odmítnout",
+    "claimSubmitted": "Nárok na autorství byl odeslán. Bude zobrazen jako čekající na schválení.",
+    "claimFailed": "Odeslání nároku na autorství se nezdařilo.",
+    "approveSuccess": "Nárok na autorství schválen.",
+    "approveFailed": "Schválení nároku na autorství se nezdařilo.",
+    "rejectSuccess": "Nárok na autorství odmítnut.",
+    "rejectFailed": "Odmítnutí nároku na autorství se nezdařilo."
   },
   "landing": {
     "publishPaper": "Publikovat článek",

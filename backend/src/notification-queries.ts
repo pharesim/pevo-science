@@ -15,7 +15,10 @@ export type NotificationEventType =
   | "new_vote"
   | "accreditation_update"
   | "new_vouch"
-  | "new_reply";
+  | "new_reply"
+  | "claim_pending"
+  | "claim_approved"
+  | "claim_revoked";
 
 export interface BaseNotificationEvent {
   type: NotificationEventType;
@@ -72,13 +75,35 @@ export interface NewReplyEvent extends BaseNotificationEvent {
   permlink: string;
 }
 
+export interface ClaimPendingEvent extends BaseNotificationEvent {
+  type: "claim_pending";
+  actor: string;
+  paper_author: string;
+  paper_permlink: string;
+}
+
+export interface ClaimApprovedEvent extends BaseNotificationEvent {
+  type: "claim_approved";
+  paper_author: string;
+  paper_permlink: string;
+}
+
+export interface ClaimRevokedEvent extends BaseNotificationEvent {
+  type: "claim_revoked";
+  paper_author: string;
+  paper_permlink: string;
+}
+
 export type NotificationEvent =
   | NewReviewEvent
   | NewCitationEvent
   | NewVoteEvent
   | AccreditationUpdateEvent
   | NewVouchEvent
-  | NewReplyEvent;
+  | NewReplyEvent
+  | ClaimPendingEvent
+  | ClaimApprovedEvent
+  | ClaimRevokedEvent;
 
 export interface NotificationBatch {
   events: NotificationEvent[];
@@ -314,6 +339,57 @@ export async function fetchNotificationsFromHaf(
         AND (citing.json_metadata -> ${at} ->> 'type') = 'paper'
         AND citing.json_metadata ->> 'app' LIKE ${al}
 
+      UNION ALL
+
+      -- 7. Pending authorship claims on your papers (notify post author)
+      SELECT
+        'claim_pending'::text,
+        cj.block_num,
+        cj.timestamp,
+        cj.required_posting_auths ->> 0,
+        cj.json::jsonb ->> 'paper_author',
+        cj.json::jsonb ->> 'paper_permlink',
+        NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL
+      FROM ${T.customJson} cj
+      WHERE cj.custom_id = ${at}
+        AND cj.json::jsonb ->> 'action' = 'claim_authorship'
+        AND cj.json::jsonb ->> 'paper_author' = $1
+        AND cj.block_num > $2
+
+      UNION ALL
+
+      -- 8. Authorship claim approved (notify claimer)
+      SELECT
+        'claim_approved'::text,
+        cj.block_num,
+        cj.timestamp,
+        NULL,
+        cj.json::jsonb ->> 'paper_author',
+        cj.json::jsonb ->> 'paper_permlink',
+        NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL
+      FROM ${T.customJson} cj
+      WHERE cj.custom_id = ${at}
+        AND cj.json::jsonb ->> 'action' = 'approve_authorship'
+        AND cj.json::jsonb ->> 'claimer' = $1
+        AND cj.block_num > $2
+
+      UNION ALL
+
+      -- 9. Authorship claim revoked (notify claimer)
+      SELECT
+        'claim_revoked'::text,
+        cj.block_num,
+        cj.timestamp,
+        NULL,
+        cj.json::jsonb ->> 'paper_author',
+        cj.json::jsonb ->> 'paper_permlink',
+        NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL
+      FROM ${T.customJson} cj
+      WHERE cj.custom_id = ${at}
+        AND cj.json::jsonb ->> 'action' = 'revoke_authorship'
+        AND cj.json::jsonb ->> 'claimer' = $1
+        AND cj.block_num > $2
+
       ORDER BY block_num ASC
       LIMIT $3`,
       [account, sinceBlock, limit, ...accredCte.params, config.appTag, `${config.appTag}/%`],
@@ -388,6 +464,31 @@ export async function fetchNotificationsFromHaf(
             paper_author: r.paper_author as string,
             paper_permlink: r.paper_permlink as string,
             permlink: r.event_permlink as string,
+          });
+          break;
+        case 'claim_pending':
+          events.push({
+            ...base,
+            type: 'claim_pending',
+            actor: r.actor as string,
+            paper_author: r.paper_author as string,
+            paper_permlink: r.paper_permlink as string,
+          });
+          break;
+        case 'claim_approved':
+          events.push({
+            ...base,
+            type: 'claim_approved',
+            paper_author: r.paper_author as string,
+            paper_permlink: r.paper_permlink as string,
+          });
+          break;
+        case 'claim_revoked':
+          events.push({
+            ...base,
+            type: 'claim_revoked',
+            paper_author: r.paper_author as string,
+            paper_permlink: r.paper_permlink as string,
           });
           break;
       }

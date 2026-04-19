@@ -1019,7 +1019,14 @@
     "emailDeleted": "تم حذف البريد الإلكتروني والبيانات المرتبطة.",
     "emailAlreadyInUse": "هذا البريد الإلكتروني مرتبط بحساب آخر بالفعل.",
     "emailTokenExpired": "انتهت صلاحية رابط التحقق. يرجى طلب رابط جديد.",
-    "emailResend": "إعادة إرسال التحقق"
+    "emailResend": "إعادة إرسال التحقق",
+    "orcidTitle": "ORCID",
+    "orcidLinkDescription": "اربط معرّف ORCID الخاص بك للتحقق من هويتك كباحث.",
+    "orcidLink": "ربط ORCID",
+    "orcidUpdate": "تحديث ORCID",
+    "orcidVerified": "موثّق",
+    "orcidRedirecting": "جارٍ التحويل إلى ORCID...",
+    "orcidLinkSuccess": "تم ربط ORCID بنجاح."
   },
   "metadataRestored": {
     "title": "تم تعديل بيانات الورقة الوصفية بواسطة تحرير خارجي",
@@ -1078,6 +1085,21 @@
     "removeLink": "إزالة الرابط",
     "linkApply": "تطبيق",
     "imageUploadFailed": "فشل رفع الصورة"
+  },
+  "claims": {
+    "confirmed": "مؤكد",
+    "pending": "قيد الانتظار",
+    "claimButton": "مطالبة",
+    "claimAuthorship": "مطالبة بالتأليف",
+    "claiming": "جارٍ المطالبة...",
+    "approve": "موافقة",
+    "reject": "رفض",
+    "claimSubmitted": "تم تقديم مطالبة التأليف. ستظهر كمعلقة حتى الموافقة عليها.",
+    "claimFailed": "فشل تقديم مطالبة التأليف.",
+    "approveSuccess": "تمت الموافقة على مطالبة التأليف.",
+    "approveFailed": "فشلت الموافقة على مطالبة التأليف.",
+    "rejectSuccess": "تم رفض مطالبة التأليف.",
+    "rejectFailed": "فشل رفض مطالبة التأليف."
   },
   "landing": {
     "publishPaper": "نشر بحث",

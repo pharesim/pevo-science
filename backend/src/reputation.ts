@@ -258,8 +258,83 @@ export async function computeReputationBatch(
         LEFT JOIN active_accounts aa ON aa.author = a.voter
       ),
 
+      -- ═══ AUTHORSHIP CLAIMS (for co-author credit) ═══
+      claim_events AS (
+        SELECT
+          cj.json::jsonb ->> 'action' AS action,
+          COALESCE(cj.json::jsonb ->> 'claimer', cj.required_posting_auths ->> 0) AS claimer,
+          cj.json::jsonb ->> 'paper_author' AS paper_author,
+          cj.json::jsonb ->> 'paper_permlink' AS paper_permlink,
+          (cj.json::jsonb ->> 'author_index')::int AS author_index,
+          cj.block_num
+        FROM ${T.customJson} cj
+        WHERE cj.custom_id = $3
+          AND cj.json::jsonb ->> 'action' IN ('claim_authorship', 'approve_authorship', 'revoke_authorship')
+          AND cj.block_num >= $7
+      ),
+      -- Accredited user ORCIDs for auto-accept
+      claimer_orcids AS (
+        SELECT
+          cj.json::jsonb ->> 'account' AS account,
+          cj.json::jsonb ->> 'orcid' AS orcid,
+          ROW_NUMBER() OVER (PARTITION BY cj.json::jsonb ->> 'account' ORDER BY cj.block_num DESC) AS rn
+        FROM ${T.customJson} cj
+        WHERE cj.custom_id = $3
+          AND cj.json::jsonb ->> 'action' IN ('accredit', 'revoke')
+          AND cj.block_num >= $7
+      ),
+      accepted_claims AS (
+        SELECT DISTINCT ce.claimer, ce.paper_author, ce.paper_permlink
+        FROM claim_events ce
+        WHERE ce.action = 'claim_authorship'
+          AND ce.claimer IN (SELECT username FROM target_users)
+          AND NOT EXISTS (
+            SELECT 1 FROM claim_events rv
+            WHERE rv.action = 'revoke_authorship'
+              AND rv.claimer = ce.claimer
+              AND rv.paper_author = ce.paper_author
+              AND rv.paper_permlink = ce.paper_permlink
+              AND rv.block_num > ce.block_num
+              AND rv.block_num > COALESCE((
+                SELECT MAX(ap.block_num) FROM claim_events ap
+                WHERE ap.action = 'approve_authorship'
+                  AND ap.claimer = ce.claimer
+                  AND ap.paper_author = ce.paper_author
+                  AND ap.paper_permlink = ce.paper_permlink
+              ), 0)
+          )
+          AND (
+            -- Explicitly approved
+            EXISTS (
+              SELECT 1 FROM claim_events ap
+              WHERE ap.action = 'approve_authorship'
+                AND ap.claimer = ce.claimer
+                AND ap.paper_author = ce.paper_author
+                AND ap.paper_permlink = ce.paper_permlink
+                AND ap.block_num > ce.block_num
+            )
+            -- Auto-accept: ORCID match
+            OR (ce.author_index IS NOT NULL AND EXISTS (
+              SELECT 1 FROM ${T.comments} c
+              JOIN claimer_orcids co ON co.account = ce.claimer AND co.rn = 1
+                AND co.orcid IS NOT NULL AND co.orcid != ''
+              WHERE c.author = ce.paper_author AND c.permlink = ce.paper_permlink
+                AND c.parent_author = ''
+                AND (c.json_metadata -> $3 -> 'authors' -> ce.author_index ->> 'orcid') = co.orcid
+            ))
+            -- Auto-accept: hive username match
+            OR (ce.author_index IS NOT NULL AND EXISTS (
+              SELECT 1 FROM ${T.comments} c
+              WHERE c.author = ce.paper_author AND c.permlink = ce.paper_permlink
+                AND c.parent_author = ''
+                AND (c.json_metadata -> $3 -> 'authors' -> ce.author_index ->> 'hive') = ce.claimer
+            ))
+          )
+      ),
+
       -- ═══ PAPERS ═══
       user_papers AS (
+        -- Papers authored by user
         SELECT c.author, c.permlink, c.created, c.json_metadata
         FROM ${T.comments} c
         WHERE c.author IN (SELECT username FROM target_users)
@@ -267,6 +342,16 @@ export async function computeReputationBatch(
           AND (c.json_metadata -> $3 ->> 'type') = 'paper'
           AND c.json_metadata ->> 'app' LIKE $4
           AND (c.json_metadata -> $3 -> 'continues') IS NULL
+        UNION ALL
+        -- Papers claimed by user (co-author credit)
+        SELECT ac.claimer AS author, c.permlink, c.created, c.json_metadata
+        FROM accepted_claims ac
+        JOIN ${T.comments} c ON c.author = ac.paper_author AND c.permlink = ac.paper_permlink
+        WHERE c.parent_author = '' AND c.parent_permlink = $3
+          AND (c.json_metadata -> $3 ->> 'type') IN ('paper', 'bridge_paper')
+          AND c.json_metadata ->> 'app' LIKE $4
+          AND (c.json_metadata -> $3 -> 'continues') IS NULL
+          AND ac.claimer != c.author  -- avoid double-counting
       ),
 
       paper_vote_signals AS (

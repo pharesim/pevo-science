@@ -1019,7 +1019,14 @@
     "emailDeleted": "E-post och tillhörande uppgifter har raderats.",
     "emailAlreadyInUse": "Den här e-postadressen är redan kopplad till ett annat konto.",
     "emailTokenExpired": "Verifieringslänken har gått ut. Begär en ny.",
-    "emailResend": "Skicka verifiering igen"
+    "emailResend": "Skicka verifiering igen",
+    "orcidTitle": "ORCID",
+    "orcidLinkDescription": "Länka ditt ORCID iD för att verifiera din forskaridentitet.",
+    "orcidLink": "Länka ORCID",
+    "orcidUpdate": "Uppdatera ORCID",
+    "orcidVerified": "Verifierad",
+    "orcidRedirecting": "Omdirigerar till ORCID...",
+    "orcidLinkSuccess": "ORCID länkat."
   },
   "metadataRestored": {
     "title": "Artikelns metadata ändrades av en extern redigering",
@@ -1078,6 +1085,21 @@
     "removeLink": "Ta bort länk",
     "linkApply": "Tillämpa",
     "imageUploadFailed": "Bilduppladdning misslyckades"
+  },
+  "claims": {
+    "confirmed": "Bekräftad",
+    "pending": "Väntande",
+    "claimButton": "Gör anspråk",
+    "claimAuthorship": "Gör anspråk på författarskap",
+    "claiming": "Skickar...",
+    "approve": "Godkänn",
+    "reject": "Avvisa",
+    "claimSubmitted": "Anspråk på författarskap skickat. Det visas som väntande tills det godkänns.",
+    "claimFailed": "Kunde inte skicka anspråk på författarskap.",
+    "approveSuccess": "Anspråk på författarskap godkänt.",
+    "approveFailed": "Kunde inte godkänna anspråk på författarskap.",
+    "rejectSuccess": "Anspråk på författarskap avvisat.",
+    "rejectFailed": "Kunde inte avvisa anspråk på författarskap."
   },
   "landing": {
     "publishPaper": "Publicera en artikel",

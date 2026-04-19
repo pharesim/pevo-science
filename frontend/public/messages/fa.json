@@ -1019,7 +1019,14 @@
     "emailDeleted": "ایمیل و اطلاعات مرتبط حذف شدند.",
     "emailAlreadyInUse": "این ایمیل قبلاً به حساب دیگری متصل است.",
     "emailTokenExpired": "لینک تأیید منقضی شده است. لطفاً یک لینک جدید درخواست کنید.",
-    "emailResend": "ارسال مجدد تأیید"
+    "emailResend": "ارسال مجدد تأیید",
+    "orcidTitle": "ORCID",
+    "orcidLinkDescription": "ORCID iD خود را پیوند دهید تا هویت پژوهشگری‌تان تأیید شود.",
+    "orcidLink": "پیوند ORCID",
+    "orcidUpdate": "به‌روزرسانی ORCID",
+    "orcidVerified": "تأیید شده",
+    "orcidRedirecting": "در حال انتقال به ORCID...",
+    "orcidLinkSuccess": "ORCID با موفقیت پیوند داده شد."
   },
   "metadataRestored": {
     "title": "فراداده مقاله توسط ویرایش خارجی تغییر یافته است",
@@ -1078,6 +1085,21 @@
     "removeLink": "حذف پیوند",
     "linkApply": "اعمال",
     "imageUploadFailed": "بارگذاری تصویر ناموفق بود"
+  },
+  "claims": {
+    "confirmed": "تأیید شده",
+    "pending": "در انتظار",
+    "claimButton": "ادعا",
+    "claimAuthorship": "ادعای نویسندگی",
+    "claiming": "در حال ارسال...",
+    "approve": "تأیید",
+    "reject": "رد",
+    "claimSubmitted": "ادعای نویسندگی ارسال شد. تا زمان تأیید به صورت معلق نمایش داده می‌شود.",
+    "claimFailed": "ارسال ادعای نویسندگی ناموفق بود.",
+    "approveSuccess": "ادعای نویسندگی تأیید شد.",
+    "approveFailed": "تأیید ادعای نویسندگی ناموفق بود.",
+    "rejectSuccess": "ادعای نویسندگی رد شد.",
+    "rejectFailed": "رد ادعای نویسندگی ناموفق بود."
   },
   "landing": {
     "publishPaper": "انتشار مقاله",

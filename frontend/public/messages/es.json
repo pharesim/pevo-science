@@ -1019,7 +1019,14 @@
     "emailDeleted": "Correo electrónico y datos asociados eliminados.",
     "emailAlreadyInUse": "Este correo electrónico ya está asociado a otra cuenta.",
     "emailTokenExpired": "El enlace de verificación ha caducado. Solicita uno nuevo.",
-    "emailResend": "Reenviar verificación"
+    "emailResend": "Reenviar verificación",
+    "orcidTitle": "ORCID",
+    "orcidLinkDescription": "Vincula tu ORCID iD para verificar tu identidad como investigador.",
+    "orcidLink": "Vincular ORCID",
+    "orcidUpdate": "Actualizar ORCID",
+    "orcidVerified": "Verificado",
+    "orcidRedirecting": "Redirigiendo a ORCID...",
+    "orcidLinkSuccess": "ORCID vinculado correctamente."
   },
   "metadataRestored": {
     "title": "Los metadatos del artículo fueron modificados por una edición externa",
@@ -1078,6 +1085,21 @@
     "removeLink": "Eliminar enlace",
     "linkApply": "Aplicar",
     "imageUploadFailed": "Error al subir la imagen"
+  },
+  "claims": {
+    "confirmed": "Confirmado",
+    "pending": "Pendiente",
+    "claimButton": "Reclamar",
+    "claimAuthorship": "Reclamar autoría",
+    "claiming": "Enviando...",
+    "approve": "Aprobar",
+    "reject": "Rechazar",
+    "claimSubmitted": "Reclamo de autoría enviado. Aparecerá como pendiente hasta que sea aprobado.",
+    "claimFailed": "No se pudo enviar el reclamo de autoría.",
+    "approveSuccess": "Reclamo de autoría aprobado.",
+    "approveFailed": "No se pudo aprobar el reclamo de autoría.",
+    "rejectSuccess": "Reclamo de autoría rechazado.",
+    "rejectFailed": "No se pudo rechazar el reclamo de autoría."
   },
   "landing": {
     "publishPaper": "Publicar un artículo",

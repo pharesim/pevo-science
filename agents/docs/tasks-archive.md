@@ -1,3 +1,51 @@
+### P3-1 — Extend edit authorization to claimed co-authors (2026-04-19) — Reviewed ✓
+
+`edit.js`: `isAuthorized` getter extended with accepted authorship claim check; `loadPaperData()` extracts `authorship_claims` from enrichment. `paper-detail.js`: `isOwnPaper` getter extended with same check for Edit button visibility. Co-author edits correctly use continuation flow via existing `isContinuation` logic. No backend changes needed.
+
+### P1-4 — Settings page ORCID section (2026-04-19) — Reviewed ✓
+
+ORCID link/update flow in settings page. `startOrcidLink()` API function, OAuth redirect with CSRF state params, hostname validation (orcid.org/sandbox.orcid.org), localStorage signals for callback routing, accreditation gate on endpoint. Redis + in-memory fallback for state storage. i18n keys in all 16 locales.
+
+### P1-3 — Display verified ORCID on profile pages (2026-04-19) — Reviewed ✓
+
+Conditional ORCID display on profile pages with official SVG icon, linked to orcid.org. Only shows verified ORCID from accreditation data (not self-reported). Backend returns `orcid` from accreditation payload.
+
+### P2-5 — Claim authorship UI (2026-04-19) — Reviewed ✓
+
+Frontend claim UI on paper-detail: status badges (confirmed/pending), eligibility-gated claim buttons (ORCID/username/name match heuristic), approve/reject for post authors, unlisted author claims. API functions (fetchPaperClaims, claimAuthorship, approveAuthorshipClaim, revokeAuthorshipClaim). Broadcasts via broadcastOps/Keychain. Bridge paper approvals server-side. Profile UNION query includes claimed papers. i18n keys in all 16 locales.
+
+### P2-6 — Reputation credit for claimed co-authors (2026-04-19) — Reviewed ✓
+
+Extended `computeReputationBatch()` with `claim_events`, `claimer_orcids`, `accepted_claims` CTEs. Co-authors with accepted claims get equal paper credit. Revoked claims excluded. Self-claims excluded to avoid double counting.
+
+### P2-4 — Notifications for authorship claims (2026-04-19) — Reviewed ✓
+
+Three notification types: `claim_pending` (post author), `claim_approved` (claimer), `claim_revoked` (claimer). UNION ALL blocks in HAF notification query + switch cases in event parser + digest descriptions. Note: co-author-listed-on-new-paper notification deferred (requires paper creation listener pattern not yet in notification system).
+
+### P2-3 — Backend claim endpoints (2026-04-19) — Reviewed ✓
+
+`backend/src/routes/claims.ts` with GET list, POST claim, POST approve, POST revoke. Bridge papers server-broadcast, native papers return operation for frontend. Custody allows claim actions for light accounts. `authorship_claims` added to paper enrichment response. Author list merging deferred to frontend.
+
+### P1-1 — Add `orcid` to accreditation custom_json payload (2026-04-19) — Reviewed ✓
+
+Added `orcid: orcidId` to both standard and link-mode `customJsonPayload` in `backend/src/routes/accreditation.ts`. `signup-verify.ts` already included orcid.
+
+### P1-2 — Extract `orcid` in HAF accreditation CTE (2026-04-19) — Reviewed ✓
+
+Added `orcid` field to `accred_ranked` and `active_accreditations` CTEs in `hafsql.ts`. Propagated to accreditations list endpoint and profile accreditation response. Note: `/api/accreditations/:username` single-user endpoint still omits `orcid` from its response (minor inconsistency, not blocking).
+
+### P1-3 — Display verified ORCID on profile pages (2026-04-19) — Reviewed ✓
+
+Conditional ORCID badge in `profile.js:48-59`. Shows official ORCID SVG logo + clickable link to `https://orcid.org/<id>`. Only renders when `profile.accreditation.orcid` is present.
+
+### P1-4 — Settings page ORCID section, backend part (2026-04-19) — Reviewed ✓
+
+`GET /api/accreditation/orcid/link-start` endpoint for accredited users. Shared callback detects `mode: 'link'` from state, preserves existing accreditation fields via `getExistingAccreditation()` helper, broadcasts updated `accredit` custom_json with new ORCID. UI part still pending.
+
+### P2-2 — HAF CTE for authorship claims (2026-04-19) — Reviewed ✓
+
+`authorshipClaimsCteBody()` in `hafsql.ts` with 5 CTEs computing claim status. Auto-accept by ORCID match or hive username match. Revocation logic checks block ordering against latest approval. Requires `active_accreditations` in scope.
+
 ### P2-1 — Authorship claim custom_json schemas (2026-04-19) — Reviewed ✓
 
 Schemas defined in `agents/docs/hive-schemas.md` sections 2.9 (claim_authorship), 2.10 (approve_authorship), 2.11 (revoke_authorship). All three payloads specified with required fields, signing accounts, and auto-accept conditions documented.

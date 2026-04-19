@@ -182,6 +182,14 @@ Lazy-loaded enrichment data for a paper (votes, reviews). Separated from the mai
       "outdated": false,
       "addressed_by_version": null
     }
+  ],
+  "authorship_claims": [
+    {
+      "claimer": "scientist3",
+      "author_index": 1,
+      "status": "accepted",
+      "claimed_at": "2026-03-22T10:00:00Z"
+    }
   ]
 }
 ```
@@ -192,8 +200,129 @@ Lazy-loaded enrichment data for a paper (votes, reviews). Separated from the mai
 - `reviews[].reviewer_reputation` — always `0` (not yet computed per-review; reserved for future use).
 - `reviews[].outdated` — `true` if the review was written against an older version than the current paper.
 - `reviews[].addressed_by_version` — version number of a paper revision that explicitly addresses this review, or `null`.
+- `authorship_claims[]` — list of non-revoked authorship claims on this paper. `status` is `accepted` (auto-accepted via ORCID/hive username match, or manually approved) or `pending`. Revoked claims are excluded.
 
 **Errors:** `NOT_FOUND` if paper does not exist.
+
+---
+
+### GET /api/papers/:author/:permlink/claims
+
+List authorship claims on a paper. Cached for 2 minutes.
+
+**Response `data`:**
+
+```json
+{
+  "claims": [
+    {
+      "claimer": "scientist3",
+      "paper_author": "scientist1",
+      "paper_permlink": "neural-network-plasticity-2026",
+      "author_index": 1,
+      "status": "accepted",
+      "claimed_at": "2026-03-22T10:00:00Z"
+    }
+  ]
+}
+```
+
+Revoked claims are excluded from the response.
+
+---
+
+### POST /api/papers/:author/:permlink/claims
+
+Claim an author slot on a paper. Requires accredited user. Returns the `custom_json` operation for the frontend to broadcast via Hive Keychain or custody endpoint.
+
+**Headers:** `X-Hive-Username`, `X-Hive-Signature`
+
+**Request Body:**
+
+```json
+{
+  "author_index": 1
+}
+```
+
+`author_index` — zero-based index into the paper's `authors` array, or `null` for unlisted authors.
+
+**Response `data`:**
+
+```json
+{
+  "operation": ["custom_json", { "id": "pevotest", "json": "...", "required_auths": [], "required_posting_auths": ["scientist3"] }],
+  "message": "Broadcast this operation to claim authorship"
+}
+```
+
+**Errors:**
+- `FORBIDDEN` — user is not accredited
+- `BAD_REQUEST` — invalid `author_index`
+
+**Rate limit:** 5 per minute per account.
+
+---
+
+### POST /api/papers/:author/:permlink/claims/:claimer/approve
+
+Approve a pending authorship claim. For bridge papers, the server broadcasts directly with the bridge account key. For native papers, returns the operation for the post author to broadcast.
+
+**Headers:** `X-Hive-Username`, `X-Hive-Signature`
+
+**Request Body:**
+
+```json
+{
+  "author_index": 1
+}
+```
+
+**Response `data` (bridge paper):**
+
+```json
+{
+  "message": "Authorship claim approved",
+  "tx_id": "<Hive transaction ID>"
+}
+```
+
+**Response `data` (native paper):**
+
+```json
+{
+  "operation": ["custom_json", { "..." }],
+  "message": "Broadcast this operation to approve the authorship claim"
+}
+```
+
+**Errors:**
+- `FORBIDDEN` — only the post author can approve claims on native papers
+
+**Rate limit:** 10 per minute per account.
+
+---
+
+### POST /api/papers/:author/:permlink/claims/:claimer/revoke
+
+Revoke an authorship claim. Authorized for: post author, bridge account (bridge papers), admin account, or the claimer themselves. Bridge/admin server-broadcasts; post author/claimer get the operation to broadcast.
+
+**Headers:** `X-Hive-Username`, `X-Hive-Signature`
+
+**Request Body:**
+
+```json
+{
+  "reason": "Unauthorized claim"
+}
+```
+
+**Response:** Same shape as approve (either `tx_id` for server-broadcast or `operation` for frontend broadcast).
+
+**Errors:**
+- `FORBIDDEN` — not authorized to revoke
+
+**Rate limit:** 10 per minute per account.
 
 ---
 

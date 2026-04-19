@@ -70,6 +70,7 @@ export function activeAccreditationsCteBody(startIdx = 1): SqlFragment {
       cj.json::jsonb ->> 'institution' AS institution,
       cj.json::jsonb ->> 'field' AS field,
       cj.json::jsonb ->> 'method' AS method,
+      cj.json::jsonb ->> 'orcid' AS orcid,
       cj.json::jsonb ->> 'timestamp' AS event_timestamp,
       cj.id AS event_id,
       ROW_NUMBER() OVER (PARTITION BY cj.json::jsonb ->> 'account' ORDER BY cj.block_num DESC) AS rn
@@ -80,7 +81,7 @@ export function activeAccreditationsCteBody(startIdx = 1): SqlFragment {
       AND cj.block_num >= $${p + 2}
   ),
   active_accreditations AS (
-    SELECT account, researcher_name, institution, field, method, event_timestamp, event_id
+    SELECT account, researcher_name, institution, field, method, orcid, event_timestamp, event_id
     FROM accred_ranked
     WHERE rn = 1 AND action = 'accredit'
   )`,
@@ -173,6 +174,110 @@ export function isPevoReviewSql(startIdx = 1): SqlFragment {
   AND c.json_metadata ->> 'app' LIKE $${p + 1}`,
     params: [config.appTag, `${config.appTag}/%`],
     nextIdx: p + 2,
+  };
+}
+
+// ─── Authorship claims CTE ──────────────────────────────────────
+
+/**
+ * CTE body for authorship claims. Computes claim status (accepted/pending/revoked)
+ * for each (claimer, paper_author, paper_permlink) combination.
+ *
+ * Auto-accept conditions:
+ * - Claimer's verified ORCID matches authors[author_index].orcid in paper metadata
+ * - authors[author_index].hive matches the claimer's username
+ *
+ * Requires `active_accreditations` CTE to be in scope.
+ *
+ * @param startIdx - first available $N parameter index
+ */
+export function authorshipClaimsCteBody(startIdx = 1): SqlFragment {
+  const p = startIdx;
+  return {
+    sql: `
+  claim_events AS (
+    SELECT
+      cj.json::jsonb ->> 'action' AS action,
+      COALESCE(cj.json::jsonb ->> 'claimer', cj.required_posting_auths ->> 0) AS claimer,
+      cj.json::jsonb ->> 'paper_author' AS paper_author,
+      cj.json::jsonb ->> 'paper_permlink' AS paper_permlink,
+      (cj.json::jsonb ->> 'author_index')::int AS author_index,
+      cj.block_num,
+      cj.json::jsonb ->> 'timestamp' AS event_timestamp
+    FROM ${T.customJson} cj
+    WHERE cj.custom_id = $${p}
+      AND cj.json::jsonb ->> 'action' IN ('claim_authorship', 'approve_authorship', 'revoke_authorship')
+      AND cj.block_num >= $${p + 1}
+  ),
+  claims_base AS (
+    SELECT claimer, paper_author, paper_permlink, author_index, block_num, event_timestamp
+    FROM claim_events
+    WHERE action = 'claim_authorship'
+  ),
+  approvals AS (
+    SELECT claimer, paper_author, paper_permlink, block_num
+    FROM claim_events
+    WHERE action = 'approve_authorship'
+  ),
+  revocations AS (
+    SELECT claimer, paper_author, paper_permlink, block_num
+    FROM claim_events
+    WHERE action = 'revoke_authorship'
+  ),
+  authorship_claims AS (
+    SELECT
+      cb.claimer,
+      cb.paper_author,
+      cb.paper_permlink,
+      cb.author_index,
+      cb.event_timestamp AS claimed_at,
+      CASE
+        WHEN EXISTS (
+          SELECT 1 FROM revocations rv
+          WHERE rv.claimer = cb.claimer
+            AND rv.paper_author = cb.paper_author
+            AND rv.paper_permlink = cb.paper_permlink
+            AND rv.block_num > cb.block_num
+            AND rv.block_num > COALESCE((
+              SELECT MAX(ap.block_num) FROM approvals ap
+              WHERE ap.claimer = cb.claimer
+                AND ap.paper_author = cb.paper_author
+                AND ap.paper_permlink = cb.paper_permlink
+            ), 0)
+        ) THEN 'revoked'
+        WHEN EXISTS (
+          SELECT 1 FROM approvals ap
+          WHERE ap.claimer = cb.claimer
+            AND ap.paper_author = cb.paper_author
+            AND ap.paper_permlink = cb.paper_permlink
+            AND ap.block_num > cb.block_num
+        ) THEN 'accepted'
+        WHEN cb.author_index IS NOT NULL AND EXISTS (
+          SELECT 1 FROM ${T.comments} c
+          JOIN active_accreditations aa ON aa.account = cb.claimer
+          WHERE c.author = cb.paper_author
+            AND c.permlink = cb.paper_permlink
+            AND c.parent_author = ''
+            AND (
+              (c.json_metadata -> $${p + 2} -> 'authors' -> cb.author_index ->> 'orcid') IS NOT NULL
+              AND aa.orcid IS NOT NULL
+              AND aa.orcid != ''
+              AND (c.json_metadata -> $${p + 2} -> 'authors' -> cb.author_index ->> 'orcid') = aa.orcid
+            )
+        ) THEN 'accepted'
+        WHEN cb.author_index IS NOT NULL AND EXISTS (
+          SELECT 1 FROM ${T.comments} c
+          WHERE c.author = cb.paper_author
+            AND c.permlink = cb.paper_permlink
+            AND c.parent_author = ''
+            AND (c.json_metadata -> $${p + 2} -> 'authors' -> cb.author_index ->> 'hive') = cb.claimer
+        ) THEN 'accepted'
+        ELSE 'pending'
+      END AS status
+    FROM claims_base cb
+  )`,
+    params: [config.appTag, getCachedGenesisBlock(), config.appTag],
+    nextIdx: p + 3,
   };
 }
 

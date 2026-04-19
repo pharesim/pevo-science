@@ -59,6 +59,12 @@ function describeEvent(event: NotificationEvent): string {
         : 'Your accreditation has been revoked';
     case 'new_citation':
       return `${event.actor} cited your paper "${event.paper_title}"`;
+    case 'claim_pending':
+      return `${event.actor} claimed authorship on your paper`;
+    case 'claim_approved':
+      return 'Your authorship claim was approved';
+    case 'claim_revoked':
+      return 'Your authorship claim was revoked';
     default:
       return 'New activity on your account';
   }

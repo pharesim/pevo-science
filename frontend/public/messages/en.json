@@ -1040,7 +1040,14 @@
     "emailDeleted": "Email and associated data deleted.",
     "emailAlreadyInUse": "This email is already associated with another account.",
     "emailTokenExpired": "Verification link has expired. Please request a new one.",
-    "emailResend": "Resend verification"
+    "emailResend": "Resend verification",
+    "orcidTitle": "ORCID",
+    "orcidLinkDescription": "Link your ORCID iD to verify your researcher identity.",
+    "orcidLink": "Link ORCID",
+    "orcidUpdate": "Update ORCID",
+    "orcidVerified": "Verified",
+    "orcidRedirecting": "Redirecting to ORCID...",
+    "orcidLinkSuccess": "ORCID linked successfully."
   },
   "editor": {
     "toolbarLabel": "Text formatting",
@@ -1078,6 +1085,21 @@
     "removeLink": "Remove link",
     "linkApply": "Apply",
     "imageUploadFailed": "Image upload failed"
+  },
+  "claims": {
+    "confirmed": "Confirmed",
+    "pending": "Pending",
+    "claimButton": "Claim",
+    "claimAuthorship": "Claim authorship",
+    "claiming": "Claiming...",
+    "approve": "Approve",
+    "reject": "Reject",
+    "claimSubmitted": "Authorship claim submitted. It will appear as pending until approved.",
+    "claimFailed": "Failed to submit authorship claim.",
+    "approveSuccess": "Authorship claim approved.",
+    "approveFailed": "Failed to approve authorship claim.",
+    "rejectSuccess": "Authorship claim rejected.",
+    "rejectFailed": "Failed to reject authorship claim."
   },
   "landing": {
     "publishPaper": "Publish a Paper",

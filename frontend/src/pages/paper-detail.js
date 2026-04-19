@@ -1,5 +1,6 @@
 import Alpine from 'alpinejs';
-import { fetchPaper, fetchPaperEnrichment, fetchCitationExport, retractPaper, updateBridgePaper } from '../api.js';
+import { fetchPaper, fetchPaperEnrichment, fetchCitationExport, retractPaper, updateBridgePaper, claimAuthorship, approveAuthorshipClaim, revokeAuthorshipClaim } from '../api.js';
+import { broadcastOps } from '../signer.js';
 import { getAppTag } from '../config.js';
 import { computeVersionDiff } from '../lib/version-diff.js';
 import { formatDate } from '../components/paper-card.js';
@@ -323,9 +324,9 @@ const template = `
               </template>
 
               <!-- Authors -->
-              <div class="flex flex-wrap items-center gap-x-3 gap-y-1 mb-4">
-                <template x-for="a in paper.authors" :key="a.hive || a.name">
-                  <span class="inline-flex items-center text-sm">
+              <div class="flex flex-wrap items-center gap-x-3 gap-y-2 mb-4">
+                <template x-for="(a, idx) in paper.authors" :key="a.hive || a.name || idx">
+                  <span class="inline-flex items-center text-sm gap-1">
                     <template x-if="a.hive && (paper.accredited_authors || []).includes(a.hive)">
                       <span class="inline-flex items-center">
                         <a :href="$lp('/profile/' + a.hive)" @click.prevent="navigate('/profile/' + a.hive)" class="no-underline hover:underline">
@@ -340,11 +341,40 @@ const template = `
                       <span class="text-ink font-medium" x-text="a.name"></span>
                     </template>
                     <template x-if="a.affiliation && a.affiliation !== 'none'">
-                      <span class="text-ink-muted ml-1" x-text="'(' + a.affiliation + ')'"></span>
+                      <span class="text-ink-muted" x-text="'(' + a.affiliation + ')'"></span>
+                    </template>
+                    <!-- Claim status badge -->
+                    <template x-if="enrichmentLoaded && claimStatusForSlot(idx) === 'accepted'">
+                      <span class="text-[10px] px-1.5 py-0.5 rounded bg-green-100 text-green-800 font-medium" x-text="$t('claims.confirmed')"></span>
+                    </template>
+                    <template x-if="enrichmentLoaded && claimStatusForSlot(idx) === 'pending'">
+                      <span class="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 font-medium" x-text="$t('claims.pending')"></span>
+                    </template>
+                    <!-- Claim button for logged-in accredited user on unclaimed matching slot -->
+                    <template x-if="enrichmentLoaded && canClaimSlot(idx)">
+                      <button type="button" class="text-[10px] px-1.5 py-0.5 rounded border border-pevo-teal text-pevo-teal hover:bg-pevo-teal-light cursor-pointer"
+                              @click="handleClaimSlot(idx)" :disabled="claimLoading" x-text="$t('claims.claimButton')"></button>
+                    </template>
+                    <!-- Approve/Reject for post author on pending claims -->
+                    <template x-if="enrichmentLoaded && canManageClaims && pendingClaimerForSlot(idx)">
+                      <span class="inline-flex gap-1">
+                        <button type="button" class="text-[10px] px-1.5 py-0.5 rounded border border-green-500 text-green-700 hover:bg-green-50 cursor-pointer"
+                                @click="handleApproveClaim(pendingClaimerForSlot(idx), idx)" :disabled="claimLoading" x-text="$t('claims.approve')"></button>
+                        <button type="button" class="text-[10px] px-1.5 py-0.5 rounded border border-red-400 text-red-600 hover:bg-red-50 cursor-pointer"
+                                @click="handleRejectClaim(pendingClaimerForSlot(idx))" :disabled="claimLoading" x-text="$t('claims.reject')"></button>
+                      </span>
                     </template>
                   </span>
                 </template>
               </div>
+              <!-- Claim authorship (for users not listed as authors) -->
+              <template x-if="enrichmentLoaded && canClaimUnlisted">
+                <div class="mb-4">
+                  <button type="button" class="text-xs px-3 py-1.5 rounded border border-pevo-teal text-pevo-teal hover:bg-pevo-teal-light cursor-pointer"
+                          @click="handleClaimSlot(null)" :disabled="claimLoading"
+                          x-text="claimLoading ? $t('claims.claiming') : $t('claims.claimAuthorship')"></button>
+                </div>
+              </template>
 
               <!-- Keywords -->
               <template x-if="paper.keywords && paper.keywords.length > 0">
@@ -727,6 +757,9 @@ export function initPaperDetailPage() {
     // Version switching
     viewingVersion: null,
 
+    // Authorship claims
+    claimLoading: false,
+
     // Bridge sync
     syncLoading: false,
 
@@ -791,6 +824,7 @@ export function initPaperDetailPage() {
         this.paper.net_votes = d.net_votes ?? this.paper.net_votes;
         this.paper.vote_strength = d.vote_strength || null;
         this.paper.voters = d.voters || [];
+        this.paper.authorship_claims = d.authorship_claims || [];
         this.enrichmentLoaded = true;
         // Scroll to review if URL has a hash fragment
         this.scrollToHashReview();
@@ -813,7 +847,9 @@ export function initPaperDetailPage() {
       if (!username || !this.paper) return false;
       if (username === this.paper.author) return true;
       const authors = this.paper.authors || [];
-      return authors.some(a => a.hive === username);
+      if (authors.some(a => a.hive === username)) return true;
+      const claims = this.paper.authorship_claims || [];
+      return claims.some(c => c.claimer === username && c.status === 'accepted');
     },
 
     get averageRatings() {
@@ -1065,6 +1101,123 @@ export function initPaperDetailPage() {
       this.diffLoading = false;
       this.diffError = null;
       this.pickingDiffVersions = false;
+    },
+
+    // ─── Authorship claims ─────────────────────────────────────
+
+    claimStatusForSlot(idx) {
+      const claims = this.paper?.authorship_claims || [];
+      const claim = claims.find(c => c.author_index === idx);
+      return claim ? claim.status : null;
+    },
+
+    pendingClaimerForSlot(idx) {
+      const claims = this.paper?.authorship_claims || [];
+      const claim = claims.find(c => c.author_index === idx && c.status === 'pending');
+      return claim ? claim.claimer : null;
+    },
+
+    canClaimSlot(idx) {
+      const username = this.$store.auth.username;
+      if (!username || !this.$store.auth.isConnected) return false;
+      if (!this.$store.auth.isAccredited) return false;
+      // Already has a non-revoked claim on this paper
+      const claims = this.paper?.authorship_claims || [];
+      if (claims.some(c => c.claimer === username)) return false;
+      // Slot must be unclaimed
+      if (this.claimStatusForSlot(idx)) return false;
+      // Heuristic: slot matches user's hive username or ORCID
+      const author = this.paper.authors[idx];
+      if (!author) return false;
+      if (author.hive === username) return true;
+      // Name match heuristic: if the user's accreditation name is set, check partial match
+      const accName = this.$store.auth.accreditation?.name;
+      if (accName && author.name && author.name.toLowerCase().includes(accName.toLowerCase())) return true;
+      return false;
+    },
+
+    get canClaimUnlisted() {
+      const username = this.$store.auth.username;
+      if (!username || !this.$store.auth.isConnected) return false;
+      if (!this.$store.auth.isAccredited) return false;
+      // Already has a claim
+      const claims = this.paper?.authorship_claims || [];
+      if (claims.some(c => c.claimer === username)) return false;
+      // Not listed as a hive author on any slot
+      const authors = this.paper?.authors || [];
+      if (authors.some(a => a.hive === username)) return false;
+      // Don't show if user can claim a specific slot
+      for (let i = 0; i < authors.length; i++) {
+        if (this.canClaimSlot(i)) return false;
+      }
+      return true;
+    },
+
+    get canManageClaims() {
+      const username = this.$store.auth.username;
+      if (!username || !this.$store.auth.isConnected) return false;
+      return username === this.paper?.author;
+    },
+
+    async handleClaimSlot(authorIndex) {
+      const username = this.$store.auth.username;
+      if (!username) return;
+      this.claimLoading = true;
+      try {
+        const res = await claimAuthorship(this.author, this.permlink, authorIndex);
+        const op = res.data?.operation;
+        if (op) {
+          await broadcastOps(username, [op]);
+        }
+        this.$store.toast.show(this.$t('claims.claimSubmitted'), 'success');
+        // Refresh enrichment to update claim status
+        await this.loadEnrichment();
+      } catch (err) {
+        this.$store.toast.show(err?.message || this.$t('claims.claimFailed'), 'error');
+      } finally {
+        this.claimLoading = false;
+      }
+    },
+
+    async handleApproveClaim(claimer, authorIndex) {
+      const username = this.$store.auth.username;
+      if (!username) return;
+      this.claimLoading = true;
+      try {
+        const res = await approveAuthorshipClaim(this.author, this.permlink, claimer, authorIndex);
+        if (res.data?.tx_id) {
+          // Server-side broadcast (bridge papers)
+          this.$store.toast.show(this.$t('claims.approveSuccess'), 'success');
+        } else if (res.data?.operation) {
+          await broadcastOps(username, [res.data.operation]);
+          this.$store.toast.show(this.$t('claims.approveSuccess'), 'success');
+        }
+        await this.loadEnrichment();
+      } catch (err) {
+        this.$store.toast.show(err?.message || this.$t('claims.approveFailed'), 'error');
+      } finally {
+        this.claimLoading = false;
+      }
+    },
+
+    async handleRejectClaim(claimer) {
+      const username = this.$store.auth.username;
+      if (!username) return;
+      this.claimLoading = true;
+      try {
+        const res = await revokeAuthorshipClaim(this.author, this.permlink, claimer, 'Rejected by post author');
+        if (res.data?.tx_id) {
+          this.$store.toast.show(this.$t('claims.rejectSuccess'), 'success');
+        } else if (res.data?.operation) {
+          await broadcastOps(username, [res.data.operation]);
+          this.$store.toast.show(this.$t('claims.rejectSuccess'), 'success');
+        }
+        await this.loadEnrichment();
+      } catch (err) {
+        this.$store.toast.show(err?.message || this.$t('claims.rejectFailed'), 'error');
+      } finally {
+        this.claimLoading = false;
+      }
     },
 
     navigate(path) {

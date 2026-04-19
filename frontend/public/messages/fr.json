@@ -1019,7 +1019,14 @@
     "emailDeleted": "E-mail et données associées supprimés.",
     "emailAlreadyInUse": "Cette adresse e-mail est déjà associée à un autre compte.",
     "emailTokenExpired": "Le lien de vérification a expiré. Veuillez en demander un nouveau.",
-    "emailResend": "Renvoyer la vérification"
+    "emailResend": "Renvoyer la vérification",
+    "orcidTitle": "ORCID",
+    "orcidLinkDescription": "Associez votre ORCID iD pour vérifier votre identité de chercheur.",
+    "orcidLink": "Associer ORCID",
+    "orcidUpdate": "Mettre à jour ORCID",
+    "orcidVerified": "Vérifié",
+    "orcidRedirecting": "Redirection vers ORCID...",
+    "orcidLinkSuccess": "ORCID associé avec succès."
   },
   "metadataRestored": {
     "title": "Les métadonnées de l'article ont été modifiées par une édition externe",
@@ -1078,6 +1085,21 @@
     "removeLink": "Supprimer le lien",
     "linkApply": "Appliquer",
     "imageUploadFailed": "Échec du téléchargement de l'image"
+  },
+  "claims": {
+    "confirmed": "Confirmé",
+    "pending": "En attente",
+    "claimButton": "Revendiquer",
+    "claimAuthorship": "Revendiquer la paternité",
+    "claiming": "Envoi...",
+    "approve": "Approuver",
+    "reject": "Rejeter",
+    "claimSubmitted": "Revendication de paternité soumise. Elle apparaîtra comme en attente jusqu'à approbation.",
+    "claimFailed": "Échec de la soumission de la revendication.",
+    "approveSuccess": "Revendication de paternité approuvée.",
+    "approveFailed": "Échec de l'approbation de la revendication.",
+    "rejectSuccess": "Revendication de paternité rejetée.",
+    "rejectFailed": "Échec du rejet de la revendication."
   },
   "landing": {
     "publishPaper": "Publier un article",

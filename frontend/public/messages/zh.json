@@ -1019,7 +1019,14 @@
     "emailDeleted": "电子邮箱和相关数据已删除。",
     "emailAlreadyInUse": "该邮箱已关联到其他账户。",
     "emailTokenExpired": "验证链接已过期，请重新获取。",
-    "emailResend": "重新发送验证"
+    "emailResend": "重新发送验证",
+    "orcidTitle": "ORCID",
+    "orcidLinkDescription": "关联您的 ORCID iD 以验证您的研究者身份。",
+    "orcidLink": "关联 ORCID",
+    "orcidUpdate": "更新 ORCID",
+    "orcidVerified": "已验证",
+    "orcidRedirecting": "正在跳转至 ORCID...",
+    "orcidLinkSuccess": "ORCID 关联成功。"
   },
   "metadataRestored": {
     "title": "论文元数据被外部编辑修改",
@@ -1078,6 +1085,21 @@
     "removeLink": "移除链接",
     "linkApply": "应用",
     "imageUploadFailed": "图片上传失败"
+  },
+  "claims": {
+    "confirmed": "已确认",
+    "pending": "待审核",
+    "claimButton": "认领",
+    "claimAuthorship": "认领作者身份",
+    "claiming": "提交中...",
+    "approve": "批准",
+    "reject": "拒绝",
+    "claimSubmitted": "作者身份认领已提交，审核通过前将显示为待审核状态。",
+    "claimFailed": "提交作者身份认领失败。",
+    "approveSuccess": "作者身份认领已批准。",
+    "approveFailed": "批准作者身份认领失败。",
+    "rejectSuccess": "作者身份认领已拒绝。",
+    "rejectFailed": "拒绝作者身份认领失败。"
   },
   "landing": {
     "publishPaper": "发表论文",

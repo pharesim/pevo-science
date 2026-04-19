@@ -1,6 +1,6 @@
 import Alpine from 'alpinejs';
 import { isKeychainInstalled } from '../keychain.js';
-import { fetchEmailStatus, submitEmail, deleteEmail } from '../api.js';
+import { fetchEmailStatus, submitEmail, deleteEmail, startOrcidLink } from '../api.js';
 import { deriveHiveKeys, deriveHivePublicKeys } from '../hive-keys.js';
 
 // Number of words to re-enter for confirmation
@@ -120,6 +120,43 @@ const template = `
               <div class="border border-parchment-dark rounded-xl p-6">
                 <h2 class="text-xl font-bold text-ink mb-2" x-text="$t('settings.accountType')"></h2>
                 <p class="text-sm text-ink-muted" x-text="$t('settings.selfCustody')"></p>
+              </div>
+            </template>
+
+            <!-- ORCID section (accredited users only) -->
+            <template x-if="isAccredited">
+              <div class="border border-parchment-dark rounded-xl p-6 mt-6">
+                <h2 class="text-xl font-bold text-ink mb-2" x-text="$t('settings.orcidTitle')"></h2>
+
+                <!-- Has verified ORCID -->
+                <template x-if="currentOrcid">
+                  <div>
+                    <div class="flex items-center gap-2 mb-4">
+                      <a :href="'https://orcid.org/' + currentOrcid" target="_blank" rel="noopener noreferrer"
+                         class="inline-flex items-center gap-1.5 text-sm text-ink hover:text-pevo-teal no-underline">
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" class="h-4 w-4 shrink-0">
+                          <circle cx="128" cy="128" r="128" fill="#A6CE39"/>
+                          <path fill="#fff" d="M86.3 186.2H70.9V79.1h15.4v107.1zM78.6 56.8c-5.7 0-10.3 4.6-10.3 10.3s4.6 10.3 10.3 10.3 10.3-4.6 10.3-10.3-4.6-10.3-10.3-10.3zM108.9 79.1h41.6c39.6 0 57 28.3 57 53.6 0 27.5-21.5 53.6-56.8 53.6h-41.8V79.1zm15.4 93.3h24.5c34.9 0 42.9-26.5 42.9-39.7 0-21.5-13.7-39.7-43.7-39.7h-23.7v79.4z"/>
+                        </svg>
+                        <span x-text="currentOrcid"></span>
+                      </a>
+                      <span class="text-xs font-medium text-pevo-green" x-text="$t('settings.orcidVerified')"></span>
+                    </div>
+                    <button @click="handleOrcidLink()" :disabled="orcidLinking"
+                            class="text-sm text-pevo-teal hover:underline" x-text="orcidLinking ? $t('settings.orcidRedirecting') : $t('settings.orcidUpdate')"></button>
+                  </div>
+                </template>
+
+                <!-- No ORCID linked -->
+                <template x-if="!currentOrcid">
+                  <div>
+                    <p class="text-sm text-ink-muted mb-4" x-text="$t('settings.orcidLinkDescription')"></p>
+                    <button @click="handleOrcidLink()" :disabled="orcidLinking"
+                            class="btn-primary" x-text="orcidLinking ? $t('settings.orcidRedirecting') : $t('settings.orcidLink')"></button>
+                  </div>
+                </template>
+
+                <p x-show="orcidError" class="text-sm text-red-600 mt-2" x-text="orcidError"></p>
               </div>
             </template>
 
@@ -263,6 +300,12 @@ export function initSettingsPage() {
     get username() { return Alpine.store('auth').username; },
     get custody() { return Alpine.store('auth').custody; },
     get isLight() { return this.custody === 'light'; },
+    get isAccredited() { return Alpine.store('auth').isAccredited; },
+    get currentOrcid() { return Alpine.store('auth').accreditation?.orcid || null; },
+
+    // ORCID link state
+    orcidLinking: false,
+    orcidError: null,
 
     // Email management state
     emailStatus: null,
@@ -305,6 +348,37 @@ export function initSettingsPage() {
       this.$watch('isConnected', (connected) => {
         if (connected) this.loadEmailStatus();
       });
+
+      // Check if returning from ORCID link callback
+      const orcidLinked = localStorage.getItem('pevo_orcid_link_complete');
+      if (orcidLinked) {
+        localStorage.removeItem('pevo_orcid_link_complete');
+        // Refresh accreditation data to pick up the new ORCID
+        Alpine.store('auth')._checkAccreditation();
+        Alpine.store('toast').show(this.$t('settings.orcidLinkSuccess'), 'success');
+      }
+    },
+
+    async handleOrcidLink() {
+      if (this.orcidLinking) return;
+      this.orcidLinking = true;
+      this.orcidError = null;
+
+      // Signal to callback page to return to settings
+      localStorage.setItem('pevo_orcid_return_to', 'settings');
+
+      try {
+        const data = await startOrcidLink();
+        const target = new URL(data.redirect_url);
+        if (!['orcid.org', 'sandbox.orcid.org'].includes(target.hostname)) {
+          throw new Error('Invalid ORCID redirect URL');
+        }
+        window.location.href = data.redirect_url;
+      } catch (err) {
+        this.orcidError = err.message || this.$t('common.connectionFailed');
+        this.orcidLinking = false;
+        localStorage.removeItem('pevo_orcid_return_to');
+      }
     },
 
     async loadEmailStatus() {

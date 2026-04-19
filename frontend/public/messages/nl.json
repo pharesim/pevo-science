@@ -1023,7 +1023,14 @@
     "emailDeleted": "E-mailadres en bijbehorende gegevens verwijderd.",
     "emailAlreadyInUse": "Dit e-mailadres is al gekoppeld aan een ander account.",
     "emailTokenExpired": "De verificatielink is verlopen. Vraag een nieuwe aan.",
-    "emailResend": "Verificatie opnieuw versturen"
+    "emailResend": "Verificatie opnieuw versturen",
+    "orcidTitle": "ORCID",
+    "orcidLinkDescription": "Koppel uw ORCID iD om uw onderzoekersidentiteit te verifiëren.",
+    "orcidLink": "ORCID koppelen",
+    "orcidUpdate": "ORCID bijwerken",
+    "orcidVerified": "Geverifieerd",
+    "orcidRedirecting": "Doorsturen naar ORCID...",
+    "orcidLinkSuccess": "ORCID succesvol gekoppeld."
   },
   "blog": {
     "title": "Blog",
@@ -1078,6 +1085,21 @@
     "removeLink": "Link verwijderen",
     "linkApply": "Toepassen",
     "imageUploadFailed": "Afbeelding uploaden mislukt"
+  },
+  "claims": {
+    "confirmed": "Bevestigd",
+    "pending": "In afwachting",
+    "claimButton": "Claim",
+    "claimAuthorship": "Claim auteurschap",
+    "claiming": "Verzenden...",
+    "approve": "Goedkeuren",
+    "reject": "Afwijzen",
+    "claimSubmitted": "Claim op auteurschap ingediend. Deze wordt als in afwachting getoond tot goedkeuring.",
+    "claimFailed": "Claim op auteurschap kon niet worden ingediend.",
+    "approveSuccess": "Claim op auteurschap goedgekeurd.",
+    "approveFailed": "Claim op auteurschap kon niet worden goedgekeurd.",
+    "rejectSuccess": "Claim op auteurschap afgewezen.",
+    "rejectFailed": "Claim op auteurschap kon niet worden afgewezen."
   },
   "landing": {
     "publishPaper": "Publiceer een artikel",

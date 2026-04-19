@@ -1019,7 +1019,14 @@
     "emailDeleted": "הדוא\"ל והנתונים המשויכים נמחקו.",
     "emailAlreadyInUse": "כתובת דוא\"ל זו כבר משויכת לחשבון אחר.",
     "emailTokenExpired": "קישור האימות פג תוקף. אנא בקשו קישור חדש.",
-    "emailResend": "שליחת אימות מחדש"
+    "emailResend": "שליחת אימות מחדש",
+    "orcidTitle": "ORCID",
+    "orcidLinkDescription": "קשרו את מזהה ORCID שלכם כדי לאמת את זהותכם כחוקרים.",
+    "orcidLink": "קישור ORCID",
+    "orcidUpdate": "עדכון ORCID",
+    "orcidVerified": "מאומת",
+    "orcidRedirecting": "מועבר ל-ORCID...",
+    "orcidLinkSuccess": "ORCID קושר בהצלחה."
   },
   "metadataRestored": {
     "title": "מטא-נתוני המאמר שונו על ידי עריכה חיצונית",
@@ -1078,6 +1085,21 @@
     "removeLink": "הסרת קישור",
     "linkApply": "החלה",
     "imageUploadFailed": "העלאת התמונה נכשלה"
+  },
+  "claims": {
+    "confirmed": "מאושר",
+    "pending": "ממתין",
+    "claimButton": "תביעה",
+    "claimAuthorship": "תביעת מחברות",
+    "claiming": "שולח...",
+    "approve": "אישור",
+    "reject": "דחייה",
+    "claimSubmitted": "תביעת מחברות הוגשה. היא תוצג כממתינה עד לאישור.",
+    "claimFailed": "הגשת תביעת המחברות נכשלה.",
+    "approveSuccess": "תביעת מחברות אושרה.",
+    "approveFailed": "אישור תביעת המחברות נכשל.",
+    "rejectSuccess": "תביעת מחברות נדחתה.",
+    "rejectFailed": "דחיית תביעת המחברות נכשלה."
   },
   "landing": {
     "publishPaper": "פרסום מאמר",

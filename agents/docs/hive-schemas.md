@@ -305,6 +305,7 @@ Broadcast by the admin account to attest that a Hive user is a verified scientis
   "institution": "University of X",
   "field": "neuroscience",
   "method": "email" | "wot" | "orcid" | "manual",
+  "orcid": "0000-0001-2345-6789" | absent,
   "evidence_hash": "<sha256 of verification evidence>",
   "timestamp": "<ISO 8601>"
 }
@@ -321,6 +322,7 @@ Broadcast by the admin account to attest that a Hive user is a verified scientis
 
 **Field Notes:**
 - `method` — verification method used. `email` = university email confirmation, `wot` = web of trust, `orcid` = ORCID verification, `manual` = manual admin verification (broadcast directly, no automated route).
+- `orcid` — verified ORCID iD, present when the user has completed ORCID OAuth verification (either during accreditation or later via settings). ORCID iDs are public identifiers. A new `accredit` custom_json with `orcid` overwrites the previous accreditation record (the CTE takes the most recent by `block_num`). Used for authorship claim auto-acceptance.
 - `evidence_hash` — hash of the verification evidence (email confirmation, signed document, etc.). The evidence itself is NOT stored on-chain.
 
 ### 2.2 Revocation
@@ -512,6 +514,91 @@ Updates configurable platform parameters.
 
 **Hive Operation:** Same structure as 2.4 (admin account posting auth).
 
+### 2.9 Claim Authorship
+
+Broadcast by an accredited user to claim an author slot on a paper. The claim is auto-accepted when: (a) the claimer's on-chain verified ORCID matches `authors[i].orcid` in the paper metadata, or (b) `authors[i].hive === claimer` for native papers. Otherwise, the claim is pending until approved by the original post author (native papers) or bridge account (bridged papers).
+
+```json
+{
+  "action": "claim_authorship",
+  "paper_author": "<post_author>",
+  "paper_permlink": "<permlink>",
+  "author_index": 2,
+  "timestamp": "<ISO 8601>"
+}
+```
+
+**Hive Operation:**
+
+| Field | Value |
+|-------|-------|
+| `id` | `APP_TAG` |
+| `required_auths` | `[]` |
+| `required_posting_auths` | `["<claimer_username>"]` |
+| `json` | Stringified JSON above |
+
+**Field Notes:**
+- `paper_author` / `paper_permlink` — identify the canonical (root) paper post. For bridged papers, `paper_author` is the bridge account.
+- `author_index` — zero-based index into the paper's `authors` array that the claimer is claiming. For claims by users not listed in the author array, `author_index` is `null` (unlisted claim, requires approval from the original post author or bridge account).
+- The claimer's identity is proven by the posting key signature (`required_posting_auths`).
+- Only accredited users may claim. The backend validates this before processing.
+
+### 2.10 Approve Authorship
+
+Broadcast to approve a pending authorship claim. The approver depends on context: the original post author for native papers, the bridge account for bridged papers.
+
+```json
+{
+  "action": "approve_authorship",
+  "claimer": "<hive_username>",
+  "paper_author": "<post_author>",
+  "paper_permlink": "<permlink>",
+  "author_index": 2,
+  "timestamp": "<ISO 8601>"
+}
+```
+
+**Hive Operation:**
+
+| Field | Value |
+|-------|-------|
+| `id` | `APP_TAG` |
+| `required_auths` | `[]` |
+| `required_posting_auths` | `["<original_post_author>"]` or `["<HIVE_BRIDGE_ACCOUNT>"]` |
+| `json` | Stringified JSON above |
+
+**Field Notes:**
+- `author_index` — if `null` in the original claim (unlisted author), the approver specifies the index at which the author is inserted, or `null` to append. The backend adds the author to the paper's displayed author list at read time.
+- For bridged papers, the bridge account admin triggers this via a backend admin endpoint.
+
+### 2.11 Revoke Authorship
+
+Revokes a previously accepted authorship claim. Can revoke any claim, including ORCID auto-accepted ones (e.g., if someone gained unauthorized access to an ORCID account).
+
+```json
+{
+  "action": "revoke_authorship",
+  "claimer": "<hive_username>",
+  "paper_author": "<post_author>",
+  "paper_permlink": "<permlink>",
+  "reason": "Unauthorized claim",
+  "timestamp": "<ISO 8601>"
+}
+```
+
+**Hive Operation:**
+
+| Field | Value |
+|-------|-------|
+| `id` | `APP_TAG` |
+| `required_auths` | `[]` |
+| `required_posting_auths` | `["<original_post_author>"]` or `["<HIVE_BRIDGE_ACCOUNT>"]` or `["<HIVE_ADMIN_ACCOUNT>"]` |
+| `json` | Stringified JSON above |
+
+**Field Notes:**
+- The original post author, bridge account, or admin account may revoke.
+- The claimer themselves may also revoke their own claim (in that case, `required_posting_auths` is `["<claimer>"]`).
+
 ---
 
 ## 3. Hive Vote
@@ -597,6 +684,36 @@ WHERE cj.custom_id = $1
   AND cj.json::jsonb ->> 'account' = $2
 ORDER BY cj.block_num DESC
 LIMIT 1;
+
+-- Authorship claims on a paper (most recent action per claimer wins)
+WITH claim_events AS (
+  SELECT
+    cj.json::jsonb ->> 'action' AS action,
+    COALESCE(cj.json::jsonb ->> 'claimer',
+             cj.required_posting_auths ->> 0) AS claimer,
+    cj.json::jsonb ->> 'paper_author' AS paper_author,
+    cj.json::jsonb ->> 'paper_permlink' AS paper_permlink,
+    (cj.json::jsonb ->> 'author_index')::int AS author_index,
+    cj.block_num,
+    cj.timestamp,
+    ROW_NUMBER() OVER (
+      PARTITION BY
+        COALESCE(cj.json::jsonb ->> 'claimer', cj.required_posting_auths ->> 0),
+        cj.json::jsonb ->> 'paper_author',
+        cj.json::jsonb ->> 'paper_permlink'
+      ORDER BY cj.block_num DESC
+    ) AS rn
+  FROM hafsql.operation_custom_json_view cj
+  WHERE cj.custom_id = $1
+    AND cj.json::jsonb ->> 'action' IN (
+      'claim_authorship', 'approve_authorship', 'revoke_authorship'
+    )
+    AND cj.json::jsonb ->> 'paper_author' = $2
+    AND cj.json::jsonb ->> 'paper_permlink' = $3
+)
+SELECT claimer, paper_author, paper_permlink, author_index, action, timestamp
+FROM claim_events
+WHERE rn = 1 AND action != 'revoke_authorship';
 ```
 
 Note: Table names use the `hafsql` schema (e.g., `hafsql.comments`, `hafsql.operation_custom_json_view`, `hafsql.operation_effective_comment_vote_view`). The custom_json table uses `custom_id` (not `id`) as the column name.

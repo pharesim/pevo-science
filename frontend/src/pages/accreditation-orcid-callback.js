@@ -78,6 +78,16 @@ export function initAccreditationOrcidCallbackPage() {
         this.status = 'verifying';
         const res = await completeOrcidVerification(code, state);
         this.orcidId = res.data.orcid;
+
+        // Check if this was a link flow from settings
+        const returnTo = localStorage.getItem('pevo_orcid_return_to');
+        localStorage.removeItem('pevo_orcid_return_to');
+        if (returnTo === 'settings') {
+          localStorage.setItem('pevo_orcid_link_complete', '1');
+          Alpine.store('router').navigate('/settings');
+          return;
+        }
+
         this.status = 'success';
         Alpine.store('toast').show(this.$t('orcid.verificationSuccess'), 'success');
       } catch (err) {

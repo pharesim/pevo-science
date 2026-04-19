@@ -19,6 +19,7 @@ Researcher profile with reputation breakdown.
     "institution": "MIT",
     "field": "neuroscience",
     "method": "email",
+    "orcid": "0000-0001-2345-6789",
     "timestamp": "2026-01-15T10:00:00Z",
     "tx_id": "abc123..."
   } | null,

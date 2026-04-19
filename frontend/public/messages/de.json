@@ -1019,7 +1019,14 @@
     "emailDeleted": "E-Mail und zugehörige Daten gelöscht.",
     "emailAlreadyInUse": "Diese E-Mail-Adresse ist bereits mit einem anderen Konto verknüpft.",
     "emailTokenExpired": "Der Bestätigungslink ist abgelaufen. Bitte fordern Sie einen neuen an.",
-    "emailResend": "Bestätigung erneut senden"
+    "emailResend": "Bestätigung erneut senden",
+    "orcidTitle": "ORCID",
+    "orcidLinkDescription": "Verknüpfen Sie Ihre ORCID iD, um Ihre Forscheridentität zu bestätigen.",
+    "orcidLink": "ORCID verknüpfen",
+    "orcidUpdate": "ORCID aktualisieren",
+    "orcidVerified": "Bestätigt",
+    "orcidRedirecting": "Weiterleitung zu ORCID...",
+    "orcidLinkSuccess": "ORCID erfolgreich verknüpft."
   },
   "metadataRestored": {
     "title": "Artikelmetadaten wurden durch eine externe Bearbeitung geändert",
@@ -1078,6 +1085,21 @@
     "removeLink": "Link entfernen",
     "linkApply": "Anwenden",
     "imageUploadFailed": "Bild-Upload fehlgeschlagen"
+  },
+  "claims": {
+    "confirmed": "Bestätigt",
+    "pending": "Ausstehend",
+    "claimButton": "Beanspruchen",
+    "claimAuthorship": "Autorschaft beanspruchen",
+    "claiming": "Wird gesendet...",
+    "approve": "Genehmigen",
+    "reject": "Ablehnen",
+    "claimSubmitted": "Autorschaftsanspruch eingereicht. Er wird als ausstehend angezeigt, bis er genehmigt wird.",
+    "claimFailed": "Autorschaftsanspruch konnte nicht eingereicht werden.",
+    "approveSuccess": "Autorschaftsanspruch genehmigt.",
+    "approveFailed": "Autorschaftsanspruch konnte nicht genehmigt werden.",
+    "rejectSuccess": "Autorschaftsanspruch abgelehnt.",
+    "rejectFailed": "Autorschaftsanspruch konnte nicht abgelehnt werden."
   },
   "landing": {
     "publishPaper": "Publikation veröffentlichen",

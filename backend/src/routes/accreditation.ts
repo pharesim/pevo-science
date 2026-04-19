@@ -11,6 +11,8 @@ import { validate, accreditationRequestSchema, accreditationVerifySchema } from 
 import { rateLimit, byAccount, byIp } from '../middleware/rateLimit.js';
 import { logger } from '../logger.js';
 import { isInstitutionalEmail } from '../email-validator.js';
+import { getPool } from '../db.js';
+import { T, getCachedGenesisBlock } from '../hafsql.js';
 
 /** How long a verification token stays valid before it expires. */
 const TOKEN_EXPIRY_MS = 24 * 60 * 60 * 1000; // 24 hours
@@ -235,12 +237,13 @@ router.get('/orcid/start', verifyHiveSignature, async (req: Request, res: Respon
   const stateKey = `orcid_state:${state}`;
 
   // Store in Redis if available, otherwise in-memory
+  const stateData = JSON.stringify({ username, mode: 'accredit' });
   const redis = getRedis();
   if (redis && isRedisAvailable()) {
-    await redis.set(stateKey, username, 'EX', ORCID_STATE_TTL_SECONDS);
+    await redis.set(stateKey, stateData, 'EX', ORCID_STATE_TTL_SECONDS);
   } else {
     // In-memory fallback
-    orcidStates.set(state, { username, expires: Date.now() + ORCID_STATE_TTL_SECONDS * 1000 });
+    orcidStates.set(state, { username, mode: 'accredit', expires: Date.now() + ORCID_STATE_TTL_SECONDS * 1000 });
   }
 
   const redirectUrl = `${config.orcidBaseUrl}/oauth/authorize?` +
@@ -254,7 +257,7 @@ router.get('/orcid/start', verifyHiveSignature, async (req: Request, res: Respon
 });
 
 // In-memory ORCID state store fallback
-const orcidStates = new Map<string, { username: string; expires: number }>();
+const orcidStates = new Map<string, { username: string; mode: 'accredit' | 'link'; expires: number }>();
 
 // ──────────────────────────────────────────────
 // POST /api/accreditation/orcid/callback
@@ -274,14 +277,25 @@ router.post('/orcid/callback', verifyHiveSignature, async (req: Request, res: Re
 
   // Verify state
   let storedUsername: string | null = null;
+  let stateMode: 'accredit' | 'link' = 'accredit';
   const redis = getRedis();
   if (redis && isRedisAvailable()) {
-    storedUsername = await redis.get(`orcid_state:${state}`);
-    if (storedUsername) await redis.del(`orcid_state:${state}`);
+    const raw = await redis.get(`orcid_state:${state}`);
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw);
+        storedUsername = parsed.username;
+        stateMode = parsed.mode || 'accredit';
+      } catch {
+        storedUsername = raw; // backwards compat with plain username strings
+      }
+      await redis.del(`orcid_state:${state}`);
+    }
   } else {
     const entry = orcidStates.get(state);
     if (entry && entry.expires > Date.now()) {
       storedUsername = entry.username;
+      stateMode = entry.mode || 'accredit';
     }
     orcidStates.delete(state);
   }
@@ -321,16 +335,37 @@ router.post('/orcid/callback', verifyHiveSignature, async (req: Request, res: Re
       return sendError(res, 500, 'INTERNAL_ERROR', 'Admin posting key not configured');
     }
 
-    const customJsonPayload = {
-      action: 'accredit',
-      account: username,
-      name: tokenData.name || username,
-      institution: '',
-      field: '',
-      method: 'orcid',
-      evidence_hash: crypto.createHash('sha256').update(`orcid:${orcidId}:${username}`).digest('hex'),
-      timestamp: new Date().toISOString(),
-    };
+    let customJsonPayload;
+    if (stateMode === 'link') {
+      // Link mode: fetch existing accreditation data and preserve it
+      const existing = await getExistingAccreditation(username);
+      if (!existing) {
+        return sendError(res, 422, 'VALIDATION_ERROR', 'Account is not accredited');
+      }
+      customJsonPayload = {
+        action: 'accredit',
+        account: username,
+        name: existing.name,
+        institution: existing.institution,
+        field: existing.field,
+        method: existing.method,
+        orcid: orcidId,
+        evidence_hash: crypto.createHash('sha256').update(`orcid:${orcidId}:${username}`).digest('hex'),
+        timestamp: new Date().toISOString(),
+      };
+    } else {
+      customJsonPayload = {
+        action: 'accredit',
+        account: username,
+        name: tokenData.name || username,
+        institution: '',
+        field: '',
+        method: 'orcid',
+        orcid: orcidId,
+        evidence_hash: crypto.createHash('sha256').update(`orcid:${orcidId}:${username}`).digest('hex'),
+        timestamp: new Date().toISOString(),
+      };
+    }
 
     const key = PrivateKey.fromString(config.pevoAdminPostingKey);
     const result = await hiveClient.broadcast.json(
@@ -339,7 +374,7 @@ router.post('/orcid/callback', verifyHiveSignature, async (req: Request, res: Re
     );
 
     sendOk(res, {
-      message: 'Accreditation via ORCID confirmed',
+      message: stateMode === 'link' ? 'ORCID linked successfully' : 'Accreditation via ORCID confirmed',
       username,
       orcid: orcidId,
       tx_id: result.id,
@@ -348,6 +383,82 @@ router.post('/orcid/callback', verifyHiveSignature, async (req: Request, res: Re
     logger.error({ err: (err as Error).message }, 'ORCID callback processing failed');
     sendError(res, 500, 'INTERNAL_ERROR', 'Failed to process ORCID callback');
   }
+});
+
+// ──────────────────────────────────────────────
+// Helper — fetch existing accreditation from HAF
+// ──────────────────────────────────────────────
+
+async function getExistingAccreditation(username: string): Promise<{
+  name: string; institution: string; field: string; method: string; orcid?: string;
+} | null> {
+  const pool = getPool();
+  if (!pool) return null;
+
+  const result = await pool.query(
+    `SELECT cj.json FROM ${T.customJson} cj
+     WHERE cj.custom_id = $2
+       AND cj.json::jsonb ->> 'action' IN ('accredit', 'revoke')
+       AND cj.json::jsonb ->> 'account' = $1
+       AND cj.block_num >= $3
+     ORDER BY cj.block_num DESC
+     LIMIT 1`,
+    [username, config.appTag, getCachedGenesisBlock()],
+  );
+  if (result.rows.length === 0) return null;
+
+  const payload = typeof result.rows[0].json === 'string'
+    ? JSON.parse(result.rows[0].json)
+    : result.rows[0].json;
+
+  if (payload.action === 'revoke') return null;
+  return {
+    name: payload.name || username,
+    institution: payload.institution || '',
+    field: payload.field || '',
+    method: payload.method || 'email',
+    orcid: payload.orcid || undefined,
+  };
+}
+
+// ──────────────────────────────────────────────
+// GET /api/accreditation/orcid/link-start
+// ──────────────────────────────────────────────
+
+router.get('/orcid/link-start', verifyHiveSignature, async (req: Request, res: Response) => {
+  if (!config.orcidClientId || !config.orcidClientSecret || !config.orcidRedirectUri) {
+    return sendError(res, 500, 'INTERNAL_ERROR', 'ORCID integration is not configured');
+  }
+
+  const username = req.hiveUsername!;
+
+  // Require accredited
+  const { getAccreditedSet } = await import('../accreditation.js');
+  const accreditedSet = await getAccreditedSet([username]);
+  if (!accreditedSet.has(username)) {
+    return sendError(res, 403, 'FORBIDDEN', 'Only accredited users can link ORCID');
+  }
+
+  // Generate state param for CSRF protection
+  const state = crypto.randomBytes(16).toString('hex');
+  const stateKey = `orcid_state:${state}`;
+  const stateData = JSON.stringify({ username, mode: 'link' });
+
+  const redis = getRedis();
+  if (redis && isRedisAvailable()) {
+    await redis.set(stateKey, stateData, 'EX', ORCID_STATE_TTL_SECONDS);
+  } else {
+    orcidStates.set(state, { username, mode: 'link', expires: Date.now() + ORCID_STATE_TTL_SECONDS * 1000 });
+  }
+
+  const redirectUrl = `${config.orcidBaseUrl}/oauth/authorize?` +
+    `client_id=${encodeURIComponent(config.orcidClientId)}` +
+    `&response_type=code` +
+    `&scope=/authenticate` +
+    `&redirect_uri=${encodeURIComponent(config.orcidRedirectUri)}` +
+    `&state=${state}`;
+
+  sendOk(res, { redirect_url: redirectUrl });
 });
 
 // Cleanup expired tokens periodically

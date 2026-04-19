@@ -354,9 +354,12 @@ export function initEditPage() {
       if (!username || !this.paper) return false;
       // Original author
       if (username === this.paper.author) return true;
-      // Co-author
+      // Co-author listed in metadata
       const authors = this.paper.authors || [];
       if (authors.some(a => a.hive === username)) return true;
+      // Accepted authorship claim
+      const claims = this.paper.authorship_claims || [];
+      if (claims.some(c => c.claimer === username && c.status === 'accepted')) return true;
       // Accredited users can create continuation posts
       return this.isAccredited;
     },
@@ -432,7 +435,9 @@ export function initEditPage() {
         this.paper = paperRes.value.data;
 
         if (enrichmentRes.status === 'fulfilled') {
-          this.reviews = enrichmentRes.value.data?.reviews || [];
+          const enrichment = enrichmentRes.value.data || {};
+          this.reviews = enrichment.reviews || [];
+          this.paper.authorship_claims = enrichment.authorship_claims || [];
         }
 
         this._prefillForm();

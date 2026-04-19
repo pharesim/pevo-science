@@ -23,6 +23,7 @@ import {
   T,
   accreditedVoteCount,
   activeAccreditationsCteBody,
+  authorshipClaimsCteBody,
   retractedPapersCteBody,
   buildWith,
   getCachedGenesisBlock,
@@ -1042,7 +1043,7 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string) {
       ? [...accreditedArr, config.hiveAnonAccount]
       : accreditedArr;
 
-    const [voteResult, reviewsResult, versions] = await Promise.all([
+    const [voteResult, reviewsResult, versions, claimsResult] = await Promise.all([
       // Accredited voters (excluding self-votes) — use vote operations to survive payout
       pool.query(
         `SELECT DISTINCT ON (v.voter) v.voter, v.weight, v.timestamp, v.block_num FROM ${T.voteOps} v
@@ -1071,6 +1072,19 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string) {
       ),
       // Version history (needed for review outdated computation)
       resolveVersionsFromHaf(author, permlink),
+      // Authorship claims
+      (async () => {
+        const cte = buildWith(1, activeAccreditationsCteBody, authorshipClaimsCteBody);
+        return pool.query(
+          `${cte.sql}
+           SELECT claimer, paper_author, paper_permlink, author_index, status, claimed_at
+           FROM authorship_claims
+           WHERE paper_author = $${cte.nextIdx}
+             AND paper_permlink = $${cte.nextIdx + 1}
+             AND status != 'revoked'`,
+          [...cte.params, author, permlink],
+        );
+      })(),
     ]);
 
     const latestVersion = versions.length > 0 ? versions[versions.length - 1].version_number : 1;
@@ -1223,11 +1237,19 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string) {
       : 0;
     const vote_strength = effectiveVoters.length > 0 ? voteStrengthTier(avgWeight) : null;
 
+    const authorship_claims = claimsResult.rows.map((r: Record<string, unknown>) => ({
+      claimer: r.claimer as string,
+      author_index: r.author_index as number | null,
+      status: r.status as string,
+      claimed_at: r.claimed_at as string,
+    }));
+
     return {
       net_votes,
       vote_strength,
       voters,
       reviews,
+      authorship_claims,
     };
   } catch (err) {
     logger.error({ err }, 'HAF enrichment query failed');

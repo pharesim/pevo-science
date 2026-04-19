@@ -13,7 +13,7 @@ import { validate } from '../validation.js';
 import { getLastBlock } from '../block-watcher.js';
 import { getAppPool } from '../app-db.js';
 import { hafCache } from '../cache.js';
-import { T, isPevoReviewSql, getCachedGenesisBlock } from '../hafsql.js';
+import { T, isPevoReviewSql, getCachedGenesisBlock, buildWith, activeAccreditationsCteBody, authorshipClaimsCteBody } from '../hafsql.js';
 
 const router = Router();
 
@@ -48,6 +48,7 @@ async function getAccreditationFromHaf(username: string) {
       institution: payload.institution,
       field: payload.field,
       method: payload.method,
+      orcid: payload.orcid || null,
       timestamp: payload.timestamp,
       tx_id: result.rows[0].event_id?.toString() || null,
     };
@@ -184,27 +185,46 @@ async function fetchUserPapersFromHaf(username: string, limit: number, offset: n
   if (!pool) return null;
 
   try {
+    // Build CTEs for authorship claims to include claimed papers
+    const cte = buildWith(1, activeAccreditationsCteBody, authorshipClaimsCteBody);
+
+    // Base filter for PEvO papers (non-continuation)
+    const paperFilter = `parent_author = '' AND parent_permlink = $${cte.nextIdx}
+         AND (json_metadata -> $${cte.nextIdx} ->> 'type') = 'paper'
+         AND json_metadata ->> 'app' LIKE $${cte.nextIdx + 1}
+         AND (json_metadata -> $${cte.nextIdx} -> 'continues') IS NULL`;
+
+    // UNION: papers authored by user + papers with accepted claims by user
+    const unionSql = `${cte.sql},
+      user_papers AS (
+        SELECT DISTINCT c.author, c.permlink, c.title, LEFT(c.body, 300) AS body,
+               c.json_metadata, c.created, c.total_rshares
+        FROM ${T.comments} c
+        WHERE c.author = $${cte.nextIdx + 2} AND ${paperFilter}
+        UNION
+        SELECT DISTINCT c.author, c.permlink, c.title, LEFT(c.body, 300) AS body,
+               c.json_metadata, c.created, c.total_rshares
+        FROM authorship_claims ac
+        JOIN ${T.comments} c ON c.author = ac.paper_author AND c.permlink = ac.paper_permlink
+        WHERE ac.claimer = $${cte.nextIdx + 2} AND ac.status = 'accepted'
+          AND ${paperFilter}
+      )`;
+
+    const baseParams = [...cte.params, config.appTag, `${config.appTag}/%`, username];
+
     const countResult = await pool.query(
-      `SELECT count(*)::int AS total FROM ${T.comments}
-       WHERE author = $1 AND parent_author = '' AND parent_permlink = $2
-         AND (json_metadata -> $2 ->> 'type') = 'paper'
-         AND json_metadata ->> 'app' LIKE $3
-         AND (json_metadata -> $2 -> 'continues') IS NULL`,
-      [username, config.appTag, `${config.appTag}/%`],
+      `${unionSql} SELECT count(*)::int AS total FROM user_papers`,
+      baseParams,
     );
     const total = countResult.rows[0]?.total ?? 0;
 
     const dataResult = await pool.query(
-      `SELECT author, permlink, title, LEFT(body, 300) AS body,
-              json_metadata, created
-       FROM ${T.comments}
-       WHERE author = $1 AND parent_author = '' AND parent_permlink = $2
-         AND (json_metadata -> $2 ->> 'type') = 'paper'
-         AND json_metadata ->> 'app' LIKE $3
-         AND (json_metadata -> $2 -> 'continues') IS NULL
+      `${unionSql}
+       SELECT author, permlink, title, body, json_metadata, created
+       FROM user_papers
        ORDER BY ${sortCol === 'net_votes' ? 'total_rshares' : 'created'} ${order === 'asc' ? 'ASC' : 'DESC'}
-       LIMIT $4 OFFSET $5`,
-      [username, config.appTag, `${config.appTag}/%`, limit, offset],
+       LIMIT $${cte.nextIdx + 3} OFFSET $${cte.nextIdx + 4}`,
+      [...baseParams, limit, offset],
     );
 
     const rows = dataResult.rows.map((r: Record<string, unknown>) => {

@@ -221,6 +221,11 @@ export function completeOrcidVerification(code, state) {
   });
 }
 
+export async function startOrcidLink() {
+  const res = await authenticatedRequest('/accreditation/orcid/link-start');
+  return res.data;
+}
+
 // ─── Citation Export ─────────────────────────────────────────────
 
 export async function fetchCitationExport(author, permlink, format) {
@@ -302,6 +307,45 @@ export function submitContactForm(data) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
   });
+}
+
+// ─── Authorship Claims ─────────────────────────────────────────
+
+export function fetchPaperClaims(author, permlink) {
+  return request(`/papers/${encodeURIComponent(author)}/${encodeURIComponent(permlink)}/claims`);
+}
+
+export function claimAuthorship(author, permlink, authorIndex) {
+  return authenticatedRequest(
+    `/papers/${encodeURIComponent(author)}/${encodeURIComponent(permlink)}/claims`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ author_index: authorIndex ?? null }),
+    }
+  );
+}
+
+export function approveAuthorshipClaim(author, permlink, claimer, authorIndex) {
+  return authenticatedRequest(
+    `/papers/${encodeURIComponent(author)}/${encodeURIComponent(permlink)}/claims/${encodeURIComponent(claimer)}/approve`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ author_index: authorIndex ?? null }),
+    }
+  );
+}
+
+export function revokeAuthorshipClaim(author, permlink, claimer, reason) {
+  return authenticatedRequest(
+    `/papers/${encodeURIComponent(author)}/${encodeURIComponent(permlink)}/claims/${encodeURIComponent(claimer)}/revoke`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason }),
+    }
+  );
 }
 
 // ─── Cache Invalidation ─────────────────────────────────────────

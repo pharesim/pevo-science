@@ -85,8 +85,9 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
       }
       try {
         const payload = typeof opParams.json === 'string' ? JSON.parse(opParams.json) : opParams.json;
-        if (payload.action !== 'revote') {
-          return sendError(res, 403, 'FORBIDDEN', 'Only revote custom_json is allowed for custodial accounts');
+        const allowedActions = ['revote', 'claim_authorship', 'approve_authorship', 'revoke_authorship'];
+        if (!allowedActions.includes(payload.action)) {
+          return sendError(res, 403, 'FORBIDDEN', `Only ${allowedActions.join(', ')} custom_json actions are allowed for custodial accounts`);
         }
       } catch {
         return sendError(res, 400, 'VALIDATION_ERROR', 'Invalid custom_json payload');

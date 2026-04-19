@@ -1023,7 +1023,14 @@
     "emailDeleted": "E-posta ve ilişkili veriler silindi.",
     "emailAlreadyInUse": "Bu e-posta zaten başka bir hesapla ilişkilendirilmiş.",
     "emailTokenExpired": "Doğrulama bağlantısının süresi dolmuş. Lütfen yeni bir tane talep edin.",
-    "emailResend": "Doğrulamayı yeniden gönder"
+    "emailResend": "Doğrulamayı yeniden gönder",
+    "orcidTitle": "ORCID",
+    "orcidLinkDescription": "Araştırmacı kimliğinizi doğrulamak için ORCID iD'nizi bağlayın.",
+    "orcidLink": "ORCID bağla",
+    "orcidUpdate": "ORCID güncelle",
+    "orcidVerified": "Doğrulandı",
+    "orcidRedirecting": "ORCID'e yönlendiriliyor...",
+    "orcidLinkSuccess": "ORCID başarıyla bağlandı."
   },
   "blog": {
     "title": "Blog",
@@ -1078,6 +1085,21 @@
     "removeLink": "Bağlantıyı kaldır",
     "linkApply": "Uygula",
     "imageUploadFailed": "Görsel yükleme başarısız"
+  },
+  "claims": {
+    "confirmed": "Onaylandı",
+    "pending": "Beklemede",
+    "claimButton": "Talep et",
+    "claimAuthorship": "Yazarlık talep et",
+    "claiming": "Gönderiliyor...",
+    "approve": "Onayla",
+    "reject": "Reddet",
+    "claimSubmitted": "Yazarlık talebi gönderildi. Onaylanana kadar beklemede görünecek.",
+    "claimFailed": "Yazarlık talebi gönderilemedi.",
+    "approveSuccess": "Yazarlık talebi onaylandı.",
+    "approveFailed": "Yazarlık talebi onaylanamadı.",
+    "rejectSuccess": "Yazarlık talebi reddedildi.",
+    "rejectFailed": "Yazarlık talebi reddedilemedi."
   },
   "landing": {
     "publishPaper": "Makale Yayınla",

@@ -26,9 +26,12 @@ List accredited researchers.
   "institution": "MIT",
   "field": "neuroscience",
   "method": "email",
+  "orcid": "0000-0001-2345-6789",
   "timestamp": "2026-01-15T10:00:00Z"
 }
 ```
+
+`orcid` is present when the researcher has a verified ORCID, otherwise absent/null.
 
 **Response `meta`:** Pagination metadata: `{ "page": 1, "limit": 50, "total": 142 }`
 
@@ -49,6 +52,7 @@ Accreditation status for a single user.
     "institution": "MIT",
     "field": "neuroscience",
     "method": "email",
+    "orcid": "0000-0001-2345-6789",
     "timestamp": "2026-01-15T10:00:00Z"
   } | null
 }
@@ -141,9 +145,29 @@ Initiate the ORCID OAuth2 accreditation flow. Returns the ORCID authorization UR
 
 ---
 
+### GET /api/accreditation/orcid/link-start
+
+Initiate ORCID OAuth2 flow for already-accredited users who want to link or update their ORCID. Returns the ORCID authorization URL with `mode: 'link'` in the state parameter.
+
+**Headers:** `X-Hive-Username`, `X-Hive-Signature`
+
+**Response `data`:** `OrcidStartResponse`
+
+```json
+{
+  "redirect_url": "https://orcid.org/oauth/authorize?client_id=...&response_type=code&scope=/authenticate&redirect_uri=...&state=..."
+}
+```
+
+**Errors:**
+- `UNAUTHORIZED` — invalid signature
+- `FORBIDDEN` — user is not accredited
+
+---
+
 ### POST /api/accreditation/orcid/callback
 
-Complete the ORCID OAuth2 flow. The frontend sends the authorization code and state parameter received from ORCID's redirect. The backend verifies the state, exchanges the code for an access token, reads the ORCID profile, and broadcasts an `accredit` custom_json with `method: "orcid"`.
+Complete the ORCID OAuth2 flow. The frontend sends the authorization code and state parameter received from ORCID's redirect. The backend verifies the state, exchanges the code for an access token, reads the ORCID profile, and broadcasts an `accredit` custom_json. In accreditation mode (`/orcid/start`), creates a new accreditation with `method: "orcid"`. In link mode (`/orcid/link-start`), preserves existing accreditation fields (name, institution, field, method) and adds/updates the ORCID.
 
 **Headers:** `X-Hive-Username`, `X-Hive-Signature`
 
@@ -169,7 +193,8 @@ Complete the ORCID OAuth2 flow. The frontend sends the authorization code and st
 
 **Errors:**
 - `UNAUTHORIZED` — invalid Hive signature
-- `BAD_REQUEST` — invalid/expired ORCID authorization code, user already accredited
+- `BAD_REQUEST` — invalid/expired ORCID authorization code or state
+- `VALIDATION_ERROR` (422) — link mode but account is not accredited
 - `INTERNAL_ERROR` — ORCID API unreachable
 
 ---

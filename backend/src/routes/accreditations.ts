@@ -51,6 +51,7 @@ async function fetchAccreditationsFromHaf(
           cj.json::jsonb ->> 'institution' AS institution,
           cj.json::jsonb ->> 'field' AS field,
           cj.json::jsonb ->> 'method' AS method,
+          cj.json::jsonb ->> 'orcid' AS orcid,
           cj.json::jsonb ->> 'timestamp' AS timestamp,
           ROW_NUMBER() OVER (PARTITION BY cj.json::jsonb ->> 'account' ORDER BY cj.block_num DESC) AS rn
         FROM ${T.customJson} cj
@@ -59,7 +60,7 @@ async function fetchAccreditationsFromHaf(
           AND cj.required_posting_auths ?| $${authIdx}::text[]
           AND cj.block_num >= $${paramIdx++}
       )
-      SELECT account AS username, name, institution, field, method, timestamp,
+      SELECT account AS username, name, institution, field, method, orcid, timestamp,
         count(*) OVER ()::int AS total
       FROM ranked AS latest
       WHERE rn = 1 AND action = 'accredit'

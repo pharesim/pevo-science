@@ -1019,7 +1019,14 @@
     "emailDeleted": "E-mail e dati associati eliminati.",
     "emailAlreadyInUse": "Questo indirizzo e-mail è già associato a un altro account.",
     "emailTokenExpired": "Il link di verifica è scaduto. Richiedine uno nuovo.",
-    "emailResend": "Rinvia verifica"
+    "emailResend": "Rinvia verifica",
+    "orcidTitle": "ORCID",
+    "orcidLinkDescription": "Collega il tuo ORCID iD per verificare la tua identità di ricercatore.",
+    "orcidLink": "Collega ORCID",
+    "orcidUpdate": "Aggiorna ORCID",
+    "orcidVerified": "Verificato",
+    "orcidRedirecting": "Reindirizzamento a ORCID...",
+    "orcidLinkSuccess": "ORCID collegato con successo."
   },
   "metadataRestored": {
     "title": "I metadati dell'articolo sono stati modificati da una modifica esterna",
@@ -1078,6 +1085,21 @@
     "removeLink": "Rimuovi collegamento",
     "linkApply": "Applica",
     "imageUploadFailed": "Caricamento immagine non riuscito"
+  },
+  "claims": {
+    "confirmed": "Confermato",
+    "pending": "In attesa",
+    "claimButton": "Rivendica",
+    "claimAuthorship": "Rivendica la paternità",
+    "claiming": "Invio...",
+    "approve": "Approva",
+    "reject": "Rifiuta",
+    "claimSubmitted": "Rivendicazione di paternità inviata. Verrà mostrata come in attesa fino all'approvazione.",
+    "claimFailed": "Invio della rivendicazione non riuscito.",
+    "approveSuccess": "Rivendicazione di paternità approvata.",
+    "approveFailed": "Approvazione della rivendicazione non riuscita.",
+    "rejectSuccess": "Rivendicazione di paternità rifiutata.",
+    "rejectFailed": "Rifiuto della rivendicazione non riuscito."
   },
   "landing": {
     "publishPaper": "Pubblica un Articolo",

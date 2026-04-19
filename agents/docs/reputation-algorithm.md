@@ -26,6 +26,10 @@ score = CLAMP(0, 100,
 )
 ```
 
+### Co-author Credit
+
+Authors with accepted authorship claims on a paper receive the same paper reputation score as the posting author. The paper's votes, reviews, decay, and quality multiplier all apply identically. This is implemented via `accepted_claims` in the reputation query, which resolves claim status using the same logic as `authorshipClaimsCteBody` (explicit approval, ORCID auto-accept, hive username auto-accept, with revocation override). Self-claims (claimer = post author) are excluded to avoid double counting.
+
 ### Paper Reputation Contribution
 
 Three signals combine per paper:

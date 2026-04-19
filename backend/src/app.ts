@@ -34,6 +34,7 @@ import contactRouter from './routes/contact.js';
 import blogRouter from './routes/blog.js';
 import accountsRouter from './routes/accounts.js';
 import settingsRouter from './routes/settings.js';
+import claimsRouter from './routes/claims.js';
 
 // ── Rate limiters (per API contract) ──────────────────────────────
 
@@ -114,6 +115,7 @@ export function createApp() {
   // on POST routes here uses byIp as a first layer; the per-account limit is checked
   // inside the route after signature verification.
   app.use('/api/papers/:author/:permlink/comments', readLimiter, commentsRouter);
+  app.use('/api/papers/:author/:permlink/claims', claimsRouter);
   app.use('/api/papers', readLimiter, papersRouter);
   app.use('/api/reviews', anonymousReviewRouter);
   app.use('/api/reviews', readLimiter, reviewsRouter);
