@@ -195,47 +195,5 @@ export function initVoteButtons() {
       }
     },
 
-    // Simple up/down for non-accredited users
-    async handleSimpleVote(weight) {
-      if (!this.isConnected) {
-        try {
-          await Alpine.store('auth').connect();
-        } catch {
-          return;
-        }
-        return;
-      }
-
-      if (!this.username) return;
-
-      const direction = weight > 0 ? 'up' : 'down';
-      if (this.voteState === direction) return;
-
-      const simpleConfirmed = await Alpine.store('broadcastConfirm').request({
-        title: this.$t('confirm.voteTitle'),
-        message: this.$t('confirm.voteSimpleMessage', { direction: this.$t('vote.' + direction) }),
-        confirmLabel: this.$t('confirm.vote'),
-      });
-      if (!simpleConfirmed) return;
-
-      this.isVoting = true;
-      try {
-        await this._broadcastVote(weight);
-        const previousState = this.voteState;
-        this.voteState = direction;
-        this.currentWeight = weight;
-        this._updateLocalVoter(weight);
-        let delta = 0;
-        if (previousState === 'none') delta = direction === 'up' ? 1 : -1;
-        else if (previousState === 'up' && direction === 'down') delta = -2;
-        else if (previousState === 'down' && direction === 'up') delta = 2;
-        this.displayVotes += delta;
-        invalidatePaperCache(this.author, this.permlink).catch(() => {});
-      } catch (err) {
-        Alpine.store('toast').show(err.message || this.$t('vote.voteFailed'), 'error');
-      } finally {
-        this.isVoting = false;
-      }
-    },
   }));
 }

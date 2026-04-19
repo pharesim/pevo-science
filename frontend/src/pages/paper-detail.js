@@ -443,20 +443,11 @@ const template = `
                     <span class="text-sm text-ink-muted" x-text="voteCountLabel()"></span>
                   </div>
                 </template>
-                <!-- Non-accredited: simple up/down -->
+                <!-- Non-accredited: read-only count + strength -->
                 <template x-if="!isAccredited">
-                  <div class="flex items-center gap-2">
-                    <button type="button" class="p-1.5 rounded transition-colors"
-                            :class="voteState === 'up' ? 'text-pevo-teal bg-pevo-teal-light' : 'text-ink-muted hover:text-pevo-teal'"
-                            @click="handleSimpleVote(10000)" :disabled="isVoting" :title="$t('vote.upvote')">
-                      <svg class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path d="M10 3l-7 7h4v7h6v-7h4L10 3z" /></svg>
-                    </button>
-                    <span class="text-sm font-medium text-ink" x-text="displayVotes"></span>
-                    <button type="button" class="p-1.5 rounded transition-colors"
-                            :class="voteState === 'down' ? 'text-pevo-crimson bg-pevo-crimson-light' : 'text-ink-muted hover:text-pevo-crimson'"
-                            @click="handleSimpleVote(-10000)" :disabled="isVoting" :title="$t('vote.downvote')">
-                      <svg class="h-5 w-5 rotate-180" viewBox="0 0 20 20" fill="currentColor"><path d="M10 3l-7 7h4v7h6v-7h4L10 3z" /></svg>
-                    </button>
+                  <div class="flex items-center gap-2 text-sm text-ink-muted">
+                    <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor"><path d="M10 3l-7 7h4v7h6v-7h4L10 3z" /></svg>
+                    <span x-text="voteCountLabel()"></span>
                   </div>
                 </template>
                 <template x-if="voteIsOutdated">
@@ -604,15 +595,8 @@ const template = `
                           </template>
                           <template x-if="!isAccredited">
                             <div class="flex items-center gap-1 text-xs text-ink-muted">
-                              <button type="button" class="p-0.5 rounded transition-colors" :class="voteState === 'up' ? 'text-pevo-teal' : 'hover:text-pevo-teal'"
-                                      @click="handleSimpleVote(10000)" :disabled="isVoting">
-                                <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor"><path d="M10 3l-7 7h4v7h6v-7h4L10 3z" /></svg>
-                              </button>
+                              <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor"><path d="M10 3l-7 7h4v7h6v-7h4L10 3z" /></svg>
                               <span x-text="displayVotes"></span>
-                              <button type="button" class="p-0.5 rounded transition-colors" :class="voteState === 'down' ? 'text-pevo-crimson' : 'hover:text-pevo-crimson'"
-                                      @click="handleSimpleVote(-10000)" :disabled="isVoting">
-                                <svg class="h-4 w-4 rotate-180" viewBox="0 0 20 20" fill="currentColor"><path d="M10 3l-7 7h4v7h6v-7h4L10 3z" /></svg>
-                              </button>
                             </div>
                           </template>
                         </div>
