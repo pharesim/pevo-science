@@ -4,7 +4,7 @@ import { getPool } from '../db.js';
 import { hiveClient } from '../hive.js';
 import { config } from '../config.js';
 import { sendOk, sendError } from '../response.js';
-import { parseMeta, parsePageLimit, parseOrder, toPaperSummary } from '../helpers.js';
+import { parseMeta, parsePageLimit, parseOrder, parseSort, toPaperSummary } from '../helpers.js';
 import { getAccreditedSet, getAllAccreditedAccounts } from '../accreditation.js';
 import { getBatchReputationScores, getReputationScore } from '../reputation.js';
 import { logger } from '../logger.js';
@@ -283,7 +283,7 @@ function buildReviewSummary(
   };
 }
 
-async function fetchUserReviewsFromHaf(username: string, limit: number, offset: number, order: string) {
+async function fetchUserReviewsFromHaf(username: string, limit: number, offset: number, order: string, sort: string) {
   const pool = getPool();
   if (!pool) return null;
 
@@ -298,18 +298,36 @@ async function fetchUserReviewsFromHaf(username: string, limit: number, offset: 
     );
     const total = countResult.rows[0]?.total ?? 0;
 
+    // For sort-by-votes, compute accredited net_votes per review
+    const accreditedAccounts = sort === 'votes' ? [...(await getAllAccreditedAccounts())] : [];
+    const accreditedParamIdx = reviewFilter.nextIdx + 2; // after limit and offset
+    const netVotesSubquery = sort === 'votes'
+      ? `(SELECT COALESCE(SUM(CASE WHEN lv.weight > 0 THEN 1 WHEN lv.weight < 0 THEN -1 ELSE 0 END), 0)::int
+          FROM (SELECT DISTINCT ON (v.voter) v.weight FROM ${T.voteOps} v
+                WHERE v.author = c.author AND v.permlink = c.permlink
+                  AND v.voter = ANY($${accreditedParamIdx}::text[]) AND v.voter != v.author
+                ORDER BY v.voter, v.block_num DESC) lv WHERE lv.weight != 0) AS net_votes`
+      : '0 AS net_votes';
+    const orderClause = sort === 'votes'
+      ? `net_votes ${order === 'asc' ? 'ASC' : 'DESC'}, c.created DESC`
+      : `c.created ${order === 'asc' ? 'ASC' : 'DESC'}`;
+
+    const dataParams = [username, ...reviewFilter.params, limit, offset];
+    if (sort === 'votes') dataParams.push(accreditedAccounts);
+
     const dataResult = await pool.query(
       `SELECT c.author, c.permlink, LEFT(c.body, 300) AS body,
               c.json_metadata, c.created,
               c.parent_author, c.parent_permlink,
-              p.title AS paper_title
+              p.title AS paper_title,
+              ${netVotesSubquery}
        FROM ${T.comments} c
        LEFT JOIN ${T.comments} p ON p.author = c.parent_author AND p.permlink = c.parent_permlink
        WHERE c.author = $1 AND c.parent_author != ''
          AND ${reviewFilter.sql}
-       ORDER BY c.created ${order === 'asc' ? 'ASC' : 'DESC'}
+       ORDER BY ${orderClause}
        LIMIT $${reviewFilter.nextIdx} OFFSET $${reviewFilter.nextIdx + 1}`,
-      [username, ...reviewFilter.params, limit, offset],
+      dataParams,
     );
 
     const rows = dataResult.rows.map((r: Record<string, unknown>) => {
@@ -334,10 +352,11 @@ router.get('/:username/reviews', async (req: Request, res: Response) => {
   const username = req.params.username as string;
   const { page, limit, offset } = parsePageLimit(req);
   const order = parseOrder(req);
+  const sort = (req.query.sort as string) === 'votes' ? 'votes' : 'date';
 
-  const cacheKey = `profile-reviews:${username}:${JSON.stringify({ order, page, limit })}`;
+  const cacheKey = `profile-reviews:${username}:${JSON.stringify({ sort, order, page, limit })}`;
   const result = await hafCache.getOrSet(cacheKey, async () => {
-    const hafResult = await fetchUserReviewsFromHaf(username, limit, offset, order);
+    const hafResult = await fetchUserReviewsFromHaf(username, limit, offset, order, sort);
     if (hafResult) return hafResult;
     return { rows: [], total: 0 };
   });

@@ -264,6 +264,15 @@ const template = `
               <!-- Reviews tab -->
               <template x-if="activeTab === 'reviews'">
                 <div>
+                  <div class="flex justify-end mb-4">
+                    <div class="w-full sm:w-48">
+                      <label for="reviews-sort" class="block text-xs font-medium text-ink-muted mb-1" x-text="$t('filters.sortBy')"></label>
+                      <select id="reviews-sort" class="select-control" x-model="reviewSort" @change="onReviewSortChange()">
+                        <option value="date" x-text="$t('filters.mostRecent')"></option>
+                        <option value="votes" x-text="$t('filters.mostVotes')"></option>
+                      </select>
+                    </div>
+                  </div>
                   <template x-if="reviewsLoading">
                     <div class="card animate-pulse">
                       <div class="h-4 bg-parchment-warm rounded w-3/4 mb-3"></div>
@@ -322,6 +331,7 @@ export function initProfilePage() {
     userReviews: [],
     reviewsLoaded: false,
     reviewsLoading: false,
+    reviewSort: 'date',
     activeTab: 'publications',
     loading: true,
     error: null,
@@ -381,11 +391,16 @@ export function initProfilePage() {
       }
     },
 
+    onReviewSortChange() {
+      this.reviewsLoaded = false;
+      this.loadReviews();
+    },
+
     async loadReviews() {
       const username = this.username;
       this.reviewsLoading = true;
       try {
-        const res = await fetchProfileReviews(username);
+        const res = await fetchProfileReviews(username, { sort: this.reviewSort });
         if (this.username !== username) return;
         this.userReviews = res.data || [];
         this.reviewsLoaded = true;
