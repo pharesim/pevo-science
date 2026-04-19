@@ -64,6 +64,10 @@ Two paths: (1) **Self-custody** — user brings an existing Hive account and con
 6. When a task is complete, the implementing agent moves it from Pending to a **Review** section in `agents/docs/TASKS.md`. The Architect reviews the implementation, then **physically moves** the task from `TASKS.md` to `agents/docs/tasks-archive.md`. Do NOT use strikethrough (`~~`) to mark tasks done in `TASKS.md`. Completed tasks must be removed entirely.
 7. **No spec file sprawl.** Do not create new files in `agents/docs/` (except inside `api-contracts/`). The allowed files are: `ARCHITECTURE.md`, `TASKS.md`, `tasks-archive.md`, `api-contract.md` (index), `api-contracts/*.md` (split contract files), `hive-schemas.md`, and `reputation-algorithm.md`. Keep these up to date when making related code changes, but do not create additional spec or contract files.
 
+## Local Dev Deployment
+
+Local dev runs via Docker using `./deploy.sh`. Common commands: `./deploy.sh restart` (rebuild + restart + migrate), `./deploy.sh logs` (tail logs), `./deploy.sh up` / `./deploy.sh down`, `./deploy.sh migrate` (run SQL migrations).
+
 ## Running Tests
 
 Use `source ~/.nvm/nvm.sh && nvm use 20` before running tests. Docker containers (Postgres, Redis) are only reachable via their Docker network IPs (not localhost). Find them with `docker inspect <container> --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}'` and override env vars:

@@ -626,7 +626,9 @@
     "verifyingOrcid": "در حال تایید هویت ORCID شما...",
     "verificationSuccess": "تایید ORCID انجام شد! شما اکنون معتبر هستید.",
     "verificationFailed": "تایید ORCID ناموفق بود",
-    "viewProfile": "مشاهده پروفایل"
+    "viewProfile": "مشاهده پروفایل",
+    "loginSuccess": "Signed in with ORCID successfully.",
+    "noAccountFound": "No account is linked to this ORCID. Please sign up first."
   },
   "citation": {
     "citeButton": "استناد",
@@ -807,6 +809,7 @@
     "institutionPlaceholder": "MIT",
     "field": "حوزه پژوهش",
     "fieldPlaceholder": "علوم اعصاب",
+    "orcidSignup": "Sign up with ORCID",
     "orcidVerifyButton": "تأیید با ORCID",
     "orcidVerifying": "در حال انتقال به ORCID…",
     "orcidInsufficientWorks": "پروفایل ORCID شما باید حداقل ۳ اثر از منابع خارجی (مانند Crossref، Scopus) داشته باشد.",
@@ -866,7 +869,8 @@
     "resending": "در حال ارسال…",
     "verificationResent": "یک لینک تأیید جدید به ایمیل شما ارسال شد.",
     "signUpAgain": "ثبت‌نام مجدد",
-    "lostEmailAccess": "دسترسی به ایمیل خود را از دست داده‌اید؟"
+    "lostEmailAccess": "دسترسی به ایمیل خود را از دست داده‌اید؟",
+    "orcidLogin": "Sign in with ORCID"
   },
   "seedPhrase": {
     "verifying": "در حال تأیید ایمیل شما…",

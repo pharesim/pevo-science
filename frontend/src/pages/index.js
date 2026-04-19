@@ -12,7 +12,7 @@ import { initBridgePage, bridgePageTemplate } from './bridge.js';
 import { initProfilePage, profilePageTemplate } from './profile.js';
 import { initAccreditationPage, accreditationPageTemplate } from './accreditation.js';
 import { initAccreditationVerifyPage, accreditationVerifyPageTemplate } from './accreditation-verify.js';
-import { initAccreditationOrcidCallbackPage, accreditationOrcidCallbackPageTemplate } from './accreditation-orcid-callback.js';
+import { initOrcidCallbackPage, orcidCallbackPageTemplate } from './orcid-callback.js';
 import { initResearchersPage, researchersPageTemplate } from './researchers.js';
 import { initStatsPage, statsPageTemplate } from './stats.js';
 import { initAboutPage, aboutPageTemplate } from './about.js';
@@ -22,7 +22,6 @@ import { initContactPage, contactPageTemplate } from './contact.js';
 import { initBlogPage, blogPageTemplate } from './blog.js';
 import { initBlogPostPage, blogPostPageTemplate } from './blog-post.js';
 import { initSignupPage, signupPageTemplate } from './signup.js';
-import { initSignupOrcidCallbackPage, signupOrcidCallbackPageTemplate } from './signup-orcid-callback.js';
 import { initSignupVerifyPage, signupVerifyPageTemplate } from './signup-verify.js';
 import { initLoginPage, loginPageTemplate } from './login.js';
 import { initResetPasswordPage, resetPasswordPageTemplate } from './reset-password.js';
@@ -42,7 +41,7 @@ export const pages = {
   'profile':                     { init: initProfilePage, template: profilePageTemplate },
   'accreditation':               { init: initAccreditationPage, template: accreditationPageTemplate },
   'accreditation-verify':        { init: initAccreditationVerifyPage, template: accreditationVerifyPageTemplate },
-  'accreditation-orcid-callback':{ init: initAccreditationOrcidCallbackPage, template: accreditationOrcidCallbackPageTemplate },
+  'orcid-callback':              { init: initOrcidCallbackPage, template: orcidCallbackPageTemplate },
   'researchers':                 { init: initResearchersPage, template: researchersPageTemplate },
   'stats':                       { init: initStatsPage, template: statsPageTemplate },
   'about':                       { init: initAboutPage, template: aboutPageTemplate },
@@ -52,7 +51,6 @@ export const pages = {
   'blog':                        { init: initBlogPage, template: blogPageTemplate },
   'blog-post':                   { init: initBlogPostPage, template: blogPostPageTemplate },
   'signup':                      { init: initSignupPage, template: signupPageTemplate },
-  'signup-orcid-callback':       { init: initSignupOrcidCallbackPage, template: signupOrcidCallbackPageTemplate },
   'signup-verify':               { init: initSignupVerifyPage, template: signupVerifyPageTemplate },
   'login':                       { init: initLoginPage, template: loginPageTemplate },
   'reset-password':              { init: initResetPasswordPage, template: resetPasswordPageTemplate },

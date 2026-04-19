@@ -626,7 +626,9 @@
     "verifyingOrcid": "מאמת את זהות ה-ORCID שלכם...",
     "verificationSuccess": "אימות ORCID הושלם! אתם כעת מוסמכים.",
     "verificationFailed": "אימות ORCID נכשל",
-    "viewProfile": "צפייה בפרופיל"
+    "viewProfile": "צפייה בפרופיל",
+    "loginSuccess": "Signed in with ORCID successfully.",
+    "noAccountFound": "No account is linked to this ORCID. Please sign up first."
   },
   "citation": {
     "citeButton": "ציטוט",
@@ -807,6 +809,7 @@
     "institutionPlaceholder": "MIT",
     "field": "תחום מחקר",
     "fieldPlaceholder": "מדעי המוח",
+    "orcidSignup": "Sign up with ORCID",
     "orcidVerifyButton": "אימות באמצעות ORCID",
     "orcidVerifying": "מפנה ל-ORCID…",
     "orcidInsufficientWorks": "פרופיל ה-ORCID שלכם צריך לכלול לפחות 3 עבודות ממקורות חיצוניים (לדוגמה Crossref, Scopus) כדי להתאים.",
@@ -866,7 +869,8 @@
     "resending": "שולח…",
     "verificationResent": "קישור אימות חדש נשלח לדוא\"ל שלכם.",
     "signUpAgain": "הרשמה מחדש",
-    "lostEmailAccess": "איבדתם גישה לדוא\"ל שלכם?"
+    "lostEmailAccess": "איבדתם גישה לדוא\"ל שלכם?",
+    "orcidLogin": "Sign in with ORCID"
   },
   "seedPhrase": {
     "verifying": "מאמת את הדוא\"ל שלכם…",

@@ -1,5 +1,5 @@
 import Alpine from 'alpinejs';
-import { requestAccreditation, startOrcidVerification, searchAccounts } from '../api.js';
+import { requestAccreditation, startOrcid, searchAccounts } from '../api.js';
 import { formatDate } from '../components/paper-card.js';
 
 const template = `
@@ -271,20 +271,20 @@ export function initAccreditationPage() {
       if (!this.username || !this.isConnected) return;
       this.orcidLoading = true;
       this.errorMessage = '';
+
+      localStorage.setItem('pevo_orcid_mode', 'accredit');
+
       try {
-        const data = await startOrcidVerification();
-        try {
-          const target = new URL(data.redirect_url);
-          if (!['orcid.org', 'sandbox.orcid.org'].includes(target.hostname)) {
-            throw new Error('Unexpected redirect target');
-          }
-          window.location.href = data.redirect_url;
-        } catch {
+        const data = await startOrcid('accredit');
+        const target = new URL(data.redirect_url);
+        if (!['orcid.org', 'sandbox.orcid.org'].includes(target.hostname)) {
           throw new Error('Invalid ORCID redirect URL');
         }
+        window.location.href = data.redirect_url;
       } catch (err) {
         Alpine.store('toast').show(err.message || 'ORCID verification failed', 'error');
         this.orcidLoading = false;
+        localStorage.removeItem('pevo_orcid_mode');
       }
     },
   }));

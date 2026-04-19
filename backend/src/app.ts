@@ -35,6 +35,7 @@ import blogRouter from './routes/blog.js';
 import accountsRouter from './routes/accounts.js';
 import settingsRouter from './routes/settings.js';
 import claimsRouter from './routes/claims.js';
+import orcidRouter from './routes/orcid.js';
 
 // ── Rate limiters (per API contract) ──────────────────────────────
 
@@ -135,6 +136,7 @@ export function createApp() {
   app.use('/api/contact', contactRouter);
   app.use('/api/accounts', readLimiter, accountsRouter);
   app.use('/api/settings', settingsRouter);
+  app.use('/api/orcid', orcidRouter);
   app.use('/api/blog', readLimiter, blogRouter);
 
   // Health check

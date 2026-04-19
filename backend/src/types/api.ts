@@ -35,6 +35,7 @@ export type ErrorCode =
   | "PENDING_SIGNUP"
   | "PENDING_UNVERIFIED"
   | "SIGNUP_EXPIRED"
+  | "NO_ACCOUNT"
   | "INTERNAL_ERROR";
 
 export interface PaginationMeta {

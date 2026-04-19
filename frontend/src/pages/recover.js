@@ -1,5 +1,5 @@
 import Alpine from 'alpinejs';
-import { recoverWithSeedPhrase, recoverWithOrcid, fetchAccreditationStatus, startSignupOrcid } from '../api.js';
+import { recoverWithSeedPhrase, recoverWithOrcid, fetchAccreditationStatus, startOrcid } from '../api.js';
 import { validateMnemonic, deriveAllKeys } from '../hive-keys.js';
 
 const MIN_PASSWORD = 10;
@@ -236,15 +236,17 @@ export function initRecoverPage() {
         newPasswordConfirm: this.newPasswordConfirm,
       }));
 
-      // Signal to signup-orcid-callback to return here
+      // Signal to orcid-callback to return here
       localStorage.setItem('pevo_orcid_return_to', 'recover');
+      localStorage.setItem('pevo_orcid_mode', 'signup');
 
       try {
-        const data = await startSignupOrcid();
+        const data = await startOrcid('signup');
         window.location.href = data.redirect_url;
       } catch (err) {
         this.orcidLoading = false;
         localStorage.removeItem('pevo_orcid_return_to');
+        localStorage.removeItem('pevo_orcid_mode');
         this.error = err.message;
       }
     },

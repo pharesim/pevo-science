@@ -626,7 +626,9 @@
     "verifyingOrcid": "Ihre ORCID-Identität wird verifiziert...",
     "verificationSuccess": "ORCID-Verifizierung abgeschlossen! Sie sind jetzt akkreditiert.",
     "verificationFailed": "ORCID-Verifizierung fehlgeschlagen",
-    "viewProfile": "Profil anzeigen"
+    "viewProfile": "Profil anzeigen",
+    "loginSuccess": "Signed in with ORCID successfully.",
+    "noAccountFound": "No account is linked to this ORCID. Please sign up first."
   },
   "citation": {
     "citeButton": "Zitieren",
@@ -807,6 +809,7 @@
     "institutionPlaceholder": "MIT",
     "field": "Forschungsgebiet",
     "fieldPlaceholder": "Neurowissenschaften",
+    "orcidSignup": "Sign up with ORCID",
     "orcidVerifyButton": "Mit ORCID verifizieren",
     "orcidVerifying": "Weiterleitung zu ORCID…",
     "orcidInsufficientWorks": "Ihr ORCID-Profil benötigt mindestens 3 Arbeiten aus externen Quellen (z. B. Crossref, Scopus), um sich zu qualifizieren.",
@@ -866,7 +869,8 @@
     "resending": "Wird gesendet…",
     "verificationResent": "Ein neuer Bestätigungslink wurde an Ihre E-Mail gesendet.",
     "signUpAgain": "Erneut registrieren",
-    "lostEmailAccess": "Keinen Zugriff mehr auf Ihre E-Mail?"
+    "lostEmailAccess": "Keinen Zugriff mehr auf Ihre E-Mail?",
+    "orcidLogin": "Sign in with ORCID"
   },
   "seedPhrase": {
     "verifying": "E-Mail wird verifiziert…",

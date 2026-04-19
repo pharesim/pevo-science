@@ -1,6 +1,6 @@
 import Alpine from 'alpinejs';
 import { isKeychainInstalled } from '../keychain.js';
-import { fetchEmailStatus, submitEmail, deleteEmail, startOrcidLink } from '../api.js';
+import { fetchEmailStatus, submitEmail, deleteEmail, startOrcid } from '../api.js';
 import { deriveHiveKeys, deriveHivePublicKeys } from '../hive-keys.js';
 
 // Number of words to re-enter for confirmation
@@ -364,11 +364,10 @@ export function initSettingsPage() {
       this.orcidLinking = true;
       this.orcidError = null;
 
-      // Signal to callback page to return to settings
-      localStorage.setItem('pevo_orcid_return_to', 'settings');
+      localStorage.setItem('pevo_orcid_mode', 'link');
 
       try {
-        const data = await startOrcidLink();
+        const data = await startOrcid('link');
         const target = new URL(data.redirect_url);
         if (!['orcid.org', 'sandbox.orcid.org'].includes(target.hostname)) {
           throw new Error('Invalid ORCID redirect URL');
@@ -377,7 +376,7 @@ export function initSettingsPage() {
       } catch (err) {
         this.orcidError = err.message || this.$t('common.connectionFailed');
         this.orcidLinking = false;
-        localStorage.removeItem('pevo_orcid_return_to');
+        localStorage.removeItem('pevo_orcid_mode');
       }
     },
 

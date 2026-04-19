@@ -191,39 +191,25 @@ export function fetchPlatformStats() {
   return request('/stats');
 }
 
-// ─── ORCID (Signup) ─────────────────────────────────────────────
+// ─── ORCID (Unified) ────────────────────────────────────────────
 
-export async function startSignupOrcid() {
-  const res = await request('/auth/orcid/start', { method: 'POST' });
+export async function startOrcid(mode) {
+  const requiresAuth = mode === 'accredit' || mode === 'link';
+  const reqFn = requiresAuth ? authenticatedRequest : request;
+  const res = await reqFn('/orcid/start', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mode }),
+  });
   return res.data;
 }
 
-export function completeSignupOrcid(code, state) {
-  return request('/auth/orcid/callback', {
+export function completeOrcid(code, state) {
+  return request('/orcid/callback', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ code, state }),
   });
-}
-
-// ─── ORCID (Accreditation) ──────────────────────────────────────
-
-export async function startOrcidVerification() {
-  const res = await authenticatedRequest('/accreditation/orcid/start');
-  return res.data;
-}
-
-export function completeOrcidVerification(code, state) {
-  return authenticatedRequest('/accreditation/orcid/callback', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ code, state }),
-  });
-}
-
-export async function startOrcidLink() {
-  const res = await authenticatedRequest('/accreditation/orcid/link-start');
-  return res.data;
 }
 
 // ─── Citation Export ─────────────────────────────────────────────

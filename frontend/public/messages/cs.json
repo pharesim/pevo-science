@@ -626,7 +626,9 @@
     "verifyingOrcid": "Ověřování vaší identity ORCID...",
     "verificationSuccess": "Ověření ORCID dokončeno! Nyní jste akreditováni.",
     "verificationFailed": "Ověření ORCID selhalo",
-    "viewProfile": "Zobrazit profil"
+    "viewProfile": "Zobrazit profil",
+    "loginSuccess": "Signed in with ORCID successfully.",
+    "noAccountFound": "No account is linked to this ORCID. Please sign up first."
   },
   "citation": {
     "citeButton": "Citovat",
@@ -807,6 +809,7 @@
     "institutionPlaceholder": "MIT",
     "field": "Obor výzkumu",
     "fieldPlaceholder": "Neurověda",
+    "orcidSignup": "Sign up with ORCID",
     "orcidVerifyButton": "Ověřit přes ORCID",
     "orcidVerifying": "Přesměrování na ORCID…",
     "orcidInsufficientWorks": "Váš profil ORCID musí obsahovat alespoň 3 práce z externích zdrojů (např. Crossref, Scopus).",
@@ -866,7 +869,8 @@
     "resending": "Odesílání…",
     "verificationResent": "Na váš e-mail byl odeslán nový ověřovací odkaz.",
     "signUpAgain": "Zaregistrovat se znovu",
-    "lostEmailAccess": "Ztratili jste přístup k e-mailu?"
+    "lostEmailAccess": "Ztratili jste přístup k e-mailu?",
+    "orcidLogin": "Sign in with ORCID"
   },
   "seedPhrase": {
     "verifying": "Ověřování vašeho e-mailu…",

@@ -1,5 +1,5 @@
 import Alpine from 'alpinejs';
-import { submitSignup, loginWithPassword, resendVerification, startSignupOrcid } from '../api.js';
+import { submitSignup, loginWithPassword, resendVerification, startOrcid } from '../api.js';
 
 const MIN_PASSWORD = 10;
 
@@ -103,6 +103,21 @@ const template = `
                 <span x-show="isSubmitting" x-text="$t('signup.submitting')"></span>
               </button>
             </form>
+
+            <!-- Divider -->
+            <div class="flex items-center gap-3 my-6">
+              <div class="flex-1 border-t border-parchment-dark"></div>
+              <span class="text-sm text-ink-muted" x-text="$t('orcid.or')"></span>
+              <div class="flex-1 border-t border-parchment-dark"></div>
+            </div>
+
+            <!-- Sign up with ORCID -->
+            <button type="button" @click="handleOrcidSignup()" :disabled="orcidLoading"
+                    class="w-full btn-secondary py-2.5 flex items-center justify-center gap-2 disabled:opacity-50">
+              <svg class="h-5 w-5" viewBox="0 0 256 256" fill="none"><path d="M256 128C256 198.692 198.692 256 128 256C57.3076 256 0 198.692 0 128C0 57.3076 57.3076 0 128 0C198.692 0 256 57.3076 256 128Z" fill="#A6CE39"/><path d="M86.3 186.2H70.9V79.1H86.3V186.2ZM78.6 56.1C73.5 56.1 69.4 60.2 69.4 65.3C69.4 70.4 73.5 74.5 78.6 74.5C83.7 74.5 87.8 70.4 87.8 65.3C87.8 60.2 83.7 56.1 78.6 56.1ZM108.5 79.1H150.3C185 79.1 200.5 102.7 200.5 132.6C200.5 165.2 181.5 186.2 150.3 186.2H108.5V79.1ZM124 172.5H148.6C175.2 172.5 184.6 153.3 184.6 132.6C184.6 110.6 173.8 92.8 148.6 92.8H124V172.5Z" fill="white"/></svg>
+              <span x-show="!orcidLoading" x-text="$t('signup.orcidSignup')"></span>
+              <span x-show="orcidLoading" x-text="$t('orcid.redirecting')"></span>
+            </button>
 
             <!-- Login link -->
             <p class="text-center text-sm text-ink-muted mt-6">
@@ -215,11 +230,31 @@ export function initSignupPage() {
         passwordConfirm: this.passwordConfirm,
       }));
 
+      localStorage.setItem('pevo_orcid_mode', 'signup');
+
       try {
-        const data = await startSignupOrcid();
+        const data = await startOrcid('signup');
         window.location.href = data.redirect_url;
       } catch (err) {
         this.orcidLoading = false;
+        localStorage.removeItem('pevo_orcid_mode');
+        this.error = err.message;
+      }
+    },
+
+    async handleOrcidSignup() {
+      if (this.orcidLoading) return;
+      this.orcidLoading = true;
+      this.error = null;
+
+      localStorage.setItem('pevo_orcid_mode', 'signup');
+
+      try {
+        const data = await startOrcid('signup');
+        window.location.href = data.redirect_url;
+      } catch (err) {
+        this.orcidLoading = false;
+        localStorage.removeItem('pevo_orcid_mode');
         this.error = err.message;
       }
     },

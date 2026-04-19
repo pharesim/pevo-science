@@ -626,7 +626,9 @@
     "verifyingOrcid": "正在验证您的 ORCID 身份...",
     "verificationSuccess": "ORCID 验证完成！您已获得认证。",
     "verificationFailed": "ORCID 验证失败",
-    "viewProfile": "查看个人资料"
+    "viewProfile": "查看个人资料",
+    "loginSuccess": "Signed in with ORCID successfully.",
+    "noAccountFound": "No account is linked to this ORCID. Please sign up first."
   },
   "citation": {
     "citeButton": "引用",
@@ -807,6 +809,7 @@
     "institutionPlaceholder": "MIT",
     "field": "研究领域",
     "fieldPlaceholder": "神经科学",
+    "orcidSignup": "Sign up with ORCID",
     "orcidVerifyButton": "通过 ORCID 验证",
     "orcidVerifying": "正在跳转至 ORCID…",
     "orcidInsufficientWorks": "您的 ORCID 个人资料需要至少 3 篇来自外部来源（如 Crossref、Scopus）的作品才能注册。",
@@ -866,7 +869,8 @@
     "resending": "发送中…",
     "verificationResent": "新的验证链接已发送至您的邮箱。",
     "signUpAgain": "重新注册",
-    "lostEmailAccess": "无法访问您的邮箱？"
+    "lostEmailAccess": "无法访问您的邮箱？",
+    "orcidLogin": "Sign in with ORCID"
   },
   "seedPhrase": {
     "verifying": "正在验证邮箱…",

@@ -1,3 +1,27 @@
+### ORCID-4 — Remove old ORCID routes (2026-04-19) — Reviewed ✓
+
+Removed old fragmented ORCID endpoints from `auth.ts` and `accreditation.ts`, replaced by unified `/api/orcid/start` and `/api/orcid/callback` in `orcid.ts`. Cleaned up `signupOrcidStates`, `signupOrcidVerified` maps, legacy `signup_orcid_verified:` Redis key fallbacks, `orcidStates` map, `getExistingAccreditation` (from accreditation.ts), and unused imports. Signup and recover routes now use only `orcid_verified:` keys from the unified orcid module. Build passes, no stale references.
+
+### ORCID-3 — Frontend ORCID consolidation (2026-04-19) — Reviewed ✓
+
+Unified ORCID callback page (`orcid-callback.js`) replaces both `signup-orcid-callback.js` and `accreditation-orcid-callback.js`. All 4 modes (signup, login, accredit, link) handled by single page reading mode from localStorage. API consolidated from 5 functions to 2 (`startOrcid(mode)`, `completeOrcid(code, state)`). All consumer pages (signup, login, accreditation, settings, recover) updated. Router and page registry updated. i18n keys added to all 16 locales. API contract documented in `api-contracts/orcid.md`. Old backend routes preserved for ORCID-4 cleanup.
+
+### ORCID-2b — Fix resend-verification crash on ORCID accounts (2026-04-19) — Reviewed ✓
+
+Null check for `password_hash` in resend-verification handler via ternary guard. When null (ORCID-only accounts), returns `false` for password validation, producing the same constant-time generic response. TypeScript type updated to `string | null`.
+
+### ORCID-2a — Fix login crash on ORCID-only accounts (2026-04-19) — Reviewed ✓
+
+One-line null check for `password_hash` before `argon2.verify()` in login handler. Prevents crash on ORCID-only accounts (null password_hash). Returns same 401 "Invalid credentials" to avoid leaking account type.
+
+### ORCID-2 — Relax signup fields for ORCID (2026-04-19) — Reviewed ✓
+
+Signup handler relaxed: when `orcid_token` present, email/password/institution/field are optional. `full_name` falls back to ORCID profile name. ORCID signups skip email verification (go directly to `confirmed:` state, return `{ flow: 'choose', auth_token }`). ORCID-only signups (no email) use plain INSERT. Dual nonce lookup (unified + legacy keys). Follow-up: ORCID-2b needed for null password_hash guard in resend-verification handler.
+
+### ORCID-1 — Unified ORCID route + migration (2026-04-19) — Reviewed ✓
+
+New `backend/src/routes/orcid.ts` with unified `POST /api/orcid/start` and `POST /api/orcid/callback` supporting 4 modes (signup, login, accredit, link). Migration `002_nullable_email.sql` makes email nullable. `NO_ACCOUNT` error code added. Auth.ts updated with dual nonce lookup (`orcid_verified:` then legacy `signup_orcid_verified:`). Removed `orcidRedirectUri`/`orcidSignupRedirectUri` from config; redirect URI derived at runtime. Old routes preserved with derived URI until ORCID-4 cleanup.
+
 ### P3-1 — Extend edit authorization to claimed co-authors (2026-04-19) — Reviewed ✓
 
 `edit.js`: `isAuthorized` getter extended with accepted authorship claim check; `loadPaperData()` extracts `authorship_claims` from enrichment. `paper-detail.js`: `isOwnPaper` getter extended with same check for Edit button visibility. Co-author edits correctly use continuation flow via existing `isContinuation` logic. No backend changes needed.

@@ -1,6 +1,6 @@
-# PEvO API Contract — Accreditation
+# PEvO API Contract -- Accreditation
 
-Endpoints for accreditation requests, verification, ORCID-based accreditation, and Web of Trust.
+Endpoints for accreditation requests, email verification, and Web of Trust. ORCID OAuth endpoints have moved to [orcid.md](orcid.md).
 
 ---
 
@@ -122,80 +122,6 @@ Confirm an email verification token to complete accreditation.
 The backend broadcasts the accreditation `custom_json` to Hive upon successful verification.
 
 **Errors:** `BAD_REQUEST` (invalid/expired token)
-
----
-
-### GET /api/accreditation/orcid/start
-
-Initiate the ORCID OAuth2 accreditation flow. Returns the ORCID authorization URL that the frontend should redirect to.
-
-**Headers:** `X-Hive-Username`, `X-Hive-Signature`
-
-**Response `data`:** `OrcidStartResponse`
-
-```json
-{
-  "redirect_url": "https://orcid.org/oauth/authorize?client_id=...&response_type=code&scope=/authenticate&redirect_uri=..."
-}
-```
-
-**Errors:**
-- `UNAUTHORIZED` — invalid signature
-- `VALIDATION_ERROR` (422) — user is already accredited
-
----
-
-### GET /api/accreditation/orcid/link-start
-
-Initiate ORCID OAuth2 flow for already-accredited users who want to link or update their ORCID. Returns the ORCID authorization URL with `mode: 'link'` in the state parameter.
-
-**Headers:** `X-Hive-Username`, `X-Hive-Signature`
-
-**Response `data`:** `OrcidStartResponse`
-
-```json
-{
-  "redirect_url": "https://orcid.org/oauth/authorize?client_id=...&response_type=code&scope=/authenticate&redirect_uri=...&state=..."
-}
-```
-
-**Errors:**
-- `UNAUTHORIZED` — invalid signature
-- `FORBIDDEN` — user is not accredited
-
----
-
-### POST /api/accreditation/orcid/callback
-
-Complete the ORCID OAuth2 flow. The frontend sends the authorization code and state parameter received from ORCID's redirect. The backend verifies the state, exchanges the code for an access token, reads the ORCID profile, and broadcasts an `accredit` custom_json. In accreditation mode (`/orcid/start`), creates a new accreditation with `method: "orcid"`. In link mode (`/orcid/link-start`), preserves existing accreditation fields (name, institution, field, method) and adds/updates the ORCID.
-
-**Headers:** `X-Hive-Username`, `X-Hive-Signature`
-
-**Request Body:**
-
-```json
-{
-  "code": "<ORCID authorization code>",
-  "state": "<state from OAuth redirect>"
-}
-```
-
-**Response `data`:** `OrcidCallbackResponse`
-
-```json
-{
-  "message": "Accreditation via ORCID confirmed",
-  "username": "scientist1",
-  "orcid": "0000-0001-2345-6789",
-  "tx_id": "<Hive custom_json transaction ID>"
-}
-```
-
-**Errors:**
-- `UNAUTHORIZED` — invalid Hive signature
-- `BAD_REQUEST` — invalid/expired ORCID authorization code or state
-- `VALIDATION_ERROR` (422) — link mode but account is not accredited
-- `INTERNAL_ERROR` — ORCID API unreachable
 
 ---
 

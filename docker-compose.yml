@@ -93,6 +93,7 @@ services:
   # Frontend is served by the backend as static files (Vite build output).
   # Update nginx config: both / and /api/ should proxy to backend:3001.
 
+
 volumes:
   pgdata:
   redis_data:

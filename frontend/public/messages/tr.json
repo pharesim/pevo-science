@@ -626,7 +626,9 @@
     "verifyingOrcid": "ORCID kimliğiniz doğrulanıyor...",
     "verificationSuccess": "ORCID doğrulaması tamamlandı! Artık akredite oldunuz.",
     "verificationFailed": "ORCID doğrulaması başarısız oldu",
-    "viewProfile": "Profili Görüntüle"
+    "viewProfile": "Profili Görüntüle",
+    "loginSuccess": "Signed in with ORCID successfully.",
+    "noAccountFound": "No account is linked to this ORCID. Please sign up first."
   },
   "citation": {
     "citeButton": "Atıf Yap",
@@ -811,6 +813,7 @@
     "institutionPlaceholder": "MIT",
     "field": "Araştırma alanı",
     "fieldPlaceholder": "Sinirbilim",
+    "orcidSignup": "Sign up with ORCID",
     "orcidVerifyButton": "ORCID ile doğrula",
     "orcidVerifying": "ORCID'e yönlendiriliyor…",
     "orcidInsufficientWorks": "ORCID profilinizde hak kazanmak için en az 3 harici kaynaklı eser (ör. Crossref, Scopus) bulunmalıdır.",
@@ -870,7 +873,8 @@
     "resending": "Gönderiliyor…",
     "verificationResent": "E-postanıza yeni bir doğrulama bağlantısı gönderildi.",
     "signUpAgain": "Tekrar kaydol",
-    "lostEmailAccess": "E-postanıza erişiminizi mi kaybettiniz?"
+    "lostEmailAccess": "E-postanıza erişiminizi mi kaybettiniz?",
+    "orcidLogin": "Sign in with ORCID"
   },
   "seedPhrase": {
     "verifying": "E-postanız doğrulanıyor…",

@@ -626,7 +626,9 @@
     "verifyingOrcid": "Verifierar din ORCID-identitet...",
     "verificationSuccess": "ORCID-verifiering slutförd! Du är nu ackrediterad.",
     "verificationFailed": "ORCID-verifiering misslyckades",
-    "viewProfile": "Visa profil"
+    "viewProfile": "Visa profil",
+    "loginSuccess": "Signed in with ORCID successfully.",
+    "noAccountFound": "No account is linked to this ORCID. Please sign up first."
   },
   "citation": {
     "citeButton": "Citera",
@@ -807,6 +809,7 @@
     "institutionPlaceholder": "MIT",
     "field": "Forskningsområde",
     "fieldPlaceholder": "Neurovetenskap",
+    "orcidSignup": "Sign up with ORCID",
     "orcidVerifyButton": "Verifiera med ORCID",
     "orcidVerifying": "Omdirigerar till ORCID…",
     "orcidInsufficientWorks": "Din ORCID-profil måste innehålla minst 3 verk från externa källor (t.ex. Crossref, Scopus) för att kvalificera sig.",
@@ -866,7 +869,8 @@
     "resending": "Skickar…",
     "verificationResent": "En ny verifieringslänk har skickats till din e-post.",
     "signUpAgain": "Registrera dig igen",
-    "lostEmailAccess": "Har du förlorat åtkomsten till din e-post?"
+    "lostEmailAccess": "Har du förlorat åtkomsten till din e-post?",
+    "orcidLogin": "Sign in with ORCID"
   },
   "seedPhrase": {
     "verifying": "Verifierar din e-post…",

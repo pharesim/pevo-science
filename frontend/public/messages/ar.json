@@ -626,7 +626,9 @@
     "verifyingOrcid": "جارٍ التحقق من هوية ORCID الخاصة بك...",
     "verificationSuccess": "اكتمل التحقق من ORCID! أنت الآن معتمد.",
     "verificationFailed": "فشل التحقق من ORCID",
-    "viewProfile": "عرض الملف الشخصي"
+    "viewProfile": "عرض الملف الشخصي",
+    "loginSuccess": "Signed in with ORCID successfully.",
+    "noAccountFound": "No account is linked to this ORCID. Please sign up first."
   },
   "citation": {
     "citeButton": "استشهاد",
@@ -807,6 +809,7 @@
     "institutionPlaceholder": "MIT",
     "field": "مجال البحث",
     "fieldPlaceholder": "علم الأعصاب",
+    "orcidSignup": "Sign up with ORCID",
     "orcidVerifyButton": "التحقق عبر ORCID",
     "orcidVerifying": "جارٍ التحويل إلى ORCID…",
     "orcidInsufficientWorks": "يجب أن يحتوي ملفك على ORCID على 3 أعمال على الأقل من مصادر خارجية (مثل Crossref أو Scopus) للتأهل.",
@@ -866,7 +869,8 @@
     "resending": "جارٍ الإرسال…",
     "verificationResent": "تم إرسال رابط تحقق جديد إلى بريدك الإلكتروني.",
     "signUpAgain": "التسجيل مرة أخرى",
-    "lostEmailAccess": "فقدت الوصول إلى بريدك الإلكتروني؟"
+    "lostEmailAccess": "فقدت الوصول إلى بريدك الإلكتروني؟",
+    "orcidLogin": "Sign in with ORCID"
   },
   "seedPhrase": {
     "verifying": "جارٍ التحقق من بريدك الإلكتروني…",

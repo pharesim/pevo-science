@@ -626,7 +626,9 @@
     "verifyingOrcid": "Uw ORCID-identiteit verifiëren...",
     "verificationSuccess": "ORCID-verificatie voltooid! U bent nu geaccrediteerd.",
     "verificationFailed": "ORCID-verificatie mislukt",
-    "viewProfile": "Profiel bekijken"
+    "viewProfile": "Profiel bekijken",
+    "loginSuccess": "Signed in with ORCID successfully.",
+    "noAccountFound": "No account is linked to this ORCID. Please sign up first."
   },
   "citation": {
     "citeButton": "Citeren",
@@ -811,6 +813,7 @@
     "institutionPlaceholder": "MIT",
     "field": "Onderzoeksgebied",
     "fieldPlaceholder": "Neurowetenschappen",
+    "orcidSignup": "Sign up with ORCID",
     "orcidVerifyButton": "Verifiëren met ORCID",
     "orcidVerifying": "Doorsturen naar ORCID…",
     "orcidInsufficientWorks": "Je ORCID-profiel moet minstens 3 werken van externe bronnen bevatten (bijv. Crossref, Scopus) om in aanmerking te komen.",
@@ -870,7 +873,8 @@
     "resending": "Verzenden…",
     "verificationResent": "Er is een nieuwe verificatielink naar je e-mailadres gestuurd.",
     "signUpAgain": "Opnieuw registreren",
-    "lostEmailAccess": "Geen toegang meer tot je e-mailadres?"
+    "lostEmailAccess": "Geen toegang meer tot je e-mailadres?",
+    "orcidLogin": "Sign in with ORCID"
   },
   "seedPhrase": {
     "verifying": "Je e-mailadres verifiëren…",

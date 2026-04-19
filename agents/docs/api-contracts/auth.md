@@ -1,6 +1,6 @@
-# PEvO API Contract — Auth
+# PEvO API Contract -- Auth
 
-Endpoints for authentication, signup, login, password reset, and account recovery.
+Endpoints for authentication, signup, login, password reset, and account recovery. ORCID OAuth endpoints have moved to [orcid.md](orcid.md).
 
 ---
 
@@ -33,7 +33,7 @@ Create a session token. The client signs a challenge with Hive Keychain at login
 
 ### POST /api/auth/signup
 
-Register a light account. Accreditation requires **either** an institutional email address **or** a verified ORCID with sufficient publications (configured via `ORCID_MIN_WORKS`, default 3). Non-institutional emails are accepted when a valid `orcid_token` is provided.
+Register a light account. Two paths: email-based (institutional email required) or ORCID-based (verified ORCID with sufficient publications).
 
 **Body:**
 
@@ -44,14 +44,23 @@ Register a light account. Accreditation requires **either** an institutional ema
   "full_name": "Dr. Jane Smith",
   "institution": "MIT",
   "field": "neuroscience",
-  "orcid_token": "abc123..."                // optional — nonce from /api/auth/orcid/callback
+  "orcid_token": "abc123..."                // optional -- nonce from /api/orcid/callback
 }
 ```
 
-- `email` — any valid email. If not from an institutional domain, `orcid_token` is required.
-- `password` must be at least 10 characters with lowercase, uppercase, and numbers.
-- `full_name`, `institution`, `field` — required accreditation details, stored with the account.
-- `orcid_token` (optional) — one-time nonce returned by `/api/auth/orcid/callback`. Backend validates against Redis and retrieves the verified ORCID iD. Consumed on use.
+**Without `orcid_token` (email path):**
+- `email` -- required, must be from an institutional domain.
+- `password` -- required, at least 10 characters with lowercase, uppercase, and numbers.
+- `full_name`, `institution`, `field` -- required.
+
+**With `orcid_token` (ORCID path):**
+- `email` -- optional. Any domain accepted (no institutional requirement). When omitted, the account has no email (ORCID-only).
+- `password` -- optional when no email is provided. Required if email is provided.
+- `full_name` -- optional, falls back to name from ORCID profile.
+- `institution`, `field` -- optional, default to empty string.
+- `orcid_token` -- one-time nonce returned by `POST /api/orcid/callback` (signup mode). Backend validates against Redis and retrieves the verified ORCID iD. Consumed on use.
+
+ORCID-path accounts skip email verification and go directly to the username/keys step (`/api/auth/confirm`).
 
 Username selection and account creation happen later, at the `/api/auth/confirm` or `/api/auth/link` step.
 
@@ -69,59 +78,6 @@ Username selection and account creation happen later, at the `/api/auth/confirm`
 **Errors:**
 - `VALIDATION_ERROR` — non-institutional email without valid `orcid_token`, password too weak, or missing required fields
 - `DUPLICATE` — email already registered or pending
-
----
-
-### POST /api/auth/orcid/start
-
-Initiate ORCID OAuth for the signup flow. No authentication required. Generates a state parameter stored in Redis and returns the ORCID authorization URL.
-
-**Body:** _(none)_
-
-**Response `data`:**
-
-```json
-{
-  "redirect_url": "https://orcid.org/oauth/authorize?client_id=...&response_type=code&scope=/authenticate+/read-limited&redirect_uri=...&state=..."
-}
-```
-
-**Rate limit:** 10 requests per IP per minute.
-
-**Errors:**
-- `INTERNAL_ERROR` — ORCID integration not configured
-
----
-
-### POST /api/auth/orcid/callback
-
-Complete the signup ORCID OAuth flow. Exchanges the authorization code for an access token, fetches the ORCID profile via the public API, and checks that the profile has at least `ORCID_MIN_WORKS` (default 3) works with an external source (Crossref, DataCite, Scopus — not self-asserted). On success, stores the verified ORCID iD in Redis keyed by a one-time nonce and returns that nonce.
-
-**Body:**
-
-```json
-{
-  "code": "<ORCID authorization code>",
-  "state": "<state from OAuth redirect>"
-}
-```
-
-**Response `data`:**
-
-```json
-{
-  "orcid_token": "<one-time nonce>",
-  "orcid_id": "0000-0001-2345-6789",
-  "works_count": 5
-}
-```
-
-The `orcid_token` is valid for 30 minutes and consumed when used in `/api/auth/signup`. The `orcid_id` and `works_count` are returned for display purposes only — the backend re-reads the verified ORCID iD from Redis using the nonce, never trusting the client.
-
-**Errors:**
-- `BAD_REQUEST` — invalid/expired state or authorization code
-- `VALIDATION_ERROR` — ORCID profile has fewer than `ORCID_MIN_WORKS` externally-sourced works
-- `INTERNAL_ERROR` — ORCID API unreachable
 
 ---
 
@@ -417,7 +373,7 @@ Recover a light account when the user has lost access to their email. Requires e
 }
 ```
 
-For ORCID recovery, obtain `orcid_token` via the existing `POST /api/auth/orcid/start` and `POST /api/auth/orcid/callback` flow first. The backend verifies the ORCID iD from the token matches the account's stored ORCID. Note: the ORCID recovery path does not re-check `ORCID_MIN_WORKS`. It only verifies identity match, since the ORCID was already validated during signup.
+For ORCID recovery, obtain `orcid_token` via `POST /api/orcid/start` (mode: `signup`) and `POST /api/orcid/callback` first. The backend verifies the ORCID iD from the token matches the account's stored ORCID. Note: the ORCID recovery path does not re-check `ORCID_MIN_WORKS`. It only verifies identity match, since the ORCID was already validated during signup.
 
 **Response `data`:**
 
