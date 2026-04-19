@@ -3,7 +3,9 @@ import request from 'supertest';
 import express from 'express';
 import { rateLimit, byIp, byAccount } from '../../src/middleware/rateLimit.js';
 
-function createTestApp(config: { windowMs: number; max: number; keyFn: (req: express.Request) => string }) {
+let testCounter = 0;
+function createTestApp(opts: { windowMs: number; max: number; keyFn: (req: express.Request) => string }) {
+  const config = { ...opts, name: `test-${Date.now()}-${++testCounter}` };
   const app = express();
   app.use(express.json());
   // Simulate verifyHiveSignature: populate req.hiveUsername from header

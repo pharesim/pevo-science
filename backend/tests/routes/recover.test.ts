@@ -12,6 +12,7 @@ const TEST_EMAIL = `recover_${Date.now()}@example.com`;
 const TEST_PASSWORD = 'OldPassword1';
 const TEST_MEMO_KEY = '5JexampleMemoKeyForRecoveryTest123456789abcdef';
 
+const hasCustodyKey = !!process.env.CUSTODY_ENCRYPTION_KEY && process.env.CUSTODY_ENCRYPTION_KEY.length >= 32;
 let dbReachable = false;
 {
   const pool = getAppPool();
@@ -70,7 +71,7 @@ describe('POST /api/auth/recover — validation', () => {
 describe('POST /api/auth/recover — with DB', () => {
   beforeAll(async () => {
     await cleanup();
-    if (!dbReachable) return;
+    if (!dbReachable || !hasCustodyKey) return;
     const pool = getAppPool()!;
 
     // Create a test light account with encrypted memo key
@@ -84,7 +85,7 @@ describe('POST /api/auth/recover — with DB', () => {
     );
   });
 
-  it.skipIf(!dbReachable)('returns 404 for non-existent username', async () => {
+  it.skipIf(!dbReachable || !hasCustodyKey)('returns 404 for non-existent username', async () => {
     const res = await request(app)
       .post('/api/auth/recover')
       .send({
@@ -97,7 +98,7 @@ describe('POST /api/auth/recover — with DB', () => {
     expect(res.body.error.code).toBe('NOT_FOUND');
   });
 
-  it.skipIf(!dbReachable)('rejects wrong memo key', async () => {
+  it.skipIf(!dbReachable || !hasCustodyKey)('rejects wrong memo key', async () => {
     const res = await request(app)
       .post('/api/auth/recover')
       .send({
@@ -120,7 +121,7 @@ describe('POST /api/auth/recover — with DB', () => {
     expect(rows.length).toBe(1);
   });
 
-  it.skipIf(!dbReachable)('rejects duplicate email', async () => {
+  it.skipIf(!dbReachable || !hasCustodyKey)('rejects duplicate email', async () => {
     const pool = getAppPool()!;
     const otherUser = `recover_other_${Date.now()}`;
     const takenEmail = `taken_${Date.now()}@example.com`;
@@ -144,7 +145,7 @@ describe('POST /api/auth/recover — with DB', () => {
     await pool.query('DELETE FROM accounts WHERE username = $1', [otherUser]);
   });
 
-  it.skipIf(!dbReachable)('succeeds with correct memo key', async () => {
+  it.skipIf(!dbReachable || !hasCustodyKey)('succeeds with correct memo key', async () => {
     const newEmail = `recovered_${Date.now()}@example.com`;
     const newPassword = 'RecoveredPass1';
 
@@ -193,7 +194,7 @@ describe('POST /api/auth/recover — with DB', () => {
     expect(auditRows.length).toBe(1);
   });
 
-  it.skipIf(!dbReachable)('rejects ORCID recovery when account has no ORCID', async () => {
+  it.skipIf(!dbReachable || !hasCustodyKey)('rejects ORCID recovery when account has no ORCID', async () => {
     const res = await request(app)
       .post('/api/auth/recover')
       .send({
@@ -206,7 +207,7 @@ describe('POST /api/auth/recover — with DB', () => {
     expect(res.body.error.code).toBe('UNAUTHORIZED');
   });
 
-  it.skipIf(!dbReachable)('rejects invalid ORCID token', async () => {
+  it.skipIf(!dbReachable || !hasCustodyKey)('rejects invalid ORCID token', async () => {
     const pool = getAppPool()!;
     await pool.query('UPDATE accounts SET orcid = $1 WHERE username = $2', ['0000-0001-2345-6789', TEST_USER]);
 
