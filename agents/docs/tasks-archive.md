@@ -1,3 +1,7 @@
+### P2-1 — Authorship claim custom_json schemas (2026-04-19) — Reviewed ✓
+
+Schemas defined in `agents/docs/hive-schemas.md` sections 2.9 (claim_authorship), 2.10 (approve_authorship), 2.11 (revoke_authorship). All three payloads specified with required fields, signing accounts, and auto-accept conditions documented.
+
 ### SRCH-F1 — Show review results in search UI (2026-04-19) — Reviewed ✓
 
 Implemented in `search.js`. Type filter dropdown (all/papers/reviews). Review results link to parent paper with hash anchor to review. Reviewer name and snippet shown. Type badge per result. All i18n keys in 16 locales.
