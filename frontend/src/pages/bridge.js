@@ -15,15 +15,32 @@ const template = `
         <h1 class="text-3xl font-bold text-ink font-serif mb-2" x-text="$t('bridge.title')"></h1>
         <p class="text-ink-muted mb-6" x-text="$t('bridge.description')"></p>
 
-        <!-- Not connected -->
+        <!-- Not connected warning -->
         <template x-if="!isConnected">
-          <div class="card text-center py-12">
-            <p class="text-ink-muted mb-4" x-text="$t('bridge.signInHint')"></p>
-            <button class="btn-primary" @click="handleConnect()" x-text="$t('signIn.signInButton')"></button>
+          <div class="card bg-pevo-crimson-light border-pevo-crimson/30 mb-6">
+            <div class="flex items-start gap-3">
+              <svg class="h-5 w-5 text-pevo-crimson shrink-0 mt-0.5" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.168 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 8a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd" /></svg>
+              <div>
+                <p class="font-medium text-ink text-sm" x-text="$t('bridge.signInHint')"></p>
+                <button class="btn-primary text-xs mt-2" @click="handleConnect()" x-text="$t('signIn.signInButton')"></button>
+              </div>
+            </div>
           </div>
         </template>
 
-        <template x-if="isConnected">
+        <!-- Not accredited warning -->
+        <template x-if="isConnected && !isAccredited">
+          <div class="card bg-pevo-crimson-light border-pevo-crimson/30 mb-6">
+            <div class="flex items-start gap-3">
+              <svg class="h-5 w-5 text-pevo-crimson shrink-0 mt-0.5" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.168 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 8a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd" /></svg>
+              <div>
+                <p class="font-medium text-ink text-sm" x-text="$t('publish.accreditationRequired')"></p>
+                <a :href="$lp('/accreditation')" @click.prevent="navigate('/accreditation')" class="btn-primary text-xs mt-2 no-underline inline-block" x-text="$t('common.getAccredited')"></a>
+              </div>
+            </div>
+          </div>
+        </template>
+
           <div>
             <!-- Step 1: Identifier input -->
             <div class="card mb-6">
@@ -127,8 +144,14 @@ const template = `
                   <input id="bridge-language" type="text" class="select-control max-w-xs" :placeholder="$t('bridge.languagePlaceholder')" x-model="language" />
                 </div>
                 <!-- Status / Submit -->
-                <template x-if="step === 'idle'">
+                <template x-if="step === 'idle' && isAccredited">
                   <button class="btn-primary" @click="handleRegister()" :disabled="!canRegister" x-text="$t('bridge.registerButton')"></button>
+                </template>
+                <template x-if="step === 'idle' && !isAccredited && !isConnected">
+                  <a :href="$lp('/getting-started')" @click.prevent="navigate('/getting-started')" class="btn-primary inline-block text-center no-underline" x-text="$t('bridge.registerButton')"></a>
+                </template>
+                <template x-if="step === 'idle' && !isAccredited && isConnected">
+                  <a :href="$lp('/accreditation')" @click.prevent="navigate('/accreditation')" class="btn-primary inline-block text-center no-underline" x-text="$t('common.getAccredited')"></a>
                 </template>
                 <template x-if="step === 'registering'">
                   <p class="text-sm text-ink-muted" x-text="$t('bridge.stepRegistering')"></p>
@@ -145,7 +168,6 @@ const template = `
               </div>
             </template>
           </div>
-        </template>
       </div>
 `;
 
@@ -170,6 +192,7 @@ export function initBridgePage() {
 
     navigate(path) { Alpine.store('router').navigate(path); },
     get isConnected() { return Alpine.store('auth').isConnected; },
+    get isAccredited() { return Alpine.store('auth').isAccredited; },
     get username() { return Alpine.store('auth').username; },
 
     get filteredTaxonomy() {
