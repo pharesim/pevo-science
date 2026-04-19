@@ -205,8 +205,7 @@ async function fetchPapersFromHaf(req: Request): Promise<{ rows: unknown[]; tota
   // appTag params for WHERE conditions
   const appTagParam = `$${paramIdx++}`;
   const appLikeParam = `$${paramIdx++}`;
-  const anonParam = `$${paramIdx++}`;
-  cteParams.push(config.appTag, `${config.appTag}/%`, config.hiveAnonAccount || '');
+  cteParams.push(config.appTag, `${config.appTag}/%`);
 
   const typeFilter = source === 'native'
     ? `(c.json_metadata -> ${appTagParam} ->> 'type') = 'paper'`
@@ -248,7 +247,12 @@ async function fetchPapersFromHaf(req: Request): Promise<{ rows: unknown[]; tota
   conditions.push(`(c.json_metadata -> ${appTagParam} -> 'continues') IS NULL`);
 
   const where = conditions.join(' AND ');
-  const params = [...cteParams, ...filterParams];
+  const countParams = [...cteParams, ...filterParams];
+
+  // anonParam is only used in SELECT subqueries (review/citation count),
+  // not in WHERE, so it must not be in countParams (PostgreSQL rejects extra bind params).
+  const anonParam = `$${paramIdx++}`;
+  const dataParams = [...cteParams, ...filterParams, config.hiveAnonAccount || ''];
 
   const sortMap: Record<SortField, string> = {
     date: 'c.created',
@@ -290,7 +294,7 @@ async function fetchPapersFromHaf(req: Request): Promise<{ rows: unknown[]; tota
       pool.query(
         `${cte.sql}
          SELECT count(*)::int AS total FROM ${T.comments} c WHERE ${where}`,
-        params,
+        countParams,
       ),
       pool.query(
         `${cte.sql}
@@ -309,7 +313,7 @@ async function fetchPapersFromHaf(req: Request): Promise<{ rows: unknown[]; tota
         WHERE ${where}
         ORDER BY ${orderBy}
         LIMIT ${limitParam} OFFSET ${offsetParam}`,
-        [...params, limit, offset],
+        [...dataParams, limit, offset],
       ),
     ]);
 
