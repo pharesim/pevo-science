@@ -123,7 +123,7 @@ export function activeVouchesCteBody(startIdx = 1): SqlFragment {
       ) AS rn
     FROM ${T.customJson} cj
     WHERE cj.custom_id = $${p}
-      AND cj.json::jsonb ->> 'action' IN ('vouch', 'unvouch')
+      AND cj.json::jsonb ->> 'action' IN ('vouch', 'retract_vouch')
       AND cj.block_num >= $${p + 1}
   ),
   active_vouches AS (
