@@ -1,4 +1,4 @@
-// PEvO Domain Types — shared data models from docs/hive-schemas.md
+// PEvO Domain Types
 
 // ─── Paper ───────────────────────────────────────────────────────
 
@@ -62,6 +62,7 @@ export interface ReputationWeights {
   decay_rate: number;
   decay_floor: number; // minimum decay multiplier
   decay_grace_months: number; // months before decay begins
+  cycle_blocks: number; // blocks per reputation cycle (~7 days at 3s/block)
 }
 
 export const DEFAULT_REPUTATION_WEIGHTS: ReputationWeights = {
@@ -75,4 +76,5 @@ export const DEFAULT_REPUTATION_WEIGHTS: ReputationWeights = {
   decay_rate: 0.02,
   decay_floor: 0.3,
   decay_grace_months: 6,
+  cycle_blocks: 201600,
 };

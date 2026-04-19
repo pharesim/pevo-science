@@ -1,80 +1,154 @@
 /**
- * Nightly batch reputation computation (R4).
+ * Deterministic cycle-based batch reputation computation.
  *
- * Computes reputation for all active PEvO users with 2-3 convergence
- * iterations for voter weight resolution. Stores results in Redis
- * at `reputation:batch:{username}` (no TTL, overwritten each run).
+ * Reputation is computed per block-based cycle (default 201,600 blocks, ~7 days).
+ * Each cycle uses the previous cycle's scores as voter weights (no convergence
+ * iterations). Results are stored in Redis at `reputation:batch:{username}`
+ * (no TTL, overwritten each cycle).
+ *
+ * Cycle N covers blocks [genesis + N * cycle_blocks, genesis + (N+1) * cycle_blocks).
  */
 
-import { isHafAvailable } from './db.js';
+import { getPool, isHafAvailable } from './db.js';
 import { getRedis } from './redis.js';
 import { logger } from './logger.js';
-import { getAllAccreditedAccounts, getAccreditedSet } from './accreditation.js';
-import { getUserStatsFromHaf, getUserStatsFromHiveApi, computeReputation, getBatchReputationMap, getActiveAccounts } from './reputation.js';
+import { getAllAccreditedAccounts } from './accreditation.js';
+import { computeReputationSql, getActiveAccounts, getReputationWeights } from './reputation.js';
+import { getCachedGenesisBlock, T } from './hafsql.js';
 
-const DEFAULT_INTERVAL_MS = 24 * 60 * 60_000; // 24 hours
-const CONVERGENCE_ITERATIONS = 3;
+const DEFAULT_CHECK_INTERVAL_MS = 60 * 60_000; // 1 hour
 const DEFAULT_MAX_DURATION_MS = 30 * 60_000; // 30 minutes
 const DEFAULT_CONCURRENCY = 5;
-const SLOW_HAF_THRESHOLD_MS = 5_000; // per-user rolling avg threshold
+const SLOW_HAF_THRESHOLD_MS = 5_000;
+
+const REDIS_KEY_LAST_CYCLE = 'reputation:cycle:last';
 
 let batchTimer: ReturnType<typeof setInterval> | null = null;
 let batchRunning = false;
 
 /**
- * Run one full batch computation cycle with convergence iterations.
+ * Get the current head block from HAF.
+ */
+async function getHeadBlock(): Promise<number> {
+  const pool = getPool();
+  if (!pool) return 0;
+  const result = await pool.query(`SELECT MAX(block_num) AS head FROM ${T.blocks}`, []);
+  return Number(result.rows[0]?.head ?? 0);
+}
+
+/**
+ * Run batch computation, catching up from the last computed cycle to the current one.
  */
 export async function runBatchComputation(maxDurationMs = DEFAULT_MAX_DURATION_MS): Promise<void> {
   if (batchRunning) {
-    logger.warn('Batch reputation computation already in progress — skipping');
+    logger.warn('Batch reputation computation already in progress, skipping');
     return;
   }
 
   batchRunning = true;
   const startTime = Date.now();
-  logger.info('Starting batch reputation computation');
 
   try {
+    if (!isHafAvailable()) {
+      logger.warn('HAF unavailable, skipping batch reputation computation');
+      return;
+    }
+
     const redis = getRedis();
     if (!redis) {
-      logger.warn('Redis unavailable — skipping batch reputation computation');
+      logger.warn('Redis unavailable, skipping batch reputation computation');
       return;
     }
 
-    const activeAccounts = await getActiveAccounts();
-    if (activeAccounts.size === 0) {
-      logger.info('No active users found — batch computation skipped');
+    const weights = await getReputationWeights();
+    const cycleBlocks = weights.cycle_blocks;
+    const genesisBlock = getCachedGenesisBlock();
+    if (genesisBlock === 0) {
+      logger.warn('Genesis block not yet discovered, skipping batch reputation computation');
       return;
     }
 
-    const users = [...activeAccounts];
-    const accreditedSet = await getAllAccreditedAccounts();
-    logger.info({ userCount: users.length, accreditedCount: accreditedSet.size }, 'Batch reputation: users loaded');
+    const headBlock = await getHeadBlock();
+    if (headBlock === 0) {
+      logger.warn('Could not determine head block, skipping batch reputation computation');
+      return;
+    }
 
-    // Convergence loop: each iteration uses the previous iteration's scores as voter weights
-    let reputationMap = await getBatchReputationMap();
-    let timeCapped = false;
+    const currentCycle = Math.floor((headBlock - genesisBlock) / cycleBlocks);
+    if (currentCycle < 0) {
+      logger.info('Head block is before genesis, nothing to compute');
+      return;
+    }
 
-    for (let iteration = 0; iteration < CONVERGENCE_ITERATIONS; iteration++) {
-      if (!isHafAvailable()) {
-        logger.warn({ iteration: iteration + 1 }, 'Batch reputation: HAF unavailable — skipping iteration');
+    // Read last computed cycle from Redis
+    const lastCycleStr = await redis.get(REDIS_KEY_LAST_CYCLE);
+    const lastComputedCycle = lastCycleStr !== null ? Number(lastCycleStr) : -1;
+
+    if (lastComputedCycle >= currentCycle) {
+      logger.debug({ currentCycle, lastComputedCycle }, 'Batch reputation: already up to date');
+      return;
+    }
+
+    const startCycle = lastComputedCycle + 1;
+    const totalCycles = currentCycle - startCycle + 1;
+    logger.info({ startCycle, currentCycle, totalCycles, genesisBlock, cycleBlocks }, 'Batch reputation: computing cycles');
+
+    // Load previous cycle's scores (or empty for bootstrap)
+    let prevScores: Record<string, number> = {};
+    if (startCycle > 0) {
+      // Read existing batch scores from Redis as prev scores
+      const keys = await redis.keys('reputation:batch:*');
+      if (keys.length > 0) {
+        const values = await redis.mget(keys);
+        for (let i = 0; i < keys.length; i++) {
+          const username = keys[i].replace('reputation:batch:', '');
+          if (values[i] !== null) {
+            const score = Number(values[i]);
+            if (!isNaN(score)) prevScores[username] = score;
+          }
+        }
+      }
+    }
+
+    // Process each cycle sequentially
+    for (let cycle = startCycle; cycle <= currentCycle; cycle++) {
+      if (Date.now() - startTime >= maxDurationMs) {
+        logger.warn({ cycle, currentCycle }, 'Batch reputation: time cap reached, stopping');
+        break;
+      }
+
+      const cycleStart = Date.now();
+      const cycleEndBlock = genesisBlock + (cycle + 1) * cycleBlocks;
+
+      const activeAccounts = await getActiveAccounts();
+      if (activeAccounts.size === 0) {
+        logger.info({ cycle }, 'No active users found, skipping cycle');
+        await redis.set(REDIS_KEY_LAST_CYCLE, String(cycle));
         continue;
       }
 
-      const iterStart = Date.now();
+      const users = [...activeAccounts];
+      const accreditedSet = await getAllAccreditedAccounts();
+      logger.info({
+        cycle,
+        totalCycles,
+        userCount: users.length,
+        cycleEndBlock,
+      }, `Computing cycle ${cycle} of ${currentCycle}`);
+
       const newScores = new Map<string, number>();
       let concurrency = DEFAULT_CONCURRENCY;
       let totalUserMs = 0;
       let usersProcessed = 0;
+      let timeCapped = false;
 
       for (let i = 0; i < users.length; i += concurrency) {
-        // Time cap check
         if (Date.now() - startTime >= maxDurationMs) {
           logger.warn({
-            iteration: iteration + 1,
+            cycle,
             usersComputed: newScores.size,
             usersSkipped: users.length - i,
-          }, 'Batch reputation: time cap reached — writing partial results');
+          }, 'Batch reputation: time cap reached mid-cycle, writing partial results');
           timeCapped = true;
           break;
         }
@@ -84,12 +158,8 @@ export async function runBatchComputation(maxDurationMs = DEFAULT_MAX_DURATION_M
           chunk.map(async (username) => {
             const userStart = Date.now();
             try {
-              const isAccredited = accreditedSet.has(username);
-              let stats = isHafAvailable() ? await getUserStatsFromHaf(username) : null;
-              if (!stats) stats = await getUserStatsFromHiveApi(username);
-
-              const result = await computeReputation(stats, isAccredited, undefined, reputationMap, activeAccounts);
-              return { username, score: result.score, durationMs: Date.now() - userStart };
+              const result = await computeReputationSql(username, prevScores, cycleEndBlock);
+              return { username, score: result?.score ?? null, durationMs: Date.now() - userStart };
             } catch (err) {
               logger.warn({ err, username }, 'Batch reputation: failed for user, skipping');
               return { username, score: null, durationMs: Date.now() - userStart };
@@ -109,37 +179,38 @@ export async function runBatchComputation(maxDurationMs = DEFAULT_MAX_DURATION_M
         if (usersProcessed > 0) {
           const avgMs = totalUserMs / usersProcessed;
           if (avgMs > SLOW_HAF_THRESHOLD_MS && concurrency > 1) {
-            logger.warn({ avgMs: Math.round(avgMs), previousConcurrency: concurrency }, 'Batch reputation: slow HAF detected — reducing concurrency to 1');
+            logger.warn({ avgMs: Math.round(avgMs), previousConcurrency: concurrency }, 'Batch reputation: slow HAF detected, reducing concurrency to 1');
             concurrency = 1;
           }
         }
       }
 
-      // Store this iteration's scores in Redis
+      // Store this cycle's scores in Redis
       const pipeline = redis.pipeline();
       for (const [username, score] of newScores) {
         pipeline.set(`reputation:batch:${username}`, String(score));
       }
+      pipeline.set(REDIS_KEY_LAST_CYCLE, String(cycle));
       await pipeline.exec();
 
-      // Use this iteration's scores as voter weights for the next iteration
-      reputationMap = newScores;
+      // Use this cycle's scores as prev scores for the next cycle
+      prevScores = Object.fromEntries(newScores);
 
       logger.info({
-        iteration: iteration + 1,
+        cycle,
         usersComputed: newScores.size,
-        durationMs: Date.now() - iterStart,
-      }, 'Batch reputation iteration complete');
+        durationMs: Date.now() - cycleStart,
+        timeCapped,
+      }, 'Batch reputation cycle complete');
 
       if (timeCapped) break;
     }
 
     logger.info({
-      totalUsers: users.length,
       totalDurationMs: Date.now() - startTime,
-      iterations: CONVERGENCE_ITERATIONS,
-      timeCapped,
     }, 'Batch reputation computation complete');
+  } catch (err) {
+    logger.error({ err }, 'Batch reputation computation failed');
   } finally {
     batchRunning = false;
   }
@@ -147,9 +218,9 @@ export async function runBatchComputation(maxDurationMs = DEFAULT_MAX_DURATION_M
 
 /**
  * Start the periodic batch computation job.
- * Runs immediately on startup, then on the configured interval.
+ * Runs immediately on startup, then checks for new cycles on a regular interval.
  */
-export function startBatchReputation(intervalMs = DEFAULT_INTERVAL_MS): void {
+export function startBatchReputation(intervalMs = DEFAULT_CHECK_INTERVAL_MS): void {
   if (batchTimer) return;
 
   // Run first batch after a short delay to let the app fully initialize

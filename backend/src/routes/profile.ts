@@ -14,7 +14,6 @@ import { getLastBlock } from '../block-watcher.js';
 import { getAppPool } from '../app-db.js';
 import {
   getUserStatsFromHaf,
-  getUserStatsFromHiveApi,
   computeReputation,
   getBatchReputationMap,
   getActiveAccounts,
@@ -115,8 +114,10 @@ router.get('/:username', async (req: Request, res: Response) => {
       getActiveAccounts(),
     ]);
 
-    const stats = hafStats ?? await getUserStatsFromHiveApi(username);
-    const reputation = await computeReputation(stats, isAccredited, undefined, reputationMap, activeAccounts);
+    const stats = hafStats;
+    const reputation = stats
+      ? await computeReputation(stats, isAccredited, undefined, reputationMap, activeAccounts)
+      : { score: 0, breakdown: { papers: 0, reviews: 0, citations: 0, accreditation: 0 } };
 
     return {
       username,
@@ -124,10 +125,10 @@ router.get('/:username', async (req: Request, res: Response) => {
       accreditation: accreditation || null,
       reputation,
       stats: {
-        paper_count: stats.paper_count,
-        review_count: stats.review_count,
-        citation_count: stats.citation_count,
-        first_pevo_post: stats.first_pevo_post,
+        paper_count: stats?.paper_count ?? 0,
+        review_count: stats?.review_count ?? 0,
+        citation_count: stats?.citation_count ?? 0,
+        first_pevo_post: stats?.first_pevo_post ?? null,
       },
     };
   }, 5 * 60_000, true);
