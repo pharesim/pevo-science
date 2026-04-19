@@ -318,7 +318,7 @@
     "strongReject": "דחייה חזקה",
     "retract": "משיכת הצבעה",
     "outdatedNotice": "ההערכה שלך היא עבור v{votedVersion}. המאמר עודכן לגרסה v{latestVersion}.",
-    "votesWithStrength": "{count} הצבעות, {strength}",
+    "votesWithStrength": "{count, plural, one {# הצבעה} other {# הצבעות}}, {strength}",
     "strength": {
       "strong_endorsement": "תמיכה חזקה",
       "endorsement": "תמיכה",
@@ -326,7 +326,10 @@
       "mixed": "מעורב",
       "mild_concerns": "הסתייגויות קלות",
       "concerns": "הסתייגויות",
-      "strong_concerns": "הסתייגויות חזקות"
+      "strong_concerns": "הסתייגויות חזקות",
+      "neutral": "ניטרלי",
+      "reject": "דחייה",
+      "strong_reject": "דחייה חזקה"
     }
   },
   "notifications": {

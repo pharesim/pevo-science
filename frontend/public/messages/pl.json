@@ -318,7 +318,7 @@
     "strongReject": "Silne odrzucenie",
     "retract": "Wycofaj głos",
     "outdatedNotice": "Twoja ocena dotyczy v{votedVersion}. Artykuł został zaktualizowany do v{latestVersion}.",
-    "votesWithStrength": "{count} głosów, {strength}",
+    "votesWithStrength": "{count, plural, one {# głos} other {# głosów}}, {strength}",
     "strength": {
       "strong_endorsement": "silne poparcie",
       "endorsement": "poparcie",
@@ -326,7 +326,10 @@
       "mixed": "mieszane",
       "mild_concerns": "umiarkowane zastrzeżenia",
       "concerns": "zastrzeżenia",
-      "strong_concerns": "silne zastrzeżenia"
+      "strong_concerns": "silne zastrzeżenia",
+      "neutral": "neutralny",
+      "reject": "odrzucenie",
+      "strong_reject": "silne odrzucenie"
     }
   },
   "notifications": {

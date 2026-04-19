@@ -318,7 +318,7 @@
     "strongReject": "Sterk afwijzen",
     "retract": "Stem intrekken",
     "outdatedNotice": "Uw beoordeling is voor v{votedVersion}. Het artikel is bijgewerkt naar v{latestVersion}.",
-    "votesWithStrength": "{count} stemmen, {strength}",
+    "votesWithStrength": "{count, plural, one {# stem} other {# stemmen}}, {strength}",
     "strength": {
       "strong_endorsement": "sterke goedkeuring",
       "endorsement": "goedkeuring",
@@ -326,7 +326,10 @@
       "mixed": "gemengd",
       "mild_concerns": "lichte bezwaren",
       "concerns": "bezwaren",
-      "strong_concerns": "sterke bezwaren"
+      "strong_concerns": "sterke bezwaren",
+      "neutral": "neutraal",
+      "reject": "afwijzing",
+      "strong_reject": "sterke afwijzing"
     }
   },
   "notifications": {

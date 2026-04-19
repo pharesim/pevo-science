@@ -318,7 +318,7 @@
     "strongReject": "Güçlü ret",
     "retract": "Oyu geri çek",
     "outdatedNotice": "Değerlendirmeniz v{votedVersion} içindir. Makale v{latestVersion} sürümüne güncellenmiştir.",
-    "votesWithStrength": "{count} oy, {strength}",
+    "votesWithStrength": "{count, plural, one {# oy} other {# oy}}, {strength}",
     "strength": {
       "strong_endorsement": "güçlü onay",
       "endorsement": "onay",
@@ -326,7 +326,10 @@
       "mixed": "karışık",
       "mild_concerns": "hafif endişe",
       "concerns": "endişe",
-      "strong_concerns": "güçlü endişe"
+      "strong_concerns": "güçlü endişe",
+      "neutral": "tarafsiz",
+      "reject": "ret",
+      "strong_reject": "güçlü ret"
     }
   },
   "notifications": {

@@ -318,7 +318,7 @@
     "strongReject": "Stærk afvisning",
     "retract": "Træk stemme tilbage",
     "outdatedNotice": "Din vurdering er for v{votedVersion}. Artiklen er opdateret til v{latestVersion}.",
-    "votesWithStrength": "{count} stemmer, {strength}",
+    "votesWithStrength": "{count, plural, one {# stemme} other {# stemmer}}, {strength}",
     "strength": {
       "strong_endorsement": "stærk opbakning",
       "endorsement": "opbakning",
@@ -326,7 +326,10 @@
       "mixed": "blandet",
       "mild_concerns": "lette forbehold",
       "concerns": "forbehold",
-      "strong_concerns": "stærke forbehold"
+      "strong_concerns": "stærke forbehold",
+      "neutral": "neutral",
+      "reject": "afvisning",
+      "strong_reject": "stærk afvisning"
     }
   },
   "notifications": {

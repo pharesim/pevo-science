@@ -318,7 +318,7 @@
     "strongReject": "رفض قوي",
     "retract": "سحب التصويت",
     "outdatedNotice": "تقييمك للإصدار v{votedVersion}. تم تحديث الورقة إلى الإصدار v{latestVersion}.",
-    "votesWithStrength": "{count} أصوات، {strength}",
+    "votesWithStrength": "{count, plural, one {# صوت} other {# أصوات}}، {strength}",
     "strength": {
       "strong_endorsement": "تأييد قوي",
       "endorsement": "تأييد",
@@ -326,7 +326,10 @@
       "mixed": "مختلط",
       "mild_concerns": "مخاوف خفيفة",
       "concerns": "مخاوف",
-      "strong_concerns": "مخاوف قوية"
+      "strong_concerns": "مخاوف قوية",
+      "neutral": "محايد",
+      "reject": "رفض",
+      "strong_reject": "رفض قوي"
     }
   },
   "notifications": {

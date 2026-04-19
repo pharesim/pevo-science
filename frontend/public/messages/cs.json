@@ -318,7 +318,7 @@
     "strongReject": "Silné zamítnutí",
     "retract": "Stáhnout hlas",
     "outdatedNotice": "Vaše hodnocení je pro v{votedVersion}. Článek byl aktualizován na v{latestVersion}.",
-    "votesWithStrength": "{count} hlasů, {strength}",
+    "votesWithStrength": "{count, plural, one {# hlas} other {# hlasů}}, {strength}",
     "strength": {
       "strong_endorsement": "silné schválení",
       "endorsement": "schválení",
@@ -326,7 +326,10 @@
       "mixed": "smíšené",
       "mild_concerns": "mírné výhrady",
       "concerns": "výhrady",
-      "strong_concerns": "silné výhrady"
+      "strong_concerns": "silné výhrady",
+      "neutral": "neutrální",
+      "reject": "zamítnutí",
+      "strong_reject": "silné zamítnutí"
     }
   },
   "notifications": {

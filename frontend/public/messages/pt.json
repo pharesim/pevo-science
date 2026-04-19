@@ -318,7 +318,7 @@
     "strongReject": "Forte rejeição",
     "retract": "Retirar voto",
     "outdatedNotice": "Sua avaliação é para v{votedVersion}. O artigo foi atualizado para v{latestVersion}.",
-    "votesWithStrength": "{count} votos, {strength}",
+    "votesWithStrength": "{count, plural, one {# voto} other {# votos}}, {strength}",
     "strength": {
       "strong_endorsement": "forte aprovação",
       "endorsement": "aprovação",
@@ -326,7 +326,10 @@
       "mixed": "misto",
       "mild_concerns": "reservas leves",
       "concerns": "reservas",
-      "strong_concerns": "fortes reservas"
+      "strong_concerns": "fortes reservas",
+      "neutral": "neutro",
+      "reject": "rejeitar",
+      "strong_reject": "forte rejeicao"
     }
   },
   "notifications": {

@@ -318,7 +318,7 @@
     "strongReject": "强烈拒绝",
     "retract": "撤回投票",
     "outdatedNotice": "您的评价针对的是 v{votedVersion}。论文已更新至 v{latestVersion}。",
-    "votesWithStrength": "{count} 票，{strength}",
+    "votesWithStrength": "{count, plural, one {# 票} other {# 票}}，{strength}",
     "strength": {
       "strong_endorsement": "强烈支持",
       "endorsement": "支持",
@@ -326,7 +326,10 @@
       "mixed": "看法不一",
       "mild_concerns": "轻度担忧",
       "concerns": "担忧",
-      "strong_concerns": "强烈担忧"
+      "strong_concerns": "强烈担忧",
+      "neutral": "中立",
+      "reject": "拒绝",
+      "strong_reject": "强烈拒绝"
     }
   },
   "notifications": {

@@ -318,7 +318,7 @@
     "strongReject": "Starkt avslag",
     "retract": "Dra tillbaka röst",
     "outdatedNotice": "Din utvärdering gäller v{votedVersion}. Artikeln har uppdaterats till v{latestVersion}.",
-    "votesWithStrength": "{count} röster, {strength}",
+    "votesWithStrength": "{count, plural, one {# röst} other {# röster}}, {strength}",
     "strength": {
       "strong_endorsement": "starkt stöd",
       "endorsement": "stöd",
@@ -326,7 +326,10 @@
       "mixed": "blandat",
       "mild_concerns": "svaga invändningar",
       "concerns": "invändningar",
-      "strong_concerns": "starka invändningar"
+      "strong_concerns": "starka invändningar",
+      "neutral": "neutral",
+      "reject": "avslag",
+      "strong_reject": "starkt avslag"
     }
   },
   "notifications": {

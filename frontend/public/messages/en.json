@@ -318,15 +318,18 @@
     "strongReject": "Strong reject",
     "retract": "Retract vote",
     "outdatedNotice": "Your evaluation is for v{votedVersion}. The paper has been updated to v{latestVersion}.",
-    "votesWithStrength": "{count} votes, {strength}",
+    "votesWithStrength": "{count, plural, one {# vote} other {# votes}}, {strength}",
     "strength": {
       "strong_endorsement": "strong endorsement",
       "endorsement": "endorsement",
       "mild_endorsement": "mild endorsement",
       "mixed": "mixed",
+      "neutral": "neutral",
       "mild_concerns": "mild concerns",
       "concerns": "concerns",
-      "strong_concerns": "strong concerns"
+      "reject": "reject",
+      "strong_concerns": "strong concerns",
+      "strong_reject": "strong reject"
     }
   },
   "notifications": {

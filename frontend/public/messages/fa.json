@@ -318,7 +318,7 @@
     "strongReject": "رد قوی",
     "retract": "پس گرفتن رأی",
     "outdatedNotice": "ارزیابی شما برای نسخه v{votedVersion} است. مقاله به نسخه v{latestVersion} به‌روزرسانی شده است.",
-    "votesWithStrength": "{count} رأی، {strength}",
+    "votesWithStrength": "{count, plural, one {# رأی} other {# رأی}}، {strength}",
     "strength": {
       "strong_endorsement": "تأیید قوی",
       "endorsement": "تأیید",
@@ -326,7 +326,10 @@
       "mixed": "مختلط",
       "mild_concerns": "نگرانی‌های خفیف",
       "concerns": "نگرانی‌ها",
-      "strong_concerns": "نگرانی‌های شدید"
+      "strong_concerns": "نگرانی‌های شدید",
+      "neutral": "بی‌طرف",
+      "reject": "رد",
+      "strong_reject": "رد قاطع"
     }
   },
   "notifications": {
