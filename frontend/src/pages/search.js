@@ -78,7 +78,7 @@ const template = `
                   <template x-for="result in results" :key="result.author + '/' + result.permlink">
                     <article class="card hover:shadow-sm transition-shadow">
                       <div class="flex items-center gap-2 text-xs text-ink-muted mb-2">
-                        <span class="badge-discipline capitalize" x-text="result.type"></span>
+                        <span class="badge-discipline capitalize" x-text="$t(result.type === 'review' ? 'search.typeReviews' : 'search.typePapers')"></span>
                         <time :datetime="result.created" x-text="formatDate(result.created)"></time>
                         <template x-if="result.is_accredited">
                           <span class="badge-accredited" :title="$t('badge.accreditedTitle')">
@@ -89,12 +89,28 @@ const template = `
                           </span>
                         </template>
                       </div>
-                      <h2 class="text-lg font-serif font-semibold mb-1">
-                        <a :href="$lp('/paper/' + result.author + '/' + result.permlink)"
-                           @click.prevent="navigate('/paper/' + result.author + '/' + result.permlink)"
-                           class="text-ink hover:text-pevo-teal no-underline" x-text="result.title"></a>
-                      </h2>
-                      <p class="text-xs text-ink-muted mb-2" x-text="'@' + result.author"></p>
+                      <!-- Paper result -->
+                      <template x-if="result.type !== 'review'">
+                        <div>
+                          <h2 class="text-lg font-serif font-semibold mb-1">
+                            <a :href="$lp('/paper/' + result.author + '/' + result.permlink)"
+                               @click.prevent="navigate('/paper/' + result.author + '/' + result.permlink)"
+                               class="text-ink hover:text-pevo-teal no-underline" x-text="result.title"></a>
+                          </h2>
+                          <p class="text-xs text-ink-muted mb-2" x-text="'@' + result.author"></p>
+                        </div>
+                      </template>
+                      <!-- Review result -->
+                      <template x-if="result.type === 'review'">
+                        <div>
+                          <h2 class="text-lg font-serif font-semibold mb-1">
+                            <a :href="$lp('/paper/' + result.paper_author + '/' + result.paper_permlink + '#review-' + result.author.replace(/[\/.]/g, '-') + '-' + result.permlink.replace(/[\/.]/g, '-'))"
+                               @click.prevent="navigate('/paper/' + result.paper_author + '/' + result.paper_permlink + '#review-' + result.author.replace(/[\/.]/g, '-') + '-' + result.permlink.replace(/[\/.]/g, '-'))"
+                               class="text-ink hover:text-pevo-teal no-underline" x-text="$t('search.reviewOn', { author: result.paper_author, permlink: result.paper_permlink })"></a>
+                          </h2>
+                          <p class="text-xs text-ink-muted mb-2" x-text="$t('search.reviewBy', { author: result.author })"></p>
+                        </div>
+                      </template>
                       <div class="text-sm text-ink-light leading-relaxed [&_mark]:bg-yellow-200 [&_mark]:px-0.5 [&_mark]:rounded"
                            x-html="sanitizeSnippet(result.snippet)"></div>
                     </article>

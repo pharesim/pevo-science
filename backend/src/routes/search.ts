@@ -15,6 +15,210 @@ const router = Router();
 // GET /api/search?q=...
 // ──────────────────────────────────────────────
 
+interface SearchRow {
+  type: string;
+  author: string;
+  permlink: string;
+  title: string | null;
+  snippet: string;
+  created: string;
+  paper_author?: string;
+  paper_permlink?: string;
+}
+
+async function searchPapersFromHaf(
+  pool: ReturnType<typeof getPool> & object,
+  query: string,
+  discipline: string | undefined,
+  language: string | undefined,
+  source: string | undefined,
+  accreditedOnly: boolean,
+  includeRetracted: boolean,
+  sort: string,
+  limit: number,
+  offset: number,
+): Promise<{ rows: SearchRow[]; total: number } | null> {
+  const cte = buildWith(1, activeAccreditationsCteBody, retractedPapersCteBody);
+  let paramIdx = cte.nextIdx;
+
+  const appTagParam = `$${paramIdx++}`;
+  const appLikeParam = `$${paramIdx++}`;
+  const cteParams = [...cte.params, config.appTag, `${config.appTag}/%`];
+
+  const conditions: string[] = [
+    `c.parent_permlink = ${appTagParam}`,
+    "c.parent_author = ''",
+    `c.json_metadata ->> 'app' LIKE ${appLikeParam}`,
+  ];
+  const params: unknown[] = [...cteParams];
+
+  if (source === 'native') {
+    conditions.push(`(c.json_metadata -> ${appTagParam} ->> 'type') = 'paper'`);
+  } else if (source === 'bridge') {
+    conditions.push(`(c.json_metadata -> ${appTagParam} ->> 'type') = 'bridge_paper'`);
+  } else {
+    conditions.push(`(c.json_metadata -> ${appTagParam} ->> 'type') IN ('paper', 'bridge_paper')`);
+  }
+
+  if (discipline) {
+    conditions.push(`(c.json_metadata -> ${appTagParam} ->> 'discipline') = $${paramIdx++}`);
+    params.push(discipline);
+  }
+
+  if (language) {
+    conditions.push(`(c.json_metadata -> ${appTagParam} ->> 'language') = $${paramIdx++}`);
+    params.push(language);
+  }
+
+  if (accreditedOnly) {
+    conditions.push(`c.author IN (SELECT account FROM active_accreditations)`);
+  }
+  if (!includeRetracted) {
+    conditions.push(`NOT EXISTS (SELECT 1 FROM retracted_papers rp WHERE rp.author = c.author AND rp.permlink = c.permlink)`);
+  }
+
+  conditions.push(`(c.json_metadata -> ${appTagParam} -> 'continues') IS NULL`);
+
+  const where = conditions.join(' AND ');
+
+  const ilikeParam = `$${paramIdx++}`;
+  const ilikePattern = `%${query}%`;
+  const textMatch = `(c.title ILIKE ${ilikeParam} OR c.body ILIKE ${ilikeParam})`;
+
+  const orderBy = sort === 'date'
+    ? 'c.created DESC'
+    : `(CASE WHEN c.title ILIKE ${ilikeParam} THEN 1 ELSE 0 END) DESC, c.created DESC`;
+
+  const snippetExpr = `substring(c.body from 1 for 300)`;
+
+  const limitParam = `$${paramIdx++}`;
+  const offsetParam = `$${paramIdx++}`;
+
+  const [countResult, dataResult] = await Promise.all([
+    pool.query(
+      `${cte.sql}
+       SELECT count(*)::int AS total
+       FROM ${T.comments} c
+       WHERE ${where}
+         AND ${textMatch}`,
+      [...params, ilikePattern],
+    ),
+    pool.query(
+      `${cte.sql}
+       SELECT
+        (c.json_metadata -> ${appTagParam} ->> 'type') AS type,
+        c.author,
+        c.permlink,
+        c.title,
+        ${snippetExpr} AS snippet,
+        c.created
+       FROM ${T.comments} c
+       WHERE ${where}
+         AND ${textMatch}
+       ORDER BY ${orderBy}
+       LIMIT ${limitParam} OFFSET ${offsetParam}`,
+      [...params, ilikePattern, limit, offset],
+    ),
+  ]);
+
+  const total = countResult.rows[0]?.total ?? 0;
+  const rows: SearchRow[] = dataResult.rows.map((r: Record<string, unknown>) => ({
+    type: r.type as string,
+    author: r.author as string,
+    permlink: r.permlink as string,
+    title: r.title as string | null,
+    snippet: r.snippet as string,
+    created: r.created as string,
+  }));
+
+  return { rows, total };
+}
+
+async function searchReviewsFromHaf(
+  pool: ReturnType<typeof getPool> & object,
+  query: string,
+  accreditedOnly: boolean,
+  sort: string,
+  limit: number,
+  offset: number,
+): Promise<{ rows: SearchRow[]; total: number } | null> {
+  const cte = buildWith(1, activeAccreditationsCteBody);
+  let paramIdx = cte.nextIdx;
+
+  const appTagParam = `$${paramIdx++}`;
+  const appLikeParam = `$${paramIdx++}`;
+  const params: unknown[] = [...cte.params, config.appTag, `${config.appTag}/%`];
+
+  // Reviews are child comments of PEvO papers
+  const conditions: string[] = [
+    `c.parent_author != ''`,
+    `c.json_metadata ->> 'app' LIKE ${appLikeParam}`,
+    `(c.json_metadata -> ${appTagParam} ->> 'type') = 'review'`,
+    // Ensure parent is a PEvO paper (top-level post in our app namespace)
+    `EXISTS (SELECT 1 FROM ${T.comments} p
+       WHERE p.author = c.parent_author AND p.permlink = c.parent_permlink
+         AND p.parent_author = '' AND p.parent_permlink = ${appTagParam})`,
+  ];
+
+  if (accreditedOnly) {
+    conditions.push(`c.author IN (SELECT account FROM active_accreditations)`);
+  }
+
+  const where = conditions.join(' AND ');
+
+  const ilikeParam = `$${paramIdx++}`;
+  const ilikePattern = `%${query}%`;
+  const textMatch = `c.body ILIKE ${ilikeParam}`;
+
+  const orderBy = 'c.created DESC';
+
+  const snippetExpr = `substring(c.body from 1 for 300)`;
+
+  const limitParam = `$${paramIdx++}`;
+  const offsetParam = `$${paramIdx++}`;
+
+  const [countResult, dataResult] = await Promise.all([
+    pool.query(
+      `${cte.sql}
+       SELECT count(*)::int AS total
+       FROM ${T.comments} c
+       WHERE ${where}
+         AND ${textMatch}`,
+      [...params, ilikePattern],
+    ),
+    pool.query(
+      `${cte.sql}
+       SELECT
+        c.author,
+        c.permlink,
+        ${snippetExpr} AS snippet,
+        c.created,
+        c.parent_author AS paper_author,
+        c.parent_permlink AS paper_permlink
+       FROM ${T.comments} c
+       WHERE ${where}
+         AND ${textMatch}
+       ORDER BY ${orderBy}
+       LIMIT ${limitParam} OFFSET ${offsetParam}`,
+      [...params, ilikePattern, limit, offset],
+    ),
+  ]);
+
+  const total = countResult.rows[0]?.total ?? 0;
+  const rows: SearchRow[] = dataResult.rows.map((r: Record<string, unknown>) => ({
+    type: 'review',
+    author: r.author as string,
+    permlink: r.permlink as string,
+    title: null,
+    snippet: r.snippet as string,
+    created: r.created as string,
+    paper_author: r.paper_author as string,
+    paper_permlink: r.paper_permlink as string,
+  }));
+
+  return { rows, total };
+}
+
 async function searchFromHaf(
   query: string,
   type: string,
@@ -31,127 +235,33 @@ async function searchFromHaf(
   if (!pool) return null;
 
   try {
-    // Build CTEs with parameterized appTag
-    const cte = buildWith(1, activeAccreditationsCteBody, retractedPapersCteBody);
-    let paramIdx = cte.nextIdx;
-
-    // appTag params for WHERE conditions
-    const appTagParam = `$${paramIdx++}`;
-    const appLikeParam = `$${paramIdx++}`;
-    const cteParams = [...cte.params, config.appTag, `${config.appTag}/%`];
-
-    // Always filter by parent_permlink = appTag to leverage the index on
-    // hafsql.comments.  Without this, PostgreSQL does a full sequential scan
-    // of the (huge) comments table and the query times out.
-    const conditions: string[] = [
-      `c.parent_permlink = ${appTagParam}`,
-      "c.parent_author = ''",
-      `c.json_metadata ->> 'app' LIKE ${appLikeParam}`,
-    ];
-    const params: unknown[] = [...cteParams];
+    if (type === 'review') {
+      return await searchReviewsFromHaf(pool, query, accreditedOnly, sort, limit, offset);
+    }
 
     if (type === 'paper') {
-      // Apply source filter within paper type
-      if (source === 'native') {
-        conditions.push(`(c.json_metadata -> ${appTagParam} ->> 'type') = 'paper'`);
-      } else if (source === 'bridge') {
-        conditions.push(`(c.json_metadata -> ${appTagParam} ->> 'type') = 'bridge_paper'`);
-      } else {
-        conditions.push(`(c.json_metadata -> ${appTagParam} ->> 'type') IN ('paper', 'bridge_paper')`);
-      }
-    } else {
-      // All types — include bridge papers alongside native
-      if (source === 'native') {
-        conditions.push(`(c.json_metadata -> ${appTagParam} ->> 'type') = 'paper'`);
-      } else if (source === 'bridge') {
-        conditions.push(`(c.json_metadata -> ${appTagParam} ->> 'type') = 'bridge_paper'`);
-      } else {
-        conditions.push(`(c.json_metadata -> ${appTagParam} ->> 'type') IN ('paper', 'bridge_paper')`);
-      }
+      return await searchPapersFromHaf(pool, query, discipline, language, source, accreditedOnly, includeRetracted, sort, limit, offset);
     }
 
-    if (discipline) {
-      conditions.push(`(c.json_metadata -> ${appTagParam} ->> 'discipline') = $${paramIdx++}`);
-      params.push(discipline);
-    }
-
-    if (language) {
-      conditions.push(`(c.json_metadata -> ${appTagParam} ->> 'language') = $${paramIdx++}`);
-      params.push(language);
-    }
-
-    if (accreditedOnly) {
-      conditions.push(`c.author IN (SELECT account FROM active_accreditations)`);
-    }
-    if (!includeRetracted) {
-      conditions.push(`NOT EXISTS (SELECT 1 FROM retracted_papers rp WHERE rp.author = c.author AND rp.permlink = c.permlink)`);
-    }
-
-    // Exclude continuation posts (revisions of existing papers)
-    conditions.push(`(c.json_metadata -> ${appTagParam} -> 'continues') IS NULL`);
-
-    const where = conditions.join(' AND ');
-
-    // Use ILIKE instead of to_tsvector/plainto_tsquery because we cannot
-    // create GIN indexes on the public HAF database, so full-text search
-    // times out scanning the entire comments table.  The PEvO-filtered
-    // subset is tiny, so ILIKE is fast enough.
-    const ilikeParam = `$${paramIdx++}`;
-    const ilikePattern = `%${query}%`;
-    const textMatch = `(c.title ILIKE ${ilikeParam} OR c.body ILIKE ${ilikeParam})`;
-
-    const orderBy = sort === 'date'
-      ? 'c.created DESC'
-      : `(CASE WHEN c.title ILIKE ${ilikeParam} THEN 1 ELSE 0 END) DESC, c.created DESC`;
-
-    const snippetExpr = `substring(c.body from 1 for 300)`;
-
-    const limitParam = `$${paramIdx++}`;
-    const offsetParam = `$${paramIdx++}`;
-
-    const [countResult, dataResult] = await Promise.all([
-      pool.query(
-        `${cte.sql}
-         SELECT count(*)::int AS total
-         FROM ${T.comments} c
-         WHERE ${where}
-           AND ${textMatch}`,
-        [...params, ilikePattern],
-      ),
-      pool.query(
-        `${cte.sql}
-         SELECT
-          (c.json_metadata -> ${appTagParam} ->> 'type') AS type,
-          c.author,
-          c.permlink,
-          c.title,
-          ${snippetExpr} AS snippet,
-          c.created
-         FROM ${T.comments} c
-         WHERE ${where}
-           AND ${textMatch}
-         ORDER BY ${orderBy}
-         LIMIT ${limitParam} OFFSET ${offsetParam}`,
-        [...params, ilikePattern, limit, offset],
-      ),
+    // type === 'all': run both queries and merge
+    const [paperResult, reviewResult] = await Promise.all([
+      searchPapersFromHaf(pool, query, discipline, language, source, accreditedOnly, includeRetracted, sort, limit, offset),
+      searchReviewsFromHaf(pool, query, accreditedOnly, sort, limit, offset),
     ]);
 
-    const total = countResult.rows[0]?.total ?? 0;
+    if (!paperResult && !reviewResult) return null;
 
-    const authors = dataResult.rows.map((r: Record<string, unknown>) => r.author as string);
-    const accreditedSet = await getAccreditedSet(authors);
+    const paperRows = paperResult?.rows ?? [];
+    const reviewRows = reviewResult?.rows ?? [];
 
-    const rows = dataResult.rows.map((r: Record<string, unknown>) => ({
-      type: r.type,
-      author: r.author,
-      permlink: r.permlink,
-      title: r.title,
-      snippet: r.snippet,
-      created: r.created,
-      is_accredited: accreditedSet.has(r.author as string),
-    }));
+    // Merge by created date descending, then take limit
+    const allRows = [...paperRows, ...reviewRows]
+      .sort((a, b) => new Date(b.created).getTime() - new Date(a.created).getTime())
+      .slice(0, limit);
 
-    return { rows, total };
+    const total = (paperResult?.total ?? 0) + (reviewResult?.total ?? 0);
+
+    return { rows: allRows, total };
   } catch (err) {
     logger.error({ err: (err as Error).message }, 'HAF search query failed');
     return null;
@@ -177,7 +287,15 @@ router.get('/', async (req: Request, res: Response) => {
     const rawKey = `q=${q}:t=${type}:d=${discipline || ''}:l=${language || ''}:src=${source || ''}:a=${accreditedOnly}:r=${includeRetracted}:s=${sort}:p=${page}:lim=${limit}`;
     const cacheKey = `search:${crypto.createHash('sha256').update(rawKey).digest('hex').slice(0, 32)}`;
     const result = await hafCache.getOrSet(cacheKey, () => searchFromHaf(q, type, discipline, language, source, accreditedOnly, includeRetracted, sort, limit, offset), 15_000);
-    if (result) return sendOk(res, result.rows, { page, limit, total: result.total });
+    if (result) {
+      const authors = result.rows.map((r) => r.author);
+      const accreditedSet = await getAccreditedSet(authors);
+      const rows = result.rows.map((r) => ({
+        ...r,
+        is_accredited: accreditedSet.has(r.author),
+      }));
+      return sendOk(res, rows, { page, limit, total: result.total });
+    }
   }
 
   // Full-text search requires HAF/PostgreSQL; without it return empty results
