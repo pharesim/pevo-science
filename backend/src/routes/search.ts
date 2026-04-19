@@ -71,7 +71,7 @@ async function searchPapersFromHaf(
   }
 
   if (accreditedOnly) {
-    conditions.push(`c.author IN (SELECT account FROM active_accreditations)`);
+    conditions.push(`(c.author IN (SELECT account FROM active_accreditations) OR (c.json_metadata -> ${appTagParam} ->> 'type') = 'bridge_paper')`);
   }
   if (!includeRetracted) {
     conditions.push(`NOT EXISTS (SELECT 1 FROM retracted_papers rp WHERE rp.author = c.author AND rp.permlink = c.permlink)`);

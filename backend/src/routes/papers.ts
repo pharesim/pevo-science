@@ -238,7 +238,9 @@ async function fetchPapersFromHaf(req: Request): Promise<{ rows: unknown[]; tota
     filterParams.push(language);
   }
   if (accreditedOnly) {
-    conditions.push(`c.author IN (SELECT account FROM active_accreditations)`);
+    // Bridge papers are posted by the system bridge account, not the original author,
+    // so they are exempt from the accredited-only filter.
+    conditions.push(`(c.author IN (SELECT account FROM active_accreditations) OR (c.json_metadata -> ${appTagParam} ->> 'type') = 'bridge_paper')`);
   }
   if (!includeRetracted) {
     conditions.push(`NOT EXISTS (SELECT 1 FROM retracted_papers rp WHERE rp.author = c.author AND rp.permlink = c.permlink)`);
