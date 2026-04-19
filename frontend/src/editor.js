@@ -335,7 +335,10 @@ export class PevoEditor {
     try {
       const Alpine = window.Alpine;
       const fullKey = key.includes('.') ? key : 'editor.' + key;
-      return Alpine?.store('i18n')?.t(fullKey) || key;
+      const messages = Alpine?.store('i18n')?.messages;
+      if (!messages) return key;
+      const val = fullKey.split('.').reduce((acc, part) => (acc && typeof acc === 'object' ? acc[part] : undefined), messages);
+      return val !== undefined ? val : key;
     } catch { return key; }
   }
 
