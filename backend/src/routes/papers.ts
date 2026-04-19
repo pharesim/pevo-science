@@ -32,13 +32,13 @@ const router = Router();
 
 // ─── Vote strength tiers ────────────────────────────────────────
 function voteStrengthTier(avgWeight: number): string {
-  if (avgWeight >= 8000) return 'strong endorsement';
-  if (avgWeight >= 4000) return 'endorsement';
-  if (avgWeight >= 1000) return 'mild endorsement';
-  if (avgWeight >= -1000) return 'mixed';
-  if (avgWeight >= -4000) return 'mild concerns';
-  if (avgWeight >= -8000) return 'concerns';
-  return 'strong concerns';
+  if (avgWeight > 6000) return 'strong endorsement';
+  if (avgWeight > 2500) return 'endorsement';
+  if (avgWeight > 0) return 'mild endorsement';
+  if (avgWeight === 0) return 'neutral';
+  if (avgWeight >= -2500) return 'mild concerns';
+  if (avgWeight >= -6000) return 'reject';
+  return 'strong reject';
 }
 
 interface ResolvedVotes {
