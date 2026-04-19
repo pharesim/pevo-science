@@ -267,13 +267,38 @@ async function fetchFromCrossRef(doi: string): Promise<BridgeLookupResult | null
       : null,
   }));
 
-  // Published date
+  // Published date — CrossRef often has incomplete dates, so fall back to
+  // scraping the publisher's citation_publication_date meta tag via the DOI URL.
   const dateParts = (msg['published-print'] || msg['published-online'] || msg.created) as { 'date-parts'?: number[][] } | undefined;
   const dp = dateParts?.['date-parts']?.[0] || [];
-  const publishedDate = dp.length >= 3
-    ? `${dp[0]}-${String(dp[1]).padStart(2, '0')}-${String(dp[2]).padStart(2, '0')}`
-    : dp.length >= 2 ? `${dp[0]}-${String(dp[1]).padStart(2, '0')}-01`
-    : dp.length >= 1 ? `${dp[0]}-01-01` : '';
+  let publishedDate: string;
+  if (dp.length >= 3) {
+    publishedDate = `${dp[0]}-${String(dp[1]).padStart(2, '0')}-${String(dp[2]).padStart(2, '0')}`;
+  } else {
+    // Try scraping the publisher landing page for a more precise date
+    let scraped: string | null = null;
+    try {
+      const pageRes = await fetch(`https://doi.org/${encodeURIComponent(doi)}`, {
+        signal: AbortSignal.timeout(10_000),
+        redirect: 'follow',
+      });
+      if (pageRes.ok) {
+        const html = await pageRes.text();
+        scraped = extractMeta(html, 'citation_publication_date') || extractMeta(html, 'citation_date');
+      }
+    } catch {
+      // Non-fatal — fall back to CrossRef partial date
+    }
+    if (scraped) {
+      publishedDate = scraped.replace(/\//g, '-');
+    } else if (dp.length >= 2) {
+      publishedDate = `${dp[0]}-${String(dp[1]).padStart(2, '0')}-01`;
+    } else if (dp.length >= 1) {
+      publishedDate = `${dp[0]}-01-01`;
+    } else {
+      publishedDate = '';
+    }
+  }
 
   // Source URL
   const sourceUrl = (msg.URL as string) || `https://doi.org/${doi}`;
