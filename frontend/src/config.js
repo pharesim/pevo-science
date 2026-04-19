@@ -18,3 +18,11 @@ export function getDiscordUrl() {
 export function getGithubUrl() {
   return (window.__PEVO_CONFIG__ && window.__PEVO_CONFIG__.githubUrl) || '';
 }
+
+export function getMaxUploadSize() {
+  return (window.__PEVO_CONFIG__ && window.__PEVO_CONFIG__.maxUploadSize) || 10 * 1024 * 1024;
+}
+
+export function getMaxUploadSizeMB() {
+  return Math.round(getMaxUploadSize() / (1024 * 1024));
+}

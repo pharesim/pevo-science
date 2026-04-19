@@ -3,7 +3,7 @@ import { uploadToIpfs, fetchDisciplines } from '../api.js';
 import { broadcastOps } from '../signer.js';
 import { sha256File, slugify } from '../crypto.js';
 
-import { getAppTag, getAppId } from '../config.js';
+import { getAppTag, getAppId, getMaxUploadSize, getMaxUploadSizeMB } from '../config.js';
 
 const DRAFT_KEY = 'pevo-draft-publish';
 const MARKDOWN_IMAGE_RE = /!\[[^\]]*\]\(([^)]+)\)/g;
@@ -208,7 +208,7 @@ const template = `
           <!-- PDF Upload -->
           <div class="card">
             <label for="pdf-upload" class="text-sm font-semibold text-ink mb-2 block" x-text="$t('publish.pdfUpload')"></label>
-            <p class="text-xs text-ink-muted mb-3" x-text="$t('publish.pdfHint')"></p>
+            <p class="text-xs text-ink-muted mb-3" x-text="$t('publish.pdfHint', { maxSize: maxUploadSizeMB })"></p>
             <input id="pdf-upload" type="file" accept=".pdf" class="block text-sm text-ink-muted file:mr-4 file:py-2 file:px-4 file:rounded-md file:border file:border-parchment-dark file:text-sm file:font-medium file:bg-white file:text-ink hover:file:bg-parchment-warm file:cursor-pointer file:transition-colors" @change="handlePdfChange($event)" />
             <template x-if="pdfFile">
               <p class="text-xs text-pevo-green mt-2" x-text="$t('publish.pdfSelected', { name: pdfFileName, size: pdfFileSize })"></p>
@@ -218,7 +218,7 @@ const template = `
           <!-- Supplementary Files -->
           <div class="card">
             <label class="text-sm font-semibold text-ink mb-2 block" x-text="$t('publish.supplementaryFiles')"></label>
-            <p class="text-xs text-ink-muted mb-3" x-text="$t('publish.supplementaryFilesHint')"></p>
+            <p class="text-xs text-ink-muted mb-3" x-text="$t('publish.supplementaryFilesHint', { maxSize: maxUploadSizeMB })"></p>
 
             <!-- File list -->
             <template x-if="supplementaryFiles.length > 0">
@@ -358,6 +358,8 @@ export function initPublishPage() {
     _draftTimer: null,
     _initialLoadDone: false,
     _storageListener: null,
+
+    maxUploadSizeMB: getMaxUploadSizeMB(),
 
     step: 'idle', // idle | hashing | uploading | broadcasting | success | error
     errorMessage: '',
@@ -667,8 +669,8 @@ export function initPublishPage() {
         return;
       }
       for (const file of files.slice(0, remaining)) {
-        if (file.size > 10 * 1024 * 1024) {
-          Alpine.store('toast').show(this.$t('publish.fileTooLarge', { name: file.name }), 'error');
+        if (file.size > getMaxUploadSize()) {
+          Alpine.store('toast').show(this.$t('publish.fileTooLarge', { name: file.name, maxSize: getMaxUploadSizeMB() }), 'error');
           continue;
         }
         this.supplementaryFiles.push({

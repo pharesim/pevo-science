@@ -53,11 +53,12 @@ export function createApp() {
   app.use(compression({ threshold: 1024 }));
 
   // Build inline config script content for CSP hash computation
-  const pevoConfig: Record<string, string> = {};
+  const pevoConfig: Record<string, string | number> = {};
   if (config.appTag) pevoConfig.appTag = config.appTag;
   if (config.appVersion) pevoConfig.appVersion = config.appVersion;
   if (config.discordUrl) pevoConfig.discordUrl = config.discordUrl;
   if (config.githubUrl) pevoConfig.githubUrl = config.githubUrl;
+  pevoConfig.maxUploadSize = config.maxUploadSize;
   // Only inject ipfsGateway if it's a public URL (not an internal Docker hostname).
   // When unset, the frontend falls back to /api/ipfs/ which proxies through the backend.
   if (config.ipfsGatewayUrl && /^https?:\/\/(?!ipfs[:/])/.test(config.ipfsGatewayUrl)) {

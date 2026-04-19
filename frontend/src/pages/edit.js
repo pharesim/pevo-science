@@ -3,7 +3,7 @@ import { fetchPaper, fetchPaperEnrichment, invalidatePaperCache, uploadToIpfs } 
 import { broadcastOps } from '../signer.js';
 import { sha256File, slugify } from '../crypto.js';
 
-import { getAppTag, getAppId } from '../config.js';
+import { getAppTag, getAppId, getMaxUploadSize, getMaxUploadSizeMB } from '../config.js';
 import diff_match_patch from 'diff-match-patch';
 
 const ABSTRACT_MAX_CHARS = 2000;
@@ -167,7 +167,7 @@ const template = `
               <!-- Supplementary Files -->
               <div class="card">
                 <label class="text-sm font-semibold text-ink mb-2 block" x-text="$t('publish.supplementaryFiles')"></label>
-                <p class="text-xs text-ink-muted mb-3" x-text="$t('publish.supplementaryFilesHint')"></p>
+                <p class="text-xs text-ink-muted mb-3" x-text="$t('publish.supplementaryFilesHint', { maxSize: maxUploadSizeMB })"></p>
 
                 <!-- Existing files (read-only) -->
                 <template x-if="existingSupplementaryFiles.length > 0">
@@ -324,6 +324,8 @@ export function initEditPage() {
     // Citations
     citations: [], // { author, permlink, title, reputation_relevant }
     dragIndex: null,
+
+    maxUploadSizeMB: getMaxUploadSizeMB(),
 
     step: 'idle',
     errorMessage: '',
@@ -609,8 +611,8 @@ export function initEditPage() {
         return;
       }
       for (const file of files.slice(0, remaining)) {
-        if (file.size > 10 * 1024 * 1024) {
-          Alpine.store('toast').show(this.$t('publish.fileTooLarge', { name: file.name }), 'error');
+        if (file.size > getMaxUploadSize()) {
+          Alpine.store('toast').show(this.$t('publish.fileTooLarge', { name: file.name, maxSize: getMaxUploadSizeMB() }), 'error');
           continue;
         }
         this.supplementaryFiles.push({
