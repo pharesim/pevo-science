@@ -487,7 +487,7 @@ router.get('/', async (req: Request, res: Response) => {
     const keyword = req.query.keyword || '';
     const author = req.query.author || '';
     const language = req.query.language || '';
-    const accreditedOnly = req.query.accredited_only === 'true';
+    const accreditedOnly = req.query.accredited_only !== 'false'; // default true
     const includeRetracted = req.query.include_retracted === 'true';
     const source = req.query.source || '';
     const cacheKey = `papers:p=${page}:l=${limit}:s=${sort}:o=${order}:d=${discipline}:k=${keyword}:a=${author}:lang=${language}:ao=${accreditedOnly}:ir=${includeRetracted}:src=${source}`;
