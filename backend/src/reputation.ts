@@ -624,7 +624,7 @@ export async function computeReputationSql(
  */
 export async function getReputationScore(username: string): Promise<ReputationScore> {
   return hafCache.getOrSet<ReputationScore>(`reputation:${username}`, async () => {
-    // Primary path: all-SQL computation (v0.4)
+    // Primary path: all-SQL computation (v0.5)
     if (isHafAvailable()) {
       const sqlResult = await computeReputationSql(username);
       if (sqlResult) return sqlResult;
