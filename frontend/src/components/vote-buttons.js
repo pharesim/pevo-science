@@ -18,6 +18,7 @@ export function initVoteButtons() {
     voteState: 'none', // 'none' | 'up' | 'down'
     currentWeight: 0,
     displayVotes: opts.netVotes ?? 0,
+    voteStrength: opts.voteStrength || null,
     isVoting: false,
     selectorOpen: false,
     created: opts.created || null,
@@ -57,7 +58,9 @@ export function initVoteButtons() {
 
     _updateLocalVoter(weight) {
       const existing = this.voters.find((v) => v.voter === this.username);
-      if (existing) {
+      if (weight === 0) {
+        this.voters = this.voters.filter((v) => v.voter !== this.username);
+      } else if (existing) {
         existing.weight = weight;
         existing.stale = false;
         existing.effective_weight = weight;
@@ -86,11 +89,16 @@ export function initVoteButtons() {
       return level ? this.$t(level.label) : null;
     },
 
+    strengthLabel() {
+      return this.$t('vote.strength.' + this.voteStrength);
+    },
+
     voteCountLabel() {
       if (this.staleVoteCount > 0) {
         return this.$t('vote.votesWithStale', { active: this.activeVoteCount, stale: this.staleVoteCount });
       }
-      return this.displayVotes + ' ' + this.$t('vote.votes');
+      const strength = this.strengthLabel();
+      return this.$t('vote.votesWithStrength', { count: this.displayVotes, strength });
     },
 
     async _broadcastVote(weight) {
@@ -127,6 +135,33 @@ export function initVoteButtons() {
       // Already voted at this weight — ignore
       if (this.currentWeight === weight) {
         this.selectorOpen = false;
+        return;
+      }
+
+      // Retract vote (weight=0)
+      if (weight === 0) {
+        const retractConfirmed = await Alpine.store('broadcastConfirm').request({
+          title: this.$t('confirm.voteTitle'),
+          message: this.$t('confirm.retractMessage'),
+          confirmLabel: this.$t('confirm.retract'),
+        });
+        if (!retractConfirmed) return;
+
+        this.isVoting = true;
+        try {
+          await this._broadcastVote(0);
+          const previousState = this.voteState;
+          this.displayVotes += previousState === 'up' ? -1 : 1;
+          this.voteState = 'none';
+          this.currentWeight = 0;
+          this._updateLocalVoter(0);
+          invalidatePaperCache(this.author, this.permlink).catch(() => {});
+        } catch (err) {
+          Alpine.store('toast').show(err.message || this.$t('vote.voteFailed'), 'error');
+        } finally {
+          this.isVoting = false;
+          this.selectorOpen = false;
+        }
         return;
       }
 

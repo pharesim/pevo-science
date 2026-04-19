@@ -24,6 +24,7 @@ export interface PaperSummary {
   ipfs_cid: string | null;
   created: string;
   net_votes: number;
+  vote_strength: string | null;
   review_count: number;
   citation_count: number;
   author_reputation: number;

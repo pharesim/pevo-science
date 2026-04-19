@@ -33,6 +33,144 @@ import {
 
 const router = Router();
 
+// ─── Vote strength tiers ────────────────────────────────────────
+function voteStrengthTier(avgWeight: number): string {
+  if (avgWeight >= 8000) return 'strong endorsement';
+  if (avgWeight >= 4000) return 'endorsement';
+  if (avgWeight >= 1000) return 'mild endorsement';
+  if (avgWeight >= -1000) return 'mixed';
+  if (avgWeight >= -4000) return 'mild concerns';
+  if (avgWeight >= -8000) return 'concerns';
+  return 'strong concerns';
+}
+
+interface ResolvedVotes {
+  net_votes: number;
+  vote_strength: string | null;
+}
+
+/**
+ * Compute resolved vote counts for a set of papers using parallel native + revote queries.
+ * Returns a Map keyed by "author/permlink" with net_votes and vote_strength.
+ */
+async function batchResolveVotes(
+  pool: { query: (sql: string, params: unknown[]) => Promise<{ rows: Record<string, unknown>[] }> },
+  papers: Array<{ author: string; permlink: string }>,
+  accreditedArr: string[],
+): Promise<Map<string, ResolvedVotes>> {
+  if (papers.length === 0) return new Map();
+
+  // Build (author, permlink) pairs for the batch native vote query
+  const pairValues: string[] = [];
+  const pairParams: unknown[] = [];
+  let pIdx = 1;
+  for (const p of papers) {
+    pairValues.push(`($${pIdx++}, $${pIdx++})`);
+    pairParams.push(p.author, p.permlink);
+  }
+  const accreditedParam = `$${pIdx++}`;
+  pairParams.push(accreditedArr);
+
+  const [nativeResult, revoteResult] = await Promise.all([
+    // Batch native votes: latest per voter per paper, accredited only, excluding self-votes
+    pool.query(
+      `SELECT DISTINCT ON (v.author, v.permlink, v.voter)
+              v.author, v.permlink, v.voter, v.weight, v.block_num
+       FROM ${T.voteOps} v
+       WHERE (v.author, v.permlink) IN (${pairValues.join(', ')})
+         AND v.voter = ANY(${accreditedParam}::text[])
+         AND v.voter != v.author
+       ORDER BY v.author, v.permlink, v.voter, v.block_num DESC`,
+      pairParams,
+    ),
+    // All revotes for APP_TAG
+    pool.query(
+      `SELECT cj.json::jsonb ->> 'author' AS author,
+              cj.json::jsonb ->> 'permlink' AS permlink,
+              cj.required_posting_auths ->> 0 AS voter,
+              (cj.json::jsonb ->> 'weight')::int AS weight,
+              cj.block_num
+       FROM ${T.customJson} cj
+       WHERE cj.custom_id = $1
+         AND cj.json::jsonb ->> 'action' = 'revote'
+         AND cj.block_num >= $2`,
+      [config.appTag, getCachedGenesisBlock()],
+    ),
+  ]);
+
+  // Index native votes: paper_key -> voter -> { weight, block_num }
+  const accreditedSet = new Set(accreditedArr);
+  type VoteSignal = { weight: number; block_num: number };
+  const nativeByPaper = new Map<string, Map<string, VoteSignal>>();
+  for (const r of nativeResult.rows) {
+    const key = `${r.author}/${r.permlink}`;
+    if (!nativeByPaper.has(key)) nativeByPaper.set(key, new Map());
+    nativeByPaper.get(key)!.set(r.voter as string, {
+      weight: Number(r.weight),
+      block_num: Number(r.block_num),
+    });
+  }
+
+  // Index revotes: paper_key -> voter -> { weight, block_num } (latest per voter per paper)
+  const revoteByPaper = new Map<string, Map<string, VoteSignal>>();
+  // Revote rows are not ordered, so we track latest block_num manually
+  for (const r of revoteResult.rows) {
+    const voter = r.voter as string;
+    const weight = Number(r.weight);
+    if (!voter || isNaN(weight) || weight < -10000 || weight > 10000) continue;
+    const rAuthor = r.author as string;
+    if (!rAuthor || !accreditedSet.has(voter) || voter === rAuthor) continue;
+    const key = `${rAuthor}/${r.permlink}`;
+    if (!revoteByPaper.has(key)) revoteByPaper.set(key, new Map());
+    const existing = revoteByPaper.get(key)!.get(voter);
+    const blockNum = Number(r.block_num);
+    if (!existing || blockNum > existing.block_num) {
+      revoteByPaper.get(key)!.set(voter, { weight, block_num: blockNum });
+    }
+  }
+
+  // Merge: for each paper, resolve votes
+  const results = new Map<string, ResolvedVotes>();
+  for (const p of papers) {
+    const key = `${p.author}/${p.permlink}`;
+    const nativeVotes = nativeByPaper.get(key) || new Map<string, VoteSignal>();
+    const revotes = revoteByPaper.get(key) || new Map<string, VoteSignal>();
+
+    // Collect all voters across both sources
+    const allVoters = new Set([...nativeVotes.keys(), ...revotes.keys()]);
+    let upvotes = 0;
+    let downvotes = 0;
+    let weightSum = 0;
+    let voterCount = 0;
+
+    for (const voter of allVoters) {
+      const native = nativeVotes.get(voter);
+      const revote = revotes.get(voter);
+
+      let effectiveWeight: number;
+      if (native && revote) {
+        effectiveWeight = revote.block_num > native.block_num ? revote.weight : native.weight;
+      } else if (revote) {
+        effectiveWeight = revote.weight;
+      } else {
+        effectiveWeight = native!.weight;
+      }
+
+      if (effectiveWeight === 0) continue; // retracted
+      if (effectiveWeight > 0) upvotes++;
+      else downvotes++;
+      weightSum += effectiveWeight;
+      voterCount++;
+    }
+
+    const net_votes = upvotes - downvotes;
+    const vote_strength = voterCount > 0 ? voteStrengthTier(weightSum / voterCount) : null;
+    results.set(key, { net_votes, vote_strength });
+  }
+
+  return results;
+}
+
 /** Safely extract the pevo metadata sub-object with runtime validation. */
 function safePevoMeta(meta: Record<string, unknown>): Record<string, unknown> {
   const pevo = meta[config.appTag];
@@ -183,14 +321,26 @@ async function fetchPapersFromHaf(req: Request): Promise<{ rows: unknown[]; tota
 
     // Use batch reputation scores only (no on-demand HAF computation).
     // Returns 0 for users not yet in the batch — profile page has full scores.
-    const batchScores = await getBatchReputationScores(authors);
-    const accreditedSet = await getAccreditedSet(authors);
-
     const allAccredited = await getAllAccreditedAccounts();
+    const allAccreditedArr = [...allAccredited];
+    const paperKeys = dataResult.rows.map((r: Record<string, unknown>) => ({
+      author: r.author as string,
+      permlink: r.permlink as string,
+    }));
+
+    // Parallel: batch reputation + accredited set + resolved votes (native + revotes)
+    const [batchScores, accreditedSet, voteData] = await Promise.all([
+      getBatchReputationScores(authors),
+      getAccreditedSet(authors),
+      batchResolveVotes(pool, paperKeys, allAccreditedArr),
+    ]);
+
     const rows = dataResult.rows.map((r: Record<string, unknown>) => {
       const meta = parseMeta(r.json_metadata);
       const pevo = safePevoMeta(meta);
       const pevoAuthors: Array<{ hive?: string }> = (pevo.authors || []) as Array<{ hive?: string }>;
+      const voteKey = `${r.author}/${r.permlink}`;
+      const resolved = voteData.get(voteKey);
       return {
         author: r.author,
         permlink: r.permlink,
@@ -201,7 +351,8 @@ async function fetchPapersFromHaf(req: Request): Promise<{ rows: unknown[]; tota
         authors: pevoAuthors,
         ipfs_cid: pevo.ipfs_cid || null,
         created: r.created,
-        net_votes: r.net_votes,
+        net_votes: resolved?.net_votes ?? (r.net_votes as number),
+        vote_strength: resolved?.vote_strength ?? null,
         review_count: (r.review_count as number) ?? 0,
         citation_count: (r.citation_count as number) ?? 0,
         author_reputation: batchScores.get(r.author as string) ?? 0,
@@ -217,6 +368,12 @@ async function fetchPapersFromHaf(req: Request): Promise<{ rows: unknown[]; tota
           : null,
       };
     });
+
+    // Re-sort by resolved vote counts when sorting by votes (revotes may change order)
+    if (sort === 'votes') {
+      const dir = order === 'asc' ? 1 : -1;
+      rows.sort((a, b) => (a.net_votes - b.net_votes) * dir);
+    }
 
     // Enrich bridge papers with external citation counts
     const bridgeDois = rows.filter(r => r.doi).map(r => r.doi!);
@@ -989,7 +1146,7 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string) {
     const [voteResult, reviewsResult, versions] = await Promise.all([
       // Accredited voters (excluding self-votes) — use vote operations to survive payout
       pool.query(
-        `SELECT DISTINCT ON (v.voter) v.voter, v.weight, v.timestamp FROM ${T.voteOps} v
+        `SELECT DISTINCT ON (v.voter) v.voter, v.weight, v.timestamp, v.block_num FROM ${T.voteOps} v
          WHERE v.author = $1 AND v.permlink = $2
            AND v.voter = ANY($3::text[])
            AND v.voter != v.author
@@ -1025,44 +1182,37 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string) {
       ? new Date(contentRevisions[contentRevisions.length - 1].created)
       : null;
 
-    // §31: If there are content revisions, batch-query revote custom_json ops
-    let revoteMap: Map<string, { weight: number; timestamp: Date }> | null = null;
-    if (latestRevisionTs && voteResult.rows.length > 0) {
-      const revoteResult = await pool.query(
-        `SELECT cj.required_posting_auths ->> 0 AS voter,
-                (cj.json::jsonb ->> 'weight')::int AS weight,
-                cj.json::jsonb ->> 'version' AS version,
-                cj.timestamp AS revote_ts
-         FROM ${T.customJson} cj
-         WHERE cj.custom_id = $1
-           AND cj.json::jsonb ->> 'action' = 'revote'
-           AND cj.json::jsonb ->> 'author' = $2
-           AND cj.json::jsonb ->> 'permlink' = $3
-           AND cj.block_num >= $4
-         ORDER BY cj.block_num DESC`,
-        [config.appTag, author, permlink, getCachedGenesisBlock()],
-      );
-      // §3.1: Build set of native voters for phantom revote check
-      const nativeVoters = new Set(voteResult.rows.map((r: Record<string, unknown>) => r.voter as string));
-      revoteMap = new Map();
-      for (const r of revoteResult.rows) {
-        const voter = r.voter as string;
-        const weight = Number(r.weight);
-        const version = r.version;
-        // §3.1 validation: required fields (author/permlink/version) and weight range
-        if (!voter || version == null || isNaN(weight) || weight < -10000 || weight > 10000) {
-          logger.debug({ voter, weight, author, permlink }, 'Ignoring invalid revote custom_json');
-          continue;
-        }
-        // §3.1: Ignore phantom revotes (voter must have a prior native Hive vote)
-        if (!nativeVoters.has(voter)) {
-          logger.debug({ voter, author, permlink }, 'Ignoring phantom revote — no prior native vote');
-          continue;
-        }
-        // Keep only the latest revote per voter (already ordered by block_num DESC)
-        if (!revoteMap.has(voter)) {
-          revoteMap.set(voter, { weight, timestamp: new Date(r.revote_ts as string) });
-        }
+    // Always query revote custom_json ops for this paper
+    const revoteResult = await pool.query(
+      `SELECT cj.required_posting_auths ->> 0 AS voter,
+              (cj.json::jsonb ->> 'weight')::int AS weight,
+              cj.json::jsonb ->> 'version' AS version,
+              cj.timestamp AS revote_ts,
+              cj.block_num
+       FROM ${T.customJson} cj
+       WHERE cj.custom_id = $1
+         AND cj.json::jsonb ->> 'action' = 'revote'
+         AND cj.json::jsonb ->> 'author' = $2
+         AND cj.json::jsonb ->> 'permlink' = $3
+         AND cj.block_num >= $4
+       ORDER BY cj.block_num DESC`,
+      [config.appTag, author, permlink, getCachedGenesisBlock()],
+    );
+    const revoteMap = new Map<string, { weight: number; timestamp: Date; block_num: number }>();
+    for (const r of revoteResult.rows) {
+      const voter = r.voter as string;
+      const weight = Number(r.weight);
+      const version = r.version;
+      // Validation: required fields (author/permlink/version) and weight range
+      if (!voter || version == null || isNaN(weight) || weight < -10000 || weight > 10000) {
+        logger.debug({ voter, weight, author, permlink }, 'Ignoring invalid revote custom_json');
+        continue;
+      }
+      // Only include accredited voters (excluding self-votes)
+      if (!accreditedAccounts.has(voter) || voter === author) continue;
+      // Keep only the latest revote per voter (already ordered by block_num DESC)
+      if (!revoteMap.has(voter)) {
+        revoteMap.set(voter, { weight, timestamp: new Date(r.revote_ts as string), block_num: Number(r.block_num) });
       }
     }
 
@@ -1107,35 +1257,70 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string) {
       };
     });
 
-    // §31: Compute staleness per voter
-    const voters = voteResult.rows.map((r: Record<string, unknown>) => {
+    // Vote resolution: for each voter, pick the signal with the highest block_num
+    // across native votes and revote custom_json. Handle weight=0 as retraction.
+    const processedVoters = new Set<string>();
+    const voters: Array<{ voter: string; weight: number; stale: boolean; effective_weight: number }> = [];
+
+    // Process voters with native votes
+    for (const r of voteResult.rows) {
       const voter = r.voter as string;
       const nativeWeight = Number(r.weight);
       const nativeTs = new Date(r.timestamp as string);
+      const nativeBlock = Number(r.block_num);
+      processedVoters.add(voter);
 
-      if (!latestRevisionTs) {
-        // No content revisions — all votes are non-stale
-        return { voter, weight: nativeWeight, stale: false, effective_weight: nativeWeight };
+      const revote = revoteMap.get(voter);
+      // Pick latest signal by block_num
+      const useRevote = revote && revote.block_num > nativeBlock;
+      const effectiveSignalWeight = useRevote ? revote.weight : nativeWeight;
+      const effectiveTs = useRevote ? revote.timestamp : nativeTs;
+
+      // weight=0 means retracted
+      if (effectiveSignalWeight === 0) continue;
+
+      // Staleness: only relevant when paper has content revisions
+      let stale = false;
+      if (latestRevisionTs && effectiveTs <= latestRevisionTs) {
+        stale = true;
       }
 
-      const revote = revoteMap?.get(voter);
-      // §31 vote resolution: if both signals are post-revision, use the later timestamp
-      if (revote && revote.timestamp > latestRevisionTs) {
-        if (nativeTs > latestRevisionTs && nativeTs > revote.timestamp) {
-          return { voter, weight: nativeWeight, stale: false, effective_weight: nativeWeight };
-        }
-        return { voter, weight: revote.weight, stale: false, effective_weight: revote.weight };
+      voters.push({
+        voter,
+        weight: effectiveSignalWeight,
+        stale,
+        effective_weight: stale ? 0 : effectiveSignalWeight,
+      });
+    }
+
+    // Process revote-only voters (no native Hive vote)
+    for (const [voter, revote] of revoteMap) {
+      if (processedVoters.has(voter)) continue;
+      if (revote.weight === 0) continue;
+
+      let stale = false;
+      if (latestRevisionTs && revote.timestamp <= latestRevisionTs) {
+        stale = true;
       }
-      if (nativeTs > latestRevisionTs) {
-        return { voter, weight: nativeWeight, stale: false, effective_weight: nativeWeight };
-      }
-      // Vote predates latest content revision with no post-revision re-vote
-      return { voter, weight: nativeWeight, stale: true, effective_weight: 0 };
-    });
+
+      voters.push({
+        voter,
+        weight: revote.weight,
+        stale,
+        effective_weight: stale ? 0 : revote.weight,
+      });
+    }
+
     const net_votes = voters.reduce((sum, v) => sum + (v.effective_weight > 0 ? 1 : v.effective_weight < 0 ? -1 : 0), 0);
+    const effectiveVoters = voters.filter(v => v.effective_weight !== 0);
+    const avgWeight = effectiveVoters.length > 0
+      ? effectiveVoters.reduce((sum, v) => sum + v.effective_weight, 0) / effectiveVoters.length
+      : 0;
+    const vote_strength = effectiveVoters.length > 0 ? voteStrengthTier(avgWeight) : null;
 
     return {
       net_votes,
+      vote_strength,
       voters,
       reviews,
     };

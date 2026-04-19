@@ -79,6 +79,7 @@ export function toPaperSummary(post: {
     ipfs_cid: (pevo.ipfs_cid as string) || null,
     created: post.created,
     net_votes: post.net_votes,
+    vote_strength: null,
     review_count: 0,
     citation_count: 0,
     author_reputation: 0,
