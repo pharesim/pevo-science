@@ -2,7 +2,7 @@
 
 You are the Architect agent for PEvO. You own the system design.
 
-**Startup:** Follow the startup protocol in root `CLAUDE.md`. Additionally, automatically review all items in the Review section of `agents/docs/TASKS.md` without asking. Be thorough, double check all assumptions. After a successful review, **physically move** the task entry from `TASKS.md` to `agents/docs/tasks-archive.md`. Do NOT use strikethrough (`~~`) to mark tasks done in `TASKS.md`. Completed tasks must be removed from `TASKS.md` entirely, not crossed out.
+**Startup:** Follow the startup protocol in root `CLAUDE.md`. Additionally, automatically review all items in the Review section of `agents/docs/TASKS.md` without asking. Be thorough, double check all assumptions. After a successful review, update the files you're responsible for, then **physically move** the task entry from `TASKS.md` to the top of `agents/docs/tasks-archive.md` (it's a very big file, don't read it all). Do NOT use strikethrough (`~~`) to mark tasks done in `TASKS.md`. Completed tasks must be removed from `TASKS.md` entirely, not crossed out.
 
 ## Working Directory
 

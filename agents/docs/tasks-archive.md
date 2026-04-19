@@ -1,3 +1,31 @@
+### SRCH-F1 — Show review results in search UI (2026-04-19) — Reviewed ✓
+
+Implemented in `search.js`. Type filter dropdown (all/papers/reviews). Review results link to parent paper with hash anchor to review. Reviewer name and snippet shown. Type badge per result. All i18n keys in 16 locales.
+
+### PSORT-F1 — Wire sort control on profile reviews tab (2026-04-19) — Reviewed ✓
+
+Implemented in `profile.js`. Sort dropdown (date/votes) in reviews tab. Re-fetches with sort param on change. All i18n keys in 16 locales.
+
+### VVER-F1 — Show voted-version indicator to current user (2026-04-19) — Reviewed ✓
+
+Implemented in `vote-buttons.js` and `paper-detail.js`. `myVotedVersion`/`voteIsOutdated` getters. Amber notice below paper-level vote controls only (not review votes). `vote.outdatedNotice` key in all 16 locales.
+
+### SRCH-B1 — Add review search support to search endpoint (2026-04-19) — Reviewed ✓
+
+Implemented in `search.ts`. Separate `searchPapersFromHaf` and `searchReviewsFromHaf` helpers. `type=review` searches child comments with `type='review'` metadata, ILIKE on body only. `type=all` runs both in parallel and merges by created date desc. `type=paper` unchanged. Review results include `paper_author`/`paper_permlink`, `title: null`. `is_accredited` computed in route handler for all types.
+
+### PSORT-B1 — Implement sort param on profile reviews endpoint (2026-04-19) — Reviewed ✓
+
+Implemented in `profile.ts`. Route reads `sort` query param (votes/date, default date), passes to `fetchUserReviewsFromHaf`, included in cache key. `sort=votes` uses accredited net_votes correlated subquery with `c.created DESC` tiebreaker. `sort=date` preserves existing ORDER BY behavior.
+
+### VVER-B1 — Add voted_version to voter objects in enrichment response (2026-04-19) — Reviewed ✓
+
+Implemented in `papers.ts`. `block_num` on `PaperVersionEntry`, preserved through `resolveVersionsFromHaf`. `fetchEnrichmentFromHaf` builds `versionBlocks` array, `inferVotedVersion` helper infers version from block number. Voter objects include `voted_version` from revote explicit version or block_num inference. Shape: `{ voter, weight, effective_weight, voted_version }`.
+
+### TYPC-1 — Delete dead types from responses.ts (2026-04-19) — Reviewed ✓
+
+No action needed. `responses.ts` already does not exist. Types are in their consumer files: `PaperSummary` in `helpers.ts`, `BridgeLookupResult`/`BridgeLookupAuthor` in `bridge.ts`, notification types in `notification-queries.ts`. No `responses.js` export in `types/index.ts`.
+
 ### STALE-3 — Drop vote staleness from frontend (2026-04-19) — Reviewed ✓
 
 Removed all vote staleness UI from `vote-buttons.js` (`myVoteIsStale`, `staleVoteCount`, stale reset, stale branch in `voteCountLabel`; simplified `activeVoteCount`). Removed from `paper-detail.js`: `staleVotesAtVersion()`, stale vote count badge, stale vote banner, `myVoteIsStale` styling. Removed `staleBanner`, `votesWithStale`, `staleAtVersion`, `pendingShort` keys from all 16 locale files. No residual stale references found.

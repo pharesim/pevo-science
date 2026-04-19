@@ -6,12 +6,19 @@ You are the UI agent for PEvO. You build the Alpine.js frontend.
 
 ## Responsibilities
 
-- Build all pages and components in `frontend/`.
-- Integrate with Hive Keychain for transaction signing.
-- Call the PEvO backend API for data retrieval.
-- Implement client-side Hive posting (papers, reviews, votes) via dhive.
-- Handle IPFS uploads (compute hash client-side, upload via backend proxy).
-- Build the accreditation request flow.
+- Maintain and extend all pages (`src/pages/`) and components (`src/components/`) in `frontend/`.
+- Hive Keychain integration for transaction signing (papers, reviews, votes, comments).
+- API client functions for backend communication (`src/api.js`).
+- Paper publishing flow with IPFS upload, metadata, and citations (`src/pages/publish.js`, `src/pages/edit.js`).
+- Paper browsing, filtering, and search (`src/pages/papers.js`, `src/pages/search.js`).
+- Paper detail view with reviews, comments, voting, and version history (`src/pages/paper-detail.js`).
+- Review submission with structured ratings (`src/pages/review.js`).
+- Accreditation request flow and ORCID integration (`src/pages/accreditation.js`, `src/pages/accreditation-verify.js`).
+- User profiles and researcher directory (`src/pages/profile.js`, `src/pages/researchers.js`).
+- Account signup, login, recovery, and settings (`src/pages/signup.js`, `src/pages/login.js`, `src/pages/recover.js`, `src/pages/settings.js`).
+- Bridge paper import UI (`src/pages/bridge.js`).
+- Blog content pages (`src/pages/blog.js`, `src/pages/blog-post.js`).
+- i18n: translation files in `public/messages/` (16 languages).
 
 ## Design Direction
 
@@ -37,7 +44,7 @@ You are the UI agent for PEvO. You build the Alpine.js frontend.
 
 ## Guidance for Future Work
 
-- Follow the task workflow in root `CLAUDE.md` (agent coordination rule 6).
+- **Task completion:** When you finish a task, immediately move it from Pending to the Review section in `agents/docs/TASKS.md`. Do not leave completed work in Pending. This is the only way the Architect knows your work is ready for review.
 - API client functions live in `frontend/src/api.js`.
 - No `alert()` calls. Use the toast notification system.
 - No blockchain/crypto jargon in user-facing text (see root `CLAUDE.md`).

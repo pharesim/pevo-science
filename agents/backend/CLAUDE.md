@@ -6,12 +6,17 @@ You are the Backend agent for PEvO. You build the Node.js/Express backend.
 
 ## Responsibilities
 
-- Implement all API endpoints defined in the contract.
-- Connect to HAF SQL (PostgreSQL) for reading indexed Hive data.
-- Implement the IPFS upload/pinning proxy.
-- Implement the accreditation request flow (email verification, `custom_json` broadcast).
-- Implement the anonymous review posting service.
-- Compute and cache reputation scores.
+- Maintain and extend the REST API (routes in `src/routes/`).
+- HAF SQL queries for listings, search, reputation, and aggregated views (`src/hafsql.ts`).
+- IPFS upload/pinning proxy and CID validation (`src/routes/ipfs.ts`).
+- Accreditation flow: email verification, `custom_json` broadcast, Web-of-Trust vouching (`src/routes/accreditation.ts`, `src/routes/wot.ts`).
+- Reputation batch computation and caching (`src/reputation-batch.ts`, `src/reputation.ts`).
+- Bridge paper import from arXiv/Crossref (`src/bridge.ts`, `src/routes/bridge.ts`).
+- Light account creation, custody broadcast, and key management (`src/routes/custody.ts`, `src/routes/signup-verify.ts`).
+- Anonymous review proxy via `pevo.anon` account (`src/routes/anonymousReview.ts`).
+- Notification system (`src/notification-queries.ts`, `src/routes/notifications.ts`).
+- Blog content serving (`src/routes/blog.ts`).
+- Search across papers, authors, and disciplines (`src/routes/search.ts`).
 
 ## Technical Context
 
@@ -57,14 +62,13 @@ The frontend owns client-side light account operations (seed phrase generation, 
 ## Available Resources
 
 - **`agents/docs/api-contracts/*.md`** — REST API spec split by domain (auth, papers, reviews, profiles, accreditation, custody, ipfs, bridge, notifications, misc). Read `api-contract.md` for the index, then only the file relevant to your task. `common.md` has the response envelope, error codes, and auth notes.
-- **`agents/docs/haf-views.sql`** — HAF SQL view definitions. Note: the backend uses **inline CTEs** in `src/hafsql.ts` against raw `hafsql.*` tables, not deployed views. This file is a design reference only.
-- **`agents/docs/reputation-algorithm-v3.md`** — Current reputation algorithm spec (v3) with voter weight convergence, activity-gated floor, and anti-sybil measures.
-- **`agents/docs/keychain-integration.md`** — Hive Keychain signing flows. Backend signature verification is in `src/middleware/verifyHiveSignature.ts`.
+- **`agents/docs/reputation-algorithm.md`** — Current reputation algorithm spec with voter weight convergence, activity-gated floor, and anti-sybil measures.
 - **`backend/src/types/`** — TypeScript types for API responses, Hive data, and error codes.
+- **`src/middleware/verifyHiveSignature.ts`** — Hive Keychain signature verification middleware.
 
 ## Guidance for Future Work
 
-- Follow the task workflow in root `CLAUDE.md` (agent coordination rule 6).
+- **Task completion:** When you finish a task, immediately move it from Pending to the Review section in `agents/docs/TASKS.md`. Do not leave completed work in Pending. This is the only way the Architect knows your work is ready for review.
 - Types live in `backend/src/types/`.
 - **No mock data, no mocked database pools in tests.** See root `CLAUDE.md` for how to run them.
 - HAF queries use inline CTEs in `src/hafsql.ts` — do not create or deploy HAF views.
