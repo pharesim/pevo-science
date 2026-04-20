@@ -148,6 +148,7 @@
     "permanentNotice": "النشر دائم. سيصبح بحثك جزءاً من سجل عام دائم لا يمكن تعديله.",
     "publishButton": "نشر البحث",
     "publishing": "جارٍ النشر...",
+    "missingRequiredFields": "Please fill in title, abstract, and discipline before publishing.",
     "stepHashing": "جارٍ حساب بصمات الملفات...",
     "stepUploading": "جارٍ رفع PDF إلى IPFS...",
     "stepBroadcasting": "جارٍ النشر على السجل العام الدائم...",

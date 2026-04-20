@@ -1,0 +1,248 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+
+const mockFetchEmailStatus = vi.fn();
+const mockSubmitEmail = vi.fn();
+const mockDeleteEmail = vi.fn();
+const mockStartOrcid = vi.fn();
+const mockIsKeychainInstalled = vi.fn(() => true);
+
+vi.mock('../../src/api.js', () => ({
+  fetchEmailStatus: (...args) => mockFetchEmailStatus(...args),
+  submitEmail: (...args) => mockSubmitEmail(...args),
+  deleteEmail: (...args) => mockDeleteEmail(...args),
+  startOrcid: (...args) => mockStartOrcid(...args),
+}));
+
+vi.mock('../../src/keychain.js', () => ({
+  isKeychainInstalled: (...args) => mockIsKeychainInstalled(...args),
+}));
+
+vi.mock('../../src/hive-keys.js', () => ({
+  deriveHiveKeys: vi.fn(),
+  deriveHivePublicKeys: vi.fn(),
+}));
+
+const mockAuthStore = {
+  isConnected: true,
+  username: 'alice',
+  custody: 'light',
+  isAccredited: true,
+  accreditation: { orcid: '0000-0001' },
+  token: 'jwt',
+  _saveSession: vi.fn(),
+  _checkAccreditation: vi.fn(),
+};
+const mockRouterStore = { navigate: vi.fn() };
+const mockToastStore = { show: vi.fn() };
+
+vi.mock('alpinejs', () => ({
+  default: {
+    data: vi.fn(),
+    store: vi.fn((name) => {
+      if (name === 'auth') return mockAuthStore;
+      if (name === 'router') return mockRouterStore;
+      if (name === 'toast') return mockToastStore;
+      return {};
+    }),
+  },
+}));
+
+import Alpine from 'alpinejs';
+import { initSettingsPage } from '../../src/pages/settings.js';
+
+function createComponent() {
+  initSettingsPage();
+  const factory = Alpine.data.mock.calls[Alpine.data.mock.calls.length - 1][1];
+  const comp = factory();
+  comp.$t = (key) => key;
+  comp.$watch = vi.fn();
+  return comp;
+}
+
+describe('settingsPage', () => {
+  let localStorageData;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockAuthStore.isConnected = true;
+    mockAuthStore.custody = 'light';
+    mockAuthStore.isAccredited = true;
+    mockAuthStore.accreditation = { orcid: '0000-0001' };
+    localStorageData = {};
+    vi.stubGlobal('localStorage', {
+      getItem: vi.fn((key) => localStorageData[key] ?? null),
+      setItem: vi.fn((key, val) => { localStorageData[key] = val; }),
+      removeItem: vi.fn((key) => { delete localStorageData[key]; }),
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  describe('loadEmailStatus', () => {
+    it('loads email status from API', async () => {
+      mockFetchEmailStatus.mockResolvedValue({ data: { hasEmail: true, email: 'a***@x.com', verified: true } });
+      const comp = createComponent();
+
+      await comp.loadEmailStatus();
+
+      expect(comp.emailStatus).toEqual({ hasEmail: true, email: 'a***@x.com', verified: true });
+      expect(comp.emailLoading).toBe(false);
+    });
+
+    it('defaults to no email on error', async () => {
+      mockFetchEmailStatus.mockRejectedValue(new Error('fail'));
+      const comp = createComponent();
+
+      await comp.loadEmailStatus();
+
+      expect(comp.emailStatus).toEqual({ hasEmail: false, custody: 'self' });
+    });
+  });
+
+  describe('handleEmailSubmit', () => {
+    it('submits email and shows success message', async () => {
+      mockSubmitEmail.mockResolvedValue({});
+      mockFetchEmailStatus.mockResolvedValue({ data: { hasEmail: true, email: 'n***@x.com', verified: false } });
+      const comp = createComponent();
+      comp.newEmail = ' new@x.com ';
+
+      await comp.handleEmailSubmit();
+
+      expect(mockSubmitEmail).toHaveBeenCalledWith('new@x.com');
+      expect(comp.emailMessage).toBe('settings.emailVerificationSent');
+      expect(comp.newEmail).toBe('');
+    });
+
+    it('does nothing with empty email', async () => {
+      const comp = createComponent();
+      comp.newEmail = '  ';
+      await comp.handleEmailSubmit();
+      expect(mockSubmitEmail).not.toHaveBeenCalled();
+    });
+
+    it('shows duplicate error', async () => {
+      mockSubmitEmail.mockRejectedValue({ code: 'DUPLICATE', message: 'taken' });
+      const comp = createComponent();
+      comp.newEmail = 'dup@x.com';
+
+      await comp.handleEmailSubmit();
+
+      expect(comp.emailError).toBe('settings.emailAlreadyInUse');
+    });
+
+    it('shows generic error', async () => {
+      mockSubmitEmail.mockRejectedValue({ message: 'server error' });
+      const comp = createComponent();
+      comp.newEmail = 'x@x.com';
+
+      await comp.handleEmailSubmit();
+
+      expect(comp.emailError).toBe('server error');
+    });
+  });
+
+  describe('handleEmailDelete', () => {
+    it('deletes email and resets state', async () => {
+      mockDeleteEmail.mockResolvedValue({});
+      const comp = createComponent();
+      comp.emailStatus = { hasEmail: true };
+
+      await comp.handleEmailDelete();
+
+      expect(mockDeleteEmail).toHaveBeenCalledWith(true);
+      expect(comp.emailStatus.hasEmail).toBe(false);
+      expect(comp.showDeleteConfirm).toBe(false);
+      expect(mockToastStore.show).toHaveBeenCalled();
+    });
+
+    it('does nothing if already deleting', async () => {
+      const comp = createComponent();
+      comp.deleting = true;
+      await comp.handleEmailDelete();
+      expect(mockDeleteEmail).not.toHaveBeenCalled();
+    });
+
+    it('sets error on failure', async () => {
+      mockDeleteEmail.mockRejectedValue(new Error('denied'));
+      const comp = createComponent();
+
+      await comp.handleEmailDelete();
+
+      expect(comp.emailError).toBe('denied');
+      expect(comp.deleting).toBe(false);
+    });
+  });
+
+  describe('handleOrcidLink', () => {
+    it('sets orcid mode and redirects', async () => {
+      mockStartOrcid.mockResolvedValue({ redirect_url: 'https://orcid.org/oauth' });
+      vi.stubGlobal('window', { ...globalThis.window, location: { href: '' } });
+      const comp = createComponent();
+
+      await comp.handleOrcidLink();
+
+      expect(localStorage.setItem).toHaveBeenCalledWith('pevo_orcid_mode', 'link');
+      expect(mockStartOrcid).toHaveBeenCalledWith('link');
+    });
+
+    it('rejects invalid redirect URL', async () => {
+      mockStartOrcid.mockResolvedValue({ redirect_url: 'https://evil.com/phish' });
+      vi.stubGlobal('window', { ...globalThis.window, location: { href: '' } });
+      const comp = createComponent();
+
+      await comp.handleOrcidLink();
+
+      expect(comp.orcidError).toBe('Invalid ORCID redirect URL');
+      expect(comp.orcidLinking).toBe(false);
+    });
+
+    it('does nothing if already linking', async () => {
+      const comp = createComponent();
+      comp.orcidLinking = true;
+      await comp.handleOrcidLink();
+      expect(mockStartOrcid).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('startUpgrade', () => {
+    it('requires keychain', () => {
+      mockIsKeychainInstalled.mockReturnValue(false);
+      const comp = createComponent();
+      comp.startUpgrade();
+      expect(comp.upgradePhase).toBe('error');
+      expect(comp.upgradeError).toBe('upgrade.keychainRequired');
+    });
+  });
+
+  describe('confirmCorrect', () => {
+    it('validates confirmation inputs', () => {
+      const comp = createComponent();
+      comp.newSeedWords = ['word1', 'word2', 'word3', 'word4'];
+      comp.confirmIndices = [0, 2];
+      comp.confirmInputs = { 0: 'word1', 2: 'word3' };
+      expect(comp.confirmCorrect).toBe(true);
+    });
+
+    it('fails on wrong input', () => {
+      const comp = createComponent();
+      comp.newSeedWords = ['word1', 'word2', 'word3', 'word4'];
+      comp.confirmIndices = [0, 2];
+      comp.confirmInputs = { 0: 'word1', 2: 'wrong' };
+      expect(comp.confirmCorrect).toBe(false);
+    });
+  });
+
+  describe('init - orcid link completion', () => {
+    it('detects orcid link completion from localStorage', () => {
+      localStorageData.pevo_orcid_link_complete = '1';
+      mockFetchEmailStatus.mockResolvedValue({ data: { hasEmail: false } });
+      const comp = createComponent();
+      comp.init();
+      expect(localStorage.removeItem).toHaveBeenCalledWith('pevo_orcid_link_complete');
+      expect(mockAuthStore._checkAccreditation).toHaveBeenCalled();
+      expect(mockToastStore.show).toHaveBeenCalled();
+    });
+  });
+});

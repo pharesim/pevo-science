@@ -3,6 +3,7 @@ import {
   generateMnemonic,
   validateMnemonic,
   deriveHiveKeys,
+  deriveHivePublicKeys,
   deriveAllKeys,
   mnemonicToSeedSync,
 } from '../../src/hive-keys.js';
@@ -15,11 +16,12 @@ describe('generateMnemonic + validateMnemonic', () => {
   });
 
   it('validateMnemonic rejects a tampered mnemonic', () => {
-    const m = generateMnemonic();
-    const words = m.split(' ');
-    // Replace last word with a different valid BIP39 word to corrupt the checksum.
-    words[11] = words[11] === 'zoo' ? 'abandon' : 'zoo';
-    expect(validateMnemonic(words.join(' '))).toBe(false);
+    // Use a known-valid mnemonic and corrupt it deterministically.
+    // "abandon" x11 + "about" is valid; replacing "about" with "abandon" breaks checksum.
+    const valid = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
+    expect(validateMnemonic(valid)).toBe(true);
+    const tampered = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon';
+    expect(validateMnemonic(tampered)).toBe(false);
   });
 });
 
@@ -49,6 +51,31 @@ describe('deriveHiveKeys (deterministic hex seeds)', () => {
     const keys = deriveHiveKeys(seed, 'alice');
     const set = new Set(Object.values(keys));
     expect(set.size).toBe(4);
+  });
+});
+
+describe('deriveHivePublicKeys', () => {
+  const mnemonic = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
+
+  it('returns STM public keys for all four roles', async () => {
+    const seed = mnemonicToSeedSync(mnemonic);
+    const hexKeys = deriveHiveKeys(seed, 'alice');
+    const pubKeys = await deriveHivePublicKeys(hexKeys);
+
+    for (const role of ['owner', 'active', 'posting', 'memo']) {
+      expect(pubKeys[role]).toMatch(/^STM[1-9A-HJ-NP-Za-km-z]{30,}$/);
+    }
+  });
+
+  it('matches public keys from deriveAllKeys', async () => {
+    const allKeys = await deriveAllKeys(mnemonic, 'alice');
+    const seed = mnemonicToSeedSync(mnemonic);
+    const hexKeys = deriveHiveKeys(seed, 'alice');
+    const pubKeys = await deriveHivePublicKeys(hexKeys);
+
+    for (const role of ['owner', 'active', 'posting', 'memo']) {
+      expect(pubKeys[role]).toBe(allKeys[role].public);
+    }
   });
 });
 

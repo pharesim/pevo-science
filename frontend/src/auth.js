@@ -115,18 +115,17 @@ export function initAuth() {
 
     _restoreSession() {
       const saved = localStorage.getItem(SESSION_KEY);
-      if (saved) {
-        const { token, username, expiresAt, isAccredited, accreditation, custody } = JSON.parse(saved);
-        if (token && username && new Date(expiresAt) > new Date()) {
-          this.token = token;
-          this.username = username;
-          this.isConnected = true;
-          this.isAccredited = isAccredited ?? false;
-          this.accreditation = accreditation ?? null;
-          this.custody = custody ?? 'self';
-          this.expiresAt = expiresAt;
-          return;
-        }
+      if (!saved) return;
+      const { token, username, expiresAt, isAccredited, accreditation, custody } = JSON.parse(saved);
+      if (token && username && new Date(expiresAt) > new Date()) {
+        this.token = token;
+        this.username = username;
+        this.isConnected = true;
+        this.isAccredited = isAccredited ?? false;
+        this.accreditation = accreditation ?? null;
+        this.custody = custody ?? 'self';
+        this.expiresAt = expiresAt;
+        return;
       }
       localStorage.removeItem(SESSION_KEY);
     },

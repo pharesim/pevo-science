@@ -148,6 +148,7 @@
     "permanentNotice": "La publicación es permanente. Su artículo formará parte de un registro permanente e inalterable.",
     "publishButton": "Publicar artículo",
     "publishing": "Publicando...",
+    "missingRequiredFields": "Please fill in title, abstract, and discipline before publishing.",
     "stepHashing": "Calculando hashes de archivos...",
     "stepUploading": "Subiendo PDF a IPFS...",
     "stepBroadcasting": "Publicando en el registro permanente...",

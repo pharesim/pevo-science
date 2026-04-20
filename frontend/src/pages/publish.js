@@ -706,6 +706,10 @@ export function initPublishPage() {
       const username = this.username;
       if (!username || !this.isConnected || !this.authorName.trim()) return;
       if (!this.isAccredited) return;
+      if (!this.title.trim() || !this.abstract.trim() || !this.discipline.trim()) {
+        Alpine.store('toast').show(this.$t('publish.missingRequiredFields'), 'error');
+        return;
+      }
       if (this.txBlock) {
         Alpine.store('toast').show(this.$t('publish.txTooLarge'), 'error');
         return;

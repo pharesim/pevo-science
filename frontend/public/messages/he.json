@@ -148,6 +148,7 @@
     "permanentNotice": "הפרסום הוא קבוע. המאמר שלכם יהיה חלק מרשומה ציבורית בלתי ניתנת לשינוי.",
     "publishButton": "פרסום מאמר",
     "publishing": "מפרסם...",
+    "missingRequiredFields": "Please fill in title, abstract, and discipline before publishing.",
     "stepHashing": "מחשב גיבובי קבצים...",
     "stepUploading": "מעלה PDF ל-IPFS...",
     "stepBroadcasting": "מפרסם לרשומה הקבועה...",

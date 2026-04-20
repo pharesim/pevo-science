@@ -148,6 +148,7 @@
     "permanentNotice": "Publicering är permanent. Din artikel kommer att bli en del av ett oföränderligt offentligt register.",
     "publishButton": "Publicera artikel",
     "publishing": "Publicerar...",
+    "missingRequiredFields": "Please fill in title, abstract, and discipline before publishing.",
     "stepHashing": "Beräknar filhashar...",
     "stepUploading": "Laddar upp PDF till IPFS...",
     "stepBroadcasting": "Publicerar till det permanenta registret...",

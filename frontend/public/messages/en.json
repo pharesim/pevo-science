@@ -148,6 +148,7 @@
     "permanentNotice": "Publishing is permanent. Your paper will be part of an unalterable public record.",
     "publishButton": "Publish Paper",
     "publishing": "Publishing...",
+    "missingRequiredFields": "Please fill in title, abstract, and discipline before publishing.",
     "stepHashing": "Computing file hashes...",
     "stepUploading": "Uploading PDF to IPFS...",
     "stepBroadcasting": "Publishing to the permanent record...",

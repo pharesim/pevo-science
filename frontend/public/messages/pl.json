@@ -148,6 +148,7 @@
     "permanentNotice": "Publikacja jest trwała. Twoja praca stanie się częścią niezmienialnego publicznego rejestru.",
     "publishButton": "Opublikuj pracę",
     "publishing": "Publikowanie...",
+    "missingRequiredFields": "Please fill in title, abstract, and discipline before publishing.",
     "stepHashing": "Obliczanie skrótów plików...",
     "stepUploading": "Przesyłanie PDF na IPFS...",
     "stepBroadcasting": "Publikowanie w trwałym rejestrze...",

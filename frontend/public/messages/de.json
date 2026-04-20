@@ -148,6 +148,7 @@
     "permanentNotice": "Die Veröffentlichung ist dauerhaft. Ihre Publikation wird Teil eines unveränderlichen öffentlichen Registers.",
     "publishButton": "Publikation veröffentlichen",
     "publishing": "Wird veröffentlicht...",
+    "missingRequiredFields": "Please fill in title, abstract, and discipline before publishing.",
     "stepHashing": "Datei-Hashes werden berechnet...",
     "stepUploading": "PDF wird auf IPFS hochgeladen...",
     "stepBroadcasting": "Wird im dauerhaften Register veröffentlicht...",

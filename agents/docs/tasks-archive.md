@@ -1,3 +1,57 @@
+### TEST-8B — Test quality audit: execute approved changes (2026-04-20) — Reviewed ✓
+
+Executed Sections 1–4 of `test-audit-findings.md`. Removals/consolidations: ~90 tests across editor, auth, pages-publish/review/signup/home/settings/contact/accreditation/bridge/profile/stats, keychain, error-tracking, components-header, signer. Parameterised `isSubmitting`/`stepClass` 5-case blocks collapsed via `it.each`. Source fixes: publish.handleSubmit now validates empty title/abstract/discipline with new `publish.missingRequiredFields` key added to all 16 locales (`en` populated, others fall back to English); `_restoreSession` early-returns on missing session, `removeItem` fires only on validation failure; DOMPurify hardened with `FORBID_ATTR: ['style']` (new security fix beyond the March M8 style-allowlist removal — belt-and-suspenders defense against CSS/URL injection). Targeted mutation-killing tests added: editor (iframe/javascript:/style/multi-math-regex/raw-HTML onerror), signer (multi-op light-account routing), pages-publish (handleSubmit integration: guards, confirmation dialog, op shape, percent_hbd, APP_TAG parent_permlink, metadata tags/citations filters, ipfs_cid + document_hash), pages-signup (DUPLICATE resolution paths, PENDING_SIGNUP redirect, VALIDATION_ERROR with orcidToken), auth (restore guards for token/username, loginFromResponse persist + accreditation polling). Verified: 46 test files, 681/681 passing (`vitest run` 4.19s). Audit findings file removed after consumption per no-spec-sprawl rule. No ARCHITECTURE.md update required — test structure and security hardening are implementation details, not architectural changes.
+
+---
+
+### TEST-8A — Test quality audit: findings report (2026-04-20) — Reviewed ✓
+
+Report delivered at `agents/docs/test-audit-findings.md`. Suite snapshot: ~737 tests across 35 files. Categorized findings: ~80 low-value tests (third-party library behavior, getter passthroughs, trivial assignments) across editor.test.js, pages-publish/review/signup/settings/home/contact/accreditation/bridge/profile/stats, auth, signer, keychain; ~11 mock-only tests (error-tracking handlers, keychain signBuffer passthrough, components-header delegations, signup argument passthroughs); 2 possibly-enshrined-bug findings (publish.handleSubmit missing validation for title/abstract/discipline; auth._restoreSession calls removeItem unconditionally); ~30 surviving mutations across 5 critical modules (signer light-account multi-op routing, editor XSS/math-regex mutations, publish.handleSubmit entirely untested, signup DUPLICATE/VALIDATION_ERROR branches, auth session-restore guards). Spot-checked findings against source — all accurate. Proposed target: remove ~90 low-value/mock-only, add ~25-30 targeted tests, net ~670 with significantly better defect detection. TEST-8B (execute approved changes) remains Pending for UI Agent after user review of report.
+
+---
+
+### TEST-7 — Unit tests: UI components (2026-04-20) — Reviewed ✓
+
+10 test files covering all components with testable data logic, 107 component tests (737 total suite). Files: components-paper-card (8), components-pagination (12), components-threaded-comments (6), components-vote-buttons (20), components-comment-composer (8), components-broadcast-confirm (4), components-header (13), components-sign-in-modal (13), components-markdown-renderer (10), components-vouch-section (13). Skipped: paper-filters, rating-bar, version-selector, accreditation-badge, review-card, footer, page-mount (DOM-heavy Alpine wiring, no extractable logic). All 107 tests pass in ~1.4s.
+
+---
+
+### TEST-6 — Unit tests: page data logic (2026-04-20) — Reviewed ✓
+
+19 test files covering all page modules, 365 page tests (630 total suite). Files: pages-signup (25), pages-login (16), pages-signup-verify (21), pages-reset-password (12), pages-recover (15), pages-settings (20), pages-settings-verify-email (5), pages-paper-detail (44), pages-publish (33), pages-search (14), pages-review (24), pages-profile (7), pages-stats (7), pages-home (17), pages-blog (13), pages-bridge (36), pages-accreditation (21), pages-orcid-callback (21), pages-contact (14). Skipped: about, faq, getting-started, blog-post, accreditation-verify (trivial/pure template), papers (reuses homePage). All 365 tests pass in ~3s.
+
+---
+
+### TEST-5 — Unit tests: editor and markdown (2026-04-20) — Reviewed ✓
+
+49 tests in `tests/unit/editor.test.js`. Covers all 5 exported helper functions: `markdownToHtml` (18 tests: basic markdown, headings, GFM tables, inline/block math Tiptap conversion, autolink stripping, explicit link preservation, XSS sanitization for script tags and event handlers, data attributes, quote escaping in latex, empty input, lists, blockquotes, code blocks, strikethrough), `createTurndown` (13 tests: bold, italic, headings, strikethrough via del/s, inline/block math spans, GFM tables, fenced code, bullet lists, links, empty table), round-trip fidelity (7 tests: bold, italic, headings, inline math both directions, block math, links), `wrapMarkdownSelection` (3 tests: wrapping selection, placeholder insertion, asymmetric markers), `prefixMarkdownLines` (3 tests: single line, multi-line, empty selection), `isImageFile` (5 tests: png/jpeg/gif true, pdf/text false). All 49 tests pass in 141ms.
+
+---
+
+### TEST-4 — Unit tests: router (2026-04-20) — Reviewed ✓
+
+46 tests in `tests/unit/router.test.js`. Covers all 24 route patterns (home, papers, paper-detail, publish, edit, review, search, bridge, profile, accreditation, accreditation-verify, orcid-callback, researchers, stats, about, faq, getting-started, contact, blog, blog-post, signup, signup-verify, auth/verify alias, login, reset-password, recover, settings, settings-verify-email), unknown-path fallback to home, locale prefix stripping with i18n store sync, query parameter parsing with URI decoding, `navigate()` with auto locale prepend / no double-prepend / hash preservation / scroll-to-top / title update, and popstate handling with i18n locale sync. All 46 tests pass.
+
+---
+
+### TEST-3 — Unit tests: signer and keychain (2026-04-20) — Reviewed ✓
+
+20 tests across 2 files: `tests/unit/keychain.test.js` (8 tests), `tests/unit/signer.test.js` (12 tests). Keychain tests cover `isKeychainInstalled` (present/absent), `waitForKeychain` (immediate/delayed/timeout), and `signMessage` (no keychain/success/failure). Signer tests cover `broadcastOps` across all three routing branches: light account via fetch (success, JSON error body, non-JSON error body), keychain `requestVote` for single vote ops (no keychain, success, failure), and keychain `requestBroadcast` for non-vote ops (no keychain, success, default/custom keyType, failure, multi-ops routing). All mocking is appropriate: Alpine.store, window.hive_keychain, global.fetch. All 20 tests pass.
+
+---
+
+### TEST-2 — Unit tests: Alpine stores (2026-04-20) — Reviewed ✓
+
+46 tests across 4 new test files: toast.test.js (8), notifications.test.js (20), error-tracking.test.js (4), auth.test.js (14). All four store modules tested with 100% branch coverage of data/state logic. Toast covers show/dismiss/cap/auto-dismiss/animation. Notifications covers cursor/seenBlock localStorage, polling start/stop, exponential backoff with cap, MAX_CONSECUTIVE_FAILURES, MAX_EVENTS, markAllRead, unreadCount, refresh, dedup, generation guard, cursor update. Error-tracking covers global error/unhandledrejection/alpine:error handlers plus resilience when toast store unavailable. Auth covers _restoreSession (valid/expired/missing/defaults), _saveSession, _handleStorageEvent (new/removed/other keys), disconnect, loginFromResponse (full/defaults), init (isLoading, keychain check), token expiry. connect() correctly excluded per task boundary. All external deps (Alpine, api.js, keychain.js, sign-request.js, localStorage) properly mocked. All 46 tests pass.
+
+---
+
+### TEST-1 — Unit tests: core utilities (2026-04-20) — Reviewed ✓
+
+63 tests across 3 new test files (i18n.test.js, version-diff.test.js) plus improved hive-keys.test.js. All TEST-1 scope files at 100% coverage (config, crypto, sign-request, hive-keys, i18n). version-diff.js at 100% lines/91.89% branches (v8 artifact on `||` fallback operators). Existing tests (config, crypto, sign-request) confirmed passing at full coverage. api.js core logic covered; thin wrappers deferred to TEST-6.
+
+---
+
 ### TEST-004 — First Playwright E2E: email signup golden path (2026-04-20) — Reviewed ✓
 
 Closes the last open item from the TEST-001…TEST-004 testing stack: a real-browser happy-path E2E that exercises the email-signup → verify-email flow end-to-end against `pevo_app_test`. [frontend/tests/e2e/email-signup.spec.js](../../frontend/tests/e2e/email-signup.spec.js) fills the signup form (inputs selected via Alpine `input[x-model="…"]`, which is resilient to i18n/layout drift), asserts the `POST /api/auth/signup` request body shape and 200 response via `page.waitForRequest` / `waitForResponse`, confirms the `Check your email` heading (bound to `signup.checkEmail` i18n key), reads the `verify_token` directly from `pevo_app_test.accounts` via `pg`, navigates to `/signup/verify?token=…` which auto-POSTs `/api/auth/verify`, and asserts the `Email Verified` heading (bound to `seedPhrase.emailVerified`). `pg` added as a frontend devDep for the DB readback. Stable `e2e+signup@pevo.test` email, no timestamp hacks — re-runs pass because `global-setup` truncates the 4 relevant tables.

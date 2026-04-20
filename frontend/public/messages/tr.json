@@ -148,6 +148,7 @@
     "permanentNotice": "Yayınlama kalıcıdır. Makaleniz değiştirilemez bir açık kaydın parçası olacaktır.",
     "publishButton": "Makaleyi Yayınla",
     "publishing": "Yayınlanıyor...",
+    "missingRequiredFields": "Please fill in title, abstract, and discipline before publishing.",
     "stepHashing": "Dosya karmaları hesaplanıyor...",
     "stepUploading": "PDF IPFS'ye yükleniyor...",
     "stepBroadcasting": "Kalıcı kayda yayınlanıyor...",

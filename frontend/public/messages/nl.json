@@ -148,6 +148,7 @@
     "permanentNotice": "Publiceren is permanent. Uw artikel wordt onderdeel van een onwijzigbaar openbaar register.",
     "publishButton": "Artikel publiceren",
     "publishing": "Publiceren...",
+    "missingRequiredFields": "Please fill in title, abstract, and discipline before publishing.",
     "stepHashing": "Bestandshashes berekenen...",
     "stepUploading": "PDF uploaden naar IPFS...",
     "stepBroadcasting": "Publiceren naar het permanente register...",

@@ -148,6 +148,7 @@
     "permanentNotice": "انتشار دائمی است. مقاله شما بخشی از یک سوابق عمومی تغییرناپذیر خواهد بود.",
     "publishButton": "انتشار مقاله",
     "publishing": "در حال انتشار...",
+    "missingRequiredFields": "Please fill in title, abstract, and discipline before publishing.",
     "stepHashing": "محاسبه هش فایل...",
     "stepUploading": "بارگذاری PDF بر IPFS...",
     "stepBroadcasting": "انتشار در سوابق دائمی...",

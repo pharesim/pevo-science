@@ -54,6 +54,7 @@ function markdownToHtml(md) {
   return DOMPurify.sanitize(html, {
     ADD_TAGS: ['span', 'div'],
     ADD_ATTR: ['data-type', 'data-latex'],
+    FORBID_ATTR: ['style'],
   });
 }
 
@@ -1197,3 +1198,6 @@ export class PevoEditor {
 export function createEditor(container, options) {
   return new PevoEditor(container, options);
 }
+
+// Exported for unit testing
+export { markdownToHtml, createTurndown, wrapMarkdownSelection, prefixMarkdownLines, isImageFile };

@@ -148,6 +148,7 @@
     "permanentNotice": "Publikování je trvalé. Váš článek se stane součástí nezměnitelného veřejného záznamu.",
     "publishButton": "Publikovat článek",
     "publishing": "Publikování...",
+    "missingRequiredFields": "Please fill in title, abstract, and discipline before publishing.",
     "stepHashing": "Výpočet hashů souborů...",
     "stepUploading": "Nahrávání PDF na IPFS...",
     "stepBroadcasting": "Publikování na trvalý záznam...",

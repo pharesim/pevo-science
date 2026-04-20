@@ -148,6 +148,7 @@
     "permanentNotice": "Publicering er permanent. Din artikel bliver en del af en uforanderlig offentlig protokol.",
     "publishButton": "Publicer artikel",
     "publishing": "Publicerer...",
+    "missingRequiredFields": "Please fill in title, abstract, and discipline before publishing.",
     "stepHashing": "Beregner filhash...",
     "stepUploading": "Uploader PDF til IPFS...",
     "stepBroadcasting": "Publicerer til den permanente protokol...",
