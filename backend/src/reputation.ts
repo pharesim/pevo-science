@@ -71,12 +71,13 @@ export async function getBatchReputationMap(): Promise<Map<string, number>> {
   if (!redis) return map;
 
   try {
-    const keys = await redis.keys('reputation:batch:*');
+    const prefix = `${config.appTag}:reputation:batch:`;
+    const keys = await redis.keys(`${prefix}*`);
     if (keys.length === 0) return map;
 
     const values = await redis.mget(keys);
     for (let i = 0; i < keys.length; i++) {
-      const username = keys[i].replace('reputation:batch:', '');
+      const username = keys[i].replace(prefix, '');
       const score = values[i] !== null ? Number(values[i]) : undefined;
       if (score !== undefined && !isNaN(score)) {
         map.set(username, score);
@@ -735,7 +736,7 @@ export async function getReputationScores(usernames: string[]): Promise<Map<stri
   const missing: string[] = [];
   if (redis) {
     try {
-      const keys = unique.map((u) => `reputation:batch:${u}`);
+      const keys = unique.map((u) => `${config.appTag}:reputation:batch:${u}`);
       const values = await redis.mget(keys);
       for (let i = 0; i < unique.length; i++) {
         if (values[i] !== null) {

@@ -77,7 +77,7 @@ router.post('/start', startLimiter, async (req: Request, res: Response) => {
   }
 
   const state = crypto.randomBytes(16).toString('hex');
-  const stateKey = `orcid_state:${state}`;
+  const stateKey = `${config.appTag}:orcid_state:${state}`;
   const stateData: Record<string, unknown> = { mode, timestamp: Date.now() };
   if (username) stateData.username = username;
 
@@ -123,7 +123,7 @@ router.post('/callback', callbackLimiter, async (req: Request, res: Response) =>
 
   const redis = getRedis();
   if (redis && isRedisAvailable()) {
-    const raw = await redis.get(`orcid_state:${state}`);
+    const raw = await redis.get(`${config.appTag}:orcid_state:${state}`);
     if (raw) {
       try {
         const parsed = JSON.parse(raw) as { mode: OrcidMode; username?: string };
@@ -132,7 +132,7 @@ router.post('/callback', callbackLimiter, async (req: Request, res: Response) =>
       } catch {
         // Invalid stored state
       }
-      await redis.del(`orcid_state:${state}`);
+      await redis.del(`${config.appTag}:orcid_state:${state}`);
     }
   } else {
     const entry = orcidStates.get(state);
@@ -216,7 +216,7 @@ async function handleSignup(
 
   const redis = getRedis();
   if (redis && isRedisAvailable()) {
-    await redis.set(`orcid_verified:${nonce}`, JSON.stringify(verifiedData), 'EX', ORCID_VERIFIED_TTL);
+    await redis.set(`${config.appTag}:orcid_verified:${nonce}`, JSON.stringify(verifiedData), 'EX', ORCID_VERIFIED_TTL);
   } else {
     orcidVerified.set(nonce, { ...verifiedData, expires: Date.now() + ORCID_VERIFIED_TTL * 1000 });
   }

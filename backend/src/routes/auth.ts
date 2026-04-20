@@ -58,9 +58,9 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
   if (hasOrcidToken) {
     const redis = getRedis();
     if (redis && isRedisAvailable()) {
-      const raw = await redis.get(`orcid_verified:${orcid_token}`);
+      const raw = await redis.get(`${config.appTag}:orcid_verified:${orcid_token}`);
       if (raw) {
-        await redis.del(`orcid_verified:${orcid_token}`);
+        await redis.del(`${config.appTag}:orcid_verified:${orcid_token}`);
         const parsed = JSON.parse(raw) as { orcid_id: string; works_count: number; name?: string };
         verifiedOrcid = parsed.orcid_id;
         orcidName = parsed.name || null;
@@ -681,9 +681,9 @@ router.post('/recover', recoverLimiter, async (req: Request, res: Response) => {
       let verifiedOrcidId: string | null = null;
       const redis = getRedis();
       if (redis && isRedisAvailable()) {
-        const raw = await redis.get(`orcid_verified:${orcid_token}`);
+        const raw = await redis.get(`${config.appTag}:orcid_verified:${orcid_token}`);
         if (raw) {
-          await redis.del(`orcid_verified:${orcid_token}`);
+          await redis.del(`${config.appTag}:orcid_verified:${orcid_token}`);
           const parsed = JSON.parse(raw) as { orcid_id: string };
           verifiedOrcidId = parsed.orcid_id;
         }

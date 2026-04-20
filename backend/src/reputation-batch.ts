@@ -11,6 +11,7 @@
 
 import { getPool, isHafAvailable } from './db.js';
 import { getRedis } from './redis.js';
+import { config } from './config.js';
 import { logger } from './logger.js';
 import { computeReputationBatch, getActiveAccounts, getReputationWeights } from './reputation.js';
 import { getCachedGenesisBlock, T } from './hafsql.js';
@@ -18,7 +19,8 @@ import { getCachedGenesisBlock, T } from './hafsql.js';
 const DEFAULT_CHECK_INTERVAL_MS = 60 * 60_000; // 1 hour
 const DEFAULT_MAX_DURATION_MS = 30 * 60_000; // 30 minutes
 
-const REDIS_KEY_LAST_CYCLE = 'reputation:cycle:last';
+const REDIS_KEY_LAST_CYCLE = `${config.appTag}:reputation:cycle:last`;
+const REDIS_KEY_BATCH_PREFIX = `${config.appTag}:reputation:batch:`;
 
 let batchTimer: ReturnType<typeof setInterval> | null = null;
 let batchRunning = false;
@@ -94,11 +96,11 @@ export async function runBatchComputation(maxDurationMs = DEFAULT_MAX_DURATION_M
     let prevScores: Record<string, number> = {};
     if (startCycle > 0) {
       // Read existing batch scores from Redis as prev scores
-      const keys = await redis.keys('reputation:batch:*');
+      const keys = await redis.keys(`${REDIS_KEY_BATCH_PREFIX}*`);
       if (keys.length > 0) {
         const values = await redis.mget(keys);
         for (let i = 0; i < keys.length; i++) {
-          const username = keys[i].replace('reputation:batch:', '');
+          const username = keys[i].replace(REDIS_KEY_BATCH_PREFIX, '');
           if (values[i] !== null) {
             const score = Number(values[i]);
             if (!isNaN(score)) prevScores[username] = score;
@@ -144,7 +146,7 @@ export async function runBatchComputation(maxDurationMs = DEFAULT_MAX_DURATION_M
       // Store this cycle's scores in Redis
       const pipeline = redis.pipeline();
       for (const [username, score] of newScores) {
-        pipeline.set(`reputation:batch:${username}`, String(score));
+        pipeline.set(`${REDIS_KEY_BATCH_PREFIX}${username}`, String(score));
       }
       pipeline.set(REDIS_KEY_LAST_CYCLE, String(cycle));
       await pipeline.exec();

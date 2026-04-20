@@ -49,7 +49,7 @@ async function isReplaySignature(signature: string): Promise<boolean> {
     try {
       const redis = getRedis()!;
       // SETNX returns 1 if key was set (new), 0 if already existed (replay)
-      const result = await redis.set(`replay:${signature}`, '1', 'EX', SEEN_SIGNATURES_TTL_SEC, 'NX');
+      const result = await redis.set(`${config.appTag}:replay:${signature}`, '1', 'EX', SEEN_SIGNATURES_TTL_SEC, 'NX');
       return result === null; // null means key already existed
     } catch (err) {
       logger.warn({ err }, 'Redis replay check failed, falling back to in-memory');

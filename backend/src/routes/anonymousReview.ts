@@ -68,7 +68,7 @@ async function storeAnonMapping(
   const value = JSON.stringify({ encrypted, iv, authTag, keyVersion, paperAuthor, paperPermlink, expiresAt });
   const redis = getRedis();
   if (redis && isRedisAvailable()) {
-    await redis.set(`anon_mapping:${permlink}`, value, 'EX', ttl);
+    await redis.set(`${config.appTag}:anon_mapping:${permlink}`, value, 'EX', ttl);
   }
   memoryMappings.set(permlink, { encrypted, iv, authTag, keyVersion, expiresAt });
 }
@@ -76,7 +76,7 @@ async function storeAnonMapping(
 async function getAnonMapping(permlink: string): Promise<{ encrypted: string; iv: string; authTag: string; keyVersion: number } | null> {
   const redis = getRedis();
   if (redis && isRedisAvailable()) {
-    const raw = await redis.get(`anon_mapping:${permlink}`);
+    const raw = await redis.get(`${config.appTag}:anon_mapping:${permlink}`);
     if (raw) {
       const parsed = JSON.parse(raw);
       return { encrypted: parsed.encrypted, iv: parsed.iv, authTag: parsed.authTag, keyVersion: parsed.keyVersion };

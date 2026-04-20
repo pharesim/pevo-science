@@ -9,26 +9,20 @@ vi.mock('../../src/middleware/verifyHiveSignature.js', async () => {
 
 const app = createApp();
 
-describe('GET /api/accreditation/orcid/start', () => {
+describe('POST /api/orcid/start', () => {
   it('returns 500 when ORCID is not configured', async () => {
     const res = await request(app)
-      .get('/api/accreditation/orcid/start')
-      .set('X-Hive-Username', 'testuser');
+      .post('/api/orcid/start')
+      .send({ mode: 'signup' });
     expect(res.status).toBe(500);
     expect(res.body.error.message).toContain('ORCID integration is not configured');
   });
-
-  it('rejects unauthenticated requests', async () => {
-    const res = await request(app).get('/api/accreditation/orcid/start');
-    expect(res.status).toBe(401);
-  });
 });
 
-describe('POST /api/accreditation/orcid/callback', () => {
+describe('POST /api/orcid/callback', () => {
   it('returns 500 when ORCID is not configured', async () => {
     const res = await request(app)
-      .post('/api/accreditation/orcid/callback')
-      .set('X-Hive-Username', 'testuser')
+      .post('/api/orcid/callback')
       .send({ code: 'abc', state: 'xyz' });
     expect(res.status).toBe(500);
     expect(res.body.error.message).toContain('ORCID integration is not configured');

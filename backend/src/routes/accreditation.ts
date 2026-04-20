@@ -43,7 +43,7 @@ async function storeToken(pending: PendingAccreditation): Promise<void> {
   const redis = getRedis();
   if (redis && isRedisAvailable()) {
     const ttl = Math.max(1, Math.ceil((pending.expires_at.getTime() - Date.now()) / 1000));
-    await redis.set(`pending_accred:${pending.token}`, JSON.stringify(pending), 'EX', ttl);
+    await redis.set(`${config.appTag}:pending_accred:${pending.token}`, JSON.stringify(pending), 'EX', ttl);
   }
   memoryTokens.set(pending.token, pending);
 }
@@ -51,7 +51,7 @@ async function storeToken(pending: PendingAccreditation): Promise<void> {
 async function getToken(token: string): Promise<PendingAccreditation | null> {
   const redis = getRedis();
   if (redis && isRedisAvailable()) {
-    const raw = await redis.get(`pending_accred:${token}`);
+    const raw = await redis.get(`${config.appTag}:pending_accred:${token}`);
     if (raw) {
       const parsed = JSON.parse(raw);
       return { ...parsed, expires_at: new Date(parsed.expires_at), created_at: new Date(parsed.created_at) };
@@ -69,7 +69,7 @@ async function getToken(token: string): Promise<PendingAccreditation | null> {
 async function deleteToken(token: string): Promise<void> {
   const redis = getRedis();
   if (redis && isRedisAvailable()) {
-    await redis.del(`pending_accred:${token}`);
+    await redis.del(`${config.appTag}:pending_accred:${token}`);
   }
   memoryTokens.delete(token);
 }
