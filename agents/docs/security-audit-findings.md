@@ -60,7 +60,7 @@ If future work needs a stronger guarantee (e.g., anti-CSRF for a sensitive flow,
 
 Backend currently computes `sha256(JSON.stringify(req.body || ''))`. After Express body-parser, an empty POST body parses to `req.body = {}` → hash of `'{}'`, but a request with no `Content-Type: application/json` header gives `req.body = undefined` → hash of `'""'`. The frontend and backend must agree on exactly one serialization.
 
-Decision: the client **must** always send `Content-Type: application/json` and a JSON body (at minimum `{}`) for authenticated POSTs. Backend continues to hash `JSON.stringify(req.body || {})` (note: `|| {}`, not `|| ''`) to normalize the empty case. For non-POST methods (GET/DELETE), hash an empty string `''` on both sides.
+Decision: the client **must** always send `Content-Type: application/json` and a JSON body (at minimum `{}`) for authenticated POSTs. Both sides hash `JSON.stringify(body || {})` uniformly — no method-based branching. For GET/DELETE with no body, both sides hash `'{}'` (backend: `req.body` is `undefined`, `|| {}` → `{}`, `JSON.stringify({})` → `'{}'`; frontend helper: pass the empty object explicitly). This is intentional: a single normalization rule avoids client/server drift.
 
 ### Files to change
 

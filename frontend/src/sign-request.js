@@ -9,24 +9,24 @@ import { sha256Hex } from './crypto.js';
  * which binds the signature to this specific deployment, endpoint, body, and 60s window
  * so it cannot be replayed across dApps, deployments, endpoints, or time.
  *
- * For POST/PUT/DELETE bodies, pass the object that will be serialized; `null`/`undefined`
- * are normalized to `{}` so the body hash matches the backend's `JSON.stringify(req.body || {})`.
- * For GET, pass `null` and the hash is computed over `''`.
+ * The body hash is always computed over `JSON.stringify(bodyObject ?? {})` to match
+ * the backend's `JSON.stringify(req.body || {})`. For GET/HEAD the serialized body is
+ * still hashed but not sent on the wire.
  */
 export async function signRequest(username, method, path, bodyObject) {
   const timestamp = new Date().toISOString();
-  const hasBody = method !== 'GET' && method !== 'HEAD';
-  const bodyForHash = hasBody ? JSON.stringify(bodyObject ?? {}) : '';
+  const bodyForHash = JSON.stringify(bodyObject ?? {});
   const bodyHash = await sha256Hex(bodyForHash);
   const message = `${getAppTag()}-auth|v1|${method}|${path}|${bodyHash}|${timestamp}`;
   const { signature } = await signMessage(username, message);
 
+  const methodAllowsBody = method !== 'GET' && method !== 'HEAD';
   return {
     headers: {
       'X-Hive-Username': username,
       'X-Hive-Signature': signature,
       'X-Hive-Timestamp': timestamp,
     },
-    body: hasBody ? bodyForHash : undefined,
+    body: methodAllowsBody ? bodyForHash : undefined,
   };
 }

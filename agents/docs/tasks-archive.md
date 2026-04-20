@@ -1,3 +1,7 @@
+### SEC-001-FIXUP — Align `signRequest` helper with doc for GET/HEAD (2026-04-20) — Reviewed ✓
+
+Frontend-only follow-up to SEC-001. [frontend/src/sign-request.js](../../frontend/src/sign-request.js) previously hashed `''` for GET/HEAD, which diverged from the backend's uniform `JSON.stringify(req.body || {})` rule and from the body-serialization caveat in `security-audit-findings.md`. Helper now unconditionally computes `bodyForHash = JSON.stringify(bodyObject ?? {})` and hashes that for every method; the serialized body is still omitted from the wire for GET/HEAD via a `methodAllowsBody` flag. JSDoc updated. No backend change needed (already matches). No tests added — verified by inspection: only two callers (`auth.js` POST /api/auth/session, `api.js` POST /api/auth/link), both POST, so no behavior change in practice. The fix is preventative in case a future caller passes GET/HEAD.
+
 ### SEC-001 — Remove `X-Hive-Message` escape hatch, enforce request-binding (2026-04-20) — Reviewed ✓
 
 Fix for FINDING-001 (Critical, CVSS 9.6 — universal auth bypass via unbound `X-Hive-Message`). Backend and frontend shipped atomically.
