@@ -297,9 +297,11 @@ export function initBridgePage() {
 
         this.step = 'success';
         Alpine.store('toast').show(this.$t('bridge.stepSuccess'), 'success');
+        // Wait for the Hive block to be produced before redirecting. The paper detail
+        // page retries on NOT_FOUND to cover any remaining HAF indexing lag.
         setTimeout(() => {
           this.navigate(`/paper/${res.data.author}/${res.data.permlink}`);
-        }, 1500);
+        }, 3000);
       } catch (err) {
         this.step = 'error';
         this.errorMessage = err.message || this.$t('common.registrationFailed');

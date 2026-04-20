@@ -779,21 +779,33 @@ export function initPaperDetailPage() {
       const permlink = this.permlink;
       this.loading = true;
       this.error = null;
-      try {
-        const res = await fetchPaper(author, permlink);
-        if (this.author !== author || this.permlink !== permlink) return;
-        this.paper = res.data;
-        if (this.paper.title) document.title = `${this.paper.title} — PEvO`;
-        // Load enrichment lazily (reviews, votes, versions, DOI)
-        this.loadEnrichment();
-      } catch (err) {
-        if (this.author !== author || this.permlink !== permlink) return;
-        this.error = err?.message === 'Not found'
-          ? this.$t('paperDetail.notFoundTitle')
-          : (err?.message || this.$t('paperDetail.errorLoadingTitle'));
-      } finally {
-        this.loading = false;
+      // Retry on NOT_FOUND to cover the HAF indexing window right after a publish/bridge.
+      const notFoundRetryDelaysMs = [2000, 2000, 2000];
+      let attempt = 0;
+      while (true) {
+        try {
+          const res = await fetchPaper(author, permlink);
+          if (this.author !== author || this.permlink !== permlink) return;
+          this.paper = res.data;
+          if (this.paper.title) document.title = `${this.paper.title} — PEvO`;
+          // Load enrichment lazily (reviews, votes, versions, DOI)
+          this.loadEnrichment();
+          break;
+        } catch (err) {
+          if (this.author !== author || this.permlink !== permlink) return;
+          if (err?.code === 'NOT_FOUND' && attempt < notFoundRetryDelaysMs.length) {
+            await new Promise((resolve) => setTimeout(resolve, notFoundRetryDelaysMs[attempt]));
+            if (this.author !== author || this.permlink !== permlink) return;
+            attempt++;
+            continue;
+          }
+          this.error = err?.code === 'NOT_FOUND'
+            ? this.$t('paperDetail.notFoundTitle')
+            : (err?.message || this.$t('paperDetail.errorLoadingTitle'));
+          break;
+        }
       }
+      this.loading = false;
     },
 
     async loadEnrichment() {
