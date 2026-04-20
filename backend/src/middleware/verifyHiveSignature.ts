@@ -8,6 +8,7 @@ import { logger } from '../logger.js';
 import { config } from '../config.js';
 import { getRedis, isRedisAvailable } from '../redis.js';
 import { getAppPool } from '../app-db.js';
+import { buildCanonicalAuthMessage } from '../lib/authMessage.js';
 
 /**
  * Middleware that verifies a Hive Keychain signature.
@@ -142,13 +143,18 @@ export async function verifyHiveSignature(req: Request, res: Response, next: Nex
 
     const postingPubKeys = account.posting.key_auths.map(([key]) => key.toString());
 
-    // Request-bound signed message with domain separator.
-    // Format: {APP_TAG}-auth|v1|{METHOD}|{path}|{sha256_hex(body)}|{timestamp}
+    // Request-bound signed message with domain separator, assembled by the shared
+    // helper so the frontend equivalence test drives both sides from one source.
     // path is req.originalUrl minus query string — the URL the client signs,
     // not req.path which is relative to the sub-router mount point.
     const fullPath = req.originalUrl.split('?')[0];
-    const bodyHash = cryptoUtils.sha256(JSON.stringify(req.body || {})).toString('hex');
-    const msgToVerify = `${config.appTag}-auth|v1|${req.method}|${fullPath}|${bodyHash}|${timestamp}`;
+    const msgToVerify = buildCanonicalAuthMessage({
+      appTag: config.appTag,
+      method: req.method,
+      path: fullPath,
+      body: req.body,
+      timestamp,
+    });
 
     const msgHash = cryptoUtils.sha256(msgToVerify);
     const sig = Signature.fromString(signature);

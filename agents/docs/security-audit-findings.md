@@ -15,7 +15,7 @@ External friend/auditor review, being triaged one finding at a time. Each entry 
 
 **Severity:** Critical (CVSS 9.6) — CWE-345, CWE-294
 **Location:** [backend/src/middleware/verifyHiveSignature.ts:138-148](../../backend/src/middleware/verifyHiveSignature.ts#L138-L148)
-**Status:** Fixed (2026-04-20) — backend (SEC-001-BE) and frontend (SEC-001-UI) shipped atomically. In-browser Keychain smoke test still pending.
+**Status:** Fixed (2026-04-20) — backend (SEC-001-BE) and frontend (SEC-001-UI) shipped atomically. The previously-pending in-browser Keychain smoke test is superseded by the TEST-003 equivalence test ([frontend/tests/unit/sec-001-equivalence.test.js](../../frontend/tests/unit/sec-001-equivalence.test.js)), which drives the backend helper ([backend/src/lib/authMessage.ts](../../backend/src/lib/authMessage.ts)) from the frontend's `signRequest` and asserts byte equality for the four representative request shapes. The manual end-to-end signature-verification check (real posting key, real Keychain) is kept deliberately out of automation and remains the pre-deploy gate.
 
 ### Summary
 

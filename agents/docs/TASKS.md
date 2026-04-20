@@ -39,7 +39,12 @@ Review history: `agents/docs/tasks-archive.md`
 
 ## Pending
 
+_None._
+
 ---
 
 ## Review
 
+_None._
+
+---

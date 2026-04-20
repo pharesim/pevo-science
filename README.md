@@ -93,14 +93,26 @@ See `.env.example` for the full list of options (Redis, ORCID OAuth, DataCite DO
 
 ```
 pevo/
-  .env.example            Environment template (single file for all services)
-  docker-compose.yml      Full stack (postgres, redis, ipfs, backend)
-  agents/docs/            Architecture docs, API contracts, task tracking
-    ARCHITECTURE.md       System design (single source of truth)
-  backend/                Node.js + Express API (types in src/types/)
-  frontend/               Alpine.js SPA (Vite build, served by backend)
-  pinner/                 Community pinner — standalone Go binary with embedded IPFS node
-  scripts/                Backup and deployment utilities
+  .env.example                       Environment template (single file for all services)
+  docker-compose.yml                 Full stack (postgres, redis, ipfs, backend)
+  docker-compose.test.override.yml   E2E overlay (routes backend at pevo_app_test + mailpit)
+  agents/docs/                       Architecture docs, API contracts, task tracking
+    ARCHITECTURE.md                  System design (single source of truth)
+  backend/                           Node.js + Express API (types in src/types/)
+  frontend/                          Alpine.js SPA (Vite build, served by backend)
+  pinner/                            Community pinner — standalone Go binary with embedded IPFS node
+  scripts/                           Backup and deployment utilities
+```
+
+### Running E2E tests
+
+E2E tests run against a dedicated `pevo_app_test` database, with a Mailpit sidecar standing in for SMTP so the signup flow works without any real mail provider configured. Everything is driven through `./deploy.sh`:
+
+```bash
+./deploy.sh test-db-up                    # provision pevo_app_test + migrate (idempotent, once per machine)
+./deploy.sh test-up                       # swap backend to pevo_app_test + start mailpit (prints the exact npm command)
+npm --prefix frontend run test:e2e        # run Playwright (APP_DATABASE_URL + PEVO_TEST_BASE_URL echoed by test-up)
+./deploy.sh up                            # restore dev routing (pevo_app) and remove the mailpit sidecar
 ```
 
 ## Key Design Decisions

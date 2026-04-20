@@ -1,0 +1,48 @@
+# E2E test override — reroutes the backend container to pevo_app_test and
+# wires a Mailpit SMTP sink so the signup flow can send verification mail
+# without touching the internet.
+#
+# Applied on top of docker-compose.yml. Postgres, Redis, and IPFS stay
+# shared with the dev stack. Mailpit is an E2E-only sidecar. The backend
+# container is recreated (compose detects the env-var change), so:
+#
+#   ./deploy.sh test-up   — reconfigures backend to pevo_app_test + Mailpit
+#   ./deploy.sh up        — restores backend to pevo_app (dev routing)
+#
+# Prerequisite: pevo_app_test must already exist and be migrated. Run
+# `./deploy.sh test-db-up` once per machine (idempotent).
+#
+# INSTITUTIONAL_EMAIL_DOMAINS=.test lets reserved RFC 2606 `.test` addresses
+# (e.g. e2e+signup@pevo.test) pass the signup accreditation gate without
+# needing a real institutional domain or ORCID round-trip.
+
+services:
+  backend:
+    environment:
+      APP_DATABASE_URL: postgresql://pevo:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/pevo_app_test
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      INSTITUTIONAL_EMAIL_DOMAINS: ".test"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ipfs:
+        condition: service_healthy
+      mailpit:
+        condition: service_started
+
+  mailpit:
+    image: axllent/mailpit:latest
+    restart: unless-stopped
+    # SMTP (1025) reachable only via the compose network. Web UI exposed
+    # on localhost:8025 for manual inspection of captured messages.
+    expose:
+      - "1025"
+    ports:
+      - "127.0.0.1:8025:8025"
+    deploy:
+      resources:
+        limits:
+          memory: 128m
