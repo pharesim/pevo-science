@@ -6,6 +6,7 @@ import { rateLimit, byAccount, byIp } from '../middleware/rateLimit.js';
 import { getAccreditation } from './profile.js';
 import { getRedis } from '../redis.js';
 import { getPool, isHafAvailable } from '../db.js';
+import { getAppPool } from '../app-db.js';
 import { T } from '../hafsql.js';
 import { logger } from '../logger.js';
 import multer from 'multer';
@@ -186,7 +187,20 @@ router.post('/upload', verifyHiveSignature, ipfsUploadLimiter, (req: Request, re
       const safeName = sanitizeFilename(req.file.originalname);
       const result = await pinToIpfs(req.file.buffer, safeName);
 
-      // Track upload in Redis for orphan cleanup (I5a)
+      // Durable tracking for orphan cleanup — Postgres is authoritative.
+      const appPool = getAppPool();
+      if (appPool) {
+        await appPool.query(
+          `INSERT INTO pending_ipfs_uploads (cid, uploader_account, size_bytes)
+           VALUES ($1, $2, $3)
+           ON CONFLICT (cid) DO NOTHING`,
+          [result.cid, req.hiveUsername, result.size],
+        ).catch((err) => {
+          logger.error({ err, cid: result.cid }, 'Failed to record pending IPFS upload in DB');
+        });
+      }
+
+      // Hot cache for the download proxy's known-CID check.
       const redis = getRedis();
       if (redis) {
         const trackingData = JSON.stringify({
@@ -194,7 +208,7 @@ router.post('/upload', verifyHiveSignature, ipfsUploadLimiter, (req: Request, re
           uploader: req.hiveUsername,
           timestamp: Date.now(),
         });
-        await redis.set(`ipfs:pending:${result.cid}`, trackingData, 'EX', 86400).catch((err) => {
+        await redis.set(`${config.appTag}:ipfs:pending:${result.cid}`, trackingData, 'EX', 86400).catch((err) => {
           logger.warn({ err, cid: result.cid }, 'Failed to track IPFS upload in Redis');
         });
       }
@@ -224,8 +238,18 @@ async function cidIsKnown(cid: string): Promise<boolean> {
   // Check Redis pending uploads first (fast path)
   const redis = getRedis();
   if (redis) {
-    const pending = await redis.get(`ipfs:pending:${cid}`);
+    const pending = await redis.get(`${config.appTag}:ipfs:pending:${cid}`);
     if (pending) return true;
+  }
+
+  // Durable pending-uploads record (Redis may have evicted the cache entry).
+  const appPool = getAppPool();
+  if (appPool) {
+    const pendingRow = await appPool.query(
+      `SELECT 1 FROM pending_ipfs_uploads WHERE cid = $1 LIMIT 1`,
+      [cid],
+    );
+    if (pendingRow.rowCount !== null && pendingRow.rowCount > 0) return true;
   }
 
   // Check HAF for published references

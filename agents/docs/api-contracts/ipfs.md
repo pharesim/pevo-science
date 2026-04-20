@@ -37,7 +37,7 @@ Upload a file and pin it to IPFS. Uses the local Kubo node by default; falls bac
 
 ### GET /api/ipfs/:cid
 
-Validated IPFS gateway proxy. Serves file content only for CIDs referenced by known PEvO papers (checked against HAF metadata and Redis pending uploads). Unknown CIDs return 404.
+Validated IPFS gateway proxy. Serves file content only for CIDs referenced by known PEvO papers (checked against HAF metadata, the `pending_ipfs_uploads` table for recent uploads, and a Redis cache as a fast path). Unknown CIDs return 404.
 
 **Rate limit:** 60 requests per minute per IP.
 

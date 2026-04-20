@@ -1,13 +1,18 @@
 /**
- * IPFS orphan cleanup job (I5b).
+ * IPFS orphan cleanup job.
  *
- * Runs every 30 minutes. For each `ipfs:pending:*` key older than 24h:
- * - If a PEvO post references the CID (in ipfs_cid or supplementary_files) → delete the key
- * - If no post references it → unpin from Kubo and delete the key
+ * Runs every 30 minutes. For each row in `pending_ipfs_uploads` older than 24h:
+ * - If a PEvO post references the CID → drop the DB row (and Redis key)
+ * - If no post references it → unpin from Kubo, then drop the DB row (and Redis key)
+ *
+ * Postgres is the authoritative record of in-flight pins. Redis is a hot cache
+ * for the download proxy's known-CID check only; keys there have a 24h TTL and
+ * may be missing on eviction or flush, which is fine.
  */
 
 import { getRedis } from './redis.js';
 import { getPool, isHafAvailable } from './db.js';
+import { getAppPool } from './app-db.js';
 import { config } from './config.js';
 import { logger } from './logger.js';
 import { T } from './hafsql.js';
@@ -61,49 +66,49 @@ async function unpinFromKubo(cid: string): Promise<void> {
 
 /** Process all expired pending CIDs. */
 async function runCleanup(): Promise<void> {
-  const redis = getRedis();
-  if (!redis) return;
+  const appPool = getAppPool();
+  if (!appPool) {
+    logger.debug('IPFS cleanup skipped — app DB not configured');
+    return;
+  }
 
   if (!isHafAvailable()) {
     logger.debug('IPFS cleanup skipped — HAF not available');
     return;
   }
 
-  let cursor = '0';
-  const now = Date.now();
+  const redis = getRedis();
+  const ageSeconds = Math.floor(MAX_AGE_MS / 1000);
+
+  const { rows } = await appPool.query<{ cid: string; uploader_account: string }>(
+    `SELECT cid, uploader_account
+       FROM pending_ipfs_uploads
+      WHERE created_at < NOW() - ($1 || ' seconds')::interval`,
+    [String(ageSeconds)],
+  );
+
   let processed = 0;
   let unpinned = 0;
 
-  do {
-    const [nextCursor, keys] = await redis.scan(
-      cursor, 'MATCH', 'ipfs:pending:*', 'COUNT', '100',
-    );
-    cursor = nextCursor;
-
-    for (const key of keys) {
-      try {
-        const raw = await redis.get(key);
-        if (!raw) continue;
-
-        const data = JSON.parse(raw) as { cid: string; uploader: string; timestamp: number };
-        if (now - data.timestamp < MAX_AGE_MS) continue; // not old enough
-
-        const referenced = await cidReferencedInHaf(data.cid);
-        if (referenced) {
-          await redis.del(key);
-          logger.debug({ cid: data.cid }, 'IPFS CID confirmed on-chain — tracking removed');
-        } else {
-          await unpinFromKubo(data.cid);
-          await redis.del(key);
-          unpinned++;
-          logger.info({ cid: data.cid, uploader: data.uploader }, 'Unpinned orphaned IPFS CID');
-        }
-        processed++;
-      } catch (err) {
-        logger.warn({ err, key }, 'IPFS cleanup error processing key');
+  for (const row of rows) {
+    try {
+      const referenced = await cidReferencedInHaf(row.cid);
+      if (referenced) {
+        await appPool.query(`DELETE FROM pending_ipfs_uploads WHERE cid = $1`, [row.cid]);
+        if (redis) await redis.del(`${config.appTag}:ipfs:pending:${row.cid}`).catch(() => {});
+        logger.debug({ cid: row.cid }, 'IPFS CID confirmed on-chain — tracking removed');
+      } else {
+        await unpinFromKubo(row.cid);
+        await appPool.query(`DELETE FROM pending_ipfs_uploads WHERE cid = $1`, [row.cid]);
+        if (redis) await redis.del(`${config.appTag}:ipfs:pending:${row.cid}`).catch(() => {});
+        unpinned++;
+        logger.info({ cid: row.cid, uploader: row.uploader_account }, 'Unpinned orphaned IPFS CID');
       }
+      processed++;
+    } catch (err) {
+      logger.warn({ err, cid: row.cid }, 'IPFS cleanup error processing CID');
     }
-  } while (cursor !== '0');
+  }
 
   if (processed > 0) {
     logger.info({ processed, unpinned }, 'IPFS orphan cleanup completed');

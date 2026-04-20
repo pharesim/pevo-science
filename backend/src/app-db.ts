@@ -96,6 +96,16 @@ export async function initAppDb(): Promise<void> {
       used_at         TIMESTAMPTZ,
       used_for        TEXT
     );
+
+    CREATE TABLE IF NOT EXISTS pending_ipfs_uploads (
+      cid                TEXT PRIMARY KEY,
+      uploader_account   TEXT NOT NULL,
+      size_bytes         BIGINT,
+      created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_pending_ipfs_uploads_created_at
+      ON pending_ipfs_uploads (created_at);
   `);
 
   logger.info('App database tables initialized');
