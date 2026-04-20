@@ -206,7 +206,9 @@ const template = `
                         <div class="flex items-center gap-5 text-xs text-ink-muted pt-3 border-t border-parchment-dark">
                           <span class="flex items-center gap-1" :title="$t('aria.votes')">
                             <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor"><path d="M10 3l-7 7h4v7h6v-7h4L10 3z" /></svg>
-                            <span x-text="$t('vote.votesWithStrength', { count: paper.net_votes ?? 0, strength: $t('vote.strength.' + paper.vote_strength) })"></span>
+                            <template x-if="paper.net_votes != 0">
+                              <span x-text="$t('vote.votesWithStrength', { count: paper.net_votes ?? 0, strength: $t('vote.strength.' + paper.vote_strength) })"></span>
+                            </template>
                           </span>
                           <span class="flex items-center gap-1" :title="$t('aria.reviews')">
                             <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M18 10c0 3.866-3.582 7-8 7a8.841 8.841 0 01-4.083-.98L2 17l1.338-3.123C2.493 12.767 2 11.434 2 10c0-3.866 3.582-7 8-7s8 3.134 8 7zM7 9H5v2h2V9zm8 0h-2v2h2V9zm-5 0H8v2h2V9z" clip-rule="evenodd" /></svg>
