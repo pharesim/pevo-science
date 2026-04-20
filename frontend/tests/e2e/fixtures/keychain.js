@@ -17,6 +17,7 @@
  */
 
 import { test as base, expect } from '@playwright/test';
+import { recordCid } from './captured-cids.js';
 
 const INJECT_SCRIPT = `
   (function installStubKeychain() {
@@ -44,8 +45,25 @@ const INJECT_SCRIPT = `
 `;
 
 export const test = base.extend({
-  page: async ({ page }, use) => {
+  page: async ({ page }, use, testInfo) => {
     await page.addInitScript(INJECT_SCRIPT);
+
+    // Record CIDs from any successful IPFS upload so global-teardown can
+    // unpin them. Listener is attached once per page regardless of whether
+    // the test actually uploads anything.
+    page.on('response', async (response) => {
+      const url = response.url();
+      if (!url.endsWith('/api/ipfs/upload')) return;
+      if (response.status() !== 200) return;
+      try {
+        const body = await response.json();
+        const cid = body?.data?.cid ?? body?.cid;
+        if (cid) recordCid(cid, { testTitle: testInfo.title });
+      } catch {
+        // non-JSON or stream already consumed — nothing to record
+      }
+    });
+
     await use(page);
   },
 });

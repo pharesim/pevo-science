@@ -17,6 +17,7 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync, existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { resetCapturedCids } from './fixtures/captured-cids.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FRONTEND_ROOT = resolve(__dirname, '..', '..');
@@ -38,6 +39,10 @@ function loadEnvFile(path) {
 
 export default async function globalSetup() {
   loadEnvFile(resolve(FRONTEND_ROOT, '.env.test'));
+
+  // Clear any leftover CIDs from a previous run so teardown doesn't try to
+  // unpin CIDs that were already cleaned up.
+  resetCapturedCids();
 
   if (!process.env.APP_DATABASE_URL) {
     throw new Error(

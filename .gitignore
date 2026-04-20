@@ -35,6 +35,7 @@ docker-compose.override.yml
 # Test output
 test-results/
 coverage/
+frontend/tests/e2e/.captured-cids.jsonl
 
 *outreach.txt
 /claim_accounts*
