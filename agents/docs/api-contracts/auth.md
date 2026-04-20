@@ -6,9 +6,11 @@ Endpoints for authentication, signup, login, password reset, and account recover
 
 ### POST /api/auth/session
 
-Create a session token. The client signs a challenge with Hive Keychain at login time, then exchanges it for a JWT that authenticates all subsequent API requests — no further Keychain popups needed.
+Create a session token. The client signs the request-bound message (see [common.md → Direct Hive Signature Authentication](common.md)) with Hive Keychain at login time, then exchanges it for a JWT that authenticates all subsequent API requests — no further Keychain popups needed.
 
-**Headers:** `X-Hive-Username`, `X-Hive-Signature`, `X-Hive-Message`, `X-Hive-Timestamp`
+**Headers:** `X-Hive-Username`, `X-Hive-Signature`, `X-Hive-Timestamp`
+
+**Body:** `{}` (empty JSON object; `Content-Type: application/json` required)
 
 **Response `data`:** `SessionResponse`
 
@@ -220,7 +222,7 @@ On success: Hive account created via `create_claimed_account`, posting and memo 
 
 Link an existing Hive account to a verified PEvO signup. Requires Keychain signature proving ownership of the Hive account.
 
-**Headers:** `X-Hive-Username`, `X-Hive-Signature`, `X-Hive-Message`
+**Headers:** `X-Hive-Username`, `X-Hive-Signature`, `X-Hive-Timestamp` (see [common.md → Direct Hive Signature Authentication](common.md) for the signed-message format)
 
 **Body:**
 

@@ -1,7 +1,7 @@
 import Alpine from 'alpinejs';
 import { verifyEmail, resumeSignup, confirmAccount, linkExistingAccount } from '../api.js';
 import { generateMnemonic, validateMnemonic, deriveAllKeys } from '../hive-keys.js';
-import { signMessage, isKeychainInstalled } from '../keychain.js';
+import { isKeychainInstalled } from '../keychain.js';
 
 const template = `
       <div x-data="signupVerifyPage" class="container-narrow py-8">
@@ -444,9 +444,7 @@ export function initSignupVerifyPage() {
       this.error = null;
       try {
         const username = this.hiveUsername.trim().toLowerCase();
-        const message = `${this.email}:link`;
-        const { signature } = await signMessage(username, message);
-        const res = await linkExistingAccount(this.authToken, this.email, username, signature);
+        const res = await linkExistingAccount(this.authToken, username);
 
         const auth = Alpine.store('auth');
         auth.token = res.data.token;

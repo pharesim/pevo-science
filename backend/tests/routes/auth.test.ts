@@ -1,24 +1,43 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import request from 'supertest';
 import jwt from 'jsonwebtoken';
+import { PrivateKey, cryptoUtils } from '@hiveio/dhive';
 import { createApp } from '../../src/app.js';
 import { config } from '../../src/config.js';
 
+// Generate a deterministic test keypair and mock the Hive client so the
+// middleware's on-chain account lookup returns this public key for the
+// test username. Tests that exercise the real verifyHiveSignature
+// end-to-end use this to produce genuinely valid signatures.
+const TEST_USERNAME = 'testauthuser';
+const TEST_PRIVATE_KEY = PrivateKey.fromSeed('pevo-auth-test-seed-deterministic');
+const TEST_PUBLIC_KEY = TEST_PRIVATE_KEY.createPublic().toString();
+
+vi.mock('../../src/hive.js', () => ({
+  hiveClient: {
+    database: {
+      getAccounts: vi.fn().mockImplementation((names: string[]) => {
+        if (names.includes(TEST_USERNAME)) {
+          return Promise.resolve([
+            { name: TEST_USERNAME, posting: { key_auths: [[TEST_PUBLIC_KEY, 1]] } },
+          ]);
+        }
+        return Promise.resolve([]);
+      }),
+    },
+  },
+}));
+
 const app = createApp();
 
-describe('POST /api/auth/session', () => {
-  it('returns JWT when called with valid Hive signature headers', async () => {
-    // The real verifyHiveSignature middleware runs here.
-    // We send headers that will fail Hive sig check, so we test the mock path
-    // by providing a valid Bearer token won't work here (session endpoint needs Hive sig).
-    // Instead, test that missing headers returns 401.
-    const res = await request(app)
-      .post('/api/auth/session')
-      .send({});
-    expect(res.status).toBe(401);
-    expect(res.body.error.code).toBe('UNAUTHORIZED');
-  });
+function signRequestBound(method: string, fullPath: string, body: unknown, timestamp: string): string {
+  const bodyHash = cryptoUtils.sha256(JSON.stringify(body || {})).toString('hex');
+  const msg = `${config.appTag}-auth|v1|${method}|${fullPath}|${bodyHash}|${timestamp}`;
+  const msgHash = cryptoUtils.sha256(msg);
+  return TEST_PRIVATE_KEY.sign(msgHash).toString();
+}
 
+describe('POST /api/auth/session', () => {
   it('returns 401 without signature headers', async () => {
     const res = await request(app)
       .post('/api/auth/session')
@@ -27,35 +46,46 @@ describe('POST /api/auth/session', () => {
     expect(res.body.status).toBe('error');
     expect(res.body.error.code).toBe('UNAUTHORIZED');
   });
+
+  it('issues JWT when called with valid request-bound Hive signature', async () => {
+    const timestamp = new Date().toISOString();
+    const body = {};
+    const signature = signRequestBound('POST', '/api/auth/session', body, timestamp);
+
+    const res = await request(app)
+      .post('/api/auth/session')
+      .set('X-Hive-Username', TEST_USERNAME)
+      .set('X-Hive-Signature', signature)
+      .set('X-Hive-Timestamp', timestamp)
+      .send(body);
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('ok');
+    expect(res.body.data.token).toBeTruthy();
+    const decoded = jwt.verify(res.body.data.token, config.sessionSecret) as { sub: string };
+    expect(decoded.sub).toBe(TEST_USERNAME);
+  });
 });
 
 describe('Bearer JWT authentication', () => {
   it('accepts valid Bearer JWT on authenticated endpoints', async () => {
-    // Create a valid JWT signed with our session secret
     const token = jwt.sign({ sub: 'testuser123' }, config.sessionSecret, { expiresIn: '1h' });
 
-    // Use the notifications endpoint which requires auth (verifyHiveSignature)
-    // A valid JWT should bypass the Hive signature check
     const res = await request(app)
       .get('/api/notifications?since_block=1')
       .set('Authorization', `Bearer ${token}`);
 
-    // Should not be 401 — the JWT auth should succeed
     expect(res.status).not.toBe(401);
-    // The endpoint may return 200 or another status depending on data availability,
-    // but critically it should NOT be an auth failure
     expect(res.body.error?.code).not.toBe('UNAUTHORIZED');
   });
 
   it('rejects expired JWT and falls back to Hive sig check (returns 401)', async () => {
-    // Create an already-expired JWT
     const token = jwt.sign({ sub: 'testuser123' }, config.sessionSecret, { expiresIn: '-1s' });
 
     const res = await request(app)
       .get('/api/notifications?since_block=1')
       .set('Authorization', `Bearer ${token}`);
 
-    // Expired JWT should fall through to Hive sig check, which also fails → 401
     expect(res.status).toBe(401);
     expect(res.body.error.code).toBe('UNAUTHORIZED');
   });
@@ -81,10 +111,71 @@ describe('Bearer JWT authentication', () => {
   });
 });
 
-describe('Backwards compatibility — Hive signature auth still works', () => {
-  it('returns 401 with invalid Hive signature (real middleware runs)', async () => {
-    // Send Hive sig headers with invalid signature — the real middleware
-    // should reject it, proving the Hive sig path is still active
+describe('Hive signature path — request-binding enforcement (FINDING-001 regressions)', () => {
+  it('rejects when X-Hive-Timestamp is missing', async () => {
+    const res = await request(app)
+      .post('/api/auth/session')
+      .set('X-Hive-Username', TEST_USERNAME)
+      .set('X-Hive-Signature', 'SIG_K1_anything')
+      .send({});
+
+    expect(res.status).toBe(401);
+    expect(res.body.error.code).toBe('UNAUTHORIZED');
+    expect(res.body.error.message).toBe('X-Hive-Timestamp is required');
+  });
+
+  it('rejects a valid signature made over a different (captured) message', async () => {
+    // Simulates an attacker replaying a signature captured from another dApp
+    // or another endpoint. The signature is cryptographically valid and from
+    // the correct private key, but it was produced over a payload that is NOT
+    // the request-bound message, so the server must reject it.
+    const timestamp = new Date().toISOString();
+    const capturedMsg = `pevo-auth-${Date.now()}-${Math.random()}`; // old pre-FINDING-001 challenge format
+    const capturedMsgHash = cryptoUtils.sha256(capturedMsg);
+    const capturedSignature = TEST_PRIVATE_KEY.sign(capturedMsgHash).toString();
+
+    const res = await request(app)
+      .post('/api/auth/session')
+      .set('X-Hive-Username', TEST_USERNAME)
+      .set('X-Hive-Signature', capturedSignature)
+      .set('X-Hive-Timestamp', timestamp)
+      .send({});
+
+    expect(res.status).toBe(401);
+    expect(res.body.error.code).toBe('UNAUTHORIZED');
+  });
+
+  it('rejects a signature produced against a different path (cross-endpoint replay)', async () => {
+    // Signature bound to /api/auth/session must not authenticate /api/notifications.
+    const timestamp = new Date().toISOString();
+    const signature = signRequestBound('POST', '/api/auth/session', {}, timestamp);
+
+    const res = await request(app)
+      .get('/api/notifications?since_block=1')
+      .set('X-Hive-Username', TEST_USERNAME)
+      .set('X-Hive-Signature', signature)
+      .set('X-Hive-Timestamp', timestamp);
+
+    expect(res.status).toBe(401);
+    expect(res.body.error.code).toBe('UNAUTHORIZED');
+  });
+
+  it('rejects an expired timestamp (>60s old)', async () => {
+    const timestamp = new Date(Date.now() - 120_000).toISOString();
+    const signature = signRequestBound('POST', '/api/auth/session', {}, timestamp);
+
+    const res = await request(app)
+      .post('/api/auth/session')
+      .set('X-Hive-Username', TEST_USERNAME)
+      .set('X-Hive-Signature', signature)
+      .set('X-Hive-Timestamp', timestamp)
+      .send({});
+
+    expect(res.status).toBe(401);
+    expect(res.body.error.code).toBe('UNAUTHORIZED');
+  });
+
+  it('returns 401 with malformed Hive signature (real middleware runs)', async () => {
     const res = await request(app)
       .get('/api/notifications?since_block=1')
       .set('X-Hive-Username', 'someuser')
@@ -93,17 +184,5 @@ describe('Backwards compatibility — Hive signature auth still works', () => {
 
     expect(res.status).toBe(401);
     expect(res.body.error.code).toBe('UNAUTHORIZED');
-  });
-
-  it('does not accept Bearer JWT on session endpoint itself (requires Hive sig)', async () => {
-    // The session endpoint uses verifyHiveSignature middleware.
-    // A valid JWT would actually pass the Bearer check and bypass Hive sig,
-    // which is expected behavior — the JWT check runs first.
-    // But a fresh login (no existing token) must use Hive sig.
-    const res = await request(app)
-      .post('/api/auth/session')
-      .send({});
-
-    expect(res.status).toBe(401);
   });
 });

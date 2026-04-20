@@ -100,7 +100,7 @@ export function createApp() {
     credentials: true,
     maxAge: 86400,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Hive-Username', 'X-Hive-Signature', 'X-Hive-Message', 'X-Hive-Timestamp'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Hive-Username', 'X-Hive-Signature', 'X-Hive-Timestamp'],
   }));
   app.use(express.json({ limit: '1mb' }));
 

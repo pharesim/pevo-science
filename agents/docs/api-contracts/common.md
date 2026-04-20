@@ -76,16 +76,29 @@ This avoids repeated Keychain popups for read operations (notifications, prefere
 
 ### Direct Hive Signature Authentication (fallback)
 
-For backwards compatibility, all authenticated endpoints also accept direct Hive Keychain signatures:
+All authenticated endpoints also accept direct Hive Keychain signatures. The signed payload is **always** bound to the request:
 
-| Header | Description |
-|--------|-------------|
-| `X-Hive-Username` | The Hive account name |
-| `X-Hive-Signature` | Hex-encoded Hive Keychain signature |
-| `X-Hive-Message` | (Optional) The original message that was signed. Defaults to SHA-256 of the request body if omitted. |
-| `X-Hive-Timestamp` | ISO 8601 timestamp (must be within 60 seconds) |
+| Header | Required | Description |
+|--------|----------|-------------|
+| `X-Hive-Username` | yes | The Hive account name |
+| `X-Hive-Signature` | yes | Hex-encoded Hive Keychain signature over the message defined below |
+| `X-Hive-Timestamp` | yes | ISO 8601 timestamp. Rejected if more than 60 seconds off wall-clock. |
 
-The backend recovers the public key from the signature and verifies it matches one of the account's posting key authorities on-chain.
+The client signs exactly this message (byte-for-byte):
+
+```
+{APP_TAG}-auth|v1|{METHOD}|{path}|{sha256_hex(body)}|{timestamp}
+```
+
+- `APP_TAG` — deployment tag (`pevo` in production, `pevotest` on beta, per-fork for forks). Included so signatures from one deployment cannot be replayed against another.
+- `METHOD` — HTTP method, uppercase (e.g. `POST`).
+- `path` — request path, no query string (e.g. `/api/auth/session`).
+- `sha256_hex(body)` — lowercase hex SHA-256 of `JSON.stringify(body || {})`. For requests with no body, sign the hash of `'{}'`. Authenticated POSTs **must** send `Content-Type: application/json` and a JSON body (at minimum `{}`).
+- `timestamp` — the raw value of `X-Hive-Timestamp`.
+
+The backend recovers the public key from the signature over `sha256(message)` and verifies it matches one of the account's posting key authorities on-chain. Every accepted signature is also cached for 5 minutes to prevent in-window replay.
+
+**Note:** `X-Hive-Message` used to be accepted as a free-form override for this payload. It has been removed (see security-audit-findings.md → FINDING-001). Any client sending `X-Hive-Message` will be ignored and the request will fail signature check.
 
 ### Auth Resolution Order
 

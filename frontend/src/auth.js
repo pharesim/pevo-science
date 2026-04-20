@@ -1,6 +1,7 @@
 import Alpine from 'alpinejs';
-import { waitForKeychain, signMessage } from './keychain.js';
+import { waitForKeychain } from './keychain.js';
 import { fetchAccreditationStatus } from './api.js';
+import { signRequest } from './sign-request.js';
 
 const SESSION_KEY = 'pevo_session';
 
@@ -49,18 +50,14 @@ export function initAuth() {
 
       const accreditationPromise = fetchAccreditationStatus(inputUsername).catch(() => null);
 
-      const challenge = `pevo-auth-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      const { signature } = await signMessage(inputUsername, challenge);
-
-      const timestamp = new Date().toISOString();
+      const signed = await signRequest(inputUsername, 'POST', '/api/auth/session', {});
       const res = await fetch('/api/auth/session', {
         method: 'POST',
         headers: {
-          'X-Hive-Username': inputUsername,
-          'X-Hive-Signature': signature,
-          'X-Hive-Message': challenge,
-          'X-Hive-Timestamp': timestamp,
+          ...signed.headers,
+          'Content-Type': 'application/json',
         },
+        body: signed.body,
       });
 
       if (res.ok) {

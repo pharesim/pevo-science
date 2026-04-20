@@ -9,6 +9,16 @@ export async function sha256File(file) {
 }
 
 /**
+ * Compute SHA-256 hash of a string, returning hex.
+ */
+export async function sha256Hex(str) {
+  const bytes = new TextEncoder().encode(str);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', bytes);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/**
  * Generate a URL-safe slug from a title string.
  */
 export function slugify(text) {

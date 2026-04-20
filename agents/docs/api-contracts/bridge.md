@@ -102,7 +102,7 @@ If not registered:
 
 Register an existing preprint as a bridge paper on PEvO. The backend validates the request, checks for duplicates, and broadcasts the Hive post **server-side** under the bridge account (`HIVE_BRIDGE_ACCOUNT`). The requesting user only needs to authenticate via Keychain signature — no client-side Hive broadcast is required.
 
-**Headers:** `X-Hive-Username`, `X-Hive-Signature`, `X-Hive-Message`
+**Headers:** `X-Hive-Username`, `X-Hive-Signature`, `X-Hive-Timestamp` (see [common.md → Direct Hive Signature Authentication](common.md) for the signed-message format)
 
 **Request Body:**
 
@@ -152,7 +152,7 @@ The `author` is the bridge account (not the requesting user). The requesting use
 
 Re-fetch metadata from the source for an existing bridge paper and broadcast the updated post **server-side** under the bridge account. Used when the source preprint has a new version.
 
-**Headers:** `X-Hive-Username`, `X-Hive-Signature`, `X-Hive-Message`
+**Headers:** `X-Hive-Username`, `X-Hive-Signature`, `X-Hive-Timestamp` (see [common.md → Direct Hive Signature Authentication](common.md) for the signed-message format)
 
 **Request Body:**
 

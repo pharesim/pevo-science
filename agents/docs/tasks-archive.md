@@ -1,3 +1,13 @@
+### SEC-001 — Remove `X-Hive-Message` escape hatch, enforce request-binding (2026-04-20) — Reviewed ✓
+
+Fix for FINDING-001 (Critical, CVSS 9.6 — universal auth bypass via unbound `X-Hive-Message`). Backend and frontend shipped atomically.
+
+**Backend (SEC-001-BE):** `verifyHiveSignature` middleware no longer reads `X-Hive-Message`. `X-Hive-Timestamp` now required (missing → 401 with exact message `"X-Hive-Timestamp is required"`). Signed message is request-bound: `${appTag}-auth|v1|${method}|${originalUrl without query}|${sha256_hex(JSON.stringify(body || {}))}|${timestamp}`. `req.originalUrl.split('?')[0]` chosen over `req.path` so the backend verifies the full URL the client signs. `X-Hive-Message` removed from CORS `allowedHeaders`. 60s window, 5-min replay cache, JWT bearer path, and timing-safe pubkey compare unchanged. Tests rewritten to exercise the real middleware: positive request-bound sign → JWT; regressions for captured-message replay, missing timestamp, cross-endpoint replay, expired timestamp. All 11 auth tests pass.
+
+**Frontend (SEC-001-UI):** New `frontend/src/sign-request.js` helper `signRequest(username, method, path, bodyObject)` — builds the same message, signs via Keychain, returns `{ headers, body }`. `sha256Hex` added to `crypto.js` (Web Crypto, no new deps). `auth.js connect()` signs `POST /api/auth/session` with body `{}`. `api.js linkExistingAccount(authToken, username)` signs the actual `{ auth_token }` body against `/api/auth/link`. `signup-verify.js handleLinkAccount` delegates to `linkExistingAccount` (old `${email}:link` challenge removed). grep confirms no `X-Hive-Message` references remain in `frontend/` or `backend/`. Build passes.
+
+**Note:** In-browser Keychain login and signup-link smoke test still pending — code paths verified via backend tests and static review. `agents/docs/security-audit-findings.md` FINDING-001 marked Fixed. Contract docs (`api-contracts/common.md`, `auth.md`, `bridge.md`) already reflect the new signed-message format and the removal of `X-Hive-Message`.
+
 ### ORCID-4 — Remove old ORCID routes (2026-04-19) — Reviewed ✓
 
 Removed old fragmented ORCID endpoints from `auth.ts` and `accreditation.ts`, replaced by unified `/api/orcid/start` and `/api/orcid/callback` in `orcid.ts`. Cleaned up `signupOrcidStates`, `signupOrcidVerified` maps, legacy `signup_orcid_verified:` Redis key fallbacks, `orcidStates` map, `getExistingAccreditation` (from accreditation.ts), and unused imports. Signup and recover routes now use only `orcid_verified:` keys from the unified orcid module. Build passes, no stale references.

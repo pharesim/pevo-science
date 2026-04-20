@@ -1,4 +1,5 @@
 import Alpine from 'alpinejs';
+import { signRequest } from './sign-request.js';
 
 const BASE_URL = '/api';
 const DEFAULT_TIMEOUT_MS = 30000;
@@ -385,18 +386,16 @@ export function confirmAccount(authToken, username, keys) {
   });
 }
 
-export function linkExistingAccount(authToken, email, username, signature) {
-  const timestamp = new Date().toISOString();
+export async function linkExistingAccount(authToken, username) {
+  const body = { auth_token: authToken };
+  const signed = await signRequest(username, 'POST', '/api/auth/link', body);
   return request('/auth/link', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'X-Hive-Username': username,
-      'X-Hive-Signature': signature,
-      'X-Hive-Message': `${email}:link`,
-      'X-Hive-Timestamp': timestamp,
+      ...signed.headers,
     },
-    body: JSON.stringify({ auth_token: authToken }),
+    body: signed.body,
   });
 }
 

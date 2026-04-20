@@ -14,9 +14,16 @@ import { getAppPool } from '../app-db.js';
  *
  * Expects headers:
  *   X-Hive-Username:  the Hive account name
- *   X-Hive-Signature: hex-encoded signature of the message
- *   X-Hive-Message:   the original message that was signed (optional — defaults to request body hash)
- *   X-Hive-Timestamp: ISO 8601 timestamp of when the message was signed (required for replay prevention)
+ *   X-Hive-Signature: hex-encoded signature of the request-bound message
+ *   X-Hive-Timestamp: ISO 8601 timestamp of when the message was signed (required)
+ *
+ * The signed message must be request-bound in this exact format:
+ *   {APP_TAG}-auth|v1|{METHOD}|{path}|{sha256_hex(body)}|{timestamp}
+ *
+ * where path is req.originalUrl minus any query string (e.g. /api/auth/session
+ * rather than router-relative /session), and body is JSON.stringify(req.body || {}).
+ * This prevents cross-dApp, cross-deployment, cross-endpoint, and body-tamper
+ * replay attacks.
  *
  * Attaches `req.hiveUsername` on success.
  */
@@ -105,11 +112,14 @@ export async function verifyHiveSignature(req: Request, res: Response, next: Nex
   // 2. Existing Hive signature verification
   const username = req.headers['x-hive-username'] as string | undefined;
   const signature = req.headers['x-hive-signature'] as string | undefined;
-  const message = req.headers['x-hive-message'] as string | undefined;
   const timestamp = req.headers['x-hive-timestamp'] as string | undefined;
 
   if (!username || !signature) {
     return sendError(res, 401, 'UNAUTHORIZED', 'X-Hive-Username and X-Hive-Signature headers are required');
+  }
+
+  if (!timestamp) {
+    return sendError(res, 401, 'UNAUTHORIZED', 'X-Hive-Timestamp is required');
   }
 
   // Replay prevention: reject if we've seen this exact signature recently
@@ -117,12 +127,10 @@ export async function verifyHiveSignature(req: Request, res: Response, next: Nex
     return sendError(res, 401, 'UNAUTHORIZED', 'Signature already used — replay rejected');
   }
 
-  // Timestamp validation: if provided, enforce 60s window
-  if (timestamp) {
-    const ts = new Date(timestamp).getTime();
-    if (isNaN(ts) || Math.abs(Date.now() - ts) > MAX_SIGNATURE_AGE_MS) {
-      return sendError(res, 401, 'UNAUTHORIZED', 'Request timestamp expired or invalid (must be within 60 seconds)');
-    }
+  // Timestamp validation: enforce 60s window
+  const ts = new Date(timestamp).getTime();
+  if (isNaN(ts) || Math.abs(Date.now() - ts) > MAX_SIGNATURE_AGE_MS) {
+    return sendError(res, 401, 'UNAUTHORIZED', 'Request timestamp expired or invalid (must be within 60 seconds)');
   }
 
   try {
@@ -134,18 +142,13 @@ export async function verifyHiveSignature(req: Request, res: Response, next: Nex
 
     const postingPubKeys = account.posting.key_auths.map(([key]) => key.toString());
 
-    // Build the message to verify.
-    // If X-Hive-Message is provided, use it directly (for Keychain flows that sign custom messages).
-    // Otherwise, bind to the request: method + path + timestamp + body hash.
-    let msgToVerify: string;
-    if (message) {
-      msgToVerify = message;
-    } else {
-      const bodyHash = cryptoUtils.sha256(JSON.stringify(req.body || '')).toString('hex');
-      const parts = [req.method, req.path, bodyHash];
-      if (timestamp) parts.push(timestamp);
-      msgToVerify = parts.join(':');
-    }
+    // Request-bound signed message with domain separator.
+    // Format: {APP_TAG}-auth|v1|{METHOD}|{path}|{sha256_hex(body)}|{timestamp}
+    // path is req.originalUrl minus query string — the URL the client signs,
+    // not req.path which is relative to the sub-router mount point.
+    const fullPath = req.originalUrl.split('?')[0];
+    const bodyHash = cryptoUtils.sha256(JSON.stringify(req.body || {})).toString('hex');
+    const msgToVerify = `${config.appTag}-auth|v1|${req.method}|${fullPath}|${bodyHash}|${timestamp}`;
 
     const msgHash = cryptoUtils.sha256(msgToVerify);
     const sig = Signature.fromString(signature);
