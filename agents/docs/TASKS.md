@@ -41,70 +41,58 @@ Review history: `agents/docs/tasks-archive.md`
 
 ---
 
-### IPFS-DURABLE-TRACKING — Move pending-pin tracking from Redis to Postgres (Backend Agent)
+### UI-REFAC-1 — Establish shared-fragment convention + extract paper-card article (UI Agent)
 
-**Goal:** Prevent permanent orphan pins on Kubo when Redis loses the `ipfs:pending:{cid}` tracking key. Current setup ([backend/src/routes/ipfs.ts](backend/src/routes/ipfs.ts), [backend/src/ipfs-cleanup.ts](backend/src/ipfs-cleanup.ts)) relies on Redis keys with a 24h TTL as the sole record of in-flight uploads. Redis is a cache — flushes, evictions, unclean shutdowns, or any backend outage longer than 24h drop the tracking key, and the cleanup job then has no way to discover the orphan on Kubo. The pin sits there forever.
+**Goal:** Pick a convention for sharing HTML fragments between pages, and apply it to the `<article class="card">` paper-card markup that's currently duplicated across 5 list pages.
 
-**Context:**
-- Upload flow: user POSTs to `/api/ipfs/upload` → backend pins to Kubo → writes `ipfs:pending:{cid}` to Redis with `EX 86400`.
-- Cleanup job every 30 min: scans Redis for `ipfs:pending:*`, checks HAF for references, unpins if older than `MAX_AGE_MS` (24h) and not referenced.
-- Redis also serves the download proxy's "is this CID known?" check. That role stays — Redis is fine as a cache; it's not fine as the only record.
-- Scope: this fixes the prod/dev orphan risk against the `pevo_app` database. The E2E test teardown (IPFS-CLEANUP task above) is separate — tests use `pevo_app_test`, which this table will also exist in but test pins are cleaned up immediately by the teardown.
-
-**Schema:** new table in `pevo_app`:
-
-```sql
-CREATE TABLE pending_ipfs_uploads (
-  cid TEXT PRIMARY KEY,
-  uploader_account TEXT NOT NULL,
-  size_bytes BIGINT,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-CREATE INDEX ON pending_ipfs_uploads (created_at);
-```
-
-Add as a new migration file (next number after `002_nullable_email.sql`).
+**Convention (applies to all future components):**
+- Shared HTML fragments are exported as template-literal string constants from `frontend/src/components/<name>.js`: `export const fooTemplate = \`...\``.
+- Pages import and interpolate: `import { fooTemplate } from '../components/foo.js'; const template = \`...\${fooTemplate}...\`;`.
+- If the fragment has its own state, the same file also registers `Alpine.data('foo', () => ({...}))` and exports `initFoo()` for `main.js`. Purely presentational fragments (data comes from parent x-for / scope) skip the factory.
+- Add a short header comment at the top of `components/paper-card.js` documenting the convention so future components follow it. No new doc files.
 
 **Actions:**
-- Add the migration.
-- In `/api/ipfs/upload`, after a successful Kubo pin, INSERT into `pending_ipfs_uploads` (ON CONFLICT DO NOTHING for idempotency). Keep the Redis write as a cache for the download proxy's known-CID check.
-- In `ipfs-cleanup.ts`, change the scan: `SELECT cid, created_at FROM pending_ipfs_uploads WHERE created_at < NOW() - INTERVAL '24 hours'`. For each row, check HAF references (existing logic). If referenced → `DELETE FROM pending_ipfs_uploads WHERE cid = $1` and drop the Redis key. If not referenced → unpin from Kubo, then delete the DB row and Redis key.
-- Download proxy's known-CID check: keep Redis-first, but on miss fall back to `SELECT 1 FROM pending_ipfs_uploads WHERE cid = $1` before returning 404. This makes the cache optional for correctness.
-- Update [agents/docs/hive-schemas.md](agents/docs/hive-schemas.md) if it documents this flow, and the relevant `agents/docs/api-contracts/*.md` if the IPFS endpoint contract changes.
+- Add `paperCardTemplate` export to [components/paper-card.js](frontend/src/components/paper-card.js) (the file already exists with `truncateText`, `formatDate` helpers — same home).
+- The fragment is the full `<article class="card hover:shadow-sm transition-shadow">...</article>` block: discipline/source badge + date, title, authors (with accreditation badge), abstract preview, keywords, metrics row (votes, reviews, citations, PDF indicator).
+- Replace the inline copies in [home.js](frontend/src/pages/home.js), [papers.js](frontend/src/pages/papers.js), [paper-detail.js](frontend/src/pages/paper-detail.js), [profile.js](frontend/src/pages/profile.js), [search.js](frontend/src/pages/search.js) with `${paperCardTemplate}`.
+- Verify each call site before replacing: if a page renders a meaningfully different card (e.g. omits a field, adds a badge), do not force-fit it. Leave that site alone and note it in the Review entry.
 
-**Non-goals:**
-- Do not remove Redis. It stays as a cache.
-- Do not change `MAX_AGE_MS` or the 30-min scan cadence.
-- No Kubo-pin-list reconciler. That's a separate follow-up safety net; out of scope here.
-
-**Deliverable:** PR with migration, route change, cleanup job change, and any schema/contract doc updates. Move to Review when done.
+**Deliverable:** `paperCardTemplate` exported from `components/paper-card.js`; inline duplicates replaced in the pages above. Move to Review when done.
 
 ---
 
-### IPFS-CLEANUP — Unpin test-created CIDs in E2E teardown (UI Agent)
+### UI-REFAC-2 — Extract paper-feed component (UI Agent)
 
-**Goal:** Make the E2E suite leave no IPFS pins behind, so test pins don't sit on the Kubo node for up to 24h waiting for the background cleanup job ([backend/src/ipfs-cleanup.ts](backend/src/ipfs-cleanup.ts), every 30 min, unpins HAF-unreferenced orphans older than 24h).
+**Depends on:** UI-REFAC-1 (uses `paperCardTemplate`)
 
-**Context:**
-- E2E-WRITE-1 uploads files large enough to trigger IPFS pinning. Because the test intercepts the final Hive broadcast, the CID never lands in HAF, so the upload is always an orphan from HAF's point of view.
-- Redis is shared with the dev stack (per the swap-in-place E2E topology). A blanket flush of `ipfs:pending:*` would unpin dev uploads too. Cleanup must be per-CID, scoped to CIDs the test run explicitly created.
-- No backend endpoint is needed — teardown is Node and can talk to Kubo + Redis directly using the same env the backend uses (`IPFS_API_URL`, `REDIS_URL`).
+**Goal:** Remove the ~170-line duplication between [home.js](frontend/src/pages/home.js) and [papers.js](frontend/src/pages/papers.js). The authenticated-user paper feed on home.js and the entire papers.js body are character-for-character identical except for three filter `<label for="...">` id attributes.
 
 **Actions:**
-- In the E2E helpers, capture every CID returned from `/api/ipfs/upload` during a test run (e.g., via a Playwright response interceptor, or by wrapping the upload helper). Persist CIDs to a file that global-teardown can read (an in-memory `Set` won't survive across worker processes).
-- In [frontend/tests/e2e/global-teardown.js](frontend/tests/e2e/global-teardown.js), for each captured CID:
-  - Call Kubo directly at `${IPFS_API_URL}/api/v0/pin/rm?arg={cid}` using the same method/path as `ipfs-cleanup.ts`.
-  - Delete the `ipfs:pending:{cid}` Redis key.
-  - Log successes and failures. Do not fail the suite if an individual unpin errors — the 30-min cleanup job is still a safety net.
-- Optionally also call the same cleanup in an `afterEach` within specs that upload, so an aborted run leaves less debris.
+- Create `frontend/src/components/paper-feed.js`:
+  - Export `paperFeedTemplate` — the filters row + loading skeleton + error + empty state + card list (via `${paperCardTemplate}`) + pagination block.
+  - Register `Alpine.data('paperFeed', () => ({...}))` owning all state (`papers`, `disciplines`, `discipline`, `sortBy`, `sourceFilter`, `currentPage`, `totalPages`, `loading`, `error`) and methods (`init`, `loadPapers`, `loadDisciplines`, `onDisciplineChange`, `onSortChange`, `onSourceChange`, `goToPage`, `paginationPages` getter, `navigate`). Exposes `truncateText`, `formatDate` on the scope so the card template can use them.
+  - Export `initPaperFeed()`; wire it into `main.js`.
+- Update [home.js](frontend/src/pages/home.js): keep the unauthenticated landing block and the authenticated hero. The authenticated paper-feed section becomes `<div x-data="paperFeed">${paperFeedTemplate}</div>`. Remove the `homePage` Alpine.data feed state that now lives in `paperFeed`.
+- Update [papers.js](frontend/src/pages/papers.js): becomes a thin wrapper — page title + `<div x-data="paperFeed">${paperFeedTemplate}</div>`. `initPapersPage()` can stay empty or be deleted if nothing else imports it.
+- Pick one stable id prefix inside the shared template (e.g. `paper-feed-discipline`). Both pages rendering the fragment means only one instance exists per route, so id collisions aren't a concern.
 
-**Non-goals:**
-- No test-only backend endpoint.
-- No change to `MAX_AGE_MS`.
-- No Redis flush.
-- No cleanup for Pinata fallback — dev/CI runs against self-hosted Kubo.
+**Deliverable:** `components/paper-feed.js` consumed by home.js and papers.js. Move to Review when done.
 
-**Deliverable:** PR wiring the teardown. Move to Review when done.
+---
+
+### UI-REFAC-3 — Wire the pagination Alpine factory (UI Agent)
+
+**Depends on:** UI-REFAC-2 (convention established)
+
+**Goal:** The `Alpine.data('pagination', ...)` factory in [components/pagination.js](frontend/src/components/pagination.js) is defined but not imported anywhere — every list page hand-rolls the same `paginationPages` getter and nav markup. Replace with the shared factory + template.
+
+**Actions:**
+- Add `paginationTemplate` export to [components/pagination.js](frontend/src/components/pagination.js) — the `<nav class="flex items-center justify-center gap-1 mt-8">...</nav>` block.
+- Register `initPagination` from `main.js` (currently unwired).
+- Replace the inline pagination blocks in [search.js](frontend/src/pages/search.js) and [researchers.js](frontend/src/pages/researchers.js) with `<div x-data="pagination(totalPages, currentPage, (p) => loadX(p))">${paginationTemplate}</div>`.
+- Inside `paper-feed.js` (from UI-REFAC-2), use the same factory + template instead of the inline pagination. Remove the duplicated `paginationPages` getter from the `paperFeed` Alpine.data.
+
+**Deliverable:** All list pages use the shared `pagination` factory + template; no page defines its own `paginationPages` getter. Move to Review when done.
 
 ---
 
@@ -115,68 +103,6 @@ Add as a new migration file (next number after `002_nullable_email.sql`).
 - Real backend, real HAF, real Postgres (via `pevo_app_test`, truncated in global-setup). IPFS pinning through the backend proxy is OK.
 - One spec file per task. Keep to the happy path; edge cases belong in unit tests.
 - Follow the pattern in `frontend/tests/e2e/email-signup.spec.js` (Alpine `x-model` selectors, `waitForRequest`/`waitForResponse` for assertions).
-
----
-
-### E2E-READ-1 — Paper list, filters, search (UI Agent)
-
-**Goal:** Verify the paper browsing surface renders real HAF data correctly.
-
-**Actions:**
-- Seed at least one PEvO-tagged paper via fixture (direct DB insert into the test HAF schema, or reuse an existing seed helper if present).
-- Drive `/papers` and `/search`: assert list renders, a discipline/tag filter narrows results, and search by title returns the seeded paper.
-- Assert the paper card links to the correct detail URL.
-
-**Deliverable:** `frontend/tests/e2e/papers-browse.spec.js`. Move to Review when done.
-
----
-
-### E2E-READ-2 — Paper detail rendering (UI Agent)
-
-**Goal:** Verify paper detail page renders reviews, comments, votes, and version history from HAF.
-
-**Actions:**
-- Seed a paper with at least one review, one comment, and one vote.
-- Navigate to the detail page; assert body, metadata, reviews section, threaded comments, vote counts, and version list all render.
-
-**Deliverable:** `frontend/tests/e2e/paper-detail.spec.js`. Move to Review when done.
-
----
-
-### E2E-READ-3 — Profile and researcher directory (UI Agent)
-
-**Goal:** Verify profile pages and the researcher directory render correctly against HAF + accreditation data.
-
-**Actions:**
-- Seed an accredited researcher with a published paper.
-- Visit `/researchers`, assert the researcher appears. Click through to their profile, assert name, institution, publications, and reputation score render.
-
-**Deliverable:** `frontend/tests/e2e/researchers.spec.js`. Move to Review when done.
-
----
-
-### E2E-READ-4 — Blog pages (UI Agent)
-
-**Goal:** Verify blog index and post pages render content from the `pevo.science` account via HiveComb.
-
-**Actions:**
-- Visit `/blog`, assert posts list renders. Click through to a post, assert title and body render.
-- If live HAF calls are undesirable, mock only the HiveComb fetch at the network layer; keep the rest real.
-
-**Deliverable:** `frontend/tests/e2e/blog.spec.js`. Move to Review when done.
-
----
-
-### E2E-WRITE-1 — Publish flow up to broadcast (UI Agent)
-
-**Goal:** Verify the publish flow assembles a valid Hive `comment` broadcast with correct `json_metadata`, without hitting the chain.
-
-**Actions:**
-- Log in as an accredited test user (fixture).
-- Drive `/publish`: fill title, abstract, body, tags, citations. Upload a file large enough to trigger IPFS (real upload via backend pinning proxy).
-- Intercept the Keychain broadcast call; assert the CID is in `json_metadata`, `app` equals `APP_TAG`, tags include `APP_TAG` and `science`, and the parent permlink is `APP_TAG`.
-
-**Deliverable:** `frontend/tests/e2e/publish.spec.js`. Move to Review when done.
 
 ---
 
@@ -304,3 +230,7 @@ Add as a new migration file (next number after `002_nullable_email.sql`).
 ---
 
 ## Review
+
+_No tasks in review._
+
+---
