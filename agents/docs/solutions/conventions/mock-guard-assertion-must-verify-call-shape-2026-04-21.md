@@ -108,6 +108,8 @@ Known current locations of the vulnerable pattern in this codebase (as of commit
 
 The `accreditations-revoke.test.ts` file upgraded its predicate from `'account' = $1` to `FROM hafsql.operation_custom_json_view`, which shifts the refactor-sensitivity but does not by itself close the fallback-path gap. Apply the `toHaveBeenCalledWith` promotion across all of these sites in one sweep rather than site-by-site.
 
+**Swept in commit `16b977e` (BE-MOCK-GUARD-ASSERTION-SWEEP):** the 3 `profile-auth-bypass.test.ts` specs, the 1 `accreditations-revoke.test.ts` spec (FROM-signal variant), and 5 SEC-002-BE / SEC-002-HARDENING sites in `orcid.test.ts` now use `toHaveBeenCalledWith(expect.stringContaining(<load-bearing-fragment>), expect.arrayContaining([<params>]))`. The 2 SEC-AUTH-BYPASS sites and the 3 BE-ORCID-ID-FORMAT-VALIDATION sites in `orcid.test.ts` remain on the existing pattern per the sweep task's scope note. The SEC-002-TOCTOU-LOCK `describe.each` block in `orcid.test.ts` reuses a shared helper mock and was out of scope for this sweep.
+
 ## Examples
 
 **Before (load-bearing assertion masked by fallback):**
