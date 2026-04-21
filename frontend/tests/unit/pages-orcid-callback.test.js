@@ -140,12 +140,26 @@ describe('orcidCallbackPage', () => {
       expect(comp.backPath).toBe('/');
     });
 
-    it('removes pevo_orcid_mode from localStorage', () => {
+    it('removes pevo_orcid_mode from localStorage after successful completeOrcid', async () => {
       localStorageData['pevo_orcid_mode'] = 'accredit';
       const comp = createComponent();
       mockCompleteOrcid.mockResolvedValue({ data: { mode: 'accredit', username: 'u' } });
+      // init() kicks off _verify(); awaiting completeOrcid's resolved promise
+      // plus the trailing microtask ensures the removeItem has run.
       comp.init();
+      await Promise.resolve();
+      await Promise.resolve();
       expect(localStorage.removeItem).toHaveBeenCalledWith('pevo_orcid_mode');
+    });
+
+    it('does NOT remove pevo_orcid_mode before completeOrcid resolves (so a refresh after failure can retry)', async () => {
+      localStorageData['pevo_orcid_mode'] = 'link';
+      const comp = createComponent();
+      // Never-resolving promise simulates an in-flight / crashed completeOrcid.
+      mockCompleteOrcid.mockReturnValue(new Promise(() => {}));
+      comp.init();
+      expect(localStorage.removeItem).not.toHaveBeenCalledWith('pevo_orcid_mode');
+      expect(localStorageData['pevo_orcid_mode']).toBe('link');
     });
   });
 
@@ -175,7 +189,7 @@ describe('orcidCallbackPage', () => {
       expect(mockRouterStore.navigate).toHaveBeenCalledWith('/recover');
     });
 
-    it('handles login mode: sets auth store and navigates', async () => {
+    it('handles login mode: sets auth store (including expiresAt) and navigates', async () => {
       vi.useFakeTimers();
       const comp = createComponent();
       mockCompleteOrcid.mockResolvedValue({
@@ -188,11 +202,39 @@ describe('orcidCallbackPage', () => {
       expect(mockAuthStore.token).toBe('jwt');
       expect(mockAuthStore.username).toBe('alice');
       expect(mockAuthStore.isConnected).toBe(true);
-      expect(mockAuthStore._saveSession).toHaveBeenCalledWith('jwt', 'alice', '2025-01-01', false, null, 'light');
+      expect(mockAuthStore.custody).toBe('light');
+      // expiresAt MUST be set on the store BEFORE _saveSession() is called,
+      // otherwise _restoreSession() rejects the entry on the next page load
+      // and the ORCID-login user is silently logged out.
+      expect(mockAuthStore.expiresAt).toBe('2025-01-01');
+      // _saveSession is called with no positional args now; it reads from this.*
+      expect(mockAuthStore._saveSession).toHaveBeenCalledWith();
       expect(mockAuthStore._checkAccreditation).toHaveBeenCalled();
 
       vi.advanceTimersByTime(500);
       expect(mockRouterStore.navigate).toHaveBeenCalledWith('/papers');
+      vi.useRealTimers();
+    });
+
+    it('ORCID login leaves the auth store with a non-null expiresAt so reload keeps the session', async () => {
+      vi.useFakeTimers();
+      // Reset store so we prove expiresAt is the one written by _handleLogin.
+      mockAuthStore.expiresAt = null;
+      const comp = createComponent();
+      mockCompleteOrcid.mockResolvedValue({
+        data: {
+          mode: 'login',
+          token: 'jwt',
+          username: 'alice',
+          expires_at: '2099-01-01T00:00:00.000Z',
+          custody: 'light',
+        },
+      });
+
+      await comp._verify('code', 'state', 'login');
+
+      expect(mockAuthStore.expiresAt).not.toBeNull();
+      expect(mockAuthStore.expiresAt).toBe('2099-01-01T00:00:00.000Z');
       vi.useRealTimers();
     });
 
@@ -280,6 +322,38 @@ describe('orcidCallbackPage', () => {
 
       expect(comp.status).toBe('error');
       expect(comp.errorMessage).toBe('orcid.verificationFailed');
+    });
+
+    it('503 from completeOrcid leaves pevo_orcid_mode in localStorage so a refresh-retry can re-enter the correct flow', async () => {
+      localStorageData['pevo_orcid_mode'] = 'link';
+      const firstComp = createComponent();
+      const err503 = new Error('Service unavailable');
+      err503.status = 503;
+      mockCompleteOrcid.mockRejectedValueOnce(err503);
+
+      firstComp.init();
+      // Drain microtasks so _verify's rejection handler runs.
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(firstComp.status).toBe('error');
+      // CRITICAL: mode must still be there so a user-triggered refresh has the
+      // context needed for the retry to carry the correct auth (Bearer token
+      // for link/accredit) and route to the right endpoint.
+      expect(localStorageData['pevo_orcid_mode']).toBe('link');
+
+      // Simulate the user refreshing the page: a NEW component init() runs.
+      // The mode is still present, so the retry knows we're in link flow.
+      const secondComp = createComponent();
+      mockCompleteOrcid.mockResolvedValueOnce({ data: { mode: 'link' } });
+      secondComp.init();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      // Retry sees the mode and routes correctly.
+      expect(secondComp.backPath).toBe('/settings');
+      // Only after the successful retry is the mode cleared.
+      expect(localStorage.removeItem).toHaveBeenCalledWith('pevo_orcid_mode');
     });
   });
 });

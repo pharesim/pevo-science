@@ -148,15 +148,9 @@ export function initLoginPage() {
         auth.isAccredited = res.data.is_accredited ?? false;
         auth.accreditation = res.data.accreditation ?? null;
         auth.custody = res.data.custody ?? 'light';
+        auth.expiresAt = res.data.expires_at;
 
-        auth._saveSession(
-          res.data.token,
-          res.data.username,
-          res.data.expires_at,
-          auth.isAccredited,
-          auth.accreditation,
-          auth.custody
-        );
+        auth._saveSession();
 
         Alpine.store('router').navigate('/papers');
       } catch (err) {

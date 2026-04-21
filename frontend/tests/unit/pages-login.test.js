@@ -103,6 +103,12 @@ describe('loginPage', () => {
       expect(mockAuthStore.isConnected).toBe(true);
       expect(mockAuthStore.isAccredited).toBe(true);
       expect(mockAuthStore.custody).toBe('self');
+      // expiresAt MUST be set on the store BEFORE _saveSession() is called.
+      // Otherwise _restoreSession rejects the persisted entry and the user is
+      // silently logged out on reload.
+      expect(mockAuthStore.expiresAt).toBe('2099-01-01');
+      // _saveSession now reads from instance state (no positional args).
+      expect(mockAuthStore._saveSession).toHaveBeenCalledWith();
       expect(mockRouterStore.navigate).toHaveBeenCalledWith('/papers');
     });
 

@@ -68,9 +68,12 @@ export function initOrcidCallbackPage() {
         return;
       }
 
-      // Read mode from localStorage (set before redirect) for error routing
+      // Read mode from localStorage (set before redirect) for error routing.
+      // Do NOT remove it here — if completeOrcid fails (e.g. 503) and the user
+      // refreshes, we need the mode to still be present so the retry can
+      // reach the correct endpoint with the correct auth. It's cleared after
+      // completeOrcid resolves successfully inside _verify.
       const mode = localStorage.getItem('pevo_orcid_mode') || '';
-      localStorage.removeItem('pevo_orcid_mode');
 
       if (mode === 'signup' || mode === 'login') {
         this.backPath = mode === 'signup' ? '/signup' : '/login';
@@ -87,6 +90,10 @@ export function initOrcidCallbackPage() {
       try {
         const res = await completeOrcid(code, state, mode);
         const data = res.data;
+
+        // Only clear the stored mode after completeOrcid resolved successfully.
+        // If this throws (e.g. 503), we leave it so a refresh can retry.
+        localStorage.removeItem('pevo_orcid_mode');
 
         switch (data.mode) {
           case 'signup':
@@ -144,15 +151,9 @@ export function initOrcidCallbackPage() {
       auth.username = data.username;
       auth.isConnected = true;
       auth.custody = data.custody || 'light';
+      auth.expiresAt = data.expires_at;
 
-      auth._saveSession(
-        data.token,
-        data.username,
-        data.expires_at,
-        false,
-        null,
-        data.custody || 'light'
-      );
+      auth._saveSession();
 
       // Check accreditation status
       auth._checkAccreditation();
