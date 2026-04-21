@@ -15,7 +15,7 @@
  * the happy path against actual chain data.
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import request from 'supertest';
 
 const { hafQueryMock } = vi.hoisted(() => ({
@@ -35,21 +35,46 @@ vi.mock('../../src/redis.js', () => ({
 }));
 
 const { createApp } = await import('../../src/app.js');
+const { hafCache } = await import('../../src/cache.js');
 const app = createApp();
 
 describe('BE-ACCRED-REVOKE-TEST — GET /api/accreditations/:username revoke branch', () => {
+  beforeEach(async () => {
+    // Defense-in-depth: the unique synthetic username below already avoids
+    // cache collisions today, but clearing hafCache makes the test robust to
+    // future refactors that change cache-key shape or introduce shared
+    // fixtures across the file.
+    await hafCache.clear();
+  });
+
   it('returns is_accredited:false + accreditation:null when latest op is revoke', async () => {
     // Use a unique username so the hafCache entry cannot collide with any
     // other test in the process.
     const revokedAccount = 'accreds-revoke-fixture-user';
 
     hafQueryMock.mockImplementation(async (sql: string, params: unknown[]) => {
-      if (sql.includes("'action' IN ('accredit', 'revoke')") && sql.includes("'account' = $1")) {
+      // Multi-signal SQL detection (mirrors the SEC-003-BE round-2 pattern in
+      // claims.test.ts:95). Requiring both the action-set predicate AND the
+      // target relation prevents a silent bypass if a future refactor changes
+      // quoting, extracts the action list into a constant, or relocates the
+      // `'account' = $1` predicate into a subquery/JOIN. T.customJson resolves
+      // to 'hafsql.operation_custom_json_view' (see backend/src/hafsql.ts:46);
+      // if that mapping changes, this mock will fail loudly rather than
+      // silently stop exercising the revoke branch.
+      if (
+        sql.includes("'action' IN ('accredit', 'revoke')") &&
+        sql.includes('FROM hafsql.operation_custom_json_view')
+      ) {
         // The authority-filtered query returns a revoke as the latest row.
         // tx_id MUST be null per the route contract — callers distinguish
         // "never accredited" from "revoked" only via the full endpoint
-        // response, not tx_id presence. Return null event_id to surface any
-        // regression that leaks event_id on the revoke branch.
+        // response, not tx_id presence. event_id is set to null here as
+        // defensive signaling: the revoke branch (accreditations.ts:129-131)
+        // has no projection path that reads event_id, so this does not
+        // constitute active coverage. It documents the contract that the
+        // revoke response intentionally discards event_id, and if a future
+        // refactor starts projecting event_id onto the revoke response the
+        // null here will propagate into the assertion below.
         expect(params[0]).toBe(revokedAccount);
         return {
           rows: [{
