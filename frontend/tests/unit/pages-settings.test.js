@@ -179,14 +179,23 @@ describe('settingsPage', () => {
       expect(comp.emailError).toBe('settings.emailAlreadyInUse');
     });
 
-    it('shows generic error', async () => {
-      mockSubmitEmail.mockRejectedValue({ message: 'server error' });
+    // FE-SETTINGS-ERROR-MESSAGE-SANITIZE-SWEEP: non-DUPLICATE failures must
+    // surface a generic localized message and route raw err to console.warn.
+    it('sanitizes generic error: generic message to DOM, raw err to console.warn', async () => {
+      const leaky = new Error('server error with hex=deadbeefcafebabe');
+      mockSubmitEmail.mockRejectedValue(leaky);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const comp = createComponent();
       comp.newEmail = 'x@x.com';
 
       await comp.handleEmailSubmit();
 
-      expect(comp.emailError).toBe('server error');
+      expect(comp.emailError).toBe('settings.emailUpdateFailed');
+      expect(comp.emailError).not.toContain('deadbeef');
+      expect(warnSpy).toHaveBeenCalled();
+      const warnedErr = warnSpy.mock.calls[0][1];
+      expect(warnedErr).toBe(leaky);
+      warnSpy.mockRestore();
     });
   });
 
@@ -221,14 +230,23 @@ describe('settingsPage', () => {
       expect(mockDeleteEmail).not.toHaveBeenCalled();
     });
 
-    it('sets error on failure', async () => {
-      mockDeleteEmail.mockRejectedValue(new Error('denied'));
+    // FE-SETTINGS-ERROR-MESSAGE-SANITIZE-SWEEP: failure must surface a
+    // generic localized message and route raw err to console.warn.
+    it('sanitizes failure: generic message to DOM, raw err to console.warn', async () => {
+      const leaky = new Error('denied hex=deadbeefcafebabe');
+      mockDeleteEmail.mockRejectedValue(leaky);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const comp = createComponent();
 
       await comp.handleEmailDelete();
 
-      expect(comp.emailError).toBe('denied');
+      expect(comp.emailError).toBe('settings.emailDeleteFailed');
+      expect(comp.emailError).not.toContain('deadbeef');
       expect(comp.deleting).toBe(false);
+      expect(warnSpy).toHaveBeenCalled();
+      const warnedErr = warnSpy.mock.calls[0][1];
+      expect(warnedErr).toBe(leaky);
+      warnSpy.mockRestore();
     });
   });
 
@@ -247,12 +265,19 @@ describe('settingsPage', () => {
     it('rejects invalid redirect URL', async () => {
       mockStartOrcid.mockResolvedValue({ redirect_url: 'https://evil.com/phish' });
       vi.stubGlobal('window', { ...globalThis.window, location: { href: '' } });
+      // FE-SETTINGS-ERROR-MESSAGE-SANITIZE-SWEEP: the internal throw is no
+      // longer surfaced raw. The DOM sees the generic localized message;
+      // the raw 'Invalid ORCID redirect URL' goes to console.warn.
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const comp = createComponent();
 
       await comp.handleOrcidLink();
 
-      expect(comp.orcidError).toBe('Invalid ORCID redirect URL');
+      expect(comp.orcidError).toBe('settings.orcidLinkFailed');
       expect(comp.orcidLinking).toBe(false);
+      const warnedErr = warnSpy.mock.calls[0][1];
+      expect(warnedErr.message).toBe('Invalid ORCID redirect URL');
+      warnSpy.mockRestore();
     });
 
     it('does nothing if already linking', async () => {
@@ -260,6 +285,26 @@ describe('settingsPage', () => {
       comp.orcidLinking = true;
       await comp.handleOrcidLink();
       expect(mockStartOrcid).not.toHaveBeenCalled();
+    });
+
+    // FE-SETTINGS-ERROR-MESSAGE-SANITIZE-SWEEP: failure must surface a
+    // generic localized message and route raw err to console.warn.
+    it('sanitizes failure: generic message to DOM, raw err to console.warn', async () => {
+      const leaky = new Error('boom hex=deadbeefcafebabe');
+      mockStartOrcid.mockRejectedValue(leaky);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      vi.stubGlobal('window', { ...globalThis.window, location: { href: '' } });
+      const comp = createComponent();
+
+      await comp.handleOrcidLink();
+
+      expect(comp.orcidError).toBe('settings.orcidLinkFailed');
+      expect(comp.orcidError).not.toContain('deadbeef');
+      expect(comp.orcidLinking).toBe(false);
+      expect(warnSpy).toHaveBeenCalled();
+      const warnedErr = warnSpy.mock.calls[0][1];
+      expect(warnedErr).toBe(leaky);
+      warnSpy.mockRestore();
     });
   });
 
@@ -541,17 +586,31 @@ describe('settingsPage', () => {
       expect(mockSetPassword).not.toHaveBeenCalled();
     });
 
-    it('surfaces backend error and zeroes password inputs', async () => {
-      mockSetPassword.mockRejectedValue({ message: 'already set', code: 'CONFLICT' });
+    // FE-SETTINGS-ERROR-MESSAGE-SANITIZE-SWEEP: on failure the DOM-bound
+    // passwordError must be a generic localized message (never `err.message`,
+    // which could embed key/password material on a future error shape) and
+    // the raw error must reach console.warn for diagnostics. Plaintext
+    // password inputs are still zeroed on the error path.
+    it('surfaces generic error to DOM, raw err to console.warn, and zeroes password inputs', async () => {
+      const leaky = { message: 'already set hex=deadbeefcafebabe', code: 'CONFLICT' };
+      mockSetPassword.mockRejectedValue(leaky);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const comp = createComponent();
       comp.newPasswordInput = 'Abcdefgh1x';
       comp.newPasswordConfirmInput = 'Abcdefgh1x';
+
       await comp.handleSetPassword();
-      expect(comp.passwordError).toBe('already set');
+
+      expect(comp.passwordError).toBe('settings.passwordUpdateFailed');
+      expect(comp.passwordError).not.toContain('deadbeef');
       expect(comp.passwordSetDone).toBe(false);
       expect(comp.passwordSubmitting).toBe(false);
       expect(comp.newPasswordInput).toBe('');
       expect(comp.newPasswordConfirmInput).toBe('');
+      expect(warnSpy).toHaveBeenCalled();
+      const warnedErr = warnSpy.mock.calls[0][1];
+      expect(warnedErr).toBe(leaky);
+      warnSpy.mockRestore();
     });
 
     it('newPasswordsMatch reflects equality of the two inputs', () => {
