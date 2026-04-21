@@ -2,6 +2,7 @@ import Alpine from 'alpinejs';
 import { fetchPapers, fetchDisciplines } from '../api.js';
 import { truncateText, formatDate, paperCardTemplate } from './paper-card.js';
 import { paginationTemplate } from './pagination.js';
+import { totalPagesFromMeta } from '../lib/pagination.js';
 
 const ITEMS_PER_PAGE = 10;
 
@@ -169,7 +170,7 @@ export function initPaperFeed() {
 
         const res = await fetchPapers(params);
         this.papers = res.data || [];
-        this.totalPages = res.meta ? (Math.ceil(res.meta.total / res.meta.limit) || 1) : 1;
+        this.totalPages = totalPagesFromMeta(res.meta);
         this.loading = false;
       } catch {
         this.error = this.$t('home.errorLoading');

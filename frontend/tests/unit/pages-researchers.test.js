@@ -146,6 +146,16 @@ describe('researchersPage', () => {
       expect(url).toContain('field=physics');
     });
 
+    it('clamps totalPages to 1 when meta.limit is 0 (Infinity guard)', async () => {
+      const comp = createComponent();
+      mockFetchAccreditations.mockResolvedValue({
+        data: [{ username: 'a' }],
+        meta: { total: 42, limit: 0 },
+      });
+      await comp.loadResearchers();
+      expect(comp.totalPages).toBe(1);
+    });
+
     it('resets totalPages to 1 when response omits meta (empty result after filter change)', async () => {
       const comp = createComponent();
       comp.totalPages = 7;

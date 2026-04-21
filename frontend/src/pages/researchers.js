@@ -2,6 +2,7 @@ import Alpine from 'alpinejs';
 import { fetchAccreditations } from '../api.js';
 import { formatDate } from '../components/paper-card.js';
 import { paginationTemplate } from '../components/pagination.js';
+import { totalPagesFromMeta } from '../lib/pagination.js';
 
 const ITEMS_PER_PAGE = 12;
 
@@ -160,7 +161,7 @@ export function initResearchersPage() {
 
         const res = await fetchAccreditations(params);
         this.researchers = res.data || [];
-        this.totalPages = res.meta ? (Math.ceil(res.meta.total / res.meta.limit) || 1) : 1;
+        this.totalPages = totalPagesFromMeta(res.meta);
       } catch (err) {
         this.error = err?.message || this.$t('researchers.loadFailed');
         this.researchers = [];

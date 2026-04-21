@@ -2,6 +2,7 @@ import Alpine from 'alpinejs';
 import { searchPapers, fetchDisciplines } from '../api.js';
 import { formatDate } from '../components/paper-card.js';
 import { paginationTemplate } from '../components/pagination.js';
+import { totalPagesFromMeta } from '../lib/pagination.js';
 import DOMPurify from 'dompurify';
 
 const template = `
@@ -236,7 +237,7 @@ export function initSearchPage() {
 
         const res = await searchPapers(params);
         this.results = res.data || [];
-        this.totalPages = res.meta ? (Math.ceil(res.meta.total / res.meta.limit) || 1) : 1;
+        this.totalPages = totalPagesFromMeta(res.meta);
       } catch {
         this.error = this.$t('search.searchFailed');
         this.results = [];

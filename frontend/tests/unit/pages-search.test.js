@@ -120,6 +120,13 @@ describe('searchPage', () => {
       await comp.doSearch('test', 1);
       expect(comp.totalPages).toBe(1);
     });
+
+    it('clamps totalPages to 1 when meta.limit is 0 (Infinity guard)', async () => {
+      searchPapers.mockResolvedValue({ data: [{ title: 'R' }], meta: { total: 42, limit: 0 } });
+      const comp = createComponent();
+      await comp.doSearch('test', 1);
+      expect(comp.totalPages).toBe(1);
+    });
   });
 
   describe('handleSubmit', () => {
