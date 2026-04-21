@@ -271,6 +271,8 @@ Round-2 `/ce-code-review` (correctness/security/reliability/testing/maintainabil
 
 No contract change required (shape is a generic `SERVICE_UNAVAILABLE` 503, fits the existing envelope).
 
+**Follow-up fix (2026-04-21, commit `52419c5`):** `SERVICE_UNAVAILABLE` added to the `ErrorCode` union in `backend/src/types/api.ts`. The 1cec6df landing introduced the new code at two call sites (`claims.ts:195`, `claims.ts:291`) without extending the type union, which broke `npx tsc` in the Docker backend image build. Typecheck now clean.
+
 **Architect re-review (2026-04-21c) — HELD PENDING FIXES:**
 
 Round-2 `/ce-code-review` (correctness/security/testing/api-contract/maintainability) on commit `1cec6df` confirmed the 503 guards work and tests are sound. One P2 cross-file inconsistency must close before archive.
