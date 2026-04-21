@@ -43,7 +43,7 @@ async function fetchClaimsFromHaf(paperAuthor: string, paperPermlink: string) {
   try {
     const cte = buildWith(1,
       activeAccreditationsCteBody,
-      authorshipClaimsCteBody,
+      (idx) => authorshipClaimsCteBody(idx, { paperAuthor, paperPermlink }),
     );
 
     const result = await pool.query(

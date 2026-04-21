@@ -180,6 +180,16 @@ export function isPevoReviewSql(startIdx = 1): SqlFragment {
 // ─── Authorship claims CTE ──────────────────────────────────────
 
 /**
+ * Narrows the set of claim_events materialized by `authorshipClaimsCteBody`.
+ * The CASE inside `authorship_claims` correlates on (claimer, paper_author,
+ * paper_permlink). Scopes must match that key shape so approve/revoke rows
+ * retained for a given claim remain in scope.
+ */
+export type AuthorshipClaimsScope =
+  | { claimer: string }
+  | { paperAuthor: string; paperPermlink: string };
+
+/**
  * CTE body for authorship claims. Computes claim status (accepted/pending/revoked)
  * for each (claimer, paper_author, paper_permlink) combination.
  *
@@ -189,10 +199,49 @@ export function isPevoReviewSql(startIdx = 1): SqlFragment {
  *
  * Requires `active_accreditations` CTE to be in scope.
  *
+ * Claimer derivation:
+ *   COALESCE(cj.json::jsonb ->> 'claimer', cj.required_posting_auths ->> 0)
+ * This asymmetry is load-bearing, per agents/docs/hive-schemas.md:
+ *   - §2.9 claim_authorship    — JSON omits `claimer` (signer IS the claimer;
+ *                                 proven by required_posting_auths).
+ *   - §2.10 approve_authorship — JSON includes `claimer` explicitly (signer is
+ *                                 the approver, not the claimer).
+ *   - §2.11 revoke_authorship  — JSON includes `claimer` explicitly (signer is
+ *                                 the approver, post author, admin, or the
+ *                                 claimer themselves).
+ * COALESCE yields the correct claimer for all three actions. The claimer-scope
+ * filter below MUST use the identical expression as `claims_base.claimer` so
+ * scoped queries see the same row set the unscoped CASE correlates against.
+ *
  * @param startIdx - first available $N parameter index
+ * @param scope - optional narrowing filter pushed into `claim_events`. Without
+ *   a scope the CTE materializes every claim event in PEvO history. Scoping by
+ *   claimer or paper key avoids that full scan. The scope key must match the
+ *   dimension the caller filters on downstream, since the CASE's EXISTS
+ *   subqueries correlate on the same key.
  */
-export function authorshipClaimsCteBody(startIdx = 1): SqlFragment {
+export function authorshipClaimsCteBody(
+  startIdx = 1,
+  scope?: AuthorshipClaimsScope,
+): SqlFragment {
   const p = startIdx;
+  let scopeIdx = p + 3;
+  let scopeFilter = '';
+  const scopeParams: unknown[] = [];
+  if (scope) {
+    if ('claimer' in scope) {
+      scopeFilter = `
+      AND COALESCE(cj.json::jsonb ->> 'claimer', cj.required_posting_auths ->> 0) = $${scopeIdx}`;
+      scopeParams.push(scope.claimer);
+      scopeIdx += 1;
+    } else {
+      scopeFilter = `
+      AND cj.json::jsonb ->> 'paper_author' = $${scopeIdx}
+      AND cj.json::jsonb ->> 'paper_permlink' = $${scopeIdx + 1}`;
+      scopeParams.push(scope.paperAuthor, scope.paperPermlink);
+      scopeIdx += 2;
+    }
+  }
   return {
     sql: `
   claim_events AS (
@@ -207,7 +256,7 @@ export function authorshipClaimsCteBody(startIdx = 1): SqlFragment {
     FROM ${T.customJson} cj
     WHERE cj.custom_id = $${p}
       AND cj.json::jsonb ->> 'action' IN ('claim_authorship', 'approve_authorship', 'revoke_authorship')
-      AND cj.block_num >= $${p + 1}
+      AND cj.block_num >= $${p + 1}${scopeFilter}
   ),
   claims_base AS (
     SELECT claimer, paper_author, paper_permlink, author_index, block_num, event_timestamp
@@ -276,8 +325,8 @@ export function authorshipClaimsCteBody(startIdx = 1): SqlFragment {
       END AS status
     FROM claims_base cb
   )`,
-    params: [config.appTag, getCachedGenesisBlock(), config.appTag],
-    nextIdx: p + 3,
+    params: [config.appTag, getCachedGenesisBlock(), config.appTag, ...scopeParams],
+    nextIdx: scopeIdx,
   };
 }
 

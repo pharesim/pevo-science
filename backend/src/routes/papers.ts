@@ -1094,7 +1094,7 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string) {
       resolveVersionsFromHaf(author, permlink),
       // Authorship claims
       (async () => {
-        const cte = buildWith(1, activeAccreditationsCteBody, authorshipClaimsCteBody);
+        const cte = buildWith(1, activeAccreditationsCteBody, (idx) => authorshipClaimsCteBody(idx, { paperAuthor: author, paperPermlink: permlink }));
         return pool.query(
           `${cte.sql}
            SELECT claimer, paper_author, paper_permlink, author_index, status, claimed_at

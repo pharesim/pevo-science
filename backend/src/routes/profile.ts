@@ -186,7 +186,7 @@ async function fetchUserPapersFromHaf(username: string, limit: number, offset: n
 
   try {
     // Build CTEs for authorship claims to include claimed papers
-    const cte = buildWith(1, activeAccreditationsCteBody, authorshipClaimsCteBody);
+    const cte = buildWith(1, activeAccreditationsCteBody, (idx) => authorshipClaimsCteBody(idx, { claimer: username }));
 
     // Base filter for PEvO papers (non-continuation)
     const paperFilter = `parent_author = '' AND parent_permlink = $${cte.nextIdx}
