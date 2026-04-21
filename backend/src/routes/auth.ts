@@ -20,6 +20,19 @@ const SIGNUP_TOKEN_EXPIRY_MS = 24 * 60 * 60 * 1000; // 24 hours
 const RESET_TOKEN_EXPIRY_MS = 60 * 60 * 1000; // 1 hour
 const MAX_LOGIN_FAILURES = 20;
 
+// Sentinel argon2id hash for timing-equalization on the NO_PASSWORD_SET login
+// branch. Without this, null-hash accounts short-circuit before argon2.verify
+// runs (~1ms) while real accounts pay the ~100ms verify cost — a timing oracle
+// that lets unauthenticated attackers enumerate ORCID-only PEvO accounts. We
+// run verify() against this sentinel on the null-hash path so both branches
+// take the same wall-time. The 403 status-code axis remains (the feature-
+// distinct error is UX-valuable for legitimate ORCID users), but the 100× gap
+// does not.
+const SENTINEL_ARGON2_HASH_PROMISE: Promise<string> = argon2.hash(
+  'pevo-login-timing-sentinel-v1',
+  { type: argon2.argon2id },
+);
+
 // Rate limiters
 const sessionLimiter = rateLimit({ name: 'auth-session', windowMs: 3_600_000, max: 10, keyFn: byAccount });
 const signupLimiter = rateLimit({ name: 'auth-signup', windowMs: 3_600_000, max: 10, keyFn: byIp });
@@ -387,7 +400,13 @@ router.post('/login', loginLimiter, async (req: Request, res: Response) => {
     // recover via seed phrase. Must NOT collapse into the generic 401 — that would
     // make password login indistinguishable from "wrong password" and hide the
     // correct remediation path from legitimate users.
+    //
+    // Before returning, burn a sentinel argon2.verify so this branch takes the
+    // same wall-time as the real verify branch. Otherwise a network attacker
+    // can enumerate ORCID-only accounts by timing the response.
     if (!account.password_hash) {
+      const sentinelHash = await SENTINEL_ARGON2_HASH_PROMISE;
+      await argon2.verify(sentinelHash, password).catch(() => { /* timing-equalization only; result ignored */ });
       return sendError(
         res,
         403,
@@ -396,7 +415,9 @@ router.post('/login', loginLimiter, async (req: Request, res: Response) => {
       );
     }
 
-    // Verify password first (before revealing account state)
+    // Verify password (timing-equalized with the NO_PASSWORD_SET branch above
+    // via the sentinel hash, so status-code is the only signal distinguishing
+    // null-hash accounts from unknown accounts — not response wall-time).
     const valid = await argon2.verify(account.password_hash, password);
     if (!valid) {
       if (account.username) {
@@ -619,6 +640,9 @@ router.post('/recover', recoverLimiter, async (req: Request, res: Response) => {
   }
   if (!memo_key && !orcid_token) {
     return sendError(res, 400, 'VALIDATION_ERROR', 'Either memo_key or orcid_token is required for recovery');
+  }
+  if (memo_key && orcid_token) {
+    return sendError(res, 400, 'VALIDATION_ERROR', 'Supply exactly one of memo_key or orcid_token, not both');
   }
 
   // Password is optional on ORCID recovery — null/omitted → password_hash = NULL.

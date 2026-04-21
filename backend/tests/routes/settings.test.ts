@@ -255,11 +255,15 @@ describe('Settings email (with DB)', () => {
     expect(prefRows.length).toBe(0);
   });
 
-  it.skipIf(!dbReachable)('DELETE returns 404 for unknown user', async () => {
+  it.skipIf(!dbReachable)('DELETE returns 401 when no account row exists for the authed user', async () => {
+    // SEC-004-BE finding #2: 404 → 401 on authed-endpoint missing-own-row.
+    // The distinguishing 404 leaked account deletion to an authed session-
+    // holder. Treat missing-own-row as "session no longer valid" instead.
     const res = await request(app)
       .delete('/api/settings/email')
       .set('X-Hive-Username', TEST_USER)
       .send({ confirm: true });
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(401);
+    expect(res.body.error.code).toBe('UNAUTHORIZED');
   });
 });

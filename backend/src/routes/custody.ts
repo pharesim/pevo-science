@@ -110,7 +110,10 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
     );
 
     if (rows.length === 0) {
-      return sendError(res, 404, 'NOT_FOUND', 'Custodial account not found');
+      // 401, not 404 — authed endpoint, missing-own-row ≡ stale session
+      // (especially relevant for light-account Bearer JWTs that may outlive
+      // the underlying account row).
+      return sendError(res, 401, 'UNAUTHORIZED', 'Session is no longer valid');
     }
 
     const account = rows[0];
@@ -177,7 +180,8 @@ router.post('/upgrade', verifyHiveSignature, upgradeLimiter, async (req: Request
     );
 
     if (rows.length === 0) {
-      return sendError(res, 404, 'NOT_FOUND', 'Account not found');
+      // 401, not 404 — authed endpoint, missing-own-row ≡ stale session.
+      return sendError(res, 401, 'UNAUTHORIZED', 'Session is no longer valid');
     }
 
     const account = rows[0];

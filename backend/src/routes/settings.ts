@@ -74,21 +74,17 @@ router.get('/email', readLimiter, verifyHiveSignature, async (req: Request, res:
     );
 
     if (rows.length === 0) {
-      return sendOk(res, { hasEmail: false, custody: 'self', has_password: false });
+      return sendOk(res, { hasEmail: false, custody: 'self', hasPassword: false });
     }
 
     const row = rows[0];
-    const custody = row.upgraded_at ? 'self' : (row.custody || 'self');
-    const verified = row.verify_token === null || row.verify_token.startsWith('confirmed:');
-    const hasPassword = row.password_hash !== null;
-
     sendOk(res, {
       hasEmail: row.email !== null,
       email: row.email ? maskEmail(row.email) : null,
-      verified,
-      custody,
+      verified: row.verify_token === null || row.verify_token.startsWith('confirmed:'),
+      custody: row.upgraded_at ? 'self' : (row.custody || 'self'),
       pendingChange: row.pending_email !== null,
-      has_password: hasPassword,
+      hasPassword: row.password_hash !== null,
     });
   } catch (err) {
     logger.error({ err }, 'Failed to fetch email status');
@@ -287,7 +283,11 @@ router.delete('/email', writeLimiter, verifyHiveSignature, async (req: Request, 
     );
 
     if (rows.length === 0) {
-      return sendError(res, 404, 'NOT_FOUND', 'No account data found');
+      // 401, not 404 — for an authed endpoint reading the caller's own row,
+      // "your account no longer exists" is a stale-session signal, not a
+      // not-found-resource signal. The distinguishing 404 leaked account
+      // deletion to an authed session-holder.
+      return sendError(res, 401, 'UNAUTHORIZED', 'Session is no longer valid');
     }
 
     const row = rows[0];
@@ -350,13 +350,14 @@ router.post('/set-password', writeLimiter, verifyHiveSignature, async (req: Requ
   }
 
   try {
-    const { rows } = await pool.query<{ id: number; password_hash: string | null }>(
-      'SELECT id, password_hash FROM accounts WHERE username = $1',
+    const { rows } = await pool.query<{ id: number; password_hash: string | null; orcid: string | null }>(
+      'SELECT id, password_hash, orcid FROM accounts WHERE username = $1',
       [username],
     );
 
     if (rows.length === 0) {
-      return sendError(res, 404, 'NOT_FOUND', 'Account not found');
+      // 401, not 404 — authed endpoint, missing-own-row ≡ stale session.
+      return sendError(res, 401, 'UNAUTHORIZED', 'Session is no longer valid');
     }
 
     if (rows[0].password_hash !== null) {
@@ -365,6 +366,20 @@ router.post('/set-password', writeLimiter, verifyHiveSignature, async (req: Requ
         409,
         'PASSWORD_ALREADY_SET',
         'A password is already set for this account; use change-password (with the current password) to rotate it.',
+      );
+    }
+
+    // Only ORCID-verified accounts can opt into password login. This keeps
+    // the "set-password on null-hash account" invariant narrow: today only
+    // the ORCID-path signup/recover leaves password_hash = NULL, and we do
+    // not want future code paths that null the hash for other reasons to
+    // silently inherit set-password eligibility.
+    if (!rows[0].orcid) {
+      return sendError(
+        res,
+        403,
+        'ORCID_REQUIRED',
+        'Set-password requires a linked ORCID account',
       );
     }
 

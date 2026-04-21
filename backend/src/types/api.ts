@@ -39,6 +39,7 @@ export type ErrorCode =
   | "ORCID_ALREADY_LINKED"
   | "NO_PASSWORD_SET"
   | "PASSWORD_ALREADY_SET"
+  | "ORCID_REQUIRED"
   | "INTERNAL_ERROR";
 
 export interface PaginationMeta {

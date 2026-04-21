@@ -64,6 +64,21 @@ describe('POST /api/auth/recover — validation', () => {
       .send({ username: 'someone', new_email: 'a@b.com', new_password: 'Short1', memo_key: 'x' });
     expect(res.status).toBe(400);
   });
+
+  it('rejects both memo_key and orcid_token supplied', async () => {
+    const res = await request(app)
+      .post('/api/auth/recover')
+      .send({
+        username: 'someone',
+        new_email: 'a@b.com',
+        new_password: 'NewPassword1',
+        memo_key: 'x',
+        orcid_token: 'y',
+      });
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('VALIDATION_ERROR');
+    expect(res.body.error.message).toMatch(/exactly one/i);
+  });
 });
 
 // ─── DB-dependent tests ─────────────────────────────────────
@@ -305,6 +320,32 @@ describe('SEC-004-BE: optional password on recovery', () => {
     expect(rows[0].email).toBe(newEmail);
   });
 
+  it.skipIf(!dbReachable || !hasCustodyKey)('supplying both memo_key and orcid_token → 400 + password_hash stays NULL (mutation-kill)', async () => {
+    // Beyond the status-code assertion in the validation describe above, this
+    // test also asserts the DB invariant: the 400 must fire BEFORE any DB
+    // write so a future refactor that reorders validation after DB access
+    // would flip password_hash out of NULL and fail this assertion.
+    await clearRecoverRateLimit();
+    const res = await request(app)
+      .post('/api/auth/recover')
+      .send({
+        username: NULL_USER,
+        new_email: `recover_null_both_${Date.now()}@example.com`,
+        new_password: 'NewPassword1',
+        memo_key: NULL_MEMO,
+        orcid_token: 'some-nonce',
+      });
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('VALIDATION_ERROR');
+
+    const pool = getAppPool()!;
+    const { rows } = await pool.query<{ password_hash: string | null }>(
+      'SELECT password_hash FROM accounts WHERE username = $1',
+      [NULL_USER],
+    );
+    expect(rows[0].password_hash).toBeNull();
+  });
+
   it.skipIf(!dbReachable || !hasCustodyKey)('seed-phrase recovery on null-hash account still works (regression guard)', async () => {
     await clearRecoverRateLimit();
     const newEmail = `recover_null_seed_${Date.now()}@example.com`;
@@ -372,5 +413,30 @@ describe('SEC-004-BE: login on null-hash account', () => {
       .send({ email_or_username: NULL_LOGIN_EMAIL, password: 'AnythingValid1' });
     expect(res.status).toBe(403);
     expect(res.body.error.code).toBe('NO_PASSWORD_SET');
+  });
+
+  it.skipIf(!dbReachable)('null-hash login burns sentinel argon2.verify for timing-equalization (≥ 50ms)', async () => {
+    // SEC-004-BE finding #1 mutation-kill. Without the sentinel argon2.verify
+    // on the NO_PASSWORD_SET branch, this endpoint returns in ~1ms for null-
+    // hash accounts vs ~100ms for accounts with a real hash — a timing oracle
+    // for enumerating ORCID-only accounts. Loose lower bound (50ms) so the
+    // assertion survives CI variance but still fails if the sentinel is
+    // removed or short-circuits.
+    //
+    // Warm the sentinel-hash lazy promise so the first call in this test
+    // measures steady-state verify cost, not one-time hash-compute cost.
+    await request(app)
+      .post('/api/auth/login')
+      .send({ username: NULL_LOGIN_USER, password: 'WarmupPassword1' });
+
+    const start = Date.now();
+    const res = await request(app)
+      .post('/api/auth/login')
+      .send({ username: NULL_LOGIN_USER, password: 'AnythingValid1' });
+    const elapsed = Date.now() - start;
+
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe('NO_PASSWORD_SET');
+    expect(elapsed).toBeGreaterThanOrEqual(50);
   });
 });
