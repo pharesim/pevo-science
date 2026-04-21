@@ -119,8 +119,7 @@ Use these ce skills as part of your normal workflow. They are not optional — i
 - **`/ce-debug`** — When a test, build, or runtime failure's cause isn't immediately obvious. Use it before trying speculative fixes.
 - **`/ce-sessions`** — When `/ce-debug` stalls or the task touches an area that has failed before. Check prior-session investigations before speculating. Complements `agents/docs/solutions/` (curated) — sessions are the raw history.
 - **`/ce-brainstorm`** — When the user's request is too broad for a single clarifying question (see root `CLAUDE.md` "Asking Questions"). Use before implementing.
-- **`/ce-code-review`** — After implementation, before moving the task to the Review section of `TASKS.md`. When it returns, surface findings to the user as a ranked list (severity + file:line + one-line rationale) and wait for triage — do NOT silently apply fixes and do NOT move to Review with unresolved findings. If the review is clean, say so explicitly, then move to Review. See root `CLAUDE.md` "Code Review Findings".
-- **`/ce-simplify`** — After `/ce-code-review` findings are triaged, as a final pass to cut any over-engineering.
+- **`/ce-simplify`** — Final pass after implementation, before moving the task to Review, to cut any over-engineering. Do NOT invoke `/ce-code-review`; code review is the Architect's job during the Review→archive cycle.
 - **`/ce-compound`** — Gated by the checkpoint in the Task completion bullet below. Do not invoke on every task.
 
 **Commit policy:** see root `CLAUDE.md` "Commits and Pushes".
