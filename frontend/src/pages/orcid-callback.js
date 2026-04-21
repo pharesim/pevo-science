@@ -152,6 +152,13 @@ export function initOrcidCallbackPage() {
       auth.isConnected = true;
       auth.custody = data.custody || 'light';
       auth.expiresAt = data.expires_at;
+      // Reset accreditation state for the newly-logged-in ORCID username so
+      // no-arg _saveSession() does not carry stale values (from a prior session
+      // or the initial store defaults after a re-login as a different user)
+      // into localStorage. _checkAccreditation() below refreshes these from
+      // the server, but _saveSession runs synchronously before that resolves.
+      auth.isAccredited = false;
+      auth.accreditation = null;
 
       auth._saveSession();
 

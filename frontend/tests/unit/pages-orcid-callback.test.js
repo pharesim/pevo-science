@@ -11,6 +11,8 @@ const mockAuthStore = {
   token: '',
   username: '',
   custody: '',
+  isAccredited: false,
+  accreditation: null,
   _saveSession: vi.fn(),
   _checkAccreditation: vi.fn(),
 };
@@ -213,6 +215,40 @@ describe('orcidCallbackPage', () => {
 
       vi.advanceTimersByTime(500);
       expect(mockRouterStore.navigate).toHaveBeenCalledWith('/papers');
+      vi.useRealTimers();
+    });
+
+    it('ORCID login clears stale accreditation state BEFORE _saveSession() fires', async () => {
+      vi.useFakeTimers();
+      // Seed stale state (simulating a prior session or stale store defaults
+      // that should NOT leak into localStorage for the newly-logged-in user).
+      mockAuthStore.isAccredited = true;
+      mockAuthStore.accreditation = { type: 'email' };
+
+      // Capture store state at the moment _saveSession is invoked, to prove
+      // the clearing happens BEFORE _saveSession (not after).
+      let snapshotAtSave = null;
+      mockAuthStore._saveSession.mockImplementationOnce(() => {
+        snapshotAtSave = {
+          isAccredited: mockAuthStore.isAccredited,
+          accreditation: mockAuthStore.accreditation,
+        };
+      });
+
+      const comp = createComponent();
+      mockCompleteOrcid.mockResolvedValue({
+        data: { mode: 'login', token: 'jwt', username: 'alice', expires_at: '2099-01-01', custody: 'light' },
+      });
+
+      await comp._verify('code', 'state', 'login');
+
+      expect(mockAuthStore._saveSession).toHaveBeenCalled();
+      expect(snapshotAtSave).not.toBeNull();
+      expect(snapshotAtSave.isAccredited).toBe(false);
+      expect(snapshotAtSave.accreditation).toBeNull();
+      // And the post-call state is also cleared (belt and suspenders).
+      expect(mockAuthStore.isAccredited).toBe(false);
+      expect(mockAuthStore.accreditation).toBeNull();
       vi.useRealTimers();
     });
 
