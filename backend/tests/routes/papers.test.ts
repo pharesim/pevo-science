@@ -33,8 +33,28 @@ describe('GET /api/papers', () => {
     const res = await request(app).get('/api/papers?discipline=physics');
     expect(res.status).toBe(200);
     for (const paper of res.body.data) {
-      expect(paper.discipline).toBe('physics');
+      // Case-insensitive match: papers tagged "Physics" or "PHYSICS" also match.
+      // Assert via lowercase comparison since BE-DISCIPLINE-CANONICALIZE hold #1
+      // extended LOWER() matching to the /api/papers filter.
+      expect(paper.discipline.toLowerCase()).toBe('physics');
     }
+  });
+
+  // BE-DISCIPLINE-CANONICALIZE hold #1(a): mixed-case ?discipline= parity.
+  // Before the LOWER() fix on papers.ts, `?discipline=physics` only matched
+  // rows tagged lowercase "physics" and silently dropped "Physics"/"PHYSICS"
+  // on the primary paper-listing endpoint. Parity is an invariant regardless
+  // of whether mixed-case corpus currently exists on HAF.
+  it('?discipline= filter is case-insensitive (parity across casings)', { timeout: 60_000 }, async () => {
+    const [lower, upper] = await Promise.all([
+      request(app).get('/api/papers?discipline=physics'),
+      request(app).get('/api/papers?discipline=PHYSICS'),
+    ]);
+    expect(lower.status).toBe(200);
+    expect(upper.status).toBe(200);
+    expect(upper.body.meta.total).toBe(lower.body.meta.total);
+    const key = (p: { author: string; permlink: string }) => `${p.author}/${p.permlink}`;
+    expect(new Set(upper.body.data.map(key))).toEqual(new Set(lower.body.data.map(key)));
   });
 
   it('respects pagination params', async () => {

@@ -112,17 +112,19 @@ Discipline names are user-authored strings in `json_metadata.discipline`, so mix
 {
   "canon_name": "neuroscience",
   "display_name": "Neuroscience",
+  "name": "Neuroscience",
   "paper_count": 42
 }
 ```
 
 - `canon_name` — lowercase canonical value. Use this as the URL value for `?discipline=<canon_name>` filters (the backend lowercases the incoming filter too, so mixed-case still matches, but passing `canon_name` keeps URLs stable).
 - `display_name` — one representative casing from the underlying rows (the `MAX(name)` of the group, which is deterministic-but-arbitrary). The frontend is expected to titlecase or otherwise normalize this for rendering.
+- `name` — **deprecated-pending-removal alias for `display_name`.** Kept only so existing frontend consumers that read `row.name` (paper-feed.js, search.js) continue to work between this backend release and FE-DISCIPLINE-DISPLAY-HARDEN part 2, which switches FE consumers to `display_name` / `canon_name`. Do not add new consumers of `row.name`; they break when the shim is removed.
 - `paper_count` — total papers across all casings of this discipline.
 
-**Discipline filter semantics (`?discipline=` on `/api/search` and `/api/papers`):** the match is case-insensitive. `?discipline=physics` matches papers tagged "Physics", "PHYSICS", "physics", etc.
+**Discipline filter semantics (`?discipline=` on `/api/search` and `/api/papers`):** the match is case-insensitive. `?discipline=physics` matches papers tagged "Physics", "PHYSICS", "physics", etc. This applies on `/api/papers` as well as `/api/search`; both lowercase the query-parameter and the SQL column under `LOWER()` to match the `/api/disciplines` canon_name semantics.
 
-**Frontend migration note:** the response shape changed from `{ name, paper_count }` to `{ canon_name, display_name, paper_count }`. Frontend consumers that previously read `row.name` must switch to `row.display_name` for rendering and `row.canon_name` for URL values. Client-side lowercase-dedup logic (see FE-DISCIPLINE-CASE-NORMALIZE) can be removed — the backend now dedups.
+**Frontend migration note:** the response shape changed from `{ name, paper_count }` to `{ canon_name, display_name, paper_count }` plus the transient `name` shim described above. New consumers should read `display_name` for rendering and `canon_name` for URL values. Client-side lowercase-dedup logic (see FE-DISCIPLINE-CASE-NORMALIZE) can be removed — the backend now dedups.
 
 ---
 

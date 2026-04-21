@@ -56,7 +56,7 @@ async function fetchStatsFromHaf() {
         (SELECT count(*)::int FROM papers WHERE (json_metadata -> ${at} ->> 'type') = 'bridge_paper') AS total_bridge_papers,
         (SELECT count(*)::int FROM papers WHERE (json_metadata -> ${at} ->> 'type') = 'paper'
           AND created >= now() - interval '30 days') AS papers_last_30_days,
-        (SELECT count(DISTINCT (json_metadata -> ${at} ->> 'discipline'))::int FROM papers
+        (SELECT count(DISTINCT LOWER(json_metadata -> ${at} ->> 'discipline'))::int FROM papers
           WHERE (json_metadata -> ${at} ->> 'discipline') IS NOT NULL) AS active_disciplines,
         COALESCE((
           SELECT count(*)::int FROM papers ci,

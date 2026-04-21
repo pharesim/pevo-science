@@ -14,7 +14,10 @@ const router = Router();
 
 async function fetchDisciplinesFromHaf() {
   const pool = getPool();
-  if (!pool) return null;
+  // Return [] on pool-unavailable so the caller / response envelope stays
+  // Array-shaped (data: Array<Discipline>). Returning null leaked up as
+  // `data: null`, violating the /api/disciplines contract.
+  if (!pool) return [];
 
   try {
     // Dedup mixed-case discipline names (e.g. "Physics" vs "physics") by
@@ -22,7 +25,7 @@ async function fetchDisciplinesFromHaf() {
     // MAX(name) representative of the lowercase group; the frontend is
     // expected to titlecase it for rendering. canon_name is the lowercase
     // value that the ?discipline= filter (search.ts / papers.ts) matches on.
-    const result = await pool.query(
+    const result = await pool.query<{ canon_name: string; display_name: string; paper_count: number }>(
       `SELECT
         LOWER(json_metadata -> $1 ->> 'discipline') AS canon_name,
         MAX(json_metadata -> $1 ->> 'discipline') AS display_name,
@@ -36,7 +39,16 @@ async function fetchDisciplinesFromHaf() {
        ORDER BY paper_count DESC`,
       [config.appTag, `${config.appTag}/%`],
     );
-    return result.rows;
+    // `name` is a deprecated-pending-removal alias for `display_name`, kept
+    // so FE consumers reading `d.name` (paper-feed.js, search.js) don't break
+    // between backend and FE-DISCIPLINE-DISPLAY-HARDEN part 2. Remove this
+    // alias when that FE task archives.
+    return result.rows.map((row) => ({
+      canon_name: row.canon_name,
+      display_name: row.display_name,
+      name: row.display_name,
+      paper_count: row.paper_count,
+    }));
   } catch (err) {
     logger.error({ err }, 'HAF disciplines query failed');
     return [];

@@ -14,11 +14,20 @@
  *      a discipline that returns hits must still return the same hit count
  *      and the same result set (by author+permlink).
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import request from 'supertest';
 import { createApp } from '../../src/app.js';
+import { hafCache } from '../../src/cache.js';
 
 const app = createApp();
+
+// Defense-in-depth per BE-DISCIPLINE-CANONICALIZE hold #5: clear hafCache
+// before every spec so later assertions don't silently read an earlier
+// spec's warm value. The pattern mirrors accreditations-revoke.test.ts and
+// survives future refactors that change cache-key shape.
+beforeEach(async () => {
+  await hafCache.clear();
+});
 
 describe('GET /api/disciplines (canonicalization)', () => {
   it('returns rows with { canon_name, display_name, paper_count }', { timeout: 60_000 }, async () => {

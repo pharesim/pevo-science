@@ -223,8 +223,13 @@ async function fetchPapersFromHaf(req: Request): Promise<{ rows: unknown[]; tota
   const filterParams: unknown[] = [];
 
   if (discipline) {
-    conditions.push(`(c.json_metadata -> ${appTagParam} ->> 'discipline') = $${paramIdx++}`);
-    filterParams.push(discipline);
+    // Case-insensitive discipline match: mirrors /api/search and
+    // /api/disciplines canon_name semantics. Without LOWER() on both sides,
+    // `?discipline=physics` silently missed papers tagged "Physics" on the
+    // primary paper-listing endpoint — the same drift the canonicalization
+    // fix closed on /api/search.
+    conditions.push(`LOWER(c.json_metadata -> ${appTagParam} ->> 'discipline') = $${paramIdx++}`);
+    filterParams.push(discipline.toLowerCase());
   }
   if (keyword) {
     conditions.push(`c.json_metadata -> ${appTagParam} -> 'keywords' ? $${paramIdx++}`);

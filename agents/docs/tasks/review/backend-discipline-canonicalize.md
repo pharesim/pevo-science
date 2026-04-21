@@ -77,3 +77,32 @@ Round-1 `/ce-code-review` on commit `d6c2bb1` (10 personas: correctness, testing
 - `backend-discipline-length-cap.md` — P3 input validation. No length cap on `?discipline=` before `LOWER()` hits Postgres. DoS-adjacent (unbounded Unicode locale processing), not injection-exploitable. Add a guard at the route entry.
 
 **Path to re-archive:** (1) Backend agent applies items #1-5 on this task. (2) Backend re-review signal block below the hold. (3) Architect re-reviews round-2 with `/ce-code-review` and archives. Filed follow-up tasks (`backend-display-name-titlecase.md`, `backend-discipline-length-cap.md`) are archived independently later.
+
+---
+
+**Backend re-review signal (2026-04-22, working tree on `main` post hold-block fixes):**
+
+All 5 hold items addressed. Full backend vitest 282/286 pass + 3 skipped + 1 pre-existing SEC-004-BE ≥50ms flake (dismissed in `backend-login-unknown-user-timing.md` hold block as "ship as-is" — argon2-verify floor on this hardware is 42-55ms; unrelated to this task's diff). Discipline-affected tests in isolation: 19/19 pass across `disciplines.test.ts`, `disciplines-canon-mocked.test.ts`, `papers.test.ts`. `npx tsc --noEmit` clean.
+
+1. **LOWER() normalization at 3 sibling sites (P1 fixed).**
+   - `backend/src/routes/papers.ts:225-232` — `?discipline=` now matches via `LOWER(c.json_metadata -> ${appTagParam} ->> 'discipline') = $N` with the bound parameter lowercased. The primary paper-feed endpoint no longer silently drops mixed-case-tagged papers.
+   - `backend/src/routes/stats.ts:59` — `count(DISTINCT LOWER(json_metadata ...))::int` replaces the case-sensitive DISTINCT. `active_disciplines` KPI now matches the `/api/disciplines` canon dedup contract.
+   - `backend/src/routes/search.ts:290` — `rawKey` cache-key fragment lowercases the discipline input so `?discipline=Physics` and `?discipline=physics` share a single Redis cache entry (the SQL was already LOWER()-equivalent; the cache-key drift defeated that dedup at the memoization layer).
+   - Tests: `papers.test.ts:48-62` real-HAF parity spec (lowercase-vs-uppercase returns same total and same author/permlink set); `disciplines-canon-mocked.test.ts` stats-SQL-shape spec asserts `count(DISTINCT LOWER(json_metadata` in the active_disciplines column; `disciplines-canon-mocked.test.ts` papers-filter-SQL-shape spec asserts `LOWER(c.json_metadata` on column AND `'physics'` (lowercased) on the bound parameter; `disciplines-canon-mocked.test.ts` search cache-key spec fires two case-variant requests and asserts the main search SQL was invoked ≤1 times.
+
+2. **Backend-side `name` backward-compat shim (P1 fixed).** `backend/src/routes/disciplines.ts:41-50` — response mapping explicitly emits `{canon_name, display_name, name: display_name, paper_count}`. `name` is the deprecated-pending-removal alias. `agents/docs/api-contracts/misc.md:111-124` documents the alias as a transient shim and steers new consumers to `display_name` / `canon_name`. Contract update kept narrow per boundary rule — no new shapes introduced beyond the single alias.
+
+3. **Pool-unavailable returns [] (P2 fixed).** `disciplines.ts:17-19` — `if (!pool) return [];` with an inline comment tying the change to the `data: Array<Discipline>` envelope contract. Test at `disciplines-canon-mocked.test.ts:85-93` flips a module-level `hafPoolEnabled = false` so `getPool()` returns null, asserts response is `200` with `data: []`.
+
+4. **Mocked-pool dedup test (P3 landed).** New file `backend/tests/routes/disciplines-canon-mocked.test.ts` carries the carve-out (header comment explains why the mock is justified vs real-HAF — the public HAF database cannot be seeded with mixed-case fixtures, which squarely satisfies the root CLAUDE.md mocked-pool carve-out). Test simulates the post-canonicalization SQL result (single deduped row) AND asserts the SQL string contains `LOWER(json_metadata` + `GROUP BY LOWER(json_metadata` so a regression to the old case-sensitive query fails. Also carries the sibling tests for Holds #1(b), #1(c), #2, #3 in the same file rather than scattering across multiple new files (per no-file-sprawl convention).
+
+5. **`hafCache.clear()` in beforeEach (P3 landed).** `backend/tests/routes/disciplines.test.ts:6-16` — imports `hafCache` from `../../src/cache.js` and clears it in `beforeEach` at the file-top (outside any describe block so it applies to every spec). Mirrors the `accreditations-revoke.test.ts:42-48` pattern the hold block referenced. Same pattern also lives inside `disciplines-canon-mocked.test.ts:46-50` (scoped to its own mocked-pool tests).
+
+**Deviations from hold block:**
+
+- **Stats active_disciplines parity test shape.** The hold block offered two options for Hold #1(b): "`active_disciplines` matches `/api/disciplines.data.length` when a mixed-case corpus exists OR assert via mocked-pool carve-out." The real-HAF parity invariant does NOT hold because `stats.ts` filters papers by `active_accreditations` (line 37 papers CTE) while `/api/disciplines` does not. The two endpoints count different sets — a real `active_disciplines === data.length` assertion would fail on a HAF where papers exist but aren't accredited (currently 0 vs 2 on the live pevotest chain). I went with the mocked-pool carve-out option instead, asserting the SQL shape directly via `expect(sql).toMatch(/count\(DISTINCT LOWER\(json_metadata/)`. A future architect pass may want to either widen `/api/disciplines` to also filter by accreditation (per the accredited-only data policy in `ARCHITECTURE.md`) or acknowledge the divergence in the contract. Filing this as noted but not blocking on it.
+- **Test file placement.** Hold #4 suggested either `disciplines-dedup.test.ts` (new file) OR a carve-out block inside `disciplines.test.ts`. I went with the new-file option and consolidated Holds #1(b), #1(c), #2, #3 mocked-pool coverage into the same file (`disciplines-canon-mocked.test.ts`) rather than fragmenting into three per-hold files. The shared `hafQueryMock` + `hafPoolEnabled` scaffolding is set up once at the top; splitting would duplicate it three times.
+
+**Dismissed-finding still-dismissed:** boundary-rule violation (contract edit was explicitly authorized by the hold block for #2), no TS Discipline interface (pre-existing), Postgres LOWER() vs JS toLowerCase() Unicode divergence (ASCII-range disciplines; reopen if non-ASCII lands).
+
+**Filed follow-up still-pending:** `backend-display-name-titlecase.md`, `backend-discipline-length-cap.md` — per architect's hold block, independent archive path.

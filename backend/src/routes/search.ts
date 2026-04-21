@@ -287,7 +287,13 @@ router.get('/', async (req: Request, res: Response) => {
   const { page, limit, offset } = parsePageLimit(req);
 
   if (isHafAvailable()) {
-    const rawKey = `q=${q}:t=${type}:d=${discipline || ''}:l=${language || ''}:src=${source || ''}:a=${accreditedOnly}:r=${includeRetracted}:s=${sort}:p=${page}:lim=${limit}`;
+    // Lowercase discipline in the cache key so case-variant requests
+    // (?discipline=Physics vs ?discipline=physics) share a cache entry. The
+    // SQL side of the filter is already case-insensitive via LOWER() on both
+    // columns; without this lowercasing the cache would store separate
+    // entries for each casing variant and the SQL dedup's benefit is lost
+    // at the cache layer.
+    const rawKey = `q=${q}:t=${type}:d=${(discipline || '').toLowerCase()}:l=${language || ''}:src=${source || ''}:a=${accreditedOnly}:r=${includeRetracted}:s=${sort}:p=${page}:lim=${limit}`;
     const cacheKey = `search:${crypto.createHash('sha256').update(rawKey).digest('hex').slice(0, 32)}`;
     const result = await hafCache.getOrSet(cacheKey, () => searchFromHaf(q, type, discipline, language, source, accreditedOnly, includeRetracted, sort, limit, offset), 15_000);
     if (result) {
