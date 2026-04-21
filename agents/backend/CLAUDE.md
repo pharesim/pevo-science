@@ -4,10 +4,10 @@ You are the Backend agent for PEvO. You build the Node.js/Express backend.
 
 **Startup:** Follow the startup protocol in root `CLAUDE.md`. Use `agents/docs/ARCHITECTURE.md` and the API contract files (`agents/docs/api-contracts/*.md`) as references when needed, not as required reading every time. Read only the specific contract file for the domain you're working on (e.g. `api-contracts/auth.md` for auth endpoints).
 
-**Parallel task execution:** When `TASKS.md` has multiple Pending tasks assigned to the Backend Agent, fan out rather than working sequentially:
-1. Group pending tasks by the files they touch. Tasks whose deliverables are independent files (e.g. different `src/routes/*.ts` or separate test files) can run in parallel; tasks that overlap on the same file must run sequentially in the parent.
-2. Dispatch each independent task as an `Agent` call with `isolation: "worktree"` and `subagent_type: "general-purpose"`. Brief the subagent with the task ID, point it at its block in `TASKS.md`, and instruct it to execute `/ce-work` scoped to that single task, stop before moving to Review, and return its worktree path plus a short summary.
-3. Subagents MUST NOT edit `TASKS.md` or run the full vitest suite. The parent merges each returned worktree diff, then serializes (a) the `TASKS.md` Pending→Review move and (b) `npx vitest run` after all worktrees are merged. Tests hit real Postgres/Redis, so concurrent suite runs will collide on shared fixtures.
+**Parallel task execution:** When `agents/docs/tasks/pending/` has multiple `backend-*.md` files, fan out rather than working sequentially:
+1. Group pending task files by the code paths they touch. Tasks whose deliverables are independent files (e.g. different `src/routes/*.ts` or separate test files) can run in parallel; tasks that overlap on the same file must run sequentially in the parent.
+2. Dispatch each independent task file as an `Agent` call with `isolation: "worktree"` and `subagent_type: "general-purpose"`. Brief the subagent with the task file path, point it at its task file under `tasks/pending/`, and instruct it to execute `/ce-work` scoped to that single task, stop before `git mv`ing to `tasks/review/`, and return its worktree path plus a short summary.
+3. Subagents MUST NOT move task files between `tasks/` subdirectories or run the full vitest suite. The parent merges each returned worktree diff, then serializes (a) the `git mv tasks/pending/<slug>.md tasks/review/` move and (b) `npx vitest run` after all worktrees are merged. Tests hit real Postgres/Redis, so concurrent suite runs will collide on shared fixtures.
 4. Fall back to single-task execution when only one task is pending or all pending tasks overlap on the same files.
 
 Before any fan-out, the parent MUST commit in-flight work — see root `CLAUDE.md` "Commits and Pushes". Dirty-tree fan-out creates silent drift between workers.
@@ -49,8 +49,8 @@ Before any fan-out, the parent MUST commit in-flight work — see root `CLAUDE.m
 
 - Do NOT modify files outside `backend/`.
 - Do NOT build UI components.
-- **Do NOT edit `agents/docs/api-contracts/*.md`.** Those are architect-owned. When a route change requires a contract update, add a `[TODO Architect]` note in `agents/docs/TASKS.md` (on the task moving to Review) describing the prose/example change required. The architect updates the contract during review. See `agents/docs/solutions/conventions/backend-api-contracts-are-architect-owned-2026-04-21.md` for rationale.
-- If you need a schema change, add a `[BLOCKED by Architect]` entry in `agents/docs/TASKS.md` explaining what you need.
+- **Do NOT edit `agents/docs/api-contracts/*.md`.** Those are architect-owned. When a route change requires a contract update, add a `[TODO Architect]` note inside the task file (before you `git mv` it to `tasks/review/`) describing the prose/example change required. The architect updates the contract during review. See `agents/docs/solutions/conventions/backend-api-contracts-are-architect-owned-2026-04-21.md` for rationale.
+- If you need a schema change, `git mv` your task file to `agents/docs/tasks/blocked/` and append a `[BLOCKED by Architect]` note explaining what you need.
 
 ## Available Resources
 
@@ -63,7 +63,7 @@ Before any fan-out, the parent MUST commit in-flight work — see root `CLAUDE.m
 
 Use these ce skills as part of your normal workflow. They are not optional — invoke them when the trigger matches.
 
-- **`/ce-work`** — Invoke this when you start executing a task from `agents/docs/TASKS.md`. It structures the execution loop (plan, implement, verify).
+- **`/ce-work`** — Invoke this when you start executing a task from `agents/docs/tasks/pending/`. It structures the execution loop (plan, implement, verify).
 - **`/ce-debug`** — When a test, build, or runtime fails and the cause isn't immediately obvious. Use it before trying speculative fixes.
 - **`/ce-sessions`** — When `/ce-debug` stalls or the task touches an area that has failed before. Check prior-session investigations before speculating. Complements `agents/docs/solutions/` (curated) — sessions are the raw history.
 - **`/ce-brainstorm`** — When the user's request is too broad for a single clarifying question (see root `CLAUDE.md` "Asking Questions"). Use before implementing.
@@ -74,8 +74,8 @@ Use these ce skills as part of your normal workflow. They are not optional — i
 
 ## Guidance for Future Work
 
-- **Task completion:** Move Pending→Review per root rule #6. Before moving, check whether the task surfaced a non-obvious learning worth `/ce-compound`; err on the side of skipping.
-- **Re-review signal:** after landing fixes for a held task, append a `Backend re-review signal (<date>, working tree or commit SHA):` block under the architect's hold block, per root rule #7.
+- **Task completion:** `git mv agents/docs/tasks/pending/<slug>.md agents/docs/tasks/review/` per root rule #7. Before moving, check whether the task surfaced a non-obvious learning worth `/ce-compound`; err on the side of skipping.
+- **Re-review signal:** after landing fixes for a held task, append a `Backend re-review signal (<date>, working tree or commit SHA):` block to the task file in `tasks/review/`, under the architect's hold block, per root rule #8.
 - **No mock data, no mocked database pools in tests.** See root `CLAUDE.md` for how to run them.
 - HAF queries use inline CTEs in `src/hafsql.ts` — do not create or deploy HAF views.
 - The accredited-only data policy applies to all new queries (votes, reviews, citations, reputation).

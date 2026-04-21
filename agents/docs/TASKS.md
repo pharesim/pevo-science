@@ -1,8 +1,12 @@
-# PEvO Task Board
+# PEvO Task Board — LEGACY (being drained)
 
-Pending tasks assigned by the Architect. Each agent **must check this file before starting work** and pick up any task assigned to them.
+> **NEW TASKS GO IN `agents/docs/tasks/pending/<role>-<kebab-summary>.md`.**
+>
+> This file is the old single-bulletin-board layout. It is kept read-mostly until the tasks still listed here are drained (moved to `review/` and archived by the architect). Do NOT add new tasks here. Entries leave naturally as their work completes; do NOT migrate existing entries in bulk.
+>
+> See `agents/docs/tasks/README.md` for the per-task-file layout, slug format, transitions, and archive rules. See root `CLAUDE.md` § Agent Coordination Rules #5-#9 for protocol.
 
-When a task is complete, the implementing agent moves it to a **Review** section (not Done). The **Architect** reviews the implementation against the spec and physically moves it to `agents/docs/tasks-archive.md`. Do NOT use strikethrough to mark tasks done here. Completed tasks must be removed from this file entirely.
+When a task listed below is complete, create a corresponding task file in `agents/docs/tasks/review/<role>-<slug>.md` carrying the task's content and any re-review signal, then delete the entry's block from this file. The architect then archives per the new rules: prepend to `tasks-archive.md`, trim to 250 lines, `git rm` the per-task file.
 
 Review history: `agents/docs/tasks-archive.md`
 

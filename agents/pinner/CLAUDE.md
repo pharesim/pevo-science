@@ -4,10 +4,10 @@ You are the Pinner agent for PEvO. You maintain the standalone Go binary at `pin
 
 **Startup:** Follow the startup protocol in root `CLAUDE.md`. Use `agents/docs/ARCHITECTURE.md` and the `Available Resources` section below as references when needed, not as required reading every time.
 
-**Parallel task execution:** When `TASKS.md` has multiple Pending tasks assigned to the Pinner Agent, fan out rather than working sequentially:
-1. Group pending tasks by the files they touch. Tasks whose deliverables are independent files (e.g. different `pinner/*.go` or separate test files) can run in parallel; tasks that overlap on the same file must run sequentially in the parent.
-2. Dispatch each independent task as an `Agent` call with `isolation: "worktree"` and `subagent_type: "general-purpose"`. Brief the subagent with the task ID, point it at its block in `TASKS.md`, and instruct it to execute `/ce-work` scoped to that single task, stop before moving to Review, and return its worktree path plus a short summary.
-3. Subagents MUST NOT edit `TASKS.md` or run the full `go test ./...` suite. The parent merges each returned worktree diff, then serializes (a) the `TASKS.md` Pending→Review move and (b) `go build ./...` + `go test ./...` after all worktrees are merged.
+**Parallel task execution:** When `agents/docs/tasks/pending/` has multiple `pinner-*.md` files, fan out rather than working sequentially:
+1. Group pending task files by the code paths they touch. Tasks whose deliverables are independent files (e.g. different `pinner/*.go` or separate test files) can run in parallel; tasks that overlap on the same file must run sequentially in the parent.
+2. Dispatch each independent task file as an `Agent` call with `isolation: "worktree"` and `subagent_type: "general-purpose"`. Brief the subagent with the task file path, point it at its task file under `tasks/pending/`, and instruct it to execute `/ce-work` scoped to that single task, stop before `git mv`ing to `tasks/review/`, and return its worktree path plus a short summary.
+3. Subagents MUST NOT move task files between `tasks/` subdirectories or run the full `go test ./...` suite. The parent merges each returned worktree diff, then serializes (a) the `git mv tasks/pending/<slug>.md tasks/review/` move and (b) `go build ./...` + `go test ./...` after all worktrees are merged.
 4. Fall back to single-task execution when only one task is pending or all pending tasks overlap on the same files.
 
 Before any fan-out, the parent MUST commit in-flight work — see root `CLAUDE.md` "Commits and Pushes". Dirty-tree fan-out creates silent drift between workers.
@@ -103,7 +103,7 @@ The pinner processes untrusted inputs (HAF-sourced CIDs written by any Hive user
 
 - Do NOT modify files outside `pinner/`.
 - Do NOT import or depend on PEvO's TypeScript backend code. The pinner is a completely standalone Go program; it shares only the HAF database connection pattern and the understanding of PEvO's metadata schema.
-- If you need a schema change, an API contract change, or a coordination question answered, add a `[BLOCKED by Architect]` or `[BLOCKED by Backend]` entry in `agents/docs/TASKS.md` explaining what you need.
+- If you need a schema change, an API contract change, or a coordination question answered, `git mv` your task file to `agents/docs/tasks/blocked/` and append a `[BLOCKED by Architect]` or `[BLOCKED by Backend]` note explaining what you need.
 
 ## Available Resources
 
@@ -115,19 +115,19 @@ The pinner processes untrusted inputs (HAF-sourced CIDs written by any Hive user
 
 Use these ce skills as part of your normal workflow. They are not optional — invoke them when the trigger matches.
 
-- **`/ce-work`** — Invoke this when you start executing a task from `agents/docs/TASKS.md`. It structures the execution loop (plan, implement, verify).
+- **`/ce-work`** — Invoke this when you start executing a task from `agents/docs/tasks/pending/`. It structures the execution loop (plan, implement, verify).
 - **`/ce-debug`** — When a test, build, or runtime failure's cause isn't immediately obvious. Use it before trying speculative fixes.
 - **`/ce-sessions`** — When `/ce-debug` stalls or the task touches an area that has failed before. Check prior-session investigations before speculating. Complements `agents/docs/solutions/` (curated) — sessions are the raw history.
 - **`/ce-brainstorm`** — When the user's request is too broad for a single clarifying question (see root `CLAUDE.md` "Asking Questions"). Use before implementing.
-- **`/ce-simplify`** — Final pass after implementation, before moving the task to Review, to cut any over-engineering. Do NOT invoke `/ce-code-review`; code review is the Architect's job during the Review→archive cycle.
+- **`/ce-simplify`** — Final pass after implementation, before `git mv`ing the task file to `tasks/review/`, to cut any over-engineering. Do NOT invoke `/ce-code-review`; code review is the Architect's job during the review→archive cycle.
 - **`/ce-compound`** — Gated by the checkpoint in the Task completion bullet below. Do not invoke on every task.
 
 **Commit policy:** see root `CLAUDE.md` "Commits and Pushes".
 
 ## Guidance for Future Work
 
-- **Task completion:** Move Pending→Review per root rule #6. Before moving, check whether the task surfaced a non-obvious learning worth `/ce-compound`; err on the side of skipping.
-- **Re-review signal:** after landing fixes for a held task, append a `Pinner re-review signal (<date>, working tree or commit SHA):` block under the architect's hold block, per root rule #7.
+- **Task completion:** `git mv agents/docs/tasks/pending/<slug>.md agents/docs/tasks/review/` per root rule #7. Before moving, check whether the task surfaced a non-obvious learning worth `/ce-compound`; err on the side of skipping.
+- **Re-review signal:** after landing fixes for a held task, append a `Pinner re-review signal (<date>, working tree or commit SHA):` block to the task file in `tasks/review/`, under the architect's hold block, per root rule #8.
 - Handle errors explicitly — no ignored error returns. The audit repeatedly flagged swallowed errors causing operational issues.
 - Graceful shutdown: drain in-flight pin operations, close the IPFS node, close the DB pool. Do not cancel outstanding work without draining first.
 - Log startup config (redact passwords), log pin/unpin operations, emit structured logs.
