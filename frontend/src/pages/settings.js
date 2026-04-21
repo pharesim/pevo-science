@@ -640,20 +640,46 @@ export function initSettingsPage() {
           auth.token, auth.username, null, auth.isAccredited, auth.accreditation, 'self'
         );
 
+        // FE-UPGRADE-CREDENTIAL-WIPE: zero all sensitive reactive state on
+        // the happy path before flipping to 'done'. Without this, the old
+        // and new 12-word mnemonics plus the re-entered password sit in
+        // Alpine's reactive data indefinitely; any XSS on /settings can
+        // read them via `window.Alpine.$data(el).oldSeedPhrase` etc.
+        // `resetUpgrade()` would also reset `upgradePhase` to 'idle', which
+        // would hide the success UI, so we zero inline here and let the
+        // phase transition to 'done' show the confirmation screen.
+        this._clearSensitiveUpgradeState();
+
         this.upgradePhase = 'done';
       } catch (err) {
+        // Defense in depth: also zero sensitive state on error. The
+        // 'error' phase routes the user to `resetUpgrade()` via the "try
+        // again" button which would clear these anyway, but a refresh or
+        // navigation away leaves them lingering otherwise.
+        this._clearSensitiveUpgradeState();
         this.upgradeError = err.message;
         this.upgradePhase = 'error';
       }
     },
 
+    // Zero the plaintext-sensitive fields used during the custody upgrade
+    // flow: the old mnemonic the user typed, the freshly-generated new
+    // mnemonic (both as a string and as the words array used for the
+    // confirmation step), the confirmation inputs, and the re-entered
+    // light-account password. Callers that also need to reset phase/error
+    // should use `resetUpgrade()` instead.
+    _clearSensitiveUpgradeState() {
+      this.oldSeedPhrase = '';
+      this.newSeedPhrase = '';
+      this.newSeedWords = [];
+      this.confirmInputs = {};
+      this.upgradePassword = '';
+    },
+
     resetUpgrade() {
+      this._clearSensitiveUpgradeState();
       this.upgradePhase = 'idle';
       this.upgradeError = null;
-      this.newSeedPhrase = null;
-      this.newSeedWords = [];
-      this.oldSeedPhrase = '';
-      this.upgradePassword = '';
     },
 
     navigate(path) {

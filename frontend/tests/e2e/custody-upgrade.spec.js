@@ -338,4 +338,41 @@ test('upgrade wizard signs and would-broadcast an account_update rotating all ke
     () => window.__keychainAddAccountAuthorityCalls,
   );
   expect(addAuthCalls).toEqual([]);
+
+  // ─── FE-UPGRADE-CREDENTIAL-WIPE: Alpine state must be zeroed ─────
+  // After a successful upgrade the page transitions to phase='done'.
+  // Before that transition, executeUpgrade() calls
+  // _clearSensitiveUpgradeState() which zeros the old + new 12-word
+  // mnemonics, the confirm inputs, and the re-entered password. Read
+  // these fields straight off the Alpine reactive store: an XSS on
+  // /settings would use the same API, so this both asserts the wipe
+  // worked and guards the (SEC-002-adjacent) concern that stale
+  // plaintext seed words in Alpine state would leak into any future
+  // trace or screenshot captured on an unrelated post-upgrade failure.
+  await expect
+    .poll(
+      async () => page.evaluate(() => {
+        const el = document.querySelector('[x-data="settingsPage"]');
+        return window.Alpine.$data(el).upgradePhase;
+      }),
+      { timeout: 10_000 },
+    )
+    .toBe('done');
+
+  const sensitiveState = await page.evaluate(() => {
+    const el = document.querySelector('[x-data="settingsPage"]');
+    const data = window.Alpine.$data(el);
+    return {
+      oldSeedPhrase: data.oldSeedPhrase,
+      newSeedPhrase: data.newSeedPhrase,
+      newSeedWords: data.newSeedWords,
+      confirmInputs: data.confirmInputs,
+      upgradePassword: data.upgradePassword,
+    };
+  });
+  expect(sensitiveState.oldSeedPhrase).toBe('');
+  expect(sensitiveState.newSeedPhrase).toBe('');
+  expect(sensitiveState.newSeedWords).toEqual([]);
+  expect(sensitiveState.confirmInputs).toEqual({});
+  expect(sensitiveState.upgradePassword).toBe('');
 });

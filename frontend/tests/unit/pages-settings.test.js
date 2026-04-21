@@ -20,8 +20,44 @@ vi.mock('../../src/keychain.js', () => ({
 }));
 
 vi.mock('../../src/hive-keys.js', () => ({
-  deriveHiveKeys: vi.fn(),
-  deriveHivePublicKeys: vi.fn(),
+  deriveHiveKeys: vi.fn(() => ({
+    owner: 'a'.repeat(64),
+    active: 'b'.repeat(64),
+    posting: 'c'.repeat(64),
+    memo: 'd'.repeat(64),
+  })),
+  deriveHivePublicKeys: vi.fn(async () => ({
+    owner: 'STM' + 'o'.repeat(50),
+    active: 'STM' + 'a'.repeat(50),
+    posting: 'STM' + 'p'.repeat(50),
+    memo: 'STM' + 'm'.repeat(50),
+  })),
+}));
+
+// BIP39 + dhive mocks for the executeUpgrade() credential-wipe test.
+// The executeUpgrade path: validateMnemonic(old) → mnemonicToSeedSync →
+// deriveHiveKeys → new dhive.Client → sendOperations → requestImportKey →
+// fetch('/api/custody/upgrade'). Each layer is stubbed so the happy path
+// completes without touching the real chain or backend.
+vi.mock('@scure/bip39', () => ({
+  generateMnemonic: vi.fn(() => Array(12).fill('test').join(' ')),
+  validateMnemonic: vi.fn(() => true),
+  mnemonicToSeedSync: vi.fn(() => new Uint8Array(64)),
+}));
+vi.mock('@scure/bip39/wordlists/english.js', () => ({
+  wordlist: [],
+}));
+vi.mock('@hiveio/dhive', () => ({
+  PrivateKey: {
+    fromSeed: vi.fn(() => ({
+      toString: () => '5' + 'K' + 'x'.repeat(49),
+    })),
+  },
+  Client: vi.fn(() => ({
+    broadcast: {
+      sendOperations: vi.fn(async () => ({ id: 'stub-tx' })),
+    },
+  })),
 }));
 
 const mockAuthStore = {
@@ -225,6 +261,84 @@ describe('settingsPage', () => {
       comp.startUpgrade();
       expect(comp.upgradePhase).toBe('error');
       expect(comp.upgradeError).toBe('upgrade.keychainRequired');
+    });
+  });
+
+  // FE-UPGRADE-CREDENTIAL-WIPE — `executeUpgrade()` must zero all
+  // plaintext-sensitive reactive state (old + new mnemonic, confirm
+  // inputs, re-entered password) before transitioning to the 'done'
+  // phase. Without this, an XSS on /settings can
+  // `window.Alpine.$data(el).oldSeedPhrase` and lift the 12-word seed
+  // out of Alpine's reactive store. Same guard on the error path so a
+  // failed broadcast + navigate-away doesn't leak.
+  describe('FE-UPGRADE-CREDENTIAL-WIPE: executeUpgrade', () => {
+    function seedUpgradeState(comp) {
+      comp.oldSeedPhrase = Array(12).fill('old').join(' ');
+      comp.newSeedPhrase = Array(12).fill('new').join(' ');
+      comp.newSeedWords = comp.newSeedPhrase.split(' ');
+      comp.confirmInputs = { 0: 'new', 5: 'new', 11: 'new' };
+      comp.upgradePassword = 'light-password';
+      return comp;
+    }
+
+    function stubFetchSuccess() {
+      vi.stubGlobal('fetch', vi.fn(async () => ({
+        ok: true,
+        json: async () => ({
+          data: { token: 'new-jwt', custody: 'self' },
+        }),
+      })));
+    }
+
+    function stubKeychainImportKey() {
+      vi.stubGlobal('window', {
+        ...globalThis.window,
+        hive_keychain: {
+          requestImportKey: (account, wifKey, cb) => {
+            queueMicrotask(() => cb({ success: true }));
+          },
+        },
+      });
+    }
+
+    it('zeroes mnemonic, confirm inputs, and password on the happy path before phase=done', async () => {
+      mockIsKeychainInstalled.mockReturnValue(true);
+      stubFetchSuccess();
+      stubKeychainImportKey();
+
+      const comp = createComponent();
+      seedUpgradeState(comp);
+
+      await comp.executeUpgrade();
+
+      expect(comp.upgradePhase).toBe('done');
+      expect(comp.oldSeedPhrase).toBe('');
+      expect(comp.newSeedPhrase).toBe('');
+      expect(comp.newSeedWords).toEqual([]);
+      expect(comp.confirmInputs).toEqual({});
+      expect(comp.upgradePassword).toBe('');
+    });
+
+    it('zeroes sensitive state on the error path too', async () => {
+      mockIsKeychainInstalled.mockReturnValue(true);
+      stubKeychainImportKey();
+      // Make the backend call fail so executeUpgrade lands in the catch.
+      vi.stubGlobal('fetch', vi.fn(async () => ({
+        ok: false,
+        json: async () => ({ error: 'upgrade refused' }),
+      })));
+
+      const comp = createComponent();
+      seedUpgradeState(comp);
+
+      await comp.executeUpgrade();
+
+      expect(comp.upgradePhase).toBe('error');
+      expect(comp.oldSeedPhrase).toBe('');
+      expect(comp.newSeedPhrase).toBe('');
+      expect(comp.newSeedWords).toEqual([]);
+      expect(comp.confirmInputs).toEqual({});
+      expect(comp.upgradePassword).toBe('');
     });
   });
 
