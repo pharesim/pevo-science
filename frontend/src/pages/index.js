@@ -2,7 +2,7 @@
 // All 26 routes are rendered by pageMount via Alpine.mutateDom().
 
 import { initHomePage, homePageTemplate } from './home.js';
-import { papersPageTemplate } from './papers.js';
+import { initPapersPage, papersPageTemplate } from './papers.js';
 import { initPaperDetailPage, paperDetailPageTemplate } from './paper-detail.js';
 import { initPublishPage, publishPageTemplate } from './publish.js';
 import { initEditPage, editPageTemplate } from './edit.js';
@@ -31,7 +31,7 @@ import { initSettingsVerifyEmailPage, settingsVerifyEmailPageTemplate } from './
 
 export const pages = {
   'home':                        { init: initHomePage, template: homePageTemplate },
-  'papers':                      { template: papersPageTemplate },
+  'papers':                      { init: initPapersPage, template: papersPageTemplate },
   'paper-detail':                { init: initPaperDetailPage, template: paperDetailPageTemplate },
   'publish':                     { init: initPublishPage, template: publishPageTemplate },
   'edit':                        { init: initEditPage, template: editPageTemplate },

@@ -129,6 +129,29 @@ describe('searchPage', () => {
       await comp.doSearch('test', 1);
       expect(comp.totalPages).toBe(1);
     });
+
+    it('trims the query in state, URL, and API when input has leading/trailing whitespace', async () => {
+      searchPapers.mockResolvedValue({ data: [], meta: { total: 0, limit: 20 } });
+      const comp = createComponent();
+      comp.query = '  quantum  ';
+      const push = vi.spyOn(window.history, 'pushState');
+
+      await comp.doSearch('  quantum  ', 1);
+
+      // API sees trimmed
+      expect(searchPapers).toHaveBeenCalledWith(expect.objectContaining({ q: 'quantum' }));
+      // Component state sees trimmed
+      expect(comp.query).toBe('quantum');
+      // URL push (via handleSubmit-style path or catch-block push) would see trimmed;
+      // exercise it by forcing a failure so _pushUrl fires.
+      searchPapers.mockRejectedValueOnce(new Error('net'));
+      comp.query = '  quantum  ';
+      await comp.doSearch('  quantum  ', 1);
+      expect(comp.query).toBe('quantum');
+      const url = push.mock.calls[push.mock.calls.length - 1][2];
+      expect(url).not.toMatch(/\+quantum\+/);
+      expect(url).toContain('q=quantum');
+    });
   });
 
   describe('handleSubmit', () => {

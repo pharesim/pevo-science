@@ -20,7 +20,13 @@ const template = `
                     x-text="loading ? $t('search.searching') : $t('search.searchButton')"></button>
           </div>
 
-          <!-- Filters row -->
+          <!-- Filter changes (type/source/discipline) intentionally do NOT
+               auto-push the URL or re-run the search. Search is a user-initiated
+               action; mid-compose filter tweaks would cause unwanted network
+               churn and a jumpy result list. paper-feed uses the opposite
+               pattern (auto-push on filter change) because it's a passive
+               "what's here" feed, not a query. handleSubmit is the canonical
+               point that commits filter state to the URL + API. -->
           <div class="flex flex-wrap gap-3 mt-3">
             <div>
               <label for="search-type" class="block text-xs font-medium text-ink-muted mb-1" x-text="$t('search.typeLabel')"></label>
@@ -240,13 +246,18 @@ export function initSearchPage() {
     },
 
     async doSearch(q, page) {
-      if (!q || !q.trim()) return;
+      const trimmed = (q || '').trim();
+      if (!trimmed) return;
+      // Normalize stored state so the input field, URL, and API all reflect
+      // the same trimmed form. Without this the input keeps leading/trailing
+      // whitespace and `_pushUrl` produces `?q=+foo+` (space-encoded padding).
+      if (this.query !== trimmed) this.query = trimmed;
       this.loading = true;
       this.error = null;
       this.hasSearched = true;
       try {
         const params = {
-          q: q.trim(),
+          q: trimmed,
           page,
           limit: ITEMS_PER_PAGE,
         };
