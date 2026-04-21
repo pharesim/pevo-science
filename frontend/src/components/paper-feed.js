@@ -12,7 +12,7 @@ export const paperFeedTemplate = `
           <div class="flex flex-col sm:flex-row gap-3 sm:items-center mb-6">
             <div class="flex-1 sm:max-w-xs">
               <label for="paper-feed-discipline" class="block text-xs font-medium text-ink-muted mb-1" x-text="$t('filters.discipline')"></label>
-              <select id="paper-feed-discipline" class="select-control capitalize" x-model="discipline" @change="onDisciplineChange()">
+              <select id="paper-feed-discipline" class="select-control capitalize" x-model="discipline" @change="onDisciplineChange()" :data-disciplines-status="disciplinesLoadFailed ? 'failed' : 'ok'">
                 <option value="" x-text="$t('filters.allDisciplines')"></option>
                 <template x-for="d in disciplines" :key="d.name">
                   <option :value="d.name" x-text="\`\${d.name} (\${d.paper_count})\`" class="capitalize"></option>
@@ -101,6 +101,7 @@ export function initPaperFeed() {
     totalPages: 1,
     loading: true,
     error: null,
+    disciplinesLoadFailed: false,
     _popstateHandler: null,
 
     // Expose helpers to the paper-card template interpolated into this scope.
@@ -109,7 +110,10 @@ export function initPaperFeed() {
 
     init() {
       this._syncFromUrl();
-      this.loadDisciplines().catch(() => {});
+      this.loadDisciplines().catch((err) => {
+        console.warn('[loadDisciplines]', err);
+        this.disciplinesLoadFailed = true;
+      });
       this.loadPapers();
       if (pageOwnsUrl()) {
         this._popstateHandler = () => {

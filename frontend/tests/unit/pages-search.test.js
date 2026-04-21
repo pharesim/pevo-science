@@ -341,5 +341,24 @@ describe('searchPage', () => {
       await Promise.resolve();
       comp.destroy();
     });
+
+    it('flips disciplinesLoadFailed and warns once when loadDisciplines rejects', async () => {
+      window.history.replaceState(null, '', '/en/search');
+      const { fetchDisciplines } = await import('../../src/api.js');
+      const err = new Error('disciplines down');
+      fetchDisciplines.mockRejectedValueOnce(err);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const comp = createComponent();
+      expect(comp.disciplinesLoadFailed).toBe(false);
+      comp.init();
+      // Flush microtasks so the rejected promise settles.
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(comp.disciplinesLoadFailed).toBe(true);
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(warnSpy).toHaveBeenCalledWith('[loadDisciplines]', err);
+      warnSpy.mockRestore();
+      comp.destroy();
+    });
   });
 });

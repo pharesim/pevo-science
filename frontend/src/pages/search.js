@@ -40,7 +40,7 @@ const template = `
             </div>
             <div>
               <label for="search-discipline" class="block text-xs font-medium text-ink-muted mb-1" x-text="$t('filters.discipline')"></label>
-              <select id="search-discipline" class="select-control text-sm capitalize" x-model="disciplineFilter">
+              <select id="search-discipline" class="select-control text-sm capitalize" x-model="disciplineFilter" :data-disciplines-status="disciplinesLoadFailed ? 'failed' : 'ok'">
                 <option value="" x-text="$t('filters.allDisciplines')"></option>
                 <template x-for="d in disciplines" :key="d.name">
                   <option :value="d.name" x-text="d.name" class="capitalize"></option>
@@ -166,6 +166,7 @@ export function initSearchPage() {
     loading: false,
     error: null,
     hasSearched: false,
+    disciplinesLoadFailed: false,
     _popstateHandler: null,
 
     formatDate,
@@ -173,7 +174,10 @@ export function initSearchPage() {
     init() {
       this._syncFromUrl();
       if (this.query) this.doSearch(this.query, this.currentPage);
-      this.loadDisciplines().catch(() => {});
+      this.loadDisciplines().catch((err) => {
+        console.warn('[loadDisciplines]', err);
+        this.disciplinesLoadFailed = true;
+      });
       if (pageOwnsUrl()) {
         this._popstateHandler = () => {
           if (!pageOwnsUrl()) return;
