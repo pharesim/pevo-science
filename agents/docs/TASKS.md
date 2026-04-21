@@ -50,6 +50,63 @@ Review history: `agents/docs/tasks-archive.md`
 
 ## Pending
 
+### BE-DISCIPLINE-CANONICALIZE — Canonicalize disciplines via LOWER() in HAF query + case-insensitive search match (Backend Agent, P1)
+
+**Surfaced by:** FE-DISCIPLINE-CASE-NORMALIZE archive review (2026-04-21d).
+
+**Context:** FE-DISCIPLINE-CASE-NORMALIZE shipped client-side lowercasing of discipline names to canonicalize the URL layer. But the backend's `GET /api/disciplines` in `backend/src/routes/disciplines.ts` is an open-vocabulary HAF query (`GROUP BY (json_metadata -> $1 ->> 'discipline')` — case-sensitive). If users typed both "Physics" and "physics" into their paper metadata, the backend returns two rows; the frontend spread collapses both to `name: "physics"` but keeps each paper_count separate, yielding duplicate dropdown entries with mismatched counts. Additionally, `?discipline=physics` in `search.ts` matches only the lowercase HAF group, silently missing papers tagged "Physics."
+
+**Goal:** Close the open-vocabulary dedup bug at the backend layer.
+
+1. **`disciplines.ts`:** Update the HAF query to dedup by lowercase name. One approach preserving display info: `SELECT LOWER(name) AS canon_name, MAX(name) AS display_name, SUM(paper_count) AS paper_count GROUP BY LOWER(name)`. Response shape grows to `{ canon_name, display_name, paper_count }`.
+2. **`search.ts`:** `?discipline=physics` must match against `LOWER(json_metadata -> $1 ->> 'discipline') = $N` (lowercase both sides) so the case-insensitive match covers all HAF rows.
+3. **Update `agents/docs/api-contracts/papers.md` (or whichever contract file documents disciplines):** response shape, match semantics, migration note for frontend.
+4. **Tests:** real-HAF test asserting `GET /api/disciplines` dedups mixed-case names; search-match test asserting `?discipline=physics` finds a paper tagged "Physics".
+
+**Non-goals:** Rewriting the discipline schema. Normalizing disciplines at ingest time (would also require a backfill).
+
+**Unblocks:** FE-DISCIPLINE-DISPLAY-HARDEN (frontend can drop client-side dedup once this lands).
+
+**Deliverable:** Move to Review with API contract update + real-HAF test coverage.
+
+---
+
+### FE-DISCIPLINE-DISPLAY-HARDEN — Title-case disciplines for display; drop client-side lowercase dedup after backend lands (UI Agent, P1)
+
+**Surfaced by:** FE-DISCIPLINE-CASE-NORMALIZE archive review (2026-04-21d).
+
+**Context:** FE-DISCIPLINE-CASE-NORMALIZE relies on CSS `text-transform: capitalize` for display, which only titlecases the first letter of each word. Fails for initialisms ("ML" → "Ml", "AI" → "Ai") and titles-with-stopwords ("Theory of Computation" → "Theory Of Computation"). Task claim "display stays titlecased" is only true for simple single-word lowercase disciplines.
+
+**Goal:** Replace CSS capitalize with a JS display helper that preserves typographical conventions. Two independent changes:
+
+1. **Display helper.** Add `frontend/src/lib/discipline-display.js` exporting `titleCaseDiscipline(lowercaseName)`. Handle stopwords via a small English list (`of, and, for, in, the, to, a, an`) that stay lowercase when not the first word. Handle initialisms via a known-set lookup (`['ml', 'ai', 'nlp', 'dna', 'rna', 'gpu', 'cpu', ...]`) that render ALL-CAPS. Default: first-letter-of-each-word capitalization. Update consumers in `paper-feed.js` + `search.js` to render options via `titleCaseDiscipline(d.name)` instead of raw `{{ d.name }}` + CSS capitalize.
+2. **Drop client-side dedup** once **BE-DISCIPLINE-CANONICALIZE** lands. Switch to the new `{ canon_name, display_name, paper_count }` backend response shape; use `canon_name` as the URL value and `titleCaseDiscipline(display_name)` as the rendered text.
+
+**Non-goals:** i18n of the stopword/initialism sets (English-only; future follow-up if non-English disciplines surface). Configurable initialism lists via backend.
+
+**Blocked on:** BE-DISCIPLINE-CANONICALIZE (for part 2). Part 1 (the display helper) can land independently.
+
+**Deliverable:** Move to Review with helper + 15-20 unit tests (initialisms, stopwords, mixed case, edge cases) + consumer rendering tests.
+
+---
+
+### FE-SAVESESSION-API-MISUSE-SWEEP — Sweep remaining `_saveSession(6 args)` call sites (UI Agent, P2)
+
+**Surfaced by:** FE-ORCID-CALLBACK-FIXES archive review (2026-04-21d).
+
+**Context:** FE-ORCID-CALLBACK-FIXES (commit `0951fef`) fixed the 6-arg `_saveSession(...)` misuse at `orcid-callback.js:148` and `login.js:152`. The same pattern still exists at three other call sites:
+- `signup-verify.js:412`
+- `signup-verify.js:457`
+- `settings.js:636` — additionally passes `null` as old `expires_at` arg
+
+**Goal:** Convert all three call sites to the no-arg `_saveSession()` form, with explicit state resets beforehand where the 6-arg form hard-coded `isAccredited=false`, `accreditation=null`, etc. Match the pattern landed in FE-ORCID-CALLBACK-FIXES re-review (once that task's fixes land).
+
+**Non-goals:** Redesigning `_saveSession`'s signature. Centralizing the pre-save state-reset into a helper (fold if/when a fourth user surfaces).
+
+**Deliverable:** Move to Review with per-site regression tests asserting the safe-default fields land in localStorage.
+
+---
+
 ### FE-SEC-004-POLISH — Secondary hardening for SEC-004-UI (UI Agent, P2)
 
 **Goal:** Batch P2/P3 items from SEC-004-UI review. SEC-004 atomic pair archived 2026-04-21c — these are ship-anytime polish, no longer blocking.
@@ -106,6 +163,25 @@ Review history: `agents/docs/tasks-archive.md`
 
 ---
 
+### FE-UPGRADE-CLOSURE-WIPE — Zero closure-captured key material on custody upgrade (UI Agent, P3)
+
+**Surfaced by:** FE-UPGRADE-CREDENTIAL-WIPE archive review (2026-04-21d).
+
+**Context:** FE-UPGRADE-CREDENTIAL-WIPE's `_clearSensitiveUpgradeState()` helper zeros the reactive Alpine fields, but local `const` bindings inside `executeUpgrade()`'s try block (`oldSeed`, `oldKeys`, `newSeed`, `newKeys`, `newPubKeys`, `ownerKey`, `wifPosting`) survive until GC. Defense-in-depth — no concrete exploit today; attack requires heap-scraping browser state or an Error object that captures the frame.
+
+**Goal:** Narrow the window where derived key material is reachable. Options:
+1. Scope the derivation into a narrower IIFE or helper function that exits before the wipe call, so the frame is dropped.
+2. Explicit `.fill(0)` on seed buffers + overwrite each key object's fields to empty strings at end-of-try, before the wipe.
+3. Document the scope limit in `_clearSensitiveUpgradeState`'s comment and accept the JS "no deterministic zero-on-release" constraint.
+
+Prefer option 1 — JS engines are permissive about overwrite-then-GC.
+
+**Non-goals:** Rewriting the upgrade flow. Porting to WebCrypto (bigger scope).
+
+**Deliverable:** Move to Review with a heap-snapshot sketch or unit test showing the derivation frame is dropped before the wipe completes.
+
+---
+
 ### SEC-LOGIN-UNKNOWN-USER-TIMING — Close the unknown-account timing oracle on /api/auth/login (Backend Agent, P2)
 
 **Surfaced by:** SEC-004-BE round-2 archive review (2026-04-21c).
@@ -159,20 +235,6 @@ Same enumeration class the round-2 fix addressed; closing only half is asymmetri
 ---
 
 ## Review
-
-### BE-ARGON2-PARAMETER-LOCK — Centralize argon2id options across signup/recover/set-password (Backend Agent, P3)
-
-**Status:** Implemented. New `backend/src/lib/argon2-options.ts` exports `ARGON2_OPTIONS` as a frozen `as const` object with `{ type: argon2.argon2id, memoryCost: 65536, timeCost: 3, parallelism: 4 }` — numerically identical to node-argon2 v0.31's current defaults, so no hashing-cost regression, but now explicit and drift-resistant. All 5 `argon2.hash` call sites now consume the constant: `auth.ts:33` (SENTINEL_ARGON2_HASH_PROMISE), `auth.ts:157` (signup), `auth.ts:586` (reset), `auth.ts:760` (recover), `settings.ts:384` (set-password). Inline `{ type: argon2.argon2id }` objects are gone. `argon2.verify` call sites (`auth.ts:293/:403/:415`, `custody.ts:193`, `signup-verify.ts:117`) intentionally unchanged — `verify` reads params from the stored hash's encoded prefix, so routing those through `ARGON2_OPTIONS` would be wrong.
-
-New `backend/tests/lib/argon2-options.test.ts` (5 specs): argon2id variant assertion, OWASP minimum guards (memoryCost ≥ 19456, timeCost ≥ 2, parallelism ≥ 1), and one end-to-end `argon2.hash` + `argon2.verify` roundtrip asserting `$argon2id$`-prefixed output — catches structural typos in `ARGON2_OPTIONS` that TS widening would miss. 5/5 pass.
-
-Full backend vitest suite: **254 pass + 3 skipIf across 38 files, no failures.** Typecheck: clean on all touched files; the two pre-existing `claims.ts` `SERVICE_UNAVAILABLE` type errors are BE-CLAIMS-ERROR-POLISH (separate Review entry), not this task.
-
-**[TODO Architect]:** None. No API contract surface change; no user-facing error message change; `auth.md` doesn't describe argon2 params and doesn't need to.
-
-**Unblocks:** None. Orthogonal to PASSWORD-POLICY-HARMONIZE.
-
----
 
 ### SEC-AUTH-BYPASS — Add accreditation-authority filter to getExistingAccreditation (Backend Agent, URGENT P0)
 
@@ -271,8 +333,6 @@ Round-2 `/ce-code-review` (correctness/security/reliability/testing/maintainabil
 
 No contract change required (shape is a generic `SERVICE_UNAVAILABLE` 503, fits the existing envelope).
 
-**Follow-up fix (2026-04-21, commit `52419c5`):** `SERVICE_UNAVAILABLE` added to the `ErrorCode` union in `backend/src/types/api.ts`. The 1cec6df landing introduced the new code at two call sites (`claims.ts:195`, `claims.ts:291`) without extending the type union, which broke `npx tsc` in the Docker backend image build. Typecheck now clean.
-
 **Architect re-review (2026-04-21c) — HELD PENDING FIXES:**
 
 Round-2 `/ce-code-review` (correctness/security/testing/api-contract/maintainability) on commit `1cec6df` confirmed the 503 guards work and tests are sound. One P2 cross-file inconsistency must close before archive.
@@ -287,67 +347,23 @@ Round-2 `/ce-code-review` (correctness/security/testing/api-contract/maintainabi
 
 ---
 
-### FE-E2E-SPEC-TRACE-OFF (UI Agent, URGENT P0)
-
-**Status:** Landed at commit `3d59773`. 9 specs opted out of trace retention (`test.use({trace:'off', video:'off', screenshot:'off'})`); `scanTracesForSecrets` regex widened with JWT + SESSION_SECRET literal + compressed WIF + BIP39 mnemonic patterns.
-
-**Test results:** Full frontend unit suite (832/832 at session end) passes; `npm run build` clean.
-
----
-
-### FE-TRACE-SCAN-HARDEN (UI Agent, P1)
-
-**Status:** Landed at commit `ca48a23`. `scanTracesForSecrets` hardened: ENOENT vs per-file error classification, scan-then-cleanup-always-runs ordering, category labels (no secret bytes in CI logs), explicit <16-char SESSION_SECRET warning. 14 new unit tests via `spawnSync` mock + `cleanupIpfsPins` export. Follow-up hermetic fix at `b2a2140` purges stray trace.zip before each test.
-
-**Test results:** Full frontend unit suite (832/832 at session end) passes; `npm run build` clean.
-
----
-
-### FE-E2E-FIXTURE-CORRECTNESS (UI Agent, P1)
-
-**Status:** Landed at commit `0c01d4e`. 8 fixes: hostname-based localhost guard, strict `_test` dbName regex, `parseEnvFile` dedup (no more inline-comment divergence), `E2E_SESSION_SECRET` rename (no Docker-env leak), `mintSessionJwt` unit test (4 specs), `pickAccreditedResearcherOnce` try/catch, visible redis error warn, spec-level bugs (null-body check, picker-throw-not-truthy). Hermetic test fix for `fileURLToPath` path divergence at `a20a92e`.
-
-**Test results:** Full frontend unit suite (832/832 at session end) passes; `npm run build` clean.
-
----
-
-### FE-E2E-RETRY-SUFFIX (UI Agent, P1)
-
-**Status:** Landed at commit `45946e2`. `RUN_SUFFIX` now computed per-test-body with `testInfo.retry` suffix across 5 specs (`email-signup`, `seed-phrase`, `password-recovery` single-test; `login-email`, `settings` use `beforeAll`-scoped describe pattern to preserve single-row seeding). Retry attempts surface original root cause instead of 409 DUPLICATE.
-
-**Test results:** Full frontend unit suite (832/832 at session end) passes; `npm run build` clean.
-
----
-
 ### FE-ORCID-CALLBACK-FIXES (UI Agent, P1)
 
 **Status:** Landed at commit `0951fef`. `_saveSession` 6-arg misuse fixed in `orcid-callback.js:148` AND `login.js:152` (same bug); `auth.expiresAt = data.expires_at` set before `_saveSession()`. `pevo_orcid_mode` removeItem moved into success handler of `completeOrcid`. New tests in `pages-orcid-callback.test.js` + `pages-login.test.js`. **Flagged follow-up:** same `_saveSession` 6-arg pattern still exists at `signup-verify.js:412/457` and `settings.js:550` — candidate for a `FE-SAVESESSION-API-MISUSE-SWEEP` task.
 
 **Test results:** Full frontend unit suite (832/832 at session end) passes; `npm run build` clean.
 
----
+**Architect re-review (2026-04-21d) — HELD PENDING FIXES:**
 
-### FE-AUTH-POST-AWAIT-GUARD (UI Agent, P1)
+Review (manual-synthesis pass — see commit `e40d9dc` on why `/ce-code-review` fan-out was unavailable to the dispatched subagents, now fixed in architect CLAUDE.md) surfaced three P2 findings. User triage 2026-04-21d: fix first two in place; file third as separate sweep.
 
-**Status:** Landed at commit `10ada81`. Post-await re-check `if (!this.username || !this.isConnected) return;` added between the `fetchAccreditationStatus` await and the write block in `_checkAccreditation`. Closes the disconnect race orthogonal to FE-AUTH-ACCRED-POLL-GUARD's pre-fetch guard. Race-closing test holds the fetch open, calls `disconnect()`, asserts state not mutated.
+1. **P2 — `orcid-callback.js:146-159` `_handleLogin` stale-state write-window.** The old 6-arg `_saveSession(username, custody, postingKey, memoKey, false, null)` hard-coded `isAccredited=false` and `accreditation=null`. The new no-arg `_saveSession()` reads those fields from the Alpine store — which may carry values from a prior session via `_restoreSession`. Result: a ~50-200ms write-window where `localStorage.pevo_session` holds the new ORCID-logged-in username paired with the PREVIOUS account's `isAccredited` + `accreditation`. `_checkAccreditation()` self-heals via a second `_saveSession()`, but a concurrent tab's storage event or service worker reads the stale pairing in the interim. Fix: set `auth.isAccredited = false; auth.accreditation = null;` before `_saveSession()` in `_handleLogin` (matching the old hard-coded behavior).
 
-**Test results:** Full frontend unit suite (832/832 at session end) passes; `npm run build` clean.
+2. **P2 — `pages-orcid-callback.test.js:9-16` test-harness gap that hides finding #1.** `mockAuthStore` declares only `{ username, isConnected, orcidVerified }` — no `isAccredited`, no `accreditation`. The fix for #1 is invisible to the test suite. Extend the mock to include both fields defaulting to post-disconnect safe values (`isAccredited: false`, `accreditation: null`), AND add a regression test: seed `mockAuthStore.isAccredited = true; mockAuthStore.accreditation = { type: 'email' }`, invoke ORCID `_handleLogin`, assert both are cleared before `_saveSession()` fires.
 
----
+3. **P2 split to Pending: FE-SAVESESSION-API-MISUSE-SWEEP.** The same `_saveSession(6 args)` misuse the original commit fixed still exists at `signup-verify.js:412, :457` and `settings.js:636`. `settings.js:636` additionally passes `null` as old `expires_at`. Implementer already flagged this in the commit report; filed as a separate P2 Pending task.
 
-### FE-AUTH-TEST-HARDEN (UI Agent, P3)
-
-**Status:** Landed at commit `08b1428`. Mutation-kill assertions added to `auth.test.js`: rejected-fetch test seeds + asserts state NOT mutated; happy-path asserts `localStorage.setItem('pevo_session', ...)`; new `accRes.data === null` branch test. Removed redundant `mockClear` calls. Stripped Playwright reference + "Log but do not reject" WHAT-comment from `auth.js`.
-
-**Test results:** Full frontend unit suite (832/832 at session end) passes; `npm run build` clean.
-
----
-
-### FE-PASSWORD-POLICY-DRY (UI Agent, P3)
-
-**Status:** Landed at commit `a753773`. New `frontend/src/password-policy.js` exports `MIN_PASSWORD_LENGTH = 10` + `isPasswordValid(pw)`. 4 consumers (`signup.js`, `recover.js`, `settings.js`, `reset-password.js`) rewritten to wrap the shared helper. 8 new tests in `password-policy.test.js`. Unblocks `PASSWORD-POLICY-HARMONIZE` (cross-cutting FE+BE) which is still Pending.
-
-**Test results:** Full frontend unit suite (832/832 at session end) passes; `npm run build` clean.
+**Path to archive:** (1) UI agent applies findings #1 + #2 on this task. (2) UI agent appends a re-review signal block. (3) Architect re-reviews (`/ce-code-review` directly from architect context per the updated protocol) and archives.
 
 ---
 
@@ -357,6 +373,14 @@ Round-2 `/ce-code-review` (correctness/security/testing/api-contract/maintainabi
 
 **Test results:** Full frontend unit suite (832/832 at session end) passes; `npm run build` clean.
 
+**Architect re-review (2026-04-21d) — HELD PENDING FIXES:**
+
+Review (manual-synthesis pass) surfaced one P2 finding. User triage 2026-04-21d: broaden Keychain import to close the UX regression.
+
+1. **P2 — `settings.js:604` Keychain has no active or memo key post-upgrade.** The `account_update` broadcast rotates owner + active + posting + memo on-chain, but only the posting WIF is imported to Keychain via `requestImportKey(username, wifPosting, cb)`. Consequences: Keychain can sign posting-auth ops (comments, votes, custom_json) but CANNOT sign active-auth ops (transfers, power-down, witness votes, future account_update) or memo-encrypt/decrypt. User has no UI signal their Keychain is incomplete; any later attempt to use Keychain on a Hive frontend for a transfer prompts for a key Keychain doesn't have. Contradicts the custody-upgrade UX promise. Fix: import posting + active + memo via three sequential `requestImportKey` calls (NOT owner — owner keys should not live in browser extensions). Update the E2E stub to assert all three keys are imported with WIF-shape, and add a unit regression asserting `executeUpgrade()` issues three Keychain import calls with three distinct WIFs.
+
+**Path to archive:** (1) UI agent applies finding #1. (2) UI agent appends a re-review signal block. (3) Architect re-reviews and archives.
+
 ---
 
 ### FE-UPGRADE-CREDENTIAL-WIPE (UI Agent, P1)
@@ -364,6 +388,16 @@ Round-2 `/ce-code-review` (correctness/security/testing/api-contract/maintainabi
 **Status:** Landed at commit `dfece3e`. New `_clearSensitiveUpgradeState()` helper zeros `oldSeedPhrase`, `newSeedPhrase`, `newSeedWords`, `confirmInputs`, `upgradePassword`. Called on both success (before `upgradePhase = 'done'`) and error paths. `resetUpgrade()` refactored to use the same helper. Unit + E2E tests assert all 5 sensitive fields are empty post-upgrade. Sensitive-state audit: no other holders on the page need the wipe (handleSetPassword already zeroes on both paths).
 
 **Test results:** Full frontend unit suite (832/832 at session end) passes; `npm run build` clean.
+
+**Architect re-review (2026-04-21d) — HELD PENDING FIXES:**
+
+Review (manual-synthesis pass) surfaced two P2 findings. User triage 2026-04-21d: fix the wipe-ordering bug in place; file closure-wipe as separate defense-in-depth follow-up.
+
+1. **P2 — `settings.js:651-658` error-path wipe-before-upgradeError ordering.** The catch block invokes `_clearSensitiveUpgradeState()` then immediately does `this.upgradeError = err.message`, which is x-text'd into the DOM. If `err.message` ever embeds key material (dhive throw, library swap, future error shape), the wiped state is effectively un-wiped via a DOM-visible error message. Fix: surface a generic localized message to the user (e.g., `t('custody_upgrade_failed')`) and `console.warn(err)` for debugging. Simpler than whitelisting known-safe error shapes. Add a test asserting `upgradeError` after an injected key-material-shaped throw does NOT contain the injected substring.
+
+2. **P2 split to Pending: FE-UPGRADE-CLOSURE-WIPE.** Closure-captured derivatives (`oldSeed`, `oldKeys`, `newSeed`, `newKeys`, `newPubKeys`, `ownerKey`, `wifPosting`) live until GC — the wipe only covers reactive Alpine state. Defense-in-depth, no concrete exploit today, requires non-trivial refactoring. Filed as a separate P3 Pending task.
+
+**Path to archive:** (1) UI agent applies finding #1. (2) UI agent appends a re-review signal block. (3) Architect re-reviews and archives.
 
 ---
 
@@ -373,13 +407,13 @@ Round-2 `/ce-code-review` (correctness/security/testing/api-contract/maintainabi
 
 **Test results:** Full frontend unit suite (832/832 at session end) passes; `npm run build` clean.
 
----
+**Architect re-review (2026-04-21d) — HELD PENDING FIXES:**
 
-### FE-TOTALPAGES-INFINITY-GUARD (UI Agent, P1)
+Review (manual-synthesis pass) surfaced one P2 finding. User triage 2026-04-21d: remove the dead re-export.
 
-**Status:** Landed at commit `74f9d93`. Extracted `totalPagesFromMeta(meta)` to new `frontend/src/lib/pagination.js` guarding against `Math.ceil(n/0) === Infinity` (Infinity is truthy, `|| 1` didn't fire). Three consumers (`paper-feed.js`, `researchers.js`, `search.js`) swap to the helper. Note: `home.js` was refactored into `paper-feed.js` component earlier (commit `665011b`), so only 3 sites not 4 as task spec said. 5 lib tests + 1 consumer test per feed file.
+1. **P2 — `hive-keys.js:98` dead `wordlist` re-export.** The module re-exports `wordlist` from `@scure/bip39/wordlists/english` as part of its public API, but after this task no external consumer imports it — the wrappers (`generateMnemonic`, `validateMnemonic`, `mnemonicToSeedSync`) handle wordlist injection internally. Violates the task's "route all consumers through the wrapper" thesis. Fix: delete `export { wordlist } from ...` (and the corresponding import if `wordlist` is only used inside `hive-keys.js` itself). The `pages-settings.test.js` mock already doesn't mock `wordlist`, confirming no test coupling to remove.
 
-**Test results:** Full frontend unit suite (832/832 at session end) passes; `npm run build` clean.
+**Path to archive:** (1) UI agent applies finding #1. (2) UI agent appends a re-review signal block. (3) Architect re-reviews and archives.
 
 ---
 
@@ -389,13 +423,13 @@ Round-2 `/ce-code-review` (correctness/security/testing/api-contract/maintainabi
 
 **Test results:** Full frontend unit suite (832/832 at session end) passes; `npm run build` clean.
 
----
+**Architect re-review (2026-04-21d) — HELD PENDING FIXES:**
 
-### FE-URL-PAGE-TEST-GAPS (UI Agent, P2)
+Review (manual-synthesis pass) surfaced one P2 finding. User triage 2026-04-21d: document the coupling inline rather than widen the regex.
 
-**Status:** Landed at commit `1400df2`. Popstate coverage parity across 3 feed test files: registration-skipped-off-page, handler-inert-on-drift, `destroy()` removes listener, in-path happy path. `loadDisciplines` rejection resilience tests added to paper-feed + search. `_pushUrl` with `currentPage=1` + no filters → bare path (no query string) tests added to all 3. Causal-chain assertions (`expect(comp.currentPage).toBe(1)`) added to catch-block pushUrl tests. 15 new tests total.
+1. **P2 — `lib/url-sync.js:14` locale regex `/^\/[a-z]{2,3}(?=\/|$)/` case-sensitive.** The regex strips only lowercase 2-3 char locales. Sanity-check: `frontend/src/router.js` uses `SUPPORTED_LOCALES.includes(segments[1])` against `['ar', 'cs', 'da', 'de', 'en', 'es', 'fa', 'fr', 'he', 'it', 'nl', 'pl', 'pt', 'sv', 'tr', 'zh']` — case-sensitive, all lowercase, all 2 chars. So the helper's casing matches the router's own casing. Fix is documentation, not code: add a comment immediately above the regex noting "Mirrors SUPPORTED_LOCALES casing (all lowercase 2-char). Router treats non-matching casing as non-locale path. Widen only in tandem with SUPPORTED_LOCALES." Prevents a future refactor from "widening" the helper without widening the router (which would cause garbage locale-shaped prefixes to be stripped as real locales).
 
-**Test results:** Full frontend unit suite (832/832 at session end) passes; `npm run build` clean.
+**Path to archive:** (1) UI agent applies finding #1 (one-line code comment). (2) UI agent appends a re-review signal block. (3) Architect re-reviews and archives.
 
 ---
 
@@ -405,13 +439,13 @@ Round-2 `/ce-code-review` (correctness/security/testing/api-contract/maintainabi
 
 **Test results:** Full frontend unit suite (832/832 at session end) passes; `npm run build` clean.
 
----
+**Architect re-review (2026-04-21d) — HELD PENDING FIXES:**
 
-### FE-DISCIPLINE-CASE-NORMALIZE (UI Agent, P2)
+Review (manual-synthesis pass) surfaced one P2 finding. User triage 2026-04-21d: fix the reset-on-retry trap in place.
 
-**Status:** Landed at commit `4dfe05e`. Lowercase-canonical discipline value across `paper-feed.js` + `search.js`: `_syncFromUrl()` lowercases incoming param; `_pushUrl()` lowercases before writing; `loadDisciplines()` lowercases API-returned names. Display stays titlecased via existing Tailwind `class="capitalize"` on options. 12 new tests. Existing URLs like `?discipline=Physics` still resolve (API is case-insensitive). `researchers.js` has no disciplines — verified.
+1. **P2 — `paper-feed.js:113-116` + `search.js:177-180` `disciplinesLoadFailed` never reset on retry.** The `.catch` sets the flag to true; `loadDisciplines` itself doesn't reset it. Today the function is init-only so the omission is inert, but any future retry path (route revisit, visibility-change reload, user-triggered retry UI) would see the flag stuck at true even after a successful load. Fix: add `this.disciplinesLoadFailed = false;` at the TOP of `loadDisciplines()` body (before the fetch) in both `paper-feed.js` and `search.js`. Add one test per file: seed `disciplinesLoadFailed = true`, call `loadDisciplines()` with a successful fetch mock, assert the flag is false. ~4 source lines + 2 tests total.
 
-**Test results:** Full frontend unit suite (832/832 at session end) passes; `npm run build` clean.
+**Path to archive:** (1) UI agent applies finding #1. (2) UI agent appends a re-review signal block. (3) Architect re-reviews and archives.
 
 ---
 
@@ -420,5 +454,15 @@ Round-2 `/ce-code-review` (correctness/security/testing/api-contract/maintainabi
 **Status:** Landed at commit `7652f2d`. Three P3 cleanup items. (1) `doSearch` entry trims `q`, normalizes `this.query` so input/URL/API all see the same trimmed form. (2) Filter-change policy decided: keep submit-gated, intentional asymmetry with paper-feed (user-initiated vs passive feed) — comment added inline near filter row. (3) `/papers` Alpine scope renamed `homePage` → `papersPage` (new `initPapersPage` + registered in `index.js`); home.js unchanged. New trim-roundtrip unit test.
 
 **Test results:** Full frontend unit suite (832/832 at session end) passes; `npm run build` clean.
+
+**Architect re-review (2026-04-21d) — HELD PENDING FIXES:**
+
+Review (manual-synthesis pass) surfaced two P2 findings. User triage 2026-04-21d: fix both in place.
+
+1. **P2 — `papers.js:16-22` dead `navigate()` method on `papersPage` scope.** The new `initPapersPage` copies the `homePage` shape including a `navigate(path)` method that calls `this.$store.router.navigate(path)`. The `/papers` template at the top of `papers.js` is just a `<paperFeed>` shell and doesn't invoke `navigate(...)` anywhere. Copy-paste vestige. Fix: delete the `navigate` method from the scope. If a future CTA button on `/papers` needs programmatic navigation, add it with a test at that time.
+
+2. **P2 — `search.js:23-30` HTML comment inside template literal ships to rendered DOM.** The new 8-line submit-gated-filter-policy explanation sits inside the Alpine template string via `<!-- ... -->`. Vite/Tailwind do not strip inline template-literal HTML comments by default, so the 400-byte prose rationale is served on every `/search` page render. Benign today but sets a bad precedent for internal rationale in template comments. Fix: move the explanation ABOVE the backticks as a JS `//` block comment. Preserves the documentation for maintainers, strips it from shipped output. Optionally add a unit test loading the built template HTML and asserting the comment text is absent.
+
+**Path to archive:** (1) UI agent applies findings #1 + #2. (2) UI agent appends a re-review signal block. (3) Architect re-reviews and archives.
 
 ---

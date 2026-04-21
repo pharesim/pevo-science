@@ -1,3 +1,69 @@
+### BE-ARGON2-PARAMETER-LOCK — Centralize argon2id hashing params (2026-04-21d) — Reviewed ✓
+
+Backend agent extracted `ARGON2_OPTIONS` (frozen `as const`: `{ type: argon2.argon2id, memoryCost: 65536, timeCost: 3, parallelism: 4 }`) into new [argon2-options.ts](backend/src/lib/argon2-options.ts) — numerically identical to node-argon2 v0.44's live defaults (not v0.31 as the inline comment mistakenly says), so no hashing-cost regression, but now explicit and drift-resistant. All 5 `argon2.hash` call sites consume the constant: `auth.ts:33` (SENTINEL_ARGON2_HASH_PROMISE), `:157` (signup), `:586` (reset), `:760` (recover), `settings.ts:384` (set-password). `argon2.verify` call sites correctly left alone — verify reads params from the stored hash's encoded prefix. New [argon2-options.test.ts](backend/tests/lib/argon2-options.test.ts) (5 specs): argon2id variant assertion, OWASP minimums guards (memoryCost ≥ 19456, timeCost ≥ 2, parallelism ≥ 1), end-to-end argon2.hash + argon2.verify roundtrip. Commit `1cdad9d`. Architect review (manual-synthesis pass — see commit `e40d9dc`): clean. P3 polish (stale "v0.31" comment at `argon2-options.ts:2` should read "v0.44") noted and dismissed — values are numerically verified correct against node-argon2 0.44.0. Latent correctness win: SENTINEL_ARGON2_HASH_PROMISE now stays aligned with production hashing cost if a future agent bumps ARGON2_OPTIONS.
+
+---
+
+### FE-AUTH-POST-AWAIT-GUARD — Close post-await disconnect race in `_checkAccreditation` (2026-04-21d) — Reviewed ✓
+
+UI agent added a post-await re-check (`if (!this.username || !this.isConnected) return;`) in [auth.js](frontend/src/auth.js) `_checkAccreditation` between the `fetchAccreditationStatus` await and the write block. Closes the disconnect race orthogonal to FE-AUTH-ACCRED-POLL-GUARD's pre-fetch guard: if `disconnect()` runs mid-fetch, the continuation now returns before mutating state or calling `_saveSession()`. Race-closing test in [auth.test.js](frontend/tests/unit/auth.test.js) holds the fetch open with a manual resolver, calls `disconnect()` between await points, asserts `isAccredited === false` and `localStorage.getItem('pevo_session') === null`. Commit `10ada81`. Architect review (manual-synthesis): clean. P3 polish (duplicated pre/post guard could factor to a `_isSessionLive()` helper) noted for a future auth.js cleanup pass.
+
+---
+
+### FE-AUTH-TEST-HARDEN — Mutation-kill assertions on `_checkAccreditation` tests + WHAT-comment strip (2026-04-21d) — Reviewed ✓
+
+UI agent tightened [auth.test.js](frontend/tests/unit/auth.test.js): rejected-fetch test now seeds `isAccredited=true` + `accreditation={type:'orcid'}` and asserts both survive the catch branch (mutation-kills any regression moving state writes into/before the try); happy-path asserts `localStorage.setItem('pevo_session', ...)` fires (catches `_saveSession` being silently dropped); new `accRes.data === null` branch test covers the unaccredited-response path. Removed redundant `mockClear` calls (beforeEach already runs `mockReset()`). Stripped Playwright reference + "Log but do not reject" WHAT-comment from [auth.js](frontend/src/auth.js). Commit `08b1428`. Architect review (manual-synthesis): clean. P3 advisories (one retained `mockClear` could document its intent inline; null-branch test could mutation-kill via negative `_saveSession` assertion; swallow-and-warn WHY comment gone) noted non-blocking.
+
+---
+
+### FE-PASSWORD-POLICY-DRY — Extract shared frontend password-policy helper (2026-04-21d) — Reviewed ✓
+
+UI agent extracted `MIN_PASSWORD_LENGTH = 10` + `isPasswordValid(pw)` into new [password-policy.js](frontend/src/password-policy.js). Four consumers — [signup.js](frontend/src/pages/signup.js), [recover.js](frontend/src/pages/recover.js), [settings.js](frontend/src/pages/settings.js), [reset-password.js](frontend/src/pages/reset-password.js) — now wrap the shared helper; inline `length >= 10 && /[a-z]/ && /[A-Z]/ && /[0-9]/` duplication gone. New [password-policy.test.js](frontend/tests/unit/password-policy.test.js) (8 specs): length boundary, each class missing, non-string fallthrough. Commit `a753773`. Architect review (manual-synthesis): clean. P3 polish (no consumer regression guard; no drift pointer to backend helper) noted; unblocks PASSWORD-POLICY-HARMONIZE (Pending — both FE and BE helpers now landed).
+
+---
+
+### FE-TOTALPAGES-INFINITY-GUARD — Guard totalPages against Math.ceil(n/0) === Infinity (2026-04-21d) — Reviewed ✓
+
+UI agent extracted `totalPagesFromMeta(meta)` into new [pagination.js](frontend/src/lib/pagination.js) guarding against `Math.ceil(n/0) === Infinity` (Infinity is truthy so the prior `|| 1` fallback didn't fire). Three consumers — [paper-feed.js](frontend/src/components/paper-feed.js), [researchers.js](frontend/src/pages/researchers.js), [search.js](frontend/src/pages/search.js) — swap to the helper; the fourth call site listed in the original task spec was eliminated earlier when home.js merged into paper-feed (commit `665011b`). 5 lib unit tests + 1 consumer test per feed file. Commit `74f9d93`. Architect review (manual-synthesis): clean. P3 coverage polish (negative total, empty meta object, documentation symmetry with NaN handling) noted non-blocking.
+
+---
+
+### FE-URL-PAGE-TEST-GAPS — Fill popstate + rejection test gaps on paper-feed / researchers / search (2026-04-21d) — Reviewed ✓
+
+UI agent added 15 tests across [components-paper-feed.test.js](frontend/tests/unit/components-paper-feed.test.js), [pages-researchers.test.js](frontend/tests/unit/pages-researchers.test.js), [pages-search.test.js](frontend/tests/unit/pages-search.test.js): popstate coverage parity (registration-skipped-off-page, handler-inert-on-drift, `destroy()` removes listener, in-path happy path); `loadDisciplines` rejection resilience in paper-feed + search; `_pushUrl` with `currentPage=1` + no filters → bare path (no query string); causal-chain assertions (`expect(comp.currentPage).toBe(1)`) on catch-block pushUrl tests. Commit `1400df2`. Architect review (manual-synthesis): clean (test-only commit, no source changes, zero regression risk). P3 test-sharpening items noted non-blocking.
+
+---
+
+### FE-E2E-SPEC-TRACE-OFF — Opt 9 E2E specs out of trace retention + widen secret scanner (2026-04-21d) — Reviewed ✓
+
+UI agent added top-level `test.use({trace:'off', video:'off', screenshot:'off'})` to 9 specs (accreditation, email-signup, login-email, login-keychain, orcid-link, password-recovery, review-submit, settings, vote-comment). [global-teardown.js](frontend/tests/e2e/global-teardown.js) `scanTracesForSecrets` regex widened with three-segment base64url JWT pattern, SESSION_SECRET= literal, compressed WIF, and BIP39 12-word mnemonic. Commit `3d59773`. Architect review (manual-synthesis): clean. Advisory: BIP39 3-8-letter word pattern is loose (any 12 lowercase short tokens match); JWT 20-char-per-segment floor is lenient. Both accepted as teardown-safety-net tradeoffs — false positives only ever cost `test.use({trace:'off'})` on the offending spec.
+
+---
+
+### FE-TRACE-SCAN-HARDEN — Harden scanTracesForSecrets + add unit coverage (2026-04-21d) — Reviewed ✓
+
+UI agent hardened `scanTracesForSecrets` in [global-teardown.js](frontend/tests/e2e/global-teardown.js): ENOENT vs per-file error classification (one missing trace.zip no longer abandons the scan), scan-then-cleanup-always-runs ordering (no orphaned IPFS CIDs when the scan throws), category labels (no secret bytes leak to CI logs), explicit <16-char SESSION_SECRET warning. 14 new unit tests via spawnSync mock + `cleanupIpfsPins` export in [global-teardown.test.js](frontend/tests/unit/global-teardown.test.js). Follow-up commit `b2a2140` purges stray trace.zip before each test for hermetic execution. Commits `ca48a23` + `b2a2140`. Architect review (manual-synthesis): clean. Low-severity test-quality items (concurrent-vitest-during-Playwright-run edge case; inner-group regex offset brittleness; ENOBUFS test doesn't pin iteration order) noted non-blocking.
+
+---
+
+### FE-E2E-RETRY-SUFFIX — Make E2E RUN_SUFFIX per-attempt (2026-04-21d) — Reviewed ✓
+
+UI agent moved `RUN_SUFFIX` computation into test body with `testInfo.retry` suffix across 5 specs: [email-signup.spec.js](frontend/tests/e2e/email-signup.spec.js), [seed-phrase.spec.js](frontend/tests/e2e/seed-phrase.spec.js), [password-recovery.spec.js](frontend/tests/e2e/password-recovery.spec.js) as single-test closures; [login-email.spec.js](frontend/tests/e2e/login-email.spec.js), [settings.spec.js](frontend/tests/e2e/settings.spec.js) via beforeAll-scoped describe pattern to preserve single-row seeding. Retry attempts surface original root cause instead of 409 DUPLICATE. Commit `45946e2`. Architect review (manual-synthesis): clean. Low-severity style items (asymmetric closed-over constants in password-recovery seedActiveUser; `rN` suffix redundant with `Date.now().toString(36).slice(-6)` except sub-millisecond retries) noted non-blocking.
+
+---
+
+### FE-E2E-FIXTURE-CORRECTNESS — Harden E2E fixture correctness: localhost/DB guards, env rename, spec bugs (2026-04-21d) — Reviewed ✓
+
+UI agent landed 8 fixes across [auth.js fixture](frontend/tests/e2e/fixtures/auth.js), [db.js fixture](frontend/tests/e2e/fixtures/db.js), [global-setup.js](frontend/tests/e2e/global-setup.js), and 4 specs: hostname-based localhost guard (`localhost`/`127.0.0.1`/`[::1]` accepted — see dismissed P2 below), strict `_test` dbName regex, `parseEnvFile` dedup (no more inline-comment divergence), `E2E_SESSION_SECRET` rename (no Docker-env leak from shared-secret reuse), `mintSessionJwt` unit test (4 specs), `pickAccreditedResearcherOnce` try/catch, visible redis error warn, spec-level bugs (null-body check, picker-throw-not-truthy). Follow-up commit `a20a92e` fixes fileURLToPath / resolve path divergence for .env.test lookup under vitest. Commits `0c01d4e` + `a20a92e`. Architect review (manual-synthesis): P2 advisory on hostname guard coverage (127.x.y.z/8 loopback range not matched, only `127.0.0.1` literal) **DISMISSED** — the `/^[^/]+_test$/` dbName regex at `db.js:63` is the load-bearing safety check; the hostname check is cosmetic redundancy; adding range-matching gives coverage against a ~0-probability "APP_URL=127.0.0.2 by accident" scenario at non-trivial complexity. Remaining low-severity items (err-shape logging, regex defensive completeness, `_resetCachedSessionSecret` underscore helper) noted non-blocking.
+
+---
+
+### FE-DISCIPLINE-CASE-NORMALIZE — Lowercase-canonicalize discipline filter (2026-04-21d) — Reviewed ✓ (known-limitation)
+
+UI agent lowercased the discipline value across state, URL, and API call in [paper-feed.js](frontend/src/components/paper-feed.js) + [search.js](frontend/src/pages/search.js): `_syncFromUrl()` lowercases incoming param; `_pushUrl()` lowercases before writing; `loadDisciplines()` lowercases API-returned `d.name` via spread. 12 new tests. Commit `4dfe05e`. Architect review (manual-synthesis) surfaced a P2 DISPLAY REGRESSION + P2 OPEN-VOCABULARY DEDUP BUG that are ARCHITECTURAL rather than commit-local: the backend's `GET /api/disciplines` is open-vocabulary (HAF returns whatever users typed, case-sensitive GROUP BY), so lowercasing the spread produces **two dropdown entries with identical `name: "physics"` but different `paper_count`** when both "Physics" and "physics" exist in HAF; AND CSS `text-transform: capitalize` can only titlecase the first letter of each word, so "ml" → "Ml", "theory of computation" → "Theory Of Computation". Filed as new Pending: **BE-DISCIPLINE-CANONICALIZE** (P1, backend SQL `LOWER(...)` dedup + case-insensitive `?discipline=` match in `search.ts`) and **FE-DISCIPLINE-DISPLAY-HARDEN** (P1, JS title-case helper preserving known initialisms + stopwords, replace raw CSS capitalize). This commit's URL-canonicalization value ships; the wider architectural fix follows in the two new Pending tasks.
+
+---
+
 ### BE-PASSWORD-POLICY-DRY — Extract shared backend password-policy helper (2026-04-21c) — Reviewed ✓
 
 Backend agent extracted `MIN_PASSWORD_LENGTH = 10`, `PASSWORD_POLICY_MESSAGE`, and `isPasswordValid(pw: unknown): boolean` into new [password-policy.ts](backend/src/lib/password-policy.ts), mirroring `frontend/src/password-policy.js`. Six call sites — `auth.ts` signup / signup-ORCID / reset-password / recover-ORCID / recover-seed-phrase plus `settings.ts` set-password — now delegate the length+class rule to `isPasswordValid`. Inline `length < 10`, `/[a-z]/ && /[A-Z]/ && /[0-9]/`, and their duplicated sendError strings are gone. Original two-message error split (length vs character class) collapsed to one combined message — chosen over diverging from FE's boolean shape. New [password-policy.test.ts](backend/tests/lib/password-policy.test.ts) covers length boundary, each character class missing, non-string inputs, and `PASSWORD_POLICY_MESSAGE` content (10 specs). Commit `b50ede8`. Architect review (correctness/testing/maintainability/project-standards/kieran-typescript/api-contract/code-simplicity): clean — 3 P3 polish items dismissed (type-predicate harmless; combined-failure spec is documentation-not-coverage; auth.md wording reconciled in this archive — "a digit" → "numbers" + helper-mirror callout at `auth.md:60/:382` and `settings.md:93`). Unblocks PASSWORD-POLICY-HARMONIZE (Pending — both FE and BE helpers now landed).
