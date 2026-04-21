@@ -61,8 +61,11 @@ async function searchPapersFromHaf(
   }
 
   if (discipline) {
-    conditions.push(`(c.json_metadata -> ${appTagParam} ->> 'discipline') = $${paramIdx++}`);
-    params.push(discipline);
+    // Case-insensitive match: canonicalize both sides to lowercase so a
+    // `?discipline=physics` filter still matches papers tagged "Physics",
+    // "PHYSICS", etc. Mirrors the LOWER()-grouped /api/disciplines query.
+    conditions.push(`LOWER(c.json_metadata -> ${appTagParam} ->> 'discipline') = $${paramIdx++}`);
+    params.push(discipline.toLowerCase());
   }
 
   if (language) {

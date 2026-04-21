@@ -17,16 +17,22 @@ async function fetchDisciplinesFromHaf() {
   if (!pool) return null;
 
   try {
+    // Dedup mixed-case discipline names (e.g. "Physics" vs "physics") by
+    // grouping on LOWER(name). display_name is the arbitrary-but-stable
+    // MAX(name) representative of the lowercase group; the frontend is
+    // expected to titlecase it for rendering. canon_name is the lowercase
+    // value that the ?discipline= filter (search.ts / papers.ts) matches on.
     const result = await pool.query(
       `SELECT
-        (json_metadata -> $1 ->> 'discipline') AS name,
+        LOWER(json_metadata -> $1 ->> 'discipline') AS canon_name,
+        MAX(json_metadata -> $1 ->> 'discipline') AS display_name,
         count(*)::int AS paper_count
        FROM ${T.comments}
        WHERE parent_author = '' AND parent_permlink = $1
          AND (json_metadata -> $1 ->> 'type') IN ('paper', 'bridge_paper')
          AND json_metadata ->> 'app' LIKE $2
          AND (json_metadata -> $1 ->> 'discipline') IS NOT NULL
-       GROUP BY (json_metadata -> $1 ->> 'discipline')
+       GROUP BY LOWER(json_metadata -> $1 ->> 'discipline')
        ORDER BY paper_count DESC`,
       [config.appTag, `${config.appTag}/%`],
     );

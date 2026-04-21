@@ -102,16 +102,27 @@ Valid categories: `bug`, `accreditation`, `keychain`, `general`.
 
 ### GET /api/disciplines
 
-List all disciplines that have at least one PEvO paper.
+List all disciplines that have at least one PEvO paper, deduped case-insensitively.
+
+Discipline names are user-authored strings in `json_metadata.discipline`, so mixed-case entries ("Physics" vs "physics") previously produced duplicate dropdown rows. The HAF query groups by `LOWER(name)` and returns one row per canonical (lowercase) discipline.
 
 **Response `data`:** Array of `Discipline`
 
 ```json
 {
-  "name": "neuroscience",
+  "canon_name": "neuroscience",
+  "display_name": "Neuroscience",
   "paper_count": 42
 }
 ```
+
+- `canon_name` — lowercase canonical value. Use this as the URL value for `?discipline=<canon_name>` filters (the backend lowercases the incoming filter too, so mixed-case still matches, but passing `canon_name` keeps URLs stable).
+- `display_name` — one representative casing from the underlying rows (the `MAX(name)` of the group, which is deterministic-but-arbitrary). The frontend is expected to titlecase or otherwise normalize this for rendering.
+- `paper_count` — total papers across all casings of this discipline.
+
+**Discipline filter semantics (`?discipline=` on `/api/search` and `/api/papers`):** the match is case-insensitive. `?discipline=physics` matches papers tagged "Physics", "PHYSICS", "physics", etc.
+
+**Frontend migration note:** the response shape changed from `{ name, paper_count }` to `{ canon_name, display_name, paper_count }`. Frontend consumers that previously read `row.name` must switch to `row.display_name` for rendering and `row.canon_name` for URL values. Client-side lowercase-dedup logic (see FE-DISCIPLINE-CASE-NORMALIZE) can be removed — the backend now dedups.
 
 ---
 
