@@ -53,10 +53,15 @@ Accreditation status for a single user.
     "field": "neuroscience",
     "method": "email",
     "orcid": "0000-0001-2345-6789",
-    "timestamp": "2026-01-15T10:00:00Z"
+    "timestamp": "2026-01-15T10:00:00Z",
+    "tx_id": "5123456789"
   } | null
 }
 ```
+
+- `accreditation.tx_id` — the HAF `customJson.id` of the latest authority-signed `accredit` custom_json for this account, as a decimal string. `null` when the account has never been accredited or when the latest authority op is a `revoke` (in which case `accreditation` itself is `null`). Shape matches `/api/profile/:username` exactly — both endpoints resolve the same authority-filtered HAF query.
+
+The `accredit` row is filtered server-side to only include events signed by `config.accreditationAuthorities` (via `required_posting_auths ?|` on HAF). Self-broadcast fake `accredit` ops do not surface here.
 
 ---
 

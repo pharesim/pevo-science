@@ -296,8 +296,13 @@ Approve a pending authorship claim. For bridge papers, the server broadcasts dir
 }
 ```
 
+**Authorization:**
+- **Native papers:** only the post author.
+- **Bridge papers:** the platform admin OR an existing approved co-author (a claimer with an `accepted` authorship-claim on the same paper). A claimer cannot approve their own pending claim — the approval chain must bootstrap with the admin, who seeds the first approved co-author; after that, approved co-authors can vouch for new claimants. This prevents anyone from self-approving their way to bridge-key server-side broadcast.
+
 **Errors:**
-- `FORBIDDEN` — only the post author can approve claims on native papers
+- `FORBIDDEN` — `"Only the post author can approve claims on native papers"` (native path), OR `"Only the platform admin or an approved co-author can approve claims on bridge papers"` (bridge path, caller is neither admin nor approved co-author), OR `"Claimer cannot approve their own claim"` (bridge path, caller is the claimer even if they are admin or co-author elsewhere).
+- `UNAUTHORIZED` — invalid Hive signature.
 
 **Rate limit:** 10 per minute per account.
 
@@ -305,7 +310,9 @@ Approve a pending authorship claim. For bridge papers, the server broadcasts dir
 
 ### POST /api/papers/:author/:permlink/claims/:claimer/revoke
 
-Revoke an authorship claim. Authorized for: post author, bridge account (bridge papers), admin account, or the claimer themselves. Bridge/admin server-broadcasts; post author/claimer get the operation to broadcast.
+Revoke an authorship claim.
+
+**Authorization:** `isPostAuthor || isClaimer || isAdmin`. The bridge account is NOT implicitly authorized — on bridge papers, the post author IS the bridge account, so admin-driven revokes fall under the `isAdmin` clause. Server-side bridge-key broadcast fires only when the caller is the admin AND the paper is a bridge paper AND `PEVO_BRIDGE_POSTING_KEY` is configured; otherwise the handler returns the operation for the frontend to broadcast (admin revoking a native paper broadcasts under admin's own posting auths).
 
 **Headers:** `X-Hive-Username`, `X-Hive-Signature`
 
@@ -320,7 +327,8 @@ Revoke an authorship claim. Authorized for: post author, bridge account (bridge 
 **Response:** Same shape as approve (either `tx_id` for server-broadcast or `operation` for frontend broadcast).
 
 **Errors:**
-- `FORBIDDEN` — not authorized to revoke
+- `FORBIDDEN` — `"Not authorized to revoke this claim"` (caller is none of: post author, claimer, admin).
+- `UNAUTHORIZED` — invalid Hive signature.
 
 **Rate limit:** 10 per minute per account.
 

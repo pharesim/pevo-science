@@ -399,7 +399,7 @@ Updates email, resets password, invalidates all existing sessions, and returns a
 **Rate limit:** 10 requests per IP per hour.
 
 **Errors:**
-- `VALIDATION_ERROR` — missing fields, weak password, or no recovery method provided
+- `VALIDATION_ERROR` — missing fields, weak password, no recovery method provided, OR **both `memo_key` and `orcid_token` supplied simultaneously**. Exactly one credential must be presented. Message: `"Supply exactly one of memo_key or orcid_token, not both"`.
 - `NOT_FOUND` — no active account with that username
 - `UNAUTHORIZED` — memo key mismatch, no ORCID on account, invalid/expired ORCID token, or ORCID mismatch
 - `DUPLICATE` — new email already in use by another account
