@@ -584,21 +584,50 @@ describe('POST /api/orcid/callback — hardening (SEC-002-HARDENING)', () => {
 // see empty cache + empty HAF, both broadcast, both write. The SETNX lock on
 // `${appTag}:orcid_binding_lock:${orcidId}` is claimed BEFORE broadcast and
 // forces exactly one winner.
-describe('POST /api/orcid/callback — same-tick SETNX lock (SEC-002-TOCTOU-LOCK)', () => {
+//
+// Parameterized over accredit + link modes because withOrcidBindingLock wraps
+// both handlers identically. Each mode gets its own set of 4 specs (concurrent
+// race, stale-lock expiry, Redis-outage degrade, broadcast-throw finally); any
+// divergence in the wrapper's handling of the two handlers surfaces here.
+describe.each([
+  { mode: 'accredit' as const, tag: 'a' },
+  { mode: 'link' as const, tag: 'b' },
+])('POST /api/orcid/callback — same-tick SETNX lock (SEC-002-TOCTOU-LOCK) — $mode mode', ({ mode, tag }) => {
+  // link mode needs the pre-lock getExistingAccreditation(username) to find
+  // an existing authority-signed accredit row; otherwise handleLink 422s
+  // before touching the lock. accredit mode only needs the default empty-rows
+  // shape for findAccreditedAccountWithOrcid.
+  const installLockModeMocks = (): void => {
+    if (mode === 'link') {
+      hafQueryMock.mockImplementation(async (sql: string) => {
+        if (sql.includes("'orcid' = $1")) return { rows: [] };
+        if (sql.includes("'action' IN ('accredit', 'revoke')") && sql.includes("'account' = $1")) {
+          return {
+            rows: [{
+              json: { action: 'accredit', name: 'Test', institution: 'X', field: 'Y', method: 'email' },
+            }],
+          };
+        }
+        return { rows: [] };
+      });
+    } else {
+      hafQueryMock.mockResolvedValue({ rows: [] });
+    }
+  };
+
   it(
-    'exactly one of two concurrent same-orcid accredit requests broadcasts; the other gets 409',
+    'exactly one of two concurrent same-orcid requests broadcasts; the other gets 409 with Retry-After and retriable=true',
     async () => {
       const redis = getRedis();
       if (!redis) return; // Lock requires Redis; no-op otherwise.
-      const orcidId = '0000-0001-aaaa-0001';
+      const orcidId = `0000-0001-${tag}${tag}${tag}${tag}-0001`;
       const lockKey = `${config.appTag}:orcid_binding_lock:${orcidId}`;
       const cacheKey = `${config.appTag}:orcid_binding:${orcidId}`;
       // Ensure clean slate (no leftover lock from a prior run).
       await redis.del(lockKey, cacheKey).catch(() => { /* ignore */ });
 
       installOrcidFetchStub({ orcid: orcidId, name: 'Alice', works: 3 });
-      // HAF path says: ORCID not yet bound for either caller.
-      hafQueryMock.mockResolvedValue({ rows: [] });
+      installLockModeMocks();
 
       // Gate the winner's broadcast so the winner cannot finish and release
       // the lock before the loser has attempted SETNX. Without this gate, a
@@ -623,8 +652,8 @@ describe('POST /api/orcid/callback — same-tick SETNX lock (SEC-002-TOCTOU-LOCK
       // inside Redis), the other loses the race and returns 409 before
       // reaching broadcast.
       const [aliceState, bobState] = await Promise.all([
-        startAuthed('accredit', 'alice'),
-        startAuthed('accredit', 'bob'),
+        startAuthed(mode, 'alice'),
+        startAuthed(mode, 'bob'),
       ]);
       const alicePromise = request(app)
         .post('/api/orcid/callback')
@@ -635,11 +664,20 @@ describe('POST /api/orcid/callback — same-tick SETNX lock (SEC-002-TOCTOU-LOCK
         .set('Authorization', `Bearer ${jwtFor('bob')}`)
         .send({ code: 'fake', state: bobState });
 
-      // Give both callbacks enough scheduler turns to reach acquireBindingLock
-      // (Redis SETNX is atomic, and the loser returns 409 immediately; only the
-      // winner parks on broadcastGate). 200ms is ample for in-process supertest
-      // + local Redis RTT and comfortably under any CI timeout.
-      await new Promise((r) => setTimeout(r, 200));
+      // Wait for the loser to settle (return 409 after SETNX-held). This is a
+      // deterministic signal that the winner has already acquired the lock and
+      // is parked on broadcastGate — by definition of "loser", SETNX saw the
+      // key held, which requires the winner's SETNX to have completed first.
+      // More reliable than a fixed setTimeout, which can be scheduler-starved
+      // in CI before either handler reaches acquireBindingLock.
+      await Promise.race([alicePromise, bobPromise]);
+      // Hold #6: prove the lock is actually held during the gate window. The
+      // winner is still parked on broadcastGate inside withOrcidBindingLock's
+      // try block, so the nonce-valued lock key must still be present. Without
+      // this assertion, a handler change that releases the lock before the
+      // broadcast awaits would silently remove the race test's guarantee.
+      // Lock value is an opaque per-acquisition nonce; we only check truthiness.
+      expect(await redis.get(lockKey)).toBeTruthy();
       // Release the winner's broadcast so both promises can settle.
       releaseBroadcast();
       const [aliceRes, bobRes] = await Promise.all([alicePromise, bobPromise]);
@@ -649,6 +687,14 @@ describe('POST /api/orcid/callback — same-tick SETNX lock (SEC-002-TOCTOU-LOCK
         expect(statuses).toEqual([200, 409]);
         const loser = [aliceRes, bobRes].find((r) => r.status === 409)!;
         expect(loser.body.error.code).toBe('ORCID_ALREADY_LINKED');
+        // Hold #4: lock-contention 409 is discriminable from durable-binding 409
+        // by the retriable flag, retry_after_seconds in details, and the
+        // Retry-After response header.
+        expect(loser.body.error.details).toMatchObject({
+          retriable: true,
+          retry_after_seconds: 10,
+        });
+        expect(loser.headers['retry-after']).toBe('10');
         // Exactly one broadcast fired — proves the lock prevented the
         // double-broadcast failure mode.
         expect(broadcastJsonMock).toHaveBeenCalledTimes(1);
@@ -659,18 +705,18 @@ describe('POST /api/orcid/callback — same-tick SETNX lock (SEC-002-TOCTOU-LOCK
   );
 
   it(
-    'stale lock from a crashed holder expires after EX and a retry succeeds',
+    'stale lock from a crashed holder expires after TTL and a retry succeeds',
     async () => {
       const redis = getRedis();
       if (!redis) return;
-      const orcidId = '0000-0001-aaaa-0002';
+      const orcidId = `0000-0001-${tag}${tag}${tag}${tag}-0002`;
       const lockKey = `${config.appTag}:orcid_binding_lock:${orcidId}`;
       const cacheKey = `${config.appTag}:orcid_binding:${orcidId}`;
       await redis.del(lockKey, cacheKey).catch(() => { /* ignore */ });
 
       // Simulate a prior crashed holder: acquire the lock and never release.
-      // Use a short PX TTL instead of the production EX=10s so the test can
-      // assert expiry-then-retry without a 10s wall-clock wait. This is a
+      // Use a short PX TTL instead of the production 35s EX so the test can
+      // assert expiry-then-retry without a 35s wall-clock wait. This is a
       // proxy for the same failure mode (holder dies mid-broadcast) because
       // Redis treats both the same: the key self-deletes on TTL, freeing the
       // slot for the next SETNX attempt.
@@ -679,7 +725,7 @@ describe('POST /api/orcid/callback — same-tick SETNX lock (SEC-002-TOCTOU-LOCK
       expect(await redis.get(lockKey)).toBe('zombie-holder');
 
       installOrcidFetchStub({ orcid: orcidId, name: 'Alice', works: 3 });
-      hafQueryMock.mockResolvedValue({ rows: [] });
+      installLockModeMocks();
 
       // Wait long enough for Redis to expire the key. 500ms is comfortably
       // over the 150ms PX TTL and keeps the test fast.
@@ -687,13 +733,13 @@ describe('POST /api/orcid/callback — same-tick SETNX lock (SEC-002-TOCTOU-LOCK
       expect(await redis.get(lockKey)).toBeNull();
 
       try {
-        const state = await startAuthed('accredit', 'alice');
+        const state = await startAuthed(mode, 'alice');
         const res = await request(app)
           .post('/api/orcid/callback')
           .set('Authorization', `Bearer ${jwtFor('alice')}`)
           .send({ code: 'fake', state });
         expect(res.status).toBe(200);
-        expect(res.body.data.mode).toBe('accredit');
+        expect(res.body.data.mode).toBe(mode);
         expect(broadcastJsonMock).toHaveBeenCalledTimes(1);
       } finally {
         await redis.del(lockKey, cacheKey).catch(() => { /* cleanup */ });
@@ -706,13 +752,13 @@ describe('POST /api/orcid/callback — same-tick SETNX lock (SEC-002-TOCTOU-LOCK
     async () => {
       const redis = getRedis();
       if (!redis) return;
-      const orcidId = '0000-0001-aaaa-0003';
+      const orcidId = `0000-0001-${tag}${tag}${tag}${tag}-0003`;
       const lockKey = `${config.appTag}:orcid_binding_lock:${orcidId}`;
       const cacheKey = `${config.appTag}:orcid_binding:${orcidId}`;
       await redis.del(lockKey, cacheKey).catch(() => { /* ignore */ });
 
       installOrcidFetchStub({ orcid: orcidId, name: 'Alice', works: 3 });
-      hafQueryMock.mockResolvedValue({ rows: [] });
+      installLockModeMocks();
 
       // Fail only on the lock key so /start, state DEL, and the binding cache
       // write all use the real client. A transient flap on the lock SET must
@@ -727,13 +773,13 @@ describe('POST /api/orcid/callback — same-tick SETNX lock (SEC-002-TOCTOU-LOCK
         return origSet(...args);
       });
       try {
-        const state = await startAuthed('accredit', 'alice');
+        const state = await startAuthed(mode, 'alice');
         const res = await request(app)
           .post('/api/orcid/callback')
           .set('Authorization', `Bearer ${jwtFor('alice')}`)
           .send({ code: 'fake', state });
         expect(res.status).toBe(200);
-        expect(res.body.data.mode).toBe('accredit');
+        expect(res.body.data.mode).toBe(mode);
         expect(broadcastJsonMock).toHaveBeenCalledTimes(1);
         // The lock key was never written (set threw). Proves the degrade path
         // ran rather than the lock-acquired path.
@@ -741,6 +787,51 @@ describe('POST /api/orcid/callback — same-tick SETNX lock (SEC-002-TOCTOU-LOCK
       } finally {
         setSpy.mockRestore();
         await redis.del(cacheKey).catch(() => { /* cleanup */ });
+      }
+    },
+  );
+
+  // Hold #3: broadcast-throw finally-path test. The claim in the commit message
+  // is "crash mid-broadcast releases lock via finally so retries aren't locked
+  // out." Without this test, if the `if (lock.state === 'acquired')` guard in
+  // withOrcidBindingLock's finally were inverted, no existing spec would fail.
+  // Here we force broadcast to reject, assert the outer /callback catch maps
+  // to 500, and assert the lock was released under the nonce CAS (redis.get
+  // returns null — any release that doesn't own the nonce leaves the lock).
+  it(
+    'releases the lock via nonce CAS when broadcast throws mid-request (finally)',
+    async () => {
+      const redis = getRedis();
+      if (!redis) return;
+      const orcidId = `0000-0001-${tag}${tag}${tag}${tag}-0004`;
+      const lockKey = `${config.appTag}:orcid_binding_lock:${orcidId}`;
+      const cacheKey = `${config.appTag}:orcid_binding:${orcidId}`;
+      await redis.del(lockKey, cacheKey).catch(() => { /* ignore */ });
+
+      installOrcidFetchStub({ orcid: orcidId, name: 'Alice', works: 3 });
+      installLockModeMocks();
+      broadcastJsonMock.mockRejectedValueOnce(new Error('simulated chain failure mid-broadcast'));
+
+      try {
+        const state = await startAuthed(mode, 'alice');
+        const res = await request(app)
+          .post('/api/orcid/callback')
+          .set('Authorization', `Bearer ${jwtFor('alice')}`)
+          .send({ code: 'fake', state });
+
+        // Outer /callback try/catch catches the broadcast throw and maps to
+        // 500 INTERNAL_ERROR. The finally in withOrcidBindingLock runs on its
+        // way out, releasing the lock under the nonce CAS.
+        expect(res.status).toBe(500);
+        expect(res.body.error.code).toBe('INTERNAL_ERROR');
+        // Key proof: lock was released despite the broadcast throw. A retry
+        // arriving now would acquire cleanly rather than wait for the 35s TTL.
+        expect(await redis.get(lockKey)).toBeNull();
+        // The cache write happens AFTER broadcast, so a broadcast throw means
+        // no cache entry was written.
+        expect(await redis.get(cacheKey)).toBeNull();
+      } finally {
+        await redis.del(lockKey, cacheKey).catch(() => { /* cleanup */ });
       }
     },
   );

@@ -180,7 +180,10 @@ No min works check on link.
 - `BAD_REQUEST` -- invalid/expired state or authorization code
 - `UNAUTHORIZED` -- missing/invalid auth on `accredit` or `link` callbacks
 - `FORBIDDEN` -- authenticated caller does not match the `username` bound into the state by `/start` (applies to `accredit`, `link`)
-- `ORCID_ALREADY_LINKED` (409) -- ORCID is already linked to another accredited account (applies to `accredit`, `link`)
+- `ORCID_ALREADY_LINKED` (409) -- ORCID is bound to another account. Applies to `accredit` and `link`. Three distinct causes share this code; clients distinguish them via `error.details.retriable` and the `Retry-After` response header:
+  - **Durable on-chain binding:** the ORCID is accredited to another account on Hive. `findAccreditedAccountWithOrcid` matched an authority-signed `accredit` op for a different account. Not retriable; the caller must rebind via that account's keys or wait for a revoke. `error.details` omits `retriable`; no `Retry-After` header.
+  - **Cache-lag binding:** a different account successfully bound this ORCID within the last ~120s and the op has not yet been indexed by HAF. The orcid_binding Redis cache answered the 409 during the HAF-indexing-lag window. The binding is durable once indexed; not retriable. `error.details` omits `retriable`; no `Retry-After` header.
+  - **Same-tick lock contention:** another request for the same ORCID currently holds the `orcid_binding_lock:${orcid_id}` SETNX lock (acquired before broadcast, released in the finally under a Lua CAS keyed on a per-acquisition nonce). Transient; resolves once that request's broadcast completes or its lock TTL (35s) expires. Retriable: `error.details.retriable` is `true`, `error.details.retry_after_seconds` is `10`, and the response carries a `Retry-After: 10` header. A well-behaved client backs off and retries; the subsequent request either succeeds or promotes to one of the two durable-binding causes above.
 - `VALIDATION_ERROR` -- ORCID profile has fewer than `ORCID_MIN_WORKS` works (signup/accredit modes only)
 - `VALIDATION_ERROR` -- link mode but user is not accredited
 - `INTERNAL_ERROR` -- ORCID API unreachable

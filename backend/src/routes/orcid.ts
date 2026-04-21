@@ -26,6 +26,23 @@ const ORCID_VERIFIED_TTL = 1800; // 30 minutes
 // otherwise not see the fresh binding and two concurrent binds could slip
 // through. 120s is the upper bound on block-watcher catch-up under load.
 const ORCID_BINDING_CACHE_TTL = 120;
+// SETNX lock TTL sits above dhive's 30s broadcast timeout so a legitimately
+// slow-but-alive broadcast does not lose its lock mid-flight. The nonce-owned
+// Lua-CAS release (see releaseBindingLock) closes the lock-stomp window even
+// if the TTL is exceeded, but keeping the TTL above the known-slow-path bound
+// avoids the failure mode entirely for honest traffic.
+const ORCID_BINDING_LOCK_TTL_SECONDS = 35;
+// Advertised in the lock-contention 409 Retry-After header. Not coupled to
+// the lock TTL above: 10s is a realistic client backoff for "mid-broadcast
+// from a different request", while the TTL bounds the worst-case hold.
+const ORCID_BINDING_LOCK_RETRY_AFTER_SECONDS = 10;
+
+// Redlock CAS release: only DEL the lock key when its value matches the nonce
+// the caller acquired with. Prevents lock-stomp when holder A stalls past the
+// TTL, the lock auto-expires, holder B acquires the same key, and A's finally
+// runs — without the CAS, A's DEL would silently delete B's lock. The exact
+// failure the task's hold-block #1 calls out.
+const RELEASE_LOCK_LUA = `if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end`;
 
 // In-memory fallbacks when Redis is unavailable
 const orcidStates = new Map<string, { mode: OrcidMode; username?: string; timestamp: number; expires: number }>();
@@ -344,19 +361,15 @@ async function handleAccredit(
 
   const existingBinding = await findAccreditedAccountWithOrcid(orcidId);
   if (existingBinding && existingBinding !== username) {
+    // Durable-binding 409: the ORCID is bound to another account on-chain or
+    // in the HAF-lag cache. Not retriable; the caller must rebind via that
+    // account or wait for a revoke. Contract omits `retriable` to distinguish
+    // from the transient lock-contention 409 emitted by withOrcidBindingLock.
     sendError(res, 409, 'ORCID_ALREADY_LINKED', 'This ORCID is already linked to another account');
     return;
   }
 
-  // Acquire SETNX lock before broadcast to close the same-tick TOCTOU window.
-  // See acquireBindingLock() for the degrade-to-HAF-only story.
-  const lockState = await acquireBindingLock(orcidId, username);
-  if (lockState === 'held') {
-    sendError(res, 409, 'ORCID_ALREADY_LINKED', 'This ORCID is currently being linked by another request');
-    return;
-  }
-
-  try {
+  await withOrcidBindingLock(res, orcidId, async () => {
     const customJsonPayload = {
       action: 'accredit',
       account: username,
@@ -389,12 +402,7 @@ async function handleAccredit(
       orcid: orcidId,
       tx_id: result.id,
     });
-  } finally {
-    // Release in both success and error paths so retries after a mid-broadcast
-    // failure aren't locked out for the full EX=10s. On release failure the
-    // lock self-expires.
-    if (lockState === 'acquired') await releaseBindingLock(orcidId);
-  }
+  });
 }
 
 async function handleLink(
@@ -416,19 +424,12 @@ async function handleLink(
 
   const existingBinding = await findAccreditedAccountWithOrcid(orcidId);
   if (existingBinding && existingBinding !== username) {
+    // Durable-binding 409. See handleAccredit counterpart for contract notes.
     sendError(res, 409, 'ORCID_ALREADY_LINKED', 'This ORCID is already linked to another account');
     return;
   }
 
-  // Acquire SETNX lock before broadcast to close the same-tick TOCTOU window.
-  // See acquireBindingLock() for the degrade-to-HAF-only story.
-  const lockState = await acquireBindingLock(orcidId, username);
-  if (lockState === 'held') {
-    sendError(res, 409, 'ORCID_ALREADY_LINKED', 'This ORCID is currently being linked by another request');
-    return;
-  }
-
-  try {
+  await withOrcidBindingLock(res, orcidId, async () => {
     const customJsonPayload = {
       action: 'accredit',
       account: username,
@@ -461,12 +462,7 @@ async function handleLink(
       orcid: orcidId,
       tx_id: result.id,
     });
-  } finally {
-    // Release in both success and error paths so retries after a mid-broadcast
-    // failure aren't locked out for the full EX=10s. On release failure the
-    // lock self-expires.
-    if (lockState === 'acquired') await releaseBindingLock(orcidId);
-  }
+  });
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -481,41 +477,105 @@ function orcidBindingLockKey(orcidId: string): string {
   return `${config.appTag}:orcid_binding_lock:${orcidId}`;
 }
 
+// Discriminator returned by acquireBindingLock. The 'acquired' variant
+// carries the per-acquisition nonce that releaseBindingLock compares against
+// under the Redlock CAS contract.
+type BindingLockState =
+  | { state: 'acquired'; nonce: string }
+  | { state: 'held' }
+  | { state: 'unavailable' };
+
 // SETNX-lock acquisition keyed on orcid_id. Closes the same-event-loop-tick
 // TOCTOU race that the orcid_binding cache alone cannot: the cache is written
 // only AFTER broadcast returns, so two concurrent bind requests for the same
 // orcid_id (different usernames) can both pass the empty-binding check, both
 // broadcast, and both write their own cache entries. The lock is claimed
-// BEFORE broadcast; the loser gets 409. EX 10s bounds the hold — if the
-// holder crashes mid-broadcast, a retry succeeds after the TTL expires.
+// BEFORE broadcast; the loser gets 409. EX=35s bounds the hold — above the
+// 30s dhive timeout so a slow-but-alive broadcast does not lose its lock.
 //
-// Returns:
-//   'acquired'  — caller holds the lock; must call releaseBindingLock() later.
-//   'held'      — another request holds the lock; caller must surface 409.
-//   'unavailable' — Redis down or threw; caller degrades to the cache-less
-//                   HAF-only path (accept the narrow race in degraded mode
-//                   rather than failing closed). A warn has been logged.
-async function acquireBindingLock(orcidId: string, username: string): Promise<'acquired' | 'held' | 'unavailable'> {
+// Lock value is a per-acquisition random nonce (NOT the username) so the
+// nonce-owned Lua-CAS release in releaseBindingLock distinguishes holders.
+// Usernames alone cannot: the same user racing two tabs shares a username but
+// needs distinct ownership identities for the TTL-expired-then-stomp scenario.
+//
+// Returns a discriminated union:
+//   { state: 'acquired', nonce } — caller holds the lock; must call
+//                                  releaseBindingLock(orcidId, nonce) later.
+//   { state: 'held' }            — another request holds the lock; caller
+//                                  must surface 409.
+//   { state: 'unavailable' }     — Redis down or threw; caller degrades to
+//                                  the cache-less HAF-only path (accept the
+//                                  narrow race in degraded mode rather than
+//                                  failing closed). A warn has been logged.
+async function acquireBindingLock(orcidId: string): Promise<BindingLockState> {
   const redis = getRedis();
-  if (!redis || !isRedisAvailable()) return 'unavailable';
+  if (!redis || !isRedisAvailable()) return { state: 'unavailable' };
+  const nonce = crypto.randomBytes(16).toString('hex');
   try {
-    const result = await redis.set(orcidBindingLockKey(orcidId), username, 'EX', 10, 'NX');
-    if (result === 'OK') return 'acquired';
-    return 'held';
+    const result = await redis.set(
+      orcidBindingLockKey(orcidId),
+      nonce,
+      'EX',
+      ORCID_BINDING_LOCK_TTL_SECONDS,
+      'NX',
+    );
+    if (result === 'OK') return { state: 'acquired', nonce };
+    return { state: 'held' };
   } catch (err) {
     logger.warn({ err, orcidId }, 'ORCID binding lock acquisition failed — degrading to HAF-only path');
-    return 'unavailable';
+    return { state: 'unavailable' };
   }
 }
 
-async function releaseBindingLock(orcidId: string): Promise<void> {
+// Release via Lua CAS: only DEL when the current value equals our nonce.
+// See RELEASE_LOCK_LUA comment for why the CAS matters (lock-stomp window).
+async function releaseBindingLock(orcidId: string, nonce: string): Promise<void> {
   const redis = getRedis();
   if (!redis || !isRedisAvailable()) return;
   try {
-    await redis.del(orcidBindingLockKey(orcidId));
+    await redis.eval(RELEASE_LOCK_LUA, 1, orcidBindingLockKey(orcidId), nonce);
   } catch (err) {
-    // Best-effort release. On failure the lock self-expires after EX=10s.
+    // Best-effort release. On failure the lock self-expires after the TTL.
     logger.warn({ err, orcidId }, 'Failed to release ORCID binding lock');
+  }
+}
+
+// Acquire → run → release wrapper for the ORCID binding lock. Encapsulates
+// the acquire/try/finally scaffolding that handleAccredit and handleLink
+// otherwise duplicate, and makes the nonce flow internal so callers can't
+// accidentally call releaseBindingLock with the wrong nonce.
+//
+// Behavior per lock state:
+//   'held'        — wrapper sends 409 ORCID_ALREADY_LINKED with Retry-After
+//                   header and details.retriable=true; callback is NOT run.
+//   'acquired'    — callback runs inside try/finally; release happens under
+//                   nonce CAS in finally (success and throw paths both release).
+//   'unavailable' — callback runs WITHOUT a lock (Redis-optional degrade to
+//                   cache-less HAF-only path); no release needed.
+//
+// The wrapper swallows no exceptions from `fn`; they propagate to the outer
+// /callback try/catch which maps them to 500 INTERNAL_ERROR.
+async function withOrcidBindingLock(
+  res: Response,
+  orcidId: string,
+  fn: () => Promise<void>,
+): Promise<void> {
+  const lock = await acquireBindingLock(orcidId);
+  if (lock.state === 'held') {
+    res.setHeader('Retry-After', String(ORCID_BINDING_LOCK_RETRY_AFTER_SECONDS));
+    sendError(
+      res,
+      409,
+      'ORCID_ALREADY_LINKED',
+      'This ORCID is currently being linked by another request',
+      { retriable: true, retry_after_seconds: ORCID_BINDING_LOCK_RETRY_AFTER_SECONDS },
+    );
+    return;
+  }
+  try {
+    await fn();
+  } finally {
+    if (lock.state === 'acquired') await releaseBindingLock(orcidId, lock.nonce);
   }
 }
 
@@ -530,7 +590,14 @@ async function cacheOrcidBinding(orcidId: string, username: string): Promise<voi
   try {
     await redis.set(orcidBindingCacheKey(orcidId), username, 'EX', ORCID_BINDING_CACHE_TTL);
   } catch (err) {
-    logger.warn({ err, orcidId }, 'Failed to cache ORCID binding');
+    // Keep the swallow (availability over consistency; HAF is authoritative)
+    // but log loudly enough that operators see the mitigation degrade. Without
+    // this cache entry, a concurrent bind arriving before HAF indexes the op
+    // will see neither cache nor HAF and can slip past the 409 guard.
+    logger.warn(
+      { err, orcidId, username },
+      'orcid binding cache write failed — HAF-lag TOCTOU window may be longer than expected',
+    );
   }
 }
 
