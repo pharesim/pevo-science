@@ -38,6 +38,7 @@
 
 import { test, expect } from './fixtures/keychain.js';
 import { mintSessionJwt } from './fixtures/auth.js';
+import { deriveAllKeys, generateMnemonic } from '../../src/hive-keys.js';
 
 // SEC-002: disable trace/video/screenshot. The spec reads the generated
 // mnemonic off Alpine state and fills it into the old-seed textarea, so
@@ -199,7 +200,11 @@ test('upgrade wizard signs and would-broadcast an account_update rotating all ke
   // Phase 2: new-seed — the browser just generated a real BIP39 mnemonic
   // via bundled `@scure/bip39`. Read it off Alpine state so we can drive
   // the rest of the wizard (word confirmation and typing the "old" seed).
-  await expect(page.locator('[x-data="settingsPage"]')).toBeVisible();
+  // Gate the read on the phase transition: the "I’ve written it down"
+  // button only renders when `upgradePhase === 'new-seed'`, so waiting for
+  // it guarantees Alpine has flushed the post-click microtask queue
+  // (`[x-data="settingsPage"]`-visible is instant and not phase-gated).
+  await page.getByRole('button', { name: "I’ve written it down" }).waitFor();
   const testMnemonic = await page.evaluate(() => {
     const el = document.querySelector('[x-data="settingsPage"]');
     return window.Alpine.$data(el).newSeedPhrase;
@@ -232,7 +237,13 @@ test('upgrade wizard signs and would-broadcast an account_update rotating all ke
   await page.getByRole('button', { name: 'Next' }).click();
 
   // Phase 4: enter-old — type the old seed phrase and password.
-  await page.locator('textarea[x-model="oldSeedPhrase"]').fill(testMnemonic);
+  // Generate an independent OLD mnemonic so the broadcast exercises a real
+  // rotation (old keys ≠ new keys). The Hive node signature check never
+  // runs because we stub `condenser_api.broadcast_transaction` above, so
+  // the on-chain authority state for LIGHT_USERNAME is irrelevant here.
+  const oldMnemonic = generateMnemonic();
+  expect(oldMnemonic).not.toBe(testMnemonic);
+  await page.locator('textarea[x-model="oldSeedPhrase"]').fill(oldMnemonic);
   await page.locator('input[x-model="upgradePassword"]').fill('irrelevant-password');
 
   const broadcastClickPromise = page.getByRole('button', { name: 'Upgrade Account' }).click();
@@ -268,7 +279,7 @@ test('upgrade wizard signs and would-broadcast an account_update rotating all ke
   expect(Array.isArray(transaction.extensions)).toBe(true);
   expect(Array.isArray(transaction.signatures)).toBe(true);
   expect(transaction.signatures).toHaveLength(1);
-  expect(transaction.signatures[0]).toMatch(/^[0-9a-fA-F]+$/);
+  expect(transaction.signatures[0]).toMatch(/^[0-9a-fA-F]{130}$/);
 
   // Exactly one op: account_update rotating all four key authorities.
   expect(Array.isArray(transaction.operations)).toBe(true);
@@ -302,6 +313,17 @@ test('upgrade wizard signs and would-broadcast an account_update rotating all ke
     opBody.memo_key,
   ]);
   expect(newPubkeys.size).toBe(4);
+
+  // Cross-check the broadcast pubkeys against independently-derived values
+  // computed in the Node context from `testMnemonic` + LIGHT_USERNAME. If
+  // HMAC-SHA512-based derivation is deterministic (it is) and the browser
+  // ran the same `hive-keys.js` code path, these must match exactly. Mirrors
+  // the regression guard used in seed-phrase.spec.js.
+  const rederived = await deriveAllKeys(testMnemonic, LIGHT_USERNAME);
+  expect(opBody.owner.key_auths[0][0]).toBe(rederived.owner.public);
+  expect(opBody.active.key_auths[0][0]).toBe(rederived.active.public);
+  expect(opBody.posting.key_auths[0][0]).toBe(rederived.posting.public);
+  expect(opBody.memo_key).toBe(rederived.memo.public);
 
   // ─── Assert Keychain received a WIF, not a raw hex seed ──────
   // Poll until the post-broadcast requestImportKey call lands. The click

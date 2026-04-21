@@ -32,21 +32,20 @@ vi.mock('../../src/hive-keys.js', () => ({
     posting: 'STM' + 'p'.repeat(50),
     memo: 'STM' + 'm'.repeat(50),
   })),
-}));
-
-// BIP39 + dhive mocks for the executeUpgrade() credential-wipe test.
-// The executeUpgrade path: validateMnemonic(old) → mnemonicToSeedSync →
-// deriveHiveKeys → new dhive.Client → sendOperations → requestImportKey →
-// fetch('/api/custody/upgrade'). Each layer is stubbed so the happy path
-// completes without touching the real chain or backend.
-vi.mock('@scure/bip39', () => ({
+  // BIP39 wrappers (re-exported from hive-keys.js, not from raw @scure/bip39).
+  // FE-UPGRADE-KEY-WRAPPER-ADOPT routed settings.js through hive-keys.js so
+  // a single entropy/wordlist policy applies across callers.
   generateMnemonic: vi.fn(() => Array(12).fill('test').join(' ')),
   validateMnemonic: vi.fn(() => true),
   mnemonicToSeedSync: vi.fn(() => new Uint8Array(64)),
 }));
-vi.mock('@scure/bip39/wordlists/english.js', () => ({
-  wordlist: [],
-}));
+
+// dhive mock for the executeUpgrade() credential-wipe test.
+// The executeUpgrade path: validateMnemonic(old) → mnemonicToSeedSync →
+// deriveHiveKeys → new dhive.Client → sendOperations → requestImportKey →
+// fetch('/api/custody/upgrade'). BIP39 wrappers are mocked via
+// `vi.mock('../../src/hive-keys.js', ...)` above (settings.js imports them
+// from the wrapper, not raw @scure/bip39, after FE-UPGRADE-KEY-WRAPPER-ADOPT).
 vi.mock('@hiveio/dhive', () => ({
   PrivateKey: {
     fromSeed: vi.fn(() => ({

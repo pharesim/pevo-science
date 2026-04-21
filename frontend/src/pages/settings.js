@@ -1,9 +1,7 @@
 import Alpine from 'alpinejs';
-import { generateMnemonic, mnemonicToSeedSync, validateMnemonic } from '@scure/bip39';
-import { wordlist } from '@scure/bip39/wordlists/english.js';
 import { isKeychainInstalled } from '../keychain.js';
 import { fetchEmailStatus, submitEmail, deleteEmail, startOrcid, setPassword } from '../api.js';
-import { deriveHiveKeys, deriveHivePublicKeys } from '../hive-keys.js';
+import { deriveHiveKeys, deriveHivePublicKeys, generateMnemonic, validateMnemonic, mnemonicToSeedSync } from '../hive-keys.js';
 
 // Number of words to re-enter for confirmation
 const CONFIRM_WORD_COUNT = 3;
@@ -537,7 +535,7 @@ export function initSettingsPage() {
 
       // Generate new 12-word BIP39 seed phrase client-side
       try {
-        this.newSeedPhrase = generateMnemonic(wordlist);
+        this.newSeedPhrase = generateMnemonic();
         this.newSeedWords = this.newSeedPhrase.split(' ');
         this.upgradePhase = 'new-seed';
         this.upgradeError = null;
@@ -569,7 +567,7 @@ export function initSettingsPage() {
       try {
         // Validate old seed phrase
         const oldWords = this.oldSeedPhrase.trim().toLowerCase();
-        if (!validateMnemonic(oldWords, wordlist)) {
+        if (!validateMnemonic(oldWords)) {
           throw new Error(this.$t('upgrade.invalidOldSeed'));
         }
 
