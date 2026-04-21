@@ -92,6 +92,12 @@ describe('SEC-AUTH-BYPASS — GET /api/profile/:username authority filter', () =
     expect(res.body.data.username).toBe(victim);
     expect(res.body.data.is_accredited).toBe(false);
     expect(res.body.data.accreditation).toBeNull();
+    // Prove the guarded branch of the mock actually fired. Without this, a
+    // future SQL refactor that drops `'account' = $1` or changes the action-IN
+    // shape would fall through to the empty default and the load-bearing
+    // authority-filter assertion inside the guard would never run — tests
+    // would stay green on a regressed query.
+    expect(hafQueryMock).toHaveBeenCalled();
   });
 
   it('accepts an authority-signed accredit (is_accredited:true, accreditation payload)', async () => {
@@ -134,5 +140,40 @@ describe('SEC-AUTH-BYPASS — GET /api/profile/:username authority filter', () =
       orcid: '0000-0001-2222-3333',
       tx_id: '42',
     });
+    expect(hafQueryMock).toHaveBeenCalled();
+  });
+
+  it('treats a revoke row as unaccredited (is_accredited:false, accreditation:null)', async () => {
+    // Symmetric coverage for the revoke branch in getAccreditationFromHaf
+    // (profile.ts:51). The authority-filtered query can legitimately return
+    // `{action:'revoke', ...}` as the latest row when an authority later
+    // revoked a prior accreditation. The handler must early-return null so
+    // the profile reports unaccredited. Parallels the revoke-branch coverage
+    // in accreditations-revoke.test.ts for the sibling endpoint.
+    const revoked = 'victim-auth-bypass-revoked';
+    hafQueryMock.mockImplementation(async (sql: string, params: unknown[]) => {
+      if (sql.includes("'action' IN ('accredit', 'revoke')") && sql.includes("'account' = $1")) {
+        expect(sql).toContain('required_posting_auths ?| $4::text[]');
+        expect(params[3]).toEqual(config.accreditationAuthorities);
+        return {
+          rows: [{
+            json: {
+              action: 'revoke',
+              account: revoked,
+              reason: 'fraudulent',
+              timestamp: '2026-02-01T00:00:00.000Z',
+            },
+            event_id: 99,
+          }],
+        };
+      }
+      return { rows: [] };
+    });
+
+    const res = await request(app).get(`/api/profile/${revoked}`);
+    expect(res.status).toBe(200);
+    expect(res.body.data.is_accredited).toBe(false);
+    expect(res.body.data.accreditation).toBeNull();
+    expect(hafQueryMock).toHaveBeenCalled();
   });
 });

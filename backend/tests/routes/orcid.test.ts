@@ -271,6 +271,12 @@ describe('POST /api/orcid/callback — auth gate (SEC-002-BE)', () => {
       expect(res.body.error.code).toBe('VALIDATION_ERROR');
       expect(res.body.error.message).toMatch(/not accredited/i);
       expect(broadcastJsonMock).not.toHaveBeenCalled();
+      // Prove the guarded branch of the mock actually fired so the
+      // load-bearing authority-filter assertions inside the guard ran. A
+      // future SQL refactor that changes the column selection or query shape
+      // would otherwise fall through to the empty default and silently leave
+      // the assertions un-exercised.
+      expect(hafQueryMock).toHaveBeenCalled();
     },
   );
 
@@ -310,6 +316,7 @@ describe('POST /api/orcid/callback — auth gate (SEC-002-BE)', () => {
       expect(res.body.data.username).toBe('alice');
       expect(res.body.data.orcid).toBe(orcidId);
       expect(broadcastJsonMock).toHaveBeenCalledTimes(1);
+      expect(hafQueryMock).toHaveBeenCalled();
     },
   );
 
