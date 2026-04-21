@@ -969,7 +969,8 @@
     "backendFailed": "Account upgrade notification failed.",
     "upgrading": "Upgrading your account…",
     "doneTitle": "Upgrade Complete",
-    "doneDescription": "Your account is now fully self-custodied via Hive Keychain. Keep your old recovery phrase for 30 days as a backup."
+    "doneDescription": "Your account is now fully self-custodied via Hive Keychain. Keep your old recovery phrase for 30 days as a backup.",
+    "failed": "Account upgrade failed. Please try again. If the problem persists, contact support."
   },
   "resetPassword": {
     "requestTitle": "Reset your password",

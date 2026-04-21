@@ -948,7 +948,8 @@
     "backendFailed": "Benachrichtigung über das Konto-Upgrade fehlgeschlagen.",
     "upgrading": "Konto wird upgegradet…",
     "doneTitle": "Upgrade abgeschlossen",
-    "doneDescription": "Ihr Konto wird jetzt vollständig über Hive Keychain eigenverwaltet. Bewahren Sie Ihre alte Wiederherstellungsphrase noch 30 Tage als Sicherung auf."
+    "doneDescription": "Ihr Konto wird jetzt vollständig über Hive Keychain eigenverwaltet. Bewahren Sie Ihre alte Wiederherstellungsphrase noch 30 Tage als Sicherung auf.",
+    "failed": "Account upgrade failed. Please try again. If the problem persists, contact support."
   },
   "resetPassword": {
     "requestTitle": "Passwort zurücksetzen",

@@ -948,7 +948,8 @@
     "backendFailed": "Falló la notificación de actualización de la cuenta.",
     "upgrading": "Actualizando tu cuenta…",
     "doneTitle": "Actualización completada",
-    "doneDescription": "Tu cuenta está ahora bajo custodia propia a través de Hive Keychain. Conserva tu antigua frase de recuperación durante 30 días como respaldo."
+    "doneDescription": "Tu cuenta está ahora bajo custodia propia a través de Hive Keychain. Conserva tu antigua frase de recuperación durante 30 días como respaldo.",
+    "failed": "Account upgrade failed. Please try again. If the problem persists, contact support."
   },
   "resetPassword": {
     "requestTitle": "Restablecer contraseña",

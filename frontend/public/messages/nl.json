@@ -952,7 +952,8 @@
     "backendFailed": "Melding van accountupgrade mislukt.",
     "upgrading": "Je account upgraden…",
     "doneTitle": "Upgrade voltooid",
-    "doneDescription": "Je account is nu volledig zelfbeheerd via Hive Keychain. Bewaar je oude herstelzin nog 30 dagen als back-up."
+    "doneDescription": "Je account is nu volledig zelfbeheerd via Hive Keychain. Bewaar je oude herstelzin nog 30 dagen als back-up.",
+    "failed": "Account upgrade failed. Please try again. If the problem persists, contact support."
   },
   "resetPassword": {
     "requestTitle": "Wachtwoord opnieuw instellen",

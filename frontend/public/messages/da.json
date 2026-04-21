@@ -948,7 +948,8 @@
     "backendFailed": "Notifikation om kontoopgradering mislykkedes.",
     "upgrading": "Opgraderer din konto…",
     "doneTitle": "Opgradering færdig",
-    "doneDescription": "Din konto er nu fuldt selvforvaltet via Hive Keychain. Behold din gamle gendannelsesfrase i 30 dage som sikkerhedskopi."
+    "doneDescription": "Din konto er nu fuldt selvforvaltet via Hive Keychain. Behold din gamle gendannelsesfrase i 30 dage som sikkerhedskopi.",
+    "failed": "Account upgrade failed. Please try again. If the problem persists, contact support."
   },
   "resetPassword": {
     "requestTitle": "Nulstil din adgangskode",

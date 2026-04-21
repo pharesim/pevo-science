@@ -349,6 +349,53 @@ describe('settingsPage', () => {
       expect(comp.confirmInputs).toEqual({});
       expect(comp.upgradePassword).toBe('');
     });
+
+    // FE-UPGRADE-CREDENTIAL-WIPE re-review finding #1: the error-path
+    // `upgradeError` is x-text'd into the DOM. If `err.message` ever
+    // embeds key-material (library swap, future error shape, dhive bug),
+    // the just-wiped Alpine state is effectively un-wiped via a
+    // DOM-visible error string. Fix: surface a generic localized message
+    // and console.warn the raw error for diagnostics. This test injects
+    // a throw whose message contains a key-material-shaped substring
+    // (64-char hex seed + a seed word list) and asserts the substring
+    // never reaches `upgradeError`.
+    it('does not leak key-material from err.message into upgradeError', async () => {
+      mockIsKeychainInstalled.mockReturnValue(true);
+      stubKeychainImportKey();
+      const leakHex = 'deadbeef' + 'c'.repeat(56); // 64-char hex
+      const leakSeedWords = 'apple banana cherry donkey eagle frog giraffe hill ink jellyfish kiwi lemon';
+      const leakMessage = `derive failed: hex=${leakHex} seed="${leakSeedWords}"`;
+      vi.stubGlobal('fetch', vi.fn(async () => {
+        throw new Error(leakMessage);
+      }));
+      // Suppress the console.warn the catch block emits for diagnostics so
+      // the test output stays clean; capture it to assert the raw error DID
+      // reach the developer channel even though the DOM path got a generic.
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const comp = createComponent();
+      seedUpgradeState(comp);
+
+      await comp.executeUpgrade();
+
+      expect(comp.upgradePhase).toBe('error');
+      expect(typeof comp.upgradeError).toBe('string');
+      // The user-facing error must be the generic localized message. The
+      // $t stub in this suite returns the key verbatim, so assert the key.
+      expect(comp.upgradeError).toBe('upgrade.failed');
+      // Critical: neither of the leak substrings may appear in the DOM-bound
+      // error string.
+      expect(comp.upgradeError).not.toContain(leakHex);
+      expect(comp.upgradeError).not.toContain(leakSeedWords);
+      // Sanity: raw error still surfaced to console.warn so developers can
+      // debug. (Not a leak — devtools is a trusted surface.)
+      expect(warnSpy).toHaveBeenCalled();
+      const warnArgs = warnSpy.mock.calls[0];
+      const warnedErr = warnArgs[1];
+      const warnedStr = warnedErr && warnedErr.message ? warnedErr.message : String(warnedErr);
+      expect(warnedStr).toContain(leakHex);
+      warnSpy.mockRestore();
+    });
   });
 
   // FE-KEYCHAIN-API-MISUSE regression guard. The upgrade flow used to call

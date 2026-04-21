@@ -948,7 +948,8 @@
     "backendFailed": "فشل إشعار ترقية الحساب.",
     "upgrading": "جارٍ ترقية حسابك…",
     "doneTitle": "اكتملت الترقية",
-    "doneDescription": "حسابك الآن تحت سيطرتك الكاملة عبر Hive Keychain. احتفظ بعبارة الاسترداد القديمة لمدة 30 يومًا كنسخة احتياطية."
+    "doneDescription": "حسابك الآن تحت سيطرتك الكاملة عبر Hive Keychain. احتفظ بعبارة الاسترداد القديمة لمدة 30 يومًا كنسخة احتياطية.",
+    "failed": "Account upgrade failed. Please try again. If the problem persists, contact support."
   },
   "resetPassword": {
     "requestTitle": "إعادة تعيين كلمة المرور",

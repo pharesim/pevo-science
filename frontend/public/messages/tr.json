@@ -952,7 +952,8 @@
     "backendFailed": "Hesap yükseltme bildirimi başarısız oldu.",
     "upgrading": "Hesabınız yükseltiliyor…",
     "doneTitle": "Yükseltme Tamamlandı",
-    "doneDescription": "Hesabınız artık Hive Keychain aracılığıyla tamamen sizin kontrolünüzde. Eski kurtarma ifadenizi yedek olarak 30 gün boyunca saklayın."
+    "doneDescription": "Hesabınız artık Hive Keychain aracılığıyla tamamen sizin kontrolünüzde. Eski kurtarma ifadenizi yedek olarak 30 gün boyunca saklayın.",
+    "failed": "Account upgrade failed. Please try again. If the problem persists, contact support."
   },
   "resetPassword": {
     "requestTitle": "Şifrenizi sıfırlayın",

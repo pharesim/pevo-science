@@ -666,7 +666,15 @@ export function initSettingsPage() {
         // again" button which would clear these anyway, but a refresh or
         // navigation away leaves them lingering otherwise.
         this._clearSensitiveUpgradeState();
-        this.upgradeError = err.message;
+        // Surface a generic localized message rather than `err.message`.
+        // Raw `err.message` is x-text'd directly into the DOM; if a library
+        // swap, future dhive error shape, or bug ever embeds key-material
+        // (seed words, hex private-key seeds) into the error message, the
+        // wiped Alpine state would be effectively un-wiped via a DOM-visible
+        // error string. The real error is still surfaced to the debugger via
+        // console.warn for developer diagnostics.
+        console.warn('[custody upgrade]', err);
+        this.upgradeError = this.$t('upgrade.failed');
         this.upgradePhase = 'error';
       }
     },

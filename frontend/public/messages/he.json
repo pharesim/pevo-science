@@ -948,7 +948,8 @@
     "backendFailed": "הודעת שדרוג החשבון נכשלה.",
     "upgrading": "משדרג את החשבון…",
     "doneTitle": "השדרוג הושלם",
-    "doneDescription": "החשבון שלכם כעת בניהול עצמי מלא דרך Hive Keychain. שמרו את ביטוי השחזור הישן למשך 30 יום כגיבוי."
+    "doneDescription": "החשבון שלכם כעת בניהול עצמי מלא דרך Hive Keychain. שמרו את ביטוי השחזור הישן למשך 30 יום כגיבוי.",
+    "failed": "Account upgrade failed. Please try again. If the problem persists, contact support."
   },
   "resetPassword": {
     "requestTitle": "איפוס סיסמה",
