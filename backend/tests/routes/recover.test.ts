@@ -225,3 +225,152 @@ describe('POST /api/auth/recover — with DB', () => {
     await pool.query('UPDATE accounts SET orcid = NULL WHERE username = $1', [TEST_USER]);
   });
 });
+
+// ─── SEC-004-BE: optional-password ORCID recovery + seed-phrase regression ───
+
+async function seedOrcidNonce(nonce: string, orcidId: string) {
+  const { getRedis, isRedisAvailable } = await import('../../src/redis.js');
+  const { config } = await import('../../src/config.js');
+  const { orcidVerified } = await import('../../src/routes/orcid.js');
+  const payload = { orcid_id: orcidId, works_count: 5, name: 't' };
+  const redis = getRedis();
+  if (redis && isRedisAvailable()) {
+    await redis.set(`${config.appTag}:orcid_verified:${nonce}`, JSON.stringify(payload), 'EX', 600);
+  }
+  // Seed in-memory fallback too so test passes regardless of Redis availability.
+  orcidVerified.set(nonce, { ...payload, expires: Date.now() + 600_000 });
+}
+
+async function clearRecoverRateLimit() {
+  const { getRedis, isRedisAvailable } = await import('../../src/redis.js');
+  const { config } = await import('../../src/config.js');
+  const redis = getRedis();
+  if (redis && isRedisAvailable()) {
+    const keys = await redis.keys(`${config.appTag}:rl:auth-recover:*`).catch(() => [] as string[]);
+    if (keys.length > 0) await redis.del(...keys).catch(() => {});
+    // Also clear login limiter since some tests re-login afterwards
+    const loginKeys = await redis.keys(`${config.appTag}:rl:auth-login:*`).catch(() => [] as string[]);
+    if (loginKeys.length > 0) await redis.del(...loginKeys).catch(() => {});
+  }
+}
+
+describe('SEC-004-BE: optional password on recovery', () => {
+  const NULL_USER = `recover_null_${Date.now()}`;
+  const NULL_EMAIL = `recover_null_${Date.now()}@example.com`;
+  const NULL_MEMO = '5JnullHashMemoRecoveryRegression123456789abcde';
+  const ORCID_ID = '0000-0002-1111-2222';
+
+  beforeAll(async () => {
+    if (!dbReachable || !hasCustodyKey) return;
+    await clearRecoverRateLimit();
+    const pool = getAppPool()!;
+    const memoEnc = encryptKey(NULL_USER, NULL_MEMO);
+    await pool.query(
+      `INSERT INTO accounts (email, username, password_hash, custody, memo_key_enc, iv_memo, verify_token, orcid)
+       VALUES ($1, $2, NULL, 'light', $3, $4, NULL, $5)`,
+      [NULL_EMAIL, NULL_USER, memoEnc.ciphertext, memoEnc.iv, ORCID_ID],
+    );
+  });
+
+  afterAll(async () => {
+    if (!dbReachable) return;
+    const pool = getAppPool()!;
+    await pool.query('DELETE FROM custody_audit_log WHERE username = $1', [NULL_USER]).catch(() => {});
+    await pool.query('DELETE FROM accounts WHERE username = $1', [NULL_USER]).catch(() => {});
+  });
+
+  it.skipIf(!dbReachable || !hasCustodyKey)('ORCID recover with no password → 200, password_hash stays NULL', async () => {
+    await clearRecoverRateLimit();
+    const nonce = `recover-null-nonce-${Date.now()}`;
+    await seedOrcidNonce(nonce, ORCID_ID);
+
+    const newEmail = `recover_null_new_${Date.now()}@example.com`;
+    const res = await request(app)
+      .post('/api/auth/recover')
+      .send({
+        username: NULL_USER,
+        new_email: newEmail,
+        // new_password intentionally omitted
+        orcid_token: nonce,
+      });
+    expect(res.status).toBe(200);
+    expect(res.body.data.token).toBeDefined();
+
+    const pool = getAppPool()!;
+    const { rows } = await pool.query<{ password_hash: string | null; email: string }>(
+      'SELECT password_hash, email FROM accounts WHERE username = $1',
+      [NULL_USER],
+    );
+    expect(rows[0].password_hash).toBeNull();
+    expect(rows[0].email).toBe(newEmail);
+  });
+
+  it.skipIf(!dbReachable || !hasCustodyKey)('seed-phrase recovery on null-hash account still works (regression guard)', async () => {
+    await clearRecoverRateLimit();
+    const newEmail = `recover_null_seed_${Date.now()}@example.com`;
+    const newPassword = 'SeedRecovered1';
+    const res = await request(app)
+      .post('/api/auth/recover')
+      .send({
+        username: NULL_USER,
+        new_email: newEmail,
+        new_password: newPassword,
+        memo_key: NULL_MEMO,
+      });
+    expect(res.status).toBe(200);
+
+    const pool = getAppPool()!;
+    const { rows } = await pool.query<{ password_hash: string | null }>(
+      'SELECT password_hash FROM accounts WHERE username = $1',
+      [NULL_USER],
+    );
+    expect(rows[0].password_hash).not.toBeNull();
+
+    // Password login now works on the previously null-hash account
+    const loginRes = await request(app)
+      .post('/api/auth/login')
+      .send({ username: NULL_USER, password: newPassword });
+    expect(loginRes.status).toBe(200);
+  });
+});
+
+// ─── SEC-004-BE: password login on null-hash → 403 NO_PASSWORD_SET ───
+
+describe('SEC-004-BE: login on null-hash account', () => {
+  const NULL_LOGIN_USER = `login_nullhash_${Date.now()}`;
+  const NULL_LOGIN_EMAIL = `login_nullhash_${Date.now()}@example.com`;
+
+  beforeAll(async () => {
+    if (!dbReachable) return;
+    const pool = getAppPool()!;
+    await pool.query(
+      `INSERT INTO accounts (email, username, password_hash, custody, verify_token)
+       VALUES ($1, $2, NULL, 'light', NULL)`,
+      [NULL_LOGIN_EMAIL, NULL_LOGIN_USER],
+    );
+  });
+
+  afterAll(async () => {
+    if (!dbReachable) return;
+    const pool = getAppPool()!;
+    await pool.query('DELETE FROM custody_audit_log WHERE username = $1', [NULL_LOGIN_USER]).catch(() => {});
+    await pool.query('DELETE FROM accounts WHERE username = $1', [NULL_LOGIN_USER]).catch(() => {});
+  });
+
+  it.skipIf(!dbReachable)('returns 403 NO_PASSWORD_SET, distinct from wrong-password 401', async () => {
+    const res = await request(app)
+      .post('/api/auth/login')
+      .send({ username: NULL_LOGIN_USER, password: 'AnythingValid1' });
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe('NO_PASSWORD_SET');
+    expect(res.body.error.message).toMatch(/no password/i);
+  });
+
+  it.skipIf(!dbReachable)('email-based login on null-hash also returns 403 NO_PASSWORD_SET', async () => {
+    const res = await request(app)
+      .post('/api/auth/login')
+      .send({ email_or_username: NULL_LOGIN_EMAIL, password: 'AnythingValid1' });
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe('NO_PASSWORD_SET');
+  });
+});

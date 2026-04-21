@@ -382,9 +382,18 @@ router.post('/login', loginLimiter, async (req: Request, res: Response) => {
 
     const account = rows[0];
 
-    // ORCID-only accounts have no password — reject with same error as wrong password
+    // ORCID-only (or otherwise password-less) accounts cannot log in with a password.
+    // Return a distinct 403 so the UI can direct the user to sign in with ORCID or
+    // recover via seed phrase. Must NOT collapse into the generic 401 — that would
+    // make password login indistinguishable from "wrong password" and hide the
+    // correct remediation path from legitimate users.
     if (!account.password_hash) {
-      return sendError(res, 401, 'UNAUTHORIZED', 'Invalid credentials');
+      return sendError(
+        res,
+        403,
+        'NO_PASSWORD_SET',
+        'Account has no password; sign in with ORCID or recover via seed phrase',
+      );
     }
 
     // Verify password first (before revealing account state)
@@ -608,14 +617,33 @@ router.post('/recover', recoverLimiter, async (req: Request, res: Response) => {
   if (!new_email || typeof new_email !== 'string') {
     return sendError(res, 400, 'VALIDATION_ERROR', 'New email is required');
   }
-  if (!new_password || typeof new_password !== 'string' || new_password.length < 10) {
-    return sendError(res, 400, 'VALIDATION_ERROR', 'Password must be at least 10 characters');
-  }
-  if (!/[a-z]/.test(new_password) || !/[A-Z]/.test(new_password) || !/[0-9]/.test(new_password)) {
-    return sendError(res, 400, 'VALIDATION_ERROR', 'Password must contain lowercase letters, uppercase letters, and numbers');
-  }
   if (!memo_key && !orcid_token) {
     return sendError(res, 400, 'VALIDATION_ERROR', 'Either memo_key or orcid_token is required for recovery');
+  }
+
+  // Password is optional on ORCID recovery — null/omitted → password_hash = NULL.
+  // For seed-phrase recovery it remains required (that is the only credential the
+  // user proved knowledge of, so we force a fresh password rather than leaving the
+  // account passwordless). If supplied on either path, enforce signup strength.
+  const passwordProvided = new_password !== null && new_password !== undefined && new_password !== '';
+  if (orcid_token && !memo_key) {
+    // ORCID path: password optional
+    if (passwordProvided) {
+      if (typeof new_password !== 'string' || new_password.length < 10) {
+        return sendError(res, 400, 'VALIDATION_ERROR', 'Password must be at least 10 characters');
+      }
+      if (!/[a-z]/.test(new_password) || !/[A-Z]/.test(new_password) || !/[0-9]/.test(new_password)) {
+        return sendError(res, 400, 'VALIDATION_ERROR', 'Password must contain lowercase letters, uppercase letters, and numbers');
+      }
+    }
+  } else {
+    // Seed-phrase path: password required
+    if (!passwordProvided || typeof new_password !== 'string' || new_password.length < 10) {
+      return sendError(res, 400, 'VALIDATION_ERROR', 'Password must be at least 10 characters');
+    }
+    if (!/[a-z]/.test(new_password) || !/[A-Z]/.test(new_password) || !/[0-9]/.test(new_password)) {
+      return sendError(res, 400, 'VALIDATION_ERROR', 'Password must contain lowercase letters, uppercase letters, and numbers');
+    }
   }
 
   const normalizedUsername = username.trim().toLowerCase();
@@ -718,10 +746,14 @@ router.post('/recover', recoverLimiter, async (req: Request, res: Response) => {
       return sendError(res, 409, 'DUPLICATE', 'Email already in use');
     }
 
-    // Hash new password
-    const passwordHash = await argon2.hash(new_password, { type: argon2.argon2id });
+    // Hash new password if provided; otherwise null (ORCID recovery without
+    // password re-establishes the account but leaves password-login disabled
+    // until the user opts in via /api/settings/set-password).
+    const passwordHash = passwordProvided
+      ? await argon2.hash(new_password as string, { type: argon2.argon2id })
+      : null;
 
-    // Update account: new password, new email, invalidate all sessions
+    // Update account: new password (or null), new email, invalidate all sessions
     await pool.query(
       `UPDATE accounts
        SET password_hash = $1,

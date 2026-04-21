@@ -1,6 +1,7 @@
 import { Router, type Request, type Response } from 'express';
 import crypto from 'node:crypto';
 import nodemailer from 'nodemailer';
+import argon2 from 'argon2';
 import { z } from 'zod';
 import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';
 import { rateLimit, byIp } from '../middleware/rateLimit.js';
@@ -61,30 +62,33 @@ router.get('/email', readLimiter, verifyHiveSignature, async (req: Request, res:
 
   try {
     const { rows } = await pool.query<{
-      email: string;
+      email: string | null;
       verify_token: string | null;
       custody: string | null;
       upgraded_at: string | null;
       pending_email: string | null;
+      password_hash: string | null;
     }>(
-      'SELECT email, verify_token, custody, upgraded_at, pending_email FROM accounts WHERE username = $1',
+      'SELECT email, verify_token, custody, upgraded_at, pending_email, password_hash FROM accounts WHERE username = $1',
       [username],
     );
 
     if (rows.length === 0) {
-      return sendOk(res, { hasEmail: false, custody: 'self' });
+      return sendOk(res, { hasEmail: false, custody: 'self', has_password: false });
     }
 
     const row = rows[0];
     const custody = row.upgraded_at ? 'self' : (row.custody || 'self');
     const verified = row.verify_token === null || row.verify_token.startsWith('confirmed:');
+    const hasPassword = row.password_hash !== null;
 
     sendOk(res, {
-      hasEmail: true,
-      email: maskEmail(row.email),
+      hasEmail: row.email !== null,
+      email: row.email ? maskEmail(row.email) : null,
       verified,
       custody,
       pendingChange: row.pending_email !== null,
+      has_password: hasPassword,
     });
   } catch (err) {
     logger.error({ err }, 'Failed to fetch email status');
@@ -321,6 +325,59 @@ router.delete('/email', writeLimiter, verifyHiveSignature, async (req: Request, 
   } catch (err) {
     logger.error({ err }, 'Email deletion failed');
     sendError(res, 500, 'INTERNAL_ERROR', 'Failed to delete email data');
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+// POST /api/settings/set-password — Opt into password login (null-hash accounts only)
+// Auth: verifyHiveSignature (Keychain) or Bearer JWT for light accounts.
+// This is the "set from null" operation; rotating an existing password is a
+// separate flow (not yet implemented) that must require the current password.
+// ─────────────────────────────────────────────────────────────
+router.post('/set-password', writeLimiter, verifyHiveSignature, async (req: Request, res: Response) => {
+  const pool = getAppPool();
+  if (!pool) return sendError(res, 503, 'INTERNAL_ERROR', 'Service not available');
+
+  const username = req.hiveUsername!;
+  const { password } = req.body || {};
+
+  // Match signup password policy
+  if (!password || typeof password !== 'string' || password.length < 10) {
+    return sendError(res, 400, 'VALIDATION_ERROR', 'Password must be at least 10 characters');
+  }
+  if (!/[a-z]/.test(password) || !/[A-Z]/.test(password) || !/[0-9]/.test(password)) {
+    return sendError(res, 400, 'VALIDATION_ERROR', 'Password must contain lowercase letters, uppercase letters, and numbers');
+  }
+
+  try {
+    const { rows } = await pool.query<{ id: number; password_hash: string | null }>(
+      'SELECT id, password_hash FROM accounts WHERE username = $1',
+      [username],
+    );
+
+    if (rows.length === 0) {
+      return sendError(res, 404, 'NOT_FOUND', 'Account not found');
+    }
+
+    if (rows[0].password_hash !== null) {
+      return sendError(
+        res,
+        409,
+        'PASSWORD_ALREADY_SET',
+        'A password is already set for this account; use change-password (with the current password) to rotate it.',
+      );
+    }
+
+    const passwordHash = await argon2.hash(password, { type: argon2.argon2id });
+    await pool.query(
+      'UPDATE accounts SET password_hash = $1 WHERE id = $2',
+      [passwordHash, rows[0].id],
+    );
+
+    sendOk(res, { message: 'Password set. You can now log in with your email/username and this password.' });
+  } catch (err) {
+    logger.error({ err }, 'Failed to set password');
+    sendError(res, 500, 'INTERNAL_ERROR', 'Failed to set password');
   }
 });
 

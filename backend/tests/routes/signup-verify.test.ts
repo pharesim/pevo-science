@@ -1,0 +1,260 @@
+import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest';
+import request from 'supertest';
+import { PrivateKey } from '@hiveio/dhive';
+
+// Mock chain-broadcasting bits before createApp() so the confirm flow does not
+// hit the real Hive network. We still use the real argon2, real pg pool, and
+// real verifyHiveSignature — the SEC-004-BE deliverable explicitly rules out
+// mock-auth for these tests.
+const { getAccountsMock, broadcastJsonMock, createClaimedAccountMock } = vi.hoisted(() => ({
+  getAccountsMock: vi.fn().mockResolvedValue([]),
+  broadcastJsonMock: vi.fn().mockResolvedValue({ id: 'mock-tx' }),
+  createClaimedAccountMock: vi.fn().mockResolvedValue({ block_num: 12345 }),
+}));
+
+vi.mock('../../src/hive.js', () => ({
+  hiveClient: {
+    database: { getAccounts: getAccountsMock },
+    broadcast: { json: broadcastJsonMock },
+  },
+}));
+
+vi.mock('../../src/account-creation.js', () => ({
+  createClaimedAccount: createClaimedAccountMock,
+  startAccountCreationWorker: vi.fn(),
+  stopAccountCreationWorker: vi.fn(),
+}));
+
+import { createApp } from '../../src/app.js';
+import { getAppPool } from '../../src/app-db.js';
+import { orcidVerified } from '../../src/routes/orcid.js';
+import { config } from '../../src/config.js';
+
+// Encryption key must be configured for `/confirm` (encryptKey on posting/memo)
+if (!process.env.CUSTODY_ENCRYPTION_KEY || process.env.CUSTODY_ENCRYPTION_KEY.length < 32) {
+  process.env.CUSTODY_ENCRYPTION_KEY = 'test-custody-encryption-key-32chars!';
+}
+// Admin key optional — if unset, the accreditation broadcast is skipped silently
+config.pevoAdminPostingKey = config.pevoAdminPostingKey || PrivateKey.fromSeed('sec-004-be-admin').toString();
+
+const app = createApp();
+
+const RUN_ID = Date.now();
+
+let dbReachable = false;
+{
+  const pool = getAppPool();
+  if (pool) {
+    try {
+      await pool.query('SELECT 1');
+      dbReachable = true;
+    } catch {
+      dbReachable = false;
+    }
+  }
+}
+
+async function cleanupByEmail(email: string) {
+  if (!dbReachable) return;
+  const pool = getAppPool()!;
+  await pool.query("DELETE FROM custody_audit_log WHERE username LIKE 'sec004be_%'").catch(() => {});
+  await pool.query('DELETE FROM accounts WHERE email = $1', [email]).catch(() => {});
+}
+
+async function cleanupByUsername(username: string) {
+  if (!dbReachable) return;
+  const pool = getAppPool()!;
+  await pool.query('DELETE FROM custody_audit_log WHERE username = $1', [username]).catch(() => {});
+  await pool.query('DELETE FROM accounts WHERE username = $1', [username]).catch(() => {});
+}
+
+afterEach(() => {
+  getAccountsMock.mockReset();
+  getAccountsMock.mockResolvedValue([]); // default: username available
+  createClaimedAccountMock.mockReset();
+  createClaimedAccountMock.mockResolvedValue({ block_num: 12345 });
+  broadcastJsonMock.mockReset();
+  broadcastJsonMock.mockResolvedValue({ id: 'mock-tx' });
+});
+
+/**
+ * Seed a verified-ORCID nonce into Redis (if available) and the in-memory map.
+ * The signup/recover routes read Redis first when it's available, so both
+ * stores must be primed to work regardless of the test environment.
+ * Single-use: consumed by /signup or /recover on first read.
+ */
+async function seedOrcidNonce(nonce: string, orcidId: string, name = 'Test Researcher') {
+  const { getRedis, isRedisAvailable } = await import('../../src/redis.js');
+  const payload = { orcid_id: orcidId, works_count: 5, name };
+  const redis = getRedis();
+  if (redis && isRedisAvailable()) {
+    await redis.set(`${config.appTag}:orcid_verified:${nonce}`, JSON.stringify(payload), 'EX', 600);
+  }
+  orcidVerified.set(nonce, { ...payload, expires: Date.now() + 10 * 60_000 });
+}
+
+async function clearSignupRateLimit() {
+  const { getRedis, isRedisAvailable } = await import('../../src/redis.js');
+  const redis = getRedis();
+  if (redis && isRedisAvailable()) {
+    for (const name of ['auth-signup', 'signup-confirm']) {
+      const keys = await redis.keys(`${config.appTag}:rl:${name}:*`).catch(() => [] as string[]);
+      if (keys.length > 0) await redis.del(...keys).catch(() => {});
+    }
+  }
+}
+
+// ──────────────────────────────────────────────────────────────
+// Action 1 — ORCID signup with NO password → confirm → null hash
+// ──────────────────────────────────────────────────────────────
+
+// Hive usernames must match /^[a-z][a-z0-9.-]{1,14}[a-z0-9]$/ — no underscores,
+// must start/end alphanumeric. Derive a short suffix from RUN_ID that fits.
+const SUFFIX = (RUN_ID % 100000).toString(36).padStart(4, '0').slice(-6);
+
+describe.skipIf(!dbReachable)('SEC-004-BE: ORCID signup + confirm without password', () => {
+  const username = `sec004np${SUFFIX}`;
+  const email = `sec004be_no_${RUN_ID}@example.com`;
+  const orcidId = '0000-0001-0000-0001';
+  const nonce = `sec004be-nonce-no-${RUN_ID}`;
+
+  beforeAll(async () => {
+    await cleanupByUsername(username);
+    await cleanupByEmail(email);
+  });
+
+  afterAll(async () => {
+    await cleanupByUsername(username);
+    await cleanupByEmail(email);
+  });
+
+  it('stores password_hash = NULL end-to-end and confirm succeeds', async () => {
+    await clearSignupRateLimit();
+    await seedOrcidNonce(nonce, orcidId);
+
+    // /signup with orcid_token + no password
+    const signupRes = await request(app)
+      .post('/api/auth/signup')
+      .send({
+        email,
+        full_name: 'Test Researcher',
+        institution: 'MIT',
+        field: 'physics',
+        orcid_token: nonce,
+      });
+    expect(signupRes.status).toBe(200);
+    const authToken = signupRes.body.data.auth_token as string;
+    expect(authToken).toMatch(/^confirmed:/);
+
+    // DB assertion: password_hash is NULL
+    const pool = getAppPool()!;
+    const pre = await pool.query<{ password_hash: string | null }>(
+      'SELECT password_hash FROM accounts WHERE email = $1',
+      [email],
+    );
+    expect(pre.rows[0].password_hash).toBeNull();
+
+    // /confirm with client-side keys — should succeed regardless of null password_hash
+    getAccountsMock.mockImplementation(async (names: string[]) => {
+      // Username must not exist yet (available), but after creation the
+      // middleware may not look it up again in this flow.
+      if (names.includes(username)) return [];
+      return [];
+    });
+
+    const confirmRes = await request(app)
+      .post('/api/auth/confirm')
+      .send({
+        auth_token: authToken,
+        username,
+        keys: {
+          owner_public: PrivateKey.fromSeed(`${username}-o`).createPublic().toString(),
+          active_public: PrivateKey.fromSeed(`${username}-a`).createPublic().toString(),
+          posting_public: PrivateKey.fromSeed(`${username}-p`).createPublic().toString(),
+          memo_public: PrivateKey.fromSeed(`${username}-m`).createPublic().toString(),
+          posting_private: PrivateKey.fromSeed(`${username}-p`).toString(),
+          memo_private: PrivateKey.fromSeed(`${username}-m`).toString(),
+        },
+      });
+    expect(confirmRes.status).toBe(200);
+    expect(confirmRes.body.data.username).toBe(username);
+
+    // Post-confirm: row has username + custody='light', password_hash still null
+    const post = await pool.query<{ password_hash: string | null; custody: string | null }>(
+      'SELECT password_hash, custody FROM accounts WHERE username = $1',
+      [username],
+    );
+    expect(post.rows[0].password_hash).toBeNull();
+    expect(post.rows[0].custody).toBe('light');
+  });
+});
+
+// ──────────────────────────────────────────────────────────────
+// Action 2 — ORCID signup WITH password → login works
+// ──────────────────────────────────────────────────────────────
+
+describe.skipIf(!dbReachable)('SEC-004-BE: ORCID signup + confirm WITH password', () => {
+  const username = `sec004wp${SUFFIX}`;
+  const email = `sec004be_wp_${RUN_ID}@example.com`;
+  const password = 'OrcidOptIn1';
+  const orcidId = '0000-0001-0000-0002';
+  const nonce = `sec004be-nonce-wp-${RUN_ID}`;
+
+  beforeAll(async () => {
+    await cleanupByUsername(username);
+    await cleanupByEmail(email);
+  });
+
+  afterAll(async () => {
+    await cleanupByUsername(username);
+    await cleanupByEmail(email);
+  });
+
+  it('stores password_hash, confirm succeeds, password login works', async () => {
+    await clearSignupRateLimit();
+    await seedOrcidNonce(nonce, orcidId);
+
+    const signupRes = await request(app)
+      .post('/api/auth/signup')
+      .send({
+        email,
+        password,
+        full_name: 'Test Researcher WP',
+        institution: 'MIT',
+        field: 'physics',
+        orcid_token: nonce,
+      });
+    expect(signupRes.status).toBe(200);
+    const authToken = signupRes.body.data.auth_token as string;
+
+    const pool = getAppPool()!;
+    const pre = await pool.query<{ password_hash: string | null }>(
+      'SELECT password_hash FROM accounts WHERE email = $1',
+      [email],
+    );
+    expect(pre.rows[0].password_hash).not.toBeNull();
+
+    const confirmRes = await request(app)
+      .post('/api/auth/confirm')
+      .send({
+        auth_token: authToken,
+        username,
+        keys: {
+          owner_public: PrivateKey.fromSeed(`${username}-o`).createPublic().toString(),
+          active_public: PrivateKey.fromSeed(`${username}-a`).createPublic().toString(),
+          posting_public: PrivateKey.fromSeed(`${username}-p`).createPublic().toString(),
+          memo_public: PrivateKey.fromSeed(`${username}-m`).createPublic().toString(),
+          posting_private: PrivateKey.fromSeed(`${username}-p`).toString(),
+          memo_private: PrivateKey.fromSeed(`${username}-m`).toString(),
+        },
+      });
+    expect(confirmRes.status).toBe(200);
+
+    // Password login works
+    const loginRes = await request(app)
+      .post('/api/auth/login')
+      .send({ username, password });
+    expect(loginRes.status).toBe(200);
+    expect(loginRes.body.data.token).toBeTruthy();
+  });
+});

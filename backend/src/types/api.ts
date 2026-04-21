@@ -37,6 +37,8 @@ export type ErrorCode =
   | "SIGNUP_EXPIRED"
   | "NO_ACCOUNT"
   | "ORCID_ALREADY_LINKED"
+  | "NO_PASSWORD_SET"
+  | "PASSWORD_ALREADY_SET"
   | "INTERNAL_ERROR";
 
 export interface PaginationMeta {
