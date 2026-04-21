@@ -391,6 +391,40 @@ describe('POST /api/orcid/callback — hardening (SEC-002-HARDENING)', () => {
     },
   );
 
+  // Round-2 P2 counterpart to the DEL-throw test above: the state-READ path
+  // must also sit inside the outer try/catch, and the DEL must NOT fire when
+  // GET threw (state-not-consumed-on-infra-error, symmetric with the 403 path).
+  it(
+    'returns 500 when redis.get throws while reading state (state-read is inside try/catch, state not consumed)',
+    async () => {
+      const redis = getRedis();
+      if (!redis) return;
+      installOrcidFetchStub({ orcid: '0000-0001-ffff-0002', name: 'Alice', works: 3 });
+      const state = await startUnauthed('signup');
+      const stateKey = `${config.appTag}:orcid_state:${state}`;
+
+      const getSpy = vi.spyOn(redis, 'get').mockImplementationOnce(async () => {
+        throw new Error('simulated Redis flap on state GET');
+      });
+      const delSpy = vi.spyOn(redis, 'del');
+      try {
+        const res = await request(app)
+          .post('/api/orcid/callback')
+          .send({ code: 'fake', state });
+        expect(res.status).toBe(500);
+        expect(res.body.error.code).toBe('INTERNAL_ERROR');
+        expect(broadcastJsonMock).not.toHaveBeenCalled();
+        // Assert via del call args (not stateKey read-back): the state key may
+        // have expired under TTL in flaky CI and the contract is "DEL didn't run".
+        const delCalls = delSpy.mock.calls.map((c) => String(c[0]));
+        expect(delCalls.some((k) => k === stateKey)).toBe(false);
+      } finally {
+        getSpy.mockRestore();
+        delSpy.mockRestore();
+      }
+    },
+  );
+
   // Item 2: NO_ACCOUNT envelope compliance. `orcid_id` must live inside
   // `error.details` (not as a top-level sibling, which the ApiError envelope
   // does not carry and strict parsers drop).

@@ -139,54 +139,56 @@ router.post('/callback', callbackLimiter, async (req: Request, res: Response) =>
     return sendError(res, 400, 'BAD_REQUEST', 'code and state are required');
   }
 
-  // Read state without consuming it yet — if auth fails below, the legitimate
-  // initiator can still retry rather than being forced back through ORCID OAuth.
-  let storedMode: OrcidMode | null = null;
-  let storedUsername: string | undefined;
-
+  // State is read but not consumed until after auth passes, so a legitimate
+  // initiator can retry /callback without being forced back through ORCID OAuth
+  // if auth fails. The outer try/catch wraps state-read + auth + state-consume
+  // + token-exchange so any infrastructure throw (Redis flap on GET/DEL, auth
+  // dispatch error) becomes a clean 500 instead of an unhandled rejection; on
+  // that path the DEL never runs, preserving state-not-consumed-on-error for
+  // symmetry with the state-not-consumed-on-403 contract.
   const stateKey = `${config.appTag}:orcid_state:${state}`;
   const redis = getRedis();
   const redisReady = redis && isRedisAvailable();
-  if (redisReady) {
-    const raw = await redis.get(stateKey);
-    if (raw) {
-      try {
-        const parsed = JSON.parse(raw) as { mode: OrcidMode; username?: string };
-        storedMode = parsed.mode;
-        storedUsername = parsed.username;
-      } catch {
-        // Invalid stored state — fall through to BAD_REQUEST
-      }
-    }
-  } else {
-    const entry = orcidStates.get(state);
-    if (entry && entry.expires > Date.now()) {
-      storedMode = entry.mode;
-      storedUsername = entry.username;
-    }
-  }
-
-  if (!storedMode) {
-    return sendError(res, 400, 'BAD_REQUEST', 'Invalid or expired state parameter');
-  }
-
-  // Authenticated modes: require the caller to be the same user that initiated /start.
-  // Closes the state-hijack path where an attacker with a victim's state could complete
-  // link/accredit with their own ORCID code and rewrite the victim's accreditation.
-  if (AUTHENTICATED_MODES.has(storedMode)) {
-    const callerUsername = await authenticateRequest(req, res);
-    if (!callerUsername) return;
-    if (callerUsername !== storedUsername) {
-      return sendError(res, 403, 'FORBIDDEN', 'Callback caller does not match initiator');
-    }
-  }
 
   try {
+    let storedMode: OrcidMode | null = null;
+    let storedUsername: string | undefined;
+
+    if (redisReady) {
+      const raw = await redis.get(stateKey);
+      if (raw) {
+        try {
+          const parsed = JSON.parse(raw) as { mode: OrcidMode; username?: string };
+          storedMode = parsed.mode;
+          storedUsername = parsed.username;
+        } catch {
+          // Invalid stored state — fall through to BAD_REQUEST
+        }
+      }
+    } else {
+      const entry = orcidStates.get(state);
+      if (entry && entry.expires > Date.now()) {
+        storedMode = entry.mode;
+        storedUsername = entry.username;
+      }
+    }
+
+    if (!storedMode) {
+      return sendError(res, 400, 'BAD_REQUEST', 'Invalid or expired state parameter');
+    }
+
+    // Authenticated modes: require the caller to be the same user that initiated /start.
+    // Closes the state-hijack path where an attacker with a victim's state could complete
+    // link/accredit with their own ORCID code and rewrite the victim's accreditation.
+    if (AUTHENTICATED_MODES.has(storedMode)) {
+      const callerUsername = await authenticateRequest(req, res);
+      if (!callerUsername) return;
+      if (callerUsername !== storedUsername) {
+        return sendError(res, 403, 'FORBIDDEN', 'Callback caller does not match initiator');
+      }
+    }
+
     // Auth passed (or mode is public). Consume state now so it can't be replayed.
-    // State-consume must live INSIDE the outer try/catch: a transient Redis flap
-    // on `redis.del` would otherwise throw past the try and escape as an
-    // unhandled rejection. Inside the try, such a throw is caught below and
-    // surfaces as a clean 500 sendError.
     if (redisReady) {
       await redis.del(stateKey);
     } else {
