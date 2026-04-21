@@ -115,4 +115,112 @@ describe('GET /api/accreditations/:username', () => {
       expect(api.body.data.accreditation).toHaveProperty('orcid', null);
     },
   );
+
+  // Regression guard for BE-ACCRED-TX-ID-PARITY: the /api/accreditations/:username
+  // response must include the HAF event_id as `tx_id`, matching the shape returned
+  // by /api/profile/:username. The auth store and profile page should see the
+  // same identifier for the same underlying custom_json op.
+  it.skipIf(!isHafAvailable())(
+    'returns the same tx_id as /api/profile/:username for an accredited account',
+    { timeout: 60_000 },
+    async (ctx) => {
+      const pool = getPool();
+      if (!pool) {
+        ctx.skip('no pool available');
+        return;
+      }
+
+      // Pick an accredited account the endpoint will resolve (authority-filtered,
+      // latest op = accredit) so both endpoints should yield a tx_id.
+      const res = await pool.query(
+        `SELECT account FROM (
+           SELECT cj.json::jsonb ->> 'account' AS account,
+                  cj.json::jsonb ->> 'action'  AS action,
+                  ROW_NUMBER() OVER (
+                    PARTITION BY cj.json::jsonb ->> 'account'
+                    ORDER BY cj.block_num DESC
+                  ) AS rn
+           FROM ${T.customJson} cj
+           WHERE cj.custom_id = $1
+             AND cj.json::jsonb ->> 'action' IN ('accredit', 'revoke')
+             AND cj.required_posting_auths ?| $2::text[]
+             AND cj.block_num >= $3
+         ) latest
+         WHERE rn = 1 AND action = 'accredit'
+         LIMIT 1`,
+        [config.appTag, config.accreditationAuthorities, getCachedGenesisBlock()],
+      );
+
+      if (res.rows.length === 0) {
+        ctx.skip('HAF has no accredited account — tx_id parity not exercisable');
+        return;
+      }
+
+      const { account } = res.rows[0] as { account: string };
+
+      const [accredRes, profileRes] = await Promise.all([
+        request(app).get(`/api/accreditations/${account}`),
+        request(app).get(`/api/profile/${account}`),
+      ]);
+
+      expect(accredRes.status).toBe(200);
+      expect(profileRes.status).toBe(200);
+
+      const accredTxId = accredRes.body.data.accreditation?.tx_id;
+      const profileTxId = profileRes.body.data.accreditation?.tx_id;
+
+      expect(accredTxId).toBeTruthy();
+      expect(typeof accredTxId).toBe('string');
+      expect(accredTxId).toBe(profileTxId);
+    },
+  );
+
+  // Regression guard for BE-ACCRED-REVOKE-TEST: the revoke branch of
+  // fetchAccreditationStatusFromHaf must return is_accredited:false with a null
+  // accreditation. Without this, a mutation that returns is_accredited:true
+  // from the revoke branch would not be caught by the orcid/parity specs above.
+  it.skipIf(!isHafAvailable())(
+    'returns is_accredited:false when the latest on-chain op is a revoke',
+    { timeout: 60_000 },
+    async (ctx) => {
+      const pool = getPool();
+      if (!pool) {
+        ctx.skip('no pool available');
+        return;
+      }
+
+      // Find an account whose latest authority-signed op is a revoke.
+      const res = await pool.query(
+        `SELECT account FROM (
+           SELECT cj.json::jsonb ->> 'account' AS account,
+                  cj.json::jsonb ->> 'action'  AS action,
+                  ROW_NUMBER() OVER (
+                    PARTITION BY cj.json::jsonb ->> 'account'
+                    ORDER BY cj.block_num DESC
+                  ) AS rn
+           FROM ${T.customJson} cj
+           WHERE cj.custom_id = $1
+             AND cj.json::jsonb ->> 'action' IN ('accredit', 'revoke')
+             AND cj.required_posting_auths ?| $2::text[]
+             AND cj.block_num >= $3
+         ) latest
+         WHERE rn = 1 AND action = 'revoke'
+         LIMIT 1`,
+        [config.appTag, config.accreditationAuthorities, getCachedGenesisBlock()],
+      );
+
+      if (res.rows.length === 0) {
+        ctx.skip('HAF has no account with latest op = revoke — branch not exercisable');
+        return;
+      }
+
+      const { account } = res.rows[0] as { account: string };
+      const api = await request(app).get(`/api/accreditations/${account}`);
+
+      expect(api.status).toBe(200);
+      expect(api.body.data.username).toBe(account);
+      expect(api.body.data.is_accredited).toBe(false);
+      expect(api.body.data.accreditation).toBeNull();
+    },
+  );
 });

@@ -140,7 +140,7 @@ async function fetchAccreditationStatusFromHaf(username: string) {
         method: payload.method,
         orcid: payload.orcid || null,
         timestamp: payload.timestamp,
-        tx_id: result.rows[0].event_id?.toString() || null,
+        tx_id: result.rows[0].event_id?.toString() ?? null,
       },
     };
   } catch (err) {
