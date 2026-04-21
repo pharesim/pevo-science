@@ -80,7 +80,7 @@ async function unpinFromKubo(ipfsApiUrl, cid) {
  * binary is unavailable the scan is skipped (with a warning) rather than
  * failing the run — the opt-out pattern in actions #1 is the primary defense.
  */
-function scanTracesForSecrets() {
+export function scanTracesForSecrets() {
   const testResultsDir = resolve(FRONTEND_ROOT, 'test-results');
   if (!existsSync(testResultsDir)) return;
 
@@ -108,31 +108,51 @@ function scanTracesForSecrets() {
 
   if (traceFiles.length === 0) return;
 
-  // Regex alternation for each secret class. Matched against the
-  // text-extracted trace content with a single `new RegExp(combined)` below;
-  // we only need to know if a trace is dirty, not how many hits it has.
-  const wifPattern = '5[HJK][1-9A-HJ-NP-Za-km-z]{49}';
-  const compressedWifPattern = '[KL][1-9A-HJ-NP-Za-km-z]{51}';
-  const jwtPattern = '[A-Za-z0-9_-]{20,}\\.[A-Za-z0-9_-]{20,}\\.[A-Za-z0-9_-]{20,}';
-  const sessionSecretPattern = 'SESSION_SECRET[=:]';
-  const sessionSecretJsonPattern = '"SESSION_SECRET"';
-  const bip39MnemonicPattern = '([a-z]{3,8} ){11}[a-z]{3,8}';
-  const knownTestPassword = 'E2eTestPass1';
-  const combined = [
-    wifPattern,
-    compressedWifPattern,
-    jwtPattern,
-    sessionSecretPattern,
-    sessionSecretJsonPattern,
-    bip39MnemonicPattern,
-    knownTestPassword,
-  ].join('|');
+  // Regex alternation for each secret class, each wrapped in a capture group
+  // so the matching group can be identified and reported as a CATEGORY LABEL.
+  // The previous implementation spliced the first 8 bytes of the match into
+  // the thrown error — a partial-prefix leak into CI logs. Labels are safe.
+  const patterns = [
+    { label: 'WIF private key', source: '5[HJK][1-9A-HJ-NP-Za-km-z]{49}' },
+    { label: 'compressed WIF', source: '[KL][1-9A-HJ-NP-Za-km-z]{51}' },
+    { label: 'JWT', source: '[A-Za-z0-9_-]{20,}\\.[A-Za-z0-9_-]{20,}\\.[A-Za-z0-9_-]{20,}' },
+    { label: 'SESSION_SECRET literal', source: 'SESSION_SECRET[=:]' },
+    { label: 'SESSION_SECRET JSON key', source: '"SESSION_SECRET"' },
+    { label: 'BIP39 mnemonic', source: '([a-z]{3,8} ){11}[a-z]{3,8}' },
+    { label: 'known test password', source: 'E2eTestPass1' },
+  ];
+  // Each pattern wrapped in its own outer group so we can identify which one
+  // matched. Note the BIP39 source already contains one inner group; that is
+  // fine — we only key on the outermost per-pattern group indices below.
+  const combined = new RegExp(
+    patterns.map((p) => `(${p.source})`).join('|'),
+  );
+  // Precompute the capture-group offset for each pattern: pattern i owns
+  // group index `groupOffsets[i]` (1-indexed into match array). Inner groups
+  // inside a pattern's source bump the next pattern's offset accordingly.
+  const groupOffsets = [];
+  {
+    let offset = 1;
+    for (const p of patterns) {
+      groupOffsets.push(offset);
+      // Count outer + inner groups in this pattern's source. We only have to
+      // worry about unescaped `(` that are not non-capturing `(?:`.
+      const innerGroups = (p.source.match(/\((?!\?:)/g) || []).length;
+      offset += 1 + innerGroups;
+    }
+  }
 
   const sessionSecretValue = process.env.SESSION_SECRET;
-  const secretValuePattern =
-    sessionSecretValue && sessionSecretValue.length >= 16
-      ? sessionSecretValue
-      : null;
+  let secretValuePattern = null;
+  if (sessionSecretValue && sessionSecretValue.length >= 16) {
+    secretValuePattern = sessionSecretValue;
+  } else if (sessionSecretValue) {
+    // Silent skip risk before this fix: a short dev SESSION_SECRET disabled
+    // the value-scan without signal. Explicit warn so operators notice.
+    console.warn(
+      '[e2e global-teardown] SESSION_SECRET < 16 chars, value-scan disabled',
+    );
+  }
 
   const leaks = [];
   for (const tracePath of traceFiles) {
@@ -141,10 +161,20 @@ function scanTracesForSecrets() {
       encoding: 'buffer',
     });
     if (unzipped.error) {
+      // ENOENT = `unzip` binary is missing. Every subsequent file would fail
+      // the same way; short-circuit. Any other error (ERR_CHILD_PROCESS_STDIO_MAXBUFFER,
+      // EACCES on a single trace, transient I/O, etc.) is per-file so we
+      // `continue` and still scan the remaining traces.
+      if (unzipped.error.code === 'ENOENT') {
+        console.warn(
+          `[e2e teardown] trace secret-scan aborted: \`unzip\` binary not found (${unzipped.error.message}). Install unzip to enable scan.`,
+        );
+        return;
+      }
       console.warn(
-        `[e2e teardown] trace secret-scan skipped for ${tracePath}: ${unzipped.error.message}`,
+        `[e2e teardown] trace secret-scan skipped for ${tracePath} (${unzipped.error.code || 'unknown'}): ${unzipped.error.message}`,
       );
-      return;
+      continue;
     }
     if (unzipped.status !== 0) {
       console.warn(
@@ -153,13 +183,21 @@ function scanTracesForSecrets() {
       continue;
     }
     const text = unzipped.stdout.toString('utf8');
-    const patternMatch = new RegExp(combined).exec(text);
+    const patternMatch = combined.exec(text);
     const valueMatch = secretValuePattern && text.includes(secretValuePattern);
     if (patternMatch || valueMatch) {
-      leaks.push({
-        path: tracePath,
-        kind: valueMatch ? 'SESSION_SECRET value' : `regex: ${patternMatch[0].slice(0, 8)}…`,
-      });
+      let kind;
+      if (valueMatch) {
+        kind = 'SESSION_SECRET value';
+      } else {
+        // Find which pattern's outer group captured. Report its label only —
+        // never splice match bytes into the error, to keep CI logs clean.
+        const patternIdx = groupOffsets.findIndex(
+          (off) => patternMatch[off] !== undefined,
+        );
+        kind = patternIdx >= 0 ? patterns[patternIdx].label : 'unknown pattern';
+      }
+      leaks.push({ path: tracePath, kind });
     }
   }
 
@@ -174,12 +212,7 @@ function scanTracesForSecrets() {
   }
 }
 
-export default async function globalTeardown() {
-  loadEnvFile(resolve(FRONTEND_ROOT, '.env.test'));
-  loadEnvFile(resolve(REPO_ROOT, '.env'));
-
-  scanTracesForSecrets();
-
+export async function cleanupIpfsPins() {
   const cids = readCapturedCids();
   if (cids.length === 0) {
     resetCapturedCids();
@@ -255,4 +288,24 @@ export default async function globalTeardown() {
   );
 
   resetCapturedCids();
+}
+
+export default async function globalTeardown() {
+  loadEnvFile(resolve(FRONTEND_ROOT, '.env.test'));
+  loadEnvFile(resolve(REPO_ROOT, '.env'));
+
+  // Capture scan error so IPFS cleanup still runs. Previously a leak-detected
+  // throw short-circuited teardown and orphaned CIDs on the shared Kubo node.
+  // Cleanup-first semantics: always unpin what the run pinned, then surface
+  // the scan failure so the CI job still fails on secret leakage.
+  let scanError = null;
+  try {
+    scanTracesForSecrets();
+  } catch (err) {
+    scanError = err;
+  }
+
+  await cleanupIpfsPins();
+
+  if (scanError) throw scanError;
 }
