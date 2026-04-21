@@ -22,6 +22,20 @@ import {
 
 const router = Router();
 
+// Shared misconfig surface: when PEVO_BRIDGE_POSTING_KEY is unset, any handler
+// that would otherwise broadcast (or authorize a broadcast) under the bridge
+// account must return the same distinct 503 SERVICE_UNAVAILABLE so operators
+// see one consistent error code+message across /api/bridge/* and /api/papers/*
+// claim approve/revoke. Returns true when configured (caller proceeds); returns
+// false after sending the 503 (caller returns).
+export function assertBridgeKeyConfigured(res: Response): boolean {
+  if (!config.pevoBridgePostingKey) {
+    sendError(res, 503, 'SERVICE_UNAVAILABLE', 'Bridge posting key not configured');
+    return false;
+  }
+  return true;
+}
+
 // Per-endpoint rate limiters (per API contract)
 const lookupLimiter = rateLimit({ name: 'bridge-lookup', windowMs: 60_000, max: 20, keyFn: byIp });
 const registerLimiter = rateLimit({ name: 'bridge-register', windowMs: 3_600_000, max: 10, keyFn: byIp });
@@ -154,9 +168,7 @@ router.post('/register', registerLimiter, verifyHiveSignature, async (req: Reque
     return sendError(res, 403, 'FORBIDDEN', 'Only accredited researchers can register bridge papers');
   }
 
-  if (!config.pevoBridgePostingKey) {
-    return sendError(res, 500, 'INTERNAL_ERROR', 'Bridge posting key not configured');
-  }
+  if (!assertBridgeKeyConfigured(res)) return;
 
   // Resolve identifier to canonical DOI or arXiv ID
   let parsed;
@@ -274,9 +286,7 @@ router.post('/update', updateLimiter, verifyHiveSignature, async (req: Request, 
     return sendError(res, 403, 'FORBIDDEN', 'Only accredited researchers can update bridge papers');
   }
 
-  if (!config.pevoBridgePostingKey) {
-    return sendError(res, 500, 'INTERNAL_ERROR', 'Bridge posting key not configured');
-  }
+  if (!assertBridgeKeyConfigured(res)) return;
 
   // Fetch the existing bridge paper (always under bridge account)
   let existingMeta: Record<string, unknown> | null = null;

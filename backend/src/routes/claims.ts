@@ -9,6 +9,7 @@ import { hafCache } from '../cache.js';
 import { logger } from '../logger.js';
 import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';
 import { rateLimit, byAccount } from '../middleware/rateLimit.js';
+import { assertBridgeKeyConfigured } from './bridge.js';
 import {
   T,
   activeAccreditationsCteBody,
@@ -191,8 +192,8 @@ router.post('/:claimer/approve', verifyHiveSignature, approveLimiter, async (req
   // unconfigured. Without this guard, control falls through to the native-paper
   // branch and returns "Only the post author can approve claims on native
   // papers" — misleading for operators debugging the misconfig.
-  if (paperAuthor === config.hiveBridgeAccount && !config.pevoBridgePostingKey) {
-    return sendError(res, 503, 'SERVICE_UNAVAILABLE', 'Bridge posting key not configured');
+  if (paperAuthor === config.hiveBridgeAccount && !assertBridgeKeyConfigured(res)) {
+    return;
   }
 
   // Bridge papers: server broadcasts with bridge account key, but only after
@@ -287,8 +288,8 @@ router.post('/:claimer/revoke', verifyHiveSignature, revokeLimiter, async (req: 
   // unconfigured. Parallels the guard in the approve handler — operators
   // debugging a missing `PEVO_BRIDGE_POSTING_KEY` get a SERVICE_UNAVAILABLE
   // instead of silent fall-through to the admin-key or client-signed branches.
-  if (paperAuthor === config.hiveBridgeAccount && !config.pevoBridgePostingKey) {
-    return sendError(res, 503, 'SERVICE_UNAVAILABLE', 'Bridge posting key not configured');
+  if (paperAuthor === config.hiveBridgeAccount && !assertBridgeKeyConfigured(res)) {
+    return;
   }
 
   // Bridge-key broadcast: only when the platform admin is revoking on a
