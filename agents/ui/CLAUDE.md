@@ -26,7 +26,7 @@ Before any fan-out, the parent MUST commit in-flight work — see root `CLAUDE.m
 - Account signup, login, recovery, and settings (`src/pages/signup.js`, `src/pages/login.js`, `src/pages/recover.js`, `src/pages/settings.js`).
 - Bridge paper import UI (`src/pages/bridge.js`).
 - Blog content pages (`src/pages/blog.js`, `src/pages/blog-post.js`).
-- i18n: translation files in `public/messages/` (16 languages).
+- i18n: translation files in `public/messages/` (16 languages). Stub convention documented below.
 
 ## Design Direction
 
@@ -43,6 +43,20 @@ Before any fan-out, the parent MUST commit in-flight work — see root `CLAUDE.m
 - Do NOT modify files outside `frontend/`.
 - If you need an endpoint that isn't in the API contract, `git mv` your task file to `agents/docs/tasks/blocked/` and append a `[BLOCKED by Architect]` note explaining what you need.
 - Use the standard error response format from `agents/docs/api-contracts/common.md` when handling API errors.
+
+## Internationalization
+
+Translation files live in `frontend/public/messages/<locale>.json` — one file per locale (16 total: `ar, cs, da, de, en, es, fa, fr, he, it, nl, pl, pt, sv, tr, zh`). `en.json` is the source of truth for key shape.
+
+**Stub format.** When adding a new i18n key ahead of translation capacity, write the English string directly into the non-English locale files as a stub (not bracketed, not sentinel-prefixed — just the raw English text). Stubs are indistinguishable from final translations in the source; the tracking lives in a sibling file.
+
+**Stub tracking — `frontend/public/messages/STUBS.md`.** Every commit that adds a stub appends entries to `STUBS.md` in the form `<locale>: <key>` — one line per locale-key pair that needs translation. When a translator lands a real translation, they remove the matching line from `STUBS.md` in the same commit that updates the locale file. An empty or missing section means that locale has no known pending stubs.
+
+The stub list is the single source of truth for pending translation work. Grepping `STUBS.md` for `^ar:` yields every Arabic stub; grepping for a specific key yields every locale where it still needs translation. Do not scan locale files for identical-to-English values as a proxy — technical terms, product names, and borrowed words ("URL", "OK", "PEvO") legitimately appear verbatim across locales and would produce false positives.
+
+**When to stub vs. block.** Stubbing is acceptable for new features landing ahead of translation. For renamed, restructured, or removed keys, update all 16 locale files atomically in the same commit — translation memory carries over, and partial renames leave half the UI in an inconsistent state.
+
+**Retrofit posture.** Forward-only. Stubs added before this convention existed are not retroactively audited; they'll be flushed as translators touch each locale. New stubs (2026-04-21 onward) must carry a `STUBS.md` entry at commit time.
 
 ## Available Resources
 
