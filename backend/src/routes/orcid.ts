@@ -96,7 +96,7 @@ router.post('/start', startLimiter, async (req: Request, res: Response) => {
   const redirectUrl = `${config.orcidBaseUrl}/oauth/authorize?` +
     `client_id=${encodeURIComponent(config.orcidClientId)}` +
     `&response_type=code` +
-    `&scope=${encodeURIComponent('/authenticate /read-limited')}` +
+    `&scope=${encodeURIComponent('/authenticate')}` +
     `&redirect_uri=${encodeURIComponent(getRedirectUri())}` +
     `&state=${state}`;
 
