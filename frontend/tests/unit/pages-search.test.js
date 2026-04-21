@@ -109,6 +109,8 @@ describe('searchPage', () => {
       expect(push).toHaveBeenCalled();
       const url = push.mock.calls[push.mock.calls.length - 1][2];
       expect(url).not.toContain('page=');
+      // Causal chain: URL push reflects the reset currentPage=1.
+      expect(comp.currentPage).toBe(1);
       // Query still reflected; only page + results were reset.
       expect(url).toContain('q=test');
     });
@@ -242,6 +244,102 @@ describe('searchPage', () => {
       expect(push).toHaveBeenCalled();
       const url = push.mock.calls[push.mock.calls.length - 1][2];
       expect(url).toContain('page=3');
+    });
+
+    it('_pushUrl with currentPage=1 and no filters/query produces a bare path (no query string)', () => {
+      window.history.replaceState(null, '', '/en/search?q=stale&page=4');
+      const comp = createComponent();
+      comp.query = '';
+      comp.typeFilter = 'all';
+      comp.sourceFilter = '';
+      comp.disciplineFilter = '';
+      comp.currentPage = 1;
+      const push = vi.spyOn(window.history, 'pushState');
+      comp._pushUrl();
+      expect(push).toHaveBeenCalled();
+      const url = push.mock.calls[push.mock.calls.length - 1][2];
+      expect(url).not.toContain('?');
+      expect(url).toBe(window.location.pathname);
+    });
+  });
+
+  describe('popstate lifecycle', () => {
+    it('does not register popstate when mounted off /search', () => {
+      window.history.replaceState(null, '', '/en/home');
+      const add = vi.spyOn(window, 'addEventListener');
+      const comp = createComponent();
+      comp.loadDisciplines = vi.fn(() => Promise.resolve());
+      comp.init();
+      const popstateCalls = add.mock.calls.filter((c) => c[0] === 'popstate');
+      expect(popstateCalls).toHaveLength(0);
+    });
+
+    it('popstate handler is inert when pathname has drifted off /search mid-mount', async () => {
+      window.history.replaceState(null, '', '/en/search?q=quantum');
+      searchPapers.mockResolvedValue({ data: [], meta: { total: 0, limit: 20 } });
+      const comp = createComponent();
+      comp.loadDisciplines = vi.fn(() => Promise.resolve());
+      comp.init();
+      await Promise.resolve();
+      searchPapers.mockClear();
+
+      // SPA router has navigated away before popstate fires.
+      window.history.replaceState(null, '', '/en/home');
+      window.dispatchEvent(new PopStateEvent('popstate'));
+
+      expect(searchPapers).not.toHaveBeenCalled();
+
+      comp.destroy();
+    });
+
+    it('destroy removes the popstate listener', () => {
+      window.history.replaceState(null, '', '/en/search');
+      const remove = vi.spyOn(window, 'removeEventListener');
+      const comp = createComponent();
+      comp.loadDisciplines = vi.fn(() => Promise.resolve());
+      comp.init();
+      const handler = comp._popstateHandler;
+      expect(handler).toBeTypeOf('function');
+      comp.destroy();
+      const popstateCalls = remove.mock.calls.filter((c) => c[0] === 'popstate');
+      expect(popstateCalls.length).toBeGreaterThan(0);
+      expect(popstateCalls.some((c) => c[1] === handler)).toBe(true);
+      expect(comp._popstateHandler).toBeNull();
+    });
+
+    it('popstate re-reads URL and calls searchPapers on navigation within /search', async () => {
+      window.history.replaceState(null, '', '/en/search?q=initial');
+      searchPapers.mockResolvedValue({ data: [], meta: { total: 0, limit: 20 } });
+      const comp = createComponent();
+      comp.loadDisciplines = vi.fn(() => Promise.resolve());
+      comp.init();
+      await Promise.resolve();
+      searchPapers.mockClear();
+      const push = vi.spyOn(window.history, 'pushState');
+
+      window.history.replaceState(null, '', '/en/search?q=quantum&page=2');
+      window.dispatchEvent(new PopStateEvent('popstate'));
+
+      expect(comp.query).toBe('quantum');
+      expect(comp.currentPage).toBe(2);
+      expect(searchPapers).toHaveBeenCalled();
+      expect(push).not.toHaveBeenCalled();
+
+      comp.destroy();
+    });
+  });
+
+  describe('init resilience', () => {
+    it('completes when loadDisciplines rejects (no unhandled rejection)', async () => {
+      window.history.replaceState(null, '', '/en/search');
+      const { fetchDisciplines } = await import('../../src/api.js');
+      fetchDisciplines.mockRejectedValueOnce(new Error('disciplines down'));
+      const comp = createComponent();
+      expect(() => comp.init()).not.toThrow();
+      // Flush microtasks so the rejected promise settles without escaping.
+      await Promise.resolve();
+      await Promise.resolve();
+      comp.destroy();
     });
   });
 });

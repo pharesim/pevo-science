@@ -127,6 +127,8 @@ describe('paperFeed', () => {
       expect(push).toHaveBeenCalled();
       const url = push.mock.calls[push.mock.calls.length - 1][2];
       expect(url).not.toContain('page=');
+      // Causal chain: pushed URL reflects currentPage===1 (not the pre-failure 4).
+      expect(comp.currentPage).toBe(1);
       // Filter state is still reflected (reset only clears page + results).
       expect(url).toContain('discipline=physics');
     });
@@ -193,6 +195,96 @@ describe('paperFeed', () => {
       const push = vi.spyOn(window.history, 'pushState');
       comp.goToPage(3);
       expect(push).not.toHaveBeenCalled();
+    });
+
+    it('_pushUrl with currentPage=1 and no filters produces a bare path (no query string)', () => {
+      window.history.replaceState(null, '', '/en/papers?page=4&discipline=physics');
+      const comp = createComponent();
+      comp.currentPage = 1;
+      comp.discipline = '';
+      comp.sortBy = 'date';
+      comp.sourceFilter = '';
+      const push = vi.spyOn(window.history, 'pushState');
+      comp._pushUrl();
+      expect(push).toHaveBeenCalled();
+      const url = push.mock.calls[push.mock.calls.length - 1][2];
+      expect(url).not.toContain('?');
+      expect(url).toBe(window.location.pathname);
+    });
+  });
+
+  describe('popstate lifecycle', () => {
+    it('does not register popstate when mounted off /papers', () => {
+      window.history.replaceState(null, '', '/en/home');
+      const add = vi.spyOn(window, 'addEventListener');
+      const comp = createComponent();
+      comp.init();
+      const popstateCalls = add.mock.calls.filter((c) => c[0] === 'popstate');
+      expect(popstateCalls).toHaveLength(0);
+    });
+
+    it('popstate handler is inert when pathname has drifted off /papers mid-mount', async () => {
+      window.history.replaceState(null, '', '/en/papers');
+      const comp = createComponent();
+      comp.init();
+      await Promise.resolve();
+      mockFetchPapers.mockClear();
+
+      // SPA router has navigated away before popstate fires.
+      window.history.replaceState(null, '', '/en/home');
+      window.dispatchEvent(new PopStateEvent('popstate'));
+
+      expect(mockFetchPapers).not.toHaveBeenCalled();
+
+      comp.destroy();
+    });
+
+    it('destroy removes the popstate listener', () => {
+      window.history.replaceState(null, '', '/en/papers');
+      const remove = vi.spyOn(window, 'removeEventListener');
+      const comp = createComponent();
+      comp.init();
+      const handler = comp._popstateHandler;
+      expect(handler).toBeTypeOf('function');
+      comp.destroy();
+      const popstateCalls = remove.mock.calls.filter((c) => c[0] === 'popstate');
+      expect(popstateCalls.length).toBeGreaterThan(0);
+      expect(popstateCalls.some((c) => c[1] === handler)).toBe(true);
+      expect(comp._popstateHandler).toBeNull();
+    });
+
+    it('popstate re-reads URL and calls loadPapers on navigation within /papers', async () => {
+      window.history.replaceState(null, '', '/en/papers');
+      const comp = createComponent();
+      comp.init();
+      await Promise.resolve();
+      mockFetchPapers.mockClear();
+      const push = vi.spyOn(window.history, 'pushState');
+
+      window.history.replaceState(null, '', '/en/papers?page=3&discipline=biology');
+      window.dispatchEvent(new PopStateEvent('popstate'));
+
+      expect(comp.currentPage).toBe(3);
+      expect(comp.discipline).toBe('biology');
+      expect(mockFetchPapers).toHaveBeenCalled();
+      expect(push).not.toHaveBeenCalled();
+
+      comp.destroy();
+    });
+  });
+
+  describe('init resilience', () => {
+    it('completes when loadDisciplines rejects (no unhandled rejection)', async () => {
+      window.history.replaceState(null, '', '/en/papers');
+      mockFetchDisciplines.mockRejectedValue(new Error('disciplines down'));
+      const comp = createComponent();
+      expect(() => comp.init()).not.toThrow();
+      // Flush microtasks so the rejected promise settles without escaping.
+      await Promise.resolve();
+      await Promise.resolve();
+      // Papers load still fires independently of the disciplines failure.
+      expect(mockFetchPapers).toHaveBeenCalled();
+      comp.destroy();
     });
   });
 

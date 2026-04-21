@@ -143,6 +143,8 @@ describe('researchersPage', () => {
       expect(push).toHaveBeenCalled();
       const url = push.mock.calls[push.mock.calls.length - 1][2];
       expect(url).not.toContain('page=');
+      // Causal chain: URL push reflects the reset currentPage=1.
+      expect(comp.currentPage).toBe(1);
       expect(url).toContain('field=physics');
     });
 
@@ -197,6 +199,20 @@ describe('researchersPage', () => {
       const url = push.mock.calls[push.mock.calls.length - 1][2];
       expect(url).toContain('field=biology');
       expect(url).not.toContain('page=');
+    });
+
+    it('_pushUrl with currentPage=1 and no filters produces a bare path (no query string)', () => {
+      window.history.replaceState(null, '', '/en/researchers?page=4&field=physics');
+      const comp = createComponent();
+      comp.currentPage = 1;
+      comp.fieldFilter = '';
+      comp.institutionFilter = '';
+      const push = vi.spyOn(window.history, 'pushState');
+      comp._pushUrl();
+      expect(push).toHaveBeenCalled();
+      const url = push.mock.calls[push.mock.calls.length - 1][2];
+      expect(url).not.toContain('?');
+      expect(url).toBe(window.location.pathname);
     });
 
     it('popstate re-reads URL and calls loadResearchers without pushing', async () => {
