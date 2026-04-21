@@ -6,6 +6,14 @@ import { totalPagesFromMeta } from '../lib/pagination.js';
 import { localeStrippedPath } from '../lib/url-sync.js';
 import DOMPurify from 'dompurify';
 
+// Filter changes (type/source/discipline) intentionally do NOT
+// auto-push the URL or re-run the search. Search is a user-initiated
+// action; mid-compose filter tweaks would cause unwanted network
+// churn and a jumpy result list. paper-feed uses the opposite
+// pattern (auto-push on filter change) because it's a passive
+// "what's here" feed, not a query. handleSubmit is the canonical
+// point that commits filter state to the URL + API.
+
 const template = `
       <div x-data="searchPage" class="container-narrow py-8">
         <h1 class="text-3xl font-bold text-ink mb-2" x-text="$t('search.title')"></h1>
@@ -20,13 +28,6 @@ const template = `
                     x-text="loading ? $t('search.searching') : $t('search.searchButton')"></button>
           </div>
 
-          <!-- Filter changes (type/source/discipline) intentionally do NOT
-               auto-push the URL or re-run the search. Search is a user-initiated
-               action; mid-compose filter tweaks would cause unwanted network
-               churn and a jumpy result list. paper-feed uses the opposite
-               pattern (auto-push on filter change) because it's a passive
-               "what's here" feed, not a query. handleSubmit is the canonical
-               point that commits filter state to the URL + API. -->
           <div class="flex flex-wrap gap-3 mt-3">
             <div>
               <label for="search-type" class="block text-xs font-medium text-ink-muted mb-1" x-text="$t('search.typeLabel')"></label>

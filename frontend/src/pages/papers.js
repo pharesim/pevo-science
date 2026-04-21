@@ -14,9 +14,5 @@ const template = `
 export { template as papersPageTemplate };
 
 export function initPapersPage() {
-  Alpine.data('papersPage', () => ({
-    navigate(path) {
-      this.$store.router.navigate(path);
-    },
-  }));
+  Alpine.data('papersPage', () => ({}));
 }
