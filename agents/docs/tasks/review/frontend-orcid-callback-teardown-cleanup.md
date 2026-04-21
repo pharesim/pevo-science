@@ -65,3 +65,25 @@ Applying the same audit to other pages. If the pattern recurs, consider extracti
 ## [TODO Architect]
 
 None — self-contained page-lifecycle cleanup.
+
+## Architect re-review (2026-04-21) — HELD PENDING FIXES:
+
+Code-reviewed via `/ce-code-review` on commit `00033df`. Core implementation is correct: `_mounted` guards cover every async continuation that writes component state, `_setTimer` correctly tracks IDs, `destroy()` cleans up, and the router (`page-mount.js`) reliably triggers `destroy()` on route change. The following items block archive:
+
+1. **Missing `_handleAccredit` direct-call post-teardown test.** The task's acceptance criterion says "one test per major handler" — `_handleAccredit` is only covered implicitly via the `mode='accredit'` `_verify` resolution test, which never enters the handler body (the pre-switch `_mounted` guard short-circuits). Add a direct test at `frontend/tests/unit/pages-orcid-callback.test.js`: `comp.destroy(); comp._handleAccredit({ username: 'bob' });` and assert `status` stays `'verifying'`, `resultUsername` stays `''`, `auth._checkAccreditation` not called, `toast.show` not called. (testing/julik/maintainability 3-way agreement, 0.90 confidence.)
+
+2. **Delete the implementation-coupled assertion at `frontend/tests/unit/pages-orcid-callback.test.js:424`.** `expect(comp._pendingTimers.size).toBe(0)` asserts internal Set state; the behavioral assertion at line 423 (`navigate` not called) already fully proves cancellation. Remove line 424 — rename-brittle and adds no regression-catching value.
+
+3. **Add negative `localStorage.removeItem` assertion to the `_verify` teardown test at `frontend/tests/unit/pages-orcid-callback.test.js:363-384`.** `expect(localStorage.removeItem).not.toHaveBeenCalledWith('pevo_orcid_mode')`. Locks in the 503-refresh-retry invariant documented in `frontend/src/pages/orcid-callback.js:138-139`.
+
+4. **Add negative `localStorage.removeItem` assertion to the `_handleSignup` teardown test at `frontend/tests/unit/pages-orcid-callback.test.js:428`.** `expect(localStorage.removeItem).not.toHaveBeenCalledWith('pevo_orcid_return_to')`.
+
+5. **Extend the comment at `frontend/src/pages/orcid-callback.js:138-139`** to warn about the future-handler-async hazard. Append something like: `// If any handler later gains an await, move removeItem inside the handler after the mutation resolves. Otherwise a mid-await destroy() could clear mode without routing the flow, breaking 503-refresh-retry.`
+
+6. **Add a one-line comment above the switch at `frontend/src/pages/orcid-callback.js:142`** documenting the implicit contract. Suggested shape: `// Handlers below are _mounted-gated by the check above; they do not re-check individually. Any direct call from elsewhere must guard at the call site.`
+
+Deferred / dismissed during triage (no action required on this task):
+- AbortController for `completeOrcid` fetch — backend TOCTOU guard catches double-exchange; flag approach sufficient.
+- Double-`destroy()` idempotency test — Alpine lifecycle contract is single-destroy; test would encode behavior we don't rely on.
+- `_setTimer` delete-before-check ordering — correct as-is; delete-first is mildly defensive.
+- Pre-existing unguarded `setTimeout(navigate)` in publish/review/bridge/edit pages — filed as new task `ui-settimeout-navigate-teardown-guard-sweep.md`.
