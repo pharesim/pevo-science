@@ -383,6 +383,11 @@ Review (manual-synthesis pass — see commit `e40d9dc` on why `/ce-code-review` 
 
 **Path to archive:** (1) UI agent applies findings #1 + #2 on this task. (2) UI agent appends a re-review signal block. (3) Architect re-reviews (`/ce-code-review` directly from architect context per the updated protocol) and archives.
 
+**UI re-review signal (2026-04-21, commit `c078940`):** Findings #1 + #2 landed. Ready for architect re-review.
+- Finding #1 (stale-state write-window): `frontend/src/pages/orcid-callback.js` `_handleLogin` now sets `auth.isAccredited = false; auth.accreditation = null;` immediately before `auth._saveSession()` so the no-arg save doesn't carry stale store values into `localStorage.pevo_session`. Comment notes the synchronous reset is required because `_checkAccreditation` is async.
+- Finding #2 (test-harness gap): `frontend/tests/unit/pages-orcid-callback.test.js` `mockAuthStore` extended with `isAccredited: false` + `accreditation: null` defaults. New regression test "ORCID login clears stale accreditation state BEFORE _saveSession() fires" seeds stale values, uses `mockImplementationOnce` on `_saveSession` to snapshot store state at call-time, and asserts both fields are already cleared at that instant.
+- Verified: 25/25 pass in `pages-orcid-callback.test.js`; full frontend unit suite 837/837 pass; `npm run build` clean.
+
 ---
 
 ### FE-KEYCHAIN-API-MISUSE (UI Agent, P1)
@@ -398,6 +403,12 @@ Review (manual-synthesis pass) surfaced one P2 finding. User triage 2026-04-21d:
 1. **P2 — `settings.js:604` Keychain has no active or memo key post-upgrade.** The `account_update` broadcast rotates owner + active + posting + memo on-chain, but only the posting WIF is imported to Keychain via `requestImportKey(username, wifPosting, cb)`. Consequences: Keychain can sign posting-auth ops (comments, votes, custom_json) but CANNOT sign active-auth ops (transfers, power-down, witness votes, future account_update) or memo-encrypt/decrypt. User has no UI signal their Keychain is incomplete; any later attempt to use Keychain on a Hive frontend for a transfer prompts for a key Keychain doesn't have. Contradicts the custody-upgrade UX promise. Fix: import posting + active + memo via three sequential `requestImportKey` calls (NOT owner — owner keys should not live in browser extensions). Update the E2E stub to assert all three keys are imported with WIF-shape, and add a unit regression asserting `executeUpgrade()` issues three Keychain import calls with three distinct WIFs.
 
 **Path to archive:** (1) UI agent applies finding #1. (2) UI agent appends a re-review signal block. (3) Architect re-reviews and archives.
+
+**UI re-review signal (2026-04-21, commit `1f36b7a`):** Finding #1 landed. Ready for architect re-review.
+- `frontend/src/pages/settings.js` `executeUpgrade()` Keychain block now loops over `['posting', 'active', 'memo']`, deriving each WIF via `dhive.PrivateKey.fromSeed(newKeys[role]).toString()` and issuing one `requestImportKey(username, wif, cb)` per role. Owner deliberately excluded (inline comment: owner keys should not live in browser extensions).
+- `frontend/tests/e2e/custody-upgrade.spec.js` stub now polls for 3 calls; asserts each WIF-shape `/^5[HJK][1-9A-HJ-NP-Za-km-z]{49}$/`; asserts 3 distinct WIFs; cross-checks each against `rederived.{posting,active,memo}.private`; asserts `rederived.owner.private` is NOT imported.
+- `frontend/tests/unit/pages-settings.test.js`: dhive mock `fromSeed` now maps hex-seed input to a distinct WIF per role; new test "executeUpgrade imports posting + active + memo WIFs (three distinct) into Keychain".
+- Verified: full frontend unit suite 837/837 pass; `npm run build` clean.
 
 ---
 
@@ -417,6 +428,12 @@ Review (manual-synthesis pass) surfaced two P2 findings. User triage 2026-04-21d
 
 **Path to archive:** (1) UI agent applies finding #1. (2) UI agent appends a re-review signal block. (3) Architect re-reviews and archives.
 
+**UI re-review signal (2026-04-21, commit `fd116e4`):** Finding #1 landed. Ready for architect re-review.
+- `frontend/src/pages/settings.js` catch block in `executeUpgrade()` now does `console.warn('[custody upgrade]', err); this.upgradeError = this.$t('upgrade.failed')` instead of `this.upgradeError = err.message`. Raw error stays in the console for debugging; user-visible text is a generic localized message.
+- New i18n key `upgrade.failed` added to `frontend/public/messages/en.json` ("Account upgrade failed. Please try again. If the problem persists, contact support."). Stubbed with the English string across the 15 other locales (`ar, cs, da, de, es, fa, fr, he, it, nl, pl, pt, sv, tr, zh`) pending translation.
+- `frontend/tests/unit/pages-settings.test.js`: new test "does not leak key-material from err.message into upgradeError" injects a throw whose `err.message` contains a 64-char hex blob + 12-word BIP39-shaped seed list; asserts the generic key reaches `upgradeError` and the raw error reaches `console.warn`.
+- Verified: full frontend unit suite 837/837 pass; `npm run build` clean.
+
 ---
 
 ### FE-UPGRADE-KEY-WRAPPER-ADOPT (UI Agent)
@@ -432,6 +449,11 @@ Review (manual-synthesis pass) surfaced one P2 finding. User triage 2026-04-21d:
 1. **P2 — `hive-keys.js:98` dead `wordlist` re-export.** The module re-exports `wordlist` from `@scure/bip39/wordlists/english` as part of its public API, but after this task no external consumer imports it — the wrappers (`generateMnemonic`, `validateMnemonic`, `mnemonicToSeedSync`) handle wordlist injection internally. Violates the task's "route all consumers through the wrapper" thesis. Fix: delete `export { wordlist } from ...` (and the corresponding import if `wordlist` is only used inside `hive-keys.js` itself). The `pages-settings.test.js` mock already doesn't mock `wordlist`, confirming no test coupling to remove.
 
 **Path to archive:** (1) UI agent applies finding #1. (2) UI agent appends a re-review signal block. (3) Architect re-reviews and archives.
+
+**UI re-review signal (2026-04-21, commit `3195cb0`):** Finding #1 landed. Ready for architect re-review.
+- `frontend/src/hive-keys.js`: `wordlist` removed from the `export { mnemonicToSeedSync, wordlist }` re-export. The top-of-module `import { wordlist }` kept because the wrappers (`generateMnemonic`, `validateMnemonic`) use it internally.
+- Verified dead re-export: zero importers of `wordlist` from `hive-keys.js` across `frontend/src/` and `frontend/tests/` (only a comment reference in `pages-settings.test.js:37` mentioning "entropy/wordlist policy", no import).
+- Verified: 10/10 pass in `tests/unit/hive-keys.test.js`; full frontend unit suite 837/837 pass; `npm run build` clean.
 
 ---
 
@@ -449,6 +471,11 @@ Review (manual-synthesis pass) surfaced one P2 finding. User triage 2026-04-21d:
 
 **Path to archive:** (1) UI agent applies finding #1 (one-line code comment). (2) UI agent appends a re-review signal block. (3) Architect re-reviews and archives.
 
+**UI re-review signal (2026-04-21, commit `0f562c9`):** Finding #1 landed. Ready for architect re-review.
+- `frontend/src/lib/url-sync.js` line 14: added two-line comment above the locale regex inside `localeStrippedPath()` — "Mirrors router SUPPORTED_LOCALES casing (all lowercase, 2 chars). Widen only in tandem with frontend/src/router.js SUPPORTED_LOCALES."
+- Verified: `frontend/src/i18n.js` (re-exported via router) defines `SUPPORTED_LOCALES = ['ar', 'cs', 'da', 'de', 'en', 'es', 'fa', 'fr', 'he', 'it', 'nl', 'pl', 'pt', 'sv', 'tr', 'zh']` — all 16 lowercase 2-char codes, fully within the regex. No drift.
+- Verified: 8/8 pass in `tests/unit/lib-url-sync.test.js`; full frontend unit suite 837/837 pass; `npm run build` clean.
+
 ---
 
 ### FE-LOADDISCIPLINES-OBSERVABILITY (UI Agent, P2)
@@ -464,6 +491,11 @@ Review (manual-synthesis pass) surfaced one P2 finding. User triage 2026-04-21d:
 1. **P2 — `paper-feed.js:113-116` + `search.js:177-180` `disciplinesLoadFailed` never reset on retry.** The `.catch` sets the flag to true; `loadDisciplines` itself doesn't reset it. Today the function is init-only so the omission is inert, but any future retry path (route revisit, visibility-change reload, user-triggered retry UI) would see the flag stuck at true even after a successful load. Fix: add `this.disciplinesLoadFailed = false;` at the TOP of `loadDisciplines()` body (before the fetch) in both `paper-feed.js` and `search.js`. Add one test per file: seed `disciplinesLoadFailed = true`, call `loadDisciplines()` with a successful fetch mock, assert the flag is false. ~4 source lines + 2 tests total.
 
 **Path to archive:** (1) UI agent applies finding #1. (2) UI agent appends a re-review signal block. (3) Architect re-reviews and archives.
+
+**UI re-review signal (2026-04-21, commit `318e3dc`):** Finding #1 landed. Ready for architect re-review.
+- `frontend/src/components/paper-feed.js` and `frontend/src/pages/search.js`: `loadDisciplines()` now opens with `this.disciplinesLoadFailed = false;` (before the fetch), so any future retry path that invokes `loadDisciplines` after a prior failure clears the flag before attempting the new load. Rationale comment added inline. (Note: `disciplines` state lives on the component `paper-feed.js`, not a page-level file as the finding described.)
+- `frontend/tests/unit/components-paper-feed.test.js` + `frontend/tests/unit/pages-search.test.js`: one new regression test each — "resets disciplinesLoadFailed to false when a subsequent loadDisciplines succeeds". Seeds `disciplinesLoadFailed = true`, invokes `loadDisciplines()` with a successful fetch mock, asserts the flag is false post-call.
+- Verified: 60/60 pass across both test files; full frontend unit suite 837/837 pass; `npm run build` clean.
 
 ---
 
@@ -482,5 +514,11 @@ Review (manual-synthesis pass) surfaced two P2 findings. User triage 2026-04-21d
 2. **P2 — `search.js:23-30` HTML comment inside template literal ships to rendered DOM.** The new 8-line submit-gated-filter-policy explanation sits inside the Alpine template string via `<!-- ... -->`. Vite/Tailwind do not strip inline template-literal HTML comments by default, so the 400-byte prose rationale is served on every `/search` page render. Benign today but sets a bad precedent for internal rationale in template comments. Fix: move the explanation ABOVE the backticks as a JS `//` block comment. Preserves the documentation for maintainers, strips it from shipped output. Optionally add a unit test loading the built template HTML and asserting the comment text is absent.
 
 **Path to archive:** (1) UI agent applies findings #1 + #2. (2) UI agent appends a re-review signal block. (3) Architect re-reviews and archives.
+
+**UI re-review signal (2026-04-21, commit `b5ebbb2`):** Findings #1 + #2 landed. Ready for architect re-review.
+- Finding #1 (`frontend/src/pages/papers.js:16-22` dead `navigate()`): deleted. `papersPage` scope is now `() => ({})`.
+- Finding #2 (`frontend/src/pages/search.js:23-30` template-literal HTML comment): 8-line submit-gated-filter-policy explanation moved verbatim OUT of the Alpine template literal and UP above the backticks as a JS `//` block comment.
+- Verified grep on shipped bundle (`backend/public/assets/*.js`) for distinctive substrings — "auto-push the URL or re-run the search", "mid-compose filter tweaks", "handleSubmit is the canonical" — zero matches. The prose is stripped from the bundle as intended.
+- Verified: 31/31 pass in `tests/unit/pages-search.test.js`; full frontend unit suite 837/837 pass; `npm run build` clean.
 
 ---
