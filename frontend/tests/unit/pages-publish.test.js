@@ -386,6 +386,56 @@ describe('publishPage', () => {
       expect(meta.pevotest.ipfs_cid).toBe('bafyPDF');
       expect(meta.pevotest.document_hash).toBe('abc123');
     });
+
+    // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: broadcast failure
+    // surfaces a generic localized message; raw err reaches console.warn.
+    it('sanitizes broadcast failure: generic message to DOM, raw err to console.warn', async () => {
+      const leaky = new Error('broadcast boom hex=deadbeefcafebabe');
+      broadcastOps.mockRejectedValueOnce(leaky);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const comp = validComponent();
+
+      await comp.handleSubmit();
+
+      expect(comp.step).toBe('error');
+      expect(comp.errorMessage).toBe('common.publishingFailed');
+      expect(comp.errorMessage).not.toContain('deadbeef');
+      expect(warnSpy).toHaveBeenCalled();
+      expect(warnSpy.mock.calls[0][1]).toBe(leaky);
+      warnSpy.mockRestore();
+    });
+
+    // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: supplementary-file
+    // upload failure sets the file's sf.error to the generic localized
+    // message and logs the raw err via console.warn. The handler then
+    // throws a separate i18n'd Error for the outer catch to surface.
+    it('sanitizes supplementary upload failure: generic message to sf.error, raw err to console.warn', async () => {
+      const leaky = new Error('ipfs boom hex=deadbeefcafebabe');
+      uploadToIpfs.mockRejectedValueOnce(leaky);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const comp = validComponent();
+      comp.supplementaryFiles = [{
+        file: new Blob(['x'], { type: 'text/plain' }),
+        fileName: 'data.txt',
+        description: 'test',
+        cid: null,
+        error: null,
+        uploading: false,
+      }];
+
+      await comp.handleSubmit();
+
+      expect(comp.step).toBe('error');
+      const sf = comp.supplementaryFiles[0];
+      expect(sf.error).toBe('common.uploadFailed');
+      expect(sf.error).not.toContain('deadbeef');
+      expect(warnSpy).toHaveBeenCalled();
+      // The raw err reaches console.warn (first handler) even though a
+      // second thrown Error is caught by the outer handleSubmit catch.
+      const warnedFirst = warnSpy.mock.calls.find((call) => call[1] === leaky);
+      expect(warnedFirst).toBeDefined();
+      warnSpy.mockRestore();
+    });
   });
 
   describe('_mergeCitationCollection', () => {

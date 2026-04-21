@@ -181,8 +181,12 @@ describe('signupPage', () => {
       expect(mockSubmitSignup).not.toHaveBeenCalled();
     });
 
-    it('sets error on generic failure', async () => {
-      mockSubmitSignup.mockRejectedValue({ message: 'Server error', code: 'UNKNOWN' });
+    // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: unknown-code failures
+    // surface a generic localized message; raw err reaches console.warn.
+    it('sanitizes generic failure: generic message to DOM, raw err to console.warn', async () => {
+      const leaky = { message: 'Server error hex=deadbeefcafebabe', code: 'UNKNOWN' };
+      mockSubmitSignup.mockRejectedValue(leaky);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const comp = createComponent();
       comp.email = 'x@x.com';
       comp.fullName = 'A';
@@ -193,8 +197,12 @@ describe('signupPage', () => {
 
       await comp.handleSubmit();
 
-      expect(comp.error).toBe('Server error');
+      expect(comp.error).toBe('signup.submitFailed');
+      expect(comp.error).not.toContain('deadbeef');
       expect(comp.isSubmitting).toBe(false);
+      expect(warnSpy).toHaveBeenCalled();
+      expect(warnSpy.mock.calls[0][1]).toBe(leaky);
+      warnSpy.mockRestore();
     });
 
     it('handles DUPLICATE by attempting login and navigating to /papers on success', async () => {
@@ -274,9 +282,14 @@ describe('signupPage', () => {
       expect(comp.error).toBe('signup.orcidOrInstitutional');
     });
 
-    it('falls through to generic error when VALIDATION_ERROR occurs with orcidToken set', async () => {
-      // Guards against the `&& !this.orcidToken` being removed from the branch.
-      mockSubmitSignup.mockRejectedValue({ message: 'server complained', code: 'VALIDATION_ERROR' });
+    // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: with an ORCID token
+    // present, VALIDATION_ERROR falls through to the generic-message +
+    // console.warn sanitization path. Guards against the `&& !orcidToken`
+    // being removed from the branch.
+    it('sanitizes VALIDATION_ERROR fall-through with orcidToken: generic to DOM, raw to console.warn', async () => {
+      const leaky = Object.assign(new Error('server complained hex=deadbeefcafebabe'), { code: 'VALIDATION_ERROR' });
+      mockSubmitSignup.mockRejectedValue(leaky);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
       const comp = createComponent();
       comp.email = 'x@x.com';
@@ -289,33 +302,53 @@ describe('signupPage', () => {
 
       await comp.handleSubmit();
 
-      expect(comp.error).toBe('server complained');
+      expect(comp.error).toBe('signup.submitFailed');
+      expect(comp.error).not.toContain('deadbeef');
+      expect(warnSpy).toHaveBeenCalled();
+      expect(warnSpy.mock.calls[0][1]).toBe(leaky);
+      warnSpy.mockRestore();
     });
   });
 
   describe('handleOrcidVerify', () => {
-    it('sets error on failure', async () => {
-      mockStartOrcid.mockRejectedValue(new Error('network'));
+    // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: failure surfaces a
+    // generic localized message; raw err reaches console.warn.
+    it('sanitizes failure: generic message to DOM, raw err to console.warn', async () => {
+      const leaky = new Error('network hex=deadbeefcafebabe');
+      mockStartOrcid.mockRejectedValue(leaky);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const comp = createComponent();
 
       await comp.handleOrcidVerify();
 
-      expect(comp.error).toBe('network');
+      expect(comp.error).toBe('signup.orcidStartFailed');
+      expect(comp.error).not.toContain('deadbeef');
       expect(comp.orcidLoading).toBe(false);
+      expect(warnSpy).toHaveBeenCalled();
+      expect(warnSpy.mock.calls[0][1]).toBe(leaky);
+      warnSpy.mockRestore();
     });
   });
 
   describe('handleResendVerification', () => {
-    it('sets error on failure', async () => {
-      mockResendVerification.mockRejectedValue(new Error('fail'));
+    // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: failure surfaces a
+    // generic localized message; raw err reaches console.warn.
+    it('sanitizes failure: generic message to DOM, raw err to console.warn', async () => {
+      const leaky = new Error('fail hex=deadbeefcafebabe');
+      mockResendVerification.mockRejectedValue(leaky);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const comp = createComponent();
       comp.email = 'x@x.com';
       comp.password = 'p';
 
       await comp.handleResendVerification();
 
-      expect(comp.error).toBe('fail');
+      expect(comp.error).toBe('signup.resendFailed');
+      expect(comp.error).not.toContain('deadbeef');
       expect(comp.isResending).toBe(false);
+      expect(warnSpy).toHaveBeenCalled();
+      expect(warnSpy.mock.calls[0][1]).toBe(leaky);
+      warnSpy.mockRestore();
     });
 
     it('is a no-op on the ORCID branch (no empty-password POST)', async () => {

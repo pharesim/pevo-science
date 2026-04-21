@@ -340,17 +340,28 @@ describe('orcidCallbackPage', () => {
       expect(comp.errorAction).toBe('');
     });
 
-    it('generic error uses err.message', async () => {
+    // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: generic (non-semantic)
+    // failures surface the generic localized message; raw err reaches
+    // console.warn. NO_ACCOUNT and VALIDATION_ERROR are semantic-code
+    // branches above and render their own code-specific strings.
+    it('sanitizes generic error: generic message to DOM, raw err to console.warn', async () => {
+      const leaky = new Error('Server down hex=deadbeefcafebabe');
+      mockCompleteOrcid.mockRejectedValue(leaky);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const comp = createComponent();
-      mockCompleteOrcid.mockRejectedValue(new Error('Server down'));
 
       await comp._verify('code', 'state', 'accredit');
 
       expect(comp.status).toBe('error');
-      expect(comp.errorMessage).toBe('Server down');
+      expect(comp.errorMessage).toBe('orcid.verificationFailed');
+      expect(comp.errorMessage).not.toContain('deadbeef');
+      expect(warnSpy).toHaveBeenCalled();
+      expect(warnSpy.mock.calls[0][1]).toBe(leaky);
+      warnSpy.mockRestore();
     });
 
-    it('generic error without message uses i18n fallback', async () => {
+    it('generic error without message still shows the generic i18n key', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const comp = createComponent();
       mockCompleteOrcid.mockRejectedValue({});
 
@@ -358,6 +369,8 @@ describe('orcidCallbackPage', () => {
 
       expect(comp.status).toBe('error');
       expect(comp.errorMessage).toBe('orcid.verificationFailed');
+      expect(warnSpy).toHaveBeenCalled();
+      warnSpy.mockRestore();
     });
 
     it('post-teardown _verify resolution is a no-op (does not mutate status or navigate)', async () => {

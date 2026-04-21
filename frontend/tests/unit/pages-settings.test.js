@@ -316,6 +316,28 @@ describe('settingsPage', () => {
       expect(comp.upgradePhase).toBe('error');
       expect(comp.upgradeError).toBe('upgrade.keychainRequired');
     });
+
+    // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: generateMnemonic()
+    // pulls BIP39 entropy. If it throws with entropy-embedded text on a
+    // future library revision, the raw err.message must not reach the DOM.
+    // Generic localized message to the DOM, raw err to console.warn.
+    it('sanitizes generateMnemonic failure: generic message to DOM, raw err to console.warn', async () => {
+      mockIsKeychainInstalled.mockReturnValue(true);
+      const hiveKeys = await import('../../src/hive-keys.js');
+      const leaky = new Error('entropy failure hex=deadbeefcafebabe');
+      hiveKeys.generateMnemonic.mockImplementationOnce(() => { throw leaky; });
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const comp = createComponent();
+
+      comp.startUpgrade();
+
+      expect(comp.upgradePhase).toBe('error');
+      expect(comp.upgradeError).toBe('upgrade.generationFailed');
+      expect(comp.upgradeError).not.toContain('deadbeef');
+      expect(warnSpy).toHaveBeenCalled();
+      expect(warnSpy.mock.calls[0][1]).toBe(leaky);
+      warnSpy.mockRestore();
+    });
   });
 
   // FE-UPGRADE-CREDENTIAL-WIPE — `executeUpgrade()` must zero all

@@ -64,24 +64,34 @@ describe('settingsVerifyEmailPage', () => {
       expect(mockToastStore.show).toHaveBeenCalled();
     });
 
-    it('sets error phase on failure', async () => {
-      mockVerifyEmailToken.mockRejectedValue(new Error('token expired'));
-      const comp = createComponent({});
-
-      await comp.verify('bad-tok');
-
-      expect(comp.phase).toBe('error');
-      expect(comp.error).toBe('token expired');
-    });
-
-    it('uses fallback error message when none provided', async () => {
-      mockVerifyEmailToken.mockRejectedValue({});
+    // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: failure surfaces a
+    // generic localized message; raw err reaches console.warn.
+    it('sanitizes failure: generic message to DOM, raw err to console.warn', async () => {
+      const leaky = new Error('token expired hex=deadbeefcafebabe');
+      mockVerifyEmailToken.mockRejectedValue(leaky);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const comp = createComponent({});
 
       await comp.verify('bad-tok');
 
       expect(comp.phase).toBe('error');
       expect(comp.error).toBe('settings.emailTokenExpired');
+      expect(comp.error).not.toContain('deadbeef');
+      expect(warnSpy).toHaveBeenCalled();
+      expect(warnSpy.mock.calls[0][1]).toBe(leaky);
+      warnSpy.mockRestore();
+    });
+
+    it('error path with no message still shows the generic i18n key', async () => {
+      mockVerifyEmailToken.mockRejectedValue({});
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const comp = createComponent({});
+
+      await comp.verify('bad-tok');
+
+      expect(comp.phase).toBe('error');
+      expect(comp.error).toBe('settings.emailTokenExpired');
+      warnSpy.mockRestore();
     });
   });
 });

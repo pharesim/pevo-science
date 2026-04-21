@@ -304,14 +304,24 @@ describe('bridgePage', () => {
       vi.useRealTimers();
     });
 
-    it('transitions to error on failure', async () => {
+    // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: failure surfaces a
+    // generic localized message; raw err reaches console.warn.
+    it('sanitizes failure: generic message to DOM, raw err to console.warn', async () => {
+      const leaky = new Error('Server error hex=deadbeefcafebabe');
       const comp = createComponent();
       comp.identifier = '10.1234/test';
       comp.discipline = 'Physics';
-      mockRegisterBridgePaper.mockRejectedValue(new Error('Server error'));
+      mockRegisterBridgePaper.mockRejectedValue(leaky);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
       await comp.handleRegister();
+
       expect(comp.step).toBe('error');
-      expect(comp.errorMessage).toBe('Server error');
+      expect(comp.errorMessage).toBe('common.registrationFailed');
+      expect(comp.errorMessage).not.toContain('deadbeef');
+      expect(warnSpy).toHaveBeenCalled();
+      expect(warnSpy.mock.calls[0][1]).toBe(leaky);
+      warnSpy.mockRestore();
     });
 
     it('omits keywords when empty', async () => {

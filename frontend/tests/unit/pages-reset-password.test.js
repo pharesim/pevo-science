@@ -112,15 +112,24 @@ describe('resetPasswordPage', () => {
       expect(mockRequestPasswordReset).not.toHaveBeenCalled();
     });
 
-    it('sets error on failure', async () => {
-      mockRequestPasswordReset.mockRejectedValue(new Error('not found'));
+    // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: reset-password flows
+    // handle password-adjacent state; raw err.message must not reach the
+    // DOM. Generic localized message to the DOM, raw err to console.warn.
+    it('sanitizes failure: generic message to DOM, raw err to console.warn', async () => {
+      const leaky = new Error('not found hex=deadbeefcafebabe');
+      mockRequestPasswordReset.mockRejectedValue(leaky);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const comp = createComponent();
       comp.email = 'x@x.com';
 
       await comp.handleRequestReset();
 
-      expect(comp.requestError).toBe('not found');
+      expect(comp.requestError).toBe('resetPassword.requestFailed');
+      expect(comp.requestError).not.toContain('deadbeef');
       expect(comp.requestSubmitting).toBe(false);
+      expect(warnSpy).toHaveBeenCalled();
+      expect(warnSpy.mock.calls[0][1]).toBe(leaky);
+      warnSpy.mockRestore();
     });
   });
 
@@ -146,8 +155,13 @@ describe('resetPasswordPage', () => {
       expect(mockResetPassword).not.toHaveBeenCalled();
     });
 
-    it('sets error on failure', async () => {
-      mockResetPassword.mockRejectedValue(new Error('expired'));
+    // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: reset-password flows
+    // handle password-adjacent state; raw err.message must not reach the
+    // DOM. Generic localized message to the DOM, raw err to console.warn.
+    it('sanitizes failure: generic message to DOM, raw err to console.warn', async () => {
+      const leaky = new Error('expired hex=deadbeefcafebabe');
+      mockResetPassword.mockRejectedValue(leaky);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const comp = createComponent();
       comp.token = 'tok';
       comp.password = 'Abcdefgh1x';
@@ -155,8 +169,12 @@ describe('resetPasswordPage', () => {
 
       await comp.handleReset();
 
-      expect(comp.resetError).toBe('expired');
+      expect(comp.resetError).toBe('resetPassword.resetFailed');
+      expect(comp.resetError).not.toContain('deadbeef');
       expect(comp.resetSubmitting).toBe(false);
+      expect(warnSpy).toHaveBeenCalled();
+      expect(warnSpy.mock.calls[0][1]).toBe(leaky);
+      warnSpy.mockRestore();
     });
   });
 });

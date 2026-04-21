@@ -177,4 +177,35 @@ describe('reviewPage', () => {
       expect(comp.stepClass).toContain(cls);
     });
   });
+
+  // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: broadcast failure
+  // surfaces a generic localized message; raw err reaches console.warn.
+  describe('handleSubmit sanitization', () => {
+    it('sanitizes broadcast failure: generic message to DOM, raw err to console.warn', async () => {
+      const { broadcastOps } = await import('../../src/signer.js');
+      const leaky = new Error('network boom hex=deadbeefcafebabe');
+      broadcastOps.mockRejectedValueOnce(leaky);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      mockStores.auth.isConnected = true;
+      mockStores.auth.username = 'bob';
+      const comp = createComponent({
+        ratings: { novelty: 4, methodology: 4, clarity: 4, significance: 4 },
+        reviewBody: 'Looks good.',
+        isAnonymous: false,
+        paper: { title: 'Paper' },
+      });
+      // Force allRated-style readiness if it's a getter. Tests below bypass
+      // via direct property assignment to focus on the catch path.
+      Object.defineProperty(comp, 'allRated', { value: true, configurable: true });
+
+      await comp.handleSubmit();
+
+      expect(comp.step).toBe('error');
+      expect(comp.errorMessage).toBe('review.submissionFailed');
+      expect(comp.errorMessage).not.toContain('deadbeef');
+      expect(warnSpy).toHaveBeenCalled();
+      expect(warnSpy.mock.calls[0][1]).toBe(leaky);
+      warnSpy.mockRestore();
+    });
+  });
 });

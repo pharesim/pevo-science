@@ -247,8 +247,13 @@ describe('signupVerifyPage', () => {
       expect(comp.error).toBe('seedPhrase.credentialsRequired');
     });
 
-    it('sets error and returns to username phase on failure', async () => {
-      mockConfirmAccount.mockRejectedValue(new Error('creation failed'));
+    // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: submitCreateAccount
+    // derives keys from the BIP39 mnemonic. Raw err.message must not reach
+    // the DOM; it goes to console.warn.
+    it('sanitizes failure: generic message to DOM, raw err to console.warn, returns to username phase', async () => {
+      const leaky = new Error('creation failed hex=deadbeefcafebabe');
+      mockConfirmAccount.mockRejectedValue(leaky);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
       const comp = createComponent({ auth_token: 'tok', email: 'e@x.com' });
       comp.init();
@@ -258,8 +263,12 @@ describe('signupVerifyPage', () => {
 
       await comp.submitCreateAccount();
 
-      expect(comp.error).toBe('creation failed');
+      expect(comp.error).toBe('seedPhrase.createAccountFailed');
+      expect(comp.error).not.toContain('deadbeef');
       expect(comp.phase).toBe('create-username');
+      expect(warnSpy).toHaveBeenCalled();
+      expect(warnSpy.mock.calls[0][1]).toBe(leaky);
+      warnSpy.mockRestore();
     });
   });
 
@@ -300,6 +309,29 @@ describe('signupVerifyPage', () => {
       expect(comp.error).toBe('seedPhrase.keychainRequired');
       expect(mockLinkExistingAccount).not.toHaveBeenCalled();
     });
+
+    // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: failure surfaces a
+    // generic localized message; raw err reaches console.warn.
+    it('sanitizes failure: generic message to DOM, raw err to console.warn', async () => {
+      mockIsKeychainInstalled.mockReturnValue(true);
+      const leaky = new Error('link failed hex=deadbeefcafebabe');
+      mockLinkExistingAccount.mockRejectedValue(leaky);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const comp = createComponent({ auth_token: 'tok', email: 'e@x.com' });
+      comp.init();
+      comp.chooseLink();
+      comp.hiveUsername = 'Bob';
+
+      await comp.handleLinkAccount();
+
+      expect(comp.error).toBe('seedPhrase.linkAccountFailed');
+      expect(comp.error).not.toContain('deadbeef');
+      expect(comp.isSubmitting).toBe(false);
+      expect(warnSpy).toHaveBeenCalled();
+      expect(warnSpy.mock.calls[0][1]).toBe(leaky);
+      warnSpy.mockRestore();
+    });
   });
 
   describe('handleResume', () => {
@@ -325,16 +357,24 @@ describe('signupVerifyPage', () => {
       expect(mockResumeSignup).not.toHaveBeenCalled();
     });
 
-    it('sets error on failure', async () => {
-      mockResumeSignup.mockRejectedValue(new Error('bad'));
+    // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: failure surfaces a
+    // generic localized message; raw err reaches console.warn.
+    it('sanitizes failure: generic message to DOM, raw err to console.warn', async () => {
+      const leaky = new Error('bad hex=deadbeefcafebabe');
+      mockResumeSignup.mockRejectedValue(leaky);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const comp = createComponent({});
       comp.resumeEmail = 'x@x.com';
       comp.resumePassword = 'pass';
 
       await comp.handleResume();
 
-      expect(comp.error).toBe('bad');
+      expect(comp.error).toBe('seedPhrase.resumeFailed');
+      expect(comp.error).not.toContain('deadbeef');
       expect(comp.isResuming).toBe(false);
+      expect(warnSpy).toHaveBeenCalled();
+      expect(warnSpy.mock.calls[0][1]).toBe(leaky);
+      warnSpy.mockRestore();
     });
   });
 });

@@ -174,19 +174,26 @@ describe('loginPage', () => {
       expect(comp.pendingState).toBe('expired');
     });
 
-    it('sets generic error for unknown codes', async () => {
-      mockLoginWithPassword.mockRejectedValue({
-        code: 'UNKNOWN',
-        message: 'bad creds',
-      });
+    // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: unknown-code failures
+    // must surface a generic localized message and route raw err to
+    // console.warn. PENDING_UNVERIFIED and SIGNUP_EXPIRED are semantic-code
+    // branches and keep their existing err.message shape (see tests above).
+    it('sanitizes unknown-code error: generic message to DOM, raw err to console.warn', async () => {
+      const leaky = Object.assign(new Error('bad creds hex=deadbeefcafebabe'), { code: 'UNKNOWN' });
+      mockLoginWithPassword.mockRejectedValue(leaky);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const comp = createComponent();
       comp.emailOrUsername = 'e@x.com';
       comp.password = 'pass';
 
       await comp.handleSubmit();
 
-      expect(comp.error).toBe('bad creds');
+      expect(comp.error).toBe('login.loginFailed');
+      expect(comp.error).not.toContain('deadbeef');
       expect(comp.pendingState).toBeNull();
+      expect(warnSpy).toHaveBeenCalled();
+      expect(warnSpy.mock.calls[0][1]).toBe(leaky);
+      warnSpy.mockRestore();
     });
   });
 
@@ -204,16 +211,24 @@ describe('loginPage', () => {
       expect(comp.error).toBeNull();
     });
 
-    it('sets error on failure', async () => {
-      mockResendVerification.mockRejectedValue(new Error('oops'));
+    // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: failure surfaces a
+    // generic localized message; raw err reaches console.warn.
+    it('sanitizes failure: generic message to DOM, raw err to console.warn', async () => {
+      const leaky = new Error('oops hex=deadbeefcafebabe');
+      mockResendVerification.mockRejectedValue(leaky);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const comp = createComponent();
       comp.emailOrUsername = 'x@x.com';
       comp.password = 'p';
 
       await comp.handleResendVerification();
 
-      expect(comp.error).toBe('oops');
+      expect(comp.error).toBe('login.resendFailed');
+      expect(comp.error).not.toContain('deadbeef');
       expect(comp.isResending).toBe(false);
+      expect(warnSpy).toHaveBeenCalled();
+      expect(warnSpy.mock.calls[0][1]).toBe(leaky);
+      warnSpy.mockRestore();
     });
 
     it('does nothing if already resending', async () => {
@@ -242,15 +257,23 @@ describe('loginPage', () => {
       expect(mockStartOrcid).not.toHaveBeenCalled();
     });
 
-    it('clears orcid mode on error', async () => {
-      mockStartOrcid.mockRejectedValue(new Error('fail'));
+    // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: failure surfaces a
+    // generic localized message; raw err reaches console.warn.
+    it('sanitizes failure: clears orcid mode, generic message to DOM, raw err to console.warn', async () => {
+      const leaky = new Error('fail hex=deadbeefcafebabe');
+      mockStartOrcid.mockRejectedValue(leaky);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const comp = createComponent();
 
       await comp.handleOrcidLogin();
 
-      expect(comp.error).toBe('fail');
+      expect(comp.error).toBe('login.orcidStartFailed');
+      expect(comp.error).not.toContain('deadbeef');
       expect(comp.orcidLoading).toBe(false);
       expect(localStorage.removeItem).toHaveBeenCalledWith('pevo_orcid_mode');
+      expect(warnSpy).toHaveBeenCalled();
+      expect(warnSpy.mock.calls[0][1]).toBe(leaky);
+      warnSpy.mockRestore();
     });
   });
 });

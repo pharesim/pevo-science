@@ -114,13 +114,21 @@ describe('commentComposer', () => {
     expect(comp.body).toBe('');
   });
 
-  it('sets error on broadcast failure', async () => {
-    mockBroadcastOps.mockRejectedValue(new Error('Network error'));
+  // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: broadcast failure
+  // surfaces a generic localized message; raw err reaches console.warn.
+  it('sanitizes broadcast failure: generic message to DOM, raw err to console.warn', async () => {
+    const leaky = new Error('Network error hex=deadbeefcafebabe');
+    mockBroadcastOps.mockRejectedValue(leaky);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const comp = createComponent({ parentAuthor: 'bob', parentPermlink: 'post1' });
     comp.body = 'Hey';
     await comp.handleSubmit();
-    expect(comp.error).toBe('Network error');
+    expect(comp.error).toBe('comments.postFailed');
+    expect(comp.error).not.toContain('deadbeef');
     expect(comp.isSubmitting).toBe(false);
+    expect(warnSpy).toHaveBeenCalled();
+    expect(warnSpy.mock.calls[0][1]).toBe(leaky);
+    warnSpy.mockRestore();
   });
 
   it('does not broadcast when confirmation is cancelled', async () => {
