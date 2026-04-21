@@ -65,21 +65,38 @@ export function parseEnvFile(path) {
 let cachedSecret = null;
 
 /**
+ * Reset the cached SESSION_SECRET. Used in unit tests to exercise multiple
+ * resolution orderings against a fresh cache.
+ */
+export function _resetCachedSessionSecret() {
+  cachedSecret = null;
+}
+
+/**
  * Resolve the SESSION_SECRET the running backend is using. Priority:
- *   1. process.env.SESSION_SECRET (explicit override)
- *   2. frontend/.env.test
+ *   1. process.env.E2E_SESSION_SECRET (explicit override, E2E-dedicated)
+ *   2. frontend/.env.test → `SESSION_SECRET` key
  *
- * We deliberately do NOT fall back to the repo-root `.env`. That file holds the
- * real dev/prod SESSION_SECRET in every environment that mounts the workspace,
- * and this helper mints JWTs the backend accepts as genuine auth. If CI (or a
- * dev laptop pointed at a remote backend) picked up a production SESSION_SECRET
- * via silent fallback, the JWT would authenticate against the live deployment.
- * Surfaced by FE-E2E-AUTH-FIXTURE-HARDEN action #3.
+ * The fixture env var is intentionally named `E2E_SESSION_SECRET` (not
+ * `SESSION_SECRET`) so the backend's own `SESSION_SECRET` — which Docker
+ * Compose injects into every process running in the same shell — cannot
+ * silently leak into fixture JWT minting. That leak matters because if CI
+ * (or a dev laptop) had a production SESSION_SECRET in its shell env, the
+ * fixture would happily mint JWTs the live backend would accept.
+ *
+ * The value inside `frontend/.env.test` is still stored under the
+ * `SESSION_SECRET` key — that's the variable name the backend uses and
+ * whoever authored .env.test has to paste the value the local dev backend
+ * is booted with. Only the process-env override is renamed; the file-based
+ * source keeps its natural key.
+ *
+ * Surfaced by FE-E2E-AUTH-FIXTURE-HARDEN action #3 and tightened by
+ * FE-E2E-FIXTURE-CORRECTNESS action #4.
  */
 export function getSessionSecret() {
   if (cachedSecret !== null) return cachedSecret;
 
-  const fromEnv = process.env.SESSION_SECRET;
+  const fromEnv = process.env.E2E_SESSION_SECRET;
   if (fromEnv) {
     cachedSecret = fromEnv;
     return cachedSecret;
@@ -92,10 +109,11 @@ export function getSessionSecret() {
   }
 
   throw new Error(
-    '[e2e auth] SESSION_SECRET not found. Set process.env.SESSION_SECRET ' +
+    '[e2e auth] SESSION_SECRET not found. Set process.env.E2E_SESSION_SECRET ' +
       'or populate frontend/.env.test (see frontend/.env.test.example). ' +
-      'The repo-root .env fallback has been removed: it holds the real dev/prod ' +
-      'secret and would let E2E mint JWTs the live backend accepts as genuine auth.',
+      'The repo-root .env fallback has been removed and process.env.SESSION_SECRET ' +
+      'is intentionally ignored: both hold the real dev/prod secret and would let ' +
+      'E2E mint JWTs the live backend accepts as genuine auth.',
   );
 }
 
@@ -144,22 +162,36 @@ export async function pickAccreditedResearcher(request) {
 }
 
 async function pickAccreditedResearcherOnce(request) {
-  const listResp = await request.get('/api/accreditations?limit=10');
-  if (!listResp.ok()) return null;
-  const list = (await listResp.json()).data || [];
-  if (list.length === 0) return null;
+  // Any `request.get` here can throw (ECONNREFUSED while the backend is
+  // still starting, a DNS blip against the shared HAF, etc.). Without this
+  // try/catch the throw escapes the retry loop in pickAccreditedResearcher
+  // and fails the whole spec immediately — defeating the purpose of the
+  // retry wrapper.
+  try {
+    const listResp = await request.get('/api/accreditations?limit=10');
+    if (!listResp.ok()) return null;
+    const list = (await listResp.json()).data || [];
+    if (list.length === 0) return null;
 
-  // Re-fetch via the status endpoint — that's the shape auth.js actually
-  // saves into the session (the list endpoint uses a slightly leaner shape).
-  for (const r of list) {
-    const statusResp = await request.get(`/api/accreditations/${encodeURIComponent(r.username)}`);
-    if (!statusResp.ok()) continue;
-    const status = (await statusResp.json()).data;
-    if (status?.is_accredited) {
-      return { username: status.username, accreditation: status.accreditation };
+    // Re-fetch via the status endpoint — that's the shape auth.js actually
+    // saves into the session (the list endpoint uses a slightly leaner shape).
+    for (const r of list) {
+      const statusResp = await request.get(
+        `/api/accreditations/${encodeURIComponent(r.username)}`,
+      );
+      if (!statusResp.ok()) continue;
+      const status = (await statusResp.json()).data;
+      if (status?.is_accredited) {
+        return { username: status.username, accreditation: status.accreditation };
+      }
     }
+    return null;
+  } catch {
+    // Intentionally swallow — the retry loop handles the backoff. We do not
+    // log per-attempt failures because the happy case commonly succeeds on
+    // the first or second attempt under CI load.
+    return null;
   }
-  return null;
 }
 
 /**

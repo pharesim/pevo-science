@@ -184,10 +184,13 @@ test('login via Keychain challenge issues a session and lands authenticated', as
 
   // Body must be present and JSON-parseable — the signed message binds
   // sha256(body) into the signature, so an empty body still serializes as
-  // `{}` per api-contracts/common.md. Parse rather than exact-string match:
-  // Playwright returns `null` for zero-byte bodies and will silently fail
-  // the `.toBe('{}')` variant without surfacing the real problem.
-  expect(JSON.parse(sessionReq.postData() ?? 'null')).toEqual({});
+  // `{}` per api-contracts/common.md. Assert non-null BEFORE JSON.parse so a
+  // regression that sends a zero-byte body surfaces as "expected non-null
+  // body" instead of a crash inside JSON.parse on `null` (which a stray
+  // `?? 'null'` fallback used to mask without surfacing anything).
+  const rawBody = sessionReq.postData();
+  expect(rawBody, 'session POST body must not be null').not.toBeNull();
+  expect(JSON.parse(rawBody)).toEqual({});
 
   // ─── UI lands authenticated ──────────────────────────────────
   await expect

@@ -55,10 +55,16 @@ export function assertTestDatabase(connectionString) {
       '[e2e db] APP_DATABASE_URL has no database name in its path. Expected …/pevo_app_test.',
     );
   }
-  if (!dbName.endsWith('_test')) {
+  // Reject any path with additional `/` segments. `postgresql://.../pevo_app/test`
+  // parses pathname as `/pevo_app/test`, so dbName becomes `pevo_app/test` and
+  // `endsWith('_test')` is false — but an attacker-crafted `.../pevo_app/x_test`
+  // would sneak past the suffix check while libpq opens `pevo_app` (the chars
+  // after the first `/` are discarded). Enforce that dbName is a single token.
+  if (!/^[^/]+_test$/.test(dbName)) {
     throw new Error(
-      `[e2e db] Refusing to connect: database "${dbName}" does not end in "_test". ` +
-        'E2E specs write to the DB; point APP_DATABASE_URL at pevo_app_test before running.',
+      `[e2e db] Refusing to connect: database "${dbName}" does not match /^[^/]+_test$/. ` +
+        'E2E specs write to the DB; point APP_DATABASE_URL at a single pevo_app_test-style ' +
+        'database name (no extra path segments) before running.',
     );
   }
 }

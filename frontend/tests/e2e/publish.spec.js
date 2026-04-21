@@ -39,7 +39,7 @@ test('publish flow assembles a valid Hive comment broadcast with IPFS CID', asyn
   request,
 }) => {
   const researcher = await pickAccreditedResearcher(request);
-  expect(researcher, 'expected at least one accredited researcher in HAF').toBeTruthy();
+  if (!researcher) throw new Error('expected at least one accredited researcher in HAF');
 
   await seedAccreditedSession(page, {
     username: researcher.username,

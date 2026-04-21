@@ -48,7 +48,10 @@ function isAuthorOrCoauthor(paper, username) {
 
 test('upvote on a paper produces a valid Hive vote op', async ({ page, request }) => {
   const voter = await pickAccreditedResearcher(request);
-  expect(voter, 'expected at least one accredited researcher in HAF').toBeTruthy();
+  // Hard throw (not expect().toBeTruthy()) so execution actually stops here.
+  // The original pattern reports the failure but keeps running; downstream
+  // property accesses on `voter` then throw with a far less helpful message.
+  if (!voter) throw new Error('expected at least one accredited researcher in HAF');
 
   // Walk the list for a paper this user did not author and has not already
   // voted at the target weight on. The stub doesn't care about uniqueness,
@@ -67,10 +70,11 @@ test('upvote on a paper produces a valid Hive vote op', async ({ page, request }
     target = p;
     break;
   }
-  expect(
-    target,
-    `expected at least one pevotest paper ${voter.username} did not author`,
-  ).toBeTruthy();
+  if (!target) {
+    throw new Error(
+      `expected at least one pevotest paper ${voter.username} did not author`,
+    );
+  }
 
   await seedAccreditedSession(page, {
     username: voter.username,
@@ -115,7 +119,7 @@ test('top-level comment and review reply assemble correct Hive comment ops', asy
   request,
 }) => {
   const commenter = await pickAccreditedResearcher(request);
-  expect(commenter, 'expected at least one accredited researcher in HAF').toBeTruthy();
+  if (!commenter) throw new Error('expected at least one accredited researcher in HAF');
 
   // For the reply flow we need a paper with at least one review — the review
   // card is where the nested `commentComposer` mounts. Also make sure the
@@ -133,10 +137,11 @@ test('top-level comment and review reply assemble correct Hive comment ops', asy
     firstReview = enr.reviews[0];
     break;
   }
-  expect(
-    target,
-    `expected a pevotest paper with reviews not authored by ${commenter.username}`,
-  ).toBeTruthy();
+  if (!target) {
+    throw new Error(
+      `expected a pevotest paper with reviews not authored by ${commenter.username}`,
+    );
+  }
 
   await seedAccreditedSession(page, {
     username: commenter.username,

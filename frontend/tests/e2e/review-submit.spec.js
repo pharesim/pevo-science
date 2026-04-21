@@ -26,7 +26,7 @@ test('review submission assembles a valid Hive comment broadcast with rating met
   request,
 }) => {
   const reviewer = await pickAccreditedResearcher(request);
-  expect(reviewer, 'expected at least one accredited researcher in HAF').toBeTruthy();
+  if (!reviewer) throw new Error('expected at least one accredited researcher in HAF');
 
   // Find a PEvO paper the reviewer is not an author/co-author of. Walking
   // the list keeps the spec green as HAF content evolves; the page's
@@ -40,10 +40,11 @@ test('review submission assembles a valid Hive comment broadcast with rating met
     const coauthors = p.authors || [];
     return !coauthors.some((a) => a.hive === reviewer.username);
   });
-  expect(
-    target,
-    `expected at least one pevotest paper not authored by ${reviewer.username}`,
-  ).toBeTruthy();
+  if (!target) {
+    throw new Error(
+      `expected at least one pevotest paper not authored by ${reviewer.username}`,
+    );
+  }
 
   await seedAccreditedSession(page, {
     username: reviewer.username,

@@ -14,32 +14,31 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { readFileSync, existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Redis from 'ioredis';
 import { resetCapturedCids } from './fixtures/captured-cids.js';
+import { parseEnvFile } from './fixtures/auth.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FRONTEND_ROOT = resolve(__dirname, '..', '..');
 const REPO_ROOT = resolve(FRONTEND_ROOT, '..');
 
-function loadEnvFile(path) {
-  if (!existsSync(path)) return;
-  const contents = readFileSync(path, 'utf8');
-  for (const rawLine of contents.split('\n')) {
-    const line = rawLine.trim();
-    if (!line || line.startsWith('#')) continue;
-    const eq = line.indexOf('=');
-    if (eq === -1) continue;
-    const key = line.slice(0, eq).trim();
-    const value = line.slice(eq + 1).trim().replace(/^['"]|['"]$/g, '');
+/**
+ * Hydrate process.env from frontend/.env.test without overwriting values
+ * already set on the command line. Delegates parsing to parseEnvFile (the
+ * same helper fixtures/auth.js uses) so a single parser covers both paths
+ * and corner-cases like inline `# comment` stripping can't diverge.
+ */
+function hydrateEnvFromFile(path) {
+  const parsed = parseEnvFile(path);
+  for (const [key, value] of Object.entries(parsed)) {
     if (!(key in process.env)) process.env[key] = value;
   }
 }
 
 export default async function globalSetup() {
-  loadEnvFile(resolve(FRONTEND_ROOT, '.env.test'));
+  hydrateEnvFromFile(resolve(FRONTEND_ROOT, '.env.test'));
 
   // Clear any leftover CIDs from a previous run so teardown doesn't try to
   // unpin CIDs that were already cleaned up.
@@ -51,7 +50,20 @@ export default async function globalSetup() {
   // live deployment would authenticate against or corrupt it. Pairs with
   // the repo-root `.env` fallback removal in fixtures/auth.js.
   const baseURL = process.env.PEVO_TEST_BASE_URL || 'http://localhost:3001';
-  if (!baseURL.startsWith('http://localhost') && !baseURL.startsWith('http://127.0.0.1')) {
+  // Parse the URL and compare hostname exactly. startsWith() would accept
+  // `http://localhost.attacker.com` — the attacker-controlled subdomain
+  // resolves normally via DNS and the fixture would happily mint JWTs
+  // against it. Hostname equality against `localhost` / `127.0.0.1` /
+  // `[::1]` closes that.
+  let hostname;
+  try {
+    hostname = new URL(baseURL).hostname;
+  } catch {
+    throw new Error(
+      `[e2e global-setup] PEVO_TEST_BASE_URL is not a valid URL: "${baseURL}".`,
+    );
+  }
+  if (hostname !== 'localhost' && hostname !== '127.0.0.1' && hostname !== '[::1]') {
     throw new Error(
       `[e2e global-setup] PEVO_TEST_BASE_URL must point at localhost (got "${baseURL}"). ` +
         'E2E specs mint real JWTs and write directly to the backing DB; running ' +
@@ -112,7 +124,14 @@ async function resetRateLimitKeys() {
     maxRetriesPerRequest: 2,
     lazyConnect: true,
   });
-  redis.on('error', () => {});
+  // Log (don't crash) on transient Redis errors — the surrounding try/catch
+  // around connect()/scan already converts hard failures into a skip + warn,
+  // but an error event fired outside that window was previously swallowed
+  // silently. Surfacing it makes "rate-limit reset wasn't actually applied"
+  // debuggable from CI logs.
+  redis.on('error', (err) => {
+    console.warn('[e2e global-setup] redis error:', err.message);
+  });
   try {
     await redis.connect();
   } catch (err) {
