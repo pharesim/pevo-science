@@ -1044,7 +1044,11 @@
     "setPasswordMismatch": "Passwords do not match.",
     "setPasswordSubmit": "Set password",
     "setPasswordSaving": "Saving...",
-    "setPasswordSuccess": "Password set. You can now sign in with your email and password."
+    "setPasswordSuccess": "Password set. You can now sign in with your email and password.",
+    "passwordUpdateFailed": "Could not set your password. Please try again. If the problem persists, contact support.",
+    "emailUpdateFailed": "Could not update your email. Please try again. If the problem persists, contact support.",
+    "emailDeleteFailed": "Could not delete your email. Please try again. If the problem persists, contact support.",
+    "orcidLinkFailed": "Could not start the ORCID link flow. Please try again. If the problem persists, contact support."
   },
   "metadataRestored": {
     "title": "Metadata článku byla upravena externím zásahem",

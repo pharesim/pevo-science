@@ -433,7 +433,14 @@ export function initSettingsPage() {
         }
         window.location.href = data.redirect_url;
       } catch (err) {
-        this.orcidError = err.message || this.$t('common.connectionFailed');
+        // Sanitization pattern (shared with executeUpgrade()): the
+        // DOM-bound error takes a generic localized message rather than
+        // `err.message`, which is x-text'd directly. The raw error still
+        // reaches console.warn for developer diagnostics. Prevents
+        // accidental disclosure if a future error shape embeds sensitive
+        // material.
+        console.warn('[orcid link]', err);
+        this.orcidError = this.$t('settings.orcidLinkFailed');
         this.orcidLinking = false;
         localStorage.removeItem('pevo_orcid_mode');
       }
@@ -463,10 +470,14 @@ export function initSettingsPage() {
         this.showChangeForm = false;
         await this.loadEmailStatus();
       } catch (err) {
+        // DUPLICATE is a semantic code, safe to branch on. All other
+        // failures take the generic-message + console.warn sanitization
+        // path shared with executeUpgrade().
+        console.warn('[email submit]', err);
         if (err.code === 'DUPLICATE') {
           this.emailError = this.$t('settings.emailAlreadyInUse');
         } else {
-          this.emailError = err.message || this.$t('common.connectionFailed');
+          this.emailError = this.$t('settings.emailUpdateFailed');
         }
       } finally {
         this.emailSubmitting = false;
@@ -497,7 +508,9 @@ export function initSettingsPage() {
         // Alpine reactive state (XSS-read surface) while the error is shown.
         this.newPasswordInput = '';
         this.newPasswordConfirmInput = '';
-        this.passwordError = err.message || this.$t('common.connectionFailed');
+        // Sanitization pattern (see handleOrcidLink).
+        console.warn('[set password]', err);
+        this.passwordError = this.$t('settings.passwordUpdateFailed');
       } finally {
         this.passwordSubmitting = false;
       }
@@ -519,7 +532,9 @@ export function initSettingsPage() {
         this.emailError = null;
         Alpine.store('toast').show(this.$t('settings.emailDeleted'), 'success');
       } catch (err) {
-        this.emailError = err.message || this.$t('common.connectionFailed');
+        // Sanitization pattern (see handleOrcidLink).
+        console.warn('[email delete]', err);
+        this.emailError = this.$t('settings.emailDeleteFailed');
       } finally {
         this.deleting = false;
       }
