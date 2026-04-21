@@ -281,7 +281,9 @@ export function initReviewPage() {
         }, 1500);
       } catch (err) {
         this.step = 'error';
-        this.errorMessage = err.message || this.$t('review.submissionFailed');
+        // Sanitization pattern (see executeUpgrade() in settings.js).
+        console.warn('[review submit]', err);
+        this.errorMessage = this.$t('review.submissionFailed');
       }
     },
   }));

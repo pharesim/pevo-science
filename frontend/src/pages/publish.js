@@ -750,7 +750,9 @@ export function initPublishPage() {
                 description: sf.description || undefined,
               });
             } catch (err) {
-              sf.error = err.message || this.$t('common.uploadFailed');
+              // Sanitization pattern (see executeUpgrade() in settings.js).
+              console.warn('[publish supplementary upload]', err);
+              sf.error = this.$t('common.uploadFailed');
               throw new Error(this.$t('publish.supplementaryUploadFailed', { name: sf.fileName }));
             } finally {
               sf.uploading = false;
@@ -838,7 +840,9 @@ export function initPublishPage() {
         }, 1500);
       } catch (err) {
         this.step = 'error';
-        this.errorMessage = err.message || this.$t('common.publishingFailed');
+        // Sanitization pattern (see executeUpgrade() in settings.js).
+        console.warn('[publish submit]', err);
+        this.errorMessage = this.$t('common.publishingFailed');
       }
     },
   }));

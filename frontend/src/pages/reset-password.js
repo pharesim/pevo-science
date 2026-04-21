@@ -139,7 +139,11 @@ export function initResetPasswordPage() {
         await requestPasswordReset(this.email.trim());
         this.requestSent = true;
       } catch (err) {
-        this.requestError = err.message;
+        // Sanitization pattern (see executeUpgrade() in settings.js). The
+        // reset flow handles password material adjacent state; generic
+        // message to the DOM, raw err to console.warn for diagnostics.
+        console.warn('[reset-password request]', err);
+        this.requestError = this.$t('resetPassword.requestFailed');
       } finally {
         this.requestSubmitting = false;
       }
@@ -154,7 +158,9 @@ export function initResetPasswordPage() {
         await resetPassword(this.token, this.password);
         this.resetDone = true;
       } catch (err) {
-        this.resetError = err.message;
+        // Sanitization pattern (see executeUpgrade() in settings.js).
+        console.warn('[reset-password reset]', err);
+        this.resetError = this.$t('resetPassword.resetFailed');
       } finally {
         this.resetSubmitting = false;
       }

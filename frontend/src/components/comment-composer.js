@@ -68,7 +68,13 @@ export function initCommentComposer() {
         // Dispatch event so parent can refresh
         this.$dispatch('comment-posted', { parentPermlink: this.parentPermlink });
       } catch (err) {
-        this.error = err.message || this.$t('comments.postFailed');
+        // Sanitization pattern (shared with executeUpgrade()): generic
+        // localized message to the DOM, raw err to console.warn. The
+        // comment body itself is user-authored plaintext so this handler
+        // is low-risk today, but the invariant (no raw err.message in
+        // DOM) is a single consistent rule across the app.
+        console.warn('[comment composer post]', err);
+        this.error = this.$t('comments.postFailed');
       } finally {
         this.isSubmitting = false;
       }

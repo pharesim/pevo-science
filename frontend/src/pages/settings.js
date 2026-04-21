@@ -554,7 +554,13 @@ export function initSettingsPage() {
         this.upgradePhase = 'new-seed';
         this.upgradeError = null;
       } catch (err) {
-        this.upgradeError = err.message || this.$t('upgrade.generationFailed');
+        // Sanitization pattern (see executeUpgrade() below). The
+        // generateMnemonic() path pulls BIP39 entropy; a thrown error
+        // could plausibly embed partial entropy or seed material on a
+        // future library revision. Generic message to DOM, raw to
+        // console.warn for diagnostics.
+        console.warn('[custody upgrade start]', err);
+        this.upgradeError = this.$t('upgrade.generationFailed');
         this.upgradePhase = 'error';
       }
     },
