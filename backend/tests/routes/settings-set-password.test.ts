@@ -5,6 +5,7 @@ import argon2 from 'argon2';
 import { createApp } from '../../src/app.js';
 import { getAppPool } from '../../src/app-db.js';
 import { config } from '../../src/config.js';
+import { clearRateLimitKeys } from '../support/redis-helpers.js';
 
 // SEC-004-BE: Tests for POST /api/settings/set-password.
 // Real verifyHiveSignature (Bearer JWT path) — no MOCK_VERIFY_SIGNATURE.
@@ -39,20 +40,6 @@ async function cleanup(username: string) {
   await pool.query('DELETE FROM accounts WHERE username = $1', [username]).catch(() => {});
 }
 
-// Clear settings-write and settings-read rate-limit keys — other test files
-// in the same run share this limiter by IP. Without this, combined runs fail
-// with 429 RATE_LIMITED even though each test file passes in isolation.
-async function clearSettingsRateLimits() {
-  const { getRedis, isRedisAvailable } = await import('../../src/redis.js');
-  const redis = getRedis();
-  if (redis && isRedisAvailable()) {
-    for (const name of ['settings-write', 'settings-read', 'auth-login']) {
-      const keys = await redis.keys(`${config.appTag}:rl:${name}:*`).catch(() => [] as string[]);
-      if (keys.length > 0) await redis.del(...keys).catch(() => {});
-    }
-  }
-}
-
 describe.skipIf(!dbReachable)('POST /api/settings/set-password', () => {
   const NULL_USER = `setpw_null_${RUN_ID}`;
   const NULL_EMAIL = `setpw_null_${RUN_ID}@example.com`;
@@ -71,7 +58,7 @@ describe.skipIf(!dbReachable)('POST /api/settings/set-password', () => {
   const EXISTING_PASSWORD = 'KnownExistingPw1';
 
   beforeAll(async () => {
-    await clearSettingsRateLimits();
+    await clearRateLimitKeys(['settings-write', 'settings-read', 'auth-login']);
     await cleanup(NULL_USER);
     await cleanup(NO_ORCID_USER);
     await cleanup(SET_USER);
@@ -199,7 +186,7 @@ describe.skipIf(!dbReachable)('GET /api/settings/email — hasPassword flag', ()
   const FLAG_ORCID = `0000-0003-${RUN_ID.toString().slice(-4)}-0002`;
 
   beforeAll(async () => {
-    await clearSettingsRateLimits();
+    await clearRateLimitKeys(['settings-write', 'settings-read', 'auth-login']);
     await cleanup(FLAG_USER);
   });
 
