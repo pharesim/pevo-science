@@ -173,7 +173,6 @@ describe('auth store', () => {
     it('starts accreditation polling', () => {
       // Guards against `_startAccreditationPolling` being dropped. The poll
       // loop calls fetchAccreditationStatus with the current username.
-      mockFetchAccreditationStatus.mockClear();
       store.loginFromResponse({ token: 't4', username: 'leo', expires_at: '2099-01-01' });
       expect(mockFetchAccreditationStatus).toHaveBeenCalledWith('leo');
     });
@@ -229,45 +228,56 @@ describe('auth store', () => {
 
   describe('_checkAccreditation', () => {
     it('does not fetch when username is null', async () => {
-      // Guards against /api/accreditations/null requests during page
-      // teardown or before a login has populated the store.
       store.username = null;
       store.isConnected = false;
-      mockFetchAccreditationStatus.mockClear();
       await expect(store._checkAccreditation()).resolves.toBeUndefined();
       expect(mockFetchAccreditationStatus).not.toHaveBeenCalled();
     });
 
     it('does not fetch when not connected even if username is set', async () => {
-      // Covers the race where username lingers after disconnect.
       store.username = 'alice';
       store.isConnected = false;
-      mockFetchAccreditationStatus.mockClear();
       await expect(store._checkAccreditation()).resolves.toBeUndefined();
       expect(mockFetchAccreditationStatus).not.toHaveBeenCalled();
     });
 
-    it('swallows network errors and does not reject', async () => {
-      // Guards against unhandled promise rejections from the polling
-      // interval bleeding into the next Playwright test.
+    it('swallows network errors and does not mutate accreditation state', async () => {
       store.username = 'alice';
       store.isConnected = true;
+      store.isAccredited = true;
+      store.accreditation = { type: 'orcid' };
       mockFetchAccreditationStatus.mockRejectedValueOnce(new Error('network down'));
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       await expect(store._checkAccreditation()).resolves.toBeUndefined();
       expect(warnSpy).toHaveBeenCalled();
+      expect(store.isAccredited).toBe(true);
+      expect(store.accreditation).toEqual({ type: 'orcid' });
       warnSpy.mockRestore();
     });
 
-    it('updates state on successful fetch', async () => {
+    it('leaves state untouched when response data is null (unaccredited)', async () => {
       store.username = 'alice';
       store.isConnected = true;
+      store.isAccredited = true;
+      store.accreditation = { type: 'orcid' };
+      mockFetchAccreditationStatus.mockResolvedValueOnce({ data: null });
+      await store._checkAccreditation();
+      expect(store.isAccredited).toBe(true);
+      expect(store.accreditation).toEqual({ type: 'orcid' });
+    });
+
+    it('updates state and persists the session on successful fetch', async () => {
+      store.username = 'alice';
+      store.isConnected = true;
+      localStorage.setItem.mockClear();
       mockFetchAccreditationStatus.mockResolvedValueOnce({
         data: { is_accredited: true, accreditation: { type: 'orcid' } },
       });
       await store._checkAccreditation();
       expect(store.isAccredited).toBe(true);
       expect(store.accreditation).toEqual({ type: 'orcid' });
+      const sessionCall = localStorage.setItem.mock.calls.find((c) => c[0] === 'pevo_session');
+      expect(sessionCall).toBeDefined();
     });
   });
 });
