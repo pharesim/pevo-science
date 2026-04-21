@@ -69,7 +69,7 @@ Use these ce skills as part of your normal workflow. They are not optional — i
 - **`/ce-simplify`** — After `/ce-code-review` findings are triaged, as a final pass to cut any over-engineering.
 - **`/ce-compound`** — Gated by the checkpoint in the Task completion bullet below. Do not invoke on every task.
 
-Do NOT invoke `/ce-commit`, `/ce-commit-push-pr`, or any commit/push/PR skill. Commits happen only when the user explicitly asks.
+**Commit policy:** see root `CLAUDE.md` "Commits and Pushes". Short version: local commits at natural checkpoints are allowed (and required before a worktree fan-out). Pushes and PR operations require an explicit user ask for that specific action. Do NOT invoke `/ce-commit-push-pr` or any `/ce-*-push*` / `/ce-*-pr*` skill without explicit authorization; `/ce-commit` alone (no push) is fine.
 
 ## Testing & Building
 

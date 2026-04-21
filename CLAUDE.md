@@ -64,6 +64,16 @@ Two paths: (1) **Self-custody** — user brings an existing Hive account and con
 6. When a task is complete, the implementing agent moves it from Pending to a **Review** section in `agents/docs/TASKS.md`. The Architect reviews the implementation, then **physically moves** the task from `TASKS.md` to `agents/docs/tasks-archive.md`. Do NOT use strikethrough (`~~`) to mark tasks done in `TASKS.md`. Completed tasks must be removed entirely.
 7. **No spec file sprawl.** Do not create new files in `agents/docs/` (except inside `api-contracts/` and `solutions/`). The allowed files are: `ARCHITECTURE.md`, `TASKS.md`, `tasks-archive.md`, `api-contract.md` (index), `api-contracts/*.md` (split contract files), `hive-schemas.md`, `reputation-algorithm.md`, and `solutions/**/*.md` (see "Documented Solutions" below). Keep these up to date when making related code changes, but do not create additional spec or contract files.
 
+## Commits and Pushes
+
+Agents MAY `git commit` locally at natural checkpoints without asking: a task moving to Review, before a worktree fan-out, before handing off a long investigation, before switching context between unrelated tasks. Invoke `/ce-commit` for a message matching repo convention. Local commits are invisible to GitHub and fully reversible (`git reset --soft HEAD~N`, interactive rebase, drop, squash, amend).
+
+Agents MUST NOT perform any remote-facing action without an explicit user ask for that specific action. This includes `git push` (any form), `gh pr create`, `gh pr edit`, `gh pr comment`, `gh issue create/comment`, `gh release`, and any `/ce-*-push*` / `/ce-*-pr*` skill that pushes or opens PRs. "Push" authorization is per-invocation: "push this" authorizes one push, not subsequent pushes.
+
+**Before a worktree fan-out, the parent agent MUST commit in-flight work on the current branch** so worker subagents branch from a stable HEAD. Dirty-tree fan-out creates silent inconsistencies where workers operate on stale code and the parent must manually merge drifted changes later.
+
+Commit scope rule: keep commits focused. Don't bundle unrelated task work into a single commit. A "checkpoint" commit that captures in-flight work before a fan-out is acceptable when the work is all on one task or one logical batch; if the tree has cross-task drift, prefer multiple focused commits over one mixed one.
+
 ## Code Review Findings
 
 When running `/ce-code-review`, `/security-review`, or any review skill that produces findings, do NOT auto-append results to `agents/docs/TASKS.md`, do NOT silently apply fixes, and do NOT silently move a Review-section task to archive with unresolved findings. Surface findings as a single ranked list in chat (severity + file:line + one-line rationale) and wait for the user to triage which ones become tasks, which get fixed in place, and which get dismissed. This applies to every agent that invokes a review skill (architect, backend, ui, pinner), not to the individual persona subagents inside `/ce-code-review` itself. If the review comes back clean, say so explicitly in chat before proceeding.
@@ -74,7 +84,7 @@ Agents default to execution (`/ce-work`, `/ce-debug`) but that does not override
 
 - Scope is ambiguous and more than one reasonable interpretation exists.
 - Two conventions or prior decisions conflict and the right one isn't obvious from the code.
-- A decision is hard to reverse (schema changes, API shape changes, destructive operations, commits, pushes).
+- A decision is hard to reverse (schema changes, API shape changes, destructive operations, pushes, any remote-facing action).
 - Review or audit findings need triage (see "Code Review Findings" above).
 - A task description contradicts the code you're reading.
 

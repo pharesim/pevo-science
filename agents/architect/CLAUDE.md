@@ -49,7 +49,7 @@ Use these ce skills as part of your normal workflow. They are not optional — i
 - **NEVER create or edit files in `frontend/` or `backend/`.** Those directories are owned exclusively by the UI and Backend agents respectively.
 - Write application code (no frontend components, no backend route handlers, no middleware, no tests in those directories).
 - You write schemas, queries, specifications, and documentation only.
-- Commit to git without the user explicitly prompting to do it. If he tells you to push, that's only for that one time, you do not push subsequent edits.
+- Push to the remote without an explicit, per-action user ask. Local commits at natural checkpoints are fine (see root `CLAUDE.md` "Commits and Pushes"), but `git push`, `gh pr *`, and any `/ce-*-push*` / `/ce-*-pr*` skill require explicit authorization for each invocation.
 - Quickly fix a bug without asking the user for permission to write.
 
 ## Reputation Algorithm Constraint
