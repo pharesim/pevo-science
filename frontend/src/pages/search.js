@@ -1,6 +1,7 @@
 import Alpine from 'alpinejs';
 import { searchPapers, fetchDisciplines } from '../api.js';
 import { formatDate } from '../components/paper-card.js';
+import { paginationTemplate } from '../components/pagination.js';
 import DOMPurify from 'dompurify';
 
 const template = `
@@ -118,25 +119,7 @@ const template = `
                 </div>
 
                 <!-- Pagination -->
-                <template x-if="totalPages > 1">
-                  <nav class="flex items-center justify-center gap-1 mt-8" :aria-label="$t('aria.pagination')">
-                    <button class="btn-secondary px-3 py-1.5 text-sm" :disabled="currentPage === 1" @click="goToPage(currentPage - 1)" x-text="$t('pagination.previous')"></button>
-                    <template x-for="(page, i) in paginationPages" :key="'sp' + i">
-                      <template x-if="page === '...'">
-                        <span class="px-2 py-1 text-sm text-ink-muted">...</span>
-                      </template>
-                    </template>
-                    <template x-for="(page, i) in paginationPages" :key="'sn' + i">
-                      <template x-if="page !== '...'">
-                        <button class="px-3 py-1.5 rounded-md text-sm font-medium transition-colors"
-                                :class="page === currentPage ? 'bg-pevo-teal text-white' : 'text-ink-light hover:bg-parchment-warm'"
-                                :aria-current="page === currentPage ? 'page' : false"
-                                @click="goToPage(page)" x-text="page"></button>
-                      </template>
-                    </template>
-                    <button class="btn-secondary px-3 py-1.5 text-sm" :disabled="currentPage === totalPages" @click="goToPage(currentPage + 1)" x-text="$t('pagination.next')"></button>
-                  </nav>
-                </template>
+                <div x-data="pagination((p) => goToPage(p))">${paginationTemplate}</div>
               </div>
             </template>
 
@@ -161,6 +144,14 @@ export { template as searchPageTemplate };
 
 const ITEMS_PER_PAGE = 20;
 
+// URL sync is only active when the page mounts on /search. The pathname check
+// (stripping an optional locale prefix) guards against popstate events firing
+// after the user navigates away via the SPA router.
+function pageOwnsUrl() {
+  const path = window.location.pathname.replace(/^\/[a-z]{2,3}(?=\/|$)/, '') || '/';
+  return path === '/search';
+}
+
 export function initSearchPage() {
   Alpine.data('searchPage', () => ({
     query: '',
@@ -174,17 +165,53 @@ export function initSearchPage() {
     loading: false,
     error: null,
     hasSearched: false,
+    _popstateHandler: null,
 
     formatDate,
 
     init() {
-      // Read query from URL hash params
-      const q = this.$store.router.query?.q || '';
-      if (q) {
-        this.query = q;
-        this.doSearch(q, 1);
+      this._syncFromUrl();
+      if (this.query) this.doSearch(this.query, this.currentPage);
+      this.loadDisciplines().catch(() => {});
+      if (pageOwnsUrl()) {
+        this._popstateHandler = () => {
+          if (!pageOwnsUrl()) return;
+          this._syncFromUrl();
+          if (this.query) this.doSearch(this.query, this.currentPage);
+        };
+        window.addEventListener('popstate', this._popstateHandler);
       }
-      this.loadDisciplines();
+    },
+
+    destroy() {
+      if (this._popstateHandler) {
+        window.removeEventListener('popstate', this._popstateHandler);
+        this._popstateHandler = null;
+      }
+    },
+
+    _syncFromUrl() {
+      const params = new URLSearchParams(window.location.search);
+      this.query = params.get('q') || '';
+      const type = params.get('type');
+      this.typeFilter = type === 'paper' || type === 'review' ? type : 'all';
+      const source = params.get('source');
+      this.sourceFilter = source === 'native' || source === 'bridge' ? source : '';
+      this.disciplineFilter = params.get('discipline') || '';
+      const page = parseInt(params.get('page') || '1', 10);
+      this.currentPage = Number.isFinite(page) && page > 0 ? page : 1;
+    },
+
+    _pushUrl() {
+      const params = new URLSearchParams();
+      if (this.query.trim()) params.set('q', this.query.trim());
+      if (this.typeFilter !== 'all') params.set('type', this.typeFilter);
+      if (this.sourceFilter) params.set('source', this.sourceFilter);
+      if (this.disciplineFilter) params.set('discipline', this.disciplineFilter);
+      if (this.currentPage > 1) params.set('page', String(this.currentPage));
+      const qs = params.toString();
+      const newUrl = window.location.pathname + (qs ? '?' + qs : '');
+      window.history.pushState(null, '', newUrl);
     },
 
     async loadDisciplines() {
@@ -209,12 +236,13 @@ export function initSearchPage() {
 
         const res = await searchPapers(params);
         this.results = res.data || [];
-        if (res.meta) {
-          this.totalPages = Math.ceil(res.meta.total / res.meta.limit) || 1;
-        }
+        this.totalPages = res.meta ? (Math.ceil(res.meta.total / res.meta.limit) || 1) : 1;
       } catch {
         this.error = this.$t('search.searchFailed');
         this.results = [];
+        this.totalPages = 1;
+        this.currentPage = 1;
+        this._pushUrl();
       } finally {
         this.loading = false;
       }
@@ -222,41 +250,15 @@ export function initSearchPage() {
 
     handleSubmit() {
       this.currentPage = 1;
-      // Update URL so searches are bookmarkable and back/forward works
-      const params = new URLSearchParams();
-      if (this.query.trim()) params.set('q', this.query.trim());
-      if (this.typeFilter !== 'all') params.set('type', this.typeFilter);
-      if (this.sourceFilter) params.set('source', this.sourceFilter);
-      if (this.disciplineFilter) params.set('discipline', this.disciplineFilter);
-      const qs = params.toString();
-      const locale = this.$store.i18n.locale;
-      const newUrl = `/${locale}/search${qs ? '?' + qs : ''}`;
-      window.history.pushState(null, '', newUrl);
+      this._pushUrl();
       this.doSearch(this.query, 1);
     },
 
     goToPage(page) {
       if (page === '...' || page < 1 || page > this.totalPages) return;
       this.currentPage = page;
+      this._pushUrl();
       this.doSearch(this.query, page);
-    },
-
-    get paginationPages() {
-      const total = this.totalPages;
-      const current = this.currentPage;
-      const result = [];
-      if (total <= 7) {
-        for (let i = 1; i <= total; i++) result.push(i);
-      } else {
-        result.push(1);
-        if (current > 3) result.push('...');
-        for (let i = Math.max(2, current - 1); i <= Math.min(total - 1, current + 1); i++) {
-          result.push(i);
-        }
-        if (current < total - 2) result.push('...');
-        result.push(total);
-      }
-      return result;
     },
 
     sanitizeSnippet(html) {

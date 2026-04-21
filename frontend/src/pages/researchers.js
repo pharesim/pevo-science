@@ -1,6 +1,7 @@
 import Alpine from 'alpinejs';
 import { fetchAccreditations } from '../api.js';
 import { formatDate } from '../components/paper-card.js';
+import { paginationTemplate } from '../components/pagination.js';
 
 const ITEMS_PER_PAGE = 12;
 
@@ -79,31 +80,21 @@ const template = `
             </div>
 
             <!-- Pagination -->
-            <template x-if="totalPages > 1">
-              <nav class="flex items-center justify-center gap-1 mt-8" :aria-label="$t('aria.pagination')">
-                <button class="btn-secondary px-3 py-1.5 text-sm" :disabled="currentPage === 1" @click="goToPage(currentPage - 1)" x-text="$t('pagination.previous')"></button>
-                <template x-for="(page, i) in paginationPages" :key="'rp' + i">
-                  <template x-if="page === '...'">
-                    <span class="px-2 py-1 text-sm text-ink-muted">...</span>
-                  </template>
-                </template>
-                <template x-for="(page, i) in paginationPages" :key="'rn' + i">
-                  <template x-if="page !== '...'">
-                    <button class="px-3 py-1.5 rounded-md text-sm font-medium transition-colors"
-                            :class="page === currentPage ? 'bg-pevo-teal text-white' : 'text-ink-light hover:bg-parchment-warm'"
-                            :aria-current="page === currentPage ? 'page' : false"
-                            @click="goToPage(page)" x-text="page"></button>
-                  </template>
-                </template>
-                <button class="btn-secondary px-3 py-1.5 text-sm" :disabled="currentPage === totalPages" @click="goToPage(currentPage + 1)" x-text="$t('pagination.next')"></button>
-              </nav>
-            </template>
+            <div x-data="pagination((p) => goToPage(p))">${paginationTemplate}</div>
           </div>
         </template>
       </div>
 `;
 
 export { template as researchersPageTemplate };
+
+// URL sync is only active when the page mounts on /researchers. The pathname
+// check (stripping an optional locale prefix) guards against popstate events
+// firing after the user navigates away via the SPA router.
+function pageOwnsUrl() {
+  const path = window.location.pathname.replace(/^\/[a-z]{2,3}(?=\/|$)/, '') || '/';
+  return path === '/researchers';
+}
 
 export function initResearchersPage() {
   Alpine.data('researchersPage', () => ({
@@ -114,11 +105,46 @@ export function initResearchersPage() {
     totalPages: 1,
     loading: true,
     error: null,
+    _popstateHandler: null,
 
     formatDate,
 
     init() {
+      this._syncFromUrl();
       this.loadResearchers();
+      if (pageOwnsUrl()) {
+        this._popstateHandler = () => {
+          if (!pageOwnsUrl()) return;
+          this._syncFromUrl();
+          this.loadResearchers();
+        };
+        window.addEventListener('popstate', this._popstateHandler);
+      }
+    },
+
+    destroy() {
+      if (this._popstateHandler) {
+        window.removeEventListener('popstate', this._popstateHandler);
+        this._popstateHandler = null;
+      }
+    },
+
+    _syncFromUrl() {
+      const params = new URLSearchParams(window.location.search);
+      const page = parseInt(params.get('page') || '1', 10);
+      this.currentPage = Number.isFinite(page) && page > 0 ? page : 1;
+      this.fieldFilter = params.get('field') || '';
+      this.institutionFilter = params.get('institution') || '';
+    },
+
+    _pushUrl() {
+      const params = new URLSearchParams();
+      if (this.currentPage > 1) params.set('page', String(this.currentPage));
+      if (this.fieldFilter) params.set('field', this.fieldFilter);
+      if (this.institutionFilter) params.set('institution', this.institutionFilter);
+      const qs = params.toString();
+      const newUrl = window.location.pathname + (qs ? '?' + qs : '');
+      window.history.pushState(null, '', newUrl);
     },
 
     async loadResearchers() {
@@ -134,11 +160,13 @@ export function initResearchersPage() {
 
         const res = await fetchAccreditations(params);
         this.researchers = res.data || [];
-        if (res.meta) {
-          this.totalPages = Math.ceil(res.meta.total / res.meta.limit) || 1;
-        }
+        this.totalPages = res.meta ? (Math.ceil(res.meta.total / res.meta.limit) || 1) : 1;
       } catch (err) {
         this.error = err?.message || this.$t('researchers.loadFailed');
+        this.researchers = [];
+        this.totalPages = 1;
+        this.currentPage = 1;
+        this._pushUrl();
       } finally {
         this.loading = false;
       }
@@ -146,36 +174,21 @@ export function initResearchersPage() {
 
     onFieldChange() {
       this.currentPage = 1;
+      this._pushUrl();
       this.loadResearchers();
     },
 
     onInstitutionChange() {
       this.currentPage = 1;
+      this._pushUrl();
       this.loadResearchers();
     },
 
     goToPage(page) {
       if (page === '...' || page < 1 || page > this.totalPages) return;
       this.currentPage = page;
+      this._pushUrl();
       this.loadResearchers();
-    },
-
-    get paginationPages() {
-      const total = this.totalPages;
-      const current = this.currentPage;
-      const result = [];
-      if (total <= 7) {
-        for (let i = 1; i <= total; i++) result.push(i);
-      } else {
-        result.push(1);
-        if (current > 3) result.push('...');
-        for (let i = Math.max(2, current - 1); i <= Math.min(total - 1, current + 1); i++) {
-          result.push(i);
-        }
-        if (current < total - 2) result.push('...');
-        result.push(total);
-      }
-      return result;
     },
 
     methodLabel(method) {

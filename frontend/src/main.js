@@ -27,6 +27,8 @@ import { initCommentComposer } from './components/comment-composer.js';
 import { initVoteButtons } from './components/vote-buttons.js';
 import { initVouchSection } from './components/vouch-section.js';
 import { initBroadcastConfirm } from './components/broadcast-confirm.js';
+import { initPaperFeed } from './components/paper-feed.js';
+import { initPagination } from './components/pagination.js';
 
 // Make Alpine available globally for debugging
 window.Alpine = Alpine;
@@ -48,8 +50,10 @@ initMarkdownRenderer();
 initSignInModal();
 initPageMount();
 
-// Initialize all pages from registry
-Object.values(pages).forEach(p => p.init());
+// Initialize all pages from registry.
+// Some registry entries (e.g. 'papers') intentionally omit init() and delegate
+// to a Phase-4 component (initPaperFeed below) — the guard keeps that working.
+Object.values(pages).forEach(p => { if (p.init) p.init(); });
 
 // Initialize components — Phase 4
 initThreadedComments();
@@ -57,6 +61,8 @@ initCommentComposer();
 initVoteButtons();
 initVouchSection();
 initBroadcastConfirm();
+initPaperFeed();
+initPagination();
 
 // Load i18n messages, sync locale with router, then start Alpine
 initI18n().then(() => {

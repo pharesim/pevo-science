@@ -52,38 +52,6 @@ describe('searchPage', () => {
     mockStores.router.query = {};
   });
 
-  describe('paginationPages', () => {
-    it('returns all pages when totalPages <= 7', () => {
-      const comp = createComponent();
-      comp.totalPages = 5;
-      comp.currentPage = 3;
-      expect(comp.paginationPages).toEqual([1, 2, 3, 4, 5]);
-    });
-
-    it('returns pages with ellipsis for > 7 pages (current near start)', () => {
-      const comp = createComponent();
-      comp.totalPages = 10;
-      comp.currentPage = 2;
-      const pages = comp.paginationPages;
-      expect(pages[0]).toBe(1);
-      expect(pages[pages.length - 1]).toBe(10);
-      expect(pages).toContain('...');
-    });
-
-    it('returns pages with ellipsis for > 7 pages (current in middle)', () => {
-      const comp = createComponent();
-      comp.totalPages = 20;
-      comp.currentPage = 10;
-      const pages = comp.paginationPages;
-      expect(pages[0]).toBe(1);
-      expect(pages[pages.length - 1]).toBe(20);
-      expect(pages.filter(p => p === '...')).toHaveLength(2);
-      expect(pages).toContain(9);
-      expect(pages).toContain(10);
-      expect(pages).toContain(11);
-    });
-  });
-
   describe('doSearch', () => {
     it('builds params with filters and calls API', async () => {
       searchPapers.mockResolvedValue({ data: [{ title: 'Result' }], meta: { total: 1, limit: 20 } });
@@ -119,6 +87,39 @@ describe('searchPage', () => {
       expect(comp.error).toBe('search.searchFailed');
       expect(comp.results).toEqual([]);
     });
+
+    it('resets totalPages and currentPage on failure so retry starts fresh', async () => {
+      searchPapers.mockRejectedValue(new Error('Network error'));
+      const comp = createComponent();
+      comp.totalPages = 5;
+      comp.currentPage = 4;
+      await comp.doSearch('test', 4);
+      expect(comp.totalPages).toBe(1);
+      expect(comp.currentPage).toBe(1);
+    });
+
+    it('pushes a clean URL after failure on /search so ?page= stops reflecting stale state', async () => {
+      window.history.replaceState(null, '', '/en/search?q=test&page=4');
+      searchPapers.mockRejectedValue(new Error('Network error'));
+      const comp = createComponent();
+      comp.query = 'test';
+      comp.currentPage = 4;
+      const push = vi.spyOn(window.history, 'pushState');
+      await comp.doSearch('test', 4);
+      expect(push).toHaveBeenCalled();
+      const url = push.mock.calls[push.mock.calls.length - 1][2];
+      expect(url).not.toContain('page=');
+      // Query still reflected; only page + results were reset.
+      expect(url).toContain('q=test');
+    });
+
+    it('resets totalPages to 1 when response omits meta (empty result after filter change)', async () => {
+      searchPapers.mockResolvedValue({ data: [] });
+      const comp = createComponent();
+      comp.totalPages = 7;
+      await comp.doSearch('test', 1);
+      expect(comp.totalPages).toBe(1);
+    });
   });
 
   describe('handleSubmit', () => {
@@ -137,23 +138,8 @@ describe('searchPage', () => {
   });
 
   describe('goToPage', () => {
-    it('rejects ellipsis', async () => {
-      const comp = createComponent();
-      comp.query = 'test';
-      await comp.goToPage('...');
-      expect(searchPapers).not.toHaveBeenCalled();
-    });
-
-    it('rejects out of range', async () => {
-      const comp = createComponent();
-      comp.totalPages = 5;
-      comp.query = 'test';
-      await comp.goToPage(0);
-      expect(searchPapers).not.toHaveBeenCalled();
-      await comp.goToPage(6);
-      expect(searchPapers).not.toHaveBeenCalled();
-    });
-
+    // Input guards live in the shared pagination factory. goToPage is only
+    // reached via that factory's callback with pre-validated values.
     it('accepts valid page', async () => {
       searchPapers.mockResolvedValue({ data: [], meta: { total: 100, limit: 20 } });
       const comp = createComponent();
@@ -181,22 +167,74 @@ describe('searchPage', () => {
   });
 
   describe('init', () => {
-    it('reads query from router and triggers search', async () => {
-      mockStores.router.query = { q: 'neural networks' };
+    it('reads query from URL and triggers search', () => {
+      window.history.replaceState(null, '', '/en/search?q=neural+networks');
       searchPapers.mockResolvedValue({ data: [], meta: { total: 0, limit: 20 } });
       const comp = createComponent();
-      // Mock loadDisciplines to avoid side effect
-      comp.loadDisciplines = vi.fn();
+      comp.loadDisciplines = vi.fn(() => Promise.resolve());
       comp.init();
       expect(comp.query).toBe('neural networks');
     });
 
-    it('does not search when no query', () => {
-      mockStores.router.query = {};
+    it('does not search when URL has no query', () => {
+      window.history.replaceState(null, '', '/en/search');
       const comp = createComponent();
-      comp.loadDisciplines = vi.fn();
+      comp.loadDisciplines = vi.fn(() => Promise.resolve());
       comp.init();
       expect(comp.query).toBe('');
+      expect(searchPapers).not.toHaveBeenCalled();
+    });
+
+    it('seeds filter state and currentPage from URL on first mount', () => {
+      window.history.replaceState(
+        null,
+        '',
+        '/en/search?q=cosmology&type=review&source=bridge&discipline=physics&page=4',
+      );
+      searchPapers.mockResolvedValue({ data: [], meta: { total: 0, limit: 20 } });
+      const comp = createComponent();
+      comp.loadDisciplines = vi.fn(() => Promise.resolve());
+      comp.init();
+      expect(comp.query).toBe('cosmology');
+      expect(comp.typeFilter).toBe('review');
+      expect(comp.sourceFilter).toBe('bridge');
+      expect(comp.disciplineFilter).toBe('physics');
+      expect(comp.currentPage).toBe(4);
+    });
+  });
+
+  describe('URL sync', () => {
+    it('handleSubmit pushes filter state + resets page to 1', () => {
+      searchPapers.mockResolvedValue({ data: [], meta: { total: 0, limit: 20 } });
+      window.history.replaceState(null, '', '/en/search');
+      const comp = createComponent();
+      comp.query = 'quantum';
+      comp.typeFilter = 'paper';
+      comp.sourceFilter = 'native';
+      comp.disciplineFilter = 'physics';
+      comp.currentPage = 5;
+      const push = vi.spyOn(window.history, 'pushState');
+      comp.handleSubmit();
+      expect(push).toHaveBeenCalled();
+      const url = push.mock.calls[push.mock.calls.length - 1][2];
+      expect(url).toContain('q=quantum');
+      expect(url).toContain('type=paper');
+      expect(url).toContain('source=native');
+      expect(url).toContain('discipline=physics');
+      expect(url).not.toContain('page=');
+    });
+
+    it('goToPage pushes page param', () => {
+      searchPapers.mockResolvedValue({ data: [], meta: { total: 100, limit: 20 } });
+      window.history.replaceState(null, '', '/en/search?q=test');
+      const comp = createComponent();
+      comp.query = 'test';
+      comp.totalPages = 5;
+      const push = vi.spyOn(window.history, 'pushState');
+      comp.goToPage(3);
+      expect(push).toHaveBeenCalled();
+      const url = push.mock.calls[push.mock.calls.length - 1][2];
+      expect(url).toContain('page=3');
     });
   });
 });
