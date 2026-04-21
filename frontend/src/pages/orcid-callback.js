@@ -55,6 +55,14 @@ export function initOrcidCallbackPage() {
     resultUsername: '',
     backPath: '/',
 
+    // Lifecycle guards. Every async continuation (awaited promise resolution,
+    // setTimeout callback) that writes to component state or fires navigation
+    // must check _mounted first. Timers are tracked in _pendingTimers and
+    // cleared in destroy() so a user navigating away mid-wait does not trip
+    // post-teardown state mutations.
+    _mounted: true,
+    _pendingTimers: new Set(),
+
     navigate(path) { Alpine.store('router').navigate(path); },
 
     init() {
@@ -69,7 +77,7 @@ export function initOrcidCallbackPage() {
       }
 
       // Read mode from localStorage (set before redirect) for error routing.
-      // Do NOT remove it here — if completeOrcid fails (e.g. 503) and the user
+      // Do NOT remove it here. If completeOrcid fails (e.g. 503) and the user
       // refreshes, we need the mode to still be present so the retry can
       // reach the correct endpoint with the correct auth. It's cleared after
       // completeOrcid resolves successfully inside _verify.
@@ -86,33 +94,28 @@ export function initOrcidCallbackPage() {
       this._verify(code, state, mode);
     },
 
+    destroy() {
+      this._mounted = false;
+      for (const id of this._pendingTimers) clearTimeout(id);
+      this._pendingTimers.clear();
+    },
+
+    _setTimer(fn, ms) {
+      const id = setTimeout(() => {
+        this._pendingTimers.delete(id);
+        if (!this._mounted) return;
+        fn();
+      }, ms);
+      this._pendingTimers.add(id);
+      return id;
+    },
+
     async _verify(code, state, mode) {
+      let res;
       try {
-        const res = await completeOrcid(code, state, mode);
-        const data = res.data;
-
-        // Only clear the stored mode after completeOrcid resolved successfully.
-        // If this throws (e.g. 503), we leave it so a refresh can retry.
-        localStorage.removeItem('pevo_orcid_mode');
-
-        switch (data.mode) {
-          case 'signup':
-            this._handleSignup(data);
-            break;
-          case 'login':
-            this._handleLogin(data);
-            break;
-          case 'accredit':
-            this._handleAccredit(data);
-            break;
-          case 'link':
-            this._handleLink(data);
-            break;
-          default:
-            this.status = 'error';
-            this.errorMessage = this.$t('orcid.verificationFailed');
-        }
+        res = await completeOrcid(code, state, mode);
       } catch (err) {
+        if (!this._mounted) return;
         this.status = 'error';
 
         if (err.code === 'NO_ACCOUNT') {
@@ -126,6 +129,32 @@ export function initOrcidCallbackPage() {
         } else {
           this.errorMessage = err.message || this.$t('orcid.verificationFailed');
         }
+        return;
+      }
+
+      if (!this._mounted) return;
+      const data = res.data;
+
+      // Only clear the stored mode after completeOrcid resolved successfully.
+      // If this throws (e.g. 503), we leave it so a refresh can retry.
+      localStorage.removeItem('pevo_orcid_mode');
+
+      switch (data.mode) {
+        case 'signup':
+          this._handleSignup(data);
+          break;
+        case 'login':
+          this._handleLogin(data);
+          break;
+        case 'accredit':
+          this._handleAccredit(data);
+          break;
+        case 'link':
+          this._handleLink(data);
+          break;
+        default:
+          this.status = 'error';
+          this.errorMessage = this.$t('orcid.verificationFailed');
       }
     },
 
@@ -166,7 +195,7 @@ export function initOrcidCallbackPage() {
       auth._checkAccreditation();
 
       Alpine.store('toast').show(this.$t('orcid.loginSuccess'), 'success');
-      setTimeout(() => this.navigate('/papers'), 500);
+      this._setTimer(() => this.navigate('/papers'), 500);
     },
 
     _handleAccredit(data) {

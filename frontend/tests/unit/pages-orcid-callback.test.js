@@ -360,6 +360,103 @@ describe('orcidCallbackPage', () => {
       expect(comp.errorMessage).toBe('orcid.verificationFailed');
     });
 
+    it('post-teardown _verify resolution is a no-op (does not mutate status or navigate)', async () => {
+      const comp = createComponent();
+      let resolveFn;
+      mockCompleteOrcid.mockReturnValue(new Promise((resolve) => { resolveFn = resolve; }));
+
+      // Kick off _verify but do NOT await yet. Tear the component down while
+      // the completeOrcid promise is still pending.
+      const verifyP = comp._verify('code', 'state', 'accredit');
+      comp.destroy();
+
+      // Now resolve the in-flight completeOrcid. The _mounted guard should
+      // make the post-await continuation a no-op — no handler fires, status
+      // stays 'verifying', no navigation, no localStorage mode cleanup.
+      resolveFn({ data: { mode: 'accredit', username: 'bob' } });
+      await verifyP;
+
+      expect(comp.status).toBe('verifying');
+      expect(comp.resultUsername).toBe('');
+      expect(mockRouterStore.navigate).not.toHaveBeenCalled();
+      expect(mockAuthStore._checkAccreditation).not.toHaveBeenCalled();
+      expect(mockToastStore.show).not.toHaveBeenCalled();
+    });
+
+    it('post-teardown _verify rejection is a no-op (does not set error state)', async () => {
+      const comp = createComponent();
+      let rejectFn;
+      mockCompleteOrcid.mockReturnValue(new Promise((_, reject) => { rejectFn = reject; }));
+
+      const verifyP = comp._verify('code', 'state', 'login');
+      comp.destroy();
+
+      const err = new Error('boom');
+      err.code = 'NO_ACCOUNT';
+      rejectFn(err);
+      await verifyP;
+
+      // No error state should be written post-teardown.
+      expect(comp.status).toBe('verifying');
+      expect(comp.errorMessage).toBe('');
+      expect(comp.errorAction).toBe('');
+    });
+
+    it('_handleLogin: setTimeout redirect is canceled by destroy() — navigate not called', async () => {
+      vi.useFakeTimers();
+      const comp = createComponent();
+      mockCompleteOrcid.mockResolvedValue({
+        data: { mode: 'login', token: 'jwt', username: 'alice', expires_at: '2099-01-01', custody: 'light' },
+      });
+
+      await comp._verify('code', 'state', 'login');
+      expect(comp.status).toBe('login-success');
+      // Timer is armed but not yet fired.
+      expect(mockRouterStore.navigate).not.toHaveBeenCalled();
+
+      // Destroy before the 500ms redirect fires.
+      comp.destroy();
+
+      // Advancing time past the redirect window MUST NOT trigger navigation,
+      // since destroy() cleared the pending timer.
+      vi.advanceTimersByTime(1000);
+      expect(mockRouterStore.navigate).not.toHaveBeenCalled();
+      expect(comp._pendingTimers.size).toBe(0);
+      vi.useRealTimers();
+    });
+
+    it('_handleSignup: post-teardown resolution does not write signup tokens or navigate', async () => {
+      const comp = createComponent();
+      let resolveFn;
+      mockCompleteOrcid.mockReturnValue(new Promise((resolve) => { resolveFn = resolve; }));
+
+      const verifyP = comp._verify('code', 'state', 'signup');
+      comp.destroy();
+
+      resolveFn({ data: { mode: 'signup', orcid_token: 'tok', orcid_id: 'id', name: 'Jane' } });
+      await verifyP;
+
+      expect(localStorage.setItem).not.toHaveBeenCalledWith('pevo_signup_orcid_token', 'tok');
+      expect(localStorage.setItem).not.toHaveBeenCalledWith('pevo_signup_orcid_id', 'id');
+      expect(localStorage.setItem).not.toHaveBeenCalledWith('pevo_signup_orcid_name', 'Jane');
+      expect(mockRouterStore.navigate).not.toHaveBeenCalled();
+    });
+
+    it('_handleLink: post-teardown resolution does not set link flag or navigate', async () => {
+      const comp = createComponent();
+      let resolveFn;
+      mockCompleteOrcid.mockReturnValue(new Promise((resolve) => { resolveFn = resolve; }));
+
+      const verifyP = comp._verify('code', 'state', 'link');
+      comp.destroy();
+
+      resolveFn({ data: { mode: 'link' } });
+      await verifyP;
+
+      expect(localStorage.setItem).not.toHaveBeenCalledWith('pevo_orcid_link_complete', '1');
+      expect(mockRouterStore.navigate).not.toHaveBeenCalled();
+    });
+
     it('503 from completeOrcid leaves pevo_orcid_mode in localStorage so a refresh-retry can re-enter the correct flow', async () => {
       localStorageData['pevo_orcid_mode'] = 'link';
       const firstComp = createComponent();
