@@ -50,27 +50,6 @@ Review history: `agents/docs/tasks-archive.md`
 
 ## Pending
 
-### BE-DISCIPLINE-CANONICALIZE — Canonicalize disciplines via LOWER() in HAF query + case-insensitive search match (Backend Agent, P1)
-
-**Surfaced by:** FE-DISCIPLINE-CASE-NORMALIZE archive review (2026-04-21d).
-
-**Context:** FE-DISCIPLINE-CASE-NORMALIZE shipped client-side lowercasing of discipline names to canonicalize the URL layer. But the backend's `GET /api/disciplines` in `backend/src/routes/disciplines.ts` is an open-vocabulary HAF query (`GROUP BY (json_metadata -> $1 ->> 'discipline')` — case-sensitive). If users typed both "Physics" and "physics" into their paper metadata, the backend returns two rows; the frontend spread collapses both to `name: "physics"` but keeps each paper_count separate, yielding duplicate dropdown entries with mismatched counts. Additionally, `?discipline=physics` in `search.ts` matches only the lowercase HAF group, silently missing papers tagged "Physics."
-
-**Goal:** Close the open-vocabulary dedup bug at the backend layer.
-
-1. **`disciplines.ts`:** Update the HAF query to dedup by lowercase name. One approach preserving display info: `SELECT LOWER(name) AS canon_name, MAX(name) AS display_name, SUM(paper_count) AS paper_count GROUP BY LOWER(name)`. Response shape grows to `{ canon_name, display_name, paper_count }`.
-2. **`search.ts`:** `?discipline=physics` must match against `LOWER(json_metadata -> $1 ->> 'discipline') = $N` (lowercase both sides) so the case-insensitive match covers all HAF rows.
-3. **Update `agents/docs/api-contracts/papers.md` (or whichever contract file documents disciplines):** response shape, match semantics, migration note for frontend.
-4. **Tests:** real-HAF test asserting `GET /api/disciplines` dedups mixed-case names; search-match test asserting `?discipline=physics` finds a paper tagged "Physics".
-
-**Non-goals:** Rewriting the discipline schema. Normalizing disciplines at ingest time (would also require a backfill).
-
-**Unblocks:** FE-DISCIPLINE-DISPLAY-HARDEN (frontend can drop client-side dedup once this lands).
-
-**Deliverable:** Move to Review with API contract update + real-HAF test coverage.
-
----
-
 ### FE-DISCIPLINE-DISPLAY-HARDEN — Title-case disciplines for display; drop client-side lowercase dedup after backend lands (UI Agent, P1)
 
 **Surfaced by:** FE-DISCIPLINE-CASE-NORMALIZE archive review (2026-04-21d).
@@ -147,22 +126,6 @@ Review history: `agents/docs/tasks-archive.md`
 
 ---
 
-### BE-ACCRED-TEST-MOCK-POLISH — Test-mock hygiene for accreditations route (Backend Agent, P3)
-
-**Surfaced by:** BE-ACCRED-TX-ID-PARITY + BE-ACCRED-REVOKE-TEST archive review (2026-04-21c). All 4 are test-mock hygiene that would surface as visible test failure under refactor — not production risk — but worth a sweep before the next accreditations.ts refactor.
-
-**Changes:**
-1. **`backend/tests/routes/accreditations-revoke.test.ts:44`** — `hafCache.clear()` in `beforeEach`. Currently relies on a synthetic-username cache miss; safe today (60s TTL, fresh string), but a sibling test injecting the same username would see stale data.
-2. **`backend/tests/routes/accreditations-revoke.test.ts:47`** — multi-signal mock SQL detection. Currently `sql.includes("'action' IN ('accredit', 'revoke')")` couples to a specific quoting/whitespace shape. Mirror the SEC-003-BE round-2 pattern: `sql.includes('FROM customjsonops') && sql.includes("'action' IN ('accredit', 'revoke')")` (or whichever two signals survive the most refactors). A whitespace/quoting change in `accreditations.ts:108-118` currently silently falls into the `rows: []` branch, turning the assertion green for the wrong reason.
-3. **`backend/tests/routes/accreditations-revoke.test.ts:61`** — comment edit. The `event_id: null` fixture comment claims it "surfaces regression that leaks event_id on the revoke branch." The revoke branch has no projection path that reads event_id, so the null is defensive signaling, not active coverage. Tighten the comment to match.
-4. **`backend/src/routes/accreditations.ts:141`** — change `payload.orcid || null` → `payload.orcid ?? null`. One line above the `?? null` fix from BE-ACCRED-TX-ID-PARITY round-2 finding #10. Operator precision; no behavior change today (HAF JSON values are non-empty strings or absent), but consistent with the immediately-following line.
-
-**Non-goals:** Extracting a `withCleanCache()` test helper. Refactoring the accreditations.ts CTE shape.
-
-**Deliverable:** Move to Review.
-
----
-
 ### FE-UPGRADE-CLOSURE-WIPE — Zero closure-captured key material on custody upgrade (UI Agent, P3)
 
 **Surfaced by:** FE-UPGRADE-CREDENTIAL-WIPE archive review (2026-04-21d).
@@ -179,58 +142,6 @@ Prefer option 1 — JS engines are permissive about overwrite-then-GC.
 **Non-goals:** Rewriting the upgrade flow. Porting to WebCrypto (bigger scope).
 
 **Deliverable:** Move to Review with a heap-snapshot sketch or unit test showing the derivation frame is dropped before the wipe completes.
-
----
-
-### SEC-LOGIN-UNKNOWN-USER-TIMING — Close the unknown-account timing oracle on /api/auth/login (Backend Agent, P2)
-
-**Surfaced by:** SEC-004-BE round-2 archive review (2026-04-21c).
-
-**Context:** SEC-004-BE round-2 added a `SENTINEL_ARGON2_HASH_PROMISE`-based timing-equalization burn on the `NO_PASSWORD_SET` (null-hash) branch of `POST /api/auth/login`, closing the `~1ms vs ~100ms` oracle that distinguished ORCID-only accounts from password-loginable accounts. The sibling **unknown-account** branch at `backend/src/routes/auth.ts:~388` returns `401 UNAUTHORIZED` *without any argon2 work*, leaving a separate timing oracle: an unauthenticated attacker can enumerate which usernames/emails have accounts on the platform (existing-account → ~100ms argon2.verify path; non-existing-account → ~1ms early return).
-
-Same enumeration class the round-2 fix addressed; closing only half is asymmetric and provides a false sense of completeness.
-
-**Fix:**
-1. On the unknown-account branch in `/login`, burn `await argon2.verify(await SENTINEL_ARGON2_HASH_PROMISE, password).catch(() => {})` before returning 401. Same shape as the null-hash branch.
-2. Add a wall-time test to `auth.test.ts` (or `recover.test.ts` if that's where the sibling timing test lives) asserting the unknown-account 401 path takes ≥50ms (loose CI-stability bound matching the existing null-hash timing assertion).
-3. Audit other `/api/auth/*` early returns for the same class — `/recover`'s "no active account with that username" path at `auth.ts:~712`, the lockout path, etc. Burn sentinel where they leak existence vs. non-existence by timing. This may grow the fix to 2-3 sites.
-
-**Non-goals:** Closing the status-code oracle (401 stays distinct). Adding rate-limit-based detection. Extracting `burnSentinel()` helper unless 3+ call sites land.
-
-**Deliverable:** Move to Review. Atomic with no other task.
-
----
-
-### SEC-002-TOCTOU-LOCK — SETNX lock to close same-tick TOCTOU on ORCID binding (Backend Agent, P2)
-
-**Surfaced by:** SEC-002-HARDENING archive review (2026-04-21c, round-2).
-
-**Context:** SEC-002-HARDENING Item 5 added a `${appTag}:orcid_binding:${orcid_id}` Redis cache (EX 120s, value=username) narrowing the HAF-lag TOCTOU window where two concurrent binds for the same `orcid_id` could both pass the 409 guard before either's `accredit` op was indexed by HAF. The cache is consulted on read in `findAccreditedAccountWithOrcid` and short-circuits with 409 when value mismatches the candidate username.
-
-**Remaining race:** the cache is written AFTER `broadcast.json` returns. Two requests entering `findAccreditedAccountWithOrcid` within the same event-loop tick both see empty cache + empty HAF, both broadcast to Hive, both write cache with their respective usernames. The 409 guard never fires for either. Same-tick concurrency is the narrow window — but it's exploitable (~0.1-1s broadcast time, attacker submits two requests concurrently from different sessions).
-
-**Fix:** SETNX lock keyed on `${appTag}:orcid_binding_lock:${orcid_id}` claimed atomically BEFORE broadcast.
-
-1. In `handleAccredit` and `handleLink`, immediately after the empty-binding check passes, attempt:
-   ```ts
-   const lockKey = `${config.appTag}:orcid_binding_lock:${orcidId}`;
-   const acquired = await redis.set(lockKey, username, { NX: true, EX: 10 });
-   if (acquired !== 'OK') {
-     return sendError(res, 409, 'ORCID_ALREADY_LINKED', 'This ORCID is currently being linked by another request');
-   }
-   ```
-2. After successful broadcast + cache write, `redis.del(lockKey)` (don't leave the 10s lock holding for the full TTL).
-3. On error after lock acquisition, also `redis.del(lockKey)` so retries succeed.
-4. **Outage fallback:** if `redis.set` throws (Redis unavailable), fall through to current cache-less HAF-only path. Accept the narrow race window in degraded mode rather than failing closed (which would block all binding when Redis blips).
-
-**Tests:**
-1. Two concurrent requests for the same `orcid_id` (different usernames) → exactly one succeeds with 200 + broadcast + cache write; the other gets 409 ORCID_ALREADY_LINKED.
-2. Lock-holder crash mid-broadcast (simulate by acquiring but never deleting) → second request after EX=10s succeeds.
-3. Redis outage during lock acquisition → falls back to current behavior (one warn log, both requests proceed; this is acceptable degradation).
-
-**Non-goals:** Changing the cache TTL. Adding revoke-side cache invalidation (separate problem; bounded window already accepted). Extending the lock to other binding paths (only `/api/orcid/callback` accredit/link modes have this race today).
-
-**Deliverable:** Move to Review.
 
 ---
 
