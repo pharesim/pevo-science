@@ -15,6 +15,17 @@ import { logger } from '../logger.js';
 
 const router = Router();
 
+// ORCID iD format: four groups of four digits separated by hyphens, with the
+// last character optionally 'X' (ISO 7064 MOD 11-2 checksum token). We do not
+// validate the checksum itself — ORCID validates that upstream at token
+// exchange. This guard is format-only defense-in-depth to prevent a malformed
+// or adversarial orcid_id from ORCID's token response being interpolated into
+// Redis key builders, the pub.orcid.org API path, or on-chain custom_json
+// payloads. Exploitability is bounded today (fetch host is pinned, Redis uses
+// binary-safe RESP, on-chain payloads are admin-signed), but this closes the
+// surface for future callers (e.g. an admin UI rendering orcid_id in HTML).
+const ORCID_RE = /^\d{4}-\d{4}-\d{4}-\d{3}[\dX]$/;
+
 type OrcidMode = 'signup' | 'login' | 'accredit' | 'link';
 const VALID_MODES: ReadonlySet<string> = new Set(['signup', 'login', 'accredit', 'link']);
 const AUTHENTICATED_MODES: ReadonlySet<string> = new Set(['accredit', 'link']);
@@ -219,6 +230,9 @@ router.post('/callback', callbackLimiter, async (req: Request, res: Response) =>
     if (!orcidId) {
       return sendError(res, 400, 'BAD_REQUEST', 'ORCID response missing orcid field');
     }
+    if (!ORCID_RE.test(orcidId)) {
+      return sendError(res, 400, 'BAD_REQUEST', 'Invalid ORCID iD format');
+    }
 
     const orcidName = tokenData.name || '';
 
@@ -278,6 +292,11 @@ async function handleSignup(
 }
 
 async function handleLogin(res: Response, orcidId: string): Promise<void> {
+  if (!ORCID_RE.test(orcidId)) {
+    sendError(res, 400, 'BAD_REQUEST', 'Invalid ORCID iD format');
+    return;
+  }
+
   const pool = getAppPool();
   if (!pool) {
     sendError(res, 503, 'INTERNAL_ERROR', 'Service not available');
@@ -321,6 +340,11 @@ async function handleAccredit(
   username: string,
   accessToken?: string,
 ): Promise<void> {
+  if (!ORCID_RE.test(orcidId)) {
+    sendError(res, 400, 'BAD_REQUEST', 'Invalid ORCID iD format');
+    return;
+  }
+
   // Check if already accredited
   const { getAccreditedSet } = await import('../accreditation.js');
   const accreditedSet = await getAccreditedSet([username]);
@@ -402,6 +426,11 @@ async function handleLink(
   orcidId: string,
   username: string,
 ): Promise<void> {
+  if (!ORCID_RE.test(orcidId)) {
+    sendError(res, 400, 'BAD_REQUEST', 'Invalid ORCID iD format');
+    return;
+  }
+
   // Fetch existing accreditation to preserve fields
   const existing = await getExistingAccreditation(username);
   if (!existing) {
