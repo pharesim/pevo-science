@@ -348,38 +348,53 @@ async function handleAccredit(
     return;
   }
 
-  const customJsonPayload = {
-    action: 'accredit',
-    account: username,
-    name: orcidName || username,
-    institution: '',
-    field: '',
-    method: 'orcid',
-    orcid: orcidId,
-    evidence_hash: crypto.createHash('sha256').update(`orcid:${orcidId}:${username}`).digest('hex'),
-    timestamp: new Date().toISOString(),
-  };
+  // Acquire SETNX lock before broadcast to close the same-tick TOCTOU window.
+  // See acquireBindingLock() for the degrade-to-HAF-only story.
+  const lockState = await acquireBindingLock(orcidId, username);
+  if (lockState === 'held') {
+    sendError(res, 409, 'ORCID_ALREADY_LINKED', 'This ORCID is currently being linked by another request');
+    return;
+  }
 
-  const key = PrivateKey.fromString(config.pevoAdminPostingKey);
-  const result = await hiveClient.broadcast.json(
-    { id: config.appTag, json: JSON.stringify(customJsonPayload), required_auths: [], required_posting_auths: [config.hiveAdminAccount] },
-    key,
-  );
+  try {
+    const customJsonPayload = {
+      action: 'accredit',
+      account: username,
+      name: orcidName || username,
+      institution: '',
+      field: '',
+      method: 'orcid',
+      orcid: orcidId,
+      evidence_hash: crypto.createHash('sha256').update(`orcid:${orcidId}:${username}`).digest('hex'),
+      timestamp: new Date().toISOString(),
+    };
 
-  // Cache the binding so a concurrent bind request in the HAF-lag window sees
-  // it via findAccreditedAccountWithOrcid() before the chain op is indexed.
-  await cacheOrcidBinding(orcidId, username);
+    const key = PrivateKey.fromString(config.pevoAdminPostingKey);
+    const result = await hiveClient.broadcast.json(
+      { id: config.appTag, json: JSON.stringify(customJsonPayload), required_auths: [], required_posting_auths: [config.hiveAdminAccount] },
+      key,
+    );
 
-  // Update orcid column in accounts (if light account row exists)
-  await updateAccountOrcid(username, orcidId);
+    // Cache the binding so a concurrent bind request in the HAF-lag window sees
+    // it via findAccreditedAccountWithOrcid() before the chain op is indexed.
+    await cacheOrcidBinding(orcidId, username);
 
-  sendOk(res, {
-    mode: 'accredit',
-    message: 'Accreditation via ORCID confirmed',
-    username,
-    orcid: orcidId,
-    tx_id: result.id,
-  });
+    // Update orcid column in accounts (if light account row exists)
+    await updateAccountOrcid(username, orcidId);
+
+    sendOk(res, {
+      mode: 'accredit',
+      message: 'Accreditation via ORCID confirmed',
+      username,
+      orcid: orcidId,
+      tx_id: result.id,
+    });
+  } finally {
+    // Release in both success and error paths so retries after a mid-broadcast
+    // failure aren't locked out for the full EX=10s. On release failure the
+    // lock self-expires.
+    if (lockState === 'acquired') await releaseBindingLock(orcidId);
+  }
 }
 
 async function handleLink(
@@ -405,38 +420,53 @@ async function handleLink(
     return;
   }
 
-  const customJsonPayload = {
-    action: 'accredit',
-    account: username,
-    name: existing.name,
-    institution: existing.institution,
-    field: existing.field,
-    method: existing.method,
-    orcid: orcidId,
-    evidence_hash: crypto.createHash('sha256').update(`orcid:${orcidId}:${username}`).digest('hex'),
-    timestamp: new Date().toISOString(),
-  };
+  // Acquire SETNX lock before broadcast to close the same-tick TOCTOU window.
+  // See acquireBindingLock() for the degrade-to-HAF-only story.
+  const lockState = await acquireBindingLock(orcidId, username);
+  if (lockState === 'held') {
+    sendError(res, 409, 'ORCID_ALREADY_LINKED', 'This ORCID is currently being linked by another request');
+    return;
+  }
 
-  const key = PrivateKey.fromString(config.pevoAdminPostingKey);
-  const result = await hiveClient.broadcast.json(
-    { id: config.appTag, json: JSON.stringify(customJsonPayload), required_auths: [], required_posting_auths: [config.hiveAdminAccount] },
-    key,
-  );
+  try {
+    const customJsonPayload = {
+      action: 'accredit',
+      account: username,
+      name: existing.name,
+      institution: existing.institution,
+      field: existing.field,
+      method: existing.method,
+      orcid: orcidId,
+      evidence_hash: crypto.createHash('sha256').update(`orcid:${orcidId}:${username}`).digest('hex'),
+      timestamp: new Date().toISOString(),
+    };
 
-  // Cache the binding so a concurrent bind request in the HAF-lag window sees
-  // it via findAccreditedAccountWithOrcid() before the chain op is indexed.
-  await cacheOrcidBinding(orcidId, username);
+    const key = PrivateKey.fromString(config.pevoAdminPostingKey);
+    const result = await hiveClient.broadcast.json(
+      { id: config.appTag, json: JSON.stringify(customJsonPayload), required_auths: [], required_posting_auths: [config.hiveAdminAccount] },
+      key,
+    );
 
-  // Update orcid column in accounts (if light account row exists)
-  await updateAccountOrcid(username, orcidId);
+    // Cache the binding so a concurrent bind request in the HAF-lag window sees
+    // it via findAccreditedAccountWithOrcid() before the chain op is indexed.
+    await cacheOrcidBinding(orcidId, username);
 
-  sendOk(res, {
-    mode: 'link',
-    message: 'ORCID linked successfully',
-    username,
-    orcid: orcidId,
-    tx_id: result.id,
-  });
+    // Update orcid column in accounts (if light account row exists)
+    await updateAccountOrcid(username, orcidId);
+
+    sendOk(res, {
+      mode: 'link',
+      message: 'ORCID linked successfully',
+      username,
+      orcid: orcidId,
+      tx_id: result.id,
+    });
+  } finally {
+    // Release in both success and error paths so retries after a mid-broadcast
+    // failure aren't locked out for the full EX=10s. On release failure the
+    // lock self-expires.
+    if (lockState === 'acquired') await releaseBindingLock(orcidId);
+  }
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -445,6 +475,48 @@ async function handleLink(
 
 function orcidBindingCacheKey(orcidId: string): string {
   return `${config.appTag}:orcid_binding:${orcidId}`;
+}
+
+function orcidBindingLockKey(orcidId: string): string {
+  return `${config.appTag}:orcid_binding_lock:${orcidId}`;
+}
+
+// SETNX-lock acquisition keyed on orcid_id. Closes the same-event-loop-tick
+// TOCTOU race that the orcid_binding cache alone cannot: the cache is written
+// only AFTER broadcast returns, so two concurrent bind requests for the same
+// orcid_id (different usernames) can both pass the empty-binding check, both
+// broadcast, and both write their own cache entries. The lock is claimed
+// BEFORE broadcast; the loser gets 409. EX 10s bounds the hold — if the
+// holder crashes mid-broadcast, a retry succeeds after the TTL expires.
+//
+// Returns:
+//   'acquired'  — caller holds the lock; must call releaseBindingLock() later.
+//   'held'      — another request holds the lock; caller must surface 409.
+//   'unavailable' — Redis down or threw; caller degrades to the cache-less
+//                   HAF-only path (accept the narrow race in degraded mode
+//                   rather than failing closed). A warn has been logged.
+async function acquireBindingLock(orcidId: string, username: string): Promise<'acquired' | 'held' | 'unavailable'> {
+  const redis = getRedis();
+  if (!redis || !isRedisAvailable()) return 'unavailable';
+  try {
+    const result = await redis.set(orcidBindingLockKey(orcidId), username, 'EX', 10, 'NX');
+    if (result === 'OK') return 'acquired';
+    return 'held';
+  } catch (err) {
+    logger.warn({ err, orcidId }, 'ORCID binding lock acquisition failed — degrading to HAF-only path');
+    return 'unavailable';
+  }
+}
+
+async function releaseBindingLock(orcidId: string): Promise<void> {
+  const redis = getRedis();
+  if (!redis || !isRedisAvailable()) return;
+  try {
+    await redis.del(orcidBindingLockKey(orcidId));
+  } catch (err) {
+    // Best-effort release. On failure the lock self-expires after EX=10s.
+    logger.warn({ err, orcidId }, 'Failed to release ORCID binding lock');
+  }
 }
 
 /**
