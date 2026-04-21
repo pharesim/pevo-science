@@ -189,6 +189,19 @@ describe('POST /api/orcid/callback — auth gate (SEC-002-BE)', () => {
       expect(res.body.data.mode).toBe('link');
       expect(res.body.data.username).toBe('alice');
       expect(broadcastJsonMock).toHaveBeenCalledTimes(1);
+      // Call-shape assertions on both load-bearing HAF queries. If a future
+      // refactor drops either predicate the fallback path { rows: [] } would
+      // leave outer assertions passing on a regressed query — promote the
+      // mock-guard from existence-check to shape-check. See
+      // agents/docs/solutions/conventions/mock-guard-assertion-must-verify-call-shape-2026-04-21.md.
+      expect(hafQueryMock).toHaveBeenCalledWith(
+        expect.stringContaining("'orcid' = $1"),
+        expect.anything(),
+      );
+      expect(hafQueryMock).toHaveBeenCalledWith(
+        expect.stringContaining("'action' IN ('accredit', 'revoke')"),
+        expect.arrayContaining(['alice']),
+      );
     },
   );
 
@@ -241,6 +254,21 @@ describe('POST /api/orcid/callback — auth gate (SEC-002-BE)', () => {
       expect(res.status).toBe(409);
       expect(res.body.error.code).toBe('ORCID_ALREADY_LINKED');
       expect(broadcastJsonMock).not.toHaveBeenCalled();
+      // Call-shape assertions: both the orcid-binding lookup AND the existing-
+      // accreditation check for the incumbent account (bob) must have fired
+      // with the right params. A fallback-path-only run would return empty
+      // rows and the handler's 409 response would still be produced by an
+      // unrelated code path, leaving the 409 regression-detection value of
+      // this test hollow. See
+      // agents/docs/solutions/conventions/mock-guard-assertion-must-verify-call-shape-2026-04-21.md.
+      expect(hafQueryMock).toHaveBeenCalledWith(
+        expect.stringContaining("'orcid' = $1"),
+        expect.arrayContaining([orcidId]),
+      );
+      expect(hafQueryMock).toHaveBeenCalledWith(
+        expect.stringContaining("'action' IN ('accredit', 'revoke')"),
+        expect.arrayContaining(['bob']),
+      );
     },
   );
 
@@ -358,6 +386,19 @@ describe('POST /api/orcid/callback — auth gate (SEC-002-BE)', () => {
       expect(res.status).toBe(409);
       expect(res.body.error.code).toBe('ORCID_ALREADY_LINKED');
       expect(broadcastJsonMock).not.toHaveBeenCalled();
+      // Call-shape assertions: both load-bearing HAF queries (ORCID-binding
+      // lookup + action-IN check) must have fired. A fallback-only run would
+      // still produce 409 via other code paths, hollowing out the regression
+      // kill value. See
+      // agents/docs/solutions/conventions/mock-guard-assertion-must-verify-call-shape-2026-04-21.md.
+      expect(hafQueryMock).toHaveBeenCalledWith(
+        expect.stringContaining("'orcid' = $1"),
+        expect.arrayContaining([orcidId]),
+      );
+      expect(hafQueryMock).toHaveBeenCalledWith(
+        expect.stringContaining("'action' IN ('accredit', 'revoke')"),
+        expect.anything(),
+      );
     },
   );
 });
@@ -516,6 +557,16 @@ describe('POST /api/orcid/callback — hardening (SEC-002-HARDENING)', () => {
         .set('Authorization', `Bearer ${jwtFor('alice')}`)
         .send({ code: 'fake', state });
       expect(res.status).toBe(200);
+      // Call-shape assertions on the two load-bearing HAF queries. See
+      // agents/docs/solutions/conventions/mock-guard-assertion-must-verify-call-shape-2026-04-21.md.
+      expect(hafQueryMock).toHaveBeenCalledWith(
+        expect.stringContaining("'orcid' = $1"),
+        expect.arrayContaining([orcidId]),
+      );
+      expect(hafQueryMock).toHaveBeenCalledWith(
+        expect.stringContaining("'action' IN ('accredit', 'revoke')"),
+        expect.arrayContaining(['alice']),
+      );
       const cacheKey = `${config.appTag}:orcid_binding:${orcidId}`;
       try {
         const cached = await redis.get(cacheKey);
@@ -571,6 +622,16 @@ describe('POST /api/orcid/callback — hardening (SEC-002-HARDENING)', () => {
         expect(res.status).toBe(200);
         expect(res.body.data.mode).toBe('link');
         expect(broadcastJsonMock).toHaveBeenCalledTimes(1);
+        // Call-shape assertions on the two load-bearing HAF queries. See
+        // agents/docs/solutions/conventions/mock-guard-assertion-must-verify-call-shape-2026-04-21.md.
+        expect(hafQueryMock).toHaveBeenCalledWith(
+          expect.stringContaining("'orcid' = $1"),
+          expect.arrayContaining([orcidId]),
+        );
+        expect(hafQueryMock).toHaveBeenCalledWith(
+          expect.stringContaining("'action' IN ('accredit', 'revoke')"),
+          expect.arrayContaining(['alice']),
+        );
       } finally {
         setSpy.mockRestore();
       }

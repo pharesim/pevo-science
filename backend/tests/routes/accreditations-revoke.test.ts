@@ -52,7 +52,7 @@ describe('BE-ACCRED-REVOKE-TEST — GET /api/accreditations/:username revoke bra
     // other test in the process.
     const revokedAccount = 'accreds-revoke-fixture-user';
 
-    hafQueryMock.mockImplementation(async (sql: string, params: unknown[]) => {
+    hafQueryMock.mockImplementation(async (sql: string) => {
       // Multi-signal SQL detection (mirrors the SEC-003-BE round-2 pattern in
       // claims.test.ts:95). Requiring both the action-set predicate AND the
       // target relation prevents a silent bypass if a future refactor changes
@@ -75,7 +75,6 @@ describe('BE-ACCRED-REVOKE-TEST — GET /api/accreditations/:username revoke bra
         // revoke response intentionally discards event_id, and if a future
         // refactor starts projecting event_id onto the revoke response the
         // null here will propagate into the assertion below.
-        expect(params[0]).toBe(revokedAccount);
         return {
           rows: [{
             json: {
@@ -98,5 +97,17 @@ describe('BE-ACCRED-REVOKE-TEST — GET /api/accreditations/:username revoke bra
     // tx_id is only projected on the accredit branch; assert the revoke
     // branch doesn't leak one.
     expect(res.body.data.accreditation).not.toMatchObject({ tx_id: expect.anything() });
+    // Call-shape assertion on the load-bearing HAF call: the authority-filtered
+    // query fired against the correct relation AND with the username as $1.
+    // If a future SQL refactor drops the FROM-signal (changes the relation) or
+    // reshapes the `'account' = $1` predicate so the guard in the mock no
+    // longer matches, the fallback path `{ rows: [] }` would otherwise leave
+    // this test green on a regressed query because an empty result set is
+    // indistinguishable from "never accredited". See
+    // agents/docs/solutions/conventions/mock-guard-assertion-must-verify-call-shape-2026-04-21.md.
+    expect(hafQueryMock).toHaveBeenCalledWith(
+      expect.stringContaining('FROM hafsql.operation_custom_json_view'),
+      expect.arrayContaining([revokedAccount]),
+    );
   });
 });
