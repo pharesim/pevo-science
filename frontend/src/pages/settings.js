@@ -1,6 +1,8 @@
 import Alpine from 'alpinejs';
+import { generateMnemonic, mnemonicToSeedSync, validateMnemonic } from '@scure/bip39';
+import { wordlist } from '@scure/bip39/wordlists/english.js';
 import { isKeychainInstalled } from '../keychain.js';
-import { fetchEmailStatus, submitEmail, deleteEmail, startOrcid } from '../api.js';
+import { fetchEmailStatus, submitEmail, deleteEmail, startOrcid, setPassword } from '../api.js';
 import { deriveHiveKeys, deriveHivePublicKeys } from '../hive-keys.js';
 
 // Number of words to re-enter for confirmation
@@ -157,6 +159,42 @@ const template = `
                 </template>
 
                 <p x-show="orcidError" class="text-sm text-red-600 mt-2" x-text="orcidError"></p>
+              </div>
+            </template>
+
+            <!-- Set a password section (SEC-004-UI: only shown for accounts
+                 with no password. ORCID-verified signups/recoveries leave
+                 the password empty; this lets the user opt into password login later. -->
+            <template x-if="!emailLoading && emailStatus && emailStatus.hasPassword === false">
+              <div class="border border-parchment-dark rounded-xl p-6 mt-6">
+                <h2 class="text-xl font-bold text-ink mb-2" x-text="$t('settings.setPasswordTitle')"></h2>
+                <p class="text-sm text-ink-muted mb-4" x-text="$t('settings.setPasswordDescription')"></p>
+
+                <template x-if="!passwordSetDone">
+                  <form @submit.prevent="handleSetPassword()" class="space-y-3">
+                    <div>
+                      <label class="block text-sm font-medium text-ink mb-1" x-text="$t('settings.setPasswordLabel')"></label>
+                      <input type="password" x-model="newPasswordInput" required minlength="10"
+                             class="w-full border border-parchment-dark rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-pevo-teal focus:border-pevo-teal">
+                      <p class="text-xs text-ink-muted mt-1" x-text="$t('settings.setPasswordHint')"></p>
+                    </div>
+                    <div>
+                      <label class="block text-sm font-medium text-ink mb-1" x-text="$t('settings.setPasswordConfirmLabel')"></label>
+                      <input type="password" x-model="newPasswordConfirmInput" required
+                             class="w-full border border-parchment-dark rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-pevo-teal focus:border-pevo-teal"
+                             :class="newPasswordConfirmInput && !newPasswordsMatch ? 'border-pevo-crimson' : ''">
+                      <p x-show="newPasswordConfirmInput && !newPasswordsMatch" class="text-xs text-pevo-crimson mt-1" x-text="$t('settings.setPasswordMismatch')"></p>
+                    </div>
+                    <button type="submit" :disabled="!canSubmitPassword || passwordSubmitting"
+                            class="btn-primary disabled:opacity-50 disabled:cursor-not-allowed"
+                            x-text="passwordSubmitting ? $t('settings.setPasswordSaving') : $t('settings.setPasswordSubmit')"></button>
+                    <p x-show="passwordError" class="text-sm text-red-600" x-text="passwordError"></p>
+                  </form>
+                </template>
+
+                <template x-if="passwordSetDone">
+                  <p class="text-sm text-pevo-green" x-text="$t('settings.setPasswordSuccess')"></p>
+                </template>
               </div>
             </template>
 
@@ -318,6 +356,14 @@ export function initSettingsPage() {
     showChangeForm: false,
     deleting: false,
 
+    // Set-password state (SEC-004-UI: for ORCID-verified accounts that
+    // have no password_hash set, lets the user opt into password login)
+    newPasswordInput: '',
+    newPasswordConfirmInput: '',
+    passwordSubmitting: false,
+    passwordError: null,
+    passwordSetDone: false,
+
     // Upgrade flow state
     // Phases: 'idle' | 'new-seed' | 'confirm-new' | 'enter-old' | 'upgrading' | 'done' | 'error'
     upgradePhase: 'idle',
@@ -339,6 +385,22 @@ export function initSettingsPage() {
       return this.confirmIndices.every(
         (i) => this.confirmInputs[i]?.trim().toLowerCase() === this.newSeedWords[i]
       );
+    },
+
+    // Set-password validity mirrors signup/recover password policy.
+    get newPasswordValid() {
+      return this.newPasswordInput.length >= 10
+        && /[a-z]/.test(this.newPasswordInput)
+        && /[A-Z]/.test(this.newPasswordInput)
+        && /[0-9]/.test(this.newPasswordInput);
+    },
+
+    get newPasswordsMatch() {
+      return this.newPasswordInput === this.newPasswordConfirmInput;
+    },
+
+    get canSubmitPassword() {
+      return this.newPasswordValid && this.newPasswordsMatch;
     },
 
     init() {
@@ -421,6 +483,25 @@ export function initSettingsPage() {
       this.showChangeForm = true;
     },
 
+    async handleSetPassword() {
+      if (!this.canSubmitPassword || this.passwordSubmitting) return;
+      this.passwordSubmitting = true;
+      this.passwordError = null;
+      try {
+        await setPassword(this.newPasswordInput);
+        this.passwordSetDone = true;
+        this.newPasswordInput = '';
+        this.newPasswordConfirmInput = '';
+        // Reflect the new state locally so the surface hides on re-render.
+        if (this.emailStatus) this.emailStatus = { ...this.emailStatus, hasPassword: true };
+        Alpine.store('toast').show(this.$t('settings.setPasswordSuccess'), 'success');
+      } catch (err) {
+        this.passwordError = err.message || this.$t('common.connectionFailed');
+      } finally {
+        this.passwordSubmitting = false;
+      }
+    },
+
     async handleEmailDelete() {
       if (this.deleting) return;
       this.deleting = true;
@@ -447,9 +528,7 @@ export function initSettingsPage() {
       }
 
       // Generate new 12-word BIP39 seed phrase client-side
-      // Requires @scure/bip39 to be available
       try {
-        const { generateMnemonic, wordlist } = this._getBip39();
         this.newSeedPhrase = generateMnemonic(wordlist);
         this.newSeedWords = this.newSeedPhrase.split(' ');
         this.upgradePhase = 'new-seed';
@@ -480,11 +559,6 @@ export function initSettingsPage() {
       this.upgradeError = null;
 
       try {
-        // Dynamic imports — these packages must be installed before upgrade is used
-        // npm install @scure/bip39 @hiveio/dhive
-        const bip39 = this._getBip39();
-        const { mnemonicToSeedSync, validateMnemonic, wordlist } = bip39;
-
         // Validate old seed phrase
         const oldWords = this.oldSeedPhrase.trim().toLowerCase();
         if (!validateMnemonic(oldWords, wordlist)) {
@@ -565,14 +639,6 @@ export function initSettingsPage() {
       this.newSeedWords = [];
       this.oldSeedPhrase = '';
       this.upgradePassword = '';
-    },
-
-    _getBip39() {
-      // @scure/bip39 must be bundled
-      // eslint-disable-next-line no-undef
-      if (typeof scureBip39 !== 'undefined') return scureBip39;
-      // Try dynamic import as fallback
-      throw new Error(this.$t('common.bip39NotLoaded'));
     },
 
     navigate(path) {

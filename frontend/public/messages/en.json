@@ -847,6 +847,7 @@
     "passwordHint": "At least 10 characters with lowercase, uppercase, and numbers.",
     "passwordConfirm": "Confirm Password",
     "passwordMismatch": "Passwords do not match.",
+    "orcidNoPassword": "You can set a password later in Settings if you want email-based login.",
     "submit": "Sign Up",
     "submitting": "Creating account…",
     "hasAccount": "Already have an account?",
@@ -1016,6 +1017,7 @@
     "orcidVerifyButton": "Verify with ORCID",
     "orcidVerifying": "Redirecting to ORCID...",
     "orcidVerified": "ORCID verified",
+    "orcidNoPassword": "You can set a password later in Settings if you want email-based login.",
     "checkingOrcid": "Checking ORCID eligibility...",
     "doneTitle": "Account Recovered",
     "doneDescription": "Your account has been recovered with the new email and password. Please sign in with your new credentials.",
@@ -1054,7 +1056,16 @@
     "orcidUpdate": "Update ORCID",
     "orcidVerified": "Verified",
     "orcidRedirecting": "Redirecting to ORCID...",
-    "orcidLinkSuccess": "ORCID linked successfully."
+    "orcidLinkSuccess": "ORCID linked successfully.",
+    "setPasswordTitle": "Set a password",
+    "setPasswordDescription": "Your account has no password. Set one if you want the option to sign in with your email and password in addition to ORCID.",
+    "setPasswordLabel": "New password",
+    "setPasswordHint": "At least 10 characters with lowercase, uppercase, and numbers.",
+    "setPasswordConfirmLabel": "Confirm new password",
+    "setPasswordMismatch": "Passwords do not match.",
+    "setPasswordSubmit": "Set password",
+    "setPasswordSaving": "Saving...",
+    "setPasswordSuccess": "Password set. You can now sign in with your email and password."
   },
   "editor": {
     "toolbarLabel": "Text formatting",

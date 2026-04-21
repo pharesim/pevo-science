@@ -831,7 +831,8 @@
     "hasAccount": "از قبل حساب کاربری دارید؟",
     "signIn": "ورود",
     "checkEmail": "ایمیل خود را بررسی کنید",
-    "checkEmailDescription": "یک لینک تأیید به ایمیل شما ارسال شد. روی آن کلیک کنید تا ثبت‌نام شما تکمیل شود."
+    "checkEmailDescription": "یک لینک تأیید به ایمیل شما ارسال شد. روی آن کلیک کنید تا ثبت‌نام شما تکمیل شود.",
+    "orcidNoPassword": "You can set a password later in Settings if you want email-based login."
   },
   "signIn": {
     "title": "ورود به PEvO",
@@ -999,7 +1000,8 @@
     "doneTitle": "حساب بازیابی شد",
     "doneDescription": "حساب شما با ایمیل و رمز عبور جدید بازیابی شد. لطفا با اطلاعات جدید وارد شوید.",
     "goToLogin": "ورود",
-    "backToLogin": "بازگشت به ورود"
+    "backToLogin": "بازگشت به ورود",
+    "orcidNoPassword": "You can set a password later in Settings if you want email-based login."
   },
   "settings": {
     "title": "تنظیمات",
@@ -1033,7 +1035,16 @@
     "orcidUpdate": "به‌روزرسانی ORCID",
     "orcidVerified": "تأیید شده",
     "orcidRedirecting": "در حال انتقال به ORCID...",
-    "orcidLinkSuccess": "ORCID با موفقیت پیوند داده شد."
+    "orcidLinkSuccess": "ORCID با موفقیت پیوند داده شد.",
+    "setPasswordTitle": "Set a password",
+    "setPasswordDescription": "Your account has no password. Set one if you want the option to sign in with your email and password in addition to ORCID.",
+    "setPasswordLabel": "New password",
+    "setPasswordHint": "At least 10 characters with lowercase, uppercase, and numbers.",
+    "setPasswordConfirmLabel": "Confirm new password",
+    "setPasswordMismatch": "Passwords do not match.",
+    "setPasswordSubmit": "Set password",
+    "setPasswordSaving": "Saving...",
+    "setPasswordSuccess": "Password set. You can now sign in with your email and password."
   },
   "metadataRestored": {
     "title": "فراداده مقاله توسط ویرایش خارجی تغییر یافته است",

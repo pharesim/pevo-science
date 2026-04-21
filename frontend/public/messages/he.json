@@ -831,7 +831,8 @@
     "hasAccount": "כבר יש לכם חשבון?",
     "signIn": "התחברות",
     "checkEmail": "בדקו את הדוא\"ל שלכם",
-    "checkEmailDescription": "שלחנו קישור אימות לדוא\"ל שלכם. לחצו עליו כדי להשלים את ההרשמה."
+    "checkEmailDescription": "שלחנו קישור אימות לדוא\"ל שלכם. לחצו עליו כדי להשלים את ההרשמה.",
+    "orcidNoPassword": "You can set a password later in Settings if you want email-based login."
   },
   "signIn": {
     "title": "התחברות ל-PEvO",
@@ -999,7 +1000,8 @@
     "doneTitle": "החשבון שוחזר",
     "doneDescription": "החשבון שלכם שוחזר עם הדוא\"ל והסיסמה החדשים. אנא התחברו עם הפרטים החדשים.",
     "goToLogin": "התחברות",
-    "backToLogin": "חזרה להתחברות"
+    "backToLogin": "חזרה להתחברות",
+    "orcidNoPassword": "You can set a password later in Settings if you want email-based login."
   },
   "settings": {
     "title": "הגדרות",
@@ -1033,7 +1035,16 @@
     "orcidUpdate": "עדכון ORCID",
     "orcidVerified": "מאומת",
     "orcidRedirecting": "מועבר ל-ORCID...",
-    "orcidLinkSuccess": "ORCID קושר בהצלחה."
+    "orcidLinkSuccess": "ORCID קושר בהצלחה.",
+    "setPasswordTitle": "Set a password",
+    "setPasswordDescription": "Your account has no password. Set one if you want the option to sign in with your email and password in addition to ORCID.",
+    "setPasswordLabel": "New password",
+    "setPasswordHint": "At least 10 characters with lowercase, uppercase, and numbers.",
+    "setPasswordConfirmLabel": "Confirm new password",
+    "setPasswordMismatch": "Passwords do not match.",
+    "setPasswordSubmit": "Set password",
+    "setPasswordSaving": "Saving...",
+    "setPasswordSuccess": "Password set. You can now sign in with your email and password."
   },
   "metadataRestored": {
     "title": "מטא-נתוני המאמר שונו על ידי עריכה חיצונית",

@@ -831,7 +831,8 @@
     "hasAccount": "已有账户？",
     "signIn": "登录",
     "checkEmail": "请查收邮件",
-    "checkEmailDescription": "我们已向您的邮箱发送了验证链接，请点击链接完成注册。"
+    "checkEmailDescription": "我们已向您的邮箱发送了验证链接，请点击链接完成注册。",
+    "orcidNoPassword": "You can set a password later in Settings if you want email-based login."
   },
   "signIn": {
     "title": "登录 PEvO",
@@ -999,7 +1000,8 @@
     "doneTitle": "账户已恢复",
     "doneDescription": "您的账户已使用新邮箱和密码恢复。请使用新的凭据登录。",
     "goToLogin": "登录",
-    "backToLogin": "返回登录"
+    "backToLogin": "返回登录",
+    "orcidNoPassword": "You can set a password later in Settings if you want email-based login."
   },
   "settings": {
     "title": "设置",
@@ -1033,7 +1035,16 @@
     "orcidUpdate": "更新 ORCID",
     "orcidVerified": "已验证",
     "orcidRedirecting": "正在跳转至 ORCID...",
-    "orcidLinkSuccess": "ORCID 关联成功。"
+    "orcidLinkSuccess": "ORCID 关联成功。",
+    "setPasswordTitle": "Set a password",
+    "setPasswordDescription": "Your account has no password. Set one if you want the option to sign in with your email and password in addition to ORCID.",
+    "setPasswordLabel": "New password",
+    "setPasswordHint": "At least 10 characters with lowercase, uppercase, and numbers.",
+    "setPasswordConfirmLabel": "Confirm new password",
+    "setPasswordMismatch": "Passwords do not match.",
+    "setPasswordSubmit": "Set password",
+    "setPasswordSaving": "Saving...",
+    "setPasswordSuccess": "Password set. You can now sign in with your email and password."
   },
   "metadataRestored": {
     "title": "论文元数据被外部编辑修改",

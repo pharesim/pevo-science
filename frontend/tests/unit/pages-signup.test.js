@@ -136,6 +136,31 @@ describe('signupPage', () => {
       expect(comp.submitted).toBe(true);
     });
 
+    it('SEC-004: ORCID branch submits password: null (not the password field)', async () => {
+      mockSubmitSignup.mockResolvedValue({});
+      const comp = createComponent();
+      comp.email = 'x@x.com';
+      comp.fullName = 'A';
+      comp.institution = 'B';
+      comp.field = 'C';
+      comp.orcidToken = 'orcid-nonce-123';
+      // Password fields are hidden on the ORCID branch; these should NOT be sent.
+      // (In production they're empty; we set them here to guard against regression.)
+      comp.password = 'LeakedPass1x';
+      comp.passwordConfirm = 'LeakedPass1x';
+
+      await comp.handleSubmit();
+
+      expect(mockSubmitSignup).toHaveBeenCalledWith({
+        email: 'x@x.com',
+        password: null,
+        full_name: 'A',
+        institution: 'B',
+        field: 'C',
+        orcid_token: 'orcid-nonce-123',
+      });
+    });
+
     it('does nothing if canSubmit is false', async () => {
       const comp = createComponent();
       comp.email = '';
@@ -301,14 +326,31 @@ describe('signupPage', () => {
         fullName: 'Saved',
         institution: 'Inst',
         field: 'F',
-        password: 'Pass123456',
-        passwordConfirm: 'Pass123456',
       });
       const comp = createComponent();
       comp.init();
       expect(comp.email).toBe('saved@x.com');
       expect(comp.fullName).toBe('Saved');
       expect(localStorage.removeItem).toHaveBeenCalledWith('pevo_signup_draft');
+    });
+
+    it('SEC-004: does NOT restore password from legacy drafts', () => {
+      // Regression guard on the SEC-004 fix: even if an older draft
+      // contains password fields (e.g., user had an in-flight round-trip
+      // from an older UI), init() must never rehydrate them.
+      localStorageData.pevo_signup_draft = JSON.stringify({
+        email: 'saved@x.com',
+        fullName: 'Saved',
+        institution: 'Inst',
+        field: 'F',
+        password: 'hunter2Leaked',
+        passwordConfirm: 'hunter2Leaked',
+      });
+      const comp = createComponent();
+      comp.init();
+      expect(comp.email).toBe('saved@x.com');
+      expect(comp.password).toBe('');
+      expect(comp.passwordConfirm).toBe('');
     });
 
     it('restores orcid from localStorage', () => {
@@ -318,6 +360,62 @@ describe('signupPage', () => {
       comp.init();
       expect(comp.orcidToken).toBe('orcid-tok');
       expect(comp.orcidId).toBe('0000-0002');
+    });
+  });
+
+  describe('handleOrcidVerify - draft payload (SEC-004)', () => {
+    it('persists only non-sensitive fields to pevo_signup_draft', async () => {
+      mockStartOrcid.mockResolvedValue({ redirect_url: 'https://orcid.org/oauth' });
+      const comp = createComponent();
+      comp.email = 'user@x.com';
+      comp.fullName = 'User';
+      comp.institution = 'Inst';
+      comp.field = 'F';
+      comp.password = 'Abcdefgh1x';
+      comp.passwordConfirm = 'Abcdefgh1x';
+
+      await comp.handleOrcidVerify();
+
+      expect(localStorage.setItem).toHaveBeenCalledWith(
+        'pevo_signup_draft',
+        expect.any(String),
+      );
+      const draft = JSON.parse(localStorageData.pevo_signup_draft);
+      expect(draft).toEqual({
+        email: 'user@x.com',
+        fullName: 'User',
+        institution: 'Inst',
+        field: 'F',
+      });
+      // Explicit: password must NOT be persisted.
+      expect(draft).not.toHaveProperty('password');
+      expect(draft).not.toHaveProperty('passwordConfirm');
+    });
+  });
+
+  describe('canSubmit - ORCID branch (SEC-004)', () => {
+    it('is truthy on ORCID branch even with no password', () => {
+      const comp = createComponent();
+      comp.email = 'x@x.com';
+      comp.fullName = 'A';
+      comp.institution = 'B';
+      comp.field = 'C';
+      comp.orcidToken = 'tok';
+      comp.password = '';
+      comp.passwordConfirm = '';
+      expect(comp.canSubmit).toBeTruthy();
+    });
+
+    it('is falsy on non-ORCID branch with no password', () => {
+      const comp = createComponent();
+      comp.email = 'x@x.com';
+      comp.fullName = 'A';
+      comp.institution = 'B';
+      comp.field = 'C';
+      comp.orcidToken = '';
+      comp.password = '';
+      comp.passwordConfirm = '';
+      expect(comp.canSubmit).toBeFalsy();
     });
   });
 });

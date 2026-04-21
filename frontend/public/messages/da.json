@@ -831,7 +831,8 @@
     "hasAccount": "Har du allerede en konto?",
     "signIn": "Log ind",
     "checkEmail": "Tjek din e-mail",
-    "checkEmailDescription": "Vi har sendt et bekræftelseslink til din e-mail. Klik på det for at færdiggøre din registrering."
+    "checkEmailDescription": "Vi har sendt et bekræftelseslink til din e-mail. Klik på det for at færdiggøre din registrering.",
+    "orcidNoPassword": "You can set a password later in Settings if you want email-based login."
   },
   "signIn": {
     "title": "Log ind på PEvO",
@@ -999,7 +1000,8 @@
     "doneTitle": "Konto gendannet",
     "doneDescription": "Din konto er blevet gendannet med den nye e-mail og adgangskode. Log venligst ind med dine nye loginoplysninger.",
     "goToLogin": "Log ind",
-    "backToLogin": "Tilbage til login"
+    "backToLogin": "Tilbage til login",
+    "orcidNoPassword": "You can set a password later in Settings if you want email-based login."
   },
   "settings": {
     "title": "Indstillinger",
@@ -1033,7 +1035,16 @@
     "orcidUpdate": "Opdater ORCID",
     "orcidVerified": "Verificeret",
     "orcidRedirecting": "Omdirigerer til ORCID...",
-    "orcidLinkSuccess": "ORCID tilknyttet."
+    "orcidLinkSuccess": "ORCID tilknyttet.",
+    "setPasswordTitle": "Set a password",
+    "setPasswordDescription": "Your account has no password. Set one if you want the option to sign in with your email and password in addition to ORCID.",
+    "setPasswordLabel": "New password",
+    "setPasswordHint": "At least 10 characters with lowercase, uppercase, and numbers.",
+    "setPasswordConfirmLabel": "Confirm new password",
+    "setPasswordMismatch": "Passwords do not match.",
+    "setPasswordSubmit": "Set password",
+    "setPasswordSaving": "Saving...",
+    "setPasswordSuccess": "Password set. You can now sign in with your email and password."
   },
   "metadataRestored": {
     "title": "Artikelmetadata blev ændret af en ekstern redigering",

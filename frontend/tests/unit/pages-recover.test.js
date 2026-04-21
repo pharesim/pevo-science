@@ -109,7 +109,25 @@ describe('recoverPage', () => {
       comp.newEmail = 'a@x.com';
       comp.newPassword = 'Abcdefgh1x';
       comp.newPasswordConfirm = 'Abcdefgh1x';
-      expect(comp.canSubmitOrcid).toBe(true);
+      expect(comp.canSubmitOrcid).toBeTruthy();
+    });
+
+    it('SEC-004: is truthy even with no password (ORCID branch skips password)', () => {
+      const comp = createComponent();
+      comp.username = 'alice';
+      comp.orcidToken = 'orcid-tok';
+      comp.newEmail = 'a@x.com';
+      comp.newPassword = '';
+      comp.newPasswordConfirm = '';
+      expect(comp.canSubmitOrcid).toBeTruthy();
+    });
+
+    it('SEC-004: is falsy without orcid token even if other fields set', () => {
+      const comp = createComponent();
+      comp.username = 'alice';
+      comp.orcidToken = '';
+      comp.newEmail = 'a@x.com';
+      expect(comp.canSubmitOrcid).toBeFalsy();
     });
   });
 
@@ -118,14 +136,28 @@ describe('recoverPage', () => {
       localStorageData.pevo_recover_draft = JSON.stringify({
         username: 'bob',
         newEmail: 'b@x.com',
-        newPassword: 'Pass123456',
-        newPasswordConfirm: 'Pass123456',
       });
       const comp = createComponent();
       comp.init();
       expect(comp.username).toBe('bob');
       expect(comp.method).toBe('orcid');
       expect(comp.orcidAvailable).toBe(true);
+    });
+
+    it('SEC-004: does NOT restore password from legacy drafts', () => {
+      // Regression guard on the SEC-004 fix: even if an older draft
+      // contains password fields, init() must never rehydrate them.
+      localStorageData.pevo_recover_draft = JSON.stringify({
+        username: 'bob',
+        newEmail: 'b@x.com',
+        newPassword: 'LeakedHunter2',
+        newPasswordConfirm: 'LeakedHunter2',
+      });
+      const comp = createComponent();
+      comp.init();
+      expect(comp.username).toBe('bob');
+      expect(comp.newPassword).toBe('');
+      expect(comp.newPasswordConfirm).toBe('');
     });
 
     it('restores orcid token/id from localStorage', () => {
@@ -219,19 +251,23 @@ describe('recoverPage', () => {
   });
 
   describe('handleSubmit - orcid method', () => {
-    it('calls recoverWithOrcid', async () => {
+    it('SEC-004: calls recoverWithOrcid with newPassword: null', async () => {
       mockRecoverWithOrcid.mockResolvedValue({});
       const comp = createComponent();
       comp.method = 'orcid';
       comp.username = 'alice';
       comp.orcidToken = 'orcid-tok';
       comp.newEmail = 'a@x.com';
-      comp.newPassword = 'Abcdefgh1x';
-      comp.newPasswordConfirm = 'Abcdefgh1x';
+      // Even if the password fields somehow have values (shouldn't in
+      // production — they're hidden on the ORCID branch), they must NOT
+      // be transmitted. Backend SEC-004-BE accepts null and preserves
+      // password_hash = NULL.
+      comp.newPassword = 'StaleLeaked1x';
+      comp.newPasswordConfirm = 'StaleLeaked1x';
 
       await comp.handleSubmit();
 
-      expect(mockRecoverWithOrcid).toHaveBeenCalledWith('alice', 'orcid-tok', 'a@x.com', 'Abcdefgh1x');
+      expect(mockRecoverWithOrcid).toHaveBeenCalledWith('alice', 'orcid-tok', 'a@x.com', null);
       expect(comp.phase).toBe('done');
     });
   });
@@ -248,6 +284,27 @@ describe('recoverPage', () => {
       expect(localStorage.setItem).toHaveBeenCalledWith('pevo_recover_draft', expect.any(String));
       expect(localStorage.setItem).toHaveBeenCalledWith('pevo_orcid_return_to', 'recover');
       expect(mockStartOrcid).toHaveBeenCalledWith('signup');
+    });
+
+    it('SEC-004: persists only non-sensitive fields to pevo_recover_draft', async () => {
+      mockStartOrcid.mockResolvedValue({ redirect_url: 'https://orcid.org/auth' });
+      vi.stubGlobal('window', { ...globalThis.window, location: { href: '' } });
+      const comp = createComponent();
+      comp.username = 'alice';
+      comp.newEmail = 'a@x.com';
+      comp.newPassword = 'LeakedHunter1x';
+      comp.newPasswordConfirm = 'LeakedHunter1x';
+
+      await comp.handleOrcidVerify();
+
+      const draftCall = localStorage.setItem.mock.calls.find(
+        (c) => c[0] === 'pevo_recover_draft',
+      );
+      expect(draftCall).toBeDefined();
+      const draft = JSON.parse(draftCall[1]);
+      expect(draft).toEqual({ username: 'alice', newEmail: 'a@x.com' });
+      expect(draft).not.toHaveProperty('newPassword');
+      expect(draft).not.toHaveProperty('newPasswordConfirm');
     });
 
     it('does nothing if loading', async () => {

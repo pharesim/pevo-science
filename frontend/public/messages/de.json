@@ -831,7 +831,8 @@
     "hasAccount": "Haben Sie bereits ein Konto?",
     "signIn": "Anmelden",
     "checkEmail": "Prüfen Sie Ihre E-Mails",
-    "checkEmailDescription": "Wir haben Ihnen einen Bestätigungslink gesendet. Klicken Sie darauf, um Ihre Registrierung abzuschließen."
+    "checkEmailDescription": "Wir haben Ihnen einen Bestätigungslink gesendet. Klicken Sie darauf, um Ihre Registrierung abzuschließen.",
+    "orcidNoPassword": "You can set a password later in Settings if you want email-based login."
   },
   "signIn": {
     "title": "Bei PEvO anmelden",
@@ -999,7 +1000,8 @@
     "doneTitle": "Konto wiederhergestellt",
     "doneDescription": "Ihr Konto wurde mit der neuen E-Mail-Adresse und dem neuen Passwort wiederhergestellt. Bitte melden Sie sich mit Ihren neuen Zugangsdaten an.",
     "goToLogin": "Anmelden",
-    "backToLogin": "Zurück zur Anmeldung"
+    "backToLogin": "Zurück zur Anmeldung",
+    "orcidNoPassword": "You can set a password later in Settings if you want email-based login."
   },
   "settings": {
     "title": "Einstellungen",
@@ -1033,7 +1035,16 @@
     "orcidUpdate": "ORCID aktualisieren",
     "orcidVerified": "Bestätigt",
     "orcidRedirecting": "Weiterleitung zu ORCID...",
-    "orcidLinkSuccess": "ORCID erfolgreich verknüpft."
+    "orcidLinkSuccess": "ORCID erfolgreich verknüpft.",
+    "setPasswordTitle": "Set a password",
+    "setPasswordDescription": "Your account has no password. Set one if you want the option to sign in with your email and password in addition to ORCID.",
+    "setPasswordLabel": "New password",
+    "setPasswordHint": "At least 10 characters with lowercase, uppercase, and numbers.",
+    "setPasswordConfirmLabel": "Confirm new password",
+    "setPasswordMismatch": "Passwords do not match.",
+    "setPasswordSubmit": "Set password",
+    "setPasswordSaving": "Saving...",
+    "setPasswordSuccess": "Password set. You can now sign in with your email and password."
   },
   "metadataRestored": {
     "title": "Artikelmetadaten wurden durch eine externe Bearbeitung geändert",

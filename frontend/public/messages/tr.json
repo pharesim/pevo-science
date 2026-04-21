@@ -835,7 +835,8 @@
     "hasAccount": "Zaten bir hesabınız var mı?",
     "signIn": "Giriş yap",
     "checkEmail": "E-postanızı kontrol edin",
-    "checkEmailDescription": "E-postanıza bir doğrulama bağlantısı gönderdik. Kaydınızı tamamlamak için bağlantıya tıklayın."
+    "checkEmailDescription": "E-postanıza bir doğrulama bağlantısı gönderdik. Kaydınızı tamamlamak için bağlantıya tıklayın.",
+    "orcidNoPassword": "You can set a password later in Settings if you want email-based login."
   },
   "signIn": {
     "title": "PEvO'ya giriş yap",
@@ -1003,7 +1004,8 @@
     "doneTitle": "Hesap Kurtarıldı",
     "doneDescription": "Hesabınız yeni e-posta ve şifre ile kurtarıldı. Lütfen yeni bilgilerinizle giriş yapın.",
     "goToLogin": "Giriş yap",
-    "backToLogin": "Giriş sayfasına dön"
+    "backToLogin": "Giriş sayfasına dön",
+    "orcidNoPassword": "You can set a password later in Settings if you want email-based login."
   },
   "settings": {
     "title": "Ayarlar",
@@ -1037,7 +1039,16 @@
     "orcidUpdate": "ORCID güncelle",
     "orcidVerified": "Doğrulandı",
     "orcidRedirecting": "ORCID'e yönlendiriliyor...",
-    "orcidLinkSuccess": "ORCID başarıyla bağlandı."
+    "orcidLinkSuccess": "ORCID başarıyla bağlandı.",
+    "setPasswordTitle": "Set a password",
+    "setPasswordDescription": "Your account has no password. Set one if you want the option to sign in with your email and password in addition to ORCID.",
+    "setPasswordLabel": "New password",
+    "setPasswordHint": "At least 10 characters with lowercase, uppercase, and numbers.",
+    "setPasswordConfirmLabel": "Confirm new password",
+    "setPasswordMismatch": "Passwords do not match.",
+    "setPasswordSubmit": "Set password",
+    "setPasswordSaving": "Saving...",
+    "setPasswordSuccess": "Password set. You can now sign in with your email and password."
   },
   "blog": {
     "title": "Blog",

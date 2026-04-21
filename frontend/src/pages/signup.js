@@ -79,22 +79,25 @@ const template = `
                 </div>
               </div>
 
-              <!-- Password -->
-              <div>
+              <!-- Password (hidden on ORCID branch. ORCID-verified accounts skip password entirely; user can set one later from Settings) -->
+              <div x-show="!orcidToken">
                 <label class="block text-sm font-medium text-ink mb-1" x-text="$t('signup.password')"></label>
-                <input type="password" x-model="password" required minlength="10"
+                <input type="password" x-model="password" :required="!orcidToken" minlength="10"
                        class="w-full border border-parchment-dark rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-pevo-teal focus:border-pevo-teal">
                 <p class="text-xs text-ink-muted mt-1" x-text="$t('signup.passwordHint')"></p>
               </div>
 
               <!-- Confirm Password -->
-              <div>
+              <div x-show="!orcidToken">
                 <label class="block text-sm font-medium text-ink mb-1" x-text="$t('signup.passwordConfirm')"></label>
-                <input type="password" x-model="passwordConfirm" required
+                <input type="password" x-model="passwordConfirm" :required="!orcidToken"
                        class="w-full border border-parchment-dark rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-pevo-teal focus:border-pevo-teal"
                        :class="passwordConfirm && !passwordsMatch ? 'border-pevo-crimson' : ''">
                 <p x-show="passwordConfirm && !passwordsMatch" class="text-xs text-pevo-crimson mt-1" x-text="$t('signup.passwordMismatch')"></p>
               </div>
+
+              <!-- ORCID-branch hint replacing password fields -->
+              <div x-show="orcidToken" class="bg-parchment rounded-lg p-3 text-xs text-ink-muted" x-text="$t('signup.orcidNoPassword')"></div>
 
               <!-- Submit -->
               <button type="submit" :disabled="!canSubmit || isSubmitting"
@@ -187,11 +190,21 @@ export function initSignupPage() {
     },
 
     get canSubmit() {
-      return this.email && this.fullName && this.institution && this.field && this.passwordValid && this.passwordsMatch;
+      const baseFields = this.email && this.fullName && this.institution && this.field;
+      if (!baseFields) return false;
+      // ORCID branch: password is optional. User can set one later in Settings.
+      if (this.orcidToken) return true;
+      // Non-ORCID branch: password still required
+      return this.passwordValid && this.passwordsMatch;
     },
 
     init() {
-      // Restore form state after ORCID OAuth redirect
+      // Restore form state after ORCID OAuth redirect.
+      // NOTE: password fields are deliberately NOT persisted or restored
+      // (SEC-004). ORCID-verified signups skip the password entirely; the
+      // non-ORCID branch requires the user to re-enter their password
+      // if they ever did cross the ORCID round-trip (which the UI now
+      // prevents by hiding the field on the ORCID branch anyway).
       const draft = localStorage.getItem('pevo_signup_draft');
       if (draft) {
         const saved = JSON.parse(draft);
@@ -199,8 +212,6 @@ export function initSignupPage() {
         this.fullName = saved.fullName || '';
         this.institution = saved.institution || '';
         this.field = saved.field || '';
-        this.password = saved.password || '';
-        this.passwordConfirm = saved.passwordConfirm || '';
         localStorage.removeItem('pevo_signup_draft');
       }
 
@@ -220,14 +231,15 @@ export function initSignupPage() {
       this.orcidLoading = true;
       this.error = null;
 
-      // Save form state before redirecting
+      // Save form state before redirecting.
+      // SEC-004: do NOT persist password/passwordConfirm across the ORCID
+      // round-trip. ORCID-verified signups send `password: null` and skip
+      // the field entirely.
       localStorage.setItem('pevo_signup_draft', JSON.stringify({
         email: this.email,
         fullName: this.fullName,
         institution: this.institution,
         field: this.field,
-        password: this.password,
-        passwordConfirm: this.passwordConfirm,
       }));
 
       localStorage.setItem('pevo_orcid_mode', 'signup');
@@ -270,9 +282,13 @@ export function initSignupPage() {
       this.error = null;
 
       try {
+        // SEC-004: ORCID-verified signups submit `password: null`. The backend
+        // (SEC-004-BE) creates the account with `password_hash = NULL`; the
+        // user can opt into password login later from Settings.
+        const isOrcid = Boolean(this.orcidToken);
         await submitSignup({
           email: this.email.trim(),
-          password: this.password,
+          password: isOrcid ? null : this.password,
           full_name: this.fullName.trim(),
           institution: this.institution.trim(),
           field: this.field.trim(),
@@ -280,7 +296,7 @@ export function initSignupPage() {
         });
         this.submitted = true;
       } catch (err) {
-        if (err.code === 'DUPLICATE' && this.email && this.password) {
+        if (err.code === 'DUPLICATE' && this.email && this.password && !this.orcidToken) {
           await this._resolveExistingAccount();
         } else if (err.code === 'VALIDATION_ERROR' && !this.orcidToken) {
           this.error = this.$t('signup.orcidOrInstitutional');

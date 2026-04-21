@@ -4,6 +4,7 @@ const mockFetchEmailStatus = vi.fn();
 const mockSubmitEmail = vi.fn();
 const mockDeleteEmail = vi.fn();
 const mockStartOrcid = vi.fn();
+const mockSetPassword = vi.fn();
 const mockIsKeychainInstalled = vi.fn(() => true);
 
 vi.mock('../../src/api.js', () => ({
@@ -11,6 +12,7 @@ vi.mock('../../src/api.js', () => ({
   submitEmail: (...args) => mockSubmitEmail(...args),
   deleteEmail: (...args) => mockDeleteEmail(...args),
   startOrcid: (...args) => mockStartOrcid(...args),
+  setPassword: (...args) => mockSetPassword(...args),
 }));
 
 vi.mock('../../src/keychain.js', () => ({
@@ -231,6 +233,73 @@ describe('settingsPage', () => {
       comp.confirmIndices = [0, 2];
       comp.confirmInputs = { 0: 'word1', 2: 'wrong' };
       expect(comp.confirmCorrect).toBe(false);
+    });
+  });
+
+  describe('SEC-004: handleSetPassword', () => {
+    it('submits new password and toggles emailStatus.hasPassword', async () => {
+      mockSetPassword.mockResolvedValue({ status: 'ok' });
+      const comp = createComponent();
+      comp.emailStatus = { hasEmail: true, email: 'a***@x.com', verified: true, hasPassword: false };
+      comp.newPasswordInput = 'Abcdefgh1x';
+      comp.newPasswordConfirmInput = 'Abcdefgh1x';
+
+      await comp.handleSetPassword();
+
+      expect(mockSetPassword).toHaveBeenCalledWith('Abcdefgh1x');
+      expect(comp.passwordSetDone).toBe(true);
+      expect(comp.emailStatus.hasPassword).toBe(true);
+      expect(comp.newPasswordInput).toBe('');
+      expect(comp.newPasswordConfirmInput).toBe('');
+      expect(mockToastStore.show).toHaveBeenCalled();
+    });
+
+    it('does nothing if the password is invalid', async () => {
+      const comp = createComponent();
+      comp.newPasswordInput = 'short';
+      comp.newPasswordConfirmInput = 'short';
+      await comp.handleSetPassword();
+      expect(mockSetPassword).not.toHaveBeenCalled();
+    });
+
+    it('does nothing if passwords do not match', async () => {
+      const comp = createComponent();
+      comp.newPasswordInput = 'Abcdefgh1x';
+      comp.newPasswordConfirmInput = 'Differe12Xy';
+      await comp.handleSetPassword();
+      expect(mockSetPassword).not.toHaveBeenCalled();
+    });
+
+    it('surfaces backend error', async () => {
+      mockSetPassword.mockRejectedValue({ message: 'already set', code: 'CONFLICT' });
+      const comp = createComponent();
+      comp.newPasswordInput = 'Abcdefgh1x';
+      comp.newPasswordConfirmInput = 'Abcdefgh1x';
+      await comp.handleSetPassword();
+      expect(comp.passwordError).toBe('already set');
+      expect(comp.passwordSetDone).toBe(false);
+      expect(comp.passwordSubmitting).toBe(false);
+    });
+
+    it('newPasswordsMatch reflects equality of the two inputs', () => {
+      const comp = createComponent();
+      comp.newPasswordInput = 'Abcdefgh1x';
+      comp.newPasswordConfirmInput = 'Abcdefgh1x';
+      expect(comp.newPasswordsMatch).toBe(true);
+      comp.newPasswordConfirmInput = 'Different1X';
+      expect(comp.newPasswordsMatch).toBe(false);
+    });
+
+    it('canSubmitPassword requires valid + match', () => {
+      const comp = createComponent();
+      comp.newPasswordInput = 'Abcdefgh1x';
+      comp.newPasswordConfirmInput = 'Abcdefgh1x';
+      expect(comp.canSubmitPassword).toBe(true);
+      comp.newPasswordConfirmInput = 'other';
+      expect(comp.canSubmitPassword).toBe(false);
+      comp.newPasswordInput = 'short';
+      comp.newPasswordConfirmInput = 'short';
+      expect(comp.canSubmitPassword).toBe(false);
     });
   });
 

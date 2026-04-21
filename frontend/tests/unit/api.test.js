@@ -16,6 +16,7 @@ import {
   fetchNotifications,
   fetchDisciplines,
   completeOrcid,
+  setPassword,
 } from '../../src/api.js';
 
 // Helper: build a mock Response-like object for fetch.
@@ -283,5 +284,45 @@ describe('completeOrcid mode-based auth', () => {
 
     const [, init] = fetchSpy.mock.calls[0];
     expect(init.headers?.Authorization).toBeUndefined();
+  });
+});
+
+describe('setPassword (SEC-004-UI)', () => {
+  let fetchSpy;
+
+  beforeEach(() => {
+    fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      mockJsonResponse(200, { status: 'ok', data: {} }),
+    );
+  });
+
+  afterEach(() => {
+    fetchSpy.mockRestore();
+  });
+
+  it('POSTs to /api/settings/set-password with Bearer auth and JSON body', async () => {
+    authStore = { token: 'jwt-setpw-1' };
+    await setPassword('Abcdefgh1x');
+
+    const [url, init] = fetchSpy.mock.calls[0];
+    expect(url).toBe('/api/settings/set-password');
+    expect(init.method).toBe('POST');
+    expect(init.headers).toMatchObject({
+      Authorization: 'Bearer jwt-setpw-1',
+      'Content-Type': 'application/json',
+    });
+    expect(init.body).toBe(JSON.stringify({ password: 'Abcdefgh1x' }));
+  });
+
+  it('throws UNAUTHORIZED when no session is present', async () => {
+    authStore = null;
+    try {
+      await setPassword('Abcdefgh1x');
+      throw new Error('expected throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(ApiRequestError);
+      expect(err.code).toBe('UNAUTHORIZED');
+    }
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 });
