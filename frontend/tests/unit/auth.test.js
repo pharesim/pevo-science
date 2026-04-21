@@ -188,6 +188,34 @@ describe('auth store', () => {
     });
   });
 
+  describe('_checkAccreditation race with disconnect', () => {
+    it('does not write accreditation state if disconnect runs mid-fetch', async () => {
+      // Set up a connected session so _checkAccreditation proceeds past its
+      // pre-fetch guard.
+      store.username = 'mia';
+      store.isConnected = true;
+      store.isAccredited = false;
+
+      // Hold the fetch promise open via a manual resolver.
+      let resolveFetch;
+      const pending = new Promise((resolve) => { resolveFetch = resolve; });
+      mockFetchAccreditationStatus.mockReset().mockReturnValue(pending);
+      localStorage.setItem.mockClear();
+
+      // Kick off the check, then disconnect before the fetch settles.
+      const checkPromise = store._checkAccreditation();
+      store.disconnect();
+
+      // Resolve the in-flight fetch with a positive accreditation. The post-
+      // await re-check should drop the result on the floor.
+      resolveFetch({ data: { is_accredited: true, accreditation: { type: 'orcid' } } });
+      await checkPromise;
+
+      expect(store.isAccredited).toBe(false);
+      expect(localStorage.getItem('pevo_session')).toBeNull();
+    });
+  });
+
   describe('token expiry', () => {
     it('expired token means session is not restored', () => {
       const past = new Date(Date.now() - 1).toISOString();

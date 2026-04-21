@@ -159,6 +159,9 @@ export function initAuth() {
       if (!this.username || !this.isConnected) return;
       try {
         const accRes = await fetchAccreditationStatus(this.username);
+        // disconnect() may have run while the fetch was in flight; drop the
+        // stale result rather than re-persisting a cleared session.
+        if (!this.username || !this.isConnected) return;
         if (accRes?.data) {
           this.isAccredited = accRes.data.is_accredited;
           this.accreditation = accRes.data.accreditation;
