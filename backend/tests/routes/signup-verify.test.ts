@@ -29,6 +29,7 @@ import { createApp } from '../../src/app.js';
 import { getAppPool } from '../../src/app-db.js';
 import { orcidVerified } from '../../src/routes/orcid.js';
 import { config } from '../../src/config.js';
+import { clearRateLimitKeys } from '../support/redis-helpers.js';
 
 // Encryption key must be configured for `/confirm` (encryptKey on posting/memo)
 if (!process.env.CUSTODY_ENCRYPTION_KEY || process.env.CUSTODY_ENCRYPTION_KEY.length < 32) {
@@ -93,17 +94,6 @@ async function seedOrcidNonce(nonce: string, orcidId: string, name = 'Test Resea
   orcidVerified.set(nonce, { ...payload, expires: Date.now() + 10 * 60_000 });
 }
 
-async function clearSignupRateLimit() {
-  const { getRedis, isRedisAvailable } = await import('../../src/redis.js');
-  const redis = getRedis();
-  if (redis && isRedisAvailable()) {
-    for (const name of ['auth-signup', 'signup-confirm']) {
-      const keys = await redis.keys(`${config.appTag}:rl:${name}:*`).catch(() => [] as string[]);
-      if (keys.length > 0) await redis.del(...keys).catch(() => {});
-    }
-  }
-}
-
 // ──────────────────────────────────────────────────────────────
 // Action 1 — ORCID signup with NO password → confirm → null hash
 // ──────────────────────────────────────────────────────────────
@@ -129,7 +119,7 @@ describe.skipIf(!dbReachable)('SEC-004-BE: ORCID signup + confirm without passwo
   });
 
   it('stores password_hash = NULL end-to-end and confirm succeeds', async () => {
-    await clearSignupRateLimit();
+    await clearRateLimitKeys(['auth-signup', 'signup-confirm']);
     await seedOrcidNonce(nonce, orcidId);
 
     // /signup with orcid_token + no password
@@ -211,7 +201,7 @@ describe.skipIf(!dbReachable)('SEC-004-BE: ORCID signup + confirm WITH password'
   });
 
   it('stores password_hash, confirm succeeds, password login works', async () => {
-    await clearSignupRateLimit();
+    await clearRateLimitKeys(['auth-signup', 'signup-confirm']);
     await seedOrcidNonce(nonce, orcidId);
 
     const signupRes = await request(app)

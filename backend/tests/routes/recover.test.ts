@@ -4,6 +4,7 @@ import argon2 from 'argon2';
 import { createApp } from '../../src/app.js';
 import { getAppPool } from '../../src/app-db.js';
 import { encryptKey } from '../../src/custody-crypto.js';
+import { clearRateLimitKeys } from '../support/redis-helpers.js';
 
 const app = createApp();
 
@@ -256,19 +257,6 @@ async function seedOrcidNonce(nonce: string, orcidId: string) {
   orcidVerified.set(nonce, { ...payload, expires: Date.now() + 600_000 });
 }
 
-async function clearRecoverRateLimit() {
-  const { getRedis, isRedisAvailable } = await import('../../src/redis.js');
-  const { config } = await import('../../src/config.js');
-  const redis = getRedis();
-  if (redis && isRedisAvailable()) {
-    const keys = await redis.keys(`${config.appTag}:rl:auth-recover:*`).catch(() => [] as string[]);
-    if (keys.length > 0) await redis.del(...keys).catch(() => {});
-    // Also clear login limiter since some tests re-login afterwards
-    const loginKeys = await redis.keys(`${config.appTag}:rl:auth-login:*`).catch(() => [] as string[]);
-    if (loginKeys.length > 0) await redis.del(...loginKeys).catch(() => {});
-  }
-}
-
 describe('SEC-004-BE: optional password on recovery', () => {
   const NULL_USER = `recover_null_${Date.now()}`;
   const NULL_EMAIL = `recover_null_${Date.now()}@example.com`;
@@ -277,7 +265,7 @@ describe('SEC-004-BE: optional password on recovery', () => {
 
   beforeAll(async () => {
     if (!dbReachable || !hasCustodyKey) return;
-    await clearRecoverRateLimit();
+    await clearRateLimitKeys(['auth-recover', 'auth-login']);
     const pool = getAppPool()!;
     const memoEnc = encryptKey(NULL_USER, NULL_MEMO);
     await pool.query(
@@ -295,7 +283,7 @@ describe('SEC-004-BE: optional password on recovery', () => {
   });
 
   it.skipIf(!dbReachable || !hasCustodyKey)('ORCID recover with no password → 200, password_hash stays NULL', async () => {
-    await clearRecoverRateLimit();
+    await clearRateLimitKeys(['auth-recover', 'auth-login']);
     const nonce = `recover-null-nonce-${Date.now()}`;
     await seedOrcidNonce(nonce, ORCID_ID);
 
@@ -325,7 +313,7 @@ describe('SEC-004-BE: optional password on recovery', () => {
     // test also asserts the DB invariant: the 400 must fire BEFORE any DB
     // write so a future refactor that reorders validation after DB access
     // would flip password_hash out of NULL and fail this assertion.
-    await clearRecoverRateLimit();
+    await clearRateLimitKeys(['auth-recover', 'auth-login']);
     const res = await request(app)
       .post('/api/auth/recover')
       .send({
@@ -347,7 +335,7 @@ describe('SEC-004-BE: optional password on recovery', () => {
   });
 
   it.skipIf(!dbReachable || !hasCustodyKey)('seed-phrase recovery on null-hash account still works (regression guard)', async () => {
-    await clearRecoverRateLimit();
+    await clearRateLimitKeys(['auth-recover', 'auth-login']);
     const newEmail = `recover_null_seed_${Date.now()}@example.com`;
     const newPassword = 'SeedRecovered1';
     const res = await request(app)
@@ -442,24 +430,6 @@ describe('SEC-004-BE: login on null-hash account', () => {
 });
 
 // ─── SEC-LOGIN-UNKNOWN-USER-TIMING: close unknown-account timing oracles ───
-
-async function clearRateLimitKeys(names: string[]) {
-  const { getRedis } = await import('../../src/redis.js');
-  const { config } = await import('../../src/config.js');
-  const redis = getRedis();
-  if (!redis) return;
-  // Wait briefly for Redis to become ready — getRedis() returns a client
-  // before connect() resolves, so isRedisAvailable() may transiently be false
-  // during beforeAll. If it never becomes ready, skip (in-memory fallback).
-  for (let i = 0; i < 20 && redis.status !== 'ready'; i++) {
-    await new Promise((r) => setTimeout(r, 50));
-  }
-  if (redis.status !== 'ready') return;
-  for (const name of names) {
-    const keys = await redis.keys(`${config.appTag}:rl:${name}:*`).catch(() => [] as string[]);
-    if (keys.length > 0) await redis.del(...keys).catch(() => {});
-  }
-}
 
 describe('SEC-LOGIN-UNKNOWN-USER-TIMING: /login unknown-account burns sentinel', () => {
   it.skipIf(!dbReachable)('returns 401 for unknown username with ≥ 40ms wall-time', async () => {
