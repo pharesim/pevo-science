@@ -76,12 +76,12 @@ describe('SEC-AUTH-BYPASS — GET /api/profile/:username authority filter', () =
     const victim = 'victim-auth-bypass-fake';
     hafQueryMock.mockImplementation(async (sql: string, params: unknown[]) => {
       if (sql.includes("'action' IN ('accredit', 'revoke')") && sql.includes("'account' = $1")) {
-        // Authority filter MUST be applied — this is the load-bearing assertion.
-        expect(sql).toContain('required_posting_auths ?| $4::text[]');
-        expect(params[3]).toEqual(config.accreditationAuthorities);
-        expect(params[0]).toBe(victim);
         // Filter yields zero rows because the self-broadcast op is signed by
-        // the victim's own posting key, not an authority.
+        // the victim's own posting key, not an authority. Call-shape assertions
+        // (authority filter present, params indexed correctly) live on the
+        // caller below so they fire ONLY when a matching call actually
+        // happened. See:
+        // agents/docs/solutions/conventions/mock-guard-assertion-must-verify-call-shape-2026-04-21.md
         return { rows: [] };
       }
       return { rows: [] };
@@ -92,12 +92,17 @@ describe('SEC-AUTH-BYPASS — GET /api/profile/:username authority filter', () =
     expect(res.body.data.username).toBe(victim);
     expect(res.body.data.is_accredited).toBe(false);
     expect(res.body.data.accreditation).toBeNull();
-    // Prove the guarded branch of the mock actually fired. Without this, a
-    // future SQL refactor that drops `'account' = $1` or changes the action-IN
-    // shape would fall through to the empty default and the load-bearing
-    // authority-filter assertion inside the guard would never run — tests
-    // would stay green on a regressed query.
-    expect(hafQueryMock).toHaveBeenCalled();
+    // Assert the authority-filtered query actually fired with the load-bearing
+    // SQL fragment + authority params. A SQL refactor that drops
+    // `required_posting_auths ?| $4::text[]` or fails to pass
+    // config.accreditationAuthorities as params[3] would no longer match this
+    // call shape — the matcher fails even though the mock was called (the
+    // fallback path returns { rows: [] } which would otherwise leave outer
+    // assertions green on a regressed query).
+    expect(hafQueryMock).toHaveBeenCalledWith(
+      expect.stringContaining('required_posting_auths ?| $4::text[]'),
+      expect.arrayContaining([victim, config.accreditationAuthorities]),
+    );
   });
 
   it('accepts an authority-signed accredit (is_accredited:true, accreditation payload)', async () => {
@@ -107,8 +112,6 @@ describe('SEC-AUTH-BYPASS — GET /api/profile/:username authority filter', () =
     const accredited = 'victim-auth-bypass-real';
     hafQueryMock.mockImplementation(async (sql: string, params: unknown[]) => {
       if (sql.includes("'action' IN ('accredit', 'revoke')") && sql.includes("'account' = $1")) {
-        expect(sql).toContain('required_posting_auths ?| $4::text[]');
-        expect(params[3]).toEqual(config.accreditationAuthorities);
         return {
           rows: [{
             json: {
@@ -140,7 +143,13 @@ describe('SEC-AUTH-BYPASS — GET /api/profile/:username authority filter', () =
       orcid: '0000-0001-2222-3333',
       tx_id: '42',
     });
-    expect(hafQueryMock).toHaveBeenCalled();
+    // Call-shape assertion: the authority-filtered query fired with the
+    // load-bearing SQL fragment and authorities param. See
+    // agents/docs/solutions/conventions/mock-guard-assertion-must-verify-call-shape-2026-04-21.md.
+    expect(hafQueryMock).toHaveBeenCalledWith(
+      expect.stringContaining('required_posting_auths ?| $4::text[]'),
+      expect.arrayContaining([accredited, config.accreditationAuthorities]),
+    );
   });
 
   it('treats a revoke row as unaccredited (is_accredited:false, accreditation:null)', async () => {
@@ -153,8 +162,6 @@ describe('SEC-AUTH-BYPASS — GET /api/profile/:username authority filter', () =
     const revoked = 'victim-auth-bypass-revoked';
     hafQueryMock.mockImplementation(async (sql: string, params: unknown[]) => {
       if (sql.includes("'action' IN ('accredit', 'revoke')") && sql.includes("'account' = $1")) {
-        expect(sql).toContain('required_posting_auths ?| $4::text[]');
-        expect(params[3]).toEqual(config.accreditationAuthorities);
         return {
           rows: [{
             json: {
@@ -174,6 +181,12 @@ describe('SEC-AUTH-BYPASS — GET /api/profile/:username authority filter', () =
     expect(res.status).toBe(200);
     expect(res.body.data.is_accredited).toBe(false);
     expect(res.body.data.accreditation).toBeNull();
-    expect(hafQueryMock).toHaveBeenCalled();
+    // Call-shape assertion: the authority-filtered query fired with the
+    // load-bearing SQL fragment and authorities param. See
+    // agents/docs/solutions/conventions/mock-guard-assertion-must-verify-call-shape-2026-04-21.md.
+    expect(hafQueryMock).toHaveBeenCalledWith(
+      expect.stringContaining('required_posting_auths ?| $4::text[]'),
+      expect.arrayContaining([revoked, config.accreditationAuthorities]),
+    );
   });
 });
