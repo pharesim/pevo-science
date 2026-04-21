@@ -27,7 +27,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readdirSync, statSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -88,6 +88,28 @@ beforeEach(async () => {
   createdDirs = [];
   warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
   originalEnv = { ...process.env };
+
+  // Walker scans the real test-results/ tree. Stray trace.zip files from
+  // prior Playwright runs would steal spawnSync calls from the staged queue,
+  // exhausting the mock. Purge any pre-existing trace.zip before each test so
+  // the walker only sees what the test stages.
+  if (existsSync(TEST_RESULTS_DIR)) {
+    const stack = [TEST_RESULTS_DIR];
+    while (stack.length) {
+      const dir = stack.pop();
+      let entries;
+      try { entries = readdirSync(dir); } catch { continue; }
+      for (const name of entries) {
+        const path = join(dir, name);
+        let st;
+        try { st = statSync(path); } catch { continue; }
+        if (st.isDirectory()) stack.push(path);
+        else if (name === 'trace.zip') {
+          try { rmSync(path, { force: true }); } catch {}
+        }
+      }
+    }
+  }
 });
 
 afterEach(() => {
