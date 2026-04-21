@@ -22,17 +22,23 @@ import { queryAppDb } from './fixtures/db.js';
 // `trace: 'retain-on-failure'` would otherwise capture them).
 test.use({ trace: 'off', video: 'off', screenshot: 'off' });
 
-// Suffix the email so reruns against a non-truncated dev DB don't collide on
-// the UNIQUE(email) constraint or overwrite verify-token rows before the
-// expect-length-1 assertion below. Matches the pattern in seed-phrase.spec.js.
-const RUN_SUFFIX = Date.now().toString(36).slice(-6);
-const TEST_EMAIL = `e2e+signup-${RUN_SUFFIX}@pevo.test`;
+// Constants that don't depend on RUN_SUFFIX stay at module scope; identity
+// strings derived from RUN_SUFFIX are computed per-test (see test body) so
+// Playwright retries get a distinct suffix and don't collide on
+// UNIQUE(email). Matches the pattern in seed-phrase.spec.js.
 const TEST_PASSWORD = 'E2eTestPass1';
 const TEST_NAME = 'E2E Tester';
 const TEST_INSTITUTION = 'Test Institution';
 const TEST_FIELD = 'Test Science';
 
-test('fresh visitor signs up and verifies email', async ({ page }) => {
+test('fresh visitor signs up and verifies email', async ({ page }, testInfo) => {
+  // RUN_SUFFIX is computed here (not at module scope) so Playwright retries
+  // in the same worker re-evaluate it. Including `testInfo.retry` guarantees
+  // a distinct suffix on every attempt, avoiding duplicate-signup 409s that
+  // would mask the original failure.
+  const RUN_SUFFIX = `${Date.now().toString(36).slice(-6)}r${testInfo.retry}`;
+  const TEST_EMAIL = `e2e+signup-${RUN_SUFFIX}@pevo.test`;
+
   await page.goto('/signup');
 
   // Alpine x-model is preserved in the DOM; selecting by it is stable

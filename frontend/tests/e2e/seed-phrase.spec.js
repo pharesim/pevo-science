@@ -41,22 +41,23 @@ import { deriveAllKeys } from '../../src/hive-keys.js';
 // Dropping traces entirely is safer than attempting per-step redaction.
 test.use({ trace: 'off', video: 'off', screenshot: 'off' });
 
-// Timestamp-suffix both the email and the username for rerun safety. Without
-// the suffix, reruns against a non-truncated dev DB collide on the email
-// unique constraint, or overwrite verify-token rows before the
-// expect-length-1 assertion below.
-const RUN_SUFFIX = Date.now().toString(36).slice(-6);
-const TEST_EMAIL = `e2e+seed-${RUN_SUFFIX}@pevo.test`;
+// Constants that don't depend on RUN_SUFFIX stay at module scope; identity
+// strings derived from RUN_SUFFIX (email, username) are computed per-test
+// so Playwright retries in the same worker re-evaluate them.
 const TEST_PASSWORD = 'E2eTestPass1';
 const TEST_NAME = 'E2E Seed Tester';
 const TEST_INSTITUTION = 'Test Institution';
 const TEST_FIELD = 'Test Science';
-// Hive usernames are 3-16 chars, lowercase a-z/0-9, may contain dots/hyphens.
-// Keys are derived from username, so the value only needs to be stable
-// within a single test invocation.
-const TEST_USERNAME = `e2eseed${RUN_SUFFIX}`.toLowerCase();
 
-test('signup-generated mnemonic re-derives to the same keys on /recover', async ({ page }) => {
+test('signup-generated mnemonic re-derives to the same keys on /recover', async ({ page }, testInfo) => {
+  // RUN_SUFFIX is computed inside the test so retries get a distinct value
+  // (including `testInfo.retry`), preventing duplicate-signup 409s from
+  // masking the original failure. Hive usernames are 3-16 chars, lowercase
+  // a-z/0-9, dots/hyphens allowed; keys are derived from username, so the
+  // value only needs to be stable within a single test invocation.
+  const RUN_SUFFIX = `${Date.now().toString(36).slice(-6)}r${testInfo.retry}`;
+  const TEST_EMAIL = `e2e+seed-${RUN_SUFFIX}@pevo.test`;
+  const TEST_USERNAME = `e2eseed${RUN_SUFFIX}`.toLowerCase();
   // ─── Step 1: email signup (same shape as email-signup.spec.js) ─────────
   await page.goto('/signup');
 

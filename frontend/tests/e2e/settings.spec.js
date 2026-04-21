@@ -33,13 +33,19 @@ import { openAppPool } from './fixtures/db.js';
 // (the global default `trace: 'retain-on-failure'` would otherwise persist them).
 test.use({ trace: 'off', video: 'off', screenshot: 'off' });
 
-// Suffix all three identity strings so reruns against a non-truncated dev DB
-// don't collide on UNIQUE(email)/UNIQUE(username). Mirrors seed-phrase.spec.js.
-const RUN_SUFFIX = Date.now().toString(36).slice(-6);
-const TEST_USERNAME = `e2e-settings-${RUN_SUFFIX}`;
-const TEST_EMAIL_OLD = `e2e+settings-old-${RUN_SUFFIX}@pevo.test`;
-const TEST_EMAIL_NEW = `e2e+settings-new-${RUN_SUFFIX}@pevo.test`;
+// Stable constants stay at module scope; identity strings derived from
+// RUN_SUFFIX are (re)computed in beforeAll so Playwright retries — which
+// re-run beforeAll but do NOT re-evaluate module scope — get a distinct
+// suffix that includes `testInfo.retry`.
 const NEW_LOCALE = 'de';
+
+// Populated in beforeAll from (Date.now, testInfo.retry). Declared with `let`
+// so the tests + seedLightAccount + seedLightSession observe whatever the
+// most recent beforeAll computed.
+let RUN_SUFFIX;
+let TEST_USERNAME;
+let TEST_EMAIL_OLD;
+let TEST_EMAIL_NEW;
 
 async function seedLightAccount(pool) {
   // custody='light', verify_token=NULL means an active light-account user
@@ -84,7 +90,15 @@ async function seedLightSession(page) {
 test.describe('settings — light-account non-chain flows', () => {
   let pool;
 
-  test.beforeAll(async () => {
+  test.beforeAll(async ({}, testInfo) => {
+    // Recompute RUN_SUFFIX per beforeAll invocation. Playwright re-runs
+    // beforeAll on retries, so including `testInfo.retry` guarantees retries
+    // see a distinct suffix and don't collide on UNIQUE(email) /
+    // UNIQUE(username) against rows left by the failed attempt.
+    RUN_SUFFIX = `${Date.now().toString(36).slice(-6)}r${testInfo.retry}`;
+    TEST_USERNAME = `e2e-settings-${RUN_SUFFIX}`;
+    TEST_EMAIL_OLD = `e2e+settings-old-${RUN_SUFFIX}@pevo.test`;
+    TEST_EMAIL_NEW = `e2e+settings-new-${RUN_SUFFIX}@pevo.test`;
     // `openAppPool` enforces the `_test` DB-suffix guard locally, matching
     // global-setup so spec-in-isolation runs can't accidentally write to
     // the dev DB.

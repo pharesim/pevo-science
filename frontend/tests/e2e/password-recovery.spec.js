@@ -43,12 +43,10 @@ import { withAppPool } from './fixtures/db.js';
 // `trace: 'retain-on-failure'` would otherwise capture them).
 test.use({ trace: 'off', video: 'off', screenshot: 'off' });
 
-// Suffix the email and username so reruns against a non-truncated dev DB
-// don't collide on UNIQUE(email) / UNIQUE(username). Mirrors the pattern
-// introduced in seed-phrase.spec.js for the same reason.
-const RUN_SUFFIX = Date.now().toString(36).slice(-6);
-const TEST_EMAIL = `e2e+recovery-${RUN_SUFFIX}@pevo.test`;
-const TEST_USERNAME = `e2e-recover-${RUN_SUFFIX}`;
+// Stable constants stay at module scope; identity strings derived from
+// RUN_SUFFIX are computed per-test (including `testInfo.retry`) so
+// Playwright retries in the same worker re-evaluate them and don't collide
+// on UNIQUE(email) / UNIQUE(username).
 const OLD_PASSWORD = 'E2eOldPass1';
 const NEW_PASSWORD = 'E2eNewPass2';
 const TEST_NAME = 'E2E Recovery Tester';
@@ -61,19 +59,22 @@ const TEST_FIELD = 'Test Science';
  *   - Flip verify_token/username/custody so the row represents an
  *     account that has completed the Hive-account step.
  * Returns the account id for follow-up queries.
+ *
+ * Takes email/username as arguments so the per-test RUN_SUFFIX flows in
+ * instead of closing over module-scope constants.
  */
-async function seedActiveUser(request, pool) {
+async function seedActiveUser(request, pool, testEmail, testUsername) {
   // Clean any leftover row from a prior partial run (test DB is reset
   // between runs by global-setup, but a retry within the same run can hit
   // UNIQUE(email)).
   await pool.query('DELETE FROM accounts WHERE email = $1 OR username = $2', [
-    TEST_EMAIL,
-    TEST_USERNAME,
+    testEmail,
+    testUsername,
   ]);
 
   const signupResp = await request.post('/api/auth/signup', {
     data: {
-      email: TEST_EMAIL,
+      email: testEmail,
       password: OLD_PASSWORD,
       full_name: TEST_NAME,
       institution: TEST_INSTITUTION,
@@ -90,7 +91,7 @@ async function seedActiveUser(request, pool) {
            custody = 'light'
      WHERE email = $1
      RETURNING id`,
-    [TEST_EMAIL, TEST_USERNAME],
+    [testEmail, testUsername],
   );
   expect(rows).toHaveLength(1);
   return rows[0].id;
@@ -99,12 +100,20 @@ async function seedActiveUser(request, pool) {
 test('user requests password reset, follows email token, and signs in with new password', async ({
   page,
   request,
-}) => {
+}, testInfo) => {
+  // RUN_SUFFIX is computed inside the test body so Playwright retries — which
+  // re-run this test function but do NOT re-evaluate module scope — get a
+  // distinct suffix (via `testInfo.retry`) and don't collide on
+  // UNIQUE(email) / UNIQUE(username) against rows from the failed attempt.
+  const RUN_SUFFIX = `${Date.now().toString(36).slice(-6)}r${testInfo.retry}`;
+  const TEST_EMAIL = `e2e+recovery-${RUN_SUFFIX}@pevo.test`;
+  const TEST_USERNAME = `e2e-recover-${RUN_SUFFIX}`;
+
   // `withAppPool` opens a short-lived pool against APP_DATABASE_URL, enforces
   // the `_test` DB-suffix guard locally, and ends the pool even if the test
   // throws — replaces the hand-rolled pool/try/finally that used to live here.
   await withAppPool(async (pool) => {
-    await seedActiveUser(request, pool);
+    await seedActiveUser(request, pool, TEST_EMAIL, TEST_USERNAME);
 
     // ── Step 1: request a reset from the UI ────────────────────────
     await page.goto('/reset-password');

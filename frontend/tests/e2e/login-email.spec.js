@@ -28,13 +28,18 @@ import { openAppPool } from './fixtures/db.js';
 // capture both).
 test.use({ trace: 'off', video: 'off', screenshot: 'off' });
 
-// Suffix email + username so reruns against a non-truncated dev DB don't
-// collide on UNIQUE(email)/UNIQUE(username). Mirrors seed-phrase.spec.js.
-const RUN_SUFFIX = Date.now().toString(36).slice(-6);
-const TEST_EMAIL = `e2e+login-${RUN_SUFFIX}@pevo.test`;
-const TEST_USERNAME = `e2e-login-${RUN_SUFFIX}`;
+// Identity strings derived from RUN_SUFFIX are computed in beforeAll (rather
+// than at module scope) so Playwright retries in the same worker — which
+// re-run beforeAll but do NOT re-evaluate module scope — get a distinct
+// suffix including `testInfo.retry`. Stable constants stay here.
 const TEST_PASSWORD = 'E2eLoginPass1';
 const WRONG_PASSWORD = 'NotMyPassword9';
+
+// Populated in beforeAll from (Date.now, testInfo.retry). Declared with `let`
+// so the two tests below see whatever the most recent beforeAll computed.
+let RUN_SUFFIX;
+let TEST_EMAIL;
+let TEST_USERNAME;
 
 async function seedLightAccount(pool) {
   const passwordHash = await argon2.hash(TEST_PASSWORD, { type: argon2.argon2id });
@@ -56,7 +61,14 @@ async function seedLightAccount(pool) {
 test.describe('email+password login', () => {
   let pool;
 
-  test.beforeAll(async () => {
+  test.beforeAll(async ({}, testInfo) => {
+    // Recompute RUN_SUFFIX per beforeAll invocation. Playwright runs
+    // beforeAll again on retries, so including `testInfo.retry` guarantees
+    // retries see a distinct suffix and don't collide on UNIQUE(email) /
+    // UNIQUE(username) against rows left by the failed attempt.
+    RUN_SUFFIX = `${Date.now().toString(36).slice(-6)}r${testInfo.retry}`;
+    TEST_EMAIL = `e2e+login-${RUN_SUFFIX}@pevo.test`;
+    TEST_USERNAME = `e2e-login-${RUN_SUFFIX}`;
     // `openAppPool` refuses to open the pool unless APP_DATABASE_URL's
     // database name ends in `_test` — spec-local belt-and-suspenders for
     // spec-in-isolation runs that skip global-setup.
