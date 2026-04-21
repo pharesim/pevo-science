@@ -11,6 +11,8 @@
 // Trailing slashes are dropped so `/fr/papers/` normalises to `/papers` —
 // callers compare exact-equal to `/papers`, `/researchers`, `/search`.
 export function localeStrippedPath(pathname) {
+  // Mirrors router SUPPORTED_LOCALES casing (all lowercase, 2 chars). Widen only
+  // in tandem with frontend/src/router.js SUPPORTED_LOCALES.
   const stripped = pathname.replace(/^\/[a-z]{2,3}(?=\/|$)/, '') || '/';
   if (stripped.length > 1 && stripped.endsWith('/')) {
     return stripped.slice(0, -1);
