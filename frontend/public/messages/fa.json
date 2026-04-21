@@ -714,7 +714,6 @@
     "editFailed": "ویرایش ناموفق بود",
     "accreditationFailed": "درخواست اعتبارسنجی ناموفق بود",
     "orcidFailed": "تایید ORCID ناموفق بود",
-    "bip39NotLoaded": "کتابخانه BIP39 بارگذاری نشده است",
     "getAccredited": "دریافت اعتبارسنجی",
     "noAccount": "حساب کاربری ندارید؟",
     "signUp": "ثبت‌نام",

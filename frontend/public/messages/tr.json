@@ -718,7 +718,6 @@
     "editFailed": "Düzenleme başarısız",
     "accreditationFailed": "Akreditasyon talebi başarısız",
     "orcidFailed": "ORCID doğrulaması başarısız",
-    "bip39NotLoaded": "BIP39 kütüphanesi yüklenemedi",
     "getAccredited": "Akredite olun",
     "noAccount": "Hesabınız yok mu?",
     "signUp": "Kayıt ol",

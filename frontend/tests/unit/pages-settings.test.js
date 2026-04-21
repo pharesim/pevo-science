@@ -99,7 +99,7 @@ describe('settingsPage', () => {
 
       await comp.loadEmailStatus();
 
-      expect(comp.emailStatus).toEqual({ hasEmail: false, custody: 'self' });
+      expect(comp.emailStatus).toEqual({ hasEmail: false, custody: 'self', hasPassword: false });
     });
   });
 
@@ -157,6 +157,16 @@ describe('settingsPage', () => {
       expect(comp.emailStatus.hasEmail).toBe(false);
       expect(comp.showDeleteConfirm).toBe(false);
       expect(mockToastStore.show).toHaveBeenCalled();
+    });
+
+    it('preserves hasPassword on delete so Set-Password surface stays visible for ORCID users', async () => {
+      mockDeleteEmail.mockResolvedValue({});
+      const comp = createComponent();
+      comp.emailStatus = { hasEmail: true, email: 'a***@x.com', verified: true, hasPassword: false };
+
+      await comp.handleEmailDelete();
+
+      expect(comp.emailStatus.hasPassword).toBe(false);
     });
 
     it('does nothing if already deleting', async () => {
@@ -270,7 +280,7 @@ describe('settingsPage', () => {
       expect(mockSetPassword).not.toHaveBeenCalled();
     });
 
-    it('surfaces backend error', async () => {
+    it('surfaces backend error and zeroes password inputs', async () => {
       mockSetPassword.mockRejectedValue({ message: 'already set', code: 'CONFLICT' });
       const comp = createComponent();
       comp.newPasswordInput = 'Abcdefgh1x';
@@ -279,6 +289,8 @@ describe('settingsPage', () => {
       expect(comp.passwordError).toBe('already set');
       expect(comp.passwordSetDone).toBe(false);
       expect(comp.passwordSubmitting).toBe(false);
+      expect(comp.newPasswordInput).toBe('');
+      expect(comp.newPasswordConfirmInput).toBe('');
     });
 
     it('newPasswordsMatch reflects equality of the two inputs', () => {

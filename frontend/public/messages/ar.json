@@ -714,7 +714,6 @@
     "editFailed": "فشل التعديل",
     "accreditationFailed": "فشل طلب الاعتماد",
     "orcidFailed": "فشل التحقق من ORCID",
-    "bip39NotLoaded": "لم يتم تحميل مكتبة BIP39",
     "getAccredited": "الحصول على الاعتماد",
     "noAccount": "ليس لديك حساب؟",
     "signUp": "إنشاء حساب",

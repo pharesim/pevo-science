@@ -714,7 +714,6 @@
     "editFailed": "Modifica non riuscita",
     "accreditationFailed": "Richiesta di accreditamento non riuscita",
     "orcidFailed": "Verifica ORCID non riuscita",
-    "bip39NotLoaded": "Libreria BIP39 non caricata",
     "getAccredited": "Ottieni l'accreditamento",
     "noAccount": "Non hai un account?",
     "signUp": "Registrati",

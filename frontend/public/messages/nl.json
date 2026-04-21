@@ -718,7 +718,6 @@
     "editFailed": "Bewerking mislukt",
     "accreditationFailed": "Accreditatieverzoek mislukt",
     "orcidFailed": "ORCID-verificatie mislukt",
-    "bip39NotLoaded": "BIP39-bibliotheek niet geladen",
     "getAccredited": "Accreditatie aanvragen",
     "noAccount": "Nog geen account?",
     "signUp": "Registreren",

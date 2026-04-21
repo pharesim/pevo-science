@@ -718,7 +718,6 @@
     "editFailed": "Edit failed",
     "accreditationFailed": "Accreditation request failed",
     "orcidFailed": "ORCID verification failed",
-    "bip39NotLoaded": "BIP39 library not loaded",
     "getAccredited": "Get accredited",
     "noAccount": "Don't have an account?",
     "signUp": "Sign up",

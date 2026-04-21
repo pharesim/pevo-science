@@ -714,7 +714,6 @@
     "editFailed": "编辑失败",
     "accreditationFailed": "认证申请失败",
     "orcidFailed": "ORCID 验证失败",
-    "bip39NotLoaded": "BIP39 库未加载",
     "getAccredited": "获取认证",
     "noAccount": "还没有账户？",
     "signUp": "注册",

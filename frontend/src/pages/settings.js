@@ -166,7 +166,7 @@ const template = `
                  with no password. ORCID-verified signups/recoveries leave
                  the password empty; this lets the user opt into password login later. -->
             <template x-if="!emailLoading && emailStatus && emailStatus.hasPassword === false">
-              <div class="border border-parchment-dark rounded-xl p-6 mt-6">
+              <div data-testid="set-password-section" class="border border-parchment-dark rounded-xl p-6 mt-6">
                 <h2 class="text-xl font-bold text-ink mb-2" x-text="$t('settings.setPasswordTitle')"></h2>
                 <p class="text-sm text-ink-muted mb-4" x-text="$t('settings.setPasswordDescription')"></p>
 
@@ -174,18 +174,18 @@ const template = `
                   <form @submit.prevent="handleSetPassword()" class="space-y-3">
                     <div>
                       <label class="block text-sm font-medium text-ink mb-1" x-text="$t('settings.setPasswordLabel')"></label>
-                      <input type="password" x-model="newPasswordInput" required minlength="10"
+                      <input type="password" data-testid="set-password-input" x-model="newPasswordInput" required minlength="10"
                              class="w-full border border-parchment-dark rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-pevo-teal focus:border-pevo-teal">
                       <p class="text-xs text-ink-muted mt-1" x-text="$t('settings.setPasswordHint')"></p>
                     </div>
                     <div>
                       <label class="block text-sm font-medium text-ink mb-1" x-text="$t('settings.setPasswordConfirmLabel')"></label>
-                      <input type="password" x-model="newPasswordConfirmInput" required
+                      <input type="password" data-testid="set-password-confirm-input" x-model="newPasswordConfirmInput" required
                              class="w-full border border-parchment-dark rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-pevo-teal focus:border-pevo-teal"
                              :class="newPasswordConfirmInput && !newPasswordsMatch ? 'border-pevo-crimson' : ''">
                       <p x-show="newPasswordConfirmInput && !newPasswordsMatch" class="text-xs text-pevo-crimson mt-1" x-text="$t('settings.setPasswordMismatch')"></p>
                     </div>
-                    <button type="submit" :disabled="!canSubmitPassword || passwordSubmitting"
+                    <button type="submit" data-testid="set-password-submit" :disabled="!canSubmitPassword || passwordSubmitting"
                             class="btn-primary disabled:opacity-50 disabled:cursor-not-allowed"
                             x-text="passwordSubmitting ? $t('settings.setPasswordSaving') : $t('settings.setPasswordSubmit')"></button>
                     <p x-show="passwordError" class="text-sm text-red-600" x-text="passwordError"></p>
@@ -448,7 +448,7 @@ export function initSettingsPage() {
         const res = await fetchEmailStatus();
         this.emailStatus = res.data;
       } catch {
-        this.emailStatus = { hasEmail: false, custody: 'self' };
+        this.emailStatus = { hasEmail: false, custody: 'self', hasPassword: false };
       } finally {
         this.emailLoading = false;
       }
@@ -496,6 +496,10 @@ export function initSettingsPage() {
         if (this.emailStatus) this.emailStatus = { ...this.emailStatus, hasPassword: true };
         Alpine.store('toast').show(this.$t('settings.setPasswordSuccess'), 'success');
       } catch (err) {
+        // Zero plaintext password on error path so it doesn't linger in
+        // Alpine reactive state (XSS-read surface) while the error is shown.
+        this.newPasswordInput = '';
+        this.newPasswordConfirmInput = '';
         this.passwordError = err.message || this.$t('common.connectionFailed');
       } finally {
         this.passwordSubmitting = false;
@@ -507,7 +511,11 @@ export function initSettingsPage() {
       this.deleting = true;
       try {
         await deleteEmail(true);
-        this.emailStatus = { hasEmail: false, custody: this.custody };
+        this.emailStatus = {
+          hasEmail: false,
+          custody: this.custody,
+          hasPassword: this.emailStatus?.hasPassword ?? false,
+        };
         this.showDeleteConfirm = false;
         this.showChangeForm = false;
         this.emailMessage = null;

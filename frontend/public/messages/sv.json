@@ -714,7 +714,6 @@
     "editFailed": "Redigering misslyckades",
     "accreditationFailed": "Ackrediteringsbegäran misslyckades",
     "orcidFailed": "ORCID-verifiering misslyckades",
-    "bip39NotLoaded": "BIP39-bibliotek inte laddat",
     "getAccredited": "Bli ackrediterad",
     "noAccount": "Har du inget konto?",
     "signUp": "Registrera dig",

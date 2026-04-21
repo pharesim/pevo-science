@@ -107,7 +107,7 @@ async function fetchAccreditationStatusFromHaf(username: string) {
 
   try {
     const result = await pool.query(
-      `SELECT cj.json FROM ${T.customJson} cj
+      `SELECT cj.json, cj.id AS event_id FROM ${T.customJson} cj
        WHERE cj.custom_id = $2
          AND cj.json::jsonb ->> 'action' IN ('accredit', 'revoke')
          AND cj.required_posting_auths ?| $4::text[]
@@ -140,6 +140,7 @@ async function fetchAccreditationStatusFromHaf(username: string) {
         method: payload.method,
         orcid: payload.orcid || null,
         timestamp: payload.timestamp,
+        tx_id: result.rows[0].event_id?.toString() || null,
       },
     };
   } catch (err) {

@@ -714,7 +714,6 @@
     "editFailed": "Úprava selhala",
     "accreditationFailed": "Žádost o akreditaci selhala",
     "orcidFailed": "Ověření ORCID selhalo",
-    "bip39NotLoaded": "Knihovna BIP39 nebyla načtena",
     "getAccredited": "Získat akreditaci",
     "noAccount": "Nemáte účet?",
     "signUp": "Registrovat se",

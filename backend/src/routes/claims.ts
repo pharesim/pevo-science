@@ -63,6 +63,52 @@ async function fetchClaimsFromHaf(paperAuthor: string, paperPermlink: string) {
   }
 }
 
+/**
+ * Returns true iff `candidate` has an accepted authorship claim on
+ * (paperAuthor, paperPermlink). Used to authorize approved co-authors to
+ * co-sign approvals of additional claimants on bridge papers.
+ *
+ * Note: the HAF CTE's status values are 'accepted' / 'pending' / 'revoked'
+ * (see `authorshipClaimsCteBody` in src/hafsql.ts). "Approved" in product
+ * language maps to `status = 'accepted'` in the schema.
+ *
+ * Fails closed: if HAF is unavailable or the query errors, returns false.
+ * That's the safe default. An unavailable data source must not be treated
+ * as positive authorization to trigger a bridge-key broadcast.
+ */
+async function isApprovedCoAuthor(
+  paperAuthor: string,
+  paperPermlink: string,
+  candidate: string,
+): Promise<boolean> {
+  const pool = getPool();
+  if (!pool) return false;
+
+  try {
+    const cte = buildWith(1,
+      activeAccreditationsCteBody,
+      (idx) => authorshipClaimsCteBody(idx, { paperAuthor, paperPermlink }),
+    );
+
+    const result = await pool.query(
+      `${cte.sql}
+       SELECT 1
+       FROM authorship_claims
+       WHERE paper_author = $${cte.nextIdx}
+         AND paper_permlink = $${cte.nextIdx + 1}
+         AND claimer = $${cte.nextIdx + 2}
+         AND status = 'accepted'
+       LIMIT 1`,
+      [...cte.params, paperAuthor, paperPermlink, candidate],
+    );
+
+    return result.rows.length > 0;
+  } catch (err) {
+    logger.error({ err }, 'HAF approved-co-author check failed — denying authorization');
+    return false;
+  }
+}
+
 // ──────────────────────────────────────────────
 // POST /api/papers/:author/:permlink/claim
 // For light accounts: server-side broadcast of claim_authorship
@@ -136,8 +182,22 @@ router.post('/:claimer/approve', verifyHiveSignature, approveLimiter, async (req
     timestamp: new Date().toISOString(),
   };
 
-  // Bridge papers: server broadcasts with bridge account key
+  // Bridge papers: server broadcasts with bridge account key, but only after
+  // caller-identity authorization. Bridge papers have no human post-author,
+  // so the platform admin bootstraps the first approved claim, and approved
+  // co-authors of the same paper may then vouch for additional claimants.
+  // Self-approval by the claimer is disallowed. That would collapse the gate.
   if (paperAuthor === config.hiveBridgeAccount && config.pevoBridgePostingKey) {
+    if (username === claimer) {
+      return sendError(res, 403, 'FORBIDDEN', 'Claimer cannot approve their own claim');
+    }
+    const isApprovalAuthority =
+      username === config.hiveAdminAccount ||
+      await isApprovedCoAuthor(paperAuthor, paperPermlink, username);
+    if (!isApprovalAuthority) {
+      return sendError(res, 403, 'FORBIDDEN', 'Only the platform admin or an approved co-author can approve claims on bridge papers');
+    }
+
     const key = PrivateKey.fromString(config.pevoBridgePostingKey);
     const result = await hiveClient.broadcast.json(
       {
@@ -188,13 +248,16 @@ router.post('/:claimer/revoke', verifyHiveSignature, revokeLimiter, async (req: 
   const claimer = req.params.claimer as string;
   const { reason } = req.body as { reason?: string };
 
-  // Authorization: post author, bridge account, admin, or claimer themselves
+  // Authorization: post author, admin, or claimer themselves. Note that
+  // `paperAuthor === config.hiveBridgeAccount` (a property of the paper, not
+  // the caller) is deliberately NOT part of this gate. Prior to SEC-003-BE
+  // including it meant every authenticated user could revoke any claim on any
+  // bridge paper, since the bridge account is never a human caller.
   const isPostAuthor = username === paperAuthor;
   const isClaimer = username === claimer;
   const isAdmin = username === config.hiveAdminAccount;
-  const isBridgeAdmin = paperAuthor === config.hiveBridgeAccount;
 
-  if (!isPostAuthor && !isClaimer && !isAdmin && !isBridgeAdmin) {
+  if (!isPostAuthor && !isClaimer && !isAdmin) {
     return sendError(res, 403, 'FORBIDDEN', 'Not authorized to revoke this claim');
   }
 
@@ -207,8 +270,11 @@ router.post('/:claimer/revoke', verifyHiveSignature, revokeLimiter, async (req: 
     timestamp: new Date().toISOString(),
   };
 
-  // Bridge papers or admin: server broadcasts
-  if (isBridgeAdmin && config.pevoBridgePostingKey) {
+  // Bridge-key broadcast: only when the platform admin is revoking on a
+  // bridge paper. A claimer revoking their own claim on a bridge paper falls
+  // through to the client-signed return-operation path below. We never burn
+  // the bridge key on a user-driven revoke.
+  if (paperAuthor === config.hiveBridgeAccount && isAdmin && config.pevoBridgePostingKey) {
     const key = PrivateKey.fromString(config.pevoBridgePostingKey);
     const result = await hiveClient.broadcast.json(
       {

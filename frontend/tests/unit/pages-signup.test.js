@@ -317,6 +317,18 @@ describe('signupPage', () => {
       expect(comp.error).toBe('fail');
       expect(comp.isResending).toBe(false);
     });
+
+    it('is a no-op on the ORCID branch (no empty-password POST)', async () => {
+      const comp = createComponent();
+      comp.email = 'x@x.com';
+      comp.password = '';
+      comp.orcidToken = 'orcid-token';
+
+      await comp.handleResendVerification();
+
+      expect(mockResendVerification).not.toHaveBeenCalled();
+      expect(comp.isResending).toBe(false);
+    });
   });
 
   describe('init', () => {

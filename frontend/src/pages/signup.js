@@ -147,7 +147,7 @@ const template = `
             <div x-show="resendSuccess" class="bg-green-50 border border-green-200 rounded-lg p-4 mb-4">
               <p class="text-green-700 text-sm" x-text="$t('login.verificationResent')"></p>
             </div>
-            <button x-show="!resendSuccess" type="button" @click="handleResendVerification()" :disabled="isResending"
+            <button x-show="!resendSuccess && !orcidToken" type="button" @click="handleResendVerification()" :disabled="isResending"
                     class="text-sm text-pevo-teal hover:underline disabled:opacity-50">
               <span x-show="!isResending" x-text="$t('login.resendVerification')"></span>
               <span x-show="isResending" x-text="$t('login.resending')"></span>
@@ -328,7 +328,9 @@ export function initSignupPage() {
     },
 
     async handleResendVerification() {
-      if (this.isResending) return;
+      // ORCID branch has no password; don't POST an empty-password resend
+      // even if the button hide is bypassed.
+      if (this.isResending || this.orcidToken) return;
       this.isResending = true;
       try {
         await resendVerification(this.email.trim(), this.password);
