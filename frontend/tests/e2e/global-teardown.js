@@ -56,8 +56,23 @@ async function unpinFromKubo(ipfsApiUrl, cid) {
  * opt out of `trace: 'retain-on-failure'` before handling real keys.
  *
  * Secrets checked:
- *   - Base58 WIF private keys (Hive prefixes `5H`, `5J`, `5K`, 51 chars).
- *   - `SESSION_SECRET=` value — the symmetric key our backend uses for JWTs.
+ *   - Uncompressed Base58 WIF private keys (Hive prefixes `5H`, `5J`, `5K`,
+ *     51 chars) — the format owner/active/posting/memo keys ship in.
+ *   - Compressed Base58 WIF private keys (prefix `K` or `L`, 52 chars).
+ *     Bitcoin-style compressed WIFs are produced by some libraries when
+ *     deriving keys from a BIP39 mnemonic; worth catching even though
+ *     Hive itself prefers the uncompressed form.
+ *   - Three-segment base64url tokens (JWT shape: header.payload.signature,
+ *     each segment 20+ chars). Catches bearer JWTs minted via `mintSessionJwt`
+ *     / `seedAccreditedSession` / `seedUnaccreditedSession` even when the
+ *     SESSION_SECRET literal isn't in the trace.
+ *   - `SESSION_SECRET=` assignment form and `"SESSION_SECRET"` JSON-key form.
+ *     Either could leak the literal key name, which is enough signal to
+ *     investigate even without the value adjacent.
+ *   - 12-word lowercase BIP39 mnemonic shape (11 spaces between 12 words of
+ *     3-8 lowercase letters). Catches seed phrases that drive the light-
+ *     account signup path.
+ *   - `SESSION_SECRET` value itself (checked separately via env lookup).
  *   - Known E2E-minted password `E2eTestPass1` used by seed-phrase,
  *     email-signup, login-email, password-recovery, settings.
  *
@@ -93,13 +108,25 @@ function scanTracesForSecrets() {
 
   if (traceFiles.length === 0) return;
 
-  // Regex alternation for the three secret classes. Matched against the
-  // text-extracted trace content; `-E` for extended regex, `-l` to bail
-  // on first match per file (we only need to know if it's dirty).
+  // Regex alternation for each secret class. Matched against the
+  // text-extracted trace content with a single `new RegExp(combined)` below;
+  // we only need to know if a trace is dirty, not how many hits it has.
   const wifPattern = '5[HJK][1-9A-HJ-NP-Za-km-z]{49}';
+  const compressedWifPattern = '[KL][1-9A-HJ-NP-Za-km-z]{51}';
+  const jwtPattern = '[A-Za-z0-9_-]{20,}\\.[A-Za-z0-9_-]{20,}\\.[A-Za-z0-9_-]{20,}';
   const sessionSecretPattern = 'SESSION_SECRET[=:]';
+  const sessionSecretJsonPattern = '"SESSION_SECRET"';
+  const bip39MnemonicPattern = '([a-z]{3,8} ){11}[a-z]{3,8}';
   const knownTestPassword = 'E2eTestPass1';
-  const combined = `${wifPattern}|${sessionSecretPattern}|${knownTestPassword}`;
+  const combined = [
+    wifPattern,
+    compressedWifPattern,
+    jwtPattern,
+    sessionSecretPattern,
+    sessionSecretJsonPattern,
+    bip39MnemonicPattern,
+    knownTestPassword,
+  ].join('|');
 
   const sessionSecretValue = process.env.SESSION_SECRET;
   const secretValuePattern =

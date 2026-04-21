@@ -28,6 +28,11 @@ import { test, expect } from './fixtures/keychain.js';
 import { mintSessionJwt } from './fixtures/auth.js';
 import { openAppPool } from './fixtures/db.js';
 
+// Specs in this file mint live backend-valid bearer JWTs via mintSessionJwt.
+// Disable trace/video/screenshot to keep those tokens out of trace.zip artifacts
+// (the global default `trace: 'retain-on-failure'` would otherwise persist them).
+test.use({ trace: 'off', video: 'off', screenshot: 'off' });
+
 // Suffix all three identity strings so reruns against a non-truncated dev DB
 // don't collide on UNIQUE(email)/UNIQUE(username). Mirrors seed-phrase.spec.js.
 const RUN_SUFFIX = Date.now().toString(36).slice(-6);

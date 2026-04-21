@@ -14,6 +14,11 @@
 import { test, expect } from './fixtures/keychain.js';
 import { pickAccreditedResearcher, seedAccreditedSession } from './fixtures/auth.js';
 
+// This spec mints a live backend-valid bearer JWT via seedAccreditedSession.
+// Disable trace/video/screenshot to keep that token out of trace.zip artifacts
+// (the global default `trace: 'retain-on-failure'` would otherwise persist it).
+test.use({ trace: 'off', video: 'off', screenshot: 'off' });
+
 const APP_TAG = 'pevotest';
 
 test('review submission assembles a valid Hive comment broadcast with rating metadata', async ({

@@ -18,6 +18,11 @@
 import { test, expect } from './fixtures/keychain.js';
 import { seedUnaccreditedSession } from './fixtures/auth.js';
 
+// This spec mints a live backend-valid bearer JWT via seedUnaccreditedSession.
+// Disable trace/video/screenshot to keep that token out of trace.zip artifacts
+// (the global default `trace: 'retain-on-failure'` would otherwise persist it).
+test.use({ trace: 'off', video: 'off', screenshot: 'off' });
+
 const STUB_CODE = 'stub-orcid-code-abc';
 const STUB_STATE = 'stub-orcid-state-xyz';
 

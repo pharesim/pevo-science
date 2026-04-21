@@ -21,6 +21,13 @@ import argon2 from '../../../backend/node_modules/argon2/argon2.cjs';
 import { test, expect } from './fixtures/keychain.js';
 import { openAppPool } from './fixtures/db.js';
 
+// This spec submits a plaintext password through the /login form and the login
+// response body carries the minted session JWT. Disable trace/video/screenshot
+// so neither the plaintext password nor the token is persisted in trace.zip
+// artifacts (the global default `trace: 'retain-on-failure'` would otherwise
+// capture both).
+test.use({ trace: 'off', video: 'off', screenshot: 'off' });
+
 // Suffix email + username so reruns against a non-truncated dev DB don't
 // collide on UNIQUE(email)/UNIQUE(username). Mirrors seed-phrase.spec.js.
 const RUN_SUFFIX = Date.now().toString(36).slice(-6);

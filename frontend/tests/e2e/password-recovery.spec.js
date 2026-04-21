@@ -36,6 +36,13 @@
 import { test, expect } from './fixtures/keychain.js';
 import { withAppPool } from './fixtures/db.js';
 
+// This spec drives password-reset flows that carry plaintext passwords through
+// form submissions and response bodies. Disable trace/video/screenshot so
+// neither the plaintext passwords nor any subsequent session JWT ends up
+// persisted in trace.zip artifacts (the global default
+// `trace: 'retain-on-failure'` would otherwise capture them).
+test.use({ trace: 'off', video: 'off', screenshot: 'off' });
+
 // Suffix the email and username so reruns against a non-truncated dev DB
 // don't collide on UNIQUE(email) / UNIQUE(username). Mirrors the pattern
 // introduced in seed-phrase.spec.js for the same reason.

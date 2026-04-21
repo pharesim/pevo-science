@@ -33,6 +33,11 @@
 import { test, expect } from './fixtures/keychain.js';
 import { seedUnaccreditedSession } from './fixtures/auth.js';
 
+// This spec mints a live backend-valid bearer JWT via seedUnaccreditedSession.
+// Disable trace/video/screenshot to keep that token out of trace.zip artifacts
+// (the global default `trace: 'retain-on-failure'` would otherwise persist it).
+test.use({ trace: 'off', video: 'off', screenshot: 'off' });
+
 const TEST_FULL_NAME = 'E2E Accreditation Tester';
 const TEST_INSTITUTION = 'Test Institution';
 const TEST_FIELD = 'Test Science';
