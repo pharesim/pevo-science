@@ -378,7 +378,7 @@ describe('POST /api/orcid/callback — hardening (SEC-002-HARDENING)', () => {
         // under test exists only on the Redis path. Skip rather than fake it.
         return;
       }
-      installOrcidFetchStub({ orcid: '0000-0001-ffff-0001', name: 'Alice', works: 3 });
+      installOrcidFetchStub({ orcid: '0000-0001-9001-0001', name: 'Alice', works: 3 });
       const state = await startUnauthed('signup');
       const delSpy = vi.spyOn(redis, 'del').mockImplementationOnce(async () => {
         throw new Error('simulated Redis flap on state DEL');
@@ -406,7 +406,7 @@ describe('POST /api/orcid/callback — hardening (SEC-002-HARDENING)', () => {
     async () => {
       const redis = getRedis();
       if (!redis) return;
-      installOrcidFetchStub({ orcid: '0000-0001-ffff-0002', name: 'Alice', works: 3 });
+      installOrcidFetchStub({ orcid: '0000-0001-9001-0002', name: 'Alice', works: 3 });
       const state = await startUnauthed('signup');
       const stateKey = `${config.appTag}:orcid_state:${state}`;
 
@@ -438,7 +438,7 @@ describe('POST /api/orcid/callback — hardening (SEC-002-HARDENING)', () => {
   it(
     'login mode returns NO_ACCOUNT with orcid_id in error.details (envelope compliance)',
     async () => {
-      const orcidId = '0000-0001-cccc-0002';
+      const orcidId = '0000-0001-9002-0002';
       installOrcidFetchStub({ orcid: orcidId });
       // No app-db row => NO_ACCOUNT branch fires.
       appQueryMock.mockResolvedValue({ rows: [] });
@@ -464,7 +464,7 @@ describe('POST /api/orcid/callback — hardening (SEC-002-HARDENING)', () => {
     async () => {
       const redis = getRedis();
       if (!redis) return; // Cache requires Redis; no-op otherwise.
-      const orcidId = '0000-0001-cccc-0003';
+      const orcidId = '0000-0001-9002-0003';
       const cacheKey = `${config.appTag}:orcid_binding:${orcidId}`;
       await redis.set(cacheKey, 'bob', 'EX', 120);
       try {
@@ -494,7 +494,7 @@ describe('POST /api/orcid/callback — hardening (SEC-002-HARDENING)', () => {
     async () => {
       const redis = getRedis();
       if (!redis) return;
-      const orcidId = '0000-0001-cccc-0004';
+      const orcidId = '0000-0001-9002-0004';
       installOrcidFetchStub({ orcid: orcidId, name: 'Alice', works: 3 });
       hafQueryMock.mockImplementation(async (sql: string) => {
         if (sql.includes("'orcid' = $1")) {
@@ -540,7 +540,7 @@ describe('POST /api/orcid/callback — hardening (SEC-002-HARDENING)', () => {
     async () => {
       const redis = getRedis();
       if (!redis) return;
-      const orcidId = '0000-0001-cccc-0005';
+      const orcidId = '0000-0001-9002-0005';
       installOrcidFetchStub({ orcid: orcidId, name: 'Alice', works: 3 });
       hafQueryMock.mockImplementation(async (sql: string) => {
         if (sql.includes("'orcid' = $1")) return { rows: [] };
@@ -578,6 +578,89 @@ describe('POST /api/orcid/callback — hardening (SEC-002-HARDENING)', () => {
   );
 });
 
+// BE-ORCID-ID-FORMAT-VALIDATION — format-level guard on orcid_id at the OAuth
+// token-exchange boundary. Each handler (handleAccredit / handleLink /
+// handleLogin) gets a module-level ORCID_RE check; the dispatch site also
+// guards before branching. These specs inject a structurally invalid orcid_id
+// via the mocked token endpoint (e.g. '0000-0000-0000-0001/../../oauth/token')
+// and assert 400 BAD_REQUEST before any Redis (binding cache/lock), Hive
+// (broadcast.json), or HAF (hafQueryMock) call fires on the rejection path.
+describe('POST /api/orcid/callback — orcid_id format validation (BE-ORCID-ID-FORMAT-VALIDATION)', () => {
+  const MALFORMED_ORCID = '0000-0000-0000-0001/../../oauth/token';
+
+  // Install a fetch stub that returns a structurally invalid orcid from the
+  // token endpoint. Mirrors installOrcidFetchStub but with no format guard
+  // inside the stub — the handler's guard is what we're testing.
+  function installMalformedOrcidFetchStub(): void {
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL) => {
+      const u = typeof url === 'string' ? url : url.toString();
+      if (u.includes('/oauth/token')) {
+        return new Response(
+          JSON.stringify({ orcid: MALFORMED_ORCID, name: 'Malformed', access_token: 'tk' }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      // If the guard fails to fire, a subsequent countExternalWorks() fetch to
+      // pub.orcid.org would surface here. Throw loudly so the test fails with
+      // a clear signal rather than a silent 422/500 downstream.
+      throw new Error(`Unexpected post-guard fetch in format-validation test: ${u}`);
+    }));
+  }
+
+  it(
+    'handleAccredit rejects malformed orcid_id with 400 BAD_REQUEST before any Redis/Hive/HAF call',
+    async () => {
+      installMalformedOrcidFetchStub();
+      const state = await startAuthed('accredit', 'alice');
+      const res = await request(app)
+        .post('/api/orcid/callback')
+        .set('Authorization', `Bearer ${jwtFor('alice')}`)
+        .send({ code: 'fake', state });
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('BAD_REQUEST');
+      expect(res.body.error.message).toMatch(/invalid orcid/i);
+      // Rejection must happen before any downstream side effect.
+      expect(broadcastJsonMock).not.toHaveBeenCalled();
+      expect(hafQueryMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it(
+    'handleLink rejects malformed orcid_id with 400 BAD_REQUEST before any Redis/Hive/HAF call',
+    async () => {
+      installMalformedOrcidFetchStub();
+      const state = await startAuthed('link', 'alice');
+      const res = await request(app)
+        .post('/api/orcid/callback')
+        .set('Authorization', `Bearer ${jwtFor('alice')}`)
+        .send({ code: 'fake', state });
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('BAD_REQUEST');
+      expect(res.body.error.message).toMatch(/invalid orcid/i);
+      expect(broadcastJsonMock).not.toHaveBeenCalled();
+      expect(hafQueryMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it(
+    'handleLogin rejects malformed orcid_id with 400 BAD_REQUEST before any Redis/Hive/HAF call',
+    async () => {
+      installMalformedOrcidFetchStub();
+      const state = await startUnauthed('login');
+      const res = await request(app)
+        .post('/api/orcid/callback')
+        .send({ code: 'fake', state });
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('BAD_REQUEST');
+      expect(res.body.error.message).toMatch(/invalid orcid/i);
+      // login mode would normally hit appQueryMock; guard must fire first.
+      expect(appQueryMock).not.toHaveBeenCalled();
+      expect(hafQueryMock).not.toHaveBeenCalled();
+      expect(broadcastJsonMock).not.toHaveBeenCalled();
+    },
+  );
+});
+
 // SEC-002-TOCTOU-LOCK — same-event-loop-tick race on ORCID binding.
 // The orcid_binding cache (EX 120s) narrows the HAF-indexing-lag window but is
 // written AFTER broadcast. Two concurrent requests for the same orcid_id both
@@ -590,8 +673,8 @@ describe('POST /api/orcid/callback — hardening (SEC-002-HARDENING)', () => {
 // race, stale-lock expiry, Redis-outage degrade, broadcast-throw finally); any
 // divergence in the wrapper's handling of the two handlers surfaces here.
 describe.each([
-  { mode: 'accredit' as const, tag: 'a' },
-  { mode: 'link' as const, tag: 'b' },
+  { mode: 'accredit' as const, tag: '1' },
+  { mode: 'link' as const, tag: '2' },
 ])('POST /api/orcid/callback — same-tick SETNX lock (SEC-002-TOCTOU-LOCK) — $mode mode', ({ mode, tag }) => {
   // link mode needs the pre-lock getExistingAccreditation(username) to find
   // an existing authority-signed accredit row; otherwise handleLink 422s
