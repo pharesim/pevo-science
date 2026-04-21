@@ -284,7 +284,13 @@ router.post('/resend-verification', resendLimiter, async (req: Request, res: Res
     );
 
     if (rows.length === 0) {
-      // Constant-time response to prevent email enumeration
+      // Burn sentinel argon2.verify to equalize wall-time with the real-account
+      // branch below (which runs argon2.verify for accounts with a password
+      // hash). Without this, unknown-email returns in ~1ms while known-email
+      // returns in ~100ms — a timing oracle for email enumeration that
+      // undermines the constant-message response. Status-code stays 200.
+      const sentinelHash = await SENTINEL_ARGON2_HASH_PROMISE;
+      await argon2.verify(sentinelHash, password).catch(() => { /* timing-equalization only; result ignored */ });
       return sendOk(res, { message: 'If that email has a pending signup, a new verification link has been sent.' });
     }
 
@@ -384,6 +390,14 @@ router.post('/login', loginLimiter, async (req: Request, res: Response) => {
     );
 
     if (rows.length === 0) {
+      // Burn sentinel argon2.verify to equalize wall-time with the real-account
+      // branch below. Without this, the unknown-account 401 returns in ~1ms
+      // while a real-account wrong-password 401 takes ~100ms (argon2.verify) —
+      // a timing oracle that lets an unauthenticated attacker enumerate which
+      // usernames/emails have PEvO accounts. Status-code stays 401 (matches
+      // wrong-password); only the timing leak is closed.
+      const sentinelHash = await SENTINEL_ARGON2_HASH_PROMISE;
+      await argon2.verify(sentinelHash, password).catch(() => { /* timing-equalization only; result ignored */ });
       return sendError(res, 401, 'UNAUTHORIZED', 'Invalid credentials');
     }
 
@@ -673,6 +687,16 @@ router.post('/recover', recoverLimiter, async (req: Request, res: Response) => {
     );
 
     if (rows.length === 0) {
+      // Burn sentinel argon2.verify to equalize wall-time with the happy-path
+      // argon2.hash below. Without this, unknown-username returns in ~1ms
+      // while successful recovery with a new password takes ~100ms — a
+      // timing oracle for username enumeration. Status-code stays 404
+      // (distinct from 401/200 on the known-account branches); only the
+      // timing leak is closed. We use a dummy argon2 input since this
+      // endpoint doesn't take a raw password at this point; the sentinel
+      // verify is cost-equivalent to the real argon2.hash work.
+      const sentinelHash = await SENTINEL_ARGON2_HASH_PROMISE;
+      await argon2.verify(sentinelHash, 'recover-timing-dummy').catch(() => { /* timing-equalization only; result ignored */ });
       return sendError(res, 404, 'NOT_FOUND', 'Account not found');
     }
 

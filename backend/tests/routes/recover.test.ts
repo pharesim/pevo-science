@@ -440,3 +440,123 @@ describe('SEC-004-BE: login on null-hash account', () => {
     expect(elapsed).toBeGreaterThanOrEqual(50);
   });
 });
+
+// ─── SEC-LOGIN-UNKNOWN-USER-TIMING: close unknown-account timing oracles ───
+
+async function clearRateLimitKeys(names: string[]) {
+  const { getRedis } = await import('../../src/redis.js');
+  const { config } = await import('../../src/config.js');
+  const redis = getRedis();
+  if (!redis) return;
+  // Wait briefly for Redis to become ready — getRedis() returns a client
+  // before connect() resolves, so isRedisAvailable() may transiently be false
+  // during beforeAll. If it never becomes ready, skip (in-memory fallback).
+  for (let i = 0; i < 20 && redis.status !== 'ready'; i++) {
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  if (redis.status !== 'ready') return;
+  for (const name of names) {
+    const keys = await redis.keys(`${config.appTag}:rl:${name}:*`).catch(() => [] as string[]);
+    if (keys.length > 0) await redis.del(...keys).catch(() => {});
+  }
+}
+
+describe('SEC-LOGIN-UNKNOWN-USER-TIMING: /login unknown-account burns sentinel', () => {
+  it.skipIf(!dbReachable)('returns 401 for unknown username with ≥ 40ms wall-time', async () => {
+    await clearRateLimitKeys(['auth-login']);
+    // Without the sentinel argon2.verify on the unknown-account branch of
+    // /api/auth/login, this path returns in ~1ms while the known-account
+    // wrong-password path takes ~45-100ms — a timing oracle for username/email
+    // enumeration by unauthenticated attackers. 40ms lower bound is the
+    // mutation-kill threshold (40x margin above the ~1ms pre-sentinel path);
+    // set slightly below the existing SEC-004-BE 50ms assertion because
+    // argon2.verify at these ARGON2_OPTIONS runs 42-55ms on modern x86 and
+    // 50ms produces CI flakes. Still kills the sentinel-removal mutation.
+    //
+    // Warm the sentinel-hash lazy promise + Node request stack so the measured
+    // call reflects steady-state argon2.verify cost (~50ms on modern x86),
+    // not first-call overhead.
+    for (let i = 0; i < 2; i++) {
+      await request(app)
+        .post('/api/auth/login')
+        .send({ username: `definitely_nonexistent_warmup_user_${i}`, password: 'Warmup1234' });
+    }
+
+    const start = Date.now();
+    const res = await request(app)
+      .post('/api/auth/login')
+      .send({ username: 'definitely_nonexistent_user_xyz', password: 'AnythingValid1' });
+    const elapsed = Date.now() - start;
+
+    expect(res.status).toBe(401);
+    expect(res.body.error.code).toBe('UNAUTHORIZED');
+    expect(elapsed).toBeGreaterThanOrEqual(40);
+  });
+});
+
+describe('SEC-LOGIN-UNKNOWN-USER-TIMING: /resend-verification unknown-email burns sentinel', () => {
+  it.skipIf(!dbReachable)('returns 200 for unknown email with ≥ 40ms wall-time', async () => {
+    // Clear per-test (not just beforeAll) because vitest retry reruns the
+    // body without reruns of beforeAll, and resendLimiter=3/hr leaves no
+    // headroom across a retry.
+    await clearRateLimitKeys(['auth-resend']);
+    // Without the sentinel argon2.verify on the unknown-email branch of
+    // /api/auth/resend-verification, this path returns in ~1ms while the
+    // known-email + password-verify path takes ~100ms — a timing oracle
+    // that undermines the constant-message 200 response. The status-code
+    // is already constant; only the timing leak is closed here.
+    //
+    // Warm sentinel-hash promise. Limited to 1 warmup request because
+    // resendLimiter is only 3/hr (1 warmup + 1 measured + 1 retry headroom).
+    await request(app)
+      .post('/api/auth/resend-verification')
+      .send({ email: 'nonexistent_warmup@example.com', password: 'Warmup1234' });
+
+    const start = Date.now();
+    const res = await request(app)
+      .post('/api/auth/resend-verification')
+      .send({ email: 'definitely_nonexistent_xyz@example.com', password: 'AnythingValid1' });
+    const elapsed = Date.now() - start;
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('ok');
+    expect(elapsed).toBeGreaterThanOrEqual(40);
+  });
+});
+
+describe('SEC-LOGIN-UNKNOWN-USER-TIMING: /recover unknown-username burns sentinel', () => {
+  it.skipIf(!dbReachable)('returns 404 for unknown username with ≥ 40ms wall-time', async () => {
+    await clearRateLimitKeys(['auth-recover']);
+    // Without the sentinel argon2.verify on the unknown-username branch of
+    // /api/auth/recover, this path returns in ~1ms while the happy-path
+    // (argon2.hash of new_password on successful recovery) takes ~100ms —
+    // a timing oracle for username enumeration. Status-code stays 404.
+    //
+    // Warm sentinel-hash promise + Node request stack.
+    for (let i = 0; i < 2; i++) {
+      await request(app)
+        .post('/api/auth/recover')
+        .send({
+          username: `nonexistent_warmup_user_${i}`,
+          new_email: `warmup_${Date.now()}_${i}@example.com`,
+          new_password: 'WarmupPass1234',
+          memo_key: TEST_MEMO_KEY,
+        });
+    }
+
+    const start = Date.now();
+    const res = await request(app)
+      .post('/api/auth/recover')
+      .send({
+        username: 'definitely_nonexistent_recover_user',
+        new_email: `recover_timing_${Date.now()}@example.com`,
+        new_password: 'NewPassword1234',
+        memo_key: TEST_MEMO_KEY,
+      });
+    const elapsed = Date.now() - start;
+
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe('NOT_FOUND');
+    expect(elapsed).toBeGreaterThanOrEqual(40);
+  });
+});
