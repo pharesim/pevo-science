@@ -12,10 +12,14 @@
  * spec starts.
  */
 
-import pg from 'pg';
 import { test, expect } from './fixtures/keychain.js';
+import { queryAppDb } from './fixtures/db.js';
 
-const TEST_EMAIL = 'e2e+signup@pevo.test';
+// Suffix the email so reruns against a non-truncated dev DB don't collide on
+// the UNIQUE(email) constraint or overwrite verify-token rows before the
+// expect-length-1 assertion below. Matches the pattern in seed-phrase.spec.js.
+const RUN_SUFFIX = Date.now().toString(36).slice(-6);
+const TEST_EMAIL = `e2e+signup-${RUN_SUFFIX}@pevo.test`;
 const TEST_PASSWORD = 'E2eTestPass1';
 const TEST_NAME = 'E2E Tester';
 const TEST_INSTITUTION = 'Test Institution';
@@ -59,23 +63,17 @@ test('fresh visitor signs up and verifies email', async ({ page }) => {
     page.getByRole('heading', { name: 'Check your email' }),
   ).toBeVisible();
 
-  // Read the verification token straight from pevo_app_test. APP_DATABASE_URL
-  // is the same env var Playwright global-setup asserted on, so it's already
-  // validated by the time we get here.
-  const pool = new pg.Pool({ connectionString: process.env.APP_DATABASE_URL });
-  let verifyToken;
-  try {
-    const { rows } = await pool.query(
-      'SELECT verify_token FROM accounts WHERE email = $1',
-      [TEST_EMAIL],
-    );
-    expect(rows).toHaveLength(1);
-    verifyToken = rows[0].verify_token;
-    expect(verifyToken).toBeTruthy();
-    expect(verifyToken.startsWith('confirmed:')).toBe(false);
-  } finally {
-    await pool.end();
-  }
+  // Read the verification token straight from pevo_app_test. `queryAppDb`
+  // layers a spec-local `_test` DB-suffix guard on top of global-setup for
+  // spec-in-isolation runs.
+  const { rows } = await queryAppDb(
+    'SELECT verify_token FROM accounts WHERE email = $1',
+    [TEST_EMAIL],
+  );
+  expect(rows).toHaveLength(1);
+  const verifyToken = rows[0].verify_token;
+  expect(verifyToken).toBeTruthy();
+  expect(verifyToken.startsWith('confirmed:')).toBe(false);
 
   // Drive the verify page; it auto-POSTs /api/auth/verify on init.
   const verifyResponsePromise = page.waitForResponse(
