@@ -207,6 +207,24 @@ Round-3 `/ce-code-review` (7 reviewers: correctness, security, testing, maintain
 - Finding #2 (P3→must-fix revoke-branch): new third spec `backend/tests/routes/profile-auth-bypass.test.ts:146-178` "treats a revoke row as unaccredited" — injects `{action:'revoke', ...}` as latest row, asserts `is_accredited:false` + `accreditation:null`, with `expect(hafQueryMock).toHaveBeenCalled()` at `:177`. Mocked-pool carve-out justification from existing file header covers this spec (pattern parallels `accreditations-revoke.test.ts`).
 - Verified via targeted run: 17/17 pass across `profile-auth-bypass.test.ts` (3) + `orcid.test.ts` (14).
 
+**Architect re-review (2026-04-21, round-4) — HELD PENDING FIXES:**
+
+Round-4 `/ce-code-review` (testing + correctness, direct invocation per updated protocol) on commit `9895fe9`. The round-3 prescribed fix landed verbatim — and round-4 reviewers converged on the finding that **the prescription itself was insufficient**. Captured as `/ce-compound` learning `agents/docs/solutions/conventions/mock-guard-assertion-must-verify-call-shape-2026-04-21.md`.
+
+1. **P2 — `toHaveBeenCalled()` is not a mutation-kill safeguard at a predicate-gated mock site** (testing 0.95 + correctness 0.90, 2-reviewer convergence). The mock's fallback `return { rows: [] }` fires whenever the `if (sql.includes(...) && sql.includes('account' = $1))` guard doesn't match. `toHaveBeenCalled()` passes on every call — matched branch or fallback branch. If a SQL refactor drops the authority filter entirely, the guard fails, the mock returns the fallback, outer assertions (`is_accredited:false`, `accreditation:null`) still pass, `toHaveBeenCalled()` still passes, and the load-bearing `expect(sql).toContain('required_posting_auths ?| $4::text[]')` assertion silently never runs. Fix: promote all 4 sites to `expect(hafQueryMock).toHaveBeenCalledWith(expect.stringContaining('required_posting_auths ?| $4::text[]'), expect.anything())`. The matcher fails if no call matched the expected SQL shape — which is exactly the regression the test is named for. Sites: `profile-auth-bypass.test.ts:100, 143, 177` + `orcid.test.ts:279, 319` (the SEC-AUTH-BYPASS blocks; also add to the new third revoke spec at `profile-auth-bypass.test.ts:177`).
+
+2. **P3 — `event_id:99` in the revoke fixture is inert** (correctness COR-001, 0.95). `profile.ts:51` returns `null` before `event_id` is projected. The fixture's `event_id:99` is never read. Current comment implies meaning it doesn't have. Fix: mirror the pattern in `accreditations-revoke.test.ts` — either drop the field or add a one-line comment noting "event_id intentionally discarded on revoke branch".
+
+3. **P3 — Revoke spec omits `params[0]` account-scoping check** (testing T-2, 0.85). Specs 1 and 2 in `profile-auth-bypass.test.ts` assert `expect(params[0]).toBe(victim)` inside the guard. The new revoke spec doesn't. Fix: add `expect(params[0]).toBe(revoked)` inside the guarded branch at `profile-auth-bypass.test.ts:~160`. One line.
+
+**Dismissed from round-4 findings:**
+- **P3 Carve-out condition (c) compliance weak** (project-standards F-001, 0.62). The real-HAF variant for the revoke branch on `/api/profile/:username` is demonstrably infeasible per-test (requires broadcasting a revoke from an authority account + waiting on HAF indexing). Clause (c)'s spirit is covered by the 4 sibling sites in `accreditations.ts` + `orcid.ts` that DO have real-HAF tests of the same authority-filter pattern. Not paperwork-theater-filing a follow-up.
+
+**Filed as new Pending task (out of scope for this hold):**
+- `backend-mock-guard-assertion-sweep.md` — P3 broader sweep. The `toHaveBeenCalled()` → `toHaveBeenCalledWith(matcher, ...)` promotion should land across **all** predicate-gated mock sites in the backend test suite, not just these 5. Known current sites enumerated in the learning doc at `agents/docs/solutions/conventions/mock-guard-assertion-must-verify-call-shape-2026-04-21.md`.
+
+**Path to re-archive:** (1) Backend applies items #1-3. (2) Backend re-review signal block. (3) Architect re-reviews round-5 with `/ce-code-review` and archives.
+
 ---
 
 ### SEC-002-HARDENING — Post-review hardening of /api/orcid (Backend Agent, P2)
@@ -247,6 +265,23 @@ Round-2 `/ce-code-review` (correctness/security/reliability/testing/maintainabil
 - Verified: 15/15 pass in `orcid.test.ts`; typecheck clean.
 - [TODO Architect] orcid.md doc updates from original status block (state-not-consumed-on-403 contract + NO_ACCOUNT `error.details` shape + optional common.md note) remain deferred to atomic archive.
 
+**Architect re-review (2026-04-21, round-3) — HELD PENDING FIXES:**
+
+Round-3 `/ce-code-review` on commit `ab2baaf`. The round-2 hold-block widening (try/catch encompasses state-read + auth + DEL + token-exchange) landed correctly: 400 BAD_REQUEST path on `storedMode=null` still fires via normal early-return (not catch); 403 state-not-consumed preserved because `sendError(403) + return` exits before DEL; DEL throw still catches as 500 consistent with round-1. Round-3 surfaced a defense-in-depth gap and 2 test-coverage gaps adjacent to the commit's stated behavior.
+
+1. **P2 — `sendError` has no `res.headersSent` guard** (correctness COR-005, 0.75). `backend/src/response.ts:19` calls `res.status(httpStatus).json(...)` unconditionally. The widened try now wraps `authenticateRequest` (orcid.ts:184), which internally uses `verifyHiveSignature`. If `verifyHiveSignature` ever both writes a response AND throws (currently not reachable per the promise/finish-listener structure, but not structurally enforced), the outer catch fires `sendError(res, 500, ...)` on an already-responded res, Express logs "Cannot set headers after they are sent", the response stream is corrupted. Fix: add `if (res.headersSent) { logger.warn({}, 'sendError called after response sent'); return; }` at the top of `sendError` in `backend/src/response.ts`. Defense-in-depth; closes any future expansion of the pattern (e.g. the SEC-AUTH-BYPASS and SEC-002-TOCTOU-LOCK catch blocks that also widen try/catch around middleware). Architect-owned file, so backend agent must flag the edit via `[TODO Architect]` or the architect lands it during re-review.
+
+2. **P2 — Test uses `mockImplementationOnce` on `redis.get` — call-order-dependent, not key-targeted** (testing T-001, 0.88). The new "redis.get throws" spec at `orcid.test.ts:413-431` assumes the first `redis.get` call on the singleton is the stateKey read. Works today coincidentally (the throw exits the try before other `redis.get` calls happen). If a future change adds a `redis.get` upstream of the stateKey read (e.g. a per-request session lookup), the mock silently intercepts the wrong call and the test either passes for the wrong reason or fails for a confusing reason. Fix: swap to `mockImplementation(async (key) => { if (key === stateKey) throw new Error(...); return origGet(key); })`. Key-targeted, refactor-stable. ~6 lines.
+
+3. **P3 — `authenticateRequest` throws → 500 path untested** (testing T-002, 0.85). The widened try wraps auth. The commit message names "auth dispatch error" as a covered path. No test exercises `verifyHiveSignature` synchronously throwing before `sendError + resolve`. Fix: one spec mocking `verifyHiveSignature` (or the underlying redis replay-cache it depends on) to reject synchronously for an authed-mode callback. Assert 500 INTERNAL_ERROR + `delSpy.mock.calls.map(c => c[0])` does NOT contain `stateKey` (state-not-consumed on infra error, symmetric with the 403 path).
+
+4. **P3 — 403 state-not-consumed contract has no assertion in the existing 403 test** (testing T-003, 0.75). The 403 test at `orcid.test.ts:140` asserts `res.status === 403` + `broadcastJsonMock not called` but never asserts `redis.del` was NOT called with `stateKey`. A refactor that moves DEL before the username-mismatch check would go undetected. Fix: add `expect(delSpy.mock.calls.map(c => c[0])).not.toContain(stateKey)` to the existing 403 spec. One line.
+
+**Dismissed from round-3 findings:**
+- **P3 Emdashes in newly-added comments** (project-standards PS-001, 0.72). Rule is user-facing text scope; comments are fine. Pre-existing pattern.
+
+**Path to re-archive:** (1) Backend applies items #1-4 (item #1 requires touching `backend/src/response.ts` — architect-owned — so either flag for architect with a `[TODO Architect]` block, or the architect lands it at re-review time). (2) Backend re-review signal block. (3) Architect re-reviews round-4 with `/ce-code-review` and archives. At archive, land the deferred `orcid.md` contract updates from the original `[TODO Architect]` block (state-not-consumed-on-403 contract + NO_ACCOUNT `error.details` shape + optional common.md note) as a single atomic edit.
+
 ---
 
 ### BE-CLAIMS-ERROR-POLISH — Surface bridge misconfiguration with a distinct 503 (Backend Agent, P3)
@@ -278,6 +313,23 @@ Round-2 `/ce-code-review` (correctness/security/testing/api-contract/maintainabi
 - `backend/tests/routes/bridge.test.ts`: added auth-mock scaffold (mirroring `claims.test.ts` shape) plus new `BE-CLAIMS-ERROR-POLISH` describe block with 2 scenarios — register 503, update 503 — per-test save/restore of `config.pevoBridgePostingKey`. File-header justification for the `getAccreditedSet` mock added per root CLAUDE.md carve-out.
 - Verified: 25/25 pass across `bridge.test.ts` (10) + `claims.test.ts` (15); typecheck clean.
 
+**Architect re-review (2026-04-21, round-3) — HELD PENDING FIXES:**
+
+Round-3 `/ce-code-review` on commit `67311b3`. The round-2 hold (backport bridge.ts 500→503, extract `assertBridgeKeyConfigured` helper, 4 call sites source from one constant) landed correctly: all 4 sites use the helper, bridge.test.ts has 2 new 503 specs with proper save/restore, typing is sound. Round-3 surfaced one logic bug in the revoke handler's guard ordering and two contract-documentation gaps the commit introduced but didn't close.
+
+1. **P2 — `claims.ts:291` guard blocks `isClaimer` self-revoke on bridge paper when key is unset** (correctness C-01, 0.72). The revoke handler's authorization gate at lines 274-276 passes for `isClaimer` regardless of paper type. The `assertBridgeKeyConfigured` guard at line 291 then fires unconditionally for any bridge paper when the key is missing — including the self-revoke case. Comment at line 298 says "falls through to the client-signed return-operation path below" (no bridge key needed for client-signed), but the line-291 guard blocks that path before it can fire. A claimer self-revoking on a bridge paper when `pevoBridgePostingKey` is unset gets 503 SERVICE_UNAVAILABLE instead of the expected 200 + client-broadcast operation payload. Fix: reorder. Move the `assertBridgeKeyConfigured` guard BELOW the client-signed branch so it fires only when the server actually needs to broadcast with the bridge key. Alternative: gate the guard on `!isClaimer && paperAuthor === config.hiveBridgeAccount` so it skips when the caller will client-sign. Cleaner shape is reordering — the guard's job is "block when we NEED the key," which is after the client-signed branch has had its chance. Add one test: `isClaimer` authenticated + bridge paper + `pevoBridgePostingKey` unset → 200 with operation payload (not 503).
+
+2. **P2 — `agents/docs/api-contracts/bridge.md` lines 146 and 187 still document `INTERNAL_ERROR`** (api-contract AC-001, 0.92). Both endpoints previously returned 500 INTERNAL_ERROR; round-2 changed to 503 SERVICE_UNAVAILABLE. Contract doc never updated. **Architect-side fix at archive** — I own the contract file. Rewrite both lines during archive as part of item #3 bundle.
+
+3. **P2 — `SERVICE_UNAVAILABLE` absent from `common.md` error codes table** (api-contract AC-002, 0.95). The round-2 work (commit `52419c5`) added `SERVICE_UNAVAILABLE` to the `ErrorCode` TS union to satisfy the compiler but didn't update the standard error codes table in `agents/docs/api-contracts/common.md` lines 48-59. Any consumer that validates error codes against the documented set will treat SERVICE_UNAVAILABLE as unknown. **Architect-side fix at archive** — add a row to the standard error codes table: `| 503 | SERVICE_UNAVAILABLE | Backend dependency not configured or temporarily unavailable |`. Bundle with item #2.
+
+**Dismissed from round-3 findings:**
+- **P3 `assertBridgeKeyConfigured` naming — "assert" implies throw-on-failure convention, returns boolean** (maintainability M-001, 0.68). Inline comment above the function already documents the call convention. Rename is cosmetic churn. File mental note if a second boolean-returning `assert*` helper joins the codebase.
+- **(P3) `afterEach` save/restore ceremony** — round-2 dismissal stands. Vitest file-level serial execution + per-test afterEach is safe.
+- **(advisory) Pre-auth info leak on approve guard** — round-2 dismissal stands. `verifyHiveSignature` runs before the guard.
+
+**Path to re-archive:** (1) Backend applies item #1 (reorder + test). (2) Backend re-review signal block. (3) Architect re-reviews round-4 with `/ce-code-review`. (4) Architect lands items #2 and #3 (contract doc updates) during archive as a single atomic edit. All 4 changes archive together.
+
 ---
 
 ### FE-ORCID-CALLBACK-FIXES (UI Agent, P1)
@@ -303,6 +355,29 @@ Review (manual-synthesis pass — see commit `e40d9dc` on why `/ce-code-review` 
 - Finding #2 (test-harness gap): `frontend/tests/unit/pages-orcid-callback.test.js` `mockAuthStore` extended with `isAccredited: false` + `accreditation: null` defaults. New regression test "ORCID login clears stale accreditation state BEFORE _saveSession() fires" seeds stale values, uses `mockImplementationOnce` on `_saveSession` to snapshot store state at call-time, and asserts both fields are already cleared at that instant.
 - Verified: 25/25 pass in `pages-orcid-callback.test.js`; full frontend unit suite 837/837 pass; `npm run build` clean.
 
+**Architect re-review (2026-04-21) — HELD PENDING FIXES:**
+
+Round-2 `/ce-code-review` on commit `c078940` (correctness + testing + julik-frontend-races personas). The round-1 hold-block requirements (clear stale accreditation state before `_saveSession`, extend mockAuthStore + regression test) landed correctly ("BOTH HOLD-BLOCK REQUIREMENTS MET" per correctness reviewer). Round-2 surfaced an adjacent P2 asymmetry with other login paths and several test-hygiene items.
+
+1. **P2 — `_handleLogin` uses bare `_checkAccreditation()` instead of `_startAccreditationPolling()`** (julik-frontend-races JR-2, 0.88; merged with JR-3 0.85). Sibling login paths `loginFromResponse` and `connect` in `frontend/src/auth.js` both call `_startAccreditationPolling()` after writing session state; this provides the 60s retry loop so a transient accreditation-fetch failure doesn't leave a non-accredited-looking store permanently. `_handleLogin` on the ORCID callback path calls only `_checkAccreditation()` — a single fetch. If the fetch fails transiently (network flap, backend slow), the store stays at `isAccredited=false` / `accreditation=null` forever (or until manual reload). Fix: replace `auth._checkAccreditation()` with `auth._startAccreditationPolling()` at `frontend/src/pages/orcid-callback.js:~166`. One-line change; matches the pattern other login paths use. Add one test asserting `_startAccreditationPolling` is called exactly once post-ORCID-login. Closes JR-2 and JR-3 together.
+
+2. **P3 — Regression test snapshots in-memory store, not actual localStorage payload** (julik-frontend-races JR-5, 0.80). The new "clears stale accreditation state BEFORE _saveSession" test uses `mockImplementationOnce` on `_saveSession` to capture store state at call-time. It does NOT assert that the actual `localStorage.setItem('pevo_session', ...)` payload reflects the cleared state. A broken `_saveSession` that reads the wrong store fields would pass this test. Fix: after the existing `snapshotAtSave` assertions, add `expect(JSON.parse(localStorage.getItem('pevo_session'))).toMatchObject({ isAccredited: false, accreditation: null })` to cover the end-to-end persistence claim. (The real `_saveSession` is mocked in this test, so this assertion requires either un-mocking _saveSession for this one spec or pinning the test at a level where the real localStorage write happens. Implementer picks the shape; either is fine.)
+
+3. **P3 — No call-count assertion on `_saveSession`** (testing T1, 0.95). Neither the existing "handles login mode" test nor the new stale-state test asserts `toHaveBeenCalledTimes(1)`. A refactor introducing a second `_saveSession` call (double-save) would pass. Fix: add `expect(mockAuthStore._saveSession).toHaveBeenCalledTimes(1)` to both tests. 2 lines.
+
+4. **P3 — Dead `vi.useFakeTimers()` in the new stale-state test** (testing T2, 0.90). The test calls `vi.useFakeTimers()` at top and `vi.useRealTimers()` at the end but never advances timers, never asserts navigation, never depends on any setTimeout behavior. Noise. Fix: remove both calls.
+
+**Dismissed from round-2 findings:**
+- **P2 Transient `_checkAccreditation` failure leaves store permanently false** (julik-frontend-races JR-3, 0.85). **Subsumed by item #1**: starting the polling loop provides the retry path. Once #1 lands, JR-3 dissolves.
+- **P3 500ms redirect setTimeout not canceled on component teardown** (julik-frontend-races JR-4, 0.75). Latent bug for page-destroy races. Filed as separate Pending task `frontend-orcid-callback-teardown-cleanup.md` — affects other setTimeout call sites in the callback flow, not just this one.
+- **P3 Pre-existing `_saveSession` 6-arg misuse at `signup-verify.js` and `settings.js`**. Already filed as `FE-SAVESESSION-API-MISUSE-SWEEP` per the original task's split-to-Pending decision.
+- **P3 Storage-event two-write gap** (julik-frontend-races JR-1). Not a defect — storing `false` while the fetch is in flight is strictly safer than the prior behavior of storing stale `true`. Gap is bounded to one network round trip.
+
+**Filed as separate Pending task (out of scope for this hold):**
+- `frontend-orcid-callback-teardown-cleanup.md` — P3. Audit all setTimeout / setInterval / pending-promise call sites in `orcid-callback.js` for component-destroy cleanup. Store IDs in component state, clear in `destroy()`. Small scope but touches more than just the one site flagged.
+
+**Path to re-archive:** (1) UI agent applies items #1-4. (2) UI agent re-review signal block. (3) Architect re-reviews round-3 with `/ce-code-review` and archives.
+
 ---
 
 ### FE-KEYCHAIN-API-MISUSE (UI Agent, P1)
@@ -324,6 +399,29 @@ Review (manual-synthesis pass) surfaced one P2 finding. User triage 2026-04-21d:
 - `frontend/tests/e2e/custody-upgrade.spec.js` stub now polls for 3 calls; asserts each WIF-shape `/^5[HJK][1-9A-HJ-NP-Za-km-z]{49}$/`; asserts 3 distinct WIFs; cross-checks each against `rederived.{posting,active,memo}.private`; asserts `rederived.owner.private` is NOT imported.
 - `frontend/tests/unit/pages-settings.test.js`: dhive mock `fromSeed` now maps hex-seed input to a distinct WIF per role; new test "executeUpgrade imports posting + active + memo WIFs (three distinct) into Keychain".
 - Verified: full frontend unit suite 837/837 pass; `npm run build` clean.
+
+**Architect re-review (2026-04-21) — HELD PENDING FIXES:**
+
+Round-2 `/ce-code-review` on commit `1f36b7a` (correctness/security/testing). Round-1 hold (broaden Keychain import to 3 keys) landed cleanly and the 3-key loop works as designed. Round-2 surfaced a new P1 ordering bug that was latent in round-1's single-key version and becomes more exploitable with 3 sequential popups.
+
+1. **P1 — Partial-import lockout state via ordering bug** (security 0.82 + correctness 0.87, 2-reviewer convergence). The current sequence inside `executeUpgrade()` is: (a) `account_update` broadcast [**IRREVERSIBLE** — rotates all 4 authorities on-chain], (b) Keychain import loop with 3 sequential popups, (c) on success `/api/custody/upgrade` backend cleanup, (d) mnemonic wipe. If the user clicks Deny on Keychain popup 2 or 3, the Promise rejects, the outer catch wipes the mnemonic from Alpine state, and step (c) never fires. Backend retains stale encrypted keys for the old (now-superseded) authorities; on-chain authorities are already the new keys; mnemonic is gone from the DOM. The user's session is wedged — old keys don't work on-chain, backend doesn't have the new keys, mnemonic can't be recovered from state. Reachable via a single click on a Keychain permission dialog. Fix: reorder so the atomic pair `(broadcast, backend cleanup)` happens together, and Keychain import becomes a best-effort step with a soft warning UI (toast/banner, NOT upgradeError):
+    - Before broadcast: unchanged setup.
+    - After broadcast: immediately call `/api/custody/upgrade` backend cleanup. Failure here is a real error and surfaces upgradeError (this is the only remaining irreversible-pair gap).
+    - After backend cleanup: Keychain import loop. Each role's failure becomes a warning ("Keychain import incomplete — your `<role>` key was not imported; you can retry from settings later") but does NOT clear the mnemonic or mark upgrade as failed. upgradePhase advances to 'done'.
+    - After loop (success OR partial): `_clearSensitiveUpgradeState()` wipes the mnemonic.
+    Also: surface the Keychain-incomplete state via a new `upgradeWarnings: string[]` array so the user can see which roles succeeded and which didn't. i18n keys for each role's import-warning message.
+
+2. **P2 — No test for mid-loop Keychain denial** (testing 0.92). The round-1 fix's 3-key loop has no coverage for `requestImportKey` returning `{ success: false }` on call index 0 or 1. Production-reachable (user cancels dialog). Fix: with the #1 reorder landed, add two specs — (a) stub denies on call index 1 (active) → assert backend cleanup fired, assert upgradePhase === 'done', assert upgradeWarnings contains the active-role message; (b) stub denies on call index 0 (posting) → same assertions with posting message. Covers the new best-effort semantics.
+
+3. **P3 — Unit test WIF stub produces 51-char strings, not 50** (correctness C3, 0.82). `stubWifForHex` uses `'5K' + pad.repeat(49)` = 51 chars. Real Hive WIFs are 50 chars (2-char prefix + 48 base58). Doesn't affect correctness of production (dhive fully mocked) but makes the owner-exclusion assertion hard-code the stub output rather than derive it from the stub function — a stub change could silently break the check. Fix: change the stub to produce 50-char output (`'5K' + pad.repeat(48)`). Replace the hard-coded owner-WIF literal in the assertion with `stubWifForHex(<owner-seed>)` so any stub change flows through.
+
+**Dismissed from round-2 findings:**
+- **P3 No positional assertion (posting imported first)**. With the #1 reorder, Keychain import is best-effort and order no longer load-bearing. File mental note if a future caller reintroduces order dependence.
+- **P3 `newKeys[role]` unguarded if `deriveHiveKeys` drifts**. YAGNI. `deriveHiveKeys` unconditionally populates all 4 roles today; a future refactor breaking that contract will be caught by that refactor's tests.
+- **P3 WIF strings in closure memory during 3-popup window** (SEC-UPGRADE-WIF-IN-CLOSURE). Acknowledged as FE-UPGRADE-CLOSURE-WIPE follow-up; no JS fix at this layer.
+- **P3 `newKeys.owner` hex seed in scope through Keychain loop** (SEC-UPGRADE-OWNER-SEED-IN-SCOPE). Not a regression; the importRoles literal exclusion is structurally correct and tested both ways.
+
+**Path to re-archive:** (1) UI agent applies items #1-3 on this task. (2) UI agent appends a re-review signal block. (3) Architect re-reviews round-3 with `/ce-code-review`. Item #1 is cross-cutting (changes settings.js UX + i18n + tests); expect a thorough review.
 
 ---
 
@@ -349,91 +447,26 @@ Review (manual-synthesis pass) surfaced two P2 findings. User triage 2026-04-21d
 - `frontend/tests/unit/pages-settings.test.js`: new test "does not leak key-material from err.message into upgradeError" injects a throw whose `err.message` contains a 64-char hex blob + 12-word BIP39-shaped seed list; asserts the generic key reaches `upgradeError` and the raw error reaches `console.warn`.
 - Verified: full frontend unit suite 837/837 pass; `npm run build` clean.
 
----
+**Architect re-review (2026-04-21) — HELD PENDING FIXES:**
 
-### FE-UPGRADE-KEY-WRAPPER-ADOPT (UI Agent)
+Round-2 `/ce-code-review` on commit `fd116e4`. The round-1 hold (generic localized message + `console.warn` instead of raw `err.message` in `executeUpgrade()` catch) landed correctly. Round-2 surfaced one P2 sibling-catch gap (same bug in `startUpgrade`) and two P3 test-hardening items.
 
-**Status:** Landed at commit `276ed8f`. `settings.js` now imports `generateMnemonic`/`validateMnemonic`/`mnemonicToSeedSync` from `../hive-keys.js` (no raw `@scure/bip39` imports, no manual `wordlist` threading). `custody-upgrade.spec.js` signature regex tightened to `/^[0-9a-fA-F]{130}$/`; pubkeys cross-checked against independently-derived values via `deriveAllKeys`; old/new seeds now distinct so broadcast exercises real rotation; `newSeedPhrase` read gated on `I've written it down` button. `@hiveio/dhive` + `@scure/bip39` exact-pinned in `package.json`.
+1. **P2 — `startUpgrade()` catch at `settings.js:542` still binds `err.message` to `upgradeError`** (correctness COR-01, 0.85). The round-1 fix hardened `executeUpgrade()`'s catch but the sibling catch in `startUpgrade()` still does `this.upgradeError = err.message || this.$t('upgrade.generationFailed')`. `upgradeError` is x-text'd into the DOM at line 38. Immediate risk is low (generateMnemonic is a pure local BIP39 call, unlikely to embed key material in its error) but the invariant round-1 established — "upgradeError never carries `err.message`" — is broken by this sibling catch. Any future expansion of `startUpgrade()`'s try block that calls into a library reintroduces the vulnerability without a visible red flag. Fix: apply the same pattern. `console.warn('[custody upgrade:generate]', err); this.upgradeError = this.$t('upgrade.generationFailed')`. Verify `upgrade.generationFailed` key exists in `en.json` (add + stub across 15 locales if missing). Add one test asserting `startUpgrade` failure does not leak `err.message` contents into `upgradeError`.
 
-**Test results:** Full frontend unit suite (832/832 at session end) passes; `npm run build` clean.
+2. **P3 — `$t` stub in unit tests returns key verbatim; doesn't guard the `$t('key') || err.message` regression class** (correctness COR-02, 0.82). The stub `comp.$t = (key) => key` never returns falsy, so a future refactor changing the catch to `this.upgradeError = this.$t('upgrade.failed') || err.message` passes the current test. In production, any locale where `$t` returns `''` for a missing key would cause `upgradeError` to fall through to `err.message` (leak). Fix: change the stub to return a distinguishable non-empty marker (e.g. `comp.$t = (key) => 't:' + key`) and assert `expect(comp.upgradeError).toMatch(/^t:/)`. A regression using the OR-fallback pattern would fall through to `err.message` (which does NOT start with `t:`) and fail the new matcher.
 
-**Architect re-review (2026-04-21d) — HELD PENDING FIXES:**
+3. **P3 — `console.warn` assertion pins `calls[0]` without filtering on `[custody upgrade]` prefix** (correctness COR-03, 0.90). `warnSpy.mock.calls[0]` grabs the FIRST warn. If any code path inside `executeUpgrade()` or its mocks emits a warn before the catch block (e.g. a mock throws a React-style warning), `calls[0]` is that earlier warn, and the `expect(warnedStr).toContain(leakHex)` assertion runs against the wrong error object. Fix: filter `warnSpy.mock.calls` by `c[0] === '[custody upgrade]'` before extracting the error object. Refactor-stable.
 
-Review (manual-synthesis pass) surfaced one P2 finding. User triage 2026-04-21d: remove the dead re-export.
+**Dismissed from round-2 findings:**
+- **P3 4 other catch blocks (`handleSetPassword`, `handleEmailSubmit`, `handleEmailDelete`, `handleOrcidLink`) still bind err.message to DOM** (RR-01). Filed as separate Pending task (below). Lower risk than the upgrade flow (no key material in those code paths) but pattern-consistency matters.
+- **P3 console.warn not stripped in production bundle** (RR-02). Correct by design — Vite config does not `drop:['console']`, and the warn is intended for production operator diagnostics.
+- **P3 15 non-English locale stubs contain English placeholder** (RR-03). Accepted beta pattern per commit message. Translation follow-up is continuous, not gated on this task.
 
-1. **P2 — `hive-keys.js:98` dead `wordlist` re-export.** The module re-exports `wordlist` from `@scure/bip39/wordlists/english` as part of its public API, but after this task no external consumer imports it — the wrappers (`generateMnemonic`, `validateMnemonic`, `mnemonicToSeedSync`) handle wordlist injection internally. Violates the task's "route all consumers through the wrapper" thesis. Fix: delete `export { wordlist } from ...` (and the corresponding import if `wordlist` is only used inside `hive-keys.js` itself). The `pages-settings.test.js` mock already doesn't mock `wordlist`, confirming no test coupling to remove.
+**Filed as separate Pending tasks (out of scope for this hold):**
+- `frontend-settings-error-message-sanitize-sweep.md` — P3. Audit `handleSetPassword`, `handleEmailSubmit`, `handleEmailDelete`, `handleOrcidLink` (and any other `this.<field>Error = err.message` patterns across `frontend/src/`) for the same pattern; apply the generic-localized-message + console.warn fix uniformly.
+- `docs-locale-stub-convention.md` — P3 tooling/convention. Neither root `CLAUDE.md` nor `agents/ui/CLAUDE.md` documents a locale-stub convention (marker format, tracking mechanism). Future contributors have no signal that English-in-non-English-locale strings need translation. Standardize.
 
-**Path to archive:** (1) UI agent applies finding #1. (2) UI agent appends a re-review signal block. (3) Architect re-reviews and archives.
-
-**UI re-review signal (2026-04-21, commit `3195cb0`):** Finding #1 landed. Ready for architect re-review.
-- `frontend/src/hive-keys.js`: `wordlist` removed from the `export { mnemonicToSeedSync, wordlist }` re-export. The top-of-module `import { wordlist }` kept because the wrappers (`generateMnemonic`, `validateMnemonic`) use it internally.
-- Verified dead re-export: zero importers of `wordlist` from `hive-keys.js` across `frontend/src/` and `frontend/tests/` (only a comment reference in `pages-settings.test.js:37` mentioning "entropy/wordlist policy", no import).
-- Verified: 10/10 pass in `tests/unit/hive-keys.test.js`; full frontend unit suite 837/837 pass; `npm run build` clean.
-
----
-
-### FE-URL-SYNC-UTIL-EXTRACT (UI Agent, P2)
-
-**Status:** Landed at commit `ff22ce4`. New `frontend/src/lib/url-sync.js` exports pure `localeStrippedPath(pathname)`. Handles `/en/papers` → `/papers`, `/fr/papers/` → `/papers` (trailing slash drop), `/en` → `/`, `/research-something` unchanged. Three consumers swap. `feedOwnsUrl` → `pageOwnsUrl` rename in `paper-feed.js`. Missing inner popstate guard added to `paper-feed.js`; `pageOwnsUrl()` early-out added to `researchers._syncFromUrl()`. 8 lib tests. `search._syncFromUrl` left alone per task scope.
-
-**Test results:** Full frontend unit suite (832/832 at session end) passes; `npm run build` clean.
-
-**Architect re-review (2026-04-21d) — HELD PENDING FIXES:**
-
-Review (manual-synthesis pass) surfaced one P2 finding. User triage 2026-04-21d: document the coupling inline rather than widen the regex.
-
-1. **P2 — `lib/url-sync.js:14` locale regex `/^\/[a-z]{2,3}(?=\/|$)/` case-sensitive.** The regex strips only lowercase 2-3 char locales. Sanity-check: `frontend/src/router.js` uses `SUPPORTED_LOCALES.includes(segments[1])` against `['ar', 'cs', 'da', 'de', 'en', 'es', 'fa', 'fr', 'he', 'it', 'nl', 'pl', 'pt', 'sv', 'tr', 'zh']` — case-sensitive, all lowercase, all 2 chars. So the helper's casing matches the router's own casing. Fix is documentation, not code: add a comment immediately above the regex noting "Mirrors SUPPORTED_LOCALES casing (all lowercase 2-char). Router treats non-matching casing as non-locale path. Widen only in tandem with SUPPORTED_LOCALES." Prevents a future refactor from "widening" the helper without widening the router (which would cause garbage locale-shaped prefixes to be stripped as real locales).
-
-**Path to archive:** (1) UI agent applies finding #1 (one-line code comment). (2) UI agent appends a re-review signal block. (3) Architect re-reviews and archives.
-
-**UI re-review signal (2026-04-21, commit `0f562c9`):** Finding #1 landed. Ready for architect re-review.
-- `frontend/src/lib/url-sync.js` line 14: added two-line comment above the locale regex inside `localeStrippedPath()` — "Mirrors router SUPPORTED_LOCALES casing (all lowercase, 2 chars). Widen only in tandem with frontend/src/router.js SUPPORTED_LOCALES."
-- Verified: `frontend/src/i18n.js` (re-exported via router) defines `SUPPORTED_LOCALES = ['ar', 'cs', 'da', 'de', 'en', 'es', 'fa', 'fr', 'he', 'it', 'nl', 'pl', 'pt', 'sv', 'tr', 'zh']` — all 16 lowercase 2-char codes, fully within the regex. No drift.
-- Verified: 8/8 pass in `tests/unit/lib-url-sync.test.js`; full frontend unit suite 837/837 pass; `npm run build` clean.
+**Path to re-archive:** (1) UI agent applies items #1-3. (2) UI agent re-review signal block. (3) Architect re-reviews round-3 with `/ce-code-review` and archives.
 
 ---
 
-### FE-LOADDISCIPLINES-OBSERVABILITY (UI Agent, P2)
-
-**Status:** Landed at commit `7abb7d1`. `paper-feed.js` + `search.js`: added `disciplinesLoadFailed: false` state; `init()` `.catch(() => {})` replaced with `.catch((err) => { console.warn('[loadDisciplines]', err); this.disciplinesLoadFailed = true; })`. `:data-disciplines-status="disciplinesLoadFailed ? 'failed' : 'ok'"` bound on the discipline `<select>`. Playwright agents can now assert failure. `researchers.js` verified to have no disciplines dropdown — no changes there.
-
-**Test results:** Full frontend unit suite (832/832 at session end) passes; `npm run build` clean.
-
-**Architect re-review (2026-04-21d) — HELD PENDING FIXES:**
-
-Review (manual-synthesis pass) surfaced one P2 finding. User triage 2026-04-21d: fix the reset-on-retry trap in place.
-
-1. **P2 — `paper-feed.js:113-116` + `search.js:177-180` `disciplinesLoadFailed` never reset on retry.** The `.catch` sets the flag to true; `loadDisciplines` itself doesn't reset it. Today the function is init-only so the omission is inert, but any future retry path (route revisit, visibility-change reload, user-triggered retry UI) would see the flag stuck at true even after a successful load. Fix: add `this.disciplinesLoadFailed = false;` at the TOP of `loadDisciplines()` body (before the fetch) in both `paper-feed.js` and `search.js`. Add one test per file: seed `disciplinesLoadFailed = true`, call `loadDisciplines()` with a successful fetch mock, assert the flag is false. ~4 source lines + 2 tests total.
-
-**Path to archive:** (1) UI agent applies finding #1. (2) UI agent appends a re-review signal block. (3) Architect re-reviews and archives.
-
-**UI re-review signal (2026-04-21, commit `318e3dc`):** Finding #1 landed. Ready for architect re-review.
-- `frontend/src/components/paper-feed.js` and `frontend/src/pages/search.js`: `loadDisciplines()` now opens with `this.disciplinesLoadFailed = false;` (before the fetch), so any future retry path that invokes `loadDisciplines` after a prior failure clears the flag before attempting the new load. Rationale comment added inline. (Note: `disciplines` state lives on the component `paper-feed.js`, not a page-level file as the finding described.)
-- `frontend/tests/unit/components-paper-feed.test.js` + `frontend/tests/unit/pages-search.test.js`: one new regression test each — "resets disciplinesLoadFailed to false when a subsequent loadDisciplines succeeds". Seeds `disciplinesLoadFailed = true`, invokes `loadDisciplines()` with a successful fetch mock, asserts the flag is false post-call.
-- Verified: 60/60 pass across both test files; full frontend unit suite 837/837 pass; `npm run build` clean.
-
----
-
-### FE-SEARCH-QUERY-URL-HYGIENE (UI Agent, P3)
-
-**Status:** Landed at commit `7652f2d`. Three P3 cleanup items. (1) `doSearch` entry trims `q`, normalizes `this.query` so input/URL/API all see the same trimmed form. (2) Filter-change policy decided: keep submit-gated, intentional asymmetry with paper-feed (user-initiated vs passive feed) — comment added inline near filter row. (3) `/papers` Alpine scope renamed `homePage` → `papersPage` (new `initPapersPage` + registered in `index.js`); home.js unchanged. New trim-roundtrip unit test.
-
-**Test results:** Full frontend unit suite (832/832 at session end) passes; `npm run build` clean.
-
-**Architect re-review (2026-04-21d) — HELD PENDING FIXES:**
-
-Review (manual-synthesis pass) surfaced two P2 findings. User triage 2026-04-21d: fix both in place.
-
-1. **P2 — `papers.js:16-22` dead `navigate()` method on `papersPage` scope.** The new `initPapersPage` copies the `homePage` shape including a `navigate(path)` method that calls `this.$store.router.navigate(path)`. The `/papers` template at the top of `papers.js` is just a `<paperFeed>` shell and doesn't invoke `navigate(...)` anywhere. Copy-paste vestige. Fix: delete the `navigate` method from the scope. If a future CTA button on `/papers` needs programmatic navigation, add it with a test at that time.
-
-2. **P2 — `search.js:23-30` HTML comment inside template literal ships to rendered DOM.** The new 8-line submit-gated-filter-policy explanation sits inside the Alpine template string via `<!-- ... -->`. Vite/Tailwind do not strip inline template-literal HTML comments by default, so the 400-byte prose rationale is served on every `/search` page render. Benign today but sets a bad precedent for internal rationale in template comments. Fix: move the explanation ABOVE the backticks as a JS `//` block comment. Preserves the documentation for maintainers, strips it from shipped output. Optionally add a unit test loading the built template HTML and asserting the comment text is absent.
-
-**Path to archive:** (1) UI agent applies findings #1 + #2. (2) UI agent appends a re-review signal block. (3) Architect re-reviews and archives.
-
-**UI re-review signal (2026-04-21, commit `b5ebbb2`):** Findings #1 + #2 landed. Ready for architect re-review.
-- Finding #1 (`frontend/src/pages/papers.js:16-22` dead `navigate()`): deleted. `papersPage` scope is now `() => ({})`.
-- Finding #2 (`frontend/src/pages/search.js:23-30` template-literal HTML comment): 8-line submit-gated-filter-policy explanation moved verbatim OUT of the Alpine template literal and UP above the backticks as a JS `//` block comment.
-- Verified grep on shipped bundle (`backend/public/assets/*.js`) for distinctive substrings — "auto-push the URL or re-run the search", "mid-compose filter tweaks", "handleSubmit is the canonical" — zero matches. The prose is stripped from the bundle as intended.
-- Verified: 31/31 pass in `tests/unit/pages-search.test.js`; full frontend unit suite 837/837 pass; `npm run build` clean.
-
----
