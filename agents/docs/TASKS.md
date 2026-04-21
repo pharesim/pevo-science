@@ -287,6 +287,11 @@ Round-3 `/ce-code-review` (7 reviewers: correctness, security, testing, maintain
 
 **Path to archive:** (1) Backend agent applies findings #1 (4-site `expect(hafQueryMock).toHaveBeenCalled()` addition) + #2 (revoke-branch spec in profile-auth-bypass.test.ts). (2) Architect re-reviews round-4 with `/ce-code-review`. (3) Archive atomically with the uncommitted `accreditation.md` / `auth.md` / `papers.md` doc changes.
 
+**Backend re-review signal (2026-04-21, commit `9895fe9`):** Fixes already landed in a prior session under the round-3 hold but never got a signal block appended; flagging now. Ready for architect round-4 re-review.
+- Finding #1 (P2 mutation-kill): `expect(hafQueryMock).toHaveBeenCalled()` added at all 4 sites — `backend/tests/routes/profile-auth-bypass.test.ts:100` (spec 1 self-broadcast) and `:143` (spec 2 authority-signed); `backend/tests/routes/orcid.test.ts:279` (SEC-AUTH-BYPASS self-broadcast) and `:319` (SEC-AUTH-BYPASS authority-signed).
+- Finding #2 (P3→must-fix revoke-branch): new third spec `backend/tests/routes/profile-auth-bypass.test.ts:146-178` "treats a revoke row as unaccredited" — injects `{action:'revoke', ...}` as latest row, asserts `is_accredited:false` + `accreditation:null`, with `expect(hafQueryMock).toHaveBeenCalled()` at `:177`. Mocked-pool carve-out justification from existing file header covers this spec (pattern parallels `accreditations-revoke.test.ts`).
+- Verified via targeted run: 17/17 pass across `profile-auth-bypass.test.ts` (3) + `orcid.test.ts` (14).
+
 ---
 
 ### SEC-002-HARDENING — Post-review hardening of /api/orcid (Backend Agent, P2)
@@ -321,6 +326,12 @@ Round-2 `/ce-code-review` (correctness/security/reliability/testing/maintainabil
 
 **Path to archive:** (1) Backend agent applies finding #1 (try/catch widening + one test). (2) Architect re-reviews round-3 with `/ce-code-review`, lands the deferred orcid.md updates, archives.
 
+**Backend re-review signal (2026-04-21, commit `ab2baaf`):** Finding #1 landed. Ready for architect round-3 re-review.
+- `backend/src/routes/orcid.ts` `POST /api/orcid/callback`: outer try/catch widened to encompass the upstream `redis.get(stateKey)` + the `authenticateRequest` dispatch (previously only wrapped the state-consume DEL + token-exchange). Any infrastructure throw on the state-read or auth path now maps to 500 INTERNAL_ERROR via the existing catch with the same message shape the DEL-throw path produces. State is not consumed when the throw fires on the read (symmetric with the 403 state-not-consumed contract). Two stale rationale comments consolidated into one block above the try.
+- `backend/tests/routes/orcid.test.ts`: one new spec in the `SEC-002-HARDENING` describe block — "returns 500 when redis.get throws while reading state (state-read is inside try/catch, state not consumed)". Spies `redis.get` to throw once, asserts `redis.del` never called with `stateKey`. Skips when Redis unavailable (Map.get can't throw). Pattern matches the pre-existing Item 1 DEL-throw test.
+- Verified: 15/15 pass in `orcid.test.ts`; typecheck clean.
+- [TODO Architect] orcid.md doc updates from original status block (state-not-consumed-on-403 contract + NO_ACCOUNT `error.details` shape + optional common.md note) remain deferred to atomic archive.
+
 ---
 
 ### BE-CLAIMS-ERROR-POLISH — Surface bridge misconfiguration with a distinct 503 (Backend Agent, P3)
@@ -344,6 +355,13 @@ Round-2 `/ce-code-review` (correctness/security/testing/api-contract/maintainabi
 - **Pre-auth info leak on the approve guard (advisory):** dismissed. `verifyHiveSignature` runs before the guard, so unauthenticated callers never reach it. Authenticated-but-unrelated callers learn only that the paper author equals the bridge account — already public on-chain.
 
 **Path to archive:** (1) Backend agent applies finding #1 (bridge.ts → 503 + helper extraction + 2 bridge.test.ts scenarios). (2) Architect re-reviews round-3 with `/ce-code-review`, archives.
+
+**Backend re-review signal (2026-04-21, commit `67311b3`):** Finding #1 landed. Ready for architect round-3 re-review.
+- `backend/src/routes/bridge.ts`: extracted `assertBridgeKeyConfigured(res): boolean` helper (exported). Register (`~:170`) and update (`~:288`) call sites converted from `500 INTERNAL_ERROR` / "Bridge posting key not configured" to the helper call; helper emits `503 SERVICE_UNAVAILABLE` with the identical message.
+- `backend/src/routes/claims.ts`: imports `assertBridgeKeyConfigured` from `./bridge.js`; replaces the round-1 inline 503 guards at approve (`~:195`) and revoke (`~:291`). All four call sites now source from one constant message in the helper.
+- Helper shape: `(res): boolean` — no `paperAuthor` parameter. In `bridge.ts` the handler is unconditionally bridge-context so the gate isn't relevant; in `claims.ts` that gate stays at the call site (`if (paperAuthor === config.hiveBridgeAccount && !assertBridgeKeyConfigured(res)) return;`). Delivers the "one constant message" goal without leaking a trivial coupling back into the helper.
+- `backend/tests/routes/bridge.test.ts`: added auth-mock scaffold (mirroring `claims.test.ts` shape) plus new `BE-CLAIMS-ERROR-POLISH` describe block with 2 scenarios — register 503, update 503 — per-test save/restore of `config.pevoBridgePostingKey`. File-header justification for the `getAccreditedSet` mock added per root CLAUDE.md carve-out.
+- Verified: 25/25 pass across `bridge.test.ts` (10) + `claims.test.ts` (15); typecheck clean.
 
 ---
 
