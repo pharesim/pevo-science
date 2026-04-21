@@ -1,6 +1,9 @@
 # Environment
 .env
 .env.local
+# E2E-only secrets for Playwright (mirrors the .env.test.example templates)
+.env.test
+**/.env.test
 
 # Dependencies
 node_modules/
@@ -28,6 +31,12 @@ Whitepaper*.docx
 
 # Docker local overrides
 docker-compose.override.yml
+
+# Compound Engineering plugin — local config only (example is committed)
+.compound-engineering/config.local.yaml
+
+# Compound Engineering runtime artifacts (per-run review outputs, session logs)
+.context/
 
 # Logs
 *.log
