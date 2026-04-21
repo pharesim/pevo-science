@@ -1,8 +1,7 @@
 import Alpine from 'alpinejs';
 import { recoverWithSeedPhrase, recoverWithOrcid, fetchAccreditationStatus, startOrcid } from '../api.js';
 import { validateMnemonic, deriveAllKeys } from '../hive-keys.js';
-
-const MIN_PASSWORD = 10;
+import { isPasswordValid } from '../password-policy.js';
 
 const template = `
       <div x-data="recoverPage" class="container-narrow py-8">
@@ -156,10 +155,7 @@ export function initRecoverPage() {
     _orcidCheckTimer: null,
 
     get passwordValid() {
-      return this.newPassword.length >= MIN_PASSWORD
-        && /[a-z]/.test(this.newPassword)
-        && /[A-Z]/.test(this.newPassword)
-        && /[0-9]/.test(this.newPassword);
+      return isPasswordValid(this.newPassword);
     },
 
     get passwordsMatch() {

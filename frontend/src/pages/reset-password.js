@@ -1,7 +1,6 @@
 import Alpine from 'alpinejs';
 import { requestPasswordReset, resetPassword } from '../api.js';
-
-const MIN_PASSWORD = 10;
+import { isPasswordValid } from '../password-policy.js';
 
 const template = `
       <div x-data="resetPasswordPage" class="container-narrow py-8">
@@ -118,7 +117,7 @@ export function initResetPasswordPage() {
     resetDone: false,
     resetError: null,
 
-    get passwordValid() { return this.password.length >= MIN_PASSWORD && /[a-z]/.test(this.password) && /[A-Z]/.test(this.password) && /[0-9]/.test(this.password); },
+    get passwordValid() { return isPasswordValid(this.password); },
     get passwordsMatch() { return this.password === this.passwordConfirm; },
     get canReset() { return this.passwordValid && this.passwordsMatch; },
 

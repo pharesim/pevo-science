@@ -1,7 +1,6 @@
 import Alpine from 'alpinejs';
 import { submitSignup, loginWithPassword, resendVerification, startOrcid } from '../api.js';
-
-const MIN_PASSWORD = 10;
+import { isPasswordValid } from '../password-policy.js';
 
 const template = `
       <div x-data="signupPage" class="container-narrow py-8">
@@ -179,10 +178,7 @@ export function initSignupPage() {
     get isConnected() { return Alpine.store('auth').isConnected; },
 
     get passwordValid() {
-      return this.password.length >= MIN_PASSWORD
-        && /[a-z]/.test(this.password)
-        && /[A-Z]/.test(this.password)
-        && /[0-9]/.test(this.password);
+      return isPasswordValid(this.password);
     },
 
     get passwordsMatch() {

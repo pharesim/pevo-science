@@ -2,6 +2,7 @@ import Alpine from 'alpinejs';
 import { isKeychainInstalled } from '../keychain.js';
 import { fetchEmailStatus, submitEmail, deleteEmail, startOrcid, setPassword } from '../api.js';
 import { deriveHiveKeys, deriveHivePublicKeys, generateMnemonic, validateMnemonic, mnemonicToSeedSync } from '../hive-keys.js';
+import { isPasswordValid } from '../password-policy.js';
 
 // Number of words to re-enter for confirmation
 const CONFIRM_WORD_COUNT = 3;
@@ -385,12 +386,10 @@ export function initSettingsPage() {
       );
     },
 
-    // Set-password validity mirrors signup/recover password policy.
+    // Set-password validity mirrors signup/recover password policy
+    // (shared helper in frontend/src/password-policy.js).
     get newPasswordValid() {
-      return this.newPasswordInput.length >= 10
-        && /[a-z]/.test(this.newPasswordInput)
-        && /[A-Z]/.test(this.newPasswordInput)
-        && /[0-9]/.test(this.newPasswordInput);
+      return isPasswordValid(this.newPasswordInput);
     },
 
     get newPasswordsMatch() {
