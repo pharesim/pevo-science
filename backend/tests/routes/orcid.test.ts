@@ -5,7 +5,8 @@ import { PrivateKey } from '@hiveio/dhive';
 
 // DB pool mocks. Root CLAUDE.md says "no mocked database pools," but these
 // tests need deterministic responses to six narrow query shapes to exercise
-// the auth gate (SEC-002-BE) and the 409 ORCID_ALREADY_LINKED check. The
+// the auth gate (SEC-002-BE), the 409 ORCID_ALREADY_LINKED check, and the
+// authority-filter (SEC-AUTH-BYPASS) assertions. The
 // alternative — seeding the real HAF with specific accreditation states per
 // test — would couple the suite to external pevotest chain data and hide
 // logic bugs behind fixture drift. The trade-off is accepted here because
@@ -233,6 +234,82 @@ describe('POST /api/orcid/callback — auth gate (SEC-002-BE)', () => {
       expect(res.status).toBe(409);
       expect(res.body.error.code).toBe('ORCID_ALREADY_LINKED');
       expect(broadcastJsonMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it(
+    'SEC-AUTH-BYPASS: link rejects a self-broadcast fake accredit (422, no broadcast)',
+    async () => {
+      // Exploit: attacker X broadcasts a custom_json with action=accredit,
+      // account=X, signed by X's OWN posting key. Without the authority filter,
+      // getExistingAccreditation would find this self-broadcast op and let the
+      // /link flow burn the admin key to actually accredit X.
+      //
+      // With the fix, the query filters on `required_posting_auths ?| $4::text[]`
+      // where $4 is config.accreditationAuthorities. The mock below asserts the
+      // filter is applied (params length includes authorities) and simulates the
+      // filter's effect (no authority-signed op => no row).
+      const orcidId = '0000-0001-5555-0001';
+      installOrcidFetchStub({ orcid: orcidId, name: 'Mallory', works: 3 });
+      hafQueryMock.mockImplementation(async (sql: string, params: unknown[]) => {
+        if (sql.includes("'action' IN ('accredit', 'revoke')") && sql.includes("'account' = $1")) {
+          // getExistingAccreditation for mallory. The fixed query includes the
+          // authority filter; the self-broadcast op wouldn't match because its
+          // required_posting_auths is ['mallory'], not an authority.
+          expect(sql).toContain('required_posting_auths ?| $4::text[]');
+          expect(params[3]).toEqual(config.accreditationAuthorities);
+          return { rows: [] };
+        }
+        return { rows: [] };
+      });
+      const state = await startAuthed('link', 'mallory');
+      const res = await request(app)
+        .post('/api/orcid/callback')
+        .set('Authorization', `Bearer ${jwtFor('mallory')}`)
+        .send({ code: 'fake', state });
+      expect(res.status).toBe(422);
+      expect(res.body.error.code).toBe('VALIDATION_ERROR');
+      expect(res.body.error.message).toMatch(/not accredited/i);
+      expect(broadcastJsonMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it(
+    'SEC-AUTH-BYPASS: link succeeds on an authority-signed accredit (200, admin broadcast fires)',
+    async () => {
+      // Positive counterpart: when a real authority (config.hiveAdminAccount)
+      // signed the accredit op, the authority-filtered query returns the row
+      // and the link flow proceeds, broadcasting the new ORCID binding.
+      const orcidId = '0000-0001-5555-0002';
+      installOrcidFetchStub({ orcid: orcidId, name: 'Alice', works: 3 });
+      hafQueryMock.mockImplementation(async (sql: string, params: unknown[]) => {
+        if (sql.includes("'orcid' = $1")) {
+          // findAccreditedAccountWithOrcid: ORCID not yet bound to any account.
+          return { rows: [] };
+        }
+        if (sql.includes("'action' IN ('accredit', 'revoke')") && sql.includes("'account' = $1")) {
+          // Authority filter must be present.
+          expect(sql).toContain('required_posting_auths ?| $4::text[]');
+          expect(params[3]).toEqual(config.accreditationAuthorities);
+          // Simulate the filter matching: an authority-signed accredit exists.
+          return {
+            rows: [{
+              json: { action: 'accredit', name: 'Alice', institution: 'MIT', field: 'CS', method: 'email' },
+            }],
+          };
+        }
+        return { rows: [] };
+      });
+      const state = await startAuthed('link', 'alice');
+      const res = await request(app)
+        .post('/api/orcid/callback')
+        .set('Authorization', `Bearer ${jwtFor('alice')}`)
+        .send({ code: 'fake', state });
+      expect(res.status).toBe(200);
+      expect(res.body.data.mode).toBe('link');
+      expect(res.body.data.username).toBe('alice');
+      expect(res.body.data.orcid).toBe(orcidId);
+      expect(broadcastJsonMock).toHaveBeenCalledTimes(1);
     },
   );
 

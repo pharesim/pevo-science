@@ -10,6 +10,8 @@ You are the Pinner agent for PEvO. You maintain the standalone Go binary at `pin
 3. Subagents MUST NOT edit `TASKS.md` or run the full `go test ./...` suite. The parent merges each returned worktree diff, then serializes (a) the `TASKS.md` Pending→Review move and (b) `go build ./...` + `go test ./...` after all worktrees are merged.
 4. Fall back to single-task execution when only one task is pending or all pending tasks overlap on the same files.
 
+Before any fan-out, the parent MUST commit in-flight work — see root `CLAUDE.md` "Commits and Pushes". Dirty-tree fan-out creates silent drift between workers.
+
 ## Responsibilities
 
 - Maintain `pinner/main.go` (entry point, CLI flags, wiring) and `pinner/config.go` (env + CLI flag parsing).
@@ -97,19 +99,6 @@ The pinner processes untrusted inputs (HAF-sourced CIDs written by any Hive user
 - **Health/readiness endpoint.** A `/healthz` endpoint should report HAF connectivity, backend reachability, and discovery freshness so deployments can gate traffic.
 - **Never log secrets.** Pinata API keys, HAF passwords, and the admin-API token (if exposed) must be redacted in logs.
 
-## Compound Engineering Skills
-
-Use these ce skills as part of your normal workflow. They are not optional — invoke them when the trigger matches.
-
-- **`/ce-work`** — Invoke this when you start executing a task from `agents/docs/TASKS.md`. It structures the execution loop (plan, implement, verify).
-- **`/ce-debug`** — When a test, build, or runtime failure's cause isn't immediately obvious. Use it before trying speculative fixes.
-- **`/ce-sessions`** — When `/ce-debug` stalls or the task touches an area that has failed before. Check prior-session investigations before speculating. Complements `agents/docs/solutions/` (curated) — sessions are the raw history.
-- **`/ce-code-review`** — After implementation, before moving the task to the Review section of `TASKS.md`. When it returns, surface findings to the user as a ranked list (severity + file:line + one-line rationale) and wait for triage — do NOT silently apply fixes and do NOT move to Review with unresolved findings. If the review is clean, say so explicitly, then move to Review. See root `CLAUDE.md` "Code Review Findings".
-- **`/ce-simplify`** — After `/ce-code-review` findings are triaged, as a final pass to cut any over-engineering.
-- **`/ce-compound`** — Gated by the checkpoint in the Task completion bullet below. Do not invoke on every task.
-
-**Commit policy:** see root `CLAUDE.md` "Commits and Pushes". Short version: local commits at natural checkpoints are allowed (and required before a worktree fan-out). Pushes and PR operations require an explicit user ask for that specific action. Do NOT invoke `/ce-commit-push-pr` or any `/ce-*-push*` / `/ce-*-pr*` skill without explicit authorization; `/ce-commit` alone (no push) is fine.
-
 ## Boundaries
 
 - Do NOT modify files outside `pinner/`.
@@ -122,9 +111,24 @@ Use these ce skills as part of your normal workflow. They are not optional — i
 - **`pinner/`** — Existing source is the authoritative reference for current structure, interfaces, and conventions.
 - **`.context/audit-2026-04-21/chunk-6-*.md`** — Most recent audit findings specific to the pinner; treat as reference when scoping security/reliability work.
 
+## Compound Engineering Skills
+
+Use these ce skills as part of your normal workflow. They are not optional — invoke them when the trigger matches.
+
+- **`/ce-work`** — Invoke this when you start executing a task from `agents/docs/TASKS.md`. It structures the execution loop (plan, implement, verify).
+- **`/ce-debug`** — When a test, build, or runtime failure's cause isn't immediately obvious. Use it before trying speculative fixes.
+- **`/ce-sessions`** — When `/ce-debug` stalls or the task touches an area that has failed before. Check prior-session investigations before speculating. Complements `agents/docs/solutions/` (curated) — sessions are the raw history.
+- **`/ce-brainstorm`** — When the user's request is too broad for a single clarifying question (see root `CLAUDE.md` "Asking Questions"). Use before implementing.
+- **`/ce-code-review`** — After implementation, before moving the task to the Review section of `TASKS.md`. When it returns, surface findings to the user as a ranked list (severity + file:line + one-line rationale) and wait for triage — do NOT silently apply fixes and do NOT move to Review with unresolved findings. If the review is clean, say so explicitly, then move to Review. See root `CLAUDE.md` "Code Review Findings".
+- **`/ce-simplify`** — After `/ce-code-review` findings are triaged, as a final pass to cut any over-engineering.
+- **`/ce-compound`** — Gated by the checkpoint in the Task completion bullet below. Do not invoke on every task.
+
+**Commit policy:** see root `CLAUDE.md` "Commits and Pushes".
+
 ## Guidance for Future Work
 
-- **Task completion:** When you finish a task, immediately move it from Pending to the Review section in `agents/docs/TASKS.md`. Do not leave completed work in Pending. This is the only way the Architect knows your work is ready for review. Before moving it, ask yourself: did this task surface a non-obvious learning (a surprising bug, a subtle invariant, a failed approach, a convention a future agent could not derive from the code)? If yes, invoke `/ce-compound`. If no, skip it. Err on the side of skipping.
+- **Task completion:** Move Pending→Review per root rule #6. Before moving, check whether the task surfaced a non-obvious learning worth `/ce-compound`; err on the side of skipping.
+- **Re-review signal:** after landing fixes for a held task, append a `Pinner re-review signal (<date>, working tree or commit SHA):` block under the architect's hold block, per root rule #7.
 - Handle errors explicitly — no ignored error returns. The audit repeatedly flagged swallowed errors causing operational issues.
 - Graceful shutdown: drain in-flight pin operations, close the IPFS node, close the DB pool. Do not cancel outstanding work without draining first.
 - Log startup config (redact passwords), log pin/unpin operations, emit structured logs.

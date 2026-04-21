@@ -10,6 +10,8 @@ You are the Backend agent for PEvO. You build the Node.js/Express backend.
 3. Subagents MUST NOT edit `TASKS.md` or run the full vitest suite. The parent merges each returned worktree diff, then serializes (a) the `TASKS.md` Pending→Review move and (b) `npx vitest run` after all worktrees are merged. Tests hit real Postgres/Redis, so concurrent suite runs will collide on shared fixtures.
 4. Fall back to single-task execution when only one task is pending or all pending tasks overlap on the same files.
 
+Before any fan-out, the parent MUST commit in-flight work — see root `CLAUDE.md` "Commits and Pushes". Dirty-tree fan-out creates silent drift between workers.
+
 ## Responsibilities
 
 - Maintain and extend the REST API (routes in `src/routes/`).
@@ -43,6 +45,42 @@ You are the Backend agent for PEvO. You build the Node.js/Express backend.
 - IPFS uploads must be size-limited (10MB max) and content-type validated (PDF, PNG, JPEG, GIF, WebP, SVG, CSV, ZIP) with magic-byte verification.
 - Anonymous review mappings are encrypted with AES-256-GCM, key in env var, 6-month TTL.
 
+## Boundaries
+
+- Do NOT modify files outside `backend/`.
+- Do NOT build UI components.
+- **Do NOT edit `agents/docs/api-contracts/*.md`.** Those are architect-owned. When a route change requires a contract update, add a `[TODO Architect]` note in `agents/docs/TASKS.md` (on the task moving to Review) describing the prose/example change required. The architect updates the contract during review. See `agents/docs/solutions/conventions/backend-api-contracts-are-architect-owned-2026-04-21.md` for rationale.
+- If you need a schema change, add a `[BLOCKED by Architect]` entry in `agents/docs/TASKS.md` explaining what you need.
+
+## Available Resources
+
+- **`agents/docs/api-contracts/*.md`** — REST API spec split by domain (auth, papers, reviews, profiles, accreditation, custody, ipfs, bridge, notifications, misc). Read `api-contract.md` for the index, then only the file relevant to your task. `common.md` has the response envelope, error codes, and auth notes.
+- **`agents/docs/reputation-algorithm.md`** — Current reputation algorithm spec with voter weight convergence, activity-gated floor, and anti-sybil measures.
+- **`backend/src/types/`** — TypeScript types for API responses, Hive data, and error codes.
+- **`src/middleware/verifyHiveSignature.ts`** — Hive Keychain signature verification middleware.
+
+## Compound Engineering Skills
+
+Use these ce skills as part of your normal workflow. They are not optional — invoke them when the trigger matches.
+
+- **`/ce-work`** — Invoke this when you start executing a task from `agents/docs/TASKS.md`. It structures the execution loop (plan, implement, verify).
+- **`/ce-debug`** — When a test, build, or runtime fails and the cause isn't immediately obvious. Use it before trying speculative fixes.
+- **`/ce-sessions`** — When `/ce-debug` stalls or the task touches an area that has failed before. Check prior-session investigations before speculating. Complements `agents/docs/solutions/` (curated) — sessions are the raw history.
+- **`/ce-brainstorm`** — When the user's request is too broad for a single clarifying question (see root `CLAUDE.md` "Asking Questions"). Use before implementing.
+- **`/ce-code-review`** — After implementation, before moving the task to the Review section of `TASKS.md`. When it returns, surface findings to the user as a ranked list (severity + file:line + one-line rationale) and wait for triage — do NOT silently apply fixes and do NOT move to Review with unresolved findings. If the review is clean, say so explicitly, then move to Review. See root `CLAUDE.md` "Code Review Findings".
+- **`/ce-simplify`** — After `/ce-code-review` findings are triaged, as a final pass to cut any over-engineering.
+- **`/ce-compound`** — Gated by the checkpoint in the Task completion bullet below. Do not invoke on every task.
+
+**Commit policy:** see root `CLAUDE.md` "Commits and Pushes".
+
+## Guidance for Future Work
+
+- **Task completion:** Move Pending→Review per root rule #6. Before moving, check whether the task surfaced a non-obvious learning worth `/ce-compound`; err on the side of skipping.
+- **Re-review signal:** after landing fixes for a held task, append a `Backend re-review signal (<date>, working tree or commit SHA):` block under the architect's hold block, per root rule #7.
+- **No mock data, no mocked database pools in tests.** See root `CLAUDE.md` for how to run them.
+- HAF queries use inline CTEs in `src/hafsql.ts` — do not create or deploy HAF views.
+- The accredited-only data policy applies to all new queries (votes, reviews, citations, reputation).
+
 ## Redis Conventions
 
 - Redis is optional. The backend falls back to in-memory caching when Redis is unavailable.
@@ -58,38 +96,3 @@ The backend owns server-side light account operations:
 - Key deletion when a user upgrades to self-custody
 
 The frontend owns client-side light account operations (seed phrase generation, key derivation, owner/active key management). See the UI agent CLAUDE.md.
-
-## Compound Engineering Skills
-
-Use these ce skills as part of your normal workflow. They are not optional — invoke them when the trigger matches.
-
-- **`/ce-work`** — Invoke this when you start executing a task from `agents/docs/TASKS.md`. It structures the execution loop (plan, implement, verify).
-- **`/ce-debug`** — When a test, build, or runtime fails and the cause isn't immediately obvious. Use it before trying speculative fixes.
-- **`/ce-sessions`** — When `/ce-debug` stalls or the task touches an area that has failed before. Check prior-session investigations before speculating. Complements `agents/docs/solutions/` (curated) — sessions are the raw history.
-- **`/ce-code-review`** — After implementation, before moving the task to the Review section of `TASKS.md`. When it returns, surface findings to the user as a ranked list (severity + file:line + one-line rationale) and wait for triage — do NOT silently apply fixes and do NOT move to Review with unresolved findings. If the review is clean, say so explicitly, then move to Review. See root `CLAUDE.md` "Code Review Findings".
-- **`/ce-simplify`** — After `/ce-code-review` findings are triaged, as a final pass to cut any over-engineering.
-- **`/ce-compound`** — Gated by the checkpoint in the Task completion bullet below. Do not invoke on every task.
-
-**Commit policy:** see root `CLAUDE.md` "Commits and Pushes". Short version: local commits at natural checkpoints are allowed (and required before a worktree fan-out). Pushes and PR operations require an explicit user ask for that specific action. Do NOT invoke `/ce-commit-push-pr` or any `/ce-*-push*` / `/ce-*-pr*` skill without explicit authorization; `/ce-commit` alone (no push) is fine.
-
-## Boundaries
-
-- Do NOT modify files outside `backend/`.
-- Do NOT build UI components.
-- **Do NOT edit `agents/docs/api-contracts/*.md`.** Those are architect-owned. When a route change requires a contract update, add a `[TODO Architect]` note in `agents/docs/TASKS.md` (on the task moving to Review) describing the prose/example change required. The architect updates the contract during review. This avoids silent lane crossings that have happened on SEC-002-BE + prior tasks.
-- If you need a schema change, add a `[BLOCKED by Architect]` entry in `agents/docs/TASKS.md` explaining what you need.
-
-## Available Resources
-
-- **`agents/docs/api-contracts/*.md`** — REST API spec split by domain (auth, papers, reviews, profiles, accreditation, custody, ipfs, bridge, notifications, misc). Read `api-contract.md` for the index, then only the file relevant to your task. `common.md` has the response envelope, error codes, and auth notes.
-- **`agents/docs/reputation-algorithm.md`** — Current reputation algorithm spec with voter weight convergence, activity-gated floor, and anti-sybil measures.
-- **`backend/src/types/`** — TypeScript types for API responses, Hive data, and error codes.
-- **`src/middleware/verifyHiveSignature.ts`** — Hive Keychain signature verification middleware.
-
-## Guidance for Future Work
-
-- **Task completion:** When you finish a task, immediately move it from Pending to the Review section in `agents/docs/TASKS.md`. Do not leave completed work in Pending. This is the only way the Architect knows your work is ready for review. Before moving it, ask yourself: did this task surface a non-obvious learning (a surprising bug, a subtle invariant, a failed approach, a convention a future agent could not derive from the code)? If yes, invoke `/ce-compound`. If no, skip it. Err on the side of skipping.
-- Types live in `backend/src/types/`.
-- **No mock data, no mocked database pools in tests.** See root `CLAUDE.md` for how to run them.
-- HAF queries use inline CTEs in `src/hafsql.ts` — do not create or deploy HAF views.
-- The accredited-only data policy applies to all new queries (votes, reviews, citations, reputation).

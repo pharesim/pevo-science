@@ -26,15 +26,21 @@ async function getAccreditationFromHaf(username: string) {
   if (!pool) return undefined; // no HAF available
 
   try {
+    // Filter by accreditationAuthorities so a self-broadcast custom_json (signed
+    // by the target account's own posting key) cannot masquerade as a real
+    // accreditation and paint attacker-chosen metadata onto someone's profile.
+    // See SEC-AUTH-BYPASS. Mirrors the same filter in accreditations.ts and
+    // orcid.ts's getExistingAccreditation.
     const result = await pool.query(
       `SELECT cj.json, cj.id AS event_id FROM ${T.customJson} cj
        WHERE cj.custom_id = $2
          AND cj.json::jsonb ->> 'action' IN ('accredit', 'revoke')
+         AND cj.required_posting_auths ?| $4::text[]
          AND cj.json::jsonb ->> 'account' = $1
          AND cj.block_num >= $3
        ORDER BY cj.block_num DESC
        LIMIT 1`,
-      [username, config.appTag, getCachedGenesisBlock()],
+      [username, config.appTag, getCachedGenesisBlock(), config.accreditationAuthorities],
     );
     if (result.rows.length === 0) return null;
 
@@ -50,7 +56,7 @@ async function getAccreditationFromHaf(username: string) {
       method: payload.method,
       orcid: payload.orcid || null,
       timestamp: payload.timestamp,
-      tx_id: result.rows[0].event_id?.toString() || null,
+      tx_id: result.rows[0].event_id?.toString() ?? null,
     };
   } catch (err) {
     logger.error({ err }, 'HAF accreditation query failed');

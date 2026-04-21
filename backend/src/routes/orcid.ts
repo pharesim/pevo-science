@@ -515,15 +515,19 @@ async function getExistingAccreditation(username: string): Promise<{
   const pool = getPool();
   if (!pool) return null;
 
+  // Filter by accreditationAuthorities so a self-broadcast custom_json (signed
+  // by the target account's own posting key) cannot masquerade as a real
+  // accreditation and unlock the /link flow. See SEC-AUTH-BYPASS.
   const result = await pool.query(
     `SELECT cj.json FROM ${T.customJson} cj
      WHERE cj.custom_id = $2
        AND cj.json::jsonb ->> 'action' IN ('accredit', 'revoke')
        AND cj.json::jsonb ->> 'account' = $1
+       AND cj.required_posting_auths ?| $4::text[]
        AND cj.block_num >= $3
      ORDER BY cj.block_num DESC
      LIMIT 1`,
-    [username, config.appTag, getCachedGenesisBlock()],
+    [username, config.appTag, getCachedGenesisBlock(), config.accreditationAuthorities],
   );
   if (result.rows.length === 0) return null;
 

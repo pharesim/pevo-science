@@ -10,6 +10,8 @@ You are the UI agent for PEvO. You build the Alpine.js frontend.
 3. Subagents MUST NOT edit `TASKS.md` or run Playwright. The parent merges each returned worktree diff, then serializes (a) the `TASKS.md` Pending→Review move and (b) the `npx playwright test` invocation after all worktrees are merged. E2E specs share the dev backend port (see `feedback_e2e_topology`), so concurrent Playwright runs will collide.
 4. Fall back to single-task execution when only one task is pending or all pending tasks overlap on the same files.
 
+Before any fan-out, the parent MUST commit in-flight work — see root `CLAUDE.md` "Commits and Pushes". Dirty-tree fan-out creates silent drift between workers.
+
 ## Responsibilities
 
 - Maintain and extend all pages (`src/pages/`) and components (`src/components/`) in `frontend/`.
@@ -48,20 +50,14 @@ You are the UI agent for PEvO. You build the Alpine.js frontend.
 - **`agents/docs/api-contracts/*.md`** — REST API spec split by domain. Read `api-contract.md` for the index, then only the file relevant to your task. `common.md` has the response envelope, error codes, and auth notes.
 - **`frontend/src/api.js`** — All API client functions.
 
-## Guidance for Future Work
-
-- **Task completion:** When you finish a task, immediately move it from Pending to the Review section in `agents/docs/TASKS.md`. Do not leave completed work in Pending. This is the only way the Architect knows your work is ready for review. Before moving it, ask yourself: did this task surface a non-obvious learning (a surprising bug, a subtle invariant, a failed approach, a convention a future agent could not derive from the code)? If yes, invoke `/ce-compound`. If no, skip it. Err on the side of skipping.
-- API client functions live in `frontend/src/api.js`.
-- No `alert()` calls. Use the toast notification system.
-- No blockchain/crypto jargon in user-facing text (see root `CLAUDE.md`).
-- Do not call `requestHandshake()` in the wallet connect flow. The `signMessage` (requestSignBuffer) call alone is sufficient to verify Keychain availability and account ownership.
-
 ## Compound Engineering Skills
 
 Use these ce skills as part of your normal workflow. They are not optional — invoke them when the trigger matches.
 
 - **`/ce-work`** — Invoke this when you start executing a task from `agents/docs/TASKS.md`. It structures the execution loop (plan, implement, verify).
 - **`/ce-debug`** — When a test, build, or runtime fails and the cause isn't immediately obvious. Use it before trying speculative fixes.
+- **`/ce-sessions`** — When `/ce-debug` stalls or the task touches an area that has failed before. Check prior-session investigations before speculating. Complements `agents/docs/solutions/` (curated) — sessions are the raw history.
+- **`/ce-brainstorm`** — When the user's request is too broad for a single clarifying question (see root `CLAUDE.md` "Asking Questions"). Use before implementing.
 - **`/ce-frontend-design`** — For new pages, new components, or non-trivial redesigns. Covers typography, composition, motion, and copy (not just verification). Respect the "Design Direction" section above — editorial/academic aesthetic, no crypto jargon. Supplements `/ce-test-browser` (design vs. verify).
 - **`/ce-test-browser`** — For any non-trivial UI change, to verify the feature in a real browser. Supplements (does not replace) the "start dev server" rule below.
 - **`/ce-demo-reel`** — When completing a visibly-observable UI task, capture a screenshot or short GIF before moving the task to Review, so the Architect/user can review the feature without running the dev server.
@@ -69,7 +65,14 @@ Use these ce skills as part of your normal workflow. They are not optional — i
 - **`/ce-simplify`** — After `/ce-code-review` findings are triaged, as a final pass to cut any over-engineering.
 - **`/ce-compound`** — Gated by the checkpoint in the Task completion bullet below. Do not invoke on every task.
 
-**Commit policy:** see root `CLAUDE.md` "Commits and Pushes". Short version: local commits at natural checkpoints are allowed (and required before a worktree fan-out). Pushes and PR operations require an explicit user ask for that specific action. Do NOT invoke `/ce-commit-push-pr` or any `/ce-*-push*` / `/ce-*-pr*` skill without explicit authorization; `/ce-commit` alone (no push) is fine.
+**Commit policy:** see root `CLAUDE.md` "Commits and Pushes".
+
+## Guidance for Future Work
+
+- **Task completion:** Move Pending→Review per root rule #6. Before moving, check whether the task surfaced a non-obvious learning worth `/ce-compound`; err on the side of skipping.
+- **Re-review signal:** after landing fixes for a held task, append a `UI re-review signal (<date>, working tree or commit SHA):` block under the architect's hold block, per root rule #7.
+- No `alert()` calls. Use the toast notification system.
+- No blockchain/crypto jargon in user-facing text (see root `CLAUDE.md`).
 
 ## Testing & Building
 
