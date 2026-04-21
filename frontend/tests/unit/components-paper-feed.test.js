@@ -306,6 +306,79 @@ describe('paperFeed', () => {
     });
   });
 
+  describe('discipline case normalization', () => {
+    // Canonical form is lowercase. URLs with `?discipline=Physics` still
+    // resolve (API is case insensitive), but the stored value and the URL
+    // the page pushes are always lowercase so the dropdown option values
+    // (also lowercased from the API response) match and the select visibly
+    // reflects the current filter.
+    it('_syncFromUrl lowercases ?discipline= on read (uppercase URL becomes lowercase state)', () => {
+      window.history.replaceState(null, '', '/en/papers?discipline=PHYSICS');
+      const comp = createComponent();
+      comp._syncFromUrl();
+      expect(comp.discipline).toBe('physics');
+    });
+
+    it('_syncFromUrl lowercases mixed-case ?discipline= param', () => {
+      window.history.replaceState(null, '', '/en/papers?discipline=Biology');
+      const comp = createComponent();
+      comp._syncFromUrl();
+      expect(comp.discipline).toBe('biology');
+    });
+
+    it('_pushUrl writes ?discipline= lowercased regardless of starting case', () => {
+      window.history.replaceState(null, '', '/en/papers');
+      const comp = createComponent();
+      // Simulate code path that assigns uppercase directly, bypassing syncFromUrl.
+      comp.discipline = 'CHEMISTRY';
+      const push = vi.spyOn(window.history, 'pushState');
+      comp._pushUrl();
+      const url = push.mock.calls[push.mock.calls.length - 1][2];
+      expect(url).toContain('discipline=chemistry');
+      expect(url).not.toContain('discipline=CHEMISTRY');
+    });
+
+    it('loadDisciplines lowercases each API-returned discipline name', async () => {
+      mockFetchDisciplines.mockResolvedValue({
+        data: [
+          { name: 'Physics', paper_count: 5 },
+          { name: 'Biology', paper_count: 3 },
+        ],
+      });
+      const comp = createComponent();
+      await comp.loadDisciplines();
+      expect(comp.disciplines).toEqual([
+        { name: 'physics', paper_count: 5 },
+        { name: 'biology', paper_count: 3 },
+      ]);
+    });
+
+    it('loadDisciplines preserves non-name fields when lowercasing', async () => {
+      mockFetchDisciplines.mockResolvedValue({
+        data: [{ name: 'Mathematics', paper_count: 12, extra: 'keep' }],
+      });
+      const comp = createComponent();
+      await comp.loadDisciplines();
+      expect(comp.disciplines[0]).toEqual({
+        name: 'mathematics',
+        paper_count: 12,
+        extra: 'keep',
+      });
+    });
+
+    it('end-to-end: uppercase URL through state through push produces lowercase URL', () => {
+      window.history.replaceState(null, '', '/en/papers?discipline=PHYSICS');
+      const comp = createComponent();
+      comp._syncFromUrl();
+      expect(comp.discipline).toBe('physics');
+      const push = vi.spyOn(window.history, 'pushState');
+      comp._pushUrl();
+      const url = push.mock.calls[push.mock.calls.length - 1][2];
+      expect(url).toContain('discipline=physics');
+      expect(url).not.toContain('PHYSICS');
+    });
+  });
+
   describe('filter handlers', () => {
     it('onDisciplineChange resets currentPage to 1 and reloads', () => {
       const comp = createComponent();

@@ -137,7 +137,12 @@ export function initPaperFeed() {
       const params = new URLSearchParams(window.location.search);
       const page = parseInt(params.get('page') || '1', 10);
       this.currentPage = Number.isFinite(page) && page > 0 ? page : 1;
-      this.discipline = params.get('discipline') || '';
+      // Canonicalize discipline to lowercase on read so the stored value matches
+      // option values populated from loadDisciplines (also lowercased). Existing
+      // URLs like `?discipline=Physics` continue to resolve. the API is case
+      // insensitive; normalization is purely a frontend-coherence concern.
+      const rawDiscipline = params.get('discipline') || '';
+      this.discipline = rawDiscipline.toLowerCase();
       const sort = params.get('sort');
       this.sortBy = sort === 'votes' || sort === 'reputation' ? sort : 'date';
       const source = params.get('source');
@@ -148,7 +153,10 @@ export function initPaperFeed() {
       if (!pageOwnsUrl()) return;
       const params = new URLSearchParams();
       if (this.currentPage > 1) params.set('page', String(this.currentPage));
-      if (this.discipline) params.set('discipline', this.discipline);
+      // Belt-and-suspenders: _syncFromUrl + loadDisciplines already lowercase
+      // the source values, but lowercase again on write so any future code path
+      // that assigns `this.discipline` directly still produces canonical URLs.
+      if (this.discipline) params.set('discipline', this.discipline.toLowerCase());
       if (this.sortBy !== 'date') params.set('sort', this.sortBy);
       if (this.sourceFilter) params.set('source', this.sourceFilter);
       const qs = params.toString();
@@ -158,7 +166,14 @@ export function initPaperFeed() {
 
     async loadDisciplines() {
       const res = await fetchDisciplines();
-      this.disciplines = res.data || [];
+      // Lowercase each discipline name so dropdown option values match the
+      // canonical form used by `_syncFromUrl`/`_pushUrl`. Display is titlecased
+      // via Tailwind `class="capitalize"` on the <option>; the underlying
+      // stored value is lowercase.
+      this.disciplines = (res.data || []).map((d) => ({
+        ...d,
+        name: typeof d.name === 'string' ? d.name.toLowerCase() : d.name,
+      }));
     },
 
     async loadPapers() {
