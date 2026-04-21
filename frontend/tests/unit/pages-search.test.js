@@ -319,28 +319,23 @@ describe('searchPage', () => {
       expect(url).not.toContain('discipline=CHEMISTRY');
     });
 
-    it('loadDisciplines lowercases each API-returned discipline name', async () => {
+    it('loadDisciplines stores backend canon_name/display_name rows verbatim', async () => {
+      // Backend dedupes and lowercases server-side per BE-DISCIPLINE-CANONICALIZE;
+      // the frontend no longer does its own lowercasing. canon_name is the URL
+      // value, display_name is the rendered label.
       const { fetchDisciplines } = await import('../../src/api.js');
       fetchDisciplines.mockResolvedValueOnce({
-        data: [{ name: 'Physics' }, { name: 'Biology' }],
+        data: [
+          { canon_name: 'physics', display_name: 'Physics', paper_count: 5 },
+          { canon_name: 'biology', display_name: 'Biology', paper_count: 3 },
+        ],
       });
       const comp = createComponent();
       await comp.loadDisciplines();
-      expect(comp.disciplines).toEqual([{ name: 'physics' }, { name: 'biology' }]);
-    });
-
-    it('loadDisciplines preserves non-name fields when lowercasing', async () => {
-      const { fetchDisciplines } = await import('../../src/api.js');
-      fetchDisciplines.mockResolvedValueOnce({
-        data: [{ name: 'Mathematics', paper_count: 12, extra: 'keep' }],
-      });
-      const comp = createComponent();
-      await comp.loadDisciplines();
-      expect(comp.disciplines[0]).toEqual({
-        name: 'mathematics',
-        paper_count: 12,
-        extra: 'keep',
-      });
+      expect(comp.disciplines).toEqual([
+        { canon_name: 'physics', display_name: 'Physics', paper_count: 5 },
+        { canon_name: 'biology', display_name: 'Biology', paper_count: 3 },
+      ]);
     });
 
     it('end-to-end: uppercase URL through state through push produces lowercase URL', () => {
@@ -460,7 +455,7 @@ describe('searchPage', () => {
       // in FE-LOADDISCIPLINES-OBSERVABILITY architect re-review.
       const { fetchDisciplines } = await import('../../src/api.js');
       fetchDisciplines.mockResolvedValueOnce({
-        data: [{ name: 'physics', paper_count: 1 }],
+        data: [{ canon_name: 'physics', display_name: 'physics', paper_count: 1 }],
       });
       const comp = createComponent();
       comp.disciplinesLoadFailed = true;

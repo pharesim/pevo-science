@@ -49,8 +49,8 @@ const template = `
               <label for="search-discipline" class="block text-xs font-medium text-ink-muted mb-1" x-text="$t('filters.discipline')"></label>
               <select id="search-discipline" class="select-control text-sm capitalize" x-model="disciplineFilter" :data-disciplines-status="disciplinesLoadFailed ? 'failed' : 'ok'">
                 <option value="" x-text="$t('filters.allDisciplines')"></option>
-                <template x-for="d in disciplines" :key="d.name">
-                  <option :value="d.name" x-text="d.name" class="capitalize"></option>
+                <template x-for="d in disciplines" :key="d.canon_name">
+                  <option :value="d.canon_name" x-text="d.display_name" class="capitalize"></option>
                 </template>
               </select>
             </div>
@@ -243,14 +243,12 @@ export function initSearchPage() {
       // successful reload.
       this.disciplinesLoadFailed = false;
       const res = await fetchDisciplines();
-      // Lowercase each discipline name so dropdown option values match the
-      // canonical form used by `_syncFromUrl`/`_pushUrl`. Display is titlecased
-      // via Tailwind `class="capitalize"` on the <option>; the underlying
-      // stored value is lowercase.
-      this.disciplines = (res.data || []).map((d) => ({
-        ...d,
-        name: typeof d.name === 'string' ? d.name.toLowerCase() : d.name,
-      }));
+      // Backend returns `{ canon_name, display_name, paper_count }` per
+      // BE-DISCIPLINE-CANONICALIZE. `canon_name` is already lowercased
+      // server-side (the dedup key), so the frontend no longer needs to
+      // lowercase here. `display_name` is the rendered label; Tailwind
+      // `class="capitalize"` on the <option> titlecases it for display.
+      this.disciplines = res.data || [];
     },
 
     async doSearch(q, page) {

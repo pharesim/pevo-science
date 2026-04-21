@@ -40,11 +40,15 @@ test('papers list renders, discipline filter narrows, search returns matches', a
   // ─── Discipline filter ───────────────────────────────────────
   const disciplineSelect = page.locator('select[x-model="discipline"]');
   await expect(disciplineSelect).toBeVisible();
-  // Pick the first real option. `option[value!=""]` skips the "All disciplines" entry.
-  const firstDiscipline = await disciplineSelect
-    .locator('option:not([value=""])')
-    .first()
-    .getAttribute('value');
+  // Options are populated asynchronously by a separate `/api/disciplines`
+  // request (not covered by the page-level `/api/papers` waitForResponse).
+  // Waiting on the `<select>` element alone only proves the element exists,
+  // not that Alpine's `x-for` has rendered its option children. Assert on
+  // the option locator directly so Playwright's auto-waiting handles the
+  // hydration race. `option[value!=""]` skips the "All disciplines" entry.
+  const firstRealOption = disciplineSelect.locator('option:not([value=""])').first();
+  await expect(firstRealOption).toHaveCount(1);
+  const firstDiscipline = await firstRealOption.getAttribute('value');
   expect(firstDiscipline).toBeTruthy();
 
   const filterResponsePromise = page.waitForResponse(
