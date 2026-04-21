@@ -13,7 +13,8 @@
 import { describe, it, expect, afterEach, beforeEach } from 'vitest';
 import { writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
 
 import {
@@ -226,12 +227,7 @@ describe('mintSessionJwt', () => {
     // eslint-disable-next-line no-undef
     let fileHasSecret = false;
     try {
-      const repoEnvTest = join(
-        new URL('.', import.meta.url).pathname,
-        '..',
-        '..',
-        '.env.test',
-      );
+      const repoEnvTest = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '.env.test');
       fileHasSecret = Boolean(parseEnvFile(repoEnvTest).SESSION_SECRET);
     } catch {
       // swallow — absence is the only thing we care about
