@@ -100,7 +100,12 @@ export function initSignInModal() {
           this.mode = 'unverified';
           return;
         }
-        this.emailError = err.message || this.$t('signIn.loginFailed');
+        // Sanitization pattern (shared with executeUpgrade()): generic
+        // localized message to the DOM, raw err to console.warn for
+        // diagnostics. Prevents accidental disclosure of key material,
+        // tokens, or PII embedded in a backend error string.
+        console.warn('[sign-in email login]', err);
+        this.emailError = this.$t('signIn.loginFailed');
       } finally {
         this.emailLoading = false;
       }
@@ -113,7 +118,9 @@ export function initSignInModal() {
         await resendVerification(this.emailValue.trim(), this.passwordValue);
         this.resendSuccess = true;
       } catch (err) {
-        this.emailError = err.message;
+        // Sanitization pattern (see handleEmailLogin).
+        console.warn('[sign-in resend verification]', err);
+        this.emailError = this.$t('signIn.resendFailed');
       } finally {
         this.isResending = false;
       }

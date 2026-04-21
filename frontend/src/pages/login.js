@@ -154,8 +154,13 @@ export function initLoginPage() {
 
         Alpine.store('router').navigate('/papers');
       } catch (err) {
+        // PENDING_SIGNUP, PENDING_UNVERIFIED, and SIGNUP_EXPIRED are
+        // semantic codes where err.message carries intentional server
+        // context (e.g. "unverified", "expired"). The generic-fallback
+        // branch takes the sanitization path shared with executeUpgrade()
+        // in settings.js: generic message to DOM, raw err to console.warn.
         if (err.code === 'PENDING_SIGNUP' && err.data) {
-          // Verified but incomplete — redirect to choose phase with auth_token
+          // Verified but incomplete. Redirect to choose phase with auth_token.
           const params = new URLSearchParams({
             auth_token: err.data.auth_token,
             email: err.data.email,
@@ -173,7 +178,8 @@ export function initLoginPage() {
           this.error = err.message;
           return;
         }
-        this.error = err.message;
+        console.warn('[login submit]', err);
+        this.error = this.$t('login.loginFailed');
       } finally {
         this.isSubmitting = false;
       }
@@ -187,7 +193,9 @@ export function initLoginPage() {
         this.resendSuccess = true;
         this.error = null;
       } catch (err) {
-        this.error = err.message;
+        // Sanitization pattern (see executeUpgrade() in settings.js).
+        console.warn('[login resend verification]', err);
+        this.error = this.$t('login.resendFailed');
       } finally {
         this.isResending = false;
       }
@@ -206,7 +214,9 @@ export function initLoginPage() {
       } catch (err) {
         this.orcidLoading = false;
         localStorage.removeItem('pevo_orcid_mode');
-        this.error = err.message;
+        // Sanitization pattern (see executeUpgrade() in settings.js).
+        console.warn('[login orcid start]', err);
+        this.error = this.$t('login.orcidStartFailed');
       }
     },
 

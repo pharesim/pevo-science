@@ -831,7 +831,10 @@
     "signIn": "Log ind",
     "checkEmail": "Tjek din e-mail",
     "checkEmailDescription": "Vi har sendt et bekræftelseslink til din e-mail. Klik på det for at færdiggøre din registrering.",
-    "orcidNoPassword": "You can set a password later in Settings if you want email-based login."
+    "orcidNoPassword": "You can set a password later in Settings if you want email-based login.",
+    "orcidStartFailed": "Could not start the ORCID sign-up flow. Please try again. If the problem persists, contact support.",
+    "submitFailed": "Could not create your account. Please try again. If the problem persists, contact support.",
+    "resendFailed": "Could not resend the verification email. Please try again. If the problem persists, contact support."
   },
   "signIn": {
     "title": "Log ind på PEvO",
@@ -853,7 +856,8 @@
     "browserExtensionDescription": "For brugere med egen Hive-konto",
     "browserExtensionTitle": "Forbind med Keychain",
     "browserExtensionNotInstalled": "Hive Keychain er ikke installeret i din browser.",
-    "usernamePlaceholder": "f.eks. satoshi"
+    "usernamePlaceholder": "f.eks. satoshi",
+    "resendFailed": "Could not resend the verification email. Please try again. If the problem persists, contact support."
   },
   "login": {
     "title": "Log ind",
@@ -870,7 +874,10 @@
     "verificationResent": "Et nyt bekræftelseslink er sendt til din e-mail.",
     "signUpAgain": "Tilmeld dig igen",
     "lostEmailAccess": "Mistet adgang til din e-mail?",
-    "orcidLogin": "Sign in with ORCID"
+    "orcidLogin": "Sign in with ORCID",
+    "loginFailed": "Could not sign you in. Please check your credentials and try again.",
+    "resendFailed": "Could not resend the verification email. Please try again. If the problem persists, contact support.",
+    "orcidStartFailed": "Could not start the ORCID sign-in flow. Please try again. If the problem persists, contact support."
   },
   "seedPhrase": {
     "verifying": "Bekræfter din e-mail…",
@@ -911,7 +918,10 @@
     "resumeDescription": "Har du allerede bekræftet din e-mail? Indtast dine legitimationsoplysninger for at fortsætte hvor du slap.",
     "resumeButton": "Fortsæt tilmelding",
     "resuming": "Genoptager…",
-    "startOver": "Start en ny tilmelding i stedet"
+    "startOver": "Start en ny tilmelding i stedet",
+    "createAccountFailed": "Could not create your account. Please try again. If the problem persists, contact support.",
+    "linkAccountFailed": "Could not link your Hive account. Please try again. If the problem persists, contact support.",
+    "resumeFailed": "Could not resume your signup. Please check your credentials and try again."
   },
   "confirm": {
     "publishTitle": "Publicer artikel",
@@ -971,7 +981,9 @@
     "resetting": "Nulstiller…",
     "doneTitle": "Adgangskode nulstillet",
     "doneDescription": "Din adgangskode er blevet opdateret. Du kan nu logge ind med din nye adgangskode.",
-    "goToLogin": "Log ind"
+    "goToLogin": "Log ind",
+    "requestFailed": "Could not send the reset link. Please try again. If the problem persists, contact support.",
+    "resetFailed": "Could not reset your password. The link may have expired. Please request a new one."
   },
   "recover": {
     "title": "Gendan din konto",
@@ -1001,7 +1013,10 @@
     "doneDescription": "Din konto er blevet gendannet med den nye e-mail og adgangskode. Log venligst ind med dine nye loginoplysninger.",
     "goToLogin": "Log ind",
     "backToLogin": "Tilbage til login",
-    "orcidNoPassword": "You can set a password later in Settings if you want email-based login."
+    "orcidNoPassword": "You can set a password later in Settings if you want email-based login.",
+    "orcidStartFailed": "Could not start the ORCID recovery flow. Please try again. If the problem persists, contact support.",
+    "seedRecoveryFailed": "Could not recover your account with the provided recovery phrase. Please check the phrase and try again.",
+    "orcidRecoveryFailed": "Could not recover your account with ORCID. Please try again. If the problem persists, contact support."
   },
   "settings": {
     "title": "Indstillinger",

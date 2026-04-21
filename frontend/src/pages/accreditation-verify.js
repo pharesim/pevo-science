@@ -60,7 +60,9 @@ export function initAccreditationVerifyPage() {
         })
         .catch((err) => {
           this.state = 'error';
-          this.errorMessage = err.message || this.$t('verify.verificationFailed');
+          // Sanitization pattern (see executeUpgrade() in settings.js).
+          console.warn('[accreditation verify]', err);
+          this.errorMessage = this.$t('verify.verificationFailed');
         });
     },
   }));

@@ -886,7 +886,9 @@ export function initEditPage() {
         }
       } catch (err) {
         this.step = 'error';
-        this.errorMessage = err.message || this.$t('common.editFailed');
+        // Sanitization pattern (see executeUpgrade() in settings.js).
+        console.warn('[edit submit]', err);
+        this.errorMessage = this.$t('common.editFailed');
       }
     },
   }));

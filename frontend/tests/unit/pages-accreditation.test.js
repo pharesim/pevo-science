@@ -149,18 +149,26 @@ describe('accreditationPage', () => {
       );
     });
 
-    it('transitions to error on failure', async () => {
+    // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: failure surfaces a
+    // generic localized message; raw err reaches console.warn.
+    it('sanitizes failure: generic message to DOM, raw err to console.warn', async () => {
+      const leaky = new Error('Rate limited hex=deadbeefcafebabe');
       const comp = createComponent();
       comp.fullName = 'Jane';
       comp.institution = 'MIT';
       comp.field = 'Physics';
       comp.email = 'jane@mit.edu';
 
-      mockRequestAccreditation.mockRejectedValue(new Error('Rate limited'));
+      mockRequestAccreditation.mockRejectedValue(leaky);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       await comp.handleSubmit();
 
       expect(comp.step).toBe('error');
-      expect(comp.errorMessage).toBe('Rate limited');
+      expect(comp.errorMessage).toBe('common.accreditationFailed');
+      expect(comp.errorMessage).not.toContain('deadbeef');
+      expect(warnSpy).toHaveBeenCalled();
+      expect(warnSpy.mock.calls[0][1]).toBe(leaky);
+      warnSpy.mockRestore();
     });
 
     it('uses generic i18n key when error has no message', async () => {
@@ -171,10 +179,12 @@ describe('accreditationPage', () => {
       comp.email = 'jane@mit.edu';
 
       mockRequestAccreditation.mockRejectedValue({});
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       await comp.handleSubmit();
 
       expect(comp.step).toBe('error');
       expect(comp.errorMessage).toBe('common.accreditationFailed');
+      warnSpy.mockRestore();
     });
 
     it('sets step to submitting during request', async () => {

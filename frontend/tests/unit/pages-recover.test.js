@@ -233,8 +233,13 @@ describe('recoverPage', () => {
       expect(comp.error).toBe('recover.seedPhraseInvalid');
     });
 
-    it('sets error on API failure', async () => {
-      mockRecoverWithSeedPhrase.mockRejectedValue(new Error('fail'));
+    // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: the seed-phrase
+    // recovery path derives keys from the BIP39 mnemonic. Raw err.message
+    // must not reach the DOM; it goes to console.warn.
+    it('sanitizes API failure: generic message to DOM, raw err to console.warn', async () => {
+      const leaky = new Error('fail hex=deadbeefcafebabe');
+      mockRecoverWithSeedPhrase.mockRejectedValue(leaky);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const comp = createComponent();
       comp.method = 'seed';
       comp.username = 'alice';
@@ -245,8 +250,12 @@ describe('recoverPage', () => {
 
       await comp.handleSubmit();
 
-      expect(comp.error).toBe('fail');
+      expect(comp.error).toBe('recover.seedRecoveryFailed');
+      expect(comp.error).not.toContain('deadbeef');
       expect(comp.isSubmitting).toBe(false);
+      expect(warnSpy).toHaveBeenCalled();
+      expect(warnSpy.mock.calls[0][1]).toBe(leaky);
+      warnSpy.mockRestore();
     });
   });
 
@@ -259,7 +268,7 @@ describe('recoverPage', () => {
       comp.orcidToken = 'orcid-tok';
       comp.newEmail = 'a@x.com';
       // Even if the password fields somehow have values (shouldn't in
-      // production — they're hidden on the ORCID branch), they must NOT
+      // production. They're hidden on the ORCID branch), they must NOT
       // be transmitted. Backend SEC-004-BE accepts null and preserves
       // password_hash = NULL.
       comp.newPassword = 'StaleLeaked1x';
@@ -269,6 +278,28 @@ describe('recoverPage', () => {
 
       expect(mockRecoverWithOrcid).toHaveBeenCalledWith('alice', 'orcid-tok', 'a@x.com', null);
       expect(comp.phase).toBe('done');
+    });
+
+    // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: failure surfaces a
+    // generic localized message; raw err reaches console.warn.
+    it('sanitizes API failure: generic message to DOM, raw err to console.warn', async () => {
+      const leaky = new Error('boom hex=deadbeefcafebabe');
+      mockRecoverWithOrcid.mockRejectedValue(leaky);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const comp = createComponent();
+      comp.method = 'orcid';
+      comp.username = 'alice';
+      comp.orcidToken = 'orcid-tok';
+      comp.newEmail = 'a@x.com';
+
+      await comp.handleSubmit();
+
+      expect(comp.error).toBe('recover.orcidRecoveryFailed');
+      expect(comp.error).not.toContain('deadbeef');
+      expect(comp.isSubmitting).toBe(false);
+      expect(warnSpy).toHaveBeenCalled();
+      expect(warnSpy.mock.calls[0][1]).toBe(leaky);
+      warnSpy.mockRestore();
     });
   });
 
@@ -319,6 +350,28 @@ describe('recoverPage', () => {
       comp.username = '';
       await comp.handleOrcidVerify();
       expect(mockStartOrcid).not.toHaveBeenCalled();
+    });
+
+    // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: failure surfaces a
+    // generic localized message; raw err reaches console.warn.
+    it('sanitizes failure: clears orcid state, generic message to DOM, raw err to console.warn', async () => {
+      const leaky = new Error('fail hex=deadbeefcafebabe');
+      mockStartOrcid.mockRejectedValue(leaky);
+      vi.stubGlobal('window', { ...globalThis.window, location: { href: '' } });
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const comp = createComponent();
+      comp.username = 'alice';
+
+      await comp.handleOrcidVerify();
+
+      expect(comp.error).toBe('recover.orcidStartFailed');
+      expect(comp.error).not.toContain('deadbeef');
+      expect(comp.orcidLoading).toBe(false);
+      expect(localStorage.removeItem).toHaveBeenCalledWith('pevo_orcid_return_to');
+      expect(localStorage.removeItem).toHaveBeenCalledWith('pevo_orcid_mode');
+      expect(warnSpy).toHaveBeenCalled();
+      expect(warnSpy.mock.calls[0][1]).toBe(leaky);
+      warnSpy.mockRestore();
     });
   });
 });

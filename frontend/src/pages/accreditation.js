@@ -263,7 +263,9 @@ export function initAccreditationPage() {
         this.resultMessage = res.data.message;
       } catch (err) {
         this.step = 'error';
-        this.errorMessage = err.message || this.$t('common.accreditationFailed');
+        // Sanitization pattern (see executeUpgrade() in settings.js).
+        console.warn('[accreditation submit]', err);
+        this.errorMessage = this.$t('common.accreditationFailed');
       }
     },
 

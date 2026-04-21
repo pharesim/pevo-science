@@ -246,7 +246,9 @@ export function initSignupPage() {
       } catch (err) {
         this.orcidLoading = false;
         localStorage.removeItem('pevo_orcid_mode');
-        this.error = err.message;
+        // Sanitization pattern (see executeUpgrade() in settings.js).
+        console.warn('[signup orcid verify]', err);
+        this.error = this.$t('signup.orcidStartFailed');
       }
     },
 
@@ -263,7 +265,9 @@ export function initSignupPage() {
       } catch (err) {
         this.orcidLoading = false;
         localStorage.removeItem('pevo_orcid_mode');
-        this.error = err.message;
+        // Sanitization pattern (see executeUpgrade() in settings.js).
+        console.warn('[signup orcid start]', err);
+        this.error = this.$t('signup.orcidStartFailed');
       }
     },
 
@@ -292,12 +296,16 @@ export function initSignupPage() {
         });
         this.submitted = true;
       } catch (err) {
+        // DUPLICATE and VALIDATION_ERROR are semantic codes, safe to branch
+        // on. All other failures take the generic-message + console.warn
+        // sanitization path shared with executeUpgrade() in settings.js.
+        console.warn('[signup submit]', err);
         if (err.code === 'DUPLICATE' && this.email && this.password && !this.orcidToken) {
           await this._resolveExistingAccount();
         } else if (err.code === 'VALIDATION_ERROR' && !this.orcidToken) {
           this.error = this.$t('signup.orcidOrInstitutional');
         } else {
-          this.error = err.message;
+          this.error = this.$t('signup.submitFailed');
         }
       } finally {
         this.isSubmitting = false;
@@ -332,7 +340,9 @@ export function initSignupPage() {
         await resendVerification(this.email.trim(), this.password);
         this.resendSuccess = true;
       } catch (err) {
-        this.error = err.message;
+        // Sanitization pattern (see executeUpgrade() in settings.js).
+        console.warn('[signup resend verification]', err);
+        this.error = this.$t('signup.resendFailed');
       } finally {
         this.isResending = false;
       }

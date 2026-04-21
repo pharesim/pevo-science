@@ -831,7 +831,10 @@
     "signIn": "Accedi",
     "checkEmail": "Controlla la tua e-mail",
     "checkEmailDescription": "Ti abbiamo inviato un link di verifica. Cliccaci sopra per completare la registrazione.",
-    "orcidNoPassword": "You can set a password later in Settings if you want email-based login."
+    "orcidNoPassword": "You can set a password later in Settings if you want email-based login.",
+    "orcidStartFailed": "Could not start the ORCID sign-up flow. Please try again. If the problem persists, contact support.",
+    "submitFailed": "Could not create your account. Please try again. If the problem persists, contact support.",
+    "resendFailed": "Could not resend the verification email. Please try again. If the problem persists, contact support."
   },
   "signIn": {
     "title": "Accedi a PEvO",
@@ -853,7 +856,8 @@
     "browserExtensionDescription": "Per utenti con un proprio account Hive",
     "browserExtensionTitle": "Connetti con Keychain",
     "browserExtensionNotInstalled": "Hive Keychain non è installato nel tuo browser.",
-    "usernamePlaceholder": "es. satoshi"
+    "usernamePlaceholder": "es. satoshi",
+    "resendFailed": "Could not resend the verification email. Please try again. If the problem persists, contact support."
   },
   "login": {
     "title": "Accedi",
@@ -870,7 +874,10 @@
     "verificationResent": "Un nuovo link di verifica è stato inviato alla tua e-mail.",
     "signUpAgain": "Registrati di nuovo",
     "lostEmailAccess": "Hai perso l'accesso alla tua e-mail?",
-    "orcidLogin": "Sign in with ORCID"
+    "orcidLogin": "Sign in with ORCID",
+    "loginFailed": "Could not sign you in. Please check your credentials and try again.",
+    "resendFailed": "Could not resend the verification email. Please try again. If the problem persists, contact support.",
+    "orcidStartFailed": "Could not start the ORCID sign-in flow. Please try again. If the problem persists, contact support."
   },
   "seedPhrase": {
     "verifying": "Verifica dell’e-mail in corso…",
@@ -911,7 +918,10 @@
     "resumeDescription": "Hai già verificato la tua email? Inserisci le tue credenziali per continuare da dove avevi interrotto.",
     "resumeButton": "Continua registrazione",
     "resuming": "Ripresa in corso…",
-    "startOver": "Inizia una nuova registrazione"
+    "startOver": "Inizia una nuova registrazione",
+    "createAccountFailed": "Could not create your account. Please try again. If the problem persists, contact support.",
+    "linkAccountFailed": "Could not link your Hive account. Please try again. If the problem persists, contact support.",
+    "resumeFailed": "Could not resume your signup. Please check your credentials and try again."
   },
   "confirm": {
     "publishTitle": "Pubblica articolo",
@@ -971,7 +981,9 @@
     "resetting": "Reimpostazione…",
     "doneTitle": "Password reimpostata",
     "doneDescription": "La tua password è stata aggiornata. Ora puoi accedere con la nuova password.",
-    "goToLogin": "Accedi"
+    "goToLogin": "Accedi",
+    "requestFailed": "Could not send the reset link. Please try again. If the problem persists, contact support.",
+    "resetFailed": "Could not reset your password. The link may have expired. Please request a new one."
   },
   "recover": {
     "title": "Recupera il tuo account",
@@ -1001,7 +1013,10 @@
     "doneDescription": "Il tuo account è stato recuperato con la nuova e-mail e password. Accedi con le nuove credenziali.",
     "goToLogin": "Accedi",
     "backToLogin": "Torna all'accesso",
-    "orcidNoPassword": "You can set a password later in Settings if you want email-based login."
+    "orcidNoPassword": "You can set a password later in Settings if you want email-based login.",
+    "orcidStartFailed": "Could not start the ORCID recovery flow. Please try again. If the problem persists, contact support.",
+    "seedRecoveryFailed": "Could not recover your account with the provided recovery phrase. Please check the phrase and try again.",
+    "orcidRecoveryFailed": "Could not recover your account with ORCID. Please try again. If the problem persists, contact support."
   },
   "settings": {
     "title": "Impostazioni",

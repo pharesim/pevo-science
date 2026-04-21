@@ -95,7 +95,9 @@ export function initVouchSection() {
         await this.loadVouchStatus();
       } catch (err) {
         this.step = 'error';
-        this.message = err.message || this.$t('wot.vouchFailed');
+        // Sanitization pattern (see executeUpgrade() in settings.js).
+        console.warn('[vouch]', err);
+        this.message = this.$t('wot.vouchFailed');
       }
     },
 
@@ -134,7 +136,9 @@ export function initVouchSection() {
         await this.loadVouchStatus();
       } catch (err) {
         this.step = 'error';
-        this.message = err.message || this.$t('wot.retractFailed');
+        // Sanitization pattern (see executeUpgrade() in settings.js).
+        console.warn('[vouch retract]', err);
+        this.message = this.$t('wot.retractFailed');
       }
     },
   }));

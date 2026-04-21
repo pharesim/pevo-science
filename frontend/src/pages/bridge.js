@@ -304,7 +304,9 @@ export function initBridgePage() {
         }, 3000);
       } catch (err) {
         this.step = 'error';
-        this.errorMessage = err.message || this.$t('common.registrationFailed');
+        // Sanitization pattern (see executeUpgrade() in settings.js).
+        console.warn('[bridge register]', err);
+        this.errorMessage = this.$t('common.registrationFailed');
       }
     },
   }));

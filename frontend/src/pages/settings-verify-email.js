@@ -57,7 +57,9 @@ export function initSettingsVerifyEmailPage() {
         this.phase = 'success';
         Alpine.store('toast').show(this.$t('settings.emailVerified_success'), 'success');
       } catch (err) {
-        this.error = err.message || this.$t('settings.emailTokenExpired');
+        // Sanitization pattern (see executeUpgrade() in settings.js).
+        console.warn('[settings verify email]', err);
+        this.error = this.$t('settings.emailTokenExpired');
         this.phase = 'error';
       }
     },

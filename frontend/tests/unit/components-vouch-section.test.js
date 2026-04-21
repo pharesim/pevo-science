@@ -131,12 +131,20 @@ describe('vouchSection', () => {
       expect(comp.message).toContain('wot.accreditedViaWot');
     });
 
-    it('sets error on broadcast failure', async () => {
-      mockBroadcastOps.mockRejectedValue(new Error('Signing failed'));
+    // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: broadcast failure
+    // surfaces a generic localized message; raw err reaches console.warn.
+    it('sanitizes broadcast failure: generic message to DOM, raw err to console.warn', async () => {
+      const leaky = new Error('Signing failed hex=deadbeefcafebabe');
+      mockBroadcastOps.mockRejectedValue(leaky);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const comp = createComponent({ targetUsername: 'bob' });
       await comp.handleVouch();
       expect(comp.step).toBe('error');
-      expect(comp.message).toBe('Signing failed');
+      expect(comp.message).toBe('wot.vouchFailed');
+      expect(comp.message).not.toContain('deadbeef');
+      expect(warnSpy).toHaveBeenCalled();
+      expect(warnSpy.mock.calls[0][1]).toBe(leaky);
+      warnSpy.mockRestore();
     });
   });
 
@@ -158,6 +166,23 @@ describe('vouchSection', () => {
       const comp = createComponent({ targetUsername: 'bob' });
       await comp.handleRetract();
       expect(comp.message).toContain('carol');
+    });
+
+    // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: broadcast failure
+    // surfaces a generic localized message; raw err reaches console.warn.
+    it('sanitizes retract broadcast failure: generic message to DOM, raw err to console.warn', async () => {
+      const leaky = new Error('Signing failed hex=deadbeefcafebabe');
+      mockBroadcastOps.mockRejectedValue(leaky);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const comp = createComponent({ targetUsername: 'bob' });
+      comp.vouchStatus = { vouches: [{ voucher: 'alice' }] };
+      await comp.handleRetract();
+      expect(comp.step).toBe('error');
+      expect(comp.message).toBe('wot.retractFailed');
+      expect(comp.message).not.toContain('deadbeef');
+      expect(warnSpy).toHaveBeenCalled();
+      expect(warnSpy.mock.calls[0][1]).toBe(leaky);
+      warnSpy.mockRestore();
     });
   });
 });

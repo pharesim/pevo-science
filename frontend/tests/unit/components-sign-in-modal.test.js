@@ -143,13 +143,21 @@ describe('signInModal', () => {
       expect(comp.mode).toBe('unverified');
     });
 
-    it('shows generic error for other failures', async () => {
-      mockLoginWithPassword.mockRejectedValue(new Error('Bad creds'));
+    // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: unknown-code failures
+    // surface a generic localized message; raw err reaches console.warn.
+    it('sanitizes generic error: generic message to DOM, raw err to console.warn', async () => {
+      const leaky = new Error('Bad creds hex=deadbeefcafebabe');
+      mockLoginWithPassword.mockRejectedValue(leaky);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const comp = createComponent();
       comp.emailValue = 'e@x.com';
       comp.passwordValue = 'pass';
       await comp.handleEmailLogin();
-      expect(comp.emailError).toBe('Bad creds');
+      expect(comp.emailError).toBe('signIn.loginFailed');
+      expect(comp.emailError).not.toContain('deadbeef');
+      expect(warnSpy).toHaveBeenCalled();
+      expect(warnSpy.mock.calls[0][1]).toBe(leaky);
+      warnSpy.mockRestore();
     });
   });
 
@@ -164,13 +172,21 @@ describe('signInModal', () => {
       expect(comp.resendSuccess).toBe(true);
     });
 
-    it('sets error on resend failure', async () => {
-      mockResendVerification.mockRejectedValue(new Error('Rate limited'));
+    // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: failure surfaces a
+    // generic localized message; raw err reaches console.warn.
+    it('sanitizes resend failure: generic message to DOM, raw err to console.warn', async () => {
+      const leaky = new Error('Rate limited hex=deadbeefcafebabe');
+      mockResendVerification.mockRejectedValue(leaky);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const comp = createComponent();
       comp.emailValue = 'e@x.com';
       comp.passwordValue = 'pass';
       await comp.handleResendVerification();
-      expect(comp.emailError).toBe('Rate limited');
+      expect(comp.emailError).toBe('signIn.resendFailed');
+      expect(comp.emailError).not.toContain('deadbeef');
+      expect(warnSpy).toHaveBeenCalled();
+      expect(warnSpy.mock.calls[0][1]).toBe(leaky);
+      warnSpy.mockRestore();
     });
 
     it('does not double-send while resending', async () => {

@@ -248,7 +248,9 @@ export function initRecoverPage() {
         this.orcidLoading = false;
         localStorage.removeItem('pevo_orcid_return_to');
         localStorage.removeItem('pevo_orcid_mode');
-        this.error = err.message;
+        // Sanitization pattern (see executeUpgrade() in settings.js).
+        console.warn('[recover orcid start]', err);
+        this.error = this.$t('recover.orcidStartFailed');
       }
     },
 
@@ -271,7 +273,12 @@ export function initRecoverPage() {
           await recoverWithSeedPhrase(name, keys.memo.private, this.newEmail.trim(), this.newPassword);
           this.phase = 'done';
         } catch (err) {
-          this.error = err.message;
+          // Sanitization pattern (see executeUpgrade() in settings.js).
+          // The seed-phrase recovery path derives keys from the BIP39
+          // mnemonic, so surfacing raw err.message risks leaking
+          // key-adjacent material on a future error shape.
+          console.warn('[recover seed]', err);
+          this.error = this.$t('recover.seedRecoveryFailed');
         } finally {
           this.isSubmitting = false;
         }
@@ -285,7 +292,9 @@ export function initRecoverPage() {
           await recoverWithOrcid(this.username.trim(), this.orcidToken, this.newEmail.trim(), null);
           this.phase = 'done';
         } catch (err) {
-          this.error = err.message;
+          // Sanitization pattern (see executeUpgrade() in settings.js).
+          console.warn('[recover orcid]', err);
+          this.error = this.$t('recover.orcidRecoveryFailed');
         } finally {
           this.isSubmitting = false;
         }
