@@ -187,6 +187,14 @@ router.post('/:claimer/approve', verifyHiveSignature, approveLimiter, async (req
     timestamp: new Date().toISOString(),
   };
 
+  // Distinct misconfiguration surface: bridge paper but bridge posting key
+  // unconfigured. Without this guard, control falls through to the native-paper
+  // branch and returns "Only the post author can approve claims on native
+  // papers" — misleading for operators debugging the misconfig.
+  if (paperAuthor === config.hiveBridgeAccount && !config.pevoBridgePostingKey) {
+    return sendError(res, 503, 'SERVICE_UNAVAILABLE', 'Bridge posting key not configured');
+  }
+
   // Bridge papers: server broadcasts with bridge account key, but only after
   // caller-identity authorization. Bridge papers have no human post-author,
   // so the platform admin bootstraps the first approved claim, and approved
@@ -274,6 +282,14 @@ router.post('/:claimer/revoke', verifyHiveSignature, revokeLimiter, async (req: 
     reason: reason || 'Revoked',
     timestamp: new Date().toISOString(),
   };
+
+  // Distinct misconfiguration surface: bridge paper but bridge posting key
+  // unconfigured. Parallels the guard in the approve handler — operators
+  // debugging a missing `PEVO_BRIDGE_POSTING_KEY` get a SERVICE_UNAVAILABLE
+  // instead of silent fall-through to the admin-key or client-signed branches.
+  if (paperAuthor === config.hiveBridgeAccount && !config.pevoBridgePostingKey) {
+    return sendError(res, 503, 'SERVICE_UNAVAILABLE', 'Bridge posting key not configured');
+  }
 
   // Bridge-key broadcast: only when the platform admin is revoking on a
   // bridge paper. A claimer revoking their own claim on a bridge paper falls

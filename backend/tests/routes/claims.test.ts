@@ -16,7 +16,7 @@
  * `verifyHiveSignature` is NOT mocked.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import request from 'supertest';
 import { PrivateKey, cryptoUtils } from '@hiveio/dhive';
 
@@ -292,6 +292,68 @@ describe('SEC-003-BE — POST /:claimer/revoke authorization', () => {
     expect(res.body.data.operation).toBeDefined();
     expect(res.body.data.operation[0]).toBe('custom_json');
     expect(res.body.data.operation[1].required_posting_auths).toEqual([CLAIMER]);
+    expect(broadcastJson).not.toHaveBeenCalled();
+  });
+});
+
+// ──────────────────────────────────────────────
+// BE-CLAIMS-ERROR-POLISH — Bridge-misconfig 503 surface
+//
+// When the paper is a bridge paper but PEVO_BRIDGE_POSTING_KEY is unconfigured,
+// both approve and revoke handlers must return a distinct 503 SERVICE_UNAVAILABLE
+// rather than silently falling through to the native-paper branch (approve) or
+// the admin-key / client-signed branches (revoke). This surfaces the operator-
+// facing misconfig distinctly from authorization errors.
+// ──────────────────────────────────────────────
+
+describe('BE-CLAIMS-ERROR-POLISH — bridge misconfig surfaces as 503', () => {
+  // Snapshot-and-restore the key around each test so we only toggle the
+  // misconfig state for this block and don't leak into other describe suites.
+  let originalBridgeKey: string;
+
+  beforeEach(() => {
+    originalBridgeKey = config.pevoBridgePostingKey;
+    (config as { pevoBridgePostingKey: string }).pevoBridgePostingKey = '';
+  });
+
+  afterEach(() => {
+    (config as { pevoBridgePostingKey: string }).pevoBridgePostingKey = originalBridgeKey;
+  });
+
+  it('POST approve on bridge paper with empty bridge key → 503 SERVICE_UNAVAILABLE, no broadcast', async () => {
+    // Admin caller would normally be authorized for the bridge-branch broadcast.
+    // With the bridge key unconfigured, the handler must short-circuit to 503
+    // rather than fall through to "Only the post author can approve claims on
+    // native papers", which was misleading for operators debugging the misconfig.
+    const path = `/api/papers/${BRIDGE}/${PAPER_PERMLINK}/claims/${CLAIMER}/approve`;
+    const res = await signedPost(path, ADMIN, {});
+    expect(res.status).toBe(503);
+    expect(res.body.error.code).toBe('SERVICE_UNAVAILABLE');
+    expect(res.body.error.message).toMatch(/bridge posting key/i);
+    expect(broadcastJson).not.toHaveBeenCalled();
+  });
+
+  it('POST revoke on bridge paper with empty bridge key → 503 SERVICE_UNAVAILABLE, no broadcast', async () => {
+    // Admin caller would normally trigger the bridge-key broadcast branch.
+    // With the key unconfigured the handler must 503 rather than silently
+    // falling through to the admin-key branch (which would broadcast with
+    // admin-account signing identity, not bridge).
+    const path = `/api/papers/${BRIDGE}/${PAPER_PERMLINK}/claims/${CLAIMER}/revoke`;
+    const res = await signedPost(path, ADMIN, { reason: 'abuse' });
+    expect(res.status).toBe(503);
+    expect(res.body.error.code).toBe('SERVICE_UNAVAILABLE');
+    expect(res.body.error.message).toMatch(/bridge posting key/i);
+    expect(broadcastJson).not.toHaveBeenCalled();
+  });
+
+  it('native paper with empty bridge key → unaffected (approve 403 for unrelated caller)', async () => {
+    // Negative: the 503 guard must NOT fire on native papers. Unrelated caller
+    // hitting a native-paper approve still gets 403 FORBIDDEN from the
+    // native-paper-only guard, not 503.
+    const path = `/api/papers/${NATIVE_AUTHOR}/${PAPER_PERMLINK}/claims/${CLAIMER}/approve`;
+    const res = await signedPost(path, UNRELATED, {});
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe('FORBIDDEN');
     expect(broadcastJson).not.toHaveBeenCalled();
   });
 });
