@@ -50,20 +50,40 @@ const LIGHT_USERNAME = 'e2e-upgrade-user';
 test('upgrade wizard signs and would-broadcast an account_update rotating all keys', async ({
   page,
 }) => {
-  // ─── Extend the Keychain stub with requestAddAccountAuthority ─
-  // settings.js calls this AFTER the chain broadcast succeeds. The base
-  // keychain fixture does not provide it; without a stub the Alpine handler
-  // would hang forever waiting for a callback. init scripts run in
-  // insertion order, so window.hive_keychain is already installed by the
-  // base fixture's script by the time this one fires.
+  // ─── Extend the Keychain stub with requestImportKey ─────────
+  // settings.js calls this AFTER the chain broadcast succeeds to import the
+  // newly-derived posting WIF into Keychain. The base fixture does not
+  // provide it; without a stub the Alpine handler would hang forever waiting
+  // for a callback. init scripts run in insertion order, so
+  // window.hive_keychain is already installed by the base fixture's script
+  // by the time this one fires.
+  //
+  // The stub captures call arguments on a window-global array so the test
+  // can assert the second argument is a WIF-formatted private key (matching
+  // /^5[HJK][1-9A-HJ-NP-Za-km-z]{49}$/), NOT a raw 64-char hex seed.
+  // Regression guard for the old `requestAddAccountAuthority` misuse that
+  // was passing `newKeys.posting` (a raw hex seed) as an "account name".
   await page.addInitScript(() => {
+    window.__keychainImportKeyCalls = [];
+    window.__keychainAddAccountAuthorityCalls = [];
     if (window.hive_keychain) {
-      window.hive_keychain.requestAddAccountAuthority = (
-        _account,
-        _authorizedKey,
-        _role,
+      window.hive_keychain.requestImportKey = (
+        account,
+        wifKey,
         callback,
       ) => {
+        window.__keychainImportKeyCalls.push({ account, wifKey });
+        queueMicrotask(() => callback({ success: true, result: 'STUB_KEY_IMPORTED' }));
+      };
+      // Trap for the legacy API. If settings.js ever regresses and calls
+      // this, the test captures it and the assertion below fails.
+      window.hive_keychain.requestAddAccountAuthority = (
+        account,
+        authorizedKey,
+        role,
+        callback,
+      ) => {
+        window.__keychainAddAccountAuthorityCalls.push({ account, authorizedKey, role });
         queueMicrotask(() => callback({ success: true, result: 'STUB_AUTH_ADDED' }));
       };
     }
@@ -282,4 +302,40 @@ test('upgrade wizard signs and would-broadcast an account_update rotating all ke
     opBody.memo_key,
   ]);
   expect(newPubkeys.size).toBe(4);
+
+  // ─── Assert Keychain received a WIF, not a raw hex seed ──────
+  // Poll until the post-broadcast requestImportKey call lands. The click
+  // handler awaits the Keychain callback AFTER the broadcast assertion
+  // promise resolves, so at this point the call may or may not have been
+  // made yet depending on microtask ordering.
+  await expect
+    .poll(
+      async () => page.evaluate(() => window.__keychainImportKeyCalls.length),
+      { timeout: 10_000 },
+    )
+    .toBeGreaterThan(0);
+
+  const importKeyCalls = await page.evaluate(
+    () => window.__keychainImportKeyCalls,
+  );
+  expect(importKeyCalls).toHaveLength(1);
+  const [importCall] = importKeyCalls;
+  expect(importCall.account).toBe(LIGHT_USERNAME);
+
+  // WIF-formatted Hive private key: starts with 5H/5J/5K, 50 chars total,
+  // base58 alphabet. A raw 64-char lowercase hex seed would NOT match.
+  const WIF_RE = /^5[HJK][1-9A-HJ-NP-Za-km-z]{49}$/;
+  expect(importCall.wifKey).toMatch(WIF_RE);
+  // Belt-and-suspenders: explicitly reject the old-bug shape (64-char hex).
+  expect(importCall.wifKey).not.toMatch(/^[0-9a-f]{64}$/);
+
+  // ─── Regression: `requestAddAccountAuthority` must NOT be called ──
+  // settings.js historically called this with a raw hex seed as the
+  // "authorizedKey" (second arg), leaking a 64-char private-key seed into
+  // Keychain's extension logs. If any future refactor reintroduces the
+  // call, this assertion catches it.
+  const addAuthCalls = await page.evaluate(
+    () => window.__keychainAddAccountAuthorityCalls,
+  );
+  expect(addAuthCalls).toEqual([]);
 });

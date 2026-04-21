@@ -596,11 +596,18 @@ export function initSettingsPage() {
 
         await client.broadcast.sendOperations([['account_update', op]], ownerKey);
 
-        // Import new posting key into Keychain
+        // Import new posting key into Keychain so the user can sign with it
+        // after self-custody upgrade. `requestImportKey` expects (username,
+        // wifKey, callback); the WIF is derived from the new posting seed.
+        // Historical bug: this used `requestAddAccountAuthority(username,
+        // rawHexSeed, 'posting', ...)` which (a) is the wrong API semantic
+        // (second arg should be an ACCOUNT NAME, not a key) and (b) leaks the
+        // raw 64-char hex private-key seed into Keychain's extension logs.
         if (isKeychainInstalled()) {
+          const wifPosting = dhive.PrivateKey.fromSeed(newKeys.posting).toString();
           await new Promise((resolve, reject) => {
-            window.hive_keychain.requestAddAccountAuthority(
-              this.username, newKeys.posting, 'posting',
+            window.hive_keychain.requestImportKey(
+              this.username, wifPosting,
               (res) => res.success ? resolve(res) : reject(new Error(res.message))
             );
           });

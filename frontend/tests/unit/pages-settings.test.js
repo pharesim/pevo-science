@@ -228,6 +228,46 @@ describe('settingsPage', () => {
     });
   });
 
+  // FE-KEYCHAIN-API-MISUSE regression guard. The upgrade flow used to call
+  // `window.hive_keychain.requestAddAccountAuthority(username, rawHexSeed,
+  // 'posting', cb)` — wrong API (second arg should be an ACCOUNT NAME) and
+  // a private-key seed leak into Keychain's extension logs. Replaced with
+  // `requestImportKey(username, wifPosting, cb)`. A grep-level check on
+  // the compiled module source is the simplest, most-robust regression
+  // guard: exercising executeUpgrade() in a unit test would require mocking
+  // BIP39, dhive, and the chain broadcast. This test keeps the assertion
+  // cheap and impossible to bypass with an equivalent code rewrite.
+  describe('FE-KEYCHAIN-API-MISUSE regression', () => {
+    it('settings.js must not call requestAddAccountAuthority', async () => {
+      const fs = await import('node:fs');
+      const path = await import('node:path');
+      const { fileURLToPath } = await import('node:url');
+      const here = path.dirname(fileURLToPath(import.meta.url));
+      const src = fs.readFileSync(
+        path.join(here, '../../src/pages/settings.js'),
+        'utf8',
+      );
+      // Strip block + line comments so the historical-mention comment in
+      // the upgrade flow doesn't trigger the regression. We only want to
+      // catch a real method call `.requestAddAccountAuthority(`.
+      const noBlockComments = src.replace(/\/\*[\s\S]*?\*\//g, '');
+      const noLineComments = noBlockComments.replace(/\/\/[^\n]*/g, '');
+      expect(noLineComments).not.toMatch(/\.requestAddAccountAuthority\s*\(/);
+    });
+
+    it('settings.js must call requestImportKey in the upgrade flow', async () => {
+      const fs = await import('node:fs');
+      const path = await import('node:path');
+      const { fileURLToPath } = await import('node:url');
+      const here = path.dirname(fileURLToPath(import.meta.url));
+      const src = fs.readFileSync(
+        path.join(here, '../../src/pages/settings.js'),
+        'utf8',
+      );
+      expect(src).toMatch(/window\.hive_keychain\.requestImportKey\(/);
+    });
+  });
+
   describe('confirmCorrect', () => {
     it('validates confirmation inputs', () => {
       const comp = createComponent();
