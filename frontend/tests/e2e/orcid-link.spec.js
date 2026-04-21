@@ -105,16 +105,71 @@ test('signup mode omits Authorization header on callback', async ({ page }) => {
 });
 
 /**
- * Real-backend 403 assertion. Pending SEC-002-BE: today the callback
- * returns 200 for cross-user link attempts (the P0 hole we are closing).
- * Enable once backend lands.
+ * Real-backend 403 assertion (SEC-002-BE). Exercises the auth gate against a
+ * live backend: victim A calls `/api/orcid/start` to allocate state, then
+ * attacker B posts to `/api/orcid/callback` with A's state and B's own
+ * signed bearer. The backend must return 403 FORBIDDEN and never broadcast
+ * on-chain. No page navigation here — we drive the API directly via two
+ * isolated request contexts so the state-hijack check is not entangled with
+ * any frontend behaviour. `code` is fake: the callback must reject before
+ * reaching the ORCID token-exchange step.
  */
-test.fixme(
-  'link mode returns 403 when session username does not match the state initiator',
-  async () => {
-    // 1. Call `/api/orcid/start` with mode=link, authed as user A.
-    // 2. Seed a session for user B.
-    // 3. Navigate to /orcid/callback?code=...&state=<A's state>.
-    // 4. Expect 403 FORBIDDEN from the real backend, no on-chain broadcast.
-  },
-);
+test('link mode returns 403 when session username does not match the state initiator', async ({ browser, request }) => {
+  // Victim: any signup-eligible username that the backend accepts a bearer for.
+  // seedUnaccreditedSession is used elsewhere to keep the fixture surface narrow;
+  // we just need two DIFFERENT mints against the same SESSION_SECRET so the
+  // bearer auths as distinct users.
+  const victimContext = await browser.newContext();
+  const attackerContext = await browser.newContext();
+  try {
+    const victimPage = await victimContext.newPage();
+    const attackerPage = await attackerContext.newPage();
+
+    // Mint two distinct sessions. The init scripts seed localStorage, but for
+    // this API-only assertion we also grab the raw tokens so we can sign the
+    // two requests directly.
+    const victim = await seedUnaccreditedSession(victimPage, {
+      username: `e2evictim${Date.now().toString(36)}`,
+    });
+    const attacker = await seedUnaccreditedSession(attackerPage, {
+      username: `e2eattacker${Date.now().toString(36)}`,
+    });
+    expect(victim.username).not.toBe(attacker.username);
+
+    // Victim calls /start (mode=link) to allocate state. Uses the victim page
+    // context so the backend sees a real origin/cookies path; the bearer is
+    // what actually authenticates.
+    const startResp = await victimPage.request.post('/api/orcid/start', {
+      headers: { Authorization: `Bearer ${victim.token}` },
+      data: { mode: 'link' },
+    });
+    // `/start` on mode=link requires the victim to be accredited in some
+    // backends, and it requires admin key to be configured; but pure state
+    // allocation only needs a valid bearer. If the backend responds non-200
+    // (e.g., ORCID not configured in this env) skip the assertion with a
+    // helpful message rather than a cryptic cross-context failure.
+    if (startResp.status() !== 200) {
+      test.skip(true, `/api/orcid/start returned ${startResp.status()} — ORCID config likely missing in this env`);
+      return;
+    }
+    const startBody = await startResp.json();
+    const redirectUrl = startBody?.data?.redirect_url;
+    expect(redirectUrl, 'redirect_url missing from /start response').toBeTruthy();
+    const state = new URL(redirectUrl).searchParams.get('state');
+    expect(state, 'state param missing from ORCID redirect URL').toBeTruthy();
+
+    // Attacker calls /callback with the victim's state and the attacker's bearer.
+    // Should be 403 FORBIDDEN — the auth gate runs before token exchange, so
+    // the fake `code` never reaches ORCID.
+    const callbackResp = await attackerPage.request.post('/api/orcid/callback', {
+      headers: { Authorization: `Bearer ${attacker.token}` },
+      data: { code: 'fake-not-reached', state },
+    });
+    expect(callbackResp.status()).toBe(403);
+    const body = await callbackResp.json();
+    expect(body?.error?.code).toBe('FORBIDDEN');
+  } finally {
+    await victimContext.close();
+    await attackerContext.close();
+  }
+});

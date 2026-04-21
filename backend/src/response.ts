@@ -12,9 +12,12 @@ export function sendError(
   httpStatus: number,
   code: ErrorCode,
   message: string,
+  details?: Record<string, unknown>,
 ) {
+  const error: Record<string, unknown> = { code, message };
+  if (details) error.details = details;
   res.status(httpStatus).json({
     status: 'error',
-    error: { code, message },
+    error,
   });
 }

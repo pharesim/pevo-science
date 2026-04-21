@@ -354,3 +354,185 @@ describe('POST /api/orcid/callback — auth gate (SEC-002-BE)', () => {
     },
   );
 });
+
+describe('POST /api/orcid/callback — hardening (SEC-002-HARDENING)', () => {
+  // Item 1: state-consume lives inside the outer try/catch. A Redis flap on
+  // the stateKey DEL must surface as a clean 500 INTERNAL_ERROR rather than
+  // escaping as an unhandled rejection (which would kill the process under the
+  // global unhandledRejection handler). We spy on the real Redis client's `del`
+  // to simulate a transient flap WITHOUT mocking out the redis module, so the
+  // broader state-read/auth-check path keeps using the real client.
+  it(
+    'returns 500 when redis.del throws while consuming state (state-consume is inside try/catch)',
+    async () => {
+      const redis = getRedis();
+      if (!redis) {
+        // Without Redis the in-memory Map.delete can't throw — the behavior
+        // under test exists only on the Redis path. Skip rather than fake it.
+        return;
+      }
+      installOrcidFetchStub({ orcid: '0000-0001-ffff-0001', name: 'Alice', works: 3 });
+      const state = await startUnauthed('signup');
+      const delSpy = vi.spyOn(redis, 'del').mockImplementationOnce(async () => {
+        throw new Error('simulated Redis flap on state DEL');
+      });
+      try {
+        const res = await request(app)
+          .post('/api/orcid/callback')
+          .send({ code: 'fake', state });
+        expect(res.status).toBe(500);
+        expect(res.body.error.code).toBe('INTERNAL_ERROR');
+        // The state-consume throw must not have leaked past the handler as a
+        // broadcast: the crash path must abort before dispatch.
+        expect(broadcastJsonMock).not.toHaveBeenCalled();
+      } finally {
+        delSpy.mockRestore();
+      }
+    },
+  );
+
+  // Item 2: NO_ACCOUNT envelope compliance. `orcid_id` must live inside
+  // `error.details` (not as a top-level sibling, which the ApiError envelope
+  // does not carry and strict parsers drop).
+  it(
+    'login mode returns NO_ACCOUNT with orcid_id in error.details (envelope compliance)',
+    async () => {
+      const orcidId = '0000-0001-cccc-0002';
+      installOrcidFetchStub({ orcid: orcidId });
+      // No app-db row => NO_ACCOUNT branch fires.
+      appQueryMock.mockResolvedValue({ rows: [] });
+      const state = await startUnauthed('login');
+      const res = await request(app)
+        .post('/api/orcid/callback')
+        .send({ code: 'fake', state });
+      expect(res.status).toBe(404);
+      expect(res.body.error.code).toBe('NO_ACCOUNT');
+      expect(res.body.error.details).toEqual({ orcid_id: orcidId });
+      // Must NOT leak orcid_id at the top level — that was the drift this
+      // hardening fixes.
+      expect(res.body.orcid_id).toBeUndefined();
+    },
+  );
+
+  // Item 5 (cache hit): findAccreditedAccountWithOrcid consults the recent-bind
+  // cache BEFORE HAF. A cached binding to a different account must trigger
+  // 409 ORCID_ALREADY_LINKED without any HAF query running at all. This is the
+  // TOCTOU mitigation that closes the HAF-indexing-lag window.
+  it(
+    'accredit returns 409 from cache alone when another account bound this ORCID seconds ago',
+    async () => {
+      const redis = getRedis();
+      if (!redis) return; // Cache requires Redis; no-op otherwise.
+      const orcidId = '0000-0001-cccc-0003';
+      const cacheKey = `${config.appTag}:orcid_binding:${orcidId}`;
+      await redis.set(cacheKey, 'bob', 'EX', 120);
+      try {
+        installOrcidFetchStub({ orcid: orcidId, name: 'Alice', works: 3 });
+        // HAF mock returns empty — proving the cache alone drove the 409.
+        hafQueryMock.mockResolvedValue({ rows: [] });
+        const state = await startAuthed('accredit', 'alice');
+        const res = await request(app)
+          .post('/api/orcid/callback')
+          .set('Authorization', `Bearer ${jwtFor('alice')}`)
+          .send({ code: 'fake', state });
+        expect(res.status).toBe(409);
+        expect(res.body.error.code).toBe('ORCID_ALREADY_LINKED');
+        expect(broadcastJsonMock).not.toHaveBeenCalled();
+      } finally {
+        await redis.del(cacheKey).catch(() => { /* cleanup */ });
+      }
+    },
+  );
+
+  // Item 5 (cache write): after a successful link broadcast, the binding is
+  // written to the recent-bind cache so a subsequent concurrent request sees
+  // it before HAF catches up. Spec asserts the cache key holds the broadcast
+  // username and that the TTL is set (EX was applied, not a permanent key).
+  it(
+    'link writes the ORCID → username binding to Redis after a successful broadcast',
+    async () => {
+      const redis = getRedis();
+      if (!redis) return;
+      const orcidId = '0000-0001-cccc-0004';
+      installOrcidFetchStub({ orcid: orcidId, name: 'Alice', works: 3 });
+      hafQueryMock.mockImplementation(async (sql: string) => {
+        if (sql.includes("'orcid' = $1")) {
+          // findAccreditedAccountWithOrcid: ORCID not yet bound
+          return { rows: [] };
+        }
+        if (sql.includes("'action' IN ('accredit', 'revoke')") && sql.includes("'account' = $1")) {
+          return {
+            rows: [{
+              json: { action: 'accredit', name: 'Alice', institution: 'MIT', field: 'CS', method: 'email' },
+            }],
+          };
+        }
+        return { rows: [] };
+      });
+      const state = await startAuthed('link', 'alice');
+      const res = await request(app)
+        .post('/api/orcid/callback')
+        .set('Authorization', `Bearer ${jwtFor('alice')}`)
+        .send({ code: 'fake', state });
+      expect(res.status).toBe(200);
+      const cacheKey = `${config.appTag}:orcid_binding:${orcidId}`;
+      try {
+        const cached = await redis.get(cacheKey);
+        expect(cached).toBe('alice');
+        const ttl = await redis.ttl(cacheKey);
+        // TTL must be a positive number (EX set, not -1 permanent / -2 missing).
+        expect(ttl).toBeGreaterThan(0);
+        expect(ttl).toBeLessThanOrEqual(120);
+      } finally {
+        await redis.del(cacheKey).catch(() => { /* cleanup */ });
+      }
+    },
+  );
+
+  // Item 5 (graceful degrade): when Redis is unavailable at cache-write time,
+  // the handler must not fail the broadcast. The Redis-optional contract
+  // binds the behaviour — the HAF path is authoritative once the op indexes.
+  // Simulated by spying on redis.set to throw; the 200 response proves the
+  // cache write was isolated (try/catch) and didn't propagate.
+  it(
+    'link still returns 200 when the ORCID binding cache write fails (Redis-optional)',
+    async () => {
+      const redis = getRedis();
+      if (!redis) return;
+      const orcidId = '0000-0001-cccc-0005';
+      installOrcidFetchStub({ orcid: orcidId, name: 'Alice', works: 3 });
+      hafQueryMock.mockImplementation(async (sql: string) => {
+        if (sql.includes("'orcid' = $1")) return { rows: [] };
+        if (sql.includes("'action' IN ('accredit', 'revoke')") && sql.includes("'account' = $1")) {
+          return {
+            rows: [{
+              json: { action: 'accredit', name: 'Alice', institution: 'MIT', field: 'CS', method: 'email' },
+            }],
+          };
+        }
+        return { rows: [] };
+      });
+      // Throw only on the binding-cache key so the state-consume DEL still works.
+      const origSet = redis.set.bind(redis);
+      const setSpy = vi.spyOn(redis, 'set').mockImplementation(async (...args: unknown[]) => {
+        const k = String(args[0]);
+        if (k.includes(':orcid_binding:')) throw new Error('simulated Redis flap on binding SET');
+        // Forward every other SET to the real client — state/verified keys still need to work.
+        // @ts-expect-error ioredis set is variadic; forwarding by spread is safe here.
+        return origSet(...args);
+      });
+      try {
+        const state = await startAuthed('link', 'alice');
+        const res = await request(app)
+          .post('/api/orcid/callback')
+          .set('Authorization', `Bearer ${jwtFor('alice')}`)
+          .send({ code: 'fake', state });
+        expect(res.status).toBe(200);
+        expect(res.body.data.mode).toBe('link');
+        expect(broadcastJsonMock).toHaveBeenCalledTimes(1);
+      } finally {
+        setSpy.mockRestore();
+      }
+    },
+  );
+});

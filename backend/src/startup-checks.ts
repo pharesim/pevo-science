@@ -1,5 +1,6 @@
 import { config } from './config.js';
 import { logger } from './logger.js';
+import { getRedis, isRedisAvailable } from './redis.js';
 
 interface EnvCheck {
   key: string;
@@ -59,4 +60,32 @@ export function validateConfig(): void {
     logger.error('Required config missing:\n' + missing.join('\n'));
     process.exit(1);
   }
+}
+
+/**
+ * Warn loudly when the ORCID in-memory fallbacks would be active in a multi-
+ * process deployment. The OAuth state map (`orcidStates`) and nonce map
+ * (`orcidVerified`) live on a single Node process when Redis is unavailable.
+ * Under PM2/cluster/k8s-replicas, the /start request and the /callback request
+ * can land on different workers, so a user who started the flow would see
+ * "invalid state" on callback. This check runs asynchronously a few seconds
+ * after boot, giving the lazy Redis client time to connect before we judge it.
+ */
+export function checkOrcidProcessSafety(): void {
+  const isProduction = process.env.NODE_ENV === 'production';
+  if (!isProduction) return;
+
+  // Touch the client so the lazy-connect path fires, then give it a moment.
+  getRedis();
+  setTimeout(() => {
+    if (!isRedisAvailable()) {
+      logger.error(
+        { component: 'orcid' },
+        'Redis is not available and NODE_ENV=production — ORCID OAuth state falls back to an in-memory map that is NOT shared across workers. ' +
+        'Multi-process deployments (PM2 cluster mode, k8s replicas, any load balancer in front of multiple Node instances) WILL break the /start → /callback handoff: ' +
+        'a callback landing on a different worker than the one that handled /start sees "Invalid or expired state parameter". ' +
+        'Provision Redis (set REDIS_URL) before serving production traffic, or run a single process.',
+      );
+    }
+  }, 5000);
 }

@@ -14,6 +14,7 @@ export interface ApiError {
   error: {
     code: ErrorCode;
     message: string;
+    details?: Record<string, unknown>;
   };
 }
 

@@ -21,6 +21,11 @@ const AUTHENTICATED_MODES: ReadonlySet<string> = new Set(['accredit', 'link']);
 
 const ORCID_STATE_TTL = 600; // 10 minutes
 const ORCID_VERIFIED_TTL = 1800; // 30 minutes
+// Short TTL covers the 3-30s HAF-indexing-lag window after a successful
+// accredit/link broadcast, during which findAccreditedAccountWithOrcid would
+// otherwise not see the fresh binding and two concurrent binds could slip
+// through. 120s is the upper bound on block-watcher catch-up under load.
+const ORCID_BINDING_CACHE_TTL = 120;
 
 // In-memory fallbacks when Redis is unavailable
 const orcidStates = new Map<string, { mode: OrcidMode; username?: string; timestamp: number; expires: number }>();
@@ -176,14 +181,18 @@ router.post('/callback', callbackLimiter, async (req: Request, res: Response) =>
     }
   }
 
-  // Auth passed (or mode is public). Consume state now so it can't be replayed.
-  if (redisReady) {
-    await redis.del(stateKey);
-  } else {
-    orcidStates.delete(state);
-  }
-
   try {
+    // Auth passed (or mode is public). Consume state now so it can't be replayed.
+    // State-consume must live INSIDE the outer try/catch: a transient Redis flap
+    // on `redis.del` would otherwise throw past the try and escape as an
+    // unhandled rejection. Inside the try, such a throw is caught below and
+    // surfaces as a clean 500 sendError.
+    if (redisReady) {
+      await redis.del(stateKey);
+    } else {
+      orcidStates.delete(state);
+    }
+
     // Exchange code for access token
     const tokenRes = await fetch(`${config.orcidBaseUrl}/oauth/token`, {
       method: 'POST',
@@ -279,11 +288,10 @@ async function handleLogin(res: Response, orcidId: string): Promise<void> {
   );
 
   if (result.rows.length === 0) {
-    res.status(404).json({
-      status: 'error',
-      error: { code: 'NO_ACCOUNT', message: 'No account linked to this ORCID. Please sign up first.' },
-      orcid_id: orcidId,
-    });
+    // `orcid_id` must live inside `error.details` so it survives the ApiError
+    // envelope. Top-level siblings are not part of the envelope contract and
+    // get dropped by strict parsers.
+    sendError(res, 404, 'NO_ACCOUNT', 'No account linked to this ORCID. Please sign up first.', { orcid_id: orcidId });
     return;
   }
 
@@ -356,6 +364,10 @@ async function handleAccredit(
     key,
   );
 
+  // Cache the binding so a concurrent bind request in the HAF-lag window sees
+  // it via findAccreditedAccountWithOrcid() before the chain op is indexed.
+  await cacheOrcidBinding(orcidId, username);
+
   // Update orcid column in accounts (if light account row exists)
   await updateAccountOrcid(username, orcidId);
 
@@ -409,6 +421,10 @@ async function handleLink(
     key,
   );
 
+  // Cache the binding so a concurrent bind request in the HAF-lag window sees
+  // it via findAccreditedAccountWithOrcid() before the chain op is indexed.
+  await cacheOrcidBinding(orcidId, username);
+
   // Update orcid column in accounts (if light account row exists)
   await updateAccountOrcid(username, orcidId);
 
@@ -424,6 +440,43 @@ async function handleLink(
 // ─────────────────────────────────────────────────────────────
 // Shared helpers
 // ─────────────────────────────────────────────────────────────
+
+function orcidBindingCacheKey(orcidId: string): string {
+  return `${config.appTag}:orcid_binding:${orcidId}`;
+}
+
+/**
+ * Cache the ORCID → username binding for the HAF-indexing-lag window.
+ * Best-effort: swallow Redis errors (availability over consistency; the HAF
+ * path remains the source of truth once the chain op is indexed).
+ */
+async function cacheOrcidBinding(orcidId: string, username: string): Promise<void> {
+  const redis = getRedis();
+  if (!redis || !isRedisAvailable()) return;
+  try {
+    await redis.set(orcidBindingCacheKey(orcidId), username, 'EX', ORCID_BINDING_CACHE_TTL);
+  } catch (err) {
+    logger.warn({ err, orcidId }, 'Failed to cache ORCID binding');
+  }
+}
+
+/**
+ * Look up the recent-binding cache for an ORCID.
+ * Returns the cached username, or null when no entry exists or Redis is
+ * unavailable. Caller falls back to HAF on null. On a transient Redis read
+ * error the service degrades gracefully: HAF remains authoritative and the
+ * 409 guard still fires once the op is indexed.
+ */
+async function getCachedOrcidBinding(orcidId: string): Promise<string | null> {
+  const redis = getRedis();
+  if (!redis || !isRedisAvailable()) return null;
+  try {
+    return await redis.get(orcidBindingCacheKey(orcidId));
+  } catch (err) {
+    logger.warn({ err, orcidId }, 'Failed to read ORCID binding cache');
+    return null;
+  }
+}
 
 async function countExternalWorks(orcidId: string, _accessToken?: string): Promise<number> {
   const worksRes = await fetch(`https://pub.orcid.org/v3.0/${orcidId}/works`, {
@@ -461,6 +514,15 @@ async function countExternalWorks(orcidId: string, _accessToken?: string): Promi
 }
 
 async function findAccreditedAccountWithOrcid(orcidId: string): Promise<string | null> {
+  // Cache-first: check the recent-binding cache before HAF. Closes the
+  // 3-30s HAF-indexing-lag TOCTOU window where two concurrent bind requests
+  // for the same ORCID could both pass findAccreditedAccountWithOrcid() before
+  // either had been indexed. The cache is written by handleAccredit / handleLink
+  // right after broadcast. On Redis outage we fall through to the HAF path so
+  // the service stays available (Redis is optional by design).
+  const cached = await getCachedOrcidBinding(orcidId);
+  if (cached) return cached;
+
   const pool = getPool();
   // Fail closed when HAF is unavailable: returning null would silently bypass
   // the 409 duplicate-bind guard in handleAccredit/handleLink and let the admin
