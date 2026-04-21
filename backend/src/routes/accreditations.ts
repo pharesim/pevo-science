@@ -138,6 +138,7 @@ async function fetchAccreditationStatusFromHaf(username: string) {
         institution: payload.institution,
         field: payload.field,
         method: payload.method,
+        orcid: payload.orcid || null,
         timestamp: payload.timestamp,
       },
     };
