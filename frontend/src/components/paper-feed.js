@@ -3,6 +3,7 @@ import { fetchPapers, fetchDisciplines } from '../api.js';
 import { truncateText, formatDate, paperCardTemplate } from './paper-card.js';
 import { paginationTemplate } from './pagination.js';
 import { totalPagesFromMeta } from '../lib/pagination.js';
+import { localeStrippedPath } from '../lib/url-sync.js';
 
 const ITEMS_PER_PAGE = 10;
 
@@ -85,9 +86,8 @@ export const paperFeedTemplate = `
 // component renders without rewriting the URL, so `?page=…` never leaks onto
 // the landing page. Detected from the path (minus optional locale prefix) so
 // this works regardless of Alpine store init order.
-function feedOwnsUrl() {
-  const path = window.location.pathname.replace(/^\/[a-z]{2,3}(?=\/|$)/, '') || '/';
-  return path === '/papers';
+function pageOwnsUrl() {
+  return localeStrippedPath(window.location.pathname) === '/papers';
 }
 
 export function initPaperFeed() {
@@ -111,8 +111,9 @@ export function initPaperFeed() {
       this._syncFromUrl();
       this.loadDisciplines().catch(() => {});
       this.loadPapers();
-      if (feedOwnsUrl()) {
+      if (pageOwnsUrl()) {
         this._popstateHandler = () => {
+          if (!pageOwnsUrl()) return;
           this._syncFromUrl();
           this.loadPapers();
         };
@@ -128,7 +129,7 @@ export function initPaperFeed() {
     },
 
     _syncFromUrl() {
-      if (!feedOwnsUrl()) return;
+      if (!pageOwnsUrl()) return;
       const params = new URLSearchParams(window.location.search);
       const page = parseInt(params.get('page') || '1', 10);
       this.currentPage = Number.isFinite(page) && page > 0 ? page : 1;
@@ -140,7 +141,7 @@ export function initPaperFeed() {
     },
 
     _pushUrl() {
-      if (!feedOwnsUrl()) return;
+      if (!pageOwnsUrl()) return;
       const params = new URLSearchParams();
       if (this.currentPage > 1) params.set('page', String(this.currentPage));
       if (this.discipline) params.set('discipline', this.discipline);

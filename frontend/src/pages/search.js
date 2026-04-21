@@ -3,6 +3,7 @@ import { searchPapers, fetchDisciplines } from '../api.js';
 import { formatDate } from '../components/paper-card.js';
 import { paginationTemplate } from '../components/pagination.js';
 import { totalPagesFromMeta } from '../lib/pagination.js';
+import { localeStrippedPath } from '../lib/url-sync.js';
 import DOMPurify from 'dompurify';
 
 const template = `
@@ -149,8 +150,7 @@ const ITEMS_PER_PAGE = 20;
 // (stripping an optional locale prefix) guards against popstate events firing
 // after the user navigates away via the SPA router.
 function pageOwnsUrl() {
-  const path = window.location.pathname.replace(/^\/[a-z]{2,3}(?=\/|$)/, '') || '/';
-  return path === '/search';
+  return localeStrippedPath(window.location.pathname) === '/search';
 }
 
 export function initSearchPage() {

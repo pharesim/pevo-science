@@ -3,6 +3,7 @@ import { fetchAccreditations } from '../api.js';
 import { formatDate } from '../components/paper-card.js';
 import { paginationTemplate } from '../components/pagination.js';
 import { totalPagesFromMeta } from '../lib/pagination.js';
+import { localeStrippedPath } from '../lib/url-sync.js';
 
 const ITEMS_PER_PAGE = 12;
 
@@ -93,8 +94,7 @@ export { template as researchersPageTemplate };
 // check (stripping an optional locale prefix) guards against popstate events
 // firing after the user navigates away via the SPA router.
 function pageOwnsUrl() {
-  const path = window.location.pathname.replace(/^\/[a-z]{2,3}(?=\/|$)/, '') || '/';
-  return path === '/researchers';
+  return localeStrippedPath(window.location.pathname) === '/researchers';
 }
 
 export function initResearchersPage() {
@@ -131,6 +131,7 @@ export function initResearchersPage() {
     },
 
     _syncFromUrl() {
+      if (!pageOwnsUrl()) return;
       const params = new URLSearchParams(window.location.search);
       const page = parseInt(params.get('page') || '1', 10);
       this.currentPage = Number.isFinite(page) && page > 0 ? page : 1;
