@@ -198,4 +198,48 @@ describe('auth store', () => {
       expect(store.isConnected).toBe(false);
     });
   });
+
+  describe('_checkAccreditation', () => {
+    it('does not fetch when username is null', async () => {
+      // Guards against /api/accreditations/null requests during page
+      // teardown or before a login has populated the store.
+      store.username = null;
+      store.isConnected = false;
+      mockFetchAccreditationStatus.mockClear();
+      await expect(store._checkAccreditation()).resolves.toBeUndefined();
+      expect(mockFetchAccreditationStatus).not.toHaveBeenCalled();
+    });
+
+    it('does not fetch when not connected even if username is set', async () => {
+      // Covers the race where username lingers after disconnect.
+      store.username = 'alice';
+      store.isConnected = false;
+      mockFetchAccreditationStatus.mockClear();
+      await expect(store._checkAccreditation()).resolves.toBeUndefined();
+      expect(mockFetchAccreditationStatus).not.toHaveBeenCalled();
+    });
+
+    it('swallows network errors and does not reject', async () => {
+      // Guards against unhandled promise rejections from the polling
+      // interval bleeding into the next Playwright test.
+      store.username = 'alice';
+      store.isConnected = true;
+      mockFetchAccreditationStatus.mockRejectedValueOnce(new Error('network down'));
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      await expect(store._checkAccreditation()).resolves.toBeUndefined();
+      expect(warnSpy).toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
+
+    it('updates state on successful fetch', async () => {
+      store.username = 'alice';
+      store.isConnected = true;
+      mockFetchAccreditationStatus.mockResolvedValueOnce({
+        data: { is_accredited: true, accreditation: { type: 'orcid' } },
+      });
+      await store._checkAccreditation();
+      expect(store.isAccredited).toBe(true);
+      expect(store.accreditation).toEqual({ type: 'orcid' });
+    });
+  });
 });

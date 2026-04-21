@@ -152,11 +152,21 @@ export function initAuth() {
     },
 
     async _checkAccreditation() {
-      const accRes = await fetchAccreditationStatus(this.username);
-      if (accRes.data) {
-        this.isAccredited = accRes.data.is_accredited;
-        this.accreditation = accRes.data.accreditation;
-        this._saveSession();
+      // Guard: skip if the session isn't fully connected yet. Prevents
+      // requests to /api/accreditations/null during page teardown or before
+      // a login has populated the store, and avoids unhandled rejections
+      // that can bleed into the next Playwright test.
+      if (!this.username || !this.isConnected) return;
+      try {
+        const accRes = await fetchAccreditationStatus(this.username);
+        if (accRes?.data) {
+          this.isAccredited = accRes.data.is_accredited;
+          this.accreditation = accRes.data.accreditation;
+          this._saveSession();
+        }
+      } catch (err) {
+        // Log but do not reject. Polling continues; the next tick retries.
+        console.warn('[auth] accreditation check failed:', err);
       }
     },
 
