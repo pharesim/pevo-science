@@ -831,7 +831,10 @@
     "signIn": "登录",
     "checkEmail": "请查收邮件",
     "checkEmailDescription": "我们已向您的邮箱发送了验证链接，请点击链接完成注册。",
-    "orcidNoPassword": "You can set a password later in Settings if you want email-based login."
+    "orcidNoPassword": "You can set a password later in Settings if you want email-based login.",
+    "orcidStartFailed": "Could not start the ORCID sign-up flow. Please try again. If the problem persists, contact support.",
+    "submitFailed": "Could not create your account. Please try again. If the problem persists, contact support.",
+    "resendFailed": "Could not resend the verification email. Please try again. If the problem persists, contact support."
   },
   "signIn": {
     "title": "登录 PEvO",
@@ -853,7 +856,8 @@
     "browserExtensionDescription": "适用于拥有 Hive 账户的用户",
     "browserExtensionTitle": "通过 Keychain 连接",
     "browserExtensionNotInstalled": "您的浏览器未安装 Hive Keychain。",
-    "usernamePlaceholder": "例如 satoshi"
+    "usernamePlaceholder": "例如 satoshi",
+    "resendFailed": "Could not resend the verification email. Please try again. If the problem persists, contact support."
   },
   "login": {
     "title": "登录",
@@ -870,7 +874,10 @@
     "verificationResent": "新的验证链接已发送至您的邮箱。",
     "signUpAgain": "重新注册",
     "lostEmailAccess": "无法访问您的邮箱？",
-    "orcidLogin": "Sign in with ORCID"
+    "orcidLogin": "Sign in with ORCID",
+    "loginFailed": "Could not sign you in. Please check your credentials and try again.",
+    "resendFailed": "Could not resend the verification email. Please try again. If the problem persists, contact support.",
+    "orcidStartFailed": "Could not start the ORCID sign-in flow. Please try again. If the problem persists, contact support."
   },
   "seedPhrase": {
     "verifying": "正在验证邮箱…",
@@ -911,7 +918,10 @@
     "resumeDescription": "已经验证了您的电子邮件？输入您的凭据以继续之前的注册。",
     "resumeButton": "继续注册",
     "resuming": "正在继续…",
-    "startOver": "重新开始注册"
+    "startOver": "重新开始注册",
+    "createAccountFailed": "Could not create your account. Please try again. If the problem persists, contact support.",
+    "linkAccountFailed": "Could not link your Hive account. Please try again. If the problem persists, contact support.",
+    "resumeFailed": "Could not resume your signup. Please check your credentials and try again."
   },
   "confirm": {
     "publishTitle": "发表论文",
@@ -971,7 +981,9 @@
     "resetting": "正在重置…",
     "doneTitle": "密码已重置",
     "doneDescription": "密码已更新，您现在可以使用新密码登录。",
-    "goToLogin": "登录"
+    "goToLogin": "登录",
+    "requestFailed": "Could not send the reset link. Please try again. If the problem persists, contact support.",
+    "resetFailed": "Could not reset your password. The link may have expired. Please request a new one."
   },
   "recover": {
     "title": "恢复您的账户",
@@ -1001,7 +1013,10 @@
     "doneDescription": "您的账户已使用新邮箱和密码恢复。请使用新的凭据登录。",
     "goToLogin": "登录",
     "backToLogin": "返回登录",
-    "orcidNoPassword": "You can set a password later in Settings if you want email-based login."
+    "orcidNoPassword": "You can set a password later in Settings if you want email-based login.",
+    "orcidStartFailed": "Could not start the ORCID recovery flow. Please try again. If the problem persists, contact support.",
+    "seedRecoveryFailed": "Could not recover your account with the provided recovery phrase. Please check the phrase and try again.",
+    "orcidRecoveryFailed": "Could not recover your account with ORCID. Please try again. If the problem persists, contact support."
   },
   "settings": {
     "title": "设置",

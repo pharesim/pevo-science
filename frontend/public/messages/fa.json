@@ -831,7 +831,10 @@
     "signIn": "ورود",
     "checkEmail": "ایمیل خود را بررسی کنید",
     "checkEmailDescription": "یک لینک تأیید به ایمیل شما ارسال شد. روی آن کلیک کنید تا ثبت‌نام شما تکمیل شود.",
-    "orcidNoPassword": "You can set a password later in Settings if you want email-based login."
+    "orcidNoPassword": "You can set a password later in Settings if you want email-based login.",
+    "orcidStartFailed": "Could not start the ORCID sign-up flow. Please try again. If the problem persists, contact support.",
+    "submitFailed": "Could not create your account. Please try again. If the problem persists, contact support.",
+    "resendFailed": "Could not resend the verification email. Please try again. If the problem persists, contact support."
   },
   "signIn": {
     "title": "ورود به PEvO",
@@ -853,7 +856,8 @@
     "browserExtensionDescription": "برای کاربرانی که حساب Hive خود را دارند",
     "browserExtensionTitle": "اتصال با Keychain",
     "browserExtensionNotInstalled": "Hive Keychain در مرورگر شما نصب نیست.",
-    "usernamePlaceholder": "مثلاً satoshi"
+    "usernamePlaceholder": "مثلاً satoshi",
+    "resendFailed": "Could not resend the verification email. Please try again. If the problem persists, contact support."
   },
   "login": {
     "title": "ورود",
@@ -870,7 +874,10 @@
     "verificationResent": "یک لینک تأیید جدید به ایمیل شما ارسال شد.",
     "signUpAgain": "ثبت‌نام مجدد",
     "lostEmailAccess": "دسترسی به ایمیل خود را از دست داده‌اید؟",
-    "orcidLogin": "Sign in with ORCID"
+    "orcidLogin": "Sign in with ORCID",
+    "loginFailed": "Could not sign you in. Please check your credentials and try again.",
+    "resendFailed": "Could not resend the verification email. Please try again. If the problem persists, contact support.",
+    "orcidStartFailed": "Could not start the ORCID sign-in flow. Please try again. If the problem persists, contact support."
   },
   "seedPhrase": {
     "verifying": "در حال تأیید ایمیل شما…",
@@ -911,7 +918,10 @@
     "resumeDescription": "ایمیل خود را قبلاً تأیید کرده‌اید؟ اطلاعات ورود خود را وارد کنید تا از همان‌جا ادامه دهید.",
     "resumeButton": "ادامه ثبت‌نام",
     "resuming": "در حال ادامه…",
-    "startOver": "شروع ثبت‌نام جدید"
+    "startOver": "شروع ثبت‌نام جدید",
+    "createAccountFailed": "Could not create your account. Please try again. If the problem persists, contact support.",
+    "linkAccountFailed": "Could not link your Hive account. Please try again. If the problem persists, contact support.",
+    "resumeFailed": "Could not resume your signup. Please check your credentials and try again."
   },
   "confirm": {
     "publishTitle": "انتشار مقاله",
@@ -971,7 +981,9 @@
     "resetting": "در حال بازنشانی…",
     "doneTitle": "رمز عبور بازنشانی شد",
     "doneDescription": "رمز عبور شما به‌روزرسانی شد. اکنون می‌توانید با رمز عبور جدید وارد شوید.",
-    "goToLogin": "ورود"
+    "goToLogin": "ورود",
+    "requestFailed": "Could not send the reset link. Please try again. If the problem persists, contact support.",
+    "resetFailed": "Could not reset your password. The link may have expired. Please request a new one."
   },
   "recover": {
     "title": "بازیابی حساب کاربری",
@@ -1001,7 +1013,10 @@
     "doneDescription": "حساب شما با ایمیل و رمز عبور جدید بازیابی شد. لطفا با اطلاعات جدید وارد شوید.",
     "goToLogin": "ورود",
     "backToLogin": "بازگشت به ورود",
-    "orcidNoPassword": "You can set a password later in Settings if you want email-based login."
+    "orcidNoPassword": "You can set a password later in Settings if you want email-based login.",
+    "orcidStartFailed": "Could not start the ORCID recovery flow. Please try again. If the problem persists, contact support.",
+    "seedRecoveryFailed": "Could not recover your account with the provided recovery phrase. Please check the phrase and try again.",
+    "orcidRecoveryFailed": "Could not recover your account with ORCID. Please try again. If the problem persists, contact support."
   },
   "settings": {
     "title": "تنظیمات",

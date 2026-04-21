@@ -831,7 +831,10 @@
     "signIn": "Iniciar sessão",
     "checkEmail": "Verifique o seu e-mail",
     "checkEmailDescription": "Enviámos uma ligação de verificação para o seu e-mail. Clique nela para concluir o registo.",
-    "orcidNoPassword": "You can set a password later in Settings if you want email-based login."
+    "orcidNoPassword": "You can set a password later in Settings if you want email-based login.",
+    "orcidStartFailed": "Could not start the ORCID sign-up flow. Please try again. If the problem persists, contact support.",
+    "submitFailed": "Could not create your account. Please try again. If the problem persists, contact support.",
+    "resendFailed": "Could not resend the verification email. Please try again. If the problem persists, contact support."
   },
   "signIn": {
     "title": "Iniciar sessão no PEvO",
@@ -853,7 +856,8 @@
     "browserExtensionDescription": "Para utilizadores com conta Hive própria",
     "browserExtensionTitle": "Ligar com Keychain",
     "browserExtensionNotInstalled": "O Hive Keychain não está instalado no seu navegador.",
-    "usernamePlaceholder": "ex. satoshi"
+    "usernamePlaceholder": "ex. satoshi",
+    "resendFailed": "Could not resend the verification email. Please try again. If the problem persists, contact support."
   },
   "login": {
     "title": "Iniciar sessão",
@@ -870,7 +874,10 @@
     "verificationResent": "Um novo link de verificação foi enviado para o seu e-mail.",
     "signUpAgain": "Registar novamente",
     "lostEmailAccess": "Perdeu o acesso ao seu e-mail?",
-    "orcidLogin": "Sign in with ORCID"
+    "orcidLogin": "Sign in with ORCID",
+    "loginFailed": "Could not sign you in. Please check your credentials and try again.",
+    "resendFailed": "Could not resend the verification email. Please try again. If the problem persists, contact support.",
+    "orcidStartFailed": "Could not start the ORCID sign-in flow. Please try again. If the problem persists, contact support."
   },
   "seedPhrase": {
     "verifying": "A verificar o seu e-mail…",
@@ -911,7 +918,10 @@
     "resumeDescription": "Já verificou o seu e-mail? Introduza as suas credenciais para continuar de onde parou.",
     "resumeButton": "Continuar registo",
     "resuming": "A retomar…",
-    "startOver": "Iniciar novo registo"
+    "startOver": "Iniciar novo registo",
+    "createAccountFailed": "Could not create your account. Please try again. If the problem persists, contact support.",
+    "linkAccountFailed": "Could not link your Hive account. Please try again. If the problem persists, contact support.",
+    "resumeFailed": "Could not resume your signup. Please check your credentials and try again."
   },
   "confirm": {
     "publishTitle": "Publicar artigo",
@@ -971,7 +981,9 @@
     "resetting": "A redefinir…",
     "doneTitle": "Palavra-passe redefinida",
     "doneDescription": "A sua palavra-passe foi atualizada. Já pode iniciar sessão com a sua nova palavra-passe.",
-    "goToLogin": "Iniciar sessão"
+    "goToLogin": "Iniciar sessão",
+    "requestFailed": "Could not send the reset link. Please try again. If the problem persists, contact support.",
+    "resetFailed": "Could not reset your password. The link may have expired. Please request a new one."
   },
   "recover": {
     "title": "Recuperar a sua conta",
@@ -1001,7 +1013,10 @@
     "doneDescription": "A sua conta foi recuperada com o novo e-mail e palavra-passe. Inicie sessão com as suas novas credenciais.",
     "goToLogin": "Iniciar sessão",
     "backToLogin": "Voltar ao início de sessão",
-    "orcidNoPassword": "You can set a password later in Settings if you want email-based login."
+    "orcidNoPassword": "You can set a password later in Settings if you want email-based login.",
+    "orcidStartFailed": "Could not start the ORCID recovery flow. Please try again. If the problem persists, contact support.",
+    "seedRecoveryFailed": "Could not recover your account with the provided recovery phrase. Please check the phrase and try again.",
+    "orcidRecoveryFailed": "Could not recover your account with ORCID. Please try again. If the problem persists, contact support."
   },
   "settings": {
     "title": "Definições",
