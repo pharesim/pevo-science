@@ -304,6 +304,19 @@ describe('paperFeed', () => {
       warnSpy.mockRestore();
       comp.destroy();
     });
+
+    it('resets disciplinesLoadFailed to false when a subsequent loadDisciplines succeeds', async () => {
+      // Seed a stuck-true flag, simulate a later retry whose fetch resolves, and
+      // assert the flag is cleared. Guards against the reset-on-retry trap noted
+      // in FE-LOADDISCIPLINES-OBSERVABILITY architect re-review.
+      mockFetchDisciplines.mockResolvedValue({
+        data: [{ name: 'physics', paper_count: 1 }],
+      });
+      const comp = createComponent();
+      comp.disciplinesLoadFailed = true;
+      await comp.loadDisciplines();
+      expect(comp.disciplinesLoadFailed).toBe(false);
+    });
   });
 
   describe('discipline case normalization', () => {

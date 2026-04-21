@@ -234,6 +234,13 @@ export function initSearchPage() {
     },
 
     async loadDisciplines() {
+      // Reset the failure flag before attempting the fetch so retries after a
+      // transient failure can clear the `data-disciplines-status="failed"` DOM
+      // signal on success. Today `loadDisciplines` is init-only, but any future
+      // retry path (route revisit, visibility-change reload, user-triggered
+      // retry) would otherwise see the flag stuck at true even after a
+      // successful reload.
+      this.disciplinesLoadFailed = false;
       const res = await fetchDisciplines();
       // Lowercase each discipline name so dropdown option values match the
       // canonical form used by `_syncFromUrl`/`_pushUrl`. Display is titlecased
