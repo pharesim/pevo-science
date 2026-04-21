@@ -85,7 +85,7 @@ export function initOrcidCallbackPage() {
 
     async _verify(code, state, mode) {
       try {
-        const res = await completeOrcid(code, state);
+        const res = await completeOrcid(code, state, mode);
         const data = res.data;
 
         switch (data.mode) {

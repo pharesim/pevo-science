@@ -205,8 +205,10 @@ export async function startOrcid(mode) {
   return res.data;
 }
 
-export function completeOrcid(code, state) {
-  return request('/orcid/callback', {
+export function completeOrcid(code, state, mode) {
+  const requiresAuth = mode === 'accredit' || mode === 'link';
+  const reqFn = requiresAuth ? authenticatedRequest : request;
+  return reqFn('/orcid/callback', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ code, state }),

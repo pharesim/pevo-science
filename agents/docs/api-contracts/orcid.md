@@ -47,13 +47,13 @@ Initiate the ORCID OAuth2 flow for any mode. Generates a state parameter stored 
 
 ```json
 {
-  "redirect_url": "https://orcid.org/oauth/authorize?client_id=...&response_type=code&scope=/authenticate+/read-limited&redirect_uri=...&state=..."
+  "redirect_url": "https://orcid.org/oauth/authorize?client_id=...&response_type=code&scope=/authenticate&redirect_uri=...&state=..."
 }
 ```
 
 **Redirect URI:** Derived at runtime as `${config.appUrl}/orcid/callback`. No env var.
 
-**Scope:** All modes use `/authenticate /read-limited`.
+**Scope:** All modes use `/authenticate` only. The ORCID Public API (free tier) does not permit additional scopes like `/read-limited` (Member API paid tier).
 
 **Rate limit:** 10 requests per IP per minute.
 
@@ -68,7 +68,7 @@ Initiate the ORCID OAuth2 flow for any mode. Generates a state parameter stored 
 
 Complete the ORCID OAuth2 flow. Exchanges the authorization code for an access token, reads the ORCID profile, and performs mode-specific logic.
 
-**Auth:** Not required (mode is read from Redis state, not from the request).
+**Auth:** Required for `accredit` and `link` modes (JWT or Hive-signature headers). The authenticated caller must match the `username` bound into the state by `/start`; otherwise the request is rejected with 403. Not required for `signup` and `login` modes (their state has no bound username). This closes the state-hijack path where a leaked state could be replayed by a different user.
 
 **Body:**
 
@@ -178,6 +178,9 @@ No min works check on link.
 
 **Errors (all modes):**
 - `BAD_REQUEST` -- invalid/expired state or authorization code
+- `UNAUTHORIZED` -- missing/invalid auth on `accredit` or `link` callbacks
+- `FORBIDDEN` -- authenticated caller does not match the `username` bound into the state by `/start` (applies to `accredit`, `link`)
+- `ORCID_ALREADY_LINKED` (409) -- ORCID is already linked to another accredited account (applies to `accredit`, `link`)
 - `VALIDATION_ERROR` -- ORCID profile has fewer than `ORCID_MIN_WORKS` works (signup/accredit modes only)
 - `VALIDATION_ERROR` -- link mode but user is not accredited
 - `INTERNAL_ERROR` -- ORCID API unreachable

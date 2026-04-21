@@ -15,6 +15,7 @@ import {
   fetchPapers,
   fetchNotifications,
   fetchDisciplines,
+  completeOrcid,
 } from '../../src/api.js';
 
 // Helper: build a mock Response-like object for fetch.
@@ -197,5 +198,90 @@ describe('authenticatedRequest', () => {
     const [url, init] = fetchSpy.mock.calls[0];
     expect(url).toBe('/api/notifications?since_block=100&limit=10');
     expect(init.headers).toMatchObject({ Authorization: 'Bearer jwt-abc-123' });
+  });
+});
+
+describe('completeOrcid mode-based auth', () => {
+  let fetchSpy;
+
+  beforeEach(() => {
+    fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      mockJsonResponse(200, { status: 'ok', data: { mode: 'signup' } }),
+    );
+  });
+
+  afterEach(() => {
+    fetchSpy.mockRestore();
+  });
+
+  it('sends Authorization: Bearer <token> on link mode', async () => {
+    authStore = { token: 'jwt-link-1' };
+    await completeOrcid('code', 'state', 'link');
+
+    const [url, init] = fetchSpy.mock.calls[0];
+    expect(url).toBe('/api/orcid/callback');
+    expect(init.headers).toMatchObject({ Authorization: 'Bearer jwt-link-1' });
+    expect(init.body).toBe(JSON.stringify({ code: 'code', state: 'state' }));
+  });
+
+  it('sends Authorization: Bearer <token> on accredit mode', async () => {
+    authStore = { token: 'jwt-accr-1' };
+    await completeOrcid('code', 'state', 'accredit');
+
+    const [, init] = fetchSpy.mock.calls[0];
+    expect(init.headers).toMatchObject({ Authorization: 'Bearer jwt-accr-1' });
+  });
+
+  it('omits Authorization header on signup mode', async () => {
+    authStore = { token: 'jwt-signup-1' };
+    await completeOrcid('code', 'state', 'signup');
+
+    const [url, init] = fetchSpy.mock.calls[0];
+    expect(url).toBe('/api/orcid/callback');
+    expect(init.headers?.Authorization).toBeUndefined();
+  });
+
+  it('omits Authorization header on login mode', async () => {
+    authStore = { token: 'jwt-login-1' };
+    await completeOrcid('code', 'state', 'login');
+
+    const [, init] = fetchSpy.mock.calls[0];
+    expect(init.headers?.Authorization).toBeUndefined();
+  });
+
+  it('throws UNAUTHORIZED on link mode when no session token is present', async () => {
+    authStore = null;
+
+    try {
+      await completeOrcid('code', 'state', 'link');
+      throw new Error('expected throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(ApiRequestError);
+      expect(err.code).toBe('UNAUTHORIZED');
+    }
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('throws UNAUTHORIZED on accredit mode when no session token is present', async () => {
+    authStore = null;
+
+    try {
+      await completeOrcid('code', 'state', 'accredit');
+      throw new Error('expected throw');
+    } catch (err) {
+      expect(err.code).toBe('UNAUTHORIZED');
+    }
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('falls through to unauthenticated request() on an unknown mode', async () => {
+    // Documents the fallback contract: any string that is neither
+    // 'accredit' nor 'link' routes through the unauth path. Guards against
+    // an accidental inversion of the `requiresAuth` boolean.
+    authStore = { token: 'jwt-should-not-be-sent' };
+    await completeOrcid('code', 'state', 'bogus-future-mode');
+
+    const [, init] = fetchSpy.mock.calls[0];
+    expect(init.headers?.Authorization).toBeUndefined();
   });
 });

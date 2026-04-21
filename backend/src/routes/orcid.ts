@@ -45,6 +45,32 @@ function getRedirectUri(): string {
   return `${config.appUrl}/orcid/callback`;
 }
 
+// Runs verifyHiveSignature inline outside the Express middleware chain.
+// Returns the authenticated username on success. Returns null when the
+// middleware has already terminated the response (the caller must return
+// without sending more data) — typically because auth failed. The resolve-on-
+// finish listener protects against verifyHiveSignature's catch path, which
+// sends an error without calling `next()` and would otherwise leave this
+// Promise pending forever.
+async function authenticateRequest(req: Request, res: Response): Promise<string | null> {
+  await new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const settle = (fn: () => void) => { if (!settled) { settled = true; fn(); } };
+    res.once('finish', () => settle(resolve));
+    res.once('close', () => settle(resolve));
+    verifyHiveSignature(req, res, (err?: unknown) => {
+      settle(err ? () => reject(err) : resolve);
+    });
+  });
+  if (res.headersSent) return null;
+  const username = req.hiveUsername;
+  if (!username) {
+    sendError(res, 401, 'UNAUTHORIZED', 'Authentication required for this mode');
+    return null;
+  }
+  return username;
+}
+
 // ─────────────────────────────────────────────────────────────
 // POST /api/orcid/start — Initiate ORCID OAuth for any mode
 // ─────────────────────────────────────────────────────────────
@@ -62,18 +88,9 @@ router.post('/start', startLimiter, async (req: Request, res: Response) => {
   // Authenticated modes require a valid session
   let username: string | undefined;
   if (AUTHENTICATED_MODES.has(mode)) {
-    // Run verifyHiveSignature inline
-    await new Promise<void>((resolve, reject) => {
-      verifyHiveSignature(req, res, (err?: unknown) => {
-        if (err) reject(err);
-        else resolve();
-      });
-    });
-    if (res.headersSent) return; // verifyHiveSignature already sent error
-    username = req.hiveUsername;
-    if (!username) {
-      return sendError(res, 401, 'UNAUTHORIZED', 'Authentication required for this mode');
-    }
+    const authed = await authenticateRequest(req, res);
+    if (!authed) return;
+    username = authed;
   }
 
   const state = crypto.randomBytes(16).toString('hex');
@@ -117,22 +134,24 @@ router.post('/callback', callbackLimiter, async (req: Request, res: Response) =>
     return sendError(res, 400, 'BAD_REQUEST', 'code and state are required');
   }
 
-  // Retrieve and validate state
+  // Read state without consuming it yet — if auth fails below, the legitimate
+  // initiator can still retry rather than being forced back through ORCID OAuth.
   let storedMode: OrcidMode | null = null;
   let storedUsername: string | undefined;
 
+  const stateKey = `${config.appTag}:orcid_state:${state}`;
   const redis = getRedis();
-  if (redis && isRedisAvailable()) {
-    const raw = await redis.get(`${config.appTag}:orcid_state:${state}`);
+  const redisReady = redis && isRedisAvailable();
+  if (redisReady) {
+    const raw = await redis.get(stateKey);
     if (raw) {
       try {
         const parsed = JSON.parse(raw) as { mode: OrcidMode; username?: string };
         storedMode = parsed.mode;
         storedUsername = parsed.username;
       } catch {
-        // Invalid stored state
+        // Invalid stored state — fall through to BAD_REQUEST
       }
-      await redis.del(`${config.appTag}:orcid_state:${state}`);
     }
   } else {
     const entry = orcidStates.get(state);
@@ -140,11 +159,28 @@ router.post('/callback', callbackLimiter, async (req: Request, res: Response) =>
       storedMode = entry.mode;
       storedUsername = entry.username;
     }
-    orcidStates.delete(state);
   }
 
   if (!storedMode) {
     return sendError(res, 400, 'BAD_REQUEST', 'Invalid or expired state parameter');
+  }
+
+  // Authenticated modes: require the caller to be the same user that initiated /start.
+  // Closes the state-hijack path where an attacker with a victim's state could complete
+  // link/accredit with their own ORCID code and rewrite the victim's accreditation.
+  if (AUTHENTICATED_MODES.has(storedMode)) {
+    const callerUsername = await authenticateRequest(req, res);
+    if (!callerUsername) return;
+    if (callerUsername !== storedUsername) {
+      return sendError(res, 403, 'FORBIDDEN', 'Callback caller does not match initiator');
+    }
+  }
+
+  // Auth passed (or mode is public). Consume state now so it can't be replayed.
+  if (redisReady) {
+    await redis.del(stateKey);
+  } else {
+    orcidStates.delete(state);
   }
 
   try {
@@ -296,6 +332,12 @@ async function handleAccredit(
     return;
   }
 
+  const existingBinding = await findAccreditedAccountWithOrcid(orcidId);
+  if (existingBinding && existingBinding !== username) {
+    sendError(res, 409, 'ORCID_ALREADY_LINKED', 'This ORCID is already linked to another account');
+    return;
+  }
+
   const customJsonPayload = {
     action: 'accredit',
     account: username,
@@ -340,6 +382,12 @@ async function handleLink(
 
   if (!config.pevoAdminPostingKey) {
     sendError(res, 500, 'INTERNAL_ERROR', 'Admin posting key not configured');
+    return;
+  }
+
+  const existingBinding = await findAccreditedAccountWithOrcid(orcidId);
+  if (existingBinding && existingBinding !== username) {
+    sendError(res, 409, 'ORCID_ALREADY_LINKED', 'This ORCID is already linked to another account');
     return;
   }
 
@@ -410,6 +458,55 @@ async function countExternalWorks(orcidId: string, _accessToken?: string): Promi
     }
   }
   return count;
+}
+
+async function findAccreditedAccountWithOrcid(orcidId: string): Promise<string | null> {
+  const pool = getPool();
+  // Fail closed when HAF is unavailable: returning null would silently bypass
+  // the 409 duplicate-bind guard in handleAccredit/handleLink and let the admin
+  // key sign two accreditations for the same ORCID. The outer try/catch in
+  // /callback maps the throw to a 500.
+  if (!pool) throw new Error('HAF unavailable — cannot verify ORCID binding');
+
+  // Latest authorized on-chain accredit op carrying this ORCID. Filter by
+  // accreditationAuthorities so a self-broadcast custom_json can't poison the check.
+  const recent = await pool.query<{ account: string | null }>(
+    `SELECT cj.json::jsonb ->> 'account' AS account
+     FROM ${T.customJson} cj
+     WHERE cj.custom_id = $2
+       AND cj.json::jsonb ->> 'action' = 'accredit'
+       AND cj.json::jsonb ->> 'orcid' = $1
+       AND cj.required_posting_auths ?| $4::text[]
+       AND cj.block_num >= $3
+     ORDER BY cj.block_num DESC
+     LIMIT 1`,
+    [orcidId, config.appTag, getCachedGenesisBlock(), config.accreditationAuthorities],
+  );
+  if (recent.rows.length === 0) return null;
+  const account = recent.rows[0].account;
+  if (!account) return null;
+
+  // Re-check the account's latest authorized action. The binding is live only
+  // if that action is still an 'accredit' carrying THIS orcid; a subsequent
+  // 'revoke' clears it, and a subsequent 'accredit' with a different orcid
+  // means the account rebound to another identity (freeing this orcid).
+  const status = await pool.query<{ action: string | null; orcid: string | null }>(
+    `SELECT cj.json::jsonb ->> 'action' AS action,
+            cj.json::jsonb ->> 'orcid' AS orcid
+     FROM ${T.customJson} cj
+     WHERE cj.custom_id = $2
+       AND cj.json::jsonb ->> 'action' IN ('accredit', 'revoke')
+       AND cj.json::jsonb ->> 'account' = $1
+       AND cj.required_posting_auths ?| $4::text[]
+       AND cj.block_num >= $3
+     ORDER BY cj.block_num DESC
+     LIMIT 1`,
+    [account, config.appTag, getCachedGenesisBlock(), config.accreditationAuthorities],
+  );
+  if (status.rows.length === 0) return null;
+  const latest = status.rows[0];
+  if (latest.action !== 'accredit' || latest.orcid !== orcidId) return null;
+  return account;
 }
 
 async function getExistingAccreditation(username: string): Promise<{

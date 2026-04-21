@@ -36,6 +36,7 @@ export type ErrorCode =
   | "PENDING_UNVERIFIED"
   | "SIGNUP_EXPIRED"
   | "NO_ACCOUNT"
+  | "ORCID_ALREADY_LINKED"
   | "INTERNAL_ERROR";
 
 export interface PaginationMeta {
