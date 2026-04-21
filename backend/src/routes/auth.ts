@@ -12,6 +12,7 @@ import { getAppPool } from '../app-db.js';
 import { getRedis, isRedisAvailable } from '../redis.js';
 import { logger } from '../logger.js';
 import { decryptKey } from '../custody-crypto.js';
+import { isPasswordValid, PASSWORD_POLICY_MESSAGE } from '../lib/password-policy.js';
 
 const router = Router();
 const SESSION_EXPIRY = '24h';
@@ -98,11 +99,8 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
     if (!hasEmail) {
       return sendError(res, 400, 'VALIDATION_ERROR', 'Email is required');
     }
-    if (!hasPassword || password.length < 10) {
-      return sendError(res, 400, 'VALIDATION_ERROR', 'Password must be at least 10 characters');
-    }
-    if (!/[a-z]/.test(password) || !/[A-Z]/.test(password) || !/[0-9]/.test(password)) {
-      return sendError(res, 400, 'VALIDATION_ERROR', 'Password must contain lowercase letters, uppercase letters, and numbers');
+    if (!isPasswordValid(password)) {
+      return sendError(res, 400, 'VALIDATION_ERROR', PASSWORD_POLICY_MESSAGE);
     }
     if (!full_name || typeof full_name !== 'string') {
       return sendError(res, 400, 'VALIDATION_ERROR', 'Full name is required');
@@ -115,13 +113,8 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
     }
   } else {
     // ORCID signup: password required only when email is provided
-    if (hasEmail && hasPassword) {
-      if (password.length < 10) {
-        return sendError(res, 400, 'VALIDATION_ERROR', 'Password must be at least 10 characters');
-      }
-      if (!/[a-z]/.test(password) || !/[A-Z]/.test(password) || !/[0-9]/.test(password)) {
-        return sendError(res, 400, 'VALIDATION_ERROR', 'Password must contain lowercase letters, uppercase letters, and numbers');
-      }
+    if (hasEmail && hasPassword && !isPasswordValid(password)) {
+      return sendError(res, 400, 'VALIDATION_ERROR', PASSWORD_POLICY_MESSAGE);
     }
   }
 
@@ -559,11 +552,8 @@ router.post('/reset', resetLimiter, async (req: Request, res: Response) => {
   if (!token || typeof token !== 'string') {
     return sendError(res, 400, 'VALIDATION_ERROR', 'Reset token is required');
   }
-  if (!password || typeof password !== 'string' || password.length < 10) {
-    return sendError(res, 400, 'VALIDATION_ERROR', 'Password must be at least 10 characters');
-  }
-  if (!/[a-z]/.test(password) || !/[A-Z]/.test(password) || !/[0-9]/.test(password)) {
-    return sendError(res, 400, 'VALIDATION_ERROR', 'Password must contain lowercase letters, uppercase letters, and numbers');
+  if (!isPasswordValid(password)) {
+    return sendError(res, 400, 'VALIDATION_ERROR', PASSWORD_POLICY_MESSAGE);
   }
 
   try {
@@ -652,21 +642,13 @@ router.post('/recover', recoverLimiter, async (req: Request, res: Response) => {
   const passwordProvided = new_password !== null && new_password !== undefined && new_password !== '';
   if (orcid_token && !memo_key) {
     // ORCID path: password optional
-    if (passwordProvided) {
-      if (typeof new_password !== 'string' || new_password.length < 10) {
-        return sendError(res, 400, 'VALIDATION_ERROR', 'Password must be at least 10 characters');
-      }
-      if (!/[a-z]/.test(new_password) || !/[A-Z]/.test(new_password) || !/[0-9]/.test(new_password)) {
-        return sendError(res, 400, 'VALIDATION_ERROR', 'Password must contain lowercase letters, uppercase letters, and numbers');
-      }
+    if (passwordProvided && !isPasswordValid(new_password)) {
+      return sendError(res, 400, 'VALIDATION_ERROR', PASSWORD_POLICY_MESSAGE);
     }
   } else {
     // Seed-phrase path: password required
-    if (!passwordProvided || typeof new_password !== 'string' || new_password.length < 10) {
-      return sendError(res, 400, 'VALIDATION_ERROR', 'Password must be at least 10 characters');
-    }
-    if (!/[a-z]/.test(new_password) || !/[A-Z]/.test(new_password) || !/[0-9]/.test(new_password)) {
-      return sendError(res, 400, 'VALIDATION_ERROR', 'Password must contain lowercase letters, uppercase letters, and numbers');
+    if (!passwordProvided || !isPasswordValid(new_password)) {
+      return sendError(res, 400, 'VALIDATION_ERROR', PASSWORD_POLICY_MESSAGE);
     }
   }
 

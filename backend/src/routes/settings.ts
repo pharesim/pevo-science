@@ -9,6 +9,7 @@ import { sendOk, sendError } from '../response.js';
 import { config } from '../config.js';
 import { getAppPool } from '../app-db.js';
 import { logger } from '../logger.js';
+import { isPasswordValid, PASSWORD_POLICY_MESSAGE } from '../lib/password-policy.js';
 
 const readLimiter = rateLimit({ name: 'settings-read', windowMs: 60_000, max: 30, keyFn: byIp });
 const writeLimiter = rateLimit({ name: 'settings-write', windowMs: 60_000, max: 10, keyFn: byIp });
@@ -341,12 +342,8 @@ router.post('/set-password', writeLimiter, verifyHiveSignature, async (req: Requ
   const username = req.hiveUsername!;
   const { password } = req.body || {};
 
-  // Match signup password policy
-  if (!password || typeof password !== 'string' || password.length < 10) {
-    return sendError(res, 400, 'VALIDATION_ERROR', 'Password must be at least 10 characters');
-  }
-  if (!/[a-z]/.test(password) || !/[A-Z]/.test(password) || !/[0-9]/.test(password)) {
-    return sendError(res, 400, 'VALIDATION_ERROR', 'Password must contain lowercase letters, uppercase letters, and numbers');
+  if (!isPasswordValid(password)) {
+    return sendError(res, 400, 'VALIDATION_ERROR', PASSWORD_POLICY_MESSAGE);
   }
 
   try {
