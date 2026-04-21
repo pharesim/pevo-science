@@ -90,14 +90,19 @@ async function isApprovedCoAuthor(
       (idx) => authorshipClaimsCteBody(idx, { paperAuthor, paperPermlink }),
     );
 
+    // JOIN active_accreditations so a co-author whose accreditation was later
+    // revoked loses the ability to co-sign approvals. Without the JOIN, the
+    // accepted-claim row on HAF is immutable and would grant co-signing
+    // authority in perpetuity, contradicting the trust-layer revocation model.
     const result = await pool.query(
       `${cte.sql}
        SELECT 1
-       FROM authorship_claims
-       WHERE paper_author = $${cte.nextIdx}
-         AND paper_permlink = $${cte.nextIdx + 1}
-         AND claimer = $${cte.nextIdx + 2}
-         AND status = 'accepted'
+       FROM authorship_claims ac
+       JOIN active_accreditations a ON a.account = ac.claimer
+       WHERE ac.paper_author = $${cte.nextIdx}
+         AND ac.paper_permlink = $${cte.nextIdx + 1}
+         AND ac.claimer = $${cte.nextIdx + 2}
+         AND ac.status = 'accepted'
        LIMIT 1`,
       [...cte.params, paperAuthor, paperPermlink, candidate],
     );
@@ -290,6 +295,11 @@ router.post('/:claimer/revoke', verifyHiveSignature, revokeLimiter, async (req: 
   }
 
   if (isAdmin && config.pevoAdminPostingKey) {
+    // Admin revokes on native papers broadcast under the admin account's
+    // posting auths — the resulting chain op is visibly signed by admin, NOT
+    // by the original paper author. Consumers who audit `revoke_authorship`
+    // ops should treat the `required_posting_auths[0]` as the revoker, not
+    // the paper author.
     const key = PrivateKey.fromString(config.pevoAdminPostingKey);
     const result = await hiveClient.broadcast.json(
       {

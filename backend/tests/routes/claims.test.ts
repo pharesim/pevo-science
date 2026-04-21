@@ -1,0 +1,297 @@
+/**
+ * SEC-003-BE — Authorization coverage for the bridge-claim approve/revoke paths.
+ *
+ * Uses the REAL `verifyHiveSignature` middleware (we produce genuine Hive
+ * signatures with a deterministic test keypair and mock only the on-chain
+ * account lookup). The real middleware is required by the SEC-003-BE task
+ * spec so these tests actually exercise the authentication layer.
+ *
+ * Justification for the `getPool()` mock (per root CLAUDE.md carve-out):
+ * the `isApprovedCoAuthor` path requires a paper-author/permlink/claimer row
+ * in `authorship_claims` with status='accepted'. Seeding that into real HAF
+ * would require (a) broadcasting `claim_authorship` + `approve_authorship`
+ * custom_jsons on Hive, (b) waiting for HAF to index them, and (c) the
+ * paper's comment row existing. That's impractical per-test. Mocking the
+ * pool lets us deterministically toggle the authorization grid. The real
+ * `verifyHiveSignature` is NOT mocked.
+ */
+
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import request from 'supertest';
+import { PrivateKey, cryptoUtils } from '@hiveio/dhive';
+
+// Deterministic test keypair — shared by all test usernames, since the mocked
+// getAccounts lookup resolves every requested name to the same public key.
+const TEST_PRIVATE_KEY = PrivateKey.fromSeed('pevo-claims-test-seed-deterministic');
+const TEST_PUBLIC_KEY = TEST_PRIVATE_KEY.createPublic().toString();
+
+// Valid-format posting keys for the fake bridge and admin keys in the
+// overridden config. Never broadcast because hive.js is mocked — just need to
+// parse via PrivateKey.fromString() inside the handlers.
+const TEST_BRIDGE_KEY = PrivateKey.fromSeed('pevo-test-bridge-key-seed').toString();
+const TEST_ADMIN_KEY = PrivateKey.fromSeed('pevo-test-admin-key-seed').toString();
+
+// Override config so bridge-broadcast + admin-broadcast branches are reachable
+// even when the local .env leaves the posting keys empty. Also set a
+// hiveBridgeAccount distinct from hiveAdminAccount — dev .env collapses both
+// to `pevotest.admin`, which silently hides a class of role-conflation
+// mutations (prod runs them as distinct accounts).
+vi.mock('../../src/config.js', async () => {
+  const actual = await vi.importActual<typeof import('../../src/config.js')>('../../src/config.js');
+  return {
+    ...actual,
+    config: {
+      ...actual.config,
+      hiveBridgeAccount: 'pevotest.bridge',
+      pevoBridgePostingKey: TEST_BRIDGE_KEY,
+      pevoAdminPostingKey: TEST_ADMIN_KEY,
+    },
+  };
+});
+
+// Hive client mock (signature verification + broadcast capture)
+const broadcastJson = vi.fn().mockResolvedValue({ id: 'mock-tx-id' });
+vi.mock('../../src/hive.js', () => ({
+  hiveClient: {
+    database: {
+      getAccounts: vi.fn().mockImplementation((names: string[]) =>
+        Promise.resolve(
+          names.map((name) => ({
+            name,
+            posting: { key_auths: [[TEST_PUBLIC_KEY, 1]] },
+          })),
+        ),
+      ),
+    },
+    broadcast: {
+      json: (...args: unknown[]) => broadcastJson(...args),
+    },
+  },
+}));
+
+// Pool mock — controls the isApprovedCoAuthor lookup per test.
+//
+// The isApprovedCoAuthor query filters by paper_author / paper_permlink /
+// claimer / status='accepted' and returns rows where the match succeeds.
+// We key approved-co-author-ness on (paperAuthor, paperPermlink, candidate).
+const approvedCoAuthors = new Set<string>();
+function approvedKey(paperAuthor: string, paperPermlink: string, candidate: string) {
+  return `${paperAuthor}::${paperPermlink}::${candidate}`;
+}
+
+// Exported via the vi.mock factory so individual tests can stage
+// mockRejectedValueOnce / mockResolvedValueOnce for the fail-closed path.
+const { queryFn } = vi.hoisted(() => ({
+  queryFn: vi.fn(),
+}));
+
+queryFn.mockImplementation(async (sql: string, params: unknown[]) => {
+  // Only the isApprovedCoAuthor query reaches this mock in approve/revoke
+  // tests. Its trailing three params are paperAuthor, paperPermlink,
+  // candidate (the CTE params come first). Multi-signal match: require both
+  // the target relation (FROM authorship_claims) AND the target status — the
+  // single-signal form silently bypasses when SQL gets refactored (constant
+  // extraction, quote-style change, JOIN additions).
+  if (sql.includes('FROM authorship_claims') && sql.includes("status = 'accepted'")) {
+    const paperAuthor = params[params.length - 3] as string;
+    const paperPermlink = params[params.length - 2] as string;
+    const candidate = params[params.length - 1] as string;
+    const hit = approvedCoAuthors.has(approvedKey(paperAuthor, paperPermlink, candidate));
+    return { rows: hit ? [{ '?column?': 1 }] : [] };
+  }
+  // Fall-through for any other query: return empty.
+  return { rows: [] };
+});
+
+vi.mock('../../src/db.js', () => ({
+  getPool: () => ({ query: queryFn }),
+  isHafAvailable: () => true,
+  closeHafPool: async () => {},
+}));
+
+// Redis in test environment: stay silent. verifyHiveSignature tolerates no-redis
+// via the in-memory replay fallback.
+vi.mock('../../src/redis.js', () => ({
+  getRedis: () => null,
+  isRedisAvailable: () => false,
+  disconnectRedis: async () => {},
+}));
+
+// The app-db getAppPool is only consulted during Bearer-JWT session-invalidation
+// checks. We don't use Bearer in these tests, so returning null is safe.
+vi.mock('../../src/app-db.js', () => ({
+  getAppPool: () => null,
+}));
+
+// Import createApp AFTER the mocks so the route wiring picks up the mocked deps.
+const { createApp } = await import('../../src/app.js');
+const { config } = await import('../../src/config.js');
+
+const app = createApp();
+
+function signRequestBound(method: string, fullPath: string, body: unknown, timestamp: string): string {
+  const bodyHash = cryptoUtils.sha256(JSON.stringify(body || {})).toString('hex');
+  const msg = `${config.appTag}-auth|v1|${method}|${fullPath}|${bodyHash}|${timestamp}`;
+  const msgHash = cryptoUtils.sha256(msg);
+  return TEST_PRIVATE_KEY.sign(msgHash).toString();
+}
+
+async function signedPost(path: string, username: string, body: unknown) {
+  const timestamp = new Date().toISOString();
+  const signature = signRequestBound('POST', path, body, timestamp);
+  return request(app)
+    .post(path)
+    .set('X-Hive-Username', username)
+    .set('X-Hive-Signature', signature)
+    .set('X-Hive-Timestamp', timestamp)
+    .send(body);
+}
+
+const BRIDGE = config.hiveBridgeAccount;
+const ADMIN = config.hiveAdminAccount;
+const PAPER_PERMLINK = 'bridge-paper-sec003';
+const NATIVE_AUTHOR = 'nativeauthor';
+const CLAIMER = 'claimeraccount';
+const UNRELATED = 'someintruder';
+const COAUTHOR = 'approvedcoauthor';
+
+beforeEach(() => {
+  broadcastJson.mockClear();
+  approvedCoAuthors.clear();
+  queryFn.mockClear();
+});
+
+describe('SEC-003-BE — POST /:claimer/approve authorization', () => {
+  it('bridge paper: unrelated authed user → 403, no broadcast', async () => {
+    const path = `/api/papers/${BRIDGE}/${PAPER_PERMLINK}/claims/${CLAIMER}/approve`;
+    const res = await signedPost(path, UNRELATED, {});
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe('FORBIDDEN');
+    expect(broadcastJson).not.toHaveBeenCalled();
+  });
+
+  it('bridge paper: admin → 200 + broadcast with bridge account', async () => {
+    const path = `/api/papers/${BRIDGE}/${PAPER_PERMLINK}/claims/${CLAIMER}/approve`;
+    const res = await signedPost(path, ADMIN, {});
+    expect(res.status).toBe(200);
+    expect(res.body.data.tx_id).toBe('mock-tx-id');
+    expect(broadcastJson).toHaveBeenCalledTimes(1);
+    const [opArg] = broadcastJson.mock.calls[0];
+    expect(opArg.required_posting_auths).toEqual([BRIDGE]);
+  });
+
+  it('bridge paper: approved co-author of same paper → 200 + broadcast', async () => {
+    approvedCoAuthors.add(approvedKey(BRIDGE, PAPER_PERMLINK, COAUTHOR));
+    const path = `/api/papers/${BRIDGE}/${PAPER_PERMLINK}/claims/${CLAIMER}/approve`;
+    const res = await signedPost(path, COAUTHOR, {});
+    expect(res.status).toBe(200);
+    expect(broadcastJson).toHaveBeenCalledTimes(1);
+  });
+
+  it('bridge paper: claimer self-approving → 403, no broadcast', async () => {
+    // Even if somehow flagged as an approved co-author, the self-approval
+    // short-circuit must reject first. Seed both conditions to prove the
+    // self-approval guard is not bypassable.
+    approvedCoAuthors.add(approvedKey(BRIDGE, PAPER_PERMLINK, CLAIMER));
+    const path = `/api/papers/${BRIDGE}/${PAPER_PERMLINK}/claims/${CLAIMER}/approve`;
+    const res = await signedPost(path, CLAIMER, {});
+    expect(res.status).toBe(403);
+    expect(res.body.error.message).toMatch(/own claim/i);
+    expect(broadcastJson).not.toHaveBeenCalled();
+  });
+
+  it('native paper: caller ≠ paperAuthor → 403', async () => {
+    const path = `/api/papers/${NATIVE_AUTHOR}/${PAPER_PERMLINK}/claims/${CLAIMER}/approve`;
+    const res = await signedPost(path, UNRELATED, {});
+    expect(res.status).toBe(403);
+    expect(broadcastJson).not.toHaveBeenCalled();
+  });
+
+  it('native paper: caller = paperAuthor → 200 + returns operation (no server broadcast)', async () => {
+    const path = `/api/papers/${NATIVE_AUTHOR}/${PAPER_PERMLINK}/claims/${CLAIMER}/approve`;
+    const res = await signedPost(path, NATIVE_AUTHOR, {});
+    expect(res.status).toBe(200);
+    expect(res.body.data.operation).toBeDefined();
+    expect(res.body.data.operation[0]).toBe('custom_json');
+    expect(res.body.data.operation[1].required_posting_auths).toEqual([NATIVE_AUTHOR]);
+    expect(broadcastJson).not.toHaveBeenCalled();
+  });
+
+  it('bridge paper: isApprovedCoAuthor HAF throw → 403 fail-closed, no broadcast', async () => {
+    // The isApprovedCoAuthor catch block must deny authorization when HAF is
+    // unavailable. The negative invariant — "bridge key is NOT used" — is the
+    // load-bearing assertion: a fail-open regression would broadcast under
+    // the bridge account's posting auth on a dropped database connection.
+    //
+    // Seed the caller as an approved co-author; the throw must override.
+    approvedCoAuthors.add(approvedKey(BRIDGE, PAPER_PERMLINK, COAUTHOR));
+    queryFn.mockRejectedValueOnce(new Error('ECONNRESET'));
+
+    const path = `/api/papers/${BRIDGE}/${PAPER_PERMLINK}/claims/${CLAIMER}/approve`;
+    const res = await signedPost(path, COAUTHOR, {});
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe('FORBIDDEN');
+    expect(broadcastJson).not.toHaveBeenCalled();
+  });
+});
+
+describe('SEC-003-BE — POST /:claimer/revoke authorization', () => {
+  it('bridge paper: unrelated authed user → 403 (the exact current bug)', async () => {
+    const path = `/api/papers/${BRIDGE}/${PAPER_PERMLINK}/claims/${CLAIMER}/revoke`;
+    const res = await signedPost(path, UNRELATED, { reason: 'test' });
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe('FORBIDDEN');
+    expect(broadcastJson).not.toHaveBeenCalled();
+  });
+
+  it('bridge paper: claimer revoking own claim → 200 + returns operation (NOT a bridge-key broadcast)', async () => {
+    const path = `/api/papers/${BRIDGE}/${PAPER_PERMLINK}/claims/${CLAIMER}/revoke`;
+    const res = await signedPost(path, CLAIMER, { reason: 'withdrawn' });
+    expect(res.status).toBe(200);
+    expect(res.body.data.operation).toBeDefined();
+    expect(res.body.data.operation[0]).toBe('custom_json');
+    expect(res.body.data.operation[1].required_posting_auths).toEqual([CLAIMER]);
+    expect(broadcastJson).not.toHaveBeenCalled();
+  });
+
+  it('bridge paper: admin → 200 + bridge-key broadcast', async () => {
+    const path = `/api/papers/${BRIDGE}/${PAPER_PERMLINK}/claims/${CLAIMER}/revoke`;
+    const res = await signedPost(path, ADMIN, { reason: 'abuse' });
+    expect(res.status).toBe(200);
+    expect(broadcastJson).toHaveBeenCalledTimes(1);
+    const [opArg] = broadcastJson.mock.calls[0];
+    expect(opArg.required_posting_auths).toEqual([BRIDGE]);
+  });
+
+  it('native paper: caller = paperAuthor → 200 + returns operation', async () => {
+    const path = `/api/papers/${NATIVE_AUTHOR}/${PAPER_PERMLINK}/claims/${CLAIMER}/revoke`;
+    const res = await signedPost(path, NATIVE_AUTHOR, { reason: 'retracted' });
+    expect(res.status).toBe(200);
+    expect(res.body.data.operation).toBeDefined();
+    expect(res.body.data.operation[1].required_posting_auths).toEqual([NATIVE_AUTHOR]);
+    expect(broadcastJson).not.toHaveBeenCalled();
+  });
+
+  it('native paper: admin revoking → 200 + admin-key broadcast (not bridge key)', async () => {
+    const path = `/api/papers/${NATIVE_AUTHOR}/${PAPER_PERMLINK}/claims/${CLAIMER}/revoke`;
+    const res = await signedPost(path, ADMIN, { reason: 'abuse' });
+    expect(res.status).toBe(200);
+    expect(broadcastJson).toHaveBeenCalledTimes(1);
+    const [opArg] = broadcastJson.mock.calls[0];
+    expect(opArg.required_posting_auths).toEqual([ADMIN]);
+    expect(opArg.required_posting_auths).not.toEqual([BRIDGE]);
+  });
+
+  it('native paper: claimer revoking own claim → 200 + returns operation (no server broadcast)', async () => {
+    // Symmetric mutation-kill for the "claimer can always revoke" invariant.
+    // Bridge-paper counterpart is tested above; native-paper path must behave
+    // identically — the self-revoke right does not depend on paper type.
+    const path = `/api/papers/${NATIVE_AUTHOR}/${PAPER_PERMLINK}/claims/${CLAIMER}/revoke`;
+    const res = await signedPost(path, CLAIMER, { reason: 'withdrawn' });
+    expect(res.status).toBe(200);
+    expect(res.body.data.operation).toBeDefined();
+    expect(res.body.data.operation[0]).toBe('custom_json');
+    expect(res.body.data.operation[1].required_posting_auths).toEqual([CLAIMER]);
+    expect(broadcastJson).not.toHaveBeenCalled();
+  });
+});
