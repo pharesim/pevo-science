@@ -29,6 +29,11 @@ const INJECT_SCRIPT = `
         .join('');
     }
 
+    // Broadcast-capture buffer: every stubbed requestBroadcast/requestVote call
+    // pushes a record here so specs can assert the payload shape without the
+    // op ever leaving the browser. Tests read via page.evaluate.
+    window.__pevoBroadcastCalls = [];
+
     window.hive_keychain = {
       requestSignBuffer(username, message, keyType, callback) {
         sha256Hex(String(message)).then((hex) => {
@@ -40,6 +45,22 @@ const INJECT_SCRIPT = `
           });
         });
       },
+      requestBroadcast(username, operations, keyType, callback) {
+        window.__pevoBroadcastCalls.push({ kind: 'broadcast', username, operations, keyType });
+        queueMicrotask(() => callback({
+          success: true,
+          result: { id: 'STUB_TX_ID', block_num: 1 },
+          data: { username, operations, keyType },
+        }));
+      },
+      requestVote(voter, permlink, author, weight, callback) {
+        window.__pevoBroadcastCalls.push({ kind: 'vote', voter, permlink, author, weight });
+        queueMicrotask(() => callback({
+          success: true,
+          result: { id: 'STUB_TX_ID', block_num: 1 },
+          data: { voter, permlink, author, weight },
+        }));
+      },
     };
   })();
 `;
@@ -47,6 +68,15 @@ const INJECT_SCRIPT = `
 export const test = base.extend({
   page: async ({ page }, use, testInfo) => {
     await page.addInitScript(INJECT_SCRIPT);
+
+    // Reset the broadcast-capture buffer on every navigation so each test
+    // starts with a clean `window.__pevoBroadcastCalls`. addInitScript runs
+    // before any page scripts on every navigation in the session; same-page
+    // navigations are rare in these specs, so this will not wipe captures
+    // mid-test.
+    await page.addInitScript(() => {
+      window.__pevoBroadcastCalls = [];
+    });
 
     // Record CIDs from any successful IPFS upload so global-teardown can
     // unpin them. Listener is attached once per page regardless of whether

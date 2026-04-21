@@ -17,6 +17,7 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync, existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import Redis from 'ioredis';
 import { resetCapturedCids } from './fixtures/captured-cids.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -44,6 +45,20 @@ export default async function globalSetup() {
   // unpin CIDs that were already cleaned up.
   resetCapturedCids();
 
+  // Belt-and-suspenders: refuse to run E2E against anything that isn't
+  // localhost. The auth fixture mints real JWTs from SESSION_SECRET, and
+  // specs write to pevo_app_test via direct pg.Pool; pointing either at a
+  // live deployment would authenticate against or corrupt it. Pairs with
+  // the repo-root `.env` fallback removal in fixtures/auth.js.
+  const baseURL = process.env.PEVO_TEST_BASE_URL || 'http://localhost:3001';
+  if (!baseURL.startsWith('http://localhost') && !baseURL.startsWith('http://127.0.0.1')) {
+    throw new Error(
+      `[e2e global-setup] PEVO_TEST_BASE_URL must point at localhost (got "${baseURL}"). ` +
+        'E2E specs mint real JWTs and write directly to the backing DB; running ' +
+        'against a remote target is unsafe by design.',
+    );
+  }
+
   if (!process.env.APP_DATABASE_URL) {
     throw new Error(
       '[e2e global-setup] APP_DATABASE_URL is not set. ' +
@@ -63,5 +78,68 @@ export default async function globalSetup() {
 
   if (result.status !== 0) {
     throw new Error(`[e2e global-setup] test-db:reset exited with code ${result.status}`);
+  }
+
+  await resetRateLimitKeys();
+}
+
+/**
+ * Delete every rate-limit key the backend may have written during a prior
+ * test run (or dev usage of the same Redis). Rate-limit keys carry the
+ * prefix `${appTag}:rl:<limiter-name>:<ip-or-account>` — see
+ * `backend/src/middleware/rateLimit.ts`. The signup/recovery limiters are
+ * strict enough (e.g. 3 per IP per hour) that a couple of prior failed
+ * runs exhaust the quota for the rest of the day, causing spurious 429s
+ * on specs that drive those endpoints.
+ *
+ * Narrow-by-design: we only touch `${appTag}:rl:*`. Caches, session keys,
+ * accreditation-status keys, and the IPFS pending-pin ledger that
+ * global-teardown relies on are all left intact.
+ */
+async function resetRateLimitKeys() {
+  const redisUrl = process.env.REDIS_URL;
+  const appTag = process.env.APP_TAG || 'pevotest';
+  if (!redisUrl) {
+    console.warn(
+      '[e2e global-setup] REDIS_URL not set — skipping rate-limit reset. ' +
+        'Specs that drive signup/recovery endpoints may 429 if Redis carries ' +
+        'quota from prior runs.',
+    );
+    return;
+  }
+
+  const redis = new Redis(redisUrl, {
+    maxRetriesPerRequest: 2,
+    lazyConnect: true,
+  });
+  redis.on('error', () => {});
+  try {
+    await redis.connect();
+  } catch (err) {
+    console.warn(
+      `[e2e global-setup] Redis connect failed (${err.message}); ` +
+        'skipping rate-limit reset.',
+    );
+    return;
+  }
+
+  const pattern = `${appTag}:rl:*`;
+  let deleted = 0;
+  try {
+    const stream = redis.scanStream({ match: pattern, count: 500 });
+    for await (const keys of stream) {
+      if (keys.length === 0) continue;
+      deleted += await redis.del(...keys);
+    }
+  } catch (err) {
+    console.warn(
+      `[e2e global-setup] rate-limit key scan failed (${err.message}); ` +
+        'E2E specs may hit 429s.',
+    );
+  } finally {
+    await redis.quit().catch(() => {});
+  }
+  if (deleted > 0) {
+    console.log(`[e2e global-setup] cleared ${deleted} rate-limit key(s) under "${pattern}"`);
   }
 }
