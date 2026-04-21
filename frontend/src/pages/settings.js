@@ -593,21 +593,33 @@ export function initSettingsPage() {
 
         await client.broadcast.sendOperations([['account_update', op]], ownerKey);
 
-        // Import new posting key into Keychain so the user can sign with it
-        // after self-custody upgrade. `requestImportKey` expects (username,
-        // wifKey, callback); the WIF is derived from the new posting seed.
+        // Import new posting + active + memo WIFs into Keychain so the user
+        // can sign ALL non-owner-auth ops post-upgrade (transfers, votes,
+        // comments, memo encrypt/decrypt). `requestImportKey` expects
+        // (username, wifKey, callback); each WIF is derived from the
+        // corresponding role's new hex seed via PrivateKey.fromSeed.
+        //
+        // NOT owner — owner keys are the account-recovery root of trust and
+        // should live in the user's seed phrase only, never in a browser
+        // extension. `account_update` still rotates owner on-chain (see
+        // newPubKeys.owner above); the user's new mnemonic is the only
+        // way to re-derive it.
+        //
         // Historical bug: this used `requestAddAccountAuthority(username,
         // rawHexSeed, 'posting', ...)` which (a) is the wrong API semantic
         // (second arg should be an ACCOUNT NAME, not a key) and (b) leaks the
         // raw 64-char hex private-key seed into Keychain's extension logs.
         if (isKeychainInstalled()) {
-          const wifPosting = dhive.PrivateKey.fromSeed(newKeys.posting).toString();
-          await new Promise((resolve, reject) => {
-            window.hive_keychain.requestImportKey(
-              this.username, wifPosting,
-              (res) => res.success ? resolve(res) : reject(new Error(res.message))
-            );
-          });
+          const importRoles = ['posting', 'active', 'memo'];
+          for (const role of importRoles) {
+            const wif = dhive.PrivateKey.fromSeed(newKeys[role]).toString();
+            await new Promise((resolve, reject) => {
+              window.hive_keychain.requestImportKey(
+                this.username, wif,
+                (res) => res.success ? resolve(res) : reject(new Error(res.message || 'Keychain import failed'))
+              );
+            });
+          }
         }
 
         // Notify backend to clean up stored keys

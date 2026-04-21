@@ -325,31 +325,54 @@ test('upgrade wizard signs and would-broadcast an account_update rotating all ke
   expect(opBody.posting.key_auths[0][0]).toBe(rederived.posting.public);
   expect(opBody.memo_key).toBe(rederived.memo.public);
 
-  // ─── Assert Keychain received a WIF, not a raw hex seed ──────
-  // Poll until the post-broadcast requestImportKey call lands. The click
-  // handler awaits the Keychain callback AFTER the broadcast assertion
-  // promise resolves, so at this point the call may or may not have been
-  // made yet depending on microtask ordering.
+  // ─── Assert Keychain received three WIFs, not a raw hex seed ──
+  // The custody upgrade imports posting + active + memo (NOT owner) into
+  // Keychain so the user can sign every non-owner-auth op post-upgrade.
+  // Poll until all three post-broadcast requestImportKey calls land. The
+  // click handler awaits the Keychain callbacks sequentially AFTER the
+  // broadcast assertion promise resolves, so at this point the calls may
+  // or may not have been made yet depending on microtask ordering.
   await expect
     .poll(
       async () => page.evaluate(() => window.__keychainImportKeyCalls.length),
       { timeout: 10_000 },
     )
-    .toBeGreaterThan(0);
+    .toBe(3);
 
   const importKeyCalls = await page.evaluate(
     () => window.__keychainImportKeyCalls,
   );
-  expect(importKeyCalls).toHaveLength(1);
-  const [importCall] = importKeyCalls;
-  expect(importCall.account).toBe(LIGHT_USERNAME);
+  expect(importKeyCalls).toHaveLength(3);
 
   // WIF-formatted Hive private key: starts with 5H/5J/5K, 50 chars total,
   // base58 alphabet. A raw 64-char lowercase hex seed would NOT match.
   const WIF_RE = /^5[HJK][1-9A-HJ-NP-Za-km-z]{49}$/;
-  expect(importCall.wifKey).toMatch(WIF_RE);
-  // Belt-and-suspenders: explicitly reject the old-bug shape (64-char hex).
-  expect(importCall.wifKey).not.toMatch(/^[0-9a-f]{64}$/);
+  for (const call of importKeyCalls) {
+    expect(call.account).toBe(LIGHT_USERNAME);
+    expect(call.wifKey).toMatch(WIF_RE);
+    // Belt-and-suspenders: explicitly reject the old-bug shape (64-char hex).
+    expect(call.wifKey).not.toMatch(/^[0-9a-f]{64}$/);
+  }
+
+  // All three WIFs must be distinct — same-WIF-thrice would indicate a
+  // regression where the role iteration collapsed to a single key.
+  const distinctWifs = new Set(importKeyCalls.map((c) => c.wifKey));
+  expect(distinctWifs.size).toBe(3);
+
+  // The owner WIF must NOT be imported. Owner keys are the account-recovery
+  // root of trust and live in the user's seed phrase only. Cross-check the
+  // imported WIFs against the independently-derived owner WIF.
+  const importedWifs = new Set(importKeyCalls.map((c) => c.wifKey));
+  expect(importedWifs.has(rederived.owner.private)).toBe(false);
+  // And each imported WIF must match one of the three expected role WIFs.
+  const expectedImported = new Set([
+    rederived.posting.private,
+    rederived.active.private,
+    rederived.memo.private,
+  ]);
+  for (const call of importKeyCalls) {
+    expect(expectedImported.has(call.wifKey)).toBe(true);
+  }
 
   // ─── Regression: `requestAddAccountAuthority` must NOT be called ──
   // settings.js historically called this with a raw hex seed as the

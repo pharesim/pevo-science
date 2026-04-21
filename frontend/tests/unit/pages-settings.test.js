@@ -46,10 +46,20 @@ vi.mock('../../src/hive-keys.js', () => ({
 // fetch('/api/custody/upgrade'). BIP39 wrappers are mocked via
 // `vi.mock('../../src/hive-keys.js', ...)` above (settings.js imports them
 // from the wrapper, not raw @scure/bip39, after FE-UPGRADE-KEY-WRAPPER-ADOPT).
+// Map each hex seed char to a distinct WIF so the three Keychain
+// `requestImportKey` calls (posting + active + memo) get distinguishable
+// WIFs — required by the FE-KEYCHAIN-API-MISUSE regression test that
+// asserts three distinct WIFs.
+function stubWifForHex(hex) {
+  if (typeof hex !== 'string' || hex.length === 0) return '5' + 'K' + 'x'.repeat(49);
+  const tag = hex[0].toLowerCase();
+  const pad = ({ a: 'A', b: 'B', c: 'C', d: 'D' }[tag]) || 'x';
+  return '5K' + pad.repeat(49);
+}
 vi.mock('@hiveio/dhive', () => ({
   PrivateKey: {
-    fromSeed: vi.fn(() => ({
-      toString: () => '5' + 'K' + 'x'.repeat(49),
+    fromSeed: vi.fn((hex) => ({
+      toString: () => stubWifForHex(hex),
     })),
   },
   Client: vi.fn(() => ({
@@ -378,6 +388,57 @@ describe('settingsPage', () => {
         'utf8',
       );
       expect(src).toMatch(/window\.hive_keychain\.requestImportKey\(/);
+    });
+
+    // FE-KEYCHAIN-API-MISUSE re-review: the custody upgrade must import
+    // posting + active + memo (NOT owner) into Keychain so the user can
+    // sign every non-owner-auth op after the upgrade. The previous single
+    // posting-only import left Keychain unable to sign transfers/power-down
+    // (active) or encrypt memos (memo). Assert three sequential
+    // requestImportKey calls with three DISTINCT WIFs.
+    it('executeUpgrade imports posting + active + memo WIFs (three distinct) into Keychain', async () => {
+      mockIsKeychainInstalled.mockReturnValue(true);
+      const importKeyCalls = [];
+      vi.stubGlobal('window', {
+        ...globalThis.window,
+        hive_keychain: {
+          requestImportKey: (account, wifKey, cb) => {
+            importKeyCalls.push({ account, wifKey });
+            queueMicrotask(() => cb({ success: true }));
+          },
+        },
+      });
+      vi.stubGlobal('fetch', vi.fn(async () => ({
+        ok: true,
+        json: async () => ({ data: { token: 'new-jwt', custody: 'self' } }),
+      })));
+
+      const comp = createComponent();
+      comp.oldSeedPhrase = Array(12).fill('old').join(' ');
+      comp.newSeedPhrase = Array(12).fill('new').join(' ');
+      comp.newSeedWords = comp.newSeedPhrase.split(' ');
+      comp.confirmInputs = { 0: 'new', 5: 'new', 11: 'new' };
+      comp.upgradePassword = 'light-password';
+
+      await comp.executeUpgrade();
+
+      expect(comp.upgradePhase).toBe('done');
+      expect(importKeyCalls).toHaveLength(3);
+      for (const call of importKeyCalls) {
+        expect(call.account).toBe('alice');
+        expect(typeof call.wifKey).toBe('string');
+        expect(call.wifKey.length).toBeGreaterThan(10);
+      }
+      const distinctWifs = new Set(importKeyCalls.map((c) => c.wifKey));
+      expect(distinctWifs.size).toBe(3);
+      // Belt-and-suspenders: owner WIF must NOT have been imported. The
+      // deriveHiveKeys mock above returns `owner: 'a'.repeat(64)`; the
+      // stubWifForHex mapping produces `5K` + 'A'*49 for that seed. None
+      // of the three imported WIFs may equal that value.
+      const ownerWif = '5K' + 'A'.repeat(49);
+      for (const call of importKeyCalls) {
+        expect(call.wifKey).not.toBe(ownerWif);
+      }
     });
   });
 
