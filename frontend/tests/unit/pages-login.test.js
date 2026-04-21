@@ -174,6 +174,19 @@ describe('loginPage', () => {
       expect(comp.pendingState).toBe('expired');
     });
 
+    it('surfaces login.invalidCredentials for UNAUTHORIZED, not raw err.message', async () => {
+      const err = Object.assign(new Error('Invalid credentials'), { code: 'UNAUTHORIZED' });
+      mockLoginWithPassword.mockRejectedValue(err);
+      const comp = createComponent();
+      comp.emailOrUsername = 'e@x.com';
+      comp.password = 'wrong';
+
+      await comp.handleSubmit();
+
+      expect(comp.error).toBe('login.invalidCredentials');
+      expect(comp.pendingState).toBeNull();
+    });
+
     // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: unknown-code failures
     // must surface a generic localized message and route raw err to
     // console.warn. PENDING_UNVERIFIED and SIGNUP_EXPIRED are semantic-code

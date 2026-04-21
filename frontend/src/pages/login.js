@@ -178,6 +178,10 @@ export function initLoginPage() {
           this.error = err.message;
           return;
         }
+        if (err.code === 'UNAUTHORIZED') {
+          this.error = this.$t('login.invalidCredentials');
+          return;
+        }
         console.warn('[login submit]', err);
         this.error = this.$t('login.loginFailed');
       } finally {

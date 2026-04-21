@@ -876,6 +876,7 @@
     "lostEmailAccess": "Ztratili jste přístup k e-mailu?",
     "orcidLogin": "Sign in with ORCID",
     "loginFailed": "Could not sign you in. Please check your credentials and try again.",
+    "invalidCredentials": "Invalid credentials. Please check your email or username and password.",
     "resendFailed": "Could not resend the verification email. Please try again. If the problem persists, contact support.",
     "orcidStartFailed": "Could not start the ORCID sign-in flow. Please try again. If the problem persists, contact support."
   },
