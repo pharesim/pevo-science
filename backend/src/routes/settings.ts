@@ -10,6 +10,7 @@ import { config } from '../config.js';
 import { getAppPool } from '../app-db.js';
 import { logger } from '../logger.js';
 import { isPasswordValid, PASSWORD_POLICY_MESSAGE } from '../lib/password-policy.js';
+import { ARGON2_OPTIONS } from '../lib/argon2-options.js';
 
 const readLimiter = rateLimit({ name: 'settings-read', windowMs: 60_000, max: 30, keyFn: byIp });
 const writeLimiter = rateLimit({ name: 'settings-write', windowMs: 60_000, max: 10, keyFn: byIp });
@@ -380,7 +381,7 @@ router.post('/set-password', writeLimiter, verifyHiveSignature, async (req: Requ
       );
     }
 
-    const passwordHash = await argon2.hash(password, { type: argon2.argon2id });
+    const passwordHash = await argon2.hash(password, ARGON2_OPTIONS);
     await pool.query(
       'UPDATE accounts SET password_hash = $1 WHERE id = $2',
       [passwordHash, rows[0].id],

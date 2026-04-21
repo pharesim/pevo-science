@@ -71,33 +71,6 @@ Review history: `agents/docs/tasks-archive.md`
 
 ---
 
-### BE-ARGON2-PARAMETER-LOCK — Centralize argon2id options across signup/recover/set-password (Backend Agent, P3)
-
-**Surfaced by:** SEC-004-BE round-2 `/ce-code-review` triage (2026-04-21b).
-
-**Context:** `argon2.hash(pw, { type: argon2.argon2id })` across multiple call sites (signup, recover, reset, set-password) relies on node-argon2 library defaults (memoryCost=65536, timeCost=3, parallelism=4 as of `argon2 ^0.31`). Meets OWASP minimums today. Risk: a future node-argon2 default change, or a partial upgrade across sites, silently drifts params — production-hashing consistency is load-bearing for auth and should not be implicit.
-
-**Fix:** Create `backend/src/lib/argon2-options.ts` exporting:
-
-```ts
-import argon2 from 'argon2';
-
-export const ARGON2_OPTIONS = {
-  type: argon2.argon2id,
-  memoryCost: 65536,
-  timeCost: 3,
-  parallelism: 4,
-} as const;
-```
-
-Import in all `argon2.hash` callers: signup, recover, reset, set-password, any other. Delete inline option objects. Add one unit test asserting the constant matches OWASP minimums (memoryCost ≥ 19456, timeCost ≥ 2, parallelism ≥ 1) so a future weakening is test-caught.
-
-**Non-goals:** Tuning the params themselves beyond OWASP minimums. Runtime flexibility via env vars. Migrating existing hashes (new params only apply to newly-hashed passwords; verification works against any argon2id hash regardless of params).
-
-**Deliverable:** Single source of truth for argon2 params. Move to Review.
-
----
-
 ### PASSWORD-POLICY-HARMONIZE — Cross-cutting FE+BE password-policy harmonization (Backend + UI, P3)
 
 **Surfaced by:** SEC-004-BE review triage (2026-04-21).
@@ -118,6 +91,20 @@ Import in all `argon2.hash` callers: signup, recover, reset, set-password, any o
 ---
 
 ## Review
+
+### BE-ARGON2-PARAMETER-LOCK — Centralize argon2id options across signup/recover/set-password (Backend Agent, P3)
+
+**Status:** Implemented. New `backend/src/lib/argon2-options.ts` exports `ARGON2_OPTIONS` as a frozen `as const` object with `{ type: argon2.argon2id, memoryCost: 65536, timeCost: 3, parallelism: 4 }` — numerically identical to node-argon2 v0.31's current defaults, so no hashing-cost regression, but now explicit and drift-resistant. All 5 `argon2.hash` call sites now consume the constant: `auth.ts:33` (SENTINEL_ARGON2_HASH_PROMISE), `auth.ts:157` (signup), `auth.ts:586` (reset), `auth.ts:760` (recover), `settings.ts:384` (set-password). Inline `{ type: argon2.argon2id }` objects are gone. `argon2.verify` call sites (`auth.ts:293/:403/:415`, `custody.ts:193`, `signup-verify.ts:117`) intentionally unchanged — `verify` reads params from the stored hash's encoded prefix, so routing those through `ARGON2_OPTIONS` would be wrong.
+
+New `backend/tests/lib/argon2-options.test.ts` (5 specs): argon2id variant assertion, OWASP minimum guards (memoryCost ≥ 19456, timeCost ≥ 2, parallelism ≥ 1), and one end-to-end `argon2.hash` + `argon2.verify` roundtrip asserting `$argon2id$`-prefixed output — catches structural typos in `ARGON2_OPTIONS` that TS widening would miss. 5/5 pass.
+
+Full backend vitest suite: **254 pass + 3 skipIf across 38 files, no failures.** Typecheck: clean on all touched files; the two pre-existing `claims.ts` `SERVICE_UNAVAILABLE` type errors are BE-CLAIMS-ERROR-POLISH (separate Review entry), not this task.
+
+**[TODO Architect]:** None. No API contract surface change; no user-facing error message change; `auth.md` doesn't describe argon2 params and doesn't need to.
+
+**Unblocks:** PASSWORD-POLICY-HARMONIZE still gated on FE-PASSWORD-POLICY-DRY (which landed in commit `a753773`) + BE-PASSWORD-POLICY-DRY (Review, below). This task is orthogonal.
+
+---
 
 ### BE-PASSWORD-POLICY-DRY — Extract shared password-policy helper (Backend Agent, P3)
 

@@ -13,6 +13,7 @@ import { getRedis, isRedisAvailable } from '../redis.js';
 import { logger } from '../logger.js';
 import { decryptKey } from '../custody-crypto.js';
 import { isPasswordValid, PASSWORD_POLICY_MESSAGE } from '../lib/password-policy.js';
+import { ARGON2_OPTIONS } from '../lib/argon2-options.js';
 
 const router = Router();
 const SESSION_EXPIRY = '24h';
@@ -31,7 +32,7 @@ const MAX_LOGIN_FAILURES = 20;
 // does not.
 const SENTINEL_ARGON2_HASH_PROMISE: Promise<string> = argon2.hash(
   'pevo-login-timing-sentinel-v1',
-  { type: argon2.argon2id },
+  ARGON2_OPTIONS,
 );
 
 // Rate limiters
@@ -153,7 +154,7 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
 
     // Hash password if provided
     const passwordHash = hasPassword
-      ? await argon2.hash(password, { type: argon2.argon2id })
+      ? await argon2.hash(password, ARGON2_OPTIONS)
       : null;
 
     const expiresAt = new Date(Date.now() + SIGNUP_TOKEN_EXPIRY_MS);
@@ -582,7 +583,7 @@ router.post('/reset', resetLimiter, async (req: Request, res: Response) => {
     }
 
     // Hash new password
-    const passwordHash = await argon2.hash(password, { type: argon2.argon2id });
+    const passwordHash = await argon2.hash(password, ARGON2_OPTIONS);
 
     // Update password, clear reset token, invalidate all existing sessions
     await pool.query(
@@ -756,7 +757,7 @@ router.post('/recover', recoverLimiter, async (req: Request, res: Response) => {
     // password re-establishes the account but leaves password-login disabled
     // until the user opts in via /api/settings/set-password).
     const passwordHash = passwordProvided
-      ? await argon2.hash(new_password as string, { type: argon2.argon2id })
+      ? await argon2.hash(new_password as string, ARGON2_OPTIONS)
       : null;
 
     // Update account: new password (or null), new email, invalidate all sessions
