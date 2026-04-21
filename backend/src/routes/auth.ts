@@ -22,18 +22,58 @@ const SIGNUP_TOKEN_EXPIRY_MS = 24 * 60 * 60 * 1000; // 24 hours
 const RESET_TOKEN_EXPIRY_MS = 60 * 60 * 1000; // 1 hour
 const MAX_LOGIN_FAILURES = 20;
 
-// Sentinel argon2id hash for timing-equalization on the NO_PASSWORD_SET login
-// branch. Without this, null-hash accounts short-circuit before argon2.verify
-// runs (~1ms) while real accounts pay the ~100ms verify cost — a timing oracle
-// that lets unauthenticated attackers enumerate ORCID-only PEvO accounts. We
-// run verify() against this sentinel on the null-hash path so both branches
-// take the same wall-time. The 403 status-code axis remains (the feature-
-// distinct error is UX-valuable for legitimate ORCID users), but the 100× gap
+// Sentinel argon2id hash for timing-equalization at every "cheap" early-return
+// that would otherwise distinguish a known-account branch from an unknown one
+// (login unknown-account, NO_PASSWORD_SET null-hash, resend-verification
+// unknown-email AND null-hash known-email, recover unknown-username, signup
+// 409 DUPLICATE). Without sentinel burns, those ~1ms paths stand out against
+// the ~50-100ms real-argon2 paths and let unauthenticated attackers enumerate
+// accounts. The status-code axis may still differ per-endpoint, but timing
 // does not.
 const SENTINEL_ARGON2_HASH_PROMISE: Promise<string> = argon2.hash(
   'pevo-login-timing-sentinel-v1',
   ARGON2_OPTIONS,
 );
+
+// Startup-rejection handler. If argon2.hash rejects at module load (native
+// binding missing, memory pressure at boot, libuv thread exhaustion), every
+// later `await SENTINEL_ARGON2_HASH_PROMISE` would throw and every sentinel
+// `.catch` would silently swallow — the oracle would reopen for the whole
+// process lifetime with zero operator signal. Fail loud instead: log and
+// exit so the process supervisor restarts into a state that either works or
+// fails loudly again. This is a security primitive; partial function is
+// worse than hard fail.
+SENTINEL_ARGON2_HASH_PROMISE.catch((err) => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  logger.error({ err }, 'SENTINEL_ARGON2_HASH_PROMISE rejected at startup — timing-equalization oracle would be silently open; exiting');
+  process.exit(1);
+});
+
+// Burn one argon2.verify cycle against the pre-computed sentinel to equalize
+// wall-time with the real-verify/hash branch at the same call site. Used at
+// every early-return path whose real counterpart would otherwise pay the
+// ~50ms argon2 cost. Silent on successful burn; log on failure so an operator
+// sees the oracle reopen (argon2 native crash, OOM, libuv thread pool
+// exhaustion all cause the burn to noop and the response to return in ~1ms).
+//
+// The `input` argument is the attacker-supplied password on login/signup/
+// resend-verification, or a fixed dummy when the endpoint has no password at
+// the guarded return (e.g. /recover on the unknown-username branch). Pinning
+// the input to request data is cost-equivalent either way; the purpose is
+// wall-time, not correctness.
+//
+// Timing tests assert ≥40ms rather than ≥50ms because argon2.verify at our
+// ARGON2_OPTIONS (64 MiB, time=3) runs 42-55ms median on reference hardware;
+// 40ms is still 40× above the pre-sentinel ~1ms path, preserving mutation-kill
+// while surviving the argon2-verify floor.
+async function burnSentinel(input: string = 'pevo-login-timing-sentinel-burn'): Promise<void> {
+  try {
+    const sentinelHash = await SENTINEL_ARGON2_HASH_PROMISE;
+    await argon2.verify(sentinelHash, input);
+  } catch (err) {
+    logger.warn({ err }, 'argon2 sentinel burn failed — timing oracle may be open');
+  }
+}
 
 // Rate limiters
 const sessionLimiter = rateLimit({ name: 'auth-session', windowMs: 3_600_000, max: 10, keyFn: byAccount });
@@ -142,10 +182,19 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
         [normalizedEmail],
       );
       if (existingRows.length > 0) {
+        // Already-registered 409 short-circuits before argon2.hash below.
+        // When hasPassword is true, the happy-path pays ~50ms; without a burn
+        // here, 409 returns in ~1ms — an enumeration oracle where two
+        // orthogonal signals (409 status + ~1ms timing) leak simultaneously.
+        // Gate on hasPassword to avoid paying argon2 cost on ORCID+email
+        // signup with no password (both 409 and happy-path are ~1ms there,
+        // no oracle to close).
         if (existingRows[0].verify_token === null) {
+          if (hasPassword) await burnSentinel(password as string);
           return sendError(res, 409, 'DUPLICATE', 'Email already registered');
         }
         if (existingRows[0].verify_token.startsWith('confirmed:')) {
+          if (hasPassword) await burnSentinel(password as string);
           return sendError(res, 409, 'DUPLICATE', 'Email already verified. Please log in to continue.');
         }
         // Unverified — allow overwrite via ON CONFLICT below
@@ -284,19 +333,27 @@ router.post('/resend-verification', resendLimiter, async (req: Request, res: Res
     );
 
     if (rows.length === 0) {
-      // Burn sentinel argon2.verify to equalize wall-time with the real-account
-      // branch below (which runs argon2.verify for accounts with a password
-      // hash). Without this, unknown-email returns in ~1ms while known-email
-      // returns in ~100ms — a timing oracle for email enumeration that
-      // undermines the constant-message response. Status-code stays 200.
-      const sentinelHash = await SENTINEL_ARGON2_HASH_PROMISE;
-      await argon2.verify(sentinelHash, password).catch(() => { /* timing-equalization only; result ignored */ });
+      // Unknown-email path: burn sentinel to match the known-email + argon2.verify
+      // wall-time below. Without this, unknown-email returns in ~1ms while
+      // known-email returns in ~50ms — an enumeration oracle that undermines the
+      // constant-message 200 response.
+      await burnSentinel(password);
       return sendOk(res, { message: 'If that email has a pending signup, a new verification link has been sent.' });
     }
 
     const account = rows[0];
 
-    const passwordValid = account.password_hash ? await argon2.verify(account.password_hash, password) : false;
+    // SEC-LOGIN-UNKNOWN-USER-TIMING hold #1: the null-hash (ORCID-only) branch
+    // must also burn sentinel. Without this, unknown-email costs ~50ms (burn
+    // above) but known-email-with-null-hash short-circuits to ~1ms, INVERTING
+    // the oracle: ~1ms now means "ORCID-only account exists here." Match both
+    // branches by running either the real verify OR a sentinel burn.
+    let passwordValid = false;
+    if (account.password_hash) {
+      passwordValid = await argon2.verify(account.password_hash, password);
+    } else {
+      await burnSentinel(password);
+    }
     if (!passwordValid) {
       return sendOk(res, { message: 'If that email has a pending signup, a new verification link has been sent.' });
     }
@@ -390,14 +447,11 @@ router.post('/login', loginLimiter, async (req: Request, res: Response) => {
     );
 
     if (rows.length === 0) {
-      // Burn sentinel argon2.verify to equalize wall-time with the real-account
-      // branch below. Without this, the unknown-account 401 returns in ~1ms
-      // while a real-account wrong-password 401 takes ~100ms (argon2.verify) —
-      // a timing oracle that lets an unauthenticated attacker enumerate which
-      // usernames/emails have PEvO accounts. Status-code stays 401 (matches
-      // wrong-password); only the timing leak is closed.
-      const sentinelHash = await SENTINEL_ARGON2_HASH_PROMISE;
-      await argon2.verify(sentinelHash, password).catch(() => { /* timing-equalization only; result ignored */ });
+      // Unknown-account path: burn sentinel to match the known-account
+      // wrong-password wall-time below. Closes the username/email-enumeration
+      // oracle for unauthenticated attackers. Status-code stays 401 (matches
+      // wrong-password); only timing is closed.
+      await burnSentinel(password);
       return sendError(res, 401, 'UNAUTHORIZED', 'Invalid credentials');
     }
 
@@ -413,8 +467,7 @@ router.post('/login', loginLimiter, async (req: Request, res: Response) => {
     // same wall-time as the real verify branch. Otherwise a network attacker
     // can enumerate ORCID-only accounts by timing the response.
     if (!account.password_hash) {
-      const sentinelHash = await SENTINEL_ARGON2_HASH_PROMISE;
-      await argon2.verify(sentinelHash, password).catch(() => { /* timing-equalization only; result ignored */ });
+      await burnSentinel(password);
       return sendError(
         res,
         403,
@@ -687,16 +740,16 @@ router.post('/recover', recoverLimiter, async (req: Request, res: Response) => {
     );
 
     if (rows.length === 0) {
-      // Burn sentinel argon2.verify to equalize wall-time with the happy-path
-      // argon2.hash below. Without this, unknown-username returns in ~1ms
-      // while successful recovery with a new password takes ~100ms — a
-      // timing oracle for username enumeration. Status-code stays 404
-      // (distinct from 401/200 on the known-account branches); only the
-      // timing leak is closed. We use a dummy argon2 input since this
-      // endpoint doesn't take a raw password at this point; the sentinel
-      // verify is cost-equivalent to the real argon2.hash work.
-      const sentinelHash = await SENTINEL_ARGON2_HASH_PROMISE;
-      await argon2.verify(sentinelHash, 'recover-timing-dummy').catch(() => { /* timing-equalization only; result ignored */ });
+      // Unknown-username path: burn sentinel ONLY when the happy-path would
+      // run argon2.hash on new_password. For ORCID-recovery-without-password,
+      // the happy path skips argon2 entirely (~5-15ms); burning sentinel on
+      // the unknown-username branch (~50ms) would INVERT the oracle —
+      // unknown would be slower than known-ORCID-no-password, exploitable by
+      // any attacker holding an ORCID token. Gate on passwordProvided so the
+      // unknown/known wall-times match for each caller shape.
+      if (passwordProvided) {
+        await burnSentinel(new_password as string);
+      }
       return sendError(res, 404, 'NOT_FOUND', 'Account not found');
     }
 

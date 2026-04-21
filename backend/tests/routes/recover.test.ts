@@ -26,6 +26,24 @@ let dbReachable = false;
   }
 }
 
+// SEC-LOGIN-UNKNOWN-USER-TIMING hold #6: /resend-verification timing specs
+// need a ready Redis connection because the rate limiter (3/hr per IP) runs
+// against it; under vitest retry=1, a limiter backed by the in-memory fallback
+// cannot be cleared between attempts and the second run hits 429. Mirror the
+// dbReachable pattern so the timing specs skip cleanly rather than fail for
+// the wrong reason when Redis is unavailable.
+let redisReachable = false;
+{
+  const { getRedis } = await import('../../src/redis.js');
+  const redis = getRedis();
+  if (redis) {
+    for (let i = 0; i < 20 && redis.status !== 'ready'; i++) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    redisReachable = redis.status === 'ready';
+  }
+}
+
 async function cleanup() {
   if (!dbReachable) return;
   const pool = getAppPool()!;
@@ -495,7 +513,7 @@ describe('SEC-LOGIN-UNKNOWN-USER-TIMING: /login unknown-account burns sentinel',
 });
 
 describe('SEC-LOGIN-UNKNOWN-USER-TIMING: /resend-verification unknown-email burns sentinel', () => {
-  it.skipIf(!dbReachable)('returns 200 for unknown email with ≥ 40ms wall-time', async () => {
+  it.skipIf(!dbReachable || !redisReachable)('returns 200 for unknown email with ≥ 40ms wall-time', async () => {
     // Clear per-test (not just beforeAll) because vitest retry reruns the
     // body without reruns of beforeAll, and resendLimiter=3/hr leaves no
     // headroom across a retry.
@@ -559,4 +577,169 @@ describe('SEC-LOGIN-UNKNOWN-USER-TIMING: /recover unknown-username burns sentine
     expect(res.body.error.code).toBe('NOT_FOUND');
     expect(elapsed).toBeGreaterThanOrEqual(40);
   });
+});
+
+// SEC-LOGIN-UNKNOWN-USER-TIMING hold round-2 — new specs that close oracles
+// the round-1 fix inverted or missed.
+
+// Hold #1: /resend-verification null-hash (ORCID-only) known-email must ALSO
+// burn sentinel. Round-1 closed the unknown-email branch (~50ms now) but the
+// null-hash known-email path remained at ~1ms, which made ORCID-only accounts
+// DISTINGUISHABLE from both new accounts and password accounts. Closing the
+// inversion requires the null-hash branch to take wall-time equal to the
+// password-verify branch below it.
+describe('SEC-LOGIN-UNKNOWN-USER-TIMING hold #1: /resend-verification null-hash known-email burns sentinel', () => {
+  const NULL_HASH_EMAIL = `resend_nullhash_${Date.now()}@example.com`;
+
+  beforeAll(async () => {
+    if (!dbReachable) return;
+    const pool = getAppPool()!;
+    await pool.query(
+      `INSERT INTO accounts (email, username, password_hash, custody, verify_token, expires_at)
+       VALUES ($1, $2, NULL, 'light', $3, $4)`,
+      [
+        NULL_HASH_EMAIL,
+        `resend_nullhash_${Date.now()}`,
+        'pending-verification-token',
+        new Date(Date.now() + 60 * 60 * 1000),
+      ],
+    );
+  });
+
+  afterAll(async () => {
+    if (!dbReachable) return;
+    const pool = getAppPool()!;
+    await pool.query('DELETE FROM accounts WHERE email = $1', [NULL_HASH_EMAIL]).catch(() => {});
+  });
+
+  it.skipIf(!dbReachable || !redisReachable)(
+    'returns 200 for null-hash known-email with ≥ 40ms wall-time (no oracle vs unknown)',
+    async () => {
+      await clearRateLimitKeys(['auth-resend']);
+      // Warm the sentinel-hash promise + request stack so the measured call
+      // reflects steady-state argon2.verify cost, not first-call overhead.
+      // Limited to 1 warmup because resendLimiter is 3/hr (warmup + measured
+      // + retry headroom).
+      await request(app)
+        .post('/api/auth/resend-verification')
+        .send({ email: `resend_warmup_${Date.now()}@example.com`, password: 'Warmup1234' });
+
+      const start = Date.now();
+      const res = await request(app)
+        .post('/api/auth/resend-verification')
+        .send({ email: NULL_HASH_EMAIL, password: 'AnythingValid1' });
+      const elapsed = Date.now() - start;
+
+      // Uniform message — same as unknown-email and wrong-password branches.
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe('ok');
+      // Mutation-kill: if the null-hash burn is removed, this path returns in
+      // ~1ms and the assertion fails.
+      expect(elapsed).toBeGreaterThanOrEqual(40);
+    },
+  );
+});
+
+// Hold #2: /recover ORCID-recovery-without-password unknown vs known must
+// both be fast. Round-1 burned sentinel on unknown-username regardless of
+// passwordProvided; the known-ORCID-no-password happy path skips argon2.hash
+// entirely (~5-15ms). Unknown at ~50ms was SLOWER than known, exploitable by
+// any attacker holding an ORCID token. Post-fix: unknown burns only when
+// passwordProvided, so the no-password caller shape stays symmetric.
+describe('SEC-LOGIN-UNKNOWN-USER-TIMING hold #2: /recover ORCID-no-password both branches are fast', () => {
+  it.skipIf(!dbReachable)(
+    'unknown-username without new_password neither branch exceeds 40ms (no inverted oracle)',
+    async () => {
+      await clearRateLimitKeys(['auth-recover']);
+      // Warm Node request stack so first-call overhead doesn't dominate.
+      await request(app)
+        .post('/api/auth/recover')
+        .send({
+          username: `recover_warmup_nopass_${Date.now()}`,
+          new_email: `recover_nopass_warmup_${Date.now()}@example.com`,
+          orcid_token: 'warmup-nonexistent-token',
+        });
+
+      const start = Date.now();
+      const res = await request(app)
+        .post('/api/auth/recover')
+        .send({
+          username: `recover_timing_nopass_${Date.now()}`,
+          new_email: `recover_nopass_${Date.now()}@example.com`,
+          orcid_token: 'nonexistent-orcid-token',
+          // No new_password — this exercises the ORCID-recovery-no-password shape.
+        });
+      const elapsed = Date.now() - start;
+
+      // 404 NOT_FOUND for unknown username. The ORCID path yields 404 here
+      // because the account lookup happens before ORCID token validation.
+      expect(res.status).toBe(404);
+      // Mutation-kill: if the passwordProvided gate is removed, the sentinel
+      // burn fires (~50ms) and this assertion fails. The test asserts the
+      // fast-path wall-time bound rather than ≥X — the inversion is closed
+      // by NOT burning, not by burning.
+      expect(elapsed).toBeLessThan(40);
+    },
+  );
+});
+
+// Hold #3: /signup 409 DUPLICATE must burn sentinel when hasPassword. Round-1
+// missed this endpoint. Without the burn, already-registered 409 returns in
+// ~1ms while new-email happy-path runs argon2.hash at ~50ms — two orthogonal
+// enumeration signals (409 status + ~1ms timing) leak simultaneously.
+describe('SEC-LOGIN-UNKNOWN-USER-TIMING hold #3: /signup 409 DUPLICATE burns sentinel', () => {
+  const EXISTING_EMAIL = `signup_dup_${Date.now()}@mit.edu`;
+
+  beforeAll(async () => {
+    if (!dbReachable) return;
+    const pool = getAppPool()!;
+    // Seed an already-verified-and-active account so /signup hits the
+    // `verify_token === null` 409 path (not the unverified-overwrite path).
+    const passwordHash = await argon2.hash('ExistingPassword1', { type: argon2.argon2id });
+    await pool.query(
+      `INSERT INTO accounts (email, username, password_hash, full_name, institution, field, custody, verify_token)
+       VALUES ($1, $2, $3, 'Test', 'Uni', 'CS', 'light', NULL)`,
+      [EXISTING_EMAIL, `signup_dup_${Date.now()}`, passwordHash],
+    );
+  });
+
+  afterAll(async () => {
+    if (!dbReachable) return;
+    const pool = getAppPool()!;
+    await pool.query('DELETE FROM accounts WHERE email = $1', [EXISTING_EMAIL]).catch(() => {});
+  });
+
+  it.skipIf(!dbReachable)(
+    'returns 409 DUPLICATE with ≥ 40ms wall-time when a password is supplied',
+    async () => {
+      await clearRateLimitKeys(['auth-signup']);
+      // Warm argon2 + request stack.
+      await request(app)
+        .post('/api/auth/signup')
+        .send({
+          email: `signup_warmup_${Date.now()}@mit.edu`,
+          password: 'Warmup12345',
+          full_name: 'Warmup',
+          institution: 'Uni',
+          field: 'CS',
+        });
+
+      const start = Date.now();
+      const res = await request(app)
+        .post('/api/auth/signup')
+        .send({
+          email: EXISTING_EMAIL,
+          password: 'AnythingValid1',
+          full_name: 'Test',
+          institution: 'Uni',
+          field: 'CS',
+        });
+      const elapsed = Date.now() - start;
+
+      expect(res.status).toBe(409);
+      expect(res.body.error.code).toBe('DUPLICATE');
+      // Mutation-kill: removing the 409 sentinel burn drops wall-time to ~1ms.
+      expect(elapsed).toBeGreaterThanOrEqual(40);
+    },
+  );
 });
