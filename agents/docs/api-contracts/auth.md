@@ -57,7 +57,7 @@ Register a light account. Two paths: email-based (institutional email required) 
 
 **With `orcid_token` (ORCID path):**
 - `email` -- optional. Any domain accepted (no institutional requirement). When omitted, the account has no email (ORCID-only).
-- `password` -- **optional** on the ORCID path, regardless of whether `email` is provided. When omitted, null, or empty, the account is stored with `password_hash = NULL`; subsequent password-login attempts return `403 NO_PASSWORD_SET` and the UI should direct the user to sign in via ORCID or recover via seed phrase. The user can opt into password login later via `POST /api/settings/set-password`. When supplied, the password must meet the signup policy (10+ chars with lowercase, uppercase, and a digit).
+- `password` -- **optional** on the ORCID path, regardless of whether `email` is provided. When omitted, null, or empty, the account is stored with `password_hash = NULL`; subsequent password-login attempts return `403 NO_PASSWORD_SET` and the UI should direct the user to sign in via ORCID or recover via seed phrase. The user can opt into password login later via `POST /api/settings/set-password`. When supplied, the password must meet the signup policy (10+ chars with lowercase, uppercase, and numbers).
 - `full_name` -- optional, falls back to name from ORCID profile.
 - `institution`, `field` -- optional, default to empty string.
 - `orcid_token` -- one-time nonce returned by `POST /api/orcid/callback` (signup mode). Backend validates against Redis and retrieves the verified ORCID iD. Consumed on use.
@@ -285,7 +285,7 @@ Password-based login for light accounts.
 
 **Errors:**
 - `UNAUTHORIZED` — invalid credentials
-- `NO_PASSWORD_SET` (403) — account has `password_hash IS NULL` (ORCID-only signup, or ORCID recovery that skipped password). The UI should direct the user to sign in with ORCID or recover via seed phrase. Message: `"Account has no password; sign in with ORCID or recover via seed phrase"`. Distinct from 401 on purpose — collapsing this into "invalid credentials" would make password login indistinguishable from the wrong-password case and hide the correct remediation path from legitimate users.
+- `NO_PASSWORD_SET` (403) — account has `password_hash IS NULL` (ORCID-only signup, or ORCID recovery that skipped password). The UI should direct the user to sign in with ORCID or recover via seed phrase. Message: `"Account has no password; sign in with ORCID or recover via seed phrase"`. Distinct from 401 on purpose — collapsing this into "invalid credentials" would make password login indistinguishable from the wrong-password case and hide the correct remediation path from legitimate users. Backend implementation note (advisory, not contract): the null-hash branch burns a sentinel `argon2.verify` against a module-load-computed argon2id hash before returning the 403, so its wall-time matches the real-hash verify path. This closes the per-request timing oracle that would otherwise let an unauthenticated attacker enumerate ORCID-only accounts (~1ms vs ~100ms before the equalization). The status-code axis (403 vs 401) is an accepted tradeoff — the feature-distinct error is UX-valuable for legitimate ORCID users, and status-code oracles are weaker than the prior 100x timing gap.
 - `ACCOUNT_LOCKED` (403) — too many failed attempts
 - `PENDING_SIGNUP` (409) — email verified but signup not completed. Response includes `auth_token` and `email` to resume.
 - `PENDING_UNVERIFIED` (409) — email not yet verified
@@ -379,7 +379,7 @@ Recover a light account when the user has lost access to their email. Requires e
 ```
 
 - `new_password` is **optional** on ORCID recovery. When omitted, null, or empty, `password_hash` is set to `NULL` — password login is disabled for the account until the user opts in via `POST /api/settings/set-password`. Subsequent password-login attempts return `403 NO_PASSWORD_SET`. Seed-phrase recovery remains available on null-hash accounts.
-- When supplied, the password must meet the signup policy (10+ chars with lowercase, uppercase, and a digit).
+- When supplied, the password must meet the signup policy (10+ chars with lowercase, uppercase, and numbers — same `isPasswordValid` helper used by signup).
 
 For ORCID recovery, obtain `orcid_token` via `POST /api/orcid/start` (mode: `signup`) and `POST /api/orcid/callback` first. The backend verifies the ORCID iD from the token matches the account's stored ORCID. Note: the ORCID recovery path does not re-check `ORCID_MIN_WORKS`. It only verifies identity match, since the ORCID was already validated during signup.
 

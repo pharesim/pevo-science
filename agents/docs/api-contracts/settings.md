@@ -21,15 +21,15 @@ Read the authenticated account's email and password status. Used by the settings
   "verified": true,
   "custody": "light",
   "pendingChange": false,
-  "has_password": false
+  "hasPassword": false
 }
 ```
 
-- `has_password` — `true` when the account has `password_hash` set; `false` for ORCID-only signups that opted out of password, or recovered accounts that skipped password reset. The UI should show a "Set a password" surface when `has_password` is `false`.
+- `hasPassword` — `true` when the account has `password_hash` set; `false` for ORCID-only signups that opted out of password, or recovered accounts that skipped password reset. The UI should show a "Set a password" surface when `hasPassword` is `false`. Renamed from snake_case `has_password` to align with the rest of the response object's camelCase casing.
 - `hasEmail` / `email` / `verified` / `pendingChange` — existing email-management fields (unchanged).
 - `custody` — `"self"` for upgraded/Keychain accounts, `"light"` otherwise.
 
-When the authenticated user has no account row (Keychain user who never added an email), the response is `{ hasEmail: false, custody: 'self', has_password: false }`.
+When the authenticated user has no account row (Keychain user who never added an email), the response is `{ hasEmail: false, custody: 'self', hasPassword: false }`.
 
 ---
 
@@ -90,7 +90,7 @@ Opt into password login for an account that currently has `password_hash IS NULL
 { "password": "NewSecurePass1" }
 ```
 
-Password must meet the signup policy: at least 10 characters with lowercase, uppercase, and a digit.
+Password must meet the signup policy: at least 10 characters with lowercase, uppercase, and numbers. Validated server-side via the shared `backend/src/lib/password-policy.ts` `isPasswordValid` helper, mirrored by `frontend/src/password-policy.js`.
 
 **Response `data`:** `{ "message": "Password set. You can now log in with your email/username and this password." }`
 
@@ -98,7 +98,8 @@ Password must meet the signup policy: at least 10 characters with lowercase, upp
 
 **Errors:**
 - `VALIDATION_ERROR` — password missing, too short, or missing required character classes
-- `NOT_FOUND` — no account row for the authenticated user
+- `UNAUTHORIZED` (401) — no account row for the authenticated user (session is no longer valid). Returned instead of 404 because, for an authed endpoint, "your account no longer exists" is functionally equivalent to "your session is invalid" — flipping to 401 closes a small enumeration oracle (a holder of a stale JWT could otherwise distinguish account-deleted from other authed-error states by status code). The same 404→401 treatment applies to `DELETE /api/settings/email`, `POST /api/custody/broadcast`, and `POST /api/custody/upgrade`.
+- `ORCID_REQUIRED` (403) — caller has no linked ORCID. The set-password opt-in is deliberately scoped to ORCID-verified accounts: today only ORCID-path signup/recover leaves `password_hash IS NULL`, but the runtime guard makes the invariant explicit so future flows that null the hash for other reasons cannot silently inherit set-password eligibility.
 - `PASSWORD_ALREADY_SET` (409) — account already has a password. Use the (separate) change-password flow, which must require the current password to authorize the rotation. Rotating a known password via `set-password` is deliberately disallowed because `set-password` authenticates via Keychain or JWT only; allowing it to overwrite an existing hash would let any live JWT silently rotate the password without re-proving the current one.
 
 **Why a distinct endpoint from `/api/auth/reset`:** `/api/auth/reset` is token-gated (email reset link) and targets the "I lost my password" path. `POST /api/settings/set-password` is session-gated and targets the "I never had one" path — no email round-trip required, and the account must be in the `password_hash IS NULL` state.

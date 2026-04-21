@@ -52,12 +52,12 @@ Review history: `agents/docs/tasks-archive.md`
 
 ### FE-SEC-004-POLISH — Secondary hardening for SEC-004-UI (UI Agent, P2)
 
-**Goal:** Batch P2/P3 items from SEC-004-UI review. Not merge-blockers for the SEC-004 atomic pair — ship after.
+**Goal:** Batch P2/P3 items from SEC-004-UI review. SEC-004 atomic pair archived 2026-04-21c — these are ship-anytime polish, no longer blocking.
 
 **Changes:**
 1. **`orcid-callback.js:130` orphaned `pevo_signup_orcid_name`** — either remove the `setItem` (if auto-fill abandoned) or add `removeItem` in `signup.js init()` (and optionally read into `fullName`).
 2. **`settings.js` handleSetPassword mutation order** — patch `emailStatus` FIRST, flip `passwordSetDone=true` LAST. If the spread throws, form isn't stuck in success state while emailStatus is un-patched.
-3. **Collapse overlapping success signals.** Drop `passwordSetDone` — the outer `x-if` on `emailStatus.has_password === false` (post-SEC-004-UI field-name fix) already hides the section on success.
+3. **Collapse overlapping success signals.** Drop `passwordSetDone` — the outer `x-if` on `emailStatus.hasPassword === false` (post-SEC-004-UI field-name fix) already hides the section on success.
 4. **`orcid-no-password.spec.js:217-227` — Alpine internals.** Replace `root._x_dataStack[0]` with `Alpine.evaluate(root, 'newPassword = "..."')`.
 5. **`orcid-no-password.spec.js:209` — brittle selector.** Add `data-testid="recover-method-orcid"` to the tab button; use that selector.
 6. **`pages-settings.test.js` double-guard gap** — test `handleSetPassword` with `passwordSubmitting=true` pre-set; assert no API call.
@@ -65,7 +65,7 @@ Review history: `agents/docs/tasks-archive.md`
 8. **Placeholder-translation markers for 15 non-English locales** — prefix untranslated strings with `[TODO]` OR add `_todo_keys` array listing untranslated keys. Pick one; document convention in ui/CLAUDE.md.
 9. **Resend-button-hide regression test** — `signup.js:150` adds `x-show="!resendSuccess && !orcidToken"` to hide resend on the ORCID branch. The handler body is already guarded (unit-tested in SEC-004-UI follow-up), but the template-level hide has no test surface. Add a small Playwright spec (or extend an existing one) that drives signup to `submitted: true` with `orcidToken` set and asserts `page.getByRole('button', { name: /resend/i })` is not visible. Defense-in-depth for the ORCID-branch-never-sends-password invariant.
 
-**Non-goals:** Splitting settings.js (separate refactor). DRY password validation (FE-PASSWORD-POLICY-DRY).
+**Non-goals:** Splitting settings.js (separate refactor). DRY password validation (FE-PASSWORD-POLICY-DRY, already landed in commit `a753773`).
 
 **Deliverable:** Move to Review.
 
@@ -75,18 +75,86 @@ Review history: `agents/docs/tasks-archive.md`
 
 **Surfaced by:** SEC-004-BE review triage (2026-04-21).
 
-**Context:** FE-PASSWORD-POLICY-DRY and BE-PASSWORD-POLICY-DRY extract shared helpers in each stack independently. They will drift unless harmonized explicitly.
+**Context:** FE-PASSWORD-POLICY-DRY (commit `a753773`) and BE-PASSWORD-POLICY-DRY (archived 2026-04-21c) extracted shared helpers in each stack independently. Both currently encode an identical `length >= 10 && /[a-z]/ && /[A-Z]/ && /[0-9]/` rule, but they will drift unless harmonized explicitly.
 
-**Goal:** After both single-stack extractions land, harmonize so FE and BE cannot diverge silently:
-1. Document the canonical policy in `agents/docs/api-contracts/auth.md`.
+**Goal:** Now that both single-stack extractions have landed, harmonize so FE and BE cannot diverge silently:
+1. Document the canonical policy in `agents/docs/api-contracts/auth.md` with explicit pointer to both helpers (already partially done — `auth.md:60` and `:382` cite the helper; `settings.md:93` does too).
 2. Add `// Keep in sync with frontend/src/password-policy.js` pointer (and vice versa) in both helpers, OR centralize via a JSON schema that both consume.
 3. Add a CI check (grep or type-level) that fails when only one side changes.
 
 **Non-goals:** Changing the policy itself. Adding zxcvbn or other strength tools.
 
-**Blocked by:** FE-PASSWORD-POLICY-DRY + BE-PASSWORD-POLICY-DRY.
+**Status:** Both prerequisite helpers landed. No longer blocked.
 
 **Deliverable:** A future unilateral policy change on one side breaks CI, not production.
+
+---
+
+### BE-ACCRED-TEST-MOCK-POLISH — Test-mock hygiene for accreditations route (Backend Agent, P3)
+
+**Surfaced by:** BE-ACCRED-TX-ID-PARITY + BE-ACCRED-REVOKE-TEST archive review (2026-04-21c). All 4 are test-mock hygiene that would surface as visible test failure under refactor — not production risk — but worth a sweep before the next accreditations.ts refactor.
+
+**Changes:**
+1. **`backend/tests/routes/accreditations-revoke.test.ts:44`** — `hafCache.clear()` in `beforeEach`. Currently relies on a synthetic-username cache miss; safe today (60s TTL, fresh string), but a sibling test injecting the same username would see stale data.
+2. **`backend/tests/routes/accreditations-revoke.test.ts:47`** — multi-signal mock SQL detection. Currently `sql.includes("'action' IN ('accredit', 'revoke')")` couples to a specific quoting/whitespace shape. Mirror the SEC-003-BE round-2 pattern: `sql.includes('FROM customjsonops') && sql.includes("'action' IN ('accredit', 'revoke')")` (or whichever two signals survive the most refactors). A whitespace/quoting change in `accreditations.ts:108-118` currently silently falls into the `rows: []` branch, turning the assertion green for the wrong reason.
+3. **`backend/tests/routes/accreditations-revoke.test.ts:61`** — comment edit. The `event_id: null` fixture comment claims it "surfaces regression that leaks event_id on the revoke branch." The revoke branch has no projection path that reads event_id, so the null is defensive signaling, not active coverage. Tighten the comment to match.
+4. **`backend/src/routes/accreditations.ts:141`** — change `payload.orcid || null` → `payload.orcid ?? null`. One line above the `?? null` fix from BE-ACCRED-TX-ID-PARITY round-2 finding #10. Operator precision; no behavior change today (HAF JSON values are non-empty strings or absent), but consistent with the immediately-following line.
+
+**Non-goals:** Extracting a `withCleanCache()` test helper. Refactoring the accreditations.ts CTE shape.
+
+**Deliverable:** Move to Review.
+
+---
+
+### SEC-LOGIN-UNKNOWN-USER-TIMING — Close the unknown-account timing oracle on /api/auth/login (Backend Agent, P2)
+
+**Surfaced by:** SEC-004-BE round-2 archive review (2026-04-21c).
+
+**Context:** SEC-004-BE round-2 added a `SENTINEL_ARGON2_HASH_PROMISE`-based timing-equalization burn on the `NO_PASSWORD_SET` (null-hash) branch of `POST /api/auth/login`, closing the `~1ms vs ~100ms` oracle that distinguished ORCID-only accounts from password-loginable accounts. The sibling **unknown-account** branch at `backend/src/routes/auth.ts:~388` returns `401 UNAUTHORIZED` *without any argon2 work*, leaving a separate timing oracle: an unauthenticated attacker can enumerate which usernames/emails have accounts on the platform (existing-account → ~100ms argon2.verify path; non-existing-account → ~1ms early return).
+
+Same enumeration class the round-2 fix addressed; closing only half is asymmetric and provides a false sense of completeness.
+
+**Fix:**
+1. On the unknown-account branch in `/login`, burn `await argon2.verify(await SENTINEL_ARGON2_HASH_PROMISE, password).catch(() => {})` before returning 401. Same shape as the null-hash branch.
+2. Add a wall-time test to `auth.test.ts` (or `recover.test.ts` if that's where the sibling timing test lives) asserting the unknown-account 401 path takes ≥50ms (loose CI-stability bound matching the existing null-hash timing assertion).
+3. Audit other `/api/auth/*` early returns for the same class — `/recover`'s "no active account with that username" path at `auth.ts:~712`, the lockout path, etc. Burn sentinel where they leak existence vs. non-existence by timing. This may grow the fix to 2-3 sites.
+
+**Non-goals:** Closing the status-code oracle (401 stays distinct). Adding rate-limit-based detection. Extracting `burnSentinel()` helper unless 3+ call sites land.
+
+**Deliverable:** Move to Review. Atomic with no other task.
+
+---
+
+### SEC-002-TOCTOU-LOCK — SETNX lock to close same-tick TOCTOU on ORCID binding (Backend Agent, P2)
+
+**Surfaced by:** SEC-002-HARDENING archive review (2026-04-21c, round-2).
+
+**Context:** SEC-002-HARDENING Item 5 added a `${appTag}:orcid_binding:${orcid_id}` Redis cache (EX 120s, value=username) narrowing the HAF-lag TOCTOU window where two concurrent binds for the same `orcid_id` could both pass the 409 guard before either's `accredit` op was indexed by HAF. The cache is consulted on read in `findAccreditedAccountWithOrcid` and short-circuits with 409 when value mismatches the candidate username.
+
+**Remaining race:** the cache is written AFTER `broadcast.json` returns. Two requests entering `findAccreditedAccountWithOrcid` within the same event-loop tick both see empty cache + empty HAF, both broadcast to Hive, both write cache with their respective usernames. The 409 guard never fires for either. Same-tick concurrency is the narrow window — but it's exploitable (~0.1-1s broadcast time, attacker submits two requests concurrently from different sessions).
+
+**Fix:** SETNX lock keyed on `${appTag}:orcid_binding_lock:${orcid_id}` claimed atomically BEFORE broadcast.
+
+1. In `handleAccredit` and `handleLink`, immediately after the empty-binding check passes, attempt:
+   ```ts
+   const lockKey = `${config.appTag}:orcid_binding_lock:${orcidId}`;
+   const acquired = await redis.set(lockKey, username, { NX: true, EX: 10 });
+   if (acquired !== 'OK') {
+     return sendError(res, 409, 'ORCID_ALREADY_LINKED', 'This ORCID is currently being linked by another request');
+   }
+   ```
+2. After successful broadcast + cache write, `redis.del(lockKey)` (don't leave the 10s lock holding for the full TTL).
+3. On error after lock acquisition, also `redis.del(lockKey)` so retries succeed.
+4. **Outage fallback:** if `redis.set` throws (Redis unavailable), fall through to current cache-less HAF-only path. Accept the narrow race window in degraded mode rather than failing closed (which would block all binding when Redis blips).
+
+**Tests:**
+1. Two concurrent requests for the same `orcid_id` (different usernames) → exactly one succeeds with 200 + broadcast + cache write; the other gets 409 ORCID_ALREADY_LINKED.
+2. Lock-holder crash mid-broadcast (simulate by acquiring but never deleting) → second request after EX=10s succeeds.
+3. Redis outage during lock acquisition → falls back to current behavior (one warn log, both requests proceed; this is acceptable degradation).
+
+**Non-goals:** Changing the cache TTL. Adding revoke-side cache invalidation (separate problem; bounded window already accepted). Extending the lock to other binding paths (only `/api/orcid/callback` accredit/link modes have this race today).
+
+**Deliverable:** Move to Review.
 
 ---
 
@@ -102,19 +170,7 @@ Full backend vitest suite: **254 pass + 3 skipIf across 38 files, no failures.**
 
 **[TODO Architect]:** None. No API contract surface change; no user-facing error message change; `auth.md` doesn't describe argon2 params and doesn't need to.
 
-**Unblocks:** PASSWORD-POLICY-HARMONIZE still gated on FE-PASSWORD-POLICY-DRY (which landed in commit `a753773`) + BE-PASSWORD-POLICY-DRY (Review, below). This task is orthogonal.
-
----
-
-### BE-PASSWORD-POLICY-DRY — Extract shared password-policy helper (Backend Agent, P3)
-
-**Status:** Implemented. `backend/src/lib/password-policy.ts` now exports `MIN_PASSWORD_LENGTH = 10`, `PASSWORD_POLICY_MESSAGE`, and `isPasswordValid(pw: unknown): boolean`, mirroring `frontend/src/password-policy.js`. `auth.ts` (5 sites: signup, signup-ORCID branch, reset-password, recover-ORCID branch, recover-seed-phrase branch) and `settings.ts` (1 site: set-password) now delegate the length+class rule to `isPasswordValid`. Inline `length < 10` checks, the `/[a-z]/ && /[A-Z]/ && /[0-9]/` triple, and their duplicated sendError strings are gone. New `backend/tests/lib/password-policy.test.ts` with 10 specs covering length boundary (exactly 10 passes, 9 fails), each character class individually missing, non-string inputs (undefined/null/number/object/array/boolean), empty string, and a sanity assertion that `PASSWORD_POLICY_MESSAGE` names every criterion. 10/10 pass. Full backend vitest suite: 248/252 pass + 3 skipIf across 37 files; the one failure (`recover.test.ts:440` sentinel-argon2 ≥50ms timing check, got 43–46ms under full-suite parallelism) is unrelated to this diff and passes on isolated re-run (16/16). Typecheck clean on all touched files; two pre-existing `claims.ts` `SERVICE_UNAVAILABLE` type errors are BE-CLAIMS-ERROR-POLISH, not this task.
-
-**Note on error-message shape:** the original 6 sites surfaced TWO distinct errors (`"Password must be at least 10 characters"` and `"Password must contain lowercase letters, uppercase letters, and numbers"`). Since `isPasswordValid` returns a single boolean mirroring the FE helper, call sites now surface ONE combined message: `"Password must be at least 10 characters and contain lowercase letters, uppercase letters, and numbers"`. Chosen over diverging from FE's boolean shape or introducing a second granular helper — `agents/docs/api-contracts/auth.md` describes the policy as a single rule, not as two separate error strings, so no contract shape change.
-
-**[TODO Architect]:** No contract-shape change required on `auth.md`. Optionally fold the unified message string into the policy description at `auth.md:55` for traceability; current wording ("required, at least 10 characters with lowercase, uppercase, and numbers") already matches the new runtime message semantically.
-
-**Unblocks:** PASSWORD-POLICY-HARMONIZE (still Pending; it waits on this + FE-PASSWORD-POLICY-DRY, which already landed in commit `a753773`).
+**Unblocks:** None. Orthogonal to PASSWORD-POLICY-HARMONIZE.
 
 ---
 
@@ -171,255 +227,37 @@ Round-3 `/ce-code-review` (7 reviewers: correctness, security, testing, maintain
 
 ---
 
-### SEC-003-BE — Fix bridge-claim approve/revoke authorization (Backend Agent)
-
-**Status:** Implemented. `backend/src/routes/claims.ts` approve-path now requires caller to be admin OR approved co-author on bridge papers (self-approval rejected); revoke-path drops `isBridgeAdmin` from the OR-gate and tightens bridge-key broadcast to `paperAuthor === hiveBridgeAccount && isAdmin && pevoBridgePostingKey`. New `isApprovedCoAuthor` helper, fails closed on HAF error. Schema note: the HAF `authorship_claims` CTE uses status `'accepted'` (not `'approved'` as the original spec text said) — code matches schema. 11 test scenarios in new `backend/tests/routes/claims.test.ts` (10 from spec + 1 added during review triage for native admin-revoke branch coverage). Config mock overrides `hiveBridgeAccount: 'pevotest.bridge'` distinct from admin so tests exercise production BRIDGE≠ADMIN asymmetry. 11/11 pass. Full suite green.
-
-**Review (CE) findings triaged (2026-04-21):**
-- B1 (P2, bridge-approve misleading error on missing posting key) → filed as **BE-CLAIMS-ERROR-POLISH** (P3 follow-up).
-- B2 (native admin-revoke branch untested) → fixed in this task; added scenario 11.
-- B3 (`getAppPool() => null` mock) → dismissed; null crashes loudly on future Bearer tests.
-- B4 (isApprovedCoAuthor CTE cost) → dismissed; rate-limited endpoint.
-- B5 (BRIDGE===ADMIN in dev) → fixed in this task; distinct BRIDGE in config mock.
-- B6 (isAdmin single-value equality) → dismissed; admin is singular by product design (memory saved).
-
-**Curl reproducers (bridge approve + bridge revoke by random user → 403 FORBIDDEN):**
-```bash
-# (a) bridge approve by random authed user
-curl -i -X POST "http://localhost:3000/api/papers/${HIVE_BRIDGE_ACCOUNT}/bridge-paper-sec003/claims/claimeraccount/approve" \
-  -H "X-Hive-Username: someintruder" \
-  -H "X-Hive-Signature: <valid-sig>" \
-  -H "X-Hive-Timestamp: $(date -u +%Y-%m-%dT%H:%M:%S.000Z)" \
-  -H "Content-Type: application/json" -d '{}'
-# → 403 {"error":{"code":"FORBIDDEN","message":"Only the platform admin or an approved co-author can approve claims on bridge papers"}}
-
-# (b) bridge revoke by random authed user
-curl -i -X POST "http://localhost:3000/api/papers/${HIVE_BRIDGE_ACCOUNT}/bridge-paper-sec003/claims/claimeraccount/revoke" \
-  -H "X-Hive-Username: someintruder" \
-  -H "X-Hive-Signature: <valid-sig>" \
-  -H "X-Hive-Timestamp: $(date -u +%Y-%m-%dT%H:%M:%S.000Z)" \
-  -H "Content-Type: application/json" -d '{"reason":"test"}'
-# → 403 {"error":{"code":"FORBIDDEN","message":"Not authorized to revoke this claim"}}
-```
-
-**[TODO Architect]:** update the claims routes contract file (architect-decided: `papers.md`, since the routes are `/api/papers/:author/:permlink/claims/...`) to document:
-- New 403 responses on approve: "Only the platform admin or an approved co-author can approve claims on bridge papers" + "Claimer cannot approve their own claim".
-- Revoke authorization is now strictly `isPostAuthor || isClaimer || isAdmin`; bridge-key server-side broadcast fires only when admin + bridge paper.
-
-**Architect re-review (2026-04-21b) — HELD PENDING FIXES:**
-
-Round-2 `/ce-code-review` surfaced 5 findings. Must land before archive.
-
-1. **P2 — `isApprovedCoAuthor` builds `active_accreditations` CTE but never JOINs it** (`backend/src/routes/claims.ts:64-108`). The implementer set up the revocation-aware machinery (the CTE is declared in `buildWith`) and dropped the final link — the SELECT reads only from `authorship_claims`. A co-author whose accreditation was later revoked can still co-sign bridge-claim approvals in perpetuity, since the accepted-claim row on HAF is immutable. This silently contradicts the PEvO trust model where revocation is meaningful (accreditation is the trust layer per root CLAUDE.md). Fix: change the SELECT to `SELECT 1 FROM authorship_claims ac JOIN active_accreditations a ON a.account = ac.claimer WHERE ac.paper_author = ... AND ac.paper_permlink = ... AND ac.claimer = ... AND ac.status = 'accepted' LIMIT 1`. Semantics: "currently accredited AND has accepted claim." Matches the other authority-filtered sites (`getAccreditedSet`, `findAccreditedAccountWithOrcid`) which all filter live on revocation.
-
-2. **P2 — Fragile SQL detection in test mock** (`backend/tests/routes/claims.test.ts:~87`). Pool-mock branches on `sql.includes("status = 'accepted'")` — silent-fail risk under query refactor (constant extraction, quote-style change, the JOIN fix in #1). Change to a multi-signal match: `sql.includes('FROM authorship_claims') && sql.includes("status = 'accepted'")`. The double-signal requires both the target relation AND the target status, surviving most refactors that keep one but drop the other.
-
-3. **P2 — HAF-throw fail-closed path untested.** The `isApprovedCoAuthor` `catch` block (returns `false` on throw) has no test scenario. The CLAUDE.md carve-out explicitly names this as one of the mocked-pool justifications. Add one scenario: `queryFn.mockRejectedValueOnce(new Error('ECONNRESET'))` for the co-author lookup, POST bridge-paper approve as a seeded-approved co-author, assert `403 FORBIDDEN` AND `broadcastJson` NOT called. The negative-invariant assertion ("bridge key not used") is the load-bearing check — it proves the fail-closed didn't just return an error code while still having done something dangerous. ~10-line test block.
-
-4. **P3 — Missing symmetric native-claimer-revoke test.** Bridge-paper claimer-revokes-own-claim is tested; the native-paper equivalent isn't. The code path is identical semantically (claimer can always revoke regardless of paper type); the test exists to mutation-kill that invariant. ~15-line test block.
-
-5. **P3 — Chain-visible-actor comment on native-admin-revoke.** The code broadcasts admin-revokes-on-native-paper under the admin account's posting auths, not the original paper-author's. Add a one-line comment at the relevant broadcast site in claims.ts noting the chain-visible-actor semantic (future reader should understand that the admin revoke produces a chain op visibly signed by admin, not by paper author).
-
-**Dismissed from round-2 findings:** round-2 P3 on cj.json field selection cleanup (cosmetic, not defect-class). BE-CLAIMS-ERROR-POLISH already filed as separate Pending task — not duplicated here.
-
-**Path to archive:** (1) Backend agent applies findings 1-5. (2) Architect re-reviews with `/ce-code-review` once + updates `papers.md` per the [TODO Architect] note above, adding a note on the revocation-JOIN semantic. (3) Archive.
-
-**Backend re-review signal (2026-04-21, working tree, uncommitted):** All 5 findings applied, ready for architect re-review.
-- Finding #1 (P2 `active_accreditations` JOIN): `backend/src/routes/claims.ts` `isApprovedCoAuthor` SELECT now `FROM authorship_claims ac JOIN active_accreditations a ON a.account = ac.claimer` — revoked co-authors lose co-sign authority live.
-- Finding #2 (P2 fragile mock SQL detection): `backend/tests/routes/claims.test.ts` pool-mock now branches on `sql.includes('FROM authorship_claims') && sql.includes("status = 'accepted'")` (multi-signal) — survives JOIN refactor from finding #1.
-- Finding #3 (P2 HAF-throw fail-closed test): new scenario in approve describe — seeds COAUTHOR as approved, `queryFn.mockRejectedValueOnce(new Error('ECONNRESET'))`, asserts 403 FORBIDDEN AND `broadcastJson not.toHaveBeenCalled()`. Negative invariant: bridge key not used on HAF-throw.
-- Finding #4 (P3 native-claimer-revoke symmetric test): new scenario in revoke describe — CLAIMER revokes own claim on native paper → 200 + returns operation + no server broadcast.
-- Finding #5 (P3 chain-visible-actor comment): added at native-admin-revoke broadcast site in `claims.ts` noting the op is signed by admin, not the paper author.
-
----
-
-### BE-ACCRED-TX-ID-PARITY — Add tx_id to GET /api/accreditations/:username (Backend Agent, P2)
-
-**Status:** Implemented with **BE-ACCRED-REVOKE-TEST** (batched — same file). `backend/src/routes/accreditations.ts` `fetchAccreditationStatusFromHaf` SELECT now includes `cj.id AS event_id`; response projects `tx_id: result.rows[0].event_id?.toString() || null`. Shape mirrors `/api/profile/:username` exactly. New `backend/tests/routes/accreditations.test.ts` with a parity test asserting both endpoints return the same tx_id for a sample accredited account. 3/4 pass, 1 skipIf (the revoke-branch test — no `pevotest` account currently has `revoke` as its latest op in HAF; skip pattern mirrors the existing file).
-
-**Review (CE) findings:** clean on the diff itself. Round-2 `/ce-code-review` surfaced 2 hardening items; see hold block below.
-
-**Architect re-review (2026-04-21b) — HELD PENDING FIXES:**
-
-1. **P2 — Revoke-branch skipIf chronically skips.** `backend/tests/routes/accreditations.test.ts:182-225` relies on `pevotest` HAF having an authority-signed `revoke` as the latest op for some account — no such account currently exists, so the test is aspirational coverage for the mutation-kill it claims to close. Fix: convert to mocked-pool carve-out per the CLAUDE.md clause. Mock `getPool()` for this one test, inject `{action: 'revoke', account: '...', ...}` as the latest row, assert `is_accredited: false` + `accreditation: null` + `tx_id: null`. Add a carve-out justification header to the test file (2-3 sentences, same form as `orcid.test.ts:6-15`). Keep the current skipIf real-HAF variant as a secondary test documenting the aspirational path.
-
-2. **P2 — `|| null` vs `?? null` operator precision.** Change `event_id?.toString() || null` to `event_id?.toString() ?? null` at `backend/src/routes/accreditations.ts:143`. No current behavior change (HAF event_ids are always positive integers) but precise operator; future-proofs against falsy-non-null regressions if the column type ever widens. Pair with the identical change at `backend/src/routes/profile.ts:53` landing in the SEC-AUTH-BYPASS hold-pending-fixes block — same logical fix, two call sites.
-
-**Dismissed from round-2 findings:** CTE duplication across 4 test scenarios (P3 — filing as follow-up when drift becomes visible is cheaper than a premature helper extraction).
-
-**[TODO Architect]:** update `agents/docs/api-contracts/accreditation.md` `/:username` section to document `accreditation.tx_id: string | null` (the HAF event_id of the latest accredit custom_json). Mirror the prose + example already present for `/api/profile/:username`.
-
-**Path to archive:** (1) Backend agent applies findings #9 + #10-accreditations-half in the test file + accreditations.ts. (2) Architect updates `accreditation.md` per [TODO Architect] note. (3) Re-review + atomic archive with BE-ACCRED-REVOKE-TEST.
-
-**Backend re-review signal (2026-04-21, working tree, uncommitted):** Both findings applied, ready for architect re-review. Atomic pair with BE-ACCRED-REVOKE-TEST.
-- Finding #9 (P2 revoke-branch mocked carve-out): `backend/tests/routes/accreditations-revoke.test.ts` (new, separate file so the mocks don't spill into the real-HAF specs in `accreditations.test.ts`). Mocks `getPool()` + `getRedis()`; injects `{action:'revoke', ...}` as the latest row for a unique username. Asserts `is_accredited:false` + `accreditation:null` + no `tx_id` leak. Carve-out justification header documents why real-HAF seed-and-wait is impractical. Existing skipIf real-HAF variant retained in `accreditations.test.ts` as the aspirational path.
-- Finding #10 (P2 `?? null` operator precision): `backend/src/routes/accreditations.ts:143` changed from `|| null` to `?? null`. Companion change at `backend/src/routes/profile.ts:53` landed under SEC-AUTH-BYPASS (same logical fix, two call sites).
-
----
-
-### BE-ACCRED-REVOKE-TEST — Revoke-branch test for fetchAccreditationStatusFromHaf (Backend Agent, P2)
-
-**Status:** Implemented in the same commit as BE-ACCRED-TX-ID-PARITY. Revoke-branch skipIf test added in `backend/tests/routes/accreditations.test.ts`; currently skips because no `pevotest` HAF account matches the fixture. Closes the mutation-kill gap by design — when HAF has a matching account, the test will cover the revoke branch returning `is_accredited: false, accreditation: null`.
-
-**Architect re-review (2026-04-21b) — HELD PENDING FIXES:**
-
-See the BE-ACCRED-TX-ID-PARITY hold-pending-fixes block above — the revoke-branch carve-out conversion (round-2 finding #9) is batched with the tx_id work since both live in the same test file. This task archives atomically with BE-ACCRED-TX-ID-PARITY.
-
----
-
-### SEC-004-BE — Make password optional for ORCID-verified signup/recover (Backend Agent)
-
-**Status:** Landed on `main` at commit **2fd4d20** ("make password optional for ORCID-verified signup and recover (SEC-004-BE)") before this review pass. Verified in situ: `backend/src/routes/auth.ts` `/signup` and `/recover` accept null password on ORCID paths; `/login` returns `403 NO_PASSWORD_SET` when `password_hash IS NULL`; new `POST /api/settings/set-password` (400 weak / 401 unauthed / 404 no account / 409 PASSWORD_ALREADY_SET / 200 argon2id hash); `GET /api/settings/email` projects `has_password: boolean` (**snake_case**, settings.ts:91) with `has_password: false` fallback on no-row. `NO_PASSWORD_SET` + `PASSWORD_ALREADY_SET` added to `ErrorCode` in `backend/src/types/api.ts`. 46/46 tests pass across `signup-verify.test.ts`, `recover.test.ts`, `settings-set-password.test.ts`, `auth.test.ts`, `settings.test.ts` (real `verifyHiveSignature`, real Postgres, real Redis). Full backend suite: 221 pass + 3 skipIf across 34 files.
-
-**Follow-ups from review triage (2026-04-21):**
-- **C1** (6-way password-policy duplication) → filed as **BE-PASSWORD-POLICY-DRY** (backend) + **PASSWORD-POLICY-HARMONIZE** (cross-cutting FE+BE).
-- **C2** (`/recover` silent branch-pick when both memo_key + orcid_token supplied) → **fixed in follow-up commit**: `auth.ts` now rejects with 400 "Supply exactly one of memo_key or orcid_token, not both". Test added in `recover.test.ts` validation block. 29/29 recover+settings tests pass.
-- **C3** (trivial `hasPassword`/`verified`/`custody` locals in `settings.ts:81-83`) → **fixed in same follow-up commit**: inlined all three into the `sendOk` call for style consistency.
-
-**Atomic-ship note:** SEC-004-BE and SEC-004-UI must ship together. SEC-004-UI is also in Review with 4 architect-flagged P0/P1 fixes outstanding (camelCase/snake_case field mismatch, resendVerification with empty password on ORCID branch, password-not-zeroed-on-error in handleSetPassword, dead `common.bip39NotLoaded` i18n key). Those are UI agent's to land before archiving either.
-
-**[TODO Architect]:** verify the prose committed at 2fd4d20 for:
-- `agents/docs/api-contracts/auth.md` — password optional on ORCID branch of `/signup` + `/recover`; new 403 `NO_PASSWORD_SET` on `/login`.
-- `agents/docs/api-contracts/settings.md` (new file) — `POST /api/settings/set-password` schema + `has_password` (now renamed to `hasPassword` — see finding #4 below) on `GET /api/settings/email`.
-- `agents/docs/api-contract.md` index — settings.md row + profiles.md description trim.
-
-Also add the new C2 400 mutual-exclusion to `/recover` in auth.md.
-
-**Architect re-review (2026-04-21b) — HELD PENDING FIXES:**
-
-Round-2 `/ce-code-review` surfaced 7 findings. Must land before archive. SEC-004-BE + SEC-004-UI ship atomically (atomic-ship constraint preserved).
-
-1. **P1 — Login enumeration oracle via null-hash short-circuit** (`backend/src/routes/auth.ts:~390`). Null-hash accounts return `403 NO_PASSWORD_SET` before `argon2.verify` runs, distinguishing ORCID-only accounts from normal accounts by status code AND response time (~1ms vs ~100ms). Unauthenticated attacker can enumerate ORCID-only PEvO users. Triaged to Option A (timing equalization only): run a sentinel `argon2.verify` against a fixed argon2id hash on the null-hash path before returning 403. Closes the timing axis; the 403 status-code axis remains as an accepted tradeoff — the feature-distinct error is UX-valuable for legitimate ORCID users, and status-code oracles are weaker than 100× timing gaps. Concrete shape: define `const SENTINEL_ARGON2_HASH` (real argon2id hash of a compile-time constant string, generated once); on the null-hash branch call `await argon2.verify(SENTINEL_ARGON2_HASH, password).catch(() => {})` before the 403 return. Add a unit test with a loose-bound wall-time assertion (e.g. null-hash path ≥ 50ms). Update the comment on `auth.ts:~399` ("Verify password first (before revealing account state)") to reflect the NO_PASSWORD_SET branch's new timing-equalized behavior (finding #7 batched in same edit).
-
-2. **P2 — `/set-password` 404 leaks account deletion** (`backend/src/routes/settings.ts:~358`). Authed-but-deleted accounts hit 404 NOT_FOUND, distinguishable from 409 and 400 by a session holder. Fix: change to `sendError(res, 401, 'UNAUTHORIZED', 'Session is no longer valid')`. Rationale: for authenticated endpoints, "your account no longer exists" ≡ "your session is no longer valid." Update the existing set-password test's 404 assertion to 401. **Plus (user triage A+B):** audit sibling authed endpoints that read `accounts` by username and apply the same 404 → 401 treatment where the pattern matches. Sites to check: `GET /api/settings/email` (settings.ts), `POST /api/settings/email`, `DELETE /api/settings/email`, any other authed accounts-by-username reader. Grep: `FROM accounts WHERE username` and `accounts WHERE username = $` across `backend/src/routes/`. Apply 401 treatment to each that currently returns 404 on missing-row for an authed request. Expected: +1-3 other call sites.
-
-3. **P2 — `/set-password` lacks ORCID-verified guard.** The invariant "only ORCID-verified users can opt into password" is held implicitly (today, only ORCID-path signup/recover leaves `password_hash IS NULL`). Future flows that null the hash for other reasons would silently inherit set-password eligibility. Fix: add runtime guard after the existing null-hash check — `if (!account.orcid_id) return sendError(res, 403, 'ORCID_REQUIRED', 'Set-password requires a linked ORCID account')`. Add new `ORCID_REQUIRED` error code to `backend/src/types/api.ts`. Add one regression test: null-hash account without `orcid_id` → 403 ORCID_REQUIRED.
-
-4. **P2 — Rename `has_password` → `hasPassword` end-to-end (backend half).** `GET /api/settings/email` currently emits `has_password` (snake_case) inside a response whose other keys are camelCase (`hasEmail`, `verified`, `pendingChange`, `custody`). Rename to `hasPassword` for internal consistency. Sites in `backend/src/routes/settings.ts`: 2 response sites, the `has_password: false` catch fallback. The frontend-half rename lands in SEC-004-UI's hold-pending-fixes. Collapses the `BE-SETTINGS-EMAIL-CASING` Pending task (removed in this pass).
-
-5. **P3 — Mutation-kill assertion on C2 recover test.** `backend/tests/routes/recover.test.ts` C2 test (both `memo_key` + `orcid_token` → 400) asserts status + error code but not DB invariant. Add one assertion: post-request, the account's `password_hash` remained null. Guards against future refactors that reorder validation after DB access.
-
-6. **P3 — Real argon2 hash as seed in set-password test.** `backend/tests/routes/settings-set-password.test.ts` seeds `password_hash: 'dummy-existing-hash'` for the 409 path. Works today because short-circuit bypasses `argon2.verify`. Swap to a real argon2id hash of a fixed known plaintext (e.g., pre-compute `await argon2.hash('known-test-password', { type: argon2.argon2id })` in a `beforeAll`) so future tests that exercise the verify path don't silently fail against a non-argon2 string.
-
-7. **P3 — Comment drift on auth.ts:~399.** Batched into finding #1's edit. Sibling comment "Verify password first (before revealing account state)" is now misleading because the null-hash branch reveals state (via the new sentinel-verify delay) before the verify gate. Tighten to reflect the NO_PASSWORD_SET branch's timing-equalized behavior.
-
-**Dismissed from round-2 findings:** "Supply exactly one of memo_key or orcid_token" error message "reveals server-side branching" (field names are API-contract visible — not an info leak); argon2 parameter lock (filed separately as **BE-ARGON2-PARAMETER-LOCK** P3 Pending task).
-
-**[TODO Architect after fixes land] — doc updates:**
-- `agents/docs/api-contracts/auth.md`: add an editorial note on `/login` timing-equalization behavior (advisory, not contract shape). Current C2 mutual-exclusion doc update happens now (see below).
-- `agents/docs/api-contracts/settings.md`: rename `has_password` → `hasPassword` in `GET /email` response example; update `POST /set-password` error list to add `ORCID_REQUIRED` (403) and change `NOT_FOUND` → `UNAUTHORIZED` (401) on missing-account branch.
-- `agents/docs/api-contract.md` index: verify settings.md + profiles.md rows are current.
-
-**Path to archive:** (1) Backend agent applies findings 1-7 + the 404→401 audit sweep. (2) UI agent applies the `has_password` → `hasPassword` frontend rename (see SEC-004-UI hold-pending-fixes). (3) Architect updates the three api-contract files (deferred until post-fix). (4) Re-review with `/ce-code-review` + atomic archive of SEC-004-BE + SEC-004-UI.
-
-**Backend re-review signal (2026-04-21, working tree, uncommitted):** All 7 backend findings + 404→401 audit applied. Atomic-ship constraint still requires SEC-004-UI's frontend `has_password` → `hasPassword` rename before either archives.
-- Finding #1 (P1 login enumeration oracle): `backend/src/routes/auth.ts` now burns a sentinel `argon2.verify` against a module-load-computed `SENTINEL_ARGON2_HASH` on the NO_PASSWORD_SET branch before returning 403 — closes the 100× timing gap. Test: `recover.test.ts` "null-hash login burns sentinel argon2.verify for timing-equalization (≥ 50ms)" with loose CI-variance lower bound.
-- Finding #2 (P2 404→401 sweep): `/set-password` + `DELETE /email` in `settings.ts`, `/custody/broadcast` + `/custody/upgrade` in `custody.ts` (4 sites total). `GET /email` already returned `hasEmail:false` fallback — left unchanged (legitimate Keychain-user-never-registered path). `settings.test.ts` DELETE-unknown-user expectation flipped to 401. New `settings-set-password.test.ts` 401 missing-row scenario.
-- Finding #3 (P2 ORCID_REQUIRED guard): `/set-password` now selects `orcid` column, returns 403 `ORCID_REQUIRED` when null-hash row has no linked ORCID. New `ORCID_REQUIRED` error code in `backend/src/types/api.ts`. Regression test: null-hash account without orcid → 403 `ORCID_REQUIRED` + `password_hash` stays NULL.
-- Finding #4 (P2 `has_password` → `hasPassword` backend half): `settings.ts` `GET /email` response key renamed at 2 sites + catch fallback. `settings-set-password.test.ts` flag-test assertions updated. Frontend half is UI agent's (see SEC-004-UI hold-pending-fixes).
-- Finding #5 (P3 C2 mutation-kill): `recover.test.ts` new DB-backed scenario — seeds null-hash `NULL_USER`, sends both `memo_key` + `orcid_token`, asserts 400 VALIDATION_ERROR AND `password_hash` remained NULL post-request.
-- Finding #6 (P3 real argon2 hash seed): `settings-set-password.test.ts` `beforeAll` now pre-computes `argon2.hash(EXISTING_PASSWORD, argon2id)` and seeds SET_USER with it; 409 assertion updated. Closes mutation surface for future refactors that exercise verify on the seeded hash.
-- Finding #7 (P3 comment drift): `auth.ts` comment on the verify-password gate rewritten to reflect the NO_PASSWORD_SET branch's timing-equalized behavior.
-
-**Test results:** Full backend vitest suite 230 passed + 3 skipped across 36 files. Targeted SEC-004-BE subset: 51 passed + 1 skipped across 7 files.
-
----
-
-### SEC-004-UI — Stop persisting passwords across ORCID round-trip (UI Agent)
-
-**Status:** Implemented, UI-side only. Unit tests 750/750 green (+17 SEC-004-UI tests across 4 files). `npm run build` clean. `/ce-work` stepped through the 5 actions; E2E spec written stubbed-first with 3 `test.fixme`s blocked on SEC-004-BE. **BLOCKER for archive: SEC-004-BE must land before this is safe to merge** — same atomic-ship constraint as SEC-002.
-
-**Changes:**
-- `frontend/src/pages/signup.js` — removed `password`/`passwordConfirm` from the `pevo_signup_draft` write in `handleOrcidVerify` and from the `init()` restore. Password + confirm fields hidden via `x-show="!orcidToken"`; added inline hint `signup.orcidNoPassword`. `canSubmit` drops password predicates on the ORCID branch. `handleSubmit` sends `password: null` on the ORCID branch (non-ORCID branch unchanged). Also tightened the DUPLICATE-fallback guard so it only runs when the non-ORCID branch has an actual password to retry with.
-- `frontend/src/pages/recover.js` — same pattern: removed `newPassword`/`newPasswordConfirm` from the `pevo_recover_draft` write and init restore. Password fields hidden under `x-show="method !== 'orcid'"`; added `recover.orcidNoPassword` hint. `canSubmitOrcid` no longer requires password; submit path sends `new_password: null` when `method === 'orcid'`.
-- `frontend/src/pages/settings.js` — added a "Set a password" surface gated on `emailStatus.hasPassword === false`. New state (`newPasswordInput`, `newPasswordConfirmInput`, `passwordSubmitting`, `passwordError`, `passwordSetDone`), new getters (`newPasswordValid`, `newPasswordsMatch`, `canSubmitPassword`) mirroring signup's validation, and a `handleSetPassword()` that calls the new API and flips `emailStatus.hasPassword` locally so the surface hides on success.
-- `frontend/src/api.js` — new `setPassword(password)` helper posting to `/api/settings/set-password` via `authenticatedRequest`.
-- `frontend/public/messages/en.json` — 3 new key groups: `signup.orcidNoPassword`, `recover.orcidNoPassword`, 9 `settings.setPassword*` keys.
-- `frontend/public/messages/{ar,cs,da,de,es,fa,fr,he,it,nl,pl,pt,sv,tr,zh}.json` (15 files) — same 11 keys added to every locale with English source strings as TODO-placeholders per task instructions.
-- `frontend/tests/unit/api.test.js` — +2 tests for `setPassword` (Bearer + UNAUTHORIZED).
-- `frontend/tests/unit/pages-signup.test.js` — +5 tests covering the SEC-004 regression surface (no password in draft on OrcidVerify, legacy drafts do NOT rehydrate password, ORCID submit sends `password: null`, `canSubmit` semantics both branches).
-- `frontend/tests/unit/pages-recover.test.js` — +5 tests mirroring the above for the recover flow.
-- `frontend/tests/unit/pages-settings.test.js` — +6 tests covering `handleSetPassword` (happy path, invalid-password no-op, mismatch no-op, backend-error surface, `newPasswordsMatch`/`canSubmitPassword` getters).
-- `frontend/tests/e2e/orcid-no-password.spec.js` (new) — 4 passing specs (2 for signup, 2 for recover) that stub `/api/orcid/start` + `/api/auth/{signup,recover}` at the network layer and assert draft localStorage + request bodies contain no password keys. 3 `test.fixme`s sketch the real-backend integration paths that become runnable once SEC-004-BE lands.
-
-**Dependency on SEC-004-BE (BLOCKER for archive):** SEC-004-UI and SEC-004-BE ship atomically. Merging SEC-004-UI alone will cause the ORCID signup/recover submit paths to return 400 on today's backend (they still treat `password` as required). **Please do not archive SEC-004-UI in isolation.**
-
----
-
-**Architect review (2026-04-21) — HELD PENDING FIXES:**
-
-Task was architect-gated from archive pending SEC-004-BE. The review surfaced **P0 show-stopper defect** that makes the feature non-functional even when SEC-004-BE lands. Must fix these in the UI before archiving the atomic pair.
-
-1. **P0 SHOW-STOPPER — `hasPassword` / `has_password` field-name mismatch.** Backend `GET /api/settings/email` emits `has_password` (snake_case, matching `backend/src/routes/settings.ts:91`). Template at `settings.js:168` reads `emailStatus.hasPassword === false` (camelCase). `undefined === false` → always false → **Set-Password surface never renders**. Entire SEC-004 opt-in is dead on arrival. Optimistic update spread at `settings.js:496` (`{ ...emailStatus, hasPassword: true }`) has the same wrong key. Unit tests hand-seed camelCase (`pages-settings.test.js:240`), **masking** the bug. Fix: (a) change template `emailStatus.has_password === false`; (b) change spread `has_password: true`; (c) add `has_password: false` to the catch fallback object in `loadEmailStatus` at `settings.js:451`; (d) update unit tests to seed `has_password` (snake_case). 2 reviewers cross-flagged (capped confidence).
-
-2. **P1 — `handleResendVerification` passes empty password on ORCID branch.** After ORCID signup, `this.password=''`. Submitted screen still shows resend; calling `resendVerification(email, '')` likely errors on backend. Fix: either skip the resend button on ORCID branch (hide with `x-show="!orcidToken"`) OR make resendVerification password-optional when there is no password.
-
-3. **P1 — Password not zeroed on error path in `handleSetPassword`.** `settings.js:498` catch block doesn't zero `newPasswordInput` / `newPasswordConfirmInput` → plaintext password remains readable in Alpine reactive state via XSS for the error-display duration. Same class as FE-UPGRADE-CREDENTIAL-WIPE. Fix: add `this.newPasswordInput = ''; this.newPasswordConfirmInput = '';` at the top of the catch block.
-
-4. **P1 — Dead i18n key `common.bip39NotLoaded` in all 16 locale files.** SEC-004-UI's `settings.js` change removed the `_getBip39()` method that referenced this key; FE-UPGRADE-KEY-WRAPPER-ADOPT was going to clean it, but the prerequisite code is already gone NOW. Delete the key from all 16 `frontend/public/messages/*.json`.
-
-**P2/P3 items (batched into FE-SEC-004-POLISH Pending — NOT required to land before archive):**
-- `pevo_signup_orcid_name` orphaned in localStorage
-- `handleSetPassword` mutation-order fragility
-- Overlapping `passwordSetDone` + `emailStatus` signals (collapse after field-name fix lands)
-- E2E spec Alpine-internals reach (`_x_dataStack[0]`)
-- Brittle `button[@click=...]` selector
-- `handleSetPassword` double-guard path untested
-- Task-ID refs in comments
-- Placeholder-translation markers for 15 locales
-
-**P1 separate follow-up — FE-PASSWORD-POLICY-DRY:** rule `length >= 10 && /[a-z]/ && /[A-Z]/ && /[0-9]/` duplicated across `signup.js`, `recover.js`, `settings.js`, `reset-password.js`. Extract `frontend/src/password-policy.js`. Filed as Pending.
-
-**Path to archive:** (1) UI agent fixes the 4 must-fix items above in a commit on top of SEC-004-UI. (2) SEC-004-BE lands. (3) Atomic ship — archive both together. Review artifact: `.context/compound-engineering/ce-code-review/20260421-122144-98977b64-sec-004-ui/`.
-
----
-
-**Architect re-review (2026-04-21b) — ORIGINAL HOLD RESOLVED + ONE NEW FIX:**
-
-All 4 items held on 2026-04-21 are FIXED in the working-tree follow-up:
-
-- ✅ `has_password` (snake_case) consistently applied at template (`settings.js:168`), catch fallback (`:451`), optimistic spread (`:496`), delete-path reset (`:517`). Unit tests seed snake_case.
-- ✅ `handleResendVerification` guards on ORCID branch — template `x-show="!resendSuccess && !orcidToken"` + handler `if (this.isResending || this.orcidToken) return`. Regression test at `pages-signup.test.js:321-329`.
-- ✅ `handleSetPassword` catch zeroes both `newPasswordInput` + `newPasswordConfirmInput` before surfacing error. Regression test at `pages-settings.test.js:283-292`.
-- ✅ `common.bip39NotLoaded` deleted from all 16 locale files. Grep confirms zero remaining references in `frontend/`.
-
-Round-2 `/ce-code-review` surfaced **one new finding** that partners with SEC-004-BE finding #4:
-
-1. **P2 — Rename `has_password` → `hasPassword` end-to-end (frontend half).** SEC-004-BE is renaming the backend response field from `has_password` (snake_case) to `hasPassword` (camelCase) to restore internal consistency with the rest of the `GET /api/settings/email` response object. Frontend must rename symmetrically — and this must ship in the same atomic pair. Sites:
-   - `frontend/src/pages/settings.js`: template at line 168 (`emailStatus.has_password === false` → `emailStatus.hasPassword === false`), `loadEmailStatus` catch fallback (~451), `handleSetPassword` optimistic spread (~496), `handleEmailDelete` reset (~517). Four sites.
-   - `frontend/tests/unit/pages-settings.test.js`: ~5 seed/assertion sites. Swap from snake_case to camelCase.
-
-   Collapses the `BE-SETTINGS-EMAIL-CASING` Pending task (removed in this pass).
-
-**Path to archive:** SEC-004-BE's 7 fixes land → SEC-004-UI's 1 rename lands → architect re-reviews once → atomic archive of both.
-
-**UI re-review signal (2026-04-21, commit `e257047`):** All 4 round-1 must-fix items + the round-2 `hasPassword` rename finding are FIXED.
-- ✅ Round-1 #1 (`hasPassword`/`has_password` mismatch, dead-on-arrival) + round-2 #1 (end-to-end camelCase rename): `frontend/src/pages/settings.js` 4 sites renamed to `hasPassword` (template:168, catch fallback:451, optimistic spread:496, `handleEmailDelete`:517). `frontend/tests/unit/pages-settings.test.js` 7 seeds updated to camelCase. Atomic-ship partner for SEC-004-BE round-2 finding #4.
-- ✅ Round-1 #2 (empty-password resend on ORCID branch): `signup.js:150` template hide `x-show="!resendSuccess && !orcidToken"` + `handleResendVerification` handler guard. Regression test `pages-signup.test.js:323-330`.
-- ✅ Round-1 #3 (password not zeroed on `handleSetPassword` error): `settings.js:501-502` zeroes `newPasswordInput` + `newPasswordConfirmInput` at top of catch block.
-- ✅ Round-1 #4 (dead `common.bip39NotLoaded`): removed from all 16 `frontend/public/messages/*.json`. Grep confirms zero references.
-
-**Test results:** 832/832 unit tests pass at session end. `npm run build` clean.
-
----
-
 ### SEC-002-HARDENING — Post-review hardening of /api/orcid (Backend Agent, P2)
 
 **Status:** All 6 items landed at commit **0e4241b** ("harden /api/orcid state consume, envelope, TOCTOU cache, prod warn (SEC-002-HARDENING)"). 14/14 `orcid.test.ts` pass (9 pre-existing SEC-002-BE + 5 new hardening). Full backend vitest 239 pass + 1 skipped; 2 `hafsql.test.ts` ECONNRESETs under concurrency, pass in isolation (infra flap, unrelated to this commit).
 
 - **#1 state-consume inside try/catch** — `backend/src/routes/orcid.ts:185-194`. `redis.del`/`orcidStates.delete` now sits inside the outer try wrapping the token-exchange dispatch; a Redis DEL throw maps to 500 via the existing catch. Did NOT use `redis.getdel` — would break #3's state-not-consumed-on-403 contract.
 - **#2 NO_ACCOUNT envelope fix** — `handleLogin` now emits `sendError(res, 404, 'NO_ACCOUNT', '...', { orcid_id })` so the frontend `ApiRequestError` parser receives `orcid_id` under `error.details`. Required adding `details?: Record<string, unknown>` to the `ApiError.error` shape in `backend/src/types/api.ts` and a `details` parameter on `sendError` in `backend/src/response.ts`.
-- **#3 state-not-consumed-on-403 contract** — code-side contract enforced by the #1 move (consume fires only when auth passes). See **[TODO Architect]** below for the orcid.md prose.
+- **#3 state-not-consumed-on-403 contract** — code-side contract enforced by the #1 move (consume fires only when auth passes). See **[TODO Architect post-fix]** below for the orcid.md prose.
 - **#4 `orcid-link.spec.js:107-115` test.fixme** — implemented the two-browser-contexts 403 test (`frontend/tests/e2e/orcid-link.spec.js:107-176`); hits the API directly across two `browser.newContext()`s, asserts 403 FORBIDDEN. Falls back to `test.skip` with a concrete citation when ORCID is unconfigured in the test environment.
-- **#5 HAF-lag TOCTOU mitigation** — `${config.appTag}:orcid_binding:${orcid_id}` EX 120s/value=username, written after the successful broadcast in both `handleAccredit` and `handleLink`. `findAccreditedAccountWithOrcid` consults Redis first and short-circuits when `value !== candidateUsername`. Redis outage degrades gracefully (falls back to the HAF-only path).
+- **#5 HAF-lag TOCTOU mitigation** — `${config.appTag}:orcid_binding:${orcid_id}` EX 120s/value=username, written after the successful broadcast in both `handleAccredit` and `handleLink`. `findAccreditedAccountWithOrcid` consults Redis first and short-circuits when `value !== candidateUsername`. Redis outage degrades gracefully (falls back to the HAF-only path). NOTE: same-tick concurrent races remain — see SEC-002-TOCTOU-LOCK Pending follow-up.
 - **#6 production multi-process startup check** — new `backend/src/startup-checks.ts` `checkOrcidProcessSafety()`, wired from `backend/src/index.ts` post-listen. Fires a loud `logger.warn` 5s after boot under `NODE_ENV=production` when Redis is not ready, calling out single-process-only `orcidStates` fallback as a multi-process/PM2/clustered-deploy breakage risk.
 
-**[TODO Architect]** — `agents/docs/api-contracts/orcid.md`:
-1. Under `POST /api/orcid/callback`, document the state-not-consumed-on-403 contract (item #3): "On a 403 FORBIDDEN response from authenticated modes (caller username does not match the initiator stored at /start), the OAuth `state` parameter is intentionally NOT consumed. The legitimate initiator can retry `/callback` with a valid bearer without being forced back through the ORCID OAuth redirect. State is consumed only after auth passes, or after any success or error on unauthenticated modes."
-2. Update the NO_ACCOUNT response example (item #2): `orcid_id` now lives under `error.details`, not at the top level. Shape: `{ "status": "error", "error": { "code": "NO_ACCOUNT", "message": "...", "details": { "orcid_id": "0000-..." } } }`.
-3. Consider adding a one-line note in `common.md` documenting that `error.details` is the canonical channel for error-context fields (mirrors the generic `ApiError.error` shape change in `backend/src/types/api.ts`).
+**Architect re-review (2026-04-21c) — HELD PENDING FIXES:**
 
-**Downstream follow-up (UI agent territory, not blocking this task):** `ApiRequestError` on the frontend should consume `error.details` alongside whatever it reads today. Current `orcid-callback.js` didn't appear to use the old top-level `orcid_id`, so the move is likely inert — but worth a grep pass across `frontend/src/**` before the contract ships.
+Round-2 `/ce-code-review` (correctness/security/reliability/testing/maintainability/project-standards/kieran-typescript) on commit `0e4241b` confirmed the 6 landed items work as designed. One P2 finding extends Item 1's promise; remaining items dismissed or split to follow-ups.
+
+1. **P2 — State-read still outside try/catch** (`backend/src/routes/orcid.ts:151`). Item 1 wrapped the Redis DEL inside the try/catch around the token-exchange dispatch, but the upstream `redis.get(stateKey)` at line 151 and `authenticateRequest` at line 177 remain outside. A transient Redis flap on the GET (or auth dispatch) escapes as an unhandled rejection — the exact failure mode Item 1 promised to close. Fix: widen the outer try to encompass the GET + the auth-check block, mapping any throw to 500 INTERNAL_ERROR with the same message shape the DEL-throw path now produces. Single-file edit in `orcid.ts`. Add one test: `redis.get` mocked to throw → 500 INTERNAL_ERROR with `state` NOT consumed (matches the state-not-consumed-on-403 contract for symmetry on infrastructure errors).
+
+**Split to Pending follow-up: SEC-002-TOCTOU-LOCK (P2).** Round-2 also confirmed Item 5's narrowing of the HAF-lag TOCTOU window does NOT close the same-event-loop-tick race (cache write is post-broadcast, two concurrent same-orcid-id requests both broadcast). Fix is bigger surgery (SETNX lock semantics + outage fallback story) than fits in this task's scope; filed as Pending P2 with concrete shape.
+
+**Dismissed from round-2 findings (architect review):**
+- **(P3) No revoke-side cache invalidation, false 409 within 120s window if a different user tries to bind a just-freed ORCID:** revokes happen via on-chain `custom_json` (no PEvO endpoint to hook); the right shape is shorter TTL or accept the bounded window. 120s is acceptable for beta — revoke-then-rebind is a rare flow.
+- **(P3) `error.details` widening unread by frontend:** grepped `frontend/src/` for top-level `orcid_id` consumers of NO_ACCOUNT — only hit is `orcid-callback.js:118` which reads `err.code === 'NO_ACCOUNT'` and uses a localized message, no field-level read. Move from top-level to `error.details` is end-to-end inert.
+- **(P3) `setTimeout(5000)` startup check robustness:** plausible improvement (subscribe to the Redis client's `ready` event instead of fixed timeout) but no real failure motivating the change. Defer to a real incident.
+- **(P3) `@ts-expect-error` in test:** cosmetic.
+
+**[TODO Architect post-fix]** — `agents/docs/api-contracts/orcid.md` doc updates from the original status block, deferred to atomic archive once the state-read widening lands. Items 2/3 are stable and won't change shape further:
+1. Under `POST /api/orcid/callback`, document the state-not-consumed-on-403 contract: "On a 403 FORBIDDEN response from authenticated modes (caller username does not match the initiator stored at /start), the OAuth `state` parameter is intentionally NOT consumed. The legitimate initiator can retry `/callback` with a valid bearer without being forced back through the ORCID OAuth redirect. State is consumed only after auth passes, or after any success or error on unauthenticated modes."
+2. Update the NO_ACCOUNT response example: `orcid_id` now lives under `error.details`, not at the top level. Shape: `{ "status": "error", "error": { "code": "NO_ACCOUNT", "message": "...", "details": { "orcid_id": "0000-..." } } }`.
+3. Optional: add a one-line note in `common.md` documenting that `error.details` is the canonical channel for error-context fields (mirrors the generic `ApiError.error` shape change in `backend/src/types/api.ts`).
+
+**Path to archive:** (1) Backend agent applies finding #1 (try/catch widening + one test). (2) Architect re-reviews round-3 with `/ce-code-review`, lands the deferred orcid.md updates, archives.
 
 ---
 
@@ -433,8 +271,19 @@ Round-2 `/ce-code-review` surfaced **one new finding** that partners with SEC-00
 
 No contract change required (shape is a generic `SERVICE_UNAVAILABLE` 503, fits the existing envelope).
 
----
+**Architect re-review (2026-04-21c) — HELD PENDING FIXES:**
 
+Round-2 `/ce-code-review` (correctness/security/testing/api-contract/maintainability) on commit `1cec6df` confirmed the 503 guards work and tests are sound. One P2 cross-file inconsistency must close before archive.
+
+1. **P2 — `bridge.ts` returns 500 INTERNAL_ERROR for the same misconfig** (`backend/src/routes/bridge.ts:158, :278`). Two bridge endpoints (registration + update) already returned 500 INTERNAL_ERROR with the identical `"Bridge posting key not configured"` message before this task. The new claims guards in commit `1cec6df` return 503 SERVICE_UNAVAILABLE — the more correct code per RFC 9110 ("deployment cannot broadcast on behalf of the bridge account right now" is service-availability, not internal-error). Result: same root cause, two codes. Fix: backport `bridge.ts` (both sites) to 503 SERVICE_UNAVAILABLE with the identical message + extract a small `assertBridgeKeyConfigured(res, paperAuthor)` helper (one return-true-if-configured, one return-false-after-sendError shape) so the four call sites (2 in bridge.ts + 2 in claims.ts) all source from one constant. Folds the round-2 P3 (helper-extraction-on-byte-identical-guards) in for free. Add one `bridge.test.ts` scenario per converted site asserting the 503 + identical error message.
+
+**Dismissed from round-2 findings (architect review):**
+- **(P3) `afterEach` save/restore ceremonial:** vitest file-level serial execution + per-test afterEach is safe; no race risk with sibling SEC-003-BE tests in the same file. The `(config as { ... })` cast matches the existing pattern. Discretionary refactor at most.
+- **Pre-auth info leak on the approve guard (advisory):** dismissed. `verifyHiveSignature` runs before the guard, so unauthenticated callers never reach it. Authenticated-but-unrelated callers learn only that the paper author equals the bridge account — already public on-chain.
+
+**Path to archive:** (1) Backend agent applies finding #1 (bridge.ts → 503 + helper extraction + 2 bridge.test.ts scenarios). (2) Architect re-reviews round-3 with `/ce-code-review`, archives.
+
+---
 
 ### FE-E2E-SPEC-TRACE-OFF (UI Agent, URGENT P0)
 
