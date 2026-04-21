@@ -4,6 +4,12 @@ You are the Backend agent for PEvO. You build the Node.js/Express backend.
 
 **Startup:** Follow the startup protocol in root `CLAUDE.md`. Use `agents/docs/ARCHITECTURE.md` and the API contract files (`agents/docs/api-contracts/*.md`) as references when needed, not as required reading every time. Read only the specific contract file for the domain you're working on (e.g. `api-contracts/auth.md` for auth endpoints).
 
+**Parallel task execution:** When `TASKS.md` has multiple Pending tasks assigned to the Backend Agent, fan out rather than working sequentially:
+1. Group pending tasks by the files they touch. Tasks whose deliverables are independent files (e.g. different `src/routes/*.ts` or separate test files) can run in parallel; tasks that overlap on the same file must run sequentially in the parent.
+2. Dispatch each independent task as an `Agent` call with `isolation: "worktree"` and `subagent_type: "general-purpose"`. Brief the subagent with the task ID, point it at its block in `TASKS.md`, and instruct it to execute `/ce-work` scoped to that single task, stop before moving to Review, and return its worktree path plus a short summary.
+3. Subagents MUST NOT edit `TASKS.md` or run the full vitest suite. The parent merges each returned worktree diff, then serializes (a) the `TASKS.md` Pending→Review move and (b) `npx vitest run` after all worktrees are merged. Tests hit real Postgres/Redis, so concurrent suite runs will collide on shared fixtures.
+4. Fall back to single-task execution when only one task is pending or all pending tasks overlap on the same files.
+
 ## Responsibilities
 
 - Maintain and extend the REST API (routes in `src/routes/`).
@@ -53,10 +59,24 @@ The backend owns server-side light account operations:
 
 The frontend owns client-side light account operations (seed phrase generation, key derivation, owner/active key management). See the UI agent CLAUDE.md.
 
+## Compound Engineering Skills
+
+Use these ce skills as part of your normal workflow. They are not optional — invoke them when the trigger matches.
+
+- **`/ce-work`** — Invoke this when you start executing a task from `agents/docs/TASKS.md`. It structures the execution loop (plan, implement, verify).
+- **`/ce-debug`** — When a test, build, or runtime fails and the cause isn't immediately obvious. Use it before trying speculative fixes.
+- **`/ce-sessions`** — When `/ce-debug` stalls or the task touches an area that has failed before. Check prior-session investigations before speculating. Complements `agents/docs/solutions/` (curated) — sessions are the raw history.
+- **`/ce-code-review`** — After implementation, before moving the task to the Review section of `TASKS.md`. When it returns, surface findings to the user as a ranked list (severity + file:line + one-line rationale) and wait for triage — do NOT silently apply fixes and do NOT move to Review with unresolved findings. If the review is clean, say so explicitly, then move to Review. See root `CLAUDE.md` "Code Review Findings".
+- **`/ce-simplify`** — After `/ce-code-review` findings are triaged, as a final pass to cut any over-engineering.
+- **`/ce-compound`** — Gated by the checkpoint in the Task completion bullet below. Do not invoke on every task.
+
+Do NOT invoke `/ce-commit`, `/ce-commit-push-pr`, or any commit/push/PR skill. Commits happen only when the user explicitly asks.
+
 ## Boundaries
 
 - Do NOT modify files outside `backend/`.
 - Do NOT build UI components.
+- **Do NOT edit `agents/docs/api-contracts/*.md`.** Those are architect-owned. When a route change requires a contract update, add a `[TODO Architect]` note in `agents/docs/TASKS.md` (on the task moving to Review) describing the prose/example change required. The architect updates the contract during review. This avoids silent lane crossings that have happened on SEC-002-BE + prior tasks.
 - If you need a schema change, add a `[BLOCKED by Architect]` entry in `agents/docs/TASKS.md` explaining what you need.
 
 ## Available Resources
@@ -68,7 +88,7 @@ The frontend owns client-side light account operations (seed phrase generation, 
 
 ## Guidance for Future Work
 
-- **Task completion:** When you finish a task, immediately move it from Pending to the Review section in `agents/docs/TASKS.md`. Do not leave completed work in Pending. This is the only way the Architect knows your work is ready for review.
+- **Task completion:** When you finish a task, immediately move it from Pending to the Review section in `agents/docs/TASKS.md`. Do not leave completed work in Pending. This is the only way the Architect knows your work is ready for review. Before moving it, ask yourself: did this task surface a non-obvious learning (a surprising bug, a subtle invariant, a failed approach, a convention a future agent could not derive from the code)? If yes, invoke `/ce-compound`. If no, skip it. Err on the side of skipping.
 - Types live in `backend/src/types/`.
 - **No mock data, no mocked database pools in tests.** See root `CLAUDE.md` for how to run them.
 - HAF queries use inline CTEs in `src/hafsql.ts` — do not create or deploy HAF views.

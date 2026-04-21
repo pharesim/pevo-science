@@ -50,7 +50,7 @@ Two paths: (1) **Self-custody** — user brings an existing Hive account and con
 
 ## Project-Wide Conventions
 
-- **Single `.env` file.** No `.env.production` or environment-specific env files. The `.env.example` serves as the template.
+- **Single `.env` file for deployment.** No `.env.production` or other deployment-environment-specific env files. The `.env.example` serves as the template. **E2E-test-only exception:** `frontend/.env.test` (gitignored) is permitted to hold E2E-only secrets that MUST NOT leak from the production `.env` — e.g. a separate `SESSION_SECRET` or `E2E_SESSION_SECRET` used for minting test JWTs. The point of the split is to prevent E2E fixtures from accidentally authenticating against a live deployment via shared-secret reuse. `frontend/.env.test.example` is the template.
 - **No Hive rewards as a value proposition.** We don't care about tokens. Focus on censorship resistance, reputation, structured review, decentralization.
 - **No emdashes (—) in user-facing text.** Use periods, commas, or restructure sentences instead.
 
@@ -62,7 +62,29 @@ Two paths: (1) **Self-custody** — user brings an existing Hive account and con
 4. The **Backend agent** reads the code and `ARCHITECTURE.md` to understand interfaces. It does NOT change API shapes without updating `ARCHITECTURE.md` and notifying via a TODO in `agents/docs/TASKS.md`.
 5. If an agent is blocked, it adds a `[BLOCKED by <agent>]` entry in `agents/docs/TASKS.md` explaining what it needs. The blocking agent resolves it there.
 6. When a task is complete, the implementing agent moves it from Pending to a **Review** section in `agents/docs/TASKS.md`. The Architect reviews the implementation, then **physically moves** the task from `TASKS.md` to `agents/docs/tasks-archive.md`. Do NOT use strikethrough (`~~`) to mark tasks done in `TASKS.md`. Completed tasks must be removed entirely.
-7. **No spec file sprawl.** Do not create new files in `agents/docs/` (except inside `api-contracts/`). The allowed files are: `ARCHITECTURE.md`, `TASKS.md`, `tasks-archive.md`, `api-contract.md` (index), `api-contracts/*.md` (split contract files), `hive-schemas.md`, and `reputation-algorithm.md`. Keep these up to date when making related code changes, but do not create additional spec or contract files.
+7. **No spec file sprawl.** Do not create new files in `agents/docs/` (except inside `api-contracts/` and `solutions/`). The allowed files are: `ARCHITECTURE.md`, `TASKS.md`, `tasks-archive.md`, `api-contract.md` (index), `api-contracts/*.md` (split contract files), `hive-schemas.md`, `reputation-algorithm.md`, and `solutions/**/*.md` (see "Documented Solutions" below). Keep these up to date when making related code changes, but do not create additional spec or contract files.
+
+## Code Review Findings
+
+When running `/ce-code-review`, `/security-review`, or any review skill that produces findings, do NOT auto-append results to `agents/docs/TASKS.md`, do NOT silently apply fixes, and do NOT silently move a Review-section task to archive with unresolved findings. Surface findings as a single ranked list in chat (severity + file:line + one-line rationale) and wait for the user to triage which ones become tasks, which get fixed in place, and which get dismissed. This applies to every agent that invokes a review skill (architect, backend, ui, pinner), not to the individual persona subagents inside `/ce-code-review` itself. If the review comes back clean, say so explicitly in chat before proceeding.
+
+## Asking Questions
+
+Agents default to execution (`/ce-work`, `/ce-debug`) but that does not override the user's role as triager. Pause and ask before acting when:
+
+- Scope is ambiguous and more than one reasonable interpretation exists.
+- Two conventions or prior decisions conflict and the right one isn't obvious from the code.
+- A decision is hard to reverse (schema changes, API shape changes, destructive operations, commits, pushes).
+- Review or audit findings need triage (see "Code Review Findings" above).
+- A task description contradicts the code you're reading.
+
+One short question with options beats a silent guess. Batch related questions into a single message when possible. This rule binds the architect, backend, ui, and pinner agents equally.
+
+When scope is too ambiguous for a single clarifying question (e.g. the user brings a broad goal with multiple defensible shapes), invoke `/ce-brainstorm` instead of guessing or peppering the user with a wall of questions.
+
+## Documented Solutions
+
+`agents/docs/solutions/` is a shared knowledge store of past problems and conventions, organized by category (e.g. `conventions/`, `runtime-errors/`, `test-failures/`, `performance-issues/`) with YAML frontmatter (`module`, `tags`, `problem_type`, `component`). Entries are written via `/ce-compound` when solving a non-obvious problem whose rationale wouldn't be reconstructable from the code or git history alone. Relevant when implementing or debugging in a documented area — search by component, module, or keyword before investigating from scratch. The architect maintains the categories, format, and any required consolidation via `/ce-compound-refresh`.
 
 ## Local Dev Deployment
 
@@ -80,6 +102,8 @@ npx vitest run
 
 Tests run against real HAF + Hive API. No mock data, no mocked database pools.
 
+**Carve-out for deterministic edge-case coverage:** when a test must exercise a rare or multi-state scenario (e.g., duplicate-bind 409 on `/api/orcid/callback`, the HAF-null throw path, or any case where seeding real HAF per-test is impractical), mocking the `getPool()` / `getAppPool()` helpers is permitted IF (a) the test file header documents the justification explicitly (which real path is impractical and why), (b) `verifyHiveSignature` and other middleware are NOT mocked, and (c) a real-HAF variant of the same assertion exists or is filed as a follow-up. Prefer real-HAF whenever feasible; the carve-out is for determinism, not convenience.
+
 ## Startup Protocol (applies to ALL Claude instances)
 
 **Do NOT explore the codebase on startup.** No recursive `ls`, no globbing `**/*`, no "let me understand the full project structure" sweeps. This wastes context and time.
@@ -92,3 +116,5 @@ Instead, follow this sequence:
 4. If a task assigned to you is pending, verify the issue, double check the implementation, and if everything checks out implement it. If not prompt the user.
 
 This applies equally to top-level Claude, subagents, and Explore agents. If you are asked to "initiate" an agent, follow that agent's startup protocol — do not delegate to a broad exploration pass.
+
+If the user's request references prior work ("the thing we tried last week", "this keeps breaking", "we discussed this before") and the current session has no visible context for it, invoke `/ce-sessions` before guessing or starting from scratch.
