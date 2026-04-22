@@ -14,10 +14,12 @@ const router = Router();
 
 async function fetchDisciplinesFromHaf() {
   const pool = getPool();
-  // Return [] on pool-unavailable so the caller / response envelope stays
-  // Array-shaped (data: Array<Discipline>). Returning null leaked up as
-  // `data: null`, violating the /api/disciplines contract.
-  if (!pool) return [];
+  // Return null on pool-unavailable (and query failure) so `hafCache.getOrSet`
+  // skips caching the sentinel. Caching an empty array as a `stable=true`
+  // 60s entry would pin the disciplines dropdown to "empty" for a full minute
+  // after HAF recovers. The router coerces null → [] at the envelope layer
+  // so the `data: Array<Discipline>` contract still holds.
+  if (!pool) return null;
 
   try {
     // Dedup mixed-case discipline names (e.g. "Physics" vs "physics") by
@@ -39,25 +41,25 @@ async function fetchDisciplinesFromHaf() {
        ORDER BY paper_count DESC`,
       [config.appTag, `${config.appTag}/%`],
     );
-    // `name` is a deprecated-pending-removal alias for `display_name`, kept
-    // so FE consumers reading `d.name` (paper-feed.js, search.js) don't break
-    // between backend and FE-DISCIPLINE-DISPLAY-HARDEN part 2. Remove this
-    // alias when that FE task archives.
     return result.rows.map((row) => ({
       canon_name: row.canon_name,
       display_name: row.display_name,
-      name: row.display_name,
       paper_count: row.paper_count,
     }));
   } catch (err) {
     logger.error({ err }, 'HAF disciplines query failed');
-    return [];
+    return null;
   }
 }
 
 router.get('/', async (_req: Request, res: Response) => {
+  // Coerce null (pool-unavailable / query-error) → [] at the envelope layer.
+  // Keeping the null sentinel inside fetchDisciplinesFromHaf lets hafCache
+  // skip caching on transient HAF outages (see cache.ts:73 null-guard) so a
+  // recovered HAF is re-queried on the next request instead of serving a
+  // 60s stale-empty window.
   const result = await hafCache.getOrSet('disciplines', fetchDisciplinesFromHaf, 60_000, true);
-  sendOk(res, result);
+  sendOk(res, result ?? []);
 });
 
 export default router;

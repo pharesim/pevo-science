@@ -44,14 +44,25 @@ describe('GET /api/papers', () => {
   // Before the LOWER() fix on papers.ts, `?discipline=physics` only matched
   // rows tagged lowercase "physics" and silently dropped "Physics"/"PHYSICS"
   // on the primary paper-listing endpoint. Parity is an invariant regardless
-  // of whether mixed-case corpus currently exists on HAF.
-  it('?discipline= filter is case-insensitive (parity across casings)', { timeout: 60_000 }, async () => {
+  // of whether mixed-case corpus currently exists on HAF — but this real-HAF
+  // spec vacuously passes when the corpus has zero `physics`-tagged papers
+  // (both sides return total=0 / data=[]), so we skip in that state. The
+  // SQL-shape regression is pinned deterministically in
+  // disciplines-canon-mocked.test.ts (hold #1a mocked-pool coverage).
+  it('?discipline= filter is case-insensitive (parity across casings)', { timeout: 60_000 }, async (ctx) => {
     const [lower, upper] = await Promise.all([
       request(app).get('/api/papers?discipline=physics'),
       request(app).get('/api/papers?discipline=PHYSICS'),
     ]);
     expect(lower.status).toBe(200);
     expect(upper.status).toBe(200);
+    if (lower.body.meta.total === 0) {
+      // Empty corpus — parity assertion is vacuous. Skip so a future
+      // regression on mixed-case inputs surfaces at the mocked-pool spec
+      // instead of silently passing here.
+      ctx.skip();
+      return;
+    }
     expect(upper.body.meta.total).toBe(lower.body.meta.total);
     const key = (p: { author: string; permlink: string }) => `${p.author}/${p.permlink}`;
     expect(new Set(upper.body.data.map(key))).toEqual(new Set(lower.body.data.map(key)));
