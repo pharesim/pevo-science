@@ -2,6 +2,12 @@ import Alpine from 'alpinejs';
 import { completeOrcid } from '../api.js';
 import { createTimerGuard } from '../lib/timer-guard.js';
 
+// Cap on self-triggered retries of a retriable 409 ORCID_ALREADY_LINKED.
+// After this many automatic retries, switch to the durable-binding message
+// instead of re-arming another countdown, so the user isn't trapped in an
+// infinite retry loop if the backend keeps reporting contention.
+const MAX_RETRIES = 1;
+
 const template = `
       <div x-data="orcidCallbackPage" class="container-narrow py-8">
         <div class="max-w-md mx-auto text-center py-16">
@@ -72,6 +78,14 @@ export function initOrcidCallbackPage() {
     errorAction: '', // 'signup' for NO_ACCOUNT, 'recover' for durable ORCID_ALREADY_LINKED, 'settings' for BROADCAST_TIMEOUT, 'retry' for retriable ORCID_ALREADY_LINKED, else empty
     errorKind: '', // 'alreadyLinkedRetriable' surfaces countdown-parameterized i18n; other branches render the static errorMessage key
     retryCountdown: 0,
+    // Cap self-triggered retries of a retriable 409 to MAX_RETRIES. On the
+    // (MAX_RETRIES+1)th retriable response, surface the durable message so
+    // the user stops seeing a countdown that keeps re-arming. Counter resets
+    // on a successful verify (inside _verify after the await resolves without
+    // throwing) and on destroy(). The contract is "one self-retry" per the
+    // code comment below; hard-coded to 1 so reviewers see the bound without
+    // chasing a const elsewhere.
+    _retryCount: 0,
     // Stash last _verify args so a user-initiated retry (retriable 409) can
     // re-invoke against the same state token. Reused by _retryVerify(); the
     // state token remains valid so long as the backend-side Redis record has
@@ -113,6 +127,7 @@ export function initOrcidCallbackPage() {
 
     destroy() {
       this._teardownTimers();
+      this._retryCount = 0;
     },
 
     async _verify(code, state, mode) {
@@ -136,13 +151,32 @@ export function initOrcidCallbackPage() {
         // absence of both signals a durable binding (on-chain accreditation
         // to another account, or a cache-lag record of one).
         if (err.code === 'ORCID_ALREADY_LINKED') {
-          const retriable = err.details?.retriable === true || err.retryAfterSeconds !== null;
+          // Loose `!= null` intentionally catches both `null` (api.js default
+          // when Retry-After header absent) and `undefined` (defensive: a
+          // thrown value constructed outside the ApiRequestError constructor
+          // may omit the field entirely). `!== null` alone misclassifies
+          // `undefined` as retriable, which would arm a countdown on a
+          // durable-binding error.
+          const retriable = err.details?.retriable === true || err.retryAfterSeconds != null;
+          // Retriable 409 flagged but we've already burned our self-retry
+          // budget. Fall through to the durable-binding message so the user
+          // isn't stuck watching the countdown re-arm indefinitely.
+          if (retriable && this._retryCount >= MAX_RETRIES) {
+            this.errorMessage = this.$t('orcid.alreadyLinkedDurable');
+            this.errorAction = 'recover';
+            return;
+          }
           if (retriable) {
             // Parametric i18n — the countdown renders in real time via the
             // template's $t('orcid.alreadyLinkedRetriable', { seconds: retryCountdown }).
             this.errorKind = 'alreadyLinkedRetriable';
             this.errorAction = 'retry';
-            const seconds = err.retryAfterSeconds ?? 10;
+            // Clamp to >= 1s. `Retry-After: 0` would collapse the UX into
+            // an immediate synchronous-looking retry loop (the nullish
+            // coalesce below does NOT fire on 0, so without this clamp a
+            // zero-second hint would trigger _retryVerify() on the very
+            // next tick).
+            const seconds = Math.max(1, err.retryAfterSeconds ?? 10);
             this.retryCountdown = seconds;
             // Ticks every 1s until zero; re-invokes _retryVerify() at zero
             // for a single self-triggered retry (task non-goal: exponential
@@ -181,6 +215,10 @@ export function initOrcidCallbackPage() {
 
       if (!this._mounted) return;
       const data = res.data;
+
+      // Successful verify clears the self-retry budget so a later fresh flow
+      // (same component instance, e.g. navigate-back) starts from zero.
+      this._retryCount = 0;
 
       // Only clear the stored mode after completeOrcid resolved successfully.
       // If this throws (e.g. 503), we leave it so a refresh can retry.
@@ -234,6 +272,12 @@ export function initOrcidCallbackPage() {
     _retryVerify() {
       if (!this._mounted) return;
       if (!this._lastVerifyArgs) return;
+      // Increment BEFORE re-invoking _verify so that if the next response is
+      // again retriable, the catch block can compare _retryCount >= MAX_RETRIES
+      // and bail out to the durable-binding branch instead of arming another
+      // countdown. Reset to 0 on a successful verify (see post-await block
+      // in _verify) and on destroy() (so a re-mount starts fresh).
+      this._retryCount += 1;
       // Reset error UI for the retry attempt.
       this.status = 'verifying';
       this.errorMessage = '';

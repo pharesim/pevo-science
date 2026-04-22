@@ -591,6 +591,152 @@ describe('orcidCallbackPage', () => {
       vi.useRealTimers();
     });
 
+    // Countdown fires self-retry at zero; MAX_RETRIES cap converts a second
+    // retriable 409 into the durable-binding message (no third call, no
+    // infinite loop). Pairs with the hold-block fix: without the counter,
+    // repeated retriable responses would re-arm the countdown forever.
+    it('ORCID_ALREADY_LINKED retriable: countdown fires self-retry, second retriable 409 hits MAX_RETRIES cap', async () => {
+      vi.useFakeTimers();
+      const comp = createComponent();
+      comp._mounted = true; // timer-guard is initialised on createTimerGuard
+
+      // Two consecutive retriable 409s. After the second, MAX_RETRIES=1 is
+      // hit and the durable message should render instead of another
+      // countdown.
+      const err = () => {
+        const e = new Error('Locked');
+        e.code = 'ORCID_ALREADY_LINKED';
+        e.details = { retriable: true, retry_after_seconds: 10 };
+        e.retryAfterSeconds = 10;
+        return e;
+      };
+      mockCompleteOrcid.mockRejectedValueOnce(err());
+      mockCompleteOrcid.mockRejectedValueOnce(err());
+
+      await comp._verify('code', 'state', 'link');
+
+      expect(comp.status).toBe('error');
+      expect(comp.errorKind).toBe('alreadyLinkedRetriable');
+      expect(comp.retryCountdown).toBe(10);
+      expect(mockCompleteOrcid).toHaveBeenCalledTimes(1);
+
+      // Advance past the 10-second countdown; the tick at zero invokes
+      // _retryVerify() which re-enters _verify().
+      await vi.advanceTimersByTimeAsync(10000);
+      // Drain the microtask queue spawned by the rejected completeOrcid so
+      // the catch block runs.
+      await Promise.resolve();
+      await Promise.resolve();
+
+      // Second call happened (self-triggered retry).
+      expect(mockCompleteOrcid).toHaveBeenCalledTimes(2);
+      // `status` cycled through 'verifying' during the retry attempt.
+      // _retryVerify() sets status='verifying' before re-invoking _verify;
+      // the subsequent reject then flips status back to 'error'.
+      // MAX_RETRIES=1 means the second retriable response does NOT arm
+      // another countdown; it renders the durable message.
+      expect(comp.status).toBe('error');
+      expect(comp.errorMessage).toBe('orcid.alreadyLinkedDurable');
+      expect(comp.errorAction).toBe('recover');
+      expect(comp.errorKind).not.toBe('alreadyLinkedRetriable');
+
+      // No third call even after advancing well past any hypothetical
+      // re-armed countdown — the cap truly stops the loop.
+      await vi.advanceTimersByTimeAsync(30000);
+      expect(mockCompleteOrcid).toHaveBeenCalledTimes(2);
+      vi.useRealTimers();
+    });
+
+    // Status cycles through 'verifying' during the countdown-fired retry.
+    // Captures the transition via a setter observer so the assertion is
+    // insensitive to the final state after the retry resolves.
+    it('ORCID_ALREADY_LINKED retriable: status transitions through \'verifying\' during auto-retry', async () => {
+      vi.useFakeTimers();
+      const comp = createComponent();
+      const err = new Error('Locked');
+      err.code = 'ORCID_ALREADY_LINKED';
+      err.details = { retriable: true };
+      err.retryAfterSeconds = 10;
+      mockCompleteOrcid.mockRejectedValueOnce(err);
+      // Second call succeeds — we want to prove the retry actually landed
+      // and status flipped verifying->success, not just stuck at 'error'.
+      mockCompleteOrcid.mockResolvedValueOnce({
+        data: { mode: 'link' },
+      });
+
+      const statusLog = [];
+      const origDesc = Object.getOwnPropertyDescriptor(comp, 'status');
+      let statusVal = comp.status;
+      Object.defineProperty(comp, 'status', {
+        configurable: true,
+        get() { return statusVal; },
+        set(v) { statusVal = v; statusLog.push(v); },
+      });
+
+      await comp._verify('code', 'state', 'link');
+      expect(statusLog).toContain('error');
+
+      await vi.advanceTimersByTimeAsync(10000);
+      await Promise.resolve();
+      await Promise.resolve();
+
+      // 'verifying' must appear AFTER the first 'error' — the retry path
+      // flipped status back before calling completeOrcid.
+      const firstError = statusLog.indexOf('error');
+      const verifyingAfter = statusLog.indexOf('verifying', firstError);
+      expect(verifyingAfter).toBeGreaterThan(firstError);
+      expect(mockCompleteOrcid).toHaveBeenCalledTimes(2);
+
+      // Restore the original property descriptor (best effort, keeps later
+      // tests from picking up the observer accidentally).
+      if (origDesc) Object.defineProperty(comp, 'status', origDesc);
+      vi.useRealTimers();
+    });
+
+    // Retry-After: 0 must not collapse the countdown to an immediate retry.
+    // Without the Math.max(1, ...) clamp, retryCountdown=0 would trip the
+    // tick-at-zero branch on the next tick and fire _retryVerify()
+    // synchronously, producing a loop.
+    it('ORCID_ALREADY_LINKED retriable with Retry-After: 0: clamps countdown to >= 1s', async () => {
+      vi.useFakeTimers();
+      const comp = createComponent();
+      const err = new Error('Locked');
+      err.code = 'ORCID_ALREADY_LINKED';
+      err.details = { retriable: true };
+      err.retryAfterSeconds = 0;
+      mockCompleteOrcid.mockRejectedValueOnce(err);
+
+      await comp._verify('code', 'state', 'link');
+
+      expect(comp.status).toBe('error');
+      expect(comp.errorKind).toBe('alreadyLinkedRetriable');
+      // Clamped to 1s minimum — NOT 0.
+      expect(comp.retryCountdown).toBe(1);
+      expect(mockCompleteOrcid).toHaveBeenCalledTimes(1);
+      vi.useRealTimers();
+    });
+
+    // Defensive: `err.retryAfterSeconds === undefined` (rather than null) must
+    // not classify as retriable. With `!== null` this branch misfired; the
+    // loose `!= null` catches both.
+    it('ORCID_ALREADY_LINKED with undefined retryAfterSeconds and no retriable flag: durable branch', async () => {
+      const comp = createComponent();
+      const err = new Error('Already linked');
+      err.code = 'ORCID_ALREADY_LINKED';
+      // `err.retryAfterSeconds` intentionally omitted — simulates a thrown
+      // value constructed outside ApiRequestError (defensive path).
+      err.details = {};
+      mockCompleteOrcid.mockRejectedValue(err);
+
+      await comp._verify('code', 'state', 'link');
+
+      expect(comp.status).toBe('error');
+      expect(comp.errorMessage).toBe('orcid.alreadyLinkedDurable');
+      expect(comp.errorAction).toBe('recover');
+      expect(comp.errorKind).not.toBe('alreadyLinkedRetriable');
+      expect(comp.retryCountdown).toBe(0);
+    });
+
     // Durable = no retriable flag AND no Retry-After header. Per
     // api-contracts/orcid.md convention: absence of both means the binding
     // is permanent (on-chain or cache-lag). Retry affordance must NOT show.

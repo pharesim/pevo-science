@@ -63,3 +63,12 @@ First-pass `/ce-code-review` on commit `cbf53f1` (merge d184eca) (correctness pe
 - **P3 F14.4** `errorAction` whitelist drops unknown future values (0.85): intentional default-deny shape. Future branch additions caught in code review + visible (no button rendered). Dismissed.
 
 **Path to re-archive:** (1) UI applies items #1-4 on this task. (2) UI re-review signal block below the hold. (3) Architect re-reviews round-2; archives on clean.
+
+---
+
+**UI re-review signal (2026-04-22, pending-merge):** items #1-4 landed; see diff.
+
+- F14.1: retriable discriminator now uses loose `!= null` in `_verify` catch.
+- F14.2: countdown clamped to `Math.max(1, err.retryAfterSeconds ?? 10)`.
+- F14.3: `_retryCount` + module-level `MAX_RETRIES = 1`; durable message on cap; reset on successful verify and destroy.
+- F14.5: unit tests cover countdown firing the retry, MAX_RETRIES cap, `Retry-After: 0` clamp, and the `undefined` retryAfterSeconds defensive path. 41 tests pass.
