@@ -420,7 +420,11 @@ export function initSignupVerifyPage() {
         const res = await confirmAccount(this.authToken, normalizedUsername, keys);
         if (!this._mounted) return;
 
-        // Set auth state
+        // Set auth state. expiresAt MUST land on the store BEFORE
+        // _saveSession() runs; otherwise _restoreSession rejects the
+        // persisted entry on next load (see FE-ORCID-CALLBACK-FIXES for
+        // the reference pattern). _saveSession now reads instance state
+        // positionally-free.
         const auth = Alpine.store('auth');
         auth.token = res.data.token;
         auth.username = res.data.username;
@@ -428,15 +432,9 @@ export function initSignupVerifyPage() {
         auth.isAccredited = true;
         auth.accreditation = res.data.accreditation ?? null;
         auth.custody = 'light';
+        auth.expiresAt = res.data.expires_at;
 
-        auth._saveSession(
-          res.data.token,
-          res.data.username,
-          res.data.expires_at,
-          true,
-          res.data.accreditation ?? null,
-          'light'
-        );
+        auth._saveSession();
 
         this.phase = 'done';
       } catch (err) {
@@ -473,6 +471,9 @@ export function initSignupVerifyPage() {
         const res = await linkExistingAccount(this.authToken, username);
         if (!this._mounted) return;
 
+        // expiresAt MUST land on the store BEFORE _saveSession() runs;
+        // otherwise _restoreSession rejects the persisted entry on next
+        // load. _saveSession now reads instance state positionally-free.
         const auth = Alpine.store('auth');
         auth.token = res.data.token;
         auth.username = res.data.username;
@@ -480,15 +481,9 @@ export function initSignupVerifyPage() {
         auth.isAccredited = true;
         auth.accreditation = res.data.accreditation ?? null;
         auth.custody = 'self';
+        auth.expiresAt = res.data.expires_at;
 
-        auth._saveSession(
-          res.data.token,
-          res.data.username,
-          res.data.expires_at,
-          true,
-          res.data.accreditation ?? null,
-          'self'
-        );
+        auth._saveSession();
 
         this.phase = 'done';
       } catch (err) {

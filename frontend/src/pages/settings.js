@@ -662,14 +662,24 @@ export function initSettingsPage() {
 
         const result = await res.json();
 
-        // Update session
+        // Update session. The upgrade response rotates the session token
+        // (the old light-custody JWT is invalidated server-side); if the
+        // backend emits a new token + expires_at pair, refresh both on the
+        // store BEFORE _saveSession() so the persisted expires_at matches
+        // the new token. Historically this call hard-coded `null` as the
+        // expires_at positional arg, which would wipe the session's expiry
+        // on upgrade and silently log the user out on next reload. With
+        // the no-arg _saveSession() form, the new token pairs with its own
+        // expiry; if the backend omits either, we preserve the existing
+        // store value rather than clobbering it to null.
         auth.custody = 'self';
         if (result.data?.token) {
           auth.token = result.data.token;
         }
-        auth._saveSession(
-          auth.token, auth.username, null, auth.isAccredited, auth.accreditation, 'self'
-        );
+        if (result.data?.expires_at) {
+          auth.expiresAt = result.data.expires_at;
+        }
+        auth._saveSession();
 
         // FE-UPGRADE-CREDENTIAL-WIPE: zero all sensitive reactive state on
         // the happy path before flipping to 'done'. Without this, the old

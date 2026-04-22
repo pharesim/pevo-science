@@ -38,6 +38,7 @@ const mockAuthStore = {
   isAccredited: false,
   accreditation: null,
   custody: null,
+  expiresAt: null,
   _saveSession: vi.fn(),
 };
 const mockRouterStore = { navigate: vi.fn(), query: {}, params: {} };
@@ -71,6 +72,11 @@ describe('signupVerifyPage', () => {
     vi.clearAllMocks();
     mockAuthStore.isConnected = false;
     mockAuthStore.token = null;
+    mockAuthStore.username = null;
+    mockAuthStore.isAccredited = false;
+    mockAuthStore.accreditation = null;
+    mockAuthStore.custody = null;
+    mockAuthStore.expiresAt = null;
   });
 
   describe('init', () => {
@@ -223,6 +229,67 @@ describe('signupVerifyPage', () => {
       expect(mockAuthStore.custody).toBe('light');
     });
 
+    // FE-SAVESESSION-API-MISUSE-SWEEP: submitCreateAccount used to pass six
+    // positional args to _saveSession(), which the no-arg implementation
+    // silently ignored — the call happened to work only because the store
+    // fields were already set on the lines above. Lock in the full pre-save
+    // state-reset: token/username/isAccredited/accreditation/custody MUST
+    // land on the store, AND expiresAt MUST be set before _saveSession() is
+    // invoked. Otherwise _restoreSession rejects the persisted entry on
+    // next load and the user is silently logged out.
+    it('sets full auth state including expiresAt before calling no-arg _saveSession()', async () => {
+      mockConfirmAccount.mockResolvedValue({
+        data: {
+          token: 'jwt-create',
+          username: 'alice',
+          expires_at: '2099-12-31T00:00:00.000Z',
+          accreditation: { some: 'acc-payload' },
+        },
+      });
+
+      const comp = createComponent({ auth_token: 'tok', email: 'e@x.com' });
+      comp.init();
+      comp.chooseCreate();
+      comp.username = 'alice';
+      comp.usernameStatus = 'available';
+
+      await comp.submitCreateAccount();
+
+      expect(mockAuthStore.token).toBe('jwt-create');
+      expect(mockAuthStore.username).toBe('alice');
+      expect(mockAuthStore.isConnected).toBe(true);
+      expect(mockAuthStore.isAccredited).toBe(true);
+      expect(mockAuthStore.accreditation).toEqual({ some: 'acc-payload' });
+      expect(mockAuthStore.custody).toBe('light');
+      // Load-bearing: expiresAt MUST be on the store BEFORE the no-arg
+      // _saveSession() reads from it.
+      expect(mockAuthStore.expiresAt).toBe('2099-12-31T00:00:00.000Z');
+      expect(mockAuthStore._saveSession).toHaveBeenCalledWith();
+    });
+
+    // FE-SAVESESSION-API-MISUSE-SWEEP: handle the null-accreditation
+    // default. Backend may omit `accreditation`; the pre-save reset must
+    // coerce it to null (not leave a stale value carried over from a prior
+    // login-as-different-user).
+    it('coerces missing accreditation to null before _saveSession()', async () => {
+      mockConfirmAccount.mockResolvedValue({
+        data: { token: 'jwt-create2', username: 'alice', expires_at: '2099-01-01' },
+      });
+      // Simulate a stale prior value on the store.
+      mockAuthStore.accreditation = { stale: true };
+
+      const comp = createComponent({ auth_token: 'tok', email: 'e@x.com' });
+      comp.init();
+      comp.chooseCreate();
+      comp.username = 'alice';
+      comp.usernameStatus = 'available';
+
+      await comp.submitCreateAccount();
+
+      expect(mockAuthStore.accreditation).toBeNull();
+      expect(mockAuthStore._saveSession).toHaveBeenCalledWith();
+    });
+
     it('does nothing with invalid username', async () => {
       const comp = createComponent({ auth_token: 'tok', email: 'e@x.com' });
       comp.init();
@@ -288,6 +355,38 @@ describe('signupVerifyPage', () => {
       expect(mockLinkExistingAccount).toHaveBeenCalledWith('tok', 'bob');
       expect(comp.phase).toBe('done');
       expect(mockAuthStore.custody).toBe('self');
+    });
+
+    // FE-SAVESESSION-API-MISUSE-SWEEP: the link-account path used to pass
+    // six positional args to _saveSession() (silently ignored by the
+    // no-arg implementation). Lock in the full pre-save state-reset.
+    it('sets full auth state including expiresAt before calling no-arg _saveSession()', async () => {
+      mockLinkExistingAccount.mockResolvedValue({
+        data: {
+          token: 'jwt-link',
+          username: 'bob',
+          expires_at: '2099-06-15T00:00:00.000Z',
+          accreditation: { link: 'acc' },
+        },
+      });
+
+      const comp = createComponent({ auth_token: 'tok', email: 'e@x.com' });
+      comp.init();
+      comp.chooseLink();
+      comp.hiveUsername = 'Bob';
+
+      await comp.handleLinkAccount();
+
+      expect(mockAuthStore.token).toBe('jwt-link');
+      expect(mockAuthStore.username).toBe('bob');
+      expect(mockAuthStore.isConnected).toBe(true);
+      expect(mockAuthStore.isAccredited).toBe(true);
+      expect(mockAuthStore.accreditation).toEqual({ link: 'acc' });
+      expect(mockAuthStore.custody).toBe('self');
+      // Load-bearing: expiresAt MUST be on the store BEFORE the no-arg
+      // _saveSession() reads from it.
+      expect(mockAuthStore.expiresAt).toBe('2099-06-15T00:00:00.000Z');
+      expect(mockAuthStore._saveSession).toHaveBeenCalledWith();
     });
 
     it('does nothing without hiveUsername', async () => {

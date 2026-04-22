@@ -76,6 +76,7 @@ const mockAuthStore = {
   isAccredited: true,
   accreditation: { orcid: '0000-0001' },
   token: 'jwt',
+  expiresAt: '2099-01-01T00:00:00.000Z',
   _saveSession: vi.fn(),
   _checkAccreditation: vi.fn(),
 };
@@ -115,6 +116,8 @@ describe('settingsPage', () => {
     mockAuthStore.custody = 'light';
     mockAuthStore.isAccredited = true;
     mockAuthStore.accreditation = { orcid: '0000-0001' };
+    mockAuthStore.token = 'jwt';
+    mockAuthStore.expiresAt = '2099-01-01T00:00:00.000Z';
     localStorageData = {};
     vi.stubGlobal('localStorage', {
       getItem: vi.fn((key) => localStorageData[key] ?? null),
@@ -477,6 +480,100 @@ describe('settingsPage', () => {
       const warnedStr = warnedErr && warnedErr.message ? warnedErr.message : String(warnedErr);
       expect(warnedStr).toContain(leakHex);
       warnSpy.mockRestore();
+    });
+  });
+
+  // FE-SAVESESSION-API-MISUSE-SWEEP: executeUpgrade() used to call
+  // _saveSession(token, username, null, isAccredited, accreditation, 'self')
+  // — the no-arg implementation silently ignored all six args, so the `null`
+  // was harmless in practice, BUT the old call-shape advertised an intent
+  // ("wipe expires_at on upgrade") that would have been actively wrong if
+  // _saveSession ever honored its args. Lock in the no-arg form + full
+  // pre-save state-reset: custody flips to 'self', token rotates to the
+  // upgrade response's new token, and expires_at rotates alongside it so
+  // the persisted entry matches the new token's lifetime. Pre-existing
+  // isAccredited / accreditation are preserved (upgrade doesn't change
+  // accreditation status).
+  describe('FE-SAVESESSION-API-MISUSE-SWEEP: executeUpgrade', () => {
+    function seedUpgradeState(comp) {
+      comp.oldSeedPhrase = Array(12).fill('old').join(' ');
+      comp.newSeedPhrase = Array(12).fill('new').join(' ');
+      comp.newSeedWords = comp.newSeedPhrase.split(' ');
+      comp.confirmInputs = { 0: 'new', 5: 'new', 11: 'new' };
+      comp.upgradePassword = 'light-password';
+      return comp;
+    }
+
+    it('calls no-arg _saveSession() with full auth state set on the store first', async () => {
+      mockIsKeychainInstalled.mockReturnValue(true);
+      vi.stubGlobal('window', {
+        ...globalThis.window,
+        hive_keychain: {
+          requestImportKey: (_a, _k, cb) => queueMicrotask(() => cb({ success: true })),
+        },
+      });
+      vi.stubGlobal('fetch', vi.fn(async () => ({
+        ok: true,
+        json: async () => ({
+          data: {
+            token: 'new-jwt',
+            custody: 'self',
+            expires_at: '2100-01-01T00:00:00.000Z',
+          },
+        }),
+      })));
+
+      const comp = createComponent();
+      seedUpgradeState(comp);
+
+      await comp.executeUpgrade();
+
+      expect(comp.upgradePhase).toBe('done');
+      // Store state immediately before the no-arg _saveSession() call
+      // determines the persisted localStorage shape. Assert each load-bearing
+      // field landed correctly.
+      expect(mockAuthStore.custody).toBe('self');
+      expect(mockAuthStore.token).toBe('new-jwt');
+      // Load-bearing: expiresAt rotates with the new token, so _restoreSession
+      // sees a valid entry on next load. Historically the 6-arg call passed
+      // null here, which would have wiped expires_at and logged the user out.
+      expect(mockAuthStore.expiresAt).toBe('2100-01-01T00:00:00.000Z');
+      // Pre-existing accreditation fields survive the upgrade.
+      expect(mockAuthStore.isAccredited).toBe(true);
+      expect(mockAuthStore.accreditation).toEqual({ orcid: '0000-0001' });
+      // The no-arg form — zero positional args, reads from instance state.
+      expect(mockAuthStore._saveSession).toHaveBeenCalledWith();
+    });
+
+    it('preserves existing expiresAt when backend omits expires_at from the upgrade response', async () => {
+      mockIsKeychainInstalled.mockReturnValue(true);
+      vi.stubGlobal('window', {
+        ...globalThis.window,
+        hive_keychain: {
+          requestImportKey: (_a, _k, cb) => queueMicrotask(() => cb({ success: true })),
+        },
+      });
+      // Backend response omits expires_at (older contract shape).
+      vi.stubGlobal('fetch', vi.fn(async () => ({
+        ok: true,
+        json: async () => ({
+          data: { token: 'new-jwt-legacy', custody: 'self' },
+        }),
+      })));
+
+      const originalExpiry = mockAuthStore.expiresAt;
+      const comp = createComponent();
+      seedUpgradeState(comp);
+
+      await comp.executeUpgrade();
+
+      expect(comp.upgradePhase).toBe('done');
+      expect(mockAuthStore.token).toBe('new-jwt-legacy');
+      // Critical: the no-arg _saveSession() must persist the existing
+      // expiresAt, not clobber it to null (which the pre-sweep call-shape
+      // advertised with its hard-coded `null` positional arg).
+      expect(mockAuthStore.expiresAt).toBe(originalExpiry);
+      expect(mockAuthStore._saveSession).toHaveBeenCalledWith();
     });
   });
 
