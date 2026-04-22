@@ -189,11 +189,6 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
   const normalizedEmail = hasEmail ? (email as string).trim().toLowerCase() : null;
   const isInstitutional = normalizedEmail ? isInstitutionalEmail(normalizedEmail) : false;
 
-  // Accreditation gate: institutional email OR verified ORCID required
-  if (!isInstitutional && !verifiedOrcid) {
-    return sendError(res, 422, 'VALIDATION_ERROR', 'Either an institutional email or ORCID verification is required');
-  }
-
   // Resolve full_name: explicit value > ORCID profile name
   const resolvedName = (full_name && typeof full_name === 'string')
     ? full_name.trim()
@@ -202,7 +197,23 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
   const resolvedField = (field && typeof field === 'string') ? field.trim() : '';
 
   try {
-    // Check email not already registered or pending (skip for no-email ORCID signups)
+    // Check email not already registered or pending (skip for no-email ORCID signups).
+    //
+    // Check-order note (BE-SIGNUP-INSTITUTIONAL-GATE-ORDERING): this
+    // duplicate-email check fires BEFORE the accreditation gate below.
+    // If the two fired in the opposite order, an attacker could probe
+    // public-domain institutional emails (mit.edu, harvard.edu, and so
+    // on) and distinguish "account exists" (~50ms 409 with argon2.hash
+    // burn) from "no account here" (422 in ~0ms). Running the duplicate
+    // check first pushes both known-institution AND unknown-institution
+    // duplicate paths through the same argon2.hash-equalized 409, so
+    // registration status is not leaked on the timing axis. A non-
+    // duplicate email on an unaccredited domain still returns 422 fast --
+    // institution membership is public knowledge and not the signal
+    // being closed here. Behavior change: an unaccredited-institution
+    // duplicate-email caller previously got 422 ACCREDITATION_NOT_FOUND;
+    // now they get 409 DUPLICATE, which is more accurate about their
+    // actual email state. Neither path lets them complete signup.
     if (normalizedEmail) {
       const { rows: existingRows } = await pool.query<{ verify_token: string | null }>(
         'SELECT verify_token FROM accounts WHERE email = $1',
@@ -232,6 +243,17 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
         }
         // Unverified — allow overwrite via ON CONFLICT below
       }
+    }
+
+    // Accreditation gate: institutional email OR verified ORCID required.
+    // Runs AFTER the duplicate-email check above so a duplicate on a
+    // non-institutional domain returns 409 DUPLICATE (accurate about
+    // email state) rather than 422 ACCREDITATION_NOT_FOUND (which would
+    // leak registration status to anyone probing accredited-domain
+    // addresses). See the check-order note at the duplicate-email check
+    // for the full rationale.
+    if (!isInstitutional && !verifiedOrcid) {
+      return sendError(res, 422, 'VALIDATION_ERROR', 'Either an institutional email or ORCID verification is required');
     }
 
     // Hash password if provided

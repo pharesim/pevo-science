@@ -1104,3 +1104,104 @@ describe('SEC-LOGIN-UNKNOWN-USER-TIMING: /signup 4-way timing matrix', () => {
     },
   );
 });
+
+// BE-SIGNUP-INSTITUTIONAL-GATE-ORDERING: the /signup duplicate-email check
+// must fire BEFORE the accreditation gate. If the gate fires first, an
+// attacker submitting a duplicate email on a non-institutional domain gets
+// 422 ACCREDITATION_NOT_FOUND in ~0ms (no DB lookup, no argon2 burn), while
+// a duplicate on an accredited domain gets 409 DUPLICATE in ~50ms
+// (argon2.hash burn). The ~50ms / 422 split leaks registration status on
+// any accredited public domain (mit.edu, harvard.edu, etc.). Post-reorder,
+// both duplicate paths return 409 and both pay the argon2.hash burn so
+// wall-time does not distinguish them.
+describe('BE-SIGNUP-INSTITUTIONAL-GATE-ORDERING: duplicate check fires before accreditation gate', () => {
+  const ACCREDITED_DUPLICATE_EMAIL = `signup_gate_acc_${Date.now()}@mit.edu`;
+  const UNACCREDITED_DUPLICATE_EMAIL = `signup_gate_unacc_${Date.now()}@gmail.com`;
+
+  beforeAll(async () => {
+    if (!dbReachable) return;
+    const pool = getAppPool()!;
+    const passwordHash = await argon2.hash('ExistingPassword1', { type: argon2.argon2id });
+    // Seed two already-verified accounts: one on an accredited domain, one
+    // on a non-accredited domain. Both should hit the verify_token=NULL 409
+    // DUPLICATE branch when /signup is called with their email.
+    await pool.query(
+      `INSERT INTO accounts (email, username, password_hash, full_name, institution, field, custody, verify_token)
+       VALUES ($1, $2, $3, 'Test', 'Uni', 'CS', 'light', NULL)`,
+      [ACCREDITED_DUPLICATE_EMAIL, `signup_gate_acc_${Date.now()}`, passwordHash],
+    );
+    await pool.query(
+      `INSERT INTO accounts (email, username, password_hash, full_name, institution, field, custody, verify_token)
+       VALUES ($1, $2, $3, 'Test', 'Uni', 'CS', 'light', NULL)`,
+      [UNACCREDITED_DUPLICATE_EMAIL, `signup_gate_unacc_${Date.now()}`, passwordHash],
+    );
+  });
+
+  afterAll(async () => {
+    if (!dbReachable) return;
+    const pool = getAppPool()!;
+    await pool.query(
+      'DELETE FROM accounts WHERE email IN ($1, $2)',
+      [ACCREDITED_DUPLICATE_EMAIL, UNACCREDITED_DUPLICATE_EMAIL],
+    ).catch(() => {});
+  });
+
+  it.skipIf(!dbReachable)(
+    'accredited-duplicate AND unaccredited-duplicate both 409 with ≥ floor wall-time',
+    async () => {
+      await clearRateLimitKeys(['auth-signup']);
+      // Warm argon2 + request stack.
+      await request(app)
+        .post('/api/auth/signup')
+        .send({
+          email: `signup_gate_warmup_${Date.now()}@mit.edu`,
+          password: 'Warmup12345',
+          full_name: 'Warmup',
+          institution: 'Uni',
+          field: 'CS',
+        });
+
+      // Accredited domain + duplicate email → 409 DUPLICATE, argon2.hash burn.
+      const accStart = Date.now();
+      const accRes = await request(app)
+        .post('/api/auth/signup')
+        .send({
+          email: ACCREDITED_DUPLICATE_EMAIL,
+          password: 'AnythingValid1',
+          full_name: 'Test',
+          institution: 'Uni',
+          field: 'CS',
+        });
+      const accElapsed = Date.now() - accStart;
+
+      // Unaccredited domain + duplicate email → also 409 DUPLICATE
+      // (post-reorder) with argon2.hash burn. Pre-reorder this would have
+      // been a ~0ms 422 ACCREDITATION_NOT_FOUND — the bug this fix closes.
+      const unaccStart = Date.now();
+      const unaccRes = await request(app)
+        .post('/api/auth/signup')
+        .send({
+          email: UNACCREDITED_DUPLICATE_EMAIL,
+          password: 'AnythingValid1',
+          full_name: 'Test',
+          institution: 'Uni',
+          field: 'CS',
+        });
+      const unaccElapsed = Date.now() - unaccStart;
+
+      // Status-code axis: BOTH must be 409 DUPLICATE. If unaccredited drops
+      // to 422 the reorder has regressed and the oracle is open.
+      expect(accRes.status).toBe(409);
+      expect(accRes.body.error.code).toBe('DUPLICATE');
+      expect(unaccRes.status).toBe(409);
+      expect(unaccRes.body.error.code).toBe('DUPLICATE');
+
+      // Wall-time axis: both 409 paths must pay the argon2.hash burn.
+      // Removing the hasPassword-gated argon2.hash in the duplicate branch
+      // or moving the accreditation gate back before the duplicate check
+      // drops unaccElapsed into the ~1-5ms band and fails this assertion.
+      expect(accElapsed).toBeGreaterThanOrEqual(TIMING_ORACLE_FLOOR_MS);
+      expect(unaccElapsed).toBeGreaterThanOrEqual(TIMING_ORACLE_FLOOR_MS);
+    },
+  );
+});
