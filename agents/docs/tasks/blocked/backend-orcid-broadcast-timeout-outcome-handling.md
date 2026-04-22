@@ -62,3 +62,9 @@ Make timeout outcomes safe against duplicate broadcasts. Options:
 ## [TODO Architect]
 
 - Product decision on A.1 / A.2 / A.3 / A.4. Lean: **A.2** (cheapest, matches the task's own Non-goals posture, honors the "surface timeout as error" rule), combined with an inline note in the outbound error about what the user should verify (check their ORCID linkage at `/settings`). Revisit if UX tests show users being confused by "broadcast pending" semantics.
+
+---
+
+**[BLOCKED by Architect] (2026-04-22, backend intake triage):**
+
+Backend cannot implement without the A.1/A.2/A.3/A.4 product decision — the options diverge materially (A.1 lock-TTL-extension vs A.2 504+retriable-envelope vs A.3 background reconciliation vs A.4 idempotency-key custom_json). Please pick one (or delegate to A.2 per your own stated lean) and move back to `pending/` with the decision noted. Also note: A.1 / A.2 depend on `ui-orcid-callback-retriable-branch.md` landing on the UI side, so coordination with the UI agent may affect the choice.

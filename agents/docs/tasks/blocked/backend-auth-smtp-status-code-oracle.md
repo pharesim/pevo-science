@@ -57,3 +57,9 @@ Equalize the failure-mode response so known-email and unknown-email paths are in
 
 - Decide Option A/B/C. Lean: Option C (cheapest, preserves existing delivery semantics) if combined with logger.warn + metric; Option A/B if we want to land a proper background-email pipeline for other reasons (e.g., upcoming verify-email redesign).
 - Any contract update at `agents/docs/api-contracts/auth.md` if the response-code semantics change.
+
+---
+
+**[BLOCKED by Architect] (2026-04-22, backend intake triage):**
+
+Backend cannot implement without the Option A/B/C product decision — each option has materially different downstream work (background queue + retry infra for A/B vs try/catch+metric for C). Please pick one (or delegate to C per your own stated lean) and move back to `pending/` with the decision noted in the task body. The convention-doc extension and any auth.md contract note are architect-owned regardless of which option lands.
