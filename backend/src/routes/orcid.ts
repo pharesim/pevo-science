@@ -589,15 +589,26 @@ async function acquireBindingLock(orcidId: string): Promise<BindingLockState> {
   const redis = getRedis();
   if (!redis || !isRedisAvailable()) return { state: 'unavailable' };
   const nonce = crypto.randomBytes(16).toString('hex');
-  // Runtime invariant: RELEASE_LOCK_LUA compares stored value byte-for-byte
-  // under Lua string equality. If a future refactor changes the nonce encoding
-  // away from printable-ASCII hex, the CAS would silently never match. Throw
-  // here so the drift surfaces at acquire-time rather than as locks that never
-  // release before TTL.
-  if (typeof nonce !== 'string' || !LOCK_NONCE_RE.test(nonce)) {
-    throw new Error('orcid binding lock nonce shape invariant violated');
-  }
   try {
+    // Runtime invariant: RELEASE_LOCK_LUA compares the stored value byte-for-
+    // byte under Lua string equality. If a future refactor changes the nonce
+    // encoding away from printable-ASCII hex, the CAS would silently never
+    // match. Surface the drift as a `'unavailable'` state (matching the Redis-
+    // outage degradation semantics) rather than a thrown error: throwing out
+    // here would propagate to the /callback outer catch as 500 INTERNAL_ERROR,
+    // but the state token was already consumed before dispatch, so the user
+    // would be hard-blocked and forced to restart the ORCID OAuth flow. The
+    // error-tier log preserves operator visibility so the drift is discovered
+    // without burning the user's session. (The typeof-string check is omitted
+    // because crypto.randomBytes(16).toString('hex') always returns a string;
+    // only the hex-shape assertion is load-bearing.)
+    if (!LOCK_NONCE_RE.test(nonce)) {
+      logger.error(
+        { orcidId },
+        'orcid binding lock nonce shape invariant violated — degrading to HAF-only path',
+      );
+      return { state: 'unavailable' };
+    }
     const result = await redis.set(
       orcidBindingLockKey(orcidId),
       nonce,
@@ -608,7 +619,12 @@ async function acquireBindingLock(orcidId: string): Promise<BindingLockState> {
     if (result === 'OK') return { state: 'acquired', nonce };
     return { state: 'held' };
   } catch (err) {
-    logger.warn({ err, orcidId }, 'ORCID binding lock acquisition failed — degrading to HAF-only path');
+    // Item #3: promote warn → error to match cacheOrcidBinding's round-2
+    // precedent. Redis outage during lock acquisition silently degrades every
+    // binding attempt to the full TOCTOU window; that's a paging-tier event,
+    // not a warn-tier one. Behavior unchanged (still returns 'unavailable' so
+    // the handler falls back to the HAF-only path).
+    logger.error({ err, orcidId }, 'ORCID binding lock acquisition failed — degrading to HAF-only path');
     return { state: 'unavailable' };
   }
 }
@@ -668,11 +684,23 @@ async function withOrcidBindingLock(
       { retriable: true, retry_after_seconds: ORCID_BINDING_LOCK_RETRY_AFTER_SECONDS },
     );
     return;
-  }
-  try {
+  } else if (lock.state === 'acquired') {
+    try {
+      await fn();
+    } finally {
+      await releaseBindingLock(orcidId, lock.nonce);
+    }
+  } else if (lock.state === 'unavailable') {
+    // Redis outage or nonce-shape invariant drift: degrade to cache-less
+    // HAF-only dedup. No lock to release.
     await fn();
-  } finally {
-    if (lock.state === 'acquired') await releaseBindingLock(orcidId, lock.nonce);
+  } else {
+    // Exhaustiveness guard: adding a new BindingLockState variant without
+    // handling it here becomes a compile error. Belt-and-suspenders alongside
+    // the docblock "no double response" contract above — a future fourth
+    // variant must be routed explicitly rather than silently falling through.
+    const _exhaustive: never = lock;
+    void _exhaustive;
   }
 }
 

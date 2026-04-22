@@ -222,3 +222,23 @@ Round-3 `/ce-code-review` on commit `8a147a8` (10 personas). All 10 round-2 hold
 **`/ce-compound` candidate (unchanged from round-2):** consolidated ORCID-lock-pattern doc covering the six sub-patterns the architect enumerated. Deferred to archive time.
 
 **Path to re-archive:** (1) Backend applies items #1-3 on this task. (2) Backend re-review signal block below the hold. (3) Architect re-reviews round-4 with `/ce-code-review`; archives on clean.
+
+---
+
+**Backend re-review signal (2026-04-22 round-4, worktree branch `worktree-agent-aad063ab`):**
+
+All 3 round-3 hold items landed. 29/29 pass in `backend/tests/routes/orcid.test.ts` (no new specs; existing matrix covers the changed paths: the lock-contention 409 spec exercises the `'held'` branch through `withOrcidBindingLock`; the Redis-outage specs exercise the `'unavailable'` branch; the broadcast-throw finally-path specs exercise the `'acquired'` branch via `releaseBindingLock`). `npx tsc --noEmit` clean. Full backend vitest NOT re-run per parent instruction.
+
+1. **P2 Exhaustiveness assertion on `BindingLockState`** (hold #1, option a). `backend/src/routes/orcid.ts:655-684` — restructured `withOrcidBindingLock` from the prior `if 'held' return; try/finally with guarded release` shape into an explicit `if / else if / else if / else` chain covering the three `BindingLockState` variants, with a final `else` branch that assigns `lock` to `const _exhaustive: never`. Adding a fourth variant to `BindingLockState` now fails the TypeScript build (the `never` narrow breaks) rather than silently falling through the wrapper with no behavior. Option (a) chosen over (b) per parent's rationale: the third-caller use case is hypothetical and (b) would churn the handler signatures for no current benefit. Callers (`handleAccredit`, `handleLink`) are unchanged.
+
+2. **P2 Nonce-shape invariant no longer propagates to /callback 500** (hold #2). `backend/src/routes/orcid.ts:588-628` — moved the `LOCK_NONCE_RE` check from before the outer `try` to inside it. On drift (mismatch), the function now returns `{ state: 'unavailable' }` (matching Redis-outage degradation semantics) after emitting a distinctive `logger.error` — the user falls through to the HAF-only dedup path and gets a usable response, rather than a 500 on a consumed state token. Dropped the dead `typeof nonce !== 'string'` half of the guard per the round-3 P3 dismissal note: `crypto.randomBytes(16).toString('hex')` has return type `string` so the typeof check was compile-time-unreachable. Only the hex-shape regex remains load-bearing. Inline comment captures the rationale so a future "tighten the invariant" attempt doesn't re-throw.
+
+3. **P2 Lock-SET-failure log warn → error** (hold #3). `backend/src/routes/orcid.ts:624-628` — promoted the `catch (err)` log in `acquireBindingLock` from `logger.warn` to `logger.error`, matching the round-2 `cacheOrcidBinding` precedent. Log context (`{ err, orcidId }`) and message text unchanged; behavior unchanged (still returns `'unavailable'`). Rationale captured inline: sustained Redis outage during lock acquisition opens the full TOCTOU window silently, which is paging-tier, not warn-tier.
+
+**Deviation note.** The parent prompt cited 28 existing specs; the test file currently reports 29. No specs were added in this round — the delta appears to be existing `describe.each` matrix rows present on main that the parent's count didn't include. All 29 pass.
+
+**Dismissed-finding still-dismissed:** per round-2 and round-3 triage.
+
+**Filed follow-up still-pending:** `backend-redis-key-naming-convention-sweep.md`, `backend-orcid-broadcast-abort-timeout.md`, `ui-orcid-retriable-discriminator-plumbing.md`, `ui-orcid-callback-retriable-branch.md`, `backend-orcid-no-account-error-shape-align.md` — per architect's round-2 + round-3 hold blocks.
+
+**`/ce-compound` candidate (unchanged):** consolidated ORCID-lock-pattern doc covering the sub-patterns the architect enumerated. Deferred to archive time.
