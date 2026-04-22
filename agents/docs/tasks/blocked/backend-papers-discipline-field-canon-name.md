@@ -61,3 +61,7 @@ for (const paper of filterBody.data) {
 Decide whether `/api/search` result entries should carry both `discipline` (canon) and `discipline_display`. Default to canon-only unless a concrete frontend consumer needs both in the same payload. Same question for paper-detail.
 
 Also: `/api/papers` and `/api/search` each independently shape their discipline field — confirm the fix consolidates through a single helper so future drift is structural, not per-route.
+
+## [BLOCKED by Architect] (2026-04-22)
+
+Implementation cannot start until the architect decides on the canon-only vs canon+display_name payload shape for `/api/search` and `/api/papers` (paper-detail too), and confirms the consolidating-helper direction. Architect `git mv`s back to `pending/` once resolved.

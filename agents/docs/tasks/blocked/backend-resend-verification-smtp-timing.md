@@ -40,3 +40,7 @@ Closing SMTP-provider-level timing leaks (DNS, TLS handshake differentials acros
 ## [TODO Architect]
 
 Pick shape (1/2/3) and decide on the operator-visibility story for async-send failures before implementer starts.
+
+## [BLOCKED by Architect] (2026-04-22)
+
+Implementation cannot start until the architect picks one of the three shapes and decides how async-send failures should surface to operators (log line, metric, alert channel). Architect `git mv`s back to `pending/` once resolved.

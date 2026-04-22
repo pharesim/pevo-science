@@ -46,3 +46,7 @@ Changing the rate-limit buckets themselves or their TTLs.
 
 1. Confirm `trust proxy` value. For the current single-nginx setup, `1` (trust one hop) is correct. If a CDN (Cloudflare, Fastly) is added in front later, this becomes `2` or needs an explicit CIDR allowlist.
 2. Decide whether to also document the trusted-proxy chain in `agents/docs/api-contracts/common.md` (where rate-limit semantics live).
+
+## [BLOCKED by Architect] (2026-04-22)
+
+Implementation cannot start until the architect confirms the `trust proxy` value for the current topology (likely `1`) and decides whether `common.md` gains a trusted-proxy-chain subsection. Architect `git mv`s back to `pending/` once resolved.

@@ -29,3 +29,7 @@ Changing `canon_name` semantics (stays lowercase, used as filter value). Handlin
 ## [TODO Architect]
 
 None yet — this is a pending design decision, not an atomic fix. Awaiting user triage on whether the INITCAP semantic is desired before implementing.
+
+## [BLOCKED by Architect] (2026-04-22)
+
+Implementation cannot start until the user/architect decides whether to adopt the `INITCAP(LOWER(...))` semantic for `display_name`, resolves the three open questions above (INITCAP on compound words, mixed-case corner cases, whether to add a `display_name_source` metadata field). Architect `git mv`s back to `pending/` once resolved.

@@ -36,3 +36,7 @@ Adding `?discipline=` length caps to HAF SQL layer (not PEvO-owned). Normalizing
 
 1. Pick a shape (1/2/3 above) before implementer starts.
 2. Decide whether to add a regression test that the malicious input yields 400, or let the API-contract reviewer flag it as residual gap.
+
+## [BLOCKED by Architect] (2026-04-22)
+
+Implementation cannot start until the architect picks one of the three shapes above (recommendation: option 2, length + charset) and decides on the regression-test question. Architect `git mv`s back to `pending/` once resolved.
