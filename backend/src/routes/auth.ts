@@ -110,14 +110,10 @@ const MAX_LOGIN_FAILURES = 20;
 // Note: on /signup 409 DUPLICATE paths we burn argon2.hash (not verify) to
 // match the happy-path argon2.hash cost — see the /signup handler.
 //
-// Concurrency / libuv note: argon2.verify runs on the libuv thread pool
-// (default UV_THREADPOOL_SIZE=4). argon2's `parallelism=4` option means each
-// verify effectively holds 4 libuv threads for its duration. At
-// UV_THREADPOOL_SIZE=16, that allows ~4 concurrent argon2 ops (16 / 4 = 4),
-// NOT 16 — the common confusion that made the initial cap insufficient. The
-// JS-level semaphore at lib/argon2-semaphore.ts is the deterministic cap
+// Concurrency / libuv note: argon2.verify runs on the libuv thread pool.
+// The JS-level semaphore at lib/argon2-semaphore.ts is the deterministic cap
 // (`runWithArgon2Slot` caps concurrent ops at MAX_CONCURRENT_ARGON2_OPS,
-// derived from the same `pool / parallelism` math). The env knob above is
+// derived from libuv pool size and argon2 parallelism). The env knob is
 // libuv headroom so the semaphore can fill its slots without queueing at
 // the pool layer. Every argon2.hash / argon2.verify on auth paths (incl.
 // burnSentinel's internal verify) goes through runWithArgon2Slot; the sole
@@ -128,13 +124,13 @@ const MAX_LOGIN_FAILURES = 20;
 //
 // Fail-loud guard: if UV_THREADPOOL_SIZE is unset or below 16 in the
 // environment, reject at module-load rather than serving traffic with a
-// hidden saturation oracle. The semaphore (when landed) will relax this
-// to advisory; until then it's a hard invariant for burnSentinel
-// determinism. Silenced when running under Vitest (VITEST=true is set
-// by the runner itself) so unit tests don't need the env knob. Production
-// startup MUST set UV_THREADPOOL_SIZE; the Dockerfile and docker-compose
-// environment both carry it.
-if (!process.env.VITEST) {
+// hidden saturation oracle. The semaphore landed at lib/argon2-semaphore.ts
+// enforces the deterministic JS-level cap; this env check remains as a
+// defense-in-depth libuv headroom invariant. Production startup MUST set
+// UV_THREADPOOL_SIZE; the Dockerfile and docker-compose environment both
+// carry it. Vitest sets UV_THREADPOOL_SIZE=16 in vitest.config.ts so the
+// assertion fires identically under test.
+{
   const pool = Number(process.env.UV_THREADPOOL_SIZE);
   if (!Number.isFinite(pool) || pool < 16) {
     throw new Error(

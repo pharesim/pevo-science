@@ -1410,10 +1410,11 @@ describe.each([
       const state = await startAuthed(mode, 'alice');
 
       // Spy on crypto.randomBytes so the nonce generated inside
-      // acquireBindingLock fails LOCK_NONCE_RE. Short buffer → .toString('hex')
-      // is 10 chars, not the required 32; regex rejects it. handleAccredit and
-      // handleLink use crypto.createHash (not randomBytes) between /start and
-      // the lock acquisition, so this spy only affects the lock nonce path.
+      // acquireBindingLock fails LOCK_NONCE_RE. Short buffer (10 bytes →
+      // 20 hex chars via .toString('hex')) fails the 32-hex regex; regex
+      // rejects it. handleAccredit and handleLink use crypto.createHash
+      // (not randomBytes) between /start and the lock acquisition, so this
+      // spy only affects the lock nonce path.
       const randomBytesSpy = vi.spyOn(crypto, 'randomBytes').mockImplementation(((size: number) => {
         // Only shrink the 16-byte call (the lock nonce). Defensive: if any
         // other caller asks for a different size during this window, honor it

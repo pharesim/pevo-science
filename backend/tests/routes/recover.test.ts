@@ -1169,6 +1169,16 @@ describe('BE-SIGNUP-INSTITUTIONAL-GATE-ORDERING: duplicate check fires before ac
 // also burn argon2 on 422" refactor doesn't silently regress the happy
 // path without re-opening the debate.
 describe('BE-SIGNUP-INSTITUTIONAL-GATE-ORDERING: 422 on non-duplicate unaccredited email is fast', () => {
+  afterAll(async () => {
+    if (!dbReachable) return;
+    const pool = getAppPool()!;
+    // Warmup insert uses an @mit.edu email with pattern signup_422_warmup_%,
+    // which is a valid pending institutional-signup row the global cleanup
+    // (matches username LIKE 'recover_%') leaves orphaned. Pattern-match on
+    // email to sweep every signup_422_% warmup across CI runs.
+    await pool.query("DELETE FROM accounts WHERE email LIKE 'signup_422_%'").catch(() => {});
+  });
+
   it.skipIf(!dbReachable)(
     'fresh gmail-style email returns 422 in < ceiling wall-time (no argon2 burn)',
     async () => {
