@@ -142,8 +142,17 @@ export function initOrcidCallbackPage() {
 
       // Only clear the stored mode after completeOrcid resolved successfully.
       // If this throws (e.g. 503), we leave it so a refresh can retry.
+      // If any handler below later gains an `await`, move this removeItem
+      // inside the handler after the mutation resolves. Otherwise a mid-await
+      // destroy() could clear the mode without routing the flow, breaking
+      // the 503-refresh-retry invariant.
       localStorage.removeItem('pevo_orcid_mode');
 
+      // Handlers below are _mounted-gated by the check above; they do not
+      // re-check individually, except _handleAccredit, which self-guards
+      // because its side effects (toast, auth-store refresh) persist beyond
+      // this component. Direct calls from elsewhere to a non-self-guarded
+      // handler must guard at the call site.
       switch (data.mode) {
         case 'signup':
           this._handleSignup(data);
@@ -204,6 +213,11 @@ export function initOrcidCallbackPage() {
     },
 
     _handleAccredit(data) {
+      // Self-guard: unlike the other handlers, this one has no navigation to
+      // terminate the flow. It fires a toast and an auth-store refresh whose
+      // side effects outlive the component, so direct calls must no-op
+      // post-destroy.
+      if (!this._mounted) return;
       this.status = 'accredit-success';
       this.resultUsername = data.username;
 
