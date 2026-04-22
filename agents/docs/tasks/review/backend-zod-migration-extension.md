@@ -76,3 +76,25 @@ Full scope landed. `npx tsc --noEmit` clean. `npm run lint` clean (6 pre-existin
 
 **`[TODO Architect]`:**
 - The `isPasswordValid` signature change from `boolean` to `pw is string` is a tightening (no runtime behavior change) but is observable via TypeScript type flow. If any doc/API contract references the helper's signature, it should be updated. Not expected to touch api-contracts/*.md since that file describes REST shapes, not internal helper signatures.
+
+---
+
+**Backend re-review signal (2026-04-22, worktree agent-af344d23):**
+
+P2 "extend Zod-leak regression test coverage to the 4 round-2 migrated routes" fix landed. Only `backend/tests/routes/auth.test.ts` modified.
+
+1. **Extended the parametrized `cases` array** in the `BE-REQUEST-BODY-TYPING-ZOD: 400 VALIDATION_ERROR does not leak Zod schema shape` describe block with 3 new HTTP round-trip cases:
+   - `/api/auth/resend-verification` — body `{ email: 123, password: 'x' }` (non-string email fails `ResendVerificationBodySchema.safeParse`).
+   - `/api/auth/reset-request` — body `{ email: 123 }` (non-string email fails `ResetRequestBodySchema.safeParse`).
+   - `/api/auth/reset` — body `{ token: 123, password: 'NewPass123!' }` (non-string token fails `ResetBodySchema.safeParse`).
+   Each new case runs the same assertions as the round-1 cases: 400 status, `status:'error'`, `error.code:'VALIDATION_ERROR'`, `error.message:'Invalid request body'`, `error.details === undefined`, and a deep-stringified body that contains none of `"issues"`, `"received"`, `"expected"`, `"validation"`.
+
+2. **`/orcid/start` handled via option (b) — source-shape grep, not a live HTTP round trip.** The ordering wrinkle (documented inline in the describe-block header comment) is: the `/start` handler returns 500 `INTERNAL_ERROR` ("ORCID integration is not configured") BEFORE `StartBodySchema.safeParse` whenever `config.orcidClientId` or `config.orcidClientSecret` is unset, which is the default test-env state. Plumbing real ORCID creds solely to reach the parse branch adds a large test-harness surface for one assertion. Instead, `/api/orcid/start uses StartBodySchema.safeParse with the flat VALIDATION_ERROR shape` reads `backend/src/routes/orcid.ts` via `readFileSync` and asserts the three structural invariants that the live tests cover for the other routes: `z.object(` schema decl, `StartBodySchema.safeParse(req.body)` call, and the literal `sendError(res, 400, 'VALIDATION_ERROR', 'Invalid request body')` forwarding (no `details` arg = no issues leak). Uses `import.meta.dirname` (Node 20, matches the module-Node16 ESM config) to resolve the source path.
+
+3. **Rate-limit pre-clear extended.** `beforeAll(clearRateLimitKeys([...]))` now clears `auth-resend` (3/hr), `auth-reset-request` (5/hr), and `auth-reset` (5/hr) in addition to the prior `auth-login` / `auth-signup`. Each of the new routes has a tighter hourly window than `/login` (10/hr), so they're more vulnerable to cross-test-file ordering flakes; one clear per windowMs at beforeAll is cheap insurance.
+
+**Test outcomes:**
+- `auth.test.ts`: **20/20 pass** (up from 16/16, reflecting the 3 new parametrized HTTP cases + 1 new /orcid/start structural case).
+- `npx tsc --noEmit`: clean.
+- `npm run lint`: clean (same 6 pre-existing `no-explicit-any` warnings as round-1; zero new findings).
+- No source file modified; no other test file modified. Scope strictly matches the held-pending-fix brief.
