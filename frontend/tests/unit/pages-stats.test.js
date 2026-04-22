@@ -74,11 +74,16 @@ describe('statsPage', () => {
       expect(comp.error).toBe(null);
     });
 
-    it('sets error on failure', async () => {
-      fetchPlatformStats.mockRejectedValue(new Error('Server down'));
+    it('sets sanitized generic error on failure (raw err -> console.warn, leak sentinel absent)', async () => {
+      const leaky = new Error('Server down deadbeef-sentinel');
+      fetchPlatformStats.mockRejectedValue(leaky);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const comp = createComponent();
       await comp.loadStats();
-      expect(comp.error).toBe('Server down');
+      expect(comp.error).toBe('stats.loadFailed');
+      expect(comp.error).not.toContain('deadbeef-sentinel');
+      expect(warnSpy).toHaveBeenCalled();
+      expect(warnSpy.mock.calls[0][1]).toBe(leaky);
       expect(comp.loading).toBe(false);
       expect(comp.stats).toBe(null);
     });

@@ -90,7 +90,8 @@ export function initStatsPage() {
         const res = await fetchPlatformStats();
         this.stats = res.data;
       } catch (err) {
-        this.error = err?.message || this.$t('stats.loadFailed');
+        console.warn('[stats load]', err);
+        this.error = this.$t('stats.loadFailed');
       } finally {
         this.loading = false;
       }

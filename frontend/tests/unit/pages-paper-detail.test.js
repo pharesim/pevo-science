@@ -46,6 +46,25 @@ vi.mock('alpinejs', () => ({
 
 import Alpine from 'alpinejs';
 import { initPaperDetailPage } from '../../src/pages/paper-detail.js';
+import {
+  fetchPaper,
+  fetchCitationExport,
+  retractPaper,
+  updateBridgePaper,
+  claimAuthorship,
+  approveAuthorshipClaim,
+  revokeAuthorshipClaim,
+} from '../../src/api.js';
+import { computeVersionDiff } from '../../src/lib/version-diff.js';
+
+// Sentinel the DOM-bound field / toast must NOT contain.
+const LEAK_SENTINEL = 'deadbeef-leak-sentinel';
+
+function leakyError(code) {
+  const err = new Error(`server leak: ${LEAK_SENTINEL} pg=table_not_found`);
+  if (code) err.code = code;
+  return err;
+}
 
 function createComponent(overrides = {}) {
   initPaperDetailPage();
@@ -450,6 +469,136 @@ describe('paperDetailPage', () => {
         authorship_claims: [{ claimer: 'carol', status: 'pending' }],
       };
       expect(comp.canClaimUnlisted).toBe(false);
+    });
+  });
+
+  // Error-sanitization invariant (convention:
+  // agents/docs/solutions/conventions/frontend-error-sanitization-2026-04-21.md).
+  // Per sanitized handler: generic i18n key binds to DOM/toast, raw err reaches
+  // console.warn, leak sentinel does NOT surface in the bound field/toast.
+  describe('error sanitization', () => {
+    let warnSpy;
+
+    beforeEach(() => {
+      warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    });
+
+    it('loadPaper generic branch: generic key, raw err to warn, no leak', async () => {
+      const err = leakyError();
+      fetchPaper.mockRejectedValue(err);
+      const comp = createComponent();
+      await comp.loadPaper();
+      expect(comp.error).toBe('paperDetail.errorLoadingTitle');
+      expect(comp.error).not.toContain(LEAK_SENTINEL);
+      expect(warnSpy).toHaveBeenCalled();
+      expect(warnSpy.mock.calls[0][1]).toBe(err);
+    });
+
+    it('loadPaper NOT_FOUND carve-out: localized title, no warn', async () => {
+      // Retry loop yields 3 delayed attempts then falls to the final branch.
+      // Keep delays from hanging the test by rejecting with NOT_FOUND on every attempt.
+      const err = leakyError('NOT_FOUND');
+      fetchPaper.mockRejectedValue(err);
+      vi.useFakeTimers();
+      const comp = createComponent();
+      const p = comp.loadPaper();
+      // Advance through the 3 x 2000ms retry delays.
+      await vi.advanceTimersByTimeAsync(6000);
+      await p;
+      vi.useRealTimers();
+      expect(comp.error).toBe('paperDetail.notFoundTitle');
+      expect(comp.error).not.toContain(LEAK_SENTINEL);
+      expect(warnSpy).not.toHaveBeenCalled();
+    });
+
+    it('loadVersion: generic key, raw err to warn, no leak', async () => {
+      const err = leakyError();
+      fetchPaper.mockRejectedValue(err);
+      const comp = createComponent();
+      await comp.loadVersion(2);
+      expect(mockStores.toast.show).toHaveBeenCalledWith('common.loadVersionFailed', 'error');
+      expect(mockStores.toast.show.mock.calls[0][0]).not.toContain(LEAK_SENTINEL);
+      expect(warnSpy).toHaveBeenCalled();
+      expect(warnSpy.mock.calls[0][1]).toBe(err);
+    });
+
+    it('handleCitationExport: generic key, raw err to warn, no leak', async () => {
+      const err = leakyError();
+      fetchCitationExport.mockRejectedValue(err);
+      const comp = createComponent();
+      await comp.handleCitationExport('bibtex');
+      expect(mockStores.toast.show).toHaveBeenCalledWith('citation.exportFailed', 'error');
+      expect(mockStores.toast.show.mock.calls[0][0]).not.toContain(LEAK_SENTINEL);
+      expect(warnSpy).toHaveBeenCalled();
+      expect(warnSpy.mock.calls[0][1]).toBe(err);
+    });
+
+    it('handleRetract: generic key, raw err to warn, no leak', async () => {
+      const err = leakyError();
+      retractPaper.mockRejectedValue(err);
+      const comp = createComponent();
+      await comp.handleRetract();
+      expect(mockStores.toast.show).toHaveBeenCalledWith('retraction.failed', 'error');
+      expect(mockStores.toast.show.mock.calls[0][0]).not.toContain(LEAK_SENTINEL);
+      expect(warnSpy).toHaveBeenCalled();
+      expect(warnSpy.mock.calls[0][1]).toBe(err);
+    });
+
+    it('handleBridgeSync: generic key, raw err to warn, no leak', async () => {
+      const err = leakyError();
+      updateBridgePaper.mockRejectedValue(err);
+      const comp = createComponent();
+      await comp.handleBridgeSync();
+      expect(mockStores.toast.show).toHaveBeenCalledWith('bridge.syncFailed', 'error');
+      expect(mockStores.toast.show.mock.calls[0][0]).not.toContain(LEAK_SENTINEL);
+      expect(warnSpy).toHaveBeenCalled();
+      expect(warnSpy.mock.calls[0][1]).toBe(err);
+    });
+
+    it('startDiff: generic key, raw err to warn, no leak', async () => {
+      const err = leakyError();
+      fetchPaper.mockRejectedValue(err);
+      computeVersionDiff.mockReturnValue({ title: {} });
+      const comp = createComponent();
+      await comp.startDiff(1, 2);
+      expect(comp.diffError).toBe('common.diffLoadFailed');
+      expect(comp.diffError).not.toContain(LEAK_SENTINEL);
+      expect(mockStores.toast.show).toHaveBeenCalledWith('common.diffLoadFailed', 'error');
+      expect(warnSpy).toHaveBeenCalled();
+      expect(warnSpy.mock.calls[0][1]).toBe(err);
+    });
+
+    it('handleClaimSlot: generic key, raw err to warn, no leak', async () => {
+      const err = leakyError();
+      claimAuthorship.mockRejectedValue(err);
+      const comp = createComponent();
+      await comp.handleClaimSlot(0);
+      expect(mockStores.toast.show).toHaveBeenCalledWith('claims.claimFailed', 'error');
+      expect(mockStores.toast.show.mock.calls[0][0]).not.toContain(LEAK_SENTINEL);
+      expect(warnSpy).toHaveBeenCalled();
+      expect(warnSpy.mock.calls[0][1]).toBe(err);
+    });
+
+    it('handleApproveClaim: generic key, raw err to warn, no leak', async () => {
+      const err = leakyError();
+      approveAuthorshipClaim.mockRejectedValue(err);
+      const comp = createComponent();
+      await comp.handleApproveClaim('bob', 0);
+      expect(mockStores.toast.show).toHaveBeenCalledWith('claims.approveFailed', 'error');
+      expect(mockStores.toast.show.mock.calls[0][0]).not.toContain(LEAK_SENTINEL);
+      expect(warnSpy).toHaveBeenCalled();
+      expect(warnSpy.mock.calls[0][1]).toBe(err);
+    });
+
+    it('handleRejectClaim: generic key, raw err to warn, no leak', async () => {
+      const err = leakyError();
+      revokeAuthorshipClaim.mockRejectedValue(err);
+      const comp = createComponent();
+      await comp.handleRejectClaim('bob');
+      expect(mockStores.toast.show).toHaveBeenCalledWith('claims.rejectFailed', 'error');
+      expect(mockStores.toast.show.mock.calls[0][0]).not.toContain(LEAK_SENTINEL);
+      expect(warnSpy).toHaveBeenCalled();
+      expect(warnSpy.mock.calls[0][1]).toBe(err);
     });
   });
 });
