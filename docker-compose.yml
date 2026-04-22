@@ -72,6 +72,12 @@ services:
       REDIS_URL: redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}@redis:6379
       IPFS_API_URL: http://ipfs:5001
       PORT: "3001"
+      # Cap libuv thread pool above argon2's effective serialization so the
+      # burnSentinel path in backend/src/routes/auth.ts cannot silently throw
+      # under concurrent /login, /signup, /resend-verification, /recover load
+      # (see comment near SENTINEL_ARGON2_HASH_PROMISE). Default is 4, which
+      # saturates at ~4 concurrent auth requests and reopens the timing oracle.
+      UV_THREADPOOL_SIZE: "16"
     depends_on:
       postgres:
         condition: service_healthy
