@@ -133,3 +133,21 @@ Hold items:
 
 Deferred / dismissed during triage (no action required on this task):
 - Extended `localStorage.removeItem` future-async hazard comment (item 5 of prior hold) is still accurate and does not need rewording.
+
+## UI re-review signal (2026-04-22, commit 6f0cdd5)
+
+All 3 round-2 hold items addressed in a single focused commit (`6f0cdd5 fix(ui): apply FE-ORCID-CALLBACK-TEARDOWN-CLEANUP round-2 hold fixes`):
+
+1. Added `if (!this._mounted) return;` as the first line of `_handleSignup`, `_handleLogin`, and `_handleLink` in `frontend/src/pages/orcid-callback.js`. `_handleAccredit`'s existing guard kept verbatim. One intentional divergence: dropped `_handleAccredit`'s now-stale block comment ("Self-guard: unlike the other handlers, this one has no navigation to terminate the flow...") because it's false under the new uniform posture. The guard line itself is unchanged.
+
+2. Added three direct-call post-teardown tests in `frontend/tests/unit/pages-orcid-callback.test.js`, mirroring the existing `_handleAccredit` test shape:
+   - `_handleSignup direct-call post-teardown is a no-op (handler self-guards)` — asserts no signup-token / orcid-id / name writes, no `pevo_orcid_return_to` removal, no navigate, no toast.
+   - `_handleLogin direct-call post-teardown is a no-op (handler self-guards)` — snapshots auth-store state pre-call, asserts all four auth fields unchanged post-call, plus no `_saveSession`, no `_checkAccreditation`, no toast. Also advances fake timers by 1000ms to prove the 500ms redirect setTimeout was never armed (no navigate).
+   - `_handleLink direct-call post-teardown is a no-op (handler self-guards)` — asserts no `pevo_orcid_link_complete` write, no navigate, no toast.
+   Each test is mutation-kill for its handler's new self-guard — removing the guard flips the assertions.
+
+3. Rewrote the switch-level comment in `_verify` (previously lines 141-145) to the architect's suggested wording verbatim: "Handlers self-guard on _mounted. The dispatch-level check above is belt-and-suspenders — either guard alone would suffice; both together tolerate a direct-call code path being added later without re-reading the whole file." The `_handleAccredit` exception clause is gone.
+
+Verification: `npx vitest run tests/unit/pages-orcid-callback.test.js` passes all 34 tests (was 31 — 3 new). Full frontend unit suite passes (901 tests); the one failing suite (`sec-001-equivalence.test.js`) is the pre-existing unrelated `@hiveio/dhive` import resolution issue, reproduces against HEAD without my changes and is documented in prior re-review signals. `npm run build` clean.
+
+Note on worktree state: at the start of this cycle the worktree was stale relative to main (missing the round-2 hold block commit `6adddd9`), so I merged main to pick up the hold block before implementing. Per the parent's dispatch instructions, no new task-file `git mv` was performed — the task file stays in `pending/`; the parent owns the review transition.
