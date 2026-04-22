@@ -225,6 +225,40 @@ describe('GET /api/papers — discipline-filter SQL uses LOWER() on both sides',
   );
 });
 
+describe('GET /api/papers — discipline-filter cache-key canonicalization', () => {
+  it(
+    'Hold #1 (round 3): case-variant ?discipline= values serve from a single cache entry (papers-data query invoked once)',
+    async () => {
+      // Round-3 hold #1 (papers.ts sibling of search.ts round-2 hold #6):
+      // `/api/papers` was lowercasing at the SQL-binder site only; the route
+      // handler's cache key embedded the raw (non-lowercased) `discipline`
+      // value. `?discipline=Physics` and `?discipline=physics` produced
+      // distinct Redis cache entries despite the SQL-side LOWER() match,
+      // defeating the dedup at the memoization layer on the PRIMARY paper
+      // feed. Fix mirrors search.ts:287 — lowercase once at route entry.
+      //
+      // Filter to the papers-data query (absent from papers-count, reviews,
+      // and the batch reputation/vote-ops lookups). The `LEFT(c.body, 300)
+      // AS abstract` fragment is unique to the papers SELECT data path.
+      // Tighten to `toBe(1)` so a regression to per-casing cache keys (which
+      // would emit 2 data queries across the two case-variant requests)
+      // surfaces.
+      hafQueryMock.mockResolvedValue({ rows: [] });
+
+      const res1 = await request(app).get('/api/papers?discipline=Physics');
+      const res2 = await request(app).get('/api/papers?discipline=physics');
+      expect(res1.status).toBe(200);
+      expect(res2.status).toBe(200);
+
+      const papersDataCalls = hafQueryMock.mock.calls.filter((call) => {
+        const sql = String(call[0] || '');
+        return sql.includes('LEFT(c.body, 300) AS abstract');
+      });
+      expect(papersDataCalls).toHaveLength(1);
+    },
+  );
+});
+
 describe('GET /api/search — discipline-filter cache-key canonicalization', () => {
   it(
     'Hold #1 (round 2): case-variant ?discipline= values serve from a single cache entry (papers-search data query invoked once)',
