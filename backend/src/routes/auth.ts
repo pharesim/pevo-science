@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import jwt from 'jsonwebtoken';
 import argon2 from 'argon2';
 import nodemailer from 'nodemailer';
+import { z } from 'zod';
 import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';
 import { sendOk, sendError } from '../response.js';
 import { config } from '../config.js';
@@ -14,6 +15,55 @@ import { logger } from '../logger.js';
 import { decryptKey } from '../custody-crypto.js';
 import { isPasswordValid, PASSWORD_POLICY_MESSAGE } from '../lib/password-policy.js';
 import { ARGON2_OPTIONS } from '../lib/argon2-options.js';
+
+// ─── Per-route Zod body schemas (BE-REQUEST-BODY-TYPING-ZOD) ────
+//
+// These schemas replace the `req.body as any` + `field as string` casts
+// that previously existed across these 3 handlers. Each schema narrows
+// req.body to a real TypeScript type via z.infer, so downstream code
+// gets type-safe destructuring without unsafe casts.
+//
+// Incremental migration: only /login, /signup, and /recover are covered
+// here. Business validation (isEmail / isPasswordValid / etc.) still
+// runs after the schema parse; Zod handles shape only. Status codes and
+// error-code strings remain unchanged.
+//
+// Error shape: on parse failure, handlers return 400 VALIDATION_ERROR
+// with `details.issues` carrying the raw zod issue array. That matches
+// existing 400 VALIDATION_ERROR conventions (no handler currently
+// returns a bare validation error without a message; the new responses
+// add machine-readable detail without changing status codes).
+
+const LoginBodySchema = z.object({
+  // Either `username` or `email_or_username` must be present — the
+  // handler accepts both for backward compatibility with older frontend
+  // builds. Both are optional in the schema; a superRefine enforces the
+  // OR-required semantic. Dropping either field out of the schema
+  // would 400-bounce legit frontend traffic sending the other.
+  username: z.string().optional(),
+  email_or_username: z.string().optional(),
+  password: z.string().optional(),
+}).refine(
+  (b) => (b.username && b.username.length > 0) || (b.email_or_username && b.email_or_username.length > 0),
+  { message: 'username or email_or_username is required', path: ['username'] },
+);
+
+const SignupBodySchema = z.object({
+  email: z.string().optional(),
+  password: z.string().optional(),
+  full_name: z.string().optional(),
+  institution: z.string().optional(),
+  field: z.string().optional(),
+  orcid_token: z.string().optional(),
+});
+
+const RecoverBodySchema = z.object({
+  username: z.string().min(1),
+  new_email: z.string().min(1),
+  new_password: z.string().optional().nullable(),
+  memo_key: z.string().optional(),
+  orcid_token: z.string().optional(),
+});
 
 const router = Router();
 const SESSION_EXPIRY = '24h';
@@ -130,9 +180,13 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
   const pool = getAppPool();
   if (!pool) return sendError(res, 503, 'INTERNAL_ERROR', 'Registration not available');
 
-  const { email, password, full_name, institution, field, orcid_token } = req.body || {};
+  const parsed = SignupBodySchema.safeParse(req.body);
+  if (!parsed.success) {
+    return sendError(res, 400, 'VALIDATION_ERROR', 'Invalid request body', { issues: parsed.error.issues });
+  }
+  const { email, password, full_name, institution, field, orcid_token } = parsed.data;
 
-  const hasOrcidToken = orcid_token && typeof orcid_token === 'string';
+  const hasOrcidToken = !!(orcid_token && orcid_token.length > 0);
 
   // Validate orcid_token first if provided — retrieve verified ORCID data
   let verifiedOrcid: string | null = null;
@@ -158,9 +212,12 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
     }
   }
 
-  // Validate required fields — relaxed when orcid_token is present
-  const hasEmail = email && typeof email === 'string';
-  const hasPassword: boolean = !!(password && typeof password === 'string');
+  // Validate required fields — relaxed when orcid_token is present.
+  // Zod ensures every named field is either string-or-undefined; the
+  // nonempty checks below are the business-required-field guards, NOT
+  // type guards.
+  const hasEmail = !!(email && email.length > 0);
+  const hasPassword = !!(password && password.length > 0);
 
   if (!hasOrcidToken) {
     // Standard signup: all fields required
@@ -170,13 +227,13 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
     if (!isPasswordValid(password)) {
       return sendError(res, 400, 'VALIDATION_ERROR', PASSWORD_POLICY_MESSAGE);
     }
-    if (!full_name || typeof full_name !== 'string') {
+    if (!full_name || full_name.length === 0) {
       return sendError(res, 400, 'VALIDATION_ERROR', 'Full name is required');
     }
-    if (!institution || typeof institution !== 'string') {
+    if (!institution || institution.length === 0) {
       return sendError(res, 400, 'VALIDATION_ERROR', 'Institution is required');
     }
-    if (!field || typeof field !== 'string') {
+    if (!field || field.length === 0) {
       return sendError(res, 400, 'VALIDATION_ERROR', 'Field of research is required');
     }
   } else {
@@ -186,15 +243,15 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
     }
   }
 
-  const normalizedEmail = hasEmail ? (email as string).trim().toLowerCase() : null;
+  const normalizedEmail = hasEmail ? email!.trim().toLowerCase() : null;
   const isInstitutional = normalizedEmail ? isInstitutionalEmail(normalizedEmail) : false;
 
   // Resolve full_name: explicit value > ORCID profile name
-  const resolvedName = (full_name && typeof full_name === 'string')
+  const resolvedName = (full_name && full_name.length > 0)
     ? full_name.trim()
     : (orcidName || '');
-  const resolvedInstitution = (institution && typeof institution === 'string') ? institution.trim() : '';
-  const resolvedField = (field && typeof field === 'string') ? field.trim() : '';
+  const resolvedInstitution = institution ? institution.trim() : '';
+  const resolvedField = field ? field.trim() : '';
 
   try {
     // Check email not already registered or pending (skip for no-email ORCID signups).
@@ -471,13 +528,20 @@ router.post('/login', loginLimiter, async (req: Request, res: Response) => {
   const pool = getAppPool();
   if (!pool) return sendError(res, 503, 'INTERNAL_ERROR', 'Login not available');
 
-  const { username, email_or_username, password } = req.body || {};
+  const parsed = LoginBodySchema.safeParse(req.body);
+  if (!parsed.success) {
+    return sendError(res, 400, 'VALIDATION_ERROR', 'Invalid request body', { issues: parsed.error.issues });
+  }
+  const { username, email_or_username, password } = parsed.data;
   const loginId = email_or_username || username;
 
-  if (!loginId || typeof loginId !== 'string') {
+  if (!loginId) {
+    // Schema.refine already enforces "one of" — this branch is a
+    // defensive noop kept for clarity of intent. Post-refine the union
+    // invariant holds, so loginId is non-empty here.
     return sendError(res, 400, 'VALIDATION_ERROR', 'Username or email is required');
   }
-  if (!password || typeof password !== 'string') {
+  if (!password) {
     return sendError(res, 400, 'VALIDATION_ERROR', 'Password is required');
   }
 
@@ -767,15 +831,13 @@ router.post('/recover', recoverLimiter, async (req: Request, res: Response) => {
   const pool = getAppPool();
   if (!pool) return sendError(res, 503, 'INTERNAL_ERROR', 'Service not available');
 
-  const { username, memo_key, orcid_token, new_email, new_password } = req.body || {};
+  const parsed = RecoverBodySchema.safeParse(req.body);
+  if (!parsed.success) {
+    return sendError(res, 400, 'VALIDATION_ERROR', 'Invalid request body', { issues: parsed.error.issues });
+  }
+  const { username, memo_key, orcid_token, new_email, new_password } = parsed.data;
 
-  // Validate required fields
-  if (!username || typeof username !== 'string') {
-    return sendError(res, 400, 'VALIDATION_ERROR', 'Username is required');
-  }
-  if (!new_email || typeof new_email !== 'string') {
-    return sendError(res, 400, 'VALIDATION_ERROR', 'New email is required');
-  }
+  // Business-required guards (Zod enforced shape only).
   if (!memo_key && !orcid_token) {
     return sendError(res, 400, 'VALIDATION_ERROR', 'Either memo_key or orcid_token is required for recovery');
   }
@@ -828,7 +890,7 @@ router.post('/recover', recoverLimiter, async (req: Request, res: Response) => {
       // any attacker holding an ORCID token. Gate on passwordProvided so the
       // unknown/known wall-times match for each caller shape.
       if (passwordProvided) {
-        await burnSentinel(new_password as string);
+        await burnSentinel(new_password!);
       }
       return sendError(res, 404, 'NOT_FOUND', 'Account not found');
     }
@@ -914,7 +976,7 @@ router.post('/recover', recoverLimiter, async (req: Request, res: Response) => {
     // password re-establishes the account but leaves password-login disabled
     // until the user opts in via /api/settings/set-password).
     const passwordHash = passwordProvided
-      ? await argon2.hash(new_password as string, ARGON2_OPTIONS)
+      ? await argon2.hash(new_password!, ARGON2_OPTIONS)
       : null;
 
     // Update account: new password (or null), new email, invalidate all sessions

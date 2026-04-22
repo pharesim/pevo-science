@@ -2,6 +2,7 @@ import { Router, type Request, type Response } from 'express';
 import crypto from 'node:crypto';
 import jwt from 'jsonwebtoken';
 import { PrivateKey } from '@hiveio/dhive';
+import { z } from 'zod';
 import { config } from '../config.js';
 import { hiveClient, broadcastJsonWithTimeout } from '../hive.js';
 import { getRedis, isRedisAvailable } from '../redis.js';
@@ -12,6 +13,16 @@ import { sendOk, sendError } from '../response.js';
 import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';
 import { rateLimit, byIp } from '../middleware/rateLimit.js';
 import { logger } from '../logger.js';
+
+// Per-route Zod body schema for POST /api/orcid/callback
+// (BE-REQUEST-BODY-TYPING-ZOD). Narrows req.body to typed fields so
+// downstream code doesn't need `req.body as { code?: string; state?: string }`
+// casts. Business-required guards ("code and state are required") still
+// run after the schema parse; Zod only enforces shape.
+const CallbackBodySchema = z.object({
+  code: z.string().optional(),
+  state: z.string().optional(),
+});
 
 const router = Router();
 
@@ -178,7 +189,11 @@ router.post('/callback', callbackLimiter, async (req: Request, res: Response) =>
     return sendError(res, 500, 'INTERNAL_ERROR', 'ORCID integration is not configured');
   }
 
-  const { code, state } = req.body as { code?: string; state?: string };
+  const parsed = CallbackBodySchema.safeParse(req.body);
+  if (!parsed.success) {
+    return sendError(res, 400, 'VALIDATION_ERROR', 'Invalid request body', { issues: parsed.error.issues });
+  }
+  const { code, state } = parsed.data;
   if (!code || !state) {
     return sendError(res, 400, 'BAD_REQUEST', 'code and state are required');
   }
