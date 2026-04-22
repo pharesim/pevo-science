@@ -119,3 +119,64 @@ All 4 round-1 hold items landed. `npx tsc --noEmit` clean. Per-route test files 
 **Inline comment fix:** `backend/src/routes/orcid.ts:~617` — the `ORCID_BINDING_LOCK_TTL_SECONDS` block-comment line citing "30s dhive timeout" has been updated to reference the helper-enforced wall-clock bound in `hive.ts`. The task file noted orcid.ts:40 originally; the line drifted to ~617 during the SEC-002-TOCTOU-LOCK round-2 refactor but the inaccurate prose was the same.
 
 **Out of scope (filed as separate Pending tasks per architect's round-1 hold):** `backend-orcid-broadcast-timeout-outcome-handling.md` (ambiguous-outcome + retry semantics), `backend-wot-broadcast-timeout-handling.md` (wot.ts library-level discrimination + cascade wall-clock cap), `backend-broadcast-sendoperations-wrap.md` (unwrapped `broadcast.sendOperations` sites in bridge/custody/anonymousReview/signup-verify).
+
+---
+
+**Architect re-review (2026-04-22) — HELD PENDING FIXES (round 2):**
+
+Round-2 `/ce-code-review` on commit `618e024` (10 personas: correctness, testing, maintainability, project-standards, kieran-typescript, api-contract, reliability, adversarial, agent-native, learnings-researcher). All 4 round-1 hold items are present in code; two P1 issues block archive and several P2 polish items collapse into the same hold-fix commit. Full per-persona artifacts at `.context/compound-engineering/ce-code-review/20260422-124330-25bdd0c4/`.
+
+1. **P1 — `retriable:true` on `/api/orcid/callback` 504 is factually false and contradicts the existing convention** (adversarial ADV-R2-001 0.93 + learnings-researcher convergence, 2-reviewer). The OAuth `state` is unconditionally deleted at `backend/src/routes/orcid.ts:~253` BEFORE dispatch to `handleAccredit`/`handleLink`. On 504 timeout the response advertises `retriable:true`; a client retry with the same `{code, state}` hits the state-check at `orcid.ts:~245` and returns 400 BAD_REQUEST "Invalid or expired state parameter." The retry physically cannot succeed. Also: `agents/docs/solutions/conventions/chain-write-timeout-ambiguous-outcome-2026-04-22.md` already mandates `retriable:false + outcome:'uncertain' + verify_before_retry:true` for this exact pattern — the round-1 hold's `retriable:true` spec contradicted a load-bearing convention doc.
+
+   **Fix at both `handleAccredit` and `handleLink` timeout catches:**
+   ```ts
+   sendError(res, 504, 'BROADCAST_TIMEOUT', '<mode-specific message>', {
+     retriable: false,
+     outcome: 'uncertain',
+     verify_before_retry: true,
+     verify_location: '/settings',
+     timeout_ms: err.timeoutMs,
+   });
+   ```
+   Apply the same `retriable:false + outcome:'uncertain' + verify_before_retry:true` envelope at the 5 other 504 sites (`accreditation.ts /verify`, `papers.ts /retract`, `claims.ts` x3) for consistency — a broadcast abort is ambiguous-outcome at every surface, not just `/callback`. The contract doc (`agents/docs/api-contracts/common.md` Standard Error Codes table, updated by architect during this review pass) is the new source of truth for the `BROADCAST_TIMEOUT` envelope shape.
+
+   Update the 504 `orcid.test.ts` specs to assert the new envelope (`retriable:false, outcome:'uncertain', verify_before_retry:true, timeout_ms:30000`). The 5 non-orcid sites also need their 504 envelope updated + test coverage (see item #2).
+
+   Coordination: `ui-orcid-callback-retriable-branch.md` (currently in `review/`, blocked on this round) will be re-reviewed AFTER this task's round-3 fixes land so its retriable-consumer logic matches the corrected backend envelope.
+
+2. **P1 — `accreditation.ts /verify` and `papers.ts /retract` ship 504/502 discrimination with ZERO test coverage** (testing TEST-002 + TEST-003 0.95 each). Round-1 hold P2 item #4 required per-route timeout specs at all 7 migrated surfaces. Delivered: `orcid.test.ts` (2 specs), `claims.test.ts` (4 specs). Missing: `accreditation.test.ts` and `retract.test.ts` — both files cover only short-circuit paths (400/401/404/422) with no `vi.mock` for `broadcastJsonWithTimeout`, so a regression reverting the `instanceof BroadcastTimeoutError` check or changing the 504 code to 500 passes all tests green.
+
+   Add per-file:
+   - `accreditation.test.ts` — 2 specs: (a) 504 BROADCAST_TIMEOUT envelope + token NOT deleted (token survives for retry after chain-state verify); (b) 502 BROADCAST_FAILED envelope + token IS deleted (see item #3).
+   - `retract.test.ts` — 2 specs: (a) 504 envelope + no post-broadcast state writes; (b) 502 envelope. Mirror the orcid/claims pattern (vi.hoisted MockBroadcastTimeoutError, vi.mock broadcastJsonWithTimeout, mockRejectedValueOnce).
+
+3. **P2 — `accreditation.ts /verify` token survives the 502 path** (correctness COR-001 0.87). `deleteToken(token)` is inside the try block after a successful broadcast. On 502 (chain-rejected, `retriable:false`) the token survives its 24h TTL and can be reused, contradicting the `retriable:false` advertisement. Fix: call `deleteToken(token)` before the 502 `sendError` (but NOT on 504 — the 504 path is retriable-after-verify, so the token must survive). Pair the token-lifecycle change with the `accreditation.test.ts` specs from item #2.
+
+4. **P2 — All 7 `BroadcastTimeoutError` catch branches emit no server-side log** (reliability R2-001 0.95). The non-timeout (`else`) branch at every site logs with `logger.error`; the timeout branch has no log call. Operators cannot detect slow-node events via log aggregation or alerting; a sustained degraded-Hive-node period silently drops broadcasts with no pager signal. Fix at each of the 7 sites: add `logger.warn({err, timeoutMs: err.timeoutMs, ...routeCtx}, '<route> broadcast timed out')` before the `sendError` call. `logger.warn` is the right tier (expected degraded-node event, not a code bug).
+
+5. **P3 — `BroadcastTimeoutError` missing `Error.captureStackTrace`** (kieran-typescript KT-R2-1 0.92). `backend/src/hive.ts:33` — add `Error.captureStackTrace(this, BroadcastTimeoutError)` in the constructor so stack traces point to the broadcast call site instead of the Promise timeout closure. One-liner fold into the hold-fix commit; touches every 504 log across all 8 catch sites (7 routes + wot.ts).
+
+6. **P3 — `claims.test.ts` describe-block comment asserts `hafCache.invalidate` NOT called on timeout, but no assertion enforces it** (testing TEST-001 0.92). `backend/tests/routes/claims.test.ts:~388`. Add a `vi.spyOn(hafCache, 'invalidate')` + `expect(invalidateSpy).not.toHaveBeenCalled()` to each of the 4 claims timeout specs so a future refactor that moves `invalidate` outside the try surfaces as a failing test. Same describe-block opportunity.
+
+**Dismissed from round-2 findings (architect triage):**
+- **P3** AC-008 Retry-After header absent on 504 (0.88): intentional — the 504 is ambiguous-outcome, not a simple "wait N seconds and retry," so `Retry-After` would mislead. Document via item #1's `verify_before_retry` field instead.
+- **P3** AC-009 `BROADCAST_FAILED` emits two HTTP statuses (500 bridge/custody, 502 the 7 migrated surfaces): subsumed by the new follow-up task `backend-bridge-custody-broadcast-discrimination.md` (filed below).
+- **P3** ADV-R2-002 `/verify` double-broadcast risk: subsumed by item #1 (504 `retriable:false` closes the naive-retry window) + item #3 (token deletion on 502).
+- **P3** COR-002 comment/assertion `toBe(1)` vs `toHaveLength(1)` cosmetic.
+- **P3** COR-003 `sendOk` inside try block emits false 502 on client-disconnect: low likelihood; opportunistic fix if easy, not blocking.
+- **P3** KT-R2-3 `(err as Error).message` pattern in `bridge.ts`: pre-existing; subsumed by the new bridge/custody follow-up.
+- **P3** KT-R2-4 `as never` test casts: pre-existing stylistic.
+- **P3** MAINT-005 dead `if (timer)` guard: cosmetic.
+
+**Filed as separate Pending tasks (out of scope for this hold):**
+- `backend-handle-broadcast-error-helper.md` (new P3) — extract the 7-site try/catch discrimination pattern into a `handleBroadcastError(res, err, opts)` helper (MAINT-001 0.88). Purely a DRY refactor; does not block archive of THIS task.
+- `backend-bridge-custody-broadcast-discrimination.md` (new P2) — migrate `bridge.ts` (`/register`, `/update`) + `custody.ts` (`/broadcast`) `broadcastSendOperationsWithTimeout` catch blocks to the 504/502 discrimination pattern; remove `err.message` / `jse_shortmsg` interpolation from bridge response bodies (MAINT-002 + KT-R2-2 + KT-R2-3 convergence). Depends on the helper from the previous task.
+- `backend-log-pii-email-hash.md` (new P2) — replace plaintext `email` log fields with truncated SHA-256 hashes at `signup-verify.ts`, `accreditation.ts`, and any sibling sites (MAINT-004 0.80). PEvO privacy-by-design vs persistent error logs.
+
+**Architect-owned fix-in-place (applied in this review pass):**
+- `agents/docs/api-contracts/common.md` — Standard Error Codes table updated: `BROADCAST_FAILED` → HTTP 502, `details.retriable:false`; `BROADCAST_TIMEOUT` → HTTP 504 with the `{retriable:false, outcome:'uncertain', verify_before_retry:true, timeout_ms:number}` envelope per the convention doc. Closes AC-001 + AC-002 + AC-007.
+- `agents/docs/api-contracts/orcid.md` — `/callback` errors list extended with 502 BROADCAST_FAILED and 504 BROADCAST_TIMEOUT entries including the `verify_location:'/settings'` hint. Closes AC-004.
+- `agents/docs/api-contracts/accreditation.md` — `/verify` errors list extended. Closes AC-003.
+- `agents/docs/api-contracts/papers.md` — `/retract` + claims `/approve` + claims `/revoke` errors lists extended. Closes AC-005 + AC-006.
+
+**Path to re-archive:** (1) Backend applies items #1-6 on this task. The contract-file shape (common.md BROADCAST_TIMEOUT envelope) is now the source of truth — backend code must match. (2) Backend re-review signal block below the hold. (3) Architect re-reviews round-3 with `/ce-code-review` (adversarial + reliability + testing mandatory given P1 scope); archives on clean. Filed follow-up tasks archive independently.

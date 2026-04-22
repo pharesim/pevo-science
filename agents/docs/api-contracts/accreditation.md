@@ -126,7 +126,10 @@ Confirm an email verification token to complete accreditation.
 
 The backend broadcasts the accreditation `custom_json` to Hive upon successful verification.
 
-**Errors:** `BAD_REQUEST` (invalid/expired token)
+**Errors:**
+- `BAD_REQUEST` — invalid/expired token.
+- `BROADCAST_FAILED` (502) — Hive chain rejected the accreditation broadcast. `details.retriable: false`. The token is consumed; request a new verification token.
+- `BROADCAST_TIMEOUT` (504) — Backend aborted the broadcast at 30s. Outcome uncertain. `details.retriable: false, details.outcome: 'uncertain', details.verify_before_retry: true, details.timeout_ms: 30000`. Verify whether the accreditation landed (query `/api/accreditation/:username` against HAF) before retrying — a blind retry while the original broadcast lands silently produces duplicate `accredit` custom_json ops.
 
 ---
 

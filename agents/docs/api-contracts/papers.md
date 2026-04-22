@@ -12,7 +12,7 @@ List PEvO papers with filtering and sorting.
 
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
-| `discipline` | string | — | Filter by discipline |
+| `discipline` | string | — | Filter by discipline. Match is case-insensitive (the backend lowercases both the query param and the stored value via `LOWER()`). Case-variant values share a single Redis cache entry. Pass `canon_name` from `GET /api/disciplines` as the canonical form. Repeated params (`?discipline=a&discipline=b`) are treated as no-filter rather than coerced to a single value; clients SHOULD send exactly one value. |
 | `keyword` | string | — | Filter by keyword tag |
 | `author` | string | — | Filter by Hive username |
 | `language` | string | — | Filter by language code (e.g. `en`, `de`, `es`) |
@@ -303,6 +303,8 @@ Approve a pending authorship claim. For bridge papers, the server broadcasts dir
 **Errors:**
 - `FORBIDDEN` — `"Only the post author can approve claims on native papers"` (native path), OR `"Only the platform admin or an approved co-author can approve claims on bridge papers"` (bridge path, caller is neither admin nor approved co-author), OR `"Claimer cannot approve their own claim"` (bridge path, caller is the claimer even if they are admin or co-author elsewhere).
 - `UNAUTHORIZED` — invalid Hive signature.
+- `BROADCAST_FAILED` (502) — Hive chain rejected the approve broadcast. `details.retriable: false`. Fires only on the bridge-server-side-broadcast path.
+- `BROADCAST_TIMEOUT` (504) — Backend aborted the broadcast at 30s. Outcome uncertain. `details.retriable: false, details.outcome: 'uncertain', details.verify_before_retry: true, details.timeout_ms: 30000`. Verify chain state (via HAF) before retrying to avoid duplicate approve ops.
 
 **Rate limit:** 10 per minute per account.
 
@@ -329,6 +331,8 @@ Revoke an authorship claim.
 **Errors:**
 - `FORBIDDEN` — `"Not authorized to revoke this claim"` (caller is none of: post author, claimer, admin).
 - `UNAUTHORIZED` — invalid Hive signature.
+- `BROADCAST_FAILED` (502) — Hive chain rejected the revoke broadcast. `details.retriable: false`. Fires on the bridge-admin and admin-on-native server-side-broadcast paths.
+- `BROADCAST_TIMEOUT` (504) — Backend aborted the broadcast at 30s. Outcome uncertain. `details.retriable: false, details.outcome: 'uncertain', details.verify_before_retry: true, details.timeout_ms: 30000`. Verify chain state before retrying.
 
 **Rate limit:** 10 per minute per account.
 
@@ -431,6 +435,8 @@ Retract a paper. The backend broadcasts a `retract_paper` custom_json to Hive.
 - `FORBIDDEN` — user is neither the paper author, `pevo.admin`, nor (for bridge papers) the registerer or an original author listed in `pevo.authors[].hive`
 - `NOT_FOUND` — paper does not exist
 - `VALIDATION_ERROR` (422) — paper is already retracted
+- `BROADCAST_FAILED` (502) — Hive chain rejected the retract broadcast. `details.retriable: false`.
+- `BROADCAST_TIMEOUT` (504) — Backend aborted the broadcast at 30s. Outcome uncertain. `details.retriable: false, details.outcome: 'uncertain', details.verify_before_retry: true, details.timeout_ms: 30000`. Retraction is idempotent at the chain layer; retry is safe after verifying the op did not land.
 
 ---
 
@@ -462,7 +468,7 @@ Full-text search across PEvO papers and reviews.
 |-------|------|---------|-------------|
 | `q` | string | **required** | Search query |
 | `type` | enum | `all` | `paper` or `all` (reviews are not searchable via this endpoint) |
-| `discipline` | string | — | Filter by discipline |
+| `discipline` | string | — | Filter by discipline. Match is case-insensitive (the backend lowercases both the query param and the stored value via `LOWER()`). Case-variant values share a single Redis cache entry. Pass `canon_name` from `GET /api/disciplines` as the canonical form. Repeated params (`?discipline=a&discipline=b`) are treated as no-filter rather than coerced to a single value; clients SHOULD send exactly one value. |
 | `language` | string | — | Filter by language code (e.g. `en`, `de`, `es`) |
 | `source` | enum | — | Filter by paper source: `native`, `bridge`, or omit for both |
 | `accredited_only` | boolean | `true` | Only accredited authors |

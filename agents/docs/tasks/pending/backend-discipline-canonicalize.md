@@ -221,3 +221,45 @@ Both round-3 hold items addressed. Directly-affected vitest files in isolation: 
 **Dismissed-finding still-dismissed:** boundary-rule violation (architect round-2 authorized the contract edit), Postgres LOWER() vs JS toLowerCase() Unicode divergence (ASCII-range disciplines), orphaned comment at `search.ts:67-68` (round-3 dismissed P3; code change already made it accurate).
 
 **Filed follow-up still-pending:** `backend-display-name-titlecase.md`, `backend-discipline-length-cap.md` — unchanged.
+
+---
+
+**Architect re-review (2026-04-22) — HELD PENDING FIXES (round 4):**
+
+Round-4 `/ce-code-review` on commit `a58a587` (9 personas: correctness, testing, maintainability, project-standards, kieran-typescript, api-contract, adversarial, agent-native, learnings-researcher). Full artifacts at `.context/compound-engineering/ce-code-review/20260422-123203-b301b347/`.
+
+Both round-3 hold items are correctly applied: `papers.ts` cache-key lowercasing at route entry + typeof-narrowed `req.query.discipline` parsing at all 3 sites. The pass surfaced 4 new items that block archive.
+
+1. **P3 — Double `.toLowerCase()` regression on cache-miss path** (adversarial ADV-001 0.87). `backend/src/routes/papers.ts:451` (route handler) AND `backend/src/routes/papers.ts:199` (`fetchPapersFromHaf`) both re-read `req.query.discipline` and call `.toLowerCase()` independently. Pre-commit: 1 call per cache-miss (at the SQL-bind site). Post-commit: 2 calls per cache-miss, plus a 3rd on the SWR stale-path background revalidation. `search.ts` handles this cleanly by passing the processed `discipline` value as an argument to `searchFromHaf`; `papers.ts` still passes the raw `req` through. Until `backend-discipline-length-cap.md` lands, the doubled per-request CPU exposure is visible on oversize discipline strings.
+
+   Fix: refactor `fetchPapersFromHaf` to accept `discipline` as an explicit argument (mirrors `search.ts:searchFromHaf(..., discipline)`):
+   ```ts
+   async function fetchPapersFromHaf(req: Request, discipline: string | undefined): Promise<...> {
+     // drop the lines re-reading req.query.discipline + narrowing + lowercasing
+     ...
+   }
+   ```
+   Call site at `papers.ts:~460` passes the route-handler-parsed `discipline` (narrowed + lowercased once).
+
+2. **P3 — `''` vs `undefined` fallback split is undocumented and load-bearing** (maintainability M-02 0.80). `papers.ts:451` uses `: ''` for cache-key falsy-coalesce; `papers.ts:199` + `search.ts:293` use `: undefined` for `if (discipline)` gate. The split is correct (cache-key template would stringify `undefined` to `'undefined'` and invalidate every existing entry on deploy; the SQL gate needs `undefined` to suppress the condition). Rationale lives in commit messages, not in code. Add a 2-line inline comment at `papers.ts:451` explaining why `''` is required for cache-key stability; fold opportunistically into the item-1 refactor (the refactor eliminates one of the three narrowing sites, so only two comments needed: route handler `: ''` vs inner `: undefined`).
+
+3. **P3 — No test for the `string[]` repeated-param trap** (testing T-01 0.82 + kieran-typescript TG-R4-1 + adversarial testing-gap convergence, 3-reviewer → boosted 0.92). Round-3 hold #2 added typeof-narrowing to defend against `?discipline=a&discipline=b` yielding `string[]` at Express runtime. Zero test exercises this path. A regression reverting `typeof disciplineRaw === 'string' ? ... : ''` back to `(req.query.discipline as string | undefined)?.toLowerCase() ?? ''` passes every current test because `"[object Object]"` is a consistent (if wrong) cache-key fragment across both requests in the new parity test.
+
+   Add a spec to `disciplines-canon-mocked.test.ts` (sibling of the Hold #1 round-3 block): `?discipline=a&discipline=b` → status 200, bound SQL param NOT `"[object Object]"`, cache-key fragment NOT `"[object Object]"`, two such repeat-param requests produce `papersDataCalls.toHaveLength(1)`. Mirror for `/api/search`.
+
+4. **P3 — `search.ts:67` comment factually wrong** (maintainability M-04 0.68). The comment lists `stats` among callers that lowercase `discipline` at route entry. `stats.ts` has no `?discipline=` query param — it applies `LOWER()` inside a hard-coded SQL subquery. Drop `stats` from the caller list.
+
+**Dismissed from round-4 findings (architect triage):**
+- **P3** M-01 / M-03 task-round labels in code comments + `it()` names: accepted pattern across prior rounds; consistent enough to leave. Not blocking.
+- **P2** AC-002 repeated-param contract decision (silently unfilter vs 400): architect decision → document the silent-unfilter behavior in `papers.md` (applied this pass). 400-on-repeated-param is a broader query-string-parsing design call outside this task's scope; a future `backend-zod-migration-extension.md` pass can revisit.
+- **P3** KT-R4-1 / ADV-002 sibling unsafe casts on `keyword`/`author`/`language`/`source`: pre-existing, symmetric with the fixed `discipline` but out of this task's scope. Filed hint for `backend-zod-migration-extension.md` (already pending).
+- **P3** ADV-004 `papers.ts` cache-key not SHA-hashed like `search.ts`: pre-existing asymmetry; reopen when unbounded-input DoS becomes a concrete concern.
+- **Agent-native** Gap 2 (`canon_name` not echoed in response envelope) and Gap 3 (dual contract shape): widening scope.
+
+**Filed as separate Pending tasks (out of scope for this hold):**
+- None — the sibling-casts concern is routed into the existing `backend-zod-migration-extension.md`.
+
+**Architect-owned fix-in-place (applied in this review pass):**
+- `agents/docs/api-contracts/papers.md` — `GET /api/papers` + `GET /api/search` `discipline` parameter rows now document case-insensitive matching, case-variant cache-dedup, `canon_name` guidance, and the repeated-param silent-unfilter contract. Closes AC-001 + AC-002.
+
+**Path to re-archive:** (1) Backend applies items #1-4 on this task (all P3; scope tight: one refactor + one inline comment + one test spec + one comment-delete). (2) Backend re-review signal block below the hold. (3) Architect re-reviews round-5 with a minimal `/ce-code-review` pass (correctness + testing sufficient); archives on clean.

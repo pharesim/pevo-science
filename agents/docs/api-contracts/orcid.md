@@ -193,6 +193,8 @@ No min works check on link.
 - `VALIDATION_ERROR` -- ORCID profile has fewer than `ORCID_MIN_WORKS` works (signup/accredit modes only)
 - `VALIDATION_ERROR` -- link mode but user is not accredited
 - `INTERNAL_ERROR` -- ORCID API unreachable
+- `BROADCAST_FAILED` (502) -- Hive chain rejected the accreditation/link broadcast (accredit + link modes). `details.retriable: false`. The OAuth `state` has already been consumed; the caller must restart the ORCID flow.
+- `BROADCAST_TIMEOUT` (504) -- Backend aborted the broadcast at 30s (accredit + link modes). Outcome uncertain. `details.retriable: false, details.outcome: 'uncertain', details.verify_before_retry: true, details.timeout_ms: 30000, details.verify_location: '/settings'`. The OAuth `state` has been consumed, so retrying `POST /api/orcid/callback` with the same `{code, state}` body returns 400 BAD_REQUEST — the caller MUST verify linkage at `/settings` (or via `/api/accreditation/:username`) before restarting the flow. Blind retry would duplicate the `custom_json` op if the original broadcast landed.
 
 ---
 
