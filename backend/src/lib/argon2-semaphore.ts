@@ -81,10 +81,38 @@ export class ArgonQueueFullError extends Error {
   }
 }
 
+/**
+ * Thrown by `runWithArgon2Slot` after `drainArgon2Queue()` has been called.
+ * Signals that the process is shutting down: pending waiters are rejected
+ * with this error, and any subsequent call throws immediately without
+ * queueing. Route handlers MUST translate to 503 SERVICE_UNAVAILABLE so
+ * Express can flush a clean response before `server.close()` + the 30s
+ * force-timeout in `index.ts shutdown()` tears the socket down.
+ *
+ * Distinct from `ArgonQueueFullError`: that one is transient (queue
+ * saturation), this one is terminal (process exiting). Both map to the
+ * same HTTP code, but operators distinguish them by log message so they
+ * can separate "increase capacity" from "benign during rolling restart".
+ */
+export class ShuttingDownError extends Error {
+  constructor(message = 'argon2 semaphore shutting down') {
+    super(message);
+    this.name = 'ShuttingDownError';
+  }
+}
+
 export interface Argon2Semaphore {
   runWithArgon2Slot<T>(fn: () => Promise<T>): Promise<T>;
   getArgon2QueueDepth(): number;
   getArgon2InFlight(): number;
+  /**
+   * Reject all currently-queued waiters with `ShuttingDownError` and flip
+   * the instance into shutting-down mode: any subsequent
+   * `runWithArgon2Slot` call throws `ShuttingDownError` without queueing.
+   * In-flight operations are NOT interrupted — they run to completion and
+   * release their slot normally. Idempotent.
+   */
+  drainArgon2Queue(): void;
   readonly cap: number;
   readonly maxQueueDepth: number;
 }
@@ -110,7 +138,14 @@ export function createArgon2Semaphore(
   }
   let inFlight = 0;
   let queueDepth = 0;
-  const waiters: Array<() => void> = [];
+  // Each waiter carries both resolve and reject handlers so `drainArgon2Queue`
+  // can synchronously unblock every pending caller with `ShuttingDownError`
+  // during SIGTERM handling. Without the reject handle a queued waiter's
+  // Promise would hang forever, the route handler would never return, and
+  // Express would never write the 503 before server.close() / the 30s
+  // force-timeout torched the socket.
+  const waiters: Array<{ resolve: () => void; reject: (err: Error) => void }> = [];
+  let shuttingDown = false;
 
   return {
     cap,
@@ -121,7 +156,22 @@ export function createArgon2Semaphore(
     getArgon2InFlight(): number {
       return inFlight;
     },
+    drainArgon2Queue(): void {
+      shuttingDown = true;
+      // Swap the waiters array atomically before iterating so a concurrent
+      // runWithArgon2Slot call (which is now gated by `shuttingDown` anyway)
+      // can't observe a half-drained queue.
+      const pending = waiters.splice(0, waiters.length);
+      for (const w of pending) {
+        w.reject(new ShuttingDownError());
+      }
+    },
     async runWithArgon2Slot<T>(fn: () => Promise<T>): Promise<T> {
+      if (shuttingDown) {
+        // Fail fast: no point queueing work the process is about to exit
+        // without completing. Route handlers translate to 503.
+        throw new ShuttingDownError();
+      }
       if (inFlight >= cap) {
         // Queue-full guard: reject BEFORE pushing to `waiters` to bound the
         // unbounded-growth DoS path. Must throw rather than block so callers
@@ -131,7 +181,9 @@ export function createArgon2Semaphore(
         }
         queueDepth += 1;
         try {
-          await new Promise<void>((resolve) => waiters.push(resolve));
+          await new Promise<void>((resolve, reject) => {
+            waiters.push({ resolve, reject });
+          });
         } finally {
           queueDepth -= 1;
         }
@@ -142,7 +194,7 @@ export function createArgon2Semaphore(
       } finally {
         inFlight -= 1;
         const next = waiters.shift();
-        if (next) next();
+        if (next) next.resolve();
       }
     },
   };
@@ -178,10 +230,28 @@ export function getArgon2InFlight(): number {
  * still decides how to handle them).
  *
  * Throws `ArgonQueueFullError` when the waiter queue is at MAX_QUEUE_DEPTH.
- * Route handlers MUST translate this into 503 SERVICE_UNAVAILABLE; burn-
+ * Throws `ShuttingDownError` after `drainArgon2Queue()` has been called.
+ * Route handlers MUST translate both into 503 SERVICE_UNAVAILABLE; burn-
  * Sentinel MUST re-throw rather than swallow (swallowing reopens the
  * timing oracle under DoS conditions).
  */
 export async function runWithArgon2Slot<T>(fn: () => Promise<T>): Promise<T> {
   return defaultSemaphore.runWithArgon2Slot(fn);
+}
+
+/**
+ * Drain the process-wide semaphore's waiter queue: rejects every pending
+ * waiter with `ShuttingDownError` and flips the semaphore into shutting-
+ * down mode (subsequent `runWithArgon2Slot` calls throw immediately).
+ * Called from `shutdown()` in `backend/src/index.ts` before
+ * `server.close()` so Express can flush clean 503 responses within the
+ * 30s force-timeout window instead of letting callers hang and have their
+ * sockets torn down mid-handshake.
+ *
+ * Idempotent: safe to call more than once. In-flight argon2 operations
+ * are NOT interrupted — they run to completion and release their slot
+ * normally.
+ */
+export function drainArgon2Queue(): void {
+  defaultSemaphore.drainArgon2Queue();
 }

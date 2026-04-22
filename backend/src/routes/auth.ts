@@ -15,7 +15,7 @@ import { logger } from '../logger.js';
 import { decryptKey } from '../custody-crypto.js';
 import { isPasswordValid, PASSWORD_POLICY_MESSAGE } from '../lib/password-policy.js';
 import { ARGON2_OPTIONS } from '../lib/argon2-options.js';
-import { runWithArgon2Slot, ArgonQueueFullError } from '../lib/argon2-semaphore.js';
+import { runWithArgon2Slot, ArgonQueueFullError, ShuttingDownError } from '../lib/argon2-semaphore.js';
 import { hashEmailForLogs } from '../lib/log-pii.js';
 
 // ─── Per-route Zod body schemas (BE-REQUEST-BODY-TYPING-ZOD) ────
@@ -219,23 +219,39 @@ export async function burnSentinel(input: string): Promise<void> {
     const safeInput = input.length > 1024 ? input.slice(0, 1024) : input;
     await runWithArgon2Slot(() => argon2.verify(sentinelHash, safeInput));
   } catch (err) {
-    // ArgonQueueFullError MUST propagate so route handlers can translate it
-    // into 503. Swallowing here would return ~0ms from burnSentinel under
-    // queue-full conditions and reopen the timing oracle under DoS load —
-    // the opposite of what the JS-level semaphore is for.
+    // ArgonQueueFullError and ShuttingDownError MUST propagate so route
+    // handlers can translate to 503. Swallowing here would return ~0ms from
+    // burnSentinel under queue-full / shutting-down conditions and reopen
+    // the timing oracle under DoS load or during SIGTERM drain — the
+    // opposite of what the JS-level semaphore is for.
     if (err instanceof ArgonQueueFullError) throw err;
+    if (err instanceof ShuttingDownError) throw err;
     logger.warn({ err }, 'argon2 sentinel burn failed — timing oracle may be open');
   }
 }
 
-// Shared catch-block handler: translate ArgonQueueFullError → 503 before
-// the generic 500 branch. Factored out so every auth route that touches
-// argon2 (directly via runWithArgon2Slot or transitively via burnSentinel)
-// handles queue saturation consistently. Returns true if it handled the
-// error, false otherwise (caller falls through to its own 500 branch).
+// Shared catch-block handler: translate ArgonQueueFullError and
+// ShuttingDownError → 503 before the generic 500 branch. Factored out so
+// every auth route that touches argon2 (directly via runWithArgon2Slot or
+// transitively via burnSentinel) handles both the transient saturation
+// case and the terminal shutdown case consistently. Returns true if it
+// handled the error, false otherwise (caller falls through to its own 500
+// branch).
+//
+// Distinct log lines so operators can separate "increase capacity"
+// (ArgonQueueFullError spikes under load) from "benign during rolling
+// restart" (ShuttingDownError during SIGTERM drain). Both return the same
+// 503 status + SERVICE_UNAVAILABLE code so clients handle them
+// identically.
 function handleArgonQueueFull(res: Response, err: unknown): boolean {
   if (err instanceof ArgonQueueFullError) {
+    logger.warn({ err }, 'argon2 queue saturated — returning 503');
     sendError(res, 503, 'SERVICE_UNAVAILABLE', 'Authentication service temporarily overloaded. Please retry.');
+    return true;
+  }
+  if (err instanceof ShuttingDownError) {
+    logger.info({ err }, 'argon2 semaphore shutting down — returning 503');
+    sendError(res, 503, 'SERVICE_UNAVAILABLE', 'Service shutting down. Please retry.');
     return true;
   }
   return false;

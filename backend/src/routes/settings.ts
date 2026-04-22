@@ -11,7 +11,7 @@ import { getAppPool } from '../app-db.js';
 import { logger } from '../logger.js';
 import { isPasswordValid, PASSWORD_POLICY_MESSAGE } from '../lib/password-policy.js';
 import { ARGON2_OPTIONS } from '../lib/argon2-options.js';
-import { runWithArgon2Slot, ArgonQueueFullError } from '../lib/argon2-semaphore.js';
+import { runWithArgon2Slot, ArgonQueueFullError, ShuttingDownError } from '../lib/argon2-semaphore.js';
 
 const readLimiter = rateLimit({ name: 'settings-read', windowMs: 60_000, max: 30, keyFn: byIp });
 const writeLimiter = rateLimit({ name: 'settings-write', windowMs: 60_000, max: 10, keyFn: byIp });
@@ -391,7 +391,12 @@ router.post('/set-password', writeLimiter, verifyHiveSignature, async (req: Requ
     sendOk(res, { message: 'Password set. You can now log in with your email/username and this password.' });
   } catch (err) {
     if (err instanceof ArgonQueueFullError) {
+      logger.warn({ err }, 'argon2 queue saturated — returning 503');
       return sendError(res, 503, 'SERVICE_UNAVAILABLE', 'Authentication service temporarily overloaded. Please retry.');
+    }
+    if (err instanceof ShuttingDownError) {
+      logger.info({ err }, 'argon2 semaphore shutting down — returning 503');
+      return sendError(res, 503, 'SERVICE_UNAVAILABLE', 'Service shutting down. Please retry.');
     }
     logger.error({ err }, 'Failed to set password');
     sendError(res, 500, 'INTERNAL_ERROR', 'Failed to set password');
