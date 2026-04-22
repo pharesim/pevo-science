@@ -394,6 +394,9 @@ describe('orcidCallbackPage', () => {
       expect(mockRouterStore.navigate).not.toHaveBeenCalled();
       expect(mockAuthStore._checkAccreditation).not.toHaveBeenCalled();
       expect(mockToastStore.show).not.toHaveBeenCalled();
+      // 503-refresh-retry invariant: mid-await teardown must not clear the
+      // stored mode, so a refresh can retry against the right endpoint.
+      expect(localStorage.removeItem).not.toHaveBeenCalledWith('pevo_orcid_mode');
     });
 
     it('post-teardown _verify rejection is a no-op (does not set error state)', async () => {
@@ -434,7 +437,6 @@ describe('orcidCallbackPage', () => {
       // since destroy() cleared the pending timer.
       vi.advanceTimersByTime(1000);
       expect(mockRouterStore.navigate).not.toHaveBeenCalled();
-      expect(comp._pendingTimers.size).toBe(0);
       vi.useRealTimers();
     });
 
@@ -453,6 +455,10 @@ describe('orcidCallbackPage', () => {
       expect(localStorage.setItem).not.toHaveBeenCalledWith('pevo_signup_orcid_id', 'id');
       expect(localStorage.setItem).not.toHaveBeenCalledWith('pevo_signup_orcid_name', 'Jane');
       expect(mockRouterStore.navigate).not.toHaveBeenCalled();
+      // The pevo_orcid_return_to key (consumed inside _handleSignup) must
+      // stay intact so a later retry still knows whether to route to
+      // /signup vs /recover.
+      expect(localStorage.removeItem).not.toHaveBeenCalledWith('pevo_orcid_return_to');
     });
 
     it('_handleLink: post-teardown resolution does not set link flag or navigate', async () => {
@@ -468,6 +474,17 @@ describe('orcidCallbackPage', () => {
 
       expect(localStorage.setItem).not.toHaveBeenCalledWith('pevo_orcid_link_complete', '1');
       expect(mockRouterStore.navigate).not.toHaveBeenCalled();
+    });
+
+    it('_handleAccredit direct-call post-teardown is a no-op (handler self-guards)', () => {
+      const comp = createComponent();
+      comp.destroy();
+      comp._handleAccredit({ username: 'bob' });
+
+      expect(comp.status).toBe('verifying');
+      expect(comp.resultUsername).toBe('');
+      expect(mockAuthStore._checkAccreditation).not.toHaveBeenCalled();
+      expect(mockToastStore.show).not.toHaveBeenCalled();
     });
 
     it('503 from completeOrcid leaves pevo_orcid_mode in localStorage so a refresh-retry can re-enter the correct flow', async () => {

@@ -87,3 +87,18 @@ Deferred / dismissed during triage (no action required on this task):
 - Double-`destroy()` idempotency test — Alpine lifecycle contract is single-destroy; test would encode behavior we don't rely on.
 - `_setTimer` delete-before-check ordering — correct as-is; delete-first is mildly defensive.
 - Pre-existing unguarded `setTimeout(navigate)` in publish/review/bridge/edit pages — filed as new task `ui-settimeout-navigate-teardown-guard-sweep.md`.
+
+## UI re-review signal (2026-04-22, commit 71ae59f)
+
+All 6 hold items addressed in a single focused commit (`71ae59f fix(ui): apply FE-ORCID-CALLBACK-TEARDOWN-CLEANUP re-review hold-block fixes`):
+
+1. New test `_handleAccredit direct-call post-teardown is a no-op (handler self-guards)` at `frontend/tests/unit/pages-orcid-callback.test.js` (in the `_verify - error classification` block, alongside the other teardown tests). Calls `comp.destroy()` then `comp._handleAccredit({ username: 'bob' })` and asserts the four no-op invariants. Required adding a `_mounted` self-guard as the first line of `_handleAccredit` in `frontend/src/pages/orcid-callback.js` — flagged as a notable divergence from item 6's suggested comment and reflected in the item 6 wording (see below).
+2. Removed the `expect(comp._pendingTimers.size).toBe(0)` line from the `_handleLogin: setTimeout redirect is canceled by destroy()` test.
+3. Added `expect(localStorage.removeItem).not.toHaveBeenCalledWith('pevo_orcid_mode')` to the `post-teardown _verify resolution is a no-op` test.
+4. Added `expect(localStorage.removeItem).not.toHaveBeenCalledWith('pevo_orcid_return_to')` to the `_handleSignup: post-teardown resolution` test.
+5. Extended the `localStorage.removeItem('pevo_orcid_mode')` comment in `_verify` with the future-handler-async hazard warning verbatim in spirit.
+6. Added the switch-level comment. Wording diverges from the architect's suggested shape because item 1's assertions required `_handleAccredit` to self-guard, so the comment now reads: "Handlers below are _mounted-gated by the check above; they do not re-check individually, except _handleAccredit, which self-guards because its side effects (toast, auth-store refresh) persist beyond this component. Direct calls from elsewhere to a non-self-guarded handler must guard at the call site." If the architect prefers the original "handlers do not re-check individually" wording without an exception, drop the `_handleAccredit` self-guard and rewrite the test as a negative-contract assertion.
+
+Verification: `npx vitest run tests/unit/pages-orcid-callback.test.js` passes all 31 tests. Full frontend unit suite passes (851 tests); the one failing suite (`sec-001-equivalence.test.js`) is a pre-existing, unrelated `@hiveio/dhive` import resolution issue reproduced against HEAD without my changes. `npm run build` is clean.
+
+Note on worktree state: this branch merged `main` at the start of the cycle to pick up commit `00033df` (the original teardown implementation landed via `225d43b Merge FE-ORCID-CALLBACK-TEARDOWN-CLEANUP worktree`). The fast-forward merge moved the worktree HEAD to `39e9699`, then the fix landed as `71ae59f` on top. No new task-file `git mv` was performed per the parent's dispatch instructions; the parent owns the review transition.
