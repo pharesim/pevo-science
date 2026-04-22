@@ -264,4 +264,37 @@ describe('accreditationPage', () => {
       expect(comp.orcidLoading).toBe(false);
     });
   });
+
+  // UI-ASYNC-CONTINUATION-TEARDOWN-GUARD-SWEEP: post-destroy() catch
+  // continuations must not write to component state. The requestAccreditation
+  // promise rejects after destroy(), and the handleSubmit catch must see
+  // _mounted === false and short-circuit before touching `step` or
+  // `errorMessage`.
+  describe('teardown guard', () => {
+    it('post-destroy() handleSubmit rejection does not write to step or errorMessage', async () => {
+      const comp = createComponent();
+      comp.fullName = 'Jane';
+      comp.institution = 'MIT';
+      comp.field = 'Physics';
+      comp.email = 'jane@mit.edu';
+
+      let rejectFn;
+      mockRequestAccreditation.mockReturnValue(new Promise((_, reject) => { rejectFn = reject; }));
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const submitP = comp.handleSubmit();
+      // Transition: submitting is set synchronously before the await.
+      expect(comp.step).toBe('submitting');
+
+      comp.destroy();
+
+      rejectFn(new Error('post-teardown'));
+      await submitP;
+
+      // step must NOT transition to 'error' after teardown.
+      expect(comp.step).toBe('submitting');
+      expect(comp.errorMessage).toBe('');
+      warnSpy.mockRestore();
+    });
+  });
 });

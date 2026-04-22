@@ -265,6 +265,7 @@ export function initBridgePage() {
       try {
         await Alpine.store('auth').connect();
       } catch (err) {
+        if (!this._mounted) return;
         Alpine.store('toast').show(err.message || this.$t('common.connectionFailed'), 'error');
       }
     },
@@ -280,14 +281,16 @@ export function initBridgePage() {
           fetchBridgeLookup(this.identifier.trim()),
           fetchBridgeCheck(this.identifier.trim()),
         ]);
+        if (!this._mounted) return;
         this.lookup = lookupRes.data;
         this.check = checkRes.data;
         this.prefillDiscipline(this.lookup);
       } catch (err) {
+        if (!this._mounted) return;
         const code = err.code || '';
         this.lookupError = code === 'INTERNAL_ERROR' ? this.$t('bridge.lookupUnavailable') : this.$t('bridge.lookupFailed');
       } finally {
-        this.lookingUp = false;
+        if (this._mounted) this.lookingUp = false;
       }
     },
 
@@ -304,6 +307,7 @@ export function initBridgePage() {
           language: this.language.trim() || undefined,
         });
 
+        if (!this._mounted) return;
         this.step = 'success';
         Alpine.store('toast').show(this.$t('bridge.stepSuccess'), 'success');
         // Wait for the Hive block to be produced before redirecting. The paper detail
@@ -312,6 +316,7 @@ export function initBridgePage() {
           this.navigate(`/paper/${res.data.author}/${res.data.permlink}`);
         }, 3000);
       } catch (err) {
+        if (!this._mounted) return;
         this.step = 'error';
         // Sanitization pattern (see executeUpgrade() in settings.js).
         console.warn('[bridge register]', err);

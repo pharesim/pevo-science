@@ -67,4 +67,31 @@ describe('accreditationVerifyPage', () => {
     expect(warnSpy.mock.calls[0][1]).toBe(leaky);
     warnSpy.mockRestore();
   });
+
+  // UI-ASYNC-CONTINUATION-TEARDOWN-GUARD-SWEEP: post-destroy() .catch
+  // continuation must not write to component state. The verifyAccreditation
+  // promise rejects after destroy(), and the .catch sees _mounted === false
+  // and short-circuits before touching `state` or `errorMessage`.
+  it('post-destroy() verifyAccreditation rejection does not write to state or errorMessage', async () => {
+    let rejectFn;
+    mockVerifyAccreditation.mockReturnValue(new Promise((_, reject) => { rejectFn = reject; }));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const comp = createComponent();
+    comp.init();
+    // state starts 'loading'; destroy before the promise rejects.
+    expect(comp.state).toBe('loading');
+
+    comp.destroy();
+
+    rejectFn(new Error('post-teardown'));
+    // Drain microtasks so the .catch handler runs.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // state must NOT transition to 'error' after teardown.
+    expect(comp.state).toBe('loading');
+    expect(comp.errorMessage).toBe('');
+    warnSpy.mockRestore();
+  });
 });

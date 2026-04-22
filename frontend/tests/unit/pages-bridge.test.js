@@ -366,6 +366,37 @@ describe('bridgePage', () => {
     });
   });
 
+  // UI-ASYNC-CONTINUATION-TEARDOWN-GUARD-SWEEP: post-destroy() catch
+  // continuation must not write to component state. The registerBridgePaper
+  // broadcast rejects after destroy(), and handleRegister's catch sees
+  // _mounted === false and short-circuits before touching `step` or
+  // `errorMessage`.
+  describe('teardown guard', () => {
+    it('post-destroy() handleRegister rejection does not write to step or errorMessage', async () => {
+      const comp = createComponent();
+      comp.identifier = '10.1234/test';
+      comp.discipline = 'Physics';
+
+      let rejectFn;
+      mockRegisterBridgePaper.mockReturnValue(new Promise((_, reject) => { rejectFn = reject; }));
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const registerP = comp.handleRegister();
+      // 'registering' is set synchronously before the await.
+      expect(comp.step).toBe('registering');
+
+      comp.destroy();
+
+      rejectFn(new Error('post-teardown'));
+      await registerP;
+
+      // step must NOT transition to 'error' after teardown.
+      expect(comp.step).toBe('registering');
+      expect(comp.errorMessage).toBe('');
+      warnSpy.mockRestore();
+    });
+  });
+
   describe('disciplineDisplayValue', () => {
     it('returns disciplineSearch when dropdown is open', () => {
       const comp = createComponent();

@@ -1,6 +1,7 @@
 import Alpine from 'alpinejs';
 import { broadcastOps } from '../signer.js';
 import { getAppTag, getAppId } from '../config.js';
+import { createTimerGuard } from '../lib/timer-guard.js';
 
 function generatePermlink(parentPermlink) {
   const timestamp = Date.now();
@@ -10,6 +11,12 @@ function generatePermlink(parentPermlink) {
 
 export function initCommentComposer() {
   Alpine.data('commentComposer', (opts = {}) => ({
+    // Lifecycle guard. See frontend/src/lib/timer-guard.js. handleSubmit
+    // awaits a broadcast-confirm prompt and a multi-second Hive broadcast;
+    // Alpine.destroyTree (e.g. SPA route change) fires synchronously and
+    // the post-await continuations must not write to torn-down state.
+    ...createTimerGuard(),
+
     parentAuthor: opts.parentAuthor || '',
     parentPermlink: opts.parentPermlink || '',
     body: '',
@@ -19,6 +26,10 @@ export function initCommentComposer() {
     get isConnected() { return Alpine.store('auth').isConnected; },
     get isAccredited() { return Alpine.store('auth').isAccredited; },
     get username() { return Alpine.store('auth').username; },
+
+    destroy() {
+      this._teardownTimers();
+    },
 
     async handleSubmit() {
       const trimmed = this.body.trim();
@@ -33,6 +44,7 @@ export function initCommentComposer() {
           message: this.$t('confirm.commentMessage'),
           confirmLabel: this.$t('confirm.comment'),
         });
+        if (!this._mounted) return;
         if (!commentConfirmed) { this.isSubmitting = false; return; }
 
         const permlink = generatePermlink(this.parentPermlink);
@@ -64,10 +76,12 @@ export function initCommentComposer() {
           }],
         ];
         await broadcastOps(this.username, operations);
+        if (!this._mounted) return;
         this.body = '';
         // Dispatch event so parent can refresh
         this.$dispatch('comment-posted', { parentPermlink: this.parentPermlink });
       } catch (err) {
+        if (!this._mounted) return;
         // Sanitization pattern (shared with executeUpgrade()): generic
         // localized message to the DOM, raw err to console.warn. The
         // comment body itself is user-authored plaintext so this handler
@@ -76,7 +90,7 @@ export function initCommentComposer() {
         console.warn('[comment composer post]', err);
         this.error = this.$t('comments.postFailed');
       } finally {
-        this.isSubmitting = false;
+        if (this._mounted) this.isSubmitting = false;
       }
     },
   }));

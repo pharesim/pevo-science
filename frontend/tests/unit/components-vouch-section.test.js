@@ -185,4 +185,33 @@ describe('vouchSection', () => {
       warnSpy.mockRestore();
     });
   });
+
+  // UI-ASYNC-CONTINUATION-TEARDOWN-GUARD-SWEEP: post-destroy() catch
+  // continuation must not write to component state. The broadcastOps
+  // promise rejects after destroy(), and handleVouch's catch sees
+  // _mounted === false and short-circuits before touching `step` or
+  // `message`.
+  describe('teardown guard', () => {
+    it('post-destroy() handleVouch rejection does not write to step or message', async () => {
+      let rejectFn;
+      mockBroadcastOps.mockReturnValue(new Promise((_, reject) => { rejectFn = reject; }));
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const comp = createComponent({ targetUsername: 'bob' });
+      comp.vouchStatus = { vouches: [] };
+      const vouchP = comp.handleVouch();
+      // 'signing' is set synchronously before the broadcast await.
+      expect(comp.step).toBe('signing');
+
+      comp.destroy();
+
+      rejectFn(new Error('post-teardown'));
+      await vouchP;
+
+      // step must NOT transition to 'error' after teardown.
+      expect(comp.step).toBe('signing');
+      expect(comp.message).toBe('');
+      warnSpy.mockRestore();
+    });
+  });
 });

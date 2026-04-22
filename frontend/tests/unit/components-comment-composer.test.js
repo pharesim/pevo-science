@@ -139,4 +139,34 @@ describe('commentComposer', () => {
     expect(mockBroadcastOps).not.toHaveBeenCalled();
     expect(comp.isSubmitting).toBe(false);
   });
+
+  // UI-ASYNC-CONTINUATION-TEARDOWN-GUARD-SWEEP: post-destroy() catch
+  // continuation must not write to component state. The broadcastOps
+  // promise rejects after destroy(), and handleSubmit's catch sees
+  // _mounted === false and short-circuits before touching `error`.
+  it('post-destroy() broadcast rejection does not write to error or isSubmitting', async () => {
+    let rejectFn;
+    mockBroadcastOps.mockReturnValue(new Promise((_, reject) => { rejectFn = reject; }));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const comp = createComponent({ parentAuthor: 'bob', parentPermlink: 'post1' });
+    comp.body = 'Hey';
+    const submitP = comp.handleSubmit();
+    // isSubmitting is set synchronously before the broadcastConfirm await.
+    expect(comp.isSubmitting).toBe(true);
+
+    // Drain the broadcastConfirm.request microtask so we're parked on the
+    // broadcastOps await. Then tear down.
+    await Promise.resolve();
+    await Promise.resolve();
+    comp.destroy();
+
+    rejectFn(new Error('post-teardown'));
+    await submitP;
+
+    // error must NOT be set after teardown. isSubmitting stays true because
+    // the finally-branch equivalent on destroyed state is a no-op.
+    expect(comp.error).toBeNull();
+    warnSpy.mockRestore();
+  });
 });

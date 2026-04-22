@@ -1,5 +1,6 @@
 import Alpine from 'alpinejs';
 import { verifyAccreditation } from '../api.js';
+import { createTimerGuard } from '../lib/timer-guard.js';
 
 const template = `
       <div x-data="accreditationVerifyPage" class="container-narrow py-16 text-center">
@@ -39,11 +40,21 @@ export { template as accreditationVerifyPageTemplate };
 
 export function initAccreditationVerifyPage() {
   Alpine.data('accreditationVerifyPage', () => ({
+    // Lifecycle guard. See frontend/src/lib/timer-guard.js. The .then/.catch
+    // below fire after a multi-second network round-trip; a user navigating
+    // away mid-flight destroys the component, and the resolution must not
+    // write to torn-down reactive state.
+    ...createTimerGuard(),
+
     state: 'loading', // loading | success | error
     resultUsername: '',
     errorMessage: '',
 
     navigate(path) { Alpine.store('router').navigate(path); },
+
+    destroy() {
+      this._teardownTimers();
+    },
 
     init() {
       const token = Alpine.store('router').query.token;
@@ -55,10 +66,12 @@ export function initAccreditationVerifyPage() {
 
       verifyAccreditation(token)
         .then((res) => {
+          if (!this._mounted) return;
           this.state = 'success';
           this.resultUsername = res.data.username;
         })
         .catch((err) => {
+          if (!this._mounted) return;
           this.state = 'error';
           // Sanitization pattern (see executeUpgrade() in settings.js).
           console.warn('[accreditation verify]', err);
