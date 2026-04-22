@@ -2,6 +2,7 @@ import Alpine from 'alpinejs';
 import { broadcastOps } from '../signer.js';
 import { invalidatePaperCache } from '../api.js';
 import { getAppTag } from '../config.js';
+import { createTimerGuard } from '../lib/timer-guard.js';
 
 const VOTE_LEVELS = [
   { label: 'vote.strongEndorsement', weight: 10000, cls: 'text-emerald-700 bg-emerald-50 border-emerald-200 hover:bg-emerald-100' },
@@ -14,6 +15,7 @@ const VOTE_LEVELS = [
 
 export function initVoteButtons() {
   Alpine.data('voteButtons', (opts = {}) => ({
+    ...createTimerGuard(),
     author: opts.author || '',
     permlink: opts.permlink || '',
     voteState: 'none', // 'none' | 'up' | 'down'
@@ -70,6 +72,14 @@ export function initVoteButtons() {
     init() {
       this.$watch('username', () => this._restoreVoteState());
       this._restoreVoteState();
+    },
+
+    destroy() {
+      // _teardownTimers flips _mounted so in-flight broadcastOps /
+      // invalidatePaperCache / Alpine.store('auth').connect continuations
+      // bail before touching reactive state. Hive broadcasts take multiple
+      // seconds; the user can easily navigate away mid-flight.
+      this._teardownTimers();
     },
 
     _restoreVoteState() {
@@ -144,11 +154,13 @@ export function initVoteButtons() {
           message: this.$t('confirm.retractMessage'),
           confirmLabel: this.$t('confirm.retract'),
         });
+        if (!this._mounted) return;
         if (!retractConfirmed) return;
 
         this.isVoting = true;
         try {
           await this._broadcastVote(0);
+          if (!this._mounted) return;
           const previousState = this.voteState;
           this.displayVotes += previousState === 'up' ? -1 : 1;
           this.voteState = 'none';
@@ -156,11 +168,14 @@ export function initVoteButtons() {
           this._updateLocalVoter(0);
           invalidatePaperCache(this.author, this.permlink).catch(() => {});
         } catch (err) {
+          if (!this._mounted) return;
           console.warn('[vote cancel]', err);
           Alpine.store('toast').show(this.$t('vote.cancelFailed'), 'error');
         } finally {
-          this.isVoting = false;
-          this.selectorOpen = false;
+          if (this._mounted) {
+            this.isVoting = false;
+            this.selectorOpen = false;
+          }
         }
         return;
       }
@@ -171,11 +186,13 @@ export function initVoteButtons() {
         message: this.$t('confirm.voteMessage', { strength: level ? this.$t(level.label) : '' }),
         confirmLabel: this.$t('confirm.vote'),
       });
+      if (!this._mounted) return;
       if (!confirmed) return;
 
       this.isVoting = true;
       try {
         await this._broadcastVote(weight);
+        if (!this._mounted) return;
         const previousState = this.voteState;
         const direction = weight > 0 ? 'up' : 'down';
         this.voteState = direction;
@@ -189,11 +206,14 @@ export function initVoteButtons() {
         this.displayVotes += delta;
         invalidatePaperCache(this.author, this.permlink).catch(() => {});
       } catch (err) {
+        if (!this._mounted) return;
         console.warn('[vote submit]', err);
         Alpine.store('toast').show(this.$t('vote.voteFailed'), 'error');
       } finally {
-        this.isVoting = false;
-        this.selectorOpen = false;
+        if (this._mounted) {
+          this.isVoting = false;
+          this.selectorOpen = false;
+        }
       }
     },
 

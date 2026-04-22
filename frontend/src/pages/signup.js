@@ -1,6 +1,7 @@
 import Alpine from 'alpinejs';
 import { submitSignup, loginWithPassword, resendVerification, startOrcid } from '../api.js';
 import { isPasswordValid } from '../password-policy.js';
+import { createTimerGuard } from '../lib/timer-guard.js';
 
 const template = `
       <div x-data="signupPage" class="container-narrow py-8">
@@ -159,6 +160,7 @@ export { template as signupPageTemplate };
 
 export function initSignupPage() {
   Alpine.data('signupPage', () => ({
+    ...createTimerGuard(),
     email: '',
     fullName: '',
     institution: '',
@@ -222,6 +224,13 @@ export function initSignupPage() {
       }
     },
 
+    destroy() {
+      // _teardownTimers flips _mounted so in-flight submitSignup /
+      // loginWithPassword / startOrcid / resendVerification continuations
+      // bail before touching reactive state.
+      this._teardownTimers();
+    },
+
     async handleOrcidVerify() {
       if (this.orcidLoading) return;
       this.orcidLoading = true;
@@ -242,8 +251,10 @@ export function initSignupPage() {
 
       try {
         const data = await startOrcid('signup');
+        if (!this._mounted) return;
         window.location.href = data.redirect_url;
       } catch (err) {
+        if (!this._mounted) return;
         this.orcidLoading = false;
         localStorage.removeItem('pevo_orcid_mode');
         // Sanitization pattern (see executeUpgrade() in settings.js).
@@ -261,8 +272,10 @@ export function initSignupPage() {
 
       try {
         const data = await startOrcid('signup');
+        if (!this._mounted) return;
         window.location.href = data.redirect_url;
       } catch (err) {
+        if (!this._mounted) return;
         this.orcidLoading = false;
         localStorage.removeItem('pevo_orcid_mode');
         // Sanitization pattern (see executeUpgrade() in settings.js).
@@ -294,8 +307,10 @@ export function initSignupPage() {
           field: this.field.trim(),
           orcid_token: this.orcidToken || undefined,
         });
+        if (!this._mounted) return;
         this.submitted = true;
       } catch (err) {
+        if (!this._mounted) return;
         // DUPLICATE and VALIDATION_ERROR are semantic codes, safe to branch
         // on. All other failures take the generic-message + console.warn
         // sanitization path shared with executeUpgrade() in settings.js.
@@ -310,17 +325,19 @@ export function initSignupPage() {
           this.error = this.$t('signup.submitFailed');
         }
       } finally {
-        this.isSubmitting = false;
+        if (this._mounted) this.isSubmitting = false;
       }
     },
 
     async _resolveExistingAccount() {
       try {
         const res = await loginWithPassword(this.email.trim(), this.password);
+        if (!this._mounted) return;
         const auth = Alpine.store('auth');
         auth.loginFromResponse(res.data);
         Alpine.store('router').navigate('/papers');
       } catch (loginErr) {
+        if (!this._mounted) return;
         if (loginErr.code === 'PENDING_SIGNUP' && loginErr.data) {
           const params = new URLSearchParams({
             auth_token: loginErr.data.auth_token,
@@ -340,13 +357,15 @@ export function initSignupPage() {
       this.isResending = true;
       try {
         await resendVerification(this.email.trim(), this.password);
+        if (!this._mounted) return;
         this.resendSuccess = true;
       } catch (err) {
+        if (!this._mounted) return;
         // Sanitization pattern (see executeUpgrade() in settings.js).
         console.warn('[signup resend verification]', err);
         this.error = this.$t('signup.resendFailed');
       } finally {
-        this.isResending = false;
+        if (this._mounted) this.isResending = false;
       }
     },
 

@@ -266,4 +266,70 @@ describe('voteButtons', () => {
       expect(warnSpy.mock.calls[0][1]).toBe(leaky);
     });
   });
+
+  // UI-TEARDOWN-GUARD-SWEEP-EXTENSION: Hive broadcasts can take multiple
+  // seconds, and a user easily navigates away mid-flight. Post-destroy()
+  // writes to voteState / displayVotes / currentWeight / isVoting /
+  // selectorOpen on a destroyed reactive scope must not happen.
+  describe('teardown', () => {
+    it('handleVote happy path does not mutate vote state after destroy()', async () => {
+      let resolveBroadcast;
+      mockBroadcastOps.mockImplementationOnce(() => new Promise((resolve) => { resolveBroadcast = resolve; }));
+      const comp = createComponent({ author: 'bob', permlink: 'p1', netVotes: 5 });
+      comp.voteState = 'none';
+      comp.currentWeight = 0;
+      comp.displayVotes = 5;
+      const pending = comp.handleVote(10000);
+      // Let the broadcastConfirm resolve + broadcastOps start.
+      await Promise.resolve();
+      await Promise.resolve();
+      // isVoting flipped synchronously before the broadcastOps await.
+      expect(comp.isVoting).toBe(true);
+      comp.destroy();
+      resolveBroadcast();
+      await pending;
+      // Post-await writes skipped: voteState/currentWeight/displayVotes
+      // must not have moved, and the finally block's `isVoting = false` is
+      // guarded, so it stays true (the reactive scope is dead anyway).
+      expect(comp.voteState).toBe('none');
+      expect(comp.currentWeight).toBe(0);
+      expect(comp.displayVotes).toBe(5);
+      expect(mockInvalidatePaperCache).not.toHaveBeenCalled();
+    });
+
+    it('handleVote catch does not toast or flip isVoting after destroy()', async () => {
+      let rejectBroadcast;
+      mockBroadcastOps.mockImplementationOnce(() => new Promise((_, reject) => { rejectBroadcast = reject; }));
+      const comp = createComponent({ author: 'bob', permlink: 'p1', netVotes: 5 });
+      comp.isVoting = false;
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const pending = comp.handleVote(10000);
+      await Promise.resolve();
+      await Promise.resolve();
+      comp.destroy();
+      rejectBroadcast(new Error('late'));
+      await pending;
+      expect(mockToastStore.show).not.toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
+
+    it('retract (weight=0) happy path does not mutate state after destroy()', async () => {
+      let resolveBroadcast;
+      mockBroadcastOps.mockImplementationOnce(() => new Promise((resolve) => { resolveBroadcast = resolve; }));
+      const comp = createComponent({ author: 'bob', permlink: 'p1', netVotes: 5 });
+      comp.voteState = 'up';
+      comp.currentWeight = 10000;
+      comp.displayVotes = 5;
+      const pending = comp.handleVote(0);
+      await Promise.resolve();
+      await Promise.resolve();
+      comp.destroy();
+      resolveBroadcast();
+      await pending;
+      // State preserved — retract-path post-await writes were guarded.
+      expect(comp.voteState).toBe('up');
+      expect(comp.currentWeight).toBe(10000);
+      expect(comp.displayVotes).toBe(5);
+    });
+  });
 });

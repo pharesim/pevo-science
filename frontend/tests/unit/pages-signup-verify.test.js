@@ -377,4 +377,77 @@ describe('signupVerifyPage', () => {
       warnSpy.mockRestore();
     });
   });
+
+  // UI-TEARDOWN-GUARD-SWEEP-EXTENSION: post-destroy() async continuations
+  // must not write to component state. The create-account path derives keys
+  // from a BIP39 mnemonic and makes a multi-second Hive broadcast; the user
+  // easily navigates away mid-flight.
+  describe('teardown', () => {
+    it('verifyToken catch does not flip phase to error after destroy()', async () => {
+      let rejectFn;
+      mockVerifyEmail.mockImplementationOnce(() => new Promise((_, reject) => { rejectFn = reject; }));
+      const comp = createComponent({ token: 'emailtok' });
+      expect(comp.phase).toBe('verifying');
+      comp.init();
+      comp.destroy();
+      rejectFn(new Error('late'));
+      // Let the rejection + catch settle.
+      await Promise.resolve();
+      await Promise.resolve();
+      // phase stays 'verifying' (not flipped to 'error') after destroy.
+      expect(comp.phase).toBe('verifying');
+    });
+
+    it('submitCreateAccount catch does not set error after destroy()', async () => {
+      let rejectFn;
+      mockConfirmAccount.mockImplementationOnce(() => new Promise((_, reject) => { rejectFn = reject; }));
+      const comp = createComponent();
+      comp.mnemonic = 'w1 w2 w3 w4 w5 w6 w7 w8 w9 w10 w11 w12';
+      comp.seedWords = comp.mnemonic.split(' ');
+      comp.authToken = 'tok';
+      comp.username = 'alice';
+      comp.usernameStatus = 'available';
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const pending = comp.submitCreateAccount();
+      // Give deriveAllKeys a tick to resolve, so we're guaranteed to be
+      // waiting on confirmAccount when destroy() fires.
+      await Promise.resolve();
+      await Promise.resolve();
+      comp.destroy();
+      rejectFn(new Error('late'));
+      await pending;
+      expect(comp.error).toBeNull();
+      warnSpy.mockRestore();
+    });
+
+    it('handleLinkAccount catch does not set error after destroy()', async () => {
+      let rejectFn;
+      mockLinkExistingAccount.mockImplementationOnce(() => new Promise((_, reject) => { rejectFn = reject; }));
+      const comp = createComponent();
+      comp.authToken = 'tok';
+      comp.hiveUsername = 'alice';
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const pending = comp.handleLinkAccount();
+      comp.destroy();
+      rejectFn(new Error('late'));
+      await pending;
+      expect(comp.error).toBeNull();
+      warnSpy.mockRestore();
+    });
+
+    it('handleResume catch does not set error after destroy()', async () => {
+      let rejectFn;
+      mockResumeSignup.mockImplementationOnce(() => new Promise((_, reject) => { rejectFn = reject; }));
+      const comp = createComponent();
+      comp.resumeEmail = 'e@x.com';
+      comp.resumePassword = 'pass';
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const pending = comp.handleResume();
+      comp.destroy();
+      rejectFn(new Error('late'));
+      await pending;
+      expect(comp.error).toBeNull();
+      warnSpy.mockRestore();
+    });
+  });
 });

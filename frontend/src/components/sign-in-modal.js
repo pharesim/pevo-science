@@ -1,8 +1,10 @@
 import Alpine from 'alpinejs';
 import { loginWithPassword, resendVerification } from '../api.js';
+import { createTimerGuard } from '../lib/timer-guard.js';
 
 export function initSignInModal() {
   Alpine.data('signInModal', () => ({
+    ...createTimerGuard(),
     open: false,
     mode: 'choose', // 'choose', 'email', 'keychain', 'unverified'
     // Keychain fields
@@ -72,6 +74,7 @@ export function initSignInModal() {
       this.emailError = null;
       try {
         const res = await loginWithPassword(this.emailValue.trim(), this.passwordValue);
+        if (!this._mounted) return;
         const auth = Alpine.store('auth');
         auth.loginFromResponse(res.data);
         this.open = false;
@@ -82,6 +85,7 @@ export function initSignInModal() {
           this._resolve = null;
         }
       } catch (err) {
+        if (!this._mounted) return;
         if (err.code === 'PENDING_SIGNUP' && err.data) {
           this.open = false;
           this.mode = 'choose';
@@ -107,7 +111,7 @@ export function initSignInModal() {
         console.warn('[sign in email login]', err);
         this.emailError = this.$t('signIn.loginFailed');
       } finally {
-        this.emailLoading = false;
+        if (this._mounted) this.emailLoading = false;
       }
     },
 
@@ -116,14 +120,22 @@ export function initSignInModal() {
       this.isResending = true;
       try {
         await resendVerification(this.emailValue.trim(), this.passwordValue);
+        if (!this._mounted) return;
         this.resendSuccess = true;
       } catch (err) {
+        if (!this._mounted) return;
         // Sanitization pattern (see handleEmailLogin).
         console.warn('[sign in resend verification]', err);
         this.emailError = this.$t('signIn.resendFailed');
       } finally {
-        this.isResending = false;
+        if (this._mounted) this.isResending = false;
       }
+    },
+
+    destroy() {
+      // _teardownTimers flips _mounted so in-flight loginWithPassword /
+      // resendVerification continuations bail before touching reactive state.
+      this._teardownTimers();
     },
 
     handleKeydown(e) {
