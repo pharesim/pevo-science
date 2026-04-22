@@ -4,7 +4,8 @@ import jwt from 'jsonwebtoken';
 import { PrivateKey } from '@hiveio/dhive';
 import { z } from 'zod';
 import { config } from '../config.js';
-import { broadcastJsonWithTimeout, BroadcastTimeoutError } from '../hive.js';
+import { broadcastJsonWithTimeout } from '../hive.js';
+import { handleBroadcastError } from '../lib/broadcast-error.js';
 import { getRedis, isRedisAvailable } from '../redis.js';
 import { getAppPool } from '../app-db.js';
 import { getPool } from '../db.js';
@@ -478,34 +479,13 @@ async function handleAccredit(
         key,
       );
     } catch (err) {
-      if (err instanceof BroadcastTimeoutError) {
-        logger.warn(
-          { err, timeoutMs: err.timeoutMs, username, orcid: orcidId, mode: 'accredit' },
-          'orcid.handleAccredit broadcast timed out',
-        );
-        sendError(
-          res,
-          504,
-          'BROADCAST_TIMEOUT',
-          'Broadcasting ORCID accreditation timed out',
-          {
-            retriable: false,
-            outcome: 'uncertain',
-            verify_before_retry: true,
-            verify_location: '/settings',
-            timeout_ms: err.timeoutMs,
-          },
-        );
-        return;
-      }
-      logger.error({ err, username, orcid: orcidId, mode: 'accredit' }, 'orcid.handleAccredit broadcast failed');
-      sendError(
-        res,
-        502,
-        'BROADCAST_FAILED',
-        'Failed to broadcast ORCID accreditation to Hive',
-        { retriable: false },
-      );
+      handleBroadcastError(res, err, {
+        timeoutMsg: 'Broadcasting ORCID accreditation timed out',
+        failMsg: 'Failed to broadcast ORCID accreditation to Hive',
+        logContext: { username, orcid: orcidId, mode: 'accredit' },
+        verifyLocation: '/settings',
+        routeLabel: 'orcid.handleAccredit',
+      });
       return;
     }
 
@@ -576,34 +556,13 @@ async function handleLink(
         key,
       );
     } catch (err) {
-      if (err instanceof BroadcastTimeoutError) {
-        logger.warn(
-          { err, timeoutMs: err.timeoutMs, username, orcid: orcidId, mode: 'link' },
-          'orcid.handleLink broadcast timed out',
-        );
-        sendError(
-          res,
-          504,
-          'BROADCAST_TIMEOUT',
-          'Broadcasting ORCID link timed out',
-          {
-            retriable: false,
-            outcome: 'uncertain',
-            verify_before_retry: true,
-            verify_location: '/settings',
-            timeout_ms: err.timeoutMs,
-          },
-        );
-        return;
-      }
-      logger.error({ err, username, orcid: orcidId, mode: 'link' }, 'orcid.handleLink broadcast failed');
-      sendError(
-        res,
-        502,
-        'BROADCAST_FAILED',
-        'Failed to broadcast ORCID link to Hive',
-        { retriable: false },
-      );
+      handleBroadcastError(res, err, {
+        timeoutMsg: 'Broadcasting ORCID link timed out',
+        failMsg: 'Failed to broadcast ORCID link to Hive',
+        logContext: { username, orcid: orcidId, mode: 'link' },
+        verifyLocation: '/settings',
+        routeLabel: 'orcid.handleLink',
+      });
       return;
     }
 

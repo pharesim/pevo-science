@@ -1,7 +1,8 @@
 import { Router, type Request, type Response } from 'express';
 import { PrivateKey } from '@hiveio/dhive';
 import { getPool } from '../db.js';
-import { broadcastJsonWithTimeout, BroadcastTimeoutError } from '../hive.js';
+import { broadcastJsonWithTimeout } from '../hive.js';
+import { handleBroadcastError } from '../lib/broadcast-error.js';
 import { config } from '../config.js';
 import { sendOk, sendError } from '../response.js';
 import { getAccreditedSet } from '../accreditation.js';
@@ -230,35 +231,12 @@ router.post('/:claimer/approve', verifyHiveSignature, approveLimiter, async (req
         tx_id: result.id,
       });
     } catch (err) {
-      if (err instanceof BroadcastTimeoutError) {
-        logger.warn(
-          { err, timeoutMs: err.timeoutMs, paperAuthor, paperPermlink, claimer, username },
-          'claims.approve broadcast timed out',
-        );
-        return sendError(
-          res,
-          504,
-          'BROADCAST_TIMEOUT',
-          'Broadcasting authorship approval timed out',
-          {
-            retriable: false,
-            outcome: 'uncertain',
-            verify_before_retry: true,
-            timeout_ms: err.timeoutMs,
-          },
-        );
-      }
-      logger.error(
-        { err, paperAuthor, paperPermlink, claimer, username },
-        'claims.approve broadcast failed',
-      );
-      return sendError(
-        res,
-        502,
-        'BROADCAST_FAILED',
-        'Failed to broadcast authorship approval to Hive',
-        { retriable: false },
-      );
+      return handleBroadcastError(res, err, {
+        timeoutMsg: 'Broadcasting authorship approval timed out',
+        failMsg: 'Failed to broadcast authorship approval to Hive',
+        logContext: { paperAuthor, paperPermlink, claimer, username },
+        routeLabel: 'claims.approve',
+      });
     }
   }
 
@@ -341,35 +319,12 @@ router.post('/:claimer/revoke', verifyHiveSignature, revokeLimiter, async (req: 
       await hafCache.invalidate(`claims:${paperAuthor}:${paperPermlink}`);
       return sendOk(res, { message: 'Authorship claim revoked', tx_id: result.id });
     } catch (err) {
-      if (err instanceof BroadcastTimeoutError) {
-        logger.warn(
-          { err, timeoutMs: err.timeoutMs, paperAuthor, paperPermlink, claimer, username, signer: 'bridge' },
-          'claims.revoke bridge broadcast timed out',
-        );
-        return sendError(
-          res,
-          504,
-          'BROADCAST_TIMEOUT',
-          'Broadcasting bridge-paper revocation timed out',
-          {
-            retriable: false,
-            outcome: 'uncertain',
-            verify_before_retry: true,
-            timeout_ms: err.timeoutMs,
-          },
-        );
-      }
-      logger.error(
-        { err, paperAuthor, paperPermlink, claimer, username, signer: 'bridge' },
-        'claims.revoke bridge broadcast failed',
-      );
-      return sendError(
-        res,
-        502,
-        'BROADCAST_FAILED',
-        'Failed to broadcast authorship revocation to Hive',
-        { retriable: false },
-      );
+      return handleBroadcastError(res, err, {
+        timeoutMsg: 'Broadcasting bridge-paper revocation timed out',
+        failMsg: 'Failed to broadcast authorship revocation to Hive',
+        logContext: { paperAuthor, paperPermlink, claimer, username, signer: 'bridge' },
+        routeLabel: 'claims.revoke bridge',
+      });
     }
   }
 
@@ -393,35 +348,12 @@ router.post('/:claimer/revoke', verifyHiveSignature, revokeLimiter, async (req: 
       await hafCache.invalidate(`claims:${paperAuthor}:${paperPermlink}`);
       return sendOk(res, { message: 'Authorship claim revoked', tx_id: result.id });
     } catch (err) {
-      if (err instanceof BroadcastTimeoutError) {
-        logger.warn(
-          { err, timeoutMs: err.timeoutMs, paperAuthor, paperPermlink, claimer, username, signer: 'admin' },
-          'claims.revoke admin broadcast timed out',
-        );
-        return sendError(
-          res,
-          504,
-          'BROADCAST_TIMEOUT',
-          'Broadcasting authorship revocation timed out',
-          {
-            retriable: false,
-            outcome: 'uncertain',
-            verify_before_retry: true,
-            timeout_ms: err.timeoutMs,
-          },
-        );
-      }
-      logger.error(
-        { err, paperAuthor, paperPermlink, claimer, username, signer: 'admin' },
-        'claims.revoke admin broadcast failed',
-      );
-      return sendError(
-        res,
-        502,
-        'BROADCAST_FAILED',
-        'Failed to broadcast authorship revocation to Hive',
-        { retriable: false },
-      );
+      return handleBroadcastError(res, err, {
+        timeoutMsg: 'Broadcasting authorship revocation timed out',
+        failMsg: 'Failed to broadcast authorship revocation to Hive',
+        logContext: { paperAuthor, paperPermlink, claimer, username, signer: 'admin' },
+        routeLabel: 'claims.revoke admin',
+      });
     }
   }
 
