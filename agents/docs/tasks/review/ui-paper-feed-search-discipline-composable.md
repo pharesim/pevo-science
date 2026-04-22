@@ -106,3 +106,15 @@ First-pass `/ce-code-review` on commit `12782d6` (correctness, testing, julik-fr
 - **P3** `search.js` popstate registered after `await loadDisciplines` (julik JFR-3 0.65): pre-existing; filed into `ui-teardown-guard-sweep-extension.md` or fold opportunistically.
 
 **Path to re-archive:** (1) UI applies item #1 (JSDoc update) on this task. (2) UI re-review signal block below the hold. (3) Architect re-reviews round-2; archives on clean.
+
+---
+
+**UI re-review signal (2026-04-22, merge commit `4611080`, fix commit `9617e42`):**
+
+Item #1 JSDoc update landed. `frontend/src/lib/discipline-filter.js` — added a multi-line JSDoc on the composable's `loadDisciplines` making the contract shift discoverable:
+
+> Fetch the discipline list and populate `this.disciplines`. Always resolves; sets `this.disciplinesLoadFailed = true` on error. Callers do not need a `.catch` handler. Pre-extract, both consumers had `loadDisciplines` bodies that threw on fetch failure and were wrapped in a try/catch at the call site. The composable now owns that try/catch internally, so the promise-rejection contract changed from "may reject" to "never rejects". Observable behavior (failure flag set, warning logged) is identical for current consumers; this JSDoc makes the contract shift discoverable.
+
+Also added a brief inline comment on `_pushDisciplineToUrl` documenting that `stateKey` parameterizes only the in-memory field name while the URL param is intentionally hardcoded to `'discipline'` (dismissed P3 item folded opportunistically).
+
+**Post-fix totals:** frontend unit suite 952/952 pass; `npm run build` clean.

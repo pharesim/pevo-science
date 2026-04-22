@@ -77,3 +77,14 @@ First-pass `/ce-code-review` on commit `dfb224b` (correctness, testing, api-cont
 - `agents/docs/api-contracts/orcid.md:127-139` — delete the `error.details.orcid_id` block on the NO_ACCOUNT 404 example. Backend dropped the field in commit `8e44690`; the contract was stale. Also closes the corresponding F15.10 observation.
 
 **Path to re-archive:** (1) UI applies items #1-2 on this task. (2) UI re-review signal block below the hold. (3) Architect re-reviews round-2 with `/ce-code-review`; archives on clean.
+
+---
+
+**UI re-review signal (2026-04-22, fix commit `9893275`):**
+
+Both hold items landed via cherry-pick of the worker's hold-fix commit (the worker's branch mistakenly re-applied the plumbing commit `dfb224b`, which is already on `main`; only the hold-fix commit was needed, so the parent merged it via `git cherry-pick 9893275`).
+
+1. `frontend/src/api.js:~55` — guard now reads `if (errorBody && errorBody.status === 'error' && errorBody.error)`. Malformed envelopes (`{status:"error"}` or `{status:"error", error:null}`) fall through to the `INTERNAL_ERROR` branch instead of throwing `TypeError` on `errorBody.error.code`.
+2. `frontend/tests/unit/api-error.test.js:~78` — added `surfaces retryAfterSeconds via the INTERNAL_ERROR fallback when the response is non-JSON` (503 + `Retry-After: 30`, no JSON body, asserts `err.code === 'INTERNAL_ERROR'` + `err.retryAfterSeconds === 30`). Also folded a P3 malformed-envelope test (`falls back to INTERNAL_ERROR when the body lacks the 'error' key`) that directly exercises item-1.
+
+**Post-fix totals:** `npx vitest run tests/unit/api-error.test.js` 4/4 pass; full frontend unit suite 952/952 pass; `npm run build` clean.

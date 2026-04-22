@@ -102,3 +102,20 @@ Hold items:
 - `ui-teardown-guard-sweep-extension.md` (new P2) — extend `_mounted` guards to signup/login/reset-password/sign-in-modal/signup-verify/vote-buttons/contact.js + `paper-feed.loadPapers` finally pattern. Sites surfaced by neighbouring reviews (#5 / #6 / #8) outside this sweep's original scope.
 
 **Path to re-archive:** (1) UI applies items #1-5 on this task. (2) UI re-review signal block below the hold. (3) Architect re-reviews round-2 with `/ce-code-review`; archives on clean. `ui-teardown-guard-sweep-extension.md` archives independently.
+
+---
+
+**UI re-review signal (2026-04-22, merge commit `3a5b60c`, fix commit `1e97b58`):**
+
+All 5 hold items landed in a single worktree worker pass (`worktree-agent-a5ef9e44`), merged as `3a5b60c`.
+
+1. `frontend/src/components/paper-feed.js:~119` — `if (!this._mounted) return;` after `await this.loadDisciplines()` before `this.loadPapers()` + popstate registration. Kills the dead-listener leak the hold called out.
+2. `frontend/src/pages/search.js:~190` — same pattern after `await this.loadDisciplines()` before popstate registration.
+3. `frontend/src/pages/publish.js:~736, ~739, ~752` — `if (!this._mounted) return;` after `sha256File`, `uploadToIpfs(pdf)`, and the per-supplementary `uploadToIpfs(sf.file)`.
+4. `frontend/src/pages/edit.js:~755` — `if (!this._mounted) return;` after the supplementary `uploadToIpfs(sf.file)` await.
+5. `frontend/src/pages/review.js:~207-233` — bare `await fetchPaper(...)` wrapped in try/catch/finally mirroring `edit.js loadPaperData`. `catch` → `console.warn` + null `paper` under `_mounted + route-params staleness` guard. `finally` resets `loadingPaper = false` under same guard (M-2 polarity-switch comment included).
+6. `frontend/tests/unit/pages-review.test.js` — added `describe('loadPaper teardown guard')` with 4 tests (post-destroy suppression, success/error finally behaviour, `console.warn` spy).
+
+**Post-sweep totals:** frontend unit suite 952/952 pass; `npm run build` clean; `grep -n 'this\._mounted'` still matches across all 10 in-scope files + composables + helper. Playwright not re-run in this pass (parent gate).
+
+P3 dismissed items not touched (per architect's dismiss list). Out-of-scope sibling sites covered by `ui-teardown-guard-sweep-extension.md` (landed in the same review cycle, separate file).
