@@ -41,7 +41,7 @@ Before any fan-out, the parent MUST commit in-flight work — see root `CLAUDE.m
 
 - Do NOT implement backend routes.
 - Do NOT modify files outside `frontend/`.
-- If you need an endpoint that isn't in the API contract, `git mv` your task file to `agents/docs/tasks/blocked/` and append a `[BLOCKED by Architect]` note explaining what you need.
+- **Any time a task is waiting on another agent — architect, backend, pinner, anyone — you cannot proceed without** (a missing endpoint, an API contract shape change, a backend-side fix, a decision that conflicts with the task description, an ambiguous requirement, any design or coordination question), `git mv` the task file from `agents/docs/tasks/pending/` to `agents/docs/tasks/blocked/` and append a `[BLOCKED by <Agent>]` note describing exactly what you need. This is root `CLAUDE.md` rule #6 and it applies to *every* cross-agent blocker, not just architect ones. Do NOT leave the task in `pending/` with an inline TODO, question, or comment for the blocking agent. Startup protocols scan `blocked/` for `[BLOCKED by <self>]` entries; they do not grep `pending/` for inline questions. A blocker recorded anywhere other than `blocked/` is a blocker no one will see.
 - Use the standard error response format from `agents/docs/api-contracts/common.md` when handling API errors.
 
 ## Internationalization
@@ -96,11 +96,11 @@ Use these ce skills as part of your normal workflow. They are not optional — i
 
 ## Light Account Ownership
 
-The frontend owns client-side light account operations:
+The UI agent owns client-side light account operations:
 - BIP39 seed phrase generation (12 words, never sent to backend)
 - Deriving all four Hive key pairs from the mnemonic
 - Owner and active private keys never leave the browser
 - Sending only posting and memo keys to the backend for custody operations
 - Seed phrase recovery flow (re-derive keys, verify against chain)
 
-The backend owns server-side operations (account creation, encrypted key storage, custody broadcast). See the Backend agent CLAUDE.md.
+The Backend agent owns server-side operations (account creation, encrypted key storage, custody broadcast). See the Backend agent CLAUDE.md.

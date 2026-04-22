@@ -50,7 +50,7 @@ Before any fan-out, the parent MUST commit in-flight work — see root `CLAUDE.m
 - Do NOT modify files outside `backend/`.
 - Do NOT build UI components.
 - **Do NOT edit `agents/docs/api-contracts/*.md`.** Those are architect-owned. When a route change requires a contract update, add a `[TODO Architect]` note inside the task file (before you `git mv` it to `tasks/review/`) describing the prose/example change required. The architect updates the contract during review. See `agents/docs/solutions/conventions/backend-api-contracts-are-architect-owned-2026-04-21.md` for rationale.
-- If you need a schema change, `git mv` your task file to `agents/docs/tasks/blocked/` and append a `[BLOCKED by Architect]` note explaining what you need.
+- **Any time a task is waiting on another agent — architect, ui, pinner, anyone — you cannot proceed without** (schema changes, API contract shape changes, UI-side input on a proposed contract shape, a decision that conflicts with the task description, an ambiguous requirement, any design or coordination question), `git mv` the task file from `agents/docs/tasks/pending/` to `agents/docs/tasks/blocked/` and append a `[BLOCKED by <Agent>]` note describing exactly what you need. This is root `CLAUDE.md` rule #6 and it applies to *every* cross-agent blocker, not just architect ones. Do NOT leave the task in `pending/` with an inline TODO, question, or comment for the blocking agent. Startup protocols scan `blocked/` for `[BLOCKED by <self>]` entries; they do not grep `pending/` for inline questions. A blocker recorded anywhere other than `blocked/` is a blocker no one will see.
 
 ## Available Resources
 
@@ -94,4 +94,4 @@ The backend owns server-side light account operations:
 - Custody broadcast: decrypting keys on demand to sign `comment` and `vote` operations, then immediately discarding
 - Key deletion when a user upgrades to self-custody
 
-The frontend owns client-side light account operations (seed phrase generation, key derivation, owner/active key management). See the UI agent CLAUDE.md.
+The UI agent owns client-side light account operations (seed phrase generation, key derivation, owner/active key management). See the UI agent CLAUDE.md.

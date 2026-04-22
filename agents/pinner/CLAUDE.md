@@ -103,7 +103,7 @@ The pinner processes untrusted inputs (HAF-sourced CIDs written by any Hive user
 
 - Do NOT modify files outside `pinner/`.
 - Do NOT import or depend on PEvO's TypeScript backend code. The pinner is a completely standalone Go program; it shares only the HAF database connection pattern and the understanding of PEvO's metadata schema.
-- If you need a schema change, an API contract change, or a coordination question answered, `git mv` your task file to `agents/docs/tasks/blocked/` and append a `[BLOCKED by Architect]` or `[BLOCKED by Backend]` note explaining what you need.
+- **Any time a task is waiting on another agent — architect, backend, ui, anyone — you cannot proceed without** (schema changes, API contract changes, a backend-side fix, a decision that conflicts with the task description, an ambiguous requirement, any coordination question), `git mv` the task file from `agents/docs/tasks/pending/` to `agents/docs/tasks/blocked/` and append a `[BLOCKED by <Agent>]` note describing exactly what you need. This is root `CLAUDE.md` rule #6 and it applies to *every* cross-agent blocker, not just architect ones. Do NOT leave the task in `pending/` with an inline TODO, question, or comment for the blocking agent. Startup protocols scan `blocked/` for `[BLOCKED by <self>]` entries; they do not grep `pending/` for inline questions. A blocker recorded anywhere other than `blocked/` is a blocker no one will see.
 
 ## Available Resources
 
