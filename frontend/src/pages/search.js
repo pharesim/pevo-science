@@ -1,9 +1,10 @@
 import Alpine from 'alpinejs';
-import { searchPapers, fetchDisciplines } from '../api.js';
+import { searchPapers } from '../api.js';
 import { formatDate } from '../components/paper-card.js';
 import { paginationTemplate } from '../components/pagination.js';
 import { totalPagesFromMeta } from '../lib/pagination.js';
 import { localeStrippedPath } from '../lib/url-sync.js';
+import { createDisciplineFilter } from '../lib/discipline-filter.js';
 import DOMPurify from 'dompurify';
 
 // Filter changes (type/source/discipline) intentionally do NOT
@@ -162,18 +163,16 @@ function pageOwnsUrl() {
 
 export function initSearchPage() {
   Alpine.data('searchPage', () => ({
+    ...createDisciplineFilter({ stateKey: 'disciplineFilter' }),
     query: '',
     typeFilter: 'all',
     sourceFilter: '',
-    disciplineFilter: '',
-    disciplines: [],
     results: [],
     currentPage: 1,
     totalPages: 1,
     loading: false,
     error: null,
     hasSearched: false,
-    disciplinesLoadFailed: false,
     _popstateHandler: null,
 
     formatDate,
@@ -181,10 +180,7 @@ export function initSearchPage() {
     init() {
       this._syncFromUrl();
       if (this.query) this.doSearch(this.query, this.currentPage);
-      this.loadDisciplines().catch((err) => {
-        console.warn('[loadDisciplines]', err);
-        this.disciplinesLoadFailed = true;
-      });
+      this.loadDisciplines();
       if (pageOwnsUrl()) {
         this._popstateHandler = () => {
           if (!pageOwnsUrl()) return;
@@ -209,12 +205,7 @@ export function initSearchPage() {
       this.typeFilter = type === 'paper' || type === 'review' ? type : 'all';
       const source = params.get('source');
       this.sourceFilter = source === 'native' || source === 'bridge' ? source : '';
-      // Canonicalize discipline to lowercase so the stored value matches
-      // option values populated from loadDisciplines (also lowercased). Existing
-      // URLs like `?discipline=Physics` continue to resolve. the API is case
-      // insensitive; normalization is purely a frontend-coherence concern.
-      const rawDiscipline = params.get('discipline') || '';
-      this.disciplineFilter = rawDiscipline.toLowerCase();
+      this._syncDisciplineFromUrl(params);
       const page = parseInt(params.get('page') || '1', 10);
       this.currentPage = Number.isFinite(page) && page > 0 ? page : 1;
     },
@@ -224,32 +215,11 @@ export function initSearchPage() {
       if (this.query.trim()) params.set('q', this.query.trim());
       if (this.typeFilter !== 'all') params.set('type', this.typeFilter);
       if (this.sourceFilter) params.set('source', this.sourceFilter);
-      // _syncFromUrl lowercases URL reads; backend canon_name is already
-      // lowercase; _pushUrl catches direct state assignments (e.g. code paths
-      // that assign `this.disciplineFilter` without going through _syncFromUrl).
-      if (this.disciplineFilter) params.set('discipline', this.disciplineFilter.toLowerCase());
+      this._pushDisciplineToUrl(params);
       if (this.currentPage > 1) params.set('page', String(this.currentPage));
       const qs = params.toString();
       const newUrl = window.location.pathname + (qs ? '?' + qs : '');
       window.history.pushState(null, '', newUrl);
-    },
-
-    async loadDisciplines() {
-      // Reset the failure flag before attempting the fetch so retries after a
-      // transient failure can clear the `data-disciplines-status="failed"` DOM
-      // signal on success. Today `loadDisciplines` is init-only, but any future
-      // retry path (route revisit, visibility-change reload, user-triggered
-      // retry) would otherwise see the flag stuck at true even after a
-      // successful reload.
-      this.disciplinesLoadFailed = false;
-      const res = await fetchDisciplines();
-      // Backend returns `{ canon_name, display_name, paper_count }` per
-      // `agents/docs/api-contracts/misc.md` (GET /api/disciplines).
-      // `canon_name` is already lowercased server-side (the dedup key), so
-      // the frontend no longer needs to lowercase here. `display_name` is
-      // the rendered label; Tailwind `class="capitalize"` on the <option>
-      // titlecases it for display.
-      this.disciplines = res.data || [];
     },
 
     async doSearch(q, page) {

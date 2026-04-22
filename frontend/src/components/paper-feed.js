@@ -1,9 +1,10 @@
 import Alpine from 'alpinejs';
-import { fetchPapers, fetchDisciplines } from '../api.js';
+import { fetchPapers } from '../api.js';
 import { truncateText, formatDate, paperCardTemplate } from './paper-card.js';
 import { paginationTemplate } from './pagination.js';
 import { totalPagesFromMeta } from '../lib/pagination.js';
 import { localeStrippedPath } from '../lib/url-sync.js';
+import { createDisciplineFilter } from '../lib/discipline-filter.js';
 
 const ITEMS_PER_PAGE = 10;
 
@@ -92,16 +93,14 @@ function pageOwnsUrl() {
 
 export function initPaperFeed() {
   Alpine.data('paperFeed', () => ({
+    ...createDisciplineFilter({ stateKey: 'discipline' }),
     papers: [],
-    disciplines: [],
-    discipline: '',
     sortBy: 'date',
     sourceFilter: '',
     currentPage: 1,
     totalPages: 1,
     loading: true,
     error: null,
-    disciplinesLoadFailed: false,
     _popstateHandler: null,
 
     // Expose helpers to the paper-card template interpolated into this scope.
@@ -110,10 +109,7 @@ export function initPaperFeed() {
 
     init() {
       this._syncFromUrl();
-      this.loadDisciplines().catch((err) => {
-        console.warn('[loadDisciplines]', err);
-        this.disciplinesLoadFailed = true;
-      });
+      this.loadDisciplines();
       this.loadPapers();
       if (pageOwnsUrl()) {
         this._popstateHandler = () => {
@@ -137,12 +133,7 @@ export function initPaperFeed() {
       const params = new URLSearchParams(window.location.search);
       const page = parseInt(params.get('page') || '1', 10);
       this.currentPage = Number.isFinite(page) && page > 0 ? page : 1;
-      // Canonicalize discipline to lowercase on read so the stored value matches
-      // option values populated from loadDisciplines (also lowercased). Existing
-      // URLs like `?discipline=Physics` continue to resolve. the API is case
-      // insensitive; normalization is purely a frontend-coherence concern.
-      const rawDiscipline = params.get('discipline') || '';
-      this.discipline = rawDiscipline.toLowerCase();
+      this._syncDisciplineFromUrl(params);
       const sort = params.get('sort');
       this.sortBy = sort === 'votes' || sort === 'reputation' ? sort : 'date';
       const source = params.get('source');
@@ -153,33 +144,12 @@ export function initPaperFeed() {
       if (!pageOwnsUrl()) return;
       const params = new URLSearchParams();
       if (this.currentPage > 1) params.set('page', String(this.currentPage));
-      // _syncFromUrl lowercases URL reads; backend canon_name is already
-      // lowercase; _pushUrl catches direct state assignments (e.g. code paths
-      // that assign `this.discipline` without going through _syncFromUrl).
-      if (this.discipline) params.set('discipline', this.discipline.toLowerCase());
+      this._pushDisciplineToUrl(params);
       if (this.sortBy !== 'date') params.set('sort', this.sortBy);
       if (this.sourceFilter) params.set('source', this.sourceFilter);
       const qs = params.toString();
       const newUrl = window.location.pathname + (qs ? '?' + qs : '');
       window.history.pushState(null, '', newUrl);
-    },
-
-    async loadDisciplines() {
-      // Reset the failure flag before attempting the fetch so retries after a
-      // transient failure can clear the `data-disciplines-status="failed"` DOM
-      // signal on success. Today `loadDisciplines` is init-only, but any future
-      // retry path (route revisit, visibility-change reload, user-triggered
-      // retry) would otherwise see the flag stuck at true even after a
-      // successful reload.
-      this.disciplinesLoadFailed = false;
-      const res = await fetchDisciplines();
-      // Backend returns `{ canon_name, display_name, paper_count }` per
-      // `agents/docs/api-contracts/misc.md` (GET /api/disciplines).
-      // `canon_name` is already lowercased server-side (the dedup key), so
-      // the frontend no longer needs to lowercase here. `display_name` is
-      // the rendered label; Tailwind `class="capitalize"` on the <option>
-      // titlecases it for display.
-      this.disciplines = res.data || [];
     },
 
     async loadPapers() {
