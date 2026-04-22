@@ -19,7 +19,21 @@ vi.mock('../../src/hive.js', () => ({
   },
   broadcastJsonWithTimeout: (...args: unknown[]) =>
     (broadcastJsonMock as (...a: unknown[]) => unknown)(...args),
-  BroadcastTimeoutError: class BroadcastTimeoutError extends Error {},
+  // Mirror the real BroadcastTimeoutError shape (timeoutMs ctor arg) so code
+  // under test that reads `err.timeoutMs` after `instanceof` discrimination
+  // gets the property rather than undefined. signup-verify treats accreditation
+  // broadcast as best-effort: failures (including timeouts) are logged and the
+  // confirm flow returns 200 regardless, so no 504 surface to test here. This
+  // mirror protects against latent false-confidence if the log structure or
+  // discrimination semantics change later.
+  BroadcastTimeoutError: class BroadcastTimeoutError extends Error {
+    public readonly timeoutMs: number;
+    constructor(timeoutMs: number) {
+      super(`Hive broadcast timed out after ${timeoutMs}ms`);
+      this.name = 'BroadcastTimeoutError';
+      this.timeoutMs = timeoutMs;
+    }
+  },
   DEFAULT_BROADCAST_TIMEOUT_MS: 30_000,
 }));
 
@@ -250,5 +264,50 @@ describe.skipIf(!dbReachable)('SEC-004-BE: ORCID signup + confirm WITH password'
       .send({ username, password });
     expect(loginRes.status).toBe(200);
     expect(loginRes.body.data.token).toBeTruthy();
+  });
+});
+
+// ──────────────────────────────────────────────────────────────
+// BE-AUTH-RESUME-SIGNUP-TIMING-GUARD — close unknown-email timing
+// oracle on /api/auth/resume-signup. Mirrors the three sibling
+// timing specs in recover.test.ts (unknown-user on /login, /recover,
+// /resend-verification). The FLOOR value is identical (35ms) because
+// the mutation-kill threshold is set by argon2.verify wall-time at
+// our ARGON2_OPTIONS, not by the endpoint under test.
+// ──────────────────────────────────────────────────────────────
+
+// Duplicated from recover.test.ts to keep each route test file self-
+// contained. See that file for the rationale on 35ms (reference hardware
+// argon2.verify runs 42-55ms; faster CI drops to high-20s; 35ms still
+// kills the sentinel-removal mutation at ≥35× margin over the ~1ms
+// pre-sentinel path).
+const TIMING_ORACLE_FLOOR_MS = 35;
+
+describe('BE-AUTH-RESUME-SIGNUP-TIMING-GUARD: /resume-signup unknown-email burns sentinel', () => {
+  it.skipIf(!dbReachable)('returns 400 for unknown email with ≥ floor wall-time', async () => {
+    await clearRateLimitKeys(['signup-resume']);
+    // Without the sentinel argon2.verify on the unknown-email branch of
+    // /api/auth/resume-signup, this path returns in ~1ms while the known-
+    // email-in-confirmed-signup-state branch pays argon2.verify (~50ms) —
+    // an enumeration oracle that leaks which emails sit in a resumable
+    // state. Status-code stays 400.
+    //
+    // Warm the sentinel-hash lazy promise + Node request stack so the
+    // measured call reflects steady-state argon2.verify cost, not first-
+    // call overhead. resumeLimiter is 5/hr per IP (1 warmup + 1 measured
+    // + 3 retry headroom).
+    await request(app)
+      .post('/api/auth/resume-signup')
+      .send({ email: 'resume_warmup@example.com', password: 'Warmup1234' });
+
+    const start = Date.now();
+    const res = await request(app)
+      .post('/api/auth/resume-signup')
+      .send({ email: 'definitely_nonexistent_resume_xyz@example.com', password: 'AnythingValid1' });
+    const elapsed = Date.now() - start;
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('BAD_REQUEST');
+    expect(elapsed).toBeGreaterThanOrEqual(TIMING_ORACLE_FLOOR_MS);
   });
 });

@@ -12,6 +12,7 @@ import { hiveClient, broadcastJsonWithTimeout } from '../hive.js';
 import { encryptKey } from '../custody-crypto.js';
 import { createClaimedAccount } from '../account-creation.js';
 import { logger } from '../logger.js';
+import { burnSentinel } from './auth.js';
 
 const router = Router();
 const SESSION_EXPIRY = '24h';
@@ -103,13 +104,23 @@ router.post('/resume-signup', resumeLimiter, async (req: Request, res: Response)
     );
 
     if (rows.length === 0) {
+      // Unknown-email path: burn sentinel to match the known-email + argon2.verify
+      // wall-time below. Without this, unknown-email returns in ~1ms while the
+      // known-email-in-confirmed-signup-state branch pays argon2.verify (~50ms),
+      // an enumeration oracle that leaks which emails sit in a resumable state.
+      // Mirrors the pattern applied across auth.ts under SEC-LOGIN-UNKNOWN-USER-TIMING.
+      await burnSentinel(password);
       return sendError(res, 400, 'BAD_REQUEST', 'Invalid email or password');
     }
 
     const account = rows[0];
 
-    // Only allow resume if email was already verified but account not yet active
+    // Only allow resume if email was already verified but account not yet active.
+    // Burn sentinel on the non-confirmed branch too so accounts in any non-
+    // resumable lifecycle state (null verify_token, unverified verify_token)
+    // cost the same wall-time as the confirmed + wrong-password branch below.
     if (!account.verify_token || !account.verify_token.startsWith('confirmed:')) {
+      await burnSentinel(password);
       return sendError(res, 400, 'BAD_REQUEST', 'Invalid email or password');
     }
 
@@ -263,7 +274,10 @@ router.post('/confirm', confirmLimiter, async (req: Request, res: Response) => {
           adminKey,
         );
       } catch (accErr) {
-        logger.error({ err: (accErr as Error).message }, 'Failed to broadcast accreditation — account created but not accredited');
+        logger.error(
+          { err: accErr, email: account.email, username: normalizedUsername, orcid: account.orcid ?? null },
+          'Failed to broadcast accreditation — account created but not accredited',
+        );
       }
     }
 
@@ -382,7 +396,10 @@ router.post('/link', linkLimiter, verifyHiveSignature, async (req: Request, res:
           adminKey,
         );
       } catch (accErr) {
-        logger.error({ err: (accErr as Error).message }, 'Failed to broadcast accreditation for linked account');
+        logger.error(
+          { err: accErr, email: account.email, username: hiveUsername, orcid: account.orcid ?? null },
+          'Failed to broadcast accreditation for linked account',
+        );
       }
     }
 

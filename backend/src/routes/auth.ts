@@ -155,7 +155,7 @@ SENTINEL_ARGON2_HASH_PROMISE.catch((err) => {
 // but can drop to the high-20s on faster CI hosts. 35ms still kills the
 // sentinel-removal mutation (35× margin above the pre-sentinel ~1ms path).
 // The 35ms floor is named TIMING_ORACLE_FLOOR_MS in recover.test.ts.
-async function burnSentinel(input: string): Promise<void> {
+export async function burnSentinel(input: string): Promise<void> {
   try {
     const sentinelHash = await SENTINEL_ARGON2_HASH_PROMISE;
     // Clip attacker-controlled oversize input before handing it to argon2:
