@@ -744,13 +744,11 @@ describe('SEC-LOGIN-UNKNOWN-USER-TIMING: /signup 409 DUPLICATE burns sentinel', 
   );
 });
 
-// ─── Round-3 additions ───────────────────────────────────────
-
-// (The /login ACCOUNT_LOCKED timing test was removed in round-4: the 403
-// status code already discloses lockout to correct-password callers, and the
-// prior burnSentinel on that branch created a 2× asymmetry — ~100ms locked
-// vs ~50ms unlocked — instead of closing one. See the /login handler's
-// lockout comment for the full rationale.)
+// (No timing test for /login ACCOUNT_LOCKED: the check runs after
+// argon2.verify, so adding a burn creates a 2× asymmetry — verify+burn on
+// locked vs verify-only on unlocked. 403 already discloses lockout state to
+// correct-password callers. See the handler comment in auth.ts for full
+// rationale.)
 
 // burnSentinel must clip attacker-controlled oversize input before handing it
 // to argon2.verify. argon2.verify rejects inputs >4096 bytes BEFORE entering

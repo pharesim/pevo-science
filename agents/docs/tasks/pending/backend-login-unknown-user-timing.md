@@ -256,3 +256,51 @@ All 3 round-3 hold items landed. `npx tsc --noEmit` clean. `backend/tests/routes
 **Deviations from hold block:**
 - Item #3: the literal snippet `logger.flush?.(cb) ?? process.exit(1)` would fire `process.exit(1)` synchronously immediately after calling flush (pino's flush returns void). Landed an `if (typeof logger.flush === 'function') { ... } else { ... }` + setTimeout shape that preserves both the timeout guard and the wait-for-callback intent. Rationale above.
 - Opportunistic `if (password)` tightening applied per architect's P3-dismissed-but-suggested note at both item-#1 sites (one-line change, matches the "fine to apply opportunistically" guidance).
+
+---
+
+**Architect re-review (2026-04-22, round 4) — HELD PENDING FIXES:**
+
+Round-4 `/ce-code-review` on commit `1cbd210` (10 personas: correctness, testing, security, adversarial, reliability, maintainability, project-standards, kieran-typescript, ce-agent-native, ce-learnings-researcher). All 3 round-3 hold items correctly applied: the setTimeout+flush composition is sound (correctness + reliability confirm the literal-snippet deviation was the right call — pino's `flush` returns `void` so the `??` fallback would never fire), ACCOUNT_LOCKED burn removal does not reopen an oracle (wrong-password callers on both locked and unlocked accounts return 401 at ~50ms via `!valid` path; correct-password's 403 vs 200 is status-code oracle explicitly accepted by design), and the /signup 409 `logger.warn` on argon2.hash failure matches `burnSentinel`'s operator-visible failure-log pattern.
+
+Re-review surfaced 3 P3 comment/naming-drift items worth closing before archive. All in-scope of the round-4 commit.
+
+1. **P3 — Stale comment "Gate on `hasPassword`"** (adversarial ADV-R4-003 0.95 + maintainability M-02 0.76 + kieran KT-001 0.72, 3-reviewer convergence). `backend/src/routes/auth.ts:~306` — the block comment reads "Gate on hasPassword to avoid paying argon2 cost on ORCID+email signup with no password" but the code beneath was changed in round-4 from `if (hasPassword)` to `if (password)`. Update the comment to reference the `password` truthy-narrow (e.g., "Gate on truthy `password` to avoid paying argon2 cost on ORCID+email signup with no password — the narrow also gives TS `password: string` for the `argon2.hash` call below"). One-line fix.
+
+2. **P3 — Dead `clearTimeout(t)` in startup-reject else branch** (maintainability M-03 0.85). `backend/src/routes/auth.ts:~121` — the else branch (no-flush path) has `clearTimeout(t); process.exit(1);` where `t` is already `.unref()`'d, no flush callback is pending in this branch, and `process.exit(1)` on the next line terminates the process before the timer could ever fire anyway. The `clearTimeout` is pure structural symmetry with the `if` branch (where clearing is necessary to suppress the 2s fallback once flush succeeds); here it creates cognitive overhead for zero behavioral benefit. Remove it; optional one-line comment: `// no flush callback pending; exit directly`.
+
+3. **P3 — "round-4" task-history phrasing in test replacement comment** (maintainability M-04 0.72). `backend/tests/routes/recover.test.ts:~748-758` — the comment replacing the removed ACCOUNT_LOCKED describe block says "The /login ACCOUNT_LOCKED timing test was removed in round-4". Round-2 item #10 rule requires production/test comments to be self-contained invariant prose (no hold/round references — they rot once the task archives). Rewrite as: `(No timing test for /login ACCOUNT_LOCKED: the check runs after argon2.verify, so adding a burn creates a 2× asymmetry — verify+burn on locked vs verify-only on unlocked. 403 already discloses lockout state to correct-password callers. See the handler comment in auth.ts for full rationale.)` — keeps the rationale, drops the round reference.
+
+**Dismissed from round-4 findings (architect triage):**
+- **P2** Startup double-failure 2s oracle window (adversarial ADV-R4-001 0.63): requires simultaneous OOM of argon2 native + pino worker thread at module init; window bounded at 2s by the setTimeout fallback. A structural fix (sentinel-ready middleware gate awaiting `SENTINEL_ARGON2_HASH_PROMISE` before dispatching auth requests) is non-trivial and beyond this task's scope. Accepted residual; noted for future hardening if the dual-OOM scenario is observed in prod.
+- **P3** Duplicated `logger.warn` string across 2 /signup 409 sites (maintainability M-01 0.82): below the task's explicit 4-site extraction threshold. Inline is preferred per the round-3 hold block's own guidance.
+- **P3** `hasPassword` boolean alias still gates `argon2.hash(password, ...)` at `:~339` (kieran KT-002 0.65 pre-existing): masked by `skipLibCheck: true` allowing `string | undefined` to slip through argon2's overloads. Partial migration leaves two idioms for the same gate in adjacent code. Pre-existing; `backend-request-body-typing-zod.md` + `backend-zod-migration-extension.md` follow-up work is the right path for a general fix. Not blocking.
+- **P3** SIGNUP_EXPIRED DB-DELETE latency oracle vs other post-verify branches (adversarial ADV-R4-002 0.61 pre-existing): not introduced by round-4. Status-code oracle already discloses state; timing axis marginal.
+- **P3** Signal block appended to `pending/` not `review/` (project-standards PS-01/PS-02 0.72/0.65): addressed separately this review via an `agents/backend/CLAUDE.md` rule clarification — both sequences are now explicitly permitted.
+- **P3** Hold #1 test coverage for the ACCOUNT_LOCKED burn removal (testing T-R4-02 0.62): the architect already dismissed in round-3 that the removed burn-assertion was zero-mutation-kill given handler order. A negative test asserting the branch does NOT pay burn wall-time would cost more than it protects.
+- **P3** Hold #3 test coverage for the setTimeout+flush composition (testing T-R4-03 0.60): architect accepted in round-3 as environmental/fail-loud — not unit-testable without mocking argon2 in a way that defeats the security primitive under test.
+
+**Filed follow-up still-pending:** `backend-auth-smtp-status-code-oracle.md`, `backend-auth-resume-signup-timing-guard.md`, `backend-argon2-concurrency-cap.md`, `backend-signup-institutional-gate-ordering.md`, `backend-request-body-typing-zod.md`, `backend-enable-eslint-ts-rules.md` — per prior hold blocks. No new follow-ups filed from round 4.
+
+**Path to re-archive:** (1) Backend applies items #1-3 (single commit, all in `auth.ts` + `recover.test.ts`). (2) Backend re-review signal block below the hold. (3) Architect re-reviews round-5; archives on clean.
+
+---
+
+**Backend re-review signal (2026-04-22 round-5, worktree `.claude/worktrees/agent-a67d9e4c`):**
+
+All 3 round-4 P3 hold items landed in a single commit. `npx tsc --noEmit` clean. `backend/npm run lint` clean (6 pre-existing `no-explicit-any` warnings at Express/dhive boundaries, per backend CLAUDE.md these are accepted). `backend/tests/routes/recover.test.ts` 24/27 pass on this worktree. The 3 failures are pre-existing on the worktree's base commit `55fc03b` (verified by running the suite on that baseline before applying any changes); all are SMTP-not-configured 500-vs-409 status code mismatches in `BE-SIGNUP-INSTITUTIONAL-GATE-ORDERING` tests, unrelated to this task. Full backend vitest suite deferred to parent per coordination rules.
+
+1. **P3 Stale "Gate on `hasPassword`" comment (fixed).** `backend/src/routes/auth.ts:~306-311` — rewrote the block comment to reference the round-4 `if (password)` truthy-narrow: "Gate on truthy `password` to avoid paying argon2 cost on ORCID+email signup with no password (both 409 and happy-path are ~1ms there, no oracle to close). The truthy-narrow also gives TS `password: string` for the `argon2.hash` call below without an `as string` cast. The hex-pending fall-through path below runs argon2.hash + upsert naturally, so no burn is needed there." The comment now accurately describes the code and captures the type-flow benefit.
+
+2. **P3 Dead `clearTimeout(t)` in startup-reject else branch (fixed).** `backend/src/routes/auth.ts:~122-124` — removed `clearTimeout(t);` from the no-flush else branch. Replaced with the architect-suggested clarifying comment `// no flush callback pending; exit directly`. The `if (typeof logger.flush === 'function')` branch still calls `clearTimeout(t)` inside the flush callback, which is where it remains load-bearing (clearing the 2s fallback after flush succeeds).
+
+3. **P3 "round-4" task-history phrasing in test replacement comment (fixed).** `backend/tests/routes/recover.test.ts:~747-751` — rewrote as architect-suggested self-contained invariant prose: "(No timing test for /login ACCOUNT_LOCKED: the check runs after argon2.verify, so adding a burn creates a 2× asymmetry — verify+burn on locked vs verify-only on unlocked. 403 already discloses lockout state to correct-password callers. See the handler comment in auth.ts for full rationale.)". Opportunistic cleanup: also removed the adjacent `// ─── Round-3 additions ─── ...` section-heading comment (same rot class — task-history marker with no invariant value).
+
+**Test outcomes:**
+- `recover.test.ts`: 24/27 pass (3 pre-existing SMTP-config failures on baseline `55fc03b` — not introduced by this commit). No net-new tests added; all 3 hold items are comment/dead-code edits with no behavioral change.
+- `npx tsc --noEmit`: clean.
+- `npm run lint`: clean (6 pre-existing `no-explicit-any` warnings accepted per backend CLAUDE.md).
+- Full vitest suite: deferred to parent agent.
+
+**Deviations from hold block:**
+- None substantive. All 3 items landed as the architect specified. Minor: also removed the adjacent `Round-3 additions` section-heading comment in `recover.test.ts` under item #3 as cleanup-while-there (same task-history-phrasing class as item #3 itself).

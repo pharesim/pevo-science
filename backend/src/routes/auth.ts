@@ -120,7 +120,7 @@ SENTINEL_ARGON2_HASH_PROMISE.catch((err) => {
       process.exit(1);
     });
   } else {
-    clearTimeout(t);
+    // no flush callback pending; exit directly
     process.exit(1);
   }
 });
@@ -303,10 +303,12 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
         // equalization, no persistence. Silent-catch so a native argon2
         // failure degrades the same way burnSentinel does (logged by the
         // global catch at module top when the startup hash rejects).
-        // Gate on hasPassword to avoid paying argon2 cost on ORCID+email
-        // signup with no password (both 409 and happy-path are ~1ms there,
-        // no oracle to close). The hex-pending fall-through path below
-        // runs argon2.hash + upsert naturally, so no burn is needed there.
+        // Gate on truthy `password` to avoid paying argon2 cost on
+        // ORCID+email signup with no password (both 409 and happy-path are
+        // ~1ms there, no oracle to close). The truthy-narrow also gives TS
+        // `password: string` for the `argon2.hash` call below without an
+        // `as string` cast. The hex-pending fall-through path below runs
+        // argon2.hash + upsert naturally, so no burn is needed there.
         if (existingRows[0].verify_token === null) {
           if (password) await argon2.hash(password, ARGON2_OPTIONS).catch((err) => {
             logger.warn({ err }, 'argon2 signup-dup burn failed — timing oracle may be open');
