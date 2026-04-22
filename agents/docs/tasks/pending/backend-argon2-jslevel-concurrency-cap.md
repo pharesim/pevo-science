@@ -69,3 +69,43 @@ Either is fine. `p-limit` is lower-risk; in-repo implementation avoids supply-ch
 ## [TODO Architect]
 
 - Revisit docker-compose `mem_limit` after the semaphore lands — can likely reduce from 512m (argon2 was the biggest sink) or use the headroom for Postgres/Redis.
+- `/api/health` response shape gained three new fields: `argon2_queue_depth`, `argon2_in_flight`, `argon2_max_concurrent`. If `agents/docs/api-contracts/misc.md` or similar documents the health endpoint, add these there. Not auto-updated by the implementer per backend CLAUDE.md architect-owns-contracts rule.
+
+---
+
+**Backend implementation signal (2026-04-22 round-1, worktree `.claude/worktrees/agent-a67d9e4c`):**
+
+Full scope landed. `npx tsc --noEmit` clean. `npm run lint` clean (6 pre-existing `no-explicit-any` warnings accepted per backend CLAUDE.md). Directly-affected tests: `tests/routes/auth.test.ts` 16/16, `tests/routes/auth-concurrency.test.ts` 2/2, `tests/routes/recover.test.ts` 27/27, `tests/routes/signup-verify.test.ts` 2/2. Full backend vitest suite deferred to parent.
+
+1. **Semaphore module (landed).** New file `backend/src/lib/argon2-semaphore.ts` (~90 LoC including docblock). In-repo implementation (no `p-limit` dep) via a simple Promise-queue + counter. Exposes:
+   - `runWithArgon2Slot(fn)`: acquire slot, run fn, release. Propagates fn's return value and errors; does NOT catch — callers decide error handling.
+   - `MAX_CONCURRENT_ARGON2_OPS`: named constant, derived as `floor(UV_THREADPOOL_SIZE / ARGON2_OPTIONS.parallelism)`. At the production knobs (pool=16, parallelism=4) this is 4. Fallback to 1 when UV_THREADPOOL_SIZE is unset (Vitest, bare-metal dev) — fail-loud-deterministic is the correct posture even when slow.
+   - `getArgon2QueueDepth()` + `getArgon2InFlight()`: synchronous counters for the /api/health endpoint, independent of pino transport drainage.
+
+2. **Call-site wrapping (landed).** Every argon2.hash / argon2.verify on auth paths now goes through `runWithArgon2Slot`:
+   - `backend/src/routes/auth.ts`: burnSentinel internal verify (1 site), /signup 409 dup hash (2 sites), /signup happy-path hash (1 site), /resend-verification verify (1 site), /login verify (1 site), /reset hash (1 site), /recover hash (1 site) — 8 sites total.
+   - `backend/src/routes/signup-verify.ts`: resume-signup verify (1 site).
+   - `backend/src/routes/custody.ts`: upgrade-to-self-custody verify (1 site).
+   - Sole exception: the module-load `SENTINEL_ARGON2_HASH_PROMISE = argon2.hash(...)` at `auth.ts:~124` runs exactly once at module init (no saturation possible), so wrapping it would add a cold-start race condition and zero security value.
+
+3. **Health endpoint (landed).** `backend/src/app.ts:143-160` — the existing `/api/health` route now includes `argon2_queue_depth` (callers currently waiting in the semaphore queue), `argon2_in_flight` (callers currently running), and `argon2_max_concurrent` (the static cap). These are synchronous counter reads — they cannot be lost to OOM-induced log-drain failures the way pino warnings could. See `auth-concurrency.test.ts` for an assertion on the shape.
+
+4. **Concurrent-load test (landed).** New file `backend/tests/routes/auth-concurrency.test.ts`. 8-way Promise.all fan-out of `/api/auth/login` with distinct unknown usernames; asserts every response returns 401 UNAUTHORIZED AND elapsed ≥ TIMING_ORACLE_FLOOR_MS (35ms). Also asserts the /api/health shape carries the 3 argon2 fields. `CONCURRENCY = 8` was chosen above MAX_CONCURRENT_ARGON2_OPS (4, proving the queue fills) AND below the loginLimiter cap of 10/hr per-IP (no rate-limit interference). Observed timings: the first 4 complete in ~94-136ms; the final 4 queue and complete in ~260-462ms. If the semaphore were removed and the libuv pool saturated, late responses would throw through burnSentinel's silent catch and return in ~0ms, failing the floor assertion.
+
+5. **Docblock correction (landed).** `auth.ts` comment block above `SENTINEL_ARGON2_HASH_PROMISE` rewritten to name `lib/argon2-semaphore.ts` directly and explain that the env knob is libuv headroom while the semaphore is the deterministic cap. The "NOT 16" disambiguation is retained for future readers.
+
+**Test outcomes:**
+- `auth-concurrency.test.ts`: 2/2 pass.
+- `auth.test.ts`: 16/16 pass.
+- `recover.test.ts`: 27/27 pass.
+- `signup-verify.test.ts`: 2/2 pass (after resolving a worktree-setup gap where `backend/data/academic-domains.json` was absent; now symlinked from the main checkout for tests — production builds generate it at Docker build time).
+- `npx tsc --noEmit`: clean.
+- `npm run lint`: clean.
+- Full vitest suite: deferred to parent.
+
+**Deviations from acceptance:**
+- Acceptance called for a 20-way Promise.all. Landed 8-way because `loginLimiter = 10/hr per-IP`; a 20-way burst would hit 429 on requests 11-20, masking the semaphore assertion with rate-limit noise. 8 still exceeds MAX_CONCURRENT_ARGON2_OPS (4) by 2×, so the queue demonstrably fills. Raising the limiter for this test would require middleware mocking that the test carve-out policy discourages; an alternate test-only limiter override could be filed as a follow-up if the architect prefers 20.
+- Acceptance asked that the semaphore wrap "every `burnSentinel` call and every `argon2.hash` / `argon2.verify` call on auth paths." Interpreted this as wrapping the argon2.hash/verify calls INSIDE burnSentinel (rather than the burnSentinel calls themselves), since that's where the actual libuv-pool contention happens. Wrapping both would add an extra queue level without changing behavior.
+
+**`[TODO Architect]`:**
+- `/api/health` response shape gained three new fields. If the API contract documents this endpoint, the architect owns that update per backend CLAUDE.md's architect-owns-contracts rule.

@@ -12,6 +12,7 @@ import { hiveClient, broadcastJsonWithTimeout } from '../hive.js';
 import { encryptKey } from '../custody-crypto.js';
 import { createClaimedAccount } from '../account-creation.js';
 import { logger } from '../logger.js';
+import { runWithArgon2Slot } from '../lib/argon2-semaphore.js';
 
 const router = Router();
 const SESSION_EXPIRY = '24h';
@@ -114,7 +115,7 @@ router.post('/resume-signup', resumeLimiter, async (req: Request, res: Response)
     }
 
     // Verify password
-    const passwordValid = await argon2.verify(account.password_hash, password);
+    const passwordValid = await runWithArgon2Slot(() => argon2.verify(account.password_hash, password));
     if (!passwordValid) {
       return sendError(res, 400, 'BAD_REQUEST', 'Invalid email or password');
     }
