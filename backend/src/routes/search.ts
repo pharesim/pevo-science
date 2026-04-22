@@ -64,8 +64,10 @@ async function searchPapersFromHaf(
     // Case-insensitive match: canonicalize both sides to lowercase so a
     // `?discipline=physics` filter still matches papers tagged "Physics",
     // "PHYSICS", etc. Mirrors the LOWER()-grouped /api/disciplines query.
-    // Callers (router, stats, papers, search) lowercase `discipline` once at
-    // route entry, so the bound parameter is already canonical here.
+    // Callers (router, papers, search) lowercase `discipline` once at route
+    // entry, so the bound parameter is already canonical here. (stats has no
+    // `?discipline=` query param; it applies LOWER() inside a hard-coded
+    // subquery.)
     conditions.push(`LOWER(c.json_metadata -> ${appTagParam} ->> 'discipline') = $${paramIdx++}`);
     params.push(discipline);
   }

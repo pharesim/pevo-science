@@ -263,3 +263,26 @@ Both round-3 hold items are correctly applied: `papers.ts` cache-key lowercasing
 - `agents/docs/api-contracts/papers.md` — `GET /api/papers` + `GET /api/search` `discipline` parameter rows now document case-insensitive matching, case-variant cache-dedup, `canon_name` guidance, and the repeated-param silent-unfilter contract. Closes AC-001 + AC-002.
 
 **Path to re-archive:** (1) Backend applies items #1-4 on this task (all P3; scope tight: one refactor + one inline comment + one test spec + one comment-delete). (2) Backend re-review signal block below the hold. (3) Architect re-reviews round-5 with a minimal `/ce-code-review` pass (correctness + testing sufficient); archives on clean.
+
+---
+
+**Backend re-review signal (2026-04-22 round-5, branch `worktree-agent-a9db3270`):**
+
+All 4 round-4 hold items addressed. Directly-affected vitest file in isolation (`disciplines-canon-mocked.test.ts`): 9 passed. `npm run lint` clean on changed files.
+
+1. **Hold #1 — `fetchPapersFromHaf` accepts `discipline` as explicit arg (P3).** `backend/src/routes/papers.ts:186-200` — signature changed from `fetchPapersFromHaf(req: Request)` to `fetchPapersFromHaf(req: Request, discipline: string | undefined)`. The inner re-read of `req.query.discipline` (typeof narrowing + `.toLowerCase()`) is removed; the docblock now explains the caller-provided-canonical-value contract. `backend/src/routes/papers.ts:471` — call site now passes `discipline || undefined` from the route-handler-parsed value (already narrowed + lowercased once at `:459`). Mirrors the `search.ts:searchFromHaf(..., discipline)` shape. Eliminates the double `.toLowerCase()` regression on cache-miss + SWR-stale revalidation paths flagged by round-4 hold #1.
+
+2. **Hold #2 — 2-line inline comment on the `''` vs `undefined` split (P3).** `backend/src/routes/papers.ts:451-457` — extended the route-handler `disciplineRaw`/`discipline` docblock with a dedicated paragraph on the fallback split: `''` at the cache-key site (template-literal stringification of `undefined` yields `"undefined"`, which would invalidate every existing `d=` cache entry on deploy); `: undefined` at the SQL-gate site (passed to `fetchPapersFromHaf` so `if (discipline)` suppresses the `WHERE LOWER(...) = $N` condition). A second comment at `papers.ts:467-470` tags the call-site `discipline || undefined` coalesce with the same rationale. `backend/src/routes/papers.ts:196-200` — the `fetchPapersFromHaf` docblock also mentions the `: undefined` semantics for the SQL-gate path. Per round-4 hold #2 instruction the refactor collapses the narrowing-site count from 3 to 2 (route handler + inner function), so only two comment sites were needed.
+
+3. **Hold #3 — Test for the `string[]` repeated-param trap (P3).** `backend/tests/routes/disciplines-canon-mocked.test.ts` — two new describe blocks:
+   - **`GET /api/papers — repeated-param ?discipline=a&discipline=b` trap.** Two requests with `?discipline=a&discipline=b`, captures papers-data SQL + params. Asserts (a) no bound param equals `"[object Object]"`; (b) SQL does NOT contain the `LOWER(c.json_metadata ...) ->> 'discipline' =` discipline clause at all (typeof-narrowing yields `undefined` → `if (discipline)` false → no filter fires); (c) `papersDataCalls.toHaveLength(1)` — both repeated-param requests share one cache entry.
+   - **`GET /api/search — repeated-param ?discipline=a&discipline=b` trap.** Mirrors the above against `/api/search`, using the `->> 'type') AS type,` papers-search-data-query fragment to uniquely identify the data query (same predicate as the round-2 hold #1 cache-key test). Same three-way assertion shape: no `"[object Object]"` in params, no discipline clause in SQL, one data-query call across the two repeated-param requests.
+   - Both tests verify the round-3 hold #2 typeof-narrowing is load-bearing: a revert to `(req.query.discipline as string | undefined)?.toLowerCase()` would silently coerce `string[]` → `undefined.toLowerCase()` would throw; a revert to `.map(...).join()` or similar "best-effort" handling would surface `"[object Object]"` (or similar) in the bound params and fail assertion (a).
+
+4. **Hold #4 — `search.ts:67` comment fix (P3).** `backend/src/routes/search.ts:67-71` — `stats` dropped from the caller enumeration; added a parenthetical clarifying that stats has no `?discipline=` query param (it applies `LOWER()` inside a hard-coded subquery). Rest of comment intact. Closes round-4 M-04 (`search.ts:67` factually wrong).
+
+**Deviations from hold block:** None.
+
+**Dismissed-finding still-dismissed:** boundary-rule violation (architect round-2 authorized the contract edit), Postgres LOWER() vs JS toLowerCase() Unicode divergence (ASCII-range disciplines); all round-4 dismissed items stand.
+
+**Filed follow-up still-pending:** `backend-display-name-titlecase.md`, `backend-discipline-length-cap.md` — unchanged.

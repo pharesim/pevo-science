@@ -297,6 +297,110 @@ describe('GET /api/papers — discipline-filter cache-key canonicalization', () 
   );
 });
 
+describe('GET /api/papers — repeated-param `?discipline=a&discipline=b` trap', () => {
+  it(
+    'Hold #3 (round 4): repeated discipline params narrow to `undefined`/`""` without `"[object Object]"` leakage',
+    async () => {
+      // Round-3 hold #2 added a typeof-narrowed parse (`typeof raw ===
+      // 'string' ? raw.toLowerCase() : ''/undefined`) at each site to defend
+      // against Express yielding `string[]` for repeated query params
+      // (`?discipline=a&discipline=b`). A regression reverting to
+      // `(req.query.discipline as string | undefined)?.toLowerCase()` would
+      // call `.toLowerCase()` on the array and silently coerce to
+      // `"[object Object]"` (actually `undefined`, but older patterns with
+      // `.map(...).join()` or default fallbacks can land there). Round-4
+      // hold #3 pins the bound-param and cache-key behavior so a revert
+      // cannot pass this suite.
+      //
+      // Expected post-fix: the inner SQL gate sees `discipline === undefined`
+      // and emits NO `LOWER(c.json_metadata) = $N` clause at all (so no
+      // filter param gets bound for discipline). The cache-key fragment is
+      // the empty string (`d=`). Two repeated-param requests therefore share
+      // one cache entry → papers-data query runs exactly once.
+      let capturedPapersSql: string | undefined;
+      let capturedPapersParams: unknown[] | undefined;
+      hafQueryMock.mockImplementation(async (sql: string, params: unknown[]) => {
+        if (sql.includes('LEFT(c.body, 300) AS abstract') && capturedPapersSql === undefined) {
+          capturedPapersSql = sql;
+          capturedPapersParams = params;
+        }
+        return { rows: [] };
+      });
+
+      const res1 = await request(app).get('/api/papers?discipline=a&discipline=b');
+      const res2 = await request(app).get('/api/papers?discipline=a&discipline=b');
+      expect(res1.status).toBe(200);
+      expect(res2.status).toBe(200);
+
+      // Bound SQL params must not contain the string[].toLowerCase() coercion.
+      expect(capturedPapersParams).toBeDefined();
+      for (const p of capturedPapersParams!) {
+        expect(p).not.toBe('[object Object]');
+      }
+      // With typeof-narrowing, no discipline filter fires → SQL must NOT
+      // contain the LOWER(...) = $N discipline clause for this request path.
+      expect(capturedPapersSql).toBeDefined();
+      expect(capturedPapersSql!).not.toMatch(/LOWER\(c\.json_metadata[^)]*\)\s*->>\s*'discipline'\)\s*=/);
+
+      // Cache-key fragment for a repeated param must canonicalize to `d=`
+      // (empty) so the two requests dedup into a single entry → papers-data
+      // query runs exactly once across the two requests.
+      const papersDataCalls = hafQueryMock.mock.calls.filter((call) => {
+        const sql = String(call[0] || '');
+        return sql.includes('LEFT(c.body, 300) AS abstract');
+      });
+      expect(papersDataCalls).toHaveLength(1);
+    },
+  );
+});
+
+describe('GET /api/search — repeated-param `?discipline=a&discipline=b` trap', () => {
+  it(
+    'Hold #3 (round 4): repeated discipline params narrow to `undefined` without `"[object Object]"` leakage',
+    async () => {
+      // search.ts:293 uses the same typeof-narrowed pattern. Mirrors the
+      // /api/papers assertion above for the search-cache-key path. Since the
+      // search cache-key hashes `d=${discipline || ''}` into the SHA-256
+      // prefix (see search.ts:306), a `[object Object]` coercion would
+      // produce a different (but still consistent) hash across both
+      // requests — so the one-call assertion alone wouldn't catch a revert.
+      // We additionally check the bound SQL parameter list.
+      let capturedPapersSearchSql: string | undefined;
+      let capturedPapersSearchParams: unknown[] | undefined;
+      hafQueryMock.mockImplementation(async (sql: string, params: unknown[]) => {
+        if (sql.includes("->> 'type') AS type,") && capturedPapersSearchSql === undefined) {
+          capturedPapersSearchSql = sql;
+          capturedPapersSearchParams = params;
+        }
+        return {
+          rows: [
+            { type: 'paper', author: 'alice', permlink: 'test', title: 'x', snippet: 'x', created: '2026-01-01' },
+          ],
+        };
+      });
+
+      const res1 = await request(app).get('/api/search?q=science&discipline=a&discipline=b');
+      const res2 = await request(app).get('/api/search?q=science&discipline=a&discipline=b');
+      expect(res1.status).toBe(200);
+      expect(res2.status).toBe(200);
+
+      expect(capturedPapersSearchParams).toBeDefined();
+      for (const p of capturedPapersSearchParams!) {
+        expect(p).not.toBe('[object Object]');
+      }
+      // With typeof-narrowing, no discipline filter fires.
+      expect(capturedPapersSearchSql).toBeDefined();
+      expect(capturedPapersSearchSql!).not.toMatch(/LOWER\(c\.json_metadata[^)]*\)\s*->>\s*'discipline'\)\s*=/);
+
+      const papersDataCalls = hafQueryMock.mock.calls.filter((call) => {
+        const sql = String(call[0] || '');
+        return sql.includes("->> 'type') AS type,");
+      });
+      expect(papersDataCalls).toHaveLength(1);
+    },
+  );
+});
+
 describe('GET /api/search — discipline-filter cache-key canonicalization', () => {
   it(
     'Hold #1 (round 2): case-variant ?discipline= values serve from a single cache entry (papers-search data query invoked once)',

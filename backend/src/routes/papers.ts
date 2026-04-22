@@ -183,20 +183,21 @@ const retractLimiter = rateLimit({ name: 'paper-retract', windowMs: 3_600_000, m
 // HAF SQL implementation for paper listing
 // ──────────────────────────────────────────────
 
-async function fetchPapersFromHaf(req: Request): Promise<{ rows: unknown[]; total: number } | null> {
+async function fetchPapersFromHaf(
+  req: Request,
+  discipline: string | undefined,
+): Promise<{ rows: unknown[]; total: number } | null> {
   const pool = getPool();
   if (!pool) return null;
 
   const { limit, offset } = parsePageLimit(req);
   const sort = parseSort(req);
   const order = parseOrder(req);
-  // Canonicalize `?discipline=` once here too. The route handler already
-  // lowercases for its cache key; the SQL binder relies on the same
-  // canonical form so `LOWER(column) = $N` matches. Round-3 hold #2:
-  // typeof-narrow rather than `as string | undefined` to dodge the
-  // repeated-param `string[]` coercion trap.
-  const disciplineRaw = req.query.discipline;
-  const discipline = typeof disciplineRaw === 'string' ? disciplineRaw.toLowerCase() : undefined;
+  // `discipline` is parsed + lowercased once by the route handler and passed in
+  // explicitly (mirrors `search.ts:searchFromHaf(..., discipline)`). The SQL
+  // gate below uses `: undefined` at the call site so the `if (discipline)`
+  // branch suppresses the `WHERE LOWER(...) = $N` condition entirely rather
+  // than emitting an empty-string match.
   const keyword = req.query.keyword as string | undefined;
   const author = req.query.author as string | undefined;
   const language = req.query.language as string | undefined;
@@ -447,6 +448,13 @@ router.get('/', async (req: Request, res: Response) => {
   // rather than `as string | undefined`; repeated params yield `string[]` at
   // runtime and `.toLowerCase()` on an array silently coerces to
   // `"[object Object]"` in the cache key.
+  //
+  // Fallback to `''` here (NOT `undefined`) is load-bearing for cache
+  // stability: the template literal below would stringify `undefined` to the
+  // literal `"undefined"`, invalidating every existing `d=` cache entry on
+  // deploy. The inner SQL-gate path uses `: undefined` (passed to
+  // `fetchPapersFromHaf`) so the `if (discipline)` condition suppresses the
+  // `WHERE LOWER(...) = $N` branch entirely.
   const disciplineRaw = req.query.discipline;
   const discipline = typeof disciplineRaw === 'string' ? disciplineRaw.toLowerCase() : '';
   const keyword = req.query.keyword || '';
@@ -456,7 +464,11 @@ router.get('/', async (req: Request, res: Response) => {
   const includeRetracted = req.query.include_retracted === 'true';
   const source = req.query.source || '';
   const cacheKey = `papers:p=${page}:l=${limit}:s=${sort}:o=${order}:d=${discipline}:k=${keyword}:a=${author}:lang=${language}:ao=${accreditedOnly}:ir=${includeRetracted}:src=${source}`;
-  const result = await hafCache.getOrSetSWR(cacheKey, () => fetchPapersFromHaf(req));
+  // Pass `discipline || undefined` so the inner `if (discipline)` SQL-gate
+  // suppresses the `WHERE LOWER(...) = $N` condition when no filter was
+  // requested. The cache-key `: ''` vs SQL-gate `: undefined` split is
+  // intentional — see comment above.
+  const result = await hafCache.getOrSetSWR(cacheKey, () => fetchPapersFromHaf(req, discipline || undefined));
   if (result) {
     return sendOk(res, result.rows, { page, limit, total: result.total });
   }
