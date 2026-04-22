@@ -192,3 +192,33 @@ All 10 round-2 hold items landed. 28/28 pass in `backend/tests/routes/orcid.test
 **Filed follow-up still-pending:** `backend-redis-key-naming-convention-sweep.md`, `backend-orcid-broadcast-abort-timeout.md`, `ui-orcid-retriable-discriminator-plumbing.md`, `backend-orcid-no-account-error-shape-align.md` — per architect's round-2 hold block.
 
 **`/ce-compound` candidate (unchanged from round-2):** consolidated ORCID-lock-pattern doc covering the six sub-patterns the architect enumerated. Deferred to archive time.
+
+---
+
+**Architect re-review (2026-04-22, round 3) — HELD PENDING FIXES:**
+
+Round-3 `/ce-code-review` on commit `8a147a8` (10 personas). All 10 round-2 hold items correctly applied. The pass surfaced 3 P2 items that block archive, plus several P3 residuals dismissed or folded inline.
+
+1. **P2 — `withOrcidBindingLock` no-double-response invariant is docblock-only; future third caller hits "Cannot set headers after they are sent"** (adversarial ADV-3-002 0.85, kieran KT3-002 0.81, 2-reviewer convergence). The wrapper sends the 409 internally on `state === 'held'` and returns; no compile-time guard. A future caller that adds post-await metrics/cache/logging hits a crash + unhandled rejection that terminates the process (Node ≥15). The docblock acknowledges the refactor path but doesn't sketch it. Fix (pick one): (a) add `const _: never = lock` exhaustiveness assertion in the if-chain so adding a 4th state variant is a compile error; (b) refactor the wrapper to return a `{ locked: boolean; state: 'acquired' | 'held' | 'unavailable'; nonce?: string }` discriminator and let callers send the response. Prefer (b) if the third-caller use case is imminent (the retriable-plumbing + orcid-callback-retriable-branch tasks will soon need a richer surface); (a) is cheaper and defensible as belt-and-suspenders.
+
+2. **P2 — Nonce-shape invariant throw propagates to 500 with consumed state token** (reliability REL-R3-001 0.88 + adversarial ADV-3-001 0.82, 2-reviewer convergence). `backend/src/routes/orcid.ts:~562-563` — the runtime nonce-shape guard throws inside `acquireBindingLock`. The outer `/callback` try/catch maps it to 500 INTERNAL_ERROR, but the state token was already consumed before dispatch, so the user is hard-blocked: they cannot retry `/callback` and must restart the entire OAuth flow. The invariant was added explicitly for future-drift defense (nonce encoding changes), but the current handler turns that defense into a user-facing brick. Fix: move the check inside `acquireBindingLock`'s existing try/catch; return `{ state: 'unavailable' }` on invariant failure (matching Redis-outage degradation semantics), so the handler falls back to HAF-only binding dedup and the user gets a usable response.
+
+3. **P2 — `acquireBindingLock` Redis-SET failure still logs at `warn`; inconsistent with round-2 item #5's `cacheOrcidBinding` warn→error promotion** (reliability REL-R3-002 0.82). Item #5 (round-2) explicitly promoted `cacheOrcidBinding` from `warn` to `error` with the rationale "warn isn't paged; error is the right tier for mitigation is degraded." The same degraded-mitigation scenario applies to `acquireBindingLock` (Redis outage means every binding attempt silently opens the full TOCTOU window), but the log tier was not lifted in the same commit. Fix: promote `acquireBindingLock`'s Redis-SET-failure log to `logger.error` for consistency with the `cacheOrcidBinding` precedent.
+
+**Dismissed from round-3 findings (architect triage):**
+- **P3** `__test_releaseBindingLock` has no build-time guard (security SEC-TEST-EXPORT 0.72 + adversarial ADV-3-003 0.80): convention-only mitigation is acceptable given attacker exploitation requires knowing the 128-bit nonce. An ESLint `no-restricted-imports` rule matching `__test_*` from non-test paths would close it definitively; filed as a potential follow-up if lint config (task `backend-enable-eslint-ts-rules.md`) lands before the next review cycle. Not blocking.
+- **P3** 35s TTL comment still references "dhive 30s broadcast timeout" (reliability REL-R3-005 0.85 + learnings doc): subsumed by the separately-filed `backend-orcid-broadcast-abort-timeout.md` which already updates the comment to reference the helper-enforced abort. Dismissed here.
+- **P3** `withOrcidBindingLock` lacks exhaustiveness check on `BindingLockState` (kieran KT3-002 0.81): folded into hold #1.
+- **P3** Dead `typeof nonce !== 'string'` half of invariant guard (kieran KT3-001 0.72): cosmetic; can fold into hold #2's inside-catch move.
+- **P3** Residual "round-1 #1" provenance note in `orcid.test.ts:1046`: reads as historical note, not hold reference; acceptable.
+- **P3** Item #3 install-ordering comment describes "resolved gate Promise" inaccurately (correctness C3-03): documentation bug; fix opportunistically during the next test-touch.
+- **P3** Race-spec `redis.set(..., 'NX')` seed doesn't assert NX succeeded directly (correctness C3-01): read-back assertion provides most protection; narrow gap accepted.
+- **P3** Durable-409 negative-assert subverted by defensive `retriable: false` (adversarial ADV-3-005 0.88): intentionally strict; add a comment noting "strict-absence is the contract" to deter future "fixes" to `toBe(false)`.
+- **P3** Frontend orcid-callback doesn't branch on retriable discriminator (agent-native): filed as separate task `ui-orcid-callback-retriable-branch.md`.
+- **P3** Task file self-edit ordering convention (project-standards PS-TASK-SIGNAL-ORDERING 0.65): end state correct; pattern-level note.
+
+**Filed follow-up still-pending:** `backend-redis-key-naming-convention-sweep.md`, `backend-orcid-broadcast-abort-timeout.md`, `ui-orcid-retriable-discriminator-plumbing.md`, `backend-orcid-no-account-error-shape-align.md` — per architect's round-2 hold block.
+
+**`/ce-compound` candidate (unchanged from round-2):** consolidated ORCID-lock-pattern doc covering the six sub-patterns the architect enumerated. Deferred to archive time.
+
+**Path to re-archive:** (1) Backend applies items #1-3 on this task. (2) Backend re-review signal block below the hold. (3) Architect re-reviews round-4 with `/ce-code-review`; archives on clean.

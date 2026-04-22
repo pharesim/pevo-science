@@ -87,3 +87,22 @@ Alpine.data('paperFeed', () => ({
 ## [TODO Architect]
 
 None — self-contained refactor.
+
+---
+
+**Architect re-review (2026-04-22) — HELD PENDING FIXES:**
+
+First-pass `/ce-code-review` on commit `12782d6` (correctness, testing, julik-frontend-races, maintainability, project-standards). The composable extraction genuinely eliminates duplication (42 LoC × 2 → 71 LoC shared). File placement + `create*` naming + JSDoc consistent with repo conventions. Tests mutation-kill-strong. One hold item on documentation; other residuals are pre-existing out-of-scope concerns filed into the teardown-guard-extension task.
+
+1. **P3 → elevated to hold — Document the error-contract change in composable JSDoc** (correctness C2 0.82). Pre-extract, both consumers called `this.loadDisciplines().catch(handler)` — `loadDisciplines` threw on error and the catch handled it. Post-extract, the composable swallows all errors internally and never rejects; callers now call it fire-and-forget. Observable behavior is identical for current consumers, but the promise rejection contract changed silently. Fix: add a one-line note to the composable's `loadDisciplines` JSDoc: `"Always resolves; sets `this.disciplinesLoadFailed = true` on error. Callers do not need a .catch handler."` This makes the contract shift discoverable to a future developer wrapping the method.
+
+**Dismissed from round-1 findings (architect triage):**
+- **P3** `paper-feed.js loadPapers` missing `finally` pattern + no generation counter for concurrent fetches (julik JFR-1 0.82): pre-existing; filed into `ui-teardown-guard-sweep-extension.md`.
+- **P3** `loadDisciplines` has no `_mounted` check at this commit (correctness C1 0.88): at this commit, `createTimerGuard` wasn't imported by consumers; forward-compat composable `=== false` check is correct. Sibling task `ui-async-continuation-teardown-guard-sweep` round-2 hold addresses it.
+- **P3** `stateKey` parameterizes memory key only, URL key hardcoded to `'discipline'` (correctness C3 0.75 + maintainability M2 0.58): document inline or rename; fold into hold-fix commit.
+- **P3** `stateKey` option exists only because consumers disagree on name (`discipline` vs `disciplineFilter`) (maintainability M1 0.62): cosmetic; rename search.js's `disciplineFilter → discipline` + drop option if convenient.
+- **P3** `_pushDisciplineToUrl` empty-branch test only uses `''` not whitespace (testing T-DISC-1 0.72): dropdown-bounded values; practical risk negligible.
+- **P3** Rejection test doesn't assert `this.disciplines` unchanged after error (testing T-DISC-2 0.68): guard against future edit that mutates before failing await.
+- **P3** `search.js` popstate registered after `await loadDisciplines` (julik JFR-3 0.65): pre-existing; filed into `ui-teardown-guard-sweep-extension.md` or fold opportunistically.
+
+**Path to re-archive:** (1) UI applies item #1 (JSDoc update) on this task. (2) UI re-review signal block below the hold. (3) Architect re-reviews round-2; archives on clean.

@@ -58,3 +58,27 @@ Recommend **Option A first** (one-line Dockerfile / docker-compose env change), 
 - Decide between Option A (env) and Option B (semaphore) or both. Option A suggested for this task, Option B as follow-up if needed.
 - Confirm the memory-ceiling tradeoff (1 GiB under full saturation at 16 threads) is acceptable given the single-backend-instance production topology.
 - If opting for monitoring, specify where the argon2 p99/throw signals land (pino JSON → log-aggregator, or a prometheus counter exposed via `/metrics`).
+
+---
+
+**Architect re-review (2026-04-22) — HELD PENDING FIXES:**
+
+First-pass `/ce-code-review` on commit `c39377d` (security, reliability, project-standards). Option A (env knob) landed as specified. The pass surfaced two fundamental gaps that weaken the fix: the calculation `UV_THREADPOOL_SIZE=16` → "16 concurrent argon2 ops" is wrong (argon2 parallelism=4 means 4 concurrent ops), AND the resulting 16×64MiB=1GiB peak exceeds the 512m docker memory limit. Both are addressed by Option B (JS-level semaphore), filed as separate task `backend-argon2-jslevel-concurrency-cap.md` — that task correctly names the derivation + closes both oracle and OOM concerns. In the meantime, this task can land cleanly on its stated Option A scope with the items below corrected.
+
+1. **P2 — Fix applied only in `docker-compose.yml`; Dockerfile / k8s / bare-metal deployments silently inherit default pool=4** (reliability R-1 0.92). Any deployment path that bypasses docker-compose (direct image run, Kubernetes manifest, bare-metal `tsx watch`, dev-without-Docker per `reference_frontend_build.md`) inherits the default of 4 libuv threads and silently reproduces the saturation path the env knob is designed to close. Fix: add `ENV UV_THREADPOOL_SIZE=16` to `backend/Dockerfile` so all container consumers inherit the knob. Add a note in `.env.example` mirroring the value so bare-metal dev picks it up (this item also closes hold #3 below).
+
+2. **P2 — No startup assertion that `UV_THREADPOOL_SIZE` meets the minimum; dropped env var invisible until attack reveals it** (reliability R-2 0.85). The process starts and `SENTINEL_ARGON2_HASH_PROMISE` succeeds regardless of actual pool size. A config rotation that drops the env var fails silently until a load test or a real saturation event. Fix: add `if (Number(process.env.UV_THREADPOOL_SIZE) < 16) throw new Error('UV_THREADPOOL_SIZE must be >= 16 for burnSentinel determinism')` at module top in auth.ts (near `SENTINEL_ARGON2_HASH_PROMISE`), mirroring the sentinel-promise fail-loud pattern. Once Option B (the filed follow-up) lands, this assertion can relax to advisory; until then it's fail-loud.
+
+3. **P3 — `.env.example` missing `UV_THREADPOOL_SIZE` entry; violates "Single .env file" convention** (project-standards 0.72). Deployment-tunable value hardcoded in `docker-compose.yml environment:` block. Operators have no visibility the knob exists; `.env` override is overridden by `environment:` block. Fix: `UV_THREADPOOL_SIZE: "${UV_THREADPOOL_SIZE:-16}"` in `docker-compose.yml` + `UV_THREADPOOL_SIZE=16` entry in `.env.example`. Closed together with hold #1's Dockerfile ENV.
+
+4. **P2 / folded into follow-up — Correct the commit's own miscalculation** (security SEC-ARGON2-SATURATION-THRESHOLD-MISCALCULATED 0.92). The commit's inline comment at `auth.ts:~30-36` and its commit message both state "Default is 4, which saturates at ~4 concurrent auth requests" — this is wrong. With `parallelism=4`, default pool=4 allows 1 concurrent op; pool=16 allows 4 concurrent ops. The doc-level correction is part of the `backend-argon2-jslevel-concurrency-cap.md` task's acceptance criteria (that task also fixes the underlying issue). Leaving the comment accurate in the meantime is important; update it now to read "UV_THREADPOOL_SIZE=16 allows ~4 concurrent argon2 ops (argon2 parallelism=4 holds 4 threads per call); the JS-level semaphore filed as `backend-argon2-jslevel-concurrency-cap.md` is the deterministic cap."
+
+**Dismissed from round-1 findings (architect triage):**
+- **P2 → filed as new task** (security SEC-ARGON2-SATURATION-THRESHOLD-MISCALCULATED + SEC-ARGON2-OOM-REOPENS-ORACLE): the underlying fix is Option B, which is the filed `backend-argon2-jslevel-concurrency-cap.md`. The meantime-fix here (hold #4) prevents the comment from misleading future agents.
+- **P3** burnSentinel failure log via pino async transport can be lost on OOM-kill under sustained saturation (security SEC-ARGON2-SATURATION-SIGNAL-SILENT-UNDER-LOAD 0.80): folded into the Option B task's acceptance (add a synchronous in-process counter / `/api/health` field exposing argon2-saturation events). Accepted as deferred-with-owner.
+- **P3** No concurrent-load test in CI despite original task spec acceptance criterion (testing TG-1): task spec explicitly deferred to operational verification. Fold into Option B task's acceptance (Promise.all fan-out timing test).
+
+**Filed as separate Pending tasks:**
+- `backend-argon2-jslevel-concurrency-cap.md` (new P1) — JS-level semaphore implementing Option B, deterministic cap on concurrent argon2 operations that closes both the saturation oracle AND the OOM window. Acceptance includes the commit-comment correction + concurrent-load test + metric endpoint.
+
+**Path to re-archive:** (1) Backend applies items #1-4 on this task. (2) Backend re-review signal block below the hold. (3) Architect re-reviews round-2 with `/ce-code-review`; archives on clean. `backend-argon2-jslevel-concurrency-cap.md` archives independently.

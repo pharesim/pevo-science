@@ -45,3 +45,20 @@ These are latent infrastructure debts. Adding a minimal ESLint config closes bot
 
 - Decide config location (repo-root vs backend-scoped). Repo-root simpler if frontend eventually adopts; backend-scoped keeps lanes clean today.
 - Confirm `@typescript-eslint/no-explicit-any` should be warn (not error) given codebase pragmatics.
+
+---
+
+**Architect re-review (2026-04-22) — HELD PENDING FIXES:**
+
+First-pass `/ce-code-review` on commit `f888312` (correctness, reliability, maintainability, project-standards). The lint config is minimal and focused; 5 of 6 `void` sites are correctly fire-and-forget with internal error handling; all 8 import removals + 4 `_err` renames are clean. Two hold items on reliability + maintainability; P3 residuals dismissed.
+
+1. **P2 — `claimAccountTokens` trailing query outside try/catch; transient DB failure → unhandledRejection → `process.exit(1)`** (reliability REL-001 0.85). `backend/src/account-creation.ts:~60-63` — `claimAccountTokens` is voided at the call site. The `while` loop (line ~44) has an inner catch, but the trailing `pool.query('SELECT COUNT(*) FROM ...')` at line ~60 is outside any try/catch. If that query throws after a successful claim batch, the rejection escapes the function entirely. With `process.on('unhandledRejection')` in `index.ts` calling `process.exit(1)`, a transient DB blip at that one spot after successful claims would crash the process with no contextual log before the throw; the operator gets only the fatal `unhandledRejection` signal. Fix: wrap lines ~60-63 in try/catch with `logger.warn({ err }, 'claimAccountTokens trailing count query failed')`, mirroring the pattern in `cleanupExpiredSignups`.
+
+2. **P3 → elevated — Test-files opt-out block in `backend/eslint.config.mjs` is dead config** (maintainability M1 0.82). The override block at lines ~47-54 disables all 4 rules for `tests/**/*.ts`, but both `lint` and `lint:fix` scripts target `eslint src/` only. Tests are never linted. The block creates future traps: (a) a developer reading the config infers tests were reviewed and deliberately exempted (not true — they were never evaluated); (b) widening lint target to `.` silently swallows `no-floating-promises` across 40+ test files. Fix options: (a) delete the dead opt-out block entirely (tests out of scope, no override needed), OR (b) widen `lint`/`lint:fix` target to `.` and keep the opt-out, documenting explicitly in a comment why tests opt out of each rule. Prefer (a) — simpler, removes misleading signal. If the team wants tests linted in future, land (b) as a separate commit.
+
+**Dismissed from round-1 findings (architect triage):**
+- **P3** Blanket tests opt-out disables `no-unused-vars` unnecessarily (maintainability M2 0.65): moot once hold #2 lands as (a).
+- **P3** `no-console: off` decision not mentioned in CLAUDE.md lint section (maintainability RR 0.55): add a one-line note in `agents/backend/CLAUDE.md` § Lint/Tooling.
+- **P3** `verifyHiveSignature` void: residual hang scenario if sendError itself throws (correctness C1 0.55): architecturally intended per comment; `res.once('close')` is fallback.
+
+**Path to re-archive:** (1) Backend applies items #1-2 on this task. (2) Backend re-review signal block below the hold. (3) Architect re-reviews round-2; archives on clean.

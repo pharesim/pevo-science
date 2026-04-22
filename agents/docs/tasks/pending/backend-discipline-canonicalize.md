@@ -181,3 +181,25 @@ All 7 round-2 hold items addressed. Directly-affected vitest files in isolation:
 **Dismissed-finding still-dismissed:** boundary-rule violation (contract edit was explicitly authorized by round-1 hold #2), Postgres LOWER() vs JS toLowerCase() Unicode divergence (ASCII-range disciplines; reopen if non-ASCII lands).
 
 **Filed follow-up still-pending:** `backend-display-name-titlecase.md`, `backend-discipline-length-cap.md` — per architect's hold block, independent archive path.
+
+---
+
+**Architect re-review (2026-04-22, round 3) — HELD PENDING FIXES:**
+
+Round-3 `/ce-code-review` on commit `d5dc7a0` (11 personas including adversarial + kieran-typescript). All 7 round-2 hold items correctly applied. The pass surfaced two new items that promote on cross-reviewer convergence and block archive. The other P3 residuals are polish and noted inline where held items touch the same site.
+
+1. **P1 — `papers.ts` cache key still uses raw (non-lowercased) discipline; Hold #6 pattern not mirrored to sibling endpoint** (correctness 0.97 + testing 0.92 + performance 0.92 + reliability 0.88 + adversarial 0.97 + maintainability 0.72, 6-reviewer convergence). `backend/src/routes/papers.ts:433` reads `const discipline = req.query.discipline || ''` with no `.toLowerCase()`; cache key at `:440` embeds the raw value (`d=${discipline}`); `fetchPapersFromHaf` re-reads `req.query.discipline` and lowercases only at SQL bind (line 232). Result: `?discipline=Physics` and `?discipline=physics` produce distinct Redis cache entries with identical SQL results on `/api/papers` — the PRIMARY paper-feed endpoint. Same three-site split-responsibility failure mode that Hold #6 (round-2) closed in `search.ts`. Fix: apply the `search.ts:287` pattern to `papers.ts:433` (`(req.query.discipline as string | undefined)?.toLowerCase()`), drop the inner `.toLowerCase()` at `papers.ts:232`, and add a mocked-pool cache-parity test to `disciplines-canon-mocked.test.ts` analogous to the search Hold #1(c) spec (two case-variant requests + `toHaveLength(1)` on the papers-data SQL filter). The convention doc `object-shape-fix-every-reset-site-2026-04-21.md` directly applies.
+
+2. **P2 — Unsafe `as string | undefined` assertion on `req.query.discipline`** (kieran-typescript KT-1 0.85). `(req.query.discipline as string | undefined)?.toLowerCase()` at `search.ts:287` is a type assertion, not narrowing. Express's `@types/express` types `req.query[k]` as `string | ParsedQs | string[] | ParsedQs[] | undefined`. A repeated query parameter (`?discipline=a&discipline=b`) yields `string[]` at runtime; `.toLowerCase()` on an array returns `"[object Object]"` silently in the cache key. Fix: `const disciplineRaw = req.query.discipline; const discipline = typeof disciplineRaw === 'string' ? disciplineRaw.toLowerCase() : undefined;`. Apply the same safe pattern at the new `papers.ts:433` site from hold #1. Closes the repeated-param silent-coercion trap.
+
+**Dismissed from round-3 findings (architect triage):**
+- **P3** Orphaned comment in `search.ts:67-68` claiming callers lowercase at route entry (inaccurate for stats which has no `?discipline=`). Subsumed by hold #2 — the comment gets updated when the safe-pattern code change lands.
+- **P3** `isHafAvailable` mock couples to `getPoolMock` in tests (maintainability M3): test-hygiene residual, not behavior-affecting, note during hold-fix commit but no separate action required.
+- **P3** `fetchStatsFromHaf` exported for test access; leaks internal shape into module public API. Justified by hold-block rationale; accepted.
+- **P3** stats hafCache.set null-guard missing in test: pattern-level note; safe under current mock shape.
+- **P3** Negative assertion `not.toHaveProperty('name')` for shim-absence regression: cheap add; fold into the hold-fix commit if convenient.
+- **P3** papers Hold #1(a) filter less precise than search Hold #1(c) (two-token co-occurrence vs single unique token): current code passes; future refactor risk flagged.
+
+**Filed follow-up still-pending:** `backend-display-name-titlecase.md`, `backend-discipline-length-cap.md` — unchanged.
+
+**Path to re-archive:** (1) Backend applies items #1-2 on this task. (2) Backend re-review signal block below the hold. (3) Architect re-reviews round-4 with `/ce-code-review` and archives on clean.

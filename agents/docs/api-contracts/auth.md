@@ -78,8 +78,9 @@ Username selection and account creation happen later, at the `/api/auth/confirm`
 **Rate limit:** 10 requests per IP per hour.
 
 **Errors:**
-- `VALIDATION_ERROR` — non-institutional email without valid `orcid_token`, password too weak, or missing required fields
-- `DUPLICATE` — email already registered or pending
+- `VALIDATION_ERROR` — password too weak, or missing required fields
+- `DUPLICATE` — email already registered or pending (fires BEFORE the accreditation gate; duplicate-email 409 is authoritative regardless of whether the domain is institutional)
+- `ACCREDITATION_NOT_FOUND` — non-institutional email without valid `orcid_token`, on a non-duplicate email. Institution-is-accredited is public knowledge; the fast-return on this path is intentional.
 
 ---
 
@@ -104,7 +105,7 @@ Resend the signup verification email. Requires the email and password to prevent
 }
 ```
 
-Always returns a generic success message to prevent email enumeration. If the account is already active, returns `"Your account is already active. Please log in."`.
+Always returns the same generic success message regardless of account state (unknown email, already-active account, confirmed-but-pending, hex-pending). The uniform body is a privacy invariant: no observer can distinguish account states from this endpoint's 200 response.
 
 **Rate limit:** 3 requests per IP per hour.
 

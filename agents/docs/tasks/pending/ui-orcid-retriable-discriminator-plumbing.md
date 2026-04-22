@@ -51,3 +51,29 @@ Semantics:
 ## [TODO Architect]
 
 None — self-contained frontend plumbing task. The backend and contract are already correct.
+
+---
+
+**Architect re-review (2026-04-22) — HELD PENDING FIXES:**
+
+First-pass `/ce-code-review` on commit `dfb224b` (correctness, testing, api-contract). The plumbing is correct: `err.details` maps from `errorBody.error.details`, `parseRetryAfterSeconds` handles absent/unparseable headers correctly, 3-arg legacy ctor preserved, change is additive across all endpoints. Two hold items surface; the consumer-level follow-up is filed as a separate task (the task spec was explicit "plumbing only").
+
+1. **P2 — `errorBody.error` unchecked before property access; throws TypeError on malformed response** (correctness COR-1 0.85). `frontend/src/api.js:~55-62` — the guard `errorBody && errorBody.status === 'error'` does not verify `errorBody.error` is a non-null object. A server response of `{ "status": "error" }` or `{ "status": "error", "error": null }` causes `errorBody.error.code` to throw a `TypeError: Cannot read properties of undefined (reading 'code')`. This TypeError is NOT an `ApiRequestError`, so any consumer doing `catch (err) { if (err instanceof ApiRequestError)` misclassifies it. Fix: add `errorBody.error &&` to the condition: `if (errorBody && errorBody.status === 'error' && errorBody.error) { ... }`.
+
+2. **P2 — `INTERNAL_ERROR` fallback path gained `retryAfterSeconds` plumbing but is untested** (testing T-4 0.92). The non-JSON error response path (lines ~64-70 of api.js) also sets `retryAfterSeconds` from the `Retry-After` header. No test covers this path. Removing the `retryAfterSeconds` arg from this branch would pass all current tests silently. Fix: add a spec that mocks a non-JSON error response with a `Retry-After` header and asserts `err instanceof ApiRequestError && err.retryAfterSeconds === <expected>` + `err.code === 'INTERNAL_ERROR'`.
+
+**Dismissed from round-1 findings (architect triage):**
+- **P3** `parseRetryAfterSeconds` negative value / NaN / very large values untested (testing T-1/T-2/T-3): fold into hold-fix commit if convenient.
+- **P3** `details: null` sets `this.details = null` not undefined (correctness COR-2 0.72): normalize null → undefined in ctor; one-line fix.
+- **P3** `{ status: 'error' }` body missing error key untested (testing T-5 0.88): covered by hold #1's test.
+- **P3** HTTP-date Retry-After not supported (correctness): documented limitation; backend-contract-aligned; add a code-comment.
+- **P3** Sentinel-inside-try test pattern diagnostic fragility (testing T-6 0.82): stylistic.
+- **P3** Legacy `ApiRequestError` invocations not asserted against new fields (testing): fold if convenient.
+
+**Filed as separate Pending tasks (out of scope for this hold):**
+- `ui-orcid-callback-retriable-branch.md` (new P2) — consume `err.details.retriable` + `err.retryAfterSeconds` in `frontend/src/pages/orcid-callback.js` `_verify` catch block to distinguish retriable from durable 409. Depends on this task's plumbing + backend `BE-ORCID-BROADCAST-ABORT-TIMEOUT` hold #2 (BroadcastTimeoutError discrimination).
+
+**Architect-owned fix-in-place (applied in this review pass):**
+- `agents/docs/api-contracts/orcid.md:127-139` — delete the `error.details.orcid_id` block on the NO_ACCOUNT 404 example. Backend dropped the field in commit `8e44690`; the contract was stale. Also closes the corresponding F15.10 observation.
+
+**Path to re-archive:** (1) UI applies items #1-2 on this task. (2) UI re-review signal block below the hold. (3) Architect re-reviews round-2 with `/ce-code-review`; archives on clean.

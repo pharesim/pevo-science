@@ -48,3 +48,24 @@ Behavior change note: an unaccredited-institution user submitting a duplicate em
 ## [TODO Architect]
 
 - Update `agents/docs/api-contracts/auth.md` /signup section to document the reordered semantics: duplicate-email check is now authoritative across all institutional/non-institutional callers. Backend agent leaves a [TODO Architect] note on the re-review signal; architect edits misc.md / auth.md during archive per the boundary rule.
+
+---
+
+**Architect re-review (2026-04-22) — HELD PENDING FIXES:**
+
+First-pass `/ce-code-review` on commit `34580a6` (correctness, security, testing, adversarial). The reorder is correct; timing test mutation-kill is strong on both the burn and the gate-order mutations; the UX regression (unaccredited-duplicate 409 instead of 422) is correctly tested. One hold item plus several P3s. Architect-owned contract update (auth.md:81) is applied in-place during this review pass.
+
+1. **P2 — 422 non-duplicate unaccredited path has no test** (testing T1 0.88). The gate moved to a new code position. No test sends a fresh gmail-style address to `/api/auth/signup` and asserts 422 + fast elapsed time. The fast-exit 422 branch is a behavioral change from the reorder; it needs a test to lock in the "accredited institution membership is public knowledge; fast-return on 422 is intentional" contract. Fix: add one spec hitting a non-duplicate gmail-style address, assert `res.status === 422` AND `elapsed < TIMING_ORACLE_CEILING_MS` (or similar ceiling constant confirming no argon2 path was taken).
+
+**Dismissed from round-1 findings (architect triage):**
+- **P3** hasPassword=false ORCID-duplicate cell untested (testing T2 0.82): lower-priority matrix cell; fold into hold-fix commit if convenient.
+- **P3** Missing TIMING_ORACLE_CEILING_MS upper-bound on new timing test (testing T3 0.75): fold into hold-fix.
+- **P3** ORCID-only no-email signup has no uniqueness guard (correctness RR13-2): pre-existing gap, not introduced.
+- **P3** "Public knowledge" claim thinner for configured INSTITUTIONAL_EMAIL_DOMAINS (security RR13-1): gov/corporate accreditations in allowlist are not publicly audited. Document in security posture notes or file follow-up if operationally relevant.
+- **P3** Unverified pending row on unaccredited domain coverage gap (security): falls through to upsert → 422. Correct behavior; acceptable.
+- **P3** ORCID+email+no-password duplicate skips argon2 burn (correctness C13-2 0.61 info): intentional per `hasPassword` gate; add inline comment explaining the asymmetry.
+
+**Architect-owned fix-in-place (applied in this review pass):**
+- `agents/docs/api-contracts/auth.md:81` — update the 422 clause so it documents the post-reorder semantics (422 applies only to non-duplicate unaccredited callers; duplicate-email 409 is authoritative regardless of institution).
+
+**Path to re-archive:** (1) Backend applies item #1 on this task. (2) Backend re-review signal block below the hold. (3) Architect re-reviews round-2; archives on clean.

@@ -130,13 +130,12 @@ No min works check on login.
   "status": "error",
   "error": {
     "code": "NO_ACCOUNT",
-    "message": "No account linked to this ORCID. Please sign up first.",
-    "details": {
-      "orcid_id": "0000-0001-2345-6789"
-    }
+    "message": "No account linked to this ORCID. Please sign up first."
   }
 }
 ```
+
+The caller already knows the ORCID they submitted, so the response carries no payload. Consumers branching on this code should not expect `error.details`.
 
 #### accredit
 
