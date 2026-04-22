@@ -5,12 +5,31 @@ const BASE_URL = '/api';
 const DEFAULT_TIMEOUT_MS = 30000;
 
 export class ApiRequestError extends Error {
-  constructor(code, message, data) {
+  constructor(code, message, data, details, retryAfterSeconds) {
     super(message);
     this.code = code;
     this.data = data || null;
+    // `details` mirrors `error.details` from the response envelope. It is
+    // distinct from `data` (which is the success-path payload, always `null`
+    // on errors). Left `undefined` when the server omits it so consumers can
+    // use `err.details?.retriable` safely.
+    this.details = details;
+    // `retryAfterSeconds` is parsed from the `Retry-After` response header.
+    // `null` when the header is absent or unparseable; a positive integer
+    // otherwise. See `api-contracts/orcid.md` for the retriable discriminator.
+    this.retryAfterSeconds = retryAfterSeconds ?? null;
     this.name = 'ApiRequestError';
   }
+}
+
+// Parse `Retry-After` response header as seconds. Returns `null` when absent
+// or unparseable. Only the delta-seconds form is supported; HTTP-date form
+// is rare in our API and not worth the parse cost.
+function parseRetryAfterSeconds(res) {
+  const raw = res?.headers?.get?.('Retry-After');
+  if (!raw) return null;
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) && n >= 0 ? n : null;
 }
 
 function getToken() {
@@ -32,10 +51,23 @@ async function request(path, init) {
   if (!res.ok) {
     let errorBody = null;
     try { errorBody = await res.json(); } catch { /* not JSON */ }
+    const retryAfterSeconds = parseRetryAfterSeconds(res);
     if (errorBody && errorBody.status === 'error') {
-      throw new ApiRequestError(errorBody.error.code, errorBody.error.message, errorBody.data);
+      throw new ApiRequestError(
+        errorBody.error.code,
+        errorBody.error.message,
+        errorBody.data,
+        errorBody.error.details,
+        retryAfterSeconds,
+      );
     }
-    throw new ApiRequestError('INTERNAL_ERROR', `Request failed with status ${res.status}`);
+    throw new ApiRequestError(
+      'INTERNAL_ERROR',
+      `Request failed with status ${res.status}`,
+      null,
+      undefined,
+      retryAfterSeconds,
+    );
   }
 
   return res.json();
