@@ -70,6 +70,14 @@ Two paths: (1) **Self-custody** — user brings an existing Hive account and con
 
 Agents MAY `git commit` locally at natural checkpoints without asking: a task moving to Review, before a worktree fan-out, before handing off a long investigation, before switching context between unrelated tasks. Invoke `/ce-commit` for a message matching repo convention. Local commits are invisible to GitHub and fully reversible (`git reset --soft HEAD~N`, interactive rebase, drop, squash, amend).
 
+**Every commit message MUST end with a `Co-Authored-By:` trailer identifying the authoring model**, e.g.:
+
+```
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+```
+
+This applies to `/ce-commit`, manual `git commit`, worker subagent commits, and pre-fan-out checkpoint commits. Pass the message via HEREDOC so the blank line before the trailer survives. If running under a different Claude model (Sonnet, Haiku, a different Opus version), substitute the correct model name in the trailer, but never omit the trailer. `/ce-commit` sometimes drops it; re-check the last commit with `git log -1` after invoking the skill and amend the trailer in if missing.
+
 Agents MUST NOT perform any remote-facing action without an explicit user ask for that specific action. This includes `git push` (any form), `gh pr create`, `gh pr edit`, `gh pr comment`, `gh issue create/comment`, `gh release`, and any `/ce-*-push*` / `/ce-*-pr*` skill that pushes or opens PRs. "Push" authorization is per-invocation: "push this" authorizes one push, not subsequent pushes.
 
 **Before a worktree fan-out, the parent agent MUST commit in-flight work on the current branch** so worker subagents branch from a stable HEAD. Dirty-tree fan-out creates silent inconsistencies where workers operate on stale code and the parent must manually merge drifted changes later.
