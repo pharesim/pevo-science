@@ -209,6 +209,7 @@ export function initReviewPage() {
       const permlink = this.permlink;
       this.loadingPaper = true;
       const res = await fetchPaper(author, permlink);
+      if (!this._mounted) return;
       if (this.author !== author || this.permlink !== permlink) return;
       this.paper = res.data;
     },
@@ -236,6 +237,7 @@ export function initReviewPage() {
             body: this.reviewBody,
             rating: this.ratings,
           });
+          if (!this._mounted) return;
         } else {
           const reviewPermlink = `re-${slugify(this.author)}-${slugify(this.permlink)}-${Date.now().toString(36)}`;
           const APP_TAG = getAppTag();
@@ -258,6 +260,7 @@ export function initReviewPage() {
             message: this.$t('confirm.reviewMessage', { title: this.paper?.title || '' }),
             confirmLabel: this.$t('confirm.review'),
           });
+          if (!this._mounted) return;
           if (!confirmed) { this.step = 'idle'; return; }
 
           const reviewOps = [
@@ -281,6 +284,7 @@ export function initReviewPage() {
             }],
           ];
           await broadcastOps(username, reviewOps);
+          if (!this._mounted) return;
         }
 
         this.step = 'success';
@@ -288,6 +292,7 @@ export function initReviewPage() {
           this.navigate(`/paper/${this.author}/${this.permlink}`);
         }, 1500);
       } catch (err) {
+        if (!this._mounted) return;
         this.step = 'error';
         // Sanitization pattern (see executeUpgrade() in settings.js).
         console.warn('[review submit]', err);

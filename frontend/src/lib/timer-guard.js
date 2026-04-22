@@ -34,6 +34,12 @@
 // - The helper only guards `setTimeout`. Debounce timers bound to input
 //   events (e.g. `_draftTimer`, `_orcidCheckTimer`) have a different hazard
 //   shape (replaced on next keystroke) and stay outside this helper.
+//
+// The same helper now guards both `setTimeout(navigate)` call sites AND
+// async-continuation catches (fetch/broadcast awaits) via `_mounted`: any
+// post-await write to component state should be preceded by
+// `if (!this._mounted) return;`. This makes `createTimerGuard()` the canonical
+// teardown primitive for Alpine components with async work.
 export function createTimerGuard() {
   return {
     _mounted: true,

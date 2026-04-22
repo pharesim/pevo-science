@@ -4,6 +4,7 @@ import { formatDate } from '../components/paper-card.js';
 import { paginationTemplate } from '../components/pagination.js';
 import { totalPagesFromMeta } from '../lib/pagination.js';
 import { localeStrippedPath } from '../lib/url-sync.js';
+import { createTimerGuard } from '../lib/timer-guard.js';
 import DOMPurify from 'dompurify';
 
 // Filter changes (type/source/discipline) intentionally do NOT
@@ -162,6 +163,9 @@ function pageOwnsUrl() {
 
 export function initSearchPage() {
   Alpine.data('searchPage', () => ({
+    // Post-teardown guard. See frontend/src/lib/timer-guard.js.
+    ...createTimerGuard(),
+
     query: '',
     typeFilter: 'all',
     sourceFilter: '',
@@ -178,13 +182,14 @@ export function initSearchPage() {
 
     formatDate,
 
-    init() {
+    async init() {
       this._syncFromUrl();
+      // doSearch runs in parallel with loadDisciplines (results don't depend
+      // on the discipline dropdown). Await disciplines so the <select>'s
+      // x-model binds against hydrated options on first render. Subsequent
+      // refetches stay parallel.
       if (this.query) this.doSearch(this.query, this.currentPage);
-      this.loadDisciplines().catch((err) => {
-        console.warn('[loadDisciplines]', err);
-        this.disciplinesLoadFailed = true;
-      });
+      await this.loadDisciplines();
       if (pageOwnsUrl()) {
         this._popstateHandler = () => {
           if (!pageOwnsUrl()) return;
@@ -196,6 +201,9 @@ export function initSearchPage() {
     },
 
     destroy() {
+      // _teardownTimers first: flips _mounted so in-flight doSearch /
+      // loadDisciplines continuations bail before touching reactive state.
+      this._teardownTimers();
       if (this._popstateHandler) {
         window.removeEventListener('popstate', this._popstateHandler);
         this._popstateHandler = null;
@@ -242,13 +250,20 @@ export function initSearchPage() {
       // retry) would otherwise see the flag stuck at true even after a
       // successful reload.
       this.disciplinesLoadFailed = false;
-      const res = await fetchDisciplines();
-      // Backend returns `{ canon_name, display_name, paper_count }` per
-      // BE-DISCIPLINE-CANONICALIZE. `canon_name` is already lowercased
-      // server-side (the dedup key), so the frontend no longer needs to
-      // lowercase here. `display_name` is the rendered label; Tailwind
-      // `class="capitalize"` on the <option> titlecases it for display.
-      this.disciplines = res.data || [];
+      try {
+        const res = await fetchDisciplines();
+        if (!this._mounted) return;
+        // Backend returns `{ canon_name, display_name, paper_count }` per
+        // BE-DISCIPLINE-CANONICALIZE. `canon_name` is already lowercased
+        // server-side (the dedup key), so the frontend no longer needs to
+        // lowercase here. `display_name` is the rendered label; Tailwind
+        // `class="capitalize"` on the <option> titlecases it for display.
+        this.disciplines = res.data || [];
+      } catch (err) {
+        if (!this._mounted) return;
+        console.warn('[loadDisciplines]', err);
+        this.disciplinesLoadFailed = true;
+      }
     },
 
     async doSearch(q, page) {
@@ -272,16 +287,18 @@ export function initSearchPage() {
         if (this.disciplineFilter) params.discipline = this.disciplineFilter;
 
         const res = await searchPapers(params);
+        if (!this._mounted) return;
         this.results = res.data || [];
         this.totalPages = totalPagesFromMeta(res.meta);
       } catch {
+        if (!this._mounted) return;
         this.error = this.$t('search.searchFailed');
         this.results = [];
         this.totalPages = 1;
         this.currentPage = 1;
         this._pushUrl();
       } finally {
-        this.loading = false;
+        if (this._mounted) this.loading = false;
       }
     },
 

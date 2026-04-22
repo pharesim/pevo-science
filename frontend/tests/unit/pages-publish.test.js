@@ -454,6 +454,26 @@ describe('publishPage', () => {
       expect(mockStores.router.navigate).not.toHaveBeenCalled();
       vi.useRealTimers();
     });
+
+    // UI-ASYNC-CONTINUATION-TEARDOWN-GUARD-SWEEP: post-destroy() async
+    // continuation catches must not write step/errorMessage. A broadcast
+    // that rejects after Alpine tears the component down would otherwise
+    // mutate a destroyed reactive scope.
+    it('handleSubmit catch does not write step=error / errorMessage after destroy()', async () => {
+      let rejectFn;
+      broadcastOps.mockImplementationOnce(() => new Promise((_, reject) => { rejectFn = reject; }));
+      const comp = validComponent();
+      const pending = comp.handleSubmit();
+      // Let the flow progress past the broadcastConfirm await into broadcastOps.
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      comp.destroy();
+      rejectFn(new Error('post-teardown boom'));
+      await pending;
+      expect(comp.step).not.toBe('error');
+      expect(comp.errorMessage).toBe('');
+    });
   });
 
   describe('_mergeCitationCollection', () => {

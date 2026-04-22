@@ -380,12 +380,14 @@ describe('searchPage', () => {
       comp.destroy();
     });
 
-    it('destroy removes the popstate listener', () => {
+    it('destroy removes the popstate listener', async () => {
       window.history.replaceState(null, '', '/en/search');
       const remove = vi.spyOn(window, 'removeEventListener');
       const comp = createComponent();
       comp.loadDisciplines = vi.fn(() => Promise.resolve());
-      comp.init();
+      // init() is async (awaits loadDisciplines before registering popstate);
+      // await it so the handler is wired before we assert.
+      await comp.init();
       const handler = comp._popstateHandler;
       expect(handler).toBeTypeOf('function');
       comp.destroy();
@@ -400,8 +402,7 @@ describe('searchPage', () => {
       searchPapers.mockResolvedValue({ data: [], meta: { total: 0, limit: 20 } });
       const comp = createComponent();
       comp.loadDisciplines = vi.fn(() => Promise.resolve());
-      comp.init();
-      await Promise.resolve();
+      await comp.init();
       searchPapers.mockClear();
       const push = vi.spyOn(window.history, 'pushState');
 
@@ -461,6 +462,52 @@ describe('searchPage', () => {
       comp.disciplinesLoadFailed = true;
       await comp.loadDisciplines();
       expect(comp.disciplinesLoadFailed).toBe(false);
+    });
+  });
+
+  // UI-ASYNC-CONTINUATION-TEARDOWN-GUARD-SWEEP: post-destroy() async
+  // continuations must not write to component state. A fetch that resolves
+  // (or rejects) after Alpine tears the component down would otherwise
+  // mutate a destroyed reactive scope.
+  describe('teardown', () => {
+    it('doSearch catch does not write error/results after destroy()', async () => {
+      let rejectFn;
+      searchPapers.mockImplementationOnce(() => new Promise((_, reject) => { rejectFn = reject; }));
+      const comp = createComponent();
+      comp.results = [{ title: 'stale' }];
+      const pending = comp.doSearch('hello', 1);
+      comp.destroy();
+      rejectFn(new Error('after teardown'));
+      await pending;
+      expect(comp.error).toBeNull();
+      expect(comp.results).toEqual([{ title: 'stale' }]);
+    });
+
+    it('doSearch happy path does not write results after destroy()', async () => {
+      let resolveFn;
+      searchPapers.mockImplementationOnce(() => new Promise((resolve) => { resolveFn = resolve; }));
+      const comp = createComponent();
+      comp.results = [];
+      const pending = comp.doSearch('hello', 1);
+      comp.destroy();
+      resolveFn({ data: [{ title: 'late' }], meta: { total: 1, limit: 20 } });
+      await pending;
+      expect(comp.results).toEqual([]);
+    });
+
+    it('loadDisciplines catch does not flip disciplinesLoadFailed after destroy()', async () => {
+      const { fetchDisciplines } = await import('../../src/api.js');
+      let rejectFn;
+      fetchDisciplines.mockImplementationOnce(() => new Promise((_, reject) => { rejectFn = reject; }));
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const comp = createComponent();
+      expect(comp.disciplinesLoadFailed).toBe(false);
+      const pending = comp.loadDisciplines();
+      comp.destroy();
+      rejectFn(new Error('late failure'));
+      await pending;
+      expect(comp.disciplinesLoadFailed).toBe(false);
+      warnSpy.mockRestore();
     });
   });
 });

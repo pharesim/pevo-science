@@ -4,6 +4,7 @@ import { truncateText, formatDate, paperCardTemplate } from './paper-card.js';
 import { paginationTemplate } from './pagination.js';
 import { totalPagesFromMeta } from '../lib/pagination.js';
 import { localeStrippedPath } from '../lib/url-sync.js';
+import { createTimerGuard } from '../lib/timer-guard.js';
 
 const ITEMS_PER_PAGE = 10;
 
@@ -92,6 +93,9 @@ function pageOwnsUrl() {
 
 export function initPaperFeed() {
   Alpine.data('paperFeed', () => ({
+    // Post-teardown guard. See frontend/src/lib/timer-guard.js.
+    ...createTimerGuard(),
+
     papers: [],
     disciplines: [],
     discipline: '',
@@ -108,12 +112,13 @@ export function initPaperFeed() {
     truncateText,
     formatDate,
 
-    init() {
+    async init() {
       this._syncFromUrl();
-      this.loadDisciplines().catch((err) => {
-        console.warn('[loadDisciplines]', err);
-        this.disciplinesLoadFailed = true;
-      });
+      // Await disciplines before the first paper fetch so the <select>'s
+      // x-model binds against hydrated options on first render. Without
+      // this, a URL-canonical discipline briefly shows "All disciplines"
+      // until fetchDisciplines resolves. Subsequent refetches stay parallel.
+      await this.loadDisciplines();
       this.loadPapers();
       if (pageOwnsUrl()) {
         this._popstateHandler = () => {
@@ -126,6 +131,9 @@ export function initPaperFeed() {
     },
 
     destroy() {
+      // _teardownTimers first: flips _mounted so in-flight loadPapers /
+      // loadDisciplines continuations bail before touching reactive state.
+      this._teardownTimers();
       if (this._popstateHandler) {
         window.removeEventListener('popstate', this._popstateHandler);
         this._popstateHandler = null;
@@ -172,13 +180,20 @@ export function initPaperFeed() {
       // retry) would otherwise see the flag stuck at true even after a
       // successful reload.
       this.disciplinesLoadFailed = false;
-      const res = await fetchDisciplines();
-      // Backend returns `{ canon_name, display_name, paper_count }` per
-      // BE-DISCIPLINE-CANONICALIZE. `canon_name` is already lowercased
-      // server-side (the dedup key), so the frontend no longer needs to
-      // lowercase here. `display_name` is the rendered label; Tailwind
-      // `class="capitalize"` on the <option> titlecases it for display.
-      this.disciplines = res.data || [];
+      try {
+        const res = await fetchDisciplines();
+        if (!this._mounted) return;
+        // Backend returns `{ canon_name, display_name, paper_count }` per
+        // BE-DISCIPLINE-CANONICALIZE. `canon_name` is already lowercased
+        // server-side (the dedup key), so the frontend no longer needs to
+        // lowercase here. `display_name` is the rendered label; Tailwind
+        // `class="capitalize"` on the <option> titlecases it for display.
+        this.disciplines = res.data || [];
+      } catch (err) {
+        if (!this._mounted) return;
+        console.warn('[loadDisciplines]', err);
+        this.disciplinesLoadFailed = true;
+      }
     },
 
     async loadPapers() {
@@ -194,10 +209,12 @@ export function initPaperFeed() {
         if (this.sourceFilter) params.source = this.sourceFilter;
 
         const res = await fetchPapers(params);
+        if (!this._mounted) return;
         this.papers = res.data || [];
         this.totalPages = totalPagesFromMeta(res.meta);
         this.loading = false;
       } catch {
+        if (!this._mounted) return;
         this.error = this.$t('home.errorLoading');
         this.papers = [];
         this.totalPages = 1;

@@ -189,4 +189,44 @@ describe('editPage handleSubmit sanitization', () => {
     expect(mockStores.router.navigate).not.toHaveBeenCalled();
     vi.useRealTimers();
   });
+
+  // UI-ASYNC-CONTINUATION-TEARDOWN-GUARD-SWEEP: post-destroy() async
+  // continuation catches must not write step/errorMessage. A broadcast
+  // that rejects after Alpine tears the component down would otherwise
+  // mutate a destroyed reactive scope.
+  it('handleSubmit catch does not write step=error / errorMessage after destroy()', async () => {
+    let rejectFn;
+    broadcastOps.mockImplementationOnce(() => new Promise((_, reject) => { rejectFn = reject; }));
+    const comp = createComponent();
+    mockStores.auth.username = 'alice';
+    comp.paper = {
+      author: 'alice',
+      permlink: 'p1',
+      head_author: 'alice',
+      head_permlink: 'p1',
+      body: 'old body',
+      json_metadata: JSON.stringify({ pevotest: { version: 1 } }),
+      title: 'Old Title',
+    };
+    comp._originalBody = '## Abstract\n\nold abstract\n\n---\n\nold body';
+    comp.title = 'New Title';
+    comp.abstract = 'new abstract';
+    comp.body = 'new body';
+    comp.discipline = 'Physics';
+    comp.authorName = 'Alice';
+    comp.authorAffiliation = 'MIT';
+    comp.authorOrcid = '';
+    comp.keywordsText = 'quantum';
+
+    const pending = comp.handleSubmit();
+    // Let the flow progress into the pending broadcastOps.
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    comp.destroy();
+    rejectFn(new Error('post-teardown boom'));
+    await pending;
+    expect(comp.step).not.toBe('error');
+    expect(comp.errorMessage).toBe('');
+  });
 });
