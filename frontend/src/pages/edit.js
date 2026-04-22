@@ -476,7 +476,8 @@ export function initEditPage() {
       } catch (err) {
         if (!this._mounted) return;
         if (this.author !== author || this.permlink !== permlink) return;
-        this.loadError = err?.message || this.$t('edit.loadError');
+        console.warn('[edit load paper]', err);
+        this.loadError = this.$t('edit.loadError');
       } finally {
         if (this._mounted) this.loadingPaper = false;
       }

@@ -1175,9 +1175,10 @@ export class PevoEditor {
         this._cmd()?.setImage({ src: ipfsUrl }).run();
       }
     } catch (err) {
+      console.warn('[editor image upload]', err);
       try {
         const Alpine = (await import('alpinejs')).default;
-        Alpine.store('toast')?.show(err?.message || this._t('imageUploadFailed'), 'error');
+        Alpine.store('toast')?.show(this._t('imageUploadFailed'), 'error');
       } catch { /* toast unavailable */ }
     } finally {
       this.isUploading = false;

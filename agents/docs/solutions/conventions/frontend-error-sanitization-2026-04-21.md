@@ -141,9 +141,11 @@ The `deadbeef` canary catches regressions via concatenation (`` `${generic} ${er
 **Don't do this:**
 
 ```js
-// ❌ Raw err.message to DOM-bound field:
+// ❌ Raw err.message to DOM-bound field (literal or optional-chained):
 this.emailError = err.message;
 this.emailError = err.message || this.$t('common.connectionFailed');
+this.emailError = err?.message || this.$t('common.connectionFailed');
+this.$store.toast.show(err?.message || this.$t('...'), 'error');
 
 // ❌ Raw err.data to DOM-bound field:
 this.emailError = this.$t('...') + ' ' + err.data.hint;
@@ -165,6 +167,16 @@ catch (err) {
   this.passwordError = this.$t('...');
 }
 ```
+
+## Acceptance grep
+
+The canonical grep for enforcing this convention is:
+
+```bash
+grep -rnE '= err\??\.message|err\??\.message \|\|' frontend/src/
+```
+
+This catches both literal-assignment forms (`this.x = err.message`, `this.x = err.message || …`) and **optional-chained** forms (`err?.message || …`, `this.x = err?.message`) — the earlier form of this doc specified only the literal shape, which caused `UI-ERR-MESSAGE-SANITIZE-PAPER-DETAIL-SURVIVORS` (2026-04-22): 9 `err?.message || $t(...)` toast/DOM bindings in `paper-detail.js` plus 5 more in sibling pages slipped past the original gate. Zero matches expected across `frontend/src/`, or only semantic-code-branch carve-outs with an inline justification comment (e.g. the `NOT_FOUND` branch in `paper-detail.js` loader).
 
 ## Related
 

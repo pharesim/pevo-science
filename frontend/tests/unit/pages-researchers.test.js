@@ -112,11 +112,16 @@ describe('researchersPage', () => {
       });
     });
 
-    it('sets error on fetch failure', async () => {
+    it('sets sanitized generic error on fetch failure (raw err -> console.warn, leak sentinel absent)', async () => {
       const comp = createComponent();
-      mockFetchAccreditations.mockRejectedValue(new Error('boom'));
+      const leaky = new Error('boom deadbeef-sentinel');
+      mockFetchAccreditations.mockRejectedValue(leaky);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       await comp.loadResearchers();
-      expect(comp.error).toBe('boom');
+      expect(comp.error).toBe('researchers.loadFailed');
+      expect(comp.error).not.toContain('deadbeef-sentinel');
+      expect(warnSpy).toHaveBeenCalled();
+      expect(warnSpy.mock.calls[0][1]).toBe(leaky);
       expect(comp.loading).toBe(false);
     });
 

@@ -374,7 +374,8 @@ export function initProfilePage() {
         if (username) document.title = `${username} — PEvO`;
       } catch (err) {
         if (this.username !== username) return;
-        this.error = err?.message || this.$t('profile.loadFailed');
+        console.warn('[profile load]', err);
+        this.error = this.$t('profile.loadFailed');
       } finally {
         this.loading = false;
       }

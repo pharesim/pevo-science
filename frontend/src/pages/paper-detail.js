@@ -799,9 +799,14 @@ export function initPaperDetailPage() {
             attempt++;
             continue;
           }
-          this.error = err?.code === 'NOT_FOUND'
-            ? this.$t('paperDetail.notFoundTitle')
-            : (err?.message || this.$t('paperDetail.errorLoadingTitle'));
+          // Semantic-code carve-out: NOT_FOUND renders a dedicated localized title.
+          // Every other caught error is sanitized to a generic key; raw err -> console.warn.
+          if (err?.code === 'NOT_FOUND') {
+            this.error = this.$t('paperDetail.notFoundTitle');
+          } else {
+            console.warn('[paper detail load]', err);
+            this.error = this.$t('paperDetail.errorLoadingTitle');
+          }
           break;
         }
       }
@@ -940,7 +945,8 @@ export function initPaperDetailPage() {
         this.viewingVersion = version;
       } catch (err) {
         if (this.author !== author || this.permlink !== permlink) return;
-        this.$store.toast.show(err?.message || this.$t('common.loadVersionFailed'), 'error');
+        console.warn('[paper detail load version]', err);
+        this.$store.toast.show(this.$t('common.loadVersionFailed'), 'error');
       } finally {
         this.loading = false;
       }
@@ -988,7 +994,8 @@ export function initPaperDetailPage() {
           this.$store.toast.show(this.$t('citation.downloadStarted'), 'success');
         }
       } catch (err) {
-        this.$store.toast.show(err?.message || this.$t('citation.exportFailed'), 'error');
+        console.warn('[paper detail citation export]', err);
+        this.$store.toast.show(this.$t('citation.exportFailed'), 'error');
       } finally {
         this.citeLoading = false;
         this.citeOpen = false;
@@ -1008,7 +1015,8 @@ export function initPaperDetailPage() {
         const res = await fetchPaper(this.author, this.permlink);
         this.paper = res.data;
       } catch (err) {
-        this.$store.toast.show(err?.message || this.$t('retraction.failed'), 'error');
+        console.warn('[paper detail retract]', err);
+        this.$store.toast.show(this.$t('retraction.failed'), 'error');
       } finally {
         this.retractLoading = false;
       }
@@ -1029,7 +1037,8 @@ export function initPaperDetailPage() {
         this.paper = res.data;
       } catch (err) {
         if (this.author !== author || this.permlink !== permlink) return;
-        this.$store.toast.show(err?.message || this.$t('bridge.syncFailed'), 'error');
+        console.warn('[paper detail bridge sync]', err);
+        this.$store.toast.show(this.$t('bridge.syncFailed'), 'error');
       } finally {
         this.syncLoading = false;
       }
@@ -1082,7 +1091,8 @@ export function initPaperDetailPage() {
         this.diffResult = computeVersionDiff(resA.data, resB.data);
         this.diffMode = true;
       } catch (err) {
-        this.diffError = err?.message || this.$t('common.diffLoadFailed');
+        console.warn('[paper detail diff]', err);
+        this.diffError = this.$t('common.diffLoadFailed');
         this.$store.toast.show(this.diffError, 'error');
       } finally {
         this.diffLoading = false;
@@ -1169,7 +1179,8 @@ export function initPaperDetailPage() {
         // Refresh enrichment to update claim status
         await this.loadEnrichment();
       } catch (err) {
-        this.$store.toast.show(err?.message || this.$t('claims.claimFailed'), 'error');
+        console.warn('[paper detail claim slot]', err);
+        this.$store.toast.show(this.$t('claims.claimFailed'), 'error');
       } finally {
         this.claimLoading = false;
       }
@@ -1190,7 +1201,8 @@ export function initPaperDetailPage() {
         }
         await this.loadEnrichment();
       } catch (err) {
-        this.$store.toast.show(err?.message || this.$t('claims.approveFailed'), 'error');
+        console.warn('[paper detail approve claim]', err);
+        this.$store.toast.show(this.$t('claims.approveFailed'), 'error');
       } finally {
         this.claimLoading = false;
       }
@@ -1210,7 +1222,8 @@ export function initPaperDetailPage() {
         }
         await this.loadEnrichment();
       } catch (err) {
-        this.$store.toast.show(err?.message || this.$t('claims.rejectFailed'), 'error');
+        console.warn('[paper detail reject claim]', err);
+        this.$store.toast.show(this.$t('claims.rejectFailed'), 'error');
       } finally {
         this.claimLoading = false;
       }

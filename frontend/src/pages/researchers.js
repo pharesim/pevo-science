@@ -164,7 +164,8 @@ export function initResearchersPage() {
         this.researchers = res.data || [];
         this.totalPages = totalPagesFromMeta(res.meta);
       } catch (err) {
-        this.error = err?.message || this.$t('researchers.loadFailed');
+        console.warn('[researchers load]', err);
+        this.error = this.$t('researchers.loadFailed');
         this.researchers = [];
         this.totalPages = 1;
         this.currentPage = 1;
