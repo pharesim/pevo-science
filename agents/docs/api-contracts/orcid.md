@@ -130,9 +130,11 @@ No min works check on login.
   "status": "error",
   "error": {
     "code": "NO_ACCOUNT",
-    "message": "No account linked to this ORCID. Please sign up first."
-  },
-  "orcid_id": "0000-0001-2345-6789"
+    "message": "No account linked to this ORCID. Please sign up first.",
+    "details": {
+      "orcid_id": "0000-0001-2345-6789"
+    }
+  }
 }
 ```
 
@@ -178,6 +180,7 @@ No min works check on link.
 
 **Errors (all modes):**
 - `BAD_REQUEST` -- invalid/expired state or authorization code
+- `BAD_REQUEST` -- `Invalid ORCID iD format`. The `orcid_id` returned from ORCID's token-exchange response did not match `/^\d{4}-\d{4}-\d{4}-\d{3}[\dX]$/`. Format-level defense-in-depth guard; ORCID itself validates the MOD 11-2 checksum upstream. Fires at the `/callback` dispatch before any Redis key builder, pub.orcid.org fetch, or `custom_json` broadcast sees the value.
 - `UNAUTHORIZED` -- missing/invalid auth on `accredit` or `link` callbacks
 - `FORBIDDEN` -- authenticated caller does not match the `username` bound into the state by `/start` (applies to `accredit`, `link`)
 - `ORCID_ALREADY_LINKED` (409) -- ORCID is bound to another account. Applies to `accredit` and `link`. Three distinct causes share this code; clients distinguish them via `error.details.retriable` and the `Retry-After` response header:

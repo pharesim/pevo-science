@@ -169,6 +169,6 @@ catch (err) {
 ## Related
 
 - `agents/ui/CLAUDE.md` § Internationalization — new generic-message keys stub across 15 non-English locales and register one line per stub in `frontend/public/messages/STUBS.md`.
-- `agents/docs/tasks/pending/frontend-err-message-sanitize-sweep-rest-of-frontend.md` — extends this pattern to ~30 remaining call sites.
-- `agents/docs/tasks/pending/ui-locale-stubs-md-seed.md` — bootstraps `STUBS.md` itself (prerequisite for registering the sanitize keys).
+- `agents/docs/tasks/ui-err-message-sanitize-sweep-rest-of-frontend.md` — extends this pattern to ~30 remaining call sites.
+- `STUBS.md` bootstrapping: `frontend/public/messages/STUBS.md` was seeded + populated by commit `97ac495` (FE-SETTINGS-ERROR-MESSAGE-SANITIZE-SWEEP hold-block fix, 2026-04-22); the earlier `ui-locale-stubs-md-seed` prerequisite task was retired as subsumed.
 - Reference implementation: `frontend/src/pages/settings.js` catches in `executeUpgrade`, `handleOrcidLink`, `handleEmailSubmit`, `handleSetPassword`, `handleEmailDelete`.
