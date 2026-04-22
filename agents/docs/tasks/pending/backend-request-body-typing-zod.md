@@ -88,3 +88,36 @@ First-pass `/ce-code-review` on commit `a04cadd` (correctness, security, kieran-
 - `backend-zod-migration-extension.md` (new P2) — migrate `/api/orcid/start`, `/resend-verification`, `/reset-request`, `/reset` to Zod schemas; same pattern as this task.
 
 **Path to re-archive:** (1) Backend applies item #1 on this task. (2) Backend re-review signal block below the hold. (3) Architect re-reviews round-2 with `/ce-code-review`; archives on clean.
+
+---
+
+**Backend re-review signal (2026-04-22 round-1 hold fix, worktree `.claude/worktrees/agent-a67d9e4c`):**
+
+Round-1 P2 SEC-ZOD-01 hold item landed + all 4 architect-suggested P3 folds applied. `npx tsc --noEmit` clean. `npm run lint` clean (6 pre-existing `no-explicit-any` warnings at Express/dhive boundaries accepted per backend CLAUDE.md). `backend/tests/routes/auth.test.ts` 16/16 pass; `orcid.test.ts` 29/29 pass; `recover.test.ts` 24/27 pass (same 3 pre-existing SMTP-not-configured failures on baseline `55fc03b`, unrelated to this task). Full backend vitest suite deferred to parent per coordination rules.
+
+1. **P2 SEC-ZOD-01 Zod `issues` leak (fixed).** All 4 migrated routes' 400 VALIDATION_ERROR responses now omit `details` entirely. The `sendError(..., { issues: parsed.error.issues })` shape at `backend/src/routes/auth.ts:~200` (/signup), `~556` (/login), `~855` (/recover), and `backend/src/routes/orcid.ts:~194` (/callback) all collapsed to `sendError(res, 400, 'VALIDATION_ERROR', 'Invalid request body')` — no `details`, no Zod internals leaked. The schema-level comment block at `auth.ts:~30-37` updated to document the generic-message error shape and why the raw issue array was a schema-disclosure regression.
+
+2. **P3 KT-2 RecoverBodySchema empty-string tighten (fixed).** `backend/src/routes/auth.ts:~63-65` — `new_password: z.string().min(1).optional().nullable()` (was `.optional().nullable()` alone). Pushed the min-length guard up to the schema layer so empty strings now 400 at parse rather than slipping through to the downstream `passwordProvided` guard. Inline comment explains the rationale.
+
+3. **P3 KT-3 Dead `if (!loginId)` guard removed (fixed).** `backend/src/routes/auth.ts:~558-563` — the dead post-refine guard is gone; replaced with a single-line cast `(email_or_username || username) as string` and a one-line comment pointing at the refine invariant. Post-refine, at least one of the two string fields is non-empty, so the coalesce is guaranteed to yield a non-empty string.
+
+4. **P3 KT-4 Redundant typeof guards removed (fixed).** `backend/src/routes/auth.ts:~920, ~948` — the `memo_key && typeof memo_key === 'string'` and `orcid_token && typeof orcid_token === 'string'` guards collapsed to `memo_key` / `orcid_token` truthy checks. Post-Zod these fields are already `string | undefined`; the typeof was redundant.
+
+5. **P3 TG-1/TG-2 Tests added (fixed).** `backend/tests/routes/auth.test.ts:~189-244` — new `BE-REQUEST-BODY-TYPING-ZOD` describe block with:
+   - a parametrized 400-schema-leak guard over 3 routes (/login, /signup, /recover) asserting `res.body.error.details === undefined` + a `JSON.stringify(res.body)` scan that rejects `"issues"`, `"received"`, `"expected"`, and `"validation"` — Zod internals must not leak anywhere in the response body;
+   - a LoginBodySchema.refine-invariant test asserting both-fields-empty yields 400 VALIDATION_ERROR with the generic message (the refine still fires);
+   - a parse-failure test asserting non-string password on /login yields 400 VALIDATION_ERROR (zod shape rejection, pre-business-validation).
+
+   `/api/orcid/callback` is intentionally omitted from the parametrized batch: the route returns 500 INTERNAL_ERROR before safeParse when `ORCID_CLIENT_ID/SECRET` are unset (test env default). The flattening on that route mirrors the 3 auth.ts sites structurally and is covered by the same `sendError(res, 400, 'VALIDATION_ERROR', 'Invalid request body')` call shape in the code.
+
+**Test outcomes:**
+- `auth.test.ts`: 16/16 pass.
+- `orcid.test.ts`: 29/29 pass (no regression from the /callback 400 flattening).
+- `recover.test.ts`: 24/27 pass (3 pre-existing SMTP-config failures on baseline `55fc03b`).
+- `npx tsc --noEmit`: clean.
+- `npm run lint`: clean.
+- Full vitest suite: deferred to parent agent.
+
+**Deviations from hold block:**
+- The architect's P2 hold text offered two shapes: "collapse to `sendError(res, 400, 'VALIDATION_ERROR', 'Invalid request body')` with no `details`, OR a narrowed `{ path, message }` whitelist". Landed the simpler shape (no details) per the hold's "Prefer the message-only shape for simplicity" note.
+- `/orcid/callback` is covered by code-shape inspection rather than an end-to-end test (rationale above). If the architect prefers a real E2E test for that route, it would need a test fixture that sets `config.orcidClientId` + `config.orcidClientSecret`, which is a test-infra change outside the scope of this hold.

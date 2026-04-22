@@ -29,10 +29,12 @@ import { ARGON2_OPTIONS } from '../lib/argon2-options.js';
 // error-code strings remain unchanged.
 //
 // Error shape: on parse failure, handlers return 400 VALIDATION_ERROR
-// with `details.issues` carrying the raw zod issue array. That matches
-// existing 400 VALIDATION_ERROR conventions (no handler currently
-// returns a bare validation error without a message; the new responses
-// add machine-readable detail without changing status codes).
+// with a generic 'Invalid request body' message and NO `details.issues`.
+// The raw zod issue array leaks schema shape (field paths, constraint
+// codes, received types) to unauthenticated callers, which hardens the
+// target for probing. Business validation errors (isEmail,
+// isPasswordValid, etc.) continue to emit specific messages because
+// those run post-parse and have their own endpoint-specific surface.
 
 const LoginBodySchema = z.object({
   // Either `username` or `email_or_username` must be present — the
@@ -60,7 +62,12 @@ const SignupBodySchema = z.object({
 const RecoverBodySchema = z.object({
   username: z.string().min(1),
   new_email: z.string().min(1),
-  new_password: z.string().optional().nullable(),
+  // Non-empty when present: ''→parse-reject, null/undefined→optional.
+  // The previous shape `z.string().optional().nullable()` also accepted
+  // empty strings, which the downstream `passwordProvided` guard
+  // rejected at a later layer. Pushing the min-length up to the schema
+  // layer makes the 400 VALIDATION_ERROR fail loudly on ''.
+  new_password: z.string().min(1).optional().nullable(),
   memo_key: z.string().optional(),
   orcid_token: z.string().optional(),
 });
@@ -199,7 +206,7 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
 
   const parsed = SignupBodySchema.safeParse(req.body);
   if (!parsed.success) {
-    return sendError(res, 400, 'VALIDATION_ERROR', 'Invalid request body', { issues: parsed.error.issues });
+    return sendError(res, 400, 'VALIDATION_ERROR', 'Invalid request body');
   }
   const { email, password, full_name, institution, field, orcid_token } = parsed.data;
 
@@ -553,17 +560,13 @@ router.post('/login', loginLimiter, async (req: Request, res: Response) => {
 
   const parsed = LoginBodySchema.safeParse(req.body);
   if (!parsed.success) {
-    return sendError(res, 400, 'VALIDATION_ERROR', 'Invalid request body', { issues: parsed.error.issues });
+    return sendError(res, 400, 'VALIDATION_ERROR', 'Invalid request body');
   }
   const { username, email_or_username, password } = parsed.data;
-  const loginId = email_or_username || username;
+  // Schema.refine enforces that at least one of username/email_or_username
+  // is a non-empty string; loginId is therefore a non-empty string here.
+  const loginId = (email_or_username || username) as string;
 
-  if (!loginId) {
-    // Schema.refine already enforces "one of" — this branch is a
-    // defensive noop kept for clarity of intent. Post-refine the union
-    // invariant holds, so loginId is non-empty here.
-    return sendError(res, 400, 'VALIDATION_ERROR', 'Username or email is required');
-  }
   if (!password) {
     return sendError(res, 400, 'VALIDATION_ERROR', 'Password is required');
   }
@@ -854,7 +857,7 @@ router.post('/recover', recoverLimiter, async (req: Request, res: Response) => {
 
   const parsed = RecoverBodySchema.safeParse(req.body);
   if (!parsed.success) {
-    return sendError(res, 400, 'VALIDATION_ERROR', 'Invalid request body', { issues: parsed.error.issues });
+    return sendError(res, 400, 'VALIDATION_ERROR', 'Invalid request body');
   }
   const { username, memo_key, orcid_token, new_email, new_password } = parsed.data;
 
@@ -919,7 +922,7 @@ router.post('/recover', recoverLimiter, async (req: Request, res: Response) => {
     const account = rows[0];
 
     // ── Method A: Seed-phrase recovery via memo key comparison ──
-    if (memo_key && typeof memo_key === 'string') {
+    if (memo_key) {
       if (!account.memo_key_enc || !account.iv_memo) {
         return sendError(res, 401, 'UNAUTHORIZED', 'Account does not support seed phrase recovery');
       }
@@ -947,7 +950,7 @@ router.post('/recover', recoverLimiter, async (req: Request, res: Response) => {
       }
     }
     // ── Method B: ORCID recovery ──
-    else if (orcid_token && typeof orcid_token === 'string') {
+    else if (orcid_token) {
       if (!account.orcid) {
         return sendError(res, 401, 'UNAUTHORIZED', 'Account does not have a verified ORCID');
       }

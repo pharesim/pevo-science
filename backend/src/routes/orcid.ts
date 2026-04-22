@@ -191,7 +191,7 @@ router.post('/callback', callbackLimiter, async (req: Request, res: Response) =>
 
   const parsed = CallbackBodySchema.safeParse(req.body);
   if (!parsed.success) {
-    return sendError(res, 400, 'VALIDATION_ERROR', 'Invalid request body', { issues: parsed.error.issues });
+    return sendError(res, 400, 'VALIDATION_ERROR', 'Invalid request body');
   }
   const { code, state } = parsed.data;
   if (!code || !state) {
