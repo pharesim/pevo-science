@@ -157,3 +157,47 @@ Hold-block items below:
 - **New `/ce-compound` candidate at archive time:** `redisReachable` skipIf poll pattern (up to 20×50ms ticks + `it.skipIf(!dbReachable || !redisReachable)`). Not currently in solutions/; likely to recur on any future timing test that depends on a live Redis-backed rate limiter.
 
 **Path to re-archive:** (1) Backend applies items #1-14 on this task (bundled into a single round-3 fix commit, grouped into auth.ts source + recover.test.ts tests). (2) Backend re-review signal block below the hold. (3) Architect re-reviews round-3 with `/ce-code-review` — adversarial + security personas mandatory given the P1 findings. Archives on clean. Filed follow-up tasks archive independently.
+
+---
+
+**Backend re-review signal (2026-04-22 round-3, commit `4a83eef`, worktree `.claude/worktrees/agent-ab26cac9`):**
+
+All 14 round-2 hold items landed in a single commit on the worktree branch (parent agent merges). `npx tsc --noEmit` clean. `backend/tests/routes/recover.test.ts` 27/27 pass on two consecutive runs. Full backend vitest suite deferred to parent per coordination rules.
+
+1. **P1 /login ACCOUNT_LOCKED burnSentinel (fixed).** `auth.ts` — added `await burnSentinel(password)` before the 403 ACCOUNT_LOCKED return at the "Active account — check lockout" block. Timing test `SEC-LOGIN-UNKNOWN-USER-TIMING: /login ACCOUNT_LOCKED burns sentinel` seeds an account with 21 login_failures rows, sends the correct password, asserts wall-time ≥ TIMING_ORACLE_FLOOR_MS. Deviation from hold block text: the lockout gate runs AFTER argon2.verify in the current handler, not before. The burn is still added per architect instruction — it keeps wall-time symmetric with the other post-verify branches and equalizes against any future handler reshape that moves the check earlier.
+
+2. **P1 /signup `verify_token === null` 409 → argon2.hash (fixed).** `auth.ts:192-194` — replaced `burnSentinel(password)` with `await argon2.hash(password, ARGON2_OPTIONS).catch(() => {})` so the 409 path pays argon2.HASH (~100ms) rather than argon2.VERIFY (~50ms), matching the happy-path argon2.hash cost.
+
+3. **P2 /signup `confirmed:` 409 → argon2.hash (fixed).** `auth.ts:196-198` — same replacement on the already-verified branch. 4-way timing matrix test `SEC-LOGIN-UNKNOWN-USER-TIMING: /signup 4-way timing matrix` exercises unknown-email + `verify_token = NULL` + `verify_token LIKE 'confirmed:%'` + hex-pending fall-through; each path asserts ≥ TIMING_ORACLE_FLOOR_MS. Fall-through (hex verify_token) unchanged — it already pays argon2.hash via the upsert. SMTP-not-configured in the test env causes (a) and (d) to return 500; the wall-time assertion still holds because argon2.hash has already run.
+
+4. **P2 burnSentinel oversized-input clip (fixed).** `auth.ts` — `const safeInput = input.length > 1024 ? input.slice(0, 1024) : input;` before `argon2.verify`. Test `SEC-LOGIN-UNKNOWN-USER-TIMING: burnSentinel clips oversized input` sends a 5000-byte password to `/login` with an unknown username and asserts wall-time ≥ TIMING_ORACLE_FLOOR_MS. Removing the clip drops the call to ~1ms via argon2.verify's early-reject + silent catch.
+
+5. **P2 /reset-request unknown-email burn (fixed).** `auth.ts` — `await burnSentinel(normalizedEmail)` before the unknown-email 200 early-return. Docblock at `auth.ts:25-34` updated to list `/reset-request` under the covered endpoints. Timing test `SEC-LOGIN-UNKNOWN-USER-TIMING: /reset-request unknown-email burns sentinel` asserts 200 ≥ TIMING_ORACLE_FLOOR_MS.
+
+6. **P2 logger.flush before process.exit (fixed).** `auth.ts:48-59` — replaced the raw `process.exit(1)` with `typeof logger.flush === 'function' ? logger.flush(() => process.exit(1)) : process.exit(1)`. Guards against both the dev pino-worker-thread race and a future logger shape that drops `.flush`.
+
+7. **P2 /resend-verification uniform message (fixed per user decision).** `auth.ts:~362-378` — all three post-auth-success branches (`!verify_token`, `verify_token.startsWith('confirmed:')`, hex-pending fall-through) now emit the identical `"If that email has a pending signup, a new verification link has been sent."` body. Test `SEC-LOGIN-UNKNOWN-USER-TIMING: /resend-verification message body is uniform` seeds the three account states, calls each with the correct password, asserts the three message strings are equal. The pending-branch assertion is conditional on 200 (the test env has no SMTP configured so it returns 500); the active-vs-confirmed pair is asserted unconditionally — those branches never hit SMTP.
+
+8. **P2 timing thresholds calibrated (fixed).** Module-level constants in recover.test.ts: `TIMING_ORACLE_FLOOR_MS = 35` (was `40`, lowered to survive the argon2.verify floor on faster CI hosts per hold rationale) and `TIMING_ORACLE_CEILING_MS = 150` (was `40`, raised to survive DB + Express + supertest overhead on stressed CI per hold rationale). All pre-existing `>=40` and `<40` numeric literals replaced with the named constants; inline comments near the constants tie the choice to the argon2 floor.
+
+9. **P3 burnSentinel default-parameter dropped (fixed).** `auth.ts` — signature is now `async function burnSentinel(input: string)`. No default. All call sites pass an explicit argument.
+
+10. **P3 task-slug comment rewritten (fixed).** `auth.ts` — the `SEC-LOGIN-UNKNOWN-USER-TIMING hold #1:` prefix on the /resend-verification null-hash burn comment is gone; the comment now reads as a self-contained rationale. `grep -n "hold #" backend/src/routes/auth.ts` confirms no remaining references.
+
+11. **P3 describe-block naming normalized (fixed).** recover.test.ts — round-2 describe blocks `SEC-LOGIN-UNKNOWN-USER-TIMING hold #1:`, `hold #2:`, `hold #3:` renamed to `SEC-LOGIN-UNKNOWN-USER-TIMING:` (round-1 shape). No `hold #N` qualifiers remain in describe block names. The prose comments above each describe block still carry round-2 context.
+
+12. **P3 dead eslint-disable removed (fixed).** `auth.ts:47` — the `// eslint-disable-next-line @typescript-eslint/no-explicit-any` is gone.
+
+13. **P3 hasPassword typed as boolean (fixed).** `auth.ts:136` — `const hasPassword: boolean = !!(password && typeof password === 'string');`.
+
+14. **P3 redisReachable try/catch (fixed).** `recover.test.ts:39-51` — the block now wraps the `getRedis()` import + probe in try/catch, mirroring the dbReachable pattern.
+
+**Test outcomes:**
+- `recover.test.ts`: 27/27 pass on two consecutive runs. New round-3 tests added: /login lockout, burnSentinel oversized input, /reset-request unknown-email, /resend-verification uniform message body, /signup 4-way timing matrix.
+- `npx tsc --noEmit`: clean.
+- Full vitest suite: deferred to parent agent.
+
+**Deviations / notes for architect:**
+- Round-2 hold #1 asserted ACCOUNT_LOCKED fires before argon2.verify; the current handler fires it AFTER. Burn added per instruction; see item #1 note above. If the architect prefers to reorder the lockout check to run before argon2.verify (which would make the enumeration oracle match the hold text), that is a separate structural change and should be filed as a new task.
+- Round-2 hold #7 test uniformity asserts on 200 responses only for the hex-pending branch, because the test env has no SMTP configured and that branch returns 500. The active-vs-confirmed pair is still asserted unconditionally, which is the specific oracle the fix closes (active and confirmed always bypass SMTP).
+- No work touched in `backend-signup-institutional-gate-ordering.md`, `backend-argon2-concurrency-cap.md`, `backend-request-body-typing-zod.md`, or `backend-enable-eslint-ts-rules.md` — those are separately filed per architect.
