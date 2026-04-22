@@ -1,7 +1,7 @@
 import { Router, type Request, type Response } from 'express';
 import { PrivateKey } from '@hiveio/dhive';
 import { getPool } from '../db.js';
-import { broadcastJsonWithTimeout } from '../hive.js';
+import { broadcastJsonWithTimeout, BroadcastTimeoutError } from '../hive.js';
 import { config } from '../config.js';
 import { sendOk, sendError } from '../response.js';
 import {
@@ -1399,8 +1399,23 @@ router.post('/:author/:permlink/retract', verifyHiveSignature, retractLimiter, a
     void hafCache.invalidate('retracted-papers');
     sendOk(res, { message: 'Paper retracted', tx_id: result.id });
   } catch (err) {
-    logger.error({ err: (err as Error).message }, 'Failed to broadcast retraction');
-    sendError(res, 500, 'INTERNAL_ERROR', 'Failed to broadcast retraction to Hive');
+    if (err instanceof BroadcastTimeoutError) {
+      return sendError(
+        res,
+        504,
+        'BROADCAST_TIMEOUT',
+        'Broadcasting paper retraction timed out',
+        { retriable: true, timeout_ms: err.timeoutMs },
+      );
+    }
+    logger.error({ err, author, permlink }, 'papers.retract broadcast failed');
+    sendError(
+      res,
+      502,
+      'BROADCAST_FAILED',
+      'Failed to broadcast retraction to Hive',
+      { retriable: false },
+    );
   }
 });
 

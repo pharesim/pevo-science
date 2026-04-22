@@ -4,7 +4,7 @@ import jwt from 'jsonwebtoken';
 import { PrivateKey } from '@hiveio/dhive';
 import { z } from 'zod';
 import { config } from '../config.js';
-import { broadcastJsonWithTimeout } from '../hive.js';
+import { broadcastJsonWithTimeout, BroadcastTimeoutError } from '../hive.js';
 import { getRedis, isRedisAvailable } from '../redis.js';
 import { getAppPool } from '../app-db.js';
 import { getPool } from '../db.js';
@@ -456,10 +456,33 @@ async function handleAccredit(
     };
 
     const key = PrivateKey.fromString(config.pevoAdminPostingKey);
-    const result = await broadcastJsonWithTimeout(
-      { id: config.appTag, json: JSON.stringify(customJsonPayload), required_auths: [], required_posting_auths: [config.hiveAdminAccount] },
-      key,
-    );
+    let result;
+    try {
+      result = await broadcastJsonWithTimeout(
+        { id: config.appTag, json: JSON.stringify(customJsonPayload), required_auths: [], required_posting_auths: [config.hiveAdminAccount] },
+        key,
+      );
+    } catch (err) {
+      if (err instanceof BroadcastTimeoutError) {
+        sendError(
+          res,
+          504,
+          'BROADCAST_TIMEOUT',
+          'Broadcasting ORCID accreditation timed out',
+          { retriable: true, timeout_ms: err.timeoutMs },
+        );
+        return;
+      }
+      logger.error({ err, username, orcid: orcidId, mode: 'accredit' }, 'orcid.handleAccredit broadcast failed');
+      sendError(
+        res,
+        502,
+        'BROADCAST_FAILED',
+        'Failed to broadcast ORCID accreditation to Hive',
+        { retriable: false },
+      );
+      return;
+    }
 
     // Cache the binding so a concurrent bind request in the HAF-lag window sees
     // it via findAccreditedAccountWithOrcid() before the chain op is indexed.
@@ -521,10 +544,33 @@ async function handleLink(
     };
 
     const key = PrivateKey.fromString(config.pevoAdminPostingKey);
-    const result = await broadcastJsonWithTimeout(
-      { id: config.appTag, json: JSON.stringify(customJsonPayload), required_auths: [], required_posting_auths: [config.hiveAdminAccount] },
-      key,
-    );
+    let result;
+    try {
+      result = await broadcastJsonWithTimeout(
+        { id: config.appTag, json: JSON.stringify(customJsonPayload), required_auths: [], required_posting_auths: [config.hiveAdminAccount] },
+        key,
+      );
+    } catch (err) {
+      if (err instanceof BroadcastTimeoutError) {
+        sendError(
+          res,
+          504,
+          'BROADCAST_TIMEOUT',
+          'Broadcasting ORCID link timed out',
+          { retriable: true, timeout_ms: err.timeoutMs },
+        );
+        return;
+      }
+      logger.error({ err, username, orcid: orcidId, mode: 'link' }, 'orcid.handleLink broadcast failed');
+      sendError(
+        res,
+        502,
+        'BROADCAST_FAILED',
+        'Failed to broadcast ORCID link to Hive',
+        { retriable: false },
+      );
+      return;
+    }
 
     // Cache the binding so a concurrent bind request in the HAF-lag window sees
     // it via findAccreditedAccountWithOrcid() before the chain op is indexed.
@@ -569,7 +615,8 @@ type BindingLockState =
 // orcid_id (different usernames) can both pass the empty-binding check, both
 // broadcast, and both write their own cache entries. The lock is claimed
 // BEFORE broadcast; the loser gets 409. EX=35s bounds the hold — above the
-// 30s dhive timeout so a slow-but-alive broadcast does not lose its lock.
+// 30s wall-clock timeout enforced by broadcastJsonWithTimeout (see hive.ts)
+// so a legitimately slow broadcast does not lose its lock mid-flight.
 //
 // Lock value is a per-acquisition random nonce (NOT the username) so the
 // nonce-owned Lua-CAS release in releaseBindingLock distinguishes holders.

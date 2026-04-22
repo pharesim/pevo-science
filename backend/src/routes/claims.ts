@@ -1,7 +1,7 @@
 import { Router, type Request, type Response } from 'express';
 import { PrivateKey } from '@hiveio/dhive';
 import { getPool } from '../db.js';
-import { broadcastJsonWithTimeout } from '../hive.js';
+import { broadcastJsonWithTimeout, BroadcastTimeoutError } from '../hive.js';
 import { config } from '../config.js';
 import { sendOk, sendError } from '../response.js';
 import { getAccreditedSet } from '../accreditation.js';
@@ -211,23 +211,46 @@ router.post('/:claimer/approve', verifyHiveSignature, approveLimiter, async (req
     }
 
     const key = PrivateKey.fromString(config.pevoBridgePostingKey);
-    const result = await broadcastJsonWithTimeout(
-      {
-        id: config.appTag,
-        json: JSON.stringify(payload),
-        required_auths: [],
-        required_posting_auths: [config.hiveBridgeAccount],
-      },
-      key,
-    );
+    try {
+      const result = await broadcastJsonWithTimeout(
+        {
+          id: config.appTag,
+          json: JSON.stringify(payload),
+          required_auths: [],
+          required_posting_auths: [config.hiveBridgeAccount],
+        },
+        key,
+      );
 
-    // Invalidate claims cache
-    await hafCache.invalidate(`claims:${paperAuthor}:${paperPermlink}`);
+      // Invalidate claims cache
+      await hafCache.invalidate(`claims:${paperAuthor}:${paperPermlink}`);
 
-    return sendOk(res, {
-      message: 'Authorship claim approved',
-      tx_id: result.id,
-    });
+      return sendOk(res, {
+        message: 'Authorship claim approved',
+        tx_id: result.id,
+      });
+    } catch (err) {
+      if (err instanceof BroadcastTimeoutError) {
+        return sendError(
+          res,
+          504,
+          'BROADCAST_TIMEOUT',
+          'Broadcasting authorship approval timed out',
+          { retriable: true, timeout_ms: err.timeoutMs },
+        );
+      }
+      logger.error(
+        { err, paperAuthor, paperPermlink, claimer, username },
+        'claims.approve broadcast failed',
+      );
+      return sendError(
+        res,
+        502,
+        'BROADCAST_FAILED',
+        'Failed to broadcast authorship approval to Hive',
+        { retriable: false },
+      );
+    }
   }
 
   // Native papers: only the post author can approve
@@ -296,17 +319,40 @@ router.post('/:claimer/revoke', verifyHiveSignature, revokeLimiter, async (req: 
   // the bridge key on a user-driven revoke.
   if (paperAuthor === config.hiveBridgeAccount && isAdmin && config.pevoBridgePostingKey) {
     const key = PrivateKey.fromString(config.pevoBridgePostingKey);
-    const result = await broadcastJsonWithTimeout(
-      {
-        id: config.appTag,
-        json: JSON.stringify(payload),
-        required_auths: [],
-        required_posting_auths: [config.hiveBridgeAccount],
-      },
-      key,
-    );
-    await hafCache.invalidate(`claims:${paperAuthor}:${paperPermlink}`);
-    return sendOk(res, { message: 'Authorship claim revoked', tx_id: result.id });
+    try {
+      const result = await broadcastJsonWithTimeout(
+        {
+          id: config.appTag,
+          json: JSON.stringify(payload),
+          required_auths: [],
+          required_posting_auths: [config.hiveBridgeAccount],
+        },
+        key,
+      );
+      await hafCache.invalidate(`claims:${paperAuthor}:${paperPermlink}`);
+      return sendOk(res, { message: 'Authorship claim revoked', tx_id: result.id });
+    } catch (err) {
+      if (err instanceof BroadcastTimeoutError) {
+        return sendError(
+          res,
+          504,
+          'BROADCAST_TIMEOUT',
+          'Broadcasting bridge-paper revocation timed out',
+          { retriable: true, timeout_ms: err.timeoutMs },
+        );
+      }
+      logger.error(
+        { err, paperAuthor, paperPermlink, claimer, username, signer: 'bridge' },
+        'claims.revoke bridge broadcast failed',
+      );
+      return sendError(
+        res,
+        502,
+        'BROADCAST_FAILED',
+        'Failed to broadcast authorship revocation to Hive',
+        { retriable: false },
+      );
+    }
   }
 
   if (isAdmin && config.pevoAdminPostingKey) {
@@ -316,17 +362,40 @@ router.post('/:claimer/revoke', verifyHiveSignature, revokeLimiter, async (req: 
     // ops should treat the `required_posting_auths[0]` as the revoker, not
     // the paper author.
     const key = PrivateKey.fromString(config.pevoAdminPostingKey);
-    const result = await broadcastJsonWithTimeout(
-      {
-        id: config.appTag,
-        json: JSON.stringify(payload),
-        required_auths: [],
-        required_posting_auths: [config.hiveAdminAccount],
-      },
-      key,
-    );
-    await hafCache.invalidate(`claims:${paperAuthor}:${paperPermlink}`);
-    return sendOk(res, { message: 'Authorship claim revoked', tx_id: result.id });
+    try {
+      const result = await broadcastJsonWithTimeout(
+        {
+          id: config.appTag,
+          json: JSON.stringify(payload),
+          required_auths: [],
+          required_posting_auths: [config.hiveAdminAccount],
+        },
+        key,
+      );
+      await hafCache.invalidate(`claims:${paperAuthor}:${paperPermlink}`);
+      return sendOk(res, { message: 'Authorship claim revoked', tx_id: result.id });
+    } catch (err) {
+      if (err instanceof BroadcastTimeoutError) {
+        return sendError(
+          res,
+          504,
+          'BROADCAST_TIMEOUT',
+          'Broadcasting authorship revocation timed out',
+          { retriable: true, timeout_ms: err.timeoutMs },
+        );
+      }
+      logger.error(
+        { err, paperAuthor, paperPermlink, claimer, username, signer: 'admin' },
+        'claims.revoke admin broadcast failed',
+      );
+      return sendError(
+        res,
+        502,
+        'BROADCAST_FAILED',
+        'Failed to broadcast authorship revocation to Hive',
+        { retriable: false },
+      );
+    }
   }
 
   // Post author or claimer: return operation for frontend to broadcast

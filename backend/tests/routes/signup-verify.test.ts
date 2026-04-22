@@ -19,7 +19,21 @@ vi.mock('../../src/hive.js', () => ({
   },
   broadcastJsonWithTimeout: (...args: unknown[]) =>
     (broadcastJsonMock as (...a: unknown[]) => unknown)(...args),
-  BroadcastTimeoutError: class BroadcastTimeoutError extends Error {},
+  // Mirror the real BroadcastTimeoutError shape (timeoutMs ctor arg) so code
+  // under test that reads `err.timeoutMs` after `instanceof` discrimination
+  // gets the property rather than undefined. signup-verify treats accreditation
+  // broadcast as best-effort: failures (including timeouts) are logged and the
+  // confirm flow returns 200 regardless, so no 504 surface to test here. This
+  // mirror protects against latent false-confidence if the log structure or
+  // discrimination semantics change later.
+  BroadcastTimeoutError: class BroadcastTimeoutError extends Error {
+    public readonly timeoutMs: number;
+    constructor(timeoutMs: number) {
+      super(`Hive broadcast timed out after ${timeoutMs}ms`);
+      this.name = 'BroadcastTimeoutError';
+      this.timeoutMs = timeoutMs;
+    }
+  },
   DEFAULT_BROADCAST_TIMEOUT_MS: 30_000,
 }));
 

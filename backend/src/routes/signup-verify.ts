@@ -263,7 +263,10 @@ router.post('/confirm', confirmLimiter, async (req: Request, res: Response) => {
           adminKey,
         );
       } catch (accErr) {
-        logger.error({ err: (accErr as Error).message }, 'Failed to broadcast accreditation — account created but not accredited');
+        logger.error(
+          { err: accErr, email: account.email, username: normalizedUsername, orcid: account.orcid ?? null },
+          'Failed to broadcast accreditation — account created but not accredited',
+        );
       }
     }
 
@@ -382,7 +385,10 @@ router.post('/link', linkLimiter, verifyHiveSignature, async (req: Request, res:
           adminKey,
         );
       } catch (accErr) {
-        logger.error({ err: (accErr as Error).message }, 'Failed to broadcast accreditation for linked account');
+        logger.error(
+          { err: accErr, email: account.email, username: hiveUsername, orcid: account.orcid ?? null },
+          'Failed to broadcast accreditation for linked account',
+        );
       }
     }
 

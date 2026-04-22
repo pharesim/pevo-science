@@ -39,10 +39,22 @@ import { PrivateKey } from '@hiveio/dhive';
 // in the test body). Only the database pools and broadcast.json are mocked;
 // that scope matches the SEC-002-BE carve-out and does not widen here.
 // vi.hoisted keeps these references alive across the hoisted vi.mock factories below.
-const { hafQueryMock, appQueryMock, broadcastJsonMock } = vi.hoisted(() => ({
+// MockBroadcastTimeoutError mirrors the real class's constructor signature (timeoutMs
+// property) so handlers discriminating via `err instanceof BroadcastTimeoutError`
+// can read `err.timeoutMs` identically against mock and real errors. The hoisted
+// class identity is visible in both the vi.mock factory and in test bodies.
+const { hafQueryMock, appQueryMock, broadcastJsonMock, MockBroadcastTimeoutError } = vi.hoisted(() => ({
   hafQueryMock: vi.fn().mockResolvedValue({ rows: [] }),
   appQueryMock: vi.fn().mockResolvedValue({ rows: [] }),
   broadcastJsonMock: vi.fn().mockResolvedValue({ id: 'mock-orcid-tx' }),
+  MockBroadcastTimeoutError: class BroadcastTimeoutError extends Error {
+    public readonly timeoutMs: number;
+    constructor(timeoutMs: number) {
+      super(`Hive broadcast timed out after ${timeoutMs}ms`);
+      this.name = 'BroadcastTimeoutError';
+      this.timeoutMs = timeoutMs;
+    }
+  },
 }));
 
 vi.mock('../../src/db.js', () => ({
@@ -62,7 +74,7 @@ vi.mock('../../src/hive.js', () => ({
   },
   broadcastJsonWithTimeout: (...args: unknown[]) =>
     (broadcastJsonMock as (...a: unknown[]) => unknown)(...args),
-  BroadcastTimeoutError: class BroadcastTimeoutError extends Error {},
+  BroadcastTimeoutError: MockBroadcastTimeoutError,
   DEFAULT_BROADCAST_TIMEOUT_MS: 30_000,
 }));
 
@@ -1102,11 +1114,13 @@ describe.each([
           .set('Authorization', `Bearer ${jwtFor('alice')}`)
           .send({ code: 'fake', state });
 
-        // Outer /callback try/catch catches the broadcast throw and maps to
-        // 500 INTERNAL_ERROR. The finally in withOrcidBindingLock runs on its
-        // way out, releasing the lock under the nonce CAS.
-        expect(res.status).toBe(500);
-        expect(res.body.error.code).toBe('INTERNAL_ERROR');
+        // The narrow try/catch around broadcastJsonWithTimeout maps the
+        // non-timeout chain-rejection into 502 BROADCAST_FAILED (retriable=false).
+        // The finally in withOrcidBindingLock runs on its way out, releasing
+        // the lock under the nonce CAS.
+        expect(res.status).toBe(502);
+        expect(res.body.error.code).toBe('BROADCAST_FAILED');
+        expect(res.body.error.details).toEqual({ retriable: false });
         // Key proof: lock was released despite the broadcast throw. A retry
         // arriving now would acquire cleanly rather than wait for the 35s TTL.
         expect(await redis.get(lockKey)).toBeNull();
@@ -1156,6 +1170,47 @@ describe.each([
         expect(await redis.get(lockKey)).toBe(nonceB);
       } finally {
         await redis.del(lockKey).catch(() => { /* cleanup */ });
+      }
+    },
+  );
+
+  // BE-ORCID-BROADCAST-ABORT-TIMEOUT — route-level timeout discrimination.
+  // When broadcastJsonWithTimeout raises BroadcastTimeoutError, the handler
+  // must return 504 BROADCAST_TIMEOUT with { retriable: true, timeout_ms }
+  // details AND must NOT write any post-broadcast side-effects (no
+  // cacheOrcidBinding, no updateAccountOrcid). A regression to the plain
+  // outer-catch-only pattern would return 500 INTERNAL_ERROR and lose the
+  // retriable signal UI/agent consumers need.
+  it(
+    'broadcast timeout → 504 BROADCAST_TIMEOUT, no cache write, lock released',
+    async () => {
+      const redis = getRedis();
+      if (!redis) return;
+      const orcidId = `0000-0001-${orcidSuffix}${orcidSuffix}${orcidSuffix}${orcidSuffix}-0006`;
+      const lockKey = `${config.appTag}:orcid_binding_lock:${orcidId}`;
+      const cacheKey = `${config.appTag}:orcid_binding:${orcidId}`;
+      await redis.del(lockKey, cacheKey).catch(() => { /* ignore */ });
+
+      installOrcidFetchStub({ orcid: orcidId, name: 'Alice', works: 3 });
+      installLockModeMocks();
+      broadcastJsonMock.mockRejectedValueOnce(new MockBroadcastTimeoutError(30_000));
+
+      try {
+        const state = await startAuthed(mode, 'alice');
+        const res = await request(app)
+          .post('/api/orcid/callback')
+          .set('Authorization', `Bearer ${jwtFor('alice')}`)
+          .send({ code: 'fake', state });
+
+        expect(res.status).toBe(504);
+        expect(res.body.error.code).toBe('BROADCAST_TIMEOUT');
+        expect(res.body.error.details).toEqual({ retriable: true, timeout_ms: 30_000 });
+        // Post-broadcast side-effects must NOT fire on timeout: no cache entry,
+        // lock released via finally's nonce CAS so retries aren't blocked.
+        expect(await redis.get(cacheKey)).toBeNull();
+        expect(await redis.get(lockKey)).toBeNull();
+      } finally {
+        await redis.del(lockKey, cacheKey).catch(() => { /* cleanup */ });
       }
     },
   );

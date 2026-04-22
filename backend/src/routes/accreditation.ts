@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import nodemailer from 'nodemailer';
 import { PrivateKey } from '@hiveio/dhive';
 import { config } from '../config.js';
-import { broadcastJsonWithTimeout } from '../hive.js';
+import { broadcastJsonWithTimeout, BroadcastTimeoutError } from '../hive.js';
 import { getRedis, isRedisAvailable } from '../redis.js';
 import { sendOk, sendError } from '../response.js';
 import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';
@@ -204,8 +204,23 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
       tx_id: result.id,
     });
   } catch (err) {
-    logger.error({ err: (err as Error).message }, 'Failed to broadcast accreditation');
-    sendError(res, 500, 'INTERNAL_ERROR', 'Failed to broadcast accreditation to Hive');
+    if (err instanceof BroadcastTimeoutError) {
+      return sendError(
+        res,
+        504,
+        'BROADCAST_TIMEOUT',
+        'Broadcasting accreditation timed out',
+        { retriable: true, timeout_ms: err.timeoutMs },
+      );
+    }
+    logger.error({ err, username: pending.hive_username, email: pending.email }, 'accreditation.verify broadcast failed');
+    sendError(
+      res,
+      502,
+      'BROADCAST_FAILED',
+      'Failed to broadcast accreditation to Hive',
+      { retriable: false },
+    );
   }
 });
 

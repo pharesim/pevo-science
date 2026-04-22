@@ -83,3 +83,39 @@ First-pass `/ce-code-review` on commit `6211190` (11 personas including adversar
 - `backend-broadcast-sendoperations-wrap.md` (new P2) — 5 `broadcast.sendOperations` call sites (account-creation, anonymousReview, bridge, custody, +1) still unwrapped; same no-timeout hazard as pre-helper `broadcast.json`.
 
 **Path to re-archive:** (1) Backend applies items #1-4 on this task. (2) Backend re-review signal block below the hold. (3) Architect re-reviews round-2 with `/ce-code-review` (adversarial + reliability mandatory given the P1 items); archives on clean. Filed follow-up tasks archive independently.
+
+---
+
+**Backend re-review signal (2026-04-22 round-2, worktree branch `worktree-agent-aa48f4ea`):**
+
+All 4 round-1 hold items landed. `npx tsc --noEmit` clean. Per-route test files modified all pass: `backend/tests/routes/claims.test.ts` 20/20, `backend/tests/routes/orcid.test.ts` 31/31, `backend/tests/routes/signup-verify.test.ts` 2/2, `backend/tests/routes/accreditation.test.ts` + `papers.test.ts` + `anonymousReview.test.ts` clean, `backend/tests/hive-broadcast-timeout.test.ts` 3/3. Full vitest suite NOT re-run per parent instruction.
+
+**[TODO Architect]** API contract updates needed before archive (backend cannot edit `agents/docs/api-contracts/*.md`):
+- Add `BROADCAST_TIMEOUT` to the error-code table in `agents/docs/api-contracts/common.md` (or whichever file owns the ErrorCode list). Semantics: HTTP 504, `details.retriable: true`, `details.timeout_ms: number`. Returned when `broadcastJsonWithTimeout` throws `BroadcastTimeoutError` at the 30s wall-clock bound.
+- Document `BROADCAST_FAILED` now actively returned at HTTP 502 (not 500) with `details.retriable: false` for chain-rejection broadcast failures. Prior to this task the code was declared but never emitted.
+- Affected endpoints that can now return 502/504 per the above: `POST /api/orcid/callback` (modes accredit + link), `POST /api/accreditation/verify`, `POST /api/papers/:author/:permlink/retract`, `POST /api/papers/:author/:permlink/claims/:claimer/approve` (bridge-branch), `POST /api/papers/:author/:permlink/claims/:claimer/revoke` (bridge-admin + native-admin branches). Total 7 response surfaces across the `orcid.md`, `accreditation.md`, and `papers.md` contract files (plus a claims.md section if one exists; otherwise under papers.md).
+
+1. **P1 claims.ts try/catch** (item #1). Added narrow try/catch around all 3 `broadcastJsonWithTimeout` call sites in `backend/src/routes/claims.ts`:
+   - `~214` (approve bridge-branch): wraps broadcast + post-broadcast `hafCache.invalidate` + `sendOk`. On timeout: 504 `BROADCAST_TIMEOUT` with `{retriable:true, timeout_ms}`. On other error: `logger.error({err, paperAuthor, paperPermlink, claimer, username}, 'claims.approve broadcast failed')` + 502 `BROADCAST_FAILED` with `{retriable:false}`.
+   - `~299` (revoke bridge-admin): same pattern, context adds `signer:'bridge'`, message "Broadcasting bridge-paper revocation timed out" / "Failed to broadcast authorship revocation to Hive".
+   - `~319` (revoke admin-on-native): same pattern, context adds `signer:'admin'`.
+   Before: `BroadcastTimeoutError` bubbled to Express default handler → generic 500, no route context logged. After: route context logged, typed envelope returned.
+
+2. **P1 `BroadcastTimeoutError` discrimination at all HTTP-surface catch sites** (item #2). Added `BROADCAST_TIMEOUT` to `backend/src/types/api.ts` ErrorCode union alongside the existing `BROADCAST_FAILED`. Applied the 504/502 discrimination pattern at 7 HTTP-response catch sites:
+   - `backend/src/routes/orcid.ts` handleAccredit + handleLink — introduced narrow try/catch around `broadcastJsonWithTimeout` (outer `/callback` try/catch still covers non-broadcast errors as 500 INTERNAL_ERROR). Messages are mode-specific ("Broadcasting ORCID accreditation timed out" vs "Broadcasting ORCID link timed out"). Log context includes `{err, username, orcid, mode}`.
+   - `backend/src/routes/accreditation.ts` `/verify` — replaced existing 500 INTERNAL_ERROR catch with the discrimination pattern. Log context `{err, username, email}`.
+   - `backend/src/routes/papers.ts` `/retract` — replaced existing 500 INTERNAL_ERROR catch. Log context `{err, author, permlink}`.
+   - `backend/src/routes/claims.ts` x3 — per item #1 above.
+   Status codes: 504 = timeout (retriable), 502 = chain rejection (not retriable), 500 reserved for our bugs. The `retriable` flag is the programmatic-consumer discriminator.
+
+3. **P2 signup-verify.ts structured logging** (item #3). `backend/src/routes/signup-verify.ts` `/confirm` (~265) and `/link` (~384): replaced `{err: (accErr as Error).message}` with `{err: accErr, email, username, orcid}` so operators see the `BroadcastTimeoutError` class + `timeoutMs` property in logs when the best-effort accreditation broadcast fails. Response still returns 200 (best-effort contract unchanged — account creation succeeds regardless of accreditation broadcast outcome). Same structured-log shape applied to both sites.
+
+4. **P2 route test timeout coverage + mock-stub `timeoutMs` ctor fix** (item #4 + dismissed P3 T4-04).
+   - `backend/tests/routes/orcid.test.ts` + `claims.test.ts` + `signup-verify.test.ts`: replaced stub `BroadcastTimeoutError extends Error {}` with a class that mirrors the real ctor signature (`constructor(timeoutMs: number)` + public readonly `timeoutMs` property). Hoisted via `vi.hoisted` so the same class identity is shared between the vi.mock factory and test bodies that stage `mockRejectedValueOnce(new MockBroadcastTimeoutError(30_000))`.
+   - `orcid.test.ts`: added `'broadcast timeout → 504 BROADCAST_TIMEOUT, no cache write, lock released'` spec inside the existing `describe.each([{mode:'accredit'},{mode:'link'}])` block (2 specs total). Asserts 504 envelope with `{retriable:true, timeout_ms:30000}`, asserts `redis.get(cacheKey)` is null (no cache write), asserts `redis.get(lockKey)` is null (finally released under nonce CAS). Updated the existing `'releases the lock via nonce CAS when broadcast throws mid-request (finally)'` spec — assertion changed from 500 INTERNAL_ERROR to 502 BROADCAST_FAILED with `{retriable:false}` since non-timeout broadcast errors now hit the new narrow try/catch rather than the outer /callback catch.
+   - `claims.test.ts`: added `BE-ORCID-BROADCAST-ABORT-TIMEOUT — claims timeout discrimination` describe block with 4 specs covering approve (timeout + non-timeout) + revoke-bridge + revoke-native. Asserts 504/502 envelope shapes and that the broadcast mock was called exactly once before the error (proves no retry happens in the handler).
+   - `signup-verify.test.ts`: ctor-fix only (test bodies don't assert timeout-specific behavior since `/confirm` + `/link` treat accreditation broadcast as best-effort — swallowed, no 504 surface). Inline comment in the mock factory documents why no per-route timeout spec applies here and notes the ctor-mirror exists to protect against latent false-confidence.
+
+**Inline comment fix:** `backend/src/routes/orcid.ts:~617` — the `ORCID_BINDING_LOCK_TTL_SECONDS` block-comment line citing "30s dhive timeout" has been updated to reference the helper-enforced wall-clock bound in `hive.ts`. The task file noted orcid.ts:40 originally; the line drifted to ~617 during the SEC-002-TOCTOU-LOCK round-2 refactor but the inaccurate prose was the same.
+
+**Out of scope (filed as separate Pending tasks per architect's round-1 hold):** `backend-orcid-broadcast-timeout-outcome-handling.md` (ambiguous-outcome + retry semantics), `backend-wot-broadcast-timeout-handling.md` (wot.ts library-level discrimination + cascade wall-clock cap), `backend-broadcast-sendoperations-wrap.md` (unwrapped `broadcast.sendOperations` sites in bridge/custody/anonymousReview/signup-verify).

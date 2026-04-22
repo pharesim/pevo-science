@@ -51,6 +51,22 @@ vi.mock('../../src/config.js', async () => {
 
 // Hive client mock (signature verification + broadcast capture)
 const broadcastJson = vi.fn().mockResolvedValue({ id: 'mock-tx-id' });
+// The stub BroadcastTimeoutError class mirrors the real one's constructor
+// signature (timeoutMs property) so routes that discriminate via
+// `err instanceof BroadcastTimeoutError` and read `err.timeoutMs` behave
+// identically against the mock. Hoisted so the same class identity is
+// visible both inside the vi.mock factory and in test bodies that
+// construct instances to stage mockRejectedValue.
+const { MockBroadcastTimeoutError } = vi.hoisted(() => ({
+  MockBroadcastTimeoutError: class BroadcastTimeoutError extends Error {
+    public readonly timeoutMs: number;
+    constructor(timeoutMs: number) {
+      super(`Hive broadcast timed out after ${timeoutMs}ms`);
+      this.name = 'BroadcastTimeoutError';
+      this.timeoutMs = timeoutMs;
+    }
+  },
+}));
 vi.mock('../../src/hive.js', () => ({
   hiveClient: {
     database: {
@@ -68,7 +84,7 @@ vi.mock('../../src/hive.js', () => ({
     },
   },
   broadcastJsonWithTimeout: (...args: unknown[]) => broadcastJson(...args),
-  BroadcastTimeoutError: class BroadcastTimeoutError extends Error {},
+  BroadcastTimeoutError: MockBroadcastTimeoutError,
   DEFAULT_BROADCAST_TIMEOUT_MS: 30_000,
 }));
 
@@ -358,5 +374,56 @@ describe('BE-CLAIMS-ERROR-POLISH — bridge misconfig surfaces as 503', () => {
     expect(res.status).toBe(403);
     expect(res.body.error.code).toBe('FORBIDDEN');
     expect(broadcastJson).not.toHaveBeenCalled();
+  });
+});
+
+// ──────────────────────────────────────────────
+// BE-ORCID-BROADCAST-ABORT-TIMEOUT — route-level BroadcastTimeoutError discrimination.
+//
+// The helper's timeout mechanism is unit-tested in hive-broadcast-timeout.test.ts.
+// These specs cover the route-level catch-and-discriminate pattern: each of
+// the three claims.ts broadcastJsonWithTimeout call sites must translate
+// BroadcastTimeoutError into a 504 BROADCAST_TIMEOUT envelope with
+// { retriable: true, timeout_ms } details. The post-broadcast side-effect
+// (hafCache.invalidate) must NOT fire on timeout.
+// ──────────────────────────────────────────────
+
+describe('BE-ORCID-BROADCAST-ABORT-TIMEOUT — claims timeout discrimination', () => {
+  it('approve bridge paper: BroadcastTimeoutError → 504 BROADCAST_TIMEOUT with retriable + timeout_ms', async () => {
+    broadcastJson.mockRejectedValueOnce(new MockBroadcastTimeoutError(30_000));
+    const path = `/api/papers/${BRIDGE}/${PAPER_PERMLINK}/claims/${CLAIMER}/approve`;
+    const res = await signedPost(path, ADMIN, {});
+    expect(res.status).toBe(504);
+    expect(res.body.error.code).toBe('BROADCAST_TIMEOUT');
+    expect(res.body.error.details).toEqual({ retriable: true, timeout_ms: 30_000 });
+    // Broadcast was attempted (and timed out).
+    expect(broadcastJson).toHaveBeenCalledTimes(1);
+  });
+
+  it('approve bridge paper: non-timeout broadcast error → 502 BROADCAST_FAILED with retriable=false', async () => {
+    broadcastJson.mockRejectedValueOnce(new Error('RPC node rejected: insufficient RC'));
+    const path = `/api/papers/${BRIDGE}/${PAPER_PERMLINK}/claims/${CLAIMER}/approve`;
+    const res = await signedPost(path, ADMIN, {});
+    expect(res.status).toBe(502);
+    expect(res.body.error.code).toBe('BROADCAST_FAILED');
+    expect(res.body.error.details).toEqual({ retriable: false });
+  });
+
+  it('revoke bridge paper (admin): BroadcastTimeoutError → 504 BROADCAST_TIMEOUT', async () => {
+    broadcastJson.mockRejectedValueOnce(new MockBroadcastTimeoutError(30_000));
+    const path = `/api/papers/${BRIDGE}/${PAPER_PERMLINK}/claims/${CLAIMER}/revoke`;
+    const res = await signedPost(path, ADMIN, { reason: 'abuse' });
+    expect(res.status).toBe(504);
+    expect(res.body.error.code).toBe('BROADCAST_TIMEOUT');
+    expect(res.body.error.details).toEqual({ retriable: true, timeout_ms: 30_000 });
+  });
+
+  it('revoke native paper (admin): BroadcastTimeoutError → 504 BROADCAST_TIMEOUT', async () => {
+    broadcastJson.mockRejectedValueOnce(new MockBroadcastTimeoutError(30_000));
+    const path = `/api/papers/${NATIVE_AUTHOR}/${PAPER_PERMLINK}/claims/${CLAIMER}/revoke`;
+    const res = await signedPost(path, ADMIN, { reason: 'abuse' });
+    expect(res.status).toBe(504);
+    expect(res.body.error.code).toBe('BROADCAST_TIMEOUT');
+    expect(res.body.error.details).toEqual({ retriable: true, timeout_ms: 30_000 });
   });
 });
