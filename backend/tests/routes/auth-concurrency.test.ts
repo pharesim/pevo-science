@@ -17,7 +17,7 @@
 // see saturation events synchronously. This test also asserts both fields
 // are present and typed in the response.
 
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import request from 'supertest';
 import { createApp } from '../../src/app.js';
 import { getAppPool } from '../../src/app-db.js';
@@ -42,7 +42,15 @@ let dbReachable = false;
 
 describe('BE-ARGON2-JSLEVEL-CONCURRENCY-CAP: concurrent /login unknown-username burst', () => {
   beforeAll(async () => {
-    await clearRateLimitKeys(['auth-login']);
+    await clearRateLimitKeys(['auth-login', 'read']);
+  });
+
+  // T3 (hold block): prevent this test's 8 login attempts from bleeding into
+  // unrelated tests via the 10/hr per-IP auth-login limiter. Also clear the
+  // shared `read` limiter since /api/health is now rate-limited and shares
+  // its keyspace with other read endpoints.
+  afterAll(async () => {
+    await clearRateLimitKeys(['auth-login', 'read']);
   });
 
   // loginLimiter is 10/hr per-IP. Use 8 concurrent requests (≤ limit) so
@@ -87,14 +95,22 @@ describe('BE-ARGON2-JSLEVEL-CONCURRENCY-CAP: concurrent /login unknown-username 
     30_000,
   );
 
-  it('/api/health exposes argon2 saturation fields', async () => {
+  it('/api/health exposes argon2 saturation fields (idle) and does NOT leak the static cap', async () => {
+    // Clear the read limiter first — previous tests in this file may have
+    // polled /api/health and consumed the 120/min window.
+    await clearRateLimitKeys(['read']);
     const res = await request(app).get('/api/health');
     expect(res.status).toBe(200);
     expect(typeof res.body.argon2_queue_depth).toBe('number');
     expect(typeof res.body.argon2_in_flight).toBe('number');
-    expect(typeof res.body.argon2_max_concurrent).toBe('number');
-    expect(res.body.argon2_queue_depth).toBeGreaterThanOrEqual(0);
-    expect(res.body.argon2_in_flight).toBeGreaterThanOrEqual(0);
-    expect(res.body.argon2_max_concurrent).toBeGreaterThanOrEqual(1);
+    // T4 (hold block): the static cap is no longer exposed — it narrows the
+    // search space for queue-DoS reconnaissance without giving operators any
+    // live-load signal. The in-flight and queue-depth counters remain.
+    expect(res.body).not.toHaveProperty('argon2_max_concurrent');
+    // Idle-state assertions: with no auth burst in flight, both counters
+    // must read 0. This doubles as a leak detector — if a prior test left
+    // slots unreleased, the value would stay >0.
+    expect(res.body.argon2_queue_depth).toBe(0);
+    expect(res.body.argon2_in_flight).toBe(0);
   });
 });

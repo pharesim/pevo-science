@@ -11,6 +11,7 @@ import { getAppPool } from '../app-db.js';
 import { logger } from '../logger.js';
 import { isPasswordValid, PASSWORD_POLICY_MESSAGE } from '../lib/password-policy.js';
 import { ARGON2_OPTIONS } from '../lib/argon2-options.js';
+import { runWithArgon2Slot, ArgonQueueFullError } from '../lib/argon2-semaphore.js';
 
 const readLimiter = rateLimit({ name: 'settings-read', windowMs: 60_000, max: 30, keyFn: byIp });
 const writeLimiter = rateLimit({ name: 'settings-write', windowMs: 60_000, max: 10, keyFn: byIp });
@@ -381,7 +382,7 @@ router.post('/set-password', writeLimiter, verifyHiveSignature, async (req: Requ
       );
     }
 
-    const passwordHash = await argon2.hash(password, ARGON2_OPTIONS);
+    const passwordHash = await runWithArgon2Slot(() => argon2.hash(password, ARGON2_OPTIONS));
     await pool.query(
       'UPDATE accounts SET password_hash = $1 WHERE id = $2',
       [passwordHash, rows[0].id],
@@ -389,6 +390,9 @@ router.post('/set-password', writeLimiter, verifyHiveSignature, async (req: Requ
 
     sendOk(res, { message: 'Password set. You can now log in with your email/username and this password.' });
   } catch (err) {
+    if (err instanceof ArgonQueueFullError) {
+      return sendError(res, 503, 'SERVICE_UNAVAILABLE', 'Authentication service temporarily overloaded. Please retry.');
+    }
     logger.error({ err }, 'Failed to set password');
     sendError(res, 500, 'INTERNAL_ERROR', 'Failed to set password');
   }
