@@ -138,3 +138,27 @@ describe('404 handling', () => {
     expect(res.status).toBe(404);
   });
 });
+
+describe('HTML shell serving', () => {
+  it('redirects bare / to a locale-prefixed path', async () => {
+    const res = await request(app).get('/');
+    expect(res.status).toBe(302);
+    expect(res.headers.location).toMatch(/^\/[a-z]{2}(\/|$)/);
+  });
+
+  it('injects window.__PEVO_CONFIG__ into locale-prefixed HTML', async () => {
+    const res = await request(app).get('/en');
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toMatch(/text\/html/);
+    expect(res.text).toContain('window.__PEVO_CONFIG__=');
+  });
+
+  it('emits hreflang x-default pointing at the locale-negotiating root', async () => {
+    const res = await request(app).get('/en/about');
+    expect(res.status).toBe(200);
+    // x-default must point at the unprefixed path so Google treats / as the
+    // locale-negotiating entry point, not the English version.
+    expect(res.text).toMatch(/<link rel="alternate" hreflang="x-default" href="[^"]+\/about"\s*\/>/);
+    expect(res.text).not.toMatch(/hreflang="x-default" href="[^"]+\/en\/about"/);
+  });
+});

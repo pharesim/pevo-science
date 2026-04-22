@@ -105,9 +105,15 @@ export function createApp() {
   }));
   app.use(express.json({ limit: '1mb' }));
 
-  // Serve compiled frontend (Vite build output in backend/public/)
+  // Serve compiled frontend (Vite build output in backend/public/).
+  // Disable directory-index serving so bare / and locale-prefixed paths fall
+  // through to the SPA catch-all below, which injects window.__PEVO_CONFIG__
+  // into the HTML. Without this, GET / returns the raw built index.html
+  // (no config injected) and the footer's discordUrl / githubUrl resolve to
+  // empty strings, hiding both links until the next full-page reload on a
+  // catch-all-served path.
   const publicDir = path.join(__dirname, '../public');
-  app.use(express.static(publicDir));
+  app.use(express.static(publicDir, { index: false }));
 
   // HTTPS is enforced by the reverse proxy, not the backend.
 
@@ -185,7 +191,7 @@ export function createApp() {
       SUPPORTED_LOCALES_ARR.map(
         loc => `    <xhtml:link rel="alternate" hreflang="${loc}" href="${escHtml(baseUrl)}/${loc}${path}" />`,
       ).concat(
-        `    <xhtml:link rel="alternate" hreflang="x-default" href="${escHtml(baseUrl)}/en${path}" />`,
+        `    <xhtml:link rel="alternate" hreflang="x-default" href="${escHtml(baseUrl)}${path}" />`,
       ).join('\n');
 
     const url = (path: string, freq: string, priority: string, lastmod?: string) => {
@@ -301,7 +307,10 @@ export function createApp() {
     const tags = SUPPORTED_LOCALES_ARR.map(
       loc => `<link rel="alternate" hreflang="${loc}" href="${baseUrl}/${loc}${path}" />`,
     );
-    tags.push(`<link rel="alternate" hreflang="x-default" href="${baseUrl}/en${path}" />`);
+    // x-default points at the locale-negotiating root (no locale prefix).
+    // The SPA catch-all 302-redirects unprefixed paths to /${detectedLocale}${path}
+    // based on cookie + Accept-Language, which is exactly what x-default should signal.
+    tags.push(`<link rel="alternate" hreflang="x-default" href="${baseUrl}${path}" />`);
     return tags.join('\n  ');
   }
 
