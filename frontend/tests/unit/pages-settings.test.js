@@ -125,6 +125,11 @@ describe('settingsPage', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    // Belt-and-suspenders: per-test `warnSpy.mockRestore()` leaks console.warn
+    // suppression if an assertion throws before the restore call runs. A
+    // file-local restoreAllMocks() keeps spy leaks from bleeding across
+    // sibling tests.
+    vi.restoreAllMocks();
   });
 
   describe('loadEmailStatus', () => {
@@ -171,12 +176,18 @@ describe('settingsPage', () => {
 
     it('shows duplicate error', async () => {
       mockSubmitEmail.mockRejectedValue({ code: 'DUPLICATE', message: 'taken' });
+      // DUPLICATE is a semantic/benign code; the handler must NOT
+      // console.warn on this branch (only non-DUPLICATE failures take the
+      // sanitization path). Locks in the DUPLICATE-exempt invariant so a
+      // future refactor can't silently reintroduce the noise.
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const comp = createComponent();
       comp.newEmail = 'dup@x.com';
 
       await comp.handleEmailSubmit();
 
       expect(comp.emailError).toBe('settings.emailAlreadyInUse');
+      expect(warnSpy).not.toHaveBeenCalled();
     });
 
     // FE-SETTINGS-ERROR-MESSAGE-SANITIZE-SWEEP: non-DUPLICATE failures must
@@ -275,6 +286,10 @@ describe('settingsPage', () => {
 
       expect(comp.orcidError).toBe('settings.orcidLinkFailed');
       expect(comp.orcidLinking).toBe(false);
+      // Guard the warnSpy.mock.calls[0][1] read below: without this
+      // assertion a regression that skips the console.warn throws a
+      // TypeError here instead of surfacing a clear test failure.
+      expect(warnSpy).toHaveBeenCalled();
       const warnedErr = warnSpy.mock.calls[0][1];
       expect(warnedErr.message).toBe('Invalid ORCID redirect URL');
       warnSpy.mockRestore();

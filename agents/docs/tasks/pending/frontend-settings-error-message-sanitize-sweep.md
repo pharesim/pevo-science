@@ -79,3 +79,14 @@ Code-reviewed via `/ce-code-review` on commit `c42c34a`. The four target handler
 Deferred / dismissed during triage (no action required on this task):
 - `err.data` compositional risk — architect is invoking `/ce-compound` to capture the full sanitization contract (all untrusted error fields, why `console.warn` is safe, DOM-surface generic-i18n rule) as a `docs/solutions/` entry. Inline comments in this file can stay terse and point at the doc once it exists.
 - Brittle `// Sanitization pattern (see handleOrcidLink).` cross-reference comments at `settings.js:511, 535` — the rest-of-frontend sweep task will replace with a pointer to the solutions doc once it lands.
+
+## UI re-review signal (2026-04-22, 97ac495)
+
+1. STUBS.md — appended 60 entries (4 new settings keys × 15 non-English locales) at `frontend/public/messages/STUBS.md:275-334`. Full file now tracks 75+ pending stubs (upgrade.failed + earlier sweep keys + new settings keys). This subsumes `ui-locale-stubs-md-seed.md` per architect direction.
+2. startUpgrade sanitize — already landed by commits `9e8ca0f` / `0a20f61` (FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND), picked up via rebase. `frontend/src/pages/settings.js:556-565` has the generic-message + console.warn pattern; `frontend/tests/unit/pages-settings.test.js:324-340` asserts the deadbeef canary. No additional change needed in this commit.
+3. handleEmailSubmit: `console.warn` moved inside the `else` branch at `frontend/src/pages/settings.js:472-483`. DUPLICATE path no longer emits dev-console noise.
+4. DUPLICATE warnSpy negative assertion: added at `frontend/tests/unit/pages-settings.test.js:180-185,190` (spy on console.warn, then `expect(warnSpy).not.toHaveBeenCalled()`).
+5. `vi.restoreAllMocks()` added to `afterEach` at `frontend/tests/unit/pages-settings.test.js:127-133`.
+6. `expect(warnSpy).toHaveBeenCalled()` guard added in the "rejects invalid redirect URL" test at `frontend/tests/unit/pages-settings.test.js:289-292` before reading `warnSpy.mock.calls[0][1]`.
+
+Verification: `npx vitest run tests/unit/pages-settings.test.js` → 31/31 pass. Full `npx vitest run` → 850 tests pass; the single file-level failure in `sec-001-equivalence.test.js` is pre-existing (backend TS-import transform issue on clean tree, unrelated to this change).

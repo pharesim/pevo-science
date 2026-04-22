@@ -470,13 +470,14 @@ export function initSettingsPage() {
         this.showChangeForm = false;
         await this.loadEmailStatus();
       } catch (err) {
-        // DUPLICATE is a semantic code, safe to branch on. All other
-        // failures take the generic-message + console.warn sanitization
-        // path shared with executeUpgrade().
-        console.warn('[email submit]', err);
+        // DUPLICATE is a semantic code, safe to branch on and surface the
+        // matching localized message without warning. All other failures
+        // take the generic-message + console.warn sanitization path shared
+        // with executeUpgrade().
         if (err.code === 'DUPLICATE') {
           this.emailError = this.$t('settings.emailAlreadyInUse');
         } else {
+          console.warn('[email submit]', err);
           this.emailError = this.$t('settings.emailUpdateFailed');
         }
       } finally {
