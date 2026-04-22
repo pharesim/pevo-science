@@ -293,9 +293,11 @@ export function initOrcidCallbackPage() {
       // Store verified ORCID nonce for the signup page
       localStorage.setItem('pevo_signup_orcid_token', data.orcid_token);
       localStorage.setItem('pevo_signup_orcid_id', data.orcid_id);
-      if (data.name) {
-        localStorage.setItem('pevo_signup_orcid_name', data.name);
-      }
+      // Note: `data.name` intentionally not persisted. Auto-fill of the
+      // full name field was considered (and the orphaned
+      // pevo_signup_orcid_name key was previously written here for that)
+      // but the signup form never reads it and the feature was abandoned.
+      // The user fills Full Name themselves; ORCID surfaces the ID only.
 
       // Return to the originating page (signup or recover)
       const returnTo = localStorage.getItem('pevo_orcid_return_to');
