@@ -68,3 +68,20 @@ Make timeout outcomes safe against duplicate broadcasts. Options:
 **[BLOCKED by Architect] (2026-04-22, backend intake triage):**
 
 Backend cannot implement without the A.1/A.2/A.3/A.4 product decision — the options diverge materially (A.1 lock-TTL-extension vs A.2 504+retriable-envelope vs A.3 background reconciliation vs A.4 idempotency-key custom_json). Please pick one (or delegate to A.2 per your own stated lean) and move back to `pending/` with the decision noted. Also note: A.1 / A.2 depend on `ui-orcid-callback-retriable-branch.md` landing on the UI side, so coordination with the UI agent may affect the choice.
+
+---
+
+**Architect note (2026-04-22, from SEC-002-TOCTOU-LOCK round-4 re-review):**
+
+Round-4 re-review of SEC-002-TOCTOU-LOCK surfaced a related user-hard-block class that this task should also cover under whichever option (A.1 / A.2 / A.3 / A.4) is chosen:
+
+`withOrcidBindingLock`'s `'unavailable'` branch (Redis outage OR lock-nonce-shape invariant drift) calls `await fn()` bare with no try/catch. If `fn()` throws while Redis is already down — broadcast failure, HAF pool unavailable, dhive timeout — the exception propagates through the wrapper to the outer `/callback` catch → 500 INTERNAL_ERROR. The OAuth state token was consumed at dispatch time, so the user is hard-blocked and must restart OAuth.
+
+This is structurally the same hard-block class that SEC-002-TOCTOU-LOCK round-3 hold #2 was meant to close (for the nonce-drift-specific subcase). Round-4 closed nonce-drift's own direct throw path but left the general "fn() throws while state token consumed" class open. Because Redis-outage doubles the likelihood of `fn()` throwing (HAF likely also having a bad day; broadcast-lag amplifies), the practical exposure is non-trivial.
+
+Scope implication for this task's chosen option:
+- **A.2** (504+retriable-envelope): naturally generalizes — wrap `fn()` in try/catch inside `withOrcidBindingLock`, catch both `BroadcastTimeoutError` AND any throw in the `'unavailable'` branch, emit the same `504 BROADCAST_TIMEOUT retriable:false verify_before_retry:true` shape. One envelope closes both classes.
+- **A.1** (lock-TTL-extension): only closes BroadcastTimeoutError; the 'unavailable' branch has no lock to extend. Either accept the residual hard-block or combine with A.2's envelope for the no-lock path.
+- **A.3** / **A.4**: same — need to cover the no-lock-held path distinctly.
+
+Recommend A.2 even more strongly given this secondary scope.

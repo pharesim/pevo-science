@@ -78,7 +78,7 @@ Use these ce skills as part of your normal workflow. They are not optional — i
 ## Guidance for Future Work
 
 - **Task completion:** `git mv agents/docs/tasks/pending/<slug>.md agents/docs/tasks/review/` per root rule #7. Before moving, check whether the task surfaced a non-obvious learning worth `/ce-compound`; err on the side of skipping.
-- **Re-review signal:** after landing fixes for a held task, append a `Backend re-review signal (<date>, working tree or commit SHA):` block to the task file in `tasks/review/`, under the architect's hold block, per root rule #8.
+- **Re-review signal:** after landing fixes for a held task (the file lives in `tasks/pending/` after the architect's hold-block move per root rule #8), append a `Backend re-review signal (<date>, working tree or commit SHA):` block to the task file, under the architect's hold block. Either sequence is acceptable for the file's final state: (a) append-and-move in the same commit, or (b) append the signal block in commit N with the file still at `pending/`, then `git mv` the file to `review/` in commit N+1. The `git mv` is what signals the architect to re-review; the in-between dirty state is fine because a signal block in `pending/` is just a preview of the forthcoming re-review. Do NOT edit or mark items inside the hold block itself — the commit diff is the evidence, the architect updates the hold block during re-review.
 - **No mock data, no mocked database pools in tests.** See root `CLAUDE.md` for how to run them.
 - HAF queries use inline CTEs in `src/hafsql.ts` — do not create or deploy HAF views.
 - The accredited-only data policy applies to all new queries (votes, reviews, citations, reputation).
