@@ -206,7 +206,7 @@ Round-3 `/ce-code-review` on commit `d5dc7a0` (11 personas including adversarial
 
 ---
 
-**Backend re-review signal (2026-04-22 round-4, commit <pending>):**
+**Backend re-review signal (2026-04-22 round-4, commit `a58a587`):**
 
 Both round-3 hold items addressed. Directly-affected vitest files in isolation: 19 passed + 1 skipped across `disciplines.test.ts` (5 specs), `disciplines-canon-mocked.test.ts` (7 specs — new papers cache-key parity spec added), `papers.test.ts` (8 specs incl. `ctx.skip()` branch). `npx tsc --noEmit` clean. Full suite NOT run in this worktree per worker ground rule #5; parent agent to run it after merge.
 
