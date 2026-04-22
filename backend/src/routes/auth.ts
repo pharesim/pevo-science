@@ -91,11 +91,34 @@ const MAX_LOGIN_FAILURES = 20;
 // match the happy-path argon2.hash cost — see the /signup handler.
 //
 // Concurrency / libuv note: argon2.verify runs on the libuv thread pool
-// (default UV_THREADPOOL_SIZE=4). Under a burst of concurrent auth requests
-// the pool saturates, queued verifies can throw, and burnSentinel's silent
-// catch returns in ~0ms — reopening the timing oracle for the saturated
-// window. Deployment must set UV_THREADPOOL_SIZE=16 (see docker-compose.yml
-// backend service env) to keep the burn path wall-time-deterministic.
+// (default UV_THREADPOOL_SIZE=4). argon2's `parallelism=4` option means each
+// verify effectively holds 4 libuv threads for its duration. At
+// UV_THREADPOOL_SIZE=16, that allows ~4 concurrent argon2 ops (16 / 4 = 4),
+// NOT 16 — the common confusion that made the initial cap insufficient. The
+// JS-level semaphore filed separately as backend-argon2-jslevel-concurrency-cap
+// is the deterministic cap on concurrent argon2 ops; the env value above is
+// libuv headroom so the semaphore can fill its slots without queueing at
+// the pool layer. Deployment MUST set UV_THREADPOOL_SIZE=16 (Dockerfile ENV
+// + docker-compose.yml env + .env.example) so the pool never becomes the
+// bottleneck and saturation throws cannot silently reopen the oracle.
+//
+// Fail-loud guard: if UV_THREADPOOL_SIZE is unset or below 16 in the
+// environment, reject at module-load rather than serving traffic with a
+// hidden saturation oracle. The semaphore (when landed) will relax this
+// to advisory; until then it's a hard invariant for burnSentinel
+// determinism. Silenced when running under Vitest (VITEST=true is set
+// by the runner itself) so unit tests don't need the env knob. Production
+// startup MUST set UV_THREADPOOL_SIZE; the Dockerfile and docker-compose
+// environment both carry it.
+if (!process.env.VITEST) {
+  const pool = Number(process.env.UV_THREADPOOL_SIZE);
+  if (!Number.isFinite(pool) || pool < 16) {
+    throw new Error(
+      `UV_THREADPOOL_SIZE must be >= 16 for burnSentinel determinism (got ${process.env.UV_THREADPOOL_SIZE ?? 'unset'}); the JS-level semaphore (backend-argon2-jslevel-concurrency-cap) is the real cap, this env value is libuv headroom.`,
+    );
+  }
+}
+
 const SENTINEL_ARGON2_HASH_PROMISE: Promise<string> = argon2.hash(
   'pevo-login-timing-sentinel-v1',
   ARGON2_OPTIONS,

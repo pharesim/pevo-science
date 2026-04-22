@@ -75,9 +75,11 @@ services:
       # Cap libuv thread pool above argon2's effective serialization so the
       # burnSentinel path in backend/src/routes/auth.ts cannot silently throw
       # under concurrent /login, /signup, /resend-verification, /recover load
-      # (see comment near SENTINEL_ARGON2_HASH_PROMISE). Default is 4, which
-      # saturates at ~4 concurrent auth requests and reopens the timing oracle.
-      UV_THREADPOOL_SIZE: "16"
+      # (see comment near SENTINEL_ARGON2_HASH_PROMISE). UV_THREADPOOL_SIZE=16
+      # allows ~4 concurrent argon2 ops (argon2 parallelism=4 holds 4 threads
+      # per call); the JS-level semaphore in auth.ts is the deterministic cap.
+      # Override via .env; default 16 is the minimum for the startup assertion.
+      UV_THREADPOOL_SIZE: "${UV_THREADPOOL_SIZE:-16}"
     depends_on:
       postgres:
         condition: service_healthy
