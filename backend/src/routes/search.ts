@@ -8,6 +8,7 @@ import { getAccreditedSet } from '../accreditation.js';
 import { hafCache } from '../cache.js';
 import { logger } from '../logger.js';
 import { T, activeAccreditationsCteBody, retractedPapersCteBody, buildWith } from '../hafsql.js';
+import { validateDisciplineFilter, DisciplineFilterError } from '../types/disciplines.js';
 
 const router = Router();
 
@@ -291,8 +292,20 @@ router.get('/', async (req: Request, res: Response) => {
   // so repeated params (`?discipline=a&discipline=b`) yield `string[]` and an
   // unsafe cast silently coerces `.toLowerCase()` on the array to
   // `"[object Object]"` in the cache key.
-  const disciplineRaw = req.query.discipline;
-  const discipline = typeof disciplineRaw === 'string' ? disciplineRaw.toLowerCase() : undefined;
+  //
+  // BE-DISCIPLINE-LENGTH-CAP: validate length + charset BEFORE .toLowerCase()
+  // so a 1 MB oversize string is rejected before V8 does the lower. The helper
+  // runs the length check on the raw input, rejects non-Unicode-safe charsets,
+  // and returns the canonical lowercased value (or null for empty/non-string).
+  let discipline: string | null;
+  try {
+    discipline = validateDisciplineFilter(req.query.discipline);
+  } catch (err) {
+    if (err instanceof DisciplineFilterError) {
+      return sendError(res, 400, 'BAD_REQUEST', err.message);
+    }
+    throw err;
+  }
   const language = req.query.language as string | undefined;
   const source = req.query.source as string | undefined;
   const accreditedOnly = req.query.accredited_only !== 'false'; // default true
@@ -306,7 +319,7 @@ router.get('/', async (req: Request, res: Response) => {
     // share a single Redis entry.
     const rawKey = `q=${q}:t=${type}:d=${discipline || ''}:l=${language || ''}:src=${source || ''}:a=${accreditedOnly}:r=${includeRetracted}:s=${sort}:p=${page}:lim=${limit}`;
     const cacheKey = `search:${crypto.createHash('sha256').update(rawKey).digest('hex').slice(0, 32)}`;
-    const result = await hafCache.getOrSet(cacheKey, () => searchFromHaf(q, type, discipline, language, source, accreditedOnly, includeRetracted, sort, limit, offset), 15_000);
+    const result = await hafCache.getOrSet(cacheKey, () => searchFromHaf(q, type, discipline ?? undefined, language, source, accreditedOnly, includeRetracted, sort, limit, offset), 15_000);
     if (result) {
       const authors = result.rows.map((r) => r.author);
       const accreditedSet = await getAccreditedSet(authors);

@@ -29,6 +29,7 @@ import {
   buildWith,
   getCachedGenesisBlock,
 } from '../hafsql.js';
+import { validateDisciplineFilter, DisciplineFilterError } from '../types/disciplines.js';
 
 const router = Router();
 
@@ -194,11 +195,14 @@ async function fetchPapersFromHaf(
   const { limit, offset } = parsePageLimit(req);
   const sort = parseSort(req);
   const order = parseOrder(req);
-  // `discipline` is parsed + lowercased once by the route handler and passed in
-  // explicitly (mirrors `search.ts:searchFromHaf(..., discipline)`). The SQL
-  // gate below uses `: undefined` at the call site so the `if (discipline)`
-  // branch suppresses the `WHERE LOWER(...) = $N` condition entirely rather
-  // than emitting an empty-string match.
+  // `discipline` arrives already validated + lowercased by the route handler
+  // via `validateDisciplineFilter` (BE-DISCIPLINE-LENGTH-CAP). The SQL binder
+  // below uses it as-is against `LOWER(column) = $N`. Do not re-lowercase or
+  // re-read req.query.discipline here: the guard must run once, before
+  // V8/Postgres touches an oversize string. The caller passes
+  // `discipline ?? undefined` so the `if (discipline)` gate suppresses the
+  // `WHERE LOWER(...) = $N` condition when no filter was supplied (rather
+  // than emitting an empty-string match).
   const keyword = req.query.keyword as string | undefined;
   const author = req.query.author as string | undefined;
   const language = req.query.language as string | undefined;
@@ -445,31 +449,36 @@ router.get('/', async (req: Request, res: Response) => {
   // #6. Round-3 hold #1: without this, `?discipline=Physics` and
   // `?discipline=physics` populate independent Redis cache entries despite
   // the SQL-side LOWER() match — the dedup is defeated at the memoization
-  // layer on the primary paper-feed endpoint. Round-3 hold #2: typeof-narrow
-  // rather than `as string | undefined`; repeated params yield `string[]` at
-  // runtime and `.toLowerCase()` on an array silently coerces to
-  // `"[object Object]"` in the cache key.
+  // layer on the primary paper-feed endpoint.
   //
-  // Fallback to `''` here (NOT `undefined`) is load-bearing for cache
-  // stability: the template literal below would stringify `undefined` to the
-  // literal `"undefined"`, invalidating every existing `d=` cache entry on
-  // deploy. The inner SQL-gate path uses `: undefined` (passed to
-  // `fetchPapersFromHaf`) so the `if (discipline)` condition suppresses the
-  // `WHERE LOWER(...) = $N` branch entirely.
-  const disciplineRaw = req.query.discipline;
-  const discipline = typeof disciplineRaw === 'string' ? disciplineRaw.toLowerCase() : '';
+  // BE-DISCIPLINE-LENGTH-CAP: validate length + charset BEFORE .toLowerCase()
+  // so a 1 MB oversize string is rejected before V8 does the lower. The helper
+  // also handles the repeated-param `string[]` coercion trap (round-3 hold #2)
+  // by accepting `unknown` and returning null for non-string shapes.
+  //
+  // Cache-key stability (W4 round-3 hold #1): `discipline` must coalesce to
+  // `''` in the template literal below, NOT `undefined` — the template would
+  // otherwise stringify `undefined` to the literal `"undefined"`, invalidating
+  // every existing `d=` cache entry on deploy. The inner SQL-gate path uses
+  // `: undefined` so the `if (discipline)` condition suppresses the WHERE
+  // clause entirely.
+  let discipline: string | null;
+  try {
+    discipline = validateDisciplineFilter(req.query.discipline);
+  } catch (err) {
+    if (err instanceof DisciplineFilterError) {
+      return sendError(res, 400, 'BAD_REQUEST', err.message);
+    }
+    throw err;
+  }
   const keyword = req.query.keyword || '';
   const author = req.query.author || '';
   const language = req.query.language || '';
   const accreditedOnly = req.query.accredited_only !== 'false'; // default true
   const includeRetracted = req.query.include_retracted === 'true';
   const source = req.query.source || '';
-  const cacheKey = `papers:p=${page}:l=${limit}:s=${sort}:o=${order}:d=${discipline}:k=${keyword}:a=${author}:lang=${language}:ao=${accreditedOnly}:ir=${includeRetracted}:src=${source}`;
-  // Pass `discipline || undefined` so the inner `if (discipline)` SQL-gate
-  // suppresses the `WHERE LOWER(...) = $N` condition when no filter was
-  // requested. The cache-key `: ''` vs SQL-gate `: undefined` split is
-  // intentional — see comment above.
-  const result = await hafCache.getOrSetSWR(cacheKey, () => fetchPapersFromHaf(req, discipline || undefined));
+  const cacheKey = `papers:p=${page}:l=${limit}:s=${sort}:o=${order}:d=${discipline ?? ''}:k=${keyword}:a=${author}:lang=${language}:ao=${accreditedOnly}:ir=${includeRetracted}:src=${source}`;
+  const result = await hafCache.getOrSetSWR(cacheKey, () => fetchPapersFromHaf(req, discipline ?? undefined));
   if (result) {
     return sendOk(res, result.rows, { page, limit, total: result.total });
   }

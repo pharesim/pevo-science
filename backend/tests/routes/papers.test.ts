@@ -83,6 +83,44 @@ describe('GET /api/papers', () => {
       expect(Array.isArray(res.body.data)).toBe(true);
     }
   });
+
+  // BE-DISCIPLINE-LENGTH-CAP: guard oversized/malformed ?discipline= inputs
+  // before V8 runs toLowerCase() and Postgres runs LOWER(). Prevents
+  // per-request-CPU DoS via megabyte-scale query strings.
+  describe('?discipline= input validation', () => {
+    it('rejects >100 char discipline with 400 BAD_REQUEST', async () => {
+      // 4 KB of ASCII letters — well above the 100-char guard, below Node's
+      // default ~8 KB URL/header limit (which would fire a 431 before Express
+      // routing). The task's "1 MB" scenario is what the guard protects the
+      // SQL/V8 layer against; the 4 KB probe proves the route-level cap fires
+      // before toLowerCase() / LOWER() touch oversize input.
+      const oversized = 'a'.repeat(4_000);
+      const res = await request(app).get('/api/papers').query({ discipline: oversized });
+      expect(res.status).toBe(400);
+      expect(res.body.status).toBe('error');
+      expect(res.body.error.code).toBe('BAD_REQUEST');
+      expect(res.body.error.message).toBe('Discipline filter invalid');
+    });
+
+    it('rejects malformed charset (e.g. $$$) with 400 BAD_REQUEST', async () => {
+      const res = await request(app).get('/api/papers').query({ discipline: '$$$' });
+      expect(res.status).toBe(400);
+      expect(res.body.status).toBe('error');
+      expect(res.body.error.code).toBe('BAD_REQUEST');
+      expect(res.body.error.message).toBe('Discipline filter invalid');
+    });
+
+    it('accepts long-but-valid discipline (99 chars, letters+spaces)', { timeout: 60_000 }, async () => {
+      // "quantum computing" padded to 99 chars with spaces
+      const padded = 'quantum computing' + ' '.repeat(99 - 'quantum computing'.length);
+      expect(padded.length).toBe(99);
+      const res = await request(app).get('/api/papers').query({ discipline: padded });
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe('ok');
+      // Data may be empty (no matching papers in corpus); assert envelope only.
+      expect(Array.isArray(res.body.data)).toBe(true);
+    });
+  });
 });
 
 describe('GET /api/papers/:author/:permlink', () => {
