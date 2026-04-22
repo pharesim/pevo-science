@@ -5,6 +5,7 @@ import {
   authorshipClaimsCteBody,
   buildWith,
 } from '../src/hafsql.js';
+import { queryWithRetry } from './support/haf-query.js';
 
 /**
  * Scope-narrowing invariant: a scoped authorshipClaimsCteBody must return the
@@ -27,7 +28,7 @@ describe('authorshipClaimsCteBody scope', () => {
       }
 
       const unscoped = buildWith(1, activeAccreditationsCteBody, authorshipClaimsCteBody);
-      const unscopedRows = (await pool.query(
+      const unscopedRows = (await queryWithRetry(pool, 
         `${unscoped.sql} SELECT claimer, paper_author, paper_permlink, author_index, status, claimed_at FROM authorship_claims ORDER BY claimer, paper_author, paper_permlink, claimed_at`,
         unscoped.params,
       )).rows;
@@ -41,7 +42,7 @@ describe('authorshipClaimsCteBody scope', () => {
       const expected = unscopedRows.filter((r) => r.claimer === sampleClaimer);
 
       const scoped = buildWith(1, activeAccreditationsCteBody, (idx) => authorshipClaimsCteBody(idx, { claimer: sampleClaimer }));
-      const scopedRows = (await pool.query(
+      const scopedRows = (await queryWithRetry(pool, 
         `${scoped.sql} SELECT claimer, paper_author, paper_permlink, author_index, status, claimed_at FROM authorship_claims ORDER BY claimer, paper_author, paper_permlink, claimed_at`,
         scoped.params,
       )).rows;
@@ -61,7 +62,7 @@ describe('authorshipClaimsCteBody scope', () => {
       }
 
       const unscoped = buildWith(1, activeAccreditationsCteBody, authorshipClaimsCteBody);
-      const unscopedRows = (await pool.query(
+      const unscopedRows = (await queryWithRetry(pool, 
         `${unscoped.sql} SELECT claimer, paper_author, paper_permlink, author_index, status, claimed_at FROM authorship_claims ORDER BY claimer, paper_author, paper_permlink, claimed_at`,
         unscoped.params,
       )).rows;
@@ -79,7 +80,7 @@ describe('authorshipClaimsCteBody scope', () => {
       );
 
       const scoped = buildWith(1, activeAccreditationsCteBody, (idx) => authorshipClaimsCteBody(idx, { paperAuthor, paperPermlink }));
-      const scopedRows = (await pool.query(
+      const scopedRows = (await queryWithRetry(pool, 
         `${scoped.sql} SELECT claimer, paper_author, paper_permlink, author_index, status, claimed_at FROM authorship_claims ORDER BY claimer, paper_author, paper_permlink, claimed_at`,
         scoped.params,
       )).rows;

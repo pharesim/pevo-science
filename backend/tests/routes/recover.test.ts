@@ -421,13 +421,15 @@ describe('SEC-004-BE: login on null-hash account', () => {
     expect(res.body.error.code).toBe('NO_PASSWORD_SET');
   });
 
-  it.skipIf(!dbReachable)('null-hash login burns sentinel argon2.verify for timing-equalization (≥ 50ms)', async () => {
+  it.skipIf(!dbReachable)('null-hash login burns sentinel argon2.verify for timing-equalization (≥ 40ms)', async () => {
     // SEC-004-BE finding #1 mutation-kill. Without the sentinel argon2.verify
     // on the NO_PASSWORD_SET branch, this endpoint returns in ~1ms for null-
     // hash accounts vs ~100ms for accounts with a real hash — a timing oracle
-    // for enumerating ORCID-only accounts. Loose lower bound (50ms) so the
-    // assertion survives CI variance but still fails if the sentinel is
-    // removed or short-circuits.
+    // for enumerating ORCID-only accounts. 40ms lower bound matches the
+    // SEC-LOGIN-UNKNOWN-USER-TIMING sibling — argon2.verify at these
+    // ARGON2_OPTIONS runs 42-55ms on modern x86 and 50ms produces flakes
+    // under parallel load. Still kills the sentinel-removal mutation
+    // (40x margin above the ~1ms pre-sentinel path).
     //
     // Warm the sentinel-hash lazy promise so the first call in this test
     // measures steady-state verify cost, not one-time hash-compute cost.
@@ -443,7 +445,7 @@ describe('SEC-004-BE: login on null-hash account', () => {
 
     expect(res.status).toBe(403);
     expect(res.body.error.code).toBe('NO_PASSWORD_SET');
-    expect(elapsed).toBeGreaterThanOrEqual(50);
+    expect(elapsed).toBeGreaterThanOrEqual(40);
   });
 });
 
