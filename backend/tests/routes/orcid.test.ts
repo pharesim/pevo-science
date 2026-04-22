@@ -78,6 +78,7 @@ vi.mock('../../src/accreditation.js', () => ({
 import { createApp } from '../../src/app.js';
 import { config } from '../../src/config.js';
 import { getRedis } from '../../src/redis.js';
+import { clearRateLimitKeys } from '../support/redis-helpers.js';
 // Test-only export — see note at orcid.ts __test_releaseBindingLock export.
 import { __test_releaseBindingLock as releaseBindingLock } from '../../src/routes/orcid.js';
 
@@ -150,13 +151,11 @@ beforeEach(async () => {
   }));
   // Clear rate-limit counters so parallel/retried tests don't burn through the
   // 10-req/min /start window. Both limiters key by IP; supertest always uses 127.0.0.1.
-  const redis = getRedis();
-  if (redis) {
-    try {
-      const keys = await redis.keys(`${config.appTag}:rl:orcid-*`);
-      if (keys.length > 0) await redis.del(...keys);
-    } catch { /* ignore */ }
-  }
+  // Use the shared helper — it ready-waits on redis.status before issuing the
+  // KEYS/DEL so the clear isn't silently skipped during the client's initial
+  // connect window (was a divergent inline caller prior to
+  // BE-TESTS-ORCID-RATE-LIMIT-CLEAR-HELPER-MIGRATION).
+  await clearRateLimitKeys(['orcid-start', 'orcid-callback']);
 });
 
 describe('POST /api/orcid/callback — auth gate (SEC-002-BE)', () => {
@@ -188,7 +187,8 @@ describe('POST /api/orcid/callback — auth gate (SEC-002-BE)', () => {
   it(
     'returns 200 and broadcasts on link callback when caller matches initiator',
     async () => {
-      installOrcidFetchStub({ orcid: '0000-0001-2222-3333', name: 'Alice', works: 3 });
+      const orcidId = '0000-0001-2222-3333';
+      installOrcidFetchStub({ orcid: orcidId, name: 'Alice', works: 3 });
       hafQueryMock.mockImplementation(async (sql: string) => {
         if (sql.includes("'orcid' = $1")) {
           // findAccreditedAccountWithOrcid first query — ORCID not yet bound
@@ -218,9 +218,12 @@ describe('POST /api/orcid/callback — auth gate (SEC-002-BE)', () => {
       // leave outer assertions passing on a regressed query — promote the
       // mock-guard from existence-check to shape-check. See
       // agents/docs/solutions/conventions/mock-guard-assertion-must-verify-call-shape-2026-04-21.md.
+      // `'orcid' = $1` call pins orcidId at $1 via arrayContaining (sibling
+      // sites use the same shape); `expect.anything()` was insufficient
+      // because it lets a regression re-bind the lookup to a different value.
       expect(hafQueryMock).toHaveBeenCalledWith(
         expect.stringContaining("'orcid' = $1"),
-        expect.anything(),
+        expect.arrayContaining([orcidId]),
       );
       expect(hafQueryMock).toHaveBeenCalledWith(
         expect.stringContaining("'action' IN ('accredit', 'revoke')"),
@@ -318,13 +321,17 @@ describe('POST /api/orcid/callback — auth gate (SEC-002-BE)', () => {
       // filter's effect (no authority-signed op => no row).
       const orcidId = '0000-0001-5555-0001';
       installOrcidFetchStub({ orcid: orcidId, name: 'Mallory', works: 3 });
-      hafQueryMock.mockImplementation(async (sql: string, params: unknown[]) => {
+      hafQueryMock.mockImplementation(async (sql: string) => {
         if (sql.includes("'action' IN ('accredit', 'revoke')") && sql.includes("'account' = $1")) {
           // getExistingAccreditation for mallory. The fixed query includes the
           // authority filter; the self-broadcast op wouldn't match because its
-          // required_posting_auths is ['mallory'], not an authority.
-          expect(sql).toContain('required_posting_auths ?| $4::text[]');
-          expect(params[3]).toEqual(config.accreditationAuthorities);
+          // required_posting_auths is ['mallory'], not an authority. Load-bearing
+          // call-shape assertions (authority-filter SQL fragment + params[3] ===
+          // accreditationAuthorities) moved out of the mock guard and onto the
+          // caller so they fire ONLY when a matching call actually happened;
+          // the mock's fallback path returning { rows: [] } would otherwise
+          // leave them un-exercised on a regressed SQL shape. See
+          // agents/docs/solutions/conventions/mock-guard-assertion-must-verify-call-shape-2026-04-21.md.
           return { rows: [] };
         }
         return { rows: [] };
@@ -338,12 +345,25 @@ describe('POST /api/orcid/callback — auth gate (SEC-002-BE)', () => {
       expect(res.body.error.code).toBe('VALIDATION_ERROR');
       expect(res.body.error.message).toMatch(/not accredited/i);
       expect(broadcastJsonMock).not.toHaveBeenCalled();
-      // Prove the guarded branch of the mock actually fired so the
-      // load-bearing authority-filter assertions inside the guard ran. A
-      // future SQL refactor that changes the column selection or query shape
-      // would otherwise fall through to the empty default and silently leave
-      // the assertions un-exercised.
-      expect(hafQueryMock).toHaveBeenCalled();
+      // Call-shape assertion on the load-bearing HAF call: the authority-filtered
+      // getExistingAccreditation query must have fired with both the action-set
+      // predicate AND mallory + accreditationAuthorities in the params. A SQL
+      // refactor that drops `required_posting_auths ?| $4::text[]` or reorders
+      // the binds so authorities no longer sits at $4 would produce a matcher
+      // miss here. The positional pin on params[3] closes the arrayContaining
+      // order-agnostic gap.
+      expect(hafQueryMock).toHaveBeenCalledWith(
+        expect.stringContaining("'action' IN ('accredit', 'revoke')"),
+        expect.arrayContaining(['mallory', config.accreditationAuthorities]),
+      );
+      const authorityCall = hafQueryMock.mock.calls.find(
+        (c) =>
+          typeof c[0] === 'string' &&
+          c[0].includes("'action' IN ('accredit', 'revoke')") &&
+          c[0].includes("'account' = $1"),
+      );
+      expect(authorityCall).toBeDefined();
+      expect((authorityCall![1] as unknown[])[3]).toEqual(config.accreditationAuthorities);
     },
   );
 
@@ -355,15 +375,15 @@ describe('POST /api/orcid/callback — auth gate (SEC-002-BE)', () => {
       // and the link flow proceeds, broadcasting the new ORCID binding.
       const orcidId = '0000-0001-5555-0002';
       installOrcidFetchStub({ orcid: orcidId, name: 'Alice', works: 3 });
-      hafQueryMock.mockImplementation(async (sql: string, params: unknown[]) => {
+      hafQueryMock.mockImplementation(async (sql: string) => {
         if (sql.includes("'orcid' = $1")) {
           // findAccreditedAccountWithOrcid: ORCID not yet bound to any account.
           return { rows: [] };
         }
         if (sql.includes("'action' IN ('accredit', 'revoke')") && sql.includes("'account' = $1")) {
-          // Authority filter must be present.
-          expect(sql).toContain('required_posting_auths ?| $4::text[]');
-          expect(params[3]).toEqual(config.accreditationAuthorities);
+          // Authority-filter assertions moved out of the guard to the caller
+          // below so they fire only when a matching call actually happened.
+          // See agents/docs/solutions/conventions/mock-guard-assertion-must-verify-call-shape-2026-04-21.md.
           // Simulate the filter matching: an authority-signed accredit exists.
           return {
             rows: [{
@@ -383,7 +403,23 @@ describe('POST /api/orcid/callback — auth gate (SEC-002-BE)', () => {
       expect(res.body.data.username).toBe('alice');
       expect(res.body.data.orcid).toBe(orcidId);
       expect(broadcastJsonMock).toHaveBeenCalledTimes(1);
-      expect(hafQueryMock).toHaveBeenCalled();
+      // Call-shape assertion: the authority-filtered getExistingAccreditation
+      // query fired with alice + accreditationAuthorities in the params. A
+      // positional pin on params[3] closes the arrayContaining order-agnostic
+      // gap (a mutant moving authorities off of $4 would pass arrayContaining
+      // but fail the positional check).
+      expect(hafQueryMock).toHaveBeenCalledWith(
+        expect.stringContaining("'action' IN ('accredit', 'revoke')"),
+        expect.arrayContaining(['alice', config.accreditationAuthorities]),
+      );
+      const authorityCall = hafQueryMock.mock.calls.find(
+        (c) =>
+          typeof c[0] === 'string' &&
+          c[0].includes("'action' IN ('accredit', 'revoke')") &&
+          c[0].includes("'account' = $1"),
+      );
+      expect(authorityCall).toBeDefined();
+      expect((authorityCall![1] as unknown[])[3]).toEqual(config.accreditationAuthorities);
     },
   );
 
@@ -433,9 +469,17 @@ describe('POST /api/orcid/callback — auth gate (SEC-002-BE)', () => {
         expect.stringContaining("'orcid' = $1"),
         expect.arrayContaining([orcidId]),
       );
+      // The action-IN query fires twice on this path: once for alice's
+      // getExistingAccreditation (pre-lock), once for bob's binding-liveness
+      // check (inside findAccreditedAccountWithOrcid). The 409 branch is
+      // reached only when bob's call returns an accredit row still carrying
+      // this orcid — i.e. bob is the load-bearing caller. Pin bob in the
+      // params so a regression that stops querying the incumbent account
+      // fails loudly. `expect.anything()` accepted any invocation regardless
+      // of which account was being queried.
       expect(hafQueryMock).toHaveBeenCalledWith(
         expect.stringContaining("'action' IN ('accredit', 'revoke')"),
-        expect.anything(),
+        expect.arrayContaining(['bob']),
       );
     },
   );
@@ -764,6 +808,31 @@ describe('POST /api/orcid/callback — orcid_id format validation (BE-ORCID-ID-F
       expect(appQueryMock).not.toHaveBeenCalled();
       expect(hafQueryMock).not.toHaveBeenCalled();
       expect(broadcastJsonMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it(
+    'handleSignup rejects malformed orcid_id with 400 BAD_REQUEST before any Redis/Hive/HAF call',
+    async () => {
+      // Signup's in-handler guard is the mutation-kill for the dispatch-site
+      // guard on the signup path — handleSignup is the only handler that feeds
+      // orcidId into a URL-path interpolation (countExternalWorks →
+      // pub.orcid.org). If the inner guard is dropped, a future refactor that
+      // also drops the dispatch-site guard would silently let a malformed id
+      // reach that fetch. The malformed-fetch stub throws on any post-guard
+      // pub.orcid.org fetch, so a guard bypass surfaces loudly rather than
+      // falling through to a generic 422 works-count branch.
+      installMalformedOrcidFetchStub();
+      const state = await startUnauthed('signup');
+      const res = await request(app)
+        .post('/api/orcid/callback')
+        .send({ code: 'fake', state });
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('BAD_REQUEST');
+      expect(res.body.error.message).toMatch(/invalid orcid/i);
+      expect(broadcastJsonMock).not.toHaveBeenCalled();
+      expect(hafQueryMock).not.toHaveBeenCalled();
+      expect(appQueryMock).not.toHaveBeenCalled();
     },
   );
 });
