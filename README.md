@@ -208,7 +208,7 @@ Restore: `gunzip -c /var/backups/pevo/pevo_app_YYYYMMDD.sql.gz | psql $APP_DATAB
 
 ## AI usage in development
 
-This project uses AI coding assistance (Claude Code) for implementation. Architecture, standards research, and all review/integration decisions are made by the lead developer.
+This project uses AI coding assistance (Claude Code, compound engineering) for implementation. Architecture, standards research, and all review/integration decisions are made by the lead developer.
 
 The agent configuration is committed for transparency:
 
@@ -216,7 +216,7 @@ The agent configuration is committed for transparency:
 - [agents/architect/](agents/architect/), [agents/backend/](agents/backend/), [agents/ui/](agents/ui/), [agents/pinner/](agents/pinner/) — role-specific agent instructions
 - [agents/docs/ARCHITECTURE.md](agents/docs/ARCHITECTURE.md) — system design
 - [agents/docs/api-contracts/](agents/docs/api-contracts/) — API contract specifications
-- [agents/docs/TASKS.md](agents/docs/TASKS.md) — task tracking between agents
+- [agents/docs/tasks](agents/docs/tasks) — task tracking between agents
 - [agents/docs/reputation-algorithm.md](agents/docs/reputation-algorithm.md) — reputation scoring algorithm
 - [agents/docs/hive-schemas.md](agents/docs/hive-schemas.md) — Hive custom_json schemas
 - [agents/tools/reputation-sim.ts](agents/tools/reputation-sim.ts) — reputation simulation tool
