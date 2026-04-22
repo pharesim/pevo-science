@@ -35,6 +35,18 @@ export function createDisciplineFilter({ stateKey = 'discipline' } = {}) {
     disciplinesLoadFailed: false,
     [stateKey]: '',
 
+    /**
+     * Fetch the discipline list and populate `this.disciplines`.
+     *
+     * Always resolves; sets `this.disciplinesLoadFailed = true` on error.
+     * Callers do not need a .catch handler. Pre-extract, both consumers
+     * had `loadDisciplines` bodies that threw on fetch failure and were
+     * wrapped in a try/catch at the call site. The composable now owns
+     * that try/catch internally, so the promise-rejection contract
+     * changed from "may reject" to "never rejects". Observable behavior
+     * (failure flag set, warning logged) is identical for current
+     * consumers; this JSDoc makes the contract shift discoverable.
+     */
     async loadDisciplines() {
       // Reset before each attempt so a later retry can clear a
       // previously-set failure flag on success. init-only today, but any
@@ -72,6 +84,12 @@ export function createDisciplineFilter({ stateKey = 'discipline' } = {}) {
       // already lowercase. The .toLowerCase() here catches direct state
       // assignments (e.g. code paths that assign this[stateKey] without
       // going through _syncDisciplineFromUrl).
+      //
+      // Note: `stateKey` parameterizes only the in-memory field name
+      // (consumers disagree: `discipline` vs `disciplineFilter`). The URL
+      // param is intentionally hardcoded to `'discipline'` so shareable
+      // URLs stay stable across consumers and bookmarked links keep
+      // working regardless of which page renders them.
       if (this[stateKey]) params.set('discipline', this[stateKey].toLowerCase());
     },
   };
