@@ -35,3 +35,25 @@ Architect review on 2026-04-22 surfaced 5 low-priority cleanup items across task
 ## [TODO Architect]
 
 None — cosmetic/hygiene sweep.
+
+## Backend re-review signal (2026-04-22, worktree agent-a1adad05):
+
+All 5 items landed:
+
+1. `backend/src/routes/auth.ts` — rewrote the comment block above `SENTINEL_ARGON2_HASH_PROMISE`. The "semaphore (when landed) will relax this to advisory" conditional is gone; the comment now states past-tense that the semaphore landed at `lib/argon2-semaphore.ts` and enforces the deterministic JS-level cap, with the env check as defense-in-depth libuv headroom. Did NOT touch any `runWithArgon2Slot` call sites.
+
+2. `.env.example` — softened the `UV_THREADPOOL_SIZE` comment. Dropped the "argon2 parallelism=4 holds 4 threads per call; 16/4 = 4 concurrent argon2 ops" arithmetic disclosure. New comment points at `backend/src/routes/auth.ts` for derivation and states "Default 16 meets the startup assertion." Env var line preserved.
+
+3. `backend/src/routes/auth.ts` + `backend/vitest.config.ts` — removed the `if (!process.env.VITEST)` wrapper around the startup assertion (now a bare block). `backend/vitest.config.ts` now sets `UV_THREADPOOL_SIZE: '16'` inside the `env:` block (merged with `loadEnv(...)` spread). Verified with `env -u UV_THREADPOOL_SIZE npx vitest run tests/routes/auth-concurrency.test.ts` — the assertion fires and passes via the vitest-injected value alone.
+
+4. `backend/tests/routes/orcid.test.ts` — fixed the "10 chars" comment in the SEC-002-TOCTOU-LOCK nonce-drift test to "Short buffer (10 bytes → 20 hex chars via .toString('hex')) fails the 32-hex regex."
+
+5. `backend/tests/routes/recover.test.ts` — added `afterAll` to the `BE-SIGNUP-INSTITUTIONAL-GATE-ORDERING: 422 on non-duplicate unaccredited email is fast` describe block. Note: the architect's suggested SQL (`username LIKE 'signup_422_%'`) would not match because the signup insert sets `email` but not `username` (username is assigned later on verify). Changed the cleanup to `email LIKE 'signup_422_%'` to actually delete the orphan warmup rows. Consistent with the sibling SMTP describe block at line ~1262 which also cleans by email.
+
+Verification:
+- `npx tsc --noEmit` clean (no errors).
+- `npm run lint` clean (2 pre-existing unrelated `no-explicit-any` warnings in `seed-phrase.ts`).
+- `tests/routes/auth.test.ts` 20/20 pass.
+- `tests/routes/orcid.test.ts` + `tests/routes/auth-concurrency.test.ts` 39/39 pass.
+- `tests/routes/recover.test.ts` 30/30 pass (including new afterAll block).
+- `env -u UV_THREADPOOL_SIZE npx vitest run tests/routes/auth-concurrency.test.ts` passes — confirms vitest.config.ts env injection is authoritative and the unwrapped assertion behaves correctly under test.

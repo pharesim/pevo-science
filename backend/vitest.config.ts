@@ -13,7 +13,12 @@ export default defineConfig(({ mode }) => {
     test: {
       globals: true,
       environment: 'node',
-      env,
+      env: {
+        ...env,
+        // Backend auth.ts asserts UV_THREADPOOL_SIZE >= 16 at module load.
+        // Explicit here so tests pass regardless of the ambient shell env.
+        UV_THREADPOOL_SIZE: '16',
+      },
       include: ['tests/**/*.test.ts'],
       testTimeout: 30_000,
       hookTimeout: 15_000,
