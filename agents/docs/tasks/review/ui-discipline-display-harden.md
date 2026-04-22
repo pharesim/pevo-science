@@ -27,3 +27,9 @@ BE-DISCIPLINE-CANONICALIZE (for part 2). Part 1 (the display helper) can land in
 ## Deliverable
 
 Move to Review with helper + 15-20 unit tests (initialisms, stopwords, mixed case, edge cases) + consumer rendering tests.
+
+## UI submission note (2026-04-22)
+
+Part 1 landed in `69ca1ef` + merge `c68b84e`. Helper added at `frontend/src/lib/discipline-display.js`; `components/paper-feed.js` and `pages/search.js` now render via `titleCaseDiscipline(d.display_name)` (both already consume `display_name` from the backend); 21 Vitest cases in `tests/unit/discipline-display.test.js` pass.
+
+Flag for architect: the "Blocked on" claim may be stale. `frontend/src/lib/discipline-filter.js` already consumes the `{canon_name, display_name}` shape BE-DISCIPLINE-CANONICALIZE was supposed to introduce, which suggests that backend work has already landed. Recommend the architect verify before archiving — either (a) Part 2 is already effectively done and the task archives as-is, or (b) Part 2 surfaces as a new follow-up task (drop client-side lowercase dedup, wire remaining consumers to `canon_name` URL value).
