@@ -56,10 +56,12 @@ test('papers list renders, discipline filter narrows, search returns matches', a
   // request (not covered by the page-level `/api/papers` waitForResponse).
   // Waiting on the `<select>` element alone only proves the element exists,
   // not that Alpine's `x-for` has rendered its option children. Assert on
-  // the option locator directly so Playwright's auto-waiting handles the
-  // hydration race. `option[value!=""]` skips the "All disciplines" entry.
+  // the option's `value` attribute so Playwright auto-waits for the element
+  // to attach AND carry a non-empty value — `toBeVisible()` is wrong here
+  // because `<option>` children inside a closed `<select>` have zero bounds.
+  // `option[value!=""]` skips the "All disciplines" entry.
   const firstRealOption = disciplineSelect.locator('option:not([value=""])').first();
-  await expect(firstRealOption).toBeVisible();
+  await expect(firstRealOption).toHaveAttribute('value', /.+/);
   const firstDiscipline = await firstRealOption.getAttribute('value');
   expect(firstDiscipline).toBeTruthy();
 
@@ -74,8 +76,13 @@ test('papers list renders, discipline filter narrows, search returns matches', a
   const filterBody = await filterResp.json();
   expect(filterBody.data.length).toBeGreaterThan(0);
   // Every returned paper matches the selected discipline (authoritative check).
+  // The filter value is `canon_name` (lowercase slug, e.g. "computer science"),
+  // while papers carry the `display_name` form (e.g. "Computer Science") on
+  // their `discipline` field. Compare case-insensitively so we assert the
+  // semantic invariant ("this paper is in the selected discipline") without
+  // coupling to the backend's display-case choice.
   for (const paper of filterBody.data) {
-    expect(paper.discipline).toBe(firstDiscipline);
+    expect(paper.discipline.toLowerCase()).toBe(firstDiscipline);
   }
 
   // ─── Search ──────────────────────────────────────────────────
