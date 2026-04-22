@@ -20,6 +20,24 @@ import { PrivateKey } from '@hiveio/dhive';
 // simulate the concurrent-arrival shape by serializing the SETs and asserting
 // the lock semantics (one acquires, the other gets 'held' → 409); see the
 // "same-tick SETNX lock" block at the bottom of this file for the specifics.
+//
+// Round-2 additions under the same carve-out:
+//   * broadcast-throw finally-path specs (one per accredit/link mode) that
+//     drive broadcastJsonMock to reject and assert the lock is released under
+//     the nonce CAS in withOrcidBindingLock's finally block.
+//   * link-mode matrix: all four SEC-002-TOCTOU-LOCK specs are parameterized
+//     via describe.each over accredit + link modes so wrapper-handling
+//     divergence between the two handlers surfaces in one of the two branches.
+//   * explicit Lua CAS multi-holder spec that pre-seeds the lock key with a
+//     different nonce and asserts releaseBindingLock refuses to DEL — the
+//     primary safety property of the Redlock release path, which the other
+//     specs only exercise indirectly.
+//
+// Confirmed STILL UNMOCKED for the new specs (per root CLAUDE.md carve-out):
+// verifyHiveSignature, the rest of the auth middleware chain, the real Redis
+// client (lock/cache keys are observed via live redis.get / redis.set calls
+// in the test body). Only the database pools and broadcast.json are mocked;
+// that scope matches the SEC-002-BE carve-out and does not widen here.
 // vi.hoisted keeps these references alive across the hoisted vi.mock factories below.
 const { hafQueryMock, appQueryMock, broadcastJsonMock } = vi.hoisted(() => ({
   hafQueryMock: vi.fn().mockResolvedValue({ rows: [] }),
@@ -56,6 +74,8 @@ vi.mock('../../src/accreditation.js', () => ({
 import { createApp } from '../../src/app.js';
 import { config } from '../../src/config.js';
 import { getRedis } from '../../src/redis.js';
+// Test-only export — see note at orcid.ts __test_releaseBindingLock export.
+import { __test_releaseBindingLock as releaseBindingLock } from '../../src/routes/orcid.js';
 
 // The dev .env leaves ORCID and admin-key fields empty, and config is built at
 // import time (cached by the setupFile before this file runs), so we patch the
@@ -253,6 +273,14 @@ describe('POST /api/orcid/callback — auth gate (SEC-002-BE)', () => {
         .send({ code: 'fake', state });
       expect(res.status).toBe(409);
       expect(res.body.error.code).toBe('ORCID_ALREADY_LINKED');
+      // Durable-binding 409 is semantically distinct from the lock-contention
+      // 409 (the latter carries retriable=true + Retry-After). A regression
+      // routing durable bindings through withOrcidBindingLock (or otherwise
+      // stamping these fields onto the permanent-binding path) would cause
+      // clients / agents to infinite-retry permanent bindings. Assert the
+      // discriminator fields are ABSENT here so that mistake fails loudly.
+      expect(res.body.error.details?.retriable).toBeUndefined();
+      expect(res.headers['retry-after']).toBeUndefined();
       expect(broadcastJsonMock).not.toHaveBeenCalled();
       // Call-shape assertions: both the orcid-binding lookup AND the existing-
       // accreditation check for the incumbent account (bob) must have fired
@@ -385,6 +413,12 @@ describe('POST /api/orcid/callback — auth gate (SEC-002-BE)', () => {
         .send({ code: 'fake', state });
       expect(res.status).toBe(409);
       expect(res.body.error.code).toBe('ORCID_ALREADY_LINKED');
+      // Durable-binding 409 (link mode) must not carry the retriable/Retry-After
+      // discriminator that lock-contention 409 sets. Permanent bindings are
+      // terminal; clients / agents relying on the contract at orcid.md:183-186
+      // would infinite-retry if these fields leaked onto this path.
+      expect(res.body.error.details?.retriable).toBeUndefined();
+      expect(res.headers['retry-after']).toBeUndefined();
       expect(broadcastJsonMock).not.toHaveBeenCalled();
       // Call-shape assertions: both load-bearing HAF queries (ORCID-binding
       // lookup + action-IN check) must have fired. A fallback-only run would
@@ -733,10 +767,15 @@ describe('POST /api/orcid/callback — orcid_id format validation (BE-ORCID-ID-F
 // both handlers identically. Each mode gets its own set of 4 specs (concurrent
 // race, stale-lock expiry, Redis-outage degrade, broadcast-throw finally); any
 // divergence in the wrapper's handling of the two handlers surfaces here.
+// `orcidSuffix` is a single character stitched into the ORCID ID template
+// literal (e.g. '0000-0001-1111-000X'). It must be unique across rows so the
+// derived Redis lock/cache keys do not collide between the two matrix branches
+// running in the same test process — that would cause accredit-mode mocks to
+// interfere with link-mode state and produce flaky cross-mode failures.
 describe.each([
-  { mode: 'accredit' as const, tag: '1' },
-  { mode: 'link' as const, tag: '2' },
-])('POST /api/orcid/callback — same-tick SETNX lock (SEC-002-TOCTOU-LOCK) — $mode mode', ({ mode, tag }) => {
+  { mode: 'accredit' as const, orcidSuffix: '1' },
+  { mode: 'link' as const, orcidSuffix: '2' },
+])('POST /api/orcid/callback — same-tick SETNX lock (SEC-002-TOCTOU-LOCK) — $mode mode', ({ mode, orcidSuffix }) => {
   // link mode needs the pre-lock getExistingAccreditation(username) to find
   // an existing authority-signed accredit row; otherwise handleLink 422s
   // before touching the lock. accredit mode only needs the default empty-rows
@@ -764,7 +803,7 @@ describe.each([
     async () => {
       const redis = getRedis();
       if (!redis) return; // Lock requires Redis; no-op otherwise.
-      const orcidId = `0000-0001-${tag}${tag}${tag}${tag}-0001`;
+      const orcidId = `0000-0001-${orcidSuffix}${orcidSuffix}${orcidSuffix}${orcidSuffix}-0001`;
       const lockKey = `${config.appTag}:orcid_binding_lock:${orcidId}`;
       const cacheKey = `${config.appTag}:orcid_binding:${orcidId}`;
       // Ensure clean slate (no leftover lock from a prior run).
@@ -779,22 +818,38 @@ describe.each([
       // loser's event-loop turn reaches acquireBindingLock, making the test
       // pass or fail on scheduling whims. The gate enforces the real-world
       // shape: broadcasts take ~1s, the lock is held across that window.
+      //
+      // Mock shape: first call parks on the gate; subsequent calls resolve
+      // immediately. This is the lock's failure-mode signal: if the lock is
+      // removed (the regression this spec exists to detect), both concurrent
+      // requests reach broadcast, both would call broadcastJsonMock, and the
+      // `toHaveBeenCalledTimes(1)` assertion after the gate release fires
+      // fails loudly. With `mockImplementation` (no "Once"), a second call
+      // would also park on the same resolved gate Promise → the test times
+      // out opaquely at vitest's per-test timeout instead. mockImplementation
+      // Once + mockResolvedValue gives the two-call regression a fast, clean
+      // failure surface.
       let releaseBroadcast!: () => void;
       const broadcastGate = new Promise<void>((r) => { releaseBroadcast = r; });
-      broadcastJsonMock.mockImplementation(async () => {
-        // First call (winner) parks here; we release once both requests have
-        // raced through to SETNX. Subsequent calls (should not happen with the
-        // lock in place — this is also the failure-mode signal) return
-        // immediately so the test fails loudly on the assert rather than
-        // hanging.
-        await broadcastGate;
-        return { id: 'mock-orcid-tx' };
-      });
+      broadcastJsonMock
+        .mockImplementationOnce(async () => {
+          await broadcastGate;
+          return { id: 'mock-orcid-tx' };
+        })
+        .mockResolvedValue({ id: 'mock-orcid-tx-second-should-not-fire' });
 
       // Fire two /start + /callback flows for the same orcid_id with different
       // usernames. Kick them off concurrently — one will SETNX first (atomic
       // inside Redis), the other loses the race and returns 409 before
       // reaching broadcast.
+      //
+      // Install ordering note: the broadcastJsonMock.mockImplementationOnce
+      // call above MUST precede the request-promise creation below. The
+      // supertest requests dispatch into the handler synchronously on the next
+      // microtask turn; a future refactor that reorders the mock install after
+      // the request promises would race the gate-install against the first
+      // broadcast call and lose the synchronization point. Keep the mock
+      // install above the request-promise creation.
       const [aliceState, bobState] = await Promise.all([
         startAuthed(mode, 'alice'),
         startAuthed(mode, 'bob'),
@@ -815,10 +870,10 @@ describe.each([
       // More reliable than a fixed setTimeout, which can be scheduler-starved
       // in CI before either handler reaches acquireBindingLock.
       await Promise.race([alicePromise, bobPromise]);
-      // Hold #6: prove the lock is actually held during the gate window. The
-      // winner is still parked on broadcastGate inside withOrcidBindingLock's
-      // try block, so the nonce-valued lock key must still be present. Without
-      // this assertion, a handler change that releases the lock before the
+      // Prove the lock is actually held during the gate window. The winner is
+      // still parked on broadcastGate inside withOrcidBindingLock's try block,
+      // so the nonce-valued lock key must still be present. Without this
+      // assertion, a handler change that releases the lock before the
       // broadcast awaits would silently remove the race test's guarantee.
       // Lock value is an opaque per-acquisition nonce; we only check truthiness.
       expect(await redis.get(lockKey)).toBeTruthy();
@@ -831,9 +886,12 @@ describe.each([
         expect(statuses).toEqual([200, 409]);
         const loser = [aliceRes, bobRes].find((r) => r.status === 409)!;
         expect(loser.body.error.code).toBe('ORCID_ALREADY_LINKED');
-        // Hold #4: lock-contention 409 is discriminable from durable-binding 409
-        // by the retriable flag, retry_after_seconds in details, and the
-        // Retry-After response header.
+        // Lock-contention 409 is discriminable from durable-binding 409 by the
+        // retriable flag, retry_after_seconds in details, and the Retry-After
+        // response header. The contract (orcid.md 409 section) uses presence/
+        // absence of these fields to distinguish transient lock contention
+        // (client should retry after ~10s) from a permanent binding (client
+        // should NOT retry).
         expect(loser.body.error.details).toMatchObject({
           retriable: true,
           retry_after_seconds: 10,
@@ -853,7 +911,7 @@ describe.each([
     async () => {
       const redis = getRedis();
       if (!redis) return;
-      const orcidId = `0000-0001-${tag}${tag}${tag}${tag}-0002`;
+      const orcidId = `0000-0001-${orcidSuffix}${orcidSuffix}${orcidSuffix}${orcidSuffix}-0002`;
       const lockKey = `${config.appTag}:orcid_binding_lock:${orcidId}`;
       const cacheKey = `${config.appTag}:orcid_binding:${orcidId}`;
       await redis.del(lockKey, cacheKey).catch(() => { /* ignore */ });
@@ -896,7 +954,7 @@ describe.each([
     async () => {
       const redis = getRedis();
       if (!redis) return;
-      const orcidId = `0000-0001-${tag}${tag}${tag}${tag}-0003`;
+      const orcidId = `0000-0001-${orcidSuffix}${orcidSuffix}${orcidSuffix}${orcidSuffix}-0003`;
       const lockKey = `${config.appTag}:orcid_binding_lock:${orcidId}`;
       const cacheKey = `${config.appTag}:orcid_binding:${orcidId}`;
       await redis.del(lockKey, cacheKey).catch(() => { /* ignore */ });
@@ -935,19 +993,19 @@ describe.each([
     },
   );
 
-  // Hold #3: broadcast-throw finally-path test. The claim in the commit message
-  // is "crash mid-broadcast releases lock via finally so retries aren't locked
-  // out." Without this test, if the `if (lock.state === 'acquired')` guard in
-  // withOrcidBindingLock's finally were inverted, no existing spec would fail.
-  // Here we force broadcast to reject, assert the outer /callback catch maps
-  // to 500, and assert the lock was released under the nonce CAS (redis.get
-  // returns null — any release that doesn't own the nonce leaves the lock).
+  // Broadcast-throw finally-path test. Guarantee: "crash mid-broadcast releases
+  // the lock via finally so retries aren't locked out for 35s." Without this
+  // test, if the `if (lock.state === 'acquired')` guard in withOrcidBindingLock's
+  // finally were inverted, no other spec would fail. Here we force broadcast to
+  // reject, assert the outer /callback catch maps to 500, and assert the lock
+  // was released under the nonce CAS (redis.get returns null — any release
+  // that doesn't own the nonce would leave the lock in place until TTL).
   it(
     'releases the lock via nonce CAS when broadcast throws mid-request (finally)',
     async () => {
       const redis = getRedis();
       if (!redis) return;
-      const orcidId = `0000-0001-${tag}${tag}${tag}${tag}-0004`;
+      const orcidId = `0000-0001-${orcidSuffix}${orcidSuffix}${orcidSuffix}${orcidSuffix}-0004`;
       const lockKey = `${config.appTag}:orcid_binding_lock:${orcidId}`;
       const cacheKey = `${config.appTag}:orcid_binding:${orcidId}`;
       await redis.del(lockKey, cacheKey).catch(() => { /* ignore */ });
@@ -976,6 +1034,47 @@ describe.each([
         expect(await redis.get(cacheKey)).toBeNull();
       } finally {
         await redis.del(lockKey, cacheKey).catch(() => { /* cleanup */ });
+      }
+    },
+  );
+
+  // Direct Lua-CAS correctness spec. The primary safety property of
+  // RELEASE_LOCK_LUA is that it refuses to delete the key when the stored
+  // value does not equal the caller's nonce. The other specs in this block
+  // only exercise the CAS indirectly (self-release on success, self-release
+  // on broadcast throw, TTL expiry). A regression to plain `redis.del(key)`
+  // (the exact stomp bug round-1 #1 closed) would pass every other spec in
+  // this file but must fail this one. The scenario mirrors the real stomp:
+  // holder A stalled past TTL, holder B acquired the same key, A's finally
+  // tries to release — the CAS must refuse because B's nonce is stored.
+  it(
+    'releaseBindingLock no-ops when the caller nonce does not match the stored lock value (Lua CAS)',
+    async () => {
+      const redis = getRedis();
+      if (!redis) return;
+      const orcidId = `0000-0001-${orcidSuffix}${orcidSuffix}${orcidSuffix}${orcidSuffix}-0005`;
+      const lockKey = `${config.appTag}:orcid_binding_lock:${orcidId}`;
+      await redis.del(lockKey).catch(() => { /* ignore */ });
+
+      // Pre-seed the lock key with nonce B (shape-matched to production:
+      // 32-char lowercase hex so the byte-equality contract is exercised on
+      // the real production encoding, not just any string). Simulates holder
+      // B having acquired the lock after holder A's TTL expired.
+      const nonceB = 'b'.repeat(32);
+      await redis.set(lockKey, nonceB, 'EX', 35, 'NX');
+      expect(await redis.get(lockKey)).toBe(nonceB);
+
+      try {
+        // Holder A's finally runs with its own (stale) nonce A. Under the
+        // Lua CAS, the DEL must NOT fire because stored value != nonce A.
+        const nonceA = 'a'.repeat(32);
+        await releaseBindingLock(orcidId, nonceA);
+
+        // Lock is intact: B's nonce is still the stored value. A regression
+        // to plain DEL would make this null.
+        expect(await redis.get(lockKey)).toBe(nonceB);
+      } finally {
+        await redis.del(lockKey).catch(() => { /* cleanup */ });
       }
     },
   );

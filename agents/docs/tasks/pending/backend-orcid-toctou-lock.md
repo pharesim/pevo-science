@@ -156,3 +156,39 @@ Hold-block items below:
   - `describe.each` parameterization for matrixed concurrency tests covering two handlers identically.
 
 **Path to re-archive:** (1) Backend applies items #1-10 on this task (grouped into orcid.ts source + orcid.test.ts tests — coherent single-commit fix). (2) Backend re-review signal block below the hold. (3) Architect re-reviews round-3 with `/ce-code-review` — testing + adversarial personas mandatory given the P2 safety-property test gaps. Archives on clean. `/ce-compound` candidate lands alongside archive per ORCID lock pattern consolidation note above.
+
+---
+
+**Backend re-review signal (2026-04-22 round-3, worktree branch `worktree-agent-afcc44c2`):**
+
+All 10 round-2 hold items landed. 28/28 pass in `backend/tests/routes/orcid.test.ts` (23 round-2 specs + 2 mode-parameterized Lua CAS multi-holder specs + 4 durable-binding 409 negative-assert extensions in-place). `npx tsc --noEmit` clean. Full backend vitest NOT re-run per parent instruction; parent runs the full suite after merging this worktree.
+
+1. **P2 Lua CAS multi-holder spec** (item #1). Added `'releaseBindingLock no-ops when the caller nonce does not match the stored lock value (Lua CAS)'` spec inside the existing `describe.each` matrix so it runs in both accredit + link branches (2 specs). Pre-seeds lock with `'b'.repeat(32)` under EX 35s, calls `releaseBindingLock(orcidId, 'a'.repeat(32))`, asserts `redis.get(lockKey)` still equals nonce B. Exposed `releaseBindingLock` as `__test_releaseBindingLock` from `orcid.ts` with a test-only-export docblock explaining why indirect-only coverage is insufficient. A regression to plain `redis.del` would pass every other spec and fail this one.
+
+2. **P2 Durable-binding 409 negative asserts** (item #2). Extended both durable-binding 409 specs (accredit at `orcid.test.ts:~254-301`, link at `:386-437`) with `expect(res.body.error.details?.retriable).toBeUndefined()` and `expect(res.headers['retry-after']).toBeUndefined()`. Inline rationale cites the contract-discriminator mistake this locks down.
+
+3. **P2 Race-spec mock install** (item #3). Rewrote the first `broadcastJsonMock` install in the race-spec from a single `mockImplementation` to `mockImplementationOnce` (parks on gate) + `mockResolvedValue` (subsequent calls resolve immediately). Added expository comment on why this shape converts a "lock removed entirely" regression from a hung test into a fast assertion failure. `toHaveBeenCalledTimes(1)` after `Promise.all` settles both promises was already in place.
+
+4. **P3 Lua byte-equality comment + runtime invariant** (item #4). Extended `RELEASE_LOCK_LUA` docblock at `orcid.ts:51-67` with the encoding contract: "nonce must remain a printable-ASCII string for Redis Lua byte-equality to hold." Added module-level `LOCK_NONCE_RE = /^[0-9a-f]{32}$/` and a runtime invariant throw in `acquireBindingLock` that fires before `redis.set` if the nonce shape ever drifts. Throws `'orcid binding lock nonce shape invariant violated'` so drift surfaces at acquire-time, not as a silent release-no-op.
+
+5. **P3 `cacheOrcidBinding` log tier** (item #5). Promoted `logger.warn` → `logger.error` at `orcid.ts:~627`. Log context already included `{ err, orcidId, username }` in round-2; message text unchanged. Behavior unchanged (still swallows per availability-over-consistency contract).
+
+6. **P3 Hold-block references** (item #6). Rewrote the `orcid.ts:51-55` round-1 reference as self-contained invariant prose (the "task's hold-block #1" phrasing replaced). Rewrote the three `orcid.test.ts` hold references (`Hold #6` → "Prove the lock is actually held during the gate window.", `Hold #4` → "Lock-contention 409 is discriminable from durable-binding 409 by...", `Hold #3` → "Broadcast-throw finally-path test. Guarantee:..."). All comments now stand as invariants rather than archive references.
+
+7. **P3 `tag` → `orcidSuffix` rename** (item #7). Renamed the describe.each row field from `tag` to `orcidSuffix` and updated all four template-literal call sites. Added a paragraph above the describe.each: "single character unique per row; used to generate distinct ORCID IDs per mode so Redis lock/cache keys do not collide between the two matrix branches."
+
+8. **P3 Mocked-pool header extension** (item #8). Added a round-2 carve-out paragraph to the file header at `orcid.test.ts:6-41` citing the three new scenario classes (broadcast-throw finally specs, link-mode matrix, direct Lua CAS multi-holder spec). Explicitly confirmed `verifyHiveSignature`, the auth middleware chain, and the real Redis client all remain unmocked for the new specs — only the DB pools and `broadcast.json` are mocked, matching the SEC-002-BE carve-out.
+
+9. **P3 `withOrcidBindingLock` response-sending docblock** (item #9). Promoted the leading `//` comment block to a `/** */` docblock and added an IMPORTANT section: "On 'held' state, the wrapper sends the 409 response itself. Callers MUST NOT send another response after the await returns, regardless of lock state." Notes the refactor path (move post-await work inside `fn`, or refactor the wrapper to return a discriminator) if a future caller needs post-lock logic.
+
+10. **P3 Race-spec install-ordering comment** (item #10). Added an inline "Install ordering note" at `orcid.test.ts:~847` explaining that `broadcastJsonMock.mockImplementationOnce` must precede the request-promise creation below, because supertest dispatches into the handler synchronously on the next microtask turn — reordering would race gate-install vs. first broadcast call.
+
+**Factual error NOT addressed here:** The round-2 hold block's "re-review signal factual error" about dhive 30s broadcast timeout is filed as a separate pending task (`backend-orcid-broadcast-abort-timeout.md`) per parent instruction. The 35s TTL comment on `ORCID_BINDING_LOCK_TTL_SECONDS` still cites the (non-existent) 30s dhive timeout; that correction lands with the separate task.
+
+**Test-only export carve-out (new in this round):** `__test_releaseBindingLock` exported from `orcid.ts` so the item-#1 CAS-correctness spec can directly invoke the release helper with a chosen nonce. Alternative (not chosen): replicate `RELEASE_LOCK_LUA` inside the test and call `redis.eval` manually — would drift if the production Lua script ever changes, defeating the regression-detection value. Double-underscore prefix + inline "NOT for production import" docblock flags the non-prod-consumer boundary.
+
+**Dismissed-finding still-dismissed:** SEC-LOCK-002 (fail-open on Redis outage), PS-002 (emdashes in comments), COR-003/ADV-002 (pre-existing stale-existing race in handleLink), KTS-001 (`@ts-expect-error` on ioredis variadic spread), ADV-LOCK-002/003/004, AC-002/003 — all per round-2 architect triage.
+
+**Filed follow-up still-pending:** `backend-redis-key-naming-convention-sweep.md`, `backend-orcid-broadcast-abort-timeout.md`, `ui-orcid-retriable-discriminator-plumbing.md`, `backend-orcid-no-account-error-shape-align.md` — per architect's round-2 hold block.
+
+**`/ce-compound` candidate (unchanged from round-2):** consolidated ORCID-lock-pattern doc covering the six sub-patterns the architect enumerated. Deferred to archive time.
