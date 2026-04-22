@@ -205,15 +205,31 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
     });
   } catch (err) {
     if (err instanceof BroadcastTimeoutError) {
+      logger.warn(
+        { err, timeoutMs: err.timeoutMs, username: pending.hive_username, email: pending.email },
+        'accreditation.verify broadcast timed out',
+      );
+      // Do NOT deleteToken here: the 504 is retriable-after-verify, so the
+      // token must survive its 24h TTL so the caller can retry after verifying
+      // chain state (the broadcast outcome is uncertain at this point).
       return sendError(
         res,
         504,
         'BROADCAST_TIMEOUT',
         'Broadcasting accreditation timed out',
-        { retriable: true, timeout_ms: err.timeoutMs },
+        {
+          retriable: false,
+          outcome: 'uncertain',
+          verify_before_retry: true,
+          timeout_ms: err.timeoutMs,
+        },
       );
     }
     logger.error({ err, username: pending.hive_username, email: pending.email }, 'accreditation.verify broadcast failed');
+    // The chain rejected the broadcast (retriable=false per the envelope). The
+    // accreditation attempt is terminal for this token — delete it so it cannot
+    // be reused. A new token is obtained via /api/accreditation/request.
+    await deleteToken(token);
     sendError(
       res,
       502,

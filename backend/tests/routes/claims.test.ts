@@ -145,6 +145,7 @@ vi.mock('../../src/app-db.js', () => ({
 // Import createApp AFTER the mocks so the route wiring picks up the mocked deps.
 const { createApp } = await import('../../src/app.js');
 const { config } = await import('../../src/config.js');
+const { hafCache } = await import('../../src/cache.js');
 
 const app = createApp();
 
@@ -388,16 +389,29 @@ describe('BE-CLAIMS-ERROR-POLISH — bridge misconfig surfaces as 503', () => {
 // (hafCache.invalidate) must NOT fire on timeout.
 // ──────────────────────────────────────────────
 
+// Envelope mandated by agents/docs/api-contracts/common.md for BROADCAST_TIMEOUT
+// at non-orcid surfaces (no verify_location — that field is orcid-specific).
+const TIMEOUT_DETAILS = {
+  retriable: false,
+  outcome: 'uncertain',
+  verify_before_retry: true,
+  timeout_ms: 30_000,
+};
+
 describe('BE-ORCID-BROADCAST-ABORT-TIMEOUT — claims timeout discrimination', () => {
-  it('approve bridge paper: BroadcastTimeoutError → 504 BROADCAST_TIMEOUT with retriable + timeout_ms', async () => {
+  it('approve bridge paper: BroadcastTimeoutError → 504 BROADCAST_TIMEOUT with uncertain-outcome envelope', async () => {
+    const invalidateSpy = vi.spyOn(hafCache, 'invalidate');
     broadcastJson.mockRejectedValueOnce(new MockBroadcastTimeoutError(30_000));
     const path = `/api/papers/${BRIDGE}/${PAPER_PERMLINK}/claims/${CLAIMER}/approve`;
     const res = await signedPost(path, ADMIN, {});
     expect(res.status).toBe(504);
     expect(res.body.error.code).toBe('BROADCAST_TIMEOUT');
-    expect(res.body.error.details).toEqual({ retriable: true, timeout_ms: 30_000 });
+    expect(res.body.error.details).toEqual(TIMEOUT_DETAILS);
     // Broadcast was attempted (and timed out).
     expect(broadcastJson).toHaveBeenCalledTimes(1);
+    // Post-broadcast cache invalidation must NOT fire on timeout.
+    expect(invalidateSpy).not.toHaveBeenCalled();
+    invalidateSpy.mockRestore();
   });
 
   it('approve bridge paper: non-timeout broadcast error → 502 BROADCAST_FAILED with retriable=false', async () => {
@@ -410,20 +424,26 @@ describe('BE-ORCID-BROADCAST-ABORT-TIMEOUT — claims timeout discrimination', (
   });
 
   it('revoke bridge paper (admin): BroadcastTimeoutError → 504 BROADCAST_TIMEOUT', async () => {
+    const invalidateSpy = vi.spyOn(hafCache, 'invalidate');
     broadcastJson.mockRejectedValueOnce(new MockBroadcastTimeoutError(30_000));
     const path = `/api/papers/${BRIDGE}/${PAPER_PERMLINK}/claims/${CLAIMER}/revoke`;
     const res = await signedPost(path, ADMIN, { reason: 'abuse' });
     expect(res.status).toBe(504);
     expect(res.body.error.code).toBe('BROADCAST_TIMEOUT');
-    expect(res.body.error.details).toEqual({ retriable: true, timeout_ms: 30_000 });
+    expect(res.body.error.details).toEqual(TIMEOUT_DETAILS);
+    expect(invalidateSpy).not.toHaveBeenCalled();
+    invalidateSpy.mockRestore();
   });
 
   it('revoke native paper (admin): BroadcastTimeoutError → 504 BROADCAST_TIMEOUT', async () => {
+    const invalidateSpy = vi.spyOn(hafCache, 'invalidate');
     broadcastJson.mockRejectedValueOnce(new MockBroadcastTimeoutError(30_000));
     const path = `/api/papers/${NATIVE_AUTHOR}/${PAPER_PERMLINK}/claims/${CLAIMER}/revoke`;
     const res = await signedPost(path, ADMIN, { reason: 'abuse' });
     expect(res.status).toBe(504);
     expect(res.body.error.code).toBe('BROADCAST_TIMEOUT');
-    expect(res.body.error.details).toEqual({ retriable: true, timeout_ms: 30_000 });
+    expect(res.body.error.details).toEqual(TIMEOUT_DETAILS);
+    expect(invalidateSpy).not.toHaveBeenCalled();
+    invalidateSpy.mockRestore();
   });
 });

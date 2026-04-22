@@ -1206,7 +1206,16 @@ describe.each([
 
         expect(res.status).toBe(504);
         expect(res.body.error.code).toBe('BROADCAST_TIMEOUT');
-        expect(res.body.error.details).toEqual({ retriable: true, timeout_ms: 30_000 });
+        // Envelope per common.md + orcid-specific verify_location (state was
+        // consumed before dispatch, so retriable=false; caller verifies chain
+        // state at /settings before attempting a fresh OAuth flow).
+        expect(res.body.error.details).toEqual({
+          retriable: false,
+          outcome: 'uncertain',
+          verify_before_retry: true,
+          verify_location: '/settings',
+          timeout_ms: 30_000,
+        });
         // Post-broadcast side-effects must NOT fire on timeout: no cache entry,
         // lock released via finally's nonce CAS so retries aren't blocked.
         expect(await redis.get(cacheKey)).toBeNull();

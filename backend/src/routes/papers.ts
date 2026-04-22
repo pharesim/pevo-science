@@ -1430,12 +1430,21 @@ router.post('/:author/:permlink/retract', verifyHiveSignature, retractLimiter, a
     sendOk(res, { message: 'Paper retracted', tx_id: result.id });
   } catch (err) {
     if (err instanceof BroadcastTimeoutError) {
+      logger.warn(
+        { err, timeoutMs: err.timeoutMs, author, permlink },
+        'papers.retract broadcast timed out',
+      );
       return sendError(
         res,
         504,
         'BROADCAST_TIMEOUT',
         'Broadcasting paper retraction timed out',
-        { retriable: true, timeout_ms: err.timeoutMs },
+        {
+          retriable: false,
+          outcome: 'uncertain',
+          verify_before_retry: true,
+          timeout_ms: err.timeoutMs,
+        },
       );
     }
     logger.error({ err, author, permlink }, 'papers.retract broadcast failed');

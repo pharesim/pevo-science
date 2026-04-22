@@ -479,12 +479,22 @@ async function handleAccredit(
       );
     } catch (err) {
       if (err instanceof BroadcastTimeoutError) {
+        logger.warn(
+          { err, timeoutMs: err.timeoutMs, username, orcid: orcidId, mode: 'accredit' },
+          'orcid.handleAccredit broadcast timed out',
+        );
         sendError(
           res,
           504,
           'BROADCAST_TIMEOUT',
           'Broadcasting ORCID accreditation timed out',
-          { retriable: true, timeout_ms: err.timeoutMs },
+          {
+            retriable: false,
+            outcome: 'uncertain',
+            verify_before_retry: true,
+            verify_location: '/settings',
+            timeout_ms: err.timeoutMs,
+          },
         );
         return;
       }
@@ -567,12 +577,22 @@ async function handleLink(
       );
     } catch (err) {
       if (err instanceof BroadcastTimeoutError) {
+        logger.warn(
+          { err, timeoutMs: err.timeoutMs, username, orcid: orcidId, mode: 'link' },
+          'orcid.handleLink broadcast timed out',
+        );
         sendError(
           res,
           504,
           'BROADCAST_TIMEOUT',
           'Broadcasting ORCID link timed out',
-          { retriable: true, timeout_ms: err.timeoutMs },
+          {
+            retriable: false,
+            outcome: 'uncertain',
+            verify_before_retry: true,
+            verify_location: '/settings',
+            timeout_ms: err.timeoutMs,
+          },
         );
         return;
       }

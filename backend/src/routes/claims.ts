@@ -231,12 +231,21 @@ router.post('/:claimer/approve', verifyHiveSignature, approveLimiter, async (req
       });
     } catch (err) {
       if (err instanceof BroadcastTimeoutError) {
+        logger.warn(
+          { err, timeoutMs: err.timeoutMs, paperAuthor, paperPermlink, claimer, username },
+          'claims.approve broadcast timed out',
+        );
         return sendError(
           res,
           504,
           'BROADCAST_TIMEOUT',
           'Broadcasting authorship approval timed out',
-          { retriable: true, timeout_ms: err.timeoutMs },
+          {
+            retriable: false,
+            outcome: 'uncertain',
+            verify_before_retry: true,
+            timeout_ms: err.timeoutMs,
+          },
         );
       }
       logger.error(
@@ -333,12 +342,21 @@ router.post('/:claimer/revoke', verifyHiveSignature, revokeLimiter, async (req: 
       return sendOk(res, { message: 'Authorship claim revoked', tx_id: result.id });
     } catch (err) {
       if (err instanceof BroadcastTimeoutError) {
+        logger.warn(
+          { err, timeoutMs: err.timeoutMs, paperAuthor, paperPermlink, claimer, username, signer: 'bridge' },
+          'claims.revoke bridge broadcast timed out',
+        );
         return sendError(
           res,
           504,
           'BROADCAST_TIMEOUT',
           'Broadcasting bridge-paper revocation timed out',
-          { retriable: true, timeout_ms: err.timeoutMs },
+          {
+            retriable: false,
+            outcome: 'uncertain',
+            verify_before_retry: true,
+            timeout_ms: err.timeoutMs,
+          },
         );
       }
       logger.error(
@@ -376,12 +394,21 @@ router.post('/:claimer/revoke', verifyHiveSignature, revokeLimiter, async (req: 
       return sendOk(res, { message: 'Authorship claim revoked', tx_id: result.id });
     } catch (err) {
       if (err instanceof BroadcastTimeoutError) {
+        logger.warn(
+          { err, timeoutMs: err.timeoutMs, paperAuthor, paperPermlink, claimer, username, signer: 'admin' },
+          'claims.revoke admin broadcast timed out',
+        );
         return sendError(
           res,
           504,
           'BROADCAST_TIMEOUT',
           'Broadcasting authorship revocation timed out',
-          { retriable: true, timeout_ms: err.timeoutMs },
+          {
+            retriable: false,
+            outcome: 'uncertain',
+            verify_before_retry: true,
+            timeout_ms: err.timeoutMs,
+          },
         );
       }
       logger.error(

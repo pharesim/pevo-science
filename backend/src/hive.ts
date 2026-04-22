@@ -34,6 +34,11 @@ export class BroadcastTimeoutError extends Error {
   constructor(public readonly timeoutMs: number) {
     super(`Hive broadcast timed out after ${timeoutMs}ms`);
     this.name = 'BroadcastTimeoutError';
+    // V8-only; guard is hygiene. Points the stack trace at the caller of the
+    // broadcast helper instead of the internal Promise.race timeout closure.
+    if (Error.captureStackTrace) {
+      Error.captureStackTrace(this, BroadcastTimeoutError);
+    }
   }
 }
 

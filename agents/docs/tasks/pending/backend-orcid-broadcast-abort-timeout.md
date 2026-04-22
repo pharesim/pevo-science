@@ -180,3 +180,32 @@ Round-2 `/ce-code-review` on commit `618e024` (10 personas: correctness, testing
 - `agents/docs/api-contracts/papers.md` — `/retract` + claims `/approve` + claims `/revoke` errors lists extended. Closes AC-005 + AC-006.
 
 **Path to re-archive:** (1) Backend applies items #1-6 on this task. The contract-file shape (common.md BROADCAST_TIMEOUT envelope) is now the source of truth — backend code must match. (2) Backend re-review signal block below the hold. (3) Architect re-reviews round-3 with `/ce-code-review` (adversarial + reliability + testing mandatory given P1 scope); archives on clean. Filed follow-up tasks archive independently.
+
+---
+
+**Backend re-review signal (2026-04-22 round-3, worktree branch `worktree-agent-a56a374a`):**
+
+All 6 round-2 hold items landed. `npx tsc --noEmit` clean. `npm run lint` clean (6 pre-existing warnings unrelated to this change). Touched test files all pass against real Redis + real HAF (docker-IP env-override pattern): `accreditation.test.ts` 9/9, `retract.test.ts` 4/4, `orcid.test.ts` 32/32, `claims.test.ts` 24/24, `hive-broadcast-timeout.test.ts` 3/3, `signup-verify.test.ts` 3/3 — 75 tests total, 6 files. Full vitest suite NOT re-run per parent instruction.
+
+1. **P1 504 envelope update at all 7 sites** (item #1). Replaced `{retriable:true, timeout_ms:err.timeoutMs}` with `{retriable:false, outcome:'uncertain', verify_before_retry:true, timeout_ms:err.timeoutMs}` per `agents/docs/api-contracts/common.md` `BROADCAST_TIMEOUT` row. Orcid surfaces additionally include `verify_location:'/settings'` per common.md's orcid-specific note and `agents/docs/api-contracts/orcid.md` (architect's fix-in-place during round-2). Non-orcid surfaces omit `verify_location` — common.md's canonical envelope does not include it. Sites:
+   - `backend/src/routes/orcid.ts:~485` (handleAccredit) — includes `verify_location:'/settings'`.
+   - `backend/src/routes/orcid.ts:~580` (handleLink) — includes `verify_location:'/settings'`.
+   - `backend/src/routes/accreditation.ts:~220` (/verify) — no verify_location.
+   - `backend/src/routes/papers.ts:~1428` (/retract) — no verify_location.
+   - `backend/src/routes/claims.ts:~240` (approve bridge), `~345` (revoke bridge), `~390` (revoke admin) — no verify_location.
+
+2. **P1 per-route timeout coverage for accreditation.test.ts + retract.test.ts** (item #2).
+   - `backend/tests/routes/accreditation.test.ts`: new describe block `POST /api/accreditation/verify — BE-ORCID-BROADCAST-ABORT-TIMEOUT` with 2 specs. (a) seeds a real pending row in Redis (`${appTag}:pending_accred:<token>`), stages `broadcastJsonMock.mockRejectedValueOnce(new MockBroadcastTimeoutError(30_000))`, asserts 504 envelope and `tokenExists(token) === true` (token survives retry-after-verify TTL). (b) stages a non-timeout `Error`, asserts 502 envelope and `tokenExists(token) === false` (terminal failure deletes the token). Uses the hoisted-mock-stub pattern (`vi.hoisted` + `vi.mock('../../src/hive.js')`). Header documents the mock carve-out justification per root CLAUDE.md.
+   - `backend/tests/routes/retract.test.ts`: new describe block `POST /api/papers/:author/:permlink/retract — BE-ORCID-BROADCAST-ABORT-TIMEOUT` with 2 specs. Mocks `getPool()` with SQL-shape-matched canned responses so the handler reaches the broadcast call site (minimal PEvO paper row, empty continuation chain, not-retracted). (a) BroadcastTimeoutError → 504 envelope; `vi.spyOn(hafCache, 'invalidate')` asserts `retracted-papers` invalidation did NOT fire on timeout. (b) Non-timeout error → 502 envelope. Header documents the mock carve-out and the hafQueryMock dispatcher rationale.
+
+3. **P2 accreditation.ts token lifecycle on 502** (item #3). `backend/src/routes/accreditation.ts:~232` — added `await deleteToken(token)` before the 502 `sendError` so chain-rejection terminates the token rather than leaving it live for 24h. The 504 path deliberately does NOT delete the token — the retry-after-verify contract requires it to survive. Inline comments at both branches document the lifecycle rule. Paired with the `accreditation.test.ts` token-lifecycle assertions from item #2.
+
+4. **P2 logger.warn on all 7 timeout catch branches** (item #4). Added `logger.warn({err, timeoutMs, ...routeCtx}, '<route> broadcast timed out')` before every 504 `sendError` so operator log-aggregation / alerting can detect slow-node events. Field shapes mirror each site's sibling `else`-branch `logger.error` call: orcid.ts adds `{username, orcid, mode}`; accreditation.ts adds `{username, email}`; papers.ts adds `{author, permlink}`; claims.ts adds `{paperAuthor, paperPermlink, claimer, username, signer?}`. `logger.warn` tier matches the "expected degraded-node event, not a code bug" semantics.
+
+5. **P3 Error.captureStackTrace in BroadcastTimeoutError** (item #5). `backend/src/hive.ts:33-42` — added `Error.captureStackTrace(this, BroadcastTimeoutError)` after `this.name = ...` guarded by `if (Error.captureStackTrace)`. Stack traces now point at the broadcast helper caller instead of the internal Promise.race timeout closure. Observable in the logger.warn stack fields captured during the round-3 test run (the stack begins at the route's `await broadcastJsonWithTimeout(...)` call site, not at the timer callback).
+
+6. **P3 invalidate spy in claims tests** (item #6). `backend/tests/routes/claims.test.ts` — added dynamic `await import('../../src/cache.js')` alongside createApp/config to dodge the `vi.mock(config)` top-level hoist ordering trap. Added `vi.spyOn(hafCache, 'invalidate')` + `expect(invalidateSpy).not.toHaveBeenCalled()` to each of the 3 claims timeout specs (approve, revoke-bridge, revoke-native). `invalidateSpy.mockRestore()` after each spec. The non-timeout 502 spec does not need the assertion since the 502 handler never reaches the invalidate line (same catch block wraps both).
+
+**Envelope shape source of truth:** `agents/docs/api-contracts/common.md` — architect's round-2 fix-in-place. Non-orcid 504 sites match the canonical envelope verbatim. Orcid sites additionally include `verify_location:'/settings'` per `orcid.md` endpoint-specific detail. Tests assert the exact envelope shape per site.
+
+**Out of scope (filed as separate Pending tasks per architect's round-2 hold):** `backend-handle-broadcast-error-helper.md` (DRY the 7-site try/catch), `backend-bridge-custody-broadcast-discrimination.md` (502/504 migration for `broadcastSendOperationsWithTimeout` sites), `backend-log-pii-email-hash.md` (PII hash for email log fields).
