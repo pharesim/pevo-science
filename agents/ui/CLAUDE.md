@@ -94,6 +94,19 @@ Use these ce skills as part of your normal workflow. They are not optional — i
 - Production build: `npm run build` from `frontend/` (output goes to `backend/public/`).
 - After UI changes, start the dev server and verify the feature in a browser before reporting the task as complete. Test the golden path and edge cases.
 
+### E2E (Playwright)
+
+Playwright E2E specs (`frontend/tests/e2e/*.spec.js`) require the backend to be running in test-mode: routed at `pevo_app_test` with `INSTITUTIONAL_EMAIL_DOMAINS=".test"` so `@pevo.test` fixture emails pass signup validation. The dev-mode backend rejects them with 422, causing 6+ spurious signup/login/settings failures.
+
+Workflow for any E2E run:
+
+1. `./deploy.sh restart` — rebuild the backend with current code (picks up any backend changes since last up).
+2. `./deploy.sh test-up` — recreate backend container with `docker-compose.test.override.yml` applied (pevo_app_test routing + Mailpit SMTP sink + `.test` domain allow).
+3. From `frontend/`: `source ~/.nvm/nvm.sh && nvm use 20 && npx playwright test`.
+4. `./deploy.sh up` — restore dev routing (`pevo_app`) when finished.
+
+Skip this dance only for `npx playwright test --list` or other non-executing commands. Don't leave the stack in test-mode — dev sessions against `pevo_app_test` confuse later work.
+
 ## Light Account Ownership
 
 The UI agent owns client-side light account operations:
