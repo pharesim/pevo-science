@@ -41,7 +41,7 @@ router.get('/search', async (req: Request, res: Response) => {
     }));
 
     sendOk(res, { accounts });
-  } catch (err) {
+  } catch (_err) {
     sendError(res, 500, 'INTERNAL_ERROR', 'Account search failed');
   }
 });

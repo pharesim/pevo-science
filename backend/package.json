@@ -12,6 +12,7 @@
     "build:frontend": "cd ../frontend && npm run build",
     "start": "node --env-file=../.env dist/index.js",
     "lint": "eslint src/",
+    "lint:fix": "eslint src/ --fix",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
@@ -50,10 +51,14 @@
     "@types/nodemailer": "^8.0.0",
     "@types/pg": "^8.20.0",
     "@types/supertest": "^7.2.0",
+    "@typescript-eslint/eslint-plugin": "^8.59.0",
+    "@typescript-eslint/parser": "^8.59.0",
     "@vitest/coverage-v8": "^4.1.4",
+    "eslint": "^9.39.4",
     "supertest": "^7.2.2",
     "tsx": "^4.21.0",
     "typescript": "^6.0.2",
+    "typescript-eslint": "^8.59.0",
     "vitest": "^4.1.4"
   }
 }

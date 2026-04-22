@@ -157,7 +157,7 @@ export function startAccountClaimer(): void {
   }
 
   // Claim immediately on startup, then every 24h
-  claimAccountTokens();
+  void claimAccountTokens();
 
   claimTimer = setInterval(claimAccountTokens, CLAIM_INTERVAL_MS);
   claimTimer.unref();

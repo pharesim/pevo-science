@@ -3,7 +3,6 @@ import { getPool } from '../db.js';
 import { sendOk, sendError } from '../response.js';
 import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';
 import { hafCache } from '../cache.js';
-import { logger } from '../logger.js';
 import { fetchNotificationsFromHaf } from '../notification-queries.js';
 import { getGenesisBlock } from '../hafsql.js';
 

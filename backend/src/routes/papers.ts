@@ -1,7 +1,7 @@
 import { Router, type Request, type Response } from 'express';
 import { PrivateKey } from '@hiveio/dhive';
 import { getPool } from '../db.js';
-import { hiveClient, broadcastJsonWithTimeout } from '../hive.js';
+import { broadcastJsonWithTimeout } from '../hive.js';
 import { config } from '../config.js';
 import { sendOk, sendError } from '../response.js';
 import {
@@ -1396,7 +1396,7 @@ router.post('/:author/:permlink/retract', verifyHiveSignature, retractLimiter, a
       key,
     );
     // Invalidate retraction cache so the change is visible immediately
-    hafCache.invalidate('retracted-papers');
+    void hafCache.invalidate('retracted-papers');
     sendOk(res, { message: 'Paper retracted', tx_id: result.id });
   } catch (err) {
     logger.error({ err: (err as Error).message }, 'Failed to broadcast retraction');

@@ -81,7 +81,7 @@ initAppDb()
       startSignupCleanup();
 
       // Non-blocking: check Hive API node connectivity at startup
-      checkHiveNodes();
+      void checkHiveNodes();
     });
   })
   .catch((err) => {

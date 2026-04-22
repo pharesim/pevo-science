@@ -28,7 +28,7 @@ async function cleanupExpiredSignups(): Promise<void> {
 }
 
 export function startSignupCleanup(): void {
-  cleanupExpiredSignups();
+  void cleanupExpiredSignups();
   cleanupTimer = setInterval(cleanupExpiredSignups, CLEANUP_INTERVAL_MS);
   cleanupTimer.unref();
   logger.info('Pending signup cleanup started (every 1h)');

@@ -1,7 +1,7 @@
 import type { Request, Response, NextFunction } from 'express';
 import crypto from 'node:crypto';
 import jwt from 'jsonwebtoken';
-import { Signature, PublicKey, cryptoUtils } from '@hiveio/dhive';
+import { Signature, cryptoUtils } from '@hiveio/dhive';
 import { hiveClient } from '../hive.js';
 import { sendError } from '../response.js';
 import { logger } from '../logger.js';

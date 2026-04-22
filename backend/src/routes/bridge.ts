@@ -9,7 +9,7 @@ import { getAccreditedSet } from '../accreditation.js';
 import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';
 import { hafCache } from '../cache.js';
 import { logger } from '../logger.js';
-import { rateLimit, byIp, byAccount } from '../middleware/rateLimit.js';
+import { rateLimit, byIp } from '../middleware/rateLimit.js';
 import { T } from '../hafsql.js';
 import {
   parseIdentifier,

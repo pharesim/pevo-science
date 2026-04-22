@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import nodemailer from 'nodemailer';
 import { PrivateKey } from '@hiveio/dhive';
 import { config } from '../config.js';
-import { hiveClient, broadcastJsonWithTimeout } from '../hive.js';
+import { broadcastJsonWithTimeout } from '../hive.js';
 import { getRedis, isRedisAvailable } from '../redis.js';
 import { sendOk, sendError } from '../response.js';
 import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';

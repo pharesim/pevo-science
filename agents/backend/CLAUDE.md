@@ -98,3 +98,7 @@ The backend owns server-side light account operations:
 - Key deletion when a user upgrades to self-custody
 
 The UI agent owns client-side light account operations (seed phrase generation, key derivation, owner/active key management). See the UI agent CLAUDE.md.
+
+## Linting
+
+Backend has a minimal ESLint flat config at `backend/eslint.config.mjs` with `@typescript-eslint/no-floating-promises` as the load-bearing rule (catches fire-and-forget on safety primitives like `burnSentinel` and `withOrcidBindingLock`). Run `npm run lint` from `backend/` before committing changes that touch `src/`. `npm run lint:fix` applies auto-fixes for the small subset that supports it. Warnings for `@typescript-eslint/no-explicit-any` are acceptable at Express/dhive/pg boundaries.

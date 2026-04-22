@@ -4,7 +4,7 @@ import jwt from 'jsonwebtoken';
 import { PrivateKey } from '@hiveio/dhive';
 import { z } from 'zod';
 import { config } from '../config.js';
-import { hiveClient, broadcastJsonWithTimeout } from '../hive.js';
+import { broadcastJsonWithTimeout } from '../hive.js';
 import { getRedis, isRedisAvailable } from '../redis.js';
 import { getAppPool } from '../app-db.js';
 import { getPool } from '../db.js';
@@ -118,7 +118,7 @@ async function authenticateRequest(req: Request, res: Response): Promise<string 
     const settle = (fn: () => void) => { if (!settled) { settled = true; fn(); } };
     res.once('finish', () => settle(resolve));
     res.once('close', () => settle(resolve));
-    verifyHiveSignature(req, res, (err?: unknown) => {
+    void verifyHiveSignature(req, res, (err?: unknown) => {
       settle(err ? () => reject(err) : resolve);
     });
   });

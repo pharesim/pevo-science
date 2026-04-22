@@ -93,7 +93,7 @@ export class QueryCache {
     const staleKey = `swr:${key}`;
     const stale = await this.get<T>(staleKey);
     if (stale !== undefined) {
-      this.revalidate(key, staleKey, fn, ttlMs, staleMs, stable);
+      void this.revalidate(key, staleKey, fn, ttlMs, staleMs, stable);
       return stale;
     }
 

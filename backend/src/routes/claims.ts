@@ -1,7 +1,7 @@
 import { Router, type Request, type Response } from 'express';
 import { PrivateKey } from '@hiveio/dhive';
 import { getPool } from '../db.js';
-import { hiveClient, broadcastJsonWithTimeout } from '../hive.js';
+import { broadcastJsonWithTimeout } from '../hive.js';
 import { config } from '../config.js';
 import { sendOk, sendError } from '../response.js';
 import { getAccreditedSet } from '../accreditation.js';
@@ -11,11 +11,9 @@ import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';
 import { rateLimit, byAccount } from '../middleware/rateLimit.js';
 import { assertBridgeKeyConfigured } from './bridge.js';
 import {
-  T,
   activeAccreditationsCteBody,
   authorshipClaimsCteBody,
   buildWith,
-  getCachedGenesisBlock,
 } from '../hafsql.js';
 
 const router = Router({ mergeParams: true });

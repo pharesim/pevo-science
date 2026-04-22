@@ -4,7 +4,7 @@ import { getPool } from '../db.js';
 import { hiveClient } from '../hive.js';
 import { config } from '../config.js';
 import { sendOk, sendError } from '../response.js';
-import { parseMeta, parsePageLimit, parseOrder, parseSort, toPaperSummary } from '../helpers.js';
+import { parseMeta, parsePageLimit, parseOrder, toPaperSummary } from '../helpers.js';
 import { getAccreditedSet, getAllAccreditedAccounts } from '../accreditation.js';
 import { getBatchReputationScores, getReputationScore } from '../reputation.js';
 import { logger } from '../logger.js';

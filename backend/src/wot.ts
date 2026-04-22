@@ -7,7 +7,7 @@
  */
 import pg from 'pg';
 import { getPool } from './db.js';
-import { hiveClient, broadcastJsonWithTimeout } from './hive.js';
+import { broadcastJsonWithTimeout } from './hive.js';
 import { config } from './config.js';
 import { getAccreditedSet } from './accreditation.js';
 import { logger } from './logger.js';
