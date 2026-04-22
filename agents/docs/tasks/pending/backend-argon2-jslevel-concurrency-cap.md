@@ -138,3 +138,40 @@ First-pass `/ce-code-review` on commit `3e6f093` (correctness, security, reliabi
 - `backend-argon2-semaphore-abort-signal.md` (P2) — AbortSignal threading so client disconnects skip queued argon2 work.
 
 **Path to re-archive:** (1) Backend applies items #1-4 on this task. (2) Backend re-review signal block below the hold. (3) Architect re-reviews round-2 with `/ce-code-review` — security + adversarial mandatory given the P1. Archives on clean. Filed follow-up tasks archive independently.
+
+---
+
+**Backend re-review signal (2026-04-22, worktree `.claude/worktrees/agent-a866b69a`):**
+
+All four hold-block items landed. `npx tsc --noEmit` clean. `npm run lint` clean (2 pre-existing `no-explicit-any` warnings in `seed-phrase.ts`, unrelated to this task).
+
+1. **P1 — `settings.ts` unwrapped `argon2.hash` (landed).** `backend/src/routes/settings.ts:~385` now imports `runWithArgon2Slot` + `ArgonQueueFullError` from `../lib/argon2-semaphore.js` and wraps the hash: `const passwordHash = await runWithArgon2Slot(() => argon2.hash(password, ARGON2_OPTIONS));`. The handler's catch translates `ArgonQueueFullError` to 503 SERVICE_UNAVAILABLE before the generic 500 fallback. Closes the out-of-semaphore bypass identified in the hold block.
+
+2. **P2 — `MAX_QUEUE_DEPTH` cap + `ArgonQueueFullError` (landed).** `backend/src/lib/argon2-semaphore.ts` now exports `MAX_QUEUE_DEPTH = 50` and an `ArgonQueueFullError` class. `runWithArgon2Slot` throws `ArgonQueueFullError` BEFORE pushing to `waiters` when `waiters.length >= maxQueueDepth` (bounds the DoS vector). The factory `createArgon2Semaphore(cap, maxQueueDepth?)` is exported for DI in unit tests. `burnSentinel` in `auth.ts` now rethrows `ArgonQueueFullError` rather than swallowing (preserves the 503 signal and keeps the timing-oracle closed under queue-full conditions). A shared `handleArgonQueueFull(res, err)` helper in `auth.ts` translates the error to 503 across all 5 auth route catch-blocks (/signup, /resend-verification, /login, /reset-request, /reset, /recover). `signup-verify.ts` resume-signup and `custody.ts` upgrade-to-self-custody catch-blocks likewise translate to 503.
+
+3. **P2 — `/api/health` hardening (landed).** `backend/src/app.ts` — the response no longer includes `argon2_max_concurrent` (removed both from the JSON and from the import list). The route is now rate-limited via the existing `readLimiter` (120/min per-IP). Docblock above the handler documents why the static cap is no longer exposed (narrows search space for queue-DoS reconnaissance). `argon2_queue_depth` + `argon2_in_flight` retained.
+
+4. **P2 testing bundle — all four items landed.**
+   - **T1 (library-level in_flight-peaks test):** New `backend/tests/lib/argon2-semaphore.test.ts`. Exercises `createArgon2Semaphore(cap=3)` with cap+2 controlled-delay fns; asserts `in_flight` peaks at `cap`, queue depth is `N - cap`, and drains back to 0. Does NOT modify `vitest.config.ts` (sibling task owns that); dependency injection via the factory is option (b) from the hold block.
+   - **T2 (throw-path slot release):** Same file. Builds cap=1 semaphore, puts 2 waiters behind an A that rejects. Asserts `pA` rejects with the original error, B starts next (slot released via `finally`), then C drains. Final `in_flight` and `queue_depth` are both 0 — no leaked slot.
+   - **Queue-full coverage:** Same file. Two tests — one fills cap=1/queue=2 and asserts the 4th caller throws `ArgonQueueFullError` with unchanged counters; one with cap=1/queue=3 confirms the 5th (but not 4th) throws. Exercises the bound boundary symmetrically.
+   - **T3 (afterAll cleanup):** `backend/tests/routes/auth-concurrency.test.ts` now has `afterAll(clearRateLimitKeys(['auth-login', 'read']))` on top of the existing `beforeAll`. The `'read'` limiter is added because `/api/health` now shares that keyspace.
+   - **T4 (health shape assertion):** Same file. The shape test now asserts `res.body` does NOT have `argon2_max_concurrent`, and asserts idle-state `argon2_queue_depth === 0` + `argon2_in_flight === 0` (tight equality, doubles as a leak detector vs. the prior `≥0` check). The test calls `clearRateLimitKeys(['read'])` before the GET to avoid 429s from concurrent-burst polling.
+
+**Test outcomes (directly-affected only; full suite deferred to parent):**
+- `tests/lib/argon2-semaphore.test.ts`: 9/9 pass (new file).
+- `tests/routes/auth-concurrency.test.ts`: 2/2 pass.
+- `tests/routes/auth.test.ts`: all pass.
+- `tests/routes/settings.test.ts`: all pass.
+- `tests/routes/settings-set-password.test.ts`: all pass.
+- `tests/routes/signup-verify.test.ts`: all pass.
+- `tests/routes/custody.test.ts`: all pass.
+- `tests/routes/recover.test.ts`: all pass.
+- Aggregate across the 7 routes + 1 lib file: 82/82 pass.
+- `npx tsc --noEmit`: clean.
+- `npm run lint`: clean (2 pre-existing warnings unrelated to this task).
+
+**Design notes:**
+- Kept `MAX_CONCURRENT_ARGON2_OPS` exported (it's still used internally by the default singleton and referenced in tests for sanity assertions); only its exposure on `/api/health` is removed.
+- `readLimiter` chosen over a dedicated 60/min/IP limiter because the existing limiter already covers other read endpoints with the same threat model (polling for state) and reusing it avoids a second Redis keyspace for the same policy.
+- The round-1 auth.ts comment block referencing `argon2_max_concurrent` was not rewritten — the field isn't mentioned there. The only doc change in auth.ts is the new `handleArgonQueueFull` helper and its docblock.

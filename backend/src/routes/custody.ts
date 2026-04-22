@@ -11,7 +11,7 @@ import { broadcastSendOperationsWithTimeout } from '../hive.js';
 import { decryptKey } from '../custody-crypto.js';
 import { logCustodyBroadcast } from '../custody-audit.js';
 import { logger } from '../logger.js';
-import { runWithArgon2Slot } from '../lib/argon2-semaphore.js';
+import { runWithArgon2Slot, ArgonQueueFullError } from '../lib/argon2-semaphore.js';
 import { handleBroadcastError } from '../lib/broadcast-error.js';
 
 const router = Router();
@@ -233,6 +233,9 @@ router.post('/upgrade', verifyHiveSignature, upgradeLimiter, async (req: Request
 
     sendOk(res, { custody: 'self', token, expires_at: expiresAt });
   } catch (err) {
+    if (err instanceof ArgonQueueFullError) {
+      return sendError(res, 503, 'SERVICE_UNAVAILABLE', 'Authentication service temporarily overloaded. Please retry.');
+    }
     logger.error({ err, username }, 'Custody upgrade failed');
     sendError(res, 500, 'INTERNAL_ERROR', 'Upgrade failed');
   }

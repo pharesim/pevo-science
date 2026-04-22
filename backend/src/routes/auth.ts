@@ -15,7 +15,7 @@ import { logger } from '../logger.js';
 import { decryptKey } from '../custody-crypto.js';
 import { isPasswordValid, PASSWORD_POLICY_MESSAGE } from '../lib/password-policy.js';
 import { ARGON2_OPTIONS } from '../lib/argon2-options.js';
-import { runWithArgon2Slot } from '../lib/argon2-semaphore.js';
+import { runWithArgon2Slot, ArgonQueueFullError } from '../lib/argon2-semaphore.js';
 import { hashEmailForLogs } from '../lib/log-pii.js';
 
 // ─── Per-route Zod body schemas (BE-REQUEST-BODY-TYPING-ZOD) ────
@@ -219,8 +219,26 @@ export async function burnSentinel(input: string): Promise<void> {
     const safeInput = input.length > 1024 ? input.slice(0, 1024) : input;
     await runWithArgon2Slot(() => argon2.verify(sentinelHash, safeInput));
   } catch (err) {
+    // ArgonQueueFullError MUST propagate so route handlers can translate it
+    // into 503. Swallowing here would return ~0ms from burnSentinel under
+    // queue-full conditions and reopen the timing oracle under DoS load —
+    // the opposite of what the JS-level semaphore is for.
+    if (err instanceof ArgonQueueFullError) throw err;
     logger.warn({ err }, 'argon2 sentinel burn failed — timing oracle may be open');
   }
+}
+
+// Shared catch-block handler: translate ArgonQueueFullError → 503 before
+// the generic 500 branch. Factored out so every auth route that touches
+// argon2 (directly via runWithArgon2Slot or transitively via burnSentinel)
+// handles queue saturation consistently. Returns true if it handled the
+// error, false otherwise (caller falls through to its own 500 branch).
+function handleArgonQueueFull(res: Response, err: unknown): boolean {
+  if (err instanceof ArgonQueueFullError) {
+    sendError(res, 503, 'SERVICE_UNAVAILABLE', 'Authentication service temporarily overloaded. Please retry.');
+    return true;
+  }
+  return false;
 }
 
 // Rate limiters
@@ -489,6 +507,7 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
       expires_at: expiresAt.toISOString(),
     });
   } catch (err) {
+    if (handleArgonQueueFull(res, err)) return;
     logger.error({ err }, 'Signup failed');
     sendError(res, 500, 'INTERNAL_ERROR', 'Registration failed');
   }
@@ -601,6 +620,7 @@ router.post('/resend-verification', resendLimiter, async (req: Request, res: Res
 
     sendOk(res, { message: 'If that email has a pending signup, a new verification link has been sent.' });
   } catch (err) {
+    if (handleArgonQueueFull(res, err)) return;
     logger.error({ err }, 'Resend verification failed');
     sendError(res, 500, 'INTERNAL_ERROR', 'Failed to resend verification email');
   }
@@ -737,6 +757,7 @@ router.post('/login', loginLimiter, async (req: Request, res: Response) => {
 
     sendOk(res, { token, expires_at: expiresAt, custody, username: account.username });
   } catch (err) {
+    if (handleArgonQueueFull(res, err)) return;
     logger.error({ err }, 'Login failed');
     sendError(res, 500, 'INTERNAL_ERROR', 'Login failed');
   }
@@ -830,6 +851,7 @@ router.post('/reset-request', resetRequestLimiter, async (req: Request, res: Res
 
     sendOk(res, { message: 'If an account exists with that email, a reset link has been sent.' });
   } catch (err) {
+    if (handleArgonQueueFull(res, err)) return;
     logger.error({ err }, 'Password reset request failed');
     sendError(res, 500, 'INTERNAL_ERROR', 'Password reset request failed');
   }
@@ -902,6 +924,7 @@ router.post('/reset', resetLimiter, async (req: Request, res: Response) => {
 
     sendOk(res, { message: 'Password has been reset. Please log in with your new password.' });
   } catch (err) {
+    if (handleArgonQueueFull(res, err)) return;
     logger.error({ err }, 'Password reset failed');
     sendError(res, 500, 'INTERNAL_ERROR', 'Password reset failed');
   }
@@ -1091,6 +1114,7 @@ router.post('/recover', recoverLimiter, async (req: Request, res: Response) => {
 
     sendOk(res, { token, expires_at: expiresAt, custody, username: account.username });
   } catch (err) {
+    if (handleArgonQueueFull(res, err)) return;
     logger.error({ err }, 'Account recovery failed');
     sendError(res, 500, 'INTERNAL_ERROR', 'Account recovery failed');
   }

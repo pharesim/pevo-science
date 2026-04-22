@@ -13,7 +13,7 @@ import { encryptKey } from '../custody-crypto.js';
 import { createClaimedAccount } from '../account-creation.js';
 import { logger } from '../logger.js';
 import { burnSentinel } from './auth.js';
-import { runWithArgon2Slot } from '../lib/argon2-semaphore.js';
+import { runWithArgon2Slot, ArgonQueueFullError } from '../lib/argon2-semaphore.js';
 import { hashEmailForLogs } from '../lib/log-pii.js';
 
 const router = Router();
@@ -141,6 +141,9 @@ router.post('/resume-signup', resumeLimiter, async (req: Request, res: Response)
 
     sendOk(res, { flow: 'choose', email: normalizedEmail, auth_token: account.verify_token });
   } catch (err) {
+    if (err instanceof ArgonQueueFullError) {
+      return sendError(res, 503, 'SERVICE_UNAVAILABLE', 'Authentication service temporarily overloaded. Please retry.');
+    }
     logger.error({ err }, 'Resume signup failed');
     sendError(res, 500, 'INTERNAL_ERROR', 'Resume failed');
   }
