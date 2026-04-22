@@ -36,6 +36,7 @@ const template = `
                           :class="method === 'seed' ? 'bg-pevo-teal text-white border-pevo-teal' : 'bg-white text-ink border-parchment-dark hover:border-pevo-teal'"
                           x-text="$t('recover.methodSeed')"></button>
                   <button x-show="orcidAvailable" type="button" @click="method = 'orcid'"
+                          data-testid="recover-method-orcid"
                           class="px-4 py-2 text-sm rounded-lg border transition-colors"
                           :class="method === 'orcid' ? 'bg-pevo-teal text-white border-pevo-teal' : 'bg-white text-ink border-parchment-dark hover:border-pevo-teal'"
                           x-text="$t('recover.methodOrcid')"></button>
@@ -79,7 +80,7 @@ const template = `
                          :placeholder="$t('recover.newEmailPlaceholder')">
                 </div>
 
-                <!-- New password (hidden on ORCID branch. SEC-004: ORCID-verified recovery skips password; user can set one later from Settings) -->
+                <!-- New password (hidden on ORCID branch. ORCID-verified recovery skips password; user can set one later from Settings) -->
                 <div x-show="method !== 'orcid'">
                   <label class="block text-sm font-medium text-ink mb-1" x-text="$t('recover.newPassword')"></label>
                   <input type="password" x-model="newPassword" :required="method !== 'orcid'" minlength="10"
@@ -167,16 +168,16 @@ export function initRecoverPage() {
     },
 
     get canSubmitOrcid() {
-      // SEC-004: ORCID branch does not require a password. The recover
-      // call submits null password and the backend preserves
-      // password_hash = NULL. User can opt into password login later.
+      // ORCID branch does not require a password. The recover call
+      // submits null password and the backend preserves password_hash
+      // as NULL. User can opt into password login later.
       return this.username.trim() && this.orcidToken && this.newEmail.trim();
     },
 
     init() {
       // Restore form state after ORCID OAuth redirect.
-      // SEC-004: password fields are deliberately NOT persisted or
-      // restored. ORCID-verified recovery skips the password entirely.
+      // Password fields are deliberately NOT persisted or restored.
+      // ORCID-verified recovery skips the password entirely.
       const draft = localStorage.getItem('pevo_recover_draft');
       if (draft) {
         try {
@@ -231,7 +232,7 @@ export function initRecoverPage() {
       this.error = null;
 
       // Save form state before redirecting to ORCID.
-      // SEC-004: do NOT persist password fields across the round-trip.
+      // Do NOT persist password fields across the round-trip.
       localStorage.setItem('pevo_recover_draft', JSON.stringify({
         username: this.username,
         newEmail: this.newEmail,
@@ -287,8 +288,8 @@ export function initRecoverPage() {
         this.isSubmitting = true;
 
         try {
-          // SEC-004: submit `newPassword: null`. Backend (SEC-004-BE)
-          // preserves `password_hash = NULL` and returns success.
+          // Submit `newPassword: null`. The backend preserves
+          // `password_hash = NULL` and returns success.
           await recoverWithOrcid(this.username.trim(), this.orcidToken, this.newEmail.trim(), null);
           this.phase = 'done';
         } catch (err) {

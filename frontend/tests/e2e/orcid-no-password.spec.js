@@ -162,6 +162,57 @@ test.describe('signup — ORCID branch never persists password', () => {
       orcid_token: STUB_ORCID_TOKEN,
     });
   });
+
+  test('on ORCID branch, the "Resend verification" button is NOT visible after submit', async ({
+    page,
+  }) => {
+    // Defense-in-depth template-level assertion. The handler body is
+    // already guarded (handleResendVerification early-returns when
+    // orcidToken is set, unit-tested in pages-signup.test.js); this
+    // asserts the x-show="!resendSuccess && !orcidToken" hide on the
+    // button itself, since a template regression would not be caught
+    // by the handler-level guard.
+    //
+    // Drive signup to submitted: true with orcidToken set by seeding
+    // localStorage (as above) and then stubbing /api/auth/signup so we
+    // can reach the success state without backend coupling.
+    await page.addInitScript(
+      ({ token, id }) => {
+        window.localStorage.setItem(
+          'pevo_signup_draft',
+          JSON.stringify({
+            email: 'sec004-ui@pevo.test',
+            fullName: 'SEC-004 Tester',
+            institution: 'Test Institution',
+            field: 'Test Science',
+          }),
+        );
+        window.localStorage.setItem('pevo_signup_orcid_token', token);
+        window.localStorage.setItem('pevo_signup_orcid_id', id);
+      },
+      { token: STUB_ORCID_TOKEN, id: STUB_ORCID_ID },
+    );
+
+    await page.route('**/api/auth/signup', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ status: 'ok', data: {} }),
+      });
+    });
+
+    await page.goto('/signup');
+
+    // Submit the form to flip to the submitted: true branch.
+    await page.locator('form button[type="submit"]').click();
+
+    // The "Check your email" surface is now visible; assert the Resend
+    // button is hidden on this branch.
+    await expect(page.getByText(/check your email/i)).toBeVisible();
+    await expect(
+      page.getByRole('button', { name: /resend/i }),
+    ).not.toBeVisible();
+  });
 });
 
 test.describe('recover — ORCID branch never persists password', () => {
@@ -204,25 +255,26 @@ test.describe('recover — ORCID branch never persists password', () => {
 
     // The method tab ("ORCID") and the "Verify with ORCID" submit button
     // both contain the text "ORCID", so a plain :has-text() matcher is
-    // ambiguous under strict mode. Target the tab by its Alpine click
-    // binding instead — it's the only "method = 'orcid'" button on the page.
-    const orcidTab = page.locator('button[\\@click="method = \'orcid\'"]');
+    // ambiguous under strict mode. Target the tab by its data-testid.
+    const orcidTab = page.getByTestId('recover-method-orcid');
     await expect(orcidTab).toBeVisible({ timeout: 2000 });
     await orcidTab.click();
 
     await page.locator('input[x-model="newEmail"]').fill('new@pevo.test');
     // Fill the (now-visible-only-on-seed-method) password fields pre-switch
     // is impossible here since method is 'orcid'. But test the guard by
-    // writing directly to the Alpine store before clicking verify.
+    // writing directly to Alpine's reactive state via the public evaluate
+    // API. Poking _x_dataStack[0] reaches an Alpine internal and breaks
+    // on minor version bumps; Alpine.evaluate is the stable equivalent.
     await page.evaluate(() => {
-      // Populate password fields via Alpine $data regardless of visibility.
-      // This mirrors the regression scenario: even if something sets
-      // newPassword in memory, it must NOT be persisted.
+      // Populate password fields regardless of visibility. This mirrors
+      // the regression scenario: even if something sets newPassword in
+      // memory, it must NOT be persisted.
       const root = document.querySelector('[x-data="recoverPage"]');
-      if (root && root._x_dataStack) {
-        const data = root._x_dataStack[0];
-        data.newPassword = 'LeakedHunter1X';
-        data.newPasswordConfirm = 'LeakedHunter1X';
+      // Alpine is exposed globally by main.js.
+      if (root && window.Alpine) {
+        window.Alpine.evaluate(root, 'newPassword = "LeakedHunter1X"');
+        window.Alpine.evaluate(root, 'newPasswordConfirm = "LeakedHunter1X"');
       }
     });
 
