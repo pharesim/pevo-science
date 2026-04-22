@@ -76,6 +76,23 @@ Agents MUST NOT perform any remote-facing action without an explicit user ask fo
 
 Commit scope rule: keep commits focused. Don't bundle unrelated task work into a single commit. A "checkpoint" commit that captures in-flight work before a fan-out is acceptable when the work is all on one task or one logical batch; if the tree has cross-task drift, prefer multiple focused commits over one mixed one.
 
+## Worktree Cleanup
+
+After a worktree fan-out completes and its commits have been merged into the orchestrating branch, the parent agent MUST prune the worker worktrees it spawned. The harness writes a pid-based lock file on spawn but does not release it on child exit, so a plain `git worktree remove` fails against a stale `locked` file. Parents detect the stale lock and clear it themselves:
+
+```bash
+name=<agent-xxxxxxx>       # e.g. agent-a03c02c8, from `git worktree list`
+lock=.git/worktrees/$name/locked
+pid=$(grep -oE 'pid [0-9]+' "$lock" | awk '{print $2}')
+if [ -n "$pid" ] && ! ps -p "$pid" > /dev/null 2>&1; then
+  git worktree unlock .claude/worktrees/$name
+  git worktree remove .claude/worktrees/$name
+  git branch -D worktree-$name
+fi
+```
+
+If the lock's pid is still alive, leave the worktree alone — it belongs to a running sibling agent. Never bulk-unlock blindly; always gate on the stale-pid check.
+
 ## Code Review Findings
 
 When running `/ce-code-review`, `/security-review`, or any review skill that produces findings, do NOT auto-create new task files under `agents/docs/tasks/`, do NOT silently apply fixes, and do NOT silently archive a `review/` task with unresolved findings. Surface findings as a single ranked list in chat (severity + file:line + one-line rationale) and wait for the user to triage which ones become tasks, which get fixed in place, and which get dismissed. This applies to every agent that invokes a review skill (architect, backend, ui, pinner), not to the individual persona subagents inside `/ce-code-review` itself. If the review comes back clean, say so explicitly in chat before proceeding.
