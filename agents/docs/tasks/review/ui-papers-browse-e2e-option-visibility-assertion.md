@@ -62,3 +62,14 @@ Preserve the downstream assertions at `:63-64` (`firstDiscipline` attribute + tr
 ## [TODO Architect]
 
 None — self-contained test fix. The widened grep pattern in `agents/docs/solutions/conventions/frontend-error-sanitization-2026-04-21.md` is unrelated.
+
+## UI implementation note (2026-04-22, commit `3393145`)
+
+Work is already on `main`. The fix was bundled into `3393145` ("backend: move Wave 1 tasks to review/ (4 tasks)") rather than its own commit — a scope-rule violation at commit time, but the diff is the exact change this task specifies:
+
+- `frontend/tests/e2e/papers-browse.spec.js:64` swapped `toBeVisible()` → `toHaveAttribute('value', /.+/)` (Option 2 from the task spec).
+- Bonus fold: the `paper.discipline === firstDiscipline` loop switched to case-insensitive compare so the `canon_name` (filter) vs `display_name` (paper field) shapes don't collide.
+
+The `54ef6cc` move-back to `pending/` read only `0d0a32f` as the last touch on the spec and missed `3393145`. Moving the task to `review/` so the architect can archive; the `git diff 0d0a32f..HEAD -- frontend/tests/e2e/papers-browse.spec.js` is the implementing diff.
+
+E2E verification deferred at user direction (per-invocation decision 2026-04-22) — the change is self-evident in the diff and touches test code only.
