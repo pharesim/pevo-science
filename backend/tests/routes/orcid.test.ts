@@ -766,6 +766,31 @@ describe('POST /api/orcid/callback — orcid_id format validation (BE-ORCID-ID-F
       expect(broadcastJsonMock).not.toHaveBeenCalled();
     },
   );
+
+  it(
+    'handleSignup rejects malformed orcid_id with 400 BAD_REQUEST before any Redis/Hive/HAF call',
+    async () => {
+      // Signup's in-handler guard is the mutation-kill for the dispatch-site
+      // guard on the signup path — handleSignup is the only handler that feeds
+      // orcidId into a URL-path interpolation (countExternalWorks →
+      // pub.orcid.org). If the inner guard is dropped, a future refactor that
+      // also drops the dispatch-site guard would silently let a malformed id
+      // reach that fetch. The malformed-fetch stub throws on any post-guard
+      // pub.orcid.org fetch, so a guard bypass surfaces loudly rather than
+      // falling through to a generic 422 works-count branch.
+      installMalformedOrcidFetchStub();
+      const state = await startUnauthed('signup');
+      const res = await request(app)
+        .post('/api/orcid/callback')
+        .send({ code: 'fake', state });
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('BAD_REQUEST');
+      expect(res.body.error.message).toMatch(/invalid orcid/i);
+      expect(broadcastJsonMock).not.toHaveBeenCalled();
+      expect(hafQueryMock).not.toHaveBeenCalled();
+      expect(appQueryMock).not.toHaveBeenCalled();
+    },
+  );
 });
 
 // SEC-002-TOCTOU-LOCK — same-event-loop-tick race on ORCID binding.

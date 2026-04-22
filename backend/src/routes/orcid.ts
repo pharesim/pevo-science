@@ -311,6 +311,18 @@ async function handleSignup(
   orcidName: string,
   accessToken?: string,
 ): Promise<void> {
+  // Belt-and-suspenders format guard matching handleLogin / handleAccredit /
+  // handleLink. The dispatch site in POST /callback already guards; this inner
+  // check removes the "handler-guard asymmetry" that round-2 review flagged,
+  // and — specifically for signup — is the only handler that feeds orcidId
+  // into a URL-path interpolation (countExternalWorks → pub.orcid.org).
+  // Keeping the guard here locks in the mutation-kill for the signup path so
+  // the dispatch-site guard is not the sole defense.
+  if (!ORCID_RE.test(orcidId)) {
+    sendError(res, 400, 'BAD_REQUEST', 'Invalid ORCID iD format');
+    return;
+  }
+
   const externalWorksCount = await countExternalWorks(orcidId, accessToken);
 
   if (externalWorksCount < config.orcidMinWorks) {
