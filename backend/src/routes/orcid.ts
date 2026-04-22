@@ -51,9 +51,23 @@ const ORCID_BINDING_LOCK_RETRY_AFTER_SECONDS = 10;
 // Redlock CAS release: only DEL the lock key when its value matches the nonce
 // the caller acquired with. Prevents lock-stomp when holder A stalls past the
 // TTL, the lock auto-expires, holder B acquires the same key, and A's finally
-// runs — without the CAS, A's DEL would silently delete B's lock. The exact
-// failure the task's hold-block #1 calls out.
+// runs. Without the CAS, A's stalled-then-finally DEL would delete B's lock
+// and the double-broadcast this lock exists to prevent becomes possible again.
+//
+// Encoding contract: the Lua string-equality `KEYS[1] == ARGV[1]` is a byte-
+// exact compare. The acquire path MUST keep the nonce as a printable-ASCII
+// string (current: 32-char lowercase hex from crypto.randomBytes(16).toString
+// ('hex')). A future refactor introducing raw buffers, base64 padding chars,
+// or any non-ASCII encoding can silently break the CAS: nonces would never
+// match, every release would no-op, and locks would always wait the full TTL
+// instead of releasing promptly. The runtime invariant in acquireBindingLock
+// enforces this at the source so a drift surfaces as a throw at acquire-time,
+// not as a silent latency regression.
 const RELEASE_LOCK_LUA = `if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end`;
+
+// Enforced at acquire-time so the Lua byte-equality contract above cannot
+// drift silently. Matches the shape of crypto.randomBytes(16).toString('hex').
+const LOCK_NONCE_RE = /^[0-9a-f]{32}$/;
 
 // In-memory fallbacks when Redis is unavailable
 const orcidStates = new Map<string, { mode: OrcidMode; username?: string; timestamp: number; expires: number }>();
@@ -540,6 +554,14 @@ async function acquireBindingLock(orcidId: string): Promise<BindingLockState> {
   const redis = getRedis();
   if (!redis || !isRedisAvailable()) return { state: 'unavailable' };
   const nonce = crypto.randomBytes(16).toString('hex');
+  // Runtime invariant: RELEASE_LOCK_LUA compares stored value byte-for-byte
+  // under Lua string equality. If a future refactor changes the nonce encoding
+  // away from printable-ASCII hex, the CAS would silently never match. Throw
+  // here so the drift surfaces at acquire-time rather than as locks that never
+  // release before TTL.
+  if (typeof nonce !== 'string' || !LOCK_NONCE_RE.test(nonce)) {
+    throw new Error('orcid binding lock nonce shape invariant violated');
+  }
   try {
     const result = await redis.set(
       orcidBindingLockKey(orcidId),
@@ -569,21 +591,32 @@ async function releaseBindingLock(orcidId: string, nonce: string): Promise<void>
   }
 }
 
-// Acquire → run → release wrapper for the ORCID binding lock. Encapsulates
-// the acquire/try/finally scaffolding that handleAccredit and handleLink
-// otherwise duplicate, and makes the nonce flow internal so callers can't
-// accidentally call releaseBindingLock with the wrong nonce.
-//
-// Behavior per lock state:
-//   'held'        — wrapper sends 409 ORCID_ALREADY_LINKED with Retry-After
-//                   header and details.retriable=true; callback is NOT run.
-//   'acquired'    — callback runs inside try/finally; release happens under
-//                   nonce CAS in finally (success and throw paths both release).
-//   'unavailable' — callback runs WITHOUT a lock (Redis-optional degrade to
-//                   cache-less HAF-only path); no release needed.
-//
-// The wrapper swallows no exceptions from `fn`; they propagate to the outer
-// /callback try/catch which maps them to 500 INTERNAL_ERROR.
+/**
+ * Acquire → run → release wrapper for the ORCID binding lock. Encapsulates
+ * the acquire/try/finally scaffolding that handleAccredit and handleLink
+ * otherwise duplicate, and makes the nonce flow internal so callers can't
+ * accidentally call releaseBindingLock with the wrong nonce.
+ *
+ * Behavior per lock state:
+ *   'held'        — wrapper sends 409 ORCID_ALREADY_LINKED with Retry-After
+ *                   header and details.retriable=true; callback is NOT run.
+ *   'acquired'    — callback runs inside try/finally; release happens under
+ *                   nonce CAS in finally (success and throw paths both release).
+ *   'unavailable' — callback runs WITHOUT a lock (Redis-optional degrade to
+ *                   cache-less HAF-only path); no release needed.
+ *
+ * The wrapper swallows no exceptions from `fn`; they propagate to the outer
+ * /callback try/catch which maps them to 500 INTERNAL_ERROR.
+ *
+ * IMPORTANT — response-sending contract: on the 'held' state the wrapper sends
+ * the 409 response itself. Callers MUST NOT send another response after the
+ * await returns, regardless of lock state. Today both callers (handleAccredit,
+ * handleLink) have no code after `await withOrcidBindingLock(...)` and are
+ * safe; a future caller that appends post-await logic risks a double-send /
+ * "Cannot set headers after they are sent" crash. If post-await work is ever
+ * needed, move it INSIDE the `fn` callback, or refactor the wrapper to return
+ * a discriminator instead of sending the 409 directly.
+ */
 async function withOrcidBindingLock(
   res: Response,
   orcidId: string,
@@ -620,10 +653,14 @@ async function cacheOrcidBinding(orcidId: string, username: string): Promise<voi
     await redis.set(orcidBindingCacheKey(orcidId), username, 'EX', ORCID_BINDING_CACHE_TTL);
   } catch (err) {
     // Keep the swallow (availability over consistency; HAF is authoritative)
-    // but log loudly enough that operators see the mitigation degrade. Without
-    // this cache entry, a concurrent bind arriving before HAF indexes the op
-    // will see neither cache nor HAF and can slip past the 409 guard.
-    logger.warn(
+    // but emit at error-level so persistent failures surface on the pager. A
+    // sustained Redis cache-write outage silently degrades the 120s HAF-lag
+    // TOCTOU protection: a concurrent bind arriving before HAF indexes the op
+    // will see neither cache nor HAF and can slip past the 409 guard. warn
+    // level typically isn't paged; error is the right tier for "mitigation is
+    // degraded, investigate the Redis path." Behavior unchanged (still swallows
+    // per availability-over-consistency contract).
+    logger.error(
       { err, orcidId, username },
       'orcid binding cache write failed — HAF-lag TOCTOU window may be longer than expected',
     );
@@ -792,5 +829,14 @@ async function updateAccountOrcid(username: string, orcidId: string): Promise<vo
 
 // Export the in-memory verified map so auth.ts signup can consume nonces
 export { orcidVerified };
+
+// Test-only exports: SEC-002-TOCTOU-LOCK Lua CAS multi-holder correctness is
+// the primary safety property of the Redlock release path, but the other
+// specs only exercise it indirectly (self-release on success, self-release on
+// broadcast throw, TTL expiry). Expose the release helper so a unit spec can
+// assert that releaseBindingLock(orcidId, wrongNonce) refuses to delete a lock
+// held under a different nonce. A regression to plain DEL (no CAS) would pass
+// every other spec in the file but fail this one. NOT for production import.
+export { releaseBindingLock as __test_releaseBindingLock };
 
 export default router;
