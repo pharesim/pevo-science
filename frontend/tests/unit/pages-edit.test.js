@@ -45,7 +45,15 @@ vi.mock('alpinejs', () => ({
 
 import Alpine from 'alpinejs';
 import { broadcastOps } from '../../src/signer.js';
+import { fetchPaper, fetchPaperEnrichment } from '../../src/api.js';
 import { initEditPage } from '../../src/pages/edit.js';
+
+// Sentinel the DOM-bound field / toast must NOT contain.
+const LEAK_SENTINEL = 'deadbeef-leak-sentinel';
+
+function leakyError() {
+  return new Error(`server leak: ${LEAK_SENTINEL} pg=table_not_found`);
+}
 
 function createComponent() {
   initEditPage();
@@ -194,6 +202,32 @@ describe('editPage handleSubmit sanitization', () => {
   // continuation catches must not write step/errorMessage. A broadcast
   // that rejects after Alpine tears the component down would otherwise
   // mutate a destroyed reactive scope.
+  // UI-ERR-MESSAGE-SANITIZE-PAPER-DETAIL-SURVIVORS: the loadPaperData catch
+  // block was sanitized in commit 0ee5bfe to bind a generic localized key
+  // instead of err?.message. Mirrors the pages-paper-detail.test.js pattern.
+  // The catch fires on unexpected failures after the Promise.allSettled
+  // (e.g. a synchronous throw in _prefillForm during post-fetch bookkeeping),
+  // and the error binding must use this.$t('edit.loadError') — not err.message.
+  it('loadPaperData catch: generic key bound to loadError, raw err to warn, no leak', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    fetchPaper.mockResolvedValue({ data: { author: 'alice', permlink: 'p1', body: '', json_metadata: '{}' } });
+    fetchPaperEnrichment.mockResolvedValue({ data: {} });
+
+    const comp = createComponent();
+    comp._mounted = true;
+    const err = leakyError();
+    // Force the catch branch by making post-fetch bookkeeping throw.
+    comp._prefillForm = () => { throw err; };
+
+    await comp.loadPaperData();
+
+    expect(comp.loadError).toBe('edit.loadError');
+    expect(comp.loadError).not.toContain(LEAK_SENTINEL);
+    expect(warnSpy).toHaveBeenCalled();
+    expect(warnSpy.mock.calls[0][1]).toBe(err);
+    warnSpy.mockRestore();
+  });
+
   it('handleSubmit catch does not write step=error / errorMessage after destroy()', async () => {
     let rejectFn;
     broadcastOps.mockImplementationOnce(() => new Promise((_, reject) => { rejectFn = reject; }));

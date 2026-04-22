@@ -499,16 +499,22 @@ describe('paperDetailPage', () => {
       // Keep delays from hanging the test by rejecting with NOT_FOUND on every attempt.
       const err = leakyError('NOT_FOUND');
       fetchPaper.mockRejectedValue(err);
-      vi.useFakeTimers();
-      const comp = createComponent();
-      const p = comp.loadPaper();
-      // Advance through the 3 x 2000ms retry delays.
-      await vi.advanceTimersByTimeAsync(6000);
-      await p;
-      vi.useRealTimers();
-      expect(comp.error).toBe('paperDetail.notFoundTitle');
-      expect(comp.error).not.toContain(LEAK_SENTINEL);
-      expect(warnSpy).not.toHaveBeenCalled();
+      // Wrap the fake-timers block in try/finally so a mid-assertion throw
+      // still restores real timers. vitest.config.js sets restoreMocks:true
+      // but that does NOT restore timers — only mocks/spies.
+      try {
+        vi.useFakeTimers();
+        const comp = createComponent();
+        const p = comp.loadPaper();
+        // Advance through the 3 x 2000ms retry delays.
+        await vi.advanceTimersByTimeAsync(6000);
+        await p;
+        expect(comp.error).toBe('paperDetail.notFoundTitle');
+        expect(comp.error).not.toContain(LEAK_SENTINEL);
+        expect(warnSpy).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('loadVersion: generic key, raw err to warn, no leak', async () => {

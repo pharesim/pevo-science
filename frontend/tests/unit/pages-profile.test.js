@@ -24,8 +24,15 @@ vi.mock('alpinejs', () => ({
 }));
 
 import Alpine from 'alpinejs';
-import { fetchProfileReviews } from '../../src/api.js';
+import { fetchProfile, fetchProfilePapers, fetchProfileReviews } from '../../src/api.js';
 import { initProfilePage } from '../../src/pages/profile.js';
+
+// Sentinel the DOM-bound field / toast must NOT contain.
+const LEAK_SENTINEL = 'deadbeef-leak-sentinel';
+
+function leakyError() {
+  return new Error(`server leak: ${LEAK_SENTINEL} pg=table_not_found`);
+}
 
 function createComponent(overrides = {}) {
   initProfilePage();
@@ -118,6 +125,31 @@ describe('profilePage', () => {
       comp.reviewsLoaded = true;
       comp.switchTab('reviews');
       expect(fetchProfileReviews).not.toHaveBeenCalled();
+    });
+  });
+
+  // UI-ERR-MESSAGE-SANITIZE-PAPER-DETAIL-SURVIVORS: the profile.loadProfile
+  // catch block was sanitized in commit 0ee5bfe to bind a generic localized
+  // key instead of err?.message. Mirrors the pages-paper-detail.test.js
+  // pattern: generic i18n key bound to this.error, raw err reaches
+  // console.warn, leak sentinel does NOT surface in the DOM-bound field.
+  describe('loadProfile error sanitization', () => {
+    let warnSpy;
+
+    beforeEach(() => {
+      warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    });
+
+    it('generic key bound, raw err to warn, no leak in this.error', async () => {
+      const err = leakyError();
+      fetchProfile.mockRejectedValue(err);
+      fetchProfilePapers.mockRejectedValue(err);
+      const comp = createComponent();
+      await comp.loadProfile();
+      expect(comp.error).toBe('profile.loadFailed');
+      expect(comp.error).not.toContain(LEAK_SENTINEL);
+      expect(warnSpy).toHaveBeenCalled();
+      expect(warnSpy.mock.calls[0][1]).toBe(err);
     });
   });
 });

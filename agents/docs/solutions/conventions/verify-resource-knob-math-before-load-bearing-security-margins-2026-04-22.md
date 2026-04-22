@@ -222,3 +222,4 @@ const argon2Semaphore = pLimit(ARGON2_CONCURRENT_OPS);
 - `agents/docs/tasks/pending/backend-argon2-jslevel-concurrency-cap.md` — follow-up task implementing the semaphore + startup assertion + correct comment.
 - `backend/src/lib/argon2-options.ts` — canonical `ARGON2_OPTIONS`.
 - `docker-compose.yml` backend service — `UV_THREADPOOL_SIZE` env + `memory: 512m`.
+- [wrapping-primitive-exhaustive-call-site-audit-2026-04-22.md](wrapping-primitive-exhaustive-call-site-audit-2026-04-22.md) — sibling lesson from the same semaphore task. That doc captures the call-site coverage rule (grep every `argon2.hash`/`argon2.verify` across all files; the implementer missed `settings.ts:384`). This doc captures the arithmetic-chain verification rule. Both are necessary for the semaphore's invariant to hold; neither is sufficient alone.

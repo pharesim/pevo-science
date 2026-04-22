@@ -1,11 +1,31 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+vi.mock('../../src/api.js', () => ({
+  uploadToIpfs: vi.fn(),
+}));
+
+// Minimal Alpine mock used by PevoEditor._handleImageUpload's dynamic import.
+const toastShow = vi.fn();
+vi.mock('alpinejs', () => ({
+  default: {
+    store: vi.fn((name) => {
+      if (name === 'toast') return { show: toastShow };
+      if (name === 'auth') return { username: 'alice' };
+      if (name === 'i18n') return { t: (k) => k };
+      return null;
+    }),
+  },
+}));
+
 import {
   markdownToHtml,
   createTurndown,
   wrapMarkdownSelection,
   prefixMarkdownLines,
   isImageFile,
+  PevoEditor,
 } from '../../src/editor.js';
+import { uploadToIpfs } from '../../src/api.js';
 
 // --- markdownToHtml ---
 
@@ -257,5 +277,50 @@ describe('isImageFile', () => {
 
   it('returns false for non-image mime types', () => {
     expect(isImageFile({ type: 'application/pdf' })).toBe(false);
+  });
+});
+
+// --- Error sanitization for _handleImageUpload ---
+//
+// UI-ERR-MESSAGE-SANITIZE-PAPER-DETAIL-SURVIVORS: the image-upload catch
+// was sanitized in commit 0ee5bfe to bind the generic 'imageUploadFailed'
+// key instead of err?.message. Mirrors the pages-paper-detail.test.js
+// pattern: generic i18n key bound to the toast, raw err reaches
+// console.warn, leak sentinel does NOT surface in the toast message.
+//
+// We skip PevoEditor's real constructor (it renders DOM / mounts Tiptap) and
+// drive _handleImageUpload directly on a prototype-backed stub. The catch
+// branch is reached by making uploadToIpfs() reject with a leaky error.
+describe('PevoEditor._handleImageUpload error sanitization', () => {
+  const LEAK_SENTINEL = 'deadbeef-leak-sentinel';
+
+  function leakyError() {
+    return new Error(`ipfs leak: ${LEAK_SENTINEL} pg=bucket_missing`);
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    toastShow.mockClear();
+  });
+
+  it('generic key bound to toast, raw err to warn, no leak', async () => {
+    const err = leakyError();
+    uploadToIpfs.mockRejectedValue(err);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    // Stub the editor instance without invoking the DOM-mounting constructor.
+    const stub = Object.create(PevoEditor.prototype);
+    stub.editor = {};
+    stub.isUploading = false;
+    stub._els = { toolbar: { querySelector: () => null } };
+    stub._t = (key) => key;
+
+    await stub._handleImageUpload({ type: 'image/png', name: 'x.png' });
+
+    expect(warnSpy).toHaveBeenCalled();
+    expect(warnSpy.mock.calls[0][1]).toBe(err);
+    expect(toastShow).toHaveBeenCalledWith('imageUploadFailed', 'error');
+    expect(toastShow.mock.calls[0][0]).not.toContain(LEAK_SENTINEL);
+    warnSpy.mockRestore();
   });
 });

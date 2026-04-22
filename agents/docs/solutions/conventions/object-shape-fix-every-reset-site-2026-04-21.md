@@ -156,3 +156,4 @@ it('shows set-password surface from API response', async () => {
 
 - `agents/docs/TASKS.md` entry `BE-SETTINGS-EMAIL-CASING` — follow-up to normalize the wire format.
 - `feedback_architect_ce_code_review.md` (auto memory) — architect must `/ce-code-review` every Review-section task; this doc is the "why" story behind that rule.
+- [wrapping-primitive-exhaustive-call-site-audit-2026-04-22.md](wrapping-primitive-exhaustive-call-site-audit-2026-04-22.md) — applies the same "grep every site, don't trust mental enumeration" meta-pattern to wrapping primitives (semaphore, lock, helper) on backend call sites, plus the null-path type annotation axis. Different domain, same failure mode.

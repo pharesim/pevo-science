@@ -51,3 +51,15 @@ First-pass `/ce-code-review` on commit `0ee5bfe` (correctness persona). All 9 `e
 - `handleBridgeSync` stale-mount guard short-circuits console.warn entirely: intentional per teardown-guard sweep.
 
 **Path to re-archive:** (1) UI applies items #1-2 on this task. (2) UI re-review signal block below the hold. (3) Architect re-reviews round-2; archives on clean.
+
+---
+
+**UI re-review signal (2026-04-22, pending-merge):** items #1-2 landed; see diff.
+
+- #1 (F13-C1) — Added sanitize unit tests for the 3 sibling handlers sanitized in commit `0ee5bfe`:
+  - `frontend/tests/unit/pages-profile.test.js` — `loadProfile` catch: generic `profile.loadFailed` bound, raw err to `console.warn`, leak sentinel absent from `this.error`.
+  - `frontend/tests/unit/pages-edit.test.js` — `loadPaperData` catch: generic `edit.loadError` bound, raw err to `console.warn`, leak sentinel absent from `this.loadError`. Catch branch reached by stubbing `_prefillForm` to throw after a resolved `fetchPaper`.
+  - `frontend/tests/unit/editor.test.js` — `PevoEditor._handleImageUpload` catch: generic `imageUploadFailed` key bound to toast, raw err to `console.warn`, leak sentinel absent from toast message. Editor instantiated via `Object.create(PevoEditor.prototype)` to bypass the DOM-mounting constructor.
+- #2 (F13-C2) — Wrapped the NOT_FOUND carve-out's `vi.useFakeTimers()` block in `try { ... } finally { vi.useRealTimers(); }` in `frontend/tests/unit/pages-paper-detail.test.js` so a mid-assertion throw still restores real timers.
+
+Vitest: `tests/unit/pages-profile.test.js (7) + tests/unit/pages-edit.test.js (5) + tests/unit/pages-paper-detail.test.js (54) + tests/unit/editor.test.js (31)` = 97 passed / 97.
