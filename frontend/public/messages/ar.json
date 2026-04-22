@@ -630,7 +630,10 @@
     "verificationFailed": "فشل التحقق من ORCID",
     "viewProfile": "عرض الملف الشخصي",
     "loginSuccess": "Signed in with ORCID successfully.",
-    "noAccountFound": "No account is linked to this ORCID. Please sign up first."
+    "noAccountFound": "No account is linked to this ORCID. Please sign up first.",
+    "alreadyLinkedRetriable": "Another request is in progress. Please wait {seconds} seconds and try again.",
+    "alreadyLinkedDurable": "This ORCID is linked to another account. Recover access or contact support.",
+    "broadcastPending": "Broadcast is pending. Verify your ORCID linkage in Settings before retrying."
   },
   "citation": {
     "citeButton": "استشهاد",

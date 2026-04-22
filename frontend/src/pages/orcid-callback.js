@@ -33,12 +33,21 @@ const template = `
           <!-- Error -->
           <div x-show="status === 'error'">
             <div class="bg-red-50 border border-red-200 rounded-lg p-4 mb-6">
-              <p class="text-red-700 text-sm" x-text="errorMessage"></p>
+              <p class="text-red-700 text-sm" x-text="errorKind === 'alreadyLinkedRetriable' ? $t('orcid.alreadyLinkedRetriable', { seconds: retryCountdown }) : errorMessage"></p>
             </div>
             <template x-if="errorAction === 'signup'">
               <a :href="$lp('/signup')" @click.prevent="navigate('/signup')" class="btn-primary inline-block no-underline" x-text="$t('common.signUp')"></a>
             </template>
-            <template x-if="errorAction !== 'signup'">
+            <template x-if="errorAction === 'recover'">
+              <a :href="$lp('/recover')" @click.prevent="navigate('/recover')" class="btn-primary inline-block no-underline" x-text="$t('common.tryAgain')"></a>
+            </template>
+            <template x-if="errorAction === 'settings'">
+              <a :href="$lp('/settings')" @click.prevent="navigate('/settings')" class="btn-primary inline-block no-underline" x-text="$t('common.tryAgain')"></a>
+            </template>
+            <template x-if="errorAction === 'retry'">
+              <button @click="_retryVerify()" :disabled="retryCountdown > 0" class="btn-primary inline-block no-underline" x-text="$t('common.retry')"></button>
+            </template>
+            <template x-if="errorAction === '' || errorAction === null">
               <a :href="$lp(backPath)" @click.prevent="navigate(backPath)" class="btn-secondary inline-block no-underline" x-text="$t('common.tryAgain')"></a>
             </template>
           </div>
@@ -60,7 +69,14 @@ export function initOrcidCallbackPage() {
 
     status: 'verifying',
     errorMessage: '',
-    errorAction: '', // 'signup' for NO_ACCOUNT, else empty
+    errorAction: '', // 'signup' for NO_ACCOUNT, 'recover' for durable ORCID_ALREADY_LINKED, 'settings' for BROADCAST_TIMEOUT, 'retry' for retriable ORCID_ALREADY_LINKED, else empty
+    errorKind: '', // 'alreadyLinkedRetriable' surfaces countdown-parameterized i18n; other branches render the static errorMessage key
+    retryCountdown: 0,
+    // Stash last _verify args so a user-initiated retry (retriable 409) can
+    // re-invoke against the same state token. Reused by _retryVerify(); the
+    // state token remains valid so long as the backend-side Redis record has
+    // not been consumed (single-use) and has not expired.
+    _lastVerifyArgs: null,
     resultUsername: '',
     backPath: '/',
 
@@ -100,6 +116,7 @@ export function initOrcidCallbackPage() {
     },
 
     async _verify(code, state, mode) {
+      this._lastVerifyArgs = { code, state, mode };
       let res;
       try {
         res = await completeOrcid(code, state, mode);
@@ -110,6 +127,41 @@ export function initOrcidCallbackPage() {
         if (err.code === 'NO_ACCOUNT') {
           this.errorMessage = this.$t('orcid.noAccountFound');
           this.errorAction = 'signup';
+          return;
+        }
+
+        // ORCID_ALREADY_LINKED has a retriable discriminator per
+        // api-contracts/orcid.md. `err.details?.retriable === true` OR a
+        // parsed `Retry-After` header signals lock contention (transient);
+        // absence of both signals a durable binding (on-chain accreditation
+        // to another account, or a cache-lag record of one).
+        if (err.code === 'ORCID_ALREADY_LINKED') {
+          const retriable = err.details?.retriable === true || err.retryAfterSeconds !== null;
+          if (retriable) {
+            // Parametric i18n — the countdown renders in real time via the
+            // template's $t('orcid.alreadyLinkedRetriable', { seconds: retryCountdown }).
+            this.errorKind = 'alreadyLinkedRetriable';
+            this.errorAction = 'retry';
+            const seconds = err.retryAfterSeconds ?? 10;
+            this.retryCountdown = seconds;
+            // Ticks every 1s until zero; re-invokes _retryVerify() at zero
+            // for a single self-triggered retry (task non-goal: exponential
+            // backoff). Timers route through _setTimer so destroy() tears
+            // them down cleanly.
+            this._tickRetryCountdown();
+          } else {
+            this.errorMessage = this.$t('orcid.alreadyLinkedDurable');
+            this.errorAction = 'recover';
+          }
+          return;
+        }
+
+        // Forward-compat for BE-ORCID-BROADCAST-ABORT-TIMEOUT: backend may
+        // emit this code once the 504 envelope lands. Surfacing it now is
+        // safe — the branch is inert until the code appears on the wire.
+        if (err.code === 'BROADCAST_TIMEOUT') {
+          this.errorMessage = this.$t('orcid.broadcastPending');
+          this.errorAction = 'settings';
           return;
         }
 
@@ -159,6 +211,37 @@ export function initOrcidCallbackPage() {
           this.status = 'error';
           this.errorMessage = this.$t('orcid.verificationFailed');
       }
+    },
+
+    // Countdown tick for retriable ORCID_ALREADY_LINKED 409. Decrements
+    // retryCountdown once per second; when it hits zero, auto-invokes
+    // _retryVerify() (single self-retry, not aggressive backoff). Each tick
+    // is armed through _setTimer so component teardown cancels any pending
+    // tick — no post-teardown state writes.
+    _tickRetryCountdown() {
+      if (!this._mounted) return;
+      if (this.retryCountdown <= 0) {
+        this._retryVerify();
+        return;
+      }
+      this._setTimer(() => {
+        if (!this._mounted) return;
+        this.retryCountdown = Math.max(0, this.retryCountdown - 1);
+        this._tickRetryCountdown();
+      }, 1000);
+    },
+
+    _retryVerify() {
+      if (!this._mounted) return;
+      if (!this._lastVerifyArgs) return;
+      // Reset error UI for the retry attempt.
+      this.status = 'verifying';
+      this.errorMessage = '';
+      this.errorAction = '';
+      this.errorKind = '';
+      this.retryCountdown = 0;
+      const { code, state, mode } = this._lastVerifyArgs;
+      this._verify(code, state, mode);
     },
 
     _handleSignup(data) {
