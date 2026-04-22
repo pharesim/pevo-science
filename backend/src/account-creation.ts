@@ -1,5 +1,6 @@
 import { PrivateKey } from '@hiveio/dhive';
-import { BroadcastTimeoutError, broadcastSendOperationsWithTimeout } from './hive.js';
+import type pg from 'pg';
+import { BroadcastTimeoutError, broadcastSendOperationsWithTimeout, hiveClient } from './hive.js';
 import { config } from './config.js';
 import { getAppPool } from './app-db.js';
 import { logger } from './logger.js';
@@ -17,6 +18,108 @@ function buildClaimOps(n: number): Array<['claim_account', { creator: string; fe
     fee: '0.000 HIVE',
     extensions: [],
   }]);
+}
+
+/**
+ * Read the onboarding account's on-chain `pending_claimed_accounts` counter.
+ * Returns the numeric counter, or `null` if the account lookup fails or the
+ * field is missing (older/exotic API responses). dhive's `ExtendedAccount`
+ * type does not declare `pending_claimed_accounts`, but every current Hive
+ * node returns it on `get_accounts`; we access it via a narrow cast.
+ */
+async function fetchPendingClaimedAccounts(accountName: string): Promise<number | null> {
+  const [account] = await hiveClient.database.getAccounts([accountName]);
+  if (!account) return null;
+  const raw = (account as unknown as { pending_claimed_accounts?: number | string })
+    .pending_claimed_accounts;
+  if (raw === undefined || raw === null) return null;
+  const n = typeof raw === 'string' ? parseInt(raw, 10) : raw;
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Reconcile the DB `account_creation_tokens` table with the on-chain
+ * `pending_claimed_accounts` counter after a `claim_account` broadcast
+ * timed out with ambiguous outcome. Compares the post-broadcast counter
+ * against `preCounter` and INSERTs `delta` token rows (bounded by
+ * `batchSize`: extra claims from a parallel admin-account actor are not
+ * ours to count).
+ *
+ * Returns the number of DB rows inserted. If the post-broadcast chain read
+ * fails or `preCounter` was unavailable, returns 0 and logs — the next
+ * claim cycle will retry from a clean state.
+ */
+async function reconcileClaimTimeout(
+  pool: pg.Pool,
+  err: BroadcastTimeoutError,
+  batchSize: number,
+  preCounter: number | null,
+): Promise<number> {
+  if (preCounter === null) {
+    logger.error(
+      { err, batchSize },
+      'claim_account broadcast timed out — no pre-counter available, reconcile skipped',
+    );
+    return 0;
+  }
+
+  let postCounter: number | null;
+  try {
+    postCounter = await fetchPendingClaimedAccounts(config.hiveOnboardAccount);
+  } catch (reconcileErr) {
+    logger.error(
+      { err, reconcileErr, batchSize, preCounter },
+      'claim_account broadcast timed out — post-counter read failed, reconcile skipped',
+    );
+    return 0;
+  }
+  if (postCounter === null) {
+    logger.error(
+      { err, batchSize, preCounter },
+      'claim_account broadcast timed out — post-counter unavailable, reconcile skipped',
+    );
+    return 0;
+  }
+
+  const rawDelta = postCounter - preCounter;
+  // Clamp: negative delta is nonsense (the account burned claims between
+  // reads); delta > batchSize means someone else claimed on the same
+  // account during our broadcast window — only count up to our batchSize.
+  const inserted = Math.max(0, Math.min(rawDelta, batchSize));
+
+  if (inserted === 0) {
+    logger.error(
+      { err, batchSize, preCounter, postCounter, inserted },
+      'claim_account broadcast timed out — reconciled 0/batchSize from chain (nothing landed)',
+    );
+    return 0;
+  }
+
+  try {
+    await pool.query(
+      'INSERT INTO account_creation_tokens SELECT FROM generate_series(1, $1)',
+      [inserted],
+    );
+  } catch (dbErr) {
+    logger.error(
+      { err, dbErr, batchSize, preCounter, postCounter, inserted },
+      'claim_account broadcast timed out — reconcile INSERT failed, DB may still diverge from chain',
+    );
+    return 0;
+  }
+
+  if (inserted < batchSize) {
+    logger.warn(
+      { err, batchSize, preCounter, postCounter, inserted },
+      `claim_account broadcast timed out — reconciled ${inserted}/${batchSize} from chain (partial landing)`,
+    );
+  } else {
+    logger.error(
+      { err, batchSize, preCounter, postCounter, inserted },
+      `claim_account broadcast timed out — reconciled ${inserted}/${batchSize} from chain (full landing)`,
+    );
+  }
+  return inserted;
 }
 
 /**
@@ -45,6 +148,19 @@ export async function claimAccountTokens(): Promise<void> {
   let batchSize = CLAIMS_PER_TX;
 
   while (batchSize >= 1) {
+    // Capture the on-chain pending counter BEFORE the broadcast so we can
+    // reconcile if the broadcast times out with outcome uncertain. A `null`
+    // pre-counter means we could not read the account; in that case we
+    // cannot reconcile on timeout and will log-and-skip.
+    const preCounter = await fetchPendingClaimedAccounts(config.hiveOnboardAccount)
+      .catch((err) => {
+        logger.warn(
+          { err, account: config.hiveOnboardAccount },
+          'claim_account pre-broadcast counter read failed — reconcile on timeout disabled for this batch',
+        );
+        return null;
+      });
+
     try {
       await broadcastSendOperationsWithTimeout(buildClaimOps(batchSize), key);
 
@@ -60,16 +176,12 @@ export async function claimAccountTokens(): Promise<void> {
       // read-then-broadcast pattern, see `broadcastSendOperationsWithTimeout`
       // docblock). Halving and retrying would rebroadcast the same claim
       // batch and, if the first landed, double-count claims relative to the
-      // DB (we only INSERT on clean resolve). Worse, each retry costs
-      // another 30s wall-clock, so a single network blip becomes ~3 minutes
-      // of silent hanging logged as "insufficient RC". Break out and let
-      // the next 24h cycle (plus the separate reconcile task) realign DB
-      // and chain counts.
+      // DB (we only INSERT on clean resolve). Instead, read the on-chain
+      // `pending_claimed_accounts` counter and INSERT any delta into the DB
+      // so token count eventually catches up to chain state.
       if (err instanceof BroadcastTimeoutError) {
-        logger.error(
-          { err, batchSize },
-          'claim_account broadcast timed out — outcome uncertain, DB count may diverge from chain',
-        );
+        const reconciled = await reconcileClaimTimeout(pool, err, batchSize, preCounter);
+        claimed += reconciled;
         break;
       }
       // Not enough RC for this batch size — try smaller

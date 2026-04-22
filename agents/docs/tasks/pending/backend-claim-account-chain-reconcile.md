@@ -34,3 +34,20 @@ After a `BroadcastTimeoutError` during `claim_account` broadcast:
 ## [TODO Architect]
 
 - Confirm `pending_claimed_accounts` counter is the right signal vs a block-range query over `claim_account` ops (counter is simpler; ops query is more robust against other admin activity).
+
+Backend re-review signal (2026-04-22, worktree agent-ae8349d1):
+
+Implementation landed. Summary of choices:
+
+- Counter signal: chose `pending_claimed_accounts` from `hiveClient.database.getAccounts([config.hiveOnboardAccount])`. Queried on the onboarding account (the `creator` in `buildClaimOps`), not `hiveAdminAccount`, since those can differ in config (`hiveOnboardAccount` defaults to `hiveAdminAccount` but is independently overridable). The task description referenced `hiveAdminAccount`; selected `hiveOnboardAccount` because that is the account actually signing the `claim_account` ops and whose counter will advance.
+- Pre-counter is captured on every loop iteration (before each broadcast attempt), not once per cycle, so a halving retry path still has a correct baseline if the eventual final attempt times out. Extra chain reads are cheap vs a 30s broadcast timeout.
+- Reconcile branch returns `inserted` count so `claimed` stays accurate and the trailing `pending_tokens` log reflects reality.
+- Clamp: `inserted = clamp(postCounter - preCounter, 0, batchSize)` — negative delta (someone burned claims) becomes 0; delta > batchSize (a parallel admin actor also claimed) is capped at our batchSize so we only INSERT what our broadcast was responsible for.
+- Log severity: `logger.error` for full-landing reconcile and all failure branches (no pre-counter, post-counter read fails, INSERT fails, nothing landed); `logger.warn` for partial-landing reconcile (intermediate, operators need to know but it's a known-handled case).
+- dhive's `ExtendedAccount` type does not declare `pending_claimed_accounts`; accessed via a narrow cast in `fetchPendingClaimedAccounts`.
+
+Test coverage: 6 new reconcile cases (full landing, partial landing, nothing landed, concurrent-actor clamp, pre-counter read fails, post-counter read fails) plus the 2 existing discrimination tests. All 8 pass. `npx tsc --noEmit` clean; `npm run lint` clean (2 pre-existing warnings in `seed-phrase.ts` unchanged).
+
+Files modified:
+- `backend/src/account-creation.ts` (added `fetchPendingClaimedAccounts` helper, `reconcileClaimTimeout` helper, updated `claimAccountTokens` loop to capture `preCounter` per-iteration and call reconciler on `BroadcastTimeoutError` before breaking).
+- `backend/tests/account-creation.test.ts` (added `getAccounts` mock + new `post-timeout chain reconcile` describe block with 6 cases; updated header justification).
