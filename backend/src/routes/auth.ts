@@ -16,6 +16,7 @@ import { decryptKey } from '../custody-crypto.js';
 import { isPasswordValid, PASSWORD_POLICY_MESSAGE } from '../lib/password-policy.js';
 import { ARGON2_OPTIONS } from '../lib/argon2-options.js';
 import { runWithArgon2Slot } from '../lib/argon2-semaphore.js';
+import { hashEmailForLogs } from '../lib/log-pii.js';
 
 // ─── Per-route Zod body schemas (BE-REQUEST-BODY-TYPING-ZOD) ────
 //
@@ -475,7 +476,10 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
         return sendError(res, 500, 'INTERNAL_ERROR', 'Failed to send verification email');
       }
     } else {
-      logger.error({ email: normalizedEmail }, 'SMTP not configured — cannot send verification email');
+      logger.error(
+        { email_hash: normalizedEmail ? hashEmailForLogs(normalizedEmail) : null },
+        'SMTP not configured — cannot send verification email',
+      );
       await pool.query('DELETE FROM accounts WHERE verify_token = $1', [verifyToken]);
       return sendError(res, 500, 'INTERNAL_ERROR', 'Email service not configured');
     }

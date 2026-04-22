@@ -12,6 +12,7 @@ import { validate, accreditationRequestSchema, accreditationVerifySchema } from 
 import { rateLimit, byAccount, byIp } from '../middleware/rateLimit.js';
 import { logger } from '../logger.js';
 import { isInstitutionalEmail } from '../email-validator.js';
+import { hashEmailForLogs } from '../lib/log-pii.js';
 
 /** How long a verification token stays valid before it expires. */
 const TOKEN_EXPIRY_MS = 24 * 60 * 60 * 1000; // 24 hours
@@ -208,7 +209,7 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
     const outcome = handleBroadcastError(res, err, {
       timeoutMsg: 'Broadcasting accreditation timed out',
       failMsg: 'Failed to broadcast accreditation to Hive',
-      logContext: { username: pending.hive_username, email: pending.email },
+      logContext: { username: pending.hive_username, email_hash: hashEmailForLogs(pending.email) },
       routeLabel: 'accreditation.verify',
     });
     // On timeout: do NOT deleteToken — the 504 is retriable-after-verify, so

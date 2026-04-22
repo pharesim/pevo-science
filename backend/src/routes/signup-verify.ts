@@ -14,6 +14,7 @@ import { createClaimedAccount } from '../account-creation.js';
 import { logger } from '../logger.js';
 import { burnSentinel } from './auth.js';
 import { runWithArgon2Slot } from '../lib/argon2-semaphore.js';
+import { hashEmailForLogs } from '../lib/log-pii.js';
 
 const router = Router();
 const SESSION_EXPIRY = '24h';
@@ -276,7 +277,12 @@ router.post('/confirm', confirmLimiter, async (req: Request, res: Response) => {
         );
       } catch (accErr) {
         logger.error(
-          { err: accErr, email: account.email, username: normalizedUsername, orcid: account.orcid ?? null },
+          {
+            err: accErr,
+            email_hash: hashEmailForLogs(account.email),
+            username: normalizedUsername,
+            orcid: account.orcid ?? null,
+          },
           'Failed to broadcast accreditation — account created but not accredited',
         );
       }
@@ -398,7 +404,12 @@ router.post('/link', linkLimiter, verifyHiveSignature, async (req: Request, res:
         );
       } catch (accErr) {
         logger.error(
-          { err: accErr, email: account.email, username: hiveUsername, orcid: account.orcid ?? null },
+          {
+            err: accErr,
+            email_hash: hashEmailForLogs(account.email),
+            username: hiveUsername,
+            orcid: account.orcid ?? null,
+          },
           'Failed to broadcast accreditation for linked account',
         );
       }
