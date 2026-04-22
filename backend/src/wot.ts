@@ -7,7 +7,7 @@
  */
 import pg from 'pg';
 import { getPool } from './db.js';
-import { broadcastJsonWithTimeout } from './hive.js';
+import { broadcastJsonWithTimeout, BroadcastTimeoutError } from './hive.js';
 import { config } from './config.js';
 import { getAccreditedSet } from './accreditation.js';
 import { logger } from './logger.js';
@@ -18,6 +18,53 @@ const DEFAULT_WOT_THRESHOLD = 3;
 const MAX_REVOCATION_DEPTH = 20;
 
 const WOT_THRESHOLD_TTL = 30 * 60_000;
+
+/**
+ * Aggregate wall-clock budget for a single top-level `cascadeRevocation` call
+ * (and its recursive descendants). With a per-broadcast 30s timeout and K
+ * cascades, a pathological degraded Hive node could block K*30s otherwise.
+ * Exceeding this budget surfaces a `PartialCascadeError` so the caller can
+ * log / alert / queue the pending list for manual follow-up.
+ */
+export const CASCADE_BUDGET_MS = 60_000;
+
+/**
+ * Result of `broadcastWotAccreditation` (the Web-of-Trust auto-accreditation
+ * broadcast). A tagged union so the caller branches explicitly on outcome
+ * instead of conflating "skipped because not eligible" with "broadcast timed
+ * out and we have no idea whether it landed". See
+ * BE-WOT-BROADCAST-TIMEOUT-HANDLING.
+ */
+export type WotAccreditationResult =
+  | { ok: true; txId: string }
+  | { ok: false; reason: 'timeout' | 'chain_error' | 'skipped'; err?: Error };
+
+/**
+ * Thrown by `cascadeRevocation` when the aggregate wall-clock budget is
+ * exceeded. Carries the lists of completed and pending vouchees so the caller
+ * (route handler / operator) can log or queue for manual re-revocation.
+ *
+ * `rootRevocation` is the top-level revoked account that triggered the
+ * cascade. `completed` holds vouchees whose revocation broadcast succeeded
+ * this run. `pending` holds vouchees whose revocation was identified as
+ * needed but was not attempted (or failed mid-flight) before the budget was
+ * exhausted.
+ */
+export class PartialCascadeError extends Error {
+  public readonly completed: string[];
+  public readonly pending: string[];
+  public readonly rootRevocation: string;
+  constructor(params: { completed: string[]; pending: string[]; rootRevocation: string }) {
+    super(
+      `Cascade revocation budget exceeded for root ${params.rootRevocation}: ` +
+        `${params.completed.length} completed, ${params.pending.length} pending`,
+    );
+    this.name = 'PartialCascadeError';
+    this.completed = params.completed;
+    this.pending = params.pending;
+    this.rootRevocation = params.rootRevocation;
+  }
+}
 
 async function loadWotThreshold(): Promise<number> {
   const pool = getPool();
@@ -133,23 +180,29 @@ export async function getVouchStatus(username: string): Promise<VouchStatus | nu
 /**
  * Check if a vouchee has reached the WoT threshold and auto-accredit them.
  * Called after a new vouch is observed.
+ *
+ * Returns a tagged union surfacing the broadcast outcome so the caller can
+ * distinguish "not eligible / already accredited / admin key missing"
+ * (`reason: 'skipped'`) from an actual broadcast failure
+ * (`reason: 'timeout'` or `reason: 'chain_error'`). A timeout outcome means
+ * the broadcast MAY have landed on chain — the caller should surface a
+ * degraded-state warning rather than retry blindly.
  */
-export async function checkAndAccreditViaWot(vouchee: string): Promise<string | null> {
+export async function broadcastWotAccreditation(vouchee: string): Promise<WotAccreditationResult> {
   if (!config.pevoAdminPostingKey) {
     logger.warn('PEVO_ADMIN_POSTING_KEY not configured — cannot broadcast WoT accreditation');
-    return null;
+    return { ok: false, reason: 'skipped' };
   }
 
   const status = await getVouchStatus(vouchee);
-  if (!status || !status.eligible) return null;
+  if (!status || !status.eligible) return { ok: false, reason: 'skipped' };
 
   // Check if already accredited
   const accreditedSet = await getAccreditedSet([vouchee]);
-  if (accreditedSet.has(vouchee)) return null;
+  if (accreditedSet.has(vouchee)) return { ok: false, reason: 'skipped' };
 
-  // Get vouchee's info from vouches (use the most common relationship context)
   const pool = getPool();
-  if (!pool) return null;
+  if (!pool) return { ok: false, reason: 'skipped' };
 
   try {
     const { PrivateKey } = await import('@hiveio/dhive');
@@ -179,19 +232,55 @@ export async function checkAndAccreditViaWot(vouchee: string): Promise<string | 
     );
 
     logger.info({ vouchee, txId: result.id }, 'WoT auto-accreditation broadcast');
-    return result.id;
+    return { ok: true, txId: result.id };
   } catch (err) {
+    if (err instanceof BroadcastTimeoutError) {
+      logger.error(
+        { err, vouchee },
+        'WoT accreditation broadcast timed out — outcome ambiguous, may or may not have landed',
+      );
+      return { ok: false, reason: 'timeout', err };
+    }
     logger.error({ err, vouchee }, 'Failed to broadcast WoT accreditation');
-    return null;
+    return { ok: false, reason: 'chain_error', err: err as Error };
   }
+}
+
+/**
+ * @deprecated Use `broadcastWotAccreditation` for explicit outcome signalling.
+ * Retained as a thin shim returning `string | null` for any remaining callers.
+ */
+export async function checkAndAccreditViaWot(vouchee: string): Promise<string | null> {
+  const result = await broadcastWotAccreditation(vouchee);
+  return result.ok ? result.txId : null;
 }
 
 /**
  * Check if revoking a voucher's accreditation should cascade to their vouchees.
  * For each vouchee that drops below the WoT threshold and was WoT-accredited,
  * broadcast a revocation.
+ *
+ * Semantics:
+ * - Per-vouchee broadcast timeouts or chain errors are logged at `error` and
+ *   the loop continues to the next vouchee (the missed revocation shows up in
+ *   the operator's error log and can be re-attempted manually — no silent
+ *   drop).
+ * - The cascade aborts with `PartialCascadeError` once the aggregate wall-
+ *   clock budget (`CASCADE_BUDGET_MS`, 60s) is exceeded, carrying the list of
+ *   completed (successfully revoked) and pending (identified-but-not-
+ *   attempted / failed) vouchees.
+ * - The top-level caller should catch `PartialCascadeError` and surface the
+ *   partial state; nested recursive calls propagate the error upward so the
+ *   top-level cascade decides what to persist.
  */
-export async function cascadeRevocation(revokedAccount: string, depth = 0): Promise<string[]> {
+export async function cascadeRevocation(
+  revokedAccount: string,
+  depth = 0,
+  deadlineMs?: number,
+): Promise<string[]> {
+  // Top-level call establishes the deadline; recursive calls inherit it.
+  const effectiveDeadline = deadlineMs ?? Date.now() + CASCADE_BUDGET_MS;
+
   if (depth >= MAX_REVOCATION_DEPTH) {
     logger.warn({ revokedAccount, depth }, 'Cascading revocation depth limit reached');
     return [];
@@ -203,6 +292,9 @@ export async function cascadeRevocation(revokedAccount: string, depth = 0): Prom
 
   const pool = getPool();
   if (!pool) return [];
+
+  const completed: string[] = [];
+  const pending: string[] = [];
 
   try {
     const threshold = await getWotThreshold();
@@ -217,11 +309,20 @@ export async function cascadeRevocation(revokedAccount: string, depth = 0): Prom
       [...findCte.params, revokedAccount],
     );
 
-    const revokedTxIds: string[] = [];
     const { PrivateKey } = await import('@hiveio/dhive');
 
     for (const row of result.rows) {
       const vouchee = row.vouchee as string;
+
+      // Aggregate budget check — abort cascade if we've blown through the
+      // wall-clock cap. Everything not yet attempted lands in `pending`.
+      if (Date.now() >= effectiveDeadline) {
+        // Remaining vouchees in this level's result set (including `vouchee`)
+        // are pending.
+        const remainingRows = result.rows.slice(result.rows.indexOf(row));
+        for (const r of remainingRows) pending.push(r.vouchee as string);
+        throw new PartialCascadeError({ completed, pending, rootRevocation: revokedAccount });
+      }
 
       // Check if this vouchee was WoT-accredited
       const accredCte = activeAccreditationsCteBody();
@@ -268,18 +369,69 @@ export async function cascadeRevocation(revokedAccount: string, depth = 0): Prom
         );
 
         logger.info({ vouchee, revokedAccount, txId: txResult.id }, 'WoT cascading revocation broadcast');
-        revokedTxIds.push(txResult.id);
+        completed.push(txResult.id);
 
-        // Recursively cascade — the revoked vouchee may have vouched for others
-        const nested = await cascadeRevocation(vouchee, depth + 1);
-        revokedTxIds.push(...nested);
+        // Recursively cascade — the revoked vouchee may have vouched for others.
+        // Propagate PartialCascadeError upward so the top-level call has the
+        // full completed/pending picture. Non-budget errors from the nested
+        // call fall through to the outer catch of this iteration.
+        try {
+          const nested = await cascadeRevocation(vouchee, depth + 1, effectiveDeadline);
+          completed.push(...nested);
+        } catch (nestedErr) {
+          if (nestedErr instanceof PartialCascadeError) {
+            // Fold nested progress into our aggregate and re-throw.
+            completed.push(...nestedErr.completed);
+            pending.push(...nestedErr.pending);
+            throw new PartialCascadeError({
+              completed,
+              pending,
+              rootRevocation: depth === 0 ? revokedAccount : nestedErr.rootRevocation,
+            });
+          }
+          throw nestedErr;
+        }
       } catch (err) {
-        logger.error({ err, vouchee }, 'Failed to broadcast cascading revocation');
+        if (err instanceof PartialCascadeError) {
+          // Budget-exhaustion surfaced from this iteration or a nested call —
+          // propagate upward without swallowing.
+          throw err;
+        }
+        if (err instanceof BroadcastTimeoutError) {
+          logger.error(
+            { err, vouchee, rootRevocation: revokedAccount },
+            'WoT cascading revocation timed out — vouchee un-revoked, manual follow-up required',
+          );
+          pending.push(vouchee);
+          continue;
+        }
+        logger.error(
+          { err, vouchee, rootRevocation: revokedAccount },
+          'Failed to broadcast cascading revocation',
+        );
+        pending.push(vouchee);
       }
     }
 
-    return revokedTxIds;
+    return completed;
   } catch (err) {
+    if (err instanceof PartialCascadeError) {
+      // Let the top-level caller handle partial state. Only the top-level
+      // cascade (depth === 0) is expected to log or persist the partial
+      // state; intermediate levels bubble up.
+      if (depth === 0) {
+        logger.error(
+          {
+            err,
+            rootRevocation: err.rootRevocation,
+            completed: err.completed,
+            pending: err.pending,
+          },
+          'Cascade revocation budget exceeded — partial state surfaced to caller',
+        );
+      }
+      throw err;
+    }
     logger.error({ err, revokedAccount }, 'Cascade revocation check failed');
     return [];
   }

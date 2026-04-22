@@ -42,3 +42,77 @@ Make WoT broadcast outcomes observable and recoverable.
 ## [TODO Architect]
 
 - Whether partial-cascade state should be persisted (DB row, Redis queue) vs. just logged. Lean: log-only for now; file a follow-up for persistent retry queue once operator demand is clear.
+
+## Backend re-review signal (2026-04-22, worktree-agent-a8c0ade0)
+
+Landed:
+
+- `broadcastWotAccreditation(vouchee)` added with tagged-union return
+  `{ ok: true, txId } | { ok: false, reason: 'timeout' | 'chain_error' | 'skipped', err? }`
+  in `backend/src/wot.ts`. `'skipped'` covers all the former `null` paths
+  (admin key missing, not eligible, already accredited, pool unavailable).
+  `'timeout'` fires only on `BroadcastTimeoutError`; every other throw maps to
+  `'chain_error'` with the underlying `err` preserved. `checkAndAccreditViaWot`
+  retained as a `@deprecated` thin shim returning `string | null` (no remaining
+  callers in repo but kept for safety; archive pass can drop if preferred).
+
+- `cascadeRevocation` now takes an optional internal `deadlineMs` so the
+  top-level call stamps one deadline that recursive descendants inherit. The
+  loop checks `Date.now() >= deadline` before each vouchee and throws
+  `PartialCascadeError { completed, pending, rootRevocation }` when exceeded.
+  Nested `PartialCascadeError`s are caught, their progress folded into the
+  outer aggregate, and re-thrown with the outer depth-0 `rootRevocation`.
+  `CASCADE_BUDGET_MS = 60_000` is exported.
+
+- **Cascade semantics chosen: continue-on-timeout-until-budget.** A single-
+  vouchee `BroadcastTimeoutError` is logged at `logger.error` with
+  `{ err, vouchee, rootRevocation }`, appended to `pending`, and the loop
+  continues. The cascade only aborts when the aggregate wall-clock budget
+  is exhausted. Rationale: a single 30s hang doesn't justify abandoning the
+  remaining vouchees. The per-vouchee error log gives operators a paper
+  trail for manual re-revocation, and the budget prevents K cascades from
+  holding the route handler for K*30s.
+
+- `backend/src/routes/wot.ts` vouch handler branches on the tagged union:
+  happy path returns `accredited: true, tx_id`; `timeout` returns
+  `accredited: false, accreditation_outcome: 'timeout'` plus a degraded-
+  state message (no blind retry); `chain_error` returns
+  `accredited: false, accreditation_outcome: 'chain_error'`; `skipped`
+  returns the old "N/M vouches" message. Retract handler catches
+  `PartialCascadeError`, folds `completed` into `revocations`, and adds a
+  `partial_cascade: { completed, pending, root_revocation }` field on the
+  response.
+
+- Tests: `backend/tests/wot-broadcast-timeout.test.ts` (5 new). Covers
+  (a) single-broadcast timeout → `ok: false, reason: 'timeout'`; also
+  chain-error and happy-path variants for completeness. (b) 3-vouchee
+  cascade with the middle one timing out → `completed = ['tx-v1', 'tx-v3']`,
+  3 broadcasts attempted, v2 logged at error and skipped. (c) aggregate
+  budget exceeded via `vi.setSystemTime` jump after v1 succeeds →
+  `PartialCascadeError` with `completed: ['tx-v1']`,
+  `pending: ['v2', 'v3', 'v4']`, `rootRevocation: 'boss'`. File header
+  documents the mocked-pool + mocked-`broadcastJsonWithTimeout` carve-out
+  per root CLAUDE.md.
+
+- All 11 tests across `tests/wot-broadcast-timeout.test.ts`,
+  `tests/routes/wot.test.ts`, and `tests/hive-broadcast-timeout.test.ts`
+  pass. `tsc --noEmit` clean. `npm run lint` shows only the 6 pre-existing
+  `no-explicit-any` warnings in unrelated files.
+
+Deferred / notes for architect:
+
+- **Persistent retry queue deferred pending operator demand.** Per the
+  task's [TODO Architect] lean, partial-cascade state is log-only for this
+  pass. The `partial_cascade` response field plus `logger.error` entries
+  give operators enough signal to re-run revocations manually. Please ack
+  so we can archive. If a Redis/DB outbox follow-up task is wanted, say so
+  during re-review.
+
+- `checkAndAccreditViaWot` shim kept for safety since the task said to
+  "update every caller" and there are none left in the repo. Flagged
+  `@deprecated`. Delete freely during archive if preferred.
+
+- `accreditation_outcome` field on the vouch response and `partial_cascade`
+  field on the retract response are new. `agents/docs/api-contracts/` may
+  need updates. [TODO Architect] per backend CLAUDE.md — contract edits are
+  architect-owned; I did not touch the contract file.

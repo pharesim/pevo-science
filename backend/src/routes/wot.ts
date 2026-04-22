@@ -9,7 +9,7 @@ import { Router, type Request, type Response } from 'express';
 import { sendOk, sendError } from '../response.js';
 import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';
 import { getAccreditedSet } from '../accreditation.js';
-import { getVouchStatus, checkAndAccreditViaWot, cascadeRevocation } from '../wot.js';
+import { getVouchStatus, broadcastWotAccreditation, cascadeRevocation, PartialCascadeError } from '../wot.js';
 import { logger } from '../logger.js';
 import { isHafAvailable } from '../db.js';
 
@@ -60,19 +60,55 @@ router.post('/vouch', verifyHiveSignature, async (req: Request, res: Response) =
   }
 
   // Check if the vouchee now meets the threshold
-  const txId = await checkAndAccreditViaWot(vouchee);
+  const accreditResult = await broadcastWotAccreditation(vouchee);
   const status = await getVouchStatus(vouchee);
 
-  if (txId) {
-    logger.info({ voucher, vouchee, txId }, 'WoT accreditation triggered by vouch');
+  if (accreditResult.ok) {
+    logger.info(
+      { voucher, vouchee, txId: accreditResult.txId },
+      'WoT accreditation triggered by vouch',
+    );
+    return sendOk(res, {
+      message: `Vouch recorded. ${vouchee} has been auto-accredited via Web of Trust.`,
+      accredited: true,
+      tx_id: accreditResult.txId,
+      vouch_status: status,
+    });
   }
 
+  if (accreditResult.reason === 'timeout') {
+    // Broadcast may or may not have landed — surface a degraded-state warning
+    // rather than retry blindly (retry could land a duplicate accreditation).
+    logger.error(
+      { err: accreditResult.err, voucher, vouchee },
+      'WoT accreditation broadcast timed out — outcome ambiguous',
+    );
+    return sendOk(res, {
+      message:
+        `Vouch recorded. Auto-accreditation broadcast for ${vouchee} is in a degraded state ` +
+        '(timeout). Please check on-chain status before re-attempting.',
+      accredited: false,
+      accreditation_outcome: 'timeout',
+      tx_id: null,
+      vouch_status: status,
+    });
+  }
+
+  if (accreditResult.reason === 'chain_error') {
+    return sendOk(res, {
+      message: `Vouch recorded. Auto-accreditation broadcast for ${vouchee} failed.`,
+      accredited: false,
+      accreditation_outcome: 'chain_error',
+      tx_id: null,
+      vouch_status: status,
+    });
+  }
+
+  // reason === 'skipped' — not eligible, already accredited, or admin key missing.
   sendOk(res, {
-    message: txId
-      ? `Vouch recorded. ${vouchee} has been auto-accredited via Web of Trust.`
-      : `Vouch recorded. ${vouchee} has ${status?.vouch_count ?? 0}/${status?.threshold ?? 3} vouches.`,
-    accredited: !!txId,
-    tx_id: txId,
+    message: `Vouch recorded. ${vouchee} has ${status?.vouch_count ?? 0}/${status?.threshold ?? 3} vouches.`,
+    accredited: false,
+    tx_id: null,
     vouch_status: status,
   });
 });
@@ -92,15 +128,42 @@ router.post('/retract', verifyHiveSignature, async (req: Request, res: Response)
   // Check for cascading revocations
   // The retract_vouch custom_json has already been broadcast by the frontend.
   // We check if the vouchee (and their downstream vouchees) should be revoked.
-  const revokedTxIds = await cascadeRevocation(voucher);
+  let revokedTxIds: string[] = [];
+  let partial: PartialCascadeError | null = null;
+  try {
+    revokedTxIds = await cascadeRevocation(voucher);
+  } catch (err) {
+    if (err instanceof PartialCascadeError) {
+      partial = err;
+      revokedTxIds = err.completed;
+      logger.error(
+        {
+          voucher,
+          completed: err.completed,
+          pending: err.pending,
+          rootRevocation: err.rootRevocation,
+        },
+        'WoT cascade revocation aborted on budget exhaustion — operator follow-up required',
+      );
+    } else {
+      throw err;
+    }
+  }
 
   const status = await getVouchStatus(vouchee);
 
+  const baseMessage = revokedTxIds.length > 0
+    ? `Retraction processed. ${revokedTxIds.length} cascading revocation(s) broadcast.`
+    : 'Retraction processed. No cascading revocations needed.';
+
   sendOk(res, {
-    message: revokedTxIds.length > 0
-      ? `Retraction processed. ${revokedTxIds.length} cascading revocation(s) broadcast.`
-      : 'Retraction processed. No cascading revocations needed.',
+    message: partial
+      ? `${baseMessage} Aggregate budget exceeded — ${partial.pending.length} pending revocation(s) require manual follow-up.`
+      : baseMessage,
     revocations: revokedTxIds,
+    partial_cascade: partial
+      ? { completed: partial.completed, pending: partial.pending, root_revocation: partial.rootRevocation }
+      : null,
     vouch_status: status,
   });
 });
