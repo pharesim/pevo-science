@@ -269,7 +269,8 @@
     "searchPlaceholder": "按用户名搜索...",
     "searching": "搜索中...",
     "noResults": "未找到账户。",
-    "signInHint": "请先登录。您的账户将被验证以证明所有权。"
+    "signInHint": "请先登录。您的账户将被验证以证明所有权。",
+    "orcidVerifyFailed": "ORCID verification failed. Please try again."
   },
   "researchers": {
     "title": "已认证研究人员",
@@ -309,6 +310,7 @@
     "upvote": "赞成",
     "downvote": "反对",
     "voteFailed": "投票失败",
+    "cancelFailed": "Could not cancel vote. Please try again.",
     "evaluate": "评价",
     "votes": "票",
     "strongEndorsement": "强烈支持",

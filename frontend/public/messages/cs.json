@@ -269,7 +269,8 @@
     "searchPlaceholder": "Hledat podle uživatelského jména...",
     "searching": "Vyhledávání...",
     "noResults": "Nebyly nalezeny žádné účty.",
-    "signInHint": "Nejprve se přihlaste. Váš účet bude ověřen pro prokázání vlastnictví."
+    "signInHint": "Nejprve se přihlaste. Váš účet bude ověřen pro prokázání vlastnictví.",
+    "orcidVerifyFailed": "ORCID verification failed. Please try again."
   },
   "researchers": {
     "title": "Akreditovaní výzkumníci",
@@ -309,6 +310,7 @@
     "upvote": "Hlasovat pro",
     "downvote": "Hlasovat proti",
     "voteFailed": "Hlasování selhalo",
+    "cancelFailed": "Could not cancel vote. Please try again.",
     "evaluate": "Hodnotit",
     "votes": "hlasy",
     "strongEndorsement": "Silný souhlas",

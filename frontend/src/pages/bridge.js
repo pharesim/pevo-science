@@ -266,7 +266,8 @@ export function initBridgePage() {
         await Alpine.store('auth').connect();
       } catch (err) {
         if (!this._mounted) return;
-        Alpine.store('toast').show(err.message || this.$t('common.connectionFailed'), 'error');
+        console.warn('[bridge connect]', err);
+        Alpine.store('toast').show(this.$t('common.connectionFailed'), 'error');
       }
     },
 

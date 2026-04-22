@@ -218,7 +218,9 @@ export function initReviewPage() {
       try {
         await Alpine.store('auth').connect();
       } catch (err) {
-        Alpine.store('toast').show(err.message || this.$t('common.connectionFailed'), 'error');
+        if (!this._mounted) return;
+        console.warn('[review connect]', err);
+        Alpine.store('toast').show(this.$t('common.connectionFailed'), 'error');
       }
     },
 

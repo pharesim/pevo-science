@@ -90,11 +90,16 @@ describe('contactPage', () => {
       comp.subject = 'Test';
       comp.message = 'Message';
 
-      mockSubmitContactForm.mockRejectedValue(new Error('Rate limited'));
+      const leaky = new Error('Rate limited sentinel');
+      mockSubmitContactForm.mockRejectedValue(leaky);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       await comp.handleSubmit();
 
       expect(comp.step).toBe('error');
-      expect(comp.errorMessage).toBe('Rate limited');
+      // Sanitization: always bind i18n key, never raw err.message.
+      expect(comp.errorMessage).toBe('contact.errorGeneric');
+      expect(comp.errorMessage).not.toContain('sentinel');
+      expect(warnSpy.mock.calls[0][1]).toBe(leaky);
     });
 
     it('uses i18n fallback for non-Error rejections', async () => {

@@ -269,7 +269,8 @@
     "searchPlaceholder": "Søg efter brugernavn...",
     "searching": "Søger...",
     "noResults": "Ingen konti fundet.",
-    "signInHint": "Log ind først. Din konto verificeres for at bevise ejerskab."
+    "signInHint": "Log ind først. Din konto verificeres for at bevise ejerskab.",
+    "orcidVerifyFailed": "ORCID verification failed. Please try again."
   },
   "researchers": {
     "title": "Akkrediterede forskere",
@@ -309,6 +310,7 @@
     "upvote": "Stem op",
     "downvote": "Stem ned",
     "voteFailed": "Afstemning mislykkedes",
+    "cancelFailed": "Could not cancel vote. Please try again.",
     "evaluate": "Vurdér",
     "votes": "stemmer",
     "strongEndorsement": "Stærk tilslutning",

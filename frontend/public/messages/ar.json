@@ -269,7 +269,8 @@
     "searchPlaceholder": "البحث باسم المستخدم...",
     "searching": "جارٍ البحث...",
     "noResults": "لم يتم العثور على حسابات.",
-    "signInHint": "سجّل الدخول أولاً. سيتم التحقق من حسابك لإثبات الملكية."
+    "signInHint": "سجّل الدخول أولاً. سيتم التحقق من حسابك لإثبات الملكية.",
+    "orcidVerifyFailed": "ORCID verification failed. Please try again."
   },
   "researchers": {
     "title": "الباحثون المعتمدون",
@@ -309,6 +310,7 @@
     "upvote": "تصويت إيجابي",
     "downvote": "تصويت سلبي",
     "voteFailed": "فشل التصويت",
+    "cancelFailed": "Could not cancel vote. Please try again.",
     "evaluate": "تقييم",
     "votes": "أصوات",
     "strongEndorsement": "تأييد قوي",

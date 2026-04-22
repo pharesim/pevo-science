@@ -499,4 +499,20 @@ describe('publishPage', () => {
       expect(comp.citations).toEqual([]);
     });
   });
+
+  describe('handleConnect sanitize invariant', () => {
+    // Representative test for the 4 handleConnect copies (publish, review,
+    // accreditation, bridge). Bodies are literal copies; one test proves the
+    // pattern. If copies diverge later, add per-file coverage.
+    it('shows i18n key in toast (never raw err.message) and warns with the real err', async () => {
+      const leaky = new Error('keychain-reject-sentinel');
+      mockStores.auth.connect = vi.fn().mockRejectedValue(leaky);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const comp = createComponent();
+      await comp.handleConnect();
+      expect(mockStores.toast.show).toHaveBeenCalledWith('common.connectionFailed', 'error');
+      expect(mockStores.toast.show.mock.calls[0][0]).not.toContain('sentinel');
+      expect(warnSpy.mock.calls[0][1]).toBe(leaky);
+    });
+  });
 });

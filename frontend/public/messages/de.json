@@ -269,7 +269,8 @@
     "searchPlaceholder": "Nach Benutzername suchen...",
     "searching": "Suche läuft...",
     "noResults": "Keine Konten gefunden.",
-    "signInHint": "Melden Sie sich zuerst an. Ihr Konto wird verifiziert, um den Besitz nachzuweisen."
+    "signInHint": "Melden Sie sich zuerst an. Ihr Konto wird verifiziert, um den Besitz nachzuweisen.",
+    "orcidVerifyFailed": "ORCID verification failed. Please try again."
   },
   "researchers": {
     "title": "Akkreditierte Forschende",
@@ -309,6 +310,7 @@
     "upvote": "Positiv bewerten",
     "downvote": "Negativ bewerten",
     "voteFailed": "Abstimmung fehlgeschlagen",
+    "cancelFailed": "Could not cancel vote. Please try again.",
     "evaluate": "Bewerten",
     "votes": "Stimmen",
     "strongEndorsement": "Starke Zustimmung",

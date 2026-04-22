@@ -269,7 +269,8 @@
     "searchPlaceholder": "Kullanıcı adına göre ara...",
     "searching": "Aranıyor...",
     "noResults": "Hesap bulunamadı.",
-    "signInHint": "Önce giriş yapın. Hesap sahipliğini kanıtlamak için hesabınız doğrulanacaktır."
+    "signInHint": "Önce giriş yapın. Hesap sahipliğini kanıtlamak için hesabınız doğrulanacaktır.",
+    "orcidVerifyFailed": "ORCID verification failed. Please try again."
   },
   "researchers": {
     "title": "Akredite Araştırmacılar",
@@ -309,6 +310,7 @@
     "upvote": "Olumlu Oy",
     "downvote": "Olumsuz Oy",
     "voteFailed": "Oylama başarısız",
+    "cancelFailed": "Could not cancel vote. Please try again.",
     "evaluate": "Değerlendir",
     "votes": "oy",
     "strongEndorsement": "Güçlü onay",

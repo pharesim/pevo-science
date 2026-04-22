@@ -237,19 +237,28 @@ describe('accreditationPage', () => {
         redirect_url: 'https://evil.com/steal',
       });
 
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       await comp.handleOrcidVerify();
 
       expect(comp.orcidLoading).toBe(false);
-      expect(mockToastStore.show).toHaveBeenCalledWith('Invalid ORCID redirect URL', 'error');
+      // Sanitized: i18n key only, never raw err.message (the client-thrown
+      // 'Invalid ORCID redirect URL' must not reach the DOM).
+      expect(mockToastStore.show).toHaveBeenCalledWith('accreditation.orcidVerifyFailed', 'error');
+      expect(mockToastStore.show.mock.calls[0][0]).not.toContain('Invalid');
+      expect(warnSpy).toHaveBeenCalled();
     });
 
-    it('shows toast on startOrcid failure and cleans up', async () => {
+    it('shows sanitized toast on startOrcid failure and cleans up', async () => {
       const comp = createComponent();
-      mockStartOrcid.mockRejectedValue(new Error('Network error'));
+      const leaky = new Error('network-error-sentinel');
+      mockStartOrcid.mockRejectedValue(leaky);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       await comp.handleOrcidVerify();
 
       expect(comp.orcidLoading).toBe(false);
-      expect(mockToastStore.show).toHaveBeenCalledWith('Network error', 'error');
+      expect(mockToastStore.show).toHaveBeenCalledWith('accreditation.orcidVerifyFailed', 'error');
+      expect(mockToastStore.show.mock.calls[0][0]).not.toContain('sentinel');
+      expect(warnSpy.mock.calls[0][1]).toBe(leaky);
     });
 
     it('sets orcidLoading to true during the call', async () => {

@@ -55,8 +55,8 @@ export function initHeader() {
       try {
         await this.$store.auth.connect();
       } catch (err) {
-        const msg = err instanceof Error ? err.message : this.$t('common.connectionFailed');
-        this.$store.toast.show(msg, 'error');
+        console.warn('[header sign in]', err);
+        this.$store.toast.show(this.$t('common.connectionFailed'), 'error');
       }
     },
 

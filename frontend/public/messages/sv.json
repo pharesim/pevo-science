@@ -269,7 +269,8 @@
     "searchPlaceholder": "Sök efter användarnamn...",
     "searching": "Söker...",
     "noResults": "Inga konton hittades.",
-    "signInHint": "Logga in först. Ditt konto kommer att verifieras för att bevisa ägande."
+    "signInHint": "Logga in först. Ditt konto kommer att verifieras för att bevisa ägande.",
+    "orcidVerifyFailed": "ORCID verification failed. Please try again."
   },
   "researchers": {
     "title": "Ackrediterade forskare",
@@ -309,6 +310,7 @@
     "upvote": "Rösta upp",
     "downvote": "Rösta ner",
     "voteFailed": "Röstning misslyckades",
+    "cancelFailed": "Could not cancel vote. Please try again.",
     "evaluate": "Bedöm",
     "votes": "röster",
     "strongEndorsement": "Starkt stöd",

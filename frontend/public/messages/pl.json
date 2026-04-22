@@ -269,7 +269,8 @@
     "searchPlaceholder": "Szukaj po nazwie użytkownika...",
     "searching": "Wyszukiwanie...",
     "noResults": "Nie znaleziono kont.",
-    "signInHint": "Najpierw się zaloguj. Twoje konto zostanie zweryfikowane w celu potwierdzenia własności."
+    "signInHint": "Najpierw się zaloguj. Twoje konto zostanie zweryfikowane w celu potwierdzenia własności.",
+    "orcidVerifyFailed": "ORCID verification failed. Please try again."
   },
   "researchers": {
     "title": "Akredytowani naukowcy",
@@ -309,6 +310,7 @@
     "upvote": "Głos za",
     "downvote": "Głos przeciw",
     "voteFailed": "Głosowanie nie powiodło się",
+    "cancelFailed": "Could not cancel vote. Please try again.",
     "evaluate": "Oceń",
     "votes": "głosy",
     "strongEndorsement": "Silne poparcie",

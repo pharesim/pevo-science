@@ -269,7 +269,8 @@
     "searchPlaceholder": "חיפוש לפי שם משתמש...",
     "searching": "מחפש...",
     "noResults": "לא נמצאו חשבונות.",
-    "signInHint": "התחברו תחילה. החשבון שלכם יאומת כדי להוכיח בעלות."
+    "signInHint": "התחברו תחילה. החשבון שלכם יאומת כדי להוכיח בעלות.",
+    "orcidVerifyFailed": "ORCID verification failed. Please try again."
   },
   "researchers": {
     "title": "חוקרים מוסמכים",
@@ -309,6 +310,7 @@
     "upvote": "הצבעה בעד",
     "downvote": "הצבעה נגד",
     "voteFailed": "ההצבעה נכשלה",
+    "cancelFailed": "Could not cancel vote. Please try again.",
     "evaluate": "הערך",
     "votes": "קולות",
     "strongEndorsement": "תמיכה חזקה",

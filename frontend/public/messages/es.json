@@ -269,7 +269,8 @@
     "searchPlaceholder": "Buscar por nombre de usuario...",
     "searching": "Buscando...",
     "noResults": "No se encontraron cuentas.",
-    "signInHint": "Inicie sesión primero. Se verificará su cuenta para demostrar la propiedad."
+    "signInHint": "Inicie sesión primero. Se verificará su cuenta para demostrar la propiedad.",
+    "orcidVerifyFailed": "ORCID verification failed. Please try again."
   },
   "researchers": {
     "title": "Investigadores acreditados",
@@ -309,6 +310,7 @@
     "upvote": "Votar a favor",
     "downvote": "Votar en contra",
     "voteFailed": "Error en la votación",
+    "cancelFailed": "Could not cancel vote. Please try again.",
     "evaluate": "Evaluar",
     "votes": "votos",
     "strongEndorsement": "Apoyo fuerte",

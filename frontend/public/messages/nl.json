@@ -269,7 +269,8 @@
     "searchPlaceholder": "Zoek op gebruikersnaam...",
     "searching": "Zoeken...",
     "noResults": "Geen accounts gevonden.",
-    "signInHint": "Meld u eerst aan. Uw account wordt geverifieerd om eigendom te bewijzen."
+    "signInHint": "Meld u eerst aan. Uw account wordt geverifieerd om eigendom te bewijzen.",
+    "orcidVerifyFailed": "ORCID verification failed. Please try again."
   },
   "researchers": {
     "title": "Geaccrediteerde onderzoekers",
@@ -309,6 +310,7 @@
     "upvote": "Positief stemmen",
     "downvote": "Negatief stemmen",
     "voteFailed": "Stemmen mislukt",
+    "cancelFailed": "Could not cancel vote. Please try again.",
     "evaluate": "Evalueren",
     "votes": "stemmen",
     "strongEndorsement": "Sterke aanbeveling",

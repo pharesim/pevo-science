@@ -265,7 +265,8 @@ export function initAccreditationPage() {
         await Alpine.store('auth').connect();
       } catch (err) {
         if (!this._mounted) return;
-        Alpine.store('toast').show(err.message || this.$t('common.connectionFailed'), 'error');
+        console.warn('[accreditation connect]', err);
+        Alpine.store('toast').show(this.$t('common.connectionFailed'), 'error');
       }
     },
 
@@ -314,7 +315,8 @@ export function initAccreditationPage() {
         window.location.href = data.redirect_url;
       } catch (err) {
         if (!this._mounted) return;
-        Alpine.store('toast').show(err.message || 'ORCID verification failed', 'error');
+        console.warn('[accreditation orcid verify]', err);
+        Alpine.store('toast').show(this.$t('accreditation.orcidVerifyFailed'), 'error');
         this.orcidLoading = false;
         localStorage.removeItem('pevo_orcid_mode');
       }

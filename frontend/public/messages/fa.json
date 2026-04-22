@@ -269,7 +269,8 @@
     "searchPlaceholder": "جستجو بر اساس نام کاربری...",
     "searching": "در حال جستجو...",
     "noResults": "هیچ حسابی یافت نشد.",
-    "signInHint": "ابتدا وارد شوید. حساب شما برای اثبات مالکیت تایید خواهد شد."
+    "signInHint": "ابتدا وارد شوید. حساب شما برای اثبات مالکیت تایید خواهد شد.",
+    "orcidVerifyFailed": "ORCID verification failed. Please try again."
   },
   "researchers": {
     "title": "پژوهشگران معتبر",
@@ -309,6 +310,7 @@
     "upvote": "رای مثبت",
     "downvote": "رای منفی",
     "voteFailed": "رای‌گیری ناموفق بود",
+    "cancelFailed": "Could not cancel vote. Please try again.",
     "evaluate": "ارزیابی",
     "votes": "رأی‌ها",
     "strongEndorsement": "تأیید قوی",

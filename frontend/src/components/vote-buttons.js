@@ -156,7 +156,8 @@ export function initVoteButtons() {
           this._updateLocalVoter(0);
           invalidatePaperCache(this.author, this.permlink).catch(() => {});
         } catch (err) {
-          Alpine.store('toast').show(err.message || this.$t('vote.voteFailed'), 'error');
+          console.warn('[vote cancel]', err);
+          Alpine.store('toast').show(this.$t('vote.cancelFailed'), 'error');
         } finally {
           this.isVoting = false;
           this.selectorOpen = false;
@@ -188,7 +189,8 @@ export function initVoteButtons() {
         this.displayVotes += delta;
         invalidatePaperCache(this.author, this.permlink).catch(() => {});
       } catch (err) {
-        Alpine.store('toast').show(err.message || this.$t('vote.voteFailed'), 'error');
+        console.warn('[vote submit]', err);
+        Alpine.store('toast').show(this.$t('vote.voteFailed'), 'error');
       } finally {
         this.isVoting = false;
         this.selectorOpen = false;

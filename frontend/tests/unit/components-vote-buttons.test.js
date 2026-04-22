@@ -242,11 +242,28 @@ describe('voteButtons', () => {
       })]]);
     });
 
-    it('shows toast on broadcast error', async () => {
-      mockBroadcastOps.mockRejectedValue(new Error('Broadcast failed'));
+    it('shows sanitized toast on broadcast error (vote submit)', async () => {
+      const leaky = new Error('broadcast-failed-sentinel');
+      mockBroadcastOps.mockRejectedValue(leaky);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const comp = createComponent({ author: 'bob', permlink: 'p1', netVotes: 5 });
       await comp.handleVote(10000);
-      expect(mockToastStore.show).toHaveBeenCalledWith('Broadcast failed', 'error');
+      expect(mockToastStore.show).toHaveBeenCalledWith('vote.voteFailed', 'error');
+      expect(mockToastStore.show.mock.calls[0][0]).not.toContain('sentinel');
+      expect(warnSpy.mock.calls[0][1]).toBe(leaky);
+    });
+
+    it('shows sanitized toast on vote-cancel error', async () => {
+      const leaky = new Error('cancel-failed-sentinel');
+      mockBroadcastOps.mockRejectedValue(leaky);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const comp = createComponent({ author: 'bob', permlink: 'p1', netVotes: 5 });
+      comp.voteState = 'up';
+      comp.currentWeight = 10000;
+      await comp.handleVote(0);
+      expect(mockToastStore.show).toHaveBeenCalledWith('vote.cancelFailed', 'error');
+      expect(mockToastStore.show.mock.calls[0][0]).not.toContain('sentinel');
+      expect(warnSpy.mock.calls[0][1]).toBe(leaky);
     });
   });
 });

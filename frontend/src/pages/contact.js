@@ -135,8 +135,9 @@ export function initContactPage() {
         });
         this.step = 'success';
       } catch (err) {
+        console.warn('[contact submit]', err);
         this.step = 'error';
-        this.errorMessage = err instanceof Error ? err.message : this.$t('contact.errorGeneric');
+        this.errorMessage = this.$t('contact.errorGeneric');
       }
     },
 

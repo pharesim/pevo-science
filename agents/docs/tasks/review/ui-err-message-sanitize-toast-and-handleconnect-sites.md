@@ -74,3 +74,30 @@ Flag the extraction decision in the re-review signal — either "extracted, one 
 ## [TODO Architect]
 
 - Decide whether the "no raw err.message in DOM" invariant belongs in `ARCHITECTURE.md` or stays in `docs/solutions/conventions/frontend-error-sanitization-2026-04-21.md`. Review of the parent sweep already surfaced this question; cross-link from ARCHITECTURE.md is the minimal answer if the user wants higher visibility.
+
+---
+
+**UI implementer note (2026-04-22, working on main post-composable-and-teardown-sweep):**
+
+All 8 sites sanitized. Full frontend unit suite: **902/902 pass**; `npm run build` clean. Both acceptance greps clean: `grep -rn '\.show(err\.message' frontend/src/` → empty, `grep -rn 'this\.errorMessage = err' frontend/src/` → empty.
+
+**Per-site summary:**
+
+- **`vote-buttons.js` vote-submit + vote-cancel** — replaced `err.message || this.$t('vote.voteFailed')` with `console.warn + $t('vote.voteFailed' / 'vote.cancelFailed')`. New key `vote.cancelFailed`.
+- **`accreditation.js` handleOrcidVerify** — sanitized `err.message || 'ORCID verification failed'` → `console.warn + $t('accreditation.orcidVerifyFailed')`. New key `accreditation.orcidVerifyFailed`. Killed the English literal fallback.
+- **`accreditation.js`, `bridge.js`, `publish.js`, `review.js` handleConnect (4 copies)** — replaced `err.message || this.$t('common.connectionFailed')` with `console.warn + $t('common.connectionFailed')`. Existing i18n key reused. Also added `if (!this._mounted) return;` guards to the publish/review copies that were missing them (the 1-A teardown sweep focused on broadcast catches and left handleConnect catches untouched in publish/review; accreditation/bridge already had the guard).
+- **`header.js` handleSignIn** — replaced `const msg = err instanceof Error ? err.message : this.$t('common.connectionFailed')` with `console.warn + $t('common.connectionFailed')`. Existing i18n key reused.
+- **`contact.js` submit** — replaced `err instanceof Error ? err.message : this.$t('contact.errorGeneric')` with `console.warn + $t('contact.errorGeneric')`. Existing i18n key reused.
+
+**Extraction decision (per task's "Consideration" section):** **Inlined, kept the 4 handleConnect copies.** Rationale: of the 5 candidate sites, 4 (accreditation/bridge/publish/review) share an identical 3-line body but the 5th (header.js handleSignIn) has a slightly different shape (uses `$store.toast` via Alpine's magic rather than `Alpine.store('toast')`, plus the pre-existing `err instanceof Error` branch). Extracting a `useAuthConnect()` factory for 4 sites while header remains inline doesn't cross the duplication threshold cleanly. The 4 remaining copies are literal and auditable; extraction can land as a follow-up if they drift.
+
+**i18n:** 2 new keys added to `en.json`: `vote.cancelFailed` + `accreditation.orcidVerifyFailed`. Stubbed across 14 non-English locales with English placeholders via JSON-aware edit (initial sed-based pass matched 4 unintended `signInHint` anchors across different blocks — reverted and redone via Python/JSON). 30 `STUBS.md` entries appended (2 keys × 15 non-English locales). The 7 reused keys (`vote.voteFailed`, `common.connectionFailed`, `contact.errorGeneric`) were NOT added to STUBS — they already carry real translations in every locale.
+
+**Test coverage added:**
+- 2 sanitize tests in `tests/unit/components-vote-buttons.test.js` (one per site) replacing the pre-existing `'Broadcast failed'` raw-assertion test.
+- 2 sanitize tests in `tests/unit/pages-accreditation.test.js` handleOrcidVerify describe (replacing pre-existing `'Invalid ORCID redirect URL'` / `'Network error'` raw-assertion tests).
+- 1 sanitize test in `tests/unit/pages-publish.test.js` — representative for the 4 handleConnect copies (comment explains the coverage scope).
+- 1 sanitize test in `tests/unit/components-header.test.js` for handleSignIn.
+- 1 updated sanitize test in `tests/unit/pages-contact.test.js` replacing the pre-existing `'Rate limited'` raw-assertion.
+
+**Path to re-archive:** (1) Architect reviews with `/ce-code-review`. (2) Archives on clean. No hold items expected — the invariant is now fully enforced and the grep criteria are empty.

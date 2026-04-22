@@ -269,7 +269,8 @@
     "searchPlaceholder": "Cerca per nome utente...",
     "searching": "Ricerca in corso...",
     "noResults": "Nessun account trovato.",
-    "signInHint": "Accedi prima. Il tuo account verrà verificato per dimostrarne la proprietà."
+    "signInHint": "Accedi prima. Il tuo account verrà verificato per dimostrarne la proprietà.",
+    "orcidVerifyFailed": "ORCID verification failed. Please try again."
   },
   "researchers": {
     "title": "Ricercatori Accreditati",
@@ -309,6 +310,7 @@
     "upvote": "Voto positivo",
     "downvote": "Voto negativo",
     "voteFailed": "Voto fallito",
+    "cancelFailed": "Could not cancel vote. Please try again.",
     "evaluate": "Valuta",
     "votes": "voti",
     "strongEndorsement": "Forte approvazione",

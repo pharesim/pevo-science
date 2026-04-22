@@ -269,7 +269,8 @@
     "searchPlaceholder": "Search by username...",
     "searching": "Searching...",
     "noResults": "No accounts found.",
-    "signInHint": "Sign in first. Your account will be verified to prove ownership."
+    "signInHint": "Sign in first. Your account will be verified to prove ownership.",
+    "orcidVerifyFailed": "ORCID verification failed. Please try again."
   },
   "researchers": {
     "title": "Accredited Researchers",
@@ -309,6 +310,7 @@
     "upvote": "Upvote",
     "downvote": "Downvote",
     "voteFailed": "Vote failed",
+    "cancelFailed": "Could not cancel vote. Please try again.",
     "evaluate": "Evaluate",
     "votes": "votes",
     "strongEndorsement": "Strong endorsement",

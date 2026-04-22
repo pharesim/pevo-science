@@ -269,7 +269,8 @@
     "searchPlaceholder": "Pesquisar por nome de usuário...",
     "searching": "Pesquisando...",
     "noResults": "Nenhuma conta encontrada.",
-    "signInHint": "Entre primeiro. Sua conta sera verificada para comprovar a propriedade."
+    "signInHint": "Entre primeiro. Sua conta sera verificada para comprovar a propriedade.",
+    "orcidVerifyFailed": "ORCID verification failed. Please try again."
   },
   "researchers": {
     "title": "Pesquisadores Credenciados",
@@ -309,6 +310,7 @@
     "upvote": "Votar a favor",
     "downvote": "Votar contra",
     "voteFailed": "Falha na votacao",
+    "cancelFailed": "Could not cancel vote. Please try again.",
     "evaluate": "Avaliar",
     "votes": "votos",
     "strongEndorsement": "Forte endosso",

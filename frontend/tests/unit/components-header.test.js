@@ -112,4 +112,17 @@ describe('header', () => {
       expect(result).toBe('unknown_type');
     });
   });
+
+  describe('handleSignIn sanitize invariant', () => {
+    it('shows i18n key in toast (never raw err.message) and warns with the real err', async () => {
+      const leaky = new Error('keychain-rejected-sentinel');
+      mockAuthStore.connect = vi.fn().mockRejectedValue(leaky);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const comp = createComponent();
+      await comp.handleSignIn();
+      expect(mockToastStore.show).toHaveBeenCalledWith('common.connectionFailed', 'error');
+      expect(mockToastStore.show.mock.calls[0][0]).not.toContain('sentinel');
+      expect(warnSpy.mock.calls[0][1]).toBe(leaky);
+    });
+  });
 });
