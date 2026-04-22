@@ -60,6 +60,10 @@ vi.mock('../../src/hive.js', () => ({
     database: { getAccounts: vi.fn().mockResolvedValue([]) },
     broadcast: { json: broadcastJsonMock },
   },
+  broadcastJsonWithTimeout: (...args: unknown[]) =>
+    (broadcastJsonMock as (...a: unknown[]) => unknown)(...args),
+  BroadcastTimeoutError: class BroadcastTimeoutError extends Error {},
+  DEFAULT_BROADCAST_TIMEOUT_MS: 30_000,
 }));
 
 // handleAccredit asks whether the caller is already accredited before broadcasting.

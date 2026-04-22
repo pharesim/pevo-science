@@ -8,7 +8,7 @@ import { sendOk, sendError } from '../response.js';
 import { config } from '../config.js';
 import { rateLimit, byIp } from '../middleware/rateLimit.js';
 import { getAppPool } from '../app-db.js';
-import { hiveClient } from '../hive.js';
+import { hiveClient, broadcastJsonWithTimeout } from '../hive.js';
 import { encryptKey } from '../custody-crypto.js';
 import { createClaimedAccount } from '../account-creation.js';
 import { logger } from '../logger.js';
@@ -243,7 +243,7 @@ router.post('/confirm', confirmLimiter, async (req: Request, res: Response) => {
           .digest('hex');
 
         const adminKey = PrivateKey.fromString(config.pevoAdminPostingKey);
-        await hiveClient.broadcast.json(
+        await broadcastJsonWithTimeout(
           {
             id: config.appTag,
             json: JSON.stringify({
@@ -362,7 +362,7 @@ router.post('/link', linkLimiter, verifyHiveSignature, async (req: Request, res:
           .digest('hex');
 
         const adminKey = PrivateKey.fromString(config.pevoAdminPostingKey);
-        await hiveClient.broadcast.json(
+        await broadcastJsonWithTimeout(
           {
             id: config.appTag,
             json: JSON.stringify({

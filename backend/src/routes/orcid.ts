@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import jwt from 'jsonwebtoken';
 import { PrivateKey } from '@hiveio/dhive';
 import { config } from '../config.js';
-import { hiveClient } from '../hive.js';
+import { hiveClient, broadcastJsonWithTimeout } from '../hive.js';
 import { getRedis, isRedisAvailable } from '../redis.js';
 import { getAppPool } from '../app-db.js';
 import { getPool } from '../db.js';
@@ -37,11 +37,13 @@ const ORCID_VERIFIED_TTL = 1800; // 30 minutes
 // otherwise not see the fresh binding and two concurrent binds could slip
 // through. 120s is the upper bound on block-watcher catch-up under load.
 const ORCID_BINDING_CACHE_TTL = 120;
-// SETNX lock TTL sits above dhive's 30s broadcast timeout so a legitimately
-// slow-but-alive broadcast does not lose its lock mid-flight. The nonce-owned
-// Lua-CAS release (see releaseBindingLock) closes the lock-stomp window even
-// if the TTL is exceeded, but keeping the TTL above the known-slow-path bound
-// avoids the failure mode entirely for honest traffic.
+// SETNX lock TTL sits above the 30s wall-clock bound enforced by
+// broadcastJsonWithTimeout (see backend/src/hive.ts) so a legitimately slow
+// broadcast does not lose its lock mid-flight. dhive itself does not enforce
+// a per-request broadcast timeout — our helper does. The nonce-owned Lua-CAS
+// release (see releaseBindingLock) closes the lock-stomp window even if the
+// TTL is exceeded, but keeping the TTL above the helper-enforced bound avoids
+// the failure mode entirely for honest traffic.
 const ORCID_BINDING_LOCK_TTL_SECONDS = 35;
 // Advertised in the lock-contention 409 Retry-After header. Not coupled to
 // the lock TTL above: 10s is a realistic client backoff for "mid-broadcast
@@ -421,7 +423,7 @@ async function handleAccredit(
     };
 
     const key = PrivateKey.fromString(config.pevoAdminPostingKey);
-    const result = await hiveClient.broadcast.json(
+    const result = await broadcastJsonWithTimeout(
       { id: config.appTag, json: JSON.stringify(customJsonPayload), required_auths: [], required_posting_auths: [config.hiveAdminAccount] },
       key,
     );
@@ -486,7 +488,7 @@ async function handleLink(
     };
 
     const key = PrivateKey.fromString(config.pevoAdminPostingKey);
-    const result = await hiveClient.broadcast.json(
+    const result = await broadcastJsonWithTimeout(
       { id: config.appTag, json: JSON.stringify(customJsonPayload), required_auths: [], required_posting_auths: [config.hiveAdminAccount] },
       key,
     );

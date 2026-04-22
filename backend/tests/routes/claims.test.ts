@@ -67,6 +67,9 @@ vi.mock('../../src/hive.js', () => ({
       json: (...args: unknown[]) => broadcastJson(...args),
     },
   },
+  broadcastJsonWithTimeout: (...args: unknown[]) => broadcastJson(...args),
+  BroadcastTimeoutError: class BroadcastTimeoutError extends Error {},
+  DEFAULT_BROADCAST_TIMEOUT_MS: 30_000,
 }));
 
 // Pool mock — controls the isApprovedCoAuthor lookup per test.

@@ -1,7 +1,7 @@
 import { Router, type Request, type Response } from 'express';
 import { PrivateKey } from '@hiveio/dhive';
 import { getPool } from '../db.js';
-import { hiveClient } from '../hive.js';
+import { hiveClient, broadcastJsonWithTimeout } from '../hive.js';
 import { config } from '../config.js';
 import { sendOk, sendError } from '../response.js';
 import { getAccreditedSet } from '../accreditation.js';
@@ -213,7 +213,7 @@ router.post('/:claimer/approve', verifyHiveSignature, approveLimiter, async (req
     }
 
     const key = PrivateKey.fromString(config.pevoBridgePostingKey);
-    const result = await hiveClient.broadcast.json(
+    const result = await broadcastJsonWithTimeout(
       {
         id: config.appTag,
         json: JSON.stringify(payload),
@@ -298,7 +298,7 @@ router.post('/:claimer/revoke', verifyHiveSignature, revokeLimiter, async (req: 
   // the bridge key on a user-driven revoke.
   if (paperAuthor === config.hiveBridgeAccount && isAdmin && config.pevoBridgePostingKey) {
     const key = PrivateKey.fromString(config.pevoBridgePostingKey);
-    const result = await hiveClient.broadcast.json(
+    const result = await broadcastJsonWithTimeout(
       {
         id: config.appTag,
         json: JSON.stringify(payload),
@@ -318,7 +318,7 @@ router.post('/:claimer/revoke', verifyHiveSignature, revokeLimiter, async (req: 
     // ops should treat the `required_posting_auths[0]` as the revoker, not
     // the paper author.
     const key = PrivateKey.fromString(config.pevoAdminPostingKey);
-    const result = await hiveClient.broadcast.json(
+    const result = await broadcastJsonWithTimeout(
       {
         id: config.appTag,
         json: JSON.stringify(payload),

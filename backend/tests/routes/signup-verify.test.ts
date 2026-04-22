@@ -17,6 +17,10 @@ vi.mock('../../src/hive.js', () => ({
     database: { getAccounts: getAccountsMock },
     broadcast: { json: broadcastJsonMock },
   },
+  broadcastJsonWithTimeout: (...args: unknown[]) =>
+    (broadcastJsonMock as (...a: unknown[]) => unknown)(...args),
+  BroadcastTimeoutError: class BroadcastTimeoutError extends Error {},
+  DEFAULT_BROADCAST_TIMEOUT_MS: 30_000,
 }));
 
 vi.mock('../../src/account-creation.js', () => ({

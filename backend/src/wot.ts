@@ -7,7 +7,7 @@
  */
 import pg from 'pg';
 import { getPool } from './db.js';
-import { hiveClient } from './hive.js';
+import { hiveClient, broadcastJsonWithTimeout } from './hive.js';
 import { config } from './config.js';
 import { getAccreditedSet } from './accreditation.js';
 import { logger } from './logger.js';
@@ -168,7 +168,7 @@ export async function checkAndAccreditViaWot(vouchee: string): Promise<string | 
       timestamp: now,
     };
 
-    const result = await hiveClient.broadcast.json(
+    const result = await broadcastJsonWithTimeout(
       {
         id: config.appTag,
         required_auths: [],
@@ -257,7 +257,7 @@ export async function cascadeRevocation(revokedAccount: string, depth = 0): Prom
       };
 
       try {
-        const txResult = await hiveClient.broadcast.json(
+        const txResult = await broadcastJsonWithTimeout(
           {
             id: config.appTag,
             required_auths: [],

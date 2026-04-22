@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import nodemailer from 'nodemailer';
 import { PrivateKey } from '@hiveio/dhive';
 import { config } from '../config.js';
-import { hiveClient } from '../hive.js';
+import { hiveClient, broadcastJsonWithTimeout } from '../hive.js';
 import { getRedis, isRedisAvailable } from '../redis.js';
 import { sendOk, sendError } from '../response.js';
 import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';
@@ -191,7 +191,7 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
 
   try {
     const key = PrivateKey.fromString(config.pevoAdminPostingKey);
-    const result = await hiveClient.broadcast.json(
+    const result = await broadcastJsonWithTimeout(
       { id: config.appTag, json: JSON.stringify(customJsonPayload), required_auths: [], required_posting_auths: [config.hiveAdminAccount] },
       key,
     );

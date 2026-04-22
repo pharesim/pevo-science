@@ -1,7 +1,7 @@
 import { Router, type Request, type Response } from 'express';
 import { PrivateKey } from '@hiveio/dhive';
 import { getPool } from '../db.js';
-import { hiveClient } from '../hive.js';
+import { hiveClient, broadcastJsonWithTimeout } from '../hive.js';
 import { config } from '../config.js';
 import { sendOk, sendError } from '../response.js';
 import {
@@ -1391,7 +1391,7 @@ router.post('/:author/:permlink/retract', verifyHiveSignature, retractLimiter, a
 
   try {
     const key = PrivateKey.fromString(config.pevoAdminPostingKey);
-    const result = await hiveClient.broadcast.json(
+    const result = await broadcastJsonWithTimeout(
       { id: config.appTag, json: JSON.stringify(payload), required_auths: [], required_posting_auths: [config.hiveAdminAccount] },
       key,
     );
