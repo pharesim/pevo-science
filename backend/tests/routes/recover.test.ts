@@ -1,9 +1,11 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import argon2 from 'argon2';
+import nodemailer from 'nodemailer';
 import { createApp } from '../../src/app.js';
 import { getAppPool } from '../../src/app-db.js';
 import { encryptKey } from '../../src/custody-crypto.js';
+import { config } from '../../src/config.js';
 import { clearRateLimitKeys } from '../support/redis-helpers.js';
 
 const app = createApp();
@@ -884,14 +886,16 @@ describe('SEC-LOGIN-UNKNOWN-USER-TIMING: /resend-verification message body is un
       expect(activeRes.body.data.message).toBe(confirmedRes.body.data.message);
       expect(activeRes.body.data.message).toMatch(/pending signup/i);
 
-      // Pending-hex branch: in test env SMTP is not configured so it may
-      // return 500. When it DOES return 200, assert the same uniform body.
+      // Pending-hex branch: per BE-AUTH-SMTP-STATUS-CODE-ORACLE, the handler
+      // now always returns 200 + the uniform body regardless of SMTP outcome
+      // (the previous carve-out that skipped the assertion when status==500
+      // papered over exactly the status-code oracle the fix closes). Assert
+      // unconditionally.
       const pendingRes = await request(app)
         .post('/api/auth/resend-verification')
         .send({ email: PENDING_EMAIL, password: UNIFORM_PASSWORD });
-      if (pendingRes.status === 200) {
-        expect(pendingRes.body.data.message).toBe(activeRes.body.data.message);
-      }
+      expect(pendingRes.status).toBe(200);
+      expect(pendingRes.body.data.message).toBe(activeRes.body.data.message);
     },
   );
 });
@@ -1202,6 +1206,117 @@ describe('BE-SIGNUP-INSTITUTIONAL-GATE-ORDERING: 422 on non-duplicate unaccredit
       // instrumentation, matching the pattern used by recover's fast-path
       // test at line 678.
       expect(elapsed).toBeLessThan(TIMING_ORACLE_CEILING_MS);
+    },
+  );
+});
+
+// BE-AUTH-SMTP-STATUS-CODE-ORACLE: under induced SMTP failure, both
+// /reset-request and /resend-verification MUST return 200 + the uniform
+// message body on the known-email branch. Before the fix, sendMail-throws
+// caused a 500 INTERNAL_ERROR on the known-email branch while the unknown-
+// email branch (burnSentinel) returned 200 — a status-code oracle that
+// bypassed all wall-time equalization work. See
+// `agents/docs/solutions/conventions/timing-equalization-smtp-failure-mode-oracle-2026-04-22.md`.
+//
+// To force the throw path we spy on nodemailer.createTransport and return a
+// mock transporter whose sendMail rejects. This is the vi.spyOn pattern
+// recommended by the convention doc. config.smtpHost is temporarily set so
+// the handler enters the try/sendMail branch (test env has SMTP_HOST='').
+describe('BE-AUTH-SMTP-STATUS-CODE-ORACLE: SMTP failure must not leak known-email via status code', () => {
+  const RESET_EMAIL = `smtp_fail_reset_${Date.now()}@example.com`;
+  const RESEND_EMAIL = `smtp_fail_resend_${Date.now()}@example.com`;
+  const FAIL_PASSWORD = 'FailTestPassword1';
+  const prevSmtpHost = config.smtpHost;
+
+  beforeAll(async () => {
+    if (!dbReachable) return;
+    const pool = getAppPool()!;
+    const passwordHash = await argon2.hash(FAIL_PASSWORD, { type: argon2.argon2id });
+    // Active account for /reset-request (verify_token NULL).
+    await pool.query(
+      `INSERT INTO accounts (email, username, password_hash, custody, verify_token)
+       VALUES ($1, $2, $3, 'light', NULL)`,
+      [RESET_EMAIL, `smtp_fail_reset_${Date.now()}`, passwordHash],
+    );
+    // Pending account for /resend-verification (hex verify_token).
+    await pool.query(
+      `INSERT INTO accounts (email, username, password_hash, custody, verify_token, expires_at)
+       VALUES ($1, $2, $3, 'light', $4, $5)`,
+      [
+        RESEND_EMAIL,
+        `smtp_fail_resend_${Date.now()}`,
+        passwordHash,
+        'abcdef0123456789abcdef0123456789',
+        new Date(Date.now() + 24 * 60 * 60 * 1000),
+      ],
+    );
+    // Force the handler into the sendMail branch.
+    config.smtpHost = 'smtp-fail-test.invalid';
+  });
+
+  afterAll(async () => {
+    config.smtpHost = prevSmtpHost;
+    vi.restoreAllMocks();
+    if (!dbReachable) return;
+    const pool = getAppPool()!;
+    await pool.query('DELETE FROM accounts WHERE email IN ($1, $2)', [RESET_EMAIL, RESEND_EMAIL]).catch(() => {});
+  });
+
+  it.skipIf(!dbReachable || !redisReachable)(
+    '/reset-request returns 200 + uniform body when sendMail rejects',
+    async () => {
+      const sendMailSpy = vi.fn().mockRejectedValue(new Error('SMTP connection refused'));
+      const transportSpy = vi.spyOn(nodemailer, 'createTransport').mockReturnValue({
+        sendMail: sendMailSpy,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+
+      await clearRateLimitKeys(['auth-reset-request']);
+      const knownRes = await request(app)
+        .post('/api/auth/reset-request')
+        .send({ email: RESET_EMAIL });
+      await clearRateLimitKeys(['auth-reset-request']);
+      const unknownRes = await request(app)
+        .post('/api/auth/reset-request')
+        .send({ email: `smtp_fail_unknown_${Date.now()}@example.com` });
+
+      // Core oracle invariant: known and unknown branches MUST return the
+      // same status code regardless of SMTP health.
+      expect(knownRes.status).toBe(200);
+      expect(unknownRes.status).toBe(200);
+      expect(knownRes.body.data.message).toBe(unknownRes.body.data.message);
+      // sendMail must actually have been invoked (and rejected) on the
+      // known-email branch — otherwise we're asserting a no-op path.
+      expect(sendMailSpy).toHaveBeenCalledTimes(1);
+
+      transportSpy.mockRestore();
+    },
+  );
+
+  it.skipIf(!dbReachable || !redisReachable)(
+    '/resend-verification returns 200 + uniform body when sendMail rejects',
+    async () => {
+      const sendMailSpy = vi.fn().mockRejectedValue(new Error('SMTP connection refused'));
+      const transportSpy = vi.spyOn(nodemailer, 'createTransport').mockReturnValue({
+        sendMail: sendMailSpy,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+
+      await clearRateLimitKeys(['auth-resend']);
+      const knownRes = await request(app)
+        .post('/api/auth/resend-verification')
+        .send({ email: RESEND_EMAIL, password: FAIL_PASSWORD });
+      await clearRateLimitKeys(['auth-resend']);
+      const unknownRes = await request(app)
+        .post('/api/auth/resend-verification')
+        .send({ email: `smtp_fail_unknown_${Date.now()}@example.com`, password: FAIL_PASSWORD });
+
+      expect(knownRes.status).toBe(200);
+      expect(unknownRes.status).toBe(200);
+      expect(knownRes.body.data.message).toBe(unknownRes.body.data.message);
+      expect(sendMailSpy).toHaveBeenCalledTimes(1);
+
+      transportSpy.mockRestore();
     },
   );
 });

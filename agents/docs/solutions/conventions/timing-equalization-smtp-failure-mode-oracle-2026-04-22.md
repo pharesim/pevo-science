@@ -74,14 +74,26 @@ Two mechanically sound options:
 if (config.smtpHost) {
   try {
     await transporter.sendMail({ /* ... */ });
-  } catch (mailErr) {
-    logger.error({ err: (mailErr as Error).message }, 'sendMail failed — SMTP outage or misconfiguration');
+  } catch (err) {
+    logger.warn(
+      { err, route: 'auth.reset-request', emailKnown: 'known' },
+      'SMTP send failed',
+    );
     // DO NOT return 500 here. Returning 500 only on the known-email path
     // is a status-code oracle: 500 = "this email exists in our database."
   }
 }
 sendOk(res, { message: 'If an account exists with that email, a reset link has been sent.' });
 ```
+
+Structured-log-field shape (landed via BE-AUTH-SMTP-STATUS-CODE-ORACLE on 2026-04-22):
+
+- **Level:** `warn`. `error` is reserved for conditions that warrant paging; an SMTP outage where the request still returns 200 is a delivery-gap metric, not an availability incident. Bump to `error` only if the outage blocks a response.
+- **Shape:** `logger.warn({ err, route: '<handler-name>', emailKnown: 'known' | 'unknown' }, 'SMTP send failed')`.
+  - `err` is the raw Error (pino serializes it; do NOT pre-stringify via `(err as Error).message` — that drops the stack).
+  - `route` identifies the handler so operators can aggregate by endpoint: `'auth.reset-request'`, `'auth.resend-verification'`, future additions follow `'<router>.<path>'`.
+  - `emailKnown: 'known'` on branches that looked up a real account; `'unknown'` on the burnSentinel/no-row branches (even though those don't send email, keep the shape uniform if a future refactor adds a send there).
+  - Message string: `'SMTP send failed'` verbatim. Operators grep for it; keep it stable across call sites.
 
 Requires retry or dead-letter infrastructure so legitimate users are not silently dropped. At minimum, an async retry queue or a metrics alert on the `sendMail` failure rate.
 
@@ -170,12 +182,15 @@ if (config.smtpHost) {
 }
 sendOk(res, { message: 'If an account exists...' });
 
-// CLOSED (Option A):
+// CLOSED (Option A, as landed by BE-AUTH-SMTP-STATUS-CODE-ORACLE):
 if (config.smtpHost) {
   try {
     await transporter.sendMail({ /* ... */ });
-  } catch (mailErr) {
-    logger.error({ err: (mailErr as Error).message }, 'sendMail failed — delivery gap; monitor for retry');
+  } catch (err) {
+    logger.warn(
+      { err, route: 'auth.reset-request', emailKnown: 'known' },
+      'SMTP send failed',
+    );
     // Fall through to uniform 200 below.
   }
 }

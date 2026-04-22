@@ -566,6 +566,13 @@ router.post('/resend-verification', resendLimiter, async (req: Request, res: Res
       [newToken, expiresAt, account.id],
     );
 
+    // SMTP-failure status-code oracle (BE-AUTH-SMTP-STATUS-CODE-ORACLE):
+    // this known-email branch MUST NOT return 500 when sendMail throws. If it
+    // did, an attacker inducing an SMTP outage would observe 500 = "pending
+    // signup exists for this email + matches this password" vs 200 = any other
+    // shape (unknown email, wrong password, already-active, already-confirmed)
+    // — a status-code oracle that bypasses the wall-time equalization work.
+    // See `agents/docs/solutions/conventions/timing-equalization-smtp-failure-mode-oracle-2026-04-22.md`.
     if (config.smtpHost) {
       try {
         const transporter = nodemailer.createTransport({
@@ -582,9 +589,9 @@ router.post('/resend-verification', resendLimiter, async (req: Request, res: Res
           subject: 'PEvO - Verify your email',
           text: `Welcome to PEvO!\n\nPlease verify your email to complete your registration:\n\n${verifyUrl}\n\nThis link expires in 24 hours.\n\nIf you did not sign up for PEvO, you can safely ignore this email.\n\nPEvO - Open Scientific Publishing\nhttps://pevo.science`,
         });
-      } catch (mailErr) {
-        logger.error({ err: (mailErr as Error).message }, 'Failed to resend verification email');
-        return sendError(res, 500, 'INTERNAL_ERROR', 'Failed to send verification email');
+      } catch (err) {
+        logger.warn({ err, route: 'auth.resend-verification', emailKnown: 'known' }, 'SMTP send failed');
+        // Fall through to uniform 200 below.
       }
     }
 
@@ -780,7 +787,17 @@ router.post('/reset-request', resetRequestLimiter, async (req: Request, res: Res
       [resetToken, expiresAt, account.id],
     );
 
-    // Send reset email
+    // Send reset email.
+    //
+    // SMTP-failure status-code oracle (BE-AUTH-SMTP-STATUS-CODE-ORACLE): the
+    // known-email branch MUST NOT return 500 when sendMail throws or SMTP is
+    // unconfigured. If it did, an attacker inducing or waiting for an SMTP
+    // outage would observe 500 = "email exists" vs 200 = "email unknown" from
+    // the burnSentinel path above — full enumeration via the HTTP status code,
+    // bypassing all the wall-time equalization work. See
+    // `agents/docs/solutions/conventions/timing-equalization-smtp-failure-mode-oracle-2026-04-22.md`.
+    // Log at warn so operators see the outage, then fall through to the
+    // uniform 200 below regardless of SMTP outcome.
     if (config.smtpHost) {
       try {
         const transporter = nodemailer.createTransport({
@@ -797,22 +814,14 @@ router.post('/reset-request', resetRequestLimiter, async (req: Request, res: Res
           subject: 'PEvO - Password reset',
           text: `You requested a password reset for your PEvO account.\n\nReset your password here:\n\n${resetUrl}\n\nThis link expires in 1 hour. If you did not request this, you can safely ignore this email.\n\nPEvO - Open Scientific Publishing\nhttps://pevo.science`,
         });
-      } catch (mailErr) {
-        logger.error({ err: (mailErr as Error).message }, 'Failed to send reset email');
-        // Clear the token since we couldn't send the email
-        await pool.query(
-          'UPDATE accounts SET reset_token = NULL, reset_token_expires_at = NULL WHERE id = $1',
-          [account.id],
-        );
-        return sendError(res, 500, 'INTERNAL_ERROR', 'Failed to send reset email');
+      } catch (err) {
+        logger.warn({ err, route: 'auth.reset-request', emailKnown: 'known' }, 'SMTP send failed');
+        // Fall through to uniform 200. Do NOT clear the reset token: a
+        // legitimate user whose send failed transiently may retry and get a
+        // working email on the SMTP relay's next attempt window.
       }
     } else {
-      logger.error({ id: account.id }, 'SMTP not configured — cannot send reset email');
-      await pool.query(
-        'UPDATE accounts SET reset_token = NULL, reset_token_expires_at = NULL WHERE id = $1',
-        [account.id],
-      );
-      return sendError(res, 500, 'INTERNAL_ERROR', 'Email service not configured');
+      logger.warn({ route: 'auth.reset-request', emailKnown: 'known' }, 'SMTP not configured — reset email not sent');
     }
 
     sendOk(res, { message: 'If an account exists with that email, a reset link has been sent.' });
