@@ -64,8 +64,10 @@ async function searchPapersFromHaf(
     // Case-insensitive match: canonicalize both sides to lowercase so a
     // `?discipline=physics` filter still matches papers tagged "Physics",
     // "PHYSICS", etc. Mirrors the LOWER()-grouped /api/disciplines query.
+    // Callers (router, stats, papers, search) lowercase `discipline` once at
+    // route entry, so the bound parameter is already canonical here.
     conditions.push(`LOWER(c.json_metadata -> ${appTagParam} ->> 'discipline') = $${paramIdx++}`);
-    params.push(discipline.toLowerCase());
+    params.push(discipline);
   }
 
   if (language) {
@@ -278,7 +280,11 @@ router.get('/', async (req: Request, res: Response) => {
   }
 
   const type = (req.query.type as string) || 'all';
-  const discipline = req.query.discipline as string | undefined;
+  // Canonicalize `?discipline=` at route entry so downstream SQL binding and
+  // cache-key construction share the same lowercased value. Three-site
+  // lowercasing (route, SQL binder, cache key) drifted under refactor — see
+  // BE-DISCIPLINE-CANONICALIZE round-2 hold #6.
+  const discipline = (req.query.discipline as string | undefined)?.toLowerCase();
   const language = req.query.language as string | undefined;
   const source = req.query.source as string | undefined;
   const accreditedOnly = req.query.accredited_only !== 'false'; // default true
@@ -287,13 +293,10 @@ router.get('/', async (req: Request, res: Response) => {
   const { page, limit, offset } = parsePageLimit(req);
 
   if (isHafAvailable()) {
-    // Lowercase discipline in the cache key so case-variant requests
-    // (?discipline=Physics vs ?discipline=physics) share a cache entry. The
-    // SQL side of the filter is already case-insensitive via LOWER() on both
-    // columns; without this lowercasing the cache would store separate
-    // entries for each casing variant and the SQL dedup's benefit is lost
-    // at the cache layer.
-    const rawKey = `q=${q}:t=${type}:d=${(discipline || '').toLowerCase()}:l=${language || ''}:src=${source || ''}:a=${accreditedOnly}:r=${includeRetracted}:s=${sort}:p=${page}:lim=${limit}`;
+    // `discipline` is already lowercased at route entry (see above), so the
+    // cache key is canonical — `?discipline=Physics` and `?discipline=physics`
+    // share a single Redis entry.
+    const rawKey = `q=${q}:t=${type}:d=${discipline || ''}:l=${language || ''}:src=${source || ''}:a=${accreditedOnly}:r=${includeRetracted}:s=${sort}:p=${page}:lim=${limit}`;
     const cacheKey = `search:${crypto.createHash('sha256').update(rawKey).digest('hex').slice(0, 32)}`;
     const result = await hafCache.getOrSet(cacheKey, () => searchFromHaf(q, type, discipline, language, source, accreditedOnly, includeRetracted, sort, limit, offset), 15_000);
     if (result) {

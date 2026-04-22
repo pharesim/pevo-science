@@ -145,3 +145,39 @@ Round-2 `/ce-code-review` on commit `3d68ee6` (9 personas: correctness, testing,
 - `agents/docs/api-contracts/misc.md` /api/stats section — field-level notes on `active_disciplines` semantic change (case-sensitive DISTINCT → LOWER DISTINCT) and accredited-only vs all-papers set divergence. Closes api-contract AC-001.
 
 **Path to re-archive:** (1) Backend applies items #1-7 on this task. (2) Backend re-review signal block below the hold. (3) Architect re-reviews round-3 with `/ce-code-review` and archives when clean. `/ce-compound` candidate at archive time: capture the "FE-migrated-before-BE-shim-landed" timing failure as a learning about cross-task hold-block staleness.
+
+---
+
+**Backend re-review signal (2026-04-22 round-3, commit `d5dc7a0`):**
+
+All 7 round-2 hold items addressed. Directly-affected vitest files in isolation: 18 passed + 1 skipped across `disciplines.test.ts` (5 specs), `disciplines-canon-mocked.test.ts` (6 specs rewritten), `papers.test.ts` (8 specs incl. the new `ctx.skip()` branch). `npx tsc --noEmit` clean. Full suite NOT run in this worktree per worker ground rule #5; parent agent to run it after merge.
+
+1. **Hold #1 — Vacuous cache-key filter fixed (P1).** `disciplines-canon-mocked.test.ts` cache-key test now filters `hafQueryMock.mock.calls` on `sql.includes("->> 'type') AS type,")` — a stable fragment from the papers-search data-query SELECT list that is absent from papers-count, reviews count/data, and the accredited-set batch lookup. Assertion tightened to `toHaveLength(1)` (exactly one papers-search data query across the two case-variant requests).
+
+2. **Hold #2 — `name` shim removed (P1).** `disciplines.ts` map now emits `{canon_name, display_name, paper_count}` — three fields, no alias (comment block explaining the shim also removed). `disciplines-canon-mocked.test.ts` Hold #2 shim-present describe-it block deleted. **DEFERRED TO ARCHITECT (out-of-scope per worker ground rule #2):** `agents/docs/api-contracts/misc.md:111-124` still documents the deprecated `- \`name\`` alias line — per backend-contract-edit boundary rule, backend workers do not edit contract files. Architect must remove the corresponding `- \`name\` — **deprecated-pending-removal**...` line in `misc.md` during round-3 review (this also closes round-2 dismissed PS-001 emdash violation at `misc.md:122`).
+
+   **`/ce-compound` timing note:** FE-DISCIPLINE-DISPLAY-HARDEN-related commit `7961ac0` migrated FE consumers to `canon_name`/`display_name` 12 minutes BEFORE the round-1 Hold #2 shim landed, so the shim was protecting zero live consumers from the moment it landed. Captures an interesting failure mode: hold-block rationale stales when cross-task commits land between the architect's review and the implementer's fix. Consider capturing as a learning under `agents/docs/solutions/conventions/` on archive.
+
+3. **Hold #3 — Pool-unavailable cache-skip (P2).** `disciplines.ts:16` — `fetchDisciplinesFromHaf` returns `null` on pool-unavailable AND on query-catch; `hafCache.getOrSet` skips caching null sentinels (`cache.ts:73`). Router coerces `null ?? []` at `sendOk` so `data: Array<Discipline>` envelope contract still holds. Test at `disciplines-canon-mocked.test.ts` (Hold #3 describe-it) verifies: request 1 with `getPoolMock.mockReturnValueOnce(null)` → `data: []`, `hafQueryMock` call count stays at 0 → request 2 with pool restored → HAF is re-queried (call count goes to 1). Pre-fix `return []` behavior would cache the empty sentinel for 60s stable → post-recovery requests would still serve `[]` and call count would stay at 0 on request 2 → test fails.
+
+4. **Hold #4 — Stats test via HTTP route (P2).** `disciplines-canon-mocked.test.ts` active_disciplines SQL-shape test now exports and calls `fetchStatsFromHaf()` directly (added `export` at `stats.ts:22`), primes the cache with `hafCache.set('stats', stats, 60_000, true)`, then hits `/api/stats` via supertest. No `startStatsCache()` → no unref'd setInterval leak → no late-firing mock contamination of later specs. SQL-shape regex `count\(DISTINCT LOWER\(json_metadata` retained so the LOWER() coverage from round-1 hold #1b is preserved.
+
+5. **Hold #5 — `papers.test.ts` skip on empty corpus (P2).** `papers.test.ts:48-69` now `ctx.skip()`s when `lower.body.meta.total === 0` with an explanatory comment steering the reader to `disciplines-canon-mocked.test.ts` for the deterministic SQL-shape pin. Mirrors the `disciplines.test.ts` skip style. Currently skips on live pevotest (no `physics`-tagged accredited papers); mocked-pool counterpart carries the regression coverage.
+
+6. **Hold #6 — search.ts single-site lowercasing (P2).** `search.ts:287` — `discipline` is now lowercased ONCE at route entry (`(req.query.discipline as string | undefined)?.toLowerCase()`). Downstream: SQL binder at `:68` just pushes `discipline` (no duplicate `.toLowerCase()`); cache-key fragment at `:296` just interpolates `discipline || ''` (no duplicate `.toLowerCase()`). Three-site duplication collapsed to one source of truth.
+
+7. **Hold #7 — Test-hygiene pass on `disciplines-canon-mocked.test.ts` (P3).** Five sub-items:
+   - **(a) Catch-branch test added** — new Hold #7a describe-it: `hafQueryMock.mockRejectedValueOnce(new Error('HAF down'))` → asserts 200 + `data: []` + no cache poisoning (next call re-queries HAF).
+   - **(b) Alias-drift assertion** — moot: hold #2 removed the shim test entirely.
+   - **(c) File header** — line 34 now references only `getPool()` (no `getAppPool()`), since no route under test imports from `app-db.ts`.
+   - **(d) `expect` out of mock bodies** — all four mock-callback sites (dedup SQL-shape, stats SQL-shape, papers filter SQL-shape, cache-key filter) now capture values into local `let capturedSql` / `capturedParams` variables and assert AFTER the request. No more `expect` inside `mockImplementation` bodies (they threw at uncertain times and could cross-contaminate subsequent specs).
+   - **(e) `hafPoolEnabled` rescoped** — module-level mutable `let` flag removed. Replaced with a `getPoolMock` that `beforeEach` resets to `mockReturnValue({ query: hafQueryMock })`, and the one test that needs a null pool uses `getPoolMock.mockReturnValueOnce(null)` inline. Mirrors standard vitest mock reset/override patterns used elsewhere in the backend test suite.
+
+**Deviations from hold block:**
+
+- **Cache-key filter on `AS type,` (not ILIKE).** Hold #1 suggested `ILIKE / a stable CTE fragment`. `ILIKE` appears in BOTH papers count+data AND reviews count+data (4+ matches per search request) — too fuzzy for `toBe(1)`. `retracted_papers AS (` is in the papers-search CTE only but appears in both count and data queries (2 matches per search). `AS type,` uniquely identifies the papers-search DATA query (the one that materializes result rows) — exactly 1 match per cache-missing papers-search invocation. Cleanest `toBe(1)` framing.
+- **`misc.md` `name`-alias line removal deferred to architect.** Per backend worker ground rule #2 (the fan-out instruction), backend workers do not edit `agents/docs/api-contracts/*.md`. Flagged explicitly in Hold #2 signal above for architect round-3 action.
+
+**Dismissed-finding still-dismissed:** boundary-rule violation (contract edit was explicitly authorized by round-1 hold #2), Postgres LOWER() vs JS toLowerCase() Unicode divergence (ASCII-range disciplines; reopen if non-ASCII lands).
+
+**Filed follow-up still-pending:** `backend-display-name-titlecase.md`, `backend-discipline-length-cap.md` — per architect's hold block, independent archive path.

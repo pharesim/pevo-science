@@ -15,7 +15,11 @@ const router = Router();
 
 const STATS_REFRESH_INTERVAL = 300_000; // 5 minutes
 
-async function fetchStatsFromHaf() {
+// Exported for tests so the stats SQL can be exercised without registering a
+// periodic-refresh setInterval (see BE-DISCIPLINE-CANONICALIZE round-2 hold
+// #4). Production callers should go through the HTTP route, which reads from
+// the cache warmed by startStatsCache().
+export async function fetchStatsFromHaf() {
   const pool = getPool();
   if (!pool) return null;
 

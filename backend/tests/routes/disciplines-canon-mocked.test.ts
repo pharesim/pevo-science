@@ -2,37 +2,48 @@
  * Mocked-pool coverage for BE-DISCIPLINE-CANONICALIZE hold items that cannot
  * be exercised against real HAF:
  *
- *   - Hold #4: the core dedup behavior (Physics + physics → 1 row, paper_count
- *     summed) has no deterministic real-HAF test because the public HAF
- *     database cannot be seeded with mixed-case fixtures.
- *   - Hold #3: the pool-unavailable branch of `fetchDisciplinesFromHaf`
- *     returns `[]` so the response envelope stays Array-shaped. Testing
+ *   - Hold #4 (round 1): the core dedup behavior (Physics + physics → 1 row,
+ *     paper_count summed) has no deterministic real-HAF test because the
+ *     public HAF database cannot be seeded with mixed-case fixtures.
+ *   - Hold #3 (round 1) / Hold #3 (round 2): the pool-unavailable branch of
+ *     `fetchDisciplinesFromHaf` returns `null` so `hafCache.getOrSet` skips
+ *     caching; the router coerces → `[]` at the envelope layer. Testing
  *     this requires `getPool()` to return null, which real HAF never does.
- *   - Hold #2: verify the deprecated-pending-removal `name` alias is present
- *     in the response mapping. Implicitly covered by Hold #4 assertion but
- *     called out explicitly so a future shim-removal PR breaks this test
- *     and signals the FE migration is expected to have landed.
- *   - Hold #1(c): `/api/search` cache-key lowercases `?discipline=` so
- *     case-variant requests serve from a single cache entry, not two. Needs
- *     a spy on pool.query to count invocations.
+ *     Hold #3 round 2 also demands a regression test proving pool-unavailable
+ *     does NOT cache (a cached `[]` would pin an empty dropdown for 60s).
+ *   - Hold #1(a) (round 1): `/api/papers` ?discipline= filter builds
+ *     `LOWER(...) = $N` with a lowercased bound parameter. The real-HAF
+ *     parity spec in papers.test.ts vacuously passes on empty corpus, so we
+ *     pin the SQL shape deterministically here.
+ *   - Hold #1(b) (round 1): `/api/stats` active_disciplines uses
+ *     `count(DISTINCT LOWER(...))` so the KPI matches /api/disciplines dedup.
+ *     The suggested real-HAF parity (active_disciplines === data.length) is
+ *     not an invariant — stats filters by active_accreditations while
+ *     /api/disciplines does not.
+ *   - Hold #1(c) (round 1) / Hold #1 (round 2): `/api/search` lowercases
+ *     `?discipline=` at route entry so case-variant requests serve from a
+ *     single cache entry, not two. The round-1 assertion predicated on SQL
+ *     containing `ts_rank | plainto_tsquery` matched zero calls (the search
+ *     path is ILIKE-based) and silently passed on a regression; round-2 hold
+ *     #1 tightens the filter to a stable papers-search data-query fragment
+ *     (`AS type,`) and uses `toBe(1)` so a cache-key drift surfaces.
  *
  * Per root CLAUDE.md mocked-pool carve-out: `verifyHiveSignature` and other
- * middleware are NOT mocked; only `getPool()` / `getAppPool()`. The real-HAF
- * counterparts (disciplines.test.ts, papers.test.ts) still exist for every
- * branch where a real-HAF path exists.
+ * middleware are NOT mocked; only `getPool()`. The real-HAF counterparts
+ * (disciplines.test.ts, papers.test.ts) still exist for every branch where a
+ * real-HAF path exists.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import request from 'supertest';
 
-const { hafQueryMock } = vi.hoisted(() => ({
+const { hafQueryMock, getPoolMock } = vi.hoisted(() => ({
   hafQueryMock: vi.fn(async () => ({ rows: [] })),
+  getPoolMock: vi.fn(),
 }));
 
-let hafPoolEnabled = true;
-
 vi.mock('../../src/db.js', () => ({
-  getPool: () => (hafPoolEnabled ? { query: hafQueryMock } : null),
-  isHafAvailable: () => hafPoolEnabled,
+  getPool: getPoolMock,
+  isHafAvailable: () => getPoolMock() !== null,
   closeHafPool: async () => { /* no-op */ },
 }));
 
@@ -42,24 +53,25 @@ const app = createApp();
 
 beforeEach(async () => {
   hafQueryMock.mockReset().mockResolvedValue({ rows: [] });
-  hafPoolEnabled = true;
+  // Default: pool available. Individual tests can override per-call via
+  // `.mockReturnValueOnce(null)` to exercise the pool-unavailable branch.
+  getPoolMock.mockReset().mockReturnValue({ query: hafQueryMock });
   await hafCache.clear();
 });
 
 describe('GET /api/disciplines — mocked pool', () => {
   it('dedup contract: SQL uses LOWER() + GROUP BY LOWER() and response is deduped', async () => {
-    // Hold #4: architect-described input was two raw-SQL rows
+    // Hold #4 (round 1): architect-described input was two raw-SQL rows
     //   [{name:'Physics',paper_count:1},{name:'physics',paper_count:2}]
-    // representing pre-dedup rows that the OLD SQL would have emitted.
-    // Post-fix, the SQL LOWER() + GROUP BY LOWER() produces exactly one
-    // row `{canon_name:'physics', display_name:'Physics', paper_count:3}`.
-    // The mocked pool cannot execute SQL, so we simulate what the post-
-    // canonicalization SQL produces, AND assert the SQL string contains
-    // LOWER(...) and GROUP BY LOWER(...) so a regression to the old
-    // case-sensitive query (the root bug this task closed) fails here.
+    // representing pre-dedup rows the OLD SQL would have emitted. Post-fix,
+    // the SQL LOWER() + GROUP BY LOWER() produces exactly one row
+    //   {canon_name:'physics', display_name:'Physics', paper_count:3}.
+    // We capture the SQL string in the mock and assert the LOWER() + GROUP
+    // BY LOWER() shape AFTER the request (not inside the mock body — see
+    // round-2 hold #7d; a throw inside the mock fires at uncertain times).
+    let capturedSql: string | undefined;
     hafQueryMock.mockImplementation(async (sql: string) => {
-      expect(sql).toContain("LOWER(json_metadata");
-      expect(sql).toMatch(/GROUP BY LOWER\(json_metadata/);
+      capturedSql = sql;
       return {
         rows: [
           { canon_name: 'physics', display_name: 'Physics', paper_count: 3 },
@@ -75,31 +87,71 @@ describe('GET /api/disciplines — mocked pool', () => {
       paper_count: 3,
     });
     expect(hafQueryMock).toHaveBeenCalledTimes(1);
+    expect(capturedSql).toContain('LOWER(json_metadata');
+    expect(capturedSql).toMatch(/GROUP BY LOWER\(json_metadata/);
   });
 
-  it('Hold #2 shim: response carries `name` alias equal to display_name', async () => {
+  it('Hold #3 (round 2): returns [] when getPool() is unavailable without caching the empty sentinel', async () => {
+    // Round-2 hold #3: if `fetchDisciplinesFromHaf` returned `[]` on
+    // pool-unavailable, `hafCache.getOrSet` would write it as a stable 60s
+    // entry and `clearVolatile()` wouldn't evict it — a transient HAF outage
+    // would degrade the disciplines dropdown for a full minute post-recovery.
+    // Fix: `fetchDisciplinesFromHaf` returns null → cache skip (see
+    // cache.ts:73 null-guard) → router coerces null → [] at the envelope.
+    //
+    // First request: pool null → response is `data: []` and cache stays
+    // empty. Second request: pool restored → HAF is re-queried.
+    getPoolMock.mockReturnValueOnce(null);
+    const res1 = await request(app).get('/api/disciplines');
+    expect(res1.status).toBe(200);
+    expect(Array.isArray(res1.body.data)).toBe(true);
+    expect(res1.body.data).toHaveLength(0);
+    // Mock's call count must not have advanced — pool was null, no query ran.
+    expect(hafQueryMock).toHaveBeenCalledTimes(0);
+
+    // Second request: default pool (non-null) restored by beforeEach setup.
+    // If the null-path had poisoned the cache with [], this request would
+    // still hit the cache and hafQueryMock would stay at 0. Post-fix it
+    // re-queries HAF.
     hafQueryMock.mockResolvedValueOnce({
-      rows: [
-        { canon_name: 'neuroscience', display_name: 'Neuroscience', paper_count: 42 },
-      ],
+      rows: [{ canon_name: 'biology', display_name: 'Biology', paper_count: 7 }],
     });
-    const res = await request(app).get('/api/disciplines');
-    expect(res.status).toBe(200);
-    const row = res.body.data[0];
-    expect(row.name).toBe('Neuroscience');
-    expect(row.name).toBe(row.display_name);
-    // Guard against a future shim-removal PR: deleting the alias is expected
-    // to fail this assertion and force the PR author to audit FE consumers.
+    const res2 = await request(app).get('/api/disciplines');
+    expect(res2.status).toBe(200);
+    expect(res2.body.data).toHaveLength(1);
+    expect(res2.body.data[0]).toMatchObject({
+      canon_name: 'biology',
+      display_name: 'Biology',
+      paper_count: 7,
+    });
+    expect(hafQueryMock).toHaveBeenCalledTimes(1);
   });
 
-  it('Hold #3: returns [] (not null) when getPool() is unavailable', async () => {
-    hafPoolEnabled = false;
-    const res = await request(app).get('/api/disciplines');
-    expect(res.status).toBe(200);
-    // Contract is data: Array<Discipline>. Returning null violates the
-    // envelope and breaks strict parsers that expect an iterable.
-    expect(Array.isArray(res.body.data)).toBe(true);
-    expect(res.body.data).toHaveLength(0);
+  it('Hold #7a: catch branch (pool exists, query throws) returns 200 + data: []', async () => {
+    // `fetchDisciplinesFromHaf` catches pool.query errors, logs, and returns
+    // null. The router coerces null → []. Verify the error path does NOT
+    // cache the empty sentinel (parity with the pool-unavailable branch —
+    // both go through the same null-return → cache-skip path).
+    hafQueryMock.mockRejectedValueOnce(new Error('HAF down'));
+    const res1 = await request(app).get('/api/disciplines');
+    expect(res1.status).toBe(200);
+    expect(Array.isArray(res1.body.data)).toBe(true);
+    expect(res1.body.data).toHaveLength(0);
+    expect(hafQueryMock).toHaveBeenCalledTimes(1);
+
+    // Re-query on next request — not a cached empty response.
+    hafQueryMock.mockResolvedValueOnce({
+      rows: [{ canon_name: 'chemistry', display_name: 'Chemistry', paper_count: 2 }],
+    });
+    const res2 = await request(app).get('/api/disciplines');
+    expect(res2.status).toBe(200);
+    expect(res2.body.data).toHaveLength(1);
+    expect(res2.body.data[0]).toMatchObject({
+      canon_name: 'chemistry',
+      display_name: 'Chemistry',
+      paper_count: 2,
+    });
+    expect(hafQueryMock).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -107,23 +159,17 @@ describe('GET /api/stats — active_disciplines SQL uses LOWER() to match /api/d
   it(
     'Hold #1(b): count(DISTINCT LOWER(...)) — parity with /api/disciplines canon_name dedup',
     async () => {
-      // The architect's suggested real-HAF parity test (active_disciplines ===
-      // disciplines.data.length) cannot hold against real HAF because stats.ts
-      // filters papers by accreditation (papers CTE includes
-      // `active_accreditations` join) while /api/disciplines does not. The
-      // two endpoints count from different sets.
-      //
-      // Instead, invoke the stats periodic refresh manually (the /api/stats
-      // HTTP route only reads from the warmed cache; the pool query runs via
-      // `registerPeriodicRefresh`). Assert the SQL-shape invariant directly:
-      // stats.ts must count DISTINCT LOWER(...) not DISTINCT (...). Removing
-      // LOWER from this specific query reopens the mixed-case double-count
-      // bug on the `active_disciplines` KPI.
-      let sawStatsQuery = false;
+      // Round-2 hold #4: exercise via the HTTP route (not `startStatsCache`
+      // which registers an unref'd setInterval that can fire after beforeEach
+      // resets the mock-call counters). Call `fetchStatsFromHaf` directly,
+      // prime the cache with its return value, then hit `/api/stats` so the
+      // HTTP handler path is what covers the SQL-shape invariant.
+      let capturedSql: string | undefined;
       hafQueryMock.mockImplementation(async (sql: string) => {
-        if (sql.includes('active_disciplines')) {
-          sawStatsQuery = true;
-          expect(sql).toMatch(/count\(DISTINCT LOWER\(json_metadata/);
+        // stats is the only SQL containing the `active_disciplines` alias;
+        // capture the first match and assert AFTER the request (out-of-mock).
+        if (sql.includes('active_disciplines') && capturedSql === undefined) {
+          capturedSql = sql;
         }
         return { rows: [{
           total_accredited_researchers: 0,
@@ -136,9 +182,13 @@ describe('GET /api/stats — active_disciplines SQL uses LOWER() to match /api/d
           reviews_last_30_days: 0,
         }] };
       });
-      const { startStatsCache } = await import('../../src/routes/stats.js');
-      await startStatsCache();
-      expect(sawStatsQuery).toBe(true);
+      const { fetchStatsFromHaf } = await import('../../src/routes/stats.js');
+      const stats = await fetchStatsFromHaf();
+      await hafCache.set('stats', stats, 60_000, true);
+      const res = await request(app).get('/api/stats');
+      expect(res.status).toBe(200);
+      expect(capturedSql).toBeDefined();
+      expect(capturedSql!).toMatch(/count\(DISTINCT LOWER\(json_metadata/);
     },
   );
 });
@@ -147,36 +197,50 @@ describe('GET /api/papers — discipline-filter SQL uses LOWER() on both sides',
   it(
     'Hold #1(a, SQL-shape): ?discipline= builds `LOWER(...) = $N` with lowercased param',
     async () => {
-      // papers.ts ran against real HAF in papers.test.ts; this test nails the
-      // SQL shape so a regression that reverts only one side of the LOWER()
-      // application (column OR bound parameter) surfaces even if the real-
-      // HAF corpus happens to be lowercase-only.
-      let sawDisciplineFilter = false;
+      // papers.ts ran against real HAF in papers.test.ts; this test nails
+      // the SQL shape so a regression reverting only one side of the
+      // LOWER() application (column OR bound parameter) surfaces even
+      // when the real-HAF corpus happens to be lowercase-only. Capture
+      // the SQL + params inside the mock and assert AFTER the request
+      // (round-2 hold #7d — throw-inside-mock fires at uncertain times).
+      let capturedSql: string | undefined;
+      let capturedParams: unknown[] | undefined;
       hafQueryMock.mockImplementation(async (sql: string, params: unknown[]) => {
-        if (sql.includes("->> 'discipline'") && sql.includes('LOWER(c.json_metadata')) {
-          sawDisciplineFilter = true;
-          // Bound parameter must be the lowercased user input.
-          expect(params).toContain('physics');
+        if (sql.includes("->> 'discipline'") && sql.includes('LOWER(c.json_metadata') && capturedSql === undefined) {
+          capturedSql = sql;
+          capturedParams = params;
         }
         return { rows: [], rowCount: 0 };
       });
       const res = await request(app).get('/api/papers?discipline=PHYSICS');
       expect(res.status).toBe(200);
-      expect(sawDisciplineFilter).toBe(true);
+      expect(capturedSql).toBeDefined();
+      expect(capturedSql!).toContain('LOWER(c.json_metadata');
+      expect(capturedSql!).toContain("->> 'discipline'");
+      // Bound parameter must be the lowercased user input — uppercase input
+      // `PHYSICS` must bind as `physics` so LOWER(column) = $N matches.
+      expect(capturedParams).toBeDefined();
+      expect(capturedParams!).toContain('physics');
     },
   );
 });
 
 describe('GET /api/search — discipline-filter cache-key canonicalization', () => {
   it(
-    'Hold #1(c): case-variant ?discipline= values serve from a single cache entry (pool invoked once)',
+    'Hold #1 (round 2): case-variant ?discipline= values serve from a single cache entry (papers-search data query invoked once)',
     async () => {
-      // Simulate a non-empty SQL result so the route takes the caching
-      // branch (searchFromHaf). The exact rows don't matter; we assert on
-      // pool.query call count across two requests.
+      // Round-2 hold #1 rewrites the round-1 vacuous assertion. The old
+      // filter matched on `ts_rank | plainto_tsquery | websearch_to_tsquery`
+      // — tokens that DO NOT appear anywhere in `searchPapersFromHaf` (it's
+      // ILIKE-based). Every SQL call mismatched → array was empty →
+      // `toBeLessThanOrEqual(1)` trivially passed even on a revert of the
+      // `search.ts` lowercasing. Fix: filter on a stable papers-search
+      // data-query fragment (`AS type,` — the first selected column in the
+      // papers data query, absent from papers count, reviews count/data,
+      // and the accredited-set batch lookup); tighten to `toBe(1)`.
       hafQueryMock.mockResolvedValue({
         rows: [
-          { author: 'alice', permlink: 'test', title: 'x', snippet: 'x', type: 'paper', created: '2026-01-01', rank: 1 },
+          { type: 'paper', author: 'alice', permlink: 'test', title: 'x', snippet: 'x', created: '2026-01-01' },
         ],
       });
 
@@ -184,16 +248,17 @@ describe('GET /api/search — discipline-filter cache-key canonicalization', () 
       const res2 = await request(app).get('/api/search?q=science&discipline=physics');
       expect(res1.status).toBe(200);
       expect(res2.status).toBe(200);
-      // The primary search SQL is the only query that matters for cache-hit
-      // accounting. Filter the mock calls to it (it contains the papers CTE
-      // and ts_rank) so the accredited-set lookup below doesn't inflate the
-      // count. Before the fix, each casing populated a separate cache key
-      // and this count was 2; post-fix it's 1.
-      const searchCalls = hafQueryMock.mock.calls.filter((call) => {
+
+      // Filter to the papers-search DATA query (the one that materializes
+      // rows, via `(c.json_metadata -> $N ->> 'type') AS type, c.author,
+      // c.permlink, c.title, ... AS snippet, c.created`). One such call per
+      // cache-missing papers-search invocation. Before the fix, each casing
+      // populated a separate cache key → 2 calls. Post-fix: 1.
+      const papersDataCalls = hafQueryMock.mock.calls.filter((call) => {
         const sql = String(call[0] || '');
-        return sql.includes('ts_rank') || sql.includes('plainto_tsquery') || sql.includes('websearch_to_tsquery');
+        return sql.includes("->> 'type') AS type,");
       });
-      expect(searchCalls.length).toBeLessThanOrEqual(1);
+      expect(papersDataCalls).toHaveLength(1);
     },
   );
 });
