@@ -55,8 +55,11 @@ Error:
 | 422 | `INVALID_FILE_TYPE` | Upload is not a PDF |
 | 409 | `DUPLICATE` | Resource already exists |
 | 429 | `RATE_LIMITED` | Too many requests |
-| 500 | `BROADCAST_FAILED` | Hive broadcast failed |
+| 502 | `BROADCAST_FAILED` | Hive chain rejected the broadcast (chain-side error, not retriable). `details.retriable: false`. |
+| 504 | `BROADCAST_TIMEOUT` | Backend aborted the broadcast at the wall-clock bound. Outcome is uncertain (the op may or may not have landed on chain). `details.retriable: false, details.outcome: 'uncertain', details.verify_before_retry: true, details.timeout_ms: number`. Clients must verify chain state before retrying to avoid duplicate ops. |
 | 500 | `INTERNAL_ERROR` | Server error |
+
+**Note on `BROADCAST_*` codes.** `bridge.ts` and `custody.ts` use a different broadcast helper (`broadcastSendOperationsWithTimeout`) and currently still emit `BROADCAST_FAILED` at HTTP 500 with no discrimination. Migrating those sites to the 502/504 pattern is tracked as a separate follow-up task (see `tasks/pending/backend-bridge-custody-broadcast-discrimination.md` when filed).
 
 ---
 
