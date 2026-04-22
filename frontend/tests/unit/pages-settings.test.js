@@ -483,6 +483,162 @@ describe('settingsPage', () => {
     });
   });
 
+  // FE-UPGRADE-CLOSURE-WIPE — the derivation/broadcast/keychain-import
+  // steps (which capture `oldSeed`, `oldKeys`, `newSeed`, `newKeys`,
+  // `newPubKeys`, `ownerKey`, per-role `wif`) must live inside a
+  // narrower-scoped helper method (`_performUpgradeKeyRotation`) that
+  // returns BEFORE `_clearSensitiveUpgradeState()` runs. This way the
+  // helper's frame is popped off the stack and its `const` bindings are
+  // unreachable by the time the wipe executes — closure-captured key
+  // material is eligible for GC on the very next cycle, in addition to
+  // the reactive-field zeroing that _clearSensitiveUpgradeState already
+  // does.
+  //
+  // JS has no deterministic zero-on-release and WeakRef/FinalizationRegistry
+  // timing is engine-dependent and flaky under vitest, so the reachability
+  // invariant is enforced structurally instead:
+  //   (1) The helper method exists (regression guard against future inlining).
+  //   (2) Its promise resolves BEFORE `_clearSensitiveUpgradeState()` is
+  //       called on the happy path (proves the frame exited first).
+  //   (3) It returns undefined (no derived key object escapes back to
+  //       `executeUpgrade`'s frame via the return value).
+  describe('FE-UPGRADE-CLOSURE-WIPE: executeUpgrade', () => {
+    function seedUpgradeState(comp) {
+      comp.oldSeedPhrase = Array(12).fill('old').join(' ');
+      comp.newSeedPhrase = Array(12).fill('new').join(' ');
+      comp.newSeedWords = comp.newSeedPhrase.split(' ');
+      comp.confirmInputs = { 0: 'new', 5: 'new', 11: 'new' };
+      comp.upgradePassword = 'light-password';
+      return comp;
+    }
+
+    function stubFetchSuccess() {
+      vi.stubGlobal('fetch', vi.fn(async () => ({
+        ok: true,
+        json: async () => ({ data: { token: 'new-jwt', custody: 'self' } }),
+      })));
+    }
+
+    function stubKeychainImportKey() {
+      vi.stubGlobal('window', {
+        ...globalThis.window,
+        hive_keychain: {
+          requestImportKey: (_a, _k, cb) => queueMicrotask(() => cb({ success: true })),
+        },
+      });
+    }
+
+    it('extracts key derivation + broadcast + keychain import into _performUpgradeKeyRotation helper', () => {
+      const comp = createComponent();
+      // Regression guard: if a future refactor inlines this helper back
+      // into executeUpgrade, the derivation frame stops popping before
+      // the wipe runs and closure-captured key material lingers.
+      expect(typeof comp._performUpgradeKeyRotation).toBe('function');
+    });
+
+    it('helper frame exits before _clearSensitiveUpgradeState runs (happy path)', async () => {
+      mockIsKeychainInstalled.mockReturnValue(true);
+      stubFetchSuccess();
+      stubKeychainImportKey();
+
+      const comp = createComponent();
+      seedUpgradeState(comp);
+
+      const events = [];
+      const origPerform = comp._performUpgradeKeyRotation.bind(comp);
+      comp._performUpgradeKeyRotation = async (...args) => {
+        events.push('perform:enter');
+        const result = await origPerform(...args);
+        events.push('perform:exit');
+        // Reachability evidence: by the time we push 'perform:exit', the
+        // inner `oldSeed`/`oldKeys`/`newSeed`/`newKeys`/`newPubKeys`/`ownerKey`
+        // bindings no longer have any owning reference — they lived in the
+        // helper's frame, which is now unwinding. The awaited result must
+        // be `undefined`; otherwise the derived material would be escaping
+        // back to executeUpgrade's frame via the return value.
+        expect(result).toBeUndefined();
+        return result;
+      };
+      const origWipe = comp._clearSensitiveUpgradeState.bind(comp);
+      comp._clearSensitiveUpgradeState = () => {
+        events.push('wipe');
+        return origWipe();
+      };
+
+      await comp.executeUpgrade();
+
+      expect(comp.upgradePhase).toBe('done');
+      // Invariant: the derivation helper fully exits (perform:exit) BEFORE
+      // the wipe runs. The 'perform:exit' event fires when the awaited
+      // promise resolves, which implies the helper's frame has popped.
+      const exitIdx = events.indexOf('perform:exit');
+      const wipeIdx = events.indexOf('wipe');
+      expect(exitIdx).toBeGreaterThanOrEqual(0);
+      expect(wipeIdx).toBeGreaterThanOrEqual(0);
+      expect(exitIdx).toBeLessThan(wipeIdx);
+    });
+
+    it('helper frame exits before _clearSensitiveUpgradeState runs (error path)', async () => {
+      mockIsKeychainInstalled.mockReturnValue(true);
+      stubKeychainImportKey();
+      // Fetch fails → executeUpgrade lands in the catch block, which still
+      // calls _clearSensitiveUpgradeState. The helper has already returned
+      // by the time the catch runs (broadcast + keychain import happened
+      // before the fetch), so the reachability invariant still holds.
+      vi.stubGlobal('fetch', vi.fn(async () => ({
+        ok: false,
+        json: async () => ({ error: 'upgrade refused' }),
+      })));
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const comp = createComponent();
+      seedUpgradeState(comp);
+
+      const events = [];
+      const origPerform = comp._performUpgradeKeyRotation.bind(comp);
+      comp._performUpgradeKeyRotation = async (...args) => {
+        events.push('perform:enter');
+        const result = await origPerform(...args);
+        events.push('perform:exit');
+        return result;
+      };
+      const origWipe = comp._clearSensitiveUpgradeState.bind(comp);
+      comp._clearSensitiveUpgradeState = () => {
+        events.push('wipe');
+        return origWipe();
+      };
+
+      await comp.executeUpgrade();
+
+      expect(comp.upgradePhase).toBe('error');
+      const exitIdx = events.indexOf('perform:exit');
+      const wipeIdx = events.indexOf('wipe');
+      expect(exitIdx).toBeGreaterThanOrEqual(0);
+      expect(wipeIdx).toBeGreaterThanOrEqual(0);
+      expect(exitIdx).toBeLessThan(wipeIdx);
+
+      warnSpy.mockRestore();
+    });
+
+    it('_performUpgradeKeyRotation returns undefined (no derived key object escapes to caller)', async () => {
+      mockIsKeychainInstalled.mockReturnValue(true);
+      stubKeychainImportKey();
+
+      const comp = createComponent();
+      const result = await comp._performUpgradeKeyRotation(
+        Array(12).fill('old').join(' '),
+        Array(12).fill('new').join(' '),
+      );
+
+      // Critical: the helper MUST NOT return `newKeys`, `newPubKeys`,
+      // `oldKeys`, or any other object that would re-escape the derived
+      // material into executeUpgrade's frame. A future refactor that
+      // returns the tx id is fine (scalar), but returning the key objects
+      // would defeat the whole narrowing — assert undefined to lock it.
+      expect(result).toBeUndefined();
+    });
+  });
+
   // FE-SAVESESSION-API-MISUSE-SWEEP: executeUpgrade() used to call
   // _saveSession(token, username, null, isAccredited, accreditation, 'self')
   // — the no-arg implementation silently ignored all six args, so the `null`
