@@ -1,6 +1,7 @@
 import Alpine from 'alpinejs';
 import { submitContactForm } from '../api.js';
 import { getDiscordUrl, getGithubUrl } from '../config.js';
+import { createTimerGuard } from '../lib/timer-guard.js';
 
 const template = `
       <div x-data="contactPage" class="container-narrow py-8">
@@ -109,6 +110,7 @@ export { template as contactPageTemplate };
 
 export function initContactPage() {
   Alpine.data('contactPage', () => ({
+    ...createTimerGuard(),
     discordUrl: getDiscordUrl(),
     githubUrl: getGithubUrl(),
     get githubIssuesUrl() { return this.githubUrl ? this.githubUrl + '/issues' : ''; },
@@ -119,6 +121,12 @@ export function initContactPage() {
     website: '', // honeypot
     step: 'idle', // idle | submitting | success | error
     errorMessage: '',
+
+    destroy() {
+      // _teardownTimers flips _mounted so in-flight submitContactForm
+      // continuations bail before touching reactive state.
+      this._teardownTimers();
+    },
 
     async handleSubmit() {
       if (this.website) return; // honeypot triggered
@@ -133,8 +141,10 @@ export function initContactPage() {
           subject: this.subject,
           message: this.message,
         });
+        if (!this._mounted) return;
         this.step = 'success';
       } catch (err) {
+        if (!this._mounted) return;
         console.warn('[contact submit]', err);
         this.step = 'error';
         this.errorMessage = this.$t('contact.errorGeneric');

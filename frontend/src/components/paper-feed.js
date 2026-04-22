@@ -104,6 +104,12 @@ export function initPaperFeed() {
     loading: true,
     error: null,
     _popstateHandler: null,
+    // Monotonic generation counter: every loadPapers() bump makes previous
+    // in-flight fetches stale. When the stale fetch resolves it checks
+    // gen !== this._loadPapersGen and bails, so a slow first fetch cannot
+    // overwrite a newer fetch's result or flip `loading` back to false
+    // while a newer fetch is still pending.
+    _loadPapersGen: 0,
 
     // Expose helpers to the paper-card template interpolated into this scope.
     truncateText,
@@ -168,6 +174,7 @@ export function initPaperFeed() {
     },
 
     async loadPapers() {
+      const gen = ++this._loadPapersGen;
       this.loading = true;
       this.error = null;
       try {
@@ -180,18 +187,22 @@ export function initPaperFeed() {
         if (this.sourceFilter) params.source = this.sourceFilter;
 
         const res = await fetchPapers(params);
-        if (!this._mounted) return;
+        if (!this._mounted || gen !== this._loadPapersGen) return;
         this.papers = res.data || [];
         this.totalPages = totalPagesFromMeta(res.meta);
-        this.loading = false;
       } catch {
-        if (!this._mounted) return;
+        if (!this._mounted || gen !== this._loadPapersGen) return;
         this.error = this.$t('home.errorLoading');
         this.papers = [];
         this.totalPages = 1;
         this.currentPage = 1;
-        this.loading = false;
         this._pushUrl();
+      } finally {
+        // Only the winning generation flips loading off. A stale fetch that
+        // finishes while a newer one is in-flight must NOT clear `loading`
+        // (would render half-populated state while the real fetch is still
+        // running). Mirrors the search.js doSearch pattern.
+        if (this._mounted && gen === this._loadPapersGen) this.loading = false;
       }
     },
 

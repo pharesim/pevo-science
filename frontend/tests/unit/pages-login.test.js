@@ -309,4 +309,55 @@ describe('loginPage', () => {
       warnSpy.mockRestore();
     });
   });
+
+  // UI-TEARDOWN-GUARD-SWEEP-EXTENSION: post-destroy() async continuations
+  // must not write to component state. A login that resolves/rejects after
+  // Alpine tears the page down would otherwise flip auth store + error state
+  // on a destroyed scope.
+  describe('teardown', () => {
+    it('handleSubmit catch does not set error/pendingState after destroy()', async () => {
+      let rejectFn;
+      mockLoginWithPassword.mockImplementationOnce(() => new Promise((_, reject) => { rejectFn = reject; }));
+      const comp = createComponent();
+      comp.emailOrUsername = 'x@y.com';
+      comp.password = 'secret';
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const pending = comp.handleSubmit();
+      comp.destroy();
+      rejectFn(new Error('late'));
+      await pending;
+      expect(comp.error).toBeNull();
+      expect(comp.pendingState).toBeNull();
+      warnSpy.mockRestore();
+    });
+
+    it('handleSubmit happy path does not navigate after destroy()', async () => {
+      let resolveFn;
+      mockLoginWithPassword.mockImplementationOnce(() => new Promise((resolve) => { resolveFn = resolve; }));
+      const comp = createComponent();
+      comp.emailOrUsername = 'x@y.com';
+      comp.password = 'secret';
+      const pending = comp.handleSubmit();
+      comp.destroy();
+      resolveFn({ data: { token: 't', username: 'u', expires_at: 'e' } });
+      await pending;
+      expect(mockRouterStore.navigate).not.toHaveBeenCalled();
+    });
+
+    it('handleResendVerification catch does not set error after destroy()', async () => {
+      let rejectFn;
+      mockResendVerification.mockImplementationOnce(() => new Promise((_, reject) => { rejectFn = reject; }));
+      const comp = createComponent();
+      comp.emailOrUsername = 'x@y.com';
+      comp.password = 'secret';
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const pending = comp.handleResendVerification();
+      comp.destroy();
+      rejectFn(new Error('late'));
+      await pending;
+      expect(comp.error).toBeNull();
+      expect(comp.resendSuccess).toBe(false);
+      warnSpy.mockRestore();
+    });
+  });
 });

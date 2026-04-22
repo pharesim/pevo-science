@@ -454,4 +454,82 @@ describe('paperFeed', () => {
       warnSpy.mockRestore();
     });
   });
+
+  // UI-TEARDOWN-GUARD-SWEEP-EXTENSION: concurrent-fetch generation counter.
+  // loadPapers() bumps `_loadPapersGen` on entry; any in-flight fetch whose
+  // generation no longer matches bails. Without this, a slow first fetch
+  // resolving after a newer fetch would overwrite `papers` with stale data,
+  // or its `finally` would flip `loading` off while a newer fetch is still
+  // running.
+  describe('loadPapers generation counter (concurrent fetches)', () => {
+    it('stale fetch resolving after a newer fetch does not overwrite papers', async () => {
+      let resolveFirst;
+      let resolveSecond;
+      mockFetchPapers
+        .mockImplementationOnce(() => new Promise((r) => { resolveFirst = r; }))
+        .mockImplementationOnce(() => new Promise((r) => { resolveSecond = r; }));
+      const comp = createComponent();
+      comp.papers = [];
+
+      const firstPending = comp.loadPapers();
+      const secondPending = comp.loadPapers();
+
+      // Resolve the newer fetch first — its data should win.
+      resolveSecond({ data: [{ title: 'fresh' }], meta: { total: 1, limit: 10 } });
+      await secondPending;
+      expect(comp.papers).toEqual([{ title: 'fresh' }]);
+
+      // Stale fetch resolves later; must NOT overwrite 'fresh'.
+      resolveFirst({ data: [{ title: 'stale' }], meta: { total: 1, limit: 10 } });
+      await firstPending;
+      expect(comp.papers).toEqual([{ title: 'fresh' }]);
+    });
+
+    it('finally does NOT flip loading to false when a newer fetch is still pending', async () => {
+      let resolveFirst;
+      let resolveSecond;
+      mockFetchPapers
+        .mockImplementationOnce(() => new Promise((r) => { resolveFirst = r; }))
+        .mockImplementationOnce(() => new Promise((r) => { resolveSecond = r; }));
+      const comp = createComponent();
+
+      const firstPending = comp.loadPapers();
+      const secondPending = comp.loadPapers();
+      expect(comp.loading).toBe(true);
+
+      // Resolve the stale fetch first. Its finally must not clear loading,
+      // because the newer fetch is still in-flight.
+      resolveFirst({ data: [{ title: 'stale' }], meta: { total: 1, limit: 10 } });
+      await firstPending;
+      expect(comp.loading).toBe(true);
+
+      // Winning fetch resolves → loading clears.
+      resolveSecond({ data: [{ title: 'fresh' }], meta: { total: 1, limit: 10 } });
+      await secondPending;
+      expect(comp.loading).toBe(false);
+    });
+
+    it('stale fetch rejection after a newer success does not surface error', async () => {
+      let rejectFirst;
+      let resolveSecond;
+      mockFetchPapers
+        .mockImplementationOnce(() => new Promise((_, rej) => { rejectFirst = rej; }))
+        .mockImplementationOnce(() => new Promise((r) => { resolveSecond = r; }));
+      const comp = createComponent();
+
+      const firstPending = comp.loadPapers();
+      const secondPending = comp.loadPapers();
+
+      resolveSecond({ data: [{ title: 'fresh' }], meta: { total: 1, limit: 10 } });
+      await secondPending;
+      expect(comp.error).toBeNull();
+      expect(comp.papers).toEqual([{ title: 'fresh' }]);
+
+      rejectFirst(new Error('late-stale-error'));
+      await firstPending;
+      // Stale error must NOT replace the fresh papers or flip error on.
+      expect(comp.error).toBeNull();
+      expect(comp.papers).toEqual([{ title: 'fresh' }]);
+    });
+  });
 });

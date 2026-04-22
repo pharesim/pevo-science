@@ -177,4 +177,68 @@ describe('resetPasswordPage', () => {
       warnSpy.mockRestore();
     });
   });
+
+  // UI-TEARDOWN-GUARD-SWEEP-EXTENSION: post-destroy() async continuations
+  // must not write to component state. A reset request/POST that resolves
+  // after Alpine tears the page down would otherwise flip the success flag
+  // or push an error onto a destroyed scope.
+  describe('teardown', () => {
+    it('handleRequestReset catch does not set requestError after destroy()', async () => {
+      let rejectFn;
+      mockRequestPasswordReset.mockImplementationOnce(() => new Promise((_, reject) => { rejectFn = reject; }));
+      const comp = createComponent();
+      comp.email = 'x@y.com';
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const pending = comp.handleRequestReset();
+      comp.destroy();
+      rejectFn(new Error('late'));
+      await pending;
+      expect(comp.requestError).toBeNull();
+      expect(comp.requestSent).toBe(false);
+      warnSpy.mockRestore();
+    });
+
+    it('handleRequestReset happy path does not set requestSent after destroy()', async () => {
+      let resolveFn;
+      mockRequestPasswordReset.mockImplementationOnce(() => new Promise((resolve) => { resolveFn = resolve; }));
+      const comp = createComponent();
+      comp.email = 'x@y.com';
+      const pending = comp.handleRequestReset();
+      comp.destroy();
+      resolveFn();
+      await pending;
+      expect(comp.requestSent).toBe(false);
+    });
+
+    it('handleReset catch does not set resetError after destroy()', async () => {
+      let rejectFn;
+      mockResetPassword.mockImplementationOnce(() => new Promise((_, reject) => { rejectFn = reject; }));
+      const comp = createComponent();
+      comp.token = 'tok';
+      comp.password = 'Abcdefgh1x';
+      comp.passwordConfirm = 'Abcdefgh1x';
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const pending = comp.handleReset();
+      comp.destroy();
+      rejectFn(new Error('late'));
+      await pending;
+      expect(comp.resetError).toBeNull();
+      expect(comp.resetDone).toBe(false);
+      warnSpy.mockRestore();
+    });
+
+    it('handleReset happy path does not set resetDone after destroy()', async () => {
+      let resolveFn;
+      mockResetPassword.mockImplementationOnce(() => new Promise((resolve) => { resolveFn = resolve; }));
+      const comp = createComponent();
+      comp.token = 'tok';
+      comp.password = 'Abcdefgh1x';
+      comp.passwordConfirm = 'Abcdefgh1x';
+      const pending = comp.handleReset();
+      comp.destroy();
+      resolveFn();
+      await pending;
+      expect(comp.resetDone).toBe(false);
+    });
+  });
 });

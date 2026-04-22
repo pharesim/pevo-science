@@ -1,5 +1,6 @@
 import Alpine from 'alpinejs';
 import { loginWithPassword, resendVerification, startOrcid } from '../api.js';
+import { createTimerGuard } from '../lib/timer-guard.js';
 
 const template = `
       <div x-data="loginPage" class="container-narrow py-8">
@@ -111,6 +112,7 @@ export { template as loginPageTemplate };
 
 export function initLoginPage() {
   Alpine.data('loginPage', () => ({
+    ...createTimerGuard(),
     emailOrUsername: '',
     password: '',
     isSubmitting: false,
@@ -128,6 +130,13 @@ export function initLoginPage() {
       return this.emailOrUsername.trim() && this.password;
     },
 
+    destroy() {
+      // _teardownTimers flips _mounted so in-flight loginWithPassword /
+      // resendVerification / startOrcid continuations bail before touching
+      // reactive state.
+      this._teardownTimers();
+    },
+
     async handleSubmit() {
       if (!this.canSubmit || this.isSubmitting) return;
       this.isSubmitting = true;
@@ -140,6 +149,7 @@ export function initLoginPage() {
           this.emailOrUsername.trim(),
           this.password
         );
+        if (!this._mounted) return;
 
         const auth = Alpine.store('auth');
         auth.token = res.data.token;
@@ -154,6 +164,7 @@ export function initLoginPage() {
 
         Alpine.store('router').navigate('/papers');
       } catch (err) {
+        if (!this._mounted) return;
         // Semantic-code branches render localized messages; the generic
         // fallback takes the sanitization path shared with executeUpgrade()
         // in settings.js (generic message to DOM, raw err to console.warn).
@@ -185,7 +196,7 @@ export function initLoginPage() {
         console.warn('[login submit]', err);
         this.error = this.$t('login.loginFailed');
       } finally {
-        this.isSubmitting = false;
+        if (this._mounted) this.isSubmitting = false;
       }
     },
 
@@ -194,14 +205,16 @@ export function initLoginPage() {
       this.isResending = true;
       try {
         await resendVerification(this.emailOrUsername.trim(), this.password);
+        if (!this._mounted) return;
         this.resendSuccess = true;
         this.error = null;
       } catch (err) {
+        if (!this._mounted) return;
         // Sanitization pattern (see executeUpgrade() in settings.js).
         console.warn('[login resend verification]', err);
         this.error = this.$t('login.resendFailed');
       } finally {
-        this.isResending = false;
+        if (this._mounted) this.isResending = false;
       }
     },
 
@@ -214,8 +227,10 @@ export function initLoginPage() {
 
       try {
         const data = await startOrcid('login');
+        if (!this._mounted) return;
         window.location.href = data.redirect_url;
       } catch (err) {
+        if (!this._mounted) return;
         this.orcidLoading = false;
         localStorage.removeItem('pevo_orcid_mode');
         // Sanitization pattern (see executeUpgrade() in settings.js).

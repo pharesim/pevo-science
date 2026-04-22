@@ -1,6 +1,7 @@
 import Alpine from 'alpinejs';
 import { requestPasswordReset, resetPassword } from '../api.js';
 import { isPasswordValid } from '../password-policy.js';
+import { createTimerGuard } from '../lib/timer-guard.js';
 
 const template = `
       <div x-data="resetPasswordPage" class="container-narrow py-8">
@@ -100,6 +101,7 @@ export { template as resetPasswordPageTemplate };
 
 export function initResetPasswordPage() {
   Alpine.data('resetPasswordPage', () => ({
+    ...createTimerGuard(),
     // Mode: 'request' (enter email) or 'reset' (enter new password)
     mode: 'request',
     token: null,
@@ -130,6 +132,12 @@ export function initResetPasswordPage() {
       }
     },
 
+    destroy() {
+      // _teardownTimers flips _mounted so in-flight requestPasswordReset /
+      // resetPassword continuations bail before touching reactive state.
+      this._teardownTimers();
+    },
+
     async handleRequestReset() {
       if (!this.email.trim() || this.requestSubmitting) return;
       this.requestSubmitting = true;
@@ -137,15 +145,17 @@ export function initResetPasswordPage() {
 
       try {
         await requestPasswordReset(this.email.trim());
+        if (!this._mounted) return;
         this.requestSent = true;
       } catch (err) {
+        if (!this._mounted) return;
         // Sanitization pattern (see executeUpgrade() in settings.js). The
         // reset flow handles password material adjacent state; generic
         // message to the DOM, raw err to console.warn for diagnostics.
         console.warn('[reset password request]', err);
         this.requestError = this.$t('resetPassword.requestFailed');
       } finally {
-        this.requestSubmitting = false;
+        if (this._mounted) this.requestSubmitting = false;
       }
     },
 
@@ -156,13 +166,15 @@ export function initResetPasswordPage() {
 
       try {
         await resetPassword(this.token, this.password);
+        if (!this._mounted) return;
         this.resetDone = true;
       } catch (err) {
+        if (!this._mounted) return;
         // Sanitization pattern (see executeUpgrade() in settings.js).
         console.warn('[reset password reset]', err);
         this.resetError = this.$t('resetPassword.resetFailed');
       } finally {
-        this.resetSubmitting = false;
+        if (this._mounted) this.resetSubmitting = false;
       }
     },
 

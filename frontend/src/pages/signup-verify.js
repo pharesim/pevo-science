@@ -2,6 +2,7 @@ import Alpine from 'alpinejs';
 import { verifyEmail, resumeSignup, confirmAccount, linkExistingAccount } from '../api.js';
 import { generateMnemonic, validateMnemonic, deriveAllKeys } from '../hive-keys.js';
 import { isKeychainInstalled } from '../keychain.js';
+import { createTimerGuard } from '../lib/timer-guard.js';
 
 const template = `
       <div x-data="signupVerifyPage" class="container-narrow py-8">
@@ -239,6 +240,7 @@ function isValidUsername(u) {
 
 export function initSignupVerifyPage() {
   Alpine.data('signupVerifyPage', () => ({
+    ...createTimerGuard(),
     // Phases: 'verifying' | 'choose' | 'create-seed' | 'create-confirm' | 'create-username' | 'create-submitting' | 'link-keychain' | 'done' | 'error'
     phase: 'verifying',
     error: null,
@@ -299,9 +301,21 @@ export function initSignupVerifyPage() {
       this.verifyToken(emailToken);
     },
 
+    destroy() {
+      // _teardownTimers flips _mounted so in-flight verifyEmail / resumeSignup
+      // / confirmAccount / linkExistingAccount continuations bail before
+      // touching reactive state. Also clears the debounce username timer.
+      this._teardownTimers();
+      if (this._usernameTimer) {
+        clearTimeout(this._usernameTimer);
+        this._usernameTimer = null;
+      }
+    },
+
     async verifyToken(emailToken) {
       try {
         const res = await verifyEmail(emailToken);
+        if (!this._mounted) return;
         if (res.data.flow === 'choose') {
           this.authToken = res.data.auth_token;
           this.email = res.data.email;
@@ -311,6 +325,7 @@ export function initSignupVerifyPage() {
           this.error = this.$t('seedPhrase.unexpectedResponse');
         }
       } catch {
+        if (!this._mounted) return;
         // Token already consumed (second click) or expired — show resume form
         this.phase = 'error';
         this.error = null;
@@ -363,12 +378,15 @@ export function initSignupVerifyPage() {
     async _checkUsername(val) {
       try {
         const { Client } = await import('@hiveio/dhive');
+        if (!this._mounted) return;
         const client = new Client(['https://api.hive.blog', 'https://api.deathwing.me']);
         const accounts = await client.database.getAccounts([val]);
+        if (!this._mounted) return;
         if (this.username.trim().toLowerCase() === val) {
           this.usernameStatus = accounts.length === 0 ? 'available' : 'taken';
         }
       } catch {
+        if (!this._mounted) return;
         if (this.username.trim().toLowerCase() === val) this.usernameStatus = 'error';
       }
     },
@@ -388,6 +406,7 @@ export function initSignupVerifyPage() {
       try {
         // Derive all keys from mnemonic + username
         const allKeys = await deriveAllKeys(this.mnemonic, normalizedUsername);
+        if (!this._mounted) return;
 
         const keys = {
           owner_public: allKeys.owner.public,
@@ -399,6 +418,7 @@ export function initSignupVerifyPage() {
         };
 
         const res = await confirmAccount(this.authToken, normalizedUsername, keys);
+        if (!this._mounted) return;
 
         // Set auth state
         const auth = Alpine.store('auth');
@@ -420,6 +440,7 @@ export function initSignupVerifyPage() {
 
         this.phase = 'done';
       } catch (err) {
+        if (!this._mounted) return;
         // Sanitization pattern (see executeUpgrade() in settings.js). The
         // create-account path derives keys from the BIP39 mnemonic, so
         // surfacing raw err.message risks leaking key-adjacent material
@@ -428,7 +449,7 @@ export function initSignupVerifyPage() {
         this.error = this.$t('seedPhrase.createAccountFailed');
         this.phase = 'create-username';
       } finally {
-        this.isSubmitting = false;
+        if (this._mounted) this.isSubmitting = false;
       }
     },
 
@@ -450,6 +471,7 @@ export function initSignupVerifyPage() {
       try {
         const username = this.hiveUsername.trim().toLowerCase();
         const res = await linkExistingAccount(this.authToken, username);
+        if (!this._mounted) return;
 
         const auth = Alpine.store('auth');
         auth.token = res.data.token;
@@ -470,11 +492,12 @@ export function initSignupVerifyPage() {
 
         this.phase = 'done';
       } catch (err) {
+        if (!this._mounted) return;
         // Sanitization pattern (see executeUpgrade() in settings.js).
         console.warn('[signup verify link account]', err);
         this.error = this.$t('seedPhrase.linkAccountFailed');
       } finally {
-        this.isSubmitting = false;
+        if (this._mounted) this.isSubmitting = false;
       }
     },
 
@@ -487,6 +510,7 @@ export function initSignupVerifyPage() {
 
       try {
         const res = await resumeSignup(this.resumeEmail, this.resumePassword);
+        if (!this._mounted) return;
         if (res.data.flow === 'choose') {
           this.authToken = res.data.auth_token;
           this.email = res.data.email;
@@ -495,13 +519,14 @@ export function initSignupVerifyPage() {
           this.error = this.$t('seedPhrase.unexpectedResponse');
         }
       } catch (err) {
+        if (!this._mounted) return;
         // Sanitization pattern (see executeUpgrade() in settings.js). The
         // resume path handles email/password auth; backend error shapes
         // can embed credential-adjacent text on unusual failures.
         console.warn('[signup verify resume]', err);
         this.error = this.$t('seedPhrase.resumeFailed');
       } finally {
-        this.isResuming = false;
+        if (this._mounted) this.isResuming = false;
       }
     },
 

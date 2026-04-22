@@ -180,4 +180,44 @@ describe('contactPage', () => {
       expect(comp.step).toBe('idle');
     });
   });
+
+  // UI-TEARDOWN-GUARD-SWEEP-EXTENSION: post-destroy() async continuations
+  // must not write to component state. submitContactForm can hang (slow
+  // backend) and the user navigates away mid-flight.
+  describe('teardown', () => {
+    it('handleSubmit happy path does not flip step/errorMessage after destroy()', async () => {
+      let resolveFn;
+      mockSubmitContactForm.mockImplementationOnce(() => new Promise((resolve) => { resolveFn = resolve; }));
+      const comp = createComponent();
+      comp.email = 'a@b.com';
+      comp.subject = 's';
+      comp.message = 'm';
+      const pending = comp.handleSubmit();
+      // step flipped to 'submitting' synchronously before await
+      expect(comp.step).toBe('submitting');
+      comp.destroy();
+      resolveFn();
+      await pending;
+      expect(comp.step).toBe('submitting');
+    });
+
+    it('handleSubmit catch does not set errorMessage/step after destroy()', async () => {
+      let rejectFn;
+      mockSubmitContactForm.mockImplementationOnce(() => new Promise((_, reject) => { rejectFn = reject; }));
+      const comp = createComponent();
+      comp.email = 'a@b.com';
+      comp.subject = 's';
+      comp.message = 'm';
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const pending = comp.handleSubmit();
+      expect(comp.step).toBe('submitting');
+      comp.destroy();
+      rejectFn(new Error('late'));
+      await pending;
+      // step stays 'submitting' (not flipped to 'error') and errorMessage empty.
+      expect(comp.step).toBe('submitting');
+      expect(comp.errorMessage).toBe('');
+      warnSpy.mockRestore();
+    });
+  });
 });

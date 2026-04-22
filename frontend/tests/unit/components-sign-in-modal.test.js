@@ -202,4 +202,59 @@ describe('signInModal', () => {
       expect(mockResendVerification).toHaveBeenCalledTimes(1);
     });
   });
+
+  // UI-TEARDOWN-GUARD-SWEEP-EXTENSION: post-destroy() async continuations
+  // must not write to component state. A modal login that resolves after the
+  // modal is torn down would otherwise flip auth state + modal mode on a
+  // destroyed scope.
+  describe('teardown', () => {
+    it('handleEmailLogin catch does not set emailError after destroy()', async () => {
+      let rejectFn;
+      mockLoginWithPassword.mockImplementationOnce(() => new Promise((_, reject) => { rejectFn = reject; }));
+      const comp = createComponent();
+      comp.emailValue = 'e@x.com';
+      comp.passwordValue = 'pass';
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const pending = comp.handleEmailLogin();
+      comp.destroy();
+      rejectFn(new Error('late'));
+      await pending;
+      expect(comp.emailError).toBeNull();
+      warnSpy.mockRestore();
+    });
+
+    it('handleEmailLogin happy path does not flip open/mode after destroy()', async () => {
+      let resolveFn;
+      mockLoginWithPassword.mockImplementationOnce(() => new Promise((resolve) => { resolveFn = resolve; }));
+      const comp = createComponent();
+      comp.emailValue = 'e@x.com';
+      comp.passwordValue = 'pass';
+      comp.open = true;
+      comp.mode = 'email';
+      const pending = comp.handleEmailLogin();
+      comp.destroy();
+      resolveFn({ data: { token: 't', username: 'u' } });
+      await pending;
+      // open/mode untouched, auth store write skipped
+      expect(comp.open).toBe(true);
+      expect(comp.mode).toBe('email');
+      expect(mockAuthStore.loginFromResponse).not.toHaveBeenCalled();
+    });
+
+    it('handleResendVerification catch does not set emailError after destroy()', async () => {
+      let rejectFn;
+      mockResendVerification.mockImplementationOnce(() => new Promise((_, reject) => { rejectFn = reject; }));
+      const comp = createComponent();
+      comp.emailValue = 'e@x.com';
+      comp.passwordValue = 'pass';
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const pending = comp.handleResendVerification();
+      comp.destroy();
+      rejectFn(new Error('late'));
+      await pending;
+      expect(comp.emailError).toBeNull();
+      expect(comp.resendSuccess).toBe(false);
+      warnSpy.mockRestore();
+    });
+  });
 });

@@ -486,4 +486,90 @@ describe('signupPage', () => {
       expect(comp.canSubmit).toBeFalsy();
     });
   });
+
+  // UI-TEARDOWN-GUARD-SWEEP-EXTENSION: post-destroy() async continuations
+  // must not write to component state. The DUPLICATE branch is especially
+  // sensitive because it chains `_resolveExistingAccount() → loginWithPassword`
+  // on top of the already-resolved submitSignup catch.
+  describe('teardown', () => {
+    it('handleSubmit catch does not set error/submitted after destroy()', async () => {
+      let rejectFn;
+      mockSubmitSignup.mockImplementationOnce(() => new Promise((_, reject) => { rejectFn = reject; }));
+      const comp = createComponent();
+      comp.email = 'x@y.com';
+      comp.fullName = 'A';
+      comp.institution = 'B';
+      comp.field = 'C';
+      comp.password = 'Abcdefgh1x';
+      comp.passwordConfirm = 'Abcdefgh1x';
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const pending = comp.handleSubmit();
+      comp.destroy();
+      rejectFn(new Error('late'));
+      await pending;
+      expect(comp.error).toBeNull();
+      expect(comp.submitted).toBe(false);
+      warnSpy.mockRestore();
+    });
+
+    it('handleSubmit happy path does not set submitted after destroy()', async () => {
+      let resolveFn;
+      mockSubmitSignup.mockImplementationOnce(() => new Promise((resolve) => { resolveFn = resolve; }));
+      const comp = createComponent();
+      comp.email = 'x@y.com';
+      comp.fullName = 'A';
+      comp.institution = 'B';
+      comp.field = 'C';
+      comp.password = 'Abcdefgh1x';
+      comp.passwordConfirm = 'Abcdefgh1x';
+      const pending = comp.handleSubmit();
+      comp.destroy();
+      resolveFn();
+      await pending;
+      expect(comp.submitted).toBe(false);
+    });
+
+    it('DUPLICATE branch _resolveExistingAccount does not navigate after destroy()', async () => {
+      // Signup rejects DUPLICATE → _resolveExistingAccount → loginWithPassword
+      // rejects PENDING_SIGNUP. We destroy while loginWithPassword is still
+      // pending. The post-await nav to /signup/verify must not fire.
+      mockSubmitSignup.mockRejectedValueOnce(Object.assign(new Error('dupe'), { code: 'DUPLICATE' }));
+      let rejectLogin;
+      mockLoginWithPassword.mockImplementationOnce(() => new Promise((_, reject) => { rejectLogin = reject; }));
+      const comp = createComponent();
+      comp.email = 'x@y.com';
+      comp.fullName = 'A';
+      comp.institution = 'B';
+      comp.field = 'C';
+      comp.password = 'Abcdefgh1x';
+      comp.passwordConfirm = 'Abcdefgh1x';
+      const pending = comp.handleSubmit();
+      // Flush the submit rejection + chained _resolveExistingAccount start.
+      await Promise.resolve();
+      await Promise.resolve();
+      comp.destroy();
+      rejectLogin(Object.assign(new Error('pending'), {
+        code: 'PENDING_SIGNUP',
+        data: { auth_token: 'tok', email: 'x@y.com' },
+      }));
+      await pending;
+      expect(Alpine.store('router').navigate).not.toHaveBeenCalled();
+    });
+
+    it('handleResendVerification catch does not set error after destroy()', async () => {
+      let rejectFn;
+      mockResendVerification.mockImplementationOnce(() => new Promise((_, reject) => { rejectFn = reject; }));
+      const comp = createComponent();
+      comp.email = 'x@y.com';
+      comp.password = 'Abcdefgh1x';
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const pending = comp.handleResendVerification();
+      comp.destroy();
+      rejectFn(new Error('late'));
+      await pending;
+      expect(comp.error).toBeNull();
+      expect(comp.resendSuccess).toBe(false);
+      warnSpy.mockRestore();
+    });
+  });
 });
