@@ -16,6 +16,7 @@ import { startActiveAccountsCache, startReputationWeightsCache } from './reputat
 import { startWotThresholdCache } from './wot.js';
 import { startAccountClaimer, stopAccountClaimer } from './account-creation.js';
 import { startSignupCleanup, stopSignupCleanup } from './signup-cleanup.js';
+import { drainArgon2Queue } from './lib/argon2-semaphore.js';
 import { logger } from './logger.js';
 import type { Server } from 'http';
 
@@ -99,6 +100,12 @@ async function shutdown(signal: string): Promise<void> {
   stopBatchReputation();
   stopAccountClaimer();
   stopSignupCleanup();
+
+  // Reject any auth requests parked in the argon2 semaphore queue. Without
+  // this, `server.close()` waits for them until the 30s force-timeout fires,
+  // then kills the socket mid-handshake instead of flushing a clean 503.
+  // In-flight argon2 ops are NOT interrupted; they complete normally.
+  drainArgon2Queue();
 
   // Stop accepting new connections, wait up to 30s for in-flight requests
   if (server) {

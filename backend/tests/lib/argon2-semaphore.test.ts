@@ -27,6 +27,7 @@ import { describe, it, expect } from 'vitest';
 import {
   createArgon2Semaphore,
   ArgonQueueFullError,
+  ShuttingDownError,
   MAX_CONCURRENT_ARGON2_OPS,
   MAX_QUEUE_DEPTH,
 } from '../../src/lib/argon2-semaphore.js';
@@ -227,6 +228,112 @@ describe('MAX_QUEUE_DEPTH cap', () => {
 
     expect(sem.getArgon2InFlight()).toBe(0);
     expect(sem.getArgon2QueueDepth()).toBe(0);
+  });
+});
+
+describe('drainArgon2Queue — graceful SIGTERM handling', () => {
+  it('rejects all pending waiters with ShuttingDownError on drain', async () => {
+    // cap=1 so only A runs; B, C, D queue.
+    const sem = createArgon2Semaphore(1, 10);
+
+    const a = controllable<number>();
+    const pA = sem.runWithArgon2Slot(() => a.fn());
+    await a.started;
+
+    // Queue 3 waiters behind A.
+    const pB = sem.runWithArgon2Slot(() => Promise.resolve('B-ran'));
+    const pC = sem.runWithArgon2Slot(() => Promise.resolve('C-ran'));
+    const pD = sem.runWithArgon2Slot(() => Promise.resolve('D-ran'));
+
+    // Yield so queue increments land.
+    await new Promise((r) => setImmediate(r));
+    expect(sem.getArgon2InFlight()).toBe(1);
+    expect(sem.getArgon2QueueDepth()).toBe(3);
+
+    // Drain. All queued waiters reject with ShuttingDownError.
+    sem.drainArgon2Queue();
+
+    await expect(pB).rejects.toBeInstanceOf(ShuttingDownError);
+    await expect(pC).rejects.toBeInstanceOf(ShuttingDownError);
+    await expect(pD).rejects.toBeInstanceOf(ShuttingDownError);
+
+    // Queue depth returns to 0 (each rejected waiter unwinds the finally).
+    expect(sem.getArgon2QueueDepth()).toBe(0);
+
+    // A is still running — drain does NOT interrupt in-flight ops.
+    expect(sem.getArgon2InFlight()).toBe(1);
+
+    // Complete A; it returns normally.
+    a.resolve(42);
+    await expect(pA).resolves.toBe(42);
+    expect(sem.getArgon2InFlight()).toBe(0);
+  });
+
+  it('rejects new runWithArgon2Slot calls immediately after drain', async () => {
+    const sem = createArgon2Semaphore(2);
+    sem.drainArgon2Queue();
+
+    // No waiters to reject, but the shutting-down flag now gates new calls.
+    await expect(
+      sem.runWithArgon2Slot(() => Promise.resolve('should-not-run')),
+    ).rejects.toBeInstanceOf(ShuttingDownError);
+
+    // No slot acquired.
+    expect(sem.getArgon2InFlight()).toBe(0);
+    expect(sem.getArgon2QueueDepth()).toBe(0);
+  });
+
+  it('is idempotent — multiple drain calls are safe', () => {
+    const sem = createArgon2Semaphore(1);
+    sem.drainArgon2Queue();
+    expect(() => sem.drainArgon2Queue()).not.toThrow();
+    expect(() => sem.drainArgon2Queue()).not.toThrow();
+  });
+
+  it('simulates full shutdown flow: burst queues, drain, callers see 503-ish error bounded-time', async () => {
+    // Integration-flavor: simulate the auth-route pattern. A burst of 5
+    // concurrent "requests" hits a cap=1 semaphore. One gets the slot; 4
+    // queue. Drain fires while they're parked. Every queued caller must
+    // resolve (reject, in this case) within a bounded tick window — NOT
+    // hang until a force-timeout elsewhere kills their socket.
+    const sem = createArgon2Semaphore(1, 10);
+    const blocker = controllable<void>();
+
+    const inFlight = sem.runWithArgon2Slot(() => blocker.fn());
+    await blocker.started;
+
+    // 4 queued callers. Each "handler" translates ShuttingDownError to a
+    // 503-equivalent payload, mirroring the route-handler catch blocks.
+    const handlers = Array.from({ length: 4 }, () =>
+      sem
+        .runWithArgon2Slot(() => Promise.resolve('ran'))
+        .catch((err) => {
+          if (err instanceof ShuttingDownError) {
+            return { status: 503, code: 'SERVICE_UNAVAILABLE' };
+          }
+          throw err;
+        }),
+    );
+
+    await new Promise((r) => setImmediate(r));
+    expect(sem.getArgon2QueueDepth()).toBe(4);
+
+    // Drain. All handlers should resolve (to a 503 payload) in bounded time.
+    const startMs = Date.now();
+    sem.drainArgon2Queue();
+    const results = await Promise.all(handlers);
+    const elapsedMs = Date.now() - startMs;
+
+    // Bounded: microtask drain, should be well under 100ms. The semantic
+    // assertion is "not hung for >30s" (the force-timeout in index.ts).
+    expect(elapsedMs).toBeLessThan(1000);
+    for (const r of results) {
+      expect(r).toEqual({ status: 503, code: 'SERVICE_UNAVAILABLE' });
+    }
+
+    // Cleanup the in-flight blocker so the test doesn't leak.
+    blocker.resolve();
+    await inFlight;
   });
 });
 
