@@ -1,7 +1,7 @@
 import { Router, type Request, type Response } from 'express';
 import { PrivateKey } from '@hiveio/dhive';
 import { getPool, isHafAvailable } from '../db.js';
-import { hiveClient } from '../hive.js';
+import { hiveClient, broadcastSendOperationsWithTimeout } from '../hive.js';
 import { config } from '../config.js';
 import { sendOk, sendError } from '../response.js';
 import { parseMeta, isPevoBridgePaper } from '../helpers.js';
@@ -226,7 +226,7 @@ router.post('/register', registerLimiter, verifyHiveSignature, async (req: Reque
 
   try {
     const key = PrivateKey.fromString(config.pevoBridgePostingKey);
-    const result = await hiveClient.broadcast.sendOperations(
+    const result = await broadcastSendOperationsWithTimeout(
       [
         ['comment', {
           parent_author: '',
@@ -352,7 +352,7 @@ router.post('/update', updateLimiter, verifyHiveSignature, async (req: Request, 
 
   try {
     const key = PrivateKey.fromString(config.pevoBridgePostingKey);
-    const result = await hiveClient.broadcast.sendOperations(
+    const result = await broadcastSendOperationsWithTimeout(
       [
         ['comment', {
           parent_author: '',

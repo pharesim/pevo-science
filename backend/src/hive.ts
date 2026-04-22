@@ -77,3 +77,40 @@ export async function broadcastJsonWithTimeout(
     if (timer) clearTimeout(timer);
   }
 }
+
+type BroadcastSendOperationsArgs = Parameters<typeof hiveClient.broadcast.sendOperations>;
+type BroadcastSendOperationsOps = BroadcastSendOperationsArgs[0];
+type BroadcastSendOperationsResult = Awaited<
+  ReturnType<typeof hiveClient.broadcast.sendOperations>
+>;
+
+/**
+ * Wraps hiveClient.broadcast.sendOperations with a wall-clock timeout.
+ *
+ * Same reasoning as `broadcastJsonWithTimeout`: dhive's `Client.timeout`
+ * only applies to read (non-broadcast) calls; broadcast fetches can hang
+ * indefinitely against a slow-but-alive Hive node. Any caller lock or
+ * request handler relying on this returning in bounded time needs this
+ * wrapper. See the sibling helper above for the full rationale.
+ *
+ * Throws `BroadcastTimeoutError` on timeout; underlying dhive errors
+ * propagate unchanged on the fast-path failure.
+ */
+export async function broadcastSendOperationsWithTimeout(
+  operations: BroadcastSendOperationsOps,
+  key: PrivateKey,
+  timeoutMs: number = DEFAULT_BROADCAST_TIMEOUT_MS,
+): Promise<BroadcastSendOperationsResult> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new BroadcastTimeoutError(timeoutMs)), timeoutMs);
+  });
+  try {
+    return await Promise.race([
+      hiveClient.broadcast.sendOperations(operations, key),
+      timeout,
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}

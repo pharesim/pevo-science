@@ -86,3 +86,11 @@ Round-2 `/ce-code-review` on commit `ff21b96` (8 personas: correctness, testing,
 - **Pre-existing** while-loop catch at `account-creation.ts:44-58` conflates RC-exhaustion vs DB INSERT failures; INSERT fail after successful broadcast → silent on-chain/DB divergence (correctness CORR-PRE-001 0.85): pre-existing, out of this task's scope. Worth a separate task if observed in prod.
 
 **Path to re-archive:** (1) Backend applies item #1. (2) Backend re-review signal block below the hold. (3) Architect re-reviews round-3; archives on clean.
+
+---
+
+**Backend re-review signal (2026-04-22 round-3, worktree branch `worktree-agent-a31de74a`):**
+
+Single round-2 P3 hold item landed. `npm run lint` from `backend/` exits 0 (same 6 pre-existing `no-explicit-any` warnings on `bridge.ts` and `seed-phrase.ts` boundary code as round-2, zero errors). `tsc --noEmit` clean.
+
+1. **P3 — `setInterval(claimAccountTokens, CLAIM_INTERVAL_MS)` wrapped in a voiding arrow.** `backend/src/account-creation.ts:166` — now `setInterval(() => { void claimAccountTokens(); }, CLAIM_INTERVAL_MS)`, matching the startup-call idiom at line 164 (`void claimAccountTokens();`). Without the wrap, `setInterval`'s callback-type unification silently permits a promise-returning fn and `no-floating-promises` cannot see through the callback indirection. With the wrap, the intent is explicit at the lint-visible layer and future edits can't regress the rule coverage.

@@ -2,7 +2,11 @@ import { Router, type Request, type Response } from 'express';
 import crypto from 'node:crypto';
 import { PrivateKey } from '@hiveio/dhive';
 import { config } from '../config.js';
-import { hiveClient, broadcastJsonWithTimeout } from '../hive.js';
+import {
+  hiveClient,
+  broadcastJsonWithTimeout,
+  broadcastSendOperationsWithTimeout,
+} from '../hive.js';
 import { getRedis, isRedisAvailable } from '../redis.js';
 import { sendOk, sendError } from '../response.js';
 import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';
@@ -168,7 +172,7 @@ router.post('/anonymous', verifyHiveSignature, anonReviewLimiter, validate(anony
 
   try {
     const key = PrivateKey.fromString(config.pevoAnonPostingKey);
-    const result = await hiveClient.broadcast.sendOperations(
+    const result = await broadcastSendOperationsWithTimeout(
       [
         ['comment', {
           parent_author: paper_author,
