@@ -869,6 +869,7 @@
     "submit": "登录",
     "submitting": "正在登录…",
     "pendingUnverified": "您的邮箱尚未验证。请点击下方按钮获取新的验证链接。",
+    "signupExpired": "Your signup session has expired. Please sign up again.",
     "resendVerification": "重新发送验证邮件",
     "resending": "发送中…",
     "verificationResent": "新的验证链接已发送至您的邮箱。",

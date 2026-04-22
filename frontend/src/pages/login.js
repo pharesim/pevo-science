@@ -154,11 +154,9 @@ export function initLoginPage() {
 
         Alpine.store('router').navigate('/papers');
       } catch (err) {
-        // PENDING_SIGNUP, PENDING_UNVERIFIED, and SIGNUP_EXPIRED are
-        // semantic codes where err.message carries intentional server
-        // context (e.g. "unverified", "expired"). The generic-fallback
-        // branch takes the sanitization path shared with executeUpgrade()
-        // in settings.js: generic message to DOM, raw err to console.warn.
+        // Semantic-code branches render localized messages; the generic
+        // fallback takes the sanitization path shared with executeUpgrade()
+        // in settings.js (generic message to DOM, raw err to console.warn).
         if (err.code === 'PENDING_SIGNUP' && err.data) {
           // Verified but incomplete. Redirect to choose phase with auth_token.
           const params = new URLSearchParams({
@@ -169,13 +167,15 @@ export function initLoginPage() {
           return;
         }
         if (err.code === 'PENDING_UNVERIFIED') {
+          console.warn('[login submit pending]', err);
           this.pendingState = 'unverified';
-          this.error = err.message;
+          this.error = this.$t('login.pendingUnverified');
           return;
         }
         if (err.code === 'SIGNUP_EXPIRED') {
+          console.warn('[login submit expired]', err);
           this.pendingState = 'expired';
-          this.error = err.message;
+          this.error = this.$t('login.signupExpired');
           return;
         }
         if (err.code === 'UNAUTHORIZED') {

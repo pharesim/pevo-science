@@ -104,7 +104,7 @@ export function initSignInModal() {
         // localized message to the DOM, raw err to console.warn for
         // diagnostics. Prevents accidental disclosure of key material,
         // tokens, or PII embedded in a backend error string.
-        console.warn('[sign-in email login]', err);
+        console.warn('[sign in email login]', err);
         this.emailError = this.$t('signIn.loginFailed');
       } finally {
         this.emailLoading = false;
@@ -119,7 +119,7 @@ export function initSignInModal() {
         this.resendSuccess = true;
       } catch (err) {
         // Sanitization pattern (see handleEmailLogin).
-        console.warn('[sign-in resend verification]', err);
+        console.warn('[sign in resend verification]', err);
         this.emailError = this.$t('signIn.resendFailed');
       } finally {
         this.isResending = false;

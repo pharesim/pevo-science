@@ -869,6 +869,7 @@
     "submit": "Zaloguj się",
     "submitting": "Logowanie…",
     "pendingUnverified": "Twój adres e-mail nie został jeszcze zweryfikowany. Kliknij poniżej, aby otrzymać nowy link weryfikacyjny.",
+    "signupExpired": "Your signup session has expired. Please sign up again.",
     "resendVerification": "Wyślij ponownie e-mail weryfikacyjny",
     "resending": "Wysyłanie…",
     "verificationResent": "Nowy link weryfikacyjny został wysłany na Twój adres e-mail.",

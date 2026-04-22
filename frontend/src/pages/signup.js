@@ -299,12 +299,14 @@ export function initSignupPage() {
         // DUPLICATE and VALIDATION_ERROR are semantic codes, safe to branch
         // on. All other failures take the generic-message + console.warn
         // sanitization path shared with executeUpgrade() in settings.js.
-        console.warn('[signup submit]', err);
+        // console.warn fires only on the generic fallback, not on expected
+        // DUPLICATE / VALIDATION_ERROR submissions (avoids log noise).
         if (err.code === 'DUPLICATE' && this.email && this.password && !this.orcidToken) {
           await this._resolveExistingAccount();
         } else if (err.code === 'VALIDATION_ERROR' && !this.orcidToken) {
           this.error = this.$t('signup.orcidOrInstitutional');
         } else {
+          console.warn('[signup submit]', err);
           this.error = this.$t('signup.submitFailed');
         }
       } finally {

@@ -869,6 +869,7 @@
     "submit": "Accedi",
     "submitting": "Accesso in corso…",
     "pendingUnverified": "La tua e-mail non è ancora stata verificata. Clicca qui sotto per ricevere un nuovo link di verifica.",
+    "signupExpired": "Your signup session has expired. Please sign up again.",
     "resendVerification": "Rinvia e-mail di verifica",
     "resending": "Invio in corso…",
     "verificationResent": "Un nuovo link di verifica è stato inviato alla tua e-mail.",

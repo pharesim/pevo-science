@@ -873,6 +873,7 @@
     "submit": "Inloggen",
     "submitting": "Bezig met inloggen…",
     "pendingUnverified": "Je e-mailadres is nog niet geverifieerd. Klik hieronder om een nieuwe verificatielink te ontvangen.",
+    "signupExpired": "Your signup session has expired. Please sign up again.",
     "resendVerification": "Verificatiemail opnieuw versturen",
     "resending": "Verzenden…",
     "verificationResent": "Er is een nieuwe verificatielink naar je e-mailadres gestuurd.",

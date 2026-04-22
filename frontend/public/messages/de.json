@@ -869,6 +869,7 @@
     "submit": "Anmelden",
     "submitting": "Anmeldung läuft…",
     "pendingUnverified": "Ihre E-Mail-Adresse wurde noch nicht verifiziert. Klicken Sie unten, um einen neuen Bestätigungslink zu erhalten.",
+    "signupExpired": "Your signup session has expired. Please sign up again.",
     "resendVerification": "Bestätigungsmail erneut senden",
     "resending": "Wird gesendet…",
     "verificationResent": "Ein neuer Bestätigungslink wurde an Ihre E-Mail gesendet.",

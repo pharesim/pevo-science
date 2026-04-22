@@ -873,6 +873,7 @@
     "submit": "Giriş Yap",
     "submitting": "Giriş yapılıyor…",
     "pendingUnverified": "E-postanız henüz doğrulanmadı. Yeni bir doğrulama bağlantısı almak için aşağıya tıklayın.",
+    "signupExpired": "Your signup session has expired. Please sign up again.",
     "resendVerification": "Doğrulama e-postasını yeniden gönder",
     "resending": "Gönderiliyor…",
     "verificationResent": "E-postanıza yeni bir doğrulama bağlantısı gönderildi.",

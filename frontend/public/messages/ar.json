@@ -869,6 +869,7 @@
     "submit": "تسجيل الدخول",
     "submitting": "جارٍ تسجيل الدخول…",
     "pendingUnverified": "لم يتم التحقق من بريدك الإلكتروني بعد. انقر أدناه لتلقي رابط تحقق جديد.",
+    "signupExpired": "Your signup session has expired. Please sign up again.",
     "resendVerification": "إعادة إرسال بريد التحقق",
     "resending": "جارٍ الإرسال…",
     "verificationResent": "تم إرسال رابط تحقق جديد إلى بريدك الإلكتروني.",

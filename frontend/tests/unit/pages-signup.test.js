@@ -330,6 +330,29 @@ describe('signupPage', () => {
     });
   });
 
+  describe('handleOrcidSignup', () => {
+    // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND hold item #3:
+    // handleOrcidSignup has its own catch block independent from
+    // handleOrcidVerify. Both share the signup.orcidStartFailed i18n key
+    // but regress independently, so it needs its own invariant test.
+    it('sanitizes failure: generic message to DOM, raw err to console.warn', async () => {
+      const leaky = new Error('start orcid failed hex=deadbeefcafebabe');
+      mockStartOrcid.mockRejectedValue(leaky);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const comp = createComponent();
+
+      await comp.handleOrcidSignup();
+
+      expect(comp.error).toBe('signup.orcidStartFailed');
+      expect(comp.error).not.toContain('deadbeef');
+      expect(comp.orcidLoading).toBe(false);
+      expect(localStorage.removeItem).toHaveBeenCalledWith('pevo_orcid_mode');
+      expect(warnSpy).toHaveBeenCalled();
+      expect(warnSpy.mock.calls[0][1]).toBe(leaky);
+      warnSpy.mockRestore();
+    });
+  });
+
   describe('handleResendVerification', () => {
     // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: failure surfaces a
     // generic localized message; raw err reaches console.warn.

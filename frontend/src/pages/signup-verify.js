@@ -424,7 +424,7 @@ export function initSignupVerifyPage() {
         // create-account path derives keys from the BIP39 mnemonic, so
         // surfacing raw err.message risks leaking key-adjacent material
         // (seed words, hex entropy) on a future error shape.
-        console.warn('[signup-verify create account]', err);
+        console.warn('[signup verify create account]', err);
         this.error = this.$t('seedPhrase.createAccountFailed');
         this.phase = 'create-username';
       } finally {
@@ -471,7 +471,7 @@ export function initSignupVerifyPage() {
         this.phase = 'done';
       } catch (err) {
         // Sanitization pattern (see executeUpgrade() in settings.js).
-        console.warn('[signup-verify link account]', err);
+        console.warn('[signup verify link account]', err);
         this.error = this.$t('seedPhrase.linkAccountFailed');
       } finally {
         this.isSubmitting = false;
@@ -498,7 +498,7 @@ export function initSignupVerifyPage() {
         // Sanitization pattern (see executeUpgrade() in settings.js). The
         // resume path handles email/password auth; backend error shapes
         // can embed credential-adjacent text on unusual failures.
-        console.warn('[signup-verify resume]', err);
+        console.warn('[signup verify resume]', err);
         this.error = this.$t('seedPhrase.resumeFailed');
       } finally {
         this.isResuming = false;

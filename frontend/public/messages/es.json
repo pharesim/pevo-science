@@ -869,6 +869,7 @@
     "submit": "Iniciar sesión",
     "submitting": "Iniciando sesión…",
     "pendingUnverified": "Tu correo electrónico aún no ha sido verificado. Haz clic abajo para recibir un nuevo enlace de verificación.",
+    "signupExpired": "Your signup session has expired. Please sign up again.",
     "resendVerification": "Reenviar correo de verificación",
     "resending": "Enviando…",
     "verificationResent": "Se ha enviado un nuevo enlace de verificación a tu correo electrónico.",

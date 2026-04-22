@@ -869,6 +869,7 @@
     "submit": "התחברות",
     "submitting": "מתחבר…",
     "pendingUnverified": "הדוא\"ל שלכם עדיין לא אומת. לחצו למטה כדי לקבל קישור אימות חדש.",
+    "signupExpired": "Your signup session has expired. Please sign up again.",
     "resendVerification": "שליחת דוא\"ל אימות מחדש",
     "resending": "שולח…",
     "verificationResent": "קישור אימות חדש נשלח לדוא\"ל שלכם.",
