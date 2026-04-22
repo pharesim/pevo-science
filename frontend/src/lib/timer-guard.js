@@ -34,6 +34,12 @@
 // - The helper only guards `setTimeout`. Debounce timers bound to input
 //   events (e.g. `_draftTimer`, `_orcidCheckTimer`) have a different hazard
 //   shape (replaced on next keystroke) and stay outside this helper.
+//
+// USAGE: Call inside the per-mount Alpine.data factory
+// (`Alpine.data(() => ({ ...createTimerGuard(), ... }))`), NOT at module
+// scope. The returned object holds component-instance state
+// (`_pendingTimers` Set, `_mounted` flag); hoisting a single return value
+// shared across multiple components would corrupt teardown state.
 export function createTimerGuard() {
   return {
     _mounted: true,
