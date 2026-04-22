@@ -116,11 +116,12 @@ export function initOrcidCallbackPage() {
         // NO_ACCOUNT and VALIDATION_ERROR are semantic codes, safe to
         // branch on. All other failures take the generic-message +
         // console.warn sanitization path shared with executeUpgrade() in
-        // settings.js.
-        console.warn('[orcid callback complete]', err);
+        // settings.js. console.warn fires only on the generic fallback,
+        // not on expected VALIDATION_ERROR responses (avoids log noise).
         if (err.code === 'VALIDATION_ERROR') {
           this.errorMessage = this.$t('signup.orcidInsufficientWorks');
         } else {
+          console.warn('[orcid callback complete]', err);
           this.errorMessage = this.$t('orcid.verificationFailed');
         }
         return;

@@ -869,6 +869,7 @@
     "submit": "Se connecter",
     "submitting": "Connexion en cours…",
     "pendingUnverified": "Votre adresse e-mail n’a pas encore été vérifiée. Cliquez ci-dessous pour recevoir un nouveau lien de vérification.",
+    "signupExpired": "Your signup session has expired. Please sign up again.",
     "resendVerification": "Renvoyer l’e-mail de vérification",
     "resending": "Envoi en cours…",
     "verificationResent": "Un nouveau lien de vérification a été envoyé à votre adresse e-mail.",

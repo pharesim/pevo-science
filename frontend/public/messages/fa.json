@@ -869,6 +869,7 @@
     "submit": "ورود",
     "submitting": "در حال ورود…",
     "pendingUnverified": "ایمیل شما هنوز تأیید نشده است. برای دریافت لینک تأیید جدید، روی دکمه زیر کلیک کنید.",
+    "signupExpired": "Your signup session has expired. Please sign up again.",
     "resendVerification": "ارسال مجدد ایمیل تأیید",
     "resending": "در حال ارسال…",
     "verificationResent": "یک لینک تأیید جدید به ایمیل شما ارسال شد.",

@@ -869,6 +869,7 @@
     "submit": "Log ind",
     "submitting": "Logger ind…",
     "pendingUnverified": "Din e-mail er endnu ikke bekræftet. Klik nedenfor for at modtage et nyt bekræftelseslink.",
+    "signupExpired": "Your signup session has expired. Please sign up again.",
     "resendVerification": "Send bekræftelsesmail igen",
     "resending": "Sender…",
     "verificationResent": "Et nyt bekræftelseslink er sendt til din e-mail.",

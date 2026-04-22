@@ -890,6 +890,7 @@
     "submit": "Sign In",
     "submitting": "Signing in…",
     "pendingUnverified": "Your email hasn’t been verified yet. Click below to receive a new verification link.",
+    "signupExpired": "Your signup session has expired. Please sign up again.",
     "resendVerification": "Resend verification email",
     "resending": "Sending…",
     "verificationResent": "A new verification link has been sent to your email.",

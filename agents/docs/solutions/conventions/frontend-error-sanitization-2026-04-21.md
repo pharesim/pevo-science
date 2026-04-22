@@ -19,6 +19,8 @@ tags: [frontend, security, info-disclosure, error-handling, i18n, alpine, consol
 
 # Sanitize caught errors before surfacing them to the DOM
 
+**Warn-tag convention:** `console.warn('[<page> <handler concept>]', err)` — space-separated words, no filename-hyphens (e.g. `[reset password request]`, not `[reset-password request]`).
+
 ## Context
 
 PEvO's frontend catches backend errors at handler boundaries (API rejections, Hive broadcast failures, local validation throws) and renders them to the user via `x-text` bindings on component state fields (`passwordError`, `emailError`, `orcidError`, `upgradeError`, etc.). The straightforward shape — `this.emailError = err.message || this.$t('common.connectionFailed')` — leaks whatever the error happened to embed into the DOM. Backend 5xx bodies, Postgres error text, library-internal diagnostics, and future crypto-material mentions all travel through `err.message` unless the caller sanitizes.

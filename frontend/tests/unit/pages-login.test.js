@@ -145,11 +145,16 @@ describe('loginPage', () => {
       );
     });
 
-    it('sets pendingState to unverified on PENDING_UNVERIFIED', async () => {
-      mockLoginWithPassword.mockRejectedValue({
+    // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND hold item #1: the
+    // PENDING_UNVERIFIED branch binds the localized login.pendingUnverified
+    // key to the DOM field and routes raw err (including any server-text
+    // sentinel) to console.warn. Guards against reverting to `err.message`.
+    it('sanitizes PENDING_UNVERIFIED: sets pendingState=unverified, generic key to DOM, raw err to console.warn', async () => {
+      const leaky = Object.assign(new Error('not verified hex=deadbeefcafebabe'), {
         code: 'PENDING_UNVERIFIED',
-        message: 'not verified',
       });
+      mockLoginWithPassword.mockRejectedValue(leaky);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const comp = createComponent();
       comp.emailOrUsername = 'e@x.com';
       comp.password = 'pass';
@@ -157,14 +162,24 @@ describe('loginPage', () => {
       await comp.handleSubmit();
 
       expect(comp.pendingState).toBe('unverified');
-      expect(comp.error).toBe('not verified');
+      expect(comp.error).toBe('login.pendingUnverified');
+      expect(comp.error).not.toContain('deadbeef');
+      expect(warnSpy).toHaveBeenCalled();
+      expect(warnSpy.mock.calls[0][1]).toBe(leaky);
+      warnSpy.mockRestore();
     });
 
-    it('sets pendingState to expired on SIGNUP_EXPIRED', async () => {
-      mockLoginWithPassword.mockRejectedValue({
+    // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND hold item #1: the
+    // SIGNUP_EXPIRED branch binds the localized login.signupExpired key to
+    // the DOM field and routes raw err to console.warn. The pendingState
+    // === 'expired' view renders `error` inline (see login.js template),
+    // so sanitization here matters even though it's a known-code branch.
+    it('sanitizes SIGNUP_EXPIRED: sets pendingState=expired, generic key to DOM, raw err to console.warn', async () => {
+      const leaky = Object.assign(new Error('expired hex=deadbeefcafebabe'), {
         code: 'SIGNUP_EXPIRED',
-        message: 'expired',
       });
+      mockLoginWithPassword.mockRejectedValue(leaky);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const comp = createComponent();
       comp.emailOrUsername = 'e@x.com';
       comp.password = 'pass';
@@ -172,6 +187,11 @@ describe('loginPage', () => {
       await comp.handleSubmit();
 
       expect(comp.pendingState).toBe('expired');
+      expect(comp.error).toBe('login.signupExpired');
+      expect(comp.error).not.toContain('deadbeef');
+      expect(warnSpy).toHaveBeenCalled();
+      expect(warnSpy.mock.calls[0][1]).toBe(leaky);
+      warnSpy.mockRestore();
     });
 
     it('surfaces login.invalidCredentials for UNAUTHORIZED, not raw err.message', async () => {
@@ -189,8 +209,8 @@ describe('loginPage', () => {
 
     // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: unknown-code failures
     // must surface a generic localized message and route raw err to
-    // console.warn. PENDING_UNVERIFIED and SIGNUP_EXPIRED are semantic-code
-    // branches and keep their existing err.message shape (see tests above).
+    // console.warn. PENDING_UNVERIFIED and SIGNUP_EXPIRED now follow the
+    // same invariant on dedicated i18n keys (see tests above).
     it('sanitizes unknown-code error: generic message to DOM, raw err to console.warn', async () => {
       const leaky = Object.assign(new Error('bad creds hex=deadbeefcafebabe'), { code: 'UNKNOWN' });
       mockLoginWithPassword.mockRejectedValue(leaky);

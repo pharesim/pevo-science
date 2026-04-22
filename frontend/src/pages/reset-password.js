@@ -142,7 +142,7 @@ export function initResetPasswordPage() {
         // Sanitization pattern (see executeUpgrade() in settings.js). The
         // reset flow handles password material adjacent state; generic
         // message to the DOM, raw err to console.warn for diagnostics.
-        console.warn('[reset-password request]', err);
+        console.warn('[reset password request]', err);
         this.requestError = this.$t('resetPassword.requestFailed');
       } finally {
         this.requestSubmitting = false;
@@ -159,7 +159,7 @@ export function initResetPasswordPage() {
         this.resetDone = true;
       } catch (err) {
         // Sanitization pattern (see executeUpgrade() in settings.js).
-        console.warn('[reset-password reset]', err);
+        console.warn('[reset password reset]', err);
         this.resetError = this.$t('resetPassword.resetFailed');
       } finally {
         this.resetSubmitting = false;

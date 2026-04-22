@@ -869,6 +869,7 @@
     "submit": "Logga in",
     "submitting": "Loggar in…",
     "pendingUnverified": "Din e-postadress har inte verifierats ännu. Klicka nedan för att få en ny verifieringslänk.",
+    "signupExpired": "Your signup session has expired. Please sign up again.",
     "resendVerification": "Skicka verifieringsmail igen",
     "resending": "Skickar…",
     "verificationResent": "En ny verifieringslänk har skickats till din e-post.",

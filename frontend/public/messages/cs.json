@@ -869,6 +869,7 @@
     "submit": "Přihlásit se",
     "submitting": "Přihlašování…",
     "pendingUnverified": "Váš e-mail ještě nebyl ověřen. Klikněte níže pro zaslání nového ověřovacího odkazu.",
+    "signupExpired": "Your signup session has expired. Please sign up again.",
     "resendVerification": "Znovu odeslat ověřovací e-mail",
     "resending": "Odesílání…",
     "verificationResent": "Na váš e-mail byl odeslán nový ověřovací odkaz.",
