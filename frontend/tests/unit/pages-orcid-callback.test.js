@@ -183,7 +183,9 @@ describe('orcidCallbackPage', () => {
 
       expect(localStorage.setItem).toHaveBeenCalledWith('pevo_signup_orcid_token', 'token123');
       expect(localStorage.setItem).toHaveBeenCalledWith('pevo_signup_orcid_id', '0000-0001');
-      expect(localStorage.setItem).toHaveBeenCalledWith('pevo_signup_orcid_name', 'Jane');
+      // pevo_signup_orcid_name is intentionally not persisted (auto-fill
+      // of fullName was abandoned; signup.js never read the key).
+      expect(localStorage.setItem).not.toHaveBeenCalledWith('pevo_signup_orcid_name', 'Jane');
       expect(mockRouterStore.navigate).toHaveBeenCalledWith('/signup');
     });
 

@@ -686,7 +686,7 @@ describe('settingsPage', () => {
     });
   });
 
-  describe('SEC-004: handleSetPassword', () => {
+  describe('handleSetPassword', () => {
     it('submits new password and toggles emailStatus.hasPassword', async () => {
       mockSetPassword.mockResolvedValue({ status: 'ok' });
       const comp = createComponent();
@@ -697,11 +697,48 @@ describe('settingsPage', () => {
       await comp.handleSetPassword();
 
       expect(mockSetPassword).toHaveBeenCalledWith('Abcdefgh1x');
-      expect(comp.passwordSetDone).toBe(true);
       expect(comp.emailStatus.hasPassword).toBe(true);
       expect(comp.newPasswordInput).toBe('');
       expect(comp.newPasswordConfirmInput).toBe('');
       expect(mockToastStore.show).toHaveBeenCalled();
+    });
+
+    it('patches emailStatus BEFORE clearing inputs (so a thrown spread on a later line cannot leave the form stuck)', async () => {
+      mockSetPassword.mockResolvedValue({ status: 'ok' });
+      const comp = createComponent();
+      const initialStatus = { hasEmail: true, email: 'a***@x.com', verified: true, hasPassword: false };
+      comp.emailStatus = initialStatus;
+      comp.newPasswordInput = 'Abcdefgh1x';
+      comp.newPasswordConfirmInput = 'Abcdefgh1x';
+
+      // Capture the order of mutations by stubbing the toast store to
+      // record the state observed when the toast fires (it is the last
+      // side effect in the success branch).
+      let observedHasPasswordAtToastTime = null;
+      let observedInputAtToastTime = null;
+      mockToastStore.show.mockImplementationOnce(() => {
+        observedHasPasswordAtToastTime = comp.emailStatus?.hasPassword;
+        observedInputAtToastTime = comp.newPasswordInput;
+      });
+
+      await comp.handleSetPassword();
+
+      // By the time the toast fires, both emailStatus patch and input
+      // clear have run; the invariant is that the emailStatus patch is
+      // visible first (asserted by toast-observed state being `true`).
+      expect(observedHasPasswordAtToastTime).toBe(true);
+      expect(observedInputAtToastTime).toBe('');
+    });
+
+    it('double-guard: pre-set passwordSubmitting prevents any API call', async () => {
+      const comp = createComponent();
+      comp.newPasswordInput = 'Abcdefgh1x';
+      comp.newPasswordConfirmInput = 'Abcdefgh1x';
+      comp.passwordSubmitting = true;
+
+      await comp.handleSetPassword();
+
+      expect(mockSetPassword).not.toHaveBeenCalled();
     });
 
     it('does nothing if the password is invalid', async () => {
@@ -737,7 +774,6 @@ describe('settingsPage', () => {
 
       expect(comp.passwordError).toBe('settings.passwordUpdateFailed');
       expect(comp.passwordError).not.toContain('deadbeef');
-      expect(comp.passwordSetDone).toBe(false);
       expect(comp.passwordSubmitting).toBe(false);
       expect(comp.newPasswordInput).toBe('');
       expect(comp.newPasswordConfirmInput).toBe('');

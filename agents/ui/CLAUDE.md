@@ -60,6 +60,8 @@ The stub list is the single source of truth for pending translation work. Greppi
 
 **Retrofit posture.** Forward-only. Stubs added before this convention existed are not retroactively audited; they'll be flushed as translators touch each locale. New stubs (2026-04-21 onward) must carry a `STUBS.md` entry at commit time.
 
+**No parallel marker conventions.** Do not prefix stubs with `[TODO]`, embed a `_todo_keys` array in locale files, or invent any other inline placeholder marker. `STUBS.md` is the single tracking surface; a second marker is dead weight that drifts out of sync. If a post-hoc audit surfaces pre-2026-04-21 stubs that were never tracked (e.g. a feature that landed under this convention but skipped the sweep entry), append them to `STUBS.md` under a fresh `### Added <YYYY-MM-DD> (<TASK-SLUG>)` heading referencing the task that surfaced them, rather than mutating the locale files.
+
 ## Available Resources
 
 - **`agents/docs/ARCHITECTURE.md`** — System architecture and interface contracts.

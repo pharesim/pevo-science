@@ -161,39 +161,37 @@ const template = `
               </div>
             </template>
 
-            <!-- Set a password section (SEC-004-UI: only shown for accounts
-                 with no password. ORCID-verified signups/recoveries leave
-                 the password empty; this lets the user opt into password login later. -->
+            <!-- Set a password section: only shown for accounts with no
+                 password. ORCID-verified signups/recoveries leave the
+                 password empty; this lets the user opt into password
+                 login later. On success we flip emailStatus.hasPassword
+                 true, which collapses this outer x-if and hides the
+                 section entirely. The success surface is the toast
+                 fired from handleSetPassword, not an inline confirmation. -->
             <template x-if="!emailLoading && emailStatus && emailStatus.hasPassword === false">
               <div data-testid="set-password-section" class="border border-parchment-dark rounded-xl p-6 mt-6">
                 <h2 class="text-xl font-bold text-ink mb-2" x-text="$t('settings.setPasswordTitle')"></h2>
                 <p class="text-sm text-ink-muted mb-4" x-text="$t('settings.setPasswordDescription')"></p>
 
-                <template x-if="!passwordSetDone">
-                  <form @submit.prevent="handleSetPassword()" class="space-y-3">
-                    <div>
-                      <label class="block text-sm font-medium text-ink mb-1" x-text="$t('settings.setPasswordLabel')"></label>
-                      <input type="password" data-testid="set-password-input" x-model="newPasswordInput" required minlength="10"
-                             class="w-full border border-parchment-dark rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-pevo-teal focus:border-pevo-teal">
-                      <p class="text-xs text-ink-muted mt-1" x-text="$t('settings.setPasswordHint')"></p>
-                    </div>
-                    <div>
-                      <label class="block text-sm font-medium text-ink mb-1" x-text="$t('settings.setPasswordConfirmLabel')"></label>
-                      <input type="password" data-testid="set-password-confirm-input" x-model="newPasswordConfirmInput" required
-                             class="w-full border border-parchment-dark rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-pevo-teal focus:border-pevo-teal"
-                             :class="newPasswordConfirmInput && !newPasswordsMatch ? 'border-pevo-crimson' : ''">
-                      <p x-show="newPasswordConfirmInput && !newPasswordsMatch" class="text-xs text-pevo-crimson mt-1" x-text="$t('settings.setPasswordMismatch')"></p>
-                    </div>
-                    <button type="submit" data-testid="set-password-submit" :disabled="!canSubmitPassword || passwordSubmitting"
-                            class="btn-primary disabled:opacity-50 disabled:cursor-not-allowed"
-                            x-text="passwordSubmitting ? $t('settings.setPasswordSaving') : $t('settings.setPasswordSubmit')"></button>
-                    <p x-show="passwordError" class="text-sm text-red-600" x-text="passwordError"></p>
-                  </form>
-                </template>
-
-                <template x-if="passwordSetDone">
-                  <p class="text-sm text-pevo-green" x-text="$t('settings.setPasswordSuccess')"></p>
-                </template>
+                <form @submit.prevent="handleSetPassword()" class="space-y-3">
+                  <div>
+                    <label class="block text-sm font-medium text-ink mb-1" x-text="$t('settings.setPasswordLabel')"></label>
+                    <input type="password" data-testid="set-password-input" x-model="newPasswordInput" required minlength="10"
+                           class="w-full border border-parchment-dark rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-pevo-teal focus:border-pevo-teal">
+                    <p class="text-xs text-ink-muted mt-1" x-text="$t('settings.setPasswordHint')"></p>
+                  </div>
+                  <div>
+                    <label class="block text-sm font-medium text-ink mb-1" x-text="$t('settings.setPasswordConfirmLabel')"></label>
+                    <input type="password" data-testid="set-password-confirm-input" x-model="newPasswordConfirmInput" required
+                           class="w-full border border-parchment-dark rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-pevo-teal focus:border-pevo-teal"
+                           :class="newPasswordConfirmInput && !newPasswordsMatch ? 'border-pevo-crimson' : ''">
+                    <p x-show="newPasswordConfirmInput && !newPasswordsMatch" class="text-xs text-pevo-crimson mt-1" x-text="$t('settings.setPasswordMismatch')"></p>
+                  </div>
+                  <button type="submit" data-testid="set-password-submit" :disabled="!canSubmitPassword || passwordSubmitting"
+                          class="btn-primary disabled:opacity-50 disabled:cursor-not-allowed"
+                          x-text="passwordSubmitting ? $t('settings.setPasswordSaving') : $t('settings.setPasswordSubmit')"></button>
+                  <p x-show="passwordError" class="text-sm text-red-600" x-text="passwordError"></p>
+                </form>
               </div>
             </template>
 
@@ -355,13 +353,14 @@ export function initSettingsPage() {
     showChangeForm: false,
     deleting: false,
 
-    // Set-password state (SEC-004-UI: for ORCID-verified accounts that
-    // have no password_hash set, lets the user opt into password login)
+    // Set-password state: for ORCID-verified accounts that have no
+    // password_hash set, lets the user opt into password login. On
+    // success we patch emailStatus.hasPassword true, which collapses the
+    // outer x-if and hides the section. No separate "done" flag.
     newPasswordInput: '',
     newPasswordConfirmInput: '',
     passwordSubmitting: false,
     passwordError: null,
-    passwordSetDone: false,
 
     // Upgrade flow state
     // Phases: 'idle' | 'new-seed' | 'confirm-new' | 'enter-old' | 'upgrading' | 'done' | 'error'
@@ -498,11 +497,16 @@ export function initSettingsPage() {
       this.passwordError = null;
       try {
         await setPassword(this.newPasswordInput);
-        this.passwordSetDone = true;
+        // Patch emailStatus FIRST. The outer `x-if` on
+        // `emailStatus.hasPassword === false` is the single success signal;
+        // flipping it hides the section in the next render tick. Mutating
+        // emailStatus before clearing inputs and firing the toast keeps the
+        // "form stuck on success while still visible" state unreachable
+        // even if a later line throws (spread on a frozen proxy, a future
+        // toast-store API change, etc.).
+        if (this.emailStatus) this.emailStatus = { ...this.emailStatus, hasPassword: true };
         this.newPasswordInput = '';
         this.newPasswordConfirmInput = '';
-        // Reflect the new state locally so the surface hides on re-render.
-        if (this.emailStatus) this.emailStatus = { ...this.emailStatus, hasPassword: true };
         Alpine.store('toast').show(this.$t('settings.setPasswordSuccess'), 'success');
       } catch (err) {
         // Zero plaintext password on error path so it doesn't linger in
