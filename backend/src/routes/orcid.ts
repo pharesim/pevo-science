@@ -5,7 +5,7 @@ import { PrivateKey } from '@hiveio/dhive';
 import { z } from 'zod';
 import { config } from '../config.js';
 import { broadcastJsonWithTimeout } from '../hive.js';
-import { handleBroadcastError } from '../lib/broadcast-error.js';
+import { handleBroadcastError, type HandleBroadcastErrorOpts } from '../lib/broadcast-error.js';
 import { getRedis, isRedisAvailable } from '../redis.js';
 import { getAppPool } from '../app-db.js';
 import { getPool } from '../db.js';
@@ -458,6 +458,14 @@ async function handleAccredit(
     return;
   }
 
+  const accreditErrorOpts: HandleBroadcastErrorOpts = {
+    timeoutMsg: 'Broadcasting ORCID accreditation timed out',
+    failMsg: 'Failed to broadcast ORCID accreditation to Hive',
+    logContext: { username, orcid: orcidId, mode: 'accredit' },
+    verifyLocation: '/settings',
+    routeLabel: 'orcid.handleAccredit',
+  };
+
   await withOrcidBindingLock(res, orcidId, async () => {
     const customJsonPayload = {
       action: 'accredit',
@@ -479,13 +487,7 @@ async function handleAccredit(
         key,
       );
     } catch (err) {
-      handleBroadcastError(res, err, {
-        timeoutMsg: 'Broadcasting ORCID accreditation timed out',
-        failMsg: 'Failed to broadcast ORCID accreditation to Hive',
-        logContext: { username, orcid: orcidId, mode: 'accredit' },
-        verifyLocation: '/settings',
-        routeLabel: 'orcid.handleAccredit',
-      });
+      handleBroadcastError(res, err, accreditErrorOpts);
       return;
     }
 
@@ -503,7 +505,7 @@ async function handleAccredit(
       orcid: orcidId,
       tx_id: result.id,
     });
-  });
+  }, accreditErrorOpts);
 }
 
 async function handleLink(
@@ -535,6 +537,14 @@ async function handleLink(
     return;
   }
 
+  const linkErrorOpts: HandleBroadcastErrorOpts = {
+    timeoutMsg: 'Broadcasting ORCID link timed out',
+    failMsg: 'Failed to broadcast ORCID link to Hive',
+    logContext: { username, orcid: orcidId, mode: 'link' },
+    verifyLocation: '/settings',
+    routeLabel: 'orcid.handleLink',
+  };
+
   await withOrcidBindingLock(res, orcidId, async () => {
     const customJsonPayload = {
       action: 'accredit',
@@ -556,13 +566,7 @@ async function handleLink(
         key,
       );
     } catch (err) {
-      handleBroadcastError(res, err, {
-        timeoutMsg: 'Broadcasting ORCID link timed out',
-        failMsg: 'Failed to broadcast ORCID link to Hive',
-        logContext: { username, orcid: orcidId, mode: 'link' },
-        verifyLocation: '/settings',
-        routeLabel: 'orcid.handleLink',
-      });
+      handleBroadcastError(res, err, linkErrorOpts);
       return;
     }
 
@@ -580,7 +584,7 @@ async function handleLink(
       orcid: orcidId,
       tx_id: result.id,
     });
-  });
+  }, linkErrorOpts);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -703,11 +707,23 @@ async function releaseBindingLock(orcidId: string, nonce: string): Promise<void>
  *                   header and details.retriable=true; callback is NOT run.
  *   'acquired'    — callback runs inside try/finally; release happens under
  *                   nonce CAS in finally (success and throw paths both release).
+ *                   Throws from fn propagate to the outer /callback catch
+ *                   (mapped to 500 INTERNAL_ERROR); callers that want to
+ *                   surface a more specific envelope for known throw classes
+ *                   (e.g. BroadcastTimeoutError → 504 BROADCAST_TIMEOUT) must
+ *                   catch inside fn.
  *   'unavailable' — callback runs WITHOUT a lock (Redis-optional degrade to
- *                   cache-less HAF-only path); no release needed.
- *
- * The wrapper swallows no exceptions from `fn`; they propagate to the outer
- * /callback try/catch which maps them to 500 INTERNAL_ERROR.
+ *                   cache-less HAF-only path); no release needed. On this path
+ *                   the wrapper catches throws from fn and, when
+ *                   `ambiguousOutcomeOpts` is provided, emits the 504
+ *                   BROADCAST_TIMEOUT ambiguous-outcome envelope via
+ *                   handleBroadcastError. Rationale: with Redis down, there is
+ *                   no lock-TTL margin or binding-cache to guarantee the
+ *                   broadcast hasn't landed. Every throw in this branch is
+ *                   outcome-ambiguous (the broadcast may be on-chain already);
+ *                   surfacing 500 would license a user retry that duplicates
+ *                   the custom_json. See
+ *                   agents/docs/solutions/conventions/chain-write-timeout-ambiguous-outcome-2026-04-22.md.
  *
  * IMPORTANT — response-sending contract: on the 'held' state the wrapper sends
  * the 409 response itself. Callers MUST NOT send another response after the
@@ -722,6 +738,7 @@ async function withOrcidBindingLock(
   res: Response,
   orcidId: string,
   fn: () => Promise<void>,
+  ambiguousOutcomeOpts?: HandleBroadcastErrorOpts,
 ): Promise<void> {
   const lock = await acquireBindingLock(orcidId);
   if (lock.state === 'held') {
@@ -742,8 +759,30 @@ async function withOrcidBindingLock(
     }
   } else if (lock.state === 'unavailable') {
     // Redis outage or nonce-shape invariant drift: degrade to cache-less
-    // HAF-only dedup. No lock to release.
-    await fn();
+    // HAF-only dedup. No lock to release. Wrap fn() so that a throw on this
+    // branch is routed to the 504 ambiguous-outcome envelope rather than the
+    // outer /callback catch's 500 INTERNAL_ERROR — the OAuth state token is
+    // already consumed, so a 500 hard-blocks the user on a retry path that
+    // may also duplicate-broadcast. handleBroadcastError with
+    // forceAmbiguousOutcome collapses BroadcastTimeoutError AND any other
+    // throw into the same 504 BROADCAST_TIMEOUT shape (retriable:false,
+    // verify_before_retry:true). See convention doc
+    // agents/docs/solutions/conventions/chain-write-timeout-ambiguous-outcome-2026-04-22.md.
+    if (ambiguousOutcomeOpts) {
+      try {
+        await fn();
+      } catch (err) {
+        handleBroadcastError(res, err, {
+          ...ambiguousOutcomeOpts,
+          forceAmbiguousOutcome: true,
+        });
+      }
+    } else {
+      // No opts provided — preserve legacy propagate-to-outer-catch behavior
+      // for callers that haven't opted in. Today both ORCID callers pass opts;
+      // this branch exists for forward-compat with non-broadcast callers.
+      await fn();
+    }
   } else {
     // Exhaustiveness guard: adding a new BindingLockState variant without
     // handling it here becomes a compile error. Belt-and-suspenders alongside

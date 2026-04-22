@@ -166,6 +166,40 @@ sendOk(res, { tx_id: result.id /* ... */ });
 
 The `BroadcastTimeoutError` MUST be caught **inside** the `fn` callback passed to `withOrcidBindingLock`, not in the outer `/callback` try/catch — the outer catch maps unrecognized errors to 500 INTERNAL_ERROR which has the wrong status code and wrong retriable semantics.
 
+### Right — Option A.2, unavailable-branch extension
+
+The A.2 envelope also applies to the lock-wrapper's `'unavailable'` branch (Redis outage OR lock-nonce-shape invariant drift). In that branch `fn` runs WITHOUT a lock, so there is no lock-TTL margin to bound a retry race. Every throw escaping `fn` on this path is outcome-ambiguous — the broadcast may already be on-chain without the caller being able to reconcile the cache/DB state — so the wrapper catches throws in the `'unavailable'` branch and emits the same 504 envelope, even for non-`BroadcastTimeoutError` throws. Implemented via a `forceAmbiguousOutcome: true` option on `handleBroadcastError` in `backend/src/lib/broadcast-error.ts`:
+
+```ts
+async function withOrcidBindingLock(
+  res: Response,
+  orcidId: string,
+  fn: () => Promise<void>,
+  ambiguousOutcomeOpts?: HandleBroadcastErrorOpts,
+): Promise<void> {
+  const lock = await acquireBindingLock(orcidId);
+  // ...'held' / 'acquired' branches unchanged...
+  else if (lock.state === 'unavailable') {
+    if (ambiguousOutcomeOpts) {
+      try {
+        await fn();
+      } catch (err) {
+        handleBroadcastError(res, err, {
+          ...ambiguousOutcomeOpts,
+          forceAmbiguousOutcome: true,
+        });
+      }
+    } else {
+      await fn();  // legacy: propagate to outer /callback catch as 500
+    }
+  }
+}
+```
+
+On the `forceAmbiguousOutcome` branch, `BroadcastTimeoutError` emits the envelope with `timeout_ms` (from `err.timeoutMs`); non-timeout throws emit the same envelope WITHOUT `timeout_ms` (the throw did not originate from the timer, so reporting a fabricated value would mislead consumers keying retry-backoff off that field).
+
+**`verify_location: '/settings'`** is the UI hint surfaced on the 504 envelope for both ORCID binding callers (`handleAccredit`, `handleLink`). It points the user at the page where their ORCID link status is visible, so they can verify whether the broadcast landed before attempting a retry. Other timeout-wrapped broadcast callers MAY adopt a different `verifyLocation` appropriate to their surface (accreditation profile, paper post page, etc.) or omit it entirely if there is no user-facing verify surface. The field is optional; envelopes without it remain spec-compliant.
+
 ### Right — Option A.1 (extend lock TTL instead of releasing)
 
 ```ts

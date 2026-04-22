@@ -1226,6 +1226,158 @@ describe.each([
     },
   );
 
+  // BE-ORCID-BROADCAST-TIMEOUT-OUTCOME-HANDLING — unavailable-branch
+  // BroadcastTimeoutError path. When the lock SETNX fails (Redis flap/outage),
+  // acquireBindingLock returns 'unavailable' and withOrcidBindingLock runs fn()
+  // on the cache-less degrade path. A timer-fire during that fn() must still
+  // emit the 504 BROADCAST_TIMEOUT ambiguous-outcome envelope — NOT fall
+  // through to the outer /callback catch's 500 INTERNAL_ERROR. The state token
+  // was already consumed before dispatch, so 500 hard-blocks the user on a
+  // retry path that may also duplicate-broadcast (the 'unavailable' branch
+  // has no lock-TTL margin to close the race).
+  it(
+    'broadcast timeout in the lock-unavailable branch → 504 BROADCAST_TIMEOUT ambiguous-outcome envelope',
+    async () => {
+      const redis = getRedis();
+      if (!redis) return;
+      const orcidId = `0000-0001-${orcidSuffix}${orcidSuffix}${orcidSuffix}${orcidSuffix}-0008`;
+      const lockKey = `${config.appTag}:orcid_binding_lock:${orcidId}`;
+      const cacheKey = `${config.appTag}:orcid_binding:${orcidId}`;
+      await redis.del(lockKey, cacheKey).catch(() => { /* ignore */ });
+
+      installOrcidFetchStub({ orcid: orcidId, name: 'Alice', works: 3 });
+      installLockModeMocks();
+
+      // Force the 'unavailable' branch: lock-key SETNX throws (Redis flap).
+      // Same technique as the "falls back to the cache-less path" spec above.
+      const origSet = redis.set.bind(redis);
+      const setSpy = vi.spyOn(redis, 'set').mockImplementation(async (...args: unknown[]) => {
+        const k = String(args[0]);
+        if (k.includes(':orcid_binding_lock:')) throw new Error('simulated Redis flap on lock SET');
+        // @ts-expect-error ioredis set is variadic; forwarding by spread is safe here.
+        return origSet(...args);
+      });
+      // Broadcast on the unavailable-branch fn() times out.
+      broadcastJsonMock.mockRejectedValueOnce(new MockBroadcastTimeoutError(30_000));
+
+      try {
+        const state = await startAuthed(mode, 'alice');
+        const res = await request(app)
+          .post('/api/orcid/callback')
+          .set('Authorization', `Bearer ${jwtFor('alice')}`)
+          .send({ code: 'fake', state });
+
+        expect(res.status).toBe(504);
+        expect(res.body.error.code).toBe('BROADCAST_TIMEOUT');
+        expect(res.body.error.details).toEqual({
+          retriable: false,
+          outcome: 'uncertain',
+          verify_before_retry: true,
+          verify_location: '/settings',
+          timeout_ms: 30_000,
+        });
+        // No cache entry written (broadcast never confirmed). No lock key
+        // either (SETNX threw). A regression to 500 from the outer catch
+        // would fail the .status assertion; a regression that swallows the
+        // envelope and returns 200 would fail details.outcome.
+        expect(await redis.get(cacheKey)).toBeNull();
+        expect(await redis.get(lockKey)).toBeNull();
+      } finally {
+        setSpy.mockRestore();
+        await redis.del(lockKey, cacheKey).catch(() => { /* cleanup */ });
+      }
+    },
+  );
+
+  // BE-ORCID-BROADCAST-TIMEOUT-OUTCOME-HANDLING — unavailable-branch
+  // non-broadcast throw path. Per architect decision: with Redis down, every
+  // throw on the lock-unavailable branch is outcome-ambiguous (the broadcast
+  // may have landed and no lock-TTL margin closes the race), so a throw
+  // escaping fn's inner try/catch (e.g. from PrivateKey.fromString, a future
+  // DB write, or any other code path that could run after a successful
+  // broadcast but outside an inner guard) still collapses to the 504
+  // BROADCAST_TIMEOUT ambiguous-outcome envelope rather than propagating to
+  // the outer /callback catch's 500 INTERNAL_ERROR. Without the wrapper's
+  // new forceAmbiguousOutcome path the user's consumed-state-token OAuth
+  // flow is hard-blocked on any unexpected throw in the degraded-Redis
+  // regime. `timeout_ms` MUST be absent — the throw did not come from the
+  // timer, so fabricating a timeout value would mislead consumers keying
+  // retry-backoff off that field.
+  it(
+    'non-broadcast throw inside fn on the lock-unavailable branch → 504 BROADCAST_TIMEOUT ambiguous-outcome (no timeout_ms)',
+    async () => {
+      const redis = getRedis();
+      if (!redis) return;
+      const orcidId = `0000-0001-${orcidSuffix}${orcidSuffix}${orcidSuffix}${orcidSuffix}-0009`;
+      const lockKey = `${config.appTag}:orcid_binding_lock:${orcidId}`;
+      const cacheKey = `${config.appTag}:orcid_binding:${orcidId}`;
+      await redis.del(lockKey, cacheKey).catch(() => { /* ignore */ });
+
+      installOrcidFetchStub({ orcid: orcidId, name: 'Alice', works: 3 });
+      installLockModeMocks();
+
+      // Force the 'unavailable' branch via lock SETNX flap. Keep non-lock
+      // SETs working so the rest of the request pipeline is unaffected.
+      const origSet = redis.set.bind(redis);
+      const setSpy = vi.spyOn(redis, 'set').mockImplementation(async (...args: unknown[]) => {
+        const k = String(args[0]);
+        if (k.includes(':orcid_binding_lock:')) throw new Error('simulated Redis flap on lock SET');
+        // @ts-expect-error ioredis set is variadic; forwarding by spread is safe here.
+        return origSet(...args);
+      });
+      // Force a throw that ESCAPES fn's inner try/catch (which only wraps
+      // broadcastJsonWithTimeout). PrivateKey.fromString is called inside fn
+      // before the broadcast and outside any guard. A bad WIF here would
+      // throw before the inner try runs, propagating to the wrapper's new
+      // forceAmbiguousOutcome catch on the unavailable branch.
+      const pkSpy = vi.spyOn(PrivateKey, 'fromString').mockImplementation(() => {
+        throw new Error('simulated PrivateKey.fromString failure (escapes fn inner catch)');
+      });
+      // Silence the logger.error emitted by handleBroadcastError's
+      // ambiguous-outcome branch — a single structured error is expected on
+      // this path and the spy keeps test output clean.
+      const loggerErrorSpy = vi.spyOn(logger, 'error').mockImplementation(() => { /* silence */ });
+
+      try {
+        const state = await startAuthed(mode, 'alice');
+        const res = await request(app)
+          .post('/api/orcid/callback')
+          .set('Authorization', `Bearer ${jwtFor('alice')}`)
+          .send({ code: 'fake', state });
+
+        expect(res.status).toBe(504);
+        expect(res.body.error.code).toBe('BROADCAST_TIMEOUT');
+        // Same envelope shape as the timeout case, but timeout_ms is
+        // intentionally omitted: the error did not originate from the timer.
+        expect(res.body.error.details).toEqual({
+          retriable: false,
+          outcome: 'uncertain',
+          verify_before_retry: true,
+          verify_location: '/settings',
+        });
+        expect(res.body.error.details).not.toHaveProperty('timeout_ms');
+        // Broadcast never fired (PrivateKey.fromString threw before it).
+        expect(broadcastJsonMock).not.toHaveBeenCalled();
+        // No cache entry, no lock key.
+        expect(await redis.get(cacheKey)).toBeNull();
+        expect(await redis.get(lockKey)).toBeNull();
+        // handleBroadcastError's ambiguous-outcome log fires at error level
+        // with the distinctive message suffix. This guards against a
+        // regression that silently swallows the throw without emitting the
+        // structured error for operators.
+        const ambiguousCalls = loggerErrorSpy.mock.calls.filter(
+          (call) => typeof call[1] === 'string' && call[1].includes('broadcast failed on ambiguous-outcome path'),
+        );
+        expect(ambiguousCalls.length).toBeGreaterThanOrEqual(1);
+      } finally {
+        pkSpy.mockRestore();
+        setSpy.mockRestore();
+        loggerErrorSpy.mockRestore();
+        await redis.del(lockKey, cacheKey).catch(() => { /* cleanup */ });
+      }
+    },
+  );
+
   // Nonce-shape invariant drift: if a future refactor changes the nonce
   // encoding away from the 32-char lowercase hex shape, the Lua CAS byte-
   // equality contract would silently break. acquireBindingLock guards this
