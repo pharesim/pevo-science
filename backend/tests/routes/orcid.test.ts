@@ -317,13 +317,17 @@ describe('POST /api/orcid/callback — auth gate (SEC-002-BE)', () => {
       // filter's effect (no authority-signed op => no row).
       const orcidId = '0000-0001-5555-0001';
       installOrcidFetchStub({ orcid: orcidId, name: 'Mallory', works: 3 });
-      hafQueryMock.mockImplementation(async (sql: string, params: unknown[]) => {
+      hafQueryMock.mockImplementation(async (sql: string) => {
         if (sql.includes("'action' IN ('accredit', 'revoke')") && sql.includes("'account' = $1")) {
           // getExistingAccreditation for mallory. The fixed query includes the
           // authority filter; the self-broadcast op wouldn't match because its
-          // required_posting_auths is ['mallory'], not an authority.
-          expect(sql).toContain('required_posting_auths ?| $4::text[]');
-          expect(params[3]).toEqual(config.accreditationAuthorities);
+          // required_posting_auths is ['mallory'], not an authority. Load-bearing
+          // call-shape assertions (authority-filter SQL fragment + params[3] ===
+          // accreditationAuthorities) moved out of the mock guard and onto the
+          // caller so they fire ONLY when a matching call actually happened;
+          // the mock's fallback path returning { rows: [] } would otherwise
+          // leave them un-exercised on a regressed SQL shape. See
+          // agents/docs/solutions/conventions/mock-guard-assertion-must-verify-call-shape-2026-04-21.md.
           return { rows: [] };
         }
         return { rows: [] };
@@ -337,12 +341,25 @@ describe('POST /api/orcid/callback — auth gate (SEC-002-BE)', () => {
       expect(res.body.error.code).toBe('VALIDATION_ERROR');
       expect(res.body.error.message).toMatch(/not accredited/i);
       expect(broadcastJsonMock).not.toHaveBeenCalled();
-      // Prove the guarded branch of the mock actually fired so the
-      // load-bearing authority-filter assertions inside the guard ran. A
-      // future SQL refactor that changes the column selection or query shape
-      // would otherwise fall through to the empty default and silently leave
-      // the assertions un-exercised.
-      expect(hafQueryMock).toHaveBeenCalled();
+      // Call-shape assertion on the load-bearing HAF call: the authority-filtered
+      // getExistingAccreditation query must have fired with both the action-set
+      // predicate AND mallory + accreditationAuthorities in the params. A SQL
+      // refactor that drops `required_posting_auths ?| $4::text[]` or reorders
+      // the binds so authorities no longer sits at $4 would produce a matcher
+      // miss here. The positional pin on params[3] closes the arrayContaining
+      // order-agnostic gap.
+      expect(hafQueryMock).toHaveBeenCalledWith(
+        expect.stringContaining("'action' IN ('accredit', 'revoke')"),
+        expect.arrayContaining(['mallory', config.accreditationAuthorities]),
+      );
+      const authorityCall = hafQueryMock.mock.calls.find(
+        (c) =>
+          typeof c[0] === 'string' &&
+          c[0].includes("'action' IN ('accredit', 'revoke')") &&
+          c[0].includes("'account' = $1"),
+      );
+      expect(authorityCall).toBeDefined();
+      expect((authorityCall![1] as unknown[])[3]).toEqual(config.accreditationAuthorities);
     },
   );
 
@@ -354,15 +371,15 @@ describe('POST /api/orcid/callback — auth gate (SEC-002-BE)', () => {
       // and the link flow proceeds, broadcasting the new ORCID binding.
       const orcidId = '0000-0001-5555-0002';
       installOrcidFetchStub({ orcid: orcidId, name: 'Alice', works: 3 });
-      hafQueryMock.mockImplementation(async (sql: string, params: unknown[]) => {
+      hafQueryMock.mockImplementation(async (sql: string) => {
         if (sql.includes("'orcid' = $1")) {
           // findAccreditedAccountWithOrcid: ORCID not yet bound to any account.
           return { rows: [] };
         }
         if (sql.includes("'action' IN ('accredit', 'revoke')") && sql.includes("'account' = $1")) {
-          // Authority filter must be present.
-          expect(sql).toContain('required_posting_auths ?| $4::text[]');
-          expect(params[3]).toEqual(config.accreditationAuthorities);
+          // Authority-filter assertions moved out of the guard to the caller
+          // below so they fire only when a matching call actually happened.
+          // See agents/docs/solutions/conventions/mock-guard-assertion-must-verify-call-shape-2026-04-21.md.
           // Simulate the filter matching: an authority-signed accredit exists.
           return {
             rows: [{
@@ -382,7 +399,23 @@ describe('POST /api/orcid/callback — auth gate (SEC-002-BE)', () => {
       expect(res.body.data.username).toBe('alice');
       expect(res.body.data.orcid).toBe(orcidId);
       expect(broadcastJsonMock).toHaveBeenCalledTimes(1);
-      expect(hafQueryMock).toHaveBeenCalled();
+      // Call-shape assertion: the authority-filtered getExistingAccreditation
+      // query fired with alice + accreditationAuthorities in the params. A
+      // positional pin on params[3] closes the arrayContaining order-agnostic
+      // gap (a mutant moving authorities off of $4 would pass arrayContaining
+      // but fail the positional check).
+      expect(hafQueryMock).toHaveBeenCalledWith(
+        expect.stringContaining("'action' IN ('accredit', 'revoke')"),
+        expect.arrayContaining(['alice', config.accreditationAuthorities]),
+      );
+      const authorityCall = hafQueryMock.mock.calls.find(
+        (c) =>
+          typeof c[0] === 'string' &&
+          c[0].includes("'action' IN ('accredit', 'revoke')") &&
+          c[0].includes("'account' = $1"),
+      );
+      expect(authorityCall).toBeDefined();
+      expect((authorityCall![1] as unknown[])[3]).toEqual(config.accreditationAuthorities);
     },
   );
 
