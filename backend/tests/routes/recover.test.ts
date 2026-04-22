@@ -1147,6 +1147,63 @@ describe('BE-SIGNUP-INSTITUTIONAL-GATE-ORDERING: duplicate check fires before ac
       // drops unaccElapsed into the ~1-5ms band and fails this assertion.
       expect(accElapsed).toBeGreaterThanOrEqual(TIMING_ORACLE_FLOOR_MS);
       expect(unaccElapsed).toBeGreaterThanOrEqual(TIMING_ORACLE_FLOOR_MS);
+      // Upper-bound mutation-kill: a regression that adds a second argon2
+      // pass (e.g. burnSentinel layered on top of argon2.hash) would push
+      // elapsed past the combined-cost ceiling. Bound both paths above.
+      expect(accElapsed).toBeLessThan(TIMING_ORACLE_CEILING_MS);
+      expect(unaccElapsed).toBeLessThan(TIMING_ORACLE_CEILING_MS);
+    },
+  );
+});
+
+// BE-SIGNUP-INSTITUTIONAL-GATE-ORDERING (round-1 hold fix P2): the 422
+// ACCREDITATION_NOT_FOUND fast-exit on a non-duplicate unaccredited email
+// is an INTENDED behavior, not a bug. Institution membership is public
+// knowledge (mit.edu is accredited, gmail.com is not — anyone can check
+// INSTITUTIONAL_EMAIL_DOMAINS config), so equalizing 422 timing would hide
+// nothing and would slow the happy-path ceiling. The duplicate-check-first
+// reorder closed the *registration-status* oracle; this test locks in the
+// non-duplicate-unaccredited 422 fast-return contract so a future "let's
+// also burn argon2 on 422" refactor doesn't silently regress the happy
+// path without re-opening the debate.
+describe('BE-SIGNUP-INSTITUTIONAL-GATE-ORDERING: 422 on non-duplicate unaccredited email is fast', () => {
+  it.skipIf(!dbReachable)(
+    'fresh gmail-style email returns 422 in < ceiling wall-time (no argon2 burn)',
+    async () => {
+      await clearRateLimitKeys(['auth-signup']);
+      // Warm argon2 + request stack so first-call overhead doesn't dominate.
+      await request(app)
+        .post('/api/auth/signup')
+        .send({
+          email: `signup_422_warmup_${Date.now()}@mit.edu`,
+          password: 'Warmup12345',
+          full_name: 'Warmup',
+          institution: 'Uni',
+          field: 'CS',
+        });
+
+      // Fresh (non-duplicate) email on a non-institutional domain — duplicate
+      // check misses, accreditation gate fires, 422 returns fast.
+      const start = Date.now();
+      const res = await request(app)
+        .post('/api/auth/signup')
+        .send({
+          email: `signup_422_fresh_${Date.now()}@gmail.com`,
+          password: 'AnythingValid1',
+          full_name: 'Test',
+          institution: 'Uni',
+          field: 'CS',
+        });
+      const elapsed = Date.now() - start;
+
+      expect(res.status).toBe(422);
+      expect(res.body.error.code).toBe('VALIDATION_ERROR');
+      // Mutation-kill: if a future refactor adds burnSentinel or argon2.hash
+      // to the 422 path, elapsed crosses the ceiling and this fails. The
+      // bound asserts "no argon2 work happened" via wall-time rather than
+      // instrumentation, matching the pattern used by recover's fast-path
+      // test at line 678.
+      expect(elapsed).toBeLessThan(TIMING_ORACLE_CEILING_MS);
     },
   );
 });

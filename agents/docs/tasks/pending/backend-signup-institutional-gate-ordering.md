@@ -69,3 +69,20 @@ First-pass `/ce-code-review` on commit `34580a6` (correctness, security, testing
 - `agents/docs/api-contracts/auth.md:81` — update the 422 clause so it documents the post-reorder semantics (422 applies only to non-duplicate unaccredited callers; duplicate-email 409 is authoritative regardless of institution).
 
 **Path to re-archive:** (1) Backend applies item #1 on this task. (2) Backend re-review signal block below the hold. (3) Architect re-reviews round-2; archives on clean.
+
+---
+
+**Backend re-review signal (2026-04-22, commit pending):**
+
+Round-1 hold fix landed. Changes:
+
+- **P2 (required)** — Added `BE-SIGNUP-INSTITUTIONAL-GATE-ORDERING: 422 on non-duplicate unaccredited email is fast` describe block to `backend/tests/routes/recover.test.ts`. One spec posts a fresh `signup_422_fresh_${Date.now()}@gmail.com` address with a valid password and the standard signup shape, then asserts `res.status === 422`, `res.body.error.code === 'VALIDATION_ERROR'`, and `elapsed < TIMING_ORACLE_CEILING_MS` (150ms, the existing constant at `recover.test.ts:71`). Observed runtime on the new spec: ~2ms for the 422 response (logged `responseTime:2`), well under the 150ms ceiling. Mutation-kills: adding `burnSentinel` or `argon2.hash` to the 422 path would push `elapsed` past 150ms and fail the upper-bound assertion, locking in the intended "institution membership is public, fast-return is fine" contract.
+- **P3 T3 folded in** — Added `expect(accElapsed).toBeLessThan(TIMING_ORACLE_CEILING_MS)` and `expect(unaccElapsed).toBeLessThan(TIMING_ORACLE_CEILING_MS)` to the existing duplicate-gate-ordering timing test (recover.test.ts ~line 1148). Upper-bound mutation-kill: a regression that layers `burnSentinel` on top of `argon2.hash` would push elapsed past 150ms.
+- **P3 T2 skipped** — The hasPassword=false ORCID-duplicate cell test requires new scaffolding (seeded ORCID-only account + a valid ORCID verification token path, because `verifiedOrcid` depends on an upstream token exchange). The hold block marked this "fold in if convenient"; it isn't, so skipped.
+- **P3 C13-2 skipped** — The `hasPassword` gate inline comment asymmetry is already covered by the block comment at `auth.ts:306-309` ("Gate on hasPassword to avoid paying argon2 cost on ORCID+email signup with no password — both 409 and happy-path are ~1ms there, no oracle to close"). Adding another inline comment would duplicate the existing rationale.
+
+Verification:
+- `npx tsc --noEmit` — clean (no output).
+- `npx vitest run tests/routes/recover.test.ts` — 28/28 passing against real Redis + Postgres (Docker network IPs).
+
+Parent will `git mv` this file to `tasks/review/` on merge.
