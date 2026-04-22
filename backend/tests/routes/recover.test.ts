@@ -746,66 +746,11 @@ describe('SEC-LOGIN-UNKNOWN-USER-TIMING: /signup 409 DUPLICATE burns sentinel', 
 
 // ─── Round-3 additions ───────────────────────────────────────
 
-// /login ACCOUNT_LOCKED branch must burn sentinel. The lockout check fires in
-// the current handler AFTER argon2.verify — so the wall-time is already paid
-// on this branch — but a future refactor that moves the check before verify
-// would silently reopen the enumeration oracle for "is this account locked?"
-// Adding burnSentinel here keeps all post-argon2-verify branches in the
-// /login handler wall-time-symmetric regardless of future reshaping.
-describe('SEC-LOGIN-UNKNOWN-USER-TIMING: /login ACCOUNT_LOCKED burns sentinel', () => {
-  const LOCKED_USER = `login_locked_${Date.now()}`;
-  const LOCKED_EMAIL = `login_locked_${Date.now()}@example.com`;
-  const LOCKED_PASSWORD = 'LockedPass1234';
-
-  beforeAll(async () => {
-    if (!dbReachable) return;
-    const pool = getAppPool()!;
-    const passwordHash = await argon2.hash(LOCKED_PASSWORD, { type: argon2.argon2id });
-    await pool.query(
-      `INSERT INTO accounts (email, username, password_hash, custody, verify_token)
-       VALUES ($1, $2, $3, 'light', NULL)`,
-      [LOCKED_EMAIL, LOCKED_USER, passwordHash],
-    );
-    // Seed MAX_LOGIN_FAILURES + 1 recent login_failure audit rows so the
-    // ACCOUNT_LOCKED branch fires on the next login attempt.
-    for (let i = 0; i < 21; i++) {
-      await pool.query(
-        'INSERT INTO custody_audit_log (username, operation_type) VALUES ($1, $2)',
-        [LOCKED_USER, 'login_failure'],
-      );
-    }
-  });
-
-  afterAll(async () => {
-    if (!dbReachable) return;
-    const pool = getAppPool()!;
-    await pool.query('DELETE FROM custody_audit_log WHERE username = $1', [LOCKED_USER]).catch(() => {});
-    await pool.query('DELETE FROM accounts WHERE username = $1', [LOCKED_USER]).catch(() => {});
-  });
-
-  it.skipIf(!dbReachable)('returns 403 ACCOUNT_LOCKED with ≥ floor wall-time', async () => {
-    await clearRateLimitKeys(['auth-login']);
-    // Warm sentinel-hash promise + request stack so the measured call
-    // reflects steady-state cost, not first-call overhead.
-    await request(app)
-      .post('/api/auth/login')
-      .send({ username: `locked_warmup_${Date.now()}`, password: 'Warmup1234' });
-
-    const start = Date.now();
-    const res = await request(app)
-      .post('/api/auth/login')
-      // Correct password: the handler runs argon2.verify successfully THEN
-      // hits the lockout gate and burns sentinel before the 403. On a future
-      // refactor that moves the lockout gate before argon2.verify, the burn
-      // is the only cost on this branch — the assertion still holds.
-      .send({ username: LOCKED_USER, password: LOCKED_PASSWORD });
-    const elapsed = Date.now() - start;
-
-    expect(res.status).toBe(403);
-    expect(res.body.error.code).toBe('ACCOUNT_LOCKED');
-    expect(elapsed).toBeGreaterThanOrEqual(TIMING_ORACLE_FLOOR_MS);
-  });
-});
+// (The /login ACCOUNT_LOCKED timing test was removed in round-4: the 403
+// status code already discloses lockout to correct-password callers, and the
+// prior burnSentinel on that branch created a 2× asymmetry — ~100ms locked
+// vs ~50ms unlocked — instead of closing one. See the /login handler's
+// lockout comment for the full rationale.)
 
 // burnSentinel must clip attacker-controlled oversize input before handing it
 // to argon2.verify. argon2.verify rejects inputs >4096 bytes BEFORE entering

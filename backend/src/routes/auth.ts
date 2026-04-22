@@ -74,7 +74,7 @@ const MAX_LOGIN_FAILURES = 20;
 
 // Sentinel argon2id hash for timing-equalization at every "cheap" early-return
 // that would otherwise distinguish a known-account branch from an unknown one
-// (login unknown-account, NO_PASSWORD_SET null-hash, login ACCOUNT_LOCKED,
+// (login unknown-account, NO_PASSWORD_SET null-hash,
 // resend-verification unknown-email AND null-hash known-email, recover
 // unknown-username, reset-request unknown-email, signup 409 DUPLICATE).
 // Without sentinel burns, those ~1ms paths stand out against the ~50-100ms
@@ -106,11 +106,21 @@ SENTINEL_ARGON2_HASH_PROMISE.catch((err) => {
   logger.error({ err }, 'SENTINEL_ARGON2_HASH_PROMISE rejected at startup — timing-equalization oracle would be silently open; exiting');
   // Drain the pino transport worker before exit; in dev the transport runs in
   // a worker thread and a bare process.exit() can lose the final log line.
-  // logger.flush is available on pino loggers; the optional-call guard keeps
-  // this safe if a future logger shape drops the method.
+  // pino's thread-stream.flush(cb) uses timeout=Infinity, so a deadlocked
+  // worker (same OOM conditions that killed argon2 at startup) would hang the
+  // flush callback forever, leaving the process alive with a permanently-
+  // rejected sentinel and a silently-open timing oracle that no supervisor
+  // can restart. Guard with a 2s timeout fallback so the supervisor always
+  // gets a clean exit.
+  const t = setTimeout(() => process.exit(1), 2000);
+  t.unref();
   if (typeof logger.flush === 'function') {
-    logger.flush(() => process.exit(1));
+    logger.flush(() => {
+      clearTimeout(t);
+      process.exit(1);
+    });
   } else {
+    clearTimeout(t);
     process.exit(1);
   }
 });
@@ -298,11 +308,15 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
         // no oracle to close). The hex-pending fall-through path below
         // runs argon2.hash + upsert naturally, so no burn is needed there.
         if (existingRows[0].verify_token === null) {
-          if (hasPassword) await argon2.hash(password, ARGON2_OPTIONS).catch(() => {});
+          if (password) await argon2.hash(password, ARGON2_OPTIONS).catch((err) => {
+            logger.warn({ err }, 'argon2 signup-dup burn failed — timing oracle may be open');
+          });
           return sendError(res, 409, 'DUPLICATE', 'Email already registered');
         }
         if (existingRows[0].verify_token.startsWith('confirmed:')) {
-          if (hasPassword) await argon2.hash(password, ARGON2_OPTIONS).catch(() => {});
+          if (password) await argon2.hash(password, ARGON2_OPTIONS).catch((err) => {
+            logger.warn({ err }, 'argon2 signup-dup burn failed — timing oracle may be open');
+          });
           return sendError(res, 409, 'DUPLICATE', 'Email already verified. Please log in to continue.');
         }
         // Unverified — allow overwrite via ON CONFLICT below
@@ -640,17 +654,15 @@ router.post('/login', loginLimiter, async (req: Request, res: Response) => {
       return sendError(res, 409, 'PENDING_UNVERIFIED', 'Your email has not been verified yet.');
     }
 
-    // Active account — check lockout. Burn a sentinel argon2.verify before
-    // the 403 so the ACCOUNT_LOCKED branch takes the same wall-time as any
-    // future refactor that moves the lockout check before argon2.verify
-    // (and to keep wall-time symmetric with the other post-verify branches
-    // above). Without this, locked-account callers supplying the CORRECT
-    // password would take ~50ms (argon2.verify only) while an unlocked
-    // correct-password caller takes ~50ms + session-mint overhead; keeping
-    // all post-argon2 branches equalized closes the "is this account
-    // locked?" enumeration signal for known usernames.
+    // Active account — check lockout. This branch runs AFTER argon2.verify
+    // succeeded, so the caller has already paid the ~50ms verify cost. No
+    // sentinel burn here: adding one would push correct-password-on-locked
+    // to ~100ms (verify + burn) while correct-password-on-unlocked stays at
+    // ~50ms (verify only), creating a 2× timing asymmetry instead of closing
+    // one. The 403 ACCOUNT_LOCKED status code already discloses lockout
+    // state to callers who reach this point (they supplied the correct
+    // password), so timing equalization adds no privacy; it only hurts.
     if (account.login_failures >= MAX_LOGIN_FAILURES) {
-      await burnSentinel(password);
       return sendError(res, 403, 'ACCOUNT_LOCKED', 'Account temporarily locked due to too many failed attempts. Reset your password or try again later.');
     }
 

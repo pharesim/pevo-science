@@ -235,3 +235,24 @@ Hold items below are scoped to in-task bugs worth closing before archive.
 - `agents/docs/api-contracts/auth.md:107` — trim the "If the account is already active, returns..." clause; the uniform message is the contract post-item-#7 round-3.
 
 **Path to re-archive:** (1) Backend applies items #1-3 on this task. (2) Backend re-review signal block below the hold. (3) Architect re-reviews round-4 with `/ce-code-review` (adversarial + security mandatory); archives on clean. Filed follow-up tasks archive independently.
+
+---
+
+**Backend re-review signal (2026-04-22 round-4, worktree `.claude/worktrees/agent-ae33bace`):**
+
+All 3 round-3 hold items landed. `npx tsc --noEmit` clean. `backend/tests/routes/recover.test.ts` 27/27 pass. Full backend vitest suite deferred to parent per coordination rules.
+
+1. **P2 C2-01 /signup 409 silent swallow (fixed).** `backend/src/routes/auth.ts:~301, ~305` — both 409 DUPLICATE paths now have inline `.catch((err) => { logger.warn({ err }, 'argon2 signup-dup burn failed — timing oracle may be open'); })` instead of the silent `.catch(() => {})`. An argon2 runtime crash on either path now emits an operator-visible warning on the same channel as `burnSentinel()`'s own catch. No helper extracted (only 2 sites; architect's note in the hold block preferred inline). Opportunistic tightening per architect's P3-dismissed-but-suggested note: swapped `if (hasPassword)` to `if (password)` at both sites so the truthy-narrowing gives TS `password: string` rather than relying on `hasPassword: boolean` which doesn't flow-narrow `password`.
+
+2. **P2 C2-02 ACCOUNT_LOCKED double-burn removed (fixed per architect option (a)).** `backend/src/routes/auth.ts:~643-651` — removed `await burnSentinel(password)` on the ACCOUNT_LOCKED 403 branch. Comment rewritten to document the decision: the lockout gate runs AFTER argon2.verify, so the burn was creating a 2× asymmetry (verify + burn ~100ms locked vs verify-only ~50ms unlocked) instead of closing one, and 403 status code already discloses lockout state to callers who reach that branch (they already supplied the correct password). The matching timing test `SEC-LOGIN-UNKNOWN-USER-TIMING: /login ACCOUNT_LOCKED burns sentinel` at `backend/tests/routes/recover.test.ts:~755` is removed (its describe block, beforeAll, afterAll, and it replaced with a short explanatory comment pointing at the handler rationale). Also dropped "login ACCOUNT_LOCKED" from the file-header burnSentinel coverage comment at `auth.ts:~77`.
+
+3. **P2 R2-1 logger.flush timeout guard (fixed).** `backend/src/routes/auth.ts:~105-120` — added a 2s `setTimeout(() => process.exit(1), 2000); t.unref();` fallback before the flush call, and `clearTimeout(t)` inside the flush callback. Guards against both the missing-flush case (no-flush path immediately exits) and the deadlocked-pino-worker case (supervisor gets a clean exit within 2s even if flush callback never fires). Comment expanded to document the pino `thread-stream.flush(cb)` `timeout=Infinity` behavior. Note: deviated from the literal snippet in the round-3 hold block (`logger.flush?.(cb) ?? process.exit(1)`) because that shape fires `process.exit(1)` synchronously immediately after calling `logger.flush()` (which returns `void`/undefined), defeating the wait-for-flush intent. The `if/else` + setTimeout composition preserves both the timeout guard and the wait-for-flush-callback behavior the hold block wanted.
+
+**Test outcomes:**
+- `recover.test.ts`: 27/27 pass (one net-removed ACCOUNT_LOCKED test is intentional; no net-new tests added in round 4 because item #1 is logging-only, item #2 is a removal, item #3 is environment-only fail-loud).
+- `npx tsc --noEmit`: clean.
+- Full vitest suite: deferred to parent agent.
+
+**Deviations from hold block:**
+- Item #3: the literal snippet `logger.flush?.(cb) ?? process.exit(1)` would fire `process.exit(1)` synchronously immediately after calling flush (pino's flush returns void). Landed an `if (typeof logger.flush === 'function') { ... } else { ... }` + setTimeout shape that preserves both the timeout guard and the wait-for-callback intent. Rationale above.
+- Opportunistic `if (password)` tightening applied per architect's P3-dismissed-but-suggested note at both item-#1 sites (one-line change, matches the "fine to apply opportunistically" guidance).
