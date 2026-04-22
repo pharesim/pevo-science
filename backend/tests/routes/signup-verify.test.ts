@@ -283,27 +283,82 @@ describe.skipIf(!dbReachable)('SEC-004-BE: ORCID signup + confirm WITH password'
 // pre-sentinel path).
 const TIMING_ORACLE_FLOOR_MS = 35;
 
-describe('BE-AUTH-RESUME-SIGNUP-TIMING-GUARD: /resume-signup unknown-email burns sentinel', () => {
-  it.skipIf(!dbReachable)('returns 400 for unknown email with ≥ floor wall-time', async () => {
+// Round-2 parametrization: the oracle closes across THREE branches that all
+// must equal the confirmed+wrong-password wall-time (~argon2.verify cost):
+//   (a) unknown-email                 → rows.length === 0 early-return
+//   (b) non-confirmed-state           → row exists, verify_token not
+//                                       `confirmed:…` (raw 64-hex pre-verify)
+//   (c) ORCID-only confirmed          → row confirmed, password_hash IS NULL
+//                                       (ORCID-autopath with no password)
+// Each scenario must pay argon2.verify wall-time before the 400 return, or
+// an attacker can enumerate which (email, lifecycle-state) tuples exist.
+type ResumeTimingScenario = {
+  label: string;
+  email: string;
+};
+const TIMING_RUN_ID = Date.now();
+
+describe.skipIf(!dbReachable)('BE-AUTH-RESUME-SIGNUP-TIMING-GUARD: /resume-signup burns sentinel on all non-verify-path branches', () => {
+  const pool = dbReachable ? getAppPool()! : null;
+
+  const unknownEmail = `resume_unknown_${TIMING_RUN_ID}@example.com`;
+  const nonConfirmedEmail = `resume_nonconfirmed_${TIMING_RUN_ID}@example.com`;
+  const orcidOnlyEmail = `resume_orcidonly_${TIMING_RUN_ID}@example.com`;
+
+  beforeAll(async () => {
+    if (!pool) return;
+    // Clean any prior rows
+    await pool.query('DELETE FROM accounts WHERE email = ANY($1)', [
+      [unknownEmail, nonConfirmedEmail, orcidOnlyEmail],
+    ]).catch(() => {});
+    // Seed (b): non-confirmed-state — raw 64-hex verify_token (pre-email-verify lifecycle).
+    // password_hash is a real argon2 hash so the real surface the guard protects
+    // (confirmed-branch burn) is symmetric with this row.
+    const fakeHash = '$argon2id$v=19$m=65536,t=3,p=4$aaaaaaaaaaaaaaaaaaaaaa$bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+    const rawHexToken = 'a'.repeat(64);
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    await pool.query(
+      `INSERT INTO accounts (email, password_hash, full_name, institution, field, orcid, verify_token, expires_at)
+       VALUES ($1, $2, 'Timing Nonconfirmed', 'MIT', 'physics', NULL, $3, $4)`,
+      [nonConfirmedEmail, fakeHash, rawHexToken, expiresAt],
+    );
+    // Seed (c): ORCID-only confirmed — password_hash = NULL, verify_token = 'confirmed:…'
+    const confirmedToken = `confirmed:${'c'.repeat(64)}`;
+    await pool.query(
+      `INSERT INTO accounts (email, password_hash, full_name, institution, field, orcid, verify_token, expires_at)
+       VALUES ($1, NULL, 'Timing ORCID', 'MIT', 'physics', '0000-0001-0000-9999', $2, $3)`,
+      [orcidOnlyEmail, confirmedToken, expiresAt],
+    );
+  });
+
+  afterAll(async () => {
+    if (!pool) return;
+    await pool.query('DELETE FROM accounts WHERE email = ANY($1)', [
+      [unknownEmail, nonConfirmedEmail, orcidOnlyEmail],
+    ]).catch(() => {});
+  });
+
+  const scenarios: ResumeTimingScenario[] = [
+    { label: 'unknown-email (no row)', email: unknownEmail },
+    { label: 'non-confirmed-state (raw 64-hex verify_token)', email: nonConfirmedEmail },
+    { label: 'ORCID-only confirmed (null password_hash)', email: orcidOnlyEmail },
+  ];
+
+  it.each(scenarios)('returns 400 with ≥ floor wall-time for $label', async ({ email }) => {
     await clearRateLimitKeys(['signup-resume']);
-    // Without the sentinel argon2.verify on the unknown-email branch of
-    // /api/auth/resume-signup, this path returns in ~1ms while the known-
-    // email-in-confirmed-signup-state branch pays argon2.verify (~50ms) —
-    // an enumeration oracle that leaks which emails sit in a resumable
-    // state. Status-code stays 400.
-    //
+
     // Warm the sentinel-hash lazy promise + Node request stack so the
     // measured call reflects steady-state argon2.verify cost, not first-
-    // call overhead. resumeLimiter is 5/hr per IP (1 warmup + 1 measured
-    // + 3 retry headroom).
+    // call overhead. resumeLimiter is 5/hr per IP but we clear it above,
+    // so 1 warmup + 1 measured is fine per scenario.
     await request(app)
       .post('/api/auth/resume-signup')
-      .send({ email: 'resume_warmup@example.com', password: 'Warmup1234' });
+      .send({ email: `resume_warmup_${TIMING_RUN_ID}@example.com`, password: 'Warmup1234' });
 
     const start = Date.now();
     const res = await request(app)
       .post('/api/auth/resume-signup')
-      .send({ email: 'definitely_nonexistent_resume_xyz@example.com', password: 'AnythingValid1' });
+      .send({ email, password: 'AnythingValid1' });
     const elapsed = Date.now() - start;
 
     expect(res.status).toBe(400);

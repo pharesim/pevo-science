@@ -97,7 +97,7 @@ router.post('/resume-signup', resumeLimiter, async (req: Request, res: Response)
   try {
     const { rows } = await pool.query<{
       id: number;
-      password_hash: string;
+      password_hash: string | null;
       verify_token: string | null;
     }>(
       'SELECT id, password_hash, verify_token FROM accounts WHERE email = $1',
@@ -125,8 +125,19 @@ router.post('/resume-signup', resumeLimiter, async (req: Request, res: Response)
       return sendError(res, 400, 'BAD_REQUEST', 'Invalid email or password');
     }
 
+    // ORCID-only accounts (confirmed via ORCID, no password set) have
+    // password_hash = NULL. Calling argon2.verify(null, ...) throws a
+    // TypeError, which would diverge wall-time from the wrong-password
+    // branch and create a confirmed-state oracle. Burn sentinel to match
+    // argon2.verify wall-time, then reject uniformly.
+    if (!account.password_hash) {
+      await burnSentinel(password);
+      return sendError(res, 400, 'BAD_REQUEST', 'Invalid email or password');
+    }
+
     // Verify password
-    const passwordValid = await runWithArgon2Slot(() => argon2.verify(account.password_hash, password));
+    const passwordHash = account.password_hash;
+    const passwordValid = await runWithArgon2Slot(() => argon2.verify(passwordHash, password));
     if (!passwordValid) {
       return sendError(res, 400, 'BAD_REQUEST', 'Invalid email or password');
     }
