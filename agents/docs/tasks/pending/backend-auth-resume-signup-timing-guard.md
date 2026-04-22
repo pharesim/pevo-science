@@ -51,3 +51,15 @@ First-pass `/ce-code-review` on commit `e627dcf` (security + correctness persona
 - No test for happy path of /resume-signup: out of scope for timing-guard task; file follow-up if operator demand.
 
 **Path to re-archive:** (1) Backend applies items #1-2 on this task. (2) Backend re-review signal block below the hold. (3) Architect re-reviews round-2 — security + correctness mandatory. Archives on clean.
+
+---
+
+## Backend re-review signal (2026-04-22, worktree agent-aa1bf969):
+
+Round-2 hold items landed:
+
+1. **P2 — ORCID-only confirmed-state TypeError oracle** — landed. Added null-guard burn before `argon2.verify` in `/resume-signup` (`backend/src/routes/signup-verify.ts`): when `account.password_hash` is null (ORCID-only confirmed-state), the route now `await burnSentinel(password)` then returns the uniform `400 BAD_REQUEST 'Invalid email or password'`. SQL result type annotation widened `password_hash: string` → `string | null` on the `/resume-signup` `pool.query<...>(...)` generic. Also hoisted the hash into a non-null local (`const passwordHash = account.password_hash`) so the argon2.verify call typechecks without a cast.
+
+2. **P3 elevated — Parametrize timing test across 3 scenarios** — landed. Converted the single unknown-email timing spec in `backend/tests/routes/signup-verify.test.ts` into a 3-scenario `it.each` under `describe.skipIf(!dbReachable)('BE-AUTH-RESUME-SIGNUP-TIMING-GUARD: /resume-signup burns sentinel on all non-verify-path branches', ...)`: (a) unknown-email (no row), (b) non-confirmed-state (row exists, raw 64-hex `verify_token`, real-looking argon2 `password_hash`), (c) ORCID-only confirmed (row with `verify_token = 'confirmed:…'` and `password_hash = NULL`). `beforeAll` seeds (b) and (c) directly via `INSERT INTO accounts`; `afterAll` cleans up. Each scenario clears `signup-resume` rate limit, warms the sentinel-hash lazy promise with one unknown-email request, then measures a second request and asserts `elapsed ≥ TIMING_ORACLE_FLOOR_MS` (35ms). All 3 pass locally at ~50ms each; full `signup-verify.test.ts` → 5/5 pass, `recover.test.ts` → 28/28 pass.
+
+Verification: `npx tsc --noEmit` clean; `npm run lint` clean (0 errors; 6 preexisting warnings in unrelated files).
