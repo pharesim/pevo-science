@@ -1,5 +1,5 @@
 import Alpine from 'alpinejs';
-import { uploadToIpfs, fetchDisciplines } from '../api.js';
+import { uploadToIpfs } from '../api.js';
 import { broadcastOps } from '../signer.js';
 import { sha256File, slugify } from '../crypto.js';
 import { createTimerGuard } from '../lib/timer-guard.js';

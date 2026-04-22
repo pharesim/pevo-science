@@ -16,7 +16,19 @@
 
 import { test, expect } from './fixtures/keychain.js';
 
-test('papers list renders, discipline filter narrows, search returns matches', async ({ page }) => {
+test('papers list renders, discipline filter narrows, search returns matches', async ({ page, request }) => {
+  // Preflight: the discipline-filter portion of the spec requires ≥1 paper in
+  // the HAF corpus with a discipline set. If /api/disciplines returns empty
+  // (beta corpus with no disciplined papers), skip readably rather than
+  // hanging on the 30s default locator timeout with an opaque message.
+  const disciplinesPreflight = await request.get('/api/disciplines');
+  if (disciplinesPreflight.ok()) {
+    const body = await disciplinesPreflight.json();
+    if (!Array.isArray(body.data) || body.data.length === 0) {
+      test.skip(true, 'skipped: no disciplines in corpus. Spec requires >=1 paper with a discipline set.');
+    }
+  }
+
   // ─── List renders ────────────────────────────────────────────
   const listResponsePromise = page.waitForResponse(
     (resp) => resp.url().includes('/api/papers') && resp.request().method() === 'GET',
@@ -47,7 +59,7 @@ test('papers list renders, discipline filter narrows, search returns matches', a
   // the option locator directly so Playwright's auto-waiting handles the
   // hydration race. `option[value!=""]` skips the "All disciplines" entry.
   const firstRealOption = disciplineSelect.locator('option:not([value=""])').first();
-  await expect(firstRealOption).toHaveCount(1);
+  await expect(firstRealOption).toBeVisible();
   const firstDiscipline = await firstRealOption.getAttribute('value');
   expect(firstDiscipline).toBeTruthy();
 
