@@ -57,15 +57,19 @@ async function claimAccountTokens(): Promise<void> {
     }
   }
 
-  const { rows } = await pool.query<{ count: string }>(
-    'SELECT COUNT(*) AS count FROM account_creation_tokens WHERE used_at IS NULL',
-  );
-  const pending = parseInt(rows[0].count, 10);
+  try {
+    const { rows } = await pool.query<{ count: string }>(
+      'SELECT COUNT(*) AS count FROM account_creation_tokens WHERE used_at IS NULL',
+    );
+    const pending = parseInt(rows[0].count, 10);
 
-  if (claimed > 0) {
-    logger.info({ claimed, pending_tokens: pending }, 'Account token claim batch complete — RC exhausted');
-  } else {
-    logger.info({ pending_tokens: pending }, 'No tokens claimed — insufficient RC');
+    if (claimed > 0) {
+      logger.info({ claimed, pending_tokens: pending }, 'Account token claim batch complete — RC exhausted');
+    } else {
+      logger.info({ pending_tokens: pending }, 'No tokens claimed — insufficient RC');
+    }
+  } catch (err) {
+    logger.warn({ err }, 'claimAccountTokens trailing count query failed');
   }
 }
 

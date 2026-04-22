@@ -62,3 +62,12 @@ First-pass `/ce-code-review` on commit `f888312` (correctness, reliability, main
 - **P3** `verifyHiveSignature` void: residual hang scenario if sendError itself throws (correctness C1 0.55): architecturally intended per comment; `res.once('close')` is fallback.
 
 **Path to re-archive:** (1) Backend applies items #1-2 on this task. (2) Backend re-review signal block below the hold. (3) Architect re-reviews round-2; archives on clean.
+
+---
+
+**Backend re-review signal (2026-04-22, worktree branch `worktree-agent-a6312774`):**
+
+Both hold items addressed. `npm run lint` from `backend/` exits 0 (6 pre-existing `no-explicit-any` warnings on `bridge.ts` and `seed-phrase.ts` boundary code, zero errors). `npx tsc --noEmit` clean.
+
+1. **P2 REL-001 — `claimAccountTokens` trailing count query wrapped in try/catch.** `backend/src/account-creation.ts:60-74` — the trailing `pool.query('SELECT COUNT(*) ...')` plus the two `logger.info` calls that depend on its result are now inside a `try { ... } catch (err) { logger.warn({ err }, 'claimAccountTokens trailing count query failed'); }` block, mirroring the `cleanupExpiredSignups` pattern in `backend/src/signup-cleanup.ts:16-27`. A transient DB blip on that spot after successful `claim_account` ops now logs a contextual warning instead of escaping as an unhandledRejection that would trigger `process.exit(1)` via the handler in `index.ts`.
+2. **P3 elevated M1 — dead `tests/**/*.ts` opt-out block deleted from `backend/eslint.config.mjs`.** Per architect's preferred option (a): removed the entire override block (was at lines ~47-54). Tests remain out of scope (`lint` / `lint:fix` scripts still target `eslint src/`); no misleading signal remains for future readers. File is now 46 lines vs. 55, single active config block.

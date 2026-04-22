@@ -44,12 +44,4 @@ export default tseslint.config(
       'no-console': 'off',
     },
   },
-  {
-    files: ['tests/**/*.ts'],
-    rules: {
-      '@typescript-eslint/no-floating-promises': 'off',
-      '@typescript-eslint/no-explicit-any': 'off',
-      '@typescript-eslint/no-unused-vars': 'off',
-    },
-  },
 );
