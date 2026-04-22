@@ -59,3 +59,32 @@ None — self-contained pattern-propagation pass. Architect reviews at archive.
 - Tests: one post-teardown no-navigation assertion per site in `frontend/tests/unit/pages-{publish,review,bridge,edit}.test.js` (edit.js has two: same-author and continuation paths). Dedicated helper unit tests in `frontend/tests/unit/lib-timer-guard.test.js` (7 tests). Existing `frontend/tests/unit/pages-orcid-callback.test.js` timer-teardown test still passes against the migrated consumer.
 - Full frontend unit suite: 862 pass; only pre-existing `sec-001-equivalence.test.js` dhive-import failure (noted in brief) remains. `npm run build` clean.
 - E2E not run (parent owns serialization).
+
+## Architect re-review (2026-04-22) — HELD PENDING FIXES:
+
+Code-reviewed via `/ce-code-review` on commit `a33f667`. The extraction is correct: factory returns a fresh object per call, method binding via Alpine proxy `this` (plain object methods, not arrow-captured), `_mounted` lifecycle is clean, `_pendingTimers` cleanup on fire is correct, all 5 navigate-timer sites migrated, `orcid-callback.js` migrated without regression to its prior hold-block fixes. Grep confirms no bare `setTimeout(navigate)` remains under `frontend/src/pages/`. The following items block archive:
+
+1. **Add 2 unit tests to `frontend/tests/unit/lib-timer-guard.test.js` covering the extraction's core invariants.** Three reviewers (correctness 0.90, testing 0.92 + 0.80) agree that factory-isolation and `_teardownTimers()` idempotency are safe by construction but unasserted — the exact properties a future author is most likely to accidentally violate by caching the factory return value at module scope.
+
+   - **Factory isolation:** call `createTimerGuard()` twice, arm a timer on the first instance, call `_teardownTimers()` on it, then assert the second instance's `_mounted === true` and `_pendingTimers.size === 0`. This prevents a future module-level hoist from silently sharing state across components.
+   - **Idempotency:** call `_teardownTimers()` twice on the same instance; assert no throw and state stays consistent (`_mounted === false`, `_pendingTimers.size === 0`).
+
+2. **Expand the JSDoc at `frontend/src/lib/timer-guard.js`** to warn adopters that `createTimerGuard()` must be called inside the per-mount `Alpine.data(() => ({ ... }))` factory, NOT at module scope. Rationale: the return value carries `_pendingTimers` (a `Set`) and `_mounted` (a boolean) — both component-instance state. A module-level hoist shared across two components would corrupt teardown (clearing one would clear the other's timers; `_mounted = false` in one would silently gate the other's callbacks). Suggested addition (≈3 lines):
+
+   ```js
+   /**
+    * ... (existing JSDoc)
+    *
+    * USAGE: Call inside the per-mount Alpine.data factory
+    * (`Alpine.data(() => ({ ...createTimerGuard(), ... }))`), NOT at module
+    * scope. The returned object holds component-instance state
+    * (`_pendingTimers` Set, `_mounted` flag); hoisting a single return value
+    * shared across multiple components would corrupt teardown state.
+    */
+   ```
+
+Deferred / dismissed during triage (no action required on this task):
+- `review.js:211` `loadPaper()` post-fetch write lacking `_mounted` check — already covered by the in-flight `ui-async-continuation-teardown-guard-sweep` task (currently in review/; `_mounted` guards are already applied at `review.js:212, 221, 242, 265, 289, 297`).
+- Copy-pasted 6-step teardown block across 4 page-test files — dismissed; the shape is short, honest duplication that teaches the pattern at each call site.
+- `bridge.js` / `review.js` thin-wrapper `destroy()` methods lack a cross-reference comment — dismissed as low value; the underscore prefix on `_teardownTimers` already signals internal helper.
+- Residual risk: the helper centralizes timer-teardown only, not awaited-promise continuations. The `ui-async-continuation-teardown-guard-sweep` task covers that surface.

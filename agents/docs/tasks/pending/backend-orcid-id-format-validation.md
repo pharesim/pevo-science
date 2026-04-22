@@ -52,3 +52,26 @@ Validating at `/start` initiation where `orcidId` is not yet known.
 ## [TODO Architect]
 
 None — self-contained defense-in-depth fix.
+
+## Architect re-review (2026-04-22) — HELD PENDING FIXES:
+
+Code-reviewed via `/ce-code-review` on commit `2ee6c6e`. The regex is correct, guard placement at `/callback` dispatch + `handleLogin` + `handleAccredit` + `handleLink` fires before any trust-sensitive surface, and the 3 new format-rejection tests correctly assert `not.toHaveBeenCalled()` on the downstream mocks. The following items block archive:
+
+1. **Add `ORCID_RE` self-guard to `handleSignup` in `backend/src/routes/orcid.ts`.** Five reviewers (correctness, security, adversarial, kieran-typescript, maintainability) independently flagged the handler-guard asymmetry. `handleLogin`, `handleAccredit`, and `handleLink` each carry the belt-and-suspenders in-handler check; `handleSignup` — the one handler that reaches `countExternalWorks()` (URL-path interpolation into `pub.orcid.org`) — has no in-handler guard. Not live-exploitable today (all 4 handlers are module-private and reached only via the callback-guarded dispatch), but the asymmetry looks intentional to a future reader and leaves the dispatch-site guard as the sole mutation-kill for the signup path. Add:
+
+   ```ts
+   if (!ORCID_RE.test(orcidId)) {
+     sendError(res, 400, 'BAD_REQUEST', 'Invalid ORCID iD format');
+     return;
+   }
+   ```
+
+   as the first line of `handleSignup`, matching the shape used in the other three handlers.
+
+2. **Add one `mode='signup'` format-rejection test in `backend/tests/routes/orcid.test.ts`.** The task's acceptance says "one test per handler"; signup is currently uncovered. Mirror the 3 existing tests: inject a malformed `orcid_id` via the `/oauth/token` fetch stub, assert `res.status === 400`, assert `res.body.error.code === 'BAD_REQUEST'`, assert `broadcastJsonMock`/`hafQueryMock`/`appQueryMock` `not.toHaveBeenCalled()`. This also locks in the dispatch-site guard mutation-kill that no current test provides for signup.
+
+Deferred / dismissed during triage (no action required on this task):
+- API-contract doc drift (`api-contracts/orcid.md` missing the new 400 branch) — fixed in place by architect.
+- Pre-existing `NO_ACCOUNT` envelope-shape bug — fixed in place by architect.
+- Pre-existing 2 SEC-AUTH-BYPASS sites at `orcid.test.ts:322, 382` still on bare `toHaveBeenCalled()` — filed as `agents/docs/tasks/pending/backend-mock-guard-sec-auth-bypass-sites-promote.md`.
+- Regex edge-case tests (lowercase `x`, whitespace), `as { orcid: string }` bare cast, 4-line guard duplication — low-value; below actionability bar.

@@ -102,3 +102,34 @@ All 6 hold items addressed in a single focused commit (`71ae59f fix(ui): apply F
 Verification: `npx vitest run tests/unit/pages-orcid-callback.test.js` passes all 31 tests. Full frontend unit suite passes (851 tests); the one failing suite (`sec-001-equivalence.test.js`) is a pre-existing, unrelated `@hiveio/dhive` import resolution issue reproduced against HEAD without my changes. `npm run build` is clean.
 
 Note on worktree state: this branch merged `main` at the start of the cycle to pick up commit `00033df` (the original teardown implementation landed via `225d43b Merge FE-ORCID-CALLBACK-TEARDOWN-CLEANUP worktree`). The fast-forward merge moved the worktree HEAD to `39e9699`, then the fix landed as `71ae59f` on top. No new task-file `git mv` was performed per the parent's dispatch instructions; the parent owns the review transition.
+
+## Architect re-review (2026-04-22, round 2) — HELD PENDING FIXES:
+
+Code-reviewed via `/ce-code-review` on commit `71ae59f` (scoped to the 6 items held 2026-04-21). **All 6 hold items correctly applied** — item 1's direct-call test is mutation-kill (removing the `_handleAccredit` self-guard flips all 4 no-op invariants); items 3/4's negative `localStorage.removeItem` assertions lock in the 503-refresh-retry invariant; items 2/5/6 landed correctly.
+
+However, the architect is **reversing course on the self-guard shape**. Item 6's original wording suggested a comment-only documentation of a *dispatch-gated* contract (`"handlers do not re-check individually"`); the implementer's item-1 direct-call test required `_handleAccredit` to self-guard, which created a two-tier pattern that three reviewers (maintainability M1 0.82, M2 0.85, julik-races JR-1 0.55) identified as architecturally fragile. The implementer explicitly flagged this divergence in the re-review signal and offered to roll back to uniform non-self-guard.
+
+The architect prefers the opposite rollback: **uniform self-guards on all 4 handlers**, not uniform dispatch-guard-only. Reasoning:
+- The two-tier pattern accretes cost with every handler added.
+- Uniform self-guards are discoverable (reader sees the guard in the handler) and defensible without cross-reference comments.
+- Item 1's direct-call mutation-kill test becomes the mutation-kill for all 4 handlers, not just one — broader coverage.
+- Aligns with the project-wide trajectory toward in-handler guards as the cheapest readable posture (mirrored in `backend-orcid-id-format-validation`'s re-review).
+
+Hold items:
+
+1. **Add `if (!this._mounted) return;` as the first line of `_handleSignup`, `_handleLogin`, and `_handleLink`** in `frontend/src/pages/orcid-callback.js`. Keep the existing guard on `_handleAccredit` unchanged.
+
+2. **Add one direct-call post-teardown test per newly-self-guarded handler** in `frontend/tests/unit/pages-orcid-callback.test.js`, mirroring the shape of the `_handleAccredit` test added in this cycle (item 1). For each of `_handleSignup`, `_handleLogin`, `_handleLink`:
+
+   ```js
+   comp.destroy();
+   comp._handle<Foo>({ /* handler-specific arg shape */ });
+   // Assert the handler's state-writes are no-ops (status unchanged, no toast, no navigate, no auth-store mutation, no localStorage removal).
+   ```
+
+   Each test locks in the new self-guard's mutation-kill.
+
+3. **Rewrite the switch-level comment at `frontend/src/pages/orcid-callback.js:141-145`** to reflect the new uniform posture. Suggested shape: `"Handlers self-guard on _mounted. The dispatch-level check above is belt-and-suspenders — either guard alone would suffice; both together tolerate a direct-call code path being added later without re-reading the whole file."` Drop the `_handleAccredit` exception clause.
+
+Deferred / dismissed during triage (no action required on this task):
+- Extended `localStorage.removeItem` future-async hazard comment (item 5 of prior hold) is still accurate and does not need rewording.
