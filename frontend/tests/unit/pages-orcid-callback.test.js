@@ -487,6 +487,65 @@ describe('orcidCallbackPage', () => {
       expect(mockToastStore.show).not.toHaveBeenCalled();
     });
 
+    it('_handleSignup direct-call post-teardown is a no-op (handler self-guards)', () => {
+      const comp = createComponent();
+      comp.destroy();
+      comp._handleSignup({ orcid_token: 'tok', orcid_id: 'id', name: 'Jane' });
+
+      expect(comp.status).toBe('verifying');
+      expect(localStorage.setItem).not.toHaveBeenCalledWith('pevo_signup_orcid_token', 'tok');
+      expect(localStorage.setItem).not.toHaveBeenCalledWith('pevo_signup_orcid_id', 'id');
+      expect(localStorage.setItem).not.toHaveBeenCalledWith('pevo_signup_orcid_name', 'Jane');
+      expect(localStorage.removeItem).not.toHaveBeenCalledWith('pevo_orcid_return_to');
+      expect(mockRouterStore.navigate).not.toHaveBeenCalled();
+      expect(mockToastStore.show).not.toHaveBeenCalled();
+    });
+
+    it('_handleLogin direct-call post-teardown is a no-op (handler self-guards)', () => {
+      vi.useFakeTimers();
+      // Snapshot auth-store state before the direct call so we can prove
+      // the self-guard prevents any mutation.
+      const priorToken = mockAuthStore.token;
+      const priorUsername = mockAuthStore.username;
+      const priorCustody = mockAuthStore.custody;
+      const priorExpiresAt = mockAuthStore.expiresAt;
+
+      const comp = createComponent();
+      comp.destroy();
+      comp._handleLogin({
+        token: 'jwt',
+        username: 'alice',
+        custody: 'light',
+        expires_at: '2099-01-01',
+      });
+
+      expect(comp.status).toBe('verifying');
+      expect(mockAuthStore.token).toBe(priorToken);
+      expect(mockAuthStore.username).toBe(priorUsername);
+      expect(mockAuthStore.custody).toBe(priorCustody);
+      expect(mockAuthStore.expiresAt).toBe(priorExpiresAt);
+      expect(mockAuthStore._saveSession).not.toHaveBeenCalled();
+      expect(mockAuthStore._checkAccreditation).not.toHaveBeenCalled();
+      expect(mockToastStore.show).not.toHaveBeenCalled();
+
+      // Also prove the 500ms setTimeout was NOT armed — advancing time past
+      // the redirect window must not call navigate.
+      vi.advanceTimersByTime(1000);
+      expect(mockRouterStore.navigate).not.toHaveBeenCalled();
+      vi.useRealTimers();
+    });
+
+    it('_handleLink direct-call post-teardown is a no-op (handler self-guards)', () => {
+      const comp = createComponent();
+      comp.destroy();
+      comp._handleLink({});
+
+      expect(comp.status).toBe('verifying');
+      expect(localStorage.setItem).not.toHaveBeenCalledWith('pevo_orcid_link_complete', '1');
+      expect(mockRouterStore.navigate).not.toHaveBeenCalled();
+      expect(mockToastStore.show).not.toHaveBeenCalled();
+    });
+
     it('503 from completeOrcid leaves pevo_orcid_mode in localStorage so a refresh-retry can re-enter the correct flow', async () => {
       localStorageData['pevo_orcid_mode'] = 'link';
       const firstComp = createComponent();
