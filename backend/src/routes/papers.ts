@@ -190,7 +190,13 @@ async function fetchPapersFromHaf(req: Request): Promise<{ rows: unknown[]; tota
   const { limit, offset } = parsePageLimit(req);
   const sort = parseSort(req);
   const order = parseOrder(req);
-  const discipline = req.query.discipline as string | undefined;
+  // Canonicalize `?discipline=` once here too. The route handler already
+  // lowercases for its cache key; the SQL binder relies on the same
+  // canonical form so `LOWER(column) = $N` matches. Round-3 hold #2:
+  // typeof-narrow rather than `as string | undefined` to dodge the
+  // repeated-param `string[]` coercion trap.
+  const disciplineRaw = req.query.discipline;
+  const discipline = typeof disciplineRaw === 'string' ? disciplineRaw.toLowerCase() : undefined;
   const keyword = req.query.keyword as string | undefined;
   const author = req.query.author as string | undefined;
   const language = req.query.language as string | undefined;
@@ -227,9 +233,10 @@ async function fetchPapersFromHaf(req: Request): Promise<{ rows: unknown[]; tota
     // /api/disciplines canon_name semantics. Without LOWER() on both sides,
     // `?discipline=physics` silently missed papers tagged "Physics" on the
     // primary paper-listing endpoint — the same drift the canonicalization
-    // fix closed on /api/search.
+    // fix closed on /api/search. `discipline` is lowercased once at route
+    // entry (see above); no duplicated `.toLowerCase()` here.
     conditions.push(`LOWER(c.json_metadata -> ${appTagParam} ->> 'discipline') = $${paramIdx++}`);
-    filterParams.push(discipline.toLowerCase());
+    filterParams.push(discipline);
   }
   if (keyword) {
     conditions.push(`c.json_metadata -> ${appTagParam} -> 'keywords' ? $${paramIdx++}`);
@@ -430,7 +437,18 @@ router.get('/', async (req: Request, res: Response) => {
   const { page, limit } = parsePageLimit(req);
   const sort = parseSort(req);
   const order = parseOrder(req);
-  const discipline = req.query.discipline || '';
+  // Canonicalize `?discipline=` at route entry so downstream SQL binding and
+  // cache-key construction share the same lowercased value. Mirrors the
+  // search.ts:287 pattern landed by BE-DISCIPLINE-CANONICALIZE round-2 hold
+  // #6. Round-3 hold #1: without this, `?discipline=Physics` and
+  // `?discipline=physics` populate independent Redis cache entries despite
+  // the SQL-side LOWER() match — the dedup is defeated at the memoization
+  // layer on the primary paper-feed endpoint. Round-3 hold #2: typeof-narrow
+  // rather than `as string | undefined`; repeated params yield `string[]` at
+  // runtime and `.toLowerCase()` on an array silently coerces to
+  // `"[object Object]"` in the cache key.
+  const disciplineRaw = req.query.discipline;
+  const discipline = typeof disciplineRaw === 'string' ? disciplineRaw.toLowerCase() : '';
   const keyword = req.query.keyword || '';
   const author = req.query.author || '';
   const language = req.query.language || '';

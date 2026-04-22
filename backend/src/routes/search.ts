@@ -283,8 +283,14 @@ router.get('/', async (req: Request, res: Response) => {
   // Canonicalize `?discipline=` at route entry so downstream SQL binding and
   // cache-key construction share the same lowercased value. Three-site
   // lowercasing (route, SQL binder, cache key) drifted under refactor — see
-  // BE-DISCIPLINE-CANONICALIZE round-2 hold #6.
-  const discipline = (req.query.discipline as string | undefined)?.toLowerCase();
+  // BE-DISCIPLINE-CANONICALIZE round-2 hold #6. Round-3 hold #2: use a
+  // typeof-narrowed check rather than `as string | undefined`; Express types
+  // `req.query[k]` as `string | ParsedQs | string[] | ParsedQs[] | undefined`,
+  // so repeated params (`?discipline=a&discipline=b`) yield `string[]` and an
+  // unsafe cast silently coerces `.toLowerCase()` on the array to
+  // `"[object Object]"` in the cache key.
+  const disciplineRaw = req.query.discipline;
+  const discipline = typeof disciplineRaw === 'string' ? disciplineRaw.toLowerCase() : undefined;
   const language = req.query.language as string | undefined;
   const source = req.query.source as string | undefined;
   const accreditedOnly = req.query.accredited_only !== 'false'; // default true

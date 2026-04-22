@@ -203,3 +203,21 @@ Round-3 `/ce-code-review` on commit `d5dc7a0` (11 personas including adversarial
 **Filed follow-up still-pending:** `backend-display-name-titlecase.md`, `backend-discipline-length-cap.md` — unchanged.
 
 **Path to re-archive:** (1) Backend applies items #1-2 on this task. (2) Backend re-review signal block below the hold. (3) Architect re-reviews round-4 with `/ce-code-review` and archives on clean.
+
+---
+
+**Backend re-review signal (2026-04-22 round-4, commit <pending>):**
+
+Both round-3 hold items addressed. Directly-affected vitest files in isolation: 19 passed + 1 skipped across `disciplines.test.ts` (5 specs), `disciplines-canon-mocked.test.ts` (7 specs — new papers cache-key parity spec added), `papers.test.ts` (8 specs incl. `ctx.skip()` branch). `npx tsc --noEmit` clean. Full suite NOT run in this worktree per worker ground rule #5; parent agent to run it after merge.
+
+1. **Hold #1 — `papers.ts` cache-key lowercasing (P1).** `backend/src/routes/papers.ts:438-443` (new line numbers after the comment block) — route handler now reads `req.query.discipline` with the typeof-narrowed pattern (`disciplineRaw`/`discipline` pair) and lowercases once at entry, then embeds the canonical value in the `cacheKey`. `fetchPapersFromHaf` also narrows the same way at its own entry (so a direct function call path stays canonical) and the inner `.toLowerCase()` at the SQL-bind site is removed (`papers.ts:232` → just `filterParams.push(discipline)`). Mirrors the `search.ts:287` pattern landed by round-2 hold #6.
+
+   Test: `disciplines-canon-mocked.test.ts` — new `GET /api/papers — discipline-filter cache-key canonicalization` describe block. Two case-variant requests (`?discipline=Physics` and `?discipline=physics`); filter `hafQueryMock.mock.calls` on SQL containing `LEFT(c.body, 300) AS abstract` (the stable fragment uniquely identifying the papers data-query SELECT list — absent from papers-count, reviews count/data, vote-ops lookups, reputation batch, and the active_accreditations CTE body). Asserted `toHaveLength(1)` per round-2 hold #1 pattern — a regression to per-casing cache keys would emit 2 data queries.
+
+2. **Hold #2 — Unsafe `as string | undefined` replaced by typeof-narrowed pattern (P2).** Both new `papers.ts` route-entry site AND the existing `search.ts:287` site now use `const disciplineRaw = req.query.discipline; const discipline = typeof disciplineRaw === 'string' ? disciplineRaw.toLowerCase() : undefined;` (papers router uses `: ''` rather than `: undefined` to keep the cache-key falsy-coalesce shape unchanged; `fetchPapersFromHaf` uses `: undefined` to match the existing `if (discipline)` gate). Closes the repeated-param `?discipline=a&discipline=b` silent-coercion trap — Express yields `string[]` at runtime, the old cast silently coerced `.toLowerCase()` on the array to `"[object Object]"` in the cache key.
+
+**Deviations from hold block:** None. The `search.ts:67-68` disclaimer comment was left untouched per dismissed round-3 P3 (the comment is now accurate — Hold #2 keeps single-site lowercasing at route entry; the comment already said "callers lowercase `discipline` once at route entry").
+
+**Dismissed-finding still-dismissed:** boundary-rule violation (architect round-2 authorized the contract edit), Postgres LOWER() vs JS toLowerCase() Unicode divergence (ASCII-range disciplines), orphaned comment at `search.ts:67-68` (round-3 dismissed P3; code change already made it accurate).
+
+**Filed follow-up still-pending:** `backend-display-name-titlecase.md`, `backend-discipline-length-cap.md` — unchanged.
