@@ -40,7 +40,14 @@ function createComponent() {
   initOrcidCallbackPage();
   const factory = Alpine.data.mock.calls[Alpine.data.mock.calls.length - 1][1];
   const comp = factory();
-  comp.$t = (key) => key;
+  // Parametric $t support: when params are passed, encode them into the
+  // returned key string so tests can assert the countdown value flowed
+  // through the i18n call (e.g. 'orcid.alreadyLinkedRetriable|seconds=10').
+  comp.$t = (key, params) => {
+    if (!params) return key;
+    const parts = Object.entries(params).map(([k, v]) => `${k}=${v}`).join(',');
+    return `${key}|${parts}`;
+  };
   return comp;
 }
 
@@ -544,6 +551,79 @@ describe('orcidCallbackPage', () => {
       expect(localStorage.setItem).not.toHaveBeenCalledWith('pevo_orcid_link_complete', '1');
       expect(mockRouterStore.navigate).not.toHaveBeenCalled();
       expect(mockToastStore.show).not.toHaveBeenCalled();
+    });
+
+    // UI-ORCID-CALLBACK-RETRIABLE-BRANCH: `err.details?.retriable === true`
+    // OR `err.retryAfterSeconds !== null` signals lock contention
+    // (transient). Template renders the parametric
+    // `orcid.alreadyLinkedRetriable` key with a live countdown.
+    it('ORCID_ALREADY_LINKED retriable (Retry-After present): renders retriable state, countdown initialized, tears down on destroy', async () => {
+      vi.useFakeTimers();
+      const comp = createComponent();
+      const err = new Error('Locked');
+      err.code = 'ORCID_ALREADY_LINKED';
+      err.details = { retriable: true, retry_after_seconds: 10 };
+      err.retryAfterSeconds = 10;
+      mockCompleteOrcid.mockRejectedValue(err);
+
+      await comp._verify('code', 'state', 'link');
+
+      expect(comp.status).toBe('error');
+      expect(comp.errorKind).toBe('alreadyLinkedRetriable');
+      expect(comp.errorAction).toBe('retry');
+      expect(comp.retryCountdown).toBe(10);
+      // Countdown ticks every 1s.
+      vi.advanceTimersByTime(1000);
+      expect(comp.retryCountdown).toBe(9);
+      vi.advanceTimersByTime(2000);
+      expect(comp.retryCountdown).toBe(7);
+
+      // destroy() must tear down pending countdown timers so no post-
+      // teardown write fires (the _mounted guard inside the tick is the
+      // contract; this test exercises both the clearTimeout path AND the
+      // guard). Advancing time past any stale timer must not mutate state.
+      comp.destroy();
+      const countdownAtTeardown = comp.retryCountdown;
+      vi.advanceTimersByTime(30000);
+      expect(comp.retryCountdown).toBe(countdownAtTeardown);
+      // And the self-retry at zero MUST NOT fire after teardown.
+      expect(mockCompleteOrcid).toHaveBeenCalledTimes(1);
+      vi.useRealTimers();
+    });
+
+    // Durable = no retriable flag AND no Retry-After header. Per
+    // api-contracts/orcid.md convention: absence of both means the binding
+    // is permanent (on-chain or cache-lag). Retry affordance must NOT show.
+    it('ORCID_ALREADY_LINKED durable (no retriable flag, no Retry-After): renders durable message, no retry affordance', async () => {
+      const comp = createComponent();
+      const err = new Error('Already linked');
+      err.code = 'ORCID_ALREADY_LINKED';
+      err.details = undefined;
+      err.retryAfterSeconds = null;
+      mockCompleteOrcid.mockRejectedValue(err);
+
+      await comp._verify('code', 'state', 'link');
+
+      expect(comp.status).toBe('error');
+      expect(comp.errorMessage).toBe('orcid.alreadyLinkedDurable');
+      expect(comp.errorAction).toBe('recover');
+      expect(comp.errorKind).not.toBe('alreadyLinkedRetriable');
+      expect(comp.retryCountdown).toBe(0);
+    });
+
+    // Forward-compat for BE-ORCID-BROADCAST-ABORT-TIMEOUT 504. Backend may
+    // not yet emit this code; the branch is inert until it does.
+    it('BROADCAST_TIMEOUT: renders pending message pointing to settings', async () => {
+      const comp = createComponent();
+      const err = new Error('Broadcast timed out');
+      err.code = 'BROADCAST_TIMEOUT';
+      mockCompleteOrcid.mockRejectedValue(err);
+
+      await comp._verify('code', 'state', 'link');
+
+      expect(comp.status).toBe('error');
+      expect(comp.errorMessage).toBe('orcid.broadcastPending');
+      expect(comp.errorAction).toBe('settings');
     });
 
     it('503 from completeOrcid leaves pevo_orcid_mode in localStorage so a refresh-retry can re-enter the correct flow', async () => {
