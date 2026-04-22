@@ -115,3 +115,21 @@ Hold-block items below:
 - The task spec references a non-existent `docs-locale-stub-convention.md`. The actual convention is in `agents/ui/CLAUDE.md` Internationalization. Low-signal noise; no action — future task specs should reference the UI CLAUDE.md directly.
 
 **Path to re-archive:** (1) UI applies items #1-5 on this task. (2) UI re-review signal block below the hold. (3) Architect re-reviews round-2 with `/ce-code-review` and archives on clean. Filed follow-up tasks archive independently.
+
+---
+
+**UI re-review signal (2026-04-22, merge commit `494038d`, worktree `worktree-agent-a185be24` → main):**
+
+All 5 hold items landed. Full frontend unit suite 869/869 pass post-merge; `npm run build` clean.
+
+1. **P2 login.js carve-out misuse (item #1)** — PENDING_UNVERIFIED + SIGNUP_EXPIRED branches now use the standard 3-line sanitize pattern with `console.warn('[login submit pending]', err)` / `[login submit expired]` and i18n keys `login.pendingUnverified` / `login.signupExpired`. Block comment at `login.js:157` reworded to drop "semantic-code carve-out preserved" language. **Deviation flagged:** `login.pendingUnverified` already existed in `en.json` + all 15 locales with real native-language translations; only `login.signupExpired` is truly new. Adding `pendingUnverified` to STUBS.md would have demoted real translations to stubs, which is wrong. Net: 1 new en key + 14 locale stubs + 14 `STUBS.md` entries (not 28 as the hold item specified). 2 test-site additions to `pages-login.test.js` match the full invariant shape.
+
+2. **P2 warn ordering (item #2)** — `signup.js:302` and `orcid-callback.js:120` restructured so `console.warn` fires only on the generic-fallback `else` branch, not before the semantic-code branch checks. Mirrors `settings.js handleEmailSubmit`. All existing semantic-code-branch behavior preserved.
+
+3. **P2 handleOrcidSignup test gap (item #3)** — added `describe('handleOrcidSignup')` block to `pages-signup.test.js` with the full invariant shape: i18n key `signup.orcidStartFailed` bound, sentinel absent, raw err reaches `warnSpy.mock.calls[0][1]`, `localStorage.removeItem('pevo_orcid_mode')` called on failure.
+
+4. **P3 restoreMocks (item #4)** — `vitest.config.js` gains `restoreMocks: true` globally. Full suite 869/869 pass afterward — no tests depended on spy-leak behavior.
+
+5. **P3 prefix normalization (item #5)** — 7 hyphenated warn prefixes normalized to space-separated across `reset-password.js` (2), `sign-in-modal.js` (2), `signup-verify.js` (3). One-liner convention added to the top of `agents/docs/solutions/conventions/frontend-error-sanitization-2026-04-21.md`.
+
+Commit: `5bbd357 ui: apply architect hold fixes on err-message-sanitize-sweep (5 items)`, merged to main via `494038d`.

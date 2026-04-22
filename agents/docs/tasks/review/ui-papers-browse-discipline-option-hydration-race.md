@@ -111,3 +111,19 @@ Hold-block items below:
 - "A backend contract rename requires a frontend migration task filed by the architect IN THE SAME review cycle. The gap between backend rename landing and FE migration landing creates `:value=\"undefined\"` windows that look like hydration races. REV-1 Hold #2 shim-is-already-dead is the dual of this finding — the architect filed a protective shim on BE for a FE consumer that THIS COMMIT had already migrated; the cross-task hold-block was stale by the time round-2 backend applied it."
 
 **Path to re-archive:** (1) UI applies items #1-4 on this task. (2) UI re-review signal block below the hold. (3) Architect archives on clean round-2. The scope-pivot narrative will be prepended as "Implementation notes" at archive time.
+
+---
+
+**UI re-review signal (2026-04-22, merge commit `8ed1e68`, worktree `worktree-agent-af51d3aa` → main):**
+
+All 4 hold items landed. `npm run build` clean; Playwright `--list` clean for `papers-browse.spec.js`; full frontend unit suite 869/869 pass post-merge (no unit tests touched in this task).
+
+1. **P2 stale `_pushUrl` comments (item #1)** — rewrote the comment in both `frontend/src/components/paper-feed.js:156-158` and `frontend/src/pages/search.js:227-229` to: "_syncFromUrl lowercases URL reads; backend canon_name is already lowercase; _pushUrl catches direct state assignments..." No code change.
+
+2. **P3 dead `fetchDisciplines` import (item #2)** — dropped from `frontend/src/pages/publish.js:2`; import line now `{ uploadToIpfs }` only.
+
+3. **P3 task-slug rot (item #3)** — `loadDisciplines` comments in `paper-feed.js:176-177` and `search.js:246-247` now point to `agents/docs/api-contracts/misc.md` (GET /api/disciplines) instead of the `BE-DISCIPLINE-CANONICALIZE` task slug.
+
+4. **P3 Playwright spec (item #4)** — `frontend/tests/e2e/papers-browse.spec.js:62`: `toHaveCount(1)` → `toBeVisible()` (Option A per spec). Preflight added at lines 19-30 using Playwright's built-in `request` fixture to GET `/api/disciplines`; calls `test.skip(true, ...)` when `data` is empty/non-array. No new fetch layer introduced. `/ce-simplify` replaced an emdash in the skip message with a period per repo convention.
+
+Commit: `0d0a32f ui: apply architect hold-block fixes on papers-browse discipline hydration task`, merged to main via `8ed1e68`.
