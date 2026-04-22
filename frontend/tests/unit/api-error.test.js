@@ -23,6 +23,19 @@ function mockErrorResponse(status, body, headerEntries = []) {
   };
 }
 
+// Non-JSON error response: `res.json()` rejects, mirroring real fetch behavior
+// when a gateway returns HTML or plain text (e.g. 502 from an upstream proxy).
+function mockNonJsonErrorResponse(status, headerEntries = []) {
+  return {
+    ok: false,
+    status,
+    headers: new Headers(headerEntries),
+    json: async () => {
+      throw new SyntaxError('Unexpected token < in JSON at position 0');
+    },
+  };
+}
+
 describe('ApiRequestError: details and Retry-After plumbing', () => {
   let fetchSpy;
 
@@ -59,6 +72,46 @@ describe('ApiRequestError: details and Retry-After plumbing', () => {
       expect(err.details).toEqual({ retriable: true, retry_after_seconds: 10 });
       expect(err.details.retriable).toBe(true);
       expect(err.retryAfterSeconds).toBe(10);
+    }
+  });
+
+  it('falls back to INTERNAL_ERROR when the body lacks the `error` key (malformed envelope)', async () => {
+    // Guard against a TypeError-on-nullish-property-access. A body shaped like
+    // `{status:"error"}` or `{status:"error", error:null}` must NOT crash the
+    // error-body branch reading `errorBody.error.code`; it should fall through
+    // to the INTERNAL_ERROR fallback.
+    fetchSpy.mockResolvedValue(
+      mockErrorResponse(500, { status: 'error' }, []),
+    );
+
+    try {
+      await fetchPlatformStats();
+      throw new Error('expected throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(ApiRequestError);
+      expect(err.code).toBe('INTERNAL_ERROR');
+      expect(err.retryAfterSeconds).toBeNull();
+      expect(err.details).toBeUndefined();
+    }
+  });
+
+  it('surfaces retryAfterSeconds via the INTERNAL_ERROR fallback when the response is non-JSON', async () => {
+    // Covers the fallback path: a 503 from a gateway with a plain-text body
+    // still carries a `Retry-After` header. The JSON parse fails, so `request()`
+    // falls through to the `INTERNAL_ERROR` constructor — but the parsed header
+    // MUST still reach `err.retryAfterSeconds` so callers can honor it.
+    fetchSpy.mockResolvedValue(
+      mockNonJsonErrorResponse(503, [['Retry-After', '30']]),
+    );
+
+    try {
+      await fetchPlatformStats();
+      throw new Error('expected throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(ApiRequestError);
+      expect(err.code).toBe('INTERNAL_ERROR');
+      expect(err.retryAfterSeconds).toBe(30);
+      expect(err.details).toBeUndefined();
     }
   });
 

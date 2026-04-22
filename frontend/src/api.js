@@ -52,7 +52,7 @@ async function request(path, init) {
     let errorBody = null;
     try { errorBody = await res.json(); } catch { /* not JSON */ }
     const retryAfterSeconds = parseRetryAfterSeconds(res);
-    if (errorBody && errorBody.status === 'error') {
+    if (errorBody && errorBody.status === 'error' && errorBody.error) {
       throw new ApiRequestError(
         errorBody.error.code,
         errorBody.error.message,
