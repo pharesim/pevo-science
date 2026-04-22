@@ -45,7 +45,24 @@ vi.mock('../../src/config.js', async () => {
 
 // Hive client mock — supports signature verification (getAccounts) and
 // captures any accidental broadcast (there must be none when the 503 fires).
+// Also exposes broadcastSendOperationsWithTimeout + BroadcastTimeoutError so
+// the /register and /update handlers' timeout-discrimination catch block is
+// reachable from these tests. The stub BroadcastTimeoutError class mirrors
+// the real one's constructor signature (timeoutMs property) so
+// `err instanceof BroadcastTimeoutError` and `err.timeoutMs` both work when
+// the mock rejects with it.
 const sendOperations = vi.fn().mockResolvedValue({ id: 'mock-tx-id' });
+const { MockBroadcastTimeoutError } = vi.hoisted(() => ({
+  MockBroadcastTimeoutError: class BroadcastTimeoutError extends Error {
+    public readonly timeoutMs: number;
+    constructor(timeoutMs: number) {
+      super(`Hive broadcast timed out after ${timeoutMs}ms`);
+      this.name = 'BroadcastTimeoutError';
+      this.timeoutMs = timeoutMs;
+    }
+  },
+}));
+const databaseCall = vi.fn();
 vi.mock('../../src/hive.js', () => ({
   hiveClient: {
     database: {
@@ -57,13 +74,52 @@ vi.mock('../../src/hive.js', () => ({
           })),
         ),
       ),
-      call: vi.fn(),
+      call: (...args: unknown[]) => databaseCall(...args),
     },
     broadcast: {
       sendOperations: (...args: unknown[]) => sendOperations(...args),
     },
   },
+  broadcastSendOperationsWithTimeout: (...args: unknown[]) => sendOperations(...args),
+  BroadcastTimeoutError: MockBroadcastTimeoutError,
+  DEFAULT_BROADCAST_TIMEOUT_MS: 30_000,
 }));
+
+// Bridge module mock: let checkExistingBridge short-circuit to "no
+// duplicate" (exists=false) and stub resolveToCanonical / lookupPreprint so
+// the broadcast-timeout specs don't actually hit Crossref / arXiv. The
+// unused-helper exports (parseIdentifier, buildBridgeBody, buildBridgeMetadata)
+// fall through to the real implementation.
+const { MOCK_META } = vi.hoisted(() => ({
+  MOCK_META: {
+    title: 'A deterministic test paper',
+    authors: ['Alice Example', 'Bob Example'],
+    abstract: 'Test abstract.',
+    doi: null,
+    arxiv_id: '2301.12345',
+    source_type: 'arxiv',
+    source_url: 'https://arxiv.org/abs/2301.12345',
+    publication_date: '2023-01-20',
+    license: null,
+  },
+}));
+vi.mock('../../src/bridge.js', async () => {
+  const actual = await vi.importActual<typeof import('../../src/bridge.js')>('../../src/bridge.js');
+  return {
+    ...actual,
+    // Keep the "unparseable identifier" path real (parseIdentifier handles it)
+    // but short-circuit known-good inputs so broadcast-discrimination tests
+    // never hit arXiv / Crossref over the network.
+    resolveToCanonical: vi.fn().mockImplementation(async (identifier: string) => {
+      if (identifier === '2301.12345') return { type: 'arxiv', id: '2301.12345' };
+      return actual.resolveToCanonical(identifier);
+    }),
+    lookupPreprint: vi.fn().mockImplementation(async (identifier: string) => {
+      if (identifier === '2301.12345') return MOCK_META;
+      return actual.lookupPreprint(identifier);
+    }),
+  };
+});
 
 // Accreditation mock: treat the caller as accredited by default so the 503
 // guard (which runs after the accreditation check) is reachable.
@@ -223,5 +279,133 @@ describe('BE-CLAIMS-ERROR-POLISH — bridge misconfig surfaces as 503', () => {
     expect(res.body.error.code).toBe('SERVICE_UNAVAILABLE');
     expect(res.body.error.message).toBe('Bridge posting key not configured');
     expect(sendOperations).not.toHaveBeenCalled();
+  });
+});
+
+// ──────────────────────────────────────────────
+// BE-BRIDGE-CUSTODY-BROADCAST-DISCRIMINATION — per-route timeout/failure specs.
+//
+// /register and /update must discriminate BroadcastTimeoutError into a 504
+// BROADCAST_TIMEOUT envelope and all other broadcast errors into a 502
+// BROADCAST_FAILED envelope with {retriable:false}. The response body must
+// NOT interpolate err.message / jse_shortmsg — that was a defense-in-depth
+// leak the helper migration closes.
+// ──────────────────────────────────────────────
+
+const TIMEOUT_DETAILS = {
+  retriable: false,
+  outcome: 'uncertain',
+  verify_before_retry: true,
+  timeout_ms: 30_000,
+};
+
+describe('BE-BRIDGE-CUSTODY-BROADCAST-DISCRIMINATION — /register timeout discrimination', () => {
+  const ACCREDITED_CALLER = 'accreditedregister';
+
+  beforeEach(() => {
+    sendOperations.mockClear();
+    accreditedSet.clear();
+    accreditedSet.add(ACCREDITED_CALLER);
+  });
+
+  it('POST /api/bridge/register: BroadcastTimeoutError → 504 BROADCAST_TIMEOUT with uncertain-outcome envelope', async () => {
+    sendOperations.mockRejectedValueOnce(new MockBroadcastTimeoutError(30_000));
+    const res = await signedPost('/api/bridge/register', ACCREDITED_CALLER, {
+      identifier: '2301.12345',
+      discipline: 'CS',
+    });
+    expect(res.status).toBe(504);
+    expect(res.body.error.code).toBe('BROADCAST_TIMEOUT');
+    expect(res.body.error.message).toBe('Broadcasting bridge paper registration timed out');
+    expect(res.body.error.details).toEqual(TIMEOUT_DETAILS);
+    // No orcid-style verify_location hint on the bridge surface.
+    expect(res.body.error.details.verify_location).toBeUndefined();
+  });
+
+  it('POST /api/bridge/register: non-timeout broadcast error → 502 BROADCAST_FAILED with retriable=false and no err.message leak', async () => {
+    const CHAIN_INTERNAL = 'RPC node rejected: missing_active_authority pevotest.bridge';
+    sendOperations.mockRejectedValueOnce(new Error(CHAIN_INTERNAL));
+    const res = await signedPost('/api/bridge/register', ACCREDITED_CALLER, {
+      identifier: '2301.12345',
+      discipline: 'CS',
+    });
+    expect(res.status).toBe(502);
+    expect(res.body.error.code).toBe('BROADCAST_FAILED');
+    expect(res.body.error.message).toBe('Failed to broadcast bridge paper registration to Hive');
+    expect(res.body.error.details).toEqual({ retriable: false });
+    // Chain-internal error text must NOT be interpolated into the response.
+    expect(JSON.stringify(res.body)).not.toContain('missing_active_authority');
+    expect(JSON.stringify(res.body)).not.toContain(CHAIN_INTERNAL);
+  });
+});
+
+describe('BE-BRIDGE-CUSTODY-BROADCAST-DISCRIMINATION — /update timeout discrimination', () => {
+  const ACCREDITED_CALLER = 'accreditedupdater';
+  const EXISTING_PERMLINK = 'bridge-arxiv-2301-12345';
+
+  beforeEach(() => {
+    sendOperations.mockClear();
+    accreditedSet.clear();
+    accreditedSet.add(ACCREDITED_CALLER);
+
+    // Existing bridge paper registered by ACCREDITED_CALLER so the update
+    // handler's pre-broadcast checks pass and we reach the broadcast catch.
+    databaseCall.mockImplementation((method: string, params: unknown[]) => {
+      if (method === 'get_content') {
+        return Promise.resolve({
+          author: config.hiveBridgeAccount,
+          permlink: (params as string[])[1],
+          parent_permlink: config.appTag,
+          title: 'Existing test paper',
+          body: 'body',
+          json_metadata: JSON.stringify({
+            app: `${config.appTag}/1.0`,
+            [config.appTag]: {
+              type: 'bridge_paper',
+              version: 1,
+              discipline: 'CS',
+              keywords: ['test'],
+              language: 'en',
+              source: {
+                registered_by: ACCREDITED_CALLER,
+                arxiv_id: '2301.12345',
+                doi: null,
+              },
+            },
+          }),
+        });
+      }
+      return Promise.resolve(null);
+    });
+  });
+
+  afterEach(() => {
+    databaseCall.mockReset();
+  });
+
+  it('POST /api/bridge/update: BroadcastTimeoutError → 504 BROADCAST_TIMEOUT with uncertain-outcome envelope', async () => {
+    sendOperations.mockRejectedValueOnce(new MockBroadcastTimeoutError(30_000));
+    const res = await signedPost('/api/bridge/update', ACCREDITED_CALLER, {
+      permlink: EXISTING_PERMLINK,
+    });
+    expect(res.status).toBe(504);
+    expect(res.body.error.code).toBe('BROADCAST_TIMEOUT');
+    expect(res.body.error.message).toBe('Broadcasting bridge paper update timed out');
+    expect(res.body.error.details).toEqual(TIMEOUT_DETAILS);
+    expect(res.body.error.details.verify_location).toBeUndefined();
+  });
+
+  it('POST /api/bridge/update: non-timeout broadcast error → 502 BROADCAST_FAILED with retriable=false and no err.message leak', async () => {
+    const CHAIN_INTERNAL = 'tx_missing_posting_auth bridge';
+    sendOperations.mockRejectedValueOnce(new Error(CHAIN_INTERNAL));
+    const res = await signedPost('/api/bridge/update', ACCREDITED_CALLER, {
+      permlink: EXISTING_PERMLINK,
+    });
+    expect(res.status).toBe(502);
+    expect(res.body.error.code).toBe('BROADCAST_FAILED');
+    expect(res.body.error.message).toBe('Failed to broadcast bridge paper update to Hive');
+    expect(res.body.error.details).toEqual({ retriable: false });
+    expect(JSON.stringify(res.body)).not.toContain('tx_missing_posting_auth');
+    expect(JSON.stringify(res.body)).not.toContain(CHAIN_INTERNAL);
   });
 });

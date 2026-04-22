@@ -45,4 +45,19 @@ AC-009 (0.85) from api-contract review: `BROADCAST_FAILED` now returns TWO diffe
 
 ## [TODO Architect]
 
-None at task file time. On re-review, architect applies the contract-file updates.
+On re-review, architect applies contract-file updates in `agents/docs/api-contracts/` (implementer did NOT touch the contract files):
+
+- `bridge.md` — on `POST /register` and `POST /update`, replace the prior 500 `BROADCAST_FAILED` with:
+  - 504 `BROADCAST_TIMEOUT`, details `{retriable:false, outcome:"uncertain", verify_before_retry:true, timeout_ms}` (no `verify_location`, not an orcid surface).
+  - 502 `BROADCAST_FAILED`, details `{retriable:false}`.
+  - Static response messages per branch:
+    - register 504: `"Broadcasting bridge paper registration timed out"`
+    - register 502: `"Failed to broadcast bridge paper registration to Hive"`
+    - update 504: `"Broadcasting bridge paper update timed out"`
+    - update 502: `"Failed to broadcast bridge paper update to Hive"`
+- `custody.md` — on `POST /broadcast`, add the same 504/502 entries. Note the handler still emits 500 `INTERNAL_ERROR` for non-chain errors (db / decrypt / key parse) via the outer catch; only broadcast-path errors flow through 502/504.
+  - 504: `"Broadcasting signed operation timed out"`
+  - 502: `"Failed to broadcast signed operation to Hive"`
+
+Implementer note (BE-BRIDGE-CUSTODY-BROADCAST-DISCRIMINATION, 2026-04-22): the 3 call sites were migrated via `handleBroadcastError` (landed in `0c95115`). Contract files are architect-owned and were deliberately not touched.
+

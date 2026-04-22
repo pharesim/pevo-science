@@ -12,6 +12,7 @@ import { decryptKey } from '../custody-crypto.js';
 import { logCustodyBroadcast } from '../custody-audit.js';
 import { logger } from '../logger.js';
 import { runWithArgon2Slot } from '../lib/argon2-semaphore.js';
+import { handleBroadcastError } from '../lib/broadcast-error.js';
 
 const router = Router();
 
@@ -130,20 +131,32 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
     const postingKeyWif = decryptKey(username, account.posting_key_enc, account.iv_posting);
     const key = PrivateKey.fromString(postingKeyWif);
 
-    // Broadcast
-    const result = await broadcastSendOperationsWithTimeout(operations, key);
-
-    // Audit log (non-blocking)
+    // Broadcast. Scoped try/catch so BroadcastTimeoutError is discriminated
+    // into a 504 envelope via handleBroadcastError, and non-timeout chain
+    // errors land in a 502 envelope. Non-broadcast errors (db, decrypt,
+    // key parse) fall through to the outer 500 INTERNAL_ERROR.
     const opTypes = operations.map((op: [string, unknown]) => op[0]).join(',');
-    logCustodyBroadcast(username, opTypes, result.id, result.block_num).catch(() => {});
+    try {
+      const result = await broadcastSendOperationsWithTimeout(operations, key);
 
-    sendOk(res, {
-      tx_id: result.id,
-      block_num: result.block_num,
-    });
+      // Audit log (non-blocking)
+      logCustodyBroadcast(username, opTypes, result.id, result.block_num).catch(() => {});
+
+      return sendOk(res, {
+        tx_id: result.id,
+        block_num: result.block_num,
+      });
+    } catch (err) {
+      return handleBroadcastError(res, err, {
+        timeoutMsg: 'Broadcasting signed operation timed out',
+        failMsg: 'Failed to broadcast signed operation to Hive',
+        logContext: { username, opTypes },
+        routeLabel: 'custody.broadcast',
+      });
+    }
   } catch (err) {
-    logger.error({ err, username }, 'Custodial broadcast failed');
-    sendError(res, 500, 'BROADCAST_FAILED', 'Failed to broadcast transaction');
+    logger.error({ err, username }, 'Custodial broadcast failed (non-chain error)');
+    sendError(res, 500, 'INTERNAL_ERROR', 'Failed to broadcast transaction');
   }
 });
 

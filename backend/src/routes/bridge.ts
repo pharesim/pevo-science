@@ -11,6 +11,7 @@ import { hafCache } from '../cache.js';
 import { logger } from '../logger.js';
 import { rateLimit, byIp } from '../middleware/rateLimit.js';
 import { T } from '../hafsql.js';
+import { handleBroadcastError } from '../lib/broadcast-error.js';
 import {
   parseIdentifier,
   resolveToCanonical,
@@ -58,7 +59,7 @@ router.get('/lookup', lookupLimiter, async (req: Request, res: Response) => {
     }
     sendOk(res, result);
   } catch (err) {
-    logger.error({ err: (err as Error).message }, 'Preprint lookup failed');
+    logger.error({ err, identifier }, 'Preprint lookup failed');
     sendError(res, 500, 'INTERNAL_ERROR', 'Failed to fetch preprint metadata');
   }
 });
@@ -114,7 +115,7 @@ async function checkExistingBridge(identifier: string, resolvedParsed?: { type: 
       }
     }
   } catch (err) {
-    logger.error({ err: (err as Error).message }, 'Bridge check HAF query failed');
+    logger.error({ err, identifier, permlink }, 'Bridge check HAF query failed');
   }
 
   return { exists: false, author: null, permlink: null, title: null, created: null };
@@ -136,7 +137,7 @@ router.get('/check', lookupLimiter, async (req: Request, res: Response) => {
     const result = await hafCache.getOrSet(cacheKey, () => checkExistingBridge(identifier, parsed), 30_000);
     sendOk(res, result);
   } catch (err) {
-    logger.error({ err: (err as Error).message }, 'Bridge check failed');
+    logger.error({ err, identifier }, 'Bridge check failed');
     sendError(res, 500, 'INTERNAL_ERROR', 'Failed to check bridge paper status');
   }
 });
@@ -175,7 +176,7 @@ router.post('/register', registerLimiter, verifyHiveSignature, async (req: Reque
   try {
     parsed = await resolveToCanonical(identifier);
   } catch (err) {
-    logger.error({ err: (err as Error).message }, 'Identifier resolution failed');
+    logger.error({ err, identifier, username }, 'Identifier resolution failed');
     return sendError(res, 500, 'INTERNAL_ERROR', 'Failed to resolve identifier');
   }
   if (!parsed) {
@@ -201,7 +202,7 @@ router.post('/register', registerLimiter, verifyHiveSignature, async (req: Reque
   try {
     meta = await lookupPreprint(identifier);
   } catch (err) {
-    logger.error({ err: (err as Error).message }, 'Preprint metadata fetch failed during registration');
+    logger.error({ err, identifier, username }, 'Preprint metadata fetch failed during registration');
     return sendError(res, 500, 'INTERNAL_ERROR', 'Failed to fetch preprint metadata from source');
   }
   if (!meta) {
@@ -262,9 +263,12 @@ router.post('/register', registerLimiter, verifyHiveSignature, async (req: Reque
       },
     });
   } catch (err) {
-    logger.error({ err }, 'Failed to broadcast bridge paper to Hive');
-    const detail = (err as any)?.jse_shortmsg || (err as any)?.message || 'Unknown broadcast error';
-    sendError(res, 500, 'BROADCAST_FAILED', `Hive broadcast failed: ${detail}`);
+    return handleBroadcastError(res, err, {
+      timeoutMsg: 'Broadcasting bridge paper registration timed out',
+      failMsg: 'Failed to broadcast bridge paper registration to Hive',
+      logContext: { author: config.hiveBridgeAccount, permlink, username },
+      routeLabel: 'bridge.register',
+    });
   }
 });
 
@@ -305,7 +309,7 @@ router.post('/update', updateLimiter, verifyHiveSignature, async (req: Request, 
 
     existingPevo = (existingMeta[config.appTag] || {}) as Record<string, unknown>;
   } catch (err) {
-    logger.error({ err: (err as Error).message }, 'Failed to fetch existing bridge paper');
+    logger.error({ err, author: config.hiveBridgeAccount, permlink, username }, 'Failed to fetch existing bridge paper');
     return sendError(res, 500, 'INTERNAL_ERROR', 'Failed to fetch existing bridge paper');
   }
 
@@ -326,7 +330,7 @@ router.post('/update', updateLimiter, verifyHiveSignature, async (req: Request, 
   try {
     freshMeta = await lookupPreprint(sourceIdentifier);
   } catch (err) {
-    logger.error({ err: (err as Error).message }, 'Failed to re-fetch preprint metadata for update');
+    logger.error({ err, sourceIdentifier, author: config.hiveBridgeAccount, permlink, username }, 'Failed to re-fetch preprint metadata for update');
     return sendError(res, 500, 'INTERNAL_ERROR', 'Failed to fetch updated metadata from source');
   }
   if (!freshMeta) {
@@ -384,9 +388,12 @@ router.post('/update', updateLimiter, verifyHiveSignature, async (req: Request, 
       new_version: newVersion,
     });
   } catch (err) {
-    logger.error({ err }, 'Failed to broadcast bridge paper update to Hive');
-    const detail = (err as any)?.jse_shortmsg || (err as any)?.message || 'Unknown broadcast error';
-    sendError(res, 500, 'BROADCAST_FAILED', `Hive broadcast failed: ${detail}`);
+    return handleBroadcastError(res, err, {
+      timeoutMsg: 'Broadcasting bridge paper update timed out',
+      failMsg: 'Failed to broadcast bridge paper update to Hive',
+      logContext: { author: config.hiveBridgeAccount, permlink, username, newVersion },
+      routeLabel: 'bridge.update',
+    });
   }
 });
 
