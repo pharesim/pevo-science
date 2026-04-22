@@ -153,9 +153,9 @@ export function initPaperFeed() {
       if (!pageOwnsUrl()) return;
       const params = new URLSearchParams();
       if (this.currentPage > 1) params.set('page', String(this.currentPage));
-      // Belt-and-suspenders: _syncFromUrl + loadDisciplines already lowercase
-      // the source values, but lowercase again on write so any future code path
-      // that assigns `this.discipline` directly still produces canonical URLs.
+      // _syncFromUrl lowercases URL reads; backend canon_name is already
+      // lowercase; _pushUrl catches direct state assignments (e.g. code paths
+      // that assign `this.discipline` without going through _syncFromUrl).
       if (this.discipline) params.set('discipline', this.discipline.toLowerCase());
       if (this.sortBy !== 'date') params.set('sort', this.sortBy);
       if (this.sourceFilter) params.set('source', this.sourceFilter);
@@ -174,10 +174,11 @@ export function initPaperFeed() {
       this.disciplinesLoadFailed = false;
       const res = await fetchDisciplines();
       // Backend returns `{ canon_name, display_name, paper_count }` per
-      // BE-DISCIPLINE-CANONICALIZE. `canon_name` is already lowercased
-      // server-side (the dedup key), so the frontend no longer needs to
-      // lowercase here. `display_name` is the rendered label; Tailwind
-      // `class="capitalize"` on the <option> titlecases it for display.
+      // `agents/docs/api-contracts/misc.md` (GET /api/disciplines).
+      // `canon_name` is already lowercased server-side (the dedup key), so
+      // the frontend no longer needs to lowercase here. `display_name` is
+      // the rendered label; Tailwind `class="capitalize"` on the <option>
+      // titlecases it for display.
       this.disciplines = res.data || [];
     },
 
