@@ -95,6 +95,10 @@ router.post('/vouch', verifyHiveSignature, async (req: Request, res: Response) =
   }
 
   if (accreditResult.reason === 'chain_error') {
+    logger.error(
+      { err: accreditResult.err, voucher, vouchee },
+      'WoT accreditation broadcast chain error',
+    );
     return sendOk(res, {
       message: `Vouch recorded. Auto-accreditation broadcast for ${vouchee} failed.`,
       accredited: false,

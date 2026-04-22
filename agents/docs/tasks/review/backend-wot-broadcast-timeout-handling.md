@@ -116,3 +116,33 @@ Deferred / notes for architect:
   field on the retract response are new. `agents/docs/api-contracts/` may
   need updates. [TODO Architect] per backend CLAUDE.md — contract edits are
   architect-owned; I did not touch the contract file.
+
+## Backend re-review signal (2026-04-22, worktree-agent-ac1ca05b)
+
+Round-2 P3 fixes landed:
+
+- **P3a — `.entries()` restructure in `cascadeRevocation`.** In
+  `backend/src/wot.ts` the budget-exceeded branch replaced the
+  `result.rows.indexOf(row)` identity-lookup with `.entries()`, so the
+  `for` loop now yields `[i, row]` and `remainingRows = result.rows.slice(i)`.
+  Semantics unchanged — the branch still pushes every remaining vouchee
+  (including the current one) onto `pending` and throws `PartialCascadeError`.
+
+- **P3b — `logger.error` on `chain_error` branch in vouch handler.** In
+  `backend/src/routes/wot.ts` the `chain_error` branch now logs
+  `{ err: accreditResult.err, voucher, vouchee }` at `error` tier with
+  message `'WoT accreditation broadcast chain error'`, matching the
+  sibling `timeout` branch's shape. Operators now get a log entry on
+  either failure mode.
+
+- **P3c — deleted `@deprecated checkAndAccreditViaWot` shim.** Confirmed
+  zero callers via `grep -rn 'checkAndAccreditViaWot'` across
+  `backend/src/`, `backend/tests/`, and the wider repo (result: only the
+  definition itself). Removed the export entirely from `backend/src/wot.ts`.
+  Future callers will see the explicit tagged-union `broadcastWotAccreditation`
+  signature.
+
+Tests: `backend/tests/wot-broadcast-timeout.test.ts` +
+`backend/tests/routes/wot.test.ts` pass. `npx tsc --noEmit` clean.
+`npm run lint` shows only the pre-existing `no-explicit-any` warnings
+in unrelated files.

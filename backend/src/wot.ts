@@ -247,15 +247,6 @@ export async function broadcastWotAccreditation(vouchee: string): Promise<WotAcc
 }
 
 /**
- * @deprecated Use `broadcastWotAccreditation` for explicit outcome signalling.
- * Retained as a thin shim returning `string | null` for any remaining callers.
- */
-export async function checkAndAccreditViaWot(vouchee: string): Promise<string | null> {
-  const result = await broadcastWotAccreditation(vouchee);
-  return result.ok ? result.txId : null;
-}
-
-/**
  * Check if revoking a voucher's accreditation should cascade to their vouchees.
  * For each vouchee that drops below the WoT threshold and was WoT-accredited,
  * broadcast a revocation.
@@ -311,7 +302,7 @@ export async function cascadeRevocation(
 
     const { PrivateKey } = await import('@hiveio/dhive');
 
-    for (const row of result.rows) {
+    for (const [i, row] of result.rows.entries()) {
       const vouchee = row.vouchee as string;
 
       // Aggregate budget check — abort cascade if we've blown through the
@@ -319,7 +310,7 @@ export async function cascadeRevocation(
       if (Date.now() >= effectiveDeadline) {
         // Remaining vouchees in this level's result set (including `vouchee`)
         // are pending.
-        const remainingRows = result.rows.slice(result.rows.indexOf(row));
+        const remainingRows = result.rows.slice(i);
         for (const r of remainingRows) pending.push(r.vouchee as string);
         throw new PartialCascadeError({ completed, pending, rootRevocation: revokedAccount });
       }
