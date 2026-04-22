@@ -484,9 +484,9 @@ export async function searchAccounts(q) {
 
 // ─── Password Settings ──────────────────────────────────────
 
-// SEC-004-UI: set a password on an account that has none (ORCID-verified
-// signup/recover flows leave `password_hash = NULL`; this lets the user
-// opt into password login later from Settings). Ships with SEC-004-BE.
+// Set a password on an account that has none (ORCID-verified signup and
+// recover flows leave `password_hash = NULL`; this lets the user opt
+// into password login later from Settings).
 export function setPassword(password) {
   return authenticatedRequest('/settings/set-password', {
     method: 'POST',

@@ -198,11 +198,11 @@ export function initSignupPage() {
 
     init() {
       // Restore form state after ORCID OAuth redirect.
-      // NOTE: password fields are deliberately NOT persisted or restored
-      // (SEC-004). ORCID-verified signups skip the password entirely; the
-      // non-ORCID branch requires the user to re-enter their password
-      // if they ever did cross the ORCID round-trip (which the UI now
-      // prevents by hiding the field on the ORCID branch anyway).
+      // NOTE: password fields are deliberately NOT persisted or restored.
+      // ORCID-verified signups skip the password entirely; the non-ORCID
+      // branch requires the user to re-enter their password if they ever
+      // did cross the ORCID round-trip (which the UI now prevents by
+      // hiding the field on the ORCID branch anyway).
       const draft = localStorage.getItem('pevo_signup_draft');
       if (draft) {
         const saved = JSON.parse(draft);
@@ -237,7 +237,7 @@ export function initSignupPage() {
       this.error = null;
 
       // Save form state before redirecting.
-      // SEC-004: do NOT persist password/passwordConfirm across the ORCID
+      // Do NOT persist password/passwordConfirm across the ORCID
       // round-trip. ORCID-verified signups send `password: null` and skip
       // the field entirely.
       localStorage.setItem('pevo_signup_draft', JSON.stringify({
@@ -295,9 +295,9 @@ export function initSignupPage() {
       this.error = null;
 
       try {
-        // SEC-004: ORCID-verified signups submit `password: null`. The backend
-        // (SEC-004-BE) creates the account with `password_hash = NULL`; the
-        // user can opt into password login later from Settings.
+        // ORCID-verified signups submit `password: null`. The backend
+        // creates the account with `password_hash = NULL`; the user can
+        // opt into password login later from Settings.
         const isOrcid = Boolean(this.orcidToken);
         await submitSignup({
           email: this.email.trim(),
