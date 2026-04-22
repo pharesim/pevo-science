@@ -71,3 +71,11 @@ Both hold items addressed. `npm run lint` from `backend/` exits 0 (6 pre-existin
 
 1. **P2 REL-001 — `claimAccountTokens` trailing count query wrapped in try/catch.** `backend/src/account-creation.ts:60-74` — the trailing `pool.query('SELECT COUNT(*) ...')` plus the two `logger.info` calls that depend on its result are now inside a `try { ... } catch (err) { logger.warn({ err }, 'claimAccountTokens trailing count query failed'); }` block, mirroring the `cleanupExpiredSignups` pattern in `backend/src/signup-cleanup.ts:16-27`. A transient DB blip on that spot after successful `claim_account` ops now logs a contextual warning instead of escaping as an unhandledRejection that would trigger `process.exit(1)` via the handler in `index.ts`.
 2. **P3 elevated M1 — dead `tests/**/*.ts` opt-out block deleted from `backend/eslint.config.mjs`.** Per architect's preferred option (a): removed the entire override block (was at lines ~47-54). Tests remain out of scope (`lint` / `lint:fix` scripts still target `eslint src/`); no misleading signal remains for future readers. File is now 46 lines vs. 55, single active config block.
+
+---
+
+**Backend re-review signal (2026-04-22 round-3, worktree branch `worktree-agent-a31de74a`):**
+
+Single round-2 P3 hold item landed. `npm run lint` from `backend/` exits 0 (same 6 pre-existing `no-explicit-any` warnings on `bridge.ts` and `seed-phrase.ts` boundary code as round-2, zero errors). `tsc --noEmit` clean.
+
+1. **P3 — `setInterval(claimAccountTokens, CLAIM_INTERVAL_MS)` wrapped in a voiding arrow.** `backend/src/account-creation.ts:166` — now `setInterval(() => { void claimAccountTokens(); }, CLAIM_INTERVAL_MS)`, matching the startup-call idiom at line 164 (`void claimAccountTokens();`). Without the wrap, `setInterval`'s callback-type unification silently permits a promise-returning fn and `no-floating-promises` cannot see through the callback indirection. With the wrap, the intent is explicit at the lint-visible layer and future edits can't regress the rule coverage.

@@ -163,7 +163,7 @@ export function startAccountClaimer(): void {
   // Claim immediately on startup, then every 24h
   void claimAccountTokens();
 
-  claimTimer = setInterval(claimAccountTokens, CLAIM_INTERVAL_MS);
+  claimTimer = setInterval(() => { void claimAccountTokens(); }, CLAIM_INTERVAL_MS);
   claimTimer.unref();
   logger.info('Account creation token claimer started (every 24h, claims until RC exhausted)');
 }
