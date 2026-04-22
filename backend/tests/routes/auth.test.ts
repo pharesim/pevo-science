@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeAll } from 'vitest';
 import request from 'supertest';
 import jwt from 'jsonwebtoken';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { PrivateKey, cryptoUtils } from '@hiveio/dhive';
 import { createApp } from '../../src/app.js';
 import { config } from '../../src/config.js';
@@ -205,12 +207,30 @@ describe('BE-REQUEST-BODY-TYPING-ZOD: 400 VALIDATION_ERROR does not leak Zod sch
   // flattening on that route mirrors the auth.ts sites and is covered
   // structurally by the same sendError call shape.
   //
-  // Clear the /login and /signup rate-limit buckets before these specs
-  // run — without this, a prior test file (auth-concurrency.test.ts,
-  // which burns 8 /login requests against the 10/hr loginLimiter) can
-  // exhaust the window and these specs 429 instead of 400.
+  // /api/orcid/start has the same ordering wrinkle: the handler returns
+  // 500 INTERNAL_ERROR (ORCID integration not configured) BEFORE the
+  // StartBodySchema.safeParse call when ORCID_CLIENT_ID/SECRET are unset
+  // in the test env. Rather than plumb real ORCID creds through the test
+  // harness just to reach the parse branch, we assert the structural
+  // invariant — that routes/orcid.ts uses StartBodySchema.safeParse and
+  // forwards failure to the same sendError(400, 'VALIDATION_ERROR',
+  // 'Invalid request body') shape — via a source-shape grep below.
+  //
+  // Clear the rate-limit buckets of every route exercised in this
+  // describe block before these specs run. Without this, prior test
+  // files (e.g. auth-concurrency.test.ts burns 8 /login requests
+  // against the 10/hr loginLimiter) can exhaust a shared window and
+  // these specs 429 instead of 400. Each added route
+  // (resend-verification at 3/hr, reset-request at 5/hr, reset at
+  // 5/hr) is cheaper to exhaust than /login, so we clear them too.
   beforeAll(async () => {
-    await clearRateLimitKeys(['auth-login', 'auth-signup']);
+    await clearRateLimitKeys([
+      'auth-login',
+      'auth-signup',
+      'auth-resend',
+      'auth-reset-request',
+      'auth-reset',
+    ]);
   });
   const cases: Array<{ route: string; body: unknown }> = [
     // /login: refine requires at least one of username/email_or_username.
@@ -219,6 +239,13 @@ describe('BE-REQUEST-BODY-TYPING-ZOD: 400 VALIDATION_ERROR does not leak Zod sch
     { route: '/api/auth/signup', body: { email: 123 } },
     // /recover: username is .min(1), non-string triggers parse failure.
     { route: '/api/auth/recover', body: { username: 123 } },
+    // BE-ZOD-MIGRATION-EXTENSION round-2 additions:
+    // /resend-verification: email is .min(1) string, non-string fails parse.
+    { route: '/api/auth/resend-verification', body: { email: 123, password: 'x' } },
+    // /reset-request: email is .min(1) string, non-string fails parse.
+    { route: '/api/auth/reset-request', body: { email: 123 } },
+    // /reset: token is .min(1) string, non-string fails parse.
+    { route: '/api/auth/reset', body: { token: 123, password: 'NewPass123!' } },
   ];
 
   for (const { route, body } of cases) {
@@ -254,5 +281,25 @@ describe('BE-REQUEST-BODY-TYPING-ZOD: 400 VALIDATION_ERROR does not leak Zod sch
       .send({ username: 'user', password: 123 });
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe('VALIDATION_ERROR');
+  });
+
+  // /orcid/start structural grep (see header comment for why HTTP-round-trip
+  // coverage isn't practical in the default test env).
+  it('/api/orcid/start uses StartBodySchema.safeParse with the flat VALIDATION_ERROR shape', () => {
+    const here = import.meta.dirname;
+    const src = readFileSync(
+      resolve(here, '../../src/routes/orcid.ts'),
+      'utf8',
+    );
+    // Schema is declared at module scope.
+    expect(src).toMatch(/const\s+StartBodySchema\s*=\s*z\.object\(/);
+    // Handler calls safeParse on req.body.
+    expect(src).toMatch(/StartBodySchema\.safeParse\(req\.body\)/);
+    // Failure branch forwards to sendError with the same flat shape
+    // as the other migrated routes (400 VALIDATION_ERROR 'Invalid
+    // request body' and no details payload that could leak issues).
+    expect(src).toMatch(
+      /sendError\(\s*res\s*,\s*400\s*,\s*['"]VALIDATION_ERROR['"]\s*,\s*['"]Invalid request body['"]\s*\)/,
+    );
   });
 });
