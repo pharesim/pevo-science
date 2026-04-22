@@ -68,6 +68,27 @@ describe('GET /api/papers', () => {
     expect(new Set(upper.body.data.map(key))).toEqual(new Set(lower.body.data.map(key)));
   });
 
+  // BE-PAPERS-DISCIPLINE-FIELD-CANON-NAME: per-paper `discipline` response
+  // field must be canon_name (lowercased). Regression: pre-fix, the API echoed
+  // whatever casing was stored on-chain (e.g. "Computer Science"), forcing
+  // every client to re-canonicalize before round-tripping through the
+  // `?discipline=` URL filter. This spec iterates the full `/api/papers`
+  // listing and asserts every entry's `discipline` equals its own lowercased
+  // form. Empty corpus passes vacuously; the mocked-pool coverage in
+  // disciplines-canon-mocked.test.ts pins the SQL-shape regression
+  // deterministically. The `discipline !== null` guard skips papers with no
+  // discipline tag (pre-taxonomy posts).
+  it('per-paper `discipline` field is canon_name (lowercased)', { timeout: 60_000 }, async () => {
+    const res = await request(app).get('/api/papers?limit=100');
+    expect(res.status).toBe(200);
+    for (const paper of res.body.data) {
+      if (paper.discipline !== null) {
+        expect(typeof paper.discipline).toBe('string');
+        expect(paper.discipline).toBe(paper.discipline.toLowerCase());
+      }
+    }
+  });
+
   it('respects pagination params', async () => {
     const res = await request(app).get('/api/papers?page=1&limit=1');
     expect(res.status).toBe(200);
@@ -147,5 +168,23 @@ describe('GET /api/papers/:author/:permlink', () => {
     expect(Array.isArray(res.body.data.reviews)).toBe(true);
     expect(res.body.data).toHaveProperty('versions');
     expect(res.body.data).toHaveProperty('is_retracted');
+  });
+
+  // BE-PAPERS-DISCIPLINE-FIELD-CANON-NAME: paper-detail `discipline` field
+  // shares the same canon_name contract as the list endpoint. Routes through
+  // the single `paperDisciplineField()` helper in both the initial shape
+  // (buildPaperDetail) and the continuation-chain override path.
+  it('paper-detail `discipline` field is canon_name (lowercased)', { timeout: 60_000 }, async () => {
+    const listRes = await request(app).get('/api/papers?limit=1');
+    if (listRes.body.data.length === 0) return;
+
+    const { author, permlink } = listRes.body.data[0];
+    const res = await request(app).get(`/api/papers/${author}/${permlink}`);
+    expect(res.status).toBe(200);
+    const d = res.body.data.discipline;
+    if (d !== null) {
+      expect(typeof d).toBe('string');
+      expect(d).toBe(d.toLowerCase());
+    }
   });
 });

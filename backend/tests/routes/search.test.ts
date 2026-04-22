@@ -56,6 +56,27 @@ describe('GET /api/search', () => {
     expect(Array.isArray(res.body.data)).toBe(true);
   });
 
+  // BE-PAPERS-DISCIPLINE-FIELD-CANON-NAME: per-entry `discipline` response
+  // field on `paper` / `bridge_paper` result types must be canon_name
+  // (lowercased) if/when the search response shape adds one. The current
+  // SearchRow shape does not include `discipline`, so this spec asserts the
+  // contract is upheld for every entry that DOES surface one (future-proof),
+  // plus that `paper`/`bridge_paper` entries ship without a divergent-casing
+  // field today. Both guards route through the same helper contract as
+  // /api/papers so a future author adding `discipline` to SearchRow gets a
+  // failing spec before it can regress.
+  it('per-entry `discipline` field (if present) is canon_name on paper/bridge_paper entries', { timeout: 60_000 }, async () => {
+    const res = await request(app).get('/api/search?q=science&type=paper');
+    expect(res.status).toBe(200);
+    for (const item of res.body.data) {
+      if (item.type !== 'paper' && item.type !== 'bridge_paper') continue;
+      if ('discipline' in item && item.discipline !== null && item.discipline !== undefined) {
+        expect(typeof item.discipline).toBe('string');
+        expect(item.discipline).toBe(item.discipline.toLowerCase());
+      }
+    }
+  });
+
   it('returns 400 when q is only whitespace', async () => {
     const res = await request(app).get('/api/search?q=%20%20');
     expect(res.status).toBe(400);

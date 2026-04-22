@@ -82,3 +82,29 @@ Implementation cannot start until the architect decides on the canon-only vs can
 - Contract updates needed: `agents/docs/api-contracts/papers.md` and `agents/docs/api-contracts/search.md` — architect-owned. Implementer flags via `[TODO Architect]` in the task note before moving to `review/`.
 - Test: real-HAF fixtures with mixed-case discipline input → response `discipline` field is canon-lowered. E2E `papers-browse.spec.js:66` should pass cold.
 - Non-goals explicitly exclude: URL filter (already fixed), `/api/disciplines` shape (already fixed), publish/edit-side normalization (already normalized via `normalizeDiscipline`).
+
+---
+
+## Implementer re-review signal (2026-04-22, backend)
+
+Landed `paperDisciplineField(raw: string | null | undefined): string | null` in `backend/src/types/disciplines.ts`. Threaded through all three per-paper discipline response-shaping sites in `backend/src/routes/papers.ts` (list row shape at line 385, continuation-chain head override at line 574, `buildPaperDetail` at line 966). `/api/search` does not currently surface a `discipline` field on any result type, so no code-change was needed there; added a future-proof spec in `search.test.ts` that asserts canon-lower semantics for any `paper`/`bridge_paper` entry that does expose the field.
+
+Tests run with docker-IP env overrides: `npx vitest run tests/routes/papers.test.ts tests/routes/search.test.ts` → 17 passed, 1 skipped (pre-existing vacuous-parity skip). Real-HAF; no pool mocking. Lint clean on changed `src/` files; pre-existing warnings unchanged.
+
+### [TODO Architect]
+
+**Contract updates (architect-owned, per architect decision scope note):**
+- `agents/docs/api-contracts/papers.md` — per-paper `discipline` field contract prose must state "canon_name (lowercased); clients titlecase on render via `/api/disciplines.display_name` or CSS `capitalize` if needed". Applies to both the list response shape (line ~35 and ~84) and the paper-detail shape.
+- `agents/docs/api-contracts/papers.md` `GET /api/search` block (line ~461-490) — `SearchResult` does not currently carry a `discipline` field. If the contract ever adds one to the `paper` / `bridge_paper` result types, it must be canon_name (lowercased). A forward-looking spec guards this in `search.test.ts`.
+
+**Frontend impact findings (no UI regression expected; surfaced for architect triage):**
+
+Read-only grep of `frontend/src/` for `paper.discipline` / `.discipline` rendering sites:
+- `frontend/src/pages/profile.js:226` — `<span class="badge-discipline capitalize" x-text="paper.discipline">` — CSS `capitalize` titlecases the rendered text. Canon-lower backend input renders identically. No UI task needed.
+- `frontend/src/components/paper-card.js:16` — identical pattern with `capitalize`. No UI task needed.
+- `frontend/src/pages/paper-detail.js:266` — identical pattern with `capitalize`. No UI task needed.
+
+All three render sites already rely on CSS `text-transform: capitalize` rather than reading display-form semantics from the backend. No follow-up `ui-*` task required for this change. If the architect wants a more robust long-term path (e.g. rendering `display_name` from `/api/disciplines` instead of CSS-titlecasing), that's a separate UI improvement, not a regression of this change.
+
+**Out-of-boundary site noted, not touched (architect triage):**
+- `backend/src/helpers.ts:98` — `toPaperSummary()` builds a `PaperSummary` with `discipline: (pevo.discipline as string) || ''`. Used by `backend/src/routes/profile.ts:238` (`/api/profile/:account` papers list). Lives outside this task's declared boundary (`papers.ts` / `search.ts` only). The profile papers list will still echo the stored casing until a follow-up task routes it through `paperDisciplineField` as well. Minor: `PaperSummary.discipline` is typed `string` (not `string | null`), so this would need either a type widening or a `|| ''` fallback over the helper's `null` return. Suggest a small follow-up `be-profile-paper-discipline-canon` task if desired.

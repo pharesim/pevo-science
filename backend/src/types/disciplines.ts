@@ -134,3 +134,31 @@ export function validateDisciplineFilter(raw: unknown): string | null {
   }
   return raw.toLowerCase();
 }
+
+// ──────────────────────────────────────────────
+// Per-paper `discipline` response field (BE-PAPERS-DISCIPLINE-FIELD-CANON-NAME)
+// ──────────────────────────────────────────────
+
+/**
+ * Normalizes the per-paper `discipline` response field to canon_name
+ * (lowercased). Every response-shaping site that surfaces a paper's
+ * discipline must route through this so future drift becomes a type-check
+ * failure at the helper call site, not a whack-a-mole across routes.
+ *
+ * Returns null for missing/empty/non-string input so callers can distinguish
+ * "no discipline tagged" from a canonicalized value.
+ *
+ * Canon semantics mirror `/api/disciplines.canon_name` (lowercased) and the
+ * `?discipline=` URL-filter contract: clients can round-trip the response
+ * field back through a filter URL without re-canonicalizing. Display form
+ * (titlecase) is a one-hop lookup via `/api/disciplines.display_name` or a
+ * CSS `text-transform: capitalize` on the render site.
+ */
+export function paperDisciplineField(
+  raw: string | null | undefined,
+): string | null {
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  return trimmed.toLowerCase();
+}
