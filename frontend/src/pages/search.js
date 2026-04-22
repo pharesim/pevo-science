@@ -5,6 +5,7 @@ import { paginationTemplate } from '../components/pagination.js';
 import { totalPagesFromMeta } from '../lib/pagination.js';
 import { localeStrippedPath } from '../lib/url-sync.js';
 import { createDisciplineFilter } from '../lib/discipline-filter.js';
+import { titleCaseDiscipline } from '../lib/discipline-display.js';
 import { createTimerGuard } from '../lib/timer-guard.js';
 import DOMPurify from 'dompurify';
 
@@ -49,10 +50,10 @@ const template = `
             </div>
             <div>
               <label for="search-discipline" class="block text-xs font-medium text-ink-muted mb-1" x-text="$t('filters.discipline')"></label>
-              <select id="search-discipline" class="select-control text-sm capitalize" x-model="disciplineFilter" :data-disciplines-status="disciplinesLoadFailed ? 'failed' : 'ok'">
+              <select id="search-discipline" class="select-control text-sm" x-model="disciplineFilter" :data-disciplines-status="disciplinesLoadFailed ? 'failed' : 'ok'">
                 <option value="" x-text="$t('filters.allDisciplines')"></option>
                 <template x-for="d in disciplines" :key="d.canon_name">
-                  <option :value="d.canon_name" x-text="d.display_name" class="capitalize"></option>
+                  <option :value="d.canon_name" x-text="titleCaseDiscipline(d.display_name)"></option>
                 </template>
               </select>
             </div>
@@ -178,6 +179,7 @@ export function initSearchPage() {
     _popstateHandler: null,
 
     formatDate,
+    titleCaseDiscipline,
 
     async init() {
       this._syncFromUrl();
