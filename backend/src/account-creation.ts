@@ -1,5 +1,5 @@
 import { PrivateKey } from '@hiveio/dhive';
-import { hiveClient } from './hive.js';
+import { broadcastSendOperationsWithTimeout } from './hive.js';
 import { config } from './config.js';
 import { getAppPool } from './app-db.js';
 import { logger } from './logger.js';
@@ -43,7 +43,7 @@ async function claimAccountTokens(): Promise<void> {
 
   while (batchSize >= 1) {
     try {
-      await hiveClient.broadcast.sendOperations(buildClaimOps(batchSize), key);
+      await broadcastSendOperationsWithTimeout(buildClaimOps(batchSize), key);
 
       // Record each token individually so the count stays accurate
       await pool.query(
@@ -109,7 +109,7 @@ export async function createClaimedAccount(
 
   try {
     const key = PrivateKey.fromString(activeKey);
-    const result = await hiveClient.broadcast.sendOperations(
+    const result = await broadcastSendOperationsWithTimeout(
       [['create_claimed_account', {
         creator: config.hiveOnboardAccount,
         new_account_name: newUsername,

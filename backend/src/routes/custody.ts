@@ -7,7 +7,7 @@ import { sendOk, sendError } from '../response.js';
 import { config } from '../config.js';
 import { rateLimit, byAccount } from '../middleware/rateLimit.js';
 import { getAppPool } from '../app-db.js';
-import { hiveClient } from '../hive.js';
+import { broadcastSendOperationsWithTimeout } from '../hive.js';
 import { decryptKey } from '../custody-crypto.js';
 import { logCustodyBroadcast } from '../custody-audit.js';
 import { logger } from '../logger.js';
@@ -130,7 +130,7 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
     const key = PrivateKey.fromString(postingKeyWif);
 
     // Broadcast
-    const result = await hiveClient.broadcast.sendOperations(operations, key);
+    const result = await broadcastSendOperationsWithTimeout(operations, key);
 
     // Audit log (non-blocking)
     const opTypes = operations.map((op: [string, unknown]) => op[0]).join(',');
