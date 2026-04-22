@@ -98,6 +98,21 @@ type BroadcastSendOperationsResult = Awaited<
  * request handler relying on this returning in bounded time needs this
  * wrapper. See the sibling helper above for the full rationale.
  *
+ * Two-phase-timeout ambiguity caveat: dhive's `sendOperations` follows
+ * the same preflight-read-then-broadcast pattern as `broadcast.json`
+ * (fetch dynamic-global-properties, sign, then POST the tx). A timeout
+ * can fire after the tx has already been accepted into a Hive node's
+ * mempool, so a `BroadcastTimeoutError` does NOT imply the operation
+ * did not land. Callers that track on-chain state (e.g. DB counters
+ * mirroring `claim_account` successes, ORCID binding custom_json
+ * attestations) must assume orphan-outcome on timeout and reconcile
+ * against chain state, not retry blindly. The outer promise rejects at
+ * `timeoutMs`; the underlying dhive fetch may continue in the
+ * background until node-fetch's default socket idle or until the Hive
+ * node closes the connection. That orphan is wasteful but acceptable
+ * — the request handler and any caller lock release on the
+ * BroadcastTimeoutError.
+ *
  * Throws `BroadcastTimeoutError` on timeout; underlying dhive errors
  * propagate unchanged on the fast-path failure.
  */

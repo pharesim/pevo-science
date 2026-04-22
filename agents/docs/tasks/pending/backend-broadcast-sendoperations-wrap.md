@@ -78,3 +78,17 @@ First-pass `/ce-code-review` on commit `a4a3371` (correctness + reliability pers
 - `backend-claim-account-chain-reconcile.md` (P2) — reconcile DB `claim_account` count with chain after timeout. Scope: query `pending_claimed_accounts` post-timeout, INSERT any delta into DB. Orthogonal to the discrimination fix above.
 
 **Path to re-archive:** (1) Backend applies items #1-2 on this task. (2) Backend re-review signal block below the hold. (3) Architect re-reviews round-2; archives on clean.
+
+---
+
+**Backend re-review signal (2026-04-22, worktree `agent-ab556a1b`):**
+
+Round-2 hold fixes landed.
+
+1. **`claimAccountTokens` catch-site discriminates `BroadcastTimeoutError`.** `backend/src/account-creation.ts:1-2` imports `BroadcastTimeoutError` from `./hive.js`. The loop's bare `catch {}` is now `catch (err) { if (err instanceof BroadcastTimeoutError) { logger.error(...); break; } batchSize = Math.floor(batchSize / 2); }`. Comment block above the branch explains why: a timeout leaves outcome ambiguous (tx may have landed during the slow broadcast phase); halving + retrying would rebroadcast the same claim batch, double-count claims on orphan success, and pile up to ~3 minutes of silent 30s hangs per cycle. DB/chain reconcile is handled separately by `backend-claim-account-chain-reconcile.md` (already filed pending).
+
+2. **`broadcastSendOperationsWithTimeout` JSDoc gained the two-phase-timeout ambiguity caveat.** `backend/src/hive.ts:92-120`. Added a dedicated paragraph documenting that dhive's `sendOperations` follows the same preflight-read-then-broadcast pattern as `broadcast.json`, so a `BroadcastTimeoutError` does NOT imply the operation did not land, and callers tracking on-chain state (DB counters, ORCID attestations) must assume orphan-outcome and reconcile rather than retry blindly. Also kept the original orphan-fetch paragraph about the background dhive fetch continuing until socket idle.
+
+3. **New test `backend/tests/account-creation.test.ts`** with the carve-out justification block documenting the `getAppPool()` + `broadcastSendOperationsWithTimeout` + `config` mocks (real-HAF impractical: inducing a >30s Hive node hang per-test is not feasible, and the assertion under test is pure catch-site discrimination logic). Two cases: (a) `BroadcastTimeoutError` → exactly one broadcast call, zero INSERTs into `account_creation_tokens`, loop breaks; (b) non-timeout error (RC exhaustion) → halving retry preserved, 6 broadcast attempts across the 50→25→12→6→3→1 sequence. Used `vi.hoisted` for the mock factories so `vi.mock` can reference them before the imports resolve, matching the pattern in `backend/tests/routes/custody.test.ts`. Required `claimAccountTokens` to be exported — added a single-line JSDoc note explaining the export is test-only. A deterministic WIF (`PrivateKey.fromSeed('pevo-account-creation-test-seed').toString()`) is set via `process.env.HIVE_ONBOARD_ACTIVE_KEY` per-test so `PrivateKey.fromString` doesn't throw at the top of the function.
+
+Acceptance: `tests/hive-broadcast-timeout.test.ts` + `tests/account-creation.test.ts` → 8 tests green. `npx tsc --noEmit` clean. `npm run lint` → 0 errors (2 pre-existing warnings in `seed-phrase.ts` unchanged).

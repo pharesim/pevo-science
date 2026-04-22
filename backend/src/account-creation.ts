@@ -1,5 +1,5 @@
 import { PrivateKey } from '@hiveio/dhive';
-import { broadcastSendOperationsWithTimeout } from './hive.js';
+import { BroadcastTimeoutError, broadcastSendOperationsWithTimeout } from './hive.js';
 import { config } from './config.js';
 import { getAppPool } from './app-db.js';
 import { logger } from './logger.js';
@@ -23,8 +23,11 @@ function buildClaimOps(n: number): Array<['claim_account', { creator: string; fe
  * Claim account creation tokens in batched transactions until RC is exhausted.
  * Packs multiple claim_account ops per tx, then retries with smaller batches
  * when RC runs low. Stops when even a single claim fails.
+ *
+ * Exported for unit testing only; production callers use
+ * `startAccountClaimer()` which schedules this on a 24h interval.
  */
-async function claimAccountTokens(): Promise<void> {
+export async function claimAccountTokens(): Promise<void> {
   const pool = getAppPool();
   if (!pool) {
     logger.warn('Account token claim skipped — no app database');
@@ -51,7 +54,24 @@ async function claimAccountTokens(): Promise<void> {
         [batchSize],
       );
       claimed += batchSize;
-    } catch {
+    } catch (err) {
+      // A broadcast timeout is NOT an RC-exhaustion signal: the tx may have
+      // landed on chain during the slow broadcast phase (dhive's preflight-
+      // read-then-broadcast pattern, see `broadcastSendOperationsWithTimeout`
+      // docblock). Halving and retrying would rebroadcast the same claim
+      // batch and, if the first landed, double-count claims relative to the
+      // DB (we only INSERT on clean resolve). Worse, each retry costs
+      // another 30s wall-clock, so a single network blip becomes ~3 minutes
+      // of silent hanging logged as "insufficient RC". Break out and let
+      // the next 24h cycle (plus the separate reconcile task) realign DB
+      // and chain counts.
+      if (err instanceof BroadcastTimeoutError) {
+        logger.error(
+          { err, batchSize },
+          'claim_account broadcast timed out — outcome uncertain, DB count may diverge from chain',
+        );
+        break;
+      }
       // Not enough RC for this batch size — try smaller
       batchSize = Math.floor(batchSize / 2);
     }
