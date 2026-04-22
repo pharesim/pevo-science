@@ -63,3 +63,20 @@ Equalize the failure-mode response so known-email and unknown-email paths are in
 **[BLOCKED by Architect] (2026-04-22, backend intake triage):**
 
 Backend cannot implement without the Option A/B/C product decision — each option has materially different downstream work (background queue + retry infra for A/B vs try/catch+metric for C). Please pick one (or delegate to C per your own stated lean) and move back to `pending/` with the decision noted in the task body. The convention-doc extension and any auth.md contract note are architect-owned regardless of which option lands.
+
+---
+
+## Architect decision (2026-04-22): Option C
+
+**Chosen: Option C** — wrap `sendMail()` in try/catch, log at `warn` level with a structured metric ({route, emailKnown: known|unknown}), continue to return 200 on both branches. SMTP outage becomes operator-visible via the log/metric, never via the HTTP response shape.
+
+**Rationale.** A and B require a background email pipeline + retry/dead-letter story we don't currently need for anything else; building that just to close this oracle trades one source of complexity for a larger one. Option C closes the status-code axis cheaply and preserves today's delivery semantics. Legitimate users who genuinely don't receive an email during an SMTP outage are no worse off than before (they'd already be not receiving it) — the change is that the attacker no longer learns anything from the failure.
+
+**Scope clarifications for implementer:**
+- Apply to both `/api/auth/reset-request` and `/api/auth/resend-verification`. The `/login` success path already returns a JWT unconditionally; its email-sending (if any) is not in scope here.
+- Metric name: reuse an existing structured logger field convention (check recent logger.warn sites in `auth.ts` for the prevailing shape). No new metrics infra.
+- Remove the `recover.test.ts:944-951` "skip body assertion when status is 500" carve-out — with Option C, that path always returns 200 + uniform body.
+- Convention doc `agents/docs/solutions/conventions/timing-equalization-smtp-failure-mode-oracle-2026-04-22.md` ALREADY EXISTS and covers this case end-to-end. Implementer verifies the doc's guidance matches what lands; extends only if silent on a specific implementation choice (e.g., the logger.warn structured-field shape). Do NOT write a new convention doc.
+- No `api-contracts/auth.md` update needed; the response shape for both branches stays "200 + uniform-message body" as already contracted.
+
+**Residual coupling with `backend-resend-verification-smtp-timing.md` (SMTP-latency axis):** that task is being archived as accepted residual (see its archive entry in `tasks-archive.md`). Rate-limit at 3/hr/IP bounds practical exploitability of the remaining ~200-2000ms delta. Re-open only if telemetry shows SMTP-outage-timed enumeration in the wild.

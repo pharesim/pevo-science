@@ -85,3 +85,24 @@ Scope implication for this task's chosen option:
 - **A.3** / **A.4**: same — need to cover the no-lock-held path distinctly.
 
 Recommend A.2 even more strongly given this secondary scope.
+
+---
+
+## Architect decision (2026-04-22): Option A.2 (504 + retriable:false envelope)
+
+**Chosen: A.2** — on `BroadcastTimeoutError`, return `504 BROADCAST_TIMEOUT` with body `{ retriable: false, details: { outcome: 'uncertain', verify_before_retry: true, verify_location: '/settings' } }`. Apply the same envelope to any throw inside `withOrcidBindingLock`'s `'unavailable'` branch (per the round-4 SEC-002-TOCTOU-LOCK note above), so the no-lock-held path is covered by the same shape.
+
+**Rationale.**
+- A.2 matches the task's own "surface timeout as error, don't recover at the helper layer" posture. A.1 (lock-TTL extension) only covers the lock-held path and leaves the `'unavailable'`-branch hard-block open. A.3 (background reconciliation) requires a persistent task queue we don't have in the stack and aren't planning to add for this alone. A.4 (idempotency key) has the biggest schema surface and needs HAF-query support for the key — not worth the cost for this one caller class.
+- A.2 naturally generalizes across the four ORCID timeout-wrapped broadcast callers (`handleAccredit`, `handleLink`, and the two `'unavailable'`-branch fallthrough paths) via a single envelope shape.
+- Depends on `ui-orcid-callback-retriable-branch.md` landing to surface the "broadcast pending — verify before retrying" message on the frontend. That task is already in `tasks/review/` — consume its discriminator plumbing for the `retriable: false` + `verify_before_retry` signal.
+
+**Scope clarifications for implementer:**
+- Minimum scope: `handleAccredit` + `handleLink` in `backend/src/routes/orcid.ts`. Cover both the `BroadcastTimeoutError` catch and the `'unavailable'` branch's `fn()` throws.
+- Extension to other broadcast callers (accreditation/anonymousReview/papers/signup-verify/wot/claims) is OUT of initial scope. File a follow-up `architect-broadcast-timeout-envelope-sweep.md` task if the reusable shape is clean — don't block this task on the sweep.
+- Error envelope shape must be documented in `agents/docs/api-contracts/common.md` (new `504 BROADCAST_TIMEOUT` row in the standard-error-codes table) AND `agents/docs/api-contracts/auth.md` under the `/callback` and `/link` endpoints. Architect-owned — implementer flags via `[TODO Architect]` before `git mv` to `review/`; architect applies the contract edits during review (per backend CLAUDE.md rule).
+- Convention doc `agents/docs/solutions/conventions/chain-write-timeout-ambiguous-outcome-2026-04-22.md` ALREADY EXISTS and captures this pattern. Implementer verifies the doc's guidance matches the A.2 envelope shape landed here; extends only if silent on a specific choice (e.g., the `verify_location` affordance). Do NOT write a new convention doc.
+- Test: mocked broadcast hangs past 30s → assert 504 envelope shape; second request during the uncertainty window (same orcid_id / state) gets the same 504 semantics, not a fresh broadcast attempt (lock TTL still bounds the re-broadcast window in practice; A.2 adds the user-facing "stop retrying until you verify" signal on top).
+- Do NOT change the 30s timeout value.
+
+**Residual note.** A.2 accepts that a user whose broadcast actually did land on-chain sees a 504 + "verify before retry" message and has to check `/settings` to confirm. The frontend task `ui-orcid-callback-retriable-branch.md` is the UX surface for this; if that task's final shape doesn't include a "verify" affordance linking to `/settings`, coordinate with UI before shipping (file a follow-up on the UI side).
