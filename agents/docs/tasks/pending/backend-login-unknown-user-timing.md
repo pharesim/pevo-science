@@ -283,3 +283,24 @@ Re-review surfaced 3 P3 comment/naming-drift items worth closing before archive.
 **Filed follow-up still-pending:** `backend-auth-smtp-status-code-oracle.md`, `backend-auth-resume-signup-timing-guard.md`, `backend-argon2-concurrency-cap.md`, `backend-signup-institutional-gate-ordering.md`, `backend-request-body-typing-zod.md`, `backend-enable-eslint-ts-rules.md` — per prior hold blocks. No new follow-ups filed from round 4.
 
 **Path to re-archive:** (1) Backend applies items #1-3 (single commit, all in `auth.ts` + `recover.test.ts`). (2) Backend re-review signal block below the hold. (3) Architect re-reviews round-5; archives on clean.
+
+---
+
+**Backend re-review signal (2026-04-22 round-5, worktree `.claude/worktrees/agent-a67d9e4c`):**
+
+All 3 round-4 P3 hold items landed in a single commit. `npx tsc --noEmit` clean. `backend/npm run lint` clean (6 pre-existing `no-explicit-any` warnings at Express/dhive boundaries, per backend CLAUDE.md these are accepted). `backend/tests/routes/recover.test.ts` 24/27 pass on this worktree. The 3 failures are pre-existing on the worktree's base commit `55fc03b` (verified by running the suite on that baseline before applying any changes); all are SMTP-not-configured 500-vs-409 status code mismatches in `BE-SIGNUP-INSTITUTIONAL-GATE-ORDERING` tests, unrelated to this task. Full backend vitest suite deferred to parent per coordination rules.
+
+1. **P3 Stale "Gate on `hasPassword`" comment (fixed).** `backend/src/routes/auth.ts:~306-311` — rewrote the block comment to reference the round-4 `if (password)` truthy-narrow: "Gate on truthy `password` to avoid paying argon2 cost on ORCID+email signup with no password (both 409 and happy-path are ~1ms there, no oracle to close). The truthy-narrow also gives TS `password: string` for the `argon2.hash` call below without an `as string` cast. The hex-pending fall-through path below runs argon2.hash + upsert naturally, so no burn is needed there." The comment now accurately describes the code and captures the type-flow benefit.
+
+2. **P3 Dead `clearTimeout(t)` in startup-reject else branch (fixed).** `backend/src/routes/auth.ts:~122-124` — removed `clearTimeout(t);` from the no-flush else branch. Replaced with the architect-suggested clarifying comment `// no flush callback pending; exit directly`. The `if (typeof logger.flush === 'function')` branch still calls `clearTimeout(t)` inside the flush callback, which is where it remains load-bearing (clearing the 2s fallback after flush succeeds).
+
+3. **P3 "round-4" task-history phrasing in test replacement comment (fixed).** `backend/tests/routes/recover.test.ts:~747-751` — rewrote as architect-suggested self-contained invariant prose: "(No timing test for /login ACCOUNT_LOCKED: the check runs after argon2.verify, so adding a burn creates a 2× asymmetry — verify+burn on locked vs verify-only on unlocked. 403 already discloses lockout state to correct-password callers. See the handler comment in auth.ts for full rationale.)". Opportunistic cleanup: also removed the adjacent `// ─── Round-3 additions ─── ...` section-heading comment (same rot class — task-history marker with no invariant value).
+
+**Test outcomes:**
+- `recover.test.ts`: 24/27 pass (3 pre-existing SMTP-config failures on baseline `55fc03b` — not introduced by this commit). No net-new tests added; all 3 hold items are comment/dead-code edits with no behavioral change.
+- `npx tsc --noEmit`: clean.
+- `npm run lint`: clean (6 pre-existing `no-explicit-any` warnings accepted per backend CLAUDE.md).
+- Full vitest suite: deferred to parent agent.
+
+**Deviations from hold block:**
+- None substantive. All 3 items landed as the architect specified. Minor: also removed the adjacent `Round-3 additions` section-heading comment in `recover.test.ts` under item #3 as cleanup-while-there (same task-history-phrasing class as item #3 itself).

@@ -82,3 +82,29 @@ First-pass `/ce-code-review` on commit `c39377d` (security, reliability, project
 - `backend-argon2-jslevel-concurrency-cap.md` (new P1) — JS-level semaphore implementing Option B, deterministic cap on concurrent argon2 operations that closes both the saturation oracle AND the OOM window. Acceptance includes the commit-comment correction + concurrent-load test + metric endpoint.
 
 **Path to re-archive:** (1) Backend applies items #1-4 on this task. (2) Backend re-review signal block below the hold. (3) Architect re-reviews round-2 with `/ce-code-review`; archives on clean. `backend-argon2-jslevel-concurrency-cap.md` archives independently.
+
+---
+
+**Backend re-review signal (2026-04-22 round-1 hold fix, worktree `.claude/worktrees/agent-a67d9e4c`):**
+
+All 4 round-1 hold items landed. `npx tsc --noEmit` clean. `npm run lint` clean (6 pre-existing `no-explicit-any` warnings accepted per backend CLAUDE.md). `backend/tests/routes/auth.test.ts` 16/16 pass (startup-assertion guards are silenced under Vitest via `VITEST=true` env var, so tests don't require the env knob). Full backend vitest suite deferred to parent.
+
+1. **P2 Dockerfile ENV (fixed).** `backend/Dockerfile:51` — added `ENV UV_THREADPOOL_SIZE=16` in the production stage between `PORT=3001` and `EXPOSE`. All container consumers (k8s, direct image run, ECS) now inherit the knob regardless of whether docker-compose.yml is involved. Comment references the JS-level semaphore's role as the real deterministic cap.
+
+2. **P2 Startup assertion (fixed).** `backend/src/routes/auth.ts:~87-105` — added a fail-loud guard at module-load: if `UV_THREADPOOL_SIZE < 16` or unset, throws an error that includes the observed value and references `backend-argon2-jslevel-concurrency-cap` as the real cap. Silenced under Vitest via `if (!process.env.VITEST)` so unit tests don't need the env knob. (Originally tried `NODE_ENV !== 'test'` but the project's `.env` sets `NODE_ENV=development` for dev + tests; `VITEST=true` is set by the vitest runner itself and is a stable signal.) Production and dev-via-docker paths both set the env knob, so this guard fires only on misconfigured deployments.
+
+3. **P3 .env.example + docker-compose.yml override (fixed).** `.env.example:115-122` — new "Performance / security tuning" block with `UV_THREADPOOL_SIZE=16` and a comment covering the math (parallelism=4, 16/4 = 4 concurrent argon2 ops) and the fail-loud guard. `docker-compose.yml:75-82` — hardcoded `UV_THREADPOOL_SIZE: "16"` replaced with `UV_THREADPOOL_SIZE: "${UV_THREADPOOL_SIZE:-16}"` so `.env` overrides take effect. Comment corrected to match item #4 (no more "saturates at ~4 concurrent auth requests" miscalculation).
+
+4. **P2 Commit-comment correction (fixed).** `backend/src/routes/auth.ts:~86-97` — the `SENTINEL_ARGON2_HASH_PROMISE` block comment rewritten: "argon2's `parallelism=4` option means each verify effectively holds 4 libuv threads for its duration. At UV_THREADPOOL_SIZE=16, that allows ~4 concurrent argon2 ops (16 / 4 = 4), NOT 16 — the common confusion that made the initial cap insufficient. The JS-level semaphore filed separately as backend-argon2-jslevel-concurrency-cap is the deterministic cap on concurrent argon2 ops; the env value above is libuv headroom so the semaphore can fill its slots without queueing at the pool layer." The miscalculation claim "Default is 4, which saturates at ~4 concurrent auth requests and reopens the timing oracle" is gone from both this comment and docker-compose.yml.
+
+**Test outcomes:**
+- `auth.test.ts`: 16/16 pass (VITEST guard silences the startup assertion; no regression).
+- `npx tsc --noEmit`: clean.
+- `npm run lint`: clean.
+- Full vitest suite: deferred to parent.
+
+**Deviations from hold block:**
+- Item #2 assertion gate: hold block suggested `if (Number(process.env.UV_THREADPOOL_SIZE) < 16) throw` as a plain top-level statement. Landed an `if (!process.env.VITEST) { ... }` wrapper to avoid failing all unit tests at module-load. The guard still fires fail-loud in production and dev; only unit-test execution (VITEST=true injected by the runner) bypasses it. An alternative would be to set UV_THREADPOOL_SIZE in vitest.config.ts env block, but that couples test-infra to an implementation detail of this file.
+
+**Notes for Task 4 (backend-argon2-jslevel-concurrency-cap, in this worker's commit chain):**
+- The fail-loud guard's error message references that follow-up task by name. Once the semaphore lands and this guard relaxes to advisory, the message can drop the task reference.

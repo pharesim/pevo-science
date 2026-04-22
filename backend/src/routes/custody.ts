@@ -11,6 +11,7 @@ import { broadcastSendOperationsWithTimeout } from '../hive.js';
 import { decryptKey } from '../custody-crypto.js';
 import { logCustodyBroadcast } from '../custody-audit.js';
 import { logger } from '../logger.js';
+import { runWithArgon2Slot } from '../lib/argon2-semaphore.js';
 
 const router = Router();
 
@@ -190,7 +191,7 @@ router.post('/upgrade', verifyHiveSignature, upgradeLimiter, async (req: Request
     }
 
     // Verify password re-entry
-    const valid = await argon2.verify(account.password_hash, password);
+    const valid = await runWithArgon2Slot(() => argon2.verify(account.password_hash, password));
     if (!valid) {
       logCustodyBroadcast(username, 'upgrade_failure').catch(() => {});
       return sendError(res, 401, 'UNAUTHORIZED', 'Invalid password');

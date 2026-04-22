@@ -28,6 +28,7 @@ import wotRouter from './routes/wot.js';
 import notificationsRouter from './routes/notifications.js';
 import bridgeRouter from './routes/bridge.js';
 import authRouter from './routes/auth.js';
+import { getArgon2QueueDepth, getArgon2InFlight, MAX_CONCURRENT_ARGON2_OPS } from './lib/argon2-semaphore.js';
 import signupVerifyRouter from './routes/signup-verify.js';
 import custodyRouter from './routes/custody.js';
 import contactRouter from './routes/contact.js';
@@ -139,12 +140,20 @@ export function createApp() {
   app.use('/api/orcid', orcidRouter);
   app.use('/api/blog', readLimiter, blogRouter);
 
-  // Health check
+  // Health check. Exposes argon2 semaphore saturation synchronously so
+  // operators see the backend-argon2-jslevel-concurrency-cap counter
+  // without depending on pino async-transport drainage under OOM. A
+  // non-zero `argon2_queue_depth` on a healthy production instance
+  // indicates the auth-path semaphore is saturated (expected under
+  // bursty login/signup traffic; sustained >0 is a load signal).
   app.get('/api/health', (_req, res) => {
     res.json({
       status: 'ok',
       haf_available: isHafAvailable(),
       redis_available: isRedisAvailable(),
+      argon2_queue_depth: getArgon2QueueDepth(),
+      argon2_in_flight: getArgon2InFlight(),
+      argon2_max_concurrent: MAX_CONCURRENT_ARGON2_OPS,
       timestamp: new Date().toISOString(),
     });
   });

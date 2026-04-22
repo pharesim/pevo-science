@@ -48,6 +48,15 @@ USER pevo
 
 ENV NODE_ENV=production
 ENV PORT=3001
+# Cap libuv thread pool above argon2's effective serialization so the
+# burnSentinel path in src/routes/auth.ts cannot silently throw under
+# concurrent /login, /signup, /resend-verification, /recover load. This
+# ENV applies to all container consumers (k8s, direct image run, ECS)
+# regardless of whether docker-compose.yml is involved. The JS-level
+# semaphore in auth.ts (see SENTINEL_ARGON2_HASH_PROMISE comment) is the
+# real deterministic cap; this value is libuv headroom to ensure the
+# semaphore can fill its 4 concurrent slots without blocking on the pool.
+ENV UV_THREADPOOL_SIZE=16
 
 EXPOSE 3001
 

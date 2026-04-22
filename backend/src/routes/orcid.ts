@@ -25,6 +25,16 @@ const CallbackBodySchema = z.object({
   state: z.string().optional(),
 });
 
+// BE-ZOD-MIGRATION-EXTENSION: schema for POST /api/orcid/start. The mode
+// value is an optional string at the Zod layer; VALID_MODES membership is
+// enforced as business validation below (same pattern as auth.ts schemas
+// that defer isEmail/isPasswordValid to post-parse). This replaces the
+// `req.body as { mode?: string }` cast that previously bypassed the type
+// system.
+const StartBodySchema = z.object({
+  mode: z.string().optional(),
+});
+
 const router = Router();
 
 // ORCID iD format: four groups of four digits separated by hyphens, with the
@@ -141,7 +151,11 @@ router.post('/start', startLimiter, async (req: Request, res: Response) => {
     return sendError(res, 500, 'INTERNAL_ERROR', 'ORCID integration is not configured');
   }
 
-  const { mode } = req.body as { mode?: string };
+  const startParsed = StartBodySchema.safeParse(req.body);
+  if (!startParsed.success) {
+    return sendError(res, 400, 'VALIDATION_ERROR', 'Invalid request body');
+  }
+  const { mode } = startParsed.data;
   if (!mode || !VALID_MODES.has(mode)) {
     return sendError(res, 400, 'VALIDATION_ERROR', 'mode must be one of: signup, login, accredit, link');
   }
@@ -192,7 +206,7 @@ router.post('/callback', callbackLimiter, async (req: Request, res: Response) =>
 
   const parsed = CallbackBodySchema.safeParse(req.body);
   if (!parsed.success) {
-    return sendError(res, 400, 'VALIDATION_ERROR', 'Invalid request body', { issues: parsed.error.issues });
+    return sendError(res, 400, 'VALIDATION_ERROR', 'Invalid request body');
   }
   const { code, state } = parsed.data;
   if (!code || !state) {

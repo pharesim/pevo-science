@@ -15,6 +15,7 @@ import { logger } from '../logger.js';
 import { decryptKey } from '../custody-crypto.js';
 import { isPasswordValid, PASSWORD_POLICY_MESSAGE } from '../lib/password-policy.js';
 import { ARGON2_OPTIONS } from '../lib/argon2-options.js';
+import { runWithArgon2Slot } from '../lib/argon2-semaphore.js';
 
 // ─── Per-route Zod body schemas (BE-REQUEST-BODY-TYPING-ZOD) ────
 //
@@ -29,10 +30,12 @@ import { ARGON2_OPTIONS } from '../lib/argon2-options.js';
 // error-code strings remain unchanged.
 //
 // Error shape: on parse failure, handlers return 400 VALIDATION_ERROR
-// with `details.issues` carrying the raw zod issue array. That matches
-// existing 400 VALIDATION_ERROR conventions (no handler currently
-// returns a bare validation error without a message; the new responses
-// add machine-readable detail without changing status codes).
+// with a generic 'Invalid request body' message and NO `details.issues`.
+// The raw zod issue array leaks schema shape (field paths, constraint
+// codes, received types) to unauthenticated callers, which hardens the
+// target for probing. Business validation errors (isEmail,
+// isPasswordValid, etc.) continue to emit specific messages because
+// those run post-parse and have their own endpoint-specific surface.
 
 const LoginBodySchema = z.object({
   // Either `username` or `email_or_username` must be present — the
@@ -60,9 +63,32 @@ const SignupBodySchema = z.object({
 const RecoverBodySchema = z.object({
   username: z.string().min(1),
   new_email: z.string().min(1),
-  new_password: z.string().optional().nullable(),
+  // Non-empty when present: ''→parse-reject, null/undefined→optional.
+  // The previous shape `z.string().optional().nullable()` also accepted
+  // empty strings, which the downstream `passwordProvided` guard
+  // rejected at a later layer. Pushing the min-length up to the schema
+  // layer makes the 400 VALIDATION_ERROR fail loudly on ''.
+  new_password: z.string().min(1).optional().nullable(),
   memo_key: z.string().optional(),
   orcid_token: z.string().optional(),
+});
+
+// BE-ZOD-MIGRATION-EXTENSION: schemas for /resend-verification,
+// /reset-request, /reset. Same flat-error pattern as the 3 round-1
+// schemas — shape only, business validation (isEmail, isPasswordValid)
+// continues to run after safeParse.
+const ResendVerificationBodySchema = z.object({
+  email: z.string().min(1),
+  password: z.string().min(1),
+});
+
+const ResetRequestBodySchema = z.object({
+  email: z.string().min(1),
+});
+
+const ResetBodySchema = z.object({
+  token: z.string().min(1),
+  password: z.string().optional(),
 });
 
 const router = Router();
@@ -84,11 +110,38 @@ const MAX_LOGIN_FAILURES = 20;
 // match the happy-path argon2.hash cost — see the /signup handler.
 //
 // Concurrency / libuv note: argon2.verify runs on the libuv thread pool
-// (default UV_THREADPOOL_SIZE=4). Under a burst of concurrent auth requests
-// the pool saturates, queued verifies can throw, and burnSentinel's silent
-// catch returns in ~0ms — reopening the timing oracle for the saturated
-// window. Deployment must set UV_THREADPOOL_SIZE=16 (see docker-compose.yml
-// backend service env) to keep the burn path wall-time-deterministic.
+// (default UV_THREADPOOL_SIZE=4). argon2's `parallelism=4` option means each
+// verify effectively holds 4 libuv threads for its duration. At
+// UV_THREADPOOL_SIZE=16, that allows ~4 concurrent argon2 ops (16 / 4 = 4),
+// NOT 16 — the common confusion that made the initial cap insufficient. The
+// JS-level semaphore at lib/argon2-semaphore.ts is the deterministic cap
+// (`runWithArgon2Slot` caps concurrent ops at MAX_CONCURRENT_ARGON2_OPS,
+// derived from the same `pool / parallelism` math). The env knob above is
+// libuv headroom so the semaphore can fill its slots without queueing at
+// the pool layer. Every argon2.hash / argon2.verify on auth paths (incl.
+// burnSentinel's internal verify) goes through runWithArgon2Slot; the sole
+// exception is the module-load SENTINEL_ARGON2_HASH_PROMISE below, which
+// runs exactly once and cannot saturate anything. Queue depth is exposed
+// via /api/health (`argon2_queue_depth`) so operators see saturation events
+// synchronously, independent of pino async-transport drainage under OOM.
+//
+// Fail-loud guard: if UV_THREADPOOL_SIZE is unset or below 16 in the
+// environment, reject at module-load rather than serving traffic with a
+// hidden saturation oracle. The semaphore (when landed) will relax this
+// to advisory; until then it's a hard invariant for burnSentinel
+// determinism. Silenced when running under Vitest (VITEST=true is set
+// by the runner itself) so unit tests don't need the env knob. Production
+// startup MUST set UV_THREADPOOL_SIZE; the Dockerfile and docker-compose
+// environment both carry it.
+if (!process.env.VITEST) {
+  const pool = Number(process.env.UV_THREADPOOL_SIZE);
+  if (!Number.isFinite(pool) || pool < 16) {
+    throw new Error(
+      `UV_THREADPOOL_SIZE must be >= 16 for burnSentinel determinism (got ${process.env.UV_THREADPOOL_SIZE ?? 'unset'}); the JS-level semaphore (backend-argon2-jslevel-concurrency-cap) is the real cap, this env value is libuv headroom.`,
+    );
+  }
+}
+
 const SENTINEL_ARGON2_HASH_PROMISE: Promise<string> = argon2.hash(
   'pevo-login-timing-sentinel-v1',
   ARGON2_OPTIONS,
@@ -120,7 +173,7 @@ SENTINEL_ARGON2_HASH_PROMISE.catch((err) => {
       process.exit(1);
     });
   } else {
-    clearTimeout(t);
+    // no flush callback pending; exit directly
     process.exit(1);
   }
 });
@@ -163,7 +216,7 @@ export async function burnSentinel(input: string): Promise<void> {
     // burn into a noop and reopen the oracle. 1024 bytes is well under the
     // limit and matches the compute cost of any realistic password.
     const safeInput = input.length > 1024 ? input.slice(0, 1024) : input;
-    await argon2.verify(sentinelHash, safeInput);
+    await runWithArgon2Slot(() => argon2.verify(sentinelHash, safeInput));
   } catch (err) {
     logger.warn({ err }, 'argon2 sentinel burn failed — timing oracle may be open');
   }
@@ -199,7 +252,7 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
 
   const parsed = SignupBodySchema.safeParse(req.body);
   if (!parsed.success) {
-    return sendError(res, 400, 'VALIDATION_ERROR', 'Invalid request body', { issues: parsed.error.issues });
+    return sendError(res, 400, 'VALIDATION_ERROR', 'Invalid request body');
   }
   const { email, password, full_name, institution, field, orcid_token } = parsed.data;
 
@@ -303,18 +356,20 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
         // equalization, no persistence. Silent-catch so a native argon2
         // failure degrades the same way burnSentinel does (logged by the
         // global catch at module top when the startup hash rejects).
-        // Gate on hasPassword to avoid paying argon2 cost on ORCID+email
-        // signup with no password (both 409 and happy-path are ~1ms there,
-        // no oracle to close). The hex-pending fall-through path below
-        // runs argon2.hash + upsert naturally, so no burn is needed there.
+        // Gate on truthy `password` to avoid paying argon2 cost on
+        // ORCID+email signup with no password (both 409 and happy-path are
+        // ~1ms there, no oracle to close). The truthy-narrow also gives TS
+        // `password: string` for the `argon2.hash` call below without an
+        // `as string` cast. The hex-pending fall-through path below runs
+        // argon2.hash + upsert naturally, so no burn is needed there.
         if (existingRows[0].verify_token === null) {
-          if (password) await argon2.hash(password, ARGON2_OPTIONS).catch((err) => {
+          if (password) await runWithArgon2Slot(() => argon2.hash(password, ARGON2_OPTIONS)).catch((err) => {
             logger.warn({ err }, 'argon2 signup-dup burn failed — timing oracle may be open');
           });
           return sendError(res, 409, 'DUPLICATE', 'Email already registered');
         }
         if (existingRows[0].verify_token.startsWith('confirmed:')) {
-          if (password) await argon2.hash(password, ARGON2_OPTIONS).catch((err) => {
+          if (password) await runWithArgon2Slot(() => argon2.hash(password, ARGON2_OPTIONS)).catch((err) => {
             logger.warn({ err }, 'argon2 signup-dup burn failed — timing oracle may be open');
           });
           return sendError(res, 409, 'DUPLICATE', 'Email already verified. Please log in to continue.');
@@ -336,7 +391,7 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
 
     // Hash password if provided
     const passwordHash = hasPassword
-      ? await argon2.hash(password, ARGON2_OPTIONS)
+      ? await runWithArgon2Slot(() => argon2.hash(password, ARGON2_OPTIONS))
       : null;
 
     const expiresAt = new Date(Date.now() + SIGNUP_TOKEN_EXPIRY_MS);
@@ -445,13 +500,11 @@ router.post('/resend-verification', resendLimiter, async (req: Request, res: Res
   const pool = getAppPool();
   if (!pool) return sendError(res, 503, 'INTERNAL_ERROR', 'Service not available');
 
-  const { email, password } = req.body || {};
-  if (!email || typeof email !== 'string') {
-    return sendError(res, 400, 'VALIDATION_ERROR', 'Email is required');
+  const parsed = ResendVerificationBodySchema.safeParse(req.body);
+  if (!parsed.success) {
+    return sendError(res, 400, 'VALIDATION_ERROR', 'Invalid request body');
   }
-  if (!password || typeof password !== 'string') {
-    return sendError(res, 400, 'VALIDATION_ERROR', 'Password is required');
-  }
+  const { email, password } = parsed.data;
 
   const normalizedEmail = email.trim().toLowerCase();
 
@@ -483,7 +536,7 @@ router.post('/resend-verification', resendLimiter, async (req: Request, res: Res
     // running either the real verify OR a sentinel burn.
     let passwordValid = false;
     if (account.password_hash) {
-      passwordValid = await argon2.verify(account.password_hash, password);
+      passwordValid = await runWithArgon2Slot(() => argon2.verify(account.password_hash!, password));
     } else {
       await burnSentinel(password);
     }
@@ -551,17 +604,13 @@ router.post('/login', loginLimiter, async (req: Request, res: Response) => {
 
   const parsed = LoginBodySchema.safeParse(req.body);
   if (!parsed.success) {
-    return sendError(res, 400, 'VALIDATION_ERROR', 'Invalid request body', { issues: parsed.error.issues });
+    return sendError(res, 400, 'VALIDATION_ERROR', 'Invalid request body');
   }
   const { username, email_or_username, password } = parsed.data;
-  const loginId = email_or_username || username;
+  // Schema.refine enforces that at least one of username/email_or_username
+  // is a non-empty string; loginId is therefore a non-empty string here.
+  const loginId = (email_or_username || username) as string;
 
-  if (!loginId) {
-    // Schema.refine already enforces "one of" — this branch is a
-    // defensive noop kept for clarity of intent. Post-refine the union
-    // invariant holds, so loginId is non-empty here.
-    return sendError(res, 400, 'VALIDATION_ERROR', 'Username or email is required');
-  }
   if (!password) {
     return sendError(res, 400, 'VALIDATION_ERROR', 'Password is required');
   }
@@ -625,7 +674,7 @@ router.post('/login', loginLimiter, async (req: Request, res: Response) => {
     // Verify password (timing-equalized with the NO_PASSWORD_SET branch above
     // via the sentinel hash, so status-code is the only signal distinguishing
     // null-hash accounts from unknown accounts — not response wall-time).
-    const valid = await argon2.verify(account.password_hash, password);
+    const valid = await runWithArgon2Slot(() => argon2.verify(account.password_hash, password));
     if (!valid) {
       if (account.username) {
         await pool.query(
@@ -689,10 +738,11 @@ router.post('/reset-request', resetRequestLimiter, async (req: Request, res: Res
   const pool = getAppPool();
   if (!pool) return sendError(res, 503, 'INTERNAL_ERROR', 'Service not available');
 
-  const { email } = req.body || {};
-  if (!email || typeof email !== 'string') {
-    return sendError(res, 400, 'VALIDATION_ERROR', 'Email is required');
+  const parsed = ResetRequestBodySchema.safeParse(req.body);
+  if (!parsed.success) {
+    return sendError(res, 400, 'VALIDATION_ERROR', 'Invalid request body');
   }
+  const { email } = parsed.data;
 
   const normalizedEmail = email.trim().toLowerCase();
 
@@ -779,10 +829,11 @@ router.post('/reset', resetLimiter, async (req: Request, res: Response) => {
   const pool = getAppPool();
   if (!pool) return sendError(res, 503, 'INTERNAL_ERROR', 'Service not available');
 
-  const { token, password } = req.body || {};
-  if (!token || typeof token !== 'string') {
-    return sendError(res, 400, 'VALIDATION_ERROR', 'Reset token is required');
+  const parsed = ResetBodySchema.safeParse(req.body);
+  if (!parsed.success) {
+    return sendError(res, 400, 'VALIDATION_ERROR', 'Invalid request body');
   }
+  const { token, password } = parsed.data;
   if (!isPasswordValid(password)) {
     return sendError(res, 400, 'VALIDATION_ERROR', PASSWORD_POLICY_MESSAGE);
   }
@@ -812,8 +863,10 @@ router.post('/reset', resetLimiter, async (req: Request, res: Response) => {
       return sendError(res, 400, 'INVALID_TOKEN', 'Reset token has expired');
     }
 
-    // Hash new password
-    const passwordHash = await argon2.hash(password, ARGON2_OPTIONS);
+    // Hash new password. isPasswordValid flow-narrowed `password` to
+    // `string` via its type-predicate return (`pw is string`), so no
+    // cast is needed here.
+    const passwordHash = await runWithArgon2Slot(() => argon2.hash(password, ARGON2_OPTIONS));
 
     // Update password, clear reset token, invalidate all existing sessions
     await pool.query(
@@ -852,7 +905,7 @@ router.post('/recover', recoverLimiter, async (req: Request, res: Response) => {
 
   const parsed = RecoverBodySchema.safeParse(req.body);
   if (!parsed.success) {
-    return sendError(res, 400, 'VALIDATION_ERROR', 'Invalid request body', { issues: parsed.error.issues });
+    return sendError(res, 400, 'VALIDATION_ERROR', 'Invalid request body');
   }
   const { username, memo_key, orcid_token, new_email, new_password } = parsed.data;
 
@@ -917,7 +970,7 @@ router.post('/recover', recoverLimiter, async (req: Request, res: Response) => {
     const account = rows[0];
 
     // ── Method A: Seed-phrase recovery via memo key comparison ──
-    if (memo_key && typeof memo_key === 'string') {
+    if (memo_key) {
       if (!account.memo_key_enc || !account.iv_memo) {
         return sendError(res, 401, 'UNAUTHORIZED', 'Account does not support seed phrase recovery');
       }
@@ -945,7 +998,7 @@ router.post('/recover', recoverLimiter, async (req: Request, res: Response) => {
       }
     }
     // ── Method B: ORCID recovery ──
-    else if (orcid_token && typeof orcid_token === 'string') {
+    else if (orcid_token) {
       if (!account.orcid) {
         return sendError(res, 401, 'UNAUTHORIZED', 'Account does not have a verified ORCID');
       }
@@ -995,7 +1048,7 @@ router.post('/recover', recoverLimiter, async (req: Request, res: Response) => {
     // password re-establishes the account but leaves password-login disabled
     // until the user opts in via /api/settings/set-password).
     const passwordHash = passwordProvided
-      ? await argon2.hash(new_password!, ARGON2_OPTIONS)
+      ? await runWithArgon2Slot(() => argon2.hash(new_password!, ARGON2_OPTIONS))
       : null;
 
     // Update account: new password (or null), new email, invalidate all sessions

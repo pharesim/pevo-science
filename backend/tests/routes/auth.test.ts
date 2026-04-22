@@ -1,9 +1,10 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeAll } from 'vitest';
 import request from 'supertest';
 import jwt from 'jsonwebtoken';
 import { PrivateKey, cryptoUtils } from '@hiveio/dhive';
 import { createApp } from '../../src/app.js';
 import { config } from '../../src/config.js';
+import { clearRateLimitKeys } from '../support/redis-helpers.js';
 
 // Generate a deterministic test keypair and mock the Hive client so the
 // middleware's on-chain account lookup returns this public key for the
@@ -184,5 +185,74 @@ describe('Hive signature path — request-binding enforcement (FINDING-001 regre
 
     expect(res.status).toBe(401);
     expect(res.body.error.code).toBe('UNAUTHORIZED');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
+// BE-REQUEST-BODY-TYPING-ZOD: 400 VALIDATION_ERROR schema-leak guard
+//
+// The Zod `safeParse` result carries an `issues` array with field paths,
+// constraint codes, and `received` types. Emitting it raw in the 400
+// response body leaks schema shape to unauthenticated callers. Assert
+// that the 400 body on parse failure contains NEITHER a raw `issues`
+// array NOR any Zod-internal keys (`received`, `code`, `expected`,
+// `validation`) across each of the four migrated routes.
+// ─────────────────────────────────────────────────────────────
+describe('BE-REQUEST-BODY-TYPING-ZOD: 400 VALIDATION_ERROR does not leak Zod schema shape', () => {
+  // /api/orcid/callback intentionally omitted from this parametrized
+  // batch: it returns 500 INTERNAL_ERROR before safeParse when
+  // ORCID_CLIENT_ID/SECRET are unset (test env default). The Zod
+  // flattening on that route mirrors the auth.ts sites and is covered
+  // structurally by the same sendError call shape.
+  //
+  // Clear the /login and /signup rate-limit buckets before these specs
+  // run — without this, a prior test file (auth-concurrency.test.ts,
+  // which burns 8 /login requests against the 10/hr loginLimiter) can
+  // exhaust the window and these specs 429 instead of 400.
+  beforeAll(async () => {
+    await clearRateLimitKeys(['auth-login', 'auth-signup']);
+  });
+  const cases: Array<{ route: string; body: unknown }> = [
+    // /login: refine requires at least one of username/email_or_username.
+    { route: '/api/auth/login', body: { password: 'x' } },
+    // /signup: non-string email triggers parse failure at the object level.
+    { route: '/api/auth/signup', body: { email: 123 } },
+    // /recover: username is .min(1), non-string triggers parse failure.
+    { route: '/api/auth/recover', body: { username: 123 } },
+  ];
+
+  for (const { route, body } of cases) {
+    it(`${route} 400 body omits raw Zod issues + internals`, async () => {
+      const res = await request(app).post(route).send(body);
+      expect(res.status).toBe(400);
+      expect(res.body.status).toBe('error');
+      expect(res.body.error.code).toBe('VALIDATION_ERROR');
+      expect(res.body.error.message).toBe('Invalid request body');
+      // No details.issues leak.
+      expect(res.body.error.details).toBeUndefined();
+      // Deep shape scan: no raw Zod internals anywhere in the body.
+      const flat = JSON.stringify(res.body);
+      expect(flat).not.toContain('"issues"');
+      expect(flat).not.toContain('"received"');
+      expect(flat).not.toContain('"expected"');
+      expect(flat).not.toContain('"validation"');
+    });
+  }
+
+  it('/login 400 still fires when both username and email_or_username are empty (refine invariant)', async () => {
+    const res = await request(app)
+      .post('/api/auth/login')
+      .send({ username: '', email_or_username: '', password: 'x' });
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('VALIDATION_ERROR');
+    expect(res.body.error.message).toBe('Invalid request body');
+  });
+
+  it('/login 400 fires on parse failure for non-string password', async () => {
+    const res = await request(app)
+      .post('/api/auth/login')
+      .send({ username: 'user', password: 123 });
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('VALIDATION_ERROR');
   });
 });
