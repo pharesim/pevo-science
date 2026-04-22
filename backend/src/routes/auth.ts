@@ -82,6 +82,13 @@ const MAX_LOGIN_FAILURES = 20;
 // status-code axis may still differ per-endpoint, but timing does not.
 // Note: on /signup 409 DUPLICATE paths we burn argon2.hash (not verify) to
 // match the happy-path argon2.hash cost — see the /signup handler.
+//
+// Concurrency / libuv note: argon2.verify runs on the libuv thread pool
+// (default UV_THREADPOOL_SIZE=4). Under a burst of concurrent auth requests
+// the pool saturates, queued verifies can throw, and burnSentinel's silent
+// catch returns in ~0ms — reopening the timing oracle for the saturated
+// window. Deployment must set UV_THREADPOOL_SIZE=16 (see docker-compose.yml
+// backend service env) to keep the burn path wall-time-deterministic.
 const SENTINEL_ARGON2_HASH_PROMISE: Promise<string> = argon2.hash(
   'pevo-login-timing-sentinel-v1',
   ARGON2_OPTIONS,
