@@ -187,6 +187,10 @@ export function initSearchPage() {
       // refetches stay parallel.
       if (this.query) this.doSearch(this.query, this.currentPage);
       await this.loadDisciplines();
+      // Bail if the component was destroyed during the disciplines fetch.
+      // Without this guard, the popstate listener below registers on a dead
+      // component and leaks (destroy already cleared _popstateHandler).
+      if (!this._mounted) return;
       if (pageOwnsUrl()) {
         this._popstateHandler = () => {
           if (!pageOwnsUrl()) return;

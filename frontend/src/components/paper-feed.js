@@ -116,6 +116,12 @@ export function initPaperFeed() {
       // this, a URL-canonical discipline briefly shows "All disciplines"
       // until fetchDisciplines resolves. Subsequent refetches stay parallel.
       await this.loadDisciplines();
+      // Bail if the component was destroyed during the disciplines fetch.
+      // Without this guard, loadPapers() writes `this.loading = true` on a
+      // destroyed scope and the popstate listener below leaks past destroy()
+      // (destroy already cleared _popstateHandler, so the handler we register
+      // here would never be removed).
+      if (!this._mounted) return;
       this.loadPapers();
       if (pageOwnsUrl()) {
         this._popstateHandler = () => {

@@ -265,4 +265,76 @@ describe('reviewPage', () => {
       expect(comp.errorMessage).toBe('');
     });
   });
+
+  // UI-ASYNC-CONTINUATION-TEARDOWN-GUARD-SWEEP round-2 hold item #5:
+  // loadPaper previously had a bare `await fetchPaper(...)` with no
+  // try/catch/finally. A rejection became an unhandled promise (init()
+  // calls loadPaper() without awaiting) and `loadingPaper=true` was
+  // never reset on failure. Post-destroy continuations must also not
+  // write to reactive state.
+  describe('loadPaper teardown guard', () => {
+    it('catch does not write paper / loadingPaper after destroy()', async () => {
+      const { fetchPaper } = await import('../../src/api.js');
+      let rejectFn;
+      fetchPaper.mockImplementationOnce(() => new Promise((_, reject) => { rejectFn = reject; }));
+      const comp = createComponent();
+      comp.loadingPaper = true;
+      comp.paper = null;
+
+      const pending = comp.loadPaper();
+      comp.destroy();
+      rejectFn(new Error('post-teardown fetch failure'));
+      await pending;
+
+      // Post-destroy writes are suppressed: paper stays null (not set to
+      // some stale value) and loadingPaper is left as-is by the finally
+      // block's guarded write.
+      expect(comp.paper).toBeNull();
+      expect(comp.loadingPaper).toBe(true);
+    });
+
+    it('happy-path continuation does not write paper after destroy()', async () => {
+      const { fetchPaper } = await import('../../src/api.js');
+      let resolveFn;
+      fetchPaper.mockImplementationOnce(() => new Promise((resolve) => { resolveFn = resolve; }));
+      const comp = createComponent();
+      comp.loadingPaper = true;
+      comp.paper = null;
+
+      const pending = comp.loadPaper();
+      comp.destroy();
+      resolveFn({ data: { title: 'Late Paper' } });
+      await pending;
+
+      expect(comp.paper).toBeNull();
+      expect(comp.loadingPaper).toBe(true);
+    });
+
+    it('resets loadingPaper=false in finally on success', async () => {
+      const { fetchPaper } = await import('../../src/api.js');
+      fetchPaper.mockResolvedValueOnce({ data: { title: 'Paper' } });
+      const comp = createComponent();
+      comp.loadingPaper = true;
+
+      await comp.loadPaper();
+
+      expect(comp.paper).toEqual({ title: 'Paper' });
+      expect(comp.loadingPaper).toBe(false);
+    });
+
+    it('resets loadingPaper=false in finally on error', async () => {
+      const { fetchPaper } = await import('../../src/api.js');
+      fetchPaper.mockRejectedValueOnce(new Error('boom'));
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const comp = createComponent();
+      comp.loadingPaper = true;
+
+      await comp.loadPaper();
+
+      expect(comp.paper).toBeNull();
+      expect(comp.loadingPaper).toBe(false);
+      expect(warnSpy).toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
+  });
 });

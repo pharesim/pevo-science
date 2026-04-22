@@ -208,10 +208,29 @@ export function initReviewPage() {
       const author = this.author;
       const permlink = this.permlink;
       this.loadingPaper = true;
-      const res = await fetchPaper(author, permlink);
-      if (!this._mounted) return;
-      if (this.author !== author || this.permlink !== permlink) return;
-      this.paper = res.data;
+      try {
+        const res = await fetchPaper(author, permlink);
+        if (!this._mounted) return;
+        if (this.author !== author || this.permlink !== permlink) return;
+        this.paper = res.data;
+      } catch (err) {
+        // Sibling data-fetch methods (edit.js loadPaperData, paper-feed.js
+        // loadPapers, vouch-section.js loadVouchStatus) all wrap in try/catch
+        // for the same reason: init() calls loadPaper() without await, so a
+        // bare rejection would escape as an unhandled promise. Swallow to a
+        // console.warn; the template falls through to the not-found branch.
+        if (!this._mounted) return;
+        if (this.author !== author || this.permlink !== permlink) return;
+        console.warn('[review loadPaper]', err);
+        this.paper = null;
+      } finally {
+        // Polarity switch vs the dominant early-exit guard: finally always
+        // runs (including post-destroy), so we gate the write itself rather
+        // than returning early.
+        if (this._mounted && this.author === author && this.permlink === permlink) {
+          this.loadingPaper = false;
+        }
+      }
     },
 
     async handleConnect() {
