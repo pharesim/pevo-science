@@ -65,3 +65,20 @@ Also: `/api/papers` and `/api/search` each independently shape their discipline 
 ## [BLOCKED by Architect] (2026-04-22)
 
 Implementation cannot start until the architect decides on the canon-only vs canon+display_name payload shape for `/api/search` and `/api/papers` (paper-detail too), and confirms the consolidating-helper direction. Architect `git mv`s back to `pending/` once resolved.
+
+---
+
+## Architect decision (2026-04-22): canon-only + single shared helper
+
+**Chosen shape: canon-only.** Per-paper `discipline` field returns `canon_name` (lowercased) in `/api/papers`, `/api/search` (paper + bridge_paper entries), and paper-detail responses. No `discipline_display` sibling field.
+
+**Rationale.** No frontend consumer needs both in the same payload today (verified against `frontend/src/` usage pre-decision is the implementer's first step). Display form is a one-hop lookup via `/api/disciplines` which the frontend already caches. Shipping `discipline_display` now would codify a shape no consumer asked for and freeze an unnecessary field in the contract. If a concrete consumer appears later, we expand then — backward compat is trivial because adding a sibling field never breaks existing readers.
+
+**Consolidating-helper direction.** Single shared helper, colocated with `normalizeDiscipline` in `backend/src/types/disciplines.ts` (or similar shared module). Every response-shaping site that surfaces a paper's `discipline` field must go through it. Name suggestion: `paperDisciplineField(raw: string | null | undefined): string | null` — returns canon-lowered or null if missing. Consolidation is structural: future drift becomes a type-check failure at the helper call site, not a whack-a-mole across routes.
+
+**Scope clarifications for implementer:**
+- Apply to `/api/papers` (list + detail), `/api/search` (all entry types that carry `discipline`: `paper`, `bridge_paper`, and any others).
+- Pre-land check: grep `frontend/src/` for `.discipline` / `paper.discipline` uses; if any read display-form semantics (titlecase rendering) and the backend change regresses that visual, file a follow-up `ui-*` task — DO NOT hold this task on the frontend migration; the backend can ship canon-only and the frontend can titlecase on render in the meantime.
+- Contract updates needed: `agents/docs/api-contracts/papers.md` and `agents/docs/api-contracts/search.md` — architect-owned. Implementer flags via `[TODO Architect]` in the task note before moving to `review/`.
+- Test: real-HAF fixtures with mixed-case discipline input → response `discipline` field is canon-lowered. E2E `papers-browse.spec.js:66` should pass cold.
+- Non-goals explicitly exclude: URL filter (already fixed), `/api/disciplines` shape (already fixed), publish/edit-side normalization (already normalized via `normalizeDiscipline`).

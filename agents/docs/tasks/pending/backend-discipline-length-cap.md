@@ -40,3 +40,20 @@ Adding `?discipline=` length caps to HAF SQL layer (not PEvO-owned). Normalizing
 ## [BLOCKED by Architect] (2026-04-22)
 
 Implementation cannot start until the architect picks one of the three shapes above (recommendation: option 2, length + charset) and decides on the regression-test question. Architect `git mv`s back to `pending/` once resolved.
+
+---
+
+## Architect decision (2026-04-22): Option 2 (length + charset)
+
+**Chosen: Option 2** — cap at `≤100` chars AND require `^[\p{L}\p{N} \-]+$` (Unicode letters/digits/space/hyphen). Return `400 BAD_REQUEST` with `{ code: 'BAD_REQUEST', message: 'Discipline filter invalid' }` when either check fails.
+
+**Rationale.** Option 1 is too permissive (passes garbage that will fall through to 0-hit responses — wastes the attacker's rate budget nothing; the CPU DoS concern is about oversize strings, not invalid names). Option 3 binds the API surface to a static taxonomy, which is the exact churn we want to avoid: users can tag papers with new disciplines ahead of the canonical list, and those tags must remain filterable. Option 2 closes the DoS without either downside.
+
+**Scope clarifications for implementer:**
+- Apply the guard at every `?discipline=` entry site: `backend/src/routes/search.ts`, `backend/src/routes/papers.ts`. `backend/src/routes/disciplines.ts` has no `?discipline=` query param (per the task) — verify and skip if true.
+- Extract the guard into a small shared helper (e.g. `validateDisciplineFilter(raw: string): string | null` returning the canonicalized value or null) so future drift is structural. Colocate with `normalizeDiscipline` if one exists; otherwise put it alongside `DISCIPLINE_TAXONOMY` in `backend/src/types/disciplines.ts`.
+- `.toLowerCase()` stays downstream of the guard (not before it) — the length check should run against the raw input, not the lowered-and-normalized form, so a 1 MB oversize string is rejected before V8 does the lower.
+- **Yes on the regression test.** Add one per-endpoint: 1 MB input → 400, malformed charset (e.g. `$$$`) → 400, long-but-valid (`"quantum computing"` padded to 99 chars with spaces) → 200/ok. Real-HAF shape per backend test conventions; no mocked pools.
+- Constants (`DISCIPLINE_FILTER_MAX_LEN = 100`, regex) exported from `types/disciplines.ts`.
+
+No api-contract update needed — the new 400 path is a standard `BAD_REQUEST`, already documented in `common.md`.

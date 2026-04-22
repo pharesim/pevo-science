@@ -50,3 +50,19 @@ Changing the rate-limit buckets themselves or their TTLs.
 ## [BLOCKED by Architect] (2026-04-22)
 
 Implementation cannot start until the architect confirms the `trust proxy` value for the current topology (likely `1`) and decides whether `common.md` gains a trusted-proxy-chain subsection. Architect `git mv`s back to `pending/` once resolved.
+
+---
+
+## Architect decision (2026-04-22): `trust proxy = 1`, document in common.md
+
+**Chosen config:** `app.set('trust proxy', 1)` in `backend/src/app.ts`. Simplify `byIp(req)` to return `req.ip`. Remove manual XFF parsing.
+
+**Rationale.** Production topology is single nginx → Docker backend, so exactly one hop is trustworthy. An explicit CIDR allowlist is overkill for this shape; numeric `1` is Express-idiomatic and reviewable. If a CDN (Cloudflare, Fastly) is added later, `1` bumps to `2` or becomes an explicit CIDR — the follow-up is trivial and scoped.
+
+**Yes, document in `common.md`.** Add a short "Trusted Proxy Chain" subsection under "Rate Limiting" noting: "Per-IP rate-limit keys use the peer IP derived from `req.ip` with `trust proxy = 1`. Production topology assumes exactly one trusted proxy hop (nginx on the host). X-Forwarded-For values from untrusted upstreams are not honored." Architect edits this during re-review; implementer flags via `[TODO Architect]` note in the task.
+
+**Scope clarifications for implementer:**
+- Test: supertest request with spoofed `X-Forwarded-For: 1.2.3.4` — in production-like config (`trust proxy = 1`, where supertest injects no peer), `req.ip` is the spoof value (by design: the test simulates an intermediate proxy adding XFF). Dev-like config (no `trust proxy`) returns loopback, ignoring XFF.
+- Verify no test regression. Rate-limit tests that set `X-Forwarded-For` to distinguish IPs should still work because `trust proxy = 1` honors the first-in-chain value.
+- If any existing `byIp`-style helper exists outside `middleware/rateLimit.ts`, migrate it to `req.ip` too (grep before shipping).
+- Acknowledge the IPv6 /64 rotation non-goal explicitly in the task's changelog (attacker with a /64 block still rotates per-request legitimately; closing that requires keying on a broader CIDR or session/account — out of scope).
