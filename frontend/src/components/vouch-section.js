@@ -2,9 +2,16 @@ import Alpine from 'alpinejs';
 import { fetchVouchStatus, notifyVouch, notifyRetractVouch } from '../api.js';
 import { broadcastOps } from '../signer.js';
 import { getAppTag } from '../config.js';
+import { createTimerGuard } from '../lib/timer-guard.js';
 
 export function initVouchSection() {
   Alpine.data('vouchSection', (opts = {}) => ({
+    // Lifecycle guard. See frontend/src/lib/timer-guard.js. handleVouch /
+    // handleRetract / loadVouchStatus all await multi-second I/O (Hive
+    // broadcast + backend notify + HAF status fetch). Post-teardown writes
+    // to `step` / `message` / `vouchStatus` are a classic Alpine race.
+    ...createTimerGuard(),
+
     targetUsername: opts.targetUsername || '',
     isTargetAccredited: opts.isTargetAccredited || false,
     vouchStatus: null,
@@ -18,6 +25,10 @@ export function initVouchSection() {
     navigate(path) { Alpine.store('router').navigate(path); },
     get isConnected() { return Alpine.store('auth').isConnected; },
     get username() { return Alpine.store('auth').username; },
+
+    destroy() {
+      this._teardownTimers();
+    },
 
     get currentUserHasVouched() {
       return this.vouchStatus?.vouches?.some((v) => v.voucher === this.username) ?? false;
@@ -55,11 +66,13 @@ export function initVouchSection() {
     async loadVouchStatus() {
       try {
         const res = await fetchVouchStatus(this.targetUsername);
+        if (!this._mounted) return;
         this.vouchStatus = res.data;
       } catch {
+        if (!this._mounted) return;
         this.vouchStatus = null;
       } finally {
-        this.loading = false;
+        if (this._mounted) this.loading = false;
       }
     },
 
@@ -81,19 +94,23 @@ export function initVouchSection() {
             timestamp: new Date().toISOString(),
           }),
         }]]);
+        if (!this._mounted) return;
         try {
           const res = await notifyVouch(this.targetUsername);
+          if (!this._mounted) return;
           const accMsg = res.data.accredited
             ? ` ${this.$t('wot.accreditedViaWot', { username: this.targetUsername })}`
             : '';
           this.step = 'success';
           this.message = `${this.$t('wot.vouchSuccess')}${accMsg}`;
         } catch {
+          if (!this._mounted) return;
           this.step = 'success';
           this.message = this.$t('wot.vouchBroadcastPending');
         }
         await this.loadVouchStatus();
       } catch (err) {
+        if (!this._mounted) return;
         this.step = 'error';
         // Sanitization pattern (see executeUpgrade() in settings.js).
         console.warn('[vouch]', err);
@@ -119,8 +136,10 @@ export function initVouchSection() {
             timestamp: new Date().toISOString(),
           }),
         }]]);
+        if (!this._mounted) return;
         try {
           const res = await notifyRetractVouch(this.targetUsername);
+          if (!this._mounted) return;
           const revocations = res.data.revocations;
           const revMsg = revocations.length > 0
             ? ` ${this.$t('wot.accreditationRevoked', { accounts: revocations.join(', ') })}`
@@ -128,6 +147,7 @@ export function initVouchSection() {
           this.step = 'success';
           this.message = `${this.$t('wot.retractSuccess')}${revMsg}`;
         } catch {
+          if (!this._mounted) return;
           this.step = 'success';
           this.message = this.$t('wot.retractBroadcastPending');
         }
@@ -135,6 +155,7 @@ export function initVouchSection() {
         this.retractReason = '';
         await this.loadVouchStatus();
       } catch (err) {
+        if (!this._mounted) return;
         this.step = 'error';
         // Sanitization pattern (see executeUpgrade() in settings.js).
         console.warn('[vouch retract]', err);

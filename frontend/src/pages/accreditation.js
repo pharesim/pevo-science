@@ -1,6 +1,7 @@
 import Alpine from 'alpinejs';
 import { requestAccreditation, startOrcid, searchAccounts } from '../api.js';
 import { formatDate } from '../components/paper-card.js';
+import { createTimerGuard } from '../lib/timer-guard.js';
 
 const template = `
       <div x-data="accreditationPage" class="container-narrow py-8">
@@ -177,6 +178,13 @@ export { template as accreditationPageTemplate };
 
 export function initAccreditationPage() {
   Alpine.data('accreditationPage', () => ({
+    // Lifecycle guards (spread first). See frontend/src/lib/timer-guard.js.
+    // Every async catch or post-await continuation that writes to component
+    // state must check `_mounted` first — handleSubmit, handleOrcidVerify,
+    // and the searchColleagues debounce all await multi-second I/O that can
+    // resolve after an Alpine.destroyTree().
+    ...createTimerGuard(),
+
     fullName: '',
     institution: '',
     field: '',
@@ -195,6 +203,18 @@ export function initAccreditationPage() {
     vouchDebounce: null,
 
     navigate(path) { Alpine.store('router').navigate(path); },
+
+    destroy() {
+      // Teardown timers first so _mounted flips to false before any other
+      // cleanup touches reactive state. Subsequent async continuations see
+      // _mounted === false and short-circuit.
+      this._teardownTimers();
+      if (this.vouchDebounce) {
+        clearTimeout(this.vouchDebounce);
+        this.vouchDebounce = null;
+      }
+    },
+
     get isConnected() { return Alpine.store('auth').isConnected; },
     get username() { return Alpine.store('auth').username; },
     get isAccredited() { return Alpine.store('auth').isAccredited; },
@@ -218,12 +238,17 @@ export function initAccreditationPage() {
         return;
       }
       this.vouchDebounce = setTimeout(async () => {
+        if (!this._mounted) return;
         this.vouchSearching = true;
         try {
-          this.vouchResults = await searchAccounts(q);
+          const results = await searchAccounts(q);
+          if (!this._mounted) return;
+          this.vouchResults = results;
         } catch {
+          if (!this._mounted) return;
           this.vouchResults = [];
         }
+        if (!this._mounted) return;
         this.vouchSearching = false;
         this.vouchSearched = true;
       }, 300);
@@ -239,6 +264,7 @@ export function initAccreditationPage() {
       try {
         await Alpine.store('auth').connect();
       } catch (err) {
+        if (!this._mounted) return;
         Alpine.store('toast').show(err.message || this.$t('common.connectionFailed'), 'error');
       }
     },
@@ -259,9 +285,11 @@ export function initAccreditationPage() {
           orcid: this.orcid || '',
         });
 
+        if (!this._mounted) return;
         this.step = 'success';
         this.resultMessage = res.data.message;
       } catch (err) {
+        if (!this._mounted) return;
         this.step = 'error';
         // Sanitization pattern (see executeUpgrade() in settings.js).
         console.warn('[accreditation submit]', err);
@@ -278,12 +306,14 @@ export function initAccreditationPage() {
 
       try {
         const data = await startOrcid('accredit');
+        if (!this._mounted) return;
         const target = new URL(data.redirect_url);
         if (!['orcid.org', 'sandbox.orcid.org'].includes(target.hostname)) {
           throw new Error('Invalid ORCID redirect URL');
         }
         window.location.href = data.redirect_url;
       } catch (err) {
+        if (!this._mounted) return;
         Alpine.store('toast').show(err.message || 'ORCID verification failed', 'error');
         this.orcidLoading = false;
         localStorage.removeItem('pevo_orcid_mode');
