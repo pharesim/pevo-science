@@ -127,6 +127,44 @@ describe('GET /api/disciplines — mocked pool', () => {
     expect(hafQueryMock).toHaveBeenCalledTimes(1);
   });
 
+  it('BE-DISPLAY-NAME-TITLECASE: display_name is INITCAP(LOWER()) — mixed-case rows collapse to canonical titlecase', async () => {
+    // BE-DISPLAY-NAME-TITLECASE: `display_name` is produced via
+    // INITCAP(LOWER(...)) so the three casing variants "Computer Science",
+    // "computer science", "COMPUTER SCIENCE" collapse under the GROUP BY
+    // LOWER() into one row with `canon_name: "computer science"` and
+    // `display_name: "Computer Science"`. Real-HAF cannot be seeded with
+    // mixed-case fixtures (per the existing dedup test carve-out above), so
+    // this test captures the outgoing SQL + simulates the Postgres result
+    // the INITCAP(LOWER(...)) expression would produce on that fixture.
+    let capturedSql: string | undefined;
+    hafQueryMock.mockImplementation(async (sql: string) => {
+      capturedSql = sql;
+      // Simulate Postgres GROUP BY LOWER() + INITCAP(LOWER()) reducing the
+      // three input rows (Computer Science, computer science, COMPUTER
+      // SCIENCE with counts 1+2+1=4) to a single canonical row.
+      return {
+        rows: [
+          { canon_name: 'computer science', display_name: 'Computer Science', paper_count: 4 },
+        ],
+      };
+    });
+    const res = await request(app).get('/api/disciplines');
+    expect(res.status).toBe(200);
+    expect(res.body.data).toHaveLength(1);
+    expect(res.body.data[0]).toMatchObject({
+      canon_name: 'computer science',
+      display_name: 'Computer Science',
+      paper_count: 4,
+    });
+    // Pin the SQL shape: display_name is INITCAP(LOWER(...)), not MAX(...).
+    // A revert to MAX() would cause `display_name === canon_name` for pure-
+    // ASCII disciplines on the Postgres C-locale (uppercase codepoints sort
+    // before lowercase), silently regressing the consumer-facing label.
+    expect(capturedSql).toBeDefined();
+    expect(capturedSql!).toMatch(/INITCAP\(LOWER\(json_metadata/);
+    expect(capturedSql!).not.toMatch(/MAX\(json_metadata/);
+  });
+
   it('Hold #7a: catch branch (pool exists, query throws) returns 200 + data: []', async () => {
     // `fetchDisciplinesFromHaf` catches pool.query errors, logs, and returns
     // null. The router coerces null → []. Verify the error path does NOT

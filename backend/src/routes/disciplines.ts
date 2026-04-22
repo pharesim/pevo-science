@@ -23,14 +23,18 @@ async function fetchDisciplinesFromHaf() {
 
   try {
     // Dedup mixed-case discipline names (e.g. "Physics" vs "physics") by
-    // grouping on LOWER(name). display_name is the arbitrary-but-stable
-    // MAX(name) representative of the lowercase group; the frontend is
-    // expected to titlecase it for rendering. canon_name is the lowercase
-    // value that the ?discipline= filter (search.ts / papers.ts) matches on.
+    // grouping on LOWER(name). display_name is the titlecased form of the
+    // lowercase group (INITCAP on LOWER produces a stable, consistent
+    // presentation regardless of which casing variants are stored on-chain),
+    // so every consumer — frontend, mobile, CLI, indexers — gets a
+    // render-ready label without reimplementing titlecase. canon_name is
+    // the lowercase value that the ?discipline= filter (search.ts /
+    // papers.ts) matches on. INITCAP is safe inside a LOWER()-group because
+    // the input to INITCAP is uniform (the grouped LOWER() value).
     const result = await pool.query<{ canon_name: string; display_name: string; paper_count: number }>(
       `SELECT
         LOWER(json_metadata -> $1 ->> 'discipline') AS canon_name,
-        MAX(json_metadata -> $1 ->> 'discipline') AS display_name,
+        INITCAP(LOWER(json_metadata -> $1 ->> 'discipline')) AS display_name,
         count(*)::int AS paper_count
        FROM ${T.comments}
        WHERE parent_author = '' AND parent_permlink = $1
