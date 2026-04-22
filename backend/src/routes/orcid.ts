@@ -2,6 +2,7 @@ import { Router, type Request, type Response } from 'express';
 import crypto from 'node:crypto';
 import jwt from 'jsonwebtoken';
 import { PrivateKey } from '@hiveio/dhive';
+import { z } from 'zod';
 import { config } from '../config.js';
 import { hiveClient, broadcastJsonWithTimeout } from '../hive.js';
 import { getRedis, isRedisAvailable } from '../redis.js';
@@ -12,6 +13,16 @@ import { sendOk, sendError } from '../response.js';
 import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';
 import { rateLimit, byIp } from '../middleware/rateLimit.js';
 import { logger } from '../logger.js';
+
+// Per-route Zod body schema for POST /api/orcid/callback
+// (BE-REQUEST-BODY-TYPING-ZOD). Narrows req.body to typed fields so
+// downstream code doesn't need `req.body as { code?: string; state?: string }`
+// casts. Business-required guards ("code and state are required") still
+// run after the schema parse; Zod only enforces shape.
+const CallbackBodySchema = z.object({
+  code: z.string().optional(),
+  state: z.string().optional(),
+});
 
 const router = Router();
 
@@ -178,7 +189,11 @@ router.post('/callback', callbackLimiter, async (req: Request, res: Response) =>
     return sendError(res, 500, 'INTERNAL_ERROR', 'ORCID integration is not configured');
   }
 
-  const { code, state } = req.body as { code?: string; state?: string };
+  const parsed = CallbackBodySchema.safeParse(req.body);
+  if (!parsed.success) {
+    return sendError(res, 400, 'VALIDATION_ERROR', 'Invalid request body', { issues: parsed.error.issues });
+  }
+  const { code, state } = parsed.data;
   if (!code || !state) {
     return sendError(res, 400, 'BAD_REQUEST', 'code and state are required');
   }
@@ -342,10 +357,16 @@ async function handleLogin(res: Response, orcidId: string): Promise<void> {
   );
 
   if (result.rows.length === 0) {
-    // `orcid_id` must live inside `error.details` so it survives the ApiError
-    // envelope. Top-level siblings are not part of the envelope contract and
-    // get dropped by strict parsers.
-    sendError(res, 404, 'NO_ACCOUNT', 'No account linked to this ORCID. Please sign up first.', { orcid_id: orcidId });
+    // NO_ACCOUNT 409/404 carries no payload. Per BE-ORCID-NO-ACCOUNT-
+    // ERROR-SHAPE-ALIGN (2026-04-22), the prior `{ orcid_id }` details
+    // field was never consumed by any frontend handler — the caller
+    // already knows which ORCID they submitted, so echoing it back is
+    // redundant. The contract (api-contracts/orcid.md) previously
+    // documented it as a top-level sibling of `error`, which the
+    // sendError envelope does not produce; the mismatch was
+    // audit-hygiene noise with no runtime impact. Architect updates
+    // the contract during re-review.
+    sendError(res, 404, 'NO_ACCOUNT', 'No account linked to this ORCID. Please sign up first.');
     return;
   }
 
