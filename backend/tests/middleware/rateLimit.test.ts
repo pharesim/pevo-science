@@ -4,9 +4,15 @@ import express from 'express';
 import { rateLimit, byIp, byAccount } from '../../src/middleware/rateLimit.js';
 
 let testCounter = 0;
-function createTestApp(opts: { windowMs: number; max: number; keyFn: (req: express.Request) => string }) {
+function createTestApp(
+  opts: { windowMs: number; max: number; keyFn: (req: express.Request) => string },
+  appOpts: { trustProxy?: number | boolean } = {},
+) {
   const config = { ...opts, name: `test-${Date.now()}-${++testCounter}` };
   const app = express();
+  if (appOpts.trustProxy !== undefined) {
+    app.set('trust proxy', appOpts.trustProxy);
+  }
   app.use(express.json());
   // Simulate verifyHiveSignature: populate req.hiveUsername from header
   app.use((req, _res, next) => {
@@ -74,5 +80,51 @@ describe('rateLimit middleware', () => {
     // Second user is unaffected
     const bobOk = await request(app).get('/test').set('X-Hive-Username', 'bob');
     expect(bobOk.status).toBe(200);
+  });
+
+  // Regression: production config sets `trust proxy = 1`, so nginx's appended
+  // XFF value becomes req.ip. Two requests with *different* XFF values should
+  // key on different IPs (each gets its own bucket). A single attacker rotating
+  // XFF cannot starve the bucket — but nginx appends the true peer IP, so a
+  // direct-to-backend client cannot actually rotate in production. The test
+  // here pins the behavior that req.ip reflects the first-in-chain XFF value.
+  it('byIp with trust proxy=1 honors first-in-chain X-Forwarded-For', async () => {
+    const app = createTestApp(
+      { windowMs: 60_000, max: 1, keyFn: byIp },
+      { trustProxy: 1 },
+    );
+
+    // IP A (1.2.3.4) uses its single request
+    const aOk = await request(app).get('/test').set('X-Forwarded-For', '1.2.3.4');
+    expect(aOk.status).toBe(200);
+
+    // IP B (5.6.7.8) is a different bucket — should also succeed
+    const bOk = await request(app).get('/test').set('X-Forwarded-For', '5.6.7.8');
+    expect(bOk.status).toBe(200);
+
+    // IP A again — now over its bucket's limit
+    const aBlocked = await request(app).get('/test').set('X-Forwarded-For', '1.2.3.4');
+    expect(aBlocked.status).toBe(429);
+  });
+
+  // Regression: without `trust proxy`, Express ignores XFF and req.ip is the
+  // socket peer (loopback under supertest). Arbitrary XFF rotation does NOT
+  // produce distinct buckets — this is the spoof-guard property.
+  it('byIp without trust proxy ignores X-Forwarded-For (spoof guard)', async () => {
+    const app = createTestApp(
+      { windowMs: 60_000, max: 1, keyFn: byIp },
+      { trustProxy: false },
+    );
+
+    // First spoofed IP uses the single-request bucket
+    const first = await request(app).get('/test').set('X-Forwarded-For', '1.2.3.4');
+    expect(first.status).toBe(200);
+
+    // A different spoofed XFF on the SAME loopback peer must NOT get a fresh
+    // bucket — `req.ip` is loopback in both cases, so the second request is
+    // blocked. This is the property the previous manual-XFF-parsing byIp()
+    // silently broke.
+    const second = await request(app).get('/test').set('X-Forwarded-For', '5.6.7.8');
+    expect(second.status).toBe(429);
   });
 });

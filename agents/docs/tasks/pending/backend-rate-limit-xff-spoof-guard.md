@@ -66,3 +66,18 @@ Implementation cannot start until the architect confirms the `trust proxy` value
 - Verify no test regression. Rate-limit tests that set `X-Forwarded-For` to distinguish IPs should still work because `trust proxy = 1` honors the first-in-chain value.
 - If any existing `byIp`-style helper exists outside `middleware/rateLimit.ts`, migrate it to `req.ip` too (grep before shipping).
 - Acknowledge the IPv6 /64 rotation non-goal explicitly in the task's changelog (attacker with a /64 block still rotates per-request legitimately; closing that requires keying on a broader CIDR or session/account — out of scope).
+
+---
+
+## [TODO Architect] — common.md doc snippet
+
+Add a "Trusted Proxy Chain" subsection under "Rate Limiting" in `agents/docs/api-contracts/common.md` with the architect-specified text:
+
+> Per-IP rate-limit keys use the peer IP derived from `req.ip` with `trust proxy = 1`. Production topology assumes exactly one trusted proxy hop (nginx on the host). X-Forwarded-For values from untrusted upstreams are not honored.
+
+Implementer cannot edit contract files per task boundary; architect owns this on re-review.
+
+## Changelog
+
+- **2026-04-22 (backend implementer):** Implemented architect decision. `app.set('trust proxy', 1)` was already present in `backend/src/app.ts:53` (added by an earlier change); left as-is. Simplified `byIp()` in `backend/src/middleware/rateLimit.ts` to return `req.ip ?? 'unknown'` and removed the manual `x-forwarded-for` header parsing. Grep of `backend/src/**/*.ts` confirms no other sites consume `x-forwarded-for` / `req.headers['x-forwarded-for']` for request-keying (the one remaining `0xff` hit in `routes/ipfs.ts` is an unrelated JPEG magic-byte check). Added two supertest regressions to `backend/tests/middleware/rateLimit.test.ts`: (1) `trust proxy = 1` honors first-in-chain XFF so distinct XFF values get distinct buckets, (2) without `trust proxy`, supertest XFF rotation does NOT create fresh buckets (the spoof-guard property).
+- **IPv6 /64 rotation non-goal:** `trust proxy = 1` correctly closes the *header-spoofing* bypass (attacker sending arbitrary `X-Forwarded-For` headers directly to an unproxied backend). It does NOT close the *legitimate-IP-rotation* bypass: an attacker controlling an IPv6 /64 block rotates source IPs per-request at the socket level, and each rotated IP becomes a fresh bucket. Closing that requires keying on a broader IPv6 CIDR (e.g. /64) or on session/account rather than raw peer IP. Out of scope for this task; track separately if it becomes a real threat.

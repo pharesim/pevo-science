@@ -73,9 +73,14 @@ export function rateLimit(config: RateLimitConfig) {
   };
 }
 
-/** Key by client IP address */
+/** Key by client IP address.
+ *
+ * Relies on Express's `trust proxy = 1` setting in `app.ts` to derive `req.ip`
+ * from the first-in-chain `X-Forwarded-For` value appended by nginx. Without
+ * that app-level setting, Express ignores XFF and `req.ip` is the peer socket
+ * address, so arbitrary XFF values from clients cannot spoof the key. */
 export function byIp(req: Request): string {
-  return (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.ip || 'unknown';
+  return req.ip ?? 'unknown';
 }
 
 /** Key by verified Hive username (set by verifyHiveSignature middleware).
