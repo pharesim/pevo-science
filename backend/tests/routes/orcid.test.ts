@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import request from 'supertest';
 import jwt from 'jsonwebtoken';
+import crypto from 'node:crypto';
 import { PrivateKey } from '@hiveio/dhive';
 
 // DB pool mocks. Root CLAUDE.md says "no mocked database pools," but these
@@ -78,6 +79,7 @@ vi.mock('../../src/accreditation.js', () => ({
 import { createApp } from '../../src/app.js';
 import { config } from '../../src/config.js';
 import { getRedis } from '../../src/redis.js';
+import { logger } from '../../src/logger.js';
 import { clearRateLimitKeys } from '../support/redis-helpers.js';
 // Test-only export — see note at orcid.ts __test_releaseBindingLock export.
 import { __test_releaseBindingLock as releaseBindingLock } from '../../src/routes/orcid.js';
@@ -1156,6 +1158,97 @@ describe.each([
         expect(await redis.get(lockKey)).toBe(nonceB);
       } finally {
         await redis.del(lockKey).catch(() => { /* cleanup */ });
+      }
+    },
+  );
+
+  // Nonce-shape invariant drift: if a future refactor changes the nonce
+  // encoding away from the 32-char lowercase hex shape, the Lua CAS byte-
+  // equality contract would silently break. acquireBindingLock guards this
+  // at the source with a LOCK_NONCE_RE regex check; on mismatch it emits a
+  // structured `event: 'nonce_drift'` error log and returns 'unavailable' so
+  // the handler falls through to the HAF-only degrade path (NOT a 500 on a
+  // consumed state token — that would hard-block the user's OAuth flow).
+  //
+  // This spec forces the branch by stubbing `crypto.randomBytes` during the
+  // /callback dispatch to return a short buffer (10 hex chars, fails the
+  // 32-char regex). Reverting the regex guard to `throw new Error(...)` or
+  // removing it entirely would fail this spec; the other specs in this file
+  // cannot distinguish the nonce-drift path from the Redis-outage path.
+  it(
+    'nonce-shape invariant drift: /callback degrades to 2xx, emits event: nonce_drift, skips lock SETNX',
+    async () => {
+      const redis = getRedis();
+      if (!redis) return;
+      const orcidId = `0000-0001-${orcidSuffix}${orcidSuffix}${orcidSuffix}${orcidSuffix}-0007`;
+      const lockKey = `${config.appTag}:orcid_binding_lock:${orcidId}`;
+      const cacheKey = `${config.appTag}:orcid_binding:${orcidId}`;
+      await redis.del(lockKey, cacheKey).catch(() => { /* ignore */ });
+
+      installOrcidFetchStub({ orcid: orcidId, name: 'Alice', works: 3 });
+      installLockModeMocks();
+
+      // Get state from /start BEFORE installing the randomBytes spy so the
+      // state token gets a valid nonce. The spy activates only for the
+      // /callback dispatch below, scoping the drift to acquireBindingLock.
+      const state = await startAuthed(mode, 'alice');
+
+      // Spy on crypto.randomBytes so the nonce generated inside
+      // acquireBindingLock fails LOCK_NONCE_RE. Short buffer → .toString('hex')
+      // is 10 chars, not the required 32; regex rejects it. handleAccredit and
+      // handleLink use crypto.createHash (not randomBytes) between /start and
+      // the lock acquisition, so this spy only affects the lock nonce path.
+      const randomBytesSpy = vi.spyOn(crypto, 'randomBytes').mockImplementation(((size: number) => {
+        // Only shrink the 16-byte call (the lock nonce). Defensive: if any
+        // other caller asks for a different size during this window, honor it
+        // to avoid breaking unrelated paths.
+        if (size === 16) return Buffer.from('shortdrift');
+        return Buffer.alloc(size);
+      }) as typeof crypto.randomBytes);
+      // Spy on redis.set so we can assert the lock-key SETNX was never issued.
+      const origSet = redis.set.bind(redis);
+      const setSpy = vi.spyOn(redis, 'set').mockImplementation(async (...args: unknown[]) => {
+        // @ts-expect-error ioredis set is variadic; forwarding by spread is safe here.
+        return origSet(...args);
+      });
+      const loggerErrorSpy = vi.spyOn(logger, 'error').mockImplementation(() => { /* silence */ });
+
+      try {
+        const res = await request(app)
+          .post('/api/orcid/callback')
+          .set('Authorization', `Bearer ${jwtFor('alice')}`)
+          .send({ code: 'fake', state });
+
+        // Fail-soft: the /callback returns 2xx rather than 500, so the user is
+        // not hard-blocked on a consumed state token. Degrades to HAF-only
+        // dedup (the 120s binding cache still guards the narrow TOCTOU window).
+        expect(res.status).toBe(200);
+        expect(res.body.data.mode).toBe(mode);
+
+        // Structured log discriminator fires — alert pipelines keyed on the
+        // `event` field can distinguish nonce_drift (code defect) from
+        // redis_outage (infra event). A regression to the single suffix
+        // "— degrading to HAF-only path" would pass the 2xx assertion above
+        // but fail this one.
+        const nonceDriftCalls = loggerErrorSpy.mock.calls.filter(
+          (call) => typeof call[0] === 'object' && call[0] !== null && (call[0] as { event?: unknown }).event === 'nonce_drift',
+        );
+        expect(nonceDriftCalls.length).toBeGreaterThanOrEqual(1);
+
+        // The lock SETNX must never have been attempted — the regex guard
+        // exited acquireBindingLock before redis.set was called. A regression
+        // that checked the regex AFTER the SETNX would fail this assertion.
+        const lockSetCalls = setSpy.mock.calls.filter(
+          (call) => typeof call[0] === 'string' && call[0].includes(':orcid_binding_lock:'),
+        );
+        expect(lockSetCalls).toEqual([]);
+        // Sanity: the key is absent in Redis too, not just unset by the spy.
+        expect(await redis.get(lockKey)).toBeNull();
+      } finally {
+        randomBytesSpy.mockRestore();
+        setSpy.mockRestore();
+        loggerErrorSpy.mockRestore();
+        await redis.del(lockKey, cacheKey).catch(() => { /* cleanup */ });
       }
     },
   );

@@ -13,6 +13,7 @@ import { sendOk, sendError } from '../response.js';
 import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';
 import { rateLimit, byIp } from '../middleware/rateLimit.js';
 import { logger } from '../logger.js';
+import { assertNever } from '../util/assertNever.js';
 
 // Per-route Zod body schema for POST /api/orcid/callback
 // (BE-REQUEST-BODY-TYPING-ZOD). Narrows req.body to typed fields so
@@ -584,7 +585,12 @@ type BindingLockState =
 //   { state: 'unavailable' }     — Redis down or threw; caller degrades to
 //                                  the cache-less HAF-only path (accept the
 //                                  narrow race in degraded mode rather than
-//                                  failing closed). A warn has been logged.
+//                                  failing closed). An error has been logged
+//                                  on both causes (Redis outage OR nonce-
+//                                  shape invariant drift); pino JSON carries
+//                                  an `event` discriminator ('redis_outage'
+//                                  vs 'nonce_drift') so text-matching alert
+//                                  pipelines can tell the two apart.
 async function acquireBindingLock(orcidId: string): Promise<BindingLockState> {
   const redis = getRedis();
   if (!redis || !isRedisAvailable()) return { state: 'unavailable' };
@@ -604,8 +610,8 @@ async function acquireBindingLock(orcidId: string): Promise<BindingLockState> {
     // only the hex-shape assertion is load-bearing.)
     if (!LOCK_NONCE_RE.test(nonce)) {
       logger.error(
-        { orcidId },
-        'orcid binding lock nonce shape invariant violated — degrading to HAF-only path',
+        { orcidId, event: 'nonce_drift' },
+        'orcid binding lock nonce shape invariant violated — code defect, degrading to HAF-only path',
       );
       return { state: 'unavailable' };
     }
@@ -619,12 +625,16 @@ async function acquireBindingLock(orcidId: string): Promise<BindingLockState> {
     if (result === 'OK') return { state: 'acquired', nonce };
     return { state: 'held' };
   } catch (err) {
-    // Item #3: promote warn → error to match cacheOrcidBinding's round-2
-    // precedent. Redis outage during lock acquisition silently degrades every
-    // binding attempt to the full TOCTOU window; that's a paging-tier event,
-    // not a warn-tier one. Behavior unchanged (still returns 'unavailable' so
-    // the handler falls back to the HAF-only path).
-    logger.error({ err, orcidId }, 'ORCID binding lock acquisition failed — degrading to HAF-only path');
+    // Redis outage during lock acquisition silently degrades every binding
+    // attempt to the full TOCTOU window; that's a paging-tier event, not a
+    // warn-tier one. Behavior unchanged (still returns 'unavailable' so the
+    // handler falls back to the HAF-only path). The `event: 'redis_outage'`
+    // structured field discriminates this cause from `event: 'nonce_drift'`
+    // above so alert pipelines keyed on message text can tell the two apart.
+    logger.error(
+      { err, orcidId, event: 'redis_outage' },
+      'orcid binding lock acquisition failed — redis outage, degrading to HAF-only path',
+    );
     return { state: 'unavailable' };
   }
 }
@@ -699,8 +709,11 @@ async function withOrcidBindingLock(
     // handling it here becomes a compile error. Belt-and-suspenders alongside
     // the docblock "no double response" contract above — a future fourth
     // variant must be routed explicitly rather than silently falling through.
-    const _exhaustive: never = lock;
-    void _exhaustive;
+    // `assertNever` also enforces this at runtime: if a value with an unknown
+    // discriminant ever reaches this branch (JSON.parse round-trip, unsafe
+    // cast, test mock bypassing types), the throw surfaces as a 500 via the
+    // outer /callback catch instead of a silent hang with no response sent.
+    assertNever(lock);
   }
 }
 
