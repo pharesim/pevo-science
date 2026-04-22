@@ -138,11 +138,10 @@ export function initOrcidCallbackPage() {
       // the 503-refresh-retry invariant.
       localStorage.removeItem('pevo_orcid_mode');
 
-      // Handlers below are _mounted-gated by the check above; they do not
-      // re-check individually, except _handleAccredit, which self-guards
-      // because its side effects (toast, auth-store refresh) persist beyond
-      // this component. Direct calls from elsewhere to a non-self-guarded
-      // handler must guard at the call site.
+      // Handlers self-guard on _mounted. The dispatch-level check above is
+      // belt-and-suspenders — either guard alone would suffice; both together
+      // tolerate a direct-call code path being added later without re-reading
+      // the whole file.
       switch (data.mode) {
         case 'signup':
           this._handleSignup(data);
@@ -163,6 +162,7 @@ export function initOrcidCallbackPage() {
     },
 
     _handleSignup(data) {
+      if (!this._mounted) return;
       // Store verified ORCID nonce for the signup page
       localStorage.setItem('pevo_signup_orcid_token', data.orcid_token);
       localStorage.setItem('pevo_signup_orcid_id', data.orcid_id);
@@ -177,6 +177,7 @@ export function initOrcidCallbackPage() {
     },
 
     _handleLogin(data) {
+      if (!this._mounted) return;
       this.status = 'login-success';
 
       const auth = Alpine.store('auth');
@@ -203,10 +204,6 @@ export function initOrcidCallbackPage() {
     },
 
     _handleAccredit(data) {
-      // Self-guard: unlike the other handlers, this one has no navigation to
-      // terminate the flow. It fires a toast and an auth-store refresh whose
-      // side effects outlive the component, so direct calls must no-op
-      // post-destroy.
       if (!this._mounted) return;
       this.status = 'accredit-success';
       this.resultUsername = data.username;
@@ -217,6 +214,7 @@ export function initOrcidCallbackPage() {
     },
 
     _handleLink(data) {
+      if (!this._mounted) return;
       // Signal settings page to show success
       localStorage.setItem('pevo_orcid_link_complete', '1');
       this.navigate('/settings');
