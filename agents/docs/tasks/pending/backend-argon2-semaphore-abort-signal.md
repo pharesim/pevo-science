@@ -37,3 +37,28 @@ Lean Option A for explicitness; B if Option A's call-site churn is unacceptable.
 ## [TODO Architect]
 
 - Decide Option A vs B. Lean A.
+
+## Backend re-review signal (2026-04-22, worktree agent-a381cfde):
+
+Implemented Option A per architect's lean.
+
+**Semaphore (`backend/src/lib/argon2-semaphore.ts`):**
+- New exported `ArgonAbortError` (name = `'AbortError'`, matching the `DOMException('…', 'AbortError')` convention) and `RunWithArgon2SlotOptions` interface.
+- `runWithArgon2Slot(fn, options?)` now accepts `{ signal?: AbortSignal }`.
+- Three checkpoints:
+  1. Pre-queue: `signal.aborted` at entry → throw `ArgonAbortError` before touching counters / queue state.
+  2. While parked: `signal`'s `abort` event listener splices the exact waiter object out of `waiters[]` and rejects its Promise with `ArgonAbortError`. Removing from the queue prevents a later slot-release from `shift`-ing a dead waiter.
+  3. At slot-grant: race guard — if the slot was granted just before the abort listener fired, skip `fn()`, release the slot to the next waiter, throw `ArgonAbortError`.
+- Abort listener registered with `{ once: true }` and explicitly removed in the `finally` block to avoid listener leaks on the happy path.
+- Waiter shape upgraded from `Array<() => void>` pair-tuple to `type Waiter = { resolve; reject }` with a closure-scoped `waiter` variable so the abort handler can locate the exact entry via `indexOf` (array identity, not value match).
+
+**Call sites:**
+- `backend/src/routes/auth.ts`: added module-local `requestAbortSignal(req, res)` helper (Node 20 / Express 5 don't expose `req.signal` natively — adds fallback via `req.once('close')` gated by `!res.writableEnded`). Threaded `{ signal }` through every `runWithArgon2Slot` call and `burnSentinel` call in `/signup`, `/resend-verification`, `/login`, `/reset-request`, `/reset`, `/recover`. `burnSentinel` signature extended: `burnSentinel(input, signal?)`. Expanded `handleArgonQueueFull` to also swallow `ArgonAbortError` → log at `debug` and return `true` so the shared catch doesn't fall through to `sendError(500)` on a torn-down socket. Also extended burnSentinel's internal catch to re-throw `ArgonAbortError` (matching the existing `ArgonQueueFullError`/`ShuttingDownError` propagation policy) so an abort during a sentinel burn doesn't get swallowed and reopen the timing oracle.
+- `backend/src/routes/signup-verify.ts`, `backend/src/routes/custody.ts`, `backend/src/routes/settings.ts`: same `requestAbortSignal` helper copied into each file (no shared new file per the file-list scope), threaded through their `runWithArgon2Slot` / `burnSentinel` calls. Each route's existing `catch` block now recognizes `ArgonAbortError` as a silent-return case (debug log, no `sendError`).
+
+**Test (`backend/tests/lib/argon2-semaphore.test.ts`):**
+- New `describe('AbortSignal — drop queued waiters on client disconnect')` block with two cases:
+  1. cap=1, A holds the slot, B queues with an `AbortController.signal`, C queues after B. Aborting B asserts: (a) B's fn `callCount === 0`, (b) B rejects with `ArgonAbortError` where `err.name === 'AbortError'`, (c) `queueDepth` decrements cleanly, (d) when A resolves, C (not a ghost B) gets the slot and proceeds.
+  2. Already-aborted signal short-circuits: no queue state mutated, `inFlight === 0`, `queueDepth === 0`, fn never called.
+
+**Local verification:** `npx tsc --noEmit` clean. `npm run lint` clean (2 pre-existing `any` warnings in `seed-phrase.ts`, unchanged). Tests: `tests/lib/argon2-semaphore.test.ts` (15/15), plus full run of `tests/routes/{auth,auth-concurrency,custody,signup-verify,settings-set-password,settings,recover}.test.ts` (96/96) against real HAF + Redis/Postgres via Docker network IPs.

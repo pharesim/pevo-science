@@ -11,10 +11,22 @@ import { broadcastSendOperationsWithTimeout } from '../hive.js';
 import { decryptKey } from '../custody-crypto.js';
 import { logCustodyBroadcast } from '../custody-audit.js';
 import { logger } from '../logger.js';
-import { runWithArgon2Slot, ArgonQueueFullError, ShuttingDownError } from '../lib/argon2-semaphore.js';
+import { runWithArgon2Slot, ArgonQueueFullError, ShuttingDownError, ArgonAbortError } from '../lib/argon2-semaphore.js';
 import { handleBroadcastError } from '../lib/broadcast-error.js';
 
 const router = Router();
+
+// Build an AbortSignal tied to the HTTP request's lifetime. See the same
+// helper in routes/auth.ts for the rationale — Node 20 / Express 5 don't
+// expose `req.signal`, so we reconstruct it from the 'close' event to feed
+// `runWithArgon2Slot(..., { signal })`.
+function requestAbortSignal(req: Request, res: Response): AbortSignal {
+  const ac = new AbortController();
+  req.once('close', () => {
+    if (!res.writableEnded) ac.abort();
+  });
+  return ac.signal;
+}
 
 // Allowed Hive operations for custodial broadcast
 const ALLOWED_OPS = new Set(['comment', 'vote', 'custom_json']);
@@ -164,6 +176,7 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
 // POST /api/custody/upgrade — Notify backend that key upgrade completed (LA12)
 // ─────────────────────────────────────────────────────────────
 router.post('/upgrade', verifyHiveSignature, upgradeLimiter, async (req: Request, res: Response) => {
+  const abortSignal = requestAbortSignal(req, res);
   const username = req.hiveUsername;
   const custody = req.hiveCustody;
 
@@ -204,7 +217,7 @@ router.post('/upgrade', verifyHiveSignature, upgradeLimiter, async (req: Request
     }
 
     // Verify password re-entry
-    const valid = await runWithArgon2Slot(() => argon2.verify(account.password_hash, password));
+    const valid = await runWithArgon2Slot(() => argon2.verify(account.password_hash, password), { signal: abortSignal });
     if (!valid) {
       logCustodyBroadcast(username, 'upgrade_failure').catch(() => {});
       return sendError(res, 401, 'UNAUTHORIZED', 'Invalid password');
@@ -240,6 +253,13 @@ router.post('/upgrade', verifyHiveSignature, upgradeLimiter, async (req: Request
     if (err instanceof ShuttingDownError) {
       logger.info({ err, username }, 'argon2 semaphore shutting down — returning 503');
       return sendError(res, 503, 'SERVICE_UNAVAILABLE', 'Service shutting down. Please retry.');
+    }
+    if (err instanceof ArgonAbortError) {
+      // Client disconnected before the argon2 slot was granted — socket is
+      // gone, no response to write. Silently swallow so the global error
+      // handler doesn't 500 into a torn-down connection.
+      logger.debug({ err, username }, 'argon2 slot aborted by client disconnect — no response to write');
+      return;
     }
     logger.error({ err, username }, 'Custody upgrade failed');
     sendError(res, 500, 'INTERNAL_ERROR', 'Upgrade failed');

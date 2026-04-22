@@ -13,10 +13,23 @@ import { encryptKey } from '../custody-crypto.js';
 import { createClaimedAccount } from '../account-creation.js';
 import { logger } from '../logger.js';
 import { burnSentinel } from './auth.js';
-import { runWithArgon2Slot, ArgonQueueFullError, ShuttingDownError } from '../lib/argon2-semaphore.js';
+import { runWithArgon2Slot, ArgonQueueFullError, ShuttingDownError, ArgonAbortError } from '../lib/argon2-semaphore.js';
 import { hashEmailForLogs } from '../lib/log-pii.js';
 
 const router = Router();
+
+// Build an AbortSignal tied to the HTTP request's lifetime. See the same
+// helper in routes/auth.ts for the rationale — short version, Node 20 /
+// Express 5 don't expose `req.signal`, so we reconstruct it from the
+// 'close' event to feed `runWithArgon2Slot(..., { signal })`.
+function requestAbortSignal(req: Request, res: Response): AbortSignal {
+  const ac = new AbortController();
+  req.once('close', () => {
+    if (!res.writableEnded) ac.abort();
+  });
+  return ac.signal;
+}
+
 const SESSION_EXPIRY = '24h';
 const SESSION_EXPIRY_MS = 24 * 60 * 60 * 1000;
 const SIGNUP_TOKEN_EXPIRY_MS = 24 * 60 * 60 * 1000;
@@ -82,6 +95,7 @@ router.post('/verify', verifyLimiter, async (req: Request, res: Response) => {
 // Authenticates via email + password, resets expiry, returns { flow: 'choose' }
 // ─────────────────────────────────────────────────────────────
 router.post('/resume-signup', resumeLimiter, async (req: Request, res: Response) => {
+  const abortSignal = requestAbortSignal(req, res);
   const pool = getAppPool();
   if (!pool) return sendError(res, 503, 'INTERNAL_ERROR', 'Service not available');
 
@@ -111,7 +125,7 @@ router.post('/resume-signup', resumeLimiter, async (req: Request, res: Response)
       // known-email-in-confirmed-signup-state branch pays argon2.verify (~50ms),
       // an enumeration oracle that leaks which emails sit in a resumable state.
       // Mirrors the pattern applied across auth.ts under SEC-LOGIN-UNKNOWN-USER-TIMING.
-      await burnSentinel(password);
+      await burnSentinel(password, abortSignal);
       return sendError(res, 400, 'BAD_REQUEST', 'Invalid email or password');
     }
 
@@ -122,7 +136,7 @@ router.post('/resume-signup', resumeLimiter, async (req: Request, res: Response)
     // resumable lifecycle state (null verify_token, unverified verify_token)
     // cost the same wall-time as the confirmed + wrong-password branch below.
     if (!account.verify_token || !account.verify_token.startsWith('confirmed:')) {
-      await burnSentinel(password);
+      await burnSentinel(password, abortSignal);
       return sendError(res, 400, 'BAD_REQUEST', 'Invalid email or password');
     }
 
@@ -132,13 +146,13 @@ router.post('/resume-signup', resumeLimiter, async (req: Request, res: Response)
     // branch and create a confirmed-state oracle. Burn sentinel to match
     // argon2.verify wall-time, then reject uniformly.
     if (!account.password_hash) {
-      await burnSentinel(password);
+      await burnSentinel(password, abortSignal);
       return sendError(res, 400, 'BAD_REQUEST', 'Invalid email or password');
     }
 
     // Verify password
     const passwordHash = account.password_hash;
-    const passwordValid = await runWithArgon2Slot(() => argon2.verify(passwordHash, password));
+    const passwordValid = await runWithArgon2Slot(() => argon2.verify(passwordHash, password), { signal: abortSignal });
     if (!passwordValid) {
       return sendError(res, 400, 'BAD_REQUEST', 'Invalid email or password');
     }
@@ -159,6 +173,13 @@ router.post('/resume-signup', resumeLimiter, async (req: Request, res: Response)
     if (err instanceof ShuttingDownError) {
       logger.info({ err }, 'argon2 semaphore shutting down — returning 503');
       return sendError(res, 503, 'SERVICE_UNAVAILABLE', 'Service shutting down. Please retry.');
+    }
+    if (err instanceof ArgonAbortError) {
+      // Client disconnected before the argon2 slot was granted — socket is
+      // gone, no response to write. Silently swallow so the global error
+      // handler doesn't 500 into a torn-down connection.
+      logger.debug({ err }, 'argon2 slot aborted by client disconnect — no response to write');
+      return;
     }
     logger.error({ err }, 'Resume signup failed');
     sendError(res, 500, 'INTERNAL_ERROR', 'Resume failed');

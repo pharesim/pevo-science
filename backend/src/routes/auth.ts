@@ -15,7 +15,7 @@ import { logger } from '../logger.js';
 import { decryptKey } from '../custody-crypto.js';
 import { isPasswordValid, PASSWORD_POLICY_MESSAGE } from '../lib/password-policy.js';
 import { ARGON2_OPTIONS } from '../lib/argon2-options.js';
-import { runWithArgon2Slot, ArgonQueueFullError, ShuttingDownError } from '../lib/argon2-semaphore.js';
+import { runWithArgon2Slot, ArgonQueueFullError, ShuttingDownError, ArgonAbortError } from '../lib/argon2-semaphore.js';
 import { hashEmailForLogs } from '../lib/log-pii.js';
 
 // ─── Per-route Zod body schemas (BE-REQUEST-BODY-TYPING-ZOD) ────
@@ -93,6 +93,26 @@ const ResetBodySchema = z.object({
 });
 
 const router = Router();
+
+// Build an AbortSignal tied to the HTTP request's lifetime. Wired to the
+// argon2 semaphore via `runWithArgon2Slot(fn, { signal })` so a queued
+// waiter can be dropped the instant the client disconnects — freeing the
+// slot for the next live caller instead of letting a dead request
+// acquire it, run the full ~50ms argon2.verify, and release it against a
+// torn-down socket. Node 20 / Express 5 do NOT expose `req.signal`
+// natively (added in Node 22), so we reconstruct the equivalent via the
+// 'close' event. The writableEnded guard skips the abort when the handler
+// has already completed cleanly — without it, every normal response
+// would also abort(), which is harmless (fn has already run) but masks
+// the "actual client disconnect" signal in debug logs.
+function requestAbortSignal(req: Request, res: Response): AbortSignal {
+  const ac = new AbortController();
+  req.once('close', () => {
+    if (!res.writableEnded) ac.abort();
+  });
+  return ac.signal;
+}
+
 const SESSION_EXPIRY = '24h';
 const SESSION_EXPIRY_MS = 24 * 60 * 60 * 1000;
 const SIGNUP_TOKEN_EXPIRY_MS = 24 * 60 * 60 * 1000; // 24 hours
@@ -209,7 +229,7 @@ SENTINEL_ARGON2_HASH_PROMISE.catch((err) => {
 // but can drop to the high-20s on faster CI hosts. 35ms still kills the
 // sentinel-removal mutation (35× margin above the pre-sentinel ~1ms path).
 // The 35ms floor is named TIMING_ORACLE_FLOOR_MS in recover.test.ts.
-export async function burnSentinel(input: string): Promise<void> {
+export async function burnSentinel(input: string, signal?: AbortSignal): Promise<void> {
   try {
     const sentinelHash = await SENTINEL_ARGON2_HASH_PROMISE;
     // Clip attacker-controlled oversize input before handing it to argon2:
@@ -217,7 +237,7 @@ export async function burnSentinel(input: string): Promise<void> {
     // burn into a noop and reopen the oracle. 1024 bytes is well under the
     // limit and matches the compute cost of any realistic password.
     const safeInput = input.length > 1024 ? input.slice(0, 1024) : input;
-    await runWithArgon2Slot(() => argon2.verify(sentinelHash, safeInput));
+    await runWithArgon2Slot(() => argon2.verify(sentinelHash, safeInput), { signal });
   } catch (err) {
     // ArgonQueueFullError and ShuttingDownError MUST propagate so route
     // handlers can translate to 503. Swallowing here would return ~0ms from
@@ -226,6 +246,7 @@ export async function burnSentinel(input: string): Promise<void> {
     // opposite of what the JS-level semaphore is for.
     if (err instanceof ArgonQueueFullError) throw err;
     if (err instanceof ShuttingDownError) throw err;
+    if (err instanceof ArgonAbortError) throw err;
     logger.warn({ err }, 'argon2 sentinel burn failed — timing oracle may be open');
   }
 }
@@ -252,6 +273,14 @@ function handleArgonQueueFull(res: Response, err: unknown): boolean {
   if (err instanceof ShuttingDownError) {
     logger.info({ err }, 'argon2 semaphore shutting down — returning 503');
     sendError(res, 503, 'SERVICE_UNAVAILABLE', 'Service shutting down. Please retry.');
+    return true;
+  }
+  if (err instanceof ArgonAbortError) {
+    // Client disconnected before the argon2 slot was granted; there is no
+    // response to write (the socket is gone). Return true so the caller's
+    // catch block does NOT fall through to the generic 500 / sendError
+    // path, which would try to write to the torn-down socket.
+    logger.debug({ err }, 'argon2 slot aborted by client disconnect — no response to write');
     return true;
   }
   return false;
@@ -282,6 +311,7 @@ router.post('/session', verifyHiveSignature, sessionLimiter, (req: Request, res:
 // POST /api/auth/signup — Light account signup (LA6)
 // ─────────────────────────────────────────────────────────────
 router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
+  const abortSignal = requestAbortSignal(req, res);
   const pool = getAppPool();
   if (!pool) return sendError(res, 503, 'INTERNAL_ERROR', 'Registration not available');
 
@@ -398,13 +428,15 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
         // `as string` cast. The hex-pending fall-through path below runs
         // argon2.hash + upsert naturally, so no burn is needed there.
         if (existingRows[0].verify_token === null) {
-          if (password) await runWithArgon2Slot(() => argon2.hash(password, ARGON2_OPTIONS)).catch((err) => {
+          if (password) await runWithArgon2Slot(() => argon2.hash(password, ARGON2_OPTIONS), { signal: abortSignal }).catch((err) => {
+            if (err instanceof ArgonAbortError) throw err;
             logger.warn({ err }, 'argon2 signup-dup burn failed — timing oracle may be open');
           });
           return sendError(res, 409, 'DUPLICATE', 'Email already registered');
         }
         if (existingRows[0].verify_token.startsWith('confirmed:')) {
-          if (password) await runWithArgon2Slot(() => argon2.hash(password, ARGON2_OPTIONS)).catch((err) => {
+          if (password) await runWithArgon2Slot(() => argon2.hash(password, ARGON2_OPTIONS), { signal: abortSignal }).catch((err) => {
+            if (err instanceof ArgonAbortError) throw err;
             logger.warn({ err }, 'argon2 signup-dup burn failed — timing oracle may be open');
           });
           return sendError(res, 409, 'DUPLICATE', 'Email already verified. Please log in to continue.');
@@ -426,7 +458,7 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
 
     // Hash password if provided
     const passwordHash = hasPassword
-      ? await runWithArgon2Slot(() => argon2.hash(password, ARGON2_OPTIONS))
+      ? await runWithArgon2Slot(() => argon2.hash(password, ARGON2_OPTIONS), { signal: abortSignal })
       : null;
 
     const expiresAt = new Date(Date.now() + SIGNUP_TOKEN_EXPIRY_MS);
@@ -536,6 +568,7 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
 const resendLimiter = rateLimit({ name: 'auth-resend', windowMs: 3_600_000, max: 3, keyFn: byIp });
 
 router.post('/resend-verification', resendLimiter, async (req: Request, res: Response) => {
+  const abortSignal = requestAbortSignal(req, res);
   const pool = getAppPool();
   if (!pool) return sendError(res, 503, 'INTERNAL_ERROR', 'Service not available');
 
@@ -562,7 +595,7 @@ router.post('/resend-verification', resendLimiter, async (req: Request, res: Res
       // wall-time below. Without this, unknown-email returns in ~1ms while
       // known-email returns in ~50ms — an enumeration oracle that undermines the
       // constant-message 200 response.
-      await burnSentinel(password);
+      await burnSentinel(password, abortSignal);
       return sendOk(res, { message: 'If that email has a pending signup, a new verification link has been sent.' });
     }
 
@@ -575,9 +608,9 @@ router.post('/resend-verification', resendLimiter, async (req: Request, res: Res
     // running either the real verify OR a sentinel burn.
     let passwordValid = false;
     if (account.password_hash) {
-      passwordValid = await runWithArgon2Slot(() => argon2.verify(account.password_hash!, password));
+      passwordValid = await runWithArgon2Slot(() => argon2.verify(account.password_hash!, password), { signal: abortSignal });
     } else {
-      await burnSentinel(password);
+      await burnSentinel(password, abortSignal);
     }
     if (!passwordValid) {
       return sendOk(res, { message: 'If that email has a pending signup, a new verification link has been sent.' });
@@ -646,6 +679,7 @@ router.post('/resend-verification', resendLimiter, async (req: Request, res: Res
 // POST /api/auth/login — Password-based login (LA8)
 // ─────────────────────────────────────────────────────────────
 router.post('/login', loginLimiter, async (req: Request, res: Response) => {
+  const abortSignal = requestAbortSignal(req, res);
   const pool = getAppPool();
   if (!pool) return sendError(res, 503, 'INTERNAL_ERROR', 'Login not available');
 
@@ -693,7 +727,7 @@ router.post('/login', loginLimiter, async (req: Request, res: Response) => {
       // wrong-password wall-time below. Closes the username/email-enumeration
       // oracle for unauthenticated attackers. Status-code stays 401 (matches
       // wrong-password); only timing is closed.
-      await burnSentinel(password);
+      await burnSentinel(password, abortSignal);
       return sendError(res, 401, 'UNAUTHORIZED', 'Invalid credentials');
     }
 
@@ -709,7 +743,7 @@ router.post('/login', loginLimiter, async (req: Request, res: Response) => {
     // same wall-time as the real verify branch. Otherwise a network attacker
     // can enumerate ORCID-only accounts by timing the response.
     if (!account.password_hash) {
-      await burnSentinel(password);
+      await burnSentinel(password, abortSignal);
       return sendError(
         res,
         403,
@@ -721,7 +755,7 @@ router.post('/login', loginLimiter, async (req: Request, res: Response) => {
     // Verify password (timing-equalized with the NO_PASSWORD_SET branch above
     // via the sentinel hash, so status-code is the only signal distinguishing
     // null-hash accounts from unknown accounts — not response wall-time).
-    const valid = await runWithArgon2Slot(() => argon2.verify(account.password_hash, password));
+    const valid = await runWithArgon2Slot(() => argon2.verify(account.password_hash, password), { signal: abortSignal });
     if (!valid) {
       if (account.username) {
         await pool.query(
@@ -783,6 +817,7 @@ router.post('/login', loginLimiter, async (req: Request, res: Response) => {
 // POST /api/auth/reset-request — Request password reset email (LA13)
 // ─────────────────────────────────────────────────────────────
 router.post('/reset-request', resetRequestLimiter, async (req: Request, res: Response) => {
+  const abortSignal = requestAbortSignal(req, res);
   const pool = getAppPool();
   if (!pool) return sendError(res, 503, 'INTERNAL_ERROR', 'Service not available');
 
@@ -812,7 +847,7 @@ router.post('/reset-request', resetRequestLimiter, async (req: Request, res: Res
     // `backend-resend-verification-smtp-timing.md`); this closes the
     // cheap-early-return half only.
     if (rows.length === 0) {
-      await burnSentinel(normalizedEmail);
+      await burnSentinel(normalizedEmail, abortSignal);
       sendOk(res, { message: 'If an account exists with that email, a reset link has been sent.' });
       return;
     }
@@ -877,6 +912,7 @@ router.post('/reset-request', resetRequestLimiter, async (req: Request, res: Res
 // POST /api/auth/reset — Set new password using reset token (LA13)
 // ─────────────────────────────────────────────────────────────
 router.post('/reset', resetLimiter, async (req: Request, res: Response) => {
+  const abortSignal = requestAbortSignal(req, res);
   const pool = getAppPool();
   if (!pool) return sendError(res, 503, 'INTERNAL_ERROR', 'Service not available');
 
@@ -917,7 +953,7 @@ router.post('/reset', resetLimiter, async (req: Request, res: Response) => {
     // Hash new password. isPasswordValid flow-narrowed `password` to
     // `string` via its type-predicate return (`pw is string`), so no
     // cast is needed here.
-    const passwordHash = await runWithArgon2Slot(() => argon2.hash(password, ARGON2_OPTIONS));
+    const passwordHash = await runWithArgon2Slot(() => argon2.hash(password, ARGON2_OPTIONS), { signal: abortSignal });
 
     // Update password, clear reset token, invalidate all existing sessions
     await pool.query(
@@ -952,6 +988,7 @@ router.post('/reset', resetLimiter, async (req: Request, res: Response) => {
 const recoverLimiter = rateLimit({ name: 'auth-recover', windowMs: 3_600_000, max: 10, keyFn: byIp });
 
 router.post('/recover', recoverLimiter, async (req: Request, res: Response) => {
+  const abortSignal = requestAbortSignal(req, res);
   const pool = getAppPool();
   if (!pool) return sendError(res, 503, 'INTERNAL_ERROR', 'Service not available');
 
@@ -1014,7 +1051,7 @@ router.post('/recover', recoverLimiter, async (req: Request, res: Response) => {
       // any attacker holding an ORCID token. Gate on passwordProvided so the
       // unknown/known wall-times match for each caller shape.
       if (passwordProvided) {
-        await burnSentinel(new_password!);
+        await burnSentinel(new_password!, abortSignal);
       }
       return sendError(res, 404, 'NOT_FOUND', 'Account not found');
     }
@@ -1100,7 +1137,7 @@ router.post('/recover', recoverLimiter, async (req: Request, res: Response) => {
     // password re-establishes the account but leaves password-login disabled
     // until the user opts in via /api/settings/set-password).
     const passwordHash = passwordProvided
-      ? await runWithArgon2Slot(() => argon2.hash(new_password!, ARGON2_OPTIONS))
+      ? await runWithArgon2Slot(() => argon2.hash(new_password!, ARGON2_OPTIONS), { signal: abortSignal })
       : null;
 
     // Update account: new password (or null), new email, invalidate all sessions
