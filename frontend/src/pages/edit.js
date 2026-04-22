@@ -2,6 +2,7 @@ import Alpine from 'alpinejs';
 import { fetchPaper, fetchPaperEnrichment, invalidatePaperCache, uploadToIpfs } from '../api.js';
 import { broadcastOps } from '../signer.js';
 import { sha256File, slugify } from '../crypto.js';
+import { createTimerGuard } from '../lib/timer-guard.js';
 
 import { getAppTag, getAppId, getMaxUploadSize, getMaxUploadSizeMB } from '../config.js';
 import diff_match_patch from 'diff-match-patch';
@@ -300,6 +301,9 @@ export { template as editPageTemplate };
 
 export function initEditPage() {
   Alpine.data('editPage', () => ({
+    // Post-teardown setTimeout guard. See frontend/src/lib/timer-guard.js.
+    ...createTimerGuard(),
+
     paper: null,
     reviews: [],
     loadingPaper: true,
@@ -580,6 +584,7 @@ export function initEditPage() {
     },
 
     destroy() {
+      this._teardownTimers();
       if (this._draftTimer) { clearTimeout(this._draftTimer); this._draftTimer = null; }
       if (this._abstractEditor) { this._abstractEditor.destroy(); this._abstractEditor = null; }
       if (this._bodyEditor) { this._bodyEditor.destroy(); this._bodyEditor = null; }
@@ -821,7 +826,7 @@ export function initEditPage() {
 
           this.step = 'success';
           localStorage.removeItem(this.draftKey);
-          setTimeout(() => {
+          this._setTimer(() => {
             this.navigate(`/paper/${canonicalAuthor}/${canonicalPermlink}`);
           }, 1500);
         } else {
@@ -880,7 +885,7 @@ export function initEditPage() {
 
           this.step = 'success';
           localStorage.removeItem(this.draftKey);
-          setTimeout(() => {
+          this._setTimer(() => {
             this.navigate(`/paper/${this.author}/${this.permlink}`);
           }, 1500);
         }

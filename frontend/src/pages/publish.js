@@ -2,6 +2,7 @@ import Alpine from 'alpinejs';
 import { uploadToIpfs, fetchDisciplines } from '../api.js';
 import { broadcastOps } from '../signer.js';
 import { sha256File, slugify } from '../crypto.js';
+import { createTimerGuard } from '../lib/timer-guard.js';
 
 import { getAppTag, getAppId, getMaxUploadSize, getMaxUploadSizeMB } from '../config.js';
 
@@ -334,6 +335,9 @@ export { template as publishPageTemplate };
 
 export function initPublishPage() {
   Alpine.data('publishPage', () => ({
+    // Post-teardown setTimeout guard. See frontend/src/lib/timer-guard.js.
+    ...createTimerGuard(),
+
     title: '',
     abstract: '',
     body: '',
@@ -513,6 +517,7 @@ export function initPublishPage() {
     },
 
     destroy() {
+      this._teardownTimers();
       if (this._draftTimer) { clearTimeout(this._draftTimer); this._draftTimer = null; }
       if (this._abstractEditor) { this._abstractEditor.destroy(); this._abstractEditor = null; }
       if (this._bodyEditor) { this._bodyEditor.destroy(); this._bodyEditor = null; }
@@ -835,7 +840,7 @@ export function initPublishPage() {
 
         this.step = 'success';
         localStorage.removeItem(DRAFT_KEY);
-        setTimeout(() => {
+        this._setTimer(() => {
           this.navigate(`/paper/${username}/${permlink}`);
         }, 1500);
       } catch (err) {
