@@ -33,3 +33,14 @@ A future unilateral policy change on one side breaks CI, not production. The bac
 ## Architect contract note
 
 Document the canonical policy in `agents/docs/api-contracts/auth.md` with explicit pointer to both helpers (already partially done — `auth.md:60` and `:382` cite the helper; `settings.md:93` does too). Architect may need to confirm those pointers still resolve after this task lands.
+
+## Implementation (Backend, 2026-04-22)
+
+- `backend/src/lib/password-policy.ts`: header comment rewritten to `Keep in sync with frontend/src/password-policy.js`, mirroring the FE-side wording (`frontend/src/password-policy.js:1`). Comment now also cites the drift-check test below so future editors see where the gate lives.
+- `backend/tests/lib/password-policy-drift.test.ts`: new vitest test dynamically imports both helpers, asserts `MIN_PASSWORD_LENGTH` matches across stacks, and runs a shared labelled test-vector grid through both `isPasswordValid` implementations. Any unilateral change (rule shape, length, class set, type-coercion behaviour) fails the grid and surfaces the exact disagreeing scenario. This is the repo's "CI gate" — there is no `.github/workflows` directory, so the gate lives in `npm test`, which is where agents already run tests before moving tasks to review.
+- Backend lint clean after the change; `tests/lib/password-policy.test.ts` and the new `password-policy-drift.test.ts` both pass (12 tests total).
+
+## [TODO Architect]
+
+- Verify the contract pointers in `agents/docs/api-contracts/auth.md` and `settings.md` still resolve after archive — they already cite `isPasswordValid` / both helper files in prose, no shape change needed.
+- Optional: during archive, consider adding a one-liner to `auth.md` or `settings.md` pointing at `backend/tests/lib/password-policy-drift.test.ts` as the drift gate, so anyone chasing the "CI check" referenced by this task can find it from the contract side. Not strictly required — the pointer comments in the helpers already cite the test file.
