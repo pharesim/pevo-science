@@ -596,57 +596,22 @@ export function initSettingsPage() {
           throw new Error(this.$t('upgrade.invalidOldSeed'));
         }
 
-        // Derive keys from old and new seed phrases
-        const dhive = await import('@hiveio/dhive');
-        const oldSeed = mnemonicToSeedSync(oldWords);
-        const oldKeys = deriveHiveKeys(oldSeed, this.username);
-        const newSeed = mnemonicToSeedSync(this.newSeedPhrase);
-        const newKeys = deriveHiveKeys(newSeed, this.username);
-        const newPubKeys = await deriveHivePublicKeys(newKeys);
-
-        // Broadcast account_update signed with old owner key
-        const client = new dhive.Client(['https://api.hive.blog']);
-
-        const ownerKey = dhive.PrivateKey.fromSeed(oldKeys.owner);
-        const op = {
-          account: this.username,
-          owner: { weight_threshold: 1, account_auths: [], key_auths: [[newPubKeys.owner, 1]] },
-          active: { weight_threshold: 1, account_auths: [], key_auths: [[newPubKeys.active, 1]] },
-          posting: { weight_threshold: 1, account_auths: [], key_auths: [[newPubKeys.posting, 1]] },
-          memo_key: newPubKeys.memo,
-          json_metadata: '',
-        };
-
-        await client.broadcast.sendOperations([['account_update', op]], ownerKey);
-
-        // Import new posting + active + memo WIFs into Keychain so the user
-        // can sign ALL non-owner-auth ops post-upgrade (transfers, votes,
-        // comments, memo encrypt/decrypt). `requestImportKey` expects
-        // (username, wifKey, callback); each WIF is derived from the
-        // corresponding role's new hex seed via PrivateKey.fromSeed.
-        //
-        // NOT owner — owner keys are the account-recovery root of trust and
-        // should live in the user's seed phrase only, never in a browser
-        // extension. `account_update` still rotates owner on-chain (see
-        // newPubKeys.owner above); the user's new mnemonic is the only
-        // way to re-derive it.
-        //
-        // Historical bug: this used `requestAddAccountAuthority(username,
-        // rawHexSeed, 'posting', ...)` which (a) is the wrong API semantic
-        // (second arg should be an ACCOUNT NAME, not a key) and (b) leaks the
-        // raw 64-char hex private-key seed into Keychain's extension logs.
-        if (isKeychainInstalled()) {
-          const importRoles = ['posting', 'active', 'memo'];
-          for (const role of importRoles) {
-            const wif = dhive.PrivateKey.fromSeed(newKeys[role]).toString();
-            await new Promise((resolve, reject) => {
-              window.hive_keychain.requestImportKey(
-                this.username, wif,
-                (res) => res.success ? resolve(res) : reject(new Error(res.message || 'Keychain import failed'))
-              );
-            });
-          }
-        }
+        // FE-UPGRADE-CLOSURE-WIPE — derive keys, broadcast account_update,
+        // and import WIFs inside a narrower-scoped helper so the closure
+        // frame that captured the derived private-key material (oldSeed,
+        // oldKeys, newSeed, newKeys, newPubKeys, ownerKey, per-role WIFs)
+        // is popped off the call stack BEFORE `_clearSensitiveUpgradeState()`
+        // runs below. Without this split, those `const` bindings would sit
+        // inside `executeUpgrade`'s own frame — still reachable when the
+        // wipe executes, and only released whenever the async function's
+        // promise chain is GC'd. JS has no deterministic zero-on-release,
+        // but scope exit is the closest thing to it: once the helper
+        // returns, its frame is unreferenced and eligible for GC on the
+        // very next cycle. Reachability invariant: no variable bound inside
+        // `_performUpgradeKeyRotation()` escapes to `executeUpgrade()` other
+        // than control flow (resolved promise). See also
+        // `tests/unit/pages-settings.test.js` > FE-UPGRADE-CLOSURE-WIPE.
+        await this._performUpgradeKeyRotation(oldWords, this.newSeedPhrase);
 
         // Notify backend to clean up stored keys
         const auth = Alpine.store('auth');
@@ -715,12 +680,100 @@ export function initSettingsPage() {
       }
     },
 
+    // FE-UPGRADE-CLOSURE-WIPE — narrower-scoped key-material handler.
+    //
+    // Encapsulates every step that must touch private key material: seed
+    // derivation, pubkey derivation, `account_update` broadcast, and the
+    // Keychain WIF imports. All `const` bindings that hold sensitive
+    // material (`oldSeed`, `oldKeys`, `newSeed`, `newKeys`, `newPubKeys`,
+    // `ownerKey`, per-iteration `wif`) are local to this method's frame.
+    // When this method's promise resolves, the frame is popped off the
+    // stack and those bindings become unreachable, eligible for GC on the
+    // next cycle. The caller (`executeUpgrade`) then calls
+    // `_clearSensitiveUpgradeState()` with ZERO reachable references to
+    // the derived material.
+    //
+    // Reachability invariant: this method returns `undefined` (via the
+    // resolved promise); none of the `const` bindings inside it are
+    // returned, assigned to `this`, captured in a closure that outlives
+    // the call, or passed by reference to the caller. The only persistent
+    // side effects are on-chain (`sendOperations`) and in Keychain
+    // (`requestImportKey`). If a future refactor needs data back from
+    // here (e.g., a tx id), return a scalar, not the key objects.
+    //
+    // Arguments are passed by value (`oldWords` is a string; `newSeedPhrase`
+    // is a string — Alpine reactive fields resolve to primitive strings
+    // before being passed in, so no observer reference leaks through).
+    async _performUpgradeKeyRotation(oldWords, newSeedPhrase) {
+      // Derive keys from old and new seed phrases
+      const dhive = await import('@hiveio/dhive');
+      const oldSeed = mnemonicToSeedSync(oldWords);
+      const oldKeys = deriveHiveKeys(oldSeed, this.username);
+      const newSeed = mnemonicToSeedSync(newSeedPhrase);
+      const newKeys = deriveHiveKeys(newSeed, this.username);
+      const newPubKeys = await deriveHivePublicKeys(newKeys);
+
+      // Broadcast account_update signed with old owner key
+      const client = new dhive.Client(['https://api.hive.blog']);
+
+      const ownerKey = dhive.PrivateKey.fromSeed(oldKeys.owner);
+      const op = {
+        account: this.username,
+        owner: { weight_threshold: 1, account_auths: [], key_auths: [[newPubKeys.owner, 1]] },
+        active: { weight_threshold: 1, account_auths: [], key_auths: [[newPubKeys.active, 1]] },
+        posting: { weight_threshold: 1, account_auths: [], key_auths: [[newPubKeys.posting, 1]] },
+        memo_key: newPubKeys.memo,
+        json_metadata: '',
+      };
+
+      await client.broadcast.sendOperations([['account_update', op]], ownerKey);
+
+      // Import new posting + active + memo WIFs into Keychain so the user
+      // can sign ALL non-owner-auth ops post-upgrade (transfers, votes,
+      // comments, memo encrypt/decrypt). `requestImportKey` expects
+      // (username, wifKey, callback); each WIF is derived from the
+      // corresponding role's new hex seed via PrivateKey.fromSeed.
+      //
+      // NOT owner — owner keys are the account-recovery root of trust and
+      // should live in the user's seed phrase only, never in a browser
+      // extension. `account_update` still rotates owner on-chain (see
+      // newPubKeys.owner above); the user's new mnemonic is the only
+      // way to re-derive it.
+      //
+      // Historical bug: this used `requestAddAccountAuthority(username,
+      // rawHexSeed, 'posting', ...)` which (a) is the wrong API semantic
+      // (second arg should be an ACCOUNT NAME, not a key) and (b) leaks the
+      // raw 64-char hex private-key seed into Keychain's extension logs.
+      if (isKeychainInstalled()) {
+        const importRoles = ['posting', 'active', 'memo'];
+        for (const role of importRoles) {
+          const wif = dhive.PrivateKey.fromSeed(newKeys[role]).toString();
+          await new Promise((resolve, reject) => {
+            window.hive_keychain.requestImportKey(
+              this.username, wif,
+              (res) => res.success ? resolve(res) : reject(new Error(res.message || 'Keychain import failed'))
+            );
+          });
+        }
+      }
+      // Intentionally returns `undefined`. Do NOT return `newKeys`,
+      // `newPubKeys`, or anything else that would re-escape the derived
+      // material into `executeUpgrade`'s frame.
+    },
+
     // Zero the plaintext-sensitive fields used during the custody upgrade
     // flow: the old mnemonic the user typed, the freshly-generated new
     // mnemonic (both as a string and as the words array used for the
     // confirmation step), the confirmation inputs, and the re-entered
     // light-account password. Callers that also need to reset phase/error
     // should use `resetUpgrade()` instead.
+    //
+    // FE-UPGRADE-CLOSURE-WIPE — this helper zeros REACTIVE (Alpine `this.*`)
+    // fields only. Closure-captured `const` bindings that held derived key
+    // material during the broadcast/import step live inside
+    // `_performUpgradeKeyRotation()` and are dropped when that method's
+    // frame pops, BEFORE this helper runs. See the big comment block on
+    // `_performUpgradeKeyRotation()`.
     _clearSensitiveUpgradeState() {
       this.oldSeedPhrase = '';
       this.newSeedPhrase = '';
