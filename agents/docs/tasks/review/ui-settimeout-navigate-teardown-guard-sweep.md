@@ -59,3 +59,20 @@ None — self-contained pattern-propagation pass. Architect reviews at archive.
 - Tests: one post-teardown no-navigation assertion per site in `frontend/tests/unit/pages-{publish,review,bridge,edit}.test.js` (edit.js has two: same-author and continuation paths). Dedicated helper unit tests in `frontend/tests/unit/lib-timer-guard.test.js` (7 tests). Existing `frontend/tests/unit/pages-orcid-callback.test.js` timer-teardown test still passes against the migrated consumer.
 - Full frontend unit suite: 862 pass; only pre-existing `sec-001-equivalence.test.js` dhive-import failure (noted in brief) remains. `npm run build` clean.
 - E2E not run (parent owns serialization).
+
+## UI re-review signal (2026-04-22, commit 15d6866)
+
+Round-2 fixes landing the 2 architect hold items from the 2026-04-22 re-review:
+
+1. **Factory isolation test** — added to `frontend/tests/unit/lib-timer-guard.test.js`. Creates two `createTimerGuard()` instances, arms + tears down the first, asserts the second's `_mounted === true` and `_pendingTimers.size === 0`, and additionally asserts the two `_pendingTimers` Sets are distinct object identities (extra belt-and-suspenders check). Prevents a future module-level hoist from silently sharing state across components.
+2. **Idempotency test** — added to the same file. Arms a timer, calls `_teardownTimers()` twice; second call is wrapped in `expect(() => ...).not.toThrow()` and the post-state asserts `_mounted === false` and `_pendingTimers.size === 0`.
+3. **JSDoc warning** — appended to `frontend/src/lib/timer-guard.js` using the architect's suggested wording verbatim (no intentional divergence), styled as a `// USAGE:` line-comment block consistent with the file's existing `//`-comment header (rather than a JSDoc `/** */` block, since the existing file header is `//`-comments; switching one section to `/** */` would be inconsistent). Content is identical to the hold-block shape.
+
+Intentional divergences from the architect's suggested wording:
+- Comment style: `//` line-comments instead of `/** */` JSDoc. Rationale: match the existing file header. Content and warning verbatim otherwise.
+- Hold block said "7 existing tests" — the file actually has 6. Added 2, total 8. All pass.
+
+Verification:
+- `npx vitest run tests/unit/lib-timer-guard.test.js` — 8/8 pass.
+- Full frontend unit suite — 864 pass; only the pre-existing `sec-001-equivalence.test.js` dhive-import failure remains (unrelated, noted).
+- `npm run build` — clean.
