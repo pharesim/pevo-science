@@ -86,7 +86,10 @@ Use these ce skills as part of your normal workflow. They are not optional — i
 ## Redis Conventions
 
 - Redis is optional. The backend falls back to in-memory caching when Redis is unavailable.
-- All Redis keys are prefixed with `${APP_TAG}:cache:` (e.g. `pevotest:cache:papers`). The `QueryCache` class in `src/cache.ts` handles this automatically.
+- **All Redis keys are prefixed with `${config.appTag}:<domain>:`** where `<domain>` is an open set naming the semantic namespace of the key. Keys are NOT all `:cache:` — the deployment runs locks, rate-limit buckets, OAuth state tokens, replay guards, and ORCID verification receipts alongside caches, and each gets its own domain segment. Domains currently in use: `cache`, `rl` (rate limits), `replay` (signature-replay guard), `orcid_state` (OAuth state), `orcid_binding` (bind cache), `orcid_binding_lock` (CAS lock), `orcid_verified` (verification receipt), `anon_mapping` (anonymous-review mapping), `ipfs:pending` (IPFS upload tracking), `pending_accred` (pending accreditation tokens), `reputation:cycle` + `reputation:batch` (reputation batch state). New domains are fine; pick a short namespace-like segment.
+- The `${config.appTag}:` segment is the load-bearing part — it prevents collision between deployments (`pevo` vs `pevotest`) sharing a Redis instance. The `<domain>` segment is semantic and per-site.
+- The `QueryCache` class in `src/cache.ts` handles appTag + caller-supplied prefix automatically. Direct `redis.*` calls must build the full prefixed key themselves (see `routes/orcid.ts` for examples).
+- Rationale and audit recorded in `tasks-archive.md` → BE-REDIS-KEY-NAMING-CONVENTION-SWEEP.
 - Use `hafCache.registerPeriodicRefresh()` for expensive HAF queries rather than `getOrSet` with long TTLs. See `startRetractionCache()` in `routes/papers.ts` for the pattern.
 
 ## Light Account Ownership

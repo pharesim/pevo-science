@@ -148,6 +148,14 @@ Rate limits protect authenticated endpoints from abuse:
 
 Rate limit state may be stored in-memory (development) or Redis (production). When a rate limit is exceeded, the response uses error code `RATE_LIMITED` (HTTP 429) with a `Retry-After` header in seconds.
 
+#### Trusted Proxy Chain
+
+Per-IP rate-limit keys are derived from `req.ip` with Express `trust proxy = 1`. The production topology assumes exactly one trusted proxy hop (nginx on the host, terminating TLS and forwarding to the backend on `127.0.0.1:3001`). `X-Forwarded-For` values from untrusted upstreams are not honored — only the left-most value prepended by the trusted nginx hop is used.
+
+If a CDN (Cloudflare, Fastly) is introduced in front of nginx later, the `trust proxy` value increases to `2` or is replaced with an explicit CIDR allowlist. Do not trust arbitrary `X-Forwarded-For` chains.
+
+**Residual:** Attackers with a legitimate IPv6 /64 block can still rotate source IPs per-request under IPv6. Closing that requires keying on a broader CIDR or on session/account — out of scope for the current rate-limit shape.
+
 ### API Versioning
 
 The v0.1 API uses unversioned paths (`/api/...`). When breaking changes are needed in the future, the API will adopt path-based versioning (`/api/v2/...`), with the original paths continuing to serve v1 responses for a deprecation period of at least 6 months. The `app` field in Hive post metadata already includes a version string (`pevo/0.1`) that can be used for content versioning independently of the API version.
