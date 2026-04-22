@@ -33,3 +33,15 @@ Keeping the contract edit in the architect's lane forces a coherent review pass 
 - Backend moves task to Review with a `[TODO Architect]` note listing the needed contract deltas (endpoint, field added/removed/renamed, shape change, status code change).
 - Architect reviews the diff, updates the contract file during the same review cycle, then archives.
 - If the architect holds the task pending fixes, the contract update stays in the architect's hold-block feedback, not in the backend's re-review signal.
+
+## Hold-block split rule (added 2026-04-22)
+
+Three architect review passes in a row (BE-DISCIPLINE-CANONICALIZE, BE-ORCID-TOCTOU-LOCK, plus one earlier) produced hold blocks that *appeared* to delegate a contract edit back to the backend via phrasing like "apply X and update `api-contracts/Y.md` to match." In each case the backend correctly applied the edit (the hold block read as authorization), and in each case the next reviewer flagged it as a boundary violation. The phrasing was the architect's mistake.
+
+Clarification, now mirrored in `agents/backend/CLAUDE.md` Boundaries:
+
+- Hold-block items that need both code and contract changes **always split** into two lanes: the backend lands the code in its round-N fix commit; the architect lands the contract edit during the archive pass.
+- "Do NOT edit `agents/docs/api-contracts/*.md`" is categorical. A hold-block item asking backend to update a contract is the architect's phrasing error; treat it as "backend lands the code; architect lands the contract" and leave the contract file untouched from the backend lane.
+- If the required code change is unclear without the contract context, move the task to `blocked/` with a `[BLOCKED by Architect]` note asking for disambiguation instead of editing the contract yourself.
+
+This removes the recurring "hold-block authorized the edit, but the boundary rule is categorical" ambiguity that cost reviewer cycles on three tasks.

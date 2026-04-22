@@ -149,6 +149,11 @@ Platform-wide statistics.
 }
 ```
 
+**Field notes:**
+
+- `active_disciplines`: count of distinct lowercase-canonical discipline strings (`count(DISTINCT LOWER(json_metadata -> appTag ->> 'discipline'))`). Case-insensitive dedup matches the `/api/disciplines` canon_name grouping. This semantic changed from case-sensitive `DISTINCT` in BE-DISCIPLINE-CANONICALIZE; the number may step down on first deploy against any corpus with mixed-case discipline variants (e.g. "Physics" and "physics" previously counted as 2, now count as 1).
+- `active_disciplines` counts **only papers authored by currently-accredited researchers** (the `papers` CTE filters via `active_accreditations`), while `/api/disciplines` counts **all** PEvO-tagged papers regardless of accreditation status. The two endpoints count from different sets; `active_disciplines` may be smaller than `/api/disciplines.data.length`. This divergence is intentional per the accredited-only data policy in `ARCHITECTURE.md`.
+
 ---
 
 ### GET /api/health
