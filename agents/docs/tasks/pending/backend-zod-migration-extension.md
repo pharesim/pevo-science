@@ -39,4 +39,40 @@ Each route's schema lives next to the existing 4 (grouped at the top of `auth.ts
 
 ## [TODO Architect]
 
-None.
+None initial. See implementation signal below for one contract-update `[TODO Architect]` on the `isPasswordValid` type-predicate change.
+
+---
+
+**Backend implementation signal (2026-04-22 round-1, worktree `.claude/worktrees/agent-a67d9e4c`):**
+
+Full scope landed. `npx tsc --noEmit` clean. `npm run lint` clean (6 pre-existing `no-explicit-any` warnings accepted per backend CLAUDE.md). Directly-affected tests: `auth.test.ts` 16/16, `recover.test.ts` 27/27, `orcid.test.ts` 29/29, `signup-verify.test.ts` 2/2, `auth-concurrency.test.ts` 2/2. Full backend vitest suite deferred to parent.
+
+1. **POST /api/orcid/start (migrated).** `backend/src/routes/orcid.ts:22-32, ~153-161` — new `StartBodySchema = z.object({ mode: z.string().optional() })` with docblock noting that VALID_MODES membership is enforced as business validation post-parse (matching the existing auth.ts schemas). The `req.body as { mode?: string }` cast is gone; safeParse returns 400 VALIDATION_ERROR with the same flat `'Invalid request body'` shape as the round-1 schemas (no `details.issues` leak). The subsequent VALID_MODES check retains its distinct error message ("mode must be one of: ...") so frontend callers can surface the accepted-values list.
+
+2. **POST /api/auth/resend-verification (migrated).** `backend/src/routes/auth.ts:~96-100, ~500-504` — new `ResendVerificationBodySchema = z.object({ email: z.string().min(1), password: z.string().min(1) })`. The `typeof email !== 'string'` + `typeof password !== 'string'` guards are gone; both are now shape-enforced by Zod. Existing tests (e.g. the `/resend-verification` timing specs in recover.test.ts) continue to pass.
+
+3. **POST /api/auth/reset-request (migrated).** `backend/src/routes/auth.ts:~102-104, ~738-742` — new `ResetRequestBodySchema = z.object({ email: z.string().min(1) })`. The `typeof email !== 'string'` guard is gone; `email` is now `string` post-parse.
+
+4. **POST /api/auth/reset (migrated).** `backend/src/routes/auth.ts:~106-109, ~828-832` — new `ResetBodySchema = z.object({ token: z.string().min(1), password: z.string().optional() })`. Note: Kept `password: z.string().optional()` rather than `.min(1)` because `isPasswordValid` below handles the empty/missing case with a more informative error message (PASSWORD_POLICY_MESSAGE) — forcing `.min(1)` at the Zod layer would swallow the policy-message channel for empty-password callers. The existing 400 VALIDATION_ERROR path now fires BEFORE `isPasswordValid` when the body isn't an object at all.
+
+5. **`isPasswordValid` type-predicate (opportunistic fold).** `backend/src/lib/password-policy.ts:9` — signature changed from `pw: unknown): boolean` to `pw: unknown): pw is string`. This lets TS flow-narrow the argument after the truthy check, which in turn lets `argon2.hash(password, ARGON2_OPTIONS)` in the `/reset` handler compile without an `as string` cast. No caller behavior changes: the guard still returns true/false identically. All 2 existing callers (auth.ts `/signup` and `/reset`) were already relying on the boolean return; the type predicate strictly adds compile-time narrowing.
+
+**Acceptance grep:**
+- Before this commit: 9+ hits of `as string|as \{.*\?\:` in routes/auth.ts + routes/orcid.ts.
+- After: 8 hits, **all of which are now either comments referencing the previous casts, JSON.parse type casts (unrelated to req.body), or the one intentional `(email_or_username || username) as string` narrow at `/login` that keys off the refine invariant (round-1 hold fix for BE-REQUEST-BODY-TYPING-ZOD)**. The req.body-typing cast class is fully eliminated.
+
+**Test outcomes:**
+- `auth.test.ts`: 16/16 pass (added `beforeAll(clearRateLimitKeys(['auth-login','auth-signup']))` to the Zod-leak describe block because auth-concurrency.test.ts now burns 8 /login attempts against the 10/hr loginLimiter; without the clear, later tests 429 instead of 400).
+- `orcid.test.ts`: 29/29 pass (no regression from the /orcid/start Zod migration).
+- `recover.test.ts`: 27/27 pass.
+- `signup-verify.test.ts`: 2/2 pass.
+- `auth-concurrency.test.ts`: 2/2 pass.
+- `npx tsc --noEmit`: clean.
+- `npm run lint`: clean.
+- Full vitest suite: deferred to parent.
+
+**Deviations from acceptance:**
+- Task brief named `/api/auth/reset` body fields as `token + new_password`, but the handler field name is `password` (pre-existing). Kept `password` to avoid a breaking API change; the Zod schema matches the handler's actual field name. If the architect intended a rename, that's a separate API-contract change.
+
+**`[TODO Architect]`:**
+- The `isPasswordValid` signature change from `boolean` to `pw is string` is a tightening (no runtime behavior change) but is observable via TypeScript type flow. If any doc/API contract references the helper's signature, it should be updated. Not expected to touch api-contracts/*.md since that file describes REST shapes, not internal helper signatures.

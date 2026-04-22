@@ -1,9 +1,10 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeAll } from 'vitest';
 import request from 'supertest';
 import jwt from 'jsonwebtoken';
 import { PrivateKey, cryptoUtils } from '@hiveio/dhive';
 import { createApp } from '../../src/app.js';
 import { config } from '../../src/config.js';
+import { clearRateLimitKeys } from '../support/redis-helpers.js';
 
 // Generate a deterministic test keypair and mock the Hive client so the
 // middleware's on-chain account lookup returns this public key for the
@@ -203,6 +204,14 @@ describe('BE-REQUEST-BODY-TYPING-ZOD: 400 VALIDATION_ERROR does not leak Zod sch
   // ORCID_CLIENT_ID/SECRET are unset (test env default). The Zod
   // flattening on that route mirrors the auth.ts sites and is covered
   // structurally by the same sendError call shape.
+  //
+  // Clear the /login and /signup rate-limit buckets before these specs
+  // run — without this, a prior test file (auth-concurrency.test.ts,
+  // which burns 8 /login requests against the 10/hr loginLimiter) can
+  // exhaust the window and these specs 429 instead of 400.
+  beforeAll(async () => {
+    await clearRateLimitKeys(['auth-login', 'auth-signup']);
+  });
   const cases: Array<{ route: string; body: unknown }> = [
     // /login: refine requires at least one of username/email_or_username.
     { route: '/api/auth/login', body: { password: 'x' } },

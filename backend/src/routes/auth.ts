@@ -73,6 +73,24 @@ const RecoverBodySchema = z.object({
   orcid_token: z.string().optional(),
 });
 
+// BE-ZOD-MIGRATION-EXTENSION: schemas for /resend-verification,
+// /reset-request, /reset. Same flat-error pattern as the 3 round-1
+// schemas — shape only, business validation (isEmail, isPasswordValid)
+// continues to run after safeParse.
+const ResendVerificationBodySchema = z.object({
+  email: z.string().min(1),
+  password: z.string().min(1),
+});
+
+const ResetRequestBodySchema = z.object({
+  email: z.string().min(1),
+});
+
+const ResetBodySchema = z.object({
+  token: z.string().min(1),
+  password: z.string().optional(),
+});
+
 const router = Router();
 const SESSION_EXPIRY = '24h';
 const SESSION_EXPIRY_MS = 24 * 60 * 60 * 1000;
@@ -482,13 +500,11 @@ router.post('/resend-verification', resendLimiter, async (req: Request, res: Res
   const pool = getAppPool();
   if (!pool) return sendError(res, 503, 'INTERNAL_ERROR', 'Service not available');
 
-  const { email, password } = req.body || {};
-  if (!email || typeof email !== 'string') {
-    return sendError(res, 400, 'VALIDATION_ERROR', 'Email is required');
+  const parsed = ResendVerificationBodySchema.safeParse(req.body);
+  if (!parsed.success) {
+    return sendError(res, 400, 'VALIDATION_ERROR', 'Invalid request body');
   }
-  if (!password || typeof password !== 'string') {
-    return sendError(res, 400, 'VALIDATION_ERROR', 'Password is required');
-  }
+  const { email, password } = parsed.data;
 
   const normalizedEmail = email.trim().toLowerCase();
 
@@ -722,10 +738,11 @@ router.post('/reset-request', resetRequestLimiter, async (req: Request, res: Res
   const pool = getAppPool();
   if (!pool) return sendError(res, 503, 'INTERNAL_ERROR', 'Service not available');
 
-  const { email } = req.body || {};
-  if (!email || typeof email !== 'string') {
-    return sendError(res, 400, 'VALIDATION_ERROR', 'Email is required');
+  const parsed = ResetRequestBodySchema.safeParse(req.body);
+  if (!parsed.success) {
+    return sendError(res, 400, 'VALIDATION_ERROR', 'Invalid request body');
   }
+  const { email } = parsed.data;
 
   const normalizedEmail = email.trim().toLowerCase();
 
@@ -812,10 +829,11 @@ router.post('/reset', resetLimiter, async (req: Request, res: Response) => {
   const pool = getAppPool();
   if (!pool) return sendError(res, 503, 'INTERNAL_ERROR', 'Service not available');
 
-  const { token, password } = req.body || {};
-  if (!token || typeof token !== 'string') {
-    return sendError(res, 400, 'VALIDATION_ERROR', 'Reset token is required');
+  const parsed = ResetBodySchema.safeParse(req.body);
+  if (!parsed.success) {
+    return sendError(res, 400, 'VALIDATION_ERROR', 'Invalid request body');
   }
+  const { token, password } = parsed.data;
   if (!isPasswordValid(password)) {
     return sendError(res, 400, 'VALIDATION_ERROR', PASSWORD_POLICY_MESSAGE);
   }
@@ -845,7 +863,9 @@ router.post('/reset', resetLimiter, async (req: Request, res: Response) => {
       return sendError(res, 400, 'INVALID_TOKEN', 'Reset token has expired');
     }
 
-    // Hash new password
+    // Hash new password. isPasswordValid flow-narrowed `password` to
+    // `string` via its type-predicate return (`pw is string`), so no
+    // cast is needed here.
     const passwordHash = await runWithArgon2Slot(() => argon2.hash(password, ARGON2_OPTIONS));
 
     // Update password, clear reset token, invalidate all existing sessions
