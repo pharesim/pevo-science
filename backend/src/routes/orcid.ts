@@ -357,10 +357,16 @@ async function handleLogin(res: Response, orcidId: string): Promise<void> {
   );
 
   if (result.rows.length === 0) {
-    // `orcid_id` must live inside `error.details` so it survives the ApiError
-    // envelope. Top-level siblings are not part of the envelope contract and
-    // get dropped by strict parsers.
-    sendError(res, 404, 'NO_ACCOUNT', 'No account linked to this ORCID. Please sign up first.', { orcid_id: orcidId });
+    // NO_ACCOUNT 409/404 carries no payload. Per BE-ORCID-NO-ACCOUNT-
+    // ERROR-SHAPE-ALIGN (2026-04-22), the prior `{ orcid_id }` details
+    // field was never consumed by any frontend handler — the caller
+    // already knows which ORCID they submitted, so echoing it back is
+    // redundant. The contract (api-contracts/orcid.md) previously
+    // documented it as a top-level sibling of `error`, which the
+    // sendError envelope does not produce; the mismatch was
+    // audit-hygiene noise with no runtime impact. Architect updates
+    // the contract during re-review.
+    sendError(res, 404, 'NO_ACCOUNT', 'No account linked to this ORCID. Please sign up first.');
     return;
   }
 

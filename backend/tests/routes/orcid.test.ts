@@ -511,11 +511,15 @@ describe('POST /api/orcid/callback — hardening (SEC-002-HARDENING)', () => {
     },
   );
 
-  // Item 2: NO_ACCOUNT envelope compliance. `orcid_id` must live inside
-  // `error.details` (not as a top-level sibling, which the ApiError envelope
-  // does not carry and strict parsers drop).
+  // Item 2: NO_ACCOUNT envelope compliance (BE-ORCID-NO-ACCOUNT-ERROR-
+  // SHAPE-ALIGN). The prior shape put `orcid_id` inside `error.details`;
+  // per re-review the field was never consumed by any frontend handler
+  // and was dropped entirely. This spec pins the new payload-less
+  // shape: status 404, error.code = 'NO_ACCOUNT', no orcid_id anywhere
+  // (neither top-level nor in error.details). A regression that adds it
+  // back in either position fails this assertion.
   it(
-    'login mode returns NO_ACCOUNT with orcid_id in error.details (envelope compliance)',
+    'login mode returns NO_ACCOUNT with no orcid_id anywhere in the response body',
     async () => {
       const orcidId = '0000-0001-9002-0002';
       installOrcidFetchStub({ orcid: orcidId });
@@ -527,10 +531,14 @@ describe('POST /api/orcid/callback — hardening (SEC-002-HARDENING)', () => {
         .send({ code: 'fake', state });
       expect(res.status).toBe(404);
       expect(res.body.error.code).toBe('NO_ACCOUNT');
-      expect(res.body.error.details).toEqual({ orcid_id: orcidId });
-      // Must NOT leak orcid_id at the top level — that was the drift this
-      // hardening fixes.
+      // details must not exist at all — sendError omits the key when
+      // the caller passes no details argument, and the envelope must
+      // not carry a stale orcid_id field.
+      expect(res.body.error.details).toBeUndefined();
+      // Belt-and-suspenders: neither top-level nor any other path
+      // echoes the orcid_id the caller submitted.
       expect(res.body.orcid_id).toBeUndefined();
+      expect(res.body.data).toBeUndefined();
     },
   );
 
