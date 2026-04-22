@@ -50,3 +50,12 @@ Make the extraction decision inside this task based on what the 5 call sites act
 ## [TODO Architect]
 
 None — self-contained pattern-propagation pass. Architect reviews at archive.
+
+## UI re-review signal (2026-04-22, a33f667)
+
+- Extraction decision: shared helper `createTimerGuard()` at `frontend/src/lib/timer-guard.js` (factory returning `{ _mounted, _pendingTimers, _setTimer, _teardownTimers }`). Pages spread it into their Alpine.data() state object and call `this._teardownTimers()` from `destroy()`. Helper keeps the public surface identical to orcid-callback's original inline shape modulo the rename `destroy` -> `_teardownTimers` (destroy() lives on the component and can call the helper in addition to its own teardown logic, e.g. editor disposal in publish.js / edit.js).
+- All 5 sites migrated: `frontend/src/pages/publish.js:844`, `frontend/src/pages/review.js:290`, `frontend/src/pages/bridge.js:308`, `frontend/src/pages/edit.js:832`, `frontend/src/pages/edit.js:891`. Grep for `setTimeout(() => .* navigate` under `frontend/src/pages/` returns nothing (only debounce/retry timers remain).
+- orcid-callback.js migrated in the same commit (no forked copy): inline `_mounted`/`_pendingTimers`/`_setTimer`/`destroy()` body replaced with `...createTimerGuard()` spread and a `destroy()` that delegates to `_teardownTimers()`.
+- Tests: one post-teardown no-navigation assertion per site in `frontend/tests/unit/pages-{publish,review,bridge,edit}.test.js` (edit.js has two: same-author and continuation paths). Dedicated helper unit tests in `frontend/tests/unit/lib-timer-guard.test.js` (7 tests). Existing `frontend/tests/unit/pages-orcid-callback.test.js` timer-teardown test still passes against the migrated consumer.
+- Full frontend unit suite: 862 pass; only pre-existing `sec-001-equivalence.test.js` dhive-import failure (noted in brief) remains. `npm run build` clean.
+- E2E not run (parent owns serialization).
