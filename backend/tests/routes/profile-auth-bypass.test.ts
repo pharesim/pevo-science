@@ -74,7 +74,7 @@ describe('SEC-AUTH-BYPASS — GET /api/profile/:username authority filter', () =
     // Unique victim name per test so the hafCache doesn't carry state across
     // spec ordering.
     const victim = 'victim-auth-bypass-fake';
-    hafQueryMock.mockImplementation(async (sql: string, params: unknown[]) => {
+    hafQueryMock.mockImplementation(async (sql: string) => {
       if (sql.includes("'action' IN ('accredit', 'revoke')") && sql.includes("'account' = $1")) {
         // Filter yields zero rows because the self-broadcast op is signed by
         // the victim's own posting key, not an authority. Call-shape assertions
@@ -103,6 +103,19 @@ describe('SEC-AUTH-BYPASS — GET /api/profile/:username authority filter', () =
       expect.stringContaining('required_posting_auths ?| $4::text[]'),
       expect.arrayContaining([victim, config.accreditationAuthorities]),
     );
+    // Positional pin on params[3]: arrayContaining is order-agnostic, so a
+    // mutant that moves accreditationAuthorities from $4 to $2 would still
+    // satisfy the matcher above. The `$4::text[]` bind MUST be the authorities
+    // array; nothing else. Locate the authority-filtered call explicitly to
+    // avoid coupling to call ordering (profile.ts may fire other queries
+    // before it).
+    const authorityCall = hafQueryMock.mock.calls.find(
+      (c) =>
+        typeof c[0] === 'string' &&
+        c[0].includes('required_posting_auths ?| $4::text[]'),
+    );
+    expect(authorityCall).toBeDefined();
+    expect((authorityCall![1] as unknown[])[3]).toEqual(config.accreditationAuthorities);
   });
 
   it('accepts an authority-signed accredit (is_accredited:true, accreditation payload)', async () => {
@@ -110,7 +123,7 @@ describe('SEC-AUTH-BYPASS — GET /api/profile/:username authority filter', () =
     // accredit row (as it would for a real authority-signed op), the profile
     // reports accredited + carries the payload fields.
     const accredited = 'victim-auth-bypass-real';
-    hafQueryMock.mockImplementation(async (sql: string, params: unknown[]) => {
+    hafQueryMock.mockImplementation(async (sql: string) => {
       if (sql.includes("'action' IN ('accredit', 'revoke')") && sql.includes("'account' = $1")) {
         return {
           rows: [{
@@ -150,6 +163,14 @@ describe('SEC-AUTH-BYPASS — GET /api/profile/:username authority filter', () =
       expect.stringContaining('required_posting_auths ?| $4::text[]'),
       expect.arrayContaining([accredited, config.accreditationAuthorities]),
     );
+    // Positional pin on params[3]. See the fake-accredit spec above for rationale.
+    const authorityCall = hafQueryMock.mock.calls.find(
+      (c) =>
+        typeof c[0] === 'string' &&
+        c[0].includes('required_posting_auths ?| $4::text[]'),
+    );
+    expect(authorityCall).toBeDefined();
+    expect((authorityCall![1] as unknown[])[3]).toEqual(config.accreditationAuthorities);
   });
 
   it('treats a revoke row as unaccredited (is_accredited:false, accreditation:null)', async () => {
@@ -160,7 +181,7 @@ describe('SEC-AUTH-BYPASS — GET /api/profile/:username authority filter', () =
     // the profile reports unaccredited. Parallels the revoke-branch coverage
     // in accreditations-revoke.test.ts for the sibling endpoint.
     const revoked = 'victim-auth-bypass-revoked';
-    hafQueryMock.mockImplementation(async (sql: string, params: unknown[]) => {
+    hafQueryMock.mockImplementation(async (sql: string) => {
       if (sql.includes("'action' IN ('accredit', 'revoke')") && sql.includes("'account' = $1")) {
         return {
           rows: [{
@@ -188,5 +209,13 @@ describe('SEC-AUTH-BYPASS — GET /api/profile/:username authority filter', () =
       expect.stringContaining('required_posting_auths ?| $4::text[]'),
       expect.arrayContaining([revoked, config.accreditationAuthorities]),
     );
+    // Positional pin on params[3]. See the fake-accredit spec above for rationale.
+    const authorityCall = hafQueryMock.mock.calls.find(
+      (c) =>
+        typeof c[0] === 'string' &&
+        c[0].includes('required_posting_auths ?| $4::text[]'),
+    );
+    expect(authorityCall).toBeDefined();
+    expect((authorityCall![1] as unknown[])[3]).toEqual(config.accreditationAuthorities);
   });
 });

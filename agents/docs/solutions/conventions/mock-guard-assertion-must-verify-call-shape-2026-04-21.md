@@ -112,6 +112,12 @@ The `accreditations-revoke.test.ts` file upgraded its predicate from `'account' 
 
 **Follow-up gap closure (BE-MOCK-GUARD-SEC-AUTH-BYPASS-SITES-PROMOTE):** the final 2 SEC-AUTH-BYPASS sites in `orcid.test.ts` (the link-mode 422 "self-broadcast fake accredit" spec and the link-mode 200 "authority-signed accredit" spec) were promoted in a follow-up commit. Both now use `toHaveBeenCalledWith(expect.stringContaining("'action' IN ('accredit', 'revoke')"), expect.arrayContaining([<account>, config.accreditationAuthorities]))` plus a positional pin on `params[3]` (via a `mock.calls.find(...)` lookup) so an order-swap mutant that moves authorities off of `$4` fails loudly. The in-mock-guard `expect(sql).toContain(...)` / `expect(params[3]).toEqual(...)` assertions moved out of the guard body to the caller, matching the sweep pattern applied in commit `16b977e`.
 
+**Hold-block fixes (BE-MOCK-GUARD-ASSERTION-SWEEP round 2):** swept in a follow-up commit:
+- `profile-auth-bypass.test.ts` (3 sites) — restored the positional `expect((authorityCall![1] as unknown[])[3]).toEqual(config.accreditationAuthorities)` pin alongside the existing `arrayContaining` call so an order-swap mutant that moves `accreditationAuthorities` from `$4` to `$2` is caught. Dead `params: unknown[]` parameters dropped from the 3 `mockImplementation` callbacks — after assertions moved out of the guard, `params` was referenced nowhere in the body.
+- `orcid.test.ts` — 2 `expect.anything()` sites upgraded to `expect.arrayContaining([<load-bearing-value>])`: the link-success broadcast spec pins `orcidId` on the `'orcid' = $1` call, and the link-mode `ORCID_ALREADY_LINKED` spec pins `'bob'` on the `'action' IN ('accredit', 'revoke')` call (the incumbent-account liveness check that gates the 409).
+
+After this sweep the codebase should be consistent: every predicate-gated `hafQueryMock.mockImplementation` site uses `toHaveBeenCalledWith(expect.stringContaining(<fragment>), expect.arrayContaining([<load-bearing-params>]))` with a positional pin where the exact bind position matters for the security property. Future readers grepping for `toHaveBeenCalled()` without a matching `Called*With` at a mock-guard site should find only legitimate `.not.toHaveBeenCalled()` (inverse) assertions.
+
 ## Examples
 
 **Before (load-bearing assertion masked by fallback):**

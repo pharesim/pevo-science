@@ -187,7 +187,8 @@ describe('POST /api/orcid/callback — auth gate (SEC-002-BE)', () => {
   it(
     'returns 200 and broadcasts on link callback when caller matches initiator',
     async () => {
-      installOrcidFetchStub({ orcid: '0000-0001-2222-3333', name: 'Alice', works: 3 });
+      const orcidId = '0000-0001-2222-3333';
+      installOrcidFetchStub({ orcid: orcidId, name: 'Alice', works: 3 });
       hafQueryMock.mockImplementation(async (sql: string) => {
         if (sql.includes("'orcid' = $1")) {
           // findAccreditedAccountWithOrcid first query — ORCID not yet bound
@@ -217,9 +218,12 @@ describe('POST /api/orcid/callback — auth gate (SEC-002-BE)', () => {
       // leave outer assertions passing on a regressed query — promote the
       // mock-guard from existence-check to shape-check. See
       // agents/docs/solutions/conventions/mock-guard-assertion-must-verify-call-shape-2026-04-21.md.
+      // `'orcid' = $1` call pins orcidId at $1 via arrayContaining (sibling
+      // sites use the same shape); `expect.anything()` was insufficient
+      // because it lets a regression re-bind the lookup to a different value.
       expect(hafQueryMock).toHaveBeenCalledWith(
         expect.stringContaining("'orcid' = $1"),
-        expect.anything(),
+        expect.arrayContaining([orcidId]),
       );
       expect(hafQueryMock).toHaveBeenCalledWith(
         expect.stringContaining("'action' IN ('accredit', 'revoke')"),
@@ -465,9 +469,17 @@ describe('POST /api/orcid/callback — auth gate (SEC-002-BE)', () => {
         expect.stringContaining("'orcid' = $1"),
         expect.arrayContaining([orcidId]),
       );
+      // The action-IN query fires twice on this path: once for alice's
+      // getExistingAccreditation (pre-lock), once for bob's binding-liveness
+      // check (inside findAccreditedAccountWithOrcid). The 409 branch is
+      // reached only when bob's call returns an accredit row still carrying
+      // this orcid — i.e. bob is the load-bearing caller. Pin bob in the
+      // params so a regression that stops querying the incumbent account
+      // fails loudly. `expect.anything()` accepted any invocation regardless
+      // of which account was being queried.
       expect(hafQueryMock).toHaveBeenCalledWith(
         expect.stringContaining("'action' IN ('accredit', 'revoke')"),
-        expect.anything(),
+        expect.arrayContaining(['bob']),
       );
     },
   );
