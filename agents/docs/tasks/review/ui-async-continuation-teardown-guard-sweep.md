@@ -60,4 +60,14 @@ Teardown-race writes are a real SPA bug class. Impact is usually invisible (sile
 
 ## [TODO Architect]
 
-None — self-contained pattern-propagation pass using the existing helper.
+None. self-contained pattern-propagation pass using the existing helper.
+
+---
+
+**UI implementer note (2026-04-22, merge commits `e3bba81` + `95ce11e`):**
+
+Sweep fanned out into two parallel worktree subagents (1-A: paper-feed, search, publish, edit, review + sequencing fix + helper docblock; 1-B: accreditation, bridge, accreditation-verify, comment-composer, vouch-section). Both branched from pre-composable `5023a67`, so 1-A's inlined `loadDisciplines` migrations conflicted with the composable (`12782d6 ui: extract discipline-filter composable`) on `paper-feed.js` + `search.js`.
+
+Resolution: merged 1-B first (no overlap with composable; clean auto-merge). Merged 1-A with manual conflict resolution — took 1-A's `createTimerGuard()` spread alongside the existing `createDisciplineFilter()` spread, took 1-A's `async init()` + `await this.loadDisciplines()` sequencing fix, dropped 1-A's inlined `loadDisciplines` method (composable owns it), and moved the post-await `_mounted` guards INTO the composable's `loadDisciplines`. The composable uses `this._mounted === false` (strict `false`, not falsy) so consumers that spread `createDisciplineFilter` without `createTimerGuard` retain prior behavior (undefined `_mounted` never short-circuits). Added 2 composable-level guard tests covering happy + error teardown paths.
+
+Final totals: 899/899 unit tests pass; `npm run build` clean. `grep -n 'this\._mounted' frontend/src/{pages,components,lib}/` matches across all 10 in-scope files + the composable + the pre-existing `orcid-callback.js` + `timer-guard.js`. Helper docblock updated to note the primitive now covers both setTimeout and async-continuation teardown. Playwright NOT re-run in this pass (parent-level gate — the architect's review pass can run the E2E suite with the backend in test-mode, which requires the `./deploy.sh test-up` dance documented in the UI agent CLAUDE.md).
