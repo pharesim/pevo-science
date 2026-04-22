@@ -752,6 +752,7 @@ export function initEditPage() {
             sf.uploading = true;
             try {
               const res = await uploadToIpfs(sf.file);
+              if (!this._mounted) return;
               sf.cid = res.data.cid;
               uploadedSupplementary.push({
                 cid: res.data.cid,

@@ -733,8 +733,10 @@ export function initPublishPage() {
 
         if (this.pdfFile) {
           documentHash = await sha256File(this.pdfFile);
+          if (!this._mounted) return;
           this.step = 'uploading';
           const uploadRes = await uploadToIpfs(this.pdfFile);
+          if (!this._mounted) return;
           ipfsCid = uploadRes.data.cid;
           ipfsFilename = uploadRes.data.filename;
         }
@@ -748,6 +750,7 @@ export function initPublishPage() {
             sf.error = null;
             try {
               const res = await uploadToIpfs(sf.file);
+              if (!this._mounted) return;
               sf.cid = res.data.cid;
               supplementaryFiles.push({
                 cid: res.data.cid,
