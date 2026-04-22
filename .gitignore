@@ -50,3 +50,5 @@ frontend/tests/e2e/.captured-cids.jsonl
 /claim_accounts*
 
 *.pem
+
+agents/docs/tasks/hold/*
