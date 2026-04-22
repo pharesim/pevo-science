@@ -78,6 +78,7 @@ vi.mock('../../src/accreditation.js', () => ({
 import { createApp } from '../../src/app.js';
 import { config } from '../../src/config.js';
 import { getRedis } from '../../src/redis.js';
+import { clearRateLimitKeys } from '../support/redis-helpers.js';
 // Test-only export — see note at orcid.ts __test_releaseBindingLock export.
 import { __test_releaseBindingLock as releaseBindingLock } from '../../src/routes/orcid.js';
 
@@ -150,13 +151,11 @@ beforeEach(async () => {
   }));
   // Clear rate-limit counters so parallel/retried tests don't burn through the
   // 10-req/min /start window. Both limiters key by IP; supertest always uses 127.0.0.1.
-  const redis = getRedis();
-  if (redis) {
-    try {
-      const keys = await redis.keys(`${config.appTag}:rl:orcid-*`);
-      if (keys.length > 0) await redis.del(...keys);
-    } catch { /* ignore */ }
-  }
+  // Use the shared helper — it ready-waits on redis.status before issuing the
+  // KEYS/DEL so the clear isn't silently skipped during the client's initial
+  // connect window (was a divergent inline caller prior to
+  // BE-TESTS-ORCID-RATE-LIMIT-CLEAR-HELPER-MIGRATION).
+  await clearRateLimitKeys(['orcid-start', 'orcid-callback']);
 });
 
 describe('POST /api/orcid/callback — auth gate (SEC-002-BE)', () => {
