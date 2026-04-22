@@ -44,3 +44,22 @@ Extend `_verify`'s catch block to branch on the retriable discriminator:
 ## [TODO Architect]
 
 None — consumes existing backend contract.
+
+---
+
+**Architect re-review (2026-04-22) — HELD PENDING FIXES:**
+
+First-pass `/ce-code-review` on commit `cbf53f1` (merge d184eca) (correctness persona). Retriable-branch consumption + countdown + retry scaffolding all correctly shaped; i18n keys present; durable vs retriable 409 correctly distinguished. Four hold items on retry-loop boundaries + semantics.
+
+1. **P2 — `err.retryAfterSeconds !== null` discriminator misclassifies `undefined` as retriable** (correctness F14.1 0.82). `frontend/src/pages/orcid-callback.js:~139`. Today `completeOrcid` only throws `ApiRequestError`, which normalizes absent values to `null` via api.js — so the misclassification is theoretical. Diverges from stated semantics (retriable iff backend explicitly signals retriability). Fix: `err.retryAfterSeconds != null` (loose equality) or explicit `typeof err.retryAfterSeconds === 'number'`.
+
+2. **P2 — `Retry-After: 0` collapses UX: `retryCountdown = 0` → synchronous immediate retry** (correctness F14.2 0.88). `parseRetryAfterSeconds(0) === 0` is valid (non-null). `const seconds = err.retryAfterSeconds ?? 10` evaluates to `0` (nullish coalesce doesn't fire on `0`). `_tickRetryCountdown()` finds `retryCountdown <= 0`, calls `_retryVerify()` synchronously. User sees no countdown, no error flash, immediate retry. If retry also returns 0, infinite synchronous loop risk. Fix: `const seconds = Math.max(1, err.retryAfterSeconds ?? 10)` or explicit `> 0` clamp.
+
+3. **P2 — No retry counter enforcement; comment claims "single self-triggered retry" but code allows unbounded** (correctness F14.3 0.90). `frontend/src/pages/orcid-callback.js:~221-244`. Persistent retriable 409 (attacker holds lock / cache-HAF lag exceeds 10s / repeated backend contention) arms a new countdown on every retry-fail. Stuck-on-page user creates unbounded retry loop burning backend state tokens. Safe across navigation (destroy cancels timer) but poor UX + backend resource burn. Fix: add `_retryCount` field; `MAX_RETRIES = 1` to match the comment; on `_retryCount >= MAX_RETRIES` show the durable-binding message instead of arming a new countdown. Reset on successful verify or navigation.
+
+4. **P3 — No test for countdown-reaches-zero → `_retryVerify` path** (correctness F14.5 info-tier 0.95). Existing teardown test advances timers to `countdown=7` then destroys. Retry-firing path is the main value-add of the branch; no test asserts `completeOrcid` gets called twice, `status` flips through `'verifying'` during retry. Fix: add a test that advances past `retryAfterSeconds=10`, asserts `completeOrcid` mock was called twice AND `status` cycled through `'verifying'`. Couples naturally with the retry-counter cap from #3 (single test can assert cap behavior + countdown firing).
+
+**Dismissed from round-1 findings (architect triage):**
+- **P3 F14.4** `errorAction` whitelist drops unknown future values (0.85): intentional default-deny shape. Future branch additions caught in code review + visible (no button rendered). Dismissed.
+
+**Path to re-archive:** (1) UI applies items #1-4 on this task. (2) UI re-review signal block below the hold. (3) Architect re-reviews round-2; archives on clean.

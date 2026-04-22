@@ -116,3 +116,21 @@ Deferred / notes for architect:
   field on the retract response are new. `agents/docs/api-contracts/` may
   need updates. [TODO Architect] per backend CLAUDE.md — contract edits are
   architect-owned; I did not touch the contract file.
+
+---
+
+**Architect re-review (2026-04-22) — HELD PENDING FIXES:**
+
+First-pass `/ce-code-review` on commits `4966a5a` + `3d9362c` merge (correctness persona). Tagged-union shape on `broadcastWotAccreditation`, `PartialCascadeError` with aggregate budget, and continue-on-timeout-until-budget semantic all correct. One reviewer finding (C1, multi-level rootRevocation) traced as false-positive by architect — see dismissal below. Three P3 in-scope hygiene items for round-2.
+
+1. **P3 — `result.rows.indexOf(row)` identity-based lookup is fragile to future pg driver changes** (correctness C2 0.88). `backend/src/wot.ts:~322` budget-exceeded branch calls `result.rows.indexOf(row)` where `row` is the for-of iteration variable. Safe today; if a future driver version clones rows, `slice(-1)` returns only the last element → silent truncation of the pending list. Fix: restructure with `.entries()`: `for (const [i, row] of result.rows.entries()) { ... const remainingRows = result.rows.slice(i); ... }`. Documents intent + removes identity assumption.
+
+2. **P3 — `chain_error` branch in vouch handler doesn't log `err` with voucher context** (correctness C3 0.85). `backend/src/routes/wot.ts:~97` returns the error response without calling `logger.error({ err: accreditResult.err, voucher, vouchee }, 'wot vouch chain error')`. Sibling `timeout` branch at :82 correctly logs with voucher context. Fix: add the matching logger.error call. Closes route-layer observability asymmetry.
+
+3. **P3 — `@deprecated checkAndAccreditViaWot` shim: lint doesn't enforce `@deprecated`; editor-only** (correctness C4 0.95). ESLint config has no `no-deprecated` rule; `tsc --noEmit` is silent. Implementer signal says "no remaining callers in repo but kept for safety; archive pass can drop if preferred." Fix: delete the shim (no callers → no safety net value; future callers would get a compile error against the new tagged-union return, which is the better forcing function than an editor-hover hint).
+
+**Dismissed from round-1 findings (architect triage):**
+- **C1 (correctness 0.92) — `rootRevocation` wrong in multi-level cascades:** FALSE POSITIVE. Reviewer traced through depth=1 folding but missed the depth=0 re-stamp at line 389 (`depth === 0 ? revokedAccount : nestedErr.rootRevocation`). Final PartialCascadeError emitted to the caller always has `rootRevocation = <depth-0 revokedAccount>` because the outermost depth's inner catch restamps. Intermediate stamps at depth ≥ 1 are mid-level accounts, but nothing logs them — per-vouchee logs at each depth use `{ vouchee, revokedAccount }` (this depth's own param, not the error's stamped value); the outer route handler logs the final error which always has the true root. Dismissed. Verified by direct code trace: `boss → v1 → x1 → y1` scenario with budget-exhaust at depth=2 produces `PartialCascadeError(rootRevocation='boss')` at the route handler, after intermediate stamps of 'x1' and 'v1' that are overwritten by the depth=0 re-stamp.
+- Residual risk R2 (per-vouchee timeouts outside aggregate budget, N*30s if all time out): out-of-scope residual.
+
+**Path to re-archive:** (1) Backend applies items #1-3 (restructure + logger.error + delete shim) on this task. (2) Backend re-review signal block below the hold. (3) Architect re-reviews round-2; archives on clean.

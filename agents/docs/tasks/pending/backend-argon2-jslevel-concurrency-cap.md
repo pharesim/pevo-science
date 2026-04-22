@@ -109,3 +109,32 @@ Full scope landed. `npx tsc --noEmit` clean. `npm run lint` clean (6 pre-existin
 
 **`[TODO Architect]`:**
 - `/api/health` response shape gained three new fields. If the API contract documents this endpoint, the architect owns that update per backend CLAUDE.md's architect-owns-contracts rule.
+
+---
+
+**Architect re-review (2026-04-22) — HELD PENDING FIXES:**
+
+First-pass `/ce-code-review` on commit `3e6f093` (correctness, security, reliability, testing personas). The semaphore primitive is structurally sound — Promise-queue + counter is race-safe in JS single-threaded, `finally` correctly releases on throw, `computeCap()` edge cases all handle NaN/0/negative/float. One P1 finding that blocks archive, three P2 safety/observability items in-scope for the primitive, plus test-fidelity gaps that undermine the task's own mutation-kill claim. Two additional P2 items (SIGTERM drain, AbortSignal threading) filed as separate pending tasks.
+
+1. **P1 — `backend/src/routes/settings.ts:~384` unwrapped `argon2.hash` bypasses semaphore** (correctness C1 0.97 + security SEC-BYPASS-SETTINGS 0.95, 2-reviewer convergence). `settings.ts` calls `const passwordHash = await argon2.hash(password, ARGON2_OPTIONS);` directly; file does not import `runWithArgon2Slot`. Task acceptance states "Semaphore wraps every `burnSentinel` call and every `argon2.hash(...)` / `argon2.verify(...)` call on auth paths." Acceptance unmet. Attack path: hold 4 semaphore slots via 4 concurrent `/login` unknown-username attempts (each pays ~50ms burnSentinel); 5th concurrent authenticated `/api/settings/set-password` call runs argon2.hash outside the semaphore. Total concurrent argon2 ops = 5, exceeding the libuv `floor(16/4)=4` cap. argon2 throws on thread exhaustion inside an in-flight burnSentinel; the silent `.catch` swallows it; timing oracle reopens. Fix: import `runWithArgon2Slot` from `../lib/argon2-semaphore.js`; wrap as `const passwordHash = await runWithArgon2Slot(() => argon2.hash(password, ARGON2_OPTIONS));`.
+
+2. **P2 — Unbounded `waiters` array → DoS via sustained multi-IP queue growth** (security SEC-SEMAPHORE-DOS-STARVATION 0.72). `backend/src/lib/argon2-semaphore.ts:~86` has no `MAX_QUEUE_DEPTH` cap. Rate limiters constrain per-IP, but N IPs × 10/hr × 4 auth endpoints = large queue. Each waiter holds an open HTTP connection. Legit users delay 6+ seconds at cap=4, 50ms/op × 400-waiter queue. **Coupled fix requirement:** the `burnSentinel` catch at `auth.ts:~220` MUST NOT swallow `ARGON2_QUEUE_FULL` when the cap is added — swallowing would return ~0ms, reopening the timing oracle under DoS conditions. Fix: add `MAX_QUEUE_DEPTH = 50` (or similar) in argon2-semaphore.ts; before pushing to `waiters`, throw `ArgonQueueFullError` when `waiters.length >= MAX_QUEUE_DEPTH`. In `burnSentinel`'s try/catch at `auth.ts:~220`, rethrow `ArgonQueueFullError` instead of swallowing. In auth route handlers, catch `ArgonQueueFullError` → 503 SERVICE_UNAVAILABLE. Tests: queue-full → 503 + burnSentinel propagates (not swallow) + timing assertion.
+
+3. **P3 → P2 elevated — `/api/health` unauthenticated, unrate-limited, exposes `argon2_max_concurrent` + live `argon2_in_flight` + `argon2_queue_depth`** (security SEC-HEALTH-RECON-UNAUTHENTICATED 0.78). High-resolution real-time attack feedback for the DoS in item #2. Fix: remove `argon2_max_concurrent` from the public response (it's a fixed deployment constant — no live-operator value). Apply rate limit (e.g., `readLimiter` or 60/min/IP) to `/api/health`. `argon2_in_flight` + `argon2_queue_depth` retained for operator-visible saturation signal; rate limit reduces polling resolution.
+
+4. **P2 — Testing gaps bundle: mutation-kill claim is weakened under Vitest** (testing T1 0.92 + T2 0.88 + T3 0.85 + T4 0.90).
+   - **T1:** Under Vitest, `UV_THREADPOOL_SIZE` is unset → `computeCap()` falls back to 1 → `MAX_CONCURRENT_ARGON2_OPS=1` → the 8-way Promise.all fan-out in `auth-concurrency.test.ts` serializes. At cap=1, the semaphore is indistinguishable from an inlined `fn()` call; the "revert semaphore to no-op" mutant passes. The test's comment describes a 20-way cap-4 scenario; the actual test proves only cap-1 serialization. Fix (pick one): (a) set `UV_THREADPOOL_SIZE=16` in `vitest.config.ts` `env:` block so tests exercise cap=4, OR (b) add a dedicated library-level unit test for `runWithArgon2Slot` that dependency-injects an explicit cap>1, fans out cap+2 controlled-delay fns, asserts `in_flight` peaks at cap.
+   - **T2:** No test exercises the `finally` throw-path slot release. Add: inject a rejecting fn, populate queue with 2 waiters, assert all waiters proceed + `in_flight` returns to 0.
+   - **T3:** `auth-concurrency.test.ts` consumes 8 login attempts (out of 10/hr loginLimiter) with no `afterAll` cleanup. Add `afterAll(clearRateLimitKeys(['auth-login']))`.
+   - **T4:** `/api/health` concurrency assertions check type + ≥0 only; add `expect(res.body.argon2_max_concurrent).toBe(MAX_CONCURRENT_ARGON2_OPS)` (import the exported constant) + idle-state `argon2_queue_depth === 0` + `argon2_in_flight === 0`.
+
+**Dismissed from round-1 findings (architect triage):**
+- Reliability R2 "abandoned-connection waiter runs wasteful argon2" (0.90): filed as separate pending task `backend-argon2-semaphore-abort-signal.md`. AbortSignal threading is a larger architectural change than this task's scope.
+- Reliability R1 "No SIGTERM drain for queued waiters" (0.95): filed as separate pending task `backend-argon2-semaphore-shutdown-drain.md`. Shutdown semantics orthogonal to "cap concurrent argon2 ops."
+- Residual statistical queue-wait timing oracle (0.63): accepted residual.
+
+**Filed as separate Pending tasks:**
+- `backend-argon2-semaphore-shutdown-drain.md` (P2) — `drainArgon2Queue()` + `ShuttingDownError` for graceful SIGTERM.
+- `backend-argon2-semaphore-abort-signal.md` (P2) — AbortSignal threading so client disconnects skip queued argon2 work.
+
+**Path to re-archive:** (1) Backend applies items #1-4 on this task. (2) Backend re-review signal block below the hold. (3) Architect re-reviews round-2 with `/ce-code-review` — security + adversarial mandatory given the P1. Archives on clean. Filed follow-up tasks archive independently.

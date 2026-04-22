@@ -76,3 +76,18 @@ Full scope landed. `npx tsc --noEmit` clean. `npm run lint` clean (6 pre-existin
 
 **`[TODO Architect]`:**
 - The `isPasswordValid` signature change from `boolean` to `pw is string` is a tightening (no runtime behavior change) but is observable via TypeScript type flow. If any doc/API contract references the helper's signature, it should be updated. Not expected to touch api-contracts/*.md since that file describes REST shapes, not internal helper signatures.
+
+---
+
+**Architect re-review (2026-04-22) — HELD PENDING FIXES:**
+
+First-pass `/ce-code-review` on commit `933352c` (correctness persona). All 4 migrated routes (/orcid/start, /resend-verification, /reset-request, /reset) correctly adopt `safeParse` + 400 VALIDATION_ERROR shape matching round-1. `isPasswordValid` type-predicate opportunistic fold is sound. One P2 hold item on testing coverage; two low-confidence residuals dismissed.
+
+1. **P2 — Zod-leak regression test coverage missing on the 4 new routes** (correctness C2 0.85). `backend/tests/routes/auth.test.ts:~215-222` `BE-REQUEST-BODY-TYPING-ZOD` describe block covers /login + /signup + /recover only. None of the 4 routes migrated by this task have a parse-failure + no-issues-leak assertion. A future refactor emitting `res.status(400).json({ ...zodResult.error })` on one of the 4 new routes passes CI silently, reopening the SEC-ZOD-01 issue-leak class round-1 closed. Fix: extend the `cases` array (or add a parallel describe block) to include /resend-verification + /reset-request + /reset + /orcid/start. Note: /orcid/start has an ordering wrinkle — the Zod parse runs AFTER the ORCID config check; test env without `ORCID_CLIENT_ID/SECRET` returns 500 before 400. Either (a) set those env vars in the test, or (b) document the ordering and skip /orcid/start with explicit comment + assert via a code-shape grep instead.
+
+**Dismissed from round-1 findings (architect triage):**
+- **P3 C1** `isPasswordValid` type-predicate redundant after `passwordProvided` guard in /recover (0.62): harmless; future callers skipping the guard would hit runtime narrowing that's correct.
+- **P3 C3** `ResetBodySchema.password: z.string().optional()` accepts `''` (0.72): intentional two-layer design (policy gate handles empty-string + PASSWORD_POLICY_MESSAGE). Test pin is optional; defer unless operator reports a regression.
+- RR1/RR2 testing infrastructure notes: accepted residual.
+
+**Path to re-archive:** (1) Backend applies item #1 on this task. (2) Backend re-review signal block below the hold. (3) Architect re-reviews round-2; archives on clean.
