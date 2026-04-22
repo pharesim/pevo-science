@@ -44,3 +44,5 @@ Changing the `${config.appTag}` segment itself. Introducing a new Redis prefix c
 
 1. Run the audit first — the decision depends on how many keys currently drift and in how many distinct shapes.
 2. Pick Option A or B with a one-paragraph rationale written into the updated CLAUDE.md rule.
+
+[BLOCKED by Architect] (2026-04-22) — Backend retrofit cannot start until the architect runs the audit of all `${config.appTag}:` key construction sites, decides Option A (open-domain prefix, update CLAUDE.md wording) vs Option B (`:cache:` mandatory, retrofit every key builder), and writes the rationale into `agents/backend/CLAUDE.md`. Once that lands, move this back to `pending/` for backend to conform the key builders.
