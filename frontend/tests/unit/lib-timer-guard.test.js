@@ -74,4 +74,28 @@ describe('createTimerGuard', () => {
     expect(id).toBeDefined();
     expect(c._pendingTimers.has(id)).toBe(true);
   });
+
+  it('factory returns isolated state per call (no shared module-level state)', () => {
+    // Guards against a future refactor that hoists the returned object to
+    // module scope. Arming + tearing down the first instance must not leak
+    // into a freshly-created second instance.
+    const c1 = component();
+    const c2 = component();
+    c1._setTimer(() => {}, 100);
+    expect(c1._pendingTimers.size).toBe(1);
+    c1._teardownTimers();
+    expect(c1._mounted).toBe(false);
+    expect(c2._mounted).toBe(true);
+    expect(c2._pendingTimers.size).toBe(0);
+    expect(c2._pendingTimers).not.toBe(c1._pendingTimers);
+  });
+
+  it('_teardownTimers is idempotent (safe to call twice)', () => {
+    const c = component();
+    c._setTimer(() => {}, 100);
+    c._teardownTimers();
+    expect(() => c._teardownTimers()).not.toThrow();
+    expect(c._mounted).toBe(false);
+    expect(c._pendingTimers.size).toBe(0);
+  });
 });

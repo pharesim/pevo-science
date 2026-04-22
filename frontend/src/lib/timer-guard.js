@@ -40,6 +40,12 @@
 // post-await write to component state should be preceded by
 // `if (!this._mounted) return;`. This makes `createTimerGuard()` the canonical
 // teardown primitive for Alpine components with async work.
+//
+// USAGE: Call inside the per-mount Alpine.data factory
+// (`Alpine.data(() => ({ ...createTimerGuard(), ... }))`), NOT at module
+// scope. The returned object holds component-instance state
+// (`_pendingTimers` Set, `_mounted` flag); hoisting a single return value
+// shared across multiple components would corrupt teardown state.
 export function createTimerGuard() {
   return {
     _mounted: true,

@@ -6,8 +6,9 @@ locale files as raw English placeholders, pending a real translation. See
 
 ## Format
 
-One line per locale/key pair. When a translator lands a real translation,
-they remove the matching line in the same commit.
+One line per locale/key pair, grouped under a dated sub-heading that names
+the sweep (task slug) that introduced the key. Each sub-heading is
+`### Added <YYYY-MM-DD> (<TASK-SLUG>)`.
 
 ```
 <locale>: <key>
@@ -15,7 +16,25 @@ they remove the matching line in the same commit.
 
 Example: `ar: upgrade.failed`
 
+## How to use this file
+
+Translators: pick a sweep section (freshness is descending top-to-bottom
+within the same date; oldest sweeps float to the top). Translate the
+English value of each listed key into the target locale in the matching
+`public/messages/<locale>.json` file, then delete the matching
+`<locale>: <key>` line from the section in the same commit. A section
+with no remaining lines can be deleted entirely. Sweeps ship as batches,
+so finishing one section at a time is usually the cleanest unit of work.
+
+Sweep authors: when appending new stubs for a new sweep, add a new
+`### Added <YYYY-MM-DD> (<TASK-SLUG>)` sub-heading at the bottom of the
+`## Pending` section. Do not merge new entries into an existing sweep's
+list. A fresh header per sweep is what lets translators prioritize and
+lets stale-entry detection be archeological rather than manual.
+
 ## Pending
+
+### Added 2026-04-21 (FE-UPGRADE-CREDENTIAL-WIPE)
 
 ar: upgrade.failed
 cs: upgrade.failed
@@ -32,6 +51,72 @@ pt: upgrade.failed
 sv: upgrade.failed
 tr: upgrade.failed
 zh: upgrade.failed
+
+### Added 2026-04-21 (FE-SETTINGS-ERROR-MESSAGE-SANITIZE-SWEEP)
+
+ar: settings.passwordUpdateFailed
+cs: settings.passwordUpdateFailed
+da: settings.passwordUpdateFailed
+de: settings.passwordUpdateFailed
+es: settings.passwordUpdateFailed
+fa: settings.passwordUpdateFailed
+fr: settings.passwordUpdateFailed
+he: settings.passwordUpdateFailed
+it: settings.passwordUpdateFailed
+nl: settings.passwordUpdateFailed
+pl: settings.passwordUpdateFailed
+pt: settings.passwordUpdateFailed
+sv: settings.passwordUpdateFailed
+tr: settings.passwordUpdateFailed
+zh: settings.passwordUpdateFailed
+ar: settings.emailUpdateFailed
+cs: settings.emailUpdateFailed
+da: settings.emailUpdateFailed
+de: settings.emailUpdateFailed
+es: settings.emailUpdateFailed
+fa: settings.emailUpdateFailed
+fr: settings.emailUpdateFailed
+he: settings.emailUpdateFailed
+it: settings.emailUpdateFailed
+nl: settings.emailUpdateFailed
+pl: settings.emailUpdateFailed
+pt: settings.emailUpdateFailed
+sv: settings.emailUpdateFailed
+tr: settings.emailUpdateFailed
+zh: settings.emailUpdateFailed
+ar: settings.emailDeleteFailed
+cs: settings.emailDeleteFailed
+da: settings.emailDeleteFailed
+de: settings.emailDeleteFailed
+es: settings.emailDeleteFailed
+fa: settings.emailDeleteFailed
+fr: settings.emailDeleteFailed
+he: settings.emailDeleteFailed
+it: settings.emailDeleteFailed
+nl: settings.emailDeleteFailed
+pl: settings.emailDeleteFailed
+pt: settings.emailDeleteFailed
+sv: settings.emailDeleteFailed
+tr: settings.emailDeleteFailed
+zh: settings.emailDeleteFailed
+ar: settings.orcidLinkFailed
+cs: settings.orcidLinkFailed
+da: settings.orcidLinkFailed
+de: settings.orcidLinkFailed
+es: settings.orcidLinkFailed
+fa: settings.orcidLinkFailed
+fr: settings.orcidLinkFailed
+he: settings.orcidLinkFailed
+it: settings.orcidLinkFailed
+nl: settings.orcidLinkFailed
+pl: settings.orcidLinkFailed
+pt: settings.orcidLinkFailed
+sv: settings.orcidLinkFailed
+tr: settings.orcidLinkFailed
+zh: settings.orcidLinkFailed
+
+### Added 2026-04-22 (FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND)
+
 ar: signIn.resendFailed
 cs: signIn.resendFailed
 da: signIn.resendFailed
@@ -272,66 +357,6 @@ pt: login.invalidCredentials
 sv: login.invalidCredentials
 tr: login.invalidCredentials
 zh: login.invalidCredentials
-ar: settings.passwordUpdateFailed
-cs: settings.passwordUpdateFailed
-da: settings.passwordUpdateFailed
-de: settings.passwordUpdateFailed
-es: settings.passwordUpdateFailed
-fa: settings.passwordUpdateFailed
-fr: settings.passwordUpdateFailed
-he: settings.passwordUpdateFailed
-it: settings.passwordUpdateFailed
-nl: settings.passwordUpdateFailed
-pl: settings.passwordUpdateFailed
-pt: settings.passwordUpdateFailed
-sv: settings.passwordUpdateFailed
-tr: settings.passwordUpdateFailed
-zh: settings.passwordUpdateFailed
-ar: settings.emailUpdateFailed
-cs: settings.emailUpdateFailed
-da: settings.emailUpdateFailed
-de: settings.emailUpdateFailed
-es: settings.emailUpdateFailed
-fa: settings.emailUpdateFailed
-fr: settings.emailUpdateFailed
-he: settings.emailUpdateFailed
-it: settings.emailUpdateFailed
-nl: settings.emailUpdateFailed
-pl: settings.emailUpdateFailed
-pt: settings.emailUpdateFailed
-sv: settings.emailUpdateFailed
-tr: settings.emailUpdateFailed
-zh: settings.emailUpdateFailed
-ar: settings.emailDeleteFailed
-cs: settings.emailDeleteFailed
-da: settings.emailDeleteFailed
-de: settings.emailDeleteFailed
-es: settings.emailDeleteFailed
-fa: settings.emailDeleteFailed
-fr: settings.emailDeleteFailed
-he: settings.emailDeleteFailed
-it: settings.emailDeleteFailed
-nl: settings.emailDeleteFailed
-pl: settings.emailDeleteFailed
-pt: settings.emailDeleteFailed
-sv: settings.emailDeleteFailed
-tr: settings.emailDeleteFailed
-zh: settings.emailDeleteFailed
-ar: settings.orcidLinkFailed
-cs: settings.orcidLinkFailed
-da: settings.orcidLinkFailed
-de: settings.orcidLinkFailed
-es: settings.orcidLinkFailed
-fa: settings.orcidLinkFailed
-fr: settings.orcidLinkFailed
-he: settings.orcidLinkFailed
-it: settings.orcidLinkFailed
-nl: settings.orcidLinkFailed
-pl: settings.orcidLinkFailed
-pt: settings.orcidLinkFailed
-sv: settings.orcidLinkFailed
-tr: settings.orcidLinkFailed
-zh: settings.orcidLinkFailed
 ar: login.signupExpired
 cs: login.signupExpired
 da: login.signupExpired
@@ -347,6 +372,9 @@ pt: login.signupExpired
 sv: login.signupExpired
 tr: login.signupExpired
 zh: login.signupExpired
+
+### Added 2026-04-22 (FE-ERR-MESSAGE-SANITIZE-TOAST-AND-HANDLECONNECT-SITES)
+
 ar: vote.cancelFailed
 cs: vote.cancelFailed
 da: vote.cancelFailed
