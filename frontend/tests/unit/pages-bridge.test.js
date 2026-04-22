@@ -341,6 +341,29 @@ describe('bridgePage', () => {
       });
       vi.useRealTimers();
     });
+
+    // UI-SETTIMEOUT-NAVIGATE-TEARDOWN-GUARD-SWEEP: the 3s post-success
+    // redirect must be cancelable. If the user navigates away during the
+    // wait for the Hive block, destroy() clears the pending timer and
+    // navigate MUST NOT fire.
+    it('destroy() cancels the post-success redirect timer (no navigate after teardown)', async () => {
+      vi.useFakeTimers();
+      const comp = createComponent();
+      comp.identifier = '10.1234/test';
+      comp.discipline = 'Physics';
+      mockRegisterBridgePaper.mockResolvedValue({ data: { author: 'testuser', permlink: 'p' } });
+
+      await comp.handleRegister();
+      expect(comp.step).toBe('success');
+      // Timer armed but not yet fired.
+      expect(mockRouterStore.navigate).not.toHaveBeenCalled();
+
+      comp.destroy();
+      // Advancing past the 3s redirect window MUST NOT trigger navigate.
+      vi.advanceTimersByTime(5000);
+      expect(mockRouterStore.navigate).not.toHaveBeenCalled();
+      vi.useRealTimers();
+    });
   });
 
   describe('disciplineDisplayValue', () => {

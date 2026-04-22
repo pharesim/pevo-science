@@ -436,6 +436,24 @@ describe('publishPage', () => {
       expect(warnedFirst).toBeDefined();
       warnSpy.mockRestore();
     });
+
+    // UI-SETTIMEOUT-NAVIGATE-TEARDOWN-GUARD-SWEEP: the 1.5s post-success
+    // redirect must be cancelable. If the user navigates away during the
+    // wait, destroy() clears the pending timer and navigate MUST NOT fire.
+    it('destroy() cancels the post-success redirect timer (no navigate after teardown)', async () => {
+      vi.useFakeTimers();
+      broadcastOps.mockResolvedValue({ tx_id: 'tx' });
+      const comp = validComponent();
+
+      await comp.handleSubmit();
+      expect(comp.step).toBe('success');
+      expect(mockStores.router.navigate).not.toHaveBeenCalled();
+
+      comp.destroy();
+      vi.advanceTimersByTime(3000);
+      expect(mockStores.router.navigate).not.toHaveBeenCalled();
+      vi.useRealTimers();
+    });
   });
 
   describe('_mergeCitationCollection', () => {

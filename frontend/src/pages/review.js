@@ -3,6 +3,7 @@ import { fetchPaper, submitAnonymousReview } from '../api.js';
 import { broadcastOps } from '../signer.js';
 import { slugify } from '../crypto.js';
 import { getAppTag, getAppId } from '../config.js';
+import { createTimerGuard } from '../lib/timer-guard.js';
 
 const template = `
       <div x-data="reviewPage" class="container-narrow py-8">
@@ -129,6 +130,9 @@ const RATING_KEYS = ['methodology', 'novelty', 'clarity', 'significance'];
 
 export function initReviewPage() {
   Alpine.data('reviewPage', () => ({
+    // Post-teardown setTimeout guard. See frontend/src/lib/timer-guard.js.
+    ...createTimerGuard(),
+
     paper: null,
     loadingPaper: true,
     ratings: { methodology: 0, novelty: 0, clarity: 0, significance: 0 },
@@ -194,6 +198,10 @@ export function initReviewPage() {
 
     init() {
       this.loadPaper();
+    },
+
+    destroy() {
+      this._teardownTimers();
     },
 
     async loadPaper() {
@@ -276,7 +284,7 @@ export function initReviewPage() {
         }
 
         this.step = 'success';
-        setTimeout(() => {
+        this._setTimer(() => {
           this.navigate(`/paper/${this.author}/${this.permlink}`);
         }, 1500);
       } catch (err) {

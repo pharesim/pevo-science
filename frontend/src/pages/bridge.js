@@ -1,5 +1,6 @@
 import Alpine from 'alpinejs';
 import { fetchBridgeLookup, fetchBridgeCheck, registerBridgePaper } from '../api.js';
+import { createTimerGuard } from '../lib/timer-guard.js';
 
 const DISCIPLINE_TAXONOMY = [
   { field: 'Natural Sciences', subfields: ['Mathematics', 'Computer Science', 'Physics', 'Chemistry', 'Earth Sciences', 'Biology', 'Astronomy'] },
@@ -175,6 +176,9 @@ export { template as bridgePageTemplate };
 
 export function initBridgePage() {
   Alpine.data('bridgePage', () => ({
+    // Post-teardown setTimeout guard. See frontend/src/lib/timer-guard.js.
+    ...createTimerGuard(),
+
     identifier: '',
     lookingUp: false,
     lookupError: '',
@@ -191,6 +195,11 @@ export function initBridgePage() {
     errorMessage: '',
 
     navigate(path) { Alpine.store('router').navigate(path); },
+
+    destroy() {
+      this._teardownTimers();
+    },
+
     get isConnected() { return Alpine.store('auth').isConnected; },
     get isAccredited() { return Alpine.store('auth').isAccredited; },
     get username() { return Alpine.store('auth').username; },
@@ -299,7 +308,7 @@ export function initBridgePage() {
         Alpine.store('toast').show(this.$t('bridge.stepSuccess'), 'success');
         // Wait for the Hive block to be produced before redirecting. The paper detail
         // page retries on NOT_FOUND to cover any remaining HAF indexing lag.
-        setTimeout(() => {
+        this._setTimer(() => {
           this.navigate(`/paper/${res.data.author}/${res.data.permlink}`);
         }, 3000);
       } catch (err) {

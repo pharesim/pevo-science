@@ -51,6 +51,7 @@ function createComponent() {
   initEditPage();
   const factory = Alpine.data.mock.calls[Alpine.data.mock.calls.length - 1][1];
   const comp = factory();
+  comp.$store = mockStores;
   comp.$t = (key) => key;
   comp.$watch = vi.fn();
   comp.$nextTick = vi.fn((fn) => fn && fn());
@@ -100,5 +101,92 @@ describe('editPage handleSubmit sanitization', () => {
     expect(warnSpy).toHaveBeenCalled();
     expect(warnSpy.mock.calls[0][1]).toBe(leaky);
     warnSpy.mockRestore();
+  });
+
+  // UI-SETTIMEOUT-NAVIGATE-TEARDOWN-GUARD-SWEEP: the 1.5s post-success
+  // redirect must be cancelable on BOTH the same-author edit path and
+  // the continuation path. If the user navigates away during the wait,
+  // destroy() clears the pending timer and navigate MUST NOT fire.
+  it('same-author edit path: destroy() cancels the post-success redirect timer', async () => {
+    vi.useFakeTimers();
+    const { invalidatePaperCache } = await import('../../src/api.js');
+    broadcastOps.mockResolvedValue({ tx_id: 'tx' });
+    invalidatePaperCache.mockResolvedValue({});
+
+    const comp = createComponent();
+    // Same-author path: username === paper.author and no continuation chain
+    // (head_author === author && head_permlink === permlink).
+    mockStores.auth.username = 'alice';
+    comp.paper = {
+      author: 'alice',
+      permlink: 'p1',
+      head_author: 'alice',
+      head_permlink: 'p1',
+      canonical_author: 'alice',
+      canonical_permlink: 'p1',
+      body: 'old body',
+      json_metadata: JSON.stringify({ pevotest: { version: 1 } }),
+      title: 'Old Title',
+    };
+    comp._originalBody = '## Abstract\n\nold abstract\n\n---\n\nold body';
+    comp.title = 'New Title';
+    comp.abstract = 'new abstract';
+    comp.body = 'new body';
+    comp.discipline = 'Physics';
+    comp.authorName = 'Alice';
+    comp.authorAffiliation = 'MIT';
+    comp.authorOrcid = '';
+    comp.keywordsText = 'quantum';
+
+    await comp.handleSubmit();
+    expect(comp.step).toBe('success');
+    expect(mockStores.router.navigate).not.toHaveBeenCalled();
+
+    comp.destroy();
+    vi.advanceTimersByTime(3000);
+    expect(mockStores.router.navigate).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
+  it('continuation path: destroy() cancels the post-success redirect timer', async () => {
+    vi.useFakeTimers();
+    const { invalidatePaperCache } = await import('../../src/api.js');
+    broadcastOps.mockResolvedValue({ tx_id: 'tx' });
+    invalidatePaperCache.mockResolvedValue({});
+
+    const comp = createComponent();
+    // Continuation path: username !== paper.author (different user editing)
+    // forces isContinuation=true and routes through the continuation branch.
+    mockStores.auth.username = 'bob';
+    comp.paper = {
+      author: 'alice',
+      permlink: 'p1',
+      head_author: 'alice',
+      head_permlink: 'p1',
+      canonical_author: 'alice',
+      canonical_permlink: 'p1',
+      body: 'old body',
+      json_metadata: JSON.stringify({ pevotest: { version: 1 } }),
+      title: 'Old Title',
+      versions: [{ version_number: 1 }],
+    };
+    comp._originalBody = '## Abstract\n\nold abstract\n\n---\n\nold body';
+    comp.title = 'Continuation Title';
+    comp.abstract = 'new abstract';
+    comp.body = 'new body';
+    comp.discipline = 'Physics';
+    comp.authorName = 'Bob';
+    comp.authorAffiliation = 'Harvard';
+    comp.authorOrcid = '';
+    comp.keywordsText = 'quantum';
+
+    await comp.handleSubmit();
+    expect(comp.step).toBe('success');
+    expect(mockStores.router.navigate).not.toHaveBeenCalled();
+
+    comp.destroy();
+    vi.advanceTimersByTime(3000);
+    expect(mockStores.router.navigate).not.toHaveBeenCalled();
+    vi.useRealTimers();
   });
 });

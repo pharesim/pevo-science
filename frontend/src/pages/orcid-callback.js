@@ -1,5 +1,6 @@
 import Alpine from 'alpinejs';
 import { completeOrcid } from '../api.js';
+import { createTimerGuard } from '../lib/timer-guard.js';
 
 const template = `
       <div x-data="orcidCallbackPage" class="container-narrow py-8">
@@ -49,19 +50,19 @@ export { template as orcidCallbackPageTemplate };
 
 export function initOrcidCallbackPage() {
   Alpine.data('orcidCallbackPage', () => ({
+    // Lifecycle guards (spread first). Every async continuation (awaited
+    // promise resolution, setTimeout callback) that writes to component
+    // state or fires navigation must check _mounted first. Timers are
+    // tracked in _pendingTimers and cleared in destroy() so a user
+    // navigating away mid-wait does not trip post-teardown state mutations.
+    // See frontend/src/lib/timer-guard.js for the helper contract.
+    ...createTimerGuard(),
+
     status: 'verifying',
     errorMessage: '',
     errorAction: '', // 'signup' for NO_ACCOUNT, else empty
     resultUsername: '',
     backPath: '/',
-
-    // Lifecycle guards. Every async continuation (awaited promise resolution,
-    // setTimeout callback) that writes to component state or fires navigation
-    // must check _mounted first. Timers are tracked in _pendingTimers and
-    // cleared in destroy() so a user navigating away mid-wait does not trip
-    // post-teardown state mutations.
-    _mounted: true,
-    _pendingTimers: new Set(),
 
     navigate(path) { Alpine.store('router').navigate(path); },
 
@@ -95,19 +96,7 @@ export function initOrcidCallbackPage() {
     },
 
     destroy() {
-      this._mounted = false;
-      for (const id of this._pendingTimers) clearTimeout(id);
-      this._pendingTimers.clear();
-    },
-
-    _setTimer(fn, ms) {
-      const id = setTimeout(() => {
-        this._pendingTimers.delete(id);
-        if (!this._mounted) return;
-        fn();
-      }, ms);
-      this._pendingTimers.add(id);
-      return id;
+      this._teardownTimers();
     },
 
     async _verify(code, state, mode) {
