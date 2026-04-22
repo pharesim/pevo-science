@@ -429,6 +429,7 @@ export function initEditPage() {
           fetchPaperEnrichment(author, permlink),
         ]);
 
+        if (!this._mounted) return;
         if (this.author !== author || this.permlink !== permlink) return;
 
         if (paperRes.status === 'rejected') {
@@ -473,10 +474,11 @@ export function initEditPage() {
         this.$watch('authorOrcid', () => this._scheduleDraftSave());
         this.$watch('citations', () => this._scheduleDraftSave());
       } catch (err) {
+        if (!this._mounted) return;
         if (this.author !== author || this.permlink !== permlink) return;
         this.loadError = err?.message || this.$t('edit.loadError');
       } finally {
-        this.loadingPaper = false;
+        if (this._mounted) this.loadingPaper = false;
       }
     },
 
@@ -818,11 +820,13 @@ export function initEditPage() {
             }],
           ];
           await broadcastOps(username, continuationOps);
+          if (!this._mounted) return;
 
           // Invalidate cache for the canonical paper
           const canonicalAuthor = this.paper.canonical_author || this.paper.author;
           const canonicalPermlink = this.paper.canonical_permlink || this.paper.permlink;
           await invalidatePaperCache(canonicalAuthor, canonicalPermlink);
+          if (!this._mounted) return;
 
           this.step = 'success';
           localStorage.removeItem(this.draftKey);
@@ -880,8 +884,10 @@ export function initEditPage() {
             }],
           ];
           await broadcastOps(username, editOps);
+          if (!this._mounted) return;
 
           await invalidatePaperCache(this.author, this.permlink);
+          if (!this._mounted) return;
 
           this.step = 'success';
           localStorage.removeItem(this.draftKey);
@@ -890,6 +896,7 @@ export function initEditPage() {
           }, 1500);
         }
       } catch (err) {
+        if (!this._mounted) return;
         this.step = 'error';
         // Sanitization pattern (see executeUpgrade() in settings.js).
         console.warn('[edit submit]', err);

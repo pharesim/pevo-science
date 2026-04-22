@@ -5,6 +5,7 @@ import { paginationTemplate } from '../components/pagination.js';
 import { totalPagesFromMeta } from '../lib/pagination.js';
 import { localeStrippedPath } from '../lib/url-sync.js';
 import { createDisciplineFilter } from '../lib/discipline-filter.js';
+import { createTimerGuard } from '../lib/timer-guard.js';
 import DOMPurify from 'dompurify';
 
 // Filter changes (type/source/discipline) intentionally do NOT
@@ -163,6 +164,7 @@ function pageOwnsUrl() {
 
 export function initSearchPage() {
   Alpine.data('searchPage', () => ({
+    ...createTimerGuard(),
     ...createDisciplineFilter({ stateKey: 'disciplineFilter' }),
     query: '',
     typeFilter: 'all',
@@ -177,10 +179,14 @@ export function initSearchPage() {
 
     formatDate,
 
-    init() {
+    async init() {
       this._syncFromUrl();
+      // doSearch runs in parallel with loadDisciplines (results don't depend
+      // on the discipline dropdown). Await disciplines so the <select>'s
+      // x-model binds against hydrated options on first render. Subsequent
+      // refetches stay parallel.
       if (this.query) this.doSearch(this.query, this.currentPage);
-      this.loadDisciplines();
+      await this.loadDisciplines();
       if (pageOwnsUrl()) {
         this._popstateHandler = () => {
           if (!pageOwnsUrl()) return;
@@ -192,6 +198,9 @@ export function initSearchPage() {
     },
 
     destroy() {
+      // _teardownTimers first: flips _mounted so in-flight doSearch /
+      // loadDisciplines continuations bail before touching reactive state.
+      this._teardownTimers();
       if (this._popstateHandler) {
         window.removeEventListener('popstate', this._popstateHandler);
         this._popstateHandler = null;
@@ -243,16 +252,18 @@ export function initSearchPage() {
         if (this.disciplineFilter) params.discipline = this.disciplineFilter;
 
         const res = await searchPapers(params);
+        if (!this._mounted) return;
         this.results = res.data || [];
         this.totalPages = totalPagesFromMeta(res.meta);
       } catch {
+        if (!this._mounted) return;
         this.error = this.$t('search.searchFailed');
         this.results = [];
         this.totalPages = 1;
         this.currentPage = 1;
         this._pushUrl();
       } finally {
-        this.loading = false;
+        if (this._mounted) this.loading = false;
       }
     },
 

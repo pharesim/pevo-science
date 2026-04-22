@@ -43,8 +43,15 @@ export function createDisciplineFilter({ stateKey = 'discipline' } = {}) {
       this.disciplinesLoadFailed = false;
       try {
         const res = await fetchDisciplines();
+        // Teardown-race guard: if the consumer also spreads createTimerGuard()
+        // and destroy() already fired, bail before writing to a destroyed
+        // reactive scope. `=== false` (not just falsy) so consumers that do
+        // NOT spread createTimerGuard keep their prior behavior (undefined
+        // _mounted → no short-circuit).
+        if (this._mounted === false) return;
         this.disciplines = res.data || [];
       } catch (err) {
+        if (this._mounted === false) return;
         console.warn('[loadDisciplines]', err);
         this.disciplinesLoadFailed = true;
       }

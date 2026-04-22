@@ -234,5 +234,35 @@ describe('reviewPage', () => {
       expect(mockStores.router.navigate).not.toHaveBeenCalled();
       vi.useRealTimers();
     });
+
+    // UI-ASYNC-CONTINUATION-TEARDOWN-GUARD-SWEEP: post-destroy() async
+    // continuation catches must not write step/errorMessage. A broadcast
+    // that rejects after Alpine tears the component down would otherwise
+    // mutate a destroyed reactive scope.
+    it('catch does not write step=error / errorMessage after destroy()', async () => {
+      const { broadcastOps } = await import('../../src/signer.js');
+      let rejectFn;
+      broadcastOps.mockImplementationOnce(() => new Promise((_, reject) => { rejectFn = reject; }));
+      mockStores.auth.isConnected = true;
+      mockStores.auth.username = 'bob';
+      const comp = createComponent({
+        ratings: { novelty: 4, methodology: 4, clarity: 4, significance: 4 },
+        reviewBody: 'Looks good.',
+        isAnonymous: false,
+        paper: { title: 'Paper' },
+      });
+      Object.defineProperty(comp, 'allRated', { value: true, configurable: true });
+
+      const pending = comp.handleSubmit();
+      // Let the flow progress past broadcastConfirm into broadcastOps.
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      comp.destroy();
+      rejectFn(new Error('post-teardown boom'));
+      await pending;
+      expect(comp.step).not.toBe('error');
+      expect(comp.errorMessage).toBe('');
+    });
   });
 });

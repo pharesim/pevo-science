@@ -813,6 +813,7 @@ export function initPublishPage() {
           message: this.$t('confirm.publishMessage', { title: this.title }),
           confirmLabel: this.$t('confirm.publish'),
         });
+        if (!this._mounted) return;
         if (!confirmed) { this.step = 'idle'; return; }
 
         this.step = 'broadcasting';
@@ -837,6 +838,7 @@ export function initPublishPage() {
           }],
         ];
         await broadcastOps(username, operations);
+        if (!this._mounted) return;
 
         this.step = 'success';
         localStorage.removeItem(DRAFT_KEY);
@@ -844,6 +846,7 @@ export function initPublishPage() {
           this.navigate(`/paper/${username}/${permlink}`);
         }, 1500);
       } catch (err) {
+        if (!this._mounted) return;
         this.step = 'error';
         // Sanitization pattern (see executeUpgrade() in settings.js).
         console.warn('[publish submit]', err);

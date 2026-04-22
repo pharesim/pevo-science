@@ -84,6 +84,31 @@ describe('createDisciplineFilter', () => {
       expect(state.disciplineFilter).toBe('');
       expect(state.disciplines).toEqual([]);
     });
+
+    it('bails after teardown when consumer sets _mounted=false (happy path)', async () => {
+      let resolve;
+      fetchDisciplines.mockReturnValue(new Promise((r) => { resolve = r; }));
+      const state = createDisciplineFilter();
+      const p = state.loadDisciplines();
+      state._mounted = false;
+      resolve({ data: [{ canon_name: 'physics', display_name: 'Physics', paper_count: 1 }] });
+      await p;
+      expect(state.disciplines).toEqual([]);
+    });
+
+    it('bails after teardown when consumer sets _mounted=false (error path)', async () => {
+      let reject;
+      fetchDisciplines.mockReturnValue(new Promise((_, r) => { reject = r; }));
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const state = createDisciplineFilter();
+      const p = state.loadDisciplines();
+      state._mounted = false;
+      reject(new Error('boom'));
+      await p;
+      expect(state.disciplinesLoadFailed).toBe(false);
+      expect(warnSpy).not.toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
   });
 
   describe('_syncDisciplineFromUrl', () => {

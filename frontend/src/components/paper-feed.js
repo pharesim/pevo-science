@@ -5,6 +5,7 @@ import { paginationTemplate } from './pagination.js';
 import { totalPagesFromMeta } from '../lib/pagination.js';
 import { localeStrippedPath } from '../lib/url-sync.js';
 import { createDisciplineFilter } from '../lib/discipline-filter.js';
+import { createTimerGuard } from '../lib/timer-guard.js';
 
 const ITEMS_PER_PAGE = 10;
 
@@ -93,6 +94,7 @@ function pageOwnsUrl() {
 
 export function initPaperFeed() {
   Alpine.data('paperFeed', () => ({
+    ...createTimerGuard(),
     ...createDisciplineFilter({ stateKey: 'discipline' }),
     papers: [],
     sortBy: 'date',
@@ -107,9 +109,13 @@ export function initPaperFeed() {
     truncateText,
     formatDate,
 
-    init() {
+    async init() {
       this._syncFromUrl();
-      this.loadDisciplines();
+      // Await disciplines before the first paper fetch so the <select>'s
+      // x-model binds against hydrated options on first render. Without
+      // this, a URL-canonical discipline briefly shows "All disciplines"
+      // until fetchDisciplines resolves. Subsequent refetches stay parallel.
+      await this.loadDisciplines();
       this.loadPapers();
       if (pageOwnsUrl()) {
         this._popstateHandler = () => {
@@ -122,6 +128,9 @@ export function initPaperFeed() {
     },
 
     destroy() {
+      // _teardownTimers first: flips _mounted so in-flight loadPapers /
+      // loadDisciplines continuations bail before touching reactive state.
+      this._teardownTimers();
       if (this._popstateHandler) {
         window.removeEventListener('popstate', this._popstateHandler);
         this._popstateHandler = null;
@@ -165,10 +174,12 @@ export function initPaperFeed() {
         if (this.sourceFilter) params.source = this.sourceFilter;
 
         const res = await fetchPapers(params);
+        if (!this._mounted) return;
         this.papers = res.data || [];
         this.totalPages = totalPagesFromMeta(res.meta);
         this.loading = false;
       } catch {
+        if (!this._mounted) return;
         this.error = this.$t('home.errorLoading');
         this.papers = [];
         this.totalPages = 1;

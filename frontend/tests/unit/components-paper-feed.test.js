@@ -226,8 +226,7 @@ describe('paperFeed', () => {
     it('popstate handler is inert when pathname has drifted off /papers mid-mount', async () => {
       window.history.replaceState(null, '', '/en/papers');
       const comp = createComponent();
-      comp.init();
-      await Promise.resolve();
+      await comp.init();
       mockFetchPapers.mockClear();
 
       // SPA router has navigated away before popstate fires.
@@ -239,11 +238,13 @@ describe('paperFeed', () => {
       comp.destroy();
     });
 
-    it('destroy removes the popstate listener', () => {
+    it('destroy removes the popstate listener', async () => {
       window.history.replaceState(null, '', '/en/papers');
       const remove = vi.spyOn(window, 'removeEventListener');
       const comp = createComponent();
-      comp.init();
+      // init() is async (awaits loadDisciplines before registering popstate);
+      // await it so the handler is wired before we assert.
+      await comp.init();
       const handler = comp._popstateHandler;
       expect(handler).toBeTypeOf('function');
       comp.destroy();
@@ -256,8 +257,7 @@ describe('paperFeed', () => {
     it('popstate re-reads URL and calls loadPapers on navigation within /papers', async () => {
       window.history.replaceState(null, '', '/en/papers');
       const comp = createComponent();
-      comp.init();
-      await Promise.resolve();
+      await comp.init();
       mockFetchPapers.mockClear();
       const push = vi.spyOn(window.history, 'pushState');
 
@@ -405,6 +405,53 @@ describe('paperFeed', () => {
       comp.onSourceChange();
       expect(comp.currentPage).toBe(1);
       expect(mockFetchPapers).toHaveBeenCalled();
+    });
+  });
+
+  // UI-ASYNC-CONTINUATION-TEARDOWN-GUARD-SWEEP: post-destroy() async
+  // continuations must not write to component state. A fetch that resolves
+  // (or rejects) after Alpine tears the component down would otherwise
+  // mutate a destroyed reactive scope.
+  describe('teardown', () => {
+    it('loadPapers catch does not write error/papers after destroy()', async () => {
+      let rejectFn;
+      mockFetchPapers.mockImplementationOnce(() => new Promise((_, reject) => { rejectFn = reject; }));
+      const comp = createComponent();
+      comp.error = null;
+      comp.papers = [{ title: 'stale' }];
+      const pending = comp.loadPapers();
+      comp.destroy();
+      rejectFn(new Error('after teardown'));
+      await pending;
+      expect(comp.error).toBeNull();
+      // papers array untouched
+      expect(comp.papers).toEqual([{ title: 'stale' }]);
+    });
+
+    it('loadPapers happy path does not write papers after destroy()', async () => {
+      let resolveFn;
+      mockFetchPapers.mockImplementationOnce(() => new Promise((resolve) => { resolveFn = resolve; }));
+      const comp = createComponent();
+      comp.papers = [];
+      const pending = comp.loadPapers();
+      comp.destroy();
+      resolveFn({ data: [{ title: 'late' }], meta: { total: 1, limit: 10 } });
+      await pending;
+      expect(comp.papers).toEqual([]);
+    });
+
+    it('loadDisciplines catch does not flip disciplinesLoadFailed after destroy()', async () => {
+      let rejectFn;
+      mockFetchDisciplines.mockImplementationOnce(() => new Promise((_, reject) => { rejectFn = reject; }));
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const comp = createComponent();
+      expect(comp.disciplinesLoadFailed).toBe(false);
+      const pending = comp.loadDisciplines();
+      comp.destroy();
+      rejectFn(new Error('late failure'));
+      await pending;
+      expect(comp.disciplinesLoadFailed).toBe(false);
+      warnSpy.mockRestore();
     });
   });
 });
