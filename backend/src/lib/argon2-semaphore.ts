@@ -101,8 +101,34 @@ export class ShuttingDownError extends Error {
   }
 }
 
+/**
+ * Options accepted by `runWithArgon2Slot`. `signal` lets the caller abort
+ * a queued waiter before its slot is granted — on abort, the waiter is
+ * rejected with `AbortError`, the slot is never acquired, and the next
+ * queued waiter is drained. Does NOT cancel an in-flight argon2 operation
+ * (argon2 is native and not AbortSignal-aware); once fn() has started it
+ * runs to completion.
+ */
+export interface RunWithArgon2SlotOptions {
+  signal?: AbortSignal;
+}
+
+/**
+ * Thrown by `runWithArgon2Slot` when a queued waiter is aborted via the
+ * `signal` option before its slot is granted. Route handlers SHOULD NOT
+ * translate this into a visible HTTP response (the client has already
+ * disconnected); log at debug and return silently so Express can close
+ * the already-dead socket without writing a 500.
+ */
+export class ArgonAbortError extends Error {
+  constructor(message = 'argon2 slot aborted') {
+    super(message);
+    this.name = 'AbortError'; // Matches DOMException('…', 'AbortError') idiom.
+  }
+}
+
 export interface Argon2Semaphore {
-  runWithArgon2Slot<T>(fn: () => Promise<T>): Promise<T>;
+  runWithArgon2Slot<T>(fn: () => Promise<T>, options?: RunWithArgon2SlotOptions): Promise<T>;
   getArgon2QueueDepth(): number;
   getArgon2InFlight(): number;
   /**
@@ -144,7 +170,12 @@ export function createArgon2Semaphore(
   // Promise would hang forever, the route handler would never return, and
   // Express would never write the 503 before server.close() / the 30s
   // force-timeout torched the socket.
-  const waiters: Array<{ resolve: () => void; reject: (err: Error) => void }> = [];
+  //
+  // The optional `entry` back-reference lets an AbortSignal listener remove
+  // the waiter from the queue on abort (so a dead client doesn't consume a
+  // slot once the in-flight op completes and drains the next waiter).
+  type Waiter = { resolve: () => void; reject: (err: Error) => void };
+  const waiters: Waiter[] = [];
   let shuttingDown = false;
 
   return {
@@ -166,7 +197,15 @@ export function createArgon2Semaphore(
         w.reject(new ShuttingDownError());
       }
     },
-    async runWithArgon2Slot<T>(fn: () => Promise<T>): Promise<T> {
+    async runWithArgon2Slot<T>(fn: () => Promise<T>, options?: RunWithArgon2SlotOptions): Promise<T> {
+      const signal = options?.signal;
+      // Pre-queue abort fast-path: caller handed us an already-aborted
+      // signal, so there is no point even considering a slot. Throw before
+      // touching counters / queue state. This keeps the happy path branch-
+      // equal to the pre-abort world (no `signal` touched when undefined).
+      if (signal?.aborted) {
+        throw new ArgonAbortError();
+      }
       if (shuttingDown) {
         // Fail fast: no point queueing work the process is about to exit
         // without completing. Route handlers translate to 503.
@@ -180,13 +219,40 @@ export function createArgon2Semaphore(
           throw new ArgonQueueFullError();
         }
         queueDepth += 1;
+        // Declared outside the Promise executor so the abort listener (installed
+        // after the push) can splice the exact waiter object out of the queue.
+        let waiter: Waiter;
+        let onAbort: (() => void) | undefined;
         try {
           await new Promise<void>((resolve, reject) => {
-            waiters.push({ resolve, reject });
+            waiter = { resolve, reject };
+            waiters.push(waiter);
+            if (signal) {
+              onAbort = () => {
+                // Remove from the queue so a later slot-grant doesn't
+                // resolve() this dead waiter and consume a slot the client
+                // will never see. Slot-release path below will shift() the
+                // next live waiter instead.
+                const i = waiters.indexOf(waiter);
+                if (i >= 0) waiters.splice(i, 1);
+                reject(new ArgonAbortError());
+              };
+              signal.addEventListener('abort', onAbort, { once: true });
+            }
           });
         } finally {
           queueDepth -= 1;
+          if (signal && onAbort) signal.removeEventListener('abort', onAbort);
         }
+      }
+      // Second abort check at slot-grant time: the waiter may have been
+      // resolved by a slot-release BEFORE its abort listener fired (race
+      // between the in-flight op's finally and the abort event). If so,
+      // skip fn() and release the slot back to the next waiter.
+      if (signal?.aborted) {
+        const next = waiters.shift();
+        if (next) next.resolve();
+        throw new ArgonAbortError();
       }
       inFlight += 1;
       try {
@@ -229,14 +295,28 @@ export function getArgon2InFlight(): number {
  * re-throws fn's errors (including argon2 native failures — the caller
  * still decides how to handle them).
  *
+ * Pass `{ signal }` to abort a queued waiter before its slot is granted
+ * (e.g., when the HTTP client disconnects). On abort the waiter is
+ * rejected with `ArgonAbortError`, removed from the queue, and the slot
+ * it would have consumed goes to the next live waiter. The argon2 fn is
+ * NOT called. If the signal is already aborted when this is called, it
+ * throws immediately without touching queue state.
+ *
  * Throws `ArgonQueueFullError` when the waiter queue is at MAX_QUEUE_DEPTH.
  * Throws `ShuttingDownError` after `drainArgon2Queue()` has been called.
- * Route handlers MUST translate both into 503 SERVICE_UNAVAILABLE; burn-
- * Sentinel MUST re-throw rather than swallow (swallowing reopens the
- * timing oracle under DoS conditions).
+ * Throws `ArgonAbortError` (name="AbortError") when a queued waiter's
+ * `signal` aborts before the slot is granted.
+ * Route handlers MUST translate queue-full / shutting-down into 503
+ * SERVICE_UNAVAILABLE; burnSentinel MUST re-throw both rather than
+ * swallow (swallowing reopens the timing oracle under DoS conditions).
+ * `ArgonAbortError` should be caught and silently dropped by handlers:
+ * the client is gone, there is no response to write.
  */
-export async function runWithArgon2Slot<T>(fn: () => Promise<T>): Promise<T> {
-  return defaultSemaphore.runWithArgon2Slot(fn);
+export async function runWithArgon2Slot<T>(
+  fn: () => Promise<T>,
+  options?: RunWithArgon2SlotOptions,
+): Promise<T> {
+  return defaultSemaphore.runWithArgon2Slot(fn, options);
 }
 
 /**

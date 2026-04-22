@@ -28,6 +28,7 @@ import {
   createArgon2Semaphore,
   ArgonQueueFullError,
   ShuttingDownError,
+  ArgonAbortError,
   MAX_CONCURRENT_ARGON2_OPS,
   MAX_QUEUE_DEPTH,
 } from '../../src/lib/argon2-semaphore.js';
@@ -334,6 +335,98 @@ describe('drainArgon2Queue — graceful SIGTERM handling', () => {
     // Cleanup the in-flight blocker so the test doesn't leak.
     blocker.resolve();
     await inFlight;
+  });
+});
+
+describe('AbortSignal — drop queued waiters on client disconnect', () => {
+  it('aborted waiter rejects with AbortError, never runs fn, and the next live waiter proceeds', async () => {
+    // cap=1 so A holds the only slot while B and C queue behind it.
+    // Abort B while it is queued; assert:
+    //   (1) B's argon2 fn is NEVER called,
+    //   (2) B's promise rejects with ArgonAbortError (name === 'AbortError'),
+    //   (3) B's queue slot is released cleanly (queueDepth decrements),
+    //   (4) C — the next live waiter — still proceeds when A completes.
+    const sem = createArgon2Semaphore(1, 10);
+
+    const a = controllable<number>();
+    const c = controllable<number>();
+
+    const pA = sem.runWithArgon2Slot(() => a.fn());
+    await a.started; // A is in-flight.
+
+    // B is the aborted waiter. Its fn must not run; we use a sentinel
+    // counter instead of a promise because a promise-never-resolves would
+    // mask a bug where fn IS called but we just fail to observe it.
+    let bFnCallCount = 0;
+    const bAbort = new AbortController();
+
+    const pB = sem
+      .runWithArgon2Slot(
+        () => {
+          bFnCallCount += 1;
+          return Promise.resolve('should-not-run');
+        },
+        { signal: bAbort.signal },
+      )
+      .catch((err) => err);
+
+    // C is a live waiter that must still proceed after A finishes.
+    const pC = sem.runWithArgon2Slot(() => c.fn());
+
+    // Let both waiters actually park in the queue before aborting B.
+    await new Promise((r) => setImmediate(r));
+    expect(sem.getArgon2InFlight()).toBe(1);
+    expect(sem.getArgon2QueueDepth()).toBe(2);
+
+    // Abort B. Its waiter rejects synchronously via the event listener.
+    bAbort.abort();
+
+    const bErr = await pB;
+    expect(bErr).toBeInstanceOf(ArgonAbortError);
+    expect((bErr as Error).name).toBe('AbortError');
+    expect(bFnCallCount).toBe(0); // argon2 fn was never invoked.
+
+    // Queue drained of B; only C remains queued behind A.
+    // (Microtask yield so the finally-branch queueDepth decrement lands.)
+    await new Promise((r) => setImmediate(r));
+    expect(sem.getArgon2InFlight()).toBe(1);
+    expect(sem.getArgon2QueueDepth()).toBe(1);
+
+    // Finish A — C should now get the slot, not a ghost B waiter.
+    a.resolve(1);
+    await pA;
+
+    await c.started; // C proceeds because B did NOT consume the slot.
+    expect(sem.getArgon2InFlight()).toBe(1);
+    expect(sem.getArgon2QueueDepth()).toBe(0);
+
+    c.resolve(3);
+    await pC;
+
+    // Everything drains cleanly; no leaked slots from the aborted path.
+    expect(sem.getArgon2InFlight()).toBe(0);
+    expect(sem.getArgon2QueueDepth()).toBe(0);
+  });
+
+  it('already-aborted signal short-circuits before any queue state is touched', async () => {
+    const sem = createArgon2Semaphore(2, 5);
+    const ac = new AbortController();
+    ac.abort();
+
+    let fnCalled = false;
+    await expect(
+      sem.runWithArgon2Slot(
+        () => {
+          fnCalled = true;
+          return Promise.resolve('nope');
+        },
+        { signal: ac.signal },
+      ),
+    ).rejects.toBeInstanceOf(ArgonAbortError);
+
+    expect(fnCalled).toBe(false);
+    expect(sem.getArgon2InFlight()).toBe(0);
+    expect(sem.getArgon2QueueDepth()).toBe(0);
   });
 });
 
