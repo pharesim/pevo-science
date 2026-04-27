@@ -15,6 +15,7 @@ import { logger } from '../logger.js';
 import { burnSentinel } from './auth.js';
 import { runWithArgon2Slot, ArgonQueueFullError, ShuttingDownError, ArgonAbortError } from '../lib/argon2-semaphore.js';
 import { hashEmailForLogs } from '../lib/log-pii.js';
+import { seedAccreditationBonus } from '../reputation.js';
 
 const router = Router();
 
@@ -315,6 +316,7 @@ router.post('/confirm', confirmLimiter, async (req: Request, res: Response) => {
           },
           adminKey,
         );
+        await seedAccreditationBonus(normalizedUsername);
       } catch (accErr) {
         logger.error(
           {
@@ -442,6 +444,7 @@ router.post('/link', linkLimiter, verifyHiveSignature, async (req: Request, res:
           },
           adminKey,
         );
+        await seedAccreditationBonus(hiveUsername);
       } catch (accErr) {
         logger.error(
           {

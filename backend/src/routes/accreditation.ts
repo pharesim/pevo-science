@@ -13,6 +13,7 @@ import { rateLimit, byAccount, byIp } from '../middleware/rateLimit.js';
 import { logger } from '../logger.js';
 import { isInstitutionalEmail } from '../email-validator.js';
 import { hashEmailForLogs } from '../lib/log-pii.js';
+import { seedAccreditationBonus } from '../reputation.js';
 
 /** How long a verification token stays valid before it expires. */
 const TOKEN_EXPIRY_MS = 24 * 60 * 60 * 1000; // 24 hours
@@ -199,6 +200,7 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
     );
 
     await deleteToken(token);
+    await seedAccreditationBonus(pending.hive_username);
 
     sendOk(res, {
       message: 'Accreditation confirmed',

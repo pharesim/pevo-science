@@ -15,6 +15,7 @@ import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';
 import { rateLimit, byIp } from '../middleware/rateLimit.js';
 import { logger } from '../logger.js';
 import { assertNever } from '../util/assertNever.js';
+import { seedAccreditationBonus } from '../reputation.js';
 
 // Per-route Zod body schema for POST /api/orcid/callback
 // (BE-REQUEST-BODY-TYPING-ZOD). Narrows req.body to typed fields so
@@ -497,6 +498,8 @@ async function handleAccredit(
 
     // Update orcid column in accounts (if light account row exists)
     await updateAccountOrcid(username, orcidId);
+
+    await seedAccreditationBonus(username);
 
     sendOk(res, {
       mode: 'accredit',

@@ -12,7 +12,7 @@ import { checkHiveNodes } from './hive.js';
 import { startRetractionCache } from './routes/papers.js';
 import { startStatsCache } from './routes/stats.js';
 import { getGenesisBlock } from './hafsql.js';
-import { startActiveAuthorsCache, startReputationWeightsCache } from './reputation.js';
+import { startActiveAuthorsCache, startReputationWeightsCache, backfillAccreditationSeeds } from './reputation.js';
 import { startWotThresholdCache } from './wot.js';
 import { startAccountClaimer, stopAccountClaimer } from './account-creation.js';
 import { startSignupCleanup, stopSignupCleanup } from './signup-cleanup.js';
@@ -53,6 +53,7 @@ initAppDb()
         startReputationWeightsCache(),
         startWotThresholdCache(),
         startStatsCache(),
+        backfillAccreditationSeeds(),
       ]).catch((err) => logger.warn({ err }, 'Background cache warmup failed'));
       logger.info({ port: config.port, haf: isHafAvailable(), appDb: !!config.appDatabaseUrl }, 'PEvO backend started');
 

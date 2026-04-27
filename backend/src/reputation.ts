@@ -63,6 +63,92 @@ export async function startActiveAuthorsCache(): Promise<void> {
   logger.info('Active authors cache loaded');
 }
 
+// ─── Batch key helpers ──────────────────────────────────────────
+
+/** Redis key namespace for cycle-computed reputation scores. */
+const BATCH_KEY_PREFIX = `${config.appTag}:reputation:batch:`;
+
+function batchKey(username: string): string {
+  return `${BATCH_KEY_PREFIX}${username}`;
+}
+
+/**
+ * Build a provisional ReputationScore representing a freshly-accredited user
+ * with no on-chain activity yet (papers/reviews/citations all zero).
+ */
+function provisionalScore(bonus: number): ReputationScore {
+  return {
+    score: bonus,
+    breakdown: { papers: 0, reviews: 0, citations: 0, accreditation: bonus },
+  };
+}
+
+// ─── Accreditation lifecycle helpers ────────────────────────────
+
+/**
+ * Seed a provisional batch entry for a freshly-accredited user.
+ * Uses Redis `SET NX` so a real cycle-computed score is never clobbered;
+ * the seed only wins when no entry exists yet.
+ *
+ * Call after an `accredit` custom_json broadcast is acknowledged so the
+ * user's profile shows `accreditation_bonus` immediately, without waiting
+ * for the next cycle boundary.
+ */
+export async function seedAccreditationBonus(username: string): Promise<void> {
+  const redis = getRedis();
+  if (!redis) return;
+  try {
+    const weights = await getReputationWeights();
+    const provisional = provisionalScore(weights.accreditation_bonus);
+    await redis.set(batchKey(username), JSON.stringify(provisional), 'NX');
+  } catch (err) {
+    logger.warn({ err, username }, 'Failed to seed accreditation bonus');
+  }
+}
+
+/**
+ * Drop a user's batch entry on revocation. Without this, a revoked user with
+ * no authored papers would keep their stale entry indefinitely (the next
+ * cycle's `getAllAccreditedAccounts()` lookup excludes them, so the batch
+ * never recomputes their slot). After deletion, readers fall through to 0.
+ */
+export async function invalidateOnRevocation(username: string): Promise<void> {
+  const redis = getRedis();
+  if (!redis) return;
+  try {
+    await redis.del(batchKey(username));
+  } catch (err) {
+    logger.warn({ err, username }, 'Failed to invalidate batch entry on revocation');
+  }
+}
+
+/**
+ * Boot-time seed sweep: ensure every currently-accredited user has at least
+ * a provisional batch entry. Idempotent under SET NX, so users with real
+ * cycle-computed scores are untouched. Fires from index.ts inside the
+ * non-blocking after-listen Promise.all warmup.
+ */
+export async function backfillAccreditationSeeds(): Promise<void> {
+  const redis = getRedis();
+  if (!redis) return;
+  try {
+    const [accredited, weights] = await Promise.all([
+      getAllAccreditedAccounts(),
+      getReputationWeights(),
+    ]);
+    if (accredited.size === 0) return;
+    const value = JSON.stringify(provisionalScore(weights.accreditation_bonus));
+    const pipeline = redis.pipeline();
+    for (const username of accredited) {
+      pipeline.set(batchKey(username), value, 'NX');
+    }
+    await pipeline.exec();
+    logger.info({ count: accredited.size }, 'Accreditation seed backfill complete');
+  } catch (err) {
+    logger.warn({ err }, 'Accreditation seed backfill failed');
+  }
+}
+
 /**
  * Read batch-computed reputation scores from Redis.
  * Returns empty map if Redis unavailable or no batch scores exist.

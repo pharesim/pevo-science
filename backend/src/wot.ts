@@ -10,6 +10,7 @@ import { getPool } from './db.js';
 import { broadcastJsonWithTimeout, BroadcastTimeoutError } from './hive.js';
 import { config } from './config.js';
 import { getAccreditedSet } from './accreditation.js';
+import { seedAccreditationBonus, invalidateOnRevocation } from './reputation.js';
 import { logger } from './logger.js';
 import { hafCache } from './cache.js';
 import { T, activeAccreditationsCteBody, activeVouchesCteBody, buildWith, getCachedGenesisBlock } from './hafsql.js';
@@ -232,6 +233,7 @@ export async function broadcastWotAccreditation(vouchee: string): Promise<WotAcc
     );
 
     logger.info({ vouchee, txId: result.id }, 'WoT auto-accreditation broadcast');
+    await seedAccreditationBonus(vouchee);
     return { ok: true, txId: result.id };
   } catch (err) {
     if (err instanceof BroadcastTimeoutError) {
@@ -360,6 +362,7 @@ export async function cascadeRevocation(
         );
 
         logger.info({ vouchee, revokedAccount, txId: txResult.id }, 'WoT cascading revocation broadcast');
+        await invalidateOnRevocation(vouchee);
         completed.push(txResult.id);
 
         // Recursively cascade — the revoked vouchee may have vouched for others.
