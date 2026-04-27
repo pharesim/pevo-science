@@ -822,18 +822,6 @@ export async function computeReputationBatch(
   }
 }
 
-/**
- * Compute reputation for a single user. Delegates to computeReputationBatch.
- */
-export async function computeReputationSql(
-  username: string,
-  prevScores?: Record<string, number>,
-  cycleEndBlock?: number,
-): Promise<ReputationScore | null> {
-  const results = await computeReputationBatch([username], prevScores, cycleEndBlock);
-  return results.get(username) ?? null;
-}
-
 // ─── Public API ─────────────────────────────────────────────────
 
 const ZERO_SCORE: ReputationScore = {
