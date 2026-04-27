@@ -193,7 +193,15 @@
     "stepSuccess": "مقاله با موفقیت به‌روزرسانی شد!",
     "noChanges": "تغییری شناسایی نشد. محتوای مقاله با نسخه فعلی یکسان است.",
     "authorsAddOnly": "نویسندگان موجود قابل حذف نیستند. می‌توانید نویسندگان همکار جدید اضافه کنید.",
-    "versionLabel": "نسخه {version}"
+    "versionLabel": "نسخه {version}",
+    "accreditationRequired": "You need to be accredited to edit this paper.",
+    "signInToEdit": "Sign in to edit this paper.",
+    "signInHint": "You also need to be the original author, a co-author, or an accredited researcher to edit.",
+    "howToEditTitle": "Who can edit this paper?",
+    "howToEditIntro": "Editing is restricted to the people responsible for the work and accredited researchers continuing it. You can edit if any of these apply:",
+    "howToEditOriginalAuthor": "You are the original author posting from this account.",
+    "howToEditCoAuthor": "You are listed as a co-author with a Hive username matching this account.",
+    "howToEditClaim": "You file an authorship claim from the paper page and the author approves it, or you are an accredited researcher publishing a revision."
   },
   "review": {
     "backToPaper": "بازگشت به مقاله",

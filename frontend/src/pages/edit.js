@@ -3,9 +3,20 @@ import { fetchPaper, fetchPaperEnrichment, invalidatePaperCache, uploadToIpfs } 
 import { broadcastOps } from '../signer.js';
 import { sha256File, slugify } from '../crypto.js';
 import { createTimerGuard } from '../lib/timer-guard.js';
+import { accreditationBannerTemplate } from '../components/accreditation-banner.js';
 
 import { getAppTag, getAppId, getMaxUploadSize, getMaxUploadSizeMB } from '../config.js';
 import diff_match_patch from 'diff-match-patch';
+
+// Gating shape for connected+unaccredited non-author: today the page
+// renders a generic "not authorized" panel that doesn't tell the user how
+// to proceed. We split it into three states so each affordance is clear:
+//   - !isConnected → sign-in banner with sign-in CTA
+//   - isConnected && !isAccredited (non-author, no claim) → red
+//     accreditation banner + a panel explaining the three valid paths to
+//     edit (be the author, be a co-author, or file an authorship claim
+//     from the paper page) with a back-to-paper CTA.
+//   - Author/co-author/accepted-claim/accredited → form renders as before.
 
 const ABSTRACT_MAX_CHARS = 2000;
 
@@ -40,8 +51,40 @@ const template = `
           </div>
         </template>
 
-        <!-- Not authorized -->
-        <template x-if="!loadingPaper && !loadError && !isAuthorized">
+        <!-- Not authorized: not connected -->
+        <template x-if="!loadingPaper && !loadError && !isAuthorized && !isConnected">
+          <div class="card bg-pevo-crimson-light border-pevo-crimson/30 mb-6">
+            <div class="flex items-start gap-3">
+              <svg class="h-5 w-5 text-pevo-crimson shrink-0 mt-0.5" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.168 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 8a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd" /></svg>
+              <div>
+                <p class="font-medium text-ink text-sm" x-text="$t('edit.signInToEdit')"></p>
+                <p class="text-xs text-ink-muted mt-1" x-text="$t('edit.signInHint')"></p>
+                <button class="btn-primary text-xs mt-2" @click="handleConnect()" x-text="$t('signIn.signInButton')"></button>
+              </div>
+            </div>
+          </div>
+        </template>
+
+        <!-- Not authorized: connected but unaccredited non-author -->
+        <template x-if="!loadingPaper && !loadError && !isAuthorized && isConnected && !isAccredited">
+          <div>
+            ${accreditationBannerTemplate('edit.accreditationRequired')}
+            <div class="card">
+              <h2 class="text-section-title text-ink font-serif mb-3" x-text="$t('edit.howToEditTitle')"></h2>
+              <p class="text-sm text-ink-light mb-3" x-text="$t('edit.howToEditIntro')"></p>
+              <ul class="list-disc pl-5 space-y-1.5 text-sm text-ink-light mb-4">
+                <li x-text="$t('edit.howToEditOriginalAuthor')"></li>
+                <li x-text="$t('edit.howToEditCoAuthor')"></li>
+                <li x-text="$t('edit.howToEditClaim')"></li>
+              </ul>
+              <a :href="$lp('/paper/' + author + '/' + permlink)" @click.prevent="navigate('/paper/' + author + '/' + permlink)"
+                 class="btn-secondary text-xs no-underline inline-block" x-text="$t('common.backToPapers')"></a>
+            </div>
+          </div>
+        </template>
+
+        <!-- Not authorized: catch-all (e.g. connected accredited user with stale state) -->
+        <template x-if="!loadingPaper && !loadError && !isAuthorized && isConnected && isAccredited">
           <div class="card bg-pevo-crimson-light border-pevo-crimson/30 text-center py-8">
             <p class="text-sm text-pevo-crimson font-medium" x-text="$t('edit.notAuthorized')"></p>
             <a :href="$lp('/paper/' + author + '/' + permlink)" @click.prevent="navigate('/paper/' + author + '/' + permlink)"
@@ -343,6 +386,17 @@ export function initEditPage() {
 
     navigate(path) {
       Alpine.store('router').navigate(path);
+    },
+
+    async handleConnect() {
+      try {
+        await Alpine.store('auth').connect();
+      } catch (err) {
+        if (!this._mounted) return;
+        // Sanitization pattern (see executeUpgrade() in settings.js).
+        console.warn('[edit connect]', err);
+        Alpine.store('toast').show(this.$t('common.connectionFailed'), 'error');
+      }
     },
 
     get isConnected() { return Alpine.store('auth').isConnected; },

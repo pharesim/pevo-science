@@ -4,6 +4,18 @@ import { broadcastOps } from '../signer.js';
 import { slugify } from '../crypto.js';
 import { getAppTag, getAppId } from '../config.js';
 import { createTimerGuard } from '../lib/timer-guard.js';
+import { accreditationBannerTemplate } from '../components/accreditation-banner.js';
+
+// Gating shape for connected+unaccredited (non-own paper): we render the
+// rating form in a disabled, read-only preview alongside the red
+// accreditation banner. Banner-only would leave a blank stretch of page
+// where the rating bars normally live; an inert preview lets unaccredited
+// readers see what reviewing looks like (academic transparency) without
+// being able to submit. Matches publish.js's pattern (banner + visible
+// form, submit swapped for "Get accredited" CTA). Submit is impossible
+// regardless: handleSubmit no-ops without `isAccredited`, and the submit
+// slot in the template swaps to a "Get accredited" anchor instead of a
+// submit button when the user lacks accreditation.
 
 const template = `
       <div x-data="reviewPage" class="container-narrow py-8">
@@ -33,17 +45,7 @@ const template = `
         </template>
 
         <!-- Not accredited -->
-        <template x-if="isConnected && !isAccredited">
-          <div class="card bg-pevo-crimson-light border-pevo-crimson/30 mb-6">
-            <div class="flex items-start gap-3">
-              <svg class="h-5 w-5 text-pevo-crimson shrink-0 mt-0.5" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.168 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 8a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd" /></svg>
-              <div>
-                <p class="font-medium text-ink text-sm" x-text="$t('review.accreditationRequired')"></p>
-                <a :href="$lp('/accreditation')" @click.prevent="navigate('/accreditation')" class="btn-primary text-xs mt-2 no-underline inline-block" x-text="$t('common.getAccredited')"></a>
-              </div>
-            </div>
-          </div>
-        </template>
+        ${accreditationBannerTemplate('review.accreditationRequired')}
 
         <!-- Own paper warning -->
         <template x-if="isConnected && isOwnPaper">
@@ -65,8 +67,8 @@ const template = `
           </div>
         </template>
 
-        <template x-if="isAccredited && !isOwnPaper">
-          <form @submit.prevent="handleSubmit()" class="space-y-6">
+        <template x-if="isConnected && !isOwnPaper">
+          <form @submit.prevent="isAccredited ? handleSubmit() : null" class="space-y-6" :class="!isAccredited ? 'opacity-75' : ''">
             <!-- Star ratings -->
             <div class="card">
               <h2 class="text-section-title text-ink font-serif mb-4" x-text="$t('review.ratingsTitle')"></h2>
@@ -80,8 +82,8 @@ const template = `
                     <p class="text-xs text-ink-muted mb-2" x-text="ratingDesc(key)"></p>
                     <div class="flex gap-1">
                       <template x-for="star in [1,2,3,4,5]" :key="star">
-                        <button type="button" @click="setRating(key, star)"
-                                :class="star <= ratings[key] ? 'text-pevo-teal' : 'text-parchment-dark hover:text-ink-muted'"
+                        <button type="button" @click="isAccredited && setRating(key, star)" :disabled="!isAccredited"
+                                :class="(star <= ratings[key] ? 'text-pevo-teal' : 'text-parchment-dark') + (isAccredited ? ' hover:text-ink-muted' : ' cursor-not-allowed')"
                                 class="p-2 rounded transition-colors">
                           <svg class="h-7 w-7 sm:h-6 sm:w-6" viewBox="0 0 20 20" fill="currentColor"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" /></svg>
                         </button>
@@ -99,13 +101,13 @@ const template = `
                 <button type="button" class="text-xs text-pevo-teal hover:text-pevo-teal-dark" @click="showPreview = !showPreview" x-text="showPreview ? $t('review.edit') : $t('review.preview')"></button>
               </div>
               <div x-show="showPreview" class="min-h-[200px] p-4 bg-parchment rounded-lg text-sm text-ink-light leading-relaxed whitespace-pre-line" x-text="reviewBody || $t('review.nothingToPreview')"></div>
-              <textarea x-show="!showPreview" id="review-body" class="select-control font-mono text-sm min-h-[200px] resize-y" :placeholder="$t('review.reviewPlaceholder')" x-model="reviewBody" required></textarea>
+              <textarea x-show="!showPreview" id="review-body" class="select-control font-mono text-sm min-h-[200px] resize-y" :placeholder="$t('review.reviewPlaceholder')" x-model="reviewBody" :disabled="!isAccredited" :required="isAccredited"></textarea>
             </div>
 
             <!-- Anonymous option -->
             <div class="card">
-              <label class="flex items-start gap-3 cursor-pointer">
-                <input type="checkbox" class="mt-1 h-4 w-4 rounded border-parchment-dark text-pevo-teal focus:ring-accent" x-model="isAnonymous" />
+              <label class="flex items-start gap-3" :class="isAccredited ? 'cursor-pointer' : 'cursor-not-allowed'">
+                <input type="checkbox" class="mt-1 h-4 w-4 rounded border-parchment-dark text-pevo-teal focus:ring-accent" x-model="isAnonymous" :disabled="!isAccredited" />
                 <div>
                   <span class="text-sm font-medium text-ink" x-text="$t('review.anonymousLabel')"></span>
                   <p class="text-xs text-ink-muted mt-1" x-text="$t('review.anonymousDescription')"></p>
@@ -116,8 +118,13 @@ const template = `
             <!-- Submit -->
             <div class="flex flex-col-reverse sm:flex-row items-start sm:items-center justify-between gap-3">
               <p class="text-xs text-ink-muted" x-text="$t('review.permanentNotice')"></p>
-              <button type="submit" class="btn-primary w-full sm:w-auto shrink-0" :disabled="!isConnected || !allRated || isSubmitting"
-                      x-text="isSubmitting ? $t('review.submitting') : $t('review.submitButton')"></button>
+              <template x-if="isAccredited">
+                <button type="submit" class="btn-primary w-full sm:w-auto shrink-0" :disabled="!isConnected || !allRated || isSubmitting"
+                        x-text="isSubmitting ? $t('review.submitting') : $t('review.submitButton')"></button>
+              </template>
+              <template x-if="!isAccredited">
+                <a :href="$lp('/accreditation')" @click.prevent="navigate('/accreditation')" class="btn-primary w-full sm:w-auto shrink-0 text-center no-underline" x-text="$t('common.getAccredited')"></a>
+              </template>
             </div>
           </form>
         </template>
@@ -246,6 +253,11 @@ export function initReviewPage() {
     async handleSubmit() {
       const username = this.username;
       if (!username || !this.isConnected || !this.allRated) return;
+      // Defense in depth — the template already swaps the submit slot for an
+      // accreditation CTA when !isAccredited, but a programmatic form submit
+      // (e.g. Enter in textarea) would still fire @submit; gate at the
+      // handler level too.
+      if (!this.isAccredited) return;
 
       this.step = 'submitting';
       this.errorMessage = '';
