@@ -3,17 +3,30 @@
  *
  * Reputation is computed per block-based cycle (default 28,800 blocks, ~1 day).
  * Each cycle uses the previous cycle's scores as voter weights (no convergence
- * iterations). Results are stored in Redis at `reputation:batch:{username}`
- * (no TTL, overwritten each cycle).
+ * iterations). Results are stored in Redis at
+ * `${appTag}:reputation:batch:{username}` (no TTL) as JSON-encoded
+ * `ReputationScore` ({score, breakdown}).
+ *
+ * Atomic cycle swap: each cycle stages its values under
+ * `${appTag}:reputation:batch:staging:{username}`, then a single Lua script
+ * RENAMEs every staging key into its production counterpart and bumps
+ * `${appTag}:reputation:cycle:last`. Readers see either the full new cycle
+ * or none of it.
  *
  * Cycle N covers blocks [genesis + N * cycle_blocks, genesis + (N+1) * cycle_blocks).
  */
 
+import type Redis from 'ioredis';
 import { getPool, isHafAvailable } from './db.js';
 import { getRedis } from './redis.js';
 import { config } from './config.js';
 import { logger } from './logger.js';
-import { computeReputationBatch, getReputationWeights } from './reputation.js';
+import {
+  BATCH_KEY_PREFIX,
+  computeReputationBatch,
+  getReputationWeights,
+  parseBatchValue,
+} from './reputation.js';
 import { getAllAccreditedAccounts } from './accreditation.js';
 import { getCachedGenesisBlock, T } from './hafsql.js';
 
@@ -21,19 +34,48 @@ const DEFAULT_CHECK_INTERVAL_MS = 60 * 60_000; // 1 hour
 const DEFAULT_MAX_DURATION_MS = 30 * 60_000; // 30 minutes
 
 const REDIS_KEY_LAST_CYCLE = `${config.appTag}:reputation:cycle:last`;
-const REDIS_KEY_BATCH_PREFIX = `${config.appTag}:reputation:batch:`;
+const REDIS_KEY_STAGING_PREFIX = `${config.appTag}:reputation:batch:staging:`;
 
 let batchTimer: ReturnType<typeof setInterval> | null = null;
 let batchRunning = false;
 
 /**
- * Get the current head block from HAF.
+ * Lua script for the atomic cycle swap. Runs server-side under Redis's
+ * single-threaded execution model, so other clients see either the entire
+ * new cycle or none of it.
+ *
+ * KEYS[1..N] = staging key paths
+ * ARGV[1]    = new cycle number (string)
+ * ARGV[2]    = cycle:last key path
  */
+const CYCLE_SWAP_LUA = `
+for i = 1, #KEYS do
+  local staging = KEYS[i]
+  local prod = string.gsub(staging, ':batch:staging:', ':batch:')
+  redis.call('RENAME', staging, prod)
+end
+redis.call('SET', ARGV[2], ARGV[1])
+return #KEYS
+`;
+
 async function getHeadBlock(): Promise<number> {
   const pool = getPool();
   if (!pool) return 0;
   const result = await pool.query(`SELECT MAX(block_num) AS head FROM ${T.blocks}`, []);
   return Number(result.rows[0]?.head ?? 0);
+}
+
+/**
+ * Drop any staging keys left over from a crashed prior run. Safe to call at
+ * any time — staging keys are write-only intermediates, never read by
+ * production code paths.
+ */
+async function clearStagingKeys(redis: Redis): Promise<void> {
+  const stale = await redis.keys(`${REDIS_KEY_STAGING_PREFIX}*`);
+  if (stale.length > 0) {
+    await redis.del(...stale);
+    logger.info({ count: stale.length }, 'Cleared abandoned reputation staging keys');
+  }
 }
 
 /**
@@ -59,6 +101,10 @@ export async function runBatchComputation(maxDurationMs = DEFAULT_MAX_DURATION_M
       logger.warn('Redis unavailable, skipping batch reputation computation');
       return;
     }
+
+    // Crash-recovery: a prior run may have crashed mid-cycle, leaving staging
+    // keys behind. They are write-only intermediates, so dropping them is safe.
+    await clearStagingKeys(redis);
 
     const weights = await getReputationWeights();
     const cycleBlocks = weights.cycle_blocks;
@@ -93,19 +139,19 @@ export async function runBatchComputation(maxDurationMs = DEFAULT_MAX_DURATION_M
     const totalCycles = currentCycle - startCycle + 1;
     logger.info({ startCycle, currentCycle, totalCycles, genesisBlock, cycleBlocks }, 'Batch reputation: computing cycles');
 
-    // Load previous cycle's scores (or empty for bootstrap)
+    // Load previous cycle's scores (or empty for bootstrap). Filter out any
+    // staging keys defensively — clearStagingKeys above already DEL'd them,
+    // but the bare `:batch:*` glob would catch them if they reappeared.
     let prevScores: Record<string, number> = {};
     if (startCycle > 0) {
-      // Read existing batch scores from Redis as prev scores
-      const keys = await redis.keys(`${REDIS_KEY_BATCH_PREFIX}*`);
-      if (keys.length > 0) {
-        const values = await redis.mget(keys);
-        for (let i = 0; i < keys.length; i++) {
-          const username = keys[i].replace(REDIS_KEY_BATCH_PREFIX, '');
-          if (values[i] !== null) {
-            const score = Number(values[i]);
-            if (!isNaN(score)) prevScores[username] = score;
-          }
+      const allKeys = await redis.keys(`${BATCH_KEY_PREFIX}*`);
+      const prodKeys = allKeys.filter((k) => !k.startsWith(REDIS_KEY_STAGING_PREFIX));
+      if (prodKeys.length > 0) {
+        const values = await redis.mget(prodKeys);
+        for (let i = 0; i < prodKeys.length; i++) {
+          const username = prodKeys[i].replace(BATCH_KEY_PREFIX, '');
+          const parsed = parseBatchValue(values[i]);
+          if (parsed) prevScores[username] = parsed.score;
         }
       }
     }
@@ -142,26 +188,37 @@ export async function runBatchComputation(maxDurationMs = DEFAULT_MAX_DURATION_M
       // Single query computes all users at once
       const batchResults = await computeReputationBatch(users, prevScores, cycleEndBlock);
 
-      const newScores = new Map<string, number>();
-      for (const [username, result] of batchResults) {
-        newScores.set(username, result.score);
-      }
       const timeCapped = Date.now() - startTime >= maxDurationMs;
 
-      // Store this cycle's scores in Redis
+      // Stage this cycle's full {score, breakdown} payload, then atomically
+      // swap into production via Lua so readers never see a half-applied cycle.
+      const stagingKeys: string[] = [];
       const pipeline = redis.pipeline();
-      for (const [username, score] of newScores) {
-        pipeline.set(`${REDIS_KEY_BATCH_PREFIX}${username}`, String(score));
+      for (const [username, result] of batchResults) {
+        const stagingPath = `${REDIS_KEY_STAGING_PREFIX}${username}`;
+        pipeline.set(stagingPath, JSON.stringify(result));
+        stagingKeys.push(stagingPath);
       }
-      pipeline.set(REDIS_KEY_LAST_CYCLE, String(cycle));
       await pipeline.exec();
 
-      // Use this cycle's scores as prev scores for the next cycle
-      prevScores = Object.fromEntries(newScores);
+      await redis.eval(
+        CYCLE_SWAP_LUA,
+        stagingKeys.length,
+        ...stagingKeys,
+        String(cycle),
+        REDIS_KEY_LAST_CYCLE,
+      );
+
+      // Use this cycle's scores as prev scores for the next cycle (score-only
+      // for the SQL `prev_scores` jsonb parameter).
+      prevScores = {};
+      for (const [username, result] of batchResults) {
+        prevScores[username] = result.score;
+      }
 
       logger.info({
         cycle,
-        usersComputed: newScores.size,
+        usersComputed: batchResults.size,
         durationMs: Date.now() - cycleStart,
         timeCapped,
       }, 'Batch reputation cycle complete');

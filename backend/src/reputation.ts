@@ -66,10 +66,40 @@ export async function startActiveAuthorsCache(): Promise<void> {
 // ─── Batch key helpers ──────────────────────────────────────────
 
 /** Redis key namespace for cycle-computed reputation scores. */
-const BATCH_KEY_PREFIX = `${config.appTag}:reputation:batch:`;
+export const BATCH_KEY_PREFIX = `${config.appTag}:reputation:batch:`;
 
-function batchKey(username: string): string {
+export function batchKey(username: string): string {
   return `${BATCH_KEY_PREFIX}${username}`;
+}
+
+/**
+ * Parse a Redis batch value into a ReputationScore. Returns null on missing
+ * or malformed data so callers can fall through to a zero-score default.
+ *
+ * Shared between the batch writer (rehydrating prev-scores at the start of a
+ * new run) and the readers in `getBatchReputationMap` / `getReputationScore`,
+ * so the two sides cannot drift on shape interpretation.
+ */
+export function parseBatchValue(raw: string | null | undefined): ReputationScore | null {
+  if (raw === null || raw === undefined) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object' && typeof parsed.score === 'number') {
+      const b = parsed.breakdown ?? {};
+      return {
+        score: parsed.score,
+        breakdown: {
+          papers: Number(b.papers ?? 0),
+          reviews: Number(b.reviews ?? 0),
+          citations: Number(b.citations ?? 0),
+          accreditation: Number(b.accreditation ?? 0),
+        },
+      };
+    }
+  } catch {
+    // not JSON — fall through
+  }
+  return null;
 }
 
 /**
