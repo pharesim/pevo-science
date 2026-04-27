@@ -110,7 +110,7 @@ const SINGLE_USER_SQL = `WITH
   prev_scores AS (
     SELECT key AS username, value::numeric AS rep FROM jsonb_each_text($5)
   ),
-  active_accounts AS (
+  active_authors AS (
     SELECT DISTINCT author FROM (
       SELECT c.author FROM ${T.comments} c
       WHERE c.parent_author = '' AND c.parent_permlink = $3
@@ -134,7 +134,7 @@ const SINGLE_USER_SQL = `WITH
       END AS vw
     FROM unnest($2::text[]) AS a(voter)
     LEFT JOIN prev_scores ps ON ps.username = a.voter
-    LEFT JOIN active_accounts aa ON aa.author = a.voter
+    LEFT JOIN active_authors aa ON aa.author = a.voter
   ),
   user_papers AS (
     SELECT c.author, c.permlink, c.created, c.json_metadata FROM ${T.comments} c
@@ -356,7 +356,7 @@ const ALL_USERS_SQL = `WITH
   prev_scores AS (
     SELECT key AS username, value::numeric AS rep FROM jsonb_each_text($5)
   ),
-  active_accounts AS (
+  active_authors AS (
     SELECT DISTINCT author FROM (
       SELECT c.author FROM ${T.comments} c
       WHERE c.parent_author = '' AND c.parent_permlink = $3
@@ -380,7 +380,7 @@ const ALL_USERS_SQL = `WITH
       END AS vw
     FROM unnest($2::text[]) AS a(voter)
     LEFT JOIN prev_scores ps ON ps.username = a.voter
-    LEFT JOIN active_accounts aa ON aa.author = a.voter
+    LEFT JOIN active_authors aa ON aa.author = a.voter
   ),
 
   -- PAPERS (all target users at once)

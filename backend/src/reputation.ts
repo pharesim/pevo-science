@@ -16,7 +16,7 @@ import { T, getCachedGenesisBlock } from './hafsql.js';
 
 const REPUTATION_CACHE_TTL = 60 * 60_000; // 1 hour
 
-async function loadActiveAccounts(): Promise<string[]> {
+async function loadActiveAuthors(): Promise<string[]> {
   const pool = getPool();
   if (!pool) return [];
 
@@ -47,18 +47,20 @@ async function loadActiveAccounts(): Promise<string[]> {
 }
 
 /**
- * Get all accounts that have published at least one PEvO paper or review.
- * Cached as Set<string> with 1h TTL. Used for activity-gated voter weight (R9).
+ * Get all authors that have published at least one PEvO paper or review.
+ * Cached as Set<string> with 1h TTL. Distinct from "users to score" (which is
+ * the accredited set fed to the batch); this set gates the activity-based
+ * voter-weight bonus (R9) inside the SQL CTE `active_authors`.
  */
-export async function getActiveAccounts(): Promise<Set<string>> {
-  const arr = await hafCache.getOrSet<string[]>('active_pevo_accounts', loadActiveAccounts, REPUTATION_CACHE_TTL, true);
+export async function getActiveAuthors(): Promise<Set<string>> {
+  const arr = await hafCache.getOrSet<string[]>('active_pevo_authors', loadActiveAuthors, REPUTATION_CACHE_TTL, true);
   return new Set(arr);
 }
 
-/** Warm the active accounts cache at startup via periodic refresh. */
-export async function startActiveAccountsCache(): Promise<void> {
-  await hafCache.registerPeriodicRefresh('active_pevo_accounts', loadActiveAccounts, REPUTATION_CACHE_TTL);
-  logger.info('Active accounts cache loaded');
+/** Warm the active authors cache at startup via periodic refresh. */
+export async function startActiveAuthorsCache(): Promise<void> {
+  await hafCache.registerPeriodicRefresh('active_pevo_authors', loadActiveAuthors, REPUTATION_CACHE_TTL);
+  logger.info('Active authors cache loaded');
 }
 
 /**
@@ -162,7 +164,7 @@ export async function startReputationWeightsCache(): Promise<void> {
 
 /**
  * Compute reputation for multiple users in a single SQL query.
- * Shared CTEs (voter_weights, active_accounts, etc.) run once.
+ * Shared CTEs (voter_weights, active_authors, etc.) run once.
  *
  * Parameters: $1 = target usernames, $2 = accredited, $3 = app_tag,
  * $4 = app_like, $5 = prev scores jsonb, $6 = cycle_end_block,
@@ -228,7 +230,7 @@ export async function computeReputationBatch(
         FROM jsonb_each_text($5)
       ),
 
-      active_accounts AS (
+      active_authors AS (
         SELECT DISTINCT author FROM (
           SELECT c.author FROM ${T.comments} c
           WHERE c.parent_author = '' AND c.parent_permlink = $3
@@ -256,7 +258,7 @@ export async function computeReputationBatch(
           END AS vw
         FROM unnest($2::text[]) AS a(voter)
         LEFT JOIN prev_scores ps ON ps.username = a.voter
-        LEFT JOIN active_accounts aa ON aa.author = a.voter
+        LEFT JOIN active_authors aa ON aa.author = a.voter
       ),
 
       -- ═══ AUTHORSHIP CLAIMS (for co-author credit) ═══

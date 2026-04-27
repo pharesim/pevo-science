@@ -13,7 +13,8 @@ import { getPool, isHafAvailable } from './db.js';
 import { getRedis } from './redis.js';
 import { config } from './config.js';
 import { logger } from './logger.js';
-import { computeReputationBatch, getActiveAccounts, getReputationWeights } from './reputation.js';
+import { computeReputationBatch, getReputationWeights } from './reputation.js';
+import { getAllAccreditedAccounts } from './accreditation.js';
 import { getCachedGenesisBlock, T } from './hafsql.js';
 
 const DEFAULT_CHECK_INTERVAL_MS = 60 * 60_000; // 1 hour
@@ -119,14 +120,18 @@ export async function runBatchComputation(maxDurationMs = DEFAULT_MAX_DURATION_M
       const cycleStart = Date.now();
       const cycleEndBlock = genesisBlock + (cycle + 1) * cycleBlocks;
 
-      const activeAccounts = await getActiveAccounts();
-      if (activeAccounts.size === 0) {
-        logger.info({ cycle }, 'No active users found, skipping cycle');
+      // Score every currently-accredited account. Per the Standard, non-
+      // accredited users have score 0, so there's no point computing them.
+      // The "active authors" subset (gates the activity-based voter-weight
+      // bonus) is rebuilt independently inside the SQL `active_authors` CTE.
+      const scoredUsers = await getAllAccreditedAccounts();
+      if (scoredUsers.size === 0) {
+        logger.info({ cycle }, 'No accredited users found, skipping cycle');
         await redis.set(REDIS_KEY_LAST_CYCLE, String(cycle));
         continue;
       }
 
-      const users = [...activeAccounts];
+      const users = [...scoredUsers];
       logger.info({
         cycle,
         totalCycles,

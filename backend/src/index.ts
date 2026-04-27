@@ -12,7 +12,7 @@ import { checkHiveNodes } from './hive.js';
 import { startRetractionCache } from './routes/papers.js';
 import { startStatsCache } from './routes/stats.js';
 import { getGenesisBlock } from './hafsql.js';
-import { startActiveAccountsCache, startReputationWeightsCache } from './reputation.js';
+import { startActiveAuthorsCache, startReputationWeightsCache } from './reputation.js';
 import { startWotThresholdCache } from './wot.js';
 import { startAccountClaimer, stopAccountClaimer } from './account-creation.js';
 import { startSignupCleanup, stopSignupCleanup } from './signup-cleanup.js';
@@ -49,7 +49,7 @@ initAppDb()
     server = app.listen(config.port, () => {
       // Warm expensive shared HAF caches in the background (non-blocking)
       Promise.all([
-        startActiveAccountsCache(),
+        startActiveAuthorsCache(),
         startReputationWeightsCache(),
         startWotThresholdCache(),
         startStatsCache(),
