@@ -15,7 +15,7 @@ import {
   type SortField,
 } from '../helpers.js';
 import { getAccreditedSet, getAllAccreditedAccounts } from '../accreditation.js';
-import { getBatchReputationScores } from '../reputation.js';
+import { getReputationScores } from '../reputation.js';
 import { hafCache } from '../cache.js';
 import { logger } from '../logger.js';
 import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';
@@ -372,7 +372,7 @@ async function fetchPapersFromHaf(
 
     // Parallel: batch reputation + accredited set + resolved votes (native + revotes)
     const [batchScores, accreditedSet, voteData] = await Promise.all([
-      getBatchReputationScores(authors),
+      getReputationScores(authors),
       getAccreditedSet(authors),
       batchResolveVotes(pool, paperKeys, allAccreditedArr),
     ]);

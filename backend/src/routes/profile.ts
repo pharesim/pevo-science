@@ -6,7 +6,7 @@ import { config } from '../config.js';
 import { sendOk, sendError } from '../response.js';
 import { parseMeta, parsePageLimit, parseOrder, toPaperSummary } from '../helpers.js';
 import { getAccreditedSet, getAllAccreditedAccounts } from '../accreditation.js';
-import { getBatchReputationScores, getReputationScore } from '../reputation.js';
+import { getReputationScore, getReputationScores } from '../reputation.js';
 import { logger } from '../logger.js';
 import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';
 import { validate } from '../validation.js';
@@ -266,7 +266,7 @@ router.get('/:username/papers', async (req: Request, res: Response) => {
     const authorNames = result.rows.map((r) => r.author);
     const [accreditedSet, batchScores, allAccredited] = await Promise.all([
       getAccreditedSet(authorNames),
-      getBatchReputationScores(authorNames),
+      getReputationScores(authorNames),
       getAllAccreditedAccounts(),
     ]);
     for (const row of result.rows) {

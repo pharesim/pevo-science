@@ -73,13 +73,17 @@ export async function fetchStatsFromHaf() {
 
     const row = result.rows[0];
 
-    // Find highest reputation from Redis batch scores
+    // Find highest reputation from Redis batch scores. The map values are
+    // ReputationScore objects ({score, breakdown}); compare on `.score`.
+    // Leave highest_reputation_user null when nobody has a strictly positive
+    // score — the frontend hides the card on a falsy value, which is the
+    // correct rendering for the "fresh Redis, no cycle yet" state.
     let highest_reputation_user: string | null = null;
     let highest_reputation_score = 0;
     const repMap = await getBatchReputationMap();
-    for (const [username, score] of repMap) {
-      if (score > highest_reputation_score) {
-        highest_reputation_score = score;
+    for (const [username, rep] of repMap) {
+      if (rep.score > highest_reputation_score) {
+        highest_reputation_score = rep.score;
         highest_reputation_user = username;
       }
     }

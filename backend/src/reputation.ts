@@ -5,7 +5,7 @@
  * Voter weighting, decay, and vote resolution live entirely in SQL.
  */
 import pg from 'pg';
-import { getPool, isHafAvailable } from './db.js';
+import { getPool } from './db.js';
 import { config } from './config.js';
 import { getAllAccreditedAccounts } from './accreditation.js';
 import { hafCache } from './cache.js';
@@ -180,31 +180,45 @@ export async function backfillAccreditationSeeds(): Promise<void> {
 }
 
 /**
- * Read batch-computed reputation scores from Redis.
- * Returns empty map if Redis unavailable or no batch scores exist.
+ * Read every cycle-computed ReputationScore from Redis. Returns an empty map
+ * if Redis is unavailable or no batch scores exist. Filters out staging keys
+ * (intermediates owned by the batch writer's atomic-swap path).
  */
-export async function getBatchReputationMap(): Promise<Map<string, number>> {
-  const map = new Map<string, number>();
+export async function getBatchReputationMap(): Promise<Map<string, ReputationScore>> {
+  const map = new Map<string, ReputationScore>();
   const redis = getRedis();
   if (!redis) return map;
 
   try {
-    const prefix = `${config.appTag}:reputation:batch:`;
-    const keys = await redis.keys(`${prefix}*`);
-    if (keys.length === 0) return map;
+    const stagingPrefix = `${BATCH_KEY_PREFIX}staging:`;
+    const allKeys = await redis.keys(`${BATCH_KEY_PREFIX}*`);
+    const prodKeys = allKeys.filter((k) => !k.startsWith(stagingPrefix));
+    if (prodKeys.length === 0) return map;
 
-    const values = await redis.mget(keys);
-    for (let i = 0; i < keys.length; i++) {
-      const username = keys[i].replace(prefix, '');
-      const score = values[i] !== null ? Number(values[i]) : undefined;
-      if (score !== undefined && !isNaN(score)) {
-        map.set(username, score);
-      }
+    const values = await redis.mget(prodKeys);
+    for (let i = 0; i < prodKeys.length; i++) {
+      const username = prodKeys[i].replace(BATCH_KEY_PREFIX, '');
+      const parsed = parseBatchValue(values[i]);
+      if (parsed) map.set(username, parsed);
     }
   } catch (err) {
     logger.warn({ err }, 'Failed to read batch reputation scores from Redis');
   }
   return map;
+}
+
+/**
+ * Flatten a batch map to the score-only `{username: score}` shape consumed by
+ * the SQL `prev_scores` jsonb parameter (`value::numeric` cast). Centralized
+ * here so every score-only caller takes the same path; forgetting the
+ * `.score` extraction silently collapses every voter weight to 1.0.
+ */
+export function batchMapToScoreRecord(map: Map<string, ReputationScore>): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const [username, rep] of map) {
+    out[username] = rep.score;
+  }
+  return out;
 }
 
 // ─── Weights ────────────────────────────────────────────────────
@@ -312,7 +326,7 @@ export async function computeReputationBatch(
       if (endBlock === 0) return results;
     }
 
-    const prevJson = prevScores ?? Object.fromEntries(await getBatchReputationMap());
+    const prevJson = prevScores ?? batchMapToScoreRecord(await getBatchReputationMap());
 
     const result = await pool.query(
       `WITH
@@ -822,76 +836,36 @@ export async function computeReputationSql(
 
 // ─── Public API ─────────────────────────────────────────────────
 
+const ZERO_SCORE: ReputationScore = {
+  score: 0,
+  breakdown: { papers: 0, reviews: 0, citations: 0, accreditation: 0 },
+};
+
 /**
- * Get cached reputation score for a single user (1h TTL).
- * Uses all-SQL computation when HAF is available, returns zero otherwise.
+ * Read a single user's reputation from the batch map. Single Redis GET, no
+ * HAF queries, no on-demand SQL — every reader resolves to the same
+ * `${appTag}:reputation:batch:${user}` value. Returns the zero score for
+ * users with no batch entry (consistent with the Standard: non-accredited
+ * users have score 0).
  */
 export async function getReputationScore(username: string): Promise<ReputationScore> {
-  return hafCache.getOrSet<ReputationScore>(`reputation:${username}`, async () => {
-    // Primary path: all-SQL computation (v0.5)
-    if (isHafAvailable()) {
-      const sqlResult = await computeReputationSql(username);
-      if (sqlResult) return sqlResult;
-    }
-
-    // Fallback: no HAF means no weighted reputation — return zero
-    return { score: 0, breakdown: { papers: 0, reviews: 0, citations: 0, accreditation: 0 } };
-  }, REPUTATION_CACHE_TTL, true);
+  const redis = getRedis();
+  if (!redis) return ZERO_SCORE;
+  try {
+    const raw = await redis.get(batchKey(username));
+    return parseBatchValue(raw) ?? ZERO_SCORE;
+  } catch (err) {
+    logger.warn({ err, username }, 'Failed to read batch reputation');
+    return ZERO_SCORE;
+  }
 }
 
 /**
- * Batch-fetch reputation scores. Reads from Redis batch scores first
- * (populated by nightly batch job), then falls back to on-demand
- * computation only for users missing from the batch.
+ * Read multiple users' reputations from the batch map in a single MGET.
+ * Returns a score-only map; users with no batch entry are absent (callers
+ * already handle `undefined` via `?? 0`).
  */
 export async function getReputationScores(usernames: string[]): Promise<Map<string, number>> {
-  const unique = [...new Set(usernames)];
-  const result = new Map<string, number>();
-  if (unique.length === 0) return result;
-
-  // Try Redis batch scores first (no HAF queries needed)
-  const redis = getRedis();
-  const missing: string[] = [];
-  if (redis) {
-    try {
-      const keys = unique.map((u) => `${config.appTag}:reputation:batch:${u}`);
-      const values = await redis.mget(keys);
-      for (let i = 0; i < unique.length; i++) {
-        if (values[i] !== null) {
-          result.set(unique[i], Number(values[i]));
-        } else {
-          missing.push(unique[i]);
-        }
-      }
-    } catch {
-      missing.push(...unique.filter((u) => !result.has(u)));
-    }
-  } else {
-    missing.push(...unique);
-  }
-
-  // On-demand computation only for users not in the batch
-  if (missing.length > 0) {
-    const entries = await Promise.all(
-      missing.map(async (u) => {
-        const rep = await getReputationScore(u);
-        return [u, rep.score] as const;
-      }),
-    );
-    for (const [u, score] of entries) {
-      result.set(u, score);
-    }
-  }
-
-  return result;
-}
-
-/**
- * Fast batch-only reputation lookup. Reads Redis batch scores only —
- * returns 0 for users not yet computed. No HAF queries, no blocking.
- * Use this for list endpoints where speed matters more than completeness.
- */
-export async function getBatchReputationScores(usernames: string[]): Promise<Map<string, number>> {
   const unique = [...new Set(usernames)];
   const result = new Map<string, number>();
   if (unique.length === 0) return result;
@@ -900,15 +874,14 @@ export async function getBatchReputationScores(usernames: string[]): Promise<Map
   if (!redis) return result;
 
   try {
-    const keys = unique.map((u) => `reputation:batch:${u}`);
+    const keys = unique.map(batchKey);
     const values = await redis.mget(keys);
     for (let i = 0; i < unique.length; i++) {
-      if (values[i] !== null) {
-        result.set(unique[i], Number(values[i]));
-      }
+      const parsed = parseBatchValue(values[i]);
+      if (parsed) result.set(unique[i], parsed.score);
     }
-  } catch {
-    // Redis unavailable — return empty map, all scores default to 0
+  } catch (err) {
+    logger.warn({ err }, 'Failed to MGET batch reputation');
   }
   return result;
 }
