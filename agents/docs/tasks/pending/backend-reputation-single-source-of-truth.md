@@ -195,3 +195,34 @@ Document the exact `redis-cli` commands in the implementation-notes section belo
 - Schema additions for historical reputation tracking (per-cycle history in SQL).
 
 ## Implementation notes
+
+### Deploy-time Redis flush
+
+Per scope #8, two distinct sets of keys must be deleted on the deploy that ships this task. Run these `redis-cli` commands BEFORE the new backend starts accepting traffic on each environment (dev, staging, prod). The batch job recomputes from cycle 0 to current cycle on first run.
+
+```bash
+# 1. Legacy unprefixed keys (dead data from before commit 41952f5's prefix
+#    migration — no current reader, but cleaning up for hygiene).
+redis-cli DEL \
+  reputation:batch:pevo.science \
+  reputation:batch:pevotest.anon \
+  reputation:batch:pevotest.bridge \
+  reputation:cycle:last \
+  cache:retracted-papers
+
+# 2. Current prefixed batch keys (alive but in the old numeric-string shape;
+#    readers of the new JSON shape would see them as malformed for one cycle).
+#    Replace ${APP_TAG} with the deployment's actual tag (`pevo` or `pevotest`).
+redis-cli --scan --pattern "${APP_TAG}:reputation:batch:*" | xargs -r redis-cli DEL
+redis-cli DEL "${APP_TAG}:reputation:cycle:last"
+```
+
+After flush, the batch job's first run starts from `lastComputedCycle = -1` and catches up to the current cycle. The boot backfill (`backfillAccreditationSeeds`) seeds every accredited user's provisional entry in parallel, so profiles render `accreditation_bonus` immediately while the catch-up runs.
+
+### Externally-broadcast accreditation events
+
+The current `block-watcher.ts` is a polling cache invalidator (clears volatile hafCache entries on each new HAF block); there is no event-level processor that reads custom_json operations. Backend-originated accredit/revoke broadcasts call `seedAccreditationBonus` / `invalidateOnRevocation` synchronously after the broadcast acks. Externally-originated broadcasts (admin Hive Keychain, future DAO/WoT paths independent of backend routes) hit the documented fallback:
+
+- **Grants**: caught at the next batch cycle when the user enters `getAllAccreditedAccounts()`. The boot backfill handles them on restart. `seedAccreditationBonus` is idempotent under SET NX, so duplicate seeding from external + backend-originated paths is safe.
+- **Revocations of users with no authored papers**: leak indefinitely. The next cycle's `getAllAccreditedAccounts()` excludes them, so the batch never recomputes their slot, and no event-level processor exists to DEL the stale seed. Acceptable trade-off per the task spec; revisit if/when an event-level custom_json processor is added.
+- **Revocations of users with authored papers**: persist for up to one cycle (the user remains in the previous cycle's batch output). The next cycle's `getAllAccreditedAccounts()` excludes them and the new cycle's `RENAME` overwrite never fires for their slot, so their old prod key persists. The deploy-time flush above is the cleanup for any pre-refactor stale entries; ongoing operational hygiene relies on backend-originated revocations calling `invalidateOnRevocation` directly.

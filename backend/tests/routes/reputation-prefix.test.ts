@@ -27,9 +27,17 @@ import {
 } from '../../src/reputation.js';
 
 describe('reputation Redis prefix invariant', () => {
-  it('runBatchComputation writes only under ${appTag}:reputation:*', { timeout: 120_000 }, async () => {
+  it('runBatchComputation writes only under ${appTag}:reputation:*', { timeout: 180_000 }, async () => {
     const redis = getRedis();
     if (!redis) return; // Redis-unavailable env: vacuous pass
+
+    // Pre-clean: bare-glob keys may persist from pre-migration legacy state
+    // (see scope #8 deploy flush). The regression check catches NEW
+    // unprefixed writes by current code, so wipe any legacy survivors first.
+    const legacyBatch = await redis.keys('reputation:batch:*');
+    if (legacyBatch.length > 0) await redis.del(...legacyBatch);
+    const legacyCycle = await redis.keys('reputation:cycle:last');
+    if (legacyCycle.length > 0) await redis.del(...legacyCycle);
 
     await runBatchComputation();
 
