@@ -727,7 +727,10 @@ async function releaseBindingLock(orcidId: string, nonce: string): Promise<void>
  *                   broadcast hasn't landed. Every throw in this branch is
  *                   outcome-ambiguous (the broadcast may be on-chain already);
  *                   surfacing 500 would license a user retry that duplicates
- *                   the custom_json. See
+ *                   the custom_json. The `ambiguousOutcomeOpts` argument is
+ *                   required (not optional) precisely so a future caller
+ *                   cannot silently re-introduce the consumed-state-token
+ *                   hard-block class by omitting the safety envelope. See
  *                   agents/docs/solutions/conventions/chain-write-timeout-ambiguous-outcome-2026-04-22.md.
  *
  * IMPORTANT — response-sending contract: on the 'held' state the wrapper sends
