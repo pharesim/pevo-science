@@ -282,7 +282,26 @@ router.get('/', async (req: Request, res: Response) => {
     return sendError(res, 400, 'BAD_REQUEST', 'Search query "q" is required');
   }
 
-  const type = (req.query.type as string) || 'all';
+  // BE-SEARCH-REVIEWS-CONTRACT-RECONCILE: validate `?type=` against the
+  // documented enum (`all` | `paper` | `review`) instead of silently coercing
+  // unknown values to `'all'`. Untyped fall-through hid the contract drift
+  // where `papers.md` claimed reviews were unsearchable while the code
+  // shipped a live `type === 'review'` branch. Pin the enum here so any
+  // future drift surfaces as a 400 rather than a quiet semantic shift.
+  // Typeof-narrowed (mirrors the discipline pattern above) — repeated
+  // params (`?type=a&type=b`) yield `string[]` which an `as string` cast
+  // would coerce to `"a,b"`, slipping past the enum check.
+  const VALID_SEARCH_TYPES = ['all', 'paper', 'review'] as const;
+  type SearchType = typeof VALID_SEARCH_TYPES[number];
+  const rawType = req.query.type;
+  let type: SearchType;
+  if (rawType === undefined) {
+    type = 'all';
+  } else if (typeof rawType === 'string' && (VALID_SEARCH_TYPES as readonly string[]).includes(rawType)) {
+    type = rawType as SearchType;
+  } else {
+    return sendError(res, 400, 'BAD_REQUEST', `Invalid type. Must be one of: ${VALID_SEARCH_TYPES.join(', ')}`);
+  }
   // Canonicalize `?discipline=` at route entry so downstream SQL binding and
   // cache-key construction share the same lowercased value. Three-site
   // lowercasing (route, SQL binder, cache key) drifted under refactor — see
