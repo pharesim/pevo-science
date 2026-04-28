@@ -9,6 +9,7 @@ import { hafCache } from '../cache.js';
 import { logger } from '../logger.js';
 import { T, activeAccreditationsCteBody, retractedPapersCteBody, buildWith, validPevoPaperWhere } from '../hafsql.js';
 import { validateDisciplineFilter } from '../types/disciplines.js';
+import { validateSearchQuery } from '../types/search-filters.js';
 
 const router = Router();
 
@@ -83,13 +84,18 @@ async function searchPapersFromHaf(
 
   const where = conditions.join(' AND ');
 
+  // `query` arrives already LIKE-escaped + length-capped from the route
+  // handler via `validateSearchQuery`. The wildcards we wrap around it are
+  // the literal LIKE metacharacters; user-supplied `%` `_` `\` are
+  // backslash-escaped inside `query` so Postgres treats them as literals
+  // under the `ESCAPE '\\'` clause (BE-SEARCH-Q-LIKEGUARD-AND-LENGTH-CAP).
   const ilikeParam = `$${paramIdx++}`;
   const ilikePattern = `%${query}%`;
-  const textMatch = `(c.title ILIKE ${ilikeParam} OR c.body ILIKE ${ilikeParam})`;
+  const textMatch = `(c.title ILIKE ${ilikeParam} ESCAPE '\\' OR c.body ILIKE ${ilikeParam} ESCAPE '\\')`;
 
   const orderBy = sort === 'date'
     ? 'c.created DESC'
-    : `(CASE WHEN c.title ILIKE ${ilikeParam} THEN 1 ELSE 0 END) DESC, c.created DESC`;
+    : `(CASE WHEN c.title ILIKE ${ilikeParam} ESCAPE '\\' THEN 1 ELSE 0 END) DESC, c.created DESC`;
 
   const snippetExpr = `substring(c.body from 1 for 300)`;
 
@@ -168,9 +174,11 @@ async function searchReviewsFromHaf(
 
   const where = conditions.join(' AND ');
 
+  // See searchPapersFromHaf for the escape contract: `query` is pre-escaped,
+  // ESCAPE '\\' makes Postgres treat embedded `\%` `\_` `\\` as literals.
   const ilikeParam = `$${paramIdx++}`;
   const ilikePattern = `%${query}%`;
-  const textMatch = `c.body ILIKE ${ilikeParam}`;
+  const textMatch = `c.body ILIKE ${ilikeParam} ESCAPE '\\'`;
 
   const orderBy = 'c.created DESC';
 
@@ -271,10 +279,19 @@ async function searchFromHaf(
 }
 
 router.get('/', async (req: Request, res: Response) => {
-  const q = req.query.q as string;
-  if (!q || q.trim().length === 0) {
+  // BE-SEARCH-Q-LIKEGUARD-AND-LENGTH-CAP: validate length + LIKE-escape BEFORE
+  // the bound parameter reaches the SQL binder. null = absent (missing,
+  // empty/whitespace, repeated-param array shape, non-string) → 400 required;
+  // ok=false = present-but-too-long → 400 too-long; ok=true → LIKE-escaped
+  // value. The downstream SQL pairs with `ESCAPE '\\'` on every ILIKE site.
+  const qResult = validateSearchQuery(req.query.q);
+  if (qResult === null) {
     return sendError(res, 400, 'BAD_REQUEST', 'Search query "q" is required');
   }
+  if (!qResult.ok) {
+    return sendError(res, 400, 'BAD_REQUEST', qResult.message);
+  }
+  const q = qResult.value;
 
   // BE-SEARCH-REVIEWS-CONTRACT-RECONCILE: validate `?type=` against the
   // documented enum (`all` | `paper` | `review`) instead of silently coercing

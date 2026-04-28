@@ -155,4 +155,69 @@ describe('GET /api/search', () => {
       expect(Array.isArray(res.body.data)).toBe(true);
     });
   });
+
+  // BE-SEARCH-Q-LIKEGUARD-AND-LENGTH-CAP: guard ?q= length and escape LIKE
+  // metacharacters before the bound parameter reaches Postgres ILIKE. Closes
+  // the per-request CPU-DoS vector that was materially more exploitable than
+  // ?discipline= because q runs against c.title OR c.body across every
+  // PEvO-app comment row.
+  describe('?q= input validation', () => {
+    it('rejects >200 char q with 400 BAD_REQUEST and "Search query too long"', async () => {
+      // 4 KB of ASCII letters — well above the 200-char guard, below Node's
+      // default URL/header limit. The route-level cap fires before the
+      // bound parameter reaches the ILIKE binder.
+      const oversized = 'a'.repeat(4_000);
+      const res = await request(app).get('/api/search').query({ q: oversized });
+      expect(res.status).toBe(400);
+      expect(res.body.status).toBe('error');
+      expect(res.body.error.code).toBe('BAD_REQUEST');
+      expect(res.body.error.message).toBe('Search query too long');
+    });
+
+    it('accepts long-but-valid q (199 chars) — exercises ILIKE path without 400', async () => {
+      // 199 chars: under the 200-char cap, exercises the LIKE-escape path
+      // end-to-end against real HAF.
+      const padded = 'science ' + 'a'.repeat(199 - 'science '.length);
+      expect(padded.length).toBe(199);
+      const res = await request(app).get('/api/search').query({ q: padded });
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe('ok');
+      expect(Array.isArray(res.body.data)).toBe(true);
+    });
+
+    it('still 400s on whitespace-only q with the existing required-message', async () => {
+      // Helper folds empty/whitespace into the absent (null) path so the
+      // existing "Search query \"q\" is required" 400 is preserved.
+      const res = await request(app).get('/api/search?q=%20%20');
+      expect(res.status).toBe(400);
+      expect(res.body.status).toBe('error');
+      expect(res.body.error.code).toBe('BAD_REQUEST');
+      expect(res.body.error.message).toBe('Search query "q" is required');
+    });
+
+    it('repeated ?q=a&q=b yields the existing required-message (silent-unfilter contract)', async () => {
+      // Express yields string[]; helper returns null (silent-unfilter,
+      // mirrors ?discipline= round-4 contract). Since q is required, the
+      // route returns 400 with the required message rather than 'too long'.
+      const res = await request(app).get('/api/search?q=a&q=b');
+      expect(res.status).toBe(400);
+      expect(res.body.status).toBe('error');
+      expect(res.body.error.code).toBe('BAD_REQUEST');
+      expect(res.body.error.message).toBe('Search query "q" is required');
+    });
+
+    it('q containing LIKE metacharacters (%, _, \\) returns 200 — escape neutralizes the wildcards', async () => {
+      // The crafted DoS shape: `%_%_%_%_%_…` — pre-fix would inject N live
+      // wildcards into ILIKE. Post-fix, the helper escapes each `%` to `\%`
+      // and each `_` to `\_` so Postgres treats them as literals under
+      // ESCAPE '\\'. Real-HAF runs the ILIKE; on the public corpus there
+      // are no titles literally containing the escaped sequence, so the
+      // result is empty — but the request completes successfully (no
+      // backtracking explosion).
+      const res = await request(app).get('/api/search').query({ q: '%_%_%_%_%_test_%' });
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe('ok');
+      expect(Array.isArray(res.body.data)).toBe(true);
+    });
+  });
 });

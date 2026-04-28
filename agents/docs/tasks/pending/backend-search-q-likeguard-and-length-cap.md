@@ -60,3 +60,41 @@ Real-HAF + carve-out coverage on `backend/tests/routes/search.test.ts`:
 - `searchPapersFromHaf` and the reviews-search SQL site both use `ESCAPE '\\'` clause.
 - No regression on the existing search specs.
 - `papers.md` `/api/search ?q=` parameter row updated with the new validity rules + escape semantics. (Architect-owned; flag via `[TODO Architect]` in the task note before moving to `review/`.)
+
+---
+
+## Implementer re-review signal (2026-04-28, backend) — round 1
+
+Landed in a single commit. Two distinct defenses on `?q=` are in place: 200-char length cap + LIKE-metacharacter escape with `ESCAPE '\\'` clause on every ILIKE site.
+
+**Helper-module-location decision:** new file `backend/src/types/search-filters.ts` (sibling to `disciplines.ts`). Rationale: `disciplines.ts` was already 165 lines and the search-query semantics (LIKE escape) are conceptually distinct from discipline-filter semantics (charset + length); a sibling module reads cleaner than a monolithic one. Mirrors the discriminated-union Result-shape return idiom from `validateDisciplineFilter` exactly.
+
+**Repeated-param semantics decision:** `?q=a&q=b` returns `null` from `validateSearchQuery` (silent-unfilter, mirrors the round-4 `?discipline=` contract). Since `q` is required, the route handler emits the existing `'Search query "q" is required'` 400 message rather than `'Search query too long'` — preserving observable behavior for absent-vs-too-long distinction. Same shape: empty / whitespace-only / `string[]` / non-string all fold into the `null` (absent) branch with the existing required-message; only `length > 200` returns `{ ok: false, message: 'Search query too long' }`.
+
+**Code changes:**
+- `backend/src/types/search-filters.ts` (new) — `SEARCH_QUERY_MAX_LEN = 200`, `escapeLikePattern()`, `validateSearchQuery()` with the discriminated-union return.
+- `backend/src/routes/search.ts`:
+  * Route entry (~line 273): replaced the inline `q` empty-check with `validateSearchQuery(req.query.q)` + null-then-not-ok branching. Preserves both 400 messages (`'Search query "q" is required'` and `'Search query too long'`).
+  * `searchPapersFromHaf` (~line 86-94): added `ESCAPE '\\'` to both ILIKE sites in `textMatch` (c.title + c.body) AND to the orderBy CASE expression (3 ILIKE sites total).
+  * `searchReviewsFromHaf` (~line 173): added `ESCAPE '\\'` to the c.body ILIKE site.
+  * Added a comment block in each function explaining the pre-escape contract.
+
+**Tests landed:**
+- `backend/tests/lib/search-filters.test.ts` (new) — 21 helper-direct unit tests across 4 describe blocks (absent shapes, happy-path escape coverage, length boundary at 200/201, escapeLikePattern direct exposure).
+- `backend/tests/routes/search.test.ts` (real-HAF) — 5 new specs in a `?q= input validation` describe block: 4KB → 400 too-long, 199-char → 200, whitespace-only → 400 required, `?q=a&q=b` → 400 required, `%_%_%_…` → 200 (escape neutralizes wildcards, no backtracking explosion).
+- `backend/tests/routes/disciplines-canon-mocked.test.ts` (mocked-pool SQL contract) — 3 new specs: papers-search bound parameter is escaped (`%` → `\%`, `_` → `\_`, `\` → `\\`), papers-search SQL contains ≥2 `ESCAPE '\\'` occurrences, reviews-search SQL contains `ESCAPE '\\'`.
+
+**Tests run** (with docker-IP env overrides per CLAUDE.md):
+- `tests/lib/search-filters.test.ts` → 21/21 passed.
+- `tests/routes/disciplines-canon-mocked.test.ts` → 19/19 passed (was 16; +3 new cases).
+- `tests/routes/search.test.ts` (real-HAF) → 19/19 passed (was 14; +5 new cases).
+- Combined pass count: 59/59.
+- `npm run lint` clean (2 pre-existing warnings on `seed-phrase.ts` unchanged).
+
+### [TODO Architect]
+
+**Contract update needed (architect-owned, before archive):**
+- `agents/docs/api-contracts/papers.md` `/api/search` block — add validity rules to the `?q=` parameter row:
+  * **Length:** required; 1-200 chars after trim.
+  * **400 errors:** `'Search query "q" is required'` on absent / empty / whitespace-only / repeated `?q=a&q=b` shapes; `'Search query too long'` on > 200 chars.
+  * **LIKE-metacharacter handling:** literal `%` `_` `\` in the query are matched as literal characters (escaped server-side); they cannot be used to inject SQL LIKE wildcards. (Implementation detail — the escape is invisible to clients; surfacing it in the contract makes the security guarantee explicit for AGPL forks.)

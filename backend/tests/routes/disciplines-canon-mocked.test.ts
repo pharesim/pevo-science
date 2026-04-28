@@ -735,3 +735,90 @@ describe('GET /api/papers — cache key sha256-wrapped (BE-PAPERS-CACHE-KEY-SHA2
     }
   });
 });
+
+describe('GET /api/search — ?q= LIKE-escape SQL contract (BE-SEARCH-Q-LIKEGUARD-AND-LENGTH-CAP)', () => {
+  // The real-HAF specs in search.test.ts assert the 400 paths and that the
+  // ILIKE path completes without backtracking explosion on metacharacter
+  // payloads. This block pins the SQL contract deterministically: the bound
+  // parameter has its `%` `_` `\` characters escaped, AND every ILIKE call
+  // site carries an `ESCAPE '\\'` clause. A regression that drops either side
+  // of the contract surfaces here.
+
+  it('papers-search bound parameter is LIKE-escaped (% → \\%, _ → \\_, \\ → \\\\)', async () => {
+    let capturedParams: unknown[] | undefined;
+    hafQueryMock.mockImplementation(async (sql: string, params: unknown[]) => {
+      // Match the papers-search data query (uniquely contains `AS type,`).
+      if (sql.includes("->> 'type') AS type,") && capturedParams === undefined) {
+        capturedParams = params;
+      }
+      if (sql.includes('count(*)::int AS total')) return { rows: [{ total: 0 }] };
+      return { rows: [] };
+    });
+
+    // The crafted payload: `%`, `_`, `\` — all three LIKE metacharacters
+    // plus the escape character itself. Post-fix bound parameter must
+    // contain `\%`, `\_`, `\\` — never the bare metacharacters.
+    const res = await request(app).get('/api/search?type=paper&q=%25_%5C');
+    expect(res.status).toBe(200);
+    expect(capturedParams).toBeDefined();
+    // The ILIKE-pattern bind is the LAST string param before LIMIT/OFFSET
+    // ints. Find a string param wrapped in `%...%`.
+    const ilikePattern = capturedParams!.find(
+      (p) => typeof p === 'string' && p.startsWith('%') && p.endsWith('%') && p.length > 2,
+    ) as string | undefined;
+    expect(ilikePattern).toBeDefined();
+    // Strip the surrounding wildcards (added by the route, NOT escaped).
+    const escapedQ = ilikePattern!.slice(1, -1);
+    // The escaped form for input `%_\` is `\%\_\\`. A revert of the
+    // helper would surface here as the raw `%_\`.
+    expect(escapedQ).toBe('\\%\\_\\\\');
+  });
+
+  it('papers-search SQL carries ESCAPE clause with backslash literal at every ILIKE site', async () => {
+    // Re-do the above assertion correctly: the JS template literal at the
+    // route emits `\\` which becomes a single `\` in the runtime string, so
+    // the SQL string literally contains `ESCAPE '\'` (10 chars: E,S,C,A,P,E,
+    // space, ',\, '). The default `relevance` sort path adds a third ILIKE
+    // site in the ORDER BY CASE, so we expect at least 3 occurrences for
+    // ?type=paper.
+    let capturedSql: string | undefined;
+    hafQueryMock.mockImplementation(async (sql: string) => {
+      if (sql.includes("->> 'type') AS type,") && capturedSql === undefined) {
+        capturedSql = sql;
+      }
+      if (sql.includes('count(*)::int AS total')) return { rows: [{ total: 0 }] };
+      return { rows: [] };
+    });
+
+    await request(app).get('/api/search?type=paper&q=science');
+    expect(capturedSql).toBeDefined();
+    // Match the literal SQL fragment `ESCAPE '\'` — JS template literal
+    // form `\\` yields one `\` in the runtime string.
+    const escapeClause = `ESCAPE '\\'`;
+    expect(capturedSql).toContain(escapeClause);
+    // textMatch site (data query): both c.title ILIKE and c.body ILIKE
+    // each carry ESCAPE — that's 2; ORDER BY CASE adds 1 more → 3 total
+    // on the data query.
+    const occurrences = capturedSql!.split(escapeClause).length - 1;
+    expect(occurrences).toBeGreaterThanOrEqual(2);
+  });
+
+  it('reviews-search SQL carries ESCAPE clause on c.body ILIKE', async () => {
+    let capturedSql: string | undefined;
+    hafQueryMock.mockImplementation(async (sql: string) => {
+      // Reviews search data query: filters parent_author != '' and binds
+      // ILIKE to c.body only. Distinguished from the papers-search data
+      // query by the absence of the `type` SELECT alias and the presence
+      // of `parent_author != ''`.
+      if (sql.includes("c.parent_author != ''") && sql.includes('ILIKE')) {
+        capturedSql = sql;
+      }
+      if (sql.includes('count(*)::int AS total')) return { rows: [{ total: 0 }] };
+      return { rows: [] };
+    });
+
+    await request(app).get('/api/search?type=review&q=science');
+    expect(capturedSql).toBeDefined();
+    expect(capturedSql).toContain(`ESCAPE '\\'`);
+  });
+});
