@@ -28,10 +28,19 @@ export async function fetchStatsFromHaf() {
     const at = `$${cte.nextIdx}`;      // appTag
     const al = `$${cte.nextIdx + 1}`;  // appTag/%
     const anon = `$${cte.nextIdx + 2}`; // anonymous review account
-    const params = [...cte.params, config.appTag, `${config.appTag}/%`, config.hiveAnonAccount];
+    const bridge = `$${cte.nextIdx + 3}`; // platform bridge account (pins bridge_paper carve-out)
+    const params = [...cte.params, config.appTag, `${config.appTag}/%`, config.hiveAnonAccount, config.hiveBridgeAccount];
 
     // Single query: papers CTE narrows to PEvO posts, reviews CTE joins through
     // papers (children of known papers) to avoid a full hafsql.comments scan.
+    //
+    // The bridge_paper accreditation carve-out is pinned to
+    // `c.author = config.hiveBridgeAccount`. Without the author equality, any
+    // unaccredited Hive account can spoof `type: bridge_paper` in
+    // json_metadata to slip past the accreditation gate (the carve-out then
+    // ALSO leaks into `total_bridge_papers` since the SELECT subquery only
+    // gates on type after the CTE has admitted it). Mirrors papers.ts and
+    // search.ts.
     const result = await pool.query(`
       ${cte.sql},
       papers AS (
@@ -43,7 +52,7 @@ export async function fetchStatsFromHaf() {
           AND c.json_metadata ->> 'app' LIKE ${al}
           AND (c.json_metadata -> ${at} -> 'continues') IS NULL
           AND (aa.account IS NOT NULL
-               OR (c.json_metadata -> ${at} ->> 'type') = 'bridge_paper')
+               OR (c.author = ${bridge} AND (c.json_metadata -> ${at} ->> 'type') = 'bridge_paper'))
       ),
       reviews AS (
         SELECT r.created

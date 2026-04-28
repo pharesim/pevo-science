@@ -258,9 +258,16 @@ async function fetchPapersFromHaf(
     filterParams.push(language);
   }
   if (accreditedOnly) {
-    // Bridge papers are posted by the system bridge account, not the original author,
-    // so they are exempt from the accredited-only filter.
-    conditions.push(`(c.author IN (SELECT account FROM active_accreditations) OR (c.json_metadata -> ${appTagParam} ->> 'type') = 'bridge_paper')`);
+    // Bridge papers are posted by the system bridge account, not the original
+    // author, so they are exempt from the accredited-only filter — but the
+    // carve-out is pinned to `c.author = config.hiveBridgeAccount` to prevent
+    // an unaccredited Hive account from spoofing `type: bridge_paper` in
+    // json_metadata to bypass the accreditation gate. Without the author
+    // equality, a forged type tag is sufficient to ride along; with it, the
+    // post must come from the platform's bridge account to qualify.
+    const bridgeAccountParam = `$${paramIdx++}`;
+    conditions.push(`(c.author IN (SELECT account FROM active_accreditations) OR (c.author = ${bridgeAccountParam} AND (c.json_metadata -> ${appTagParam} ->> 'type') = 'bridge_paper'))`);
+    filterParams.push(config.hiveBridgeAccount);
   }
   if (!includeRetracted) {
     conditions.push(`NOT EXISTS (SELECT 1 FROM retracted_papers rp WHERE rp.author = c.author AND rp.permlink = c.permlink)`);

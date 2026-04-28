@@ -79,7 +79,13 @@ async function searchPapersFromHaf(
   }
 
   if (accreditedOnly) {
-    conditions.push(`(c.author IN (SELECT account FROM active_accreditations) OR (c.json_metadata -> ${appTagParam} ->> 'type') = 'bridge_paper')`);
+    // Pin the bridge_paper accreditation carve-out to the platform bridge
+    // account. Without `c.author = config.hiveBridgeAccount`, any unaccredited
+    // Hive account can spoof `type: bridge_paper` in json_metadata to bypass
+    // the accreditation gate. Mirrors papers.ts and stats.ts.
+    const bridgeAccountParam = `$${paramIdx++}`;
+    conditions.push(`(c.author IN (SELECT account FROM active_accreditations) OR (c.author = ${bridgeAccountParam} AND (c.json_metadata -> ${appTagParam} ->> 'type') = 'bridge_paper'))`);
+    params.push(config.hiveBridgeAccount);
   }
   if (!includeRetracted) {
     conditions.push(`NOT EXISTS (SELECT 1 FROM retracted_papers rp WHERE rp.author = c.author AND rp.permlink = c.permlink)`);
