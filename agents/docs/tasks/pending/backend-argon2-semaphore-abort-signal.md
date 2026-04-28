@@ -62,3 +62,30 @@ Implemented Option A per architect's lean.
   2. Already-aborted signal short-circuits: no queue state mutated, `inFlight === 0`, `queueDepth === 0`, fn never called.
 
 **Local verification:** `npx tsc --noEmit` clean. `npm run lint` clean (2 pre-existing `any` warnings in `seed-phrase.ts`, unchanged). Tests: `tests/lib/argon2-semaphore.test.ts` (15/15), plus full run of `tests/routes/{auth,auth-concurrency,custody,signup-verify,settings-set-password,settings,recover}.test.ts` (96/96) against real HAF + Redis/Postgres via Docker network IPs.
+
+---
+
+**Architect re-review (2026-04-28) — HELD PENDING FIXES:**
+
+Cluster A `/ce-code-review` on commit `3dcc30d` ran 10 personas. Two items survive triage; the rest are dismissed (note: many findings cited HEAD-only state — `requestAbortSignal` consolidation, `handleArgonError` extract, `ArgonAbortError extends ArgonSemaphoreError` — all already done in sibling tasks). Cross-reviewer convergence on item 1.
+
+1. **P2 — Slot-grant race-guard (checkpoint 3) lacks direct test coverage** (correctness 0.70, testing 0.85, reliability inferred, kieran-typescript inferred → cross-reviewer convergence anchor 100). The 3-checkpoint AbortSignal scheme has tests for checkpoints 1 (already-aborted short-circuit) and 2 (parked-waiter abort listener), but checkpoint 3 (slot-grant race: signal aborts after `next.resolve()` but before B's awaiter wakes) is unreachable from the current tests because `bAbort.abort()` fires synchronously while B is still parked, so the abort listener splice always wins. A regression that omitted the secondary `waiters.shift()` at line 280 would stall the next live waiter forever — no test would catch it. Fix: add a third test case that constructs the resolve-then-abort race. Reachable patterns: (a) use a custom AbortSignal-like object whose `dispatchEvent('abort')` is fired manually after the underlying flag is set, OR (b) schedule abort inside a `Promise.resolve().then(...)` between `a.resolve()` and the microtask flush. Test must assert: `bFn.callCount === 0`, B rejected with `ArgonAbortError`, the next live waiter (C) gets the slot, `getArgon2InFlight()` and `getArgon2QueueDepth()` invariants hold.
+
+2. **P3 — `waiters.indexOf(waiter)` identity-match is load-bearing but uncommented** (reliability conf 75). The abort listener splices via reference-equality `indexOf` on the closure-captured `waiter` object. A future refactor swapping `waiters[]` from `Array<Waiter>` to a ring buffer or any structure that copies elements would silently break the splice (`indexOf` returns -1, `splice(-1, 1)` removes the last element instead). Documented as a class of failure in `agents/docs/solutions/conventions/wrapping-primitive-exhaustive-call-site-audit-2026-04-22.md`, but the convention store relies on future searchers finding it. Fix: add a one-line comment on the `waiters` declaration:
+
+   ```ts
+   // waiters[] holds Waiter object references by identity; the abort listener at
+   // line ~255 uses indexOf reference-equality to splice. Any refactor to a
+   // ring-buffer / value-copy queue MUST update the abort path — silent miss
+   // otherwise (indexOf returns -1, splice(-1, 1) removes the wrong element).
+   const waiters: Waiter[] = [];
+   ```
+
+**Architect triage notes (cluster A, 2026-04-28):**
+
+- **Task narrative drift vs HEAD**: signal block claims `requestAbortSignal` is duplicated per-file and listener uses `{once: true}`. HEAD has `requestAbortSignal` consolidated into `backend/src/lib/request-abort-signal.ts`, listener uses plain `addEventListener` + explicit `removeEventListener` in `finally`. These were addressed by `backend-argon2-error-handler-extract.md` and surrounding cluster work; no fix needed against this task. Doc-only correction during eventual archive.
+- **`ArgonAbortError extends Error` rather than `ArgonSemaphoreError`** (kieran-typescript K-1 conf 75): Already fixed at HEAD; the `ArgonSemaphoreError` abstract base + extends relationship was introduced by the round-3 cluster fix (commit `0ecc621`). Dismissed.
+- **Aborted requests log only at `debug`** (agent-native conf 90): Real ops concern, but not specific to this task. Filed as new pending task `backend-argon2-abort-observability.md` (P2). Decoupled from this task's hold cycle.
+- **Aborted burnSentinel pre-queue ~0ms cost** (agent-native conf 75): Dismissed. Rate limiter is the primary defense; per-attempt argon2 cost is supplementary; exploit window (sub-ms between handler entry and slot grant) is impractical to land reliably.
+
+**Path to re-archive:** (1) Backend adds checkpoint-3 test (item 1) + `waiters[]` identity comment (item 2). (2) Backend re-review signal block below the hold. (3) Architect re-runs `/ce-code-review` scoped to the round-2 commit; archives on clean.

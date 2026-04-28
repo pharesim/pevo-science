@@ -8,7 +8,7 @@ All responses use JSON. All timestamps are ISO 8601 UTC. Pagination uses `page` 
 
 ## Stability
 
-PEvO is in beta. The API surface — endpoints, query parameters, response shapes, error codes — may change without deprecation notice during beta. Forks and third-party integrators should pin to specific commit SHAs or accept that surfaces may break.
+PEvO is in beta. The API surface (endpoints, query parameters, response shapes, error codes) may change without deprecation notice during beta. Forks and third-party integrators should pin to specific commit SHAs or accept that surfaces may break.
 
 Once PEvO declares 1.0, we'll commit to:
 - Semver-style versioning for breaking changes.
