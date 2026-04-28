@@ -44,22 +44,28 @@
 // caller pattern-match on the discriminated outcome if we add a third
 // classification.
 //
-// ── Extension points (for downstream tasks) ─────────────────────────────
+// ── Generic 503 client message ──────────────────────────────────────────
 //
-// Two follow-up tasks depend on this helper's shape:
+// The two 503 branches share a single client-facing body string,
+// `SERVICE_UNAVAILABLE_MESSAGE`. Earlier wording ("Authentication service
+// temporarily overloaded.", "Service shutting down.") leaked argon2 as the
+// chokepoint and let an attacker distinguish saturation from drain — minor
+// reconnaissance that the SERVICE_UNAVAILABLE error code already conveys
+// more cleanly. Operators still get the distinct branch via the
+// `logger.warn` (queue-full) vs `logger.info` (shutdown) call below; only
+// the wire body is genericized. See `backend-503-message-genericize.md`.
 //
-//   `backend-503-message-genericize.md` — collapse the two 503 messages
-//     into one generic string. Single-place edit: change the `message`
-//     field in the 'handled' branches below.
+// ── Retry-After header on 503 responses ─────────────────────────────────
 //
-//   `backend-503-retry-after.md` — emit a `Retry-After` header on 503
-//     responses. Single-place edit: call `res.set('Retry-After', ...)`
-//     before `sendError` in the two 503 branches. The `opts.retryAfterSec`
-//     hook below is sketched but unused; uncomment when that task lands.
-//
-// Both are intentionally one-place edits because the helper is the choke
-// point for every 503 the auth surface emits. Adding a per-route override
-// would re-introduce the drift this consolidation was meant to kill.
+// Both 503 branches set `Retry-After` from per-branch defaults
+// (`QUEUE_FULL_RETRY_AFTER_SEC` / `SHUTDOWN_RETRY_AFTER_SEC`). The defaults
+// live on the helper, not the call sites — every route that runs an argon2
+// op should emit the same retry window for the same condition; pushing the
+// number to call sites would re-introduce the drift this consolidation was
+// meant to kill. `HandleArgonErrorOpts.retryAfterSec` is an optional
+// per-call override; when set it wins over the defaults for both branches.
+// `ArgonAbortError` gets no header (the socket is gone — there is no
+// header to send). See `backend-503-retry-after.md`.
 
 import type { Response } from 'express';
 import { sendError } from '../response.js';
@@ -82,21 +88,54 @@ import {
 export type HandleArgonErrorResult = 'handled' | 'unhandled';
 
 /**
- * Optional per-call context. `logContext` is merged into the structured log
- * record on the two 503 branches and the debug-level disconnect log; it
- * lets routes propagate identifiers (e.g. `username`) into the log line
- * without each route re-implementing the catch chain.
+ * Generic client-facing body string used on both 503 branches. Operators
+ * still see distinct log lines (`logger.warn` for queue-full, `logger.info`
+ * for shutdown); only the wire body is genericized. Exported so route-level
+ * tests can assert against the canonical string instead of a hand-copied
+ * literal.
+ */
+export const SERVICE_UNAVAILABLE_MESSAGE = 'Service temporarily unavailable. Please retry.';
+
+/**
+ * Default `Retry-After` (seconds) for the queue-full branch. Queue typically
+ * drains in ~625ms at full depth × the configured argon2 cap, but 5s gives
+ * clients a safe window without thundering-herd retry on the next instance
+ * during a rolling deploy.
+ */
+export const QUEUE_FULL_RETRY_AFTER_SEC = 5;
+
+/**
+ * Default `Retry-After` (seconds) for the shutdown branch. Matches the
+ * `server.close()` force-timeout used by the SIGTERM drain path so the
+ * client comes back after the rolling deploy has likely cut over.
+ */
+export const SHUTDOWN_RETRY_AFTER_SEC = 30;
+
+/**
+ * Optional per-call context.
  *
- * Reserved for downstream tasks (currently unused; documented so the
- * intent is visible at the call sites):
- *   `retryAfterSec` — number of seconds for a future `Retry-After` header
- *     when `backend-503-retry-after.md` lands. Helper will read this and
- *     set the header before `sendError` in the 503 branches.
+ * `logContext` is merged into the structured log record on the two 503
+ * branches and the debug-level disconnect log; it lets routes propagate
+ * identifiers (e.g. `username`) into the log line without each route
+ * re-implementing the catch chain.
+ *
+ * `retryAfterSec` is an optional per-call override for the `Retry-After`
+ * header on the two 503 branches. When unset (the common case) the helper
+ * uses the per-branch defaults: {@link QUEUE_FULL_RETRY_AFTER_SEC} for
+ * `ArgonQueueFullError` and {@link SHUTDOWN_RETRY_AFTER_SEC} for
+ * `ShuttingDownError`. The override applies to whichever branch fires; it
+ * is not branch-specific because no current call site needs to override
+ * one branch but not the other. `ArgonAbortError` ignores it (no response
+ * to write).
  */
 export interface HandleArgonErrorOpts {
   /** Structured-log context merged into the helper's log calls. */
   logContext?: Record<string, unknown>;
-  /** Reserved for `backend-503-retry-after.md`. Currently unused. */
+  /**
+   * Override for the `Retry-After` header (seconds) on the two 503 branches.
+   * Defaults to {@link QUEUE_FULL_RETRY_AFTER_SEC} / {@link SHUTDOWN_RETRY_AFTER_SEC}
+   * when unset.
+   */
   retryAfterSec?: number;
 }
 
@@ -143,17 +182,14 @@ export function handleArgonError(
 
   if (err instanceof ArgonQueueFullError) {
     logger.warn({ err, ...ctx }, 'argon2 queue saturated — returning 503');
-    sendError(
-      res,
-      503,
-      'SERVICE_UNAVAILABLE',
-      'Authentication service temporarily overloaded. Please retry.',
-    );
+    res.set('Retry-After', String(opts.retryAfterSec ?? QUEUE_FULL_RETRY_AFTER_SEC));
+    sendError(res, 503, 'SERVICE_UNAVAILABLE', SERVICE_UNAVAILABLE_MESSAGE);
     return 'handled';
   }
   if (err instanceof ShuttingDownError) {
     logger.info({ err, ...ctx }, 'argon2 semaphore shutting down — returning 503');
-    sendError(res, 503, 'SERVICE_UNAVAILABLE', 'Service shutting down. Please retry.');
+    res.set('Retry-After', String(opts.retryAfterSec ?? SHUTDOWN_RETRY_AFTER_SEC));
+    sendError(res, 503, 'SERVICE_UNAVAILABLE', SERVICE_UNAVAILABLE_MESSAGE);
     return 'handled';
   }
   if (err instanceof ArgonAbortError) {

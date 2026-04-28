@@ -32,3 +32,9 @@ Reduce information disclosure in the 503 body message.
 
 - Removing the message field entirely (clients may parse it for display; keep it informative without being diagnostic).
 - Localization (out of scope — the project does not yet localize backend error messages).
+
+## Implementation note
+
+Both 503 branches in `backend/src/lib/argon-error-handler.ts` now share `SERVICE_UNAVAILABLE_MESSAGE` (exported constant): `"Service temporarily unavailable. Please retry."`. Operator-facing log lines retain their distinct wording (`logger.warn` for queue-full, `logger.info` for shutdown). The constant is exported so downstream tests can assert against a canonical string instead of a hand-copied literal.
+
+[TODO Architect] If `agents/docs/api-contracts/auth.md` (or related contract files) quotes the previous body strings ("Authentication service temporarily overloaded.", "Service shutting down."), update them to reference the new generic phrasing.
