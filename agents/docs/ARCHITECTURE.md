@@ -73,6 +73,7 @@ The backend always reads from real chain data. **No mock/fake data in production
    | `getAccounts` | `verifyHiveSignature.ts` | Fetch public posting key for signature verification |
    | `getAccounts` | `signup-verify.ts` | Check username availability before account creation |
    | `getAccounts` | `signup-verify.ts` | Verify account exists before linking |
+   | `getAccounts` | `account-creation.ts` | Read on-chain `pending_claimed_accounts` capacity (cached 10s in Redis) |
    | `getAccounts` | `profile.ts` | Fetch account data for user profiles |
    | `get_content` | `app.ts` | SEO meta injection (Open Graph tags for bots) |
    | `get_content` | `anonymousReview.ts` | Fetch paper metadata to prevent author self-review |

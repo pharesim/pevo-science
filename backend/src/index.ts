@@ -76,7 +76,7 @@ initAppDb()
       // Start nightly batch reputation computation (v3 voter weight convergence)
       startBatchReputation();
 
-      // Start account creation token claimer (every 6h)
+      // Start account creation token claimer (every 24h)
       startAccountClaimer();
 
       // Start pending signup cleanup (every 1h)

@@ -1,21 +1,23 @@
 /**
- * Unit tests for claimAccountTokens — covers (1) round-2 hold fix requiring
- * BroadcastTimeoutError discrimination in the claim-batch loop and (2)
- * post-timeout chain-reconcile behavior added by BE-CLAIM-ACCOUNT-CHAIN-RECONCILE.
+ * Unit tests for `account-creation.ts` after BE-ACCOUNT-CREATION-TOKENS-DROP.
  *
- * Justification for the `getAppPool()`, `broadcastSendOperationsWithTimeout`,
- * and `hiveClient.database.getAccounts` mocks (per root CLAUDE.md carve-out):
- * the assertions under test are (a) that a timeout during `claim_account`
- * broadcast makes the loop BREAK (not halve batchSize and retry), and (b)
- * that after a timeout the reconciler reads the on-chain
- * `pending_claimed_accounts` counter and INSERTs delta rows. Seeding a real
- * DB + inducing a wall-clock >30s hang from a real Hive node per-test is
- * impractical; the behavior under test is the catch-site discrimination
- * plus the chain-read + counter-delta INSERT logic. `verifyHiveSignature`
- * and other middleware are NOT mocked here; this function has no route
- * surface. A real-HAF broadcast-success path is covered by the existing
- * `hive-broadcast-timeout.test.ts` (wrapper-level) and by the in-production
- * behavior of `startAccountClaimer` running against the real chain.
+ * The DB mirror table (`account_creation_tokens`) was removed. Capacity is
+ * now read from the on-chain `pending_claimed_accounts` counter, cached in
+ * Redis (10s TTL) and invalidated on every successful broadcast.
+ *
+ * Justification for the `getRedis()` and `broadcastSendOperationsWithTimeout`
+ * + `hiveClient.database.getAccounts` mocks (per root CLAUDE.md carve-out):
+ * the assertions under test exercise (a) the catch-site discrimination of
+ * `BroadcastTimeoutError` in `claimAccountTokens` (the loop must break, not
+ * halve-retry), (b) the cached-then-invalidated counter contract on the
+ * consume path (`createClaimedAccount`), and (c) the chain-consensus
+ * rejection translation. Inducing a wall-clock >30s Hive node hang per-test
+ * is impractical, and the consensus-rejection error shape is node-side
+ * behavior we cannot deterministically trigger from a real broadcast.
+ * `verifyHiveSignature` and other middleware are NOT mocked (these
+ * functions have no route surface). A real-HAF broadcast-success path is
+ * covered by `hive-broadcast-timeout.test.ts` (wrapper-level) and by the
+ * production behavior of `startAccountClaimer` against the real chain.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -24,8 +26,10 @@ import { logger } from '../src/logger.js';
 const {
   MockBroadcastTimeoutError,
   sendOperationsMock,
-  poolQueryMock,
   getAccountsMock,
+  redisGetMock,
+  redisSetMock,
+  redisDelMock,
 } = vi.hoisted(() => ({
   MockBroadcastTimeoutError: class BroadcastTimeoutError extends Error {
     public readonly timeoutMs: number;
@@ -36,8 +40,10 @@ const {
     }
   },
   sendOperationsMock: vi.fn(),
-  poolQueryMock: vi.fn(),
   getAccountsMock: vi.fn(),
+  redisGetMock: vi.fn(),
+  redisSetMock: vi.fn(),
+  redisDelMock: vi.fn(),
 }));
 
 vi.mock('../src/hive.js', () => ({
@@ -50,49 +56,54 @@ vi.mock('../src/hive.js', () => ({
   },
 }));
 
-vi.mock('../src/app-db.js', () => ({
-  getAppPool: () => ({ query: poolQueryMock }),
+vi.mock('../src/redis.js', () => ({
+  getRedis: () => ({
+    get: redisGetMock,
+    set: redisSetMock,
+    del: redisDelMock,
+  }),
 }));
 
-// Config stubbed so PrivateKey.fromString / hiveOnboardAccount resolve without
-// touching real env. HIVE_ONBOARD_ACTIVE_KEY must be a valid WIF so
-// PrivateKey.fromString doesn't throw at the top of claimAccountTokens.
+// Config stubbed so PrivateKey.fromString / hiveOnboardAccount / appTag resolve
+// without touching real env. HIVE_ONBOARD_ACTIVE_KEY must be a valid WIF so
+// PrivateKey.fromString doesn't throw at the top of the functions under test.
 vi.mock('../src/config.js', () => ({
   config: {
+    appTag: 'pevotest',
     hiveOnboardAccount: 'pevo.admin',
     claimAccountTokens: true,
   },
 }));
 
 const TEST_WIF = '5KKaVFkiC7E8SysRb8xuiu53Kcg7khbwzbr2WgCmWQLh3yt58mN';
+const EXPECTED_CACHE_KEY = 'pevotest:hive:pending_claimed_accounts:pevo.admin';
 
 /** Build a minimal Hive account response with the given pending counter. */
 function accountWithPending(pending: number): unknown {
   return { name: 'pevo.admin', pending_claimed_accounts: pending };
 }
 
+beforeEach(() => {
+  process.env.HIVE_ONBOARD_ACTIVE_KEY = TEST_WIF;
+  sendOperationsMock.mockReset();
+  getAccountsMock.mockReset();
+  redisGetMock.mockReset();
+  redisSetMock.mockReset();
+  redisDelMock.mockReset();
+  // Default: cache miss; chain reads return a healthy counter.
+  redisGetMock.mockResolvedValue(null);
+  redisSetMock.mockResolvedValue('OK');
+  redisDelMock.mockResolvedValue(1);
+  getAccountsMock.mockResolvedValue([accountWithPending(100)]);
+});
+
+afterEach(() => {
+  delete process.env.HIVE_ONBOARD_ACTIVE_KEY;
+  vi.restoreAllMocks();
+});
+
 describe('claimAccountTokens — BroadcastTimeoutError discrimination', () => {
-  beforeEach(() => {
-    process.env.HIVE_ONBOARD_ACTIVE_KEY = TEST_WIF;
-    sendOperationsMock.mockReset();
-    poolQueryMock.mockReset();
-    getAccountsMock.mockReset();
-    // Default: trailing count query (runs after the claim loop regardless of
-    // exit path). Individual tests may override for reconcile INSERTs.
-    poolQueryMock.mockResolvedValue({ rows: [{ count: '0' }] });
-    // Default: no chain advance (reconcile yields 0). Individual tests
-    // override for delta scenarios.
-    getAccountsMock.mockResolvedValue([accountWithPending(100)]);
-  });
-
-  afterEach(() => {
-    delete process.env.HIVE_ONBOARD_ACTIVE_KEY;
-    vi.restoreAllMocks();
-  });
-
   it('breaks out of the batch loop on BroadcastTimeoutError (no halve, no retry)', async () => {
-    // First broadcast times out. Without the discrimination fix the loop would
-    // then retry with batchSize=25, 12, 6, 3, 1 — 6 calls total.
     sendOperationsMock.mockRejectedValueOnce(new MockBroadcastTimeoutError(30_000));
 
     const { claimAccountTokens } = await import('../src/account-creation.js');
@@ -104,8 +115,6 @@ describe('claimAccountTokens — BroadcastTimeoutError discrimination', () => {
   });
 
   it('halves batchSize and retries on non-timeout errors (RC exhaustion path preserved)', async () => {
-    // A plain chain error (e.g. insufficient RC) should still trigger the
-    // halving retry behavior — the fix only discriminates BroadcastTimeoutError.
     sendOperationsMock.mockRejectedValue(new Error('Insufficient RC'));
 
     const { claimAccountTokens } = await import('../src/account-creation.js');
@@ -115,126 +124,129 @@ describe('claimAccountTokens — BroadcastTimeoutError discrimination', () => {
     // That's 6 broadcast attempts.
     expect(sendOperationsMock).toHaveBeenCalledTimes(6);
   });
+
+  it('does NOT INSERT into a DB table on success (table dropped)', async () => {
+    // Sanity guard: if any future regression reintroduces a DB INSERT, this
+    // test will fail because no `pg.Pool` mock is wired up. The function
+    // must not import `getAppPool` or query a pool. We assert via module
+    // shape: the file should resolve and run without any DB dependency.
+    sendOperationsMock.mockResolvedValueOnce({ id: 'tx', block_num: 1 });
+    sendOperationsMock.mockRejectedValue(new Error('Insufficient RC'));
+
+    const { claimAccountTokens } = await import('../src/account-creation.js');
+    await expect(claimAccountTokens()).resolves.toBeUndefined();
+  });
+
+  it('invalidates the chain-counter cache after a successful claim broadcast', async () => {
+    // First batch lands; subsequent halving attempts all fail with non-timeout
+    // errors (we don't care — we're asserting cache.del was called for the
+    // success).
+    sendOperationsMock.mockResolvedValueOnce({ id: 'tx', block_num: 1 });
+    sendOperationsMock.mockRejectedValue(new Error('Insufficient RC'));
+
+    const { claimAccountTokens } = await import('../src/account-creation.js');
+    await claimAccountTokens();
+
+    expect(redisDelMock).toHaveBeenCalledWith(EXPECTED_CACHE_KEY);
+  });
 });
 
-describe('claimAccountTokens — post-timeout chain reconcile', () => {
-  beforeEach(() => {
-    process.env.HIVE_ONBOARD_ACTIVE_KEY = TEST_WIF;
-    sendOperationsMock.mockReset();
-    poolQueryMock.mockReset();
-    getAccountsMock.mockReset();
-    poolQueryMock.mockResolvedValue({ rows: [{ count: '0' }] });
-  });
+describe('createClaimedAccount — capacity check + cache + consensus translation', () => {
+  const KEY_ARGS = ['STM_owner', 'STM_active', 'STM_posting', 'STM_memo'] as const;
 
-  afterEach(() => {
-    delete process.env.HIVE_ONBOARD_ACTIVE_KEY;
-    vi.restoreAllMocks();
-  });
+  it('throws retriable "No account creation tokens available" when the cached counter is 0', async () => {
+    redisGetMock.mockResolvedValueOnce('0');
 
-  it('inserts N token rows when the chain counter advanced by N during a timed-out broadcast (full landing)', async () => {
-    // pre-broadcast counter = 100, post-broadcast counter = 150: full 50-op
-    // batch landed on chain despite the broadcast timing out. Reconciler
-    // should INSERT 50 rows.
-    getAccountsMock
-      .mockResolvedValueOnce([accountWithPending(100)]) // pre-broadcast
-      .mockResolvedValueOnce([accountWithPending(150)]); // post-timeout
-    sendOperationsMock.mockRejectedValueOnce(new MockBroadcastTimeoutError(30_000));
-
-    const { claimAccountTokens } = await import('../src/account-creation.js');
-    await claimAccountTokens();
-
-    const insertCalls = poolQueryMock.mock.calls.filter(([sql]) =>
-      String(sql).includes('INSERT INTO account_creation_tokens'),
+    const { createClaimedAccount } = await import('../src/account-creation.js');
+    await expect(createClaimedAccount('alice', ...KEY_ARGS)).rejects.toThrow(
+      'No account creation tokens available',
     );
-    expect(insertCalls).toHaveLength(1);
-    expect(insertCalls[0][1]).toEqual([50]);
-    // Only one broadcast attempt — the timeout broke the loop (no halving).
+
+    // No broadcast attempted when capacity check fails.
+    expect(sendOperationsMock).not.toHaveBeenCalled();
+    // No fallback chain read when the cache hit was a definite zero.
+    expect(getAccountsMock).not.toHaveBeenCalled();
+  });
+
+  it('throws retriable error when the chain read returns null (pre-broadcast capacity unknown)', async () => {
+    redisGetMock.mockResolvedValueOnce(null);
+    getAccountsMock.mockResolvedValueOnce([]); // missing account => null
+
+    const { createClaimedAccount } = await import('../src/account-creation.js');
+    await expect(createClaimedAccount('alice', ...KEY_ARGS)).rejects.toThrow(
+      'No account creation tokens available',
+    );
+    expect(sendOperationsMock).not.toHaveBeenCalled();
+  });
+
+  it('broadcasts when the cached counter is positive, then invalidates the cache', async () => {
+    redisGetMock.mockResolvedValueOnce('5');
+    sendOperationsMock.mockResolvedValueOnce({ id: 'tx', block_num: 12345 });
+
+    const { createClaimedAccount } = await import('../src/account-creation.js');
+    const result = await createClaimedAccount('alice', ...KEY_ARGS);
+
+    expect(result).toEqual({ id: 'tx', block_num: 12345 });
     expect(sendOperationsMock).toHaveBeenCalledTimes(1);
-    // Two chain reads: pre-broadcast + post-timeout reconcile.
+    expect(redisDelMock).toHaveBeenCalledWith(EXPECTED_CACHE_KEY);
+  });
+
+  it('reads chain on cache miss, caches the value, and proceeds when positive', async () => {
+    redisGetMock.mockResolvedValueOnce(null);
+    getAccountsMock.mockResolvedValueOnce([accountWithPending(7)]);
+    sendOperationsMock.mockResolvedValueOnce({ id: 'tx', block_num: 999 });
+
+    const { createClaimedAccount } = await import('../src/account-creation.js');
+    await createClaimedAccount('alice', ...KEY_ARGS);
+
+    expect(getAccountsMock).toHaveBeenCalledWith(['pevo.admin']);
+    // Cache write happened with the appTag-prefixed key and a 10s PX TTL.
+    expect(redisSetMock).toHaveBeenCalledWith(EXPECTED_CACHE_KEY, '7', 'PX', 10_000);
+    // Then invalidated after the successful broadcast.
+    expect(redisDelMock).toHaveBeenCalledWith(EXPECTED_CACHE_KEY);
+  });
+
+  it('cache invalidation forces a fresh chain read on the next call', async () => {
+    redisGetMock
+      .mockResolvedValueOnce(null) // first call: miss -> chain
+      .mockResolvedValueOnce(null); // second call: invalidated -> miss -> chain
+    getAccountsMock
+      .mockResolvedValueOnce([accountWithPending(5)])
+      .mockResolvedValueOnce([accountWithPending(4)]);
+    sendOperationsMock.mockResolvedValue({ id: 'tx', block_num: 1 });
+
+    const { createClaimedAccount } = await import('../src/account-creation.js');
+    await createClaimedAccount('alice', ...KEY_ARGS);
+    await createClaimedAccount('bob', ...KEY_ARGS);
+
+    // Two chain reads — invalidation between calls forced a fresh read.
     expect(getAccountsMock).toHaveBeenCalledTimes(2);
+    // Two cache invalidations (one per successful broadcast).
+    expect(redisDelMock).toHaveBeenCalledTimes(2);
   });
 
-  it('inserts partial count when only some claim ops landed before timeout', async () => {
-    // pre=100, post=130: 30 of the 50 ops landed. Reconciler INSERTs 30.
-    getAccountsMock
-      .mockResolvedValueOnce([accountWithPending(100)])
-      .mockResolvedValueOnce([accountWithPending(130)]);
-    sendOperationsMock.mockRejectedValueOnce(new MockBroadcastTimeoutError(30_000));
-
-    const { claimAccountTokens } = await import('../src/account-creation.js');
-    await claimAccountTokens();
-
-    const insertCalls = poolQueryMock.mock.calls.filter(([sql]) =>
-      String(sql).includes('INSERT INTO account_creation_tokens'),
+  it('translates a consensus-rejection error mentioning pending_claimed_accounts into the retriable shape', async () => {
+    redisGetMock.mockResolvedValueOnce('1');
+    sendOperationsMock.mockRejectedValueOnce(
+      new Error('assertion failed: pending_claimed_accounts > 0'),
     );
-    expect(insertCalls).toHaveLength(1);
-    expect(insertCalls[0][1]).toEqual([30]);
+
+    const { createClaimedAccount } = await import('../src/account-creation.js');
+    await expect(createClaimedAccount('alice', ...KEY_ARGS)).rejects.toThrow(
+      'No account creation tokens available',
+    );
+    // Cache was invalidated so the next reader sees fresh state.
+    expect(redisDelMock).toHaveBeenCalledWith(EXPECTED_CACHE_KEY);
   });
 
-  it('inserts nothing when the chain counter did not advance (broadcast never landed)', async () => {
-    // pre=100, post=100: nothing landed. Reconciler INSERTs 0 rows.
-    getAccountsMock
-      .mockResolvedValueOnce([accountWithPending(100)])
-      .mockResolvedValueOnce([accountWithPending(100)]);
+  it('propagates non-counter broadcast errors unchanged (e.g. timeouts, network errors)', async () => {
+    redisGetMock.mockResolvedValueOnce('5');
     sendOperationsMock.mockRejectedValueOnce(new MockBroadcastTimeoutError(30_000));
 
-    const { claimAccountTokens } = await import('../src/account-creation.js');
-    await claimAccountTokens();
-
-    const insertCalls = poolQueryMock.mock.calls.filter(([sql]) =>
-      String(sql).includes('INSERT INTO account_creation_tokens'),
+    const { createClaimedAccount } = await import('../src/account-creation.js');
+    await expect(createClaimedAccount('alice', ...KEY_ARGS)).rejects.toThrow(
+      /timed out/,
     );
-    expect(insertCalls).toHaveLength(0);
-  });
-
-  it('clamps reconcile delta to batchSize when another actor advanced the counter concurrently', async () => {
-    // pre=100, post=200: +100 on chain but we only broadcast 50. A parallel
-    // admin-account actor added the extra. Only INSERT up to batchSize (50).
-    getAccountsMock
-      .mockResolvedValueOnce([accountWithPending(100)])
-      .mockResolvedValueOnce([accountWithPending(200)]);
-    sendOperationsMock.mockRejectedValueOnce(new MockBroadcastTimeoutError(30_000));
-
-    const { claimAccountTokens } = await import('../src/account-creation.js');
-    await claimAccountTokens();
-
-    const insertCalls = poolQueryMock.mock.calls.filter(([sql]) =>
-      String(sql).includes('INSERT INTO account_creation_tokens'),
-    );
-    expect(insertCalls).toHaveLength(1);
-    expect(insertCalls[0][1]).toEqual([50]);
-  });
-
-  it('skips reconcile when the pre-broadcast chain read fails', async () => {
-    // Pre-broadcast getAccounts throws. Reconciler has no baseline so it
-    // cannot compute delta — logs and skips (no INSERT).
-    getAccountsMock.mockRejectedValueOnce(new Error('chain read failed'));
-    sendOperationsMock.mockRejectedValueOnce(new MockBroadcastTimeoutError(30_000));
-
-    const { claimAccountTokens } = await import('../src/account-creation.js');
-    await claimAccountTokens();
-
-    const insertCalls = poolQueryMock.mock.calls.filter(([sql]) =>
-      String(sql).includes('INSERT INTO account_creation_tokens'),
-    );
-    expect(insertCalls).toHaveLength(0);
-  });
-
-  it('skips reconcile when the post-timeout chain read fails', async () => {
-    // Pre-broadcast read succeeds; post-timeout read throws. Reconciler
-    // cannot compute delta — logs and skips (no INSERT).
-    getAccountsMock
-      .mockResolvedValueOnce([accountWithPending(100)])
-      .mockRejectedValueOnce(new Error('chain read failed'));
-    sendOperationsMock.mockRejectedValueOnce(new MockBroadcastTimeoutError(30_000));
-
-    const { claimAccountTokens } = await import('../src/account-creation.js');
-    await claimAccountTokens();
-
-    const insertCalls = poolQueryMock.mock.calls.filter(([sql]) =>
-      String(sql).includes('INSERT INTO account_creation_tokens'),
-    );
-    expect(insertCalls).toHaveLength(0);
   });
 
   it('logs reconcile_outcome=insert_failed and returns 0 when the reconcile INSERT throws', async () => {

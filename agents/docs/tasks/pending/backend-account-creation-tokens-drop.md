@@ -108,3 +108,17 @@ Resolved questions:
 3. **Audit trail?** Drop `used_for`. Chain history is sufficient. File a separate task only if a concrete support workflow needs richer signal.
 
 Slug renamed from `backend-claim-account-haf-op-reconcile` to `backend-account-creation-tokens-drop` to reflect the decided shape. File moved from `tasks/blocked/` to `tasks/pending/` for backend pickup.
+
+---
+
+## [TODO Architect] — api-contracts language sweep
+
+Backend deferred edits to `agents/docs/api-contracts/*.md` per rule "architect owns contract docs". Current matches the architect should review/update:
+
+- `agents/docs/api-contracts/auth.md:218` — `` - `INTERNAL_ERROR` — account creation failed (e.g., no available claim tokens) `` — the phrase "no available claim tokens" still references the old DB-token mental model. The user-visible behavior is unchanged (the same `INTERNAL_ERROR` is emitted when capacity is exhausted), but the parenthetical example may want a rewrite to "no on-chain account creation capacity" or similar to align with the chain-counter source of truth. Cosmetic only — not a contract change.
+
+No other matches found in `agents/docs/api-contracts/` for "account creation token", "account_creation_token", or "claim token".
+
+## [TODO Architect] — predecessor task supersession
+
+This task supersedes `agents/docs/tasks/review/backend-claim-account-chain-reconcile.md` (commit `ef56eab`). The reconcile path that task added (`reconcileClaimTimeout` + the pre/post counter capture in `claimAccountTokens`) is fully removed by this commit. The predecessor still archives on its own merits as a record of the intermediate state per task #7's note.

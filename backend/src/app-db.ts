@@ -90,13 +90,6 @@ export async function initAppDb(): Promise<void> {
     CREATE INDEX IF NOT EXISTS idx_custody_audit_username ON custody_audit_log(username);
     CREATE INDEX IF NOT EXISTS idx_custody_audit_created ON custody_audit_log(created_at);
 
-    CREATE TABLE IF NOT EXISTS account_creation_tokens (
-      id              SERIAL PRIMARY KEY,
-      claimed_at      TIMESTAMPTZ DEFAULT NOW(),
-      used_at         TIMESTAMPTZ,
-      used_for        TEXT
-    );
-
     CREATE TABLE IF NOT EXISTS pending_ipfs_uploads (
       cid                TEXT PRIMARY KEY,
       uploader_account   TEXT NOT NULL,
