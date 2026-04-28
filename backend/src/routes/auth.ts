@@ -121,9 +121,13 @@ const MAX_LOGIN_FAILURES = 20;
 // the pool layer. Every argon2.hash / argon2.verify on auth paths (incl.
 // burnSentinel's internal verify) goes through runWithArgon2Slot; the sole
 // exception is the module-load SENTINEL_ARGON2_HASH_PROMISE below, which
-// runs exactly once and cannot saturate anything. Queue depth is exposed
-// via /api/health (`argon2_queue_depth`) so operators see saturation events
-// synchronously, independent of pino async-transport drainage under OOM.
+// runs exactly once and cannot saturate anything. Argon2 semaphore
+// saturation counters are deliberately NOT exposed on /api/health (publicly
+// polled, would give an attacker near-real-time feedback for tuning
+// parallel attacks). Operators access the counters via SSH on the host
+// (`getArgon2QueueDepth` / `getArgon2InFlight` exports remain available
+// for ops tooling and tests), independent of pino async-transport
+// drainage under OOM.
 //
 // Fail-loud guard: if UV_THREADPOOL_SIZE is unset or below 16 in the
 // environment, reject at module-load rather than serving traffic with a
@@ -365,6 +369,13 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
     // duplicate-email caller previously got 422 ACCREDITATION_NOT_FOUND;
     // now they get 409 DUPLICATE, which is more accurate about their
     // actual email state. Neither path lets them complete signup.
+    // Under saturation, the duplicate path returns 503 (translated from
+    // `ArgonQueueFullError`/`ShuttingDownError` via `handleArgonQueueFull`)
+    // rather than 409. The 503-vs-422 differential on unaccredited domains
+    // is the same registration-status signal as 409-vs-422 in the non-
+    // saturated case; saturation does not widen the leak, only changes the
+    // registered-side status code. The unaccredited-domain registration-
+    // status signal remains out-of-scope per the rationale above.
     if (normalizedEmail) {
       const { rows: existingRows } = await pool.query<{ verify_token: string | null }>(
         'SELECT verify_token FROM accounts WHERE email = $1',

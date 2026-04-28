@@ -26,6 +26,12 @@
  *   - `redis.js` is mocked to no-redis so the in-memory rate-limiter +
  *     replay-cache fallbacks engage and the test does not depend on a
  *     live Redis instance.
+ *   - Clause (c): no real-HAF variant is filed because the queue-fill
+ *     scenario is deterministically impractical at scale (filling
+ *     MAX_QUEUE_DEPTH=50 with real concurrent stuck requests exceeds
+ *     rate-limit caps and risks flake on drain timing). The architect's
+ *     hold-block authorized the mock for this exact reason; this header
+ *     note records that authorization for future readers.
  */
 
 import { describe, it, expect, vi } from 'vitest';
