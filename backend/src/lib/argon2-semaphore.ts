@@ -42,6 +42,7 @@
 // (b) the required semantics fit in trivially-auditable code.
 
 import { ARGON2_OPTIONS } from './argon2-options.js';
+import { logger } from '../logger.js';
 
 // Derive from known knobs. At UV_THREADPOOL_SIZE=16 and parallelism=4 this
 // is 4. If either knob changes, the cap auto-adjusts; the load-bearing
@@ -366,7 +367,20 @@ export async function runWithArgon2Slot<T>(
  * `createArgon2Semaphore(...)` — calling the module-level wrapper from a
  * test would poison the singleton for every subsequent test in the same
  * Vitest worker.
+ *
+ * Runtime guard: under Vitest / NODE_ENV=test, this no-ops with a
+ * `logger.warn` instead of draining. The docblock above is convention-only;
+ * a test author who imports this without reading the comment can poison
+ * the worker. The guard makes the misuse loud at the call site instead of
+ * silent for the rest of the test run. Mirrors the `process.env.VITEST`
+ * gate at routes/auth.ts:153-160 for the UV_THREADPOOL_SIZE assertion.
  */
 export function drainArgon2Queue(): void {
+  if (process.env.VITEST || process.env.NODE_ENV === 'test') {
+    logger.warn(
+      'drainArgon2Queue called from test context — ignored. Use createArgon2Semaphore() for DI.',
+    );
+    return;
+  }
   defaultSemaphore.drainArgon2Queue();
 }

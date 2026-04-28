@@ -23,7 +23,7 @@
 //        and 3rd to queue. Confirms the MAX_QUEUE_DEPTH bound is enforced
 //        BEFORE push to `waiters`.
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   createArgon2Semaphore,
   ArgonQueueFullError,
@@ -31,7 +31,12 @@ import {
   ArgonAbortError,
   MAX_CONCURRENT_ARGON2_OPS,
   MAX_QUEUE_DEPTH,
+  drainArgon2Queue,
+  getArgon2InFlight,
+  getArgon2QueueDepth,
+  runWithArgon2Slot,
 } from '../../src/lib/argon2-semaphore.js';
+import { logger } from '../../src/logger.js';
 
 // Helper: build a controllable async fn + its resolver.
 function controllable<T>(): {
@@ -427,6 +432,61 @@ describe('AbortSignal — drop queued waiters on client disconnect', () => {
     expect(fnCalled).toBe(false);
     expect(sem.getArgon2InFlight()).toBe(0);
     expect(sem.getArgon2QueueDepth()).toBe(0);
+  });
+});
+
+describe('drainArgon2Queue — runtime guard against test-context misuse', () => {
+  // The closure-private `shuttingDown` flag inside the singleton is
+  // IRREVERSIBLE: once flipped, every subsequent runWithArgon2Slot against
+  // the process-wide semaphore throws ShuttingDownError for the rest of the
+  // process. A test that imports the module-level `drainArgon2Queue` (rather
+  // than constructing its own semaphore via `createArgon2Semaphore`) would
+  // therefore poison every downstream test in the same Vitest worker.
+  // The guard at the top of `drainArgon2Queue()` no-ops with a logger.warn
+  // when running under Vitest / NODE_ENV=test. These tests confirm the
+  // guard is wired correctly: removing the guard from the production code
+  // MUST cause the singleton-state assertion below to fail.
+
+  it('Vitest sets process.env.VITEST so the guard fires', () => {
+    // Self-check: vitest sets VITEST=true by default. If this assertion
+    // ever fails the guard isn't covered by this test (it would silently
+    // fall through to the real drain) — fix the env, don't relax the test.
+    expect(process.env.VITEST).toBeTruthy();
+  });
+
+  it('module-level drainArgon2Queue() no-ops with logger.warn under Vitest; singleton stays usable', async () => {
+    // Snapshot pre-call state so we can prove the guard prevented the drain.
+    const inFlightBefore = getArgon2InFlight();
+    const queueDepthBefore = getArgon2QueueDepth();
+
+    const warnSpy = vi
+      .spyOn(logger, 'warn')
+      .mockImplementation(() => undefined as unknown as void);
+
+    try {
+      // Call the module-level wrapper. Under the guard, this MUST be a no-op.
+      drainArgon2Queue();
+
+      // Assertion 1: logger.warn was emitted with the documented message.
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      const warnArg = warnSpy.mock.calls[0][0];
+      expect(typeof warnArg).toBe('string');
+      expect(warnArg).toContain('drainArgon2Queue');
+      expect(warnArg).toContain('test context');
+
+      // Assertion 2: the singleton was NOT drained — runWithArgon2Slot
+      // still works. If the guard were removed, the next call would throw
+      // ShuttingDownError (because shuttingDown=true would be sticky for
+      // the rest of the worker's lifetime).
+      const result = await runWithArgon2Slot(() => Promise.resolve('still-alive'));
+      expect(result).toBe('still-alive');
+
+      // Assertion 3: counters undisturbed (the no-op didn't touch state).
+      expect(getArgon2InFlight()).toBe(inFlightBefore);
+      expect(getArgon2QueueDepth()).toBe(queueDepthBefore);
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });
 
