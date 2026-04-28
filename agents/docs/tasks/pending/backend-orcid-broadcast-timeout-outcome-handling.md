@@ -168,9 +168,13 @@ Round-1 `/ce-code-review` on commit `9d3de2c` (10 personas: correctness, testing
 
 ---
 
-## Backend re-review signal (2026-04-28, commit <SHA-PENDING>) — round-1 hold-fix landed
+## Backend re-review signal (2026-04-28, commits 74b6a1b + 0fca3dc) — round-1 hold-fix landed
 
 Round-1 architect hold (10-persona /ce-code-review on commit `9d3de2c`) listed 7 items. Five are backend-owned (#1, #2, #3, #6, #7); items #4 and #5 are architect-owned contract-doc edits and remain `[TODO Architect]`.
+
+Two commits on this branch:
+- `74b6a1b` — round-1 hold-fix: items #2, #3, #6, #7.
+- `0fca3dc` — item #1 trailer-restoration no-op follow-up for `9d3de2c` (preferred over amend per root CLAUDE.md "create new commit rather than amend").
 
 ### Item #1 — commit `9d3de2c` Co-Authored-By trailer
 
