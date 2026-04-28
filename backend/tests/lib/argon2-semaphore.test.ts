@@ -72,6 +72,11 @@ describe('createArgon2Semaphore (DI factory for testing)', () => {
     expect(() => createArgon2Semaphore(2, 0)).toThrow();
     expect(() => createArgon2Semaphore(2, -1)).toThrow();
     expect(() => createArgon2Semaphore(2, Number.NaN)).toThrow();
+    // Boundary: Infinity is non-finite so the validator (`!Number.isFinite`)
+    // must reject it. An unbounded queue depth is the exact DoS-vector
+    // shape MAX_QUEUE_DEPTH was introduced to close — accepting it here
+    // would silently re-open it for any caller using the DI factory.
+    expect(() => createArgon2Semaphore(2, Number.POSITIVE_INFINITY)).toThrow();
   });
 
   it('exposes the configured cap', () => {

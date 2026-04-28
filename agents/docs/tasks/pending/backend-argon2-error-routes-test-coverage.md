@@ -60,3 +60,16 @@ Lib-level gaps:
 ## Notes
 
 The `TIMING_ORACLE_FLOOR_MS=35ms` floor in `auth-concurrency.test.ts` is a non-saturated-path floor (proves argon2 is paid). Add a code comment clarifying this boundary so a future reader doesn't mistakenly extend the assertion to the 503 path (which returns ~0ms by construction).
+
+## Implementer notes (lib-gap coverage decisions)
+
+Covered:
+- **`maxQueueDepth=Infinity` boundary** — added to existing `createArgon2Semaphore` validation describe block in `tests/lib/argon2-semaphore.test.ts` ("rejects invalid maxQueueDepth values"). One-line addition; closes the unbounded-queue DoS vector via the DI factory.
+- **`requestAbortSignal` writableEnded guard** — new `tests/lib/request-abort-signal.test.ts` (3 tests). Covers writableEnded=true (no-abort), writableEnded=false (abort fires), and the `once`-subscription idempotency invariant.
+
+Skipped (with reason):
+- **Slot-grant abort race (checkpoint 3)** — already exercised by the existing "aborted waiter rejects with AbortError" test at `tests/lib/argon2-semaphore.test.ts:352` which asserts the queue-state ledger remains consistent after abort during slot-grant; an explicit "force B's resolve and abort in same microtask batch" variant would duplicate coverage at marginal value.
+- **`drainArgon2Queue` + `AbortSignal.abort` race** — behavior is implementation-defined (whichever listener fires first wins); documenting the chosen behavior in a test would lock in a non-load-bearing race outcome rather than a contract.
+- **Listener-leak happy path** — the `finally`-branch `signal.removeEventListener('abort', onAbort)` in `argon2-semaphore.ts:272` covers it via inspection; a test would need to either monkey-patch AbortController or pull in a custom fake, both higher cost than value for code that has been stable since the abort feature landed.
+- **T2 sync-throw vs async-reject** — synchronously-thrown errors inside `runWithArgon2Slot`'s `await fn()` are caught by JS's await semantics (sync throw → rejected promise from the async fn wrapper), so the sync/async distinction is collapsed at the language level; the existing async-reject test exercises the same finally-branch slot release.
+- **`queueDepth` underflow guard** — already implicitly covered by the existing abort test at `tests/lib/argon2-semaphore.test.ts:411-418` which asserts `getArgon2QueueDepth() === 0` after a full drain (any double-decrement would surface as a negative value).
