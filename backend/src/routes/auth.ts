@@ -425,15 +425,32 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
         // argon2.hash + upsert naturally, so no burn is needed there.
         if (existingRows[0].verify_token === null) {
           if (password) await runWithArgon2Slot(() => argon2.hash(password, ARGON2_OPTIONS), { signal: abortSignal }).catch((err) => {
-            if (err instanceof ArgonAbortError) throw err;
-            logger.warn({ err }, 'argon2 signup-dup burn failed — timing oracle may be open');
+            // ArgonQueueFullError + ShuttingDownError MUST propagate so the
+            // outer handleArgonQueueFull catch translates them to 503. Swallowing
+            // them would let this branch return 409 in ~0ms while a non-dup
+            // signup returns 503 in ~0ms — a status-code differential that
+            // leaks email-existence under saturation/shutdown. ArgonAbortError
+            // also propagates so the route exits silently on client disconnect.
+            // Other (non-semaphore) failures stay swallowed so the timing-
+            // oracle equalization on the happy path is preserved (the burn is
+            // best-effort cost-equalization, not a correctness guarantee).
+            if (
+              err instanceof ArgonAbortError ||
+              err instanceof ArgonQueueFullError ||
+              err instanceof ShuttingDownError
+            ) throw err;
+            logger.warn({ err }, 'argon2 signup-dup burn failed — non-semaphore failure mode');
           });
           return sendError(res, 409, 'DUPLICATE', 'Email already registered');
         }
         if (existingRows[0].verify_token.startsWith('confirmed:')) {
           if (password) await runWithArgon2Slot(() => argon2.hash(password, ARGON2_OPTIONS), { signal: abortSignal }).catch((err) => {
-            if (err instanceof ArgonAbortError) throw err;
-            logger.warn({ err }, 'argon2 signup-dup burn failed — timing oracle may be open');
+            if (
+              err instanceof ArgonAbortError ||
+              err instanceof ArgonQueueFullError ||
+              err instanceof ShuttingDownError
+            ) throw err;
+            logger.warn({ err }, 'argon2 signup-dup burn failed — non-semaphore failure mode');
           });
           return sendError(res, 409, 'DUPLICATE', 'Email already verified. Please log in to continue.');
         }

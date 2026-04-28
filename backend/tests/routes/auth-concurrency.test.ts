@@ -95,22 +95,21 @@ describe('BE-ARGON2-JSLEVEL-CONCURRENCY-CAP: concurrent /login unknown-username 
     30_000,
   );
 
-  it('/api/health exposes argon2 saturation fields (idle) and does NOT leak the static cap', async () => {
+  it('/api/health does NOT expose argon2 semaphore counters (recon channel removed)', async () => {
     // Clear the read limiter first — previous tests in this file may have
     // polled /api/health and consumed the 120/min window.
     await clearRateLimitKeys(['read']);
     const res = await request(app).get('/api/health');
     expect(res.status).toBe(200);
-    expect(typeof res.body.argon2_queue_depth).toBe('number');
-    expect(typeof res.body.argon2_in_flight).toBe('number');
-    // T4 (hold block): the static cap is no longer exposed — it narrows the
-    // search space for queue-DoS reconnaissance without giving operators any
-    // live-load signal. The in-flight and queue-depth counters remain.
+    // Round-3 hold (item 2): live queue depth and in-flight counters were
+    // removed from the public response because /api/health is unauthenticated
+    // and externally reachable, giving attackers near-real-time saturation
+    // state for tuning parallel attacks. Operators read the counters via SSH
+    // on the host. The static cap (argon2_max_concurrent) was already
+    // stripped in round-2; assert absence of all three so a regression that
+    // re-exposes any of them fails this test.
+    expect(res.body).not.toHaveProperty('argon2_queue_depth');
+    expect(res.body).not.toHaveProperty('argon2_in_flight');
     expect(res.body).not.toHaveProperty('argon2_max_concurrent');
-    // Idle-state assertions: with no auth burst in flight, both counters
-    // must read 0. This doubles as a leak detector — if a prior test left
-    // slots unreleased, the value would stay >0.
-    expect(res.body.argon2_queue_depth).toBe(0);
-    expect(res.body.argon2_in_flight).toBe(0);
   });
 });

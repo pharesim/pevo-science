@@ -331,6 +331,15 @@ export async function runWithArgon2Slot<T>(
  * Idempotent: safe to call more than once. In-flight argon2 operations
  * are NOT interrupted — they run to completion and release their slot
  * normally.
+ *
+ * IRREVERSIBLE on the singleton. The closure-private `shuttingDown` flag
+ * has no reset path: once this is called, every subsequent
+ * `runWithArgon2Slot` against the process-wide semaphore throws
+ * `ShuttingDownError` for the lifetime of the process. Tests that need to
+ * exercise drain semantics MUST construct their own instance via
+ * `createArgon2Semaphore(...)` — calling the module-level wrapper from a
+ * test would poison the singleton for every subsequent test in the same
+ * Vitest worker.
  */
 export function drainArgon2Queue(): void {
   defaultSemaphore.drainArgon2Queue();

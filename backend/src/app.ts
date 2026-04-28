@@ -28,7 +28,6 @@ import wotRouter from './routes/wot.js';
 import notificationsRouter from './routes/notifications.js';
 import bridgeRouter from './routes/bridge.js';
 import authRouter from './routes/auth.js';
-import { getArgon2QueueDepth, getArgon2InFlight } from './lib/argon2-semaphore.js';
 import signupVerifyRouter from './routes/signup-verify.js';
 import custodyRouter from './routes/custody.js';
 import contactRouter from './routes/contact.js';
@@ -146,27 +145,20 @@ export function createApp() {
   app.use('/api/orcid', orcidRouter);
   app.use('/api/blog', readLimiter, blogRouter);
 
-  // Health check. Exposes argon2 semaphore saturation synchronously so
-  // operators see the backend-argon2-jslevel-concurrency-cap counter
-  // without depending on pino async-transport drainage under OOM. A
-  // non-zero `argon2_queue_depth` on a healthy production instance
-  // indicates the auth-path semaphore is saturated (expected under
-  // bursty login/signup traffic; sustained >0 is a load signal).
-  //
-  // Rate-limited via the shared readLimiter to prevent unauthenticated
-  // high-resolution polling of argon2 saturation state, which would
-  // otherwise give an attacker real-time feedback for tuning a DoS against
-  // the semaphore queue. The static cap (MAX_CONCURRENT_ARGON2_OPS) is
-  // deliberately NOT exposed — it's a fixed deployment constant with no
-  // live-operator value, and publishing it narrows the search space for
-  // queue-DoS reconnaissance.
+  // Health check. Reports backend liveness and downstream-dependency
+  // availability (HAF, Redis). Argon2 semaphore saturation counters are
+  // deliberately NOT exposed: /api/health is publicly polled and live
+  // queue/in-flight values give an attacker near-real-time feedback for
+  // tuning parallel attacks against the semaphore queue. Operators access
+  // the counters via SSH on the host (`getArgon2QueueDepth` /
+  // `getArgon2InFlight` exports remain available for ops tooling and
+  // tests). Rate-limited via the shared readLimiter as defense-in-depth
+  // against general unauthenticated polling.
   app.get('/api/health', readLimiter, (_req, res) => {
     res.json({
       status: 'ok',
       haf_available: isHafAvailable(),
       redis_available: isRedisAvailable(),
-      argon2_queue_depth: getArgon2QueueDepth(),
-      argon2_in_flight: getArgon2InFlight(),
       timestamp: new Date().toISOString(),
     });
   });

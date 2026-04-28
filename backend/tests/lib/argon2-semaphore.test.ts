@@ -105,7 +105,7 @@ describe('T1 — in_flight peaks at cap under cap+2 burst', () => {
 
     // Resolve the first CAP runs, then the queued 2 get slots.
     for (let i = 0; i < CAP; i++) handles[i].resolve(i);
-    await Promise.all(handles.slice(0, CAP).map(async (_, i) => i));
+    await Promise.all(promises.slice(0, CAP));
 
     // Give the microtask queue a tick to let the next two start.
     await Promise.all(handles.slice(CAP).map((h) => h.started));

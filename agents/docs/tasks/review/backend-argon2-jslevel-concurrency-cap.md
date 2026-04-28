@@ -69,7 +69,8 @@ Either is fine. `p-limit` is lower-risk; in-repo implementation avoids supply-ch
 ## [TODO Architect]
 
 - Revisit docker-compose `mem_limit` after the semaphore lands — can likely reduce from 512m (argon2 was the biggest sink) or use the headroom for Postgres/Redis.
-- `/api/health` response shape gained three new fields: `argon2_queue_depth`, `argon2_in_flight`, `argon2_max_concurrent`. If `agents/docs/api-contracts/misc.md` or similar documents the health endpoint, add these there. Not auto-updated by the implementer per backend CLAUDE.md architect-owns-contracts rule.
+- `/api/health` response shape: net no change vs. pre-cluster. Round-1 added three argon2 fields (`argon2_queue_depth`, `argon2_in_flight`, `argon2_max_concurrent`); round-2 stripped `argon2_max_concurrent` for recon hardening; round-3 (this hold) stripped the remaining two for the same reason. No contract update needed against this task.
+- Contract documentation for the new 503 SERVICE_UNAVAILABLE responses across auth/settings/custody/signup-verify is filed as a separate architect-owned task: `architect-argon2-cluster-contract-docs.md`.
 
 ---
 
@@ -218,3 +219,45 @@ Filed as separate Pending tasks (not held on this task — independent scope):
 - `backend-shutdown-reentrancy-guard.md` (P3) — `if (shuttingDown) return; shuttingDown = true;` guard in `index.ts shutdown()` to prevent SIGTERM+SIGINT racing pool.end().
 - `backend-503-retry-after.md` (P3) — set `Retry-After` header on 503 SERVICE_UNAVAILABLE responses (5s for queue-full, 30s for shutdown).
 - `backend-503-message-genericize.md` (P3) — change 503 message string from "Authentication service temporarily overloaded" to a generic "Service temporarily unavailable. Please retry." to reduce information disclosure about argon2 being the bottleneck.
+
+---
+
+**Backend re-review signal (2026-04-28, working tree against `a24c16e`):**
+
+All 7 round-3 hold-block items landed. `npx tsc --noEmit` clean. `npm run lint` clean (2 pre-existing `no-explicit-any` warnings in `seed-phrase.ts`, unrelated to this task).
+
+1. **P1 — `auth.ts` dup-signup `.catch()` rethrow extension (landed).** `backend/src/routes/auth.ts:~427` and `~434` (the two `runWithArgon2Slot(... argon2.hash ...).catch((err) => {...})` blocks behind the verify_token === null and verify_token startsWith('confirmed:') branches) now rethrow `ArgonAbortError | ArgonQueueFullError | ShuttingDownError` and log only on the residual non-semaphore failure-mode path. The outer `handleArgonQueueFull` translates both new error classes into 503 SERVICE_UNAVAILABLE for /signup, closing the 409-vs-503 status differential under saturation/shutdown that leaked email-existence in round-2.
+
+   New route-level test: `backend/tests/routes/auth-signup-dup-saturated.test.ts` (3 cases). Mocks `runWithArgon2Slot` to throw `ArgonQueueFullError`, then `ShuttingDownError`, then a generic native-argon2 `Error`. Asserts the first two return 503 SERVICE_UNAVAILABLE (not 409), and the third still returns 409 DUPLICATE (timing-oracle equalization on non-semaphore failures preserved). Mocking justification documented in the file header per CLAUDE.md test carve-out — filling the singleton's 50-slot queue with real concurrent stuck requests is impractical (exceeds rate-limit caps and risks flake on drain timing).
+
+2. **P2 — `/api/health` argon2 fields stripped (landed).** `backend/src/app.ts` no longer imports `getArgon2QueueDepth` / `getArgon2InFlight`, and the `/api/health` JSON response carries only `status`, `haf_available`, `redis_available`, `timestamp`. The lib still exports the counters for future ops tooling and tests. The `readLimiter` stays on the route as defense-in-depth. Docblock above the handler rewritten to explain the strip and point operators at SSH access for live counters.
+
+3. **P2 — `health.test.ts` rate-limit cleanup (landed).** `backend/tests/routes/health.test.ts` now has `beforeAll` and `afterAll` calling `clearRateLimitKeys(['read'])`. New assertion `expect(res.body).not.toHaveProperty('argon2_*')` covers all three stripped fields so a regression that re-exposes any of them fails this test.
+
+4. **P2 — `vitest.config.ts` UV_THREADPOOL_SIZE override (already landed).** `vitest.config.ts:20` was set to `UV_THREADPOOL_SIZE: '16'` in commit `04fddee` (BE-P3-CLEANUP-SWEEP). No change required for round-3.
+
+5. **P3 — Stale `[TODO Architect]` block rewrite (landed).** Lines 69-72 of this task file rewritten to reflect the round-2 + round-3 strips: net no shape change to `/api/health` vs. pre-cluster, and the architect-owned 503 contract documentation is filed as a separate task (`architect-argon2-cluster-contract-docs.md`).
+
+6. **P3 — `tests/lib/argon2-semaphore.test.ts:108` await-no-op fix (landed).** Replaced `await Promise.all(handles.slice(0, CAP).map(async (_, i) => i))` with `await Promise.all(promises.slice(0, CAP))` so the test actually awaits the runWithArgon2Slot promises for the first CAP runs (was previously awaiting freshly-created `async () => i` no-ops, which masked the intended "wait for the first CAP runs to drain" assertion).
+
+7. **P3 — `drainArgon2Queue()` irreversibility docblock (landed).** Added a paragraph to the JSDoc on the module-level `drainArgon2Queue()` export at `argon2-semaphore.ts:~336` explaining that the closure-private `shuttingDown` flag has no reset path; tests that need to exercise drain semantics must use `createArgon2Semaphore(...)` rather than the module-level wrapper or they will poison the singleton for the rest of the worker.
+
+**Test outcomes (directly-affected only; full suite deferred to parent):**
+- `tests/lib/argon2-semaphore.test.ts`: 9/9 pass.
+- `tests/routes/auth-concurrency.test.ts`: 2/2 pass (T4 now asserts absence of the 3 argon2 fields).
+- `tests/routes/auth-signup-dup-saturated.test.ts`: 3/3 pass (new file).
+- `tests/routes/health.test.ts`: 3/3 pass (new no-leak assertion + rate-limit cleanup).
+- `tests/routes/auth.test.ts`: 20/20 pass.
+- `tests/routes/settings.test.ts`: 13/13 pass.
+- `tests/routes/settings-set-password.test.ts`: all pass.
+- `tests/routes/signup-verify.test.ts`: 6/6 pass.
+- `tests/routes/custody.test.ts`: all pass.
+- `tests/routes/recover.test.ts`: all pass.
+- Aggregate across the 10 directly-affected files: 102/102 pass.
+- `npx tsc --noEmit`: clean.
+- `npm run lint`: clean (2 pre-existing warnings).
+
+**Design notes:**
+- The dup-signup `.catch()` rethrow now covers all three semaphore error classes; only generic non-semaphore failures stay swallowed (preserving the timing-oracle-equalization burn purpose). Comment block on the first occurrence documents the rationale; the second occurrence (the `confirmed:`-prefix branch) carries the same rethrow without re-iterating the rationale.
+- Item 4's already-landed status was confirmed by `git show 04fddee` showing `vitest.config.ts: explicitly set UV_THREADPOOL_SIZE: '16'` as part of the P3 cleanup sweep.
+- `auth-signup-dup-saturated.test.ts` is a separate file from `auth-concurrency.test.ts` so the semaphore-mock module-level vi.mock doesn't leak into the timing-floor concurrent-burst test (which uses the real semaphore).
