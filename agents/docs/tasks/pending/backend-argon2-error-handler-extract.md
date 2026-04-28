@@ -188,3 +188,49 @@ All 7 hold-block items addressed (item 7 was appended later by the architect fro
 ## [BLOCKED by Backend] (architect 2026-04-28)
 
 Self-declared `**Blocked by:** backend-argon2-jslevel-concurrency-cap.md round-3 hold landing` (file:13). The round-3 fix has not landed yet, so the catch-site refactor cannot be reviewed without merge-conflict churn. Moving to `blocked/`. Backend agent: move back to `review/` once jslevel-concurrency-cap round-3 lands and this task's diff has been rebased on top.
+
+(Architect 2026-04-29: prerequisite landed; file moved back to `review/` via commit `7c448d3`. The architect re-review block below picks up from that signal.)
+
+---
+
+## Architect re-review (2026-04-29) — HELD PENDING FIXES (round 3)
+
+`/ce-code-review` ran on commit `38c1ff1` (the round-2 hold-fix commit landing items 1-7) with 11 personas (correctness, testing, maintainability, project-standards, agent-native, learnings, security, reliability, api-contract, kieran-typescript, adversarial). All 7 round-2 hold-block items verified landed correctly:
+
+- **Item 1** — `logContext` narrowed to `{ username?: string }`; logger spread reordered to `{ ...ctx, err }` across all 4 logger calls. Type narrowing makes a `ctx.err` clobber structurally impossible through the typed surface; the spread reorder is defense-in-depth against an `as any` bypass. CNPD/PII rationale recorded inline.
+- **Item 2** — stale `handleArgonQueueFull` reference at `auth.ts:373` updated to `handleArgonError`.
+- **Item 3** — file rename `argon-error-handler.ts` → `argon2-error-handler.ts` complete; src + test + 4 route imports + 4 test dynamic-import path strings + 1 docblock cross-reference all migrated. `grep -r "argon-error-handler" backend/` returns zero hits.
+- **Item 4** — `ARGON_HANDLED = 'handled' as const` and `ARGON_UNHANDLED = 'unhandled' as const` exported with `HandleArgonErrorResult = typeof ARGON_HANDLED | typeof ARGON_UNHANDLED`. All 9 production call sites updated to `=== ARGON_HANDLED`. `isArgonSemaphoreError(err: unknown): err is ArgonSemaphoreError` exported as a true type predicate, colocated with the abstract base.
+- **Item 5** — inline comment at `auth.ts:401-422` reframed to "Structural collapse, behavior unchanged." Implementation note in this task file rewritten with the architect's `git show 497795e` evidence pointer; the prior "behavior widening" framing flagged as incorrect.
+- **Item 6** — `ArgonSemaphoreError` JSDoc cross-references at `argon2-semaphore.ts:71-91` extended to name the two consumers (`burnSentinel` re-throw + `handleArgonError` dispatch) and the 503-able-or-silent propagation invariant a future 4th subclass must honor.
+- **Item 7** — `resolveRetryAfterSec(override, defaultSec)` validates at the helper boundary: `Number.isFinite` short-circuits NaN / ±Infinity / non-finite inputs, `< 0` rejects negatives, `Math.floor` integerizes fractions, zero remains valid (HTTP allows `Retry-After: 0`). Fallback path emits a `logger.warn` and returns the per-branch default (5 / 30). Tests cover both branches × {negative, NaN, +Infinity, -Infinity, fractional, zero}.
+
+Doc-side: prior architect commit landed contract-doc updates in `agents/docs/api-contracts/{auth,custody,settings,common}.md` covering /signup, /resend-verification, /resume-signup, /login, /reset-request, /reset, /recover, /upgrade, /set-password, plus the SERVICE_UNAVAILABLE error-code row and the AbortError silent-return note. (Verified untouched in this re-review.)
+
+One round-3 hold item below.
+
+### Items to address
+
+**1. (P3) Migrate the 4 raw `instanceof ArgonSemaphoreError` sites to the exported `isArgonSemaphoreError` type guard**
+
+Item 4 added `isArgonSemaphoreError` "colocated with the class" with JSDoc claiming it's the preferred form. But the four production sites that already check `instanceof ArgonSemaphoreError` were not migrated:
+- `backend/src/routes/auth.ts:233` (burnSentinel re-throw)
+- `backend/src/routes/auth.ts:410` (`/signup` dup-burn `.catch`)
+- `backend/src/routes/auth.ts:419` (second `/signup` dup-burn `.catch`)
+- `backend/src/lib/argon2-error-handler.ts:244` (helper's own fast-path)
+
+The only consumer is the test mock factory at `tests/support/argon2-error-mocks.ts:128`, which is a mechanical re-export. A type guard with zero production callers promises an abstraction it does not enforce — the next contributor either copies the unmigrated `instanceof` form (defeating the guard's purpose) or migrates ad-hoc (further fragmenting). Two reviewers (maintainability + kieran-typescript) flagged it independently.
+
+Fix: replace the 4 raw `err instanceof ArgonSemaphoreError` checks with `isArgonSemaphoreError(err)`. Mechanical edit; type narrowing is identical (the guard is a true type predicate). ~4 line-edits.
+
+### Items dismissed during architect triage (do NOT address)
+
+- **Sibling task files cite old `argon-error-handler.ts` filename** (maintainability conf 55). Architect-side doc cleanup, fixed in-place during this review pass — see the corrections at `tasks/pending/backend-argon2-error-routes-test-coverage.md` lines 99, 107, 112 and the now-archived `backend-503-reason-discrimination.md` lines 60, 63 (in `tasks-archive.md`).
+- **`resolveRetryAfterSec` warn line lacks `event:` tag for log aggregators** (agent-native ops conf 50). Pre-existing pattern (other helper log lines also use message-only); revisit when ops-side dashboard work surfaces the asymmetry.
+- **Spread-order `{ ...ctx, err }` invariant comment-only, not pinned by test** (testing + kieran-typescript residual). Narrow `{ username?: string }` type makes the clobber structurally unreachable through the typed surface; a runtime test would have to bypass types via `as any`, which doesn't represent a reachable production path.
+- **`HandleArgonErrorResult` 3rd-outcome silent-fallthrough risk** (kieran-typescript residual). YAGNI today; closed binary outcome.
+- **`writableEnded` guard absence on the helper** (adversarial residual). Architect already YAGNI-triaged in the round-2 hold block; loud failure mode (`ERR_HTTP_HEADERS_SENT`) would surface immediately if a future caller violated the contract.
+
+### Re-review signal
+
+When item 1 lands, `git mv` this file back to `tasks/review/`. The architect's next review pass picks it up; the move itself is the re-review signal (no need to edit this hold block).

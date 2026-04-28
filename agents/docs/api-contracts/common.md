@@ -72,12 +72,27 @@ Error:
 | 502 | `BROADCAST_FAILED` | Hive chain rejected the broadcast (chain-side error, not retriable). `details.retriable: false`. |
 | 502 | `POST_BROADCAST_FAILED` | Broadcast confirmed on chain, then a downstream cascade write (cache, persistent row, secondary index) failed. `details.retriable: false, details.outcome: 'confirmed', details.tx_id: <40-char lowercase hex string, the Hive transaction id>, details.failed_step: <string>`. Distinct from `BROADCAST_FAILED`: the chain op IS durable; the failed step is a server-side cascade, not a chain rejection. Clients should treat the operation as successful from the user's perspective (the chain state is canonical) and surface the failed step to operators rather than asking the user to retry. Reconciliation of the failed cascade step is per-resource and per-step (some steps reconcile via the next request populating the cache; others via a scheduled batch job; some require manual re-execution); see the resource contract for the canonical list of `failed_step` values and their recovery semantics. |
 | 504 | `BROADCAST_TIMEOUT` | Backend aborted the broadcast at the wall-clock bound, OR caught a non-timer throw on a code path where outcome cannot be determined (e.g. lock-wrapper unavailable-branch with non-`BroadcastTimeoutError` throw, OR lock-wrapper acquired-branch pre-broadcast SYNC throw such as a malformed signing key). Outcome is uncertain (the op may or may not have landed on chain). `details.retriable: false, details.outcome: 'uncertain', details.verify_before_retry: true`. `details.timeout_ms` is OPTIONAL: present iff the underlying throw was a `BroadcastTimeoutError` (timer-fire path); omitted otherwise. Clients must verify chain state before retrying to avoid duplicate ops. |
-| 503 | `SERVICE_UNAVAILABLE` | Argon2 password-hash/verify capacity is exhausted (queue full) or the backend is draining for shutdown. Transient. Emitted only by argon2-bound endpoints (auth signup/login/resend-verification/reset-request/reset/recover, signup-verify resume-signup, custody upgrade, settings set-password). `Retry-After` header carries seconds: 5 for queue-full, 30 for shutdown drain. Body is the generic `"Service temporarily unavailable. Please retry."` — the body intentionally does not distinguish queue-full from shutdown to avoid leaking the chokepoint identity (operator logs differentiate the two). Clients SHOULD honor `Retry-After` rather than tight-loop retrying. |
+| 503 | `SERVICE_UNAVAILABLE` | Argon2 password-hash/verify capacity is exhausted (queue full) or the backend is draining for shutdown. Transient. Emitted only by argon2-bound endpoints (auth signup/login/resend-verification/reset-request/reset/recover, signup-verify resume-signup, custody upgrade, settings set-password). `Retry-After` header carries seconds: 5 for queue-full, 30 for shutdown drain. Body is the generic `"Service temporarily unavailable. Please retry."` — the body's `error.message` intentionally does not distinguish queue-full from shutdown to avoid leaking the chokepoint identity. The machine-readable discriminator is `details.reason: 'queue_full' \| 'shutdown_drain'` on the same envelope (see note below). Clients SHOULD honor `Retry-After` rather than tight-loop retrying. |
 | 500 | `INTERNAL_ERROR` | Server error |
 
 **Note on `BROADCAST_*` codes.** `bridge.ts` and `custody.ts` use a different broadcast helper (`broadcastSendOperationsWithTimeout`) but route their broadcast-catch sites through `handleBroadcastError`, so they emit the same 502 `BROADCAST_FAILED` / 504 `BROADCAST_TIMEOUT` discrimination envelopes as the `broadcastJsonWithTimeout` callers. HTTP 500 from those routes is reserved for non-broadcast errors (DB, decrypt, key-parse, etc.) emitted by an outer try/catch as `INTERNAL_ERROR`.
 
 **Note on `503 SERVICE_UNAVAILABLE` and client disconnects.** Argon2-bound endpoints may emit no response body when the client disconnects mid-request (the in-flight argon2 work is aborted via the request's `AbortSignal`). The closed socket is the client signal; no response envelope is written. Frontend code paths that observe a torn-down request (e.g. fetch `AbortError`) should treat it as a normal client cancellation, not as a server fault. Future global response middleware MUST NOT enforce "every request gets a body" or this contract will silently break.
+
+**Note on `503 SERVICE_UNAVAILABLE` and `details.reason`.** Argon2-bound 503 envelopes carry a `details.reason: 'queue_full' \| 'shutdown_drain'` discriminator on the same response body. Status, error code, message, and `Retry-After` are deliberately identical between the two cases (HTTP body parity prevents leaking which chokepoint is active); the discriminator lets HTTP-only consumers (synthetic canaries, status-page probes, browser-side telemetry) branch on shutdown-drain vs. queue-saturation without log-stream correlation. `'queue_full'` is a transient capacity event (operator action: investigate, scale up if sustained); `'shutdown_drain'` is the expected SIGTERM rolling-restart path (operator action: suppress alert, the next instance handles new requests). Source-of-truth values are pinned in `backend/src/lib/argon2-error-handler.ts` as `ARGON_REASON_QUEUE_FULL` / `ARGON_REASON_SHUTDOWN_DRAIN`. Other 503 paths NOT yet covered (the `getAppPool() === null` pool-unavailable case in particular) intentionally do NOT emit `details.reason` today; consumers MUST treat absence of the field as a third "non-argon2" bucket rather than assuming a default.
+
+Example envelope:
+
+```json
+{
+  "status": "error",
+  "error": {
+    "code": "SERVICE_UNAVAILABLE",
+    "message": "Service temporarily unavailable. Please retry.",
+    "details": { "reason": "shutdown_drain" }
+  }
+}
+```
 
 ---
 

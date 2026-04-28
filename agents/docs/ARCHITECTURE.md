@@ -326,3 +326,26 @@ Each PEvO instance runs its own Redis. Keys are not namespaced by `APP_TAG`.
 ## 4. API Contract
 
 See `agents/docs/api-contract.md` for full endpoint specifications.
+
+## 5. Operator Signals
+
+Backend emits structured log lines that operators (and any future ops/monitoring tooling) key on for capacity-related triage. Field names listed here are stable and dashboard-safe.
+
+### `event: 'argon2_abort_summary'`
+
+Periodic summary log emitted at most once per `ABORT_REPORT_INTERVAL_MS` (currently hard-coded to 60s in `backend/src/lib/argon2-semaphore.ts`). Captures the count of `ArgonAbortError` events (client-disconnect-during-argon2) since the last emission. Emitted only when the delta is non-zero, so quiet boxes produce zero log lines.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `event` | string | Always `'argon2_abort_summary'`. |
+| `count` | integer | Aborts since the last summary emission (delta, not cumulative). |
+
+Operator semantics: a non-zero `count` indicates clients disconnected mid-request while their argon2 hash/verify was running. A bursty signal under a network event or attacker-driven connection-cycling scenario is the expected use case. Per-event abort lines remain at `debug` for `LOG_LEVEL=debug` deep investigation; the summary is the default-`info` operator-visible signal.
+
+### `argon2 queue saturated` (free-text, queue-full path)
+
+Emitted from `backend/src/lib/argon2-error-handler.ts` when a route catches `ArgonQueueFullError`. Currently free-text rather than structured. Operationally still useful (visible at `LOG_LEVEL=warn`) but log aggregators have to match the message string rather than a stable `event` field. This asymmetry vs. `argon2_abort_summary` is tracked as a follow-up; see also the `details.reason: 'queue_full' \| 'shutdown_drain'` machine-readable discriminator on the 503 envelope itself (`agents/docs/api-contracts/common.md` SERVICE_UNAVAILABLE row), which HTTP-only consumers can branch on without log-stream correlation.
+
+### Worker / instance scope
+
+The argon2 abort counter is per-process. If PEvO ever runs in cluster mode (multi-worker), the counter is per-worker and the summary log fires per-worker. Aggregating across workers is the dashboard's responsibility — the log line carries no worker/PID field today (one process = one source).

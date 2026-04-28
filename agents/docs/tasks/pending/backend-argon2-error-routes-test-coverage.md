@@ -96,7 +96,7 @@ The acceptance test for symmetry: under induced saturation, a request that would
 
 **2. (P2) Import Retry-After constants instead of hardcoding `'5'` / `'30'`**
 
-All four new route test files compare `Retry-After` against literal strings `'5'` / `'30'`. Replace with `String(QUEUE_FULL_RETRY_AFTER_SEC)` / `String(SHUTDOWN_RETRY_AFTER_SEC)` imported from `backend/src/lib/argon-error-handler.js` (or post-rename `argon2-error-handler.js`). Operator-tuning the defaults would otherwise produce false-red tests on a contract-compliant change. The body string is already correctly imported from `SERVICE_UNAVAILABLE_MESSAGE`; mirror that pattern.
+All four new route test files compare `Retry-After` against literal strings `'5'` / `'30'`. Replace with `String(QUEUE_FULL_RETRY_AFTER_SEC)` / `String(SHUTDOWN_RETRY_AFTER_SEC)` imported from `backend/src/lib/argon2-error-handler.js`. Operator-tuning the defaults would otherwise produce false-red tests on a contract-compliant change. The body string is already correctly imported from `SERVICE_UNAVAILABLE_MESSAGE`; mirror that pattern.
 
 **3. (P2) Assert outer envelope `status: 'error'` discriminant**
 
@@ -104,12 +104,12 @@ Tests check `res.body.error?.code` and `res.body.error?.message` but never `res.
 
 **4. (P2) ArgonAbortError silent-return: assert no body was written**
 
-The current pattern uses supertest's `.timeout({ deadline: 250 })` and infers silence from deadline rejection. `agents/docs/api-contracts/common.md:79` documents the contract as "no response envelope is written" — close to but not identical to "deadline expired without resolution". Strengthen the assertion: introspect supertest's outcome (the `outcome.kind` shape the testing reviewer noted) to assert the resolution was specifically a deadline, not a response with body. The unit-level helper test in `tests/lib/argon-error-handler.test.ts` already covers this directly via mocked `res.set` / `res.status` / `res.json` not being called; the route tests should mirror that contract assertion at the integration level.
+The current pattern uses supertest's `.timeout({ deadline: 250 })` and infers silence from deadline rejection. `agents/docs/api-contracts/common.md:79` documents the contract as "no response envelope is written" — close to but not identical to "deadline expired without resolution". Strengthen the assertion: introspect supertest's outcome (the `outcome.kind` shape the testing reviewer noted) to assert the resolution was specifically a deadline, not a response with body. The unit-level helper test in `tests/lib/argon2-error-handler.test.ts` already covers this directly via mocked `res.set` / `res.status` / `res.json` not being called; the route tests should mirror that contract assertion at the integration level.
 
 **5. (P2) Type the mocks**
 
 - `vi.fn<typeof runWithArgon2Slot>()` instead of bare `vi.fn()`. Same treatment for any other unfn'd mocks in the four files.
-- Replace the `vi.hoisted` synthetic class declarations with `vi.importActual` to re-export the real `ArgonSemaphoreError` / `ArgonQueueFullError` / `ShuttingDownError` / `ArgonAbortError` from the production module. Keep the function-side (`runWithArgon2Slot`, `drainArgon2Queue`) mocked. The `instanceof` checks in `argon-error-handler.ts` then bind against the real class hierarchy at test time, which is what makes the route-level integration test load-bearing rather than synthetic.
+- Replace the `vi.hoisted` synthetic class declarations with `vi.importActual` to re-export the real `ArgonSemaphoreError` / `ArgonQueueFullError` / `ShuttingDownError` / `ArgonAbortError` from the production module. Keep the function-side (`runWithArgon2Slot`, `drainArgon2Queue`) mocked. The `instanceof` checks in `argon2-error-handler.ts` then bind against the real class hierarchy at test time, which is what makes the route-level integration test load-bearing rather than synthetic.
 
 **6. (P2) Extract shared mock infrastructure**
 
@@ -160,15 +160,59 @@ Hoist-pattern note: vitest 4's `vi.mock(...)` is hoisted above every regular `im
 
 Tests run: 42 passed (5 files). Lint: clean (0 errors, only pre-existing seed-phrase.ts warnings).
 
-The new tests cover 25 distinct {route × branch × error-class} cells:
+The new tests cover 39 distinct {route × branch × error-class} cells (post-`5586f9f` reconcile, which removed `/reset-request` from the parameterized list because it has the divergent 200-on-shutdown contract):
 - /login × {known, unknown, ORCID-only} × {queue-full, shutdown, abort} = 9
-- /resend-verification, /reset-request, /reset, /recover × 3 = 12
+- /resend-verification, /reset, /recover × 3 = 9 (`/reset-request` covered separately in `auth-reset-request-shutdown.test.ts`)
 - /signup new-email × 3 = 3
 - /resume-signup × {unknown, non-confirmed, no-pwhash, confirmed+pw} × 3 = 12
 - /custody/upgrade × 3 = 3
 - /settings/set-password × 3 = 3
-Total = 42 assertions.
+Total = 39 assertions.
+
+(Architect 2026-04-29: corrected cell count from "25 distinct cells / 42 total" written in the original signal block — the original counts predated the `5586f9f` reconcile which dropped `/reset-request` from the parameterized list.)
 
 ## [BLOCKED by Backend] (architect 2026-04-28)
 
 Self-declared `**Blocked by:** backend-argon2-jslevel-concurrency-cap.md round-3 hold landing` (file:13). The route-catch logic for all 3 error classes settles in that round; tests written now would re-churn against the round-3 diff. Moving to `blocked/`. Backend agent: move back to `review/` once jslevel-concurrency-cap round-3 lands.
+
+(Architect 2026-04-29: prerequisite landed; file moved back to `review/` via commit `4a4d069`. The architect re-review block below picks up from that signal.)
+
+---
+
+## Architect re-review (2026-04-29) — HELD PENDING FIXES (round 2)
+
+`/ce-code-review` ran on commits `e7a5602` (hold-block items 1-6 from round-1) + `5586f9f` (test-side reconcile of `details.reason` from sibling task `backend-503-reason-discrimination.md` into the shared mock infrastructure, plus the `/reset-request` shutdown-branch skip rationalized). 8 personas (correctness, testing, maintainability, project-standards, learnings, security, kieran-typescript, adversarial). Round-1 hold items 1-6 verified landed:
+
+- **Item 1 (P1) Symmetric branch coverage** — verified. /login `routes` array enumerates all 3 sites (auth.ts:710, :726, :738) under all 3 error classes. /resume-signup `branches` array covers all 4 burnSentinel sites. /signup new-email path covered in the new `auth-signup-argon-error-translation.test.ts`. All assertions unconditional (no `if (res.status === 200)` guards).
+- **Item 2 Retry-After constants** — imported from `argon2-error-handler.js`. No literal `'5'`/`'30'`.
+- **Item 3 Outer envelope `status: 'error'`** — `assert503` asserts on every 503 case via the shared helper.
+- **Item 4 `assertArgon2AbortIsSilent`** — introspects supertest's `outcome.kind`; a 500-in-<250ms mutation would NOT false-pass.
+- **Item 5 typed mocks + `vi.importActual`** — production `ArgonSemaphoreError` hierarchy genuinely re-exported (verified at `tests/support/argon2-error-mocks.ts`). Synthetic-class declarations gone from all five new files.
+- **Item 6 shared mock infrastructure** — extracted to `backend/tests/support/argon2-error-mocks.ts`. Per-file plumbing ~30 lines.
+
+But two route × error-class cells remain unguarded against an abort-class mutation (the convention `agents/docs/solutions/conventions/timing-equalization-sub-branch-oracles-2026-04-21.md` requires lock-in at the route level, not just at the helper level). One round-2 hold-fix bundle below.
+
+### Items to address
+
+**1. (P2) /reset-request unknown-email + ArgonAbortError uncovered**
+
+`backend/tests/routes/auth-reset-request-shutdown.test.ts` covers (a) shutdown-unknown → 200, (b) known-shutdown → 200, (c) queue-full-unknown → 503. The file imports `MockArgonAbortError` but never injects it. Production at `backend/src/routes/auth.ts:847` re-throws ONLY `ShuttingDownError` (the deliberate enumeration-suppression swallow); `ArgonAbortError` propagates to `handleArgonError` which silently returns. A future mutation that broadens the swallow to `instanceof ArgonSemaphoreError` would write a 200 onto a torn-down socket and reopen the email-enumeration oracle — and no test would catch it.
+
+Fix: add a 4th `it()` invoking `assertArgon2AbortIsSilent` on the unknown-email branch under abort. Reuse the existing helper. ~10 lines.
+
+**2. (P3) /signup dup-email burn paths lack ArgonAbortError coverage**
+
+`backend/tests/routes/auth-signup-dup-saturated.test.ts` covers queue-full + shutdown + non-semaphore swallow on the dup-burn paths (`backend/src/routes/auth.ts:401, 416`) but never asserts ArgonAbortError silent-return on those branches. The new-email path (`auth.ts:441`) covers it via `auth-signup-argon-error-translation.test.ts`; the dup-burn `.catch` blocks remain unguarded against an abort-class mutation that could write a 409 onto a torn-down socket.
+
+Fix: add `it()` cases asserting `assertArgon2AbortIsSilent` on each dup-burn site under saturation. Same shape as item 1. ~10 lines.
+
+### Items dismissed during architect triage (do NOT address)
+
+- **`assert503` doesn't enforce cross-branch identity** (adversarial conf 60). The current shape compares each branch against shared production constants; cross-branch identity is enforced transitively (each branch matches the same constants → therefore branches match each other). Architecturally load-bearing today: each multi-branch route (`/login`, `/resume-signup`) funnels through a SINGLE `handleArgonError` catch site, so divergence is structurally impossible without touching the helper itself (which is constant-pinned). Adding a separate `assertSymmetric503` cross-branch comparator would be defense-in-depth against a hypothetical future refactor that splits the catch sites — but that refactor would itself require code review and the symmetry-as-test-property would be re-imposed at that point. Per project CLAUDE.md "don't add validation for scenarios that can't happen."
+- **Pre-existing argon2 test files still use `vi.hoisted` synthetic mock classes** (adversarial conf 80). Out of held-task scope (item 5 was scoped to "the five NEW files"). Captured in a new task `backend-argon2-test-mocks-migrate-pre-existing.md` (filed separately during this review pass).
+- **Backend signal-block math: claims 25 cells / 42 total** (testing + adversarial cross-promoted). Doc-only. Architect corrected the math in-place during this review pass (see the modified signal block above).
+- **/resend-verification rate-limit margin = 0** (correctness residual). The 3 calls the parameterized describe.each makes against supertest's default IP exactly equals the max=3/hr limiter. A future fourth error-class case or test reordering would silently flip the third assertion from 503 to 429. Out of scope for this hold; revisit if a future test addition pushes the count.
+
+### Re-review signal
+
+When items 1-2 land, `git mv` this file back to `tasks/review/`. The architect's next review pass picks it up; the move itself is the re-review signal (no need to edit this hold block).
