@@ -124,6 +124,13 @@ Doc-side fixes (auth.md /signup + /resend-verification + /resume-signup + /login
 - File: `backend/src/lib/argon2-semaphore.ts:71-91`.
 - Base-class JSDoc describes the propagation invariant but doesn't point at the two consumers (`burnSentinel` re-throw in `auth.ts`, `handleArgonError` dispatch in `argon2-error-handler.ts`) that depend on it. A future contributor adding a 4th subclass needs to know both consumers assume 503-able-or-silent semantics. Two-line addition.
 
+**7. Validate `opts.retryAfterSec` at the helper boundary (added 2026-04-28 from 503-bundle review)**
+- File: `backend/src/lib/argon2-error-handler.ts` (post-rename), where `opts.retryAfterSec` is consumed before `res.set('Retry-After', String(...))`.
+- Field is currently typed `number | undefined` and passed straight through. NaN, Infinity, negative values, and non-integer fractions all flow to the wire as malformed `Retry-After` headers. No production caller passes the field today, so this is latent; closing it before a future caller derives it from user input avoids a Retry-After-injection or ill-formed-header oracle.
+- Implementation: clamp to a positive integer (`Math.max(0, Math.floor(opts.retryAfterSec))`), or reject non-finite values with a `logger.warn` + per-branch-default fallback. Keep the per-branch defaults as the floor.
+- Add test cases in `tests/lib/argon-error-handler.test.ts` for `retryAfterSec: 0`, negative, `NaN`, `Infinity`, fractional. Both branches (queue-full + shutdown).
+- Two reviewers flagged this (reliability, kieran-typescript).
+
 ### Items dismissed during architect triage (do NOT address)
 
 - **Truthy short-circuit footgun on `'unhandled'`** — covered by `backend-argon2-error-routes-test-coverage.md` (also in cluster A's review queue). The exported constants in item 4 also help.
