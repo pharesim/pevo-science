@@ -422,3 +422,59 @@ T-02 (conf 65), MAINT-003 (conf 75 info), AN-02 (conf 50), REL-003 (conf 50), ad
 
 (1) Backend addresses items #1, #2, #3 in this hold block. (2) Backend re-review signal block referencing the round-3 hold-fix commit SHA. (3) Architect round-4 `/ce-code-review` on the new commit (testing + adversarial mandatory given items #1 and #2 are mutation-kill-rigor; correctness on item #3 if the cause class is swapped). (4) Archive on clean.
 
+---
+
+## Backend re-review signal (2026-04-28, commit `a0f121d`) — round-3 hold-fix landed
+
+Round-3 architect hold listed 3 backend-owned items (#1 P1, #2 P2, #3 P3). All three landed in a single commit since they all touch test files and the changes are small enough to be reviewed together. The architect-applied in-place fixes during the round-3 review pass (4th log-suffix in the docblock; stale "forceAmbiguousOutcome above" comment; `Extract<>`-derived ambiguous opts type; convention-doc round-2 example block) are preserved as-is — no backend touches required.
+
+### Item #1 — non-timeout broadcast error on `lockState='unavailable'` mutation-kill spec
+
+New spec at `backend/tests/routes/orcid.test.ts` inside the existing `describe.each([accredit, link])` matrix, immediately after the PrivateKey-throw `'unavailable'`-branch spec. The new spec differs structurally:
+
+- Forces the `'unavailable'` branch via the same lock-SETNX flap (`redis.set` mock that throws on `:orcid_binding_lock:` keys).
+- Rejects `broadcastJsonMock` with `new Error('synthetic non-timeout broadcast failure (rpc reject)')`. This routes the throw INTO fn's inner try/catch around `broadcastJsonWithTimeout` (the prior PrivateKey spec throws BEFORE the inner try is entered).
+- Inside fn's inner catch, the `instanceof BroadcastTimeoutError` branch is skipped (the synthetic error is not a `BroadcastTimeoutError`), so execution reaches the discriminator at `orcid.ts:570` (handleAccredit) / `:700` (handleLink): `if (lockState === 'unavailable') throw err;`. The throw escapes fn and the wrapper's outer catch emits the 504 ambiguous-outcome envelope via `handleBroadcastErrorAmbiguous`.
+
+Assertions: `res.status === 504`, `error.code === 'BROADCAST_TIMEOUT'`, `details.outcome === 'uncertain'`, `details.verify_before_retry === true`, `details.verify_location === '/settings'`, `details.timeout_ms` ABSENT (canonical non-timer-fire discriminator), `error.message` matches `/uncertain/i` AND does NOT match `/^Failed to broadcast/i`, `broadcastJsonMock` called exactly once (distinguishing this spec from the PrivateKey pre-broadcast spec where broadcast count is 0), no leftover lock or cache, and the `<routeLabel> broadcast failed on ambiguous-outcome path` operator-alert log was emitted at error level.
+
+Mutation kill: removing the `if (lockState === 'unavailable') throw err;` line at `orcid.ts:570` / `:700` routes the synthetic non-timeout broadcast error through the inner-catch `handleBroadcastError(res, err, accreditErrorOpts)` 502 BROADCAST_FAILED path. The 504 status assertion fails; the `/uncertain/i` message assertion fails (`failMsg` "Failed to broadcast …" surfaces instead); the ambiguous-outcome log-suffix filter returns 0 calls and the `>= 1` assertion fails. Three independent assertion classes all fail under that regression — the architect-required mutation-kill-rigor for round-4 review.
+
+The spec runs across both `mode: 'accredit'` and `mode: 'link'` via the existing `describe.each` matrix, producing the symmetric coverage the architect's path-to-archive required.
+
+### Item #2 — `handleBroadcastErrorAmbiguous` unit test asserts the operator-alert log suffix
+
+The round-2 spec at `backend/tests/lib/broadcast-error.test.ts:370+` (the `handleBroadcastErrorAmbiguous emits the same 504 envelope as forceAmbiguousOutcome:true on a non-timer error` test) silenced `logger.error` via `vi.spyOn(logger, 'error').mockImplementation(...)` but never captured the spy as a named local for assertion. The 3rd stable log-message suffix (`<routeLabel> broadcast failed on ambiguous-outcome path`) was pinned only at the integration layer (orcid.test.ts).
+
+Round-3 fix: the spy is now bound to a named local `errorSpy`. After the envelope-shape assertions, the spec asserts:
+
+```ts
+expect(errorSpy).toHaveBeenCalledWith(
+  expect.objectContaining({ run: 'item-4', err }),
+  'test.route broadcast failed on ambiguous-outcome path',
+);
+```
+
+Mutation kill: a regression that renames the suffix in the `forceAmbiguousOutcome` branch of `handleBroadcastError` (e.g. drops "on ambiguous-outcome path" or changes "broadcast failed" to "broadcast errored") fails this unit-layer assertion. Previously such a regression would have passed every unit test and only failed at the integration layer where the suffix is filtered indirectly through other route mocks.
+
+### Item #3 — post-broadcast seam test cause class swapped from `MockBroadcastTimeoutError` to a generic `Error`
+
+At `backend/tests/routes/orcid.test.ts:~1843` (the `'post-broadcast throw on the lock-unavailable branch → 502 POST_BROADCAST_FAILED outcome:confirmed envelope'` spec), the `__test_seams.updateAccountOrcid` rejection cause class was changed from `new MockBroadcastTimeoutError(30_000)` to `new Error('synthetic db cascade failure')`.
+
+The architect-flagged semantic confusion (a future maintainer reading the test sees a `BroadcastTimeoutError` cause inside a "broadcast succeeded, post-broadcast write failed" assertion and may misread the invariant) is resolved. The `instanceof PostBroadcastWriteError` priority over `instanceof BroadcastTimeoutError` inside `handleBroadcastError` is exercised at the unit layer by the `'PostBroadcastWriteError discrimination fires BEFORE BroadcastTimeoutError + forceAmbiguousOutcome branches'` spec in `tests/lib/broadcast-error.test.ts:329` — the integration-layer test does not need to also exercise that priority order.
+
+The replacement comment block in the integration spec explains the rationale for future readers and points at the unit-layer spec that covers the priority semantics.
+
+Verified the only other uses of `MockBroadcastTimeoutError` in `orcid.test.ts` are on `broadcastJsonMock.mockRejectedValueOnce(...)` (timer-fire path, lines 1555 and 1620), which are correct and unchanged.
+
+### Verification
+
+- `npx vitest run tests/routes/orcid.test.ts tests/lib/broadcast-error.test.ts`: **61 passed**, 0 skipped (matrix doubles the new orcid.test.ts spec across accredit + link, producing 2 new integration assertions; broadcast-error.test.ts gains 1 new unit-layer assertion line in the existing item-4 spec).
+- `npm run lint`: clean (2 pre-existing warnings in `seed-phrase.ts` only, unrelated).
+- `npx tsc --noEmit` (run from `backend/`): clean.
+
+### Files changed (round-3 hold-fix, commit `a0f121d`)
+
+- `backend/tests/routes/orcid.test.ts` — new mutation-kill spec for `lockState='unavailable'` non-timeout broadcast error (item #1); cause class swapped to generic `Error` in the post-broadcast seam test with rationale comment (item #3).
+- `backend/tests/lib/broadcast-error.test.ts` — `errorSpy` named-local capture and log-suffix assertion added to the existing `handleBroadcastErrorAmbiguous` envelope-shape spec (item #2).
+
