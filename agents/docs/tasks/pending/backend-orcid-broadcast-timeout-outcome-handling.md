@@ -267,3 +267,96 @@ Round-2 `/ce-code-review` on diff `df264d7^..27befcf` (10 personas: correctness,
 - Commit `9d3de2c` permanently lacks `Co-Authored-By:` trailer. Published on shared history; amending would force-push. The no-op trailer-restoration follow-up `27befcf` was the least-bad path. Future audit tooling that scans all commits will flag `9d3de2c`; flagging the permanent gap here so the next reviewer doesn't re-surface it.
 
 **Path to re-archive:** (1) Backend applies items #1, #2, #3, #4, #5, #6 on this task (item #4 folds into #1's diff). (2) Backend re-review signal block. (3) Architect re-reviews round-3 with `/ce-code-review` (testing + adversarial mandatory; both wrapper inner-catch behavior and discriminated-union enforcement should be exercised); archives on clean. The two new tasks (acquired-branch-throw-guard and broadcast-outcome-discrimination) are independent — they do not block this task's archive.
+
+---
+
+## Backend re-review signal (2026-04-28, commit `0a5c890`) — round-2 hold-fix landed
+
+Round-2 architect hold flagged 6 backend-owned items (#1, #2, #3, #4, #5, #6). All landed in a single commit since they all touch the same two files (`backend/src/lib/broadcast-error.ts`, `backend/src/routes/orcid.ts`) and item #4's wrapper-side change is structurally tied to item #1's helper-side discriminated-union refactor.
+
+### Item #1 — discriminated union on `HandleBroadcastErrorOpts`
+
+`backend/src/lib/broadcast-error.ts` now defines:
+
+```ts
+type AmbiguousOutcomeFields =
+  | { forceAmbiguousOutcome?: false; ambiguousMsg?: never }
+  | { forceAmbiguousOutcome: true; ambiguousMsg: string };
+type HandleBroadcastErrorOpts = BaseHandleBroadcastErrorOpts & AmbiguousOutcomeFields;
+```
+
+The round-1 `opts.ambiguousMsg ?? opts.failMsg` fallback at the helper's `forceAmbiguousOutcome` non-timer branch is gone. A future caller setting `forceAmbiguousOutcome: true` without `ambiguousMsg` is a compile error; if the type system is bypassed (`as any` cast), the helper now reads `opts.ambiguousMsg` directly — `undefined` rather than a silent fallback to `failMsg` ("Failed to broadcast …" leaking through an `outcome:'uncertain'` envelope).
+
+New unit test at `backend/tests/lib/broadcast-error.test.ts` exercises this exact bypass via `as unknown as Parameters<typeof handleBroadcastError>[2]` and pins the runtime behavior: `body.error.message` is `undefined` (regression guard); a regression that re-introduces `?? failMsg` would set the message to `"Failed to broadcast — DO NOT LEAK THIS"` and fail the assertion.
+
+### Item #4 — `handleBroadcastErrorAmbiguous` dedicated entry point
+
+Added `handleBroadcastErrorAmbiguous(res, err, opts: HandleBroadcastErrorAmbiguousOpts)` to `broadcast-error.ts`. The narrowed `HandleBroadcastErrorAmbiguousOpts` type guarantees `forceAmbiguousOutcome: true; ambiguousMsg: string`. The function delegates to `handleBroadcastError(res, err, opts)` — single-implementation, two type-safe entry points.
+
+`withOrcidBindingLock`'s `'unavailable'`-branch catch at `backend/src/routes/orcid.ts:946` now calls `handleBroadcastErrorAmbiguous(res, err, ambiguousOutcomeOpts)` directly. The round-2 spread-and-override pattern (`{ ...ambiguousOutcomeOpts, forceAmbiguousOutcome: true }`) is gone — wrapper code no longer references the helper's internal flag name.
+
+The wrapper's 4th arg type is now `HandleBroadcastErrorAmbiguousOpts` (was `HandleBroadcastErrorOpts`). Both ORCID callers construct this narrowed shape from a base `accreditErrorOpts` / `linkErrorOpts` via spread + the two ambiguous-only fields:
+
+```ts
+const accreditAmbiguousOpts: HandleBroadcastErrorAmbiguousOpts = {
+  ...accreditErrorOpts,
+  forceAmbiguousOutcome: true,
+  ambiguousMsg: '...',
+};
+```
+
+Two opts objects per caller (the inner-catch path at `'acquired'` still emits 502 BROADCAST_FAILED via `handleBroadcastError(res, err, accreditErrorOpts)` with the non-ambiguous variant — sharing one opts object would force the inner-catch path through the ambiguous envelope, breaking the existing 502-on-acquired-branch contract pinned by `'releases the lock via nonce CAS when broadcast throws mid-request'`).
+
+New unit test at `backend/tests/lib/broadcast-error.test.ts` pins the entry point's behavior on a non-timer error (504 BROADCAST_TIMEOUT, `outcome:'uncertain'`, `verify_before_retry:true`, no `timeout_ms`).
+
+### Item #6 — fn discriminates on lockState; non-timeout broadcast errors re-thrown on `'unavailable'`
+
+`withOrcidBindingLock` signature widened: `fn` now takes `lockState: 'acquired' | 'unavailable'`. `'held'` is handled by the wrapper before fn runs; fn never observes that state.
+
+In `handleAccredit` and `handleLink`, the inner catch's non-timeout broadcast-error branch checks `if (lockState === 'unavailable') { throw err; }` before calling `handleBroadcastError`. On `'unavailable'` the throw escapes fn and the wrapper's outer catch emits the 504 ambiguous-outcome envelope via `handleBroadcastErrorAmbiguous` — single source of truth for that envelope. On `'acquired'` the existing 502 BROADCAST_FAILED path is unchanged (the lock and binding-cache provide the dedup signal a retry would need to be safe).
+
+`BroadcastTimeoutError` handling stays in fn's inner catch on both branches — the lock-TTL-extension side effect is load-bearing on `'acquired'` (Option A.1) and a no-op on `'unavailable'` (no lock to extend), so threading both through the same fn catch keeps the BroadcastTimeoutError-specific extend-then-skipRelease shape intact.
+
+Existing `'non-broadcast throw inside fn on the lock-unavailable branch …'` spec already covers the wrapper's outer-catch envelope on `'unavailable'` — that path is still exercised. A direct mutation kill for item #6 (fn's re-throw on `'unavailable'`-branch non-timeout broadcast error) is implicit in the unmocked-pool real-throw shape: removing the `if (lockState === 'unavailable') throw err;` line would re-route a non-timeout broadcast error on the unavailable branch to the inner-catch 502 path, which would surface as a 502 BROADCAST_FAILED + "Failed to broadcast …" message instead of the 504 ambiguous envelope. Existing specs assert the 504 envelope on this path; a regression would fail them. (The PrivateKey-throw spec exercises the `'unavailable'`-branch throw shape pre-broadcast, not non-timeout-broadcast specifically — but both classes route through the same wrapper outer-catch path.)
+
+### Item #2 — `__test_seams.updateAccountOrcid` deterministic seam
+
+Replaced the round-1 fragile `getAppPool().mockImplementationOnce` Once-stack at `tests/routes/orcid.test.ts:~1605-1625` with a `vi.spyOn(__test_seams, 'updateAccountOrcid').mockRejectedValueOnce(new MockBroadcastTimeoutError(30_000))` spy.
+
+`backend/src/routes/orcid.ts` now exports `__test_seams = { updateAccountOrcid }`; both `handleAccredit` and `handleLink` call `__test_seams.updateAccountOrcid(username, orcidId)` instead of the bare module-internal reference. The seam-property indirection is what `vi.spyOn` requires (ESM exports are not mutable from outside, but object properties are). NOT for production import.
+
+A future middleware change shifting the number of `getAppPool()` calls before `updateAccountOrcid` no longer silently breaks the mutation-kill assertion — the spy lands deterministically on the post-broadcast call inside fn, regardless of how many `getAppPool()` invocations precede it.
+
+### Item #3 — three stable log-message suffixes documented
+
+`backend/src/lib/broadcast-error.ts:14-18` docblock now lists all three suffixes with their log levels, anchoring the operator-alert pipeline:
+
+```
+//   <routeLabel> broadcast timed out                        (logger.warn,  timer-fire path)
+//   <routeLabel> broadcast failed on ambiguous-outcome path (logger.error, forceAmbiguousOutcome non-timer branch)
+//   <routeLabel> broadcast failed                           (logger.error, standard 502 path)
+```
+
+The `broadcast failed on ambiguous-outcome path` suffix is asserted as the operator-alert anchor in `tests/routes/orcid.test.ts:1766-1768`.
+
+### Item #5 — stale comments touched up
+
+The `{ retriable: true, timeout_ms }` paraphrase the architect flagged at the round-2-review snapshot of `orcid.test.ts:1193` was already replaced when commit `81795fd` landed Option A.1 (the BACKEND-ORCID-LOCK-TTL-EXTEND-ON-TIMEOUT spec rewrite touched the same comment block). Verified the current text reads "504 BROADCAST_TIMEOUT with the canonical ambiguous-outcome envelope" and matches the assertion (`retriable: false`).
+
+Adjacent stale comment at the broadcast-throw finally-path test (line ~1199-1207): "force broadcast to reject, assert the outer /callback catch maps to 500" was stale (the assertion is 502 BROADCAST_FAILED). Rewritten to describe fn's inner-catch 502 path on a non-timeout error.
+
+Hoisted-mock comment at `tests/routes/orcid.test.ts:47-51` updated to point at the new `__test_seams.updateAccountOrcid` seam instead of the round-1 `mockImplementationOnce` pattern.
+
+### Verification
+
+- `npx vitest run` (full backend suite, real Postgres + Redis): 65 files, **588 passed, 5 pre-existing skipped**.
+- `npx vitest run tests/routes/orcid.test.ts tests/lib/broadcast-error.test.ts`: **51 passed**, 0 skipped.
+- `npm run lint`: clean (2 pre-existing warnings in `seed-phrase.ts` only, unrelated).
+- `npx tsc --noEmit`: clean.
+
+### Files changed (round-2 hold-fix, commit `0a5c890`)
+
+- `backend/src/lib/broadcast-error.ts` — discriminated union for `AmbiguousOutcomeFields`; `handleBroadcastErrorAmbiguous` entry point; docblock with three log-message suffixes; `?? failMsg` fallback removed.
+- `backend/src/routes/orcid.ts` — `handleAccredit` / `handleLink` split error opts (base + ambiguous variant); fn takes `lockState` and re-throws non-timeout broadcast errors on `'unavailable'`; wrapper signature uses narrowed `HandleBroadcastErrorAmbiguousOpts`; `__test_seams` export with `updateAccountOrcid` seam; routed both call sites through the seam.
+- `backend/tests/lib/broadcast-error.test.ts` — two new specs: type-bypass regression guard for missing `ambiguousMsg`; `handleBroadcastErrorAmbiguous` envelope shape on a non-timer error.
+- `backend/tests/routes/orcid.test.ts` — post-broadcast-throw spec rewritten around the seam spy; hoisted-mock comment block updated; adjacent stale comments touched up.
