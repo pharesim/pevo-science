@@ -221,8 +221,23 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
     // envelope). The accreditation attempt is terminal for this token — delete
     // it so it cannot be reused. A new token is obtained via
     // /api/accreditation/request.
+    //
+    // The cleanup is wrapped in a local try/catch because handleBroadcastError
+    // has already written the 502 response. If deleteToken rejects (Redis
+    // hiccup, connection drop, evicted-to-read-only), letting the rejection
+    // propagate to Express 5's async error handler would attempt to write a
+    // 500 over the already-sent 502 → ERR_HTTP_HEADERS_SENT. Swallow the
+    // error: the token will TTL out within 24h, and an orphaned token is
+    // harmless because the broadcast already failed terminally.
     if (outcome === 'failure') {
-      await deleteToken(token);
+      try {
+        await deleteToken(token);
+      } catch (deleteErr) {
+        logger.error(
+          { err: deleteErr, username: pending.hive_username },
+          'accreditation.verify token cleanup failed after broadcast failure — orphan will TTL out',
+        );
+      }
     }
   }
 });

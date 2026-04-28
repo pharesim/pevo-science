@@ -252,4 +252,62 @@ describe('POST /api/accreditation/verify — BE-ORCID-BROADCAST-ABORT-TIMEOUT', 
     // re-used. A fresh token is obtained via /api/accreditation/request.
     expect(await tokenExists(token)).toBe(false);
   });
+
+  // BE-HANDLE-BROADCAST-ERROR-HELPER round-2 hold #1 (P1): when the broadcast
+  // fails (502 path) AND deleteToken's underlying redis.del rejects, the route
+  // must NOT let the rejection propagate to Express 5's async error handler
+  // (which would attempt to write 500 over the already-sent 502 →
+  // ERR_HTTP_HEADERS_SENT). The cleanup-failure log line documents the
+  // orphaned token; the token TTLs out within 24h so the orphan is harmless.
+  it('502 BROADCAST_FAILED path with deleteToken rejection: response stays 502, no header-sent error, cleanup-failure logged', async () => {
+    const redis = getRedis();
+    if (!redis) return;
+    // Clear the per-IP /verify rate-limit window — prior specs in this
+    // describe consume the byIp(127.0.0.1) bucket (limit: 5/min). Without
+    // this reset the 5th-or-later request returns 429 and short-circuits the
+    // route handler before reaching the broadcast catch.
+    const limitKeys = await redis.keys(`${config.appTag}:rl:accred-verify:*`);
+    if (limitKeys.length > 0) await redis.del(...limitKeys);
+
+    const token = `accred-timeout-${crypto.randomBytes(8).toString('hex')}`;
+    await seedPendingAccreditation(token);
+
+    broadcastJsonMock.mockRejectedValueOnce(new Error('RPC node rejected: insufficient RC'));
+
+    // Spy on redis.del to throw on this single call. The seeded token will
+    // remain in Redis (afterEach cleanup handles it). Spying here also
+    // verifies that the route attempted the cleanup (delSpy.mock.calls
+    // confirms the catch's failure-branch deleteToken ran).
+    const delSpy = vi
+      .spyOn(redis, 'del')
+      .mockRejectedValueOnce(new Error('Redis evicted to read-only'));
+
+    let res;
+    let delCallArgs: unknown[][];
+    try {
+      res = await request(app)
+        .post('/api/accreditation/verify')
+        .send({ token });
+      // Snapshot the spy calls BEFORE restoring (mockRestore clears mock state).
+      delCallArgs = delSpy.mock.calls.slice();
+    } finally {
+      delSpy.mockRestore();
+    }
+
+    // Response stays the broadcast-failure 502 — the deleteToken rejection
+    // was swallowed, no 500 was layered on top. If the route had let the
+    // rejection propagate to Express 5's async error handler, errorHandler
+    // would have attempted to write 500 over the already-sent 502, throwing
+    // ERR_HTTP_HEADERS_SENT into the request-error pipeline. supertest
+    // surfaces only the first response written, so a 502 here is the
+    // load-bearing signal that the helper's 502 was preserved.
+    expect(res.status).toBe(502);
+    expect(res.body.error.code).toBe('BROADCAST_FAILED');
+    expect(res.body.error.details).toEqual({ retriable: false });
+
+    // The route's failure-branch cleanup did call redis.del with the seeded
+    // token key — proves the deleteToken path was reached, the rejection
+    // fired, and the local try/catch swallowed it.
+    expect(delCallArgs).toContainEqual([`${config.appTag}:pending_accred:${token}`]);
+  });
 });

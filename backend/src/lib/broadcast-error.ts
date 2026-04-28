@@ -45,8 +45,11 @@ export interface HandleBroadcastErrorOpts {
 }
 
 /**
- * Emit the canonical 504 `BROADCAST_TIMEOUT` or 502 `BROADCAST_FAILED` envelope
- * for a `broadcastJsonWithTimeout` catch site, plus the matching log call.
+ * Emit the 504 `BROADCAST_TIMEOUT` or 502 `BROADCAST_FAILED` envelope shape per
+ * `agents/docs/api-contracts/common.md` for a `broadcastJsonWithTimeout` catch
+ * site, plus the matching log call. The contract doc remains the canonical
+ * surface description; this helper is a single-source implementation of those
+ * envelopes for HTTP route handlers.
  *
  * Returns `'timeout' | 'failure'` so callers that need a side effect tied to
  * the failure branch (e.g. {@link
