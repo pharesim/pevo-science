@@ -136,3 +136,21 @@ Round-1 `/ce-code-review` on commit `9882573` (5 personas: correctness, testing,
 - `backend-profile-paper-discipline-canon.md` — correctness + maintainability cross-reviewer finding (P2) that `helpers.ts:98` `toPaperSummary()` (used by `/api/profile/:account/papers`) bypasses `paperDisciplineField()`, producing divergent canon shape across endpoints. Implementer pre-flagged this as out-of-boundary; clean follow-up scope.
 
 **Path to re-archive:** (1) Backend applies items 1-3 on this task. (2) Backend re-review signal block below the hold. (3) Architect re-reviews round-2 with `/ce-code-review` and archives on clean.
+
+---
+
+## Implementer re-review signal (2026-04-28, backend) — round 2
+
+**Items 1 + 2 landed in this commit. Item 3 (Co-Authored-By trailer) deferred to a combined no-op restore commit after BE-DISCIPLINE-LENGTH-CAP round-2 lands, per the architect's "may be combined with the parallel `602214f` correction" guidance.**
+
+**Item 1 (P2) — Mocked-pool spec for canon response-field shape + continuation-chain coverage.** Added a new `describe` block at the bottom of `backend/tests/routes/disciplines-canon-mocked.test.ts` (`per-paper "discipline" response field — canon_name (lowercased) via paperDisciplineField()`) with three deterministic cases:
+
+  1. `GET /api/papers` list mapping (`papers.ts:400`) — seeds `pevo.discipline = '  Computer Science  '` (whitespace-padded mixed case to exercise the helper's `.trim()` semantic), asserts `res.body.data[0].discipline === 'computer science'`. A revert of `paperDisciplineField()` to `pevo.discipline || null` would surface here as `'  Computer Science  '`.
+  2. `GET /api/papers/:author/:permlink` detail via `buildPaperDetail` (`papers.ts:1005`, chain-length-1 path) — same whitespace-padded seed routed through the detail SELECT, asserts canon-trimmed in the response.
+  3. `GET /api/papers/:author/:permlink` detail continuation-chain head-override (`papers.ts:613`, chain-length-greater-than-1 path) — seeds an original paper alice/p-1 with `discipline = 'Physics'` and a continuation post bob/p-2 with `discipline = 'BiOlOgY'` (different case + different discipline). Mocks `findCanonicalRoot` (matched via `AS cont_author`) to return empty so alice/p-1 IS the root, mocks `resolveContinuationChain` (matched via `'continues' ->> 'author' = $1`) to return bob/p-2 on the iteration where `params=[alice, p-1, appTag]`, mocks `reconstructVersionsFromHaf`'s comment-ops query to return both rows in block-num order. Asserts `res.body.data.discipline === 'biology'` — the lowercased head metadata. A regression dropping the line-613 helper call would surface as `'BiOlOgY'`; a regression to the buildPaperDetail-only path (no override) would surface as `'physics'`.
+
+**Item 2 (P3) — Widened `paperDisciplineField` parameter to `unknown`.** `backend/src/types/disciplines.ts`: parameter signature now mirrors the sibling `validateDisciplineFilter(raw: unknown)`. Runtime is identical (the helper's first line guards `typeof raw !== 'string'`). Dropped the three `as string | null | undefined` casts at `backend/src/routes/papers.ts:400` (list mapping), `:613` (continuation-chain head-override), `:1005` (`buildPaperDetail`). Call sites are now type-honest: `pevo.discipline` is `unknown` from `safePevoMeta` and the helper accepts that directly.
+
+**Tests run:** `npx vitest run tests/routes/disciplines-canon-mocked.test.ts` → 13 passed (was 10 before this task's seeds; +3 new cases). Real-HAF regression: `npx vitest run tests/routes/papers.test.ts` → 12 passed | 1 skipped (pre-existing). `npm run lint` clean on `src/` (2 pre-existing warnings on `seed-phrase.ts`, unchanged). All runs with docker-IP env overrides per CLAUDE.md.
+
+**Item 3 status:** the round-2 fixes commit on this task carries the proper `Co-Authored-By: Claude Opus 4.7 (1M context)` trailer. The legacy `9882573` trailer restore is deferred to a single combined no-op commit alongside `602214f` (BE-DISCIPLINE-LENGTH-CAP) once that task's round-2 fixes also land — minimizes commit churn and matches the architect's combine-or-defer guidance.

@@ -153,10 +153,14 @@ export function validateDisciplineFilter(raw: unknown): string | null {
  * field back through a filter URL without re-canonicalizing. Display form
  * (titlecase) is a one-hop lookup via `/api/disciplines.display_name` or a
  * CSS `text-transform: capitalize` on the render site.
+ *
+ * Accepts `unknown` because `pevo.discipline` is `unknown` from
+ * `safePevoMeta` and the typeof narrow on the first line guards every
+ * non-string shape (null, undefined, number, object, array) the same way.
+ * Mirrors the sibling `validateDisciplineFilter(raw: unknown)` shape so
+ * call sites do not need to lie to the type checker.
  */
-export function paperDisciplineField(
-  raw: string | null | undefined,
-): string | null {
+export function paperDisciplineField(raw: unknown): string | null {
   if (typeof raw !== 'string') return null;
   const trimmed = raw.trim();
   if (!trimmed) return null;

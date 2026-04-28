@@ -397,7 +397,7 @@ async function fetchPapersFromHaf(
         permlink: r.permlink,
         title: r.title,
         abstract: r.abstract,
-        discipline: paperDisciplineField(pevo.discipline as string | null | undefined),
+        discipline: paperDisciplineField(pevo.discipline),
         keywords: pevo.keywords || [],
         authors: pevoAuthors,
         ipfs_cid: pevo.ipfs_cid || null,
@@ -610,7 +610,7 @@ async function fetchPaperDetailFromHaf(author: string, permlink: string) {
           detail.json_metadata = headMeta;
           const headPevo = safePevoMeta(headMeta);
           detail.authors = headPevo.authors || [];
-          detail.discipline = paperDisciplineField(headPevo.discipline as string | null | undefined);
+          detail.discipline = paperDisciplineField(headPevo.discipline);
           detail.keywords = headPevo.keywords || [];
           detail.citations = headPevo.citations || [];
           detail.ipfs_cid = headPevo.ipfs_cid || null;
@@ -1002,7 +1002,7 @@ function buildPaperDetail(
     created: post.created,
     last_update: post.last_edited || post.last_update || post.created,
     net_votes: post.net_votes ?? 0,
-    discipline: paperDisciplineField(pevo.discipline as string | null | undefined),
+    discipline: paperDisciplineField(pevo.discipline),
     keywords: pevo.keywords || [],
     authors: pevo.authors || [],
     ipfs_cid: pevo.ipfs_cid || null,

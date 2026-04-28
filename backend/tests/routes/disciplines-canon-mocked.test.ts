@@ -49,6 +49,7 @@ vi.mock('../../src/db.js', () => ({
 
 const { createApp } = await import('../../src/app.js');
 const { hafCache } = await import('../../src/cache.js');
+const { config } = await import('../../src/config.js');
 const app = createApp();
 
 beforeEach(async () => {
@@ -443,4 +444,209 @@ describe('GET /api/search — discipline-filter cache-key canonicalization', () 
       expect(papersDataCalls).toHaveLength(1);
     },
   );
+});
+
+describe('per-paper `discipline` response field — canon_name (lowercased) via paperDisciplineField()', () => {
+  // BE-PAPERS-DISCIPLINE-FIELD-CANON-NAME round-2 hold #1: the round-1 real-HAF
+  // specs (`papers.test.ts:79`, `:175`) were corpus-vacuous — they asserted
+  // `paper.discipline === paper.discipline.toLowerCase()` which passes
+  // regardless of whether `paperDisciplineField()` actually runs on any
+  // all-lowercase or empty corpus. A revert of the helper call sites to
+  // `pevo.discipline || null` would NOT fail those tests.
+  //
+  // These mocked-pool specs deterministically pin the canon transform by
+  // seeding `'  Computer Science  '` (whitespace-padded mixed case) and
+  // asserting the response carries `'computer science'`. They cover all three
+  // response-shaping sites threaded through `paperDisciplineField()`:
+  //   - `/api/papers` list mapping (papers.ts:400)
+  //   - `/api/papers/:author/:permlink` detail via `buildPaperDetail`
+  //     (papers.ts:1005) — chain length 1 path
+  //   - `/api/papers/:author/:permlink` detail continuation-chain head-override
+  //     (papers.ts:613) — chain length > 1 path (only fired when an edited
+  //     paper's head version is in a different post; round-1 had no targeted
+  //     spec for this branch).
+
+  function buildPevoPaperMeta(discipline: unknown) {
+    // Minimal `isPevoPaper`-passing metadata: appTag-prefixed `app` + nested
+    // `{ type: 'paper', discipline }` under `config.appTag`. Mirrors the
+    // shape produced by the publish form. Discipline is intentionally typed
+    // `unknown` so the seed can verify the helper's `unknown` parameter
+    // accepts whatever shape on-chain metadata carries (string with
+    // whitespace + mixed case is the contract case here).
+    return {
+      app: `${config.appTag}/1.0`,
+      [config.appTag]: {
+        type: 'paper',
+        discipline,
+        keywords: [],
+        authors: [],
+      },
+    };
+  }
+
+  it('GET /api/papers — list mapping lowercases + trims whitespace-padded mixed case to canon', async () => {
+    // Seed both halves of the Promise.all in fetchPapersFromHaf:
+    //   - papers-count query (matched via `count(*)::int AS total`) → 1
+    //   - papers-data query (matched via `LEFT(c.body, 300) AS abstract`) → 1
+    //     row with `pevo.discipline = '  Computer Science  '`. The helper
+    //     should trim + lowercase to `'computer science'`.
+    hafQueryMock.mockImplementation(async (sql: string) => {
+      if (sql.includes('count(*)::int AS total')) {
+        return { rows: [{ total: 1 }] };
+      }
+      if (sql.includes('LEFT(c.body, 300) AS abstract')) {
+        return {
+          rows: [{
+            author: 'alice',
+            permlink: 'p-1',
+            title: 'Test Paper',
+            abstract: 'Abstract text',
+            json_metadata: buildPevoPaperMeta('  Computer Science  '),
+            created: '2026-04-28T00:00:00',
+            net_votes: 0,
+            review_count: 0,
+            citation_count: 0,
+            avg_rating: 0,
+            author_reputation: 0,
+          }],
+        };
+      }
+      return { rows: [] };
+    });
+
+    const res = await request(app).get('/api/papers?accredited_only=false');
+    expect(res.status).toBe(200);
+    expect(res.body.data).toHaveLength(1);
+    // Canon contract: trimmed + lowercased. A revert of `paperDisciplineField`
+    // to `pevo.discipline || null` would surface here as `'  Computer Science  '`.
+    expect(res.body.data[0].discipline).toBe('computer science');
+  });
+
+  it('GET /api/papers/:author/:permlink — buildPaperDetail lowercases + trims (chain length 1)', async () => {
+    // Seeds the simpler detail path: paper has no continuation, so chain
+    // length 1, head-override block does not fire, and the canon transform
+    // happens at `buildPaperDetail` (papers.ts:1005) only.
+    hafQueryMock.mockImplementation(async (sql: string) => {
+      // Detail SELECT: `SELECT c.author, c.permlink, c.title, c.body,
+      // c.json_metadata, c.created, c.last_edited`. Match on the `c.last_edited`
+      // tail since that column is unique to fetchPaperDetailFromHaf among the
+      // paper-related queries.
+      if (sql.includes('c.last_edited') && sql.includes('c.author = $1 AND c.permlink = $2')) {
+        return {
+          rows: [{
+            author: 'alice',
+            permlink: 'p-1',
+            title: 'Test Paper',
+            body: 'abstract\n\n---\n\nfull text',
+            json_metadata: buildPevoPaperMeta('  Computer Science  '),
+            created: '2026-04-28T00:00:00',
+            last_edited: '2026-04-28T00:00:00',
+          }],
+        };
+      }
+      // Every other query (continuation lookup, version reconstruction,
+      // accreditation set, retraction lookup, findCanonicalRoot) returns
+      // empty rows — chain length 1, no versions, not retracted, not
+      // accredited. Sufficient to exercise the detail discipline path.
+      return { rows: [] };
+    });
+
+    const res = await request(app).get('/api/papers/alice/p-1');
+    expect(res.status).toBe(200);
+    expect(res.body.data.discipline).toBe('computer science');
+  });
+
+  it('GET /api/papers/:author/:permlink — continuation-chain head-override lowercases head metadata (chain length > 1)', async () => {
+    // Round-2 hold #1 explicitly calls out the continuation-chain head-override
+    // path at papers.ts:613 as having no targeted spec. This test seeds:
+    //   - Original paper alice/p-1 with `discipline = 'Physics'`
+    //   - Continuation post bob/p-2 with `discipline = 'BiOlOgY'` (different
+    //     case + different value)
+    //   - resolveContinuationChain returns 1 row pointing alice/p-1 → bob/p-2
+    //     on the first iteration, then 0 rows (chain ends)
+    //   - reconstructVersionsFromHaf comment-ops query returns 2 rows: alice's
+    //     original at block 100 and bob's continuation at block 200 (latest)
+    //
+    // Expected: `detail.discipline` ends up as `paperDisciplineField('BiOlOgY')`
+    // = `'biology'` via line 613, NOT `'physics'` from the original paper's
+    // line 1005 (which fires first then is overridden).
+    let continuationCallCount = 0;
+    hafQueryMock.mockImplementation(async (sql: string, params: unknown[]) => {
+      // Detail SELECT for the original paper alice/p-1.
+      if (sql.includes('c.last_edited') && sql.includes('c.author = $1 AND c.permlink = $2')) {
+        return {
+          rows: [{
+            author: 'alice',
+            permlink: 'p-1',
+            title: 'Original Paper',
+            body: 'abstract\n\n---\n\nfull text',
+            json_metadata: buildPevoPaperMeta('Physics'),
+            created: '2026-04-20T00:00:00',
+            last_edited: '2026-04-20T00:00:00',
+          }],
+        };
+      }
+      // findCanonicalRoot uses `'continues' ->> 'author' AS cont_author`
+      // (selected as alias). It walks BACKWARD from a continuation post to
+      // its root. For our test alice/p-1 IS the root, so this query must
+      // return 0 rows so the route does not redirect. Distinguished from
+      // resolveContinuationChain by the `AS cont_author` literal.
+      if (sql.includes('AS cont_author')) {
+        return { rows: [] };
+      }
+      // resolveContinuationChain walks FORWARD from the root looking for
+      // continuations. Distinguished by the WHERE bind
+      // `'continues' ->> 'author' = $1`. Iterates from (alice, p-1). First
+      // call returns the bob/p-2 link; subsequent calls walk no further.
+      if (sql.includes("'continues' ->> 'author' = $1")) {
+        if (params[0] === 'alice' && params[1] === 'p-1') {
+          continuationCallCount++;
+          return { rows: [{ author: 'bob', permlink: 'p-2', block_num: 200 }] };
+        }
+        return { rows: [] };
+      }
+      // Version reconstruction: `ROW_NUMBER() OVER (ORDER BY co.block_num)`
+      // against comment_operations. Returns alice's original op then bob's
+      // continuation op (latest). The bob op carries the head metadata with
+      // discipline = 'BiOlOgY'.
+      if (sql.includes('ROW_NUMBER() OVER (ORDER BY co.block_num)')) {
+        return {
+          rows: [
+            {
+              version_number: 1,
+              block_num: 100,
+              author: 'alice',
+              permlink: 'p-1',
+              title: 'Original Paper',
+              body: 'abstract\n\n---\n\nfull text',
+              created: '2026-04-20T00:00:00',
+              json_metadata: buildPevoPaperMeta('Physics'),
+            },
+            {
+              version_number: 2,
+              block_num: 200,
+              author: 'bob',
+              permlink: 'p-2',
+              title: 'Continuation Paper',
+              body: 'updated abstract\n\n---\n\nupdated full text',
+              created: '2026-04-25T00:00:00',
+              json_metadata: buildPevoPaperMeta('BiOlOgY'),
+            },
+          ],
+        };
+      }
+      return { rows: [] };
+    });
+
+    const res = await request(app).get('/api/papers/alice/p-1');
+    expect(res.status).toBe(200);
+    // Sanity: the chain lookup actually ran and matched the expected route.
+    expect(continuationCallCount).toBeGreaterThan(0);
+    // Head-override post-fix: the response carries the lowercased head
+    // metadata's discipline. A regression that drops the line-613 helper
+    // call (i.e. `detail.discipline = headPevo.discipline`) would surface
+    // here as `'BiOlOgY'`. A regression to the old buildPaperDetail-only
+    // path (no override) would surface as `'physics'`.
+    expect(res.body.data.discipline).toBe('biology');
+  });
 });
