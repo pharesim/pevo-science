@@ -408,21 +408,6 @@ zh: accreditation.orcidVerifyFailed
 
 ### Added 2026-04-22 (UI-ORCID-CALLBACK-RETRIABLE-BRANCH)
 
-ar: orcid.alreadyLinkedRetriable
-cs: orcid.alreadyLinkedRetriable
-da: orcid.alreadyLinkedRetriable
-de: orcid.alreadyLinkedRetriable
-es: orcid.alreadyLinkedRetriable
-fa: orcid.alreadyLinkedRetriable
-fr: orcid.alreadyLinkedRetriable
-he: orcid.alreadyLinkedRetriable
-it: orcid.alreadyLinkedRetriable
-nl: orcid.alreadyLinkedRetriable
-pl: orcid.alreadyLinkedRetriable
-pt: orcid.alreadyLinkedRetriable
-sv: orcid.alreadyLinkedRetriable
-tr: orcid.alreadyLinkedRetriable
-zh: orcid.alreadyLinkedRetriable
 ar: orcid.alreadyLinkedDurable
 cs: orcid.alreadyLinkedDurable
 da: orcid.alreadyLinkedDurable
