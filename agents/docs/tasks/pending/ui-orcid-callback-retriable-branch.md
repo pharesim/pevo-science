@@ -72,3 +72,51 @@ First-pass `/ce-code-review` on commit `cbf53f1` (merge d184eca) (correctness pe
 - F14.2: countdown clamped to `Math.max(1, err.retryAfterSeconds ?? 10)`.
 - F14.3: `_retryCount` + module-level `MAX_RETRIES = 1`; durable message on cap; reset on successful verify and destroy.
 - F14.5: unit tests cover countdown firing the retry, MAX_RETRIES cap, `Retry-After: 0` clamp, and the `undefined` retryAfterSeconds defensive path. 41 tests pass.
+
+---
+
+## Architect re-review (2026-04-29, round-2) — HELD PENDING FIXES
+
+Round-2 `/ce-code-review` on commit `fbe8578` (9 personas + adversarial; kieran-typescript skipped — JS not TS; api-contract skipped — frontend consumes API not defines). All 4 round-1 hold items (F14.1, F14.2, F14.3, F14.5) verified clean. **No P0. No exploitable security findings.** One latent contract issue routed to a new architect task (does NOT block this archive); five minor cleanup items held for round-3.
+
+### Items held pending fixes (UI-owned)
+
+1. **P2 — No upper bound on `Retry-After` clamp.** 2-reviewer convergence (reliability REL-001 conf 90, adversarial adv-2 conf 70 → promoted conf 100). `frontend/src/pages/orcid-callback.js:179` reads `Math.max(1, err.retryAfterSeconds ?? 10)`. Lower bound is correctly clamped to 1; **no upper bound**. A misconfigured backend or proxy emitting `Retry-After: 99999` pins the user on the page for ~28 hours with the retry button disabled the entire time. The MAX_RETRIES=1 cap fires after one auto-retry, but the FIRST 409's countdown is unbounded — the cap doesn't help here. Defense-in-depth one-liner:
+   ```ts
+   const seconds = Math.max(1, Math.min(300, err.retryAfterSeconds ?? 10));
+   ```
+   `300` (5 minutes) is conservative; 60 is fine if you want stricter UX. If the backend ever legitimately emits `Retry-After > 300`, that's a backend bug worth surfacing rather than respecting silently. Add a unit test asserting `retryCountdown <= 300` for `retryAfterSeconds = 99999`.
+
+2. **P3 — Stale comment on `_retryCount` field declaration.** Maintainability MAINT-001 conf 90. `frontend/src/pages/orcid-callback.js:85`. The inline comment says the value is "hard-coded to 1 so reviewers see the bound without chasing a const elsewhere" — but `MAX_RETRIES = 1` IS a named module-level const at the top of the file. Pre-const-draft fragment that contradicts the code. Drop the clause; the rest of the comment (counter semantics + reset sites) is accurate.
+
+3. **P3 — "Single self-triggered retry" prose at two sites is fragile to MAX_RETRIES change.** Maintainability MAINT-002 conf 75. `orcid-callback.js:182` and `:256` both say "a single self-triggered retry". Accurate only because MAX_RETRIES happens to equal 1 today. If the constant is ever raised, both comments silently lie. Reword to "up to MAX_RETRIES self-triggered retries" in both places.
+
+4. **P3 — Redundant `comp._mounted = true` assignment in countdown-fires-retry test.** Testing T-01 conf 90. `frontend/tests/unit/pages-orcid-callback.test.js:624`. The comment says "timer-guard is initialised on createTimerGuard" — accurate; `createTimerGuard()` already sets `_mounted: true`. The explicit assignment is a no-op and creates the false impression that this test requires special bootstrapping the other three new timer-based tests don't. Delete the line.
+
+5. **P3 — `undefined` retryAfterSeconds test doesn't pin `_retryCount` invariant.** Testing T-04 conf 70. `frontend/tests/unit/pages-orcid-callback.test.js:321`. Test asserts the durable branch fires (correct) but doesn't assert `expect(comp._retryCount).toBe(0)`. A mutation that incorrectly increments `_retryCount` in the durable/non-retriable branch wouldn't be caught. One-line addition.
+
+### Findings routed to a new architect task (NOT held against this task)
+
+- **F1 (P1 latent contract issue, adversarial conf 85):** the same-tick lock-contention `retriable: true` 409 contract is **unreachable by design** because backend consumes the OAuth state token at `orcid.ts:299` BEFORE dispatching to `handleAccredit`/`handleLink`, and the lock-contention 409 fires LATER inside `withOrcidBindingLock`. Frontend's `_retryVerify` replays `{code, state}` → backend's state-check at `orcid.ts:282` returns 400 BAD_REQUEST first → frontend falls through to `orcid.verificationFailed` (generic). MAX_RETRIES=1 just bounds how many times the wrong outcome repeats. **Pre-existing** — the broken contract dates to whenever the lock-contention 409 first signaled `retriable: true`; this task ships an elaborate consumer over it. Filed as `agents/docs/tasks/pending/architect-orcid-state-consumption-vs-retriable-409.md` for architect product decision (Option A: defer state consumption; Option B: drop `retriable:true` from this specific 409; Option C: frontend treats `retriable:true` as informational). Architect's leaning recorded in that file: Option B (drop the discriminator, honest to actual contract). Resolution decided there, not here.
+
+### Pre-existing in `frontend/src/auth.js` (NOT in this commit's scope; surfaced for visibility)
+
+None new; auth.js issues from task #5's review still apply (one spurious fetch at T+60s, no SPA-nav teardown, etc.).
+
+### Dismissed from round-2 findings (architect triage)
+
+- **PS-001 (project-standards "task file not in tasks/review/", conf 100).** False positive — the file IS at `tasks/review/` at HEAD (commit `b4614c5` moved it after `fbe8578`). The reviewer looked at a stale path or the wrong commit reference.
+- **T-03 (testing P2 conf 75) — Object.defineProperty setter intercept brittleness.** The status-transition test couples to `status` being a plain writable property (not a reactive proxy). Reviewer's argument: the assertion is redundant with the MAX_RETRIES cap test (which asserts call-count + final state, implementation-agnostic). True today; if Alpine ever wraps `status` as a reactive proxy, the test silently breaks. Acceptable risk — the cap test catches the same mutations.
+- **JFR-001/002 (julik-frontend-races, conf 35-40).** Below confidence gate. The current Alpine-batch-flush mechanism + `:disabled` binding makes the in-flight overlap mechanically impossible; no real-world failure path.
+- **AN/OPS-1 (agent-native — backend lacks log entry for retriable vs durable 409 split).** Backend-owned, low priority, advisory. File a backend follow-up if monitoring shows the split is needed.
+- **Backend `Retry-After: 0` root cause (OPS-2).** Outside this task's scope; frontend's clamp is the right defense-in-depth.
+
+### Suppressed at confidence gate
+
+testing T-02 (timer advancement, conf 55), T-05 (counter assertion missing in cap test, conf 65), RR-01 (Retry-After:0 mutation kill incomplete, conf 80 borderline — folds into item #5 if implementer wants), RR-02/RR-03 (`_retryCount` reset assertions missing, conf 65-70), security residual risks (informational), learnings forward-looking notes.
+
+### Path to re-archive
+
+(1) UI applies items #1, #2, #3, #4, #5 in this hold block — small bundle, ~6 lines of code + 1 line of test. Item #1 also gets a unit test for the upper-bound clamp. (2) UI re-review signal block referencing the round-3 hold-fix commit SHA. (3) Architect round-3 `/ce-code-review` on the new commit (testing-focused given the rigor items). (4) Archive on clean. The new `architect-orcid-state-consumption-vs-retriable-409.md` task is independent and does not block this archive.
+
+
