@@ -49,3 +49,17 @@ Round-2 `/ce-code-review` on commit `fd116e4`. The round-1 hold (generic localiz
 - `docs-locale-stub-convention.md` — P3 tooling/convention. Neither root `CLAUDE.md` nor `agents/ui/CLAUDE.md` documents a locale-stub convention (marker format, tracking mechanism). Future contributors have no signal that English-in-non-English-locale strings need translation. Standardize.
 
 **Path to re-archive:** (1) UI agent applies items #1-3. (2) UI agent re-review signal block. (3) Architect re-reviews round-3 with `/ce-code-review` and archives.
+
+## Architect re-review pass (2026-04-28) — HELD PENDING FIXES (items #2 + #3 still open)
+
+Status of round-2 hold items against current code (no `/ce-code-review` invocation — the `fd116e4..HEAD` diff is cross-task wide, 273 files / 28k lines; the round-2 hold's lens is narrow enough to verify directly):
+
+1. **Item #1 (P2 — `startUpgrade()` catch sanitize)** — **FIXED.** Landed as collateral of commit `9e8ca0f` ("sanitize err.message DOM bindings across remaining frontend (29 sites)"), not via a task-targeted commit. `frontend/src/pages/settings.js:567-568` now does `console.warn('[custody upgrade start]', err); this.upgradeError = this.$t('upgrade.generationFailed')`. The `upgrade.generationFailed` i18n key exists in `en.json` and was stubbed across the 15 non-English locales as part of `56fb4f1`.
+
+2. **Item #2 (P3 — `$t` stub returns key verbatim; doesn't guard `$t('key') || err.message` regression class)** — **NOT FIXED.** `frontend/tests/unit/pages-settings.test.js:105` still has `comp.$t = (key) => key;`. The leakage test at `:470` asserts `expect(comp.upgradeError).toBe('upgrade.failed')` against the verbatim-key form, which would still pass under a regressed `this.$t('upgrade.failed') || err.message` if `$t` returned empty for a missing key. The regression-class guard round-2 specified is absent.
+
+3. **Item #3 (P3 — `warnSpy.mock.calls[0]` not filtered on `[custody upgrade]` prefix)** — **NOT FIXED.** `pages-settings.test.js:478` still does `const warnArgs = warnSpy.mock.calls[0];` with no `.find(c => c[0] === '[custody upgrade]')` filter. A future intermediate `console.warn` call inside `executeUpgrade` (or its mocks) would shift `[0]` to a different entry and the leakage assertion would target the wrong error object.
+
+`git mv`'d back to `tasks/pending/`. Items #2 and #3 are pure test improvements (no production code change). Implementer should be able to land both in a single small commit, then `git mv` back to `tasks/review/`. At that point the architect runs round-4 with a narrowly-scoped `/ce-code-review` (e.g., `base:<commit-prior-to-fix>` on `pages-settings.test.js`) before archive per the mandate.
+
+**Path to re-archive (refreshed):** (1) UI agent applies items #2 + #3. (2) `git mv` to `tasks/review/`. (3) Architect runs `/ce-code-review` round-4 on the test-file delta and archives.
