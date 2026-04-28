@@ -135,6 +135,10 @@ describe('POST /api/signup — saturated dup-email returns 503, not 409 (round-3
 
     expect(res.status).toBe(503);
     expect(res.body.error?.code).toBe('SERVICE_UNAVAILABLE');
+    // Machine-readable discriminator on the queue-full branch (per
+    // BE-503-REASON-DISCRIMINATION). HTTP-only canaries branch on this
+    // value to distinguish saturation from rolling-restart drain.
+    expect(res.body.error?.details?.reason).toBe('queue_full');
     // Critical: NOT 409. Before the fix, the burn catch swallowed
     // ArgonQueueFullError and the handler fell through to the 409 path,
     // leaking email-existence under saturation.
@@ -162,6 +166,10 @@ describe('POST /api/signup — saturated dup-email returns 503, not 409 (round-3
 
     expect(res.status).toBe(503);
     expect(res.body.error?.code).toBe('SERVICE_UNAVAILABLE');
+    // Shutdown branch carries the `shutdown_drain` discriminator so a
+    // canary can suppress alerts during deploy windows; queue-full carries
+    // `queue_full` and pages.
+    expect(res.body.error?.details?.reason).toBe('shutdown_drain');
     expect(res.status).not.toBe(409);
   });
 

@@ -23,6 +23,8 @@ import {
   SERVICE_UNAVAILABLE_MESSAGE,
   QUEUE_FULL_RETRY_AFTER_SEC,
   SHUTDOWN_RETRY_AFTER_SEC,
+  ARGON_REASON_QUEUE_FULL,
+  ARGON_REASON_SHUTDOWN_DRAIN,
 } from '../../src/lib/argon2-error-handler.js';
 import {
   ArgonQueueFullError,
@@ -51,7 +53,7 @@ describe('handleArgonError', () => {
   });
 
   describe('ArgonQueueFullError → 503 + Retry-After: 5', () => {
-    it('sends generic SERVICE_UNAVAILABLE_MESSAGE body and Retry-After: 5', () => {
+    it('sends generic SERVICE_UNAVAILABLE_MESSAGE body, Retry-After: 5, and details.reason: queue_full', () => {
       const res = mockResponse();
       const outcome = handleArgonError(res, new ArgonQueueFullError());
 
@@ -64,8 +66,13 @@ describe('handleArgonError', () => {
         error: {
           code: 'SERVICE_UNAVAILABLE',
           message: SERVICE_UNAVAILABLE_MESSAGE,
+          details: { reason: ARGON_REASON_QUEUE_FULL },
         },
       });
+      // Sentinel pin: catch a future drift of the wire literal away from
+      // the documented `'queue_full'` value (the contract HTTP-only
+      // canaries match against).
+      expect(ARGON_REASON_QUEUE_FULL).toBe('queue_full');
       // Body string MUST NOT mention "authentication" or "argon"; that was
       // the information disclosure the genericize task closed.
       expect(SERVICE_UNAVAILABLE_MESSAGE).not.toMatch(/authentication/i);
@@ -95,7 +102,7 @@ describe('handleArgonError', () => {
   });
 
   describe('ShuttingDownError → 503 + Retry-After: 30', () => {
-    it('sends generic SERVICE_UNAVAILABLE_MESSAGE body and Retry-After: 30', () => {
+    it('sends generic SERVICE_UNAVAILABLE_MESSAGE body, Retry-After: 30, and details.reason: shutdown_drain', () => {
       const res = mockResponse();
       const outcome = handleArgonError(res, new ShuttingDownError());
 
@@ -108,8 +115,12 @@ describe('handleArgonError', () => {
         error: {
           code: 'SERVICE_UNAVAILABLE',
           message: SERVICE_UNAVAILABLE_MESSAGE,
+          details: { reason: ARGON_REASON_SHUTDOWN_DRAIN },
         },
       });
+      // Sentinel pin matching the queue-full case; the wire literal is the
+      // contract canaries match against and must not silently drift.
+      expect(ARGON_REASON_SHUTDOWN_DRAIN).toBe('shutdown_drain');
       // Body string MUST NOT mention "shutting down" or "shutdown"; that
       // was the deployment-state leak the genericize task closed.
       expect(SERVICE_UNAVAILABLE_MESSAGE).not.toMatch(/shut\s?down/i);

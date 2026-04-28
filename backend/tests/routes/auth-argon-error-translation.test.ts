@@ -236,6 +236,10 @@ describe.each(routes)('argon error → HTTP translation: $name', (route) => {
     expect(res.headers['retry-after']).toBe('5');
     // Body MUST NOT leak the underlying chokepoint or deployment state.
     expect(res.body.error?.message).not.toMatch(/argon|authentication|shut\s?down/i);
+    // Machine-readable discriminator (BE-503-REASON-DISCRIMINATION) so
+    // HTTP-only canaries can branch saturation vs. drain without log
+    // correlation. Value is intentionally distinct from the shutdown branch.
+    expect(res.body.error?.details?.reason).toBe('queue_full');
   });
 
   it('ShuttingDownError → 503 SERVICE_UNAVAILABLE + Retry-After: 30 + generic body', async () => {
@@ -250,6 +254,7 @@ describe.each(routes)('argon error → HTTP translation: $name', (route) => {
     expect(res.body.error?.code).toBe('SERVICE_UNAVAILABLE');
     expect(res.body.error?.message).toBe(SERVICE_UNAVAILABLE_MESSAGE);
     expect(res.headers['retry-after']).toBe('30');
+    expect(res.body.error?.details?.reason).toBe('shutdown_drain');
   });
 
   it('ArgonAbortError → silent (no response written, request hangs until socket close)', async () => {

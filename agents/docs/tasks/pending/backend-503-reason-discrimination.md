@@ -77,4 +77,25 @@ A canary monitor reading the response can branch on `error.details.reason === 's
 
 ## [TODO Architect]
 
-None — extends an existing helper with a clearly-bounded new field.
+Update `agents/docs/api-contracts/common.md` so the `SERVICE_UNAVAILABLE` error
+code documentation includes the new `details.reason` discriminator. Per
+backend agent CLAUDE.md, contract files are architect-owned. Required prose:
+
+- Document `details.reason: 'queue_full' | 'shutdown_drain'` as a stable
+  field on the 503 envelope when the underlying cause is the argon2 slot
+  semaphore (auth, custody, settings, signup-verify routes).
+- Mention that the discriminator lets HTTP-only consumers (synthetic
+  canaries, status-page probes, browser-side telemetry) branch on
+  shutdown-drain vs. queue-saturation without log-stream correlation —
+  same status (503), same `error.code`, same generic `message`, distinct
+  `reason`.
+- Note the 503 paths NOT yet covered (e.g. `getAppPool() === null` pool-
+  unavailable cases) intentionally do not emit the field today; that is
+  out of scope for this task and tracked separately.
+- Optionally show the example envelope already drafted in this task's
+  Goal section.
+
+Source-of-truth values are pinned in `backend/src/lib/argon2-error-handler.ts`
+as `ARGON_REASON_QUEUE_FULL` / `ARGON_REASON_SHUTDOWN_DRAIN`. Asserted by
+`backend/tests/lib/argon2-error-handler.test.ts` and the four route-level
+argon-error-translation test files.

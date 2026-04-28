@@ -116,6 +116,10 @@ describe('POST /api/auth/resume-signup — argon2 error → HTTP translation', (
     expect(res.body.error?.code).toBe('SERVICE_UNAVAILABLE');
     expect(res.body.error?.message).toBe(SERVICE_UNAVAILABLE_MESSAGE);
     expect(res.headers['retry-after']).toBe('5');
+    // BE-503-REASON-DISCRIMINATION: machine-readable discriminator on the
+    // 503 envelope so HTTP-only canaries can distinguish saturation from
+    // shutdown drain without log correlation.
+    expect(res.body.error?.details?.reason).toBe('queue_full');
   });
 
   it('ShuttingDownError → 503 SERVICE_UNAVAILABLE + Retry-After: 30 + generic body', async () => {
@@ -130,6 +134,7 @@ describe('POST /api/auth/resume-signup — argon2 error → HTTP translation', (
     expect(res.body.error?.code).toBe('SERVICE_UNAVAILABLE');
     expect(res.body.error?.message).toBe(SERVICE_UNAVAILABLE_MESSAGE);
     expect(res.headers['retry-after']).toBe('30');
+    expect(res.body.error?.details?.reason).toBe('shutdown_drain');
   });
 
   it('ArgonAbortError → silent (no response written, request hangs until socket close)', async () => {

@@ -58,6 +58,17 @@
 // `logger.warn` (queue-full) vs `logger.info` (shutdown) call below; only
 // the wire body is genericized. See `backend-503-message-genericize.md`.
 //
+// ── Machine-readable details.reason discriminator ─────────────────────
+//
+// Both 503 branches emit a `details.reason` field on the error envelope:
+// `'queue_full'` for `ArgonQueueFullError`, `'shutdown_drain'` for
+// `ShuttingDownError`. Lets HTTP-only consumers (synthetic canaries,
+// status-page probes, browser-side telemetry) branch on the operationally-
+// distinct cases without needing log-stream correlation — the wire body
+// stays generic so an attacker still cannot distinguish saturation from
+// drain via the human-readable `message`. `ArgonAbortError` writes no
+// response so it has no `reason`. See `backend-503-reason-discrimination.md`.
+//
 // ── Retry-After header on 503 responses ─────────────────────────────────
 //
 // Both 503 branches set `Retry-After` from per-branch defaults
@@ -109,6 +120,15 @@ export type HandleArgonErrorResult = typeof ARGON_HANDLED | typeof ARGON_UNHANDL
  * literal.
  */
 export const SERVICE_UNAVAILABLE_MESSAGE = 'Service temporarily unavailable. Please retry.';
+
+/**
+ * Wire literals emitted in the 503 envelope's `details.reason` field. The
+ * `as const` typing lets the test files pin the wire value via constant
+ * import rather than a hand-copied string. Stable contract; changes require
+ * a coordinated `agents/docs/api-contracts/common.md` update.
+ */
+export const ARGON_REASON_QUEUE_FULL = 'queue_full' as const;
+export const ARGON_REASON_SHUTDOWN_DRAIN = 'shutdown_drain' as const;
 
 /**
  * Default `Retry-After` (seconds) for the queue-full branch. Queue typically
@@ -233,13 +253,17 @@ export function handleArgonError(
     // ordering on every log call below.
     logger.warn({ ...ctx, err }, 'argon2 queue saturated — returning 503');
     res.set('Retry-After', String(resolveRetryAfterSec(opts.retryAfterSec, QUEUE_FULL_RETRY_AFTER_SEC)));
-    sendError(res, 503, 'SERVICE_UNAVAILABLE', SERVICE_UNAVAILABLE_MESSAGE);
+    sendError(res, 503, 'SERVICE_UNAVAILABLE', SERVICE_UNAVAILABLE_MESSAGE, {
+      reason: ARGON_REASON_QUEUE_FULL,
+    });
     return ARGON_HANDLED;
   }
   if (err instanceof ShuttingDownError) {
     logger.info({ ...ctx, err }, 'argon2 semaphore shutting down — returning 503');
     res.set('Retry-After', String(resolveRetryAfterSec(opts.retryAfterSec, SHUTDOWN_RETRY_AFTER_SEC)));
-    sendError(res, 503, 'SERVICE_UNAVAILABLE', SERVICE_UNAVAILABLE_MESSAGE);
+    sendError(res, 503, 'SERVICE_UNAVAILABLE', SERVICE_UNAVAILABLE_MESSAGE, {
+      reason: ARGON_REASON_SHUTDOWN_DRAIN,
+    });
     return ARGON_HANDLED;
   }
   if (err instanceof ArgonAbortError) {
