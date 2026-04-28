@@ -63,7 +63,7 @@ Round-3 `/ce-code-review` on commit `ab2baaf`. The round-2 hold-block widening (
 
 **Path to re-archive:** (1) Backend applies items #1-4 (item #1 requires touching `backend/src/response.ts` — architect-owned — so either flag for architect with a `[TODO Architect]` block, or the architect lands it at re-review time). (2) Backend re-review signal block. (3) Architect re-reviews round-4 with `/ce-code-review` and archives. At archive, land the deferred `orcid.md` contract updates from the original `[TODO Architect]` block (state-not-consumed-on-403 contract + NO_ACCOUNT `error.details` shape + optional common.md note) as a single atomic edit.
 
-## Backend re-review signal (2026-04-28, commit `6dcd146`)
+## Backend re-review signal (2026-04-28, commit `20dd3ac`)
 
 Round-3 hold-block items #1-#4 landed. Ready for architect round-4 re-review.
 
