@@ -99,10 +99,6 @@ const ORCID_BINDING_CACHE_TTL = HAF_INDEXING_LAG_CEILING_SECONDS;
 // TTL is exceeded, but keeping the TTL above the helper-enforced bound avoids
 // the failure mode entirely for honest traffic.
 const ORCID_BINDING_LOCK_TTL_SECONDS = 35;
-// Advertised in the lock-contention 409 Retry-After header. Not coupled to
-// the lock TTL above: 10s is a realistic client backoff for "mid-broadcast
-// from a different request", while the TTL bounds the worst-case hold.
-const ORCID_BINDING_LOCK_RETRY_AFTER_SECONDS = 10;
 
 // Redlock CAS release: only DEL the lock key when its value matches the nonce
 // the caller acquired with. Prevents lock-stomp when holder A stalls past the
@@ -946,8 +942,12 @@ async function extendBindingLockOnTimeoutOrLog(orcidId: string, routeLabel: stri
  * accidentally call releaseBindingLock with the wrong nonce.
  *
  * Behavior per lock state:
- *   'held'        — wrapper sends 409 ORCID_ALREADY_LINKED with Retry-After
- *                   header and details.retriable=true; callback is NOT run.
+ *   'held'        — wrapper sends 409 ORCID_ALREADY_LINKED (terminal: no
+ *                   `retriable` flag, no `Retry-After` header — the OAuth
+ *                   state token was consumed at /callback entry, so the
+ *                   client must restart the ORCID flow); callback is NOT run.
+ *                   See ARCHITECT-ORCID-STATE-CONSUMPTION-VS-RETRIABLE-409 in
+ *                   tasks-archive.md (Option B) for the rationale.
  *   'acquired'    — callback runs inside try/catch/finally; release happens
  *                   under nonce CAS in finally on both success and caught
  *                   throw paths. The wrapper catches every throw escaping fn
@@ -1025,13 +1025,17 @@ async function withOrcidBindingLock(
 ): Promise<void> {
   const lock = await acquireBindingLock(orcidId);
   if (lock.state === 'held') {
-    res.setHeader('Retry-After', String(ORCID_BINDING_LOCK_RETRY_AFTER_SECONDS));
+    // Same-tick lock contention: state token has already been consumed at the
+    // /callback entry, so the wire shape here is terminal from the user's
+    // perspective. Restart the ORCID flow rather than retry. Matches the
+    // durable on-chain binding 409 envelope (no `retriable`, no `Retry-After`).
+    // Rationale: ARCHITECT-ORCID-STATE-CONSUMPTION-VS-RETRIABLE-409 (Option B)
+    // in tasks-archive.md.
     sendError(
       res,
       409,
       'ORCID_ALREADY_LINKED',
       'This ORCID is currently being linked by another request',
-      { retriable: true, retry_after_seconds: ORCID_BINDING_LOCK_RETRY_AFTER_SECONDS },
     );
     return;
   } else if (lock.state === 'acquired') {

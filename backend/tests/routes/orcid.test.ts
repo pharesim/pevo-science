@@ -371,12 +371,12 @@ describe('POST /api/orcid/callback — auth gate (SEC-002-BE)', () => {
         .send({ code: 'fake', state });
       expect(res.status).toBe(409);
       expect(res.body.error.code).toBe('ORCID_ALREADY_LINKED');
-      // Durable-binding 409 is semantically distinct from the lock-contention
-      // 409 (the latter carries retriable=true + Retry-After). A regression
-      // routing durable bindings through withOrcidBindingLock (or otherwise
-      // stamping these fields onto the permanent-binding path) would cause
-      // clients / agents to infinite-retry permanent bindings. Assert the
-      // discriminator fields are ABSENT here so that mistake fails loudly.
+      // All ORCID_ALREADY_LINKED 409 paths (durable on-chain binding,
+      // cache-lag binding, same-tick lock contention) are terminal: no
+      // `retriable` flag, no `Retry-After` header. A regression that
+      // re-introduced these fields on any path would license clients/agents
+      // to infinite-retry. Assert ABSENCE here so the mistake fails loudly.
+      // Rationale: ARCHITECT-ORCID-STATE-CONSUMPTION-VS-RETRIABLE-409 (Option B).
       expect(res.body.error.details?.retriable).toBeUndefined();
       expect(res.headers['retry-after']).toBeUndefined();
       expect(broadcastJsonMock).not.toHaveBeenCalled();
@@ -544,10 +544,11 @@ describe('POST /api/orcid/callback — auth gate (SEC-002-BE)', () => {
         .send({ code: 'fake', state });
       expect(res.status).toBe(409);
       expect(res.body.error.code).toBe('ORCID_ALREADY_LINKED');
-      // Durable-binding 409 (link mode) must not carry the retriable/Retry-After
-      // discriminator that lock-contention 409 sets. Permanent bindings are
-      // terminal; clients / agents relying on the contract at orcid.md:183-186
-      // would infinite-retry if these fields leaked onto this path.
+      // Durable-binding 409 (link mode) is terminal: no `retriable`, no
+      // `Retry-After`. Same shape as every other ORCID_ALREADY_LINKED 409 path
+      // after ARCHITECT-ORCID-STATE-CONSUMPTION-VS-RETRIABLE-409 (Option B).
+      // Clients / agents relying on the contract at orcid.md:183-186 would
+      // infinite-retry if these fields leaked onto this path.
       expect(res.body.error.details?.retriable).toBeUndefined();
       expect(res.headers['retry-after']).toBeUndefined();
       expect(broadcastJsonMock).not.toHaveBeenCalled();
@@ -1013,7 +1014,7 @@ describe.each([
   };
 
   it(
-    'exactly one of two concurrent same-orcid requests broadcasts; the other gets 409 with Retry-After and retriable=true',
+    'exactly one of two concurrent same-orcid requests broadcasts; the other gets a terminal 409 (no Retry-After, no retriable)',
     async () => {
       const redis = getRedis();
       if (!redis) return; // Lock requires Redis; no-op otherwise.
@@ -1100,17 +1101,16 @@ describe.each([
         expect(statuses).toEqual([200, 409]);
         const loser = [aliceRes, bobRes].find((r) => r.status === 409)!;
         expect(loser.body.error.code).toBe('ORCID_ALREADY_LINKED');
-        // Lock-contention 409 is discriminable from durable-binding 409 by the
-        // retriable flag, retry_after_seconds in details, and the Retry-After
-        // response header. The contract (orcid.md 409 section) uses presence/
-        // absence of these fields to distinguish transient lock contention
-        // (client should retry after ~10s) from a permanent binding (client
-        // should NOT retry).
-        expect(loser.body.error.details).toMatchObject({
-          retriable: true,
-          retry_after_seconds: 10,
-        });
-        expect(loser.headers['retry-after']).toBe('10');
+        // Same-tick lock-contention 409 is terminal: the OAuth state token was
+        // consumed at /callback entry, so the loser cannot retry the same
+        // {code, state} pair. Wire shape matches the durable on-chain binding
+        // 409 — no `retriable`, no `retry_after_seconds`, no `Retry-After`
+        // header. Rationale: ARCHITECT-ORCID-STATE-CONSUMPTION-VS-RETRIABLE-409
+        // (Option B). A regression that re-introduced the retriable promise
+        // would fail the absence assertions below.
+        expect(loser.body.error.details?.retriable).toBeUndefined();
+        expect(loser.body.error.details?.retry_after_seconds).toBeUndefined();
+        expect(loser.headers['retry-after']).toBeUndefined();
         // Exactly one broadcast fired — proves the lock prevented the
         // double-broadcast failure mode.
         expect(broadcastJsonMock).toHaveBeenCalledTimes(1);
@@ -1673,10 +1673,13 @@ describe.each([
           .send({ code: 'fake', state: stateB });
         expect(resB.status).toBe(409);
         expect(resB.body.error.code).toBe('ORCID_ALREADY_LINKED');
-        expect(resB.body.error.details).toMatchObject({
-          retriable: true,
-          retry_after_seconds: 10,
-        });
+        // Same-tick lock-contention 409 is terminal (no `retriable`, no
+        // `Retry-After`); see the dedicated lock-contention spec above for
+        // rationale. The lock-extension behavior under exercise here (TTL
+        // extension via BroadcastTimeoutError → A.1 path) is unchanged.
+        expect(resB.body.error.details?.retriable).toBeUndefined();
+        expect(resB.body.error.details?.retry_after_seconds).toBeUndefined();
+        expect(resB.headers['retry-after']).toBeUndefined();
         // No fresh broadcast fired — the 'held' branch returned before fn ran.
         expect(broadcastJsonMock).not.toHaveBeenCalled();
         // Lock value unchanged across the second attempt (the loser's SETNX
