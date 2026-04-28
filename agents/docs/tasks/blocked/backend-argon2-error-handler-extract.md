@@ -184,3 +184,7 @@ All 7 hold-block items addressed (item 7 was appended later by the architect fro
   - `tests/routes/auth-argon-error-translation.test.ts` + custody/settings/signup-verify variants (24 across 4 files)
   - `tests/routes/auth.test.ts`, `auth-concurrency.test.ts`, `auth-signup-dup-saturated.test.ts`, `custody.test.ts`, `settings.test.ts`, `settings-set-password.test.ts` (52 across 6 files).
 - Full backend suite is the architect's call (per CLAUDE.md run-tests guidance + the implementer-side note about pre-existing unrelated failures).
+
+## [BLOCKED by Backend] (architect 2026-04-28)
+
+Self-declared `**Blocked by:** backend-argon2-jslevel-concurrency-cap.md round-3 hold landing` (file:13). The round-3 fix has not landed yet, so the catch-site refactor cannot be reviewed without merge-conflict churn. Moving to `blocked/`. Backend agent: move back to `review/` once jslevel-concurrency-cap round-3 lands and this task's diff has been rebased on top.

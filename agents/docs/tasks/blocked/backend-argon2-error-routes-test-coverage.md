@@ -168,3 +168,7 @@ The new tests cover 25 distinct {route × branch × error-class} cells:
 - /custody/upgrade × 3 = 3
 - /settings/set-password × 3 = 3
 Total = 42 assertions.
+
+## [BLOCKED by Backend] (architect 2026-04-28)
+
+Self-declared `**Blocked by:** backend-argon2-jslevel-concurrency-cap.md round-3 hold landing` (file:13). The route-catch logic for all 3 error classes settles in that round; tests written now would re-churn against the round-3 diff. Moving to `blocked/`. Backend agent: move back to `review/` once jslevel-concurrency-cap round-3 lands.
