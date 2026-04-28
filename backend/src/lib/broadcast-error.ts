@@ -49,9 +49,10 @@ export class PostBroadcastWriteError extends Error {
  * messages.
  *
  * Stable log-message suffixes (operator alert anchors — change with care):
- *   <routeLabel> broadcast timed out                        (logger.warn,  timer-fire path)
- *   <routeLabel> broadcast failed on ambiguous-outcome path (logger.error, forceAmbiguousOutcome non-timer branch)
- *   <routeLabel> broadcast failed                           (logger.error, standard 502 path)
+ *   <routeLabel> broadcast timed out                                  (logger.warn,  timer-fire path)
+ *   <routeLabel> broadcast failed on ambiguous-outcome path           (logger.error, forceAmbiguousOutcome non-timer branch)
+ *   <routeLabel> broadcast failed                                     (logger.error, standard 502 path)
+ *   <routeLabel> broadcast confirmed but post-broadcast write failed  (logger.error, PostBroadcastWriteError discrimination path — routes to DB on-call, not broadcast on-call)
  *
  * Item #1 of round-2 hold (BE-ORCID-BROADCAST-TIMEOUT-OUTCOME-HANDLING):
  * `forceAmbiguousOutcome` and `ambiguousMsg` are now correlated via a
@@ -113,10 +114,10 @@ export type HandleBroadcastErrorOpts = BaseHandleBroadcastErrorOpts & AmbiguousO
  * of the round-2 hold — keeps the helper's internal flag name out of caller
  * sites).
  */
-export type HandleBroadcastErrorAmbiguousOpts = BaseHandleBroadcastErrorOpts & {
-  forceAmbiguousOutcome: true;
-  ambiguousMsg: string;
-};
+export type HandleBroadcastErrorAmbiguousOpts = Extract<
+  HandleBroadcastErrorOpts,
+  { forceAmbiguousOutcome: true }
+>;
 
 /**
  * Emit the 504 `BROADCAST_TIMEOUT` or 502 `BROADCAST_FAILED` envelope shape per

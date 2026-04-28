@@ -1006,8 +1006,9 @@ async function withOrcidBindingLock(
     // NB: A.1 lock-TTL extension is a NO-OP on this branch. There is no lock
     // to extend (acquireBindingLock returned 'unavailable'). The duplicate-
     // bind window in the degraded-Redis regime is a separate axis tracked
-    // outside this function; forceAmbiguousOutcome above already steers the
-    // user to /settings rather than a fresh broadcast retry. A future fn that
+    // outside this function; the wrapper's outer catch below routes throws
+    // through handleBroadcastErrorAmbiguous, which steers the user to
+    // /settings rather than a fresh broadcast retry. A future fn that
     // returns `{ skipRelease: true }` on this branch is silently ignored —
     // there is nothing to skip releasing.
     try {

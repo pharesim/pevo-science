@@ -360,3 +360,65 @@ Hoisted-mock comment at `tests/routes/orcid.test.ts:47-51` updated to point at t
 - `backend/src/routes/orcid.ts` — `handleAccredit` / `handleLink` split error opts (base + ambiguous variant); fn takes `lockState` and re-throws non-timeout broadcast errors on `'unavailable'`; wrapper signature uses narrowed `HandleBroadcastErrorAmbiguousOpts`; `__test_seams` export with `updateAccountOrcid` seam; routed both call sites through the seam.
 - `backend/tests/lib/broadcast-error.test.ts` — two new specs: type-bypass regression guard for missing `ambiguousMsg`; `handleBroadcastErrorAmbiguous` envelope shape on a non-timer error.
 - `backend/tests/routes/orcid.test.ts` — post-broadcast-throw spec rewritten around the seam spy; hoisted-mock comment block updated; adjacent stale comments touched up.
+
+---
+
+## Architect re-review (2026-04-28, round-3) — HELD PENDING FIXES
+
+Round-3 `/ce-code-review` on commit `0a5c890` (11 personas: correctness, testing, maintainability, project-standards, ce-agent-native, ce-learnings, security, reliability, api-contract, adversarial, kieran-typescript). The 6 backend-owned items from round-2 (#1-#6) all landed at the level the architect required, with two test-rigor gaps and one comment-vs-assertion alignment carry-over. Architect-applied in-place fixes during this review pass cleared four findings (docblock 4th suffix, stale comment "forceAmbiguousOutcome above", `Extract<>`-derived ambiguous opts type, convention-doc round-2 example block); three test-side findings remain backend-owned. **No P0. No exploitable security findings. No project-standards violations** (Co-Authored-By present, emdash-clean user-facing strings, carve-out justified).
+
+**The architect applied 4 in-place fixes during this review pass (override-the-rule for backend, user-authorized):**
+
+- `backend/src/lib/broadcast-error.ts:51-55` — added the **4th** stable log-message suffix (`<routeLabel> broadcast confirmed but post-broadcast write failed (logger.error, PostBroadcastWriteError discrimination path — routes to DB on-call, not broadcast on-call)`) so the operator-alert anchor table reflects runtime truth. Round-2 item #3 specified three; the helper actually emits four. The 4th suffix was introduced by commit `d8b9b75` (BACKEND-ORCID-BROADCAST-OUTCOME-DISCRIMINATION) and the docblock at HEAD was the canonical reference, so the gap surfaces here.
+- `backend/src/routes/orcid.ts:1006-1011` — replaced the stale "forceAmbiguousOutcome above already steers the user to /settings" comment (the round-2 refactor removed exactly the spread that set `forceAmbiguousOutcome:true` in the wrapper). Now reads "the wrapper's outer catch below routes throws through `handleBroadcastErrorAmbiguous`, which steers the user to /settings".
+- `backend/src/lib/broadcast-error.ts:117-120` — re-derived `HandleBroadcastErrorAmbiguousOpts` via `Extract<HandleBroadcastErrorOpts, { forceAmbiguousOutcome: true }>` so it stays mechanically in sync with `AmbiguousOutcomeFields`. Equivalent today; was a hand-written intersection that would silently drift if `AmbiguousOutcomeFields` ever gains a third correlated field — exactly the parallel-types-drift class the round-2 union itself was added to prevent. `npx tsc --noEmit` clean after the swap.
+- `agents/docs/solutions/conventions/chain-write-timeout-ambiguous-outcome-2026-04-22.md:171-...` — rewrote the "Right — Option A.2, unavailable-branch extension" example block to reflect the round-2 hold-fix shape (`AmbiguousOutcomeFields` discriminated union, narrowed `HandleBroadcastErrorAmbiguousOpts` required arg, `handleBroadcastErrorAmbiguous` entry point, split caller opts, `lockState`-discriminated re-throw). Architect-owned doc, no role-boundary issue.
+
+### Items held pending fixes (backend-owned)
+
+1. **P1 — Item #6 lockState-discriminated re-throw lacks a mutation-kill spec.** Both `correctness` (conf 75) and `adversarial` (conf 85) flagged this convergent. Code at `backend/src/routes/orcid.ts:570-572` (handleAccredit fn inner catch) and `:700-702` (handleLink fn inner catch) is correct: `if (lockState === 'unavailable') throw err;` re-throws non-`BroadcastTimeoutError` broadcast errors so the wrapper's outer catch emits the 504 ambiguous-outcome envelope. But no spec traverses this path. The existing 'unavailable'-branch coverage spec in `backend/tests/routes/orcid.test.ts` uses `PrivateKey.fromString` to throw, which fires *before* fn's inner try/catch is even entered — a regression that deletes the 3-line discriminator passes the suite, weakening the ambiguous-outcome contract on the unavailable branch (a user whose broadcast may have landed on chain would get told "Hive chain rejected" via 502 BROADCAST_FAILED and is licensed to retry, producing a duplicate-bind on chain). Fix shape (per the architect's round-2 path-to-archive "testing + adversarial mandatory"):
+
+   ```ts
+   // On the lockState='unavailable' branch, force a non-timeout broadcast error
+   // (NOT a BroadcastTimeoutError, NOT a sync pre-broadcast throw):
+   //   - Install lock-SET flap so acquireBindingLock returns 'unavailable'
+   //   - broadcastJsonMock.mockRejectedValueOnce(new Error('synthetic non-timeout failure'))
+   // Assert:
+   //   - res.status === 504, error.code === 'BROADCAST_TIMEOUT'
+   //   - details.outcome === 'uncertain', verify_before_retry === true
+   //   - details.timeout_ms is absent (canonical non-timer-fire discriminator)
+   //   - error.message matches /uncertain/i (NOT /^Failed to broadcast/i)
+   //   - log assertion: `<routeLabel> broadcast failed on ambiguous-outcome path` was emitted
+   ```
+
+   Add the spec to both the `handleAccredit` and `handleLink` matrix rows (the `describe.each` already covers both, so a single spec emitted by the matrix produces the two assertions).
+
+2. **P2 — Item #4's `handleBroadcastErrorAmbiguous` unit test does not assert the 3rd stable log-suffix is emitted.** `backend/tests/lib/broadcast-error.test.ts:370` (the new `handleBroadcastErrorAmbiguous` envelope-shape spec on a non-timer error) silences `logger.error` with `vi.spyOn(logger, 'error').mockImplementation(...)` and never asserts the spy was called with `'<routeLabel> broadcast failed on ambiguous-outcome path'`. The 3rd suffix is operator-alert load-bearing per the docblock; pinned at the integration layer (orcid.test.ts) but not at the unit layer where `handleBroadcastErrorAmbiguous` is the unit under test. A mutation renaming the suffix in the `forceAmbiguousOutcome` branch would pass this unit test and only fail at integration. Fix shape:
+
+   ```ts
+   expect(errorSpy).toHaveBeenCalledWith(
+     expect.objectContaining({ run: 'item-4' }),
+     'test.route broadcast failed on ambiguous-outcome path'
+   );
+   ```
+
+3. **P3 — Post-broadcast seam test injects `MockBroadcastTimeoutError` as the cause inside `PostBroadcastWriteError`.** `backend/tests/routes/orcid.test.ts:~1843` — the `__test_seams.updateAccountOrcid` rejection path uses `new MockBroadcastTimeoutError(30_000)` as the throw value. The route wraps it as `PostBroadcastWriteError(txId, cause, 'account_update')` and the test correctly asserts the 502 `POST_BROADCAST_FAILED` envelope (because `handleBroadcastError` checks `instanceof PostBroadcastWriteError` BEFORE `instanceof BroadcastTimeoutError`). Functionally correct, but semantically misleading: a future maintainer reading the test sees a `BroadcastTimeoutError` cause inside a "broadcast succeeded, post-broadcast write failed" assertion and may misread the invariant. Either swap the cause to a generic `new Error('synthetic db cascade failure')` (or similar non-timeout class), OR add a comment block explaining why a `BroadcastTimeoutError`-as-cause was chosen on purpose (e.g., to exercise the priority order of `instanceof` checks in `handleBroadcastError`). If the priority-order intent was the implementer's reason, leave the cause class but make the comment explicit.
+
+### Findings routed to other Cluster A tasks (not held here)
+
+- **AC-001 (P1)** — `POST_BROADCAST_FAILED` HTTP 502 error code (introduced by `PostBroadcastWriteError` discrimination) is undocumented in `agents/docs/api-contracts/common.md` and `agents/docs/api-contracts/orcid.md`. Will be raised against `backend-orcid-broadcast-outcome-discrimination` (commit `d8b9b75`, the commit that introduced the class).
+- **adv-002 (P2)** — On the `'acquired'` branch, pre-broadcast SYNC throws (e.g., `PrivateKey.fromString` on malformed admin WIF) now route through the `outcome:'uncertain'` envelope with `verify_before_retry:true`, but no broadcast fired. Misroutes operator alerts. Will be raised against `backend-orcid-acquired-branch-throw-guard` (commit `0d0c156`, where the outer catch was added).
+
+### Pre-existing in-scope (not held; surfaced for visibility)
+
+- **REL-001 (P2, conf 75)** — `backend/src/routes/orcid.ts:1081` `countExternalWorks` calls `fetch('https://pub.orcid.org/...')` with no `AbortSignal.timeout(...)`. A stalled pub.orcid.org response hangs the whole `/callback` worker. Pre-existing, not introduced by this commit. File a follow-up task if it has not been filed already.
+- **AC-002 (P2, conf 75)** — `backend/src/routes/orcid.ts:504,657` `ambiguousMsg` user-facing string `'Broadcast outcome uncertain. Verify your ORCID linkage at /settings before retrying.'` is not documented in `orcid.md` or `common.md`. Frontend consumer (`ui-orcid-callback-retriable-branch`, currently in review/) has no contract anchor for the message text. May be intentional (only `details.verify_location` is meant to be load-bearing), but the contract should say so explicitly. Decide during the `ui-orcid-callback-retriable-branch` review pass whether to amend `orcid.md` or document explicitly that only `verify_location` is stable.
+
+### Suppressed at confidence gate (recorded; not surfaced)
+
+T-02 (conf 65), MAINT-003 (conf 75 info), AN-02 (conf 50), REL-003 (conf 50), adv-003 (conf 72), adv-004 (conf 55), adv-005 (conf 50), KT-03 (conf 70 — `__test_seams` `satisfies` annotation; nice-to-have), KT-04 (conf 55 — `lockState` named-type extraction; nice-to-have).
+
+### Path to re-archive
+
+(1) Backend addresses items #1, #2, #3 in this hold block. (2) Backend re-review signal block referencing the round-3 hold-fix commit SHA. (3) Architect round-4 `/ce-code-review` on the new commit (testing + adversarial mandatory given items #1 and #2 are mutation-kill-rigor; correctness on item #3 if the cause class is swapped). (4) Archive on clean.
+

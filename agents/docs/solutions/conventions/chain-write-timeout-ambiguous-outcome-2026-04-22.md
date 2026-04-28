@@ -170,31 +170,74 @@ The `BroadcastTimeoutError` MUST be caught **inside** the `fn` callback passed t
 
 ### Right — Option A.2, unavailable-branch extension
 
-The A.2 envelope also applies to the lock-wrapper's `'unavailable'` branch (Redis outage OR lock-nonce-shape invariant drift). In that branch `fn` runs WITHOUT a lock, so there is no lock-TTL margin to bound a retry race. Every throw escaping `fn` on this path is outcome-ambiguous — the broadcast may already be on-chain without the caller being able to reconcile the cache/DB state — so the wrapper catches throws in the `'unavailable'` branch and emits the same 504 envelope, even for non-`BroadcastTimeoutError` throws. Implemented via a `forceAmbiguousOutcome: true` option on `handleBroadcastError` in `backend/src/lib/broadcast-error.ts`:
+The A.2 envelope also applies to the lock-wrapper's `'unavailable'` branch (Redis outage OR lock-nonce-shape invariant drift). In that branch `fn` runs WITHOUT a lock, so there is no lock-TTL margin to bound a retry race. Every throw escaping `fn` on this path is outcome-ambiguous — the broadcast may already be on-chain without the caller being able to reconcile the cache/DB state — so the wrapper catches throws in the `'unavailable'` branch and emits the same 504 envelope, even for non-`BroadcastTimeoutError` throws.
+
+The shape was iterated in two rounds; this section reflects the round-2 hold-fix landed at commit `0a5c890`, which is the canonical pattern. The helper interface is a discriminated union (`AmbiguousOutcomeFields`) so a caller cannot set `forceAmbiguousOutcome: true` without also providing `ambiguousMsg` (the round-1 `?? failMsg` silent-regression class is structurally impossible at compile time). The wrapper takes the narrowed `HandleBroadcastErrorAmbiguousOpts` (required, not optional) and routes throws through a dedicated `handleBroadcastErrorAmbiguous` entry point so the wrapper code never references the helper's internal flag name. `fn` receives the resolved `lockState` so non-`BroadcastTimeoutError` broadcast errors on the `'unavailable'` branch can re-throw out to the wrapper's outer catch (single source of truth for the ambiguous envelope), while the same error class on the `'acquired'` branch keeps its inner-catch 502 `BROADCAST_FAILED` semantics:
 
 ```ts
+// Helper interface — discriminated union enforces the correlated invariant.
+type AmbiguousOutcomeFields =
+  | { forceAmbiguousOutcome?: false; ambiguousMsg?: never }
+  | { forceAmbiguousOutcome: true; ambiguousMsg: string };
+export type HandleBroadcastErrorOpts = BaseHandleBroadcastErrorOpts & AmbiguousOutcomeFields;
+export type HandleBroadcastErrorAmbiguousOpts = Extract<
+  HandleBroadcastErrorOpts,
+  { forceAmbiguousOutcome: true }
+>;
+
+// Wrapper signature — narrowed type required, no optional.
 async function withOrcidBindingLock(
   res: Response,
   orcidId: string,
-  fn: () => Promise<void>,
-  ambiguousOutcomeOpts?: HandleBroadcastErrorOpts,
+  fn: (lockState: 'acquired' | 'unavailable') => Promise<{ skipRelease?: boolean } | void>,
+  ambiguousOutcomeOpts: HandleBroadcastErrorAmbiguousOpts,
 ): Promise<void> {
   const lock = await acquireBindingLock(orcidId);
   // ...'held' / 'acquired' branches unchanged...
   else if (lock.state === 'unavailable') {
-    if (ambiguousOutcomeOpts) {
-      try {
-        await fn();
-      } catch (err) {
-        handleBroadcastError(res, err, {
-          ...ambiguousOutcomeOpts,
-          forceAmbiguousOutcome: true,
-        });
-      }
-    } else {
-      await fn();  // legacy: propagate to outer /callback catch as 500
+    try {
+      await fn('unavailable');
+    } catch (err) {
+      handleBroadcastErrorAmbiguous(res, err, ambiguousOutcomeOpts);
     }
   }
+}
+
+// Caller — split opts: base for the inner-catch 502 path, ambiguous variant for the wrapper outer catch.
+const accreditErrorOpts: HandleBroadcastErrorOpts = {
+  routeLabel: 'orcid.handleAccredit',
+  timeoutMsg: 'Hive broadcast timed out while linking ORCID.',
+  failMsg: 'Failed to broadcast ORCID accreditation to Hive.',
+  verifyLocation: '/settings',
+  logContext: { username, orcid: orcidId, mode: 'accredit' },
+};
+const accreditAmbiguousOpts: HandleBroadcastErrorAmbiguousOpts = {
+  ...accreditErrorOpts,
+  forceAmbiguousOutcome: true,
+  ambiguousMsg: 'Broadcast outcome uncertain. Verify your ORCID linkage at /settings before retrying.',
+};
+
+// Inner-catch on fn discriminates by lockState — non-timeout broadcast errors
+// on 'unavailable' re-throw to the wrapper's outer catch (single source of
+// truth for the ambiguous envelope); on 'acquired' they take the inner-catch
+// 502 BROADCAST_FAILED path (lock + binding-cache provide the dedup signal a
+// retry would need to be safe). BroadcastTimeoutError stays in fn's inner
+// catch on BOTH branches because the lock-TTL-extend side effect (Option A.1)
+// is load-bearing on 'acquired' and a no-op on 'unavailable'.
+try {
+  const result = await broadcastJsonWithTimeout(op, accreditErrorOpts);
+  // ...post-broadcast cascade...
+} catch (err) {
+  if (err instanceof BroadcastTimeoutError) {
+    if (lockState === 'acquired') {
+      await redis.expire(orcidBindingLockKey(orcidId), 120);
+    }
+    handleBroadcastError(res, err, accreditErrorOpts);
+    return { skipRelease: true };
+  }
+  if (lockState === 'unavailable') throw err;  // route to wrapper outer catch → 504 ambiguous
+  handleBroadcastError(res, err, accreditErrorOpts);  // 'acquired': 502 BROADCAST_FAILED
+  return;
 }
 ```
 
