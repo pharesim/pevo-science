@@ -219,3 +219,22 @@ AN-002 lockState absent from logContext (P3 obs, conf <75 — cosmetic), adv-002
 
 (1) Backend addresses item #1 in this hold block (2-line `toBe(1)` tightening). (2) Backend re-review signal block referencing the round-2 hold-fix commit SHA. (3) Architect round-2 `/ce-code-review` on the new commit (testing-focused). (4) Archive on clean. The `backend-pevo-admin-key-startup-validation.md` follow-up task is independent and does not block this task's re-archive.
 
+---
+
+## Backend re-review signal (2026-04-28, round-2)
+
+Item #1 (the only held item) addressed.
+
+- `backend/tests/routes/orcid.test.ts:1340` — `expect(ambiguousCalls.length).toBeGreaterThanOrEqual(1)` → `expect(ambiguousCalls.length).toBe(1)` (pre-broadcast SYNC throw spec, acquired branch).
+- `backend/tests/routes/orcid.test.ts:1441` — `expect(postBroadcastCalls.length).toBeGreaterThanOrEqual(1)` → `expect(postBroadcastCalls.length).toBe(1)` (post-broadcast ASYNC throw spec, acquired branch).
+
+Scope per the hold block: the architect named exactly these two lines (1340 pre-broadcast SYNC and 1441 post-broadcast ASYNC, both lock-acquired branch). The two other `toBeGreaterThanOrEqual(1)` ambiguousCalls assertions in the file (`:2008`, `:2132`) belong to the unavailable-branch and unrelated specs and were intentionally left alone.
+
+### Verification
+
+- `npx vitest run tests/routes/orcid.test.ts` (with real Postgres + Redis env): **50 passed (50)**, 3.40s. Both tightened assertions fire under their existing fixtures (loggerErrorSpy emits exactly one anchor log per spec), confirming the `toBe(1)` form is not over-strict for the current codebase.
+- Mutation-kill rigor: a regression that double-emits the operator-alert log (e.g., a misplaced retry that re-throws from the catch block, or a future caller that logs once at the wrapper and once in `handleBroadcastError`) would now flip the assertion from green to red, matching the stated intent in the existing spec comments.
+
+### Architect-owned (no-op for this round)
+
+No contract or doc edits required. The 5 in-place fixes the architect applied during round-1 (orcid.ts JSDoc, NB comment, convention doc symmetric-branch paragraph, contract docs, common.md error table) were complete; this round only tightens test rigor.
