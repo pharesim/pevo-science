@@ -907,10 +907,44 @@ async function withOrcidBindingLock(
     // lock for 35s — failure mode the original try/finally already
     // prevented). Throws skip the `if (result?.skipRelease)` line entirely,
     // leaving skipRelease=false, so finally releases as before.
+    //
+    // Symmetric ambiguous-outcome catch (BACKEND-ORCID-ACQUIRED-BRANCH-THROW-GUARD):
+    // closes the symmetric hard-block class round-1 #3 closed on the
+    // 'unavailable' branch. Two throw classes escape fn's inner try/catch
+    // even on the lock-acquired branch:
+    //   1. Pre-broadcast SYNC throw inside fn (e.g. PrivateKey.fromString on
+    //      malformed admin key, or the crypto.createHash building
+    //      evidence_hash).
+    //   2. Post-broadcast ASYNC throw inside fn (broadcast SUCCEEDS, then
+    //      __test_seams.updateAccountOrcid / cacheOrcidBinding /
+    //      seedAccreditationBonus throws — most concretely getAppPool() in
+    //      updateAccountOrcid is called outside that function's own
+    //      pool.query try/catch).
+    // Both classes consume the OAuth state token at dispatch and produce
+    // 500 INTERNAL_ERROR + user hard-blocked on the round-1 wrapper shape.
+    // The new catch below routes them through the SAME 504 ambiguous-outcome
+    // envelope as the 'unavailable' branch via handleBroadcastErrorAmbiguous.
+    // Lock release semantics: throws release the lock (skipRelease stays
+    // false); successful skipRelease (the BroadcastTimeoutError + redis.expire
+    // path inside fn) still skips. Caught throws don't set skipRelease so
+    // the finally releases — a subsequent retry can acquire a fresh lock.
+    //
+    // NB on post-broadcast throws: the 504 outcome:'uncertain' envelope is
+    // technically over-cautious here (chain write IS confirmed; the throw is
+    // a downstream cascade failure). Discriminating broadcast-succeeded vs
+    // broadcast-threw is filed separately as
+    // backend-orcid-broadcast-outcome-discrimination.md (502
+    // POST_BROADCAST_FAILED with tx_id + failed_step). This guard ships the
+    // over-cautious envelope; the discrimination task swaps the post-broadcast
+    // throw to a 502 envelope without re-touching this wrapper.
     let skipRelease = false;
     try {
       const result = await fn('acquired');
       if (result?.skipRelease) skipRelease = true;
+    } catch (err) {
+      handleBroadcastErrorAmbiguous(res, err, ambiguousOutcomeOpts);
+      // Do NOT set skipRelease — release the lock so a subsequent retry
+      // (after the user verifies state at /settings) can acquire it.
     } finally {
       if (!skipRelease) {
         await releaseBindingLock(orcidId, lock.nonce);

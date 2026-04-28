@@ -1248,6 +1248,181 @@ describe.each([
     },
   );
 
+  // BACKEND-ORCID-ACQUIRED-BRANCH-THROW-GUARD — pre-broadcast SYNC throw
+  // inside fn on the lock-acquired branch. Round-2 architect re-review of
+  // BACKEND-ORCID-BROADCAST-TIMEOUT-OUTCOME-HANDLING flagged that the
+  // 'acquired' branch had the symmetric hard-block class round-1 #3 closed
+  // on 'unavailable': pre-broadcast sync code (PrivateKey.fromString,
+  // crypto.createHash building evidence_hash) throws → 500 INTERNAL_ERROR
+  // with the OAuth state token already consumed → user hard-blocked.
+  //
+  // The new wrapper try/catch on the 'acquired' branch routes the throw
+  // through the SAME 504 ambiguous-outcome envelope as the 'unavailable'
+  // branch via handleBroadcastErrorAmbiguous. timeout_ms is OMITTED (the
+  // throw isn't a BroadcastTimeoutError); message uses ambiguousMsg.
+  //
+  // Mutation kill: removing the wrapper's new acquired-branch try/catch
+  // propagates the throw to the outer /callback catch as 500 INTERNAL_ERROR;
+  // the `expect(res.status).toBe(504)` assertion fails. Removing
+  // forceAmbiguousOutcome:true from accreditAmbiguousOpts/linkAmbiguousOpts
+  // is now a TypeScript-level error after round-2 #1's discriminated union;
+  // a bypass would re-route the throw to a 502 BROADCAST_FAILED envelope and
+  // fail the BROADCAST_TIMEOUT assertion. Skipping `await fn()`'s catch
+  // entirely (e.g. accidentally removing the catch but keeping the finally)
+  // would also fail the 504 assertion.
+  it(
+    'pre-broadcast SYNC throw inside fn on the lock-acquired branch → 504 BROADCAST_TIMEOUT ambiguous-outcome (no timeout_ms); lock released for retry',
+    async () => {
+      const redis = getRedis();
+      if (!redis) return;
+      const orcidId = `0000-0001-${orcidSuffix}${orcidSuffix}${orcidSuffix}${orcidSuffix}-0012`;
+      const lockKey = `${config.appTag}:orcid_binding_lock:${orcidId}`;
+      const cacheKey = `${config.appTag}:orcid_binding:${orcidId}`;
+      await redis.del(lockKey, cacheKey).catch(() => { /* ignore */ });
+
+      installOrcidFetchStub({ orcid: orcidId, name: 'Alice', works: 3 });
+      installLockModeMocks();
+
+      // Force a SYNC throw inside fn BEFORE the broadcast. PrivateKey.fromString
+      // is the canonical site (called inside fn at orcid.ts:495 / :577 right
+      // before broadcastJsonWithTimeout, and OUTSIDE any inner try/catch in fn).
+      // Mirrors the existing 'unavailable'-branch PrivateKey spec; the only
+      // difference is that lock SETNX is NOT mocked to throw, so the wrapper
+      // takes the 'acquired' branch.
+      const pkSpy = vi.spyOn(PrivateKey, 'fromString').mockImplementation(() => {
+        throw new Error('synthetic pre-broadcast sync throw (acquired branch)');
+      });
+      // Silence the structured error logged by handleBroadcastErrorAmbiguous on
+      // the non-timer ambiguous-outcome path — keeps test output clean.
+      const loggerErrorSpy = vi.spyOn(logger, 'error').mockImplementation(() => { /* silence */ });
+
+      try {
+        const state = await startAuthed(mode, 'alice');
+        const res = await request(app)
+          .post('/api/orcid/callback')
+          .set('Authorization', `Bearer ${jwtFor('alice')}`)
+          .send({ code: 'fake', state });
+
+        expect(res.status).toBe(504);
+        expect(res.body.error.code).toBe('BROADCAST_TIMEOUT');
+        // Same envelope shape as the timer-fire branch, but timeout_ms is
+        // intentionally omitted: the throw didn't originate from the timer.
+        expect(res.body.error.details).toEqual({
+          retriable: false,
+          outcome: 'uncertain',
+          verify_before_retry: true,
+          verify_location: '/settings',
+        });
+        expect(res.body.error.details).not.toHaveProperty('timeout_ms');
+        // ambiguousMsg surfaces (not failMsg); regression guard for round-2 #1.
+        expect(res.body.error.message).toMatch(/uncertain/i);
+        expect(res.body.error.message).not.toMatch(/^Failed to broadcast/i);
+        // Broadcast never fired — the throw beat it.
+        expect(broadcastJsonMock).not.toHaveBeenCalled();
+        // Lock RELEASED: caught throws don't set skipRelease, so the wrapper's
+        // finally runs the nonce-CAS release. A subsequent retry can acquire.
+        expect(await redis.exists(lockKey)).toBe(0);
+        // Cache absent: cache write happens AFTER broadcast; the throw beat both.
+        expect(await redis.get(cacheKey)).toBeNull();
+        // Operator-alert anchor: ambiguous-outcome path log message fired at
+        // error level. A regression that swallows the throw without emitting
+        // the structured error would leave operators blind.
+        const ambiguousCalls = loggerErrorSpy.mock.calls.filter(
+          (call) => typeof call[1] === 'string' && call[1].includes('broadcast failed on ambiguous-outcome path'),
+        );
+        expect(ambiguousCalls.length).toBeGreaterThanOrEqual(1);
+      } finally {
+        pkSpy.mockRestore();
+        loggerErrorSpy.mockRestore();
+        await redis.del(lockKey, cacheKey).catch(() => { /* cleanup */ });
+      }
+    },
+  );
+
+  // BACKEND-ORCID-ACQUIRED-BRANCH-THROW-GUARD — post-broadcast ASYNC throw
+  // inside fn on the lock-acquired branch. Broadcast SUCCEEDS, then the
+  // post-broadcast cascade (cacheOrcidBinding → __test_seams.updateAccountOrcid
+  // → seedAccreditationBonus) throws. The throw escapes fn's inner try/catch
+  // (which only wraps broadcastJsonWithTimeout) and reaches the wrapper's new
+  // acquired-branch outer catch, which routes it through
+  // handleBroadcastErrorAmbiguous → 504 ambiguous-outcome envelope.
+  //
+  // The 504 outcome:'uncertain' envelope is over-cautious here (chain write
+  // IS confirmed; the throw is a downstream cascade failure). Discriminating
+  // broadcast-succeeded vs broadcast-threw is filed separately as
+  // backend-orcid-broadcast-outcome-discrimination.md (502 POST_BROADCAST_FAILED
+  // with tx_id). This task ships the over-cautious envelope.
+  //
+  // Mutation kill (architect-required, acceptance #5): removing the wrapper's
+  // new acquired-branch try/catch routes the throw to the outer /callback catch
+  // as 500 INTERNAL_ERROR; the 504 assertion below fails. broadcastJsonMock was
+  // called exactly ONCE (proves the broadcast path ran to success before the
+  // post-broadcast throw); a regression that re-enters fn or double-broadcasts
+  // would change that count.
+  it(
+    'post-broadcast ASYNC throw inside fn on the lock-acquired branch → 504 BROADCAST_TIMEOUT ambiguous-outcome; broadcast fired exactly once; lock released',
+    async () => {
+      const redis = getRedis();
+      if (!redis) return;
+      const orcidId = `0000-0001-${orcidSuffix}${orcidSuffix}${orcidSuffix}${orcidSuffix}-0013`;
+      const lockKey = `${config.appTag}:orcid_binding_lock:${orcidId}`;
+      const cacheKey = `${config.appTag}:orcid_binding:${orcidId}`;
+      await redis.del(lockKey, cacheKey).catch(() => { /* ignore */ });
+
+      installOrcidFetchStub({ orcid: orcidId, name: 'Alice', works: 3 });
+      installLockModeMocks();
+      // Default broadcastJsonMock resolves with { id: 'mock-orcid-tx' } (set in
+      // beforeEach). The post-broadcast throw comes from the seam spy below.
+
+      // Inject the throw deterministically through __test_seams (round-2 hold
+      // item #2's seam) — independent of the number of getAppPool() calls
+      // before updateAccountOrcid runs. A future middleware change cannot
+      // shift the throw site silently.
+      const updateOrcidSpy = vi
+        .spyOn(__test_seams, 'updateAccountOrcid')
+        .mockRejectedValueOnce(new Error('synthetic post-broadcast async throw (acquired branch)'));
+      const loggerErrorSpy = vi.spyOn(logger, 'error').mockImplementation(() => { /* silence */ });
+
+      try {
+        const state = await startAuthed(mode, 'alice');
+        const res = await request(app)
+          .post('/api/orcid/callback')
+          .set('Authorization', `Bearer ${jwtFor('alice')}`)
+          .send({ code: 'fake', state });
+
+        expect(res.status).toBe(504);
+        expect(res.body.error.code).toBe('BROADCAST_TIMEOUT');
+        expect(res.body.error.details).toEqual({
+          retriable: false,
+          outcome: 'uncertain',
+          verify_before_retry: true,
+          verify_location: '/settings',
+        });
+        expect(res.body.error.details).not.toHaveProperty('timeout_ms');
+        // Mutation-kill anchor: broadcast DID fire and succeed exactly once
+        // (proves the throw came from the post-broadcast cascade, not a
+        // re-entered fn or double-broadcast).
+        expect(broadcastJsonMock).toHaveBeenCalledTimes(1);
+        // Lock RELEASED: caught throws on the acquired branch don't set
+        // skipRelease, so the finally's nonce-CAS release runs. A subsequent
+        // retry can acquire cleanly.
+        expect(await redis.exists(lockKey)).toBe(0);
+        // The cache write fires BEFORE updateAccountOrcid in fn, so the
+        // binding cache MAY persist. Not asserted here — that's a benign
+        // best-effort cache and not the security property under test.
+        // Operator-alert anchor: ambiguous-outcome log fired.
+        const ambiguousCalls = loggerErrorSpy.mock.calls.filter(
+          (call) => typeof call[1] === 'string' && call[1].includes('broadcast failed on ambiguous-outcome path'),
+        );
+        expect(ambiguousCalls.length).toBeGreaterThanOrEqual(1);
+      } finally {
+        updateOrcidSpy.mockRestore();
+        loggerErrorSpy.mockRestore();
+        await redis.del(lockKey, cacheKey).catch(() => { /* cleanup */ });
+      }
+    },
+  );
+
   // Direct Lua-CAS correctness spec. The primary safety property of
   // RELEASE_LOCK_LUA is that it refuses to delete the key when the stored
   // value does not equal the caller's nonce. The other specs in this block
