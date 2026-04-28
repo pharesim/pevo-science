@@ -57,7 +57,7 @@ async function reconcileClaimTimeout(
 ): Promise<number> {
   if (preCounter === null) {
     logger.error(
-      { err, batchSize },
+      { err, batchSize, reconcile_outcome: 'abandoned_pre' },
       'claim_account broadcast timed out — no pre-counter available, reconcile skipped',
     );
     return 0;
@@ -68,14 +68,14 @@ async function reconcileClaimTimeout(
     postCounter = await fetchPendingClaimedAccounts(config.hiveOnboardAccount);
   } catch (reconcileErr) {
     logger.error(
-      { err, reconcileErr, batchSize, preCounter },
+      { err, reconcileErr, batchSize, preCounter, reconcile_outcome: 'abandoned_post_read' },
       'claim_account broadcast timed out — post-counter read failed, reconcile skipped',
     );
     return 0;
   }
   if (postCounter === null) {
     logger.error(
-      { err, batchSize, preCounter },
+      { err, batchSize, preCounter, reconcile_outcome: 'abandoned_post_null' },
       'claim_account broadcast timed out — post-counter unavailable, reconcile skipped',
     );
     return 0;
@@ -88,8 +88,8 @@ async function reconcileClaimTimeout(
   const inserted = Math.max(0, Math.min(rawDelta, batchSize));
 
   if (inserted === 0) {
-    logger.error(
-      { err, batchSize, preCounter, postCounter, inserted },
+    logger.warn(
+      { err, batchSize, preCounter, postCounter, inserted, reconcile_outcome: 'none' },
       'claim_account broadcast timed out — reconciled 0/batchSize from chain (nothing landed)',
     );
     return 0;
@@ -102,7 +102,7 @@ async function reconcileClaimTimeout(
     );
   } catch (dbErr) {
     logger.error(
-      { err, dbErr, batchSize, preCounter, postCounter, inserted },
+      { err, dbErr, batchSize, preCounter, postCounter, inserted, reconcile_outcome: 'insert_failed' },
       'claim_account broadcast timed out — reconcile INSERT failed, DB may still diverge from chain',
     );
     return 0;
@@ -110,12 +110,12 @@ async function reconcileClaimTimeout(
 
   if (inserted < batchSize) {
     logger.warn(
-      { err, batchSize, preCounter, postCounter, inserted },
+      { err, batchSize, preCounter, postCounter, inserted, reconcile_outcome: 'partial' },
       `claim_account broadcast timed out — reconciled ${inserted}/${batchSize} from chain (partial landing)`,
     );
   } else {
-    logger.error(
-      { err, batchSize, preCounter, postCounter, inserted },
+    logger.info(
+      { err, batchSize, preCounter, postCounter, inserted, reconcile_outcome: 'full' },
       `claim_account broadcast timed out — reconciled ${inserted}/${batchSize} from chain (full landing)`,
     );
   }
@@ -152,6 +152,12 @@ export async function claimAccountTokens(): Promise<void> {
     // reconcile if the broadcast times out with outcome uncertain. A `null`
     // pre-counter means we could not read the account; in that case we
     // cannot reconcile on timeout and will log-and-skip.
+    //
+    // Account choice: `hiveOnboardAccount`, NOT `hiveAdminAccount`. The counter
+    // tracked here is `pending_claimed_accounts` on the account that signs and
+    // is the `creator` of the `claim_account` ops (see `buildClaimOps`). The
+    // two config values default to the same account but are independently
+    // overridable; reading from the signer is the only correct choice.
     const preCounter = await fetchPendingClaimedAccounts(config.hiveOnboardAccount)
       .catch((err) => {
         logger.warn(

@@ -116,3 +116,44 @@ The right long-term shape is **Option A.3** from `agents/docs/solutions/conventi
 ### Re-review signal
 
 When items 1-4 land, `git mv` this file back to `tasks/review/`. Architect's next pass scopes `/ce-code-review` to the round-2 commit and archives on clean.
+
+---
+
+Backend re-review signal (2026-04-28, worktree agent-a2ce0b3e, round 2):
+
+All four hold-block items addressed in `backend/src/account-creation.ts` and `backend/tests/account-creation.test.ts`:
+
+1. **Log severity tightening** in `reconcileClaimTimeout`:
+   - Full-landing branch: `logger.error` -> `logger.info` (happy path).
+   - Nothing-landed branch (delta=0): `logger.error` -> `logger.warn` (clean state, timeout still worth knowing).
+   - Partial-landing branch stays `warn`. Pre-counter null, post-counter read failure, post-counter null, INSERT failure all stay `error` per the table.
+
+2. **New test coverage** in the existing `post-timeout chain reconcile` describe block (3 cases):
+   - INSERT failure: pool.query rejection on the reconcile INSERT (highest-impact failure mode). Asserts `logger.error` fires with `reconcile_outcome: 'insert_failed'` plus the expected discriminant fields, single broadcast attempt, single INSERT call with `[50]`, no halve/retry. Uses `vi.spyOn(logger, 'error')` so the mock is restored by `vi.restoreAllMocks()` in afterEach.
+   - `postCounter === null`: post-timeout `getAccounts` returns an account record without the `pending_claimed_accounts` field (older API shape). Reconciler abandons; `reconcile_outcome: 'abandoned_post_null'` logged at error.
+   - Negative delta (post < pre): pre=100, post=80. Clamps to 0; `reconcile_outcome: 'none'` logged at warn (matches the new severity for the delta=0 branch).
+   The test header carve-out justification was already in place from round 1; no edits needed.
+
+3. **`reconcile_outcome` enum field** added to all seven reconcile log lines:
+   - `'full'` (full-landing info)
+   - `'partial'` (partial-landing warn)
+   - `'none'` (delta=0 warn — both true-zero and clamped negative)
+   - `'abandoned_pre'` (preCounter null error)
+   - `'abandoned_post_read'` (post-counter read threw error)
+   - `'abandoned_post_null'` (post-counter field missing error)
+   - `'insert_failed'` (DB INSERT rejected error)
+   Existing `inserted` / `batchSize` / `preCounter` / `postCounter` fields preserved — `reconcile_outcome` is one extra discriminant.
+
+4. **`hiveOnboardAccount` choice documented inline** at the first `fetchPendingClaimedAccounts` call site in `claimAccountTokens`. Five-line comment explains the counter belongs to the `creator` of `claim_account` ops (signer), the two config values default equal but are independently overridable, and the signer is the only correct read source.
+
+The architect's [TODO Architect] resolution and the new follow-up task `backend-claim-account-haf-op-reconcile.md` for the HAF op-fingerprint migration (DI-1, DI-2, INSERT-failure observability) are not addressed here — incremental fixes only, per the hold block's framing.
+
+Verification:
+- `npx vitest run tests/account-creation.test.ts` -> 11/11 passing (8 prior + 3 new).
+- `npm run lint` -> clean (2 pre-existing warnings in `seed-phrase.ts` unchanged).
+- `npx tsc --noEmit` -> clean.
+- Full vitest suite NOT run by this worker (parent serializes after fan-out merges).
+
+Files modified:
+- `backend/src/account-creation.ts` (log-severity tweaks, `reconcile_outcome` field on all log lines, inline rationale comment for `hiveOnboardAccount`).
+- `backend/tests/account-creation.test.ts` (added `logger` import, three new test cases in the `post-timeout chain reconcile` describe block).
