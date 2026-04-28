@@ -1,7 +1,7 @@
 ---
 title: "Chain-write timeout is an ambiguous outcome, not a confirmed failure"
 date: 2026-04-22
-last_updated: 2026-04-28
+last_updated: 2026-04-29
 category: conventions
 module: backend
 problem_type: convention
@@ -24,6 +24,8 @@ tags:
   - "toctou"
   - "retry-safety"
   - "partial-execution-ambiguity"
+  - "single-use-state"
+  - "retriable-discriminator"
 ---
 
 # Chain-write timeout is an ambiguous outcome, not a confirmed failure
@@ -403,6 +405,21 @@ The `'unavailable'` branch silently ignores any returned `skipRelease` (no lock 
 1. **`redis.expire` returns 0** (key already deleted between SETNX and EXPIRE — operator FLUSHDB, eviction, AOF-rewrite stall). No exception, code returns `{skipRelease:true}` anyway, lock is gone, A.1 protection bypassed silently. Check the return value: if 0, log at `error` and proceed with the 504; the wrapper's `skipRelease:true` is now a no-op (no lock to skip releasing).
 2. **`redis.expire` succeeds silently with no log.** Operators cannot alert on extension-event frequency or correlate against HAF-lag spikes. Emit `logger.warn` on the success path so the safety extension is observable.
 3. **Redis completely absent at BroadcastTimeoutError time** (`if (redis && isRedisAvailable())` guard short-circuits). The expire is skipped silently. Log at `error` so operators see the degraded mode, and accept that A.1 is a no-op when Redis is down (the convention's `'unavailable'` branch handles the no-lock case via the ambiguous-outcome envelope).
+
+### Sibling principle — `retriable: true` is meaningless when state is single-use
+
+Before adding a `retriable: true` discriminator to a non-2xx envelope, audit the path the client takes on retry. The discriminator promises "the same request body, replayed, will succeed once the transient cause clears." That promise requires the request body to remain valid across retries — it is BROKEN if any field is single-use and was already consumed when the discriminator emitted.
+
+The 2026-04-29 ORCID lock-contention case (architect decision: ARCHITECT-ORCID-STATE-CONSUMPTION-VS-RETRIABLE-409, archived 2026-04-29). The same-tick contention 409 inside `withOrcidBindingLock` carried `retriable: true` + `retry_after_seconds: 10`. The frontend consumed the discriminator, ran a countdown, replayed `POST /api/orcid/callback` with the same `{code, state}`. Result: 400 BAD_REQUEST. Reason: `routes/orcid.ts` consumes `state` at the top of `/callback` (eager replay protection — `redis.del(stateKey)` at the post-auth checkpoint) BEFORE dispatching to the handler that runs the lock acquisition. By the time the lock-contention 409 emits, the state token is gone. The retriable promise was theatre. Resolution: drop the discriminator from this 409 entirely — the contention case is genuinely terminal at the wire layer; clients restart OAuth.
+
+Audit checklist before stamping `retriable: true` on any envelope:
+
+1. **What single-use values does the request carry?** OAuth state tokens, signup nonces, idempotency keys whose first use mints a row, anti-replay nonces, time-windowed signed bodies. List them.
+2. **At what point in the handler does each become consumed/invalid?** Trace from request entry to the discriminator's emission site. If consumption happens BEFORE the discriminator can fire, the discriminator is unreachable in practice.
+3. **Does the retry path mint fresh values or replay the same body?** Frontend countdown-and-retry typically replays the same body. If the body must change to be valid on retry, `retriable: true` is the wrong shape — the right shape is either a non-retriable 4xx with a "restart the flow" UX, or a 2xx-with-pending-state envelope that the client polls separately.
+4. **If you keep `retriable: true`, can you defer the single-use consumption past the discriminator's emission point?** Sometimes yes (e.g., consume after lock acquisition rather than before — accepts a narrow replay window in exchange). Sometimes no (e.g., authentication checks that GUARD the consumption, where deferral opens a real attack surface). When deferral is unsafe, drop the discriminator.
+
+This sibling principle applies wherever the codebase emits a non-2xx that signals retry-with-same-body: not just chain-write timeouts. It pairs naturally with the timeout convention because both failure modes get tempting `retriable: true` annotations that quietly violate the contract — timeouts because outcome is ambiguous (retry may double-write), single-use-state because the retry's body is already invalid (retry can't even reach the original handler).
 
 ## Related
 
