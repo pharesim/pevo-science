@@ -103,7 +103,10 @@ initAppDb()
 let shutdownStarted = false;
 
 async function shutdown(signal: string): Promise<void> {
-  if (shutdownStarted) return;
+  if (shutdownStarted) {
+    logger.debug({ signal }, 'Duplicate shutdown signal received, ignored');
+    return;
+  }
   shutdownStarted = true;
 
   logger.info({ signal }, 'Shutdown signal received — draining connections');

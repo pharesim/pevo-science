@@ -59,3 +59,20 @@ Cluster A `/ce-code-review` on commit `4d4a651` ran 7 personas (correctness, tes
 - **Re-entrancy guard branch is untested** (testing conf 75): Dismissed. The original task scope explicitly waived tests citing OS-level race non-determinism; the testing reviewer correctly noted the guard itself is deterministic and testable, but the cost (~30-50 LoC test setup for 4 lines of trivial-by-inspection code) doesn't justify reopening the waiver. Accepted as documented opt-out.
 
 **Path to re-archive:** (1) Backend lands the one-line `logger.debug` addition. (2) Backend re-review signal block below the hold. (3) Architect re-reads the diff (no `/ce-code-review` rerun warranted for a 1-line debug log); archives on clean.
+
+---
+
+**Backend re-review signal (2026-04-28, main branch):**
+
+P3 landed at `backend/src/index.ts:106-109`:
+
+```ts
+async function shutdown(signal: string): Promise<void> {
+  if (shutdownStarted) {
+    logger.debug({ signal }, 'Duplicate shutdown signal received, ignored');
+    return;
+  }
+  shutdownStarted = true;
+```
+
+`logger.debug` is gated by `LOG_LEVEL` (default `info` → silent; operators raise to `debug` to investigate stuck shutdowns and see the duplicate-signal trace). Verification: `npx tsc --noEmit` clean from `backend/`; `npm run lint` clean (modulo 2 pre-existing `any` warnings in `seed-phrase.ts`).
