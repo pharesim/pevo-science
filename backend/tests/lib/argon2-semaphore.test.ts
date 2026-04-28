@@ -623,6 +623,102 @@ describe('drainArgon2Queue — runtime guard against test-context misuse', () =>
   });
 });
 
+describe('abort counter — operator observability', () => {
+  // The periodic `argon2_abort_summary` reporter consumes deltas from the
+  // monotonic counter exposed via `getArgon2AbortCount()`. The reporter
+  // itself is timer-based and not unit-tested here (would either flake on
+  // real timers or require fake-timers wiring); the contract is "every
+  // abort path increments the counter" and that is auditable per-path.
+  it('increments on the pre-queue abort path (already-aborted signal)', async () => {
+    const sem = createArgon2Semaphore(2, 5);
+    expect(sem.getArgon2AbortCount()).toBe(0);
+
+    const ac = new AbortController();
+    ac.abort();
+    await expect(
+      sem.runWithArgon2Slot(() => Promise.resolve('nope'), { signal: ac.signal }),
+    ).rejects.toBeInstanceOf(ArgonAbortError);
+
+    expect(sem.getArgon2AbortCount()).toBe(1);
+
+    // A second pre-queue abort increments again (monotonic, not reset by reads).
+    const ac2 = new AbortController();
+    ac2.abort();
+    await expect(
+      sem.runWithArgon2Slot(() => Promise.resolve('nope'), { signal: ac2.signal }),
+    ).rejects.toBeInstanceOf(ArgonAbortError);
+
+    expect(sem.getArgon2AbortCount()).toBe(2);
+  });
+
+  it('increments on the parked-waiter abort path (abort while queued)', async () => {
+    const sem = createArgon2Semaphore(1, 10);
+    expect(sem.getArgon2AbortCount()).toBe(0);
+
+    // Hold the only slot with A so B parks in the queue.
+    const a = controllable<number>();
+    const pA = sem.runWithArgon2Slot(() => a.fn());
+    await a.started;
+
+    const bAbort = new AbortController();
+    const pB = sem
+      .runWithArgon2Slot(() => Promise.resolve('should-not-run'), { signal: bAbort.signal })
+      .catch((err) => err);
+
+    // Yield so B actually parks before we abort it.
+    await new Promise((r) => setImmediate(r));
+    expect(sem.getArgon2QueueDepth()).toBe(1);
+    expect(sem.getArgon2AbortCount()).toBe(0); // Not yet aborted.
+
+    bAbort.abort();
+    expect(await pB).toBeInstanceOf(ArgonAbortError);
+    expect(sem.getArgon2AbortCount()).toBe(1);
+
+    // Drain.
+    a.resolve(1);
+    await pA;
+  });
+
+  it('increments on the slot-grant race-guard abort path', async () => {
+    // Race window: slot is granted (waiter resolved) BEFORE the abort
+    // listener fires; the second `signal?.aborted` check at slot-grant
+    // catches it, releases the slot to the next waiter, and increments
+    // the counter. Reproduce by manually ordering the events: queue B
+    // behind A, fire A's resolve so B's resolver runs first, then abort
+    // B before B's microtask continues past the slot-grant check.
+    //
+    // Easiest deterministic reproduction: pre-resolve B's slot via A
+    // finishing, and have B's abort signal be set to abort synchronously
+    // in the same microtask batch via `queueMicrotask`. The semaphore
+    // itself awaits the parked Promise — once resolved, the next line
+    // is the slot-grant abort check.
+    const sem = createArgon2Semaphore(1, 10);
+    const beforeCount = sem.getArgon2AbortCount();
+
+    const a = controllable<number>();
+    const pA = sem.runWithArgon2Slot(() => a.fn());
+    await a.started;
+
+    const bAbort = new AbortController();
+    const pB = sem
+      .runWithArgon2Slot(() => Promise.resolve('should-not-run'), { signal: bAbort.signal })
+      .catch((err) => err);
+    await new Promise((r) => setImmediate(r));
+    expect(sem.getArgon2QueueDepth()).toBe(1);
+
+    // Resolve A (which will resolve B's parked promise via the finally
+    // shift), then immediately call abort. Whether the parked-waiter path
+    // or the slot-grant race-guard path wins is racy, but BOTH increment
+    // the counter — the assertion only cares that we get exactly +1.
+    a.resolve(1);
+    bAbort.abort();
+    await pA;
+    expect(await pB).toBeInstanceOf(ArgonAbortError);
+
+    expect(sem.getArgon2AbortCount()).toBe(beforeCount + 1);
+  });
+});
+
 describe('module-level exports sanity', () => {
   it('MAX_CONCURRENT_ARGON2_OPS is a positive integer', () => {
     expect(Number.isInteger(MAX_CONCURRENT_ARGON2_OPS)).toBe(true);

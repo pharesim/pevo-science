@@ -179,6 +179,14 @@ export interface Argon2Semaphore {
   getArgon2QueueDepth(): number;
   getArgon2InFlight(): number;
   /**
+   * Monotonic count of `ArgonAbortError`s thrown since process start across
+   * all three abort paths (pre-queue, parked-waiter, slot-grant). Used by
+   * the periodic summary reporter to compute deltas — operators see one
+   * `argon2_abort_summary` log line per non-zero interval, no per-event
+   * flood. Safe to call concurrently; reads do not mutate state.
+   */
+  getArgon2AbortCount(): number;
+  /**
    * Reject all currently-queued waiters with `ShuttingDownError` and flip
    * the instance into shutting-down mode: any subsequent
    * `runWithArgon2Slot` call throws `ShuttingDownError` without queueing.
@@ -211,6 +219,10 @@ export function createArgon2Semaphore(
   }
   let inFlight = 0;
   let queueDepth = 0;
+  // Monotonic abort counter, incremented on every ArgonAbortError throw
+  // path. Consumed by the periodic summary reporter (delta-based), not
+  // reset by readers — see `startArgon2AbortReporter` for the reason.
+  let abortCount = 0;
   // Each waiter carries both resolve and reject handlers so `drainArgon2Queue`
   // can synchronously unblock every pending caller with `ShuttingDownError`
   // during SIGTERM handling. Without the reject handle a queued waiter's
@@ -238,6 +250,9 @@ export function createArgon2Semaphore(
     getArgon2InFlight(): number {
       return inFlight;
     },
+    getArgon2AbortCount(): number {
+      return abortCount;
+    },
     drainArgon2Queue(): void {
       shuttingDown = true;
       // Swap the waiters array atomically before iterating so a concurrent
@@ -255,6 +270,7 @@ export function createArgon2Semaphore(
       // touching counters / queue state. This keeps the happy path branch-
       // equal to the pre-abort world (no `signal` touched when undefined).
       if (signal?.aborted) {
+        abortCount += 1;
         throw new ArgonAbortError();
       }
       if (shuttingDown) {
@@ -286,6 +302,7 @@ export function createArgon2Semaphore(
                 // next live waiter instead.
                 const i = waiters.indexOf(waiter);
                 if (i >= 0) waiters.splice(i, 1);
+                abortCount += 1;
                 reject(new ArgonAbortError());
               };
               // No `{ once: true }` here: the explicit `removeEventListener`
@@ -310,6 +327,7 @@ export function createArgon2Semaphore(
       if (signal?.aborted) {
         const next = waiters.shift();
         if (next) next.resolve();
+        abortCount += 1;
         throw new ArgonAbortError();
       }
       inFlight += 1;
@@ -344,6 +362,17 @@ export function getArgon2QueueDepth(): number {
  */
 export function getArgon2InFlight(): number {
   return defaultSemaphore.getArgon2InFlight();
+}
+
+/**
+ * Monotonic count of `ArgonAbortError`s thrown since process start across
+ * all three abort paths (pre-queue, parked-waiter, slot-grant). The
+ * periodic reporter (`startArgon2AbortReporter`) consumes deltas from this
+ * counter and emits a single `argon2_abort_summary` log line per non-zero
+ * interval.
+ */
+export function getArgon2AbortCount(): number {
+  return defaultSemaphore.getArgon2AbortCount();
 }
 
 /**
@@ -414,4 +443,64 @@ export function drainArgon2Queue(): void {
     return;
   }
   defaultSemaphore.drainArgon2Queue();
+}
+
+// ── Periodic abort-summary reporter ────────────────────────
+//
+// Route handlers translate `ArgonAbortError` into a silent return (the
+// client has already disconnected; writing to a torn-down socket is a
+// no-op). That silent-by-design policy means an operator running with
+// `LOG_LEVEL=info` (production default) sees zero signal when client-
+// abort storms saturate the semaphore. A periodic summary log fixes the
+// blind spot without flooding logs: one line per 60s interval iff at
+// least one abort happened in that window.
+//
+// This is gated start/stop (not auto-started at module import) so vitest
+// does not acquire the timer just by importing the module. `index.ts`
+// calls `startArgon2AbortReporter()` from the `app.listen` callback and
+// `stopArgon2AbortReporter()` from `shutdown()`. The interval is
+// `.unref()`ed so a forgotten stop call cannot keep Node alive.
+
+const ABORT_REPORT_INTERVAL_MS = 60_000;
+let abortReportTimer: ReturnType<typeof setInterval> | null = null;
+let abortLastReportedCount = 0;
+
+function reportArgon2Aborts(): void {
+  const current = defaultSemaphore.getArgon2AbortCount();
+  const delta = current - abortLastReportedCount;
+  if (delta > 0) {
+    abortLastReportedCount = current;
+    logger.info(
+      { event: 'argon2_abort_summary', count: delta },
+      'argon2 abort events in the last interval',
+    );
+  }
+}
+
+/**
+ * Start the periodic `argon2_abort_summary` reporter. Emits one
+ * `logger.info` line every `ABORT_REPORT_INTERVAL_MS` (60s) iff the
+ * abort-counter delta since the last report is > 0. Quiet intervals
+ * produce zero log lines. Idempotent: calling twice is a no-op.
+ *
+ * Wired from `index.ts` after `app.listen`. NOT auto-started at module
+ * import so vitest workers don't acquire the timer (a leaked interval
+ * across test files would surface as "Vitest is hanging" or worker-
+ * process-doesn't-exit warnings).
+ */
+export function startArgon2AbortReporter(): void {
+  if (abortReportTimer) return;
+  abortReportTimer = setInterval(reportArgon2Aborts, ABORT_REPORT_INTERVAL_MS);
+  abortReportTimer.unref();
+}
+
+/**
+ * Stop the periodic abort reporter. Called from `shutdown()` in
+ * `index.ts`. Idempotent.
+ */
+export function stopArgon2AbortReporter(): void {
+  if (abortReportTimer) {
+    clearInterval(abortReportTimer);
+    abortReportTimer = null;
+  }
 }

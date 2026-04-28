@@ -16,7 +16,7 @@ import { startActiveAuthorsCache, startReputationWeightsCache, backfillAccredita
 import { startWotThresholdCache } from './wot.js';
 import { startAccountClaimer, stopAccountClaimer } from './account-creation.js';
 import { startSignupCleanup, stopSignupCleanup } from './signup-cleanup.js';
-import { drainArgon2Queue } from './lib/argon2-semaphore.js';
+import { drainArgon2Queue, startArgon2AbortReporter, stopArgon2AbortReporter } from './lib/argon2-semaphore.js';
 import { logger } from './logger.js';
 import type { Server } from 'http';
 
@@ -82,6 +82,10 @@ initAppDb()
       // Start pending signup cleanup (every 1h)
       startSignupCleanup();
 
+      // Start periodic argon2 abort-summary reporter (every 60s).
+      // Surfaces silent ArgonAbortError events to operators at LOG_LEVEL=info.
+      startArgon2AbortReporter();
+
       // Non-blocking: check Hive API node connectivity at startup
       void checkHiveNodes();
     });
@@ -117,6 +121,7 @@ async function shutdown(signal: string): Promise<void> {
   stopBatchReputation();
   stopAccountClaimer();
   stopSignupCleanup();
+  stopArgon2AbortReporter();
 
   // Reject any auth requests parked in the argon2 semaphore queue. Without
   // this, `server.close()` waits for them until the 30s force-timeout fires,
