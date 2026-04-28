@@ -8,7 +8,7 @@ import { getAccreditedSet } from '../accreditation.js';
 import { hafCache } from '../cache.js';
 import { logger } from '../logger.js';
 import { T, activeAccreditationsCteBody, retractedPapersCteBody, buildWith, validPevoPaperWhere } from '../hafsql.js';
-import { validateDisciplineFilter, DisciplineFilterError } from '../types/disciplines.js';
+import { validateDisciplineFilter } from '../types/disciplines.js';
 
 const router = Router();
 
@@ -59,13 +59,7 @@ async function searchPapersFromHaf(
   conditions.push(validPevoPaperWhere({ commentAlias: 'c', appTagParam, bridgeAccountParam, source: paperSource }));
 
   if (discipline) {
-    // Case-insensitive match: canonicalize both sides to lowercase so a
-    // `?discipline=physics` filter still matches papers tagged "Physics",
-    // "PHYSICS", etc. Mirrors the LOWER()-grouped /api/disciplines query.
-    // Callers (router, papers, search) lowercase `discipline` once at route
-    // entry, so the bound parameter is already canonical here. (stats has no
-    // `?discipline=` query param; it applies LOWER() inside a hard-coded
-    // subquery.)
+    // LOWER() on both sides so case-variant on-chain values match.
     conditions.push(`LOWER(c.json_metadata -> ${appTagParam} ->> 'discipline') = $${paramIdx++}`);
     params.push(discipline);
   }
@@ -302,29 +296,15 @@ router.get('/', async (req: Request, res: Response) => {
   } else {
     return sendError(res, 400, 'BAD_REQUEST', `Invalid type. Must be one of: ${VALID_SEARCH_TYPES.join(', ')}`);
   }
-  // Canonicalize `?discipline=` at route entry so downstream SQL binding and
-  // cache-key construction share the same lowercased value. Three-site
-  // lowercasing (route, SQL binder, cache key) drifted under refactor — see
-  // BE-DISCIPLINE-CANONICALIZE round-2 hold #6. Round-3 hold #2: use a
-  // typeof-narrowed check rather than `as string | undefined`; Express types
-  // `req.query[k]` as `string | ParsedQs | string[] | ParsedQs[] | undefined`,
-  // so repeated params (`?discipline=a&discipline=b`) yield `string[]` and an
-  // unsafe cast silently coerces `.toLowerCase()` on the array to
-  // `"[object Object]"` in the cache key.
-  //
-  // BE-DISCIPLINE-LENGTH-CAP: validate length + charset BEFORE .toLowerCase()
-  // so a 1 MB oversize string is rejected before V8 does the lower. The helper
-  // runs the length check on the raw input, rejects non-Unicode-safe charsets,
-  // and returns the canonical lowercased value (or null for empty/non-string).
-  let discipline: string | null;
-  try {
-    discipline = validateDisciplineFilter(req.query.discipline);
-  } catch (err) {
-    if (err instanceof DisciplineFilterError) {
-      return sendError(res, 400, 'BAD_REQUEST', err.message);
-    }
-    throw err;
+  // Cache key uses the lowercased value (hashed downstream); the SQL gate
+  // uses `discipline ?? undefined` so the `if (discipline)` predicate
+  // suppresses the WHERE clause entirely on absent input. Same value, two
+  // coalesce shapes, on purpose.
+  const filterResult = validateDisciplineFilter(req.query.discipline);
+  if (filterResult && !filterResult.ok) {
+    return sendError(res, 400, 'BAD_REQUEST', filterResult.message);
   }
+  const discipline: string | null = filterResult?.ok ? filterResult.value : null;
   const language = req.query.language as string | undefined;
   const source = req.query.source as string | undefined;
   const accreditedOnly = req.query.accredited_only !== 'false'; // default true

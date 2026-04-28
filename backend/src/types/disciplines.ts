@@ -93,18 +93,23 @@ export function getFieldForDiscipline(
 
 export const DISCIPLINE_FILTER_MAX_LEN = 100;
 export const DISCIPLINE_FILTER_PATTERN = /^[\p{L}\p{N} \-]+$/u;
+const DISCIPLINE_FILTER_INVALID_MESSAGE = 'Discipline filter invalid';
 
 /**
- * Thrown by `validateDisciplineFilter` when a raw filter value violates the
- * length or charset guard. Callers convert this to a `400 BAD_REQUEST`
- * response with the error's message. See BE-DISCIPLINE-LENGTH-CAP.
+ * Result shape returned by `validateDisciplineFilter`:
+ * - `null` — the filter is absent (not provided, repeated/array shape, or
+ *   non-string). Callers should treat as "no filter".
+ * - `{ ok: true, value }` — the filter is present and valid; `value` is the
+ *   canonical lowercased form ready to bind into SQL / cache keys.
+ * - `{ ok: false, message }` — the filter is present but violates the length
+ *   or charset guard. Callers convert to `400 BAD_REQUEST`.
+ *
+ * Discriminated union avoids the throw/instanceof rethrow shape that an
+ * expected 400 path does not deserve.
  */
-export class DisciplineFilterError extends Error {
-  constructor(message = 'Discipline filter invalid') {
-    super(message);
-    this.name = 'DisciplineFilterError';
-  }
-}
+export type DisciplineFilterResult =
+  | { ok: true; value: string }
+  | { ok: false; message: string };
 
 /**
  * Validates a raw `?discipline=` filter value. Enforces:
@@ -112,27 +117,24 @@ export class DisciplineFilterError extends Error {
  *   on String.prototype.toLowerCase() and Postgres LOWER()).
  * - Charset matches DISCIPLINE_FILTER_PATTERN (Unicode letters/digits/space/hyphen).
  *
- * Returns the canonical (lowercased) value on success, null for empty/undefined,
- * or throws `DisciplineFilterError` on guard failure. Callers convert the error
- * to a 400 BAD_REQUEST response.
- *
- * Accepts `unknown` because Express types `req.query[k]` as
- * `string | ParsedQs | string[] | ParsedQs[] | undefined`; non-string shapes
- * (repeated `?discipline=a&discipline=b` yields `string[]`) are treated as
- * invalid input and return null — same as absent. This preserves the prior
- * `typeof raw === 'string'` narrow while centralising the guard.
+ * Returns null for absent input (missing, empty, non-string, or array shape
+ * from repeated `?discipline=a&discipline=b` params), `{ ok: true, value }`
+ * with the lowercased canonical form on success, or `{ ok: false, message }`
+ * on guard failure. The length check runs against the raw input before any
+ * `.toLowerCase()` so an oversize string is rejected before V8 / Postgres
+ * touch it.
  */
-export function validateDisciplineFilter(raw: unknown): string | null {
+export function validateDisciplineFilter(raw: unknown): DisciplineFilterResult | null {
   if (raw == null) return null;
   if (typeof raw !== 'string') return null;
   if (raw.length === 0) return null;
   if (raw.length > DISCIPLINE_FILTER_MAX_LEN) {
-    throw new DisciplineFilterError();
+    return { ok: false, message: DISCIPLINE_FILTER_INVALID_MESSAGE };
   }
   if (!DISCIPLINE_FILTER_PATTERN.test(raw)) {
-    throw new DisciplineFilterError();
+    return { ok: false, message: DISCIPLINE_FILTER_INVALID_MESSAGE };
   }
-  return raw.toLowerCase();
+  return { ok: true, value: raw.toLowerCase() };
 }
 
 // ──────────────────────────────────────────────

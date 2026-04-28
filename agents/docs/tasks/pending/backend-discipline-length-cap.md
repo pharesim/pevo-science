@@ -87,3 +87,42 @@ Round-1 `/ce-code-review` on commit `602214f` (8 personas: correctness, testing,
 - `backend-papers-cache-key-sha256-mirror.md` — adversarial P3 finding (conf 80) that `/api/papers` cache key is delimiter-collision-prone via unvalidated sibling fields; mitigation pattern (sha256-wrap) already in-repo at `search.ts:339`.
 
 **Path to re-archive:** (1) Backend applies items 1-3 + 5 on this task. (2) Backend re-review signal block below the hold. (3) Architect re-reviews round-2 with `/ce-code-review` and archives on clean.
+
+---
+
+## Implementer re-review signal (2026-04-28, backend) — round 2
+
+Items 1, 2, 3, and 5 landed. Item 4 was DONE architect-side this pass (per the hold-block annotation) so no implementer action was required.
+
+**Item 1 (P2) — Helper-direct unit tests with 100/101 boundary coverage.** New file `backend/tests/lib/disciplines.test.ts` covers all five branches of `validateDisciplineFilter` directly:
+
+  - **Absent / non-string shapes return null:** null, undefined, empty string, repeated-param `string[]`, ParsedQs object, numeric, boolean (7 cases).
+  - **Happy path returns canonical lowercased value:** ASCII single-word, multi-word, already-lowercase, hyphen-containing, Latin-extended diacritics (`mathématiques`), non-Latin scripts (`Φυσική`), Unicode digits (`CO2 Reduction`) (7 cases).
+  - **Length-cap boundary at `DISCIPLINE_FILTER_MAX_LEN`:** pin the constant === 100, accept exactly 100 chars, reject exactly 101 chars, reject 1MB oversize (4 cases). The 100-accept + 101-reject pair specifically guards an off-by-one flip from `>` to `>=` that the existing 99-accept / 4000-reject coverage in supertest specs would silently pass.
+  - **Charset rejection:** `$$$`, periods/commas/slashes/ampersands, underscore, HTML markup, error-message verbatim assertion (5 cases).
+
+**Item 2 (P2) — Result-shape return; folded away `DisciplineFilterError`.** `validateDisciplineFilter(raw: unknown)` now returns `{ ok: true, value: string } | { ok: false, message: string } | null` (discriminated union; null = absent). `DisciplineFilterError` class deleted from `backend/src/types/disciplines.ts`. Both call sites collapsed:
+
+  - `backend/src/routes/papers.ts:475-483` — was a 9-line try/catch with `instanceof` rethrow; now 5 lines (filterResult; if !ok, sendError; ?? null coalesce).
+  - `backend/src/routes/search.ts:319-327` — same shape, same collapse.
+
+  The new helper unit tests from item 1 exercise the new return shape directly. Mocked-pool regression in `disciplines-canon-mocked.test.ts` (which exercises the route handlers via supertest) confirms the call-site refactor preserves all existing repeated-param, oversize-input, and charset-rejection contracts.
+
+**Item 3 (P2) — Trim route-handler comment archaeology.** Trimmed three sites:
+
+  - `papers.ts:452-475` (route entry comment) — was 18 lines citing BE-DISCIPLINE-CANONICALIZE round-2 hold #6, round-3 hold #1, round-3 hold #2, BE-DISCIPLINE-LENGTH-CAP, and the W4 cache-key history; now 4 lines covering only the live `'' vs undefined` coalesce-shape invariant.
+  - `papers.ts:198-208` (`fetchPapersFromHaf` parameter header) — was 8 lines re-narrating the helper's contract; now 3 lines stating the binder invariant + the suppress-on-absent gate behavior.
+  - `papers.ts:234-243` (`if (discipline)` SQL-binder branch) — was 7 lines citing the canonicalization fix + a "no duplicated `.toLowerCase()`" warning; now 1 line (the LOWER()-on-both-sides invariant).
+  - `search.ts:305-318` (route entry) + `search.ts:61-71` (SQL-binder branch) — same shape; trimmed to live invariants only.
+
+  The narrative for each round of holds is preserved in `git blame` and (post-archive) in `tasks-archive.md`. Once these tasks archive, the citations stop being navigable, so deletion now is the right move.
+
+**Item 5 (P3) — Co-Authored-By trailer restore for `602214f` + `9882573` (combined).** Per the architect's "may be combined" guidance, the deferred restore from BE-PAPERS-DISCIPLINE-FIELD-CANON-NAME round-2 hold #3 is bundled into one no-op follow-up commit covering both missing trailers. Pattern matches `27befcf` precedent.
+
+**Tests run** (with docker-IP env overrides per CLAUDE.md):
+  - `tests/lib/disciplines.test.ts` (new) → 23 passed.
+  - `tests/routes/disciplines-canon-mocked.test.ts` (regression for the call-site refactor) → 13 passed.
+  - `tests/routes/papers.test.ts` + `tests/routes/search.test.ts` (real-HAF smoke) → 26 passed | 1 skipped (pre-existing).
+  - `npm run lint` clean (2 pre-existing warnings on `seed-phrase.ts`, unchanged).
+
+**Architect-side fix-in-place to apply after this re-review (out of band):** none — item 4 already done architect-side.

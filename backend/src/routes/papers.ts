@@ -32,7 +32,7 @@ import {
   getCachedGenesisBlock,
   validPevoPaperWhere,
 } from '../hafsql.js';
-import { validateDisciplineFilter, DisciplineFilterError } from '../types/disciplines.js';
+import { validateDisciplineFilter } from '../types/disciplines.js';
 
 const router = Router();
 
@@ -198,14 +198,9 @@ async function fetchPapersFromHaf(
   const { limit, offset } = parsePageLimit(req);
   const sort = parseSort(req);
   const order = parseOrder(req);
-  // `discipline` arrives already validated + lowercased by the route handler
-  // via `validateDisciplineFilter` (BE-DISCIPLINE-LENGTH-CAP). The SQL binder
-  // below uses it as-is against `LOWER(column) = $N`. Do not re-lowercase or
-  // re-read req.query.discipline here: the guard must run once, before
-  // V8/Postgres touches an oversize string. The caller passes
-  // `discipline ?? undefined` so the `if (discipline)` gate suppresses the
-  // `WHERE LOWER(...) = $N` condition when no filter was supplied (rather
-  // than emitting an empty-string match).
+  // `discipline` is pre-validated + lowercased by the route handler. Bound
+  // as-is into `LOWER(column) = $N`; the `if (discipline)` gate below
+  // suppresses the WHERE clause when absent.
   const keyword = req.query.keyword as string | undefined;
   const author = req.query.author as string | undefined;
   const language = req.query.language as string | undefined;
@@ -237,12 +232,7 @@ async function fetchPapersFromHaf(
   const filterParams: unknown[] = [];
 
   if (discipline) {
-    // Case-insensitive discipline match: mirrors /api/search and
-    // /api/disciplines canon_name semantics. Without LOWER() on both sides,
-    // `?discipline=physics` silently missed papers tagged "Physics" on the
-    // primary paper-listing endpoint — the same drift the canonicalization
-    // fix closed on /api/search. `discipline` is lowercased once at route
-    // entry (see above); no duplicated `.toLowerCase()` here.
+    // LOWER() on both sides so case-variant on-chain values match.
     conditions.push(`LOWER(c.json_metadata -> ${appTagParam} ->> 'discipline') = $${paramIdx++}`);
     filterParams.push(discipline);
   }
@@ -453,34 +443,15 @@ router.get('/', async (req: Request, res: Response) => {
   const { page, limit } = parsePageLimit(req);
   const sort = parseSort(req);
   const order = parseOrder(req);
-  // Canonicalize `?discipline=` at route entry so downstream SQL binding and
-  // cache-key construction share the same lowercased value. Mirrors the
-  // search.ts:287 pattern landed by BE-DISCIPLINE-CANONICALIZE round-2 hold
-  // #6. Round-3 hold #1: without this, `?discipline=Physics` and
-  // `?discipline=physics` populate independent Redis cache entries despite
-  // the SQL-side LOWER() match — the dedup is defeated at the memoization
-  // layer on the primary paper-feed endpoint.
-  //
-  // BE-DISCIPLINE-LENGTH-CAP: validate length + charset BEFORE .toLowerCase()
-  // so a 1 MB oversize string is rejected before V8 does the lower. The helper
-  // also handles the repeated-param `string[]` coercion trap (round-3 hold #2)
-  // by accepting `unknown` and returning null for non-string shapes.
-  //
-  // Cache-key stability (W4 round-3 hold #1): `discipline` must coalesce to
-  // `''` in the template literal below, NOT `undefined` — the template would
-  // otherwise stringify `undefined` to the literal `"undefined"`, invalidating
-  // every existing `d=` cache entry on deploy. The inner SQL-gate path uses
-  // `: undefined` so the `if (discipline)` condition suppresses the WHERE
-  // clause entirely.
-  let discipline: string | null;
-  try {
-    discipline = validateDisciplineFilter(req.query.discipline);
-  } catch (err) {
-    if (err instanceof DisciplineFilterError) {
-      return sendError(res, 400, 'BAD_REQUEST', err.message);
-    }
-    throw err;
+  // Cache key uses `discipline ?? ''` so absent/invalid coalesces to the
+  // empty fragment `d=`, while the SQL gate uses `discipline ?? undefined`
+  // so the `if (discipline)` predicate suppresses the WHERE clause entirely.
+  // Same value, two coalesce shapes, on purpose.
+  const filterResult = validateDisciplineFilter(req.query.discipline);
+  if (filterResult && !filterResult.ok) {
+    return sendError(res, 400, 'BAD_REQUEST', filterResult.message);
   }
+  const discipline: string | null = filterResult?.ok ? filterResult.value : null;
   const keyword = req.query.keyword || '';
   const author = req.query.author || '';
   const language = req.query.language || '';
