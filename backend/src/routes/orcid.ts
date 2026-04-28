@@ -4,7 +4,7 @@ import jwt from 'jsonwebtoken';
 import { PrivateKey } from '@hiveio/dhive';
 import { z } from 'zod';
 import { config } from '../config.js';
-import { broadcastJsonWithTimeout } from '../hive.js';
+import { broadcastJsonWithTimeout, BroadcastTimeoutError } from '../hive.js';
 import { handleBroadcastError, type HandleBroadcastErrorOpts } from '../lib/broadcast-error.js';
 import { getRedis, isRedisAvailable } from '../redis.js';
 import { getAppPool } from '../app-db.js';
@@ -69,6 +69,17 @@ const ORCID_BINDING_CACHE_TTL = 120;
 // TTL is exceeded, but keeping the TTL above the helper-enforced bound avoids
 // the failure mode entirely for honest traffic.
 const ORCID_BINDING_LOCK_TTL_SECONDS = 35;
+// Upper-bound HAF indexing-lag window. On `BroadcastTimeoutError` inside the
+// lock-acquired branch of withOrcidBindingLock, the lock TTL is extended to
+// this value (Option A.1 from the chain-write-timeout convention doc) so a
+// concurrent bind for the same orcid_id cannot acquire a fresh lock during
+// the window in which our broadcast may still be on-chain unindexed. The
+// extended lock auto-expires; new requests during the window receive the
+// existing transient lock-contention 409 with Retry-After. Used only on the
+// timer-fire path; non-timeout throws release immediately as before. See
+// agents/docs/solutions/conventions/chain-write-timeout-ambiguous-outcome-2026-04-22.md
+// (Option A.1) and tasks-archive.md BACKEND-ORCID-LOCK-TTL-EXTEND-ON-TIMEOUT.
+const HAF_INDEXING_LAG_CEILING_SECONDS = 120;
 // Advertised in the lock-contention 409 Retry-After header. Not coupled to
 // the lock TTL above: 10s is a realistic client backoff for "mid-broadcast
 // from a different request", while the TTL bounds the worst-case hold.
@@ -489,6 +500,40 @@ async function handleAccredit(
         key,
       );
     } catch (err) {
+      if (err instanceof BroadcastTimeoutError) {
+        // Option A.1: extend the binding lock's TTL to the HAF-indexing-lag
+        // ceiling BEFORE writing the 504 envelope. Order matters — the
+        // expire MUST land before handleBroadcastError writes the response,
+        // because the response-write is the last thing inside this fn body
+        // and a malicious caller terminating the connection mid-write could
+        // otherwise escape fn before the extend completes. Returning
+        // { skipRelease: true } signals withOrcidBindingLock NOT to delete
+        // the extended lock in finally; the lock auto-expires at the
+        // extended TTL, blocking concurrent binds for the same orcid_id
+        // during the window in which our broadcast may still be on-chain
+        // unindexed. Non-timeout throws (rethrown below) flow through the
+        // wrapper's normal release path.
+        const redis = getRedis();
+        if (redis && isRedisAvailable()) {
+          try {
+            await redis.expire(orcidBindingLockKey(orcidId), HAF_INDEXING_LAG_CEILING_SECONDS);
+          } catch (expireErr) {
+            // Best-effort: a Redis flap between acquire and expire is not
+            // worth hard-failing the request closed (the user is already
+            // getting a 504 ambiguous-outcome envelope). Log at error level
+            // because the duplicate-bind protection is degraded for this
+            // request — the lock will fall back to its original ~35s TTL
+            // and a concurrent bind arriving after that could slip the
+            // race A.1 was designed to close.
+            logger.error(
+              { err: expireErr, orcidId },
+              'orcid binding lock TTL extension failed — duplicate-bind protection degraded for this request',
+            );
+          }
+        }
+        handleBroadcastError(res, err, accreditErrorOpts);
+        return { skipRelease: true };
+      }
       handleBroadcastError(res, err, accreditErrorOpts);
       return;
     }
@@ -571,6 +616,24 @@ async function handleLink(
         key,
       );
     } catch (err) {
+      if (err instanceof BroadcastTimeoutError) {
+        // Option A.1: extend lock TTL on broadcast timeout. See handleAccredit
+        // counterpart for the full rationale (mirrored exactly so both bind
+        // surfaces share identical race protection).
+        const redis = getRedis();
+        if (redis && isRedisAvailable()) {
+          try {
+            await redis.expire(orcidBindingLockKey(orcidId), HAF_INDEXING_LAG_CEILING_SECONDS);
+          } catch (expireErr) {
+            logger.error(
+              { err: expireErr, orcidId },
+              'orcid binding lock TTL extension failed — duplicate-bind protection degraded for this request',
+            );
+          }
+        }
+        handleBroadcastError(res, err, linkErrorOpts);
+        return { skipRelease: true };
+      }
       handleBroadcastError(res, err, linkErrorOpts);
       return;
     }
@@ -745,7 +808,16 @@ async function releaseBindingLock(orcidId: string, nonce: string): Promise<void>
 async function withOrcidBindingLock(
   res: Response,
   orcidId: string,
-  fn: () => Promise<void>,
+  // `fn` may signal `{ skipRelease: true }` to opt out of the wrapper's
+  // CAS-release in finally — used by the BroadcastTimeoutError catch inside
+  // handleAccredit/handleLink, which extends the lock TTL to
+  // HAF_INDEXING_LAG_CEILING_SECONDS so a concurrent bind for the same
+  // orcid_id cannot acquire a fresh lock while our broadcast may still be
+  // on-chain unindexed (Option A.1). Throws from fn still flow through the
+  // finally and release as before — only an explicit `{ skipRelease: true }`
+  // return short-circuits the release. Returning void preserves the legacy
+  // success-path release.
+  fn: () => Promise<void | { skipRelease: true }>,
   // REQUIRED at the type level: the unavailable-branch ambiguous-outcome
   // envelope is the only thing keeping a Redis-flap throw from propagating
   // to the outer /callback catch as 500 INTERNAL_ERROR (consumed-state-token
@@ -769,10 +841,24 @@ async function withOrcidBindingLock(
     );
     return;
   } else if (lock.state === 'acquired') {
+    // skipRelease toggles to true ONLY when fn returns `{ skipRelease: true }`
+    // explicitly (e.g. the BroadcastTimeoutError catch in handleAccredit /
+    // handleLink, which extends the lock TTL to
+    // HAF_INDEXING_LAG_CEILING_SECONDS and signals the wrapper not to delete
+    // the extended lock). The `let` declared above the try is load-bearing:
+    // `finally` cannot read `result` from `try` scope, and a throw from fn
+    // must still release (otherwise a non-timeout throw would orphan the
+    // lock for 35s — failure mode the original try/finally already
+    // prevented). Throws skip the `if (result?.skipRelease)` line entirely,
+    // leaving skipRelease=false, so finally releases as before.
+    let skipRelease = false;
     try {
-      await fn();
+      const result = await fn();
+      if (result?.skipRelease) skipRelease = true;
     } finally {
-      await releaseBindingLock(orcidId, lock.nonce);
+      if (!skipRelease) {
+        await releaseBindingLock(orcidId, lock.nonce);
+      }
     }
   } else if (lock.state === 'unavailable') {
     // Redis outage or nonce-shape invariant drift: degrade to cache-less
@@ -785,6 +871,14 @@ async function withOrcidBindingLock(
     // throw into the same 504 BROADCAST_TIMEOUT shape (retriable:false,
     // verify_before_retry:true). See convention doc
     // agents/docs/solutions/conventions/chain-write-timeout-ambiguous-outcome-2026-04-22.md.
+    //
+    // NB: A.1 lock-TTL extension is a NO-OP on this branch. There is no lock
+    // to extend (acquireBindingLock returned 'unavailable'). The duplicate-
+    // bind window in the degraded-Redis regime is a separate axis tracked
+    // outside this function; forceAmbiguousOutcome above already steers the
+    // user to /settings rather than a fresh broadcast retry. A future fn that
+    // returns `{ skipRelease: true }` on this branch is silently ignored —
+    // there is nothing to skip releasing.
     try {
       await fn();
     } catch (err) {

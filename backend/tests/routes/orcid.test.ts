@@ -1286,13 +1286,28 @@ describe.each([
 
   // BE-ORCID-BROADCAST-ABORT-TIMEOUT — route-level timeout discrimination.
   // When broadcastJsonWithTimeout raises BroadcastTimeoutError, the handler
-  // must return 504 BROADCAST_TIMEOUT with { retriable: true, timeout_ms }
-  // details AND must NOT write any post-broadcast side-effects (no
-  // cacheOrcidBinding, no updateAccountOrcid). A regression to the plain
-  // outer-catch-only pattern would return 500 INTERNAL_ERROR and lose the
-  // retriable signal UI/agent consumers need.
+  // must return 504 BROADCAST_TIMEOUT with the canonical ambiguous-outcome
+  // envelope AND must NOT write the orcid_binding cache entry (the broadcast
+  // outcome is uncertain).
+  //
+  // Round-2 contract change (BACKEND-ORCID-LOCK-TTL-EXTEND-ON-TIMEOUT,
+  // Option A.1): the lock is NO LONGER released on the timeout path. Instead
+  // the wrapper's fn returns `{ skipRelease: true }` after extending the
+  // lock TTL to HAF_INDEXING_LAG_CEILING_SECONDS (120s) so a concurrent bind
+  // for the same orcid_id cannot acquire a fresh lock during the window in
+  // which our broadcast may still be on-chain unindexed. Pre-A.1 behavior
+  // released the lock under the nonce CAS in finally — that left a 0-30.x
+  // second window during which holder B could acquire a fresh lock and
+  // duplicate-broadcast. The lock-extended behavior is asserted by the
+  // companion `withOrcidBindingLock-extends-ttl-on-broadcast-timeout` spec
+  // immediately below; here we pin the integration shape (504 envelope,
+  // no cache write, lock present in Redis after the call returns).
+  //
+  // A regression to the plain outer-catch-only pattern would return 500
+  // INTERNAL_ERROR and lose the retriable signal UI/agent consumers need.
+  // A regression that releases the lock would re-open the duplicate-bind race.
   it(
-    'broadcast timeout → 504 BROADCAST_TIMEOUT, no cache write, lock released',
+    'broadcast timeout → 504 BROADCAST_TIMEOUT, no cache write, lock TTL extended (A.1)',
     async () => {
       const redis = getRedis();
       if (!redis) return;
@@ -1328,10 +1343,195 @@ describe.each([
           timeout_ms: 30_000,
           verify_location: '/settings',
         });
-        // Post-broadcast side-effects must NOT fire on timeout: no cache entry,
-        // lock released via finally's nonce CAS so retries aren't blocked.
+        // Cache write skipped on timeout (broadcast outcome uncertain).
         expect(await redis.get(cacheKey)).toBeNull();
-        expect(await redis.get(lockKey)).toBeNull();
+        // A.1: lock NOT released — TTL extended to HAF_INDEXING_LAG_CEILING_SECONDS
+        // (120s). Sanity-check: the key is present and the TTL is in the
+        // extended range. The companion spec below pins the exact bounds; here
+        // we assert the integration-level invariant that an extended-TTL key
+        // exists rather than a deleted one.
+        expect(await redis.get(lockKey)).not.toBeNull();
+        const ttl = await redis.ttl(lockKey);
+        expect(ttl).toBeGreaterThan(35);
+        expect(ttl).toBeLessThanOrEqual(120);
+      } finally {
+        await redis.del(lockKey, cacheKey).catch(() => { /* cleanup */ });
+      }
+    },
+  );
+
+  // BACKEND-ORCID-LOCK-TTL-EXTEND-ON-TIMEOUT (acceptance #7).
+  // withOrcidBindingLock-extends-ttl-on-broadcast-timeout — pins the exact
+  // A.1 contract: on BroadcastTimeoutError, the lock TTL extends to
+  // HAF_INDEXING_LAG_CEILING_SECONDS (120s), the lock value is NOT rotated
+  // (same nonce), and a second acquireBindingLock during the window returns
+  // 'held'. Stronger than the integration spec above: directly verifies the
+  // TTL bounds (>=100s slack to absorb test scheduling) and the rolling-nonce
+  // identity, both of which a regression to the naive `redis.expire` shape
+  // (without the skipRelease return signal) would silently break — the
+  // wrapper's CAS-release in finally would still delete the extended lock
+  // without skipRelease, leaving redis.get(lockKey) === null.
+  it(
+    'withOrcidBindingLock-extends-ttl-on-broadcast-timeout',
+    async () => {
+      const redis = getRedis();
+      if (!redis) return;
+      const orcidId = `0000-0001-${orcidSuffix}${orcidSuffix}${orcidSuffix}${orcidSuffix}-0009`;
+      const lockKey = `${config.appTag}:orcid_binding_lock:${orcidId}`;
+      const cacheKey = `${config.appTag}:orcid_binding:${orcidId}`;
+      await redis.del(lockKey, cacheKey).catch(() => { /* ignore */ });
+
+      installOrcidFetchStub({ orcid: orcidId, name: 'Alice', works: 3 });
+      installLockModeMocks();
+      broadcastJsonMock.mockRejectedValueOnce(new MockBroadcastTimeoutError(30_000));
+
+      try {
+        const state = await startAuthed(mode, 'alice');
+        const res = await request(app)
+          .post('/api/orcid/callback')
+          .set('Authorization', `Bearer ${jwtFor('alice')}`)
+          .send({ code: 'fake', state });
+
+        // A.2 envelope unchanged — A.1 is purely a server-side lock-state
+        // change orthogonal to the user-facing 504 shape.
+        expect(res.status).toBe(504);
+        expect(res.body.error.code).toBe('BROADCAST_TIMEOUT');
+
+        // Lock present with extended TTL. Range bound (>=100, <=120) absorbs
+        // any test-scheduling slack between the `redis.expire` call inside
+        // fn and the `redis.ttl` read here. A naive implementation that
+        // forgot to extend (or a regression that released the lock) would
+        // either return -2 (key absent) or a TTL <= 35.
+        const ttl = await redis.ttl(lockKey);
+        expect(ttl).toBeGreaterThanOrEqual(100);
+        expect(ttl).toBeLessThanOrEqual(120);
+
+        // Lock VALUE is the original nonce — A.1 extends TTL only, not the
+        // nonce. A regression that re-acquired a fresh lock (e.g. via
+        // SET ... EX 120 instead of EXPIRE on the existing key) would
+        // rotate the value; the original holder's CAS-release would then
+        // succeed against the new nonce mid-window, undoing the extension.
+        // We can't read the original nonce from outside the wrapper, but we
+        // can prove the value is a valid 32-char hex nonce (acquireBindingLock
+        // shape) — a fresh SET would still satisfy this. The strict
+        // anti-rotation guarantee comes from the next assertion: a second
+        // acquireBindingLock returns 'held' (which it would not if the
+        // wrapper had already released and a sibling could acquire).
+        const lockValue = await redis.get(lockKey);
+        expect(lockValue).toMatch(/^[0-9a-f]{32}$/);
+
+        // Concurrent A/B race regression (acceptance #10): a second bind
+        // attempt for the same orcid_id during the extended window receives
+        // 'held'. Drives a fresh /callback through the same SETNX path and
+        // asserts the loser's 409 envelope (the wrapper's response shape on
+        // 'held'). A regression that released the lock would let this second
+        // bind succeed → duplicate-broadcast.
+        broadcastJsonMock.mockReset().mockResolvedValue({ id: 'mock-orcid-tx-2' });
+        installOrcidFetchStub({ orcid: orcidId, name: 'Bob', works: 3 });
+        // For accredit mode, hafQueryMock default (empty rows) keeps the
+        // ORCID-not-bound check passing. For link mode we already stubbed
+        // it via installLockModeMocks. Bob is a different account — the
+        // 'held' branch fires before any per-username business check.
+        const stateB = await startAuthed(mode, 'bob');
+        const resB = await request(app)
+          .post('/api/orcid/callback')
+          .set('Authorization', `Bearer ${jwtFor('bob')}`)
+          .send({ code: 'fake', state: stateB });
+        expect(resB.status).toBe(409);
+        expect(resB.body.error.code).toBe('ORCID_ALREADY_LINKED');
+        expect(resB.body.error.details).toMatchObject({
+          retriable: true,
+          retry_after_seconds: 10,
+        });
+        // No fresh broadcast fired — the 'held' branch returned before fn ran.
+        expect(broadcastJsonMock).not.toHaveBeenCalled();
+        // Lock value unchanged across the second attempt (the loser's SETNX
+        // never succeeded, so the original-holder nonce is still stored).
+        expect(await redis.get(lockKey)).toBe(lockValue);
+      } finally {
+        await redis.del(lockKey, cacheKey).catch(() => { /* cleanup */ });
+      }
+    },
+  );
+
+  // BACKEND-ORCID-LOCK-TTL-EXTEND-ON-TIMEOUT (acceptance #8).
+  // withOrcidBindingLock-still-releases-on-non-timeout-throw — A.1 is scoped
+  // to BroadcastTimeoutError ONLY. A non-timeout throw from fn must STILL
+  // release the lock via the wrapper's finally — otherwise a transient
+  // chain-rejection would orphan the lock for the full extended TTL.
+  //
+  // The existing 'releases the lock via nonce CAS when broadcast throws
+  // mid-request' spec above asserts the 502 BROADCAST_FAILED envelope on a
+  // synthetic Error throw; this spec asserts the same lock-release contract
+  // explicitly through the A.1 lens, so a regression that widened the
+  // skipRelease path beyond BroadcastTimeoutError (e.g. accidentally
+  // returning skipRelease on every catch) would fail here.
+  it(
+    'withOrcidBindingLock-still-releases-on-non-timeout-throw',
+    async () => {
+      const redis = getRedis();
+      if (!redis) return;
+      const orcidId = `0000-0001-${orcidSuffix}${orcidSuffix}${orcidSuffix}${orcidSuffix}-0010`;
+      const lockKey = `${config.appTag}:orcid_binding_lock:${orcidId}`;
+      const cacheKey = `${config.appTag}:orcid_binding:${orcidId}`;
+      await redis.del(lockKey, cacheKey).catch(() => { /* ignore */ });
+
+      installOrcidFetchStub({ orcid: orcidId, name: 'Alice', works: 3 });
+      installLockModeMocks();
+      broadcastJsonMock.mockRejectedValueOnce(new Error('synthetic non-timeout failure'));
+
+      try {
+        const state = await startAuthed(mode, 'alice');
+        const res = await request(app)
+          .post('/api/orcid/callback')
+          .set('Authorization', `Bearer ${jwtFor('alice')}`)
+          .send({ code: 'fake', state });
+
+        // Non-timeout throw → 502 BROADCAST_FAILED (legacy envelope).
+        expect(res.status).toBe(502);
+        expect(res.body.error.code).toBe('BROADCAST_FAILED');
+        // CRITICAL: lock released. A regression that widened skipRelease to
+        // every catch would leave the lock present here.
+        expect(await redis.exists(lockKey)).toBe(0);
+      } finally {
+        await redis.del(lockKey, cacheKey).catch(() => { /* cleanup */ });
+      }
+    },
+  );
+
+  // BACKEND-ORCID-LOCK-TTL-EXTEND-ON-TIMEOUT (acceptance #9).
+  // withOrcidBindingLock-still-releases-on-success — the success path must
+  // continue to release the lock immediately (the cache + HAF combo handles
+  // the post-broadcast TOCTOU window; holding the lock 120s on success would
+  // unnecessarily lock out legitimate retries from the SAME user). A
+  // regression that always returned skipRelease, or that flipped the gate
+  // inversely (release ONLY on skipRelease), would fail here.
+  it(
+    'withOrcidBindingLock-still-releases-on-success',
+    async () => {
+      const redis = getRedis();
+      if (!redis) return;
+      const orcidId = `0000-0001-${orcidSuffix}${orcidSuffix}${orcidSuffix}${orcidSuffix}-0011`;
+      const lockKey = `${config.appTag}:orcid_binding_lock:${orcidId}`;
+      const cacheKey = `${config.appTag}:orcid_binding:${orcidId}`;
+      await redis.del(lockKey, cacheKey).catch(() => { /* ignore */ });
+
+      installOrcidFetchStub({ orcid: orcidId, name: 'Alice', works: 3 });
+      installLockModeMocks();
+      // Default broadcastJsonMock resolves with { id: 'mock-orcid-tx' }.
+
+      try {
+        const state = await startAuthed(mode, 'alice');
+        const res = await request(app)
+          .post('/api/orcid/callback')
+          .set('Authorization', `Bearer ${jwtFor('alice')}`)
+          .send({ code: 'fake', state });
+
+        expect(res.status).toBe(200);
+        expect(res.body.data.mode).toBe(mode);
+        // CRITICAL: lock released on success. Holding the lock 120s on every
+        // success would be a 35x regression in legitimate-retry latency.
+        expect(await redis.exists(lockKey)).toBe(0);
       } finally {
         await redis.del(lockKey, cacheKey).catch(() => { /* cleanup */ });
       }
