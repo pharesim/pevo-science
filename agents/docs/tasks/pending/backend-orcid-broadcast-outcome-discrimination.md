@@ -122,3 +122,127 @@ Discriminate broadcast-succeeded vs broadcast-threw at the `withOrcidBindingLock
 - `agents/docs/tasks/pending/backend-orcid-broadcast-timeout-outcome-handling.md` round-2 architect re-review (2026-04-28) — Finding #4 (P2 conf 80).
 - `backend/src/routes/orcid.ts:983` — concrete trigger site (`getAppPool()` outside `updateAccountOrcid`'s try).
 - `backend/src/lib/broadcast-error.ts` — current envelope shapes; new error class lands here.
+
+---
+
+## Implementation landed (2026-04-28, commit `d8b9b75`)
+
+Round-1 implementation. Layered on top of the parent task's round-2 hold-fix (`0a5c890`) and the `acquired`-branch throw guard (`0d0c156`) — both prerequisites are in place so this task applies discrimination to BOTH branches in one pass (per the "Coordination" section's implement-order note).
+
+### `PostBroadcastWriteError` class
+
+`backend/src/lib/broadcast-error.ts`:
+
+```ts
+export class PostBroadcastWriteError extends Error {
+  constructor(
+    public readonly txId: string,
+    public readonly cause: unknown,
+    public readonly failedStep: 'cache_write' | 'account_update' | 'reputation_seed' | 'unknown',
+  ) {
+    super(`Post-broadcast write failed at step '${failedStep}' (tx ${txId})`);
+    this.name = 'PostBroadcastWriteError';
+  }
+}
+```
+
+### Discrimination in `handleBroadcastError`
+
+The `instanceof PostBroadcastWriteError` check fires FIRST (before `BroadcastTimeoutError` and `forceAmbiguousOutcome` branches) so a `PostBroadcastWriteError` whose `cause` happens to be a `BroadcastTimeoutError` still emits 502 POST_BROADCAST_FAILED — the chain op IS confirmed; the over-cautious 504 envelope is wrong. Order regression guard test added.
+
+Envelope:
+```json
+{
+  "status": "error",
+  "error": {
+    "code": "POST_BROADCAST_FAILED",
+    "message": "<postBroadcastFailedMsgFn(failedStep)>",
+    "details": {
+      "retriable": false,
+      "outcome": "confirmed",
+      "tx_id": "<broadcast-result-id>",
+      "failed_step": "cache_write" | "account_update" | "reputation_seed" | "unknown"
+    }
+  }
+}
+```
+
+NO `verify_location` / `verify_before_retry` (the chain op IS the source of truth; HAF reconciles within 120s).
+
+`POST_BROADCAST_FAILED` added to the `ErrorCode` union in `backend/src/types/api.ts`.
+
+### `postBroadcastFailedMsgFn` opt
+
+Added to `BaseHandleBroadcastErrorOpts`:
+
+```ts
+postBroadcastFailedMsgFn?: (failedStep: string) => string;
+```
+
+ORCID callers pass an ORCID-shaped function:
+- `accreditErrorOpts`: `(failedStep) => "Your ORCID is verified on Hive. A backend write to '${failedStep}' failed; this will reconcile automatically once HAF indexes the operation."`
+- `linkErrorOpts`: same with "linked" instead of "verified".
+
+Inherited via spread by `accreditAmbiguousOpts` / `linkAmbiguousOpts`. Generic fallback inside the helper used when the function is omitted (so a future non-ORCID caller throwing `PostBroadcastWriteError` still produces a meaningful envelope without re-touching this file).
+
+### Wrap post-broadcast cascade with `currentStep` tracking
+
+`handleAccredit`:
+
+```ts
+let currentStep: 'cache_write' | 'account_update' | 'reputation_seed' = 'cache_write';
+try {
+  await cacheOrcidBinding(orcidId, username);
+  currentStep = 'account_update';
+  await __test_seams.updateAccountOrcid(username, orcidId);
+  currentStep = 'reputation_seed';
+  await seedAccreditationBonus(username);
+} catch (postErr) {
+  throw new PostBroadcastWriteError(result.id, postErr, currentStep);
+}
+```
+
+`handleLink` mirrors it but stops at `'account_update'` (no reputation seed).
+
+The throw escapes fn → wrapper outer catch (`'acquired'` or `'unavailable'`, both ship the symmetric try/catch now) → `handleBroadcastErrorAmbiguous` → `handleBroadcastError` → discriminates `PostBroadcastWriteError` → 502 POST_BROADCAST_FAILED.
+
+### Tests
+
+**`tests/lib/broadcast-error.test.ts` — 4 new unit specs:**
+
+- Case B: `failed_step:'cache_write'` + supplied `postBroadcastFailedMsgFn`. Pins the ORCID-shape message and full envelope.
+- Case C: `failed_step:'account_update'`. Covers a different step.
+- Case D: `failed_step:'reputation_seed'` with NO `postBroadcastFailedMsgFn` — exercises the generic fallback (`"Broadcast confirmed (tx ...); backend write at step '...' failed."`). Regression guard: a regression dropping the fallback would surface here.
+- Discrimination order: `PostBroadcastWriteError` wrapping a `BroadcastTimeoutError` cause MUST emit 502 POST_BROADCAST_FAILED. A regression that reorders the branches to `BroadcastTimeoutError` first surfaces here.
+
+**`tests/routes/orcid.test.ts` — 2 existing post-broadcast specs updated:**
+
+- `'post-broadcast throw on the lock-unavailable branch'` — was 504; now asserts 502 POST_BROADCAST_FAILED + `outcome:'confirmed'` + `tx_id:'mock-orcid-tx'` + `failed_step:'account_update'`. Operator-alert anchor log message changed to `'broadcast confirmed but post-broadcast write failed'`.
+- `'post-broadcast ASYNC throw inside fn on the lock-acquired branch'` (added in `0d0c156`) — same envelope rewrite. Both run across the `accredit + link` matrix.
+
+`broadcastJsonMock` called EXACTLY ONCE on both — mutation-kill anchor proving the throw came from a post-broadcast cascade, not a re-entered fn or double-broadcast.
+
+### Carve-out
+
+An integration test for `failed_step:'cache_write'` end-to-end is non-trivial because `cacheOrcidBinding`'s own try/catch swallows Redis errors (best-effort by design — see `cacheOrcidBinding` docblock). To exercise case B end-to-end, we'd have to change `cacheOrcidBinding`'s contract, which is out of scope. Coverage for that step lives at the unit-test level (`broadcast-error.test.ts` case B); the integration matrix exercises `'account_update'` end-to-end via `__test_seams`. `'reputation_seed'` is covered at the unit-test level (case D) — an analogous seam on `seedAccreditationBonus` is deferred until a use-case demands it.
+
+### Verification
+
+- `npx vitest run tests/lib/broadcast-error.test.ts tests/routes/orcid.test.ts`: 59 passed (was 51; +8 = 4 new unit specs + 4 integration spec rewrites doubled by the accredit/link matrix).
+- `npx vitest run` (full backend suite, real Postgres + Redis): 593 passed, 1 skipped, 7 failed in 3 unrelated files (`hafsql.test.ts`, `auth-concurrency.test.ts`, `stats-profile-parity.test.ts`). All 3 pass when run in isolation; pre-existing flakiness under full-suite resource contention (timing-based concurrency, real-chain HAF parity, real-chain claim CTE), NOT caused by this change.
+- `npm run lint`: clean (2 pre-existing `seed-phrase.ts` warnings only).
+- `npx tsc --noEmit`: clean.
+
+### Files changed (commit `d8b9b75`)
+
+- `backend/src/lib/broadcast-error.ts` — `PostBroadcastWriteError` class; `postBroadcastFailedMsgFn` opt; discrimination check ahead of timer-fire / ambiguous-outcome branches.
+- `backend/src/routes/orcid.ts` — `handleAccredit` / `handleLink` post-broadcast cascade wrap with `currentStep` tracking; `accreditErrorOpts` / `linkErrorOpts` carry `postBroadcastFailedMsgFn`.
+- `backend/src/types/api.ts` — `POST_BROADCAST_FAILED` in `ErrorCode` union.
+- `backend/tests/lib/broadcast-error.test.ts` — 4 new specs (cases B / C / D / discrimination order).
+- `backend/tests/routes/orcid.test.ts` — 2 existing specs rewritten to assert the 502 POST_BROADCAST_FAILED envelope + post-broadcast-write log message; carve-out comment for case B's integration coverage gap.
+
+### Architect-owned (deferred per backend CLAUDE.md "architect owns contract edits")
+
+- `agents/docs/api-contracts/common.md` — add 502 POST_BROADCAST_FAILED row distinct from BROADCAST_FAILED. Discriminator: `details.outcome:'confirmed'` + `tx_id` + `failed_step` (POST_BROADCAST_FAILED) vs no `outcome` field on BROADCAST_FAILED.
+- `agents/docs/api-contracts/orcid.md` — add 502 POST_BROADCAST_FAILED to `/callback` errors with discriminator + frontend-handling guidance ("verified; HAF will reconcile; no retry needed"). Stack with the 504 update from BACKEND-ORCID-ACQUIRED-BRANCH-THROW-GUARD.
+- Convention doc `agents/docs/solutions/conventions/chain-write-timeout-ambiguous-outcome-2026-04-22.md` — add a section "ambiguous outcome ≠ post-broadcast write failure" describing the discrimination pattern.

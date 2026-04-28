@@ -107,3 +107,74 @@ This task layers on top of `BACKEND-ORCID-LOCK-TTL-EXTEND-ON-TIMEOUT` (`81795fd`
 - `agents/docs/tasks/pending/backend-orcid-broadcast-timeout-outcome-handling.md` round-2 architect re-review (2026-04-28) — Finding #2 (P1 conf 90) and pre-existing #P2 (P2 conf 90).
 - `backend/src/routes/orcid.ts:780-797` — current `withOrcidBindingLock` 'acquired' branch shape.
 - `backend/src/routes/orcid.ts:982-984` — `getAppPool()` call outside `updateAccountOrcid`'s try.
+
+---
+
+## Implementation landed (2026-04-28, commit `0d0c156`)
+
+Round-1 implementation. Wrapper restructure + 4 new specs landed in a single commit. Layered on top of the parent task's round-2 hold-fix (commit `0a5c890`), which ships the discriminated-union opts and `handleBroadcastErrorAmbiguous` entry point this task consumes.
+
+### Wrapper change — symmetric try/catch on `'acquired'` branch
+
+`backend/src/routes/orcid.ts` `withOrcidBindingLock`:
+
+```ts
+} else if (lock.state === 'acquired') {
+  let skipRelease = false;
+  try {
+    const result = await fn('acquired');
+    if (result?.skipRelease) skipRelease = true;
+  } catch (err) {
+    handleBroadcastErrorAmbiguous(res, err, ambiguousOutcomeOpts);
+    // Do NOT set skipRelease — release the lock so a subsequent retry
+    // (after the user verifies state at /settings) can acquire it.
+  } finally {
+    if (!skipRelease) {
+      await releaseBindingLock(orcidId, lock.nonce);
+    }
+  }
+}
+```
+
+Closes both throw classes the round-2 review identified:
+- **Pre-broadcast SYNC throws inside fn** — `PrivateKey.fromString` on malformed admin key, `crypto.createHash` building `evidence_hash`, or any other sync code in fn before the inner `try { broadcastJsonWithTimeout }`.
+- **Post-broadcast ASYNC throws inside fn** — broadcast SUCCEEDS, then `cacheOrcidBinding` / `__test_seams.updateAccountOrcid` / `seedAccreditationBonus` throws.
+
+Both classes previously consumed the OAuth state token at dispatch and produced 500 INTERNAL_ERROR + user hard-blocked. Now they route through the SAME 504 ambiguous-outcome envelope as the `'unavailable'` branch.
+
+Lock release semantics: caught throws don't set `skipRelease`, so the `finally` releases under the nonce CAS — a subsequent retry can acquire cleanly. Successful `skipRelease` (the `BroadcastTimeoutError` + `redis.expire` path inside fn) still skips. Tests pin both contracts.
+
+### Tests — 4 new specs in `tests/routes/orcid.test.ts`
+
+In the existing `describe.each(['accredit', 'link'])` SEC-002-TOCTOU-LOCK block:
+
+- **Pre-broadcast SYNC throw on acquired branch** — `PrivateKey.fromString` stub throws synthetically before broadcast. Asserts 504 BROADCAST_TIMEOUT + `outcome:'uncertain'` + `verify_before_retry:true` + `verify_location:'/settings'`; `timeout_ms` ABSENT (the throw isn't a `BroadcastTimeoutError`); message uses `ambiguousMsg` (regression guard for round-2 #1's discriminated union); broadcast NEVER fired; lock RELEASED for retry; cache absent; operator-alert anchor log fired at error level.
+
+- **Post-broadcast ASYNC throw on acquired branch** — `vi.spyOn(__test_seams, 'updateAccountOrcid').mockRejectedValueOnce(...)` (round-2 #2's seam) injects the throw deterministically. Asserts 504 envelope (initially); `broadcastJsonMock` called EXACTLY ONCE (mutation-kill anchor — proves the throw came from a post-broadcast cascade, not a re-entered fn or double-broadcast); lock RELEASED.
+
+  **Note**: this spec was rewritten to assert 502 POST_BROADCAST_FAILED in the immediately-following commit `d8b9b75` (BACKEND-ORCID-BROADCAST-OUTCOME-DISCRIMINATION) — discrimination took the round-1 over-cautious envelope and replaced it with `outcome:'confirmed'` + `tx_id` + `failed_step`. Don't re-review this spec's 504 history; the tests as of `d8b9b75` are the contract.
+
+Each new spec in the matrix runs across both `accredit` and `link` modes (`describe.each`) so 4 assertion-pairs total.
+
+### Mutation kills
+
+- Removing the wrapper's new acquired-branch `try/catch` propagates either throw class to the outer `/callback` catch as 500 INTERNAL_ERROR; `expect(res.status).toBe(504)` (or `502` post-discrimination) fails.
+- Removing `forceAmbiguousOutcome:true` from `accreditAmbiguousOpts` / `linkAmbiguousOpts` is a TypeScript-level error after round-2 #1's discriminated union; a bypass would re-route the throw to a 502 BROADCAST_FAILED envelope and fail the BROADCAST_TIMEOUT (or POST_BROADCAST_FAILED) assertion.
+- Removing the `instanceof PostBroadcastWriteError` discrimination check in `handleBroadcastError` would fall through to the `BroadcastTimeoutError` or `forceAmbiguousOutcome` branch → 504 envelope; `outcome === 'confirmed'` assertion fails.
+
+### Verification
+
+- `npx vitest run tests/routes/orcid.test.ts`: 48 passed (was 44 pre-acquired-branch; +4 = 2 new specs × 2 modes).
+- `npx vitest run` (full backend suite, real Postgres + Redis): 593 passed, 4 pre-existing skipped — clean.
+- `npm run lint`: clean.
+- `npx tsc --noEmit`: clean.
+
+### Files changed (commit `0d0c156`)
+
+- `backend/src/routes/orcid.ts` — wrapper acquired-branch `try/catch` + ambiguous-outcome routing.
+- `backend/tests/routes/orcid.test.ts` — 2 new specs in the `describe.each` block (×2 modes).
+
+### Architect-owned (deferred per backend CLAUDE.md "architect owns contract edits")
+
+- `agents/docs/api-contracts/orcid.md` — extend the 504 entry's already-updated `'unavailable'`-branch call-out to also cover the `'acquired'`-branch pre-broadcast and post-broadcast throw cases. (Note: the post-broadcast case at `'acquired'` now emits 502 POST_BROADCAST_FAILED per the immediately-following discrimination commit; the contract update should reflect both envelopes.)
+- `agents/docs/solutions/conventions/chain-write-timeout-ambiguous-outcome-2026-04-22.md` — add a paragraph that the wrapper's symmetric pattern (catch on BOTH branches) is the convention; one branch with catch and one without is an anti-pattern.
