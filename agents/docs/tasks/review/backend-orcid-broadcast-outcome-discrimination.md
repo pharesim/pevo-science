@@ -334,4 +334,48 @@ testing T-03 (cache_write it.todo, conf 70), reliability REL-002 (currentStep Pr
 
 (1) Backend addresses items #1, #2, #3, #4, #5, #6, #7, #8, #9 in this hold block. Item #4 and #5 may need architect input on the resolution shape — flag with `[TODO Architect]` in the re-review-signal block if so. (2) Backend re-review signal block referencing the round-2 hold-fix commit SHA. (3) Architect round-2 `/ce-code-review` on the new commit (testing + adversarial + correctness mandatory given the discrimination-order test rigor and dead-defense decision). (4) Archive on clean.
 
+---
+
+## Backend re-review signal (2026-04-29, working tree)
+
+All 9 hold-block items addressed.
+
+**Item #1 (P1) — `'unknown'` removed from `failedStep` union.** Picked option (a). `backend/src/lib/broadcast-error.ts`: introduced `export type PostBroadcastFailedStep = 'cache_write' | 'account_update' | 'reputation_seed';` and threaded it through `PostBroadcastWriteError`'s `failedStep` parameter and `BaseHandleBroadcastErrorOpts.postBroadcastMsgFn`'s callback parameter. No caller passed `'unknown'` so the change is non-disruptive; orcid.ts call sites already used the narrower union. Architect's earlier `orcid.md` doc edit (drop `'unknown'` from the documented enum) is now consistent with the type-level surface.
+
+**Item #2 (P2) — `postBroadcastMsgFn` invocation guarded.** `backend/src/lib/broadcast-error.ts`: the callback runs inside a try/catch; on throw, logs `<routeLabel> postBroadcastMsgFn threw — using generic fallback` at warn level (with `txId`, `failedStep`, and `logContext` for correlation) and falls back to `defaultPostBroadcastMsg(txId)`. Outcome remains `'post_broadcast'` in the recovery path so a callback-author bug doesn't degrade the wire envelope. New unit spec `survives postBroadcastMsgFn throwing — falls back to sanitized default + logs warn anchor` pins the recovery shape and the warn-anchor string.
+
+**Item #3 (P2) — User-facing reconciliation message tailored per step.** `backend/src/routes/orcid.ts`: both `accreditErrorOpts.postBroadcastMsgFn` and `linkErrorOpts.postBroadcastMsgFn` now switch on `failedStep`. Per the architect's `orcid.md` recovery-semantics matrix:
+- `'reputation_seed'` (handleAccredit only): "Your reputation score will update at the next scheduled cycle."
+- `'cache_write'`: "A backend cache write failed; it will repopulate on the next request that uses your ORCID binding."
+- `'account_update'`: honest about the no-auto-reconcile state — "the chain record is the source of truth, and login still works. The denormalized account record may be stale until support reconciles it."
+
+The over-promised "HAF will reconcile automatically once HAF indexes the operation" language is gone.
+
+**Item #4 (P2) — Third return value `'post_broadcast'`.** Picked option (a). `handleBroadcastError` and `handleBroadcastErrorAmbiguous` now return `'timeout' | 'failure' | 'post_broadcast'`. The `PostBroadcastWriteError` discrimination branch returns `'post_broadcast'`; chain-rejected and ambiguous-outcome branches still return `'failure'`; timer-fire still returns `'timeout'`. `accreditation.ts:310`'s `if (outcome === 'failure') { deleteToken(...) }` is unchanged and now safe by construction: a future caller that adopts `PostBroadcastWriteError` discrimination can `deleteToken` on `'failure'` only, never on a confirmed-on-chain operation. Updated unit specs assert `'post_broadcast'` on case B + the discrimination-order spec + the new msg-fn-throws spec.
+
+**Item #5 (P2) — Dead-defensive discrimination documented.** Picked the "accept as-is + document the dead-defense" branch. Added an inline `Dead-defense note` block at `backend/src/routes/orcid.ts` above the post-broadcast cascade try/catch in `handleAccredit` explaining that the cascade fns currently swallow async errors internally; the wrapping try fires only on synchronous JS-engine throws or a future cascade-fn refactor that re-throws. Kept structurally because (a) the discrimination shape is the canonical surface for `backend-sendoperations-outcome-handling-sweep.md` to reuse, (b) tightening cascade-fn error semantics is a separate, wider scope. The existing `__test_seams.updateAccountOrcid` integration spec is the live proof the path remains wired.
+
+`[TODO Architect]` — if you'd prefer the cascade-fns-rethrow path over future-proofing, say so during re-review and I'll file a follow-up task to rewire each fn (cacheOrcidBinding, updateAccountOrcid, seedAccreditationBonus) to re-throw operator-actionable errors.
+
+**Item #6 (P2) — `cause` forwarded via `super(message, { cause })`.** `backend/src/lib/broadcast-error.ts`: dropped the `public readonly cause: unknown` class field; constructor now calls `super(\`Post-broadcast write failed at step '${failedStep}' (tx ${txId})\`, { cause });` so `Error.cause` is set on the inherited slot. pino's error serializer, structured clone, and any consumer reading `Error.prototype.cause` now get the real cause instead of `undefined`. The discrimination-order spec pins `expect(err.cause).toBe(innerCause)` so a regression that shadows the slot with a class field surfaces here.
+
+**Item #7 (P2) — Renamed `postBroadcastFailedMsgFn` → `postBroadcastMsgFn`.** Picked option (b). Drops the redundant `Failed` segment (the type already implies failure) and the verbose `Fn` suffix to align with sibling string opts (`timeoutMsg`, `failMsg`, `ambiguousMsg`). The callback contract is preserved — per-step rendering needs the function form (item #3 made the function-form genuinely valuable, not optional). All call sites in `backend/src/routes/orcid.ts` and `backend/tests/lib/broadcast-error.test.ts` updated; old name remains in two docblock references where it explicitly documents the rename.
+
+**Item #8 (P3) — Discrimination-order test comment corrected.** `backend/tests/lib/broadcast-error.test.ts`: replaced the misleading "would fall into the timer-fire branch" rationale with the actual mechanism — the outer `err` is a `PostBroadcastWriteError`, not a `BroadcastTimeoutError`, so removing the `instanceof PostBroadcastWriteError` branch routes through the `forceAmbiguousOutcome` branch (which is `true` in the test's opts) and emits 504 with `outcome:'uncertain'`. The pinned 502 POST_BROADCAST_FAILED + `outcome:'confirmed'` assertion kills both reorder mutations regardless of which path the regression follows.
+
+**Item #9 (P3) — Generic fallback sanitized.** `backend/src/lib/broadcast-error.ts`: extracted `defaultPostBroadcastMsg(txId)` returning `Your operation is confirmed on Hive (tx ${txId}). A backend write failed; we'll restore the backend record from the chain shortly.` — names the txId for support-agent correlation but does NOT interpolate the internal step label. Updated case D test to assert the user-facing message contains the txId AND does NOT contain `'reputation_seed'` / `'cache_write'` / `'account_update'`. The msg-fn-throws spec asserts the same property on the recovery path.
+
+### Verification
+
+- `npx tsc --noEmit`: clean.
+- `npm run lint`: clean (pre-existing `seed-phrase.ts` no-explicit-any warnings only).
+- Targeted unit + integration: `npx vitest run tests/lib/broadcast-error.test.ts tests/routes/orcid.test.ts` — 62 tests passed (2 files). Includes 1 new unit spec for item #2 (msg-fn-throws), the rewritten case D for item #9, and the rewritten discrimination-order spec for items #6 + #8. The existing `__test_seams.updateAccountOrcid`-driven integration specs still assert the 502 POST_BROADCAST_FAILED envelope shape.
+- Full backend suite is the architect's call (per CLAUDE.md guidance).
+
+### Files changed
+
+- `backend/src/lib/broadcast-error.ts` — `PostBroadcastFailedStep` type + drop `'unknown'`, native `Error.cause` forwarding, `postBroadcastMsgFn` rename + try/catch guard, `defaultPostBroadcastMsg` sanitized fallback, `'post_broadcast'` return value, updated docblocks.
+- `backend/src/routes/orcid.ts` — `postBroadcastMsgFn` rename + per-step messages on accredit/link callsites, dead-defense documentation block above the post-broadcast cascade try/catch.
+- `backend/tests/lib/broadcast-error.test.ts` — case B/C/D rewritten (rename, `'post_broadcast'` outcome, sanitized fallback, no step-label leak), new msg-fn-throws spec, discrimination-order comment corrected + cause-forwarding assertion added.
+
 
