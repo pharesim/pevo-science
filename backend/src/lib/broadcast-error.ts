@@ -24,9 +24,20 @@ import { logger } from '../logger.js';
  * reported as the `BroadcastTimeoutError.timeoutMs` on the timer-fire path,
  * and is omitted on the non-timeout path (the error didn't originate from
  * the timer).
+ *
+ * `ambiguousMsg` is the user-facing message used on the
+ * `forceAmbiguousOutcome` non-timer branch, distinct from `failMsg`. The
+ * non-timer ambiguous path is semantically uncertainty (broadcast may have
+ * landed; verify before retry), NOT failure — so reusing `failMsg` ("Failed
+ * to broadcast …") would contradict `details.outcome: 'uncertain'` in the
+ * envelope. Callers that pass `forceAmbiguousOutcome: true` on a wrapper
+ * (e.g. `withOrcidBindingLock` `'unavailable'` branch) should set this to
+ * a verify-before-retry message like "Broadcast outcome uncertain. Verify
+ * your ORCID linkage at /settings before retrying." Defaults to `failMsg`
+ * if omitted (preserves pre-existing behavior on the legacy callers).
  */
 export interface HandleBroadcastErrorOpts {
-  /** User-facing 504 message. */
+  /** User-facing 504 message (timer-fire path). */
   timeoutMsg: string;
   /** User-facing 502 message. */
   failMsg: string;
@@ -38,10 +49,17 @@ export interface HandleBroadcastErrorOpts {
   routeLabel: string;
   /**
    * When true, any throw (timeout OR other) emits the 504 ambiguous-outcome
-   * envelope; `failMsg` is used for the non-timeout message, `timeoutMsg` for
-   * the timer-fire path. Default false (preserves pre-existing 504/502 split).
+   * envelope; `ambiguousMsg` (or `failMsg` as fallback) is used for the
+   * non-timeout message, `timeoutMsg` for the timer-fire path. Default false
+   * (preserves pre-existing 504/502 split).
    */
   forceAmbiguousOutcome?: boolean;
+  /**
+   * User-facing message for the `forceAmbiguousOutcome` non-timer branch.
+   * Falls back to `failMsg` when omitted. Distinct from `failMsg` because
+   * the ambiguous path semantically conveys uncertainty, not failure.
+   */
+  ambiguousMsg?: string;
 }
 
 /**
@@ -98,7 +116,11 @@ export function handleBroadcastError(
     if (opts.verifyLocation !== undefined) {
       details.verify_location = opts.verifyLocation;
     }
-    sendError(res, 504, 'BROADCAST_TIMEOUT', opts.failMsg, details);
+    // Prefer ambiguousMsg over failMsg here: failMsg ("Failed to broadcast …")
+    // contradicts outcome:'uncertain' in the envelope. ambiguousMsg falls back
+    // to failMsg for callers that haven't migrated to the new field yet.
+    const ambiguousUserMsg = opts.ambiguousMsg ?? opts.failMsg;
+    sendError(res, 504, 'BROADCAST_TIMEOUT', ambiguousUserMsg, details);
     return 'failure';
   }
   logger.error(

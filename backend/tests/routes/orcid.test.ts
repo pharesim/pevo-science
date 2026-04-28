@@ -44,19 +44,28 @@ import { PrivateKey } from '@hiveio/dhive';
 // property) so handlers discriminating via `err instanceof BroadcastTimeoutError`
 // can read `err.timeoutMs` identically against mock and real errors. The hoisted
 // class identity is visible in both the vi.mock factory and in test bodies.
-const { hafQueryMock, appQueryMock, broadcastJsonMock, MockBroadcastTimeoutError } = vi.hoisted(() => ({
-  hafQueryMock: vi.fn().mockResolvedValue({ rows: [] }),
-  appQueryMock: vi.fn().mockResolvedValue({ rows: [] }),
-  broadcastJsonMock: vi.fn().mockResolvedValue({ id: 'mock-orcid-tx' }),
-  MockBroadcastTimeoutError: class BroadcastTimeoutError extends Error {
-    public readonly timeoutMs: number;
-    constructor(timeoutMs: number) {
-      super(`Hive broadcast timed out after ${timeoutMs}ms`);
-      this.name = 'BroadcastTimeoutError';
-      this.timeoutMs = timeoutMs;
-    }
-  },
-}));
+// `getAppPoolMock` is hoisted as a `vi.fn` (not just `() => ({ query: ... })`)
+// so per-test specs can `mockImplementationOnce` it to throw — exercising the
+// post-broadcast-throw escape from `fn`'s inner try/catch in
+// `withOrcidBindingLock` (item #7 of the round-1 architect re-review). The
+// default impl preserves the previous behavior `getAppPool: () => ({ query: appQueryMock })`.
+const { hafQueryMock, appQueryMock, getAppPoolMock, broadcastJsonMock, MockBroadcastTimeoutError } = vi.hoisted(() => {
+  const _appQueryMock = vi.fn().mockResolvedValue({ rows: [] });
+  return {
+    hafQueryMock: vi.fn().mockResolvedValue({ rows: [] }),
+    appQueryMock: _appQueryMock,
+    getAppPoolMock: vi.fn(() => ({ query: _appQueryMock })),
+    broadcastJsonMock: vi.fn().mockResolvedValue({ id: 'mock-orcid-tx' }),
+    MockBroadcastTimeoutError: class BroadcastTimeoutError extends Error {
+      public readonly timeoutMs: number;
+      constructor(timeoutMs: number) {
+        super(`Hive broadcast timed out after ${timeoutMs}ms`);
+        this.name = 'BroadcastTimeoutError';
+        this.timeoutMs = timeoutMs;
+      }
+    },
+  };
+});
 
 vi.mock('../../src/db.js', () => ({
   getPool: () => ({ query: hafQueryMock }),
@@ -65,7 +74,7 @@ vi.mock('../../src/db.js', () => ({
 }));
 
 vi.mock('../../src/app-db.js', () => ({
-  getAppPool: () => ({ query: appQueryMock }),
+  getAppPool: getAppPoolMock,
 }));
 
 vi.mock('../../src/hive.js', () => ({
@@ -156,6 +165,9 @@ function installOrcidFetchStub(opts: OrcidStubOpts): void {
 beforeEach(async () => {
   hafQueryMock.mockReset().mockResolvedValue({ rows: [] });
   appQueryMock.mockReset().mockResolvedValue({ rows: [] });
+  // Reset getAppPoolMock to the default-pool factory between tests so a spec
+  // that mockImplementationOnce'd it to throw doesn't leak to siblings.
+  getAppPoolMock.mockReset().mockImplementation(() => ({ query: appQueryMock }));
   broadcastJsonMock.mockReset().mockResolvedValue({ id: 'mock-orcid-tx' });
   vi.unstubAllGlobals();
   // Default fetch throws — tests that reach ORCID must call installOrcidFetchStub().
@@ -1227,16 +1239,35 @@ describe.each([
   );
 
   // BE-ORCID-BROADCAST-TIMEOUT-OUTCOME-HANDLING — unavailable-branch
-  // BroadcastTimeoutError path. When the lock SETNX fails (Redis flap/outage),
-  // acquireBindingLock returns 'unavailable' and withOrcidBindingLock runs fn()
-  // on the cache-less degrade path. A timer-fire during that fn() must still
-  // emit the 504 BROADCAST_TIMEOUT ambiguous-outcome envelope — NOT fall
-  // through to the outer /callback catch's 500 INTERNAL_ERROR. The state token
-  // was already consumed before dispatch, so 500 hard-blocks the user on a
-  // retry path that may also duplicate-broadcast (the 'unavailable' branch
-  // has no lock-TTL margin to close the race).
+  // post-broadcast throw escapes fn's inner try → wrapper's outer try/catch
+  // catches the throw → 504 BROADCAST_TIMEOUT ambiguous-outcome envelope.
+  //
+  // Round-1 architect re-review item #7: the prior shape of this spec
+  // rejected the broadcast itself with BroadcastTimeoutError, but fn's
+  // inner try/catch around `broadcastJsonWithTimeout` already handles that
+  // — the wrapper's new outer catch was never reached, so the spec passed
+  // even with a regression that removed `forceAmbiguousOutcome:true` from
+  // the wrapper's call site. Rewritten to throw from a path NOT covered
+  // by fn's inner try: `getAppPool()` (called by `updateAccountOrcid`
+  // after the broadcast succeeds) throws a BroadcastTimeoutError. The
+  // throw escapes fn's inner try (only wraps the broadcast call), reaches
+  // the wrapper's outer try/catch, and `handleBroadcastError` sees a
+  // BroadcastTimeoutError on a `forceAmbiguousOutcome:true` opts → 504
+  // with `timeout_ms` populated (timer-fire envelope shape).
+  //
+  // Mutation kill: a regression that removes the wrapper's outer try/catch
+  // (or removes `forceAmbiguousOutcome:true` from its call site, dropping
+  // through to the legacy `await fn()` branch — also closed by item #3 of
+  // the same hold) propagates the throw to the outer /callback catch as
+  // 500 INTERNAL_ERROR; the .status assertion below fails.
+  //
+  // Item #6 of the same hold: a second /callback with the same {code,
+  // state} during the uncertainty window must return 400 BAD_REQUEST
+  // ("Invalid or expired state parameter") AND must NOT trigger another
+  // broadcast — locking the contract that the user is steered toward
+  // /settings to verify chain state, not into a fresh broadcast.
   it(
-    'broadcast timeout in the lock-unavailable branch → 504 BROADCAST_TIMEOUT ambiguous-outcome envelope',
+    'post-broadcast BroadcastTimeoutError on the lock-unavailable branch → 504 BROADCAST_TIMEOUT ambiguous-outcome envelope; second /callback returns 400 with no fresh broadcast',
     async () => {
       const redis = getRedis();
       if (!redis) return;
@@ -1257,11 +1288,42 @@ describe.each([
         // @ts-expect-error ioredis set is variadic; forwarding by spread is safe here.
         return origSet(...args);
       });
-      // Broadcast on the unavailable-branch fn() times out.
-      broadcastJsonMock.mockRejectedValueOnce(new MockBroadcastTimeoutError(30_000));
+      // Silence the logger.warn emitted by handleBroadcastError's
+      // timer-fire path on this branch — keeps test output clean.
+      const loggerWarnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => { /* silence */ });
 
       try {
+        // /start requires auth → getAppPool() runs BEFORE handleAccredit/Link.
+        // Defer the throw-mock until AFTER /start completes, otherwise the
+        // very first getAppPool() call (inside verifyHiveSignature) consumes
+        // the Once and starves the dispatch path.
         const state = await startAuthed(mode, 'alice');
+
+        // Broadcast SUCCEEDS — defaults to { id: 'mock-orcid-tx' } via beforeEach.
+        // After the broadcast, fn calls cacheOrcidBinding (swallows) then
+        // updateAccountOrcid → getAppPool(). We force the SECOND getAppPool()
+        // call (the post-broadcast one inside updateAccountOrcid) to throw a
+        // BroadcastTimeoutError so the throw escapes updateAccountOrcid's
+        // inner try/catch (only wraps pool.query()) AND escapes fn's inner
+        // try/catch (only wraps the broadcast). The wrapper's new outer
+        // try/catch is the only catch left to handle it. A regression there
+        // would surface as 500 INTERNAL_ERROR.
+        //
+        // Sequence inside the /callback dispatch: auth middleware →
+        // findAccreditedAccountWithOrcid (HAF, no app-db); link mode also
+        // calls getExistingAccreditation (HAF). Then handleAccredit/handleLink
+        // → broadcast → cacheOrcidBinding (redis only) → updateAccountOrcid
+        // → getAppPool(). Auth middleware also calls getAppPool() once (light-
+        // account check), so we let the next 1 getAppPool call succeed and
+        // throw on the 2nd. mockImplementationOnce stack: first call (auth
+        // middleware) returns the default pool; second call
+        // (updateAccountOrcid) throws.
+        getAppPoolMock
+          .mockImplementationOnce(() => ({ query: appQueryMock }))
+          .mockImplementationOnce(() => {
+            throw new MockBroadcastTimeoutError(30_000);
+          });
+
         const res = await request(app)
           .post('/api/orcid/callback')
           .set('Authorization', `Bearer ${jwtFor('alice')}`)
@@ -1276,14 +1338,40 @@ describe.each([
           verify_location: '/settings',
           timeout_ms: 30_000,
         });
-        // No cache entry written (broadcast never confirmed). No lock key
-        // either (SETNX threw). A regression to 500 from the outer catch
-        // would fail the .status assertion; a regression that swallows the
-        // envelope and returns 200 would fail details.outcome.
-        expect(await redis.get(cacheKey)).toBeNull();
+        // Broadcast was attempted exactly once (it succeeded; the throw came
+        // from a post-broadcast cascade). A regression that re-enters fn or
+        // double-sends would change this count.
+        expect(broadcastJsonMock).toHaveBeenCalledTimes(1);
+        // Lock key absent: the lock-key SETNX threw (Redis flap). The
+        // unavailable branch never acquired a lock, so there is nothing to
+        // release. Note: the orcid_binding cache key WAS written by
+        // cacheOrcidBinding (which ran BEFORE the forced getAppPool throw in
+        // updateAccountOrcid) — that's fine; the binding cache is a
+        // best-effort optimization and persists after a 504. The key that
+        // matters here is that no lock got stuck.
         expect(await redis.get(lockKey)).toBeNull();
+
+        // Item #6 — second /callback during the uncertainty window with the
+        // same {code, state}. The state was consumed before fn ran (orcid.ts
+        // line 268-272), so the second request hits the "Invalid or expired
+        // state parameter" guard at orcid.ts:253. broadcastJsonMock must NOT
+        // be called a second time — the user is steered to /settings, not
+        // into a fresh broadcast that could duplicate the on-chain custom_json.
+        const broadcastCallsBeforeSecond = broadcastJsonMock.mock.calls.length;
+        const res2 = await request(app)
+          .post('/api/orcid/callback')
+          .set('Authorization', `Bearer ${jwtFor('alice')}`)
+          .send({ code: 'fake', state });
+        expect(res2.status).toBe(400);
+        expect(res2.body.error.code).toBe('BAD_REQUEST');
+        expect(res2.body.error.message).toMatch(/state/i);
+        // Critical: no fresh broadcast during the uncertainty window. A
+        // regression that falls back to a fresh OAuth retry path or skips
+        // the state-consumption check would re-broadcast → on-chain duplicate.
+        expect(broadcastJsonMock.mock.calls.length).toBe(broadcastCallsBeforeSecond);
       } finally {
         setSpy.mockRestore();
+        loggerWarnSpy.mockRestore();
         await redis.del(lockKey, cacheKey).catch(() => { /* cleanup */ });
       }
     },
@@ -1304,7 +1392,7 @@ describe.each([
   // timer, so fabricating a timeout value would mislead consumers keying
   // retry-backoff off that field.
   it(
-    'non-broadcast throw inside fn on the lock-unavailable branch → 504 BROADCAST_TIMEOUT ambiguous-outcome (no timeout_ms)',
+    'non-broadcast throw inside fn on the lock-unavailable branch → 504 BROADCAST_TIMEOUT ambiguous-outcome (no timeout_ms); second /callback returns 400 with no fresh broadcast',
     async () => {
       const redis = getRedis();
       if (!redis) return;
@@ -1356,6 +1444,12 @@ describe.each([
           verify_location: '/settings',
         });
         expect(res.body.error.details).not.toHaveProperty('timeout_ms');
+        // Round-1 hold item #2: the user-facing 504 message must convey
+        // uncertainty (`ambiguousMsg`), not failure (`failMsg`). A regression
+        // that reuses failMsg ("Failed to broadcast …") would contradict
+        // outcome:'uncertain' in the envelope and mislead operators.
+        expect(res.body.error.message).toMatch(/uncertain/i);
+        expect(res.body.error.message).not.toMatch(/^Failed to broadcast/i);
         // Broadcast never fired (PrivateKey.fromString threw before it).
         expect(broadcastJsonMock).not.toHaveBeenCalled();
         // No cache entry, no lock key.
@@ -1369,6 +1463,26 @@ describe.each([
           (call) => typeof call[1] === 'string' && call[1].includes('broadcast failed on ambiguous-outcome path'),
         );
         expect(ambiguousCalls.length).toBeGreaterThanOrEqual(1);
+
+        // Item #6 — second /callback during the uncertainty window with the
+        // same {code, state}. The state was consumed before fn ran (orcid.ts
+        // line 268-272), so the second request hits the "Invalid or expired
+        // state parameter" guard at orcid.ts:253. broadcastJsonMock must NOT
+        // be called a second time — the user is steered to /settings, not
+        // into a fresh broadcast that could duplicate the on-chain custom_json.
+        const broadcastCallsBeforeSecond = broadcastJsonMock.mock.calls.length;
+        const res2 = await request(app)
+          .post('/api/orcid/callback')
+          .set('Authorization', `Bearer ${jwtFor('alice')}`)
+          .send({ code: 'fake', state });
+        expect(res2.status).toBe(400);
+        expect(res2.body.error.code).toBe('BAD_REQUEST');
+        expect(res2.body.error.message).toMatch(/state/i);
+        // Critical: no fresh broadcast during the uncertainty window. (In
+        // this spec broadcast was already at 0 before the second call; the
+        // assertion still pins the contract that the state-consumed-on-
+        // failure rule blocks a re-dispatch.)
+        expect(broadcastJsonMock.mock.calls.length).toBe(broadcastCallsBeforeSecond);
       } finally {
         pkSpy.mockRestore();
         setSpy.mockRestore();

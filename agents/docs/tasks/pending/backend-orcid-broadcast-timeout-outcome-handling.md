@@ -165,3 +165,51 @@ Round-1 `/ce-code-review` on commit `9d3de2c` (10 personas: correctness, testing
 - **P3** Convention-doc internal seam at `chain-write-timeout-ambiguous-outcome-2026-04-22.md:169` (learnings advisory). Line 169 says BroadcastTimeoutError MUST be caught **inside** `fn`; the new subsection at 171+ extends the catch to the wrapper itself. Read sequentially the rules conflict. Fix at architect's discretion during contract-doc updates: soften line 169 to permit the wrapper's unavailable-branch catch as a permitted location.
 
 **Path to re-archive:** (1) Backend applies items #1, #2, #3, #6, #7 on this task. (2) Architect lands items #4 + #5 (contract-doc edits) during the next review pass — backend can flag with `[TODO Architect]` in the re-review-signal block. (3) Backend re-review signal block. (4) Architect re-reviews round-2 with `/ce-code-review` (testing + adversarial mandatory given the test-rigor and silent-regression items); archives on clean. (5) The cross-component coordination question (verify_location renderer on FE) is a coordination check, not a blocker — surface during round-2 review.
+
+---
+
+## Backend re-review signal (2026-04-28, commit <SHA-PENDING>) — round-1 hold-fix landed
+
+Round-1 architect hold (10-persona /ce-code-review on commit `9d3de2c`) listed 7 items. Five are backend-owned (#1, #2, #3, #6, #7); items #4 and #5 are architect-owned contract-doc edits and remain `[TODO Architect]`.
+
+### Item #1 — commit `9d3de2c` Co-Authored-By trailer
+
+`9d3de2c` is published on main (and our branch) and amending would rewrite shared history, so the trailer was added via a small follow-up no-op commit (one-line clarifying comment in the existing wrapper docblock) carrying the `Co-Authored-By: Claude Opus 4.7 (1M context)` trailer. See the trailer-restoration commit immediately following the round-1 hold-fix commit on this branch. Documents the choice: no-op follow-up over amend.
+
+### Item #2 — `ambiguousMsg?: string` on `HandleBroadcastErrorOpts`
+
+Added at `backend/src/lib/broadcast-error.ts`. Used only on the `forceAmbiguousOutcome` non-timer branch; falls back to `failMsg` if omitted (preserves callers that haven't migrated). Both ORCID callers (`handleAccredit`, `handleLink`) now pass `ambiguousMsg: 'Broadcast outcome uncertain. Verify your ORCID linkage at /settings before retrying.'`. Timer-fire branch still uses `timeoutMsg`. Test asserts `res.body.error.message` matches `/uncertain/i` AND does NOT match `/^Failed to broadcast/i` so a regression that drops `ambiguousMsg` and falls back to `failMsg` ("Failed to broadcast …") fails loudly.
+
+### Item #3 — `ambiguousOutcomeOpts` is now REQUIRED on `withOrcidBindingLock`
+
+Type-level required (no `?`). The legacy `else { await fn(); }` branch is deleted; the wrapper always wraps `await fn()` in try/catch on the `'unavailable'` state and delegates throws to `handleBroadcastError` with `forceAmbiguousOutcome: true`. Both current callers already pass opts so this is a one-line type tightening with no runtime delta on the happy path. Future callers cannot silently re-introduce the consumed-state-token hard-block class. The wrapper docblock was updated to drop the "when provided" qualifier.
+
+### Item #6 — second `/callback` during the uncertainty window asserted in BOTH new specs
+
+Each of the 2 new specs (post-broadcast throw spec at `tests/routes/orcid.test.ts:~1268`; PrivateKey-pre-broadcast spec at `~1346`) now issues a SECOND `POST /api/orcid/callback` with the same `{code, state}` after the first 504 fires. Both assert (a) `res.status === 400`, `res.body.error.code === 'BAD_REQUEST'`, message matches `/state/i` (the documented state-consumed shape per `orcid.ts:253`); (b) `broadcastJsonMock.mock.calls.length` is unchanged across the second call (no fresh broadcast during the uncertainty window — the user is steered to `/settings`, not into a duplicate-broadcast retry path). Across the `describe.each` matrix (accredit + link), four assertion-pairs run in total.
+
+### Item #7 — BroadcastTimeoutError-on-unavailable spec rewritten to escape the inner try
+
+The prior shape rejected the broadcast itself with `MockBroadcastTimeoutError`; fn's inner try/catch around `broadcastJsonWithTimeout` swallowed it before the wrapper's outer catch could fire, so a regression that removed `forceAmbiguousOutcome:true` from the wrapper call site (or removed the wrapper try/catch entirely) silently passed.
+
+Rewritten: broadcast SUCCEEDS (default `{ id: 'mock-orcid-tx' }`), then the post-broadcast `updateAccountOrcid` cascade calls `getAppPool()` which is now mocked (via a hoisted `getAppPoolMock` `vi.fn`) to throw a `BroadcastTimeoutError(30_000)` on its 2nd call (the 1st call is the auth-middleware light-account check). The throw escapes `updateAccountOrcid`'s inner try (only wraps `pool.query()`) AND escapes fn's inner try (only wraps the broadcast). The wrapper's new outer try/catch is the ONLY catch left to handle it. Mutation kill: removing the wrapper's outer try/catch propagates the throw to the outer `/callback` catch as 500 INTERNAL_ERROR; the `expect(res.status).toBe(504)` assertion fails. Removing `forceAmbiguousOutcome: true` from the wrapper call site is now a TypeScript-level error after item #3, but if a regression bypasses that (e.g. casts), it would re-route to the legacy 502 BROADCAST_FAILED path; the `details.outcome === 'uncertain'` assertion on `res.body.error.details` fails.
+
+Also tightened: a `mockReset().mockImplementation(...)` of `getAppPoolMock` in `beforeEach` so a per-test `mockImplementationOnce` doesn't leak to siblings.
+
+### Items #4 and #5 — `[TODO Architect]`
+
+Remain pending architect contract-doc edits per the round-1 hold block:
+- Item #4: `agents/docs/api-contracts/common.md:73` `BROADCAST_TIMEOUT` row should mark `details.timeout_ms` as OPTIONAL with the precondition "present iff the underlying throw was a `BroadcastTimeoutError`; omitted on ambiguous-outcome paths where the timer did not fire."
+- Item #5: `agents/docs/api-contracts/orcid.md:197` `/callback` 504 entry should add a sentence calling out the unavailable-branch-with-non-timer-throw case (same envelope, `timeout_ms` present iff the underlying error is a `BroadcastTimeoutError`).
+
+Backend has not edited these per the backend CLAUDE.md "architect owns contract edits" rule. The test envelope assertions in `orcid.test.ts` reference both shapes (with and without `timeout_ms`); the contract edits will retroactively document the test reality.
+
+### Targeted-test result
+
+`npx vitest run tests/routes/orcid.test.ts` — 37/37 pass (matrix doubles the new specs across accredit + link). No other test files run.
+
+### Files changed (round-1 hold-fix)
+
+- `backend/src/lib/broadcast-error.ts` — `ambiguousMsg?: string` field on `HandleBroadcastErrorOpts`; helper preferences it over `failMsg` on the `forceAmbiguousOutcome` non-timer branch.
+- `backend/src/routes/orcid.ts` — `accreditErrorOpts` and `linkErrorOpts` add `ambiguousMsg`; `withOrcidBindingLock` signature makes `ambiguousOutcomeOpts` required and deletes the legacy `else { await fn(); }` branch.
+- `backend/tests/routes/orcid.test.ts` — hoisted `getAppPoolMock` `vi.fn`; `beforeEach` resets it; spec at line ~1250 rewritten to a post-broadcast throw via `getAppPoolMock.mockImplementationOnce`; both new specs extended with the second-`/callback` uncertainty-window assertion pair and a `mode`-shape regression guard.

@@ -462,6 +462,7 @@ async function handleAccredit(
   const accreditErrorOpts: HandleBroadcastErrorOpts = {
     timeoutMsg: 'Broadcasting ORCID accreditation timed out',
     failMsg: 'Failed to broadcast ORCID accreditation to Hive',
+    ambiguousMsg: 'Broadcast outcome uncertain. Verify your ORCID linkage at /settings before retrying.',
     logContext: { username, orcid: orcidId, mode: 'accredit' },
     verifyLocation: '/settings',
     routeLabel: 'orcid.handleAccredit',
@@ -543,6 +544,7 @@ async function handleLink(
   const linkErrorOpts: HandleBroadcastErrorOpts = {
     timeoutMsg: 'Broadcasting ORCID link timed out',
     failMsg: 'Failed to broadcast ORCID link to Hive',
+    ambiguousMsg: 'Broadcast outcome uncertain. Verify your ORCID linkage at /settings before retrying.',
     logContext: { username, orcid: orcidId, mode: 'link' },
     verifyLocation: '/settings',
     routeLabel: 'orcid.handleLink',
@@ -717,8 +719,8 @@ async function releaseBindingLock(orcidId: string, nonce: string): Promise<void>
  *                   catch inside fn.
  *   'unavailable' — callback runs WITHOUT a lock (Redis-optional degrade to
  *                   cache-less HAF-only path); no release needed. On this path
- *                   the wrapper catches throws from fn and, when
- *                   `ambiguousOutcomeOpts` is provided, emits the 504
+ *                   the wrapper catches throws from fn and, using the required
+ *                   `ambiguousOutcomeOpts`, emits the 504
  *                   BROADCAST_TIMEOUT ambiguous-outcome envelope via
  *                   handleBroadcastError. Rationale: with Redis down, there is
  *                   no lock-TTL margin or binding-cache to guarantee the
@@ -741,7 +743,16 @@ async function withOrcidBindingLock(
   res: Response,
   orcidId: string,
   fn: () => Promise<void>,
-  ambiguousOutcomeOpts?: HandleBroadcastErrorOpts,
+  // REQUIRED at the type level: the unavailable-branch ambiguous-outcome
+  // envelope is the only thing keeping a Redis-flap throw from propagating
+  // to the outer /callback catch as 500 INTERNAL_ERROR (consumed-state-token
+  // hard-block). Optional + missing arg silently re-introduces that class;
+  // both current callers (handleAccredit, handleLink) pass opts, so requiring
+  // it costs nothing and forecloses the silent regression. Future callers
+  // that genuinely have no broadcast-write to recover (e.g. a read-only
+  // probe) MUST justify the addition by extending this signature, not by
+  // omitting the safety envelope.
+  ambiguousOutcomeOpts: HandleBroadcastErrorOpts,
 ): Promise<void> {
   const lock = await acquireBindingLock(orcidId);
   if (lock.state === 'held') {
@@ -771,20 +782,13 @@ async function withOrcidBindingLock(
     // throw into the same 504 BROADCAST_TIMEOUT shape (retriable:false,
     // verify_before_retry:true). See convention doc
     // agents/docs/solutions/conventions/chain-write-timeout-ambiguous-outcome-2026-04-22.md.
-    if (ambiguousOutcomeOpts) {
-      try {
-        await fn();
-      } catch (err) {
-        handleBroadcastError(res, err, {
-          ...ambiguousOutcomeOpts,
-          forceAmbiguousOutcome: true,
-        });
-      }
-    } else {
-      // No opts provided — preserve legacy propagate-to-outer-catch behavior
-      // for callers that haven't opted in. Today both ORCID callers pass opts;
-      // this branch exists for forward-compat with non-broadcast callers.
+    try {
       await fn();
+    } catch (err) {
+      handleBroadcastError(res, err, {
+        ...ambiguousOutcomeOpts,
+        forceAmbiguousOutcome: true,
+      });
     }
   } else {
     // Exhaustiveness guard: adding a new BindingLockState variant without
