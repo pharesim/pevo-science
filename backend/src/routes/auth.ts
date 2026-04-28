@@ -15,7 +15,7 @@ import { logger } from '../logger.js';
 import { decryptKey } from '../custody-crypto.js';
 import { isPasswordValid, PASSWORD_POLICY_MESSAGE } from '../lib/password-policy.js';
 import { ARGON2_OPTIONS } from '../lib/argon2-options.js';
-import { runWithArgon2Slot, ArgonSemaphoreError } from '../lib/argon2-semaphore.js';
+import { runWithArgon2Slot, ArgonSemaphoreError, ShuttingDownError } from '../lib/argon2-semaphore.js';
 import { handleArgonError, ARGON_HANDLED } from '../lib/argon2-error-handler.js';
 import { requestAbortSignal } from '../lib/request-abort-signal.js';
 import { hashEmailForLogs } from '../lib/log-pii.js';
@@ -827,7 +827,25 @@ router.post('/reset-request', resetRequestLimiter, async (req: Request, res: Res
     // `backend-resend-verification-smtp-timing.md`); this closes the
     // cheap-early-return half only.
     if (rows.length === 0) {
-      await burnSentinel(normalizedEmail, abortSignal);
+      // Drain-window enumeration fix: if the sentinel burn aborts because the
+      // process is shutting down, fall through to the same generic 200 the
+      // steady-state path would return. Previously this re-threw
+      // `ShuttingDownError` to the outer catch, which translated it to 503 via
+      // `handleArgonError`. The known-email branch below never touches argon2
+      // and so kept returning 200 during drain — a status-code differential
+      // that re-opens the email-enumeration oracle on every rolling-deploy
+      // SIGTERM window. Returning 200 here briefly "lies" about service
+      // availability; in exchange the indistinguishable-response invariant the
+      // burn exists to enforce is preserved end-to-end. Any other error
+      // (including `ArgonQueueFullError` and `ArgonAbortError`) propagates to
+      // the outer catch via `handleArgonError` so saturation still surfaces as
+      // 503 and client-disconnect still short-circuits silently. See
+      // `agents/docs/tasks/pending/backend-reset-request-shutdown-enumeration.md`.
+      try {
+        await burnSentinel(normalizedEmail, abortSignal);
+      } catch (err) {
+        if (!(err instanceof ShuttingDownError)) throw err;
+      }
       sendOk(res, { message: 'If an account exists with that email, a reset link has been sent.' });
       return;
     }
