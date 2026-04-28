@@ -247,4 +247,40 @@ MAINT-03 (skipRelease closure pattern fragility, conf 50), AN-2 (held-branch 409
 
 (1) Backend addresses items #1, #2, #3, #4, #5, #6, #7, #8, #9 in this hold block. Items #1, #2, #3, #5 fold cleanly into a single helper-extraction commit (suggested shape in #5). Items #7 and #8 fold into the test pass that exercises the helper. Item #4 is a one-line fix or a small constants refactor. Item #6 is a one-line decision (constant vs dynamic Retry-After). Item #9 is a comment-only edit. (2) Backend re-review signal block referencing the round-2 hold-fix commit SHA. (3) Architect round-2 `/ce-code-review` on the new commit (testing + reliability mandatory given the operational-observability focus). (4) Archive on clean.
 
+---
+
+## Backend re-review signal (2026-04-29, working tree)
+
+All 9 hold-block items addressed.
+
+**Item #1 (P2) — `redis.expire` returns 0 logged at error level.** Folded into the new helper (item #5). When the lock key is gone (eviction, FLUSHDB, AOF stall), `redis.expire` resolves to 0; the helper now emits `error` with `event: 'a1_extend_lock_missing'` so the silently-degraded A.1 contract surfaces in operator logs. The wrapper still returns `{ skipRelease: true }` after the helper; on this path the skip is a no-op (no lock to skip releasing) but is structurally still correct.
+
+**Item #2 (P2) — Lock-extension success path emits `warn`.** Folded into the new helper. Successful `expire === 1` now emits `warn` with `event: 'a1_extend_ok'` and `newTtl: HAF_INDEXING_LAG_CEILING_SECONDS`. `warn` (not `info`) per the architect's note — operators want this on monitoring dashboards, not buried at info.
+
+**Item #3 (P2) — Redis-completely-absent at BroadcastTimeoutError time emits `error`.** Folded into the new helper. The previous silent `if (redis && isRedisAvailable())` short-circuit now emits `error` with `event: 'a1_extend_redis_absent'` so a degraded-during-timeout event is recoverable from logs.
+
+**Item #4 (P2) — `HAF_INDEXING_LAG_CEILING_SECONDS` is the source of truth for the 120s domain bound.** `backend/src/routes/orcid.ts`: `ORCID_BINDING_CACHE_TTL` now references `HAF_INDEXING_LAG_CEILING_SECONDS` directly (`const ORCID_BINDING_CACHE_TTL = HAF_INDEXING_LAG_CEILING_SECONDS`) rather than redeclaring `120`. The named alias at the cache-write site preserves semantic intent. Future tuning to e.g. 180s now changes one constant.
+
+**Item #5 (P2) — `extendBindingLockOnTimeoutOrLog` helper extracted.** `backend/src/routes/orcid.ts`: new function at the lock-helpers section (after `releaseBindingLock`). Routed through `__test_seams.extendBindingLockOnTimeoutOrLog` so a unit spec can pin the ordering invariant (item #7). Both `handleAccredit` and `handleLink` now `await __test_seams.extendBindingLockOnTimeoutOrLog(orcidId, '<routeLabel>')` instead of duplicating the inline `getRedis` + try/expire/catch shape. Drift surface between the two callers is closed.
+
+**Item #6 (P3) — `Retry-After: 10` kept constant.** Picked option (b) per the architect's "(b) is what shipped; the contract now documents the expectation" framing. The contract update at `orcid.md:188` already documents the ~12-attempt expectation during the extended window. Polling clients honoring `Retry-After` succeed; clients with hard retry-count caps below 12 should use the documented `verify_before_retry` mechanism instead of raw polling. No code change.
+
+**Item #7 (P3) — Ordering invariant pinned at the test layer.** `backend/tests/routes/orcid.test.ts`: new spec `extendBindingLockOnTimeoutOrLog runs BEFORE handleBroadcastError writes the response (A.1 ordering invariant)`. Uses vi's `mock.invocationCallOrder` (every spy invocation is assigned a global incrementing call number) to compare the helper's invocation order against the `<routeLabel> broadcast timed out` warn fired inside `handleBroadcastError`. A line-swap mutation that calls `handleBroadcastError` first inverts the order and surfaces here. Runs across the accredit + link describe.each matrix (2 specs total).
+
+**Item #8 (P3) — `expireErr` catch branch covered.** `backend/tests/routes/orcid.test.ts`: new spec `extendBindingLockOnTimeoutOrLog catches redis.expire throw and emits operator-alert anchor; 504 envelope unchanged`. Stubs `redis.expire` to reject with a synthetic error, asserts the standard 504 BROADCAST_TIMEOUT envelope still fires (timer-fire shape with `timeout_ms`, NOT routed through the ambiguous-outcome branch), and asserts the helper's documented operator-alert anchor (`orcid binding lock TTL extension failed — duplicate-bind protection degraded for this request`) was logged at error level. A regression that drops the catch propagates the rejection and loses the anchor → spec fails. 2 specs total.
+
+**Item #9 (P3) — Stale comment paragraph reframed.** `backend/src/routes/orcid.ts`: the `withOrcidBindingLock` acquired-branch comment block previously enumerated pre-broadcast SYNC and post-broadcast ASYNC throw classes both routing to 504 ambiguous-outcome. After d8b9b75 the post-broadcast class routes to 502 POST_BROADCAST_FAILED via PostBroadcastWriteError discrimination. Rewrote to lead with the wrapper's role (route + discriminate via handleBroadcastErrorAmbiguous → handleBroadcastError) and enumerate surviving classes after the swap (pre-broadcast SYNC → 504, with a pointer to `backend-pevo-admin-key-startup-validation.md` for the startup-time check that closes the production trigger; post-broadcast cascade → 502 POST_BROADCAST_FAILED).
+
+### Verification
+
+- `npx tsc --noEmit`: clean.
+- `npm run lint`: clean (pre-existing `seed-phrase.ts` no-explicit-any warnings only).
+- `npx vitest run tests/routes/orcid.test.ts`: 54/54 pass (was 50 before; +4 = items #7 + #8 × 2 modes via describe.each).
+- Full backend suite is the architect's call (per CLAUDE.md guidance).
+
+### Files changed
+
+- `backend/src/routes/orcid.ts` — `HAF_INDEXING_LAG_CEILING_SECONDS` reordered above + made source of truth for `ORCID_BINDING_CACHE_TTL`; new `extendBindingLockOnTimeoutOrLog` helper at the lock-helpers section; `handleAccredit` + `handleLink` BroadcastTimeoutError catch sites collapsed to `await __test_seams.extendBindingLockOnTimeoutOrLog(...)`; helper added to `__test_seams`; wrapper acquired-branch comment block reframed.
+- `backend/tests/routes/orcid.test.ts` — 2 new specs for items #7 + #8.
+
 

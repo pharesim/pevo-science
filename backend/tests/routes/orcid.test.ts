@@ -1772,6 +1772,143 @@ describe.each([
     },
   );
 
+  // BACKEND-ORCID-LOCK-TTL-EXTEND-ON-TIMEOUT round-1 hold #7.
+  // The A.1 ordering invariant — `extendBindingLockOnTimeoutOrLog` MUST run
+  // BEFORE `handleBroadcastError` writes the 504 response — is documented in
+  // the comment block at handleAccredit's BroadcastTimeoutError catch but
+  // unverified by tests at the response-write level (supertest can't simulate
+  // mid-write disconnect). A line-swap mutation that calls handleBroadcastError
+  // first would: (a) emit the 504 before the lock-extend completes, (b) leave
+  // a brief window where a malicious caller dropping the connection mid-write
+  // could escape fn before the extend lands. We pin the invariant via vi's
+  // `mock.invocationCallOrder` — every vi.spyOn invocation is assigned a
+  // global incrementing call number, comparable across mock objects. A
+  // regression that reorders the calls would surface here.
+  it(
+    'extendBindingLockOnTimeoutOrLog runs BEFORE handleBroadcastError writes the response (A.1 ordering invariant)',
+    async () => {
+      const redis = getRedis();
+      if (!redis) return;
+      const orcidId = `0000-0001-${orcidSuffix}${orcidSuffix}${orcidSuffix}${orcidSuffix}-0012`;
+      const lockKey = `${config.appTag}:orcid_binding_lock:${orcidId}`;
+      const cacheKey = `${config.appTag}:orcid_binding:${orcidId}`;
+      await redis.del(lockKey, cacheKey).catch(() => { /* ignore */ });
+
+      installOrcidFetchStub({ orcid: orcidId, name: 'Alice', works: 3 });
+      installLockModeMocks();
+      broadcastJsonMock.mockRejectedValueOnce(new MockBroadcastTimeoutError(30_000));
+
+      const extendSpy = vi.spyOn(__test_seams, 'extendBindingLockOnTimeoutOrLog');
+      // logger.warn fires inside handleBroadcastError on the BroadcastTimeoutError
+      // branch (`<routeLabel> broadcast timed out`) — that call is the proxy
+      // for "response is about to be written". A regression that runs
+      // handleBroadcastError before the helper would order this warn earlier.
+      const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as unknown as void);
+
+      try {
+        const state = await startAuthed(mode, 'alice');
+        const res = await request(app)
+          .post('/api/orcid/callback')
+          .set('Authorization', `Bearer ${jwtFor('alice')}`)
+          .send({ code: 'fake', state });
+
+        expect(res.status).toBe(504);
+        expect(res.body.error.code).toBe('BROADCAST_TIMEOUT');
+
+        // Helper was called.
+        expect(extendSpy).toHaveBeenCalledTimes(1);
+        const extendOrder = extendSpy.mock.invocationCallOrder[0];
+
+        // Find the specific warn call from handleBroadcastError. Other warn
+        // calls happen too (the helper's own success-warn at `a1_extend_ok`,
+        // pino-http request lines), so filter by message suffix.
+        const handlerWarnOrders = warnSpy.mock.calls
+          .map((call, i) => ({ msg: call[1], order: warnSpy.mock.invocationCallOrder[i] }))
+          .filter((c) => typeof c.msg === 'string' && c.msg.includes('broadcast timed out'))
+          .map((c) => c.order);
+        expect(handlerWarnOrders.length).toBeGreaterThanOrEqual(1);
+
+        // Critical: the helper's invocation order is BEFORE the broadcast-
+        // timed-out warn (which is the first observable side effect inside
+        // handleBroadcastError, ahead of `sendError`). A line-swap regression
+        // would invert this.
+        for (const handlerOrder of handlerWarnOrders) {
+          expect(extendOrder).toBeLessThan(handlerOrder);
+        }
+      } finally {
+        extendSpy.mockRestore();
+        warnSpy.mockRestore();
+        await redis.del(lockKey, cacheKey).catch(() => { /* cleanup */ });
+      }
+    },
+  );
+
+  // BACKEND-ORCID-LOCK-TTL-EXTEND-ON-TIMEOUT round-1 hold #8.
+  // `redis.expire` throwing mid-extend is logged + swallowed; the standard
+  // 504 BROADCAST_TIMEOUT envelope still fires. Without the helper's catch,
+  // an unhandled rejection from redis.expire would propagate up through fn,
+  // hit the wrapper's outer ambiguous-outcome catch, and surface as a 504
+  // ambiguous envelope WITHOUT timeout_ms (the wrong shape — the original
+  // throw IS a BroadcastTimeoutError; consumers keying retry-backoff off
+  // timeout_ms would see undefined). The catch below preserves the canonical
+  // timer-fire envelope shape.
+  it(
+    'extendBindingLockOnTimeoutOrLog catches redis.expire throw and emits operator-alert anchor; 504 envelope unchanged',
+    async () => {
+      const redis = getRedis();
+      if (!redis) return;
+      const orcidId = `0000-0001-${orcidSuffix}${orcidSuffix}${orcidSuffix}${orcidSuffix}-0013`;
+      const lockKey = `${config.appTag}:orcid_binding_lock:${orcidId}`;
+      const cacheKey = `${config.appTag}:orcid_binding:${orcidId}`;
+      await redis.del(lockKey, cacheKey).catch(() => { /* ignore */ });
+
+      installOrcidFetchStub({ orcid: orcidId, name: 'Alice', works: 3 });
+      installLockModeMocks();
+      broadcastJsonMock.mockRejectedValueOnce(new MockBroadcastTimeoutError(30_000));
+
+      const expireSpy = vi
+        .spyOn(redis, 'expire')
+        .mockRejectedValueOnce(new Error('synthetic redis.expire flap'));
+      const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => undefined as unknown as void);
+
+      try {
+        const state = await startAuthed(mode, 'alice');
+        const res = await request(app)
+          .post('/api/orcid/callback')
+          .set('Authorization', `Bearer ${jwtFor('alice')}`)
+          .send({ code: 'fake', state });
+
+        // Standard 504 BROADCAST_TIMEOUT — the original throw was a
+        // BroadcastTimeoutError, so the canonical timer-fire envelope still
+        // fires (timeout_ms is present, NOT routed through the
+        // ambiguous-outcome branch).
+        expect(res.status).toBe(504);
+        expect(res.body.error.code).toBe('BROADCAST_TIMEOUT');
+        expect(res.body.error.details).toMatchObject({
+          retriable: false,
+          outcome: 'uncertain',
+          verify_before_retry: true,
+          timeout_ms: 30_000,
+        });
+
+        // Operator-alert anchor: the helper's expire-throw catch fired with
+        // the documented log suffix. A regression that removes the catch
+        // would propagate the rejection and lose this anchor.
+        const a1ThrewCalls = errorSpy.mock.calls.filter(
+          (call) =>
+            typeof call[1] === 'string' &&
+            call[1].includes('orcid binding lock TTL extension failed'),
+        );
+        expect(a1ThrewCalls.length).toBe(1);
+        expect(expireSpy).toHaveBeenCalledTimes(1);
+      } finally {
+        expireSpy.mockRestore();
+        errorSpy.mockRestore();
+        await redis.del(lockKey, cacheKey).catch(() => { /* cleanup */ });
+      }
+    },
+  );
+
   // BE-ORCID-BROADCAST-TIMEOUT-OUTCOME-HANDLING — unavailable-branch
   // post-broadcast throw → wrapper's outer try/catch routes through
   // handleBroadcastErrorAmbiguous → handleBroadcastError discriminates and
