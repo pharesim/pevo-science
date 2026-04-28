@@ -52,3 +52,9 @@ Round-2 `/ce-code-review` on commit `c078940` (correctness + testing + julik-fro
 - `frontend-orcid-callback-teardown-cleanup.md` — P3. Audit all setTimeout / setInterval / pending-promise call sites in `orcid-callback.js` for component-destroy cleanup. Store IDs in component state, clear in `destroy()`. Small scope but touches more than just the one site flagged.
 
 **Path to re-archive:** (1) UI agent applies items #1-4. (2) UI agent re-review signal block. (3) Architect re-reviews round-3 with `/ce-code-review` and archives.
+
+## Architect re-review pass (2026-04-28) — STILL OPEN, MOVED BACK TO PENDING
+
+Task was found in `tasks/review/` on 2026-04-28 architect intake but the round-2 hold items have not been applied. Current `frontend/src/pages/orcid-callback.js:329` and `:341` still call `auth._checkAccreditation()` (single fetch) — round-2 item #1 specified swapping to `auth._startAccreditationPolling()` to match `loginFromResponse` / `connect` and provide retry on transient fetch failure. Items #2 (regression test for the swap), #3 (call-count assertion), and #4 (drop dead `vi.useFakeTimers`) were all gated on #1 landing first. Several intervening commits touched `orcid-callback.js` (UI-ORCID-CALLBACK-RETRIABLE-BRANCH, FE-ORCID-CALLBACK-TEARDOWN-CLEANUP, err-message-sanitize sweep) but none addressed the round-2 polling-vs-checkAccreditation gap.
+
+`git mv`'d back to `tasks/pending/`. Implementer: apply round-2 items #1-4, then move back to `tasks/review/`.

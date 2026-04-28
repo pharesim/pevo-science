@@ -52,3 +52,9 @@ Round-3 `/ce-code-review` on commit `67311b3`. The round-2 hold (backport bridge
 - **(advisory) Pre-auth info leak on approve guard** — round-2 dismissal stands. `verifyHiveSignature` runs before the guard.
 
 **Path to re-archive:** (1) Backend applies item #1 (reorder + test). (2) Backend re-review signal block. (3) Architect re-reviews round-4 with `/ce-code-review`. (4) Architect lands items #2 and #3 (contract doc updates) during archive as a single atomic edit. All 4 changes archive together.
+
+## Architect re-review pass (2026-04-28) — STILL OPEN, MOVED BACK TO PENDING
+
+Task was found in `tasks/review/` on 2026-04-28 architect intake but the round-3 hold item #1 has not been applied. No commit since `67311b3` mentions BE-CLAIMS-ERROR-POLISH. Current `claims.ts:299` still fires `assertBridgeKeyConfigured` before the client-signed return path at `claims.ts:361` — the exact ordering bug round-3 flagged. A claimer self-revoking on a bridge paper when `pevoBridgePostingKey` is unset still gets 503 instead of 200 + operation payload. Items #2 and #3 (architect-side contract doc edits at archive time) are still gated on item #1.
+
+`git mv`'d back to `tasks/pending/`. Implementer: apply round-3 item #1, then move back to `tasks/review/`.
