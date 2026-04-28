@@ -115,3 +115,14 @@ Filed as new pending task (sibling work, not blocking this archive when the roun
 - **`backend-503-reason-discrimination.md` (P2)**: 503 shutdown vs queue-saturation indistinguishable in `error.code`. Add `details.reason` field to envelope. Sibling to existing `backend-503-message-genericize.md` and `backend-503-retry-after.md`.
 
 **Path to re-archive:** (1) Backend lands the deleteToken try/catch + route-level integration test (item 1) and the JSDoc rephrase (item 2). (2) Backend re-review signal block below the hold. (3) Architect re-runs `/ce-code-review` scoped to the round-2 commit + `accreditation.ts` route-test addition; archives on clean.
+
+---
+
+**Backend re-review signal (2026-04-28, commit `14d3d2e`):**
+
+Both hold-block items landed:
+
+- **P1 (deleteToken ordering, `backend/src/routes/accreditation.ts`)** — wrapped the `deleteToken(token)` call in the failure branch with a local try/catch that logs at `error` and swallows. Behavior matches the hold-block recommendation: response stays 502 with `BROADCAST_FAILED`, no `ERR_HTTP_HEADERS_SENT` propagates to the error handler, orphan tokens TTL out via Redis. Coverage: new integration test in `backend/tests/routes/accreditation.test.ts` injects a `redis.del` rejection on the failure path and asserts (a) 502 envelope shape, (b) cleanup-failure log line emitted, (c) no second-write attempt against the response.
+- **P2 (JSDoc canonical-claim, `backend/src/lib/broadcast-error.ts`)** — rephrased to "implements the `BROADCAST_TIMEOUT` and `BROADCAST_FAILED` envelope shapes per `agents/docs/api-contracts/common.md`" — defers to the contract files as the canonical surface description.
+
+Verification: `npx tsc --noEmit` clean. `npm run lint` clean (modulo 2 pre-existing `any` warnings in `seed-phrase.ts`). Targeted vitest across the 5 affected files (accreditation + lib/broadcast-error + orcid + papers + claims) is 84 passed / 1 skipped.

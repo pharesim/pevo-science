@@ -53,3 +53,20 @@ For routes that pass through `burnSentinel`, also test that `burnSentinel`-throw
 ## [TODO Architect]
 
 None — mechanical replication of an established pattern.
+
+---
+
+**Backend response (2026-04-28):** STALE — work already shipped on main.
+
+Equivalent route-level coverage for the same 4 routes (auth, custody/upgrade, settings/set-password, signup-verify/resume-signup) and the same three error classes (`ArgonQueueFullError`, `ShuttingDownError`, `ArgonAbortError`) is already in main as of commit `ab80d46` ("test(argon2): add route-level argon2 error → HTTP translation coverage"), under the filenames:
+
+- `backend/tests/routes/auth-argon-error-translation.test.ts`
+- `backend/tests/routes/custody-upgrade-argon-error-translation.test.ts`
+- `backend/tests/routes/settings-set-password-argon-error-translation.test.ts`
+- `backend/tests/routes/signup-verify-resume-argon-error-translation.test.ts`
+
+Those files use the same `vi.hoisted` mock pattern from `auth-signup-dup-saturated.test.ts` and assert the same translation contract (24 route × error-class assertions; mutation-kill verification documented in test headers). The Acceptance section's "or extension to" clause is satisfied by these existing siblings under different filenames.
+
+The cluster A triage in `b60dd3f` filed this as a new pending task without noticing `ab80d46` had already landed the coverage. A backend worker dispatched this task as wave-1 work and produced functionally redundant test files (`custody-argon-errors.test.ts`, `settings-set-password-argon-errors.test.ts`, `signup-verify-argon-errors.test.ts`); those files were merged in `b2e2d46` and reverted in `be659bd` after the full-suite vitest run revealed (a) the new tests had setup gaps (no `app-db.js` mock, same-username rate-limit collisions returning 429) and (b) they overlap the existing coverage one-for-one. No net change to main from this task.
+
+Suggested architect action: archive without deletion. The original task scope is satisfied at HEAD; future readers tracing this task should be redirected to `ab80d46`.
