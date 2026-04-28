@@ -1,6 +1,7 @@
 ---
 title: Verify resource-knob math before baking it into load-bearing security margins
 date: 2026-04-22
+last_updated: 2026-04-28
 category: conventions
 module: backend
 problem_type: convention
@@ -111,20 +112,30 @@ peak_argon2_mem = UV_THREADPOOL_SIZE × (memoryCost / 1024)
 6. **JS-level concurrency semaphore** (the real fix — pool sizing alone is not deterministic under unbounded HTTP concurrency):
 
    ```typescript
-   import pLimit from 'p-limit';
+   // Pseudocode form. Actual PEvO implementation lives at
+   // backend/src/lib/argon2-semaphore.ts and exports `runWithArgon2Slot(fn, opts?)`
+   // — an in-repo ~20 LoC Promise-queue primitive chosen over adding a `p-limit`
+   // dependency. The shape illustrated below is correct; the import is conceptual.
 
    // Derivation: floor(UV_THREADPOOL_SIZE / parallelism) = floor(16 / 4) = 4
    // Peak argon2 mem = 4 × 64 MiB = 256 MiB (under 512m container limit)
    // Changing either UV_THREADPOOL_SIZE or parallelism MUST recalculate this.
-   const argon2Semaphore = pLimit(ARGON2_CONCURRENT_OPS);
+   import { runWithArgon2Slot } from '../lib/argon2-semaphore.js';
 
-   async function burnSentinel(input: string): Promise<void> {
+   async function burnSentinel(input: string, signal?: AbortSignal): Promise<void> {
      const hash = await SENTINEL_ARGON2_HASH_PROMISE;
-     await argon2Semaphore(() =>
-       argon2.verify(hash, input, ARGON2_OPTIONS),
-     ).catch((err) => {
+     try {
+       await runWithArgon2Slot(() =>
+         argon2.verify(hash, input, ARGON2_OPTIONS),
+         { signal },
+       );
+     } catch (err) {
+       // ArgonQueueFullError, ShuttingDownError, ArgonAbortError MUST propagate
+       // so route handlers can translate to 503 / silent-return. See
+       // wrapping-primitive-exhaustive-call-site-audit-2026-04-22.md Case 3.
+       if (err instanceof ArgonSemaphoreError) throw err;
        logger.warn({ err }, 'burnSentinel failed — timing oracle may be open for this request');
-     });
+     }
    }
    ```
 
@@ -219,7 +230,7 @@ const argon2Semaphore = pLimit(ARGON2_CONCURRENT_OPS);
 - `agents/docs/solutions/conventions/verify-library-claims-before-load-bearing-security-margins-2026-04-22.md` — sibling: unverified **library-behavior** claims (dhive 30s broadcast timeout) cascading through review rounds. Same failure class, different axis.
 - `agents/docs/solutions/conventions/timing-equalization-sub-branch-oracles-2026-04-21.md` — the security margin the miscalculation was meant to protect.
 - `agents/docs/solutions/conventions/timing-equalization-smtp-failure-mode-oracle-2026-04-22.md` — sibling oracle-axis doc (status-code under SMTP failure).
-- `agents/docs/tasks/pending/backend-argon2-jslevel-concurrency-cap.md` — follow-up task implementing the semaphore + startup assertion + correct comment.
+- `backend-argon2-jslevel-concurrency-cap.md` — follow-up task implementing the semaphore + startup assertion + correct comment. Archived 2026-04-28 across three rounds (Round 1: settings.ts wrap miss; Round 2: dup-burn `.catch()` cross-product gap; Round 3: dup-signup `.catch()` extended to all three semaphore error classes). The implementation reference is `backend/src/lib/argon2-semaphore.ts`.
 - `backend/src/lib/argon2-options.ts` — canonical `ARGON2_OPTIONS`.
 - `docker-compose.yml` backend service — `UV_THREADPOOL_SIZE` env + `memory: 512m`.
 - [wrapping-primitive-exhaustive-call-site-audit-2026-04-22.md](wrapping-primitive-exhaustive-call-site-audit-2026-04-22.md) — sibling lesson from the same semaphore task. That doc captures the call-site coverage rule (grep every `argon2.hash`/`argon2.verify` across all files; the implementer missed `settings.ts:384`). This doc captures the arithmetic-chain verification rule. Both are necessary for the semaphore's invariant to hold; neither is sufficient alone.

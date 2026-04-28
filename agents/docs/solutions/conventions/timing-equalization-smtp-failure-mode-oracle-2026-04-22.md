@@ -1,6 +1,7 @@
 ---
 title: SMTP-failure status-code oracle bypasses timing-equalization on email-path endpoints
 date: 2026-04-22
+last_updated: 2026-04-28
 category: conventions
 module: backend
 problem_type: convention
@@ -200,5 +201,5 @@ sendOk(res, { message: 'If an account exists...' });
 ## Related
 
 - `agents/docs/solutions/conventions/timing-equalization-sub-branch-oracles-2026-04-21.md` — the parent convention covering **wall-time** oracles. Both docs apply simultaneously on `/reset-request` and `/resend-verification`; neither subsumes the other.
-- `agents/docs/tasks/pending/backend-auth-smtp-status-code-oracle.md` — open task tracking the fix.
-- `agents/docs/tasks/pending/backend-resend-verification-smtp-timing.md` — sibling SMTP **latency** oracle. Option B (fire-and-forget) from the status-code task closes both axes simultaneously.
+- `backend-auth-smtp-status-code-oracle.md` (in `agents/docs/tasks/`) — open task tracking the fix.
+- `backend-resend-verification-smtp-timing.md` — sibling SMTP **latency** oracle. Archived 2026-04-22 as accepted residual (rate-limit-bounded; not closable at the sentinel layer without a background job pipeline). Option B (fire-and-forget) from the status-code task would close both axes simultaneously if the team ever lands a job queue for unrelated reasons.

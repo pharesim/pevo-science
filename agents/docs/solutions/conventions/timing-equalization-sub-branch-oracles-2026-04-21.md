@@ -1,6 +1,7 @@
 ---
 title: Timing-equalization security fixes must enumerate every sub-branch of the equalized target
 date: 2026-04-21
+last_updated: 2026-04-28
 category: conventions
 module: backend
 problem_type: convention
@@ -317,12 +318,12 @@ const passwordHash = hasPassword
 
 Sentinel burns mask the argon2 portion of the request path and nothing else. The following oracles remain open and must be addressed by other means (or accepted as residual leaks with explicit documentation):
 
-- **SMTP latency on `/resend-verification` success path.** `transporter.sendMail` is `await`ed synchronously on the happy-path (~200-2000ms depending on provider). Unknown-email burns sentinel (~50ms) and returns. Known-email-with-valid-password-and-pending-verification also burns argon2 (~50ms) PLUS awaits sendMail (200-2000ms) — total 250-2050ms. The sentinel equalizes the argon2 portion, not the SMTP portion. Fix is architectural: fire-and-forget sendMail + 202 Accepted, or move to a job queue. Filed as `backend-resend-verification-smtp-timing.md` in the tasks/pending tree during the review that surfaced this learning.
+- **SMTP latency on `/resend-verification` success path.** `transporter.sendMail` is `await`ed synchronously on the happy-path (~200-2000ms depending on provider). Unknown-email burns sentinel (~50ms) and returns. Known-email-with-valid-password-and-pending-verification also burns argon2 (~50ms) PLUS awaits sendMail (200-2000ms) — total 250-2050ms. The sentinel equalizes the argon2 portion, not the SMTP portion. Fix is architectural: fire-and-forget sendMail + 202 Accepted, or move to a job queue. Filed as `backend-resend-verification-smtp-timing.md` during the review that surfaced this learning, then archived 2026-04-22 as accepted residual (3/hr/IP rate limit + the forthcoming `trust proxy = 1` fix bound exploit cost; not closable at the sentinel layer without a background job pipeline).
 - **SMTP *failure-mode* status-code oracle.** Distinct from the latency bullet above: when SMTP is unavailable, `sendMail` throws, the known-email path returns 500, and the unknown-email path still returns 200 (burnSentinel succeeds). The attacker observes HTTP status codes, not timing. Filed as `backend-auth-smtp-status-code-oracle.md` and documented at `agents/docs/solutions/conventions/timing-equalization-smtp-failure-mode-oracle-2026-04-22.md` — the failure-mode axis is a sibling convention to this doc, not a subcategory of the wall-time axis.
 - **DB join cost differential.** The `/login` query at `auth.ts:~370-389` includes a correlated subquery for `custody_audit_log` that only runs for known users. Under load this is a measurable timing differential that the sentinel does not cover. Pre-existing residual; not closable at the sentinel layer.
 - **Validation-layer 400 early-returns.** Requests with malformed bodies return 400 before DB or sentinel. Status code already differentiates, so this is an accepted out-of-scope.
 - **Pool-unavailable 503 preempting the sentinel.** `if (!pool) return sendError(res, 503, ...)` on every handler returns in ~1ms on both known and unknown requests when the DB is down. Self-equalizes in most cases; worth confirming per endpoint.
-- **argon2 catch-path fast-exit.** `.catch(() => {})` on the sentinel burn silently returns ~0ms if argon2 itself throws (OOM, native-module failure). Under memory pressure this reopens the oracle invisibly. See the hold block's logger.warn item in `tasks/review/backend-login-unknown-user-timing.md`.
+- **argon2 catch-path fast-exit.** `.catch(() => {})` on the sentinel burn silently returns ~0ms if argon2 itself throws (OOM, native-module failure). Under memory pressure this reopens the oracle invisibly. The `logger.warn` mitigation that surfaces the silent failure (so operators can see the oracle has reopened) was the round-4 hold item on `backend-login-unknown-user-timing.md` (archived 2026-04-22) — applied to `burnSentinel`'s catch in `auth.ts`.
 - **JIT/V8 warm-up and startup.** First-request-per-cold-function timings can skew equalization assumptions on rarely-hit branches. Accepted residual on busy servers; worth spot-checking immediately after deploy.
 - **Sentinel promise startup-window.** `SENTINEL_ARGON2_HASH_PROMISE` is pre-computed at module load. Requests arriving before the promise resolves block on the `await` for the full hash time — acceptable because this only happens during the first ~50ms after process start.
 
