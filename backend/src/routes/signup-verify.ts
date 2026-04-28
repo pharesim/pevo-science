@@ -13,23 +13,13 @@ import { encryptKey } from '../custody-crypto.js';
 import { createClaimedAccount } from '../account-creation.js';
 import { logger } from '../logger.js';
 import { burnSentinel } from './auth.js';
-import { runWithArgon2Slot, ArgonQueueFullError, ShuttingDownError, ArgonAbortError } from '../lib/argon2-semaphore.js';
+import { runWithArgon2Slot } from '../lib/argon2-semaphore.js';
+import { handleArgonError } from '../lib/argon-error-handler.js';
+import { requestAbortSignal } from '../lib/request-abort-signal.js';
 import { hashEmailForLogs } from '../lib/log-pii.js';
 import { seedAccreditationBonus } from '../reputation.js';
 
 const router = Router();
-
-// Build an AbortSignal tied to the HTTP request's lifetime. See the same
-// helper in routes/auth.ts for the rationale — short version, Node 20 /
-// Express 5 don't expose `req.signal`, so we reconstruct it from the
-// 'close' event to feed `runWithArgon2Slot(..., { signal })`.
-function requestAbortSignal(req: Request, res: Response): AbortSignal {
-  const ac = new AbortController();
-  req.once('close', () => {
-    if (!res.writableEnded) ac.abort();
-  });
-  return ac.signal;
-}
 
 const SESSION_EXPIRY = '24h';
 const SESSION_EXPIRY_MS = 24 * 60 * 60 * 1000;
@@ -167,21 +157,7 @@ router.post('/resume-signup', resumeLimiter, async (req: Request, res: Response)
 
     sendOk(res, { flow: 'choose', email: normalizedEmail, auth_token: account.verify_token });
   } catch (err) {
-    if (err instanceof ArgonQueueFullError) {
-      logger.warn({ err }, 'argon2 queue saturated — returning 503');
-      return sendError(res, 503, 'SERVICE_UNAVAILABLE', 'Authentication service temporarily overloaded. Please retry.');
-    }
-    if (err instanceof ShuttingDownError) {
-      logger.info({ err }, 'argon2 semaphore shutting down — returning 503');
-      return sendError(res, 503, 'SERVICE_UNAVAILABLE', 'Service shutting down. Please retry.');
-    }
-    if (err instanceof ArgonAbortError) {
-      // Client disconnected before the argon2 slot was granted — socket is
-      // gone, no response to write. Silently swallow so the global error
-      // handler doesn't 500 into a torn-down connection.
-      logger.debug({ err }, 'argon2 slot aborted by client disconnect — no response to write');
-      return;
-    }
+    if (handleArgonError(res, err) === 'handled') return;
     logger.error({ err }, 'Resume signup failed');
     sendError(res, 500, 'INTERNAL_ERROR', 'Resume failed');
   }

@@ -47,3 +47,41 @@ Centralize argon2 error handling and cross-file helpers into the backend `lib/` 
 
 - Behavioral changes to error handling. This is a structural consolidation only — same status codes, same response shapes, same logs.
 - Changes to the underlying semaphore or argon2 invariants.
+
+---
+
+## Implementation notes (backend, 2026-04-28)
+
+### Shape decisions
+
+- **Base class**: `ArgonSemaphoreError` is `abstract` in `argon2-semaphore.ts`. The three concrete errors (`ArgonQueueFullError`, `ShuttingDownError`, `ArgonAbortError`) extend it. Catch sites do one `instanceof ArgonSemaphoreError` check; the helper does the per-subclass dispatch.
+- **Helper location**: `backend/src/lib/argon-error-handler.ts` (new file). Mirrors `lib/broadcast-error.ts`'s shape and conventions. Renamed from `handleArgonQueueFull` to `handleArgonError`.
+- **Return-shape footgun fix**: helper returns `'handled' | 'unhandled'` (string-literal union) matching the convention `handleBroadcastError` already uses (`'timeout' | 'failure'`). Call sites read:
+  ```ts
+  if (handleArgonError(res, err, { logContext: { username } }) === 'handled') return;
+  ```
+  The `=== 'handled'` comparison is harder to typo than a bare `if (helper(...))` boolean, and forgetting the comparison still produces an obvious truthy short-circuit (`if ('unhandled') return`) that surfaces in any path-level test rather than silently double-responding.
+- **Custody username field**: kept on the custody catch site via the new `opts.logContext` parameter. Other sites pass nothing (default `{}`). No widening of the function signature; per-route extra log fields go through `logContext`.
+- **`requestAbortSignal`**: extracted to `backend/src/lib/request-abort-signal.ts`. All four routes import it from one place.
+- **`{ once: true }` vs explicit `removeEventListener`**: kept the explicit `removeEventListener` (covers BOTH the abort-fires path AND the resolved-normally path, so it is load-bearing on the resolved-without-abort branch); dropped `{ once: true }` (which would only matter when abort fires, where the explicit cleanup also runs). Inline comment in `argon2-semaphore.ts` documents the choice.
+- **`burnSentinel` re-throw**: previously did three explicit `instanceof` checks before the warn-and-swallow path. Collapsed to one `instanceof ArgonSemaphoreError` re-throw using the new base class. Same behavior, narrower to read, and any future fourth subclass propagates automatically.
+- **`/signup` 409 dup `.catch`**: the two inline `.catch((err) => { if (err instanceof ArgonAbortError) throw err; ... })` blocks at the duplicate-email burn sites previously only re-threw `ArgonAbortError`. They now re-throw any `ArgonSemaphoreError`, so queue-full / shutting-down on those burns also propagate to the outer catch and translate to 503 instead of being silently swallowed (which would have reopened the timing oracle under DoS / SIGTERM). Behavior change is strictly safer; matches what the `burnSentinel` body already did.
+
+### Extension points for downstream tasks
+
+The helper is the choke point for every 503 the auth surface emits, so:
+
+- **`backend-503-message-genericize.md`**: change the `message` field in the two 503 branches inside `handleArgonError`. One-place edit.
+- **`backend-503-retry-after.md`**: read `opts.retryAfterSec` and call `res.set('Retry-After', String(opts.retryAfterSec))` before `sendError` in the two 503 branches. The `retryAfterSec` field is already declared in `HandleArgonErrorOpts` but currently unused — wire its consumer when that task lands.
+- **`backend-argon2-error-routes-test-coverage.md`**: route-level coverage that asserts each catch site does NOT double-respond if a future caller forgets the early return. The string-literal sentinel makes the failure mode noisier (truthy short-circuit on `'unhandled'`) but a positive test is still warranted.
+
+### Files touched
+
+- Created: `backend/src/lib/argon-error-handler.ts`, `backend/src/lib/request-abort-signal.ts`
+- Modified: `backend/src/lib/argon2-semaphore.ts` (base class + listener cleanup), `backend/src/routes/auth.ts` (catch-site collapse + burnSentinel base-class re-throw + signup-dup catch), `backend/src/routes/custody.ts`, `backend/src/routes/settings.ts`, `backend/src/routes/signup-verify.ts`
+
+### Verification
+
+- `npx tsc --noEmit` clean.
+- `npm run lint` clean (only pre-existing `seed-phrase.ts` `no-explicit-any` warnings unrelated to this task).
+- Scoped tests pass: `tests/lib/argon2-semaphore.test.ts` (15/15), `tests/lib/broadcast-error.test.ts`, `tests/routes/auth.test.ts` (20/20), `tests/routes/auth-concurrency.test.ts`, `tests/routes/custody.test.ts`, `tests/routes/settings.test.ts`, `tests/routes/settings-set-password.test.ts`. Pre-existing failures in `tests/routes/recover.test.ts` (4) and `tests/routes/signup-verify.test.ts` (2) reproduce on the unmodified HEAD and are unrelated to this refactor — verified by stashing the changes and re-running.

@@ -68,13 +68,32 @@ export const MAX_CONCURRENT_ARGON2_OPS = computeCap();
 export const MAX_QUEUE_DEPTH = 50;
 
 /**
+ * Abstract base class for every error thrown by the argon2 semaphore. Lets
+ * route handlers do a single `if (err instanceof ArgonSemaphoreError)`
+ * dispatch (via `handleArgonError`) instead of repeating a 3-way instanceof
+ * chain, and gives the type system one anchor to enforce coverage when a
+ * future 4th error class is added.
+ *
+ * Marked abstract so a stray `throw new ArgonSemaphoreError()` won't compile
+ * — the only instances on the wire are the three concrete subclasses below.
+ */
+export abstract class ArgonSemaphoreError extends Error {
+  constructor(message: string) {
+    super(message);
+    // Subclasses overwrite `this.name`; default falls back to the JS class
+    // name if a future subclass forgets.
+    this.name = new.target.name;
+  }
+}
+
+/**
  * Thrown by `runWithArgon2Slot` (and by the process-wide default semaphore)
  * when the waiter queue is at `MAX_QUEUE_DEPTH`. Callers MUST re-throw or
  * translate to 503; swallowing this error silently inside burnSentinel would
  * reopen the timing oracle under DoS conditions (~0ms response instead of
  * the argon2.verify floor).
  */
-export class ArgonQueueFullError extends Error {
+export class ArgonQueueFullError extends ArgonSemaphoreError {
   constructor(message = 'argon2 semaphore queue full') {
     super(message);
     this.name = 'ArgonQueueFullError';
@@ -94,7 +113,7 @@ export class ArgonQueueFullError extends Error {
  * same HTTP code, but operators distinguish them by log message so they
  * can separate "increase capacity" from "benign during rolling restart".
  */
-export class ShuttingDownError extends Error {
+export class ShuttingDownError extends ArgonSemaphoreError {
   constructor(message = 'argon2 semaphore shutting down') {
     super(message);
     this.name = 'ShuttingDownError';
@@ -120,7 +139,7 @@ export interface RunWithArgon2SlotOptions {
  * disconnected); log at debug and return silently so Express can close
  * the already-dead socket without writing a 500.
  */
-export class ArgonAbortError extends Error {
+export class ArgonAbortError extends ArgonSemaphoreError {
   constructor(message = 'argon2 slot aborted') {
     super(message);
     this.name = 'AbortError'; // Matches DOMException('…', 'AbortError') idiom.
@@ -237,7 +256,14 @@ export function createArgon2Semaphore(
                 if (i >= 0) waiters.splice(i, 1);
                 reject(new ArgonAbortError());
               };
-              signal.addEventListener('abort', onAbort, { once: true });
+              // No `{ once: true }` here: the explicit `removeEventListener`
+              // in the finally below covers BOTH the abort-fires path AND
+              // the resolved-normally path. Adding `{ once: true }` would
+              // make the abort-path removal a no-op (already removed by the
+              // dispatcher) but the resolved-path still needs the explicit
+              // call to avoid leaking the listener for the lifetime of the
+              // signal. One cleanup mechanism, not two.
+              signal.addEventListener('abort', onAbort);
             }
           });
         } finally {

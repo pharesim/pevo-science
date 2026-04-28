@@ -11,24 +11,14 @@ import { getAppPool } from '../app-db.js';
 import { logger } from '../logger.js';
 import { isPasswordValid, PASSWORD_POLICY_MESSAGE } from '../lib/password-policy.js';
 import { ARGON2_OPTIONS } from '../lib/argon2-options.js';
-import { runWithArgon2Slot, ArgonQueueFullError, ShuttingDownError, ArgonAbortError } from '../lib/argon2-semaphore.js';
+import { runWithArgon2Slot } from '../lib/argon2-semaphore.js';
+import { handleArgonError } from '../lib/argon-error-handler.js';
+import { requestAbortSignal } from '../lib/request-abort-signal.js';
 
 const readLimiter = rateLimit({ name: 'settings-read', windowMs: 60_000, max: 30, keyFn: byIp });
 const writeLimiter = rateLimit({ name: 'settings-write', windowMs: 60_000, max: 10, keyFn: byIp });
 
 const router = Router();
-
-// Build an AbortSignal tied to the HTTP request's lifetime. See the same
-// helper in routes/auth.ts for the rationale — Node 20 / Express 5 don't
-// expose `req.signal`, so we reconstruct it from the 'close' event to feed
-// `runWithArgon2Slot(..., { signal })`.
-function requestAbortSignal(req: Request, res: Response): AbortSignal {
-  const ac = new AbortController();
-  req.once('close', () => {
-    if (!res.writableEnded) ac.abort();
-  });
-  return ac.signal;
-}
 
 const EMAIL_TOKEN_EXPIRY_MS = 24 * 60 * 60 * 1000; // 24 hours
 
@@ -403,21 +393,7 @@ router.post('/set-password', writeLimiter, verifyHiveSignature, async (req: Requ
 
     sendOk(res, { message: 'Password set. You can now log in with your email/username and this password.' });
   } catch (err) {
-    if (err instanceof ArgonQueueFullError) {
-      logger.warn({ err }, 'argon2 queue saturated — returning 503');
-      return sendError(res, 503, 'SERVICE_UNAVAILABLE', 'Authentication service temporarily overloaded. Please retry.');
-    }
-    if (err instanceof ShuttingDownError) {
-      logger.info({ err }, 'argon2 semaphore shutting down — returning 503');
-      return sendError(res, 503, 'SERVICE_UNAVAILABLE', 'Service shutting down. Please retry.');
-    }
-    if (err instanceof ArgonAbortError) {
-      // Client disconnected before the argon2 slot was granted — socket is
-      // gone, no response to write. Silently swallow so the global error
-      // handler doesn't 500 into a torn-down connection.
-      logger.debug({ err }, 'argon2 slot aborted by client disconnect — no response to write');
-      return;
-    }
+    if (handleArgonError(res, err) === 'handled') return;
     logger.error({ err }, 'Failed to set password');
     sendError(res, 500, 'INTERNAL_ERROR', 'Failed to set password');
   }

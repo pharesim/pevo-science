@@ -11,22 +11,12 @@ import { broadcastSendOperationsWithTimeout } from '../hive.js';
 import { decryptKey } from '../custody-crypto.js';
 import { logCustodyBroadcast } from '../custody-audit.js';
 import { logger } from '../logger.js';
-import { runWithArgon2Slot, ArgonQueueFullError, ShuttingDownError, ArgonAbortError } from '../lib/argon2-semaphore.js';
+import { runWithArgon2Slot } from '../lib/argon2-semaphore.js';
+import { handleArgonError } from '../lib/argon-error-handler.js';
+import { requestAbortSignal } from '../lib/request-abort-signal.js';
 import { handleBroadcastError } from '../lib/broadcast-error.js';
 
 const router = Router();
-
-// Build an AbortSignal tied to the HTTP request's lifetime. See the same
-// helper in routes/auth.ts for the rationale — Node 20 / Express 5 don't
-// expose `req.signal`, so we reconstruct it from the 'close' event to feed
-// `runWithArgon2Slot(..., { signal })`.
-function requestAbortSignal(req: Request, res: Response): AbortSignal {
-  const ac = new AbortController();
-  req.once('close', () => {
-    if (!res.writableEnded) ac.abort();
-  });
-  return ac.signal;
-}
 
 // Allowed Hive operations for custodial broadcast
 const ALLOWED_OPS = new Set(['comment', 'vote', 'custom_json']);
@@ -246,21 +236,7 @@ router.post('/upgrade', verifyHiveSignature, upgradeLimiter, async (req: Request
 
     sendOk(res, { custody: 'self', token, expires_at: expiresAt });
   } catch (err) {
-    if (err instanceof ArgonQueueFullError) {
-      logger.warn({ err, username }, 'argon2 queue saturated — returning 503');
-      return sendError(res, 503, 'SERVICE_UNAVAILABLE', 'Authentication service temporarily overloaded. Please retry.');
-    }
-    if (err instanceof ShuttingDownError) {
-      logger.info({ err, username }, 'argon2 semaphore shutting down — returning 503');
-      return sendError(res, 503, 'SERVICE_UNAVAILABLE', 'Service shutting down. Please retry.');
-    }
-    if (err instanceof ArgonAbortError) {
-      // Client disconnected before the argon2 slot was granted — socket is
-      // gone, no response to write. Silently swallow so the global error
-      // handler doesn't 500 into a torn-down connection.
-      logger.debug({ err, username }, 'argon2 slot aborted by client disconnect — no response to write');
-      return;
-    }
+    if (handleArgonError(res, err, { logContext: { username } }) === 'handled') return;
     logger.error({ err, username }, 'Custody upgrade failed');
     sendError(res, 500, 'INTERNAL_ERROR', 'Upgrade failed');
   }
