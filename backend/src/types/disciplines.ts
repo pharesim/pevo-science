@@ -139,6 +139,12 @@ export function validateDisciplineFilter(raw: unknown): DisciplineFilterResult |
 
 // ──────────────────────────────────────────────
 // Per-paper `discipline` response field (BE-PAPERS-DISCIPLINE-FIELD-CANON-NAME)
+//
+// Distinct from `validateDisciplineFilter` above: this helper shapes the
+// on-chain stored value into the response payload (lenient — accepts any
+// string, trims whitespace, lowercases) and is NOT a security guard. The
+// query-string filter helper enforces length + charset to close the DoS
+// vector; this one trusts the upstream metadata and only canonicalizes.
 // ──────────────────────────────────────────────
 
 /**
