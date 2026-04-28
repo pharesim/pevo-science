@@ -18,7 +18,6 @@ List PEvO papers with filtering and sorting.
 | `language` | string | — | Filter by language code (e.g. `en`, `de`, `es`) |
 | `sort` | enum | `date` | `date`, `reputation`, `votes` |
 | `order` | enum | `desc` | `asc`, `desc` |
-| `accredited_only` | boolean | `true` | Only show papers from accredited authors |
 | `include_retracted` | boolean | `false` | Include retracted papers in results |
 | `source` | enum | — | Filter by paper source: `native` (original PEvO papers), `bridge` (registered preprints), or omit for both |
 | `page` | integer | `1` | Page number (1-indexed) |
@@ -346,7 +345,6 @@ Discussion comments on a paper (threaded). Returns a flat list of all comments; 
 
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
-| `accredited_only` | boolean | `true` | Only show comments from accredited authors |
 | `sort` | enum | `date` | `date`, `votes` |
 | `order` | enum | `asc` | `asc`, `desc` |
 | `page` | integer | `1` | Page number |
@@ -471,7 +469,6 @@ Full-text search across PEvO papers and reviews.
 | `discipline` | string | — | Filter by discipline. Match is case-insensitive (the backend lowercases both the query param and the stored value via `LOWER()`). Case-variant values share a single Redis cache entry. Pass `canon_name` from `GET /api/disciplines` as the canonical form. Repeated params (`?discipline=a&discipline=b`) are treated as no-filter rather than coerced to a single value; clients SHOULD send exactly one value. |
 | `language` | string | — | Filter by language code (e.g. `en`, `de`, `es`) |
 | `source` | enum | — | Filter by paper source: `native`, `bridge`, or omit for both |
-| `accredited_only` | boolean | `true` | Only accredited authors |
 | `include_retracted` | boolean | `false` | Include retracted papers in results |
 | `sort` | enum | `relevance` | `relevance`, `date` |
 | `page` | integer | `1` | Page number |

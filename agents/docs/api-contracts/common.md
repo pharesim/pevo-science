@@ -11,9 +11,12 @@ All responses use JSON. All timestamps are ISO 8601 UTC. Pagination uses `page` 
 PEvO only surfaces data from accredited users by default:
 
 - **Votes** from unaccredited accounts are excluded from all reputation computations, vote counts, and ranking. They still affect native Hive rewards but are invisible to PEvO.
-- **Reviews** from unaccredited accounts are excluded from the default view and do not count toward paper ratings or reviewer reputation.
+- **Reviews** from unaccredited accounts are excluded from every reviews surface (paper-detail `reviews: []` array, single-doc fetch which returns 404, reviews search) and do not count toward paper ratings or reviewer reputation.
+- **Comments** from unaccredited accounts are excluded from comments listings and search.
 - **Citations** from papers by unaccredited authors are excluded from citation counts.
-- **Papers** from unaccredited authors are excluded when `accredited_only=true` (the default).
+- **Papers** from unaccredited authors are excluded from papers listings and search. The one exception is `bridge_paper`-typed posts (system-account cross-posts from external sources), which are admitted regardless of author accreditation.
+
+Accreditation is a hard gate: there is no `accredited_only=false` opt-out on any endpoint. The bridge-paper exemption is type-based (`json_metadata.type === 'bridge_paper'`), not query-parameter-based.
 
 The `net_votes` field in API responses reflects **accredited votes only**, not the raw Hive vote count. The `review_count` and `citation_count` fields similarly reflect accredited-only data.
 

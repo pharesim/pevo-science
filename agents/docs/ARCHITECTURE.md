@@ -84,14 +84,15 @@ The backend always reads from real chain data. **No mock/fake data in production
 
 ### Accredited-Only Data Policy
 
-PEvO only uses on-chain data from accredited users. This applies across the entire platform:
+PEvO is a curated surface over Hive: only accredited content appears on PEvO surfaces. Anyone can post `APP_TAG`-tagged content directly on Hive, but PEvO does not surface it. **Accreditation is a hard gate across the entire platform** — there is no `accredited_only=false` opt-out on any endpoint; surfacing unaccredited content is not a designed affordance. The one exception is type-based, not opt-out-based: `bridge_paper`-typed posts (cross-posted from external sources by the system bridge account) are admitted regardless of author accreditation.
 
-- **Votes:** Only votes from accredited accounts affect reputation scores. Votes from unaccredited accounts are ignored in all PEvO computations (they still affect Hive rewards natively, but PEvO does not use them).
-- **Reviews:** Reviews from non-accredited accounts are excluded from all PEvO surfaces (the paper-detail `reviews: []` array on `GET /api/papers/:author/:permlink` and the single-doc `GET /api/reviews/:author/:permlink`) and from rating computations. Unlike papers and comments, there is no `accredited_only=false` opt-out for reviews — accreditation is a hard gate, not a default-on filter. The system anonymous proxy account (`config.hiveAnonAccount`) is admitted to the same surfaces because it posts on behalf of accredited reviewers; its `is_accredited` flag remains `false` for UI distinction.
+- **Votes:** Only votes from accredited accounts affect reputation scores, vote counts, and ranking. Votes from unaccredited accounts are ignored in all PEvO computations (they still affect Hive rewards natively).
+- **Reviews:** Reviews from non-accredited accounts are excluded from the paper-detail `reviews: []` array (`GET /api/papers/:author/:permlink`), the single-doc fetch (`GET /api/reviews/:author/:permlink`, returns 404), reviews search (`GET /api/search?type=reviews`), and from rating computations. The system anonymous proxy account (`config.hiveAnonAccount`) is admitted because it posts on behalf of accredited reviewers; its `is_accredited` flag remains `false` for UI distinction.
+- **Comments:** Comments from non-accredited accounts are excluded from `GET /api/papers/:author/:permlink/comments` and from search.
 - **Citations:** Only citations from papers authored by accredited researchers count toward citation scores.
-- **Papers:** The default listing shows only accredited papers (`accredited_only=true`). Each paper includes an `is_accredited` flag; the frontend can pass `accredited_only=false` to include unaccredited papers.
+- **Papers:** Papers list (`GET /api/papers`) and papers search (`GET /api/search?type=papers`) only surface posts authored by accredited accounts, plus the `bridge_paper`-typed exemption noted above. Bridge papers carry `is_accredited: false` and record the original off-chain authors in `json_metadata`.
 
-Unaccredited users can still read all content and vote on Hive (affecting Hive reward payouts), but their activity is invisible to PEvO's reputation and ranking systems. This prevents Sybil attacks and ensures scientific quality.
+Unaccredited users can still read PEvO's surfaces and post on Hive (affecting Hive reward payouts), but their `APP_TAG`-tagged content is invisible to PEvO surfaces and does not feed into reputation, ranking, or rating systems. This prevents Sybil attacks and ensures scientific quality.
 
 ## 2. Data Model
 
