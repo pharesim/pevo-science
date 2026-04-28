@@ -56,6 +56,40 @@ describe('GET /api/search', () => {
     expect(Array.isArray(res.body.data)).toBe(true);
   });
 
+  // BE-SEARCH-REVIEWS-CONTRACT-RECONCILE: `?type=review` is a live, frontend-
+  // consumed branch (the /search page's <select> ships `value="review"` and
+  // the result renderer dispatches on `result.type === 'review'`). The
+  // contract previously claimed reviews were unsearchable; this test pins
+  // the branch as supported so a future delete that takes the contract
+  // literally trips a failing spec.
+  it('?type=review returns 200 with review-shaped results', async () => {
+    const res = await request(app).get('/api/search?q=science&type=review');
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('ok');
+    expect(Array.isArray(res.body.data)).toBe(true);
+    for (const item of res.body.data) {
+      expect(item.type).toBe('review');
+    }
+  });
+
+  it('?type=foo returns 400 on unknown enum value', async () => {
+    const res = await request(app).get('/api/search?q=science&type=foo');
+    expect(res.status).toBe(400);
+    expect(res.body.status).toBe('error');
+    expect(res.body.error.code).toBe('BAD_REQUEST');
+    expect(res.body.error.message).toMatch(/Must be one of/);
+  });
+
+  // Repeated `?type=` params (`?type=paper&type=review`) yield `string[]` in
+  // Express's parsed query. An `as string` cast on the array would coerce to
+  // `"paper,review"` and silently fall through the enum check; the
+  // typeof-narrow rejects it with 400.
+  it('?type=paper&type=review (repeated) returns 400 instead of silently coercing', async () => {
+    const res = await request(app).get('/api/search?q=science&type=paper&type=review');
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('BAD_REQUEST');
+  });
+
   // BE-PAPERS-DISCIPLINE-FIELD-CANON-NAME: per-entry `discipline` response
   // field on `paper` / `bridge_paper` result types must be canon_name
   // (lowercased) if/when the search response shape adds one. The current
