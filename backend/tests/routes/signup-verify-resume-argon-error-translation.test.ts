@@ -11,58 +11,42 @@
  * `verifyHiveSignature` is NOT mocked. `/resume-signup` is unauthenticated
  * (the resume flow authenticates via email + password inside the handler),
  * so the middleware does not apply and there is nothing to mock.
+ *
+ * SYMMETRIC BRANCH COVERAGE (item 1 of the architect hold block):
+ * `/resume-signup` has FOUR argon2 sites (signup-verify.ts):
+ *   - :119 — burnSentinel on unknown-email (rows empty).
+ *   - :130 — burnSentinel on non-confirmed verify_token (lifecycle other
+ *     than 'confirmed:').
+ *   - :140 — burnSentinel on confirmed-but-no-password_hash (ORCID-only).
+ *   - :146 — direct runWithArgon2Slot(verify) on the confirmed +
+ *     password_hash branch.
+ * Per timing-equalization-sub-branch-oracles convention, all four MUST
+ * collapse to identical wire output under saturation/shutdown/abort. A
+ * mutation that drops the rethrow from one site reopens the lifecycle-
+ * state oracle along the status-code axis. All four cases run
+ * unconditionally (no `if (res.status === 200)` guards).
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, vi } from 'vitest';
 import request from 'supertest';
+import {
+  assertArgon2AbortIsSilent,
+  assert503QueueFull,
+  assert503Shutdown,
+} from '../support/argon2-error-mocks.js';
 
-const {
-  MockArgonSemaphoreError,
-  MockArgonQueueFullError,
-  MockShuttingDownError,
-  MockArgonAbortError,
-  MockRunWithArgon2Slot,
-} = vi.hoisted(() => {
-  abstract class ArgonSemaphoreError extends Error {}
-  class ArgonQueueFullError extends ArgonSemaphoreError {
-    constructor(message = 'argon2 semaphore queue full') {
-      super(message);
-      this.name = 'ArgonQueueFullError';
-    }
-  }
-  class ShuttingDownError extends ArgonSemaphoreError {
-    constructor(message = 'argon2 semaphore shutting down') {
-      super(message);
-      this.name = 'ShuttingDownError';
-    }
-  }
-  class ArgonAbortError extends ArgonSemaphoreError {
-    constructor(message = 'argon2 slot aborted') {
-      super(message);
-      this.name = 'AbortError';
-    }
-  }
-  return {
-    MockArgonSemaphoreError: ArgonSemaphoreError,
-    MockArgonQueueFullError: ArgonQueueFullError,
-    MockShuttingDownError: ShuttingDownError,
-    MockArgonAbortError: ArgonAbortError,
-    MockRunWithArgon2Slot: vi.fn(),
-  };
-});
+// See `auth-argon-error-translation.test.ts` for the hoist-pattern
+// rationale (vi.mock factories cannot reference module-scope imports;
+// vi.hoisted dynamic-import is the only path to the shared support
+// module's `buildArgon2RouteMockKit`).
+const { mockRunWithArgon2Slot, argon2SemaphoreMockFactory } = await vi.hoisted(
+  async () =>
+    (await import('../support/argon2-error-mocks.js')).buildArgon2RouteMockKit(),
+);
 
-vi.mock('../../src/lib/argon2-semaphore.js', () => ({
-  runWithArgon2Slot: MockRunWithArgon2Slot,
-  ArgonSemaphoreError: MockArgonSemaphoreError,
-  ArgonQueueFullError: MockArgonQueueFullError,
-  ShuttingDownError: MockShuttingDownError,
-  ArgonAbortError: MockArgonAbortError,
-  MAX_CONCURRENT_ARGON2_OPS: 4,
-  MAX_QUEUE_DEPTH: 50,
-  getArgon2QueueDepth: () => 0,
-  getArgon2InFlight: () => 0,
-  drainArgon2Queue: () => {},
-}));
+const { dbStubFactory, redisStubFactory } = await import(
+  '../support/argon2-error-mocks.js'
+);
 
 const appQueryMock = vi.fn();
 
@@ -70,94 +54,112 @@ vi.mock('../../src/app-db.js', () => ({
   getAppPool: () => ({ query: appQueryMock }),
 }));
 
-vi.mock('../../src/db.js', () => ({
-  getPool: () => null,
-  isHafAvailable: () => false,
-  closeHafPool: async () => {},
-}));
-
-vi.mock('../../src/redis.js', () => ({
-  getRedis: () => null,
-  isRedisAvailable: () => false,
-  disconnectRedis: async () => {},
-}));
+vi.mock('../../src/lib/argon2-semaphore.js', () => argon2SemaphoreMockFactory());
+vi.mock('../../src/db.js', () => dbStubFactory());
+vi.mock('../../src/redis.js', () => redisStubFactory());
 
 const { createApp } = await import('../../src/app.js');
-const { SERVICE_UNAVAILABLE_MESSAGE } = await import('../../src/lib/argon2-error-handler.js');
+const {
+  ArgonQueueFullError,
+  ShuttingDownError,
+  ArgonAbortError,
+} = await import('../../src/lib/argon2-semaphore.js');
 
 const app = createApp();
 
-// Drives the route past every pre-argon2 guard (email present, password
-// present, row exists, verify_token starts with 'confirmed:', password_hash
-// non-null) so the handler reaches `runWithArgon2Slot(verify)` at
-// signup-verify.ts:146 and the mocked semaphore throws.
-function seedConfirmedRow() {
-  appQueryMock.mockResolvedValueOnce({
-    rows: [{
-      id: 1,
-      password_hash: '$argon2id$placeholder',
-      verify_token: 'confirmed:abc',
-    }],
-  });
-}
-
 const ROUTE_BODY = { email: 'resume@mit.edu', password: 'AnyPassword1' };
 
-describe('POST /api/auth/resume-signup — argon2 error → HTTP translation', () => {
-  it('ArgonQueueFullError → 503 SERVICE_UNAVAILABLE + Retry-After: 5 + generic body', async () => {
-    appQueryMock.mockReset();
-    seedConfirmedRow();
-    MockRunWithArgon2Slot.mockReset();
-    MockRunWithArgon2Slot.mockRejectedValueOnce(new MockArgonQueueFullError());
+// Per-branch seed for each of the four argon2 sites.
+type BranchCase = {
+  name: string;
+  seed: () => void;
+};
 
-    const res = await request(app).post('/api/auth/resume-signup').send(ROUTE_BODY);
+const branches: BranchCase[] = [
+  {
+    name: 'unknown-email branch (signup-verify.ts:119, burnSentinel)',
+    seed: () => appQueryMock.mockResolvedValueOnce({ rows: [] }),
+  },
+  {
+    name: 'non-confirmed verify_token branch (signup-verify.ts:130, burnSentinel)',
+    seed: () =>
+      appQueryMock.mockResolvedValueOnce({
+        // verify_token does NOT start with 'confirmed:' → :129 guard fires.
+        rows: [{ id: 1, password_hash: '$argon2id$placeholder', verify_token: 'pending-abc' }],
+      }),
+  },
+  {
+    name: 'confirmed-but-no-password_hash branch (signup-verify.ts:140, burnSentinel)',
+    seed: () =>
+      appQueryMock.mockResolvedValueOnce({
+        // ORCID-only: confirmed verify_token but password_hash is null.
+        rows: [{ id: 1, password_hash: null, verify_token: 'confirmed:abc' }],
+      }),
+  },
+  {
+    name: 'confirmed + password_hash branch (signup-verify.ts:146, runWithArgon2Slot)',
+    seed: () =>
+      appQueryMock.mockResolvedValueOnce({
+        rows: [{ id: 1, password_hash: '$argon2id$placeholder', verify_token: 'confirmed:abc' }],
+      }),
+  },
+];
 
-    expect(res.status).toBe(503);
-    expect(res.body.error?.code).toBe('SERVICE_UNAVAILABLE');
-    expect(res.body.error?.message).toBe(SERVICE_UNAVAILABLE_MESSAGE);
-    expect(res.headers['retry-after']).toBe('5');
-    // BE-503-REASON-DISCRIMINATION: machine-readable discriminator on the
-    // 503 envelope so HTTP-only canaries can distinguish saturation from
-    // shutdown drain without log correlation.
-    expect(res.body.error?.details?.reason).toBe('queue_full');
-  });
+// Per-IP rate limiter on /resume-signup is `signup-resume`, max=5/hr keyed by
+// req.ip. The 4 branches × 3 tests = 12 calls per file run, well above the
+// 5/hr cap. Each test uses a unique synthetic X-Forwarded-For so the
+// limiter sees a fresh bucket per call. The Express `trust proxy = 1`
+// setting in app.ts is what makes XFF resolve to req.ip.
+let xffCounter = 0;
+function nextIp(): string {
+  xffCounter += 1;
+  return `10.0.${Math.floor(xffCounter / 256)}.${xffCounter % 256}`;
+}
 
-  it('ShuttingDownError → 503 SERVICE_UNAVAILABLE + Retry-After: 30 + generic body', async () => {
-    appQueryMock.mockReset();
-    seedConfirmedRow();
-    MockRunWithArgon2Slot.mockReset();
-    MockRunWithArgon2Slot.mockRejectedValueOnce(new MockShuttingDownError());
+describe.each(branches)(
+  'POST /api/auth/resume-signup — argon error → HTTP translation: $name',
+  (branch) => {
+    it('ArgonQueueFullError → 503 SERVICE_UNAVAILABLE + Retry-After: 5 + generic body', async () => {
+      appQueryMock.mockReset();
+      branch.seed();
+      mockRunWithArgon2Slot.mockReset();
+      mockRunWithArgon2Slot.mockRejectedValueOnce(new ArgonQueueFullError());
 
-    const res = await request(app).post('/api/auth/resume-signup').send(ROUTE_BODY);
-
-    expect(res.status).toBe(503);
-    expect(res.body.error?.code).toBe('SERVICE_UNAVAILABLE');
-    expect(res.body.error?.message).toBe(SERVICE_UNAVAILABLE_MESSAGE);
-    expect(res.headers['retry-after']).toBe('30');
-    expect(res.body.error?.details?.reason).toBe('shutdown_drain');
-  });
-
-  it('ArgonAbortError → silent (no response written, request hangs until socket close)', async () => {
-    appQueryMock.mockReset();
-    seedConfirmedRow();
-    MockRunWithArgon2Slot.mockReset();
-    MockRunWithArgon2Slot.mockRejectedValueOnce(new MockArgonAbortError());
-
-    let outcome: 'response' | 'timeout' | 'other-error';
-    try {
-      await request(app)
+      const res = await request(app)
         .post('/api/auth/resume-signup')
+        .set('X-Forwarded-For', nextIp())
+        .send(ROUTE_BODY);
+
+      assert503QueueFull(res);
+    });
+
+    it('ShuttingDownError → 503 SERVICE_UNAVAILABLE + Retry-After: 30 + generic body', async () => {
+      appQueryMock.mockReset();
+      branch.seed();
+      mockRunWithArgon2Slot.mockReset();
+      mockRunWithArgon2Slot.mockRejectedValueOnce(new ShuttingDownError());
+
+      const res = await request(app)
+        .post('/api/auth/resume-signup')
+        .set('X-Forwarded-For', nextIp())
+        .send(ROUTE_BODY);
+
+      assert503Shutdown(res);
+    });
+
+    it('ArgonAbortError → silent (no response written, request hangs until socket close)', async () => {
+      appQueryMock.mockReset();
+      branch.seed();
+      mockRunWithArgon2Slot.mockReset();
+      mockRunWithArgon2Slot.mockRejectedValueOnce(new ArgonAbortError());
+
+      const reqPromise = request(app)
+        .post('/api/auth/resume-signup')
+        .set('X-Forwarded-For', nextIp())
         .send(ROUTE_BODY)
         .timeout({ deadline: 250 });
-      outcome = 'response';
-    } catch (err) {
-      const e = err as { code?: string; timeout?: number; message?: string };
-      if (e.code === 'ECONNABORTED' || typeof e.timeout === 'number' || /Timeout/i.test(e.message ?? '')) {
-        outcome = 'timeout';
-      } else {
-        outcome = 'other-error';
-      }
-    }
-    expect(outcome).toBe('timeout');
-  });
-});
+
+      await assertArgon2AbortIsSilent(reqPromise);
+    });
+  },
+);

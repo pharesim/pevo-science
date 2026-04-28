@@ -140,3 +140,31 @@ Acceptance Notes section asked for a code comment in `tests/routes/auth-concurre
 ### Re-review signal
 
 When items 1-6 above land (and 7-8 if cheap), `git mv` this file back to `tasks/review/`. The architect's next review pass picks it up.
+
+---
+
+## Backend re-review signal (2026-04-28)
+
+Items 1-6 (P1/P2) landed. Items 7-8 (P3) deferred.
+
+- **Item 1 (P1) — Symmetric branch coverage on multi-branch endpoints.** /login now covers all three argon2 sites (known-account at auth.ts:738, unknown-account at :710, ORCID-only at :726) under all three error classes via the `routes` array in `auth-argon-error-translation.test.ts`. /resume-signup now covers all four sites (signup-verify.ts:119, :130, :140, :146) via a `branches` array + `describe.each` in `signup-verify-resume-argon-error-translation.test.ts`. /signup new-email branch (auth.ts:441) covered in the new `auth-signup-argon-error-translation.test.ts` file under all three error classes (closes the previously uncovered ArgonAbortError on /signup). All assertions are unconditional (no `if (res.status === 200)` guards).
+- **Item 2 (P2) — Imported retry-after constants.** `assert503QueueFull` / `assert503Shutdown` in the new `tests/support/argon2-error-mocks.ts` compare against `String(QUEUE_FULL_RETRY_AFTER_SEC)` / `String(SHUTDOWN_RETRY_AFTER_SEC)` imported from `argon2-error-handler.js`. No hardcoded `'5'` / `'30'` literals remain in the four (now five) route test files.
+- **Item 3 (P2) — Outer envelope `status: 'error'` discriminant.** `assert503` asserts `res.body.status === 'error'` on every 503 case. Applied to all 21 503 cases across the five files via the shared helper.
+- **Item 4 (P2) — ArgonAbortError silent-return.** `assertArgon2AbortIsSilent(promise)` introspects supertest's outcome (response vs deadline-timeout vs other-error) and asserts `outcome.kind === 'timeout'`. A route mutation that wrote a 500 in <250ms would resolve the supertest promise successfully and the helper would catch it (vs a bare `await ...timeout(250)` that would not).
+- **Item 5 (P2) — Typed mocks + real classes via `vi.importActual`.** `mockRunWithArgon2Slot` is `vi.fn<typeof runWithArgon2Slot>()`. `argon2SemaphoreMockFactory` uses `vi.importActual` to re-export the real `ArgonSemaphoreError` / `ArgonQueueFullError` / `ShuttingDownError` / `ArgonAbortError` classes; the route's `instanceof` checks now bind against the production hierarchy. The `vi.hoisted` synthetic class declarations are gone from all five files.
+- **Item 6 (P2) — Shared mock infrastructure extracted.** New `backend/tests/support/argon2-error-mocks.ts` exports `buildArgon2RouteMockKit()` (typed mock fn + factory body via `vi.importActual`), `dbStubFactory()` / `redisStubFactory()` for the HAF + Redis disabled-mode stubs, and `assertArgon2AbortIsSilent` / `assert503QueueFull` / `assert503Shutdown` / `assert503` for wire-level assertions. Test-file plumbing per file is ~30 lines (vi.hoisted dynamic-import + four vi.mocks + the post-hoist regular import); the rest is per-route describe + it bodies.
+- **Item 7 (P3) — direct lib-level burnSentinel rethrow test:** deferred. The existing route-level coverage now exercises `burnSentinel` transitively through /login (unknown-account, ORCID-only) and /resume-signup (three burnSentinel branches) under all three error classes; a direct lib-level test would duplicate that coverage at marginal value.
+- **Item 8 (P3) — TIMING_ORACLE_FLOOR_MS clarifying comment:** deferred. Two-line addition that does not block archive of this task.
+
+Hoist-pattern note: vitest 4's `vi.mock(...)` is hoisted above every regular `import`, so the factory body cannot reference module-scope imports. The five files use `await vi.hoisted(async () => (await import('../support/argon2-error-mocks.js')).buildArgon2RouteMockKit())` to dynamically pull the factory in during the hoist phase. The pattern is documented inline at the top of each test file (rationale + cross-reference).
+
+Tests run: 42 passed (5 files). Lint: clean (0 errors, only pre-existing seed-phrase.ts warnings).
+
+The new tests cover 25 distinct {route × branch × error-class} cells:
+- /login × {known, unknown, ORCID-only} × {queue-full, shutdown, abort} = 9
+- /resend-verification, /reset-request, /reset, /recover × 3 = 12
+- /signup new-email × 3 = 3
+- /resume-signup × {unknown, non-confirmed, no-pwhash, confirmed+pw} × 3 = 12
+- /custody/upgrade × 3 = 3
+- /settings/set-password × 3 = 3
+Total = 42 assertions.

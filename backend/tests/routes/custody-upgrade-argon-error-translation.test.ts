@@ -21,57 +21,25 @@
  * limiter to a fresh bucket each call.
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, vi } from 'vitest';
 import request from 'supertest';
 import jwt from 'jsonwebtoken';
+import {
+  assertArgon2AbortIsSilent,
+  assert503QueueFull,
+  assert503Shutdown,
+} from '../support/argon2-error-mocks.js';
 
-const {
-  MockArgonSemaphoreError,
-  MockArgonQueueFullError,
-  MockShuttingDownError,
-  MockArgonAbortError,
-  MockRunWithArgon2Slot,
-} = vi.hoisted(() => {
-  abstract class ArgonSemaphoreError extends Error {}
-  class ArgonQueueFullError extends ArgonSemaphoreError {
-    constructor(message = 'argon2 semaphore queue full') {
-      super(message);
-      this.name = 'ArgonQueueFullError';
-    }
-  }
-  class ShuttingDownError extends ArgonSemaphoreError {
-    constructor(message = 'argon2 semaphore shutting down') {
-      super(message);
-      this.name = 'ShuttingDownError';
-    }
-  }
-  class ArgonAbortError extends ArgonSemaphoreError {
-    constructor(message = 'argon2 slot aborted') {
-      super(message);
-      this.name = 'AbortError';
-    }
-  }
-  return {
-    MockArgonSemaphoreError: ArgonSemaphoreError,
-    MockArgonQueueFullError: ArgonQueueFullError,
-    MockShuttingDownError: ShuttingDownError,
-    MockArgonAbortError: ArgonAbortError,
-    MockRunWithArgon2Slot: vi.fn(),
-  };
-});
+// See `auth-argon-error-translation.test.ts` for the hoist-pattern
+// rationale.
+const { mockRunWithArgon2Slot, argon2SemaphoreMockFactory } = await vi.hoisted(
+  async () =>
+    (await import('../support/argon2-error-mocks.js')).buildArgon2RouteMockKit(),
+);
 
-vi.mock('../../src/lib/argon2-semaphore.js', () => ({
-  runWithArgon2Slot: MockRunWithArgon2Slot,
-  ArgonSemaphoreError: MockArgonSemaphoreError,
-  ArgonQueueFullError: MockArgonQueueFullError,
-  ShuttingDownError: MockShuttingDownError,
-  ArgonAbortError: MockArgonAbortError,
-  MAX_CONCURRENT_ARGON2_OPS: 4,
-  MAX_QUEUE_DEPTH: 50,
-  getArgon2QueueDepth: () => 0,
-  getArgon2InFlight: () => 0,
-  drainArgon2Queue: () => {},
-}));
+const { dbStubFactory, redisStubFactory } = await import(
+  '../support/argon2-error-mocks.js'
+);
 
 const appQueryMock = vi.fn();
 
@@ -79,21 +47,17 @@ vi.mock('../../src/app-db.js', () => ({
   getAppPool: () => ({ query: appQueryMock }),
 }));
 
-vi.mock('../../src/db.js', () => ({
-  getPool: () => null,
-  isHafAvailable: () => false,
-  closeHafPool: async () => {},
-}));
-
-vi.mock('../../src/redis.js', () => ({
-  getRedis: () => null,
-  isRedisAvailable: () => false,
-  disconnectRedis: async () => {},
-}));
+vi.mock('../../src/lib/argon2-semaphore.js', () => argon2SemaphoreMockFactory());
+vi.mock('../../src/db.js', () => dbStubFactory());
+vi.mock('../../src/redis.js', () => redisStubFactory());
 
 const { createApp } = await import('../../src/app.js');
 const { config } = await import('../../src/config.js');
-const { SERVICE_UNAVAILABLE_MESSAGE } = await import('../../src/lib/argon2-error-handler.js');
+const {
+  ArgonQueueFullError,
+  ShuttingDownError,
+  ArgonAbortError,
+} = await import('../../src/lib/argon2-semaphore.js');
 
 const app = createApp();
 
@@ -127,64 +91,43 @@ describe('POST /api/custody/upgrade — argon2 error → HTTP translation', () =
   it('ArgonQueueFullError → 503 SERVICE_UNAVAILABLE + Retry-After: 5 + generic body', async () => {
     appQueryMock.mockReset();
     seedUpgradeAccount();
-    MockRunWithArgon2Slot.mockReset();
-    MockRunWithArgon2Slot.mockRejectedValueOnce(new MockArgonQueueFullError());
+    mockRunWithArgon2Slot.mockReset();
+    mockRunWithArgon2Slot.mockRejectedValueOnce(new ArgonQueueFullError());
 
     const res = await request(app)
       .post('/api/custody/upgrade')
       .set('Authorization', authHeader('upgrade-queuefull'))
       .send({ password: 'AnyPassword1' });
 
-    expect(res.status).toBe(503);
-    expect(res.body.error?.code).toBe('SERVICE_UNAVAILABLE');
-    expect(res.body.error?.message).toBe(SERVICE_UNAVAILABLE_MESSAGE);
-    expect(res.headers['retry-after']).toBe('5');
-    // BE-503-REASON-DISCRIMINATION: machine-readable discriminator on the
-    // 503 envelope so HTTP-only canaries can distinguish saturation from
-    // shutdown drain without log correlation.
-    expect(res.body.error?.details?.reason).toBe('queue_full');
+    assert503QueueFull(res);
   });
 
   it('ShuttingDownError → 503 SERVICE_UNAVAILABLE + Retry-After: 30 + generic body', async () => {
     appQueryMock.mockReset();
     seedUpgradeAccount();
-    MockRunWithArgon2Slot.mockReset();
-    MockRunWithArgon2Slot.mockRejectedValueOnce(new MockShuttingDownError());
+    mockRunWithArgon2Slot.mockReset();
+    mockRunWithArgon2Slot.mockRejectedValueOnce(new ShuttingDownError());
 
     const res = await request(app)
       .post('/api/custody/upgrade')
       .set('Authorization', authHeader('upgrade-shutdown'))
       .send({ password: 'AnyPassword1' });
 
-    expect(res.status).toBe(503);
-    expect(res.body.error?.code).toBe('SERVICE_UNAVAILABLE');
-    expect(res.body.error?.message).toBe(SERVICE_UNAVAILABLE_MESSAGE);
-    expect(res.headers['retry-after']).toBe('30');
-    expect(res.body.error?.details?.reason).toBe('shutdown_drain');
+    assert503Shutdown(res);
   });
 
   it('ArgonAbortError → silent (no response written, request hangs until socket close)', async () => {
     appQueryMock.mockReset();
     seedUpgradeAccount();
-    MockRunWithArgon2Slot.mockReset();
-    MockRunWithArgon2Slot.mockRejectedValueOnce(new MockArgonAbortError());
+    mockRunWithArgon2Slot.mockReset();
+    mockRunWithArgon2Slot.mockRejectedValueOnce(new ArgonAbortError());
 
-    let outcome: 'response' | 'timeout' | 'other-error';
-    try {
-      await request(app)
-        .post('/api/custody/upgrade')
-        .set('Authorization', authHeader('upgrade-abort'))
-        .send({ password: 'AnyPassword1' })
-        .timeout({ deadline: 250 });
-      outcome = 'response';
-    } catch (err) {
-      const e = err as { code?: string; timeout?: number; message?: string };
-      if (e.code === 'ECONNABORTED' || typeof e.timeout === 'number' || /Timeout/i.test(e.message ?? '')) {
-        outcome = 'timeout';
-      } else {
-        outcome = 'other-error';
-      }
-    }
-    expect(outcome).toBe('timeout');
+    const reqPromise = request(app)
+      .post('/api/custody/upgrade')
+      .set('Authorization', authHeader('upgrade-abort'))
+      .send({ password: 'AnyPassword1' })
+      .timeout({ deadline: 250 });
+
+    await assertArgon2AbortIsSilent(reqPromise);
   });
 });
