@@ -96,17 +96,30 @@ expect(res.body.error.details).toEqual({ retriable: false, outcome: 'uncertain',
 ### Right — test throws from a path the inner catch does not cover
 
 ```ts
-// Same route, but stage a post-broadcast throw:
+// Same route, but stage a post-broadcast throw. After commit d8b9b75 the
+// post-broadcast cascade is wrapped as PostBroadcastWriteError, so the wire
+// shape is 502 POST_BROADCAST_FAILED (outcome:'confirmed') rather than the
+// 504 BROADCAST_TIMEOUT outcome:'uncertain' envelope. The mutation-kill
+// signal is the same — removing the wrapper's outer catch propagates the
+// throw to the outer /callback catch as 500 INTERNAL_ERROR, failing the
+// 502 assertion below — but the assertion target moved.
 broadcastJsonMock.mockResolvedValueOnce({ id: 'fake-tx' });        // broadcast SUCCEEDS
-cacheOrcidBindingMock.mockRejectedValueOnce(new Error('redis flap'));   // post-broadcast helper throws
+vi.spyOn(__test_seams, 'updateAccountOrcid').mockRejectedValueOnce(new Error('pool exhausted'));
 // Lock-state arranged so the wrapper takes the 'unavailable' branch:
 redisSpy.mockImplementationOnce(...);  // forces lock state
 
 const res = await request(app).post('/api/orcid/callback').send({ ... });
-expect(res.status).toBe(504);
-expect(res.body.error.details.timeout_ms).toBeUndefined();   // discriminates outer-catch path
+expect(res.status).toBe(502);
+expect(res.body.error.code).toBe('POST_BROADCAST_FAILED');
+expect(res.body.error.details).toMatchObject({
+  outcome: 'confirmed',
+  tx_id: 'fake-tx',
+  failed_step: 'account_update',
+});
 // Now removing the wrapper's outer catch fails the test — coverage is real.
 ```
+
+Pre-d8b9b75 the same scenario asserted `res.status === 504` with `outcome:'uncertain'`; that assertion is stale at HEAD. The shadow class itself is unchanged: a throw the inner catch cannot absorb still tests the outer catch correctly. Only the wire shape the outer catch produces changed (because the discrimination layer in `handleBroadcastError` now branches on `instanceof PostBroadcastWriteError` ahead of the ambiguous-outcome path).
 
 ### Right — mutation-verify when the throw class must come from the inner-covered path
 

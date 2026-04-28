@@ -246,3 +246,92 @@ An integration test for `failed_step:'cache_write'` end-to-end is non-trivial be
 - `agents/docs/api-contracts/common.md` — add 502 POST_BROADCAST_FAILED row distinct from BROADCAST_FAILED. Discriminator: `details.outcome:'confirmed'` + `tx_id` + `failed_step` (POST_BROADCAST_FAILED) vs no `outcome` field on BROADCAST_FAILED.
 - `agents/docs/api-contracts/orcid.md` — add 502 POST_BROADCAST_FAILED to `/callback` errors with discriminator + frontend-handling guidance ("verified; HAF will reconcile; no retry needed"). Stack with the 504 update from BACKEND-ORCID-ACQUIRED-BRANCH-THROW-GUARD.
 - Convention doc `agents/docs/solutions/conventions/chain-write-timeout-ambiguous-outcome-2026-04-22.md` — add a section "ambiguous outcome ≠ post-broadcast write failure" describing the discrimination pattern.
+
+---
+
+## Architect re-review (2026-04-28, round-1) — HELD PENDING FIXES
+
+Round-1 `/ce-code-review` on commit `d8b9b75` (11 personas: correctness, testing, maintainability, project-standards, ce-agent-native, ce-learnings, security, reliability, api-contract, adversarial, kieran-typescript). The discrimination logic is structurally correct: PostBroadcastWriteError check fires before BroadcastTimeoutError and forceAmbiguousOutcome, currentStep tracking is sound, lock-release semantics on the new path are correct. **No P0. No exploitable security findings. No project-standards violations.** Architect-applied 5 doc fixes during this review pass; 9 backend-owned items remain held.
+
+**The architect applied 5 in-place doc fixes during this review pass (architect-owned files; no override needed):**
+
+- `agents/docs/api-contracts/common.md:78` — replaced stale footnote claiming bridge.ts/custody.ts emit BROADCAST_FAILED at HTTP 500. Both routes already call `handleBroadcastError` for their broadcast-catch sites and emit 502/504 with full discrimination at HEAD. Footnote now correctly describes that HTTP 500 from those routes is reserved for non-broadcast errors via the outer try/catch.
+- `agents/docs/api-contracts/common.md:73` — POST_BROADCAST_FAILED row updated: `tx_id` documented as 40-char lowercase hex; "HAF will reconcile" softened to "reconciliation is per-resource and per-step" (some steps reconcile via next-request, others via batch jobs, others require manual operator re-run).
+- `agents/docs/api-contracts/orcid.md:201` — POST_BROADCAST_FAILED entry expanded with per-step reachability + recovery semantics. `cache_write` reachable from both modes (recovers via next request); `account_update` reachable from both modes (denormalized; missed write requires HAF-replay or manual re-run, NOT auto-reconcile); `reputation_seed` reachable from `mode:'accredit'` only (recovers via next batch cycle). Removed `'unknown'` from the documented enum (kept as type-level fallback, noted as not emitted by current production paths).
+- `agents/docs/solutions/conventions/chain-write-timeout-ambiguous-outcome-2026-04-22.md` — added "Ambiguous outcome vs post-broadcast write failure (discrimination pattern)" section. Documents the PostBroadcastWriteError class, currentStep tracking idiom, instanceof discrimination order invariant (must check PostBroadcastWriteError before BroadcastTimeoutError because `cause` may itself be a BroadcastTimeoutError), 502 envelope shape (NO verify_before_retry, NO verify_location), 4th log-suffix anchor, and explicit caveats (discrimination is dead-defensive if cascade fns swallow; reconciliation is per-step).
+- `agents/docs/solutions/conventions/inner-catch-shadows-outer-catch-in-route-tests-2026-04-28.md` — "Right" example updated to reflect 502 POST_BROADCAST_FAILED (the post-broadcast cascade scenario the example describes now produces 502 not 504 after `d8b9b75`). Mutation-kill mechanism unchanged; assertion target moved.
+
+### Items held pending fixes (backend-owned)
+
+1. **P1 — `'unknown'` member of `failedStep` union is dead.** 4-reviewer convergence (correctness, maintainability, api-contract, adversarial). `backend/src/lib/broadcast-error.ts:33` declares `failedStep: 'cache_write' | 'account_update' | 'reputation_seed' | 'unknown'` but no caller passes `'unknown'`, no test exercises it, and `handleAccredit`/`handleLink` both use narrower `currentStep` typing that excludes it. Documented as a wire value in `orcid.md` but is type-level only. Two acceptable resolutions:
+   - **(a) Remove `'unknown'` from the union** in `PostBroadcastWriteError`. Forces every caller to declare a concrete step; future fall-through cases must add a named step. Cleanest. Architect updated `orcid.md` to drop `'unknown'` from the documented enum during this review pass on the assumption (a) will land.
+   - **(b) Keep `'unknown'` but add a unit test exercising it** with the generic fallback message — proves the user-facing message renders sensibly when the step is genuinely unknown. Choose this only if you anticipate a near-term caller using it.
+
+2. **P2 — `postBroadcastFailedMsgFn` callback invoked unguarded.** 2-reviewer convergence (reliability, adversarial). `backend/src/lib/broadcast-error.ts:152`: `opts.postBroadcastFailedMsgFn(err.failedStep)` runs with no try/catch around the user-supplied callback. If a future caller's template throws (typo, undefined this, mid-rotation logger), the exception escapes `handleBroadcastError` before `sendError` runs → outer `/callback` catch → 500 INTERNAL_ERROR with state token consumed. The exact hard-block class the wrapper exists to prevent. Today's two ORCID callers are trivially safe template literals so practical risk is low; the pattern is fragile for future callers. Fix:
+   ```ts
+   let userMsg: string;
+   try {
+     userMsg = opts.postBroadcastFailedMsgFn?.(err.failedStep) ?? defaultPostBroadcastMsg(err);
+   } catch (msgErr) {
+     logger.warn({ err: msgErr }, '<routeLabel> postBroadcastFailedMsgFn threw — using generic fallback');
+     userMsg = defaultPostBroadcastMsg(err);
+   }
+   ```
+
+3. **P2 — User-facing reconciliation message overpromises auto-recovery.** 2-reviewer convergence (correctness, reliability). The ORCID-shaped messages at `orcid.ts:498-499` and `:651-652` say "this will reconcile automatically once HAF indexes the operation." The architect-updated `orcid.md` now documents per-step recovery semantics: only `reputation_seed` reconciles via a scheduled batch job; `cache_write` requires the next request to populate; `account_update` is a denormalized projection with NO auto-reconcile path (a missed write requires either a HAF-replay job — not currently implemented — or manual operator re-run). The user-facing message should match the contract. Fix: tailor by step, e.g.:
+   ```ts
+   postBroadcastFailedMsgFn: (failedStep) => {
+     const tail =
+       failedStep === 'reputation_seed'
+         ? 'Your reputation score will update at the next scheduled cycle.'
+         : failedStep === 'cache_write'
+         ? 'Backend cache will populate on next access.'
+         : "We'll restore the backend record from the chain shortly.";
+     return `Your ORCID is verified on Hive. ${tail}`;
+   }
+   ```
+   The `'account_update'` branch is the most material because it currently has no auto-reconcile path; the message should be honest about that without alarming users (the chain state is durable; ORCID-based login lookups via HAF still work; only the denormalized `accounts.orcid` column is potentially stale until manual reconcile).
+
+4. **P2 — `handleBroadcastError` return-value semantic overload.** Adversarial finding (conf 75). The function returns `'timeout' | 'failure'`. Pre-`d8b9b75`, `'failure'` meant "broadcast was rejected by chain" (terminal). Post-`d8b9b75`, the new `PostBroadcastWriteError` branch also returns `'failure'`, but the chain op IS confirmed. `accreditation.ts:310` keys destructive cleanup (`deleteToken`) on `'failure'`. A future adopter of the discrimination pattern in `accreditation.ts` would `deleteToken` on a confirmed-on-chain accreditation — token is single-use, retry returns 400, user blocked. **Latent today** (no current caller affected). Two resolutions:
+   - **(a) Add a third return value** `'post_broadcast'` for the PostBroadcastWriteError branch. Caller branches that mean "broadcast didn't land" (destructive cleanup) only fire on `'timeout' | 'failure'`.
+   - **(b) Keep two return values but add a doc-comment + JSDoc tag** clarifying that `'failure'` covers BOTH broadcast-rejected AND post-broadcast-write-failed. Adopters audit destructive branches before wiring discrimination.
+
+   Backend's call. (a) is structurally cleaner; (b) is one comment.
+
+5. **P2 — PostBroadcastWriteError discrimination is dead-defensive.** Correctness finding (conf 75). The cascade fns all swallow errors internally:
+   - `cacheOrcidBinding` (orcid.ts:1055-1070) — try/catch + logger.warn, returns successfully on Redis errors.
+   - `updateAccountOrcid` (orcid.ts:1223-1230) — try/catch + logger.error, returns successfully on pool errors.
+   - `seedAccreditationBonus` (reputation.ts:136-142) — same pattern.
+
+   The cascade's wrapping try/catch around them never fires from the named async failure modes — only from synchronous JS engine errors (getAppPool returning null after a future refactor, etc.). The discrimination machinery is structurally correct but produces zero PostBroadcastWriteError events in production today. **Architect input needed:** is this acceptable as future-proofing for callers that propagate errors, or should the cascade fns re-throw critical errors (e.g., updateAccountOrcid pool exhaustion is arguably a real cascade failure operators want to alert on)? If accepted as-is, document the dead-defense explicitly in `orcid.ts` so a future reader doesn't conclude "the discrimination doesn't fire = bug" and write unnecessary tests.
+
+6. **P2 — `cause` field shadows `Error.cause` without forwarding to super.** Maintainability finding (conf 85). `backend/src/lib/broadcast-error.ts:32`: `public readonly cause: unknown` is a class field, but `super(message)` is called without the second-argument form `{ cause }`. In Node 20+ the canonical `Error.cause` slot is set via `new Error(msg, { cause })`. Today the helper reads `err.cause` explicitly via property access (line 149) so it works, but `pino`'s native error serializer, structured-clone paths, and any consumer using `Error.prototype.cause` get `undefined`. Fix: `super(message, { cause })` and remove the explicit class field declaration in favour of the inherited property.
+
+7. **P2 — `postBroadcastFailedMsgFn` naming breaks the established `<thing>Msg` pattern.** Maintainability finding (conf 90). Other message fields on `BaseHandleBroadcastErrorOpts` are `timeoutMsg`, `failMsg`, `ambiguousMsg`. The new field is the only one with a `Fn` suffix encoding its type and a verbose compound name. Two clean alternatives:
+   - **(a)** Rename to `postBroadcastFailedMsg`, accept a string OR a `(failedStep) => string`. The helper handles both at call time.
+   - **(b)** Keep the callback contract but rename to `postBroadcastMsgFn` (drop `Failed`, since the type already implies failure). Minimal divergence from the pattern.
+
+   Backend's call.
+
+8. **P3 — Discrimination-order regression test description is misleading.** Testing finding (conf 80). `backend/tests/lib/broadcast-error.test.ts:477` comment claims the kill mechanism is via `BroadcastTimeoutError instanceof` mismatch when the `cause` is a BroadcastTimeoutError. Functionally the kill works, but via the `forceAmbiguousOutcome` fallback branch (the outer `err` is PostBroadcastWriteError, which fails the `BroadcastTimeoutError instanceof` check, so control falls through to `forceAmbiguousOutcome` → 504). Update the comment so a future maintainer reasoning about the test's coverage understands the real mechanism.
+
+9. **P3 — Generic fallback message leaks internal step labels.** Maintainability finding (conf 80). `backend/src/lib/broadcast-error.ts:154` fallback ("Broadcast confirmed (tx ...); backend write at step '...' failed.") interpolates `failedStep` (e.g., `'cache_write'`, `'reputation_seed'`) directly into user-facing output. Today both ORCID callers supply `postBroadcastFailedMsgFn` so unreachable in production, but the test pins the leaky text (`broadcast-error.test.ts:473`). A future caller omitting the fn would surface ops vocabulary to users. Either remove the test pinning (so the fallback can sanitize without breaking tests) and sanitize the default, OR document that the fallback is operator-only and require all callers to pass `postBroadcastFailedMsgFn`. Pairs with item #2's resolution.
+
+### Findings routed elsewhere — none
+
+(F4 + F12 + F14 from the review surface were all architect-owned doc fixes landed inline above. AC-001 routed from task #1 was closed by the orcid.md/common.md updates during task #2's review. No findings route to other Cluster A tasks.)
+
+### Pre-existing in-scope (not held; surfaced for visibility)
+
+- No integration test exercises `failed_step:'reputation_seed'` (handleAccredit's third cascade step). Documented carve-out in the test header. A `__test_seams.seedAccreditationBonus` shim parallel to `__test_seams.updateAccountOrcid` would close it with one new spec; deferred until a use case demands it.
+- No integration test exercises `failed_step:'cache_write'` (cacheOrcidBinding swallows internally by design). The implementer's carve-out at the test header is correctly documented; the unit-layer coverage at broadcast-error.test.ts case B is sufficient for the helper path.
+
+### Suppressed at confidence gate
+
+testing T-03 (cache_write it.todo, conf 70), reliability REL-002 (currentStep Promise.all guard, info conf 50), adversarial adv-5 (result.id undefined edge, conf 50), adversarial adv-6 (latent double-broadcast on cacheOrcidBinding contract change, conf 50), kieran-typescript KT-001 (postBroadcastFailedMsgFn callback parameter typed string vs union, soft conf 50), KT-002 (currentStep local subset typing, soft conf 50).
+
+### Path to re-archive
+
+(1) Backend addresses items #1, #2, #3, #4, #5, #6, #7, #8, #9 in this hold block. Item #4 and #5 may need architect input on the resolution shape — flag with `[TODO Architect]` in the re-review-signal block if so. (2) Backend re-review signal block referencing the round-2 hold-fix commit SHA. (3) Architect round-2 `/ce-code-review` on the new commit (testing + adversarial + correctness mandatory given the discrimination-order test rigor and dead-defense decision). (4) Archive on clean.
+
+

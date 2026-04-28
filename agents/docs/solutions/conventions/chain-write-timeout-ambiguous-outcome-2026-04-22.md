@@ -273,6 +273,74 @@ Concretely on `withOrcidBindingLock` today:
 
 The `'unavailable'` branch shape is structurally identical (one less `finally` because there is no lock to release).
 
+### Ambiguous outcome vs post-broadcast write failure (discrimination pattern)
+
+A throw escaping `fn` after the broadcast SUCCEEDED is **not** an ambiguous outcome. The chain op IS confirmed; the throw is a downstream cascade failure (cache write, persistent row update, secondary index update). Surfacing the same 504 `outcome:'uncertain'` envelope as a real broadcast timeout misroutes operator alerts to broadcast-on-call when the actual root cause is downstream of the broadcast, and tells the user to "verify before retrying" when there is nothing for the user to verify.
+
+Discriminate at the catch boundary using a tagged error class. The pattern landed for ORCID in commit `d8b9b75` (BACKEND-ORCID-BROADCAST-OUTCOME-DISCRIMINATION) and is reusable across any chain-write caller that has a post-broadcast cascade.
+
+```ts
+// Tagged error class — defined once in the broadcast-error helper module.
+export class PostBroadcastWriteError extends Error {
+  constructor(
+    public readonly txId: string,
+    public readonly cause: unknown,
+    public readonly failedStep: 'cache_write' | 'account_update' | 'reputation_seed' /* per-resource */,
+  ) {
+    super(`Post-broadcast write failed at step '${failedStep}' (tx ${txId})`, { cause });
+    this.name = 'PostBroadcastWriteError';
+  }
+}
+
+// Caller — wrap the post-broadcast cascade and tag throws with the failed step.
+let currentStep: 'cache_write' | 'account_update' | 'reputation_seed' = 'cache_write';
+try {
+  const result = await broadcastJsonWithTimeout(op, errorOpts);
+  try {
+    await cacheOrcidBinding(orcidId, username);
+    currentStep = 'account_update';
+    await updateAccountOrcid(username, orcidId);
+    currentStep = 'reputation_seed';
+    await seedAccreditationBonus(username);
+    sendOk(res, { tx_id: result.id /* ... */ });
+  } catch (postErr) {
+    throw new PostBroadcastWriteError(result.id, postErr, currentStep);
+  }
+} catch (err) {
+  if (err instanceof BroadcastTimeoutError) { /* ... lock-TTL extend, 504 ... */ }
+  // ... non-timeout handling, re-throw on 'unavailable' to wrapper outer catch ...
+}
+```
+
+The wrapper's outer catch (and the helper) discriminate by `instanceof PostBroadcastWriteError` **first**, before the `BroadcastTimeoutError` and `forceAmbiguousOutcome` branches. The order matters: `PostBroadcastWriteError`'s `cause` may itself be a `BroadcastTimeoutError` (e.g., a post-broadcast call internally hits a timeout). The chain op IS confirmed regardless; the over-cautious 504 envelope would be wrong. Pin the order with a regression test that constructs `new PostBroadcastWriteError(txId, new BroadcastTimeoutError(30_000), 'cache_write')` and asserts the response is 502 `POST_BROADCAST_FAILED`, not 504.
+
+The discrimination produces a different envelope:
+
+```ts
+// 502 POST_BROADCAST_FAILED — chain op confirmed; backend cascade failed.
+res.status(502).json({
+  status: 'error',
+  error: {
+    code: 'POST_BROADCAST_FAILED',
+    message: opts.postBroadcastFailedMsg(failedStep),  // resource-specific user message
+    details: {
+      retriable: false,
+      outcome: 'confirmed',           // <-- key discriminator vs 'uncertain'
+      tx_id: err.txId,                // <-- chain op id for postmortem correlation
+      failed_step: err.failedStep,    // <-- routes operator alert to the right on-call
+    },
+  },
+});
+```
+
+Note: **NO** `verify_before_retry` and **NO** `verify_location`. The chain op is the source of truth; nothing for the user to verify. Operators see `failed_step` and route to the on-call owning that subsystem (cache, app DB, reputation pipeline).
+
+A fourth stable log-message suffix anchors the operator alert pipeline — `<routeLabel> broadcast confirmed but post-broadcast write failed` (logger.error, PostBroadcastWriteError discrimination path). It belongs alongside the three suffixes the helper already documents (`broadcast timed out`, `broadcast failed on ambiguous-outcome path`, `broadcast failed`).
+
+**Caveat — discrimination is only as live as the cascade fns.** If `cacheOrcidBinding` / `updateAccountOrcid` / `seedAccreditationBonus` swallow their async errors internally (logger.warn / logger.error and return successfully), the cascade try/catch never fires and `PostBroadcastWriteError` never gets thrown. The discrimination machinery becomes dead-defensive: structurally correct but unreachable in production. Audit each cascade fn before wiring discrimination — either re-throw critical errors so discrimination fires, or document explicitly that the swallow is by design and that the discrimination is reserved for future cascade fns that propagate.
+
+**Reconciliation per failed step is per-resource and per-step.** Don't promise blanket "HAF will reconcile" in user-facing messages. Some steps reconcile via the next request populating a cache; others via a scheduled batch job; some require manual re-execution because the failed write is a denormalized projection with no replay path. Document the recovery semantics for each `failed_step` in the resource contract, and shape the user-facing message to match.
+
 ### Right — Option A.1 (extend lock TTL instead of releasing)
 
 ```ts
