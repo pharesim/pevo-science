@@ -621,7 +621,6 @@ describe('orcidCallbackPage', () => {
     it('ORCID_ALREADY_LINKED retriable: countdown fires self-retry, second retriable 409 hits MAX_RETRIES cap', async () => {
       vi.useFakeTimers();
       const comp = createComponent();
-      comp._mounted = true; // timer-guard is initialised on createTimerGuard
 
       // Two consecutive retriable 409s. After the second, MAX_RETRIES=1 is
       // hit and the durable message should render instead of another
@@ -739,6 +738,30 @@ describe('orcidCallbackPage', () => {
       vi.useRealTimers();
     });
 
+    // Upper-bound clamp: a misconfigured backend or proxy emitting a wildly
+    // large `Retry-After` (e.g. 99999s ≈ 28 hours) must NOT pin the user on
+    // the page indefinitely with the retry button disabled. The 300s cap
+    // is defense-in-depth.
+    it('ORCID_ALREADY_LINKED retriable with Retry-After: 99999: clamps countdown to <= 300s', async () => {
+      vi.useFakeTimers();
+      const comp = createComponent();
+      const err = new Error('Locked');
+      err.code = 'ORCID_ALREADY_LINKED';
+      err.details = { retriable: true };
+      err.retryAfterSeconds = 99999;
+      mockCompleteOrcid.mockRejectedValueOnce(err);
+
+      await comp._verify('code', 'state', 'link');
+
+      expect(comp.status).toBe('error');
+      expect(comp.errorKind).toBe('alreadyLinkedRetriable');
+      // Clamped to 300s maximum — NOT 99999.
+      expect(comp.retryCountdown).toBeLessThanOrEqual(300);
+      expect(comp.retryCountdown).toBe(300);
+      expect(mockCompleteOrcid).toHaveBeenCalledTimes(1);
+      vi.useRealTimers();
+    });
+
     // Defensive: `err.retryAfterSeconds === undefined` (rather than null) must
     // not classify as retriable. With `!== null` this branch misfired; the
     // loose `!= null` catches both.
@@ -758,6 +781,10 @@ describe('orcidCallbackPage', () => {
       expect(comp.errorAction).toBe('recover');
       expect(comp.errorKind).not.toBe('alreadyLinkedRetriable');
       expect(comp.retryCountdown).toBe(0);
+      // Durable branch must NOT increment the self-retry counter — pins the
+      // invariant against a mutation that wrongly counts a non-retriable
+      // 409 toward MAX_RETRIES.
+      expect(comp._retryCount).toBe(0);
     });
 
     // Durable = no retriable flag AND no Retry-After header. Per

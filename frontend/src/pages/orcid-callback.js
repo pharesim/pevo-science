@@ -82,9 +82,7 @@ export function initOrcidCallbackPage() {
     // (MAX_RETRIES+1)th retriable response, surface the durable message so
     // the user stops seeing a countdown that keeps re-arming. Counter resets
     // on a successful verify (inside _verify after the await resolves without
-    // throwing) and on destroy(). The contract is "one self-retry" per the
-    // code comment below; hard-coded to 1 so reviewers see the bound without
-    // chasing a const elsewhere.
+    // throwing) and on destroy().
     _retryCount: 0,
     // Stash last _verify args so a user-initiated retry (retriable 409) can
     // re-invoke against the same state token. Reused by _retryVerify(); the
@@ -171,17 +169,22 @@ export function initOrcidCallbackPage() {
             // template's $t('orcid.alreadyLinkedRetriable', { seconds: retryCountdown }).
             this.errorKind = 'alreadyLinkedRetriable';
             this.errorAction = 'retry';
-            // Clamp to >= 1s. `Retry-After: 0` would collapse the UX into
-            // an immediate synchronous-looking retry loop (the nullish
-            // coalesce below does NOT fire on 0, so without this clamp a
-            // zero-second hint would trigger _retryVerify() on the very
-            // next tick).
-            const seconds = Math.max(1, err.retryAfterSeconds ?? 10);
+            // Clamp to [1, 300]s. Lower bound: `Retry-After: 0` would
+            // collapse the UX into an immediate synchronous-looking retry
+            // loop (the nullish coalesce does NOT fire on 0, so without
+            // the lower clamp a zero-second hint would trigger
+            // _retryVerify() on the very next tick). Upper bound:
+            // a misconfigured backend or proxy emitting `Retry-After:
+            // 99999` would otherwise pin the user on the page for hours
+            // with the retry button disabled; 300s (5 min) is a
+            // conservative cap. Anything legitimately larger is a
+            // backend bug worth surfacing rather than respecting silently.
+            const seconds = Math.max(1, Math.min(300, err.retryAfterSeconds ?? 10));
             this.retryCountdown = seconds;
             // Ticks every 1s until zero; re-invokes _retryVerify() at zero
-            // for a single self-triggered retry (task non-goal: exponential
-            // backoff). Timers route through _setTimer so destroy() tears
-            // them down cleanly.
+            // for up to MAX_RETRIES self-triggered retries (task non-goal:
+            // exponential backoff). Timers route through _setTimer so
+            // destroy() tears them down cleanly.
             this._tickRetryCountdown();
           } else {
             this.errorMessage = this.$t('orcid.alreadyLinkedDurable');
@@ -253,9 +256,10 @@ export function initOrcidCallbackPage() {
 
     // Countdown tick for retriable ORCID_ALREADY_LINKED 409. Decrements
     // retryCountdown once per second; when it hits zero, auto-invokes
-    // _retryVerify() (single self-retry, not aggressive backoff). Each tick
-    // is armed through _setTimer so component teardown cancels any pending
-    // tick — no post-teardown state writes.
+    // _retryVerify() (up to MAX_RETRIES self-triggered retries, not
+    // aggressive backoff). Each tick is armed through _setTimer so
+    // component teardown cancels any pending tick — no post-teardown
+    // state writes.
     _tickRetryCountdown() {
       if (!this._mounted) return;
       if (this.retryCountdown <= 0) {
