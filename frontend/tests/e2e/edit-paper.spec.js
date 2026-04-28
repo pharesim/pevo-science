@@ -264,9 +264,12 @@ test('continuation edit by another accredited user broadcasts a NEW permlink wit
   await expect(page.locator('text=Publishing as a revision').first()).toBeVisible();
 
   // Discipline input is disabled (fixed across continuations).
-  const disciplineInput = page.locator('input[disabled][value="Computer Science"]').first();
+  // Alpine binds :value as a property, not the HTML attribute, so locate by
+  // class and verify the value via toHaveValue (reads the property).
+  const disciplineInput = page.locator('input.select-control[disabled]').first();
   await expect(disciplineInput).toBeVisible();
   await expect(disciplineInput).toBeDisabled();
+  await expect(disciplineInput).toHaveValue('Computer Science');
 
   const NEW_TITLE = 'Continuation Revision Title';
   const NEW_ABSTRACT = 'Continuation abstract authored by a different accredited user.';
