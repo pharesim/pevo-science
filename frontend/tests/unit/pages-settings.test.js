@@ -105,7 +105,11 @@ function createComponent() {
   initSettingsPage();
   const factory = Alpine.data.mock.calls[Alpine.data.mock.calls.length - 1][1];
   const comp = factory();
-  comp.$t = (key) => key;
+  // Sentinel-prefixed stub: distinguishes a real $t() return from a fallback
+  // through `$t('key') || err.message`. A regression using the OR-fallback
+  // pattern would fall through to err.message (which does NOT start with
+  // 't:') and fail the `.toMatch(/^t:/)` matcher in the leak-guard test.
+  comp.$t = (key) => 't:' + key;
   comp.$watch = vi.fn();
   return comp;
 }
@@ -169,7 +173,7 @@ describe('settingsPage', () => {
       await comp.handleEmailSubmit();
 
       expect(mockSubmitEmail).toHaveBeenCalledWith('new@x.com');
-      expect(comp.emailMessage).toBe('settings.emailVerificationSent');
+      expect(comp.emailMessage).toBe('t:settings.emailVerificationSent');
       expect(comp.newEmail).toBe('');
     });
 
@@ -192,7 +196,7 @@ describe('settingsPage', () => {
 
       await comp.handleEmailSubmit();
 
-      expect(comp.emailError).toBe('settings.emailAlreadyInUse');
+      expect(comp.emailError).toBe('t:settings.emailAlreadyInUse');
       expect(warnSpy).not.toHaveBeenCalled();
     });
 
@@ -207,7 +211,7 @@ describe('settingsPage', () => {
 
       await comp.handleEmailSubmit();
 
-      expect(comp.emailError).toBe('settings.emailUpdateFailed');
+      expect(comp.emailError).toBe('t:settings.emailUpdateFailed');
       expect(comp.emailError).not.toContain('deadbeef');
       expect(warnSpy).toHaveBeenCalled();
       const warnedErr = warnSpy.mock.calls[0][1];
@@ -257,7 +261,7 @@ describe('settingsPage', () => {
 
       await comp.handleEmailDelete();
 
-      expect(comp.emailError).toBe('settings.emailDeleteFailed');
+      expect(comp.emailError).toBe('t:settings.emailDeleteFailed');
       expect(comp.emailError).not.toContain('deadbeef');
       expect(comp.deleting).toBe(false);
       expect(warnSpy).toHaveBeenCalled();
@@ -290,7 +294,7 @@ describe('settingsPage', () => {
 
       await comp.handleOrcidLink();
 
-      expect(comp.orcidError).toBe('settings.orcidLinkFailed');
+      expect(comp.orcidError).toBe('t:settings.orcidLinkFailed');
       expect(comp.orcidLinking).toBe(false);
       // Guard the warnSpy.mock.calls[0][1] read below: without this
       // assertion a regression that skips the console.warn throws a
@@ -319,7 +323,7 @@ describe('settingsPage', () => {
 
       await comp.handleOrcidLink();
 
-      expect(comp.orcidError).toBe('settings.orcidLinkFailed');
+      expect(comp.orcidError).toBe('t:settings.orcidLinkFailed');
       expect(comp.orcidError).not.toContain('deadbeef');
       expect(comp.orcidLinking).toBe(false);
       expect(warnSpy).toHaveBeenCalled();
@@ -335,7 +339,7 @@ describe('settingsPage', () => {
       const comp = createComponent();
       comp.startUpgrade();
       expect(comp.upgradePhase).toBe('error');
-      expect(comp.upgradeError).toBe('upgrade.keychainRequired');
+      expect(comp.upgradeError).toBe('t:upgrade.keychainRequired');
     });
 
     // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: generateMnemonic()
@@ -353,7 +357,7 @@ describe('settingsPage', () => {
       comp.startUpgrade();
 
       expect(comp.upgradePhase).toBe('error');
-      expect(comp.upgradeError).toBe('upgrade.generationFailed');
+      expect(comp.upgradeError).toBe('t:upgrade.generationFailed');
       expect(comp.upgradeError).not.toContain('deadbeef');
       expect(warnSpy).toHaveBeenCalled();
       expect(warnSpy.mock.calls[0][1]).toBe(leaky);
@@ -469,8 +473,13 @@ describe('settingsPage', () => {
       expect(comp.upgradePhase).toBe('error');
       expect(typeof comp.upgradeError).toBe('string');
       // The user-facing error must be the generic localized message. The
-      // $t stub in this suite returns the key verbatim, so assert the key.
-      expect(comp.upgradeError).toBe('upgrade.failed');
+      // $t stub in this suite prefixes 't:' so assert the prefixed key.
+      expect(comp.upgradeError).toBe('t:upgrade.failed');
+      // Regression-class guard: the sentinel-prefixed stub means a future
+      // refactor to `this.$t('upgrade.failed') || err.message` would, on a
+      // missing key (i.e. $t returns ''), fall through to err.message —
+      // which does NOT start with 't:' and would fail this matcher.
+      expect(comp.upgradeError).toMatch(/^t:/);
       // Critical: neither of the leak substrings may appear in the DOM-bound
       // error string.
       expect(comp.upgradeError).not.toContain(leakHex);
@@ -478,7 +487,12 @@ describe('settingsPage', () => {
       // Sanity: raw error still surfaced to console.warn so developers can
       // debug. (Not a leak — devtools is a trusted surface.)
       expect(warnSpy).toHaveBeenCalled();
-      const warnArgs = warnSpy.mock.calls[0];
+      // Filter by the '[custody upgrade]' prefix instead of relying on
+      // mock.calls[0]: any earlier console.warn (test mock, library
+      // diagnostic, etc.) would shift the index and cause this assertion
+      // to target the wrong error object.
+      const warnArgs = warnSpy.mock.calls.find((c) => c[0] === '[custody upgrade]');
+      expect(warnArgs).toBeDefined();
       const warnedErr = warnArgs[1];
       const warnedStr = warnedErr && warnedErr.message ? warnedErr.message : String(warnedErr);
       expect(warnedStr).toContain(leakHex);
@@ -881,7 +895,7 @@ describe('settingsPage', () => {
       expect(comp.upgradeError).toBeNull();
       // Warning surfaced for the active role (the denied iteration).
       expect(comp.upgradeWarnings).toEqual(
-        expect.arrayContaining(['upgrade.keychainImportWarning.active']),
+        expect.arrayContaining(['t:upgrade.keychainImportWarning.active']),
       );
       // Loop continued past the denial — memo (index 2) was still attempted.
       expect(importKeyCalls.length).toBe(3);
@@ -926,7 +940,7 @@ describe('settingsPage', () => {
       expect(comp.upgradePhase).toBe('done');
       expect(comp.upgradeError).toBeNull();
       expect(comp.upgradeWarnings).toEqual(
-        expect.arrayContaining(['upgrade.keychainImportWarning.posting']),
+        expect.arrayContaining(['t:upgrade.keychainImportWarning.posting']),
       );
       // Loop continued past the denial — active + memo (indices 1, 2) still attempted.
       expect(importKeyCalls.length).toBe(3);
@@ -1039,7 +1053,7 @@ describe('settingsPage', () => {
 
       await comp.handleSetPassword();
 
-      expect(comp.passwordError).toBe('settings.passwordUpdateFailed');
+      expect(comp.passwordError).toBe('t:settings.passwordUpdateFailed');
       expect(comp.passwordError).not.toContain('deadbeef');
       expect(comp.passwordSubmitting).toBe(false);
       expect(comp.newPasswordInput).toBe('');

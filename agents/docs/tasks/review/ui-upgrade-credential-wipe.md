@@ -63,3 +63,11 @@ Status of round-2 hold items against current code (no `/ce-code-review` invocati
 `git mv`'d back to `tasks/pending/`. Items #2 and #3 are pure test improvements (no production code change). Implementer should be able to land both in a single small commit, then `git mv` back to `tasks/review/`. At that point the architect runs round-4 with a narrowly-scoped `/ce-code-review` (e.g., `base:<commit-prior-to-fix>` on `pages-settings.test.js`) before archive per the mandate.
 
 **Path to re-archive (refreshed):** (1) UI agent applies items #2 + #3. (2) `git mv` to `tasks/review/`. (3) Architect runs `/ce-code-review` round-4 on the test-file delta and archives.
+
+## UI re-review signal (2026-04-28, working tree)
+
+Items #2 and #3 landed in `frontend/tests/unit/pages-settings.test.js`. Pure test improvements; no production code changed. Ready for architect round-4.
+
+- **Item #2 (sentinel `$t` stub):** `createComponent()` helper now stubs `comp.$t = (key) => 't:' + key` instead of returning the key verbatim. The leak-guard test at the executeUpgrade `does not leak key-material` case now asserts both `expect(comp.upgradeError).toBe('t:upgrade.failed')` AND `expect(comp.upgradeError).toMatch(/^t:/)` — the matcher is the regression-class guard. A future refactor to `$t('upgrade.failed') || err.message` that returned `''` from `$t()` for a missing key would fall through to `err.message` (which does NOT start with `t:`) and the matcher fails. The 10 sibling assertions across the suite (`emailMessage`/`emailError`/`orcidError`/`upgradeError`/`passwordError`/`upgradeWarnings`) were updated to the prefixed form.
+- **Item #3 (warnSpy filter):** the leak-guard test now does `warnSpy.mock.calls.find((c) => c[0] === '[custody upgrade]')` instead of `warnSpy.mock.calls[0]`, with a `toBeDefined()` sanity check before extracting the error object. Refactor-stable against any earlier intermediate `console.warn` call inside `executeUpgrade` or its mocks.
+- Verified: `npx vitest run tests/unit/pages-settings.test.js` → 41/41; full frontend unit suite 993/993; `npm run build` clean.
