@@ -649,6 +649,50 @@ describe('per-paper `discipline` response field — canon_name (lowercased) via 
     // path (no override) would surface as `'physics'`.
     expect(res.body.data.discipline).toBe('biology');
   });
+
+  it('GET /api/profile/:username/papers — toPaperSummary canon-lowers + trims (BE-PROFILE-PAPER-DISCIPLINE-CANON)', async () => {
+    // BE-PROFILE-PAPER-DISCIPLINE-CANON: `toPaperSummary` in helpers.ts now
+    // routes `pevo.discipline` through `paperDisciplineField() ?? ''` so
+    // /api/profile/:username/papers surfaces canon (lowercased + trimmed)
+    // shape consistent with /api/papers. Real-HAF parity in profile.test.ts
+    // is corpus-vacuous on lowercase data; this mocked-pool spec pins the
+    // transform deterministically with a whitespace-padded mixed-case seed.
+    hafQueryMock.mockImplementation(async (sql: string) => {
+      if (sql.includes('count(*)::int AS total') && sql.includes('FROM user_papers')) {
+        return { rows: [{ total: 1 }] };
+      }
+      if (sql.includes('FROM user_papers') && sql.includes('ORDER BY')) {
+        return {
+          rows: [{
+            author: 'alice',
+            permlink: 'p-1',
+            title: 'Test Paper',
+            body: 'abstract\n\n---\n\nfull text',
+            json_metadata: {
+              app: `${config.appTag}/1.0`,
+              [config.appTag]: {
+                type: 'paper',
+                discipline: '  Computer Science  ',
+                keywords: [],
+                authors: [],
+              },
+            },
+            created: '2026-04-28T00:00:00',
+            total_rshares: 0,
+          }],
+        };
+      }
+      return { rows: [] };
+    });
+
+    const res = await request(app).get('/api/profile/alice/papers');
+    expect(res.status).toBe(200);
+    expect(res.body.data).toHaveLength(1);
+    // A revert of `paperDisciplineField()` integration in toPaperSummary
+    // (i.e., back to `(pevo.discipline as string) || ''`) would surface here
+    // as `'  Computer Science  '` instead of `'computer science'`.
+    expect(res.body.data[0].discipline).toBe('computer science');
+  });
 });
 
 describe('GET /api/papers — cache key sha256-wrapped (BE-PAPERS-CACHE-KEY-SHA256-MIRROR)', () => {
@@ -801,50 +845,6 @@ describe('GET /api/search — ?q= LIKE-escape SQL contract (BE-SEARCH-Q-LIKEGUAR
     // on the data query.
     const occurrences = capturedSql!.split(escapeClause).length - 1;
     expect(occurrences).toBeGreaterThanOrEqual(2);
-  });
-
-  it('GET /api/profile/:username/papers — toPaperSummary canon-lowers + trims (BE-PROFILE-PAPER-DISCIPLINE-CANON)', async () => {
-    // BE-PROFILE-PAPER-DISCIPLINE-CANON: `toPaperSummary` in helpers.ts now
-    // routes `pevo.discipline` through `paperDisciplineField() ?? ''` so
-    // /api/profile/:username/papers surfaces canon (lowercased + trimmed)
-    // shape consistent with /api/papers. Real-HAF parity in profile.test.ts
-    // is corpus-vacuous on lowercase data; this mocked-pool spec pins the
-    // transform deterministically with a whitespace-padded mixed-case seed.
-    hafQueryMock.mockImplementation(async (sql: string) => {
-      if (sql.includes('count(*)::int AS total') && sql.includes('FROM user_papers')) {
-        return { rows: [{ total: 1 }] };
-      }
-      if (sql.includes('FROM user_papers') && sql.includes('ORDER BY')) {
-        return {
-          rows: [{
-            author: 'alice',
-            permlink: 'p-1',
-            title: 'Test Paper',
-            body: 'abstract\n\n---\n\nfull text',
-            json_metadata: {
-              app: `${config.appTag}/1.0`,
-              [config.appTag]: {
-                type: 'paper',
-                discipline: '  Computer Science  ',
-                keywords: [],
-                authors: [],
-              },
-            },
-            created: '2026-04-28T00:00:00',
-            total_rshares: 0,
-          }],
-        };
-      }
-      return { rows: [] };
-    });
-
-    const res = await request(app).get('/api/profile/alice/papers');
-    expect(res.status).toBe(200);
-    expect(res.body.data).toHaveLength(1);
-    // A revert of `paperDisciplineField()` integration in toPaperSummary
-    // (i.e., back to `(pevo.discipline as string) || ''`) would surface here
-    // as `'  Computer Science  '` instead of `'computer science'`.
-    expect(res.body.data[0].discipline).toBe('computer science');
   });
 
   it('reviews-search SQL carries ESCAPE clause on c.body ILIKE', async () => {
