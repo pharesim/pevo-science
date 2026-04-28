@@ -1,6 +1,7 @@
 ---
 title: "Chain-write timeout is an ambiguous outcome, not a confirmed failure"
 date: 2026-04-22
+last_updated: 2026-04-28
 category: conventions
 module: backend
 problem_type: convention
@@ -53,7 +54,7 @@ The `BE-ORCID-TOCTOU-LOCK` protection guards **concurrent** requests, not sequen
 
 Hive does not expose built-in idempotency keys for `custom_json` operations; a duplicate bind or duplicate accreditation on-chain is irreversible without an admin-signed revoke. "Just retry" is unsafe by default for any write crossing this boundary.
 
-The open implementation task is `agents/docs/tasks/pending/backend-orcid-broadcast-timeout-outcome-handling.md`. The frontend companion (`ui-orcid-callback-retriable-branch.md`) plumbs the `retriable` + `retry_after_seconds` signal for consumers.
+The open implementation task is `backend-orcid-broadcast-timeout-outcome-handling.md` (tracked in `agents/docs/tasks/`). The frontend companion (`ui-orcid-callback-retriable-branch.md`) plumbs the `retriable` + `retry_after_seconds` signal for consumers.
 
 ## Guidance
 
@@ -110,6 +111,7 @@ The review-level consequence is subtler. The `broadcastJsonWithTimeout` wrapper 
 2. Any operation whose post-broadcast side effects (cache write, DB write, 200 response) must be conditioned on definite broadcast success.
 3. Any retry path triggered by a timeout-class error on a write to an external system without native idempotency keys.
 4. Specifically today: `handleAccredit` + `handleLink` in `backend/src/routes/orcid.ts`. Extension to `accreditation.ts`, `anonymousReview.ts`, `papers.ts`, `signup-verify.ts`, `wot.ts`, `claims.ts` if the chosen option is reusable.
+   - **Ordering axis (added 2026-04-28):** when a migration site has post-response cleanup inside the same catch block (the `accreditation.ts /verify` shape: `handleBroadcastError → if (outcome === 'failure') await deleteToken(token)`), the helper extraction can invert the response/cleanup ordering and produce a separate `ERR_HTTP_HEADERS_SENT` regression on Express 5 if the cleanup rejects. See `helper-extraction-express5-response-ordering-2026-04-28.md` for the call-site audit checklist. Sites without post-response cleanup (current `orcid.ts`, `papers.ts`, `claims.ts`) are unaffected.
 5. Not applicable to read operations (`hiveClient.database.*`, HAF queries) or to writes where a definite error response was received from the node before the timer fired.
 
 ## Examples
@@ -224,7 +226,8 @@ Note on lock interaction: `withOrcidBindingLock`'s `finally` calls `releaseBindi
 
 - `agents/docs/solutions/conventions/verify-library-claims-before-load-bearing-security-margins-2026-04-22.md` — **causal predecessor.** That doc covers layer 1: the dhive "30s broadcast timeout" claim didn't exist, so we added `broadcastJsonWithTimeout`. This doc covers layer 2: the timer we added has ambiguous outcome semantics when its error is collapsed to 500. Same task chain, two lessons.
 - `agents/docs/solutions/conventions/timing-equalization-smtp-failure-mode-oracle-2026-04-22.md` — **structural parallel.** SMTP `sendMail` throws after the token is written → 500 reveals "email exists in DB." Broadcast timer fires after the tx may be accepted → 500 causes double-broadcast. Same failure shape (partial-execution error collapsed to generic status code), different domain.
-- `agents/docs/tasks/pending/backend-orcid-broadcast-timeout-outcome-handling.md` — open task implementing the chosen option.
-- `agents/docs/tasks/pending/ui-orcid-callback-retriable-branch.md` — frontend companion consuming the `retriable` + `retry_after_seconds` envelope.
+- `agents/docs/solutions/runtime-errors/helper-extraction-express5-response-ordering-2026-04-28.md` — **second failure mode on the same helper.** This doc covers the timeout-outcome ambiguity that `handleBroadcastError` was designed to handle. The runtime-errors doc covers a separate regression: when a migration site has post-response cleanup, helper extraction inverts the response/cleanup ordering and produces `ERR_HTTP_HEADERS_SENT` on Express 5 if the cleanup rejects. Future broadcast-helper extensions should consider both axes (idempotency on ambiguous outcomes AND ordering parity on cleanup failure).
+- `backend-orcid-broadcast-timeout-outcome-handling.md` (in `agents/docs/tasks/`) — open task implementing the chosen option.
+- `ui-orcid-callback-retriable-branch.md` (in `agents/docs/tasks/`) — frontend companion consuming the `retriable` + `retry_after_seconds` envelope.
 - `backend/src/hive.ts` — `broadcastJsonWithTimeout`, `BroadcastTimeoutError`.
 - `backend/src/routes/orcid.ts` — `handleAccredit`, `handleLink`, `withOrcidBindingLock`, `releaseBindingLock` (Lua CAS).
