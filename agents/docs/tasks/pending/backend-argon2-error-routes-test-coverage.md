@@ -73,3 +73,70 @@ Skipped (with reason):
 - **Listener-leak happy path** — the `finally`-branch `signal.removeEventListener('abort', onAbort)` in `argon2-semaphore.ts:272` covers it via inspection; a test would need to either monkey-patch AbortController or pull in a custom fake, both higher cost than value for code that has been stable since the abort feature landed.
 - **T2 sync-throw vs async-reject** — synchronously-thrown errors inside `runWithArgon2Slot`'s `await fn()` are caught by JS's await semantics (sync throw → rejected promise from the async fn wrapper), so the sync/async distinction is collapsed at the language level; the existing async-reject test exercises the same finally-branch slot release.
 - **`queueDepth` underflow guard** — already implicitly covered by the existing abort test at `tests/lib/argon2-semaphore.test.ts:411-418` which asserts `getArgon2QueueDepth() === 0` after a full drain (any double-decrement would surface as a negative value).
+
+---
+
+## Architect re-review (2026-04-28) — HELD PENDING FIXES
+
+`/ce-code-review` ran on commits ab80d46 + 92f7b91 with 9 personas (correctness, testing, security, api-contract, maintainability, project-standards, kieran-typescript, agent-native, learnings). Coverage matrix lands the right shape for the always-covered branches: 9 routes × 3 error classes asserted at the wire level, mocks correctly preserve the abstract base hierarchy, `verifyHiveSignature` genuinely not mocked, ArgonAbortError silent-return asserted via supertest deadline. Lib-level gap closures (maxQueueDepth=Infinity boundary, requestAbortSignal writableEnded trio) defensible. Triage block on the 5 skipped lib gaps is mostly defensible.
+
+But: the timing-oracle invariant the whole cluster exists to close is **not fully locked** — multi-branch endpoints test only one branch each, leaving the symmetric mutation case unguarded. Six items below need to land before this task can archive.
+
+### Items to address
+
+**1. (P1) Lock the symmetric branch coverage on multi-branch endpoints**
+
+The convention `agents/docs/solutions/conventions/timing-equalization-sub-branch-oracles-2026-04-21.md` requires that under saturation/shutdown, every sub-branch of an endpoint emits the SAME status. The current tests only cover one branch per endpoint:
+
+- **/login** covers the known-account verify path (auth.ts:738) but not the unknown-account `burnSentinel` (auth.ts:710) or the ORCID-only `burnSentinel` (auth.ts:726). Add tests for both untested branches under each of the three error classes (queue-full, shutdown, abort). Assert: known-account vs unknown-account vs ORCID-only all return identical status (503) AND identical body (`SERVICE_UNAVAILABLE_MESSAGE` constant) AND identical Retry-After under saturation/shutdown. Abort branch: silent on all three.
+- **/resume-signup** covers the confirmed+verify path (signup-verify.ts:146) but skips the three earlier `burnSentinel` branches at signup-verify.ts:119, 130, 140. Same treatment: assert all four sites collapse to the same wire shape under each error class.
+- **/signup** covers the dup-email burn (in the existing `auth-signup-dup-saturated.test.ts`) but not the new-email `runWithArgon2Slot(argon2.hash)` at auth.ts:441. Add `auth-signup-argon-error-translation.test.ts` (or extend the existing dup-saturated file) covering the new-email path under all three error classes. ArgonAbortError on /signup is currently uncovered for ANY branch — this addition closes it.
+
+The acceptance test for symmetry: under induced saturation, a request that would otherwise hit branch A (e.g., known-account login) and a request that would otherwise hit branch B (e.g., unknown-account login) MUST return identical status + identical body + identical Retry-After. Do NOT use `if (res.status === 200)` style guards in the test (per `tests-must-fail-on-mutation-of-code-under-test-2026-04-22.md`); assert unconditionally.
+
+**2. (P2) Import Retry-After constants instead of hardcoding `'5'` / `'30'`**
+
+All four new route test files compare `Retry-After` against literal strings `'5'` / `'30'`. Replace with `String(QUEUE_FULL_RETRY_AFTER_SEC)` / `String(SHUTDOWN_RETRY_AFTER_SEC)` imported from `backend/src/lib/argon-error-handler.js` (or post-rename `argon2-error-handler.js`). Operator-tuning the defaults would otherwise produce false-red tests on a contract-compliant change. The body string is already correctly imported from `SERVICE_UNAVAILABLE_MESSAGE`; mirror that pattern.
+
+**3. (P2) Assert outer envelope `status: 'error'` discriminant**
+
+Tests check `res.body.error?.code` and `res.body.error?.message` but never `res.body.status === 'error'`. A regression that drops the `{ status: 'error', ... }` wrapper from `sendError` would leave every existing assertion green. Add `expect(res.body.status).toBe('error')` to each 503 case (one line per route × error class).
+
+**4. (P2) ArgonAbortError silent-return: assert no body was written**
+
+The current pattern uses supertest's `.timeout({ deadline: 250 })` and infers silence from deadline rejection. `agents/docs/api-contracts/common.md:79` documents the contract as "no response envelope is written" — close to but not identical to "deadline expired without resolution". Strengthen the assertion: introspect supertest's outcome (the `outcome.kind` shape the testing reviewer noted) to assert the resolution was specifically a deadline, not a response with body. The unit-level helper test in `tests/lib/argon-error-handler.test.ts` already covers this directly via mocked `res.set` / `res.status` / `res.json` not being called; the route tests should mirror that contract assertion at the integration level.
+
+**5. (P2) Type the mocks**
+
+- `vi.fn<typeof runWithArgon2Slot>()` instead of bare `vi.fn()`. Same treatment for any other unfn'd mocks in the four files.
+- Replace the `vi.hoisted` synthetic class declarations with `vi.importActual` to re-export the real `ArgonSemaphoreError` / `ArgonQueueFullError` / `ShuttingDownError` / `ArgonAbortError` from the production module. Keep the function-side (`runWithArgon2Slot`, `drainArgon2Queue`) mocked. The `instanceof` checks in `argon-error-handler.ts` then bind against the real class hierarchy at test time, which is what makes the route-level integration test load-bearing rather than synthetic.
+
+**6. (P2) Extract shared mock infrastructure**
+
+~60 lines of identical `vi.hoisted` mock-class setup + four `vi.mock(...)` blocks + the silent-abort outcome-detector try/catch are copy-pasted across four test files (~240 lines of duplication). When the production `ArgonSemaphoreError` hierarchy changes shape, all four files must update in lockstep — exactly the test pattern that masks production drift. `backend/tests/support/` already exists (haf-query.ts, redis-helpers.ts) as the home for shared test infra. Extract:
+- `backend/tests/support/argon2-error-mocks.ts` exposing a hoisted-mock factory (returns the real classes via `vi.importActual` per item 5)
+- `installArgon2RouteMocks()` helper that wires the `vi.mock(...)` calls
+- `assertArgon2AbortIsSilent(res)` helper encapsulating the outcome-detector pattern (per item 4)
+
+The four route files then become ~30-50 lines each: imports + describe blocks + per-route assertions, with no mock plumbing.
+
+### Items optional (land if cheap, defer otherwise)
+
+**7. (P3) Add a direct lib-level `burnSentinel` rethrow test**
+
+Acceptance line 43 of the original task asked for this. Currently exercised only transitively through the route tests. Direct test: instantiate `burnSentinel` against a controlled semaphore that throws each of the three subclasses; assert the rethrow.
+
+**8. (P3) TIMING_ORACLE_FLOOR_MS clarifying comment**
+
+Acceptance Notes section asked for a code comment in `tests/routes/auth-concurrency.test.ts` clarifying that the 35ms floor is a non-saturated-path floor (not load-bearing on the 503 path which returns ~0ms). Two-line addition.
+
+### Items dismissed during architect triage (do NOT address)
+
+- **Silent-abort log-leak guard** — defensive, no concrete leak today; revisit if a future commit adds `logger.info` lines to the abort path.
+- **queueDepth underflow rationale weakness** — other decrement paths exist (drain, slot-grant abort race) that would surface a double-decrement; the implementer's existing rationale stands.
+- **MockArgonAbortError name asymmetry (`AbortError` vs `ArgonAbortError`)** — production also sets `name = 'AbortError'` for DOMException compat; not a divergence.
+- **Triage block uses bare line numbers (will drift)** — architect will replace with describe-block names at archive time.
+
+### Re-review signal
+
+When items 1-6 above land (and 7-8 if cheap), `git mv` this file back to `tasks/review/`. The architect's next review pass picks it up.
