@@ -55,6 +55,8 @@ import {
   SERVICE_UNAVAILABLE_MESSAGE,
   QUEUE_FULL_RETRY_AFTER_SEC,
   SHUTDOWN_RETRY_AFTER_SEC,
+  ARGON_REASON_QUEUE_FULL,
+  ARGON_REASON_SHUTDOWN_DRAIN,
 } from '../../src/lib/argon2-error-handler.js';
 
 /**
@@ -216,10 +218,14 @@ export async function assertArgon2AbortIsSilent(
  *     (NOT a hardcoded `'5'` / `'30'` literal — item 2 of the hold block).
  *   - Body string MUST NOT leak the underlying chokepoint or deployment
  *     state ("argon" / "authentication" / "shutdown").
+ *   - `details.reason` matches the imported wire literal — separate
+ *     `ArgonQueueFullError` from `ShuttingDownError` for HTTP-only ops
+ *     consumers without log-stream correlation.
  */
 export function assert503(
   res: SupertestResponse,
   expectedRetryAfterSec: number,
+  expectedReason: typeof ARGON_REASON_QUEUE_FULL | typeof ARGON_REASON_SHUTDOWN_DRAIN,
 ): void {
   expect(res.status).toBe(503);
   expect(res.body.status).toBe('error');
@@ -227,22 +233,23 @@ export function assert503(
   expect(res.body.error?.message).toBe(SERVICE_UNAVAILABLE_MESSAGE);
   expect(res.headers['retry-after']).toBe(String(expectedRetryAfterSec));
   expect(res.body.error?.message).not.toMatch(/argon|authentication|shut\s?down/i);
+  expect(res.body.error?.details?.reason).toBe(expectedReason);
 }
 
 /**
  * Assert a 503 response under `ArgonQueueFullError` saturation. Convenience
- * wrapper around {@link assert503} with the queue-full retry-after
- * constant pre-bound.
+ * wrapper around {@link assert503} with the queue-full retry-after constant
+ * and `reason: 'queue_full'` discriminator pre-bound.
  */
 export function assert503QueueFull(res: SupertestResponse): void {
-  assert503(res, QUEUE_FULL_RETRY_AFTER_SEC);
+  assert503(res, QUEUE_FULL_RETRY_AFTER_SEC, ARGON_REASON_QUEUE_FULL);
 }
 
 /**
  * Assert a 503 response under `ShuttingDownError` drain. Convenience
  * wrapper around {@link assert503} with the shutdown retry-after constant
- * pre-bound.
+ * and `reason: 'shutdown_drain'` discriminator pre-bound.
  */
 export function assert503Shutdown(res: SupertestResponse): void {
-  assert503(res, SHUTDOWN_RETRY_AFTER_SEC);
+  assert503(res, SHUTDOWN_RETRY_AFTER_SEC, ARGON_REASON_SHUTDOWN_DRAIN);
 }

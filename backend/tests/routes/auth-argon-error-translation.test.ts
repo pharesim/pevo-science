@@ -200,17 +200,13 @@ const routes: RouteCase[] = [
       });
     },
   },
-  {
-    name: 'POST /api/auth/reset-request (unknown email, hits burnSentinel → runWithArgon2Slot)',
-    method: 'post',
-    path: '/api/auth/reset-request',
-    body: { email: 'unknown@mit.edu' },
-    seedRows: () => {
-      // Empty rows → unknown-email branch → burnSentinel → runWithArgon2Slot
-      // (auth.ts:830). Exercises the burn-side semaphore catch chain.
-      appQueryMock.mockResolvedValueOnce({ rows: [] });
-    },
-  },
+  // /reset-request (unknown email, burnSentinel branch) is covered separately by
+  // tests/routes/auth-reset-request-shutdown.test.ts. Its ShuttingDownError
+  // contract diverges from the generic 503: the route swallows ShuttingDownError
+  // and falls through to a 200 to keep the unknown/known-email branches
+  // indistinguishable during SIGTERM drain (closes the email-enumeration oracle
+  // — see backend-reset-request-shutdown-enumeration). Including it here would
+  // assert the wrong contract.
   {
     name: 'POST /api/auth/reset (valid token, hits argon2.hash)',
     method: 'post',
