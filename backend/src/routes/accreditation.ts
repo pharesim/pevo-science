@@ -18,6 +18,16 @@ import { seedAccreditationBonus } from '../reputation.js';
 /** How long a verification token stays valid before it expires. */
 const TOKEN_EXPIRY_MS = 24 * 60 * 60 * 1000; // 24 hours
 
+/**
+ * Per-token broadcast-attempt cap. Bounds the broadcast-retry amplification
+ * window opened by the 504 BROADCAST_TIMEOUT envelope at /api/accreditation/verify
+ * (see BE-VERIFY-BROADCAST-ATTEMPTS-CAP). Each call to /verify that reaches
+ * the broadcast site increments a per-token counter; once the counter exceeds
+ * this cap, the token is destroyed and the caller is forced to request a
+ * fresh token via /api/accreditation/request.
+ */
+const MAX_BROADCAST_ATTEMPTS = 3;
+
 const accreditationRequestLimiter = rateLimit({ name: 'accred-req', windowMs: 24 * 60 * 60_000, max: 3, keyFn: byAccount });
 const accreditationVerifyLimiter = rateLimit({ name: 'accred-verify', windowMs: 60_000, max: 5, keyFn: byIp });
 
@@ -41,6 +51,49 @@ interface PendingAccreditation {
 
 // In-memory fallback when APP_DATABASE_URL is not configured
 const memoryTokens = new Map<string, PendingAccreditation>();
+// Per-token broadcast-attempt counters for the in-memory (no-Redis) path.
+// On the Redis path, counts live under
+// `${config.appTag}:pending_accred_broadcast_attempts:${token}` and are
+// incremented atomically with INCR.
+const memoryBroadcastAttempts = new Map<string, number>();
+
+function broadcastAttemptsKey(token: string): string {
+  return `${config.appTag}:pending_accred_broadcast_attempts:${token}`;
+}
+
+/**
+ * Atomically claim the next broadcast-attempt slot for `token`. Returns the
+ * post-increment count. Caller treats `count > MAX_BROADCAST_ATTEMPTS` as
+ * "cap exceeded — destroy token, surface limit-exceeded envelope".
+ *
+ * The TTL on the Redis key is anchored to `pending.expires_at` so the counter
+ * never outlives the token it gates. Setting TTL only on the first INCR keeps
+ * the counter from being silently extended by every retry (which would let an
+ * attacker keep a token alive past 24h via spam).
+ */
+async function incrementBroadcastAttempts(pending: PendingAccreditation): Promise<number> {
+  const redis = getRedis();
+  if (redis && isRedisAvailable()) {
+    const key = broadcastAttemptsKey(pending.token);
+    const count = await redis.incr(key);
+    if (count === 1) {
+      const ttl = Math.max(1, Math.ceil((pending.expires_at.getTime() - Date.now()) / 1000));
+      await redis.expire(key, ttl);
+    }
+    return count;
+  }
+  const next = (memoryBroadcastAttempts.get(pending.token) ?? 0) + 1;
+  memoryBroadcastAttempts.set(pending.token, next);
+  return next;
+}
+
+async function deleteBroadcastAttempts(token: string): Promise<void> {
+  const redis = getRedis();
+  if (redis && isRedisAvailable()) {
+    await redis.del(broadcastAttemptsKey(token));
+  }
+  memoryBroadcastAttempts.delete(token);
+}
 
 async function storeToken(pending: PendingAccreditation): Promise<void> {
   const redis = getRedis();
@@ -75,6 +128,9 @@ async function deleteToken(token: string): Promise<void> {
     await redis.del(`${config.appTag}:pending_accred:${token}`);
   }
   memoryTokens.delete(token);
+  // Counter is scoped to the token's life — a fresh token always starts
+  // from zero, so we drop the side-key whenever the token itself is dropped.
+  await deleteBroadcastAttempts(token);
 }
 
 async function cleanupExpiredTokens(): Promise<void> {
@@ -174,6 +230,28 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
   if (!config.pevoAdminPostingKey) {
     await deleteToken(token);
     return sendError(res, 500, 'INTERNAL_ERROR', 'Admin posting key not configured');
+  }
+
+  // Per-token broadcast-attempt cap (BE-VERIFY-BROADCAST-ATTEMPTS-CAP).
+  // The 504 BROADCAST_TIMEOUT envelope deliberately preserves the token so
+  // the legitimate caller can verify chain state and retry; that survival
+  // window is also a retry-amplification axis (each retry enqueues a fresh
+  // broadcast at the dhive layer, and Hive does not deduplicate identical
+  // custom_json ops). INCR atomically claims the next slot before broadcasting,
+  // so the cap holds even under concurrent retries on the same token.
+  const attempts = await incrementBroadcastAttempts(pending);
+  if (attempts > MAX_BROADCAST_ATTEMPTS) {
+    logger.warn(
+      {
+        username: pending.hive_username,
+        email_hash: hashEmailForLogs(pending.email),
+        attempts,
+        cap: MAX_BROADCAST_ATTEMPTS,
+      },
+      'accreditation.verify broadcast attempt cap exceeded; destroying token',
+    );
+    await deleteToken(token);
+    return sendError(res, 502, 'BROADCAST_FAILED', 'Broadcast attempt limit exceeded. Request a fresh accreditation email.', { retriable: false });
   }
 
   const evidenceHash = crypto

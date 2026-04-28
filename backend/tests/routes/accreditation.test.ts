@@ -358,3 +358,117 @@ describe('POST /api/accreditation/verify — BE-ORCID-BROADCAST-ABORT-TIMEOUT', 
     }
   });
 });
+
+// ──────────────────────────────────────────────
+// BE-VERIFY-BROADCAST-ATTEMPTS-CAP — per-token broadcast-attempts cap.
+//
+// The 504 BROADCAST_TIMEOUT envelope (above) deliberately preserves the token
+// so the legitimate caller can verify chain state and retry. That survival
+// window is also a retry-amplification axis: each retry enqueues a fresh
+// broadcast at the dhive layer, and Hive does not deduplicate identical
+// custom_json ops. The cap (MAX_BROADCAST_ATTEMPTS = 3) bounds the per-token
+// blast radius. Counter lives at
+// `${appTag}:pending_accred_broadcast_attempts:${token}` and is incremented
+// atomically with INCR before each broadcast.
+// ──────────────────────────────────────────────
+
+const MAX_BROADCAST_ATTEMPTS = 3;
+
+async function broadcastAttemptCount(token: string): Promise<number> {
+  const redis = getRedis();
+  if (!redis) return 0;
+  const raw = await redis.get(`${config.appTag}:pending_accred_broadcast_attempts:${token}`);
+  return raw === null ? 0 : Number(raw);
+}
+
+describe('POST /api/accreditation/verify — BE-VERIFY-BROADCAST-ATTEMPTS-CAP', () => {
+  beforeEach(() => {
+    broadcastJsonMock.mockReset();
+  });
+
+  afterEach(async () => {
+    const redis = getRedis();
+    if (redis) {
+      const keys = await redis.keys(`${config.appTag}:pending_accred*accred-cap-*`);
+      if (keys.length > 0) await redis.del(...keys);
+    }
+  });
+
+  // Distinct synthetic IPs per spec dodge the verify-route rate limiter
+  // (5/min per IP). app.ts sets `trust proxy = 1`, so X-Forwarded-For drives
+  // req.ip. Without this, ~10 sequential calls inside this file would
+  // collectively trip 429s and obscure the cap-vs-rate-limit signal.
+  function postVerify(token: string, ip: string) {
+    return request(app)
+      .post('/api/accreditation/verify')
+      .set('X-Forwarded-For', ip)
+      .send({ token });
+  }
+
+  it('caps broadcast attempts at MAX after N timeouts → cap-exceeded envelope; broadcastJsonMock called exactly MAX times', async () => {
+    const redis = getRedis();
+    if (!redis) return; // Redis-only spec; cap state lives in Redis.
+    const token = `accred-cap-${crypto.randomBytes(8).toString('hex')}`;
+    await seedPendingAccreditation(token);
+    const ip = `10.0.${crypto.randomInt(0, 255)}.${crypto.randomInt(1, 254)}`;
+
+    // Each /verify call hangs the broadcast → 504 envelope; token stays
+    // (per the round-3 ambiguous-outcome contract). After MAX calls, the
+    // (MAX+1)th call must short-circuit BEFORE invoking the broadcast.
+    broadcastJsonMock.mockRejectedValue(new MockBroadcastTimeoutError(30_000));
+
+    for (let i = 0; i < MAX_BROADCAST_ATTEMPTS; i++) {
+      const res = await postVerify(token, ip);
+      expect(res.status).toBe(504);
+      expect(res.body.error.code).toBe('BROADCAST_TIMEOUT');
+      expect(await tokenExists(token)).toBe(true);
+    }
+    expect(broadcastJsonMock).toHaveBeenCalledTimes(MAX_BROADCAST_ATTEMPTS);
+    expect(await broadcastAttemptCount(token)).toBe(MAX_BROADCAST_ATTEMPTS);
+
+    // (MAX+1)th call: cap exceeded → 502 BROADCAST_FAILED with limit-exceeded
+    // message, token destroyed, broadcast NOT enqueued.
+    const capped = await postVerify(token, ip);
+    expect(capped.status).toBe(502);
+    expect(capped.body.error.code).toBe('BROADCAST_FAILED');
+    expect(capped.body.error.details).toEqual({ retriable: false });
+    expect(capped.body.error.message).toMatch(/limit exceeded/i);
+    // Broadcast call-count is unchanged: the cap gate fires before broadcast.
+    expect(broadcastJsonMock).toHaveBeenCalledTimes(MAX_BROADCAST_ATTEMPTS);
+    // Token destroyed → caller must request a fresh email.
+    expect(await tokenExists(token)).toBe(false);
+    expect(await broadcastAttemptCount(token)).toBe(0);
+  });
+
+  it('clears the attempt counter on broadcast success', async () => {
+    const redis = getRedis();
+    if (!redis) return;
+    const token = `accred-cap-${crypto.randomBytes(8).toString('hex')}`;
+    await seedPendingAccreditation(token);
+    const ip = `10.1.${crypto.randomInt(0, 255)}.${crypto.randomInt(1, 254)}`;
+
+    broadcastJsonMock.mockResolvedValue({ id: 'mock-accred-tx' });
+
+    const res = await postVerify(token, ip);
+    expect(res.status).toBe(200);
+    // Token deleted on success path → counter side-key dropped with it.
+    expect(await tokenExists(token)).toBe(false);
+    expect(await broadcastAttemptCount(token)).toBe(0);
+  });
+
+  it('clears the attempt counter on terminal (502) broadcast failure', async () => {
+    const redis = getRedis();
+    if (!redis) return;
+    const token = `accred-cap-${crypto.randomBytes(8).toString('hex')}`;
+    await seedPendingAccreditation(token);
+    const ip = `10.2.${crypto.randomInt(0, 255)}.${crypto.randomInt(1, 254)}`;
+
+    broadcastJsonMock.mockRejectedValueOnce(new Error('RPC node rejected: insufficient RC'));
+
+    const res = await postVerify(token, ip);
+    expect(res.status).toBe(502);
+    // Terminal failure deletes the token → counter side-key follows.
+    expect(await tokenExists(token)).toBe(false);
+    expect(await broadcastAttemptCount(token)).toBe(0);
+  });
+});
