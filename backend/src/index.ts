@@ -92,7 +92,20 @@ initAppDb()
   });
 
 // ── Graceful shutdown ───────────────────────────────────────
+// Re-entrancy guard: SIGTERM and SIGINT both call shutdown(), and under
+// high-latency pool drain a second signal can land before the first
+// completes. closeHafPool() / closeAppPool() each follow a non-atomic
+// `if (pool) { await pool.end(); pool = null; }` shape — two concurrent
+// drains both observe pool !== null, both call pool.end(), and pg.Pool
+// throws "called end on a pool more than once" on the second invocation.
+// Flip a module-level flag synchronously on first entry so subsequent
+// signals are no-ops.
+let shutdownStarted = false;
+
 async function shutdown(signal: string): Promise<void> {
+  if (shutdownStarted) return;
+  shutdownStarted = true;
+
   logger.info({ signal }, 'Shutdown signal received — draining connections');
 
   stopBlockWatcher();
