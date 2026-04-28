@@ -15,6 +15,7 @@ const mockAuthStore = {
   accreditation: null,
   _saveSession: vi.fn(),
   _checkAccreditation: vi.fn(),
+  _startAccreditationPolling: vi.fn(),
 };
 const mockRouterStore = { navigate: vi.fn(), query: { code: 'abc123', state: 'xyz' } };
 const mockToastStore = { show: vi.fn() };
@@ -220,7 +221,12 @@ describe('orcidCallbackPage', () => {
       expect(mockAuthStore.expiresAt).toBe('2025-01-01');
       // _saveSession is called with no positional args now; it reads from this.*
       expect(mockAuthStore._saveSession).toHaveBeenCalledWith();
-      expect(mockAuthStore._checkAccreditation).toHaveBeenCalled();
+      expect(mockAuthStore._saveSession).toHaveBeenCalledTimes(1);
+      // _handleLogin uses _startAccreditationPolling (not bare
+      // _checkAccreditation) so transient accreditation-fetch failures retry
+      // via the 60s polling loop instead of leaving the store permanently at
+      // isAccredited=false. Matches sibling login paths in auth.js.
+      expect(mockAuthStore._startAccreditationPolling).toHaveBeenCalledTimes(1);
 
       vi.advanceTimersByTime(500);
       expect(mockRouterStore.navigate).toHaveBeenCalledWith('/papers');
@@ -228,20 +234,30 @@ describe('orcidCallbackPage', () => {
     });
 
     it('ORCID login clears stale accreditation state BEFORE _saveSession() fires', async () => {
-      vi.useFakeTimers();
       // Seed stale state (simulating a prior session or stale store defaults
       // that should NOT leak into localStorage for the newly-logged-in user).
       mockAuthStore.isAccredited = true;
       mockAuthStore.accreditation = { type: 'email' };
 
       // Capture store state at the moment _saveSession is invoked, to prove
-      // the clearing happens BEFORE _saveSession (not after).
+      // the clearing happens BEFORE _saveSession (not after). The mock also
+      // simulates the real _saveSession's localStorage write so the
+      // end-to-end persistence assertion below is meaningful — without this,
+      // the store-mock isolates _saveSession from the real localStorage call.
       let snapshotAtSave = null;
       mockAuthStore._saveSession.mockImplementationOnce(() => {
         snapshotAtSave = {
           isAccredited: mockAuthStore.isAccredited,
           accreditation: mockAuthStore.accreditation,
         };
+        localStorage.setItem('pevo_session', JSON.stringify({
+          username: mockAuthStore.username,
+          token: mockAuthStore.token,
+          custody: mockAuthStore.custody,
+          expiresAt: mockAuthStore.expiresAt,
+          isAccredited: mockAuthStore.isAccredited,
+          accreditation: mockAuthStore.accreditation,
+        }));
       });
 
       const comp = createComponent();
@@ -252,13 +268,17 @@ describe('orcidCallbackPage', () => {
       await comp._verify('code', 'state', 'login');
 
       expect(mockAuthStore._saveSession).toHaveBeenCalled();
+      expect(mockAuthStore._saveSession).toHaveBeenCalledTimes(1);
       expect(snapshotAtSave).not.toBeNull();
       expect(snapshotAtSave.isAccredited).toBe(false);
       expect(snapshotAtSave.accreditation).toBeNull();
+      // End-to-end persistence: the actual localStorage payload reflects the
+      // cleared state. Guards against a future _saveSession refactor that
+      // reads the wrong store fields.
+      expect(JSON.parse(localStorage.getItem('pevo_session'))).toMatchObject({ isAccredited: false, accreditation: null });
       // And the post-call state is also cleared (belt and suspenders).
       expect(mockAuthStore.isAccredited).toBe(false);
       expect(mockAuthStore.accreditation).toBeNull();
-      vi.useRealTimers();
     });
 
     it('ORCID login leaves the auth store with a non-null expiresAt so reload keeps the session', async () => {
@@ -535,6 +555,7 @@ describe('orcidCallbackPage', () => {
       expect(mockAuthStore.expiresAt).toBe(priorExpiresAt);
       expect(mockAuthStore._saveSession).not.toHaveBeenCalled();
       expect(mockAuthStore._checkAccreditation).not.toHaveBeenCalled();
+      expect(mockAuthStore._startAccreditationPolling).not.toHaveBeenCalled();
       expect(mockToastStore.show).not.toHaveBeenCalled();
 
       // Also prove the 500ms setTimeout was NOT armed — advancing time past

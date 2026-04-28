@@ -325,8 +325,14 @@ export function initOrcidCallbackPage() {
 
       auth._saveSession();
 
-      // Check accreditation status
-      auth._checkAccreditation();
+      // Start the accreditation polling loop (matches sibling login paths
+      // `loginFromResponse` and `connect` in auth.js). A bare
+      // `_checkAccreditation()` is a single fetch — a transient failure
+      // (network flap, slow backend) would leave the store at
+      // `isAccredited=false` permanently until manual reload. The polling
+      // loop retries every 60s and self-stops once accreditation is
+      // confirmed (or the user disconnects).
+      auth._startAccreditationPolling();
 
       Alpine.store('toast').show(this.$t('orcid.loginSuccess'), 'success');
       this._setTimer(() => this.navigate('/papers'), 500);
