@@ -3,6 +3,7 @@ import type { Response } from 'express';
 import {
   handleBroadcastError,
   handleBroadcastErrorAmbiguous,
+  PostBroadcastWriteError,
 } from '../../src/lib/broadcast-error.js';
 import { BroadcastTimeoutError } from '../../src/hive.js';
 import { logger } from '../../src/logger.js';
@@ -215,6 +216,148 @@ describe('handleBroadcastError', () => {
       // undefined is the expected runtime shape under bypass — pin it.
       expect(body.error.message).toBeUndefined();
     }
+  });
+
+  // BACKEND-ORCID-BROADCAST-OUTCOME-DISCRIMINATION — broadcast-succeeded
+  // vs broadcast-threw discrimination matrix at the helper level. Three
+  // cases per the architect-required acceptance #5:
+  //
+  //   Case A — broadcast threw (covered by existing
+  //   "sends 502 BROADCAST_FAILED envelope on generic Error" + "sends 504
+  //   BROADCAST_TIMEOUT envelope on BroadcastTimeoutError" specs above).
+  //   The 502/504 envelopes are unchanged by this discrimination; the new
+  //   POST_BROADCAST_FAILED envelope ONLY fires when `err instanceof
+  //   PostBroadcastWriteError`.
+  //
+  //   Case B — broadcast succeeded, cache_write threw → 502
+  //   POST_BROADCAST_FAILED with `outcome:'confirmed'`,
+  //   `failed_step:'cache_write'`, tx_id matches the constructor input.
+  //
+  //   Case C — broadcast succeeded, account_update threw → same envelope,
+  //   `failed_step:'account_update'`. (The `'reputation_seed'` step is
+  //   reserved for handleAccredit's third cascade step; the integration
+  //   spec exercises 'account_update' end-to-end via __test_seams.)
+  //
+  // The user-facing message is constructed via `postBroadcastFailedMsgFn`
+  // when supplied; tests pass the ORCID-shape function and assert it
+  // surfaces (regression guard against a regression that drops the
+  // function-supplied message in favor of a hardcoded fallback).
+  it('discriminates PostBroadcastWriteError → 502 POST_BROADCAST_FAILED with outcome:confirmed (case B — failed_step:cache_write)', () => {
+    vi.spyOn(logger, 'error').mockImplementation(() => undefined as unknown as void);
+    const res = mockResponse();
+    const err = new PostBroadcastWriteError('hive-tx-abc-123', new Error('redis flap on binding cache'), 'cache_write');
+
+    const outcome = handleBroadcastError(res, err, {
+      timeoutMsg: 'Timed out',
+      failMsg: 'Failed (should not surface)',
+      logContext: { case: 'B' },
+      verifyLocation: '/settings',
+      routeLabel: 'orcid.handleAccredit',
+      postBroadcastFailedMsgFn: (failedStep) =>
+        `Your ORCID is verified on Hive. A backend write to '${failedStep}' failed; this will reconcile automatically once HAF indexes the operation.`,
+    });
+
+    expect(outcome).toBe('failure');
+    expect(res.status).toHaveBeenCalledWith(502);
+    expect(res.json).toHaveBeenCalledWith({
+      status: 'error',
+      error: {
+        code: 'POST_BROADCAST_FAILED',
+        message: "Your ORCID is verified on Hive. A backend write to 'cache_write' failed; this will reconcile automatically once HAF indexes the operation.",
+        details: {
+          retriable: false,
+          outcome: 'confirmed',
+          tx_id: 'hive-tx-abc-123',
+          failed_step: 'cache_write',
+        },
+      },
+    });
+    // No verify_location on POST_BROADCAST_FAILED: the chain op IS the
+    // source of truth (HAF reconciles within 120s); nothing to verify.
+    const body = (res.json as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(body.error.details).not.toHaveProperty('verify_location');
+    expect(body.error.details).not.toHaveProperty('verify_before_retry');
+  });
+
+  it('discriminates PostBroadcastWriteError → 502 POST_BROADCAST_FAILED with failed_step:account_update (case C)', () => {
+    vi.spyOn(logger, 'error').mockImplementation(() => undefined as unknown as void);
+    const res = mockResponse();
+    const err = new PostBroadcastWriteError('hive-tx-xyz-456', new Error('pg pool exhausted'), 'account_update');
+
+    handleBroadcastError(res, err, {
+      timeoutMsg: 'T',
+      failMsg: 'F',
+      logContext: { case: 'C' },
+      routeLabel: 'orcid.handleLink',
+      postBroadcastFailedMsgFn: (failedStep) =>
+        `Your ORCID is linked on Hive. A backend write to '${failedStep}' failed; this will reconcile automatically once HAF indexes the operation.`,
+    });
+
+    expect(res.status).toHaveBeenCalledWith(502);
+    const body = (res.json as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(body.error.code).toBe('POST_BROADCAST_FAILED');
+    expect(body.error.details).toEqual({
+      retriable: false,
+      outcome: 'confirmed',
+      tx_id: 'hive-tx-xyz-456',
+      failed_step: 'account_update',
+    });
+    expect(body.error.message).toMatch(/'account_update'/);
+  });
+
+  it('discriminates PostBroadcastWriteError → 502 POST_BROADCAST_FAILED with failed_step:reputation_seed (case D — handleAccredit-only third step)', () => {
+    vi.spyOn(logger, 'error').mockImplementation(() => undefined as unknown as void);
+    const res = mockResponse();
+    const err = new PostBroadcastWriteError('hive-tx-def-789', new Error('reputation cache write failed'), 'reputation_seed');
+
+    handleBroadcastError(res, err, {
+      timeoutMsg: 'T',
+      failMsg: 'F',
+      logContext: {},
+      routeLabel: 'orcid.handleAccredit',
+    });
+
+    const body = (res.json as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(body.error.details.failed_step).toBe('reputation_seed');
+    // No postBroadcastFailedMsgFn supplied → helper falls back to the
+    // generic "Broadcast confirmed (tx ...); backend write at step '...'
+    // failed." line. Regression guard: ensures the fallback path is wired.
+    expect(body.error.message).toMatch(/Broadcast confirmed/i);
+    expect(body.error.message).toMatch(/'reputation_seed'/);
+  });
+
+  it('PostBroadcastWriteError discrimination fires BEFORE BroadcastTimeoutError + forceAmbiguousOutcome branches', () => {
+    // Adversarial case: a PostBroadcastWriteError whose `cause` happens to
+    // be a BroadcastTimeoutError. The discrimination order matters — the
+    // `instanceof PostBroadcastWriteError` check MUST run first or the
+    // helper would fall into the timer-fire branch and emit a 504
+    // BROADCAST_TIMEOUT envelope (chain op IS confirmed; that envelope is
+    // wrong). A regression that reorders the branches surfaces here.
+    vi.spyOn(logger, 'error').mockImplementation(() => undefined as unknown as void);
+    vi.spyOn(logger, 'warn').mockImplementation(() => undefined as unknown as void);
+    const res = mockResponse();
+    // Reuse the BroadcastTimeoutError import at the top of the file.
+    const innerCause = new BroadcastTimeoutError(30_000);
+    const err = new PostBroadcastWriteError('hive-tx-mixed', innerCause, 'account_update');
+
+    handleBroadcastError(res, err, {
+      timeoutMsg: 'T (should not surface)',
+      failMsg: 'F (should not surface)',
+      ambiguousMsg: 'Ambiguous (should not surface)',
+      forceAmbiguousOutcome: true,
+      logContext: {},
+      routeLabel: 'orcid.handleAccredit',
+    });
+
+    expect(res.status).toHaveBeenCalledWith(502);
+    const body = (res.json as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(body.error.code).toBe('POST_BROADCAST_FAILED');
+    // Critical: NOT 504 BROADCAST_TIMEOUT (the cause was a
+    // BroadcastTimeoutError but the wrapping PostBroadcastWriteError takes
+    // precedence — chain op IS confirmed).
+    expect(body.error.code).not.toBe('BROADCAST_TIMEOUT');
+    expect(body.error.details.outcome).toBe('confirmed');
+    expect(body.error.details).not.toHaveProperty('timeout_ms');
   });
 
   // Round-2 hold item #4 — handleBroadcastErrorAmbiguous dedicated entry

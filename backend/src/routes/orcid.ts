@@ -8,6 +8,7 @@ import { broadcastJsonWithTimeout, BroadcastTimeoutError } from '../hive.js';
 import {
   handleBroadcastError,
   handleBroadcastErrorAmbiguous,
+  PostBroadcastWriteError,
   type HandleBroadcastErrorOpts,
   type HandleBroadcastErrorAmbiguousOpts,
 } from '../lib/broadcast-error.js';
@@ -491,6 +492,11 @@ async function handleAccredit(
     logContext: { username, orcid: orcidId, mode: 'accredit' },
     verifyLocation: '/settings',
     routeLabel: 'orcid.handleAccredit',
+    // BACKEND-ORCID-BROADCAST-OUTCOME-DISCRIMINATION: 502 POST_BROADCAST_FAILED
+    // user-facing message. Conveys that the chain op IS confirmed and HAF will
+    // reconcile — distinct from the 504 ambiguous-outcome message.
+    postBroadcastFailedMsgFn: (failedStep) =>
+      `Your ORCID is verified on Hive. A backend write to '${failedStep}' failed; this will reconcile automatically once HAF indexes the operation.`,
   };
   const accreditAmbiguousOpts: HandleBroadcastErrorAmbiguousOpts = {
     ...accreditErrorOpts,
@@ -568,16 +574,31 @@ async function handleAccredit(
       return;
     }
 
-    // Cache the binding so a concurrent bind request in the HAF-lag window sees
-    // it via findAccreditedAccountWithOrcid() before the chain op is indexed.
-    await cacheOrcidBinding(orcidId, username);
+    // Post-broadcast cascade. The chain op is now confirmed (broadcast
+    // returned {id}). Any throw inside this block is a downstream cascade
+    // failure, NOT an ambiguous-outcome class — discriminate via
+    // PostBroadcastWriteError so the wrapper's catch emits 502
+    // POST_BROADCAST_FAILED with `outcome:'confirmed'` + `tx_id` +
+    // `failed_step` instead of the over-cautious 504. `currentStep` advances
+    // before each await so the catch attaches the precise step.
+    // (BACKEND-ORCID-BROADCAST-OUTCOME-DISCRIMINATION.)
+    let currentStep: 'cache_write' | 'account_update' | 'reputation_seed' = 'cache_write';
+    try {
+      // Cache the binding so a concurrent bind request in the HAF-lag window sees
+      // it via findAccreditedAccountWithOrcid() before the chain op is indexed.
+      await cacheOrcidBinding(orcidId, username);
+      currentStep = 'account_update';
 
-    // Update orcid column in accounts (if light account row exists)
-    // Routed through __test_seams so a unit spec can spy on this call
-    // (round-2 hold item #2 — replaces the fragile getAppPool() Once-stack).
-    await __test_seams.updateAccountOrcid(username, orcidId);
+      // Update orcid column in accounts (if light account row exists)
+      // Routed through __test_seams so a unit spec can spy on this call
+      // (round-2 hold item #2 — replaces the fragile getAppPool() Once-stack).
+      await __test_seams.updateAccountOrcid(username, orcidId);
+      currentStep = 'reputation_seed';
 
-    await seedAccreditationBonus(username);
+      await seedAccreditationBonus(username);
+    } catch (postErr) {
+      throw new PostBroadcastWriteError(result.id, postErr, currentStep);
+    }
 
     sendOk(res, {
       mode: 'accredit',
@@ -625,6 +646,10 @@ async function handleLink(
     logContext: { username, orcid: orcidId, mode: 'link' },
     verifyLocation: '/settings',
     routeLabel: 'orcid.handleLink',
+    // BACKEND-ORCID-BROADCAST-OUTCOME-DISCRIMINATION: see handleAccredit
+    // counterpart.
+    postBroadcastFailedMsgFn: (failedStep) =>
+      `Your ORCID is linked on Hive. A backend write to '${failedStep}' failed; this will reconcile automatically once HAF indexes the operation.`,
   };
   const linkAmbiguousOpts: HandleBroadcastErrorAmbiguousOpts = {
     ...linkErrorOpts,
@@ -679,14 +704,26 @@ async function handleLink(
       return;
     }
 
-    // Cache the binding so a concurrent bind request in the HAF-lag window sees
-    // it via findAccreditedAccountWithOrcid() before the chain op is indexed.
-    await cacheOrcidBinding(orcidId, username);
+    // Post-broadcast cascade — see handleAccredit counterpart for rationale.
+    // handleLink does NOT call seedAccreditationBonus (only handleAccredit
+    // seeds; link is for already-accredited accounts), so the step enum
+    // narrows to 'cache_write' | 'account_update'. The 'reputation_seed'
+    // value is reserved for handleAccredit. (Both step labels remain in
+    // PostBroadcastWriteError's union for sweep-extensibility.)
+    let currentStep: 'cache_write' | 'account_update' = 'cache_write';
+    try {
+      // Cache the binding so a concurrent bind request in the HAF-lag window sees
+      // it via findAccreditedAccountWithOrcid() before the chain op is indexed.
+      await cacheOrcidBinding(orcidId, username);
+      currentStep = 'account_update';
 
-    // Update orcid column in accounts (if light account row exists)
-    // Routed through __test_seams so a unit spec can spy on this call
-    // (round-2 hold item #2 — replaces the fragile getAppPool() Once-stack).
-    await __test_seams.updateAccountOrcid(username, orcidId);
+      // Update orcid column in accounts (if light account row exists)
+      // Routed through __test_seams so a unit spec can spy on this call
+      // (round-2 hold item #2 — replaces the fragile getAppPool() Once-stack).
+      await __test_seams.updateAccountOrcid(username, orcidId);
+    } catch (postErr) {
+      throw new PostBroadcastWriteError(result.id, postErr, currentStep);
+    }
 
     sendOk(res, {
       mode: 'link',

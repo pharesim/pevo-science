@@ -1339,28 +1339,43 @@ describe.each([
     },
   );
 
-  // BACKEND-ORCID-ACQUIRED-BRANCH-THROW-GUARD — post-broadcast ASYNC throw
-  // inside fn on the lock-acquired branch. Broadcast SUCCEEDS, then the
-  // post-broadcast cascade (cacheOrcidBinding → __test_seams.updateAccountOrcid
-  // → seedAccreditationBonus) throws. The throw escapes fn's inner try/catch
-  // (which only wraps broadcastJsonWithTimeout) and reaches the wrapper's new
-  // acquired-branch outer catch, which routes it through
-  // handleBroadcastErrorAmbiguous → 504 ambiguous-outcome envelope.
+  // BACKEND-ORCID-ACQUIRED-BRANCH-THROW-GUARD + BACKEND-ORCID-BROADCAST-OUTCOME-DISCRIMINATION
+  // — post-broadcast ASYNC throw inside fn on the lock-acquired branch.
+  // Broadcast SUCCEEDS, then the post-broadcast cascade
+  // (cacheOrcidBinding → __test_seams.updateAccountOrcid →
+  // seedAccreditationBonus) throws. handleAccredit/handleLink wrap the
+  // cascade in a try/catch with currentStep tracking and re-throw as
+  // PostBroadcastWriteError(txId, postErr, currentStep). The throw escapes
+  // fn's inner try/catch (which only wraps broadcastJsonWithTimeout) and
+  // reaches the wrapper's acquired-branch outer catch, which routes through
+  // handleBroadcastErrorAmbiguous → handleBroadcastError; the
+  // PostBroadcastWriteError discrimination check fires FIRST and emits 502
+  // POST_BROADCAST_FAILED with `outcome:'confirmed'` + `tx_id` +
+  // `failed_step:'account_update'` (cacheOrcidBinding ran first; the spy
+  // injected the throw on the second cascade step).
   //
-  // The 504 outcome:'uncertain' envelope is over-cautious here (chain write
-  // IS confirmed; the throw is a downstream cascade failure). Discriminating
-  // broadcast-succeeded vs broadcast-threw is filed separately as
-  // backend-orcid-broadcast-outcome-discrimination.md (502 POST_BROADCAST_FAILED
-  // with tx_id). This task ships the over-cautious envelope.
+  // The 502 envelope conveys that the chain op IS confirmed and the user
+  // does NOT need to verify or retry — HAF will reconcile the post-broadcast
+  // write within 120s. Operator alerts route to the DB on-call rather than
+  // the broadcast on-call.
   //
-  // Mutation kill (architect-required, acceptance #5): removing the wrapper's
-  // new acquired-branch try/catch routes the throw to the outer /callback catch
-  // as 500 INTERNAL_ERROR; the 504 assertion below fails. broadcastJsonMock was
-  // called exactly ONCE (proves the broadcast path ran to success before the
-  // post-broadcast throw); a regression that re-enters fn or double-broadcasts
-  // would change that count.
+  // Mutation kill (architect-required acceptance #5): removing the wrapper's
+  // acquired-branch try/catch routes the throw to the outer /callback catch
+  // as 500 INTERNAL_ERROR; the `expect(res.status).toBe(502)` assertion fails.
+  // Removing the post-broadcast wrap in handleAccredit/handleLink would
+  // surface the bare throw through the wrapper's outer catch as 504
+  // BROADCAST_TIMEOUT (timer-fire path) or 504 ambiguous (any other shape) —
+  // assertion on `error.code === 'POST_BROADCAST_FAILED'` fails. Removing
+  // the `instanceof PostBroadcastWriteError` check inside handleBroadcastError
+  // would fall through to the standard 502 BROADCAST_FAILED path —
+  // assertion on `details.outcome === 'confirmed'` fails (BROADCAST_FAILED
+  // emits no `outcome` field).
+  //
+  // broadcastJsonMock called EXACTLY ONCE proves the broadcast path ran to
+  // success before the post-broadcast throw; a regression that re-enters fn
+  // or double-broadcasts changes the count.
   it(
-    'post-broadcast ASYNC throw inside fn on the lock-acquired branch → 504 BROADCAST_TIMEOUT ambiguous-outcome; broadcast fired exactly once; lock released',
+    'post-broadcast ASYNC throw inside fn on the lock-acquired branch → 502 POST_BROADCAST_FAILED outcome:confirmed (PostBroadcastWriteError discrimination); broadcast fired exactly once; lock released',
     async () => {
       const redis = getRedis();
       if (!redis) return;
@@ -1390,15 +1405,18 @@ describe.each([
           .set('Authorization', `Bearer ${jwtFor('alice')}`)
           .send({ code: 'fake', state });
 
-        expect(res.status).toBe(504);
-        expect(res.body.error.code).toBe('BROADCAST_TIMEOUT');
+        expect(res.status).toBe(502);
+        expect(res.body.error.code).toBe('POST_BROADCAST_FAILED');
         expect(res.body.error.details).toEqual({
           retriable: false,
-          outcome: 'uncertain',
-          verify_before_retry: true,
-          verify_location: '/settings',
+          outcome: 'confirmed',
+          tx_id: 'mock-orcid-tx',
+          failed_step: 'account_update',
         });
-        expect(res.body.error.details).not.toHaveProperty('timeout_ms');
+        // No verify_location: the chain op is the source of truth and HAF
+        // will reconcile within 120s — nothing for the user to verify.
+        expect(res.body.error.details).not.toHaveProperty('verify_location');
+        expect(res.body.error.details).not.toHaveProperty('verify_before_retry');
         // Mutation-kill anchor: broadcast DID fire and succeed exactly once
         // (proves the throw came from the post-broadcast cascade, not a
         // re-entered fn or double-broadcast).
@@ -1407,14 +1425,13 @@ describe.each([
         // skipRelease, so the finally's nonce-CAS release runs. A subsequent
         // retry can acquire cleanly.
         expect(await redis.exists(lockKey)).toBe(0);
-        // The cache write fires BEFORE updateAccountOrcid in fn, so the
-        // binding cache MAY persist. Not asserted here — that's a benign
-        // best-effort cache and not the security property under test.
-        // Operator-alert anchor: ambiguous-outcome log fired.
-        const ambiguousCalls = loggerErrorSpy.mock.calls.filter(
-          (call) => typeof call[1] === 'string' && call[1].includes('broadcast failed on ambiguous-outcome path'),
+        // Operator-alert anchor: post-broadcast-write-failed log fired at
+        // error level with the discrimination-specific message suffix. A
+        // regression that swallows the discrimination would lose the alert.
+        const postBroadcastCalls = loggerErrorSpy.mock.calls.filter(
+          (call) => typeof call[1] === 'string' && call[1].includes('broadcast confirmed but post-broadcast write failed'),
         );
-        expect(ambiguousCalls.length).toBeGreaterThanOrEqual(1);
+        expect(postBroadcastCalls.length).toBeGreaterThanOrEqual(1);
       } finally {
         updateOrcidSpy.mockRestore();
         loggerErrorSpy.mockRestore();
@@ -1422,6 +1439,36 @@ describe.each([
       }
     },
   );
+
+  // BACKEND-ORCID-BROADCAST-OUTCOME-DISCRIMINATION — case B from the
+  // architect-required matrix: broadcast SUCCEEDED, cache_write threw.
+  // Different `failed_step` than 'account_update' (covered above by both
+  // the unavailable-branch and acquired-branch post-broadcast specs).
+  // Proves the currentStep-tracking advances correctly through the cascade
+  // and that handleBroadcastError forwards the failed_step from the thrown
+  // PostBroadcastWriteError into the envelope. A regression that hardcoded
+  // any step value would surface here.
+  //
+  // The throw is injected by stubbing `redis.set` to fail on the binding
+  // cache key — cacheOrcidBinding's own try/catch swallows Redis errors
+  // (best-effort by design, see cacheOrcidBinding docblock), so a Redis
+  // flap on ONLY the binding cache write does NOT actually surface the
+  // throw past cacheOrcidBinding. To exercise case B we need a throw that
+  // ESCAPES cacheOrcidBinding. Today the only such path would require
+  // changing cacheOrcidBinding's contract, which is out of scope. Instead
+  // we cover case B's `failed_step:'cache_write'` discrimination via the
+  // unit-test helper (broadcast-error.test.ts) where we throw a synthetic
+  // PostBroadcastWriteError directly and assert the envelope shape with
+  // failed_step:'cache_write'. The integration matrix above covers
+  // `failed_step:'account_update'` end-to-end via __test_seams.
+  // (`failed_step:'reputation_seed'` would require an analogous seam on
+  // seedAccreditationBonus; deferred.)
+  //
+  // This block intentionally has NO test body — the discrimination unit
+  // test in tests/lib/broadcast-error.test.ts covers case B at the helper
+  // level. Documented here as a deliberate carve-out so a future reviewer
+  // doesn't add a redundant integration test that fails for the wrong
+  // reason (cacheOrcidBinding's swallow).
 
   // Direct Lua-CAS correctness spec. The primary safety property of
   // RELEASE_LOCK_LUA is that it refuses to delete the key when the stored
@@ -1719,35 +1766,39 @@ describe.each([
   );
 
   // BE-ORCID-BROADCAST-TIMEOUT-OUTCOME-HANDLING — unavailable-branch
-  // post-broadcast throw escapes fn's inner try → wrapper's outer try/catch
-  // catches the throw → 504 BROADCAST_TIMEOUT ambiguous-outcome envelope.
+  // post-broadcast throw → wrapper's outer try/catch routes through
+  // handleBroadcastErrorAmbiguous → handleBroadcastError discriminates and
+  // emits 502 POST_BROADCAST_FAILED (BACKEND-ORCID-BROADCAST-OUTCOME-DISCRIMINATION).
   //
-  // Round-1 architect re-review item #7: the prior shape of this spec
-  // rejected the broadcast itself with BroadcastTimeoutError, but fn's
-  // inner try/catch around `broadcastJsonWithTimeout` already handles that
-  // — the wrapper's new outer catch was never reached, so the spec passed
-  // even with a regression that removed `forceAmbiguousOutcome:true` from
-  // the wrapper's call site. Rewritten to throw from a path NOT covered
-  // by fn's inner try: `getAppPool()` (called by `updateAccountOrcid`
-  // after the broadcast succeeds) throws a BroadcastTimeoutError. The
-  // throw escapes fn's inner try (only wraps the broadcast call), reaches
-  // the wrapper's outer try/catch, and `handleBroadcastError` sees a
-  // BroadcastTimeoutError on a `forceAmbiguousOutcome:true` opts → 504
-  // with `timeout_ms` populated (timer-fire envelope shape).
+  // History: the round-1 rewrite of this spec (item #7 of round-1 re-review)
+  // forced a post-broadcast throw via __test_seams.updateAccountOrcid to
+  // exercise the wrapper's outer try/catch (broadcast SUCCEEDS, then
+  // updateAccountOrcid rejects). That landed the wrapper's new try/catch and
+  // initially asserted 504 BROADCAST_TIMEOUT outcome:'uncertain'. The
+  // discrimination follow-up (this task) introduces PostBroadcastWriteError
+  // — handleAccredit/handleLink wrap the post-broadcast cascade in a
+  // try/catch with currentStep tracking and re-throw as
+  // PostBroadcastWriteError; handleBroadcastError discriminates that class
+  // FIRST and emits 502 POST_BROADCAST_FAILED with `outcome:'confirmed'`,
+  // `tx_id`, `failed_step`. The 504 over-cautious envelope is replaced.
   //
-  // Mutation kill: a regression that removes the wrapper's outer try/catch
-  // (or removes `forceAmbiguousOutcome:true` from its call site, dropping
-  // through to the legacy `await fn()` branch — also closed by item #3 of
-  // the same hold) propagates the throw to the outer /callback catch as
-  // 500 INTERNAL_ERROR; the .status assertion below fails.
+  // Mutation kill: a regression that removes the post-broadcast wrap in
+  // handleAccredit/handleLink would propagate the bare throw through the
+  // wrapper's outer catch → 504 BROADCAST_TIMEOUT (the timer-fire path,
+  // since the throw is a BroadcastTimeoutError instance) — assertion on
+  // `error.code === 'POST_BROADCAST_FAILED'` fails. A regression that
+  // removes the `instanceof PostBroadcastWriteError` check inside
+  // handleBroadcastError would also fall through to the BroadcastTimeoutError
+  // branch → 504 + `outcome:'uncertain'` — assertion on `outcome ===
+  // 'confirmed'` fails. The cause of the throw being a BroadcastTimeoutError
+  // here is INCIDENTAL — what matters is that broadcast already returned
+  // success before the cascade fired.
   //
-  // Item #6 of the same hold: a second /callback with the same {code,
-  // state} during the uncertainty window must return 400 BAD_REQUEST
-  // ("Invalid or expired state parameter") AND must NOT trigger another
-  // broadcast — locking the contract that the user is steered toward
-  // /settings to verify chain state, not into a fresh broadcast.
+  // Item #6 of round-2 hold: a second /callback with the same {code, state}
+  // during the uncertainty window must return 400 BAD_REQUEST AND must NOT
+  // trigger another broadcast.
   it(
-    'post-broadcast BroadcastTimeoutError on the lock-unavailable branch → 504 BROADCAST_TIMEOUT ambiguous-outcome envelope; second /callback returns 400 with no fresh broadcast',
+    'post-broadcast throw on the lock-unavailable branch → 502 POST_BROADCAST_FAILED outcome:confirmed envelope (PostBroadcastWriteError discrimination); second /callback returns 400 with no fresh broadcast',
     async () => {
       const redis = getRedis();
       if (!redis) return;
@@ -1768,22 +1819,20 @@ describe.each([
         // @ts-expect-error ioredis set is variadic; forwarding by spread is safe here.
         return origSet(...args);
       });
-      // Silence the logger.warn emitted by handleBroadcastError's
-      // timer-fire path on this branch — keeps test output clean.
-      const loggerWarnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => { /* silence */ });
+      // logger.error fires on the post-broadcast cascade discrimination;
+      // silence to keep test output clean.
+      const loggerErrorSpy = vi.spyOn(logger, 'error').mockImplementation(() => { /* silence */ });
 
       // Round-2 hold item #2 (deterministic seam): spy on the
       // __test_seams.updateAccountOrcid name directly, instead of relying on
-      // the brittle getAppPool() Once-stack (1st call from auth middleware,
-      // 2nd from updateAccountOrcid). A future middleware change that
-      // shifts the number of getAppPool() invocations would silently break
-      // the mutation-kill assertion. The seam spy lands deterministically
-      // on the post-broadcast call inside fn — broadcast SUCCEEDS, then
-      // cacheOrcidBinding (swallows) runs, then __test_seams.updateAccountOrcid
-      // throws a BroadcastTimeoutError. The throw escapes fn's inner
-      // try/catch (only wraps the broadcast) so the wrapper's new outer
-      // try/catch is the only catch left to handle it. A regression there
-      // would surface as 500 INTERNAL_ERROR.
+      // the brittle getAppPool() Once-stack. The seam spy lands
+      // deterministically on the post-broadcast call inside fn — broadcast
+      // SUCCEEDS, then cacheOrcidBinding (swallows) runs, then
+      // __test_seams.updateAccountOrcid throws. handleAccredit/handleLink
+      // catch this in the post-broadcast try/catch and re-throw as
+      // PostBroadcastWriteError — wrapper outer catch routes through
+      // handleBroadcastErrorAmbiguous → handleBroadcastError discriminates
+      // PostBroadcastWriteError → 502 POST_BROADCAST_FAILED.
       const updateOrcidSpy = vi
         .spyOn(__test_seams, 'updateAccountOrcid')
         .mockRejectedValueOnce(new MockBroadcastTimeoutError(30_000));
@@ -1796,17 +1845,20 @@ describe.each([
           .set('Authorization', `Bearer ${jwtFor('alice')}`)
           .send({ code: 'fake', state });
 
-        expect(res.status).toBe(504);
-        expect(res.body.error.code).toBe('BROADCAST_TIMEOUT');
-        // Canonical field order: optional verify_location AFTER timeout_ms
-        // so timeout_ms keeps the same position across orcid and non-orcid
-        // 504 envelopes.
+        expect(res.status).toBe(502);
+        expect(res.body.error.code).toBe('POST_BROADCAST_FAILED');
+        // Discrimination envelope shape (BACKEND-ORCID-BROADCAST-OUTCOME-DISCRIMINATION):
+        //   outcome:'confirmed' (chain op IS on-chain)
+        //   tx_id matches the mocked broadcast result
+        //   failed_step:'account_update' (cacheOrcidBinding ran first; the
+        //     spy injected the throw on the SECOND cascade step)
+        //   No verify_location: the chain op is the source of truth and HAF
+        //     will reconcile within 120s — nothing to verify.
         expect(res.body.error.details).toEqual({
           retriable: false,
-          outcome: 'uncertain',
-          verify_before_retry: true,
-          timeout_ms: 30_000,
-          verify_location: '/settings',
+          outcome: 'confirmed',
+          tx_id: 'mock-orcid-tx',
+          failed_step: 'account_update',
         });
         // Broadcast was attempted exactly once (it succeeded; the throw came
         // from a post-broadcast cascade). A regression that re-enters fn or
@@ -1842,7 +1894,7 @@ describe.each([
       } finally {
         updateOrcidSpy.mockRestore();
         setSpy.mockRestore();
-        loggerWarnSpy.mockRestore();
+        loggerErrorSpy.mockRestore();
         await redis.del(lockKey, cacheKey).catch(() => { /* cleanup */ });
       }
     },

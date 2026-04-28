@@ -4,6 +4,40 @@ import { sendError } from '../response.js';
 import { logger } from '../logger.js';
 
 /**
+ * Thrown by callers whose post-broadcast write cascade fails AFTER the chain
+ * op has been confirmed by the broadcast endpoint. The chain op is the source
+ * of truth; the throw is a downstream cascade failure (e.g. cacheOrcidBinding
+ * Redis flap, updateAccountOrcid pool exhaustion, seedAccreditationBonus DB
+ * error). Discriminates the "broadcast SUCCEEDED, post-broadcast threw" class
+ * from the "broadcast threw" class so {@link handleBroadcastError} can emit a
+ * 502 POST_BROADCAST_FAILED envelope (`details.outcome:'confirmed'`,
+ * `details.tx_id`, `details.failed_step`) instead of the over-cautious
+ * 504 BROADCAST_TIMEOUT (`details.outcome:'uncertain'`).
+ *
+ * Operator alert quality: alerts keyed on 504 BROADCAST_TIMEOUT only fire on
+ * truly uncertain outcomes; 502 POST_BROADCAST_FAILED routes to the DB on-call
+ * instead of the broadcast on-call. UX recovery is unchanged — the user is
+ * told the chain op is confirmed; HAF will reconcile within 120s.
+ *
+ * `failedStep` enumerates the cascade-step the throw occurred in. Callers
+ * thread a `currentStep` variable through the post-broadcast `try` block,
+ * advancing it before each `await`, so the catch can attach the precise
+ * failed step.
+ *
+ * BACKEND-ORCID-BROADCAST-OUTCOME-DISCRIMINATION (round-2 follow-up).
+ */
+export class PostBroadcastWriteError extends Error {
+  constructor(
+    public readonly txId: string,
+    public readonly cause: unknown,
+    public readonly failedStep: 'cache_write' | 'account_update' | 'reputation_seed' | 'unknown',
+  ) {
+    super(`Post-broadcast write failed at step '${failedStep}' (tx ${txId})`);
+    this.name = 'PostBroadcastWriteError';
+  }
+}
+
+/**
  * Base options shared by every broadcast-error envelope.
  *
  * `timeoutMsg` and `failMsg` are the user-facing strings in the 504/502
@@ -39,6 +73,15 @@ interface BaseHandleBroadcastErrorOpts {
   verifyLocation?: string;
   /** Log-message prefix, e.g. 'orcid.handleAccredit'. */
   routeLabel: string;
+  /**
+   * Optional caller-supplied template for the 502 POST_BROADCAST_FAILED
+   * envelope's user-facing message. The helper passes `failedStep` (from the
+   * `PostBroadcastWriteError`) so the message can name which cascade step
+   * failed. Defaults to a generic "broadcast confirmed; backend write failed"
+   * line when omitted. Today only ORCID callers throw `PostBroadcastWriteError`
+   * (handleAccredit / handleLink); other callers leave this undefined.
+   */
+  postBroadcastFailedMsgFn?: (failedStep: string) => string;
 }
 
 /**
@@ -93,6 +136,29 @@ export function handleBroadcastError(
   err: unknown,
   opts: HandleBroadcastErrorOpts,
 ): 'timeout' | 'failure' {
+  // PostBroadcastWriteError discrimination MUST run before the
+  // BroadcastTimeoutError / forceAmbiguousOutcome branches: the chain op IS
+  // confirmed, so the over-cautious 504 outcome:'uncertain' would mislead
+  // operators (alerts route to broadcast on-call instead of DB on-call) and
+  // the user (asked to verify a confirmed write). 502 POST_BROADCAST_FAILED
+  // with details.outcome:'confirmed' is the right shape.
+  // (BACKEND-ORCID-BROADCAST-OUTCOME-DISCRIMINATION.)
+  if (err instanceof PostBroadcastWriteError) {
+    logger.error(
+      { err, cause: err.cause, txId: err.txId, failedStep: err.failedStep, ...opts.logContext },
+      `${opts.routeLabel} broadcast confirmed but post-broadcast write failed`,
+    );
+    const userMsg = opts.postBroadcastFailedMsgFn
+      ? opts.postBroadcastFailedMsgFn(err.failedStep)
+      : `Broadcast confirmed (tx ${err.txId}); backend write at step '${err.failedStep}' failed. The chain operation is the source of truth and will reconcile automatically once HAF indexes it.`;
+    sendError(res, 502, 'POST_BROADCAST_FAILED', userMsg, {
+      retriable: false,
+      outcome: 'confirmed',
+      tx_id: err.txId,
+      failed_step: err.failedStep,
+    });
+    return 'failure';
+  }
   if (err instanceof BroadcastTimeoutError) {
     logger.warn(
       { err, timeoutMs: err.timeoutMs, ...opts.logContext },
