@@ -6,6 +6,17 @@
 
 All responses use JSON. All timestamps are ISO 8601 UTC. Pagination uses `page` (1-indexed) and `limit` parameters.
 
+## Stability
+
+PEvO is in beta. The API surface — endpoints, query parameters, response shapes, error codes — may change without deprecation notice during beta. Forks and third-party integrators should pin to specific commit SHAs or accept that surfaces may break.
+
+Once PEvO declares 1.0, we'll commit to:
+- Semver-style versioning for breaking changes.
+- A deprecation cycle for removed surfaces (minimum 1 minor release).
+- Migration notes in `agents/docs/api-contracts/CHANGELOG.md`.
+
+For now: the contract files in this directory are the canonical surface description, but they're a snapshot of intent at HEAD, not a stability commitment. See "API Versioning" below for the path-based versioning scheme that ships with 1.0.
+
 ## Accredited-Only Data Policy
 
 PEvO only surfaces data from accredited users by default:
