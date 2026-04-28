@@ -51,6 +51,9 @@ Papers authored by a specific researcher.
 
 **Response `data`:** Array of `PaperSummary`.
 
+**Field notes:**
+- `discipline` — canon_name form (lowercased and trimmed), matches `/api/disciplines.canon_name` and the `?discipline=` filter contract; round-trippable through the URL filter without re-canonicalization. `PaperSummary.discipline` is typed `string` (not nullable); absent values surface as `''`. Display form via `/api/disciplines.display_name` lookup or CSS `text-transform: capitalize`.
+
 ---
 
 ### GET /api/profile/:username/reviews
