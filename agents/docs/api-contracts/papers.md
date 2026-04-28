@@ -339,7 +339,7 @@ Revoke an authorship claim.
 
 ### GET /api/papers/:author/:permlink/comments
 
-Discussion comments on a paper (threaded). Returns a flat list of all comments; the frontend builds the tree using `parent_author`/`parent_permlink` fields. Only comments from accredited authors are included by default.
+Discussion comments on a paper (threaded). Returns a flat list of all comments; the frontend builds the tree using `parent_author`/`parent_permlink` fields. Only comments from accredited authors are included — the gate is unconditional, no opt-out.
 
 **Query Parameters:**
 
