@@ -12,7 +12,7 @@ List PEvO papers with filtering and sorting.
 
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
-| `discipline` | string | — | Filter by discipline. Match is case-insensitive (the backend lowercases both the query param and the stored value via `LOWER()`). Case-variant values share a single Redis cache entry. Pass `canon_name` from `GET /api/disciplines` as the canonical form. Repeated params (`?discipline=a&discipline=b`) are treated as no-filter rather than coerced to a single value; clients SHOULD send exactly one value. |
+| `discipline` | string | — | Filter by discipline. Match is case-insensitive (the backend lowercases both the query param and the stored value via `LOWER()`). Case-variant values share a single Redis cache entry. Pass `canon_name` from `GET /api/disciplines` as the canonical form. Repeated params (`?discipline=a&discipline=b`) are treated as no-filter rather than coerced to a single value; clients SHOULD send exactly one value. Values must match `^[\p{L}\p{N} \-]+$` (Unicode letters/digits/space/hyphen) and be at most 100 characters; longer or other-charset values return `400 BAD_REQUEST` with `{ code: 'BAD_REQUEST', message: 'Discipline filter invalid' }`. |
 | `keyword` | string | — | Filter by keyword tag |
 | `author` | string | — | Filter by Hive username |
 | `language` | string | — | Filter by language code (e.g. `en`, `de`, `es`) |
@@ -51,6 +51,7 @@ List PEvO papers with filtering and sorting.
 ```
 
 **Field notes:**
+- `discipline` — canon_name form (lowercased), matches `/api/disciplines.canon_name` and the `?discipline=` filter contract; round-trippable through the URL filter without re-canonicalization. Display form via `/api/disciplines.display_name` lookup or CSS `text-transform: capitalize`. May be `null` (paper not tagged with a discipline).
 - `vote_strength` — qualitative tier derived from average accredited vote weight, or `null` if no votes. See enrichment endpoint for possible values.
 - `source_type` — `"native"` for original PEvO papers, `"arxiv"` or `"crossref"` for bridge papers.
 - `doi` — DOI string for bridge papers (from source metadata), `null` for native papers.
@@ -126,6 +127,7 @@ Single paper with full content and reviews.
 ```
 
 **Notes:**
+- `discipline` — same canon_name semantics as `PaperSummary.discipline` above (lowercased, round-trippable through `?discipline=`, may be `null`).
 - Unlike `PaperSummary`, this endpoint does not return `vote_strength`, `review_count`, `source_type`, or `doi`. Those fields are on the list view only. `vote_strength` is returned by the enrichment endpoint.
 - `citation_count` is computed for single-paper views: for native papers via HAF (counting accredited papers that cite this one), for bridge papers via Semantic Scholar external citation counts.
 - `author_reputation` is always `0` in this endpoint (not computed for single-paper views; the list endpoint populates it via batch reputation queries).
@@ -466,7 +468,7 @@ Full-text search across PEvO papers and reviews.
 |-------|------|---------|-------------|
 | `q` | string | **required** | Search query |
 | `type` | enum | `all` | `paper` or `all` (reviews are not searchable via this endpoint) |
-| `discipline` | string | — | Filter by discipline. Match is case-insensitive (the backend lowercases both the query param and the stored value via `LOWER()`). Case-variant values share a single Redis cache entry. Pass `canon_name` from `GET /api/disciplines` as the canonical form. Repeated params (`?discipline=a&discipline=b`) are treated as no-filter rather than coerced to a single value; clients SHOULD send exactly one value. |
+| `discipline` | string | — | Filter by discipline. Match is case-insensitive (the backend lowercases both the query param and the stored value via `LOWER()`). Case-variant values share a single Redis cache entry. Pass `canon_name` from `GET /api/disciplines` as the canonical form. Repeated params (`?discipline=a&discipline=b`) are treated as no-filter rather than coerced to a single value; clients SHOULD send exactly one value. Values must match `^[\p{L}\p{N} \-]+$` (Unicode letters/digits/space/hyphen) and be at most 100 characters; longer or other-charset values return `400 BAD_REQUEST` with `{ code: 'BAD_REQUEST', message: 'Discipline filter invalid' }`. |
 | `language` | string | — | Filter by language code (e.g. `en`, `de`, `es`) |
 | `source` | enum | — | Filter by paper source: `native`, `bridge`, or omit for both |
 | `include_retracted` | boolean | `false` | Include retracted papers in results |

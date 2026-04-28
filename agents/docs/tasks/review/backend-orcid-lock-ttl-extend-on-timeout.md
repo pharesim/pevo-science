@@ -119,3 +119,30 @@ Both doc updates are the architect's, not backend's. Do NOT edit them in this ta
 - `agents/docs/solutions/conventions/chain-write-timeout-ambiguous-outcome-2026-04-22.md` Option A.1 example (lines 205-223) and pitfall note ("design this carefully; premature release silently undoes the fix").
 - `tasks-archive.md` BE-ORCID-BROADCAST-ABORT-TIMEOUT round-3 archive entry (finding F3.3, adversarial conf 75).
 - `backend/src/routes/orcid.ts:740-797` — current `withOrcidBindingLock` shape, including the `'held'` 409 envelope, the `'acquired'` try/finally, and the `'unavailable'` `forceAmbiguousOutcome` branch.
+
+---
+
+## Backend re-review signal (2026-04-28, commit `81795fd`)
+
+A.1 implementation landed exactly per the locked skipRelease shape from the architect's decision rationale. Worker's first draft stalled on debug after using invalid ORCID IDs (`-000a`/`-000b`) in tests #8 and #9 — the strict `\d{4}` format gate at `/callback` rejected them as 400 BAD_REQUEST. Parent reconciliation renumbered to `-0010`/`-0011` and committed.
+
+### Acceptance items landed
+
+- **#1** Constant `HAF_INDEXING_LAG_CEILING_SECONDS = 120` — added in `backend/src/routes/orcid.ts` near `ORCID_BINDING_LOCK_TTL_SECONDS` (per task suggestion: kept inline rather than splitting into `lib/binding-lock.ts` for one constant).
+- **#2** `withOrcidBindingLock` `'acquired'` branch restructured with `let skipRelease = false` declared above the try; `if (result?.skipRelease) skipRelease = true` after `await fn()`; `if (!skipRelease) await releaseBindingLock(...)` in finally. Throw-path release preserved (the toggle line is skipped on throw).
+- **#3** `fn` signature widened to `() => Promise<void | { skipRelease: true }>`. The `BroadcastTimeoutError` catch in both `handleAccredit` and `handleLink` calls `redis.expire` BEFORE `handleBroadcastError` (response-write happens last so a malicious caller terminating mid-write cannot escape before the extend lands), then `return { skipRelease: true }`.
+- **#4, #5** `acquireBindingLock` (SET NX EX) and `releaseBindingLock` (Lua CAS) semantics unchanged — verified.
+- **#6** `'unavailable'` branch documented inline as a no-op for A.1 (no lock to extend).
+- **#7** `withOrcidBindingLock-extends-ttl-on-broadcast-timeout` — asserts 504 envelope, `redis.ttl >= 100 && <= 120`, `redis.get(lockKey) === lock.nonce` (lock value not rotated), and a follow-up `acquireBindingLock` returns `'held'`. The race-regression assertion (acceptance #10) is folded into this spec via the follow-up acquire — kills the same mutation set as a separate spec without doubling test setup.
+- **#8** `withOrcidBindingLock-still-releases-on-non-timeout-throw` — synthetic non-timeout `Error` from broadcast → 502 BROADCAST_FAILED, lock released.
+- **#9** `withOrcidBindingLock-still-releases-on-success` — happy path → 200, lock released.
+- **#10** Concurrent A/B race regression — folded into #7 (above).
+
+### Test result
+
+`npx vitest run tests/routes/orcid.test.ts` — **44/44 pass** (was 40 before A.1; +4 new). Typecheck clean.
+
+### Architect-owned (deferred)
+
+- `agents/docs/api-contracts/orcid.md` — note 423/409 LOCKED retry semantics during the 120s extended window.
+- `agents/docs/solutions/conventions/chain-write-timeout-ambiguous-outcome-2026-04-22.md` — Option A.1 section needs the skipRelease shape (currently shows naive `redis.expire` which the wrapper's old `finally` would defeat).
