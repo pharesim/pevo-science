@@ -70,3 +70,39 @@ External indexers fingerprinting disciplines by exact-string match see two diffe
 
 - The architect's `agents/docs/api-contracts/` files do not currently document SSR JSON-LD shape (the contracts cover API JSON responses, not server-rendered HTML payloads). No api-contract update needed for this task. If the architect wants SSR JSON-LD documented in a contract file, that's a separate scope decision.
 - The wrapping-primitive learning (`agents/docs/solutions/conventions/wrapping-primitive-exhaustive-call-site-audit-2026-04-22.md`) is the named precedent for the audit-grep step. Cite it in the signal block.
+
+## Backend signal block (2026-04-28, working tree → commit pending)
+
+**Decision:** Option B (omit `about` when `paperDisciplineField()` returns null). Schema.org structured-data consumers prefer absent fields to empty-string fields; an empty `about` is semantically wrong (the paper is "about" nothing). The API-side coalesce-to-`''` exists to preserve `PaperSummary.discipline: string` typing — that's an API-shape concern that doesn't apply to schema.org JSON-LD.
+
+**Implementation:**
+- `backend/src/app.ts` — added `import { paperDisciplineField } from './types/disciplines.js';` and replaced `if (pevoMeta.discipline) jsonLd.about = pevoMeta.discipline;` with a `paperDisciplineField(pevoMeta.discipline)` route through. The replacement omits `about` for null/whitespace-only/non-string inputs (Option B).
+- Brief inline comment on the new branch points at the helper rationale and the omit-vs-empty-string decision (no full doc dump — the helper docstring is the source of truth).
+
+**Tests:** `backend/tests/routes/app-ssr-discipline-canon.test.ts` (new file). Header documents the SSR-vs-API parity rationale and the mocked-pool carve-out justification (the canon transform fires deterministically only when on-chain values are mixed-case or whitespace-padded; the current corpus is all-lowercase per ARCHITECT-DISCIPLINE-FILTER-PUBLISH-CHARSET-ALIGNMENT, so a real-HAF assertion would be vacuous on the metric we care about). Four cases:
+1. `'  Computer Science  '` → `about === 'computer science'`
+2. discipline absent → `about` omitted
+3. discipline whitespace-only (`'   '`) → `about` omitted
+4. discipline non-string (`42`) → `about` omitted
+
+`hiveClient.database.call('get_content', ...)` is the single mock; `verifyHiveSignature` and other middleware are NOT mocked (the SSR catch-all is unauthenticated). All 4 tests pass.
+
+**Audit grep result** (per `agents/docs/solutions/conventions/wrapping-primitive-exhaustive-call-site-audit-2026-04-22.md`):
+
+```
+$ grep -rn "\.discipline" backend/src/ --include="*.ts" | grep -v "src/types/disciplines.ts"
+src/app.ts:347                  ← bypass FIXED in this commit
+src/helpers.ts:118              ← already routes through paperDisciplineField (toPaperSummary)
+src/routes/papers.ts:391        ← already routes through paperDisciplineField
+src/routes/papers.ts:591        ← already routes through paperDisciplineField
+src/routes/papers.ts:983        ← already routes through paperDisciplineField
+src/routes/search.ts:320        ← uses validateDisciplineFilter (security-guard helper, not the response-shape helper — different concern, correctly out of scope)
+src/routes/bridge.ts:351        ← on-chain write context, explicitly out of scope per task non-goals + cluster review dismissal
+src/helpers.ts:116              ← comment, no .discipline access
+```
+
+After this fix, every response-shaping site reading `pevo.discipline` / `meta.discipline` / `paper.discipline` / `bridgePaper.discipline` routes through `paperDisciplineField()`. The helper's "every site" docstring claim now structurally holds. No additional bypasses found; nothing filed as a follow-up.
+
+**Linting:** `npm run lint` clean (2 pre-existing warnings in `seed-phrase.ts`, unrelated).
+
+**Coordination:** No `agents/docs/api-contracts/` change needed — the contract files cover JSON API responses, not server-rendered HTML payloads. SSR JSON-LD is not currently documented in any contract file; if the architect wants it documented, that's a separate scope decision (called out in the task's Coordination notes).

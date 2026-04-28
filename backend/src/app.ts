@@ -10,6 +10,7 @@ import { getPool, isHafAvailable } from './db.js';
 import { isRedisAvailable } from './redis.js';
 import { hiveClient } from './hive.js';
 import { extractAbstract, parseMeta, isPevoAnyPaper } from './helpers.js';
+import { paperDisciplineField } from './types/disciplines.js';
 import { validPevoPaperWhere } from './hafsql.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { httpLogger, requestContext } from './logger.js';
@@ -344,7 +345,12 @@ export function createApp() {
       publisher: { '@type': 'Organization', name: 'PEvO', url: config.appUrl },
     };
     if (reqUrl) jsonLd.url = reqUrl;
-    if (pevoMeta.discipline) jsonLd.about = pevoMeta.discipline;
+    // Route the schema.org `about` field through paperDisciplineField so SSR
+    // JSON-LD matches the canon-lowered value /api/papers ships. Absent /
+    // non-string / whitespace-only inputs return null and the `about` key is
+    // omitted entirely (schema.org-cleaner than emitting an empty string).
+    const canonDiscipline = paperDisciplineField(pevoMeta.discipline);
+    if (canonDiscipline) jsonLd.about = canonDiscipline;
     if (Array.isArray(pevoMeta.keywords) && pevoMeta.keywords.length) jsonLd.keywords = pevoMeta.keywords;
 
     const baseUrl = config.appUrl.replace(/\/$/, '');
