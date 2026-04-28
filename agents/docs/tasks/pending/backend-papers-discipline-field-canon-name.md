@@ -108,3 +108,31 @@ All three render sites already rely on CSS `text-transform: capitalize` rather t
 
 **Out-of-boundary site noted, not touched (architect triage):**
 - `backend/src/helpers.ts:98` — `toPaperSummary()` builds a `PaperSummary` with `discipline: (pevo.discipline as string) || ''`. Used by `backend/src/routes/profile.ts:238` (`/api/profile/:account` papers list). Lives outside this task's declared boundary (`papers.ts` / `search.ts` only). The profile papers list will still echo the stored casing until a follow-up task routes it through `paperDisciplineField` as well. Minor: `PaperSummary.discipline` is typed `string` (not `string | null`), so this would need either a type widening or a `|| ''` fallback over the helper's `null` return. Suggest a small follow-up `be-profile-paper-discipline-canon` task if desired.
+
+---
+
+**Architect re-review (2026-04-28) — HELD PENDING FIXES (round 1):**
+
+Round-1 `/ce-code-review` on commit `9882573` (5 personas: correctness, testing, api-contract, maintainability, project-standards). 3 P2 + 4 P3 findings. 3 hold items below.
+
+1. **P2 — Mocked-pool spec for canon response-field shape + continuation-chain coverage + trim semantic** (testing T1 0.80 + correctness P2 0.75 + testing T-canon-22 0.80 cross-reviewer, folded across the testing/correctness merge). Both new real-HAF specs (`papers.test.ts:79`, `:175`) are corpus-vacuous: `paper.discipline === paper.discipline.toLowerCase()` passes regardless of whether `paperDisciplineField()` actually runs, on any all-lowercase or empty corpus. A revert of `paperDisciplineField()` to `pevo.discipline || null` would NOT fail. The implementer's signal block claimed `disciplines-canon-mocked.test.ts` covers this deterministically, but that file's scope is `/api/disciplines` dedup + `?discipline=` filter SQL — NOT per-paper response-field shape. Add a mocked-pool describe block in `disciplines-canon-mocked.test.ts` (or sibling) that:
+   - Seeds a paper row with `pevo.discipline = '  Computer Science  '` (whitespace-padded mixed case to also exercise the helper's `.trim()` semantic), runs through `GET /api/papers` and `GET /api/papers/:author/:permlink`, asserts `res.body.data[*].discipline === 'computer science'` (and the detail equivalent).
+   - Covers the **continuation-chain head-override path** at `papers.ts:597`: seed an edited paper whose head-override metadata has a different-cased discipline than the original, assert the response carries the head-override's lowercased value. This branch is one of the three response-shaping sites threaded through `paperDisciplineField()` and has no targeted spec today.
+
+2. **P3 — Widen `paperDisciplineField` parameter to `unknown`** (correctness 1.00 + maintainability 0.55, 2-reviewer convergence). The three `as string | null | undefined` casts at `papers.ts:391, 597, 989` are unsound — `pevo.discipline` is `unknown` from `safePevoMeta`. Cast lies to type-checker; runtime is correct only because helper's first line guards `typeof raw !== 'string'`. Mirror the sibling `validateDisciplineFilter(raw: unknown)` shape: change helper signature, drop the three call-site casts. The runtime is identical; the types become honest.
+
+3. **P3 — Restore `Co-Authored-By` trailer for `9882573`** (project-standards 1.00). Same shape as the parallel `602214f` corrective on BE-DISCIPLINE-LENGTH-CAP: no-op follow-up commit per the `27befcf` precedent. May be combined with the `602214f` correction into one no-op commit covering both missing trailers.
+
+**Architect-side fix-in-place (applied this pass):**
+- `agents/docs/api-contracts/papers.md` PaperSummary "Field notes" + PaperDetail "Notes" — added explicit field note that `discipline` is canon_name (lowercased), matches `/api/disciplines.canon_name`, round-trippable through the URL filter, may be `null`. Closes the implementer's `[TODO Architect]` flag in the task signal block.
+
+**Dismissed from round-1 findings (architect triage):**
+- **P3** Search future-proof spec is a no-op today (correctness + testing 1.00). The spec's own 6-line docstring already explicitly labels it as future-proof and explains `SearchRow` doesn't currently carry `discipline` — reviewer's "should be marked clearly" recommendation is already met.
+- **P3** Backward-incompatible response shape change without deprecation note (api-contract 0.50). Beta stability stance in `common.md` covers AGPL forks; the field-note add (architect-side fix-in-place above) is sufficient.
+- **P3** Trim-semantic assertion gap (testing 0.80) — subsumed by item 1's whitespace-padded seed value (`'  Computer Science  '` → `'computer science'`), which exercises trim deterministically in the mocked-pool spec.
+- **P3** Continuation-chain head-override path lacks targeted spec (testing) — folded into item 1 above.
+
+**Filed as separate Pending tasks (out of scope for this hold):**
+- `backend-profile-paper-discipline-canon.md` — correctness + maintainability cross-reviewer finding (P2) that `helpers.ts:98` `toPaperSummary()` (used by `/api/profile/:account/papers`) bypasses `paperDisciplineField()`, producing divergent canon shape across endpoints. Implementer pre-flagged this as out-of-boundary; clean follow-up scope.
+
+**Path to re-archive:** (1) Backend applies items 1-3 on this task. (2) Backend re-review signal block below the hold. (3) Architect re-reviews round-2 with `/ce-code-review` and archives on clean.
