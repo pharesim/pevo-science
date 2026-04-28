@@ -24,6 +24,7 @@ export interface PaperSummary {
 }
 import { config } from './config.js';
 import { logger } from './logger.js';
+import { paperDisciplineField } from './types/disciplines.js';
 
 export function parseMeta(raw: unknown): Record<string, unknown> {
   if (typeof raw === 'string') {
@@ -110,7 +111,11 @@ export function toPaperSummary(post: {
     permlink: post.permlink,
     title: post.title,
     abstract: extractAbstract(post.body),
-    discipline: (pevo.discipline as string) || '',
+    // Route through paperDisciplineField so /api/profile/:account/papers
+    // surfaces canon_name (lowercased + trimmed) consistent with /api/papers.
+    // Coalesce to '' to preserve PaperSummary.discipline's `string` type
+    // (helper returns string | null; '' is the historical absent shape).
+    discipline: paperDisciplineField(pevo.discipline) ?? '',
     keywords: (pevo.keywords as string[]) || [],
     authors: (pevo.authors as PaperSummary['authors']) || [],
     ipfs_cid: (pevo.ipfs_cid as string) || null,

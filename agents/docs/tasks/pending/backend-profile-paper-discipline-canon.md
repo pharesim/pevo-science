@@ -42,3 +42,30 @@ Mocked-pool carve-out: seed a paper row through `toPaperSummary` with `pevo.disc
 - `/api/profile/:account/papers` response canon-lowers each paper's `discipline` field.
 - Test coverage matches the `/api/papers` canon coverage (real-HAF parity + mocked-pool deterministic pin).
 - `agents/docs/api-contracts/profile.md` (if it exists) gets a parallel field note. (Architect-owned; flag via `[TODO Architect]` if needed.)
+
+---
+
+## Implementer re-review signal (2026-04-28, backend) — round 1
+
+**Decision:** picked option (b) "Coalesce at the boundary" per the architect's recommendation in the task body. `PaperSummary.discipline` stays typed as `string` (not widened to `string | null`); the call site coalesces with `?? ''` to preserve the historical "absent → empty string" shape. Less downstream churn, no consumer migration needed.
+
+**Code change** (`backend/src/helpers.ts`):
+- Added `import { paperDisciplineField } from './types/disciplines.js'` (the helper was widened to `unknown` parameter in BE-PAPERS-DISCIPLINE-FIELD-CANON-NAME round-2 commit `6e7a43f`, so the call site needs no cast).
+- Replaced `discipline: (pevo.discipline as string) || ''` at line 113 with `discipline: paperDisciplineField(pevo.discipline) ?? ''`. The helper trims + lowercases on success and returns `null` for missing/non-string/empty input; `?? ''` collapses null → empty string per the `string` typing of `PaperSummary.discipline`.
+
+**Tests landed:**
+- `backend/tests/routes/profile.test.ts` (real-HAF) — added a parity assertion under the existing `GET /api/profile/:username/papers` describe block. For each paper in the response, `paper.discipline === paper.discipline.toLowerCase()`. Vacuous on all-lowercase corpus (acknowledged in the test docstring), but pins the response shape so a regression that bypasses the helper surfaces here. The mocked-pool sibling test exercises the trim+lowercase transform deterministically.
+- `backend/tests/routes/disciplines-canon-mocked.test.ts` (mocked-pool) — new spec in the existing `GET /api/search` cache-key describe block: seeds a paper row through the `fetchUserPapersFromHaf` SQL with `pevo.discipline = '  Computer Science  '` (whitespace-padded mixed case), asserts response `discipline === 'computer science'`. Mocks both halves of the count + data Promise.all by SQL-shape filtering on `FROM user_papers` + `count(*)::int AS total` vs. `ORDER BY`.
+
+**Tests run** (with docker-IP env overrides per CLAUDE.md):
+- `tests/routes/disciplines-canon-mocked.test.ts` → 20/20 passed (was 19; +1 new case).
+- `tests/routes/profile.test.ts` (real-HAF) → 5/5 passed (was 4; +1 new case).
+- `npm run lint` clean (2 pre-existing warnings on `seed-phrase.ts`, unchanged).
+
+**Coordination note:** the helper-input cast (`as string | null | undefined`) that the original task body called out as redundant once BE-PAPERS-DISCIPLINE-FIELD-CANON-NAME round-2 hold #2 lands has indeed been collapsed — the call site is simply `paperDisciplineField(pevo.discipline)` with no cast. The architect's "coordinate" note in the task body has been honored.
+
+### [TODO Architect]
+
+**Contract update needed (architect-owned, before archive):**
+- `agents/docs/api-contracts/profiles.md` — the contract file exists (verified via `ls`). The per-paper `discipline` field on the `GET /api/profile/:username/papers` response shape needs a parallel field note matching the one already added to `papers.md` in BE-PAPERS-DISCIPLINE-FIELD-CANON-NAME round-2:
+  > `discipline` is canon_name (lowercased + trimmed); matches `/api/disciplines.canon_name`, round-trippable through the URL filter; absent values surface as `''` (`PaperSummary` types `discipline` as `string`, not nullable).

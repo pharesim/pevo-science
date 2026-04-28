@@ -46,4 +46,23 @@ describe('GET /api/profile/:username/papers', () => {
     expect(Array.isArray(res.body.data)).toBe(true);
     expect(res.body.meta).toHaveProperty('total');
   });
+
+  it('per-paper `discipline` field is canon (lowercased) — parity with /api/papers', { timeout: 60_000 }, async () => {
+    // BE-PROFILE-PAPER-DISCIPLINE-CANON: `toPaperSummary` now routes through
+    // `paperDisciplineField()` so /api/profile/:account/papers surfaces the
+    // same canon_name shape as /api/papers list + detail. Mirrors the
+    // forward-looking parity assertion on /api/papers — vacuous if the
+    // public corpus is all-lowercase, but pins the output shape so a
+    // regression that bypasses the helper (i.e., reverts to
+    // `(pevo.discipline as string) || ''`) surfaces here. The mocked-pool
+    // sibling in `disciplines-canon-mocked.test.ts` deterministically
+    // exercises the trim + lowercase transform.
+    const res = await request(app).get('/api/profile/pevo.admin/papers');
+    expect(res.status).toBe(200);
+    for (const paper of res.body.data) {
+      // `discipline` is `string` (not nullable) per PaperSummary; absent →
+      // `''`, present → canon-lowered. Either way `=== toLowerCase()`.
+      expect(paper.discipline).toBe(paper.discipline.toLowerCase());
+    }
+  });
 });
