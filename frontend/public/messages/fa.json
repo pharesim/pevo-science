@@ -974,7 +974,12 @@
     "upgrading": "در حال ارتقای حساب…",
     "doneTitle": "ارتقا کامل شد",
     "doneDescription": "حساب شما اکنون به طور کامل از طریق Hive Keychain تحت مدیریت شماست. عبارت بازیابی قبلی را تا ۳۰ روز به عنوان پشتیبان نگه دارید.",
-    "failed": "Account upgrade failed. Please try again. If the problem persists, contact support."
+    "failed": "Account upgrade failed. Please try again. If the problem persists, contact support.",
+    "keychainImportWarning": {
+      "posting": "Keychain import incomplete: your posting key was not imported. You can retry from settings later.",
+      "active": "Keychain import incomplete: your active key was not imported. You can retry from settings later.",
+      "memo": "Keychain import incomplete: your memo key was not imported. You can retry from settings later."
+    }
   },
   "resetPassword": {
     "requestTitle": "بازنشانی رمز عبور",

@@ -51,10 +51,13 @@ vi.mock('../../src/hive-keys.js', () => ({
 // WIFs — required by the FE-KEYCHAIN-API-MISUSE regression test that
 // asserts three distinct WIFs.
 function stubWifForHex(hex) {
-  if (typeof hex !== 'string' || hex.length === 0) return '5' + 'K' + 'x'.repeat(49);
+  // Real Hive WIFs are 50 chars (2-char prefix + 48 base58). Match that
+  // exactly so the owner-exclusion assertion below can derive its expected
+  // value from this same stub function (see `ownerWif = stubWifForHex(...)`).
+  if (typeof hex !== 'string' || hex.length === 0) return '5K' + 'x'.repeat(48);
   const tag = hex[0].toLowerCase();
   const pad = ({ a: 'A', b: 'B', c: 'C', d: 'D' }[tag]) || 'x';
-  return '5K' + pad.repeat(49);
+  return '5K' + pad.repeat(48);
 }
 vi.mock('@hiveio/dhive', () => ({
   PrivateKey: {
@@ -814,13 +817,121 @@ describe('settingsPage', () => {
       const distinctWifs = new Set(importKeyCalls.map((c) => c.wifKey));
       expect(distinctWifs.size).toBe(3);
       // Belt-and-suspenders: owner WIF must NOT have been imported. The
-      // deriveHiveKeys mock above returns `owner: 'a'.repeat(64)`; the
-      // stubWifForHex mapping produces `5K` + 'A'*49 for that seed. None
-      // of the three imported WIFs may equal that value.
-      const ownerWif = '5K' + 'A'.repeat(49);
+      // deriveHiveKeys mock above returns `owner: 'a'.repeat(64)`; derive the
+      // expected owner WIF via the same stub function so a stub-shape change
+      // (e.g. WIF length fix) flows through automatically.
+      const ownerWif = stubWifForHex('a'.repeat(64));
       for (const call of importKeyCalls) {
         expect(call.wifKey).not.toBe(ownerWif);
       }
+    });
+
+    // FE-KEYCHAIN-API-MISUSE round-2 hold #2 (mid-loop denial):
+    // After the round-2 reorder, the Keychain import loop runs AFTER the
+    // irreversible (broadcast + backend cleanup) pair. A user denying the
+    // popup mid-loop must NOT wedge the upgrade: backend cleanup has
+    // already fired, the loop becomes best-effort, the upgrade completes
+    // with `upgradePhase === 'done'`, and the denied role's localized
+    // warning lands in `upgradeWarnings` for the success-screen surface.
+    //
+    // Two specs cover the loop's first and second indices to lock in that
+    // a denial at any iteration produces the same best-effort outcome (the
+    // round-1 single-call shape made these distinguishable; the round-2
+    // loop must not regress).
+    it('best-effort: keychain denies on call index 1 (active) → done + active warning', async () => {
+      mockIsKeychainInstalled.mockReturnValue(true);
+      const importKeyCalls = [];
+      const fetchCalls = [];
+      vi.stubGlobal('window', {
+        ...globalThis.window,
+        hive_keychain: {
+          requestImportKey: (account, wifKey, cb) => {
+            importKeyCalls.push({ account, wifKey });
+            const idx = importKeyCalls.length - 1;
+            queueMicrotask(() => cb(idx === 1 ? { success: false, message: 'denied' } : { success: true }));
+          },
+        },
+      });
+      vi.stubGlobal('fetch', vi.fn(async (...args) => {
+        fetchCalls.push(args);
+        return {
+          ok: true,
+          json: async () => ({ data: { token: 'new-jwt', custody: 'self' } }),
+        };
+      }));
+      // Suppress per-role warning console.warn that the helper emits for
+      // diagnostics so the test output stays clean.
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const comp = createComponent();
+      comp.oldSeedPhrase = Array(12).fill('old').join(' ');
+      comp.newSeedPhrase = Array(12).fill('new').join(' ');
+      comp.newSeedWords = comp.newSeedPhrase.split(' ');
+      comp.confirmInputs = { 0: 'new', 5: 'new', 11: 'new' };
+      comp.upgradePassword = 'light-password';
+
+      await comp.executeUpgrade();
+
+      // Backend cleanup fired (the irreversible pair completed BEFORE the
+      // import loop ran). Path-shape match: single call to /api/custody/upgrade.
+      expect(fetchCalls.length).toBe(1);
+      expect(fetchCalls[0][0]).toBe('/api/custody/upgrade');
+      // Upgrade marked done despite the partial keychain import.
+      expect(comp.upgradePhase).toBe('done');
+      expect(comp.upgradeError).toBeNull();
+      // Warning surfaced for the active role (the denied iteration).
+      expect(comp.upgradeWarnings).toEqual(
+        expect.arrayContaining(['upgrade.keychainImportWarning.active']),
+      );
+      // Loop continued past the denial — memo (index 2) was still attempted.
+      expect(importKeyCalls.length).toBe(3);
+
+      warnSpy.mockRestore();
+    });
+
+    it('best-effort: keychain denies on call index 0 (posting) → done + posting warning', async () => {
+      mockIsKeychainInstalled.mockReturnValue(true);
+      const importKeyCalls = [];
+      const fetchCalls = [];
+      vi.stubGlobal('window', {
+        ...globalThis.window,
+        hive_keychain: {
+          requestImportKey: (account, wifKey, cb) => {
+            importKeyCalls.push({ account, wifKey });
+            const idx = importKeyCalls.length - 1;
+            queueMicrotask(() => cb(idx === 0 ? { success: false, message: 'denied' } : { success: true }));
+          },
+        },
+      });
+      vi.stubGlobal('fetch', vi.fn(async (...args) => {
+        fetchCalls.push(args);
+        return {
+          ok: true,
+          json: async () => ({ data: { token: 'new-jwt', custody: 'self' } }),
+        };
+      }));
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const comp = createComponent();
+      comp.oldSeedPhrase = Array(12).fill('old').join(' ');
+      comp.newSeedPhrase = Array(12).fill('new').join(' ');
+      comp.newSeedWords = comp.newSeedPhrase.split(' ');
+      comp.confirmInputs = { 0: 'new', 5: 'new', 11: 'new' };
+      comp.upgradePassword = 'light-password';
+
+      await comp.executeUpgrade();
+
+      expect(fetchCalls.length).toBe(1);
+      expect(fetchCalls[0][0]).toBe('/api/custody/upgrade');
+      expect(comp.upgradePhase).toBe('done');
+      expect(comp.upgradeError).toBeNull();
+      expect(comp.upgradeWarnings).toEqual(
+        expect.arrayContaining(['upgrade.keychainImportWarning.posting']),
+      );
+      // Loop continued past the denial — active + memo (indices 1, 2) still attempted.
+      expect(importKeyCalls.length).toBe(3);
+
+      warnSpy.mockRestore();
     });
   });
 

@@ -57,3 +57,28 @@ Task was found in `tasks/review/` on 2026-04-28 architect intake but the round-2
 The intervening FE-UPGRADE-CLOSURE-WIPE commit (`d6978a6`, merge `35c3c3b`) restructured this code by extracting `_performUpgradeKeyRotation` for closure-frame hygiene, but did NOT split broadcast and Keychain imports apart, did NOT introduce `upgradeWarnings`, and did NOT change error semantics for mid-loop Keychain deny. Items #2 (test for mid-loop deny) and #3 (50-char WIF stub fix) remain gated on #1.
 
 `git mv`'d back to `tasks/pending/`. Implementer: apply round-2 items #1-3 (P1 lockout fix is the priority), then move back to `tasks/review/`. Note that the new structure (`_performUpgradeKeyRotation` helper) means the reorder is not just "move lines" — it likely splits the helper into `_broadcastAccountUpdate(...)` + `_importKeychainKeys(...)` so the caller can interleave backend cleanup between the two, and the Keychain step can fail without rejecting the helper.
+
+## UI re-review signal (2026-04-28, working tree)
+
+Items #1, #2, #3 from the round-2 hold all landed. Ready for architect round-3 re-review.
+
+**#1 (P1) — `executeUpgrade()` reorder + best-effort Keychain loop.** `frontend/src/pages/settings.js`:
+- Split `_performUpgradeKeyRotation()`: now does ONLY seed derivation + `account_update` broadcast. Returns `undefined` (closure-wipe invariant preserved). The Keychain import loop is no longer in this helper.
+- New `_performKeychainImport(newSeedPhrase)` helper: re-derives `newKeys` locally so its frame holds the only references; iterates `['posting', 'active', 'memo']`; per-role `requestImportKey` failure becomes a `console.warn` for diagnostics + a localized warning pushed to `this.upgradeWarnings` (keys `upgrade.keychainImportWarning.<role>`); loop continues to next role on denial; never throws.
+- `executeUpgrade()` ordering is now (a) validate → (b) `_performUpgradeKeyRotation` (broadcast) → (c) `/api/custody/upgrade` backend cleanup → (d) `_performKeychainImport` (best-effort) → (e) `_clearSensitiveUpgradeState` → (f) `upgradePhase = 'done'`. The (b)→(c) atomic pair lives inside the try/catch; (d) runs OUTSIDE the catch, so a denied popup mid-loop cannot wipe the mnemonic, cannot mark the upgrade as failed, and cannot skip backend cleanup. `newSeedPhrase` is snapshotted into a local `const` before the wipe so (d) can re-derive after `this.newSeedPhrase` is zeroed.
+- New reactive field `upgradeWarnings: []`. Reset on `resetUpgrade()` and on entry to `executeUpgrade()` so a previous partial run never leaks into a subsequent success screen.
+- Template: the `upgradePhase === 'done'` block now renders an amber `<ul>` of warnings via `<template x-for="(warning, i) in upgradeWarnings">` underneath the existing success copy. Empty on a fully-successful upgrade.
+- i18n: added `upgrade.keychainImportWarning.{posting,active,memo}` to `frontend/public/messages/en.json` (real English copy, no emdashes). Stubbed identical English text into the 15 other locale files (`ar, cs, da, de, es, fa, fr, he, it, nl, pl, pt, sv, tr, zh`) per the UI agent stub convention. Appended a fresh `### Added 2026-04-28 (UI-KEYCHAIN-API-MISUSE)` sweep header to `frontend/public/messages/STUBS.md` with 45 lines (15 locales × 3 keys).
+
+**#2 (P2) — Mid-loop Keychain denial unit tests.** `frontend/tests/unit/pages-settings.test.js`, two new specs in the FE-KEYCHAIN-API-MISUSE describe block:
+- "best-effort: keychain denies on call index 1 (active) → done + active warning": stub returns `{success: false}` on call index 1, returns success on indices 0 and 2. Asserts `fetch('/api/custody/upgrade')` was called (single fetch call), `upgradePhase === 'done'`, `upgradeError === null`, `upgradeWarnings` contains `upgrade.keychainImportWarning.active`, all 3 import attempts ran (loop continued past denial).
+- "best-effort: keychain denies on call index 0 (posting) → done + posting warning": same shape but denies on index 0. Asserts the posting-role warning + that loop continued (active + memo still attempted).
+
+**#3 (P3) — `stubWifForHex` now produces 50-char WIFs + owner-WIF assertion uses stub function.** `frontend/tests/unit/pages-settings.test.js`:
+- `stubWifForHex` changed from `'5K' + pad.repeat(49)` (51 chars) to `'5K' + pad.repeat(48)` (50 chars). Comment notes the real Hive WIF length.
+- The owner-exclusion assertion in the "executeUpgrade imports posting + active + memo WIFs" test now derives the expected owner WIF via `stubWifForHex('a'.repeat(64))` rather than a hard-coded literal. A future stub-shape change flows through automatically.
+
+**Verification:**
+- `npx vitest run tests/unit/pages-settings.test.js` — 41 tests pass (was 38 before; +2 mid-loop denial tests, plus the existing posting-only-then-3-key test still passes against the new helper-split shape).
+- `npx vitest run` (full unit suite) — 989/989 tests pass. One pre-existing failed *suite* (`tests/unit/sec-001-equivalence.test.js`) fails to load due to a backend-side import resolution issue unrelated to this task; verified to fail identically on stash.
+- `npm run build` — clean (existing chunk-size + dhive-eval warnings unchanged from baseline).

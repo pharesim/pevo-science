@@ -106,12 +106,24 @@ const template = `
                 </div>
 
                 <!-- Done -->
-                <div x-show="upgradePhase === 'done'" class="text-center py-4">
-                  <div class="w-12 h-12 bg-pevo-green/10 rounded-full flex items-center justify-center mx-auto mb-4">
-                    <svg class="w-6 h-6 text-pevo-green" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+                <div x-show="upgradePhase === 'done'" class="py-4">
+                  <div class="text-center">
+                    <div class="w-12 h-12 bg-pevo-green/10 rounded-full flex items-center justify-center mx-auto mb-4">
+                      <svg class="w-6 h-6 text-pevo-green" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+                    </div>
+                    <p class="text-ink font-medium mb-2" x-text="$t('upgrade.doneTitle')"></p>
+                    <p class="text-sm text-ink-muted" x-text="$t('upgrade.doneDescription')"></p>
                   </div>
-                  <p class="text-ink font-medium mb-2" x-text="$t('upgrade.doneTitle')"></p>
-                  <p class="text-sm text-ink-muted" x-text="$t('upgrade.doneDescription')"></p>
+                  <!-- Best-effort Keychain-import warnings. Empty on a fully-
+                       successful upgrade; one yellow notice per role whose
+                       requestImportKey popup was denied or failed. -->
+                  <template x-if="upgradeWarnings && upgradeWarnings.length > 0">
+                    <ul class="mt-6 space-y-2">
+                      <template x-for="(warning, i) in upgradeWarnings" :key="i">
+                        <li class="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800" x-text="warning"></li>
+                      </template>
+                    </ul>
+                  </template>
                 </div>
               </div>
             </template>
@@ -367,6 +379,13 @@ export function initSettingsPage() {
     upgradePhase: 'idle',
     upgradeError: null,
 
+    // Best-effort Keychain-import warnings surfaced on the success screen.
+    // Populated when one or more `requestImportKey` popups are denied or
+    // fail after the irreversible (broadcast + backend cleanup) pair has
+    // landed. Empty on a fully-successful upgrade. Reset on resetUpgrade()
+    // and on entry to executeUpgrade().
+    upgradeWarnings: [],
+
     // New seed phrase
     newSeedPhrase: null,
     newSeedWords: [],
@@ -588,7 +607,31 @@ export function initSettingsPage() {
       if (!this.oldSeedPhrase.trim() || !this.upgradePassword) return;
       this.upgradePhase = 'upgrading';
       this.upgradeError = null;
+      // Reset best-effort warnings on each attempt so a previous partial
+      // run doesn't leak its messages into a subsequent success screen.
+      this.upgradeWarnings = [];
 
+      // Snapshot the new seed phrase locally so the keychain-import step
+      // (which runs AFTER _clearSensitiveUpgradeState wipes reactive state)
+      // can still re-derive WIFs without holding onto `this.newSeedPhrase`.
+      const newSeedPhrase = this.newSeedPhrase;
+
+      // ORDERING — round-2 hold (P1 partial-import lockout) reshape:
+      //   (a) validate
+      //   (b) _performUpgradeKeyRotation     — IRREVERSIBLE: account_update broadcast
+      //   (c) /api/custody/upgrade            — IRREVERSIBLE: backend cleanup
+      //   (d) Keychain import loop           — best-effort; failures become warnings
+      //   (e) _clearSensitiveUpgradeState    — wipe reactive sensitive fields
+      //   (f) upgradePhase = 'done'
+      //
+      // The (b)→(c) pair is the only remaining irreversible-pair gap. If
+      // (c) fails, the user sees an error (real failure). If (d) fails on
+      // any role, the user sees the success screen WITH per-role warnings
+      // — the upgrade succeeded on-chain and the backend cleared stored
+      // keys; only Keychain's local convenience-import is incomplete and
+      // the user can retry from settings later. Mid-loop denials must NOT
+      // wipe the mnemonic, must NOT mark the upgrade as failed, and must
+      // NOT skip backend cleanup — backend cleanup happens BEFORE the loop.
       try {
         // Validate old seed phrase
         const oldWords = this.oldSeedPhrase.trim().toLowerCase();
@@ -596,24 +639,20 @@ export function initSettingsPage() {
           throw new Error(this.$t('upgrade.invalidOldSeed'));
         }
 
-        // FE-UPGRADE-CLOSURE-WIPE — derive keys, broadcast account_update,
-        // and import WIFs inside a narrower-scoped helper so the closure
-        // frame that captured the derived private-key material (oldSeed,
-        // oldKeys, newSeed, newKeys, newPubKeys, ownerKey, per-role WIFs)
-        // is popped off the call stack BEFORE `_clearSensitiveUpgradeState()`
-        // runs below. Without this split, those `const` bindings would sit
-        // inside `executeUpgrade`'s own frame — still reachable when the
-        // wipe executes, and only released whenever the async function's
-        // promise chain is GC'd. JS has no deterministic zero-on-release,
-        // but scope exit is the closest thing to it: once the helper
-        // returns, its frame is unreferenced and eligible for GC on the
-        // very next cycle. Reachability invariant: no variable bound inside
-        // `_performUpgradeKeyRotation()` escapes to `executeUpgrade()` other
-        // than control flow (resolved promise). See also
-        // `tests/unit/pages-settings.test.js` > FE-UPGRADE-CLOSURE-WIPE.
-        await this._performUpgradeKeyRotation(oldWords, this.newSeedPhrase);
+        // FE-UPGRADE-CLOSURE-WIPE — derive keys + broadcast `account_update`
+        // inside a narrower-scoped helper so the closure frame that captured
+        // the derived private-key material (oldSeed, oldKeys, newSeed,
+        // newKeys, newPubKeys, ownerKey) is popped off the call stack
+        // BEFORE `_clearSensitiveUpgradeState()` runs below. Reachability
+        // invariant: no variable bound inside `_performUpgradeKeyRotation()`
+        // escapes to `executeUpgrade()` other than control flow.
+        await this._performUpgradeKeyRotation(oldWords, newSeedPhrase);
 
-        // Notify backend to clean up stored keys
+        // Notify backend to clean up stored keys. Failure here surfaces as
+        // upgradeError — this is the only remaining irreversible-pair gap
+        // (broadcast already landed; if cleanup fails the backend retains
+        // stale encrypted keys for now-superseded authorities). We keep it
+        // as a real error so the user can contact support to resolve.
         const auth = Alpine.store('auth');
         const res = await fetch('/api/custody/upgrade', {
           method: 'POST',
@@ -635,12 +674,7 @@ export function initSettingsPage() {
         // (the old light-custody JWT is invalidated server-side); if the
         // backend emits a new token + expires_at pair, refresh both on the
         // store BEFORE _saveSession() so the persisted expires_at matches
-        // the new token. Historically this call hard-coded `null` as the
-        // expires_at positional arg, which would wipe the session's expiry
-        // on upgrade and silently log the user out on next reload. With
-        // the no-arg _saveSession() form, the new token pairs with its own
-        // expiry; if the backend omits either, we preserve the existing
-        // store value rather than clobbering it to null.
+        // the new token.
         auth.custody = 'self';
         if (result.data?.token) {
           auth.token = result.data.token;
@@ -649,22 +683,15 @@ export function initSettingsPage() {
           auth.expiresAt = result.data.expires_at;
         }
         auth._saveSession();
-
-        // FE-UPGRADE-CREDENTIAL-WIPE: zero all sensitive reactive state on
-        // the happy path before flipping to 'done'. Without this, the old
-        // and new 12-word mnemonics plus the re-entered password sit in
-        // Alpine's reactive data indefinitely; any XSS on /settings can
-        // read them via `window.Alpine.$data(el).oldSeedPhrase` etc.
-        // `resetUpgrade()` would also reset `upgradePhase` to 'idle', which
-        // would hide the success UI, so we zero inline here and let the
-        // phase transition to 'done' show the confirmation screen.
-        this._clearSensitiveUpgradeState();
-
-        this.upgradePhase = 'done';
       } catch (err) {
-        // Defense in depth: also zero sensitive state on error. The
-        // 'error' phase routes the user to `resetUpgrade()` via the "try
-        // again" button which would clear these anyway, but a refresh or
+        // The (b)→(c) pair lives inside this try. A failure here means
+        // either (b) reverted (Keychain-signing of account_update denied,
+        // chain rejection) or (c) failed (backend refused). Both are real
+        // failures from the user's perspective.
+        //
+        // Defense in depth: zero sensitive state on error. The 'error'
+        // phase routes the user to `resetUpgrade()` via the "try again"
+        // button which would clear these anyway, but a refresh or
         // navigation away leaves them lingering otherwise.
         this._clearSensitiveUpgradeState();
         // Surface a generic localized message rather than `err.message`.
@@ -677,29 +704,49 @@ export function initSettingsPage() {
         console.warn('[custody upgrade]', err);
         this.upgradeError = this.$t('upgrade.failed');
         this.upgradePhase = 'error';
+        return;
       }
+
+      // Best-effort Keychain import. By this point:
+      //   - account_update has landed on-chain (b)
+      //   - backend custody cleanup succeeded (c)
+      // Per-role failures push a localized warning string; the loop never
+      // re-throws, never wipes the mnemonic, never marks upgrade failed.
+      // The user lands on the 'done' screen with a per-role notice if any
+      // import was denied.
+      await this._performKeychainImport(newSeedPhrase);
+
+      // FE-UPGRADE-CREDENTIAL-WIPE: zero all sensitive reactive state on
+      // the happy path (success or partial-keychain-import) before flipping
+      // to 'done'. Without this, the old and new 12-word mnemonics plus the
+      // re-entered password sit in Alpine's reactive data indefinitely; any
+      // XSS on /settings can read them via
+      // `window.Alpine.$data(el).oldSeedPhrase` etc.
+      this._clearSensitiveUpgradeState();
+
+      this.upgradePhase = 'done';
     },
 
     // FE-UPGRADE-CLOSURE-WIPE — narrower-scoped key-material handler.
     //
-    // Encapsulates every step that must touch private key material: seed
-    // derivation, pubkey derivation, `account_update` broadcast, and the
-    // Keychain WIF imports. All `const` bindings that hold sensitive
-    // material (`oldSeed`, `oldKeys`, `newSeed`, `newKeys`, `newPubKeys`,
-    // `ownerKey`, per-iteration `wif`) are local to this method's frame.
-    // When this method's promise resolves, the frame is popped off the
-    // stack and those bindings become unreachable, eligible for GC on the
-    // next cycle. The caller (`executeUpgrade`) then calls
-    // `_clearSensitiveUpgradeState()` with ZERO reachable references to
-    // the derived material.
+    // Encapsulates the irreversible step: seed derivation, pubkey
+    // derivation, and the `account_update` broadcast. All `const` bindings
+    // that hold sensitive material (`oldSeed`, `oldKeys`, `newSeed`,
+    // `newKeys`, `newPubKeys`, `ownerKey`) are local to this method's
+    // frame. When this method's promise resolves, the frame is popped off
+    // the stack and those bindings become unreachable, eligible for GC on
+    // the next cycle. The Keychain WIF-import loop is intentionally NOT
+    // here (split out to `_performKeychainImport`) so a denied popup
+    // mid-loop cannot interrupt the broadcast/backend-cleanup atomic pair
+    // — see `executeUpgrade()` ordering comment.
     //
     // Reachability invariant: this method returns `undefined` (via the
     // resolved promise); none of the `const` bindings inside it are
     // returned, assigned to `this`, captured in a closure that outlives
     // the call, or passed by reference to the caller. The only persistent
-    // side effects are on-chain (`sendOperations`) and in Keychain
-    // (`requestImportKey`). If a future refactor needs data back from
-    // here (e.g., a tx id), return a scalar, not the key objects.
+    // side effect is on-chain (`sendOperations`). If a future refactor
+    // needs data back from here (e.g., a tx id), return a scalar, not the
+    // key objects.
     //
     // Arguments are passed by value (`oldWords` is a string; `newSeedPhrase`
     // is a string — Alpine reactive fields resolve to primitive strings
@@ -727,38 +774,63 @@ export function initSettingsPage() {
       };
 
       await client.broadcast.sendOperations([['account_update', op]], ownerKey);
+      // Intentionally returns `undefined`. Do NOT return `newKeys`,
+      // `newPubKeys`, or anything else that would re-escape the derived
+      // material into `executeUpgrade`'s frame.
+    },
 
-      // Import new posting + active + memo WIFs into Keychain so the user
-      // can sign ALL non-owner-auth ops post-upgrade (transfers, votes,
-      // comments, memo encrypt/decrypt). `requestImportKey` expects
-      // (username, wifKey, callback); each WIF is derived from the
-      // corresponding role's new hex seed via PrivateKey.fromSeed.
-      //
-      // NOT owner — owner keys are the account-recovery root of trust and
-      // should live in the user's seed phrase only, never in a browser
-      // extension. `account_update` still rotates owner on-chain (see
-      // newPubKeys.owner above); the user's new mnemonic is the only
-      // way to re-derive it.
-      //
-      // Historical bug: this used `requestAddAccountAuthority(username,
-      // rawHexSeed, 'posting', ...)` which (a) is the wrong API semantic
-      // (second arg should be an ACCOUNT NAME, not a key) and (b) leaks the
-      // raw 64-char hex private-key seed into Keychain's extension logs.
-      if (isKeychainInstalled()) {
-        const importRoles = ['posting', 'active', 'memo'];
-        for (const role of importRoles) {
-          const wif = dhive.PrivateKey.fromSeed(newKeys[role]).toString();
+    // Best-effort Keychain WIF import for posting + active + memo. Runs
+    // AFTER the irreversible (broadcast + backend cleanup) pair has
+    // landed; per-role failures push a localized warning to
+    // `this.upgradeWarnings` instead of throwing. The user can retry from
+    // settings later for any role that didn't land.
+    //
+    // NOT owner — owner keys are the account-recovery root of trust and
+    // should live in the user's seed phrase only, never in a browser
+    // extension. `account_update` still rotates owner on-chain (see
+    // newPubKeys.owner in `_performUpgradeKeyRotation`); the user's new
+    // mnemonic is the only way to re-derive it.
+    //
+    // Closure-wipe shape: this helper re-derives `newKeys` from the seed
+    // phrase locally (rather than receiving it from the caller) so its
+    // own frame holds the only references to derived material; when the
+    // helper returns, the frame pops and `newKeys` / per-iteration `wif`
+    // become unreachable. Reachability invariant matches
+    // `_performUpgradeKeyRotation`: returns `undefined`; no key object
+    // escapes to `executeUpgrade`'s frame.
+    //
+    // Historical bug: the upgrade flow used to call
+    // `requestAddAccountAuthority(username, rawHexSeed, 'posting', ...)`
+    // which (a) is the wrong API semantic (second arg should be an
+    // ACCOUNT NAME, not a key) and (b) leaks the raw 64-char hex
+    // private-key seed into Keychain's extension logs. `requestImportKey`
+    // is the correct API.
+    async _performKeychainImport(newSeedPhrase) {
+      if (!isKeychainInstalled()) return;
+      const dhive = await import('@hiveio/dhive');
+      const newSeed = mnemonicToSeedSync(newSeedPhrase);
+      const newKeys = deriveHiveKeys(newSeed, this.username);
+      const importRoles = ['posting', 'active', 'memo'];
+      for (const role of importRoles) {
+        const wif = dhive.PrivateKey.fromSeed(newKeys[role]).toString();
+        try {
           await new Promise((resolve, reject) => {
             window.hive_keychain.requestImportKey(
               this.username, wif,
               (res) => res.success ? resolve(res) : reject(new Error(res.message || 'Keychain import failed'))
             );
           });
+        } catch (err) {
+          // Per-role failure becomes a warning, not a fatal error. The
+          // loop continues to the next role so a denial on (e.g.) active
+          // doesn't block the memo import.
+          // Sanitization pattern: raw err to console.warn for diagnostics,
+          // localized message to user-visible warnings array.
+          console.warn(`[custody upgrade] keychain import ${role}`, err);
+          const key = `upgrade.keychainImportWarning.${role}`;
+          this.upgradeWarnings.push(this.$t(key));
         }
       }
-      // Intentionally returns `undefined`. Do NOT return `newKeys`,
-      // `newPubKeys`, or anything else that would re-escape the derived
-      // material into `executeUpgrade`'s frame.
     },
 
     // Zero the plaintext-sensitive fields used during the custody upgrade
@@ -786,6 +858,7 @@ export function initSettingsPage() {
       this._clearSensitiveUpgradeState();
       this.upgradePhase = 'idle';
       this.upgradeError = null;
+      this.upgradeWarnings = [];
     },
 
     navigate(path) {

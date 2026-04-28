@@ -974,7 +974,12 @@
     "upgrading": "Konto wird upgegradet…",
     "doneTitle": "Upgrade abgeschlossen",
     "doneDescription": "Ihr Konto wird jetzt vollständig über Hive Keychain eigenverwaltet. Bewahren Sie Ihre alte Wiederherstellungsphrase noch 30 Tage als Sicherung auf.",
-    "failed": "Account upgrade failed. Please try again. If the problem persists, contact support."
+    "failed": "Account upgrade failed. Please try again. If the problem persists, contact support.",
+    "keychainImportWarning": {
+      "posting": "Keychain import incomplete: your posting key was not imported. You can retry from settings later.",
+      "active": "Keychain import incomplete: your active key was not imported. You can retry from settings later.",
+      "memo": "Keychain import incomplete: your memo key was not imported. You can retry from settings later."
+    }
   },
   "resetPassword": {
     "requestTitle": "Passwort zurücksetzen",

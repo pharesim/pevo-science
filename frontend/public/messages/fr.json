@@ -974,7 +974,12 @@
     "upgrading": "Migration du compte…",
     "doneTitle": "Migration terminée",
     "doneDescription": "Votre compte est désormais entièrement autogéré via Hive Keychain. Conservez votre ancienne phrase de récupération pendant 30 jours par précaution.",
-    "failed": "Account upgrade failed. Please try again. If the problem persists, contact support."
+    "failed": "Account upgrade failed. Please try again. If the problem persists, contact support.",
+    "keychainImportWarning": {
+      "posting": "Keychain import incomplete: your posting key was not imported. You can retry from settings later.",
+      "active": "Keychain import incomplete: your active key was not imported. You can retry from settings later.",
+      "memo": "Keychain import incomplete: your memo key was not imported. You can retry from settings later."
+    }
   },
   "resetPassword": {
     "requestTitle": "Réinitialiser votre mot de passe",
