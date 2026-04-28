@@ -4,6 +4,7 @@ import { formatDate } from '../components/paper-card.js';
 import { paginationTemplate } from '../components/pagination.js';
 import { totalPagesFromMeta } from '../lib/pagination.js';
 import { localeStrippedPath } from '../lib/url-sync.js';
+import { titleCaseDiscipline } from '../lib/discipline-display.js';
 
 const ITEMS_PER_PAGE = 12;
 
@@ -70,7 +71,7 @@ const template = `
                   </div>
                   <div class="space-y-1 text-sm text-ink-light">
                     <p x-text="r.institution"></p>
-                    <p class="capitalize" x-text="r.field"></p>
+                    <p x-text="titleCaseDiscipline(r.field)"></p>
                   </div>
                   <div class="mt-3 pt-3 border-t border-parchment-dark text-xs text-ink-muted">
                     <span x-text="methodLabel(r.method)"></span>
@@ -109,6 +110,7 @@ export function initResearchersPage() {
     _popstateHandler: null,
 
     formatDate,
+    titleCaseDiscipline,
 
     init() {
       this._syncFromUrl();

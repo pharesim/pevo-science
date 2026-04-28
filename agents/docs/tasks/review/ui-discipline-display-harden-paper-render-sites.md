@@ -113,3 +113,37 @@ Round-1 `/ce-code-review` on commit `fd315fe` (6 personas: correctness, testing,
 - "Alpine factory must expose every imported helper used in template expressions." Factory-exposure specs guard the binding-missing failure mode (silent ReferenceError at `x-text` evaluation), not the template-expression-mutation failure mode. The four parallel factory-exposure specs (paper-feed, search, paper-detail, profile) are uniform but cover only the binding axis. A future migration of this shape should consider whether template-mounting tests are warranted at the same time.
 
 **Path to re-archive:** (1) UI applies items 1 + 2 on this task. (2) UI re-review signal block below the hold. (3) Architect re-reviews round-2 with `/ce-code-review` and archives on clean.
+
+---
+
+## UI re-review signal (2026-04-28, working tree)
+
+Round-2 fixes applied per architect hold items 1 + 2.
+
+**Item 1 — `frontend/src/pages/researchers.js:73` migrated (5th discipline render site).**
+- `frontend/src/pages/researchers.js:73` — `r.field` + `class="capitalize"` → `titleCaseDiscipline(r.field)`, `capitalize` token dropped.
+- Added `import { titleCaseDiscipline } from '../lib/discipline-display.js'` at the top of the file.
+- Exposed `titleCaseDiscipline` on the `researchersPage` Alpine factory (sibling to `formatDate`).
+- Added factory-exposure regression spec at `frontend/tests/unit/pages-researchers.test.js` (`describe('factory exposes titleCaseDiscipline')`) matching the `pages-profile.test.js:59-64` pattern: `expect(comp.titleCaseDiscipline).toBe(titleCaseDiscipline)` (identity-equal).
+
+**Item 2 — `frontend/src/pages/search.js:94` `capitalize` token dropped (architect option a).**
+- `<span class="badge-discipline capitalize" x-text="$t(...)">` → `<span class="badge-discipline" x-text="$t(...)">`. `badge-discipline` styling preserved per architect choice.
+- No factory-exposure change (no helper invoked here; the line renders a translated result-type label, not a discipline).
+
+**Final disposition (correcting original task description's "5 sites" framing):**
+- 5 sites apply `titleCaseDiscipline()`: `paper-card.js:16`, `paper-detail.js:266`, `profile.js:47/73/226`, `researchers.js:73`.
+- 1 site drops only the `capitalize` token (no helper invocation): `search.js:94` (translated `$t('search.typeReviews|Papers')` label, not a discipline value).
+- Total: 6 render sites changed in this task chain (round 1: 5 helper migrations; round 2: 1 helper migration + 1 css-only drop). The original task description's "5 sites" enumeration was incomplete (missed `researchers.js:73`) and miscategorized one site (`search.js:94` is not a discipline label); both gaps are now closed.
+
+**Widened acceptance-grep verification (`grep -rn 'class="[^"]*capitalize[^"]*"' frontend/src/`):**
+Three `capitalize` matches remain. Per-line reasoning, all retained as intentionally NOT discipline-shaped:
+1. `frontend/src/pages/profile.js:110` — `<span class="w-20 sm:w-28 text-ink-muted shrink-0 capitalize text-xs sm:text-sm" x-text="$t('profile.breakdown.' + key) || key.replace(/_/g, ' ')">`. Renders a reputation-breakdown row label. Primary path is a translation key (`profile.breakdown.publications` etc., already author-cased at source). Fallback path is `key.replace(/_/g, ' ')` on a snake_case identifier (e.g. `paper_votes` → `paper votes`), where CSS `text-transform: capitalize` is the *intended* cosmetic title-casing for the missing-translation fallback. Not a discipline; not a candidate for `titleCaseDiscipline()`.
+2. `frontend/src/pages/profile.js:143` — `<span class="text-ink-muted capitalize" x-text="'(' + relationshipLabel(v.relationship) + ')'">`. Renders a citation relationship label (`relationshipLabel(...)` returns short tags like `'cites'`, `'extends'`). Not a discipline.
+3. `frontend/src/pages/profile.js:315` — `<span class="capitalize" x-text="ratingLabel(key)">`. Renders a review-rating dimension label (`ratingLabel(...)` returns dimension keys like `'novelty'`, `'rigor'`). Not a discipline.
+
+The narrow original-form grep (`grep -rn 'capitalize.*discipline\|discipline.*capitalize' src/`) is now empty. The widened grep matches only the three intentional non-discipline cosmetic uses above.
+
+**Verification:**
+- `npx vitest run` → 998/998 pass (was 995 at round 1; +1 researchers factory-exposure spec; +2 unrelated specs landed via interim BACKEND-SEC-002 commits).
+- `npm run build` → clean.
+- Acceptance-grep narrow form: empty. Widened form: 3 retained matches, all documented above.

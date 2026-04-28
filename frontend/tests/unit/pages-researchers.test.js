@@ -28,6 +28,7 @@ vi.mock('alpinejs', () => ({
 
 import Alpine from 'alpinejs';
 import { initResearchersPage } from '../../src/pages/researchers.js';
+import { titleCaseDiscipline } from '../../src/lib/discipline-display.js';
 
 function createComponent() {
   initResearchersPage();
@@ -42,6 +43,17 @@ describe('researchersPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockFetchAccreditations.mockResolvedValue({ data: [], meta: { total: 0, limit: 12 } });
+  });
+
+  // Factory-exposure regression guard: the researcher row template renders
+  // `r.field` via `titleCaseDiscipline(...)` and would fire a silent
+  // ReferenceError at `x-text` evaluation if the helper isn't on the Alpine
+  // data factory.
+  describe('factory exposes titleCaseDiscipline', () => {
+    it('factory().titleCaseDiscipline is identity-equal to the imported helper', () => {
+      const comp = createComponent();
+      expect(comp.titleCaseDiscipline).toBe(titleCaseDiscipline);
+    });
   });
 
   describe('filter handlers', () => {
