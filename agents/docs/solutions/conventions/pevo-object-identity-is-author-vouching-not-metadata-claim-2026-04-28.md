@@ -39,6 +39,8 @@ tags:
 
 # PEvO object identity is author vouching, not metadata claim
 
+> **Meta-rule:** This doc is the concrete instance. The abstracted meta-rule — "convention docs that establish security or data-integrity invariants must use a structural audit surface, not a hand-curated exemption list" — lives in [`enumerated-exemption-lists-are-drift-vectors-2026-04-28.md`](enumerated-exemption-lists-are-drift-vectors-2026-04-28.md). That meta-rule was abstracted from this doc's own initial drift: an earlier revision enumerated six "non-gating" exempt sites which a subsequent grep audit found included multiple unguarded violations. Read both: this doc tells you the bridge-paper rule; the meta-rule tells you why the rule itself uses a grep-audit surface and a centralized helper rather than a per-site list.
+
 ## Context
 
 The accreditation gate across `backend/src/routes/papers.ts`, `search.ts`, and `stats.ts` was tightened during a `/ce-doc-review` triage on the `backend-papers-filter-accreditation.md` task. The task started as a tests-only canary, expanded twice, and went through three architect-resolution passes:
@@ -237,6 +239,7 @@ The first form is ontological — identity decides membership, metadata decides 
 
 ## Related
 
+- [`enumerated-exemption-lists-are-drift-vectors-2026-04-28.md`](enumerated-exemption-lists-are-drift-vectors-2026-04-28.md) — the meta-rule abstracted from this doc's own initial drift. An earlier revision of this doc enumerated six "non-gating" exempt sites; a subsequent grep audit on commit `497795e` found twelve unguarded sites, several of which the doc had named as exempt. The meta-rule generalizes: convention docs establishing security or data-integrity invariants must use a structural audit surface (grep + centralized helper + CI guard), never a hand-curated list of "safe" sites. This doc is the concrete instance the meta-rule was extracted from.
 - [`test-config-mock-distinct-role-accounts-2026-04-21.md`](test-config-mock-distinct-role-accounts-2026-04-21.md) — sibling rule from the same SEC-003-BE incident family. Covers the **testing-side** prevention surface (test config must distinguish role accounts so config collapse doesn't mask the same gap). This doc covers the **production-code-side** prevention surface (the gate predicate shape itself). Two rules, one root cause, two prevention surfaces.
 - [`hive-signature-request-binding-shape-2026-04-21.md`](hive-signature-request-binding-shape-2026-04-21.md) — adjacent "the principal must be bound to the request, not self-asserted" pattern at the authentication layer. The canonical replay-protection doc. Same family of "self-assertion is not authorization" reasoning, applied to the request-binding axis rather than the gate-predicate axis.
 - [`wrapping-primitive-exhaustive-call-site-audit-2026-04-22.md`](wrapping-primitive-exhaustive-call-site-audit-2026-04-22.md) — different concern (catch-block error-class cross-product audits), but shares the **grep-not-mental-audit** discipline. The audit checklist in "When to Apply" mirrors that doc's methodology applied to gate predicates.
