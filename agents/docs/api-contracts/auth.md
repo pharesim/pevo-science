@@ -81,6 +81,7 @@ Username selection and account creation happen later, at the `/api/auth/confirm`
 - `VALIDATION_ERROR` — password too weak, or missing required fields
 - `DUPLICATE` — email already registered or pending (fires BEFORE the accreditation gate; duplicate-email 409 is authoritative regardless of whether the domain is institutional)
 - `ACCREDITATION_NOT_FOUND` — non-institutional email without valid `orcid_token`, on a non-duplicate email. Institution-is-accredited is public knowledge; the fast-return on this path is intentional.
+- `SERVICE_UNAVAILABLE` (503) — argon2 capacity exhausted or backend draining. Both the duplicate-email burn path and the new-account hash path emit 503 under saturation, so the 503 outcome does not distinguish registration status. See [common.md → Standard Error Codes](common.md) for the cross-route 503 contract and `Retry-After` semantics.
 
 ---
 
@@ -108,6 +109,9 @@ Resend the signup verification email. Requires the email and password to prevent
 Always returns the same generic success message regardless of account state (unknown email, already-active account, confirmed-but-pending, hex-pending). The uniform body is a privacy invariant: no observer can distinguish account states from this endpoint's 200 response.
 
 **Rate limit:** 3 requests per IP per hour.
+
+**Errors:**
+- `SERVICE_UNAVAILABLE` (503) — argon2 capacity exhausted or backend draining. Fires uniformly regardless of email state, preserving the privacy invariant. See [common.md](common.md).
 
 ---
 
@@ -169,6 +173,7 @@ Resume an interrupted signup when the user has already verified their email but 
 **Errors:**
 - `VALIDATION_ERROR` — missing email or password
 - `BAD_REQUEST` — invalid credentials (returns an opaque `"Invalid email or password"` for all failure cases, including unverified email, to prevent enumeration)
+- `SERVICE_UNAVAILABLE` (503) — argon2 capacity exhausted or backend draining. The 503 path equalizes against the password-verify path so the 503 outcome does not distinguish credential-validity. See [common.md](common.md).
 
 ---
 
@@ -291,6 +296,7 @@ Password-based login for light accounts.
 - `PENDING_SIGNUP` (409) — email verified but signup not completed. Response includes `auth_token` and `email` to resume.
 - `PENDING_UNVERIFIED` (409) — email not yet verified
 - `SIGNUP_EXPIRED` (410) — signup expired, user must re-register
+- `SERVICE_UNAVAILABLE` (503) — argon2 capacity exhausted or backend draining. See [common.md](common.md).
 
 ---
 
@@ -317,6 +323,9 @@ Request a password reset email.
 Always returns success to prevent email enumeration.
 
 **Rate limit:** 5 requests per IP per hour.
+
+**Errors:**
+- `SERVICE_UNAVAILABLE` (503) — argon2 capacity exhausted or backend draining. Fires uniformly regardless of account existence, preserving the enumeration-prevention invariant. See [common.md](common.md).
 
 ---
 
@@ -348,6 +357,7 @@ Invalidates all existing sessions for the account.
 **Errors:**
 - `INVALID_TOKEN` — token not found or expired
 - `VALIDATION_ERROR` — password does not meet requirements
+- `SERVICE_UNAVAILABLE` (503) — argon2 capacity exhausted or backend draining. See [common.md](common.md).
 
 ---
 
@@ -404,3 +414,4 @@ Updates email, resets password, invalidates all existing sessions, and returns a
 - `NOT_FOUND` — no active account with that username
 - `UNAUTHORIZED` — memo key mismatch, no ORCID on account, invalid/expired ORCID token, or ORCID mismatch
 - `DUPLICATE` — new email already in use by another account
+- `SERVICE_UNAVAILABLE` (503) — argon2 capacity exhausted or backend draining. See [common.md](common.md).

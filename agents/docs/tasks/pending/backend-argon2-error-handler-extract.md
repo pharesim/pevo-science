@@ -85,3 +85,53 @@ The helper is the choke point for every 503 the auth surface emits, so:
 - `npx tsc --noEmit` clean.
 - `npm run lint` clean (only pre-existing `seed-phrase.ts` `no-explicit-any` warnings unrelated to this task).
 - Scoped tests pass: `tests/lib/argon2-semaphore.test.ts` (15/15), `tests/lib/broadcast-error.test.ts`, `tests/routes/auth.test.ts` (20/20), `tests/routes/auth-concurrency.test.ts`, `tests/routes/custody.test.ts`, `tests/routes/settings.test.ts`, `tests/routes/settings-set-password.test.ts`. Pre-existing failures in `tests/routes/recover.test.ts` (4) and `tests/routes/signup-verify.test.ts` (2) reproduce on the unmodified HEAD and are unrelated to this refactor — verified by stashing the changes and re-running.
+
+---
+
+## Architect re-review (2026-04-28) — HELD PENDING FIXES
+
+`/ce-code-review` ran on commits 73b6d76 + 46676ef with 11 reviewers (correctness, security, adversarial, reliability, api-contract, testing, maintainability, project-standards, kieran-typescript, agent-native, learnings). Backend refactor lands cleanly: timing-oracle invariant verified closed, listener cleanup sound across resolve/abort/shutdown paths, `logContext` propagates `username` structurally equivalently to the prior inline log, all four routes use `=== 'handled'`, no `await` runs after `handleArgonError` at any of the 9 catch sites (Express 5 response-ordering risk from `helper-extraction-express5-response-ordering-2026-04-28.md` does not apply).
+
+Doc-side fixes (auth.md /signup + /resend-verification + /resume-signup + /login + /reset-request + /reset + /recover, custody.md /upgrade, settings.md /set-password, common.md error-code table + AbortError silent-return note) were applied in the same architect commit that produced this hold block. Six backend follow-up items below need to land before this task can archive.
+
+### Items to address
+
+**1. `opts.logContext` open record + logger merge order (CNPD/PII risk)**
+- File: `backend/src/lib/argon-error-handler.ts:78-90,142`.
+- Narrow the type from `Record<string, unknown>` to a closed allowlist (e.g., `opts.logContext?: { username?: string }`). Today only custody passes `{ username }`, so the change is non-disruptive. The open record invites a future caller to pass `{ email }`, bypassing the project-wide `hashEmailForLogs` convention. Portugal/CNPD jurisdiction makes raw emails in operator logs a real compliance risk.
+- Reorder the spread inside the logger calls from `{ err, ...ctx }` to `{ ...ctx, err }` so a caller-supplied `ctx.err` cannot clobber the structured error field.
+- Three reviewers flagged this (adversarial, kieran-typescript, maintainability).
+
+**2. Stale comment at `auth.ts:373` references the old helper name `handleArgonQueueFull`**
+- File: `backend/src/routes/auth.ts:373`.
+- Update to reference `handleArgonError` (the renamed helper).
+
+**3. Filename: rename `argon-error-handler.ts` → `argon2-error-handler.ts`**
+- File: `backend/src/lib/argon-error-handler.ts` → `backend/src/lib/argon2-error-handler.ts`.
+- Sibling files use the `argon2-` prefix (`argon2-semaphore.ts`, `argon2-options.ts`). The current name means `grep argon2-` misses the helper. Update the 4 import paths in `routes/{auth,custody,settings,signup-verify}.ts`.
+
+**4. Export `ARGON_HANDLED` / `ARGON_UNHANDLED` constants and `isArgonSemaphoreError` type guard**
+- File: `backend/src/lib/argon2-error-handler.ts` (post-rename).
+- Add `export const ARGON_HANDLED = 'handled' as const;` and `export const ARGON_UNHANDLED = 'unhandled' as const;`. Update the 9 call sites to `=== ARGON_HANDLED`. Removes magic strings.
+- Add `export function isArgonSemaphoreError(err: unknown): err is ArgonSemaphoreError` in `argon2-semaphore.ts`. Keeps `instanceof` narrowing colocated with the class.
+
+**5. Reframe inline comment at `auth.ts:401-422` to say "structural collapse, behavior unchanged" and correct the existing implementation note above this hold block**
+- File: `backend/src/routes/auth.ts:401-422` and the "Implementation notes → /signup 409 dup `.catch`" bullet earlier in this task file (line 68 in the version that landed).
+- The current comment block names the three subclasses but reads as if it documents a behavior change (and the implementation note in this task file claims a "widening"). **Verified false** by the architect against `git show 497795e:backend/src/routes/auth.ts:425-455`: pre-refactor code already enumerated all three subclasses with three explicit `instanceof` checks and re-threw all three. The refactor is purely structural collapse from `(A || B || C)` to `instanceof base class`. The `burnSentinel` body sentence ("matches what the `burnSentinel` body already did") in the existing note is also misleading: `burnSentinel` had three explicit checks too; the collapse is structural in both places.
+- Reframe the inline comment so a future bisector understands the intent without thinking they are reading a behavior change. Rewrite the implementation note to describe what actually changed (structural collapse via the new abstract base class, not a behavioral widening).
+
+**6. JSDoc cross-references on `ArgonSemaphoreError` base class**
+- File: `backend/src/lib/argon2-semaphore.ts:71-91`.
+- Base-class JSDoc describes the propagation invariant but doesn't point at the two consumers (`burnSentinel` re-throw in `auth.ts`, `handleArgonError` dispatch in `argon2-error-handler.ts`) that depend on it. A future contributor adding a 4th subclass needs to know both consumers assume 503-able-or-silent semantics. Two-line addition.
+
+### Items dismissed during architect triage (do NOT address)
+
+- **Truthy short-circuit footgun on `'unhandled'`** — covered by `backend-argon2-error-routes-test-coverage.md` (also in cluster A's review queue). The exported constants in item 4 also help.
+- **`ArgonAbortError.name = 'AbortError'` asymmetry** — intentional DOMException compat for code that does `err.name === 'AbortError'`. Comment in argon2-semaphore.ts already explains it.
+- **`HandleArgonErrorOpts.retryAfterSec` declared-but-unused** — `backend-503-retry-after.md` (also in cluster A's review queue) wires it.
+- **`handleArgonError` lacks `writableEnded` guard** — YAGNI today (no streaming endpoints); loud failure mode (`ERR_HTTP_HEADERS_SENT`) if ever triggered.
+- **Per-route log correlation enrichment, saturation log volume** — advisory ops items, not tracked.
+
+### Re-review signal
+
+When items 1-6 above land, `git mv` this file back to `tasks/review/`. The architect's next review pass picks it up; the move itself is the re-review signal (no need to edit this hold block).

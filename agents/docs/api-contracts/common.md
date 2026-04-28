@@ -71,9 +71,12 @@ Error:
 | 429 | `RATE_LIMITED` | Too many requests |
 | 502 | `BROADCAST_FAILED` | Hive chain rejected the broadcast (chain-side error, not retriable). `details.retriable: false`. |
 | 504 | `BROADCAST_TIMEOUT` | Backend aborted the broadcast at the wall-clock bound. Outcome is uncertain (the op may or may not have landed on chain). `details.retriable: false, details.outcome: 'uncertain', details.verify_before_retry: true, details.timeout_ms: number`. Clients must verify chain state before retrying to avoid duplicate ops. |
+| 503 | `SERVICE_UNAVAILABLE` | Argon2 password-hash/verify capacity is exhausted (queue full) or the backend is draining for shutdown. Transient. Emitted only by argon2-bound endpoints (auth signup/login/resend-verification/reset-request/reset/recover, signup-verify resume-signup, custody upgrade, settings set-password). `Retry-After` header carries seconds (planned: 5 for queue-full, 30 for shutdown drain). Clients SHOULD honor `Retry-After` rather than tight-loop retrying. |
 | 500 | `INTERNAL_ERROR` | Server error |
 
 **Note on `BROADCAST_*` codes.** `bridge.ts` and `custody.ts` use a different broadcast helper (`broadcastSendOperationsWithTimeout`) and currently still emit `BROADCAST_FAILED` at HTTP 500 with no discrimination. Migrating those sites to the 502/504 pattern is tracked as a separate follow-up task (see `tasks/pending/backend-bridge-custody-broadcast-discrimination.md` when filed).
+
+**Note on `503 SERVICE_UNAVAILABLE` and client disconnects.** Argon2-bound endpoints may emit no response body when the client disconnects mid-request (the in-flight argon2 work is aborted via the request's `AbortSignal`). The closed socket is the client signal; no response envelope is written. Frontend code paths that observe a torn-down request (e.g. fetch `AbortError`) should treat it as a normal client cancellation, not as a server fault. Future global response middleware MUST NOT enforce "every request gets a body" or this contract will silently break.
 
 ---
 

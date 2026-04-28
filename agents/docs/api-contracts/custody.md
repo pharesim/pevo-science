@@ -85,3 +85,4 @@ Notify the backend that the user has completed a client-side key upgrade to self
 - `VALIDATION_ERROR` — missing password
 - `FORBIDDEN` — account is not a light account
 - `ALREADY_UPGRADED` (409) — account already upgraded
+- `SERVICE_UNAVAILABLE` (503) — argon2 capacity exhausted or backend draining. See [common.md](common.md).
