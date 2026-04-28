@@ -42,13 +42,28 @@ export function isPevoReview(meta: Record<string, unknown>): boolean {
   return appMeta?.type === 'review' && typeof meta.app === 'string' && (meta.app as string).startsWith(`${config.appTag}/`);
 }
 
-export function isPevoBridgePaper(meta: Record<string, unknown>): boolean {
+/**
+ * Returns true iff the metadata claims `type = 'bridge_paper'` AND the post
+ * was authored by `config.hiveBridgeAccount`.
+ *
+ * The author argument is **load-bearing**: bridge identity is what distinguishes
+ * a real bridge import from a spoofed self-claim. A type flag without an
+ * identity check is a self-asserted exemption — see
+ * `agents/docs/solutions/conventions/pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28.md`.
+ * Callers that have a post in hand always have the author; pass it.
+ */
+export function isPevoBridgePaper(meta: Record<string, unknown>, author: string): boolean {
   const appMeta = meta[config.appTag] as Record<string, unknown> | undefined;
-  return appMeta?.type === 'bridge_paper' && typeof meta.app === 'string' && (meta.app as string).startsWith(`${config.appTag}/`);
+  return (
+    appMeta?.type === 'bridge_paper'
+    && author === config.hiveBridgeAccount
+    && typeof meta.app === 'string'
+    && (meta.app as string).startsWith(`${config.appTag}/`)
+  );
 }
 
-export function isPevoAnyPaper(meta: Record<string, unknown>): boolean {
-  return isPevoPaper(meta) || isPevoBridgePaper(meta);
+export function isPevoAnyPaper(meta: Record<string, unknown>, author: string): boolean {
+  return isPevoPaper(meta) || isPevoBridgePaper(meta, author);
 }
 
 export function parsePageLimit(req: Request) {
@@ -108,10 +123,10 @@ export function toPaperSummary(post: {
     author_reputation: 0,
     is_accredited: false,
     accredited_authors: [],
-    source_type: pevo.type === 'bridge_paper'
+    source_type: isPevoBridgePaper(meta, post.author)
       ? ((pevo.source as Record<string, unknown>)?.type as 'arxiv' | 'crossref') || 'arxiv'
       : 'native',
-    doi: (pevo.type === 'bridge_paper'
+    doi: (isPevoBridgePaper(meta, post.author)
       ? ((pevo.source as Record<string, unknown>)?.doi as string) || null
       : null),
   };

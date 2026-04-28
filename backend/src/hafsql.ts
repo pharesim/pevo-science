@@ -177,6 +177,66 @@ export function isPevoReviewSql(startIdx = 1): SqlFragment {
   };
 }
 
+/**
+ * Centralized SQL fragment that matches a valid PEvO paper row by type AND
+ * (for bridge papers) author identity.
+ *
+ * **Why this helper exists.** A PEvO paper's identity is established by author
+ * vouching, not by a self-asserted metadata flag. Native papers are vouched-for
+ * by the post author being in `active_accreditations`; bridge papers are
+ * vouched-for by the post author being `config.hiveBridgeAccount`. Any place
+ * the codebase filters or admits rows on `(json_metadata -> $appTag ->> 'type')
+ * = 'bridge_paper'` (or `IN ('paper', 'bridge_paper')`) without an author
+ * predicate is admitting attacker-controlled rows: any Hive account can post a
+ * comment with `parent_permlink = '<appTag>'` and `json_metadata.<appTag>.type
+ * = 'bridge_paper'` and the type-only filter happily admits it.
+ *
+ * Routes that touch paper-class content MUST compose against this helper
+ * rather than handcrafting the predicate. The CI guard
+ * (`scripts/check-bridge-paper-discipline.sh`) enforces no direct
+ * `'bridge_paper'` string literals in non-allowlisted files.
+ *
+ * The caller allocates parameter indexes for the appTag and bridgeAccount
+ * binds and pushes the values onto its params array; this helper returns just
+ * the SQL fragment string (no params, no nextIdx — its inputs are param-string
+ * references that the caller has already accounted for).
+ *
+ * @param opts.commentAlias - SQL alias for the comments row (default 'c').
+ * @param opts.appTagParam - the caller-allocated `$N` reference for `config.appTag`.
+ * @param opts.bridgeAccountParam - the caller-allocated `$N` reference for `config.hiveBridgeAccount`.
+ * @param opts.source - which paper-class to admit. Default 'all'.
+ *   - 'native':  only `type = 'paper'` (no author pin needed; native papers
+ *                are gated separately by accreditation downstream).
+ *   - 'bridge':  only `type = 'bridge_paper' AND author = $bridgeAccount`.
+ *   - 'all':     'paper' UNION the pinned 'bridge_paper'.
+ *
+ * @example
+ *   const appTagParam = `$${paramIdx++}`;
+ *   const bridgeAccountParam = `$${paramIdx++}`;
+ *   params.push(config.appTag, config.hiveBridgeAccount);
+ *   conditions.push(validPevoPaperWhere({
+ *     commentAlias: 'c',
+ *     appTagParam,
+ *     bridgeAccountParam,
+ *   }));
+ */
+export function validPevoPaperWhere(opts: {
+  commentAlias?: string;
+  appTagParam: string;
+  bridgeAccountParam: string;
+  source?: 'native' | 'bridge' | 'all';
+}): string {
+  const alias = opts.commentAlias ?? 'c';
+  const source = opts.source ?? 'all';
+  const typeExpr = `(${alias}.json_metadata -> ${opts.appTagParam} ->> 'type')`;
+  const authorExpr = `${alias}.author`;
+  const nativeArm = `${typeExpr} = 'paper'`;
+  const bridgeArm = `(${authorExpr} = ${opts.bridgeAccountParam} AND ${typeExpr} = 'bridge_paper')`;
+  if (source === 'native') return nativeArm;
+  if (source === 'bridge') return bridgeArm;
+  return `(${nativeArm} OR ${bridgeArm})`;
+}
+
 // ─── Authorship claims CTE ──────────────────────────────────────
 
 /**

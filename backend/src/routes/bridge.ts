@@ -303,7 +303,7 @@ router.post('/update', updateLimiter, verifyHiveSignature, async (req: Request, 
     }
 
     existingMeta = parseMeta(post.json_metadata);
-    if (!isPevoBridgePaper(existingMeta)) {
+    if (!isPevoBridgePaper(existingMeta, post.author)) {
       return sendError(res, 404, 'NOT_FOUND', 'Bridge paper not found');
     }
 

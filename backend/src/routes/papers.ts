@@ -390,6 +390,11 @@ async function fetchPapersFromHaf(
       const pevoAuthors: Array<{ hive?: string }> = (pevo.authors || []) as Array<{ hive?: string }>;
       const voteKey = `${r.author}/${r.permlink}`;
       const resolved = voteData.get(voteKey);
+      // Bridge identity must be author-pinned; metadata-only `type === 'bridge_paper'`
+      // is a self-asserted exemption a spoofer can mint. The SQL gate already
+      // pins author = config.hiveBridgeAccount, so this JS-level check is
+      // defense-in-depth for any future call path that bypasses the gate.
+      const isBridge = pevo.type === 'bridge_paper' && r.author === config.hiveBridgeAccount;
       return {
         author: r.author,
         permlink: r.permlink,
@@ -410,10 +415,10 @@ async function fetchPapersFromHaf(
         accredited_authors: pevoAuthors
           .filter(a => a.hive && allAccredited.has(a.hive))
           .map(a => a.hive!),
-        source_type: pevo.type === 'bridge_paper'
+        source_type: isBridge
           ? ((pevo.source as Record<string, unknown>)?.type as 'arxiv' | 'crossref') || 'arxiv'
           : 'native',
-        doi: pevo.type === 'bridge_paper'
+        doi: isBridge
           ? ((pevo.source as Record<string, unknown>)?.doi as string) || null
           : null,
       };
@@ -570,7 +575,7 @@ async function fetchPaperDetailFromHaf(author: string, permlink: string) {
 
     const row = paperResult.rows[0];
     const meta = parseMeta(row.json_metadata);
-    if (!isPevoAnyPaper(meta)) return null;
+    if (!isPevoAnyPaper(meta, row.author as string)) return null;
 
     const detail = buildPaperDetail(row, meta, []);
     const versions = fullVersions.map(({ body: _body, json_metadata: _meta, post_author: _pa, post_permlink: _pp, ...entry }) => entry);
@@ -597,7 +602,7 @@ async function fetchPaperDetailFromHaf(author: string, permlink: string) {
 
         // Update metadata-derived fields from the head version
         const headMeta = latest.json_metadata;
-        if (isPevoAnyPaper(headMeta)) {
+        if (isPevoAnyPaper(headMeta, latest.post_author)) {
           detail.json_metadata = headMeta;
           const headPevo = safePevoMeta(headMeta);
           detail.authors = headPevo.authors || [];
@@ -883,7 +888,7 @@ async function reconstructVersionsFromHaf(
 
       let meta = parseMeta(r.json_metadata);
 
-      if (isPevoAnyPaper(meta)) {
+      if (isPevoAnyPaper(meta, r.author as string)) {
         lastGoodMeta = meta;
       } else if (lastGoodMeta) {
         meta = { ...meta, app: lastGoodMeta.app, [config.appTag]: lastGoodMeta[config.appTag] };
@@ -1044,7 +1049,7 @@ router.get('/:author/:permlink', async (req: Request, res: Response) => {
 
       // Paper identity is established by the first version (original publication).
       // External edits may overwrite json_metadata, so don't check later versions.
-      if (!isPevoAnyPaper(versions[0].json_metadata)) return null;
+      if (!isPevoAnyPaper(versions[0].json_metadata, versions[0].post_author)) return null;
 
       const target = versions.find((v) => v.version_number === requestedVersion);
       if (!target) return null;
@@ -1077,7 +1082,7 @@ router.get('/:author/:permlink', async (req: Request, res: Response) => {
     // version history. The first version establishes paper identity; later
     // versions inherit PEvO metadata when the editing frontend dropped it.
     const versions = await reconstructVersionsFromHaf(author, permlink);
-    if (versions.length > 0 && isPevoAnyPaper(versions[0].json_metadata)) {
+    if (versions.length > 0 && isPevoAnyPaper(versions[0].json_metadata, versions[0].post_author)) {
       const latest = versions[versions.length - 1];
       const meta = latest.json_metadata;
       const post = { author, permlink, title: latest.title, body: latest.body, json_metadata: meta, created: versions[0].created, last_edited: latest.created };

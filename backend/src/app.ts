@@ -313,7 +313,7 @@ export function createApp() {
     if (!post || !post.author || post.parent_permlink !== config.appTag) return html;
 
     const meta = parseMeta(post.json_metadata);
-    if (!isPevoAnyPaper(meta)) return html;
+    if (!isPevoAnyPaper(meta, post.author as string)) return html;
 
     const title = (post.title as string) || defaultTitle;
     const body = post.body as string;
