@@ -49,7 +49,14 @@ import { PrivateKey } from '@hiveio/dhive';
 // post-broadcast-throw escape from `fn`'s inner try/catch in
 // `withOrcidBindingLock` (item #7 of the round-1 architect re-review). The
 // default impl preserves the previous behavior `getAppPool: () => ({ query: appQueryMock })`.
-const { hafQueryMock, appQueryMock, getAppPoolMock, broadcastJsonMock, MockBroadcastTimeoutError } = vi.hoisted(() => {
+const {
+  hafQueryMock,
+  appQueryMock,
+  getAppPoolMock,
+  broadcastJsonMock,
+  MockBroadcastTimeoutError,
+  verifyHiveSignatureFailureToken,
+} = vi.hoisted(() => {
   const _appQueryMock = vi.fn().mockResolvedValue({ rows: [] });
   return {
     hafQueryMock: vi.fn().mockResolvedValue({ rows: [] }),
@@ -64,6 +71,13 @@ const { hafQueryMock, appQueryMock, getAppPoolMock, broadcastJsonMock, MockBroad
         this.timeoutMs = timeoutMs;
       }
     },
+    // Controllable failure flag for the round-3 SEC-002-HARDENING #3 spec.
+    // Default false: the wrapping mock delegates to the real verifyHiveSignature
+    // (preserving the SEC-002-BE invariant that the real auth middleware sees
+    // every other auth-mode callback). A single spec sets `.value = true`,
+    // exercises the orcid /callback authenticateRequest infra-throw path, and
+    // resets to false in the same try/finally.
+    verifyHiveSignatureFailureToken: { value: false as boolean },
   };
 });
 
@@ -93,9 +107,30 @@ vi.mock('../../src/accreditation.js', () => ({
   getAccreditedSet: vi.fn().mockResolvedValue(new Set()),
 }));
 
-// NOTE: verifyHiveSignature is intentionally NOT mocked. The SEC-002-BE fix must
-// be exercised against the real auth middleware; the fixtures/mock-auth shim hid
-// the state-hijack gap in the first place and must not be reintroduced here.
+// NOTE: verifyHiveSignature is wrapped, NOT replaced. The wrapper delegates to
+// the real middleware (preserving the SEC-002-BE invariant — fixtures/mock-auth
+// shims previously hid the state-hijack gap and must not be reintroduced) UNLESS
+// verifyHiveSignatureFailureToken.value === true, in which case the wrapper
+// fires next(new Error(...)) without sending a response. The toggle exists for
+// SEC-002-HARDENING round-3 finding #3: exercising the authenticateRequest
+// infra-throw path needs the inner middleware to call next(err) synchronously,
+// which the real middleware never does (every internal throw is caught and
+// mapped to sendError + finish event). All other specs leave the toggle false
+// so the real auth middleware runs end-to-end.
+vi.mock('../../src/middleware/verifyHiveSignature.js', async () => {
+  const actual = await vi.importActual<typeof import('../../src/middleware/verifyHiveSignature.js')>(
+    '../../src/middleware/verifyHiveSignature.js',
+  );
+  return {
+    ...actual,
+    verifyHiveSignature: async (req: import('express').Request, res: import('express').Response, next: import('express').NextFunction) => {
+      if (verifyHiveSignatureFailureToken.value) {
+        return next(new Error('simulated verifyHiveSignature infra throw (SEC-002-HARDENING #3)'));
+      }
+      return actual.verifyHiveSignature(req, res, next);
+    },
+  };
+});
 
 import { createApp } from '../../src/app.js';
 import { config } from '../../src/config.js';
@@ -189,13 +224,32 @@ describe('POST /api/orcid/callback — auth gate (SEC-002-BE)', () => {
     'returns 403 when link caller does not match the state initiator',
     async () => {
       const state = await startAuthed('link', 'alice');
-      const res = await request(app)
-        .post('/api/orcid/callback')
-        .set('Authorization', `Bearer ${jwtFor('mallory')}`)
-        .send({ code: 'fake', state });
-      expect(res.status).toBe(403);
-      expect(res.body.error.code).toBe('FORBIDDEN');
-      expect(broadcastJsonMock).not.toHaveBeenCalled();
+      const stateKey = `${config.appTag}:orcid_state:${state}`;
+      const redis = getRedis();
+      // Spy on redis.del when available so we can assert state-not-consumed.
+      // When Redis is unavailable the in-memory orcidStates Map is the
+      // authoritative store and the DEL spy has no surface to observe; the
+      // body assertion (403 + no broadcast) still pins the auth gate behaviour.
+      const delSpy = redis ? vi.spyOn(redis, 'del') : null;
+      try {
+        const res = await request(app)
+          .post('/api/orcid/callback')
+          .set('Authorization', `Bearer ${jwtFor('mallory')}`)
+          .send({ code: 'fake', state });
+        expect(res.status).toBe(403);
+        expect(res.body.error.code).toBe('FORBIDDEN');
+        expect(broadcastJsonMock).not.toHaveBeenCalled();
+        // State-not-consumed-on-403 contract: a refactor that moves the DEL
+        // before the username-mismatch check would let an attacker burn the
+        // legitimate initiator's state by repeatedly calling /callback with a
+        // mismatched caller. Pin the contract by asserting DEL was never
+        // invoked with stateKey on the 403 path.
+        if (delSpy) {
+          expect(delSpy.mock.calls.map((c) => c[0])).not.toContain(stateKey);
+        }
+      } finally {
+        delSpy?.mockRestore();
+      }
     },
   );
 
@@ -559,8 +613,16 @@ describe('POST /api/orcid/callback — hardening (SEC-002-HARDENING)', () => {
       const state = await startUnauthed('signup');
       const stateKey = `${config.appTag}:orcid_state:${state}`;
 
-      const getSpy = vi.spyOn(redis, 'get').mockImplementationOnce(async () => {
-        throw new Error('simulated Redis flap on state GET');
+      // Key-targeted mock (refactor-stable): a future change that adds a
+      // redis.get call upstream of the stateKey read would silently intercept
+      // the wrong call under mockImplementationOnce. Filtering by key keeps
+      // the throw bound to the state-read site this spec is exercising.
+      const origGet = redis.get.bind(redis);
+      const getSpy = vi.spyOn(redis, 'get').mockImplementation(async (key: string) => {
+        if (key === stateKey) {
+          throw new Error('simulated Redis flap on state GET');
+        }
+        return origGet(key);
       });
       const delSpy = vi.spyOn(redis, 'del');
       try {
@@ -577,6 +639,40 @@ describe('POST /api/orcid/callback — hardening (SEC-002-HARDENING)', () => {
       } finally {
         getSpy.mockRestore();
         delSpy.mockRestore();
+      }
+    },
+  );
+
+  // Round-3 P3 (SEC-002-HARDENING #3): the widened try/catch wraps
+  // authenticateRequest. When verifyHiveSignature dispatches next(err) (or
+  // otherwise causes the inner Promise to reject) the orcid /callback handler
+  // must surface a clean 500 INTERNAL_ERROR AND must NOT consume state — the
+  // legitimate caller can retry once infrastructure recovers, symmetric with
+  // the 403 state-not-consumed contract. The wrapping mock at the top of this
+  // file flips to a synthetic next(err) for this single spec.
+  it(
+    'authenticateRequest throw → 500 INTERNAL_ERROR, state not consumed (authed mode)',
+    async () => {
+      const redis = getRedis();
+      const state = await startAuthed('link', 'alice');
+      const stateKey = `${config.appTag}:orcid_state:${state}`;
+      const delSpy = redis ? vi.spyOn(redis, 'del') : null;
+      verifyHiveSignatureFailureToken.value = true;
+      try {
+        const res = await request(app)
+          .post('/api/orcid/callback')
+          .set('Authorization', `Bearer ${jwtFor('alice')}`)
+          .send({ code: 'fake', state });
+        expect(res.status).toBe(500);
+        expect(res.body.error.code).toBe('INTERNAL_ERROR');
+        expect(broadcastJsonMock).not.toHaveBeenCalled();
+        if (delSpy) {
+          // State-not-consumed-on-infra-error contract.
+          expect(delSpy.mock.calls.map((c) => c[0])).not.toContain(stateKey);
+        }
+      } finally {
+        verifyHiveSignatureFailureToken.value = false;
+        delSpy?.mockRestore();
       }
     },
   );
