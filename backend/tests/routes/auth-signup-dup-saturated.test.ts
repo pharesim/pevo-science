@@ -34,30 +34,44 @@ import request from 'supertest';
 // Hoisted error class shared with the semaphore mock and the test body so
 // `instanceof` checks inside the route handler resolve to the same class
 // the test injects.
-const { MockArgonQueueFullError, MockShuttingDownError, MockArgonAbortError, MockRunWithArgon2Slot } = vi.hoisted(() => ({
-  MockArgonQueueFullError: class ArgonQueueFullError extends Error {
+const {
+  MockArgonSemaphoreError,
+  MockArgonQueueFullError,
+  MockShuttingDownError,
+  MockArgonAbortError,
+  MockRunWithArgon2Slot,
+} = vi.hoisted(() => {
+  abstract class ArgonSemaphoreError extends Error {}
+  class ArgonQueueFullError extends ArgonSemaphoreError {
     constructor(message = 'argon2 semaphore queue full') {
       super(message);
       this.name = 'ArgonQueueFullError';
     }
-  },
-  MockShuttingDownError: class ShuttingDownError extends Error {
+  }
+  class ShuttingDownError extends ArgonSemaphoreError {
     constructor(message = 'argon2 semaphore shutting down') {
       super(message);
       this.name = 'ShuttingDownError';
     }
-  },
-  MockArgonAbortError: class ArgonAbortError extends Error {
+  }
+  class ArgonAbortError extends ArgonSemaphoreError {
     constructor(message = 'argon2 slot aborted') {
       super(message);
       this.name = 'AbortError';
     }
-  },
-  MockRunWithArgon2Slot: vi.fn(),
-}));
+  }
+  return {
+    MockArgonSemaphoreError: ArgonSemaphoreError,
+    MockArgonQueueFullError: ArgonQueueFullError,
+    MockShuttingDownError: ShuttingDownError,
+    MockArgonAbortError: ArgonAbortError,
+    MockRunWithArgon2Slot: vi.fn(),
+  };
+});
 
 vi.mock('../../src/lib/argon2-semaphore.js', () => ({
   runWithArgon2Slot: MockRunWithArgon2Slot,
+  ArgonSemaphoreError: MockArgonSemaphoreError,
   ArgonQueueFullError: MockArgonQueueFullError,
   ShuttingDownError: MockShuttingDownError,
   ArgonAbortError: MockArgonAbortError,
