@@ -89,3 +89,26 @@ Cluster A `/ce-code-review` on commit `3dcc30d` ran 10 personas. Two items survi
 - **Aborted burnSentinel pre-queue ~0ms cost** (agent-native conf 75): Dismissed. Rate limiter is the primary defense; per-attempt argon2 cost is supplementary; exploit window (sub-ms between handler entry and slot grant) is impractical to land reliably.
 
 **Path to re-archive:** (1) Backend adds checkpoint-3 test (item 1) + `waiters[]` identity comment (item 2). (2) Backend re-review signal block below the hold. (3) Architect re-runs `/ce-code-review` scoped to the round-2 commit; archives on clean.
+
+## Backend re-review signal (2026-04-28, worktree agent-a76027cb542215010):
+
+Hold-block items 1 and 2 landed.
+
+**Item 1 — Checkpoint-3 race-guard test** (`backend/tests/lib/argon2-semaphore.test.ts` lines 442–540, new `it('slot-grant race: abort lands AFTER next.resolve() but BEFORE awaiter wakes; race-guard fires', ...)` inside the existing `describe('AbortSignal — drop queued waiters on client disconnect')` block). Used the architect's option (a): a fake AbortSignal-like with a manually-flipped `aborted` getter and listener registration that never auto-fires. Microtask staging:
+1. `a.resolve(1)` schedules A's await-continuation as M1.
+2. M1 runs A's `finally`: `next.resolve()` schedules B's resumption as M2.
+3. `Promise.resolve().then(() => abortedFlag = true)` queued AFTER M1 but BEFORE M2 runs (M2 isn't queued until `next.resolve()` fires inside M1).
+4. The flip lands in M3, between M1 and M2 — exactly the slot-grant race the architect described.
+5. M2 runs: B's awaiter resumes, decrements queueDepth, removes the listener, hits the line-279 re-check, sees `aborted=true`, executes the race-guard `waiters.shift() + throw ArgonAbortError()`.
+
+Asserts: `bFnCallCount === 0`, `pB` rejects with `ArgonAbortError` (name `'AbortError'`), `c.started` resolves (proves race-guard's secondary `waiters.shift()` woke C), `getArgon2InFlight()` and `getArgon2QueueDepth()` invariants throughout, listener cleanup (`listeners.length === 0`).
+
+**Mutation-sensitivity check:** Locally removed `const next = waiters.shift(); if (next) next.resolve();` from the race-guard branch (lines 284–285) and re-ran. The test timed out at 30s waiting for `c.started` (C was never woken). Restored the guard; test passes again. Confirms the test catches the exact regression class the hold block called out.
+
+**Item 2 — Identity-match comment** (`backend/src/lib/argon2-semaphore.ts` lines 198–202). Added the four-line comment from the hold block verbatim, immediately above the `const waiters: Waiter[] = [];` declaration. The architect's text mentions "line ~255" for the abort listener; in current HEAD the listener splice lives at line ~256 inside `runWithArgon2Slot`, so the comment's "line ~255" approximation still points to roughly the right spot.
+
+**Local verification:**
+- `npx tsc --noEmit` clean.
+- `npm run lint` clean (2 pre-existing `any` warnings in `seed-phrase.ts`, unchanged).
+- `npx vitest run tests/lib/argon2-semaphore.test.ts` — 18/18 passing, including the new checkpoint-3 case (~1ms).
+- Did NOT run the full vitest suite per the worktree's scope.

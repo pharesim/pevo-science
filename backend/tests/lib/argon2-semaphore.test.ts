@@ -438,6 +438,134 @@ describe('AbortSignal — drop queued waiters on client disconnect', () => {
     expect(sem.getArgon2InFlight()).toBe(0);
     expect(sem.getArgon2QueueDepth()).toBe(0);
   });
+
+  it('slot-grant race: abort lands AFTER next.resolve() but BEFORE awaiter wakes; race-guard fires', async () => {
+    // Checkpoint-3 coverage. The semaphore has three abort checkpoints:
+    //   (1) pre-queue fast-path (signal already aborted on entry),
+    //   (2) parked-waiter abort listener that splices the waiter out,
+    //   (3) slot-grant race-guard re-check at line 279 (`if (signal?.aborted)`)
+    //       that catches the case where a slot release calls next.resolve()
+    //       BEFORE the abort listener fires.
+    //
+    // Checkpoint 3 is unreachable from a real `AbortController` because
+    // `controller.abort()` synchronously sets `aborted = true` AND fires
+    // listeners in the same call — so the abort-listener splice on a parked
+    // waiter always wins, and the slot-grant re-check sees a waiter that
+    // was already removed from the queue (never woken via next.resolve()).
+    //
+    // To exercise the race we need the `aborted` flag to flip between
+    // `next.resolve()` (which queues B's awaiter resumption as a microtask)
+    // and that resumption actually running. We use a fake AbortSignal-like
+    // whose `aborted` getter and listener registration are decoupled, then
+    // schedule the flag flip via `Promise.resolve().then(...)` so it lands
+    // in the microtask AFTER A's finally and BEFORE B's resume.
+    //
+    // A regression that omitted the secondary `waiters.shift()` at the
+    // race-guard branch (so an aborted-at-grant-time B silently throws but
+    // never wakes C) would stall the next live waiter forever — this test
+    // catches it via the `await c.started` + queueDepth assertions.
+    const sem = createArgon2Semaphore(1, 10);
+
+    const a = controllable<number>();
+    const c = controllable<number>();
+
+    const pA = sem.runWithArgon2Slot(() => a.fn());
+    await a.started; // A is in-flight.
+
+    // Fake AbortSignal: `aborted` flag is mutable from outside; listeners
+    // are tracked but never auto-fired when we flip the flag (the whole
+    // point — we want the slot-grant re-check, not the listener splice).
+    let abortedFlag = false;
+    const listeners: Array<(ev: Event) => void> = [];
+    const fakeSignal = {
+      get aborted() {
+        return abortedFlag;
+      },
+      addEventListener(_type: string, listener: (ev: Event) => void): void {
+        listeners.push(listener);
+      },
+      removeEventListener(_type: string, listener: (ev: Event) => void): void {
+        const i = listeners.indexOf(listener);
+        if (i >= 0) listeners.splice(i, 1);
+      },
+      dispatchEvent(_ev: Event): boolean {
+        return true;
+      },
+      onabort: null,
+      reason: undefined,
+      throwIfAborted(): void {
+        if (abortedFlag) throw new Error('aborted');
+      },
+    } as unknown as AbortSignal;
+
+    let bFnCallCount = 0;
+    const pB = sem
+      .runWithArgon2Slot(
+        () => {
+          bFnCallCount += 1;
+          return Promise.resolve('should-not-run');
+        },
+        { signal: fakeSignal },
+      )
+      .catch((err) => err);
+
+    // C is a live waiter behind B that must still get the slot after the
+    // race-guard fires for B.
+    const pC = sem.runWithArgon2Slot(() => c.fn());
+
+    // Park both waiters before staging the race.
+    await new Promise((r) => setImmediate(r));
+    expect(sem.getArgon2InFlight()).toBe(1);
+    expect(sem.getArgon2QueueDepth()).toBe(2);
+    // The fake-signal listener is registered but won't auto-fire — that's
+    // the whole point of the race.
+    expect(listeners.length).toBe(1);
+
+    // Stage the race in microtask order:
+    //   1. `a.resolve(1)` schedules A's await-continuation as microtask M1.
+    //   2. M1 runs: A's finally calls `next.resolve()` → schedules B's
+    //      awaiter resumption as microtask M2.
+    //   3. The `Promise.resolve().then(...)` we schedule next is microtask
+    //      M3 — queued AFTER M1 (because `a.resolve` synchronously queued
+    //      M1 first), but BEFORE M2 (because M2 isn't scheduled until M1
+    //      runs and calls next.resolve()).
+    //   4. M3 runs: flips `abortedFlag = true`.
+    //   5. M2 runs: B's awaiter wakes, decrements queueDepth, runs the
+    //      `removeEventListener`, reaches the slot-grant re-check at
+    //      line 279, sees `signal.aborted === true`, executes the
+    //      race-guard branch (next.resolve(C) + throw ArgonAbortError).
+    a.resolve(1);
+    void Promise.resolve().then(() => {
+      abortedFlag = true;
+    });
+
+    // Drain microtasks. A flush via setImmediate runs all pending microtasks
+    // in queue order before the macrotask fires.
+    const bErr = await pB;
+    await pA;
+
+    // Race-guard assertions:
+    expect(bErr).toBeInstanceOf(ArgonAbortError);
+    expect((bErr as Error).name).toBe('AbortError');
+    expect(bFnCallCount).toBe(0); // fn was NEVER called even though next.resolve(B) ran.
+
+    // C must have been woken by the race-guard's secondary `waiters.shift()`.
+    // If a regression dropped that shift, C would still be parked and this
+    // assertion would time out.
+    await c.started;
+    expect(sem.getArgon2InFlight()).toBe(1);
+    expect(sem.getArgon2QueueDepth()).toBe(0);
+
+    c.resolve(3);
+    await pC;
+
+    expect(sem.getArgon2InFlight()).toBe(0);
+    expect(sem.getArgon2QueueDepth()).toBe(0);
+
+    // Listener must have been removed by the finally — no listener leak
+    // even though we never dispatched the abort event.
+    expect(listeners.length).toBe(0);
+  });
 });
 
 describe('drainArgon2Queue — runtime guard against test-context misuse', () => {
