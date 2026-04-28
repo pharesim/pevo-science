@@ -1337,7 +1337,7 @@ describe.each([
         const ambiguousCalls = loggerErrorSpy.mock.calls.filter(
           (call) => typeof call[1] === 'string' && call[1].includes('broadcast failed on ambiguous-outcome path'),
         );
-        expect(ambiguousCalls.length).toBeGreaterThanOrEqual(1);
+        expect(ambiguousCalls.length).toBe(1);
       } finally {
         pkSpy.mockRestore();
         loggerErrorSpy.mockRestore();
@@ -1438,7 +1438,7 @@ describe.each([
         const postBroadcastCalls = loggerErrorSpy.mock.calls.filter(
           (call) => typeof call[1] === 'string' && call[1].includes('broadcast confirmed but post-broadcast write failed'),
         );
-        expect(postBroadcastCalls.length).toBeGreaterThanOrEqual(1);
+        expect(postBroadcastCalls.length).toBe(1);
       } finally {
         updateOrcidSpy.mockRestore();
         loggerErrorSpy.mockRestore();
