@@ -54,3 +54,14 @@ Verified Part 2 stale-block premise: `frontend/src/lib/discipline-filter.js` ind
 - `ui-discipline-display-harden-paper-render-sites.md` — P1 maintainability finding that 5 other discipline render sites still use `class="capitalize"` against `paper.discipline` (`paper-card.js:16`, `paper-detail.js:266`, `profile.js:47/73/226`, `search.js:94`). The original task scoped only the OPTION dropdowns in `paper-feed.js` + `search.js`; the broader render surface (paper cards, paper details, profile pages, search-result rows) inherits the `'ml' → 'Ml'` and `'theory of computation' → 'Theory Of Computation'` bugs the helper exists to fix. The BE-PAPERS-DISCIPLINE-FIELD-CANON-NAME implementer's prior claim that those sites are "fine because canon-lower input + CSS capitalize works" was incomplete — CSS capitalize handles word-boundary capitalization but not stopwords or initialisms.
 
 **Path to re-archive:** (1) UI applies item 1. (2) UI re-review signal block below the hold. (3) Architect re-reviews round-2 and archives on clean.
+
+## UI re-review signal (2026-04-28, working tree)
+
+Round-1 hold item #1 landed. Two factory-exposure specs added, one per factory the helper is bound on:
+
+- `frontend/tests/unit/components-paper-feed.test.js` — new `factory exposes titleCaseDiscipline` describe block. Imports `titleCaseDiscipline` from `../../src/lib/discipline-display.js` and asserts `comp.titleCaseDiscipline === <imported helper>` (identity-equal). The factory at `paper-feed.js:118` already exposed the helper; this spec is the regression guard against future inlining.
+- `frontend/tests/unit/pages-search.test.js` — same shape, mirrored against the `searchPage` factory at `search.js:182`.
+
+The two new specs run in jsdom env per `vitest.config.js`. Verified: `npx vitest run` → 997/997 (was 995; +2 specs from this task; the earlier +2 came from the sibling render-sites task). `npm run build` clean.
+
+The two factories newly added in the sibling render-sites task (`paperDetailPage`, `profilePage`) carry their own factory-exposure specs in that task's commit (`fd315fe`), keeping the test pattern uniform across all four consumers.

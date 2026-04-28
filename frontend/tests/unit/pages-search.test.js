@@ -33,6 +33,7 @@ vi.mock('alpinejs', () => ({
 import Alpine from 'alpinejs';
 import { searchPapers } from '../../src/api.js';
 import { initSearchPage } from '../../src/pages/search.js';
+import { titleCaseDiscipline } from '../../src/lib/discipline-display.js';
 
 function createComponent(overrides = {}) {
   initSearchPage();
@@ -50,6 +51,17 @@ describe('searchPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockStores.router.query = {};
+  });
+
+  // Factory-exposure regression guard: the discipline dropdown OPTION at
+  // search.js:56 calls `titleCaseDiscipline(d.display_name)`. Without the
+  // factory-level binding, x-text fires a silent ReferenceError at
+  // runtime and the dropdown options render blank.
+  describe('factory exposes titleCaseDiscipline', () => {
+    it('factory().titleCaseDiscipline is identity-equal to the imported helper', () => {
+      const comp = createComponent();
+      expect(comp.titleCaseDiscipline).toBe(titleCaseDiscipline);
+    });
   });
 
   describe('doSearch', () => {

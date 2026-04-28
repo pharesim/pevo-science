@@ -32,6 +32,7 @@ vi.mock('alpinejs', () => ({
 
 import Alpine from 'alpinejs';
 import { initPaperFeed } from '../../src/components/paper-feed.js';
+import { titleCaseDiscipline } from '../../src/lib/discipline-display.js';
 
 function createComponent() {
   initPaperFeed();
@@ -47,6 +48,17 @@ describe('paperFeed', () => {
     vi.clearAllMocks();
     mockFetchPapers.mockResolvedValue({ data: [], meta: { total: 0, limit: 10 } });
     mockFetchDisciplines.mockResolvedValue({ data: [] });
+  });
+
+  // Factory-exposure regression guard: the dropdown OPTION at
+  // paper-feed.js:21 calls `titleCaseDiscipline(d.display_name)`. Without
+  // the factory-level binding, x-text fires a silent ReferenceError at
+  // runtime and the dropdown options render blank.
+  describe('factory exposes titleCaseDiscipline', () => {
+    it('factory().titleCaseDiscipline is identity-equal to the imported helper', () => {
+      const comp = createComponent();
+      expect(comp.titleCaseDiscipline).toBe(titleCaseDiscipline);
+    });
   });
 
   describe('goToPage', () => {
