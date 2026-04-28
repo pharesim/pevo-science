@@ -853,13 +853,19 @@ async function releaseBindingLock(orcidId: string, nonce: string): Promise<void>
  * Behavior per lock state:
  *   'held'        — wrapper sends 409 ORCID_ALREADY_LINKED with Retry-After
  *                   header and details.retriable=true; callback is NOT run.
- *   'acquired'    — callback runs inside try/finally; release happens under
- *                   nonce CAS in finally (success and throw paths both release).
- *                   Throws from fn propagate to the outer /callback catch
- *                   (mapped to 500 INTERNAL_ERROR); callers that want to
- *                   surface a more specific envelope for known throw classes
- *                   (e.g. BroadcastTimeoutError → 504 BROADCAST_TIMEOUT) must
- *                   catch inside fn.
+ *   'acquired'    — callback runs inside try/catch/finally; release happens
+ *                   under nonce CAS in finally on both success and caught
+ *                   throw paths. The wrapper catches every throw escaping fn
+ *                   and routes it through handleBroadcastErrorAmbiguous (504
+ *                   ambiguous-outcome envelope) — symmetric with the
+ *                   'unavailable' branch. Inside fn, callers may still catch
+ *                   known throw classes earlier to surface a different
+ *                   envelope (e.g. BroadcastTimeoutError → 504 with
+ *                   timeout_ms + redis.expire side effect for A.1 lock-TTL
+ *                   extension; non-timeout broadcast errors on 'acquired' →
+ *                   502 BROADCAST_FAILED; PostBroadcastWriteError → 502
+ *                   POST_BROADCAST_FAILED with tx_id). Anything that escapes
+ *                   fn lands on the wrapper's outer catch.
  *   'unavailable' — callback runs WITHOUT a lock (Redis-optional degrade to
  *                   cache-less HAF-only path); no release needed. On this path
  *                   the wrapper catches throws from fn and, using the required
@@ -966,14 +972,18 @@ async function withOrcidBindingLock(
     // path inside fn) still skips. Caught throws don't set skipRelease so
     // the finally releases — a subsequent retry can acquire a fresh lock.
     //
-    // NB on post-broadcast throws: the 504 outcome:'uncertain' envelope is
-    // technically over-cautious here (chain write IS confirmed; the throw is
-    // a downstream cascade failure). Discriminating broadcast-succeeded vs
-    // broadcast-threw is filed separately as
-    // backend-orcid-broadcast-outcome-discrimination.md (502
-    // POST_BROADCAST_FAILED with tx_id + failed_step). This guard ships the
-    // over-cautious envelope; the discrimination task swaps the post-broadcast
-    // throw to a 502 envelope without re-touching this wrapper.
+    // NB on post-broadcast throws: the discrimination landed in commit
+    // d8b9b75 (BACKEND-ORCID-BROADCAST-OUTCOME-DISCRIMINATION). fn now wraps
+    // post-broadcast cascade failures as PostBroadcastWriteError, which
+    // handleBroadcastError checks BEFORE forceAmbiguousOutcome — so a
+    // post-broadcast throw escaping fn through this wrapper catch produces
+    // 502 POST_BROADCAST_FAILED with tx_id + failed_step (outcome:'confirmed'),
+    // NOT the 504 ambiguous envelope. The wrapper code did not need re-touching
+    // for the swap. The remaining 504 path through this catch is the
+    // pre-broadcast SYNC throw class (PrivateKey.fromString on a malformed
+    // admin key, etc.) — see backend-pevo-admin-key-startup-validation.md
+    // for the architect's follow-up to validate at server startup so that
+    // class never reaches this catch in production.
     let skipRelease = false;
     try {
       const result = await fn('acquired');

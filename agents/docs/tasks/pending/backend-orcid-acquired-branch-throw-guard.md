@@ -178,3 +178,44 @@ Each new spec in the matrix runs across both `accredit` and `link` modes (`descr
 
 - `agents/docs/api-contracts/orcid.md` — extend the 504 entry's already-updated `'unavailable'`-branch call-out to also cover the `'acquired'`-branch pre-broadcast and post-broadcast throw cases. (Note: the post-broadcast case at `'acquired'` now emits 502 POST_BROADCAST_FAILED per the immediately-following discrimination commit; the contract update should reflect both envelopes.)
 - `agents/docs/solutions/conventions/chain-write-timeout-ambiguous-outcome-2026-04-22.md` — add a paragraph that the wrapper's symmetric pattern (catch on BOTH branches) is the convention; one branch with catch and one without is an anti-pattern.
+
+---
+
+## Architect re-review (2026-04-28, round-1) — HELD PENDING FIXES
+
+Round-1 `/ce-code-review` on commit `0d0c156` (11 personas: correctness, testing, maintainability, project-standards, ce-agent-native, ce-learnings, security, reliability, api-contract, adversarial, kieran-typescript). Wrapper restructure is structurally correct; lock release semantics, BroadcastTimeoutError + skipRelease invariant, and state-token replay all clean. **No P0/P1 in code.** Architect-applied in-place fixes during this review pass cleared four findings (JSDoc 'acquired' bullet stale, NB comment about discrimination already-landed, convention-doc symmetric-branch paragraph added, contract docs updated for both 504 trigger paths and `POST_BROADCAST_FAILED`). One backend test-tightening item remains held.
+
+**The architect applied 5 in-place fixes during this review pass (override-the-rule for backend, user-authorized; architect-owned doc fixes need no override):**
+
+- `backend/src/routes/orcid.ts:856-867` — JSDoc summary's `'acquired'` bullet rewritten. Previously said "Throws from fn propagate to the outer /callback catch (mapped to 500 INTERNAL_ERROR)"; after `0d0c156` the wrapper catch intercepts. Now describes the symmetric catch + handleBroadcastErrorAmbiguous routing and notes the inner-catch envelope discrimination (BroadcastTimeoutError → 504 + lock-TTL extend, non-timeout broadcast errors on 'acquired' → 502 BROADCAST_FAILED, PostBroadcastWriteError → 502 POST_BROADCAST_FAILED, anything else lands on the outer catch).
+- `backend/src/routes/orcid.ts:969-980` — NB comment updated. Round-1 said discrimination was "filed separately" as a future task; commit `d8b9b75` (immediately following) shipped it. Now describes the post-broadcast 502 POST_BROADCAST_FAILED path as live, and points at the new `backend-pevo-admin-key-startup-validation.md` follow-up for the remaining pre-broadcast SYNC class.
+- `agents/docs/solutions/conventions/chain-write-timeout-ambiguous-outcome-2026-04-22.md` — added the architect-deferred "Symmetric-branch convention" section. States the wrapper MUST carry an outer try/catch on every execution branch (`acquired` AND `unavailable`); one branch with catch and one without is an anti-pattern. Includes the canonical `'acquired'`-branch shape (try/catch/finally with skipRelease handling) for new implementers to copy.
+- `agents/docs/api-contracts/orcid.md:197+` — 504 BROADCAST_TIMEOUT entry rewritten to enumerate three trigger paths: timer-fire on lock-acquired, non-timer throw on lock-unavailable, pre-broadcast SYNC throw on lock-acquired. `details.timeout_ms` presence rule documented per path. New `POST_BROADCAST_FAILED` (502) entry added documenting `details.outcome:'confirmed'`, `tx_id`, `failed_step`, and the "treat as success in UI; surface to operators" guidance.
+- `agents/docs/api-contracts/common.md:72-74` — added new `POST_BROADCAST_FAILED` row to the standard error table; updated `BROADCAST_TIMEOUT` parenthetical to include the lock-wrapper acquired-branch pre-broadcast SYNC throw case.
+
+### Items held pending fixes (backend-owned)
+
+1. **P3 — Operator-alert log assertions use `toBeGreaterThanOrEqual(1)` instead of `toBe(1)`** at `backend/tests/routes/orcid.test.ts:1340` (pre-broadcast SYNC spec) and `:1441` (post-broadcast ASYNC spec). The same spec comment blocks state the assertion is mutation-kill rigor; a stricter `toBe(1)` matches the stated intent and catches double-emit regressions. Two-line change. Suggested fix:
+   ```ts
+   // line 1340
+   expect(ambiguousCalls.length).toBe(1);
+   // line 1441
+   expect(postBroadcastCalls.length).toBe(1);
+   ```
+
+### Findings routed elsewhere
+
+- **F1 (P2, 3-reviewer convergence agent-native + reliability + adversarial, conf 100)** — Pre-broadcast SYNC throws on `'acquired'` branch (`PrivateKey.fromString` on malformed admin key) route through the 504 ambiguous-outcome envelope. No broadcast fired; the user has nothing to verify; the operator alert label routes to broadcast-on-call when the actual root cause is admin-key configuration. Filed as new task `agents/docs/tasks/pending/backend-pevo-admin-key-startup-validation.md` — validate the admin key at server boot so a malformed key fails the boot path rather than reaching this catch in production.
+
+### Pre-existing in-scope (not held; surfaced for visibility)
+
+- **CI-without-Redis silently skips lock-release assertions.** `backend/tests/routes/orcid.test.ts:1284` and `:1387` early-return on `if (!redis) return`. The `redis.exists(orcidBindingLockKey)` assertion is the primary mutation-kill anchor for the new catch's release semantics. In CI environments without Redis, these specs pass silently with the assertion never firing. Pre-existing pattern across multiple specs in this file; not introduced by this commit. Worth filing as a generic test-hardening follow-up.
+
+### Suppressed at confidence gate
+
+AN-002 lockState absent from logContext (P3 obs, conf <75 — cosmetic), adv-002 skipRelease mutation kill implicit only (P3 info, conf 75), adv-003 PrivateKey spy leak risk (P3 info, conf 50), KTS-001 handleBroadcastErrorAmbiguous return value discarded (info, conf 90 but non-actionable), KTS-002 lockState named-type extraction (info, conf 75 nice-to-have), testing TG `cache_write` integration coverage (pre-existing architectural gap).
+
+### Path to re-archive
+
+(1) Backend addresses item #1 in this hold block (2-line `toBe(1)` tightening). (2) Backend re-review signal block referencing the round-2 hold-fix commit SHA. (3) Architect round-2 `/ce-code-review` on the new commit (testing-focused). (4) Archive on clean. The `backend-pevo-admin-key-startup-validation.md` follow-up task is independent and does not block this task's re-archive.
+

@@ -245,6 +245,34 @@ On the `forceAmbiguousOutcome` branch, `BroadcastTimeoutError` emits the envelop
 
 **`verify_location: '/settings'`** is the UI hint surfaced on the 504 envelope for both ORCID binding callers (`handleAccredit`, `handleLink`). It points the user at the page where their ORCID link status is visible, so they can verify whether the broadcast landed before attempting a retry. Other timeout-wrapped broadcast callers MAY adopt a different `verifyLocation` appropriate to their surface (accreditation profile, paper post page, etc.) or omit it entirely if there is no user-facing verify surface. The field is optional; envelopes without it remain spec-compliant.
 
+### Symmetric-branch convention — catch on EVERY execution branch of the lock wrapper
+
+`withOrcidBindingLock` (and any future lock wrapper that fronts a chain-write) MUST carry an outer try/catch on every branch where `fn` runs — both `'acquired'` and `'unavailable'` today. **One branch with a catch and the other without is an anti-pattern.** A pre-broadcast SYNC throw or post-broadcast ASYNC throw escaping the un-guarded branch reaches the outer route handler's catch as 500 INTERNAL_ERROR, with the OAuth state token already consumed at dispatch — the user is hard-blocked on a 500 page and must restart OAuth. This is the same consumed-state-token + 500 + no-recovery class the wrapper exists to prevent; the asymmetry just relocates it.
+
+The 504 ambiguous-outcome envelope (or, after `PostBroadcastWriteError` discrimination, the 502 POST_BROADCAST_FAILED envelope) is what the wrapper trades for that 500. Skipping the catch on a branch trades the ambiguous-outcome safety net for a hard block on user-influenceable inputs (Redis flap timing, admin-key shape, network mid-broadcast). Always wrap.
+
+Concretely on `withOrcidBindingLock` today:
+
+```ts
+} else if (lock.state === 'acquired') {
+  let skipRelease = false;
+  try {
+    const result = await fn('acquired');
+    if (result?.skipRelease) skipRelease = true;
+  } catch (err) {
+    handleBroadcastErrorAmbiguous(res, err, ambiguousOutcomeOpts);
+    // Do NOT set skipRelease — release the lock so a subsequent retry
+    // (after the user verifies state at /settings) can acquire it.
+  } finally {
+    if (!skipRelease) {
+      await releaseBindingLock(orcidId, lock.nonce);
+    }
+  }
+}
+```
+
+The `'unavailable'` branch shape is structurally identical (one less `finally` because there is no lock to release).
+
 ### Right — Option A.1 (extend lock TTL instead of releasing)
 
 ```ts
