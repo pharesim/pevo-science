@@ -402,8 +402,10 @@ describe('BE-CLAIMS-ERROR-POLISH — bridge misconfig surfaces as 503', () => {
 // The helper's timeout mechanism is unit-tested in hive-broadcast-timeout.test.ts.
 // These specs cover the route-level catch-and-discriminate pattern: each of
 // the three claims.ts broadcastJsonWithTimeout call sites must translate
-// BroadcastTimeoutError into a 504 BROADCAST_TIMEOUT envelope with
-// { retriable: true, timeout_ms } details. The post-broadcast side-effect
+// BroadcastTimeoutError into the round-3 504 BROADCAST_TIMEOUT envelope shape
+// (see `agents/docs/api-contracts/common.md` and the `TIMEOUT_DETAILS`
+// constant below): { retriable:false, outcome:'uncertain',
+// verify_before_retry:true, timeout_ms }. The post-broadcast side-effect
 // (hafCache.invalidate) must NOT fire on timeout.
 // ──────────────────────────────────────────────
 

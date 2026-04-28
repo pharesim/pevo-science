@@ -1316,13 +1316,17 @@ describe.each([
         expect(res.body.error.code).toBe('BROADCAST_TIMEOUT');
         // Envelope per common.md + orcid-specific verify_location (state was
         // consumed before dispatch, so retriable=false; caller verifies chain
-        // state at /settings before attempting a fresh OAuth flow).
+        // state at /settings before attempting a fresh OAuth flow). Canonical
+        // field order: optional fields like verify_location are appended AFTER
+        // timeout_ms so timeout_ms keeps the same position across orcid and
+        // non-orcid 504 envelopes. `toEqual` is order-insensitive at runtime;
+        // the literal order here documents the contract.
         expect(res.body.error.details).toEqual({
           retriable: false,
           outcome: 'uncertain',
           verify_before_retry: true,
-          verify_location: '/settings',
           timeout_ms: 30_000,
+          verify_location: '/settings',
         });
         // Post-broadcast side-effects must NOT fire on timeout: no cache entry,
         // lock released via finally's nonce CAS so retries aren't blocked.
@@ -1427,12 +1431,15 @@ describe.each([
 
         expect(res.status).toBe(504);
         expect(res.body.error.code).toBe('BROADCAST_TIMEOUT');
+        // Canonical field order: optional verify_location AFTER timeout_ms
+        // so timeout_ms keeps the same position across orcid and non-orcid
+        // 504 envelopes.
         expect(res.body.error.details).toEqual({
           retriable: false,
           outcome: 'uncertain',
           verify_before_retry: true,
-          verify_location: '/settings',
           timeout_ms: 30_000,
+          verify_location: '/settings',
         });
         // Broadcast was attempted exactly once (it succeeded; the throw came
         // from a post-broadcast cascade). A regression that re-enters fn or

@@ -323,7 +323,14 @@ router.post('/:claimer/revoke', verifyHiveSignature, revokeLimiter, async (req: 
       return sendOk(res, { message: 'Authorship claim revoked', tx_id: result.id });
     } catch (err) {
       return handleBroadcastError(res, err, {
-        timeoutMsg: 'Broadcasting bridge-paper revocation timed out',
+        // 504 message is intentionally identical to the admin-on-native branch
+        // below: both paths revoke the same authorship `custom_json`, only the
+        // signing key differs. The `signer:'bridge'|'admin'` field in the
+        // structured log discriminates for operators; the user-facing message
+        // does not need to. Keeping the strings aligned avoids the prior
+        // bridge-vs-admin asymmetry and the cementing of it in the helper
+        // interface during the upcoming helper-extraction task.
+        timeoutMsg: 'Broadcasting authorship revocation timed out',
         failMsg: 'Failed to broadcast authorship revocation to Hive',
         logContext: { paperAuthor, paperPermlink, claimer, username, signer: 'bridge' },
         routeLabel: 'claims.revoke bridge',

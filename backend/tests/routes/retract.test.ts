@@ -175,7 +175,10 @@ describe('POST /api/papers/:author/:permlink/retract — BE-ORCID-BROADCAST-ABOR
     expect(res.body.error.code).toBe('BROADCAST_TIMEOUT');
     expect(res.body.error.details).toEqual(TIMEOUT_DETAILS);
     expect(broadcastJsonMock).toHaveBeenCalledTimes(1);
-    expect(invalidateSpy).not.toHaveBeenCalledWith('retracted-papers');
+    // Stricter than `not.toHaveBeenCalledWith('retracted-papers')`: catches
+    // any future regression that adds an unrelated `hafCache.invalidate(...)`
+    // call inside the timeout catch path. Matches `claims.test.ts` rigor.
+    expect(invalidateSpy).not.toHaveBeenCalled();
     invalidateSpy.mockRestore();
   });
 

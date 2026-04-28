@@ -85,6 +85,11 @@ export function handleBroadcastError(
       { err, timeoutMs: err.timeoutMs, ...opts.logContext },
       `${opts.routeLabel} broadcast timed out`,
     );
+    // Canonical 504 envelope field order: required fields first
+    // (retriable, outcome, verify_before_retry, timeout_ms), then optional
+    // fields (verify_location). Keeping `timeout_ms` in the same slot across
+    // orcid and non-orcid surfaces means consumers can read it positionally
+    // without branching on whether the surface adds verify_location.
     const details: Record<string, unknown> = {
       retriable: false,
       outcome: 'uncertain',
