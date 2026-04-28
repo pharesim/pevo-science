@@ -343,23 +343,66 @@ A fourth stable log-message suffix anchors the operator alert pipeline — `<rou
 
 ### Right — Option A.1 (extend lock TTL instead of releasing)
 
+The naive shape — `redis.expire` followed by `res.status(504).json(...)` and a bare `return` — is the anti-pattern, not the implementation. `withOrcidBindingLock`'s `finally` calls `releaseBindingLock(orcidId, nonce)` and the CAS matches the caller's own nonce → the lock is **deleted** in the finally regardless of what the catch did to its TTL. The premature release silently undoes the fix. Two pieces are required: a return-value signal from `fn` to the wrapper, and a wrapper restructure that respects it.
+
+**Caller side (handleAccredit / handleLink) — `redis.expire` BEFORE response-write, then signal skipRelease:**
+
 ```ts
-if (err instanceof BroadcastTimeoutError) {
-  await redis.expire(orcidBindingLockKey(orcidId), 120); // HAF-indexing upper bound
-  res.setHeader('Retry-After', '120');
-  res.status(504).json({
-    status: 'error',
-    error: {
-      code: 'BROADCAST_TIMEOUT',
-      message: 'Broadcast confirmation pending.',
-      details: { retriable: false, outcome: 'uncertain', retry_after_seconds: 120 },
-    },
-  });
-  return;
+} catch (err) {
+  if (err instanceof BroadcastTimeoutError) {
+    // Order matters: extend the lock BEFORE handleBroadcastError writes the
+    // response. If a malicious caller terminated the connection mid-write,
+    // the extend must already be persisted. Response-write happens last so
+    // a connection drop cannot escape fn before the extend lands.
+    if (redis && isRedisAvailable()) {
+      try {
+        await redis.expire(orcidBindingLockKey(orcidId), HAF_INDEXING_LAG_CEILING_SECONDS);
+      } catch (expireErr) {
+        logger.error({ err: expireErr, orcidId }, '<routeLabel> redis.expire on BroadcastTimeoutError failed — A.1 protection degraded');
+      }
+    }
+    handleBroadcastError(res, err, accreditErrorOpts);
+    return { skipRelease: true };
+  }
+  throw err;  // non-timeout throws still release (unchanged)
 }
 ```
 
-Note on lock interaction: `withOrcidBindingLock`'s `finally` calls `releaseBindingLock(orcidId, nonce)` unconditionally. For Option A.1 to be correct, the wrapper needs a "don't release" signal OR `fn` must clear the nonce before returning. Otherwise the finally-CAS still matches and deletes the lock, defeating the TTL extension. Design this carefully; premature release silently undoes the fix.
+**Wrapper side (`withOrcidBindingLock` `'acquired'` branch) — `let skipRelease = false` declared above try, mutated on the explicit signal, read in finally:**
+
+```ts
+} else if (lock.state === 'acquired') {
+  let skipRelease = false;
+  try {
+    const result = await fn('acquired');
+    if (result?.skipRelease) skipRelease = true;
+  } catch (err) {
+    handleBroadcastErrorAmbiguous(res, err, ambiguousOutcomeOpts);
+    // Do NOT set skipRelease — release the lock so a subsequent retry
+    // (after the user verifies state at /settings) can acquire it.
+  } finally {
+    if (!skipRelease) {
+      await releaseBindingLock(orcidId, lock.nonce);
+    }
+  }
+}
+```
+
+The `let skipRelease = false` declared **above** the try is load-bearing. `finally` cannot read variables from the try's scope; the closure-mutation pattern is the canonical Node idiom for this. A throw from `fn` flows past the `skipRelease = true` line, leaves `skipRelease` at its initial `false`, and `finally` releases as before — preserving the throw-path release. Only an explicit `{ skipRelease: true }` return path skips release.
+
+**`fn` signature — widen to allow the skipRelease return:**
+
+```ts
+fn: (lockState: 'acquired' | 'unavailable') => Promise<void | { skipRelease: true }>
+```
+
+The `'unavailable'` branch silently ignores any returned `skipRelease` (no lock to extend, no lock to release). Document this inline in the wrapper so a future implementer doesn't try to plumb A.1 onto the unavailable branch.
+
+**Operational hardening worth applying alongside A.1** — the naive shape above silently fails on three Redis edge cases that the test suite cannot easily reach:
+
+1. **`redis.expire` returns 0** (key already deleted between SETNX and EXPIRE — operator FLUSHDB, eviction, AOF-rewrite stall). No exception, code returns `{skipRelease:true}` anyway, lock is gone, A.1 protection bypassed silently. Check the return value: if 0, log at `error` and proceed with the 504; the wrapper's `skipRelease:true` is now a no-op (no lock to skip releasing).
+2. **`redis.expire` succeeds silently with no log.** Operators cannot alert on extension-event frequency or correlate against HAF-lag spikes. Emit `logger.warn` on the success path so the safety extension is observable.
+3. **Redis completely absent at BroadcastTimeoutError time** (`if (redis && isRedisAvailable())` guard short-circuits). The expire is skipped silently. Log at `error` so operators see the degraded mode, and accept that A.1 is a no-op when Redis is down (the convention's `'unavailable'` branch handles the no-lock case via the ambiguous-outcome envelope).
 
 ## Related
 

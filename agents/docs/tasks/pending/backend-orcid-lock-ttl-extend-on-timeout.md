@@ -146,3 +146,105 @@ A.1 implementation landed exactly per the locked skipRelease shape from the arch
 
 - `agents/docs/api-contracts/orcid.md` — note 423/409 LOCKED retry semantics during the 120s extended window.
 - `agents/docs/solutions/conventions/chain-write-timeout-ambiguous-outcome-2026-04-22.md` — Option A.1 section needs the skipRelease shape (currently shows naive `redis.expire` which the wrapper's old `finally` would defeat).
+
+---
+
+## Architect re-review (2026-04-29, round-1) — HELD PENDING FIXES
+
+Round-1 `/ce-code-review` on commit `81795fd` (11 personas: correctness, testing, maintainability, project-standards, ce-agent-native, ce-learnings, security, reliability, api-contract, adversarial, kieran-typescript). The A.1 mechanism (skipRelease return signal + `redis.expire` to 120s before response-write) is structurally correct and survives at HEAD across the subsequent commits (`0a5c890` round-2 hold-fix, `0d0c156` acquired-branch-throw-guard, `d8b9b75` PostBroadcastWriteError discrimination). **No P0/P1. No exploitable security findings. No project-standards violations.** Architect-applied 3 doc fixes during this review pass; 9 backend-owned items remain held, mostly clustered around `redis.expire` failure-mode robustness and operator observability.
+
+**The architect applied 3 in-place doc fixes during this review pass (architect-owned files):**
+
+- `agents/docs/solutions/conventions/chain-write-timeout-ambiguous-outcome-2026-04-22.md` Option A.1 section — replaced the stale naive `redis.expire` + `return` example (the literal anti-pattern the pitfall note warned against) with the canonical landed shape: `redis.expire` BEFORE `handleBroadcastError`, `return { skipRelease: true }`, the wrapper's `let skipRelease = false` mutable-closure pattern with throw-path release preserved, and `fn` signature widening. Also documented three operational hardening items the test suite cannot easily reach (expire-returns-0, log-on-success, Redis-completely-absent).
+- `agents/docs/api-contracts/orcid.md:188` — same-tick lock-contention paragraph rewritten. Removed stale "TTL (35s) expires" claim. Added explicit note that `BroadcastTimeoutError` extends the TTL in-place to `HAF_INDEXING_LAG_CEILING_SECONDS = 120s`, that polling clients at `Retry-After: 10` may see up to ~12 consecutive 409s during the extended window, and that honoring `Retry-After` is the canonical retry strategy.
+- `agents/docs/api-contracts/orcid.md:201+` — added "Server-side residual race window after the 504" sub-bullet to the BROADCAST_TIMEOUT entry. Documents that the 120s window is best-effort, not a guarantee: if HAF lag exceeds 120s the lock self-expires before the broadcast is indexed, and an OAuth-restart can broadcast a duplicate. Reinforces that `verify_before_retry` is the user-side mitigation regardless of elapsed time.
+
+### Items held pending fixes (backend-owned)
+
+1. **P2 — `redis.expire` return value 0 silently ignored.** 3-reviewer convergence (correctness, reliability, adversarial). `backend/src/routes/orcid.ts:544` (handleAccredit) and `:688` (handleLink). When the lock key is already gone (eviction, FLUSHDB, AOF stall between SETNX and the catch), `redis.expire` resolves to 0, no exception, code returns `{ skipRelease: true }` anyway. The lock doesn't exist → no protection during the 120s window → A.1 contract silently violated. Fix:
+   ```ts
+   const extended = await redis.expire(orcidBindingLockKey(orcidId), HAF_INDEXING_LAG_CEILING_SECONDS);
+   if (extended === 0) {
+     logger.error({ orcidId }, 'orcid binding lock expired between acquire and TTL-extend — A.1 protection degraded');
+     // Fall through to handleBroadcastError as before; skipRelease:true is now
+     // a no-op (no lock to skip releasing) but is still safe to return.
+   }
+   ```
+
+2. **P2 — Lock-extension success path is silent.** 2-reviewer convergence (agent-native, reliability). `redis.expire` succeeding emits no log → operators cannot alert on extension events or correlate against HAF-lag spikes. Add `logger.warn` on the success branch (alongside item #1):
+   ```ts
+   if (extended === 1) {
+     logger.warn({ orcidId, newTtl: HAF_INDEXING_LAG_CEILING_SECONDS },
+       '<routeLabel> binding lock TTL extended on BroadcastTimeoutError — duplicate-bind window held');
+   }
+   ```
+   `warn` (not `info`) because the event is abnormal and operators want it on a monitoring dashboard.
+
+3. **P2 — Redis-completely-absent at BroadcastTimeoutError time is logged silently.** 2-reviewer convergence (agent-native, adversarial). `if (redis && isRedisAvailable())` short-circuits with no log when Redis is degraded. The existing `expireErr` catch only fires on a Redis exception, not on the absent-Redis no-op. Symmetric `error`-level log:
+   ```ts
+   } else {
+     logger.error({ orcidId },
+       '<routeLabel> A.1 lock-TTL extension skipped — Redis unavailable at BroadcastTimeoutError time, duplicate-bind window may be open');
+   }
+   ```
+
+4. **P2 — `HAF_INDEXING_LAG_CEILING_SECONDS` and `ORCID_BINDING_CACHE_TTL` duplicate the same domain concept.** Maintainability finding (conf 75). `backend/src/routes/orcid.ts:69` and `:88` both declare `120` with separate comments referencing "HAF-indexing-lag window" and "HAF block-watcher catch-up upper bound." Future tuning (e.g., observed lag spikes prompting a 180s ceiling) requires changing both. Fix shape (i) preferred: a single named constant with both consumers referencing it (e.g., `HAF_INDEXING_LAG_CEILING_SECONDS` becomes the source-of-truth, `ORCID_BINDING_CACHE_TTL` is replaced by a reference to it OR by `Math.min(HAF_INDEXING_LAG_CEILING_SECONDS, 120)` if the cache TTL is intended to track but be capped). Or (ii): keep separate constants but add a cross-reference comment on `ORCID_BINDING_CACHE_TTL` linking it to the lag ceiling so future editors know to change both. The task spec preferred a `lib/binding-lock.ts` module; one constant doesn't justify a new file but a second adopter (accreditation.ts, etc.) would.
+
+5. **P2 — `BroadcastTimeoutError` catch block is duplicated verbatim across `handleAccredit` and `handleLink`.** Maintainability finding (conf 75). `backend/src/routes/orcid.ts:527-560` (handleAccredit) and `:680-697` (handleLink). The handleLink comment says "mirrored exactly". A small extracted helper closes the drift surface:
+   ```ts
+   async function extendBindingLockOnTimeoutOrLog(
+     orcidId: string,
+     routeLabel: string,
+   ): Promise<void> {
+     const redis = getRedis();
+     if (!redis || !isRedisAvailable()) {
+       logger.error({ orcidId }, `${routeLabel} A.1 lock-TTL extension skipped — Redis unavailable`);
+       return;
+     }
+     try {
+       const extended = await redis.expire(orcidBindingLockKey(orcidId), HAF_INDEXING_LAG_CEILING_SECONDS);
+       if (extended === 0) {
+         logger.error({ orcidId }, `${routeLabel} binding lock expired between acquire and TTL-extend`);
+       } else {
+         logger.warn({ orcidId, newTtl: HAF_INDEXING_LAG_CEILING_SECONDS },
+           `${routeLabel} binding lock TTL extended on BroadcastTimeoutError`);
+       }
+     } catch (expireErr) {
+       logger.error({ err: expireErr, orcidId }, `${routeLabel} redis.expire on BroadcastTimeoutError failed`);
+     }
+   }
+   ```
+   Both handlers call this before `handleBroadcastError`. The skipRelease return stays at the call site since it's wrapper-specific. Closes items #1, #2, #3, #5 in one shape.
+
+6. **P3 — `Retry-After: 10` is a constant; during the 120s extended window a polling client may see up to ~12 consecutive 409s.** Correctness finding (conf 75). `backend/src/routes/orcid.ts:933`. Clients with hard retry-count caps below 12 may give up incorrectly when the lock is genuinely held but the binding will resolve. Two acceptable resolutions:
+   - **(a)** Make `Retry-After` dynamic — read remaining TTL via `redis.ttl(orcidBindingLockKey(orcidId))` and surface the actual remaining seconds. Clients with a single retry budget see an honest "wait this long" signal.
+   - **(b)** Keep constant `10` and accept that polling clients honoring `Retry-After` succeed; clients with hard caps should use the documented `verify_before_retry` mechanism instead. The architect-applied contract update at `orcid.md:188` already documents the ~12-attempt expectation.
+
+   Backend's call. (b) is what shipped; the contract now documents the expectation, so leaving it as a P3 advisory is also acceptable.
+
+7. **P3 — Ordering invariant (`redis.expire` before `handleBroadcastError`) is unverified by tests.** 2-reviewer convergence (testing RR-02, adversarial adv-3). The code comment at `orcid.ts:530-535` documents the invariant, but supertest cannot simulate mid-write disconnect, so a line-swap mutation passes the suite. Two ways to pin it:
+   - **(a) Mock-level ordering check.** In the existing extend-ttl spec, install a spy on `redis.expire` that captures call-order vs the `res.json`/`res.status` stubs and asserts `redis.expire` was called BEFORE the response was written.
+   - **(b) Helper extraction (item #5)** — once the extend-and-log logic lives in a single helper, a simple assertion that the helper was invoked before `handleBroadcastError` (via a `vi.spyOn` order check) closes the gap structurally.
+
+8. **P3 — `expireErr` catch branch has no test.** 2-reviewer convergence (testing T-01, kieran-typescript KT-TG-001). `orcid.ts:545-557` swallows + logs the throw, but no spec injects a `redis.expire` rejection. A regression that removes the catch would change the wire shape from regular 504 (with timeout_ms) to ambiguous-outcome 504 (without timeout_ms — re-thrown to wrapper outer catch). Add a unit-style spec stubbing `redis.expire` to throw and asserting the standard 504 envelope fires + `logger.error` was called with the documented log suffix. Pairs with item #5's helper-extraction.
+
+9. **P3 — Stale comment paragraph at `orcid.ts:961-965`.** Maintainability finding (conf 50, info-tier). The "Post-broadcast ASYNC throw inside fn" paragraph in the wrapper's acquired-branch comment block describes pre-d8b9b75 behavior (throw escapes to outer `/callback` catch as 500). After `d8b9b75` post-broadcast cascade calls are wrapped as `PostBroadcastWriteError` and route to 502 POST_BROADCAST_FAILED. The NB block immediately below correctly documents this; the first paragraph reads as accurate-but-stale to a reader scanning lines 961-965 in isolation. Either delete or rewrite as "pre-d8b9b75 behavior; superseded — see NB below."
+
+### Latent / product-decision items (surfaced; not held)
+
+- **A/B starvation: held-branch 409 returns `retriable:true` for the full extended window even when the binding is durable on chain.** Adversarial finding adv-4 (P3 conf 75). `orcid.ts:932-941`. A's broadcast actually lands at t=20 but dhive's timer fires at t=30 (false timeout from RPC perspective). A.1 extends to 120s. B's polling sees `retriable:true` 409 for the full window even though the binding is already on chain. The held-branch returns BEFORE consulting `findAccreditedAccountWithOrcid`. Pre-existing pattern (existed at 35s before A.1); A.1 widens to 120s. Architect note: not held — the perf cost of HAF lookup on every contended request is non-trivial, and B will eventually succeed via the durable-binding 409 path once HAF indexes. Worth a follow-up if monitoring shows the false-retry pattern hurting users; for now the contract update at `orcid.md:188` documents the expectation.
+
+### Pre-existing in-scope (not held)
+
+- `backend/tests/routes/orcid.test.ts` — no spec for `BroadcastTimeoutError` on the `'unavailable'` branch (testing TG-01). Not introduced by this commit; the unavailable-branch 504 envelope already exists. File a follow-up if a future regression class emerges.
+- `architect-orcid-lock-ttl-extension.md` decision doc — task body says "archived same day" but no such file on disk and no matching heading in `tasks-archive.md`. Decision rationale is preserved in this task file's Source section; missing archive entry is housekeeping, not blocking.
+
+### Suppressed at confidence gate
+
+MAINT-03 (skipRelease closure pattern fragility, conf 50), AN-2 (held-branch 409 not at debug level, P3 obs), AN-3 (no HAF-lag alert threshold, P3 doc), KT-001 (inline union vs named alias, soft 50), KT-002 (`as const`, soft 40), correctness C3 (`redis.expire` bounded timeout, conf 50).
+
+### Path to re-archive
+
+(1) Backend addresses items #1, #2, #3, #4, #5, #6, #7, #8, #9 in this hold block. Items #1, #2, #3, #5 fold cleanly into a single helper-extraction commit (suggested shape in #5). Items #7 and #8 fold into the test pass that exercises the helper. Item #4 is a one-line fix or a small constants refactor. Item #6 is a one-line decision (constant vs dynamic Retry-After). Item #9 is a comment-only edit. (2) Backend re-review signal block referencing the round-2 hold-fix commit SHA. (3) Architect round-2 `/ce-code-review` on the new commit (testing + reliability mandatory given the operational-observability focus). (4) Archive on clean.
+
+
