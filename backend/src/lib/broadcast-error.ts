@@ -26,13 +26,20 @@ import { logger } from '../logger.js';
  *
  * BACKEND-ORCID-BROADCAST-OUTCOME-DISCRIMINATION (round-2 follow-up).
  */
+export type PostBroadcastFailedStep = 'cache_write' | 'account_update' | 'reputation_seed';
+
 export class PostBroadcastWriteError extends Error {
   constructor(
     public readonly txId: string,
-    public readonly cause: unknown,
-    public readonly failedStep: 'cache_write' | 'account_update' | 'reputation_seed' | 'unknown',
+    cause: unknown,
+    public readonly failedStep: PostBroadcastFailedStep,
   ) {
-    super(`Post-broadcast write failed at step '${failedStep}' (tx ${txId})`);
+    // Forward `cause` through Error's standard `{ cause }` slot so the native
+    // ES2022 Error.cause property is set. pino's error serializer, structured
+    // clone, and any consumer using the inherited Error.prototype.cause read
+    // it from there — a class field `public readonly cause: unknown` shadows
+    // that slot and presents undefined to those consumers (round-1 hold #6).
+    super(`Post-broadcast write failed at step '${failedStep}' (tx ${txId})`, { cause });
     this.name = 'PostBroadcastWriteError';
   }
 }
@@ -77,12 +84,20 @@ interface BaseHandleBroadcastErrorOpts {
   /**
    * Optional caller-supplied template for the 502 POST_BROADCAST_FAILED
    * envelope's user-facing message. The helper passes `failedStep` (from the
-   * `PostBroadcastWriteError`) so the message can name which cascade step
-   * failed. Defaults to a generic "broadcast confirmed; backend write failed"
-   * line when omitted. Today only ORCID callers throw `PostBroadcastWriteError`
-   * (handleAccredit / handleLink); other callers leave this undefined.
+   * `PostBroadcastWriteError`) so the message can render per-step recovery
+   * semantics (e.g. `'reputation_seed'` reconciles via the next batch cycle;
+   * `'account_update'` is a denormalized projection that requires a
+   * HAF-replay or manual re-run). Defaults to a generic "broadcast confirmed;
+   * we'll restore the backend record from the chain shortly" line that does
+   * NOT leak internal step labels (round-1 hold #9). Today only ORCID callers
+   * throw `PostBroadcastWriteError` (handleAccredit / handleLink); other
+   * callers leave this undefined.
+   *
+   * Renamed from `postBroadcastFailedMsgFn` (round-1 hold #7 — drop the
+   * `Failed` segment since the type already implies failure, drop the `Fn`
+   * suffix for consistency with sibling string opts).
    */
-  postBroadcastFailedMsgFn?: (failedStep: string) => string;
+  postBroadcastMsgFn?: (failedStep: PostBroadcastFailedStep) => string;
 }
 
 /**
@@ -106,6 +121,18 @@ type AmbiguousOutcomeFields =
 export type HandleBroadcastErrorOpts = BaseHandleBroadcastErrorOpts & AmbiguousOutcomeFields;
 
 /**
+ * Generic POST_BROADCAST_FAILED fallback used when a caller omits
+ * `postBroadcastMsgFn` or that callback itself throws. Deliberately omits the
+ * internal step label (round-1 hold #9 — `'cache_write'` / `'reputation_seed'`
+ * are operator vocabulary, not user-facing). Names the txId so the user (or
+ * the support agent helping them) has the chain reference for later
+ * verification.
+ */
+function defaultPostBroadcastMsg(txId: string): string {
+  return `Your operation is confirmed on Hive (tx ${txId}). A backend write failed; we'll restore the backend record from the chain shortly.`;
+}
+
+/**
  * The narrowed ambiguous-only variant. Wrappers that always emit the
  * ambiguous-outcome envelope (currently {@link withOrcidBindingLock}'s
  * `'unavailable'` branch) take this type and call
@@ -126,17 +153,24 @@ export type HandleBroadcastErrorAmbiguousOpts = Extract<
  * surface description; this helper is a single-source implementation of those
  * envelopes for HTTP route handlers.
  *
- * Returns `'timeout' | 'failure'` so callers that need a side effect tied to
- * the failure branch (e.g. {@link
+ * Returns one of `'timeout' | 'failure' | 'post_broadcast'` so callers that
+ * need a side effect tied to the failure branch (e.g. {@link
  * ../routes/accreditation.ts} `/verify` deleting the accreditation token on
  * chain rejection but preserving it across a timeout) can branch after the
  * helper without re-doing the `instanceof BroadcastTimeoutError` check.
+ *
+ * The `'post_broadcast'` return distinguishes "broadcast confirmed, downstream
+ * write threw" (502 POST_BROADCAST_FAILED) from "broadcast was rejected by
+ * chain" (502 BROADCAST_FAILED, return `'failure'`). Round-1 hold #4: a future
+ * caller that adopts `PostBroadcastWriteError` discrimination must NOT fire
+ * destructive cleanup (e.g. `deleteToken`, `releaseLock`) on a confirmed-on-
+ * chain operation — branching only on `'failure'` keeps that property safe.
  */
 export function handleBroadcastError(
   res: Response,
   err: unknown,
   opts: HandleBroadcastErrorOpts,
-): 'timeout' | 'failure' {
+): 'timeout' | 'failure' | 'post_broadcast' {
   // PostBroadcastWriteError discrimination MUST run before the
   // BroadcastTimeoutError / forceAmbiguousOutcome branches: the chain op IS
   // confirmed, so the over-cautious 504 outcome:'uncertain' would mislead
@@ -149,16 +183,32 @@ export function handleBroadcastError(
       { err, cause: err.cause, txId: err.txId, failedStep: err.failedStep, ...opts.logContext },
       `${opts.routeLabel} broadcast confirmed but post-broadcast write failed`,
     );
-    const userMsg = opts.postBroadcastFailedMsgFn
-      ? opts.postBroadcastFailedMsgFn(err.failedStep)
-      : `Broadcast confirmed (tx ${err.txId}); backend write at step '${err.failedStep}' failed. The chain operation is the source of truth and will reconcile automatically once HAF indexes it.`;
+    // Resolve the user-facing message under a guard: a caller-supplied
+    // `postBroadcastMsgFn` is application code that may throw (mid-rotation
+    // logger inside the template, undefined this, future formatter typo).
+    // Letting an exception escape here would skip `sendError`, propagate to
+    // the route's outer catch as a generic 500 INTERNAL_ERROR, and (on the
+    // ORCID surface) consume the OAuth state token in the process — the
+    // exact hard-block class the wrapper exists to prevent (round-1 hold #2).
+    let userMsg: string;
+    try {
+      userMsg = opts.postBroadcastMsgFn
+        ? opts.postBroadcastMsgFn(err.failedStep)
+        : defaultPostBroadcastMsg(err.txId);
+    } catch (msgErr) {
+      logger.warn(
+        { err: msgErr, txId: err.txId, failedStep: err.failedStep, ...opts.logContext },
+        `${opts.routeLabel} postBroadcastMsgFn threw — using generic fallback`,
+      );
+      userMsg = defaultPostBroadcastMsg(err.txId);
+    }
     sendError(res, 502, 'POST_BROADCAST_FAILED', userMsg, {
       retriable: false,
       outcome: 'confirmed',
       tx_id: err.txId,
       failed_step: err.failedStep,
     });
-    return 'failure';
+    return 'post_broadcast';
   }
   if (err instanceof BroadcastTimeoutError) {
     logger.warn(
@@ -229,6 +279,6 @@ export function handleBroadcastErrorAmbiguous(
   res: Response,
   err: unknown,
   opts: HandleBroadcastErrorAmbiguousOpts,
-): 'timeout' | 'failure' {
+): 'timeout' | 'failure' | 'post_broadcast' {
   return handleBroadcastError(res, err, opts);
 }

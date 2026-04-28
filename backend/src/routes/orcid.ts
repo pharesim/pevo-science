@@ -493,10 +493,26 @@ async function handleAccredit(
     verifyLocation: '/settings',
     routeLabel: 'orcid.handleAccredit',
     // BACKEND-ORCID-BROADCAST-OUTCOME-DISCRIMINATION: 502 POST_BROADCAST_FAILED
-    // user-facing message. Conveys that the chain op IS confirmed and HAF will
-    // reconcile — distinct from the 504 ambiguous-outcome message.
-    postBroadcastFailedMsgFn: (failedStep) =>
-      `Your ORCID is verified on Hive. A backend write to '${failedStep}' failed; this will reconcile automatically once HAF indexes the operation.`,
+    // user-facing message, tailored per cascade step (round-1 hold #3). Recovery
+    // semantics differ by step and the round-1 review surfaced that a single
+    // "HAF will reconcile" line overpromises auto-recovery: only
+    // `'reputation_seed'` reconciles via the next batch cycle; `'cache_write'`
+    // is repopulated by the next request that needs the binding;
+    // `'account_update'` is a denormalized projection with NO auto-reconcile
+    // path (a missed write requires HAF-replay, not currently implemented, or
+    // manual operator re-run). The message is honest about that without
+    // alarming users — the chain state is durable and ORCID-based login
+    // lookups via HAF still work; only the denormalized accounts.orcid column
+    // is potentially stale until a manual reconcile lands.
+    postBroadcastMsgFn: (failedStep) => {
+      const tail =
+        failedStep === 'reputation_seed'
+          ? 'Your reputation score will update at the next scheduled cycle.'
+          : failedStep === 'cache_write'
+            ? 'A backend cache write failed; it will repopulate on the next request that uses your ORCID binding.'
+            : 'A backend account update failed; the chain record is the source of truth, and login still works. The denormalized account record may be stale until support reconciles it.';
+      return `Your ORCID is verified on Hive. ${tail}`;
+    },
   };
   const accreditAmbiguousOpts: HandleBroadcastErrorAmbiguousOpts = {
     ...accreditErrorOpts,
@@ -582,6 +598,20 @@ async function handleAccredit(
     // `failed_step` instead of the over-cautious 504. `currentStep` advances
     // before each await so the catch attaches the precise step.
     // (BACKEND-ORCID-BROADCAST-OUTCOME-DISCRIMINATION.)
+    //
+    // Dead-defense note (round-1 hold #5): the three cascade fns currently
+    // swallow their async errors internally — `cacheOrcidBinding` warns and
+    // returns, `__test_seams.updateAccountOrcid` (== `updateAccountOrcid`)
+    // logs and returns, `seedAccreditationBonus` logs and returns. The
+    // wrapping try fires only on a synchronous JS-engine throw (e.g. a
+    // future refactor returning null where a method is expected) or if a
+    // future cascade-fn refactor switches to re-throwing critical errors.
+    // Kept structurally because (a) the discrimination shape is the canonical
+    // surface for `backend-sendoperations-outcome-handling-sweep.md` to reuse,
+    // and (b) tightening cascade-fn error semantics is a separate, wider scope.
+    // A test that exercises the discrimination via __test_seams (see
+    // tests/routes/orcid.test.ts post-broadcast specs) is the live proof the
+    // path remains wired.
     let currentStep: 'cache_write' | 'account_update' | 'reputation_seed' = 'cache_write';
     try {
       // Cache the binding so a concurrent bind request in the HAF-lag window sees
@@ -646,10 +676,18 @@ async function handleLink(
     logContext: { username, orcid: orcidId, mode: 'link' },
     verifyLocation: '/settings',
     routeLabel: 'orcid.handleLink',
-    // BACKEND-ORCID-BROADCAST-OUTCOME-DISCRIMINATION: see handleAccredit
-    // counterpart.
-    postBroadcastFailedMsgFn: (failedStep) =>
-      `Your ORCID is linked on Hive. A backend write to '${failedStep}' failed; this will reconcile automatically once HAF indexes the operation.`,
+    // BACKEND-ORCID-BROADCAST-OUTCOME-DISCRIMINATION: per-step user-facing
+    // message — see handleAccredit counterpart for full rationale (round-1
+    // hold #3). handleLink does NOT seed reputation, so the `'reputation_seed'`
+    // branch is unreachable in this surface; left in the switch as a defensive
+    // default in case PostBroadcastWriteError's union widens.
+    postBroadcastMsgFn: (failedStep) => {
+      const tail =
+        failedStep === 'cache_write'
+          ? 'A backend cache write failed; it will repopulate on the next request that uses your ORCID binding.'
+          : 'A backend account update failed; the chain record is the source of truth, and login still works. The denormalized account record may be stale until support reconciles it.';
+      return `Your ORCID is linked on Hive. ${tail}`;
+    },
   };
   const linkAmbiguousOpts: HandleBroadcastErrorAmbiguousOpts = {
     ...linkErrorOpts,
