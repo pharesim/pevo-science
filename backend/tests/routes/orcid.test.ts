@@ -45,10 +45,10 @@ import { PrivateKey } from '@hiveio/dhive';
 // can read `err.timeoutMs` identically against mock and real errors. The hoisted
 // class identity is visible in both the vi.mock factory and in test bodies.
 // `getAppPoolMock` is hoisted as a `vi.fn` (not just `() => ({ query: ... })`)
-// so per-test specs can `mockImplementationOnce` it to throw — exercising the
-// post-broadcast-throw escape from `fn`'s inner try/catch in
-// `withOrcidBindingLock` (item #7 of the round-1 architect re-review). The
-// default impl preserves the previous behavior `getAppPool: () => ({ query: appQueryMock })`.
+// so the default factory is observable for general assertions; per-test
+// throw injection now goes through `__test_seams.updateAccountOrcid` (round-2
+// hold item #2 — replaces the round-1 fragile getAppPool() Once-stack with a
+// deterministic seam spy). The default impl is `() => ({ query: appQueryMock })`.
 const {
   hafQueryMock,
   appQueryMock,
@@ -137,8 +137,12 @@ import { config } from '../../src/config.js';
 import { getRedis } from '../../src/redis.js';
 import { logger } from '../../src/logger.js';
 import { clearRateLimitKeys } from '../support/redis-helpers.js';
-// Test-only export — see note at orcid.ts __test_releaseBindingLock export.
-import { __test_releaseBindingLock as releaseBindingLock } from '../../src/routes/orcid.js';
+// Test-only exports — see notes at orcid.ts __test_releaseBindingLock /
+// __test_seams.
+import {
+  __test_releaseBindingLock as releaseBindingLock,
+  __test_seams,
+} from '../../src/routes/orcid.js';
 
 // The dev .env leaves ORCID and admin-key fields empty, and config is built at
 // import time (cached by the setupFile before this file runs), so we patch the
@@ -1200,9 +1204,10 @@ describe.each([
   // the lock via finally so retries aren't locked out for 35s." Without this
   // test, if the `if (lock.state === 'acquired')` guard in withOrcidBindingLock's
   // finally were inverted, no other spec would fail. Here we force broadcast to
-  // reject, assert the outer /callback catch maps to 500, and assert the lock
-  // was released under the nonce CAS (redis.get returns null — any release
-  // that doesn't own the nonce would leave the lock in place until TTL).
+  // reject with a non-timeout error, assert fn's inner catch maps it to a 502
+  // BROADCAST_FAILED envelope, and assert the lock was released under the
+  // nonce CAS (redis.get returns null — any release that doesn't own the
+  // nonce would leave the lock in place until TTL).
   it(
     'releases the lock via nonce CAS when broadcast throws mid-request (finally)',
     async () => {
@@ -1592,37 +1597,24 @@ describe.each([
       // timer-fire path on this branch — keeps test output clean.
       const loggerWarnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => { /* silence */ });
 
-      try {
-        // /start requires auth → getAppPool() runs BEFORE handleAccredit/Link.
-        // Defer the throw-mock until AFTER /start completes, otherwise the
-        // very first getAppPool() call (inside verifyHiveSignature) consumes
-        // the Once and starves the dispatch path.
-        const state = await startAuthed(mode, 'alice');
+      // Round-2 hold item #2 (deterministic seam): spy on the
+      // __test_seams.updateAccountOrcid name directly, instead of relying on
+      // the brittle getAppPool() Once-stack (1st call from auth middleware,
+      // 2nd from updateAccountOrcid). A future middleware change that
+      // shifts the number of getAppPool() invocations would silently break
+      // the mutation-kill assertion. The seam spy lands deterministically
+      // on the post-broadcast call inside fn — broadcast SUCCEEDS, then
+      // cacheOrcidBinding (swallows) runs, then __test_seams.updateAccountOrcid
+      // throws a BroadcastTimeoutError. The throw escapes fn's inner
+      // try/catch (only wraps the broadcast) so the wrapper's new outer
+      // try/catch is the only catch left to handle it. A regression there
+      // would surface as 500 INTERNAL_ERROR.
+      const updateOrcidSpy = vi
+        .spyOn(__test_seams, 'updateAccountOrcid')
+        .mockRejectedValueOnce(new MockBroadcastTimeoutError(30_000));
 
-        // Broadcast SUCCEEDS — defaults to { id: 'mock-orcid-tx' } via beforeEach.
-        // After the broadcast, fn calls cacheOrcidBinding (swallows) then
-        // updateAccountOrcid → getAppPool(). We force the SECOND getAppPool()
-        // call (the post-broadcast one inside updateAccountOrcid) to throw a
-        // BroadcastTimeoutError so the throw escapes updateAccountOrcid's
-        // inner try/catch (only wraps pool.query()) AND escapes fn's inner
-        // try/catch (only wraps the broadcast). The wrapper's new outer
-        // try/catch is the only catch left to handle it. A regression there
-        // would surface as 500 INTERNAL_ERROR.
-        //
-        // Sequence inside the /callback dispatch: auth middleware →
-        // findAccreditedAccountWithOrcid (HAF, no app-db); link mode also
-        // calls getExistingAccreditation (HAF). Then handleAccredit/handleLink
-        // → broadcast → cacheOrcidBinding (redis only) → updateAccountOrcid
-        // → getAppPool(). Auth middleware also calls getAppPool() once (light-
-        // account check), so we let the next 1 getAppPool call succeed and
-        // throw on the 2nd. mockImplementationOnce stack: first call (auth
-        // middleware) returns the default pool; second call
-        // (updateAccountOrcid) throws.
-        getAppPoolMock
-          .mockImplementationOnce(() => ({ query: appQueryMock }))
-          .mockImplementationOnce(() => {
-            throw new MockBroadcastTimeoutError(30_000);
-          });
+      try {
+        const state = await startAuthed(mode, 'alice');
 
         const res = await request(app)
           .post('/api/orcid/callback')
@@ -1648,8 +1640,8 @@ describe.each([
         // Lock key absent: the lock-key SETNX threw (Redis flap). The
         // unavailable branch never acquired a lock, so there is nothing to
         // release. Note: the orcid_binding cache key WAS written by
-        // cacheOrcidBinding (which ran BEFORE the forced getAppPool throw in
-        // updateAccountOrcid) — that's fine; the binding cache is a
+        // cacheOrcidBinding (which ran BEFORE the seam-injected
+        // updateAccountOrcid throw) — that's fine; the binding cache is a
         // best-effort optimization and persists after a 504. The key that
         // matters here is that no lock got stuck.
         expect(await redis.get(lockKey)).toBeNull();
@@ -1673,6 +1665,7 @@ describe.each([
         // the state-consumption check would re-broadcast → on-chain duplicate.
         expect(broadcastJsonMock.mock.calls.length).toBe(broadcastCallsBeforeSecond);
       } finally {
+        updateOrcidSpy.mockRestore();
         setSpy.mockRestore();
         loggerWarnSpy.mockRestore();
         await redis.del(lockKey, cacheKey).catch(() => { /* cleanup */ });

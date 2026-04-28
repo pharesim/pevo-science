@@ -4,7 +4,7 @@ import { sendError } from '../response.js';
 import { logger } from '../logger.js';
 
 /**
- * Options for {@link handleBroadcastError}.
+ * Base options shared by every broadcast-error envelope.
  *
  * `timeoutMsg` and `failMsg` are the user-facing strings in the 504/502
  * envelopes. `logContext` is merged into BOTH the `logger.warn` (timeout) and
@@ -12,31 +12,23 @@ import { logger } from '../logger.js';
  * `verifyLocation` surfaces on the 504 envelope only, as a UI hint for where
  * the caller can verify chain state before retrying (currently only the ORCID
  * surfaces set it to '/settings'). `routeLabel` is baked into the log
- * messages (`<routeLabel> broadcast timed out` / `<routeLabel> broadcast failed`).
+ * messages.
  *
- * `forceAmbiguousOutcome` collapses both branches (timeout AND any other
- * throw) into the 504 `BROADCAST_TIMEOUT` ambiguous-outcome envelope. Intended
- * for callers that operate without a surrounding retry/lock guard (e.g.
- * `withOrcidBindingLock`'s `'unavailable'` branch, where Redis is already
- * down and the broadcast may have landed without the caller being able to
- * reconcile later): in that context, every throw is outcome-ambiguous, not
- * just a broadcast timeout. When set, `timeout_ms` in the envelope is
- * reported as the `BroadcastTimeoutError.timeoutMs` on the timer-fire path,
- * and is omitted on the non-timeout path (the error didn't originate from
- * the timer).
+ * Stable log-message suffixes (operator alert anchors — change with care):
+ *   <routeLabel> broadcast timed out                        (logger.warn,  timer-fire path)
+ *   <routeLabel> broadcast failed on ambiguous-outcome path (logger.error, forceAmbiguousOutcome non-timer branch)
+ *   <routeLabel> broadcast failed                           (logger.error, standard 502 path)
  *
- * `ambiguousMsg` is the user-facing message used on the
- * `forceAmbiguousOutcome` non-timer branch, distinct from `failMsg`. The
- * non-timer ambiguous path is semantically uncertainty (broadcast may have
- * landed; verify before retry), NOT failure — so reusing `failMsg` ("Failed
- * to broadcast …") would contradict `details.outcome: 'uncertain'` in the
- * envelope. Callers that pass `forceAmbiguousOutcome: true` on a wrapper
- * (e.g. `withOrcidBindingLock` `'unavailable'` branch) should set this to
- * a verify-before-retry message like "Broadcast outcome uncertain. Verify
- * your ORCID linkage at /settings before retrying." Defaults to `failMsg`
- * if omitted (preserves pre-existing behavior on the legacy callers).
+ * Item #1 of round-2 hold (BE-ORCID-BROADCAST-TIMEOUT-OUTCOME-HANDLING):
+ * `forceAmbiguousOutcome` and `ambiguousMsg` are now correlated via a
+ * discriminated union. Setting `forceAmbiguousOutcome: true` REQUIRES
+ * `ambiguousMsg`; the round-1 `ambiguousMsg ?? failMsg` fallback is gone so
+ * a future caller cannot silently regress to "Failed to broadcast …" on a
+ * `outcome:'uncertain'` envelope (the round-1 #2 contradiction class). The
+ * non-ambiguous variant explicitly disallows `ambiguousMsg` (`?: never`) so
+ * a stray field on a non-ambiguous opts object is a compile error.
  */
-export interface HandleBroadcastErrorOpts {
+interface BaseHandleBroadcastErrorOpts {
   /** User-facing 504 message (timer-fire path). */
   timeoutMsg: string;
   /** User-facing 502 message. */
@@ -47,20 +39,41 @@ export interface HandleBroadcastErrorOpts {
   verifyLocation?: string;
   /** Log-message prefix, e.g. 'orcid.handleAccredit'. */
   routeLabel: string;
-  /**
-   * When true, any throw (timeout OR other) emits the 504 ambiguous-outcome
-   * envelope; `ambiguousMsg` (or `failMsg` as fallback) is used for the
-   * non-timeout message, `timeoutMsg` for the timer-fire path. Default false
-   * (preserves pre-existing 504/502 split).
-   */
-  forceAmbiguousOutcome?: boolean;
-  /**
-   * User-facing message for the `forceAmbiguousOutcome` non-timer branch.
-   * Falls back to `failMsg` when omitted. Distinct from `failMsg` because
-   * the ambiguous path semantically conveys uncertainty, not failure.
-   */
-  ambiguousMsg?: string;
 }
+
+/**
+ * Discriminated-union ambiguous-outcome fields. The `true` variant requires
+ * `ambiguousMsg`; the `false` (or omitted) variant explicitly disallows it
+ * so a stray field surfaces at the type level rather than silently no-op'ing.
+ *
+ * The ambiguous path is used when the caller has no surrounding retry/lock
+ * guard (e.g. {@link withOrcidBindingLock}'s `'unavailable'` branch, where
+ * Redis is already down and the broadcast may have landed without the caller
+ * being able to reconcile later): every throw is outcome-ambiguous, not just
+ * a broadcast timeout. `ambiguousMsg` is the user-facing message for the
+ * non-timer branch (the timer-fire branch keeps `timeoutMsg`); reusing
+ * `failMsg` ("Failed to broadcast …") would contradict the
+ * `details.outcome:'uncertain'` field in the envelope.
+ */
+type AmbiguousOutcomeFields =
+  | { forceAmbiguousOutcome?: false; ambiguousMsg?: never }
+  | { forceAmbiguousOutcome: true; ambiguousMsg: string };
+
+export type HandleBroadcastErrorOpts = BaseHandleBroadcastErrorOpts & AmbiguousOutcomeFields;
+
+/**
+ * The narrowed ambiguous-only variant. Wrappers that always emit the
+ * ambiguous-outcome envelope (currently {@link withOrcidBindingLock}'s
+ * `'unavailable'` branch) take this type and call
+ * {@link handleBroadcastErrorAmbiguous}, so the wrapper does not need to
+ * spread `forceAmbiguousOutcome:true` into the helper opts itself (item #4
+ * of the round-2 hold — keeps the helper's internal flag name out of caller
+ * sites).
+ */
+export type HandleBroadcastErrorAmbiguousOpts = BaseHandleBroadcastErrorOpts & {
+  forceAmbiguousOutcome: true;
+  ambiguousMsg: string;
+};
 
 /**
  * Emit the 504 `BROADCAST_TIMEOUT` or 502 `BROADCAST_FAILED` envelope shape per
@@ -121,11 +134,12 @@ export function handleBroadcastError(
     if (opts.verifyLocation !== undefined) {
       details.verify_location = opts.verifyLocation;
     }
-    // Prefer ambiguousMsg over failMsg here: failMsg ("Failed to broadcast …")
-    // contradicts outcome:'uncertain' in the envelope. ambiguousMsg falls back
-    // to failMsg for callers that haven't migrated to the new field yet.
-    const ambiguousUserMsg = opts.ambiguousMsg ?? opts.failMsg;
-    sendError(res, 504, 'BROADCAST_TIMEOUT', ambiguousUserMsg, details);
+    // `ambiguousMsg` is required by the discriminated union when
+    // forceAmbiguousOutcome is true — no `?? failMsg` fallback (the round-1
+    // fallback could silently regress to "Failed to broadcast …" which
+    // contradicts outcome:'uncertain'; round-2 item #1 closes that class at
+    // the type level).
+    sendError(res, 504, 'BROADCAST_TIMEOUT', opts.ambiguousMsg, details);
     return 'failure';
   }
   logger.error(
@@ -134,4 +148,20 @@ export function handleBroadcastError(
   );
   sendError(res, 502, 'BROADCAST_FAILED', opts.failMsg, { retriable: false });
   return 'failure';
+}
+
+/**
+ * Dedicated ambiguous-outcome entry point. Equivalent to
+ * `handleBroadcastError(res, err, opts)` where `opts` is statically narrowed
+ * to the `forceAmbiguousOutcome:true; ambiguousMsg:string` variant of the
+ * union. Wrappers like {@link withOrcidBindingLock}'s `'unavailable'`-branch
+ * catch call this directly so the helper's internal `forceAmbiguousOutcome`
+ * flag name does not leak into caller code (item #4 of round-2 hold).
+ */
+export function handleBroadcastErrorAmbiguous(
+  res: Response,
+  err: unknown,
+  opts: HandleBroadcastErrorAmbiguousOpts,
+): 'timeout' | 'failure' {
+  return handleBroadcastError(res, err, opts);
 }

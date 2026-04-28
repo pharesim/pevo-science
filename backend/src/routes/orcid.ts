@@ -5,7 +5,12 @@ import { PrivateKey } from '@hiveio/dhive';
 import { z } from 'zod';
 import { config } from '../config.js';
 import { broadcastJsonWithTimeout, BroadcastTimeoutError } from '../hive.js';
-import { handleBroadcastError, type HandleBroadcastErrorOpts } from '../lib/broadcast-error.js';
+import {
+  handleBroadcastError,
+  handleBroadcastErrorAmbiguous,
+  type HandleBroadcastErrorOpts,
+  type HandleBroadcastErrorAmbiguousOpts,
+} from '../lib/broadcast-error.js';
 import { getRedis, isRedisAvailable } from '../redis.js';
 import { getAppPool } from '../app-db.js';
 import { getPool } from '../db.js';
@@ -470,16 +475,30 @@ async function handleAccredit(
     return;
   }
 
+  // Split into two opts shapes per round-2 hold item #1:
+  //   * accreditErrorOpts — non-ambiguous variant for fn's inner catch (acquired
+  //     branch's BroadcastTimeoutError → 504 timer-fire envelope; non-timeout
+  //     broadcast error → 502 BROADCAST_FAILED). The discriminated union forbids
+  //     `ambiguousMsg` on this variant so a stray field is a compile error.
+  //   * accreditAmbiguousOpts — ambiguous variant for the wrapper's outer catch
+  //     on the 'unavailable' branch and (after item #6) for non-timeout
+  //     broadcast errors re-thrown from the same branch. `forceAmbiguousOutcome:
+  //     true` + `ambiguousMsg` are required by the discriminated union; the
+  //     round-1 `ambiguousMsg ?? failMsg` fallback is gone.
   const accreditErrorOpts: HandleBroadcastErrorOpts = {
     timeoutMsg: 'Broadcasting ORCID accreditation timed out',
     failMsg: 'Failed to broadcast ORCID accreditation to Hive',
-    ambiguousMsg: 'Broadcast outcome uncertain. Verify your ORCID linkage at /settings before retrying.',
     logContext: { username, orcid: orcidId, mode: 'accredit' },
     verifyLocation: '/settings',
     routeLabel: 'orcid.handleAccredit',
   };
+  const accreditAmbiguousOpts: HandleBroadcastErrorAmbiguousOpts = {
+    ...accreditErrorOpts,
+    forceAmbiguousOutcome: true,
+    ambiguousMsg: 'Broadcast outcome uncertain. Verify your ORCID linkage at /settings before retrying.',
+  };
 
-  await withOrcidBindingLock(res, orcidId, async () => {
+  await withOrcidBindingLock(res, orcidId, async (lockState) => {
     const customJsonPayload = {
       action: 'accredit',
       account: username,
@@ -534,6 +553,17 @@ async function handleAccredit(
         handleBroadcastError(res, err, accreditErrorOpts);
         return { skipRelease: true };
       }
+      // Round-2 hold item #6: on the 'unavailable' branch ANY throw is
+      // outcome-ambiguous (no lock-TTL margin, no binding cache to dedup
+      // against). Re-throw non-timeout broadcast errors so the wrapper's
+      // outer catch emits the 504 ambiguous-outcome envelope via
+      // handleBroadcastErrorAmbiguous. On the 'acquired' branch the
+      // existing 502 BROADCAST_FAILED envelope still fires (the lock and
+      // cache-write provide the dedup signal a retry would need to be
+      // safe). Single source of truth for the ambiguous-outcome envelope.
+      if (lockState === 'unavailable') {
+        throw err;
+      }
       handleBroadcastError(res, err, accreditErrorOpts);
       return;
     }
@@ -543,7 +573,9 @@ async function handleAccredit(
     await cacheOrcidBinding(orcidId, username);
 
     // Update orcid column in accounts (if light account row exists)
-    await updateAccountOrcid(username, orcidId);
+    // Routed through __test_seams so a unit spec can spy on this call
+    // (round-2 hold item #2 — replaces the fragile getAppPool() Once-stack).
+    await __test_seams.updateAccountOrcid(username, orcidId);
 
     await seedAccreditationBonus(username);
 
@@ -554,7 +586,7 @@ async function handleAccredit(
       orcid: orcidId,
       tx_id: result.id,
     });
-  }, accreditErrorOpts);
+  }, accreditAmbiguousOpts);
 }
 
 async function handleLink(
@@ -586,16 +618,21 @@ async function handleLink(
     return;
   }
 
+  // See handleAccredit counterpart for split-opts rationale (round-2 hold #1).
   const linkErrorOpts: HandleBroadcastErrorOpts = {
     timeoutMsg: 'Broadcasting ORCID link timed out',
     failMsg: 'Failed to broadcast ORCID link to Hive',
-    ambiguousMsg: 'Broadcast outcome uncertain. Verify your ORCID linkage at /settings before retrying.',
     logContext: { username, orcid: orcidId, mode: 'link' },
     verifyLocation: '/settings',
     routeLabel: 'orcid.handleLink',
   };
+  const linkAmbiguousOpts: HandleBroadcastErrorAmbiguousOpts = {
+    ...linkErrorOpts,
+    forceAmbiguousOutcome: true,
+    ambiguousMsg: 'Broadcast outcome uncertain. Verify your ORCID linkage at /settings before retrying.',
+  };
 
-  await withOrcidBindingLock(res, orcidId, async () => {
+  await withOrcidBindingLock(res, orcidId, async (lockState) => {
     const customJsonPayload = {
       action: 'accredit',
       account: username,
@@ -634,6 +671,10 @@ async function handleLink(
         handleBroadcastError(res, err, linkErrorOpts);
         return { skipRelease: true };
       }
+      // Round-2 hold item #6: see handleAccredit counterpart.
+      if (lockState === 'unavailable') {
+        throw err;
+      }
       handleBroadcastError(res, err, linkErrorOpts);
       return;
     }
@@ -643,7 +684,9 @@ async function handleLink(
     await cacheOrcidBinding(orcidId, username);
 
     // Update orcid column in accounts (if light account row exists)
-    await updateAccountOrcid(username, orcidId);
+    // Routed through __test_seams so a unit spec can spy on this call
+    // (round-2 hold item #2 — replaces the fragile getAppPool() Once-stack).
+    await __test_seams.updateAccountOrcid(username, orcidId);
 
     sendOk(res, {
       mode: 'link',
@@ -652,7 +695,7 @@ async function handleLink(
       orcid: orcidId,
       tx_id: result.id,
     });
-  }, linkErrorOpts);
+  }, linkAmbiguousOpts);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -785,7 +828,7 @@ async function releaseBindingLock(orcidId: string, nonce: string): Promise<void>
  *                   the wrapper catches throws from fn and, using the required
  *                   `ambiguousOutcomeOpts`, emits the 504
  *                   BROADCAST_TIMEOUT ambiguous-outcome envelope via
- *                   handleBroadcastError. Rationale: with Redis down, there is
+ *                   handleBroadcastErrorAmbiguous. Rationale: with Redis down, there is
  *                   no lock-TTL margin or binding-cache to guarantee the
  *                   broadcast hasn't landed. Every throw in this branch is
  *                   outcome-ambiguous (the broadcast may be on-chain already);
@@ -817,7 +860,16 @@ async function withOrcidBindingLock(
   // finally and release as before — only an explicit `{ skipRelease: true }`
   // return short-circuits the release. Returning void preserves the legacy
   // success-path release.
-  fn: () => Promise<void | { skipRelease: true }>,
+  // `fn` receives the resolved lock state ('acquired' | 'unavailable') so
+  // it can discriminate envelope handling on the inner-catch path: on the
+  // 'unavailable' branch, ANY throw is outcome-ambiguous (no lock-TTL
+  // margin, no binding-cache to dedup against), so non-timeout broadcast
+  // errors must be re-thrown to let this wrapper's outer catch emit the
+  // ambiguous-outcome envelope (round-2 hold item #6). On the 'acquired'
+  // branch, fn keeps its existing 502 BROADCAST_FAILED response for
+  // non-timeout broadcast errors. ('held' is handled by the wrapper before
+  // fn runs; fn never observes that state.)
+  fn: (lockState: 'acquired' | 'unavailable') => Promise<void | { skipRelease: true }>,
   // REQUIRED at the type level: the unavailable-branch ambiguous-outcome
   // envelope is the only thing keeping a Redis-flap throw from propagating
   // to the outer /callback catch as 500 INTERNAL_ERROR (consumed-state-token
@@ -826,8 +878,12 @@ async function withOrcidBindingLock(
   // it costs nothing and forecloses the silent regression. Future callers
   // that genuinely have no broadcast-write to recover (e.g. a read-only
   // probe) MUST justify the addition by extending this signature, not by
-  // omitting the safety envelope.
-  ambiguousOutcomeOpts: HandleBroadcastErrorOpts,
+  // omitting the safety envelope. Round-2 hold item #4: takes the narrowed
+  // ambiguous variant directly so the wrapper does not spread-and-override
+  // `forceAmbiguousOutcome:true` into the helper opts (i.e. doesn't leak the
+  // helper's internal flag name); calls handleBroadcastErrorAmbiguous, which
+  // accepts only this narrowed shape.
+  ambiguousOutcomeOpts: HandleBroadcastErrorAmbiguousOpts,
 ): Promise<void> {
   const lock = await acquireBindingLock(orcidId);
   if (lock.state === 'held') {
@@ -853,7 +909,7 @@ async function withOrcidBindingLock(
     // leaving skipRelease=false, so finally releases as before.
     let skipRelease = false;
     try {
-      const result = await fn();
+      const result = await fn('acquired');
       if (result?.skipRelease) skipRelease = true;
     } finally {
       if (!skipRelease) {
@@ -866,10 +922,14 @@ async function withOrcidBindingLock(
     // branch is routed to the 504 ambiguous-outcome envelope rather than the
     // outer /callback catch's 500 INTERNAL_ERROR — the OAuth state token is
     // already consumed, so a 500 hard-blocks the user on a retry path that
-    // may also duplicate-broadcast. handleBroadcastError with
-    // forceAmbiguousOutcome collapses BroadcastTimeoutError AND any other
-    // throw into the same 504 BROADCAST_TIMEOUT shape (retriable:false,
-    // verify_before_retry:true). See convention doc
+    // may also duplicate-broadcast. handleBroadcastErrorAmbiguous (the
+    // dedicated entry point — round-2 hold item #4) collapses
+    // BroadcastTimeoutError AND any other throw into the same 504
+    // BROADCAST_TIMEOUT shape (retriable:false, verify_before_retry:true,
+    // outcome:'uncertain'). The discriminated-union opts type
+    // (HandleBroadcastErrorAmbiguousOpts) requires `ambiguousMsg` so the
+    // round-1 `ambiguousMsg ?? failMsg` silent-regression class cannot
+    // reappear. See convention doc
     // agents/docs/solutions/conventions/chain-write-timeout-ambiguous-outcome-2026-04-22.md.
     //
     // NB: A.1 lock-TTL extension is a NO-OP on this branch. There is no lock
@@ -880,12 +940,14 @@ async function withOrcidBindingLock(
     // returns `{ skipRelease: true }` on this branch is silently ignored —
     // there is nothing to skip releasing.
     try {
-      await fn();
+      await fn('unavailable');
     } catch (err) {
-      handleBroadcastError(res, err, {
-        ...ambiguousOutcomeOpts,
-        forceAmbiguousOutcome: true,
-      });
+      // Round-2 hold item #4: dedicated ambiguous entry point — wrapper does
+      // not know the helper's internal `forceAmbiguousOutcome` flag name. The
+      // narrowed `HandleBroadcastErrorAmbiguousOpts` type guarantees
+      // `ambiguousMsg` is set (item #1's discriminated union closes the
+      // round-1 `ambiguousMsg ?? failMsg` silent-regression class).
+      handleBroadcastErrorAmbiguous(res, err, ambiguousOutcomeOpts);
     }
   } else {
     // Exhaustiveness guard: adding a new BindingLockState variant without
@@ -1085,6 +1147,20 @@ async function updateAccountOrcid(username: string, orcidId: string): Promise<vo
     logger.warn({ err, username }, 'Failed to update accounts.orcid (row may not exist for self-custody user)');
   }
 }
+
+// Test-only seam (round-2 hold item #2): handleAccredit/handleLink call
+// updateAccountOrcid through this object so a unit spec can replace it via
+// `vi.spyOn(__test_seams, 'updateAccountOrcid').mockRejectedValueOnce(...)`
+// to deterministically inject a post-broadcast throw without depending on the
+// fragile getAppPool() Once-stack (which assumes a specific number of
+// getAppPool() calls before this one). A future middleware change that adds
+// or removes a getAppPool() call would shift the throw onto the wrong site
+// and silently break the mutation-kill assertion. Routing the call through
+// __test_seams gives the test a stable name to spy on. NOT for production
+// import — only the test bypass references this property.
+export const __test_seams = {
+  updateAccountOrcid,
+};
 
 // Export the in-memory verified map so auth.ts signup can consume nonces
 export { orcidVerified };
