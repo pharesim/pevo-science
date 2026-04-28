@@ -71,7 +71,7 @@ const {
         this.timeoutMs = timeoutMs;
       }
     },
-    // Controllable failure flag for the round-3 SEC-002-HARDENING #3 spec.
+    // Controllable failure flag for the authenticateRequest infra-throw spec.
     // Default false: the wrapping mock delegates to the real verifyHiveSignature
     // (preserving the SEC-002-BE invariant that the real auth middleware sees
     // every other auth-mode callback). A single spec sets `.value = true`,
@@ -111,12 +111,11 @@ vi.mock('../../src/accreditation.js', () => ({
 // the real middleware (preserving the SEC-002-BE invariant — fixtures/mock-auth
 // shims previously hid the state-hijack gap and must not be reintroduced) UNLESS
 // verifyHiveSignatureFailureToken.value === true, in which case the wrapper
-// fires next(new Error(...)) without sending a response. The toggle exists for
-// SEC-002-HARDENING round-3 finding #3: exercising the authenticateRequest
-// infra-throw path needs the inner middleware to call next(err) synchronously,
-// which the real middleware never does (every internal throw is caught and
-// mapped to sendError + finish event). All other specs leave the toggle false
-// so the real auth middleware runs end-to-end.
+// fires next(new Error(...)) without sending a response. The toggle exists to
+// exercise the authenticateRequest infra-throw path: the inner middleware must
+// call next(err) synchronously, which the real middleware never does (every
+// internal throw is caught and mapped to sendError + finish event). All other
+// specs leave the toggle false so the real auth middleware runs end-to-end.
 vi.mock('../../src/middleware/verifyHiveSignature.js', async () => {
   const actual = await vi.importActual<typeof import('../../src/middleware/verifyHiveSignature.js')>(
     '../../src/middleware/verifyHiveSignature.js',
@@ -125,7 +124,7 @@ vi.mock('../../src/middleware/verifyHiveSignature.js', async () => {
     ...actual,
     verifyHiveSignature: async (req: import('express').Request, res: import('express').Response, next: import('express').NextFunction) => {
       if (verifyHiveSignatureFailureToken.value) {
-        return next(new Error('simulated verifyHiveSignature infra throw (SEC-002-HARDENING #3)'));
+        return next(new Error('simulated verifyHiveSignature infra throw'));
       }
       return actual.verifyHiveSignature(req, res, next);
     },
@@ -221,6 +220,14 @@ beforeEach(async () => {
   // connect window (was a divergent inline caller prior to
   // BE-TESTS-ORCID-RATE-LIMIT-CLEAR-HELPER-MIGRATION).
   await clearRateLimitKeys(['orcid-start', 'orcid-callback']);
+  // The verifyHiveSignature wrapper at the top of this file consults a hoisted
+  // process-singleton flag. A spec that flips it true and forgets the finally
+  // reset (or throws inside finally before the reset line) would silently leak
+  // value=true into subsequent specs, bypassing the real auth middleware in
+  // tests that should be exercising it. Reset structurally per spec so a
+  // missing finally cannot poison neighbours; the per-spec try/finally
+  // remains belt-and-suspenders.
+  verifyHiveSignatureFailureToken.value = false;
 });
 
 describe('POST /api/orcid/callback — auth gate (SEC-002-BE)', () => {
@@ -647,13 +654,13 @@ describe('POST /api/orcid/callback — hardening (SEC-002-HARDENING)', () => {
     },
   );
 
-  // Round-3 P3 (SEC-002-HARDENING #3): the widened try/catch wraps
-  // authenticateRequest. When verifyHiveSignature dispatches next(err) (or
-  // otherwise causes the inner Promise to reject) the orcid /callback handler
-  // must surface a clean 500 INTERNAL_ERROR AND must NOT consume state — the
-  // legitimate caller can retry once infrastructure recovers, symmetric with
-  // the 403 state-not-consumed contract. The wrapping mock at the top of this
-  // file flips to a synthetic next(err) for this single spec.
+  // The widened try/catch wraps authenticateRequest. When verifyHiveSignature
+  // dispatches next(err) (or otherwise causes the inner Promise to reject) the
+  // orcid /callback handler must surface a clean 500 INTERNAL_ERROR AND must
+  // NOT consume state — the legitimate caller can retry once infrastructure
+  // recovers, symmetric with the 403 state-not-consumed contract. The wrapping
+  // mock at the top of this file flips to a synthetic next(err) for this
+  // single spec.
   it(
     'authenticateRequest throw → 500 INTERNAL_ERROR, state not consumed (authed mode)',
     async () => {

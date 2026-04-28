@@ -1,6 +1,6 @@
 import type { Response } from 'express';
 import type { PaginationMeta, ErrorCode } from './types/index.js';
-import { logger } from './logger.js';
+import { logger, getRequestId } from './logger.js';
 
 export function sendOk(res: Response, data: unknown, meta?: PaginationMeta) {
   const body: Record<string, unknown> = { status: 'ok', data };
@@ -20,10 +20,18 @@ export function sendError(
   // wrapped middleware has already responded. Writing to a sent response
   // corrupts the stream and triggers Express "Cannot set headers after they
   // are sent". Drop the duplicate write and warn so the upstream pattern is
-  // visible in logs without crashing the response. See SEC-002-HARDENING
-  // round-3 finding #1 for context.
+  // visible in logs without crashing the response.
   if (res.headersSent) {
-    logger.warn({}, 'sendError called after response sent');
+    logger.warn(
+      {
+        reqId: getRequestId(),
+        method: res.req?.method,
+        url: res.req?.url,
+        attemptedStatus: httpStatus,
+        attemptedCode: code,
+      },
+      'sendError called after response sent',
+    );
     return;
   }
   const error: Record<string, unknown> = { code, message };
