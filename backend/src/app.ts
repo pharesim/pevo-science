@@ -10,6 +10,7 @@ import { getPool, isHafAvailable } from './db.js';
 import { isRedisAvailable } from './redis.js';
 import { hiveClient } from './hive.js';
 import { extractAbstract, parseMeta, isPevoAnyPaper } from './helpers.js';
+import { validPevoPaperWhere } from './hafsql.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { httpLogger, requestContext } from './logger.js';
 import { rateLimit, byIp } from './middleware/rateLimit.js';
@@ -202,15 +203,16 @@ export function createApp() {
     try {
       const pool = getPool();
       if (pool) {
+        const validPaper = validPevoPaperWhere({ commentAlias: 'c', appTagParam: '$1', bridgeAccountParam: '$3', source: 'all' });
         const { rows } = await pool.query<{ author: string; permlink: string; updated: string }>(
           `SELECT c.author, c.permlink, c.last_update::date::text AS updated
            FROM hive.comments_view c
            WHERE c.parent_author = '' AND c.parent_permlink = $1
              AND c.json_metadata ->> 'app' LIKE $2
-             AND (c.json_metadata -> $1 ->> 'type') IN ('paper', 'bridge_paper')
+             AND ${validPaper}
            ORDER BY c.last_update DESC
            LIMIT 5000`,
-          [config.appTag, `${config.appTag}/%`],
+          [config.appTag, `${config.appTag}/%`, config.hiveBridgeAccount],
         );
         for (const r of rows) {
           urls.push(url(`/paper/${r.author}/${r.permlink}`, 'weekly', '0.8', r.updated));

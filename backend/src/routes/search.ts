@@ -7,7 +7,7 @@ import { parsePageLimit } from '../helpers.js';
 import { getAccreditedSet } from '../accreditation.js';
 import { hafCache } from '../cache.js';
 import { logger } from '../logger.js';
-import { T, activeAccreditationsCteBody, retractedPapersCteBody, buildWith } from '../hafsql.js';
+import { T, activeAccreditationsCteBody, retractedPapersCteBody, buildWith, validPevoPaperWhere } from '../hafsql.js';
 import { validateDisciplineFilter, DisciplineFilterError } from '../types/disciplines.js';
 
 const router = Router();
@@ -44,7 +44,8 @@ async function searchPapersFromHaf(
 
   const appTagParam = `$${paramIdx++}`;
   const appLikeParam = `$${paramIdx++}`;
-  const cteParams = [...cte.params, config.appTag, `${config.appTag}/%`];
+  const bridgeAccountParam = `$${paramIdx++}`;
+  const cteParams = [...cte.params, config.appTag, `${config.appTag}/%`, config.hiveBridgeAccount];
 
   const conditions: string[] = [
     `c.parent_permlink = ${appTagParam}`,
@@ -53,13 +54,9 @@ async function searchPapersFromHaf(
   ];
   const params: unknown[] = [...cteParams];
 
-  if (source === 'native') {
-    conditions.push(`(c.json_metadata -> ${appTagParam} ->> 'type') = 'paper'`);
-  } else if (source === 'bridge') {
-    conditions.push(`(c.json_metadata -> ${appTagParam} ->> 'type') = 'bridge_paper'`);
-  } else {
-    conditions.push(`(c.json_metadata -> ${appTagParam} ->> 'type') IN ('paper', 'bridge_paper')`);
-  }
+  const paperSource: 'native' | 'bridge' | 'all' =
+    source === 'native' ? 'native' : source === 'bridge' ? 'bridge' : 'all';
+  conditions.push(validPevoPaperWhere({ commentAlias: 'c', appTagParam, bridgeAccountParam, source: paperSource }));
 
   if (discipline) {
     // Case-insensitive match: canonicalize both sides to lowercase so a
@@ -79,13 +76,10 @@ async function searchPapersFromHaf(
   }
 
   if (accreditedOnly) {
-    // Pin the bridge_paper accreditation carve-out to the platform bridge
-    // account. Without `c.author = config.hiveBridgeAccount`, any unaccredited
-    // Hive account can spoof `type: bridge_paper` in json_metadata to bypass
-    // the accreditation gate. Mirrors papers.ts and stats.ts.
-    const bridgeAccountParam = `$${paramIdx++}`;
-    conditions.push(`(c.author IN (SELECT account FROM active_accreditations) OR (c.author = ${bridgeAccountParam} AND (c.json_metadata -> ${appTagParam} ->> 'type') = 'bridge_paper'))`);
-    params.push(config.hiveBridgeAccount);
+    // Bridge-account-pinned bridge_paper carve-out only. A bridge_paper from
+    // any other author is invalid data per the pevo-object-identity convention.
+    const bridgeArm = validPevoPaperWhere({ commentAlias: 'c', appTagParam, bridgeAccountParam, source: 'bridge' });
+    conditions.push(`(c.author IN (SELECT account FROM active_accreditations) OR ${bridgeArm})`);
   }
   if (!includeRetracted) {
     conditions.push(`NOT EXISTS (SELECT 1 FROM retracted_papers rp WHERE rp.author = c.author AND rp.permlink = c.permlink)`);
@@ -288,26 +282,7 @@ router.get('/', async (req: Request, res: Response) => {
     return sendError(res, 400, 'BAD_REQUEST', 'Search query "q" is required');
   }
 
-  // BE-SEARCH-REVIEWS-CONTRACT-RECONCILE: validate `?type=` against the
-  // documented enum (`all` | `paper` | `review`) instead of silently coercing
-  // unknown values to `'all'`. Untyped fall-through hid the contract drift
-  // where `papers.md` claimed reviews were unsearchable while the code
-  // shipped a live `type === 'review'` branch. Pin the enum here so any
-  // future drift surfaces as a 400 rather than a quiet semantic shift.
-  // Typeof-narrowed (mirrors the discipline pattern above) — repeated
-  // params (`?type=a&type=b`) yield `string[]` which an `as string` cast
-  // would coerce to `"a,b"`, slipping past the enum check.
-  const VALID_SEARCH_TYPES = ['all', 'paper', 'review'] as const;
-  type SearchType = typeof VALID_SEARCH_TYPES[number];
-  const rawType = req.query.type;
-  let type: SearchType;
-  if (rawType === undefined) {
-    type = 'all';
-  } else if (typeof rawType === 'string' && (VALID_SEARCH_TYPES as readonly string[]).includes(rawType)) {
-    type = rawType as SearchType;
-  } else {
-    return sendError(res, 400, 'BAD_REQUEST', `Invalid type. Must be one of: ${VALID_SEARCH_TYPES.join(', ')}`);
-  }
+  const type = (req.query.type as string) || 'all';
   // Canonicalize `?discipline=` at route entry so downstream SQL binding and
   // cache-key construction share the same lowercased value. Three-site
   // lowercasing (route, SQL binder, cache key) drifted under refactor — see

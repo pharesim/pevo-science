@@ -10,7 +10,7 @@ import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';
 import { hafCache } from '../cache.js';
 import { logger } from '../logger.js';
 import { rateLimit, byIp } from '../middleware/rateLimit.js';
-import { T } from '../hafsql.js';
+import { T, validPevoPaperWhere } from '../hafsql.js';
 import { handleBroadcastError } from '../lib/broadcast-error.js';
 import {
   parseIdentifier,
@@ -81,33 +81,37 @@ async function checkExistingBridge(identifier: string, resolvedParsed?: { type: 
     // Check all possible authors by querying HAF first
     const pool = getPool();
     if (pool && isHafAvailable()) {
-      // Metadata check: find by source DOI or arXiv ID
+      // Metadata check: find by source DOI or arXiv ID. Pin to the bridge
+      // account so a spoofer can't preempt a canonical bridge import by
+      // posting a comment with the same source DOI under their own account.
       const sourceField = parsed.type === 'doi' ? 'doi' : 'arxiv_id';
+      const bridgePaperWhere = validPevoPaperWhere({ commentAlias: 'c', appTagParam: '$2', bridgeAccountParam: '$5', source: 'bridge' });
       const result = await pool.query(
         `SELECT c.author, c.permlink, c.title, c.created
          FROM ${T.comments} c
          WHERE c.parent_author = '' AND c.parent_permlink = $2
-           AND (c.json_metadata -> $2 ->> 'type') = 'bridge_paper'
+           AND ${bridgePaperWhere}
            AND c.json_metadata ->> 'app' LIKE $3
            AND (c.json_metadata -> $2 -> 'source' ->> $4) = $1
          LIMIT 1`,
-        [parsed.id, config.appTag, `${config.appTag}/%`, sourceField],
+        [parsed.id, config.appTag, `${config.appTag}/%`, sourceField, config.hiveBridgeAccount],
       );
       if (result.rows.length > 0) {
         const row = result.rows[0];
         return { exists: true, author: row.author, permlink: row.permlink, title: row.title, created: row.created };
       }
 
-      // Also check by deterministic permlink
+      // Also check by deterministic permlink (also pinned to bridge account).
+      const permlinkBridgeWhere = validPevoPaperWhere({ commentAlias: 'c', appTagParam: '$2', bridgeAccountParam: '$4', source: 'bridge' });
       const permlinkResult = await pool.query(
         `SELECT c.author, c.permlink, c.title, c.created
          FROM ${T.comments} c
          WHERE c.parent_author = '' AND c.parent_permlink = $2
            AND c.permlink = $1
-           AND (c.json_metadata -> $2 ->> 'type') = 'bridge_paper'
+           AND ${permlinkBridgeWhere}
            AND c.json_metadata ->> 'app' LIKE $3
          LIMIT 1`,
-        [permlink, config.appTag, `${config.appTag}/%`],
+        [permlink, config.appTag, `${config.appTag}/%`, config.hiveBridgeAccount],
       );
       if (permlinkResult.rows.length > 0) {
         const row = permlinkResult.rows[0];

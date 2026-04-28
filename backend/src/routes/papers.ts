@@ -8,6 +8,7 @@ import { sendOk, sendError } from '../response.js';
 import {
   parseMeta,
   isPevoAnyPaper,
+  isPevoBridgePaper,
   parsePageLimit,
   parseSort,
   parseOrder,
@@ -29,6 +30,7 @@ import {
   retractedPapersCteBody,
   buildWith,
   getCachedGenesisBlock,
+  validPevoPaperWhere,
 } from '../hafsql.js';
 import { validateDisciplineFilter, DisciplineFilterError } from '../types/disciplines.js';
 
@@ -219,13 +221,12 @@ async function fetchPapersFromHaf(
   // appTag params for WHERE conditions
   const appTagParam = `$${paramIdx++}`;
   const appLikeParam = `$${paramIdx++}`;
-  cteParams.push(config.appTag, `${config.appTag}/%`);
+  const bridgeAccountParam = `$${paramIdx++}`;
+  cteParams.push(config.appTag, `${config.appTag}/%`, config.hiveBridgeAccount);
 
-  const typeFilter = source === 'native'
-    ? `(c.json_metadata -> ${appTagParam} ->> 'type') = 'paper'`
-    : source === 'bridge'
-      ? `(c.json_metadata -> ${appTagParam} ->> 'type') = 'bridge_paper'`
-      : `(c.json_metadata -> ${appTagParam} ->> 'type') IN ('paper', 'bridge_paper')`;
+  const paperSource: 'native' | 'bridge' | 'all' =
+    source === 'native' ? 'native' : source === 'bridge' ? 'bridge' : 'all';
+  const typeFilter = validPevoPaperWhere({ commentAlias: 'c', appTagParam, bridgeAccountParam, source: paperSource });
 
   const conditions: string[] = [
     `c.parent_permlink = ${appTagParam}`,
@@ -258,16 +259,12 @@ async function fetchPapersFromHaf(
     filterParams.push(language);
   }
   if (accreditedOnly) {
-    // Bridge papers are posted by the system bridge account, not the original
-    // author, so they are exempt from the accredited-only filter — but the
-    // carve-out is pinned to `c.author = config.hiveBridgeAccount` to prevent
-    // an unaccredited Hive account from spoofing `type: bridge_paper` in
-    // json_metadata to bypass the accreditation gate. Without the author
-    // equality, a forged type tag is sufficient to ride along; with it, the
-    // post must come from the platform's bridge account to qualify.
-    const bridgeAccountParam = `$${paramIdx++}`;
-    conditions.push(`(c.author IN (SELECT account FROM active_accreditations) OR (c.author = ${bridgeAccountParam} AND (c.json_metadata -> ${appTagParam} ->> 'type') = 'bridge_paper'))`);
-    filterParams.push(config.hiveBridgeAccount);
+    // Bridge papers are posted by the system bridge account, not the original author,
+    // so they are exempt from the accredited-only filter — but ONLY when authored
+    // by config.hiveBridgeAccount. The bridge arm of validPevoPaperWhere() pins
+    // the author; we reuse it as the OR-arm here to share the predicate shape.
+    const bridgeArm = validPevoPaperWhere({ commentAlias: 'c', appTagParam, bridgeAccountParam, source: 'bridge' });
+    conditions.push(`(c.author IN (SELECT account FROM active_accreditations) OR ${bridgeArm})`);
   }
   if (!includeRetracted) {
     conditions.push(`NOT EXISTS (SELECT 1 FROM retracted_papers rp WHERE rp.author = c.author AND rp.permlink = c.permlink)`);
@@ -390,11 +387,11 @@ async function fetchPapersFromHaf(
       const pevoAuthors: Array<{ hive?: string }> = (pevo.authors || []) as Array<{ hive?: string }>;
       const voteKey = `${r.author}/${r.permlink}`;
       const resolved = voteData.get(voteKey);
-      // Bridge identity must be author-pinned; metadata-only `type === 'bridge_paper'`
-      // is a self-asserted exemption a spoofer can mint. The SQL gate already
-      // pins author = config.hiveBridgeAccount, so this JS-level check is
+      // Bridge identity must be author-pinned. isPevoBridgePaper(meta, author)
+      // checks both the metadata type AND author === config.hiveBridgeAccount;
+      // the SQL gate already enforces this, so this JS-level check is
       // defense-in-depth for any future call path that bypasses the gate.
-      const isBridge = pevo.type === 'bridge_paper' && r.author === config.hiveBridgeAccount;
+      const isBridge = isPevoBridgePaper(meta, r.author as string);
       return {
         author: r.author,
         permlink: r.permlink,
@@ -558,14 +555,21 @@ async function fetchPaperDetailFromHaf(author: string, permlink: string) {
     // Fast path: fetch paper content + versions + retraction only.
     // Accreditation-dependent data (votes, reviews, citations) is loaded
     // lazily via the /enrichment endpoint.
+    //
+    // The WHERE clause uses validPevoPaperWhere() so a spoofed bridge paper
+    // (an unaccredited author posting type=bridge_paper) cannot reach the
+    // post-fetch isPevoAnyPaper(meta, author) check — bridge identity is
+    // enforced at the SQL layer for defense in depth.
+    const detailWhere = validPevoPaperWhere({ commentAlias: 'c', appTagParam: '$3', bridgeAccountParam: '$4', source: 'all' });
     const [paperResult, fullVersions, retraction] = await Promise.all([
       pool.query(
         `SELECT c.author, c.permlink, c.title, c.body, c.json_metadata,
                 c.created, c.last_edited
          FROM ${T.comments} c
          WHERE c.author = $1 AND c.permlink = $2
-           AND c.parent_author = '' AND c.parent_permlink = $3`,
-        [author, permlink, config.appTag],
+           AND c.parent_author = '' AND c.parent_permlink = $3
+           AND ${detailWhere}`,
+        [author, permlink, config.appTag, config.hiveBridgeAccount],
       ),
       reconstructVersionsFromHaf(author, permlink),
       getRetractionInfo(author, permlink),
@@ -629,7 +633,7 @@ async function fetchPaperDetailFromHaf(author: string, permlink: string) {
 
     // Citation count
     const pevo = safePevoMeta(meta);
-    if (pevo.type === 'bridge_paper') {
+    if (isPevoBridgePaper(meta, row.author as string)) {
       // External citation count for bridge papers
       const doi = ((pevo.source as Record<string, unknown>)?.doi as string) || null;
       if (doi) {
@@ -1409,7 +1413,7 @@ router.post('/:author/:permlink/retract', verifyHiveSignature, retractLimiter, a
   if (!authorized) {
     const meta = (detail.json_metadata || {}) as Record<string, unknown>;
     const pevo = (meta[config.appTag] || {}) as Record<string, unknown>;
-    if (pevo.type === 'bridge_paper') {
+    if (isPevoBridgePaper(meta, author)) {
       const source = (pevo.source || {}) as Record<string, unknown>;
       const registeredBy = source.registered_by as string | undefined;
       if (registeredBy === username) {

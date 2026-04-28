@@ -6,7 +6,7 @@
 import { getPool } from './db.js';
 import { config } from './config.js';
 import { logger } from './logger.js';
-import { T, activeAccreditationsCteBody } from './hafsql.js';
+import { T, activeAccreditationsCteBody, validPevoPaperWhere } from './hafsql.js';
 // ─── Notification Types ──────────────────────────────────────────
 
 export type NotificationEventType =
@@ -120,10 +120,11 @@ export async function fetchNotificationsFromHaf(
   if (!pool) return null;
 
   try {
-    // $1 = account, $2 = sinceBlock, $3 = limit, $4/$5 = CTE params, $N = appTag, $N+1 = appTag/%
+    // $1 = account, $2 = sinceBlock, $3 = limit, $4/$5 = CTE params, $N = appTag, $N+1 = appTag/%, $N+2 = bridgeAccount
     const accredCte = activeAccreditationsCteBody(4);
     const at = `$${accredCte.nextIdx}`;       // appTag for WHERE clauses
     const al = `$${accredCte.nextIdx + 1}`;   // appTag/% LIKE pattern
+    const bridgeParam = `$${accredCte.nextIdx + 2}`; // hiveBridgeAccount
     const result = await pool.query(
       `WITH ${accredCte.sql},
 
@@ -131,9 +132,14 @@ export async function fetchNotificationsFromHaf(
       -- This avoids LEFT JOINing every vote/review/citation to comments just
       -- to check the registered_by field, which times out on old sinceBlock values.
       user_bridge_papers AS (
+        -- Bridge papers registered by this user, pinned to config.hiveBridgeAccount
+        -- via validPevoPaperWhere('bridge'). The 'registered_by' metadata field is
+        -- attacker-controlled in isolation; pairing it with the bridge-author
+        -- pin makes it safe (any non-bridge-author bridge_paper is invalid data).
         SELECT c.author, c.permlink
         FROM ${T.comments} c
         WHERE c.parent_author = '' AND c.parent_permlink = ${at}
+          AND ${validPevoPaperWhere({ commentAlias: 'c', appTagParam: at, bridgeAccountParam: bridgeParam, source: 'bridge' })}
           AND c.json_metadata -> ${at} -> 'source' ->> 'registered_by' = $1
           AND c.json_metadata ->> 'app' LIKE ${al}
       )
@@ -392,7 +398,7 @@ export async function fetchNotificationsFromHaf(
 
       ORDER BY block_num ASC
       LIMIT $3`,
-      [account, sinceBlock, limit, ...accredCte.params, config.appTag, `${config.appTag}/%`],
+      [account, sinceBlock, limit, ...accredCte.params, config.appTag, `${config.appTag}/%`, config.hiveBridgeAccount],
     );
 
     const events: NotificationEvent[] = [];

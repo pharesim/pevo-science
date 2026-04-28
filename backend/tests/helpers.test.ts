@@ -46,26 +46,37 @@ describe('isPevoPaper', () => {
 });
 
 describe('isPevoBridgePaper', () => {
-  it('returns true for bridge_paper type', () => {
-    expect(isPevoBridgePaper({ app: APP_ID, [TAG]: { type: 'bridge_paper' } })).toBe(true);
+  // Author argument is load-bearing: bridge identity is what distinguishes a
+  // real bridge import from a spoofed self-claim. See
+  //   agents/docs/solutions/conventions/pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28.md
+  it('returns true for bridge_paper type when author is config.hiveBridgeAccount', () => {
+    expect(isPevoBridgePaper({ app: APP_ID, [TAG]: { type: 'bridge_paper' } }, config.hiveBridgeAccount)).toBe(true);
+  });
+
+  it('returns false for bridge_paper type when author is NOT config.hiveBridgeAccount (spoof)', () => {
+    expect(isPevoBridgePaper({ app: APP_ID, [TAG]: { type: 'bridge_paper' } }, 'attacker')).toBe(false);
   });
 
   it('returns false for native paper type', () => {
-    expect(isPevoBridgePaper({ app: APP_ID, [TAG]: { type: 'paper' } })).toBe(false);
+    expect(isPevoBridgePaper({ app: APP_ID, [TAG]: { type: 'paper' } }, config.hiveBridgeAccount)).toBe(false);
   });
 });
 
 describe('isPevoAnyPaper', () => {
-  it('returns true for native paper', () => {
-    expect(isPevoAnyPaper({ app: APP_ID, [TAG]: { type: 'paper' } })).toBe(true);
+  it('returns true for native paper (any author)', () => {
+    expect(isPevoAnyPaper({ app: APP_ID, [TAG]: { type: 'paper' } }, 'alice')).toBe(true);
   });
 
-  it('returns true for bridge paper', () => {
-    expect(isPevoAnyPaper({ app: APP_ID, [TAG]: { type: 'bridge_paper' } })).toBe(true);
+  it('returns true for bridge paper authored by bridge account', () => {
+    expect(isPevoAnyPaper({ app: APP_ID, [TAG]: { type: 'bridge_paper' } }, config.hiveBridgeAccount)).toBe(true);
+  });
+
+  it('returns false for spoofed bridge_paper from non-bridge author', () => {
+    expect(isPevoAnyPaper({ app: APP_ID, [TAG]: { type: 'bridge_paper' } }, 'attacker')).toBe(false);
   });
 
   it('returns false for review', () => {
-    expect(isPevoAnyPaper({ app: APP_ID, [TAG]: { type: 'review' } })).toBe(false);
+    expect(isPevoAnyPaper({ app: APP_ID, [TAG]: { type: 'review' } }, 'alice')).toBe(false);
   });
 });
 

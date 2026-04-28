@@ -6,7 +6,7 @@ import { getAccreditedSet } from '../accreditation.js';
 import { getReputationScores } from '../reputation.js';
 import { hafCache } from '../cache.js';
 import { logger } from '../logger.js';
-import { T, activeAccreditationsCteBody, accreditedVoteCount } from '../hafsql.js';
+import { T, activeAccreditationsCteBody, accreditedVoteCount, validPevoPaperWhere } from '../hafsql.js';
 
 const router = Router({ mergeParams: true });
 
@@ -31,14 +31,15 @@ async function paperExistsInHaf(author: string, permlink: string): Promise<boole
   if (!pool) return null;
 
   try {
+    const validPaper = validPevoPaperWhere({ commentAlias: 'c', appTagParam: '$3', bridgeAccountParam: '$5', source: 'all' });
     const result = await pool.query(
-      `SELECT 1 FROM ${T.comments}
-       WHERE author = $1 AND permlink = $2
-         AND parent_author = '' AND parent_permlink = $3
-         AND (json_metadata -> $3 ->> 'type') IN ('paper', 'bridge_paper')
-         AND json_metadata ->> 'app' LIKE $4
+      `SELECT 1 FROM ${T.comments} c
+       WHERE c.author = $1 AND c.permlink = $2
+         AND c.parent_author = '' AND c.parent_permlink = $3
+         AND ${validPaper}
+         AND c.json_metadata ->> 'app' LIKE $4
        LIMIT 1`,
-      [author, permlink, config.appTag, `${config.appTag}/%`],
+      [author, permlink, config.appTag, `${config.appTag}/%`, config.hiveBridgeAccount],
     );
     return result.rows.length > 0;
   } catch (err) {

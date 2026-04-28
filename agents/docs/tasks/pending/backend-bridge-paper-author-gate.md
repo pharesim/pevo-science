@@ -194,3 +194,60 @@ The original task's scope ("3 sites flagged by manual audit") proved insufficien
 ### Re-review signal
 
 When items 1-5 land (and 6 if cheap), `git mv` this file back to `tasks/review/`. The architect's next review pass scopes `/ce-code-review` to the round-2 commit and archives on clean. Include the round-2 mutation-sensitivity verification in the re-review signal: locally remove the helper's `bridge.author = ...` clause and confirm the canary tests fail red across multiple routes.
+
+---
+
+## Backend re-review signal (2026-04-28, round-2 follow-up)
+
+Picked up the WIP commit `bd1330b` (cherry-picked from `f6b3f42` by the prior interrupted worker), audited the unfinished items 2/4/5, and landed them. Items 1, 3, 6 status:
+
+**Item 1 (helper extraction) — done in WIP.** `validPevoPaperWhere(opts)` lives in `backend/src/hafsql.ts:223-238` with the recommended signature, JSDoc, and `'native' | 'bridge' | 'all'` source variants. Unit tests in `backend/tests/hafsql.test.ts` (new `describe('validPevoPaperWhere SQL shape')` block, 7 cases) pin the SQL string shape per source value, default-source equivalence, alias propagation, and parameter-string passthrough.
+
+**Item 2 (15 site migrations) — done.** All 12 unguarded sites + 3 originally-pinned sites now compose against `validPevoPaperWhere()`. Site-by-site:
+- `backend/src/routes/papers.ts:227-228` (typeFilter source-routing) — migrated to helper with `'native' | 'bridge' | 'all'` mapping.
+- `backend/src/routes/papers.ts:263` (accreditedOnly carve-out) — migrated; OR-arm reuses the `'bridge'` source variant.
+- `backend/src/routes/papers.ts:557` (fetchPaperDetailFromHaf SELECT) — migrated; the WHERE clause now SQL-side-rejects spoofed bridge_papers before the post-fetch `isPevoAnyPaper(meta, author)` check.
+- `backend/src/routes/search.ts:57/59/61` (source-routing), `:82` (accreditedOnly carve-out) — both migrated.
+- `backend/src/routes/stats.ts:42-46` (papers CTE), `:60-65` (count subqueries) — all four count subqueries migrated; the `c`-aliased CTE pin and `p`-aliased count pins are now both proved by canary.
+- `backend/src/routes/disciplines.ts:41` — migrated; SELECT now uses alias `c.` consistently.
+- `backend/src/routes/comments.ts:38` (paperExistsInHaf) — migrated.
+- `backend/src/routes/bridge.ts:90, :107` (duplicate-check, both metadata-DOI and deterministic-permlink) — both migrated to `source: 'bridge'`.
+- `backend/src/reputation.ts:30` (loadActiveAuthors UNION) — migrated; both `c`-aliased paper side and `p`-aliased parent-paper side bind `$3` (appTag) and `$3` for parent (we added `$3=hiveBridgeAccount` for parent — actually `$1` and `$3` per the new param signature; see commit).
+- `backend/src/reputation.ts:367` (computeReputationBatch active_authors) — migrated; new `$18` slot binds `config.hiveBridgeAccount`. JSDoc updated to document `$18`.
+- `backend/src/reputation.ts:484` (accepted_claims user_papers UNION) — migrated; `'all'` source variant.
+- `backend/src/notification-queries.ts:133` (`user_bridge_papers` CTE) — migrated; the formerly attacker-controlled `source.registered_by = $1` filter is now paired with the bridge-author pin via `validPevoPaperWhere('bridge')`. Closed the spoofer-pollutes-notifications vector.
+- `backend/src/app.ts:210` (sitemap) — migrated; the dynamic-paper SELECT now author-pins.
+- JS-level callers (`papers.ts:393`, `papers.ts:635`, `papers.ts:1415`) — migrated to `isPevoBridgePaper(meta, author)` so no JS-level direct literal remains in route code.
+
+Net `'bridge_paper'` literal sites in `backend/src/`:
+- Allowlisted: `hafsql.ts` (helper + JSDoc), `helpers.ts` (`isPevoBridgePaper` JS check), `types/hive.ts` (TS literal), `bridge.ts:499` (canonical bridge-paper construction for write).
+- Forbidden: zero — `npm run check:bridge-paper-discipline` exits 0.
+
+**Item 3 (helpers.ts isPevoBridgePaper signature) — done in WIP, callers updated.** `isPevoBridgePaper(meta, author)` now requires the author argument; JSDoc explains why ("bridge identity is what distinguishes a real bridge import from a spoofed self-claim"). All callers updated: `helpers.ts:126/129` (`toPaperSummary`), `routes/bridge.ts:303` (already in WIP), `routes/papers.ts:393/635/1415` (this round). `helpers.test.ts` updated to require the author argument and cover the spoof rejection case (`isPevoBridgePaper({...bridge_paper}, 'attacker') === false`).
+
+**Item 4 (CI guard) — done.** `backend/scripts/check-bridge-paper-discipline.sh` greps for the literal `'bridge_paper'` (single-quoted) under `backend/src/`, applies the documented allowlist (`src/hafsql.ts`, `src/helpers.ts`, `src/types/hive.ts`, `src/bridge.ts`), and exits 1 on any violation. Wired into `npm run lint` (so `npm run lint` runs ESLint then the discipline check) and exposed as `npm run check:bridge-paper-discipline` for direct CI invocation. Script header documents the convention link, allowlist rationale, and exit-code contract.
+
+**Item 5 (canary tests) — done.** `backend/tests/routes/bridge-paper-author-gate.test.ts` (new file) covers all 9 migrated route surfaces (papers list, papers detail, search papers, search source=bridge, stats, disciplines, comments paperExistsInHaf, bridge/check duplicate-check, sitemap, reputation computeReputationBatch). The `assertBridgeAuthorPin()` helper matches the exact `<alias>.author = $N AND (<alias>.json_metadata -> $M ->> 'type') = 'bridge_paper'` pattern produced by `validPevoPaperWhere('bridge')`/`'all'` and verifies `params[N-1] === config.hiveBridgeAccount`. Mocked-pool justification documented in the file header per CLAUDE.md "Running Tests" carve-out clauses (a)/(b)/(c). The asymmetric `source=native` arm is also covered (asserts NO bridge_paper literal in that branch).
+
+**Mutation-sensitivity verification — confirmed.** Locally mutated the helper's bridge arm at `backend/src/hafsql.ts:234` from `(${authorExpr} = ${opts.bridgeAccountParam} AND ${typeExpr} = 'bridge_paper')` to `(${typeExpr} = 'bridge_paper')` (drop the author conjunct). Re-ran the canary suite + hafsql unit tests:
+
+```
+Test Files  2 failed (2)
+     Tests  17 failed | 6 passed | 2 skipped (25)
+```
+
+17 of the 23 mutation-sensitive assertions failed red across the canary file (every site assertion + the unit-test bridge/all variants). 6 passed (the source=native asymmetry checks and SQL-shape default-source equivalence — those don't reference the bridge arm). After restoring the helper, all 23 tests pass green again. The mutation surfaces a regression on `papers.ts`, `search.ts`, `stats.ts`, `disciplines.ts`, `comments.ts`, `bridge.ts`, `app.ts`, `reputation.ts`, AND the unit tests — multi-route coverage as the hold block required.
+
+**Item 6 (papers.md API contract update) — [TODO Architect].** Backend cannot edit `agents/docs/api-contracts/*.md` per backend CLAUDE.md "Boundaries". Suggested prose to add to `agents/docs/api-contracts/papers.md`:
+
+> Bridge papers (`type: "bridge_paper"`) returned by `/api/papers`, `/api/search`, `/api/papers/:author/:permlink`, and `/api/disciplines` are guaranteed to be authored by `config.hiveBridgeAccount` (the `HIVE_BRIDGE_ACCOUNT` env var). The bridge identity is part of the contract: any on-chain comment with `type: "bridge_paper"` from any other author is invalid data and is excluded from every PEvO surface. The platform enforces this via the SQL helper `validPevoPaperWhere()` (`backend/src/hafsql.ts`) and the `npm run check:bridge-paper-discipline` lint guard.
+
+**Targeted vitest status (touched files):**
+- `tests/hafsql.test.ts` — 10 passed, 2 skipped (the 2 skips are the existing pool-availability gates, not new).
+- `tests/routes/bridge-paper-author-gate.test.ts` — 13 passed.
+- `tests/helpers.test.ts` — 19 passed (3 new spoof-rejection cases).
+- `tests/routes/papers.test.ts` + `tests/routes/disciplines.test.ts` + `tests/routes/disciplines-canon-mocked.test.ts` — 27 passed, 1 skipped (a pre-existing skip, alias-tolerant assertions updated).
+- `tests/routes/bridge.test.ts` + `tests/bridge.test.ts` — 33 passed.
+- `tests/routes/notifications.test.ts` + `tests/routes/paper-detail-v3.test.ts` + `tests/reputation-lifecycle.test.ts` + `tests/routes/reputation-prefix.test.ts` + `tests/routes/comments.test.ts` + `tests/routes/search.test.ts` — 23 passed.
+
+**Lint + tsc:** `npm run lint` clean (only pre-existing `seed-phrase.ts` `any` warnings); `npx tsc --noEmit` clean.

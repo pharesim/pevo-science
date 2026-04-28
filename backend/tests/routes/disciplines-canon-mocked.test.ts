@@ -87,8 +87,11 @@ describe('GET /api/disciplines — mocked pool', () => {
       paper_count: 3,
     });
     expect(hafQueryMock).toHaveBeenCalledTimes(1);
-    expect(capturedSql).toContain('LOWER(json_metadata');
-    expect(capturedSql).toMatch(/GROUP BY LOWER\(json_metadata/);
+    // After the bridge-paper helper migration, the disciplines query aliases
+    // hafsql.comments as `c`; LOWER() now wraps `c.json_metadata`. The dedup
+    // shape (LOWER + GROUP BY LOWER) is the invariant; the alias is incidental.
+    expect(capturedSql).toMatch(/LOWER\(c?\.?json_metadata/);
+    expect(capturedSql).toMatch(/GROUP BY LOWER\(c?\.?json_metadata/);
   });
 
   it('Hold #3 (round 2): returns [] when getPool() is unavailable without caching the empty sentinel', async () => {
@@ -161,8 +164,11 @@ describe('GET /api/disciplines — mocked pool', () => {
     // ASCII disciplines on the Postgres C-locale (uppercase codepoints sort
     // before lowercase), silently regressing the consumer-facing label.
     expect(capturedSql).toBeDefined();
-    expect(capturedSql!).toMatch(/INITCAP\(LOWER\(json_metadata/);
-    expect(capturedSql!).not.toMatch(/MAX\(json_metadata/);
+    // Alias-tolerant: post bridge-paper helper migration, the column is
+    // qualified as `c.json_metadata`. The shape invariant is INITCAP(LOWER(...))
+    // not MAX(...); the alias is incidental.
+    expect(capturedSql!).toMatch(/INITCAP\(LOWER\(c?\.?json_metadata/);
+    expect(capturedSql!).not.toMatch(/MAX\(c?\.?json_metadata/);
   });
 
   it('Hold #7a: catch branch (pool exists, query throws) returns 200 + data: []', async () => {

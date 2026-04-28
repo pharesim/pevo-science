@@ -4,7 +4,7 @@ import { config } from '../config.js';
 import { sendOk } from '../response.js';
 import { hafCache } from '../cache.js';
 import { logger } from '../logger.js';
-import { T } from '../hafsql.js';
+import { T, validPevoPaperWhere } from '../hafsql.js';
 
 const router = Router();
 
@@ -31,19 +31,20 @@ async function fetchDisciplinesFromHaf() {
     // the lowercase value that the ?discipline= filter (search.ts /
     // papers.ts) matches on. INITCAP is safe inside a LOWER()-group because
     // the input to INITCAP is uniform (the grouped LOWER() value).
+    const validPaper = validPevoPaperWhere({ commentAlias: 'c', appTagParam: '$1', bridgeAccountParam: '$3', source: 'all' });
     const result = await pool.query<{ canon_name: string; display_name: string; paper_count: number }>(
       `SELECT
-        LOWER(json_metadata -> $1 ->> 'discipline') AS canon_name,
-        INITCAP(LOWER(json_metadata -> $1 ->> 'discipline')) AS display_name,
+        LOWER(c.json_metadata -> $1 ->> 'discipline') AS canon_name,
+        INITCAP(LOWER(c.json_metadata -> $1 ->> 'discipline')) AS display_name,
         count(*)::int AS paper_count
-       FROM ${T.comments}
-       WHERE parent_author = '' AND parent_permlink = $1
-         AND (json_metadata -> $1 ->> 'type') IN ('paper', 'bridge_paper')
-         AND json_metadata ->> 'app' LIKE $2
-         AND (json_metadata -> $1 ->> 'discipline') IS NOT NULL
-       GROUP BY LOWER(json_metadata -> $1 ->> 'discipline')
+       FROM ${T.comments} c
+       WHERE c.parent_author = '' AND c.parent_permlink = $1
+         AND ${validPaper}
+         AND c.json_metadata ->> 'app' LIKE $2
+         AND (c.json_metadata -> $1 ->> 'discipline') IS NOT NULL
+       GROUP BY LOWER(c.json_metadata -> $1 ->> 'discipline')
        ORDER BY paper_count DESC`,
-      [config.appTag, `${config.appTag}/%`],
+      [config.appTag, `${config.appTag}/%`, config.hiveBridgeAccount],
     );
     return result.rows.map((row) => ({
       canon_name: row.canon_name,

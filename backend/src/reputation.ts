@@ -12,7 +12,7 @@ import { hafCache } from './cache.js';
 import { getRedis } from './redis.js';
 import { logger } from './logger.js';
 import { DEFAULT_REPUTATION_WEIGHTS, type ReputationWeights, type ReputationScore } from './types/index.js';
-import { T, getCachedGenesisBlock } from './hafsql.js';
+import { T, getCachedGenesisBlock, validPevoPaperWhere } from './hafsql.js';
 
 const REPUTATION_CACHE_TTL = 60 * 60_000; // 1 hour
 
@@ -23,21 +23,27 @@ async function loadActiveAuthors(): Promise<string[]> {
   try {
     // Use UNION to avoid full-table scan: papers are found by parent_permlink (indexed),
     // reviews are found by joining through their parent paper.
+    // Bridge papers are pinned to config.hiveBridgeAccount via validPevoPaperWhere
+    // so a spoofed bridge_paper can't admit its (unaccredited) author into the
+    // active-author set used by reputation R9 voter weighting.
+    const validPaper = validPevoPaperWhere({ commentAlias: 'c', appTagParam: '$1', bridgeAccountParam: '$3', source: 'all' });
+    const validParent = validPevoPaperWhere({ commentAlias: 'p', appTagParam: '$1', bridgeAccountParam: '$3', source: 'all' });
     const result = await pool.query(
       `SELECT DISTINCT author FROM (
          SELECT c.author FROM ${T.comments} c
          WHERE c.parent_author = '' AND c.parent_permlink = $1
-           AND (c.json_metadata -> $1 ->> 'type') IN ('paper', 'bridge_paper')
+           AND ${validPaper}
            AND c.json_metadata ->> 'app' LIKE $2
          UNION ALL
          SELECT c.author FROM ${T.comments} c
          JOIN ${T.comments} p ON p.author = c.parent_author AND p.permlink = c.parent_permlink
          WHERE p.parent_author = '' AND p.parent_permlink = $1
+           AND ${validParent}
            AND p.json_metadata ->> 'app' LIKE $2
            AND (c.json_metadata -> $1 ->> 'type') = 'review'
            AND c.json_metadata ->> 'app' LIKE $2
        ) t`,
-      [config.appTag, `${config.appTag}/%`],
+      [config.appTag, `${config.appTag}/%`, config.hiveBridgeAccount],
     );
     return result.rows.map((r: { author: string }) => r.author);
   } catch (err) {
@@ -298,7 +304,8 @@ export async function startReputationWeightsCache(): Promise<void> {
  *
  * Parameters: $1 = target usernames, $2 = accredited, $3 = app_tag,
  * $4 = app_like, $5 = prev scores jsonb, $6 = cycle_end_block,
- * $7 = genesis block, $8-$17 = weights (cast once in `w` CTE).
+ * $7 = genesis block, $8-$17 = weights (cast once in `w` CTE),
+ * $18 = config.hiveBridgeAccount (for validPevoPaperWhere bridge-author pin).
  */
 export async function computeReputationBatch(
   usernames: string[],
@@ -364,12 +371,13 @@ export async function computeReputationBatch(
         SELECT DISTINCT author FROM (
           SELECT c.author FROM ${T.comments} c
           WHERE c.parent_author = '' AND c.parent_permlink = $3
-            AND (c.json_metadata -> $3 ->> 'type') IN ('paper', 'bridge_paper')
+            AND ${validPevoPaperWhere({ commentAlias: 'c', appTagParam: '$3', bridgeAccountParam: '$18', source: 'all' })}
             AND c.json_metadata ->> 'app' LIKE $4
           UNION ALL
           SELECT c.author FROM ${T.comments} c
           JOIN ${T.comments} p ON p.author = c.parent_author AND p.permlink = c.parent_permlink
           WHERE p.parent_author = '' AND p.parent_permlink = $3
+            AND ${validPevoPaperWhere({ commentAlias: 'p', appTagParam: '$3', bridgeAccountParam: '$18', source: 'all' })}
             AND p.json_metadata ->> 'app' LIKE $4
             AND (c.json_metadata -> $3 ->> 'type') = 'review'
             AND c.json_metadata ->> 'app' LIKE $4
@@ -467,21 +475,23 @@ export async function computeReputationBatch(
 
       -- ═══ PAPERS ═══
       user_papers AS (
-        -- Papers authored by user
+        -- Papers authored by user (native only — see validPevoPaperWhere 'native' arm)
         SELECT c.author, c.permlink, c.created, c.json_metadata
         FROM ${T.comments} c
         WHERE c.author IN (SELECT username FROM target_users)
           AND c.parent_author = '' AND c.parent_permlink = $3
-          AND (c.json_metadata -> $3 ->> 'type') = 'paper'
+          AND ${validPevoPaperWhere({ commentAlias: 'c', appTagParam: '$3', bridgeAccountParam: '$18', source: 'native' })}
           AND c.json_metadata ->> 'app' LIKE $4
           AND (c.json_metadata -> $3 -> 'continues') IS NULL
         UNION ALL
-        -- Papers claimed by user (co-author credit)
+        -- Papers claimed by user (co-author credit) — bridge_paper claims allowed
+        -- but only when authored by config.hiveBridgeAccount; spoofed bridge_paper
+        -- can't grant unearned co-author credit.
         SELECT ac.claimer AS author, c.permlink, c.created, c.json_metadata
         FROM accepted_claims ac
         JOIN ${T.comments} c ON c.author = ac.paper_author AND c.permlink = ac.paper_permlink
         WHERE c.parent_author = '' AND c.parent_permlink = $3
-          AND (c.json_metadata -> $3 ->> 'type') IN ('paper', 'bridge_paper')
+          AND ${validPevoPaperWhere({ commentAlias: 'c', appTagParam: '$3', bridgeAccountParam: '$18', source: 'all' })}
           AND c.json_metadata ->> 'app' LIKE $4
           AND (c.json_metadata -> $3 -> 'continues') IS NULL
           AND ac.claimer != c.author  -- avoid double-counting
@@ -800,6 +810,7 @@ export async function computeReputationBatch(
         weights.decay_rate,               // $15
         weights.decay_floor,              // $16
         weights.decay_grace_months,       // $17
+        config.hiveBridgeAccount,         // $18
       ],
     );
 

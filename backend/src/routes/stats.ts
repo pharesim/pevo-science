@@ -4,7 +4,7 @@ import { config } from '../config.js';
 import { sendOk } from '../response.js';
 import { hafCache } from '../cache.js';
 import { logger } from '../logger.js';
-import { T, activeAccreditationsCte } from '../hafsql.js';
+import { T, activeAccreditationsCte, validPevoPaperWhere } from '../hafsql.js';
 import { getBatchReputationMap } from '../reputation.js';
 
 const router = Router();
@@ -28,19 +28,14 @@ export async function fetchStatsFromHaf() {
     const at = `$${cte.nextIdx}`;      // appTag
     const al = `$${cte.nextIdx + 1}`;  // appTag/%
     const anon = `$${cte.nextIdx + 2}`; // anonymous review account
-    const bridge = `$${cte.nextIdx + 3}`; // platform bridge account (pins bridge_paper carve-out)
+    const bridgeParam = `$${cte.nextIdx + 3}`; // bridge account
     const params = [...cte.params, config.appTag, `${config.appTag}/%`, config.hiveAnonAccount, config.hiveBridgeAccount];
+
+    const validPaper = validPevoPaperWhere({ commentAlias: 'c', appTagParam: at, bridgeAccountParam: bridgeParam, source: 'all' });
+    const bridgeArm = validPevoPaperWhere({ commentAlias: 'c', appTagParam: at, bridgeAccountParam: bridgeParam, source: 'bridge' });
 
     // Single query: papers CTE narrows to PEvO posts, reviews CTE joins through
     // papers (children of known papers) to avoid a full hafsql.comments scan.
-    //
-    // The bridge_paper accreditation carve-out is pinned to
-    // `c.author = config.hiveBridgeAccount`. Without the author equality, any
-    // unaccredited Hive account can spoof `type: bridge_paper` in
-    // json_metadata to slip past the accreditation gate (the carve-out then
-    // ALSO leaks into `total_bridge_papers` since the SELECT subquery only
-    // gates on type after the CTE has admitted it). Mirrors papers.ts and
-    // search.ts.
     const result = await pool.query(`
       ${cte.sql},
       papers AS (
@@ -48,11 +43,10 @@ export async function fetchStatsFromHaf() {
         FROM ${T.comments} c
         LEFT JOIN active_accreditations aa ON aa.account = c.author
         WHERE c.parent_author = '' AND c.parent_permlink = ${at}
-          AND (c.json_metadata -> ${at} ->> 'type') IN ('paper', 'bridge_paper')
+          AND ${validPaper}
           AND c.json_metadata ->> 'app' LIKE ${al}
           AND (c.json_metadata -> ${at} -> 'continues') IS NULL
-          AND (aa.account IS NOT NULL
-               OR (c.author = ${bridge} AND (c.json_metadata -> ${at} ->> 'type') = 'bridge_paper'))
+          AND (aa.account IS NOT NULL OR ${bridgeArm})
       ),
       reviews AS (
         SELECT r.created
@@ -65,10 +59,10 @@ export async function fetchStatsFromHaf() {
       )
       SELECT
         (SELECT count(*)::int FROM active_accreditations) AS total_accredited_researchers,
-        (SELECT count(*)::int FROM papers WHERE (json_metadata -> ${at} ->> 'type') = 'paper') AS total_papers,
-        (SELECT count(*)::int FROM papers WHERE (json_metadata -> ${at} ->> 'type') = 'bridge_paper') AS total_bridge_papers,
-        (SELECT count(*)::int FROM papers WHERE (json_metadata -> ${at} ->> 'type') = 'paper'
-          AND created >= now() - interval '30 days') AS papers_last_30_days,
+        (SELECT count(*)::int FROM papers p WHERE ${validPevoPaperWhere({ commentAlias: 'p', appTagParam: at, bridgeAccountParam: bridgeParam, source: 'native' })}) AS total_papers,
+        (SELECT count(*)::int FROM papers p WHERE ${validPevoPaperWhere({ commentAlias: 'p', appTagParam: at, bridgeAccountParam: bridgeParam, source: 'bridge' })}) AS total_bridge_papers,
+        (SELECT count(*)::int FROM papers p WHERE ${validPevoPaperWhere({ commentAlias: 'p', appTagParam: at, bridgeAccountParam: bridgeParam, source: 'native' })}
+          AND p.created >= now() - interval '30 days') AS papers_last_30_days,
         (SELECT count(DISTINCT LOWER(json_metadata -> ${at} ->> 'discipline'))::int FROM papers
           WHERE (json_metadata -> ${at} ->> 'discipline') IS NOT NULL) AS active_disciplines,
         COALESCE((
