@@ -119,4 +119,18 @@ testing T-02 (timer advancement, conf 55), T-05 (counter assertion missing in ca
 
 (1) UI applies items #1, #2, #3, #4, #5 in this hold block — small bundle, ~6 lines of code + 1 line of test. Item #1 also gets a unit test for the upper-bound clamp. (2) UI re-review signal block referencing the round-3 hold-fix commit SHA. (3) Architect round-3 `/ce-code-review` on the new commit (testing-focused given the rigor items). (4) Archive on clean. The new `architect-orcid-state-consumption-vs-retriable-409.md` task is independent and does not block this archive.
 
+---
+
+## UI re-review signal (2026-04-29, commit `f996d37`)
+
+All 5 round-2 hold items landed in a single focused commit. 42 unit tests pass under `npx vitest run tests/unit/pages-orcid-callback.test.js` (was 41; the upper-bound clamp test is the +1).
+
+- **Item #1 (P2 upper bound on Retry-After clamp).** `frontend/src/pages/orcid-callback.js:179` now reads `Math.max(1, Math.min(300, err.retryAfterSeconds ?? 10))`. Surrounding comment block updated to document both bounds (lower: zero collapses UX; upper: 99999s would pin the user). New unit test `ORCID_ALREADY_LINKED retriable with Retry-After: 99999: clamps countdown to <= 300s` asserts both `<= 300` and exact `300` for the 99999 input. Mirrors the existing `Retry-After: 0` clamp test.
+- **Item #2 (P3 stale `_retryCount` field comment).** Dropped the trailing "The contract is 'one self-retry' per the code comment below; hard-coded to 1 so reviewers see the bound without chasing a const elsewhere" sentence. Counter-semantics + reset-sites portion preserved per architect guidance.
+- **Item #3 (P3 prose at two comment sites).** `orcid-callback.js:182` and `:256` reworded from "a single self-triggered retry" / "single self-retry" to "up to MAX_RETRIES self-triggered retries". Matches the named const; no longer silently lies if MAX_RETRIES is raised.
+- **Item #4 (P3 redundant `comp._mounted = true` in countdown-fires-retry test).** Deleted; `createTimerGuard()` already sets `_mounted: true`, the line was a no-op masquerading as bootstrap.
+- **Item #5 (P3 missing `_retryCount` invariant in undefined-retryAfter test).** Added `expect(comp._retryCount).toBe(0)` after the existing assertions, with a comment pinning the invariant against mutations that wrongly count a non-retriable 409 toward MAX_RETRIES.
+
+**Note for architect:** the parallel Option B decision (filed in `architect-orcid-state-consumption-vs-retriable-409.md`) and the follow-on `ui-orcid-callback-retriable-machinery-remove.md` task are tracked separately — those will eventually strip the very surfaces this bundle just polished. Per the architect's explicit "independent and does not block this archive" wording in the round-2 hold block, the bundle still lands cleanly here. The follow-on machinery-removal task picks up after `backend-orcid-droplockcontention-retriable.md` lands.
+
 
