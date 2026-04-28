@@ -25,9 +25,9 @@ PEvO only surfaces data from accredited users by default:
 - **Reviews** from unaccredited accounts are excluded from every reviews surface (paper-detail `reviews: []` array, single-doc fetch which returns 404, reviews search) and do not count toward paper ratings or reviewer reputation.
 - **Comments** from unaccredited accounts are excluded from comments listings and search.
 - **Citations** from papers by unaccredited authors are excluded from citation counts.
-- **Papers** from unaccredited authors are excluded from papers listings and search. The one exception is `bridge_paper`-typed posts (system-account cross-posts from external sources), which are admitted regardless of author accreditation.
+- **Papers** from unaccredited authors are excluded from papers listings and search. The one exception is `bridge_paper`-typed posts (system-account cross-posts from external sources), which are admitted only when authored by `config.hiveBridgeAccount` (`HIVE_BRIDGE_ACCOUNT` env).
 
-Accreditation is a hard gate: there is no `accredited_only=false` opt-out on any endpoint. The bridge-paper exemption is type-based (`json_metadata.type === 'bridge_paper'`), not query-parameter-based.
+Accreditation is a hard gate: there is no `accredited_only=false` opt-out on any endpoint. The bridge-paper exemption is **author-and-type-gated**: only posts authored by `config.hiveBridgeAccount` with `json_metadata.type === 'bridge_paper'` are admitted. A type claim alone is not an exemption — PEvO object identity is determined by author vouching, not by self-declared metadata. See `agents/docs/solutions/conventions/pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28.md`.
 
 The `net_votes` field in API responses reflects **accredited votes only**, not the raw Hive vote count. The `review_count` and `citation_count` fields similarly reflect accredited-only data.
 
