@@ -131,18 +131,42 @@ Mirror the discipline established by `wrapping-primitive-exhaustive-call-site-au
 grep -rn "<exempted-type>" backend/src/ --include="*.ts"
 ```
 
-For each match, verify whether the surrounding code is:
+For each match, the question is **not** "is this a gate site or a non-gate site." A bridge_paper-typed Hive comment authored by anyone other than `config.hiveBridgeAccount` is **invalid data**. It must not influence any PEvO surface — listings, search, stats, paper-detail, comments, sitemap, notifications, reputation, disciplines, source-routing aggregations, JS-level type-check helpers, or anywhere else the code branches on the type.
 
-- **A gate site** (an authorization OR/IF that admits content) → must have `author = <pinned>` conjunct.
-- **A non-gate site** (type-routing for source filtering, type-based rendering, count-by-type aggregation) → no author pin needed; document why in a one-line comment so future readers know the difference.
+The earlier framing of this convention carved out "non-gating purposes (type-routing, source filtering, count-by-type aggregation, parent-type joins)" as not needing the author pin. **That carve-out was wrong.** A spoofed bridge_paper that escapes through a "non-gating" filter still pollutes:
 
-Examples in this codebase that are NOT gate sites and don't need the author pin:
-- `papers.ts:227-228` — `source` query-param routing (filters by paper source for the user, not for authorization).
-- `helpers.ts:47` — `isPevoBridgePaper()` — used for paper-detail rendering after the gate has already filtered.
-- `comments.ts:38` — `IN ('paper', 'bridge_paper')` — parent-paper-type filter for joining comments to papers.
-- `bridge.ts:90, 107` — bridge-only routes; the route's own auth check covers the identity binding.
-- `search.ts:59, 61` — type-routing when `source` param is set.
-- `stats.ts:60` — count-by-type aggregation.
+- search results when the user routes by `?source=bridge` (search-by-type would surface it).
+- aggregations and counts (skewing public stats and disciplines).
+- paper-detail direct fetches (URL-by-author/permlink returns it).
+- comment threads (a spoofed paper "exists" so its comment children load).
+- notifications (spoofed bridge_papers reference accredited users).
+- sitemap (publishes spoofed URLs to crawlers).
+- reputation (active-author sets, claim-eligible papers).
+- bridge-register duplicate-checks (spoofer preempts canonical bridge imports).
+
+The rule is therefore: **any expression that branches on `(json_metadata -> $appTag ->> 'type') = 'bridge_paper'` (or analogous role types) MUST also bind `c.author = <pinned-identity>`**. There are no read-side exemptions.
+
+### Recommended implementation: centralized SQL fragment helper
+
+Per-site duplication of the `(c.author = ${bridge} AND ...)` shape is drift-prone — the original audit on this convention listed 6 sites it claimed were safe without the pin, and a deeper audit found at least 12 unguarded sites in the same codebase. The robust pattern is to centralize the predicate in `backend/src/hafsql.ts` (where CTE helpers already live):
+
+```ts
+// SQL fragment: comment row is a valid PEvO paper.
+// Native paper from any author OR bridge_paper from the configured bridge account.
+// USE THIS EVERYWHERE you filter by paper-type; never write `type = 'bridge_paper'`
+// directly. Bridge_papers from non-bridge authors are invalid data and must
+// not influence any PEvO surface.
+export function validPevoPaperWhere(opts: {
+  commentAlias?: string;
+  appTagParam: string;
+  bridgeAccountParam: string;
+  source?: 'native' | 'bridge' | 'all';
+}): string { /* ... */ }
+```
+
+All sites compose against this. New sites get the pin for free. The audit becomes a single grep — any direct `'bridge_paper'` literal outside the helper is a violation.
+
+A pre-commit grep / CI lint flagging direct `'bridge_paper'` literals in route or query files closes the convention enforcement loop.
 
 ## Examples
 
