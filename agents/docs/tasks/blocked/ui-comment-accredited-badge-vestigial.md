@@ -26,3 +26,5 @@ Pick one. UI implementer's call based on visual review:
 ## Why now
 
 Day-1 visual coherence after the filter-accreditation task lands. Without this UI cleanup, users who learned the badge as a "verified commenter" signal lose the signal silently.
+
+[BLOCKED by Backend] (2026-04-28) — Cannot proceed: `backend-papers-filter-accreditation.md` is itself in `blocked/` (transitively gated on `backend-bridge-paper-author-gate.md`). Until the comments hard-gate ships and every comment in the response carries `is_accredited: true`, the badge is still meaningful and dropping/repurposing it would lose live signal. Move back to `pending/` once the backend filter-accreditation task archives.

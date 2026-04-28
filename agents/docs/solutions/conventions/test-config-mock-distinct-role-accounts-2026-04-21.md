@@ -113,5 +113,6 @@ Skip this only if the handler references exactly one role account and no server-
 ## Related
 
 - SEC-003-BE (Review, 2026-04-21) — the P0 bug whose review surfaced this gap as finding B5.
+- [`pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28.md`](pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28.md) — sibling rule from the same incident family, covering the **production-code-side** prevention surface (gate predicate shape: every carve-out OR-arm must terminate in an identity predicate, not a metadata-flag claim). This doc covers the testing-side prevention; that doc covers the gate-predicate-shape side. Two rules, one root cause, two prevention surfaces.
 - Auto memory: `project_admin_is_singular.md` — why the admin role is singular; do not generalize this convention into "make admin an array".
 - `backend/src/config.ts` — the fallback source.
