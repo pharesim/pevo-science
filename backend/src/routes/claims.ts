@@ -292,19 +292,22 @@ router.post('/:claimer/revoke', verifyHiveSignature, revokeLimiter, async (req: 
     timestamp: new Date().toISOString(),
   };
 
-  // Distinct misconfiguration surface: bridge paper but bridge posting key
-  // unconfigured. Parallels the guard in the approve handler — operators
-  // debugging a missing `PEVO_BRIDGE_POSTING_KEY` get a SERVICE_UNAVAILABLE
-  // instead of silent fall-through to the admin-key or client-signed branches.
-  if (paperAuthor === config.hiveBridgeAccount && !assertBridgeKeyConfigured(res)) {
-    return;
-  }
-
   // Bridge-key broadcast: only when the platform admin is revoking on a
   // bridge paper. A claimer revoking their own claim on a bridge paper falls
   // through to the client-signed return-operation path below. We never burn
   // the bridge key on a user-driven revoke.
-  if (paperAuthor === config.hiveBridgeAccount && isAdmin && config.pevoBridgePostingKey) {
+  //
+  // The `assertBridgeKeyConfigured` guard sits INSIDE this admin-on-bridge
+  // branch (not above it) so the bridge-misconfig 503 fires only when the
+  // server actually needs to broadcast with the bridge key. A claimer self-
+  // revoking on a bridge paper with `pevoBridgePostingKey` unset must reach
+  // the client-signed path below and get 200, not a misleading 503. Parallels
+  // the guard in the approve handler — operators debugging a missing
+  // `PEVO_BRIDGE_POSTING_KEY` get SERVICE_UNAVAILABLE instead of silent fall-
+  // through to the admin-native branch (which would broadcast under the wrong
+  // signing identity for a bridge paper).
+  if (paperAuthor === config.hiveBridgeAccount && isAdmin) {
+    if (!assertBridgeKeyConfigured(res)) return;
     const key = PrivateKey.fromString(config.pevoBridgePostingKey);
     try {
       const result = await broadcastJsonWithTimeout(

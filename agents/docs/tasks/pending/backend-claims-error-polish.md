@@ -58,3 +58,14 @@ Round-3 `/ce-code-review` on commit `67311b3`. The round-2 hold (backport bridge
 Task was found in `tasks/review/` on 2026-04-28 architect intake but the round-3 hold item #1 has not been applied. No commit since `67311b3` mentions BE-CLAIMS-ERROR-POLISH. Current `claims.ts:299` still fires `assertBridgeKeyConfigured` before the client-signed return path at `claims.ts:361` — the exact ordering bug round-3 flagged. A claimer self-revoking on a bridge paper when `pevoBridgePostingKey` is unset still gets 503 instead of 200 + operation payload. Items #2 and #3 (architect-side contract doc edits at archive time) are still gated on item #1.
 
 `git mv`'d back to `tasks/pending/`. Implementer: apply round-3 item #1, then move back to `tasks/review/`.
+
+---
+
+## Backend re-review signal (2026-04-28, commit `<SHA-PENDING>`)
+
+Round-3 hold-block item #1 landed. Items #2 and #3 remain architect-owned (contract doc edits at archive). Ready for architect round-4 re-review.
+
+- `backend/src/routes/claims.ts`: reordered the revoke handler's `assertBridgeKeyConfigured` guard. The guard previously sat at line 299 above the admin-on-bridge broadcast branch and fired unconditionally for any bridge paper with the key unset, blocking the client-signed return path for `isClaimer` self-revoke. Moved INSIDE the admin-on-bridge branch (now `if (paperAuthor === config.hiveBridgeAccount && isAdmin) { if (!assertBridgeKeyConfigured(res)) return; ... }`). The branch's outer condition tightened from `... && isAdmin && config.pevoBridgePostingKey` to `... && isAdmin` so the helper itself owns the misconfig 503 surface and the truthy-key check no longer lives inline. Net effect: claimer / post-author on bridge paper with key unset falls through to client-signed (200 + operation), admin on bridge paper with key unset hits the helper (503 SERVICE_UNAVAILABLE), admin on native paper still reaches the admin-key branch unchanged.
+- `backend/tests/routes/claims.test.ts`: added one new scenario inside the existing `BE-CLAIMS-ERROR-POLISH — bridge misconfig surfaces as 503` describe block: `POST revoke as claimer on bridge paper with empty bridge key → 200 with operation, no 503`. Reuses the block's per-test `beforeEach`/`afterEach` save/restore of `config.pevoBridgePostingKey`. Asserts `res.status === 200`, `res.body.data.operation[0] === 'custom_json'`, `required_posting_auths === [CLAIMER]`, and `broadcastJson` not called.
+- Approve handler unchanged. The approve flow has no client-signed fallback for bridge papers (server broadcast is mandatory), so the existing pre-branch guard at `claims.ts:194` is correct. Only the revoke handler's guard placement was load-bearing for this fix.
+- Verified: 21/21 pass in `claims.test.ts` (was 20 pre-fix + 1 new). Typecheck clean.

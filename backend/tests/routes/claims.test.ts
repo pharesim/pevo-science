@@ -366,6 +366,24 @@ describe('BE-CLAIMS-ERROR-POLISH — bridge misconfig surfaces as 503', () => {
     expect(broadcastJson).not.toHaveBeenCalled();
   });
 
+  it('POST revoke as claimer on bridge paper with empty bridge key → 200 with operation, no 503', async () => {
+    // Round-3 hold-block fix (architect re-review 2026-04-21 round-3): the
+    // assertBridgeKeyConfigured guard previously sat above the admin-on-bridge
+    // broadcast branch and fired unconditionally for any bridge paper with the
+    // key unset. That blocked the client-signed return path for a claimer self-
+    // revoking on a bridge paper, surfacing 503 instead of the expected 200 +
+    // operation payload. Reorder moves the guard inside the admin-on-bridge
+    // branch so it fires only when the server actually needs to broadcast with
+    // the bridge key. Claimer self-revoke must reach the client-signed branch.
+    const path = `/api/papers/${BRIDGE}/${PAPER_PERMLINK}/claims/${CLAIMER}/revoke`;
+    const res = await signedPost(path, CLAIMER, { reason: 'withdrawn' });
+    expect(res.status).toBe(200);
+    expect(res.body.data.operation).toBeDefined();
+    expect(res.body.data.operation[0]).toBe('custom_json');
+    expect(res.body.data.operation[1].required_posting_auths).toEqual([CLAIMER]);
+    expect(broadcastJson).not.toHaveBeenCalled();
+  });
+
   it('native paper with empty bridge key → unaffected (approve 403 for unrelated caller)', async () => {
     // Negative: the 503 guard must NOT fire on native papers. Unrelated caller
     // hitting a native-paper approve still gets 403 FORBIDDEN from the
