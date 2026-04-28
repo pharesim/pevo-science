@@ -87,7 +87,7 @@ The backend always reads from real chain data. **No mock/fake data in production
 PEvO only uses on-chain data from accredited users. This applies across the entire platform:
 
 - **Votes:** Only votes from accredited accounts affect reputation scores. Votes from unaccredited accounts are ignored in all PEvO computations (they still affect Hive rewards natively, but PEvO does not use them).
-- **Reviews:** Only reviews from accredited accounts appear in the default view and count toward paper ratings.
+- **Reviews:** Reviews from non-accredited accounts are excluded from all PEvO surfaces (the paper-detail `reviews: []` array on `GET /api/papers/:author/:permlink` and the single-doc `GET /api/reviews/:author/:permlink`) and from rating computations. Unlike papers and comments, there is no `accredited_only=false` opt-out for reviews — accreditation is a hard gate, not a default-on filter. The system anonymous proxy account (`config.hiveAnonAccount`) is admitted to the same surfaces because it posts on behalf of accredited reviewers; its `is_accredited` flag remains `false` for UI distinction.
 - **Citations:** Only citations from papers authored by accredited researchers count toward citation scores.
 - **Papers:** The default listing shows only accredited papers (`accredited_only=true`). Each paper includes an `is_accredited` flag; the frontend can pass `accredited_only=false` to include unaccredited papers.
 
