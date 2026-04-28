@@ -21,6 +21,20 @@
  * covers only broadcast error staging; getToken / deleteToken run against
  * real Redis (or in-memory fallback), so the token-lifecycle assertions
  * exercise the real persistence layer.
+ *
+ * Per-test redis.del rejection mock (BE-HANDLE-BROADCAST-ERROR-HELPER round 3):
+ * the 502-with-deleteToken-rejection spec at the bottom of this file uses
+ * `vi.spyOn(redis, 'del').mockRejectedValueOnce(...)` for one call, then
+ * `mockRestore()`s. The failure mode it exercises (Redis evicted to
+ * read-only mid-request, or a transient connection drop right after the
+ * broadcast failure log line) is impractical to induce against the real
+ * dev-mode Redis container — the deterministic single-call rejection is
+ * the only way to drive the route's local try/catch swallow path on demand.
+ * The carve-out is narrow: only `redis.del` is mocked, only on that one
+ * call, and the seeded token + envelope assertions still exercise real
+ * Redis on the rest of the route. Real-Redis coverage of the same 502
+ * envelope under a successful cleanup is provided by the immediately
+ * preceding spec ("non-timeout broadcast error → 502 BROADCAST_FAILED").
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -61,6 +75,7 @@ vi.mock('../../src/hive.js', () => ({
 import { createApp } from '../../src/app.js';
 import { config } from '../../src/config.js';
 import { getRedis } from '../../src/redis.js';
+import { logger } from '../../src/logger.js';
 
 // Ensure the admin-posting-key guard inside /verify doesn't short-circuit.
 // A deterministic WIF keeps PrivateKey.fromString happy on the broadcast path.
@@ -282,6 +297,20 @@ describe('POST /api/accreditation/verify — BE-ORCID-BROADCAST-ABORT-TIMEOUT', 
       .spyOn(redis, 'del')
       .mockRejectedValueOnce(new Error('Redis evicted to read-only'));
 
+    // Spy on logger.error so we can assert the cleanup-failure log line was
+    // emitted with the canonical fields, AND that no ERR_HTTP_HEADERS_SENT
+    // line was emitted (load-bearing negative — its presence would prove the
+    // rejection escaped the local try/catch and reached errorHandler).
+    // Round-3 hold #1 of BE-HANDLE-BROADCAST-ERROR-HELPER: the prior version
+    // of this spec only asserted (a) the 502 envelope and that redis.del was
+    // called; it was mutation-insensitive against deletion of the local
+    // try/catch (the rejection would still surface as 502 from supertest's
+    // first-response semantics). The spy assertions below are the real
+    // mutation-sensitivity guards. Per
+    // agents/docs/solutions/conventions/mock-guard-assertion-must-verify-call-shape-2026-04-21.md
+    // and agents/docs/solutions/runtime-errors/helper-extraction-express5-response-ordering-2026-04-28.md.
+    const loggerErrorSpy = vi.spyOn(logger, 'error');
+
     let res;
     let delCallArgs: unknown[][];
     try {
@@ -290,24 +319,42 @@ describe('POST /api/accreditation/verify — BE-ORCID-BROADCAST-ABORT-TIMEOUT', 
         .send({ token });
       // Snapshot the spy calls BEFORE restoring (mockRestore clears mock state).
       delCallArgs = delSpy.mock.calls.slice();
+
+      // Response stays the broadcast-failure 502 — the deleteToken rejection
+      // was swallowed, no 500 was layered on top. If the route had let the
+      // rejection propagate to Express 5's async error handler, errorHandler
+      // would have attempted to write 500 over the already-sent 502, throwing
+      // ERR_HTTP_HEADERS_SENT into the request-error pipeline. supertest
+      // surfaces only the first response written, so a 502 here is necessary
+      // but not sufficient — the spy assertions below carry the real signal.
+      expect(res.status).toBe(502);
+      expect(res.body.error.code).toBe('BROADCAST_FAILED');
+      expect(res.body.error.details).toEqual({ retriable: false });
+
+      // (a) The route's failure-branch cleanup did call redis.del with the
+      // seeded token key — proves the deleteToken path was reached, the
+      // rejection fired, and the local try/catch swallowed it.
+      expect(delCallArgs).toContainEqual([`${config.appTag}:pending_accred:${token}`]);
+
+      // (b) The cleanup-failure log line was emitted with the expected fields.
+      // Call-shape assertion (NOT a bare toHaveBeenCalled): logger.error is
+      // also called by handleBroadcastError for the 502 path, so we must pin
+      // the cleanup-specific message to distinguish the two calls.
+      expect(loggerErrorSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ err: expect.anything(), token: expect.any(String) }),
+        expect.stringContaining('token cleanup failed after broadcast failure'),
+      );
+
+      // (c) No ERR_HTTP_HEADERS_SENT log line was emitted — the rejection did
+      // not reach Express's async error handler. This is the load-bearing
+      // negative assertion for the regression.
+      expect(loggerErrorSpy).not.toHaveBeenCalledWith(
+        expect.anything(),
+        expect.stringMatching(/ERR_HTTP_HEADERS_SENT/i),
+      );
     } finally {
       delSpy.mockRestore();
+      loggerErrorSpy.mockRestore();
     }
-
-    // Response stays the broadcast-failure 502 — the deleteToken rejection
-    // was swallowed, no 500 was layered on top. If the route had let the
-    // rejection propagate to Express 5's async error handler, errorHandler
-    // would have attempted to write 500 over the already-sent 502, throwing
-    // ERR_HTTP_HEADERS_SENT into the request-error pipeline. supertest
-    // surfaces only the first response written, so a 502 here is the
-    // load-bearing signal that the helper's 502 was preserved.
-    expect(res.status).toBe(502);
-    expect(res.body.error.code).toBe('BROADCAST_FAILED');
-    expect(res.body.error.details).toEqual({ retriable: false });
-
-    // The route's failure-branch cleanup did call redis.del with the seeded
-    // token key — proves the deleteToken path was reached, the rejection
-    // fired, and the local try/catch swallowed it.
-    expect(delCallArgs).toContainEqual([`${config.appTag}:pending_accred:${token}`]);
   });
 });

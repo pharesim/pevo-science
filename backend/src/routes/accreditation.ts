@@ -233,8 +233,12 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
       try {
         await deleteToken(token);
       } catch (deleteErr) {
+        // Include `token` in the structured fields so operators can correlate
+        // the orphan against Redis state during the 24h TTL window. Per
+        // agents/docs/solutions/runtime-errors/helper-extraction-express5-response-ordering-2026-04-28.md
+        // ("Survivor log fields for orphan resources").
         logger.error(
-          { err: deleteErr, username: pending.hive_username },
+          { err: deleteErr, token, username: pending.hive_username },
           'accreditation.verify token cleanup failed after broadcast failure — orphan will TTL out',
         );
       }

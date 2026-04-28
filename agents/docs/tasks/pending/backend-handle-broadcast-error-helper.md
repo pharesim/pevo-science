@@ -162,3 +162,56 @@ But: testing reviewer found the integration test does not actually assert the (b
 ### Re-review signal (round 3)
 
 When item 1 lands (and item 2 if cheap), `git mv` this file back to `tasks/review/`. The architect's next pass scopes `/ce-code-review` to the round-3 commit and archives on clean. Include the local deletion-and-retest mutation-sensitivity result in the re-review signal block.
+
+---
+
+Backend re-review signal (2026-04-28, round 3):
+
+Both round-3 hold-block items landed.
+
+**Item 1 (P2) — mutation-sensitive test assertions in `backend/tests/routes/accreditation.test.ts`:**
+
+The 502-with-deleteToken-rejection spec at `tests/routes/accreditation.test.ts:283-352` now adds a `loggerErrorSpy` (with `mockRestore` in `finally`) and asserts:
+
+- **(a) 502 envelope shape** — `res.status === 502`, `error.code === 'BROADCAST_FAILED'`, `error.details === { retriable: false }` (existing assertion preserved).
+- **(a-bis) `redis.del` was invoked with the seeded token key** — `expect(delCallArgs).toContainEqual([\`${config.appTag}:pending_accred:${token}\`])` (existing).
+- **(b) cleanup-failure log line emitted with canonical fields** — call-shape assertion via `expect(loggerErrorSpy).toHaveBeenCalledWith(expect.objectContaining({ err: expect.anything(), token: expect.any(String) }), expect.stringContaining('token cleanup failed after broadcast failure'))` per `agents/docs/solutions/conventions/mock-guard-assertion-must-verify-call-shape-2026-04-21.md`.
+- **(c) no `ERR_HTTP_HEADERS_SENT` log line emitted** — negative-shape assertion via `expect(loggerErrorSpy).not.toHaveBeenCalledWith(expect.anything(), expect.stringMatching(/ERR_HTTP_HEADERS_SENT/i))` per `agents/docs/solutions/runtime-errors/helper-extraction-express5-response-ordering-2026-04-28.md` test-pattern recommendation.
+
+A small bonus: `accreditation.ts:241` now adds `token` to the structured fields on the cleanup-failure `logger.error` call so operators can correlate the orphan against Redis state during the 24h TTL window. The test's `(b)` assertion pins the `token` field shape so future drift on the log call gets caught.
+
+**Item 2 (P3) — header carve-out clause in `backend/tests/routes/accreditation.test.ts:24-35`:**
+
+The file-level docblock (lines 16-23) already documented the broader carve-out for the file. A new paragraph explains the per-test `redis.del` rejection mock at the bottom of the file: failure mode (Redis evicted to read-only mid-request, or transient connection drop right after the broadcast-failure log line) is impractical to induce against the real dev-mode Redis container. Carve-out is narrow: only `redis.del`, only on that one call, and the seeded-token + envelope assertions still exercise real Redis on the rest of the route. Real-Redis coverage of the same 502 envelope under successful cleanup is provided by the immediately preceding spec ("non-timeout broadcast error → 502 BROADCAST_FAILED").
+
+**Mutation-sensitivity verification (round-3 hold-block requirement):**
+
+- Locally replaced the `try { await deleteToken(token); } catch (deleteErr) { logger.error(...); }` block at `accreditation.ts:232-245` with bare `await deleteToken(token);` (no try/catch).
+- Ran `npx vitest run tests/routes/accreditation.test.ts -t "deleteToken rejection"`.
+- Result: **the spec failed red on assertion (b)** as the round-2 hold block predicted. The 3rd `logger.error` call was the Express async error handler's `"Unhandled error"` line (carrying the `Redis evicted to read-only` rejection that escaped to errorHandler), not the cleanup-failure line with `token` + `'token cleanup failed after broadcast failure'`. Diff snippet from the failure:
+
+  ```
+    [
+  -   ObjectContaining { "err": Anything, "token": Any<String> },
+  +   { "err": { "message": "Redis evicted to read-only", ... } },
+  -   StringContaining "token cleanup failed after broadcast failure",
+  +   "Unhandled error",
+    ]
+  ```
+
+- Restored the try/catch wrap. Re-ran `npx vitest run tests/routes/accreditation.test.ts` → 10 passed / 0 failed.
+
+The round-2 hold block's claim ("deleting the try/catch wrap and re-running passes the spec") no longer holds: the round-3 spec is mutation-sensitive on (b), so removing the wrap is now caught.
+
+**Verification:**
+
+- `npx tsc --noEmit` → clean.
+- `npm run lint` → clean (2 pre-existing `seed-phrase.ts` `any` warnings unchanged).
+- `npx vitest run tests/routes/accreditation.test.ts` → 10/10 passed.
+- Full vitest suite NOT run by this implementer pass (parent will serialize after fan-out merges).
+
+**Recovery context (parent-agent surfacing):** Worker subagent `a857e6a00060feca4` was interrupted by a usage cap mid-execution. The parent agent recovered the worktree's dirty diff, ran the mutation-sensitivity verification, applied the clean-restore, ran lint/tsc/targeted-vitest, and committed in-place on `main` with this signal block. The original worker's diff is preserved on `worktree-agent-a857e6a00060feca4` for audit if needed.
+
+Files modified:
+- `backend/src/routes/accreditation.ts` (added `token` to the cleanup-failure `logger.error` structured fields, plus a code-comment cross-reference to the helper-extraction solutions doc).
+- `backend/tests/routes/accreditation.test.ts` (added per-test redis.del-rejection paragraph to the header docblock, added `loggerErrorSpy` plus call-shape (b) and negative-shape (c) assertions, restructured the `try`/`finally` so spy state and assertions are co-located with the request).
