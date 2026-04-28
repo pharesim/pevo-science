@@ -16,7 +16,7 @@ import { decryptKey } from '../custody-crypto.js';
 import { isPasswordValid, PASSWORD_POLICY_MESSAGE } from '../lib/password-policy.js';
 import { ARGON2_OPTIONS } from '../lib/argon2-options.js';
 import { runWithArgon2Slot, ArgonSemaphoreError } from '../lib/argon2-semaphore.js';
-import { handleArgonError } from '../lib/argon-error-handler.js';
+import { handleArgonError, ARGON_HANDLED } from '../lib/argon2-error-handler.js';
 import { requestAbortSignal } from '../lib/request-abort-signal.js';
 import { hashEmailForLogs } from '../lib/log-pii.js';
 
@@ -235,12 +235,12 @@ export async function burnSentinel(input: string, signal?: AbortSignal): Promise
   }
 }
 
-// Argon2-semaphore catch-block handler factored to lib/argon-error-handler.ts.
+// Argon2-semaphore catch-block handler factored to lib/argon2-error-handler.ts.
 // Imported as `handleArgonError` above. Every catch site that wraps a
 // `runWithArgon2Slot` call (directly or transitively via burnSentinel)
 // invokes it as the first step in the catch block:
 //
-//   if (handleArgonError(res, err, { logContext }) === 'handled') return;
+//   if (handleArgonError(res, err, { logContext }) === ARGON_HANDLED) return;
 //
 // Distinct log lines so operators can separate "increase capacity"
 // (ArgonQueueFullError spikes under load) from "benign during rolling
@@ -370,7 +370,7 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
     // now they get 409 DUPLICATE, which is more accurate about their
     // actual email state. Neither path lets them complete signup.
     // Under saturation, the duplicate path returns 503 (translated from
-    // `ArgonQueueFullError`/`ShuttingDownError` via `handleArgonQueueFull`)
+    // `ArgonQueueFullError`/`ShuttingDownError` via `handleArgonError`)
     // rather than 409. The 503-vs-422 differential on unaccredited domains
     // is the same registration-status signal as 409-vs-422 in the non-
     // saturated case; saturation does not widen the leak, only changes the
@@ -399,11 +399,14 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
         // argon2.hash + upsert naturally, so no burn is needed there.
         if (existingRows[0].verify_token === null) {
           if (password) await runWithArgon2Slot(() => argon2.hash(password, ARGON2_OPTIONS), { signal: abortSignal }).catch((err) => {
-            // Propagate every ArgonSemaphoreError (queue-full / shutting-
-            // down / abort) so the outer catch can translate to 503 or
-            // silent return. Swallowing queue-full / shutting-down here
-            // would short-circuit the burn to ~0ms and reopen the timing
-            // oracle under DoS / drain conditions.
+            // Structural collapse, behavior unchanged: the pre-refactor
+            // form already enumerated all three concrete subclasses
+            // (ArgonQueueFullError || ShuttingDownError || ArgonAbortError)
+            // and re-threw each. The single `instanceof ArgonSemaphoreError`
+            // check covers the same set via the shared abstract base and
+            // any future fourth subclass extending it. Swallowing any of
+            // these here would short-circuit the burn to ~0ms and reopen
+            // the timing oracle under DoS / drain conditions.
             if (err instanceof ArgonSemaphoreError) throw err;
             logger.warn({ err }, 'argon2 signup-dup burn failed — timing oracle may be open');
           });
@@ -411,11 +414,8 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
         }
         if (existingRows[0].verify_token.startsWith('confirmed:')) {
           if (password) await runWithArgon2Slot(() => argon2.hash(password, ARGON2_OPTIONS), { signal: abortSignal }).catch((err) => {
-            // Propagate every ArgonSemaphoreError (queue-full / shutting-
-            // down / abort) so the outer catch can translate to 503 or
-            // silent return. Swallowing queue-full / shutting-down here
-            // would short-circuit the burn to ~0ms and reopen the timing
-            // oracle under DoS / drain conditions.
+            // Structural collapse, behavior unchanged: see the matching
+            // `verify_token === null` branch above for the rationale.
             if (err instanceof ArgonSemaphoreError) throw err;
             logger.warn({ err }, 'argon2 signup-dup burn failed — timing oracle may be open');
           });
@@ -535,7 +535,7 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
       expires_at: expiresAt.toISOString(),
     });
   } catch (err) {
-    if (handleArgonError(res, err) === 'handled') return;
+    if (handleArgonError(res, err) === ARGON_HANDLED) return;
     logger.error({ err }, 'Signup failed');
     sendError(res, 500, 'INTERNAL_ERROR', 'Registration failed');
   }
@@ -649,7 +649,7 @@ router.post('/resend-verification', resendLimiter, async (req: Request, res: Res
 
     sendOk(res, { message: 'If that email has a pending signup, a new verification link has been sent.' });
   } catch (err) {
-    if (handleArgonError(res, err) === 'handled') return;
+    if (handleArgonError(res, err) === ARGON_HANDLED) return;
     logger.error({ err }, 'Resend verification failed');
     sendError(res, 500, 'INTERNAL_ERROR', 'Failed to resend verification email');
   }
@@ -787,7 +787,7 @@ router.post('/login', loginLimiter, async (req: Request, res: Response) => {
 
     sendOk(res, { token, expires_at: expiresAt, custody, username: account.username });
   } catch (err) {
-    if (handleArgonError(res, err) === 'handled') return;
+    if (handleArgonError(res, err) === ARGON_HANDLED) return;
     logger.error({ err }, 'Login failed');
     sendError(res, 500, 'INTERNAL_ERROR', 'Login failed');
   }
@@ -882,7 +882,7 @@ router.post('/reset-request', resetRequestLimiter, async (req: Request, res: Res
 
     sendOk(res, { message: 'If an account exists with that email, a reset link has been sent.' });
   } catch (err) {
-    if (handleArgonError(res, err) === 'handled') return;
+    if (handleArgonError(res, err) === ARGON_HANDLED) return;
     logger.error({ err }, 'Password reset request failed');
     sendError(res, 500, 'INTERNAL_ERROR', 'Password reset request failed');
   }
@@ -956,7 +956,7 @@ router.post('/reset', resetLimiter, async (req: Request, res: Response) => {
 
     sendOk(res, { message: 'Password has been reset. Please log in with your new password.' });
   } catch (err) {
-    if (handleArgonError(res, err) === 'handled') return;
+    if (handleArgonError(res, err) === ARGON_HANDLED) return;
     logger.error({ err }, 'Password reset failed');
     sendError(res, 500, 'INTERNAL_ERROR', 'Password reset failed');
   }
@@ -1147,7 +1147,7 @@ router.post('/recover', recoverLimiter, async (req: Request, res: Response) => {
 
     sendOk(res, { token, expires_at: expiresAt, custody, username: account.username });
   } catch (err) {
-    if (handleArgonError(res, err) === 'handled') return;
+    if (handleArgonError(res, err) === ARGON_HANDLED) return;
     logger.error({ err }, 'Account recovery failed');
     sendError(res, 500, 'INTERNAL_ERROR', 'Account recovery failed');
   }

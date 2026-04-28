@@ -14,7 +14,7 @@ import { createClaimedAccount } from '../account-creation.js';
 import { logger } from '../logger.js';
 import { burnSentinel } from './auth.js';
 import { runWithArgon2Slot } from '../lib/argon2-semaphore.js';
-import { handleArgonError } from '../lib/argon-error-handler.js';
+import { handleArgonError, ARGON_HANDLED } from '../lib/argon2-error-handler.js';
 import { requestAbortSignal } from '../lib/request-abort-signal.js';
 import { hashEmailForLogs } from '../lib/log-pii.js';
 import { seedAccreditationBonus } from '../reputation.js';
@@ -157,7 +157,7 @@ router.post('/resume-signup', resumeLimiter, async (req: Request, res: Response)
 
     sendOk(res, { flow: 'choose', email: normalizedEmail, auth_token: account.verify_token });
   } catch (err) {
-    if (handleArgonError(res, err) === 'handled') return;
+    if (handleArgonError(res, err) === ARGON_HANDLED) return;
     logger.error({ err }, 'Resume signup failed');
     sendError(res, 500, 'INTERNAL_ERROR', 'Resume failed');
   }

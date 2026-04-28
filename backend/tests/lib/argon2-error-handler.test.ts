@@ -23,7 +23,7 @@ import {
   SERVICE_UNAVAILABLE_MESSAGE,
   QUEUE_FULL_RETRY_AFTER_SEC,
   SHUTDOWN_RETRY_AFTER_SEC,
-} from '../../src/lib/argon-error-handler.js';
+} from '../../src/lib/argon2-error-handler.js';
 import {
   ArgonQueueFullError,
   ShuttingDownError,
@@ -153,6 +153,96 @@ describe('handleArgonError', () => {
       handleArgonError(res, new ArgonAbortError(), { retryAfterSec: 99 });
 
       expect(res.set).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('opts.retryAfterSec validation (perimeter check)', () => {
+    // Invalid overrides MUST fall back to the per-branch default so a
+    // future caller deriving the value from user input cannot land a
+    // malformed `Retry-After` on the wire (NaN/Infinity/negative/non-finite
+    // serialize inconsistently across proxies and clients). The fallback
+    // path also emits a `logger.warn` so the misuse is loud at runtime.
+    type InvalidCase = [label: string, value: number];
+    const invalidCases: InvalidCase[] = [
+      ['negative', -5],
+      ['NaN', Number.NaN],
+      ['positive Infinity', Number.POSITIVE_INFINITY],
+      ['negative Infinity', Number.NEGATIVE_INFINITY],
+    ];
+
+    describe('queue-full branch', () => {
+      it.each(invalidCases)(
+        'falls back to QUEUE_FULL_RETRY_AFTER_SEC and warns when retryAfterSec is %s',
+        (_label, value) => {
+          const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as unknown as void);
+          const res = mockResponse();
+          handleArgonError(res, new ArgonQueueFullError(), { retryAfterSec: value });
+
+          expect(res.set).toHaveBeenCalledWith('Retry-After', String(QUEUE_FULL_RETRY_AFTER_SEC));
+          expect(warnSpy).toHaveBeenCalledWith(
+            { retryAfterSec: value, defaultSec: QUEUE_FULL_RETRY_AFTER_SEC },
+            'argon2 handler: ignoring invalid retryAfterSec override; falling back to branch default',
+          );
+        },
+      );
+
+      it('floors fractional retryAfterSec to an integer (no malformed header)', () => {
+        const res = mockResponse();
+        handleArgonError(res, new ArgonQueueFullError(), { retryAfterSec: 7.9 });
+
+        expect(res.set).toHaveBeenCalledWith('Retry-After', '7');
+        expect(res.set).not.toHaveBeenCalledWith('Retry-After', '7.9');
+      });
+
+      it('accepts zero as a valid override (HTTP allows Retry-After: 0)', () => {
+        const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as unknown as void);
+        const res = mockResponse();
+        handleArgonError(res, new ArgonQueueFullError(), { retryAfterSec: 0 });
+
+        expect(res.set).toHaveBeenCalledWith('Retry-After', '0');
+        // No warn — zero is valid.
+        expect(warnSpy).not.toHaveBeenCalledWith(
+          expect.objectContaining({ retryAfterSec: 0 }),
+          expect.anything(),
+        );
+      });
+    });
+
+    describe('shutdown branch', () => {
+      it.each(invalidCases)(
+        'falls back to SHUTDOWN_RETRY_AFTER_SEC and warns when retryAfterSec is %s',
+        (_label, value) => {
+          const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as unknown as void);
+          const res = mockResponse();
+          handleArgonError(res, new ShuttingDownError(), { retryAfterSec: value });
+
+          expect(res.set).toHaveBeenCalledWith('Retry-After', String(SHUTDOWN_RETRY_AFTER_SEC));
+          expect(warnSpy).toHaveBeenCalledWith(
+            { retryAfterSec: value, defaultSec: SHUTDOWN_RETRY_AFTER_SEC },
+            'argon2 handler: ignoring invalid retryAfterSec override; falling back to branch default',
+          );
+        },
+      );
+
+      it('floors fractional retryAfterSec to an integer (no malformed header)', () => {
+        const res = mockResponse();
+        handleArgonError(res, new ShuttingDownError(), { retryAfterSec: 12.5 });
+
+        expect(res.set).toHaveBeenCalledWith('Retry-After', '12');
+        expect(res.set).not.toHaveBeenCalledWith('Retry-After', '12.5');
+      });
+
+      it('accepts zero as a valid override (HTTP allows Retry-After: 0)', () => {
+        const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as unknown as void);
+        const res = mockResponse();
+        handleArgonError(res, new ShuttingDownError(), { retryAfterSec: 0 });
+
+        expect(res.set).toHaveBeenCalledWith('Retry-After', '0');
+        expect(warnSpy).not.toHaveBeenCalledWith(
+          expect.objectContaining({ retryAfterSec: 0 }),
+          expect.anything(),
+        );
+      });
     });
   });
 

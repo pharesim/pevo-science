@@ -65,7 +65,7 @@ Centralize argon2 error handling and cross-file helpers into the backend `lib/` 
 - **`requestAbortSignal`**: extracted to `backend/src/lib/request-abort-signal.ts`. All four routes import it from one place.
 - **`{ once: true }` vs explicit `removeEventListener`**: kept the explicit `removeEventListener` (covers BOTH the abort-fires path AND the resolved-normally path, so it is load-bearing on the resolved-without-abort branch); dropped `{ once: true }` (which would only matter when abort fires, where the explicit cleanup also runs). Inline comment in `argon2-semaphore.ts` documents the choice.
 - **`burnSentinel` re-throw**: previously did three explicit `instanceof` checks before the warn-and-swallow path. Collapsed to one `instanceof ArgonSemaphoreError` re-throw using the new base class. Same behavior, narrower to read, and any future fourth subclass propagates automatically.
-- **`/signup` 409 dup `.catch`**: the two inline `.catch((err) => { if (err instanceof ArgonAbortError) throw err; ... })` blocks at the duplicate-email burn sites previously only re-threw `ArgonAbortError`. They now re-throw any `ArgonSemaphoreError`, so queue-full / shutting-down on those burns also propagate to the outer catch and translate to 503 instead of being silently swallowed (which would have reopened the timing oracle under DoS / SIGTERM). Behavior change is strictly safer; matches what the `burnSentinel` body already did.
+- **`/signup` 409 dup `.catch`**: structural collapse, behavior unchanged. The two inline `.catch` blocks at the duplicate-email burn sites previously enumerated all three concrete subclasses (`ArgonQueueFullError || ShuttingDownError || ArgonAbortError`) and re-threw each. They now collapse to one `instanceof ArgonSemaphoreError` re-throw via the shared abstract base. Same set of errors propagates to the outer catch as before; the prior earlier wording in this note ("re-threw any `ArgonSemaphoreError`" framed as a behavior widening) was incorrect — verified by the architect against `git show 497795e:backend/src/routes/auth.ts:425-455` during the round-2 hold pass.
 
 ### Extension points for downstream tasks
 
@@ -142,3 +142,45 @@ Doc-side fixes (auth.md /signup + /resend-verification + /resume-signup + /login
 ### Re-review signal
 
 When items 1-6 above land, `git mv` this file back to `tasks/review/`. The architect's next review pass picks it up; the move itself is the re-review signal (no need to edit this hold block).
+
+---
+
+## Backend re-review signal (2026-04-28, working tree)
+
+All 7 hold-block items addressed (item 7 was appended later by the architect from a 503-bundle review pass; landed alongside 1-6).
+
+**Item 1 — `opts.logContext` allowlist + logger merge order**
+- `backend/src/lib/argon2-error-handler.ts`: narrowed `logContext?: Record<string, unknown>` → `logContext?: { username?: string }` with JSDoc explaining the CNPD/PII rationale.
+- Reordered the spread inside all 4 logger calls (warn/info/debug/error) from `{ err, ...ctx }` to `{ ...ctx, err }`. Added an inline comment on the warn branch explaining the ordering invariant once; the other branches reference it.
+
+**Item 2 — stale `auth.ts:373` comment**
+- Replaced `handleArgonQueueFull` reference with `handleArgonError` (matches the renamed helper at HEAD).
+
+**Item 3 — file rename + import updates**
+- `git mv backend/src/lib/argon-error-handler.ts → argon2-error-handler.ts`. Sibling test renamed too: `backend/tests/lib/argon-error-handler.test.ts → argon2-error-handler.test.ts`. Updated import paths in `routes/{auth,custody,settings,signup-verify}.ts` and the 4 route-translation tests under `backend/tests/routes/*-argon-error-translation.test.ts` (static import + dynamic-import path string), plus the docblock cross-reference at `tests/routes/auth-argon-error-translation.test.ts:39`.
+
+**Item 4 — exported sentinel constants + type guard**
+- `argon2-error-handler.ts`: added `ARGON_HANDLED = 'handled' as const` and `ARGON_UNHANDLED = 'unhandled' as const`; `HandleArgonErrorResult` now references the constants. Updated all 9 call sites (6 in `auth.ts`, 1 each in `custody.ts`, `settings.ts`, `signup-verify.ts`) from `=== 'handled'` to `=== ARGON_HANDLED`. Updated the JSDoc example, the file's preamble, and the catch-block call-shape comment block in `auth.ts:238-250`.
+- `argon2-semaphore.ts`: added `isArgonSemaphoreError` type guard colocated with the abstract base class.
+
+**Item 5 — reframed inline comment + corrected implementation note**
+- `auth.ts:401-422`: the two `.catch` blocks at the duplicate-email burn sites now read "Structural collapse, behavior unchanged" with the architect's git-archaeology rationale. The second branch references the first to avoid duplication.
+- Implementation note at line 68 of this task file rewritten to reflect structural collapse rather than a behavior widening; the note explicitly flags the prior wording as incorrect with a pointer to the `git show 497795e` evidence.
+
+**Item 6 — `ArgonSemaphoreError` JSDoc cross-references**
+- `argon2-semaphore.ts:71-91`: extended the base-class JSDoc to name the two consumers (`burnSentinel` re-throw in `auth.ts`, `handleArgonError` dispatch in `argon2-error-handler.ts`) and the "503-able-or-silent" propagation invariant a future 4th subclass must honor.
+
+**Item 7 — `retryAfterSec` perimeter validation**
+- `argon2-error-handler.ts`: added private `resolveRetryAfterSec(override, defaultSec)` helper consumed by both 503 branches. Accepts only finite non-negative values, floors fractional values to integer, and on invalid input emits a `logger.warn` and falls back to the per-branch default (5 / 30). Zero remains valid (HTTP allows `Retry-After: 0`).
+- New tests in `tests/lib/argon2-error-handler.test.ts` under `describe('opts.retryAfterSec validation (perimeter check)')` exercise both branches × {negative, NaN, +Infinity, -Infinity, fractional, zero}. Existing happy-path overrides (`17`, `90`) still pass — the helper is identity for finite non-negative integers.
+
+### Verification
+
+- `npx tsc --noEmit` clean.
+- `npm run lint` clean (only the pre-existing `seed-phrase.ts` no-explicit-any warnings, unrelated to this task).
+- Targeted vitest suites pass (12 files, 113 tests, 13.27s):
+  - `tests/lib/argon2-semaphore.test.ts` (15)
+  - `tests/lib/argon2-error-handler.test.ts` (22 — was 14 before item 7's 8 new validation cases)
+  - `tests/routes/auth-argon-error-translation.test.ts` + custody/settings/signup-verify variants (24 across 4 files)
+  - `tests/routes/auth.test.ts`, `auth-concurrency.test.ts`, `auth-signup-dup-saturated.test.ts`, `custody.test.ts`, `settings.test.ts`, `settings-set-password.test.ts` (52 across 6 files).
+- Full backend suite is the architect's call (per CLAUDE.md run-tests guidance + the implementer-side note about pre-existing unrelated failures).

@@ -83,7 +83,7 @@ vi.mock('../../src/redis.js', () => ({
 }));
 
 const { createApp } = await import('../../src/app.js');
-const { SERVICE_UNAVAILABLE_MESSAGE } = await import('../../src/lib/argon-error-handler.js');
+const { SERVICE_UNAVAILABLE_MESSAGE } = await import('../../src/lib/argon2-error-handler.js');
 
 const app = createApp();
 

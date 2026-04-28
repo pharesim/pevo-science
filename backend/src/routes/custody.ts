@@ -12,7 +12,7 @@ import { decryptKey } from '../custody-crypto.js';
 import { logCustodyBroadcast } from '../custody-audit.js';
 import { logger } from '../logger.js';
 import { runWithArgon2Slot } from '../lib/argon2-semaphore.js';
-import { handleArgonError } from '../lib/argon-error-handler.js';
+import { handleArgonError, ARGON_HANDLED } from '../lib/argon2-error-handler.js';
 import { requestAbortSignal } from '../lib/request-abort-signal.js';
 import { handleBroadcastError } from '../lib/broadcast-error.js';
 
@@ -236,7 +236,7 @@ router.post('/upgrade', verifyHiveSignature, upgradeLimiter, async (req: Request
 
     sendOk(res, { custody: 'self', token, expires_at: expiresAt });
   } catch (err) {
-    if (handleArgonError(res, err, { logContext: { username } }) === 'handled') return;
+    if (handleArgonError(res, err, { logContext: { username } }) === ARGON_HANDLED) return;
     logger.error({ err, username }, 'Custody upgrade failed');
     sendError(res, 500, 'INTERNAL_ERROR', 'Upgrade failed');
   }

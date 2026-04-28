@@ -36,7 +36,7 @@
  *     mock injection.
  *
  * (c) REAL-HAF VARIANT: the library-level coverage at
- *     `tests/lib/argon-error-handler.test.ts` (10 tests) asserts the same
+ *     `tests/lib/argon2-error-handler.test.ts` (10 tests) asserts the same
  *     three-class translation contract against the real handler with a
  *     mocked-Express response. This file complements that coverage by
  *     exercising the FULL Express stack (routing, middleware, body parsing,
@@ -120,7 +120,7 @@ vi.mock('../../src/redis.js', () => ({
 }));
 
 const { createApp } = await import('../../src/app.js');
-const { SERVICE_UNAVAILABLE_MESSAGE } = await import('../../src/lib/argon-error-handler.js');
+const { SERVICE_UNAVAILABLE_MESSAGE } = await import('../../src/lib/argon2-error-handler.js');
 
 const app = createApp();
 

@@ -30,19 +30,22 @@
 // where this helper runs), so re-throwing inside it would force every site
 // to add an outer try/catch — strictly more boilerplate.
 //
-// Chosen shape: return a string-literal sentinel `'handled' | 'unhandled'`,
-// matching the convention already established by `handleBroadcastError`
-// (which returns `'timeout' | 'failure'`). The call site becomes
+// Chosen shape: return a string-literal sentinel `'handled' | 'unhandled'`
+// exposed via the `ARGON_HANDLED` / `ARGON_UNHANDLED` constants, matching
+// the convention already established by `handleBroadcastError` (which
+// returns `'timeout' | 'failure'`). The call site becomes
 //
-//   if (handleArgonError(res, err, opts) === 'handled') return;
+//   if (handleArgonError(res, err, opts) === ARGON_HANDLED) return;
 //
 // which is harder to typo than `if (helper(res, err))` and self-documents
-// what the boolean would have meant. Forgetting the `=== 'handled'` produces
-// `if ('unhandled') return;` which is a truthy short-circuit, BUT static
-// analysis (eslint, tsc with `--noUncheckedIndexedAccess`) flags the
-// implicit truthy-on-string. The string-literal type also lets a future
-// caller pattern-match on the discriminated outcome if we add a third
-// classification.
+// what the boolean would have meant. Forgetting the `=== ARGON_HANDLED`
+// produces `if ('unhandled') return;` which is a truthy short-circuit,
+// BUT static analysis (eslint, tsc with `--noUncheckedIndexedAccess`)
+// flags the implicit truthy-on-string. Going through the constant rather
+// than the bare literal also means a typo'd `=== ARGON_HANLDED` is a
+// `TS2304: Cannot find name` at compile time instead of a silent runtime
+// no-op. The string-literal type also lets a future caller pattern-match
+// on the discriminated outcome if we add a third classification.
 //
 // ── Generic 503 client message ──────────────────────────────────────────
 //
@@ -78,14 +81,25 @@ import {
 } from './argon2-semaphore.js';
 
 /**
- * Discriminated outcome of {@link handleArgonError}. Caller MUST early-return
- * on `'handled'` to avoid falling through to a generic 500 branch that
- * would write a second response onto the same socket. `'unhandled'` means
- * the helper recognized none of the three argon semaphore error classes
- * and the caller should run its normal error path (typically a `logger.error`
- * + `sendError(res, 500, 'INTERNAL_ERROR', ...)`).
+ * Sentinel constants for the discriminated outcome of {@link handleArgonError}.
+ * Call sites compare via `=== ARGON_HANDLED` rather than the bare string
+ * literals so the magic value lives in exactly one place; renaming the
+ * sentinel later is a single-file edit, and any caller that drifts to the
+ * wrong literal surfaces as a `TS2367` (no-overlap) at compile time instead
+ * of a silent `=== 'foo'` typo that always evaluates false.
  */
-export type HandleArgonErrorResult = 'handled' | 'unhandled';
+export const ARGON_HANDLED = 'handled' as const;
+export const ARGON_UNHANDLED = 'unhandled' as const;
+
+/**
+ * Discriminated outcome of {@link handleArgonError}. Caller MUST early-return
+ * on {@link ARGON_HANDLED} to avoid falling through to a generic 500 branch
+ * that would write a second response onto the same socket.
+ * {@link ARGON_UNHANDLED} means the helper recognized none of the three argon
+ * semaphore error classes and the caller should run its normal error path
+ * (typically a `logger.error` + `sendError(res, 500, 'INTERNAL_ERROR', ...)`).
+ */
+export type HandleArgonErrorResult = typeof ARGON_HANDLED | typeof ARGON_UNHANDLED;
 
 /**
  * Generic client-facing body string used on both 503 branches. Operators
@@ -117,7 +131,13 @@ export const SHUTDOWN_RETRY_AFTER_SEC = 30;
  * `logContext` is merged into the structured log record on the two 503
  * branches and the debug-level disconnect log; it lets routes propagate
  * identifiers (e.g. `username`) into the log line without each route
- * re-implementing the catch chain.
+ * re-implementing the catch chain. The shape is a closed allowlist (NOT
+ * `Record<string, unknown>`) so a future caller cannot pass an arbitrary
+ * field like `email` and bypass the project-wide `hashEmailForLogs`
+ * convention. PEvO's operating jurisdiction (Portugal / CNPD) makes raw
+ * email addresses in operator logs a real compliance risk; widening the
+ * type narrows the surface where that mistake can land. Add new fields
+ * here intentionally rather than via an open record.
  *
  * `retryAfterSec` is an optional per-call override for the `Retry-After`
  * header on the two 503 branches. When unset (the common case) the helper
@@ -129,8 +149,11 @@ export const SHUTDOWN_RETRY_AFTER_SEC = 30;
  * to write).
  */
 export interface HandleArgonErrorOpts {
-  /** Structured-log context merged into the helper's log calls. */
-  logContext?: Record<string, unknown>;
+  /**
+   * Structured-log context merged into the helper's log calls. Closed
+   * allowlist by design; see the JSDoc above for rationale.
+   */
+  logContext?: { username?: string };
   /**
    * Override for the `Retry-After` header (seconds) on the two 503 branches.
    * Defaults to {@link QUEUE_FULL_RETRY_AFTER_SEC} / {@link SHUTDOWN_RETRY_AFTER_SEC}
@@ -141,30 +164,54 @@ export interface HandleArgonErrorOpts {
 
 /**
  * Translate an argon2 semaphore error into the matching HTTP response and
- * log line. Returns `'handled'` if the error was recognized and the
- * response was written; `'unhandled'` if the caller should fall through to
- * its own generic-error branch.
+ * log line. Returns {@link ARGON_HANDLED} if the error was recognized and
+ * the response was written; {@link ARGON_UNHANDLED} if the caller should
+ * fall through to its own generic-error branch.
  *
  * Intended call shape:
  *
  * ```ts
  * } catch (err) {
- *   if (handleArgonError(res, err, { logContext: { username } }) === 'handled') return;
+ *   if (handleArgonError(res, err, { logContext: { username } }) === ARGON_HANDLED) return;
  *   logger.error({ err }, 'Some operation failed');
  *   sendError(res, 500, 'INTERNAL_ERROR', 'Some operation failed');
  * }
  * ```
  *
- * The `=== 'handled'` comparison closes the boolean-return footgun: a
+ * The `=== ARGON_HANDLED` comparison closes the boolean-return footgun: a
  * caller that forgot to compare would still trigger the truthy short-
  * circuit (because `'unhandled'` is also truthy), but the explicit string
  * comparison is far harder to omit by accident than a bare `if (fn())`.
  *
- * NOTE on `ArgonAbortError`: returns `'handled'` WITHOUT writing a
- * response. The client socket is already torn down; writing into it would
- * surface as an EPIPE in the global error handler. Caller MUST early-
- * return on `'handled'` to avoid the generic 500 branch attempting a write.
+ * NOTE on `ArgonAbortError`: returns {@link ARGON_HANDLED} WITHOUT writing
+ * a response. The client socket is already torn down; writing into it
+ * would surface as an EPIPE in the global error handler. Caller MUST
+ * early-return on {@link ARGON_HANDLED} to avoid the generic 500 branch
+ * attempting a write.
  */
+/**
+ * Validate a caller-supplied `retryAfterSec` override before it lands on
+ * the wire. Accepts only finite non-negative values and floors them to an
+ * integer — an HTTP `Retry-After` is delta-seconds (or an HTTP-date), and
+ * a fractional / NaN / Infinity / negative number serializes to a malformed
+ * header that downstream proxies and clients handle inconsistently. On
+ * invalid input, log loudly and fall back to the documented per-branch
+ * default rather than emitting a malformed header. No production caller
+ * passes the field today; this guard is a perimeter check before a future
+ * caller derives the value from user input.
+ */
+function resolveRetryAfterSec(override: number | undefined, defaultSec: number): number {
+  if (override === undefined) return defaultSec;
+  if (!Number.isFinite(override) || override < 0) {
+    logger.warn(
+      { retryAfterSec: override, defaultSec },
+      'argon2 handler: ignoring invalid retryAfterSec override; falling back to branch default',
+    );
+    return defaultSec;
+  }
+  return Math.floor(override);
+}
+
 export function handleArgonError(
   res: Response,
   err: unknown,
@@ -175,33 +222,36 @@ export function handleArgonError(
   // discriminator; the three subclasses are exhaustive (enforced by the
   // `abstract` keyword on `ArgonSemaphoreError`).
   if (!(err instanceof ArgonSemaphoreError)) {
-    return 'unhandled';
+    return ARGON_UNHANDLED;
   }
 
   const ctx = opts.logContext ?? {};
 
   if (err instanceof ArgonQueueFullError) {
-    logger.warn({ err, ...ctx }, 'argon2 queue saturated — returning 503');
-    res.set('Retry-After', String(opts.retryAfterSec ?? QUEUE_FULL_RETRY_AFTER_SEC));
+    // Spread caller ctx FIRST so a stray `ctx.err` cannot clobber the
+    // structured `err` field that observability tooling keys on. Same
+    // ordering on every log call below.
+    logger.warn({ ...ctx, err }, 'argon2 queue saturated — returning 503');
+    res.set('Retry-After', String(resolveRetryAfterSec(opts.retryAfterSec, QUEUE_FULL_RETRY_AFTER_SEC)));
     sendError(res, 503, 'SERVICE_UNAVAILABLE', SERVICE_UNAVAILABLE_MESSAGE);
-    return 'handled';
+    return ARGON_HANDLED;
   }
   if (err instanceof ShuttingDownError) {
-    logger.info({ err, ...ctx }, 'argon2 semaphore shutting down — returning 503');
-    res.set('Retry-After', String(opts.retryAfterSec ?? SHUTDOWN_RETRY_AFTER_SEC));
+    logger.info({ ...ctx, err }, 'argon2 semaphore shutting down — returning 503');
+    res.set('Retry-After', String(resolveRetryAfterSec(opts.retryAfterSec, SHUTDOWN_RETRY_AFTER_SEC)));
     sendError(res, 503, 'SERVICE_UNAVAILABLE', SERVICE_UNAVAILABLE_MESSAGE);
-    return 'handled';
+    return ARGON_HANDLED;
   }
   if (err instanceof ArgonAbortError) {
     // Client disconnected before the argon2 slot was granted; there is no
-    // response to write (the socket is gone). Return 'handled' so the
+    // response to write (the socket is gone). Return ARGON_HANDLED so the
     // caller's catch block does NOT fall through to the generic 500 /
     // sendError path, which would try to write to the torn-down socket.
     logger.debug(
-      { err, ...ctx },
+      { ...ctx, err },
       'argon2 slot aborted by client disconnect — no response to write',
     );
-    return 'handled';
+    return ARGON_HANDLED;
   }
 
   // Unreachable as long as `ArgonSemaphoreError` stays abstract and the
@@ -210,8 +260,8 @@ export function handleArgonError(
   // top will catch it but none of the branches will fire — log loudly so
   // we notice in production while the type system catches up.
   logger.error(
-    { err, ...ctx },
+    { ...ctx, err },
     'unknown ArgonSemaphoreError subclass — falling through to generic 500',
   );
-  return 'unhandled';
+  return ARGON_UNHANDLED;
 }

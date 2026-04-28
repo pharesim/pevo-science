@@ -77,6 +77,21 @@ export const MAX_QUEUE_DEPTH = 50;
  *
  * Marked abstract so a stray `throw new ArgonSemaphoreError()` won't compile
  * — the only instances on the wire are the three concrete subclasses below.
+ *
+ * Two consumers depend on this base class for the "503-able-or-silent"
+ * propagation invariant:
+ *  - `burnSentinel` in `backend/src/routes/auth.ts` uses
+ *    `if (err instanceof ArgonSemaphoreError) throw err;` to re-throw all
+ *    semaphore errors past its warn-and-swallow path, preserving the
+ *    timing-oracle floor under saturation / drain / abort.
+ *  - `handleArgonError` in `backend/src/lib/argon2-error-handler.ts`
+ *    dispatches per-subclass to either a 503 + `Retry-After` response
+ *    (queue-full / shutting-down) or a silent return (abort).
+ *
+ * A future 4th subclass MUST honor the same invariant (translatable to 503
+ * or silently swallowable when the socket is gone). Anything else needs a
+ * different base class — a 4xx / 422 / etc. semaphore error does not
+ * belong here.
  */
 export abstract class ArgonSemaphoreError extends Error {
   constructor(message: string) {
@@ -85,6 +100,18 @@ export abstract class ArgonSemaphoreError extends Error {
     // name if a future subclass forgets.
     this.name = new.target.name;
   }
+}
+
+/**
+ * Type guard for {@link ArgonSemaphoreError}. Colocated with the class so
+ * `instanceof` narrowing lives next to the type definition rather than at
+ * call sites that import the base class separately. Equivalent to
+ * `err instanceof ArgonSemaphoreError`; prefer this in new code so a
+ * future refactor (e.g., wrapping the error in a discriminated tagged
+ * union for cross-realm safety) is one-place editable.
+ */
+export function isArgonSemaphoreError(err: unknown): err is ArgonSemaphoreError {
+  return err instanceof ArgonSemaphoreError;
 }
 
 /**

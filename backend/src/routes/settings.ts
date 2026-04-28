@@ -12,7 +12,7 @@ import { logger } from '../logger.js';
 import { isPasswordValid, PASSWORD_POLICY_MESSAGE } from '../lib/password-policy.js';
 import { ARGON2_OPTIONS } from '../lib/argon2-options.js';
 import { runWithArgon2Slot } from '../lib/argon2-semaphore.js';
-import { handleArgonError } from '../lib/argon-error-handler.js';
+import { handleArgonError, ARGON_HANDLED } from '../lib/argon2-error-handler.js';
 import { requestAbortSignal } from '../lib/request-abort-signal.js';
 
 const readLimiter = rateLimit({ name: 'settings-read', windowMs: 60_000, max: 30, keyFn: byIp });
@@ -393,7 +393,7 @@ router.post('/set-password', writeLimiter, verifyHiveSignature, async (req: Requ
 
     sendOk(res, { message: 'Password set. You can now log in with your email/username and this password.' });
   } catch (err) {
-    if (handleArgonError(res, err) === 'handled') return;
+    if (handleArgonError(res, err) === ARGON_HANDLED) return;
     logger.error({ err }, 'Failed to set password');
     sendError(res, 500, 'INTERNAL_ERROR', 'Failed to set password');
   }
