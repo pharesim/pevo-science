@@ -168,7 +168,7 @@ Round-1 `/ce-code-review` on commit `9d3de2c` (10 personas: correctness, testing
 
 ---
 
-## Backend re-review signal (2026-04-28, commits 74b6a1b + 0fca3dc) — round-1 hold-fix landed
+## Backend re-review signal (2026-04-28, commits df264d7 + 27befcf) — round-1 hold-fix landed
 
 Round-1 architect hold (10-persona /ce-code-review on commit `9d3de2c`) listed 7 items. Five are backend-owned (#1, #2, #3, #6, #7); items #4 and #5 are architect-owned contract-doc edits and remain `[TODO Architect]`.
 

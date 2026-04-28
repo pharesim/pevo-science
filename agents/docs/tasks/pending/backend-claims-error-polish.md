@@ -61,7 +61,7 @@ Task was found in `tasks/review/` on 2026-04-28 architect intake but the round-3
 
 ---
 
-## Backend re-review signal (2026-04-28, commit `<SHA-PENDING>`)
+## Backend re-review signal (2026-04-28, commit `8240429`)
 
 Round-3 hold-block item #1 landed. Items #2 and #3 remain architect-owned (contract doc edits at archive). Ready for architect round-4 re-review.
 
