@@ -1840,9 +1840,22 @@ describe.each([
       // PostBroadcastWriteError — wrapper outer catch routes through
       // handleBroadcastErrorAmbiguous → handleBroadcastError discriminates
       // PostBroadcastWriteError → 502 POST_BROADCAST_FAILED.
+      //
+      // Round-3 hold item #3: the rejected cause is a generic Error
+      // (synthetic db cascade failure) rather than a BroadcastTimeoutError.
+      // The previous shape used MockBroadcastTimeoutError as the cause to
+      // also exercise the `instanceof PostBroadcastWriteError` priority over
+      // `instanceof BroadcastTimeoutError` inside handleBroadcastError, but
+      // that semantic was load-bearing only at the unit layer (covered by
+      // `PostBroadcastWriteError discrimination fires BEFORE
+      // BroadcastTimeoutError + forceAmbiguousOutcome branches` in
+      // tests/lib/broadcast-error.test.ts). At the integration layer the
+      // assertion is "broadcast succeeded → post-broadcast cascade failed →
+      // 502 POST_BROADCAST_FAILED" — using a non-timeout cause keeps the
+      // intent self-evident to readers.
       const updateOrcidSpy = vi
         .spyOn(__test_seams, 'updateAccountOrcid')
-        .mockRejectedValueOnce(new MockBroadcastTimeoutError(30_000));
+        .mockRejectedValueOnce(new Error('synthetic db cascade failure'));
 
       try {
         const state = await startAuthed(mode, 'alice');
@@ -2015,6 +2028,109 @@ describe.each([
         expect(broadcastJsonMock.mock.calls.length).toBe(broadcastCallsBeforeSecond);
       } finally {
         pkSpy.mockRestore();
+        setSpy.mockRestore();
+        loggerErrorSpy.mockRestore();
+        await redis.del(lockKey, cacheKey).catch(() => { /* cleanup */ });
+      }
+    },
+  );
+
+  // Round-3 hold item #1 — non-timeout broadcast error on the lock-unavailable
+  // branch must route through the wrapper's outer catch and emit the 504
+  // ambiguous-outcome envelope. The existing PrivateKey-throw spec above
+  // exercises a *pre-broadcast* throw that escapes fn's inner try/catch
+  // entirely; this spec exercises a throw that ENTERS the inner catch (from
+  // broadcastJsonWithTimeout itself) and is re-thrown by the
+  // `if (lockState === 'unavailable') throw err;` discriminator at
+  // orcid.ts:570 (handleAccredit) / :700 (handleLink), so the wrapper's outer
+  // catch handles it.
+  //
+  // Mutation kill (architect-required): removing the
+  // `if (lockState === 'unavailable') throw err;` line routes the non-timeout
+  // broadcast error through the inner catch's
+  // `handleBroadcastError(res, err, accreditErrorOpts)` 502 BROADCAST_FAILED
+  // path. A user whose broadcast may have landed on chain would be told "Hive
+  // chain rejected" via 502 BROADCAST_FAILED with the failMsg "Failed to
+  // broadcast …" message (no `verify_before_retry`), and is licensed to retry
+  // → duplicate-bind on chain. The 504 + outcome:'uncertain' + /uncertain/i
+  // message + ambiguous-outcome log-suffix assertions below all fail under
+  // that regression.
+  it(
+    'non-timeout broadcast error inside fn on the lock-unavailable branch → 504 BROADCAST_TIMEOUT ambiguous-outcome (no timeout_ms); operator-alert ambiguous-outcome log fires',
+    async () => {
+      const redis = getRedis();
+      if (!redis) return;
+      const orcidId = `0000-0001-${orcidSuffix}${orcidSuffix}${orcidSuffix}${orcidSuffix}-0013`;
+      const lockKey = `${config.appTag}:orcid_binding_lock:${orcidId}`;
+      const cacheKey = `${config.appTag}:orcid_binding:${orcidId}`;
+      await redis.del(lockKey, cacheKey).catch(() => { /* ignore */ });
+
+      installOrcidFetchStub({ orcid: orcidId, name: 'Alice', works: 3 });
+      installLockModeMocks();
+
+      // Force the 'unavailable' branch via lock SETNX flap. Keep non-lock
+      // SETs working so the rest of the request pipeline is unaffected.
+      const origSet = redis.set.bind(redis);
+      const setSpy = vi.spyOn(redis, 'set').mockImplementation(async (...args: unknown[]) => {
+        const k = String(args[0]);
+        if (k.includes(':orcid_binding_lock:')) throw new Error('simulated Redis flap on lock SET');
+        // @ts-expect-error ioredis set is variadic; forwarding by spread is safe here.
+        return origSet(...args);
+      });
+      // Force a NON-TIMEOUT broadcast rejection so fn's inner try/catch
+      // catches it (broadcastJsonWithTimeout is wrapped by the inner try),
+      // skips the BroadcastTimeoutError branch (line 528 / 681), and reaches
+      // the lockState discriminator (line 570 / 700) which re-throws on
+      // 'unavailable'. The wrapper's outer catch then emits the 504
+      // ambiguous-outcome envelope via handleBroadcastErrorAmbiguous.
+      broadcastJsonMock.mockRejectedValueOnce(new Error('synthetic non-timeout broadcast failure (rpc reject)'));
+      // Silence the structured error logged by handleBroadcastErrorAmbiguous on
+      // the non-timer ambiguous-outcome path — keeps test output clean.
+      const loggerErrorSpy = vi.spyOn(logger, 'error').mockImplementation(() => { /* silence */ });
+
+      try {
+        const state = await startAuthed(mode, 'alice');
+        const res = await request(app)
+          .post('/api/orcid/callback')
+          .set('Authorization', `Bearer ${jwtFor('alice')}`)
+          .send({ code: 'fake', state });
+
+        expect(res.status).toBe(504);
+        expect(res.body.error.code).toBe('BROADCAST_TIMEOUT');
+        // Same envelope shape as the timer-fire branch, but timeout_ms is
+        // intentionally omitted: the throw didn't originate from the timer
+        // (it was a synthetic non-timeout broadcast error, not a
+        // BroadcastTimeoutError).
+        expect(res.body.error.details).toEqual({
+          retriable: false,
+          outcome: 'uncertain',
+          verify_before_retry: true,
+          verify_location: '/settings',
+        });
+        expect(res.body.error.details).not.toHaveProperty('timeout_ms');
+        // ambiguousMsg surfaces (not failMsg). A regression that drops the
+        // `if (lockState === 'unavailable') throw err;` line routes through
+        // the inner catch's 502 BROADCAST_FAILED path — failMsg ("Failed to
+        // broadcast …") would surface and this assertion would fail.
+        expect(res.body.error.message).toMatch(/uncertain/i);
+        expect(res.body.error.message).not.toMatch(/^Failed to broadcast/i);
+        // Broadcast WAS attempted (the rejection is what fn's inner catch
+        // handles). Distinguishes this spec from the PrivateKey pre-broadcast
+        // spec above which asserts broadcast was never called.
+        expect(broadcastJsonMock).toHaveBeenCalledTimes(1);
+        // No cache entry, no lock key (lock SETNX flapped).
+        expect(await redis.get(cacheKey)).toBeNull();
+        expect(await redis.get(lockKey)).toBeNull();
+        // Operator-alert anchor: ambiguous-outcome path log message fired at
+        // error level. Pinned per round-3 hold item #1 — a regression that
+        // routes the throw to the inner-catch 502 path emits the
+        // `<routeLabel> broadcast failed` (no "on ambiguous-outcome path"
+        // suffix) log message instead, failing this assertion.
+        const ambiguousCalls = loggerErrorSpy.mock.calls.filter(
+          (call) => typeof call[1] === 'string' && call[1].includes('broadcast failed on ambiguous-outcome path'),
+        );
+        expect(ambiguousCalls.length).toBeGreaterThanOrEqual(1);
+      } finally {
         setSpy.mockRestore();
         loggerErrorSpy.mockRestore();
         await redis.del(lockKey, cacheKey).catch(() => { /* cleanup */ });

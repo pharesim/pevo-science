@@ -368,7 +368,7 @@ describe('handleBroadcastError', () => {
   // that diverges the two entry points (e.g. forgets to set the flag in
   // the alias) fails here.
   it('handleBroadcastErrorAmbiguous emits the same 504 envelope as forceAmbiguousOutcome:true on a non-timer error', () => {
-    vi.spyOn(logger, 'error').mockImplementation(() => undefined as unknown as void);
+    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => undefined as unknown as void);
     const res = mockResponse();
     const err = new Error('rpc reject');
 
@@ -401,5 +401,19 @@ describe('handleBroadcastError', () => {
     // discriminator: present iff the underlying throw was a
     // BroadcastTimeoutError; see api-contracts/common.md).
     expect(body.error.details).not.toHaveProperty('timeout_ms');
+
+    // Round-3 hold item #2 — operator-alert anchor MUST fire at the unit
+    // layer, not just at the integration layer (orcid.test.ts). The third
+    // stable log-message suffix (`<routeLabel> broadcast failed on
+    // ambiguous-outcome path`, logger.error) is documented in the helper's
+    // docblock as a load-bearing alert anchor. A mutation that renames the
+    // suffix in the `forceAmbiguousOutcome` branch passes the integration-
+    // layer log-suffix filter only because that filter runs inside an
+    // unrelated route's mock — at the unit-under-test layer the suffix has
+    // had no assertion until now. Pin it.
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ run: 'item-4', err }),
+      'test.route broadcast failed on ambiguous-outcome path',
+    );
   });
 });
