@@ -1,3 +1,4 @@
+import { PrivateKey } from '@hiveio/dhive';
 import { config } from './config.js';
 import { logger } from './logger.js';
 import { getRedis, isRedisAvailable } from './redis.js';
@@ -7,6 +8,30 @@ interface EnvCheck {
   value: string;
   required: boolean;
   description: string;
+}
+
+/**
+ * Validate that a posting-key WIF parses cleanly via `PrivateKey.fromString`.
+ * Returns `null` for unset (preserves optional-key semantics) or a parsed value;
+ * returns an error string naming the env var and the dhive error class otherwise.
+ *
+ * Why: the only realistic production trigger for `PrivateKey.fromString` rejecting
+ * mid-request is a malformed configured key, which doesn't change at runtime. The
+ * wrapper catch in `withOrcidBindingLock`'s acquired branch otherwise routes such
+ * a sync throw as a 504 BROADCAST_TIMEOUT (`outcome:'uncertain'`, `verify_before_retry:true`),
+ * paging broadcast-on-call when the actual root cause is admin-key configuration.
+ * Failing boot loudly removes that mislabeled trigger from the request lifecycle.
+ */
+export function validatePostingKeyFormat(value: string, envVar: string): string | null {
+  if (!value) return null;
+  try {
+    PrivateKey.fromString(value);
+    return null;
+  } catch (err) {
+    const errClass = err instanceof Error ? err.constructor.name : 'Error';
+    const errMsg = err instanceof Error ? err.message : String(err);
+    return `${envVar} — invalid WIF format (${errClass}: ${errMsg})`;
+  }
 }
 
 export function validateConfig(): void {
@@ -45,6 +70,14 @@ export function validateConfig(): void {
       missing.push('  ANON_REVIEW_ENCRYPTION_KEY_PREV — must be 64 hex characters (256-bit key)');
     }
   }
+
+  // Validate posting-key WIF format if present. Both keys are optional (resolveBridgePostingKey
+  // already covers the bridge≠admin presence error); a malformed value, however, must fail
+  // boot so a runtime PrivateKey.fromString throw never reaches the request lifecycle.
+  const adminKeyError = validatePostingKeyFormat(config.pevoAdminPostingKey, 'PEVO_ADMIN_POSTING_KEY');
+  if (adminKeyError) missing.push(`  ${adminKeyError}`);
+  const bridgeKeyError = validatePostingKeyFormat(config.pevoBridgePostingKey, 'PEVO_BRIDGE_POSTING_KEY');
+  if (bridgeKeyError) missing.push(`  ${bridgeKeyError}`);
 
   // In production, APP_URL should be explicitly set (not the default localhost)
   const isProduction = process.env.NODE_ENV === 'production';
