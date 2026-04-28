@@ -26,6 +26,7 @@ vi.mock('alpinejs', () => ({
 import Alpine from 'alpinejs';
 import { fetchProfile, fetchProfilePapers, fetchProfileReviews } from '../../src/api.js';
 import { initProfilePage } from '../../src/pages/profile.js';
+import { titleCaseDiscipline } from '../../src/lib/discipline-display.js';
 
 // Sentinel the DOM-bound field / toast must NOT contain.
 const LEAK_SENTINEL = 'deadbeef-leak-sentinel';
@@ -49,6 +50,17 @@ function createComponent(overrides = {}) {
 describe('profilePage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  // Factory-exposure regression guard: three discipline render sites in the
+  // profile template (`accreditation.field` x2, `paper.discipline` x1) call
+  // `titleCaseDiscipline(...)` and would fire silent ReferenceErrors at
+  // runtime if the helper isn't on the Alpine data factory.
+  describe('factory exposes titleCaseDiscipline', () => {
+    it('factory().titleCaseDiscipline is identity-equal to the imported helper', () => {
+      const comp = createComponent();
+      expect(comp.titleCaseDiscipline).toBe(titleCaseDiscipline);
+    });
   });
 
   describe('breakdownEntries', () => {

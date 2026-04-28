@@ -13,7 +13,7 @@ export const paperCardTemplate = `
     <!-- Header: discipline + source badge + date -->
     <div class="flex items-center justify-between text-xs text-ink-muted mb-3">
       <div class="flex items-center gap-2">
-        <span class="badge-discipline capitalize" x-text="paper.discipline"></span>
+        <span class="badge-discipline" x-text="titleCaseDiscipline(paper.discipline)"></span>
         <template x-if="paper.source_type && paper.source_type !== 'native'">
           <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide bg-pevo-teal-light text-pevo-teal-dark border border-pevo-teal/20"
                 x-text="paper.source_type === 'arxiv' ? 'arXiv' : 'DOI'"></span>

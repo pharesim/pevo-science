@@ -56,6 +56,7 @@ import {
   revokeAuthorshipClaim,
 } from '../../src/api.js';
 import { computeVersionDiff } from '../../src/lib/version-diff.js';
+import { titleCaseDiscipline } from '../../src/lib/discipline-display.js';
 
 // Sentinel the DOM-bound field / toast must NOT contain.
 const LEAK_SENTINEL = 'deadbeef-leak-sentinel';
@@ -86,6 +87,16 @@ describe('paperDetailPage', () => {
     mockStores.auth.isAccredited = true;
     mockStores.auth.accreditation = { name: 'Alice Smith' };
     mockStores.router.params = { author: 'alice', permlink: 'my-paper' };
+  });
+
+  // Factory-exposure regression guard: the discipline badge in the page
+  // template (`x-text="titleCaseDiscipline(paper.discipline)"`) fires a
+  // silent ReferenceError if the helper isn't on the Alpine data factory.
+  describe('factory exposes titleCaseDiscipline', () => {
+    it('factory().titleCaseDiscipline is identity-equal to the imported helper', () => {
+      const comp = createComponent();
+      expect(comp.titleCaseDiscipline).toBe(titleCaseDiscipline);
+    });
   });
 
   describe('averageRatings', () => {

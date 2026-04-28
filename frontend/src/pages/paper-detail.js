@@ -4,6 +4,7 @@ import { broadcastOps } from '../signer.js';
 import { getAppTag } from '../config.js';
 import { computeVersionDiff } from '../lib/version-diff.js';
 import { formatDate } from '../components/paper-card.js';
+import { titleCaseDiscipline } from '../lib/discipline-display.js';
 
 const template = `
       <div x-data="paperDetailPage" class="container-narrow py-8">
@@ -263,7 +264,7 @@ const template = `
             <!-- Paper header card -->
             <article class="card mt-4">
               <div class="flex items-center gap-2 text-xs text-ink-muted mb-3">
-                <span class="badge-discipline capitalize" x-text="paper.discipline"></span>
+                <span class="badge-discipline" x-text="titleCaseDiscipline(paper.discipline)"></span>
                 <time :datetime="paper.created" x-text="formatDate(paper.created)"></time>
                 <template x-if="paper.last_update && paper.last_update !== paper.created">
                   <span class="text-ink-muted" x-text="'(' + $t('paperDetail.updated', { date: formatDate(paper.last_update) }) + ')'"></span>
@@ -723,6 +724,7 @@ export { template as paperDetailPageTemplate };
 
 export function initPaperDetailPage() {
   Alpine.data('paperDetailPage', () => ({
+    titleCaseDiscipline,
     paper: null,
     loading: true,
     error: null,

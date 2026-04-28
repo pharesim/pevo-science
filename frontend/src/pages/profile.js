@@ -1,6 +1,7 @@
 import Alpine from 'alpinejs';
 import { fetchProfile, fetchProfilePapers, fetchProfileReviews } from '../api.js';
 import { truncateText, formatDate } from '../components/paper-card.js';
+import { titleCaseDiscipline } from '../lib/discipline-display.js';
 
 const template = `
       <div x-data="profilePage" class="container-narrow py-8">
@@ -44,7 +45,7 @@ const template = `
                   <template x-if="profile.accreditation">
                     <div class="mt-2 text-sm text-ink-light">
                       <p x-text="profile.accreditation.institution"></p>
-                      <p class="capitalize" x-text="profile.accreditation.field"></p>
+                      <p x-text="titleCaseDiscipline(profile.accreditation.field)"></p>
                       <template x-if="profile.accreditation.orcid">
                         <p class="mt-1">
                           <a :href="'https://orcid.org/' + profile.accreditation.orcid" target="_blank" rel="noopener noreferrer"
@@ -70,7 +71,7 @@ const template = `
                 <div class="mt-4 pt-4 border-t border-parchment-dark text-xs text-ink-muted flex items-center gap-2 flex-wrap">
                   <span x-text="$t('profile.accreditedVia', { method: profile.accreditation.method, date: formatDate(profile.accreditation.timestamp) })"></span>
                   <template x-if="profile.accreditation.field">
-                    <span> &middot; <span class="capitalize" x-text="profile.accreditation.field"></span></span>
+                    <span> &middot; <span x-text="titleCaseDiscipline(profile.accreditation.field)"></span></span>
                   </template>
                 </div>
               </template>
@@ -223,7 +224,7 @@ const template = `
                         <article class="card hover:shadow-sm transition-shadow">
                           <div class="flex items-center justify-between text-xs text-ink-muted mb-3">
                             <div class="flex items-center gap-2">
-                              <span class="badge-discipline capitalize" x-text="paper.discipline"></span>
+                              <span class="badge-discipline" x-text="titleCaseDiscipline(paper.discipline)"></span>
                               <template x-if="paper.source_type && paper.source_type !== 'native'">
                                 <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide bg-pevo-teal-light text-pevo-teal-dark border border-pevo-teal/20"
                                       x-text="paper.source_type === 'arxiv' ? 'arXiv' : 'DOI'"></span>
@@ -338,6 +339,7 @@ export { template as profilePageTemplate };
 
 export function initProfilePage() {
   Alpine.data('profilePage', () => ({
+    titleCaseDiscipline,
     profile: null,
     userPapers: [],
     userReviews: [],
