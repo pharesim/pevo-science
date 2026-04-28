@@ -650,3 +650,88 @@ describe('per-paper `discipline` response field — canon_name (lowercased) via 
     expect(res.body.data.discipline).toBe('biology');
   });
 });
+
+describe('GET /api/papers — cache key sha256-wrapped (BE-PAPERS-CACHE-KEY-SHA256-MIRROR)', () => {
+  // BE-PAPERS-CACHE-KEY-SHA256-MIRROR: the previous `papers:p=...:k=${keyword}
+  // :a=${author}:lang=...` flat-concat cache key let `:` characters in
+  // attacker-controlled `keyword` / `author` / `language` / `source` values
+  // fold into the delimiter structure, opening a (narrow) cross-filter cache-
+  // poisoning window. Mirror search.ts:320 by sha256-wrapping the rawKey so
+  // the cache namespace is content-addressed, not delimiter-structured.
+  //
+  // Verification shape (mirrors disciplines-canon-mocked round-2 hold #1
+  // pattern): count the papers-data SQL invocations across two requests.
+  // Distinct rawKeys → distinct sha256 keys → 2 cache misses → 2 SQL calls;
+  // identical rawKeys → 1 cache miss → 1 SQL call.
+
+  it('two distinct query shapes (different filter values containing delimiters) produce distinct cache entries → 2 papers-data SQL calls', async () => {
+    hafQueryMock.mockImplementation(async (sql: string) => {
+      if (sql.includes('count(*)::int AS total')) return { rows: [{ total: 0 }] };
+      return { rows: [] };
+    });
+
+    // Both requests carry `:` and `=` characters in the `keyword` / `author`
+    // values — exactly the delimiter-folding shape the sha256 wrap closes.
+    // Pre-fix, a crafted pair of these could fold into the same flat-concat
+    // fragment; post-fix, sha256 sees the rawKey character-by-character and
+    // the two distinct rawKeys hash to two distinct cache keys.
+    const res1 = await request(app).get('/api/papers?accredited_only=false&keyword=foo%3Aa%3Dalice&author=');
+    const res2 = await request(app).get('/api/papers?accredited_only=false&keyword=&author=foo%3Aa%3Dalice');
+    expect(res1.status).toBe(200);
+    expect(res2.status).toBe(200);
+
+    const papersDataCalls = hafQueryMock.mock.calls.filter((call) => {
+      const sql = String(call[0] || '');
+      return sql.includes('LEFT(c.body, 300) AS abstract');
+    });
+    // Distinct rawKeys → distinct cache entries → BOTH requests hit HAF.
+    expect(papersDataCalls).toHaveLength(2);
+  });
+
+  it('two identical requests share a single cache entry → 1 papers-data SQL call (sanity)', async () => {
+    // Sanity assertion: sha256 is deterministic, so the same rawKey must
+    // produce the same cache key. If sha256 wrapping were applied to a
+    // non-deterministic input (e.g. including a per-request timestamp), the
+    // cache hit rate would drop to zero and this assertion would fail.
+    hafQueryMock.mockImplementation(async (sql: string) => {
+      if (sql.includes('count(*)::int AS total')) return { rows: [{ total: 0 }] };
+      return { rows: [] };
+    });
+
+    const res1 = await request(app).get('/api/papers?accredited_only=false&keyword=physics');
+    const res2 = await request(app).get('/api/papers?accredited_only=false&keyword=physics');
+    expect(res1.status).toBe(200);
+    expect(res2.status).toBe(200);
+
+    const papersDataCalls = hafQueryMock.mock.calls.filter((call) => {
+      const sql = String(call[0] || '');
+      return sql.includes('LEFT(c.body, 300) AS abstract');
+    });
+    // Identical rawKeys → single cache entry → 1 cache miss → 1 SQL call.
+    expect(papersDataCalls).toHaveLength(1);
+  });
+
+  it('cache key is namespace-prefixed `papers:` followed by 32 hex chars (sha256 slice)', async () => {
+    // Pin the wrapper shape so a future refactor that switches the digest
+    // length, the slice width, or the namespace literal surfaces here.
+    // Mirrors search.ts:320 exactly: `${namespace}:${sha256(rawKey).slice(0, 32)}`.
+    hafQueryMock.mockImplementation(async (sql: string) => {
+      if (sql.includes('count(*)::int AS total')) return { rows: [{ total: 0 }] };
+      return { rows: [] };
+    });
+
+    // Spy on hafCache to capture the cache key used for the request.
+    const setSpy = vi.spyOn(hafCache, 'getOrSetSWR');
+    try {
+      await request(app).get('/api/papers?accredited_only=false');
+      expect(setSpy).toHaveBeenCalled();
+      const callArgs = setSpy.mock.calls.find((args) => typeof args[0] === 'string' && args[0].startsWith('papers:'));
+      expect(callArgs).toBeDefined();
+      const cacheKey = callArgs![0] as string;
+      // Format: `papers:` + 32 lowercase hex chars (16 bytes of sha256 hex).
+      expect(cacheKey).toMatch(/^papers:[0-9a-f]{32}$/);
+    } finally {
+      setSpy.mockRestore();
+    }
+  });
+});

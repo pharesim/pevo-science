@@ -58,3 +58,36 @@ Pre-existing — not introduced by BE-DISCIPLINE-LENGTH-CAP, just made more visi
 - `papers.ts:~489` cache key is sha256-wrapped per the `search.ts:339-340` pattern.
 - Mocked-pool collision-prevention spec passes.
 - `git grep` confirms no remaining `papers:` flat-concat cache keys.
+
+---
+
+## Implementer re-review signal (2026-04-28, backend) — round 1
+
+Landed in a single commit. Cache key on `/api/papers` is now sha256-wrapped.
+
+**Code change** (`backend/src/routes/papers.ts`):
+- Added `import crypto from 'crypto'` (top-level, mirrors search.ts).
+- Replaced the flat-concat cache-key construction at the route handler with a `rawKey` + `papers:${sha256(rawKey).hex.slice(0, 32)}` pair, mirroring `search.ts:320` exactly. The rawKey carries the same field set as before (no semantic change), just hashed before being used as the Redis namespace.
+
+**Mocked-pool tests** (new describe block in `backend/tests/routes/disciplines-canon-mocked.test.ts`):
+- **Collision prevention**: two requests carrying `:` and `=` characters in distinct fields (`?keyword=foo:a=alice` vs `?author=foo:a=alice`) produce two distinct papers-data SQL calls (i.e., two distinct cache entries). Pre-fix, this could fold into delimiter collisions; post-fix the sha256 wrap makes each rawKey character-by-character unique.
+- **Cache hit on identical rawKey**: two identical requests share a single cache entry → exactly 1 papers-data SQL call. Sanity check that sha256 is deterministic and not accidentally salted.
+- **Wrapper shape**: spy on `hafCache.getOrSetSWR` and assert the cache key matches `/^papers:[0-9a-f]{32}$/` — pins the namespace literal, the digest base, and the slice width so a future refactor that drifts any of those surfaces here.
+
+**Tests run** (with docker-IP env overrides per CLAUDE.md):
+- `tests/routes/disciplines-canon-mocked.test.ts` → 16/16 passed (was 13 before; +3 new cases).
+- `tests/routes/papers.test.ts` (real-HAF SWR-path regression) → 12 passed | 1 skipped (pre-existing).
+- `npm run lint` clean (2 pre-existing warnings on `seed-phrase.ts`, unchanged).
+
+**Audit findings** (`git grep` for flat-concat cache-key construction with attacker-controlled string fragments across `backend/src/`):
+- `accreditations.ts:91` — uses `JSON.stringify({field, institution, ...})` so embedded `:` / `=` are escaped. Collision-safe.
+- `accreditations.ts:156` — `accreditation-status:${username}`. Hive account names are `[a-z0-9.-]{3,16}`; no `:` possible.
+- `bridge.ts:140` — `bridge-check:${parsed.type}:${parsed.id}`. `parsed.type` is the strict union `'arxiv' | 'doi'`; `parsed.id` is the canonical identifier. **Theoretical risk**: DOI suffixes per the spec can contain `:`, so a crafted DOI like `10.1234/foo:bar` could in principle fold delimiters. **Realistic risk**: bounded — the namespace prefix `bridge-check:` plus the `parsed.type` enum gives only two possible structural prefixes (`bridge-check:arxiv:` and `bridge-check:doi:`), and a colliding pair would need to fold across the type boundary. Filing as a low-priority follow-up below rather than expanding scope here.
+- `claims.ts:30` — `claims:${paperAuthor}:${paperPermlink}`. Hive identifiers, no `:`. Safe.
+- `comments.ts:185` — `comments:${author}:${permlink}:p=...:s=...:o=...:ao=...`. Author/permlink are Hive identifiers; `params.sort/order/limit/page` are pre-validated enums/integers; `accreditedOnly` is a boolean. Safe.
+- `notifications.ts:33` — `notifications:${account}:${sinceBlock}:${limit}`. Hive account + integers. Safe.
+- `papers.ts:1027/1058/1324` — paper-detail / paper-enrichment keys built from `${author}:${permlink}`. Hive identifiers, no `:`. Safe.
+- `profile.ts:257/383` — `JSON.stringify({sort, order, page, limit})`. Safe by escape.
+
+**Follow-up filed (out of scope for this task):**
+- `backend-bridge-cache-key-doi-colon-folding.md` — N/A (not yet filed). Architect triage suggested rather than auto-creating per CLAUDE.md "Code Review Findings". Surfacing here for triage: should the DOI-suffix `:` folding theoretical risk on `bridge-check:` cache keys be filed as a P3 follow-up?

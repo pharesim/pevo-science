@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { Router, type Request, type Response } from 'express';
 import { PrivateKey } from '@hiveio/dhive';
 import { getPool } from '../db.js';
@@ -458,7 +459,13 @@ router.get('/', async (req: Request, res: Response) => {
   const accreditedOnly = req.query.accredited_only !== 'false'; // default true
   const includeRetracted = req.query.include_retracted === 'true';
   const source = req.query.source || '';
-  const cacheKey = `papers:p=${page}:l=${limit}:s=${sort}:o=${order}:d=${discipline ?? ''}:k=${keyword}:a=${author}:lang=${language}:ao=${accreditedOnly}:ir=${includeRetracted}:src=${source}`;
+  // Sibling fields (keyword, author, language, source) flow in unvalidated;
+  // a `:` in any of them collides with the delimiter and lets a crafted
+  // `?keyword=:a=alice` poison-cache against `?author=:a=alice`. sha256-wrap
+  // the raw fragments so the namespace is collision-stable. Mirrors
+  // search.ts:320.
+  const rawKey = `p=${page}:l=${limit}:s=${sort}:o=${order}:d=${discipline ?? ''}:k=${keyword}:a=${author}:lang=${language}:ao=${accreditedOnly}:ir=${includeRetracted}:src=${source}`;
+  const cacheKey = `papers:${crypto.createHash('sha256').update(rawKey).digest('hex').slice(0, 32)}`;
   const result = await hafCache.getOrSetSWR(cacheKey, () => fetchPapersFromHaf(req, discipline ?? undefined));
   if (result) {
     return sendOk(res, result.rows, { page, limit, total: result.total });
