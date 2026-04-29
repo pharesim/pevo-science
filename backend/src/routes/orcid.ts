@@ -478,9 +478,15 @@ async function handleAccredit(
   const existingBinding = await findAccreditedAccountWithOrcid(orcidId);
   if (existingBinding && existingBinding !== username) {
     // Durable-binding 409: the ORCID is bound to another account on-chain or
-    // in the HAF-lag cache. Not retriable; the caller must rebind via that
-    // account or wait for a revoke. Contract omits `retriable` to distinguish
-    // from the transient lock-contention 409 emitted by withOrcidBindingLock.
+    // in the HAF-lag cache. All `ORCID_ALREADY_LINKED` 409 paths share the
+    // same wire shape (status 409, code `ORCID_ALREADY_LINKED`, no `retriable`,
+    // no `Retry-After`, no `retry_after_seconds`); the cache-lag, durable, and
+    // same-tick lock-contention causes are deliberately wire-indistinguishable
+    // because all three are terminal from the user's perspective (the OAuth
+    // state token has either been consumed or will be on the next attempt;
+    // restart the ORCID flow). Cause discrimination is server-side telemetry
+    // only — see `agents/docs/api-contracts/orcid.md:185` for the three causes
+    // and `withOrcidBindingLock`'s `'held'` branch for the contention anchor.
     sendError(res, 409, 'ORCID_ALREADY_LINKED', 'This ORCID is already linked to another account');
     return;
   }
@@ -656,7 +662,9 @@ async function handleLink(
 
   const existingBinding = await findAccreditedAccountWithOrcid(orcidId);
   if (existingBinding && existingBinding !== username) {
-    // Durable-binding 409. See handleAccredit counterpart for contract notes.
+    // Durable-binding 409. Wire shape is shared across all
+    // `ORCID_ALREADY_LINKED` 409 paths (no `retriable`, no `Retry-After`); see
+    // handleAccredit counterpart and `agents/docs/api-contracts/orcid.md:185`.
     sendError(res, 409, 'ORCID_ALREADY_LINKED', 'This ORCID is already linked to another account');
     return;
   }
@@ -1031,6 +1039,16 @@ async function withOrcidBindingLock(
     // durable on-chain binding 409 envelope (no `retriable`, no `Retry-After`).
     // Rationale: ARCHITECT-ORCID-STATE-CONSUMPTION-VS-RETRIABLE-409 (Option B)
     // in tasks-archive.md.
+    //
+    // Operator-alert anchor: structured `event:'lock_contention_held'` so
+    // contention frequency is dashboard-keyable. Sibling lock-helper anchors
+    // already follow this convention (`event:'a1_extend_*'`, `event:'redis_outage'`,
+    // `event:'nonce_drift'`); silent emission here would leave oncall without
+    // a forensic trail when triaging 409s on /orcid/callback.
+    logger.warn(
+      { orcidId, event: 'lock_contention_held', routeLabel: ambiguousOutcomeOpts.routeLabel },
+      `${ambiguousOutcomeOpts.routeLabel} ORCID binding lock contended; client must restart OAuth (state token consumed)`,
+    );
     sendError(
       res,
       409,

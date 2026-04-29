@@ -82,3 +82,29 @@ Round-1 `/ce-code-review` on commit `b1aec7e` (10 personas: correctness, testing
 ### Path to re-archive
 
 (1) Backend addresses items #1, #2, #3 in this hold block. Item #1 is ~3 lines code + 1-2 line test. Items #2 + #3 are pure comment rewrites, ~5 lines total. (2) Backend re-review signal block referencing the round-2 hold-fix commit SHA. (3) Architect round-2 `/ce-code-review` on the new commit (reliability + maintainability lenses). (4) Archive on clean. The follow-on `ui-orcid-callback-retriable-machinery-remove.md` task is now in `tasks/review/` — that is independent of this archive cycle.
+
+---
+
+## Backend re-review signal (2026-04-29, working tree)
+
+All 3 hold-block items addressed.
+
+**Item #1 (P2) — Structured warn on lock-contention `'held'` branch.** `backend/src/routes/orcid.ts`: added `logger.warn` at the top of the `'held'` branch in `withOrcidBindingLock` (above `sendError`). Structured payload carries `event: 'lock_contention_held'`, `orcidId`, and `routeLabel: ambiguousOutcomeOpts.routeLabel` (so the same anchor distinguishes accredit vs link contention without duplicating the helper). Message text: `${routeLabel} ORCID binding lock contended; client must restart OAuth (state token consumed)` per the architect's suggested shape, dropping the misleading "client may retry in 10s" framing the task spec had cautioned against. Aligned with sibling lock-helper anchors (`event:'a1_extend_*'`, `event:'redis_outage'`, `event:'nonce_drift'`) so dashboard-keying is consistent.
+
+`backend/tests/routes/orcid.test.ts`: extended the existing same-tick contention spec (the parameterized accredit + link matrix) with a `vi.spyOn(logger, 'warn')` and an `expect.objectContaining({ event: 'lock_contention_held', orcidId, routeLabel: <expectedRouteLabel> })` assertion plus `expect.stringContaining('ORCID binding lock contended')` on the message. The structured `event` field is the load-bearing assertion — a regression dropping or renaming the field surfaces here even if the message text survives. Spy restored in `finally` so no spy-pollution leaks to subsequent specs. The existing `expect.toHaveBeenCalledTimes(1)` on `broadcastJsonMock` and the `retriable`/`retry_after_seconds`/`Retry-After` absence assertions still pin the wire-shape contract.
+
+**Item #2 (P3) — Stale handleAccredit durable-binding 409 comment rewritten.** `backend/src/routes/orcid.ts:478-490`. Old comment claimed durable 409 omits `retriable` "to distinguish from the transient lock-contention 409 emitted by withOrcidBindingLock" — false post-`b1aec7e` (the lock-contention 409 also omits `retriable` now). New comment leads with the wire-shape invariant ("All `ORCID_ALREADY_LINKED` 409 paths share the same wire shape: status 409, code `ORCID_ALREADY_LINKED`, no `retriable`, no `Retry-After`, no `retry_after_seconds`"), states the rationale (all three causes are terminal from the user's perspective; restart the ORCID flow), and points to `agents/docs/api-contracts/orcid.md:185` as the canonical cause-discrimination reference. Forecloses the regression class where a future maintainer reads the stale comment and re-introduces the `retriable: true` discriminator on the lock-contention path to "restore" the documented invariant.
+
+**Item #3 (P3) — handleLink cross-reference comment refreshed.** `backend/src/routes/orcid.ts:657-663`. Kept the cross-reference to handleAccredit (canonical site for the contract notes per item #2) and added a one-line summary of the shared wire shape plus a direct pointer to `agents/docs/api-contracts/orcid.md:185`, so the link-side site no longer relies solely on a forward-reference to the now-canonical handleAccredit block — a future reader scanning handleLink in isolation gets the wire-shape invariant immediately.
+
+### Verification
+
+- `npx tsc --noEmit`: clean.
+- `npm run lint`: clean (pre-existing `seed-phrase.ts` no-explicit-any warnings only).
+- `npx vitest run tests/routes/orcid.test.ts` (real Postgres + Redis via docker-network IPs): **54/54 pass**. Same count as round-1 — the new assertion lives inside the existing accredit + link matrix spec, not a new spec, so no test count delta. Live log confirmed the structured anchor fires with the documented payload (`{"event":"lock_contention_held","routeLabel":"orcid.handleLink",...}`).
+- Full backend suite is the architect's call (per CLAUDE.md guidance).
+
+### Files changed
+
+- `backend/src/routes/orcid.ts` — structured `logger.warn` at the `'held'` branch with `event:'lock_contention_held'`, `orcidId`, `routeLabel`; handleAccredit durable-binding 409 comment rewritten to reflect shared wire shape post-`b1aec7e`; handleLink cross-reference comment refreshed with a fresh paraphrase + direct contract-doc pointer.
+- `backend/tests/routes/orcid.test.ts` — `warnSpy` + `expect.objectContaining({ event: 'lock_contention_held', orcidId, routeLabel })` assertion inside the existing same-tick contention spec; spy restored in `finally`.

@@ -1027,6 +1027,14 @@ describe.each([
       installOrcidFetchStub({ orcid: orcidId, name: 'Alice', works: 3 });
       installLockModeMocks();
 
+      // Spy on logger.warn so we can assert the structured operator-alert anchor
+      // fires on the loser's `'held'` branch. Round-1 hold #1: emission was
+      // silent; oncall had no forensic trail when triaging 409s. Asserting the
+      // structured `event` field (not just the message text) pins the
+      // dashboard-keyable contract — a regression dropping the `event` key
+      // would slip through a substring assertion but not this one.
+      const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as unknown as void);
+
       // Gate the winner's broadcast so the winner cannot finish and release
       // the lock before the loser has attempted SETNX. Without this gate, a
       // fast-path broadcast (mocked = instant) could complete before the
@@ -1114,8 +1122,22 @@ describe.each([
         // Exactly one broadcast fired — proves the lock prevented the
         // double-broadcast failure mode.
         expect(broadcastJsonMock).toHaveBeenCalledTimes(1);
+        // Round-1 hold #1: structured operator-alert anchor fired on the
+        // loser's `'held'` branch. Pinning the `event` literal (not the
+        // message substring) guards the dashboard-keyable contract; a
+        // regression renaming or dropping the `event` field surfaces here.
+        const expectedRouteLabel = mode === 'accredit' ? 'orcid.handleAccredit' : 'orcid.handleLink';
+        expect(warnSpy).toHaveBeenCalledWith(
+          expect.objectContaining({
+            event: 'lock_contention_held',
+            orcidId,
+            routeLabel: expectedRouteLabel,
+          }),
+          expect.stringContaining('ORCID binding lock contended'),
+        );
       } finally {
         await redis.del(lockKey, cacheKey).catch(() => { /* cleanup */ });
+        warnSpy.mockRestore();
       }
     },
   );
