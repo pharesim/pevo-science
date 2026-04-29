@@ -1,3 +1,33 @@
+## BACKEND-ARGON2-ABORT-OBSERVABILITY (archived 2026-04-29) — round-2 clean ✓
+
+Periodic `argon2_abort_summary` log emission (`backend/src/lib/argon2-semaphore.ts`) for operator visibility into client-disconnect aborts during argon2 ops. Round-1 added the counter + reporter (commit `5d33f24`); round-1 hold-fix (`aeef5f2`) deduped the slot-grant-race double-increment via per-request `incrementAbortOnce` + 5 reporter unit tests. Round-2 hold-fix (`647a115`) closed three accuracy gaps: (1) gated parked-waiter `onAbort` counter on `waiters.indexOf(w) >= 0` so drain-race + slot-release-race no longer inflate the counter; (2) swapped function-entry guards so `shuttingDown` precedes `signal?.aborted` (pre-aborted-during-drain reclassifies as shutdown, not abort); (3) added `intervalMs` field to log payload so dashboards can express rates without hardcoding 60_000.
+
+Round-2 architect re-review surfaced 3 ARCHITECTURE.md Section 5 gaps: missing `intervalMs` field row, missing round-2 accuracy-correction paragraph, missing "no abort traffic during SIGTERM rolling restart is expected" semantics. All 3 architect-side doc updates landed in commit `dcaab4a` during the re-review. Code in `647a115` was sound — no backend hold needed.
+
+Convention docs governing: `tests-must-fail-on-mutation-of-code-under-test-2026-04-22.md`, `vitest-fake-timers-module-private-state-isolation-2026-04-29.md`, `mock-guard-assertion-must-verify-call-shape-2026-04-21.md`. The asymmetric counter rule (listener increments iff it owns propagation) is now documented in ARCHITECTURE.md Section 5.
+
+---
+
+## BACKEND-ARGON2-ERROR-HANDLER-EXTRACT (archived 2026-04-29) — round-4 clean ✓ (post orphan-replay)
+
+Centralized argon2-error → HTTP translation across 4 routes (auth, custody, settings, signup-verify) into `backend/src/lib/argon2-error-handler.ts` with `handleArgonError`, `ARGON_HANDLED` / `ARGON_UNHANDLED` constants, and `isArgonSemaphoreError` type guard. Eliminated the 3-way inline `instanceof` chain at 9+ catch sites; collapsed `burnSentinel`'s 3-class re-throw into one `instanceof ArgonSemaphoreError`. Rounds 1-2 landed the helper + base class + `requestAbortSignal` extraction + `retryAfterSec` perimeter validation. Round-3 (`ada6814`) migrated the 4 remaining raw `instanceof ArgonSemaphoreError` sites to use the type guard. Round-4 (doc-only items in `647a115`) updated JSDoc on the base class + fallthrough comment in the helper to reference `isArgonSemaphoreError` consistently.
+
+**Orphan-replay note:** the round-3 migration commit `ada6814` and its merge `9a811b9` lived only on `worktree-agent-a06fcd6a935d47929` and never reached main. Round-4's doc-only fix at `647a115` was authored under the false premise that round-3 had landed; on main HEAD it produced doc-vs-code drift (docs claimed `isArgonSemaphoreError`, code still used raw `instanceof`). Architect re-review caught the divergence and replayed `ada6814` onto main as `718b7ed`, which restored coherence between the round-4 docs and the production code. After the replay, all 4 raw `instanceof` sites use the type guard; `grep -n "instanceof ArgonSemaphoreError" backend/src/` shows only the type-guard's own implementation body in `argon2-semaphore.ts:114`.
+
+Convention docs: `wrapping-primitive-exhaustive-call-site-audit-2026-04-22.md`, `route-level-error-class-coverage-after-helper-extraction-2026-04-29.md` (the latter authored to anchor this cluster's lessons; updated in commit `dcaab4a` to reflect the 2-arg `assertArgon2AbortIsSilent` shape).
+
+---
+
+## BACKEND-ARGON2-TEST-MOCKS-MIGRATE-PRE-EXISTING (archived 2026-04-29) — clean ✓ (post orphan-replay)
+
+Migrated two pre-existing argon2 route tests (`auth-reset-request-shutdown.test.ts` + `auth-signup-dup-saturated.test.ts`) onto the shared `buildArgon2RouteMockKit` helper from `tests/support/argon2-error-mocks.ts`. Removes the in-file `vi.hoisted` synthetic class declarations; both files now bind the real production `ArgonSemaphoreError` hierarchy via `vi.importActual`. `auth-signup-dup-saturated.test.ts` also imports `ARGON_REASON_QUEUE_FULL` / `ARGON_REASON_SHUTDOWN_DRAIN` constants from `argon2-error-handler.ts` instead of hardcoding the literals. Implementer also added abort-class silent-return coverage on the `/reset-request` unknown-email branch (round-2 hold-block item from `backend-argon2-error-routes-test-coverage.md`) and on both `/signup` dup-burn sites (auth.ts:401 + auth.ts:416).
+
+**Orphan-replay note:** the migration commit `c4d988e` lived only on `worktree-agent-a54a057f80a180193` and never reached main. Architect re-review replayed it as `cfd5a73`, which produced 3 test failures because `c4d988e` was authored when `assertArgon2AbortIsSilent` was 1-arg; current main HEAD has the 2-arg signature from `5cb0fbc` (round-3 P2 hold-fix on `backend-argon2-error-routes-test-coverage`). Architect post-replay fix at `002fec1` updated the 3 call sites to pass `mockRunWithArgon2Slot` per the predicted [TODO Architect] coordination note. After the fix, 98/98 argon2-related tests pass.
+
+Convention doc: `route-level-error-class-coverage-after-helper-extraction-2026-04-29.md` covers the cluster pattern. The helper-extraction shape is the canonical example for "every route × concrete error subclass cell needs route-level coverage; helper extraction does not absolve route-level coverage."
+
+---
+
 ## UI-PASSWORD-POLICY-HARMONIZE (archived 2026-04-29) — round-1 clean ✓
 
 UI side of cross-stack password-policy harmonization. Adds a `Keep in sync with backend/src/lib/password-policy.ts` pointer comment to `frontend/src/password-policy.js`, citing the backend CI drift-check test as the gate. Lands alongside the backend half (`backend-password-policy-harmonize`, currently held in pending/ on round-1 for two test-coverage hardening items). UI half passed `/ce-code-review` (6 personas: correctness, testing, maintainability, project-standards, agent-native, learnings) with zero findings on the comment-only diff. Implementer commit: `0b73a53`.
@@ -199,52 +229,3 @@ The task's `[TODO Architect]` block carved out the `agents/docs/api-contracts/co
 - `agents/docs/api-contracts/common.md` — SERVICE_UNAVAILABLE row + new note describing the discriminator and the example envelope
 
 ---
-
-## FE-ORCID-CALLBACK-FIXES (archived 2026-04-29) — Round-3 clean ✓
-
-# FE-ORCID-CALLBACK-FIXES — Stale-state write-window + login-path polling parity on the ORCID callback
-
-**Owner:** UI Agent
-**Created:** 2026-04-21
-**Priority:** P1
-**Final commit:** `1c28b39` (round-2 hold-fix re-application after a 2026-04-28 architect intake found the round-2 items had not landed despite the prior signal)
-**Lineage commits:** `0951fef` (round-1: `_saveSession` 6-arg misuse fix at `orcid-callback.js:148` + `login.js:152`, `pevo_orcid_mode` removeItem moved into success handler), `c078940` (round-1 hold-fix: clear stale `isAccredited` + `accreditation` before `_saveSession`, mockAuthStore extension + regression test), `1c28b39` (round-2 hold-fix: `_handleLogin` swap to `_startAccreditationPolling`, localStorage payload assertion, `toHaveBeenCalledTimes(1)`, dead fake-timers removed)
-
-## What landed across the rounds
-
-**Round-1 (`0951fef`).** Fixed the `_saveSession(6 args)` misuse on the ORCID callback path and the symmetric site at `login.js:152`. Set `auth.expiresAt = data.expires_at` before `_saveSession()`. Moved `pevo_orcid_mode` removeItem into the success handler of `completeOrcid`. Filed `FE-SAVESESSION-API-MISUSE-SWEEP` for the same pattern at `signup-verify.js:412/457` and `settings.js:550`.
-
-**Round-1 hold + fix (`c078940`).** Round-1 architect review surfaced (1) a stale-state write-window where the new no-arg `_saveSession()` reads `isAccredited` and `accreditation` from a store that may carry values from a prior session via `_restoreSession`, and (2) a test-harness gap (`mockAuthStore` had no `isAccredited`/`accreditation` fields, hiding the fix). Implementer set `auth.isAccredited = false; auth.accreditation = null;` before `_saveSession()` in `_handleLogin`, extended the mock with safe defaults, and added a regression test that snapshots store state at `_saveSession` call-time.
-
-**Round-2 hold (julik-frontend-races + testing).** Surfaced (1) `_handleLogin` used bare `_checkAccreditation()` while sibling `loginFromResponse`/`connect` paths use `_startAccreditationPolling()` — a transient fetch failure could pin the store at `isAccredited=false` permanently; (2) the regression test snapshots in-memory store, not actual localStorage payload — a broken `_saveSession` would pass; (3) no `toHaveBeenCalledTimes(1)` assertion on `_saveSession` — double-save regressions undetected; (4) dead `vi.useFakeTimers()` / `vi.useRealTimers()` in the new test. Filed `frontend-orcid-callback-teardown-cleanup.md` (P3, separate task) for the unrelated 500ms setTimeout cleanup gap.
-
-**Round-2 hold-fix (`1c28b39`).** All 4 items landed — `_handleLogin` polling parity, localStorage payload assertion via mock-implementation extension that writes the full session shape, call-count assertions on both `_saveSession` and `_startAccreditationPolling`, dead fake timers removed. Test-harness `mockAuthStore` extended with `_startAccreditationPolling: vi.fn()`. The post-teardown direct-call test now asserts `_startAccreditationPolling not called` alongside `_checkAccreditation not called` (belt-and-suspenders for the self-mounted-guard contract). 41/41 pass in `pages-orcid-callback.test.js`; full frontend unit suite 987 pass.
-
-## Round-3 architect review (2026-04-29) — clean
-
-`/ce-code-review` on commit `1c28b39` (9 personas; adversarial skipped per below-50-line threshold; julik-frontend-races covers the race-condition adversarial axis). Verified all 4 round-2 items landed correctly:
-- Item #1 surgical (`_handleLogin` swapped, `_handleAccredit` at line 347 still uses `_checkAccreditation()` per spec — `_handleAccredit` is the accreditation-success path, not a login path).
-- Item #2 localStorage assertion meaningful (mock writes session shape that mirrors real `_saveSession` six fields).
-- Item #3 call-count assertions present at lines 224 + 229 (login-mode test) and 271 (stale-state test).
-- Item #4 fake timers cleanly removed.
-
-JR-2 / JR-3 closed; JR-5 substantially closed.
-
-**Suppressed P3 advisories (dismissed during round-3 triage; not held):**
-- Mock `_saveSession` field set is a hand-rolled copy of the real implementation's six fields. Identical today; silent divergence risk if real `_saveSession` adds a key (testing T-01 + learnings convergence). Documented in `object-shape-fix-every-reset-site-2026-04-21.md` convention.
-- Redundant assertion pairing `toHaveBeenCalled()` + `toHaveBeenCalledTimes(1)` at `pages-orcid-callback.test.js:223-224` and `:270-271` (maintainability M-001). The first is subsumed by the second; reader confusion. 2-line cleanup, not blocking.
-- Polling generates ~1 request/min to `/api/accreditations/:username` for unaccredited sessions (agent-native AN-1, observation). Backend operators may see step-function increase. Document in deploy notes when canary observability matures.
-
-**Pre-existing in `frontend/src/auth.js` (NOT in this commit's scope; surfaced for visibility):** one spurious fetch at T+60s when the immediate `_checkAccreditation` resolves true before the first interval tick (REL-001); concurrent tabs arm independent polling intervals with no cross-tab dedup (REL-002); no SPA-navigation teardown path for the polling interval (only `beforeunload`); Tab-B storage-event triggers redundant fetch even when `isAccredited=true` was just restored. Worth a `frontend-auth-store-polling-cleanup.md` follow-up if observed in production.
-
-## Files of record
-
-- `frontend/src/pages/orcid-callback.js` — `_handleLogin` swap (line 335), `_handleAccredit` left untouched (line 347).
-- `frontend/src/pages/login.js` — symmetric `_saveSession` 6-arg fix from round-1.
-- `frontend/tests/unit/pages-orcid-callback.test.js` — 41 specs total.
-- `agents/docs/tasks/pending/frontend-orcid-callback-teardown-cleanup.md` — round-2 spinoff for the 500ms setTimeout cleanup.
-- `FE-SAVESESSION-API-MISUSE-SWEEP` — round-1 spinoff for the same `_saveSession(6 args)` pattern at `signup-verify.js` and `settings.js`.
-
----
-
-## BE-PROFILE-PAPER-DISCIPLINE-CANON (archived 2026-04-28) — Round-2 clean ✓
