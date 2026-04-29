@@ -141,7 +141,19 @@ router.post('/resume-signup', resumeLimiter, async (req: Request, res: Response)
       return sendError(res, 400, 'BAD_REQUEST', 'Invalid email or password');
     }
 
-    // Verify password
+    // Verify password.
+    //
+    // Canonical hoist pattern (see BACKEND-PASSWORD-HASH-NULL-TYPING-AUDIT):
+    // `accounts.password_hash` is `string | null` in the schema (ORCID-only
+    // accounts have no password). After the `if (!account.password_hash)`
+    // guard above proves it non-null at this line, TypeScript narrows
+    // `account.password_hash` to `string` in the local scope — but the
+    // narrowing does NOT carry across the async closure boundary inside
+    // `runWithArgon2Slot`. Re-reading `account.password_hash` from the
+    // closure would force a non-null assertion (`!`) or a re-guard. The
+    // closure-local `const passwordHash` pins the narrowed type for the
+    // closure body so neither workaround is needed. Mirror this pattern at
+    // every other `argon2.verify(account.password_hash, ...)` call site.
     const passwordHash = account.password_hash;
     const passwordValid = await runWithArgon2Slot(() => argon2.verify(passwordHash, password), { signal: abortSignal });
     if (!passwordValid) {
@@ -213,7 +225,7 @@ router.post('/confirm', confirmLimiter, async (req: Request, res: Response) => {
     const { rows } = await pool.query<{
       id: number;
       email: string;
-      password_hash: string;
+      password_hash: string | null;
       full_name: string;
       institution: string;
       field: string;
@@ -351,7 +363,7 @@ router.post('/link', linkLimiter, verifyHiveSignature, async (req: Request, res:
     const { rows } = await pool.query<{
       id: number;
       email: string;
-      password_hash: string;
+      password_hash: string | null;
       full_name: string;
       institution: string;
       field: string;

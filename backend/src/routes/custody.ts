@@ -12,6 +12,7 @@ import { decryptKey } from '../custody-crypto.js';
 import { logCustodyBroadcast } from '../custody-audit.js';
 import { logger } from '../logger.js';
 import { runWithArgon2Slot } from '../lib/argon2-semaphore.js';
+import { burnSentinel } from './auth.js';
 import { handleArgonError, ARGON_HANDLED } from '../lib/argon2-error-handler.js';
 import { requestAbortSignal } from '../lib/request-abort-signal.js';
 import { handleBroadcastError } from '../lib/broadcast-error.js';
@@ -188,7 +189,7 @@ router.post('/upgrade', verifyHiveSignature, upgradeLimiter, async (req: Request
 
   try {
     const { rows } = await pool.query<{
-      password_hash: string;
+      password_hash: string | null;
       posting_key_enc: Buffer | null;
       upgraded_at: string | null;
     }>(
@@ -206,8 +207,29 @@ router.post('/upgrade', verifyHiveSignature, upgradeLimiter, async (req: Request
       return sendError(res, 409, 'ALREADY_UPGRADED', 'Account has already been upgraded to self-custody');
     }
 
-    // Verify password re-entry
-    const valid = await runWithArgon2Slot(() => argon2.verify(account.password_hash, password), { signal: abortSignal });
+    // Defense-in-depth null-guard: today the route is gated by JWT +
+    // custody='light', and light-custody accounts always carry a password,
+    // so this branch is unreachable in practice. But the schema permits
+    // password_hash = NULL (ORCID-only accounts) and any future code path
+    // that lands a custody='light' on a null-hash row (admin tool, bulk
+    // migration, future /upgrade variant) would otherwise fire
+    // argon2.verify(null, ...) → synchronous TypeError → 500 in ~0ms,
+    // reopening the wall-time / status-code oracle the burnSentinel work
+    // exists to close. Burn the sentinel to match the wrong-password branch
+    // wall-time and return the same 401 + audit-log entry that branch emits
+    // so internal observers cannot distinguish the null-hash invariant
+    // violation from an ordinary wrong-password attempt. See
+    // BACKEND-PASSWORD-HASH-NULL-TYPING-AUDIT.
+    if (!account.password_hash) {
+      await burnSentinel(password, abortSignal);
+      logCustodyBroadcast(username, 'upgrade_failure').catch(() => {});
+      return sendError(res, 401, 'UNAUTHORIZED', 'Invalid password');
+    }
+
+    // Verify password re-entry. Canonical hoist pattern (signup-verify.ts:145)
+    // — pin the narrowed type for the runWithArgon2Slot closure body.
+    const passwordHash = account.password_hash;
+    const valid = await runWithArgon2Slot(() => argon2.verify(passwordHash, password), { signal: abortSignal });
     if (!valid) {
       logCustodyBroadcast(username, 'upgrade_failure').catch(() => {});
       return sendError(res, 401, 'UNAUTHORIZED', 'Invalid password');
