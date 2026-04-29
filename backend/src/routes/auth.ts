@@ -640,6 +640,14 @@ router.post('/resend-verification', resendLimiter, async (req: Request, res: Res
           port: config.smtpPort,
           secure: config.smtpPort === 465,
           auth: config.smtpUser ? { user: config.smtpUser, pass: config.smtpPass } : undefined,
+          // Bound the request handler's wall-time under partial SMTP failure.
+          // Without these, nodemailer defaults to a 2-minute TCP connect timeout
+          // and unbounded socket reads, so a relay that accepts the handshake
+          // but never responds to EHLO can pin a request thread for minutes
+          // and exhaust the event loop under concurrent load. 5s connect + 10s
+          // socket covers normal relay latency with a safe ceiling.
+          connectionTimeout: 5000,
+          socketTimeout: 10000,
         });
 
         const verifyUrl = `${config.appUrl}/signup/verify?token=${newToken}`;
@@ -653,6 +661,8 @@ router.post('/resend-verification', resendLimiter, async (req: Request, res: Res
         logger.warn({ err, route: 'auth.resend-verification', emailKnown: 'known' }, 'SMTP send failed');
         // Fall through to uniform 200 below.
       }
+    } else {
+      logger.warn({ route: 'auth.resend-verification', emailKnown: 'known' }, 'SMTP not configured — verification email not sent');
     }
 
     sendOk(res, { message: 'If that email has a pending signup, a new verification link has been sent.' });
@@ -898,6 +908,10 @@ router.post('/reset-request', resetRequestLimiter, async (req: Request, res: Res
           port: config.smtpPort,
           secure: config.smtpPort === 465,
           auth: config.smtpUser ? { user: config.smtpUser, pass: config.smtpPass } : undefined,
+          // Bound the request handler's wall-time under partial SMTP failure.
+          // See /resend-verification createTransport for the rationale.
+          connectionTimeout: 5000,
+          socketTimeout: 10000,
         });
 
         const resetUrl = `${config.appUrl}/auth/reset?token=${resetToken}`;

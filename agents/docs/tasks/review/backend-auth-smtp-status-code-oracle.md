@@ -122,3 +122,16 @@ But two reliability items surfaced — one symmetry gap that operators will noti
 ### Re-review signal
 
 When items 1-2 land, `git mv` this file back to `tasks/review/`. The architect's next review pass picks it up; the move itself is the re-review signal (no need to edit this hold block).
+
+## Backend re-review signal (2026-04-29, working tree)
+
+Both round-1 hold items landed at `backend/src/routes/auth.ts`:
+
+1. **(P2) Symmetric `else { logger.warn(...) }` on `/resend-verification`.** Added the missing else-branch after the `if (config.smtpHost)` block on the `/resend-verification` known-email path so an operator running with SMTP unconfigured gets the same `'SMTP not configured — verification email not sent'` warn that `/reset-request` emits. Structured fields match (`route: 'auth.resend-verification', emailKnown: 'known'`) so a single grep/dashboard catches both routes' SMTP-misconfigured events.
+
+2. **(P3) `connectionTimeout` + `socketTimeout` on `nodemailer.createTransport`.** Added `connectionTimeout: 5000, socketTimeout: 10000` to both `createTransport` option objects on `/resend-verification` and `/reset-request`. Bounds the request handler's wall-time under partial SMTP failure (relay accepts handshake, never responds to EHLO) — without these, nodemailer's 2-minute TCP-connect default + unbounded socket reads can pin a request thread for minutes and exhaust the event loop under concurrent load. Inline comment on the `/resend-verification` site documents the rationale; `/reset-request` cross-references it.
+
+Verification:
+- `npm run lint` — clean (only pre-existing accepted `@typescript-eslint/no-explicit-any` warnings in `seed-phrase.ts`).
+- `npx tsc --noEmit` — clean.
+- `npx vitest run tests/routes/recover.test.ts tests/routes/auth-reset-request-shutdown.test.ts` — 2 files / 33 tests passed against real Postgres + Redis.
