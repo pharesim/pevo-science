@@ -21,7 +21,17 @@ type FeModule = {
 };
 
 async function loadFeHelper(): Promise<FeModule> {
-  return (await import(pathToFileURL(FE_HELPER_PATH).href)) as FeModule;
+  // Dynamic-import-from-string-URL bypasses TS resolution, so the result is
+  // structurally `any`. A runtime shape guard converts a renamed/missing
+  // export into a clear "unexpected shape" error here, instead of cryptic
+  // `undefined !== boolean` failures inside each per-vector assertion below.
+  const fe = (await import(pathToFileURL(FE_HELPER_PATH).href)) as Record<string, unknown>;
+  if (typeof fe.isPasswordValid !== 'function' || typeof fe.MIN_PASSWORD_LENGTH !== 'number') {
+    throw new Error(
+      `FE helper at ${FE_HELPER_PATH} has unexpected shape: missing isPasswordValid or MIN_PASSWORD_LENGTH`,
+    );
+  }
+  return fe as unknown as FeModule;
 }
 
 // Shared test-vector grid — every case is labelled so a mismatch names the
@@ -41,6 +51,22 @@ const VECTORS: ReadonlyArray<readonly [label: string, input: unknown, expected: 
   ['object input', {}, false],
   ['array input', [], false],
   ['boolean input', true, false],
+  // Mutation-kill vectors for `String()` coercion drift: a backend mutation
+  // that adds `pw = String(pw)` ahead of the typeof guard would render an
+  // input whose default `String()` rendering already passes every class
+  // check, silently shipping a coerced-acceptance regression. Both helpers
+  // MUST reject the input regardless of what its `toString` returns; if one
+  // helper coerces and the other type-checks, the disagreement surfaces here.
+  [
+    'object with toString returning a string that satisfies every class',
+    { toString: () => 'Abcdef1234' },
+    false,
+  ],
+  [
+    'object with valueOf returning a string that satisfies every class',
+    { valueOf: () => 'Abcdef1234' },
+    false,
+  ],
 ];
 
 describe('password-policy drift-check (BE ↔ FE)', () => {

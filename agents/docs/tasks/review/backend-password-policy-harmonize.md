@@ -87,3 +87,16 @@ But two items below tighten the drift gate's mutation-coverage and import-shape 
 ### Re-review signal
 
 When items 1-2 land, `git mv` this file back to `tasks/review/`. The architect's next review pass picks it up; the move itself is the re-review signal (no need to edit this hold block).
+
+## Backend re-review signal (2026-04-29, working tree)
+
+Both round-1 hold items landed at `backend/tests/lib/password-policy-drift.test.ts`:
+
+1. **(P3) Type-coercion mutation-kill vectors.** Added two new vectors that survive a hypothetical `String()` coercion mutation. An object with `toString: () => 'Abcdef1234'` and an object with `valueOf: () => 'Abcdef1234'` both render to a string that satisfies every class check after coercion — so a backend mutation that did `pw = String(pw)` ahead of the typeof guard would still flag this input as valid, but the type-checking implementation rejects it. Both helpers MUST reject regardless of `toString` / `valueOf` output; if one helper coerces and the other type-checks, the disagreement-accumulator surfaces the exact disagreeing label.
+
+2. **(P3) Runtime shape guard on the dynamic FE-helper import.** `loadFeHelper()` now imports the FE helper as `Record<string, unknown>` and asserts `typeof fe.isPasswordValid === 'function' && typeof fe.MIN_PASSWORD_LENGTH === 'number'` before casting to `FeModule`. A renamed/missing FE export now throws `FE helper at <path> has unexpected shape: missing isPasswordValid or MIN_PASSWORD_LENGTH` instead of producing cryptic `undefined !== boolean` failures inside each per-vector assertion downstream.
+
+Verification:
+- `npm run lint` — clean (only pre-existing accepted `@typescript-eslint/no-explicit-any` warnings in `seed-phrase.ts`).
+- `npx tsc --noEmit` — clean (src/ scope; tests/ is excluded from tsconfig but vitest runs the file as TS).
+- `npx vitest run tests/lib/password-policy-drift.test.ts` — 1 file / 2 tests pass. Both new toString/valueOf vectors flow through the disagreement accumulator without flagging — BE and FE both reject as expected.
