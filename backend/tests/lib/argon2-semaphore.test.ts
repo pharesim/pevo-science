@@ -23,7 +23,7 @@
 //        and 3rd to queue. Confirms the MAX_QUEUE_DEPTH bound is enforced
 //        BEFORE push to `waiters`.
 
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   createArgon2Semaphore,
   ArgonQueueFullError,
@@ -679,19 +679,24 @@ describe('abort counter — operator observability', () => {
     await pA;
   });
 
-  it('increments on the slot-grant race-guard abort path', async () => {
-    // Race window: slot is granted (waiter resolved) BEFORE the abort
-    // listener fires; the second `signal?.aborted` check at slot-grant
-    // catches it, releases the slot to the next waiter, and increments
-    // the counter. Reproduce by manually ordering the events: queue B
-    // behind A, fire A's resolve so B's resolver runs first, then abort
-    // B before B's microtask continues past the slot-grant check.
+  it('increments exactly once when both the slot-grant race-guard AND the parked-waiter onAbort fire for the same abort event', async () => {
+    // Slot-grant race window. Sequence of microtasks:
+    //   M1: A's await resumes; A's finally runs `next.resolve()` (resolving
+    //       B's parked promise) and schedules B's continuation (M3).
+    //   M2: queueMicrotask(abort) fires. onAbort runs:
+    //       waiters.indexOf(waiter) returns -1 (already shifted by A's
+    //       finally), so splice is no-op; `reject` on B's already-resolved
+    //       parked promise is no-op; `incrementAbortOnce()` runs.
+    //   M3: B's await returns (resolved). Slot-grant check fires
+    //       (signal.aborted is now true). `incrementAbortOnce()` is a no-op
+    //       on the second call due to the per-request dedupe flag.
     //
-    // Easiest deterministic reproduction: pre-resolve B's slot via A
-    // finishing, and have B's abort signal be set to abort synchronously
-    // in the same microtask batch via `queueMicrotask`. The semaphore
-    // itself awaits the parked Promise — once resolved, the next line
-    // is the slot-grant abort check.
+    // The contract is "one logical abort event = one counter increment."
+    // A regression that drops the flag (reverts to bare `abortCount += 1`
+    // at either site) would produce +2 here and fail the assertion. The
+    // microtask scheduling above is deterministic in V8: `a.resolve(1)`
+    // queues M1 first, `queueMicrotask` queues M2 second, and M1's
+    // `next.resolve` queues M3 from inside M1 (so M3 runs after M2).
     const sem = createArgon2Semaphore(1, 10);
     const beforeCount = sem.getArgon2AbortCount();
 
@@ -706,16 +711,175 @@ describe('abort counter — operator observability', () => {
     await new Promise((r) => setImmediate(r));
     expect(sem.getArgon2QueueDepth()).toBe(1);
 
-    // Resolve A (which will resolve B's parked promise via the finally
-    // shift), then immediately call abort. Whether the parked-waiter path
-    // or the slot-grant race-guard path wins is racy, but BOTH increment
-    // the counter — the assertion only cares that we get exactly +1.
     a.resolve(1);
-    bAbort.abort();
+    queueMicrotask(() => bAbort.abort());
     await pA;
+    await new Promise((r) => setImmediate(r));
     expect(await pB).toBeInstanceOf(ArgonAbortError);
 
     expect(sem.getArgon2AbortCount()).toBe(beforeCount + 1);
+  });
+});
+
+describe('periodic abort-summary reporter', () => {
+  // Each test resets the module cache so it gets a fresh process-wide
+  // singleton (abortCount=0, lastReportedCount=0) and a fresh interval
+  // timer state. Without this, the reporter's module-private
+  // `abortLastReportedCount` would carry across tests and the delta
+  // assertions would depend on prior-test ordering.
+  //
+  // The reporter is gated start/stop (not auto-started at module import).
+  // Tests install vi.useFakeTimers(), start the reporter, advance past
+  // the 60s interval, and assert on a logger.info spy. Bumps to the
+  // singleton's abort counter use the freshly-imported `runWithArgon2Slot`
+  // with an already-aborted signal — the only production path that
+  // increments without consuming a slot or queueing.
+  const ABORT_REPORT_INTERVAL_MS = 60_000;
+
+  type SemaphoreModule = typeof import('../../src/lib/argon2-semaphore.js');
+  type LoggerModule = typeof import('../../src/logger.js');
+
+  async function makeFresh(): Promise<{ sem: SemaphoreModule; log: LoggerModule }> {
+    const sem = await import('../../src/lib/argon2-semaphore.js');
+    const log = await import('../../src/logger.js');
+    return { sem, log };
+  }
+
+  async function bumpAbortCount(
+    runWithArgon2Slot: SemaphoreModule['runWithArgon2Slot'],
+    times: number,
+  ): Promise<void> {
+    for (let i = 0; i < times; i++) {
+      const ac = new AbortController();
+      ac.abort();
+      await runWithArgon2Slot(() => Promise.resolve('nope'), { signal: ac.signal }).catch(() => {
+        // Expected ArgonAbortError; swallow so the loop continues.
+      });
+    }
+  }
+
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  it('emits no log when the delta is zero (quiet interval)', async () => {
+    const { sem, log } = await makeFresh();
+    vi.useFakeTimers();
+    const infoSpy = vi.spyOn(log.logger, 'info').mockImplementation(() => undefined as never);
+    try {
+      sem.startArgon2AbortReporter();
+      vi.advanceTimersByTime(ABORT_REPORT_INTERVAL_MS);
+      expect(infoSpy).not.toHaveBeenCalled();
+    } finally {
+      sem.stopArgon2AbortReporter();
+      vi.useRealTimers();
+      infoSpy.mockRestore();
+    }
+  });
+
+  it('emits one structured log line per non-zero interval with event=argon2_abort_summary and count=delta', async () => {
+    const { sem, log } = await makeFresh();
+    // Bump under real timers — fake timers interfere with await microtasks.
+    await bumpAbortCount(sem.runWithArgon2Slot, 3);
+    expect(sem.getArgon2AbortCount()).toBe(3);
+
+    vi.useFakeTimers();
+    const infoSpy = vi.spyOn(log.logger, 'info').mockImplementation(() => undefined as never);
+    try {
+      sem.startArgon2AbortReporter();
+      vi.advanceTimersByTime(ABORT_REPORT_INTERVAL_MS);
+      expect(infoSpy).toHaveBeenCalledTimes(1);
+      const [ctx, msg] = infoSpy.mock.calls[0];
+      expect(ctx).toMatchObject({
+        event: 'argon2_abort_summary',
+        count: 3,
+      });
+      expect(msg).toBe('argon2 abort events in the last interval');
+    } finally {
+      sem.stopArgon2AbortReporter();
+      vi.useRealTimers();
+      infoSpy.mockRestore();
+    }
+  });
+
+  it('subsequent intervals report only the new delta, not the cumulative count', async () => {
+    const { sem, log } = await makeFresh();
+    await bumpAbortCount(sem.runWithArgon2Slot, 2);
+
+    vi.useFakeTimers();
+    const infoSpy = vi.spyOn(log.logger, 'info').mockImplementation(() => undefined as never);
+    try {
+      sem.startArgon2AbortReporter();
+      vi.advanceTimersByTime(ABORT_REPORT_INTERVAL_MS);
+      expect((infoSpy.mock.calls[0]?.[0] as { count: number }).count).toBe(2);
+
+      // Stop reporter, swap to real timers to bump, then resume fake timers
+      // and re-arm. A regression that didn't update `abortLastReportedCount`
+      // would emit count=7 (cumulative) on the second interval instead of 5.
+      sem.stopArgon2AbortReporter();
+      vi.useRealTimers();
+      await bumpAbortCount(sem.runWithArgon2Slot, 5);
+      vi.useFakeTimers();
+      sem.startArgon2AbortReporter();
+      vi.advanceTimersByTime(ABORT_REPORT_INTERVAL_MS);
+
+      expect(infoSpy).toHaveBeenCalledTimes(2);
+      expect((infoSpy.mock.calls[1]?.[0] as { count: number }).count).toBe(5);
+    } finally {
+      sem.stopArgon2AbortReporter();
+      vi.useRealTimers();
+      infoSpy.mockRestore();
+    }
+  });
+
+  it('startArgon2AbortReporter is idempotent (calling twice does not double-arm the timer)', async () => {
+    const { sem, log } = await makeFresh();
+    await bumpAbortCount(sem.runWithArgon2Slot, 1);
+
+    vi.useFakeTimers();
+    const infoSpy = vi.spyOn(log.logger, 'info').mockImplementation(() => undefined as never);
+    try {
+      sem.startArgon2AbortReporter();
+      sem.startArgon2AbortReporter();
+      vi.advanceTimersByTime(ABORT_REPORT_INTERVAL_MS);
+      // A regression that armed two setIntervals would produce two log
+      // lines here (or a series of repeated emits if the second timer
+      // ran on its own schedule).
+      expect(infoSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      sem.stopArgon2AbortReporter();
+      vi.useRealTimers();
+      infoSpy.mockRestore();
+    }
+  });
+
+  it('stopArgon2AbortReporter is idempotent and a stopped reporter emits no further lines', async () => {
+    const { sem, log } = await makeFresh();
+    await bumpAbortCount(sem.runWithArgon2Slot, 1);
+
+    vi.useFakeTimers();
+    const infoSpy = vi.spyOn(log.logger, 'info').mockImplementation(() => undefined as never);
+    try {
+      sem.startArgon2AbortReporter();
+      vi.advanceTimersByTime(ABORT_REPORT_INTERVAL_MS);
+      expect(infoSpy).toHaveBeenCalledTimes(1);
+
+      sem.stopArgon2AbortReporter();
+      sem.stopArgon2AbortReporter();
+
+      // Bump under real timers, then advance fake time by 3× the interval;
+      // a stopped reporter must NOT emit. Without the stop, this would
+      // produce additional log lines.
+      vi.useRealTimers();
+      await bumpAbortCount(sem.runWithArgon2Slot, 2);
+      vi.useFakeTimers();
+      vi.advanceTimersByTime(ABORT_REPORT_INTERVAL_MS * 3);
+      expect(infoSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      sem.stopArgon2AbortReporter();
+      vi.useRealTimers();
+      infoSpy.mockRestore();
+    }
   });
 });
 

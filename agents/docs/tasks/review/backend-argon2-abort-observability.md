@@ -160,3 +160,35 @@ Fix: gate the second increment with a per-request boolean (e.g., `abortAlreadyCo
 ### Re-review signal
 
 When items 1-2 land, `git mv` this file back to `tasks/review/`. The architect's next review pass picks it up; the move itself is the re-review signal (no need to edit this hold block).
+
+---
+
+## Backend re-review signal (2026-04-29, working tree)
+
+Both round-1 hold-block items addressed.
+
+**Item 1 (P2) — reporter unit tests with fake timers + logger spy**
+
+Added 5 tests under `describe('periodic abort-summary reporter')` in `tests/lib/argon2-semaphore.test.ts`. Each test uses `vi.resetModules()` + dynamic import per `beforeEach` so the reporter's module-private `abortLastReportedCount` and the singleton's `abortCount` start at 0 — tests are independent of execution order. Coverage:
+
+- **delta-zero → no emit**: starts the reporter without bumping; advances 60s; asserts `infoSpy` not called.
+- **delta-positive → one structured emit**: bumps singleton by 3 (via `runWithArgon2Slot` with already-aborted signal); advances 60s; asserts exactly one `logger.info` call with `{ event: 'argon2_abort_summary', count: 3 }` and the literal message `'argon2 abort events in the last interval'`.
+- **`abortLastReportedCount` delta tracking**: bumps 2, advances, asserts count=2; stops reporter, bumps 5 more under real timers, restarts, advances, asserts second call has count=5 (NOT 7 cumulative).
+- **`startArgon2AbortReporter` idempotent**: calls start twice, advances, asserts exactly one emit.
+- **`stopArgon2AbortReporter` idempotent + stopped reporter doesn't emit**: emits once, calls stop twice, bumps under real timers, advances 3× interval, asserts still exactly one emit.
+
+The bump-under-real-timers / re-arm-under-fake-timers pattern is required because awaits don't progress under `vi.useFakeTimers()`.
+
+**Item 2 (P3) — slot-grant race-guard double-increment fix**
+
+Added per-request closure-local flag `abortAlreadyCounted` and `incrementAbortOnce()` helper inside `runWithArgon2Slot`. All three abort paths (pre-queue fast-path, parked-waiter `onAbort`, slot-grant race-guard) call `incrementAbortOnce()` instead of bare `abortCount += 1`. The flag is closed over per-call, so distinct requests don't share state.
+
+Also tightened the existing slot-grant race test (`'increments exactly once when both the slot-grant race-guard AND the parked-waiter onAbort fire for the same abort event'`) to deterministically trigger BOTH paths via `queueMicrotask(() => bAbort.abort())` after `a.resolve(1)`. The microtask ordering is V8-deterministic: A's `await fn()` continuation (M1) runs first, A's finally schedules B's continuation (M3); the queueMicrotask abort (M2) fires next, runs B's `onAbort` listener; M3 runs B's slot-grant check. Without the dedupe flag, the assertion would fail with `+2`. With the fix, `+1` is asserted unconditionally.
+
+Updated the `abortCount` declaration comment in `argon2-semaphore.ts` to explain the dedupe contract: "incremented exactly ONCE per logical abort event via the per-request `incrementAbortOnce` closure."
+
+### Verification
+
+- `npx tsc --noEmit`: clean.
+- `npm run lint`: clean (only pre-existing seed-phrase.ts warnings).
+- `npx vitest run tests/lib/argon2-semaphore.test.ts`: 26 passed (26).

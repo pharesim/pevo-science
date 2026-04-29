@@ -219,9 +219,13 @@ export function createArgon2Semaphore(
   }
   let inFlight = 0;
   let queueDepth = 0;
-  // Monotonic abort counter, incremented on every ArgonAbortError throw
-  // path. Consumed by the periodic summary reporter (delta-based), not
-  // reset by readers — see `startArgon2AbortReporter` for the reason.
+  // Monotonic abort counter. Incremented exactly ONCE per logical abort
+  // event via the per-request `incrementAbortOnce` closure inside
+  // `runWithArgon2Slot` (the parked-waiter `onAbort` path and the
+  // slot-grant race-guard path can both fire for the same abort; the
+  // closure-local flag dedupes them). Consumed by the periodic summary
+  // reporter (delta-based), not reset by readers — see
+  // `startArgon2AbortReporter` for the reason.
   let abortCount = 0;
   // Each waiter carries both resolve and reject handlers so `drainArgon2Queue`
   // can synchronously unblock every pending caller with `ShuttingDownError`
@@ -265,12 +269,25 @@ export function createArgon2Semaphore(
     },
     async runWithArgon2Slot<T>(fn: () => Promise<T>, options?: RunWithArgon2SlotOptions): Promise<T> {
       const signal = options?.signal;
+      // Per-request guard against double-counting on the slot-grant race
+      // window: A's finally shifts B out of waiters and resolves B's
+      // parked promise; abort then fires synchronously, runs `onAbort`
+      // (which increments), and B's await resumes onto the slot-grant
+      // `if (signal?.aborted)` branch (which would also increment). The
+      // contract is "one abort = one counter increment"; this flag makes
+      // it idempotent. Closure-local to each `runWithArgon2Slot` call.
+      let abortAlreadyCounted = false;
+      const incrementAbortOnce = (): void => {
+        if (abortAlreadyCounted) return;
+        abortAlreadyCounted = true;
+        abortCount += 1;
+      };
       // Pre-queue abort fast-path: caller handed us an already-aborted
       // signal, so there is no point even considering a slot. Throw before
       // touching counters / queue state. This keeps the happy path branch-
       // equal to the pre-abort world (no `signal` touched when undefined).
       if (signal?.aborted) {
-        abortCount += 1;
+        incrementAbortOnce();
         throw new ArgonAbortError();
       }
       if (shuttingDown) {
@@ -302,7 +319,7 @@ export function createArgon2Semaphore(
                 // next live waiter instead.
                 const i = waiters.indexOf(waiter);
                 if (i >= 0) waiters.splice(i, 1);
-                abortCount += 1;
+                incrementAbortOnce();
                 reject(new ArgonAbortError());
               };
               // No `{ once: true }` here: the explicit `removeEventListener`
@@ -324,10 +341,14 @@ export function createArgon2Semaphore(
       // resolved by a slot-release BEFORE its abort listener fired (race
       // between the in-flight op's finally and the abort event). If so,
       // skip fn() and release the slot back to the next waiter.
+      // `incrementAbortOnce` dedupes against the parked-waiter `onAbort`
+      // path, which can fire for the SAME logical abort event when the
+      // in-flight op's finally already shifted this waiter out of the
+      // queue before the abort listener ran.
       if (signal?.aborted) {
         const next = waiters.shift();
         if (next) next.resolve();
-        abortCount += 1;
+        incrementAbortOnce();
         throw new ArgonAbortError();
       }
       inFlight += 1;
