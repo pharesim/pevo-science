@@ -94,6 +94,8 @@ const {
   ShuttingDownError,
   ArgonAbortError,
 } = await import('../../src/lib/argon2-semaphore.js');
+const { RESET_REQUEST_OK_MESSAGE } = await import('../../src/routes/auth.js');
+const { logger } = await import('../../src/logger.js');
 
 const app = createApp();
 
@@ -109,6 +111,18 @@ describe('POST /api/auth/reset-request — drain-window enumeration fix', () => 
     mockRunWithArgon2Slot.mockReset();
     mockRunWithArgon2Slot.mockRejectedValueOnce(new ShuttingDownError());
 
+    // Spy on logger.debug to pin the operator-visibility invariant: the
+    // suppression branch is otherwise silent (no status-code differential is
+    // the entire point of the fix), so the structured log is the SOLE signal
+    // that the suppression fired during a drain window. A mutation that
+    // deletes the log call, renames the `event` discriminator, drops the
+    // `email_hash` field (CNPD-relevant), or changes the level would pass
+    // every other assertion in this test. Pinning the call shape here is
+    // what makes the operator-visibility fix mutation-resistant.
+    const debugSpy = vi
+      .spyOn(logger, 'debug')
+      .mockImplementation(() => undefined as unknown as void);
+
     const res = await request(app)
       .post('/api/auth/reset-request')
       .send({ email: 'unknown-during-drain@mit.edu' });
@@ -119,7 +133,17 @@ describe('POST /api/auth/reset-request — drain-window enumeration fix', () => 
     // known-email branch returned 200 — the enumeration oracle this fix
     // closes.
     expect(res.status).not.toBe(503);
-    expect(res.body.data?.message).toBe('If an account exists with that email, a reset link has been sent.');
+    expect(res.body.data?.message).toBe(RESET_REQUEST_OK_MESSAGE);
+
+    expect(debugSpy).toHaveBeenCalledTimes(1);
+    expect(debugSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'reset_request_drain_suppression',
+        email_hash: expect.any(String),
+      }),
+      expect.stringContaining('drain window'),
+    );
+    debugSpy.mockRestore();
   });
 
   it('known-email returns 200 during shutdown (sanity check; the known branch never touches argon2)', async () => {
@@ -144,7 +168,7 @@ describe('POST /api/auth/reset-request — drain-window enumeration fix', () => 
       .send({ email: 'known-during-drain@mit.edu' });
 
     expect(res.status).toBe(200);
-    expect(res.body.data?.message).toBe('If an account exists with that email, a reset link has been sent.');
+    expect(res.body.data?.message).toBe(RESET_REQUEST_OK_MESSAGE);
   });
 
   it('unknown-email still returns 503 when the semaphore is queue-full (drain fix is ShuttingDownError-only)', async () => {

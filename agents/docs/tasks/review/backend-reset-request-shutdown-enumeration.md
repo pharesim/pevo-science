@@ -207,3 +207,17 @@ But three round-2 hold items surfaced — one P2 testing gap (mutation-kill on t
 ### Re-review signal
 
 When items 1-3 land, `git mv` this file back to `tasks/review/`. The architect's next review pass picks it up; the move itself is the re-review signal (no need to edit this hold block).
+
+## Backend re-review signal (2026-04-29, working tree)
+
+All three round-2 hold items landed:
+
+1. **(P2) `logger.debug` drain-suppression emission now mutation-resistant.** Added `vi.spyOn(logger, 'debug').mockImplementation(...)` inside the existing 'unknown-email returns 200 during shutdown' test in `backend/tests/routes/auth-reset-request-shutdown.test.ts`. The spy pins the call shape: `toHaveBeenCalledTimes(1)` with `expect.objectContaining({ event: 'reset_request_drain_suppression', email_hash: expect.any(String) })` and a message `expect.stringContaining('drain window')`. Mutations that delete the log call, rename the `event` discriminator, drop the `email_hash` field, or change the level all fail this assertion. Mirrors the spy pattern from `tests/lib/argon2-error-handler.test.ts`. `mockRestore()` at end-of-test isolates the spy from siblings.
+
+2. **(P3) Tests now import `RESET_REQUEST_OK_MESSAGE` from `auth.ts`.** Promoted the module constant from `const` to `export const` at `backend/src/routes/auth.ts:111`. Test file imports it via `await import('../../src/routes/auth.js')` (mirroring the existing dynamic-import shape used for `argon2-semaphore.js` and `app.js` in the file's hoist-aware preamble — a static `import` would race the `vi.mock` factories). Both 200-returning assertions (unknown-during-drain and known-during-drain) now reference the constant; literal-byte drift between the two production branches and either test is now mechanically prevented.
+
+3. **(P3) Catch comment cross-references the SMTP-failure-axis sibling doc.** Extended the comment block at `backend/src/routes/auth.ts:872-877` with a one-line `// See also agents/docs/solutions/conventions/timing-equalization-smtp-failure-mode-oracle-2026-04-22.md for the SMTP-failure-axis sibling on the same handler.` cross-link. A reader arriving from an SMTP-axis investigation now finds the local cross-reference; mirrors the doc-citation pattern at the SMTP-failure catch around `auth.ts:912`.
+
+Verification:
+- `npm run lint` — clean (only pre-existing accepted `@typescript-eslint/no-explicit-any` warnings on `seed-phrase.ts`).
+- `npx vitest run tests/routes/auth-reset-request-shutdown.test.ts` — 4/4 tests pass (drain unknown→200, drain known→200, queue-full→503, abort→silent), including the new logger-spy assertion.

@@ -108,7 +108,7 @@ const MAX_LOGIN_FAILURES = 20;
 // one site cannot silently re-open the email-enumeration oracle by drifting
 // the two branches apart. Both the unknown-email burn-then-200 path and the
 // known-email DB-update-then-200 path must use this constant.
-const RESET_REQUEST_OK_MESSAGE = 'If an account exists with that email, a reset link has been sent.';
+export const RESET_REQUEST_OK_MESSAGE = 'If an account exists with that email, a reset link has been sent.';
 
 // Sentinel argon2id hash for timing-equalization at every "cheap" early-return
 // that would otherwise distinguish a known-account branch from an unknown one
@@ -870,7 +870,10 @@ router.post('/reset-request', resetRequestLimiter, async (req: Request, res: Res
       // the outer catch via `handleArgonError` so saturation still surfaces as
       // 503 and client-disconnect still short-circuits silently. See
       // `agents/docs/solutions/conventions/timing-equalization-sub-branch-oracles-2026-04-21.md`
-      // for the broader sub-branch oracle pattern this catch is part of.
+      // for the broader sub-branch oracle pattern this catch is part of. See
+      // also
+      // `agents/docs/solutions/conventions/timing-equalization-smtp-failure-mode-oracle-2026-04-22.md`
+      // for the SMTP-failure-axis sibling on the same handler.
       try {
         await burnSentinel(normalizedEmail, abortSignal);
       } catch (err) {
