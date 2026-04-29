@@ -381,8 +381,17 @@ describe('handleBroadcastError', () => {
       expect.objectContaining({ run: 'msgfn-throws', err, txId: 'hive-tx-msgfn-throws', failedStep: 'account_update' }),
       'orcid.handleAccredit broadcast confirmed but post-broadcast write failed',
     );
+    // Round-3 hold #3: pin the structured `event` field literal so the
+    // operator-dashboard contract is load-bearing (a regression dropping or
+    // renaming the event slips through a message-text assertion).
     expect(warnSpy).toHaveBeenCalledWith(
-      expect.objectContaining({ err: innerErr, txId: 'hive-tx-msgfn-throws', failedStep: 'account_update', run: 'msgfn-throws' }),
+      expect.objectContaining({
+        err: innerErr,
+        txId: 'hive-tx-msgfn-throws',
+        failedStep: 'account_update',
+        event: 'post_broadcast_msg_fn_threw',
+        run: 'msgfn-throws',
+      }),
       'orcid.handleAccredit postBroadcastMsgFn threw — using generic fallback',
     );
   });

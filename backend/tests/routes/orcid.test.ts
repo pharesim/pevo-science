@@ -134,6 +134,7 @@ vi.mock('../../src/middleware/verifyHiveSignature.js', async () => {
 import { createApp } from '../../src/app.js';
 import { config } from '../../src/config.js';
 import { getRedis } from '../../src/redis.js';
+import * as redisModule from '../../src/redis.js';
 import { logger } from '../../src/logger.js';
 import { clearRateLimitKeys } from '../support/redis-helpers.js';
 // Test-only exports — see notes at orcid.ts __test_releaseBindingLock /
@@ -1641,6 +1642,13 @@ describe.each([
       installLockModeMocks();
       broadcastJsonMock.mockRejectedValueOnce(new MockBroadcastTimeoutError(30_000));
 
+      // Round-2 hold #2: pin the success-path structured event literal
+      // `a1_extend_ok` so the operator-dashboard contract is load-bearing.
+      // Spying at warn level is sufficient — `a1_extend_ok` is the only A.1
+      // helper success branch that emits at warn (lock-missing emits error;
+      // throw emits error; redis-absent emits error).
+      const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as unknown as void);
+
       try {
         const state = await startAuthed(mode, 'alice');
         const res = await request(app)
@@ -1652,6 +1660,18 @@ describe.each([
         // change orthogonal to the user-facing 504 shape.
         expect(res.status).toBe(504);
         expect(res.body.error.code).toBe('BROADCAST_TIMEOUT');
+
+        // Structured success-path event fired with the documented payload.
+        // A regression that drops or renames `a1_extend_ok` slips a substring
+        // assertion but not this one.
+        expect(warnSpy).toHaveBeenCalledWith(
+          expect.objectContaining({
+            event: 'a1_extend_ok',
+            orcidId,
+            newTtl: 120,
+          }),
+          expect.stringContaining('binding lock TTL extended on BroadcastTimeoutError'),
+        );
 
         // Lock present with extended TTL. Range bound (>=100, <=120) absorbs
         // any test-scheduling slack between the `redis.expire` call inside
@@ -1708,6 +1728,7 @@ describe.each([
         // never succeeded, so the original-holder nonce is still stored).
         expect(await redis.get(lockKey)).toBe(lockValue);
       } finally {
+        warnSpy.mockRestore();
         await redis.del(lockKey, cacheKey).catch(() => { /* cleanup */ });
       }
     },
@@ -1797,20 +1818,31 @@ describe.each([
     },
   );
 
-  // BACKEND-ORCID-LOCK-TTL-EXTEND-ON-TIMEOUT round-1 hold #7.
-  // The A.1 ordering invariant — `extendBindingLockOnTimeoutOrLog` MUST run
-  // BEFORE `handleBroadcastError` writes the 504 response — is documented in
-  // the comment block at handleAccredit's BroadcastTimeoutError catch but
+  // BACKEND-ORCID-LOCK-TTL-EXTEND-ON-TIMEOUT round-2 hold #1 (round-1 hold #7).
+  // The A.1 ordering invariant — `redis.expire` MUST run BEFORE
+  // `handleBroadcastError` writes the 504 response — is documented in the
+  // comment block at handleAccredit's BroadcastTimeoutError catch but
   // unverified by tests at the response-write level (supertest can't simulate
   // mid-write disconnect). A line-swap mutation that calls handleBroadcastError
   // first would: (a) emit the 504 before the lock-extend completes, (b) leave
   // a brief window where a malicious caller dropping the connection mid-write
-  // could escape fn before the extend lands. We pin the invariant via vi's
-  // `mock.invocationCallOrder` — every vi.spyOn invocation is assigned a
-  // global incrementing call number, comparable across mock objects. A
-  // regression that reorders the calls would surface here.
+  // could escape fn before the extend lands.
+  //
+  // Round-2 refactor: pin the invariant against the actual side-effect
+  // (`redis.expire` invocation) rather than the helper's invocation. Earlier
+  // shape compared `__test_seams.extendBindingLockOnTimeoutOrLog`'s
+  // invocationCallOrder against the broadcast-timed-out warn — that pinned
+  // helper-extraction structure but not the side-effect contract. The new
+  // shape pins the contract: `redis.expire` IS the lock-state mutation A.1
+  // promises, so its invocation order vs the response-write warn is the
+  // load-bearing assertion. Survives a future inlining of the helper without
+  // adjustment, which is the right structural property — the test follows
+  // the contract, not the implementation. Helper-was-called assertion
+  // retained as a behavioral guard against a regression that drops the
+  // helper invocation entirely (path that would also drop redis.expire and
+  // be caught by the new spy, but kept explicit for clarity).
   it(
-    'extendBindingLockOnTimeoutOrLog runs BEFORE handleBroadcastError writes the response (A.1 ordering invariant)',
+    'redis.expire runs BEFORE handleBroadcastError writes the response (A.1 ordering invariant)',
     async () => {
       const redis = getRedis();
       if (!redis) return;
@@ -1824,10 +1856,11 @@ describe.each([
       broadcastJsonMock.mockRejectedValueOnce(new MockBroadcastTimeoutError(30_000));
 
       const extendSpy = vi.spyOn(__test_seams, 'extendBindingLockOnTimeoutOrLog');
+      const expireSpy = vi.spyOn(redis, 'expire');
       // logger.warn fires inside handleBroadcastError on the BroadcastTimeoutError
       // branch (`<routeLabel> broadcast timed out`) — that call is the proxy
       // for "response is about to be written". A regression that runs
-      // handleBroadcastError before the helper would order this warn earlier.
+      // handleBroadcastError before redis.expire would order this warn earlier.
       const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as unknown as void);
 
       try {
@@ -1840,9 +1873,18 @@ describe.each([
         expect(res.status).toBe(504);
         expect(res.body.error.code).toBe('BROADCAST_TIMEOUT');
 
-        // Helper was called.
+        // Behavioral guard: the helper IS being called (a regression that
+        // bypasses it entirely — e.g. inlines a naked `redis.expire` AFTER
+        // handleBroadcastError — would still fire redis.expire but in the
+        // wrong order; we want both signals).
         expect(extendSpy).toHaveBeenCalledTimes(1);
-        const extendOrder = extendSpy.mock.invocationCallOrder[0];
+
+        // redis.expire fired against the lock key with the documented TTL.
+        // Call-shape assertion (not just `.toHaveBeenCalledTimes(1)`) so a
+        // regression that swaps argument order or drifts the TTL surfaces
+        // here too.
+        expect(expireSpy).toHaveBeenCalledWith(lockKey, 120);
+        const expireOrder = expireSpy.mock.invocationCallOrder[0];
 
         // Find the specific warn call from handleBroadcastError. Other warn
         // calls happen too (the helper's own success-warn at `a1_extend_ok`,
@@ -1853,15 +1895,18 @@ describe.each([
           .map((c) => c.order);
         expect(handlerWarnOrders.length).toBeGreaterThanOrEqual(1);
 
-        // Critical: the helper's invocation order is BEFORE the broadcast-
-        // timed-out warn (which is the first observable side effect inside
-        // handleBroadcastError, ahead of `sendError`). A line-swap regression
-        // would invert this.
+        // Critical: redis.expire's invocation order is BEFORE the
+        // broadcast-timed-out warn (which is the first observable side
+        // effect inside handleBroadcastError, ahead of `sendError`). A
+        // line-swap regression that calls handleBroadcastError before the
+        // helper, OR an inlining regression that puts the response-write
+        // before redis.expire, both invert this ordering.
         for (const handlerOrder of handlerWarnOrders) {
-          expect(extendOrder).toBeLessThan(handlerOrder);
+          expect(expireOrder).toBeLessThan(handlerOrder);
         }
       } finally {
         extendSpy.mockRestore();
+        expireSpy.mockRestore();
         warnSpy.mockRestore();
         await redis.del(lockKey, cacheKey).catch(() => { /* cleanup */ });
       }
@@ -1917,19 +1962,101 @@ describe.each([
         });
 
         // Operator-alert anchor: the helper's expire-throw catch fired with
-        // the documented log suffix. A regression that removes the catch
-        // would propagate the rejection and lose this anchor.
-        const a1ThrewCalls = errorSpy.mock.calls.filter(
-          (call) =>
-            typeof call[1] === 'string' &&
-            call[1].includes('orcid binding lock TTL extension failed'),
+        // the documented structured event field AND the documented log suffix.
+        // Round-2 hold #2: pinning `event:'a1_extend_threw'` (not just message
+        // text) makes the dashboard-keyable contract load-bearing — a regression
+        // that drops or renames the structured field surfaces here even if the
+        // message text survives.
+        expect(errorSpy).toHaveBeenCalledWith(
+          expect.objectContaining({
+            event: 'a1_extend_threw',
+            orcidId,
+            err: expect.any(Error),
+          }),
+          expect.stringContaining('orcid binding lock TTL extension failed'),
         );
-        expect(a1ThrewCalls.length).toBe(1);
-        expect(expireSpy).toHaveBeenCalledTimes(1);
+        // Round-2 hold #5: tighten redis.expire assertion from call-count to
+        // call-shape. A future cache-TTL refresh on the same flow that calls
+        // `expire` for unrelated reasons would silently break a `times(1)`
+        // assertion; pinning the call-shape catches the regression class
+        // (the call DID fire with the right key + TTL) without coupling to
+        // global call count.
+        expect(expireSpy).toHaveBeenCalledWith(lockKey, 120);
       } finally {
         expireSpy.mockRestore();
         errorSpy.mockRestore();
         await redis.del(lockKey, cacheKey).catch(() => { /* cleanup */ });
+      }
+    },
+  );
+
+  // BACKEND-ORCID-LOCK-TTL-EXTEND-ON-TIMEOUT round-2 hold #2 — pin the
+  // `a1_extend_lock_missing` event literal end-to-end. The lock-missing
+  // branch fires when `redis.expire` resolves 0 (lock key already gone
+  // due to eviction, FLUSHDB, AOF stall, or simply never seeded). Without
+  // pinning the structured event, a regression renaming or dropping the
+  // field would slip through any message-substring assertion. Calls the
+  // helper directly via __test_seams against an orcid_id that has no lock
+  // seeded — `redis.expire` against a missing key returns 0, no exception,
+  // exercising the branch under real Redis (no spy mock needed).
+  it(
+    'extendBindingLockOnTimeoutOrLog logs a1_extend_lock_missing when the binding lock key is absent',
+    async () => {
+      const redis = getRedis();
+      if (!redis) return;
+      const orcidId = `0000-0001-${orcidSuffix}${orcidSuffix}${orcidSuffix}${orcidSuffix}-0014`;
+      const lockKey = `${config.appTag}:orcid_binding_lock:${orcidId}`;
+      // Belt-and-suspenders: ensure the key is actually absent before the call.
+      await redis.del(lockKey).catch(() => { /* ignore */ });
+
+      const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => undefined as unknown as void);
+      const routeLabel = mode === 'accredit' ? 'orcid.handleAccredit' : 'orcid.handleLink';
+
+      try {
+        await __test_seams.extendBindingLockOnTimeoutOrLog(orcidId, routeLabel);
+        expect(errorSpy).toHaveBeenCalledWith(
+          expect.objectContaining({
+            event: 'a1_extend_lock_missing',
+            orcidId,
+          }),
+          expect.stringContaining('binding lock expired between acquire and TTL-extend'),
+        );
+      } finally {
+        errorSpy.mockRestore();
+      }
+    },
+  );
+
+  // BACKEND-ORCID-LOCK-TTL-EXTEND-ON-TIMEOUT round-2 hold #2 — pin the
+  // `a1_extend_redis_absent` event literal. The Redis-absent branch is the
+  // earliest short-circuit in the helper: `getRedis()` returned null OR
+  // `isRedisAvailable()` returned false. Spies on `isRedisAvailable` via the
+  // module namespace so the helper's import binding redirects through the
+  // spy (Vitest's module transform makes ESM static imports re-routable for
+  // the duration of the test). A regression dropping the structured event
+  // would slip a substring assertion but not this `objectContaining` shape.
+  it(
+    'extendBindingLockOnTimeoutOrLog logs a1_extend_redis_absent when isRedisAvailable() is false',
+    async () => {
+      const redis = getRedis();
+      if (!redis) return;
+      const orcidId = `0000-0001-${orcidSuffix}${orcidSuffix}${orcidSuffix}${orcidSuffix}-0015`;
+      const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => undefined as unknown as void);
+      const availSpy = vi.spyOn(redisModule, 'isRedisAvailable').mockReturnValue(false);
+      const routeLabel = mode === 'accredit' ? 'orcid.handleAccredit' : 'orcid.handleLink';
+
+      try {
+        await __test_seams.extendBindingLockOnTimeoutOrLog(orcidId, routeLabel);
+        expect(errorSpy).toHaveBeenCalledWith(
+          expect.objectContaining({
+            event: 'a1_extend_redis_absent',
+            orcidId,
+          }),
+          expect.stringContaining('Redis unavailable at BroadcastTimeoutError time'),
+        );
+      } finally {
+        availSpy.mockRestore();
+        errorSpy.mockRestore();
       }
     },
   );

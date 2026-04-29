@@ -11,6 +11,7 @@ import {
   PostBroadcastWriteError,
   type HandleBroadcastErrorOpts,
   type HandleBroadcastErrorAmbiguousOpts,
+  type PostBroadcastFailedStep,
 } from '../lib/broadcast-error.js';
 import { getRedis, isRedisAvailable } from '../redis.js';
 import { getAppPool } from '../app-db.js';
@@ -84,12 +85,37 @@ const ORCID_VERIFIED_TTL = 1800; // 30 minutes
 // (e.g. observed lag spikes prompting a 180s ceiling) would have required
 // changing both. Single named constant, two consumers reference it.
 //
-// See agents/docs/solutions/conventions/chain-write-timeout-ambiguous-outcome-2026-04-22.md
-// (Option A.1) and tasks-archive.md BACKEND-ORCID-LOCK-TTL-EXTEND-ON-TIMEOUT.
+// Round-2 hold #3 — derivation chain (per
+// `agents/docs/solutions/conventions/verify-resource-knob-math-before-load-bearing-security-margins-2026-04-22.md`):
+//   * Source of `120`: empirical upper bound on HAF block-watcher catch-up
+//     after a Hive broadcast lands. Hive blocks are 3s; HAF's catch-up plus
+//     PG-side index settle observed at <30s in the steady state, with rare
+//     spikes during chain reorgs or HAF restarts. 120s is a 4x margin chosen
+//     to absorb worst-case observed spikes without unbounded wait.
+//   * Why aliasing is correct (not coincidence): both consumers ARE
+//     load-bearing on the SAME bound — "during the HAF-indexing window after
+//     a successful broadcast, no concurrent bind for the same orcid_id may
+//     slip through". Consumer (1) enforces the bound at the lock layer
+//     (block fresh acquisitions); consumer (2) enforces it at the read layer
+//     (return the just-written binding from cache before HAF sees it). They
+//     cover the same window from two angles, so a single value is correct
+//     by construction. A divergence (e.g. cache TTL set lower than lock TTL)
+//     would re-introduce the duplicate-bind race A.1 closes.
+//   * What would force re-evaluation: (a) observed HAF-lag p99 exceeding the
+//     ceiling (split this constant if cache and lock have different operating
+//     bounds — currently they don't); (b) a new consumer with a genuinely
+//     different bound (do NOT alias to this constant; declare a new one);
+//     (c) a Hive protocol change altering block cadence (the 3s × ~40-block
+//     buffer would no longer hold).
+//
+// See `agents/docs/solutions/conventions/chain-write-timeout-ambiguous-outcome-2026-04-22.md`
+// (Option A.1) and `tasks-archive.md` BACKEND-ORCID-LOCK-TTL-EXTEND-ON-TIMEOUT.
 const HAF_INDEXING_LAG_CEILING_SECONDS = 120;
 // Alias: the binding-cache TTL tracks the lag ceiling exactly. Kept as a
 // named alias so call sites read with semantic intent (`ORCID_BINDING_CACHE_TTL`
 // at the cache write site is more readable than the generic ceiling name).
+// See the derivation chain above for why aliasing is correct rather than
+// coincidence.
 const ORCID_BINDING_CACHE_TTL = HAF_INDEXING_LAG_CEILING_SECONDS;
 // SETNX lock TTL sits above the 30s wall-clock bound enforced by
 // broadcastJsonWithTimeout (see backend/src/hive.ts) so a legitimately slow
@@ -519,14 +545,22 @@ async function handleAccredit(
     // alarming users — the chain state is durable and ORCID-based login
     // lookups via HAF still work; only the denormalized accounts.orcid column
     // is potentially stale until a manual reconcile lands.
-    postBroadcastMsgFn: (failedStep) => {
-      const tail =
-        failedStep === 'reputation_seed'
-          ? 'Your reputation score will update at the next scheduled cycle.'
-          : failedStep === 'cache_write'
-            ? 'A backend cache write failed; it will repopulate on the next request that uses your ORCID binding.'
-            : 'A backend account update failed; the chain record is the source of truth, and login still works. The denormalized account record may be stale until support reconciles it.';
-      return `Your ORCID is verified on Hive. ${tail}`;
+    // Round-2 hold #1: switch + `assertNever` (not nested ternary). Adding a
+    // 4th `PostBroadcastFailedStep` member would silently route to the
+    // account_update tail under the prior `else`-fallback shape — exactly the
+    // drift class the discriminated-union convention exists to prevent. The
+    // switch makes the union exhaustively pinned at compile time.
+    postBroadcastMsgFn: (failedStep: PostBroadcastFailedStep) => {
+      switch (failedStep) {
+        case 'reputation_seed':
+          return 'Your ORCID is verified on Hive. Your reputation score will update at the next scheduled cycle.';
+        case 'cache_write':
+          return 'Your ORCID is verified on Hive. A backend cache write failed; it will repopulate on the next request that uses your ORCID binding.';
+        case 'account_update':
+          return 'Your ORCID is verified on Hive. A backend account update failed; the chain record is the source of truth, and login still works. The denormalized account record may be stale until support reconciles it.';
+        default:
+          return assertNever(failedStep);
+      }
     },
   };
   const accreditAmbiguousOpts: HandleBroadcastErrorAmbiguousOpts = {
@@ -610,7 +644,10 @@ async function handleAccredit(
     // A test that exercises the discrimination via __test_seams (see
     // tests/routes/orcid.test.ts post-broadcast specs) is the live proof the
     // path remains wired.
-    let currentStep: 'cache_write' | 'account_update' | 'reputation_seed' = 'cache_write';
+    // Round-2 hold #2: typed as `PostBroadcastFailedStep` so adding a 4th
+    // union member surfaces as a compile error here (forcing the cascade to
+    // either name the new step explicitly or omit it).
+    let currentStep: PostBroadcastFailedStep = 'cache_write';
     try {
       // Cache the binding so a concurrent bind request in the HAF-lag window sees
       // it via findAccreditedAccountWithOrcid() before the chain op is indexed.
@@ -678,15 +715,24 @@ async function handleLink(
     routeLabel: 'orcid.handleLink',
     // BACKEND-ORCID-BROADCAST-OUTCOME-DISCRIMINATION: per-step user-facing
     // message — see handleAccredit counterpart for full rationale (round-1
-    // hold #3). handleLink does NOT seed reputation, so the `'reputation_seed'`
-    // branch is unreachable in this surface; left in the switch as a defensive
-    // default in case PostBroadcastWriteError's union widens.
-    postBroadcastMsgFn: (failedStep) => {
-      const tail =
-        failedStep === 'cache_write'
-          ? 'A backend cache write failed; it will repopulate on the next request that uses your ORCID binding.'
-          : 'A backend account update failed; the chain record is the source of truth, and login still works. The denormalized account record may be stale until support reconciles it.';
-      return `Your ORCID is linked on Hive. ${tail}`;
+    // hold #3). handleLink does NOT seed reputation, so `'reputation_seed'`
+    // is unreachable from this route in practice; the switch covers it
+    // exhaustively for type safety (and the message degrades gracefully to
+    // the account_update phrasing — that was the prior implicit behavior
+    // under the else-fallback ternary). Round-2 hold #1: switch + assertNever
+    // (not nested ternary) so a 4th union member surfaces as a compile error
+    // rather than silently routing to the account_update tail.
+    postBroadcastMsgFn: (failedStep: PostBroadcastFailedStep) => {
+      switch (failedStep) {
+        case 'cache_write':
+          return 'Your ORCID is linked on Hive. A backend cache write failed; it will repopulate on the next request that uses your ORCID binding.';
+        case 'account_update':
+          return 'Your ORCID is linked on Hive. A backend account update failed; the chain record is the source of truth, and login still works. The denormalized account record may be stale until support reconciles it.';
+        case 'reputation_seed':
+          return 'Your ORCID is linked on Hive. A backend account update failed; the chain record is the source of truth, and login still works. The denormalized account record may be stale until support reconciles it.';
+        default:
+          return assertNever(failedStep);
+      }
     },
   };
   const linkAmbiguousOpts: HandleBroadcastErrorAmbiguousOpts = {
@@ -738,7 +784,12 @@ async function handleLink(
     // narrows to 'cache_write' | 'account_update'. The 'reputation_seed'
     // value is reserved for handleAccredit. (Both step labels remain in
     // PostBroadcastWriteError's union for sweep-extensibility.)
-    let currentStep: 'cache_write' | 'account_update' = 'cache_write';
+    // Round-2 hold #2: typed as the link-narrow Extract over
+    // `PostBroadcastFailedStep` — handleLink's cascade does not seed
+    // reputation, so `'reputation_seed'` is structurally unreachable here.
+    // Adding a 4th union member surfaces as a compile error if it would
+    // be reachable from link mode.
+    let currentStep: Extract<PostBroadcastFailedStep, 'cache_write' | 'account_update'> = 'cache_write';
     try {
       // Cache the binding so a concurrent bind request in the HAF-lag window sees
       // it via findAccreditedAccountWithOrcid() before the chain op is indexed.
@@ -919,6 +970,13 @@ async function extendBindingLockOnTimeoutOrLog(orcidId: string, routeLabel: stri
   try {
     const extended = await redis.expire(orcidBindingLockKey(orcidId), HAF_INDEXING_LAG_CEILING_SECONDS);
     if (extended === 0) {
+      // Round-2 hold #4: caller's subsequent `return { skipRelease: true }`
+      // is decorative on this branch — the lock is already gone, so
+      // releaseBindingLock's Lua CAS is a no-op against a missing key
+      // either way. Preserved for structural parity with the success branch
+      // (a 4-way per-branch skipRelease decision is the wrong abstraction;
+      // the wrapper-skipRelease decision is "did the timer fire" and stays
+      // true regardless of which sub-state the helper observed).
       logger.error(
         { orcidId, event: 'a1_extend_lock_missing' },
         `${routeLabel} binding lock expired between acquire and TTL-extend — A.1 protection degraded for this request`,

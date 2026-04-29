@@ -93,9 +93,10 @@ interface BaseHandleBroadcastErrorOpts {
    * throw `PostBroadcastWriteError` (handleAccredit / handleLink); other
    * callers leave this undefined.
    *
-   * Renamed from `postBroadcastFailedMsgFn` (round-1 hold #7 — drop the
-   * `Failed` segment since the type already implies failure, drop the `Fn`
-   * suffix for consistency with sibling string opts).
+   * Renamed from `postBroadcastFailedMsgFn` (round-1 hold #7 — option (b):
+   * dropped the redundant `Failed` segment since the type already implies
+   * failure; kept the `Fn` suffix to make the callback contract explicit at
+   * the type level, since the per-step rendering needs the function form).
    */
   postBroadcastMsgFn?: (failedStep: PostBroadcastFailedStep) => string;
 }
@@ -197,7 +198,13 @@ export function handleBroadcastError(
         : defaultPostBroadcastMsg(err.txId);
     } catch (msgErr) {
       logger.warn(
-        { err: msgErr, txId: err.txId, failedStep: err.failedStep, ...opts.logContext },
+        {
+          err: msgErr,
+          txId: err.txId,
+          failedStep: err.failedStep,
+          event: 'post_broadcast_msg_fn_threw',
+          ...opts.logContext,
+        },
         `${opts.routeLabel} postBroadcastMsgFn threw — using generic fallback`,
       );
       userMsg = defaultPostBroadcastMsg(err.txId);

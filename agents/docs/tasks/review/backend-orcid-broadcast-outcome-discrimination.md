@@ -435,3 +435,37 @@ Round-2 `/ce-code-review` on commit `6044ebc` (10 personas: correctness, testing
 (1) Backend addresses items #1, #2, #3, #4, #5 in this hold block. Items #1 + #4 fold cleanly into a single switch-refactor commit (item #4's comment rewrite is a side-effect). Items #2, #3, #5 are 1-3 lines each. (2) Backend re-review signal block referencing the round-3 hold-fix commit SHA. (3) Architect round-3 `/ce-code-review` on the new commit (kieran-typescript + correctness + reliability lenses). (4) Archive on clean.
 
 Architect-owned doc fixes (round-2 in-place): `agents/docs/api-contracts/orcid.md` lines 190 (2 emdashes), 200 (1 emdash), 208 (stale `'unknown'` reference + new stability-scope note for `details.failed_step`).
+
+---
+
+## Backend re-review signal (2026-04-29, working tree)
+
+All 5 hold-block items addressed.
+
+**Item #1 (P2) — Switch + `assertNever` (not nested ternary) for `postBroadcastMsgFn`.** `backend/src/routes/orcid.ts` at `handleAccredit` (~507) and `handleLink` (~684):
+- Imported `type PostBroadcastFailedStep` from `lib/broadcast-error.js`.
+- handleAccredit's `postBroadcastMsgFn` now switches on all 3 union members with `assertNever(failedStep)` as the default. Adding a 4th union member surfaces as a compile error here rather than silently routing to the account_update tail under the prior `else`-fallback shape.
+- handleLink's `postBroadcastMsgFn` switches exhaustively over all 3 cases (option (b) — 3 cases not 2). The architect's prescription mentioned "type-narrowed unreachable" for `'reputation_seed'`, but the function signature accepts the full `PostBroadcastFailedStep` union, so a 2-case-with-assertNever-default switch wouldn't compile cleanly. Used 3 cases with the `'reputation_seed'` arm degrading gracefully to the account_update phrasing — that was the prior implicit behavior under the else-fallback ternary, and `seedAccreditationBonus` is not called from handleLink so the branch is unreachable in practice. The default branch still uses `assertNever` to catch a 4th union member at compile time.
+
+This naturally fixes **Item #4 (P3)** — the misleading "switch with defensive default" comment on handleLink's prior 2-arm ternary is gone, replaced by the actual switch with an exhaustive default.
+
+**Item #2 (P3) — `currentStep` locals typed via `PostBroadcastFailedStep`.**
+- handleAccredit's `currentStep` (~647): previously inline `'cache_write' | 'account_update' | 'reputation_seed'`. Now `let currentStep: PostBroadcastFailedStep = 'cache_write'`. Adding a 4th union member surfaces here.
+- handleLink's `currentStep` (~784): previously inline `'cache_write' | 'account_update'`. Now `let currentStep: Extract<PostBroadcastFailedStep, 'cache_write' | 'account_update'> = 'cache_write'`. Captures the link-narrow intent (no reputation_seed) while still being a compile-tracked subset of the canonical union — a 4th member that's also reachable from link mode would force this site to widen explicitly.
+
+**Item #3 (P3) — Structured `event:'post_broadcast_msg_fn_threw'` field added to the warn anchor.** `backend/src/lib/broadcast-error.ts:199-204`. The fallback warn fired when `postBroadcastMsgFn` itself throws now carries `event: 'post_broadcast_msg_fn_threw'` alongside `err`, `txId`, `failedStep`, and the spread `logContext`. Aligns with the sibling `event:`-tagged anchors (`event:'a1_extend_*'`, `event:'redis_outage'`, `event:'nonce_drift'`, `event:'lock_contention_held'`) so dashboards can key on it. The existing `tests/lib/broadcast-error.test.ts` msg-fn-throws spec was tightened to assert `expect.objectContaining({ event: 'post_broadcast_msg_fn_threw', ... })` — the structured field is now load-bearing, not just message text.
+
+**Item #5 (P3) — Stale `Fn` suffix docblock corrected.** `backend/src/lib/broadcast-error.ts:96`. Old docblock claimed `Fn` was "dropped" during the rename. Round-1 hold #7 picked option (b) which kept the `Fn` suffix; the field is still `postBroadcastMsgFn`. Rewrote to: option (b) was picked — dropped the redundant `Failed` segment, kept the `Fn` suffix to make the callback contract explicit at the type level.
+
+### Verification
+
+- `npx tsc --noEmit`: clean (the 3-case switches + `assertNever` defaults compile; the `Extract` narrowing on handleLink's `currentStep` compiles against the union; `PostBroadcastFailedStep` import resolves).
+- `npm run lint`: clean (pre-existing `seed-phrase.ts` no-explicit-any warnings only).
+- `npx vitest run tests/routes/orcid.test.ts tests/lib/broadcast-error.test.ts` (real Postgres + Redis): **70/70 pass** across both files. The orcid integration matrix (58 specs) plus broadcast-error unit specs (12) all green.
+- Full backend suite is the architect's call (per CLAUDE.md guidance).
+
+### Files changed
+
+- `backend/src/routes/orcid.ts` — `PostBroadcastFailedStep` type imported; handleAccredit + handleLink `postBroadcastMsgFn` rewritten as exhaustive switches with `assertNever` defaults (item #1, naturally closes item #4); `currentStep` locals typed via the imported union (handleAccredit) and `Extract<>`-narrowed (handleLink) (item #2).
+- `backend/src/lib/broadcast-error.ts` — `event: 'post_broadcast_msg_fn_threw'` added to the msg-fn-throws warn payload (item #3); stale `Fn`-dropped docblock corrected to reflect that the suffix was kept under option (b) (item #5).
+- `backend/tests/lib/broadcast-error.test.ts` — msg-fn-throws spec assertion tightened to pin the structured `event` field literal (item #3 follow-through).
