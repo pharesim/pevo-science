@@ -120,7 +120,8 @@ it('queue-full unknown email returns 503', () => { ... });
 it('abort unknown email returns silently (no body written)', async () => {
   mockRunWithArgon2Slot.mockRejectedValueOnce(new ArgonAbortError());
   await assertArgon2AbortIsSilent(
-    request(app).post('/api/auth/reset-request').send({ email: 'unknown@example.com' })
+    request(app).post('/api/auth/reset-request').send({ email: 'unknown@example.com' }),
+    mockRunWithArgon2Slot,
   );
 });
 ```
@@ -146,7 +147,15 @@ describe.each(routes)('$name', (route) => {
   describe.each(errorClasses)('$name', (cls) => {
     it('translates to wire shape', async () => {
       mockRunWithArgon2Slot.mockRejectedValueOnce(cls.err());
-      await cls.assert(request(app).post(route.path).send(route.body));
+      // The abort-class assert helper takes the mock fn as a second arg
+      // so the silent-return contract can pin invocation count and avoid
+      // false-passing on a mid-handler unmocked await; the 503 helpers
+      // are single-arg.
+      if (cls.assert === assertArgon2AbortIsSilent) {
+        await cls.assert(request(app).post(route.path).send(route.body), mockRunWithArgon2Slot);
+      } else {
+        await cls.assert(request(app).post(route.path).send(route.body));
+      }
     });
   });
 });

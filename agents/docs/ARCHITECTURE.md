@@ -333,16 +333,22 @@ Backend emits structured log lines that operators (and any future ops/monitoring
 
 ### `event: 'argon2_abort_summary'`
 
-Periodic summary log emitted at most once per `ABORT_REPORT_INTERVAL_MS` (currently hard-coded to 60s in `backend/src/lib/argon2-semaphore.ts`). Captures the count of `ArgonAbortError` events (client-disconnect-during-argon2) since the last emission. Emitted only when the delta is non-zero, so quiet boxes produce zero log lines.
+Periodic summary log emitted at most once per `ABORT_REPORT_INTERVAL_MS` (60s by default; the actual cadence is reported on every line via the `intervalMs` field). Captures the count of `ArgonAbortError` events (client-disconnect-during-argon2) since the last emission. Emitted only when the delta is non-zero, so quiet boxes produce zero log lines.
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `event` | string | Always `'argon2_abort_summary'`. |
 | `count` | integer | Aborts since the last summary emission (delta, not cumulative). |
+| `intervalMs` | integer | Reporter cadence in ms (currently 60_000). Self-describing so dashboards can express rates as `count / intervalMs * 1000` (events/s) without hardcoding the constant from source. |
 
 Operator semantics: a non-zero `count` indicates clients disconnected mid-request while their argon2 hash/verify was running. A bursty signal under a network event or attacker-driven connection-cycling scenario is the expected use case. Per-event abort lines remain at `debug` for `LOG_LEVEL=debug` deep investigation; the summary is the default-`info` operator-visible signal.
 
-Counter-accuracy note: between commits `5d33f24` (which introduced the periodic reporter) and `aeef5f2` (which added per-request dedupe via `incrementAbortOnce`), `count` could be inflated by up to 2× under the slot-grant race window (one logical abort produced two counter increments via both the parked-waiter `onAbort` listener and the awaiter-side abort check). Post-`aeef5f2`, one logical abort produces exactly one increment. Operators who calibrated alert thresholds against the inflated values will see the reported count drop by up to 50% under disconnect storms — this is a measurement correction, not a traffic decrease.
+Operator semantics during graceful shutdown (SIGTERM / `drainArgon2Queue()` window): `argon2_abort_summary` is expected to show **no** abort traffic during the drain window, even if many clients disconnect because the server is shutting down. Disconnect events that race against drain classify as `ShuttingDownError` (HTTP 503 with `details.reason: 'shutdown_drain'`) and do not feed the abort counter; pre-aborted callers arriving after `drainArgon2Queue()` flips the shutdown flag also classify as shutdown, not abort. A dashboard that suddenly shows zero abort traffic across a deploy is the metric working correctly, not a broken pipeline. The asymmetric counter rule that produces this behavior: the abort counter is incremented only by the abort listener that actually owns propagation. Drain-race aborts (caller already received `ShuttingDownError`) and slot-release-race aborts (slot-grant race-guard already counted) do not double-count. The contract is `count == ArgonAbortError instances actually thrown to callers`.
+
+Counter-accuracy notes (each is a measurement correction, not a traffic change — alert thresholds calibrated against the prior counter shape will see one or both step-downs):
+
+- **Round 1 (`5d33f24` → `aeef5f2`):** introduced the periodic reporter and then closed a slot-grant-race double-increment via per-request `incrementAbortOnce`. `count` could be inflated by up to 2× before `aeef5f2`; post-`aeef5f2`, one logical abort produces exactly one increment. Step-down was distributed across all disconnect storms.
+- **Round 2 (`647a115`):** gated the parked-waiter `onAbort` counter on `waiters.indexOf(w) >= 0` (drain-race + slot-release-race no-op) and swapped function-entry guards so `shuttingDown` precedes `signal?.aborted` (pre-aborted-during-drain reclassifies as shutdown, not abort). Step-down is concentrated in graceful-restart windows specifically — operators should expect a quieter `argon2_abort_summary` during rolling deploys after `647a115` than before, with steady-state values largely unchanged.
 
 ### `argon2 queue saturated` (free-text, queue-full path)
 
