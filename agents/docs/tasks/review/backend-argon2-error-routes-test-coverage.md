@@ -355,3 +355,35 @@ But two round-4 hold items surfaced — both P2 with mutation-kill weight. The f
 ### Re-review signal
 
 When items 1-2 land, `git mv` this file back to `tasks/review/`. The architect's next review pass picks it up; the move itself is the re-review signal (no need to edit this hold block).
+
+---
+
+## Backend re-review signal (2026-04-29, working tree)
+
+Both round-4 hold items landed.
+
+**Item 1 (P2) — `assertArgon2AbortIsSilent` self-test**
+
+New file `backend/tests/support/argon2-error-mocks.test.ts` with 4 test cases:
+
+- **(a) `outcome.kind === 'response'`** — the helper rejects when the request resolved with a fake supertest response (status 500). Pinned to the `silent-abort contract violated` and `route wrote response with status 500` substrings of item 2's diagnostic message, so a future regression that softens the failure-shape diagnostic also surfaces.
+- **(b) `outcome.kind === 'timeout'` AND mock fn called once** — the happy-path cell. The helper resolves cleanly when the request rejects with a supertest-shaped timeout (`code: 'ECONNABORTED'`, `timeout: 250`) and the mock fn was called once.
+- **(c) `outcome.kind === 'timeout'` AND mock fn NOT called** — the round-3 invocation-guard regression class. The helper rejects with the `route hung but argon2 path was never entered` diagnostic when the timeout fires but argon2 was never invoked.
+- **(d) `outcome.kind === 'other-error'`** — covers the third classification branch. The helper rejects with the `unexpected error: Error: ECONNRESET` diagnostic so a non-timeout rejection (e.g. a network-layer crash, a supertest rejection shape the timeout-classifier doesn't recognize) doesn't false-pass either.
+
+Carve-out justification documented in the file header per CLAUDE.md: the unit under test is the helper itself; driving the three outcome-classification branches deterministically requires constructing the exact resolution shapes the helper inspects, and `verifyHiveSignature` is not in the helper's call graph.
+
+**Item 2 (P2) — Failure-mode diagnostics in `assertArgon2AbortIsSilent`**
+
+`backend/tests/support/argon2-error-mocks.ts` — both `expect(...)` calls now carry message-string parameters:
+
+- The `outcome.kind` assertion: `silent-abort contract violated: route wrote response with status <status> (or unexpected error: <err>)` — the captured `outcome.status` / `outcome.err` fields are interpolated into the diagnostic so a CI failure surfaces which of the three failure shapes was hit, rather than the bare vitest default `expected '<kind>' to be 'timeout'`.
+- The `mockRunWithArgon2Slot` assertion: `route hung but argon2 path was never entered — likely an unmocked await earlier in the handler (DB/Redis/feature flag); check the route mock kit` — points the operator straight at the most common cause (test forgot to seed a DB query, Redis call, or feature-flag check the route awaits before reaching argon2).
+
+JSDoc on `assertArgon2AbortIsSilent` extended to document the exact-count `toHaveBeenCalledTimes(1)` assumption per the architect's dismissed-item note (single-call routes today; future double-call routes would need a per-route variant or a kit-bind extension).
+
+### Verification
+
+- `npx tsc --noEmit`: clean.
+- `npm run lint`: clean (only pre-existing seed-phrase.ts warnings).
+- Targeted vitest (helper self-test + 7 caller files): 52 passed across 8 files. The 4 new self-tests verify the helper itself; the 48 sibling tests verify the message-string change is non-breaking on every existing caller.

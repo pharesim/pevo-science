@@ -184,6 +184,13 @@ export const redisStubFactory: () => typeof import('../../src/redis.js') = () =>
  * argon2 path would never have been entered. The "fix-in-helper" flavor
  * (round-3 hold P2 item 1) puts the invocation guard in one place rather
  * than at every call site.
+ *
+ * The exact-count `toHaveBeenCalledTimes(1)` assumes single-call routes
+ * (every current caller invokes argon2 exactly once on the abort path). A
+ * future route that legitimately calls argon2 twice on the same path would
+ * need either to mock both calls or to use a route-specific helper variant.
+ * Until that case lands, exact-count is the strongest mutation-resistant
+ * shape for the call sites we have today.
  */
 export async function assertArgon2AbortIsSilent(
   promise: Promise<SupertestResponse>,
@@ -215,13 +222,26 @@ export async function assertArgon2AbortIsSilent(
   // and wrote ANY status, `outcome.kind === 'response'` and this fails.
   // Mirrors the unit-level "res.status not called / res.json not called"
   // shape in `tests/lib/argon2-error-handler.test.ts`.
-  expect(outcome.kind).toBe('timeout');
+  //
+  // The diagnostic message includes the actual outcome shape so a CI
+  // failure surfaces "route wrote response with status 500" or "unexpected
+  // error: ..." inline, rather than the bare vitest default
+  // (`expected 'response' to be 'timeout'`) which discards every captured
+  // outcome field. The choke-point shape pays off across every silent-abort
+  // call site (round-4 hold P2 item 2).
+  expect(
+    outcome.kind,
+    `silent-abort contract violated: route wrote response with status ${outcome.kind === 'response' ? outcome.status : 'n/a'} (or unexpected error: ${outcome.kind === 'other-error' ? String(outcome.err) : 'n/a'})`,
+  ).toBe('timeout');
 
   // Guard against a false-pass where the request hangs at a different
   // unmocked `await` (the argon2 path was never entered). The mock fn must
   // have been invoked exactly once for the silent-return assertion above
   // to be load-bearing on the abort path.
-  expect(mockRunWithArgon2Slot).toHaveBeenCalledTimes(1);
+  expect(
+    mockRunWithArgon2Slot,
+    'route hung but argon2 path was never entered — likely an unmocked await earlier in the handler (DB/Redis/feature flag); check the route mock kit',
+  ).toHaveBeenCalledTimes(1);
 }
 
 /**
