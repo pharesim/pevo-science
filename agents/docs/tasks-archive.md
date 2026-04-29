@@ -1,3 +1,43 @@
+## BACKEND-ORCID-BROADCAST-TIMEOUT-OUTCOME-HANDLING (archived 2026-04-29) — round-4 clean ✓
+
+Architect decision Option A.2 (504 + retriable:false + verify_before_retry envelope) for ORCID-binding broadcast paths whose 30s timer fires while outcome is genuinely uncertain. Closes the ambiguous-outcome window the prior round-3 sweep left open: when chain-write timer fires, the broadcast may or may not have landed; client must verify before retry to avoid duplicate-bind.
+
+Implementation landed in commit `0a5c890` (round-2 hold-fix) and `a0f121d` (round-3 hold-fix) on `backend/src/lib/broadcast-error.ts` and `backend/src/routes/orcid.ts`. Round-3 added a mutation-kill spec for the lockState='unavailable' non-timeout broadcast error path (rejects broadcastJsonMock with non-timeout `Error('synthetic ...')`, asserts 504 ambiguous-outcome envelope with no `details.timeout_ms`, `/uncertain/i` message, ambiguous-outcome operator-alert log suffix, all via the existing `describe.each([accredit, link])` matrix). Item #2 added `errorSpy` named-local capture in `tests/lib/broadcast-error.test.ts` to pin the operator-alert log suffix at unit-layer. Item #3 swapped `MockBroadcastTimeoutError` cause to a generic `Error('synthetic db cascade failure')` in the post-broadcast seam test for semantic clarity.
+
+Architect-applied in-place fixes during round-3: 4th log-suffix added to docblock (`PostBroadcastWriteError` discrimination path), stale "forceAmbiguousOutcome above" comment replaced, `HandleBroadcastErrorAmbiguousOpts` re-derived via `Extract<>`-narrowed type for mechanical sync with `AmbiguousOutcomeFields`, convention-doc round-2 example block rewritten to reflect the discriminated-union shape.
+
+Round-4 review (all 6 commits since round-3 architect review): correctness + testing + adversarial all confirm mutation-kill rigor lands. P3 polish items (hardcoded line numbers in test comments, redundant `not.toHaveProperty` after exact-match `toEqual`, integration-layer log-filter substring vs unit-layer exact match) all dismissed as below action threshold.
+
+Convention docs: `agents/docs/solutions/conventions/chain-write-timeout-ambiguous-outcome-2026-04-22.md`, `inner-catch-shadows-outer-catch-in-route-tests-2026-04-28.md`, `correlated-options-discriminated-union-2026-04-28.md`, `tests-must-fail-on-mutation-of-code-under-test-2026-04-22.md` all directly govern the work.
+
+Full history: see commits `0a5c890`, `df264d7`, `27befcf`, `0d0c156`, `d8b9b75`, `a0f121d` and the task file body via `git show HEAD~N:agents/docs/tasks/review/backend-orcid-broadcast-timeout-outcome-handling.md`.
+
+---
+
+## BACKEND-ORCID-ACQUIRED-BRANCH-THROW-GUARD (archived 2026-04-29) — round-2 clean ✓
+
+Filed by architect during BE-ORCID-BROADCAST-TIMEOUT-OUTCOME-HANDLING round-2 re-review (finding #2). The lock-acquired branch of `withOrcidBindingLock` previously had no outer try/catch — sync throws (e.g. `PrivateKey.fromString` on malformed admin key) escaped to the outer `/callback` catch and emitted 500 INTERNAL_ERROR with state token consumed (a hard-block class). Implementation in commit `0d0c156` added the symmetric outer try/catch routing through `handleBroadcastErrorAmbiguous`, producing the 504 ambiguous-outcome envelope. The post-broadcast cascade (`updateAccountOrcid`) is the live integration coverage; pre-broadcast SYNC throws on the acquired branch were filed separately as `backend-pevo-admin-key-startup-validation.md` (a startup-time validation guard makes the production trigger unreachable).
+
+Round-1 architect review held one P3 item (matcher tightening from `toBeGreaterThanOrEqual(1)` to `toBe(1)` at `tests/routes/orcid.test.ts:1340` and `:1441` for the operator-alert log assertions). Round-2 hold-fix in commit `acae57e` landed exactly the 2-line tightening. Mutation-kill verified: a regression that double-emits the operator-alert log (e.g. a misplaced retry that re-throws from the catch block) now flips green-to-red, matching the stated intent in the surrounding spec comments. Lines 2008/2132 (unavailable branch + state-replay scope) deliberately left at `>=1` per architect scope.
+
+Architect-applied in-place fixes during round-1: JSDoc 'acquired' bullet rewrite, NB comment update post-`d8b9b75` discrimination, convention-doc symmetric-branch paragraph addition, `agents/docs/api-contracts/orcid.md` 504 BROADCAST_TIMEOUT entry rewritten to enumerate three trigger paths with `details.timeout_ms` presence rule, `agents/docs/api-contracts/common.md` POST_BROADCAST_FAILED row added.
+
+Full history: see commits `0d0c156`, `acae57e`, `53da6c9` and the task file body via git.
+
+---
+
+## UI-ORCID-CALLBACK-RETRIABLE-BRANCH (archived 2026-04-29) — round-3 clean ✓ (machinery now being removed)
+
+Frontend consumer of the lock-contention 409 retriable surface. Round-2 hold-fix bundle (commit `f996d37`) landed 5 items: upper-bound clamp on `Retry-After` (`Math.max(1, Math.min(300, err.retryAfterSeconds ?? 10))` defending against backend emitting `Retry-After: 99999` which would pin the user for ~28 hours), stale `_retryCount` comment fragment dropped, "single self-triggered retry" prose reworded to "up to MAX_RETRIES self-triggered retries" at two sites, redundant `comp._mounted = true` deleted from a timer-based test (createTimerGuard already initializes it), `expect(comp._retryCount).toBe(0)` invariant added to the undefined-retryAfter test.
+
+Special context: a parallel architect task `ARCHITECT-ORCID-STATE-CONSUMPTION-VS-RETRIABLE-409` (archived 2026-04-29 — Option B chosen) determined the retriable-branch contract is **unreachable by design** — backend consumes the OAuth state token at `orcid.ts:299` BEFORE dispatching to the lock-contention branch, so the SPA's `_retryVerify` always lands on 400 BAD_REQUEST first. The follow-on task `ui-orcid-callback-retriable-machinery-remove.md` strips the `_retryCount`/`MAX_RETRIES`/countdown machinery this round just polished. Per the round-2 architect note "independent and does not block this archive", the polish-then-remove order is acceptable.
+
+Round-3 review: correctness + testing + julik-frontend-races + adversarial all confirm the 5 items land. One vacuous-`_retryCount=0`-assertion finding dismissed as "polish on dead-code-pending" — the surfaces are being torn out anyway by the machinery-removal task.
+
+Full history: see commits `fbe8578`, `f996d37`, `9b2f774` and the task file body via git.
+
+---
+
 ## ARCHITECT-ORCID-STATE-CONSUMPTION-VS-RETRIABLE-409 (archived 2026-04-29) — Option B chosen ✓
 
 # ARCHITECT-ORCID-STATE-CONSUMPTION-VS-RETRIABLE-409 — Resolve the unreachable-by-design retriable-409 contract
@@ -208,43 +248,3 @@ JR-2 / JR-3 closed; JR-5 substantially closed.
 **Priority:** P2
 
 ## Context
-
-BE-PAPERS-DISCIPLINE-FIELD-CANON-NAME (commit `9882573`) introduced `paperDisciplineField(raw: string | null | undefined): string | null` in `backend/src/types/disciplines.ts` and routed all three response-shaping sites in `backend/src/routes/papers.ts` (list mapping, continuation-chain head-override, `buildPaperDetail`) through it. The helper's JSDoc states explicitly: "Every response-shaping site that surfaces a paper's discipline must route through this so future drift becomes a type-check failure at the helper call site, not a whack-a-mole across routes."
-
-One out-of-boundary site was deliberately left unrouted by the implementer (flagged in the task signal block):
-
-- `backend/src/helpers.ts:98` — `toPaperSummary()` builds `discipline: (pevo.discipline as string) || ''`.
-- Consumer at `backend/src/routes/profile.ts:238` — `/api/profile/:account` papers list.
-
-After this commit, `/api/papers` list+detail return canon_name lowercased. `/api/profile/:account/papers` still surfaces on-chain casing. Same field name, divergent normalization. A client round-tripping a paper's `discipline` back through `?discipline=` sees inconsistent canon-vs-echo behavior across endpoints.
-
-## Goal
-
-Route the profile-papers `discipline` field through `paperDisciplineField()` so `/api/profile/:account/papers` matches the `/api/papers` canon contract.
-
-Mechanical blocker: `PaperSummary.discipline` is typed `string` (not `string | null`). Two fix shapes:
-
-- **(a) Widen the type** to `string | null` and update consumers downstream (frontend renders fine on null per the existing `paper.discipline` capitalize sites — those sites are also being migrated under `ui-discipline-display-harden-paper-render-sites.md`).
-- **(b) Coalesce at the boundary** — `discipline: paperDisciplineField(pevo.discipline) ?? ''` keeps `string`; preserves the historical "absent → empty string" shape.
-
-## Recommendation
-
-**(b) Coalesce at the boundary.** Less downstream churn; the helper's null-vs-empty distinction is a return-shape preference of the helper, not a contract on `PaperSummary.discipline`. Frontend + bridge consumers already treat `''` as absent.
-
-The `as string | null | undefined` cast on the helper input becomes redundant if/when BE-PAPERS-DISCIPLINE-FIELD-CANON-NAME round-2 hold #2 (widen helper to `unknown`) lands; coordinate.
-
-## Tests
-
-Real-HAF spec in `backend/tests/routes/profile.test.ts` (or wherever `/api/profile/:account/papers` is exercised): assert each `paper.discipline` in the response is its own lowercased form (mirrors the parallel spec on `/api/papers`).
-
-Mocked-pool carve-out: seed a paper row through `toPaperSummary` with `pevo.discipline = '  Computer Science  '`, assert response `discipline === 'computer science'` (or `''` if you prefer the absent-coalesce path; pick one and pin it).
-
-## Acceptance
-
-- `toPaperSummary` routes `pevo.discipline` through `paperDisciplineField()`.
-- `/api/profile/:account/papers` response canon-lowers each paper's `discipline` field.
-- Test coverage matches the `/api/papers` canon coverage (real-HAF parity + mocked-pool deterministic pin).
-- `agents/docs/api-contracts/profile.md` (if it exists) gets a parallel field note. (Architect-owned; flag via `[TODO Architect]` if needed.)
-
----
-
