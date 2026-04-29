@@ -118,6 +118,6 @@ describe('POST /api/settings/set-password — argon2 error → HTTP translation'
       .send(ROUTE_BODY)
       .timeout({ deadline: 250 });
 
-    await assertArgon2AbortIsSilent(reqPromise);
+    await assertArgon2AbortIsSilent(reqPromise, mockRunWithArgon2Slot);
   });
 });

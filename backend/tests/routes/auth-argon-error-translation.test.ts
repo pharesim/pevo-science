@@ -283,6 +283,6 @@ describe.each(routes)('argon error → HTTP translation: $name', (route) => {
       .send(route.body)
       .timeout({ deadline: 250 });
 
-    await assertArgon2AbortIsSilent(reqPromise);
+    await assertArgon2AbortIsSilent(reqPromise, mockRunWithArgon2Slot);
   });
 });

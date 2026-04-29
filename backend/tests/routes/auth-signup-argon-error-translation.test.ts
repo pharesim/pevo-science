@@ -125,6 +125,6 @@ describe('POST /api/auth/signup — new-email argon error → HTTP translation (
       .send(SIGNUP_BODY('signup-newemail-abort'))
       .timeout({ deadline: 250 });
 
-    await assertArgon2AbortIsSilent(reqPromise);
+    await assertArgon2AbortIsSilent(reqPromise, mockRunWithArgon2Slot);
   });
 });

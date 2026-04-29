@@ -173,10 +173,21 @@ export const redisStubFactory: () => typeof import('../../src/redis.js') = () =>
  * `await promise.timeout(250)` would not catch the regression — the
  * silent-abort test would pass against a route that wrote a 500. The
  * outcome detector forces an explicit deadline-vs-response check
- * (item 4 of the hold block).
+ * (item 4 of the round-1 hold block).
+ *
+ * The second argument is the `mockRunWithArgon2Slot` fn the test wired
+ * via `buildArgon2RouteMockKit`. After the timeout-classification passes,
+ * the helper asserts `mockRunWithArgon2Slot` was actually invoked exactly
+ * once. Without this guard, a route that hangs at a different unmocked
+ * `await` (e.g. a mid-handler DB call that the test forgot to seed) would
+ * trip the deadline timer and false-pass the silent-return contract — the
+ * argon2 path would never have been entered. The "fix-in-helper" flavor
+ * (round-3 hold P2 item 1) puts the invocation guard in one place rather
+ * than at every call site.
  */
 export async function assertArgon2AbortIsSilent(
   promise: Promise<SupertestResponse>,
+  mockRunWithArgon2Slot: ReturnType<typeof vi.fn<typeof RunWithArgon2SlotType>>,
 ): Promise<void> {
   let outcome: SilentAbortOutcome;
   try {
@@ -205,6 +216,12 @@ export async function assertArgon2AbortIsSilent(
   // Mirrors the unit-level "res.status not called / res.json not called"
   // shape in `tests/lib/argon2-error-handler.test.ts`.
   expect(outcome.kind).toBe('timeout');
+
+  // Guard against a false-pass where the request hangs at a different
+  // unmocked `await` (the argon2 path was never entered). The mock fn must
+  // have been invoked exactly once for the silent-return assertion above
+  // to be load-bearing on the abort path.
+  expect(mockRunWithArgon2Slot).toHaveBeenCalledTimes(1);
 }
 
 /**

@@ -159,7 +159,7 @@ describe.each(branches)(
         .send(ROUTE_BODY)
         .timeout({ deadline: 250 });
 
-      await assertArgon2AbortIsSilent(reqPromise);
+      await assertArgon2AbortIsSilent(reqPromise, mockRunWithArgon2Slot);
     });
   },
 );

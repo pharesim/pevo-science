@@ -269,3 +269,47 @@ But one round-3 hold item surfaced from the adversarial review on the shared ass
 ### Re-review signal
 
 When item 1 lands, `git mv` this file back to `tasks/review/`. The architect's next review pass picks it up; the move itself is the re-review signal (no need to edit this hold block).
+
+---
+
+## Backend re-review signal (2026-04-29, working tree)
+
+Round-3 hold-block item 1 (P2, the only round-3 item) landed via the architect-preferred "fix-in-helper" flavor.
+
+**Item 1 (P2) — `assertArgon2AbortIsSilent` invocation guard**
+
+`backend/tests/support/argon2-error-mocks.ts:assertArgon2AbortIsSilent` — function signature widened to take the `mockRunWithArgon2Slot` mock fn as a second argument. After the existing `outcome.kind === 'timeout'` classification passes, the helper now asserts `expect(mockRunWithArgon2Slot).toHaveBeenCalledTimes(1)`. Without the guard, a route that hangs at a different unmocked `await` (e.g. a mid-handler DB call the test forgot to seed, or a never-resolving feature-flag check) would trip the deadline timer and false-pass the silent-return contract — the argon2 path would never have been entered. Putting the guard in the helper rather than at every call site keeps the contract structurally pinned (item 4 of the round-1 hold block + item 1 of the round-3 hold block share the same defense-in-depth shape: forcing an explicit positive observation rather than inferring from absence).
+
+JSDoc updated with the rationale. The previous round-1-hold-block sentence was reframed to say "item 4 of the round-1 hold block" so the new paragraph for round-3 reads cleanly without ambiguity about which hold pass each guard came from.
+
+### Caller updates (5 files)
+
+The 5 sibling translation tests were updated to pass `mockRunWithArgon2Slot` through:
+
+- `backend/tests/routes/auth-argon-error-translation.test.ts:286`
+- `backend/tests/routes/auth-signup-argon-error-translation.test.ts:128`
+- `backend/tests/routes/custody-upgrade-argon-error-translation.test.ts:131`
+- `backend/tests/routes/settings-set-password-argon-error-translation.test.ts:121`
+- `backend/tests/routes/signup-verify-resume-argon-error-translation.test.ts:162`
+
+`backend/tests/support/argon2-error-mocks.ts:128` (the test-mock factory's re-export site noted in the round-3 dismissed-items list) is a mechanical re-export and was left untouched per the hold block.
+
+### [TODO Architect] — coordination dependency on c4d988e
+
+The round-3 hold block describes "all 7 callers (5 sibling translation tests + the 2 c4d988e-migrated files)". The two `c4d988e`-migrated files referenced are:
+
+- `backend/tests/routes/auth-signup-dup-saturated.test.ts`
+- `backend/tests/routes/auth-reset-request-shutdown.test.ts`
+
+**Commit `c4d988e` is NOT on `main` HEAD.** It lives on a sibling worktree branch (per the prior backend re-review signal block at line 222 above and per a sibling worker subagent run during this round-3 fix). On main HEAD as of this signal block, both files still use in-file `vi.hoisted` synthetic class declarations (`MockArgonSemaphoreError`, `MockArgonQueueFullError`, etc.) and do NOT call `assertArgon2AbortIsSilent`. There is therefore nothing to update in those two files at this commit.
+
+When `c4d988e` is later merged onto main, its `assertArgon2AbortIsSilent(reqPromise)` call sites in those two files will need a follow-up edit to pass `mockRunWithArgon2Slot` — otherwise `tsc` will fail because the helper now requires two arguments. Suggested resolution at that integration step: a one-line edit per call site, mirroring the 5 caller updates above.
+
+Architect: please confirm during re-review whether the divergence between the round-2 backend signal block at line 222 (which claims `c4d988e` landed) and main HEAD (where it has not landed) is expected — i.e. round-2 was reviewed against a yet-to-be-merged sibling branch — or whether `c4d988e` was lost during a worktree-cleanup pass and needs replay. This task's archive can proceed without that question being answered: this round-3 fix stands on its own.
+
+### Verification
+
+- `npx tsc --noEmit`: clean.
+- `npm run lint`: clean (only pre-existing seed-phrase.ts warnings).
+- Targeted vitest (5 caller files + helper module): all callers pass with the new two-arg signature.
+- Full backend vitest deferred to the orchestrating commit's verification step.

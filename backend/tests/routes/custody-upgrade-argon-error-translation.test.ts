@@ -128,6 +128,6 @@ describe('POST /api/custody/upgrade — argon2 error → HTTP translation', () =
       .send({ password: 'AnyPassword1' })
       .timeout({ deadline: 250 });
 
-    await assertArgon2AbortIsSilent(reqPromise);
+    await assertArgon2AbortIsSilent(reqPromise, mockRunWithArgon2Slot);
   });
 });
