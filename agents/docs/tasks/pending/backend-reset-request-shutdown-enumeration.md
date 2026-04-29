@@ -160,3 +160,50 @@ All three round-1 hold items landed at `backend/src/routes/auth.ts`:
 Verification:
 - `npm run lint` — clean (only pre-existing accepted `@typescript-eslint/no-explicit-any` warnings in `seed-phrase.ts`).
 - `npx vitest run tests/routes/auth-reset-request-shutdown.test.ts` — 3 tests passed (drain + unknown → 200, drain + known → 200, queue-full + unknown → 503 retained).
+
+---
+
+## Architect re-review (2026-04-29) — HELD PENDING FIXES (round 2)
+
+`/ce-code-review` ran on commit `f77291b` (round-1 hold-fix landing items 1-3) with 10 personas (correctness, testing, maintainability, project-standards, agent-native, learnings, security, reliability, kieran-typescript, adversarial). Round-1 hold items 1-3 verified landed correctly:
+
+- **Item 1** — `RESET_REQUEST_OK_MESSAGE` module-scoped constant at `auth.ts:111`; both branches (unknown-email burn-then-200 + known-email DB-update-then-200) reference the constant; no string-literal duplicates remain.
+- **Item 2** — `logger.debug({ event: 'reset_request_drain_suppression', email_hash: hashEmailForLogs(normalizedEmail) }, ...)` lands inside the `!(err instanceof ShuttingDownError)` catch body at the right level (debug, default-off) and uses the existing CNPD-compliant `hashEmailForLogs` helper.
+- **Item 3** — Comment block now references `agents/docs/solutions/conventions/timing-equalization-sub-branch-oracles-2026-04-21.md` instead of the stale-by-construction task-file path.
+
+But three round-2 hold items surfaced — one P2 testing gap (mutation-kill on the new operator-visibility log) and two P3 polish items (test-side constant import + sibling solution-doc cross-link) that strengthen the round-1 fix's testing surface and discoverability without changing behavior.
+
+### Items to address
+
+**1. (P2) `logger.debug` drain-suppression emission has no test coverage**
+
+- File: `backend/tests/routes/auth-reset-request-shutdown.test.ts` (the existing 'unknown-email returns 200 during shutdown' test or a new sibling test)
+- The round-1 hold-fix added `logger.debug({ event: 'reset_request_drain_suppression', email_hash: hashEmailForLogs(normalizedEmail) }, '...')` at `backend/src/routes/auth.ts:885` as the **sole** operator signal that the suppression branch fired (the prior status-code differential was the original signal; this fix closed it). No test in `auth-reset-request-shutdown.test.ts` spies on or asserts against the logger. A mutation that (a) deletes the log call entirely, (b) renames the `event` string (breaking any future log-grep-based runbook for drain-window investigations), (c) drops the `email_hash` field (CNPD-relevant), or (d) downgrades/upgrades the level would pass all 3 existing tests. Per `agents/docs/solutions/conventions/tests-must-fail-on-mutation-of-code-under-test-2026-04-22.md`, the operator-visibility invariant the P3 fix exists to defend is not enforced without coverage.
+- Fix: add a `vi.spyOn(logger, 'debug')` (or pino test transport) assertion in the existing 'unknown-email returns 200 during shutdown' test verifying the call fires exactly once with the structured fields `{ event: 'reset_request_drain_suppression', email_hash: <string> }` and the expected message. ~10 lines.
+
+**2. (P3) Tests hardcode the OK message literal instead of importing `RESET_REQUEST_OK_MESSAGE`**
+
+- File: `backend/tests/routes/auth-reset-request-shutdown.test.ts:122, 147` (the unknown-during-drain and known-during-drain `expect(res.body.data?.message).toBe(...)` assertions)
+- Both 200-returning tests assert against the hardcoded literal `'If an account exists with that email, a reset link has been sent.'`. The round-1 fix extracted that literal into a module constant precisely so wording drift between the two production branches is mechanically prevented — but tests pinned to the literal don't ride the constant. A constant rename + matching test edit could pass-by-coincidence; tests pinned to the constant would fail loudly if a future diff drifted one branch off the constant.
+- Fix: import `RESET_REQUEST_OK_MESSAGE` from `../../src/routes/auth.js` (or wherever the constant is exported/exportable from) and replace both literal assertions. Mirrors the pattern in the 5 sibling translation tests that import `SERVICE_UNAVAILABLE_MESSAGE` / `ARGON_REASON_*` from `argon2-error-handler.js` rather than hardcoding.
+- Note: if the constant is currently file-private in `auth.ts`, export it (it's already named with the `_OK_MESSAGE` suffix that signals intent). Test-only use of the export is fine.
+
+**3. (P3) Catch comment cites only one of two relevant convention docs**
+
+- File: `backend/src/routes/auth.ts:851-861` (the catch comment block above and around the `if (!(err instanceof ShuttingDownError)) throw err;` line)
+- The round-1 hold-fix updated this comment to reference `agents/docs/solutions/conventions/timing-equalization-sub-branch-oracles-2026-04-21.md` — the right canonical doc for the drain-window axis. But the same `/reset-request` handler ALSO sits under `agents/docs/solutions/conventions/timing-equalization-smtp-failure-mode-oracle-2026-04-22.md` (the SMTP-failure-axis sibling), and the SMTP-failure catch block elsewhere in the same file (around `auth.ts:872`) already cites that sibling doc. A reader arriving at the drain-suppression catch from an SMTP-axis investigation should find the cross-link locally.
+- Fix: extend the comment block with a one-line cross-reference: `// See also agents/docs/solutions/conventions/timing-equalization-smtp-failure-mode-oracle-2026-04-22.md for the SMTP-failure-axis sibling on the same handler.` Mirrors the pattern at `auth.ts:872`.
+
+### Items dismissed during architect triage (do NOT address)
+
+- **Wall-time timing oracle remaining open during drain** (adversarial conf 50). Pre-existing; the task explicitly listed this as a non-goal (line 96 of the original task). Tracked separately as `backend-resend-verification-smtp-timing.md`.
+- **`hashEmailForLogs` is unkeyed truncated SHA-256** (adversarial conf 75). Project-wide convention used at 4+ existing call sites; not introduced by this commit. Captured for a future `cnpd-pii-log-hashing` `/ce-compound` follow-up rather than blocking this task.
+- **`MockArgonAbortError` imported but unused in tests** (testing residual). Resolved during the orphaned-worktree replay (commit `cfd5a73`) which migrated the file to `buildArgon2RouteMockKit`; no synthetic mock classes remain.
+- **Cross-branch byte-equality response-body assertion** (testing/maintainability conf 60). Defensible follow-up but the constant centralization at the production level closes the wording-drift class of regression on its own. Item 2 (test-side constant import) is the lighter-weight defense that lands inside the held-task scope.
+- **Structured-log convention divergence** (`event:` vs `route: + emailKnown:`). Filed separately as `backend-auth-structured-log-convention-converge.md` — cross-cutting cleanup that exceeds this task's scope.
+- **Top-level `try/catch` structural alternative** (maintainability conf 60). Reviewer-acknowledged conf 60; current shape is correct and well-tested; restructuring touches a load-bearing concurrency primitive for stylistic gain.
+- **Listener-cleanup test under drain-race** (adversarial conf 50). Logic is structurally clean (finally always runs); coverage is defensive against a hypothetical refactor.
+
+### Re-review signal
+
+When items 1-3 land, `git mv` this file back to `tasks/review/`. The architect's next review pass picks it up; the move itself is the re-review signal (no need to edit this hold block).

@@ -313,3 +313,45 @@ Architect: please confirm during re-review whether the divergence between the ro
 - `npm run lint`: clean (only pre-existing seed-phrase.ts warnings).
 - Targeted vitest (5 caller files + helper module): all callers pass with the new two-arg signature.
 - Full backend vitest deferred to the orchestrating commit's verification step.
+
+---
+
+## Architect re-review (2026-04-29) — HELD PENDING FIXES (round 4)
+
+`/ce-code-review` ran on commit `5cb0fbc` (round-3 hold-fix landing P2 item 1: `assertArgon2AbortIsSilent` invocation guard) with 7 personas (correctness, testing, maintainability, project-standards, agent-native, learnings, kieran-typescript). Round-3 hold item 1 verified landed correctly: helper signature widened to `(promise, mockRunWithArgon2Slot)`, `expect(mockRunWithArgon2Slot).toHaveBeenCalledTimes(1)` runs after the timeout-classification, the 5 sibling translation test call sites pass the kit's mock fn through. The `[TODO Architect]` coordination question about the `c4d988e` divergence is now resolved by the orphaned-worktree replay (commits `718b7ed` + `cfd5a73` + `002fec1` on main HEAD).
+
+But two round-4 hold items surfaced — both P2 with mutation-kill weight. The first closes a meta-test gap on the helper itself (the round-3 invocation guard's discriminating power is itself unverified by automated coverage); the second improves operator-debuggability when the helper trips in CI.
+
+### Items to address
+
+**1. (P2) No self-test for `assertArgon2AbortIsSilent` helper**
+
+- File: `backend/tests/support/argon2-error-mocks.ts` — recommend a new sibling test file `backend/tests/support/argon2-error-mocks.test.ts` (or scoped describe block in an existing helper-test file).
+- The helper now contains 3 outcome-classification branches (`response`, `timeout`, `other-error`) at lines ~191-211 plus the round-3 invocation guard at line ~224. The round-3 hold's stated rationale was that without the guard, a route hanging at a different unmocked `await` would false-pass the silent-return contract — but no test proves that claim. Coverage today is purely incidental via the 7 caller files exercising happy-path scenarios. Per `agents/docs/solutions/conventions/tests-must-fail-on-mutation-of-code-under-test-2026-04-22.md`, a defense-in-depth assertion that exists to catch a specific regression class must itself be regression-fenced — otherwise a future refactor that drops or weakens the guard ships green.
+- Fix: add 3 self-test cases:
+  - **(a) `outcome.kind === 'response'` (route wrote a body in <250ms):** construct a Promise that resolves to a fake supertest response with status 500; pass to the helper; expect the helper to throw a vitest `expect` assertion failure with `outcome.kind` mismatch. Pin the message-string so a future regression that softens the failure-shape diagnostic also surfaces.
+  - **(b) `outcome.kind === 'timeout'` AND mock fn called once:** construct a Promise that rejects with a supertest-shaped timeout error (`code: 'ECONNABORTED'`, `timeout: 250`); pass with a `vi.fn()` that is called once before the helper runs; expect the helper to resolve cleanly.
+  - **(c) `outcome.kind === 'timeout'` AND mock fn NOT called (the round-3 regression class):** construct a Promise that rejects with the same timeout error shape; pass with a `vi.fn()` that is NEVER called; expect the helper to throw the round-3 invocation-guard assertion failure.
+- ~30-50 lines depending on file structure. The file write justification: this is helper-only test infra, no real-HAF/Redis surface, so the carve-out justification is "the unit is the helper itself; mocking supertest's response/error shape is the only way to exercise outcome.kind branches deterministically."
+
+**2. (P2) Failure-mode diagnostics in `assertArgon2AbortIsSilent` don't distinguish failure shapes**
+
+- File: `backend/tests/support/argon2-error-mocks.ts:218, 224` (the two `expect(...)` calls inside the helper)
+- When the helper fails in CI, vitest emits its default messages:
+  - `expect(outcome.kind).toBe('timeout')` → fails with `expected 'response' to be 'timeout'` — does NOT tell the operator which HTTP status the route wrote (the captured `outcome.status` field at line 195 is discarded).
+  - `expect(mockRunWithArgon2Slot).toHaveBeenCalledTimes(1)` → fails with `expected "spy" to be called 1 times, but got 0 times` — does NOT tell the operator "the route hung at a non-argon2 await; check DB/Redis seed".
+- A failed CI run on this surface produces generic spy-count or string-equality misses with no hint of which of the three failure shapes (response, non-argon2 hang, other-error) was hit. The helper is the choke point for 7+ silent-abort assertion sites; message-string upgrades pay off across every future CI failure on this surface.
+- Fix: pass message strings to each `expect(...)` call:
+  - `expect(outcome.kind, \`silent-abort contract violated: route wrote response with status \${outcome.kind === 'response' ? outcome.status : 'n/a'} (or unexpected error: \${outcome.kind === 'other-error' ? String(outcome.err) : 'n/a'})\`).toBe('timeout');`
+  - `expect(mockRunWithArgon2Slot, 'route hung but argon2 path was never entered — likely an unmocked await earlier in the handler (DB/Redis/feature flag); check the route mock kit').toHaveBeenCalledTimes(1);`
+- ~6-line edit (multi-line template literals).
+
+### Items dismissed during architect triage (do NOT address)
+
+- **Pre-bind `assertArgon2AbortIsSilent` to `buildArgon2RouteMockKit` to eliminate the second-arg threading at every call site** (maintainability conf 70). Filed separately as `backend-argon2-route-mock-kit-bind-helpers.md` — independent improvement, not a defect of the round-3 fix. Item 2 of this hold benefits from but does not block the kit-bind work.
+- **Helper parameter type duplicates kit field type — extract `type Argon2SlotMock = ...` alias** (maintainability conf 50). Subsumed by the kit-bind task above; if that lands, the parameter goes away entirely and the alias becomes pointless. Skip pending the kit-bind decision.
+- **`toHaveBeenCalledTimes(1)` is exact-count; brittle for routes that legitimately call argon2 twice** (testing conf 50). Current 5 callers all single-call so safe today; a future double-call route would need to either mock both calls or add a route-specific helper variant. Document the assumption in the helper JSDoc as part of item 2's edits if cheap.
+
+### Re-review signal
+
+When items 1-2 land, `git mv` this file back to `tasks/review/`. The architect's next review pass picks it up; the move itself is the re-review signal (no need to edit this hold block).
