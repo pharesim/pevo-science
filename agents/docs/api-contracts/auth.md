@@ -220,7 +220,7 @@ On success: Hive account created via `create_claimed_account`, posting and memo 
 - `VALIDATION_ERROR` — missing fields, invalid key format, or invalid username
 - `BAD_REQUEST` — invalid or expired auth token
 - `DUPLICATE` — username already taken on Hive
-- `INTERNAL_ERROR` — account creation failed (e.g., no available claim tokens)
+- `INTERNAL_ERROR` — account creation failed (e.g., no on-chain `pending_claimed_accounts` capacity on the onboarding account, transient HAF/Hive read failure, or chain-side rejection of `create_claimed_account`). The platform reads chain capacity directly via `getCachedPendingClaimedAccounts()` (10s Redis cache); there is no DB token mirror.
 
 ---
 

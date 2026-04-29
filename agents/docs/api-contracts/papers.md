@@ -2,6 +2,8 @@
 
 Endpoints for listing, viewing, searching, citing, retracting papers, and discussion comments.
 
+**Bridge paper identity guarantee.** Bridge papers (`type: "bridge_paper"`, `source_type: "arxiv" | "crossref"`) returned by `/api/papers`, `/api/search`, `/api/papers/:author/:permlink`, `/api/disciplines`, `/api/notifications`, and the sitemap are guaranteed to be authored by `config.hiveBridgeAccount` (the `HIVE_BRIDGE_ACCOUNT` env var). The bridge identity is part of the contract: any on-chain comment with `type: "bridge_paper"` from any other author is invalid data and is excluded from every PEvO surface. The platform enforces this via the SQL helper `validPevoPaperWhere()` (`backend/src/hafsql.ts`), the `isPevoBridgePaper(meta, author)` JS helper, and the `npm run check:bridge-paper-discipline` lint guard.
+
 ---
 
 ### GET /api/papers

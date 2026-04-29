@@ -49,7 +49,9 @@ Sign and broadcast Hive operations for light accounts. Only `comment`, `vote`, a
 - `NOT_FOUND` — custodial account not found
 - `FORBIDDEN` — operation not in allowlist, author/voter mismatch, or account already upgraded to self-custody
 - `VALIDATION_ERROR` — malformed operations or missing app tag
-- `BROADCAST_FAILED` (500) — Hive broadcast failed
+- `BROADCAST_TIMEOUT` (504) — broadcast timed out before chain confirmation. Message: `"Broadcasting signed operation timed out"`. Details: `{retriable:false, outcome:"uncertain", verify_before_retry:true, timeout_ms}`.
+- `BROADCAST_FAILED` (502) — Hive node rejected the broadcast. Message: `"Failed to broadcast signed operation to Hive"`. Details: `{retriable:false}`.
+- `INTERNAL_ERROR` (500) — non-broadcast errors (database, decryption, key parse) via the outer catch. Only broadcast-path errors flow through 502/504.
 
 ---
 
