@@ -102,10 +102,18 @@ export async function getCachedPendingClaimedAccounts(): Promise<number | null> 
 export async function invalidatePendingClaimedAccountsCache(): Promise<void> {
   const redis = getRedis();
   if (!redis) return;
+  const cacheKey = pendingCounterCacheKey();
   try {
-    await redis.del(pendingCounterCacheKey());
+    await redis.del(cacheKey);
   } catch (err) {
-    logger.debug({ err }, 'pending_claimed_accounts cache invalidation failed');
+    // Cache-del failure surfaces as a stale `pending_claimed_accounts` view
+    // for up to the 10s TTL window, which can block signups (the consume path
+    // sees the now-stale `'0'` and pre-rejects with a retriable error). Warn
+    // so operators have a visible anchor to correlate signup-impact incidents.
+    logger.warn(
+      { err, cacheKey, event: 'pending_claim_cache_invalidate_failed' },
+      'pending_claimed_accounts cache invalidation failed',
+    );
   }
 }
 
@@ -243,13 +251,23 @@ export async function createClaimedAccount(
     // Translate consensus-rejection-on-counter to the same retriable error
     // shape as the pre-broadcast capacity check. Any node that says the
     // creator has insufficient pending claims (lost race) surfaces as a
-    // chain error containing one of these phrases. Other broadcast failures
-    // (timeouts, network errors, signature rejection) propagate unchanged.
+    // chain error containing one of these specific phrases. Other broadcast
+    // failures (timeouts, network errors, signature rejection) propagate
+    // unchanged.
+    //
+    // Tight alternation matches only the two known consensus-rejection
+    // strings — broader patterns (e.g. "no claim" anywhere in the message)
+    // can swallow unrelated transient errors and mask their diagnostic
+    // context behind the retriable shape.
     const msg = err instanceof Error ? err.message : String(err);
-    if (
-      /pending[_ ]claimed[_ ]accounts/i.test(msg) ||
-      /no[_ ]?(?:available)?[_ ]?(?:account[_ ])?claim/i.test(msg)
-    ) {
+    if (/assertion failed: pending_claimed_accounts|no available account creation/i.test(msg)) {
+      // Preserve the original error context in operator logs before we
+      // collapse it to the retriable shape — the underlying message and
+      // stack are otherwise lost across the throw boundary.
+      logger.warn(
+        { err, event: 'create_claimed_account_consensus_rejected' },
+        'create_claimed_account rejected by chain consensus — translating to retriable',
+      );
       // Counter changed under us — make sure the next reader sees fresh state.
       await invalidatePendingClaimedAccountsCache();
       throw new Error('No account creation tokens available');

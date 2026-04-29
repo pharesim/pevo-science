@@ -249,4 +249,66 @@ describe('createClaimedAccount — capacity check + cache + consensus translatio
     );
   });
 
+  it('does NOT translate unrelated errors that happen to mention "no claim" (regex tightened)', async () => {
+    // Pre-tightening, the regex `/no[_ ]?(?:available)?[_ ]?(?:account[_ ])?claim/i`
+    // matched any string containing "no" followed loosely by "claim", which
+    // could swallow unrelated permission/validation errors mentioning the
+    // word "claim" anywhere. The tightened regex only matches the two known
+    // consensus-rejection phrases. This guard pins that contract.
+    redisGetMock.mockResolvedValueOnce('5');
+    sendOperationsMock.mockRejectedValueOnce(
+      new Error('user has no claim history yet — unrelated validation error'),
+    );
+
+    const { createClaimedAccount } = await import('../src/account-creation.js');
+    // The original error must propagate unchanged, NOT be collapsed to the
+    // retriable "No account creation tokens available" string. Asserting the
+    // exact thrown message pins both invariants (original preserved + not
+    // translated) in a single check.
+    await expect(createClaimedAccount('alice', ...KEY_ARGS)).rejects.toThrow(
+      'user has no claim history yet — unrelated validation error',
+    );
+  });
+
+  it('logs the consensus-rejection original error at warn before translating', async () => {
+    redisGetMock.mockResolvedValueOnce('1');
+    const consensusErr = new Error('assertion failed: pending_claimed_accounts > 0');
+    sendOperationsMock.mockRejectedValueOnce(consensusErr);
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => logger);
+
+    const { createClaimedAccount } = await import('../src/account-creation.js');
+    await expect(createClaimedAccount('alice', ...KEY_ARGS)).rejects.toThrow(
+      'No account creation tokens available',
+    );
+
+    // The original error context is preserved in a warn log keyed by the
+    // structured event tag; without this, diagnostic context dies at the
+    // throw boundary.
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        err: consensusErr,
+        event: 'create_claimed_account_consensus_rejected',
+      }),
+      expect.stringContaining('chain consensus'),
+    );
+  });
+
+  it('warn-logs cache-invalidation failures with the structured event tag', async () => {
+    redisGetMock.mockResolvedValueOnce('5');
+    sendOperationsMock.mockResolvedValueOnce({ id: 'tx', block_num: 1 });
+    redisDelMock.mockRejectedValueOnce(new Error('redis del boom'));
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => logger);
+
+    const { createClaimedAccount } = await import('../src/account-creation.js');
+    await createClaimedAccount('alice', ...KEY_ARGS);
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cacheKey: EXPECTED_CACHE_KEY,
+        event: 'pending_claim_cache_invalidate_failed',
+      }),
+      expect.stringContaining('cache invalidation failed'),
+    );
+  });
+
 });
