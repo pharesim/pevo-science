@@ -183,13 +183,17 @@ export async function assertArgon2AbortIsSilent(
     const res = await promise;
     outcome = { kind: 'response', status: res.status };
   } catch (err) {
-    const e = err as { code?: string; timeout?: number; message?: string };
-    if (
-      e.code === 'ECONNABORTED' ||
-      typeof e.timeout === 'number' ||
-      /Timeout/i.test(e.message ?? '')
-    ) {
-      outcome = { kind: 'timeout' };
+    if (typeof err === 'object' && err !== null) {
+      const e = err as { code?: string; timeout?: number; message?: string };
+      if (
+        e.code === 'ECONNABORTED' ||
+        typeof e.timeout === 'number' ||
+        /Timeout/i.test(e.message ?? '')
+      ) {
+        outcome = { kind: 'timeout' };
+      } else {
+        outcome = { kind: 'other-error', err };
+      }
     } else {
       outcome = { kind: 'other-error', err };
     }
