@@ -137,7 +137,9 @@ describe('POST /api/auth/reset-request — drain-window enumeration fix', () => 
     expect(debugSpy).toHaveBeenCalledTimes(1);
     expect(debugSpy).toHaveBeenCalledWith(
       expect.objectContaining({
-        event: 'reset_request_drain_suppression',
+        event: 'auth.reset_request.drain_suppression',
+        route: 'auth.reset-request',
+        emailKnown: 'unknown',
         email_hash: expect.any(String),
       }),
       expect.stringContaining('drain window'),

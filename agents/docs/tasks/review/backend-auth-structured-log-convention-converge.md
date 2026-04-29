@@ -64,3 +64,57 @@ Implementer may push back if a different shape better fits the team's actual log
 ## Notes
 
 The `event` discriminator approach is what `argon2_abort_summary` (semaphore-side) already uses (`event: 'argon2_abort_summary'` per `ARCHITECTURE.md` Section 5). Auth-side convergence on the same shape brings the two operator-signal surfaces into agreement.
+
+---
+
+## Backend re-review signal (2026-04-29, working tree)
+
+Convergence sweep landed. All 18 structured log emissions in `backend/src/routes/auth.ts` use the canonical merged shape; the new convention is captured under `agents/docs/solutions/conventions/`.
+
+### Canonical shape adopted
+
+```ts
+logger.<level>(
+  {
+    event: 'auth.<endpoint>.<sub_event>',     // canonical aggregator key, snake_case
+    route: 'auth.<endpoint>',                 // grep-friendly, kebab-case where the URL is kebab
+    email_hash?: hashEmailForLogs(email),     // when correlating per-email; never raw email
+    emailKnown?: 'known' | 'unknown',         // when branch identity matters operationally
+    err?: <Error>,                            // when warn/error
+  },
+  '<human-readable message>',
+);
+```
+
+`event` is snake_case (single grep token, valid as an aggregator field name). `route` stays kebab where the URL path is kebab (`auth.reset-request`, `auth.resend-verification`) — back-compat with existing dashboards. The `auth.` prefix is uniform across file-level (startup, helper) and route-level emissions; the second segment is the endpoint or file-level component.
+
+### Emission inventory (18 sites)
+
+- **Startup (1):** `auth.startup.sentinel_hash_failed` (line 171, error).
+- **`burnSentinel` helper (1):** `auth.burn_sentinel.failed` (line 245, warn). Helper is called from both `auth.ts` and `custody.ts`; the file-level prefix tags the file the emission lives in, not the route.
+- **/signup (5):** `auth.signup.dup_burn_failed` (lines 425 + 437, warn — both dup-burn `.catch` blocks) · `auth.signup.smtp_send_failed` (line 539, error) · `auth.signup.smtp_not_configured` (line 548, error — preserves `email_hash`) · `auth.signup.failed` (line 566, error — top-level catch).
+- **/resend-verification (3):** `auth.resend_verification.smtp_send_failed` (line 687, warn — preserves `emailKnown: 'known'`) · `auth.resend_verification.smtp_not_configured` (line 699, warn — preserves `emailKnown: 'known'`) · `auth.resend_verification.failed` (line 712, error — top-level catch).
+- **/login (1):** `auth.login.failed` (line 860, error — top-level catch).
+- **/reset-request (4):** `auth.reset_request.drain_suppression` (line 930, debug — preserves `email_hash`, gains `emailKnown: 'unknown'` for sub-branch oracle correlation) · `auth.reset_request.smtp_send_failed` (line 987, warn — preserves `emailKnown: 'known'`) · `auth.reset_request.smtp_not_configured` (line 1001, warn — preserves `emailKnown: 'known'`) · `auth.reset_request.failed` (line 1014, error — top-level catch).
+- **/reset (1):** `auth.reset.failed` (line 1091, error — top-level catch).
+- **/recover (2):** `auth.recover.memo_decrypt_failed` (line 1185, error — preserves `username` field) · `auth.recover.failed` (line 1293, error — top-level catch).
+
+### Test impact
+
+`backend/tests/routes/auth-reset-request-shutdown.test.ts` was the only test file pinned to a structured log field (the `event: 'reset_request_drain_suppression'` assertion added in `backend-reset-request-shutdown-enumeration.md` round-2). The assertion is updated to match the new canonical shape:
+
+- `event: 'auth.reset_request.drain_suppression'` (was `reset_request_drain_suppression`)
+- Adds `route: 'auth.reset-request'` and `emailKnown: 'unknown'` to the expected object — both are now present in the production emission and the assertion verifies them, so a future drift on those fields would also fail.
+
+No other test files matched any of the modified field shapes (verified via grep on the test tree before editing).
+
+### New convention doc
+
+`agents/docs/solutions/conventions/auth-structured-log-shape-2026-04-29.md` — captures the canonical shape, field rules, file-level emission convention, the `reset_request_drain_suppression` rename, and anti-patterns. Cross-linked from `agents/docs/solutions/conventions/timing-equalization-smtp-failure-mode-oracle-2026-04-22.md` (the doc that prescribed the older `{ err, route, emailKnown }` shape this convention subsumes for SMTP-failure catches).
+
+### Verification
+
+- `npx tsc --noEmit`: clean.
+- `npm run lint`: clean (only pre-existing seed-phrase.ts warnings).
+- Targeted vitest on the auth route tests (auth, auth-argon-error-translation, auth-signup-argon-error-translation, auth-signup-dup-saturated, auth-reset-request-shutdown, auth-concurrency, auth-recover, auth-resume-signup): 52 tests passed across 6 files (3 of the 8 I tried were not present in the tree; the 6 that ran are the auth-route surface).
+- Full backend vitest: 640 passed | 5 skipped, with 1 isolated flake on `tests/routes/reputation-lifecycle.test.ts` ("re-throws permanent errors (TypeError) so post-broadcast discrimination surfaces 502") that does NOT involve `auth.ts`. Re-running the same test file in isolation produces 10/10 pass; running on main without my changes produces 10/10 pass. The flake reproduces only under full-suite parallel load against real Postgres/Redis (the suite contains many ECONNRESET / ETIMEDOUT lines from concurrent HAF queries during the run). Surfacing it here so the architect re-review pass can verify; it is not introduced by this convergence sweep.

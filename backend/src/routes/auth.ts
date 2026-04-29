@@ -168,7 +168,10 @@ const SENTINEL_ARGON2_HASH_PROMISE: Promise<string> = argon2.hash(
 // fails loudly again. This is a security primitive; partial function is
 // worse than hard fail.
 SENTINEL_ARGON2_HASH_PROMISE.catch((err) => {
-  logger.error({ err }, 'SENTINEL_ARGON2_HASH_PROMISE rejected at startup — timing-equalization oracle would be silently open; exiting');
+  logger.error(
+    { event: 'auth.startup.sentinel_hash_failed', route: 'auth.startup', err },
+    'SENTINEL_ARGON2_HASH_PROMISE rejected at startup — timing-equalization oracle would be silently open; exiting',
+  );
   // Drain the pino transport worker before exit; in dev the transport runs in
   // a worker thread and a bare process.exit() can lose the final log line.
   // pino's thread-stream.flush(cb) uses timeout=Infinity, so a deadlocked
@@ -239,7 +242,10 @@ export async function burnSentinel(input: string, signal?: AbortSignal): Promise
     // three subclasses (ArgonQueueFullError, ShuttingDownError,
     // ArgonAbortError) and any future addition extending the base.
     if (isArgonSemaphoreError(err)) throw err;
-    logger.warn({ err }, 'argon2 sentinel burn failed — timing oracle may be open');
+    logger.warn(
+      { event: 'auth.burn_sentinel.failed', route: 'auth.burn_sentinel', err },
+      'argon2 sentinel burn failed — timing oracle may be open',
+    );
   }
 }
 
@@ -416,7 +422,10 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
             // these here would short-circuit the burn to ~0ms and reopen
             // the timing oracle under DoS / drain conditions.
             if (isArgonSemaphoreError(err)) throw err;
-            logger.warn({ err }, 'argon2 signup-dup burn failed — timing oracle may be open');
+            logger.warn(
+              { event: 'auth.signup.dup_burn_failed', route: 'auth.signup', err },
+              'argon2 signup-dup burn failed — timing oracle may be open',
+            );
           });
           return sendError(res, 409, 'DUPLICATE', 'Email already registered');
         }
@@ -425,7 +434,10 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
             // Structural collapse, behavior unchanged: see the matching
             // `verify_token === null` branch above for the rationale.
             if (isArgonSemaphoreError(err)) throw err;
-            logger.warn({ err }, 'argon2 signup-dup burn failed — timing oracle may be open');
+            logger.warn(
+              { event: 'auth.signup.dup_burn_failed', route: 'auth.signup', err },
+              'argon2 signup-dup burn failed — timing oracle may be open',
+            );
           });
           return sendError(res, 409, 'DUPLICATE', 'Email already verified. Please log in to continue.');
         }
@@ -524,14 +536,21 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
           text: `Welcome to PEvO!\n\nPlease verify your email to complete your registration:\n\n${verifyUrl}\n\nThis link expires in 24 hours.\n\nIf you did not sign up for PEvO, you can safely ignore this email.\n\nPEvO - Open Scientific Publishing\nhttps://pevo.science`,
         });
       } catch (mailErr) {
-        logger.error({ err: (mailErr as Error).message }, 'Failed to send verification email');
+        logger.error(
+          { event: 'auth.signup.smtp_send_failed', route: 'auth.signup', err: (mailErr as Error).message },
+          'Failed to send verification email',
+        );
         // Delete the account row since we couldn't send the email
         await pool.query('DELETE FROM accounts WHERE verify_token = $1', [verifyToken]);
         return sendError(res, 500, 'INTERNAL_ERROR', 'Failed to send verification email');
       }
     } else {
       logger.error(
-        { email_hash: normalizedEmail ? hashEmailForLogs(normalizedEmail) : null },
+        {
+          event: 'auth.signup.smtp_not_configured',
+          route: 'auth.signup',
+          email_hash: normalizedEmail ? hashEmailForLogs(normalizedEmail) : null,
+        },
         'SMTP not configured — cannot send verification email',
       );
       await pool.query('DELETE FROM accounts WHERE verify_token = $1', [verifyToken]);
@@ -544,7 +563,10 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
     });
   } catch (err) {
     if (handleArgonError(res, err) === ARGON_HANDLED) return;
-    logger.error({ err }, 'Signup failed');
+    logger.error(
+      { event: 'auth.signup.failed', route: 'auth.signup', err },
+      'Signup failed',
+    );
     sendError(res, 500, 'INTERNAL_ERROR', 'Registration failed');
   }
 });
@@ -662,17 +684,35 @@ router.post('/resend-verification', resendLimiter, async (req: Request, res: Res
           text: `Welcome to PEvO!\n\nPlease verify your email to complete your registration:\n\n${verifyUrl}\n\nThis link expires in 24 hours.\n\nIf you did not sign up for PEvO, you can safely ignore this email.\n\nPEvO - Open Scientific Publishing\nhttps://pevo.science`,
         });
       } catch (err) {
-        logger.warn({ err, route: 'auth.resend-verification', emailKnown: 'known' }, 'SMTP send failed');
+        logger.warn(
+          {
+            event: 'auth.resend_verification.smtp_send_failed',
+            route: 'auth.resend-verification',
+            emailKnown: 'known',
+            err,
+          },
+          'SMTP send failed',
+        );
         // Fall through to uniform 200 below.
       }
     } else {
-      logger.warn({ route: 'auth.resend-verification', emailKnown: 'known' }, 'SMTP not configured — verification email not sent');
+      logger.warn(
+        {
+          event: 'auth.resend_verification.smtp_not_configured',
+          route: 'auth.resend-verification',
+          emailKnown: 'known',
+        },
+        'SMTP not configured — verification email not sent',
+      );
     }
 
     sendOk(res, { message: 'If that email has a pending signup, a new verification link has been sent.' });
   } catch (err) {
     if (handleArgonError(res, err) === ARGON_HANDLED) return;
-    logger.error({ err }, 'Resend verification failed');
+    logger.error(
+      { event: 'auth.resend_verification.failed', route: 'auth.resend-verification', err },
+      'Resend verification failed',
+    );
     sendError(res, 500, 'INTERNAL_ERROR', 'Failed to resend verification email');
   }
 });
@@ -817,7 +857,10 @@ router.post('/login', loginLimiter, async (req: Request, res: Response) => {
     sendOk(res, { token, expires_at: expiresAt, custody, username: account.username });
   } catch (err) {
     if (handleArgonError(res, err) === ARGON_HANDLED) return;
-    logger.error({ err }, 'Login failed');
+    logger.error(
+      { event: 'auth.login.failed', route: 'auth.login', err },
+      'Login failed',
+    );
     sendError(res, 500, 'INTERNAL_ERROR', 'Login failed');
   }
 });
@@ -885,7 +928,12 @@ router.post('/reset-request', resetRequestLimiter, async (req: Request, res: Res
         // via LOG_LEVEL=debug for investigation. `email_hash` keeps logs CNPD-
         // compliant by hashing the address.
         logger.debug(
-          { event: 'reset_request_drain_suppression', email_hash: hashEmailForLogs(normalizedEmail) },
+          {
+            event: 'auth.reset_request.drain_suppression',
+            route: 'auth.reset-request',
+            emailKnown: 'unknown',
+            email_hash: hashEmailForLogs(normalizedEmail),
+          },
           'ShuttingDownError on unknown-email branch suppressed to 200 — drain window',
         );
       }
@@ -936,19 +984,37 @@ router.post('/reset-request', resetRequestLimiter, async (req: Request, res: Res
           text: `You requested a password reset for your PEvO account.\n\nReset your password here:\n\n${resetUrl}\n\nThis link expires in 1 hour. If you did not request this, you can safely ignore this email.\n\nPEvO - Open Scientific Publishing\nhttps://pevo.science`,
         });
       } catch (err) {
-        logger.warn({ err, route: 'auth.reset-request', emailKnown: 'known' }, 'SMTP send failed');
+        logger.warn(
+          {
+            event: 'auth.reset_request.smtp_send_failed',
+            route: 'auth.reset-request',
+            emailKnown: 'known',
+            err,
+          },
+          'SMTP send failed',
+        );
         // Fall through to uniform 200. Do NOT clear the reset token: a
         // legitimate user whose send failed transiently may retry and get a
         // working email on the SMTP relay's next attempt window.
       }
     } else {
-      logger.warn({ route: 'auth.reset-request', emailKnown: 'known' }, 'SMTP not configured — reset email not sent');
+      logger.warn(
+        {
+          event: 'auth.reset_request.smtp_not_configured',
+          route: 'auth.reset-request',
+          emailKnown: 'known',
+        },
+        'SMTP not configured — reset email not sent',
+      );
     }
 
     sendOk(res, { message: RESET_REQUEST_OK_MESSAGE });
   } catch (err) {
     if (handleArgonError(res, err) === ARGON_HANDLED) return;
-    logger.error({ err }, 'Password reset request failed');
+    logger.error(
+      { event: 'auth.reset_request.failed', route: 'auth.reset-request', err },
+      'Password reset request failed',
+    );
     sendError(res, 500, 'INTERNAL_ERROR', 'Password reset request failed');
   }
 });
@@ -1022,7 +1088,10 @@ router.post('/reset', resetLimiter, async (req: Request, res: Response) => {
     sendOk(res, { message: 'Password has been reset. Please log in with your new password.' });
   } catch (err) {
     if (handleArgonError(res, err) === ARGON_HANDLED) return;
-    logger.error({ err }, 'Password reset failed');
+    logger.error(
+      { event: 'auth.reset.failed', route: 'auth.reset', err },
+      'Password reset failed',
+    );
     sendError(res, 500, 'INTERNAL_ERROR', 'Password reset failed');
   }
 });
@@ -1113,7 +1182,15 @@ router.post('/recover', recoverLimiter, async (req: Request, res: Response) => {
       try {
         storedMemoKey = decryptKey(account.username, account.memo_key_enc, account.iv_memo);
       } catch (err) {
-        logger.error({ err, username: account.username }, 'Failed to decrypt memo key during recovery');
+        logger.error(
+          {
+            event: 'auth.recover.memo_decrypt_failed',
+            route: 'auth.recover',
+            err,
+            username: account.username,
+          },
+          'Failed to decrypt memo key during recovery',
+        );
         return sendError(res, 500, 'INTERNAL_ERROR', 'Recovery failed');
       }
 
@@ -1213,7 +1290,10 @@ router.post('/recover', recoverLimiter, async (req: Request, res: Response) => {
     sendOk(res, { token, expires_at: expiresAt, custody, username: account.username });
   } catch (err) {
     if (handleArgonError(res, err) === ARGON_HANDLED) return;
-    logger.error({ err }, 'Account recovery failed');
+    logger.error(
+      { event: 'auth.recover.failed', route: 'auth.recover', err },
+      'Account recovery failed',
+    );
     sendError(res, 500, 'INTERNAL_ERROR', 'Account recovery failed');
   }
 });
