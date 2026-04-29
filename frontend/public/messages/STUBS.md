@@ -777,3 +777,21 @@ tr: upgrade.keychainImportWarning.memo
 zh: upgrade.keychainImportWarning.posting
 zh: upgrade.keychainImportWarning.active
 zh: upgrade.keychainImportWarning.memo
+
+### Added 2026-04-30 (UI-ORCID-CALLBACK-POST-BROADCAST-FAILED-HANDLER)
+
+ar: orcid.postBroadcastFailedConfirmed
+cs: orcid.postBroadcastFailedConfirmed
+da: orcid.postBroadcastFailedConfirmed
+de: orcid.postBroadcastFailedConfirmed
+es: orcid.postBroadcastFailedConfirmed
+fa: orcid.postBroadcastFailedConfirmed
+fr: orcid.postBroadcastFailedConfirmed
+he: orcid.postBroadcastFailedConfirmed
+it: orcid.postBroadcastFailedConfirmed
+nl: orcid.postBroadcastFailedConfirmed
+pl: orcid.postBroadcastFailedConfirmed
+pt: orcid.postBroadcastFailedConfirmed
+sv: orcid.postBroadcastFailedConfirmed
+tr: orcid.postBroadcastFailedConfirmed
+zh: orcid.postBroadcastFailedConfirmed

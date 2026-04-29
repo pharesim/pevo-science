@@ -624,6 +624,90 @@ describe('orcidCallbackPage', () => {
       expect(comp.errorAction).toBe('settings');
     });
 
+    // Per backend cascade-rethrow rollout (cluster 2 task 4, commit 09e01e3):
+    // POST_BROADCAST_FAILED 502 with details.outcome:'confirmed' means the
+    // chain-side bind succeeded; only a downstream cascade write failed. The
+    // SPA must NOT route the user through /recover (the ORCID is already
+    // bound; a fresh OAuth flow would surface 409 ORCID_ALREADY_LINKED).
+    // Render a settings-affordance success-with-warning instead.
+    it('POST_BROADCAST_FAILED with outcome:confirmed: renders confirmed message and settings affordance, no recover', async () => {
+      const comp = createComponent();
+      const err = new Error('Cascade failed');
+      err.code = 'POST_BROADCAST_FAILED';
+      err.details = {
+        retriable: false,
+        outcome: 'confirmed',
+        tx_id: 'a'.repeat(40),
+        failed_step: 'account_update',
+      };
+      mockCompleteOrcid.mockRejectedValue(err);
+
+      await comp._verify('code', 'state', 'link');
+
+      expect(comp.status).toBe('error');
+      expect(comp.errorMessage).toBe('orcid.postBroadcastFailedConfirmed');
+      expect(comp.errorAction).toBe('settings');
+      // Critical: must NOT route to /recover. The ORCID is already bound
+      // on chain; restarting OAuth would surface 409 ORCID_ALREADY_LINKED.
+      expect(comp.errorAction).not.toBe('recover');
+    });
+
+    // Mutation guard: the outcome:'confirmed' discriminator is load-bearing
+    // per agents/docs/api-contracts/orcid.md:203. A 502 POST_BROADCAST_FAILED
+    // without outcome:'confirmed' (legacy/malformed envelope, future variant)
+    // must NOT take the success-with-warning path; it falls through to the
+    // generic console.warn + verificationFailed path.
+    it('POST_BROADCAST_FAILED without outcome:confirmed falls through to generic path', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const comp = createComponent();
+      const err = new Error('Cascade failed');
+      err.code = 'POST_BROADCAST_FAILED';
+      err.details = { retriable: false, failed_step: 'cache_write' }; // no outcome
+      mockCompleteOrcid.mockRejectedValue(err);
+
+      await comp._verify('code', 'state', 'accredit');
+
+      expect(comp.status).toBe('error');
+      expect(comp.errorMessage).toBe('orcid.verificationFailed');
+      expect(comp.errorAction).not.toBe('settings');
+      expect(warnSpy).toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
+
+    it('POST_BROADCAST_FAILED with outcome other than "confirmed" falls through to generic path', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const comp = createComponent();
+      const err = new Error('Cascade failed');
+      err.code = 'POST_BROADCAST_FAILED';
+      err.details = { retriable: false, outcome: 'uncertain', failed_step: 'cache_write' };
+      mockCompleteOrcid.mockRejectedValue(err);
+
+      await comp._verify('code', 'state', 'accredit');
+
+      expect(comp.status).toBe('error');
+      expect(comp.errorMessage).toBe('orcid.verificationFailed');
+      expect(comp.errorAction).not.toBe('settings');
+      expect(warnSpy).toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
+
+    it('POST_BROADCAST_FAILED with no details object falls through to generic path', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const comp = createComponent();
+      const err = new Error('Cascade failed');
+      err.code = 'POST_BROADCAST_FAILED';
+      // details intentionally absent
+      mockCompleteOrcid.mockRejectedValue(err);
+
+      await comp._verify('code', 'state', 'link');
+
+      expect(comp.status).toBe('error');
+      expect(comp.errorMessage).toBe('orcid.verificationFailed');
+      expect(comp.errorAction).not.toBe('settings');
+      expect(warnSpy).toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
+
     it('503 from completeOrcid leaves pevo_orcid_mode in localStorage so a refresh-retry can re-enter the correct flow', async () => {
       localStorageData['pevo_orcid_mode'] = 'link';
       const firstComp = createComponent();

@@ -66,7 +66,7 @@ export function initOrcidCallbackPage() {
 
     status: 'verifying',
     errorMessage: '',
-    errorAction: '', // 'signup' for NO_ACCOUNT, 'recover' for ORCID_ALREADY_LINKED, 'settings' for BROADCAST_TIMEOUT, else empty
+    errorAction: '', // 'signup' for NO_ACCOUNT, 'recover' for ORCID_ALREADY_LINKED, 'settings' for BROADCAST_TIMEOUT and POST_BROADCAST_FAILED (outcome:'confirmed'), else empty
     resultUsername: '',
     backPath: '/',
 
@@ -136,6 +136,20 @@ export function initOrcidCallbackPage() {
         // safe — the branch is inert until the code appears on the wire.
         if (err.code === 'BROADCAST_TIMEOUT') {
           this.errorMessage = this.$t('orcid.broadcastPending');
+          this.errorAction = 'settings';
+          return;
+        }
+
+        // POST_BROADCAST_FAILED with outcome:'confirmed' means the chain-side
+        // bind succeeded; only a downstream cascade write (cache, accounts row,
+        // reputation seed) failed. Per api-contracts/orcid.md, clients MUST NOT
+        // route this through /recover — the ORCID is already bound, and a fresh
+        // OAuth flow would surface 409 ORCID_ALREADY_LINKED. The outcome
+        // discriminator is load-bearing: any other value (or absent) falls
+        // through to the generic path below. Branch only on the contract enum,
+        // never on details.failed_step or err.message substrings.
+        if (err.code === 'POST_BROADCAST_FAILED' && err?.details?.outcome === 'confirmed') {
+          this.errorMessage = this.$t('orcid.postBroadcastFailedConfirmed');
           this.errorAction = 'settings';
           return;
         }
