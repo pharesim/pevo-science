@@ -1,11 +1,25 @@
 /**
- * Bridge-paper author-gate canary tests (round-2 + round-3).
+ * Bridge-paper author-gate canary tests (round-2 + round-3 hardening).
  *
  * These tests pin the SQL shape produced by every PEvO surface that filters
  * by paper-type. After the round-2 hold expanded scope to 15 sites composed
  * against `validPevoPaperWhere()`, removing the bridge-author conjunct from
  * the helper must fail every assertion below — that's the mutation-sensitive
  * invariant the canaries enforce.
+ *
+ * Round-3 hardenings (in this file):
+ *   - `assertBridgeAuthorPin` now uses `matchAll` (not `match`) and accepts an
+ *     `expectedCount` opt so per-site mutations in shared-SQL queries (e.g.
+ *     reputation.ts which composes the helper at the same alias multiple
+ *     times in one captured string) fail red instead of passing on the
+ *     first-occurrence-only match. (Item 1)
+ *   - The regex now accepts EITHER conjunct order inside the parenthesized
+ *     bridge arm — flipping `c.author = $N AND ...` ↔ `... AND c.author = $N`
+ *     no longer breaks the canary. (Item 8)
+ *   - Notification CTE coverage gap closed via a dedicated describe block
+ *     for `fetchNotificationsFromHaf`. (Item 2)
+ *   - Stats `expect(related.length).toBe(1)` loosened to `toBeGreaterThan(0)`
+ *     to mirror the other site canaries. (Item 7)
  *
  * **Carve-out (per CLAUDE.md "Running Tests"):** these tests mock `getPool()`
  * to capture the SQL string produced by each route. Real HAF cannot be seeded
@@ -81,30 +95,83 @@ beforeEach(async () => {
 
 /**
  * Asserts that the captured SQL contains the bridge-author-pinned predicate
- * shape produced by validPevoPaperWhere('bridge') or 'all':
+ * shape produced by validPevoPaperWhere('bridge') or 'all'. The helper today
+ * emits:
  *
  *   (<alias>.author = $N AND (<alias>.json_metadata -> $M ->> 'type') = 'bridge_paper')
  *
- * where $N binds to `config.hiveBridgeAccount`. This is mutation-sensitive:
- * removing the bridge-author conjunct from the helper drops the pattern.
+ * but the SQL is semantically identical if the conjuncts are flipped, so the
+ * assertion captures every parenthesized group that contains BOTH the author
+ * equality and the bridge_paper type predicate, in either order, and verifies
+ * the `$N` slot binds to `config.hiveBridgeAccount` for every match.
+ *
+ * **Mutation sensitivity (round-3 fix):** prior implementation called
+ * `sql.match(re)` which returned only the first occurrence. When the same SQL
+ * string contained multiple bridge-arm sites at the same alias (e.g.
+ * `reputation.ts:374` active_authors AND `reputation.ts:494` user_papers, both
+ * at alias `c`), a per-site mutation that dropped the author pin from the
+ * second occurrence left the first untouched and the canary passed. This
+ * implementation iterates `matchAll` and asserts each occurrence binds to the
+ * bridge account; an `expectedCount` opt pins the call-site count for SQL
+ * strings that compose the helper at the same alias multiple times.
  */
-function assertBridgeAuthorPin(sql: string, params: unknown[], opts: { alias?: string } = {}) {
+function assertBridgeAuthorPin(
+  sql: string,
+  params: unknown[],
+  opts: { alias?: string; expectedCount?: number } = {},
+) {
   const alias = opts.alias ?? 'c';
-  // Match the exact helper-produced bridge arm:
-  //   <alias>.author = $N AND (<alias>.json_metadata -> $M ->> 'type') = 'bridge_paper'
-  const re = new RegExp(
-    `${alias}\\.author = \\$(\\d+) AND \\(${alias}\\.json_metadata -> \\$\\d+ ->> 'type'\\) = 'bridge_paper'`,
+  // Match the outer parenthesized bridge-arm group emitted by
+  // validPevoPaperWhere('bridge') — one level of nesting (the json_metadata
+  // expression itself uses parens) is allowed. The group must contain BOTH
+  // the alias-author equality (with a captured `$N` slot) AND the
+  // 'bridge_paper' literal, in either order.
+  //
+  // Examples this regex accepts:
+  //   (c.author = $5 AND (c.json_metadata -> $4 ->> 'type') = 'bridge_paper')
+  //   ((c.json_metadata -> $4 ->> 'type') = 'bridge_paper' AND c.author = $5)
+  //
+  // The body `(?:[^()]+|\\([^()]*\\))*` matches either non-paren chars or one
+  // nested parenthesized fragment, repeated. That covers the json_metadata
+  // sub-expression without trying to fully balance arbitrary nesting.
+  const groupBody = `(?:[^()]+|\\([^()]*\\))*`;
+  // Two passes — one for each conjunct order — so the captured $N group
+  // index is consistent (always group 1 = the author-slot $N).
+  const reAuthorFirst = new RegExp(
+    `\\((${alias}\\.author = \\$(\\d+) AND ${groupBody}\\(${alias}\\.json_metadata -> \\$\\d+ ->> 'type'\\) = 'bridge_paper')\\)`,
+    'g',
   );
-  const m = sql.match(re);
+  const reTypeFirst = new RegExp(
+    `\\((\\(${alias}\\.json_metadata -> \\$\\d+ ->> 'type'\\) = 'bridge_paper' AND ${alias}\\.author = \\$(\\d+))\\)`,
+    'g',
+  );
+  // matchAll across both orders. Each match's group(2) is the bridge-account
+  // param slot (group(1) is the whole inner conjunction — unused).
+  const matches: RegExpMatchArray[] = [
+    ...Array.from(sql.matchAll(reAuthorFirst)),
+    ...Array.from(sql.matchAll(reTypeFirst)),
+  ];
   expect(
-    m,
-    `expected validPevoPaperWhere bridge arm "${alias}.author = $N AND (${alias}.json_metadata -> $M ->> 'type') = 'bridge_paper'" in SQL:\n${sql}`,
-  ).not.toBeNull();
-  if (!m) return;
-  const idx = Number(m[1]);
-  // Params are 1-indexed in SQL, 0-indexed in the JS array. The $N must bind
-  // to config.hiveBridgeAccount — not the route-author or any other slot.
-  expect(params[idx - 1]).toBe(config.hiveBridgeAccount);
+    matches.length,
+    `expected at least one validPevoPaperWhere bridge-arm at alias "${alias}" (author + 'bridge_paper' inside one parenthesized conjunction) in SQL:\n${sql}`,
+  ).toBeGreaterThan(0);
+  if (opts.expectedCount !== undefined) {
+    expect(
+      matches.length,
+      `expected exactly ${opts.expectedCount} bridge-arm occurrence(s) at alias "${alias}", got ${matches.length}. ` +
+      `Mutation canary: a per-site removal of the bridge-author pin would drop one occurrence. SQL:\n${sql}`,
+    ).toBe(opts.expectedCount);
+  }
+  // Every captured `$N` slot must bind to config.hiveBridgeAccount — not the
+  // route-author or any other slot. This is the per-occurrence check that
+  // catches a mutation in any one of multiple same-alias sites.
+  for (const m of matches) {
+    const idx = Number(m[2]);
+    expect(
+      params[idx - 1],
+      `bridge-arm at alias "${alias}" binds $${idx}; expected config.hiveBridgeAccount, got ${JSON.stringify(params[idx - 1])}`,
+    ).toBe(config.hiveBridgeAccount);
+  }
 }
 
 /**
@@ -195,15 +262,22 @@ describe('GET /api/stats — papers CTE bridge-author pin', () => {
   it('papers CTE and total_bridge_papers count both pin author = bridgeAccount', async () => {
     // Stats is monolithic — one query that contains both the c-aliased papers
     // CTE and the p-aliased count subqueries. Asserting both alias forms in
-    // the same captured SQL is the strongest mutation canary.
+    // every bridge-related capture is the strongest mutation canary.
     const { fetchStatsFromHaf } = await import('../../src/routes/stats.js');
     await fetchStatsFromHaf();
     const related = bridgeRelatedCaptures();
-    expect(related.length).toBe(1);
-    const cap = related[0];
-    // Both alias forms of the helper bridge-arm must be present.
-    assertBridgeAuthorPin(cap.sql, cap.params, { alias: 'c' });
-    assertBridgeAuthorPin(cap.sql, cap.params, { alias: 'p' });
+    // Loosened from `toBe(1)` to `toBeGreaterThan(0)` (round-3 hold item 7) so
+    // the assertion mirrors the other site canaries: the contract is that
+    // every bridge-related capture pins to the bridge account, not that there
+    // is exactly one capture. Adding a second monitor query in the future
+    // shouldn't break the canary as long as both capture sites pin correctly.
+    expect(related.length).toBeGreaterThan(0);
+    for (const cap of related) {
+      // Both alias forms of the helper bridge-arm must be present in this
+      // capture. `c` is the papers CTE; `p` is the count-subquery alias.
+      assertBridgeAuthorPin(cap.sql, cap.params, { alias: 'c' });
+      assertBridgeAuthorPin(cap.sql, cap.params, { alias: 'p' });
+    }
   });
 });
 
@@ -263,6 +337,28 @@ describe('GET /sitemap.xml — bridge-author pin', () => {
   });
 });
 
+describe('fetchNotificationsFromHaf — user_bridge_papers CTE bridge-author pin', () => {
+  it('user_bridge_papers CTE pins bridge_paper to config.hiveBridgeAccount', async () => {
+    // The user_bridge_papers CTE in notification-queries.ts:134 pairs the
+    // formerly attacker-controlled `source.registered_by = $1` filter with the
+    // bridge-author pin via validPevoPaperWhere('bridge'). Round-3 hold item 2
+    // closes the documented-but-untested coverage gap: the SQL shape was
+    // correct, the canary just didn't exercise it.
+    //
+    // fetchNotificationsFromHaf returns null when the pool is unavailable; we
+    // installed a real (mocked) pool in the global beforeEach so the SQL is
+    // captured. The query returns no rows → the function returns an empty
+    // batch; we assert on the captured SQL not the response.
+    const { fetchNotificationsFromHaf } = await import('../../src/notification-queries.js');
+    await fetchNotificationsFromHaf('testuser', 0, 50);
+    const related = bridgeRelatedCaptures();
+    expect(related.length).toBeGreaterThan(0);
+    for (const cap of related) {
+      assertBridgeAuthorPin(cap.sql, cap.params);
+    }
+  });
+});
+
 describe('reputation computeReputationBatch — bridge-author pin', () => {
   it('active_authors + user_papers CTEs pin bridge_paper to bridge account ($18)', async () => {
     const reputation = await import('../../src/reputation.js');
@@ -281,11 +377,21 @@ describe('reputation computeReputationBatch — bridge-author pin', () => {
     const repSql = captured.find((c) => c.sql.includes('active_authors AS'));
     expect(repSql, `expected an active_authors CTE in captured SQL`).toBeDefined();
     if (!repSql) return;
-    // Both alias forms of the helper bridge-arm — c (paper-side) and p
-    // (parent-paper-side review join) — must appear. Mutation canary:
-    // dropping the bridge-author conjunct from validPevoPaperWhere makes
-    // both regexes fail.
-    assertBridgeAuthorPin(repSql.sql, repSql.params, { alias: 'c' });
-    assertBridgeAuthorPin(repSql.sql, repSql.params, { alias: 'p' });
+    // The reputation query composes validPevoPaperWhere() at multiple sites
+    // sharing the same alias inside ONE captured SQL string:
+    //   - alias 'c', source 'all': active_authors paper side (line ~374)
+    //   - alias 'c', source 'all': accepted_claims user_papers UNION (line ~494)
+    //   - alias 'p', source 'all': active_authors review-join parent side (~380)
+    //   - alias 'c', source 'native': user_papers native side (~483, no bridge-arm)
+    //
+    // Round-3 hold item 1: a per-site mutation that drops the bridge-author
+    // pin from the accepted_claims arm (line ~494) leaves the active_authors
+    // arm intact. Without `expectedCount`, the old `match()` returned only the
+    // first occurrence and the test passed. Pinning expectedCount forces the
+    // canary to fail red on any per-site mutation. Concrete attack defended:
+    // an attacker with an accepted co-author claim on a spoofed `bridge_paper`
+    // gaining reputation credit via the user_papers UNION.
+    assertBridgeAuthorPin(repSql.sql, repSql.params, { alias: 'c', expectedCount: 2 });
+    assertBridgeAuthorPin(repSql.sql, repSql.params, { alias: 'p', expectedCount: 1 });
   });
 });

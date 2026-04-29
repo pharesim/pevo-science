@@ -14,10 +14,21 @@
 # Allowlist (must already enforce author-pinning at the file/line level):
 #   - backend/src/hafsql.ts          The helper itself + its JSDoc.
 #   - backend/src/helpers.ts          isPevoBridgePaper(meta, author) helper.
-#   - backend/src/types/hive.ts       The TypeScript type literal.
+#   - backend/src/types/hive.ts       The TypeScript type literal
+#                                     (`type: "bridge_paper"` — double-quoted).
 #   - backend/src/bridge.ts           Bridge-paper construction for broadcast
 #                                     (line 499 area, hardcoded by the bridge
 #                                     account, not a query filter).
+#
+# Quote-form coverage: the grep matches single-quoted, double-quoted, AND
+# backtick-quoted `bridge_paper` literals. Without all three forms, an attacker
+# could rewrite `'bridge_paper'` → `"bridge_paper"` and slip past the guard
+# while still branching on the same metadata claim. The convention ("any direct
+# literal branching") is quote-agnostic; the guard must be too.
+#
+# Concatenation bypass forms like `'bridge_' + 'paper'` are NOT detected by
+# this grep — they are out of scope for a regex-based guard. The discipline
+# is a tripwire for accidental drift, not an adversarial sandbox.
 #
 # Files NOT in the allowlist that mention 'bridge_paper' (single-quoted) are
 # violations; the script exits 1.
@@ -53,19 +64,18 @@ for path in "${ALLOWLIST[@]}"; do
   fi
 done
 
-# Find single-quoted 'bridge_paper' literals in backend/src/. Use grep -E with
-# the allowlist filter. The literal we look for is "'bridge_paper'" — quote-
-# escaped — so JSDoc backtick examples (`type = 'bridge_paper'` inside a
-# comment block) DO match if they include the single quotes; the convention
-# doc explicitly lists hafsql.ts as allowlisted to cover its own JSDoc.
-matches=$(grep -rn --include="*.ts" "'bridge_paper'" src/ 2>/dev/null | grep -Ev "^(${filter_pattern}):" || true)
+# Find single-, double-, OR backtick-quoted bridge_paper literals in
+# backend/src/. Use grep -E to match all three quote forms in one pass.
+# JSDoc examples that quote the literal (in any form) inside an allowlisted
+# file are accepted; allowlisted files cover their own commentary by entry.
+matches=$(grep -rEn --include="*.ts" "('bridge_paper'|\"bridge_paper\"|\`bridge_paper\`)" src/ 2>/dev/null | grep -Ev "^(${filter_pattern}):" || true)
 
 if [ -n "$matches" ]; then
   echo "ERROR: bridge-paper discipline violation."
   echo ""
-  echo "Direct 'bridge_paper' literals are forbidden outside the allowlist."
-  echo "Use validPevoPaperWhere() (SQL) or isPevoBridgePaper(meta, author) (JS)"
-  echo "instead. See:"
+  echo "Direct bridge_paper literals (single-, double-, or backtick-quoted)"
+  echo "are forbidden outside the allowlist. Use validPevoPaperWhere() (SQL)"
+  echo "or isPevoBridgePaper(meta, author) (JS) instead. See:"
   echo "  agents/docs/solutions/conventions/pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28.md"
   echo ""
   echo "Violations:"

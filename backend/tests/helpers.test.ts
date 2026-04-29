@@ -145,4 +145,56 @@ describe('toPaperSummary', () => {
     expect(result.ipfs_cid).toBeNull();
     expect(result.review_count).toBe(0);
   });
+
+  // Round-3 hold item 3: `isPevoBridgePaper` is the load-bearing identity check
+  // for `toPaperSummary`'s source_type/doi rendering. A spoofed bridge_paper
+  // (type set, but author ≠ config.hiveBridgeAccount) MUST degrade to the
+  // native render shape. Without this assertion, a future regression that
+  // narrowed `isPevoBridgePaper` back to a meta-only check would slip past
+  // both helpers.test.ts (which only tests the predicate directly) and
+  // bridge-paper-author-gate.test.ts (which only tests SQL shape).
+  it("degrades a spoofed bridge_paper (non-bridge author) to native source_type with null doi", () => {
+    const post = {
+      author: 'attacker',
+      permlink: 'spoof-1',
+      title: 'Spoofed',
+      body: 'Body',
+      created: '2026-04-30T00:00:00',
+      net_votes: 0,
+    };
+    const meta = {
+      app: APP_ID,
+      [TAG]: {
+        type: 'bridge_paper',
+        source: { type: 'arxiv', doi: '10.0000/spoof.1' },
+      },
+    };
+    const result = toPaperSummary(post, meta);
+    // Source_type falls back to 'native' because the author is not the bridge
+    // account; the metadata `source.type` MUST NOT leak through.
+    expect(result.source_type).toBe('native');
+    // doi is null in the native render path; the metadata `doi` MUST NOT leak.
+    expect(result.doi).toBeNull();
+  });
+
+  it("renders a legitimate bridge_paper authored by config.hiveBridgeAccount with bridge metadata", () => {
+    const post = {
+      author: config.hiveBridgeAccount,
+      permlink: 'legit-bridge-1',
+      title: 'Legit Bridge Paper',
+      body: 'Body',
+      created: '2026-04-30T00:00:00',
+      net_votes: 0,
+    };
+    const meta = {
+      app: APP_ID,
+      [TAG]: {
+        type: 'bridge_paper',
+        source: { type: 'crossref', doi: '10.1000/legit.1' },
+      },
+    };
+    const result = toPaperSummary(post, meta);
+    expect(result.source_type).toBe('crossref');
+    expect(result.doi).toBe('10.1000/legit.1');
+  });
 });
