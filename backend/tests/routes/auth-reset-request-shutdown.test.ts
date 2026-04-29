@@ -197,6 +197,6 @@ describe('POST /api/auth/reset-request — drain-window enumeration fix', () => 
       .send({ email: 'unknown-aborted@mit.edu' })
       .timeout({ deadline: 250 });
 
-    await assertArgon2AbortIsSilent(reqPromise);
+    await assertArgon2AbortIsSilent(reqPromise, mockRunWithArgon2Slot);
   });
 });

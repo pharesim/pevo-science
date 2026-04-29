@@ -224,7 +224,7 @@ describe('POST /api/signup — saturated dup-email returns 503, not 409 (round-3
       .send(SIGNUP_BODY('dup-unverified-abort'))
       .timeout({ deadline: 250 });
 
-    await assertArgon2AbortIsSilent(reqPromise);
+    await assertArgon2AbortIsSilent(reqPromise, mockRunWithArgon2Slot);
   });
 
   it('ArgonAbortError → silent on verified-dup burn site (auth.ts:416)', async () => {
@@ -238,6 +238,6 @@ describe('POST /api/signup — saturated dup-email returns 503, not 409 (round-3
       .send(SIGNUP_BODY('dup-verified-abort'))
       .timeout({ deadline: 250 });
 
-    await assertArgon2AbortIsSilent(reqPromise);
+    await assertArgon2AbortIsSilent(reqPromise, mockRunWithArgon2Slot);
   });
 });
