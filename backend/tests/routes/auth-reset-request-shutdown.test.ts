@@ -15,6 +15,32 @@
  * known-email branch returns. Any other error (including `ArgonQueueFullError`
  * and `ArgonAbortError`) still propagates to the outer catch.
  *
+ * This file was migrated to the shared `buildArgon2RouteMockKit` so the
+ * mocked argon2-semaphore module re-exports the REAL production
+ * `ArgonSemaphoreError` / `ArgonQueueFullError` / `ShuttingDownError` /
+ * `ArgonAbortError` classes via `vi.importActual`. The previous in-file
+ * `vi.hoisted` synthetic-class declarations let production drift the
+ * abstract-base hierarchy without test breakage; the shared kit binds the
+ * production hierarchy so the route's `instanceof ArgonSemaphoreError` and
+ * `instanceof ShuttingDownError` checks resolve against the same
+ * constructors the test injects. See `tests/support/argon2-error-mocks.ts`
+ * (lines 30-46) for the canonical hoist-pattern shape — `vi.hoisted` runs
+ * BEFORE every regular `import`, and `await import(...)` of the support
+ * module from inside hoisted scope is the only way `vi.mock(...)` can reach
+ * the shared kit.
+ *
+ * The /reset-request shutdown-branch contract DIVERGES from the symmetric
+ * 503 case other argon-error-translation tests use: the route swallows
+ * `ShuttingDownError` and returns 200 to keep unknown-vs-known email
+ * branches indistinguishable during SIGTERM drain. The shared kit's
+ * `assert503QueueFull` / `assert503Shutdown` helpers therefore do NOT apply
+ * to this 200-on-shutdown assertion; this file keeps its custom
+ * `expect(res.status).toBe(200)` shape but adopts the kit's mock-class
+ * factory so the production hierarchy is preserved. The queue-full path is
+ * the symmetric 503 case and uses a direct status-code assertion below
+ * (kept compact rather than reaching for `assert503QueueFull` because the
+ * file's other assertions are also direct status checks).
+ *
  * Justification for `vi.mock` (per root CLAUDE.md test carve-out, clauses
  * a/b/c):
  *   (a) Real-path impracticality: the only way to drive a real
@@ -35,57 +61,22 @@
 
 import { describe, it, expect, vi } from 'vitest';
 import request from 'supertest';
+import { assertArgon2AbortIsSilent } from '../support/argon2-error-mocks.js';
 
-// Hoisted error classes shared with the semaphore mock and the test body so
-// `instanceof` checks inside the route handler resolve to the same class the
-// test injects. Mirrors the pattern in `auth-signup-dup-saturated.test.ts`.
-const {
-  MockArgonSemaphoreError,
-  MockArgonQueueFullError,
-  MockShuttingDownError,
-  MockArgonAbortError,
-  MockRunWithArgon2Slot,
-} = vi.hoisted(() => {
-  abstract class ArgonSemaphoreError extends Error {}
-  class ArgonQueueFullError extends ArgonSemaphoreError {
-    constructor(message = 'argon2 semaphore queue full') {
-      super(message);
-      this.name = 'ArgonQueueFullError';
-    }
-  }
-  class ShuttingDownError extends ArgonSemaphoreError {
-    constructor(message = 'argon2 semaphore shutting down') {
-      super(message);
-      this.name = 'ShuttingDownError';
-    }
-  }
-  class ArgonAbortError extends ArgonSemaphoreError {
-    constructor(message = 'argon2 slot aborted') {
-      super(message);
-      this.name = 'AbortError';
-    }
-  }
-  return {
-    MockArgonSemaphoreError: ArgonSemaphoreError,
-    MockArgonQueueFullError: ArgonQueueFullError,
-    MockShuttingDownError: ShuttingDownError,
-    MockArgonAbortError: ArgonAbortError,
-    MockRunWithArgon2Slot: vi.fn(),
-  };
-});
+// `vi.hoisted` runs BEFORE every regular `import` (it shares the hoist
+// phase with `vi.mock`), so dynamically importing the support module from
+// inside hoisted scope is the only way `vi.mock(...)` can reach the
+// shared kit. A bare `import { ... } from '../support/...'` would not be
+// loaded yet when the hoisted mock factory runs. See
+// `tests/support/argon2-error-mocks.ts:30-46` for the full rationale.
+const { mockRunWithArgon2Slot, argon2SemaphoreMockFactory } = await vi.hoisted(
+  async () =>
+    (await import('../support/argon2-error-mocks.js')).buildArgon2RouteMockKit(),
+);
 
-vi.mock('../../src/lib/argon2-semaphore.js', () => ({
-  runWithArgon2Slot: MockRunWithArgon2Slot,
-  ArgonSemaphoreError: MockArgonSemaphoreError,
-  ArgonQueueFullError: MockArgonQueueFullError,
-  ShuttingDownError: MockShuttingDownError,
-  ArgonAbortError: MockArgonAbortError,
-  MAX_CONCURRENT_ARGON2_OPS: 4,
-  MAX_QUEUE_DEPTH: 50,
-  getArgon2QueueDepth: () => 0,
-  getArgon2InFlight: () => 0,
-  drainArgon2Queue: () => {},
-}));
+const { dbStubFactory, redisStubFactory } = await import(
+  '../support/argon2-error-mocks.js'
+);
 
 const appQueryMock = vi.fn();
 
@@ -93,20 +84,16 @@ vi.mock('../../src/app-db.js', () => ({
   getAppPool: () => ({ query: appQueryMock }),
 }));
 
-// HAF + Redis stubs — neither is needed by /reset-request.
-vi.mock('../../src/db.js', () => ({
-  getPool: () => null,
-  isHafAvailable: () => false,
-  closeHafPool: async () => {},
-}));
-
-vi.mock('../../src/redis.js', () => ({
-  getRedis: () => null,
-  isRedisAvailable: () => false,
-  disconnectRedis: async () => {},
-}));
+vi.mock('../../src/lib/argon2-semaphore.js', () => argon2SemaphoreMockFactory());
+vi.mock('../../src/db.js', () => dbStubFactory());
+vi.mock('../../src/redis.js', () => redisStubFactory());
 
 const { createApp } = await import('../../src/app.js');
+const {
+  ArgonQueueFullError,
+  ShuttingDownError,
+  ArgonAbortError,
+} = await import('../../src/lib/argon2-semaphore.js');
 
 const app = createApp();
 
@@ -119,8 +106,8 @@ describe('POST /api/auth/reset-request — drain-window enumeration fix', () => 
     // Force the burnSentinel argon2.verify to throw ShuttingDownError, as
     // would happen on any incoming request mid-drain after `drainArgon2Queue`
     // has fired.
-    MockRunWithArgon2Slot.mockReset();
-    MockRunWithArgon2Slot.mockRejectedValueOnce(new MockShuttingDownError());
+    mockRunWithArgon2Slot.mockReset();
+    mockRunWithArgon2Slot.mockRejectedValueOnce(new ShuttingDownError());
 
     const res = await request(app)
       .post('/api/auth/reset-request')
@@ -149,8 +136,8 @@ describe('POST /api/auth/reset-request — drain-window enumeration fix', () => 
 
     // Even if the semaphore mock would throw, this branch never calls into
     // it. Reset to a no-op for safety.
-    MockRunWithArgon2Slot.mockReset();
-    MockRunWithArgon2Slot.mockResolvedValue(undefined);
+    mockRunWithArgon2Slot.mockReset();
+    mockRunWithArgon2Slot.mockResolvedValue(undefined);
 
     const res = await request(app)
       .post('/api/auth/reset-request')
@@ -172,8 +159,8 @@ describe('POST /api/auth/reset-request — drain-window enumeration fix', () => 
     appQueryMock.mockReset();
     appQueryMock.mockResolvedValueOnce({ rows: [] });
 
-    MockRunWithArgon2Slot.mockReset();
-    MockRunWithArgon2Slot.mockRejectedValueOnce(new MockArgonQueueFullError());
+    mockRunWithArgon2Slot.mockReset();
+    mockRunWithArgon2Slot.mockRejectedValueOnce(new ArgonQueueFullError());
 
     const res = await request(app)
       .post('/api/auth/reset-request')
@@ -181,5 +168,35 @@ describe('POST /api/auth/reset-request — drain-window enumeration fix', () => 
 
     expect(res.status).toBe(503);
     expect(res.body.error?.code).toBe('SERVICE_UNAVAILABLE');
+  });
+
+  it('unknown-email under ArgonAbortError → silent (no response written)', async () => {
+    // The /reset-request unknown-email branch (auth.ts:847) re-throws ONLY
+    // `ShuttingDownError`. `ArgonAbortError` propagates to the outer catch
+    // → `handleArgonError` → silent return (no `res.status` / `res.json` /
+    // `res.set` called). This guards a future mutation that broadens the
+    // swallow to `instanceof ArgonSemaphoreError` (which would also swallow
+    // `ArgonQueueFullError` and `ArgonAbortError`, breaking saturation
+    // surfacing AND the silent-abort contract).
+    //
+    // Why silent-abort matters here: the production trigger is the client
+    // disconnecting mid-request (which fires the abort signal). Writing
+    // ANY response to a closed socket is a no-op at the wire, but in tests
+    // supertest's socket is still open — so the route mutation that wrote
+    // a 500 would resolve the supertest promise SUCCESSFULLY. The
+    // `assertArgon2AbortIsSilent` helper introspects the supertest outcome
+    // and forces an explicit deadline-vs-response check.
+    appQueryMock.mockReset();
+    appQueryMock.mockResolvedValueOnce({ rows: [] });
+
+    mockRunWithArgon2Slot.mockReset();
+    mockRunWithArgon2Slot.mockRejectedValueOnce(new ArgonAbortError());
+
+    const reqPromise = request(app)
+      .post('/api/auth/reset-request')
+      .send({ email: 'unknown-aborted@mit.edu' })
+      .timeout({ deadline: 250 });
+
+    await assertArgon2AbortIsSilent(reqPromise);
   });
 });

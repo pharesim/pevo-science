@@ -9,6 +9,27 @@
  * existence to an attacker who can saturate the singleton or catch a
  * SIGTERM drain window.
  *
+ * This file was migrated to the shared `buildArgon2RouteMockKit` so the
+ * mocked argon2-semaphore module re-exports the REAL production
+ * `ArgonSemaphoreError` / `ArgonQueueFullError` / `ShuttingDownError` /
+ * `ArgonAbortError` classes via `vi.importActual`. The previous in-file
+ * `vi.hoisted` synthetic-class declarations let production drift the
+ * abstract-base hierarchy without test breakage; the shared kit binds the
+ * production hierarchy so the route's `instanceof ArgonSemaphoreError`
+ * check at auth.ts:410/419 resolves against the same constructor the test
+ * injects. See `tests/support/argon2-error-mocks.ts:30-46` for the
+ * canonical hoist-pattern shape — `vi.hoisted` runs BEFORE every regular
+ * `import`, and `await import(...)` of the support module from inside
+ * hoisted scope is the only way `vi.mock(...)` can reach the shared kit.
+ *
+ * The `details.reason` literal assertions below import
+ * `ARGON_REASON_QUEUE_FULL` / `ARGON_REASON_SHUTDOWN_DRAIN` from
+ * `argon2-error-handler.js` so a future rename or whitespace drift in the
+ * production constant surfaces as a test mismatch instead of silent
+ * acceptance of a now-stale literal. Consumers (HTTP-only canaries) branch
+ * on this discriminator to distinguish saturation from rolling-restart
+ * drain.
+ *
  * Justification for `vi.mock` (per root CLAUDE.md test carve-out):
  *   - `getAppPool()` mock seeds the duplicate-email row deterministically
  *     without writing to the real `accounts` table during a test, which
@@ -36,57 +57,30 @@
 
 import { describe, it, expect, vi } from 'vitest';
 import request from 'supertest';
+import {
+  assertArgon2AbortIsSilent,
+  assert503QueueFull,
+  assert503Shutdown,
+} from '../support/argon2-error-mocks.js';
+import {
+  ARGON_REASON_QUEUE_FULL,
+  ARGON_REASON_SHUTDOWN_DRAIN,
+} from '../../src/lib/argon2-error-handler.js';
 
-// Hoisted error class shared with the semaphore mock and the test body so
-// `instanceof` checks inside the route handler resolve to the same class
-// the test injects.
-const {
-  MockArgonSemaphoreError,
-  MockArgonQueueFullError,
-  MockShuttingDownError,
-  MockArgonAbortError,
-  MockRunWithArgon2Slot,
-} = vi.hoisted(() => {
-  abstract class ArgonSemaphoreError extends Error {}
-  class ArgonQueueFullError extends ArgonSemaphoreError {
-    constructor(message = 'argon2 semaphore queue full') {
-      super(message);
-      this.name = 'ArgonQueueFullError';
-    }
-  }
-  class ShuttingDownError extends ArgonSemaphoreError {
-    constructor(message = 'argon2 semaphore shutting down') {
-      super(message);
-      this.name = 'ShuttingDownError';
-    }
-  }
-  class ArgonAbortError extends ArgonSemaphoreError {
-    constructor(message = 'argon2 slot aborted') {
-      super(message);
-      this.name = 'AbortError';
-    }
-  }
-  return {
-    MockArgonSemaphoreError: ArgonSemaphoreError,
-    MockArgonQueueFullError: ArgonQueueFullError,
-    MockShuttingDownError: ShuttingDownError,
-    MockArgonAbortError: ArgonAbortError,
-    MockRunWithArgon2Slot: vi.fn(),
-  };
-});
+// `vi.hoisted` runs BEFORE every regular `import` (it shares the hoist
+// phase with `vi.mock`), so dynamically importing the support module from
+// inside hoisted scope is the only way `vi.mock(...)` can reach the
+// shared kit. A bare `import { ... } from '../support/...'` would not be
+// loaded yet when the hoisted mock factory runs. See
+// `tests/support/argon2-error-mocks.ts:30-46` for the full rationale.
+const { mockRunWithArgon2Slot, argon2SemaphoreMockFactory } = await vi.hoisted(
+  async () =>
+    (await import('../support/argon2-error-mocks.js')).buildArgon2RouteMockKit(),
+);
 
-vi.mock('../../src/lib/argon2-semaphore.js', () => ({
-  runWithArgon2Slot: MockRunWithArgon2Slot,
-  ArgonSemaphoreError: MockArgonSemaphoreError,
-  ArgonQueueFullError: MockArgonQueueFullError,
-  ShuttingDownError: MockShuttingDownError,
-  ArgonAbortError: MockArgonAbortError,
-  MAX_CONCURRENT_ARGON2_OPS: 4,
-  MAX_QUEUE_DEPTH: 50,
-  getArgon2QueueDepth: () => 0,
-  getArgon2InFlight: () => 0,
-  drainArgon2Queue: () => {},
-}));
+const { dbStubFactory, redisStubFactory } = await import(
+  '../support/argon2-error-mocks.js'
+);
 
 const appQueryMock = vi.fn();
 
@@ -94,82 +88,90 @@ vi.mock('../../src/app-db.js', () => ({
   getAppPool: () => ({ query: appQueryMock }),
 }));
 
-// HAF + Redis stubs — neither is needed by the dup-email branch.
-vi.mock('../../src/db.js', () => ({
-  getPool: () => null,
-  isHafAvailable: () => false,
-  closeHafPool: async () => {},
-}));
-
-vi.mock('../../src/redis.js', () => ({
-  getRedis: () => null,
-  isRedisAvailable: () => false,
-  disconnectRedis: async () => {},
-}));
+vi.mock('../../src/lib/argon2-semaphore.js', () => argon2SemaphoreMockFactory());
+vi.mock('../../src/db.js', () => dbStubFactory());
+vi.mock('../../src/redis.js', () => redisStubFactory());
 
 const { createApp } = await import('../../src/app.js');
+const {
+  ArgonQueueFullError,
+  ShuttingDownError,
+  ArgonAbortError,
+} = await import('../../src/lib/argon2-semaphore.js');
 
 const app = createApp();
 
+// Two dup-email seeds, one per `.catch()` site:
+//   - `verify_token: null` → unverified-dup branch at auth.ts:401 (the
+//     `if (existingRows[0].verify_token === null)` block).
+//   - `verify_token: 'confirmed:<hex>'` → verified-dup branch at
+//     auth.ts:416 (the `verify_token.startsWith('confirmed:')` block).
+function seedUnverifiedDupRow(): void {
+  appQueryMock.mockResolvedValueOnce({ rows: [{ verify_token: null }] });
+}
+function seedVerifiedDupRow(): void {
+  appQueryMock.mockResolvedValueOnce({
+    rows: [{ verify_token: `confirmed:${'a'.repeat(64)}` }],
+  });
+}
+
+const SIGNUP_BODY = (emailLocal: string) => ({
+  email: `${emailLocal}@mit.edu`,
+  password: 'AnyPassword1',
+  full_name: 'Test User',
+  institution: 'MIT',
+  field: 'CS',
+});
+
 describe('POST /api/signup — saturated dup-email returns 503, not 409 (round-3 P1 oracle fix)', () => {
-  it('rethrows ArgonQueueFullError → 503 instead of swallowing → 409', async () => {
-    // Seed: existing unverified row for the test email. The handler reads
-    // `verify_token` and treats null as "registered, unverified" → enters
-    // the burn `.catch()` path with verify_token=null branch.
+  it('rethrows ArgonQueueFullError → 503 instead of swallowing → 409 (unverified-dup, auth.ts:401)', async () => {
+    // Seed: existing unverified row. Handler reads `verify_token` and treats
+    // null as "registered, unverified" → enters the burn `.catch()` path
+    // with verify_token=null branch.
     appQueryMock.mockReset();
-    appQueryMock.mockResolvedValueOnce({ rows: [{ verify_token: null }] });
+    seedUnverifiedDupRow();
 
     // Force the dup-email argon2.hash burn to throw queue-full.
-    MockRunWithArgon2Slot.mockReset();
-    MockRunWithArgon2Slot.mockRejectedValueOnce(new MockArgonQueueFullError());
+    mockRunWithArgon2Slot.mockReset();
+    mockRunWithArgon2Slot.mockRejectedValueOnce(new ArgonQueueFullError());
 
     const res = await request(app)
       .post('/api/auth/signup')
-      .send({
-        email: 'dup-saturated@mit.edu',
-        password: 'AnyPassword1',
-        full_name: 'Dup Saturated',
-        institution: 'MIT',
-        field: 'CS',
-      });
+      .send(SIGNUP_BODY('dup-saturated'));
 
-    expect(res.status).toBe(503);
-    expect(res.body.error?.code).toBe('SERVICE_UNAVAILABLE');
-    // Machine-readable discriminator on the queue-full branch (per
-    // BE-503-REASON-DISCRIMINATION). HTTP-only canaries branch on this
-    // value to distinguish saturation from rolling-restart drain.
-    expect(res.body.error?.details?.reason).toBe('queue_full');
+    // Asserts 503 + SERVICE_UNAVAILABLE_MESSAGE + Retry-After: 5 +
+    // details.reason: 'queue_full' (imported via the kit, which itself
+    // imports the production constants — no hardcoded literals). The
+    // `details.reason` machine-readable discriminator is what HTTP-only
+    // canaries branch on to distinguish saturation from rolling-restart
+    // drain (per BE-503-REASON-DISCRIMINATION).
+    assert503QueueFull(res);
+    expect(res.body.error?.details?.reason).toBe(ARGON_REASON_QUEUE_FULL);
     // Critical: NOT 409. Before the fix, the burn catch swallowed
     // ArgonQueueFullError and the handler fell through to the 409 path,
     // leaking email-existence under saturation.
     expect(res.status).not.toBe(409);
   });
 
-  it('rethrows ShuttingDownError → 503 instead of swallowing → 409', async () => {
+  it('rethrows ShuttingDownError → 503 instead of swallowing → 409 (unverified-dup, auth.ts:401)', async () => {
     // Same dup-row seed; this time the burn fails with ShuttingDownError
     // (SIGTERM-drain scenario).
     appQueryMock.mockReset();
-    appQueryMock.mockResolvedValueOnce({ rows: [{ verify_token: null }] });
+    seedUnverifiedDupRow();
 
-    MockRunWithArgon2Slot.mockReset();
-    MockRunWithArgon2Slot.mockRejectedValueOnce(new MockShuttingDownError());
+    mockRunWithArgon2Slot.mockReset();
+    mockRunWithArgon2Slot.mockRejectedValueOnce(new ShuttingDownError());
 
     const res = await request(app)
       .post('/api/auth/signup')
-      .send({
-        email: 'dup-shutdown@mit.edu',
-        password: 'AnyPassword1',
-        full_name: 'Dup Shutdown',
-        institution: 'MIT',
-        field: 'CS',
-      });
+      .send(SIGNUP_BODY('dup-shutdown'));
 
-    expect(res.status).toBe(503);
-    expect(res.body.error?.code).toBe('SERVICE_UNAVAILABLE');
-    // Shutdown branch carries the `shutdown_drain` discriminator so a
-    // canary can suppress alerts during deploy windows; queue-full carries
-    // `queue_full` and pages.
-    expect(res.body.error?.details?.reason).toBe('shutdown_drain');
+    // Asserts 503 + SERVICE_UNAVAILABLE_MESSAGE + Retry-After: 30 +
+    // details.reason: 'shutdown_drain'. The shutdown-branch discriminator
+    // lets a canary suppress alerts during deploy windows; queue-full
+    // carries `queue_full` and pages.
+    assert503Shutdown(res);
+    expect(res.body.error?.details?.reason).toBe(ARGON_REASON_SHUTDOWN_DRAIN);
     expect(res.status).not.toBe(409);
   });
 
@@ -180,22 +182,62 @@ describe('POST /api/signup — saturated dup-email returns 503, not 409 (round-3
     // 200s — a different oracle. The .catch() should log and fall through
     // to the 409.
     appQueryMock.mockReset();
-    appQueryMock.mockResolvedValueOnce({ rows: [{ verify_token: null }] });
+    seedUnverifiedDupRow();
 
-    MockRunWithArgon2Slot.mockReset();
-    MockRunWithArgon2Slot.mockRejectedValueOnce(new Error('native argon2 boom'));
+    mockRunWithArgon2Slot.mockReset();
+    mockRunWithArgon2Slot.mockRejectedValueOnce(new Error('native argon2 boom'));
 
     const res = await request(app)
       .post('/api/auth/signup')
-      .send({
-        email: 'dup-nativefail@mit.edu',
-        password: 'AnyPassword1',
-        full_name: 'Dup NativeFail',
-        institution: 'MIT',
-        field: 'CS',
-      });
+      .send(SIGNUP_BODY('dup-nativefail'));
 
     expect(res.status).toBe(409);
     expect(res.body.error?.code).toBe('DUPLICATE');
+  });
+
+  // ──────────────────────────────────────────────────────────────────────
+  // ArgonAbortError silent-return coverage on each dup-burn site.
+  //
+  // Production at auth.ts:410 (unverified-dup) and auth.ts:419 (verified-
+  // dup) re-throws via `if (err instanceof ArgonSemaphoreError) throw err;`.
+  // ArgonAbortError extends ArgonSemaphoreError, so it propagates to the
+  // outer catch → `handleArgonError` → silent return (no `res.status` /
+  // `res.json` / `res.set` called). This guards a future mutation that
+  // narrows the rethrow to `instanceof ArgonQueueFullError ||
+  // instanceof ShuttingDownError` (which would swallow ArgonAbortError and
+  // 409 the request — an oracle on the dup branch since the new-email
+  // branch silent-returns).
+  //
+  // Two tests, one per dup-burn site, because the verified vs unverified
+  // branches are independent code paths and a mutation to either alone
+  // would be missed by a single-site assertion.
+  // ──────────────────────────────────────────────────────────────────────
+
+  it('ArgonAbortError → silent on unverified-dup burn site (auth.ts:401)', async () => {
+    appQueryMock.mockReset();
+    seedUnverifiedDupRow();
+    mockRunWithArgon2Slot.mockReset();
+    mockRunWithArgon2Slot.mockRejectedValueOnce(new ArgonAbortError());
+
+    const reqPromise = request(app)
+      .post('/api/auth/signup')
+      .send(SIGNUP_BODY('dup-unverified-abort'))
+      .timeout({ deadline: 250 });
+
+    await assertArgon2AbortIsSilent(reqPromise);
+  });
+
+  it('ArgonAbortError → silent on verified-dup burn site (auth.ts:416)', async () => {
+    appQueryMock.mockReset();
+    seedVerifiedDupRow();
+    mockRunWithArgon2Slot.mockReset();
+    mockRunWithArgon2Slot.mockRejectedValueOnce(new ArgonAbortError());
+
+    const reqPromise = request(app)
+      .post('/api/auth/signup')
+      .send(SIGNUP_BODY('dup-verified-abort'))
+      .timeout({ deadline: 250 });
+
+    await assertArgon2AbortIsSilent(reqPromise);
   });
 });
