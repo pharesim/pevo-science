@@ -48,6 +48,7 @@ import { getAppPool } from '../../src/app-db.js';
 import { orcidVerified } from '../../src/routes/orcid.js';
 import { config } from '../../src/config.js';
 import { clearRateLimitKeys } from '../support/redis-helpers.js';
+import { TIMING_ORACLE_FLOOR_MS } from '../support/timing-constants.js';
 
 // Encryption key must be configured for `/confirm` (encryptKey on posting/memo)
 if (!process.env.CUSTODY_ENCRYPTION_KEY || process.env.CUSTODY_ENCRYPTION_KEY.length < 32) {
@@ -276,12 +277,8 @@ describe.skipIf(!dbReachable)('SEC-004-BE: ORCID signup + confirm WITH password'
 // our ARGON2_OPTIONS, not by the endpoint under test.
 // ──────────────────────────────────────────────────────────────
 
-// Duplicated from recover.test.ts to keep each route test file self-
-// contained. See that file for the rationale on 35ms (reference hardware
-// argon2.verify runs 42-55ms; faster CI drops to high-20s; 35ms still
-// kills the sentinel-removal mutation at ≥35× margin over the ~1ms
-// pre-sentinel path).
-const TIMING_ORACLE_FLOOR_MS = 35;
+// TIMING_ORACLE_FLOOR_MS lives in ../support/timing-constants.ts; see that
+// file for the argon2-tuning rationale on the 35ms floor.
 
 // Round-2 parametrization: the oracle closes across THREE branches that all
 // must equal the confirmed+wrong-password wall-time (~argon2.verify cost):

@@ -207,11 +207,11 @@ SENTINEL_ARGON2_HASH_PROMISE.catch((err) => {
 // — NOT burnSentinel — so the verify-vs-hash asymmetry doesn't reopen the
 // oracle along the wall-time axis. See the /signup handler for call sites.
 //
-// Timing tests assert ≥35ms (floor) rather than ≥50ms because argon2.verify at
-// our ARGON2_OPTIONS (64 MiB, time=3) runs 42-55ms median on reference hardware
-// but can drop to the high-20s on faster CI hosts. 35ms still kills the
-// sentinel-removal mutation (35× margin above the pre-sentinel ~1ms path).
-// The 35ms floor is named TIMING_ORACLE_FLOOR_MS in recover.test.ts.
+// Timing tests assert ≥TIMING_ORACLE_FLOOR_MS (currently 35ms). The floor
+// and its argon2-tuning rationale (why 35ms vs 50ms vs 40ms, and what to
+// revisit if ARGON2_OPTIONS.memoryCost / time changes) live in
+// backend/tests/support/timing-constants.ts, shared across recover.test.ts,
+// signup-verify.test.ts, and auth-concurrency.test.ts.
 export async function burnSentinel(input: string, signal?: AbortSignal): Promise<void> {
   try {
     const sentinelHash = await SENTINEL_ARGON2_HASH_PROMISE;

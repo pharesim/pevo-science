@@ -95,3 +95,18 @@ One round-2 hold item below — a test-side polish item on the `TIMING_ORACLE_FL
 ### Re-review signal
 
 When item 1 lands, `git mv` this file back to `tasks/review/`. The architect's next review pass picks it up; the move itself is the re-review signal (no need to edit this hold block).
+
+## Backend re-review signal (2026-04-29, working tree)
+
+Round-2 hold item 1 (P3) landed. Created `backend/tests/support/timing-constants.ts` exporting `TIMING_ORACLE_FLOOR_MS = 35` (and `TIMING_ORACLE_CEILING_MS = 150`, which was previously single-site in `recover.test.ts` — kept next to FLOOR so both thresholds and their argon2-tuning rationale live together). The new file's header documents the relation to `ARGON2_OPTIONS.memoryCost` / `time` and the visibility nudge to revisit the floor if those tune.
+
+Migrated three duplication sites to import from the shared module:
+- `backend/tests/routes/recover.test.ts` (FLOOR + CEILING)
+- `backend/tests/routes/signup-verify.test.ts` (FLOOR)
+- `backend/tests/routes/auth-concurrency.test.ts` (FLOOR) — third site beyond the two listed in the hold block; same duplication-rationale applies
+
+Replaced the local `const` declarations with short comments pointing at `tests/support/timing-constants.ts`. Updated the comment block at `backend/src/routes/auth.ts:210` to reference the shared constant rather than naming `recover.test.ts` as the home.
+
+Verification:
+- `npm run lint` — clean (only pre-existing accepted `@typescript-eslint/no-explicit-any` warnings in `seed-phrase.ts`).
+- `npx vitest run tests/routes/{auth-concurrency,signup-verify,recover}.test.ts` — 3 files / 37 tests passed against real Postgres + Redis.

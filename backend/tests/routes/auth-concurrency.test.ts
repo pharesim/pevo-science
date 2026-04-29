@@ -22,10 +22,9 @@ import request from 'supertest';
 import { createApp } from '../../src/app.js';
 import { getAppPool } from '../../src/app-db.js';
 import { clearRateLimitKeys } from '../support/redis-helpers.js';
+import { TIMING_ORACLE_FLOOR_MS } from '../support/timing-constants.js';
 
 const app = createApp();
-
-const TIMING_ORACLE_FLOOR_MS = 35;
 
 let dbReachable = false;
 {

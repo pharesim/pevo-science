@@ -7,6 +7,7 @@ import { getAppPool } from '../../src/app-db.js';
 import { encryptKey } from '../../src/custody-crypto.js';
 import { config } from '../../src/config.js';
 import { clearRateLimitKeys } from '../support/redis-helpers.js';
+import { TIMING_ORACLE_FLOOR_MS, TIMING_ORACLE_CEILING_MS } from '../support/timing-constants.js';
 
 const app = createApp();
 
@@ -52,25 +53,11 @@ try {
   redisReachable = false;
 }
 
-// Timing-oracle assertion thresholds. Used by every /api/auth/* timing test
-// in this file to keep the choice consistent and document-able in one place.
-//
-// FLOOR is 35ms (not 40ms or ≥50ms) because argon2.verify at our ARGON2_OPTIONS
-// (64 MiB, time=3) runs 42-55ms median on reference hardware, but can drop
-// into the high-20s on faster CI hosts. Pinning the assertion to 50ms would
-// flake on reference; pinning to 40ms would let a faster host silently let a
-// ~28ms production oracle through. 35ms still kills the sentinel-removal
-// mutation (the pre-sentinel path is ~1ms, so 35× margin) while surviving
-// the lowest plausible argon2-verify floor.
-//
-// CEILING is 150ms (not 40ms) because DB roundtrips + Express + supertest
-// overhead on stressed CI can add 20-50ms to the no-argon2 path even without
-// a burn. 40ms gave false-negative fails; 150ms is still well below the
-// combined cost of argon2.verify + DB + Express (typically ~100ms total),
-// so a regression that turns on argon2 on the fast-path would still cross
-// 150ms and fail the assertion.
-const TIMING_ORACLE_FLOOR_MS = 35;
-const TIMING_ORACLE_CEILING_MS = 150;
+// Timing-oracle assertion thresholds (TIMING_ORACLE_FLOOR_MS,
+// TIMING_ORACLE_CEILING_MS) live in ../support/timing-constants.ts so the
+// floor's argon2-tuning rationale is shared across recover.test.ts,
+// signup-verify.test.ts, and auth-concurrency.test.ts. See that file for
+// the full rationale on the 35ms floor and 150ms ceiling.
 
 async function cleanup() {
   if (!dbReachable) return;
