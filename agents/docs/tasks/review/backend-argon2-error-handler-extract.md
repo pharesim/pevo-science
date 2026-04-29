@@ -234,3 +234,27 @@ Fix: replace the 4 raw `err instanceof ArgonSemaphoreError` checks with `isArgon
 ### Re-review signal
 
 When item 1 lands, `git mv` this file back to `tasks/review/`. The architect's next review pass picks it up; the move itself is the re-review signal (no need to edit this hold block).
+
+---
+
+## Backend re-review signal (2026-04-29, commit ada6814 → merged via 9a811b9)
+
+Round-3 hold-block item 1 (P3, the only round-3 item) landed.
+
+**Item 1 — migrate 4 raw `instanceof ArgonSemaphoreError` sites to `isArgonSemaphoreError(err)`**
+
+- `backend/src/routes/auth.ts:233` (burnSentinel re-throw) — migrated.
+- `backend/src/routes/auth.ts:410` (first `/signup` dup-burn `.catch`) — migrated.
+- `backend/src/routes/auth.ts:419` (second `/signup` dup-burn `.catch`) — migrated.
+- `backend/src/lib/argon2-error-handler.ts:244` (helper's own fast-path) — migrated.
+- Removed the now-unused `ArgonSemaphoreError` import from both files (kept `isArgonSemaphoreError`).
+- `tests/support/argon2-error-mocks.ts:128` left untouched per the hold block (mechanical re-export).
+
+`grep -n "instanceof ArgonSemaphoreError" backend/src/` returns only the type guard's own implementation body at `argon2-semaphore.ts:114` plus jsdoc/comments — zero raw production-side checks remain.
+
+### Verification
+
+- `npx tsc --noEmit`: clean.
+- `npm run lint`: clean (only pre-existing seed-phrase.ts warnings).
+- Targeted vitest (7 suites: argon2-semaphore + argon2-error-handler + 5 route translation files): 76 passed (76).
+- Full backend vitest after merge: 615 passed | 4 skipped (619) across 67 files.

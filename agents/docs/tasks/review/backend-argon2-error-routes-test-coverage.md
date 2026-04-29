@@ -216,3 +216,27 @@ Fix: add `it()` cases asserting `assertArgon2AbortIsSilent` on each dup-burn sit
 ### Re-review signal
 
 When items 1-2 land, `git mv` this file back to `tasks/review/`. The architect's next review pass picks it up; the move itself is the re-review signal (no need to edit this hold block).
+
+---
+
+## Backend re-review signal (2026-04-29, commit c4d988e)
+
+Round-2 hold items 1 (P2) + 2 (P3) landed alongside `backend-argon2-test-mocks-migrate-pre-existing.md` (the two tasks coordinate on the same files; bundled per the migration task's "Coordination" section).
+
+**Item 1 (P2) — `/reset-request` unknown-email + ArgonAbortError uncovered**
+
+`backend/tests/routes/auth-reset-request-shutdown.test.ts` migrated to `buildArgon2RouteMockKit` and gained a 4th `it()` invoking `assertArgon2AbortIsSilent` on the unknown-email branch under abort. The divergent 200-on-shutdown contract for `/reset-request` is preserved — the production swallow of `ShuttingDownError` at `auth.ts:847` keeps the email-enumeration oracle closed; an `ArgonAbortError` propagates to `handleArgonError` and silently returns. A future mutation broadening the swallow to `instanceof ArgonSemaphoreError` would now fail this assertion.
+
+**Item 2 (P3) — `/signup` dup-email burn paths lack ArgonAbortError coverage**
+
+`backend/tests/routes/auth-signup-dup-saturated.test.ts` migrated to `buildArgon2RouteMockKit` and gained `it()` cases asserting `assertArgon2AbortIsSilent` on each dup-burn site (the two `.catch` blocks at `auth.ts:401, 416`) under saturation. The dup-burn paths are now guarded against an abort-class mutation that could write a 409 onto a torn-down socket.
+
+The same commit also lands `ARGON_REASON_QUEUE_FULL` / `ARGON_REASON_SHUTDOWN_DRAIN` constant imports in `auth-signup-dup-saturated.test.ts` (replacing the literal strings `'queue_full'` / `'shutdown_drain'` at the previously-hardcoded sites) — this is the shared scope from `backend-argon2-test-mocks-migrate-pre-existing.md`.
+
+### Verification
+
+- `npx tsc --noEmit`: clean.
+- `npm run lint`: clean (only pre-existing seed-phrase.ts warnings).
+- Targeted vitest (the two migrated files): 9 passed (9).
+- Synthetic class declarations confirmed gone from both files (`grep "class Mock|MockArgon|MockShutting|MockRunWith"` returns empty).
+- Full backend vitest after merge: 615 passed | 4 skipped (619) across 67 files.
