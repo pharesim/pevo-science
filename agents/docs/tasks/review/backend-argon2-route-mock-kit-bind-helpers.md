@@ -64,3 +64,45 @@ A previous round-2 hold dismissal noted that adding cross-branch identity assert
 
 - `backend-argon2-error-routes-test-coverage.md` (round-4 hold) — adds a self-test for the helper. Item 1 of that hold is independent of this task but their landing order interacts (see Acceptance line 4).
 - `agents/docs/solutions/conventions/route-level-error-class-coverage-after-helper-extraction-2026-04-29.md` — example block was updated to reflect the asymmetric 1-arg vs 2-arg helper shape; once this task lands, that example block can be re-collapsed onto a uniform kit-bound shape.
+
+---
+
+## Backend re-review signal (2026-04-29, working tree)
+
+All four assertion helpers are now pre-bound on `Argon2RouteMockKit`. The kit is the only public surface; standalone exports are gone.
+
+### Implementation
+
+`backend/tests/support/argon2-error-mocks.ts`:
+
+- `Argon2RouteMockKit` extended with four new method fields: `assertArgon2AbortIsSilent(promise)`, `assert503(res, expectedRetryAfterSec, expectedReason)`, `assert503QueueFull(res)`, `assert503Shutdown(res)`. JSDoc on each documents the kit-bind rationale (closure captures `mockRunWithArgon2Slot` for the abort helper; surface symmetry for the 503 helpers).
+- `buildArgon2RouteMockKit()` now constructs each method as a closure inside the returned object literal. The abort helper's closure captures the kit-local `mockFn` so callers cannot drop the round-3 invocation guard by forgetting an arg. The 503 helpers' closures forward to the underlying `assert503Impl` with the right retry-after constant + reason discriminator pre-bound.
+- Standalone `assertArgon2AbortIsSilent` was renamed to `assertArgon2AbortIsSilentImpl` and kept as a named export so the helper self-test (round-4 of `backend-argon2-error-routes-test-coverage`) can drive each `outcome.kind` branch with synthetic supertest-shaped promises without spinning up a route. JSDoc on the impl documents that the public surface is the kit-bound method.
+- Standalone `assert503` was made module-internal (`function assert503Impl`); standalone `assert503QueueFull` / `assert503Shutdown` exports were removed entirely (no in-tree consumers after the migration).
+- Header comment updated to reference the kit-bound shape (was: "imported the regular way (after the hoist phase)"; now: "pre-bound methods on the returned kit; destructure them from the same `buildArgon2RouteMockKit()` invocation").
+
+### Caller migration (8 files)
+
+Standalone-import block removed and assertion helpers added to the existing kit-destructure in:
+
+- `backend/tests/routes/auth-argon-error-translation.test.ts`
+- `backend/tests/routes/auth-signup-argon-error-translation.test.ts`
+- `backend/tests/routes/auth-signup-dup-saturated.test.ts`
+- `backend/tests/routes/auth-reset-request-shutdown.test.ts`
+- `backend/tests/routes/custody-upgrade-argon-error-translation.test.ts`
+- `backend/tests/routes/settings-set-password-argon-error-translation.test.ts`
+- `backend/tests/routes/signup-verify-resume-argon-error-translation.test.ts`
+
+`assertArgon2AbortIsSilent(reqPromise, mockRunWithArgon2Slot)` calls reduced to `assertArgon2AbortIsSilent(reqPromise)` everywhere (8 call sites total across these 7 files; the round-3 second-arg threading the architect surfaced as redundant is gone).
+
+`backend/tests/support/argon2-error-mocks.test.ts` (the round-4 self-test, just landed): switched from `assertArgon2AbortIsSilent` → `assertArgon2AbortIsSilentImpl` so it continues to drive the underlying logic with synthetic promises. The kit-bound method is exercised transitively by the 7 caller files. The test file's header notes the split.
+
+### Coordination with the round-4 self-test
+
+Acceptance line 4 of this task notes the landing-order interaction with `backend-argon2-error-routes-test-coverage.md` round-4 item 1. Round-4 landed first (commit `53daad0`), so the self-test was originally written against the standalone shape. Migrating it to import the renamed `assertArgon2AbortIsSilentImpl` was a 1-line change in this commit; the self-test's discriminating power is identical (it exercises the same code path).
+
+### Verification
+
+- `npx tsc --noEmit`: clean (no test-file coverage in tsc per the pre-existing tsconfig limitation; vitest run validates types end-to-end).
+- `npm run lint`: clean (only pre-existing seed-phrase.ts warnings).
+- Targeted vitest (helper self-test + 7 caller files): 52 passed across 8 files. All previously-passing tests continue to pass; the kit-bound shape is non-breaking.

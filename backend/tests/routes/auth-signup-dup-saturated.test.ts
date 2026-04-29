@@ -58,11 +58,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import request from 'supertest';
 import {
-  assertArgon2AbortIsSilent,
-  assert503QueueFull,
-  assert503Shutdown,
-} from '../support/argon2-error-mocks.js';
-import {
   ARGON_REASON_QUEUE_FULL,
   ARGON_REASON_SHUTDOWN_DRAIN,
 } from '../../src/lib/argon2-error-handler.js';
@@ -73,7 +68,14 @@ import {
 // shared kit. A bare `import { ... } from '../support/...'` would not be
 // loaded yet when the hoisted mock factory runs. See
 // `tests/support/argon2-error-mocks.ts:30-46` for the full rationale.
-const { mockRunWithArgon2Slot, argon2SemaphoreMockFactory } = await vi.hoisted(
+// Assertion helpers are pre-bound on the kit (kit-bind task).
+const {
+  mockRunWithArgon2Slot,
+  argon2SemaphoreMockFactory,
+  assertArgon2AbortIsSilent,
+  assert503QueueFull,
+  assert503Shutdown,
+} = await vi.hoisted(
   async () =>
     (await import('../support/argon2-error-mocks.js')).buildArgon2RouteMockKit(),
 );
@@ -224,7 +226,7 @@ describe('POST /api/signup — saturated dup-email returns 503, not 409 (round-3
       .send(SIGNUP_BODY('dup-unverified-abort'))
       .timeout({ deadline: 250 });
 
-    await assertArgon2AbortIsSilent(reqPromise, mockRunWithArgon2Slot);
+    await assertArgon2AbortIsSilent(reqPromise);
   });
 
   it('ArgonAbortError → silent on verified-dup burn site (auth.ts:416)', async () => {
@@ -238,6 +240,6 @@ describe('POST /api/signup — saturated dup-email returns 503, not 409 (round-3
       .send(SIGNUP_BODY('dup-verified-abort'))
       .timeout({ deadline: 250 });
 
-    await assertArgon2AbortIsSilent(reqPromise, mockRunWithArgon2Slot);
+    await assertArgon2AbortIsSilent(reqPromise);
   });
 });

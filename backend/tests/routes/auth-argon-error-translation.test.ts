@@ -61,12 +61,6 @@
 
 import { describe, it, vi } from 'vitest';
 import request from 'supertest';
-import {
-  assertArgon2AbortIsSilent,
-  assert503QueueFull,
-  assert503Shutdown,
-} from '../support/argon2-error-mocks.js';
-
 // `vi.hoisted` runs BEFORE every regular `import` (it shares the hoist
 // phase with `vi.mock`), so dynamically importing the support module from
 // inside hoisted scope is the only way `vi.mock(...)` can reach the
@@ -77,8 +71,17 @@ import {
 // are file-local closures: each test file gets its own typed mock fn (no
 // cross-file leak through a shared singleton in the support module) but
 // the factory body itself lives in the support module. The typed
-// `vi.fn<typeof runWithArgon2Slot>` is item 5 of the hold block.
-const { mockRunWithArgon2Slot, argon2SemaphoreMockFactory } = await vi.hoisted(
+// `vi.fn<typeof runWithArgon2Slot>` is item 5 of the round-1 hold block.
+// The four assertion helpers are pre-bound on the kit (kit-bind task);
+// `assertArgon2AbortIsSilent` captures the kit's mockFn at build time so
+// callers cannot drop the round-3 invocation guard by forgetting an arg.
+const {
+  mockRunWithArgon2Slot,
+  argon2SemaphoreMockFactory,
+  assertArgon2AbortIsSilent,
+  assert503QueueFull,
+  assert503Shutdown,
+} = await vi.hoisted(
   async () =>
     (await import('../support/argon2-error-mocks.js')).buildArgon2RouteMockKit(),
 );
@@ -283,6 +286,6 @@ describe.each(routes)('argon error → HTTP translation: $name', (route) => {
       .send(route.body)
       .timeout({ deadline: 250 });
 
-    await assertArgon2AbortIsSilent(reqPromise, mockRunWithArgon2Slot);
+    await assertArgon2AbortIsSilent(reqPromise);
   });
 });

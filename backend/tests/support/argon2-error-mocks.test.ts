@@ -28,7 +28,15 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { Response as SupertestResponse } from 'supertest';
 import type { runWithArgon2Slot as RunWithArgon2SlotType } from '../../src/lib/argon2-semaphore.js';
-import { assertArgon2AbortIsSilent } from './argon2-error-mocks.js';
+import { assertArgon2AbortIsSilentImpl } from './argon2-error-mocks.js';
+
+// The kit's `assertArgon2AbortIsSilent` method is a thin closure over
+// `assertArgon2AbortIsSilentImpl(promise, kit.mockRunWithArgon2Slot)`; the
+// kit-bound shape is exercised transitively by the 7 caller test files.
+// This file drives the underlying impl directly so we can construct
+// synthetic supertest-shaped promises to hit each outcome-classification
+// branch deterministically without spinning up a route.
+const assertArgon2AbortIsSilent = assertArgon2AbortIsSilentImpl;
 
 type MockFn = ReturnType<typeof vi.fn<typeof RunWithArgon2SlotType>>;
 

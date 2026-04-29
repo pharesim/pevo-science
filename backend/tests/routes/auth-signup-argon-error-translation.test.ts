@@ -32,15 +32,15 @@
 
 import { describe, it, vi } from 'vitest';
 import request from 'supertest';
-import {
+// See `auth-argon-error-translation.test.ts` for the hoist-pattern
+// rationale. Assertion helpers are pre-bound on the kit (kit-bind task).
+const {
+  mockRunWithArgon2Slot,
+  argon2SemaphoreMockFactory,
   assertArgon2AbortIsSilent,
   assert503QueueFull,
   assert503Shutdown,
-} from '../support/argon2-error-mocks.js';
-
-// See `auth-argon-error-translation.test.ts` for the hoist-pattern
-// rationale.
-const { mockRunWithArgon2Slot, argon2SemaphoreMockFactory } = await vi.hoisted(
+} = await vi.hoisted(
   async () =>
     (await import('../support/argon2-error-mocks.js')).buildArgon2RouteMockKit(),
 );
@@ -125,6 +125,6 @@ describe('POST /api/auth/signup — new-email argon error → HTTP translation (
       .send(SIGNUP_BODY('signup-newemail-abort'))
       .timeout({ deadline: 250 });
 
-    await assertArgon2AbortIsSilent(reqPromise, mockRunWithArgon2Slot);
+    await assertArgon2AbortIsSilent(reqPromise);
   });
 });

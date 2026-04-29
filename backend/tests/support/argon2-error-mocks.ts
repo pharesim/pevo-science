@@ -41,9 +41,11 @@
  * the test passes into `vi.mock(...)`. See any of the five route test
  * files for the canonical shape.
  *
- * `assert503QueueFull` / `assert503Shutdown` / `assertArgon2AbortIsSilent`
- * are imported the regular way (after the hoist phase); they're invoked
- * inside `it(...)` bodies which run in the post-hoist normal phase.
+ * `assert503QueueFull` / `assert503Shutdown` / `assert503` /
+ * `assertArgon2AbortIsSilent` are pre-bound methods on the returned kit;
+ * destructure them from the same `buildArgon2RouteMockKit()` invocation
+ * (inside the `vi.hoisted` block) and call them inside `it(...)` bodies.
+ * No separate import is needed.
  */
 
 import { vi, expect } from 'vitest';
@@ -85,6 +87,32 @@ type SilentAbortOutcome =
 export interface Argon2RouteMockKit {
   mockRunWithArgon2Slot: ReturnType<typeof vi.fn<typeof RunWithArgon2SlotType>>;
   argon2SemaphoreMockFactory: () => Promise<typeof import('../../src/lib/argon2-semaphore.js')>;
+
+  /**
+   * Assert a supertest request hung silently rather than writing a response.
+   * Captures the kit's `mockRunWithArgon2Slot` at build time so callers do
+   * not need to thread it through. See {@link assertArgon2AbortIsSilentImpl}
+   * for the underlying logic.
+   */
+  assertArgon2AbortIsSilent: (promise: Promise<SupertestResponse>) => Promise<void>;
+
+  /**
+   * Wire-level 503 assertion. Forwarded to {@link assert503Impl} with the
+   * caller's already-awaited supertest response. Bound on the kit for
+   * surface symmetry with {@link Argon2RouteMockKit.assertArgon2AbortIsSilent};
+   * does not need kit-local state today.
+   */
+  assert503: (
+    res: SupertestResponse,
+    expectedRetryAfterSec: number,
+    expectedReason: typeof ARGON_REASON_QUEUE_FULL | typeof ARGON_REASON_SHUTDOWN_DRAIN,
+  ) => void;
+
+  /** Convenience wrapper: 503 under `ArgonQueueFullError`. */
+  assert503QueueFull: (res: SupertestResponse) => void;
+
+  /** Convenience wrapper: 503 under `ShuttingDownError`. */
+  assert503Shutdown: (res: SupertestResponse) => void;
 }
 
 /**
@@ -92,7 +120,7 @@ export interface Argon2RouteMockKit {
  * `vi.hoisted(async () => ...)` block in the test file:
  *
  * ```ts
- * const { mockRunWithArgon2Slot, argon2SemaphoreMockFactory } = await vi.hoisted(
+ * const { mockRunWithArgon2Slot, argon2SemaphoreMockFactory, assertArgon2AbortIsSilent, assert503QueueFull, assert503Shutdown } = await vi.hoisted(
  *   async () => (await import('../support/argon2-error-mocks.js')).buildArgon2RouteMockKit(),
  * );
  *
@@ -104,7 +132,16 @@ export interface Argon2RouteMockKit {
  * The factory binds `vi.importActual(argon2-semaphore.js)` so the real
  * abstract base + three concrete subclasses are returned. The route's
  * `instanceof ArgonSemaphoreError` checks therefore resolve against the
- * production hierarchy (item 5 of the hold block).
+ * production hierarchy (item 5 of the round-1 hold block).
+ *
+ * The four assertion helpers are returned pre-bound: `assertArgon2AbortIsSilent`
+ * captures the kit's `mockRunWithArgon2Slot` at build time so callers do not
+ * need to thread it through (and cannot accidentally drop it — the round-3
+ * invocation guard's defense-in-depth shape no longer depends on per-site
+ * caller discipline). The 503 helpers are bound for surface symmetry; their
+ * implementations are pure today but staying on the kit means a future
+ * cross-branch identity check (see round-2 dismissed item) can capture the
+ * kit's response history without changing the public shape.
  */
 export function buildArgon2RouteMockKit(): Argon2RouteMockKit {
   const mockFn = vi.fn<typeof RunWithArgon2SlotType>();
@@ -129,6 +166,11 @@ export function buildArgon2RouteMockKit(): Argon2RouteMockKit {
         createArgon2Semaphore: actual.createArgon2Semaphore,
       };
     },
+    assertArgon2AbortIsSilent: (promise) => assertArgon2AbortIsSilentImpl(promise, mockFn),
+    assert503: (res, expectedRetryAfterSec, expectedReason) =>
+      assert503Impl(res, expectedRetryAfterSec, expectedReason),
+    assert503QueueFull: (res) => assert503Impl(res, QUEUE_FULL_RETRY_AFTER_SEC, ARGON_REASON_QUEUE_FULL),
+    assert503Shutdown: (res) => assert503Impl(res, SHUTDOWN_RETRY_AFTER_SEC, ARGON_REASON_SHUTDOWN_DRAIN),
   };
 }
 
@@ -192,7 +234,15 @@ export const redisStubFactory: () => typeof import('../../src/redis.js') = () =>
  * Until that case lands, exact-count is the strongest mutation-resistant
  * shape for the call sites we have today.
  */
-export async function assertArgon2AbortIsSilent(
+/**
+ * Internal implementation of the silent-abort contract assertion. The
+ * public API is the kit-bound `assertArgon2AbortIsSilent` method on
+ * {@link Argon2RouteMockKit}, which captures the mock fn at build time so
+ * call sites cannot forget to thread it. This implementation is exported
+ * only so the helper self-test can drive each outcome-classification
+ * branch with a synthetic promise without going through a full kit setup.
+ */
+export async function assertArgon2AbortIsSilentImpl(
   promise: Promise<SupertestResponse>,
   mockRunWithArgon2Slot: ReturnType<typeof vi.fn<typeof RunWithArgon2SlotType>>,
 ): Promise<void> {
@@ -263,7 +313,7 @@ export async function assertArgon2AbortIsSilent(
  *     `ArgonQueueFullError` from `ShuttingDownError` for HTTP-only ops
  *     consumers without log-stream correlation.
  */
-export function assert503(
+function assert503Impl(
   res: SupertestResponse,
   expectedRetryAfterSec: number,
   expectedReason: typeof ARGON_REASON_QUEUE_FULL | typeof ARGON_REASON_SHUTDOWN_DRAIN,
@@ -275,22 +325,4 @@ export function assert503(
   expect(res.headers['retry-after']).toBe(String(expectedRetryAfterSec));
   expect(res.body.error?.message).not.toMatch(/argon|authentication|shut\s?down/i);
   expect(res.body.error?.details?.reason).toBe(expectedReason);
-}
-
-/**
- * Assert a 503 response under `ArgonQueueFullError` saturation. Convenience
- * wrapper around {@link assert503} with the queue-full retry-after constant
- * and `reason: 'queue_full'` discriminator pre-bound.
- */
-export function assert503QueueFull(res: SupertestResponse): void {
-  assert503(res, QUEUE_FULL_RETRY_AFTER_SEC, ARGON_REASON_QUEUE_FULL);
-}
-
-/**
- * Assert a 503 response under `ShuttingDownError` drain. Convenience
- * wrapper around {@link assert503} with the shutdown retry-after constant
- * and `reason: 'shutdown_drain'` discriminator pre-bound.
- */
-export function assert503Shutdown(res: SupertestResponse): void {
-  assert503(res, SHUTDOWN_RETRY_AFTER_SEC, ARGON_REASON_SHUTDOWN_DRAIN);
 }

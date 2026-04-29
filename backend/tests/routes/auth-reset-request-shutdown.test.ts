@@ -61,7 +61,6 @@
 
 import { describe, it, expect, vi } from 'vitest';
 import request from 'supertest';
-import { assertArgon2AbortIsSilent } from '../support/argon2-error-mocks.js';
 
 // `vi.hoisted` runs BEFORE every regular `import` (it shares the hoist
 // phase with `vi.mock`), so dynamically importing the support module from
@@ -69,7 +68,7 @@ import { assertArgon2AbortIsSilent } from '../support/argon2-error-mocks.js';
 // shared kit. A bare `import { ... } from '../support/...'` would not be
 // loaded yet when the hoisted mock factory runs. See
 // `tests/support/argon2-error-mocks.ts:30-46` for the full rationale.
-const { mockRunWithArgon2Slot, argon2SemaphoreMockFactory } = await vi.hoisted(
+const { mockRunWithArgon2Slot, argon2SemaphoreMockFactory, assertArgon2AbortIsSilent } = await vi.hoisted(
   async () =>
     (await import('../support/argon2-error-mocks.js')).buildArgon2RouteMockKit(),
 );
@@ -221,6 +220,6 @@ describe('POST /api/auth/reset-request — drain-window enumeration fix', () => 
       .send({ email: 'unknown-aborted@mit.edu' })
       .timeout({ deadline: 250 });
 
-    await assertArgon2AbortIsSilent(reqPromise, mockRunWithArgon2Slot);
+    await assertArgon2AbortIsSilent(reqPromise);
   });
 });

@@ -29,17 +29,18 @@
 
 import { describe, it, vi } from 'vitest';
 import request from 'supertest';
-import {
-  assertArgon2AbortIsSilent,
-  assert503QueueFull,
-  assert503Shutdown,
-} from '../support/argon2-error-mocks.js';
-
 // See `auth-argon-error-translation.test.ts` for the hoist-pattern
 // rationale (vi.mock factories cannot reference module-scope imports;
 // vi.hoisted dynamic-import is the only path to the shared support
-// module's `buildArgon2RouteMockKit`).
-const { mockRunWithArgon2Slot, argon2SemaphoreMockFactory } = await vi.hoisted(
+// module's `buildArgon2RouteMockKit`). Assertion helpers are pre-bound on
+// the kit (kit-bind task).
+const {
+  mockRunWithArgon2Slot,
+  argon2SemaphoreMockFactory,
+  assertArgon2AbortIsSilent,
+  assert503QueueFull,
+  assert503Shutdown,
+} = await vi.hoisted(
   async () =>
     (await import('../support/argon2-error-mocks.js')).buildArgon2RouteMockKit(),
 );
@@ -159,7 +160,7 @@ describe.each(branches)(
         .send(ROUTE_BODY)
         .timeout({ deadline: 250 });
 
-      await assertArgon2AbortIsSilent(reqPromise, mockRunWithArgon2Slot);
+      await assertArgon2AbortIsSilent(reqPromise);
     });
   },
 );
