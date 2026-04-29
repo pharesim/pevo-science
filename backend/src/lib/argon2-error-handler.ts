@@ -280,9 +280,9 @@ export function handleArgonError(
 
   // Unreachable as long as `ArgonSemaphoreError` stays abstract and the
   // three concrete subclasses above are the only extenders. If a future
-  // subclass is added, the `instanceof ArgonSemaphoreError` check at the
-  // top will catch it but none of the branches will fire — log loudly so
-  // we notice in production while the type system catches up.
+  // subclass is added, the `isArgonSemaphoreError` check at the top will
+  // catch it but none of the branches will fire — log loudly so we
+  // notice in production while the type system catches up.
   logger.error(
     { ...ctx, err },
     'unknown ArgonSemaphoreError subclass — falling through to generic 500',

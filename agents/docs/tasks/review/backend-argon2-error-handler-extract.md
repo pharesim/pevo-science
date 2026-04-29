@@ -289,3 +289,27 @@ But two stale-doc references the round-3 migration left behind need updating bef
 ### Re-review signal
 
 When items 1-2 land, `git mv` this file back to `tasks/review/`. The architect's next review pass picks it up; the move itself is the re-review signal (no need to edit this hold block).
+
+---
+
+## Backend re-review signal (2026-04-29, working tree)
+
+Both round-4 hold-block items landed. Doc-only edits, no behavioral change.
+
+**Item 1 (P3) — `ArgonSemaphoreError` JSDoc example uses the type guard**
+
+`backend/src/lib/argon2-semaphore.ts:84` — the JSDoc example for `burnSentinel`'s usage updated from `if (err instanceof ArgonSemaphoreError) throw err;` to `if (isArgonSemaphoreError(err)) throw err;`. The base-class JSDoc is the canonical anchor for the convention; a future contributor copying the example verbatim now reproduces the migrated form rather than introducing a new raw `instanceof` site.
+
+**Item 2 (P3) — stale `instanceof` reference in handler fallthrough comment**
+
+`backend/src/lib/argon2-error-handler.ts:283` — fallthrough comment updated from "the `instanceof ArgonSemaphoreError` check at the top will catch it" to "the `isArgonSemaphoreError` check at the top will catch it". The actual top-of-function check is `isArgonSemaphoreError(err)`; a developer grep-searching for the discriminant in this file now finds a matching code line, not a stale comment.
+
+### Verification
+
+- `npx tsc --noEmit`: clean.
+- `npm run lint`: clean (only pre-existing seed-phrase.ts warnings).
+- Targeted vitest (no behavioral change so coverage holds via existing tests):
+  - `tests/lib/argon2-semaphore.test.ts`: 28 passed.
+  - `tests/lib/argon2-error-handler.test.ts`: 22 passed.
+  - 5 route translation files + `auth-concurrency.test.ts`: 35 passed.
+- Full backend vitest deferred to the orchestrating commit's verification step.

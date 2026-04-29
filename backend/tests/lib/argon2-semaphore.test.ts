@@ -679,6 +679,84 @@ describe('abort counter — operator observability', () => {
     await pA;
   });
 
+  it('does NOT increment when drainArgon2Queue races ahead of the abort listener', async () => {
+    // Drain + late-abort race window. Sequence:
+    //   1. drainArgon2Queue() runs synchronously: splices B out of
+    //      `waiters`, calls reject(ShuttingDownError()) on B's parked
+    //      promise.
+    //   2. bAbort.abort() runs synchronously in the same tick: onAbort
+    //      listener fires while the abort listener is still attached
+    //      (B's `finally` hasn't run removeEventListener yet).
+    //   3. With the round-2 fix, onAbort sees waiters.indexOf=-1 and
+    //      skips the counter increment. Without the fix, the counter
+    //      would inflate by 1 even though no ArgonAbortError ever
+    //      reaches the caller.
+    //   4. B's await resumes and throws ShuttingDownError (from step 1's
+    //      reject); finally runs and cleans up the listener.
+    //
+    // Operator-visibility consequence: under SIGTERM with concurrent
+    // disconnect storms, the counter must reflect ONLY the actual abort
+    // propagations. Conflating shutdown-rejected callers with client-
+    // disconnect aborts in `argon2_abort_summary` would mislead
+    // operators about disconnect-storm severity exactly when they most
+    // need the signal clean.
+    const sem = createArgon2Semaphore(1, 10);
+    const beforeCount = sem.getArgon2AbortCount();
+
+    const a = controllable<number>();
+    const pA = sem.runWithArgon2Slot(() => a.fn());
+    await a.started;
+
+    const bAbort = new AbortController();
+    const pB = sem
+      .runWithArgon2Slot(() => Promise.resolve('should-not-run'), { signal: bAbort.signal })
+      .catch((err) => err);
+
+    await new Promise((r) => setImmediate(r));
+    expect(sem.getArgon2QueueDepth()).toBe(1);
+
+    // Drain first, then abort in the SAME synchronous tick so the abort
+    // listener sees waiters.indexOf=-1 (drain already spliced).
+    sem.drainArgon2Queue();
+    bAbort.abort();
+
+    const result = await pB;
+    expect(result).toBeInstanceOf(ShuttingDownError);
+    expect(result).not.toBeInstanceOf(ArgonAbortError);
+    expect(sem.getArgon2AbortCount()).toBe(beforeCount);
+
+    a.resolve(1);
+    await pA;
+  });
+
+  it('throws ShuttingDownError (not ArgonAbortError) when called with a pre-aborted signal after drain', async () => {
+    // Function-entry guard order pins: shuttingDown is checked BEFORE
+    // signal.aborted. The drain docblock promises every subsequent
+    // runWithArgon2Slot call against a drained semaphore throws
+    // ShuttingDownError without queueing — a pre-aborted caller
+    // arriving during shutdown must honor that contract.
+    //
+    // Counter consequence: pre-aborted + drain MUST NOT increment the
+    // abort counter. Operators reading `argon2_abort_summary` during a
+    // graceful restart should see "no abort traffic" rather than
+    // inflated counts driven by clients that disconnected because the
+    // server was already shutting down.
+    const sem = createArgon2Semaphore(1, 10);
+    const beforeCount = sem.getArgon2AbortCount();
+
+    sem.drainArgon2Queue();
+
+    const ac = new AbortController();
+    ac.abort();
+    const result = await sem
+      .runWithArgon2Slot(() => Promise.resolve('nope'), { signal: ac.signal })
+      .catch((err) => err);
+
+    expect(result).toBeInstanceOf(ShuttingDownError);
+    expect(result).not.toBeInstanceOf(ArgonAbortError);
+    expect(sem.getArgon2AbortCount()).toBe(beforeCount);
+  });
+
   it('increments exactly once when both the slot-grant race-guard AND the parked-waiter onAbort fire for the same abort event', async () => {
     // Slot-grant race window. Sequence of microtasks:
     //   M1: A's await resumes; A's finally runs `next.resolve()` (resolving
@@ -793,6 +871,10 @@ describe('periodic abort-summary reporter', () => {
       expect(ctx).toMatchObject({
         event: 'argon2_abort_summary',
         count: 3,
+        // intervalMs is the cadence-self-description on the log line so
+        // dashboard authors building rate expressions (events/s) don't
+        // hardcode the 60s constant from ARCHITECTURE.md Section 5.
+        intervalMs: ABORT_REPORT_INTERVAL_MS,
       });
       expect(msg).toBe('argon2 abort events in the last interval');
     } finally {

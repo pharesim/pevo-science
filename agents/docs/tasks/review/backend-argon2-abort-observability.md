@@ -237,3 +237,45 @@ But three round-2 hold items surfaced — two contract violations on the abort-c
 ### Re-review signal
 
 When items 1-3 land, `git mv` this file back to `tasks/review/`. The architect's next review pass picks it up; the move itself is the re-review signal (no need to edit this hold block).
+
+---
+
+## Backend re-review signal (2026-04-29, working tree)
+
+All 3 round-2 hold-block items landed.
+
+**Item 1 (P2) — `onAbort` counter gating on `waiters.indexOf >= 0`**
+
+`backend/src/lib/argon2-semaphore.ts` parked-waiter `onAbort` listener: gated `incrementAbortOnce()` (and the splice it pairs with) inside the `if (i >= 0)` branch. The two race cases that produce `i < 0` — drain spliced ahead of abort, slot-release shifted ahead of abort — now no-op the counter. Drain-race callers see `ShuttingDownError` (per the parked-promise rejection), not `ArgonAbortError`, so the contract "counter == ArgonAbortErrors actually thrown" holds. Slot-release-race callers still increment exactly once, via the slot-grant race-guard's own `incrementAbortOnce()` call (the round-1 dedupe flag is unchanged; this gating doesn't break it). The `reject(new ArgonAbortError())` line is left unconditional because it's a no-op when the parked promise is already settled — keeps the listener's promise-side effect predictable across all three races.
+
+Inline comment block on the gated `incrementAbortOnce()` call documents the drain-race + slot-release-race rationale so a future contributor doesn't naively un-gate it.
+
+**Item 2 (P3) — function-entry guard order swap**
+
+`backend/src/lib/argon2-semaphore.ts` swapped the order of the two early-return guards: `shuttingDown` is now checked BEFORE `signal?.aborted`. After `drainArgon2Queue()`, a pre-aborted caller now throws `ShuttingDownError` (matching the `drainArgon2Queue` docblock contract: "every subsequent runWithArgon2Slot ... throws ShuttingDownError without queueing") instead of `ArgonAbortError`. Counter does not increment in this path either (the `incrementAbortOnce()` call lives inside the `signal?.aborted` branch which is now unreachable post-drain).
+
+Operational consequence: under a graceful restart, clients that disconnect because the server is shutting down get classified as shutdown-related, not as client-disconnect aborts. Operators reading `argon2_abort_summary` deltas during a rolling restart see "no abort traffic" rather than inflated counts driven by a shutdown-induced disconnect cascade.
+
+Inline comment block on the new ordering documents the contract pin.
+
+**Item 3 (P3) — `intervalMs` field on `argon2_abort_summary` log payload**
+
+`backend/src/lib/argon2-semaphore.ts:reportArgon2Aborts` log call now emits `{ event: 'argon2_abort_summary', count: <delta>, intervalMs: ABORT_REPORT_INTERVAL_MS }`. Dashboard authors building rate expressions (events/s) no longer need to hardcode the 60 000 ms constant from `ARCHITECTURE.md` Section 5 — the log line is self-sufficient.
+
+### Tests added
+
+`backend/tests/lib/argon2-semaphore.test.ts`:
+
+- **`does NOT increment when drainArgon2Queue races ahead of the abort listener`** (item 1 pin): cap=1 sem, A in flight, B parked with abort signal. `sem.drainArgon2Queue()` then `bAbort.abort()` synchronously in the same tick. Asserts pB rejects with `ShuttingDownError` (and `not.toBeInstanceOf(ArgonAbortError)`) AND `sem.getArgon2AbortCount()` is unchanged across the operation. A regression that ungates the counter increment on `i < 0` would inflate the count by 1 here.
+- **`throws ShuttingDownError (not ArgonAbortError) when called with a pre-aborted signal after drain`** (item 2 pin): drained sem, pre-aborted controller, single `runWithArgon2Slot` call. Asserts `ShuttingDownError` (not `ArgonAbortError`) and `getArgon2AbortCount()` unchanged. A regression that reverts the guard-order swap would make this assertion fail with `ArgonAbortError`.
+- **Existing `emits one structured log line per non-zero interval` test extended** (item 3 pin): the `toMatchObject` assertion now includes `intervalMs: ABORT_REPORT_INTERVAL_MS`. A regression that drops the field from the log call would fail this assertion.
+
+### Verification
+
+- `npx tsc --noEmit`: clean.
+- `npm run lint`: clean (only pre-existing seed-phrase.ts warnings).
+- Targeted vitest:
+  - `tests/lib/argon2-semaphore.test.ts`: 28 passed (was 26 before; +2 new tests for items 1+2 pins).
+  - `tests/lib/argon2-error-handler.test.ts`: 22 passed (unchanged).
+  - 4 route translation files (auth + custody + settings + signup-verify-resume + signup) + `auth-concurrency.test.ts`: 35 passed (no regression from the function-entry guard-order swap or the onAbort gating).
+- Full backend vitest deferred to the orchestrating commit's verification step (parent runs after merging the sibling worktree).

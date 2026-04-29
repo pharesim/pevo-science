@@ -81,7 +81,7 @@ export const MAX_QUEUE_DEPTH = 50;
  * Two consumers depend on this base class for the "503-able-or-silent"
  * propagation invariant:
  *  - `burnSentinel` in `backend/src/routes/auth.ts` uses
- *    `if (err instanceof ArgonSemaphoreError) throw err;` to re-throw all
+ *    `if (isArgonSemaphoreError(err)) throw err;` to re-throw all
  *    semaphore errors past its warn-and-swallow path, preserving the
  *    timing-oracle floor under saturation / drain / abort.
  *  - `handleArgonError` in `backend/src/lib/argon2-error-handler.ts`
@@ -282,18 +282,30 @@ export function createArgon2Semaphore(
         abortAlreadyCounted = true;
         abortCount += 1;
       };
+      // Shutdown guard runs FIRST, before the pre-queue abort fast-path.
+      // After `drainArgon2Queue()` has flipped `shuttingDown = true`, the
+      // drain docblock at function `drainArgon2Queue` promises every
+      // subsequent `runWithArgon2Slot` call throws `ShuttingDownError` —
+      // a pre-aborted caller arriving during shutdown must honor that
+      // contract, not throw `ArgonAbortError`. This also keeps the abort
+      // counter clean during rolling restarts: clients that disconnect
+      // because the server is shutting down get classified as shutdown-
+      // related, not as client-disconnect aborts. Operators reading
+      // `argon2_abort_summary` deltas during a graceful restart see
+      // "no abort traffic" rather than inflated counts driven by a
+      // disconnect cascade that the shutdown itself caused.
+      if (shuttingDown) {
+        throw new ShuttingDownError();
+      }
       // Pre-queue abort fast-path: caller handed us an already-aborted
       // signal, so there is no point even considering a slot. Throw before
-      // touching counters / queue state. This keeps the happy path branch-
-      // equal to the pre-abort world (no `signal` touched when undefined).
+      // touching queue state. The counter increments here because this is
+      // the only abort path that fires before the slot-grant flow, and the
+      // contract is "ArgonAbortErrors actually thrown" — and we're about
+      // to throw one.
       if (signal?.aborted) {
         incrementAbortOnce();
         throw new ArgonAbortError();
-      }
-      if (shuttingDown) {
-        // Fail fast: no point queueing work the process is about to exit
-        // without completing. Route handlers translate to 503.
-        throw new ShuttingDownError();
       }
       if (inFlight >= cap) {
         // Queue-full guard: reject BEFORE pushing to `waiters` to bound the
@@ -318,8 +330,35 @@ export function createArgon2Semaphore(
                 // will never see. Slot-release path below will shift() the
                 // next live waiter instead.
                 const i = waiters.indexOf(waiter);
-                if (i >= 0) waiters.splice(i, 1);
-                incrementAbortOnce();
+                if (i >= 0) {
+                  waiters.splice(i, 1);
+                  // Counter increments only when this listener actually
+                  // owns the abort propagation. Two race cases produce
+                  // i<0 and MUST NOT count here:
+                  //  - drain race: drainArgon2Queue() already spliced
+                  //    and rejected with ShuttingDownError; the caller
+                  //    sees ShuttingDownError, not ArgonAbortError. The
+                  //    counter is "ArgonAbortErrors actually thrown"
+                  //    (see getArgon2AbortCount docblock) — counting
+                  //    here would inflate `argon2_abort_summary` during
+                  //    rolling restarts, conflating shutdown-rejected
+                  //    callers with client-disconnect aborts at exactly
+                  //    the time operators most need to distinguish them.
+                  //  - slot-release race: A's finally already shifted
+                  //    us out and resolved the parked promise; the
+                  //    slot-grant race-guard at the post-await
+                  //    `if (signal?.aborted)` check owns the increment
+                  //    via its own `incrementAbortOnce()` call. The
+                  //    per-request `abortAlreadyCounted` flag would
+                  //    dedupe a redundant increment here, but skipping
+                  //    it keeps the contract local: this listener
+                  //    increments iff it caused the propagation.
+                  incrementAbortOnce();
+                }
+                // `reject` is harmless when the parked promise is already
+                // settled by drain (ShuttingDownError) or slot-release
+                // (resolve); leave it to keep the abort listener's effect
+                // on the promise predictable across all three races.
                 reject(new ArgonAbortError());
               };
               // No `{ once: true }` here: the explicit `removeEventListener`
@@ -492,7 +531,7 @@ function reportArgon2Aborts(): void {
   if (delta > 0) {
     abortLastReportedCount = current;
     logger.info(
-      { event: 'argon2_abort_summary', count: delta },
+      { event: 'argon2_abort_summary', count: delta, intervalMs: ABORT_REPORT_INTERVAL_MS },
       'argon2 abort events in the last interval',
     );
   }
