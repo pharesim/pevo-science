@@ -102,6 +102,8 @@ fi
 
 If the lock's pid is still alive, leave the worktree alone — it belongs to a running sibling agent. Never bulk-unlock blindly; always gate on the stale-pid check.
 
+Worktree cleanup also has a separate work-loss failure mode: a worker subagent commits to its `worktree-agent-*` branch, the parent fails to merge those commits back into the orchestrating branch, and the task signal block ends up citing an orphan SHA. See `agents/docs/solutions/conventions/worktree-fanout-orphan-detection-2026-04-29.md` for the detection check (`git merge-base --is-ancestor <claimed-sha> main`) to run at re-review intake before trusting any "Item N landed at commit X" signal block.
+
 ## Code Review Findings
 
 When running `/ce-code-review`, `/security-review`, or any review skill that produces findings, do NOT auto-create new task files under `agents/docs/tasks/`, do NOT silently apply fixes, and do NOT silently archive a `review/` task with unresolved findings. Surface findings as a single ranked list in chat (severity + file:line + one-line rationale) and wait for the user to triage which ones become tasks, which get fixed in place, and which get dismissed. This applies to every agent that invokes a review skill (architect, backend, ui, pinner), not to the individual persona subagents inside `/ce-code-review` itself. If the review comes back clean, say so explicitly in chat before proceeding.
