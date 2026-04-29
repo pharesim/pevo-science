@@ -258,3 +258,34 @@ Round-3 hold-block item 1 (P3, the only round-3 item) landed.
 - `npm run lint`: clean (only pre-existing seed-phrase.ts warnings).
 - Targeted vitest (7 suites: argon2-semaphore + argon2-error-handler + 5 route translation files): 76 passed (76).
 - Full backend vitest after merge: 615 passed | 4 skipped (619) across 67 files.
+
+---
+
+## Architect re-review (2026-04-29) — HELD PENDING FIXES (round 4)
+
+`/ce-code-review` ran on commit `ada6814` (the round-3 hold-fix commit landing the `isArgonSemaphoreError` migration of 4 raw `instanceof` sites) with 10 personas (correctness, testing, maintainability, project-standards, agent-native, learnings, security, reliability, adversarial, kieran-typescript). Round-3 hold item 1 (P3, the `isArgonSemaphoreError` migration) verified landed correctly: type-narrowing parity confirmed (the type predicate is `err is ArgonSemaphoreError` and behaves identically to `instanceof`), no stray `instanceof ArgonSemaphoreError` left in production code except the type guard's own body at `argon2-semaphore.ts:114`, imports clean (both files swap `ArgonSemaphoreError` for `isArgonSemaphoreError`), no behavioral drift on the 4 catch sites.
+
+But two stale-doc references the round-3 migration left behind need updating before archive. Both are P3 doc-only; bundled here so the file can archive with full canonical-form consistency.
+
+### Items to address
+
+**1. (P3) Stale JSDoc example on `ArgonSemaphoreError` base class — references raw `instanceof` instead of the type guard**
+
+- File: `backend/src/lib/argon2-semaphore.ts:84`
+- The base-class JSDoc at lines 80-90 describes burnSentinel's usage as `if (err instanceof ArgonSemaphoreError) throw err;`. burnSentinel now uses `isArgonSemaphoreError(err)`. A future contributor copying the JSDoc example verbatim will introduce a new raw `instanceof` site, undoing the round-3 consolidation. The JSDoc is on the symbol that defines the convention — the most authoritative spot for the canonical form, so the drift here is the one that matters most.
+- Fix: update the JSDoc example at line 84 to `if (isArgonSemaphoreError(err)) throw err;` (one-line edit).
+
+**2. (P3) Stale comment in handler fallthrough branch — references raw `instanceof` check that no longer exists in the file**
+
+- File: `backend/src/lib/argon2-error-handler.ts:284`
+- The unreachable-fallthrough comment reads `the instanceof ArgonSemaphoreError check at the top will catch it`. The actual top-of-function check at line 245 is now `isArgonSemaphoreError(err)`. Wording is semantically accurate but the literal reference is stale; a developer grep-searching for `instanceof ArgonSemaphoreError` in this file (looking for the fast-path discriminant) finds only this comment, not a matching code line.
+- Fix: update the comment to reference `isArgonSemaphoreError` (one-line edit).
+
+### Items dismissed during architect triage (do NOT address)
+
+- **`vi.mock` factory at `auth-signup-dup-saturated.test.ts:78-89` omits `isArgonSemaphoreError` post-migration** (testing P1, conf 90) — at commit `ada6814` standalone, the dup-burn `.catch` sites would TypeError because the mocked module returns undefined for the binding. **Already resolved at HEAD by `c4d988e`** (which migrated this file to `buildArgon2RouteMockKit`, binding the real production hierarchy via `vi.importActual`). Bisect-cleanliness cost is real but the cluster-bundle pattern is intentional in this repo's workflow.
+- **No direct unit test for `isArgonSemaphoreError`** (testing residual) — coverage is implicit via route-level tests that inject real subclass instances. The function is two lines (`return err instanceof ArgonSemaphoreError`); a direct unit test is low-value vs the route-level coverage that already exercises it transitively.
+
+### Re-review signal
+
+When items 1-2 land, `git mv` this file back to `tasks/review/`. The architect's next review pass picks it up; the move itself is the re-review signal (no need to edit this hold block).

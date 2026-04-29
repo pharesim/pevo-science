@@ -342,6 +342,8 @@ Periodic summary log emitted at most once per `ABORT_REPORT_INTERVAL_MS` (curren
 
 Operator semantics: a non-zero `count` indicates clients disconnected mid-request while their argon2 hash/verify was running. A bursty signal under a network event or attacker-driven connection-cycling scenario is the expected use case. Per-event abort lines remain at `debug` for `LOG_LEVEL=debug` deep investigation; the summary is the default-`info` operator-visible signal.
 
+Counter-accuracy note: between commits `5d33f24` (which introduced the periodic reporter) and `aeef5f2` (which added per-request dedupe via `incrementAbortOnce`), `count` could be inflated by up to 2× under the slot-grant race window (one logical abort produced two counter increments via both the parked-waiter `onAbort` listener and the awaiter-side abort check). Post-`aeef5f2`, one logical abort produces exactly one increment. Operators who calibrated alert thresholds against the inflated values will see the reported count drop by up to 50% under disconnect storms — this is a measurement correction, not a traffic decrease.
+
 ### `argon2 queue saturated` (free-text, queue-full path)
 
 Emitted from `backend/src/lib/argon2-error-handler.ts` when a route catches `ArgonQueueFullError`. Currently free-text rather than structured. Operationally still useful (visible at `LOG_LEVEL=warn`) but log aggregators have to match the message string rather than a stable `event` field. This asymmetry vs. `argon2_abort_summary` is tracked as a follow-up; see also the `details.reason: 'queue_full' \| 'shutdown_drain'` machine-readable discriminator on the 503 envelope itself (`agents/docs/api-contracts/common.md` SERVICE_UNAVAILABLE row), which HTTP-only consumers can branch on without log-stream correlation.

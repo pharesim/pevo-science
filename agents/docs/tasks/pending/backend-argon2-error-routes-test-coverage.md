@@ -240,3 +240,32 @@ The same commit also lands `ARGON_REASON_QUEUE_FULL` / `ARGON_REASON_SHUTDOWN_DR
 - Targeted vitest (the two migrated files): 9 passed (9).
 - Synthetic class declarations confirmed gone from both files (`grep "class Mock|MockArgon|MockShutting|MockRunWith"` returns empty).
 - Full backend vitest after merge: 615 passed | 4 skipped (619) across 67 files.
+
+---
+
+## Architect re-review (2026-04-29) — HELD PENDING FIXES (round 3)
+
+`/ce-code-review` ran on commit `c4d988e` (the round-2 hold-fix commit landing items 1 + 2 plus the bundled migration of 2 pre-existing test files from `backend-argon2-test-mocks-migrate-pre-existing`) with 9 personas (correctness, testing, maintainability, project-standards, agent-native, learnings, security, adversarial, kieran-typescript). Round-2 hold items 1 (P2 abort-silent on `/reset-request` unknown email) and 2 (P3 abort-silent on `/signup` dup-burn paths) verified landed correctly: both `it()` cases call `assertArgon2AbortIsSilent` correctly, both dup-burn sites are exercised independently (verify_token=null + verify_token startsWith 'confirmed:'), the migrations preserve unique scenarios (the divergent `/reset-request` 200-on-shutdown contract is preserved, dup-saturated coverage remains intact), `ARGON_REASON_*` constants replace literal strings at the previously-hardcoded sites, and synthetic class declarations are gone from both migrated files.
+
+But one round-3 hold item surfaced from the adversarial review on the shared assertion helper — a "test passes for the wrong reason" class of false-positive that this task's stated invariant (locking the timing-oracle / email-enumeration suppression contract) needs to close before archive.
+
+### Items to address
+
+**1. (P2) `assertArgon2AbortIsSilent` does not assert the mock fn was actually invoked — false-pass class on any route hang**
+
+- File: `backend/tests/support/argon2-error-mocks.ts:178-204` (the helper definition)
+- The helper introspects supertest's outcome to assert `outcome.kind === 'timeout'` but does NOT assert that `mockRunWithArgon2Slot` was actually called. A future refactor adding an awaitable step BETWEEN the seeded SELECT and the burn (e.g., `await getRedis()?.incr(rateLimitKey)`, `await someFlagCheck()`, `await isInstitutionalAccredited(domain)`) — if the new dependency is not mocked, or its mock returns a never-resolving promise — would hang the route at the new await. `runWithArgon2Slot` is never called; the seeded `mockRejectedValueOnce(new ArgonAbortError())` is never consumed; supertest's deadline (250ms) fires regardless of WHY the route hung; the helper sets `outcome.kind = 'timeout'`; the assertion passes for the wrong reason. The abort-silent contract is reported green even though the abort branch was never reached.
+- Symmetrical to the round-1 hold-block item 4 concern (a route writing 503 in <250ms — that case the helper catches; this case it does not). Per `agents/docs/solutions/conventions/tests-must-fail-on-mutation-of-code-under-test-2026-04-22.md`, a test that exercises a property must fail when the property is mutated; the helper's current shape allows passing for the wrong reason.
+- Fix: have `assertArgon2AbortIsSilent` accept the mock fn as a parameter and assert `expect(mockRunWithArgon2Slot).toHaveBeenCalledTimes(1)` after the timeout-classification (or equivalent: assert via a separate explicit check at each call site). All 7 callers (5 sibling translation tests + the 2 c4d988e-migrated files) need a small update to pass the mock fn or run the assertion. The fix-in-helper flavor is preferred — pins the assertion structurally rather than requiring per-site discipline.
+
+### Items dismissed during architect triage (do NOT address)
+
+- **Unsafe `unknown` cast in `assertArgon2AbortIsSilent` catch block** (kieran-typescript P1, conf 75) — fixed in place during this review pass at `backend/tests/support/argon2-error-mocks.ts` lines 185-198 (narrowing guard `typeof err === 'object' && err !== null` added before the property-cast). Future supertest rejection-shape drift is structurally caught.
+- **`tsc --noEmit` does not cover `tests/`** (kieran-typescript P2, conf 50) — pre-existing tsconfig limitation; project-infrastructure concern with deliberate scope per the test-suite convention. Not in scope of this cluster.
+- **250ms supertest deadline could race cold-start argon2 sentinel hash on slow CI** (adversarial P-low, conf 50) — environmental; abort tests already run after warm-up tests in both files, deadline budget is sufficient on current CI. Revisit if CI runner mix changes.
+- **Verified-dup branch at `auth.ts:416` lacks queue-full/shutdown coverage** (testing residual) — pre-existing gap, not introduced by this diff. Not blocking archive.
+- **`/reset-request` queue-full assertion is "compact" not full `assert503QueueFull`** (maintainability low-conf 45) — intentional per the file's docblock; the file's purpose is the divergent 200-on-shutdown contract, with cross-file coverage of the full wire-level queue-full contract on `auth-argon-error-translation.test.ts`.
+
+### Re-review signal
+
+When item 1 lands, `git mv` this file back to `tasks/review/`. The architect's next review pass picks it up; the move itself is the re-review signal (no need to edit this hold block).

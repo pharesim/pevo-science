@@ -192,3 +192,48 @@ Updated the `abortCount` declaration comment in `argon2-semaphore.ts` to explain
 - `npx tsc --noEmit`: clean.
 - `npm run lint`: clean (only pre-existing seed-phrase.ts warnings).
 - `npx vitest run tests/lib/argon2-semaphore.test.ts`: 26 passed (26).
+
+---
+
+## Architect re-review (2026-04-29) — HELD PENDING FIXES (round 2)
+
+`/ce-code-review` ran on commit `aeef5f2` (the round-1 hold-fix commit landing items 1 + 2) with 10 personas (correctness, testing, maintainability, project-standards, agent-native, learnings, security, reliability, adversarial, kieran-typescript). Round-1 hold items 1 (P2 reporter unit tests with fake timers + logger spy, 5 tests covering delta-zero, delta-positive, lastReportedCount tracking, start/stop idempotency) and 2 (P3 slot-grant race-guard double-increment fix via per-request `abortAlreadyCounted` closure flag + `incrementAbortOnce()` helper) verified landed correctly: closure-local flag confirmed (declared inside `runWithArgon2Slot` body, not module-level), all 3 abort paths use `incrementAbortOnce()`, the race test deterministically triggers both paths via `queueMicrotask` ordering and asserts +1 unconditionally.
+
+But three round-2 hold items surfaced — two contract violations on the abort-counter accuracy (which this task literally exists to deliver) and one operator-enrichment gap on the log payload.
+
+### Items to address
+
+**1. (P2) Counter increments under drain + late-abort race even when no `ArgonAbortError` propagates to any caller**
+
+- File: `backend/src/lib/argon2-semaphore.ts` (the parked-waiter `onAbort` listener path, approximately lines 311-330)
+- Construct: cap=1, slot held by A, B parks in `waiters[]` with `onAbort` listener attached. `drainArgon2Queue()` runs: `waiters.splice(0, ...).forEach(w => w.reject(new ShuttingDownError()))`. B's parked Promise rejects with `ShuttingDownError`. The `await` throws. **Before** B's `finally` reaches `signal.removeEventListener`, the user's `AbortController.abort()` fires synchronously. The listener is still attached. `onAbort` runs: `waiters.indexOf(waiter)` → `-1` (drain already spliced), splice no-op, `incrementAbortOnce()` runs (counter += 1), reject() no-op (already settled with `ShuttingDownError`). B's caller sees `ShuttingDownError`. **No `ArgonAbortError` was thrown to anyone.** Counter inflated by 1 even though the contract docblock says "Monotonic count of `ArgonAbortError`s thrown."
+- Operator impact: during SIGTERM, the `argon2_abort_summary` log conflates shutdown-rejected callers with actual client-disconnect aborts, giving misleading signal exactly when operators most care about distinguishing rolling restart from DoS / client-disconnect storm.
+- Fix: gate the `incrementAbortOnce()` call in `onAbort` on `waiters.indexOf(waiter) >= 0` (only count if the waiter was still live and we actually had something to abort). Aborts that race against drain (or against a slot-release that already shifted the waiter — the slot-grant race is handled separately by `incrementAbortOnce`'s own dedupe, so this gating doesn't break the round-1 fix) become no-ops on the counter, preserving the "ArgonAbortError actually thrown" invariant.
+- Add a test: induce drain + late-abort race (cap=1, A in flight, B parked, call `drainArgon2Queue` then `bAbort.abort()` synchronously in same tick), assert pB rejects with `ShuttingDownError` AND `getArgon2AbortCount()` is unchanged across the operation.
+
+**2. (P3) Pre-queue abort fast-path returns `ArgonAbortError` instead of `ShuttingDownError` after drain — drain docblock contract violated**
+
+- File: `backend/src/lib/argon2-semaphore.ts:289` (function-entry guard order)
+- The function entry has two early-return guards in order: `if (signal?.aborted) throw new ArgonAbortError();` then `if (shuttingDown) throw new ShuttingDownError();`. After `drainArgon2Queue()` flips `shuttingDown = true`, a NEW caller arriving with a pre-aborted signal hits the first guard and throws `ArgonAbortError`, never reaching the second. The drain docblock at lines 444-450 promises *"every subsequent runWithArgon2Slot against the process-wide semaphore throws ShuttingDownError without queueing"* — violated for pre-aborted callers.
+- Side effect: counter increments via `incrementAbortOnce()` in this path even though the process is exiting; related to item 1 but a different code path.
+- Fix: implementer's choice — either swap the check order (`shuttingDown` before `signal.aborted`, operator-friendlier) or update the drain docblock to acknowledge the pre-aborted exception (no behavior change). Practical impact is low (both errors map to silent / 503 outcomes downstream), so the docblock-fix flavor is defensible.
+
+**3. (P3) `argon2_abort_summary` log payload missing `intervalMs` field — dashboard authors must hardcode the 60s constant**
+
+- File: `backend/src/lib/argon2-semaphore.ts:494-498` (the `reportArgon2Aborts` log emission)
+- The log line emits `{ event: 'argon2_abort_summary', count: <delta> }` with no `intervalMs` field. The interval is a module-level constant `ABORT_REPORT_INTERVAL_MS = 60_000`, not exported, not present in the payload. Dashboard authors building rate expressions (events/s) must independently know the 60s constant from `ARCHITECTURE.md` Section 5. Adding `intervalMs` to the payload makes the log self-sufficient.
+- Fix: one-liner — add `intervalMs: ABORT_REPORT_INTERVAL_MS` to the log context object. No type change, no contract change; pure enrichment.
+
+### Items dismissed during architect triage (do NOT address)
+
+- **Counter-correction rollout note** (agent-native ops conf 85) — landed in place during this review pass at `agents/docs/ARCHITECTURE.md` Section 5. Notes that pre-`aeef5f2` `argon2_abort_summary count` could be inflated up to 2× under the slot-grant race, post-`aeef5f2` is accurate; alert thresholds calibrated against inflated values will see step-down as a measurement correction, not traffic decrease.
+- **`ABORT_REPORT_INTERVAL_MS` not env-configurable** (agent-native ops conf 75) — documentation arm satisfied by ARCHITECTURE.md Section 5; env-tunability is YAGNI per the task's Non-goals.
+- **Reporter test leaks `setInterval` if assertion fails before finally** (adversarial conf 60) — latent fragility; mitigated by `.unref()` today; trigger (vitest pool/threading config drift) is hypothetical. Revisit if vitest behavior changes.
+- **Inconsistent `as never` vs `as unknown as void` cast pattern in test mocks** (kieran-typescript conf 50) — cosmetic, no runtime delta.
+- **`reportArgon2Aborts` `logger.info` unguarded** (reliability residual) — architect already YAGNI-triaged in round-1 hold block; not a current failure path.
+- **`abortReportTimer.unref()` not asserted by tests; integration wiring of start/stop in `index.ts` not tested** (testing residuals) — out of scope; integration concerns rather than unit test gaps.
+- **Aborts during in-flight argon2 execution not counted** (adversarial residual) — argon2 is not AbortSignal-aware; known blind spot, not introduced by this diff.
+
+### Re-review signal
+
+When items 1-3 land, `git mv` this file back to `tasks/review/`. The architect's next review pass picks it up; the move itself is the re-review signal (no need to edit this hold block).
