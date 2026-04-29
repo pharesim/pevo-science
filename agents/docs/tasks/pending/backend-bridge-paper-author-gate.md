@@ -251,3 +251,38 @@ Test Files  2 failed (2)
 - `tests/routes/notifications.test.ts` + `tests/routes/paper-detail-v3.test.ts` + `tests/reputation-lifecycle.test.ts` + `tests/routes/reputation-prefix.test.ts` + `tests/routes/comments.test.ts` + `tests/routes/search.test.ts` — 23 passed.
 
 **Lint + tsc:** `npm run lint` clean (only pre-existing `seed-phrase.ts` `any` warnings); `npx tsc --noEmit` clean.
+
+---
+
+## Architect re-review (2026-04-30, round-3) — HELD PENDING FIXES
+
+`/ce-code-review` ran on commits `ad79602` → `3c2a2a1` → `9199312` (the on-main round-2 work; orphan SHA `bd1330b` cited in the prior signal block is not an ancestor of main, replayed via `3c2a2a1` per the worktree-fanout-orphan-detection convention). Substantive auth-bypass closure across all 15 SQL sites + JS-level `isPevoBridgePaper(meta, author)` is correct and comprehensive. Security, correctness, performance, and TS reviewers found no exploitable post-fix path. The remaining items below are coverage gaps and canary brittleness.
+
+### Items to address
+
+**1. (P2) Canary blind spot — shared-SQL multi-site mutation in reputation.ts evades regex.** `backend/tests/routes/bridge-paper-author-gate.test.ts:288` — `assertBridgeAuthorPin` uses `sql.match(re)` which returns only the first occurrence. `reputation.ts:404` (computeReputationBatch active_authors) and `reputation.ts:524` (accepted_claims user_papers UNION) both inject `alias='c' source='all'` substrings into the same captured SQL. A per-site mutation at line 524 (e.g., dropping the bridge-author pin from the accepted_claims arm) leaves line 404's substring intact and the test passes — concrete attack: an attacker with an accepted co-author claim on a spoofed `bridge_paper` gains reputation credit. Fix: use `sql.matchAll(re)` + assert the occurrence count matches the call-site count for that alias.
+
+**2. (P2) Notification CTE canary documented but not implemented.** `backend/tests/routes/bridge-paper-author-gate.test.ts:36` (test file header) lists `/api/notifications` user_bridge_papers as covered, but no `describe`/`it` block exercises `fetchNotificationsFromHaf`. SQL is correctly author-pinned today; this is a coverage gap. Add a `describe('fetchNotificationsFromHaf bridge-paper author-pin')` block with `assertBridgeAuthorPin()` on the captured SQL.
+
+**3. (P2) `toPaperSummary` spoofed bridge_paper degradation untested.** `backend/tests/helpers.test.ts` covers `isPevoBridgePaper(meta, author)` directly via 3 spoof-rejection unit tests, but does not cover its consumer. When `meta.type === 'bridge_paper'` but author ≠ bridge, `toPaperSummary` should produce `source_type: 'native'`, `doi: null`. Add a spec asserting that degradation behavior — without it, a future regression that re-narrows `isPevoBridgePaper` to meta-only would slip past helpers + bridge-paper-author-gate test files.
+
+**4. (P2) CI guard `check-bridge-paper-discipline.sh` has no negative test.** Add `backend/tests/scripts/check-bridge-paper-discipline.test.sh` (or analogous): create a temp file with `'bridge_paper'` literal in a non-allowlisted location → run script → assert exit 1; same in allowlisted location → assert exit 0. The guard is the load-bearing defense per the convention; an unverified guard is not a guard.
+
+**5. (P3) CI guard regex matches single-quoted literals only.** `backend/scripts/check-bridge-paper-discipline.sh:61` — bypass forms `"bridge_paper"`, `` `bridge_paper` ``, `'bridge_' + 'paper'` are not detected. Convention demands "any direct literal branching." Extend grep to multi-pattern alternation (`'bridge_paper'\|"bridge_paper"\|\`bridge_paper\``).
+
+**6. (P3) CI guard allowlist `src/types/hive.ts` is dead.** That file uses `"bridge_paper"` (double-quoted), which the single-quoted grep doesn't match — so the allowlist entry is unreachable today. Either remove `src/types/hive.ts` from the ALLOWLIST array, OR if item 5's grep extension lands first AND `src/types/hive.ts` becomes a legitimate single-quoted-literal site, re-justify the allowlist entry. Sequence items 5 and 6 deliberately: if 5 lands first, 6 may need the allowlist entry retained; if 6 lands first, 5's grep extension must add the allowlist entry back.
+
+**7. (P3) Stats canary uses strict equality on bridge-related capture count.** `backend/tests/routes/bridge-paper-author-gate.test.ts:202` — `expect(related.length).toBe(1)`. Other site canaries use `toBeGreaterThan(0)`. Loosen to `toBeGreaterThan(0)` and assert author-pin on every bridge-related capture, mirroring the other 8 site canaries.
+
+**8. (P3) Canary regex is conjunct-order-sensitive.** `backend/tests/routes/bridge-paper-author-gate.test.ts:94-97` — `assertBridgeAuthorPin` requires `<alias>.author = $N AND (<alias>.json_metadata -> $M ->> 'type') = 'bridge_paper'` in that exact order. If the helper at `hafsql.ts:234` ever flips the conjuncts (semantically identical), all 8 site canaries fail red. Rewrite the regex with lookahead/two-pass matching to accept either order, or assert both clauses appear in the same parenthesized substring.
+
+### Items dismissed during architect triage
+
+- **Rotation-blind property of `validPevoPaperWhere`** — current bridge invariant is singular per project memory; revisit when rotation is planned. Empty/whitespace `HIVE_BRIDGE_ACCOUNT` validator extension is rolled into the `backend-pevo-admin-key-startup-validation.md` hold-block (the same validator framework can reject blanks).
+- **Frontend POST_BROADCAST_FAILED handler** — separate UI surface, filed as `ui-orcid-callback-post-broadcast-failed-handler.md` in pending/.
+- **`loadActiveAuthors` dead code** — predates this task; filed separately as `backend-load-active-authors-dead-code-removal.md` per the chain-primitive-proxy-prefer-deletion convention.
+- **Continuation-post hijack** (security pre-existing finding adjacent to this work) — filed as `backend-continuation-post-author-consent-gate.md` in pending/. Companion UI work in `ui-coauthor-continuation-publishing.md`.
+
+### Re-review signal
+
+When items 1-8 land, `git mv` this file back to `tasks/review/`. The architect's next review pass scopes `/ce-code-review` to the round-3 commits and archives on clean.

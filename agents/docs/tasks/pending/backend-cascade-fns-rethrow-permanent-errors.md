@@ -162,3 +162,24 @@ Spec mechanism: `vi.spyOn(appDbModule, 'getAppPool').mockReturnValue(stubPool)` 
 
 - `agents/docs/api-contracts/orcid.md` POST_BROADCAST_FAILED entry already documents the envelope; the per-step `'reputation_seed'` reachability note can stay as-is (the path was reachable before this task; it's now actually fired in production failure modes too).
 - ARCHITECTURE.md "Operator Signals" section: the existing `event:'a1_extend_*'` cluster grew during task 2; this task adds `event:'post_broadcast_write_failed'` (singular, on the 4th anchor). Folds naturally into the next ARCHITECTURE.md sweep — not a backend hold item.
+
+---
+
+## Architect re-review (2026-04-30, round-1 → round-2) — HELD PENDING FIXES
+
+`/ce-code-review` ran on commit `09e01e3`. The Option B-narrow rewire is correctly implemented: `updateAccountOrcid` re-throws on permanent SQLSTATE classes (23*/42*) + null pool; `seedAccreditationBonus` re-throws on TypeError/SyntaxError/RangeError; `cacheOrcidBinding` stays swallowing per the documented contract. The `isPermanentDbError` and `isPermanentSeedError` discriminators are correctly typed (`unknown` parameter, `instanceof Error` narrowing). Two test-side gaps surface.
+
+### Items to address
+
+**1. (P2) Vacuous null-Redis spec in reputation-lifecycle.test.ts:222.** The "returns silently when Redis is unavailable" spec is gated by `if (!redis) { ... }` with no `else` branch. In every environment where Redis is up (the documented test topology — real Redis via docker-network IPs), the test body runs zero assertions. The inline comment acknowledges it. Either delete the spec, OR rewrite to mock `getRedis` to return null via `vi.spyOn(redisModule, 'getRedis').mockReturnValueOnce(null)` so the silent-return guard is actually exercised. Cross-reviewer convergence (correctness conf 75 + testing conf 75 → promoted to conf 100).
+
+**2. (P2) reputation-lifecycle.test.ts header doesn't document new mock carve-out justification.** Per CLAUDE.md "Running Tests" carve-out clauses (a)/(b)/(c), the file header docblock should explicitly document: which real path is impractical, why the mock is justified, and that real-HAF sibling coverage exists or is filed as follow-up. The new `vi.spyOn(redis, 'set')` and `vi.spyOn(logger, 'warn')` mocking introduced in this round-1 work landed without extending the header. Backend extends the file header with a paragraph documenting the new mocking shape and justification.
+
+### Items dismissed during architect triage
+
+- **Frontend POST_BROADCAST_FAILED handler** — separate UI surface activated by this task's re-throw work; filed as `ui-orcid-callback-post-broadcast-failed-handler.md` in pending/.
+- **claims/papers don't adopt the discrimination pattern** — scope-deferred per the original task's non-goals. Surface as residual; revisit if production logs show the conflated-error pattern on those routes.
+
+### Re-review signal
+
+When items 1-2 land, `git mv` this file back to `tasks/review/`.

@@ -42,3 +42,21 @@ Validate `config.pevoAdminPostingKey` (and `config.pevoBridgePostingKey` if it s
 - `backend/src/routes/orcid.ts:520` — `PrivateKey.fromString(config.pevoAdminPostingKey)` in `handleAccredit`.
 - `backend/src/routes/orcid.ts:610` — same in `handleLink`.
 - `backend/src/lib/broadcast-error.ts:14-18` — operator-alert anchor docblock; the third stable suffix `<routeLabel> broadcast failed on ambiguous-outcome path` is the one this task removes from the pre-broadcast SYNC trigger surface.
+
+---
+
+## Architect re-review (2026-04-30, round-1 → round-2) — HELD PENDING FIXES
+
+`/ce-code-review` ran on commit `cfa39b5`. The boot-time validator is correctly wired into `validateConfig()`, error message names env var + dhive class, empty-key carve-out preserves bridge-optional semantics, 5/5 unit tests pass. Two extensions surface from the review.
+
+### Items to address
+
+**1. (P1) Validator coverage map: `PrivateKey.fromString(config.X)` sites incomplete.** Cross-reviewer convergence (reliability + agent-native + learnings researcher all flagged this independently). The validator covers `PEVO_ADMIN_POSTING_KEY` + `PEVO_BRIDGE_POSTING_KEY`, but `PEVO_ANON_POSTING_KEY` is consumed via `PrivateKey.fromString` at `backend/src/routes/anonymousReview.ts:174` — same defect class but not covered by the boot validator. A malformed anon posting key would survive boot today; the same wrapper-catch mislabel this task closed for the admin path re-opens for the anonymous-review surface. Lower-severity than the admin path (anon is non-auth-critical and the catch returns a clean 500, not a 504 ambiguous-outcome misroute), but the same defect class.
+
+Fix: extend `validatePostingKeyFormat` calls in `validateConfig()` to cover `PEVO_ANON_POSTING_KEY`. **Run `grep -rn "PrivateKey\\.fromString(config" backend/src/`** as the verification step (per the wrapping-primitive-exhaustive-call-site-audit convention — the implementer's signal block listing sites is a CLAIM, not evidence; the grep is the source of truth). Add or extend a unit test in `tests/startup-checks.test.ts` covering the new env var.
+
+**2. (P3) Empty/whitespace `config.hiveBridgeAccount` validator.** Adversarial reviewer surfaced (during cluster 1 bridge-paper review): `HIVE_BRIDGE_ACCOUNT='   '` would silently exclude all bridge papers across every PEvO surface via `validPevoPaperWhere`'s author pin. Extend `startup-checks.ts` to reject empty/whitespace values for `HIVE_BRIDGE_ACCOUNT` (and analogous account-name env vars: `HIVE_ADMIN_ACCOUNT`, `HIVE_ONBOARD_ACCOUNT`, `HIVE_ANON_ACCOUNT` — verify the full list during implementation). Reasonable shape: a `validateAccountNameFormat(value, envVar)` helper that runs `Hive`'s standard account-name regex (`^[a-z][a-z0-9.-]{2,15}$` or whatever dhive exposes) and rejects blanks.
+
+### Re-review signal
+
+When items 1-2 land, `git mv` this file back to `tasks/review/`. Round-2 architect review scopes `/ce-code-review` to the round-2 commit.

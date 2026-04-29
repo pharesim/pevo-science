@@ -1,3 +1,33 @@
+## BACKEND-ORCID-DROPLOCKCONTENTION-RETRIABLE (archived 2026-04-30) — round-2 clean ✓
+
+Drop the unreachable `retriable: true` discriminator from the same-tick lock-contention 409 in `withOrcidBindingLock`. Round-1 (`b1aec7e`) stripped `retriable`, `retry_after_seconds`, and the `Retry-After` header from the `'held'` branch's `sendError` call; deleted the now-unused `ORCID_BINDING_LOCK_RETRY_AFTER_SECONDS` constant; updated test assertions to the new wire shape (409 + `ORCID_ALREADY_LINKED`, no `retriable`). Round-2 hold-fix (`4eb07ed`) added a structured `logger.warn` carrying `event:'lock_contention_held'`, `orcidId`, `routeLabel` so dashboards can pivot on the anchor; rewrote handleAccredit and handleLink durable-binding 409 comments to lead with the wire-shape invariant ("All ORCID_ALREADY_LINKED 409 paths share the same wire shape: status 409, code ORCID_ALREADY_LINKED, no `retriable`, no `Retry-After`, no `retry_after_seconds`") + cross-reference to `agents/docs/api-contracts/orcid.md:185`. Round-2 architect re-review zero findings.
+
+Companion UI work: `UI-ORCID-CALLBACK-RETRIABLE-MACHINERY-REMOVE` (archived same day) strips the dead frontend auto-retry machinery that the dropped discriminator activated.
+
+Convention reinforced: `chain-write-timeout-ambiguous-outcome-2026-04-22.md` "Sibling principle — `retriable: true` is meaningless when state is single-use" section is the canonical rationale; this commit is its first code-side implementation.
+
+---
+
+## UI-ORCID-CALLBACK-RETRIABLE-MACHINERY-REMOVE (archived 2026-04-30) — clean ✓
+
+Strip the now-unused auto-retry machinery from `frontend/src/pages/orcid-callback.js` after the backend stopped emitting `retriable: true` on the same-tick lock-contention 409 (companion `BACKEND-ORCID-DROPLOCKCONTENTION-RETRIABLE`). Removed: `_retryCount`, `MAX_RETRIES`, `retryCountdown`, `errorKind === 'alreadyLinkedRetriable'`, `_retryVerify`, `_tickRetryCountdown`, `_lastVerifyArgs`, the `orcid.alreadyLinkedRetriable` locale key from all 16 languages + `STUBS.md` cleanup. Net `-357/+24`, 5 unit tests deleted (machinery-specific) + 2 added (durable-rendering + retriable-shaped-envelope-treated-as-durable for mutation-killing). Test count `37/37` pass.
+
+Architect re-review zero findings. One adjacent gap surfaced (frontend has no `POST_BROADCAST_FAILED` 502 handler — activated by cluster 2 task 4's cascade-fns rethrow round-1) and was filed as `ui-orcid-callback-post-broadcast-failed-handler.md` in pending/; orthogonal to this cleanup.
+
+Convention reinforced: `chain-primitive-proxy-prefer-deletion-2026-04-28.md` — when the authoritative layer (single-use OAuth state) makes a downstream defense unreachable, decommission the consumer rather than retain it as scaffolding.
+
+---
+
+## BE-CLAIM-ACCOUNT-CHAIN-RECONCILE (archived 2026-04-30) — round-2 clean, superseded by R4 ✓
+
+Reconcile DB `account_creation_tokens` count with on-chain `pending_claimed_accounts` after `BroadcastTimeoutError` during `claim_account` batch broadcast. Round-1 (`ef56eab`) added `reconcileClaimTimeout` capturing pre/post counter delta and INSERT-reconcile path. Round-1 architect hold-block (`3312e2c`) flagged 4 items including log-severity tweaks, `reconcile_outcome` enum field on the seven reconcile log lines, and inline rationale comment for the `hiveOnboardAccount` choice. Round-2 hold-fix (`2622742`) landed all 4 items: 8/11 → 11/11 tests passing.
+
+**Subsequently superseded by `BACKEND-ACCOUNT-CREATION-TOKENS-DROP` (commit `72978a0`, archived separately).** That round-2 review surfaced that `account_creation_tokens` was a soft proxy (reservation mutex, not a ledger) defending DB-row contention rather than chain double-spend, and chain consensus already serializes `create_claimed_account`. Per the new `chain-primitive-proxy-prefer-deletion-2026-04-28.md` convention, the table was dropped entirely; this task's reconcile machinery was removed by R4. This task archives on its own merits as a record of the intermediate state — the round-2 reconcile work was correct on the original premise; the premise itself proved unnecessary at audit time.
+
+Convention prefigured: `chain-primitive-proxy-prefer-deletion-2026-04-28.md` was authored as direct aftermath of this task's premise re-evaluation.
+
+---
+
 ## BACKEND-ARGON2-ABORT-OBSERVABILITY (archived 2026-04-29) — round-2 clean ✓
 
 Periodic `argon2_abort_summary` log emission (`backend/src/lib/argon2-semaphore.ts`) for operator visibility into client-disconnect aborts during argon2 ops. Round-1 added the counter + reporter (commit `5d33f24`); round-1 hold-fix (`aeef5f2`) deduped the slot-grant-race double-increment via per-request `incrementAbortOnce` + 5 reporter unit tests. Round-2 hold-fix (`647a115`) closed three accuracy gaps: (1) gated parked-waiter `onAbort` counter on `waiters.indexOf(w) >= 0` so drain-race + slot-release-race no longer inflate the counter; (2) swapped function-entry guards so `shuttingDown` precedes `signal?.aborted` (pre-aborted-during-drain reclassifies as shutdown, not abort); (3) added `intervalMs` field to log payload so dashboards can express rates without hardcoding 60_000.
@@ -218,14 +248,3 @@ The task's `[TODO Architect]` block carved out the `agents/docs/api-contracts/co
 
 ## Cluster-A drift surfaced (filed separately, NOT held against this task)
 
-- `auth-signup-dup-saturated.test.ts` lines 141, 172 hardcode the literals `'queue_full'` / `'shutdown_drain'` instead of importing the constants — captured in `backend-argon2-test-mocks-migrate-pre-existing.md` (new task), bundled with the synthetic-mock-class drift in the same two pre-existing test files.
-
-## Files of record
-
-- `backend/src/lib/argon2-error-handler.ts` — `ARGON_REASON_QUEUE_FULL` / `ARGON_REASON_SHUTDOWN_DRAIN` exports + `handleArgonError` `details.reason` emission
-- `backend/tests/lib/argon2-error-handler.test.ts` — lib-level exact-match assertions + sentinel pins
-- `backend/tests/routes/{auth,custody-upgrade,settings-set-password,signup-verify-resume}-argon-error-translation.test.ts` — route-level `toBe(...)` assertions
-- `backend/tests/routes/auth-signup-dup-saturated.test.ts` — extended with `details.reason` assertions (literal strings; migration captured in `backend-argon2-test-mocks-migrate-pre-existing.md`)
-- `agents/docs/api-contracts/common.md` — SERVICE_UNAVAILABLE row + new note describing the discriminator and the example envelope
-
----

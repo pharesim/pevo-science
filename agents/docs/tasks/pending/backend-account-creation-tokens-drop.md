@@ -122,3 +122,28 @@ No other matches found in `agents/docs/api-contracts/` for "account creation tok
 ## [TODO Architect] — predecessor task supersession
 
 This task supersedes `agents/docs/tasks/review/backend-claim-account-chain-reconcile.md` (commit `ef56eab`). The reconcile path that task added (`reconcileClaimTimeout` + the pre/post counter capture in `claimAccountTokens`) is fully removed by this commit. The predecessor still archives on its own merits as a record of the intermediate state per task #7's note.
+
+---
+
+## Architect re-review (2026-04-30, round-1 → round-2) — HELD PENDING FIXES
+
+`/ce-code-review` ran on commit `72978a0`. The Alternative C (drop the table) implementation is correct and security-positive: chain consensus serializes `create_claimed_account` by design, so the prior `FOR UPDATE SKIP LOCKED` reservation was defending a non-issue at PEvO's volume; the chain-counter direct path with 10s Redis cache is simpler, and consensus-rejection translation closes the race window. Migration safety verified (no FK refs, no PII beyond on-chain history, AccessExclusiveLock harmless post-code-removal). Two refinements surface.
+
+### Items to address
+
+**1. (P3) Cache poisoning via silent `del` failure on `pending_claimed_accounts`.** `backend/src/account-creation.ts invalidatePendingClaimedAccountsCache` — cache-invalidation errors are debug-logged-and-swallowed. If `redis.del(cacheKey)` fails after a successful `claim_account` broadcast, the stale cached value (`'0'` if the previous request saw zero capacity) survives for up to 10s — blocking signups until natural TTL expiry. Silent: no warn, no error, no operator visibility. Fix: promote the cache-del failure log to `logger.warn` with structured `event: 'pending_claim_cache_invalidate_failed'` + `cacheKey` field. Operators can correlate user-impact incidents with the anchor.
+
+**2. (P3) Over-broad error-translation regex in createClaimedAccount catch.** `backend/src/account-creation.ts:255` — second consensus-rejection regex `/no[_ ]?(?:available)?[_ ]?(?:account[_ ])?claim/i` matches "no claim" anywhere in any error message — including unrelated permission/auth/validation errors that happen to contain those words. Combined with `throw new Error(...)` masking the underlying error message, transient errors that happen to mention "no claim" get silently translated to the retriable shape, and the original error context is lost. Cross-reviewer convergence (correctness conf 75 + adversarial conf 70 — promoted to conf 75).
+
+Fix: tighten the regex to specific Hive consensus-rejection phrases — the actual two known messages from chain consensus are `assertion failed: pending_claimed_accounts` (the strict assertion text) and `no available account creation` (the alt phrasing). Use a tighter alternation: `/assertion failed: pending_claimed_accounts|no available account creation/i`. Log the original error at `warn` level before the throw, so operator logs preserve diagnostic context.
+
+### Items dismissed during architect triage
+
+- **TOCTOU stampede on cache miss** — at PEvO's beta volume (tens of signups/day, not concurrent), cache-miss × concurrent-signup-rate ≈ zero. Hive consensus handles correctness via retriable-translation; UX-degraded is acceptable. Revisit at scale-up.
+- **Forward-only migration redundancy (001 still creates the dropped table)** — PEvO's migration model is forward-only by convention; partial-replay is not a real concern; redundant create-then-drop is honest history.
+- **Backend boundary violation: ARCHITECTURE.md +1 line edited by this commit** — content is correct (documents the new chain-read site for `pending_claimed_accounts`); architect accepted the edit in place rather than ask for revert. Surfaced as a recurring drift pattern; mitigation is filed as `architect-commit-zone-audit-hook.md` in pending/.
+- **Predecessor task `backend-claim-account-chain-reconcile.md` archive protocol** — handled by architect at execution time per rule #7 standard flow; no special protocol needed (the "supersedes; archive on its own merits" framing is just commit-message context).
+
+### Re-review signal
+
+When items 1-2 land, `git mv` this file back to `tasks/review/`. Round-2 architect review scopes `/ce-code-review` to the round-2 commit.

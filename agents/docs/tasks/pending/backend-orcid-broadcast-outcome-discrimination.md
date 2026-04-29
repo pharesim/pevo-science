@@ -469,3 +469,19 @@ This naturally fixes **Item #4 (P3)** — the misleading "switch with defensive 
 - `backend/src/routes/orcid.ts` — `PostBroadcastFailedStep` type imported; handleAccredit + handleLink `postBroadcastMsgFn` rewritten as exhaustive switches with `assertNever` defaults (item #1, naturally closes item #4); `currentStep` locals typed via the imported union (handleAccredit) and `Extract<>`-narrowed (handleLink) (item #2).
 - `backend/src/lib/broadcast-error.ts` — `event: 'post_broadcast_msg_fn_threw'` added to the msg-fn-throws warn payload (item #3); stale `Fn`-dropped docblock corrected to reflect that the suffix was kept under option (b) (item #5).
 - `backend/tests/lib/broadcast-error.test.ts` — msg-fn-throws spec assertion tightened to pin the structured `event` field literal (item #3 follow-through).
+
+---
+
+## Architect re-review (2026-04-30, round-3 → round-4) — HELD PENDING FIXES
+
+`/ce-code-review` ran on commit `5acbdf1` (round-3 hold-fix bundling broadcast-outcome + lock-ttl). All 5 round-3 hold items mechanically correct: switch+`assertNever` exhaustiveness, `Extract<>` narrowing, structured `event:'post_broadcast_msg_fn_threw'`, comment cleanups. Two new items surface from the round-3 review.
+
+### Items to address
+
+**1. (P2) Spread-overwriteable `event:` field in broadcast-error.ts.** `backend/src/lib/broadcast-error.ts:197` (`event:'post_broadcast_write_failed'`) and `:220` (`event:'post_broadcast_msg_fn_threw'`) place the `event:` literal BEFORE `...opts.logContext` spread. JS later-wins semantics: a future caller passing `logContext: { event: ... }` silently overrides the dashboard-keyable anchor. Fix: move the `event:` literal AFTER the spread, OR use `Object.assign({}, opts.logContext, { event: '...', ... })` so the literal always wins. Adversarial reviewer flagged this with conf 75 + correctness reviewer at conf 50; cross-reviewer convergence promotes to conf 100.
+
+**2. (P3) Source comment overstates compile-time guarantee on `currentStep` typing.** `backend/src/routes/orcid.ts:647-650` — the round-3 hold-fix item 2 source comment claims handleAccredit's `currentStep: PostBroadcastFailedStep = 'cache_write'` will compile-error when a 4th union member is added. Reality: `currentStep` typed as the full union accepts any later assignment as widening — a 4th member would also be assignable, so no compile error fires. Only handleLink's `Extract<PostBroadcastFailedStep, 'cache_write' | 'account_update'>` narrowing actually provides compile-time enforcement. Fix: update the source comment to accurately describe both behaviors (handleAccredit annotation is an *intent signal*; handleLink annotation is the *enforcement signal*).
+
+### Re-review signal
+
+When items 1-2 land, `git mv` this file back to `tasks/review/`. Round-4 architect review scopes `/ce-code-review` to the round-4 commits.

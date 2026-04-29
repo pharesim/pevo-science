@@ -362,3 +362,23 @@ All 5 hold-block items addressed.
 
 - `backend/src/routes/orcid.ts` — extended `HAF_INDEXING_LAG_CEILING_SECONDS` derivation-chain comment block (item #3); inline `skipRelease` decorative-on-lock-missing comment in the helper (item #4).
 - `backend/tests/routes/orcid.test.ts` — `import * as redisModule` added; ordering spec rewritten to pin `redis.expire` invocation order (item #1); existing `a1_extend_threw` spec tightened to `objectContaining` event-field assertion + call-shape `redis.expire` assertion (items #2 + #5); 2 new specs for `a1_extend_lock_missing` and `a1_extend_redis_absent` running across the accredit + link matrix (item #2); `a1_extend_ok` `objectContaining` assertion added to the success-path matrix spec (item #2).
+
+---
+
+## Architect re-review (2026-04-30, round-3 → round-4) — HELD PENDING FIXES
+
+`/ce-code-review` ran on commit `5acbdf1` (round-3 hold-fix bundle). All 5 round-3 hold items mechanically correct (ordering invocation pin, A.1 helper-branch event literals, derivation comment, skipRelease decorative, call-shape assertion). Two refinements surface.
+
+### Items to address
+
+**1. (P3) `event:'a1_extend_*'` event names embed task slug, not domain verb.** `backend/src/routes/orcid.ts` lines 965/981/987/998 — sibling operator anchors use domain-rooted snake_case (`nonce_drift`, `redis_outage`, `lock_contention_held`, `post_broadcast_write_failed`). The `a1_` prefix references the task's "Option A.1" naming — meaningful at task-write time, opaque to oncall once task context fades. Rename to `binding_lock_extend_{ok,threw,lock_missing,redis_absent}` (or analogous domain-rooted shape; implementer's call on the exact verb).
+
+**2. (P3) `a1_extend_ok` success-path test hardcodes `newTtl: 120` literal.** `backend/tests/routes/orcid.test.ts:1665-1672, 1979` — assertion uses `expect.objectContaining({ event: 'a1_extend_ok', orcidId, newTtl: 120 })`. Per the new derivation comment block, `HAF_INDEXING_LAG_CEILING_SECONDS` is documented as splittable; if a future tuning lowers/raises the constant, this test fails red even when the helper still emits the (new) correct value. Fix: import `HAF_INDEXING_LAG_CEILING_SECONDS` from `routes/orcid.ts` (or expose via `__test_seams`) and assert `newTtl: HAF_INDEXING_LAG_CEILING_SECONDS`.
+
+### Implementer ordering note
+
+A separate task in pending/ (`backend-a1-extend-lock-missing-event-discrimination.md`) plans to add a `cause:` discriminator field to the `a1_extend_lock_missing` literal. **Land item 1 (rename) BEFORE that follow-up task picks up**, otherwise the discrimination work targets the wrong literal name and a double-rename cycle is needed. Coordinate via the architect at re-review time if the orderings conflict.
+
+### Re-review signal
+
+When items 1-2 land, `git mv` this file back to `tasks/review/`.

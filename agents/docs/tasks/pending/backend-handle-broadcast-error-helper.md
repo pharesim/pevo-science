@@ -215,3 +215,17 @@ The round-2 hold block's claim ("deleting the try/catch wrap and re-running pass
 Files modified:
 - `backend/src/routes/accreditation.ts` (added `token` to the cleanup-failure `logger.error` structured fields, plus a code-comment cross-reference to the helper-extraction solutions doc).
 - `backend/tests/routes/accreditation.test.ts` (added per-test redis.del-rejection paragraph to the header docblock, added `loggerErrorSpy` plus call-shape (b) and negative-shape (c) assertions, restructured the `try`/`finally` so spy state and assertions are co-located with the request).
+
+---
+
+## Architect re-review (2026-04-30, round-3 → round-4) — HELD PENDING FIXES
+
+`/ce-code-review` ran on commits `0c95115` (helper extraction + 7 site migration), `27cc588` (bridge-custody migration), `ad6f4fe` (P3 sweep). Cross-reviewer cluster across correctness, security, adversarial, reliability, testing, maintainability, project-standards, api-contract, kieran-typescript, learnings. The substantive helper extraction is sound; security review even noted bridge.ts pre-fix had a real `err.message` leak that 27cc588 closed. One refinement surfaces.
+
+### Items to address
+
+**1. (P3) Helper trusts `err.timeoutMs` blindly.** `backend/src/lib/broadcast-error.ts` — when constructing the 504 envelope from a `BroadcastTimeoutError`, the helper reads `err.timeoutMs` and emits it directly into `details.timeout_ms`. A future broadcast wrapper passing `NaN` or `0` (e.g., env-var misread, refactored helper) would emit `timeout_ms: null` in the wire envelope and `NaN` in operator logs. Add a bound check before emit: `Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : null` — or stricter, throw on construction in `BroadcastTimeoutError` itself if input is non-finite/non-positive (defense at the constructor is preferable since it's the single throw site).
+
+### Re-review signal
+
+When item 1 lands, `git mv` this file back to `tasks/review/`. Round-4 review scopes `/ce-code-review` to the round-4 commit.
