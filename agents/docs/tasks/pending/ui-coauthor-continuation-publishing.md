@@ -40,26 +40,40 @@ The two affordances are different actions:
 
 Bridge papers (`type: 'bridge_paper'`, post author = `config.hiveBridgeAccount`): the publish-continuation affordance should **not** appear. Bridge-paper updates flow through `/api/bridge/update`. Gate the predicate on `paper.pevo?.type !== 'bridge_paper'`.
 
-### 2. Continuation form
+### 2. Edit / continuation form — always pre-fill from chain head
 
-The form pre-fills with the latest version's content (whichever post in the chain is the head as of viewing) and allows the user to revise. On submit:
+The PEvO version chain is the timeline of all posts (originals + every co-author's continuations) AND every Hive-native edit applied to any of those posts. Each native edit produces a "new version" in the chain timeline as PEvO presents it.
 
-- The new post's chain `author` = `currentUser.username`.
-- `pevo.continues` = `{ author: <head's author>, permlink: <head's permlink> }`.
-- `pevo.type = 'paper'`.
-- Other paper fields (title, body, abstract, discipline, keywords, ipfs_cid, etc.) carry the user's revisions.
+Implication for the form: regardless of whether the user is publishing a new continuation OR editing their own existing post, the form MUST pre-fill from the **chain head** (the latest version in the chain at viewing time), not from the user's own last version. Concrete cases:
 
-The user broadcasts under their own posting authority (Keychain or backend custodial signing path).
+- Alice has `alice/v1`. Bob publishes `bob/continuation-1` (edits some content). Bob then native-edits `bob/continuation-1`. Alice clicks "edit my version". The form pre-fills with bob's most recent edit content (the chain head), and on submit Alice's content goes into `alice/v1` via Hive native edit. The result: another new version on the chain, which now reflects alice's revision applied on top of bob's most recent content.
+- A first-time co-author publishing their initial continuation pre-fills from the chain head as before; the new continuation post points at the head's author/permlink in `pevo.continues`.
 
-If the user already has a continuation in this paper's chain, their next edits are Hive-native edits on their own post — not new continuations. The UI should detect "I already have a post in this chain" and switch the affordance to "Edit my version" → Hive native edit on their existing post.
+Two affordance paths converge on the same form, differing only in submit:
+
+| Affordance | Pre-fill source | Submit action |
+|---|---|---|
+| Publish continuation (first time as a named co-author) | chain head's content | broadcast new comment under `currentUser.username`, `pevo.continues = {author: head.author, permlink: head.permlink}` |
+| Edit my version (user already has a post in the chain) | chain head's content | Hive native edit on `currentUser`'s own existing post in this chain |
+
+Other paper fields (title, body, abstract, discipline, keywords, ipfs_cid, etc.) carry the user's revisions on top of the chain-head content.
+
+The user broadcasts under their own posting authority (Keychain or backend custodial signing path) in both cases.
+
+**Implementation note.** Today's edit flow pre-fills from the original post's content (`paper.author/paper.permlink` head). After this task lands, pre-fill comes from `versions[versions.length - 1]` (or whatever shape the version-chain endpoint returns as "head"). Verify the endpoint distinguishes "head as of viewing" from "the original post" — if it doesn't, the head computation may need a small backend addition.
 
 ### 3. Tests
 
 - Unit: publish-continuation affordance renders when current user is in `paper.pevo.authors[].hive` AND has not yet published a post in this chain.
-- Unit: edit-own-post affordance renders when current user is the author of the post being viewed (same as today's behavior).
+- Unit: edit-my-version affordance renders when current user is in `paper.pevo.authors[].hive` AND already has a post in the chain.
 - Unit: neither affordance renders when current user is not a named author.
-- Unit: bridge-paper case suppresses the publish-continuation affordance.
-- Integration / E2E: a named co-author with no prior continuation broadcasts one → version chain shows it. (Coordinate with `ui-e2e-edit-paper-flow.md` already in `tasks/review/`; may extend that suite.)
+- Unit: bridge-paper case suppresses both affordances.
+- Unit (head pre-fill): when the chain head is a co-author's recent post, the form pre-fills with the head's content regardless of which named author opens the form.
+- Integration / E2E:
+  - A named co-author with no prior continuation broadcasts one → version chain shows it.
+  - A named co-author with an existing post hits "edit my version" against a chain whose head is a different co-author's recent edit → form pre-fills with the OTHER co-author's content → submit produces a Hive native edit on the user's own post → new version appears in the chain.
+
+Coordinate with `ui-e2e-edit-paper-flow.md` already in `tasks/review/`; may extend that suite.
 
 ### 4. Locale strings
 
