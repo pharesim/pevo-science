@@ -7,19 +7,36 @@
 # commit-zone-audit-hook-2026-04-30.md (e.g. a worker subagent staging a
 # parent agent's mid-flight task-file moves via `git add -A`).
 #
-# Sources of truth (when this hook and the docs disagree, the docs win):
-# - root CLAUDE.md rule #2 (architect/backend/ui/pinner ownership boundaries)
-# - agents/<role>/CLAUDE.md "Files You Own" sections
+# This function is the runtime-authoritative zone map. The convention doc and
+# the architect's "Files You Own" list are derived references; when updating,
+# this hook is the SSOT and other surfaces follow. See:
+# - root CLAUDE.md rule #2 + "Commits and Pushes" (narrative ownership rules)
+# - agents/architect/CLAUDE.md "Files You Own" (architect canonical list)
+# - agents/<role>/CLAUDE.md "Responsibilities" / "Worker subagent staging"
 # - agents/docs/tasks/README.md (task-file slug format)
 #
 # Hook installs via:  git config core.hooksPath .githooks
+# Bypassed by `git commit --no-verify` per githooks(5); per root CLAUDE.md,
+# agents MUST NOT use --no-verify without explicit user authorization.
+#
+# Limitation: `git commit --amend` with no new staging produces an empty
+# `git diff --cached`, so the audit skips. An amend that only changes the
+# subject (e.g., renames the prefix) is not re-audited against the original
+# tree. Documented; not enforced.
 
 set -euo pipefail
+
+# Agent prefix set — used in BOTH the recognition regex (line ~50) and the
+# case statement (line ~85). When adding a role, update both.
+readonly AGENT_PATTERN='architect|backend|ui|pinner'
 
 msg_file="${1:-}"
 [ -n "$msg_file" ] && [ -f "$msg_file" ] || exit 0
 
-subject="$(grep -v '^#' "$msg_file" | sed '/./,$!d' | head -n1)"
+# Strip comment lines (`#` prefix) and any leading blank lines, take first
+# remaining line as the subject. `|| true` defeats `set -e` when the message
+# file is comment-only or empty (the [ -z "$subject" ] guard then handles it).
+subject="$(grep -v '^#' "$msg_file" 2>/dev/null | sed '/./,$!d' | head -n1)" || true
 [ -z "$subject" ] && exit 0
 
 # Explicit exemption — use sparingly for genuine cross-agent commits.
@@ -30,15 +47,45 @@ fi
 
 # Parse agent prefix:  architect:, backend:, ui:, pinner:
 # Optional parenthetical scope:  backend(auth):, architect(compound):
-if [[ ! "$subject" =~ ^(architect|backend|ui|pinner)(\([^\)]+\))?: ]]; then
+# Conventional-commit wrappers (fix(role):, feat(role):) are NOT recognized
+# by design — root CLAUDE.md "Commits and Pushes" mandates the bare form.
+if [[ ! "$subject" =~ ^(${AGENT_PATTERN})(\([^\)]+\))?: ]]; then
   # Unrecognized prefix (chore:, fix:, Merge ..., revert: ...) — skip audit.
   exit 0
 fi
 
 agent="${BASH_REMATCH[1]}"
 
-staged="$(git diff --cached --name-only --diff-filter=ACDMR)"
+# Stage scope includes Unmerged (`U`) so merge-conflict commits are audited.
+staged="$(git diff --cached --name-only --diff-filter=ACDMRU 2>/dev/null)" || {
+  echo "commit-msg: git diff --cached failed; skipping zone audit (likely index lock or git infra issue)" >&2
+  exit 0
+}
 [ -z "$staged" ] && exit 0
+
+# Detect any task-file rename from review/ → pending/ (architect-driven only
+# per root CLAUDE.md rule #8). Non-architect agents staging this rename are
+# rejected outright; architect bypass already covers the legitimate case.
+# We need rename detection here, so use --name-status with no path filter.
+if [[ "$agent" != "architect" ]]; then
+  rename_status="$(git diff --cached --name-status -M50 2>/dev/null)" || rename_status=""
+  if printf '%s\n' "$rename_status" \
+       | grep -qE $'^R[0-9]*\tagents/docs/tasks/review/[^\t]+\tagents/docs/tasks/pending/'; then
+    {
+      echo "commit-msg: zone audit FAILED"
+      echo "  agent prefix parsed: $agent"
+      echo "  staged review/ → pending/ task-file rename detected."
+      echo "  Per root CLAUDE.md rule #8, that direction is architect-driven (HELD"
+      echo "  PENDING FIXES). Non-architect agents may only mv pending/ → review/."
+      printf '%s\n' "$rename_status" \
+        | grep -E $'^R[0-9]*\tagents/docs/tasks/review/[^\t]+\tagents/docs/tasks/pending/' \
+        | sed 's/^/    - /'
+      echo ""
+      echo "  If this is a legitimate non-rule-#8 case, use [skip-zone-audit] in the subject."
+    } >&2
+    exit 1
+  fi
+fi
 
 # Classify a single staged path against the agent's allowed zones.
 # Returns 0 (allowed) or 1 (out-of-zone).
@@ -46,10 +93,16 @@ allowed_for_agent() {
   local agent="$1"
   local path="$2"
 
-  # Task-file moves are zone-bound by SLUG prefix, not by directory. A
-  # backend: commit moving tasks/review/backend-X.md → tasks/pending/backend-X.md
-  # is allowed; the same commit moving tasks/review/ui-Y.md is not.
+  # Task-file paths under tasks/{pending,review,blocked}/.
+  # Architect can touch ANY task file regardless of slug — per root CLAUDE.md
+  # rule #8, hold-block appends and review→pending moves are architect-driven
+  # regardless of the task's slug. Non-architect agents are restricted to
+  # their own slug. The review→pending direction is checked separately above
+  # via global rename detection (architect-only).
   if [[ "$path" =~ ^agents/docs/tasks/(pending|review|blocked)/([a-z]+)- ]]; then
+    if [[ "$agent" == "architect" ]]; then
+      return 0
+    fi
     local slug_agent="${BASH_REMATCH[2]}"
     [[ "$slug_agent" == "$agent" ]] && return 0
     return 1
@@ -58,14 +111,19 @@ allowed_for_agent() {
   case "$agent" in
     architect)
       # Architect zone: docs, repo-root meta, per-agent CLAUDE.md, deploy config, hooks.
-      [[ "$path" =~ ^agents/docs/ ]]              && return 0
-      [[ "$path" =~ ^agents/[a-z]+/CLAUDE\.md$ ]] && return 0
-      [[ "$path" == "CLAUDE.md" ]]                && return 0
-      [[ "$path" == "README.md" ]]                && return 0
-      [[ "$path" == "Dockerfile" ]]               && return 0
-      [[ "$path" == "docker-compose.yml" ]]       && return 0
-      [[ "$path" == "docker-compose.test.override.yml" ]] && return 0
-      [[ "$path" =~ ^\.githooks/ ]]               && return 0
+      [[ "$path" =~ ^agents/docs/ ]]                        && return 0
+      [[ "$path" =~ ^agents/[a-z]+/CLAUDE\.md$ ]]           && return 0
+      [[ "$path" == "CLAUDE.md" ]]                          && return 0
+      [[ "$path" == "README.md" ]]                          && return 0
+      [[ "$path" == "LICENSE" ]]                            && return 0
+      [[ "$path" == "Dockerfile" ]]                         && return 0
+      [[ "$path" == "docker-compose.yml" ]]                 && return 0
+      [[ "$path" == "docker-compose.test.override.yml" ]]   && return 0
+      [[ "$path" == ".dockerignore" ]]                      && return 0
+      [[ "$path" == ".gitignore" ]]                         && return 0
+      [[ "$path" == ".env.example" ]]                       && return 0
+      [[ "$path" == "deploy.sh" ]]                          && return 0
+      [[ "$path" =~ ^\.githooks/ ]]                         && return 0
       ;;
     backend)
       [[ "$path" =~ ^backend/ ]] && return 0
@@ -101,8 +159,10 @@ if [ "${#violations[@]}" -gt 0 ]; then
     echo "    1. Unstage out-of-zone files (git restore --staged <path>) and recommit."
     echo "    2. Split into separate commits, one per agent zone."
     echo "    3. Add [skip-zone-audit] to the subject for an intentional cross-agent commit."
+    echo "    (Forbidden for agents: --no-verify bypasses ALL hooks; use only with explicit user authorization.)"
     echo ""
-    echo "  Reference: root CLAUDE.md rule #2 + agents/<role>/CLAUDE.md \"Files You Own\"."
+    echo "  Reference: .githooks/commit-msg allowed_for_agent() is the runtime-authoritative zone map."
+    echo "  See agents/docs/solutions/conventions/commit-zone-audit-hook-2026-04-30.md for narrative."
   } >&2
   exit 1
 fi

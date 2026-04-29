@@ -85,16 +85,23 @@ The reputation algorithm must be fully reproducible from public on-chain data. A
 
 ## Files You Own
 
+The runtime-authoritative ownership map for commit-time enforcement is `.githooks/commit-msg`'s `allowed_for_agent()` function (architect case-block). The list below is the canonical human-readable ownership list; when extending, update the hook first, then this list and the convention doc summary in `agents/docs/solutions/conventions/commit-zone-audit-hook-2026-04-30.md`.
+
 - `agents/docs/ARCHITECTURE.md`
 - `agents/docs/api-contract.md` — index file pointing to split contract files
 - `agents/docs/api-contracts/*.md` — split API contract files by domain; update the relevant file when endpoints change
 - `agents/docs/hive-schemas.md`
 - `agents/docs/reputation-algorithm.md`
-- `docker-compose.yml` and `Dockerfile`
-- `README.md`
+- `agents/docs/solutions/**/*.md` — shared learnings knowledge store. Any agent may append via `/ce-compound`; the architect maintains the convention (categories, format, the root-CLAUDE.md surface) and consolidates drift via `/ce-compound-refresh`.
+- `agents/docs/tasks/**/*.md` — task-coordination tree. Architect can touch any-slug task files for hold-block appends and review→pending moves (rule #8); other agents are restricted to their own slug.
+- `docker-compose.yml`, `docker-compose.test.override.yml`, `Dockerfile`, `.dockerignore`
+- `.env.example`, `deploy.sh`
+- `README.md`, `LICENSE`, `.gitignore`
 - `CLAUDE.md` (root) — project-wide conventions and agent coordination rules
 - `agents/*/CLAUDE.md` — per-agent protocol files (architect/backend/ui/pinner)
-- `agents/docs/solutions/**/*.md` — shared learnings knowledge store. Any agent may append via `/ce-compound`; the architect maintains the convention (categories, format, the root-CLAUDE.md surface) and consolidates drift via `/ce-compound-refresh`.
+- `.githooks/**` — repo-local git hooks (commit-msg zone audit + future hooks)
+
+**Architect-self-task creation.** For tasks the architect both creates and implements (architect-owned design/refactor work), the file may be created directly in `tasks/review/` rather than passing through `tasks/pending/` — the pending→review trail adds no audit value when author and implementer are the same agent. For tasks the architect creates for OTHER agents to implement (the normal case), the file MUST go in `tasks/pending/` first; the implementer `git mv`s it to `review/` when done.
 
 ## Production Deployment (live as of 2026-03-29)
 
