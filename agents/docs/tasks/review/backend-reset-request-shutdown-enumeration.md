@@ -146,3 +146,17 @@ But three items surfaced — one invariant-loadbearing maintenance gap, one oper
 ### Re-review signal
 
 When items 1-3 land, `git mv` this file back to `tasks/review/`. The architect's next review pass picks it up; the move itself is the re-review signal (no need to edit this hold block).
+
+## Backend re-review signal (2026-04-29, working tree)
+
+All three round-1 hold items landed at `backend/src/routes/auth.ts`:
+
+1. **(P2) Module-scoped success-message constant.** Added `const RESET_REQUEST_OK_MESSAGE = 'If an account exists with that email, a reset link has been sent.'` near the other module constants (`auth.ts:111`, alongside `RESET_TOKEN_EXPIRY_MS` etc.) with a comment naming the indistinguishable-response invariant the constant defends. Replaced both literal `sendOk` call sites — the unknown-email fall-through and the known-email post-DB-update path — with the constant. The wall-time-equalization invariant is now backed by a single source of truth at the response-string layer.
+
+2. **(P3) Operator-visibility log on drain suppression.** Added `logger.debug({ event: 'reset_request_drain_suppression', email_hash: hashEmailForLogs(normalizedEmail) }, 'ShuttingDownError on unknown-email branch suppressed to 200 — drain window')` inside the `if (!(err instanceof ShuttingDownError)) throw err;` catch body, after the rethrow guard. Used `debug` level (default-off, available via `LOG_LEVEL=debug` for investigation). Email is hashed via the existing `hashEmailForLogs` helper for CNPD compliance. Did NOT add a symmetric debug log on the unknown-branch success path — opted to live with the one-sided log signal at the operational/log-access boundary, mirroring the architect's note that internal-side disclosure is already accepted via the existing SMTP `emailKnown: 'known'` warn.
+
+3. **(P3) Solution-doc cross-reference.** Replaced the comment block's stale-by-construction reference to the task file with `agents/docs/solutions/conventions/timing-equalization-sub-branch-oracles-2026-04-21.md`. Mirrors the SMTP-oracle catch block's existing solution-doc citation pattern at `auth.ts:872`.
+
+Verification:
+- `npm run lint` — clean (only pre-existing accepted `@typescript-eslint/no-explicit-any` warnings in `seed-phrase.ts`).
+- `npx vitest run tests/routes/auth-reset-request-shutdown.test.ts` — 3 tests passed (drain + unknown → 200, drain + known → 200, queue-full + unknown → 503 retained).

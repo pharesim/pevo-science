@@ -102,6 +102,14 @@ const SIGNUP_TOKEN_EXPIRY_MS = 24 * 60 * 60 * 1000; // 24 hours
 const RESET_TOKEN_EXPIRY_MS = 60 * 60 * 1000; // 1 hour
 const MAX_LOGIN_FAILURES = 20;
 
+// /reset-request OK response message. The endpoint's enumeration-prevention
+// invariant requires that BOTH branches (unknown-email + known-email) emit a
+// byte-for-byte identical response. Centralized here so a wording change at
+// one site cannot silently re-open the email-enumeration oracle by drifting
+// the two branches apart. Both the unknown-email burn-then-200 path and the
+// known-email DB-update-then-200 path must use this constant.
+const RESET_REQUEST_OK_MESSAGE = 'If an account exists with that email, a reset link has been sent.';
+
 // Sentinel argon2id hash for timing-equalization at every "cheap" early-return
 // that would otherwise distinguish a known-account branch from an unknown one
 // (login unknown-account, NO_PASSWORD_SET null-hash,
@@ -840,13 +848,24 @@ router.post('/reset-request', resetRequestLimiter, async (req: Request, res: Res
       // (including `ArgonQueueFullError` and `ArgonAbortError`) propagates to
       // the outer catch via `handleArgonError` so saturation still surfaces as
       // 503 and client-disconnect still short-circuits silently. See
-      // `agents/docs/tasks/pending/backend-reset-request-shutdown-enumeration.md`.
+      // `agents/docs/solutions/conventions/timing-equalization-sub-branch-oracles-2026-04-21.md`
+      // for the broader sub-branch oracle pattern this catch is part of.
       try {
         await burnSentinel(normalizedEmail, abortSignal);
       } catch (err) {
         if (!(err instanceof ShuttingDownError)) throw err;
+        // Operator visibility: the swallow is otherwise silent (no status-code
+        // differential is the entire point of the fix), so without this log the
+        // only signal that the suppression fired during a drain window is the
+        // oracle being closed. `debug` level keeps it default-off; available
+        // via LOG_LEVEL=debug for investigation. `email_hash` keeps logs CNPD-
+        // compliant by hashing the address.
+        logger.debug(
+          { event: 'reset_request_drain_suppression', email_hash: hashEmailForLogs(normalizedEmail) },
+          'ShuttingDownError on unknown-email branch suppressed to 200 — drain window',
+        );
       }
-      sendOk(res, { message: 'If an account exists with that email, a reset link has been sent.' });
+      sendOk(res, { message: RESET_REQUEST_OK_MESSAGE });
       return;
     }
 
@@ -898,7 +917,7 @@ router.post('/reset-request', resetRequestLimiter, async (req: Request, res: Res
       logger.warn({ route: 'auth.reset-request', emailKnown: 'known' }, 'SMTP not configured — reset email not sent');
     }
 
-    sendOk(res, { message: 'If an account exists with that email, a reset link has been sent.' });
+    sendOk(res, { message: RESET_REQUEST_OK_MESSAGE });
   } catch (err) {
     if (handleArgonError(res, err) === ARGON_HANDLED) return;
     logger.error({ err }, 'Password reset request failed');
