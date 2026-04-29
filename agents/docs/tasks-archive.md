@@ -1,3 +1,11 @@
+## UI-PASSWORD-POLICY-HARMONIZE (archived 2026-04-29) — round-1 clean ✓
+
+UI side of cross-stack password-policy harmonization. Adds a `Keep in sync with backend/src/lib/password-policy.ts` pointer comment to `frontend/src/password-policy.js`, citing the backend CI drift-check test as the gate. Lands alongside the backend half (`backend-password-policy-harmonize`, currently held in pending/ on round-1 for two test-coverage hardening items). UI half passed `/ce-code-review` (6 personas: correctness, testing, maintainability, project-standards, agent-native, learnings) with zero findings on the comment-only diff. Implementer commit: `0b73a53`.
+
+The pair (BE drift-check test + FE pointer comment) implements the agreed cross-stack harmonization shape: two independent helper implementations, one CI gate that loads both and asserts behavioral agreement on a labelled test-vector grid, plus reciprocal pointer comments so a future unilateral edit has a visible nudge to update the other side. The drift-check test (`backend/tests/lib/password-policy-drift.test.ts`) is the audit surface; the pointer comments are the editor-visible nudges.
+
+---
+
 ## BACKEND-ORCID-BROADCAST-TIMEOUT-OUTCOME-HANDLING (archived 2026-04-29) — round-4 clean ✓
 
 Architect decision Option A.2 (504 + retriable:false + verify_before_retry envelope) for ORCID-binding broadcast paths whose 30s timer fires while outcome is genuinely uncertain. Closes the ambiguous-outcome window the prior round-3 sweep left open: when chain-write timer fires, the broadcast may or may not have landed; client must verify before retry to avoid duplicate-bind.
@@ -240,11 +248,3 @@ JR-2 / JR-3 closed; JR-5 substantially closed.
 ---
 
 ## BE-PROFILE-PAPER-DISCIPLINE-CANON (archived 2026-04-28) — Round-2 clean ✓
-
-# BE-PROFILE-PAPER-DISCIPLINE-CANON — Route `toPaperSummary` discipline through `paperDisciplineField()`
-
-**Owner:** backend
-**Created:** 2026-04-28 (surfaced by BE-PAPERS-DISCIPLINE-FIELD-CANON-NAME review, correctness + maintainability cross-reviewer)
-**Priority:** P2
-
-## Context

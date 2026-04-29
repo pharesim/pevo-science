@@ -104,3 +104,45 @@ Implementer may push back on the lean if Option B fits a broader pattern they're
 ## [TODO Architect]
 
 None — implementer chooses A vs B. Architect re-review verifies the chosen shape closes the oracle without introducing a new one.
+
+---
+
+## Architect re-review (2026-04-29) — HELD PENDING FIXES (round 1)
+
+`/ce-code-review` ran on commit `c72cefe` (Option A landed: catch `ShuttingDownError` on the unknown-email branch and fall through to `sendOk` 200) with 10 personas (correctness, testing, maintainability, project-standards, agent-native, learnings, security, reliability, adversarial, kieran-typescript). Mechanically sound: the catch uses `if (!(err instanceof ShuttingDownError)) throw err;` so `ArgonQueueFullError` (saturation), `ArgonAbortError` (disconnect), and generic Errors all propagate to the outer catch correctly. The new test file `auth-reset-request-shutdown.test.ts` covers (drain + unknown → 200), (drain + known → 200), and (queue-full + unknown → 503 retained), with unconditional body-equality assertions. The `vi.hoisted` mock-class hierarchy is module-scoped and the route's `instanceof` check resolves against the mock class correctly.
+
+But three items surfaced — one invariant-loadbearing maintenance gap, one operator-visibility gap, and one comment cross-reference. All three harden the catch path the task delivers.
+
+### Items to address
+
+**1. (P2) Duplicated success-message literal — extract to a module-scoped constant**
+
+- File: `backend/src/routes/auth.ts:849` (the `ShuttingDownError` catch fall-through `sendOk`) and `:901` (the known-email path's normal `sendOk`)
+- The string `'If an account exists with that email, a reset link has been sent.'` appears as **two separate string literals** in the same handler. The indistinguishable-response invariant the endpoint exists to enforce **requires both sites to emit byte-for-byte identical responses**. Nothing at the type or lint level enforces they stay in sync. A wording change at one site and not the other — a typo fix, a localization update, a "make it more friendly" PR — silently re-opens the enumeration oracle.
+- Fix: extract `const RESET_REQUEST_OK_MESSAGE = 'If an account exists with that email, a reset link has been sent.'` to module scope; replace both literal sites with the constant. Mechanical; ~3 line change. The constant name should explicitly say "OK_MESSAGE" so a future contributor cannot mistake it for a comment string.
+
+**2. (P3) Silent `ShuttingDownError` swallow — add a `logger.debug` emission for operator visibility**
+
+- File: `backend/src/routes/auth.ts:846-848` (the catch body)
+- The current catch is `catch (err) { if (!(err instanceof ShuttingDownError)) throw err; /* fall through to sendOk */ }` with **no logger emission at any level**. During a SIGTERM rolling-deploy drain window, the only signal that the suppression fired is an external diff between the two branch response codes — which is exactly the oracle being closed. Every other semaphore path in the cluster emits structured log: `ArgonQueueFullError` → `logger.warn` (`argon2-error-handler.ts:234`), `ShuttingDownError` (helper path) → `logger.info` (line 240), `ArgonAbortError` → `logger.debug` (line 250-254). This swallow is the sole silent exception.
+- Fix: add `logger.debug({ event: 'reset_request_drain_suppression', email_hash: hashEmailForLogs(normalizedEmail) }, 'ShuttingDownError on unknown-email branch suppressed to 200 — drain window');` inside the catch body before the fall-through. Use `debug` level (default-off; available via `LOG_LEVEL=debug` for investigation). The `email_hash` field uses the existing `hashEmailForLogs` helper to avoid plaintext-email-in-logs (CNPD).
+- Asymmetry note: emitting a log only on the drain-suppression branch creates a one-sided log signal (presence implies unknown email). Internal-log-stream observers can enumerate via this signal, but log access is an operational boundary, not API contract — and the existing `emailKnown: 'known'` field on the SMTP warn at `auth.ts:892` already accepts this internal-side disclosure for the known-branch. Implementer's call whether to also emit a symmetric debug log on the unknown-branch SUCCESS path (no drain) for full symmetry, or to live with the one-sided signal at log-access boundary.
+
+**3. (P3) Inner-catch comment doesn't cite the canonical solution doc**
+
+- File: `backend/src/routes/auth.ts:831-851` (the comment block above and around the catch)
+- The comment cites only the task file (`backend-reset-request-shutdown-enumeration.md`), which moves into `tasks-archive.md` after archive — making the link stale-by-construction once this task closes. The SMTP-oracle catch blocks elsewhere in the same file (lines 627 + 869) explicitly cite their solution doc (`timing-equalization-smtp-failure-mode-oracle-2026-04-22.md`). The matching solution doc for THIS catch is `agents/docs/solutions/conventions/timing-equalization-sub-branch-oracles-2026-04-21.md` — the durable canonical reference for why the uniform-200 invariant must hold through drain.
+- Fix: add a reference line to the comment block: `// See agents/docs/solutions/conventions/timing-equalization-sub-branch-oracles-2026-04-21.md for the broader sub-branch oracle pattern this catch is part of.` Mirrors the SMTP-oracle catch comments' shape.
+
+### Items dismissed during architect triage (do NOT address)
+
+- **No regression test for sibling-route audit** (security + adversarial residuals) — concrete parametric harness "every endpoint that calls runWithArgon2Slot returns indistinguishable status under ShuttingDownError across all branches" would lock in the audit. Out of scope for this task; consider as a future cluster-wide test infra task.
+- **`ArgonAbortError` on unknown-email branch not directly tested** (correctness + reliability TG-001 + adversarial T1) — coverage exists transitively via `handleArgonError` unit tests + the `instanceof ShuttingDownError` negation guarantees rethrow. Add if the abort-class cell becomes a real concern; not blocking.
+- **No metrics counter for drain-suppression** (agent-native F2) — project doesn't have ops-counter infrastructure for this surface; log-based counter via item 2 above suffices.
+- **Wall-time latency oracle remains during drain** (adversarial residual) — pre-existing SMTP-tail timing oracle on the success path; sibling task tracks as accepted residual under 3/hr/IP rate-limit.
+- **Token persists for 1hr after SMTP failure** (adversarial residual + reliability RR-001) — pre-existing behavior, intentional for legitimate-user retry. Functional/UX, not security.
+- **Project-standards F-001: task file in `pending/` at this commit** — historical at the commit; the file IS in `tasks/review/` at HEAD. Pre-existing state at the reviewed commit.
+
+### Re-review signal
+
+When items 1-3 land, `git mv` this file back to `tasks/review/`. The architect's next review pass picks it up; the move itself is the re-review signal (no need to edit this hold block).
