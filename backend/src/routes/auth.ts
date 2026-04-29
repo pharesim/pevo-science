@@ -15,7 +15,7 @@ import { logger } from '../logger.js';
 import { decryptKey } from '../custody-crypto.js';
 import { isPasswordValid, PASSWORD_POLICY_MESSAGE } from '../lib/password-policy.js';
 import { ARGON2_OPTIONS } from '../lib/argon2-options.js';
-import { runWithArgon2Slot, ArgonSemaphoreError, ShuttingDownError } from '../lib/argon2-semaphore.js';
+import { runWithArgon2Slot, ShuttingDownError, isArgonSemaphoreError } from '../lib/argon2-semaphore.js';
 import { handleArgonError, ARGON_HANDLED } from '../lib/argon2-error-handler.js';
 import { requestAbortSignal } from '../lib/request-abort-signal.js';
 import { hashEmailForLogs } from '../lib/log-pii.js';
@@ -238,7 +238,7 @@ export async function burnSentinel(input: string, signal?: AbortSignal): Promise
     // JS-level semaphore is for. The single instanceof check covers all
     // three subclasses (ArgonQueueFullError, ShuttingDownError,
     // ArgonAbortError) and any future addition extending the base.
-    if (err instanceof ArgonSemaphoreError) throw err;
+    if (isArgonSemaphoreError(err)) throw err;
     logger.warn({ err }, 'argon2 sentinel burn failed — timing oracle may be open');
   }
 }
@@ -415,7 +415,7 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
             // any future fourth subclass extending it. Swallowing any of
             // these here would short-circuit the burn to ~0ms and reopen
             // the timing oracle under DoS / drain conditions.
-            if (err instanceof ArgonSemaphoreError) throw err;
+            if (isArgonSemaphoreError(err)) throw err;
             logger.warn({ err }, 'argon2 signup-dup burn failed — timing oracle may be open');
           });
           return sendError(res, 409, 'DUPLICATE', 'Email already registered');
@@ -424,7 +424,7 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
           if (password) await runWithArgon2Slot(() => argon2.hash(password, ARGON2_OPTIONS), { signal: abortSignal }).catch((err) => {
             // Structural collapse, behavior unchanged: see the matching
             // `verify_token === null` branch above for the rationale.
-            if (err instanceof ArgonSemaphoreError) throw err;
+            if (isArgonSemaphoreError(err)) throw err;
             logger.warn({ err }, 'argon2 signup-dup burn failed — timing oracle may be open');
           });
           return sendError(res, 409, 'DUPLICATE', 'Email already verified. Please log in to continue.');

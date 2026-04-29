@@ -88,7 +88,7 @@ import {
   ArgonQueueFullError,
   ShuttingDownError,
   ArgonAbortError,
-  ArgonSemaphoreError,
+  isArgonSemaphoreError,
 } from './argon2-semaphore.js';
 
 /**
@@ -240,8 +240,9 @@ export function handleArgonError(
   // Fast-path: if the error isn't a semaphore error at all, don't pay the
   // cost of three more instanceof checks. The base class is the only
   // discriminator; the three subclasses are exhaustive (enforced by the
-  // `abstract` keyword on `ArgonSemaphoreError`).
-  if (!(err instanceof ArgonSemaphoreError)) {
+  // `abstract` keyword on `ArgonSemaphoreError`). Use the exported
+  // `isArgonSemaphoreError` type guard so the narrowing is centralized.
+  if (!isArgonSemaphoreError(err)) {
     return ARGON_UNHANDLED;
   }
 
