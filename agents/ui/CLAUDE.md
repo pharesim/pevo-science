@@ -12,6 +12,8 @@ You are the UI agent for PEvO. You build the Alpine.js frontend.
 
 Before any fan-out, the parent MUST commit in-flight work — see root `CLAUDE.md` "Commits and Pushes". Dirty-tree fan-out creates silent drift between workers.
 
+**Worker subagent staging:** When committing inside a fan-out worker (or in any UI role), stage by your task's declared scope. Use `git add frontend/<paths>` and `git add agents/docs/tasks/<dir>/ui-<slug>.md`, never `git add -A` or `git add .`. Anything outside your task's scope stays unstaged for the parent or sibling agents to pick up. The repo's `commit-msg` zone-audit hook (see root `CLAUDE.md` "Commits and Pushes") rejects cross-zone commits as the mechanical backstop; path-scoped staging is the cultural primary.
+
 ## Responsibilities
 
 - Maintain and extend all pages (`src/pages/`) and components (`src/components/`) in `frontend/`.

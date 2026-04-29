@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+# PEvO commit-zone audit hook.
+#
+# Validates that staged file paths fall inside the agent zone declared by the
+# commit-message subject prefix. Catches the cross-agent commit-scope drift
+# pattern documented in agents/docs/solutions/conventions/
+# commit-zone-audit-hook-2026-04-30.md (e.g. a worker subagent staging a
+# parent agent's mid-flight task-file moves via `git add -A`).
+#
+# Sources of truth (when this hook and the docs disagree, the docs win):
+# - root CLAUDE.md rule #2 (architect/backend/ui/pinner ownership boundaries)
+# - agents/<role>/CLAUDE.md "Files You Own" sections
+# - agents/docs/tasks/README.md (task-file slug format)
+#
+# Hook installs via:  git config core.hooksPath .githooks
+
+set -euo pipefail
+
+msg_file="${1:-}"
+[ -n "$msg_file" ] && [ -f "$msg_file" ] || exit 0
+
+subject="$(grep -v '^#' "$msg_file" | sed '/./,$!d' | head -n1)"
+[ -z "$subject" ] && exit 0
+
+# Explicit exemption — use sparingly for genuine cross-agent commits.
+if [[ "$subject" == *"[skip-zone-audit]"* ]]; then
+  echo "commit-msg: zone audit SKIPPED ([skip-zone-audit] in subject)" >&2
+  exit 0
+fi
+
+# Parse agent prefix:  architect:, backend:, ui:, pinner:
+# Optional parenthetical scope:  backend(auth):, architect(compound):
+if [[ ! "$subject" =~ ^(architect|backend|ui|pinner)(\([^\)]+\))?: ]]; then
+  # Unrecognized prefix (chore:, fix:, Merge ..., revert: ...) — skip audit.
+  exit 0
+fi
+
+agent="${BASH_REMATCH[1]}"
+
+staged="$(git diff --cached --name-only --diff-filter=ACDMR)"
+[ -z "$staged" ] && exit 0
+
+# Classify a single staged path against the agent's allowed zones.
+# Returns 0 (allowed) or 1 (out-of-zone).
+allowed_for_agent() {
+  local agent="$1"
+  local path="$2"
+
+  # Task-file moves are zone-bound by SLUG prefix, not by directory. A
+  # backend: commit moving tasks/review/backend-X.md → tasks/pending/backend-X.md
+  # is allowed; the same commit moving tasks/review/ui-Y.md is not.
+  if [[ "$path" =~ ^agents/docs/tasks/(pending|review|blocked)/([a-z]+)- ]]; then
+    local slug_agent="${BASH_REMATCH[2]}"
+    [[ "$slug_agent" == "$agent" ]] && return 0
+    return 1
+  fi
+
+  case "$agent" in
+    architect)
+      # Architect zone: docs, repo-root meta, per-agent CLAUDE.md, deploy config, hooks.
+      [[ "$path" =~ ^agents/docs/ ]]              && return 0
+      [[ "$path" =~ ^agents/[a-z]+/CLAUDE\.md$ ]] && return 0
+      [[ "$path" == "CLAUDE.md" ]]                && return 0
+      [[ "$path" == "README.md" ]]                && return 0
+      [[ "$path" == "Dockerfile" ]]               && return 0
+      [[ "$path" == "docker-compose.yml" ]]       && return 0
+      [[ "$path" == "docker-compose.test.override.yml" ]] && return 0
+      [[ "$path" =~ ^\.githooks/ ]]               && return 0
+      ;;
+    backend)
+      [[ "$path" =~ ^backend/ ]] && return 0
+      ;;
+    ui)
+      [[ "$path" =~ ^frontend/ ]] && return 0
+      ;;
+    pinner)
+      [[ "$path" =~ ^pinner/ ]] && return 0
+      ;;
+  esac
+  return 1
+}
+
+violations=()
+while IFS= read -r path; do
+  [ -z "$path" ] && continue
+  if ! allowed_for_agent "$agent" "$path"; then
+    violations+=("$path")
+  fi
+done <<< "$staged"
+
+if [ "${#violations[@]}" -gt 0 ]; then
+  {
+    echo "commit-msg: zone audit FAILED"
+    echo "  agent prefix parsed: $agent"
+    echo "  staged paths outside allowed zones (${#violations[@]}):"
+    for p in "${violations[@]}"; do
+      echo "    - $p"
+    done
+    echo ""
+    echo "  Fix options:"
+    echo "    1. Unstage out-of-zone files (git restore --staged <path>) and recommit."
+    echo "    2. Split into separate commits, one per agent zone."
+    echo "    3. Add [skip-zone-audit] to the subject for an intentional cross-agent commit."
+    echo ""
+    echo "  Reference: root CLAUDE.md rule #2 + agents/<role>/CLAUDE.md \"Files You Own\"."
+  } >&2
+  exit 1
+fi
+
+exit 0

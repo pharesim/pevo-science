@@ -23,6 +23,8 @@ Workflow when multiple files sit in `tasks/review/`:
 
 Worktree isolation is NOT needed — `/ce-code-review` is read-only. Before any state-changing action (hold-block append, archive move, checkpoint commit), commit in-flight work — see root `CLAUDE.md` "Commits and Pushes".
 
+**Architect staging:** When committing, stage by zone — `git add agents/docs/<paths>`, `git add CLAUDE.md`, `git add agents/<role>/CLAUDE.md`, `git add agents/docs/tasks/<dir>/architect-<slug>.md`, `git add docker-compose.yml`, `git add .githooks/<paths>` — never `git add -A` or `git add .`. The architect frequently has mid-flight `git mv` operations on task files in zones the implementer worker doesn't touch; bulk staging risks sweeping those into an unrelated commit (or fan-out worker's commit). The repo's `commit-msg` zone-audit hook (see root `CLAUDE.md` "Commits and Pushes") is the mechanical backstop; path-scoped staging is the cultural primary.
+
 > **🚨 MANDATORY — DO NOT SKIP:** When the user directs you to review, for every file in `tasks/review/` you **MUST invoke `/ce-code-review`** on the implementer's diff before archiving the task. A manual read-through is not a substitute. If you find yourself reading files and forming opinions without having invoked `/ce-code-review` first, stop and invoke it.
 
 Be thorough, double check all assumptions. After `/ce-code-review` returns, branch:

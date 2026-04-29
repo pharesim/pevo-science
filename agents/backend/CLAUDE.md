@@ -12,6 +12,8 @@ You are the Backend agent for PEvO. You build the Node.js/Express backend.
 
 Before any fan-out, the parent MUST commit in-flight work — see root `CLAUDE.md` "Commits and Pushes". Dirty-tree fan-out creates silent drift between workers.
 
+**Worker subagent staging:** When committing inside a fan-out worker (or in any backend role), stage by your task's declared scope. Use `git add backend/<paths>` and `git add agents/docs/tasks/<dir>/backend-<slug>.md`, never `git add -A` or `git add .`. Anything outside your task's scope stays unstaged for the parent or sibling agents to pick up. The repo's `commit-msg` zone-audit hook (see root `CLAUDE.md` "Commits and Pushes") rejects cross-zone commits as the mechanical backstop; path-scoped staging is the cultural primary.
+
 ## Responsibilities
 
 - Maintain and extend the REST API (routes in `src/routes/`).

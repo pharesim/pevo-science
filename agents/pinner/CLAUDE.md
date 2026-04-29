@@ -12,6 +12,8 @@ You are the Pinner agent for PEvO. You maintain the standalone Go binary at `pin
 
 Before any fan-out, the parent MUST commit in-flight work — see root `CLAUDE.md` "Commits and Pushes". Dirty-tree fan-out creates silent drift between workers.
 
+**Worker subagent staging:** When committing inside a fan-out worker (or in any pinner role), stage by your task's declared scope. Use `git add pinner/<paths>` and `git add agents/docs/tasks/<dir>/pinner-<slug>.md`, never `git add -A` or `git add .`. Anything outside your task's scope stays unstaged for the parent or sibling agents to pick up. The repo's `commit-msg` zone-audit hook (see root `CLAUDE.md` "Commits and Pushes") rejects cross-zone commits as the mechanical backstop; path-scoped staging is the cultural primary.
+
 ## Responsibilities
 
 - Maintain `pinner/main.go` (entry point, CLI flags, wiring) and `pinner/config.go` (env + CLI flag parsing).

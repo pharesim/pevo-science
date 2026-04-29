@@ -85,6 +85,10 @@ Agents MUST NOT perform any remote-facing action without an explicit user ask fo
 
 Commit scope rule: keep commits focused. Don't bundle unrelated task work into a single commit. A "checkpoint" commit that captures in-flight work before a fan-out is acceptable when the work is all on one task or one logical batch; if the tree has cross-task drift, prefer multiple focused commits over one mixed one.
 
+**Stage by task scope, not via `git add -A`.** When committing in any role (architect, backend, ui, pinner, or a worker subagent), stage files by your task's declared scope. Do not run `git add -A` or `git add .` — those sweep the entire working tree, including any sibling or parent agent's mid-flight edits sitting in zones outside your task. Anything outside your task's scope stays unstaged for the parent or sibling agent to pick up. Path-scoped staging is the cultural mechanism that prevents the "parent's mid-flight `git mv` gets bundled into worker's commit" failure mode.
+
+**Commit-time zone audit (`commit-msg` hook).** A repo-local hook at `.githooks/commit-msg` is the mechanical backstop for the staging discipline above. It parses the `architect:` / `backend:` / `ui:` / `pinner:` (with optional `(scope)`) prefix from the commit subject and rejects the commit if any staged path falls outside that agent's allowed zones (per rule #2 + per-agent `Files You Own`). Activate per clone via `git config core.hooksPath .githooks` (one-time, not a git-tracked setting). Unrecognized-prefix commits (`chore:`, `Merge ...`) skip the audit. Genuine cross-agent commits can be exempted by including `[skip-zone-audit]` in the subject. See `agents/docs/solutions/conventions/commit-zone-audit-hook-2026-04-30.md`.
+
 ## Worktree Cleanup
 
 After a worktree fan-out completes and its commits have been merged into the orchestrating branch, the parent agent MUST prune the worker worktrees it spawned. The harness writes a pid-based lock file on spawn but does not release it on child exit, so a plain `git worktree remove` fails against a stale `locked` file. Parents detect the stale lock and clear it themselves:
