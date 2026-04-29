@@ -46,3 +46,39 @@ Architect decided **Option B**: the same-tick contention case is genuinely termi
 - `backend/src/routes/orcid.ts:282-302` (state consume) and `:1027-1036` (lock-contention 409).
 - `agents/docs/api-contracts/orcid.md:185-192` (current 409 spec; updated by architect alongside this task's filing).
 - `agents/docs/solutions/conventions/chain-write-timeout-ambiguous-outcome-2026-04-22.md` (paragraph on "retriable=true is meaningless if state is single-use" appended by architect alongside this task's filing).
+
+---
+
+## Architect re-review (2026-04-29, round-1) — HELD PENDING FIXES
+
+Round-1 `/ce-code-review` on commit `b1aec7e` (10 personas: correctness, testing, maintainability, project-standards, ce-agent-native, ce-learnings, adversarial, kieran-typescript, api-contract, reliability). The wire-shape change lands clean: `Retry-After` header dropped, `retriable: true` and `retry_after_seconds` removed from `details`, `ORCID_BINDING_LOCK_RETRY_AFTER_SECONDS` constant fully removed (zero remaining hits), tests inverted to `.toBeUndefined()` negative assertions across all four `ORCID_ALREADY_LINKED` 409 paths. **No P0/P1.** Architect-applied 3 doc fixes during this review pass on architect-owned `agents/docs/api-contracts/orcid.md` (3 emdashes converted to periods/semicolons; stability-scope note added pinning `details.failed_step`). One P2 + 2 P3 items held pending fixes, all related to operator observability and the carry-over of stale comments that no longer reflect the post-commit state.
+
+### Items held pending fixes (backend-owned)
+
+1. **P2 — Same-tick lock-contention 'held' branch emits no operator log.** Reliability + maintainability + agent-native 3-way (conf 90). `backend/src/routes/orcid.ts:1027-1040` — the contention 409 fires with no `logger.*` call. Sibling branches in the same file carry rich `event:`-tagged anchors (`event:'redis_outage'` on lock-primitive degradation, `event:'nonce_drift'` on lock-CAS divergence, `event:'a1_extend_*'` on the timer-fire path). Contention frequency becomes silent in production; oncall has no forensic trail when triaging "why is this user seeing 409s on `/orcid/callback`?" Architect note: the original task spec line 26 ("operator log...should still fire") was a misread — no log existed at this site to "preserve". The gap is pre-existing but task #6 is the natural place to close it because the commit already touches the surrounding emission. Fix:
+
+   ```ts
+   logger.warn(
+     { orcidId, event: 'lock_contention_held' },
+     `${routeLabel} ORCID binding lock contended; client must restart OAuth (state token consumed)`,
+   );
+   ```
+
+   Add at the top of the `'held'` branch, before `sendError`. Add an assertion in the existing same-tick contention spec: `expect(warnSpy).toHaveBeenCalledWith(expect.objectContaining({ event: 'lock_contention_held', orcidId: '...' }), expect.stringContaining('lock contended'))`. The structured `event` field makes the line dashboard-keyable.
+
+2. **P3 — Stale durable-binding 409 comment at `backend/src/routes/orcid.ts:482-483` (handleAccredit).** Maintainability conf 80. The comment claims the durable-binding 409 envelope omits `retriable` "to distinguish from the transient lock-contention 409 emitted by withOrcidBindingLock." After this commit, both paths omit `retriable` — they are wire-identical. A future maintainer reading this comment could re-introduce the discriminator on the lock-contention path to "restore" the documented invariant — exactly the regression this commit prevents. Fix: rewrite to reflect the new state, e.g. "All `ORCID_ALREADY_LINKED` 409 paths share the same wire shape (no `retriable`, no `Retry-After`, status 409, code `ORCID_ALREADY_LINKED`). Cause discrimination is server-side telemetry only — see `agents/docs/api-contracts/orcid.md:185` for the three causes."
+
+3. **P3 — `handleLink` defers to the now-stale `handleAccredit` comment at `backend/src/routes/orcid.ts:659`.** Maintainability conf 70. Pairs with item #2: the link-side site says "see handleAccredit comment above for the `ORCID_ALREADY_LINKED` envelope rationale", which now propagates the stale invariant. Fix: either inline a fresh paraphrase referencing the api-contract doc directly, OR keep the cross-reference but ensure handleAccredit's rewrite (item #2) is the canonical source.
+
+### Findings dismissed by architect (recorded; no fix required)
+
+- **5.1 (UI task #5 P3) — vacuous `_retryCount=0` assertion** — special context: `ui-orcid-callback-retriable-machinery-remove.md` has already been started by the UI agent (commits `4b87355`, `ac76519` — that task is now itself in `tasks/review/`), which strips the surfaces the assertion was on. Polish on dead-code-pending. Dismissed in cluster archive triage.
+- **6.api-contract (P3) — emdashes in orcid.md** — architect-owned file; fixed in-place during this review pass.
+
+### Architect-owned (no-op for this round)
+
+- The architect handled `agents/docs/api-contracts/orcid.md` doc edits during the round-1 review pass (3 emdashes converted, stale `'unknown'` reference removed in task #2's review pass per cross-task triage, `details.failed_step` stability-scope note added to POST_BROADCAST_FAILED entry).
+
+### Path to re-archive
+
+(1) Backend addresses items #1, #2, #3 in this hold block. Item #1 is ~3 lines code + 1-2 line test. Items #2 + #3 are pure comment rewrites, ~5 lines total. (2) Backend re-review signal block referencing the round-2 hold-fix commit SHA. (3) Architect round-2 `/ce-code-review` on the new commit (reliability + maintainability lenses). (4) Archive on clean. The follow-on `ui-orcid-callback-retriable-machinery-remove.md` task is now in `tasks/review/` — that is independent of this archive cycle.

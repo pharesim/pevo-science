@@ -284,3 +284,49 @@ All 9 hold-block items addressed.
 - `backend/tests/routes/orcid.test.ts` — 2 new specs for items #7 + #8.
 
 
+
+---
+
+## Architect re-review (2026-04-29, round-2) — HELD PENDING FIXES
+
+Round-2 `/ce-code-review` on commit `ddfff93` (9 personas: correctness, testing, maintainability, project-standards, ce-agent-native, ce-learnings, adversarial, kieran-typescript, reliability). All 9 round-1 hold items land mechanically: helper extracted with 4 branches and consistent `event:`-tagged structured logs; both handlers route through `__test_seams.extendBindingLockOnTimeoutOrLog`; `ORCID_BINDING_CACHE_TTL` aliased to `HAF_INDEXING_LAG_CEILING_SECONDS`; new ordering + expire-throw specs landed; comment rewrite reflects post-d8b9b75 routing. **No P0/P1.** Three P2 items held pending fixes, all consistent with the path-to-archive's "operational-observability focus".
+
+### Items held pending fixes (backend-owned)
+
+1. **P2 — Ordering spec at `backend/tests/routes/orcid.test.ts:1818-1837` pins call-entry, not awaited completion.** Adversarial + correctness 2-way (cross-reviewer promoted to conf 100). `vi.mock.invocationCallOrder` records SYNCHRONOUS spy entry, so a regression that drops the `await` from `await __test_seams.extendBindingLockOnTimeoutOrLog(...)` (replaced with `__test_seams.extendBindingLockOnTimeoutOrLog(...); handleBroadcastError(...);`) still records helper-entry first → spec passes spuriously while the documented A.1 contract silently breaks. The malicious-mid-write-disconnect race the impl-comment at `orcid.ts:558-567` cites is the failure mode this spec was supposed to pin and does not. Fix shape (option F1, structurally simplest):
+
+   ```ts
+   const expireSpy = vi.spyOn(redis, 'expire');
+   // ... trigger broadcast timeout ...
+   const expireOrder = expireSpy.mock.invocationCallOrder[0];
+   const respondOrder = warnSpy.mock.calls.findIndex(
+     (call) => typeof call[1] === 'string' && call[1].includes('broadcast timed out'),
+   );
+   expect(expireOrder).toBeLessThan(warnSpy.mock.invocationCallOrder[respondOrder]);
+   ```
+
+   `redis.expire` is `await`ed inside the helper, so its position in the order proves the helper completed its inner work before the response was written. Mutation-kill: dropping the `await` lets the response write before `redis.expire` resolves → ordering inverts → spec fails.
+
+2. **P2 — Structured `event:` field literals not pinned by any spec.** Testing + maintainability + adversarial 3-way (conf 75). Items #1/#2/#3 added 3 new event tags (`a1_extend_lock_missing`, `a1_extend_ok`, `a1_extend_redis_absent`); none are asserted via `expect.objectContaining({ event: '...' })`. Item #8's existing assertion uses substring on the message text, not the event field. A regression that renames or drops `event:` slips through every test. Operator-dashboard contract is unpinned. Fix shape:
+   - Tighten item #8's existing assertion to `expect(errorSpy).toHaveBeenCalledWith(expect.objectContaining({ event: 'a1_extend_threw', orcidId, /* err */ }), ...)`.
+   - Add a unit-style spec stubbing `redis.expire` to resolve `0` (lock-missing path), asserting `event: 'a1_extend_lock_missing'`.
+   - Add a unit-style spec for the Redis-absent branch (mock `getRedis()` or `isRedisAvailable()` to return false), asserting `event: 'a1_extend_redis_absent'`.
+   - Add an `event: 'a1_extend_ok'` assertion to the existing success-path matrix spec.
+
+3. **P3 — Constant aliasing lacks a startup assertion or derivation chain.** Adversarial + learnings (conf 70). `backend/src/routes/orcid.ts:67-96`. `ORCID_BINDING_CACHE_TTL = HAF_INDEXING_LAG_CEILING_SECONDS` couples the cache TTL to the HAF lag ceiling. Future tuning of the lag ceiling silently widens the stale-cache window. Per `solutions/conventions/verify-resource-knob-math-before-load-bearing-security-margins-2026-04-22.md`, load-bearing numeric constants should have a documented derivation chain AND a startup assertion pinning the relationship. Fix: either a one-line startup assertion (e.g. `if (ORCID_BINDING_CACHE_TTL < HAF_INDEXING_LAG_CEILING_SECONDS) throw new Error('...')`) at server boot, OR a multi-line comment block at the constant declaration site enumerating the derivation (lag-observation source, both consumers, why aliasing is correct, what would force re-evaluation). Backend's call which shape.
+
+4. **P3 — `skipRelease=true` on the `expire-returns-0` branch has no behavioral effect.** Adversarial conf 75. `backend/src/routes/orcid.ts:884-922` — when `redis.expire` returns 0 (lock key gone), the helper logs `event:'a1_extend_lock_missing'` and the wrapper still returns `{ skipRelease: true }`. But `releaseBindingLock`'s Lua-CAS is idempotent on missing lock, so `skipRelease=true` and `skipRelease=false` produce identical observable behavior on this branch. Risk: future maintainer reads the helper as a 4-way decision and tries to leverage `skipRelease` semantics that aren't there. Fix: 1-line inline comment clarifying `skipRelease` is decorative on the lock-missing branch (preserved for structural parity with the success branch; behaviorally a no-op).
+
+5. **P3 — Item #8's `redis.expire` call-count assertion is brittle.** Adversarial conf 80. `backend/tests/routes/orcid.test.ts:1869-1893` uses `expect(redis.expire).toHaveBeenCalledTimes(1)` — a future cache-TTL refresh on the same flow (e.g. an asymmetric retry path that calls `expire` twice for unrelated reasons) would silently break this assertion without an obvious explanation. Tighten to call-shape pinning: `expect(redis.expire).toHaveBeenCalledWith(orcidBindingLockKey(orcidId), HAF_INDEXING_LAG_CEILING_SECONDS)`. Catches the same regression class (the call DID fire) without coupling to global call count.
+
+### Findings dismissed by architect (recorded; no fix required)
+
+- **4.6 (P3) — `orcidId` vs `orcid` log-field inconsistency** — partially pre-existing on the `handleBroadcastError` side. Standardizing log-field names across the codebase is a separate sweep; out of scope for this task.
+
+### Architect-owned follow-up (separate from the round-2 hold)
+
+- ARCHITECTURE.md "Operator Signals" section gains a new subsection enumerating the `a1_extend_*` event names (`a1_extend_redis_absent`, `a1_extend_lock_missing`, `a1_extend_ok`, `a1_extend_threw`) alongside the argon2 cluster. The argon2 archive flow already populates the section — folding the orcid events in is a natural append at archive time. Architect handles this as part of the archive commit; not a backend hold item.
+
+### Path to re-archive
+
+(1) Backend addresses items #1, #2, #3, #4, #5 in this hold block. Items #1 + #2 are the operational-observability rigor items mandated by round-1's path-to-archive — they take priority. Items #3, #4, #5 are derivative cleanup. (2) Backend re-review signal block referencing the round-2 hold-fix commit SHA. (3) Architect round-2 `/ce-code-review` on the new commit (testing + adversarial + reliability). (4) Archive on clean. ARCHITECTURE.md Operator Signals update lands in the archive commit.

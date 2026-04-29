@@ -379,3 +379,59 @@ The over-promised "HAF will reconcile automatically once HAF indexes the operati
 - `backend/tests/lib/broadcast-error.test.ts` — case B/C/D rewritten (rename, `'post_broadcast'` outcome, sanitized fallback, no step-label leak), new msg-fn-throws spec, discrimination-order comment corrected + cause-forwarding assertion added.
 
 
+
+---
+
+## Architect re-review (2026-04-29, round-2) — HELD PENDING FIXES
+
+Round-2 `/ce-code-review` on commit `6044ebc` (10 personas: correctness, testing, maintainability, project-standards, ce-agent-native, ce-learnings, adversarial, kieran-typescript, api-contract, reliability). All 9 round-1 hold items land mechanically. **No P0/P1.** Architect-applied 3 doc fixes during this review pass on architect-owned `agents/docs/api-contracts/orcid.md` (stale `'unknown'` reference removed; stability-scope note added pinning `details.failed_step` as canonical wire contract vs informational `error.message`; 3 emdashes converted to periods/semicolons per project rule). The `[TODO Architect]` decision on item #5 (cascade-fns-rethrow vs accept dead-defense) was resolved as Option (B-narrow): file `backend-cascade-fns-rethrow-permanent-errors.md` to rewire `updateAccountOrcid` and `seedAccreditationBonus` to re-throw on permanent / operator-actionable errors; leave `cacheOrcidBinding` swallowing. That follow-up task is independent of this archive — when it lands, the discrimination machinery starts firing on real production failures and finding 2.8 (dead-defense block at orcid.ts:602-614) becomes superseded (its rewrite belongs in the cascade-fns task's diff).
+
+### Items held pending fixes (backend-owned, ~5 lines code + 1 line test)
+
+1. **P2 — Non-exhaustive ternary on `postBroadcastMsgFn`'s `failedStep` arg.** kieran-ts conf 75. `backend/src/routes/orcid.ts:507` (handleAccredit) and `:684` (handleLink) use a nested ternary on the per-step branch. Adding a 4th `PostBroadcastFailedStep` union member would silently route to the `account_update` message — exact drift class the discriminated-union convention exists to prevent. Fix shape:
+
+   ```ts
+   import type { PostBroadcastFailedStep } from '../lib/broadcast-error.js';
+   // ...
+   postBroadcastMsgFn: (failedStep: PostBroadcastFailedStep) => {
+     switch (failedStep) {
+       case 'reputation_seed':
+         return 'Your ORCID is verified on Hive. Your reputation score will update at the next scheduled cycle.';
+       case 'cache_write':
+         return 'Your ORCID is verified on Hive. A backend cache write failed; it will repopulate on the next request that uses your ORCID binding.';
+       case 'account_update':
+         return "Your ORCID is verified on Hive. The chain record is the source of truth, and login still works. The denormalized account record may be stale until support reconciles it.";
+       default:
+         return assertNever(failedStep);
+     }
+   }
+   ```
+
+   `assertNever` is already imported at `orcid.ts:23`. The link-side switch will be 2 cases (`cache_write`, `account_update`) since `reputation_seed` is type-narrowed unreachable from link mode. Apply at both callsites.
+
+2. **P3 — `currentStep` local re-declares the union members instead of importing `PostBroadcastFailedStep`.** kieran-ts + maintainability cross-reviewer (conf 75 promoted). `backend/src/routes/orcid.ts:615` (handleAccredit) and `:751` (handleLink). Type the local as `PostBroadcastFailedStep` (or the appropriate `Extract<>`-narrowed subset for link). Adding a 4th step then surfaces as a compile error here too.
+
+3. **P3 — Warn-anchor at `backend/src/lib/broadcast-error.ts:199-202` is free-text; no structured `event:` field.** reliability + agent-native (ops). The new `'<routeLabel> postBroadcastMsgFn threw — using generic fallback'` log line breaks the PEvO convention used by sibling anchors (`event:'nonce_drift'`, `event:'redis_outage'`, `event:'argon2_abort_summary'`, the new `event:'a1_extend_*'` cluster). Add `event: 'post_broadcast_msg_fn_threw'` to the structured log payload so dashboards can key on it.
+
+4. **P3 — Misleading "switch with defensive default" comment on link's per-step branch.** correctness conf 75. `backend/src/routes/orcid.ts:681`. Comment says "switch with defensive default" but the actual code is a 2-arm ternary. Behavior is correct; the comment is stale prose. Naturally fixed as a side-effect of item #1's switch refactor.
+
+5. **P3 — Stale docblock at `backend/src/lib/broadcast-error.ts:96`.** kieran-ts conf 100. Docblock claims the `Fn` suffix was dropped during the rename (round-1 hold item #7 picked option (b) — keep `Fn`), but the field is still `postBroadcastMsgFn`. One-word doc fix: drop the "the Fn suffix dropped" clause OR rewrite to "kept the `Fn` suffix to make the callback contract explicit at the type level".
+
+### Findings dismissed by architect (recorded; no fix required)
+
+- **2.8 (P3) — dead-defense block overstates safety at `orcid.ts:602-614`** — superseded by `backend-cascade-fns-rethrow-permanent-errors.md`. When that task rewires `updateAccountOrcid` + `seedAccreditationBonus` to re-throw on permanent errors, the dead-defense framing becomes wrong (discrimination will fire on real failures). The comment rewrite belongs in the cascade-fns task's diff, not here.
+
+### Suppressed at confidence gate (recorded)
+
+- maintainability per-step message duplication between accredit/link (conf 50)
+- reliability callback-timeout note (conf 50)
+- adversarial theoretical re-escape via `logger.warn` throwing (conf 25)
+- kieran-ts `accreditation.ts:310` `outcome === 'failure'` non-exhaustive against new union (conf 50; not a current regression — accreditation.ts doesn't throw `PostBroadcastWriteError`, but a future adoption could silently skip `deleteToken`. Architect note: when cascade-fns-rethrow lands, this will need a separate look at accreditation.ts's adoption of the discrimination.)
+- api-contract forward-compat note for failed_step enum (conf 50)
+- agent-native ARCHITECTURE.md Operator Signals catalog gap (architect-owned; will be folded into archive commit alongside `a1_extend_*` event additions when task #4's round-2 hold-fix lands)
+
+### Path to re-archive
+
+(1) Backend addresses items #1, #2, #3, #4, #5 in this hold block. Items #1 + #4 fold cleanly into a single switch-refactor commit (item #4's comment rewrite is a side-effect). Items #2, #3, #5 are 1-3 lines each. (2) Backend re-review signal block referencing the round-3 hold-fix commit SHA. (3) Architect round-3 `/ce-code-review` on the new commit (kieran-typescript + correctness + reliability lenses). (4) Archive on clean.
+
+Architect-owned doc fixes (round-2 in-place): `agents/docs/api-contracts/orcid.md` lines 190 (2 emdashes), 200 (1 emdash), 208 (stale `'unknown'` reference + new stability-scope note for `details.failed_step`).
