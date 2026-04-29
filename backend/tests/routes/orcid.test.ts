@@ -135,6 +135,7 @@ import { createApp } from '../../src/app.js';
 import { config } from '../../src/config.js';
 import { getRedis } from '../../src/redis.js';
 import * as redisModule from '../../src/redis.js';
+import * as appDbModule from '../../src/app-db.js';
 import { logger } from '../../src/logger.js';
 import { clearRateLimitKeys } from '../support/redis-helpers.js';
 // Test-only exports — see notes at orcid.ts __test_releaseBindingLock /
@@ -1456,12 +1457,19 @@ describe.each([
         // retry can acquire cleanly.
         expect(await redis.exists(lockKey)).toBe(0);
         // Operator-alert anchor: post-broadcast-write-failed log fired at
-        // error level with the discrimination-specific message suffix. A
-        // regression that swallows the discrimination would lose the alert.
-        const postBroadcastCalls = loggerErrorSpy.mock.calls.filter(
-          (call) => typeof call[1] === 'string' && call[1].includes('broadcast confirmed but post-broadcast write failed'),
+        // error level with the discrimination-specific message suffix AND the
+        // structured `event:'post_broadcast_write_failed'` field
+        // (BACKEND-CASCADE-FNS-RETHROW-PERMANENT-ERRORS — pin the
+        // dashboard-keyable event literal so a regression dropping or
+        // renaming the field surfaces here even if the message text survives).
+        expect(loggerErrorSpy).toHaveBeenCalledWith(
+          expect.objectContaining({
+            event: 'post_broadcast_write_failed',
+            txId: expect.any(String),
+            failedStep: 'account_update',
+          }),
+          expect.stringContaining('broadcast confirmed but post-broadcast write failed'),
         );
-        expect(postBroadcastCalls.length).toBe(1);
       } finally {
         updateOrcidSpy.mockRestore();
         loggerErrorSpy.mockRestore();
@@ -2518,4 +2526,117 @@ describe.each([
       }
     },
   );
+});
+
+// BACKEND-CASCADE-FNS-RETHROW-PERMANENT-ERRORS — `updateAccountOrcid` re-throws
+// permanent (operator-actionable) errors so the orcid post-broadcast cascade
+// wrap surfaces 502 POST_BROADCAST_FAILED with `failed_step:'account_update'`.
+// Transient errors (connection drops, serialization races) stay swallowed
+// because the denormalized accounts.orcid column is briefly stale until the
+// next request, but the chain record IS the source of truth for the binding.
+//
+// These specs unit-test the function's NEW branching logic directly (against a
+// stubbed pool). The route-level discrimination machinery — wrap + 502
+// envelope + structured operator-alert anchor — is exercised by the existing
+// post-broadcast integration specs (which inject throws via __test_seams,
+// proving the route-side wrap-and-discriminate works regardless of what's
+// inside the cascade fn).
+describe('updateAccountOrcid — permanent vs transient error discrimination', () => {
+  it('re-throws permanent pg errors (constraint violation, code 23502)', async () => {
+    const permanentErr = new Error('null value in column "username" violates not-null constraint');
+    (permanentErr as Error & { code: string }).code = '23502';
+
+    const stubPool = { query: vi.fn().mockRejectedValueOnce(permanentErr) };
+    const getAppPoolSpy = vi
+      .spyOn(appDbModule, 'getAppPool')
+      // The real return type is `pg.Pool | null`. We stub a minimal subset
+      // (`query` is the only method exercised on this code path) and cast.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .mockReturnValue(stubPool as any);
+
+    try {
+      await expect(
+        __test_seams.updateAccountOrcid('alice', '0000-0001-2222-3333'),
+      ).rejects.toBe(permanentErr);
+      expect(stubPool.query).toHaveBeenCalledTimes(1);
+    } finally {
+      getAppPoolSpy.mockRestore();
+    }
+  });
+
+  it('re-throws permanent pg errors (schema/access, code 42703 undefined_column)', async () => {
+    const permanentErr = new Error('column "orcid" of relation "accounts" does not exist');
+    (permanentErr as Error & { code: string }).code = '42703';
+
+    const stubPool = { query: vi.fn().mockRejectedValueOnce(permanentErr) };
+    const getAppPoolSpy = vi
+      .spyOn(appDbModule, 'getAppPool')
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .mockReturnValue(stubPool as any);
+
+    try {
+      await expect(
+        __test_seams.updateAccountOrcid('alice', '0000-0001-2222-3333'),
+      ).rejects.toBe(permanentErr);
+    } finally {
+      getAppPoolSpy.mockRestore();
+    }
+  });
+
+  it('swallows transient pg errors (connection drop, code 08006)', async () => {
+    const transientErr = new Error('connection terminated unexpectedly');
+    (transientErr as Error & { code: string }).code = '08006';
+
+    const stubPool = { query: vi.fn().mockRejectedValueOnce(transientErr) };
+    const getAppPoolSpy = vi
+      .spyOn(appDbModule, 'getAppPool')
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .mockReturnValue(stubPool as any);
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as unknown as void);
+
+    try {
+      await expect(
+        __test_seams.updateAccountOrcid('alice', '0000-0001-2222-3333'),
+      ).resolves.toBeUndefined();
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ err: transientErr, username: 'alice' }),
+        expect.stringContaining('Failed to update accounts.orcid'),
+      );
+    } finally {
+      warnSpy.mockRestore();
+      getAppPoolSpy.mockRestore();
+    }
+  });
+
+  it('swallows errors with no SQLSTATE code (transient — generic Error)', async () => {
+    const transientErr = new Error('socket hang up');
+    const stubPool = { query: vi.fn().mockRejectedValueOnce(transientErr) };
+    const getAppPoolSpy = vi
+      .spyOn(appDbModule, 'getAppPool')
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .mockReturnValue(stubPool as any);
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as unknown as void);
+
+    try {
+      await expect(
+        __test_seams.updateAccountOrcid('alice', '0000-0001-2222-3333'),
+      ).resolves.toBeUndefined();
+      expect(warnSpy).toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+      getAppPoolSpy.mockRestore();
+    }
+  });
+
+  it('throws on null pool (operator-actionable: pool not initialised)', async () => {
+    const getAppPoolSpy = vi.spyOn(appDbModule, 'getAppPool').mockReturnValue(null);
+
+    try {
+      await expect(
+        __test_seams.updateAccountOrcid('alice', '0000-0001-2222-3333'),
+      ).rejects.toThrow('App pool not initialised');
+    } finally {
+      getAppPoolSpy.mockRestore();
+    }
+  });
 });

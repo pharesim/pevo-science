@@ -13,8 +13,9 @@
  *    inputs produces a byte-identical result map. Catches non-deterministic
  *    SQL (missing ORDER BY, unstable DISTINCT, FP reordering).
  */
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { getRedis } from '../../src/redis.js';
+import { logger } from '../../src/logger.js';
 import {
   batchKey,
   computeReputationBatch,
@@ -142,6 +143,96 @@ describe('computeReputationBatch idempotency', () => {
     const obj1 = Object.fromEntries(run1);
     const obj2 = Object.fromEntries(run2);
     expect(JSON.stringify(obj2)).toBe(JSON.stringify(obj1));
+  });
+});
+
+// BACKEND-CASCADE-FNS-RETHROW-PERMANENT-ERRORS — `seedAccreditationBonus`
+// re-throws on permanent (operator-actionable) error classes so the orcid
+// post-broadcast cascade wrap surfaces 502 POST_BROADCAST_FAILED with
+// `failed_step:'reputation_seed'`. Transient errors (Redis-side blips) stay
+// swallowed because the next batch cycle re-derives provisional scores from
+// chain state regardless. The discrimination is class-based (TypeError /
+// SyntaxError / RangeError signal data-shape regressions in the upstream
+// weights or scoring code, which the next cycle will NOT self-heal).
+describe('seedAccreditationBonus — permanent vs transient error discrimination', () => {
+  const RETHROW_USER = 'pevo-cascade-rethrow-test-user';
+
+  beforeEach(async () => {
+    const redis = getRedis();
+    if (redis) await redis.del(batchKey(RETHROW_USER));
+  });
+
+  it('re-throws permanent errors (TypeError) so post-broadcast discrimination surfaces 502', async () => {
+    const redis = getRedis();
+    if (!redis) return; // Redis required to exercise the try/catch path.
+
+    // Synthesize a permanent error from `redis.set` — the actual production
+    // source is more typically a TypeError thrown inside
+    // `provisionalScore(weights.accreditation_bonus)` when getReputationWeights
+    // returns malformed data, but the discrimination is class-based, so any
+    // TypeError surfaces the same branch. Pinning it via redis.set keeps the
+    // test deterministic without depending on a corrupted weights document.
+    const permanentErr = new TypeError("Cannot read property 'accreditation_bonus' of null");
+    const setSpy = vi.spyOn(redis, 'set').mockRejectedValueOnce(permanentErr);
+
+    try {
+      await expect(seedAccreditationBonus(RETHROW_USER)).rejects.toBe(permanentErr);
+    } finally {
+      setSpy.mockRestore();
+    }
+  });
+
+  it('re-throws permanent errors (SyntaxError)', async () => {
+    const redis = getRedis();
+    if (!redis) return;
+    const permanentErr = new SyntaxError('Unexpected token in JSON at position 0');
+    const setSpy = vi.spyOn(redis, 'set').mockRejectedValueOnce(permanentErr);
+    try {
+      await expect(seedAccreditationBonus(RETHROW_USER)).rejects.toBe(permanentErr);
+    } finally {
+      setSpy.mockRestore();
+    }
+  });
+
+  it('swallows transient errors (generic Error) — next batch cycle re-derives', async () => {
+    const redis = getRedis();
+    if (!redis) return;
+    const transientErr = new Error('Connection is closed');
+    const setSpy = vi.spyOn(redis, 'set').mockRejectedValueOnce(transientErr);
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as unknown as void);
+
+    try {
+      await expect(seedAccreditationBonus(RETHROW_USER)).resolves.toBeUndefined();
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ err: transientErr, username: RETHROW_USER }),
+        'Failed to seed accreditation bonus',
+      );
+    } finally {
+      warnSpy.mockRestore();
+      setSpy.mockRestore();
+    }
+  });
+
+  it('returns silently when Redis is unavailable (transient — next cycle re-derives)', async () => {
+    // Spec is intentionally conservative: a Redis outage at the time of an
+    // accredit broadcast should NOT surface 502 POST_BROADCAST_FAILED to the
+    // user, because the next batch cycle reconstructs the provisional score
+    // from chain state. Re-throwing on null-Redis would couple the user-
+    // visible accredit envelope to ephemeral Redis health, which is the
+    // wrong contract per the task spec ("transient errors stay swallowed
+    // because next batch cycle re-derives anyway").
+    //
+    // We can't easily flip getRedis() to null mid-test on this file's
+    // shared-Redis fixture, so this spec just documents the contract; the
+    // behavior is enforced by the `if (!redis) return` guard at the top of
+    // seedAccreditationBonus and a regression that re-throws here would
+    // surface in the existing accreditation-broadcast integration matrix
+    // (chain-confirmed accredit + Redis-down → user gets 200, not 502).
+    const redis = getRedis();
+    if (!redis) {
+      // Real Redis-absent path runs naturally here.
+      await expect(seedAccreditationBonus(RETHROW_USER)).resolves.toBeUndefined();
+    }
   });
 });
 

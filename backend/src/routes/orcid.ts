@@ -1385,15 +1385,69 @@ async function getExistingAccreditation(username: string): Promise<{
   };
 }
 
+/**
+ * Classify a thrown DB error as permanent (operator-actionable, deploy
+ * regression) or transient (single-blip, recoverable on retry).
+ *
+ * BACKEND-CASCADE-FNS-RETHROW-PERMANENT-ERRORS — the cascade fns
+ * (`updateAccountOrcid`, `seedAccreditationBonus`) re-throw permanent errors
+ * so the post-broadcast discrimination machinery surfaces real 502
+ * POST_BROADCAST_FAILED envelopes for operator alerting; transient errors
+ * stay swallowed (next-request or next-cycle reconciles).
+ *
+ * pg SQLSTATE classes deemed permanent here:
+ *   - `23*` integrity_constraint_violation (FK violation, NOT NULL violation,
+ *     unique violation, check constraint failure) — schema/data invariant
+ *     drifted from what the code expects; deploy regression.
+ *   - `42*` syntax_error_or_access_rule_violation (undefined_column,
+ *     undefined_table, datatype_mismatch, insufficient_privilege) — column
+ *     renamed/dropped or migration not applied; deploy regression.
+ *
+ * Transient (NOT classified as permanent):
+ *   - `08*` connection_exception — network blip; next request reconnects.
+ *   - `40001` serialization_failure / `40P01` deadlock — concurrent-update
+ *     race; next request typically succeeds.
+ *   - Pool-exhaustion-like errors (no SQLSTATE; surfaces as Node Error) —
+ *     transient unless sustained, which manifests as repeated occurrences
+ *     in the operator-facing log stream.
+ */
+function isPermanentDbError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const code = (err as Error & { code?: unknown }).code;
+  if (typeof code !== 'string') return false;
+  return code.startsWith('23') || code.startsWith('42');
+}
+
 async function updateAccountOrcid(username: string, orcidId: string): Promise<void> {
   const pool = getAppPool();
-  if (!pool) return;
+  if (!pool) {
+    // Permanent: app pool not initialised. Re-thrown so the orcid post-broadcast
+    // cascade wrap surfaces 502 POST_BROADCAST_FAILED with
+    // `failed_step:'account_update'`. Production-pathological — the app
+    // should fail to start if the DB pool isn't configured — but if it
+    // somehow reaches this site, the chain op IS confirmed and the user
+    // deserves the discriminated envelope (not silent staleness).
+    throw new Error('App pool not initialised — accounts.orcid update unavailable');
+  }
   try {
     await pool.query(
       `UPDATE accounts SET orcid = $1 WHERE username = $2`,
       [orcidId, username],
     );
   } catch (err) {
+    if (isPermanentDbError(err)) {
+      // Permanent (constraint/schema regression): re-thrown so the wrap-and-throw
+      // at the post-broadcast cascade lifts this into PostBroadcastWriteError →
+      // 502 POST_BROADCAST_FAILED with `failed_step:'account_update'`. The
+      // structured operator-alert anchor (`event:'post_broadcast_write_failed'`)
+      // fires at error level so oncall sees it; the per-step user message says
+      // "the chain record is the source of truth, manual reconcile may be needed".
+      throw err;
+    }
+    // Transient: log and swallow. A single connection drop or serialization
+    // race during a healthy pool isn't operator-actionable per-request — the
+    // denormalized accounts.orcid column may be briefly stale, but the chain
+    // record is the source of truth for the binding.
     logger.warn({ err, username }, 'Failed to update accounts.orcid (row may not exist for self-custody user)');
   }
 }

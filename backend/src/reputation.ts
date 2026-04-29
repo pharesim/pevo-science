@@ -129,15 +129,45 @@ function provisionalScore(bonus: number): ReputationScore {
  * Call after an `accredit` custom_json broadcast is acknowledged so the
  * user's profile shows `accreditation_bonus` immediately, without waiting
  * for the next cycle boundary.
+ *
+ * BACKEND-CASCADE-FNS-RETHROW-PERMANENT-ERRORS: re-throws on permanent
+ * (operator-actionable) errors so the orcid post-broadcast cascade wrap
+ * surfaces 502 POST_BROADCAST_FAILED with `failed_step:'reputation_seed'`.
+ * Transient errors (Redis-side blips, transient HAF query failures) stay
+ * swallowed because the next batch cycle re-derives the score from chain
+ * state regardless. Permanent errors are programmer-error class
+ * (`TypeError`, `SyntaxError`, `RangeError`) which signal a data-shape
+ * regression in `getReputationWeights()` output that the next cycle will
+ * NOT self-heal — operator must investigate the upstream weights data.
  */
+function isPermanentSeedError(err: unknown): boolean {
+  return err instanceof TypeError
+    || err instanceof SyntaxError
+    || err instanceof RangeError;
+}
+
 export async function seedAccreditationBonus(username: string): Promise<void> {
   const redis = getRedis();
+  // Redis genuinely unavailable is transient at the per-request layer —
+  // the next batch cycle re-derives provisional scores anyway. NOT
+  // re-thrown so a Redis outage during accreditation doesn't surface 502
+  // POST_BROADCAST_FAILED for a chain-confirmed accredit op.
   if (!redis) return;
   try {
     const weights = await getReputationWeights();
     const provisional = provisionalScore(weights.accreditation_bonus);
     await redis.set(batchKey(username), JSON.stringify(provisional), 'NX');
   } catch (err) {
+    if (isPermanentSeedError(err)) {
+      // Permanent (data-shape regression in weights or provisionalScore):
+      // re-thrown so the post-broadcast cascade wrap lifts this into
+      // PostBroadcastWriteError → 502 POST_BROADCAST_FAILED with
+      // `failed_step:'reputation_seed'`. The structured operator-alert
+      // anchor (`event:'post_broadcast_write_failed'`) fires at error
+      // level; per-step user message says reputation will update at the
+      // next scheduled cycle.
+      throw err;
+    }
     logger.warn({ err, username }, 'Failed to seed accreditation bonus');
   }
 }

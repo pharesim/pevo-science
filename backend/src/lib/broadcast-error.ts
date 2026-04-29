@@ -180,8 +180,23 @@ export function handleBroadcastError(
   // with details.outcome:'confirmed' is the right shape.
   // (BACKEND-ORCID-BROADCAST-OUTCOME-DISCRIMINATION.)
   if (err instanceof PostBroadcastWriteError) {
+    // Structured `event:'post_broadcast_write_failed'` so the 4th anchor is
+    // dashboard-keyable alongside the sibling event-tagged anchors
+    // (`event:'a1_extend_*'`, `event:'lock_contention_held'`,
+    // `event:'post_broadcast_msg_fn_threw'`). The 4th anchor is the
+    // operator-facing signal for `BACKEND-CASCADE-FNS-RETHROW-PERMANENT-ERRORS`
+    // — when a cascade fn re-throws on a permanent error, this is what fires
+    // at error level. Routes oncall to DB on-call (not broadcast on-call) per
+    // the discrimination contract.
     logger.error(
-      { err, cause: err.cause, txId: err.txId, failedStep: err.failedStep, ...opts.logContext },
+      {
+        err,
+        cause: err.cause,
+        txId: err.txId,
+        failedStep: err.failedStep,
+        event: 'post_broadcast_write_failed',
+        ...opts.logContext,
+      },
       `${opts.routeLabel} broadcast confirmed but post-broadcast write failed`,
     );
     // Resolve the user-facing message under a guard: a caller-supplied
