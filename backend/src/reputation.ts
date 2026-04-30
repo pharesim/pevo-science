@@ -14,61 +14,6 @@ import { logger } from './logger.js';
 import { DEFAULT_REPUTATION_WEIGHTS, type ReputationWeights, type ReputationScore } from './types/index.js';
 import { T, getCachedGenesisBlock, validPevoPaperWhere } from './hafsql.js';
 
-const REPUTATION_CACHE_TTL = 60 * 60_000; // 1 hour
-
-async function loadActiveAuthors(): Promise<string[]> {
-  const pool = getPool();
-  if (!pool) return [];
-
-  try {
-    // Use UNION to avoid full-table scan: papers are found by parent_permlink (indexed),
-    // reviews are found by joining through their parent paper.
-    // Bridge papers are pinned to config.hiveBridgeAccount via validPevoPaperWhere
-    // so a spoofed bridge_paper can't admit its (unaccredited) author into the
-    // active-author set used by reputation R9 voter weighting.
-    const validPaper = validPevoPaperWhere({ commentAlias: 'c', appTagParam: '$1', bridgeAccountParam: '$3', source: 'all' });
-    const validParent = validPevoPaperWhere({ commentAlias: 'p', appTagParam: '$1', bridgeAccountParam: '$3', source: 'all' });
-    const result = await pool.query(
-      `SELECT DISTINCT author FROM (
-         SELECT c.author FROM ${T.comments} c
-         WHERE c.parent_author = '' AND c.parent_permlink = $1
-           AND ${validPaper}
-           AND c.json_metadata ->> 'app' LIKE $2
-         UNION ALL
-         SELECT c.author FROM ${T.comments} c
-         JOIN ${T.comments} p ON p.author = c.parent_author AND p.permlink = c.parent_permlink
-         WHERE p.parent_author = '' AND p.parent_permlink = $1
-           AND ${validParent}
-           AND p.json_metadata ->> 'app' LIKE $2
-           AND (c.json_metadata -> $1 ->> 'type') = 'review'
-           AND c.json_metadata ->> 'app' LIKE $2
-       ) t`,
-      [config.appTag, `${config.appTag}/%`, config.hiveBridgeAccount],
-    );
-    return result.rows.map((r: { author: string }) => r.author);
-  } catch (err) {
-    logger.warn({ err }, 'Failed to query active PEvO accounts');
-    return [];
-  }
-}
-
-/**
- * Get all authors that have published at least one PEvO paper or review.
- * Cached as Set<string> with 1h TTL. Distinct from "users to score" (which is
- * the accredited set fed to the batch); this set gates the activity-based
- * voter-weight bonus (R9) inside the SQL CTE `active_authors`.
- */
-export async function getActiveAuthors(): Promise<Set<string>> {
-  const arr = await hafCache.getOrSet<string[]>('active_pevo_authors', loadActiveAuthors, REPUTATION_CACHE_TTL, true);
-  return new Set(arr);
-}
-
-/** Warm the active authors cache at startup via periodic refresh. */
-export async function startActiveAuthorsCache(): Promise<void> {
-  await hafCache.registerPeriodicRefresh('active_pevo_authors', loadActiveAuthors, REPUTATION_CACHE_TTL);
-  logger.info('Active authors cache loaded');
-}
-
 // ─── Batch key helpers ──────────────────────────────────────────
 
 /** Redis key namespace for cycle-computed reputation scores. */
