@@ -60,3 +60,58 @@ Fix: extend `validatePostingKeyFormat` calls in `validateConfig()` to cover `PEV
 ### Re-review signal
 
 When items 1-2 land, `git mv` this file back to `tasks/review/`. Round-2 architect review scopes `/ce-code-review` to the round-2 commit.
+
+---
+
+## Backend re-review signal (2026-04-30, working tree)
+
+Round-2 hold-fix items 1 and 2 landed. Round-1 commit `cfa39b5` not retouched.
+
+### Item 1 — `PEVO_ANON_POSTING_KEY` boot validator
+
+Extended `validateConfig()` in `backend/src/startup-checks.ts` to call `validatePostingKeyFormat(config.pevoAnonPostingKey, 'PEVO_ANON_POSTING_KEY')` alongside the existing admin/bridge calls. The optional semantics (skip if unset, fail boot if set-but-malformed) match admin/bridge — `pevoAnonPostingKey` is sourced via `process.env.PEVO_ANON_POSTING_KEY || ''` in `config.ts:51`, identical to admin's optional-with-empty-fallback shape. Added inline comment listing the verified coverage map (admin/bridge/anon).
+
+Verification grep (`grep -rn "PrivateKey\\.fromString(config" backend/src/`):
+
+```
+backend/src/wot.ts:232:      PrivateKey.fromString(config.pevoAdminPostingKey),
+backend/src/wot.ts:361:          PrivateKey.fromString(config.pevoAdminPostingKey),
+backend/src/routes/anonymousReview.ts:174:    const key = PrivateKey.fromString(config.pevoAnonPostingKey);
+backend/src/routes/papers.ts:1509:    const key = PrivateKey.fromString(config.pevoAdminPostingKey);
+backend/src/routes/bridge.ts:233:    const key = PrivateKey.fromString(config.pevoBridgePostingKey);
+backend/src/routes/bridge.ts:362:    const key = PrivateKey.fromString(config.pevoBridgePostingKey);
+backend/src/routes/signup-verify.ts:287:        const adminKey = PrivateKey.fromString(config.pevoAdminPostingKey);
+backend/src/routes/signup-verify.ts:415:        const adminKey = PrivateKey.fromString(config.pevoAdminPostingKey);
+backend/src/routes/accreditation.ts:350:    const key = PrivateKey.fromString(config.pevoAdminPostingKey);
+backend/src/routes/claims.ts:214:    const key = PrivateKey.fromString(config.pevoBridgePostingKey);
+backend/src/routes/claims.ts:311:    const key = PrivateKey.fromString(config.pevoBridgePostingKey);
+backend/src/routes/claims.ts:347:    const key = PrivateKey.fromString(config.pevoAdminPostingKey);
+backend/src/routes/orcid.ts:585:    const key = PrivateKey.fromString(config.pevoAdminPostingKey);
+backend/src/routes/orcid.ts:757:    const key = PrivateKey.fromString(config.pevoAdminPostingKey);
+```
+
+Three distinct config-sourced keys; all three are now boot-validated.
+
+Test added: `tests/startup-checks.test.ts` — `validates PEVO_ANON_POSTING_KEY (round-2 coverage gap)` covers unset-OK, valid-WIF-OK, malformed-rejected with env-var name in the error message.
+
+### Item 2 — `validateAccountNameFormat` for `HIVE_*_ACCOUNT` vars
+
+Added `validateAccountNameFormat(value, envVar)` helper to `backend/src/startup-checks.ts`. Rejects empty/whitespace and applies the literal regex `/^[a-z][a-z0-9.-]{2,15}$/` (matches the existing precedent at `backend/src/routes/anonymousReview.ts:147` — dhive does not export an account-name validator). Wired into `validateConfig()` over the resolved config values (not `process.env.*`) so a `HIVE_BRIDGE_ACCOUNT='   '` deploy that survives the `||` fallback in `config.ts` is caught at boot.
+
+Account-name env var list derived from `backend/src/config.ts` (lines 16, 17, 55, 98):
+- `HIVE_ADMIN_ACCOUNT` → `config.hiveAdminAccount` (default `'pevo.admin'`)
+- `HIVE_BRIDGE_ACCOUNT` → `config.hiveBridgeAccount` (default `hiveAdminAccount`)
+- `HIVE_ONBOARD_ACCOUNT` → `config.hiveOnboardAccount` (default `hiveAdminAccount`)
+- `HIVE_ANON_ACCOUNT` → `config.hiveAnonAccount` (default `'pevo.anon'`)
+
+All four are validated. No other `HIVE_*_ACCOUNT` env vars surfaced in the grep.
+
+Tests added (10 new): unset-OK, valid-name (dotted + plain + hyphenated), whitespace-only rejected, single-space rejected (canonical adversarial case), uppercase rejected, too-short (<3), too-long (>16), digit-start rejected, special chars (`_`, `$`, space) rejected, env-var name passthrough.
+
+### Verification
+
+- `npx tsc --noEmit` — clean (no output).
+- `npm run lint` — clean (only pre-existing `seed-phrase.ts` `any` warnings, unrelated).
+- `npx vitest run tests/startup-checks.test.ts` (with docker-network Redis/Postgres IPs per root CLAUDE.md) — 16 passed (5 round-1 + 1 round-2 anon + 10 round-2 account-name), 0 failed, 858ms.
+
+Commit SHA: filled in at commit time (this paragraph and the SHA below land in the same commit).

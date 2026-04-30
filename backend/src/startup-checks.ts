@@ -34,6 +34,36 @@ export function validatePostingKeyFormat(value: string, envVar: string): string 
   }
 }
 
+/**
+ * Validate that a Hive account-name env var is non-blank and matches Hive's
+ * account-name shape. Returns `null` for unset (preserves optional semantics
+ * for callers passing empty strings) or for a valid name; returns an error
+ * string otherwise.
+ *
+ * Why: empty/whitespace values for `HIVE_BRIDGE_ACCOUNT` (or the analogous
+ * admin/onboard/anon vars) silently exclude all bridge papers via
+ * `validPevoPaperWhere`'s author pin, with no boot-time signal. The same
+ * defect class applies to any author-pinned query: a blank account name
+ * yields a query that matches nothing, but produces no error. Validate at
+ * boot so a deploy-time misconfiguration fails loudly.
+ *
+ * Regex matches `backend/src/routes/anonymousReview.ts:147` precedent
+ * (`^[a-z][a-z0-9.-]{2,15}$`): lowercase start, 3-16 chars total, lowercase
+ * alphanumeric + dots + hyphens. Whitespace-only input fails the regex
+ * (leading space ≠ lowercase letter); the explicit `.trim()` guard below
+ * is belt-and-suspenders so the error message is recognizable.
+ */
+export function validateAccountNameFormat(value: string, envVar: string): string | null {
+  if (!value) return null;
+  if (!value.trim()) {
+    return `${envVar} — empty or whitespace-only value (a blank account name silently excludes all matching content from author-pinned queries)`;
+  }
+  if (!/^[a-z][a-z0-9.-]{2,15}$/.test(value)) {
+    return `${envVar} — invalid Hive account-name format (must match /^[a-z][a-z0-9.-]{2,15}$/, got: ${JSON.stringify(value)})`;
+  }
+  return null;
+}
+
 export function validateConfig(): void {
   const checks: EnvCheck[] = [
     { key: 'HAF_DATABASE_URL', value: config.hafDatabaseUrls.join(','), required: true, description: 'HAF SQL (comma-separated for failover)' },
@@ -71,13 +101,37 @@ export function validateConfig(): void {
     }
   }
 
-  // Validate posting-key WIF format if present. Both keys are optional (resolveBridgePostingKey
-  // already covers the bridge≠admin presence error); a malformed value, however, must fail
-  // boot so a runtime PrivateKey.fromString throw never reaches the request lifecycle.
+  // Validate posting-key WIF format if present. All three keys are optional (resolveBridgePostingKey
+  // already covers the bridge≠admin presence error; admin/anon-disabled features degrade gracefully);
+  // a malformed value, however, must fail boot so a runtime PrivateKey.fromString throw never reaches
+  // the request lifecycle. Coverage map (verified via `grep -rn "PrivateKey\.fromString(config"`):
+  //   - PEVO_ADMIN_POSTING_KEY  (orcid, accreditation, papers, claims, signup-verify, wot)
+  //   - PEVO_BRIDGE_POSTING_KEY (bridge, claims)
+  //   - PEVO_ANON_POSTING_KEY   (anonymousReview)
   const adminKeyError = validatePostingKeyFormat(config.pevoAdminPostingKey, 'PEVO_ADMIN_POSTING_KEY');
   if (adminKeyError) missing.push(`  ${adminKeyError}`);
   const bridgeKeyError = validatePostingKeyFormat(config.pevoBridgePostingKey, 'PEVO_BRIDGE_POSTING_KEY');
   if (bridgeKeyError) missing.push(`  ${bridgeKeyError}`);
+  const anonKeyError = validatePostingKeyFormat(config.pevoAnonPostingKey, 'PEVO_ANON_POSTING_KEY');
+  if (anonKeyError) missing.push(`  ${anonKeyError}`);
+
+  // Validate Hive account-name env vars. Empty/whitespace values silently exclude all
+  // author-pinned content (e.g. `validPevoPaperWhere` pins on hiveBridgeAccount); malformed
+  // values would similarly mismatch on every chain query. All four vars have defaults in
+  // config.ts so the resolved values are never undefined, but a deploy-time misconfiguration
+  // (`HIVE_BRIDGE_ACCOUNT='   '`) survives the `||` fallback and reaches the resolved config.
+  // Validate resolved values rather than `process.env.*` so the check covers the actual values
+  // used by queries.
+  const accountChecks: Array<{ value: string; envVar: string }> = [
+    { value: config.hiveAdminAccount, envVar: 'HIVE_ADMIN_ACCOUNT' },
+    { value: config.hiveBridgeAccount, envVar: 'HIVE_BRIDGE_ACCOUNT' },
+    { value: config.hiveOnboardAccount, envVar: 'HIVE_ONBOARD_ACCOUNT' },
+    { value: config.hiveAnonAccount, envVar: 'HIVE_ANON_ACCOUNT' },
+  ];
+  for (const { value, envVar } of accountChecks) {
+    const err = validateAccountNameFormat(value, envVar);
+    if (err) missing.push(`  ${err}`);
+  }
 
   // In production, APP_URL should be explicitly set (not the default localhost)
   const isProduction = process.env.NODE_ENV === 'production';
