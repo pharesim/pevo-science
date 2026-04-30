@@ -112,7 +112,8 @@ Apply this rule any time a gate has an OR-arm, fall-through branch, or middlewar
   - Pattern: `OR (c.json_metadata`
   - Pattern: `json_metadata ... ->> 'type') =` inside a WHERE clause
 - JS/TS: branches on metadata-derived discriminants followed by privilege grants.
-  - Pattern: `if (... === 'bridge_paper')` or analogous role tokens (`'moderator_post'`, `'continuation'`, future types).
+  - Pattern: `if (... === 'bridge_paper')` or analogous role tokens (`'moderator_post'`, future types).
+  - Pattern: `pevo.continues = { author, permlink }` (continuation pointer admitted into a paper's version chain) — concrete second instance of this anti-pattern after `bridge_paper`. Predicate shape differs: continuation authorization is **set membership** in the paper's `pevo.authors[].hive` list (a vouched-identity set scoped per-resource), not equality to a single pinned account. The rule generalizes: the OR-arm must terminate in an identity predicate, but the predicate shape can be `author === <pinned>` OR `author IN <vouched-set>`. See `agents/docs/solutions/architecture-patterns/pevo-paper-version-chain-and-edit-semantics-2026-04-30.md` for the version-chain semantics this gate operates on, and `agents/docs/tasks/pending/backend-continuation-post-author-consent-gate.md` for the active implementation task.
   - Pattern: `if (metadata.type === '<role>')`
   - Pattern: `if (post.tags.includes('<privileged>'))` followed by an admit/exempt branch
 - Switch/case on a metadata-derived discriminant where one case skips an auth check.
