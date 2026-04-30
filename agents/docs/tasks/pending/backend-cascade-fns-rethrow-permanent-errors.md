@@ -183,3 +183,39 @@ Spec mechanism: `vi.spyOn(appDbModule, 'getAppPool').mockReturnValue(stubPool)` 
 ### Re-review signal
 
 When items 1-2 land, `git mv` this file back to `tasks/review/`.
+
+---
+
+## Backend re-review signal (2026-04-30, working tree)
+
+Round-2 hold-fix items 1 and 2 landed. Both edits are confined to `backend/tests/routes/reputation-lifecycle.test.ts` (no source change required; the `seedAccreditationBonus` rewire from round-1 is unchanged and correctly classifies the null-Redis branch as silent-return per the documented contract).
+
+### Item 1 (P2) — Vacuous null-Redis spec rewritten
+
+The "returns silently when Redis is unavailable" spec at the previous line ~222 was gated by `if (!redis) { ... }` with no `else`, so under the documented real-Redis topology the test body ran zero assertions. Rewrite:
+
+- Added `import * as redisModule from '../../src/redis.js'` (namespace import alongside the existing named `getRedis` import) — same convention as round-1's `import * as appDbModule from '../../src/app-db.js'` in `tests/routes/orcid.test.ts`.
+- Replaced the body so when real Redis is up (the documented topology), the spec mocks `getRedis` to null via `vi.spyOn(redisModule, 'getRedis').mockReturnValueOnce(null)`, and asserts (i) silent return (no throw, `resolves.toBeUndefined()`), (ii) `getRedis` was called exactly once, (iii) `redis.set` was NOT called (the function exited at the null guard before reaching the try/catch), (iv) `logger.warn` was NOT called (no error path entered).
+- The early-return at the top of the spec (`if (!redis) return`) is preserved so a Redis-absent CI environment falls through naturally without trying to spy on a null receiver.
+
+### Item 2 (P2) — Header docblock now documents the mock carve-out
+
+Extended the file-level docblock with a "Mock carve-out" paragraph documenting per root CLAUDE.md "Running Tests" carve-out clauses:
+
+- (a) Which real path is impractical: corrupting upstream weights JSON / `weights.accreditation_bonus` shape to drive `provisionalScore` into TypeError, plus tearing down the shared Redis fixture mid-suite for the null-Redis branch.
+- (b) Why the mocks are justified: discrimination is class-based (`isPermanentSeedError` matches `TypeError | SyntaxError | RangeError`), so any error of the right class surfaces the same branch. `verifyHiveSignature` + other middleware are NOT mocked (these are unit-level specs against the function directly). The `vi.spyOn(redisModule, 'getRedis')` shape mirrors round-1's `appDbModule.getAppPool` spy in `tests/routes/orcid.test.ts`.
+- (c) Real-Redis sibling coverage exists: the rest of the file (lifecycle seed-on-grant, invalidate-on-revocation, batch idempotency) runs against real Redis + real HAF and exercises `seedAccreditationBonus` end-to-end on the happy path; the carve-out covers only the error-class branches the happy path can't reach.
+
+### Verification
+
+- `npx tsc --noEmit`: clean.
+- `npm run lint`: clean (pre-existing `seed-phrase.ts` no-explicit-any warnings only — unchanged from round-1).
+- `npx vitest run tests/routes/reputation-lifecycle.test.ts` (real Postgres + Redis via docker-network IP overrides): **10/10 pass**, including all 4 round-1 discrimination specs and the now-active null-Redis spec.
+
+### Files changed
+
+- `backend/tests/routes/reputation-lifecycle.test.ts` — header docblock extended with mock carve-out paragraph; `import * as redisModule` added; null-Redis spec rewritten to mock `getRedis` to null and assert silent return + zero Redis call + zero log line.
+
+### Commit
+
+Round-2 fixes land in this commit (subject: `backend(cascade-rethrow): round-2 hold-fixes (items 1-2) — null-Redis spec exercised + mock carve-out documented`). Parent merges into orchestrating branch and `git mv`s the task back to `tasks/review/`.

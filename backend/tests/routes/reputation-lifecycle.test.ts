@@ -12,8 +12,40 @@
  * 3. computeReputationBatch is deterministic — re-running with identical
  *    inputs produces a byte-identical result map. Catches non-deterministic
  *    SQL (missing ORDER BY, unstable DISTINCT, FP reordering).
+ *
+ * Mock carve-out (per root CLAUDE.md "Running Tests" carve-out clauses
+ * a/b/c): the `seedAccreditationBonus — permanent vs transient error
+ * discrimination` describe block at the bottom of this file uses
+ * `vi.spyOn(redis, 'set')`, `vi.spyOn(logger, 'warn')`, and
+ * `vi.spyOn(redisModule, 'getRedis')` to drive the cascade fn into its
+ * permanent / transient / null-Redis branches deterministically.
+ *
+ * (a) Real path that's impractical: the production triggers for the
+ *     permanent branch (TypeError thrown by `provisionalScore` on a
+ *     malformed `weights.accreditation_bonus`, SyntaxError on a corrupted
+ *     upstream weights JSON document) require corrupting real HAF /
+ *     real Redis state, which (i) bleeds across the suite's shared Redis
+ *     fixture and (ii) couples a class-based discrimination test to a
+ *     specific upstream data shape. Likewise the null-Redis branch can't
+ *     be exercised against the real fixture without tearing down the
+ *     shared connection mid-suite.
+ * (b) Why these mocks are justified: the discrimination is class-based
+ *     (`isPermanentSeedError` matches `TypeError | SyntaxError |
+ *     RangeError`), so any error of the right class surfaces the same
+ *     branch — the test only needs a deterministic source of that error
+ *     class. `verifyHiveSignature` and other middleware are NOT mocked
+ *     (these are unit-level specs against the function directly, not
+ *     route specs). `vi.spyOn(redisModule, 'getRedis')` is the same
+ *     namespace-import + spy pattern round-1 established for
+ *     `appDbModule.getAppPool` in `tests/routes/orcid.test.ts`.
+ * (c) Real-Redis sibling coverage: the rest of this file (lifecycle
+ *     seed-on-grant, invalidate-on-revocation, batch idempotency) runs
+ *     against real Redis + real HAF and exercises `seedAccreditationBonus`
+ *     end-to-end on the happy path. The carve-out covers only the
+ *     error-class branches the happy path can't reach.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import * as redisModule from '../../src/redis.js';
 import { getRedis } from '../../src/redis.js';
 import { logger } from '../../src/logger.js';
 import {
@@ -222,16 +254,28 @@ describe('seedAccreditationBonus — permanent vs transient error discrimination
     // wrong contract per the task spec ("transient errors stay swallowed
     // because next batch cycle re-derives anyway").
     //
-    // We can't easily flip getRedis() to null mid-test on this file's
-    // shared-Redis fixture, so this spec just documents the contract; the
-    // behavior is enforced by the `if (!redis) return` guard at the top of
-    // seedAccreditationBonus and a regression that re-throws here would
-    // surface in the existing accreditation-broadcast integration matrix
-    // (chain-confirmed accredit + Redis-down → user gets 200, not 502).
+    // The shared-Redis fixture is up in the documented test topology, so we
+    // flip `getRedis()` to null via `vi.spyOn(redisModule, 'getRedis')`
+    // (same namespace-import + spy pattern round-1 established for
+    // `appDbModule.getAppPool`). Asserts: silent return (no throw), no
+    // Redis call, no log line — the function's `if (!redis) return` guard
+    // is the only branch reached.
     const redis = getRedis();
-    if (!redis) {
-      // Real Redis-absent path runs naturally here.
+    if (!redis) return; // No real Redis to spy on; nothing to assert.
+
+    const getRedisSpy = vi.spyOn(redisModule, 'getRedis').mockReturnValueOnce(null);
+    const setSpy = vi.spyOn(redis, 'set');
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as unknown as void);
+
+    try {
       await expect(seedAccreditationBonus(RETHROW_USER)).resolves.toBeUndefined();
+      expect(getRedisSpy).toHaveBeenCalledTimes(1);
+      expect(setSpy).not.toHaveBeenCalled();
+      expect(warnSpy).not.toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+      setSpy.mockRestore();
+      getRedisSpy.mockRestore();
     }
   });
 });
