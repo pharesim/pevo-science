@@ -291,8 +291,9 @@ const template = `
                     <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor"><path d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" /></svg>
                     <span x-text="$t('citation.addToCollection')"></span>
                   </button>
-                  <!-- Edit button (author/co-author) -->
-                  <template x-if="isOwnPaper && !paper.is_retracted">
+                  <!-- Edit button (author/co-author). Bridge papers update via
+                       /api/bridge/update; the SPA edit flow doesn't apply. -->
+                  <template x-if="isOwnPaper && !paper.is_retracted && !isBridgePaper">
                     <a :href="$lp('/edit/' + (paper.canonical_author || paper.author) + '/' + (paper.canonical_permlink || paper.permlink))"
                        @click.prevent="navigate('/edit/' + (paper.canonical_author || paper.author) + '/' + (paper.canonical_permlink || paper.permlink))"
                        class="btn-secondary text-sm no-underline" x-text="$t('edit.editButton')"></a>

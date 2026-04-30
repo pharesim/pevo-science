@@ -422,17 +422,46 @@ export function initEditPage() {
       return this.isAccredited;
     },
 
+    // The latest version entry in the chain authored by the current user, if
+    // any. The reconstructed `versions[]` from /api/papers/:author/:permlink
+    // includes every operation across the continuation chain with the post's
+    // (author, permlink) per entry, so the user's existing post in the chain
+    // (if any) is the latest entry where `author === username`. Returns null
+    // when the user has not yet published anything in this chain.
+    get userPostInChain() {
+      if (!this.paper || !this.username) return null;
+      const versions = this.paper.versions || [];
+      for (let i = versions.length - 1; i >= 0; i--) {
+        if (versions[i].author === this.username) return versions[i];
+      }
+      return null;
+    },
+
     get isContinuation() {
       if (!this.paper || !this.username) return false;
-      // If a continuation chain exists, the displayed content comes from
-      // the chain head. Editing the root post in-place would produce a
-      // broken diff (Hive applies diffs against the post's own body, not
-      // the head's). So everyone must use a continuation post, unless
-      // the user is the original author AND no chain exists yet.
-      const hasChain = this.paper.head_author !== this.paper.author
-        || this.paper.head_permlink !== this.paper.permlink;
-      if (hasChain) return true;
-      return this.username !== this.paper.author;
+      // Prefer the version-chain walk: native-edit when the user has any
+      // post in the chain. This shape supersedes the prior "any chain →
+      // always new continuation" rule, which made every chain-state edit
+      // balloon into a fresh post instead of evolving the user's own
+      // version.
+      if (this.userPostInChain) return false;
+      // Fallback when versions[] is sparse (e.g. backend's synthetic
+      // single-version stub at papers.ts when HAF replay returned nothing,
+      // or a brand-new paper with no chain). Rely on the chain pointers
+      // exposed by /api/papers/:author/:permlink.
+      const headAuthor = this.paper.head_author || this.paper.author;
+      const headPermlink = this.paper.head_permlink || this.paper.permlink;
+      const hasChain = headAuthor !== this.paper.author || headPermlink !== this.paper.permlink;
+      if (!hasChain) {
+        // Single-post paper: only the canonical author native-edits;
+        // everyone else broadcasts a continuation. Matches legacy
+        // semantics so single-version edits keep working when HAF replay
+        // hasn't populated versions[].
+        return this.username !== this.paper.author;
+      }
+      // Chain exists but the version walk didn't find a user post → user
+      // has not contributed to this chain → new continuation.
+      return true;
     },
 
     get nextVersion() {
@@ -793,8 +822,16 @@ export function initEditPage() {
           .map(k => k.trim().toLowerCase())
           .filter(Boolean);
 
+        // Primary author of the broadcast is always the current user — they
+        // own the post being edited or created. The previous conditional
+        // (continuation ? username : paper.author) was vestigial: the only
+        // legacy non-continuation path was root-author-edits-self, where
+        // username === paper.author. With co-author native edits in the
+        // chain, paper.author would now point at the canonical root's
+        // author (e.g. alice) when the actual broadcaster is a different
+        // co-author (e.g. bob).
         const allAuthors = [
-          { name: this.authorName, hive: this.isContinuation ? username : (this.paper.author), orcid: this.authorOrcid, affiliation: this.authorAffiliation },
+          { name: this.authorName, hive: username, orcid: this.authorOrcid, affiliation: this.authorAffiliation },
           ...this.existingCoAuthors,
           ...this.newCoAuthors.filter(ca => ca.name),
         ];
@@ -890,29 +927,53 @@ export function initEditPage() {
             this.navigate(`/paper/${canonicalAuthor}/${canonicalPermlink}`);
           }, 1500);
         } else {
-          // Same-author edit: compute diff, broadcast single comment op
-          if (newPostBody === this._originalBody && this.title === this.paper.title) {
-            // Check if metadata changed
-            const metaChanged = JSON.stringify(keywords) !== JSON.stringify(pevoMeta.keywords || [])
-              || JSON.stringify(allAuthors) !== JSON.stringify(pevoMeta.authors || [])
-              || JSON.stringify(citationsData) !== JSON.stringify(pevoMeta.citations || [])
-              || this.supplementaryFiles.length > 0
-              || this.addressedReviews.length > 0;
+          // Same-author native edit: target the user's own post in the
+          // chain (which may be the canonical root, or a continuation post
+          // the user previously authored). userPostInChain is non-null on
+          // this branch — isContinuation === false implies it.
+          const ownPost = this.userPostInChain;
+          const targetAuthor = ownPost ? ownPost.author : this.paper.author;
+          const targetPermlink = ownPost ? ownPost.permlink : this.paper.permlink;
 
-            if (!metaChanged) {
-              this.step = 'error';
-              this.errorMessage = this.$t('edit.noChanges');
-              return;
+          // Diff base correctness: the form pre-fills from the chain head
+          // (paper.body), but Hive applies diffs against the post's own
+          // current body. The diff is only correct when the target IS the
+          // chain head (or when no chain exists, head ≡ root). Otherwise
+          // we broadcast full body — Hive accepts it, just uses more chain
+          // space than a diff would.
+          const headAuthor = this.paper.head_author || this.paper.author;
+          const headPermlink = this.paper.head_permlink || this.paper.permlink;
+          const targetIsHead = targetAuthor === headAuthor && targetPermlink === headPermlink;
+
+          let broadcastBody;
+          if (targetIsHead) {
+            if (newPostBody === this._originalBody && this.title === this.paper.title) {
+              // Check if metadata changed
+              const metaChanged = JSON.stringify(keywords) !== JSON.stringify(pevoMeta.keywords || [])
+                || JSON.stringify(allAuthors) !== JSON.stringify(pevoMeta.authors || [])
+                || JSON.stringify(citationsData) !== JSON.stringify(pevoMeta.citations || [])
+                || this.supplementaryFiles.length > 0
+                || this.addressedReviews.length > 0;
+
+              if (!metaChanged) {
+                this.step = 'error';
+                this.errorMessage = this.$t('edit.noChanges');
+                return;
+              }
             }
+            const diffText = computeDiff(this._originalBody, newPostBody);
+            broadcastBody = diffText.length >= newPostBody.length ? newPostBody : diffText;
+          } else {
+            // Non-head target (e.g. root author native-editing their own
+            // post while a co-author's continuation is currently the head):
+            // pre-fill body differs from target post body, so a diff would
+            // be applied to the wrong base. Broadcast full body.
+            broadcastBody = newPostBody;
           }
-
-          const diffText = computeDiff(this._originalBody, newPostBody);
-          // If diff is larger than full body, send full body instead
-          const broadcastBody = diffText.length >= newPostBody.length ? newPostBody : diffText;
 
           const jsonMetadata = {
             app: APP_ID,
-            canonical_url: `${window.location.origin}/paper/${this.author}/${this.permlink}`,
+            canonical_url: `${window.location.origin}/paper/${targetAuthor}/${targetPermlink}`,
             tags: [APP_TAG, 'science', this.discipline, ...keywords].filter(Boolean),
             [APP_TAG]: {
               ...pevoMeta,
@@ -932,8 +993,8 @@ export function initEditPage() {
             ['comment', {
               parent_author: '',
               parent_permlink: APP_TAG,
-              author: username,
-              permlink: this.permlink,
+              author: targetAuthor,
+              permlink: targetPermlink,
               title: this.title,
               body: broadcastBody,
               json_metadata: JSON.stringify(jsonMetadata),
@@ -942,13 +1003,18 @@ export function initEditPage() {
           await broadcastOps(username, editOps);
           if (!this._mounted) return;
 
-          await invalidatePaperCache(this.author, this.permlink);
+          // Cache invalidation keys off the canonical root, not the
+          // edit target — the paper-detail endpoint resolves any chain
+          // entry to its canonical root before reading.
+          const canonicalAuthor = this.paper.canonical_author || this.paper.author;
+          const canonicalPermlink = this.paper.canonical_permlink || this.paper.permlink;
+          await invalidatePaperCache(canonicalAuthor, canonicalPermlink);
           if (!this._mounted) return;
 
           this.step = 'success';
           localStorage.removeItem(this.draftKey);
           this._setTimer(() => {
-            this.navigate(`/paper/${this.author}/${this.permlink}`);
+            this.navigate(`/paper/${canonicalAuthor}/${canonicalPermlink}`);
           }, 1500);
         }
       } catch (err) {
