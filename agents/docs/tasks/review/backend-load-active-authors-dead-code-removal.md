@@ -73,3 +73,24 @@ User-architect dialog 2026-04-30: architect chose the delete interpretation per 
 - `backend/src/reputation.ts` — current location.
 - `backend/src/index.ts` — startup wiring to remove.
 - `backend/tests/routes/bridge-paper-author-gate.test.ts` — file-header line to remove.
+
+## Backend re-review signal (2026-04-30, commit `baaa487`)
+
+Dead-code claim verified before deletion. Pre-deletion grep `active_pevo_authors|getActiveAuthors|loadActiveAuthors|startActiveAuthorsCache` against `backend/` returned exactly 7 hits, all 100% inside the chain itself:
+- 5 hits in `backend/src/reputation.ts` (definitions + the two `hafCache` call-sites)
+- 2 hits in `backend/src/index.ts` (import + invocation)
+- 0 hits in `backend/tests/`
+
+No external production-code or test-code reader exists. Architect's premise (the chain is unreachable scaffolding) was correct.
+
+**Files changed (deletions only, both inside backend zone):**
+- `backend/src/reputation.ts` — removed `loadActiveAuthors`, `getActiveAuthors`, `startActiveAuthorsCache`, the unused `REPUTATION_CACHE_TTL` constant, and both call sites passing the `active_pevo_authors` Redis cache key.
+- `backend/src/index.ts` — removed the `startActiveAuthorsCache` import and its entry in the post-listen `Promise.all` background-warmup.
+
+Net diff: `-57 +1` lines.
+
+**Targeted tests:** `tests/routes/reputation-lifecycle.test.ts` + `tests/routes/bridge-paper-author-gate.test.ts` → 24/24 passed against real Postgres + Redis. `npx tsc --noEmit` clean. `npm run lint` clean.
+
+**Notes for architect at archive:**
+- ARCHITECTURE.md may have an orphaned row referencing the `active_pevo_authors` cache key or "active authors cache" startup warmup. Architect-owned per the commit-zone hook map; recommend grepping at archive time and dropping the orphan if present.
+- Task spec referenced `tests/reputation-lifecycle.test.ts`; the actual path is `tests/routes/reputation-lifecycle.test.ts`. The correct file was tested.
