@@ -975,7 +975,22 @@ async function extendBindingLockOnTimeoutOrLog(orcidId: string, routeLabel: stri
     return;
   }
   try {
-    const extended = await redis.expire(orcidBindingLockKey(orcidId), HAF_INDEXING_LAG_CEILING_SECONDS);
+    // Round-1 (BACKEND-A1-EXTEND-LOCK-MISSING-EVENT-DISCRIMINATION): probe
+    // the lock's residual TTL immediately before the extend attempt so the
+    // `binding_lock_extend_lock_missing` anchor can carry a `cause:` field
+    // that operators can dashboard-filter. Three operational causes
+    // collapsed to the same anchor before this probe (self-expire from
+    // HAF-lag preamble, sibling DEL, Redis eviction) — `pttl` lets us
+    // discriminate the first/third class (key already missing at probe time
+    // → `'expired_or_evicted'`) from the rare race where a sibling deletes
+    // the key between probe and expire (`'released_during_extend'`). Cases
+    // 1 and 3 stay conflated with Redis primitives alone; the dashboard
+    // distinguishes them via co-occurrence with eviction-counter / HAF-lag
+    // anchors when those land. The probe is best-effort: if it throws, fall
+    // through to the existing `binding_lock_extend_threw` anchor.
+    const lockKey = orcidBindingLockKey(orcidId);
+    const pttlBefore = await redis.pttl(lockKey);
+    const extended = await redis.expire(lockKey, HAF_INDEXING_LAG_CEILING_SECONDS);
     if (extended === 0) {
       // Round-2 hold #4: caller's subsequent `return { skipRelease: true }`
       // is decorative on this branch — the lock is already gone, so
@@ -984,8 +999,14 @@ async function extendBindingLockOnTimeoutOrLog(orcidId: string, routeLabel: stri
       // (a 4-way per-branch skipRelease decision is the wrong abstraction;
       // the wrapper-skipRelease decision is "did the timer fire" and stays
       // true regardless of which sub-state the helper observed).
+      const cause: 'expired_or_evicted' | 'released_during_extend' | 'unknown' =
+        pttlBefore === -2
+          ? 'expired_or_evicted'
+          : pttlBefore > 0
+            ? 'released_during_extend'
+            : 'unknown';
       logger.error(
-        { orcidId, event: 'binding_lock_extend_lock_missing' },
+        { orcidId, event: 'binding_lock_extend_lock_missing', cause, pttlBefore },
         `${routeLabel} binding lock expired between acquire and TTL-extend — A.1 protection degraded for this request`,
       );
       return;

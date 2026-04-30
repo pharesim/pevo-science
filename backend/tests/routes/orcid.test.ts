@@ -2035,14 +2035,64 @@ describe.each([
 
       try {
         await __test_seams.extendBindingLockOnTimeoutOrLog(orcidId, routeLabel);
+        // BACKEND-A1-EXTEND-LOCK-MISSING-EVENT-DISCRIMINATION round-1: when
+        // the lock key is absent, the helper's pre-extend `pttl` returns -2
+        // and the anchor must carry `cause: 'expired_or_evicted'` so operator
+        // dashboards can distinguish self-expire/Redis-eviction from the
+        // (rarer) sibling-DEL-during-extend race. Pinning the structured
+        // shape here makes a regression that drops the `cause` discriminator
+        // surface as a test failure rather than silently degrading the
+        // anchor back to the conflated round-0 form.
         expect(errorSpy).toHaveBeenCalledWith(
           expect.objectContaining({
             event: 'binding_lock_extend_lock_missing',
             orcidId,
+            cause: 'expired_or_evicted',
+            pttlBefore: -2,
           }),
           expect.stringContaining('binding lock expired between acquire and TTL-extend'),
         );
       } finally {
+        errorSpy.mockRestore();
+      }
+    },
+  );
+
+  // BACKEND-A1-EXTEND-LOCK-MISSING-EVENT-DISCRIMINATION round-1 — pin the
+  // `cause: 'released_during_extend'` discriminator. The race window is:
+  // `redis.pttl(lockKey)` returns a positive value (key alive at probe time)
+  // but `redis.expire(lockKey, ...)` returns 0 (key gone at extend time —
+  // sibling DEL'd it in the gap). Forced via spy ordering (cannot be induced
+  // deterministically against real Redis without a co-running sibling).
+  // Mock carve-out justification: see `tests/routes/orcid.test.ts` header
+  // — Vitest's ESM transform redirects the helper's `redis` namespace
+  // binding through the spies for the duration of the test, same pattern
+  // as the existing `redisModule.isRedisAvailable` use.
+  it(
+    'extendBindingLockOnTimeoutOrLog logs cause=released_during_extend when pttl>0 but expire returns 0',
+    async () => {
+      const redis = getRedis();
+      if (!redis) return;
+      const orcidId = `0000-0001-${orcidSuffix}${orcidSuffix}${orcidSuffix}${orcidSuffix}-0016`;
+      const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => undefined as unknown as void);
+      const pttlSpy = vi.spyOn(redis, 'pttl').mockResolvedValueOnce(30_000);
+      const expireSpy = vi.spyOn(redis, 'expire').mockResolvedValueOnce(0);
+      const routeLabel = mode === 'accredit' ? 'orcid.handleAccredit' : 'orcid.handleLink';
+
+      try {
+        await __test_seams.extendBindingLockOnTimeoutOrLog(orcidId, routeLabel);
+        expect(errorSpy).toHaveBeenCalledWith(
+          expect.objectContaining({
+            event: 'binding_lock_extend_lock_missing',
+            orcidId,
+            cause: 'released_during_extend',
+            pttlBefore: 30_000,
+          }),
+          expect.stringContaining('binding lock expired between acquire and TTL-extend'),
+        );
+      } finally {
+        expireSpy.mockRestore();
+        pttlSpy.mockRestore();
         errorSpy.mockRestore();
       }
     },
