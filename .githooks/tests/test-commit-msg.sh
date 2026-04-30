@@ -142,6 +142,86 @@ run_case "F18a backend(auth) stages backend/ → accept"     0 "backend(auth): l
 run_case "F18b architect(compound) stages backend/ → reject" 1 "architect(compound): note" "backend/src/foo.ts"
 
 echo
+echo "=== R2-F1 low-similarity D+A bypass (round-2 fix) ==="
+# Reproduces the round-2 review's P1 finding: a non-architect agent
+# stages a review→pending move with substantial content change, dropping
+# git's rename-detection similarity below 50% so the diff appears as A+D
+# instead of R. The deletion-detection path must catch this.
+SAND_LOW=$(mktemp -d)
+(cd "$SAND_LOW"
+  git init -q && git config user.email t@t && git config user.name t
+  mkdir -p agents/docs/tasks/review agents/docs/tasks/pending
+  printf 'short body\nline 2\n' > agents/docs/tasks/review/backend-foo.md
+  git add agents/docs/tasks/review/backend-foo.md
+  git -c core.hooksPath=/dev/null commit -q -m precursor
+  # Now do a non-mv shape: rm + add at new location with much-bigger body.
+  git rm -q agents/docs/tasks/review/backend-foo.md
+  for i in $(seq 1 60); do echo "## hold-block line $i"; done > agents/docs/tasks/pending/backend-foo.md
+  git add agents/docs/tasks/pending/backend-foo.md
+  msg=$(mktemp); echo "backend: low-sim D+A bypass attempt" > "$msg"
+  "$HOOK_PATH" "$msg" >/dev/null 2>&1; ec=$?; rm -f "$msg"
+  echo "$ec"
+) > "$SAND_LOW/ec"
+ec=$(tail -n1 "$SAND_LOW/ec"); rm -rf "$SAND_LOW"
+if [ "$ec" = "1" ]; then PASS=$((PASS+1)); printf "  PASS [R2-F1 low-sim D+A bypass → reject]  exit=%s\n" "$ec"
+else FAIL=$((FAIL+1)); FAILURES+=("R2-F1 low-sim D+A bypass (expected=1 got=$ec)"); printf "  FAIL [R2-F1 low-sim D+A bypass]  expected=1 got=%s\n" "$ec"; fi
+
+echo
+echo "=== R2-F2 Unmerged (U) filter ==="
+# Stage an Unmerged path via merge conflict; verify the audit sees it.
+# A `backend:` commit with an Unmerged frontend/ path must be rejected.
+SAND_U=$(mktemp -d)
+(cd "$SAND_U"
+  git init -q && git config user.email t@t && git config user.name t
+  mkdir -p frontend
+  echo base > frontend/x.js
+  git add frontend/x.js
+  git -c core.hooksPath=/dev/null commit -q -m base
+  default_br=$(git rev-parse --abbrev-ref HEAD)
+  git -c core.hooksPath=/dev/null checkout -q -b other
+  echo other-side > frontend/x.js
+  git add frontend/x.js
+  git -c core.hooksPath=/dev/null commit -q -m other
+  git checkout -q "$default_br"
+  echo main-side > frontend/x.js
+  git add frontend/x.js
+  git -c core.hooksPath=/dev/null commit -q -m mainchange
+  # This produces a content conflict, leaves frontend/x.js Unmerged in index.
+  git -c core.hooksPath=/dev/null merge -q other >/dev/null 2>&1 || true
+  msg=$(mktemp); echo "backend: stray frontend U" > "$msg"
+  "$HOOK_PATH" "$msg" >/dev/null 2>&1; ec=$?; rm -f "$msg"
+  echo "$ec"
+) > "$SAND_U/ec"
+ec=$(tail -n1 "$SAND_U/ec"); rm -rf "$SAND_U"
+if [ "$ec" = "1" ]; then PASS=$((PASS+1)); printf "  PASS [R2-F2 Unmerged path audited → reject]  exit=%s\n" "$ec"
+else FAIL=$((FAIL+1)); FAILURES+=("R2-F2 Unmerged path (expected=1 got=$ec)"); printf "  FAIL [R2-F2 Unmerged path]  expected=1 got=%s\n" "$ec"; fi
+
+echo
+echo "=== T-2 [skip-zone-audit] + review→pending rename (precedence) ==="
+# Skip token must take precedence over rename detection.
+SAND_SKIP=$(mktemp -d)
+(cd "$SAND_SKIP"
+  git init -q && git config user.email t@t && git config user.name t
+  mkdir -p agents/docs/tasks/review agents/docs/tasks/pending
+  echo x > agents/docs/tasks/review/backend-foo.md
+  git add agents/docs/tasks/review/backend-foo.md
+  git -c core.hooksPath=/dev/null commit -q -m precursor
+  git mv agents/docs/tasks/review/backend-foo.md agents/docs/tasks/pending/backend-foo.md
+  msg=$(mktemp); echo "backend: legit cross-rule case [skip-zone-audit]" > "$msg"
+  "$HOOK_PATH" "$msg" >/dev/null 2>&1; ec=$?; rm -f "$msg"
+  echo "$ec"
+) > "$SAND_SKIP/ec"
+ec=$(tail -n1 "$SAND_SKIP/ec"); rm -rf "$SAND_SKIP"
+if [ "$ec" = "0" ]; then PASS=$((PASS+1)); printf "  PASS [T-2 skip-zone-audit + rename → accept]  exit=%s\n" "$ec"
+else FAIL=$((FAIL+1)); FAILURES+=("T-2 skip + rename (expected=0 got=$ec)"); printf "  FAIL [T-2 skip + rename]  expected=0 got=%s\n" "$ec"; fi
+
+echo
+echo "=== T-3 tasks/blocked/ path variant ==="
+run_case "T-3a architect stages tasks/blocked/ui task → accept"  0 "architect: block ui task" "agents/docs/tasks/blocked/ui-foo.md"
+run_case "T-3b backend stages tasks/blocked/ui task → reject"    1 "backend: stray block"      "agents/docs/tasks/blocked/ui-foo.md"
+run_case "T-3c backend stages tasks/blocked/own task → accept"   0 "backend: own block"        "agents/docs/tasks/blocked/backend-foo.md"
+
+echo
 echo "=== Other coverage ==="
 run_case "T9 ui stages frontend/ → accept"                 0 "ui: tweak"             "frontend/src/main.js"
 run_case "T10 pinner stages pinner/ → accept"              0 "pinner: gc fix"        "pinner/foo.go"

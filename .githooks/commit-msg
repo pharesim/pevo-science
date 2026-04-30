@@ -63,23 +63,33 @@ staged="$(git diff --cached --name-only --diff-filter=ACDMRU 2>/dev/null)" || {
 }
 [ -z "$staged" ] && exit 0
 
-# Detect any task-file rename from review/ → pending/ (architect-driven only
-# per root CLAUDE.md rule #8). Non-architect agents staging this rename are
-# rejected outright; architect bypass already covers the legitimate case.
-# We need rename detection here, so use --name-status with no path filter.
+# Reject non-architect commits performing review/ → pending/ task-file moves
+# (architect-driven only per root CLAUDE.md rule #8). Two detection paths
+# combined to handle both git classifications:
+#
+#  1. RENAME path. `git diff --cached --name-status -M50` reports the move
+#     as `R<sim>\tsource\tdest` when post-move similarity ≥ 50%. Catches
+#     pure `git mv` or low-content-change moves.
+#  2. DELETION path. When a HELD PENDING FIXES append drops similarity below
+#     50%, git reports `A pending/x.md` + `D review/x.md` instead of `R`.
+#     We detect any deletion under `agents/docs/tasks/review/<slug>-` for
+#     non-architect agents and reject. Combined with the per-path zone check
+#     below, this covers the D+A bypass shape.
 if [[ "$agent" != "architect" ]]; then
   rename_status="$(git diff --cached --name-status -M50 2>/dev/null)" || rename_status=""
-  if printf '%s\n' "$rename_status" \
-       | grep -qE $'^R[0-9]*\tagents/docs/tasks/review/[^\t]+\tagents/docs/tasks/pending/'; then
+  rename_hits="$(printf '%s\n' "$rename_status" \
+    | grep -E $'^R[0-9]*\tagents/docs/tasks/review/[^\t]+\tagents/docs/tasks/pending/' || true)"
+  deleted_review="$(git diff --cached --name-only --diff-filter=D 2>/dev/null \
+    | grep -E '^agents/docs/tasks/review/[a-z]+-' || true)"
+  if [ -n "$rename_hits" ] || [ -n "$deleted_review" ]; then
     {
       echo "commit-msg: zone audit FAILED"
       echo "  agent prefix parsed: $agent"
-      echo "  staged review/ → pending/ task-file rename detected."
+      echo "  staged review/ → pending/ task-file move detected (or review/ deletion)."
       echo "  Per root CLAUDE.md rule #8, that direction is architect-driven (HELD"
       echo "  PENDING FIXES). Non-architect agents may only mv pending/ → review/."
-      printf '%s\n' "$rename_status" \
-        | grep -E $'^R[0-9]*\tagents/docs/tasks/review/[^\t]+\tagents/docs/tasks/pending/' \
-        | sed 's/^/    - /'
+      [ -n "$rename_hits" ] && printf '%s\n' "$rename_hits" | sed 's/^/    - rename: /'
+      [ -n "$deleted_review" ] && printf '%s\n' "$deleted_review" | sed 's/^/    - deleted: /'
       echo ""
       echo "  If this is a legitimate non-rule-#8 case, use [skip-zone-audit] in the subject."
     } >&2
