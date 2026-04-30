@@ -100,3 +100,21 @@ User-architect dialog 2026-04-30 confirmed the gate shape: continuation author m
 - `agents/docs/solutions/conventions/pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28.md` — convention this task extends.
 - `agents/docs/api-contracts/papers.md` — author/version semantics; may need a note on the continuation-author requirement.
 - `backend/src/routes/papers.ts:587, 1067` — the two sites needing the gate.
+
+## Backend implementation note (2026-04-30)
+
+Backend landed the gate. Single resolution point: `resolveContinuationChain` in `backend/src/routes/papers.ts`. Both call sites (`fetchPaperDetailFromHaf` and `reconstructVersionsFromHaf`) flow through it, so a single helper-extract was unnecessary — the gate lives inline in the chain resolver, with two pure helpers in `backend/src/helpers.ts` (`extractAuthorizedContinuationAuthors`, `isAuthorizedContinuationAuthor`). Defense-in-depth: SQL-side `c.author = ANY($N::text[])` filter (efficient, prevents disallowed candidates from being returned at all) AND JS-side re-check (catches drift if a future SQL refactor drops the ANY() arm).
+
+Files:
+- `backend/src/helpers.ts` — `extractAuthorizedContinuationAuthors`, `isAuthorizedContinuationAuthor` helpers.
+- `backend/src/routes/papers.ts` — `fetchHeadAuthorizedAuthors` (resolves the per-chain authorized set once), `resolveContinuationChain` (gate), updated import.
+- `backend/tests/routes/continuation-author-gate.test.ts` — 14 canary tests: 4 pure-helper unit tests + 7 SQL-shape canaries (mocked pool per CLAUDE.md "Running Tests" carve-out, justification in file header).
+
+Bridge-paper canary (`tests/routes/bridge-paper-author-gate.test.ts`) and real-HAF papers tests (`tests/routes/papers.test.ts`) pass unchanged.
+
+`npm run lint` clean (only the two pre-existing `seed-phrase.ts` `no-explicit-any` warnings).
+
+[TODO Architect]
+1. **`agents/docs/ARCHITECTURE.md`** — append a row to the metadata-trust table documenting that `pevo.continues = {author, permlink}` is gated on named-author membership in the continued paper's `pevo.authors[].hive` set, similar to the existing `bridge_paper` author-pin row. Per task acceptance #5; architect-owned doc.
+2. **`agents/docs/api-contracts/papers.md`** — consider adding a note that the version chain admits only continuation posts whose author is a named author of the head paper. The shape is server-side filtering (no client-visible API change), so this is documentation-only. Per task acceptance "may need a note on the continuation-author requirement"; architect-owned per backend CLAUDE.md.
+3. **`agents/docs/solutions/conventions/pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28.md`** — append a "Sites this convention applies to" sub-section enumerating the two surfaces now closed: `bridge_paper` (closed cluster 1, `validPevoPaperWhere()` helper across 15 sites; CI guard `scripts/check-bridge-paper-discipline.sh`) and `pevo.continues = {author, permlink}` (closed by this task; gate in `resolveContinuationChain` with helpers `extractAuthorizedContinuationAuthors` + `isAuthorizedContinuationAuthor` in `backend/src/helpers.ts`; canary `backend/tests/routes/continuation-author-gate.test.ts`; predicate shape is **set membership** in `pevo.authors[].hive`, enforced both SQL-side `c.author = ANY($N::text[])` and JS-side; no CI grep guard since both call sites flow through `resolveContinuationChain`). The convention doc lives under `agents/docs/solutions/` which is architect-owned territory per the commit-zone hook map; backend agents cannot touch it without `[skip-zone-audit]`.

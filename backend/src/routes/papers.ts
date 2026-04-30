@@ -14,6 +14,8 @@ import {
   parseSort,
   parseOrder,
   extractAbstract,
+  extractAuthorizedContinuationAuthors,
+  isAuthorizedContinuationAuthor,
   type SortField,
 } from '../helpers.js';
 import { getAccreditedSet, getAllAccreditedAccounts } from '../accreditation.js';
@@ -673,23 +675,90 @@ interface ChainLink {
 }
 
 /**
+ * Fetch the head (root) paper's authorized continuation-author set: the
+ * `hive` field values from the head paper's `pevo.authors[]`, narrowed to
+ * the case where the row at `(author, permlink)` is a valid PEvO paper
+ * (native or bridge, identity-pinned via `isPevoAnyPaper`).
+ *
+ * Returns `null` if the head is not a valid PEvO paper (no chain to admit
+ * into) — callers should treat this as "no continuations admitted".
+ *
+ * This is the per-resource vouched-identity set the continuation gate
+ * checks against. See
+ * `agents/docs/solutions/conventions/pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28.md`.
+ */
+async function fetchHeadAuthorizedAuthors(
+  pool: NonNullable<ReturnType<typeof getPool>>,
+  author: string,
+  permlink: string,
+): Promise<Set<string> | null> {
+  try {
+    const result = await pool.query(
+      `SELECT c.author, c.json_metadata
+       FROM ${T.comments} c
+       WHERE c.author = $1 AND c.permlink = $2
+         AND c.parent_author = '' AND c.parent_permlink = $3`,
+      [author, permlink, config.appTag],
+    );
+    if (result.rows.length === 0) return null;
+    const row = result.rows[0] as Record<string, unknown>;
+    const meta = parseMeta(row.json_metadata);
+    if (!isPevoAnyPaper(meta, row.author as string)) return null;
+    const pevo = safePevoMeta(meta);
+    return extractAuthorizedContinuationAuthors(pevo);
+  } catch (err) {
+    logger.error({ err }, 'Head authorized-authors lookup failed');
+    return null;
+  }
+}
+
+/**
  * Resolve the continuation chain starting from a canonical (root) post.
  * Follows `json_metadata -> appTag -> 'continues'` pointers iteratively.
  * Returns ordered array starting with the root post, ending at the chain head.
  * Uses block_num to resolve collisions (earliest wins). 50-hop safety cap.
+ *
+ * **Author-consent gate (BACKEND-CONTINUATION-POST-AUTHOR-CONSENT-GATE).**
+ * A candidate continuation post `C` is admitted into the chain only if
+ * `C.author` is one of the head (root) paper's named authors — i.e. is in
+ * the `hive` field values of the head paper's `pevo.authors[]`. Without
+ * this gate, any Hive account can post a comment with
+ * `pevo.continues = {author: <real-paper-author>, permlink: <real-paper>}`
+ * and have its content surface as a later version of the real paper.
+ *
+ * The gate is enforced both SQL-side (`c.author = ANY($N)`) so the DB
+ * never returns disallowed candidates, AND JS-side as defense in depth.
+ * If the head paper is not a valid PEvO paper or has no named authors, the
+ * chain degenerates to the root only — no continuations are admitted.
+ *
+ * See `agents/docs/solutions/conventions/pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28.md`.
  */
 async function resolveContinuationChain(author: string, permlink: string): Promise<ChainLink[]> {
   const pool = getPool();
   if (!pool) return [{ author, permlink }];
 
   const chain: ChainLink[] = [{ author, permlink }];
+
+  // Fetch the head paper's authorized-author set ONCE. The chain admit-set
+  // is scoped to the root paper, not per-hop.
+  const authorizedAuthors = await fetchHeadAuthorizedAuthors(pool, author, permlink);
+  if (!authorizedAuthors || authorizedAuthors.size === 0) {
+    // Head is not a valid PEvO paper, or has no named authors. No
+    // continuations are admitted; chain is root-only.
+    return chain;
+  }
+
   let currentAuthor = author;
   let currentPermlink = permlink;
   const MAX_HOPS = 50;
+  const authorizedArr = Array.from(authorizedAuthors);
 
   try {
     for (let i = 0; i < MAX_HOPS; i++) {
-      // Find any post whose continues field points to the current head
+      // Find any post whose continues field points to the current head AND
+      // whose author is in the head paper's named-author set. SQL-side
+      // filtering via $4::text[] is the primary gate; the JS-side
+      // `isAuthorizedContinuationAuthor` re-check below is defense in depth.
       const result = await pool.query(
         `SELECT c.author, c.permlink, co.block_num
          FROM ${T.comments} c
@@ -698,14 +767,26 @@ async function resolveContinuationChain(author: string, permlink: string): Promi
            AND c.parent_permlink = $3
            AND c.json_metadata -> $3 -> 'continues' ->> 'author' = $1
            AND c.json_metadata -> $3 -> 'continues' ->> 'permlink' = $2
+           AND c.author = ANY($4::text[])
          ORDER BY co.block_num ASC
          LIMIT 1`,
-        [currentAuthor, currentPermlink, config.appTag],
+        [currentAuthor, currentPermlink, config.appTag, authorizedArr],
       );
 
       if (result.rows.length === 0) break;
 
       const next = result.rows[0];
+      // Defense in depth: re-verify the candidate author is in the
+      // authorized-author set even though the SQL filter already gated it.
+      // A drift between the JS gate and the SQL gate (e.g. a future SQL
+      // refactor that drops the ANY() filter) would be caught here.
+      if (!isAuthorizedContinuationAuthor(next.author as string, authorizedAuthors)) {
+        logger.warn(
+          { rootAuthor: author, rootPermlink: permlink, candidateAuthor: next.author },
+          'continuation candidate slipped past SQL gate; rejecting at JS layer',
+        );
+        break;
+      }
       currentAuthor = next.author;
       currentPermlink = next.permlink;
       chain.push({ author: currentAuthor, permlink: currentPermlink });

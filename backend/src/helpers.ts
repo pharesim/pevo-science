@@ -67,6 +67,64 @@ export function isPevoAnyPaper(meta: Record<string, unknown>, author: string): b
   return isPevoPaper(meta) || isPevoBridgePaper(meta, author);
 }
 
+/**
+ * Extract the set of authorized continuation-author Hive accounts for a
+ * given paper's parsed `pevo` metadata sub-object. The set is the `hive`
+ * field values from `pevo.authors[]` — these are the named authors of the
+ * paper, the only accounts whose continuation posts may be admitted into
+ * the paper's version chain.
+ *
+ * Returns an empty Set if `pevo.authors` is missing, malformed, or empty
+ * (defensive: callers must treat empty as "no continuation admits", not
+ * as "all admits"). Filters out non-string `hive` entries.
+ *
+ * See `agents/docs/solutions/conventions/pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28.md`
+ * for the convention this enforces. The continuation-author check is
+ * **set membership** in this resource-scoped vouched-identity set, not
+ * equality to a single pinned account.
+ */
+export function extractAuthorizedContinuationAuthors(pevoMeta: Record<string, unknown> | null | undefined): Set<string> {
+  const authors: Set<string> = new Set();
+  if (!pevoMeta || typeof pevoMeta !== 'object') return authors;
+  const arr = (pevoMeta as Record<string, unknown>).authors;
+  if (!Array.isArray(arr)) return authors;
+  for (const entry of arr) {
+    if (entry && typeof entry === 'object' && typeof (entry as Record<string, unknown>).hive === 'string') {
+      const hive = ((entry as Record<string, unknown>).hive as string).trim();
+      if (hive.length > 0) authors.add(hive);
+    }
+  }
+  return authors;
+}
+
+/**
+ * Returns true iff `candidateAuthor` is a named author of the continued
+ * paper, where the named-author set is the `hive` field values from the
+ * head paper's `pevo.authors[]` (computed via
+ * `extractAuthorizedContinuationAuthors`).
+ *
+ * This is the **author-consent gate** for `pevo.continues = {author, permlink}`
+ * pointers. Without this gate, any Hive account can post a comment with
+ * `pevo.continues` pointing at a real paper and have its content surface as
+ * a later version of that paper (display-side spoof). The gate filters such
+ * spoofs out: a continuation-pointer claim is admitted only when the
+ * continuation post's chain-level author is in the head paper's vouched
+ * author set.
+ *
+ * Bridge papers: the chain-level author of the head paper is
+ * `config.hiveBridgeAccount`, but `pevo.authors[]` still lists the original
+ * preprint authors — so a continuation `C` of a bridge paper is admitted
+ * iff `C.author` is in the original-preprint-author set, not equal to the
+ * bridge account. This matches the bridge-paper-author-pin convention's
+ * "set membership in a resource-scoped vouched set" generalization.
+ *
+ * See `agents/docs/solutions/conventions/pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28.md`.
+ */
+export function isAuthorizedContinuationAuthor(candidateAuthor: string, authorizedAuthors: Set<string>): boolean {
+  if (typeof candidateAuthor !== 'string' || candidateAuthor.length === 0) return false;
+  return authorizedAuthors.has(candidateAuthor);
+}
+
 export function parsePageLimit(req: Request) {
   const page = Math.min(10000, Math.max(1, parseInt(req.query.page as string, 10) || 1));
   const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string, 10) || 20));
