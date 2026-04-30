@@ -382,3 +382,42 @@ A separate task in pending/ (`backend-a1-extend-lock-missing-event-discriminatio
 ### Re-review signal
 
 When items 1-2 land, `git mv` this file back to `tasks/review/`.
+
+---
+
+## Backend re-review signal (2026-04-30, working tree)
+
+Both round-3 hold items addressed.
+
+**Item 1 (P3) — Event-name rename from `a1_*` to domain-rooted `binding_lock_extend_*`.** `backend/src/routes/orcid.ts`: the four A.1 helper structured-event literals renamed in-place to align with sibling operator anchors (`nonce_drift`, `redis_outage`, `lock_contention_held`):
+- `a1_extend_redis_absent` → `binding_lock_extend_redis_absent` (line 965)
+- `a1_extend_lock_missing` → `binding_lock_extend_lock_missing` (line 981)
+- `a1_extend_ok` → `binding_lock_extend_ok` (line 987)
+- `a1_extend_threw` → `binding_lock_extend_threw` (line 998)
+
+The cross-reference comment in `withOrcidBindingLock`'s `lock_contention_held` block (line 1103) updated to `event:'binding_lock_extend_*'` for the same reason. Operator dashboards keying on the `a1_*` prefix will need a one-time renaming pass; the new domain-rooted names survive the task slug going stale and read as "what fired" rather than "which task wrote this."
+
+**Item 2 (P3) — Test assertions de-coupled from literal `120` via `__test_seams.HAF_INDEXING_LAG_CEILING_SECONDS`.** `backend/src/routes/orcid.ts` `__test_seams` export gains `HAF_INDEXING_LAG_CEILING_SECONDS` (chosen over a separate `import`-from-routes path because `__test_seams` is the existing test-bypass channel — keeps the "test-only export" boundary explicit in one place). `backend/tests/routes/orcid.test.ts` updates three assertion sites:
+- success-path `objectContaining({ event: 'binding_lock_extend_ok', ..., newTtl: __test_seams.HAF_INDEXING_LAG_CEILING_SECONDS })` (the literal target of the architect's finding)
+- ordering-spec `expect(expireSpy).toHaveBeenCalledWith(lockKey, __test_seams.HAF_INDEXING_LAG_CEILING_SECONDS)` (same regression class — if the constant tunes, the spec must not red against the still-correct emitted value)
+- expire-throw spec `expect(expireSpy).toHaveBeenCalledWith(lockKey, __test_seams.HAF_INDEXING_LAG_CEILING_SECONDS)` (same)
+
+A future tuning of `HAF_INDEXING_LAG_CEILING_SECONDS` per the derivation comment block now changes one constant and zero test assertions.
+
+### Verification
+
+- `npx tsc --noEmit`: clean.
+- `npm run lint`: clean (pre-existing `seed-phrase.ts` no-explicit-any warnings only).
+- `npx vitest run tests/routes/orcid.test.ts` (real Postgres + Redis via docker-network IPs): **63/63 pass** (was 58 before — the +5 delta comes from sibling tasks landed in the same window, not this round's edits; the four A.1 helper specs in this round's scope all pass with the new event names and constant assertions). Live log confirms `{"event":"binding_lock_extend_ok","newTtl":120,...}` fires with the renamed literal.
+- Full backend suite is the architect's call (per CLAUDE.md guidance).
+
+### Files changed
+
+- `backend/src/routes/orcid.ts` — four `event:` literals renamed (lines 965/981/987/998); cross-reference comment in the wrapper's `lock_contention_held` log block (line 1103) updated; `HAF_INDEXING_LAG_CEILING_SECONDS` added to the `__test_seams` export.
+- `backend/tests/routes/orcid.test.ts` — five `event:` literals + three `it(...)` test names updated; surrounding comments brought in line with the new names; three call-shape assertions migrated from bare `120` to `__test_seams.HAF_INDEXING_LAG_CEILING_SECONDS`.
+
+### Coordination note (sibling task)
+
+`backend-a1-extend-lock-missing-event-discrimination.md` still references the old `a1_extend_*` names in its body (lines 9, 42-44, 59, 73). When that task is picked up, the `cause:` discriminator work needs to target `binding_lock_extend_lock_missing`. Architect should refresh that task's prose at the next architect pass to use the new literal names — leaving as a `[TODO Architect]` note in case it gets picked up before the architect re-review here.
+
+[TODO Architect]: refresh `agents/docs/tasks/pending/backend-a1-extend-lock-missing-event-discrimination.md` to reference `binding_lock_extend_*` literal names instead of `a1_extend_*` (the rename in this task's round-3 hold-fix supersedes the literal names quoted in that sibling task body).

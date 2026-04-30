@@ -962,7 +962,7 @@ async function extendBindingLockOnTimeoutOrLog(orcidId: string, routeLabel: stri
   const redis = getRedis();
   if (!redis || !isRedisAvailable()) {
     logger.error(
-      { orcidId, event: 'a1_extend_redis_absent' },
+      { orcidId, event: 'binding_lock_extend_redis_absent' },
       `${routeLabel} A.1 lock-TTL extension skipped — Redis unavailable at BroadcastTimeoutError time, duplicate-bind window may be open`,
     );
     return;
@@ -978,13 +978,13 @@ async function extendBindingLockOnTimeoutOrLog(orcidId: string, routeLabel: stri
       // the wrapper-skipRelease decision is "did the timer fire" and stays
       // true regardless of which sub-state the helper observed).
       logger.error(
-        { orcidId, event: 'a1_extend_lock_missing' },
+        { orcidId, event: 'binding_lock_extend_lock_missing' },
         `${routeLabel} binding lock expired between acquire and TTL-extend — A.1 protection degraded for this request`,
       );
       return;
     }
     logger.warn(
-      { orcidId, newTtl: HAF_INDEXING_LAG_CEILING_SECONDS, event: 'a1_extend_ok' },
+      { orcidId, newTtl: HAF_INDEXING_LAG_CEILING_SECONDS, event: 'binding_lock_extend_ok' },
       `${routeLabel} binding lock TTL extended on BroadcastTimeoutError — duplicate-bind window held`,
     );
   } catch (expireErr) {
@@ -995,7 +995,7 @@ async function extendBindingLockOnTimeoutOrLog(orcidId: string, routeLabel: stri
     // will fall back to its original ~35s TTL and a concurrent bind
     // arriving after that could slip the race A.1 was designed to close.
     logger.error(
-      { err: expireErr, orcidId, event: 'a1_extend_threw' },
+      { err: expireErr, orcidId, event: 'binding_lock_extend_threw' },
       `${routeLabel} orcid binding lock TTL extension failed — duplicate-bind protection degraded for this request`,
     );
   }
@@ -1100,7 +1100,7 @@ async function withOrcidBindingLock(
     //
     // Operator-alert anchor: structured `event:'lock_contention_held'` so
     // contention frequency is dashboard-keyable. Sibling lock-helper anchors
-    // already follow this convention (`event:'a1_extend_*'`, `event:'redis_outage'`,
+    // already follow this convention (`event:'binding_lock_extend_*'`, `event:'redis_outage'`,
     // `event:'nonce_drift'`); silent emission here would leave oncall without
     // a forensic trail when triaging 409s on /orcid/callback.
     logger.warn(
@@ -1471,6 +1471,12 @@ export const __test_seams = {
   // Also lets a spec assert the helper was called for both routes (round-1
   // hold #5 — drift surface between handleAccredit/handleLink callers).
   extendBindingLockOnTimeoutOrLog,
+  // Round-3 hold item #2: exported so the success-path matrix spec can
+  // assert `newTtl: HAF_INDEXING_LAG_CEILING_SECONDS` instead of the bare
+  // literal `120`. A future tuning that lowers/raises the constant per the
+  // derivation comment block must not turn into a red test for the same
+  // (now correct) value.
+  HAF_INDEXING_LAG_CEILING_SECONDS,
 };
 
 // Export the in-memory verified map so auth.ts signup can consume nonces
