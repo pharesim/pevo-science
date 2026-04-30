@@ -501,4 +501,70 @@ describe('handleBroadcastError', () => {
       'test.route broadcast failed on ambiguous-outcome path',
     );
   });
+
+  // BACKEND-ORCID-BROADCAST-OUTCOME-DISCRIMINATION round-4 hold #1: the
+  // `event:` field MUST be placed AFTER `...opts.logContext` in the helper's
+  // log payload so a caller that (intentionally or by accident) supplies
+  // `logContext: { event: 'attacker' }` cannot override the dashboard-keyable
+  // anchor literal. JS object literal later-wins semantics — the rightmost
+  // property assignment wins. Mutation kill: moving `event:` BEFORE the
+  // spread re-exposes the override regression, and these specs fail.
+  it('post_broadcast_write_failed event literal wins over a colliding logContext.event field (round-4 hold #1)', () => {
+    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => undefined as unknown as void);
+    const res = mockResponse();
+    const cause = new Error('redis flap');
+    const err = new PostBroadcastWriteError('hive-tx-spread-override-1', cause, 'cache_write');
+
+    handleBroadcastError(res, err, {
+      timeoutMsg: 'Timed out',
+      failMsg: 'Failed',
+      // Adversarial caller-supplied `event:` field — should NOT win.
+      logContext: { event: 'caller_override_attempt', run: 'spread-kill-1' },
+      routeLabel: 'orcid.handleAccredit',
+    });
+
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'post_broadcast_write_failed',
+        run: 'spread-kill-1',
+      }),
+      'orcid.handleAccredit broadcast confirmed but post-broadcast write failed',
+    );
+    // Belt-and-suspenders: the colliding caller value MUST NOT have leaked
+    // through to the operator anchor. A literal-shape negative assertion
+    // catches the regression even if a future refactor reorders fields.
+    const callArgs = errorSpy.mock.calls[0][0] as { event: string };
+    expect(callArgs.event).toBe('post_broadcast_write_failed');
+    expect(callArgs.event).not.toBe('caller_override_attempt');
+  });
+
+  it('post_broadcast_msg_fn_threw event literal wins over a colliding logContext.event field (round-4 hold #1)', () => {
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as unknown as void);
+    vi.spyOn(logger, 'error').mockImplementation(() => undefined as unknown as void);
+    const res = mockResponse();
+    const cause = new Error('pool exhausted');
+    const err = new PostBroadcastWriteError('hive-tx-spread-override-2', cause, 'account_update');
+
+    handleBroadcastError(res, err, {
+      timeoutMsg: 'Timed out',
+      failMsg: 'Failed',
+      logContext: { event: 'caller_override_attempt', run: 'spread-kill-2' },
+      routeLabel: 'orcid.handleAccredit',
+      // Force the msg-fn-threw branch so the warn anchor fires.
+      postBroadcastMsgFn: () => {
+        throw new Error('msg fn boom');
+      },
+    });
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'post_broadcast_msg_fn_threw',
+        run: 'spread-kill-2',
+      }),
+      'orcid.handleAccredit postBroadcastMsgFn threw — using generic fallback',
+    );
+    const callArgs = warnSpy.mock.calls[0][0] as { event: string };
+    expect(callArgs.event).toBe('post_broadcast_msg_fn_threw');
+    expect(callArgs.event).not.toBe('caller_override_attempt');
+  });
 });

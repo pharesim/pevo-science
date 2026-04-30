@@ -108,3 +108,37 @@ describe('broadcastSendOperationsWithTimeout', () => {
     ).rejects.toBe(chainError);
   });
 });
+
+// Round-4 hold #1 (BE-HANDLE-BROADCAST-ERROR-HELPER): the constructor must
+// reject non-finite or non-positive timeoutMs at the single throw site so the
+// `details.timeout_ms` envelope field and operator-log payload can never carry
+// NaN / Infinity / 0 / negative values. Pinning the invariant at the source
+// of truth is the round-4 architect prescription (vs. a downstream sanitiser).
+describe('BroadcastTimeoutError constructor input validation', () => {
+  it('throws RangeError on NaN timeoutMs', () => {
+    expect(() => new BroadcastTimeoutError(Number.NaN)).toThrow(RangeError);
+  });
+
+  it('throws RangeError on positive Infinity timeoutMs', () => {
+    expect(() => new BroadcastTimeoutError(Number.POSITIVE_INFINITY)).toThrow(RangeError);
+  });
+
+  it('throws RangeError on negative Infinity timeoutMs', () => {
+    expect(() => new BroadcastTimeoutError(Number.NEGATIVE_INFINITY)).toThrow(RangeError);
+  });
+
+  it('throws RangeError on zero timeoutMs', () => {
+    expect(() => new BroadcastTimeoutError(0)).toThrow(RangeError);
+  });
+
+  it('throws RangeError on negative timeoutMs', () => {
+    expect(() => new BroadcastTimeoutError(-1)).toThrow(RangeError);
+  });
+
+  it('constructs successfully on a finite positive timeoutMs', () => {
+    const err = new BroadcastTimeoutError(30_000);
+    expect(err).toBeInstanceOf(BroadcastTimeoutError);
+    expect(err.timeoutMs).toBe(30_000);
+    expect(err.message).toContain('30000ms');
+  });
+});

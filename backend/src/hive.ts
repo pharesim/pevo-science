@@ -32,6 +32,20 @@ export async function checkHiveNodes(): Promise<void> {
 
 export class BroadcastTimeoutError extends Error {
   constructor(public readonly timeoutMs: number) {
+    // Round-4 hold #1 (BE-HANDLE-BROADCAST-ERROR-HELPER): reject non-finite or
+    // non-positive `timeoutMs` at the single throw site. Without this guard a
+    // future broadcast wrapper passing NaN, Infinity, 0, or a negative number
+    // (env-var misread, refactored helper) would emit `timeout_ms: null` in
+    // the wire envelope and `NaN` in operator logs. Constructor-time defense
+    // is preferable to a downstream sanitiser because there's only one throw
+    // site (the timer-fire path inside `broadcastJsonWithTimeout` /
+    // `broadcastSendOperationsWithTimeout`); guarding here pins the invariant
+    // at the source of truth instead of leaving every consumer to re-check.
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+      throw new RangeError(
+        `BroadcastTimeoutError requires a finite positive timeoutMs; got ${String(timeoutMs)}`,
+      );
+    }
     super(`Hive broadcast timed out after ${timeoutMs}ms`);
     this.name = 'BroadcastTimeoutError';
     // V8-only; guard is hygiene. Points the stack trace at the caller of the

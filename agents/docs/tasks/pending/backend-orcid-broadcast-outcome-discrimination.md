@@ -485,3 +485,38 @@ This naturally fixes **Item #4 (P3)** — the misleading "switch with defensive 
 ### Re-review signal
 
 When items 1-2 land, `git mv` this file back to `tasks/review/`. Round-4 architect review scopes `/ce-code-review` to the round-4 commits.
+
+---
+
+## Backend re-review signal (2026-04-30, working tree)
+
+Both round-4 hold-block items landed.
+
+**Item 1 (P2) — `event:` literal repositioned AFTER `...opts.logContext` spread.** `backend/src/lib/broadcast-error.ts`:
+
+- The `post_broadcast_write_failed` anchor (formerly emitted at the `instanceof PostBroadcastWriteError` branch) now places `event: 'post_broadcast_write_failed'` after `...opts.logContext` so a caller-supplied `logContext: { event: ... }` cannot override the dashboard-keyable literal under JS later-wins semantics.
+- The same fix applied to the `post_broadcast_msg_fn_threw` warn anchor at the msg-fn-throws fallback site.
+- Both repositions carry an inline comment cross-referencing round-4 hold #1 so a future refactor doesn't innocently reorder the keys back.
+
+**Item 2 (P3) — Source comment on handleAccredit's `currentStep` typing rewritten.** `backend/src/routes/orcid.ts` near the `let currentStep: PostBroadcastFailedStep = 'cache_write';` declaration. The comment now accurately describes both annotations: handleAccredit's full-union typing is an *intent signal* (the cascade can advance through every member, so widening to a 4th member is deliberate, not compile-enforced), while handleLink's `Extract<>` narrowing is the *enforcement signal* (a future 4th member reachable from link mode would fail to compile there and force the question). Aligns the source vocabulary with the architect's hold-block prescription.
+
+### Mutation-sensitivity verification (item 1)
+
+Two new specs added to `backend/tests/lib/broadcast-error.test.ts` at the bottom of the `describe('handleBroadcastError')` block:
+
+- `post_broadcast_write_failed event literal wins over a colliding logContext.event field (round-4 hold #1)` — passes a colliding `logContext: { event: 'caller_override_attempt' }`, asserts both `objectContaining({ event: 'post_broadcast_write_failed', ... })` AND a literal-shape negative assertion (`expect(callArgs.event).not.toBe('caller_override_attempt')`). Mutation kill: relocating `event:` BEFORE the spread re-exposes the override path; the second assertion fires red.
+- `post_broadcast_msg_fn_threw event literal wins over a colliding logContext.event field (round-4 hold #1)` — same shape against the msg-fn-throws branch.
+
+### Verification
+
+- `npx tsc --noEmit` clean.
+- `npm run lint` clean (only pre-existing `seed-phrase.ts` `any` warnings).
+- `npx vitest run tests/lib/broadcast-error.test.ts tests/hive-broadcast-timeout.test.ts` → 26/26 pass (24 pre-existing + 2 new spread-kill specs).
+- `npx vitest run tests/routes/orcid.test.ts -t "extendBindingLockOnTimeoutOrLog"` → 8 pass / 57 skipped (the existing test matrix that asserts `event: 'post_broadcast_write_failed'` continues to pass with the field repositioned, confirming the helper still emits the literal under `objectContaining`).
+- Full backend vitest deferred to the parent agent's post-fan-out pass.
+
+### Files changed
+
+- `backend/src/lib/broadcast-error.ts` — `event:` repositioned after `...opts.logContext` at both anchor sites; inline comments added cross-referencing round-4 hold #1.
+- `backend/src/routes/orcid.ts` — comment block above `currentStep` declaration in handleAccredit rewritten to distinguish intent-signal vs enforcement-signal annotations.
+- `backend/tests/lib/broadcast-error.test.ts` — 2 new spread-kill mutation-sensitive specs at the tail of the `handleBroadcastError` describe.

@@ -194,8 +194,12 @@ export function handleBroadcastError(
         cause: err.cause,
         txId: err.txId,
         failedStep: err.failedStep,
-        event: 'post_broadcast_write_failed',
         ...opts.logContext,
+        // `event:` placed AFTER `...opts.logContext` so a caller-supplied
+        // `logContext: { event: ... }` cannot silently override the
+        // dashboard-keyable anchor (round-3 hold #1: JS later-wins
+        // semantics; the literal must always win).
+        event: 'post_broadcast_write_failed',
       },
       `${opts.routeLabel} broadcast confirmed but post-broadcast write failed`,
     );
@@ -217,8 +221,12 @@ export function handleBroadcastError(
           err: msgErr,
           txId: err.txId,
           failedStep: err.failedStep,
-          event: 'post_broadcast_msg_fn_threw',
           ...opts.logContext,
+          // `event:` placed AFTER `...opts.logContext` so a caller-supplied
+          // `logContext: { event: ... }` cannot silently override the
+          // dashboard-keyable anchor (round-3 hold #1: same as the sibling
+          // anchor above).
+          event: 'post_broadcast_msg_fn_threw',
         },
         `${opts.routeLabel} postBroadcastMsgFn threw — using generic fallback`,
       );

@@ -229,3 +229,46 @@ Files modified:
 ### Re-review signal
 
 When item 1 lands, `git mv` this file back to `tasks/review/`. Round-4 review scopes `/ce-code-review` to the round-4 commit.
+
+---
+
+## Backend re-review signal (2026-04-30, working tree)
+
+Round-4 hold item 1 landed.
+
+**Item 1 (P3) — Constructor-time guard against non-finite / non-positive `timeoutMs`.** `backend/src/hive.ts` at the `BroadcastTimeoutError` constructor (the architect prescribed defense at the constructor since the throw site is single — `broadcastJsonWithTimeout` / `broadcastSendOperationsWithTimeout`'s timer-fire closure):
+
+```ts
+if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+  throw new RangeError(
+    `BroadcastTimeoutError requires a finite positive timeoutMs; got ${String(timeoutMs)}`,
+  );
+}
+```
+
+Placed before `super(...)` so the assignment of `public readonly timeoutMs` (parameter property) never runs when input is invalid — the constructor aborts cleanly without ever returning a partially-constructed instance. The throw is a `RangeError` so a future call site that surfaces this can discriminate it from generic `Error` paths (e.g., a caller catching `RangeError` to remap to a 500 / `INTERNAL_ERROR` envelope). The helper at `lib/broadcast-error.ts` continues to emit `details.timeout_ms` from `err.timeoutMs` directly — the invariant is now enforced at the source of truth, so the helper doesn't need a downstream sanitiser.
+
+### Tests
+
+`backend/tests/hive-broadcast-timeout.test.ts` — added a `describe('BroadcastTimeoutError constructor input validation')` block with 6 specs:
+
+- NaN → `RangeError`
+- positive Infinity → `RangeError`
+- negative Infinity → `RangeError`
+- zero → `RangeError`
+- negative number → `RangeError`
+- finite positive (30000) → constructs successfully, `.timeoutMs === 30000`, message contains `'30000ms'`
+
+The positive-control spec catches a regression that turns the guard into an over-eager rejector. The 5 invalid-input specs catch a regression that drops or weakens the invariant.
+
+### Verification
+
+- `npx tsc --noEmit` clean.
+- `npm run lint` clean (only pre-existing `seed-phrase.ts` `any` warnings).
+- `npx vitest run tests/hive-broadcast-timeout.test.ts tests/lib/broadcast-error.test.ts` → 26/26 pass (existing 18 + 6 new constructor specs + 2 spread-kill specs from sibling task).
+- Full backend vitest deferred to the parent agent's post-fan-out pass.
+
+### Files changed
+
+- `backend/src/hive.ts` — constructor guard added; comment cross-references round-4 hold #1 and the design rationale (single throw site → constructor-level defense).
+- `backend/tests/hive-broadcast-timeout.test.ts` — 6 new specs in the validation describe block.

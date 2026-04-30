@@ -644,9 +644,16 @@ async function handleAccredit(
     // A test that exercises the discrimination via __test_seams (see
     // tests/routes/orcid.test.ts post-broadcast specs) is the live proof the
     // path remains wired.
-    // Round-2 hold #2: typed as `PostBroadcastFailedStep` so adding a 4th
-    // union member surfaces as a compile error here (forcing the cascade to
-    // either name the new step explicitly or omit it).
+    // Round-2 hold #2: typed as the full `PostBroadcastFailedStep` union as
+    // an *intent signal* — handleAccredit's cascade can advance through every
+    // member of the union (cache_write → account_update → reputation_seed),
+    // so widening to a future 4th member is a deliberate annotation choice,
+    // not compile-time enforcement. The compile-time enforcement against
+    // forgotten union extensions lives at handleLink's `Extract<>` narrowing
+    // below — when a 4th member is added that is reachable from link mode,
+    // that site is what fails to compile and forces the question (round-3
+    // hold #2 corrected the prior comment, which mis-claimed enforcement at
+    // both sites).
     let currentStep: PostBroadcastFailedStep = 'cache_write';
     try {
       // Cache the binding so a concurrent bind request in the HAF-lag window sees
