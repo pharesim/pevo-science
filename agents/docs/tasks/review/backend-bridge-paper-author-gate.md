@@ -286,3 +286,21 @@ Test Files  2 failed (2)
 ### Re-review signal
 
 When items 1-8 land, `git mv` this file back to `tasks/review/`. The architect's next review pass scopes `/ce-code-review` to the round-3 commits and archives on clean.
+
+## Backend re-review signal (2026-04-30, commit `e521a96`)
+
+Round-3 hold items 1-8 all landed in commit `e521a96` (cherry-pick of worker `37bc584`). All changes are scoped to test files + the discipline guard script — no production SQL/JS code paths changed (round-2 implementation was already correct; round-3 hardens canaries + guards against drift).
+
+- **Item 1 (P2)** — `assertBridgeAuthorPin` rewritten to use `matchAll` with optional `expectedCount`; reputation canary tightened to `expectedCount: 2` / `1`. Catches per-site mutations in `reputation.ts:374`/`:494` that the prior first-occurrence-only `match()` missed.
+- **Item 2 (P2)** — New `describe('fetchNotificationsFromHaf — user_bridge_papers CTE bridge-author pin')` closes the documented-but-untested coverage gap.
+- **Item 3 (P2)** — `helpers.test.ts` covers `toPaperSummary`'s `isPevoBridgePaper(meta, author)` consumer: spoofed bridge from non-bridge author degrades to `source_type: 'native'`, `doi: null`; legitimate bridge from `config.hiveBridgeAccount` renders bridge metadata.
+- **Item 4 (P2)** — New `tests/scripts/check-bridge-paper-discipline.test.ts` (5 cases) drives the bash guard via `spawnSync`.
+- **Items 5+6 (P3)** — Guard regex extended to single-, double-, and backtick-quoted `bridge_paper` literals; allowlist semantics preserved.
+- **Item 7 (P3)** — Stats canary `toBe(1)` loosened to `toBeGreaterThan(0)` with per-capture iteration mirroring the other 8 site canaries.
+- **Item 8 (P3)** — `assertBridgeAuthorPin` made conjunct-order-tolerant via two regex passes (author-pin + type-pin matched independently inside the same parenthesized substring).
+
+**Mutation sensitivity verified:** dropping the bridge-author conjunct from `hafsql.ts:234` → 18/26 tests fail red; per-site mutation in `reputation.ts:494` → reputation canary fails red (`expected 1 to be 2`); conjunct-flip in `hafsql.ts:234` → all canaries pass green (semantically identical SQL accepted, item 8 working as intended).
+
+**Targeted tests passing (real HAF + Redis):** `bridge-paper-author-gate.test.ts` 14/14, `helpers.test.ts` 21/21, `hafsql.test.ts` 10 passed + 2 skipped (pre-existing pool gates), `check-bridge-paper-discipline.test.ts` 5/5. `npm run lint` clean. `npx tsc --noEmit` clean.
+
+**No new `[TODO Architect]`** notes this round. The pre-existing round-2 contract-prose TODO carries forward unchanged.

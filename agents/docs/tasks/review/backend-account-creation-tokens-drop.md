@@ -147,3 +147,14 @@ Fix: tighten the regex to specific Hive consensus-rejection phrases — the actu
 ### Re-review signal
 
 When items 1-2 land, `git mv` this file back to `tasks/review/`. Round-2 architect review scopes `/ce-code-review` to the round-2 commit.
+
+## Backend re-review signal (2026-04-30, commit `3736932`)
+
+Round-1 hold items 1-2 landed in commit `3736932` (cherry-pick of worker `af42122`). Both items are observability + error-translation hardening; no migration changes (the original drop migration `006_drop_account_creation_tokens.sql` is unchanged).
+
+- **Item 1 (P3)** — `invalidatePendingClaimedAccountsCache`: cache-del failure log promoted from `debug` → `logger.warn` with structured `event: 'pending_claim_cache_invalidate_failed'` + `cacheKey` field. Operators gain a visible anchor when a stale chain-counter view blocks signups for up to the 10s TTL.
+- **Item 2 (P3)** — `createClaimedAccount` catch: tightened consensus-rejection regex from two loose alternatives to a strict alternation `/assertion failed: pending_claimed_accounts|no available account creation/i`. Added a `logger.warn` of the original error with structured `event: 'create_claimed_account_consensus_rejected'` before the throw to preserve diagnostic context across the throw boundary.
+
+**Test coverage:** 3 new tests in `backend/tests/account-creation.test.ts` — regex-tightening guard ("no claim history yet" propagates unchanged, NOT translated to retriable shape), consensus-rejection original-error preservation via warn spy, cache-invalidation warn-log structured tag. 14/14 pass against real Hive + Redis. `npm run lint` clean.
+
+**No new `[TODO Architect]`** notes. The two pre-existing TODOs at the bottom of this file (api-contracts language sweep + predecessor task supersession) are unaffected.
