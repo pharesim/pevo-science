@@ -19,14 +19,22 @@ import { seedAccreditationBonus } from '../reputation.js';
 const TOKEN_EXPIRY_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 /**
- * Per-token broadcast-attempt cap. Bounds the broadcast-retry amplification
- * window opened by the 504 BROADCAST_TIMEOUT envelope at /api/accreditation/verify
- * (see BE-VERIFY-BROADCAST-ATTEMPTS-CAP). Each call to /verify that reaches
- * the broadcast site increments a per-token counter; once the counter exceeds
- * this cap, the token is destroyed and the caller is forced to request a
- * fresh token via /api/accreditation/request.
+ * Atomic INCR-with-first-write-EXPIRE Lua script. Returns the post-increment
+ * count. If this is the first write to the key, also sets EXPIRE in the same
+ * round trip so a crash between INCR and EXPIRE cannot leave a TTL-less
+ * counter stranded past the token's 24h life (round-2 hold #6).
+ *
+ * Re-priming TTL on every INCR would let an attacker indefinitely extend the
+ * counter past the token's natural expiration; tying TTL to the first-write
+ * branch keeps the counter's lifetime bounded by the token it gates.
  */
-const MAX_BROADCAST_ATTEMPTS = 3;
+const INCR_AND_EXPIRE_IF_FIRST_LUA = `
+local count = redis.call('INCR', KEYS[1])
+if count == 1 then
+  redis.call('EXPIRE', KEYS[1], ARGV[1])
+end
+return count
+`;
 
 const accreditationRequestLimiter = rateLimit({ name: 'accred-req', windowMs: 24 * 60 * 60_000, max: 3, keyFn: byAccount });
 const accreditationVerifyLimiter = rateLimit({ name: 'accred-verify', windowMs: 60_000, max: 5, keyFn: byIp });
@@ -63,28 +71,73 @@ function broadcastAttemptsKey(token: string): string {
 
 /**
  * Atomically claim the next broadcast-attempt slot for `token`. Returns the
- * post-increment count. Caller treats `count > MAX_BROADCAST_ATTEMPTS` as
- * "cap exceeded — destroy token, surface limit-exceeded envelope".
+ * post-increment count. Caller treats
+ * `count > config.verifyBroadcastAttemptsCap` as "cap exceeded — destroy
+ * token, surface limit-exceeded envelope".
  *
- * The TTL on the Redis key is anchored to `pending.expires_at` so the counter
- * never outlives the token it gates. Setting TTL only on the first INCR keeps
- * the counter from being silently extended by every retry (which would let an
- * attacker keep a token alive past 24h via spam).
+ * INCR + first-write EXPIRE run as a single Lua call (round-2 hold #6) so a
+ * crash or connection drop between the two operations cannot leave a TTL-
+ * less counter stranded past the token's 24h life. The TTL is anchored to
+ * `pending.expires_at` and applied only on the first write so the counter's
+ * lifetime is bounded by the token it gates (re-priming TTL on every INCR
+ * would let an attacker indefinitely extend the counter past the token's
+ * natural expiration).
  */
 async function incrementBroadcastAttempts(pending: PendingAccreditation): Promise<number> {
   const redis = getRedis();
   if (redis && isRedisAvailable()) {
     const key = broadcastAttemptsKey(pending.token);
-    const count = await redis.incr(key);
-    if (count === 1) {
-      const ttl = Math.max(1, Math.ceil((pending.expires_at.getTime() - Date.now()) / 1000));
-      await redis.expire(key, ttl);
-    }
-    return count;
+    const ttl = Math.max(1, Math.ceil((pending.expires_at.getTime() - Date.now()) / 1000));
+    const result = await redis.eval(
+      INCR_AND_EXPIRE_IF_FIRST_LUA,
+      1,
+      key,
+      String(ttl),
+    );
+    return Number(result);
   }
   const next = (memoryBroadcastAttempts.get(pending.token) ?? 0) + 1;
   memoryBroadcastAttempts.set(pending.token, next);
   return next;
+}
+
+/**
+ * Compensating decrement when a pre-incremented broadcast attempt resolved
+ * to a 504 BROADCAST_TIMEOUT outcome (round-2 hold #2). The cap is intended
+ * to bound retries on definitive chain rejections — punishing transient
+ * slow-Hive timeouts would force the legitimate user to re-request a fresh
+ * accreditation email after 3 unlucky attempts, which itself has a 3/24h
+ * per-account limit (24h lockout on a flaky Hive day).
+ *
+ * Pre-INCR is necessary for the atomic concurrent-claim guarantee (4
+ * parallel /verify calls on the same token must enqueue exactly
+ * `cap` broadcasts, not 4); decrement-after-timeout is the simplest shape
+ * that preserves both that guarantee and the verify-then-retry UX.
+ *
+ * `DECR` on a missing key resolves to -1; the floor at 0 keeps the counter
+ * from going negative if a parallel deleteBroadcastAttempts (success path)
+ * raced ahead of this decrement.
+ */
+async function decrementBroadcastAttempts(token: string): Promise<void> {
+  const redis = getRedis();
+  if (redis && isRedisAvailable()) {
+    const key = broadcastAttemptsKey(token);
+    const after = await redis.decr(key);
+    if (after < 0) {
+      // Counter was already gone (token deletion raced with the decrement);
+      // either re-priming via SET 0 or DEL is fine. DEL keeps the namespace
+      // clean and matches the "counter scoped to the token's life" invariant.
+      await redis.del(key);
+    }
+    return;
+  }
+  const current = memoryBroadcastAttempts.get(token);
+  if (current === undefined) return;
+  if (current <= 1) {
+    memoryBroadcastAttempts.delete(token);
+  } else {
+    memoryBroadcastAttempts.set(token, current - 1);
+  }
 }
 
 async function deleteBroadcastAttempts(token: string): Promise<void> {
@@ -237,21 +290,44 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
   // the legitimate caller can verify chain state and retry; that survival
   // window is also a retry-amplification axis (each retry enqueues a fresh
   // broadcast at the dhive layer, and Hive does not deduplicate identical
-  // custom_json ops). INCR atomically claims the next slot before broadcasting,
+  // custom_json ops). Pre-broadcast INCR atomically claims the next slot,
   // so the cap holds even under concurrent retries on the same token.
+  // Timeout outcomes decrement the counter on the catch path
+  // (decrementBroadcastAttempts) so transient slow-Hive windows do not
+  // permanently consume slots — only definitive 502 BROADCAST_FAILED
+  // outcomes count toward the cap (round-2 hold #2).
+  const cap = config.verifyBroadcastAttemptsCap;
   const attempts = await incrementBroadcastAttempts(pending);
-  if (attempts > MAX_BROADCAST_ATTEMPTS) {
+  if (attempts > cap) {
+    // Round-2 hold #5: structured `event:` discriminator so operators can
+    // dashboard/alert on cap-exceeded without message-substring grep,
+    // matching the sibling event anchors in routes/orcid.ts and
+    // lib/broadcast-error.ts (`a1_extend_*`, `lock_contention_held`,
+    // `post_broadcast_msg_fn_threw`, `post_broadcast_write_failed`).
     logger.warn(
       {
+        event: 'accred_verify_broadcast_cap_exceeded',
         username: pending.hive_username,
         email_hash: hashEmailForLogs(pending.email),
         attempts,
-        cap: MAX_BROADCAST_ATTEMPTS,
+        cap,
       },
       'accreditation.verify broadcast attempt cap exceeded; destroying token',
     );
     await deleteToken(token);
-    return sendError(res, 502, 'BROADCAST_FAILED', 'Broadcast attempt limit exceeded. Request a fresh accreditation email.', { retriable: false });
+    // Round-2 hold #1: distinct error code BROADCAST_ATTEMPT_LIMIT_EXCEEDED
+    // (NOT BROADCAST_FAILED). The broadcast was never invoked when the cap
+    // fires, so reusing BROADCAST_FAILED conflated client retry-pressure
+    // with chain rejection — operators alerting on BROADCAST_FAILED rate
+    // could not separate the two. The architect adds the corresponding row
+    // to agents/docs/api-contracts/accreditation.md at archive time.
+    return sendError(
+      res,
+      502,
+      'BROADCAST_ATTEMPT_LIMIT_EXCEEDED',
+      'Broadcast attempt limit exceeded. Request a fresh accreditation email.',
+      { retriable: false },
+    );
   }
 
   const evidenceHash = crypto
@@ -294,7 +370,14 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
     });
     // On timeout: do NOT deleteToken — the 504 is retriable-after-verify, so
     // the token must survive its 24h TTL so the caller can retry after
-    // verifying chain state (the broadcast outcome is uncertain).
+    // verifying chain state (the broadcast outcome is uncertain). Round-2
+    // hold #2: also decrement the broadcast-attempt counter so a transient
+    // slow-Hive window does not consume cap slots. Only definitive 502
+    // BROADCAST_FAILED outcomes count toward the cap. The pre-INCR claim
+    // remains necessary for atomic concurrency (4 parallel /verify calls
+    // must enqueue at most `cap` broadcasts), so the shape is
+    // pre-INCR-then-decrement-on-timeout rather than post-INCR-on-failure.
+    //
     // On failure: the chain rejected the broadcast (retriable=false per the
     // envelope). The accreditation attempt is terminal for this token — delete
     // it so it cannot be reused. A new token is obtained via
@@ -307,7 +390,19 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
     // 500 over the already-sent 502 → ERR_HTTP_HEADERS_SENT. Swallow the
     // error: the token will TTL out within 24h, and an orphaned token is
     // harmless because the broadcast already failed terminally.
-    if (outcome === 'failure') {
+    if (outcome === 'timeout') {
+      try {
+        await decrementBroadcastAttempts(token);
+      } catch (decrErr) {
+        // Compensation failure is not user-visible (the 504 has already been
+        // sent and the counter will TTL out with the token). Log so operators
+        // can correlate counter drift with Redis incidents.
+        logger.warn(
+          { err: decrErr, token, username: pending.hive_username, event: 'accred_verify_broadcast_decrement_failed' },
+          'accreditation.verify counter decrement after timeout failed — counter may TTL out at token expiration',
+        );
+      }
+    } else if (outcome === 'failure') {
       try {
         await deleteToken(token);
       } catch (deleteErr) {

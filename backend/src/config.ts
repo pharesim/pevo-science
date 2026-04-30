@@ -69,6 +69,14 @@ export const config = {
   orcidClientId: process.env.ORCID_CLIENT_ID || '',
   orcidClientSecret: process.env.ORCID_CLIENT_SECRET || '',
   orcidMinWorks: parseInt(process.env.ORCID_MIN_WORKS || '3', 10),
+  // Per-token broadcast-attempt cap on /api/accreditation/verify. Bounds
+  // retry amplification opened by the 504 BROADCAST_TIMEOUT envelope's 24h
+  // token survival window. Counts only definitive 502 BROADCAST_FAILED
+  // outcomes; timeout outcomes are compensated (decrement) so transient
+  // slow-Hive windows don't destroy a verified token. See
+  // BE-VERIFY-BROADCAST-ATTEMPTS-CAP. Flippable without redeploy so
+  // operators can tighten or relax during incident response.
+  verifyBroadcastAttemptsCap: parseInt(process.env.VERIFY_BROADCAST_ATTEMPTS_CAP || '3', 10),
   orcidBaseUrl: process.env.ORCID_BASE_URL || 'https://orcid.org',
   accreditationAuthorities: (() => {
     const extra = (process.env.ACCREDITATION_AUTHORITIES || '').split(',').map(s => s.trim()).filter(Boolean);

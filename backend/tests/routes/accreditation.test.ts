@@ -366,13 +366,23 @@ describe('POST /api/accreditation/verify — BE-ORCID-BROADCAST-ABORT-TIMEOUT', 
 // so the legitimate caller can verify chain state and retry. That survival
 // window is also a retry-amplification axis: each retry enqueues a fresh
 // broadcast at the dhive layer, and Hive does not deduplicate identical
-// custom_json ops. The cap (MAX_BROADCAST_ATTEMPTS = 3) bounds the per-token
-// blast radius. Counter lives at
+// custom_json ops. The cap (config.verifyBroadcastAttemptsCap, default 3)
+// bounds the per-token blast radius. Counter lives at
 // `${appTag}:pending_accred_broadcast_attempts:${token}` and is incremented
 // atomically with INCR before each broadcast.
+//
+// Round-2 hold semantics (BE-VERIFY-BROADCAST-ATTEMPTS-CAP):
+//  - Pre-INCR happens on every /verify call that reaches the broadcast site
+//    (atomic concurrent-claim — under N parallel retries on the same token,
+//    at most `cap` broadcasts fire).
+//  - 504 BROADCAST_TIMEOUT outcomes DECREMENT the counter so a transient
+//    slow-Hive window cannot permanently destroy a verified token. Only
+//    definitive 502 BROADCAST_FAILED outcomes count toward the cap.
+//  - Cap-exceeded surfaces the distinct error code
+//    BROADCAST_ATTEMPT_LIMIT_EXCEEDED (NOT BROADCAST_FAILED) — operators
+//    alerting on the chain-rejection rate need to separate client retry-
+//    pressure from real chain failure.
 // ──────────────────────────────────────────────
-
-const MAX_BROADCAST_ATTEMPTS = 3;
 
 async function broadcastAttemptCount(token: string): Promise<number> {
   const redis = getRedis();
@@ -405,39 +415,129 @@ describe('POST /api/accreditation/verify — BE-VERIFY-BROADCAST-ATTEMPTS-CAP', 
       .send({ token });
   }
 
-  it('caps broadcast attempts at MAX after N timeouts → cap-exceeded envelope; broadcastJsonMock called exactly MAX times', async () => {
+  it('cap-exceeded path: pre-seeded counter ≥ cap returns BROADCAST_ATTEMPT_LIMIT_EXCEEDED; broadcast NOT invoked; token destroyed', async () => {
     const redis = getRedis();
-    if (!redis) return; // Redis-only spec; cap state lives in Redis.
+    if (!redis) return;
+    const cap = config.verifyBroadcastAttemptsCap;
     const token = `accred-cap-${crypto.randomBytes(8).toString('hex')}`;
     await seedPendingAccreditation(token);
-    const ip = `10.0.${crypto.randomInt(0, 255)}.${crypto.randomInt(1, 254)}`;
+    // Pre-seed the counter to `cap` so the next call's INCR pushes it to
+    // `cap + 1`, tripping the cap gate. This isolates the cap-exceeded
+    // branch from the timeout-decrement / rejection-delete path
+    // arithmetic, giving a mutation-sensitive assertion against the gate.
+    await redis.set(`${config.appTag}:pending_accred_broadcast_attempts:${token}`, String(cap), 'EX', 24 * 60 * 60);
+    const ip = `10.5.${crypto.randomInt(0, 255)}.${crypto.randomInt(1, 254)}`;
 
-    // Each /verify call hangs the broadcast → 504 envelope; token stays
-    // (per the round-3 ambiguous-outcome contract). After MAX calls, the
-    // (MAX+1)th call must short-circuit BEFORE invoking the broadcast.
+    // Mock would reject if reached; the cap gate must short-circuit BEFORE
+    // broadcast.
+    broadcastJsonMock.mockRejectedValue(new Error('should not reach broadcast'));
+
+    const res = await postVerify(token, ip);
+    expect(res.status).toBe(502);
+    // Round-2 hold #1: the distinct error code (NOT BROADCAST_FAILED) is
+    // what HTTP-only consumers and operator alerts key off.
+    expect(res.body.error.code).toBe('BROADCAST_ATTEMPT_LIMIT_EXCEEDED');
+    expect(res.body.error.details).toEqual({ retriable: false });
+    expect(res.body.error.message).toMatch(/limit exceeded/i);
+    // Broadcast NOT invoked — the cap gate fires before the broadcast site.
+    expect(broadcastJsonMock).not.toHaveBeenCalled();
+    // Token destroyed → caller must request a fresh email.
+    expect(await tokenExists(token)).toBe(false);
+    expect(await broadcastAttemptCount(token)).toBe(0);
+  });
+
+  it('round-2 hold #2: 504 timeout outcomes DECREMENT the counter; user retrying through transient slow-Hive window does not burn cap slots', async () => {
+    const redis = getRedis();
+    if (!redis) return;
+    const cap = config.verifyBroadcastAttemptsCap;
+    const token = `accred-cap-${crypto.randomBytes(8).toString('hex')}`;
+    await seedPendingAccreditation(token);
+    const ip = `10.3.${crypto.randomInt(0, 255)}.${crypto.randomInt(1, 254)}`;
+
     broadcastJsonMock.mockRejectedValue(new MockBroadcastTimeoutError(30_000));
 
-    for (let i = 0; i < MAX_BROADCAST_ATTEMPTS; i++) {
+    // Drive `cap + 2` sequential timeouts. Without the decrement, the
+    // (cap+1)th call would hit the cap gate and destroy the token. With
+    // the decrement, every call resolves to 504 and the counter stays
+    // at zero between calls.
+    for (let i = 0; i < cap + 2; i++) {
       const res = await postVerify(token, ip);
       expect(res.status).toBe(504);
       expect(res.body.error.code).toBe('BROADCAST_TIMEOUT');
       expect(await tokenExists(token)).toBe(true);
+      // Post-decrement, counter is back at 0 (or absent) — the next
+      // pre-INCR will start from 1 again.
+      expect(await broadcastAttemptCount(token)).toBe(0);
     }
-    expect(broadcastJsonMock).toHaveBeenCalledTimes(MAX_BROADCAST_ATTEMPTS);
-    expect(await broadcastAttemptCount(token)).toBe(MAX_BROADCAST_ATTEMPTS);
+    // Broadcast was invoked every call (no cap-exceeded short-circuit).
+    expect(broadcastJsonMock).toHaveBeenCalledTimes(cap + 2);
+    expect(await tokenExists(token)).toBe(true);
+  });
 
-    // (MAX+1)th call: cap exceeded → 502 BROADCAST_FAILED with limit-exceeded
-    // message, token destroyed, broadcast NOT enqueued.
-    const capped = await postVerify(token, ip);
-    expect(capped.status).toBe(502);
-    expect(capped.body.error.code).toBe('BROADCAST_FAILED');
-    expect(capped.body.error.details).toEqual({ retriable: false });
-    expect(capped.body.error.message).toMatch(/limit exceeded/i);
-    // Broadcast call-count is unchanged: the cap gate fires before broadcast.
-    expect(broadcastJsonMock).toHaveBeenCalledTimes(MAX_BROADCAST_ATTEMPTS);
-    // Token destroyed → caller must request a fresh email.
-    expect(await tokenExists(token)).toBe(false);
-    expect(await broadcastAttemptCount(token)).toBe(0);
+  it('round-2 hold #4: concurrent retries claim slots atomically — exactly `cap` broadcasts fire under cap+1 parallel /verify calls; (cap+1)th returns BROADCAST_ATTEMPT_LIMIT_EXCEEDED', async () => {
+    const redis = getRedis();
+    if (!redis) return;
+    const cap = config.verifyBroadcastAttemptsCap;
+    const token = `accred-cap-${crypto.randomBytes(8).toString('hex')}`;
+    await seedPendingAccreditation(token);
+
+    // Stage cap+1 distinct synthetic IPs to dodge the 5/min IP limiter
+    // (each parallel /verify call must originate from a different
+    // X-Forwarded-For so the limiter doesn't 429 the burst).
+    const baseOctet = crypto.randomInt(0, 250);
+    const ips = Array.from({ length: cap + 1 }, (_, i) => `10.4.${baseOctet}.${i + 1}`);
+
+    // Each broadcast that lands rejects with a definitive non-timeout
+    // error (so the failure branch fires on the cap-bound calls and
+    // the token IS destroyed on the FIRST 502 to land — without that,
+    // subsequent parallel calls that already pre-INCR'd would race
+    // against a deleted token. The kit-staged behavior here exercises
+    // the pre-INCR atomic claim, which is what item 4 calls out).
+    //
+    // To make the assertion clean, hang every broadcast indefinitely
+    // (resolve never): the route waits, supertest waits, Promise.all
+    // resolves all together once we let them. This sidesteps the
+    // post-broadcast race (no broadcast actually completes during the
+    // burst, so deleteToken doesn't fire on the 'failure' path).
+    let release: (val: { id: string }) => void = () => {};
+    const broadcastPromise = new Promise<{ id: string }>((resolve) => {
+      release = resolve;
+    });
+    broadcastJsonMock.mockImplementation(() => broadcastPromise);
+
+    // Fire cap+1 parallel /verify calls. The cap gate must short-circuit
+    // exactly one of them BEFORE the broadcast site (the one whose
+    // pre-INCR pushes the counter to cap+1).
+    const responses = Promise.all(ips.map((ip) => postVerify(token, ip)));
+
+    // Wait briefly for all parallel calls to reach their pre-INCR /
+    // cap-gate decision. Then release the held broadcast promise so
+    // the cap-bound calls can complete (we expect them to time out via
+    // the supertest-side wait for completion of the response). Use a
+    // resolved value so the route's success path fires for the first
+    // `cap` (and the cap-exceeded path fires for the last one before
+    // it ever reaches broadcast).
+    //
+    // Sleep gives all `cap+1` requests time to reach the INCR-and-cap-
+    // check site. 100ms is generous for a localhost express app.
+    await new Promise((r) => setTimeout(r, 100));
+    // Release the broadcast promise — the `cap` requests that passed
+    // the gate now resolve (their broadcastJsonMock returns
+    // {id: 'mock-...'}) → success path → 200.
+    release({ id: 'mock-accred-concurrent-tx' });
+    const results = await responses;
+
+    // Exactly one response is BROADCAST_ATTEMPT_LIMIT_EXCEEDED (502).
+    const capExceeded = results.filter(
+      (r) => r.status === 502 && r.body.error.code === 'BROADCAST_ATTEMPT_LIMIT_EXCEEDED',
+    );
+    expect(capExceeded.length).toBe(1);
+
+    // The other `cap` responses each invoked the broadcast — count is
+    // exactly `cap`, regardless of whether they ultimately returned 200
+    // (success), 502 (some race), or 504 (rare). Item 4's load-bearing
+    // assertion: "exactly cap broadcasts fire."
+    expect(broadcastJsonMock).toHaveBeenCalledTimes(cap);
   });
 
   it('clears the attempt counter on broadcast success', async () => {
@@ -470,5 +570,84 @@ describe('POST /api/accreditation/verify — BE-VERIFY-BROADCAST-ATTEMPTS-CAP', 
     // Terminal failure deletes the token → counter side-key follows.
     expect(await tokenExists(token)).toBe(false);
     expect(await broadcastAttemptCount(token)).toBe(0);
+  });
+
+  it('round-2 hold #5: cap-exceeded log emits structured `event:` field for operator dashboards', async () => {
+    const redis = getRedis();
+    if (!redis) return;
+    const cap = config.verifyBroadcastAttemptsCap;
+    const token = `accred-cap-${crypto.randomBytes(8).toString('hex')}`;
+    await seedPendingAccreditation(token);
+    await redis.set(`${config.appTag}:pending_accred_broadcast_attempts:${token}`, String(cap), 'EX', 24 * 60 * 60);
+    const ip = `10.6.${crypto.randomInt(0, 255)}.${crypto.randomInt(1, 254)}`;
+
+    const loggerWarnSpy = vi.spyOn(logger, 'warn');
+    try {
+      broadcastJsonMock.mockRejectedValue(new Error('should not reach broadcast'));
+      const res = await postVerify(token, ip);
+      expect(res.status).toBe(502);
+      expect(res.body.error.code).toBe('BROADCAST_ATTEMPT_LIMIT_EXCEEDED');
+      // Call-shape assertion (NOT bare toHaveBeenCalled): pin the structured
+      // event discriminator alongside attempts/cap so a future log-message
+      // edit can't silently drop it.
+      expect(loggerWarnSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: 'accred_verify_broadcast_cap_exceeded',
+          attempts: cap + 1,
+          cap,
+        }),
+        expect.stringContaining('cap exceeded'),
+      );
+    } finally {
+      loggerWarnSpy.mockRestore();
+    }
+  });
+
+  it('round-2 hold #6: Lua INCR + EXPIRE-if-first runs in one round trip — counter key has positive TTL anchored to token life on first write', async () => {
+    const redis = getRedis();
+    if (!redis) return;
+
+    // Direct unit-level assertion against the Lua script. If a separate
+    // INCR-then-EXPIRE pair were used and a crash interleaved between the
+    // two, the key would persist TTL-less past the token's 24h life and
+    // a legitimate user would be locked out for 24h with no automatic
+    // recovery. The Lua atomicity is the round-2 hold #6 invariant; we
+    // exercise it here by replaying the exact script the route runs and
+    // asserting the on-disk TTL bound after a single EVAL.
+    //
+    // The script comes from src/routes/accreditation.ts; this test
+    // duplicates its body verbatim because the constant is module-scoped
+    // and not exported (export-only-for-tests would invite drift). If the
+    // script changes, this test must be updated in lockstep.
+    const script = `
+local count = redis.call('INCR', KEYS[1])
+if count == 1 then
+  redis.call('EXPIRE', KEYS[1], ARGV[1])
+end
+return count
+`;
+    const key = `${config.appTag}:pending_accred_broadcast_attempts:lua-test-${crypto.randomBytes(8).toString('hex')}`;
+    try {
+      const ttlSec = 60;
+      const count1 = await redis.eval(script, 1, key, String(ttlSec));
+      expect(Number(count1)).toBe(1);
+      const ttl1 = await redis.ttl(key);
+      // First write: TTL set in the same round trip.
+      expect(ttl1).toBeGreaterThan(0);
+      expect(ttl1).toBeLessThanOrEqual(ttlSec);
+
+      // Second write: counter increments to 2; TTL is NOT re-primed
+      // (re-priming would let an attacker indefinitely extend the
+      // counter past the token's natural expiration).
+      const count2 = await redis.eval(script, 1, key, String(ttlSec * 100));
+      expect(Number(count2)).toBe(2);
+      const ttl2 = await redis.ttl(key);
+      // TTL is still bounded by the original first-write TTL (allow
+      // small drift for elapsed seconds between EVAL calls).
+      expect(ttl2).toBeGreaterThan(0);
+      expect(ttl2).toBeLessThanOrEqual(ttlSec);
+    } finally {
+      await redis.del(key);
+    }
   });
 });

@@ -91,3 +91,38 @@ Implementer chooses; document the rationale in the round-2 signal block.
 ### Re-review signal
 
 When items 1-6 land, `git mv` this file back to `tasks/review/`. Round-2 architect review scopes `/ce-code-review` to the round-2 commit. Architect adds the new error-code row to `accreditation.md` at archive time.
+
+---
+
+## Round-2 implementer signal (2026-04-30)
+
+Items 1-6 landed. Summary by item:
+
+1. **Distinct error code** — Added `BROADCAST_ATTEMPT_LIMIT_EXCEEDED` to the `ErrorCode` union in `backend/src/types/api.ts`. Cap-exceeded path now returns `502 BROADCAST_ATTEMPT_LIMIT_EXCEEDED` (NOT `BROADCAST_FAILED`). [TODO Architect] Add the corresponding row to `agents/docs/api-contracts/accreditation.md` at archive time per the original re-review note.
+
+2. **504 timeouts no longer consume cap slots** — Chose option (i) shape, implemented as pre-INCR + decrement-on-timeout (compensating). Rationale: option (i) literally means "only count 502 failures", but item 4's atomic-concurrent-claim guarantee requires pre-INCR (otherwise 4 parallel retries all fire broadcasts before the cap can fire). Pre-INCR + decrement-on-timeout gives both: (a) atomic concurrent-claim under bursts of size N → at most `cap` broadcasts fire, and (b) sequential timeouts on a verified token never permanently consume cap slots → no 24h lockout on a flaky-Hive day. Only definitive 502 BROADCAST_FAILED outcomes count toward the cap (decrement is skipped on the failure branch). New helper `decrementBroadcastAttempts()` mirrors the increment shape; `DECR` floor at 0 + `DEL` on a missing key handles a parallel-deleteToken race.
+
+3. **MAX_BROADCAST_ATTEMPTS to config** — New env var `VERIFY_BROADCAST_ATTEMPTS_CAP` (default 3) wired through `config.verifyBroadcastAttemptsCap`. Documented in `.env.example` under the SMTP section (alongside the related accreditation surface).
+
+4. **Concurrent-retry test** — `it('round-2 hold #4: concurrent retries claim slots atomically …')` fires `cap + 1` parallel `/verify` calls on the same token via distinct synthetic XFFs to dodge the per-IP rate limiter. Asserts exactly `cap` broadcasts fire AND exactly one response is `502 BROADCAST_ATTEMPT_LIMIT_EXCEEDED`. The hung-broadcast pattern (mockImplementation returning a held promise, released after the parallel burst lands) sidesteps the post-broadcast deleteToken race.
+
+5. **Structured `event:` field** — Added `event: 'accred_verify_broadcast_cap_exceeded'` to the `logger.warn` payload at the cap-gate site. Mutation-sensitive test `round-2 hold #5` pins the call shape via `expect.objectContaining({ event, attempts, cap })` so a future log-message edit can't silently drop the discriminator.
+
+6. **Atomic INCR + EXPIRE** — Replaced the two-RTT `INCR` then `EXPIRE` pair with a single `redis.eval` of a Lua script (`INCR_AND_EXPIRE_IF_FIRST_LUA`) that runs `INCR` and the conditional `EXPIRE` (only on `count == 1`) in one round trip. Test `round-2 hold #6` asserts the on-disk invariant directly against the same Lua script (replayed verbatim) — first write sets TTL within bound, second write does NOT re-prime TTL.
+
+### Files changed (this round)
+
+- `backend/src/routes/accreditation.ts` — Lua script, helper rewrite, decrement helper, route arithmetic, error code, structured event field.
+- `backend/src/config.ts` — `verifyBroadcastAttemptsCap` env wiring.
+- `backend/src/types/api.ts` — `BROADCAST_ATTEMPT_LIMIT_EXCEEDED` ErrorCode addition.
+- `.env.example` — `VERIFY_BROADCAST_ATTEMPTS_CAP` documentation.
+- `backend/tests/routes/accreditation.test.ts` — 6 new specs replacing the round-1 burns-slots-on-timeout shape (cap-exceeded path with pre-seeded counter, timeout-decrement, concurrent-retry, structured-event log, Lua-atomicity unit).
+
+### Test status
+
+`npx vitest run tests/routes/accreditation.test.ts` — all 7 BE-VERIFY-BROADCAST-ATTEMPTS-CAP specs pass; no regressions in BE-ORCID-BROADCAST-ABORT-TIMEOUT specs. The 2 pre-existing `rejects free email` / `rejects yahoo email` failures are rate-limit pollution from prior `/api/accreditation/request` specs (occurs even on `git stash`'d HEAD); unrelated to this task.
+
+### Notes
+
+- Existing tests for "clears the attempt counter on broadcast success" and "clears the attempt counter on terminal (502) broadcast failure" continue to pass — the success and failure paths still drop the counter via `deleteToken`'s side-effect on the counter key.
+- `seedAccreditationBonus` idempotency was already verified in round-1 (Redis-layer SET NX), no DB-level UNIQUE constraint needed.
