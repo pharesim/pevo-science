@@ -466,20 +466,26 @@ describe('per-paper `discipline` response field — canon_name (lowercased) via 
   //     paper's head version is in a different post; round-1 had no targeted
   //     spec for this branch).
 
-  function buildPevoPaperMeta(discipline: unknown) {
+  function buildPevoPaperMeta(discipline: unknown, authorHandles: string[] = []) {
     // Minimal `isPevoPaper`-passing metadata: appTag-prefixed `app` + nested
     // `{ type: 'paper', discipline }` under `config.appTag`. Mirrors the
     // shape produced by the publish form. Discipline is intentionally typed
     // `unknown` so the seed can verify the helper's `unknown` parameter
     // accepts whatever shape on-chain metadata carries (string with
     // whitespace + mixed case is the contract case here).
+    //
+    // `authorHandles` populates `pevo.authors[].hive` for tests that walk a
+    // continuation chain — the chain-admit gate
+    // (BACKEND-CONTINUATION-POST-AUTHOR-CONSENT-GATE) requires the
+    // continuation post's author to be in the head paper's named-author set.
+    // Defaults to `[]` for non-chain seeds, where the gate is irrelevant.
     return {
       app: `${config.appTag}/1.0`,
       [config.appTag]: {
         type: 'paper',
         discipline,
         keywords: [],
-        authors: [],
+        authors: authorHandles.map((hive) => ({ hive })),
       },
     };
   }
@@ -580,9 +586,22 @@ describe('per-paper `discipline` response field — canon_name (lowercased) via 
             permlink: 'p-1',
             title: 'Original Paper',
             body: 'abstract\n\n---\n\nfull text',
-            json_metadata: buildPevoPaperMeta('Physics'),
+            json_metadata: buildPevoPaperMeta('Physics', ['alice', 'bob']),
             created: '2026-04-20T00:00:00',
             last_edited: '2026-04-20T00:00:00',
+          }],
+        };
+      }
+      // fetchHeadAuthorizedAuthors (continuation gate, BACKEND-CONTINUATION-
+      // POST-AUTHOR-CONSENT-GATE) selects only `c.author, c.json_metadata`
+      // — no `c.last_edited`. Discriminate against the detail SELECT by the
+      // narrower projection. authorHandles must include bob so the gate
+      // admits bob/p-2 into the chain.
+      if (sql.includes('SELECT c.author, c.json_metadata') && sql.includes('c.author = $1 AND c.permlink = $2')) {
+        return {
+          rows: [{
+            author: 'alice',
+            json_metadata: buildPevoPaperMeta('Physics', ['alice', 'bob']),
           }],
         };
       }
@@ -620,7 +639,7 @@ describe('per-paper `discipline` response field — canon_name (lowercased) via 
               title: 'Original Paper',
               body: 'abstract\n\n---\n\nfull text',
               created: '2026-04-20T00:00:00',
-              json_metadata: buildPevoPaperMeta('Physics'),
+              json_metadata: buildPevoPaperMeta('Physics', ['alice', 'bob']),
             },
             {
               version_number: 2,
@@ -630,7 +649,7 @@ describe('per-paper `discipline` response field — canon_name (lowercased) via 
               title: 'Continuation Paper',
               body: 'updated abstract\n\n---\n\nupdated full text',
               created: '2026-04-25T00:00:00',
-              json_metadata: buildPevoPaperMeta('BiOlOgY'),
+              json_metadata: buildPevoPaperMeta('BiOlOgY', ['alice', 'bob']),
             },
           ],
         };
