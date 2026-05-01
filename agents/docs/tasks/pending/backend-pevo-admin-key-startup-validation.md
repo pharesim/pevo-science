@@ -115,3 +115,39 @@ Tests added (10 new): unset-OK, valid-name (dotted + plain + hyphenated), whites
 - `npx vitest run tests/startup-checks.test.ts` (with docker-network Redis/Postgres IPs per root CLAUDE.md) — 16 passed (5 round-1 + 1 round-2 anon + 10 round-2 account-name), 0 failed, 858ms.
 
 Commit SHA: filled in at commit time (this paragraph and the SHA below land in the same commit).
+
+---
+
+## Architect re-review (2026-05-01, round-2 → round-3) — HELD PENDING FIXES
+
+`/ce-code-review` ran on commit `4f9d454`. Round-2 anon-key + account-name validators correctly extend the round-1 boot guard. The three posting-key call sites (admin/bridge/anon) are now boot-validated; the four `HIVE_*_ACCOUNT` resolved-config values are validated; tests cover both helpers in isolation. Six items surface from the round-2 commit review.
+
+### Items to address
+
+**1. (P3) Account-name regex permits canonically-invalid Hive names — defeats item 2's stated purpose.** Cross-reviewer convergence (correctness + testing + security + adversarial + project-standards, 5-way → conf 100). Regex `/^[a-z][a-z0-9.-]{2,15}$/` accepts `'pevo.'` (trailing dot), `'a..b'` (consecutive dots), `'a-bc-'` (trailing hyphen), `'.abc'` — adversarial-verified empirically. `HIVE_BRIDGE_ACCOUNT='pevo.'` boots clean and silently mismatches every chain query via `validPevoPaperWhere`'s author pin — the exact silent-zero-rows failure mode item 2 was filed to prevent. The convention parity with `routes/anonymousReview.ts:147` precedent is intentional, but that precedent guards a different surface (sanitizing already-on-chain user-supplied authors against SQL injection — values canonical-by-construction, not deploy-time configuration).
+
+Fix: tighten the regex to Hive's canonical account-name shape — segments separated by `.` where each segment matches `[a-z][a-z0-9-]*` and each segment is 3-16 chars total (overall account name ≤ 16 chars per Hive's witness-imposed limit) — OR document the gap explicitly in the docblock as accepted convention parity. Implementer's call. If tightening, recommend landing it inside the shared constant from item 5 below so the canonical pattern lives in one place.
+
+**2. (P2) `validateConfig` comment hardcodes a frozen grep snapshot of consumer files.** Cross-reviewer convergence (maintainability + adversarial, 2-way → conf 100). Lines 107-110 of `backend/src/startup-checks.ts` list "Coverage map (verified via grep)" enumerating consumer files (orcid, accreditation, papers, claims, signup-verify, wot, bridge, anonymousReview). The list will rot the moment a new file consumes one of the 3 keys — and a future site that breaks `PrivateKey.fromString(config.X)` across two lines wouldn't even match the literal grep. The comment claims authority a reader will trust 6 months from now even when stale.
+
+Fix: collapse to a one-liner referencing the re-runnable command and the COUNT (no consumer-file list) — e.g., "Coverage: 3 distinct config keys (admin/bridge/anon); re-derive the call-site map via `grep -rn 'PrivateKey\.fromString(config' backend/src/`." OR convert the coverage assertion to a unit-style spec that imports a module-level `BOOT_VALIDATED_KEYS` constant and asserts every grep'd consumer key is in the set.
+
+**3. (P3) `BLOG_AUTHOR` env var is a Hive account name but not boot-validated.** Single-reviewer (reliability) conf 75. `config.blogAuthor` (default `'pevo.science'`) is consumed as a Hive account name in `routes/blog.ts:36` (getDiscussions tag) and `:74` (get_content first arg) — same defect class as `HIVE_BRIDGE_ACCOUNT`: blank/malformed value silently returns empty blog listings or 404s with no boot-time signal.
+
+Fix: add `BLOG_AUTHOR` to the `accountChecks` array in `validateConfig`. Re-run `grep -rn "config\.\w*Account\b\|config\.blogAuthor" backend/src/` to confirm no other Hive-account-name configs are missing from the validator (e.g., scan for any future `config.fooAccount` style fields), then add a one-line item to the round-3 signal block listing the verified set.
+
+**4. (P3) Operator-grep error-message asymmetry between WIF whitespace and account-name whitespace.** Single-reviewer (adversarial) conf 75. `validateAccountNameFormat` whitespace input gets a recognizable `'empty or whitespace-only'` message; `validatePostingKeyFormat` whitespace input falls through to dhive's generic `'Non-base58 character'`, leading operators to misdiagnose copy-paste artifacts as key corruption.
+
+Fix: mirror the `.trim()` guard from `validateAccountNameFormat` into `validatePostingKeyFormat` — emit a recognizable "empty or whitespace-only value" message before dhive sees the bad input. Add a unit test for whitespace WIF input asserting the message recognizable substring.
+
+**5. (P2) Hive account-name regex `/^[a-z][a-z0-9.-]{2,15}$/` duplicated 3+ sites.** Single-reviewer (maintainability) conf 75. Now lives in `backend/src/startup-checks.ts:61`, `backend/src/routes/anonymousReview.ts:147`, with a near-miss variant at `backend/src/routes/signup-verify.ts:29` (`{1,14}` + trailing `[a-z0-9]`) and a fourth shape in the frontend. The new validator's docblock explicitly says it copies the precedent — that's the textbook signal to extract a shared constant before a third copy lands.
+
+Fix: extract `HIVE_ACCOUNT_NAME_REGEX` (and any companion regex if item 1 chooses tightening) to a new `backend/src/lib/hive-account-name.ts`; update `startup-checks.ts:61` and `routes/anonymousReview.ts:147` to import. Leave `signup-verify.ts:29` as-is (different intent — username-availability check on sign-up, not config validation) unless the implementer judges the patterns should converge.
+
+**6. (P3) Test coverage gaps for the round-2 helpers.** Single-reviewer (testing); two distinct gaps:
+   - **6a:** Round-2 anon-key spec at `tests/startup-checks.test.ts:41-52` omits the dhive error-class assertion that round-1 admin/bridge specs pin. Fix: add `expect(malformedErr).toContain('Error')` and a dhive class hint (e.g., `'Non-base58 character'`) to mirror round-1 rigor.
+   - **6b:** No length-boundary acceptance tests for `validateAccountNameFormat`. Tests assert rejection at 2 (`'ab'`) and 17 (`'a'.repeat(17)`) but no acceptance at inclusive boundaries 3 (`'abc'`) and 16 (`'a'.repeat(16)`). A future off-by-one regex tweak (`{3,15}` or `{2,14}`) would slip through. Fix: add the two missing boundary acceptance specs.
+
+### Re-review signal
+
+When items 1-6 land, `git mv` this file back to `tasks/review/`. Round-3 architect review scopes `/ce-code-review` to the round-3 commit only.
