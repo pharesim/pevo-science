@@ -302,7 +302,7 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
     // Round-2 hold #5: structured `event:` discriminator so operators can
     // dashboard/alert on cap-exceeded without message-substring grep,
     // matching the sibling event anchors in routes/orcid.ts and
-    // lib/broadcast-error.ts (`a1_extend_*`, `lock_contention_held`,
+    // lib/broadcast-error.ts (`binding_lock_extend_*`, `lock_contention_held`,
     // `post_broadcast_msg_fn_threw`, `post_broadcast_write_failed`).
     logger.warn(
       {

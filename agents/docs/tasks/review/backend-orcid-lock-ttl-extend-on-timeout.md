@@ -449,3 +449,31 @@ The implementer's prior `[TODO Architect]` note asked the architect to refresh `
 ### Re-review signal
 
 When item 1 lands, `git mv` this file back to `tasks/review/`. Round-4 architect review scopes `/ce-code-review` to the round-4 commit. **Coordination:** sibling tasks `backend-handle-broadcast-error-helper` (round-5) and `backend-orcid-broadcast-outcome-discrimination` (round-5) are also held in `pending/` and touch the same file family (`lib/broadcast-error.ts` is shared). Implementer may bundle this round-4 fix with the sibling round-5 fixes in one commit — the broadcast-error.ts cross-reference fix and the round-5 spread-after-literal protection on the same file are mechanically compatible.
+
+---
+
+## Backend re-review signal (2026-05-01, working tree)
+
+Round-4 hold item 1 landed. Bundled with the round-5 hold-fixes for sibling tasks `backend-handle-broadcast-error-helper` and `backend-orcid-broadcast-outcome-discrimination` per the architect's coordination note (same file family, mechanically compatible).
+
+**Item 1 (P1) — `a1_extend_*` cross-reference comments refreshed to `binding_lock_extend_*`.**
+
+- `backend/src/lib/broadcast-error.ts:190` — the docblock at the `post_broadcast_write_failed` discrimination branch enumerates the sibling-anchor convention. The `event:'a1_extend_*'` reference (now a dead literal in production source after the round-3 rename in this task) replaced with `event:'binding_lock_extend_*'`. Operators following this comment's pattern now find live literals when grepping for the named events.
+- `backend/src/routes/accreditation.ts:305` — the docblock above the `accred_verify_broadcast_cap_exceeded` event-tagged warn cites the sibling-anchor convention from `routes/orcid.ts` and `lib/broadcast-error.ts`. Same staleness; same fix: `a1_extend_*` → `binding_lock_extend_*`.
+
+No production behavior change. Comment-only edits. The rename mechanic for the live literals is already covered by `routes/orcid.test.ts`'s `objectContaining({ event: 'binding_lock_extend_*' })` assertions.
+
+The architect's dismissed testing residual (three `toBeLessThanOrEqual(120)` assertions at `tests/routes/orcid.test.ts:803, 1621, 1694`) was triaged as below-gate and out of scope — not folded into this round-4 fix.
+
+### Verification
+
+- `npx tsc --noEmit` clean (cross-reference comment changes do not affect types).
+- `npm run lint` clean (pre-existing `seed-phrase.ts` no-explicit-any warnings only).
+- No new test specs needed (architect-stated; comments don't get test coverage).
+- Existing `npx vitest run tests/lib/broadcast-error.test.ts tests/hive-broadcast-timeout.test.ts tests/routes/orcid.test.ts tests/routes/accreditation.test.ts tests/routes/papers.test.ts tests/routes/claims.test.ts tests/routes/custody.test.ts tests/routes/bridge.test.ts` — all green (108+ passing across the bundle including this round-4 change + the sibling round-5 changes).
+- Full backend vitest deferred to the architect's pass.
+
+### Files changed
+
+- `backend/src/lib/broadcast-error.ts` — one docblock substring (`a1_extend_*` → `binding_lock_extend_*`).
+- `backend/src/routes/accreditation.ts` — one docblock substring (`a1_extend_*` → `binding_lock_extend_*`).

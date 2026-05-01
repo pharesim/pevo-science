@@ -50,7 +50,7 @@ describe('handleBroadcastError', () => {
       },
     });
     expect(warnSpy).toHaveBeenCalledWith(
-      { err, timeoutMs: 5000, user: 'alice', action: 'test' },
+      { err, timeoutMs: 5000, user: 'alice', action: 'test', event: 'broadcast_timeout' },
       'test.route broadcast timed out',
     );
     expect(errorSpy).not.toHaveBeenCalled();
@@ -80,7 +80,7 @@ describe('handleBroadcastError', () => {
       },
     });
     expect(errorSpy).toHaveBeenCalledWith(
-      { err, user: 'bob' },
+      { err, user: 'bob', event: 'broadcast_failed' },
       'test.route broadcast failed',
     );
     expect(warnSpy).not.toHaveBeenCalled();
@@ -151,7 +151,7 @@ describe('handleBroadcastError', () => {
       routeLabel: 'claims.revoke',
     });
     expect(warnSpy).toHaveBeenCalledWith(
-      { err: timeoutErr, timeoutMs: 1500, author: 'charlie', permlink: 'p1', signer: 'admin' },
+      { err: timeoutErr, timeoutMs: 1500, author: 'charlie', permlink: 'p1', signer: 'admin', event: 'broadcast_timeout' },
       'claims.revoke broadcast timed out',
     );
 
@@ -165,7 +165,7 @@ describe('handleBroadcastError', () => {
       routeLabel: 'claims.revoke',
     });
     expect(errorSpy).toHaveBeenCalledWith(
-      { err: failErr, author: 'charlie', permlink: 'p1', signer: 'admin' },
+      { err: failErr, author: 'charlie', permlink: 'p1', signer: 'admin', event: 'broadcast_failed' },
       'claims.revoke broadcast failed',
     );
   });
@@ -497,7 +497,7 @@ describe('handleBroadcastError', () => {
     // unrelated route's mock — at the unit-under-test layer the suffix has
     // had no assertion until now. Pin it.
     expect(errorSpy).toHaveBeenCalledWith(
-      expect.objectContaining({ run: 'item-4', err }),
+      expect.objectContaining({ run: 'item-4', err, event: 'broadcast_ambiguous' }),
       'test.route broadcast failed on ambiguous-outcome path',
     );
   });
@@ -566,5 +566,184 @@ describe('handleBroadcastError', () => {
     const callArgs = warnSpy.mock.calls[0][0] as { event: string };
     expect(callArgs.event).toBe('post_broadcast_msg_fn_threw');
     expect(callArgs.event).not.toBe('caller_override_attempt');
+  });
+
+  // BACKEND-ORCID-BROADCAST-OUTCOME-DISCRIMINATION round-5 hold #1: extends
+  // the round-4 spread-kill protection from the `event:` field to the four
+  // sibling source-of-truth fields (`err`, `cause`, `txId`, `failedStep`).
+  // Same JS later-wins mechanic, same caller-override exposure: a future
+  // caller dropping a key like `failedStep` into `logContext` would mis-route
+  // operator alerts to the wrong cascade step while the wire envelope still
+  // uses `err.failedStep`. Round-4 closed this for `event:` only; round-5
+  // closes it for the remaining fields. Pattern matches the existing event:
+  // spread-kill specs above.
+  it('post_broadcast_write_failed authoritative fields win over colliding logContext keys (round-5 hold #1)', () => {
+    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => undefined as unknown as void);
+    const res = mockResponse();
+    const realCause = new Error('redis flap (real)');
+    const err = new PostBroadcastWriteError('hive-tx-real', realCause, 'reputation_seed');
+
+    handleBroadcastError(res, err, {
+      timeoutMsg: 'Timed out',
+      failMsg: 'Failed',
+      // Adversarial caller-supplied colliding values — none should win.
+      logContext: {
+        err: 'caller-override-err',
+        cause: 'caller-override-cause',
+        txId: 'caller-override-tx',
+        failedStep: 'caller-override-step',
+        run: 'spread-kill-r5-1',
+      },
+      routeLabel: 'orcid.handleAccredit',
+    });
+
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'post_broadcast_write_failed',
+        run: 'spread-kill-r5-1',
+      }),
+      'orcid.handleAccredit broadcast confirmed but post-broadcast write failed',
+    );
+    const callArgs = errorSpy.mock.calls[0][0] as {
+      err: unknown;
+      cause: unknown;
+      txId: unknown;
+      failedStep: unknown;
+    };
+    // Positive: helper's source-of-truth values surface.
+    expect(callArgs.err).toBe(err);
+    expect(callArgs.cause).toBe(realCause);
+    expect(callArgs.txId).toBe('hive-tx-real');
+    expect(callArgs.failedStep).toBe('reputation_seed');
+    // Negative: caller-supplied colliding values MUST NOT leak through.
+    expect(callArgs.err).not.toBe('caller-override-err');
+    expect(callArgs.cause).not.toBe('caller-override-cause');
+    expect(callArgs.txId).not.toBe('caller-override-tx');
+    expect(callArgs.failedStep).not.toBe('caller-override-step');
+  });
+
+  it('post_broadcast_msg_fn_threw authoritative fields win over colliding logContext keys (round-5 hold #1)', () => {
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as unknown as void);
+    vi.spyOn(logger, 'error').mockImplementation(() => undefined as unknown as void);
+    const res = mockResponse();
+    const realCause = new Error('pool exhausted (real)');
+    const err = new PostBroadcastWriteError('hive-tx-real-2', realCause, 'cache_write');
+    const innerMsgErr = new TypeError('msg-fn template throw');
+
+    handleBroadcastError(res, err, {
+      timeoutMsg: 'Timed out',
+      failMsg: 'Failed',
+      logContext: {
+        err: 'caller-override-err',
+        cause: 'caller-override-cause',
+        txId: 'caller-override-tx',
+        failedStep: 'caller-override-step',
+        run: 'spread-kill-r5-2',
+      },
+      routeLabel: 'orcid.handleAccredit',
+      postBroadcastMsgFn: () => {
+        throw innerMsgErr;
+      },
+    });
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'post_broadcast_msg_fn_threw',
+        run: 'spread-kill-r5-2',
+      }),
+      'orcid.handleAccredit postBroadcastMsgFn threw — using generic fallback',
+    );
+    const callArgs = warnSpy.mock.calls[0][0] as {
+      err: unknown;
+      txId: unknown;
+      failedStep: unknown;
+    };
+    // Positive: the msg-fn-threw anchor binds `err` to the INNER msg-fn
+    // throw (the template error), NOT the outer PostBroadcastWriteError.
+    // Pino's serializer renders this as the primary error; the outer error
+    // is still on chain and recoverable, the template bug is what needs
+    // operator attention.
+    expect(callArgs.err).toBe(innerMsgErr);
+    expect(callArgs.txId).toBe('hive-tx-real-2');
+    expect(callArgs.failedStep).toBe('cache_write');
+    // Negative: caller-supplied colliding values MUST NOT leak through.
+    expect(callArgs.err).not.toBe('caller-override-err');
+    expect(callArgs.txId).not.toBe('caller-override-tx');
+    expect(callArgs.failedStep).not.toBe('caller-override-step');
+    // (The msg-fn-threw payload omits `cause:` — the inner error has no
+    // explicit `cause` slot in the helper's call, only the implicit
+    // Error.cause inherited via `super(msg, { cause })`. No 4th negative
+    // assertion here; the round-5 hold block enumerates 4 fields × 2
+    // anchors but the msg-fn anchor only carries 3 source-of-truth fields.
+    // The `cause` coverage is supplied by the post_broadcast_write_failed
+    // spec above, where the helper does emit `cause: err.cause`.)
+  });
+
+  // Round-5 hold #2: dedicated event-anchor pin for the 3 sibling logger
+  // sites that previously had no structured `event:` discriminator. The
+  // existing tests above already pin `event: 'broadcast_timeout'` (line ~52,
+  // BroadcastTimeoutError happy path), `event: 'broadcast_failed'` (line ~82,
+  // generic Error path), and `event: 'broadcast_ambiguous'` (line ~499,
+  // forceAmbiguousOutcome path) under exact-match `toHaveBeenCalledWith`
+  // payloads. Those exact-match assertions are stricter than `objectContaining`
+  // because they fail if the helper emits extra unexpected keys. The dedicated
+  // specs below add `objectContaining` pins per the architect's prescription
+  // shape — they double-cover the same anchors so a future test refactor that
+  // loosens the exact-match shape (e.g. adding more keys) doesn't accidentally
+  // drop the event-literal assertion.
+  it('event:"broadcast_timeout" pinned on the timer-fire anchor (round-5 hold #2)', () => {
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as unknown as void);
+    const res = mockResponse();
+    const err = new BroadcastTimeoutError(2500);
+
+    handleBroadcastError(res, err, {
+      timeoutMsg: 'T',
+      failMsg: 'F',
+      logContext: { run: 'event-pin-timeout' },
+      routeLabel: 'test.route',
+    });
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'broadcast_timeout', run: 'event-pin-timeout' }),
+      'test.route broadcast timed out',
+    );
+  });
+
+  it('event:"broadcast_ambiguous" pinned on the forceAmbiguousOutcome anchor (round-5 hold #2)', () => {
+    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => undefined as unknown as void);
+    const res = mockResponse();
+    const err = new Error('rpc reject under degraded redis');
+
+    handleBroadcastError(res, err, {
+      timeoutMsg: 'T',
+      failMsg: 'F',
+      ambiguousMsg: 'Outcome uncertain',
+      forceAmbiguousOutcome: true,
+      logContext: { run: 'event-pin-ambiguous' },
+      routeLabel: 'test.route',
+    });
+
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'broadcast_ambiguous', run: 'event-pin-ambiguous' }),
+      'test.route broadcast failed on ambiguous-outcome path',
+    );
+  });
+
+  it('event:"broadcast_failed" pinned on the standard 502 anchor (round-5 hold #2)', () => {
+    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => undefined as unknown as void);
+    const res = mockResponse();
+    const err = new Error('chain rejected');
+
+    handleBroadcastError(res, err, {
+      timeoutMsg: 'T',
+      failMsg: 'F',
+      logContext: { run: 'event-pin-failed' },
+      routeLabel: 'test.route',
+    });
+
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'broadcast_failed', run: 'event-pin-failed' }),
+      'test.route broadcast failed',
+    );
   });
 });

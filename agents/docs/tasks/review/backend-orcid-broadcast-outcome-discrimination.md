@@ -569,3 +569,68 @@ Extend the round-4 mutation-kill specs in `backend/tests/lib/broadcast-error.tes
 ### Re-review signal
 
 When items 1-2 land, `git mv` this file back to `tasks/review/`. Round-5 architect review scopes `/ce-code-review` to the round-5 commit. Coordinate with `backend-handle-broadcast-error-helper` round-5 (sibling task; constructor-guard hazard from the same `4d7dcd5` review pass — the implementer may bundle both round-5 fixes in one commit since they touch the same file family).
+
+---
+
+## Backend re-review signal (2026-05-01, working tree)
+
+Both round-5 hold-block items landed.
+
+**Item 1 (P2) — spread-after-literal protection extended to `err`/`cause`/`txId`/`failedStep`.** `backend/src/lib/broadcast-error.ts` at both anchor sites:
+
+- `post_broadcast_write_failed` (the `instanceof PostBroadcastWriteError` branch) — `err`, `cause: err.cause`, `txId: err.txId`, `failedStep: err.failedStep`, `event: 'post_broadcast_write_failed'` are ALL emitted AFTER `...opts.logContext`. A caller-supplied `logContext: { err / cause / txId / failedStep / event: ... }` cannot silently override the helper's source-of-truth values. Inline comment cross-references round-5 hold #1 and explains the JS later-wins rationale + the `details.failed_step` operator-routing contract documented in `agents/docs/api-contracts/orcid.md`.
+- `post_broadcast_msg_fn_threw` (the msg-fn-throws recovery branch) — same protection for `err: msgErr`, `txId: err.txId`, `failedStep: err.failedStep`, `event: 'post_broadcast_msg_fn_threw'`. Note: this anchor's payload omits `cause:` (it carries the inner msg-fn template throw, not the outer `PostBroadcastWriteError`'s cause), so 3 fields rather than the round-5 hold's "4 fields per anchor" estimate. The 4th field genuinely doesn't exist at this site; covering it would be a no-op assertion. Cross-anchor total: 4 + 3 = 7 source-of-truth fields under spread-after-literal protection.
+
+**Item 2 (P3) — `event:` discriminators added to the 3 sibling logger sites.** `backend/src/lib/broadcast-error.ts`:
+
+- timer-fire path (`logger.warn` at the `BroadcastTimeoutError` branch): `event: 'broadcast_timeout'`. Aligns with the convention from `agents/docs/solutions/conventions/auth-structured-log-shape-2026-04-29.md`. The existing `{ err, timeoutMs, ...opts.logContext }` payload was rewritten to `{ ...opts.logContext, err, timeoutMs, event: 'broadcast_timeout' }` so the new field gets the same spread-after-literal protection introduced in item 1.
+- ambiguous-outcome path (`logger.error` at the `forceAmbiguousOutcome` branch): `event: 'broadcast_ambiguous'`. Same spread-after-literal shape.
+- standard 502 path (`logger.error` at the `BROADCAST_FAILED` branch): `event: 'broadcast_failed'`. Same shape.
+
+The helper's docblock at the top of `broadcast-error.ts` is updated to enumerate all 5 anchors (3 sibling sites + 2 PostBroadcastWriteError sites) with both their stable log-message suffix AND their structured `event:` discriminator, so future reviewers can audit the operator-alert surface against a single table.
+
+### Tests
+
+`backend/tests/lib/broadcast-error.test.ts`:
+
+- **Existing exact-match specs updated.** The `toHaveBeenCalledWith({ err, timeoutMs, user, action }, ...)` payloads in the timer-fire happy-path, generic-Error happy-path, and `merges logContext fields` specs now include `event: 'broadcast_timeout'` / `event: 'broadcast_failed'` literals. The `forceAmbiguousOutcome` `objectContaining` assertion in the existing `handleBroadcastErrorAmbiguous` spec now includes `event: 'broadcast_ambiguous'`. These are mutation-sensitive on the literal text: a regression dropping or renaming the field surfaces as a deep-equality failure.
+- **Item 2 dedicated event-anchor pin specs.** Added 3 new specs at the file tail using `expect.objectContaining({ event: '...', run: '...' })`. The dedicated specs double-cover the same 3 anchors so a future test refactor that loosens the exact-match payload doesn't accidentally drop the event-literal assertion.
+- **Item 1 spread-kill specs.** Added 2 new specs (`post_broadcast_write_failed authoritative fields win over colliding logContext keys` and `post_broadcast_msg_fn_threw authoritative fields win over colliding logContext keys`). Each constructs a `logContext` carrying adversarial colliding values (`err: 'caller-override-err'`, `cause: 'caller-override-cause'`, etc.), invokes the helper, and asserts both positive (helper's source-of-truth value surfaced) and negative (caller's colliding value did NOT leak through) on every field the anchor emits. Total: 7 negative-shape source-of-truth assertions across the 2 specs.
+
+### Mutation-sensitivity verification (item 1)
+
+Locally moved the `err / cause: err.cause / txId: err.txId / failedStep: err.failedStep` block from AFTER `...opts.logContext` to BEFORE the spread at the `post_broadcast_write_failed` anchor, leaving `event: 'post_broadcast_write_failed'` after the spread. Ran `npx vitest run tests/lib/broadcast-error.test.ts -t "post_broadcast_write_failed authoritative fields"`. Result: the new spec failed red on the very first negative-shape assertion:
+
+```
+AssertionError: expected 'caller-override-err' to be PostBroadcastWriteError: ...
++ Received: "caller-override-err"
+ ❯ tests/lib/broadcast-error.test.ts:614:26
+    expect(callArgs.err).toBe(err);
+```
+
+The colliding `logContext: { err: 'caller-override-err' }` overrode the helper's `PostBroadcastWriteError` instance — exactly the leak class the round-5 fix prevents. Restored the original AFTER-spread placement. Re-ran the file → 19/19 pass.
+
+This empirically pins:
+1. JS later-wins semantics is the active mechanic (the spread reads after the literal in the mutation; the spread's keys win).
+2. `expect(callArgs.err).toBe(err)` is mutation-sensitive on the BEFORE-spread reorder (test fails red).
+3. Restoring AFTER-spread placement makes the spec pass — the protection is load-bearing, not redundant.
+
+### Verification
+
+- `npx tsc --noEmit` clean.
+- `npm run lint` clean (only the 2 pre-existing `seed-phrase.ts` `any` warnings).
+- `npx vitest run tests/lib/broadcast-error.test.ts` → 19/19 pass (was 14; +5 new specs: 3 event-anchor pins for item 2, 2 spread-kill specs for item 1).
+- `npx vitest run tests/hive-broadcast-timeout.test.ts` → 24/24 pass (sibling task; included for cross-coverage).
+- `npx vitest run tests/routes/orcid.test.ts` → 65/65 pass. Operator-log lines visibly carry the new `"event":"broadcast_timeout"` field on the `BroadcastTimeoutError` path:
+  ```
+  {"level":40,"username":"alice","orcid":"0000-0001-2222-0013","mode":"link",
+   "err":{"type":"BroadcastTimeoutError",...},"timeoutMs":30000,
+   "event":"broadcast_timeout","msg":"orcid.handleLink broadcast timed out"}
+  ```
+- `npx vitest run tests/routes/accreditation.test.ts tests/routes/papers.test.ts tests/routes/claims.test.ts tests/routes/custody.test.ts tests/routes/bridge.test.ts` → 65/66 pass (1 pre-existing skip; no failures introduced by the round-5 changes; sibling routes that emit the new `event:` literals through their own `handleBroadcastError` callers).
+- Full backend vitest deferred to the architect's pass.
+
+### Files changed
+
+- `backend/src/lib/broadcast-error.ts` — both PostBroadcastWriteError anchor sites: `err / cause / txId / failedStep` repositioned AFTER `...opts.logContext` (item 1, with inline cross-reference to round-5 hold #1). Three sibling logger sites: `event: 'broadcast_timeout' | 'broadcast_ambiguous' | 'broadcast_failed'` added AFTER the spread (item 2). Helper docblock updated to enumerate all 5 anchors with their structured-event discriminators.
+- `backend/tests/lib/broadcast-error.test.ts` — existing exact-match expectations updated to include the new `event:` literals (forces regression detection on a missing literal even before the dedicated specs run); 3 new dedicated event-anchor pin specs (item 2); 2 new spread-kill specs covering 7 source-of-truth fields under negative-shape assertions (item 1).

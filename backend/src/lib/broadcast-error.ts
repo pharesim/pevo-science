@@ -55,11 +55,16 @@ export class PostBroadcastWriteError extends Error {
  * surfaces set it to '/settings'). `routeLabel` is baked into the log
  * messages.
  *
- * Stable log-message suffixes (operator alert anchors — change with care):
- *   <routeLabel> broadcast timed out                                  (logger.warn,  timer-fire path)
- *   <routeLabel> broadcast failed on ambiguous-outcome path           (logger.error, forceAmbiguousOutcome non-timer branch)
- *   <routeLabel> broadcast failed                                     (logger.error, standard 502 path)
- *   <routeLabel> broadcast confirmed but post-broadcast write failed  (logger.error, PostBroadcastWriteError discrimination path — routes to DB on-call, not broadcast on-call)
+ * Stable log-message suffixes + structured `event:` discriminators (operator
+ * alert anchors — change with care). Round-5 hold #2 added the `event:`
+ * literal on every site so dashboards can key on the structured field instead
+ * of suffix-matching the free-text message; both the suffix and the literal
+ * are load-bearing and pinned at the unit-test layer.
+ *   <routeLabel> broadcast timed out                                  (logger.warn,  event:'broadcast_timeout',          timer-fire path)
+ *   <routeLabel> broadcast failed on ambiguous-outcome path           (logger.error, event:'broadcast_ambiguous',        forceAmbiguousOutcome non-timer branch)
+ *   <routeLabel> broadcast failed                                     (logger.error, event:'broadcast_failed',           standard 502 path)
+ *   <routeLabel> broadcast confirmed but post-broadcast write failed  (logger.error, event:'post_broadcast_write_failed', PostBroadcastWriteError discrimination path — routes to DB on-call, not broadcast on-call)
+ *   <routeLabel> postBroadcastMsgFn threw — using generic fallback    (logger.warn,  event:'post_broadcast_msg_fn_threw', recovery branch when caller-supplied msg-fn throws)
  *
  * Item #1 of round-2 hold (BE-ORCID-BROADCAST-TIMEOUT-OUTCOME-HANDLING):
  * `forceAmbiguousOutcome` and `ambiguousMsg` are now correlated via a
@@ -182,7 +187,7 @@ export function handleBroadcastError(
   if (err instanceof PostBroadcastWriteError) {
     // Structured `event:'post_broadcast_write_failed'` so the 4th anchor is
     // dashboard-keyable alongside the sibling event-tagged anchors
-    // (`event:'a1_extend_*'`, `event:'lock_contention_held'`,
+    // (`event:'binding_lock_extend_*'`, `event:'lock_contention_held'`,
     // `event:'post_broadcast_msg_fn_threw'`). The 4th anchor is the
     // operator-facing signal for `BACKEND-CASCADE-FNS-RETHROW-PERMANENT-ERRORS`
     // — when a cascade fn re-throws on a permanent error, this is what fires
@@ -190,15 +195,20 @@ export function handleBroadcastError(
     // the discrimination contract.
     logger.error(
       {
+        ...opts.logContext,
+        // Authoritative fields placed AFTER `...opts.logContext` so a
+        // caller-supplied `logContext: { err / cause / txId / failedStep /
+        // event: ... }` cannot silently override the helper's
+        // source-of-truth values. JS later-wins semantics; the literals
+        // must always win. Round-5 hold #1 extends the round-4 `event:`
+        // protection to err / cause / txId / failedStep so the discrimination
+        // contract documented in `agents/docs/api-contracts/orcid.md` for
+        // `details.failed_step` remains load-bearing in operator logs even
+        // if a future caller's logContext drops a colliding key.
         err,
         cause: err.cause,
         txId: err.txId,
         failedStep: err.failedStep,
-        ...opts.logContext,
-        // `event:` placed AFTER `...opts.logContext` so a caller-supplied
-        // `logContext: { event: ... }` cannot silently override the
-        // dashboard-keyable anchor (round-3 hold #1: JS later-wins
-        // semantics; the literal must always win).
         event: 'post_broadcast_write_failed',
       },
       `${opts.routeLabel} broadcast confirmed but post-broadcast write failed`,
@@ -218,14 +228,19 @@ export function handleBroadcastError(
     } catch (msgErr) {
       logger.warn(
         {
+          ...opts.logContext,
+          // Authoritative fields placed AFTER `...opts.logContext` so a
+          // caller-supplied `logContext: { err / txId / failedStep / event:
+          // ... }` cannot silently override the helper's source-of-truth
+          // values (round-5 hold #1: extends round-4's `event:` protection
+          // to the sibling fields). The msg-fn-throws anchor is the
+          // dashboard-keyable signal that a caller's `postBroadcastMsgFn`
+          // template threw — `err` here is the inner template error, NOT
+          // the outer `PostBroadcastWriteError`; we name it `err` so pino's
+          // serializer renders it as the primary error.
           err: msgErr,
           txId: err.txId,
           failedStep: err.failedStep,
-          ...opts.logContext,
-          // `event:` placed AFTER `...opts.logContext` so a caller-supplied
-          // `logContext: { event: ... }` cannot silently override the
-          // dashboard-keyable anchor (round-3 hold #1: same as the sibling
-          // anchor above).
           event: 'post_broadcast_msg_fn_threw',
         },
         `${opts.routeLabel} postBroadcastMsgFn threw — using generic fallback`,
@@ -241,8 +256,21 @@ export function handleBroadcastError(
     return 'post_broadcast';
   }
   if (err instanceof BroadcastTimeoutError) {
+    // Round-5 hold #2: structured `event:` discriminator alongside the
+    // sibling event-tagged anchors (`event:'post_broadcast_write_failed'`
+    // above, `event:'post_broadcast_msg_fn_threw'` in the recovery branch).
+    // Lets dashboards key on the operator-alert anchor without parsing the
+    // free-text suffix. Placed AFTER `...opts.logContext` so a caller-
+    // supplied `logContext: { event: / err: / timeoutMs: ... }` cannot
+    // silently override the literal (item 1's spread-after-literal
+    // convention).
     logger.warn(
-      { err, timeoutMs: err.timeoutMs, ...opts.logContext },
+      {
+        ...opts.logContext,
+        err,
+        timeoutMs: err.timeoutMs,
+        event: 'broadcast_timeout',
+      },
       `${opts.routeLabel} broadcast timed out`,
     );
     // Canonical 504 envelope field order: required fields first
@@ -269,8 +297,19 @@ export function handleBroadcastError(
     // client treats the outcome as uncertain. `timeout_ms` is omitted: the
     // error didn't originate from the timer, so reporting a fake value would
     // mislead consumers keying retry-backoff off that field.
+    // Round-5 hold #2: same `event:` discriminator pattern as the sibling
+    // anchors. `event:'broadcast_ambiguous'` distinguishes this branch
+    // (non-timer throw on a path the caller forced into ambiguous-outcome
+    // semantics) from the timer-fire branch (`'broadcast_timeout'`) and the
+    // standard-failure branch (`'broadcast_failed'`). All three emit the
+    // 502/504 envelopes documented in `agents/docs/api-contracts/common.md`,
+    // but route to different operator-alert dispositions.
     logger.error(
-      { err, ...opts.logContext },
+      {
+        ...opts.logContext,
+        err,
+        event: 'broadcast_ambiguous',
+      },
       `${opts.routeLabel} broadcast failed on ambiguous-outcome path`,
     );
     const details: Record<string, unknown> = {
@@ -289,8 +328,16 @@ export function handleBroadcastError(
     sendError(res, 504, 'BROADCAST_TIMEOUT', opts.ambiguousMsg, details);
     return 'failure';
   }
+  // Round-5 hold #2: standard failure-branch `event:'broadcast_failed'`. The
+  // common case for a non-timer broadcast throw — chain rejection, RPC error,
+  // dhive client error — emits the 502 BROADCAST_FAILED envelope and routes
+  // to broadcast on-call (vs. DB on-call for `'post_broadcast_write_failed'`).
   logger.error(
-    { err, ...opts.logContext },
+    {
+      ...opts.logContext,
+      err,
+      event: 'broadcast_failed',
+    },
     `${opts.routeLabel} broadcast failed`,
   );
   sendError(res, 502, 'BROADCAST_FAILED', opts.failMsg, { retriable: false });
