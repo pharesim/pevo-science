@@ -4,6 +4,38 @@
 **Created:** 2026-04-30 (architect, surfaced during cluster 1 review triage on `backend-continuation-post-author-consent-gate.md`)
 **Priority:** P2
 
+## Scope reconciliation (UI agent, 2026-04-30)
+
+Implementer investigation found the task framing partially miscalibrated against the existing code. Recording the actual delta shipped vs. the task as written:
+
+**Already in place before this task:**
+
+- `paper-detail.js:848-856` `isOwnPaper` already includes `paper.authors[].hive` membership, so the Edit affordance was already exposed to named co-authors. The task's "no UI surface" framing was incorrect.
+- `edit.js:isAuthorized` already accepts named co-authors and accepted authorship claims.
+- The pre-fill source for the edit form is already the chain head's content — `papers.ts:569-601` replaces the canonical-root paper detail's `body`/`title`/`abstract` and metadata-derived fields with the chain head's content when `chain.length > 1`. So `_prefillForm` reading `paper.body` already pre-fills from head. No backend addition needed for that.
+- A first-time named co-author (Carol with no prior post) clicking Edit already broadcasts a properly-formed continuation post under their own account with `pevo.continues = {head_author, head_permlink}`.
+
+**The actual gap (what this task shipped):**
+
+The pre-existing `isContinuation` getter returned `true` whenever a chain existed, which made every chain-state edit balloon into a fresh continuation post — even when a returning co-author (Bob with `bob/cont-1` already in the chain) was just refining their own version. The chain grew by one new post per edit instead of evolving the user's existing post.
+
+User chose the narrower scope (option B in the implementer's discovery summary): rework `isContinuation` to use a version-chain walk for the user's own post, target that post on native edit broadcasts, sidestep the diff-base correctness issue by full-body broadcasting for non-head targets, and add bridge-paper suppression on the Edit affordance.
+
+**Implementation summary (commit will follow):**
+
+- `paper-detail.js:295` — Edit-button gate widened to `isOwnPaper && !paper.is_retracted && !isBridgePaper` (bridge papers update via `/api/bridge/update`, not via the SPA edit flow).
+- `edit.js` — new `userPostInChain` getter walks `paper.versions[]` for the latest entry where `author === username`. `isContinuation` now returns `false` when `userPostInChain` is non-null (native-edit own post) and `true` otherwise (broadcast new continuation). Falls back to legacy semantics when `versions[]` is sparse (HAF replay didn't run, single-version paper).
+- `edit.js` native-edit submit — broadcast targets `userPostInChain.author/permlink` instead of the canonical root's `(this.author, this.permlink)`. When the user's post is the chain head, the existing diff path runs (size optimization preserved). When the user's post is **not** the chain head (e.g. Alice native-editing alice/v1 while head is bob/cont-1), the broadcast is full-body — Hive applies diffs against the post's own body, so a diff against the head's pre-fill would corrupt the user's post.
+- `edit.js` `allAuthors[0].hive` — vestigial conditional `isContinuation ? username : paper.author` collapsed to `username`. The two branches were equivalent under legacy semantics (the only non-continuation case was username === paper.author); they diverged with co-author native edits in the chain.
+- Tests added for: `userPostInChain` walk + null fallback, `isContinuation` chain/sparse-versions cases, native-edit targets the user's own post, non-head full-body broadcast, head-target diff path preserved.
+
+**Items from the original task that were NOT implemented:**
+
+- Predicate widening (item 1) — already in place via `isOwnPaper`. Not duplicated.
+- Distinct "Publish Continuation" vs "Edit My Version" labels — left as `edit.editButton` ("Edit Paper") for both. The label is UX polish, not capability. If desired, file a follow-up.
+- New locale strings — none added; reusing `edit.editButton`.
+- E2E coverage extension to `ui-e2e-edit-paper-flow.md` — not extended in this pass; existing E2E tests still pass.
+
 ## Background — how continuations work in PEvO
 
 PEvO papers can have multiple named authors (the `pevo.authors[]` array on the head paper's metadata). When a co-author wants to publish their own version of a paper, they broadcast a **new** Hive comment under THEIR own account, carrying `pevo.continues = { author: <predecessor post author>, permlink: <predecessor permlink> }` and the new content. They own that post and can edit it via Hive's native edit mechanism over time. The "version chain" PEvO assembles for a paper is the timeline of all such posts (the original + every co-author's continuation), linked by `continues` pointers.
