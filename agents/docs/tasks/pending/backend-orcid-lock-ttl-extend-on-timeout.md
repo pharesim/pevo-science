@@ -421,3 +421,31 @@ A future tuning of `HAF_INDEXING_LAG_CEILING_SECONDS` per the derivation comment
 `backend-a1-extend-lock-missing-event-discrimination.md` still references the old `a1_extend_*` names in its body (lines 9, 42-44, 59, 73). When that task is picked up, the `cause:` discriminator work needs to target `binding_lock_extend_lock_missing`. Architect should refresh that task's prose at the next architect pass to use the new literal names — leaving as a `[TODO Architect]` note in case it gets picked up before the architect re-review here.
 
 [TODO Architect]: refresh `agents/docs/tasks/pending/backend-a1-extend-lock-missing-event-discrimination.md` to reference `binding_lock_extend_*` literal names instead of `a1_extend_*` (the rename in this task's round-3 hold-fix supersedes the literal names quoted in that sibling task body).
+
+---
+
+## Architect re-review (2026-05-01, round-3 → round-4) — HELD PENDING FIXES
+
+`/ce-code-review` ran on commit `7387435` (round-3 hold-fix landing event-name rename + `__test_seams.HAF_INDEXING_LAG_CEILING_SECONDS` export). Tight 3-persona pass (testing, project-standards, maintainability) — pure rename + constant-export change, no auth/security/reliability surface. The orcid.ts production rename, the tests-side rename + assertion migration, and the `__test_seams` expansion all land cleanly within their stated scope. But the rename's stated **intent** — "align with sibling anchors and survive task slug staleness" — is only partially met. Cross-reviewer convergence (project-standards conf 100 + maintainability conf 75 + testing residual) → promoted to P1 conf 100.
+
+### Items to address
+
+**1. (P1) Stale `a1_extend_*` cross-reference comments survive in two sibling files; rename intent only partially met.** The implementer's commit message correctly described what landed ("Cross-reference comment in the wrapper's `lock_contention_held` block updated for consistency" — orcid.ts:1100). But the rename's invariant ("survive task slug staleness") requires every cross-reference comment naming the renamed events to be refreshed so operators reading those comments and grepping for the named events find live literals. Two sibling cross-references missed:
+
+- `backend/src/lib/broadcast-error.ts:185` — docblock at lines 183-187 enumerates `(\`event:'a1_extend_*'\`, \`event:'lock_contention_held'\`, \`event:'post_broadcast_msg_fn_threw'\`)` as the sibling-anchor convention. After this rename, `event:'a1_extend_*'` no longer exists in production source. Operators following this comment's pattern adopt a dead naming convention.
+- `backend/src/routes/accreditation.ts:305` — docblock at 302-306 cites `lib/broadcast-error.ts (\`a1_extend_*\`, \`lock_contention_held\`, ...)` as the sibling-anchor convention being matched by the new `accred_verify_broadcast_cap_exceeded` event. Same staleness; same operator-discoverability gap.
+
+Fix: replace the substring `a1_extend_*` with `binding_lock_extend_*` at both sites. Mechanical 2-line edit per file. No production behavior change. Add no new tests — the rename mechanic is already covered by the orcid.ts `objectContaining({ event: 'binding_lock_extend_*' })` assertions; cross-reference comments don't need test coverage.
+
+### Items dismissed during architect triage
+
+- **Maintainability MAINT-2 (P3 conf 50):** `__test_seams.HAF_INDEXING_LAG_CEILING_SECONDS` re-exports a constant via a seam shaped for substitutable call sites. The clean pattern would be `export { HAF_INDEXING_LAG_CEILING_SECONDS as __test_HAF_INDEXING_LAG_CEILING_SECONDS }` (matching the `__test_releaseBindingLock` pattern at line 1520). Cosmetic; the implementer's "one boundary vs two" rationale is defensible. Below confidence gate.
+- **Testing residual (conf 60):** three `toBeLessThanOrEqual(120)` upper-bound assertions at `tests/routes/orcid.test.ts:803, 1621, 1694` still hardcode the bare `120` literal. Production aliases `ORCID_BINDING_CACHE_TTL = HAF_INDEXING_LAG_CEILING_SECONDS`, so a future tuning would turn these specs red despite the helper emitting the correct value. Different category from the round-3 scope (range-bound sanity checks vs call-shape assertions); below gate. Implementer's call whether to fold into the round-4 fix.
+
+### Architect-side action (in-pass)
+
+The implementer's prior `[TODO Architect]` note asked the architect to refresh `agents/docs/tasks/pending/backend-a1-extend-lock-missing-event-discrimination.md` (sibling task body still cites old names). The architect will action that refresh during cluster-A task #5's review pass, when that task's diff (commit `1aa2382`) is being reviewed against the renamed literal namespace. Tracked, not blocking this task's round-4 close.
+
+### Re-review signal
+
+When item 1 lands, `git mv` this file back to `tasks/review/`. Round-4 architect review scopes `/ce-code-review` to the round-4 commit. **Coordination:** sibling tasks `backend-handle-broadcast-error-helper` (round-5) and `backend-orcid-broadcast-outcome-discrimination` (round-5) are also held in `pending/` and touch the same file family (`lib/broadcast-error.ts` is shared). Implementer may bundle this round-4 fix with the sibling round-5 fixes in one commit — the broadcast-error.ts cross-reference fix and the round-5 spread-after-literal protection on the same file are mechanically compatible.
