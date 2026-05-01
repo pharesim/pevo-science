@@ -272,3 +272,63 @@ The positive-control spec catches a regression that turns the guard into an over
 
 - `backend/src/hive.ts` — constructor guard added; comment cross-references round-4 hold #1 and the design rationale (single throw site → constructor-level defense).
 - `backend/tests/hive-broadcast-timeout.test.ts` — 6 new specs in the validation describe block.
+
+---
+
+## Architect re-review (2026-05-01, round-4 → round-5) — HELD PENDING FIXES
+
+`/ce-code-review` ran on commit `4d7dcd5` (round-4 hold-fix bundle, also covers `backend-orcid-broadcast-outcome-discrimination` round-4). 10 personas (correctness, testing, maintainability, project-standards, agent-native, learnings, reliability, kieran-typescript, adversarial, security). The constructor guard, `event:`-after-spread reorder, and `currentStep` comment rewrite all land mechanically as specified. Tests cover what they claim (mutation-kill verified for both new spec families). But the constructor guard's placement reverses the regression class it was meant to close — five-reviewer convergence (correctness 50, agent-native 75, reliability 90, adversarial 80, security 50) promotes this to anchor 100.
+
+### Items to address
+
+**1. (P1) Constructor RangeError throws inside the `setTimeout` callback as uncaughtException; never reaches `reject(...)`.** `backend/src/hive.ts:44-48` (the guard) thrown from `:91` and `:140` (the `setTimeout(() => reject(new BroadcastTimeoutError(timeoutMs)))` closures). Failure mode:
+
+- The throw fires synchronously inside the timer callback BEFORE the `reject(new BroadcastTimeoutError(...))` argument-construction completes.
+- The wrapping `Promise.race` never sees a rejection — the timeout half stays pending; the wrapper falls back to dhive's no-timeout broadcast (the very hang the wrapper exists to prevent — see hive.ts header comment lines 67-73).
+- The throw bubbles to Node's `process.on('uncaughtException')` handler at `backend/src/index.ts:24-27`, which calls `process.exit(1)`. Single-process PEvO worker dies. In-flight HTTP request → TCP reset (no 502/504 envelope). Collateral in-flight requests die.
+- The route handler's `try/catch` cannot catch a throw from a timer callback — `handleBroadcastError`'s 504/502 classification is bypassed entirely.
+- Pre-fix wire-shape regression (the guard was meant to close): `details.timeout_ms: null` in 504 envelope, `NaN` in operator log. P3 cosmetic + dashboard-key concern.
+- Post-fix failure: process crash, no envelope, no log line about the broadcast outcome. **Strictly worse than the regression the guard was meant to prevent.**
+
+Triggered only if a future broadcast wrapper passes NaN/Infinity/0/negative `timeoutMs` (no production caller does today; `DEFAULT_BROADCAST_TIMEOUT_MS = 30_000` is a constant, not env-derived, no 3rd-arg override is wired anywhere). The hazard is the *future-caller scenario the guard's commit message names*.
+
+**Architect prescription: option (a) — validate at the wrapper entry.** Move the bound check from the `BroadcastTimeoutError` constructor to the entry of `broadcastJsonWithTimeout` and `broadcastSendOperationsWithTimeout`. Suggested shape:
+
+```ts
+export async function broadcastJsonWithTimeout(
+  payload: ...,
+  postingKey: PrivateKey,
+  timeoutMs: number = DEFAULT_BROADCAST_TIMEOUT_MS,
+): Promise<...> {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    throw new RangeError(
+      `broadcastJsonWithTimeout requires a finite positive timeoutMs; got ${String(timeoutMs)}`,
+    );
+  }
+  // ... existing Promise.race(setTimeout(..., timeoutMs), broadcast) ...
+}
+```
+
+The throw now propagates as a normal Promise rejection from the wrapper's async function — reaches the route's `catch` → `handleBroadcastError` classifies as the non-timeout branch → emits 502 BROADCAST_FAILED with a structured operator log. Same defensive intent at the right layer.
+
+**Decision on the constructor guard:** keep it OR drop it; both are defensible after (a). Keeping it is belt-and-suspenders and provides the "single source of truth" framing the round-4 commit message claims; the guard never fires in practice once the wrapper-entry check is in place. Dropping it removes the dead code. Implementer's call; if kept, the constructor-spec test matrix stays.
+
+**Test coverage:** add an integration spec exercising the wrapper-entry guard end-to-end. Suggested shape:
+```ts
+it('rejects with RangeError when timeoutMs is NaN, without scheduling a timer or invoking dhive', async () => {
+  const broadcast = vi.fn();
+  await expect(broadcastJsonWithTimeout(payload, key, Number.NaN)).rejects.toThrow(RangeError);
+  expect(broadcast).not.toHaveBeenCalled();
+});
+```
+Mutation-kill: removing the wrapper-entry guard lets the test reach the `setTimeout` callback and either crash the test process (uncaughtException) or hang. Either failure mode flips the spec red.
+
+### Items dismissed during architect triage
+
+- **Maintainability M1+M2 (P3 conf 55, conf 50):** comment-only refinements (orcid.ts self-referential history note + duplicate spread-rationale at sibling sites). Cosmetic; below confidence gate.
+- **Constructor-spec edge cases (`-0`, non-number runtime inputs, sub-millisecond):** runtime-input concern is out of scope (TS contract is `number`); sub-ms passes the guard but Node clamps anyway.
+- **Throw-before-`super(...)` legality:** verified safe by the adversarial reviewer — the guard references only the parameter, not `this`. No finding.
+
+### Re-review signal
+
+When item 1 lands, `git mv` this file back to `tasks/review/`. Round-5 architect review scopes `/ce-code-review` to the round-5 commit. The architect's parity-audit recommendation from the learnings persona (no constructor-time validation on `PostBroadcastWriteError`'s `txId` and `failedStep` parameter-property fields) is filed separately as a follow-up consideration; not blocking this round-5 close.

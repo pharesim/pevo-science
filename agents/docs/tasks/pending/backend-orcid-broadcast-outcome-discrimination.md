@@ -520,3 +520,52 @@ Two new specs added to `backend/tests/lib/broadcast-error.test.ts` at the bottom
 - `backend/src/lib/broadcast-error.ts` — `event:` repositioned after `...opts.logContext` at both anchor sites; inline comments added cross-referencing round-4 hold #1.
 - `backend/src/routes/orcid.ts` — comment block above `currentStep` declaration in handleAccredit rewritten to distinguish intent-signal vs enforcement-signal annotations.
 - `backend/tests/lib/broadcast-error.test.ts` — 2 new spread-kill mutation-sensitive specs at the tail of the `handleBroadcastError` describe.
+
+---
+
+## Architect re-review (2026-05-01, round-4 → round-5) — HELD PENDING FIXES
+
+`/ce-code-review` ran on commit `4d7dcd5` (round-4 hold-fix bundle; also covers `backend-handle-broadcast-error-helper` round-4). 10 personas. The `event:` reorder is mechanically correct; mutation-kill specs verified. The `handleLink` `Extract<>` claim in the rewritten comment is verified accurate (handleLink uses `Extract<PostBroadcastFailedStep, 'cache_write' | 'account_update'>` at line 799). But the spread-after-literal protection was applied to one field of five; three independent reviewers (correctness 50, adversarial 75, security 50) flagged the asymmetry — cross-reviewer convergence promotes to anchor 100. A second adversarial-only finding at conf 80 surfaces a sibling-anchor convention gap.
+
+### Items to address
+
+**1. (P2) Spread-after-literal protection applied to `event:` only; `err` / `cause` / `txId` / `failedStep` remain BEFORE the spread.** `backend/src/lib/broadcast-error.ts:194-197` (post_broadcast_write_failed) and `:220-224` (post_broadcast_msg_fn_threw). Same JS later-wins mechanic, same caller-override exposure. Per `agents/docs/api-contracts/orcid.md`, `failed_step` is documented as a per-step recovery discriminator (`'cache_write'` → next-request reconciliation; `'account_update'` → manual operator re-run; `'reputation_seed'` → next batch cycle). A future caller bug that drops a `failedStep` key into `logContext` would mis-route operator alerts to the wrong cascade step while the wire envelope still uses `err.failedStep` — same divergence the round-4 fix closed for `event:`, just on a different field.
+
+Not exploitable today: all 13 production `logContext` call sites construct from server-derived fields only (validated `username` from `verifyHiveSignature`, server-generated permlink, `config.hiveBridgeAccount`, `hashEmailForLogs(email)`, mode literals). No caller drops keys named `failedStep` / `txId` / `cause` / `err`. Defense-in-depth gap; the round-4 invariant ("the literal must always win") was applied to 1 field of 5.
+
+**Fix: option (a) — move all four authoritative fields after the spread at both anchor sites.** Suggested shape (illustrated for the `post_broadcast_write_failed` anchor; mirror at `post_broadcast_msg_fn_threw`):
+
+```ts
+logger.error(
+  {
+    ...opts.logContext,
+    // Authoritative fields placed AFTER the spread so a caller-supplied
+    // `logContext: { failedStep / txId / cause / err: ... }` cannot silently
+    // override the helper's source-of-truth values. Same later-wins
+    // semantics defense as the `event:` literal below.
+    err,
+    cause: err.cause,
+    txId: err.txId,
+    failedStep: err.failedStep,
+    event: 'post_broadcast_write_failed',
+  },
+  `${opts.routeLabel} broadcast confirmed but post-broadcast write failed`,
+);
+```
+
+Extend the round-4 mutation-kill specs in `backend/tests/lib/broadcast-error.test.ts` to cover the four additional fields (one negative assertion per field per anchor — 8 new assertions total). Pattern matches the existing `event:` spread-kill specs.
+
+**2. (P3) Three sibling logger sites in `lib/broadcast-error.ts` carry no structured `event:` discriminator.** `:244` (`broadcast timed out`), `:272` (`broadcast failed on ambiguous-outcome path`), `:292` (`broadcast failed`). The file's docblock at `:59-62` enumerates four operator-alert anchors; round-4 hardened the `event:` discriminator on ONE of them. Dashboards keyed on `event:` see only post-broadcast-cascade alerts; the timeout / ambiguous-outcome / generic-failure anchors rely on brittle message-string suffix matching.
+
+**Fix:** add `event: 'broadcast_timeout'` / `'broadcast_ambiguous'` / `'broadcast_failed'` (or analogous; implementer's call on the exact verb) to the three sibling sites. Place AFTER the spread per item 1's convention. Add one assertion per anchor in the test file pinning the literal under `expect.objectContaining`. Aligns the operator-anchor surface with the broader convention documented in `agents/docs/solutions/conventions/auth-structured-log-shape-2026-04-29.md` (auth.ts uses `event:` as the canonical aggregator key; this file's anchors should match).
+
+### Items dismissed during architect triage
+
+- **Maintainability M1 (P3 conf 55):** rewritten currentStep comment in `routes/orcid.ts:654-656` ends with self-referential parenthetical describing a fix to text that no longer exists. Cosmetic; below gate.
+- **Maintainability M2 (P3 conf 50):** spread-override rationale duplicated at the two anchor sites in `broadcast-error.ts`. Defensible verbatim duplication for two adjacent sites.
+- **Testing residuals (conf 50):** ordering between the two anchors not asserted; non-string runtime inputs not covered. Below gate.
+- **Parity-audit suggestion from learnings persona:** `PostBroadcastWriteError`'s `txId` and `failedStep` parameter-property fields have no constructor-time validation. Filed as a follow-up consideration; not blocking this round-5 close.
+
+### Re-review signal
+
+When items 1-2 land, `git mv` this file back to `tasks/review/`. Round-5 architect review scopes `/ce-code-review` to the round-5 commit. Coordinate with `backend-handle-broadcast-error-helper` round-5 (sibling task; constructor-guard hazard from the same `4d7dcd5` review pass — the implementer may bundle both round-5 fixes in one commit since they touch the same file family).
