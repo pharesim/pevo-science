@@ -34,6 +34,39 @@ import { PrivateKey } from '@hiveio/dhive';
 //     primary safety property of the Redlock release path, which the other
 //     specs only exercise indirectly.
 //
+// BACKEND-A1-EXTEND-LOCK-MISSING-EVENT-DISCRIMINATION (round-1, then round-2
+// hold #2 narrowing): the lock-extension helper at orcid.ts:968+ now reads
+// `redis.pttl(lockKey)` immediately before `redis.expire(...)` so the
+// `binding_lock_extend_lock_missing` operator anchor can carry a `cause:`
+// discriminator. Three specs use `vi.spyOn(redis, 'pttl')` and/or
+// `vi.spyOn(redis, 'expire')` to drive the discrimination matrix:
+//   * `cause=expired_or_evicted` (lock key absent) — exercised end-to-end
+//     against REAL Redis via `redis.del(lockKey)` then a direct
+//     `__test_seams.extendBindingLockOnTimeoutOrLog` call. No spy needed —
+//     `redis.expire` against a missing key resolves to 0 with no exception.
+//   * `cause=released_during_extend` (race window between probe and extend)
+//     — `vi.spyOn(redis, 'pttl').mockResolvedValueOnce(30_000)` +
+//     `vi.spyOn(redis, 'expire').mockResolvedValueOnce(0)`. Cannot be
+//     induced deterministically against real Redis: the failure mode is a
+//     co-running sibling `releaseBindingLock` Lua CAS DEL'ing the key in
+//     the microsecond gap between the helper's two redis calls; the test
+//     suite has no concurrent-fixture infrastructure that can produce
+//     that race reliably.
+//   * `binding_lock_extend_threw` (pttl-throw sibling to the existing
+//     expire-throw spec, round-2 hold #1) — `vi.spyOn(redis, 'pttl')
+//     .mockRejectedValueOnce(...)` to verify the round-1 invariant that a
+//     pttl flap falls through to the same outer catch (doesn't widen the
+//     failure surface). Cannot be induced against real Redis (the local
+//     dev Redis is reliable; transient connection drops mid-call require
+//     network-level fault injection).
+//
+// All three spies are scoped to single methods on single calls each, with
+// `mockRestore()` in `finally`. `verifyHiveSignature` and the auth middleware
+// chain are NOT mocked. Real-Redis sibling coverage exists for the
+// `expired_or_evicted` branch (the absent-key spec uses live `redis.del` +
+// real `redis.expire`); the carve-out is narrow to the deterministic-race
+// and Redis-flap variants.
+//
 // Confirmed STILL UNMOCKED for the new specs (per root CLAUDE.md carve-out):
 // verifyHiveSignature, the rest of the auth middleware chain, the real Redis
 // client (lock/cache keys are observed via live redis.get / redis.set calls
@@ -2003,6 +2036,102 @@ describe.each([
           __test_seams.HAF_INDEXING_LAG_CEILING_SECONDS,
         );
       } finally {
+        expireSpy.mockRestore();
+        errorSpy.mockRestore();
+        await redis.del(lockKey, cacheKey).catch(() => { /* cleanup */ });
+      }
+    },
+  );
+
+  // BACKEND-A1-EXTEND-LOCK-MISSING-EVENT-DISCRIMINATION round-2 hold #1 —
+  // sibling to the expire-throw spec above. The `pttl` probe added in round-1
+  // is best-effort: a Redis flap that rejects the probe should fall through
+  // to the same outer `binding_lock_extend_threw` anchor as an expire-throw
+  // would (the catch at orcid.ts:1018 wraps both calls). The architect's
+  // hold block warns that a refactor wrapping `pttl` in its own try/catch
+  // (silently swallowing the rejection and falling through to `expire`)
+  // would break the round-1 implementer's "doesn't widen the failure
+  // surface" invariant without surfacing as a test failure unless this
+  // spec is in place.
+  //
+  // Mutation kill: removing the round-1 `pttlBefore = await redis.pttl(...)`
+  // line lets `expire` run against the absent key, which returns 0 and
+  // routes to `binding_lock_extend_lock_missing` instead — different event,
+  // spec fails red. Adding a swallow-and-default-pttl wrapper around the
+  // `pttl` call also routes to lock_missing (with `cause:'unknown'` since
+  // `pttlBefore` would be the swallowed default). Spec passes only when
+  // the throw propagates to the outer catch, exactly the round-1 invariant.
+  it(
+    'extendBindingLockOnTimeoutOrLog catches redis.pttl throw and emits the same operator-alert anchor as expire-throw (round-2 hold #1)',
+    async () => {
+      const redis = getRedis();
+      if (!redis) return;
+      const orcidId = `0000-0001-${orcidSuffix}${orcidSuffix}${orcidSuffix}${orcidSuffix}-0017`;
+      const lockKey = `${config.appTag}:orcid_binding_lock:${orcidId}`;
+      const cacheKey = `${config.appTag}:orcid_binding:${orcidId}`;
+      await redis.del(lockKey, cacheKey).catch(() => { /* ignore */ });
+
+      installOrcidFetchStub({ orcid: orcidId, name: 'Alice', works: 3 });
+      installLockModeMocks();
+      broadcastJsonMock.mockRejectedValueOnce(new MockBroadcastTimeoutError(30_000));
+
+      // Reject the pttl probe; do NOT install a spy on `expire`. Under the
+      // round-1 invariant, `expire` is never called when `pttl` rejects —
+      // the throw transfers control to the outer catch directly.
+      const pttlSpy = vi
+        .spyOn(redis, 'pttl')
+        .mockRejectedValueOnce(new Error('synthetic redis.pttl flap'));
+      const expireSpy = vi.spyOn(redis, 'expire');
+      const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => undefined as unknown as void);
+
+      try {
+        const state = await startAuthed(mode, 'alice');
+        const res = await request(app)
+          .post('/api/orcid/callback')
+          .set('Authorization', `Bearer ${jwtFor('alice')}`)
+          .send({ code: 'fake', state });
+
+        // Standard 504 BROADCAST_TIMEOUT — same as the expire-throw spec.
+        // The original throw was BroadcastTimeoutError, the canonical
+        // timer-fire envelope still fires regardless of what happened
+        // inside the helper's lock-extension probe.
+        expect(res.status).toBe(504);
+        expect(res.body.error.code).toBe('BROADCAST_TIMEOUT');
+        expect(res.body.error.details).toMatchObject({
+          retriable: false,
+          outcome: 'uncertain',
+          verify_before_retry: true,
+          timeout_ms: 30_000,
+        });
+
+        // Outer-catch anchor MUST fire with the same `event:` literal as
+        // the expire-throw spec. The thrown error's identity surfaces as
+        // `err: <Error>` so a regression that loses the cause (e.g. a
+        // refactor that catches pttl separately and re-throws a wrapped
+        // error) still pins the discriminator. The round-1 implementer's
+        // claim ("the new probe doesn't widen the failure surface") is
+        // load-bearing on this assertion.
+        expect(errorSpy).toHaveBeenCalledWith(
+          expect.objectContaining({
+            event: 'binding_lock_extend_threw',
+            orcidId,
+            err: expect.any(Error),
+          }),
+          expect.stringContaining('orcid binding lock TTL extension failed'),
+        );
+        // The lock-missing anchor MUST NOT fire on this path — that's the
+        // alternative branch a swallow-and-fall-through refactor would
+        // route to, so pinning its absence catches that mutation class.
+        expect(errorSpy).not.toHaveBeenCalledWith(
+          expect.objectContaining({ event: 'binding_lock_extend_lock_missing' }),
+          expect.anything(),
+        );
+        // `expire` was never called — the pttl throw skipped past it
+        // straight to the catch. Pinning this anchors the round-1 design
+        // (best-effort probe runs first; throw bypasses the extend call).
+        expect(expireSpy).not.toHaveBeenCalled();
+      } finally {
+        pttlSpy.mockRestore();
         expireSpy.mockRestore();
         errorSpy.mockRestore();
         await redis.del(lockKey, cacheKey).catch(() => { /* cleanup */ });

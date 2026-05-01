@@ -170,3 +170,40 @@ Architect refreshed the task body in this same review pass to use the renamed `b
 ### Re-review signal
 
 When items 1-2 land, `git mv` this file back to `tasks/review/`. Round-2 architect review scopes `/ce-code-review` to the round-2 commit.
+
+---
+
+## Backend re-review signal (2026-05-01, working tree)
+
+Both round-2 hold items landed. Test-only changes; no production-code edits.
+
+**Item 1 (P1) — pttl-throw spec mirroring the existing expire-throw shape.** `backend/tests/routes/orcid.test.ts`: added a new spec `extendBindingLockOnTimeoutOrLog catches redis.pttl throw and emits the same operator-alert anchor as expire-throw (round-2 hold #1)` immediately after the existing `expire-throw` spec, inside the `same-tick SETNX lock — $mode mode` describe.each block (so it runs across both `accredit` and `link` modes — 2 spec instances total). The spec stubs `redis.pttl` to reject (synthetic flap), installs a passive spy on `redis.expire` (no implementation override), and asserts:
+
+- 504 BROADCAST_TIMEOUT envelope unchanged (timer-fire shape with `timeout_ms: 30_000`, NOT routed through the ambiguous-outcome branch).
+- Outer-catch anchor fires with `objectContaining({ event: 'binding_lock_extend_threw', orcidId, err: expect.any(Error) })` and the canonical message-suffix `'orcid binding lock TTL extension failed'`. Pins the round-1 implementer's "doesn't widen the failure surface" invariant — a regression that wraps `pttl` in a swallow-and-fall-through try/catch would route the error to a different anchor.
+- **Negative-shape assertion: `binding_lock_extend_lock_missing` anchor MUST NOT fire on this path.** This catches the swallow-and-fall-through mutation class explicitly: a refactor that catches `pttl` separately and falls through with a default `pttlBefore` would route to `lock_missing` (likely with `cause:'unknown'`) instead of `threw`. Spec fails red on that mutation.
+- **`expire` was never called** — `expect(expireSpy).not.toHaveBeenCalled()`. Pins the round-1 design: best-effort probe runs first; throw bypasses the extend call. A regression that retries `expire` after `pttl` rejects (or moves `expire` ahead of `pttl`) surfaces here.
+
+**Item 2 (P2) — test-file header carve-out paragraph documenting the new redis spy pattern.** `backend/tests/routes/orcid.test.ts:25-44` (the carve-out section). Added a new paragraph anchored on `BACKEND-A1-EXTEND-LOCK-MISSING-EVENT-DISCRIMINATION (round-1, then round-2 hold #2 narrowing)` enumerating all three lock-extend specs that touch `redis.pttl` / `redis.expire`:
+
+- `cause=expired_or_evicted` (lock-absent end-to-end against REAL Redis — no spy needed; documented to make the carve-out narrow on the deterministic-race + Redis-flap variants).
+- `cause=released_during_extend` (race-window via `vi.spyOn(redis, 'pttl').mockResolvedValueOnce(30_000)` + `vi.spyOn(redis, 'expire').mockResolvedValueOnce(0)` — explains why it can't be deterministically induced against real Redis: a co-running sibling `releaseBindingLock` Lua CAS DEL'ing the key in the microsecond gap between the helper's two calls, no concurrent-fixture infrastructure for that).
+- `binding_lock_extend_threw` (pttl-throw sibling per item 1 — explains why it can't be induced against real Redis: local dev Redis is reliable; transient mid-call connection drops require network-level fault injection).
+
+Closes the dangling pointer at lines 2061-2070 (the `released_during_extend` spec's inline `see tests/routes/orcid.test.ts header` reference). All three spies are documented as scoped to single methods on single calls each, with `mockRestore()` in `finally`. Real-Redis sibling coverage is documented (the absent-key spec exercises live `redis.del` + real `redis.expire` for the `expired_or_evicted` branch); the carve-out is explicitly narrow.
+
+### Verification
+
+- `npx tsc --noEmit` clean.
+- `npm run lint` clean (only the 2 pre-existing `seed-phrase.ts` `any` warnings).
+- `npx vitest run tests/routes/orcid.test.ts -t "extendBindingLockOnTimeoutOrLog"` → **10/67 pass** (was 8/65 before this round; +2 = 1 new spec × 2 modes via describe.each). Live log confirms `event:'broadcast_timeout'` fires under the new spec and `event:'binding_lock_extend_threw'` fires for the expected outer catch.
+- `npx vitest run tests/routes/orcid.test.ts` (full file) → **67/67 pass** (was 65/65 before).
+- Full backend suite is the architect's call (per CLAUDE.md guidance).
+
+### Files changed
+
+- `backend/tests/routes/orcid.test.ts` — new pttl-throw spec inserted between the existing `expire-throw` spec and the `binding_lock_extend_lock_missing` lock-absent spec; header carve-out section extended with a paragraph documenting the new `redis.pttl` / `redis.expire` spy pattern.
+
+### Architect-side residuals (deferred, unchanged from round-1 hold)
+
+- `[TODO Architect]` convention-doc paragraph in `agents/docs/solutions/conventions/chain-write-timeout-ambiguous-outcome-2026-04-22.md` documenting the `cause:` discriminator on `binding_lock_extend_lock_missing` (suggested prose in the round-1 implementer signal block remains accurate). Architect-zone work; deferred to the broader event-anchor convention rollup sweep.
