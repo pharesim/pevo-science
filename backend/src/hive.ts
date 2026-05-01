@@ -32,15 +32,26 @@ export async function checkHiveNodes(): Promise<void> {
 
 export class BroadcastTimeoutError extends Error {
   constructor(public readonly timeoutMs: number) {
-    // Round-4 hold #1 (BE-HANDLE-BROADCAST-ERROR-HELPER): reject non-finite or
-    // non-positive `timeoutMs` at the single throw site. Without this guard a
-    // future broadcast wrapper passing NaN, Infinity, 0, or a negative number
-    // (env-var misread, refactored helper) would emit `timeout_ms: null` in
-    // the wire envelope and `NaN` in operator logs. Constructor-time defense
-    // is preferable to a downstream sanitiser because there's only one throw
-    // site (the timer-fire path inside `broadcastJsonWithTimeout` /
-    // `broadcastSendOperationsWithTimeout`); guarding here pins the invariant
-    // at the source of truth instead of leaving every consumer to re-check.
+    // Round-5 hold #1 (BE-HANDLE-BROADCAST-ERROR-HELPER): the canonical
+    // input-validation site is now the wrapper entry below
+    // (`assertFinitePositiveTimeoutMs`), NOT this constructor. Round 4
+    // placed the guard here, but the only throw site is inside the
+    // `setTimeout(() => reject(new BroadcastTimeoutError(timeoutMs)))`
+    // closure: a synchronous throw from the constructor fires *before*
+    // `reject()` is called, so the wrapping `Promise.race` never observes
+    // the rejection. The throw escapes to `process.on('uncaughtException')`
+    // and crashes the process. Strictly worse than the regression it was
+    // meant to prevent (a `null` timeout_ms field). The wrapper-entry guard
+    // throws as a normal async-function rejection that reaches the route
+    // catch and emits a 502 `BROADCAST_FAILED` envelope via
+    // `handleBroadcastError`'s non-timeout branch.
+    //
+    // The constructor guard is kept as belt-and-suspenders: it never fires
+    // in practice once the wrapper-entry check is in place, and dropping it
+    // would lose the "single source of truth" framing for any future caller
+    // that constructs the error directly. If it ever did fire it would be
+    // from a non-wrapper caller (e.g. a future test fixture or unit-level
+    // throw) where synchronous throw semantics are fine.
     if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
       throw new RangeError(
         `BroadcastTimeoutError requires a finite positive timeoutMs; got ${String(timeoutMs)}`,
@@ -53,6 +64,24 @@ export class BroadcastTimeoutError extends Error {
     if (Error.captureStackTrace) {
       Error.captureStackTrace(this, BroadcastTimeoutError);
     }
+  }
+}
+
+/**
+ * Wrapper-entry guard for `timeoutMs`. Validates the same invariant the
+ * `BroadcastTimeoutError` constructor enforces, but at the entry of
+ * `broadcastJsonWithTimeout` / `broadcastSendOperationsWithTimeout` so the
+ * `RangeError` propagates as a normal async-function rejection (reaches the
+ * route's catch → `handleBroadcastError` → 502 `BROADCAST_FAILED` envelope)
+ * instead of firing inside the `setTimeout` callback as an
+ * `uncaughtException` (which would crash the process before any envelope is
+ * written). Round-5 hold #1 (BE-HANDLE-BROADCAST-ERROR-HELPER).
+ */
+function assertFinitePositiveTimeoutMs(timeoutMs: number, fnName: string): void {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    throw new RangeError(
+      `${fnName} requires a finite positive timeoutMs; got ${String(timeoutMs)}`,
+    );
   }
 }
 
@@ -86,6 +115,13 @@ export async function broadcastJsonWithTimeout(
   key: PrivateKey,
   timeoutMs: number = DEFAULT_BROADCAST_TIMEOUT_MS,
 ): Promise<BroadcastJsonResult> {
+  // Validate at the wrapper entry, BEFORE scheduling the timer or invoking
+  // dhive: a `RangeError` thrown here propagates as a normal async-function
+  // rejection (reaches the route's catch → `handleBroadcastError`'s 502
+  // `BROADCAST_FAILED` envelope). Validating inside the `setTimeout` callback
+  // via the constructor guard would fire as an uncaughtException and crash
+  // the process. Round-5 hold #1 (BE-HANDLE-BROADCAST-ERROR-HELPER).
+  assertFinitePositiveTimeoutMs(timeoutMs, 'broadcastJsonWithTimeout');
   let timer: NodeJS.Timeout | undefined;
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(() => reject(new BroadcastTimeoutError(timeoutMs)), timeoutMs);
@@ -135,6 +171,9 @@ export async function broadcastSendOperationsWithTimeout(
   key: PrivateKey,
   timeoutMs: number = DEFAULT_BROADCAST_TIMEOUT_MS,
 ): Promise<BroadcastSendOperationsResult> {
+  // Round-5 hold #1: same wrapper-entry validation as
+  // `broadcastJsonWithTimeout`. See its comment for the full rationale.
+  assertFinitePositiveTimeoutMs(timeoutMs, 'broadcastSendOperationsWithTimeout');
   let timer: NodeJS.Timeout | undefined;
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(() => reject(new BroadcastTimeoutError(timeoutMs)), timeoutMs);

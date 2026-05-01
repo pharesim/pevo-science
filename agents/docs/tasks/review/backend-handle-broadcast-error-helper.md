@@ -332,3 +332,59 @@ Mutation-kill: removing the wrapper-entry guard lets the test reach the `setTime
 ### Re-review signal
 
 When item 1 lands, `git mv` this file back to `tasks/review/`. Round-5 architect review scopes `/ce-code-review` to the round-5 commit. The architect's parity-audit recommendation from the learnings persona (no constructor-time validation on `PostBroadcastWriteError`'s `txId` and `failedStep` parameter-property fields) is filed separately as a follow-up consideration; not blocking this round-5 close.
+
+---
+
+## Backend re-review signal (2026-05-01, working tree)
+
+Round-5 hold item 1 landed.
+
+**Item 1 (P1) — wrapper-entry validation, not constructor.** Picked option (a) per the architect's prescription: validate `timeoutMs` at the entry of `broadcastJsonWithTimeout` and `broadcastSendOperationsWithTimeout`. Both wrappers now call a shared `assertFinitePositiveTimeoutMs(timeoutMs, fnName)` helper as their first statement, BEFORE scheduling the `setTimeout` timer or invoking dhive. A non-finite or non-positive `timeoutMs` now produces a `RangeError` rejection from the wrapper's async function, which propagates to the route's catch → `handleBroadcastError`'s non-timeout branch → 502 `BROADCAST_FAILED` envelope (the `event:'broadcast_failed'` anchor lit in round-5 hold #2 of the sibling task surfaces it on the operator dashboard). The pre-fix failure mode (RangeError fires inside `Timeout._onTimeout` → uncaughtException → `process.exit(1)`) is closed.
+
+**Constructor guard kept (belt-and-suspenders).** The `BroadcastTimeoutError` constructor's RangeError check stays in place. It never fires in practice once the wrapper-entry guard is active — every production throw path goes through one of the two wrappers — but it preserves the "single source of truth" framing for any future caller that constructs the error directly (e.g. test fixtures, unit-level throws). The constructor's docblock is rewritten to point at the wrapper-entry guard as the canonical site and to document why the constructor-level guard alone was insufficient.
+
+### Tests
+
+`backend/tests/hive-broadcast-timeout.test.ts` — added two `describe('… wrapper-entry guard')` blocks (one per wrapper) with 6 specs each:
+
+- NaN → `RangeError`, dhive mock not called.
+- positive Infinity → `RangeError`, dhive mock not called.
+- negative Infinity → `RangeError`, dhive mock not called.
+- zero → `RangeError`, dhive mock not called.
+- negative number → `RangeError`, dhive mock not called.
+- finite positive (5000) → broadcast resolves successfully (positive control). Catches a regression that turns the guard into an over-eager rejector.
+
+The existing 6 `BroadcastTimeoutError constructor input validation` specs still pass (the constructor guard wasn't dropped). Total: 18 input-validation specs (6 constructor + 6 wrapper-entry × 2 wrappers) covering both layers of the defense. `not.toHaveBeenCalled()` on the dhive mock pins the wrapper-entry placement: a regression that moves the guard *after* the dhive call would let `dhive.broadcast.json` fire before the throw and that assertion fails.
+
+### Mutation-sensitivity verification
+
+Locally replaced `assertFinitePositiveTimeoutMs(timeoutMs, 'broadcastJsonWithTimeout');` with a commented-out `// assertFinitePositiveTimeoutMs(...)` line in `broadcastJsonWithTimeout` (constructor guard left in place). Ran `npx vitest run tests/hive-broadcast-timeout.test.ts -t "broadcastJsonWithTimeout input validation"`. Result: 5 of 6 specs failed red (NaN, +Infinity, -Infinity, 0, -1) with the diagnostic shape the round-5 hold block predicted:
+
+```
+RangeError: BroadcastTimeoutError requires a finite positive timeoutMs; got 0
+ ❯ new BroadcastTimeoutError src/hive.ts:56:13
+ ❯ Timeout._onTimeout src/hive.ts:122:37
+ ❯ listOnTimeout node:internal/timers:581:17
+```
+
+The throw fires inside `Timeout._onTimeout` (the setTimeout callback at the wrapper's timer-fire path), surfaces as a Vitest "Uncaught Exception", and the original `expect(...).rejects.toThrow(RangeError)` never observes a rejection — exactly the production failure mode the architect described (the wrapping `Promise.race` never sees a rejection because the throw happens inside the timer callback, not at the `reject(...)` call). The positive-control spec (5000ms) passed. Restored the wrapper-entry guard. Re-ran the full file → 24/24 pass.
+
+This verification empirically confirms three claims from the round-5 hold block:
+
+1. The constructor-level guard alone is unreachable through `Promise.race` (the timer callback throws synchronously before `reject()` is called).
+2. The throw escapes to `process.on('uncaughtException')` (Vitest's "Uncaught Exception" surface is its uncaughtException handler).
+3. The wrapper-entry guard is the load-bearing fix; the constructor guard is dead defense once it's in place.
+
+### Verification
+
+- `npx tsc --noEmit` clean.
+- `npm run lint` clean (only the 2 pre-existing `seed-phrase.ts` `any` warnings).
+- `npx vitest run tests/hive-broadcast-timeout.test.ts tests/lib/broadcast-error.test.ts` → 43/43 pass (24 hive-broadcast-timeout + 19 broadcast-error including 5 new round-5 sibling-task specs).
+- `npx vitest run tests/routes/orcid.test.ts` → 65/65 pass (operator logs visibly carry `event:'broadcast_timeout'`).
+- `npx vitest run tests/routes/accreditation.test.ts tests/routes/papers.test.ts tests/routes/claims.test.ts tests/routes/custody.test.ts tests/routes/bridge.test.ts` → 65/66 pass (1 pre-existing skip; no failures from the round-5 changes).
+- Full backend vitest deferred to the architect's pass.
+
+### Files changed
+
+- `backend/src/hive.ts` — extracted `assertFinitePositiveTimeoutMs(timeoutMs, fnName)` helper; added wrapper-entry calls in `broadcastJsonWithTimeout` and `broadcastSendOperationsWithTimeout`; rewrote the constructor's docblock to point at the wrapper-entry guard as the canonical site (round-5 rationale: Promise.race + timer-fire callback semantics).
+- `backend/tests/hive-broadcast-timeout.test.ts` — 12 new specs (6 per wrapper) in two `describe(... wrapper-entry guard)` blocks at the file tail. Each spec asserts `RangeError` rejection and `expect(broadcastSpy).not.toHaveBeenCalled()` to pin the BEFORE-dhive-call placement.

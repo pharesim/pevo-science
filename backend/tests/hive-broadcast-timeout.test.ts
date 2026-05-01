@@ -142,3 +142,120 @@ describe('BroadcastTimeoutError constructor input validation', () => {
     expect(err.message).toContain('30000ms');
   });
 });
+
+// Round-5 hold #1 (BE-HANDLE-BROADCAST-ERROR-HELPER): the canonical
+// input-validation site is the wrapper entry, NOT the constructor. The
+// constructor guard is unreachable in production: the only throw site is
+// inside `setTimeout(() => reject(new BroadcastTimeoutError(timeoutMs)))`,
+// where a synchronous constructor throw fires before `reject()` is called,
+// escapes to `process.on('uncaughtException')`, and crashes the process. The
+// wrapper-entry guard catches the same invariant before the timer is
+// scheduled or dhive is invoked, so the throw propagates as a normal
+// async-function rejection that reaches the route's catch and produces a 502
+// `BROADCAST_FAILED` envelope.
+//
+// Mutation kill: removing `assertFinitePositiveTimeoutMs(...)` from the
+// wrapper entry sends control through to the `setTimeout` closure, where the
+// constructor guard fires synchronously and either (a) crashes the test
+// process via uncaughtException (Vitest typically surfaces this as a non-zero
+// exit + "Unhandled error" log) or (b) hangs forever waiting for a
+// rejection that never arrives. Either failure mode flips these specs red.
+describe('broadcastJsonWithTimeout input validation (wrapper-entry guard)', () => {
+  it('rejects with RangeError on NaN timeoutMs without scheduling a timer or invoking dhive', async () => {
+    const broadcastSpy = vi.spyOn(hiveClient.broadcast, 'json');
+    await expect(
+      broadcastJsonWithTimeout(DUMMY_PAYLOAD, DUMMY_KEY, Number.NaN),
+    ).rejects.toThrow(RangeError);
+    expect(broadcastSpy).not.toHaveBeenCalled();
+  });
+
+  it('rejects with RangeError on +Infinity timeoutMs', async () => {
+    const broadcastSpy = vi.spyOn(hiveClient.broadcast, 'json');
+    await expect(
+      broadcastJsonWithTimeout(DUMMY_PAYLOAD, DUMMY_KEY, Number.POSITIVE_INFINITY),
+    ).rejects.toThrow(RangeError);
+    expect(broadcastSpy).not.toHaveBeenCalled();
+  });
+
+  it('rejects with RangeError on -Infinity timeoutMs', async () => {
+    const broadcastSpy = vi.spyOn(hiveClient.broadcast, 'json');
+    await expect(
+      broadcastJsonWithTimeout(DUMMY_PAYLOAD, DUMMY_KEY, Number.NEGATIVE_INFINITY),
+    ).rejects.toThrow(RangeError);
+    expect(broadcastSpy).not.toHaveBeenCalled();
+  });
+
+  it('rejects with RangeError on zero timeoutMs', async () => {
+    const broadcastSpy = vi.spyOn(hiveClient.broadcast, 'json');
+    await expect(
+      broadcastJsonWithTimeout(DUMMY_PAYLOAD, DUMMY_KEY, 0),
+    ).rejects.toThrow(RangeError);
+    expect(broadcastSpy).not.toHaveBeenCalled();
+  });
+
+  it('rejects with RangeError on negative timeoutMs', async () => {
+    const broadcastSpy = vi.spyOn(hiveClient.broadcast, 'json');
+    await expect(
+      broadcastJsonWithTimeout(DUMMY_PAYLOAD, DUMMY_KEY, -1),
+    ).rejects.toThrow(RangeError);
+    expect(broadcastSpy).not.toHaveBeenCalled();
+  });
+
+  it('passes a finite positive timeoutMs through to the broadcast (positive control)', async () => {
+    const expected = { id: 'tx-hash-positive-control', block_num: 1, expired: false, trx_num: 0 };
+    vi.spyOn(hiveClient.broadcast, 'json').mockResolvedValueOnce(expected as never);
+
+    const result = await broadcastJsonWithTimeout(DUMMY_PAYLOAD, DUMMY_KEY, 5000);
+    expect(result).toEqual(expected);
+  });
+});
+
+describe('broadcastSendOperationsWithTimeout input validation (wrapper-entry guard)', () => {
+  it('rejects with RangeError on NaN timeoutMs without scheduling a timer or invoking dhive', async () => {
+    const broadcastSpy = vi.spyOn(hiveClient.broadcast, 'sendOperations');
+    await expect(
+      broadcastSendOperationsWithTimeout(DUMMY_OPERATIONS, DUMMY_KEY, Number.NaN),
+    ).rejects.toThrow(RangeError);
+    expect(broadcastSpy).not.toHaveBeenCalled();
+  });
+
+  it('rejects with RangeError on +Infinity timeoutMs', async () => {
+    const broadcastSpy = vi.spyOn(hiveClient.broadcast, 'sendOperations');
+    await expect(
+      broadcastSendOperationsWithTimeout(DUMMY_OPERATIONS, DUMMY_KEY, Number.POSITIVE_INFINITY),
+    ).rejects.toThrow(RangeError);
+    expect(broadcastSpy).not.toHaveBeenCalled();
+  });
+
+  it('rejects with RangeError on -Infinity timeoutMs', async () => {
+    const broadcastSpy = vi.spyOn(hiveClient.broadcast, 'sendOperations');
+    await expect(
+      broadcastSendOperationsWithTimeout(DUMMY_OPERATIONS, DUMMY_KEY, Number.NEGATIVE_INFINITY),
+    ).rejects.toThrow(RangeError);
+    expect(broadcastSpy).not.toHaveBeenCalled();
+  });
+
+  it('rejects with RangeError on zero timeoutMs', async () => {
+    const broadcastSpy = vi.spyOn(hiveClient.broadcast, 'sendOperations');
+    await expect(
+      broadcastSendOperationsWithTimeout(DUMMY_OPERATIONS, DUMMY_KEY, 0),
+    ).rejects.toThrow(RangeError);
+    expect(broadcastSpy).not.toHaveBeenCalled();
+  });
+
+  it('rejects with RangeError on negative timeoutMs', async () => {
+    const broadcastSpy = vi.spyOn(hiveClient.broadcast, 'sendOperations');
+    await expect(
+      broadcastSendOperationsWithTimeout(DUMMY_OPERATIONS, DUMMY_KEY, -1),
+    ).rejects.toThrow(RangeError);
+    expect(broadcastSpy).not.toHaveBeenCalled();
+  });
+
+  it('passes a finite positive timeoutMs through to the broadcast (positive control)', async () => {
+    const expected = { id: 'tx-hash-positive-control-2', block_num: 2, expired: false, trx_num: 0 };
+    vi.spyOn(hiveClient.broadcast, 'sendOperations').mockResolvedValueOnce(expected as never);
+
+    const result = await broadcastSendOperationsWithTimeout(DUMMY_OPERATIONS, DUMMY_KEY, 5000);
+    expect(result).toEqual(expected);
+  });
+});
