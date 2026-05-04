@@ -273,7 +273,7 @@ describe('POST /api/accreditation/verify — BE-ORCID-BROADCAST-ABORT-TIMEOUT', 
     expect(await tokenExists(token)).toBe(true);
   });
 
-  it('non-timeout broadcast error → 502 BROADCAST_FAILED with retriable=false; token IS deleted', async () => {
+  it('non-timeout broadcast error → 502 BROADCAST_FAILED with retriable=false; token IS deleted; logs email_hash, not email', async () => {
     const redis = getRedis();
     if (!redis) return;
     const token = `accred-timeout-${crypto.randomBytes(8).toString('hex')}`;
@@ -281,16 +281,45 @@ describe('POST /api/accreditation/verify — BE-ORCID-BROADCAST-ABORT-TIMEOUT', 
 
     broadcastJsonMock.mockRejectedValueOnce(new Error('RPC node rejected: insufficient RC'));
 
-    const res = await request(app)
-      .post('/api/accreditation/verify')
-      .send({ token });
+    // BE-LOG-PII-EMAIL-HASH round-1 hold item 2a: handleBroadcastError emits
+    // logger.error with `email_hash: hashEmailForLogs(pending.email)` per
+    // accreditation.ts:451. Pre-fix shape was `email: <plaintext>`. The spy
+    // pins the migration so a regression that reverts the field name or drops
+    // the helper fails this spec.
+    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => logger);
+    try {
+      const res = await request(app)
+        .post('/api/accreditation/verify')
+        .send({ token });
 
-    expect(res.status).toBe(502);
-    expect(res.body.error.code).toBe('BROADCAST_FAILED');
-    expect(res.body.error.details).toEqual({ retriable: false });
-    // Chain-rejection is terminal — the token is deleted so it cannot be
-    // re-used. A fresh token is obtained via /api/accreditation/request.
-    expect(await tokenExists(token)).toBe(false);
+      expect(res.status).toBe(502);
+      expect(res.body.error.code).toBe('BROADCAST_FAILED');
+      expect(res.body.error.details).toEqual({ retriable: false });
+      // Chain-rejection is terminal — the token is deleted so it cannot be
+      // re-used. A fresh token is obtained via /api/accreditation/request.
+      expect(await tokenExists(token)).toBe(false);
+
+      // Find the broadcast-error emission. handleBroadcastError emits the
+      // 502 BROADCAST_FAILED log line at lib/broadcast-error.ts:399 with the
+      // suffix `<routeLabel> broadcast failed` and `event: 'broadcast_failed'`.
+      // Filter by the structured event discriminator (the dashboard-keyable
+      // anchor) so the assertion is robust against routeLabel renames.
+      const emission = errorSpy.mock.calls.find(
+        ([payload]) =>
+          payload != null &&
+          typeof payload === 'object' &&
+          (payload as Record<string, unknown>).event === 'broadcast_failed',
+      );
+      expect(emission, 'expected handleBroadcastError logger.error emission').toBeDefined();
+
+      const [payload] = emission!;
+      const obj = payload as Record<string, unknown>;
+      // email_hash is the 12-hex SHA-256 truncation; no top-level `email` key.
+      expect(obj.email_hash).toMatch(/^[0-9a-f]{12}$/);
+      expect(obj).not.toHaveProperty('email');
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 
   // BE-HANDLE-BROADCAST-ERROR-HELPER round-2 hold #1 (P1): when the broadcast

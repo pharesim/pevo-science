@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeAll } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
 import request from 'supertest';
 import jwt from 'jsonwebtoken';
 import { readFileSync } from 'node:fs';
@@ -6,6 +6,8 @@ import { resolve } from 'node:path';
 import { PrivateKey, cryptoUtils } from '@hiveio/dhive';
 import { createApp } from '../../src/app.js';
 import { config } from '../../src/config.js';
+import { logger } from '../../src/logger.js';
+import { getAppPool } from '../../src/app-db.js';
 import { clearRateLimitKeys } from '../support/redis-helpers.js';
 
 // Generate a deterministic test keypair and mock the Hive client so the
@@ -32,6 +34,24 @@ vi.mock('../../src/hive.js', () => ({
 }));
 
 const app = createApp();
+
+// Top-level DB reachability probe — mirrors the pattern in
+// signup-verify.test.ts and recover.test.ts. The SMTP-not-configured spec at
+// the bottom of this file insert-then-delete a real accounts row, so it skips
+// when Postgres is unavailable. Top-level await is permitted at module scope
+// in Vitest's ESM loader.
+let dbReachable = false;
+{
+  const pool = getAppPool();
+  if (pool) {
+    try {
+      await pool.query('SELECT 1');
+      dbReachable = true;
+    } catch {
+      dbReachable = false;
+    }
+  }
+}
 
 function signRequestBound(method: string, fullPath: string, body: unknown, timestamp: string): string {
   const bodyHash = cryptoUtils.sha256(JSON.stringify(body || {})).toString('hex');
@@ -301,5 +321,81 @@ describe('BE-REQUEST-BODY-TYPING-ZOD: 400 VALIDATION_ERROR does not leak Zod sch
     expect(src).toMatch(
       /sendError\(\s*res\s*,\s*400\s*,\s*['"]VALIDATION_ERROR['"]\s*,\s*['"]Invalid request body['"]\s*\)/,
     );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
+// BE-LOG-PII-EMAIL-HASH round-1 hold item 2b: pin the email_hash log
+// shape on the /signup SMTP-not-configured branch.
+//
+// The pre-fix call site emitted `email: <plaintext>`; the round-1 fix
+// migrated it to `email_hash: safeHashEmailForLogs(normalizedEmail)`.
+// Without this spec the migration is mutation-blind — a regression that
+// reverts the field name to plaintext, drops the helper, or swaps in
+// `String(normalizedEmail)` would pass every other suite. Asserts:
+//   (1) the warn payload carries `email_hash` matching /^[0-9a-f]{12}$/
+//   (2) no top-level `email` key is present
+// The route DELETEs the inserted accounts row itself when SMTP is not
+// configured, so no post-test cleanup is required beyond a defensive
+// delete-by-email guard.
+// ─────────────────────────────────────────────────────────────
+describe.skipIf(!dbReachable)('BE-LOG-PII-EMAIL-HASH: /signup SMTP-not-configured logs email_hash, not email', () => {
+  // config.smtpHost defaults to '' in the test env (SMTP_HOST is empty in
+  // .env.example / the docker-compose env), so no override is needed to
+  // reach the else branch at routes/auth.ts:547.
+  const RUN_ID = Date.now();
+  const TEST_EMAIL = `log_pii_smtp_unset_${RUN_ID}@mit.edu`;
+
+  beforeAll(async () => {
+    if (!dbReachable) return;
+    const pool = getAppPool()!;
+    await pool.query('DELETE FROM accounts WHERE email = $1', [TEST_EMAIL]).catch(() => {});
+  });
+
+  afterAll(async () => {
+    if (!dbReachable) return;
+    const pool = getAppPool()!;
+    await pool.query('DELETE FROM accounts WHERE email = $1', [TEST_EMAIL]).catch(() => {});
+  });
+
+  it('emits email_hash (12-hex), not plaintext email, and returns 500 INTERNAL_ERROR', async () => {
+    await clearRateLimitKeys(['auth-signup']);
+
+    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => logger);
+    try {
+      const res = await request(app)
+        .post('/api/auth/signup')
+        .send({
+          email: TEST_EMAIL,
+          password: 'SmtpUnsetPass1',
+          full_name: 'SMTP Unset User',
+          institution: 'MIT',
+          field: 'physics',
+        });
+
+      // Route returns 500 INTERNAL_ERROR after deleting the just-inserted row.
+      expect(res.status).toBe(500);
+      expect(res.body.error.code).toBe('INTERNAL_ERROR');
+
+      // Find the smtp_not_configured emission. Other emissions (e.g.,
+      // dup_burn_failed warn) may fire on the same suite run if rate-limit
+      // bleed-through is incomplete; filter by event for stability.
+      const emission = errorSpy.mock.calls.find(
+        ([payload]) =>
+          payload != null &&
+          typeof payload === 'object' &&
+          (payload as Record<string, unknown>).event === 'auth.signup.smtp_not_configured',
+      );
+      expect(emission, 'expected an auth.signup.smtp_not_configured logger.error emission').toBeDefined();
+
+      const [payload] = emission!;
+      const obj = payload as Record<string, unknown>;
+      // (1) email_hash is the 12-hex SHA-256 truncation.
+      expect(obj.email_hash).toMatch(/^[0-9a-f]{12}$/);
+      // (2) no top-level `email` key — pre-fix shape removed.
+      expect(obj).not.toHaveProperty('email');
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 });

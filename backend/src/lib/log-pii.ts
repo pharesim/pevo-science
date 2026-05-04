@@ -41,6 +41,26 @@ export function hashEmailForLogs(email: string): string {
 }
 
 /**
+ * Nullable-input companion to `hashEmailForLogs`. Returns `null` when the
+ * input is `null` or `undefined`, otherwise delegates to `hashEmailForLogs`.
+ *
+ * ORCID-only signups insert `accounts.email = NULL` (the user authenticated
+ * via ORCID without supplying an email). Routes that catch errors after
+ * looking up such a row and call `hashEmailForLogs(account.email)` would
+ * synchronously throw a TypeError on `null.trim()`, converting a recoverable
+ * `logger.error + 200` flow into a 500 INTERNAL_ERROR. Use this helper at any
+ * log call site where the underlying column is nullable. Reserve the strict
+ * `hashEmailForLogs` for sites where the email is provably non-null (e.g.,
+ * accreditation `pending_accreditations.email NOT NULL`).
+ */
+export function safeHashEmailForLogs(
+  email: string | null | undefined,
+): string | null {
+  if (email == null) return null;
+  return hashEmailForLogs(email);
+}
+
+/**
  * Truncated SHA-256 of a verification token, suitable for log correlation
  * without exposing the plaintext token.
  *

@@ -18,7 +18,7 @@ import { ARGON2_OPTIONS } from '../lib/argon2-options.js';
 import { runWithArgon2Slot, ShuttingDownError, isArgonSemaphoreError } from '../lib/argon2-semaphore.js';
 import { handleArgonError, ARGON_HANDLED } from '../lib/argon2-error-handler.js';
 import { requestAbortSignal } from '../lib/request-abort-signal.js';
-import { hashEmailForLogs } from '../lib/log-pii.js';
+import { hashEmailForLogs, safeHashEmailForLogs } from '../lib/log-pii.js';
 
 // ─── Per-route Zod body schemas (BE-REQUEST-BODY-TYPING-ZOD) ────
 //
@@ -549,7 +549,7 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
         {
           event: 'auth.signup.smtp_not_configured',
           route: 'auth.signup',
-          email_hash: normalizedEmail ? hashEmailForLogs(normalizedEmail) : null,
+          email_hash: safeHashEmailForLogs(normalizedEmail),
         },
         'SMTP not configured — cannot send verification email',
       );

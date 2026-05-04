@@ -34,27 +34,16 @@ describe('hashEmailForLogs', () => {
     expect(hashEmailForLogs('ALICE@EXAMPLE.COM')).toBe(canonical);
   });
 
-  it('is not reversible — output does not contain any substring of the input email', () => {
-    const email = 'alice@example.com';
-    const out = hashEmailForLogs(email);
-    // Spot-check: no contiguous 3-char substring of the email appears in the
-    // hex output. Substrings of length 3 catch things like 'ali', 'ice', 'com'.
-    const lower = email.toLowerCase();
-    for (let i = 0; i <= lower.length - 3; i++) {
-      const sub = lower.slice(i, i + 3);
-      // Only flag if the substring is made entirely of hex chars (otherwise
-      // it can't appear in a hex output by construction).
-      if (/^[0-9a-f]{3}$/.test(sub)) {
-        expect(out.includes(sub)).toBe(false);
-      }
-    }
-  });
-
-  it('does not leak the local-part or domain of a typical email', () => {
-    const out = hashEmailForLogs('alice@example.com');
-    expect(out).not.toContain('alice');
-    expect(out).not.toContain('example');
-    expect(out).not.toContain('com');
+  // Value-pinned hash assertion. Replaces an earlier pair of substring-based
+  // "is not reversible" / "does not leak" tests that were vacuous: the
+  // alice@example.com input contains no 3-char hex windows, and 'alice' /
+  // 'example' / 'com' each contain non-hex characters, so the inner expects
+  // either never fired or could not structurally fail. This single assertion
+  // simultaneously kills algorithm-swap (sha256 → md5/sha1), truncation-length
+  // (12 → 16/8), and normalization-removal (drop trim/lowercase) mutations,
+  // because any of them changes the pinned hex output.
+  it('returns the pinned 12-hex sha256 prefix for a canonical input', () => {
+    expect(hashEmailForLogs('alice@example.com')).toBe('ff8d9819fc0e');
   });
 });
 

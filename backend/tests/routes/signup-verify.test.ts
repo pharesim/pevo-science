@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest';
 import request from 'supertest';
-import { PrivateKey } from '@hiveio/dhive';
+import { PrivateKey, cryptoUtils } from '@hiveio/dhive';
 
 // Mock chain-broadcasting bits before createApp() so the confirm flow does not
 // hit the real Hive network. We still use the real argon2, real pg pool, and
@@ -47,6 +47,7 @@ import { createApp } from '../../src/app.js';
 import { getAppPool } from '../../src/app-db.js';
 import { orcidVerified } from '../../src/routes/orcid.js';
 import { config } from '../../src/config.js';
+import { logger } from '../../src/logger.js';
 import { clearRateLimitKeys } from '../support/redis-helpers.js';
 import { TIMING_ORACLE_FLOOR_MS } from '../support/timing-constants.js';
 
@@ -361,5 +362,199 @@ describe.skipIf(!dbReachable)('BE-AUTH-RESUME-SIGNUP-TIMING-GUARD: /resume-signu
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe('BAD_REQUEST');
     expect(elapsed).toBeGreaterThanOrEqual(TIMING_ORACLE_FLOOR_MS);
+  });
+});
+
+// ──────────────────────────────────────────────────────────────
+// BE-LOG-PII-EMAIL-HASH round-1 hold item 2c: ORCID-only broadcast-rejection
+// harness. Pins both halves of the round-1 P1 fix on the /confirm and /link
+// catch-block log emissions:
+//
+//   (1) account.email IS NULL (ORCID-only signup state). Pre-fix
+//       hashEmailForLogs(account.email) called null.trim() and threw a
+//       synchronous TypeError, which propagated to the outer catch and
+//       converted the recoverable `logger.error + 200 + JWT` flow into a
+//       500 INTERNAL_ERROR. The post-fix path uses safeHashEmailForLogs and
+//       returns email_hash: null, then proceeds to the 200 + JWT response.
+//   (2) The log payload carries email_hash (null on this branch), NOT a
+//       top-level `email` key. A regression that reverts to plaintext shape
+//       fails the negative assertion.
+//
+// Without these specs, a revert of either fix passes every other suite. The
+// harness shape (account.email = NULL row + broadcastJsonMock rejecting) is
+// the strict subset called for by the architect's hold block — once it lands
+// the email_hash/email-shape checks are one extra line each.
+// ──────────────────────────────────────────────────────────────
+
+const PII_RUN_ID = Date.now();
+const PII_SUFFIX = (PII_RUN_ID % 100000).toString(36).padStart(4, '0').slice(-6);
+
+describe.skipIf(!dbReachable)('BE-LOG-PII-EMAIL-HASH item 2c: /confirm broadcast-rejection on ORCID-only (email=NULL) row logs email_hash:null, returns 200', () => {
+  const username = `piinul${PII_SUFFIX}`;
+  const orcidId = '0000-0001-0000-1234';
+  const confirmedToken = `confirmed:${'a1b2c3d4'.repeat(8)}`;
+
+  beforeAll(async () => {
+    if (!dbReachable) return;
+    const pool = getAppPool()!;
+    await cleanupByUsername(username);
+    // Seed the ORCID-only signup row: email = NULL, password_hash = NULL,
+    // verify_token = 'confirmed:…' (post-/signup state, pre-/confirm).
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    await pool.query(
+      `INSERT INTO accounts (email, password_hash, full_name, institution, field, orcid, verify_token, expires_at)
+       VALUES (NULL, NULL, 'PII Null Confirm', 'MIT', 'physics', $1, $2, $3)`,
+      [orcidId, confirmedToken, expiresAt],
+    );
+  });
+
+  afterAll(async () => {
+    await cleanupByUsername(username);
+  });
+
+  it('logs email_hash:null with no top-level email key, then returns 200 + JWT', async () => {
+    await clearRateLimitKeys(['auth-signup', 'signup-confirm']);
+
+    // The accreditation broadcast in the catch path is the failure we stage.
+    // createClaimedAccount stays at its default success — the broadcast catch
+    // is what exercises the safeHashEmailForLogs(account.email) call site.
+    broadcastJsonMock.mockReset();
+    broadcastJsonMock.mockRejectedValue(new Error('RPC node rejected: insufficient RC'));
+    // Username lookup at line 264 must return [] (Hive-side username is
+    // available — createClaimedAccount can claim it).
+    getAccountsMock.mockReset();
+    getAccountsMock.mockResolvedValue([]);
+
+    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => logger);
+    try {
+      const res = await request(app)
+        .post('/api/auth/confirm')
+        .send({
+          auth_token: confirmedToken,
+          username,
+          keys: {
+            owner_public: PrivateKey.fromSeed(`${username}-o`).createPublic().toString(),
+            active_public: PrivateKey.fromSeed(`${username}-a`).createPublic().toString(),
+            posting_public: PrivateKey.fromSeed(`${username}-p`).createPublic().toString(),
+            memo_public: PrivateKey.fromSeed(`${username}-m`).createPublic().toString(),
+            posting_private: PrivateKey.fromSeed(`${username}-p`).toString(),
+            memo_private: PrivateKey.fromSeed(`${username}-m`).toString(),
+          },
+        });
+
+      // Item 1 invariant: 200 + JWT, NOT 500. Pre-fix the TypeError on
+      // null.trim() inside the catch block bubbled up to the outer handler
+      // and produced a 500 INTERNAL_ERROR.
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe('ok');
+      expect(res.body.data.token).toBeTruthy();
+      expect(res.body.data.username).toBe(username);
+
+      const emission = errorSpy.mock.calls.find(
+        ([, msg]) =>
+          typeof msg === 'string' &&
+          msg.includes('Failed to broadcast accreditation — account created but not accredited'),
+      );
+      expect(emission, 'expected broadcast-failure logger.error emission in /confirm').toBeDefined();
+      const [payload] = emission!;
+      const obj = payload as Record<string, unknown>;
+      // safeHashEmailForLogs(null) === null. Strictly null, not undefined,
+      // pinned so a regression that drops the early-return guard surfaces.
+      expect(obj).toHaveProperty('email_hash', null);
+      expect(obj).not.toHaveProperty('email');
+      expect(obj.username).toBe(username);
+      expect(obj.orcid).toBe(orcidId);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+});
+
+// /link uses the real verifyHiveSignature middleware (per file header
+// comment, mock-auth is ruled out for these tests). The harness signs a
+// request-bound message with a deterministic test private key and primes
+// getAccountsMock to publish the matching public key on the test username,
+// so middleware succeeds end-to-end against the real signature path. No
+// mock-auth fixture is reused here.
+describe.skipIf(!dbReachable)('BE-LOG-PII-EMAIL-HASH item 2c: /link broadcast-rejection on ORCID-only (email=NULL) row logs email_hash:null, returns 200', () => {
+  const username = `piilink${PII_SUFFIX}`;
+  const orcidId = '0000-0001-0000-5678';
+  const confirmedToken = `confirmed:${'b2c3d4e5'.repeat(8)}`;
+  const TEST_KEY = PrivateKey.fromSeed(`pii-link-${PII_SUFFIX}`);
+  const TEST_PUB = TEST_KEY.createPublic().toString();
+
+  beforeAll(async () => {
+    if (!dbReachable) return;
+    const pool = getAppPool()!;
+    await cleanupByUsername(username);
+    // Seed the ORCID-only signup row: email = NULL, ready for /link.
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    await pool.query(
+      `INSERT INTO accounts (email, password_hash, full_name, institution, field, orcid, verify_token, expires_at)
+       VALUES (NULL, NULL, 'PII Null Link', 'MIT', 'physics', $1, $2, $3)`,
+      [orcidId, confirmedToken, expiresAt],
+    );
+  });
+
+  afterAll(async () => {
+    await cleanupByUsername(username);
+  });
+
+  function signRequestBound(method: string, fullPath: string, body: unknown, timestamp: string): string {
+    const bodyHash = cryptoUtils.sha256(JSON.stringify(body || {})).toString('hex');
+    const msg = `${config.appTag}-auth|v1|${method}|${fullPath}|${bodyHash}|${timestamp}`;
+    const msgHash = cryptoUtils.sha256(msg);
+    return TEST_KEY.sign(msgHash).toString();
+  }
+
+  it('logs email_hash:null with no top-level email key, then returns 200 + JWT', async () => {
+    await clearRateLimitKeys(['auth-link']);
+
+    // verifyHiveSignature looks up the account by username and reads
+    // posting.key_auths to verify the recovered key. /link's route handler
+    // then calls getAccounts a second time at line 404 (existence check
+    // — same return value works there).
+    getAccountsMock.mockReset();
+    getAccountsMock.mockImplementation(async (names: string[]) => {
+      if (names.includes(username)) {
+        return [{ name: username, posting: { key_auths: [[TEST_PUB, 1]] } }];
+      }
+      return [];
+    });
+    broadcastJsonMock.mockReset();
+    broadcastJsonMock.mockRejectedValue(new Error('RPC node rejected: insufficient RC'));
+
+    const body = { auth_token: confirmedToken };
+    const timestamp = new Date().toISOString();
+    const signature = signRequestBound('POST', '/api/auth/link', body, timestamp);
+
+    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => logger);
+    try {
+      const res = await request(app)
+        .post('/api/auth/link')
+        .set('X-Hive-Username', username)
+        .set('X-Hive-Signature', signature)
+        .set('X-Hive-Timestamp', timestamp)
+        .send(body);
+
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe('ok');
+      expect(res.body.data.token).toBeTruthy();
+
+      const emission = errorSpy.mock.calls.find(
+        ([, msg]) =>
+          typeof msg === 'string' &&
+          msg.includes('Failed to broadcast accreditation for linked account'),
+      );
+      expect(emission, 'expected broadcast-failure logger.error emission in /link').toBeDefined();
+      const [payload] = emission!;
+      const obj = payload as Record<string, unknown>;
+      expect(obj).toHaveProperty('email_hash', null);
+      expect(obj).not.toHaveProperty('email');
+      expect(obj.username).toBe(username);
+      expect(obj.orcid).toBe(orcidId);
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 });

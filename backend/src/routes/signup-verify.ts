@@ -16,7 +16,7 @@ import { burnSentinel } from './auth.js';
 import { runWithArgon2Slot } from '../lib/argon2-semaphore.js';
 import { handleArgonError, ARGON_HANDLED } from '../lib/argon2-error-handler.js';
 import { requestAbortSignal } from '../lib/request-abort-signal.js';
-import { hashEmailForLogs } from '../lib/log-pii.js';
+import { safeHashEmailForLogs } from '../lib/log-pii.js';
 import { seedAccreditationBonus } from '../reputation.js';
 
 const router = Router();
@@ -233,10 +233,16 @@ router.post('/confirm', confirmLimiter, async (req: Request, res: Response) => {
   }
 
   try {
-    // Look up account by auth token (must be in confirmed state)
+    // Look up account by auth token (must be in confirmed state).
+    //
+    // `email` is `string | null`: ORCID-only signups (auth.ts /signup with
+    // verifiedOrcid + no email) insert with `accounts.email = NULL`. Mistyping
+    // it as `string` would compile-pass `hashEmailForLogs(account.email)` in
+    // the broadcast catch below, which then throws TypeError on `null.trim()`
+    // and converts a recoverable `logger.error + 200 + JWT` flow into a 500.
     const { rows } = await pool.query<{
       id: number;
-      email: string;
+      email: string | null;
       password_hash: string | null;
       full_name: string;
       institution: string;
@@ -321,7 +327,7 @@ router.post('/confirm', confirmLimiter, async (req: Request, res: Response) => {
         logger.error(
           {
             err: accErr,
-            email_hash: hashEmailForLogs(account.email),
+            email_hash: safeHashEmailForLogs(account.email),
             username: normalizedUsername,
             orcid: account.orcid ?? null,
           },
@@ -371,10 +377,12 @@ router.post('/link', linkLimiter, verifyHiveSignature, async (req: Request, res:
   }
 
   try {
-    // Look up account by auth token (must be in confirmed state)
+    // Look up account by auth token (must be in confirmed state).
+    // `email` is `string | null` for the same ORCID-only-signup reason
+    // documented at the sibling /confirm pg query above.
     const { rows } = await pool.query<{
       id: number;
-      email: string;
+      email: string | null;
       password_hash: string | null;
       full_name: string;
       institution: string;
@@ -449,7 +457,7 @@ router.post('/link', linkLimiter, verifyHiveSignature, async (req: Request, res:
         logger.error(
           {
             err: accErr,
-            email_hash: hashEmailForLogs(account.email),
+            email_hash: safeHashEmailForLogs(account.email),
             username: hiveUsername,
             orcid: account.orcid ?? null,
           },
