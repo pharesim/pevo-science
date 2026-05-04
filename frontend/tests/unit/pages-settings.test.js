@@ -221,7 +221,9 @@ describe('settingsPage', () => {
       expect(comp.emailError).toBe('settings.emailUpdateFailed');
       expect(comp.emailError).not.toContain('deadbeef');
       expect(warnSpy).toHaveBeenCalled();
-      const warnedErr = warnSpy.mock.calls[0][1];
+      const warnArgs = warnSpy.mock.calls.find((c) => c[0] === '[email submit]');
+      expect(warnArgs).toBeDefined();
+      const warnedErr = warnArgs[1];
       expect(warnedErr).toBe(leaky);
       warnSpy.mockRestore();
     });
@@ -272,7 +274,9 @@ describe('settingsPage', () => {
       expect(comp.emailError).not.toContain('deadbeef');
       expect(comp.deleting).toBe(false);
       expect(warnSpy).toHaveBeenCalled();
-      const warnedErr = warnSpy.mock.calls[0][1];
+      const warnArgs = warnSpy.mock.calls.find((c) => c[0] === '[email delete]');
+      expect(warnArgs).toBeDefined();
+      const warnedErr = warnArgs[1];
       expect(warnedErr).toBe(leaky);
       warnSpy.mockRestore();
     });
@@ -303,11 +307,14 @@ describe('settingsPage', () => {
 
       expect(comp.orcidError).toBe('settings.orcidLinkFailed');
       expect(comp.orcidLinking).toBe(false);
-      // Guard the warnSpy.mock.calls[0][1] read below: without this
-      // assertion a regression that skips the console.warn throws a
-      // TypeError here instead of surfacing a clear test failure.
+      // Filter by '[orcid link]' so the warned-error read survives any
+      // earlier intermediate console.warn shifting mock.calls[0]; the
+      // toBeDefined() guard surfaces a clear failure if the prefixed
+      // warn was skipped, instead of a downstream TypeError.
       expect(warnSpy).toHaveBeenCalled();
-      const warnedErr = warnSpy.mock.calls[0][1];
+      const warnArgs = warnSpy.mock.calls.find((c) => c[0] === '[orcid link]');
+      expect(warnArgs).toBeDefined();
+      const warnedErr = warnArgs[1];
       expect(warnedErr.message).toBe('Invalid ORCID redirect URL');
       warnSpy.mockRestore();
     });
@@ -334,7 +341,9 @@ describe('settingsPage', () => {
       expect(comp.orcidError).not.toContain('deadbeef');
       expect(comp.orcidLinking).toBe(false);
       expect(warnSpy).toHaveBeenCalled();
-      const warnedErr = warnSpy.mock.calls[0][1];
+      const warnArgs = warnSpy.mock.calls.find((c) => c[0] === '[orcid link]');
+      expect(warnArgs).toBeDefined();
+      const warnedErr = warnArgs[1];
       expect(warnedErr).toBe(leaky);
       warnSpy.mockRestore();
     });
@@ -367,7 +376,9 @@ describe('settingsPage', () => {
       expect(comp.upgradeError).toBe('upgrade.generationFailed');
       expect(comp.upgradeError).not.toContain('deadbeef');
       expect(warnSpy).toHaveBeenCalled();
-      expect(warnSpy.mock.calls[0][1]).toBe(leaky);
+      const warnArgs = warnSpy.mock.calls.find((c) => c[0] === '[custody upgrade start]');
+      expect(warnArgs).toBeDefined();
+      expect(warnArgs[1]).toBe(leaky);
       warnSpy.mockRestore();
     });
   });
@@ -1580,7 +1591,9 @@ describe('settingsPage', () => {
       expect(comp.newPasswordInput).toBe('');
       expect(comp.newPasswordConfirmInput).toBe('');
       expect(warnSpy).toHaveBeenCalled();
-      const warnedErr = warnSpy.mock.calls[0][1];
+      const warnArgs = warnSpy.mock.calls.find((c) => c[0] === '[set password]');
+      expect(warnArgs).toBeDefined();
+      const warnedErr = warnArgs[1];
       expect(warnedErr).toBe(leaky);
       warnSpy.mockRestore();
     });
