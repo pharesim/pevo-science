@@ -1,3 +1,9 @@
+## BE-BROADCAST-CLUSTER-P3-SWEEP (archived 2026-05-04) — round-2 clean ✓
+
+Four P3 polish items across the round-3 broadcast-timeout fixes (filed 2026-04-28 from BE-ORCID-BROADCAST-ABORT-TIMEOUT round-3 archive review). Round-1 (`ad6f4fe`) applied: stale section-header comment in `claims.test.ts:387` refreshed to reference `agents/docs/api-contracts/common.md` + `TIMEOUT_DETAILS`, `retract.test.ts:881` matcher widened from `not.toHaveBeenCalledWith` to `not.toHaveBeenCalled()` to catch unrelated future cache-invalidation calls in the timeout catch path, claims.ts revoke timeout-message strings aligned across bridge + admin signers (operator gets the signer from the structured log field `signer:'bridge'|'admin'`), 504 envelope field-ordering canonicalized via the helper's `Record<string, unknown>` insertion-order build (`{retriable, outcome, verify_before_retry, timeout_ms, verify_location?}` — required-then-optional aesthetic, not a positional contract). Round-2 hold-fix (`0bc43ae`) reframed the `broadcast-error.ts` WHY comment to honestly describe the source-readability convention (no consumer-facing positional-read contract claim; `forceAmbiguousOutcome` branch exempted because it intentionally omits `timeout_ms`), collapsed the duplicated rationale in `orcid.test.ts:1632` to a one-line back-reference to the source comment (the second duplicated site at ~1432 was incidentally removed by sibling commits between the round-1 review point and current main), and trimmed the trailing forward-reference to the upcoming helper-extraction task from `claims.ts:330` (load-bearing rationale stands without it).
+
+Round-2 architect review (cluster B walk, 2026-05-04, 5-persona pass: correctness, testing, maintainability, project-standards, learnings): clean. One P3 finding surfaced (back-reference anchor in `orcid.test.ts:1633` reads "see broadcast-error.ts timer-fire 504 envelope build" — informal English, not grep-stable if extracted into a named helper) — dismissed during architect triage as cosmetic; back-reference works today and the "extracted into helper" risk is hypothetical. Architect followup A1 (canonical 504 envelope key order undocumented in `common.md`; `orcid.md:197` field-list described as divergent) resolved at archive with the source-readability stance: no contract claim added to `common.md`; `orcid.md:197` parenthetical clarification added stating "the field set is the contract; consumers MUST access by key name, not by position. The serialization order is a source-readability convention, not a wire contract." Closes the cluster-of-three rationale-comment-drift class (broadcast-error.ts:273-282 reframe + orcid.test.ts:1632 back-reference + claims.ts:330 forward-reference trim) and aligns the API-contract docs with the source convention. No `/ce-compound` invocation — the source-readability vs wire-contract distinction was already captured by the convention `chain-write-timeout-ambiguous-outcome-2026-04-22.md`'s envelope-shape definition; this round's work is a reaffirmation, not a new pattern.
+
 ## BE-ARGON2-ERROR-ROUTES-TEST-COVERAGE (archived 2026-05-04) — round-4 clean ✓
 
 Lock the security invariant "every argon2 semaphore error is correctly translated to its HTTP response by every route" with route-level integration tests across {auth/login, /signup, /resend-verification, /reset-request, /reset, /recover, signup-verify/resume-signup, custody/upgrade, settings/set-password} × {ArgonQueueFullError, ShuttingDownError, ArgonAbortError}. Round-1 (`6c4e963` initial + `e7a5602` round-1 hold-fix items 1-6) landed 39 distinct {route × branch × error-class} cells via 5 new test files using `vi.hoisted` + `vi.importActual` to bind production class hierarchies (closing the synthetic-mock-bypass concern), with a shared `tests/support/argon2-error-mocks.ts` kit-builder + assertion helpers. Round-2 hold-fix (`c4d988e`) added `assertArgon2AbortIsSilent` coverage on the `/reset-request` unknown-email branch + the `/signup` dup-burn paths (auth.ts:401, 416), bundled with the pre-existing-test-mocks migration. Round-3 hold-fix (`5cb0fbc` after orphan-replay `718b7ed`+`cfd5a73`+`002fec1`) widened the helper signature to accept `mockRunWithArgon2Slot` as a second arg and added an exact-count `toHaveBeenCalledTimes(1)` invocation guard, closing the false-pass class where a route hung at a different unmocked `await`. Round-4 hold-fix (`53daad0`) closed the meta-coverage gap by adding a 4-case helper self-test (`backend/tests/support/argon2-error-mocks.test.ts`) regression-fencing the helper's three `outcome.kind` branches plus the round-3 invocation-guard, and added `expect(value, msg)` diagnostic strings on both expects so CI failures distinguish "route wrote response with status N" from "route hung but argon2 path was never entered".
@@ -146,105 +152,3 @@ Full history: see commits `fbe8578`, `f996d37`, `9b2f774` and the task file body
 
 ---
 
-## ARCHITECT-ORCID-STATE-CONSUMPTION-VS-RETRIABLE-409 (archived 2026-04-29) — Option B chosen ✓
-
-# ARCHITECT-ORCID-STATE-CONSUMPTION-VS-RETRIABLE-409 — Resolve the unreachable-by-design retriable-409 contract
-
-**Owner:** architect (product decision needed before backend or UI implementation)
-**Created:** 2026-04-29 (architect, surfaced by adversarial reviewer adv-1 during round-2 review of `UI-ORCID-CALLBACK-RETRIABLE-BRANCH` commit `fbe8578`)
-**Priority:** P1
-**Source:** `agents/docs/tasks/pending/ui-orcid-callback-retriable-branch.md` round-2 review (architect 2026-04-29) — adversarial conf 85.
-
-## Problem
-
-The `ORCID_ALREADY_LINKED` 409 envelope's `retriable: true` discriminator on the same-tick lock-contention branch is **unreachable by design** — backend consumes the OAuth state token before the contention is detectable, and the frontend's retry path then fails with 400 BAD_REQUEST instead of the retried operation succeeding.
-
-Concrete trace:
-
-1. `POST /api/orcid/callback` with `{code, state}`.
-2. `backend/src/routes/orcid.ts:282-302` — backend reads `stateKey`, validates auth (for AUTHENTICATED_MODES), then **deletes `stateKey` at line 299** (`redis.del(stateKey)` / `orcidStates.delete(state)`). Comment at line 297 is explicit: "Auth passed (or mode is public). Consume state now so it can't be replayed."
-3. `:335` switch routes to `handleAccredit` / `handleLink`.
-4. Inside the handler, `withOrcidBindingLock` runs and may emit the 409 ORCID_ALREADY_LINKED with `retriable: true` + `Retry-After: 10` from its `'held'` branch.
-5. Frontend (`frontend/src/pages/orcid-callback.js:288` `_retryVerify`) replays the same `{code, state}` after the countdown.
-6. Backend `:282` state-check fires FIRST: `if (!storedMode) { sendError(res, 400, 'BAD_REQUEST', 'Invalid or expired state parameter'); return; }`. Returns 400, not the retried-and-succeeding operation.
-7. Frontend's catch block hits the generic-fallback branch (no special handling for 400 BAD_REQUEST after a retriable retry) and renders `orcid.verificationFailed`.
-
-The retriable-discriminator infrastructure is structurally correct on each side (backend signals retriable+Retry-After; frontend consumes and counts down then retries) but the composition fails: the user never reaches the lock-contended retry that the contract promises. `MAX_RETRIES=1` (the round-1 hold-fix safety cap on this task) just bounds how many times the wrong outcome repeats.
-
-This is **pre-existing** — the issue dates to whenever backend's lock-contention 409 first signaled `retriable: true`. UI-ORCID-CALLBACK-RETRIABLE-BRANCH (consumer side) shipped over an already-broken contract.
-
-## Why this matters
-
-- **The retriable-discriminator UX is silently lying to users.** A user hits the same-tick contention, sees a "retrying in 10 seconds" countdown, watches it fire, then sees a generic verification-failed message with no actionable signal. They restart OAuth and (most likely) succeed because the contention is transient. The countdown was theatre.
-- **Operator alerts on retriable-409 are undercounted.** The frontend's 400 BAD_REQUEST after retry is indistinguishable from a normal state-token-replay attempt; operators reviewing 400 rates can't separate "user retried our retriable promise" from "actual replay attack."
-- **Silent contract drift erodes trust in the retriable discriminator going forward.** If we ship A.1's lock-TTL-extension envelope on `BroadcastTimeoutError` (separate task, already shipped via 81795fd) and operators or future contributors look at the existing retriable-409 as a reference, they'll model new retriable contracts on a broken precedent.
-
-## Three product directions (architect to decide)
-
-### Option A — Backend: defer state consumption until after lock acquisition
-
-Move the `redis.del(stateKey)` from `:299` (pre-dispatch) to inside the handler, AFTER `withOrcidBindingLock` returns successfully (or signals a non-retriable failure). The retriable-409 then preserves the state token, the frontend retry succeeds.
-
-**Cost:** opens a state-replay attack window during the lock-acquisition + broadcast window (3-30s). An attacker who steals the state token between OAuth redirect and our consume-now point can race a parallel `/callback` request, both hitting different `handleAccredit` invocations against the same state. Today this is closed by the eager `redis.del`; deferring opens it.
-
-**Mitigation:** the lock itself is keyed on `orcid_id`, so two concurrent `/callback`s with the same state would race for the same lock — one wins, the other gets `'held'` 409 retriable. The retry-with-same-state would then succeed (lock free) for whichever client retries first. The "attack" reduces to "attacker can force the legitimate user into a single retriable-409 round-trip" — UX nuisance, not auth compromise. The state token is still single-use *eventually* (consumed after the successful broadcast).
-
-This is the cleanest architectural fix.
-
-### Option B — Backend: drop `retriable: true` from lock-contention 409
-
-Keep the eager state-consume. Acknowledge that the same-tick contention case is genuinely terminal from the user's perspective (state is gone; restart OAuth). Drop the `retriable: true` and `retry_after_seconds` from this specific 409 emission. Frontend continues to receive a `ORCID_ALREADY_LINKED` 409 but treats it as durable.
-
-**Cost:** the user retry flow on contention is "restart full OAuth" instead of "wait 10s." Acceptable at PEvO's scale (contention is rare); same-tick contention typically clears before the user restarts.
-
-This is the simplest fix. Honest to the actual contract.
-
-### Option C — Frontend: treat `retriable: true` as informational
-
-Keep both sides. Frontend renders the countdown but does NOT auto-retry — instead shows "another request is in progress; try again in N seconds" and lets the user manually click retry once N passes. A manual retry restarts OAuth (new state token) rather than replaying the consumed one.
-
-**Cost:** kills the value-add of UI-ORCID-CALLBACK-RETRIABLE-BRANCH (auto-retry was the point). Defeats the round-1 hold's `_retryCount` + `MAX_RETRIES` machinery (no auto-retry to cap).
-
-Defensible only if Option A's replay-window cost is judged unacceptable AND Option B's "drop the discriminator" feels like a contract regression we don't want to advertise.
-
-## Recommendation (architect, leaning)
-
-**Option B.** Same-tick lock contention is a rare edge case at PEvO's scale (tens of signups/day). The retriable-discriminator's value is on the lock-extended-on-`BroadcastTimeoutError` path (Option A.1, already shipped via `81795fd`) — and that path doesn't have the state-consumption-order problem because the timeout fires *after* the state was consumed by a successful broadcast acceptance. Dropping the same-tick `retriable: true` honestly aligns the contract with reality and removes the broken-by-design surface entirely.
-
-If chosen, the follow-on UI work is to remove the now-unused `_retryCount` / `MAX_RETRIES` / countdown machinery from `orcid-callback.js` (or repurpose it for the BroadcastTimeoutError envelope, which DOES have a working retriable contract on the backend side).
-
-## Decision (architect, 2026-04-29)
-
-**Option B chosen.** Drop the `retriable: true` discriminator from the same-tick lock-contention 409. The case is genuinely terminal from the user's perspective (state is consumed before lock acquisition can run, so any same-`{code, state}` retry returns 400 BAD_REQUEST) — the discriminator was promising a retry path that never reached the handler.
-
-Rationale:
-
-- Same-tick contention is rare at PEvO scale (tens of signups/day).
-- The retriable-discriminator's actual value is on the lock-TTL-extended `BroadcastTimeoutError` path (already shipped via `81795fd`) — and that path is correctly `retriable: false` with `verify_before_retry: true`. State has been consumed by the time the timer fires, so retry isn't expected.
-- Option B aligns the contract with reality and removes the broken-by-design surface entirely. Option A's deferred-state-consume would have opened a (narrow, mitigated) replay window for an edge case that's already rare; the cost-benefit doesn't justify the change.
-
-Follow-on tasks filed:
-
-- `backend-orcid-droplockcontention-retriable.md` — strip `retriable: true` + `retry_after_seconds` + `Retry-After` from the `'held'`-branch 409 in `withOrcidBindingLock`.
-- `ui-orcid-callback-retriable-machinery-remove.md` — remove `_retryCount`, `MAX_RETRIES`, `retryCountdown`, `_retryVerify`, `_lastVerifyArgs`, the `alreadyLinkedRetriable` template branch, and the `orcid.alreadyLinkedRetriable` locale key.
-
-Doc updates landed alongside this decision:
-
-- `agents/docs/api-contracts/orcid.md` — same-tick contention 409 documented as non-retriable; convention paragraph updated; degraded-mode-success tail-sentence reference to retriable-409 retry agents removed.
-- `agents/docs/solutions/conventions/chain-write-timeout-ambiguous-outcome-2026-04-22.md` — appended a "Sibling principle: `retriable: true` is meaningless when state is single-use" section with audit checklist; tags + last_updated bumped.
-
-## Acceptance
-
-A separate `backend-orcid-...` task implements the chosen option once architect decides. This task closes when the decision is recorded in this file (or the file moves to archive) and the implementation task is filed.
-
-## Coordination
-
-- Pairs with `tasks-archive.md` BACKEND-ORCID-LOCK-TTL-EXTEND-ON-TIMEOUT entry — that task's `retriable: false` 504 envelope on `BroadcastTimeoutError` (Option A.2 in the chain-write convention doc) is the OTHER retriable-vs-not signal in this surface, and IS correctly shaped (state has been consumed by the time the timer fires; the user is told to verify before retry, not auto-retry). The current task only resolves the same-tick contention path, not the timer-fire path.
-- Convention doc `agents/docs/solutions/conventions/chain-write-timeout-ambiguous-outcome-2026-04-22.md` — would benefit from a paragraph on "retriable=true is meaningless if state is single-use" once a decision is recorded.
-
-## Source
-
-- `agents/docs/tasks/pending/ui-orcid-callback-retriable-branch.md` round-2 architect review (2026-04-29) — adversarial finding adv-1 (P1 conf 85, "composition failure: state token consumed before retriable 409 emits").
-- `backend/src/routes/orcid.ts:282-302` — state validate + consume.
-- `backend/src/routes/orcid.ts:1027-1036` — lock-contention 409 with `retriable: true`.
-- `frontend/src/pages/orcid-callback.js:288` — `_retryVerify`.
