@@ -144,6 +144,48 @@ export class QueryCache {
     }
   }
 
+  /**
+   * Invalidate every cache key whose unprefixed name starts with `keyPrefix`.
+   * Uses Redis SCAN (non-blocking) when Redis is the backend; falls back to
+   * an in-memory prefix scan otherwise. Use for invalidating versioned key
+   * families (e.g. `paper-detail:author:permlink:v*`) where a single
+   * `invalidate(key)` call only flushes one specific key.
+   *
+   * Note: matched keys are passed through `del` in batches; SCAN cursors a
+   * non-blocking iteration so this is safe to call with broad prefixes.
+   */
+  async invalidatePrefix(keyPrefix: string): Promise<void> {
+    const fullPrefix = this.prefix + keyPrefix;
+    const redis = getRedis();
+    if (redis) {
+      try {
+        let cursor = '0';
+        const matched: string[] = [];
+        do {
+          const [next, batch] = await redis.scan(cursor, 'MATCH', fullPrefix + '*', 'COUNT', 200);
+          cursor = next;
+          matched.push(...batch);
+        } while (cursor !== '0');
+        if (matched.length > 0) {
+          // Batch deletes to keep DEL command size reasonable.
+          const CHUNK = 200;
+          for (let i = 0; i < matched.length; i += CHUNK) {
+            await redis.del(...matched.slice(i, i + CHUNK));
+          }
+        }
+      } catch (err) {
+        logger.debug({ err, keyPrefix }, 'Redis cache invalidatePrefix failed');
+      }
+    }
+    // In-memory mirror: drop every entry whose key starts with `keyPrefix`.
+    // (memStore keys are unprefixed.)
+    for (const key of Array.from(this.memStore.keys())) {
+      if (key.startsWith(keyPrefix)) {
+        this.memStore.delete(key);
+      }
+    }
+  }
+
   private periodicEntries = new Map<string, { reload: () => Promise<void> }>();
 
   /**

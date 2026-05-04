@@ -59,6 +59,27 @@ describe('QueryCache', () => {
     expect(cache.size).toBe(0);
   });
 
+  it('invalidatePrefix removes every key matching the prefix', async () => {
+    // Versioned cache-key family: paper-detail:author:permlink:v1, :v2, ...
+    // The unversioned `paper-detail:author:permlink` key MUST NOT be matched
+    // (we use a longer prefix `paper-detail:author:permlink:v` to scope).
+    await cache.set('paper-detail:alice:p1', 'unversioned');
+    await cache.set('paper-detail:alice:p1:v1', 'v1');
+    await cache.set('paper-detail:alice:p1:v2', 'v2');
+    await cache.set('paper-detail:alice:p1:v10', 'v10');
+    await cache.set('paper-detail:bob:other', 'unrelated');
+
+    await cache.invalidatePrefix('paper-detail:alice:p1:v');
+
+    // Versioned keys are gone:
+    expect(await cache.get('paper-detail:alice:p1:v1')).toBeUndefined();
+    expect(await cache.get('paper-detail:alice:p1:v2')).toBeUndefined();
+    expect(await cache.get('paper-detail:alice:p1:v10')).toBeUndefined();
+    // Unversioned key + unrelated key remain:
+    expect(await cache.get('paper-detail:alice:p1')).toBe('unversioned');
+    expect(await cache.get('paper-detail:bob:other')).toBe('unrelated');
+  });
+
   it('reports size correctly (memory store)', async () => {
     // size only tracks in-memory entries; when Redis is active, set()
     // stores there instead, so use a cache that won't reach Redis.

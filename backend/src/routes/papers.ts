@@ -15,7 +15,6 @@ import {
   parseOrder,
   extractAbstract,
   extractAuthorizedContinuationAuthors,
-  isAuthorizedContinuationAuthor,
   type SortField,
 } from '../helpers.js';
 import { getAccreditedSet, getAllAccreditedAccounts } from '../accreditation.js';
@@ -541,6 +540,11 @@ async function fetchPaperDetailFromHaf(author: string, permlink: string) {
     // post-fetch isPevoAnyPaper(meta, author) check — bridge identity is
     // enforced at the SQL layer for defense in depth.
     const detailWhere = validPevoPaperWhere({ commentAlias: 'c', appTagParam: '$3', bridgeAccountParam: '$4', source: 'all' });
+    // Resolve the continuation chain ONCE up-front and hand it to
+    // reconstructVersionsFromHaf to avoid duplicate
+    // `fetchHeadAuthorizedAuthors` + chain-walk queries (one each from this
+    // function and reconstructVersionsFromHaf). Per task hold-block item 4d.
+    const chain = await resolveContinuationChain(author, permlink);
     const [paperResult, fullVersions, retraction] = await Promise.all([
       pool.query(
         `SELECT c.author, c.permlink, c.title, c.body, c.json_metadata,
@@ -551,7 +555,7 @@ async function fetchPaperDetailFromHaf(author: string, permlink: string) {
            AND ${detailWhere}`,
         [author, permlink, config.appTag, config.hiveBridgeAccount],
       ),
-      reconstructVersionsFromHaf(author, permlink),
+      reconstructVersionsFromHaf(author, permlink, chain),
       getRetractionInfo(author, permlink),
     ]);
 
@@ -568,9 +572,10 @@ async function fetchPaperDetailFromHaf(author: string, permlink: string) {
     detail.retraction_reason = retraction.retraction_reason ?? null;
     detail.retraction_timestamp = retraction.retraction_timestamp ?? null;
 
-    // E7: Resolve continuation chain to set head author/permlink
-    // and use the latest version's content/metadata as the displayed paper
-    const chain = await resolveContinuationChain(author, permlink);
+    // E7: Use the (already-resolved) continuation chain to set head
+    // author/permlink and use the latest version's content/metadata as
+    // the displayed paper. `chain` was hoisted above and reused by
+    // reconstructVersionsFromHaf to dedupe HAF queries.
     if (chain.length > 1) {
       const head = chain[chain.length - 1];
       detail.head_author = head.author;
@@ -584,18 +589,70 @@ async function fetchPaperDetailFromHaf(author: string, permlink: string) {
         detail.abstract = extractAbstract(latest.body);
         detail.last_update = latest.created;
 
-        // Update metadata-derived fields from the head version
+        // Update metadata-derived fields from the head version, subject to
+        // co-author display-spoof guards:
+        //   - `pevo.authors[]` may NOT widen via continuation. The head's
+        //     hive set must be a subset of the root's hive set; any new
+        //     author entry would let a vouched co-author silently swap in
+        //     a different identity (e.g. drop alice + add mallory) and
+        //     have it surface as the original paper's authorship. New
+        //     authors can only be added by the root author editing the
+        //     root post.
+        //   - `pevo.ipfs_cid` and `pevo.document_hash` are root-pinned.
+        //     These pointers identify the canonical paper payload; if the
+        //     gate is supposed to protect the paper's content then the
+        //     payload pointers must NOT be overridable by continuations.
+        //   - Other fields (title, body, abstract, discipline, keywords,
+        //     citations, language, supplementary_files) may evolve
+        //     normally as part of legitimate version progression.
+        // Broader trust-model question (co-signing / fully locked fields /
+        // additive-only authorship) is filed as
+        // `backend-coauthor-trust-model.md`.
         const headMeta = latest.json_metadata;
         if (isPevoAnyPaper(headMeta, latest.post_author)) {
-          detail.json_metadata = headMeta;
+          const rootPevo = safePevoMeta(meta);
+          const rootAuthorSet = extractAuthorizedContinuationAuthors(rootPevo, row.author as string);
           const headPevo = safePevoMeta(headMeta);
-          detail.authors = headPevo.authors || [];
+          const headAuthorsRaw = Array.isArray(headPevo.authors) ? headPevo.authors : [];
+
+          // Subset check: every hive in head's pevo.authors[] must be
+          // present in the root's authorized-author set. If any head
+          // author is outside that set, REJECT the head's authors[]
+          // override (keep root's authors[] for display).
+          const headAuthorsAreSubset = headAuthorsRaw.every((a) => {
+            if (!a || typeof a !== 'object') return true;
+            const hiveRaw = (a as Record<string, unknown>).hive;
+            if (typeof hiveRaw !== 'string') return true;
+            const hive = hiveRaw.trim().toLowerCase();
+            if (hive.length === 0) return true;
+            // For bridge papers, root's authorized set is {bridge}; for
+            // native papers, it's pevo.authors[].hive (lowercased).
+            // Subset check is against the root's authorized set.
+            return rootAuthorSet.has(hive);
+          });
+
+          // Root-pin payload pointers regardless of head's claim.
+          detail.json_metadata = headMeta;
+          detail.authors = headAuthorsAreSubset ? (headPevo.authors || []) : detail.authors;
+          if (!headAuthorsAreSubset) {
+            logger.warn(
+              {
+                rootAuthor: row.author as string,
+                rootPermlink: row.permlink as string,
+                headAuthor: latest.post_author,
+                headPermlink: latest.post_permlink,
+                event: 'continuation_authors_subset_violation',
+              },
+              'head continuation pevo.authors[] widens beyond root authorized set; rejecting authors override',
+            );
+          }
           detail.discipline = paperDisciplineField(headPevo.discipline);
           detail.keywords = headPevo.keywords || [];
           detail.citations = headPevo.citations || [];
-          detail.ipfs_cid = headPevo.ipfs_cid || null;
-          detail.ipfs_filename = headPevo.ipfs_filename || null;
-          detail.document_hash = headPevo.document_hash || null;
+          // Root-pinned: NEVER override from continuations.
+          detail.ipfs_cid = rootPevo.ipfs_cid || null;
+          detail.ipfs_filename = rootPevo.ipfs_filename || null;
+          detail.document_hash = rootPevo.document_hash || null;
           detail.language = headPevo.language || 'en';
           detail.supplementary_files = headPevo.supplementary_files || [];
         }
@@ -702,10 +759,15 @@ async function fetchHeadAuthorizedAuthors(
     );
     if (result.rows.length === 0) return null;
     const row = result.rows[0] as Record<string, unknown>;
+    // Type-narrow row.author: HAF could in principle return NULL; the
+    // gate must fail-closed. A bare `as string` would silently coerce
+    // undefined/null and let downstream identity checks evaluate against
+    // a non-string — better to bail explicitly.
+    if (typeof row.author !== 'string') return null;
     const meta = parseMeta(row.json_metadata);
-    if (!isPevoAnyPaper(meta, row.author as string)) return null;
+    if (!isPevoAnyPaper(meta, row.author)) return null;
     const pevo = safePevoMeta(meta);
-    return extractAuthorizedContinuationAuthors(pevo);
+    return extractAuthorizedContinuationAuthors(pevo, row.author);
   } catch (err) {
     logger.error({ err }, 'Head authorized-authors lookup failed');
     return null;
@@ -719,19 +781,27 @@ async function fetchHeadAuthorizedAuthors(
  * Uses block_num to resolve collisions (earliest wins). 50-hop safety cap.
  *
  * **Author-consent gate (BACKEND-CONTINUATION-POST-AUTHOR-CONSENT-GATE).**
- * A candidate continuation post `C` is admitted into the chain only if
- * `C.author` is one of the head (root) paper's named authors — i.e. is in
- * the `hive` field values of the head paper's `pevo.authors[]`. Without
- * this gate, any Hive account can post a comment with
- * `pevo.continues = {author: <real-paper-author>, permlink: <real-paper>}`
- * and have its content surface as a later version of the real paper.
+ * A candidate continuation post `C` is admitted into the chain only if BOTH:
  *
- * The gate is enforced both SQL-side (`c.author = ANY($N)`) so the DB
- * never returns disallowed candidates, AND JS-side as defense in depth.
- * If the head paper is not a valid PEvO paper or has no named authors, the
- * chain degenerates to the root only — no continuations are admitted.
+ *   1. `C.author` is one of the head (root) paper's authorized continuation
+ *      authors (per `extractAuthorizedContinuationAuthors`):
+ *      - For native papers: a member of `pevo.authors[].hive` (lowercased).
+ *      - For bridge papers: equal to `config.hiveBridgeAccount`.
  *
- * See `agents/docs/solutions/conventions/pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28.md`.
+ *   2. `C` is itself a valid PEvO paper class — native paper, or the
+ *      bridge-paper variant pinned to `config.hiveBridgeAccount` (per
+ *      `validPevoPaperWhere` / `isPevoAnyPaper`). Without this
+ *      object-identity check, a named co-author could post a review-typed
+ *      comment with `pevo.continues={...}` and have the review content
+ *      surface as the paper's apparent body via the version walker. The
+ *      convention is "every gate enforces author + type identity
+ *      together"; see
+ *      `agents/docs/solutions/conventions/pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28.md`.
+ *
+ * Both predicates are enforced SQL-side (the DB never returns disallowed
+ * candidates) AND JS-side as defense in depth. If the head paper is not a
+ * valid PEvO paper or has no named authors, the chain degenerates to the
+ * root only — no continuations are admitted.
  */
 async function resolveContinuationChain(author: string, permlink: string): Promise<ChainLink[]> {
   const pool = getPool();
@@ -756,11 +826,20 @@ async function resolveContinuationChain(author: string, permlink: string): Promi
   try {
     for (let i = 0; i < MAX_HOPS; i++) {
       // Find any post whose continues field points to the current head AND
-      // whose author is in the head paper's named-author set. SQL-side
-      // filtering via $4::text[] is the primary gate; the JS-side
-      // `isAuthorizedContinuationAuthor` re-check below is defense in depth.
+      // whose author is in the head paper's named-author set AND whose
+      // pevo.type is a valid PEvO paper class (native paper or the
+      // bridge-paper variant pinned to the bridge account, per
+      // validPevoPaperWhere). SQL-side filtering via
+      // $4::text[] (author-set) + validPevoPaperWhere (object-identity) is
+      // the primary gate; the JS-side re-checks below are defense in depth.
+      const validPaperPredicate = validPevoPaperWhere({
+        commentAlias: 'c',
+        appTagParam: '$3',
+        bridgeAccountParam: '$5',
+        source: 'all',
+      });
       const result = await pool.query(
-        `SELECT c.author, c.permlink, co.block_num
+        `SELECT c.author, c.permlink, c.json_metadata, co.block_num
          FROM ${T.comments} c
          JOIN ${T.commentOps} co ON co.author = c.author AND co.permlink = c.permlink
          WHERE c.parent_author = ''
@@ -768,27 +847,42 @@ async function resolveContinuationChain(author: string, permlink: string): Promi
            AND c.json_metadata -> $3 -> 'continues' ->> 'author' = $1
            AND c.json_metadata -> $3 -> 'continues' ->> 'permlink' = $2
            AND c.author = ANY($4::text[])
+           AND ${validPaperPredicate}
          ORDER BY co.block_num ASC
          LIMIT 1`,
-        [currentAuthor, currentPermlink, config.appTag, authorizedArr],
+        [currentAuthor, currentPermlink, config.appTag, authorizedArr, config.hiveBridgeAccount],
       );
 
       if (result.rows.length === 0) break;
 
       const next = result.rows[0];
-      // Defense in depth: re-verify the candidate author is in the
-      // authorized-author set even though the SQL filter already gated it.
+      const candidateAuthor = next.author;
+      // Type-narrow: HAF could in principle return NULL author. Bare
+      // `as string` would coerce undefined/null silently. Bail explicitly
+      // (fail-closed: chain ends at the previous hop).
+      if (typeof candidateAuthor !== 'string') break;
+
+      // Defense in depth: re-verify (a) author in authorized set,
+      // (b) the candidate's pevo.type is a valid paper class.
       // A drift between the JS gate and the SQL gate (e.g. a future SQL
-      // refactor that drops the ANY() filter) would be caught here.
-      if (!isAuthorizedContinuationAuthor(next.author as string, authorizedAuthors)) {
+      // refactor that drops one of the predicates) would be caught here.
+      if (!authorizedAuthors.has(candidateAuthor)) {
         logger.warn(
-          { rootAuthor: author, rootPermlink: permlink, candidateAuthor: next.author },
-          'continuation candidate slipped past SQL gate; rejecting at JS layer',
+          { rootAuthor: author, rootPermlink: permlink, candidateAuthor },
+          'continuation candidate slipped past SQL author-set gate; rejecting at JS layer',
         );
         break;
       }
-      currentAuthor = next.author;
-      currentPermlink = next.permlink;
+      const candidateMeta = parseMeta(next.json_metadata);
+      if (!isPevoAnyPaper(candidateMeta, candidateAuthor)) {
+        logger.warn(
+          { rootAuthor: author, rootPermlink: permlink, candidateAuthor, candidatePermlink: next.permlink },
+          'continuation candidate slipped past SQL pevo-type gate; rejecting at JS layer',
+        );
+        break;
+      }
+      currentAuthor = candidateAuthor;
+      currentPermlink = next.permlink as string;
       chain.push({ author: currentAuthor, permlink: currentPermlink });
     }
   } catch (err) {
@@ -878,17 +972,24 @@ function applyHivePatch(base: string, raw: string): string {
  * operations for all posts in the chain, ordered by block_num.
  * Continuation post first operations are always full body (not diffs of
  * the previous chain link). Returns versions in chronological order.
+ *
+ * @param prefetchedChain - optionally pass the already-resolved continuation
+ *   chain to avoid duplicate `resolveContinuationChain`/`fetchHeadAuthorizedAuthors`
+ *   queries. `fetchPaperDetailFromHaf` resolves the chain itself; passing it
+ *   in here halves the HAF query count for an uncached paper-detail request.
  */
 async function reconstructVersionsFromHaf(
   author: string,
   permlink: string,
+  prefetchedChain?: ChainLink[],
 ): Promise<ReconstructedVersion[]> {
   const pool = getPool();
   if (!pool) return [];
 
   try {
-    // Resolve continuation chain to get all (author, permlink) pairs
-    const chain = await resolveContinuationChain(author, permlink);
+    // Resolve continuation chain to get all (author, permlink) pairs.
+    // Caller may pass it in to avoid the duplicate fetch.
+    const chain = prefetchedChain ?? await resolveContinuationChain(author, permlink);
 
     // Build a query that fetches operations for ALL posts in the chain
     const conditions: string[] = [];
@@ -923,6 +1024,11 @@ async function reconstructVersionsFromHaf(
     let lastGoodMeta: Record<string, unknown> | null = null;
     // Track which posts we've seen their first operation for
     const seenFirstOp = new Set<string>();
+    // Track per-post pevo.authors[] state for the audit-log: emit a warn
+    // event whenever a paper edit mutates pevo.authors[] (TOCTOU residual
+    // mitigation per task hold-block item 4b — operators correlate
+    // post-incident).
+    const authorsByPost = new Map<string, string>();
 
     for (const r of rows) {
       const postKey = `${r.author}/${r.permlink}`;
@@ -960,6 +1066,30 @@ async function reconstructVersionsFromHaf(
       // Extract addresses_reviews from version metadata
       const pevo = safePevoMeta(meta);
       const addressesReviews = (pevo.addresses_reviews as Array<{ author: string; permlink: string }>) || undefined;
+
+      // Audit log: emit a structured warn whenever a paper edit mutates
+      // `pevo.authors[]`. Pairs with the head-meta override subset-check
+      // above to provide post-incident operator correlation for the
+      // TOCTOU author-set-expansion concern (task hold-block item 4b).
+      // Compare structurally (JSON stringify) so any change to the array
+      // shape — add, remove, reorder, hive-rename — surfaces an event.
+      const authorsRaw = Array.isArray(pevo.authors) ? pevo.authors : [];
+      const authorsKey = JSON.stringify(authorsRaw);
+      const prevAuthorsKey = authorsByPost.get(postKey);
+      if (prevAuthorsKey !== undefined && prevAuthorsKey !== authorsKey) {
+        logger.warn(
+          {
+            event: 'paper_authors_metadata_edit',
+            postAuthor: r.author as string,
+            postPermlink: r.permlink as string,
+            blockNum: Number(r.block_num),
+            prevAuthors: prevAuthorsKey,
+            newAuthors: authorsKey,
+          },
+          'paper edit mutated pevo.authors[]',
+        );
+      }
+      authorsByPost.set(postKey, authorsKey);
 
       versions.push({
         version_number: r.version_number as number,
@@ -1421,10 +1551,17 @@ router.post('/:author/:permlink/invalidate', verifyHiveSignature, invalidateLimi
   const author = req.params.author as string;
   const permlink = req.params.permlink as string;
 
-  // Invalidate all cache keys for this paper
+  // Invalidate all cache keys for this paper, including versioned-view
+  // keys `paper-detail:{author}:{permlink}:v{N}`. Without the prefix
+  // sweep, an edit to `pevo.authors[]` (which gates continuation admit)
+  // would serve stale results from versioned views for up to 30 min.
   await Promise.all([
     hafCache.invalidate(`paper-detail:${author}:${permlink}`),
     hafCache.invalidate(`paper-enrichment:${author}:${permlink}`),
+    // Versioned keys live under `paper-detail:{author}:{permlink}:v*`.
+    // The unversioned key was already handled above; this prefix sweep
+    // catches the v1, v2, ... variants.
+    hafCache.invalidatePrefix(`paper-detail:${author}:${permlink}:v`),
   ]);
 
   sendOk(res, { message: 'Cache invalidated' });

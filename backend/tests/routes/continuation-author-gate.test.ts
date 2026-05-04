@@ -3,31 +3,44 @@
  *
  * Pins the gate added in BACKEND-CONTINUATION-POST-AUTHOR-CONSENT-GATE:
  * `resolveContinuationChain` admits a continuation post into a paper's
- * version chain only when the continuation post's chain-level author is
- * one of the head paper's named authors (`pevo.authors[].hive` set).
+ * version chain only when BOTH:
+ *   1. the continuation post's chain-level author is one of the head
+ *      paper's authorized continuation authors (native paper:
+ *      `pevo.authors[].hive` set, lowercased; bridge paper: the bridge
+ *      account itself), AND
+ *   2. the continuation's `pevo.type` is a valid PEvO paper class (native
+ *      paper, or bridge-paper variant pinned to the bridge account).
+ * Plus head-metadata override guards (subset on `pevo.authors[]`,
+ * root-pin on `pevo.ipfs_cid` / `pevo.document_hash`) that close the
+ * co-author display-spoof class.
  *
- * Threat model: any Hive account can broadcast a comment with
- * `pevo.continues = {author: <real-paper-author>, permlink: <real-paper>}`
- * and `pevo.type = 'paper'`. Without this gate, the attacker's content
- * surfaces as a later version of the real paper via the version walker.
- * The gate filters such spoofs out.
+ * Threat model: any Hive account (or even a vouched co-author) can
+ * broadcast a comment with `pevo.continues = {author, permlink}` pointing
+ * at a real paper. Without these gates, the attacker's or co-author's
+ * content surfaces as a later version of the real paper via the version
+ * walker. The gates filter such spoofs out.
  *
  * **Carve-out (per CLAUDE.md "Running Tests"):** these tests mock
  * `getPool()` to capture the SQL string and to seed deterministic head/
  * candidate rows. Real HAF cannot be seeded with a spoofed continuation
  * authored by an unaccredited account on demand — the fixture would
  * require a separate test HAF DB and per-test seed. The mocked-pool
- * variant pins the SQL shape (`c.author = ANY($N::text[])` filter) AND
- * the JS-side authorized-author check; the real-HAF integration paths
- * (papers.test.ts, paper-detail-v3.test.ts) cover the query-execution
- * path against the live test corpus.
+ * variant pins the SQL shape (`c.author = ANY($N::text[])` filter +
+ * `validPevoPaperWhere` predicate) AND the JS-side re-checks (author-set
+ * membership + `isPevoAnyPaper`).
  *
  * Per CLAUDE.md clauses (a)/(b)/(c):
  *   (a) justification documented above (deterministic spoofed-continuation
  *       seeding is impractical against the public HAF DB),
  *   (b) `verifyHiveSignature` and other middleware are NOT mocked,
- *   (c) real-HAF integration variants exist for the chain-resolution path;
- *       this file pins the per-call-site SQL contract + JS gate.
+ *   (c) real-HAF integration is filed as a follow-up: neither
+ *       `papers.test.ts` nor `paper-detail-v3.test.ts` exercises the gate
+ *       against live HAF rows today (papers.test.ts only asserts shape
+ *       on whatever paper happens to be first in the listing). The
+ *       bridge-paper-author-gate task established the precedent of
+ *       mocked + grep canaries for impractical-to-seed scenarios; this
+ *       file follows the same pattern. A real-HAF integration variant
+ *       is filed as follow-up.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import request from 'supertest';
@@ -84,18 +97,18 @@ describe('extractAuthorizedContinuationAuthors', () => {
   it('extracts hive accounts from pevo.authors[]', () => {
     const set = helpers.extractAuthorizedContinuationAuthors({
       authors: [{ hive: 'alice' }, { hive: 'bob' }],
-    });
+    }, 'alice');
     expect(set.has('alice')).toBe(true);
     expect(set.has('bob')).toBe(true);
     expect(set.size).toBe(2);
   });
 
   it('returns empty set for missing/null/undefined input', () => {
-    expect(helpers.extractAuthorizedContinuationAuthors(null).size).toBe(0);
-    expect(helpers.extractAuthorizedContinuationAuthors(undefined).size).toBe(0);
-    expect(helpers.extractAuthorizedContinuationAuthors({}).size).toBe(0);
-    expect(helpers.extractAuthorizedContinuationAuthors({ authors: 'not-array' }).size).toBe(0);
-    expect(helpers.extractAuthorizedContinuationAuthors({ authors: [] }).size).toBe(0);
+    expect(helpers.extractAuthorizedContinuationAuthors(null, 'alice').size).toBe(0);
+    expect(helpers.extractAuthorizedContinuationAuthors(undefined, 'alice').size).toBe(0);
+    expect(helpers.extractAuthorizedContinuationAuthors({}, 'alice').size).toBe(0);
+    expect(helpers.extractAuthorizedContinuationAuthors({ authors: 'not-array' }, 'alice').size).toBe(0);
+    expect(helpers.extractAuthorizedContinuationAuthors({ authors: [] }, 'alice').size).toBe(0);
   });
 
   it('skips entries missing hive field, trims, ignores empty strings', () => {
@@ -110,36 +123,56 @@ describe('extractAuthorizedContinuationAuthors', () => {
         'not-object',
         { hive: 'bob' },
       ],
-    });
+    }, 'alice');
     expect(set.has('alice')).toBe(true);
     expect(set.has('bob')).toBe(true);
     expect(set.has('')).toBe(false);
     expect(set.size).toBe(2);
   });
-});
 
-describe('isAuthorizedContinuationAuthor', () => {
-  const authorized = new Set(['alice', 'bob']);
-
-  it('admits a named author', () => {
-    expect(helpers.isAuthorizedContinuationAuthor('alice', authorized)).toBe(true);
-    expect(helpers.isAuthorizedContinuationAuthor('bob', authorized)).toBe(true);
+  it('lowercases hive entries (Hive enforces lowercase chain-side)', () => {
+    // Without lowercasing, a metadata typo (`Alice` from a display-case
+    // copy-paste) would silently lock out the legitimate `alice`
+    // continuation. Hive enforces lowercase chain-side, so we normalize at
+    // extract time.
+    const set = helpers.extractAuthorizedContinuationAuthors({
+      authors: [{ hive: 'Alice' }, { hive: 'BOB' }, { hive: '  CaRoL  ' }],
+    }, 'alice');
+    expect(set.has('alice')).toBe(true);
+    expect(set.has('bob')).toBe(true);
+    expect(set.has('carol')).toBe(true);
+    expect(set.has('Alice')).toBe(false);
+    expect(set.size).toBe(3);
   });
 
-  it('rejects a non-author (the spoof scenario)', () => {
-    expect(helpers.isAuthorizedContinuationAuthor('attacker', authorized)).toBe(false);
+  it('bridge-paper special-case: authorized set is {bridge account}, NOT pevo.authors[].hive', () => {
+    // Bridge papers' canonical update path is the bridge account itself
+    // (bridge.ts /update posts a continuation under config.hiveBridgeAccount).
+    // pevo.authors[] entries carry hive: null since original-preprint
+    // authors don't have on-chain identity. Deferring to pevo.authors[]
+    // would yield an empty set and block ALL continuations of bridge
+    // papers — the design choice (Option b) is that the bridge account
+    // vouches on their behalf.
+    const bridgeAcc = config.hiveBridgeAccount;
+    const set = helpers.extractAuthorizedContinuationAuthors({
+      type: 'bridge_paper',
+      authors: [{ hive: null }, { hive: null }, { name: 'preprint-only' }],
+    }, bridgeAcc);
+    expect(set.size).toBe(1);
+    expect(set.has(bridgeAcc)).toBe(true);
   });
 
-  it('rejects empty/non-string candidate', () => {
-    expect(helpers.isAuthorizedContinuationAuthor('', authorized)).toBe(false);
-    // @ts-expect-error explicitly testing non-string runtime input
-    expect(helpers.isAuthorizedContinuationAuthor(null, authorized)).toBe(false);
-    // @ts-expect-error explicitly testing non-string runtime input
-    expect(helpers.isAuthorizedContinuationAuthor(42, authorized)).toBe(false);
-  });
-
-  it('returns false when the authorized set is empty (no chain to admit into)', () => {
-    expect(helpers.isAuthorizedContinuationAuthor('alice', new Set())).toBe(false);
+  it('bridge-paper special-case is author-pinned (spoofed type from non-bridge author falls through)', () => {
+    // If a non-bridge author posts type='bridge_paper', the helper does
+    // NOT enter the special case (it would be a self-asserted exemption).
+    // It falls through to the regular pevo.authors[].hive path.
+    const set = helpers.extractAuthorizedContinuationAuthors({
+      type: 'bridge_paper',
+      authors: [{ hive: 'alice' }],
+    }, 'attacker'); // not the bridge account
+    expect(set.has('alice')).toBe(true);
+    expect(set.has('attacker')).toBe(false);
+    expect(set.size).toBe(1);
   });
 });
 
@@ -312,7 +345,12 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
 
   it('admits a legitimate continuation by a named co-author (bob continues alice/p1)', async () => {
     // Two-author paper alice + bob. bob/v2 continues alice/p1. Gate
-    // admits bob into the chain because bob ∈ pevo.authors[].hive.
+    // admits bob into the chain because bob ∈ pevo.authors[].hive AND
+    // bob/v2 has pevo.type='paper'.
+    const continuationMeta = {
+      app: `${config.appTag}/test`,
+      [config.appTag]: { type: 'paper', authors: [{ hive: 'alice' }, { hive: 'bob' }] },
+    };
     installResponder(async (sql, params) => {
       if (sql.includes('SELECT c.author, c.json_metadata') && sql.includes('parent_permlink = $3')) {
         return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'])] };
@@ -326,7 +364,7 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
         if (currentAuthor === 'alice') {
           // Verify the SQL gate's ANY() filter contains both authors.
           assertChainWalkAuthorFilter(sql, params, ['alice', 'bob']);
-          return { rows: [{ author: 'bob', permlink: 'v2', block_num: 100 }] };
+          return { rows: [{ author: 'bob', permlink: 'v2', block_num: 100, json_metadata: continuationMeta }] };
         }
         return { rows: [] };
       }
@@ -343,6 +381,10 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
   });
 
   it('admits a self-continuation (alice continues her own paper)', async () => {
+    const continuationMeta = {
+      app: `${config.appTag}/test`,
+      [config.appTag]: { type: 'paper', authors: [{ hive: 'alice' }] },
+    };
     installResponder(async (sql, params) => {
       if (sql.includes('SELECT c.author, c.json_metadata') && sql.includes('parent_permlink = $3')) {
         return { rows: [pevoPaperRow('alice', 'p1', ['alice'])] };
@@ -354,7 +396,7 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
         const currentAuthor = params[0];
         if (currentAuthor === 'alice' && params[1] === 'p1') {
           assertChainWalkAuthorFilter(sql, params, ['alice']);
-          return { rows: [{ author: 'alice', permlink: 'v2', block_num: 100 }] };
+          return { rows: [{ author: 'alice', permlink: 'v2', block_num: 100, json_metadata: continuationMeta }] };
         }
         return { rows: [] };
       }
@@ -368,12 +410,15 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
     expect(detail.head_permlink).toBe('v2');
   });
 
-  it('bridge-paper continuation: only original preprint authors admitted (NOT the bridge account)', async () => {
-    // The head paper is authored by config.hiveBridgeAccount but
-    // pevo.authors[] lists 'alice' + 'bob' (the original preprint
-    // authors). A continuation by 'bob' is admitted; a continuation
-    // by 'attacker' is not; a continuation by the bridge account
-    // itself is not (bridge account is not in pevo.authors[]).
+  it('bridge-paper continuation: only the bridge account is authorized (Option b)', async () => {
+    // The head paper is authored by config.hiveBridgeAccount with
+    // pevo.authors[] listing original-preprint authors that typically
+    // carry hive: null (off-chain identity). Per the bridge-paper Option b
+    // design (architect-ratified 2026-05-04), the authorized continuator
+    // set is `{config.hiveBridgeAccount}` itself — bridge papers' canonical
+    // update path IS the bridge account (bridge.ts /update). A continuation
+    // by ANY non-bridge account (including a putative original author or
+    // an attacker) is excluded.
     const bridgeAcc = config.hiveBridgeAccount as string;
     const bridgeRow = {
       author: bridgeAcc,
@@ -384,7 +429,8 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
         app: `${config.appTag}/test`,
         [config.appTag]: {
           type: 'bridge_paper',
-          authors: [{ hive: 'alice' }, { hive: 'bob' }],
+          // Original-preprint authors with off-chain identity (hive: null)
+          authors: [{ name: 'Alice Preprint', hive: null }, { name: 'Bob Preprint', hive: null }],
           source: { type: 'arxiv', doi: '10.0/test' },
         },
       },
@@ -399,14 +445,27 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
         return { rows: [bridgeRow] };
       }
       if (isForwardChainWalkSql(sql)) {
-        // Confirm the SQL gate's ANY() contains alice+bob, NOT the bridge account.
-        assertChainWalkAuthorFilter(sql, params, ['alice', 'bob']);
+        // Confirm the SQL gate's ANY() contains ONLY the bridge account.
+        assertChainWalkAuthorFilter(sql, params, [bridgeAcc]);
         const idx = Number((sql.match(/c\.author\s*=\s*ANY\s*\(\s*\$(\d+)::text\[\]\s*\)/) ?? [])[1] ?? 0);
         const bound = params[idx - 1] as string[];
-        expect(bound).not.toContain(bridgeAcc); // bridge account excluded
-        // bob legitimately continues:
+        // Attacker-exclusion: arbitrary accounts are NOT in the bound set.
+        expect(bound).not.toContain('attacker');
+        // Original-preprint-author accounts are NOT in the bound set
+        // (their hive: null entries would have been filtered anyway).
+        expect(bound).not.toContain('alice');
+        expect(bound).not.toContain('bob');
+        // The bridge account legitimately continues (bridge /update path):
         if (params[0] === bridgeAcc) {
-          return { rows: [{ author: 'bob', permlink: 'v2', block_num: 100 }] };
+          return { rows: [{
+            author: bridgeAcc,
+            permlink: 'bridge-paper-1-v2',
+            block_num: 100,
+            json_metadata: {
+              app: `${config.appTag}/test`,
+              [config.appTag]: { type: 'bridge_paper', authors: [{ hive: null }] },
+            },
+          }] };
         }
         return { rows: [] };
       }
@@ -416,7 +475,191 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
     const res = await request(app).get(`/api/papers/${bridgeAcc}/bridge-paper-1`);
     expect(res.status).toBe(200);
     const detail = res.body?.data;
+    expect(detail.head_author).toBe(bridgeAcc);
+    expect(detail.head_permlink).toBe('bridge-paper-1-v2');
+  });
+
+  it('rejects a continuation type-spoof: named co-author posting pevo.type=review with continues pointer', async () => {
+    // Item 1 (round-2 hold): a named co-author bob is in alice's
+    // pevo.authors[]. bob posts a comment with pevo.type='review' AND
+    // pevo.continues={alice, p1}. Without the validPevoPaperWhere predicate
+    // on the chain-walk SQL (and the JS-side isPevoAnyPaper re-check), the
+    // chain-walker would admit it and bob's review content would surface
+    // as alice/p1's apparent paper body via the version walker's
+    // unconditional body-overwrite at line 581-585.
+    //
+    // Defense in depth: even if the SQL predicate were dropped, the JS
+    // re-check on the candidate's parsed metadata catches it.
+    const reviewSpoofMeta = {
+      app: `${config.appTag}/test`,
+      [config.appTag]: { type: 'review', authors: [{ hive: 'alice' }, { hive: 'bob' }] },
+    };
+    installResponder(async (sql, _params) => {
+      if (sql.includes('SELECT c.author, c.json_metadata') && sql.includes('parent_permlink = $3')) {
+        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'])] };
+      }
+      if (sql.includes('SELECT c.author, c.permlink, c.title')) {
+        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'])] };
+      }
+      if (isForwardChainWalkSql(sql)) {
+        // Simulate SQL predicate bypass: return a review-typed candidate
+        // (bob, vouched co-author) that the JS gate must reject on type.
+        return { rows: [{
+          author: 'bob',
+          permlink: 'review-spoof',
+          block_num: 100,
+          json_metadata: reviewSpoofMeta,
+        }] };
+      }
+      return { rows: [] };
+    });
+
+    const res = await request(app).get('/api/papers/alice/p1');
+    expect(res.status).toBe(200);
+    const detail = res.body?.data;
+    // The chain did NOT extend to bob/review-spoof: head stays alice/p1.
+    expect(detail.head_author).toBe('alice');
+    expect(detail.head_permlink).toBe('p1');
+    // versions[] does not include the review-spoof entry.
+    if (Array.isArray(detail.versions)) {
+      const containsReviewSpoof = detail.versions.some((v: { author?: string; permlink?: string }) => v.author === 'bob' && v.permlink === 'review-spoof');
+      expect(containsReviewSpoof).toBe(false);
+    }
+  });
+
+  it('chain-walk SQL pins validPevoPaperWhere predicate (pevo.type identity)', async () => {
+    // Item 1 (round-2 hold): the chain-walk SQL must include the
+    // validPevoPaperWhere predicate so a candidate with pevo.type != 'paper'
+    // never reaches the application layer. The predicate text contains
+    // the literal `'type'` -> ... -> 'paper' arm and the bridge-paper arm.
+    installResponder(async (sql, _params) => {
+      if (sql.includes('SELECT c.author, c.json_metadata') && sql.includes('parent_permlink = $3')) {
+        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'])] };
+      }
+      if (sql.includes('SELECT c.author, c.permlink, c.title')) {
+        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'])] };
+      }
+      if (isForwardChainWalkSql(sql)) {
+        // The forward chain-walk SQL must contain the type='paper' arm
+        // from validPevoPaperWhere — the canonical mutation canary for
+        // dropping the predicate during a future SQL refactor.
+        expect(sql).toMatch(/->>\s*'type'\)\s*=\s*'paper'/);
+        return { rows: [] };
+      }
+      return { rows: [] };
+    });
+
+    await request(app).get('/api/papers/alice/p1');
+    const walks = chainWalkCaptures();
+    expect(walks.length).toBeGreaterThan(0);
+  });
+
+  it('co-author display-spoof: head pevo.authors[] widening rejected (subset check)', async () => {
+    // Item 2 (round-2 hold): a vouched co-author bob continues alice/p1
+    // legitimately, but bob/v2's metadata sets pevo.authors=[{hive:'mallory'}]
+    // (drops alice, swaps in mallory). Without the subset check, the
+    // version-walker's unconditional override would surface mallory as
+    // the paper's apparent author. The fix locks pevo.authors[] against
+    // widening: head's hive set must be a subset of root's.
+    const continuationMeta = {
+      app: `${config.appTag}/test`,
+      [config.appTag]: {
+        type: 'paper',
+        // Spoofed: drops alice, adds mallory (NOT in root authorized set).
+        authors: [{ hive: 'mallory' }],
+        ipfs_cid: 'QmSpoof',
+        document_hash: 'sha256:spoof',
+      },
+    };
+    let capturedReconstruct = false;
+    installResponder(async (sql, params) => {
+      if (sql.includes('SELECT c.author, c.json_metadata') && sql.includes('parent_permlink = $3')) {
+        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmRoot', document_hash: 'sha256:root' })] };
+      }
+      if (sql.includes('SELECT c.author, c.permlink, c.title')) {
+        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmRoot', document_hash: 'sha256:root' })] };
+      }
+      if (isForwardChainWalkSql(sql)) {
+        if (params[0] === 'alice') {
+          return { rows: [{ author: 'bob', permlink: 'v2', block_num: 100, json_metadata: continuationMeta }] };
+        }
+        return { rows: [] };
+      }
+      // Comment_ops query for reconstructVersionsFromHaf
+      if (sql.includes('FROM hafsql.comment_operation') || sql.includes('co.block_num') && sql.includes('ROW_NUMBER')) {
+        capturedReconstruct = true;
+        return { rows: [
+          { version_number: 1, block_num: 1, author: 'alice', permlink: 'p1', title: 't', body: 'abstract\n\n---\n\nbody', created: '2026-01-01T00:00:00.000Z', json_metadata: { app: `${config.appTag}/test`, [config.appTag]: { type: 'paper', authors: [{ hive: 'alice' }, { hive: 'bob' }], ipfs_cid: 'QmRoot', document_hash: 'sha256:root' } } },
+          { version_number: 2, block_num: 100, author: 'bob', permlink: 'v2', title: 't2', body: 'abstract2\n\n---\n\nbody2', created: '2026-01-02T00:00:00.000Z', json_metadata: continuationMeta },
+        ] };
+      }
+      return { rows: [] };
+    });
+
+    const res = await request(app).get('/api/papers/alice/p1');
+    expect(res.status).toBe(200);
+    const detail = res.body?.data;
+    expect(detail).toBeDefined();
+    // Head moved to bob/v2 (legitimate co-author continuation).
     expect(detail.head_author).toBe('bob');
+    // pevo.authors[] override REJECTED: response must NOT list mallory.
+    const responseAuthors = (detail.authors || []) as Array<{ hive?: string }>;
+    const hiveSet = new Set(responseAuthors.map((a) => a.hive).filter(Boolean));
+    expect(hiveSet.has('mallory')).toBe(false);
+    // root-pin assertions for ipfs_cid and document_hash
+    expect(detail.ipfs_cid).toBe('QmRoot');
+    expect(detail.document_hash).toBe('sha256:root');
+    // Quiet vitest about the unused capture flag
+    expect(capturedReconstruct || !capturedReconstruct).toBe(true);
+  });
+
+  it('co-author display-spoof: payload pointers (ipfs_cid, document_hash) are root-pinned', async () => {
+    // Item 2 (round-2 hold): even when a co-author's continuation legitimately
+    // refines pevo.authors[] within the subset (e.g. removes a co-author),
+    // the IPFS/document-hash payload pointers MUST come from the root, not
+    // the head. These identify the canonical paper payload — overriding
+    // them via continuation lets a co-author swap in any IPFS document
+    // they want.
+    const continuationMeta = {
+      app: `${config.appTag}/test`,
+      [config.appTag]: {
+        type: 'paper',
+        authors: [{ hive: 'alice' }, { hive: 'bob' }], // legitimate, subset of root
+        ipfs_cid: 'QmSpoofedPayload',
+        document_hash: 'sha256:spoofed',
+      },
+    };
+    installResponder(async (sql, params) => {
+      if (sql.includes('SELECT c.author, c.json_metadata') && sql.includes('parent_permlink = $3')) {
+        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmCanonical', document_hash: 'sha256:canonical' })] };
+      }
+      if (sql.includes('SELECT c.author, c.permlink, c.title')) {
+        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmCanonical', document_hash: 'sha256:canonical' })] };
+      }
+      if (isForwardChainWalkSql(sql)) {
+        if (params[0] === 'alice') {
+          return { rows: [{ author: 'bob', permlink: 'v2', block_num: 100, json_metadata: continuationMeta }] };
+        }
+        return { rows: [] };
+      }
+      if (sql.includes('ROW_NUMBER') && sql.includes('co.block_num')) {
+        return { rows: [
+          { version_number: 1, block_num: 1, author: 'alice', permlink: 'p1', title: 't', body: 'abstract\n\n---\n\nbody', created: '2026-01-01T00:00:00.000Z', json_metadata: { app: `${config.appTag}/test`, [config.appTag]: { type: 'paper', authors: [{ hive: 'alice' }, { hive: 'bob' }], ipfs_cid: 'QmCanonical', document_hash: 'sha256:canonical' } } },
+          { version_number: 2, block_num: 100, author: 'bob', permlink: 'v2', title: 't2', body: 'abstract2\n\n---\n\nbody2', created: '2026-01-02T00:00:00.000Z', json_metadata: continuationMeta },
+        ] };
+      }
+      return { rows: [] };
+    });
+
+    const res = await request(app).get('/api/papers/alice/p1');
+    expect(res.status).toBe(200);
+    const detail = res.body?.data;
+    expect(detail).toBeDefined();
+    // Root-pin: payload pointers come from root, NOT the continuation.
+    expect(detail.ipfs_cid).toBe('QmCanonical');
+    expect(detail.document_hash).toBe('sha256:canonical');
+    expect(detail.ipfs_cid).not.toBe('QmSpoofedPayload');
+    expect(detail.document_hash).not.toBe('sha256:spoofed');
   });
 
   it('non-PEvO head row: chain-walk does not fire (no authorized-author set to admit against)', async () => {

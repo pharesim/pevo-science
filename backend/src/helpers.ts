@@ -69,60 +69,67 @@ export function isPevoAnyPaper(meta: Record<string, unknown>, author: string): b
 
 /**
  * Extract the set of authorized continuation-author Hive accounts for a
- * given paper's parsed `pevo` metadata sub-object. The set is the `hive`
- * field values from `pevo.authors[]` — these are the named authors of the
- * paper, the only accounts whose continuation posts may be admitted into
- * the paper's version chain.
+ * given paper. The set membership rule is:
  *
- * Returns an empty Set if `pevo.authors` is missing, malformed, or empty
- * (defensive: callers must treat empty as "no continuation admits", not
- * as "all admits"). Filters out non-string `hive` entries.
+ *   - **Native paper** (`pevo.type === 'paper'`): the `hive` field values
+ *     from `pevo.authors[]`, lowercased. These are the named authors of
+ *     the paper. Hive enforces lowercase chain-side, so case-mismatched
+ *     metadata entries (e.g. `'Alice'` from a display-case copy-paste)
+ *     would silently lock out the legitimate `alice` continuation. We
+ *     normalize at extract time.
+ *
+ *   - **Bridge paper** (`pevo.type === 'bridge_paper'` AND head author ===
+ *     `config.hiveBridgeAccount`): the authorized set is
+ *     `{config.hiveBridgeAccount}`. Bridge papers' canonical update path
+ *     IS the bridge account itself (`bridge.ts /update` posts a
+ *     continuation under `config.hiveBridgeAccount`). Original-preprint
+ *     authors are listed in `pevo.authors[]` but typically have `hive: null`
+ *     (they don't have on-chain identity), so deferring to `pevo.authors[]`
+ *     would yield an empty set and block ALL continuations of bridge
+ *     papers. The bridge account vouches on their behalf.
+ *
+ * Returns an empty Set if the metadata is missing, malformed, the post
+ * isn't a valid PEvO paper, or no `hive` entries are valid (defensive:
+ * callers must treat empty as "no continuation admits", not as "all
+ * admits"). Filters out non-string `hive` entries.
  *
  * See `agents/docs/solutions/conventions/pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28.md`
  * for the convention this enforces. The continuation-author check is
  * **set membership** in this resource-scoped vouched-identity set, not
  * equality to a single pinned account.
+ *
+ * @param pevoMeta - the parsed `pevo` metadata sub-object (i.e.
+ *   `meta[config.appTag]`). May be null/undefined/non-object.
+ * @param headAuthor - the chain-level author of the head paper. Used to
+ *   detect bridge papers via the `isPevoBridgePaper` author-pin.
  */
-export function extractAuthorizedContinuationAuthors(pevoMeta: Record<string, unknown> | null | undefined): Set<string> {
+export function extractAuthorizedContinuationAuthors(
+  pevoMeta: Record<string, unknown> | null | undefined,
+  headAuthor: string,
+): Set<string> {
   const authors: Set<string> = new Set();
   if (!pevoMeta || typeof pevoMeta !== 'object') return authors;
-  const arr = (pevoMeta as Record<string, unknown>).authors;
+  // Bridge-paper special case: the bridge account is the only authorized
+  // continuator. pevo.authors[] entries for bridge papers carry `hive: null`
+  // since the original preprint authors don't own on-chain identity; the
+  // bridge account vouches for them via the bridge-paper-author-pin
+  // convention.
+  if (pevoMeta.type === 'bridge_paper' && headAuthor === config.hiveBridgeAccount) {
+    authors.add(config.hiveBridgeAccount);
+    return authors;
+  }
+  const arr = pevoMeta.authors;
   if (!Array.isArray(arr)) return authors;
   for (const entry of arr) {
-    if (entry && typeof entry === 'object' && typeof (entry as Record<string, unknown>).hive === 'string') {
-      const hive = ((entry as Record<string, unknown>).hive as string).trim();
-      if (hive.length > 0) authors.add(hive);
+    if (entry && typeof entry === 'object') {
+      const e = entry as Record<string, unknown>;
+      if (typeof e.hive === 'string') {
+        const hive = e.hive.trim().toLowerCase();
+        if (hive.length > 0) authors.add(hive);
+      }
     }
   }
   return authors;
-}
-
-/**
- * Returns true iff `candidateAuthor` is a named author of the continued
- * paper, where the named-author set is the `hive` field values from the
- * head paper's `pevo.authors[]` (computed via
- * `extractAuthorizedContinuationAuthors`).
- *
- * This is the **author-consent gate** for `pevo.continues = {author, permlink}`
- * pointers. Without this gate, any Hive account can post a comment with
- * `pevo.continues` pointing at a real paper and have its content surface as
- * a later version of that paper (display-side spoof). The gate filters such
- * spoofs out: a continuation-pointer claim is admitted only when the
- * continuation post's chain-level author is in the head paper's vouched
- * author set.
- *
- * Bridge papers: the chain-level author of the head paper is
- * `config.hiveBridgeAccount`, but `pevo.authors[]` still lists the original
- * preprint authors — so a continuation `C` of a bridge paper is admitted
- * iff `C.author` is in the original-preprint-author set, not equal to the
- * bridge account. This matches the bridge-paper-author-pin convention's
- * "set membership in a resource-scoped vouched set" generalization.
- *
- * See `agents/docs/solutions/conventions/pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28.md`.
- */
-export function isAuthorizedContinuationAuthor(candidateAuthor: string, authorizedAuthors: Set<string>): boolean {
-  if (typeof candidateAuthor !== 'string' || candidateAuthor.length === 0) return false;
-  return authorizedAuthors.has(candidateAuthor);
 }
 
 export function parsePageLimit(req: Request) {
