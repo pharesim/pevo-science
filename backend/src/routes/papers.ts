@@ -526,7 +526,7 @@ async function fetchExternalCitationCounts(dois: string[]): Promise<Record<strin
 // GET /api/papers/:author/:permlink — single paper
 // ──────────────────────────────────────────────
 
-async function fetchPaperDetailFromHaf(author: string, permlink: string) {
+async function fetchPaperDetailFromHaf(author: string, permlink: string, memo?: HeadAuthorsMemo) {
   const pool = getPool();
   if (!pool) return null;
 
@@ -544,7 +544,10 @@ async function fetchPaperDetailFromHaf(author: string, permlink: string) {
     // reconstructVersionsFromHaf to avoid duplicate
     // `fetchHeadAuthorizedAuthors` + chain-walk queries (one each from this
     // function and reconstructVersionsFromHaf). Per task hold-block item 4d.
-    const chain = await resolveContinuationChain(author, permlink);
+    // The optional `memo` parameter lets the caller share the
+    // per-`(author, permlink)` metadata cache with the backward
+    // canonical-root walker (see `findCanonicalRoot`).
+    const chain = await resolveContinuationChain(author, permlink, memo);
     const [paperResult, fullVersions, retraction] = await Promise.all([
       pool.query(
         `SELECT c.author, c.permlink, c.title, c.body, c.json_metadata,
@@ -732,6 +735,26 @@ interface ChainLink {
 }
 
 /**
+ * Per-request memo for `fetchHeadAuthorizedAuthors` results, keyed by
+ * `"author/permlink"`. Threaded into the forward (`resolveContinuationChain`)
+ * and backward (`findCanonicalRoot`) walkers so the two halves of a single
+ * request reuse the same metadata fetches. Bounded by request lifetime
+ * (a fresh map per route handler invocation; map drops out of scope when
+ * the handler returns) so there is no cross-request leak. Stores `null`
+ * for posts that are not valid PEvO papers (negative cache) so a repeat
+ * lookup does not re-issue the SQL query.
+ */
+type HeadAuthorsMemo = Map<string, Set<string> | null>;
+
+function makeHeadAuthorsMemo(): HeadAuthorsMemo {
+  return new Map();
+}
+
+function memoKey(author: string, permlink: string): string {
+  return `${author}/${permlink}`;
+}
+
+/**
  * Fetch the head (root) paper's authorized continuation-author set: the
  * `hive` field values from the head paper's `pevo.authors[]`, narrowed to
  * the case where the row at `(author, permlink)` is a valid PEvO paper
@@ -739,6 +762,10 @@ interface ChainLink {
  *
  * Returns `null` if the head is not a valid PEvO paper (no chain to admit
  * into) — callers should treat this as "no continuations admitted".
+ *
+ * Optionally accepts a per-request `HeadAuthorsMemo` so forward + backward
+ * walkers within the same request reuse fetched metadata. Both `null` and
+ * `Set` results are cached.
  *
  * This is the per-resource vouched-identity set the continuation gate
  * checks against. See
@@ -748,7 +775,12 @@ async function fetchHeadAuthorizedAuthors(
   pool: NonNullable<ReturnType<typeof getPool>>,
   author: string,
   permlink: string,
+  memo?: HeadAuthorsMemo,
 ): Promise<Set<string> | null> {
+  const key = memoKey(author, permlink);
+  if (memo && memo.has(key)) {
+    return memo.get(key) ?? null;
+  }
   try {
     const result = await pool.query(
       `SELECT c.author, c.json_metadata
@@ -757,17 +789,28 @@ async function fetchHeadAuthorizedAuthors(
          AND c.parent_author = '' AND c.parent_permlink = $3`,
       [author, permlink, config.appTag],
     );
-    if (result.rows.length === 0) return null;
+    if (result.rows.length === 0) {
+      memo?.set(key, null);
+      return null;
+    }
     const row = result.rows[0] as Record<string, unknown>;
     // Type-narrow row.author: HAF could in principle return NULL; the
     // gate must fail-closed. A bare `as string` would silently coerce
     // undefined/null and let downstream identity checks evaluate against
     // a non-string — better to bail explicitly.
-    if (typeof row.author !== 'string') return null;
+    if (typeof row.author !== 'string') {
+      memo?.set(key, null);
+      return null;
+    }
     const meta = parseMeta(row.json_metadata);
-    if (!isPevoAnyPaper(meta, row.author)) return null;
+    if (!isPevoAnyPaper(meta, row.author)) {
+      memo?.set(key, null);
+      return null;
+    }
     const pevo = safePevoMeta(meta);
-    return extractAuthorizedContinuationAuthors(pevo, row.author);
+    const set = extractAuthorizedContinuationAuthors(pevo, row.author);
+    memo?.set(key, set);
+    return set;
   } catch (err) {
     logger.error({ err }, 'Head authorized-authors lookup failed');
     return null;
@@ -803,7 +846,11 @@ async function fetchHeadAuthorizedAuthors(
  * valid PEvO paper or has no named authors, the chain degenerates to the
  * root only — no continuations are admitted.
  */
-async function resolveContinuationChain(author: string, permlink: string): Promise<ChainLink[]> {
+async function resolveContinuationChain(
+  author: string,
+  permlink: string,
+  memo?: HeadAuthorsMemo,
+): Promise<ChainLink[]> {
   const pool = getPool();
   if (!pool) return [{ author, permlink }];
 
@@ -811,7 +858,7 @@ async function resolveContinuationChain(author: string, permlink: string): Promi
 
   // Fetch the head paper's authorized-author set ONCE. The chain admit-set
   // is scoped to the root paper, not per-hop.
-  const authorizedAuthors = await fetchHeadAuthorizedAuthors(pool, author, permlink);
+  const authorizedAuthors = await fetchHeadAuthorizedAuthors(pool, author, permlink, memo);
   if (!authorizedAuthors || authorizedAuthors.size === 0) {
     // Head is not a valid PEvO paper, or has no named authors. No
     // continuations are admitted; chain is root-only.
@@ -893,15 +940,56 @@ async function resolveContinuationChain(author: string, permlink: string): Promi
 }
 
 /**
+ * Maximum hops the backward canonical-root walker is allowed to take.
+ *
+ * `findCanonicalRoot` walks attacker-controlled `pevo.continues` pointers,
+ * one SQL query per hop. Without a cap, an attacker can post a chain of
+ * 51+ continuation posts and induce that many DB queries per request to
+ * the deepest one — a per-request DoS amplifier. The PEvO-realistic
+ * version-chain depth is in the low single digits; 10 is a generous
+ * ceiling that absorbs unusual edit cadences without giving an attacker
+ * a 50× amplification factor. Beyond the cap the walker stops at the
+ * current node and emits a structured warn so operators can detect
+ * attack patterns.
+ */
+const CANONICAL_ROOT_MAX_HOPS = 10;
+
+/**
  * Walk backward from a continuation post to find the canonical (root) post.
  * Returns null if the given post is not a continuation.
+ *
+ * **Author-consent gate (BACKEND-CANONICAL-ROOT-WALKER-AUTHOR-GATE).**
+ * At every backward hop, the walker enforces: the post we are walking FROM
+ * (the child claiming a `continues` predecessor) must be authored by an
+ * account that the predecessor's `pevo.authors[]` (or bridge-paper Option b)
+ * authorizes as a continuator. This mirrors the forward gate in
+ * `resolveContinuationChain`. Without the gate, an attacker can post
+ * `attacker/fake-paper` with `pevo.continues = {alice, paper-v1}` and
+ * `/api/papers/attacker/fake-paper` would resolve back to alice's content,
+ * giving the attacker URL the appearance of alice's paper — a phishing
+ * pretext. The gate breaks the chain at the first unauthorized hop and
+ * returns the *child* of that hop as the canonical root, so the URL
+ * displays only the attacker's own content.
+ *
+ * **Depth cap.** Hard-bounded at `CANONICAL_ROOT_MAX_HOPS` (see constant
+ * above) to prevent attacker-induced DoS amplification.
+ *
+ * **Per-request memo.** Optionally accepts a `HeadAuthorsMemo` so the
+ * forward and backward walkers in the same request share the per-post
+ * `(author, permlink)` metadata fetch.
  */
-async function findCanonicalRoot(author: string, permlink: string): Promise<ChainLink | null> {
+async function findCanonicalRoot(
+  author: string,
+  permlink: string,
+  memo?: HeadAuthorsMemo,
+): Promise<ChainLink | null> {
   const pool = getPool();
   if (!pool) return null;
 
   try {
-    // Check if this post has a 'continues' field
+    // Check if this post has a 'continues' field. We also need the post's
+    // own author so the next-hop gate can verify "child author is in
+    // predecessor's authorized-authors set".
     const result = await pool.query(
       `SELECT c.json_metadata -> $3 -> 'continues' ->> 'author' AS cont_author,
               c.json_metadata -> $3 -> 'continues' ->> 'permlink' AS cont_permlink
@@ -914,12 +1002,42 @@ async function findCanonicalRoot(author: string, permlink: string): Promise<Chai
 
     if (result.rows.length === 0) return null;
 
-    // Walk backward to the root
+    // The hop being considered is FROM `(childAuthor, childPermlink)` TO
+    // `(currentAuthor, currentPermlink)` (the predecessor). To accept the
+    // hop, `childAuthor` must be in the predecessor's authorized-authors
+    // set (per `extractAuthorizedContinuationAuthors`).
+    let childAuthor: string = author;
+    let childPermlink: string = permlink;
     let currentAuthor = result.rows[0].cont_author as string;
     let currentPermlink = result.rows[0].cont_permlink as string;
-    const MAX_HOPS = 50;
 
-    for (let i = 0; i < MAX_HOPS; i++) {
+    for (let i = 0; i < CANONICAL_ROOT_MAX_HOPS; i++) {
+      // Author-consent gate on the current hop: fetch the predecessor's
+      // (current's) authorized-authors set. If `childAuthor` is not in it,
+      // the chain is broken at this hop — return the CHILD as canonical
+      // (the unauthorized predecessor pointer is rejected).
+      const authorizedAuthors = await fetchHeadAuthorizedAuthors(
+        pool,
+        currentAuthor,
+        currentPermlink,
+        memo,
+      );
+      if (!authorizedAuthors || !authorizedAuthors.has(childAuthor)) {
+        logger.warn(
+          {
+            event: 'canonical_root_walker_unauthorized_hop',
+            childAuthor,
+            childPermlink,
+            predecessorAuthor: currentAuthor,
+            predecessorPermlink: currentPermlink,
+          },
+          'canonical-root walker rejected hop: child author not in predecessor\'s authorized-authors set',
+        );
+        return { author: childAuthor, permlink: childPermlink };
+      }
+
+      // Hop accepted. Look up the predecessor's own continues pointer to
+      // see if the walk continues another step.
       const parentResult = await pool.query(
         `SELECT c.json_metadata -> $3 -> 'continues' ->> 'author' AS cont_author,
                 c.json_metadata -> $3 -> 'continues' ->> 'permlink' AS cont_permlink
@@ -930,14 +1048,30 @@ async function findCanonicalRoot(author: string, permlink: string): Promise<Chai
       );
 
       if (parentResult.rows.length === 0 || !parentResult.rows[0].cont_author) {
-        // currentAuthor/currentPermlink is the root
+        // currentAuthor/currentPermlink is the root.
         return { author: currentAuthor, permlink: currentPermlink };
       }
 
-      currentAuthor = parentResult.rows[0].cont_author;
-      currentPermlink = parentResult.rows[0].cont_permlink;
+      childAuthor = currentAuthor;
+      childPermlink = currentPermlink;
+      currentAuthor = parentResult.rows[0].cont_author as string;
+      currentPermlink = parentResult.rows[0].cont_permlink as string;
     }
 
+    // Depth cap exceeded: stop walking and return the deepest verified
+    // node as canonical. Emit a structured warn so operators can detect
+    // attacker-induced amplification patterns.
+    logger.warn(
+      {
+        event: 'canonical_root_walker_depth_exceeded',
+        startAuthor: author,
+        startPermlink: permlink,
+        stopAuthor: currentAuthor,
+        stopPermlink: currentPermlink,
+        maxHops: CANONICAL_ROOT_MAX_HOPS,
+      },
+      'canonical-root walker exceeded depth cap; stopping walk',
+    );
     return { author: currentAuthor, permlink: currentPermlink };
   } catch (err) {
     logger.error({ err }, 'Canonical root lookup failed');
@@ -1227,8 +1361,14 @@ router.get('/:author/:permlink', async (req: Request, res: Response) => {
     return sendError(res, 400, 'BAD_REQUEST', 'version must be an integer');
   }
 
+  // Per-request memo for `fetchHeadAuthorizedAuthors`. Shared between the
+  // backward walker (`findCanonicalRoot`) and the forward walker
+  // (`resolveContinuationChain` via `fetchPaperDetailFromHaf`) so they do
+  // not re-fetch metadata for the same `(author, permlink)`.
+  const headAuthorsMemo = makeHeadAuthorsMemo();
+
   // E4: If this is a continuation post, redirect to the canonical root paper
-  const canonicalRoot = await findCanonicalRoot(author, permlink);
+  const canonicalRoot = await findCanonicalRoot(author, permlink, headAuthorsMemo);
   if (canonicalRoot) {
     author = canonicalRoot.author;
     permlink = canonicalRoot.permlink;
@@ -1268,7 +1408,7 @@ router.get('/:author/:permlink', async (req: Request, res: Response) => {
 
   const cacheKey = `paper-detail:${author}:${permlink}`;
   const cached = await hafCache.getOrSet(cacheKey, async () => {
-    const hafResult = await fetchPaperDetailFromHaf(author, permlink);
+    const hafResult = await fetchPaperDetailFromHaf(author, permlink, headAuthorsMemo);
     if (hafResult) return hafResult;
 
     // If current metadata was stripped by an external edit, reconstruct from

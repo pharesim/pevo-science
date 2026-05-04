@@ -58,6 +58,8 @@ Update `agents/docs/solutions/conventions/pevo-object-identity-is-author-vouchin
 
 Architect-owned; backend leaves [TODO Architect] markers.
 
+[TODO Architect] Update `agents/docs/solutions/conventions/pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28.md` "Sites this convention applies to" sub-section to add `findCanonicalRoot` (BACKWARD walker in `backend/src/routes/papers.ts`) alongside the existing `resolveContinuationChain` (FORWARD walker) entry. Predicate shape: at every backward hop, the child post's chain-level author must be in the predecessor's authorized-authors set (per `extractAuthorizedContinuationAuthors`); enforced JS-side only since the backward walk is per-post (no SQL ANY()-filterable candidate set). Hard depth cap at `CANONICAL_ROOT_MAX_HOPS = 10` (vs. forward walker's `MAX_HOPS = 50`) — backward walk is fully attacker-induced (anyone can post a continuation pointer chain), forward walk is bounded by who is authorized into the root's named-author set. Per-request memo (`HeadAuthorsMemo`) shared between both walkers. Canary test file: `backend/tests/routes/canonical-root-walker.test.ts`.
+
 ## Out of scope
 
 - Restructuring `findCanonicalRoot` to use a different traversal pattern. Author-consent gating + depth cap closes the surface; structural refactor is separate.
