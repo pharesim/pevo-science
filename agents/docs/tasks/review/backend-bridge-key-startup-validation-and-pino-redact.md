@@ -117,3 +117,44 @@ Acceptance item 3b (existing accreditation redaction tests): no edits required. 
 2. **δ test transition confirmation:** At archive, confirm `accreditation.test.ts` redaction tests (the `not.toMatch(/[0-9a-f]{64}/)` ones added in δ round-4) transition from failing-red to passing-green via this commit's redact policy. No code edits required from this task; only verification at architect's archive pass.
 
 3. **No API contract update required.** This task is internal-only (logger serializer + startup cache); operators see the same JSON envelope shapes, only the `err` payload internals change. Architect can confirm at archive.
+
+---
+
+## Backend re-open (2026-05-04, vitest run revealed forcing-function tests still red)
+
+Wave-1 worker landed `23bdae9` (custom pino `err` serializer + bridge admin WIF startup validation), but the project-wide vitest run after worktree merge surfaced two NEW failures introduced by this commit:
+
+- `tests/routes/accreditation.test.ts:302` — "502 BROADCAST_FAILED path with deleteToken rejection: ... no raw token leak"
+- `tests/routes/accreditation.test.ts:735` — "round-3 hold #5: decrement-failure log path ... no raw token leak"
+
+Both are the forcing-function tests that this task's Acceptance 3b expected would "go green naturally." The test header at `accreditation.test.ts:54-59` declares them red-by-design until pino's redact configuration is widened to scrub `err.command.args`.
+
+**Why the worker's redact policy doesn't fix them:** The worker implemented redaction as a pino `serializers.err` hook in `backend/src/logger.ts`. Pino's custom serializers fire AT WRITE TIME (when pino formats a log line for output), NOT at the `logger.warn(...)` call. The failing tests inspect `loggerWarnSpy.mock.calls` — i.e., the args captured by a vitest spy on `logger.warn` — which records the call PRE-pino-serialization. Result: the spy still sees `err.command.args[0]` containing the raw 64-hex token.
+
+**What the next attempt needs:**
+
+A logger wrapper layer that redacts `err`-shaped args BEFORE delegating to pino. Sketch:
+```ts
+const baseLogger = pino({ ... });
+function redactErrInArg(arg: unknown) {
+  if (arg && typeof arg === 'object' && 'err' in (arg as object)) {
+    return { ...(arg as Record<string, unknown>), err: redactErrSerializer((arg as Record<string, unknown>).err) };
+  }
+  return arg;
+}
+export const logger = {
+  warn: (...args: unknown[]) => baseLogger.warn(...args.map(redactErrInArg)),
+  error: (...args: unknown[]) => baseLogger.error(...args.map(redactErrInArg)),
+  // ... and so on for info / debug / fatal / trace
+};
+```
+
+The wrapper invokes the existing exported `redactErrSerializer` so the redact policy stays single-source-of-truth. The pino `serializers.err` config can stay too (defense-in-depth for any direct-baseLogger call site, though there shouldn't be any once the wrapper is the public export).
+
+Alternative shape: keep pino's serializer, change the failing tests to inspect the actual log output stream rather than `loggerWarnSpy.mock.calls`. The test header says "Do NOT 'fix' the test back to passing" — but rewriting it to inspect the right layer (e.g., spying on the destination stream's `write`) is not the same as masking the symptom. Either approach closes the gap; the wrapper is more aligned with the task's stated acceptance.
+
+**Other vitest results from the same run (for context, NOT this task's responsibility):**
+- `tests/routes/disciplines-canon-mocked.test.ts:669` — pre-existing failure on main ("continuation-chain head-override lowercases head metadata"). Confirmed by canonical-root worker (commit `e2f7e1b`) noting same red on a stashed-clean tree.
+- `tests/routes/stats-profile-parity.test.ts:80` — real-HAF reputation score fluctuation (5 vs 20). Likely flake.
+
+The two NEW failures are the only ones this task is on the hook for. Fixing them — either via the wrapper sketched above or via a test-layer change — closes the forcing-function gap.
