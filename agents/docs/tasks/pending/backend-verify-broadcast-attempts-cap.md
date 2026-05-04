@@ -280,3 +280,76 @@ Added a test-only seam export `export const __test_seams = { decrementBroadcastA
 - `backend/src/lib/log-pii.ts` — Item 1 (`hashTokenForLogs` helper).
 - `backend/src/lib/redis-scripts.ts` — NEW (Item 4 centralizing Lua scripts; Item 7 corrected docstring).
 - `backend/tests/routes/accreditation.test.ts` — Item 3 (7 if-redis throws), Item 4 (import + use shared Lua constant), Item 5 (decrement-failure log spec), Item 6 (deterministic barrier), Item 12 (config env-var spec), Item 13 (race-recovery DEL spec), plus the existing 502+deleteToken spec updated to assert `token_hash` instead of raw `token`.
+
+---
+
+## Architect re-review (2026-05-04, round-4) — HELD PENDING FIXES
+
+`/ce-code-review` ran on commit `e4f822a` (round-3 hold items 1-13). 10 personas. The 13 round-3 items are mechanically applied and the soft-block design choice is sound. However: the headline item 1 (`hashTokenForLogs`) is INCOMPLETE in a non-obvious way, items 10 + 11 landed without tests, and several Redis-flap behaviors are uncovered.
+
+### Items to address
+
+**1. (P1) `hashTokenForLogs` redaction is incomplete — ioredis `err.command.args` carries the raw token to logs.** Security review (sec-1, conf 75) verified against ioredis source: errors propagated from a `redis.eval` / `redis.decr` / `redis.del` call carry `err.command = { name, args }` where `args[]` includes the key `${appTag}:pending_accred_broadcast_attempts:${token}` — the raw 64-hex token is in there. `pino-std-serializers/lib/err.js` enumerates ALL enumerable own properties of the error onto the serialized payload. `logger.ts` has NO custom `err` serializer override. The new redaction test at `accreditation.test.ts:632-645` asserts `not.toMatch(/[0-9a-f]{64}/)` — but the test's mock rejection is `new Error('redis flap...')`. Plain `Error` has no `command` property, so the assertion passes BY CONSTRUCTION; the real-world ioredis path it claims to cover would FAIL the assertion.
+
+Fix (test correctness only — production fix deferred to follow-up task):
+- Change the redaction test's mock rejection from `new Error('flap')` to a hand-crafted ioredis-shaped error: `Object.assign(new Error('flap'), { command: { name: 'decr', args: [counterKey] }, name: 'ReplyError' })` (or similar). The test will FAIL RED against the current production code — this is intentional; it exposes the real bug.
+- Apply the same fix to the 502+deleteToken-rejection spec at line 350 (also currently uses plain `Error`).
+
+The **production fix** (custom pino `err` serializer that strips `err.command.args` + a project-wide redact policy) is the SAME class as α's admin-WIF leak via `AssertionError.actual`/`.expected`. Filed as **`backend-bridge-key-startup-validation-and-pino-redact.md`** (P1) — both leak vectors close in one cohesive change. After that task lands, this test transitions from failing-red to passing-green naturally; no further work required here.
+
+**2. (P1) Item 11 (pre-INCR 503 path) has NO test — mutation removing the try/catch wouldn't fail.** `routes/accreditation.ts:339-358`. The new `incrementBroadcastAttempts` try/catch returns 503 SERVICE_UNAVAILABLE with `{retriable:true}` and emits `event: 'accred_verify_broadcast_increment_failed'`. Neither the 503 status code nor the event string appears anywhere in `accreditation.test.ts`. Mutation: removing the try/catch wrapper restores the prior implicit 500 INTERNAL_ERROR shape; no failing test. The implementer's signal block listed item 11 as landed but the tests for it weren't written.
+
+**3. (P1) Item 10 (Redis-unavailable warn path) has NO test.** `routes/accreditation.ts:129-138`. The `if (redis && !isRedisAvailable())` branch inside `decrementBroadcastAttempts` emits `event: 'accred_verify_broadcast_decrement_redis_unavailable'`. Neither the event string nor the `isRedisAvailable()`-false-at-decrement-time scenario appears anywhere in `accreditation.test.ts`. Item 5 (the round-3 hold's decrement-failure log spec) tests `redis.decr` THROWING (mockRejectedValueOnce) — a different path that fires `accred_verify_broadcast_decrement_failed`, NOT the silent-flap path that fires `accred_verify_broadcast_decrement_redis_unavailable`.
+
+**Bonus — adjacent reliability gap (Reliability-R2):** `incrementBroadcastAttempts` has TWO branches: the Redis branch (with `if redis && isRedisAvailable()` gate) and the in-memory fallback. The new 503 try/catch fires only when `redis.eval` THROWS. If Redis is already-down at the `isRedisAvailable()` check, the in-memory fallback runs SILENTLY with no warn and no 503 — cap enforcement degrades to an uncoordinated in-memory counter without operator signal.
+
+Fix (unified Redis-flap coverage block, items 1-3 above + this bonus):
+- (a) Item 11 spec: mock `redis.eval` to `mockRejectedValueOnce`, drive `/verify`, assert response is 503 SERVICE_UNAVAILABLE + `{retriable: true}` + structured `event: 'accred_verify_broadcast_increment_failed'` warn fires.
+- (b) Item 10 spec: drive `isRedisAvailable()` → false BEFORE the eval (e.g., `vi.spyOn(redisModule, 'isRedisAvailable').mockReturnValue(false)`), call the increment helper directly via the test seam, assert `event: 'accred_verify_broadcast_decrement_redis_unavailable'` warn fires AND the in-memory fallback ran (counter incremented in the in-memory map).
+- (c) Reliability-R2 spec: same as (b) but for the increment path — drive Redis-already-down, assert in-memory fallback runs AND emit a NEW structured warn `event: 'accred_verify_broadcast_increment_redis_unavailable'` so operators know cap enforcement is degraded. (Production fix: add this warn to `incrementBroadcastAttempts` symmetric to the existing `decrementBroadcastAttempts` warn from item 10.)
+
+**4. (P1) `[TODO Architect]` markers for contract prose.** Backend's job in this round: leave clear markers on the task signal block this round so the architect's archive-time edits are scoped. Three contract-doc items pending (architect resolves at archive):
+- A1: Add BROADCAST_ATTEMPT_LIMIT_EXCEEDED row to `agents/docs/api-contracts/accreditation.md` AND `common.md`. Note the round-3 soft-block side-effect: token PERSISTS on cap-exceeded (caller may wait for 24h counter TTL rather than calling `/request` again). Architect's round-1 hold note explicitly committed to this; round-2 + round-3 came and went.
+- A3 (NEW): Add 503 SERVICE_UNAVAILABLE row to `accreditation.md` for `POST /verify`. Trigger: pre-INCR Redis failure. Envelope: `{ retriable: true }`. Note absence of `Retry-After` header and absence of `details.reason` (third-bucket per common.md).
+- AC-4: Update `common.md`'s 503 third-bucket note to acknowledge that `details.retriable: true` may appear in non-argon2 503 responses.
+
+Backend: include explicit `[TODO Architect]` markers in the round-4 signal block referencing A1, A3, AC-4. No code change.
+
+**5. (P1) `__test_seams` export shape — add `as const` (in BOTH this task's accreditation.ts AND the orcid.ts precedent).** `routes/accreditation.ts` `export const __test_seams = { decrementBroadcastAttempts }` is mutable at runtime (TypeScript-inferred to `{ decrementBroadcastAttempts: (token: string) => Promise<void> }`). A test file can do `accreditationTestSeams.decrementBroadcastAttempts = something_else` and TypeScript won't complain. The `routes/orcid.ts` precedent (which the implementer mirrored) has the same gap.
+
+Fix: add `as const` to BOTH sites. One-character change per site. Locks the shape against accidental mutation in test setup code. Worth `/ce-compound` at archive on the seam-export-shape convention.
+
+**6. (P2 batched — comment/docstring drift) Lua naming + docblock task-coupling + line-number cross-references.**
+- (a) `lib/redis-scripts.ts:35` — rename `INCR_AND_EXPIRE_IF_FIRST_LUA` to `INCR_AND_EXPIRE_ON_ZERO_TO_ONE_LUA` (or `INCR_WITH_CONDITIONAL_EXPIRE_LUA`). The "IF_FIRST" framing encodes the corrected-away invariant from item 7. Skim-readers reconstruct the wrong mental model.
+- (b) `lib/redis-scripts.ts:1-8, :18` — strip task-coupled parentheticals ("round-3 hold #4...", "round-3 hold #7 — the prior comment described..."). After archive these become opaque archaeology. The rationale should be timeless invariants only.
+- (c) `routes/accreditation.ts:304` (44-line WHY block) — replace `(line 178-187 below)` line-number cross-reference with a function-name anchor (`see deleteToken below`). Line numbers in comments are fragile.
+- (d) `routes/accreditation.ts:114` (`__test_seams` race-recovery) — fix docstring drift `<` vs `<=`. Code reads `if (after < 0)`; comment + test description say `<= 0`.
+
+**7. (P2 batched — test scaffolding gaps).**
+- (a) `tests/routes/accreditation.test.ts:345` (502+deleteToken-rejection spec): asserts `token_hash: expect.stringMatching(/^[0-9a-f]{12}$/)` but does NOT assert no raw 64-hex token leak (`objectContaining` ignores extras). Add the negative-regex assertion alongside the positive `token_hash` check. Pairs with item 1 above (same shape).
+- (b) `tests/routes/accreditation.test.ts` file header — update mock-surface inventory to include `redis.decr` (not just `redis.del`); the existing "only redis.del is mocked" claim is now stale per round-3 hold #5.
+- (c) Vacuous regex in mock test: the round-3 hold #5 spec uses a 16-hex-tail mock token; `not.toMatch(/[0-9a-f]{64}/)` can't match by construction. Use a 64-hex token in the mock fixture so the negative regex has actual surface.
+
+**8. (P2 batched — code structure precision).**
+- (a) `routes/accreditation.ts:109` `decrementBroadcastAttempts` — restructure 3 branches as nested `if (redis) { if (isRedisAvailable()) ... else ... }` for self-evident exhaustiveness. Currently 2 sequential top-level `if` guards + fallthrough.
+- (b) `routes/accreditation.ts:341-358` pre-INCR catch — narrow `incrErr` (typed `unknown`) before passing to logger: `err: incrErr instanceof Error ? incrErr : new Error(String(incrErr))`. Pino serializes `unknown` non-Errors in unpredictable shapes.
+- (c) `lib/redis-scripts.ts:35` — add `as const` to the Lua constant for type-level immutability.
+
+**9. (P2 cap-exceeded log payload) Add `token_hash` to cap-exceeded warn.** `routes/accreditation.ts:365-374`. Cleanup paths DO carry `token_hash`; cap-exceeded warn carries `username, email_hash, attempts, cap` but no `token_hash`. Operators can't bucket cap-exceeded events by token. One-line addition.
+
+**10. (P3) `hashTokenForLogs` has no unit specs.** `lib/log-pii.ts` — `hashEmailForLogs` has six dedicated specs (deterministic, normalization handling, etc.); `hashTokenForLogs` has none. Add parity unit specs.
+
+### Items deferred to follow-up tasks
+
+- **Redis-flap counter inflation + recovery design** (Reliability-R1 + ADV-1): 3 transient flaps over a token's life exhaust the cap; counter persists inflated for 24h with no auto-recovery and no documented manual-reset runbook. Deferred to **`backend-verify-cap-redis-flap-recovery.md`** (P2 reliability — pairs with this hold's items 1-3 coverage; covers (a) auto-recovery design + (b) operator manual-reset runbook).
+- **EVAL not EVALSHA** (Reliability-R3): Lua script body sent on every `/verify` call. Deferred to **`backend-redis-script-evalsha-optimization.md`** (P3 perf, project-wide).
+- **Concurrency-burst-vs-sequential-flood scope clarity** (ADV-2): cap inert under sustained Hive-side latency; counter cycles 0→1→DECR→0. Architect refresh of WHY-comment at archive (paired with A1 contract prose).
+
+### Items dismissed during architect triage
+
+- Test fragility (cap+2 calls vs 5/min/IP rate limit at default cap=3) — operator-tuned cap=10 → 429; flag if it materializes.
+- Redundant double-serialization at line 711 (`flatPayload + JSON.stringify(loggerWarnSpy.mock.calls)`) — cosmetic; assertion not weakened.
+
+### Re-review signal
+
+When items 1-10 land, `git mv` this file back to `tasks/review/`. The architect's next review pass scopes `/ce-code-review` to the round-4 commit and archives on clean. Architect addresses A1 + A3 + AC-4 contract prose AT archive time. Item 1's test fix expects to fail red until the deferred pino-redact task lands — that's the intended state and the bug exposure is the point.

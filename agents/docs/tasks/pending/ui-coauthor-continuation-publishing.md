@@ -138,3 +138,67 @@ User-architect dialog 2026-04-30: architect surfaced the continuation-author-gat
 - `agents/docs/api-contracts/papers.md` — multi-author and version-chain semantics.
 - `frontend/src/pages/paper-detail.js` (if that's the location — investigate) — current edit-button gate.
 - Existing E2E coverage in `ui-e2e-edit-paper-flow.md` (`tasks/review/`) — may need extension for the co-author publish-continuation path.
+
+---
+
+## Architect re-review (2026-05-04, round-2) — HELD PENDING FIXES
+
+`/ce-code-review` ran on commits `5d44f23` (lifecycle rework) + `cf5da4b` (scope reconciliation). 7 personas (correctness, testing, maintainability, project-standards, learnings, security, julik-frontend-races). Security verdict CLEAN — Hive's signature requirement is the actual security boundary; SPA spoofing of broadcast targets can't escalate to cross-account writes. Correctness CLEAN — `userPostInChain` walks `versions[]` correctly, `isContinuation` truth table verified at all 4 cases, broadcast targeting + diff/full-body decision sound, `allAuthors[0].hive` collapse correct. The held items are about test coverage on a load-bearing UX gate, a mechanically-reproducible reactivity bug, and a comment-vs-code drift trap that hides a load-bearing null guard.
+
+### Items to address
+
+**1. (P1) `isBridgePaper` getter + Edit-affordance gate has ZERO test coverage.** `frontend/src/pages/paper-detail.js:296` adds `!isBridgePaper` to the Edit-button `x-if`. The `isBridgePaper` getter at line 890 returns `this.paper?.json_metadata?.[getAppTag()]?.type === 'bridge_paper'`. NO test in `pages-edit.test.js` or `pages-paper-detail.test.js` exercises this getter or asserts the Edit-affordance suppression. Mutation: removing `!isBridgePaper` from the template restores the old behavior (bridge papers show Edit) — no test catches.
+
+Security-clean (Hive signature requirement is the boundary), but the affordance is load-bearing for the round-1 deliverable and the convention `pevo-object-identity-is-author-vouching-not-metadata-claim` would frame this as a UI-side identity check that needs test coverage.
+
+Fix: add to `frontend/tests/unit/pages-paper-detail.test.js`:
+- (a) `isBridgePaper` getter returns true for `paper.json_metadata = { pevotest: { type: 'bridge_paper' } }`.
+- (b) Returns false for normal paper (`type: 'paper'`).
+- (c) Returns false for missing `json_metadata` / missing `pevotest` key / missing `type` field.
+- (d) Affordance predicate test: `isOwnPaper && !is_retracted && !isBridgePaper` evaluates correctly across the matrix (own paper + non-bridge → true; own paper + bridge → false; non-own paper → false; retracted → false).
+
+DOM-level test of the `x-if` template binding is appealing but requires Alpine + jsdom infrastructure the project may not have today; skip unless trivial.
+
+**2. (P1) `$watch` handlers + `storage` listener DUPLICATE on Retry click — mechanically reproducible reactivity bug.** `frontend/src/pages/edit.js:539-558`. The eight `$watch` registrations and the `window.addEventListener('storage', ...)` live INSIDE `loadPaperData()`, NOT `init()`. The Retry button at line 50 (`@click="loadPaperData()"`) calls the same function on a second successful load. Each call adds 8 fresh `$watch` handlers on top of existing (Alpine's `$watch` returns an unsubscribe handle that the code DISCARDS) AND overwrites `_storageListener` reference at line 539 WITHOUT calling `removeEventListener` on the old one. After ONE successful retry: storage listener fires twice per cross-tab citation event; draft autosave fires 8× per keystroke. Reproducible: load → error → Retry → success.
+
+Fix: refactor the lifecycle/data-loading boundary cleanly:
+- (a) Pull `$watch` registration + `addEventListener('storage', ...)` out of `loadPaperData()` into `init()` (or a new `_setupReactiveBindings()` called once from `init()`).
+- (b) `loadPaperData()` becomes pure data loading. Multiple invocations are safe.
+- (c) Test: drive `init()` → `loadPaperData()` → fail → Retry → `loadPaperData()` succeeds; assert `$watch` count + storage-listener count are invariant (e.g., spy on `addEventListener` calls + count `_unwatch*` registrations). Mutation: putting the registrations back in `loadPaperData()` fails the invariant assertion.
+
+This pattern matches PEvO's existing prior-art on async-continuation-teardown-guard discipline — separate concerns of "lifecycle bindings" vs "data fetching."
+
+**3. (P2) Comment-vs-code drift hides a load-bearing null guard.** `frontend/src/pages/edit.js:932-936`. The else-branch comment says "userPostInChain is non-null on this branch — isContinuation === false implies it." That claim is FALSE for the sparse-versions fallback path: `isContinuation` returns false at line 460 when `username === paper.author` even when `userPostInChain` is null (versions[] entries carry no `author` field in some HAF-replay-not-run states). The guard `ownPost ? ownPost.author : this.paper.author` at lines 935-936 is therefore a real, load-bearing null guard — NOT a vestigial one. A future developer reading the comment and trusting it will remove the ternary, regressing sparse-version root-author edits to a crash at `null.author`.
+
+Fix:
+- (a) Rewrite the comment honestly: "userPostInChain MAY be null when `versions[]` is sparse and the user is the root author. The `ownPost ?` guard is load-bearing for that case — do not remove."
+- (b) Add a test exercising the sparse-versions root-author edit path: drive `handleSubmit` with `paper.versions = []` (or the sparse stub) and `username === paper.author`, assert the broadcast targets `paper.author/paper.permlink` (not `null.author`).
+
+**4. (P2) Broadcast-payload `allAuthors[0].hive` collapse not asserted in test.** `frontend/tests/unit/pages-edit.test.js:316`. The collapsed-co-author native-edit test asserts `commentOp[1].author` and `commentOp[1].permlink` but never unpacks `JSON.parse(commentOp[1].json_metadata)`. A regression that reverts `allAuthors[0].hive = username` to the legacy `isContinuation ? username : paper.author` would silently embed 'alice' instead of 'bob' in the chain meta. Undetected by current assertions.
+
+Fix: extend the test to unpack `commentOp[1].json_metadata` (`JSON.parse`) and assert `parsedMeta.pevotest.authors[0].hive === 'bob'`. One-line addition.
+
+**5. (P2) Submit-time live-read of `isContinuation` and `userPostInChain`.** `frontend/src/pages/edit.js:869, :934`. Both are Alpine getters that recompute from `this.paper.versions[]` on every access. `handleSubmit()` reads them AFTER multiple awaits (the IPFS upload loop can run for many seconds). If `this.paper` is ever mutated between form-open and submit — by a background poll, future reactivity hook, or explicit refresh — the path chosen at line 869 and the broadcast target at line 934 silently shift. No polling exists today, so this is LATENT, but the contract is invisible to a future engineer adding a paper-refresh call.
+
+Fix: capture `const isContinuation = this.isContinuation; const ownPost = this.userPostInChain;` at the TOP of `handleSubmit()` BEFORE the first `await`, then use the locals throughout. Two-line fix; closes the latent class entirely.
+
+**6. (P2) `isSubmitting` step state machine uses negative-space exclusion list.** `frontend/src/pages/edit.js:473-475`. `isSubmitting` is `step !== 'idle' && step !== 'success' && step !== 'error'`. Mechanically safe today. The hazard: any future step name not added to the exclusion list will silently pass the guard and re-enable the Submit button mid-flight. State-machine correctness smell.
+
+Fix: freeze step names as explicit constants (`const STEP_IN_PROGRESS = ['validating', 'uploading', 'broadcasting', 'confirming']` or whatever the actual in-progress steps are); rewrite `isSubmitting` as positive-set inclusion: `STEP_IN_PROGRESS.includes(this.step)`. ~12 lines, no library needed. Resist the urge to introduce XState or a state machine library — the transition table is simple enough inline.
+
+**7. (P2) UI warning for malformed-metadata edit mis-route.** Cross-cutting from cluster B held task `backend-continuation-post-author-consent-gate.md` item 8: if head paper has empty/missing `pevo.authors[]` (malformed), the backend gate degenerates chain to root-only → legitimate co-author's `userPostInChain` returns null → `isContinuation` falls through to `head_author/head_permlink` fallback → routes the edit as a NEW continuation rather than a native edit.
+
+Fix: in `frontend/src/pages/edit.js`, if `userPostInChain` returns null AND `currentUser.username` IS in `paper.pevo.authors[].hive`, surface a UI warning (`paper.metadataIncomplete` or similar new locale key) "Paper metadata incomplete; please refresh" rather than silently mis-routing into new-continuation flow. Add the locale key to all 16 locale files + `STUBS.md`.
+
+**8. (P3) `userPostInChain` user-is-chain-head case only indirectly tested.** `frontend/tests/unit/pages-edit.test.js`. The user-is-head case (`versions: [{author: username, permlink: head_permlink}]`) is only exercised through the `handleSubmit` broadcast-target test. Add a dedicated unit spec for the `userPostInChain` getter on the head case so the partition is explicit.
+
+### Items dismissed during architect triage
+
+- **`isContinuation` truth-table cases collapsed into single composite test** (T-4) — failure attribution slightly imprecise, but coverage is real. Cosmetic.
+- **IPFS upload `finally` writes to destroyed Alpine proxy after `_mounted` early-return** (JFR-004) — Alpine silently discards writes; no user-visible behavior; cosmetic.
+
+### Re-review signal
+
+When items 1-8 land, `git mv` this file back to `tasks/review/`. The architect's next review pass scopes `/ce-code-review` to the round-2 commits. Items 1-2 are P1 (test gap on a load-bearing gate + reproducible reactivity bug); items 3-7 are P2 (correctness traps + UX warning); item 8 is P3.
+
+Anchor: item 2's lifecycle refactor is the load-bearing structural change; the rest are scoped local fixes around it.

@@ -304,3 +304,57 @@ Round-3 hold items 1-8 all landed in commit `e521a96` (cherry-pick of worker `37
 **Targeted tests passing (real HAF + Redis):** `bridge-paper-author-gate.test.ts` 14/14, `helpers.test.ts` 21/21, `hafsql.test.ts` 10 passed + 2 skipped (pre-existing pool gates), `check-bridge-paper-discipline.test.ts` 5/5. `npm run lint` clean. `npx tsc --noEmit` clean.
 
 **No new `[TODO Architect]`** notes this round. The pre-existing round-2 contract-prose TODO carries forward unchanged.
+
+---
+
+## Architect re-review (2026-05-04, round-4) — HELD PENDING FIXES
+
+`/ce-code-review` ran on commit `e521a96` (round-3 hold items 1-8). 8 personas (correctness, testing, maintainability, project-standards, learnings, security, adversarial, kieran-typescript). All 8 round-3 hold items mechanically applied; mutation-sensitivity verifications in the implementer signal block check out. The substantive bridge-paper auth-gate is correct and comprehensive; remaining issues are about the META-defense (the discipline guard + canary correctness).
+
+### Items to address
+
+**1. (P1) `assertBridgeAuthorPin` line-139 comment contradicts code.** `tests/routes/bridge-paper-author-gate.test.ts:139` says "always group 1 = the author-slot $N". Code at line 169 correctly reads `m[2]`. Line 148's other comment correctly says "group(2) is the bridge-account param slot". Two comments contradict each other in the load-bearing security canary. An auditor reading the wrong comment re-derives the wrong group structure before they can trust the mutation canary.
+
+Fix: refactor the regex to use **named capture groups** rather than positional groups. `/(?<authorSlot>\$\d+)\s+AND\s+...\s*=\s*'bridge_paper'/` (and the type-first variant). Loop body extracts via `m.groups.authorSlot`. Eliminates the comment-vs-code drift class entirely; the regex is self-documenting.
+
+**2. (P1) Document the 6 runtime-equivalent bypass classes in the discipline-guard test + convention doc.** The current regex catches single-/double-/backtick-quoted literals. Six concrete bypasses exist: (a) string concatenation (currently documented as out-of-scope), (b) template literal interpolation (`` `${prefix}_paper` ``), (c) `Array.join` (`['bridge', 'paper'].join('_')`), (d) case-toggle (`'bridge_PAPER'.toLowerCase()`), (e) `.slice` from a longer literal, (f) `String.fromCharCode(...)`. Documenting only (a) while 5 other shapes silently slip through is a credibility gap.
+
+Fix: extend the test file's documented-out-of-scope section to enumerate ALL 6 bypass classes, AND update the convention doc `agents/docs/solutions/conventions/pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28.md` to acknowledge "regex catches direct literals; structural bypasses (concatenation, template interpolation, etc.) are out of scope and require code-review attention or AST-based enforcement (see follow-up task)." The AST-based discipline rule itself is filed as `backend-discipline-guard-pipeline-integration.md`.
+
+**3. (P1) Rename "CI guard" framing to honest "lint check" / "discipline tripwire" wording.** The script header, test file header, convention doc, and task signal blocks all reference the discipline script as a "CI guard". The script is wired only into `npm run lint`. There is no `.github/workflows/`, no pre-commit hook, no `prepare`/`pre-commit` script. `npm test` alone never fires it.
+
+Fix: replace "CI guard" with "lint discipline tripwire" (or similar honest framing) across:
+- `backend/scripts/check-bridge-paper-discipline.sh` (header comment)
+- `backend/tests/scripts/check-bridge-paper-discipline.test.ts` (file header)
+- `agents/docs/solutions/conventions/pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28.md`
+- This task file's signal block (round-3 implementer wording)
+
+The actual mechanical pipeline integration (pre-commit hook OR GitHub Actions workflow) is filed as `backend-discipline-guard-pipeline-integration.md` (paired with item 2's AST rule).
+
+**4. (P3 → batched) Test scaffolding gaps.**
+- (a) `tests/scripts/check-bridge-paper-discipline.test.ts` JSDoc lists 6 cases; only 5 are implemented. Item 5 ("same literal in an allowlisted file → exit 0") is documented but missing. The grep-exclusion path is untested. Add the spec: write the literal into a path matching the allowlist (e.g., `src/types/__test_hive__.ts` or directly into `src/types/hive.ts`-shaped path), assert exit 0, clean up.
+- (b) `tests/helpers.test.ts` covers `toPaperSummary` spoof + legit bridge cases but not the native-paper case (`type: 'paper'`, any author → `source_type: 'native'`, `doi: null`). Add a one-line `expect(result.source_type).toBe('native')` to the existing pre-existing 'extracts fields from a post' spec.
+- (c) `scripts/check-bridge-paper-discipline.sh:33` comment still says "mention `bridge_paper` (single-quoted)" after the multi-quote extension landed. Update to reflect the three-quote-form coverage.
+
+**5. (P2) Move test scratch path out of `backend/src/`.** `tests/scripts/check-bridge-paper-discipline.test.ts` writes scratch files to `backend/src/__discipline_test_scratch__/`. A SIGKILL'd or timed-out vitest run leaves `'bridge_paper'` artifacts inside the live `src/` tree, breaking subsequent `npm run lint` runs until manually cleaned. The convention's own tripwire becomes a sticky false positive.
+
+Fix: move scratch path to `os.tmpdir()` + a unique subdirectory (e.g., `os.tmpdir() + '/pevo-discipline-test-' + crypto.randomUUID()`). Cleanup still in `afterEach` for normal flows; SIGKILL leftovers in `os.tmpdir()` are harmless.
+
+**6. (P2) Escape `.` in the allowlist filter regex.** `scripts/check-bridge-paper-discipline.sh:61` allowlist filter treats `.` as wildcard. Today saved by `*.ts` glob + trailing `:` anchor; future include-filter change opens bypass. Use `\.` (or `grep -F` for fixed-string matching) to escape.
+
+**7. (P2) `spawnSync` overload narrowing.** `tests/scripts/check-bridge-paper-discipline.test.ts:30-36` — `spawnSync('bash', [SCRIPT], { encoding: 'utf8' })` resolves to the wide `SpawnSyncReturns<string|NonSharedBuffer>` overload because `{ encoding: 'utf8' }` is inferred as `{ encoding: string }`. Pass `{ encoding: 'utf8' as const }` to pin the discriminated overload returning `SpawnSyncReturns<string>`. The `?? ''` fallbacks become provably redundant rather than accidentally necessary.
+
+### Items dismissed / deferred during architect triage
+
+- **Whole-file allowlist scope** (security finding) — structural concern; deferred to `backend-discipline-guard-pipeline-integration.md` where the AST-based rule will replace whole-file with structural-path enforcement.
+- **Re-export indirection laundering** (`lib/bridge-paper-constants.ts` → ALLOWLIST append) — same scope as above; deferred to the AST-rule task.
+- **`assertBridgeAuthorPin` colocation** (maintainability) — premature DRY for a single test file; flag if a second file ever needs the helper.
+- **Conjunct-order tolerance regex `groupBody = (?:[^()]+|\([^()]*\))*`** — handles 1 nesting level only. Currently exact-match against helper output; flag if helper ever produces nested parens.
+
+### Architect followups
+
+(none — round-2 contract-prose TODO is unrelated to this round's META-defense work; carries forward unchanged into the eventual archive)
+
+### Re-review signal
+
+When items 1-7 land, `git mv` this file back to `tasks/review/`. The architect's next review pass scopes `/ce-code-review` to the round-4 commit. Items 1-3 are P1; the rest are quality-of-life. Anchor: the regex named-groups rewrite (item 1) is the load-bearing structural change; items 2-7 are mostly prose / one-line fixes around it.
