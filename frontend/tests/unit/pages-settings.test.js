@@ -110,11 +110,7 @@ function createComponent() {
   initSettingsPage();
   const factory = Alpine.data.mock.calls[Alpine.data.mock.calls.length - 1][1];
   const comp = factory();
-  // Sentinel-prefixed stub: distinguishes a real $t() return from a fallback
-  // through `$t('key') || err.message`. A regression using the OR-fallback
-  // pattern would fall through to err.message (which does NOT start with
-  // 't:') and fail the `.toMatch(/^t:/)` matcher in the leak-guard test.
-  comp.$t = (key) => 't:' + key;
+  comp.$t = (key) => key;
   comp.$watch = vi.fn();
   return comp;
 }
@@ -178,7 +174,7 @@ describe('settingsPage', () => {
       await comp.handleEmailSubmit();
 
       expect(mockSubmitEmail).toHaveBeenCalledWith('new@x.com');
-      expect(comp.emailMessage).toBe('t:settings.emailVerificationSent');
+      expect(comp.emailMessage).toBe('settings.emailVerificationSent');
       expect(comp.newEmail).toBe('');
     });
 
@@ -201,7 +197,7 @@ describe('settingsPage', () => {
 
       await comp.handleEmailSubmit();
 
-      expect(comp.emailError).toBe('t:settings.emailAlreadyInUse');
+      expect(comp.emailError).toBe('settings.emailAlreadyInUse');
       expect(warnSpy).not.toHaveBeenCalled();
     });
 
@@ -216,7 +212,7 @@ describe('settingsPage', () => {
 
       await comp.handleEmailSubmit();
 
-      expect(comp.emailError).toBe('t:settings.emailUpdateFailed');
+      expect(comp.emailError).toBe('settings.emailUpdateFailed');
       expect(comp.emailError).not.toContain('deadbeef');
       expect(warnSpy).toHaveBeenCalled();
       const warnedErr = warnSpy.mock.calls[0][1];
@@ -266,7 +262,7 @@ describe('settingsPage', () => {
 
       await comp.handleEmailDelete();
 
-      expect(comp.emailError).toBe('t:settings.emailDeleteFailed');
+      expect(comp.emailError).toBe('settings.emailDeleteFailed');
       expect(comp.emailError).not.toContain('deadbeef');
       expect(comp.deleting).toBe(false);
       expect(warnSpy).toHaveBeenCalled();
@@ -299,7 +295,7 @@ describe('settingsPage', () => {
 
       await comp.handleOrcidLink();
 
-      expect(comp.orcidError).toBe('t:settings.orcidLinkFailed');
+      expect(comp.orcidError).toBe('settings.orcidLinkFailed');
       expect(comp.orcidLinking).toBe(false);
       // Guard the warnSpy.mock.calls[0][1] read below: without this
       // assertion a regression that skips the console.warn throws a
@@ -328,7 +324,7 @@ describe('settingsPage', () => {
 
       await comp.handleOrcidLink();
 
-      expect(comp.orcidError).toBe('t:settings.orcidLinkFailed');
+      expect(comp.orcidError).toBe('settings.orcidLinkFailed');
       expect(comp.orcidError).not.toContain('deadbeef');
       expect(comp.orcidLinking).toBe(false);
       expect(warnSpy).toHaveBeenCalled();
@@ -344,7 +340,7 @@ describe('settingsPage', () => {
       const comp = createComponent();
       comp.startUpgrade();
       expect(comp.upgradePhase).toBe('error');
-      expect(comp.upgradeError).toBe('t:upgrade.keychainRequired');
+      expect(comp.upgradeError).toBe('upgrade.keychainRequired');
     });
 
     // FE-ERR-MESSAGE-SANITIZE-SWEEP-REST-OF-FRONTEND: generateMnemonic()
@@ -362,7 +358,7 @@ describe('settingsPage', () => {
       comp.startUpgrade();
 
       expect(comp.upgradePhase).toBe('error');
-      expect(comp.upgradeError).toBe('t:upgrade.generationFailed');
+      expect(comp.upgradeError).toBe('upgrade.generationFailed');
       expect(comp.upgradeError).not.toContain('deadbeef');
       expect(warnSpy).toHaveBeenCalled();
       expect(warnSpy.mock.calls[0][1]).toBe(leaky);
@@ -477,14 +473,7 @@ describe('settingsPage', () => {
 
       expect(comp.upgradePhase).toBe('error');
       expect(typeof comp.upgradeError).toBe('string');
-      // The user-facing error must be the generic localized message. The
-      // $t stub in this suite prefixes 't:' so assert the prefixed key.
-      expect(comp.upgradeError).toBe('t:upgrade.failed');
-      // Regression-class guard: the sentinel-prefixed stub means a future
-      // refactor to `this.$t('upgrade.failed') || err.message` would, on a
-      // missing key (i.e. $t returns ''), fall through to err.message —
-      // which does NOT start with 't:' and would fail this matcher.
-      expect(comp.upgradeError).toMatch(/^t:/);
+      expect(comp.upgradeError).toBe('upgrade.failed');
       // Critical: neither of the leak substrings may appear in the DOM-bound
       // error string.
       expect(comp.upgradeError).not.toContain(leakHex);
@@ -501,6 +490,40 @@ describe('settingsPage', () => {
       const warnedErr = warnArgs[1];
       const warnedStr = warnedErr && warnedErr.message ? warnedErr.message : String(warnedErr);
       expect(warnedStr).toContain(leakHex);
+      warnSpy.mockRestore();
+    });
+
+    // Round-3 hold item #1: regression-class guard against the
+    // `$t('upgrade.failed') || err.message` OR-fallback pattern. Stubs
+    // $t to return '' for the specific key (simulating a missing
+    // translation in a locale file) and exercises the same leak path.
+    // Under safe production code (`upgradeError = $t(...)`), this test
+    // passes because upgradeError lands at ''. Under a regressed
+    // OR-fallback, $t returns '' → falls through to err.message → leak
+    // substrings appear in upgradeError → assertion fails.
+    it('does not leak key-material when $t returns empty for upgrade.failed', async () => {
+      mockIsKeychainInstalled.mockReturnValue(true);
+      stubKeychainImportKey();
+      const leakHex = 'deadbeef' + 'c'.repeat(56);
+      const leakSeedWords = 'apple banana cherry donkey eagle frog giraffe hill ink jellyfish kiwi lemon';
+      const leakMessage = `derive failed: hex=${leakHex} seed="${leakSeedWords}"`;
+      vi.stubGlobal('fetch', vi.fn(async () => {
+        throw new Error(leakMessage);
+      }));
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const comp = createComponent();
+      // Simulate a locale where 'upgrade.failed' has no translation.
+      // Other keys still resolve so the rest of the flow behaves normally.
+      comp.$t = (key) => (key === 'upgrade.failed' ? '' : key);
+      seedUpgradeState(comp);
+
+      await comp.executeUpgrade();
+
+      expect(comp.upgradePhase).toBe('error');
+      expect(typeof comp.upgradeError).toBe('string');
+      expect(comp.upgradeError).not.toContain(leakHex);
+      expect(comp.upgradeError).not.toContain(leakSeedWords);
       warnSpy.mockRestore();
     });
   });
@@ -900,7 +923,7 @@ describe('settingsPage', () => {
       expect(comp.upgradeError).toBeNull();
       // Warning surfaced for the active role (the denied iteration).
       expect(comp.upgradeWarnings).toEqual(
-        expect.arrayContaining(['t:upgrade.keychainImportWarning.active']),
+        expect.arrayContaining(['upgrade.keychainImportWarning.active']),
       );
       // Loop continued past the denial — memo (index 2) was still attempted.
       expect(importKeyCalls.length).toBe(3);
@@ -945,7 +968,7 @@ describe('settingsPage', () => {
       expect(comp.upgradePhase).toBe('done');
       expect(comp.upgradeError).toBeNull();
       expect(comp.upgradeWarnings).toEqual(
-        expect.arrayContaining(['t:upgrade.keychainImportWarning.posting']),
+        expect.arrayContaining(['upgrade.keychainImportWarning.posting']),
       );
       // Loop continued past the denial — active + memo (indices 1, 2) still attempted.
       expect(importKeyCalls.length).toBe(3);
@@ -1011,7 +1034,7 @@ describe('settingsPage', () => {
       expect(comp.newSeedPhrase).toBe('');
       expect(comp.oldSeedPhrase).toBe('');
       expect(comp.upgradeWarnings).toEqual(
-        expect.arrayContaining(['t:upgrade.keychainImportFailed']),
+        expect.arrayContaining(['upgrade.keychainImportFailed']),
       );
 
       warnSpy.mockRestore();
@@ -1060,7 +1083,7 @@ describe('settingsPage', () => {
       expect(comp.upgradePhase).toBe('done');
       expect(comp.upgradeError).toBeNull();
       expect(comp.upgradeWarnings).toEqual(
-        expect.arrayContaining(['t:upgrade.keychainImportWarning.memo']),
+        expect.arrayContaining(['upgrade.keychainImportWarning.memo']),
       );
       // posting + active still attempted before the memo denial.
       expect(importKeyCalls.length).toBe(3);
@@ -1109,9 +1132,9 @@ describe('settingsPage', () => {
       expect(comp.upgradeError).toBeNull();
       expect(importKeyCalls.length).toBe(3);
       expect(comp.upgradeWarnings).toEqual([
-        't:upgrade.keychainImportWarning.posting',
-        't:upgrade.keychainImportWarning.active',
-        't:upgrade.keychainImportWarning.memo',
+        'upgrade.keychainImportWarning.posting',
+        'upgrade.keychainImportWarning.active',
+        'upgrade.keychainImportWarning.memo',
       ]);
 
       warnSpy.mockRestore();
@@ -1205,9 +1228,9 @@ describe('settingsPage', () => {
       expect(importKeyCalls).toHaveLength(0);
       // All 3 per-role warnings surfaced.
       expect(comp.upgradeWarnings).toEqual([
-        't:upgrade.keychainImportWarning.posting',
-        't:upgrade.keychainImportWarning.active',
-        't:upgrade.keychainImportWarning.memo',
+        'upgrade.keychainImportWarning.posting',
+        'upgrade.keychainImportWarning.active',
+        'upgrade.keychainImportWarning.memo',
       ]);
     });
 
@@ -1252,7 +1275,7 @@ describe('settingsPage', () => {
       await comp.executeUpgrade();
       expect(comp.upgradePhase).toBe('done');
       expect(comp.upgradeWarnings).toEqual(
-        expect.arrayContaining(['t:upgrade.keychainImportWarning.posting']),
+        expect.arrayContaining(['upgrade.keychainImportWarning.posting']),
       );
 
       // Re-seed (the wipe cleared sensitive fields) and re-invoke. The reset
@@ -1371,7 +1394,7 @@ describe('settingsPage', () => {
 
       await comp.handleSetPassword();
 
-      expect(comp.passwordError).toBe('t:settings.passwordUpdateFailed');
+      expect(comp.passwordError).toBe('settings.passwordUpdateFailed');
       expect(comp.passwordError).not.toContain('deadbeef');
       expect(comp.passwordSubmitting).toBe(false);
       expect(comp.newPasswordInput).toBe('');

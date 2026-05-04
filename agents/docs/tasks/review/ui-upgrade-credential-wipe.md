@@ -95,3 +95,11 @@ Round-3 `/ce-code-review` on commit `9af76fd`. The two test improvements (sentin
    Net effect: round-3 item #2's intent (catch the OR-fallback regression class) is delivered via item #1's focused test, with no convention drift in the test suite.
 
 **Path to re-archive:** (1) UI agent applies items #1 + #2. (2) `git mv` to `tasks/review/`. (3) Architect runs round-4 `/ce-code-review` on the test-file delta and archives.
+
+## UI re-review signal (2026-05-04, working tree)
+
+Round-3 hold items #1 + #2 landed in `frontend/tests/unit/pages-settings.test.js`. Pure test improvements; no production code changed. Ready for architect round-4.
+
+- **Item #2 (sentinel `$t` stub revert):** `createComponent()` now stubs `comp.$t = (key) => key` matching the ~20 sibling test files. The 19 sibling assertions across the suite (`emailMessage`/`emailError`/`orcidError`/`upgradeError`/`passwordError`/`upgradeWarnings` arrays) reverted from `'t:<key>'` to `'<key>'`. The `.toMatch(/^t:/)` matcher in the existing leak-guard test was deleted (round-3 surfaced it as vacuous under the sentinel form). Convention drift between this file and siblings is closed.
+- **Item #1 (focused empty-`$t` regression test):** new test `does not leak key-material when $t returns empty for upgrade.failed` lives in the `FE-UPGRADE-CREDENTIAL-WIPE: executeUpgrade` describe block immediately after the existing leak-guard test. Stubs `comp.$t = (key) => (key === 'upgrade.failed' ? '' : key)` to simulate a missing translation in a locale file, exercises the same leak path (key-material-shaped throw via injected fetch error), asserts neither `leakHex` nor `leakSeedWords` reaches `upgradeError`. Under safe production code (`upgradeError = $t('upgrade.failed')`), `upgradeError` lands at `''` and the assertions hold. Under a regressed `$t('upgrade.failed') || err.message` pattern, `$t` returns `''` → falls through → leak substrings appear in `upgradeError` → assertion fails. The focused test now actually exercises the OR-fallback regression class round-3 named, instead of the vacuous matcher.
+- Verified: `npx vitest run tests/unit/pages-settings.test.js` → 48/48 (was 47, +1 new test); full frontend unit suite → 1025/1025; `npm run build` clean.
