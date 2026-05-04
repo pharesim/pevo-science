@@ -68,3 +68,28 @@ Re-review signal block must attest the new sub-cases were verified by reverting 
 - `backend-argon2-error-routes-test-coverage.md` (parent — archiving with this task split off as a follow-up, per architect cluster A triage on 2026-05-04).
 - `agents/docs/solutions/conventions/timing-equalization-sub-branch-oracles-2026-04-21.md` — the convention behind the helper's existence; this task extends the mutation-fence to the helper's own sub-branches.
 - `agents/docs/solutions/conventions/tests-must-fail-on-mutation-of-code-under-test-2026-04-22.md` — verify-by-revert discipline.
+
+## Backend re-review signal (2026-05-04, working tree)
+
+Three new sub-cases landed in `backend/tests/support/argon2-error-mocks.test.ts`, each driving the timeout-with-mock-called-once happy path with exactly one OR-arm of the timeout classifier active. The existing `timeoutRejection()` factory + the all-arms-hot sanity case are unchanged.
+
+New sub-cases (titles match `it(...)` strings):
+1. `classifies timeout when ONLY \`code: ECONNABORTED\` arm is set (no numeric timeout, no /Timeout/i in message)` — fixture is `Object.assign(new Error('aborted'), { code: 'ECONNABORTED' })`.
+2. `classifies timeout when ONLY numeric \`timeout\` arm is set (no code, no /Timeout/i in message)` — fixture is `Object.assign(new Error('connection-failure'), { timeout: 250 })`.
+3. `classifies timeout when ONLY message regex arm is set (no code, no numeric timeout field)` — fixture is `new Error('Operation Timeout exceeded')`.
+
+Per `agents/docs/solutions/conventions/tests-must-fail-on-mutation-of-code-under-test-2026-04-22.md`, each arm was verified by reverting (commenting out) that arm of the OR in `backend/tests/support/argon2-error-mocks.ts:assertArgon2AbortIsSilentImpl` and confirming the corresponding sub-case turned red. Each mutation was reverted before commit; the helper file is unchanged from main.
+
+Per-arm verify-by-revert results (clean run = 7 passed; mutated run = 1 failed | 6 passed):
+- Arm 1 (`e.code === 'ECONNABORTED'`) commented out → sub-case 1 failed with `expected 'other-error' to be 'timeout'` (received `Error: aborted` via the unexpected-error diagnostic). Other 6 tests passed.
+- Arm 2 (`typeof e.timeout === 'number'`) commented out → sub-case 2 failed with the same diagnostic shape (received `Error: connection-failure`). Other 6 tests passed.
+- Arm 3 (`/Timeout/i.test(e.message ?? '')`) commented out (replaced with `false`) → sub-case 3 failed with the same diagnostic shape (received `Error: Operation Timeout exceeded`). Other 6 tests passed.
+
+Each arm is now load-bearing under its own test fixture. After restoring the helper, all 7 tests pass.
+
+Acceptance gates on the unmutated tree:
+- `cd backend && npx vitest run tests/support/argon2-error-mocks.test.ts` → `Test Files 1 passed (1) | Tests 7 passed (7)`.
+- `cd backend && npx tsc --noEmit` → clean (no output).
+- `cd backend && npm run lint` → 0 errors, 2 warnings (both pre-existing, on `src/seed-phrase.ts:26` and `:27`).
+
+Out-of-scope per task non-goals: helper logic untouched (`git diff backend/tests/support/argon2-error-mocks.ts` is empty after revert); no other helpers in the kit gained sub-branch coverage.

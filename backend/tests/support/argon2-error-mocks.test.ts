@@ -95,6 +95,65 @@ describe('assertArgon2AbortIsSilent — outcome classification self-tests', () =
     ).resolves.toBeUndefined();
   });
 
+  // The next three sub-cases mutation-fence each OR-arm of the timeout
+  // classifier in `assertArgon2AbortIsSilentImpl` independently. The
+  // classifier accepts a rejection as a timeout if ANY of three arms hold:
+  //   - `e.code === 'ECONNABORTED'`
+  //   - typeof `e.timeout === 'number'`
+  //   - `/Timeout/i` matches `e.message`
+  // The all-arms-hot `timeoutRejection()` factory above sets all three
+  // simultaneously, so a drop-2-arms mutation false-passes via the surviving
+  // arm. Each sub-case below sets exactly one arm. Per the verify-by-revert
+  // discipline at
+  // `agents/docs/solutions/conventions/tests-must-fail-on-mutation-of-code-under-test-2026-04-22.md`,
+  // each sub-case was confirmed to turn red when its corresponding arm of
+  // the OR was commented out in `argon2-error-mocks.ts` (the mutation was
+  // reverted before commit).
+
+  it('classifies timeout when ONLY `code: ECONNABORTED` arm is set (no numeric timeout, no /Timeout/i in message)', async () => {
+    // Fences the `e.code === 'ECONNABORTED'` arm of the classifier OR.
+    // Fixture has `code` set, no numeric `timeout` field, message does NOT
+    // contain `/Timeout/i` ('aborted' is the only signal).
+    const mockFn = makeMockFn();
+    mockFn();
+    const codeOnlyRejection = Object.assign(new Error('aborted'), {
+      code: 'ECONNABORTED',
+    });
+
+    await expect(
+      assertArgon2AbortIsSilent(Promise.reject(codeOnlyRejection), mockFn),
+    ).resolves.toBeUndefined();
+  });
+
+  it('classifies timeout when ONLY numeric `timeout` arm is set (no code, no /Timeout/i in message)', async () => {
+    // Fences the `typeof e.timeout === 'number'` arm of the classifier OR.
+    // Fixture has a numeric `timeout` field, no `code` field, message does
+    // NOT contain `/Timeout/i` ('connection-failure' is the only signal).
+    const mockFn = makeMockFn();
+    mockFn();
+    const timeoutFieldOnlyRejection = Object.assign(new Error('connection-failure'), {
+      timeout: 250,
+    });
+
+    await expect(
+      assertArgon2AbortIsSilent(Promise.reject(timeoutFieldOnlyRejection), mockFn),
+    ).resolves.toBeUndefined();
+  });
+
+  it('classifies timeout when ONLY message regex arm is set (no code, no numeric timeout field)', async () => {
+    // Fences the `/Timeout/i.test(e.message)` arm of the classifier OR.
+    // Fixture has a message that matches `/Timeout/i`, no `code` field, no
+    // numeric `timeout` field. The phrasing 'Operation Timeout exceeded' is
+    // chosen to avoid coupling to supertest's exact internal text shape.
+    const mockFn = makeMockFn();
+    mockFn();
+    const messageOnlyRejection = new Error('Operation Timeout exceeded');
+
+    await expect(
+      assertArgon2AbortIsSilent(Promise.reject(messageOnlyRejection), mockFn),
+    ).resolves.toBeUndefined();
+  });
+
   it('rejects when the request timed out but the mock fn was NEVER called (round-3 invocation-guard regression class)', async () => {
     // The mutation this guard catches: a route that hangs at an unmocked
     // `await` BEFORE reaching argon2 (e.g. a DB/Redis call the test forgot
