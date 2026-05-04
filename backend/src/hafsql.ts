@@ -192,9 +192,11 @@ export function isPevoReviewSql(startIdx = 1): SqlFragment {
  * = 'bridge_paper'` and the type-only filter happily admits it.
  *
  * Routes that touch paper-class content MUST compose against this helper
- * rather than handcrafting the predicate. The CI guard
- * (`scripts/check-bridge-paper-discipline.sh`) enforces no direct
- * `'bridge_paper'` string literals in non-allowlisted files.
+ * rather than handcrafting the predicate. The ESLint discipline rule
+ * `pevo/no-bridge-paper-literal` (defined inline in `eslint.config.mjs`)
+ * enforces no direct `'bridge_paper'` string literals — including simple
+ * constant-folded forms (concat, no-interp template, literal-array .join()) —
+ * in non-allowlisted files.
  *
  * The caller allocates parameter indexes for the appTag and bridgeAccount
  * binds and pushes the values onto its params array; this helper returns just

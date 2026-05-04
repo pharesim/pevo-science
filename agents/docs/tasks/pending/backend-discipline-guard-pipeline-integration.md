@@ -149,3 +149,46 @@ PEvO has no CI today. Enforcement story = pre-commit hook + `npm run lint` + arc
 `architect-discipline-guard-precommit-hook.md` — covers `.githooks/pre-commit`, its test, and the zone-audit map update.
 
 This task returns to `tasks/pending/` for backend pickup.
+
+---
+
+## Backend re-review signal (2026-05-04, working tree)
+
+ESLint custom rule `pevo/no-bridge-paper-literal` lands inline in `backend/eslint.config.mjs` per the architect's 2026-05-04 unblock decision (a). The grep-based bash guard is decommissioned.
+
+### Rule shape
+
+- Defined inline in `backend/eslint.config.mjs` as the `pevo` plugin (no separate `eslint-plugin-pevo/` sub-package — single rule today; revisit when a second discipline rule lands).
+- Allowlist (structural-path):
+  - **Glob:** `src/types/**` (every file under the directory — types modules never gate/route/filter at runtime; per architect note in (a)).
+  - **Named files:** `src/hafsql.ts`, `src/helpers.ts`, `src/bridge.ts` (the SQL helper, the JS predicate, the write-side bridge construction). Note: the architect's brief said `src/lib/hafsql.ts`, but the actual file is `src/hafsql.ts` — the bash script's allowlist agrees, so I used the actual path. [TODO Architect] confirm.
+  - Allowlist matches via `path.relative(configDir, absoluteFilePath)` normalized to POSIX separators; RuleTester drives `filename` for fixtures.
+- Constant-folding coverage (the three forms scoped in by the architect):
+  - **(a)** `BinaryExpression` with `+` operator, recursive on both sides — catches `'bridge_' + 'paper'`, `('bri' + 'dge_') + 'paper'`, etc.
+  - **(b)** `TemplateLiteral` with `expressions.length === 0` — catches `` `bridge_paper` ``. Templates with interpolation (`` `${prefix}paper` ``) deliberately NOT folded; documented as known evasion.
+  - **(c)** `CallExpression` where callee is `<ArrayExpression>.join(<StringLiteral>)` and every array element resolves recursively — catches `['bridge', 'paper'].join('_')`. Bails if separator is non-literal or array has a non-resolvable element.
+- Reports at the OUTERMOST resolvable node and marks descendants in a `WeakSet` to suppress double-reports on the inner Literal under a folded BinaryExpression.
+- Out-of-scope (silent by design, must stay silent — verified in valid-test cases): `.toLowerCase()`, `.slice()`, `String.fromCharCode(...)`, template-literal interpolation, non-literal `.join()` separator. These are runtime-only; lint cannot catch them and the rule's job is accidental drift, not adversarial evasion.
+
+### Tested
+
+- New test file: `backend/tests/eslint/no-bridge-paper-literal.test.ts`. Imports the rule via the named `noBridgePaperLiteralRule` export from `eslint.config.mjs` and drives ESLint's `RuleTester` directly. Covers:
+  - 11 valid cases: 3 named-file allowlist hits, 2 src/types/ glob hits, 1 unrelated-literal sanity, 3 runtime-only-bypass non-flags, 1 interpolated-template non-flag, 1 non-literal-`.join`-sep non-flag.
+  - 6 invalid cases: single-quoted, double-quoted, concat, no-interp template, literal-array `.join`, nested-concat (recursion path).
+  - All 17 cases pass (`npx vitest run tests/eslint/no-bridge-paper-literal.test.ts` — 17 passed).
+- `npm run lint` against the live `src/` tree: clean. Existing `'bridge_paper'` literals (in `src/hafsql.ts`, `src/helpers.ts`, `src/types/hive.ts`, `src/bridge.ts`) all sit in allowlisted paths so the rule is silent there. The two pre-existing `@typescript-eslint/no-explicit-any` warnings in `src/seed-phrase.ts` are unrelated.
+- Smoke-test on a temporary `src/__violation_smoke__.ts` with all 4 violation forms (direct, concat, template, join): rule fires exactly 4 times with the expected error message. File removed after verification.
+- `npx tsc --noEmit` from `backend/`: clean. No type regressions.
+
+### Decommission
+
+- `git rm backend/scripts/check-bridge-paper-discipline.sh` (the regex bash guard).
+- `git rm backend/tests/scripts/check-bridge-paper-discipline.test.ts` (the negative-coverage harness for the bash guard — superseded by `tests/eslint/no-bridge-paper-literal.test.ts`).
+- `backend/package.json`: removed the `check:bridge-paper-discipline` npm script and the `&& npm run check:bridge-paper-discipline` tail on the `lint` script. `lint` is now plain `eslint src/`.
+- Updated stale `check:bridge-paper-discipline` / `scripts/check-bridge-paper-discipline.sh` references in `backend/src/hafsql.ts` (JSDoc on `validPevoPaperWhere`) and `backend/tests/hafsql.test.ts` (header comment) to point at the new ESLint rule + `npm run lint`.
+
+### `[TODO Architect]` markers
+
+- **Acceptance #5 — convention-doc update at `agents/docs/solutions/conventions/pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28.md`** (architect-owned zone, untouched by this commit): strip the "CI guard" / `check-bridge-paper-discipline.sh` framing; reference `pevo/no-bridge-paper-literal` (inline in `backend/eslint.config.mjs`) + the structural-path allowlist (`src/types/**` glob + named `src/hafsql.ts`, `src/helpers.ts`, `src/bridge.ts`) as the enforcement story; acknowledge the runtime-only bypass classes (`.toLowerCase()`, `.slice()`, `String.fromCharCode(...)`, interpolated templates, non-literal join separator) as known evasion that requires code-review attention; document the GH Actions / CI deferral per architect decision (c).
+- **Acceptance #2 — follow-up architect-owned task at `agents/docs/tasks/pending/architect-discipline-guard-precommit-hook.md`**: covers `.githooks/pre-commit`, its test under `.githooks/tests/test-pre-commit.sh`, and the `commit-msg` `allowed_for_agent()` zone-map update for the new hook. Sequencing per architect decision (b): the ESLint rule lands first (this commit), the hook lands separately and is a no-op without the rule.
+- **Allowlist path confirmation:** verify `src/hafsql.ts` (the actual file path) vs `src/lib/hafsql.ts` (the brief's path) — the rule uses `src/hafsql.ts` to match the existing bash-guard allowlist and the actual file location. If the architect intended a future `src/lib/hafsql.ts`, the allowlist needs updating in tandem with the file move.

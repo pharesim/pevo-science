@@ -126,7 +126,8 @@ describe('authorshipClaimsCteBody param arithmetic', () => {
  * valid PEvO paper." Per the pevo-object-identity convention, every PEvO
  * surface that filters by paper-type MUST use this helper rather than
  * handcrafting the type literal — direct `'bridge_paper'` literals are
- * caught by `npm run check:bridge-paper-discipline`.
+ * caught by the ESLint rule `pevo/no-bridge-paper-literal` (inline in
+ * `eslint.config.mjs`), run via `npm run lint`.
  *
  * These unit tests pin the SQL-string shape produced by the helper so any
  * future edit that drops the bridge-author conjunct, drops the appTagParam
