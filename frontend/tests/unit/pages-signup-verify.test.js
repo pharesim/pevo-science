@@ -246,6 +246,16 @@ describe('signupVerifyPage', () => {
           accreditation: { some: 'acc-payload' },
         },
       });
+      // Snapshot-capturing stub: inspects what _saveSession would persist
+      // *at the moment it was called*, locking in the ordering invariant.
+      // Final-state assertions (mockAuthStore.<field> after await returns)
+      // pass against a refactor that moves `auth.expiresAt = res.data.expires_at`
+      // to AFTER _saveSession() — re-introducing the "stale prior expiresAt
+      // persisted, user logged out on reload" bug.
+      let savedSnapshot;
+      mockAuthStore._saveSession = vi.fn(function () {
+        savedSnapshot = { ...mockAuthStore };
+      });
 
       const comp = createComponent({ auth_token: 'tok', email: 'e@x.com' });
       comp.init();
@@ -255,15 +265,16 @@ describe('signupVerifyPage', () => {
 
       await comp.submitCreateAccount();
 
-      expect(mockAuthStore.token).toBe('jwt-create');
-      expect(mockAuthStore.username).toBe('alice');
-      expect(mockAuthStore.isConnected).toBe(true);
-      expect(mockAuthStore.isAccredited).toBe(true);
-      expect(mockAuthStore.accreditation).toEqual({ some: 'acc-payload' });
-      expect(mockAuthStore.custody).toBe('light');
+      expect(savedSnapshot).toBeDefined();
+      expect(savedSnapshot.token).toBe('jwt-create');
+      expect(savedSnapshot.username).toBe('alice');
+      expect(savedSnapshot.isConnected).toBe(true);
+      expect(savedSnapshot.isAccredited).toBe(true);
+      expect(savedSnapshot.accreditation).toEqual({ some: 'acc-payload' });
+      expect(savedSnapshot.custody).toBe('light');
       // Load-bearing: expiresAt MUST be on the store BEFORE the no-arg
       // _saveSession() reads from it.
-      expect(mockAuthStore.expiresAt).toBe('2099-12-31T00:00:00.000Z');
+      expect(savedSnapshot.expiresAt).toBe('2099-12-31T00:00:00.000Z');
       expect(mockAuthStore._saveSession).toHaveBeenCalledWith();
     });
 
@@ -369,6 +380,13 @@ describe('signupVerifyPage', () => {
           accreditation: { link: 'acc' },
         },
       });
+      // Snapshot-capturing stub: see submitCreateAccount full-state spec
+      // above for rationale. Catches a refactor that moves any of the
+      // pre-save assignments to AFTER _saveSession().
+      let savedSnapshot;
+      mockAuthStore._saveSession = vi.fn(function () {
+        savedSnapshot = { ...mockAuthStore };
+      });
 
       const comp = createComponent({ auth_token: 'tok', email: 'e@x.com' });
       comp.init();
@@ -377,15 +395,16 @@ describe('signupVerifyPage', () => {
 
       await comp.handleLinkAccount();
 
-      expect(mockAuthStore.token).toBe('jwt-link');
-      expect(mockAuthStore.username).toBe('bob');
-      expect(mockAuthStore.isConnected).toBe(true);
-      expect(mockAuthStore.isAccredited).toBe(true);
-      expect(mockAuthStore.accreditation).toEqual({ link: 'acc' });
-      expect(mockAuthStore.custody).toBe('self');
+      expect(savedSnapshot).toBeDefined();
+      expect(savedSnapshot.token).toBe('jwt-link');
+      expect(savedSnapshot.username).toBe('bob');
+      expect(savedSnapshot.isConnected).toBe(true);
+      expect(savedSnapshot.isAccredited).toBe(true);
+      expect(savedSnapshot.accreditation).toEqual({ link: 'acc' });
+      expect(savedSnapshot.custody).toBe('self');
       // Load-bearing: expiresAt MUST be on the store BEFORE the no-arg
       // _saveSession() reads from it.
-      expect(mockAuthStore.expiresAt).toBe('2099-06-15T00:00:00.000Z');
+      expect(savedSnapshot.expiresAt).toBe('2099-06-15T00:00:00.000Z');
       expect(mockAuthStore._saveSession).toHaveBeenCalledWith();
     });
 

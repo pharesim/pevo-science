@@ -723,6 +723,16 @@ describe('settingsPage', () => {
           },
         }),
       })));
+      // Snapshot-capturing stub: inspects what _saveSession would persist
+      // *at the moment it was called*, locking in the ordering invariant.
+      // A future refactor moving `auth.expiresAt = result.data.expires_at`
+      // (or any other pre-save assignment) to AFTER _saveSession() passes
+      // a final-state assertion while re-introducing the "stale prior
+      // expiresAt persisted, user logged out on reload" bug.
+      let savedSnapshot;
+      mockAuthStore._saveSession = vi.fn(function () {
+        savedSnapshot = { ...mockAuthStore };
+      });
 
       const comp = createComponent();
       seedUpgradeState(comp);
@@ -732,16 +742,17 @@ describe('settingsPage', () => {
       expect(comp.upgradePhase).toBe('done');
       // Store state immediately before the no-arg _saveSession() call
       // determines the persisted localStorage shape. Assert each load-bearing
-      // field landed correctly.
-      expect(mockAuthStore.custody).toBe('self');
-      expect(mockAuthStore.token).toBe('new-jwt');
+      // field landed correctly AT CALL TIME, not after the await returns.
+      expect(savedSnapshot).toBeDefined();
+      expect(savedSnapshot.custody).toBe('self');
+      expect(savedSnapshot.token).toBe('new-jwt');
       // Load-bearing: expiresAt rotates with the new token, so _restoreSession
       // sees a valid entry on next load. Historically the 6-arg call passed
       // null here, which would have wiped expires_at and logged the user out.
-      expect(mockAuthStore.expiresAt).toBe('2100-01-01T00:00:00.000Z');
+      expect(savedSnapshot.expiresAt).toBe('2100-01-01T00:00:00.000Z');
       // Pre-existing accreditation fields survive the upgrade.
-      expect(mockAuthStore.isAccredited).toBe(true);
-      expect(mockAuthStore.accreditation).toEqual({ orcid: '0000-0001' });
+      expect(savedSnapshot.isAccredited).toBe(true);
+      expect(savedSnapshot.accreditation).toEqual({ orcid: '0000-0001' });
       // The no-arg form — zero positional args, reads from instance state.
       expect(mockAuthStore._saveSession).toHaveBeenCalledWith();
     });
@@ -773,6 +784,42 @@ describe('settingsPage', () => {
       // Critical: the no-arg _saveSession() must persist the existing
       // expiresAt, not clobber it to null (which the pre-sweep call-shape
       // advertised with its hard-coded `null` positional arg).
+      expect(mockAuthStore.expiresAt).toBe(originalExpiry);
+      expect(mockAuthStore._saveSession).toHaveBeenCalledWith();
+    });
+
+    // Round-1 hold item #2: the production guard `if (result.data?.expires_at)`
+    // covers three input shapes — present, omitted, and explicit `null`.
+    // The two specs above cover present + omitted. This spec covers explicit
+    // null. A future refactor like `if ('expires_at' in result.data)` would
+    // treat explicit null as truthy-key-present and assign null to
+    // auth.expiresAt, silently logging users out on next reload.
+    it('preserves existing expiresAt when backend response has expires_at: null explicit', async () => {
+      mockIsKeychainInstalled.mockReturnValue(true);
+      vi.stubGlobal('window', {
+        ...globalThis.window,
+        hive_keychain: {
+          requestImportKey: (_a, _k, cb) => queueMicrotask(() => cb({ success: true })),
+        },
+      });
+      vi.stubGlobal('fetch', vi.fn(async () => ({
+        ok: true,
+        json: async () => ({
+          data: { token: 'new-jwt-null-expiry', custody: 'self', expires_at: null },
+        }),
+      })));
+
+      const originalExpiry = mockAuthStore.expiresAt;
+      const comp = createComponent();
+      seedUpgradeState(comp);
+
+      await comp.executeUpgrade();
+
+      expect(comp.upgradePhase).toBe('done');
+      expect(mockAuthStore.token).toBe('new-jwt-null-expiry');
+      // Explicit null must be treated as "preserve" (same as omitted), not
+      // as "assign null". A regression to `'expires_at' in result.data`
+      // would clobber expiresAt to null here.
       expect(mockAuthStore.expiresAt).toBe(originalExpiry);
       expect(mockAuthStore._saveSession).toHaveBeenCalledWith();
     });

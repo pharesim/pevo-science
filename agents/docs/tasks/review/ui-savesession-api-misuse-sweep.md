@@ -52,3 +52,16 @@ Round-1 `/ce-code-review` on commit `748e1ac`. The 3-site conversion landed clea
 Both items are pure test improvements; no production code change. Implementer should be able to land both in one focused commit.
 
 **Path to re-archive:** (1) UI agent applies items #1 + #2. (2) `git mv` to `tasks/review/`. (3) Architect runs round-2 `/ce-code-review` on the test-file delta and archives.
+
+## UI re-review signal (2026-05-04, working tree)
+
+Round-1 hold items #1 + #2 landed across `frontend/tests/unit/pages-signup-verify.test.js` and `frontend/tests/unit/pages-settings.test.js`. Pure test improvements; no production code changed. Ready for architect round-2.
+
+- **Item #1 (snapshot-capturing `_saveSession` stub):** applied to all three full-state specs that have the "expiresAt MUST be set BEFORE _saveSession() reads from it" load-bearing comment.
+  - `pages-signup-verify.test.js` `submitCreateAccount > sets full auth state including expiresAt before calling no-arg _saveSession()` — assertions now read `savedSnapshot.<field>` (state-at-call-time), not `mockAuthStore.<field>` (final state). Fields covered: token, username, isConnected, isAccredited, accreditation, custody, expiresAt.
+  - `pages-signup-verify.test.js` `handleLinkAccount > sets full auth state including expiresAt before calling no-arg _saveSession()` — same migration. Fields covered: token, username, isConnected, isAccredited, accreditation, custody='self', expiresAt.
+  - `pages-settings.test.js` `executeUpgrade > calls no-arg _saveSession() with full auth state set on the store first` — same migration. Fields covered: custody='self', token, expiresAt, isAccredited, accreditation. The `expect(mockAuthStore._saveSession).toHaveBeenCalledWith()` zero-arg assertion is preserved at each site.
+  - The stub form `mockAuthStore._saveSession = vi.fn(function () { savedSnapshot = { ...mockAuthStore }; })` matches the architect's example. Each spec declares a local `let savedSnapshot;` and adds an `expect(savedSnapshot).toBeDefined();` sanity check before the field assertions.
+  - Mutation-kill check: a refactor moving `auth.expiresAt = res.data.expires_at` (or any other pre-save assignment) to AFTER the `_saveSession()` call now flips `savedSnapshot.expiresAt` to the seeded initial value (e.g. `null` in pages-signup-verify, `'2099-01-01T00:00:00.000Z'` in pages-settings) at call time, failing the assertion. The previous final-state form passed against this regression.
+- **Item #2 (explicit `expires_at: null` branch):** new test `preserves existing expiresAt when backend response has expires_at: null explicit` in the `FE-SAVESESSION-API-MISUSE-SWEEP: executeUpgrade` describe block, immediately after the existing "omits expires_at" spec. Backend response is `{ data: { token: 'new-jwt-null-expiry', custody: 'self', expires_at: null } }`. Asserts `mockAuthStore.expiresAt === originalExpiry` (preserved). A regression to `'expires_at' in result.data` would clobber expiresAt to null and fail. Production guard `if (result.data?.expires_at)` correctly handles null since `null` is falsy.
+- Verified: `npx vitest run tests/unit/pages-settings.test.js tests/unit/pages-signup-verify.test.js` → 78/78 (49 + 29; +1 new explicit-null spec); full frontend unit suite → 1026/1026.
