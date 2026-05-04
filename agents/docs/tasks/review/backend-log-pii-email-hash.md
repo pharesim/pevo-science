@@ -100,3 +100,28 @@ But the migration introduces a P1 latent crash on a real production path, the ca
 ### Re-review signal
 
 When items 1-3 land, `git mv` this file back to `tasks/review/`. The architect's next review pass picks it up; the move itself is the re-review signal.
+
+---
+
+## Backend re-review signal (2026-05-04, working tree before commit) — round 1
+
+Items 1, 2, and 3 landed in this round. Per the carry-the-fix-evidence-in-the-commit-diff convention, the items below summarize what changed at each named site; the commit diff is the authoritative evidence.
+
+**Item 1 (P1) — `safeHashEmailForLogs` companion + nullable-email migration:**
+- `backend/src/lib/log-pii.ts`: added `safeHashEmailForLogs(email: string | null | undefined): string | null` with JSDoc documenting the ORCID-only-NULL hazard and the strict-vs-safe split (the strict `hashEmailForLogs` stays for `accreditation.ts /verify` where the column is provably non-null per `pending_accreditations.email NOT NULL`).
+- `backend/src/routes/signup-verify.ts`: widened pg query result generics for `/confirm` (around `:243`) and `/link` (around `:383`) from `email: string` to `email: string | null`. Added inline comments at the query sites explaining the ORCID-only NULL invariant. Migrated catch-block log emissions at `:327` (`/confirm`) and `:457` (`/link`) from `hashEmailForLogs(account.email)` to `safeHashEmailForLogs(account.email)`.
+- `backend/src/routes/auth.ts`: replaced the existing `normalizedEmail ? hashEmailForLogs(normalizedEmail) : null` ternary at the `/signup` SMTP-not-configured emission with `safeHashEmailForLogs(normalizedEmail)`.
+
+**Item 2 (P2) — call-site mutation coverage on the migrated emissions (4 spy assertions across 3 test files):**
+- `backend/tests/routes/accreditation.test.ts` — augmented the existing 502 BROADCAST_FAILED spec with a `vi.spyOn(logger, 'error')` assertion: filter by the structured `event: 'broadcast_failed'` discriminator (dashboard-keyable anchor; survives `routeLabel` renames), then assert `email_hash` matches `/^[0-9a-f]{12}$/` and the payload has no top-level `email` key. Existing 502 envelope + token-deletion invariants kept intact in the same test.
+- `backend/tests/routes/auth.test.ts` — new `describe.skipIf(!dbReachable)` block at the bottom: posts a valid institutional-email + password signup body with `config.smtpHost` left at its empty test-env default, asserts 500 INTERNAL_ERROR, then filters `errorSpy.mock.calls` by `event: 'auth.signup.smtp_not_configured'` and asserts `email_hash` hex-12 + no `email` key. Added `dbReachable` probe + `getAppPool` + `logger` imports to support this.
+- `backend/tests/routes/signup-verify.test.ts` — two new `describe.skipIf(!dbReachable)` blocks (one for `/confirm`, one for `/link`). Both seed an `accounts` row with `email = NULL`, `verify_token = 'confirmed:…'`, `orcid` set; force `broadcastJsonMock.mockRejectedValue(...)`; spy `logger.error`; assert (1) response is **200 + JWT**, **NOT 500** — this is the load-bearing item-1 invariant (pre-fix, `null.trim()` threw a TypeError that bubbled to the outer catch and produced 500); (2) the catch-block log payload carries `email_hash: null` (since `safeHashEmailForLogs(null) = null`) and no top-level `email` key. The `/link` spec uses real `verifyHiveSignature` (no mock-auth) with a deterministic test private key + `getAccountsMock` priming, matching the file-header convention.
+
+**Item 3 (P2) — value-pinned hash assertion replacing the two vacuous tests:**
+- `backend/tests/lib/log-pii.test.ts:37-58`: replaced the substring-walk "is not reversible" loop and the "does not leak" `not.toContain` triple with a single `expect(hashEmailForLogs('alice@example.com')).toBe('ff8d9819fc0e')`. Pre-test rationale captured in a leading comment. The pinned hex simultaneously kills algorithm-swap (sha256 → md5/sha1), truncation-length (12 → 16/8), and normalization-removal (drop trim/lowercase) mutations.
+
+**Verification:**
+- `npm run lint` (backend): clean (2 pre-existing warnings on `seed-phrase.ts:26-27`, unrelated).
+- `npx tsc --noEmit -p .` (backend): clean.
+- Targeted vitest run on the 4 modified files: **60 passed, 2 failed** — the 2 failures are pre-existing intentional reds in `accreditation.test.ts` (round-3 hold #5 decrement-failure spec + round-4 hold #1 cleanup-failure spec), documented as forcing functions for `backend-bridge-key-startup-validation-and-pino-redact.md` per the file's header docstring (`/^[0-9a-f]{64}/` redaction-negative against `err.command.args` raw-token leak). Do NOT fix these in this round.
+- Item 1's load-bearing 200-not-500 invariant is verified end-to-end by the new `/confirm` and `/link` specs in `signup-verify.test.ts` — both pass against the real pg pool with `account.email = NULL` rows.
