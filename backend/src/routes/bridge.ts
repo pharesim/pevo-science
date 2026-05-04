@@ -1,5 +1,4 @@
 import { Router, type Request, type Response } from 'express';
-import { PrivateKey } from '@hiveio/dhive';
 import { getPool, isHafAvailable } from '../db.js';
 import { hiveClient, broadcastSendOperationsWithTimeout } from '../hive.js';
 import { config } from '../config.js';
@@ -12,6 +11,7 @@ import { logger } from '../logger.js';
 import { rateLimit, byIp } from '../middleware/rateLimit.js';
 import { T, validPevoPaperWhere } from '../hafsql.js';
 import { handleBroadcastError } from '../lib/broadcast-error.js';
+import { getCachedBridgePostingKey } from '../startup-checks.js';
 import {
   parseIdentifier,
   resolveToCanonical,
@@ -230,7 +230,11 @@ router.post('/register', registerLimiter, verifyHiveSignature, async (req: Reque
   );
 
   try {
-    const key = PrivateKey.fromString(config.pevoBridgePostingKey);
+    // Use the boot-cached parsed key. `assertBridgeKeyConfigured` above
+    // already returned 503 if the WIF env var is unset, so the cache is
+    // guaranteed populated when we reach here. The non-null assertion
+    // documents that invariant.
+    const key = getCachedBridgePostingKey()!;
     const result = await broadcastSendOperationsWithTimeout(
       [
         ['comment', {
@@ -359,7 +363,11 @@ router.post('/update', updateLimiter, verifyHiveSignature, async (req: Request, 
   );
 
   try {
-    const key = PrivateKey.fromString(config.pevoBridgePostingKey);
+    // Use the boot-cached parsed key. `assertBridgeKeyConfigured` above
+    // already returned 503 if the WIF env var is unset, so the cache is
+    // guaranteed populated when we reach here. The non-null assertion
+    // documents that invariant.
+    const key = getCachedBridgePostingKey()!;
     const result = await broadcastSendOperationsWithTimeout(
       [
         ['comment', {

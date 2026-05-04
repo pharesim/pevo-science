@@ -163,6 +163,129 @@ export function validateConfig(): void {
     logger.error('Required config missing:\n' + missing.join('\n'));
     process.exit(1);
   }
+
+  // After all string-format validations pass, parse the bridge posting key
+  // ONCE at boot and cache the resulting `PrivateKey` instance. This serves
+  // two purposes:
+  //   (a) Catches any residual parse failure that the format validator might
+  //       have missed (defense in depth — `validatePostingKeyFormat` already
+  //       calls `PrivateKey.fromString`, so this is redundant in the happy
+  //       path, but cheap insurance against future divergence).
+  //   (b) Removes the per-request `PrivateKey.fromString` call site from the
+  //       broadcast path. If a malformed WIF ever slipped past the format
+  //       validator, the resulting AssertionError used to surface inside the
+  //       broadcast try-catch (mis-classified as 502 BROADCAST_FAILED) AND
+  //       leaked the WIF-derived `actual`/`expected` Buffer slices into
+  //       operator logs (the `err` serializer redact policy in `logger.ts`
+  //       now strips those, but eliminating the throw site is the better
+  //       defense). Cached `PrivateKey` instances are immutable; reusing
+  //       one across requests is safe.
+  initBridgePostingKeyCache();
+}
+
+// ── Bridge posting key cache ───────────────────────────────
+//
+// Populated by `validateConfig()` at boot once the WIF format check passes,
+// keyed by the WIF source string. The keying serves two purposes:
+//   (a) Lets tests that override `config.pevoBridgePostingKey` (e.g., via
+//       `vi.mock`) get a parsed `PrivateKey` matching the override on the
+//       first request after the change, without requiring a manual cache
+//       reset between tests.
+//   (b) Catches the (vanishingly rare) case where production rotates the
+//       WIF in-place; the cache invalidates on the next access.
+// `null` when `pevoBridgePostingKey` is unset (production deployments
+// without bridge custody enabled), per the existing optional-key semantics
+// in `routes/bridge.ts:33` and `routes/claims.ts:203`.
+
+interface BridgeKeyCacheEntry {
+  source: string;
+  parsed: PrivateKey;
+}
+
+let cachedBridgePostingKey: BridgeKeyCacheEntry | null = null;
+
+function initBridgePostingKeyCache(): void {
+  if (!config.pevoBridgePostingKey) {
+    cachedBridgePostingKey = null;
+    return;
+  }
+  try {
+    cachedBridgePostingKey = {
+      source: config.pevoBridgePostingKey,
+      parsed: PrivateKey.fromString(config.pevoBridgePostingKey),
+    };
+  } catch (err) {
+    // The format validator above runs `PrivateKey.fromString` on the same
+    // value; a throw here means a defect in the validator (e.g., a future
+    // dhive change widened the parse surface) rather than a genuine
+    // misconfiguration. Log via the redact-policy logger so the
+    // AssertionError's `actual`/`expected` Buffer slices DON'T reach
+    // operator logs, then exit. Never log the WIF itself.
+    logger.fatal(
+      { err, envVar: 'PEVO_BRIDGE_POSTING_KEY' },
+      'Bridge posting key parse failed at boot — refusing to start. ' +
+      'The format validator passed but PrivateKey.fromString threw; ' +
+      'this indicates a validator/dhive divergence. Investigate before deploying.',
+    );
+    process.exit(1);
+  }
+}
+
+/**
+ * Returns the parsed bridge posting key (cached at boot), or `null` when
+ * `PEVO_BRIDGE_POSTING_KEY` is unset.
+ *
+ * Per-request callers MUST NOT call `PrivateKey.fromString(config.pevoBridgePostingKey)`
+ * directly — use this accessor instead. Two reasons:
+ *   1. The parse result is immutable; recomputing it per request is waste.
+ *   2. The parse path can throw `AssertionError` whose `.actual`/`.expected`
+ *      Buffer slices are derived from the WIF; even with the redact policy
+ *      in `logger.ts` stripping them post-hoc, eliminating the throw site
+ *      is the stronger guarantee. The startup validator above is the
+ *      single throw site; once boot succeeds, no request-time call to
+ *      `PrivateKey.fromString` on this key is reachable.
+ *
+ * Cache miss + key configured: parses lazily, then caches. This keeps the
+ * accessor safe to call before `validateConfig()` has run (test harnesses
+ * that bypass startup validation, scripts that import bridge.ts, etc.).
+ */
+export function getCachedBridgePostingKey(): PrivateKey | null {
+  const source = config.pevoBridgePostingKey;
+  if (!source) {
+    cachedBridgePostingKey = null;
+    return null;
+  }
+  if (cachedBridgePostingKey && cachedBridgePostingKey.source === source) {
+    return cachedBridgePostingKey.parsed;
+  }
+  // Source changed (test override, in-place rotation) or cache is unset.
+  // Parse lazily. If this throws, it propagates: callers that reach this
+  // path past the format-validator have a genuine misconfiguration and
+  // need to surface it. (The validator runs at boot; production paths
+  // that reach this accessor have already passed validation.)
+  cachedBridgePostingKey = {
+    source,
+    parsed: PrivateKey.fromString(source),
+  };
+  return cachedBridgePostingKey.parsed;
+}
+
+/**
+ * Test-only hook to reset the cache. Production code MUST NOT call this.
+ * Used by `tests/startup-checks.test.ts` to exercise the init path with
+ * varying config without leaking state across test cases.
+ */
+export function _resetBridgePostingKeyCacheForTests(): void {
+  cachedBridgePostingKey = null;
+}
+
+/**
+ * Test-only hook to drive the init path directly. Production code calls
+ * this transitively via `validateConfig()`. Used by tests that want to
+ * exercise the success path with a freshly-set key.
+ */
+export function _initBridgePostingKeyCacheForTests(): void {
+  initBridgePostingKeyCache();
 }
 
 /**
