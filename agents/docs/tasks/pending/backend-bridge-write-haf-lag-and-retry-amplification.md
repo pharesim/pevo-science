@@ -87,3 +87,73 @@ Architect-owned; backend leaves [TODO Architect] markers.
 
 - `agents/docs/solutions/conventions/chain-write-timeout-ambiguous-outcome-2026-04-22.md` — sibling convention on broadcast retry behavior.
 - `backend-broadcast-idempotency-cluster-followup.md` — companion task for retry-after-504 idempotency.
+
+---
+
+## Backend re-review signal (2026-05-05, working tree)
+
+All four acceptance items landed. Lock pattern mirrors `withOrcidBindingLock` (per-acquisition nonce + Lua CAS release).
+
+### Item 1 — `/register` per-permlink SETNX lock
+
+- `backend/src/routes/bridge.ts:48-50` — `BRIDGE_LOCK_TTL_SECONDS`, `BRIDGE_LOCK_NONCE_RE`, `BRIDGE_RELEASE_LOCK_LUA` constants.
+- `backend/src/routes/bridge.ts:52-54` — `bridgeRegisterLockKey(permlink)` helper.
+- `backend/src/routes/bridge.ts:71-108` — `acquireBridgeLock` / `releaseBridgeLock` wrappers.
+- `backend/src/routes/bridge.ts:322-334` — `/register` lock acquisition before `checkExistingBridge`; `held` → 409 `DUPLICATE` `{retriable: true}`.
+- `backend/src/routes/bridge.ts:430-434` — try/finally release under Lua CAS on the per-acquisition nonce.
+
+### Item 2 — `/update` per-(author, permlink) SETNX lock
+
+- `backend/src/routes/bridge.ts:56-58` — `bridgeUpdateLockKey(author, permlink)` helper.
+- `backend/src/routes/bridge.ts:463-475` — `/update` lock acquisition before HAF-read of `previousVersion`; `held` → 409 retriable.
+- `backend/src/routes/bridge.ts:580-584` — try/finally release.
+
+### Item 3 — Fail-closed on HAF query error in `checkExistingBridge`
+
+- `backend/src/routes/bridge.ts:157-177` — `BridgeCheckResult` discriminated union (`'ok'` vs `'haf_unavailable'`).
+- `backend/src/routes/bridge.ts:228-237` — HAF-error catch returns `{status: 'haf_unavailable'}` and emits structured warn log (`event: 'bridge.register.haf_check_failed'`, `route: 'bridge.register'`).
+- `backend/src/routes/bridge.ts:262-269` — `/check` (read-only) maps `haf_unavailable` back to `{exists: false}` to preserve fail-open on the probe path.
+- `backend/src/routes/bridge.ts:340-345` — `/register` (write path) maps `haf_unavailable` to 503 `SERVICE_UNAVAILABLE` `{retriable: true}` per acceptance.
+
+### Item 4 — [TODO Architect] marker
+
+See "TODO Architect" section below.
+
+### Tests
+
+`backend/tests/routes/bridge-haf-lag-locks.test.ts` (new file, 3 specs):
+- `/register` two concurrent same-identifier requests → exactly ONE broadcast, second returns 409 retriable.
+- `/update` two concurrent same-paper requests → exactly ONE broadcast with `version: 2`, second returns 409 retriable.
+- `/register` HAF query throws → 503 `SERVICE_UNAVAILABLE` with `retriable: true` + structured warn log.
+
+Existing `bridge.test.ts` (13) and `bridge-paper-author-gate.test.ts` (14) green.
+
+### Redis key shapes (with mandatory `${config.appTag}` prefix)
+
+- `${config.appTag}:bridge_register_lock:${permlink}`
+- `${config.appTag}:bridge_update_lock:${author}:${permlink}`
+
+### Lock-release strategy
+
+Per-acquisition 16-byte hex nonce stored as the lock value. Release via Lua CAS: `if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end`. The CAS ensures a stale lock from a different request cannot be released by accident if our broadcast outlasts the 35s TTL and a sibling re-acquires under a new nonce. Mirrors `RELEASE_LOCK_LUA` in `routes/orcid.ts`.
+
+### Integration note
+
+Worker B's worktree was based on stale commit `2616cc1` (predating `23bdae9`'s `getCachedBridgePostingKey()` boot-cache). Cherry-pick onto current main resolved by adopting worker's full lock-wrapped flow and then re-applying main's boot-cache pattern at the two key-fetch sites: `import { getCachedBridgePostingKey } from '../startup-checks.js'` (replaces worker's `import { PrivateKey } from '@hiveio/dhive'`), and both `const key = ...` lines now read `const key = getCachedBridgePostingKey()!;` (with the `assertBridgeKeyConfigured`-above invariant comment). The `assertBridgeKeyConfigured(res)` guards at the two route entry points (worker's lines 301 and 455 → integrated lines 305 and 459 area) remain in place.
+
+### Note on lock-extension on `BroadcastTimeoutError`
+
+The bridge implementation does not extend the lock TTL on `BroadcastTimeoutError` (unlike orcid's A.1 protection). If duplicate-broadcast-after-timeout becomes a measured problem on the bridge surface, that extension lands as a follow-up. Operator visibility today is the 504 `BROADCAST_TIMEOUT` envelope's `verify_before_retry` hint plus the standard broadcast-timeout log emission.
+
+## [TODO Architect] — new convention doc needed
+
+Suggested filename: `agents/docs/solutions/conventions/read-then-write-races-on-haf-backed-routes-2026-05-XX.md`.
+
+Suggested content outline (architect to draft via `/ce-compound`):
+
+- **Pattern.** Routes that read HAF (or any indexed view of an asynchronously-replicated chain state) and then broadcast a write under a service account are susceptible to read-then-write races. The HAF index lag between broadcast and read-back is the race window. `/register` and `/update` in `routes/bridge.ts` are the second instance of this class (after ORCID `/callback` bind flow); the third instance will arrive without warning.
+- **Mitigation.** Per-key Redis SETNX lock acquired BEFORE the HAF read, held until broadcast resolves, released in finally under Lua CAS on a per-acquisition nonce. Lock TTL must exceed the broadcast wall-clock timeout (`DEFAULT_BROADCAST_TIMEOUT_MS = 30s` in `hive.ts`); 35s is the current default for bridge and orcid routes.
+- **Fail-closed on HAF outage.** When the HAF query throws, do NOT proceed with broadcast on write paths. Surface 503 + `{retriable: true}` with a structured warn log. Read-only paths can fail-open if the consequence is bounded (e.g. a spurious "no duplicate" answer on a `/check` probe is harmless; the same answer on a `/register` handler licenses a duplicate broadcast).
+- **Redis key prefix.** All lock keys MUST be prefixed with `${config.appTag}:<lock_domain>:` per project Redis conventions.
+- **Lock release MUST use Lua CAS on a per-acquisition nonce.** A naive `redis.del(lockKey)` in finally races against TTL expiry — if our broadcast takes longer than the lock TTL, a sibling can acquire the lock under a new nonce, and our finally would delete the sibling's lock. The Lua CAS prevents this. See `BRIDGE_RELEASE_LOCK_LUA` in `bridge.ts` and `RELEASE_LOCK_LUA` in `orcid.ts` (identical shape).
+- **Cross-references.** Link to `agents/docs/solutions/conventions/chain-write-timeout-ambiguous-outcome-2026-04-22.md` for the `BroadcastTimeoutError` envelope semantics and to `routes/orcid.ts`'s `withOrcidBindingLock` for the wrapper pattern when the lock is reused across multiple handlers.
