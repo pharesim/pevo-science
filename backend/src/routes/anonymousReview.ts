@@ -7,6 +7,7 @@ import {
   broadcastJsonWithTimeout,
   broadcastSendOperationsWithTimeout,
 } from '../hive.js';
+import { HIVE_ACCOUNT_NAME_REGEX } from '../lib/hive-account-name.js';
 import { getRedis, isRedisAvailable } from '../redis.js';
 import { sendOk, sendError } from '../response.js';
 import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';
@@ -144,9 +145,8 @@ router.post('/anonymous', verifyHiveSignature, anonReviewLimiter, validate(anony
   }
 
   // Validate Hive-compatible format for author/permlink inputs
-  const hiveNameRegex = /^[a-z][a-z0-9.-]{2,15}$/;
   const permlinkRegex = /^[a-z0-9-]+$/;
-  if (!hiveNameRegex.test(paper_author)) {
+  if (!HIVE_ACCOUNT_NAME_REGEX.test(paper_author)) {
     return sendError(res, 400, 'BAD_REQUEST', 'Invalid paper_author format');
   }
   if (!permlinkRegex.test(paper_permlink) || paper_permlink.length > 256) {

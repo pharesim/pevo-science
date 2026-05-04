@@ -42,6 +42,7 @@ describe('validatePostingKeyFormat', () => {
     // Round-2 architect re-review caught that `pevoAnonPostingKey` is consumed via
     // `PrivateKey.fromString` at routes/anonymousReview.ts:174 — same defect class
     // as admin/bridge but uncovered by the round-1 boot validator.
+    // Round-3 item 6a: include dhive error-class hint to mirror round-1 admin/bridge rigor.
     expect(validatePostingKeyFormat('', 'PEVO_ANON_POSTING_KEY')).toBeNull();
     const validWif = PrivateKey.fromSeed('startup-checks-anon-fixture').toString();
     expect(validatePostingKeyFormat(validWif, 'PEVO_ANON_POSTING_KEY')).toBeNull();
@@ -49,6 +50,27 @@ describe('validatePostingKeyFormat', () => {
     expect(malformedErr).not.toBeNull();
     expect(malformedErr).toContain('PEVO_ANON_POSTING_KEY');
     expect(malformedErr).toContain('invalid WIF format');
+    expect(malformedErr).toContain('Error');
+    expect(malformedErr).toContain('Non-base58 character');
+  });
+
+  it('rejects whitespace-only WIF with a recognizable error message (round-3 item 4)', () => {
+    // Round-3 item 4: a copy-paste artifact like PEVO_ADMIN_POSTING_KEY=' '
+    // would otherwise fall through to dhive's generic 'Non-base58 character',
+    // leading operators to misdiagnose copy-paste artifacts as key corruption.
+    // Mirror the .trim() guard from validateAccountNameFormat so the message is
+    // recognizable.
+    const result = validatePostingKeyFormat('   ', 'PEVO_ADMIN_POSTING_KEY');
+    expect(result).not.toBeNull();
+    expect(result).toContain('PEVO_ADMIN_POSTING_KEY');
+    expect(result).toContain('empty or whitespace-only');
+  });
+
+  it('rejects single-space WIF (canonical adversarial copy-paste case)', () => {
+    const result = validatePostingKeyFormat(' ', 'PEVO_ANON_POSTING_KEY');
+    expect(result).not.toBeNull();
+    expect(result).toContain('PEVO_ANON_POSTING_KEY');
+    expect(result).toContain('empty or whitespace-only');
   });
 });
 
@@ -96,6 +118,51 @@ describe('validateAccountNameFormat', () => {
     const result = validateAccountNameFormat('a'.repeat(17), 'HIVE_ADMIN_ACCOUNT');
     expect(result).not.toBeNull();
     expect(result).toContain('HIVE_ADMIN_ACCOUNT');
+  });
+
+  it('accepts names at the inclusive lower-length boundary (3 chars) (round-3 item 6b)', () => {
+    // A future off-by-one regex tweak (e.g. {3,15} or {2,14}) would slip
+    // through if only rejection at 2 is tested. Pin acceptance at the
+    // inclusive boundary so the boundary itself is covered.
+    expect(validateAccountNameFormat('abc', 'HIVE_ADMIN_ACCOUNT')).toBeNull();
+  });
+
+  it('accepts names at the inclusive upper-length boundary (16 chars) (round-3 item 6b)', () => {
+    expect(validateAccountNameFormat('a'.repeat(16), 'HIVE_ADMIN_ACCOUNT')).toBeNull();
+  });
+
+  it('rejects trailing dot (round-3 item 1: canonical-shape gap)', () => {
+    // Adversarial: 'pevo.' boots clean under the legacy /^[a-z][a-z0-9.-]{2,15}$/
+    // and silently mismatches every chain query — the exact failure mode the
+    // boot validator was filed to prevent.
+    const result = validateAccountNameFormat('pevo.', 'HIVE_BRIDGE_ACCOUNT');
+    expect(result).not.toBeNull();
+    expect(result).toContain('HIVE_BRIDGE_ACCOUNT');
+  });
+
+  it('rejects consecutive dots (round-3 item 1)', () => {
+    const result = validateAccountNameFormat('foo..bar', 'HIVE_BRIDGE_ACCOUNT');
+    expect(result).not.toBeNull();
+    expect(result).toContain('HIVE_BRIDGE_ACCOUNT');
+  });
+
+  it('rejects trailing hyphen (round-3 item 1)', () => {
+    const result = validateAccountNameFormat('a-bc-', 'HIVE_ADMIN_ACCOUNT');
+    expect(result).not.toBeNull();
+    expect(result).toContain('HIVE_ADMIN_ACCOUNT');
+  });
+
+  it('rejects leading dot (round-3 item 1)', () => {
+    const result = validateAccountNameFormat('.abc', 'HIVE_ADMIN_ACCOUNT');
+    expect(result).not.toBeNull();
+    expect(result).toContain('HIVE_ADMIN_ACCOUNT');
+  });
+
+  it('rejects segment shorter than 3 chars in dotted name (round-3 item 1)', () => {
+    // Hive's per-segment 3-16 char rule: 'pevo.ab' has a 2-char trailing segment.
+    const result = validateAccountNameFormat('pevo.ab', 'HIVE_BRIDGE_ACCOUNT');
+    expect(result).not.toBeNull();
+    expect(result).toContain('HIVE_BRIDGE_ACCOUNT');
   });
 
   it('rejects names starting with a digit', () => {

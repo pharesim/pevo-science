@@ -1,5 +1,6 @@
 import { PrivateKey } from '@hiveio/dhive';
 import { config } from './config.js';
+import { HIVE_ACCOUNT_NAME_REGEX } from './lib/hive-account-name.js';
 import { logger } from './logger.js';
 import { getRedis, isRedisAvailable } from './redis.js';
 
@@ -21,9 +22,18 @@ interface EnvCheck {
  * a sync throw as a 504 BROADCAST_TIMEOUT (`outcome:'uncertain'`, `verify_before_retry:true`),
  * paging broadcast-on-call when the actual root cause is admin-key configuration.
  * Failing boot loudly removes that mislabeled trigger from the request lifecycle.
+ *
+ * Whitespace-only carve-out (round-3 item 4): a copy-paste artifact like
+ * `PEVO_ADMIN_POSTING_KEY=' '` would otherwise fall through to dhive's generic
+ * `'Non-base58 character'` message, leading operators to misdiagnose copy-paste
+ * artifacts as key corruption. Emit a recognizable "empty or whitespace-only"
+ * message before dhive sees the bad input.
  */
 export function validatePostingKeyFormat(value: string, envVar: string): string | null {
   if (!value) return null;
+  if (!value.trim()) {
+    return `${envVar} — empty or whitespace-only value (likely a copy-paste artifact; check the key was pasted without a leading/trailing space)`;
+  }
   try {
     PrivateKey.fromString(value);
     return null;
@@ -36,30 +46,35 @@ export function validatePostingKeyFormat(value: string, envVar: string): string 
 
 /**
  * Validate that a Hive account-name env var is non-blank and matches Hive's
- * account-name shape. Returns `null` for unset (preserves optional semantics
- * for callers passing empty strings) or for a valid name; returns an error
- * string otherwise.
+ * canonical account-name shape. Returns `null` for unset (preserves optional
+ * semantics for callers passing empty strings) or for a valid name; returns
+ * an error string otherwise.
  *
  * Why: empty/whitespace values for `HIVE_BRIDGE_ACCOUNT` (or the analogous
- * admin/onboard/anon vars) silently exclude all bridge papers via
- * `validPevoPaperWhere`'s author pin, with no boot-time signal. The same
- * defect class applies to any author-pinned query: a blank account name
- * yields a query that matches nothing, but produces no error. Validate at
- * boot so a deploy-time misconfiguration fails loudly.
+ * admin/onboard/anon/blog-author vars) silently exclude all bridge papers
+ * via `validPevoPaperWhere`'s author pin, with no boot-time signal. The same
+ * defect class applies to any author-pinned query: a blank or canonically-
+ * malformed account name yields a query that matches nothing, but produces
+ * no error. Validate at boot so a deploy-time misconfiguration fails loudly.
  *
- * Regex matches `backend/src/routes/anonymousReview.ts:147` precedent
- * (`^[a-z][a-z0-9.-]{2,15}$`): lowercase start, 3-16 chars total, lowercase
- * alphanumeric + dots + hyphens. Whitespace-only input fails the regex
- * (leading space ≠ lowercase letter); the explicit `.trim()` guard below
- * is belt-and-suspenders so the error message is recognizable.
+ * Round-3 (item 1): tightened from the legacy `/^[a-z][a-z0-9.-]{2,15}$/` to
+ * Hive's canonical shape via the shared `HIVE_ACCOUNT_NAME_REGEX` constant.
+ * The legacy regex accepted canonically-invalid names like `pevo.` (trailing
+ * dot), `a..b` (consecutive dots), `a-bc-` (trailing hyphen), `.abc` (leading
+ * dot) — all of which would survive boot and silently mismatch every chain
+ * query, defeating this validator's stated purpose.
+ *
+ * The explicit `.trim()` guard below is belt-and-suspenders so whitespace-only
+ * input gets a recognizable error message (the canonical regex would also
+ * reject it, but the message would be less actionable).
  */
 export function validateAccountNameFormat(value: string, envVar: string): string | null {
   if (!value) return null;
   if (!value.trim()) {
     return `${envVar} — empty or whitespace-only value (a blank account name silently excludes all matching content from author-pinned queries)`;
   }
-  if (!/^[a-z][a-z0-9.-]{2,15}$/.test(value)) {
-    return `${envVar} — invalid Hive account-name format (must match /^[a-z][a-z0-9.-]{2,15}$/, got: ${JSON.stringify(value)})`;
+  if (!HIVE_ACCOUNT_NAME_REGEX.test(value)) {
+    return `${envVar} — invalid Hive account-name format (must match canonical Hive shape: dot-separated segments, each [a-z][a-z0-9-]*[a-z0-9] of length 3-16, overall ≤16 chars; got: ${JSON.stringify(value)})`;
   }
   return null;
 }
@@ -104,10 +119,8 @@ export function validateConfig(): void {
   // Validate posting-key WIF format if present. All three keys are optional (resolveBridgePostingKey
   // already covers the bridge≠admin presence error; admin/anon-disabled features degrade gracefully);
   // a malformed value, however, must fail boot so a runtime PrivateKey.fromString throw never reaches
-  // the request lifecycle. Coverage map (verified via `grep -rn "PrivateKey\.fromString(config"`):
-  //   - PEVO_ADMIN_POSTING_KEY  (orcid, accreditation, papers, claims, signup-verify, wot)
-  //   - PEVO_BRIDGE_POSTING_KEY (bridge, claims)
-  //   - PEVO_ANON_POSTING_KEY   (anonymousReview)
+  // the request lifecycle. Coverage: 3 distinct config keys (admin/bridge/anon); re-derive the
+  // call-site map via `grep -rn "PrivateKey\.fromString(config" backend/src/`.
   const adminKeyError = validatePostingKeyFormat(config.pevoAdminPostingKey, 'PEVO_ADMIN_POSTING_KEY');
   if (adminKeyError) missing.push(`  ${adminKeyError}`);
   const bridgeKeyError = validatePostingKeyFormat(config.pevoBridgePostingKey, 'PEVO_BRIDGE_POSTING_KEY');
@@ -116,17 +129,20 @@ export function validateConfig(): void {
   if (anonKeyError) missing.push(`  ${anonKeyError}`);
 
   // Validate Hive account-name env vars. Empty/whitespace values silently exclude all
-  // author-pinned content (e.g. `validPevoPaperWhere` pins on hiveBridgeAccount); malformed
-  // values would similarly mismatch on every chain query. All four vars have defaults in
-  // config.ts so the resolved values are never undefined, but a deploy-time misconfiguration
-  // (`HIVE_BRIDGE_ACCOUNT='   '`) survives the `||` fallback and reaches the resolved config.
-  // Validate resolved values rather than `process.env.*` so the check covers the actual values
-  // used by queries.
+  // author-pinned content (e.g. `validPevoPaperWhere` pins on hiveBridgeAccount, blog
+  // routes pin on blogAuthor); malformed values would similarly mismatch on every chain
+  // query. All vars below have defaults in config.ts so the resolved values are never
+  // undefined, but a deploy-time misconfiguration (`HIVE_BRIDGE_ACCOUNT='   '`) survives
+  // the `||` fallback and reaches the resolved config. Validate resolved values rather
+  // than `process.env.*` so the check covers the actual values used by queries.
+  // Coverage: 5 distinct config-sourced Hive account-name fields; re-derive the
+  // consumer map via `grep -rn "config\.\w*Account\b\|config\.blogAuthor" backend/src/`.
   const accountChecks: Array<{ value: string; envVar: string }> = [
     { value: config.hiveAdminAccount, envVar: 'HIVE_ADMIN_ACCOUNT' },
     { value: config.hiveBridgeAccount, envVar: 'HIVE_BRIDGE_ACCOUNT' },
     { value: config.hiveOnboardAccount, envVar: 'HIVE_ONBOARD_ACCOUNT' },
     { value: config.hiveAnonAccount, envVar: 'HIVE_ANON_ACCOUNT' },
+    { value: config.blogAuthor, envVar: 'BLOG_AUTHOR' },
   ];
   for (const { value, envVar } of accountChecks) {
     const err = validateAccountNameFormat(value, envVar);

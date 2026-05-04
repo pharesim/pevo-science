@@ -151,3 +151,85 @@ Fix: extract `HIVE_ACCOUNT_NAME_REGEX` (and any companion regex if item 1 choose
 ### Re-review signal
 
 When items 1-6 land, `git mv` this file back to `tasks/review/`. Round-3 architect review scopes `/ce-code-review` to the round-3 commit only.
+
+---
+
+## Backend re-review signal (2026-05-04, working tree)
+
+Round-3 hold-fix items 1-6 landed.
+
+### Item 1 — Canonical Hive account-name regex
+
+Tightened from the legacy `/^[a-z][a-z0-9.-]{2,15}$/` to Hive's canonical witness shape: dot-separated segments, each `[a-z][a-z0-9-]*[a-z0-9]` of length 3-16, with overall length capped at 16 chars by a negative lookahead `(?!.{17,})`. The new constant lives in the new shared lib (item 5):
+
+```
+HIVE_ACCOUNT_NAME_REGEX = /^(?!.{17,})[a-z][a-z0-9-]{1,14}[a-z0-9](\.[a-z][a-z0-9-]{1,14}[a-z0-9])*$/
+```
+
+Empirical verification against PEvO defaults + adversarial cases (sanity script run during this round):
+
+```
+"pevo.science"       PASS    (BLOG_AUTHOR default)
+"pevo.admin"         PASS    (HIVE_ADMIN_ACCOUNT default)
+"pevo.bridge"        PASS
+"pevo.anon"          PASS    (HIVE_ANON_ACCOUNT default)
+"pevo.onboard"       PASS
+"abc" / "bob"        PASS    (3-char minimum boundary)
+"a"*16               PASS    (16-char maximum boundary)
+"a"*17               FAIL    (17-char overflow)
+"pevo."              FAIL    (trailing dot)
+"pevo.ab"            FAIL    (segment <3 chars)
+"foo..bar"           FAIL    (consecutive dots)
+"a-bc-"              FAIL    (trailing hyphen)
+".abc"               FAIL    (leading dot)
+"1abc"               FAIL    (digit start)
+"ABC"                FAIL    (uppercase)
+"pe vo"              FAIL    (whitespace)
+"pevo_admin"         FAIL    (underscore)
+```
+
+### Item 2 — Coverage-map comment collapsed
+
+Replaced the consumer-file enumeration with a one-liner referencing the re-runnable grep + the COUNT (3 distinct config-sourced posting-key fields). Same shape applied to the parallel comment block above the `accountChecks` array (5 distinct account-name fields after item 3 added `BLOG_AUTHOR`).
+
+### Item 3 — `BLOG_AUTHOR` added to `accountChecks`
+
+Added `{ value: config.blogAuthor, envVar: 'BLOG_AUTHOR' }` to the `accountChecks` array. Verified via `grep -rn "config\.\w*Account\b\|config\.blogAuthor" backend/src/` that the resolved set covers all current Hive-account-name-shaped config fields:
+
+```
+config.hiveAdminAccount    → HIVE_ADMIN_ACCOUNT     (validated)
+config.hiveBridgeAccount   → HIVE_BRIDGE_ACCOUNT    (validated)
+config.hiveOnboardAccount  → HIVE_ONBOARD_ACCOUNT   (validated)
+config.hiveAnonAccount     → HIVE_ANON_ACCOUNT      (validated)
+config.blogAuthor          → BLOG_AUTHOR            (validated, this round)
+```
+
+No other `config.*Account` or analogous Hive-name-shaped fields surfaced.
+
+### Item 4 — `.trim()` guard mirrored into `validatePostingKeyFormat`
+
+Added an explicit `if (!value.trim()) return ...` check before the dhive `PrivateKey.fromString` call. Whitespace-only WIF inputs now emit a recognizable `"empty or whitespace-only value (likely a copy-paste artifact; check the key was pasted without a leading/trailing space)"` message instead of dhive's generic `'Non-base58 character'`. Two new unit specs cover the whitespace-input case (`'   '`, `' '`).
+
+### Item 5 — `HIVE_ACCOUNT_NAME_REGEX` extracted to shared lib
+
+New file `backend/src/lib/hive-account-name.ts` defines the canonical regex with a docblock explaining: (a) Hive's witness-imposed account-name rules (per-segment 3-16, overall ≤ 16, last char must be alphanumeric); (b) why the legacy regex was a defect class (silent-zero-rows on author-pinned queries); (c) the import map (startup-checks.ts, anonymousReview.ts) and the deliberate non-import (signup-verify.ts:29 — different intent: username-availability with stricter-trailing-char rule on a single segment).
+
+`startup-checks.ts:61` and `routes/anonymousReview.ts:147` updated to import the constant. `signup-verify.ts:29` left as-is per the architect's hold note.
+
+### Item 6 — Test coverage gaps closed
+
+- **6a:** Added `expect(malformedErr).toContain('Error')` + `expect(malformedErr).toContain('Non-base58 character')` to the round-2 anon-key spec at `tests/startup-checks.test.ts:42-57` to mirror round-1 admin/bridge rigor.
+- **6b:** Added two boundary-acceptance specs at the inclusive boundaries: `'abc'` (3 chars) and `'a'.repeat(16)` (16 chars). Plus 5 bonus specs covering the canonical-shape rejections from item 1 (`pevo.`, `foo..bar`, `a-bc-`, `.abc`, `pevo.ab`) so a future regex tweak that re-permits any of the canonical-invalid shapes fails loudly.
+
+### Verification
+
+- `npx tsc --noEmit` from `backend/` — clean.
+- `npm run lint` — clean (only pre-existing `seed-phrase.ts` `any` warnings, unrelated).
+- `npx vitest run tests/startup-checks.test.ts` — 25 passed (16 round-1+2 + 9 round-3), 0 failed, 835ms.
+
+### Files changed (this round)
+
+- `backend/src/lib/hive-account-name.ts` — NEW, defines `HIVE_ACCOUNT_NAME_REGEX` + docblock.
+- `backend/src/startup-checks.ts` — `validatePostingKeyFormat` `.trim()` guard (item 4); `validateAccountNameFormat` regex tighten via shared constant (item 1); coverage-map comments collapsed (item 2); `BLOG_AUTHOR` added to `accountChecks` (item 3).
+- `backend/src/routes/anonymousReview.ts` — replaced inline regex literal with `HIVE_ACCOUNT_NAME_REGEX` import (item 5).
+- `backend/tests/startup-checks.test.ts` — round-3 anon-key dhive-class hint + whitespace WIF + boundary acceptance + canonical-shape rejections (items 6a, 6b, 4, 1).
