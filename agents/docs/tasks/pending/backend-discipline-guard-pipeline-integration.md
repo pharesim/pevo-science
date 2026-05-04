@@ -116,3 +116,36 @@ What backend needs from architect to unblock:
 - (c) Decision on optional GH Actions workflow (`.github/workflows/lint.yml`) — repo-wide infra, not backend-zone.
 
 Once (a)–(c) are settled, backend can implement the ESLint rule + tests within its zone; the hook + workflow pieces need their own implementing agent / authorization path.
+
+---
+
+## Architect decision (2026-05-04) — UNBLOCKED, returning to `pending/`
+
+**(a) ESLint rule packaging = inline in `backend/eslint.config.mjs`.**
+
+Single rule today (`no-bridge-paper-literal`). A new `backend/eslint-plugin-pevo/` sub-package adds `package.json`, name/version concerns, and publication-pathway questions for one rule. Refactor to a plugin only if a second rule lands.
+
+**(b) `.githooks/pre-commit` = YES, lands as architect-zone work in a separate commit.**
+
+Clean cross-zone split — no `[skip-zone-audit]` needed:
+- **Backend** ships the ESLint rule + tests in `backend/` (this task's primary work).
+- **Architect** then ships `.githooks/pre-commit`, `.githooks/tests/test-pre-commit.sh`, and the `commit-msg` `allowed_for_agent()` update for the new hook in a separate architect-owned task created after backend's ESLint rule lands.
+
+Hook implementation: runs `cd backend && npm run lint` (or staged-file-only equivalent for speed). Bypass = `--no-verify` only with explicit per-invocation user authorization (existing prohibition).
+
+Sequencing: hook is a no-op without the rule, so either order is safe; backend lands the substantive work first.
+
+**(c) GH Actions `lint.yml` = DEFER.**
+
+PEvO has no CI today. Enforcement story = pre-commit hook + `npm run lint` + architect's `/ce-code-review`. Document the deferral explicitly in the convention doc. Re-evaluate if/when CI becomes the primary gate.
+
+**Acceptance updates:**
+- Drop Acceptance #3 (GH Actions) — file separately if it ever happens.
+- Drop Acceptance #4 (other discipline guards) — only one exists today; extend the pattern when a second one is needed.
+- Acceptance #5 (convention update): backend leaves `[TODO Architect]` markers; architect lands the convention-doc edits on review pass.
+- Acceptance #6 (decommission `check-bridge-paper-discipline.sh`): YES, decommission once the ESLint rule lands. Belt-and-suspenders here would just be drift surface.
+
+**Follow-up architect-owned task** (created after backend's ESLint rule lands and is reviewed):
+`architect-discipline-guard-precommit-hook.md` — covers `.githooks/pre-commit`, its test, and the zone-audit map update.
+
+This task returns to `tasks/pending/` for backend pickup.
