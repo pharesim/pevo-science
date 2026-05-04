@@ -153,3 +153,11 @@ One round-5 hold item — pin the new `reqId` field on the warn payload so a del
 ### Re-review signal
 
 When item 1 lands, `git mv` this file back to `tasks/review/`. The architect's next review pass picks it up; at archive, architect lands the deferred `agents/docs/api-contracts/orcid.md` doc updates (state-not-consumed-on-403 contract + state-not-consumed-on-infra-error contract + NO_ACCOUNT envelope shape) and `common.md` `error.details` channel note as a single atomic edit.
+
+## Backend re-review signal (2026-05-04, working tree)
+
+Round-5 hold-block item 1 landed. Ready for architect round-6 re-review (parent agent will `git mv` to `tasks/review/`).
+
+- **#1 (P3)** — `backend/tests/response.test.ts` `'drops duplicate write and warns when headersSent is true'`: added `reqId: 'no-request'` to the `objectContaining({ ... })` matcher. The matcher now pins all 5 enriched fields (`reqId`, `attemptedStatus`, `attemptedCode`, `method`, `url`). The deterministic `'no-request'` value is the `getRequestId()` fallback returned outside an HTTP context (see `backend/src/logger.ts:14-16`); the unit test runs with no `AsyncLocalStorage` request scope, so the fallback fires. Production `sendError` (`backend/src/response.ts:27`) is unchanged.
+- **Mutation-verify** — locally deleted the `reqId: getRequestId()` line from `response.ts`; spec turned red with diff `+ "reqId": "no-request"` missing from the actual payload (test exit code 1). Restored the original file (`git diff backend/src/response.ts` empty). Confirms a deletion mutation of the production line is now caught.
+- Verified: 6/6 pass in `backend/tests/response.test.ts` against Docker Postgres+Redis. Targeted vitest run only — parent agent owns the full suite per the round-5 fan-out brief.

@@ -69,6 +69,7 @@ describe('sendError', () => {
       expect(msg).toBe('sendError called after response sent');
       expect(payload).toEqual(
         expect.objectContaining({
+          reqId: 'no-request',
           attemptedStatus: 500,
           attemptedCode: 'INTERNAL_ERROR',
           method: 'POST',
