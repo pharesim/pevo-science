@@ -231,7 +231,12 @@ run_case "T13 architect stages .githooks → accept"         0 "architect: hook"
 run_case "T14 architect mv own task → accept"              0 "architect: archive"    "agents/docs/tasks/review/architect-foo.md"
 run_case "T15 Merge prefix → skip"                         0 "Merge pull request #123" "anywhere/whatever.txt"
 run_case "T16 capitalized Architect: → skip (unrecognized)" 0 "Architect: bad case"  "anywhere/x.txt"
-run_case "T17 fix(backend): → skip (conventional-commit form not supported)" 0 "fix(backend): wrap" "frontend/src/x.js"
+run_case "T17 fix(backend): staging frontend/ → reject (conv-wrap recognized)" 1 "fix(backend): wrap" "frontend/src/x.js"
+run_case "T17b fix(ui): staging frontend/ → accept (conv-wrap recognized)" 0 "fix(ui): tweak" "frontend/src/x.js"
+run_case "T17c feat(architect): staging agents/docs/ → accept (conv-wrap recognized)" 0 "feat(architect): doc" "agents/docs/ARCHITECTURE.md"
+run_case "T17d chore(ui): staging backend/ → reject (conv-wrap recognized, out of zone)" 1 "chore(ui): tweak" "backend/src/x.ts"
+run_case "T17e fix(ui-tests): non-role scope → skip (scope is not a recognized role)" 0 "fix(ui-tests): tests" "anywhere/whatever.txt"
+run_case "T17f fix: no scope → skip (unrecognized prefix)" 0 "fix: stuff" "anywhere/whatever.txt"
 
 echo
 echo "=== Summary ==="

@@ -14,6 +14,8 @@ Before any fan-out, the parent MUST commit in-flight work — see root `CLAUDE.m
 
 **Worker subagent staging:** When committing inside a fan-out worker (or in any UI role), stage by your task's declared scope. Use `git add frontend/<paths>` and `git add agents/docs/tasks/<dir>/ui-<slug>.md`, never `git add -A` or `git add .`. Anything outside your task's scope stays unstaged for the parent or sibling agents to pick up. The repo's `commit-msg` zone-audit hook (see root `CLAUDE.md` "Commits and Pushes") rejects cross-zone commits as the mechanical backstop; path-scoped staging is the cultural primary.
 
+**Commit subject prefix.** Use the bare `ui:` or `ui(<scope>):` form per root `CLAUDE.md` "Subject-prefix style for agent commits". Conventional-commit wrappers `fix(ui):`/`feat(ui):`/`chore(ui):` are now also recognized by the zone-audit hook (regex updated 2026-05-04 after a recurring-drift review surfaced multiple `fix(ui):` commits silently bypassing the audit), but the bare form remains the documented preference. **Do NOT use `fix(ui-tests):`/`fix(ui-foo):` or any other non-role scope** — `ui-tests` is not a recognized agent role, so the hook still silently skips that form. Use `ui(tests):` or just `ui:` instead. The four recognized roles are exactly `architect`, `backend`, `ui`, `pinner`.
+
 ## Responsibilities
 
 - Maintain and extend all pages (`src/pages/`) and components (`src/components/`) in `frontend/`.

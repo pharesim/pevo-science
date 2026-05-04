@@ -71,3 +71,27 @@ Items #2 and #3 landed in `frontend/tests/unit/pages-settings.test.js`. Pure tes
 - **Item #2 (sentinel `$t` stub):** `createComponent()` helper now stubs `comp.$t = (key) => 't:' + key` instead of returning the key verbatim. The leak-guard test at the executeUpgrade `does not leak key-material` case now asserts both `expect(comp.upgradeError).toBe('t:upgrade.failed')` AND `expect(comp.upgradeError).toMatch(/^t:/)` — the matcher is the regression-class guard. A future refactor to `$t('upgrade.failed') || err.message` that returned `''` from `$t()` for a missing key would fall through to `err.message` (which does NOT start with `t:`) and the matcher fails. The 10 sibling assertions across the suite (`emailMessage`/`emailError`/`orcidError`/`upgradeError`/`passwordError`/`upgradeWarnings`) were updated to the prefixed form.
 - **Item #3 (warnSpy filter):** the leak-guard test now does `warnSpy.mock.calls.find((c) => c[0] === '[custody upgrade]')` instead of `warnSpy.mock.calls[0]`, with a `toBeDefined()` sanity check before extracting the error object. Refactor-stable against any earlier intermediate `console.warn` call inside `executeUpgrade` or its mocks.
 - Verified: `npx vitest run tests/unit/pages-settings.test.js` → 41/41; full frontend unit suite 993/993; `npm run build` clean.
+
+## Architect re-review (2026-05-04) — HELD PENDING FIXES
+
+Round-3 `/ce-code-review` on commit `9af76fd`. The two test improvements (sentinel `$t` stub + warnSpy prefix filter) landed cleanly and items #2/#3 from the round-2 hold are addressed. But the round-3 hold's stated value for item #2 (regression-class guard against `$t('key') || err.message`) isn't fully delivered, and the sentinel form introduced a sibling-test-file divergence.
+
+1. **P2 — `.toMatch(/^t:/)` is vacuous under the current sentinel stub** (testing + learnings, anchor 100). The round-2 hold item #2 explicitly stated: "the matcher is the regression-class guard. A future refactor to `$t('upgrade.failed') || err.message` that returned `''` from `$t()` for a missing key would fall through to `err.message` and the matcher fails." With `(key) => 't:' + key` the stub never returns falsy, so the OR-fallback never short-circuits — the matcher cannot fail under the named regression. Both `.toBe('t:upgrade.failed')` and `.toMatch(/^t:/)` pass whether code is safe or regressed via the OR-fallback pattern. The matcher only catches a *direct bypass* mutation (`upgradeError = err.message` with no `$t` call) which `.toBe` already kills. Fix: add a focused test case that temporarily stubs `$t` to return `''` for the specific key, then exercises the leak path:
+   ```js
+   it('does not leak key-material when $t returns empty for upgrade.failed', async () => {
+     const comp = createComponent();
+     comp.$t = (key) => key === 'upgrade.failed' ? '' : 't:' + key;  // simulate missing translation
+     // ... inject same key-material-shaped throw as the existing leak-guard test ...
+     await comp.executeUpgrade();
+     // If production code uses `$t(key) || err.message`, upgradeError now contains err.message → contains the leak.
+     expect(comp.upgradeError).not.toContain(leakHex);
+     expect(comp.upgradeError).not.toMatch(/<bip39-shape>/);
+   });
+   ```
+   This test actually exercises the OR-fallback path. The existing `.toMatch(/^t:/)` matcher becomes redundant once the focused test is in place — see item #2.
+
+2. **P2 — Divergent `$t` stub form vs ~20 sibling test files in `frontend/tests/unit/`** (maintainability, anchor 75). After round-3, `pages-settings.test.js` is the lone outlier with `(key) => 't:' + key`; sibling files use `(key) => key`. Future copy-paste cross-pollination breaks assertions in either direction. With the focused empty-`$t` test from item #1 carrying the regression-class guard load, the sentinel form is no longer load-bearing. Fix: revert `pages-settings.test.js`'s `comp.$t` stub to `(key) => key` (matching siblings); revert the 12 sibling assertions from `'t:<key>'` back to `'<key>'`; delete the now-redundant `.toMatch(/^t:/)` matcher. The focused empty-`$t` test from item #1 takes over the regression-class guard role.
+
+   Net effect: round-3 item #2's intent (catch the OR-fallback regression class) is delivered via item #1's focused test, with no convention drift in the test suite.
+
+**Path to re-archive:** (1) UI agent applies items #1 + #2. (2) `git mv` to `tasks/review/`. (3) Architect runs round-4 `/ce-code-review` on the test-file delta and archives.

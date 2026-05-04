@@ -45,16 +45,29 @@ if [[ "$subject" == *"[skip-zone-audit]"* ]]; then
   exit 0
 fi
 
-# Parse agent prefix:  architect:, backend:, ui:, pinner:
-# Optional parenthetical scope:  backend(auth):, architect(compound):
-# Conventional-commit wrappers (fix(role):, feat(role):) are NOT recognized
-# by design — root CLAUDE.md "Commits and Pushes" mandates the bare form.
-if [[ ! "$subject" =~ ^(${AGENT_PATTERN})(\([^\)]+\))?: ]]; then
-  # Unrecognized prefix (chore:, fix:, Merge ..., revert: ...) — skip audit.
+# Parse agent prefix. Two recognized forms:
+#   1. Bare:        architect:, ui:, backend(auth):, architect(compound):
+#   2. Conv-wrap:   fix(ui):, feat(architect):, chore(backend):
+# Form (1) is the documented PEvO convention (root CLAUDE.md "Commits and
+# Pushes" → "Subject-prefix style"). Form (2) was historically unrecognized
+# and silently skipped, which produced a recurring drift: `fix(ui):` commits
+# bypassed the audit by accident, not by intent. The hook now extracts the
+# role from the parenthetical scope of conv-wrap commits and audits them
+# normally. The bare form remains the documented preference.
+#
+# Conv-wrap subjects with a non-role scope (`fix(ui-tests):`, `chore(deps):`)
+# still skip — the scope doesn't carry agent info and the hook cannot map
+# them. Those rely on the cultural rule (use the bare form) plus per-role
+# CLAUDE.md guidance.
+if [[ "$subject" =~ ^(${AGENT_PATTERN})(\([^\)]+\))?: ]]; then
+  agent="${BASH_REMATCH[1]}"
+elif [[ "$subject" =~ ^[a-zA-Z]+\((${AGENT_PATTERN})\): ]]; then
+  agent="${BASH_REMATCH[1]}"
+else
+  # Unrecognized prefix (chore:, fix:, Merge ..., revert: ..., conv-wrap with
+  # non-role scope) — skip audit.
   exit 0
 fi
-
-agent="${BASH_REMATCH[1]}"
 
 # Stage scope includes Unmerged (`U`) so merge-conflict commits are audited.
 staged="$(git diff --cached --name-only --diff-filter=ACDMRU 2>/dev/null)" || {

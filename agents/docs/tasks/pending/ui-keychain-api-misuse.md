@@ -82,3 +82,92 @@ Items #1, #2, #3 from the round-2 hold all landed. Ready for architect round-3 r
 - `npx vitest run tests/unit/pages-settings.test.js` — 41 tests pass (was 38 before; +2 mid-loop denial tests, plus the existing posting-only-then-3-key test still passes against the new helper-split shape).
 - `npx vitest run` (full unit suite) — 989/989 tests pass. One pre-existing failed *suite* (`tests/unit/sec-001-equivalence.test.js`) fails to load due to a backend-side import resolution issue unrelated to this task; verified to fail identically on stash.
 - `npm run build` — clean (existing chunk-size + dhive-eval warnings unchanged from baseline).
+
+## Architect re-review (2026-05-04) — HELD PENDING FIXES
+
+Round-3 `/ce-code-review` on commit `2343aea`. The reorder + helper split + best-effort import landed cleanly and the round-2 hold P1 lockout (mid-loop deny wedging) is fixed. Round-3 surfaced one P1 second-injection-point + several smaller items.
+
+1. **P1 — Pre-loop throw in `_performKeychainImport` defeats the round-3 lockout fix** (security + adversarial + correctness + testing, anchor 100). The inner try/catch wraps ONLY `requestImportKey` (`settings.js:822-831`). The helper's pre-loop setup is unwrapped:
+   ```js
+   async _performKeychainImport(newSeedPhrase) {
+     if (!isKeychainInstalled()) return;
+     const dhive = await import('@hiveio/dhive');           // can reject (network)
+     const newSeed = mnemonicToSeedSync(newSeedPhrase);     // can throw
+     const newKeys = deriveHiveKeys(newSeed, this.username); // can throw
+     const importRoles = ['posting', 'active', 'memo'];
+     for (const role of importRoles) {
+       const wif = dhive.PrivateKey.fromSeed(newKeys[role]).toString(); // can throw
+       try { await new Promise(...requestImportKey...); }
+       catch (err) { /* push warning */ }
+     }
+   }
+   ```
+   The call site at `executeUpgrade:725` is `await this._performKeychainImport(newSeedPhrase)` OUTSIDE the try/catch (the try/catch already returned via early `return` on the error path at line 711). A throw from `await import('@hiveio/dhive')` (dynamic-chunk fetch fails on flaky network), `mnemonicToSeedSync` (corrupted seed), `deriveHiveKeys`, or `PrivateKey.fromSeed(...).toString()` escapes both the helper and `executeUpgrade`. Terminal state: chain rotated + backend cleaned up + mnemonic NOT wiped (lingers in `this.newSeedPhrase`, XSS-readable on /settings) + `upgradePhase` stuck at 'upgrading' (no recovery UI). Re-opens the FE-UPGRADE-CREDENTIAL-WIPE invariant via a different injection point.
+
+   Fix: wrap the call site in `try/finally` so wipe + `upgradePhase = 'done'` run unconditionally:
+   ```js
+   try {
+     await this._performKeychainImport(newSeedPhrase);
+   } catch (err) {
+     console.warn('[custody upgrade] keychain helper threw', err);
+     this.upgradeWarnings.push(this.$t('upgrade.keychainImportFailed'));
+   } finally {
+     this._clearSensitiveUpgradeState();
+     this.upgradePhase = 'done';
+   }
+   ```
+   Add new i18n key `upgrade.keychainImportFailed` to `frontend/public/messages/en.json` + 15 locale stubs + a fresh `### Added 2026-05-04 (UI-KEYCHAIN-API-MISUSE)` STUBS.md sweep entry. Add a regression test stubbing `mnemonicToSeedSync` (or `deriveHiveKeys`) to throw; assert `upgradePhase === 'done'`, mnemonic wiped (`comp.newSeedPhrase` is empty), `upgradeWarnings` contains the new fallback key.
+
+2. **P2 — Comment-vs-code drift on `newSeedPhrase` snapshot rationale** (correctness + maintainability + adversarial, anchor 100). At `frontend/src/pages/settings.js:614-617`:
+   ```js
+   // Snapshot the new seed phrase locally so the keychain-import step
+   // (which runs AFTER _clearSensitiveUpgradeState wipes reactive state)
+   // can still re-derive WIFs without holding onto `this.newSeedPhrase`.
+   ```
+   Actual order is keychain-import BEFORE wipe (lines 716, 725 of new diff). Comment is wrong. Invites refactor that "fixes" code to match comment, then deletes the now-redundant snapshot, breaking the upgrade. Fix: update the comment to reflect actual ordering AND state the snapshot's real purpose (closure-wipe — the helper receives a primitive-string argument and re-derives in its own frame so derived material doesn't escape):
+   ```js
+   // Snapshot the new seed phrase locally so the keychain-import helper
+   // receives it as a primitive-string argument rather than reading
+   // `this.newSeedPhrase` directly. This keeps the helper's frame the
+   // only owner of derived material (closure-wipe invariant). The wipe
+   // runs AFTER the keychain import (see ORDERING block above).
+   ```
+
+3. **P2 — Test gap: memo (idx 2) deny + all-three-deny scenarios uncovered** (testing + correctness, anchor 100). The round-2 hold spec called for "two specs: deny on idx 0 (posting) + idx 1 (active)" — implementer matched literally. But idx 2 (memo) is structurally distinct as the loop's last iteration ("loop continued past denial" assertion is vacuous there); all-three-deny is uncovered (does `upgradePhase` still reach 'done' with 3 warnings?). Add two specs in the existing FE-KEYCHAIN-API-MISUSE describe block:
+   ```js
+   it('best-effort: keychain denies on call index 2 (memo) → done + memo warning', async () => {
+     // similar shape to existing specs; deny on idx === 2; assert posting + active succeeded, memo warning present
+   });
+
+   it('best-effort: keychain denies all three roles → done + 3 warnings', async () => {
+     // deny on every callback; assert upgradePhase === 'done', upgradeError === null,
+     // upgradeWarnings.length === 3, fetch (backend cleanup) was called once.
+   });
+   ```
+
+4. **P2 — No ordering test: backend cleanup BEFORE first `requestImportKey`** (testing, anchor 75). The whole point of the round-3 reorder is backend cleanup BEFORE keychain loop, so mid-loop denial cannot leave backend with stale encrypted keys. Tests verify both happen but not ORDERING. A refactor swapping (c) and (d) — re-introducing the original lockout — passes the existing tests. Capture a shared sequence counter in `fetch` and `requestImportKey` stubs and assert `fetchSeq < firstImportSeq`.
+
+5. **P3 — `isKeychainInstalled()` race silent return defeats the success-screen UX** (correctness + adversarial, anchor 100). At `_performKeychainImport`:
+   ```js
+   if (!isKeychainInstalled()) return;
+   ```
+   Returns without iterating, without pushing warnings. If extension is installed at start of upgrade (proven by the `account_update` sign at step b) but disabled by step (d) (auto-update, manual toggle, content-script crash), helper early-returns silently. User sees clean 'done' screen with NO warnings, but has zero Keychain-bound roles. First post-upgrade vote/comment/transfer fails because Keychain has no key for this account; no UI signal. Fix: push 3 role warnings before the early return:
+   ```js
+   if (!isKeychainInstalled()) {
+     for (const role of ['posting', 'active', 'memo']) {
+       this.upgradeWarnings.push(this.$t(`upgrade.keychainImportWarning.${role}`));
+     }
+     return;
+   }
+   ```
+   Reuses the existing per-role i18n keys (no new keys needed). Add a test: stub `mockIsKeychainInstalled` to return true at `executeUpgrade` start (broadcast happens) but flip to false before `_performKeychainImport` runs (or stub the helper's `isKeychainInstalled` reference). Assert `upgradePhase === 'done'`, `upgradeWarnings.length === 3`, all 3 expected role-warning keys present.
+
+6. **P3 — No test for `upgradeWarnings = []` reset on second-attempt entry** (testing, anchor 75). Inline comment at `settings.js:611-613` calls out this reset's purpose: prevent prior partial run from leaking warnings into a subsequent full-success run. No spec invokes `executeUpgrade` twice on the same component. Add:
+   ```js
+   it('upgradeWarnings is reset on each executeUpgrade attempt', async () => {
+     // first run: deny one role → upgradeWarnings.length === 1
+     // second run on same comp: all roles succeed → upgradeWarnings === []
+   });
+   ```
+
+**Path to re-archive:** (1) UI agent applies items #1-6. (2) `git mv` to `tasks/review/`. (3) Architect runs round-4 `/ce-code-review` on the new diff and archives.
