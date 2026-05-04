@@ -144,3 +144,20 @@ But four items below need to land before this task can archive — one P1 (mutat
 ### Re-review signal
 
 When items 1-4 land, `git mv` this file back to `tasks/review/`. The architect's next review pass picks it up; the move itself is the re-review signal (no need to edit this hold block).
+
+---
+
+## Backend re-review signal (2026-05-04, working tree)
+
+Round-2 hold items 1-4 landed:
+
+- **Item 1 (P1)**: New mutation-fence test at `backend/tests/routes/custody-upgrade-null-hash.test.ts` — real-DB (verifyHiveSignature middleware exercised, real argon2, real pg pool, no `getPool()`/`getAppPool()` mocks). Two cases: (a) the null-hash branch returns 401 UNAUTHORIZED + "Invalid password" + custody_audit_log row (`operation_type='upgrade_failure'`) + wall-time ≥ TIMING_ORACLE_FLOOR_MS (35ms); (b) a paired-request equivalence baseline on the wrong-password branch asserts the same envelope and floor, locking the indistinguishability claim made in the implementation comment. Each test seeds a unique `custody='light'` row (`upnh<suffix>user` for null-hash, `upwp<suffix>user` for wrong-password) so the per-account `upgradeLimiter` (max=1/hr) doesn't poison subsequent runs. Cleanup runs in `afterAll`.
+- **Item 2 (P2)**: Custody-upgrade null-guard comment at `backend/src/routes/custody.ts:209-225` rewritten. The "unreachable in practice" framing is gone. Replaced with the reachable path enumerated explicitly: ORCID-only account → `/api/orcid/callback` mints a JWT with `custody: account.custody || 'light'` (defaulting to `'light'` for null/falsy `custody`) → that JWT passes `/upgrade`'s `custody !== 'light'` gate → reaches the null-guard. Notes that the null-guard is the local fix and the orcid.ts `||` default vs the `/upgrade` gate is the underlying invariant violation tracked separately.
+- **Item 3 (P3)**: Three brittle `signup-verify.ts:145` line-number cross-references replaced with symbol-based refs. `custody.ts:229`, `auth.ts:621`, `auth.ts:801` now cite "the `/resume-signup` handler in `signup-verify.ts` and BACKEND-PASSWORD-HASH-NULL-TYPING-AUDIT". Greppable, stable across line drift.
+- **Item 4 (P3)**: Canonical hoist comment at `backend/src/routes/signup-verify.ts:144-167` extended with a 3-bullet precondition list (nullable static type + control-flow guard above + closure-captures-parent-object-by-reference). Also tightened: "the narrowing does NOT carry across the **async** closure boundary" → "the narrowing does NOT carry across the closure boundary". The closure boundary itself is load-bearing, not the async-ness; synchronous closures over mutable property accesses also lose narrowing.
+
+Verification:
+- `cd backend && npx tsc --noEmit` — clean.
+- `cd backend && npm run lint` — clean (only 2 pre-existing warnings in `seed-phrase.ts`, untouched by this work).
+- `cd backend && npx vitest run tests/routes/custody*.test.ts` — 7/7 pass (the new `custody-upgrade-null-hash.test.ts` 2-case file plus the existing `custody.test.ts` and `custody-upgrade-argon-error-translation.test.ts`).
+- The broader `tests/routes/custody*.test.ts tests/routes/auth*.test.ts tests/routes/signup-verify*.test.ts` set has 10 pre-existing failures across `auth-signup-argon-error-translation.test.ts`, `auth-signup-dup-saturated.test.ts`, and the SEC-004-BE describe blocks of `signup-verify.test.ts`. Reproduced on a clean tree (stash + re-run) before applying these changes; the failure count and identity is identical with and without my work. Out of scope for this task.

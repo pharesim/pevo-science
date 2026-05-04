@@ -207,27 +207,32 @@ router.post('/upgrade', verifyHiveSignature, upgradeLimiter, async (req: Request
       return sendError(res, 409, 'ALREADY_UPGRADED', 'Account has already been upgraded to self-custody');
     }
 
-    // Defense-in-depth null-guard: today the route is gated by JWT +
-    // custody='light', and light-custody accounts always carry a password,
-    // so this branch is unreachable in practice. But the schema permits
-    // password_hash = NULL (ORCID-only accounts) and any future code path
-    // that lands a custody='light' on a null-hash row (admin tool, bulk
-    // migration, future /upgrade variant) would otherwise fire
-    // argon2.verify(null, ...) → synchronous TypeError → 500 in ~0ms,
-    // reopening the wall-time / status-code oracle the burnSentinel work
-    // exists to close. Burn the sentinel to match the wrong-password branch
-    // wall-time and return the same 401 + audit-log entry that branch emits
-    // so internal observers cannot distinguish the null-hash invariant
-    // violation from an ordinary wrong-password attempt. See
-    // BACKEND-PASSWORD-HASH-NULL-TYPING-AUDIT.
+    // Load-bearing null-guard for ORCID-only accounts. The reachable path
+    // today: an ORCID-verified account (`password_hash=NULL`, `custody=NULL`
+    // or `'orcid'`) signs in via /api/orcid/callback, which mints a JWT with
+    // `custody: account.custody || 'light'` (orcid.ts ~line 456). The `||`
+    // defaults the JWT claim to `'light'` whenever the DB column is null/
+    // falsy. That JWT then passes the `custody !== 'light'` gate above and
+    // reaches this branch with `account.password_hash === null`. Without
+    // this guard, execution hits `argon2.verify(null, password)` → synchronous
+    // TypeError → 500 in ~0ms, reopening the wall-time / status-code oracle
+    // the burnSentinel work exists to close. The orcid.ts `||` default
+    // versus this route's gate is the underlying invariant violation; that
+    // is tracked separately. The null-guard here is the local fix. Burn the
+    // sentinel to match the wrong-password branch wall-time and return the
+    // same 401 + audit-log entry that branch emits so internal observers
+    // cannot distinguish a null-hash account from an ordinary wrong-password
+    // attempt. See BACKEND-PASSWORD-HASH-NULL-TYPING-AUDIT.
     if (!account.password_hash) {
       await burnSentinel(password, abortSignal);
       logCustodyBroadcast(username, 'upgrade_failure').catch(() => {});
       return sendError(res, 401, 'UNAUTHORIZED', 'Invalid password');
     }
 
-    // Verify password re-entry. Canonical hoist pattern (signup-verify.ts:145)
-    // — pin the narrowed type for the runWithArgon2Slot closure body.
+    // Verify password re-entry. Canonical hoist pattern (see the
+    // `/resume-signup` handler in `signup-verify.ts` and
+    // BACKEND-PASSWORD-HASH-NULL-TYPING-AUDIT) — pin the narrowed type for
+    // the runWithArgon2Slot closure body.
     const passwordHash = account.password_hash;
     const valid = await runWithArgon2Slot(() => argon2.verify(passwordHash, password), { signal: abortSignal });
     if (!valid) {

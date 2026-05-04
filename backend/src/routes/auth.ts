@@ -618,9 +618,10 @@ router.post('/resend-verification', resendLimiter, async (req: Request, res: Res
     // running either the real verify OR a sentinel burn.
     let passwordValid = false;
     if (account.password_hash) {
-      // Canonical hoist pattern (signup-verify.ts:145) — pin the narrowed
-      // type for the runWithArgon2Slot closure body, replacing the prior
-      // `account.password_hash!` non-null assertion.
+      // Canonical hoist pattern (see the `/resume-signup` handler in
+      // `signup-verify.ts` and BACKEND-PASSWORD-HASH-NULL-TYPING-AUDIT) —
+      // pin the narrowed type for the runWithArgon2Slot closure body,
+      // replacing the prior `account.password_hash!` non-null assertion.
       const passwordHash = account.password_hash;
       passwordValid = await runWithArgon2Slot(() => argon2.verify(passwordHash, password), { signal: abortSignal });
     } else {
@@ -798,11 +799,12 @@ router.post('/login', loginLimiter, async (req: Request, res: Response) => {
     // via the sentinel hash, so status-code is the only signal distinguishing
     // null-hash accounts from unknown accounts — not response wall-time).
     //
-    // Canonical hoist pattern (signup-verify.ts:145) — `account.password_hash`
-    // is `string | null`; the `if (!account.password_hash)` early-return above
-    // proves it non-null at runtime, but the narrowing does not carry across
-    // the runWithArgon2Slot closure boundary. Pin the narrowed type via a
-    // closure-local const.
+    // Canonical hoist pattern (see the `/resume-signup` handler in
+    // `signup-verify.ts` and BACKEND-PASSWORD-HASH-NULL-TYPING-AUDIT) —
+    // `account.password_hash` is `string | null`; the
+    // `if (!account.password_hash)` early-return above proves it non-null at
+    // runtime, but the narrowing does not carry across the runWithArgon2Slot
+    // closure boundary. Pin the narrowed type via a closure-local const.
     const passwordHash = account.password_hash;
     const valid = await runWithArgon2Slot(() => argon2.verify(passwordHash, password), { signal: abortSignal });
     if (!valid) {

@@ -148,12 +148,24 @@ router.post('/resume-signup', resumeLimiter, async (req: Request, res: Response)
     // accounts have no password). After the `if (!account.password_hash)`
     // guard above proves it non-null at this line, TypeScript narrows
     // `account.password_hash` to `string` in the local scope — but the
-    // narrowing does NOT carry across the async closure boundary inside
+    // narrowing does NOT carry across the closure boundary inside
     // `runWithArgon2Slot`. Re-reading `account.password_hash` from the
     // closure would force a non-null assertion (`!`) or a re-guard. The
     // closure-local `const passwordHash` pins the narrowed type for the
     // closure body so neither workaround is needed. Mirror this pattern at
     // every other `argon2.verify(account.password_hash, ...)` call site.
+    //
+    // Preconditions for the hoist to be load-bearing (apply ALL three before
+    // adding the pattern at a new site, otherwise it is cargo-culted):
+    //   1. The property's static type is nullable (or otherwise needs
+    //      narrowing) — e.g., `password_hash: string | null`.
+    //   2. A control-flow guard above proves it non-null at runtime — e.g.,
+    //      `if (!account.password_hash) return ...;`.
+    //   3. The consumer is inside a closure that captures the parent object
+    //      by reference (TS de-narrows mutable property accesses at the
+    //      closure boundary; the boundary itself is load-bearing here, not
+    //      the async-ness — synchronous closures over mutable property
+    //      accesses also lose narrowing).
     const passwordHash = account.password_hash;
     const passwordValid = await runWithArgon2Slot(() => argon2.verify(passwordHash, password), { signal: abortSignal });
     if (!passwordValid) {
