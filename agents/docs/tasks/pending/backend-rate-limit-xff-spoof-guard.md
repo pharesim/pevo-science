@@ -109,3 +109,20 @@ One round-1 hold item — the test that should boot the actual app and assert it
 ### Re-review signal
 
 When item 1 lands, `git mv` this file back to `tasks/review/`. The architect's next review pass picks it up; at archive, architect lands the `common.md` Trusted Proxy Chain doc snippet (with corrected XFF semantics) atomically.
+
+---
+
+## Backend re-review signal (2026-05-04, working tree)
+
+**Round-1 hold item 1 (P3) addressed.** Added a `createApp()`-level regression test in `backend/tests/middleware/rateLimit.test.ts` (under the existing `describe('rateLimit middleware', ...)` block, last `it()` in the file). The test imports `createApp` from `../../src/app.js`, instantiates the production app factory, and asserts `app.get('trust proxy') === 1 || === true` — accepting either return shape since Express may normalize the numeric-1 setting differently across versions, while still failing on the regression cases (`false`, `0`, or an unrelated value).
+
+**Verification (worker worktree, real Postgres + Redis):**
+
+```
+cd backend && npx vitest run tests/middleware/rateLimit.test.ts
+# baseline: 8 passed (was 7 + the new createApp test)
+```
+
+**Mutation soundness:** Commenting out `app.set('trust proxy', 1)` at `backend/src/app.ts:54` causes the new test to fail with `expected false to be true` (`trustProxy` becomes Express's default `false`). The other seven tests in the file stay green — they instantiate bare `express()` apps and don't depend on `createApp()`. Reverted the mutation; the file is back to baseline before commit.
+
+**Scope:** Test-only change. No production code touched. No contract files touched. No new files created. Item 1 was the only round-1 hold item (the four dismissed items per architect triage are not addressed here, by design). Architect's `[TODO Architect]` for the `common.md` Trusted Proxy Chain snippet remains for archive-time architect-zone work.

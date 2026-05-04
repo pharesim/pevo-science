@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import request from 'supertest';
 import express from 'express';
 import { rateLimit, byIp, byAccount } from '../../src/middleware/rateLimit.js';
+import { createApp } from '../../src/app.js';
 
 let testCounter = 0;
 function createTestApp(
@@ -126,5 +127,20 @@ describe('rateLimit middleware', () => {
     // silently broke.
     const second = await request(app).get('/test').set('X-Forwarded-For', '5.6.7.8');
     expect(second.status).toBe(429);
+  });
+
+  // Regression: createApp() in src/app.ts MUST configure `trust proxy = 1` so
+  // that nginx's appended XFF value becomes req.ip in production. The two
+  // tests above verify byIp() against ad-hoc bare express() apps; this one
+  // pins the actual production app factory's setting so a refactor that
+  // removes `app.set('trust proxy', 1)` from app.ts fails loudly here rather
+  // than surfacing as a confusing "premature 429 under XFF rotation" tripwire
+  // elsewhere. Express may return either `1` or `true` for the numeric-1
+  // setting depending on version; either is acceptable, only `false`/`0` or
+  // an unrelated value is a regression.
+  it('createApp() sets trust proxy to one hop', () => {
+    const app = createApp();
+    const trustProxy = app.get('trust proxy');
+    expect(trustProxy === 1 || trustProxy === true).toBe(true);
   });
 });
