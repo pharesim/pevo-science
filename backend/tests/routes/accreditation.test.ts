@@ -76,6 +76,8 @@ import { createApp } from '../../src/app.js';
 import { config } from '../../src/config.js';
 import { getRedis } from '../../src/redis.js';
 import { logger } from '../../src/logger.js';
+import { INCR_AND_EXPIRE_IF_FIRST_LUA } from '../../src/lib/redis-scripts.js';
+import { __test_seams as accreditationTestSeams } from '../../src/routes/accreditation.js';
 
 // Ensure the admin-posting-key guard inside /verify doesn't short-circuit.
 // A deterministic WIF keeps PrivateKey.fromString happy on the broadcast path.
@@ -341,7 +343,11 @@ describe('POST /api/accreditation/verify — BE-ORCID-BROADCAST-ABORT-TIMEOUT', 
       // also called by handleBroadcastError for the 502 path, so we must pin
       // the cleanup-specific message to distinguish the two calls.
       expect(loggerErrorSpy).toHaveBeenCalledWith(
-        expect.objectContaining({ err: expect.anything(), token: expect.any(String) }),
+        // Round-3 hold #1: payload now carries `token_hash` (12-hex sha256 prefix)
+        // instead of the raw 64-hex token. Operator-correlation is preserved
+        // (the hash is stable across log lines for the same token), but the
+        // plaintext-replay capability is removed.
+        expect.objectContaining({ err: expect.anything(), token_hash: expect.stringMatching(/^[0-9a-f]{12}$/) }),
         expect.stringContaining('token cleanup failed after broadcast failure'),
       );
 
@@ -415,9 +421,9 @@ describe('POST /api/accreditation/verify — BE-VERIFY-BROADCAST-ATTEMPTS-CAP', 
       .send({ token });
   }
 
-  it('cap-exceeded path: pre-seeded counter ≥ cap returns BROADCAST_ATTEMPT_LIMIT_EXCEEDED; broadcast NOT invoked; token destroyed', async () => {
+  it('cap-exceeded path: pre-seeded counter ≥ cap returns BROADCAST_ATTEMPT_LIMIT_EXCEEDED; broadcast NOT invoked; token PRESERVED (round-3 soft-block)', async () => {
     const redis = getRedis();
-    if (!redis) return;
+    if (!redis) throw new Error('Redis required for cap specs');
     const cap = config.verifyBroadcastAttemptsCap;
     const token = `accred-cap-${crypto.randomBytes(8).toString('hex')}`;
     await seedPendingAccreditation(token);
@@ -441,14 +447,20 @@ describe('POST /api/accreditation/verify — BE-VERIFY-BROADCAST-ATTEMPTS-CAP', 
     expect(res.body.error.message).toMatch(/limit exceeded/i);
     // Broadcast NOT invoked — the cap gate fires before the broadcast site.
     expect(broadcastJsonMock).not.toHaveBeenCalled();
-    // Token destroyed → caller must request a fresh email.
-    expect(await tokenExists(token)).toBe(false);
-    expect(await broadcastAttemptCount(token)).toBe(0);
+    // Round-3 hold #2 (soft-block): token is PRESERVED on the cap-exceeded
+    // path. A stolen-token attacker with cap+1 rotating XFFs cannot mount
+    // an asymmetric token-burn DoS; the legitimate user can wait for the
+    // 24h Redis TTL to drain instead of being forced into the 3/24h
+    // /request lockout. Counter and token both TTL out independently.
+    expect(await tokenExists(token)).toBe(true);
+    // Counter remains at the pre-seeded cap+1 since soft-block doesn't
+    // delete it; it will TTL out alongside the token.
+    expect(await broadcastAttemptCount(token)).toBe(cap + 1);
   });
 
   it('round-2 hold #2: 504 timeout outcomes DECREMENT the counter; user retrying through transient slow-Hive window does not burn cap slots', async () => {
     const redis = getRedis();
-    if (!redis) return;
+    if (!redis) throw new Error('Redis required for cap specs');
     const cap = config.verifyBroadcastAttemptsCap;
     const token = `accred-cap-${crypto.randomBytes(8).toString('hex')}`;
     await seedPendingAccreditation(token);
@@ -476,7 +488,7 @@ describe('POST /api/accreditation/verify — BE-VERIFY-BROADCAST-ATTEMPTS-CAP', 
 
   it('round-2 hold #4: concurrent retries claim slots atomically — exactly `cap` broadcasts fire under cap+1 parallel /verify calls; (cap+1)th returns BROADCAST_ATTEMPT_LIMIT_EXCEEDED', async () => {
     const redis = getRedis();
-    if (!redis) return;
+    if (!redis) throw new Error('Redis required for cap specs');
     const cap = config.verifyBroadcastAttemptsCap;
     const token = `accred-cap-${crypto.randomBytes(8).toString('hex')}`;
     await seedPendingAccreditation(token);
@@ -510,17 +522,19 @@ describe('POST /api/accreditation/verify — BE-VERIFY-BROADCAST-ATTEMPTS-CAP', 
     // pre-INCR pushes the counter to cap+1).
     const responses = Promise.all(ips.map((ip) => postVerify(token, ip)));
 
-    // Wait briefly for all parallel calls to reach their pre-INCR /
-    // cap-gate decision. Then release the held broadcast promise so
-    // the cap-bound calls can complete (we expect them to time out via
-    // the supertest-side wait for completion of the response). Use a
-    // resolved value so the route's success path fires for the first
-    // `cap` (and the cap-exceeded path fires for the last one before
-    // it ever reaches broadcast).
-    //
-    // Sleep gives all `cap+1` requests time to reach the INCR-and-cap-
-    // check site. 100ms is generous for a localhost express app.
-    await new Promise((r) => setTimeout(r, 100));
+    // Round-3 hold #6: deterministic barrier — poll the counter directly
+    // until every parallel /verify call has claimed its pre-INCR slot
+    // (counter == cap + 1). The prior 100ms sleep was brittle on slow CI
+    // and on operator-tuned high caps (cap=10 → 11 parallel supertest
+    // invocations tighten the window). Polling the on-disk counter
+    // converges as soon as the last pre-INCR lands, regardless of CI
+    // speed or cap value.
+    const deadline = Date.now() + 5_000;
+    while (Date.now() < deadline) {
+      if ((await broadcastAttemptCount(token)) === cap + 1) break;
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(await broadcastAttemptCount(token)).toBe(cap + 1);
     // Release the broadcast promise — the `cap` requests that passed
     // the gate now resolve (their broadcastJsonMock returns
     // {id: 'mock-...'}) → success path → 200.
@@ -542,7 +556,7 @@ describe('POST /api/accreditation/verify — BE-VERIFY-BROADCAST-ATTEMPTS-CAP', 
 
   it('clears the attempt counter on broadcast success', async () => {
     const redis = getRedis();
-    if (!redis) return;
+    if (!redis) throw new Error('Redis required for cap specs');
     const token = `accred-cap-${crypto.randomBytes(8).toString('hex')}`;
     await seedPendingAccreditation(token);
     const ip = `10.1.${crypto.randomInt(0, 255)}.${crypto.randomInt(1, 254)}`;
@@ -556,9 +570,9 @@ describe('POST /api/accreditation/verify — BE-VERIFY-BROADCAST-ATTEMPTS-CAP', 
     expect(await broadcastAttemptCount(token)).toBe(0);
   });
 
-  it('clears the attempt counter on terminal (502) broadcast failure', async () => {
+  it('clears the attempt counter on terminal (502) broadcast failure (sequential-flood scope per round-3 hold #8)', async () => {
     const redis = getRedis();
-    if (!redis) return;
+    if (!redis) throw new Error('Redis required for cap specs');
     const token = `accred-cap-${crypto.randomBytes(8).toString('hex')}`;
     await seedPendingAccreditation(token);
     const ip = `10.2.${crypto.randomInt(0, 255)}.${crypto.randomInt(1, 254)}`;
@@ -574,7 +588,7 @@ describe('POST /api/accreditation/verify — BE-VERIFY-BROADCAST-ATTEMPTS-CAP', 
 
   it('round-2 hold #5: cap-exceeded log emits structured `event:` field for operator dashboards', async () => {
     const redis = getRedis();
-    if (!redis) return;
+    if (!redis) throw new Error('Redis required for cap specs');
     const cap = config.verifyBroadcastAttemptsCap;
     const token = `accred-cap-${crypto.randomBytes(8).toString('hex')}`;
     await seedPendingAccreditation(token);
@@ -605,7 +619,7 @@ describe('POST /api/accreditation/verify — BE-VERIFY-BROADCAST-ATTEMPTS-CAP', 
 
   it('round-2 hold #6: Lua INCR + EXPIRE-if-first runs in one round trip — counter key has positive TTL anchored to token life on first write', async () => {
     const redis = getRedis();
-    if (!redis) return;
+    if (!redis) throw new Error('Redis required for cap specs');
 
     // Direct unit-level assertion against the Lua script. If a separate
     // INCR-then-EXPIRE pair were used and a crash interleaved between the
@@ -615,17 +629,13 @@ describe('POST /api/accreditation/verify — BE-VERIFY-BROADCAST-ATTEMPTS-CAP', 
     // exercise it here by replaying the exact script the route runs and
     // asserting the on-disk TTL bound after a single EVAL.
     //
-    // The script comes from src/routes/accreditation.ts; this test
-    // duplicates its body verbatim because the constant is module-scoped
-    // and not exported (export-only-for-tests would invite drift). If the
-    // script changes, this test must be updated in lockstep.
-    const script = `
-local count = redis.call('INCR', KEYS[1])
-if count == 1 then
-  redis.call('EXPIRE', KEYS[1], ARGV[1])
-end
-return count
-`;
+    // Round-3 hold #4: import the canonical script body from
+    // `lib/redis-scripts.ts` instead of duplicating it verbatim. The
+    // round-2 rationale ("export-only-for-tests would invite drift") was
+    // weaker than the verbatim-duplication drift it accepted — having
+    // the route and the test reference the same constant is the actual
+    // drift defense.
+    const script = INCR_AND_EXPIRE_IF_FIRST_LUA;
     const key = `${config.appTag}:pending_accred_broadcast_attempts:lua-test-${crypto.randomBytes(8).toString('hex')}`;
     try {
       const ttlSec = 60;
@@ -649,5 +659,108 @@ return count
     } finally {
       await redis.del(key);
     }
+  });
+
+  it('round-3 hold #5: decrement-failure log path fires the structured warn discriminator on a 504 + redis.decr rejection without writing headers twice', async () => {
+    const redis = getRedis();
+    if (!redis) throw new Error('Redis required for cap specs');
+    const token = `accred-cap-${crypto.randomBytes(8).toString('hex')}`;
+    await seedPendingAccreditation(token);
+    const ip = `10.7.${crypto.randomInt(0, 255)}.${crypto.randomInt(1, 254)}`;
+
+    // Drive a 504 BROADCAST_TIMEOUT outcome on the broadcast site.
+    broadcastJsonMock.mockRejectedValueOnce(new MockBroadcastTimeoutError(30_000));
+
+    // Inject a Redis-side rejection on the compensating decrement so the
+    // catch around decrementBroadcastAttempts fires. The first DECR is the
+    // route's compensating call after the timer-fire 504; subsequent DECRs
+    // (e.g. tear-down cleanup) revert to default behavior.
+    const decrSpy = vi.spyOn(redis, 'decr').mockRejectedValueOnce(
+      new Error('redis flap on compensating decrement'),
+    );
+    const loggerWarnSpy = vi.spyOn(logger, 'warn');
+
+    try {
+      const res = await postVerify(token, ip);
+
+      expect(res.status).toBe(504);
+      expect(res.body.error.code).toBe('BROADCAST_TIMEOUT');
+      // Broadcast was invoked exactly once before the timer fired.
+      expect(broadcastJsonMock).toHaveBeenCalledTimes(1);
+      // Route called the compensating DECR.
+      expect(decrSpy).toHaveBeenCalled();
+      // Discriminator event fires; mutation-sensitive call-shape assertion
+      // pins the structured fields a future log-message edit can't silently
+      // drop.
+      expect(loggerWarnSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: 'accred_verify_broadcast_decrement_failed',
+          username: 'accred-timeout-user',
+        }),
+        expect.stringContaining('counter decrement after timeout failed'),
+      );
+      // Round-3 hold #1 cross-check: the warn payload carries token_hash,
+      // NOT the raw 64-hex token. Serialize all logger.warn call args and
+      // assert no 64-hex substring leaks.
+      const flatPayload = JSON.stringify(loggerWarnSpy.mock.calls);
+      expect(flatPayload).not.toMatch(/[0-9a-f]{64}/);
+      expect(flatPayload).toContain('token_hash');
+      // No duplicate write to the response (the 504 was already sent before
+      // the catch ran). If the catch path tried to write a second envelope,
+      // Express would emit ERR_HTTP_HEADERS_SENT into the warn/error stream.
+      const allWarnText = flatPayload + JSON.stringify(loggerWarnSpy.mock.calls);
+      expect(allWarnText).not.toContain('ERR_HTTP_HEADERS_SENT');
+    } finally {
+      decrSpy.mockRestore();
+      loggerWarnSpy.mockRestore();
+      await redis.del(`${config.appTag}:pending_accred_broadcast_attempts:${token}`);
+    }
+  });
+
+  it('round-3 hold #12: VERIFY_BROADCAST_ATTEMPTS_CAP env var is wired through to config.verifyBroadcastAttemptsCap (operators can flip the cap without redeploy)', async () => {
+    // Without this spec, a typo in config.ts (e.g. VERIFY_BROADCAST_CAP)
+    // would silently pass every cap-related spec since they read
+    // `config.verifyBroadcastAttemptsCap` directly and would just pin the
+    // unmutated default of 3.
+    const original = process.env.VERIFY_BROADCAST_ATTEMPTS_CAP;
+    try {
+      process.env.VERIFY_BROADCAST_ATTEMPTS_CAP = '42';
+      vi.resetModules();
+      const fresh = await import('../../src/config.js');
+      expect(fresh.config.verifyBroadcastAttemptsCap).toBe(42);
+    } finally {
+      if (original === undefined) {
+        delete process.env.VERIFY_BROADCAST_ATTEMPTS_CAP;
+      } else {
+        process.env.VERIFY_BROADCAST_ATTEMPTS_CAP = original;
+      }
+      vi.resetModules();
+    }
+  });
+
+  it('round-3 hold #13: decrementBroadcastAttempts `if (after <= 0) DEL` race-recovery branch — pre-deleted counter key stays absent', async () => {
+    const redis = getRedis();
+    if (!redis) throw new Error('Redis required for cap specs');
+    // Simulate the parallel-deleteToken-races-the-decrement case: the
+    // counter side-key has already been DELd by a concurrent path
+    // (deleteToken → deleteBroadcastAttempts) before our decrement
+    // arrives. A naive `redis.decr` on a missing key creates it at -1;
+    // the defensive floor at accreditation.ts (`if (after <= 0) DEL`)
+    // re-deletes it. Mutation-kill: removing the DEL leaves the counter
+    // at -1 in some orderings.
+    const token = `accred-decr-race-${crypto.randomBytes(8).toString('hex')}`;
+    const counterKey = `${config.appTag}:pending_accred_broadcast_attempts:${token}`;
+    // Pre-DEL: ensure the key is absent before we drive the decrement.
+    await redis.del(counterKey);
+    expect(await redis.get(counterKey)).toBeNull();
+
+    // Call directly via __test_seams (round-3 hold #13 explicitly asks for
+    // a unit-style spec; routing through the route would mask the
+    // race-recovery DEL behind the broader timeout flow).
+    await accreditationTestSeams.decrementBroadcastAttempts(token);
+
+    // Defensive floor must have re-deleted the key. A regression that
+    // drops the DEL leaves it at "-1".
+    expect(await redis.get(counterKey)).toBeNull();
   });
 });

@@ -203,3 +203,80 @@ Fix: targeted unit-style spec — DEL the counter key, call `decrementBroadcastA
 ### Re-review signal
 
 When items 1-13 land, `git mv` this file back to `tasks/review/` (use the prescribed `## Backend re-review signal (<date>, commit <sha>)` header per item 9). Round-3 architect review scopes `/ce-code-review` to the round-3 commit only. Architect addresses A1 + A2 at archive time.
+
+---
+
+## Backend re-review signal (2026-05-04, working tree)
+
+Round-3 hold-fix items 1-13 landed. Architect followups A1 + A2 remain architect-owned at archive. Pre-existing X1 not addressed in this round.
+
+### Item 1 — Token-hash redaction at decrement-failure + cleanup-failure log paths
+
+Added `hashTokenForLogs(token)` (sha256 → first 12 hex chars) to `backend/src/lib/log-pii.ts`, mirroring the `hashEmailForLogs` shape. Replaced raw `token` with `token_hash` in two operator-log call sites in `backend/src/routes/accreditation.ts`: the timeout-decrement-failure warn (line 467) and the post-broadcast-failure delete-failure error (line 482). Both raw 64-hex tokens are removed from the log payload; operator correlation is preserved via the stable hash prefix.
+
+Mutation-sensitive test for the warn path lives in the new round-3 hold #5 spec (item 5 below) — it serializes all `logger.warn` call args and asserts no 64-hex substring leaks. The existing 502+deleteToken-failure spec at line 345 was updated to expect `token_hash` instead of `token`.
+
+### Item 2 — Soft-block on cap-exceeded
+
+Chose **sub-option (ii) soft-block**: do NOT call `deleteToken` on the cap-exceeded path. Token stays alive; counter persists; both keys TTL out independently within 24h. Rationale documented inline at the route-level WHY comment block: a stolen-token attacker with `cap+1` rotating XFFs cannot mount the asymmetric token-burn DoS that destroys the legitimate user's token (cheap rotating IPs vs the 24h re-`/request` lockout under the 3/24h byAccount limiter). Sub-option (i) accept-and-document gives up the capability for free; sub-option (iii) verifyHiveSignature imposes a UX penalty on light-account users without ready Keychain access on the verify-link landing page.
+
+User-facing message tweaked from "Request a fresh accreditation email" to "Please wait or request a fresh accreditation email" — soft-block lets the user wait out the burst rather than burn a fresh `/request` slot.
+
+The cap-exceeded round-1 spec at line 416 was updated to assert `tokenExists(token) === true` and `broadcastAttemptCount(token) === cap + 1` (instead of the round-1 `false` and `0` shape).
+
+### Item 3 — Loud no-Redis throw across all 7 cap specs
+
+Replaced `if (!redis) return` with `if (!redis) throw new Error('Redis required for cap specs')` at all 7 cap-related specs (the 4 the round-2 worker landed plus the 3 the worker missed: lines 570, 586, 617 in the latest test file — `clears the attempt counter on terminal (502) broadcast failure`, `round-2 hold #5: cap-exceeded log emits structured event field`, and `round-2 hold #6: Lua INCR + EXPIRE-if-first`).
+
+### Item 4 — Lua script imported instead of duplicated
+
+Exported `INCR_AND_EXPIRE_IF_FIRST_LUA` from new `backend/src/lib/redis-scripts.ts` (created during this round to centralize shared Lua scripts; future scripts land here). The route imports from the lib; the Lua-atomicity test now imports the constant and uses it via `const script = INCR_AND_EXPIRE_IF_FIRST_LUA;` — verbatim duplication eliminated.
+
+### Item 5 — Decrement-failure log path test
+
+Added `round-3 hold #5: decrement-failure log path fires the structured warn discriminator on a 504 + redis.decr rejection without writing headers twice`. Spies on `redis.decr` with `mockRejectedValueOnce`, drives the `MockBroadcastTimeoutError` through the broadcast site, asserts response stays 504, the structured `event: 'accred_verify_broadcast_decrement_failed'` warn fires with the username discriminator, no raw 64-hex token leaks (cross-check of item 1), and `ERR_HTTP_HEADERS_SENT` does not appear in any captured warn payload (negative assertion for the Express-double-write regression).
+
+### Item 6 — Deterministic barrier in concurrent-retry test
+
+Replaced the brittle 100ms `setTimeout` fence at `tests/routes/accreditation.test.ts:523` with a deterministic poll loop: `while (Date.now() < deadline) { if (counter === cap+1) break; await sleep(5); }` with a 5-second deadline. Resilient on slow CI and on operator-tuned high caps (cap=10 → 11 parallel supertest invocations would have tightened the prior 100ms window).
+
+### Item 7 — Lua docblock corrected to match implementation
+
+Rewrote the Lua-script docblock in `backend/src/lib/redis-scripts.ts` (and the parallel comment in the route's `incrementBroadcastAttempts`) to describe the actual EXPIRE-on-every-transition-to-1 invariant (count==0 → count==1), not the prior "first-write-only" framing. Documented why safety is preserved across pre-INCR + DECR-on-timeout cycles: the TTL anchor `pending.expires_at` monotonically shrinks, so the counter's lifetime cannot exceed the token's even when EXPIRE re-fires after a decrement-recovery cycle. Re-priming TTL on EVERY INCR (irrespective of count) would break the invariant — the conditional gate is load-bearing.
+
+### Item 8 — Concurrency-burst-vs-sequential-flood scope clarified
+
+Updated the route-level WHY comment at the broadcast-cap section to explicitly state the cap is a **concurrency-burst defense**, not a sequential-flood defense. Sequential 502 retries are bounded by `deleteToken`'s side-effect on the first definitive failure (which drops both the pending row and the counter side-key); the cap engages on parallel retries where N concurrent `/verify` calls atomically claim slots and at most `cap` broadcasts fire. The existing test at line 568 was renamed to `clears the attempt counter on terminal (502) broadcast failure (sequential-flood scope per round-3 hold #8)` so the structural reason is grep-discoverable.
+
+### Item 9 — Signal block header form
+
+This round's signal block uses the prescribed form `## Backend re-review signal (<date>, working tree or commit SHA)` per `agents/backend/CLAUDE.md`. The historic round-2 `## Round-2 implementer signal (2026-04-30)` header was NOT renamed — past content stays as-is to preserve git-blame continuity; only this round's header follows the convention.
+
+### Item 10 — Redis-unavailable warn in `decrementBroadcastAttempts`
+
+Added an explicit Redis-unavailable branch inside `decrementBroadcastAttempts`: if `redis && !isRedisAvailable()` (Redis was reachable at INCR time but flapped before DECR), emit `event: 'accred_verify_broadcast_decrement_redis_unavailable'` warn with the `token_hash` discriminator before falling through. The silent-noop case now has an operator anchor for counter-drift correlation with Redis incidents.
+
+### Item 11 — Pre-INCR wrapped in try/catch returning 503
+
+Wrapped the pre-INCR `incrementBroadcastAttempts` call site at `accreditation.ts:300` in a local try/catch that emits a structured `event: 'accred_verify_broadcast_increment_failed'` warn and returns 503 SERVICE_UNAVAILABLE with `{ retriable: true }`. Symmetric to the existing 502/504 envelope discipline at the broadcast site; replaces the prior implicit 500 INTERNAL_ERROR-via-Express-async-handler shape with explicit retry guidance.
+
+### Item 12 — Config-level env-var spec
+
+Added `round-3 hold #12: VERIFY_BROADCAST_ATTEMPTS_CAP env var is wired through to config.verifyBroadcastAttemptsCap` spec. Mutates `process.env.VERIFY_BROADCAST_ATTEMPTS_CAP` to `'42'`, calls `vi.resetModules()`, dynamically re-imports `../../src/config.js`, and asserts `freshConfig.verifyBroadcastAttemptsCap === 42`. Restores the original env value + resetModules in the `finally` so subsequent tests aren't perturbed. A typo in `config.ts` (e.g., `VERIFY_BROADCAST_CAP`) would now fail this spec at the assert.
+
+### Item 13 — Race-recovery DEL spec via `__test_seams`
+
+Added a test-only seam export `export const __test_seams = { decrementBroadcastAttempts }` at the bottom of `accreditation.ts` (mirroring the precedent in `routes/orcid.ts`). The new `round-3 hold #13` spec pre-DELs the counter key, calls `accreditationTestSeams.decrementBroadcastAttempts(token)` directly, and asserts `redis.get(counterKey) === null` afterwards — the defensive `if (after <= 0) DEL` floor's race-recovery branch is now mutation-killed (removing the DEL leaves the counter at -1).
+
+### Verification
+
+- `npx tsc --noEmit` from `backend/` — clean.
+- `npm run lint` — clean (only pre-existing `seed-phrase.ts` `any` warnings, unrelated).
+- `npx vitest run tests/routes/accreditation.test.ts` (with docker-network Redis/Postgres IPs per root CLAUDE.md) — 20 passed (17 round-1+2 + 3 new round-3 specs), 0 failed, 4.47s. Pre-existing rate-limit pollution in `rejects free email`/`rejects yahoo email` is gone in this run because the test ordering happens to clear before they execute.
+
+### Files changed (this round)
+
+- `backend/src/routes/accreditation.ts` — Item 1 (token_hash at 2 sites), Item 2 (soft-block + WHY-comment), Item 7 (decrement-cycle docstring), Item 8 (cap-scope WHY-comment), Item 10 (Redis-unavailable warn), Item 11 (try/catch around pre-INCR), Item 13 (`__test_seams` export).
+- `backend/src/lib/log-pii.ts` — Item 1 (`hashTokenForLogs` helper).
+- `backend/src/lib/redis-scripts.ts` — NEW (Item 4 centralizing Lua scripts; Item 7 corrected docstring).
+- `backend/tests/routes/accreditation.test.ts` — Item 3 (7 if-redis throws), Item 4 (import + use shared Lua constant), Item 5 (decrement-failure log spec), Item 6 (deterministic barrier), Item 12 (config env-var spec), Item 13 (race-recovery DEL spec), plus the existing 502+deleteToken spec updated to assert `token_hash` instead of raw `token`.

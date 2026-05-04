@@ -39,3 +39,26 @@ export function hashEmailForLogs(email: string): string {
   const normalized = email.trim().toLowerCase();
   return createHash('sha256').update(normalized).digest('hex').slice(0, 12);
 }
+
+/**
+ * Truncated SHA-256 of a verification token, suitable for log correlation
+ * without exposing the plaintext token.
+ *
+ * Mirrors `hashEmailForLogs` (sha256 → first 12 hex chars). Used in
+ * accreditation `/verify` operator-log paths where the raw 64-hex token is
+ * the SOLE credential for the route — anyone with read access to operator
+ * logs (aggregation pipelines, archives, third-party log SaaS) for the
+ * 24h TTL window could replay the token to enqueue an `accredit`
+ * `custom_json` op signed by the admin key. Logging only the hash keeps
+ * the operator-correlation handle while removing the replay capability.
+ *
+ * Truncation length: 12 hex chars = 48 bits of entropy. Same collision
+ * properties as `hashEmailForLogs` (acceptable for operator correlation,
+ * inadequate for forensic uniqueness — widen if/when needed).
+ *
+ * No normalization step (tokens are uniformly hex-encoded by the
+ * route's `crypto.randomBytes(32).toString('hex')`).
+ */
+export function hashTokenForLogs(token: string): string {
+  return createHash('sha256').update(token).digest('hex').slice(0, 12);
+}

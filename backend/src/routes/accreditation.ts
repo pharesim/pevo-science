@@ -12,29 +12,12 @@ import { validate, accreditationRequestSchema, accreditationVerifySchema } from 
 import { rateLimit, byAccount, byIp } from '../middleware/rateLimit.js';
 import { logger } from '../logger.js';
 import { isInstitutionalEmail } from '../email-validator.js';
-import { hashEmailForLogs } from '../lib/log-pii.js';
+import { hashEmailForLogs, hashTokenForLogs } from '../lib/log-pii.js';
+import { INCR_AND_EXPIRE_IF_FIRST_LUA } from '../lib/redis-scripts.js';
 import { seedAccreditationBonus } from '../reputation.js';
 
 /** How long a verification token stays valid before it expires. */
 const TOKEN_EXPIRY_MS = 24 * 60 * 60 * 1000; // 24 hours
-
-/**
- * Atomic INCR-with-first-write-EXPIRE Lua script. Returns the post-increment
- * count. If this is the first write to the key, also sets EXPIRE in the same
- * round trip so a crash between INCR and EXPIRE cannot leave a TTL-less
- * counter stranded past the token's 24h life (round-2 hold #6).
- *
- * Re-priming TTL on every INCR would let an attacker indefinitely extend the
- * counter past the token's natural expiration; tying TTL to the first-write
- * branch keeps the counter's lifetime bounded by the token it gates.
- */
-const INCR_AND_EXPIRE_IF_FIRST_LUA = `
-local count = redis.call('INCR', KEYS[1])
-if count == 1 then
-  redis.call('EXPIRE', KEYS[1], ARGV[1])
-end
-return count
-`;
 
 const accreditationRequestLimiter = rateLimit({ name: 'accred-req', windowMs: 24 * 60 * 60_000, max: 3, keyFn: byAccount });
 const accreditationVerifyLimiter = rateLimit({ name: 'accred-verify', windowMs: 60_000, max: 5, keyFn: byIp });
@@ -72,16 +55,21 @@ function broadcastAttemptsKey(token: string): string {
 /**
  * Atomically claim the next broadcast-attempt slot for `token`. Returns the
  * post-increment count. Caller treats
- * `count > config.verifyBroadcastAttemptsCap` as "cap exceeded — destroy
- * token, surface limit-exceeded envelope".
+ * `count > config.verifyBroadcastAttemptsCap` as "cap exceeded — surface
+ * limit-exceeded envelope" (round-3 hold #2 chose soft-block: token is NOT
+ * destroyed on the cap-exceeded path; counter and token both TTL out
+ * within 24h).
  *
- * INCR + first-write EXPIRE run as a single Lua call (round-2 hold #6) so a
+ * INCR + conditional EXPIRE run as a single Lua call (round-2 hold #6) so a
  * crash or connection drop between the two operations cannot leave a TTL-
- * less counter stranded past the token's 24h life. The TTL is anchored to
- * `pending.expires_at` and applied only on the first write so the counter's
- * lifetime is bounded by the token it gates (re-priming TTL on every INCR
- * would let an attacker indefinitely extend the counter past the token's
- * natural expiration).
+ * less counter stranded past the token's 24h life. EXPIRE fires on every
+ * transition-to-1 (count==0 → count==1), not only on the very first write
+ * (round-3 hold #7). After a pre-INCR + DECR-on-timeout cycle the counter
+ * persists at 0 and a subsequent INCR re-primes EXPIRE; safety is preserved
+ * because the TTL anchor `pending.expires_at` monotonically shrinks across
+ * cycles, so the counter cannot outlive the token. Re-priming TTL on
+ * EVERY INCR (irrespective of count) would let an attacker indefinitely
+ * extend the counter past the token's natural expiration.
  */
 async function incrementBroadcastAttempts(pending: PendingAccreditation): Promise<number> {
   const redis = getRedis();
@@ -129,6 +117,23 @@ async function decrementBroadcastAttempts(token: string): Promise<void> {
       // clean and matches the "counter scoped to the token's life" invariant.
       await redis.del(key);
     }
+    return;
+  }
+  // Round-3 hold #10: if Redis was reachable at INCR time but is unavailable
+  // now (mid-request flap), the in-memory map has no record of the Redis-side
+  // counter and the silent fallback below would leave the Redis-side counter
+  // inflated until 24h TTL with no operator signal. Emit a structured warn
+  // here so operators can correlate counter drift with Redis incidents; the
+  // sibling `accred_verify_broadcast_decrement_failed` event covers the
+  // throw-during-DECR case but not this silent-noop case.
+  if (redis && !isRedisAvailable()) {
+    logger.warn(
+      {
+        token_hash: hashTokenForLogs(token),
+        event: 'accred_verify_broadcast_decrement_redis_unavailable',
+      },
+      'accreditation.verify counter decrement: Redis unavailable mid-request — counter may persist inflated until 24h TTL',
+    );
     return;
   }
   const current = memoryBroadcastAttempts.get(token);
@@ -292,12 +297,65 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
   // broadcast at the dhive layer, and Hive does not deduplicate identical
   // custom_json ops). Pre-broadcast INCR atomically claims the next slot,
   // so the cap holds even under concurrent retries on the same token.
+  //
+  // Round-3 hold #8 — structural scope: the cap is a CONCURRENCY-BURST
+  // defense, not a sequential-flood defense. Because deleteToken (line 178-187
+  // below) drops both the pending row AND the counter side-key, and the
+  // catch-block 'failure' branch calls deleteToken on the first 502, the
+  // sequential-retry case ends after one definitive failure and cannot
+  // accumulate the counter. The cap engages on the parallel-retry
+  // case — N concurrent /verify calls on the same token claim slots
+  // atomically and at most `cap` broadcasts fire.
+  //
   // Timeout outcomes decrement the counter on the catch path
   // (decrementBroadcastAttempts) so transient slow-Hive windows do not
   // permanently consume slots — only definitive 502 BROADCAST_FAILED
   // outcomes count toward the cap (round-2 hold #2).
+  //
+  // Round-3 hold #11: the pre-INCR call sits OUTSIDE the broadcast try
+  // below, so a `redis.eval` rejection (OOM, Lua error, connection drop)
+  // would propagate to Express 5's async handler → 500 INTERNAL_ERROR
+  // with no retry guidance, asymmetric to the broadcast site's 502/504
+  // envelope discipline. Wrap the call in a local try/catch returning
+  // 503 SERVICE_UNAVAILABLE with `{ retriable: true }` per the existing
+  // 503 pattern in this file's siblings (auth.ts, bridge.ts).
+  //
+  // Round-3 hold #2: chose soft-block (sub-option ii). On cap-exceeded,
+  // surface the limit envelope but DO NOT call deleteToken — destroying
+  // the token here gives a stolen-token attacker with cap+1 rotating
+  // XFFs an asymmetric token-burn DoS (cheap rotating IPs vs the
+  // legitimate user's 24h re-`/request` lockout under the 3/24h byAccount
+  // limit). Soft-block leaves the token alive: the legitimate retry will
+  // re-hit the cap until the counter TTLs out (~24h from the first INCR),
+  // but the user retains the option to wait it out instead of burning a
+  // fresh `/request` slot, and the Redis 24h TTL converges both keys
+  // independently. Sub-options (i) accept-and-document and
+  // (iii) require verifyHiveSignature were considered; (i) accepts a
+  // capability-loss DoS that's cheap to mount, and (iii) imposes a UX
+  // penalty on light-account users who lack ready Hive Keychain access
+  // on the verify-link landing page.
   const cap = config.verifyBroadcastAttemptsCap;
-  const attempts = await incrementBroadcastAttempts(pending);
+  let attempts: number;
+  try {
+    attempts = await incrementBroadcastAttempts(pending);
+  } catch (incrErr) {
+    logger.warn(
+      {
+        err: incrErr,
+        username: pending.hive_username,
+        email_hash: hashEmailForLogs(pending.email),
+        event: 'accred_verify_broadcast_increment_failed',
+      },
+      'accreditation.verify pre-INCR cap counter failed — surfacing 503 SERVICE_UNAVAILABLE',
+    );
+    return sendError(
+      res,
+      503,
+      'SERVICE_UNAVAILABLE',
+      'Verification temporarily unavailable. Please retry shortly.',
+      { retriable: true },
+    );
+  }
   if (attempts > cap) {
     // Round-2 hold #5: structured `event:` discriminator so operators can
     // dashboard/alert on cap-exceeded without message-substring grep,
@@ -312,9 +370,13 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
         attempts,
         cap,
       },
-      'accreditation.verify broadcast attempt cap exceeded; destroying token',
+      'accreditation.verify broadcast attempt cap exceeded; soft-blocking (token preserved per round-3 hold #2)',
     );
-    await deleteToken(token);
+    // Round-3 hold #2 (soft-block): do NOT deleteToken on the cap-exceeded
+    // path. Counter and token both TTL out within 24h independently, so the
+    // legitimate user can wait for the burst to drain rather than being
+    // forced into the 3/24h /request lockout window.
+    //
     // Round-2 hold #1: distinct error code BROADCAST_ATTEMPT_LIMIT_EXCEEDED
     // (NOT BROADCAST_FAILED). The broadcast was never invoked when the cap
     // fires, so reusing BROADCAST_FAILED conflated client retry-pressure
@@ -325,7 +387,7 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
       res,
       502,
       'BROADCAST_ATTEMPT_LIMIT_EXCEEDED',
-      'Broadcast attempt limit exceeded. Request a fresh accreditation email.',
+      'Broadcast attempt limit exceeded. Please wait or request a fresh accreditation email.',
       { retriable: false },
     );
   }
@@ -396,9 +458,14 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
       } catch (decrErr) {
         // Compensation failure is not user-visible (the 504 has already been
         // sent and the counter will TTL out with the token). Log so operators
-        // can correlate counter drift with Redis incidents.
+        // can correlate counter drift with Redis incidents. Round-3 hold #1:
+        // emit `token_hash` (12-hex sha256 prefix) instead of the raw 64-hex
+        // token. The token is the SOLE credential at /api/accreditation/verify
+        // (no Hive sig, no other auth) so logging the plaintext for 24h would
+        // give anyone with operator-log read access the ability to replay the
+        // verification and enqueue an `accredit` op signed by the admin key.
         logger.warn(
-          { err: decrErr, token, username: pending.hive_username, event: 'accred_verify_broadcast_decrement_failed' },
+          { err: decrErr, token_hash: hashTokenForLogs(token), username: pending.hive_username, event: 'accred_verify_broadcast_decrement_failed' },
           'accreditation.verify counter decrement after timeout failed — counter may TTL out at token expiration',
         );
       }
@@ -406,12 +473,14 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
       try {
         await deleteToken(token);
       } catch (deleteErr) {
-        // Include `token` in the structured fields so operators can correlate
-        // the orphan against Redis state during the 24h TTL window. Per
-        // agents/docs/solutions/runtime-errors/helper-extraction-express5-response-ordering-2026-04-28.md
+        // Include `token_hash` (12-hex sha256 prefix) in the structured fields
+        // so operators can correlate the orphan against Redis state during the
+        // 24h TTL window. Round-3 hold #1: hashed, NOT plaintext (see
+        // sibling timeout branch above for the plaintext-leak threat model).
+        // Per agents/docs/solutions/runtime-errors/helper-extraction-express5-response-ordering-2026-04-28.md
         // ("Survivor log fields for orphan resources").
         logger.error(
-          { err: deleteErr, token, username: pending.hive_username },
+          { err: deleteErr, token_hash: hashTokenForLogs(token), username: pending.hive_username },
           'accreditation.verify token cleanup failed after broadcast failure — orphan will TTL out',
         );
       }
@@ -427,3 +496,13 @@ setInterval(() => {
 }, 60 * 60 * 1000);
 
 export default router;
+
+// Test-only seam (round-3 hold #13): tests need to drive
+// `decrementBroadcastAttempts` directly to assert the `if (after <= 0) DEL`
+// race-recovery branch (mutation-kill: removing the DEL leaves the counter at
+// -1 in some orderings). Routing through `__test_seams` gives the spec a
+// stable name to call without making the helper a route-public symbol.
+// NOT for production import.
+export const __test_seams = {
+  decrementBroadcastAttempts,
+};
