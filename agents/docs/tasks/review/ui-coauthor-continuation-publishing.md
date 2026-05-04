@@ -202,3 +202,28 @@ Fix: in `frontend/src/pages/edit.js`, if `userPostInChain` returns null AND `cur
 When items 1-8 land, `git mv` this file back to `tasks/review/`. The architect's next review pass scopes `/ce-code-review` to the round-2 commits. Items 1-2 are P1 (test gap on a load-bearing gate + reproducible reactivity bug); items 3-7 are P2 (correctness traps + UX warning); item 8 is P3.
 
 Anchor: item 2's lifecycle refactor is the load-bearing structural change; the rest are scoped local fixes around it.
+
+---
+
+## UI re-review signal (2026-05-04, commit 26c3b6b)
+
+All 8 items landed in commit `26c3b6b` (`ui: UI-COAUTHOR-CONTINUATION-PUBLISHING round-2 hold items 1-8 landed`). Architect's hold block above is unedited per the review -> held -> re-review protocol; the commit diff is the evidence.
+
+**Item-by-item:**
+
+- **Item 1 (P1)** — `frontend/tests/unit/pages-paper-detail.test.js`: 5 `isBridgePaper` truth-table cases + 4-case predicate matrix `isOwnPaper && !is_retracted && !isBridgePaper`. Mutation-killed: removing `!isBridgePaper` from the Edit-affordance template predicate now fails the matrix.
+- **Item 2 (P1)** — `frontend/src/pages/edit.js`: 8 `$watch` registrations + `addEventListener('storage')` extracted to new `_setupReactiveBindings()`, called once from `init()` BEFORE `loadPaperData()`. `loadPaperData()` is now pure data loading; multiple invocations (Retry button) are safe. Invariant test in `pages-edit.test.js` asserts watch-call count + storage-listener count are unchanged across `init() -> loadPaperData() -> loadPaperData()`. Draft auto-save guard (`_initialLoadDone`) keeps pre-load `$watch` firings as no-ops.
+- **Item 3 (P2)** — `frontend/src/pages/edit.js` else-branch comment rewritten honestly: "ownPost MAY be null when isContinuation took the sparse-versions fallback path... The `ownPost ?` guard below is load-bearing for that case — DO NOT remove it." New unit spec `sparse-versions root-author edit: broadcast targets paper.author/permlink (ownPost null guard load-bearing)` exercises versions=`[{version_number:1}]` + `username===paper.author`, asserts pre-condition (`isContinuation===false && userPostInChain===null`) and broadcast target.
+- **Item 4 (P2)** — `frontend/tests/unit/pages-edit.test.js:316` extended: `JSON.parse(commentOp[1].json_metadata)` then `expect(parsedMeta.pevotest.authors[0].hive).toBe('bob')`. Reverting the `allAuthors[0].hive = username` collapse to the legacy `isContinuation ? username : paper.author` ternary now fails this assertion.
+- **Item 5 (P2)** — `handleSubmit()` captures `const isContinuation = this.isContinuation; const ownPost = this.userPostInChain;` BEFORE the first `await`. The continuation branch reads `isContinuation` (local); the edit branch reads `ownPost` (local). Latent class for "this.paper mutates mid-submit" is closed.
+- **Item 6 (P2)** — Module-level `STEP_IN_PROGRESS = ['diffing', 'uploading', 'broadcasting']` constant; `isSubmitting` rewritten as `STEP_IN_PROGRESS.includes(this.step)`. State-machine correctness: adding a future step name without explicit inclusion now keeps the Submit button disabled by default rather than silently re-enabling it.
+- **Item 7 (P2)** — New `showMetadataIncompleteWarning` getter (`!userPostInChain && username in paper.json_metadata.pevotest.authors[].hive`). Non-blocking banner above the form with `edit.metadataIncomplete` + `edit.metadataIncompleteHint` copy and a `common.refresh` CTA (`reloadPage()` method, mockable). The predicate intentionally also fires for legitimate first-time co-author publishes — the form remains submittable so case (a) proceeds, while case (b) malformed-head-metadata users see the prompt and refresh. Three new locale keys added as English stubs to all 16 locale files; `STUBS.md` sweep section `### Added 2026-05-04 (UI-COAUTHOR-CONTINUATION-PUBLISHING)` lists 45 stub lines (15 non-en locales x 3 keys).
+- **Item 8 (P3)** — `frontend/tests/unit/pages-edit.test.js`: dedicated `userPostInChain returns the head entry when the user IS the chain head` spec. Previously only exercised indirectly via the broadcast-target test.
+
+**Verification:**
+
+- `npx vitest run tests/unit/pages-edit.test.js tests/unit/pages-paper-detail.test.js` -> 80/80 passing (16 in `pages-edit.test.js`, 64 in `pages-paper-detail.test.js`).
+- `npx vitest run tests/unit/` -> 1018/1018 passing across 59 test files.
+- `npm run build` -> succeeds (no template/syntax regressions).
+
+**Note on item 7 predicate scope:** The architect's spec ("if `userPostInChain` returns null AND `currentUser.username` IS in `paper.pevo.authors[].hive`, surface a UI warning") also fires for legitimate first-time co-author publish (Carol named in `pevo.authors` but with no chain entry yet). Implemented as a non-blocking informational banner so the legitimate case is not interrupted; the malformed-metadata case (b) sees the prompt and refreshes. If the architect wants a stricter predicate (e.g., gated on `paper.versions.length > 1` or on a server-side malformed-metadata flag), that's a follow-up refinement, not a re-hold.
