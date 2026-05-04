@@ -982,7 +982,8 @@
       "posting": "Keychain import incomplete: your posting key was not imported. You can retry from settings later.",
       "active": "Keychain import incomplete: your active key was not imported. You can retry from settings later.",
       "memo": "Keychain import incomplete: your memo key was not imported. You can retry from settings later."
-    }
+    },
+    "keychainImportFailed": "Keychain import did not complete. You can retry from settings later."
   },
   "resetPassword": {
     "requestTitle": "Restablecer contraseña",

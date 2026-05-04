@@ -171,3 +171,29 @@ Round-3 `/ce-code-review` on commit `2343aea`. The reorder + helper split + best
    ```
 
 **Path to re-archive:** (1) UI agent applies items #1-6. (2) `git mv` to `tasks/review/`. (3) Architect runs round-4 `/ce-code-review` on the new diff and archives.
+
+## UI re-review signal (2026-05-04, working tree)
+
+Items #1-6 from the round-3 hold all landed. Ready for architect round-4 re-review.
+
+**#1 (P1) — try/catch/finally wrap around `_performKeychainImport`.** `frontend/src/pages/settings.js`:
+- The call site at the end of `executeUpgrade()`'s try block now wraps `await this._performKeychainImport(newSeedPhrase)` in `try { ... } catch (err) { console.warn('[custody upgrade] keychain helper threw', err); this.upgradeWarnings.push(this.$t('upgrade.keychainImportFailed')); } finally { this._clearSensitiveUpgradeState(); this.upgradePhase = 'done'; }`. A throw from any of the helper's pre-loop work (`await import('@hiveio/dhive')`, `mnemonicToSeedSync`, `deriveHiveKeys`, `PrivateKey.fromSeed(...).toString()`) now produces a single fallback warning + clean 'done' screen + wiped mnemonic instead of escaping both helper and `executeUpgrade`.
+- New i18n key `upgrade.keychainImportFailed` added to `frontend/public/messages/en.json` ("Keychain import did not complete. You can retry from settings later."). Stubbed identical English text into the 15 other locale files (`ar, cs, da, de, es, fa, fr, he, it, nl, pl, pt, sv, tr, zh`) per the UI agent stub convention. Appended a fresh `### Added 2026-05-04 (UI-KEYCHAIN-API-MISUSE)` sweep header to `frontend/public/messages/STUBS.md` with 15 lines (15 locales × 1 key).
+- Regression test "best-effort: helper throws (mnemonicToSeedSync rejects pre-loop) → done + fallback warning" forces the 3rd `mnemonicToSeedSync` call (the one inside `_performKeychainImport`'s pre-loop work) to throw via `vi.mocked(mnemonicToSeedSync).mockImplementation(...)` with a counter (calls 1+2 inside `_performUpgradeKeyRotation` succeed so the broadcast lands; only call 3 throws). Asserts `upgradePhase === 'done'`, `upgradeError === null`, mnemonic wiped (`newSeedPhrase`/`oldSeedPhrase` are empty), `upgradeWarnings` contains `t:upgrade.keychainImportFailed`.
+
+**#2 (P2) — Comment-vs-code drift fix on the `newSeedPhrase` snapshot.** Comment at `frontend/src/pages/settings.js:614-621` rewritten to reflect actual ordering (keychain import runs BEFORE wipe, in the finally block) and state the snapshot's real purpose (closure-wipe — both helpers receive the seed phrase as a primitive-string argument rather than reading `this.newSeedPhrase` directly, so each helper's frame is the only owner of the derived material it produces).
+
+**#3 (P2) — Memo deny + all-three-deny tests.** `frontend/tests/unit/pages-settings.test.js`, two new specs in the FE-KEYCHAIN-API-MISUSE describe block:
+- "best-effort: keychain denies on call index 2 (memo) → done + memo warning": stub denies on index 2, asserts `fetchCalls.length === 1`, `upgradePhase === 'done'`, `upgradeWarnings` contains memo role key, `importKeyCalls.length === 3` (posting + active still attempted before).
+- "best-effort: keychain denies all three roles → done + 3 warnings": stub denies on every callback, asserts `fetchCalls.length === 1` (backend cleanup fired exactly once, no retry on import failure), `upgradePhase === 'done'`, `upgradeError === null`, `importKeyCalls.length === 3`, `upgradeWarnings` contains exactly the 3 role-warning keys in `[posting, active, memo]` order.
+
+**#4 (P2) — Ordering test: backend cleanup BEFORE first `requestImportKey`.** New spec "backend cleanup runs BEFORE the first keychain import attempt" captures a shared `seq` counter; both `fetch` and `requestImportKey` stubs assign `++seq` to `fetchSeq` / `firstImportSeq` on first invocation; asserts `fetchSeq < firstImportSeq`. Refactor guard: a swap of (c) backend cleanup and (d) keychain loop fails this assertion even though existing best-effort tests still pass.
+
+**#5 (P3) — `isKeychainInstalled()` race surfaces 3 role warnings.** `frontend/src/pages/settings.js:824-837` (already in working tree from prior session): the early-return at the top of `_performKeychainImport` now pushes 3 per-role warnings (`upgrade.keychainImportWarning.{posting,active,memo}`) before returning, reusing the existing in-loop denial keys (no new i18n keys needed). New spec "isKeychainInstalled flips to false at helper time → done + 3 role warnings" stubs `mockIsKeychainInstalled.mockReturnValue(false)`, asserts `upgradePhase === 'done'`, `upgradeError === null`, `importKeyCalls.length === 0` (helper early-returned), `upgradeWarnings` contains exactly the 3 role keys in `[posting, active, memo]` order.
+
+**#6 (P3) — `upgradeWarnings = []` reset on second-attempt entry test.** New spec "upgradeWarnings is reset on each executeUpgrade attempt" invokes `executeUpgrade()` twice on the same component: first attempt denies posting (warning surfaces), second attempt all-success (warnings cleared). Re-seeds sensitive fields between attempts (since the wipe ran). Asserts `upgradePhase === 'done'` after each attempt, first attempt's `upgradeWarnings` contains the posting warning, second attempt's `upgradeWarnings === []`.
+
+**Verification:**
+- `npx vitest run tests/unit/pages-settings.test.js` — 47/47 pass (was 41 before; +6 round-4 hold tests).
+- `npx vitest run` (full unit suite) — 1024/1024 across 59 test files pass.
+- `npm run build` — clean (existing chunk-size + dhive-eval warnings unchanged from baseline).

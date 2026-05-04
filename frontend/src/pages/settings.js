@@ -611,9 +611,14 @@ export function initSettingsPage() {
       // run doesn't leak its messages into a subsequent success screen.
       this.upgradeWarnings = [];
 
-      // Snapshot the new seed phrase locally so the keychain-import step
-      // (which runs AFTER _clearSensitiveUpgradeState wipes reactive state)
-      // can still re-derive WIFs without holding onto `this.newSeedPhrase`.
+      // Snapshot the new seed phrase locally so the keychain-import helper
+      // (and the broadcast helper) receive it as a primitive-string argument
+      // rather than reading `this.newSeedPhrase` directly. This keeps each
+      // helper's frame the only owner of the derived material it produces
+      // (closure-wipe invariant — see _performUpgradeKeyRotation and
+      // _performKeychainImport). The wipe runs AFTER the keychain import in
+      // the finally block (see ORDERING block below); the snapshot is for
+      // closure-wipe hygiene, not for surviving a wipe-before-import.
       const newSeedPhrase = this.newSeedPhrase;
 
       // ORDERING — round-2 hold (P1 partial-import lockout) reshape:
@@ -710,21 +715,32 @@ export function initSettingsPage() {
       // Best-effort Keychain import. By this point:
       //   - account_update has landed on-chain (b)
       //   - backend custody cleanup succeeded (c)
-      // Per-role failures push a localized warning string; the loop never
-      // re-throws, never wipes the mnemonic, never marks upgrade failed.
-      // The user lands on the 'done' screen with a per-role notice if any
-      // import was denied.
-      await this._performKeychainImport(newSeedPhrase);
-
-      // FE-UPGRADE-CREDENTIAL-WIPE: zero all sensitive reactive state on
-      // the happy path (success or partial-keychain-import) before flipping
-      // to 'done'. Without this, the old and new 12-word mnemonics plus the
-      // re-entered password sit in Alpine's reactive data indefinitely; any
-      // XSS on /settings can read them via
-      // `window.Alpine.$data(el).oldSeedPhrase` etc.
-      this._clearSensitiveUpgradeState();
-
-      this.upgradePhase = 'done';
+      // Per-role failures inside the loop push a localized warning string;
+      // the loop never re-throws, never wipes the mnemonic, never marks
+      // upgrade failed. But the helper has unguarded pre-loop work
+      // (dynamic dhive import, mnemonicToSeedSync, deriveHiveKeys,
+      // PrivateKey.fromSeed) that could throw before the loop's per-role
+      // try/catch even runs (e.g., flaky dynamic-chunk fetch). The
+      // try/catch/finally below ensures wipe + upgradePhase = 'done' run
+      // unconditionally — without it, a thrown helper would leave the
+      // mnemonic in Alpine reactive state (XSS-readable on /settings) and
+      // upgradePhase stuck at 'upgrading' (no recovery UI). Failures
+      // surface as a single fallback warning on the 'done' screen.
+      try {
+        await this._performKeychainImport(newSeedPhrase);
+      } catch (err) {
+        console.warn('[custody upgrade] keychain helper threw', err);
+        this.upgradeWarnings.push(this.$t('upgrade.keychainImportFailed'));
+      } finally {
+        // FE-UPGRADE-CREDENTIAL-WIPE: zero all sensitive reactive state on
+        // the happy path (success or partial-keychain-import) before
+        // flipping to 'done'. Without this, the old and new 12-word
+        // mnemonics plus the re-entered password sit in Alpine's reactive
+        // data indefinitely; any XSS on /settings can read them via
+        // `window.Alpine.$data(el).oldSeedPhrase` etc.
+        this._clearSensitiveUpgradeState();
+        this.upgradePhase = 'done';
+      }
     },
 
     // FE-UPGRADE-CLOSURE-WIPE — narrower-scoped key-material handler.
@@ -806,7 +822,21 @@ export function initSettingsPage() {
     // private-key seed into Keychain's extension logs. `requestImportKey`
     // is the correct API.
     async _performKeychainImport(newSeedPhrase) {
-      if (!isKeychainInstalled()) return;
+      if (!isKeychainInstalled()) {
+        // Race: extension was installed at executeUpgrade() entry (proven
+        // by the account_update sign in _performUpgradeKeyRotation) but
+        // disabled or crashed before this helper ran (auto-update, manual
+        // toggle, content-script crash). Without surfacing warnings the
+        // user lands on a clean 'done' screen with zero Keychain-bound
+        // roles; the first post-upgrade vote/comment/transfer fails
+        // silently because Keychain has no key for this account. Push the
+        // same per-role warnings the in-loop denial path uses so the
+        // success surface is consistent with a 3-deny outcome.
+        for (const role of ['posting', 'active', 'memo']) {
+          this.upgradeWarnings.push(this.$t(`upgrade.keychainImportWarning.${role}`));
+        }
+        return;
+      }
       const dhive = await import('@hiveio/dhive');
       const newSeed = mnemonicToSeedSync(newSeedPhrase);
       const newKeys = deriveHiveKeys(newSeed, this.username);

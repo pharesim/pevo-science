@@ -100,6 +100,11 @@ vi.mock('alpinejs', () => ({
 
 import Alpine from 'alpinejs';
 import { initSettingsPage } from '../../src/pages/settings.js';
+// Imported for round-4 hold #1 regression test which forces the 3rd
+// mnemonicToSeedSync call (inside _performKeychainImport's pre-loop work)
+// to throw, simulating an unguarded helper-internal failure that the
+// try/finally wrap around _performKeychainImport must absorb.
+import { mnemonicToSeedSync } from '../../src/hive-keys.js';
 
 function createComponent() {
   initSettingsPage();
@@ -944,6 +949,319 @@ describe('settingsPage', () => {
       );
       // Loop continued past the denial — active + memo (indices 1, 2) still attempted.
       expect(importKeyCalls.length).toBe(3);
+
+      warnSpy.mockRestore();
+    });
+
+    // FE-KEYCHAIN-API-MISUSE round-4 hold #1 (P1):
+    // The try/catch only wraps requestImportKey inside the per-role loop. The
+    // helper's pre-loop work (`await import('@hiveio/dhive')`,
+    // `mnemonicToSeedSync`, `deriveHiveKeys`, `PrivateKey.fromSeed`) is
+    // unguarded. A throw from any of those escapes both the helper and
+    // executeUpgrade, leaving chain rotated + backend cleaned up + mnemonic
+    // NOT wiped (re-opens the FE-UPGRADE-CREDENTIAL-WIPE invariant via a
+    // different injection point) + upgradePhase stuck at 'upgrading' with no
+    // recovery UI. Fix: wrap the helper call site in try/catch/finally so
+    // wipe + upgradePhase = 'done' run unconditionally and the failure
+    // surfaces as a single fallback warning.
+    it('best-effort: helper throws (mnemonicToSeedSync rejects pre-loop) → done + fallback warning', async () => {
+      mockIsKeychainInstalled.mockReturnValue(true);
+      vi.stubGlobal('window', {
+        ...globalThis.window,
+        hive_keychain: {
+          requestImportKey: (account, wifKey, cb) => {
+            queueMicrotask(() => cb({ success: true }));
+          },
+        },
+      });
+      vi.stubGlobal('fetch', vi.fn(async () => ({
+        ok: true,
+        json: async () => ({ data: { token: 'new-jwt', custody: 'self' } }),
+      })));
+      // Force the 3rd mnemonicToSeedSync call to throw. Calls 1+2 happen
+      // inside _performUpgradeKeyRotation (oldWords + newSeedPhrase for the
+      // broadcast step) and must succeed so the broadcast lands and backend
+      // cleanup fires; only call 3 (inside _performKeychainImport's pre-loop
+      // work) must throw — that's the injection point the round-4 fix
+      // targets.
+      let mnemonicCallCount = 0;
+      vi.mocked(mnemonicToSeedSync).mockImplementation(() => {
+        mnemonicCallCount += 1;
+        if (mnemonicCallCount >= 3) throw new Error('seed corruption mid-helper');
+        return new Uint8Array(64);
+      });
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const comp = createComponent();
+      comp.oldSeedPhrase = Array(12).fill('old').join(' ');
+      comp.newSeedPhrase = Array(12).fill('new').join(' ');
+      comp.newSeedWords = comp.newSeedPhrase.split(' ');
+      comp.confirmInputs = { 0: 'new', 5: 'new', 11: 'new' };
+      comp.upgradePassword = 'light-password';
+
+      await comp.executeUpgrade();
+
+      // The try/finally around _performKeychainImport caught the throw,
+      // pushed the fallback warning, wiped sensitive state, and flipped to
+      // 'done'. Without the fix, executeUpgrade would re-throw and these
+      // assertions would all fail (upgradePhase stuck at 'upgrading',
+      // mnemonic still in reactive state).
+      expect(comp.upgradePhase).toBe('done');
+      expect(comp.upgradeError).toBeNull();
+      expect(comp.newSeedPhrase).toBe('');
+      expect(comp.oldSeedPhrase).toBe('');
+      expect(comp.upgradeWarnings).toEqual(
+        expect.arrayContaining(['t:upgrade.keychainImportFailed']),
+      );
+
+      warnSpy.mockRestore();
+    });
+
+    // FE-KEYCHAIN-API-MISUSE round-4 hold #3 (P2):
+    // memo (idx 2) is the loop's last iteration — structurally distinct
+    // from the existing posting/active denial specs. The "loop continued
+    // past denial" assertion is vacuous here; what we lock in is that a
+    // last-iteration denial still produces the same best-effort outcome
+    // (done + memo warning).
+    it('best-effort: keychain denies on call index 2 (memo) → done + memo warning', async () => {
+      mockIsKeychainInstalled.mockReturnValue(true);
+      const importKeyCalls = [];
+      const fetchCalls = [];
+      vi.stubGlobal('window', {
+        ...globalThis.window,
+        hive_keychain: {
+          requestImportKey: (account, wifKey, cb) => {
+            importKeyCalls.push({ account, wifKey });
+            const idx = importKeyCalls.length - 1;
+            queueMicrotask(() => cb(idx === 2 ? { success: false, message: 'denied' } : { success: true }));
+          },
+        },
+      });
+      vi.stubGlobal('fetch', vi.fn(async (...args) => {
+        fetchCalls.push(args);
+        return {
+          ok: true,
+          json: async () => ({ data: { token: 'new-jwt', custody: 'self' } }),
+        };
+      }));
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const comp = createComponent();
+      comp.oldSeedPhrase = Array(12).fill('old').join(' ');
+      comp.newSeedPhrase = Array(12).fill('new').join(' ');
+      comp.newSeedWords = comp.newSeedPhrase.split(' ');
+      comp.confirmInputs = { 0: 'new', 5: 'new', 11: 'new' };
+      comp.upgradePassword = 'light-password';
+
+      await comp.executeUpgrade();
+
+      expect(fetchCalls.length).toBe(1);
+      expect(fetchCalls[0][0]).toBe('/api/custody/upgrade');
+      expect(comp.upgradePhase).toBe('done');
+      expect(comp.upgradeError).toBeNull();
+      expect(comp.upgradeWarnings).toEqual(
+        expect.arrayContaining(['t:upgrade.keychainImportWarning.memo']),
+      );
+      // posting + active still attempted before the memo denial.
+      expect(importKeyCalls.length).toBe(3);
+
+      warnSpy.mockRestore();
+    });
+
+    // FE-KEYCHAIN-API-MISUSE round-4 hold #3 (P2):
+    // All-three-deny is the maximum failure mode for the best-effort path.
+    // Locks in that the success surface still flips to 'done' with 3 distinct
+    // role warnings and that backend cleanup fired exactly once (no retry on
+    // import failure).
+    it('best-effort: keychain denies all three roles → done + 3 warnings', async () => {
+      mockIsKeychainInstalled.mockReturnValue(true);
+      const importKeyCalls = [];
+      const fetchCalls = [];
+      vi.stubGlobal('window', {
+        ...globalThis.window,
+        hive_keychain: {
+          requestImportKey: (account, wifKey, cb) => {
+            importKeyCalls.push({ account, wifKey });
+            queueMicrotask(() => cb({ success: false, message: 'denied' }));
+          },
+        },
+      });
+      vi.stubGlobal('fetch', vi.fn(async (...args) => {
+        fetchCalls.push(args);
+        return {
+          ok: true,
+          json: async () => ({ data: { token: 'new-jwt', custody: 'self' } }),
+        };
+      }));
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const comp = createComponent();
+      comp.oldSeedPhrase = Array(12).fill('old').join(' ');
+      comp.newSeedPhrase = Array(12).fill('new').join(' ');
+      comp.newSeedWords = comp.newSeedPhrase.split(' ');
+      comp.confirmInputs = { 0: 'new', 5: 'new', 11: 'new' };
+      comp.upgradePassword = 'light-password';
+
+      await comp.executeUpgrade();
+
+      expect(fetchCalls.length).toBe(1);
+      expect(comp.upgradePhase).toBe('done');
+      expect(comp.upgradeError).toBeNull();
+      expect(importKeyCalls.length).toBe(3);
+      expect(comp.upgradeWarnings).toEqual([
+        't:upgrade.keychainImportWarning.posting',
+        't:upgrade.keychainImportWarning.active',
+        't:upgrade.keychainImportWarning.memo',
+      ]);
+
+      warnSpy.mockRestore();
+    });
+
+    // FE-KEYCHAIN-API-MISUSE round-4 hold #4 (P2):
+    // The whole point of the round-3 reorder is backend cleanup BEFORE the
+    // keychain loop, so a mid-loop denial cannot leave backend with stale
+    // encrypted keys for the now-superseded authorities. The existing tests
+    // verify both happen but not ORDERING — a refactor swapping (c) and (d)
+    // re-introduces the original lockout but passes the existing assertions.
+    // Capture a shared sequence counter so the ordering invariant is locked
+    // in mechanically.
+    it('backend cleanup runs BEFORE the first keychain import attempt', async () => {
+      mockIsKeychainInstalled.mockReturnValue(true);
+      let seq = 0;
+      let firstImportSeq = null;
+      let fetchSeq = null;
+      vi.stubGlobal('window', {
+        ...globalThis.window,
+        hive_keychain: {
+          requestImportKey: (account, wifKey, cb) => {
+            if (firstImportSeq === null) firstImportSeq = ++seq;
+            queueMicrotask(() => cb({ success: true }));
+          },
+        },
+      });
+      vi.stubGlobal('fetch', vi.fn(async () => {
+        fetchSeq = ++seq;
+        return {
+          ok: true,
+          json: async () => ({ data: { token: 'new-jwt', custody: 'self' } }),
+        };
+      }));
+
+      const comp = createComponent();
+      comp.oldSeedPhrase = Array(12).fill('old').join(' ');
+      comp.newSeedPhrase = Array(12).fill('new').join(' ');
+      comp.newSeedWords = comp.newSeedPhrase.split(' ');
+      comp.confirmInputs = { 0: 'new', 5: 'new', 11: 'new' };
+      comp.upgradePassword = 'light-password';
+
+      await comp.executeUpgrade();
+
+      expect(fetchSeq).not.toBeNull();
+      expect(firstImportSeq).not.toBeNull();
+      // Regression guard: a refactor swapping (c) backend cleanup and (d)
+      // keychain loop fails this assertion even though existing best-effort
+      // tests still pass.
+      expect(fetchSeq).toBeLessThan(firstImportSeq);
+    });
+
+    // FE-KEYCHAIN-API-MISUSE round-4 hold #5 (P3):
+    // Race: extension was installed at startUpgrade() time (account_update
+    // signed successfully, proven by the broadcast step) but disabled by the
+    // time _performKeychainImport runs (auto-update, manual toggle,
+    // content-script crash). The pre-fix silent early-return left the user
+    // on a clean 'done' screen with zero Keychain-bound roles and no UI
+    // signal — first post-upgrade vote/comment/transfer would fail. Fix
+    // pushes 3 role warnings before the early return so the success surface
+    // is consistent with a 3-deny outcome.
+    it('isKeychainInstalled flips to false at helper time → done + 3 role warnings', async () => {
+      mockIsKeychainInstalled.mockReturnValue(false);
+      const importKeyCalls = [];
+      vi.stubGlobal('window', {
+        ...globalThis.window,
+        hive_keychain: {
+          requestImportKey: (account, wifKey, cb) => {
+            importKeyCalls.push({ account, wifKey });
+            queueMicrotask(() => cb({ success: true }));
+          },
+        },
+      });
+      vi.stubGlobal('fetch', vi.fn(async () => ({
+        ok: true,
+        json: async () => ({ data: { token: 'new-jwt', custody: 'self' } }),
+      })));
+
+      const comp = createComponent();
+      comp.oldSeedPhrase = Array(12).fill('old').join(' ');
+      comp.newSeedPhrase = Array(12).fill('new').join(' ');
+      comp.newSeedWords = comp.newSeedPhrase.split(' ');
+      comp.confirmInputs = { 0: 'new', 5: 'new', 11: 'new' };
+      comp.upgradePassword = 'light-password';
+
+      await comp.executeUpgrade();
+
+      expect(comp.upgradePhase).toBe('done');
+      expect(comp.upgradeError).toBeNull();
+      // Helper early-returned; no requestImportKey ever called.
+      expect(importKeyCalls).toHaveLength(0);
+      // All 3 per-role warnings surfaced.
+      expect(comp.upgradeWarnings).toEqual([
+        't:upgrade.keychainImportWarning.posting',
+        't:upgrade.keychainImportWarning.active',
+        't:upgrade.keychainImportWarning.memo',
+      ]);
+    });
+
+    // FE-KEYCHAIN-API-MISUSE round-4 hold #6 (P3):
+    // executeUpgrade() resets `this.upgradeWarnings = []` on entry so a
+    // previous partial run never leaks its messages into a subsequent
+    // success screen. No spec invokes executeUpgrade twice on the same
+    // component; this one does to lock in the reset.
+    it('upgradeWarnings is reset on each executeUpgrade attempt', async () => {
+      mockIsKeychainInstalled.mockReturnValue(true);
+      // First attempt: deny on the very first requestImportKey call (posting);
+      // all subsequent calls (including the entire second attempt) succeed.
+      let denialBudget = 1;
+      vi.stubGlobal('window', {
+        ...globalThis.window,
+        hive_keychain: {
+          requestImportKey: (account, wifKey, cb) => {
+            const result = denialBudget > 0
+              ? { success: false, message: 'denied' }
+              : { success: true };
+            if (denialBudget > 0) denialBudget -= 1;
+            queueMicrotask(() => cb(result));
+          },
+        },
+      });
+      vi.stubGlobal('fetch', vi.fn(async () => ({
+        ok: true,
+        json: async () => ({ data: { token: 'new-jwt', custody: 'self' } }),
+      })));
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const comp = createComponent();
+      const seed = () => {
+        comp.oldSeedPhrase = Array(12).fill('old').join(' ');
+        comp.newSeedPhrase = Array(12).fill('new').join(' ');
+        comp.newSeedWords = comp.newSeedPhrase.split(' ');
+        comp.confirmInputs = { 0: 'new', 5: 'new', 11: 'new' };
+        comp.upgradePassword = 'light-password';
+      };
+
+      seed();
+      await comp.executeUpgrade();
+      expect(comp.upgradePhase).toBe('done');
+      expect(comp.upgradeWarnings).toEqual(
+        expect.arrayContaining(['t:upgrade.keychainImportWarning.posting']),
+      );
+
+      // Re-seed (the wipe cleared sensitive fields) and re-invoke. The reset
+      // at the top of executeUpgrade must clear the prior partial run's
+      // warning before the second attempt starts.
+      seed();
+      await comp.executeUpgrade();
+      expect(comp.upgradePhase).toBe('done');
+      expect(comp.upgradeWarnings).toEqual([]);
 
       warnSpy.mockRestore();
     });

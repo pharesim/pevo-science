@@ -843,3 +843,21 @@ tr: edit.metadataIncompleteHint
 zh: common.refresh
 zh: edit.metadataIncomplete
 zh: edit.metadataIncompleteHint
+
+### Added 2026-05-04 (UI-KEYCHAIN-API-MISUSE)
+
+ar: upgrade.keychainImportFailed
+cs: upgrade.keychainImportFailed
+da: upgrade.keychainImportFailed
+de: upgrade.keychainImportFailed
+es: upgrade.keychainImportFailed
+fa: upgrade.keychainImportFailed
+fr: upgrade.keychainImportFailed
+he: upgrade.keychainImportFailed
+it: upgrade.keychainImportFailed
+nl: upgrade.keychainImportFailed
+pl: upgrade.keychainImportFailed
+pt: upgrade.keychainImportFailed
+sv: upgrade.keychainImportFailed
+tr: upgrade.keychainImportFailed
+zh: upgrade.keychainImportFailed
