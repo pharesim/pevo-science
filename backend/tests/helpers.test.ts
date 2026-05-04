@@ -124,6 +124,12 @@ describe('toPaperSummary', () => {
     expect(result.citation_count).toBe(0);
     expect(result.author_reputation).toBe(0);
     expect(result.is_accredited).toBe(false);
+    // Round-4 hold item 4(b): native-paper case — `type: 'paper'` with any
+    // author renders source_type='native'. The bridge-author identity check
+    // is not load-bearing here (native-typed metadata never reaches the bridge
+    // arm of `isPevoBridgePaper`); pinning it explicitly closes the symmetry
+    // gap left by the round-3 spoofed/legitimate bridge_paper specs above.
+    expect(result.source_type).toBe('native');
   });
 
   it('handles missing pevo fields gracefully', () => {

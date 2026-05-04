@@ -135,18 +135,21 @@ function assertBridgeAuthorPin(
   // nested parenthesized fragment, repeated. That covers the json_metadata
   // sub-expression without trying to fully balance arbitrary nesting.
   const groupBody = `(?:[^()]+|\\([^()]*\\))*`;
-  // Two passes — one for each conjunct order — so the captured $N group
-  // index is consistent (always group 1 = the author-slot $N).
+  // Two passes — one for each conjunct order — using a NAMED capture group
+  // (`authorSlot`) for the bridge-account `$N` param index. The name makes the
+  // regex self-documenting and eliminates the comment-vs-code drift risk where
+  // a positional-group comment ("group(2) = the author-slot") falls out of sync
+  // with a future regex tweak.
   const reAuthorFirst = new RegExp(
-    `\\((${alias}\\.author = \\$(\\d+) AND ${groupBody}\\(${alias}\\.json_metadata -> \\$\\d+ ->> 'type'\\) = 'bridge_paper')\\)`,
+    `\\(${alias}\\.author = \\$(?<authorSlot>\\d+) AND ${groupBody}\\(${alias}\\.json_metadata -> \\$\\d+ ->> 'type'\\) = 'bridge_paper'\\)`,
     'g',
   );
   const reTypeFirst = new RegExp(
-    `\\((\\(${alias}\\.json_metadata -> \\$\\d+ ->> 'type'\\) = 'bridge_paper' AND ${alias}\\.author = \\$(\\d+))\\)`,
+    `\\(\\(${alias}\\.json_metadata -> \\$\\d+ ->> 'type'\\) = 'bridge_paper' AND ${alias}\\.author = \\$(?<authorSlot>\\d+)\\)`,
     'g',
   );
-  // matchAll across both orders. Each match's group(2) is the bridge-account
-  // param slot (group(1) is the whole inner conjunction — unused).
+  // matchAll across both orders. Each match's `groups.authorSlot` is the
+  // bridge-account param slot.
   const matches: RegExpMatchArray[] = [
     ...Array.from(sql.matchAll(reAuthorFirst)),
     ...Array.from(sql.matchAll(reTypeFirst)),
@@ -166,7 +169,12 @@ function assertBridgeAuthorPin(
   // route-author or any other slot. This is the per-occurrence check that
   // catches a mutation in any one of multiple same-alias sites.
   for (const m of matches) {
-    const idx = Number(m[2]);
+    const authorSlot = m.groups?.authorSlot;
+    expect(
+      authorSlot,
+      `regex match missing named capture group "authorSlot"; SQL:\n${sql}`,
+    ).toBeDefined();
+    const idx = Number(authorSlot);
     expect(
       params[idx - 1],
       `bridge-arm at alias "${alias}" binds $${idx}; expected config.hiveBridgeAccount, got ${JSON.stringify(params[idx - 1])}`,
