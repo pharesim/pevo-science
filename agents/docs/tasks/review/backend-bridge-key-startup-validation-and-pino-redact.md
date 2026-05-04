@@ -101,3 +101,19 @@ Append a new entry under `agents/docs/solutions/conventions/` (architect lands a
 
 - `agents/docs/solutions/conventions/auth-structured-log-shape-2026-04-29.md` — establishes pino structured-log discipline; this task extends it with redact policy.
 - `backend/src/lib/log-pii.ts` — `hashEmailForLogs`, `hashTokenForLogs` (added in δ's round-3). The redact policy is the project-wide complement to these per-field helpers.
+
+---
+
+## Backend completion signal (2026-05-04, commit `23bdae9` on `main`)
+
+Acceptance items 1, 2, 3a, 3c land in `23bdae9` (cherry-picked from `worktree-agent-ae979196ecef55594` whose base was 36 commits behind main; cherry-pick auto-merged `startup-checks.ts` and `startup-checks.test.ts` cleanly). Targeted vitest passed: 51/51 across `tests/lib/logger-redact.test.ts` (11), `tests/startup-checks.test.ts` (27), `tests/routes/bridge.test.ts` (13). `tsc --noEmit` and `npm run lint` clean.
+
+Acceptance item 3b (existing accreditation redaction tests): no edits required. δ's round-4 commit `bed4f1f` already landed the corrected `Object.assign(new Error(...), { command: { name, args: [<key-with-token>] }, name: 'ReplyError' })` shape and the `not.toMatch(/[0-9a-f]{64}/)` assertion that was failing red. The redact policy in this commit turns those tests green naturally.
+
+[TODO Architect] markers (worker could not append from a stale-base worktree; parent appended at merge):
+
+1. **Convention doc (Acceptance item 4):** Add `agents/docs/solutions/conventions/pino-err-serializer-redact-policy-2026-05-XX.md` documenting (a) the default-serializer leak class (pino enumerates `for (const key in err)`), (b) the known-leaky standard fields by error subclass (AssertionError `actual`/`expected`/`operator`, ioredis `command`/`command.args`/`command.name`, VError `info`/`jse_info`/`jse_shortmsg`/`jse_cause`), (c) the allowlist-based redact implementation + recursive `cause` and `errors[]` traversal + `PINO_ERR_REDACT_LEVEL=relaxed` env knob, (d) extension procedure for new error subclasses (audit before adding to `SAFE_BASELINE_FIELDS`), (e) cross-references to α (`backend-bridge-custody-broadcast-discrimination`) and δ (`backend-verify-broadcast-attempts-cap`) as the surfacing findings.
+
+2. **δ test transition confirmation:** At archive, confirm `accreditation.test.ts` redaction tests (the `not.toMatch(/[0-9a-f]{64}/)` ones added in δ round-4) transition from failing-red to passing-green via this commit's redact policy. No code edits required from this task; only verification at architect's archive pass.
+
+3. **No API contract update required.** This task is internal-only (logger serializer + startup cache); operators see the same JSON envelope shapes, only the `err` payload internals change. Architect can confirm at archive.

@@ -81,3 +81,21 @@ Update the docblock in `lib/redis-scripts.ts` to document the helper + when to u
 
 - `backend/src/lib/redis-scripts.ts` — created in δ round-3 (commit `e4f822a`).
 - ioredis docs: SCRIPT LOAD + EVALSHA pattern.
+
+---
+
+## Wave-1 attempt aborted (2026-05-04, backend orchestrator)
+
+Worker subagent `agent-a9bff802c28f9c919` produced commit `57963fd` on its worktree branch, but the worktree was based on stale commit `2616cc1` (36 commits behind `main` at fan-out time, parent commit per `git log --format='%P' -1 57963fd`). Two intervening changes on `main` between `2616cc1` and current HEAD:
+
+1. **δ round-3 renamed `INCR_AND_EXPIRE_IF_FIRST_LUA` → `INCR_AND_EXPIRE_ON_ZERO_TO_ONE_LUA`** in `backend/src/lib/redis-scripts.ts` (clarifies that EXPIRE re-fires on every transition from 0→1, not "first ever write to the key" semantics). Worker's commit uses the old name `INCR_AND_EXPIRE_IF_FIRST` as the SHARED_SCRIPTS key.
+2. **Other accreditation.ts churn** in the same window (handleBroadcastError migration, broadcast-attempts cap, redaction tests) created additional content drift in the call site the worker migrated.
+
+`git cherry-pick 57963fd` produced unresolvable-by-auto-merge conflicts in 3 files (`backend/src/lib/redis-scripts.ts`, `backend/src/routes/accreditation.ts`, `backend/tests/routes/accreditation.test.ts`) — the cherry-pick was aborted to avoid risk of mis-merge.
+
+Worker's intent + helper module shape are sound and should be preserved on re-do. Required adjustments for the next attempt:
+- Use the current name `INCR_AND_EXPIRE_ON_ZERO_TO_ONE_LUA` as the `SHARED_SCRIPTS` key (or drop the `_LUA` suffix to match the registry's other entries).
+- Re-base from current `main` HEAD so the `accreditation.ts` call-site migration applies cleanly.
+- The worktree at `.claude/worktrees/agent-a9bff802c28f9c919` (commit `57963fd`) is preserved for reference — read its `redis-scripts.ts`, `evalScript` helper shape, and test file as the design baseline; copy that structure onto current main.
+
+Other wave-1 tasks (`backend-bridge-key-startup-validation-and-pino-redact`, `backend-canonical-root-walker-author-gate`, `backend-orcid-custody-default-invariant`) landed cleanly on main at `23bdae9`, `e2f7e1b`, `36b3f49` respectively and moved to `tasks/review/`.
