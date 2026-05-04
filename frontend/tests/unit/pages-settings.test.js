@@ -72,6 +72,25 @@ vi.mock('@hiveio/dhive', () => ({
   })),
 }));
 
+// Mirror the real `loginFromResponse` helper from src/auth.js so the
+// upgrade-flow test can keep asserting post-call state on mockAuthStore.
+// The preserve-on-undefined branch is critical here: the upgrade site
+// only passes {token, expires_at, custody}, and the helper must
+// preserve username/isAccredited/accreditation (the upgrade rotates
+// session credentials and flips custody, not identity or accreditation).
+function mockLoginFromResponse(data) {
+  if (data.token && data.expires_at) {
+    this.token = data.token;
+    this.expiresAt = data.expires_at;
+  }
+  if (data.username !== undefined) this.username = data.username;
+  if (data.is_accredited !== undefined) this.isAccredited = data.is_accredited;
+  if (data.accreditation !== undefined) this.accreditation = data.accreditation;
+  if (data.custody !== undefined) this.custody = data.custody;
+  this.isConnected = true;
+  this._saveSession();
+  this._startAccreditationPolling();
+}
 const mockAuthStore = {
   isConnected: true,
   username: 'alice',
@@ -82,6 +101,8 @@ const mockAuthStore = {
   expiresAt: '2099-01-01T00:00:00.000Z',
   _saveSession: vi.fn(),
   _checkAccreditation: vi.fn(),
+  _startAccreditationPolling: vi.fn(),
+  loginFromResponse: vi.fn(mockLoginFromResponse),
 };
 const mockRouterStore = { navigate: vi.fn() };
 const mockToastStore = { show: vi.fn() };
@@ -901,7 +922,14 @@ describe('settingsPage', () => {
       expect(mockAuthStore._saveSession).toHaveBeenCalledWith();
     });
 
-    it('preserves existing expiresAt when backend omits expires_at from the upgrade response', async () => {
+    // Atomic-pair semantics (post-loginFromResponse adoption): when the
+    // backend response omits expires_at, the helper preserves BOTH
+    // token and expiresAt — the pre-adoption decoupled-guard form would
+    // rotate the token while preserving the old expiry, persisting a
+    // server-invalidated old token with new expiry (UI thinks logged
+    // in, first API call returns 401). Custody still rotates because
+    // it's outside the atomic pair.
+    it('atomic pair: preserves token + expiresAt when backend omits expires_at from upgrade response', async () => {
       mockIsKeychainInstalled.mockReturnValue(true);
       vi.stubGlobal('window', {
         ...globalThis.window,
@@ -917,6 +945,7 @@ describe('settingsPage', () => {
         }),
       })));
 
+      const originalToken = mockAuthStore.token;
       const originalExpiry = mockAuthStore.expiresAt;
       const comp = createComponent();
       seedUpgradeState(comp);
@@ -924,21 +953,21 @@ describe('settingsPage', () => {
       await comp.executeUpgrade();
 
       expect(comp.upgradePhase).toBe('done');
-      expect(mockAuthStore.token).toBe('new-jwt-legacy');
-      // Critical: the no-arg _saveSession() must persist the existing
-      // expiresAt, not clobber it to null (which the pre-sweep call-shape
-      // advertised with its hard-coded `null` positional arg).
+      // Atomic pair: neither rotates when only one is supplied.
+      expect(mockAuthStore.token).toBe(originalToken);
       expect(mockAuthStore.expiresAt).toBe(originalExpiry);
+      // Custody still flips (outside the atomic pair).
+      expect(mockAuthStore.custody).toBe('self');
       expect(mockAuthStore._saveSession).toHaveBeenCalledWith();
     });
 
-    // Round-1 hold item #2: the production guard `if (result.data?.expires_at)`
-    // covers three input shapes — present, omitted, and explicit `null`.
-    // The two specs above cover present + omitted. This spec covers explicit
-    // null. A future refactor like `if ('expires_at' in result.data)` would
-    // treat explicit null as truthy-key-present and assign null to
-    // auth.expiresAt, silently logging users out on next reload.
-    it('preserves existing expiresAt when backend response has expires_at: null explicit', async () => {
+    // Atomic-pair semantics for explicit `null`: a regression to
+    // `'expires_at' in result.data` would treat explicit null as
+    // truthy-key-present and assign null to auth.expiresAt, silently
+    // logging users out on next reload. The helper's truthy-check
+    // (`data.token && data.expires_at`) treats null as falsy and
+    // skips both assignments.
+    it('atomic pair: preserves token + expiresAt when backend response has expires_at: null explicit', async () => {
       mockIsKeychainInstalled.mockReturnValue(true);
       vi.stubGlobal('window', {
         ...globalThis.window,
@@ -953,6 +982,7 @@ describe('settingsPage', () => {
         }),
       })));
 
+      const originalToken = mockAuthStore.token;
       const originalExpiry = mockAuthStore.expiresAt;
       const comp = createComponent();
       seedUpgradeState(comp);
@@ -960,12 +990,42 @@ describe('settingsPage', () => {
       await comp.executeUpgrade();
 
       expect(comp.upgradePhase).toBe('done');
-      expect(mockAuthStore.token).toBe('new-jwt-null-expiry');
-      // Explicit null must be treated as "preserve" (same as omitted), not
-      // as "assign null". A regression to `'expires_at' in result.data`
-      // would clobber expiresAt to null here.
+      expect(mockAuthStore.token).toBe(originalToken);
       expect(mockAuthStore.expiresAt).toBe(originalExpiry);
+      expect(mockAuthStore.custody).toBe('self');
       expect(mockAuthStore._saveSession).toHaveBeenCalledWith();
+    });
+
+    // Helper-adoption regression guard: the upgrade now uses
+    // loginFromResponse(). `is_accredited` and `accreditation` are
+    // omitted from the data payload, so the helper's
+    // preserve-on-undefined branch keeps the user's existing
+    // accreditation state across the upgrade — the upgrade flips
+    // custody and rotates session credentials, not identity.
+    it('preserves isAccredited and accreditation across the upgrade (helper preserve-on-undefined)', async () => {
+      mockIsKeychainInstalled.mockReturnValue(true);
+      vi.stubGlobal('window', {
+        ...globalThis.window,
+        hive_keychain: {
+          requestImportKey: (_a, _k, cb) => queueMicrotask(() => cb({ success: true })),
+        },
+      });
+      vi.stubGlobal('fetch', vi.fn(async () => ({
+        ok: true,
+        json: async () => ({
+          data: { token: 'new-jwt', custody: 'self', expires_at: '2100-01-01T00:00:00.000Z' },
+        }),
+      })));
+
+      const originalIsAccredited = mockAuthStore.isAccredited;
+      const originalAccreditation = mockAuthStore.accreditation;
+      const comp = createComponent();
+      seedUpgradeState(comp);
+
+      await comp.executeUpgrade();
+
+      expect(mockAuthStore.isAccredited).toBe(originalIsAccredited);
+      expect(mockAuthStore.accreditation).toEqual(originalAccreditation);
     });
   });
 

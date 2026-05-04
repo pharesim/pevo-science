@@ -152,15 +152,14 @@ export function initLoginPage() {
         if (!this._mounted) return;
 
         const auth = Alpine.store('auth');
-        auth.token = res.data.token;
-        auth.username = res.data.username;
-        auth.isConnected = true;
-        auth.isAccredited = res.data.is_accredited ?? false;
-        auth.accreditation = res.data.accreditation ?? null;
-        auth.custody = res.data.custody ?? 'light';
-        auth.expiresAt = res.data.expires_at;
-
-        auth._saveSession();
+        auth.loginFromResponse({
+          token: res.data.token,
+          expires_at: res.data.expires_at,
+          username: res.data.username,
+          custody: res.data.custody ?? 'light',
+          is_accredited: res.data.is_accredited ?? false,
+          accreditation: res.data.accreditation ?? null,
+        });
 
         Alpine.store('router').navigate('/papers');
       } catch (err) {

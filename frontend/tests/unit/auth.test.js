@@ -152,11 +152,58 @@ describe('auth store', () => {
       expect(store.custody).toBe('light');
     });
 
-    it('defaults optional fields', () => {
-      store.loginFromResponse({ token: 't2', username: 'jack', expires_at: '2099-01-01' });
-      expect(store.isAccredited).toBe(false);
-      expect(store.accreditation).toBeNull();
+    it('preserves existing fields when omitted from data', () => {
+      // Helper now preserves-on-undefined for username/is_accredited/
+      // accreditation/custody so the upgrade flow can pass only the
+      // {token, expires_at, custody} subset without clobbering the
+      // user's identity or accreditation state. Login-style callers
+      // always emit all six fields, so they're unaffected.
+      store.isAccredited = true;
+      store.accreditation = { type: 'orcid' };
+      store.custody = 'self';
+      store.username = 'preexisting';
+      store.loginFromResponse({ token: 't2', expires_at: '2099-01-01' });
+      expect(store.isAccredited).toBe(true);
+      expect(store.accreditation).toEqual({ type: 'orcid' });
       expect(store.custody).toBe('self');
+      expect(store.username).toBe('preexisting');
+      // The atomic {token, expires_at} pair did rotate (both supplied).
+      expect(store.token).toBe('t2');
+      expect(store.expiresAt).toBe('2099-01-01');
+    });
+
+    it('atomic {token, expires_at} pair: preserves both when expires_at omitted', () => {
+      // The pre-sweep upgrade flow had two independent guards that
+      // allowed `{token: new, expires_at: undefined}` to persist a
+      // fresh token with stale expiry — the user's first API call
+      // would 401 because the backend invalidated the rotated token
+      // immediately and the UI was unaware. Atomic-pair enforcement:
+      // if either side is falsy, neither rotates.
+      store.token = 'old';
+      store.expiresAt = '2099-01-01';
+      store.loginFromResponse({ token: 'new-but-stale-expiry-omitted' });
+      expect(store.token).toBe('old');
+      expect(store.expiresAt).toBe('2099-01-01');
+    });
+
+    it('atomic {token, expires_at} pair: preserves both when token omitted', () => {
+      store.token = 'old';
+      store.expiresAt = '2099-01-01';
+      store.loginFromResponse({ expires_at: '2100-01-01' });
+      expect(store.token).toBe('old');
+      expect(store.expiresAt).toBe('2099-01-01');
+    });
+
+    it('atomic {token, expires_at} pair: preserves both when expires_at is explicit null', () => {
+      // The decoupled-guard form would treat `'expires_at' in data` as
+      // truthy-key-present and assign null to expiresAt, silently
+      // logging users out. The truthy-check (data.expires_at &&) treats
+      // null as falsy and skips both assignments.
+      store.token = 'old';
+      store.expiresAt = '2099-01-01';
+      store.loginFromResponse({ token: 'new', expires_at: null });
+      expect(store.token).toBe('old');
+      expect(store.expiresAt).toBe('2099-01-01');
     });
 
     it('persists the session to localStorage', () => {

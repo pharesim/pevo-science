@@ -62,37 +62,54 @@ export function initAuth() {
 
       if (res.ok) {
         const body = await res.json();
-        this.token = body.data.token;
-        this.expiresAt = body.data.expires_at;
-        this.username = inputUsername;
-        this.isConnected = true;
-        this.custody = body.data.custody ?? 'self';
-
         const accRes = await accreditationPromise;
-        if (accRes?.data) {
-          this.isAccredited = accRes.data.is_accredited;
-          this.accreditation = accRes.data.accreditation;
-        } else {
-          this.isAccredited = false;
-          this.accreditation = null;
-        }
-
-        this._saveSession();
-        this._startAccreditationPolling();
+        this.loginFromResponse({
+          token: body.data.token,
+          expires_at: body.data.expires_at,
+          username: inputUsername,
+          custody: body.data.custody ?? 'self',
+          is_accredited: accRes?.data?.is_accredited ?? false,
+          accreditation: accRes?.data?.accreditation ?? null,
+        });
       } else {
         throw new Error('Authentication failed');
       }
     },
 
-    // Set auth state from a login/session API response (used by sign-in modal email path)
+    // Set auth state from a login/session/upgrade API response. Used by
+    // every login-style call site (login, orcid callback, signup-verify
+    // create + link, sign-in modal connect) and by the custody-upgrade
+    // flow in settings.js.
+    //
+    // Field semantics:
+    //
+    // - `token` + `expires_at` rotate as an atomic pair. Both must be
+    //   truthy for either to land on the store. The decoupled-guard form
+    //   the upgrade flow used to ship allowed `{token: new, expires_at:
+    //   undefined}` to persist a fresh token with stale expiry (UI thinks
+    //   logged in, first API call returns 401) and the symmetric
+    //   `{token: undefined, expires_at: new}` to wipe the live token.
+    //   Atomic-pair enforcement closes both halves.
+    //
+    // - `username`, `is_accredited`, `accreditation` are preserve-on-
+    //   undefined: the upgrade response carries only `{token, expires_at,
+    //   custody}` and must not clobber the user's accreditation or
+    //   username. Login-style callers always emit all six fields, so
+    //   they're unaffected by the preserve-on-undefined branch.
+    //
+    // - `custody` is preserve-on-undefined for the same reason: callers
+    //   pass an explicit custody (login → 'light', upgrade → 'self',
+    //   etc.); omitting it preserves the existing value.
     loginFromResponse(data) {
-      this.token = data.token;
-      this.username = data.username;
+      if (data.token && data.expires_at) {
+        this.token = data.token;
+        this.expiresAt = data.expires_at;
+      }
+      if (data.username !== undefined) this.username = data.username;
+      if (data.is_accredited !== undefined) this.isAccredited = data.is_accredited;
+      if (data.accreditation !== undefined) this.accreditation = data.accreditation;
+      if (data.custody !== undefined) this.custody = data.custody;
       this.isConnected = true;
-      this.expiresAt = data.expires_at;
-      this.isAccredited = data.is_accredited ?? false;
-      this.accreditation = data.accreditation ?? null;
-      this.custody = data.custody ?? 'self';
       this._saveSession();
       this._startAccreditationPolling();
     },

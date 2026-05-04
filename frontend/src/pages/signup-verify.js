@@ -420,21 +420,21 @@ export function initSignupVerifyPage() {
         const res = await confirmAccount(this.authToken, normalizedUsername, keys);
         if (!this._mounted) return;
 
-        // Set auth state. expiresAt MUST land on the store BEFORE
-        // _saveSession() runs; otherwise _restoreSession rejects the
-        // persisted entry on next load (see FE-ORCID-CALLBACK-FIXES for
-        // the reference pattern). _saveSession now reads instance state
-        // positionally-free.
+        // Set auth state via the shared helper. expiresAt rotates with
+        // the new token as an atomic pair; the helper persists state via
+        // _saveSession(). isAccredited=true because successful confirm
+        // implies a verified ORCID identity; custody='light' because new
+        // accounts created via this path are server-custodial until the
+        // user upgrades.
         const auth = Alpine.store('auth');
-        auth.token = res.data.token;
-        auth.username = res.data.username;
-        auth.isConnected = true;
-        auth.isAccredited = true;
-        auth.accreditation = res.data.accreditation ?? null;
-        auth.custody = 'light';
-        auth.expiresAt = res.data.expires_at;
-
-        auth._saveSession();
+        auth.loginFromResponse({
+          token: res.data.token,
+          expires_at: res.data.expires_at,
+          username: res.data.username,
+          custody: 'light',
+          is_accredited: true,
+          accreditation: res.data.accreditation ?? null,
+        });
 
         this.phase = 'done';
       } catch (err) {
@@ -471,19 +471,20 @@ export function initSignupVerifyPage() {
         const res = await linkExistingAccount(this.authToken, username);
         if (!this._mounted) return;
 
-        // expiresAt MUST land on the store BEFORE _saveSession() runs;
-        // otherwise _restoreSession rejects the persisted entry on next
-        // load. _saveSession now reads instance state positionally-free.
+        // Set auth state via the shared helper. expiresAt rotates with
+        // the new token as an atomic pair. isAccredited=true since the
+        // link path requires a verified ORCID identity; custody='self'
+        // since linking attaches a user-controlled Hive account
+        // (Keychain) instead of server-custodial light keys.
         const auth = Alpine.store('auth');
-        auth.token = res.data.token;
-        auth.username = res.data.username;
-        auth.isConnected = true;
-        auth.isAccredited = true;
-        auth.accreditation = res.data.accreditation ?? null;
-        auth.custody = 'self';
-        auth.expiresAt = res.data.expires_at;
-
-        auth._saveSession();
+        auth.loginFromResponse({
+          token: res.data.token,
+          expires_at: res.data.expires_at,
+          username: res.data.username,
+          custody: 'self',
+          is_accredited: true,
+          accreditation: res.data.accreditation ?? null,
+        });
 
         this.phase = 'done';
       } catch (err) {

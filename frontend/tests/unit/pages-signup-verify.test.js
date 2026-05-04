@@ -31,6 +31,21 @@ vi.mock('../../src/keychain.js', () => ({
   isKeychainInstalled: (...args) => mockIsKeychainInstalled(...args),
 }));
 
+// Mirror the real `loginFromResponse` helper from src/auth.js so call-site
+// tests can keep asserting post-call state on mockAuthStore.
+function mockLoginFromResponse(data) {
+  if (data.token && data.expires_at) {
+    this.token = data.token;
+    this.expiresAt = data.expires_at;
+  }
+  if (data.username !== undefined) this.username = data.username;
+  if (data.is_accredited !== undefined) this.isAccredited = data.is_accredited;
+  if (data.accreditation !== undefined) this.accreditation = data.accreditation;
+  if (data.custody !== undefined) this.custody = data.custody;
+  this.isConnected = true;
+  this._saveSession();
+  this._startAccreditationPolling();
+}
 const mockAuthStore = {
   isConnected: false,
   token: null,
@@ -40,6 +55,8 @@ const mockAuthStore = {
   custody: null,
   expiresAt: null,
   _saveSession: vi.fn(),
+  _startAccreditationPolling: vi.fn(),
+  loginFromResponse: vi.fn(mockLoginFromResponse),
 };
 const mockRouterStore = { navigate: vi.fn(), query: {}, params: {} };
 
@@ -301,6 +318,37 @@ describe('signupVerifyPage', () => {
       expect(mockAuthStore._saveSession).toHaveBeenCalledWith();
     });
 
+    // UI-AUTH-LOGINFROMRESPONSE-HELPER-ADOPTION: per-site preserve-on-omit
+    // coverage. submitCreateAccount now routes through loginFromResponse()
+    // which enforces the atomic {token, expires_at} pair invariant.
+    it('atomic pair: preserves token + expiresAt when confirmAccount response omits expires_at', async () => {
+      mockConfirmAccount.mockResolvedValue({
+        data: {
+          token: 'jwt-create-no-expiry',
+          username: 'alice',
+          accreditation: { some: 'acc' },
+          // expires_at omitted — atomic pair must NOT half-rotate.
+        },
+      });
+      const originalToken = mockAuthStore.token;
+      const originalExpiry = mockAuthStore.expiresAt;
+      const comp = createComponent({ auth_token: 'tok', email: 'e@x.com' });
+      comp.init();
+      comp.chooseCreate();
+      comp.username = 'alice';
+      comp.usernameStatus = 'available';
+
+      await comp.submitCreateAccount();
+
+      expect(mockAuthStore.token).toBe(originalToken);
+      expect(mockAuthStore.expiresAt).toBe(originalExpiry);
+      // Non-atomic fields still land on the store.
+      expect(mockAuthStore.username).toBe('alice');
+      expect(mockAuthStore.isAccredited).toBe(true);
+      expect(mockAuthStore.custody).toBe('light');
+      expect(mockAuthStore._saveSession).toHaveBeenCalledWith();
+    });
+
     it('does nothing with invalid username', async () => {
       const comp = createComponent({ auth_token: 'tok', email: 'e@x.com' });
       comp.init();
@@ -405,6 +453,36 @@ describe('signupVerifyPage', () => {
       // Load-bearing: expiresAt MUST be on the store BEFORE the no-arg
       // _saveSession() reads from it.
       expect(savedSnapshot.expiresAt).toBe('2099-06-15T00:00:00.000Z');
+      expect(mockAuthStore._saveSession).toHaveBeenCalledWith();
+    });
+
+    // UI-AUTH-LOGINFROMRESPONSE-HELPER-ADOPTION: per-site preserve-on-omit
+    // coverage. handleLinkAccount now routes through loginFromResponse()
+    // which enforces the atomic {token, expires_at} pair invariant.
+    it('atomic pair: preserves token + expiresAt when linkExistingAccount response omits expires_at', async () => {
+      mockLinkExistingAccount.mockResolvedValue({
+        data: {
+          token: 'jwt-link-no-expiry',
+          username: 'bob',
+          accreditation: { link: 'acc' },
+          // expires_at omitted — atomic pair must NOT half-rotate.
+        },
+      });
+      const originalToken = mockAuthStore.token;
+      const originalExpiry = mockAuthStore.expiresAt;
+      const comp = createComponent({ auth_token: 'tok', email: 'e@x.com' });
+      comp.init();
+      comp.chooseLink();
+      comp.hiveUsername = 'Bob';
+
+      await comp.handleLinkAccount();
+
+      expect(mockAuthStore.token).toBe(originalToken);
+      expect(mockAuthStore.expiresAt).toBe(originalExpiry);
+      // Non-atomic fields still land on the store.
+      expect(mockAuthStore.username).toBe('bob');
+      expect(mockAuthStore.isAccredited).toBe(true);
+      expect(mockAuthStore.custody).toBe('self');
       expect(mockAuthStore._saveSession).toHaveBeenCalledWith();
     });
 

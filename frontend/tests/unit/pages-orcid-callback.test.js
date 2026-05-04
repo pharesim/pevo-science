@@ -6,6 +6,26 @@ vi.mock('../../src/api.js', () => ({
   completeOrcid: (...args) => mockCompleteOrcid(...args),
 }));
 
+// Mirror the real `loginFromResponse` helper from src/auth.js so call-site
+// tests can keep asserting post-call state on mockAuthStore. The
+// preserve-on-undefined branch is critical here: the ORCID login site
+// passes explicit `is_accredited: false` and `accreditation: null`
+// overrides, which the helper lands on the store BEFORE _saveSession
+// fires (locks in the "ORCID login clears stale accreditation state"
+// invariant the existing test asserts).
+function mockLoginFromResponse(data) {
+  if (data.token && data.expires_at) {
+    this.token = data.token;
+    this.expiresAt = data.expires_at;
+  }
+  if (data.username !== undefined) this.username = data.username;
+  if (data.is_accredited !== undefined) this.isAccredited = data.is_accredited;
+  if (data.accreditation !== undefined) this.accreditation = data.accreditation;
+  if (data.custody !== undefined) this.custody = data.custody;
+  this.isConnected = true;
+  this._saveSession();
+  this._startAccreditationPolling();
+}
 const mockAuthStore = {
   isConnected: true,
   token: '',
@@ -13,9 +33,11 @@ const mockAuthStore = {
   custody: '',
   isAccredited: false,
   accreditation: null,
+  expiresAt: null,
   _saveSession: vi.fn(),
   _checkAccreditation: vi.fn(),
   _startAccreditationPolling: vi.fn(),
+  loginFromResponse: vi.fn(mockLoginFromResponse),
 };
 const mockRouterStore = { navigate: vi.fn(), query: { code: 'abc123', state: 'xyz' } };
 const mockToastStore = { show: vi.fn() };
@@ -293,6 +315,37 @@ describe('orcidCallbackPage', () => {
 
       expect(mockAuthStore.expiresAt).not.toBeNull();
       expect(mockAuthStore.expiresAt).toBe('2099-01-01T00:00:00.000Z');
+      vi.useRealTimers();
+    });
+
+    // UI-AUTH-LOGINFROMRESPONSE-HELPER-ADOPTION: per-site preserve-on-omit
+    // coverage. _handleLogin now routes through loginFromResponse() which
+    // enforces the atomic {token, expires_at} pair invariant. The
+    // explicit `is_accredited: false`/`accreditation: null` overrides
+    // still land on the store regardless (those are non-atomic fields).
+    it('atomic pair: preserves token + expiresAt when ORCID login response omits expires_at', async () => {
+      vi.useFakeTimers();
+      mockAuthStore.token = 'old-jwt';
+      mockAuthStore.expiresAt = '2099-01-01T00:00:00.000Z';
+      const comp = createComponent();
+      mockCompleteOrcid.mockResolvedValue({
+        data: {
+          mode: 'login',
+          token: 'jwt-no-expiry',
+          username: 'alice',
+          custody: 'light',
+          // expires_at omitted — atomic pair must NOT half-rotate.
+        },
+      });
+
+      await comp._verify('code', 'state', 'login');
+
+      expect(mockAuthStore.token).toBe('old-jwt');
+      expect(mockAuthStore.expiresAt).toBe('2099-01-01T00:00:00.000Z');
+      // The explicit accreditation reset still fires (non-atomic field).
+      expect(mockAuthStore.isAccredited).toBe(false);
+      expect(mockAuthStore.accreditation).toBeNull();
+      expect(mockAuthStore._saveSession).toHaveBeenCalledWith();
       vi.useRealTimers();
     });
 

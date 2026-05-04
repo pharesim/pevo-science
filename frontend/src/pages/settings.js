@@ -675,19 +675,21 @@ export function initSettingsPage() {
 
         const result = await res.json();
 
-        // Update session. The upgrade response rotates the session token
-        // (the old light-custody JWT is invalidated server-side); if the
-        // backend emits a new token + expires_at pair, refresh both on the
-        // store BEFORE _saveSession() so the persisted expires_at matches
-        // the new token.
-        auth.custody = 'self';
-        if (result.data?.token) {
-          auth.token = result.data.token;
-        }
-        if (result.data?.expires_at) {
-          auth.expiresAt = result.data.expires_at;
-        }
-        auth._saveSession();
+        // Update session via the shared helper. The upgrade response
+        // rotates the session token; the helper enforces the atomic
+        // {token, expires_at} pair invariant — both rotate together or
+        // neither does. The decoupled-guard form this site used to ship
+        // allowed `{token: new, expires_at: undefined}` to persist a
+        // server-invalidated old token with new expiry. Username,
+        // is_accredited, and accreditation are omitted from the data
+        // payload so the helper preserves them (the upgrade flips
+        // custody and rotates session credentials, not identity or
+        // accreditation status).
+        auth.loginFromResponse({
+          token: result.data?.token,
+          expires_at: result.data?.expires_at,
+          custody: 'self',
+        });
       } catch (err) {
         // The (b)→(c) pair lives inside this try. A failure here means
         // either (b) reverted (Keychain-signing of account_update denied,

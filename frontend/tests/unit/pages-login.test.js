@@ -10,6 +10,23 @@ vi.mock('../../src/api.js', () => ({
   startOrcid: (...args) => mockStartOrcid(...args),
 }));
 
+// Mirror the real `loginFromResponse` helper from src/auth.js so call-site
+// tests can keep asserting post-call state on mockAuthStore. Atomic
+// {token, expires_at} pair + preserve-on-undefined for the other fields
+// is part of the contract this site relies on.
+function mockLoginFromResponse(data) {
+  if (data.token && data.expires_at) {
+    this.token = data.token;
+    this.expiresAt = data.expires_at;
+  }
+  if (data.username !== undefined) this.username = data.username;
+  if (data.is_accredited !== undefined) this.isAccredited = data.is_accredited;
+  if (data.accreditation !== undefined) this.accreditation = data.accreditation;
+  if (data.custody !== undefined) this.custody = data.custody;
+  this.isConnected = true;
+  this._saveSession();
+  this._startAccreditationPolling();
+}
 const mockAuthStore = {
   isConnected: false,
   token: null,
@@ -17,7 +34,10 @@ const mockAuthStore = {
   isAccredited: false,
   accreditation: null,
   custody: 'light',
+  expiresAt: null,
   _saveSession: vi.fn(),
+  _startAccreditationPolling: vi.fn(),
+  loginFromResponse: vi.fn(mockLoginFromResponse),
 };
 const mockRouterStore = { navigate: vi.fn() };
 
@@ -110,6 +130,41 @@ describe('loginPage', () => {
       // _saveSession now reads from instance state (no positional args).
       expect(mockAuthStore._saveSession).toHaveBeenCalledWith();
       expect(mockRouterStore.navigate).toHaveBeenCalledWith('/papers');
+    });
+
+    // UI-AUTH-LOGINFROMRESPONSE-HELPER-ADOPTION: per-site preserve-on-omit
+    // coverage. The login site now routes through loginFromResponse(),
+    // which enforces the atomic {token, expires_at} pair invariant — if
+    // the backend omits expires_at, neither rotates. The pre-adoption
+    // form set token=res.data.token and expiresAt=undefined unconditionally,
+    // which JSON.stringify then dropped, so _restoreSession evicted on
+    // next load and the user was silently logged out.
+    it('atomic pair: preserves token + expiresAt when login response omits expires_at', async () => {
+      mockLoginWithPassword.mockResolvedValue({
+        data: {
+          token: 'jwt-no-expiry',
+          username: 'alice',
+          is_accredited: true,
+          accreditation: { orcid: '0000-0001' },
+          custody: 'self',
+          // expires_at omitted — atomic pair must NOT half-rotate.
+        },
+      });
+      const originalToken = mockAuthStore.token;
+      const originalExpiry = mockAuthStore.expiresAt;
+      const comp = createComponent();
+      comp.emailOrUsername = 'alice@x.com';
+      comp.password = 'Secret1234';
+
+      await comp.handleSubmit();
+
+      expect(mockAuthStore.token).toBe(originalToken);
+      expect(mockAuthStore.expiresAt).toBe(originalExpiry);
+      // Non-atomic fields still land on the store (the helper assigns
+      // them when present in data).
+      expect(mockAuthStore.username).toBe('alice');
+      expect(mockAuthStore.isAccredited).toBe(true);
+      expect(mockAuthStore._saveSession).toHaveBeenCalledWith();
     });
 
     it('does nothing if canSubmit is false', async () => {

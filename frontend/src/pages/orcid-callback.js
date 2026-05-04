@@ -223,30 +223,23 @@ export function initOrcidCallbackPage() {
       if (!this._mounted) return;
       this.status = 'login-success';
 
+      // Reset accreditation state for the newly-logged-in ORCID username
+      // by passing explicit `is_accredited: false` and `accreditation: null`
+      // into the helper's data payload. Without this override, the helper's
+      // preserve-on-undefined semantics would carry stale values (from a
+      // prior session or a re-login as a different user) into localStorage.
+      // The polling loop the helper starts refreshes these from the server
+      // (a transient failure leaves the store at `false` until the next
+      // 60s poll, which self-stops once accreditation is confirmed).
       const auth = Alpine.store('auth');
-      auth.token = data.token;
-      auth.username = data.username;
-      auth.isConnected = true;
-      auth.custody = data.custody || 'light';
-      auth.expiresAt = data.expires_at;
-      // Reset accreditation state for the newly-logged-in ORCID username so
-      // no-arg _saveSession() does not carry stale values (from a prior session
-      // or the initial store defaults after a re-login as a different user)
-      // into localStorage. _checkAccreditation() below refreshes these from
-      // the server, but _saveSession runs synchronously before that resolves.
-      auth.isAccredited = false;
-      auth.accreditation = null;
-
-      auth._saveSession();
-
-      // Start the accreditation polling loop (matches sibling login paths
-      // `loginFromResponse` and `connect` in auth.js). A bare
-      // `_checkAccreditation()` is a single fetch — a transient failure
-      // (network flap, slow backend) would leave the store at
-      // `isAccredited=false` permanently until manual reload. The polling
-      // loop retries every 60s and self-stops once accreditation is
-      // confirmed (or the user disconnects).
-      auth._startAccreditationPolling();
+      auth.loginFromResponse({
+        token: data.token,
+        expires_at: data.expires_at,
+        username: data.username,
+        custody: data.custody || 'light',
+        is_accredited: false,
+        accreditation: null,
+      });
 
       Alpine.store('toast').show(this.$t('orcid.loginSuccess'), 'success');
       this._setTimer(() => this.navigate('/papers'), 500);
