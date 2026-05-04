@@ -7,7 +7,7 @@ import { sendOk, sendError } from '../response.js';
 import { config } from '../config.js';
 import { rateLimit, byAccount } from '../middleware/rateLimit.js';
 import { getAppPool } from '../app-db.js';
-import { broadcastSendOperationsWithTimeout } from '../hive.js';
+import { broadcastSendOperationsWithTimeout, BroadcastTimeoutError } from '../hive.js';
 import { decryptKey } from '../custody-crypto.js';
 import { logCustodyBroadcast } from '../custody-audit.js';
 import { logger } from '../logger.js';
@@ -103,6 +103,48 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
   const pool = getAppPool();
   if (!pool) return sendError(res, 503, 'INTERNAL_ERROR', 'Service not available');
 
+  // Hoisted to the outer try-scope (round-2 hold #5): both the inner
+  // (broadcast-path) and outer (db / decrypt / key-parse) catch reference the
+  // same operation context. A pre-fix outer catch only logged `{ err, username }`
+  // — operators investigating a `decryptKey` throw lost the operation context.
+  // Computed up-front from the validated `operations` array; the structured
+  // `op_types` (string[]) and `op_count` (number) are what dashboards key on
+  // (round-2 hold #5: a comma-joined string can't be filtered by a single op
+  // type in JSON-log queries, and a multi-op transaction's chain rejection at
+  // op[1] can't be correlated with the bundle without the array shape).
+  // `opTypes` (legacy comma-joined) stays threaded into `logCustodyBroadcast`
+  // because the audit-log table column is a single TEXT field; the structured
+  // pino fields are the per-attempt operator-log signal.
+  const op_types = operations.map((op: [string, unknown]) => op[0]);
+  const op_count = op_types.length;
+  const opTypes = op_types.join(',');
+
+  // Per-attempt audit-log signal (round-2 hold #4 — close audit-log blind
+  // spot). The DB-side `logCustodyBroadcast` writes only on success; this
+  // pino-side structured event fires on EVERY attempt with
+  // outcome ∈ {success, failure, timeout}. Operators correlate
+  // `event:'custody_broadcast_attempt'` to spot retry-amplification before the
+  // full idempotency design (filed as
+  // `backend-broadcast-idempotency-cluster-followup.md`) lands. `attempt_n` is
+  // 1 today — each /broadcast call is a fresh request without retry counting;
+  // the field is forward-compat for the idempotency cluster's per-key counter.
+  function logBroadcastAttempt(outcome: 'success' | 'failure' | 'timeout', extra?: Record<string, unknown>) {
+    const fields = {
+      username,
+      op_types,
+      op_count,
+      attempt_n: 1,
+      outcome,
+      event: 'custody_broadcast_attempt',
+      ...(extra ?? {}),
+    };
+    if (outcome === 'success') {
+      logger.info(fields, 'custody.broadcast attempt');
+    } else {
+      logger.warn(fields, 'custody.broadcast attempt');
+    }
+  }
+
   try {
     // Fetch and decrypt the posting key
     const { rows } = await pool.query<{
@@ -138,27 +180,41 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
     // into a 504 envelope via handleBroadcastError, and non-timeout chain
     // errors land in a 502 envelope. Non-broadcast errors (db, decrypt,
     // key parse) fall through to the outer 500 INTERNAL_ERROR.
-    const opTypes = operations.map((op: [string, unknown]) => op[0]).join(',');
     try {
       const result = await broadcastSendOperationsWithTimeout(operations, key);
 
-      // Audit log (non-blocking)
+      // Audit log (DB write, non-blocking) — captures only the success path.
       logCustodyBroadcast(username, opTypes, result.id, result.block_num).catch(() => {});
+      // Pino-side per-attempt signal (round-2 hold #4 — every attempt logged).
+      logBroadcastAttempt('success', { tx_id: result.id, block_num: result.block_num });
 
       return sendOk(res, {
         tx_id: result.id,
         block_num: result.block_num,
       });
     } catch (err) {
+      // Pino-side per-attempt signal for the broadcast catch path. The
+      // outcome label discriminates timeout vs. failure so dashboards can
+      // separate the two without parsing the inner-helper's stable suffix.
+      const outcome: 'failure' | 'timeout' = err instanceof BroadcastTimeoutError ? 'timeout' : 'failure';
+      logBroadcastAttempt(outcome);
       return handleBroadcastError(res, err, {
         timeoutMsg: 'Broadcasting signed operation timed out',
         failMsg: 'Failed to broadcast signed operation to Hive',
-        logContext: { username, opTypes },
+        logContext: { username, op_types, op_count },
         routeLabel: 'custody.broadcast',
       });
     }
   } catch (err) {
-    logger.error({ err, username }, 'Custodial broadcast failed (non-chain error)');
+    // Outer catch: db / decrypt / PrivateKey.fromString errors. Round-2 hold
+    // #5: include the structured `op_types` + `op_count` so operators don't
+    // lose the operation context when the failure is upstream of the
+    // broadcast. `event:'custody_broadcast_internal_error'` discriminates
+    // this branch from the broadcast-path event so dashboards filter cleanly.
+    logger.error(
+      { err, username, op_types, op_count, event: 'custody_broadcast_internal_error' },
+      'Custodial broadcast failed (non-chain error)',
+    );
     sendError(res, 500, 'INTERNAL_ERROR', 'Failed to broadcast transaction');
   }
 });

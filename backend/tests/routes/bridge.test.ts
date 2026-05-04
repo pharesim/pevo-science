@@ -19,6 +19,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import request from 'supertest';
 import { PrivateKey, cryptoUtils } from '@hiveio/dhive';
+import { MockBroadcastTimeoutError, makeDhiveLikeError } from '../support/broadcast-mocks.js';
 
 // Deterministic test keypair shared by all usernames (mocked getAccounts
 // resolves every name to the same public key).
@@ -47,43 +48,38 @@ vi.mock('../../src/config.js', async () => {
 // captures any accidental broadcast (there must be none when the 503 fires).
 // Also exposes broadcastSendOperationsWithTimeout + BroadcastTimeoutError so
 // the /register and /update handlers' timeout-discrimination catch block is
-// reachable from these tests. The stub BroadcastTimeoutError class mirrors
-// the real one's constructor signature (timeoutMs property) so
-// `err instanceof BroadcastTimeoutError` and `err.timeoutMs` both work when
-// the mock rejects with it.
+// reachable from these tests. The stub BroadcastTimeoutError class is
+// imported from `../support/broadcast-mocks.ts` (round-2 hold #1: shared
+// across bridge.test.ts and custody.test.ts so the substitution chain has
+// one canonical mock class identity, and a structural identity assertion at
+// the top of the discrimination describes can verify the substitution still
+// works on every test run).
 const sendOperations = vi.fn().mockResolvedValue({ id: 'mock-tx-id' });
-const { MockBroadcastTimeoutError } = vi.hoisted(() => ({
-  MockBroadcastTimeoutError: class BroadcastTimeoutError extends Error {
-    public readonly timeoutMs: number;
-    constructor(timeoutMs: number) {
-      super(`Hive broadcast timed out after ${timeoutMs}ms`);
-      this.name = 'BroadcastTimeoutError';
-      this.timeoutMs = timeoutMs;
-    }
-  },
-}));
 const databaseCall = vi.fn();
-vi.mock('../../src/hive.js', () => ({
-  hiveClient: {
-    database: {
-      getAccounts: vi.fn().mockImplementation((names: string[]) =>
-        Promise.resolve(
-          names.map((name) => ({
-            name,
-            posting: { key_auths: [[TEST_PUBLIC_KEY, 1]] },
-          })),
+vi.mock('../../src/hive.js', async () => {
+  const { MockBroadcastTimeoutError } = await import('../support/broadcast-mocks.js');
+  return {
+    hiveClient: {
+      database: {
+        getAccounts: vi.fn().mockImplementation((names: string[]) =>
+          Promise.resolve(
+            names.map((name) => ({
+              name,
+              posting: { key_auths: [[TEST_PUBLIC_KEY, 1]] },
+            })),
+          ),
         ),
-      ),
-      call: (...args: unknown[]) => databaseCall(...args),
+        call: (...args: unknown[]) => databaseCall(...args),
+      },
+      broadcast: {
+        sendOperations: (...args: unknown[]) => sendOperations(...args),
+      },
     },
-    broadcast: {
-      sendOperations: (...args: unknown[]) => sendOperations(...args),
-    },
-  },
-  broadcastSendOperationsWithTimeout: (...args: unknown[]) => sendOperations(...args),
-  BroadcastTimeoutError: MockBroadcastTimeoutError,
-  DEFAULT_BROADCAST_TIMEOUT_MS: 30_000,
-}));
+    broadcastSendOperationsWithTimeout: (...args: unknown[]) => sendOperations(...args),
+    BroadcastTimeoutError: MockBroadcastTimeoutError,
+    DEFAULT_BROADCAST_TIMEOUT_MS: 30_000,
+  };
+});
 
 // Bridge module mock: let checkExistingBridge short-circuit to "no
 // duplicate" (exists=false) and stub resolveToCanonical / lookupPreprint so
@@ -302,6 +298,23 @@ const TIMEOUT_DETAILS = {
 describe('BE-BRIDGE-CUSTODY-BROADCAST-DISCRIMINATION — /register timeout discrimination', () => {
   const ACCREDITED_CALLER = 'accreditedregister';
 
+  // Structural identity assertion — round-2 hold #1 (mutation-kill the
+  // mock-substitution chain). The route's `instanceof BroadcastTimeoutError`
+  // check (and `lib/broadcast-error.ts`'s sibling check inside
+  // `handleBroadcastError`) both resolve `BroadcastTimeoutError` via
+  // `import { BroadcastTimeoutError } from '../hive.js'`. The `vi.mock` above
+  // substitutes `MockBroadcastTimeoutError` at that module's export. If a
+  // future refactor (re-export barrel, top-level import preempting the
+  // hoist, test-side import-ordering change) breaks the chain, the helper's
+  // imported reference would be the REAL class and `instanceof` would return
+  // false — the route would emit 502 on a real timeout and every 504-spec
+  // would pass against the wrong branch. This single assertion fails fast and
+  // surfaces the regression before any other test runs.
+  it('mock-substitution chain identity check (round-2 hold #1)', async () => {
+    const { BroadcastTimeoutError } = await import('../../src/hive.js');
+    expect(BroadcastTimeoutError).toBe(MockBroadcastTimeoutError);
+  });
+
   beforeEach(() => {
     sendOperations.mockClear();
     accreditedSet.clear();
@@ -336,6 +349,39 @@ describe('BE-BRIDGE-CUSTODY-BROADCAST-DISCRIMINATION — /register timeout discr
     // Chain-internal error text must NOT be interpolated into the response.
     expect(JSON.stringify(res.body)).not.toContain('missing_active_authority');
     expect(JSON.stringify(res.body)).not.toContain(CHAIN_INTERNAL);
+  });
+
+  // Round-2 hold #3: the leak-assertion above passes by construction against
+  // a plain `Error(CHAIN_INTERNAL)` because the response body is now a static
+  // string regardless of throw shape. The pre-migration code preferred
+  // `err.jse_shortmsg` over `err.message`; a regression that re-introduces
+  // `err.jse_shortmsg` interpolation would NOT fail the prior assertion.
+  // This spec stages a real-shaped dhive RPCError so the leak-assertion has
+  // actual surface — every field that pre-migration code path touched
+  // (`jse_shortmsg`, `jse_cause`, `info`, `cause.message`) is in the throw
+  // payload, and the body must contain none of them.
+  it('POST /api/bridge/register: dhive-shaped RPCError → no jse_shortmsg/jse_cause/info leak', async () => {
+    const SHORT = 'missing_active_authority pevotest.bridge';
+    const CAUSE = 'op_authority_check_failed';
+    const INFO_KEY = 'rpc_internal_state_dump';
+    const dhiveErr = makeDhiveLikeError({
+      shortmsg: SHORT,
+      cause: CAUSE,
+      info: { internal_marker: INFO_KEY, stack_frame: 'witness_node_signature.cpp:217' },
+    });
+    sendOperations.mockRejectedValueOnce(dhiveErr);
+    const res = await signedPost('/api/bridge/register', ACCREDITED_CALLER, {
+      identifier: '2301.12345',
+      discipline: 'CS',
+    });
+    expect(res.status).toBe(502);
+    expect(res.body.error.code).toBe('BROADCAST_FAILED');
+    expect(res.body.error.message).toBe('Failed to broadcast bridge paper registration to Hive');
+    const bodyStr = JSON.stringify(res.body);
+    expect(bodyStr).not.toContain(SHORT);
+    expect(bodyStr).not.toContain(CAUSE);
+    expect(bodyStr).not.toContain(INFO_KEY);
+    expect(bodyStr).not.toContain('witness_node');
   });
 });
 
@@ -407,5 +453,31 @@ describe('BE-BRIDGE-CUSTODY-BROADCAST-DISCRIMINATION — /update timeout discrim
     expect(res.body.error.details).toEqual({ retriable: false });
     expect(JSON.stringify(res.body)).not.toContain('tx_missing_posting_auth');
     expect(JSON.stringify(res.body)).not.toContain(CHAIN_INTERNAL);
+  });
+
+  // Round-2 hold #3 (sibling spec — same rationale as the /register dhive-
+  // shaped fixture above). At least one spec per route stages a real-shaped
+  // RPCError so the leak-assertion has surface to catch a regression that
+  // re-introduces interpolation of any of the dhive-specific fields.
+  it('POST /api/bridge/update: dhive-shaped RPCError → no jse_shortmsg/jse_cause/info leak', async () => {
+    const SHORT = 'tx_missing_posting_auth bridge.update';
+    const CAUSE = 'auth_validation_failed';
+    const INFO_KEY = 'witness_internal_op_index';
+    const dhiveErr = makeDhiveLikeError({
+      shortmsg: SHORT,
+      cause: CAUSE,
+      info: { internal_marker: INFO_KEY, op_index: 1 },
+    });
+    sendOperations.mockRejectedValueOnce(dhiveErr);
+    const res = await signedPost('/api/bridge/update', ACCREDITED_CALLER, {
+      permlink: EXISTING_PERMLINK,
+    });
+    expect(res.status).toBe(502);
+    expect(res.body.error.code).toBe('BROADCAST_FAILED');
+    expect(res.body.error.message).toBe('Failed to broadcast bridge paper update to Hive');
+    const bodyStr = JSON.stringify(res.body);
+    expect(bodyStr).not.toContain(SHORT);
+    expect(bodyStr).not.toContain(CAUSE);
+    expect(bodyStr).not.toContain(INFO_KEY);
   });
 });

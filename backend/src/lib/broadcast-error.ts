@@ -75,13 +75,74 @@ export class PostBroadcastWriteError extends Error {
  * non-ambiguous variant explicitly disallows `ambiguousMsg` (`?: never`) so
  * a stray field on a non-ambiguous opts object is a compile error.
  */
+/**
+ * Narrowed structured-log context for the 504/502 broadcast-error envelopes.
+ *
+ * Round-2 hold #6 (BACKEND-BRIDGE-CUSTODY-BROADCAST-DISCRIMINATION): the
+ * pre-fix `Record<string, unknown>` accepted any string key, so a typo at a
+ * call site (`permink` for `permlink`, `usernam` for `username`) compiled
+ * silently and operators got an inconsistent log shape. The fields below are
+ * the union of every key actually passed at the existing call sites
+ * (orcid.ts, claims.ts, accreditation.ts, bridge.ts, custody.ts, etc.) — see
+ * `git grep -n 'logContext: {'` under `backend/src/`.
+ *
+ * The interface is open via the `event` field NOT being declared here (the
+ * helper writes `event:` itself, AFTER the spread, so it overrides any
+ * caller-supplied value). All other fields are explicit and `?: undefined`.
+ *
+ * Adding a new context field at a future call site is a one-line addition
+ * here — that's the cost we pay for the typo protection. Compile-time
+ * narrowing on a small set of structured fields is the right trade vs. the
+ * unbounded `Record<string, unknown>`.
+ */
+export interface LogContext {
+  /** Hive author of the targeted post (bridge/orcid surfaces) */
+  author?: string;
+  /** Hive permlink (bridge/orcid surfaces) */
+  permlink?: string;
+  /** Hive username of the caller */
+  username?: string;
+  /** Operation types in a multi-op transaction (custody — legacy comma-joined string) */
+  opTypes?: string;
+  /** Operation types as an array (custody — preferred structured form) */
+  op_types?: string[];
+  /** Operation count in a multi-op transaction (custody) */
+  op_count?: number;
+  /** Outcome label for audit-log call siblings ('success' | 'failure' | 'timeout') */
+  outcome?: 'success' | 'failure' | 'timeout';
+  /** Attempt counter (idempotency/retry-amplification audit signal) */
+  attempt_n?: number;
+  /** Bridge paper version after an /update broadcast */
+  newVersion?: number;
+  /** Source identifier (DOI / arXiv ID) for bridge surfaces */
+  sourceIdentifier?: string;
+  /** Generic identifier (orcid / bridge lookup) */
+  identifier?: string;
+  /** ORCID iD when binding/unbinding */
+  orcid?: string;
+  /** Reputation cycle id for reputation-bonus seeding */
+  cycle_id?: number | string;
+  /** SHA-256 hash of caller email (accreditation surfaces — never the raw email) */
+  email_hash?: string;
+  /** ORCID-flow mode discriminator ('accredit' | 'link') */
+  mode?: 'accredit' | 'link';
+  /** Paper author for claim approve/revoke surfaces */
+  paperAuthor?: string;
+  /** Paper permlink for claim approve/revoke surfaces */
+  paperPermlink?: string;
+  /** Claimer Hive username (claims surfaces) */
+  claimer?: string;
+  /** Signer discriminator for revoke surface ('bridge' | 'admin') */
+  signer?: 'bridge' | 'admin';
+}
+
 interface BaseHandleBroadcastErrorOpts {
   /** User-facing 504 message (timer-fire path). */
   timeoutMsg: string;
   /** User-facing 502 message. */
   failMsg: string;
   /** Merged into both log calls. */
-  logContext: Record<string, unknown>;
+  logContext: LogContext;
   /** Optional UI hint for the 504 envelope (e.g. '/settings'). */
   verifyLocation?: string;
   /** Log-message prefix, e.g. 'orcid.handleAccredit'. */
