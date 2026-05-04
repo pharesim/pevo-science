@@ -13,7 +13,7 @@ import { rateLimit, byAccount, byIp } from '../middleware/rateLimit.js';
 import { logger } from '../logger.js';
 import { isInstitutionalEmail } from '../email-validator.js';
 import { hashEmailForLogs, hashTokenForLogs } from '../lib/log-pii.js';
-import { INCR_AND_EXPIRE_IF_FIRST_LUA } from '../lib/redis-scripts.js';
+import { INCR_AND_EXPIRE_ON_ZERO_TO_ONE_LUA } from '../lib/redis-scripts.js';
 import { seedAccreditationBonus } from '../reputation.js';
 
 /** How long a verification token stays valid before it expires. */
@@ -73,16 +73,35 @@ function broadcastAttemptsKey(token: string): string {
  */
 async function incrementBroadcastAttempts(pending: PendingAccreditation): Promise<number> {
   const redis = getRedis();
-  if (redis && isRedisAvailable()) {
-    const key = broadcastAttemptsKey(pending.token);
-    const ttl = Math.max(1, Math.ceil((pending.expires_at.getTime() - Date.now()) / 1000));
-    const result = await redis.eval(
-      INCR_AND_EXPIRE_IF_FIRST_LUA,
-      1,
-      key,
-      String(ttl),
+  if (redis) {
+    if (isRedisAvailable()) {
+      const key = broadcastAttemptsKey(pending.token);
+      const ttl = Math.max(1, Math.ceil((pending.expires_at.getTime() - Date.now()) / 1000));
+      const result = await redis.eval(
+        INCR_AND_EXPIRE_ON_ZERO_TO_ONE_LUA,
+        1,
+        key,
+        String(ttl),
+      );
+      return Number(result);
+    }
+    // Reliability-R2 (round-4 hold): symmetric to the decrement-side
+    // `accred_verify_broadcast_decrement_redis_unavailable` warn — when
+    // Redis is configured but unavailable at INCR time, cap enforcement
+    // silently falls through to the in-memory map (which has no record of
+    // any prior Redis-side counter for this token across instances). Emit
+    // a structured warn so operators have a signal that cap enforcement
+    // has degraded to the in-memory fallback. Without this, an operator
+    // sees the decrement-unavailable warn but no corresponding increment
+    // warn during the same flap window, and cannot tell whether cap
+    // enforcement was active or in-memory-fallback at INCR time.
+    logger.warn(
+      {
+        token_hash: hashTokenForLogs(pending.token),
+        event: 'accred_verify_broadcast_increment_redis_unavailable',
+      },
+      'accreditation.verify counter increment: Redis unavailable mid-request — cap enforcement degraded to in-memory fallback',
     );
-    return Number(result);
   }
   const next = (memoryBroadcastAttempts.get(pending.token) ?? 0) + 1;
   memoryBroadcastAttempts.set(pending.token, next);
@@ -108,25 +127,25 @@ async function incrementBroadcastAttempts(pending: PendingAccreditation): Promis
  */
 async function decrementBroadcastAttempts(token: string): Promise<void> {
   const redis = getRedis();
-  if (redis && isRedisAvailable()) {
-    const key = broadcastAttemptsKey(token);
-    const after = await redis.decr(key);
-    if (after < 0) {
-      // Counter was already gone (token deletion raced with the decrement);
-      // either re-priming via SET 0 or DEL is fine. DEL keeps the namespace
-      // clean and matches the "counter scoped to the token's life" invariant.
-      await redis.del(key);
+  if (redis) {
+    if (isRedisAvailable()) {
+      const key = broadcastAttemptsKey(token);
+      const after = await redis.decr(key);
+      if (after < 0) {
+        // Counter was already gone (token deletion raced with the decrement);
+        // either re-priming via SET 0 or DEL is fine. DEL keeps the namespace
+        // clean and matches the "counter scoped to the token's life" invariant.
+        await redis.del(key);
+      }
+      return;
     }
-    return;
-  }
-  // Round-3 hold #10: if Redis was reachable at INCR time but is unavailable
-  // now (mid-request flap), the in-memory map has no record of the Redis-side
-  // counter and the silent fallback below would leave the Redis-side counter
-  // inflated until 24h TTL with no operator signal. Emit a structured warn
-  // here so operators can correlate counter drift with Redis incidents; the
-  // sibling `accred_verify_broadcast_decrement_failed` event covers the
-  // throw-during-DECR case but not this silent-noop case.
-  if (redis && !isRedisAvailable()) {
+    // Round-3 hold #10: if Redis was reachable at INCR time but is unavailable
+    // now (mid-request flap), the in-memory map has no record of the Redis-side
+    // counter and a silent fallback would leave the Redis-side counter inflated
+    // until 24h TTL with no operator signal. Emit a structured warn here so
+    // operators can correlate counter drift with Redis incidents; the sibling
+    // `accred_verify_broadcast_decrement_failed` event covers the
+    // throw-during-DECR case but not this silent-noop case.
     logger.warn(
       {
         token_hash: hashTokenForLogs(token),
@@ -136,6 +155,7 @@ async function decrementBroadcastAttempts(token: string): Promise<void> {
     );
     return;
   }
+  // No Redis configured at all → in-memory fallback path.
   const current = memoryBroadcastAttempts.get(token);
   if (current === undefined) return;
   if (current <= 1) {
@@ -299,11 +319,11 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
   // so the cap holds even under concurrent retries on the same token.
   //
   // Round-3 hold #8 — structural scope: the cap is a CONCURRENCY-BURST
-  // defense, not a sequential-flood defense. Because deleteToken (line 178-187
-  // below) drops both the pending row AND the counter side-key, and the
-  // catch-block 'failure' branch calls deleteToken on the first 502, the
-  // sequential-retry case ends after one definitive failure and cannot
-  // accumulate the counter. The cap engages on the parallel-retry
+  // defense, not a sequential-flood defense. Because deleteToken (see
+  // `deleteToken` below) drops both the pending row AND the counter
+  // side-key, and the catch-block 'failure' branch calls deleteToken on
+  // the first 502, the sequential-retry case ends after one definitive
+  // failure and cannot accumulate the counter. The cap engages on the parallel-retry
   // case — N concurrent /verify calls on the same token claim slots
   // atomically and at most `cap` broadcasts fire.
   //
@@ -341,7 +361,7 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
   } catch (incrErr) {
     logger.warn(
       {
-        err: incrErr,
+        err: incrErr instanceof Error ? incrErr : new Error(String(incrErr)),
         username: pending.hive_username,
         email_hash: hashEmailForLogs(pending.email),
         event: 'accred_verify_broadcast_increment_failed',
@@ -367,6 +387,7 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
         event: 'accred_verify_broadcast_cap_exceeded',
         username: pending.hive_username,
         email_hash: hashEmailForLogs(pending.email),
+        token_hash: hashTokenForLogs(token),
         attempts,
         cap,
       },
@@ -497,12 +518,19 @@ setInterval(() => {
 
 export default router;
 
-// Test-only seam (round-3 hold #13): tests need to drive
-// `decrementBroadcastAttempts` directly to assert the `if (after <= 0) DEL`
-// race-recovery branch (mutation-kill: removing the DEL leaves the counter at
-// -1 in some orderings). Routing through `__test_seams` gives the spec a
-// stable name to call without making the helper a route-public symbol.
-// NOT for production import.
+// Test-only seam (round-3 hold #13, round-4 hold #3): tests need to drive
+// `decrementBroadcastAttempts` and `incrementBroadcastAttempts` directly:
+//   - decrement: assert the `if (after < 0) DEL` race-recovery branch
+//     (mutation-kill: removing the DEL leaves the counter at -1) and the
+//     Redis-unavailable warn (round-3 hold #10).
+//   - increment: assert the symmetric Redis-unavailable warn
+//     (round-4 hold #3c / Reliability-R2). Routing the route flow has
+//     `getToken()` short-circuit on `!isRedisAvailable()` before the
+//     pre-INCR site, so a unit-style call against the helper is the only
+//     way to drive the in-memory-fallback warn path deterministically.
+// Routing through `__test_seams` gives the specs a stable name to call
+// without making the helpers route-public symbols. NOT for production import.
 export const __test_seams = {
   decrementBroadcastAttempts,
-};
+  incrementBroadcastAttempts,
+} as const;

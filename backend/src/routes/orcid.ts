@@ -1505,7 +1505,7 @@ export const __test_seams = {
   // derivation comment block must not turn into a red test for the same
   // (now correct) value.
   HAF_INDEXING_LAG_CEILING_SECONDS,
-};
+} as const;
 
 // Export the in-memory verified map so auth.ts signup can consume nonces
 export { orcidVerified };
