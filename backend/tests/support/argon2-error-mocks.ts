@@ -41,11 +41,10 @@
  * the test passes into `vi.mock(...)`. See any of the five route test
  * files for the canonical shape.
  *
- * `assert503QueueFull` / `assert503Shutdown` / `assert503` /
- * `assertArgon2AbortIsSilent` are pre-bound methods on the returned kit;
- * destructure them from the same `buildArgon2RouteMockKit()` invocation
- * (inside the `vi.hoisted` block) and call them inside `it(...)` bodies.
- * No separate import is needed.
+ * `assert503QueueFull` / `assert503Shutdown` / `assertArgon2AbortIsSilent`
+ * are pre-bound methods on the returned kit; destructure them from the same
+ * `buildArgon2RouteMockKit()` invocation (inside the `vi.hoisted` block) and
+ * call them inside `it(...)` bodies. No separate import is needed.
  */
 
 import { vi, expect } from 'vitest';
@@ -96,18 +95,6 @@ export interface Argon2RouteMockKit {
    */
   assertArgon2AbortIsSilent: (promise: Promise<SupertestResponse>) => Promise<void>;
 
-  /**
-   * Wire-level 503 assertion. Forwarded to {@link assert503Impl} with the
-   * caller's already-awaited supertest response. Bound on the kit for
-   * surface symmetry with {@link Argon2RouteMockKit.assertArgon2AbortIsSilent};
-   * does not need kit-local state today.
-   */
-  assert503: (
-    res: SupertestResponse,
-    expectedRetryAfterSec: number,
-    expectedReason: typeof ARGON_REASON_QUEUE_FULL | typeof ARGON_REASON_SHUTDOWN_DRAIN,
-  ) => void;
-
   /** Convenience wrapper: 503 under `ArgonQueueFullError`. */
   assert503QueueFull: (res: SupertestResponse) => void;
 
@@ -134,14 +121,15 @@ export interface Argon2RouteMockKit {
  * `instanceof ArgonSemaphoreError` checks therefore resolve against the
  * production hierarchy (item 5 of the round-1 hold block).
  *
- * The four assertion helpers are returned pre-bound: `assertArgon2AbortIsSilent`
+ * The three assertion helpers are returned pre-bound: `assertArgon2AbortIsSilent`
  * captures the kit's `mockRunWithArgon2Slot` at build time so callers do not
  * need to thread it through (and cannot accidentally drop it — the round-3
  * invocation guard's defense-in-depth shape no longer depends on per-site
- * caller discipline). The 503 helpers are bound for surface symmetry; their
- * implementations are pure today but staying on the kit means a future
- * cross-branch identity check (see round-2 dismissed item) can capture the
- * kit's response history without changing the public shape.
+ * caller discipline). The 503 wrappers (`assert503QueueFull` /
+ * `assert503Shutdown`) are bound to forward to the module-internal
+ * `assert503Impl` with the right retry-after constant + reason discriminator
+ * pre-pinned, so call sites cannot accidentally pair the queue-full retry
+ * window with the shutdown reason or vice versa.
  */
 export function buildArgon2RouteMockKit(): Argon2RouteMockKit {
   const mockFn = vi.fn<typeof RunWithArgon2SlotType>();
@@ -167,8 +155,6 @@ export function buildArgon2RouteMockKit(): Argon2RouteMockKit {
       };
     },
     assertArgon2AbortIsSilent: (promise) => assertArgon2AbortIsSilentImpl(promise, mockFn),
-    assert503: (res, expectedRetryAfterSec, expectedReason) =>
-      assert503Impl(res, expectedRetryAfterSec, expectedReason),
     assert503QueueFull: (res) => assert503Impl(res, QUEUE_FULL_RETRY_AFTER_SEC, ARGON_REASON_QUEUE_FULL),
     assert503Shutdown: (res) => assert503Impl(res, SHUTDOWN_RETRY_AFTER_SEC, ARGON_REASON_SHUTDOWN_DRAIN),
   };
@@ -200,7 +186,14 @@ export const redisStubFactory: () => typeof import('../../src/redis.js') = () =>
 });
 
 /**
- * Assert that a supertest request hung silently rather than writing a
+ * Internal implementation of the silent-abort contract assertion. The
+ * public API is the kit-bound `assertArgon2AbortIsSilent` method on
+ * {@link Argon2RouteMockKit}, which captures the mock fn at build time so
+ * call sites cannot forget to thread it. This implementation is exported
+ * only so the helper self-test can drive each outcome-classification
+ * branch with a synthetic promise without going through a full kit setup.
+ *
+ * Asserts that a supertest request hung silently rather than writing a
  * response. The contract is documented at
  * `agents/docs/api-contracts/common.md` (silent-return on
  * `ArgonAbortError`) and at `tests/lib/argon2-error-handler.test.ts`
@@ -233,14 +226,6 @@ export const redisStubFactory: () => typeof import('../../src/redis.js') = () =>
  * need either to mock both calls or to use a route-specific helper variant.
  * Until that case lands, exact-count is the strongest mutation-resistant
  * shape for the call sites we have today.
- */
-/**
- * Internal implementation of the silent-abort contract assertion. The
- * public API is the kit-bound `assertArgon2AbortIsSilent` method on
- * {@link Argon2RouteMockKit}, which captures the mock fn at build time so
- * call sites cannot forget to thread it. This implementation is exported
- * only so the helper self-test can drive each outcome-classification
- * branch with a synthetic promise without going through a full kit setup.
  */
 export async function assertArgon2AbortIsSilentImpl(
   promise: Promise<SupertestResponse>,

@@ -157,3 +157,34 @@ When items 1-2 land, `git mv` this file back to `tasks/review/`. The architect's
 
 - `agents/docs/solutions/conventions/route-level-error-class-coverage-after-helper-extraction-2026-04-29.md` example block is now stale — still shows the two-arg `if (cls.assert === assertArgon2AbortIsSilent)` discrimination pattern that the kit-bind diff collapses. `/ce-compound-refresh` candidate (architect to schedule).
 - The kit-bind pattern (closure capture for invariant preservation in test helpers) is a `/ce-compound` candidate — no PEvO convention captures the structural shape today. Architect to capture after this task archives.
+
+---
+
+## Backend re-review signal (2026-05-04, working tree)
+
+Round-2 hold items 1 and 2 landed. All changes are scoped to `backend/tests/support/argon2-error-mocks.ts`; no other test files needed migration (the dropped `assert503` 3-arg method had zero callers across `backend/tests/`).
+
+### Item 1 (P2) — JSDoc consolidation above `assertArgon2AbortIsSilentImpl`
+
+The two consecutive `/** ... */` blocks above `assertArgon2AbortIsSilentImpl` (the orphaned 35-line round-1/round-3/round-4 rationale at the previous lines ~200-237 and the newer 7-line "Internal implementation..." paragraph at the previous lines ~238-244) are now a single consolidated JSDoc. Per the architect's preferred shape: the "Internal implementation, public API is the kit-bound method..." paragraph is the leading paragraph (it scopes the rest), with the 35-line rationale paragraphs preserved verbatim underneath. No paraphrasing or trimming. TS/TypeDoc/VSCode hover on `assertArgon2AbortIsSilentImpl` and on the kit-bound `{@link assertArgon2AbortIsSilentImpl}` reference now show the full rationale (round-1 hold item 4 outcome-introspection, round-3 invocation-guard fix-in-helper, round-4 exact-count `toHaveBeenCalledTimes(1)` assumption).
+
+### Item 2 (P3) — Drop dead `Argon2RouteMockKit.assert503` (3-arg method)
+
+`grep -rn "assert503\b" backend/tests/` confirmed zero callers outside the support file's own self-references (the JSDoc list at the file-header and the interface field + closure that were dropped). Changes:
+
+- Removed `assert503` field from the `Argon2RouteMockKit` interface (was at lines ~99-109).
+- Removed `assert503` closure construction in the `buildArgon2RouteMockKit()` return literal (was at lines ~170-171).
+- Updated the file-header JSDoc list (line 44) from `assert503QueueFull / assert503Shutdown / assert503 / assertArgon2AbortIsSilent` to `assert503QueueFull / assert503Shutdown / assertArgon2AbortIsSilent`.
+- Updated the `buildArgon2RouteMockKit` JSDoc paragraph (was: "The four assertion helpers are returned pre-bound..."; now: "The three assertion helpers are returned pre-bound..."). The 503-wrapper rationale paragraph was rewritten away from the speculative "future cross-branch identity check" framing onto the present-day correctness payoff (closures forward to `assert503Impl` with the right retry-after constant + reason discriminator pre-pinned, so call sites can't accidentally pair the queue-full retry window with the shutdown reason or vice versa).
+
+`assert503Impl` is unchanged — it stays as the module-internal helper that the two convenience wrappers (`assert503QueueFull`, `assert503Shutdown`) forward to.
+
+### Verification
+
+- `npx tsc --noEmit`: clean.
+- `npm run lint`: clean (only the pre-existing `seed-phrase.ts` warnings).
+- Targeted vitest (`tests/support/argon2-error-mocks.test.ts` + the 7 caller route tests): 52 passed across 8 files.
+
+### Notes
+
+- The worktree this commit was authored from required two non-tracked-state fixups (`.env` copy from main, `backend/data/academic-domains.json` copy from main) before the test suite could run. Neither is in the commit diff; both are runtime-environment artifacts.
