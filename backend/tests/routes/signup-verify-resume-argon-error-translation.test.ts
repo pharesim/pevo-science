@@ -98,7 +98,7 @@ const branches: BranchCase[] = [
       }),
   },
   {
-    name: 'confirmed + password_hash branch (signup-verify.ts:146, runWithArgon2Slot)',
+    name: 'confirmed + password_hash branch (`/resume-signup` handler in signup-verify.ts, runWithArgon2Slot)',
     seed: () =>
       appQueryMock.mockResolvedValueOnce({
         rows: [{ id: 1, password_hash: '$argon2id$placeholder', verify_token: 'confirmed:abc' }],

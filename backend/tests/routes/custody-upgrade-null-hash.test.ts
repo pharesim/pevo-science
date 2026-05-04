@@ -33,7 +33,7 @@
  * `/api/auth/login` and `/api/auth/session` routes issue.
  */
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import request from 'supertest';
 import argon2 from 'argon2';
 import jwt from 'jsonwebtoken';
@@ -75,22 +75,71 @@ function bearerFor(username: string): string {
   return `Bearer ${token}`;
 }
 
+// `logCustodyBroadcast` at custody.ts:228 is fire-and-forget (`...catch(() => {})`,
+// no await) — the response can return before the audit-log INSERT microtask
+// settles, leaving a SELECT-INSERT race the architect's round-3 hold flagged
+// as compounding problem #1. Poll for at least 1 row, then add a 100ms settle
+// delay to catch any imminent double-log mutation before counting. The
+// beforeEach reset guarantees a clean baseline, so a settled count of 1 is
+// the ground truth and a count of 2+ surfaces an over-log production mutation.
+async function fetchSettledAuditRows(
+  pool: { query: (sql: string, params: unknown[]) => Promise<{ rows: { operation_type: string }[] }> },
+  username: string,
+): Promise<{ operation_type: string }[]> {
+  const sql = `SELECT operation_type FROM custody_audit_log
+               WHERE username = $1 AND operation_type = 'upgrade_failure'`;
+  const start = Date.now();
+  while (Date.now() - start < 1500) {
+    const { rows } = await pool.query(sql, [username]);
+    if (rows.length >= 1) {
+      await new Promise((r) => setTimeout(r, 100));
+      const { rows: settled } = await pool.query(sql, [username]);
+      return settled;
+    }
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  const { rows } = await pool.query(sql, [username]);
+  return rows;
+}
+
 describe.skipIf(!dbReachable)('BACKEND-PASSWORD-HASH-NULL-TYPING-AUDIT: /api/custody/upgrade null-hash sub-branch', () => {
+  // Baseline argon2 hash for KNOWN_PASSWORD, computed once and reused across
+  // every beforeEach reseed. argon2.hash is ~50ms, so re-running it per test
+  // would add unnecessary cost; the hash is data, not state under test.
+  let realHash: string;
+
   beforeAll(async () => {
     if (!dbReachable) return;
+    realHash = await argon2.hash(KNOWN_PASSWORD, { type: argon2.argon2id });
+  });
+
+  // Reset audit-log + account rows on every attempt (including vitest retries).
+  // Without this beforeEach, vitest.config.ts's `retry: 1` means a retried `it`
+  // sees the audit-log row from attempt #1 plus the route call's audit-log row
+  // from attempt #2, breaking the `expect(auditRows.length).toBe(1)` ground-
+  // truth signal regardless of whether the actual claim under test is correct.
+  // Resetting account rows alongside the audit-log keeps the seed state idem-
+  // potent across retries even if a future code path were to mutate the row.
+  beforeEach(async () => {
+    if (!dbReachable) return;
     const pool = getAppPool()!;
-    // Clean any stale rows from prior runs.
     await pool.query('DELETE FROM custody_audit_log WHERE username IN ($1, $2)', [NULL_HASH_USER, WRONG_PWD_USER]).catch(() => {});
     await pool.query('DELETE FROM accounts WHERE username IN ($1, $2)', [NULL_HASH_USER, WRONG_PWD_USER]).catch(() => {});
 
     // Seed null-hash row: custody='light' + password_hash=NULL + no upgraded_at.
     // Mirrors the ORCID-only-account-with-light-JWT shape that reaches the new
     // null-guard branch in production (orcid.ts mints custody='light' default).
-    await pool.query(
-      `INSERT INTO accounts (email, username, password_hash, custody, verify_token, expires_at)
-       VALUES ($1, $2, NULL, 'light', NULL, $3)`,
-      [NULL_HASH_EMAIL, NULL_HASH_USER, new Date(Date.now() + 24 * 60 * 60 * 1000)],
-    );
+    try {
+      await pool.query(
+        `INSERT INTO accounts (email, username, password_hash, custody, verify_token, expires_at)
+         VALUES ($1, $2, NULL, 'light', NULL, $3)`,
+        [NULL_HASH_EMAIL, NULL_HASH_USER, new Date(Date.now() + 24 * 60 * 60 * 1000)],
+      );
+    } catch (err) {
+      throw new Error(
+        `Failed to seed null-hash account ${NULL_HASH_USER}: ${(err as Error).message}`,
+      );
+    }
 
     // Seed baseline wrong-password row: custody='light' + a real argon2 hash
     // for KNOWN_PASSWORD + no upgraded_at. The mutation fence checks that the
@@ -98,12 +147,17 @@ describe.skipIf(!dbReachable)('BACKEND-PASSWORD-HASH-NULL-TYPING-AUDIT: /api/cus
     // wall-time floor) matches the wrong-password branch on every axis. If a
     // future PR drops the burn or rewrites the response code, the floor
     // assertion or the audit-log assertion below catches it.
-    const realHash = await argon2.hash(KNOWN_PASSWORD, { type: argon2.argon2id });
-    await pool.query(
-      `INSERT INTO accounts (email, username, password_hash, custody, verify_token, expires_at)
-       VALUES ($1, $2, $3, 'light', NULL, $4)`,
-      [WRONG_PWD_EMAIL, WRONG_PWD_USER, realHash, new Date(Date.now() + 24 * 60 * 60 * 1000)],
-    );
+    try {
+      await pool.query(
+        `INSERT INTO accounts (email, username, password_hash, custody, verify_token, expires_at)
+         VALUES ($1, $2, $3, 'light', NULL, $4)`,
+        [WRONG_PWD_EMAIL, WRONG_PWD_USER, realHash, new Date(Date.now() + 24 * 60 * 60 * 1000)],
+      );
+    } catch (err) {
+      throw new Error(
+        `Failed to seed wrong-password account ${WRONG_PWD_USER}: ${(err as Error).message}`,
+      );
+    }
   });
 
   afterAll(async () => {
@@ -121,14 +175,6 @@ describe.skipIf(!dbReachable)('BACKEND-PASSWORD-HASH-NULL-TYPING-AUDIT: /api/cus
     // username per row and clear the limiter once for headroom across retries.
     await clearRateLimitKeys(['custody-upgrade']);
 
-    // Warm the sentinel-hash lazy promise + Node request stack so the measured
-    // call reflects steady-state burnSentinel (argon2.verify) cost, not
-    // first-call hash-compute overhead. The warmup uses an unauthenticated
-    // request so it doesn't burn the per-account rate-limit budget.
-    await request(app)
-      .post('/api/custody/upgrade')
-      .send({ password: 'Warmup1234' });
-
     const start = Date.now();
     const res = await request(app)
       .post('/api/custody/upgrade')
@@ -144,11 +190,10 @@ describe.skipIf(!dbReachable)('BACKEND-PASSWORD-HASH-NULL-TYPING-AUDIT: /api/cus
     // Audit-log: the null-hash branch must emit logCustodyBroadcast(username,
     // 'upgrade_failure'), the same row the wrong-password branch emits. A
     // future PR that drops this call lands green if this assertion is missing.
-    const { rows: auditRows } = await pool.query(
-      `SELECT operation_type FROM custody_audit_log
-       WHERE username = $1 AND operation_type = 'upgrade_failure'`,
-      [NULL_HASH_USER],
-    );
+    // `fetchSettledAuditRows` polls + settles to handle the fire-and-forget
+    // SELECT-INSERT race; combined with the beforeEach reset, a count of 1 is
+    // ground truth.
+    const auditRows = await fetchSettledAuditRows(pool, NULL_HASH_USER);
     expect(auditRows.length).toBe(1);
 
     // Wall-time floor: ≥ TIMING_ORACLE_FLOOR_MS (35ms) kills the
@@ -166,12 +211,6 @@ describe.skipIf(!dbReachable)('BACKEND-PASSWORD-HASH-NULL-TYPING-AUDIT: /api/cus
     const pool = getAppPool()!;
     await clearRateLimitKeys(['custody-upgrade']);
 
-    // Warm again — separate test runs in isolation; warm the sentinel/argon2
-    // path so steady-state verify cost dominates.
-    await request(app)
-      .post('/api/custody/upgrade')
-      .send({ password: 'Warmup1234' });
-
     const start = Date.now();
     const res = await request(app)
       .post('/api/custody/upgrade')
@@ -188,11 +227,7 @@ describe.skipIf(!dbReachable)('BACKEND-PASSWORD-HASH-NULL-TYPING-AUDIT: /api/cus
     expect(res.body.error.code).toBe('UNAUTHORIZED');
     expect(res.body.error.message).toBe('Invalid password');
 
-    const { rows: auditRows } = await pool.query(
-      `SELECT operation_type FROM custody_audit_log
-       WHERE username = $1 AND operation_type = 'upgrade_failure'`,
-      [WRONG_PWD_USER],
-    );
+    const auditRows = await fetchSettledAuditRows(pool, WRONG_PWD_USER);
     expect(auditRows.length).toBe(1);
 
     expect(elapsed).toBeGreaterThanOrEqual(TIMING_ORACLE_FLOOR_MS);

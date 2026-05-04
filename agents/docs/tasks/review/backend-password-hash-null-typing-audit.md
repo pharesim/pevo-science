@@ -223,3 +223,19 @@ But four items below need to land before this task can archive — one P1 (test 
 ### Re-review signal
 
 When items 1-4 land, `git mv` this file back to `tasks/review/`. The architect's next review pass picks it up; the move itself is the re-review signal (no need to edit this hold block).
+
+---
+
+## Backend re-review signal (2026-05-04, working tree)
+
+Round-3 hold items 1-4 landed across two test files; production code untouched.
+
+- **Item 1 (P1)**: `backend/tests/routes/custody-upgrade-null-hash.test.ts` — `beforeAll` reduced to one-time argon2 hash compute (stored in describe-scoped `realHash`). Added a new `beforeEach` that DELETEs `custody_audit_log` rows AND `accounts` rows for both seeded usernames, then re-INSERTs the null-hash and wrong-password seed rows. Reset runs ahead of every `it` attempt including vitest's `retry: 1`, so a retried test sees a clean baseline (one INSERT from the route call, count == 1) instead of compounded prior-attempt rows. Empirically, dropping the warmup (item 2) tightened the SELECT-INSERT race window enough that the `beforeEach` reset alone was insufficient — the architect's "Alternative shape" (bounded poll + pair with `beforeEach`) was needed. Added a module-level `fetchSettledAuditRows()` helper that polls up to 1.5s for `>= 1` row, then waits 100ms for any imminent double-log mutation to also commit, then SELECTs once more and returns the settled count. Both `it` blocks call the helper and keep `expect(auditRows.length).toBe(1)` (the `beforeEach` reset guarantees the count is exactly 1, so `.toBe(1)` still surfaces an over-log production mutation). Production `custody.ts:228` `logCustodyBroadcast(...).catch(() => {})` is unchanged — fire-and-forget convention preserved per `auth-structured-log-shape-2026-04-29.md`.
+- **Item 2 (P2)**: same file at the prior lines 128-131 (null-hash case) and 171-173 (wrong-password case) — dropped both warmup `request(app).post('/api/custody/upgrade').send(...)` calls and their 4-line preamble comments. The eager `SENTINEL_ARGON2_HASH_PROMISE` at `auth.ts:157` is computed at module load (the warmup never reached `burnSentinel`/`argon2.verify` because `verifyHiveSignature` 401s on the missing `Authorization` header), and the documented 35× `TIMING_ORACLE_FLOOR_MS` floor margin handles the cold-path concern. ~12 lines removed total.
+- **Item 3 (P3)**: `backend/tests/routes/signup-verify-resume-argon-error-translation.test.ts:101` — replaced the brittle `it`-name string `'(signup-verify.ts:146, runWithArgon2Slot)'` with `'(\`/resume-signup\` handler in signup-verify.ts, runWithArgon2Slot)'`. Greppable, drift-stable across line motion in `signup-verify.ts` (item 4 of round-2 already moved `runWithArgon2Slot` from line 146 to line 170).
+- **Item 4 (P3)**: `backend/tests/routes/custody-upgrade-null-hash.test.ts` — both seed `INSERT`s (now in `beforeEach` per item 1's refactor) wrapped in try/catch that re-throw with a descriptive message naming the seeding step: `Failed to seed null-hash account ${NULL_HASH_USER}: ${(err as Error).message}` and `Failed to seed wrong-password account ${WRONG_PWD_USER}: ${(err as Error).message}`. On schema/constraint failure the surfaced error names the root cause instead of cascading into a cryptic 0-rows audit-log assertion downstream.
+
+Verification:
+- `npx tsc --noEmit` — clean.
+- `npm run lint` — clean (only pre-existing accepted `@typescript-eslint/no-explicit-any` warnings in `seed-phrase.ts`, untouched by this work).
+- `npx vitest run tests/routes/custody-upgrade-null-hash.test.ts tests/routes/signup-verify-resume-argon-error-translation.test.ts` (with `REDIS_URL` + `APP_DATABASE_URL` Docker-network overrides per root CLAUDE.md "Running Tests") — 14/14 pass.
