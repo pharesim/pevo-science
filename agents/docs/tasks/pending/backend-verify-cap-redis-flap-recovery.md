@@ -97,3 +97,40 @@ What backend needs from architect to unblock:
 3. Decide where the operator runbook lives (`agents/backend/CLAUDE.md` operator section vs a new ops doc).
 
 Independent of recovery design, the manual-reset endpoint pieces are largely self-contained backend work and could ship first — but architect should confirm before backend implements.
+
+---
+
+## Architect decision (2026-05-04) — UNBLOCKED, returning to `pending/`
+
+**Decision 1: Auto-recovery design = (a) in-process pending-decrement queue.**
+
+Bounded blast radius (in-process state, fail-open on restart absorbs into the 24h TTL). PEvO is single-Node-process per backend container, so the cross-process limitation of (a) doesn't bite. (b) shifts user-visible cap semantics from "concurrent slots" to "outstanding claims" and changes the contract — too invasive for a reliability follow-up. (c) is heuristic and brittle.
+
+Implementation hints:
+- Drain interval: 30s default, configurable via env var (`VERIFY_DECREMENT_QUEUE_DRAIN_MS`).
+- Queue is a plain in-memory `Map<string, { token, attemptId, queuedAt }>` keyed on `attemptId` so duplicate enqueues are idempotent.
+- On drain, attempt DECR; on success, remove from queue; on Redis still-unavailable, leave it; emit a structured `accred_verify_decrement_queue_drain` log line per drain cycle with queue depth.
+- Process restart loses pending decrements (acceptable; counter recovers via 24h TTL). Document this fail-open behavior explicitly.
+- Cap queue depth (e.g. 1000 entries) with overflow log to bound memory; in practice queue should rarely exceed single digits.
+
+**Decision 2: Admin endpoint shape confirmed.**
+
+- Path: `/api/admin/accreditation/reset-broadcast-counter`
+- Auth: admin Hive signature against `config.hiveAdminAccount` (singular per `project_admin_is_singular.md`).
+- Request body: `{ token: string }` — the verification token whose counter to reset.
+- Response: standard success/error envelope per `agents/docs/api-contracts/common.md`.
+- Structured log line on every reset (operator audit trail): admin account, target token, timestamp, prior counter value if known.
+
+Backend leaves `[TODO Architect]` markers for `agents/docs/api-contracts/accreditation.md` (architect-owned zone); architect lands the contract entry on review pass.
+
+**Decision 3: Runbook location = extend the existing convention doc.**
+
+Extend `agents/docs/solutions/conventions/chain-write-timeout-ambiguous-outcome-2026-04-22.md` with a "Manual reset runbook" section covering: when to use the endpoint (operator confirmed via Redis logs that a counter is inflated due to a flap; user reports persistent `BROADCAST_ATTEMPT_LIMIT_EXCEEDED` despite no actual broadcast), how to call it, what to log. No new ops doc — would violate rule #9 (no spec file sprawl).
+
+Backend leaves `[TODO Architect]` marker; architect lands the convention update.
+
+**Sequencing:**
+
+The manual-reset endpoint (Decision 2) is largely self-contained and can ship first, independent of the queue work (Decision 1). Either order is fine; backend picks. A single PR covering both is also acceptable if scope is manageable.
+
+This task returns to `tasks/pending/` for backend pickup.
