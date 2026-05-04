@@ -127,3 +127,29 @@ Round-4 hold-block items #1-#4 landed. Mutation-verify completed. Ready for arch
 - **Mutation-verify** — locally stashed the round-2 widening by wrapping the `authenticateRequest` call in an inner try/catch that swallows the throw (effectively narrowing the outer catch's reach to pre-round-2 scope). Reran `'authenticateRequest throw → 500 INTERNAL_ERROR, state not consumed (authed mode)'`; spec turned red (timeout — the swallowed throw leaves `callerUsername = null` → early return without writing the response → supertest hangs). Restored the original code; `git diff backend/src/routes/orcid.ts` is empty. Confirms the spec exercises the round-2 widened outer catch, not an inner catch shadowing path.
 - Verified: backend lint clean (2 pre-existing `@typescript-eslint/no-explicit-any` warnings in `seed-phrase.ts`, unrelated). Typecheck clean. Full backend vitest 599 pass + 4 skipped (0 failures).
 - [TODO Architect] `agents/docs/api-contracts/orcid.md` doc updates from prior `[TODO Architect]` blocks (state-not-consumed-on-403 contract + state-not-consumed-on-infra-error contract — both pinned now by the new specs + NO_ACCOUNT envelope shape per the round-2 superseding decision + optional `common.md` note about `error.details` as the canonical context-channel) remain deferred to atomic archive.
+
+---
+
+## Architect re-review (2026-05-04) — HELD PENDING FIXES (round 5)
+
+`/ce-code-review` ran on commit `2eb2efb` (round-4 hold-fixes: sendError headersSent guard test coverage, enriched warn payload with `getRequestId()`, file-level beforeEach reset for `verifyHiveSignatureFailureToken`, slug-strip on 3 sites + 1 Error string, mutation-verify documented) with 5 personas (correctness, testing, maintainability, project-standards, security). All 4 round-4 items verified landed correctly. Mutation-verify per `inner-catch-shadows-outer-catch-in-route-tests-2026-04-28.md` documented in commit message.
+
+One round-5 hold item — pin the new `reqId` field on the warn payload so a deletion mutation is caught. The architect-side `[TODO Architect]` for `agents/docs/api-contracts/orcid.md` + `common.md` doc updates land during archive (architect zone).
+
+### Items to address
+
+**1. (P3) `reqId` field in enriched warn payload not asserted in spec**
+
+- File: `backend/tests/response.test.ts` (the new `'drops duplicate write and warns when headersSent is true'` spec)
+- Testing T1 75. Production code at `response.ts:27` calls `getRequestId()` and includes the result as `reqId` in the warn payload. The spec uses `objectContaining({ attemptedStatus, attemptedCode, method, url })` — pins 4 of the 5 enriched fields but not `reqId`. A mutation removing the `reqId: getRequestId()` line passes the spec.
+- The test runs outside an HTTP context, so `getRequestId()` returns `'no-request'` (deterministic fallback at `logger.ts:15`). Add `reqId: 'no-request'` to the matcher. One line.
+
+### Items dismissed during architect triage (do NOT address)
+
+- **Describe-block landmark `(SEC-002-HARDENING)` retained while comments stripped** (maintainability MNT-R1 45) — implementer flagged for architect confirm; landmark IS the family anchor used by sibling spec comments. Confirmed: leave it.
+- **Comment block dropped SEC-002-HARDENING provenance trailer** (maintainability MNT-R2 35) — git blame is durable provenance; intentional.
+- **GET /api/settings/email/verify/:token logs verify token in pino-http request logs** (security residual) — pre-existing, not introduced by this commit; out of scope.
+
+### Re-review signal
+
+When item 1 lands, `git mv` this file back to `tasks/review/`. The architect's next review pass picks it up; at archive, architect lands the deferred `agents/docs/api-contracts/orcid.md` doc updates (state-not-consumed-on-403 contract + state-not-consumed-on-infra-error contract + NO_ACCOUNT envelope shape) and `common.md` `error.details` channel note as a single atomic edit.

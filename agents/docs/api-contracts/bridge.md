@@ -144,7 +144,7 @@ The `author` is the bridge account (not the requesting user). The requesting use
 - `DUPLICATE` (HTTP 409) — preprint already registered on PEvO. Response includes `existing_author` and `existing_permlink`.
 - `BROADCAST_TIMEOUT` (504) — broadcast timed out before chain confirmation. Message: `"Broadcasting bridge paper registration timed out"`. Details: `{retriable:false, outcome:"uncertain", verify_before_retry:true, timeout_ms}`. The broadcast may have landed; verify via the chain before retrying. See [common.md → Broadcast Error Envelopes](common.md).
 - `BROADCAST_FAILED` (502) — Hive node rejected the broadcast. Message: `"Failed to broadcast bridge paper registration to Hive"`. Details: `{retriable:false}`.
-- `INTERNAL_ERROR` — bridge posting key not configured
+- `SERVICE_UNAVAILABLE` (503) — bridge posting key not configured on the deployment. Operator misconfiguration; a redeploy with `PEVO_BRIDGE_POSTING_KEY` set restores service. Message: `"Bridge posting key not configured"`.
 - `RATE_LIMITED` — too many registrations
 
 ---
@@ -186,4 +186,4 @@ Only the original registerer (matched via `pevo.source.registered_by` in the exi
 - `BAD_REQUEST` — source metadata could not be retrieved
 - `BROADCAST_TIMEOUT` (504) — broadcast timed out before chain confirmation. Message: `"Broadcasting bridge paper update timed out"`. Details: `{retriable:false, outcome:"uncertain", verify_before_retry:true, timeout_ms}`. The broadcast may have landed; verify via the chain before retrying.
 - `BROADCAST_FAILED` (502) — Hive node rejected the broadcast. Message: `"Failed to broadcast bridge paper update to Hive"`. Details: `{retriable:false}`.
-- `INTERNAL_ERROR` — bridge posting key not configured
+- `SERVICE_UNAVAILABLE` (503) — bridge posting key not configured on the deployment. Operator misconfiguration; a redeploy with `PEVO_BRIDGE_POSTING_KEY` set restores service. Message: `"Bridge posting key not configured"`.

@@ -118,3 +118,42 @@ No other test files matched any of the modified field shapes (verified via grep 
 - `npm run lint`: clean (only pre-existing seed-phrase.ts warnings).
 - Targeted vitest on the auth route tests (auth, auth-argon-error-translation, auth-signup-argon-error-translation, auth-signup-dup-saturated, auth-reset-request-shutdown, auth-concurrency, auth-recover, auth-resume-signup): 52 tests passed across 6 files (3 of the 8 I tried were not present in the tree; the 6 that ran are the auth-route surface).
 - Full backend vitest: 640 passed | 5 skipped, with 1 isolated flake on `tests/routes/reputation-lifecycle.test.ts` ("re-throws permanent errors (TypeError) so post-broadcast discrimination surfaces 502") that does NOT involve `auth.ts`. Re-running the same test file in isolation produces 10/10 pass; running on main without my changes produces 10/10 pass. The flake reproduces only under full-suite parallel load against real Postgres/Redis (the suite contains many ECONNRESET / ETIMEDOUT lines from concurrent HAF queries during the run). Surfacing it here so the architect re-review pass can verify; it is not introduced by this convergence sweep.
+
+---
+
+## Architect re-review (2026-05-04) — HELD PENDING FIXES (round 1)
+
+`/ce-code-review` ran on commit `153605c` (convergence sweep: 18 logger.* emissions in `auth.ts` reshaped onto canonical `{ event: 'auth.<endpoint>.<sub_event>', route: 'auth.<endpoint>', email_hash?, emailKnown?, err? }`; rename `reset_request_drain_suppression` → `auth.reset_request.drain_suppression`; add convention doc) with 9 personas (correctness, testing, maintainability, project-standards, learnings, security, adversarial, kieran-typescript). Sweep itself is exhaustive — all 18 emissions touched, all carry both `event` and `route`, CNPD `email_hash` preserved at the 4 prior PII-hash migration sites. Convention doc is well-structured.
+
+But one direct violation of the convention this commit introduces, plus the convention's own enforcement gap, plus a doc-and-code consistency hole around the `burnSentinel` cross-file callers.
+
+### Items to address
+
+**1. (P2) `auth.signup.smtp_send_failed` violates the canonical `err: <Error>` shape**
+
+- File: `backend/src/routes/auth.ts:540`
+- Cross-reviewer convergence: adversarial ADV-2 90 + kieran-ts KT-01 80 → anchor 100. The emission carries `err: (mailErr as Error).message` (a STRING via cast) while every other 17 emissions in the file pass the raw Error. The convention doc explicitly specifies `err?: <Error>`. Pino's built-in `err` serializer fires only when the field is a real Error — captures `.message`, `.stack`, `.type`, `.cause`. With a pre-extracted string the serializer can't fire; only the message text reaches log aggregators, the stack trace silently dropped on the SMTP-relay debugging path that needs it most.
+- Fix: drop the `(mailErr as Error).message` cast, pass `err: mailErr` directly. One-character change.
+
+**2. (P2) 17 of 18 reshaped emissions have no spy-assertion coverage — drift inevitability**
+
+- Cross-reviewer convergence: testing T1 100 + adversarial ADV-3 85 → anchor 100. Per `tests-must-fail-on-mutation-of-code-under-test-2026-04-22.md`. Only `auth.reset_request.drain_suppression` is pinned (the round-2 fix on the sibling task). A typo mutation on any of the other 17 (`auth.signup.smtp_send_failed` → `auth.signup.SMTP_send_failed`, dropping a `route:` field, etc.) passes all 640 tests undetected.
+- Fix shape (pragmatic, not exhaustive): add 6-10 spy assertions on operationally-critical emissions where typos or field drops actually hurt operators during incidents — the outer-catch `*.failed` events on /login, /reset, /reset-request, /recover, /signup; the 3 `*.smtp_send_failed`; the 3 `*.smtp_not_configured`. Skip file-level emissions (`auth.startup.*`, `auth.burn_sentinel.*`) — process-exit / cross-file caller paths are structurally hard to drive. Each spec asserts `event` exact-match plus presence of `route` and any branch-identity fields.
+
+**3. (P2) `burnSentinel` cross-file caller attribution gap — code comment + convention doc edits**
+
+- Files: `backend/src/routes/auth.ts:246` (the `logger.warn` inside the helper's catch) and `agents/docs/solutions/conventions/auth-structured-log-shape-2026-04-29.md:59` (the "File-level (non-endpoint) emissions" enumeration).
+- Maintainability M1 90 + M2 85. `burnSentinel` is exported from `auth.ts` and called from `custody.ts` (1 site) and `signup-verify.ts` (3 sites). When the helper's catch fires from a custody-upgrade or signup-verify path, the emission carries `event: 'auth.burn_sentinel.failed'` and `route: 'auth.burn_sentinel'`. An operator grepping `event: 'custody.*'` during a custody-upgrade incident misses the failure entirely. The convention rationale lives only in the convention doc, not in the code. Doc enumeration omits `signup-verify.ts` as the third caller.
+- Fix: (a) inline comment at `auth.ts:246` clarifying the prefix-tags-file rule for cross-file callers (one-line annotation citing the convention doc); (b) one-line update to the convention doc's "File-level (non-endpoint) emissions" section to add `signup-verify.ts` as a third importer (3 call sites at lines 119, 130, 140 in `signup-verify.ts`).
+
+### Items dismissed during architect triage (do NOT address)
+
+- **Convention doc may be hand-written rather than via /ce-compound** (project-standards PS-02 90) — doc is on main, structurally sound, cross-linked from `timing-equalization-smtp-failure-mode-oracle-2026-04-22.md`; tearing it out to feed `/ce-compound` retroactively risks divergence. Dismissed with reaffirmation: future convention docs MUST go through `/ce-compound`.
+- **Rolling-deploy split-brain on event rename** (adversarial ADV-1 65) — single-reviewer below the 75 anchor; PEvO has no production aggregator dashboards keyed on the old tag.
+- **`objectContaining` permissiveness — extra fields wouldn't fail** (adversarial ADV-4 80) — open-ended; would require negative-property assertions for every "shouldn't be here" field.
+- **Convention scope = auth.ts only; sibling files still use older shape** (adversarial ADV-6 70) — explicit non-goal of THIS task; filed as new follow-up `backend-log-shape-convergence-sibling-files.md` in `tasks/pending/`.
+- **No typed `AuthLogEvent` discriminated union** (kieran-ts KT-02 50) — single-reviewer below the 75 anchor; convention doc + spy assertions from item 2 cover the typo class.
+
+### Re-review signal
+
+When items 1-3 land, `git mv` this file back to `tasks/review/`.

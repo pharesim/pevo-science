@@ -135,3 +135,46 @@ Verification:
 - `npm run lint` — clean (only pre-existing accepted `@typescript-eslint/no-explicit-any` warnings in `seed-phrase.ts`).
 - `npx tsc --noEmit` — clean.
 - `npx vitest run tests/routes/recover.test.ts tests/routes/auth-reset-request-shutdown.test.ts` — 2 files / 33 tests passed against real Postgres + Redis.
+
+---
+
+## Architect re-review (2026-05-04) — HELD PENDING FIXES (round 2)
+
+`/ce-code-review` ran on commit `76d90ed` (round-1 hold-fix: symmetric `else { logger.warn(...) }` on `/resend-verification` + `connectionTimeout: 5000, socketTimeout: 10000` on both `/resend-verification` and `/reset-request` createTransport calls) with 6 personas (correctness, testing, maintainability, project-standards, learnings, reliability). Round-1 hold items 1-2 verified landed correctly: symmetric else-branch matches `/reset-request` shape; nodemailer option names + types correct; existing try/catch fall-through to uniform 200 preserved.
+
+Round-2 surfaces a P1 missed-site finding (matches the wrapping-primitive-exhaustive-call-site-audit convention's exact failure shape) plus reliability and testing gaps. The cleanest fix bundles all of them via a single helper extraction.
+
+### Items to address
+
+**1. (P1) `/signup` createTransport at `auth.ts:524` missing connectionTimeout + socketTimeout**
+
+- Cross-reviewer convergence: reliability R-01 100 + maintainability M-1 90 → anchor 100. Same vulnerability class the round-1 fix closed on `/resend-verification` and `/reset-request`. The third site retains nodemailer's defaults (2-min TCP connect, 10-min socket inactivity); a relay that accepts the TCP handshake but never responds to EHLO pins the `/signup` thread for up to 2 minutes.
+
+**2. (P2) `greetingTimeout` unbounded on all 3 sites**
+
+- Reliability R-02 90. nodemailer's `greetingTimeout` default is 30s (the wait between TCP handshake and the SMTP 220 banner). The connectionTimeout/socketTimeout from round-1 do NOT bound this window. A relay completing TCP but never sending 220 bypasses connectionTimeout and pins the thread for 30s. The round-1 comment claims "EHLO stall bounded by these timeouts" but that's actually bounded by `greetingTimeout`.
+- Worst-case wall-time on the round-1-patched endpoints: 5s connect + 30s greeting + 10s socket = 45s, not 15s as the comment implies.
+- Add `greetingTimeout: 8000` to all 3 sites.
+
+**3. (P2) `dnsTimeout` unbounded on all 3 sites**
+
+- Reliability R-03 75. nodemailer's `dnsTimeout` default is 30s. DNS resolution runs BEFORE connectionTimeout starts, so a misconfigured or unreachable resolver adds 30s before the connect clock begins. Worst case under DNS misconfig + relay handshake-but-no-greeting + socket idle = 30 + 5 + 30 + 10 = 75s.
+- Add `dnsTimeout: 5000` to all 3 sites.
+
+**4. (P2) Three-site createTransport duplication — extract `createSmtpTransporter()` helper**
+
+- Maintainability M-2 + M-3 75. The 5-field options object is repeated at 3 sites in `auth.ts`. Item 1 happened precisely because there was no single call point. Extract a module-level helper that owns the canonical option set (host/port/secure/auth from config + the 4 timeout knobs) and route all 3 callers through it. Eliminates the missed-site failure mode structurally. Inline rationale comment lives in the helper, replacing the cross-references at the call sites.
+
+**5. (P2) Tests don't capture createTransport options or pin the new else-branches — silent revert undetected**
+
+- Testing T01 + T02 85-90. The two BE-AUTH-SMTP-STATUS-CODE-ORACLE tests in `recover.test.ts` use `vi.spyOn(nodemailer, 'createTransport').mockReturnValue({sendMail})` — full return-value replacement that discards the options arg. Removing connectionTimeout/socketTimeout from any site passes all 33 tests. Both new else-branches (smtpHost falsy on /resend-verification + /reset-request) emit only `logger.warn`; deletion leaves `sendOk` 200 unchanged so no test catches the loss.
+- Fix shape (after item 4 lands): a helper unit test pinning all 4 timeout fields kills the option-revert mutations in one shot. An integration test that boots the app, sets `config.smtpHost = ''`, hits each route, and asserts a logger.warn fires with `route: 'auth.<endpoint>', emailKnown: 'known'` kills the else-branch revert mutations on both sites.
+
+### Items dismissed during architect triage (do NOT address)
+
+- **Per-request createTransport (no connection pooling)** — wasteful under load but not a reliability bug; pooling deferred per architect's prior round-1 dismissal.
+- **`/reset-request` SMTP-unconfigured else-branch test gap** (architect's prior round-1 dismissal) — folded into item 5 above as a 2-route requirement now that `/resend-verification` has the same gap.
+
+### Re-review signal
+
+When items 1-5 land, `git mv` this file back to `tasks/review/`. The architect's next review pass picks it up.
