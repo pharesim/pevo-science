@@ -127,7 +127,7 @@ export interface Argon2RouteMockKit {
  * invocation guard's defense-in-depth shape no longer depends on per-site
  * caller discipline). The 503 wrappers (`assert503QueueFull` /
  * `assert503Shutdown`) are bound to forward to the module-internal
- * `assert503Impl` with the right retry-after constant + reason discriminator
+ * `assert503` with the right retry-after constant + reason discriminator
  * pre-pinned, so call sites cannot accidentally pair the queue-full retry
  * window with the shutdown reason or vice versa.
  */
@@ -155,8 +155,8 @@ export function buildArgon2RouteMockKit(): Argon2RouteMockKit {
       };
     },
     assertArgon2AbortIsSilent: (promise) => assertArgon2AbortIsSilentImpl(promise, mockFn),
-    assert503QueueFull: (res) => assert503Impl(res, QUEUE_FULL_RETRY_AFTER_SEC, ARGON_REASON_QUEUE_FULL),
-    assert503Shutdown: (res) => assert503Impl(res, SHUTDOWN_RETRY_AFTER_SEC, ARGON_REASON_SHUTDOWN_DRAIN),
+    assert503QueueFull: (res) => assert503(res, QUEUE_FULL_RETRY_AFTER_SEC, ARGON_REASON_QUEUE_FULL),
+    assert503Shutdown: (res) => assert503(res, SHUTDOWN_RETRY_AFTER_SEC, ARGON_REASON_SHUTDOWN_DRAIN),
   };
 }
 
@@ -298,7 +298,7 @@ export async function assertArgon2AbortIsSilentImpl(
  *     `ArgonQueueFullError` from `ShuttingDownError` for HTTP-only ops
  *     consumers without log-stream correlation.
  */
-function assert503Impl(
+function assert503(
   res: SupertestResponse,
   expectedRetryAfterSec: number,
   expectedReason: typeof ARGON_REASON_QUEUE_FULL | typeof ARGON_REASON_SHUTDOWN_DRAIN,
