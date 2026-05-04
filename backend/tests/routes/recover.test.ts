@@ -6,6 +6,7 @@ import { createApp } from '../../src/app.js';
 import { getAppPool } from '../../src/app-db.js';
 import { encryptKey } from '../../src/custody-crypto.js';
 import { config } from '../../src/config.js';
+import { logger } from '../../src/logger.js';
 import { clearRateLimitKeys } from '../support/redis-helpers.js';
 import { TIMING_ORACLE_FLOOR_MS, TIMING_ORACLE_CEILING_MS } from '../support/timing-constants.js';
 
@@ -1314,6 +1315,88 @@ describe('BE-AUTH-SMTP-STATUS-CODE-ORACLE: SMTP failure must not leak known-emai
       expect(sendMailSpy).toHaveBeenCalledTimes(1);
 
       transportSpy.mockRestore();
+    },
+  );
+
+  // Round-2 hold-fix item 5(b) of BE-AUTH-SMTP-STATUS-CODE-ORACLE: when
+  // `config.smtpHost` is empty, both routes MUST emit the canonical
+  // `auth.<endpoint>.smtp_not_configured` warn with route + emailKnown:'known'
+  // so an operator running with SMTP misconfigured gets a deterministic
+  // signal. Without these spy assertions, an option-revert that drops the
+  // else-branch entirely (or strips one of the structured-log fields) passes
+  // every behavioral check (the route still returns 200) but loses operator
+  // visibility into the misconfiguration. Pin the log shape per the
+  // canonical structured-log convention
+  // (`agents/docs/solutions/conventions/auth-structured-log-shape-2026-04-29.md`).
+  it.skipIf(!dbReachable || !redisReachable)(
+    '/reset-request emits auth.reset_request.smtp_not_configured warn when config.smtpHost is empty',
+    async () => {
+      const prevHost = config.smtpHost;
+      config.smtpHost = '';
+      const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(
+        () => undefined as unknown as void,
+      );
+
+      try {
+        await clearRateLimitKeys(['auth-reset-request']);
+        const res = await request(app)
+          .post('/api/auth/reset-request')
+          .send({ email: RESET_EMAIL });
+        // Route still returns 200 — the SMTP-misconfigured else-branch is
+        // operator-side observability, not a behavioral change.
+        expect(res.status).toBe(200);
+
+        const matched = warnSpy.mock.calls.find(
+          ([obj]) =>
+            obj &&
+            typeof obj === 'object' &&
+            (obj as { event?: string }).event === 'auth.reset_request.smtp_not_configured',
+        );
+        expect(matched).toBeDefined();
+        expect(matched![0]).toMatchObject({
+          event: 'auth.reset_request.smtp_not_configured',
+          route: 'auth.reset-request',
+          emailKnown: 'known',
+        });
+      } finally {
+        warnSpy.mockRestore();
+        config.smtpHost = prevHost;
+      }
+    },
+  );
+
+  it.skipIf(!dbReachable || !redisReachable)(
+    '/resend-verification emits auth.resend_verification.smtp_not_configured warn when config.smtpHost is empty',
+    async () => {
+      const prevHost = config.smtpHost;
+      config.smtpHost = '';
+      const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(
+        () => undefined as unknown as void,
+      );
+
+      try {
+        await clearRateLimitKeys(['auth-resend']);
+        const res = await request(app)
+          .post('/api/auth/resend-verification')
+          .send({ email: RESEND_EMAIL, password: FAIL_PASSWORD });
+        expect(res.status).toBe(200);
+
+        const matched = warnSpy.mock.calls.find(
+          ([obj]) =>
+            obj &&
+            typeof obj === 'object' &&
+            (obj as { event?: string }).event === 'auth.resend_verification.smtp_not_configured',
+        );
+        expect(matched).toBeDefined();
+        expect(matched![0]).toMatchObject({
+          event: 'auth.resend_verification.smtp_not_configured',
+          route: 'auth.resend-verification',
+          emailKnown: 'known',
+        });
+      } finally {
+        warnSpy.mockRestore();
+        config.smtpHost = prevHost;
+      }
     },
   );
 });

@@ -178,3 +178,26 @@ Round-2 surfaces a P1 missed-site finding (matches the wrapping-primitive-exhaus
 ### Re-review signal
 
 When items 1-5 land, `git mv` this file back to `tasks/review/`. The architect's next review pass picks it up.
+
+---
+
+## Backend re-review signal (2026-05-05, working tree)
+
+Round-2 hold items 1-5 landed at `backend/src/routes/auth.ts` + new test file.
+
+1. **(P1) Item 1 — `/signup` createTransport gains the 4 timeout knobs.** The third `createTransport` site at the original `auth.ts:524` was missed by round-1 (round-1 only patched the /reset-request and /resend-verification sites). After helper extraction (item 4), /signup routes through `createSmtpTransporter()` at `auth.ts:564` and gains all 4 timeouts uniformly with the other two callers.
+
+2-3. **(P2) Items 2 + 3 — All 3 sites get `greetingTimeout: 8000` + `dnsTimeout: 5000`; misleading "EHLO stall bounded" comment retired.** The helper at `auth.ts:279-292` is the canonical 5-field options object: host/port/secure/auth from config plus all four timeout knobs (`connectionTimeout: 5000`, `socketTimeout: 10000`, `greetingTimeout: 8000`, `dnsTimeout: 5000`). The helper's docblock at `auth.ts:251-278` explains why all four are needed (TCP connect, socket read, SMTP banner / EHLO read, DNS resolution are sequential failure stages) and replaces the round-1 inline comment that incorrectly attributed the EHLO-stall bound to `socketTimeout`. The old inline comments at the call sites are gone — single source of rationale lives in the helper.
+
+4. **(P2) Item 4 — `createSmtpTransporter()` helper extracted.** Module-level helper at `auth.ts:279-292`; all three call sites collapse to a single-line `const transporter = createSmtpTransporter();` (`auth.ts:564` /signup, `auth.ts:699` /resend-verification, `auth.ts:990` /reset-request). The "missed third site" failure mode that motivated round-2 is now structurally impossible — adding a fourth caller follows the same pattern, and changing the timeout shape happens in one place. The helper is `export`-ed so the round-2 unit test can pin its options object directly.
+
+5. **(P2) Item 5 — Tests pin the canonical options shape AND the smtp_not_configured else-branches.**
+   - **5(a) Helper unit test** at `backend/tests/routes/auth-smtp-transporter.test.ts` (4 tests). Spies on `nodemailer.createTransport`, calls `createSmtpTransporter()`, asserts every field on the captured options object: all 4 timeout knobs as separate `toMatchObject` assertions (one per knob, so a revert that drops any single timeout fails on its own assertion rather than masking inside a combined object check), plus host/port/secure/auth from config, `secure` derivation from `port === 465`, and `auth` omission when `smtpUser` is empty. Replaces the option-discarding `mockReturnValue({ sendMail })` shape used by the BE-AUTH-SMTP-STATUS-CODE-ORACLE block in `recover.test.ts` (which was the failure mode item 5 of the hold called out — those tests still pass behaviorally, but they cannot detect a timeout-revert mutation; the helper unit test does).
+   - **5(b) Integration-style smtp_not_configured spy assertions** in `backend/tests/routes/recover.test.ts:1320-1380` (2 new tests appended to the BE-AUTH-SMTP-STATUS-CODE-ORACLE describe block). Boots the real app, sets `config.smtpHost = ''`, hits `/api/auth/reset-request` and `/api/auth/resend-verification`, and asserts `logger.warn` is called with the canonical structured-log shape — `event: 'auth.<endpoint>.smtp_not_configured'`, `route: 'auth.<endpoint>'`, `emailKnown: 'known'` — per the structured-log convention (`agents/docs/solutions/conventions/auth-structured-log-shape-2026-04-29.md`). Each test wraps in try/finally so `config.smtpHost` is restored even on assertion failure; this kills the else-branch revert mutation on both routes in one shot.
+
+### Verification (round-2)
+
+- `npm run lint` — clean (only pre-existing accepted `@typescript-eslint/no-explicit-any` warnings in `seed-phrase.ts`).
+- `npx tsc --noEmit` — clean.
+- `npx vitest run tests/routes/auth-smtp-transporter.test.ts` — 4/4 passed.
+- `npx vitest run tests/routes/recover.test.ts -t "BE-AUTH-SMTP-STATUS-CODE-ORACLE"` — 4/4 passed (the 2 round-1 sendMail-rejects specs + 2 round-2 smtp_not_configured specs). The 4 pre-existing /signup timing-floor failures in `recover.test.ts` (`SEC-LOGIN-UNKNOWN-USER-TIMING`, `BE-SIGNUP-INSTITUTIONAL-GATE-ORDERING`) reproduce on baseline without these changes — unrelated to round-2 scope; surfaced for visibility but not introduced here.

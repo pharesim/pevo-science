@@ -249,6 +249,46 @@ export async function burnSentinel(input: string, signal?: AbortSignal): Promise
   }
 }
 
+// SMTP transporter factory.
+//
+// Round-2 of BE-AUTH-SMTP-STATUS-CODE-ORACLE collapsed the three per-route
+// inline `nodemailer.createTransport({ ... })` calls (/signup, /reset-request,
+// /resend-verification) into this single helper so every site gets the same
+// canonical 5-field shape (host/port/secure/auth + 4 timeout knobs). The
+// previous round-1 patch added timeouts to /reset-request and /resend-verification
+// but missed /signup, leaving the third caller at nodemailer's defaults; the
+// helper makes that "missed third site" failure mode structurally impossible.
+//
+// Timeout rationale (all four matter; round-1 only added 2):
+//   - connectionTimeout (5s): TCP-connect ceiling. Nodemailer defaults to 2 minutes.
+//   - socketTimeout (10s): per-read ceiling once the TCP connection is up.
+//     Nodemailer defaults to unbounded socket reads.
+//   - greetingTimeout (8s): bounds the SMTP banner + EHLO/HELO handshake.
+//     A relay that completes the TCP handshake but never sends a 220 banner
+//     would otherwise pin the request handler at the SMTP-protocol layer
+//     until socketTimeout fires (10s) — but only if a read is in flight.
+//     greetingTimeout is the explicit ceiling for the pre-EHLO read.
+//   - dnsTimeout (5s): bounds DNS resolution of `host`. Without it, a stalled
+//     resolver can pin the handler before any of the other timeouts fire,
+//     because no socket exists yet for socketTimeout to measure.
+//
+// All four together give a worst-case ceiling of ~10s under partial SMTP
+// failure (DNS + connect + greeting are sequential at startup; socket reads
+// happen after EHLO completes). Without them, nodemailer's per-stage defaults
+// can compound to multi-minute waits and exhaust the event loop under load.
+export function createSmtpTransporter() {
+  return nodemailer.createTransport({
+    host: config.smtpHost,
+    port: config.smtpPort,
+    secure: config.smtpPort === 465,
+    auth: config.smtpUser ? { user: config.smtpUser, pass: config.smtpPass } : undefined,
+    connectionTimeout: 5000,
+    socketTimeout: 10000,
+    greetingTimeout: 8000,
+    dnsTimeout: 5000,
+  });
+}
+
 // Argon2-semaphore catch-block handler factored to lib/argon2-error-handler.ts.
 // Imported as `handleArgonError` above. Every catch site that wraps a
 // `runWithArgon2Slot` call (directly or transitively via burnSentinel)
@@ -521,12 +561,7 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
     // Send verification email
     if (config.smtpHost) {
       try {
-        const transporter = nodemailer.createTransport({
-          host: config.smtpHost,
-          port: config.smtpPort,
-          secure: config.smtpPort === 465,
-          auth: config.smtpUser ? { user: config.smtpUser, pass: config.smtpPass } : undefined,
-        });
+        const transporter = createSmtpTransporter();
 
         const verifyUrl = `${config.appUrl}/signup/verify?token=${verifyToken}`;
         await transporter.sendMail({
@@ -662,20 +697,7 @@ router.post('/resend-verification', resendLimiter, async (req: Request, res: Res
     // See `agents/docs/solutions/conventions/timing-equalization-smtp-failure-mode-oracle-2026-04-22.md`.
     if (config.smtpHost) {
       try {
-        const transporter = nodemailer.createTransport({
-          host: config.smtpHost,
-          port: config.smtpPort,
-          secure: config.smtpPort === 465,
-          auth: config.smtpUser ? { user: config.smtpUser, pass: config.smtpPass } : undefined,
-          // Bound the request handler's wall-time under partial SMTP failure.
-          // Without these, nodemailer defaults to a 2-minute TCP connect timeout
-          // and unbounded socket reads, so a relay that accepts the handshake
-          // but never responds to EHLO can pin a request thread for minutes
-          // and exhaust the event loop under concurrent load. 5s connect + 10s
-          // socket covers normal relay latency with a safe ceiling.
-          connectionTimeout: 5000,
-          socketTimeout: 10000,
-        });
+        const transporter = createSmtpTransporter();
 
         const verifyUrl = `${config.appUrl}/signup/verify?token=${newToken}`;
         await transporter.sendMail({
@@ -967,16 +989,7 @@ router.post('/reset-request', resetRequestLimiter, async (req: Request, res: Res
     // uniform 200 below regardless of SMTP outcome.
     if (config.smtpHost) {
       try {
-        const transporter = nodemailer.createTransport({
-          host: config.smtpHost,
-          port: config.smtpPort,
-          secure: config.smtpPort === 465,
-          auth: config.smtpUser ? { user: config.smtpUser, pass: config.smtpPass } : undefined,
-          // Bound the request handler's wall-time under partial SMTP failure.
-          // See /resend-verification createTransport for the rationale.
-          connectionTimeout: 5000,
-          socketTimeout: 10000,
-        });
+        const transporter = createSmtpTransporter();
 
         const resetUrl = `${config.appUrl}/auth/reset?token=${resetToken}`;
         await transporter.sendMail({
