@@ -12,7 +12,6 @@ import { decryptKey } from '../custody-crypto.js';
 import { logCustodyBroadcast } from '../custody-audit.js';
 import { logger } from '../logger.js';
 import { runWithArgon2Slot } from '../lib/argon2-semaphore.js';
-import { burnSentinel } from './auth.js';
 import { handleArgonError, ARGON_HANDLED } from '../lib/argon2-error-handler.js';
 import { requestAbortSignal } from '../lib/request-abort-signal.js';
 import { handleBroadcastError } from '../lib/broadcast-error.js';
@@ -263,28 +262,29 @@ router.post('/upgrade', verifyHiveSignature, upgradeLimiter, async (req: Request
       return sendError(res, 409, 'ALREADY_UPGRADED', 'Account has already been upgraded to self-custody');
     }
 
-    // Load-bearing null-guard for ORCID-only accounts. The reachable path
-    // today: an ORCID-verified account (`password_hash=NULL`, `custody=NULL`
-    // or `'orcid'`) signs in via /api/orcid/callback, which mints a JWT with
-    // `custody: account.custody || 'light'` (orcid.ts ~line 456). The `||`
-    // defaults the JWT claim to `'light'` whenever the DB column is null/
-    // falsy. That JWT then passes the `custody !== 'light'` gate above and
-    // reaches this branch with `account.password_hash === null`. Without
-    // this guard, execution hits `argon2.verify(null, password)` → synchronous
-    // TypeError → 500 in ~0ms, reopening the wall-time / status-code oracle
-    // the burnSentinel work exists to close. The orcid.ts `||` default
-    // versus this route's gate is the underlying invariant violation; that
-    // is tracked separately. The null-guard here is the local fix. Burn the
-    // sentinel to match the wrong-password branch wall-time and return the
-    // same 401 + audit-log entry that branch emits so internal observers
-    // cannot distinguish a null-hash account from an ordinary wrong-password
-    // attempt. See BACKEND-PASSWORD-HASH-NULL-TYPING-AUDIT.
+    // BACKEND-ORCID-CUSTODY-DEFAULT-INVARIANT (Option A): the orcid.ts JWT
+    // mint now uses `custody: account.custody` (no `|| 'light'` default), so
+    // ORCID-only accounts carry `custody: null` in the JWT. The middleware
+    // (`verifyHiveSignature.ts:84`) coerces null → `'self'`, which fails the
+    // `custody !== 'light'` gate above and 403s before reaching this branch.
+    // The previous round-2 null-guard (`if (!account.password_hash)` with
+    // `burnSentinel` for timing-equalization) is now unreachable through
+    // any documented path; the JWT-vs-DB drift is closed at the source.
+    //
+    // The minimal narrowing guard below is a TypeScript-narrowing belt-and-
+    // suspenders for any hypothetical future direct caller that bypasses
+    // `verifyHiveSignature` (e.g., a new auth path) and arrives here with a
+    // null hash. No `burnSentinel` is needed: the timing-oracle attack
+    // requires the path to be reachable from an attacker-issued JWT, and
+    // the orcid.ts fix removes that reachability. A future direct caller
+    // would be a server-internal control-flow bug, not a timing oracle.
     if (!account.password_hash) {
-      await burnSentinel(password, abortSignal);
-      logCustodyBroadcast(username, 'upgrade_failure').catch(() => {});
+      logger.error(
+        { username, event: 'custody_upgrade_null_hash_unreachable' },
+        'Custody upgrade reached password-verify branch with null password_hash. The orcid.ts default removal should have made this unreachable; investigate any new direct caller of this route.',
+      );
       return sendError(res, 401, 'UNAUTHORIZED', 'Invalid password');
     }
-
     // Verify password re-entry. Canonical hoist pattern (see the
     // `/resume-signup` handler in `signup-verify.ts` and
     // BACKEND-PASSWORD-HASH-NULL-TYPING-AUDIT) — pin the narrowed type for

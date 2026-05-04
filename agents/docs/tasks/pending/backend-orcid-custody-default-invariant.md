@@ -74,3 +74,61 @@ This task is independent of the round-3 hold-fix on `backend-password-hash-null-
 ## Background
 
 Identified during cluster-A `/ce-code-review` of commit `99c6e72` (BACKEND-PASSWORD-HASH-NULL-TYPING-AUDIT round-2 hold-fix), adversarial persona finding ADV-R4-3, conf 80. Filed as a separate task per architect triage on 2026-05-04 — the local round-2 mutation-fence is correct on its own scope; closing the underlying invariant is the natural follow-up.
+
+## Backend re-review signal (2026-05-04, Option A landed)
+
+**Option chosen: A** — drop the orcid.ts `||` default and let the middleware's `|| 'self'` fallback close the JWT-vs-DB drift. The null-guard at custody.ts is now unreachable through any documented path; replaced its burnSentinel + audit-log block with a TypeScript-narrowing-only guard plus a `custody_upgrade_null_hash_unreachable` operator log for the hypothetical direct-caller case. Rationale: Option A yields the simpler post-state (one fewer dead-code branch, one fewer mutation fence to maintain) and the consumer audit (below) shows no consumer relies on a non-null JWT custody claim that the middleware fallback wouldn't already handle correctly.
+
+### Consumer audit grep
+
+```
+grep -rn "hiveCustody\|req\.hiveCustody\|\.custody" backend/src/ --include="*.ts" | grep -v test | grep -v "\.d\.ts"
+```
+
+Sites that read the JWT `custody` claim (via `req.hiveCustody`):
+
+| Site | Purpose | Effect of `custody: null` JWT |
+|---|---|---|
+| `backend/src/middleware/verifyHiveSignature.ts:84` | Source of truth: extracts `payload.custody` and coerces with `|| 'self'`. | `null` → `'self'`. ORCID-only callers default to self-custody at the request level (correct: they have no encrypted keys). |
+| `backend/src/middleware/verifyHiveSignature.ts:182` | Hive-signature path always sets `'self'`. | Unaffected (this branch never reads JWT). |
+| `backend/src/routes/auth.ts:277` (`POST /api/auth/session`) | Re-mints JWT from `req.hiveCustody`. | Reads `req.hiveCustody || 'self'` — `null` already coerced to `'self'` by middleware, and double-defaulted here. New JWT carries `'self'`. |
+| `backend/src/routes/custody.ts:33` (`POST /api/custody/broadcast`) | Gates `custody !== 'light'` → 403. | ORCID-only (`'self'` post-coerce) fails the gate → 403 FORBIDDEN. Correct: ORCID-only accounts have no encrypted keys to broadcast. |
+| `backend/src/routes/custody.ts:228` (`POST /api/custody/upgrade`) | Gates `custody !== 'light'` → 403. | ORCID-only (`'self'` post-coerce) fails the gate → 403 FORBIDDEN before reaching the password-verify branch. **This is the load-bearing change.** The `password_hash=NULL` branch at line 282 is now unreachable through this route. |
+
+Sites that read `account.custody` (DB column, NOT JWT — out of scope for this task but cross-checked):
+
+```
+grep -n "account\.custody\|row\.custody" backend/src/routes/auth.ts backend/src/routes/settings.ts
+```
+
+| Site | Purpose | Effect |
+|---|---|---|
+| `backend/src/routes/auth.ts:850` (`POST /api/auth/login`) | Mints JWT after password-verify success: `account.upgraded_at ? 'self' : (account.custody || 'light')`. | Unchanged. The `|| 'light'` fallback here applies to password-verified accounts, which by definition have a non-null `password_hash`; the JWT-vs-DB drift this task closes does not apply (the password-verify branch is already past). |
+| `backend/src/routes/auth.ts:1284` (`POST /api/auth/recover`) | Same shape as login post-recovery. | Unchanged for the same reason. |
+| `backend/src/routes/settings.ts:90` (`GET /api/settings/email`) | Returns `row.upgraded_at ? 'self' : (row.custody || 'self')`. | Reads DB column directly. ORCID-only accounts now correctly surface as `'self'` here too. |
+| `backend/src/routes/settings.ts:301` | Logs warning if `row.custody === 'light'` on email delete. | Unchanged. |
+
+Conclusion: the only consumer that must change behavior under Option A is `custody.ts /upgrade`, which now correctly 403s ORCID-only callers at the gate. No consumer was found that would silently mishandle a `'self'`-coerced ORCID-only request. Two `auth.ts` JWT-mint sites still carry `account.custody || 'light'` defaults, but those mint paths run only after password-verify success, so they do not affect the JWT-vs-DB drift this task closes; widening them to honest null-handling is out of scope for this task.
+
+### Test mutation kills
+
+`backend/tests/routes/custody-upgrade-null-hash.test.ts` was re-purposed (not deleted). The new shape:
+1. Seeds `custody=NULL` + `password_hash=NULL` (the production-reachable ORCID-only shape, closing ADV-R4-3).
+2. Mints a JWT with `custody: null` (matches what orcid.ts now produces).
+3. Asserts 403 FORBIDDEN with `Only custodial accounts can upgrade` and `code: FORBIDDEN`. A regression that re-introduced `custody: account.custody || 'light'` in orcid.ts would let this request pass the gate and return 401 instead of 403 — that is the primary mutation kill.
+4. Asserts no audit-log entry (the gate fires before `logCustodyBroadcast(username, 'upgrade_failure')`).
+5. Wrong-password baseline preserved as the second test (light-custody + real argon2 hash + wrong password → 401 with audit-log row settled). This locks the wire contract for real light-custody upgrade attempts.
+
+### Verification
+
+- `npx tsc --noEmit` clean.
+- `npm run lint` clean (only pre-existing warnings in `seed-phrase.ts`).
+- Targeted vitest run: `tests/routes/custody-upgrade-null-hash.test.ts` (2/2), `tests/routes/custody.test.ts` (passes), `tests/routes/custody-upgrade-argon-error-translation.test.ts` (passes), `tests/routes/orcid.test.ts` (passes). 78/78 across the four files.
+
+### Files changed
+
+- `backend/src/routes/orcid.ts` — type narrowed to `custody: string | null`; both `|| 'light'` defaults at lines 456, 466 dropped.
+- `backend/src/routes/custody.ts` — `burnSentinel` import removed; null-guard block at the password-verify branch reduced to a TypeScript-narrowing-only guard with operator-level `custody_upgrade_null_hash_unreachable` log.
+- `backend/tests/routes/custody-upgrade-null-hash.test.ts` — re-purposed to lock the post-fix gate behavior (custody=NULL → JWT custody=null → 403 FORBIDDEN), preserving the wrong-password baseline as the second test.
+
+[TODO Architect] None. The orcid.ts response body still returns `custody: account.custody` (possibly null) to the frontend — `frontend/src/pages/orcid-callback.js:230` already does `auth.custody = data.custody || 'light'`, which is symmetric to the bug just removed but is in the UI agent's zone (out of backend scope). If the architect prefers the response-body shape to default to `'self'` instead of null, that is a one-line follow-up; flagged here for the architect's awareness but not blocking archive of this task.
