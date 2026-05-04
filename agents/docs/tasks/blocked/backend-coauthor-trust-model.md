@@ -136,3 +136,16 @@ This is a major feature; expect 2-4 implementation rounds with held-pending-fix 
 - `agents/docs/solutions/conventions/pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28.md` — convention this task extends from "identity-only" to "identity + field-write authorization".
 - ε task `backend-continuation-post-author-consent-gate.md` — sibling task; landed the identity layer.
 - `agents/docs/solutions/architecture-patterns/pevo-paper-version-chain-and-edit-semantics-2026-04-30.md` — version-chain semantics this task interacts with.
+
+---
+
+## [BLOCKED by Architect] (backend startup triage 2026-05-04)
+
+Phase 1 of this task is explicit: "Invoke `/ce-brainstorm` on the trust-model question with the architect." The brainstorm is the first deliverable; backend cannot proceed to Phase 2 implementation without (a) the threat-model writeup, (b) the sensitive-vs-non-sensitive field enumeration, (c) the chosen multi-sig primitive (per-paper sub-account vs custom_json+app-layer-validation vs co-author-veto window), and (d) the migration story for existing papers.
+
+What backend needs from architect to unblock:
+1. Architect-led `/ce-brainstorm` session with the user covering the design questions in this task file's "Design questions" section.
+2. Resulting design doc landed under `agents/docs/` (architect-owned zone) with `/ce-doc-review` pass clean.
+3. Decision on the bridge-paper trust model interaction (the ε hold-block special-case admit for `hive: null` authors needs a long-term home that is consistent with this task's design).
+
+Once the design doc is ratified, this task moves back to `tasks/pending/` and backend picks up Phase 2 implementation (schema changes, validation logic, tests, convention doc).

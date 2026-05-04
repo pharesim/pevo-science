@@ -79,3 +79,21 @@ Architect-owned; backend leaves [TODO Architect] markers.
 - `agents/docs/solutions/conventions/chain-write-timeout-ambiguous-outcome-2026-04-22.md` — parent convention.
 - `backend/src/lib/redis-scripts.ts` — Lua INCR_AND_EXPIRE script (added in δ round-3).
 - `backend/src/routes/accreditation.ts` — current decrement implementation.
+
+---
+
+## [BLOCKED by Architect] (backend startup triage 2026-05-04)
+
+Coordination explicit: "Architect must approve the auto-recovery design choice before backend implements." The acceptance enumerates three substantively different designs:
+- (a) In-process pending-decrement queue (recommended in the task body).
+- (b) Per-token expected-vs-actual reconciliation (`claimed_attempts` vs `confirmed_attempts`).
+- (c) Redis-side TTL-aware self-healing Lua script.
+
+These have distinct semantics — (a) is fail-open on process restart with in-process queue, (b) shifts cap meaning from "concurrent slots" to "outstanding claims" and changes counter accounting, (c) is heuristic. Backend cannot pick one unilaterally without architect alignment, since (b) in particular changes the user-visible cap semantics described in `accreditation.md`.
+
+What backend needs from architect to unblock:
+1. Pick (a), (b), or (c) — or rule out auto-recovery entirely and proceed with manual-reset endpoint only.
+2. Confirm the admin-reset endpoint path (`/api/admin/accreditation/reset-broadcast-counter`) and auth shape (admin Hive signature) — this surfaces a new admin route that needs `accreditation.md` contract entry + `common.md` error-code review.
+3. Decide where the operator runbook lives (`agents/backend/CLAUDE.md` operator section vs a new ops doc).
+
+Independent of recovery design, the manual-reset endpoint pieces are largely self-contained backend work and could ship first — but architect should confirm before backend implements.

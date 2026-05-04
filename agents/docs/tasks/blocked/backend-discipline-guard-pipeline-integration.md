@@ -100,3 +100,19 @@ If the ESLint rule fully subsumes `check-bridge-paper-discipline.sh`, decommissi
 - β round-3 commit `e521a96` — current grep-based guard implementation.
 - `agents/docs/solutions/conventions/pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28.md` — the convention this guard enforces.
 - `.githooks/commit-msg` — existing hook precedent for the pre-commit pattern.
+
+---
+
+## [BLOCKED by Architect] (backend startup triage 2026-05-04)
+
+Two structural blockers prevent backend from picking this up:
+
+1. **Cross-zone work outside `backend/`.** Acceptance #2 (pre-commit hook integration) writes `.githooks/pre-commit` and `.githooks/tests/test-pre-commit.sh`, both outside the backend zone. The repo's commit-msg zone-audit hook will reject any backend-prefixed commit that stages `.githooks/` paths. Backend agent boundaries (`agents/backend/CLAUDE.md` "Boundaries") explicitly forbid modifying files outside `backend/`. The hook + test-harness pieces need to land via the architect (or a separate cross-cutting commit with `[skip-zone-audit]` authorization from the user).
+2. **ESLint plugin location decision.** Acceptance #1 says "in `backend/eslint-plugin-pevo/` (NEW directory) or directly in the existing eslint config" and #4's coordination block says "Architect must approve the ESLint plugin location + the convention-doc landing path." Backend cannot ship a new `eslint-plugin-pevo/` package without architect sign-off on whether it's a sub-package, whether to keep it inline in `eslint.config.mjs`, or whether to defer the plugin packaging entirely.
+
+What backend needs from architect to unblock:
+- (a) Decision on ESLint rule packaging — inline in `backend/eslint.config.mjs` (simplest, recommended for single-rule scope) vs `backend/eslint-plugin-pevo/` directory.
+- (b) Decision on whether `.githooks/pre-commit` lands at all, and if so whether backend ships it under `[skip-zone-audit]` or it lands as architect-zone work.
+- (c) Decision on optional GH Actions workflow (`.github/workflows/lint.yml`) — repo-wide infra, not backend-zone.
+
+Once (a)–(c) are settled, backend can implement the ESLint rule + tests within its zone; the hook + workflow pieces need their own implementing agent / authorization path.
