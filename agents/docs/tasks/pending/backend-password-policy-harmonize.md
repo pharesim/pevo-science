@@ -142,3 +142,34 @@ Verification (mutation-then-revert per `agents/docs/solutions/conventions/tests-
 - `npx tsc --noEmit` — clean.
 - `npm run lint` — clean (only pre-existing accepted `@typescript-eslint/no-explicit-any` warnings in `seed-phrase.ts`).
 - `npx vitest run tests/lib/password-policy-drift.test.ts` (post-revert) — 1 file / 2 tests pass.
+
+---
+
+## Architect re-review (2026-05-04) — HELD PENDING FIXES (round 3)
+
+`/ce-code-review` ran on commit `591f815` (round-2 hold-fix: replace dead `valueOf` vector with `Symbol.toPrimitive`; rewrite comment block to name the specific mutation each vector kills) with 6 personas (correctness, testing, maintainability, project-standards, kieran-typescript, learnings). Round-2 acceptance landed correctly:
+
+- Vector 1 (`{ toString: () => 'Abcdef1234' }`) preserved as the string-hint kill.
+- Vector 2 (`{ valueOf: ... }`) replaced with `{ [Symbol.toPrimitive]: () => 'Abcdef1234' }` per the convention `js-coercion-mutation-kill-vector-2026-05-04.md`.
+- Comment block rewritten with per-vector "kills `<mutation>`" framing; the historical explanation of why `valueOf` failed (OrdinaryToPrimitive string-hint algorithm) preserved as documentation rationale.
+- Mutation-then-revert verification documented in the round-2 signal block; both vectors named in the disagreement-accumulator on a `pw = String(pw)` mutation.
+- `tsc --noEmit` clean, `npm run lint` clean, targeted vitest 1/2 pass.
+
+But one item below needs to land before this task can archive — a P3 comment-accuracy nit corroborated by two reviewers (testing conf 80, correctness as residual).
+
+### Items to address
+
+**1. (P3) Vector 2 comment over-claims "number hint (`+pw`)" as a kill target.**
+
+- File: `backend/tests/lib/password-policy-drift.test.ts`, the Vector 2 comment block (~line 71). Current text lists three coercion forms: "string hint (`String(pw)`), number hint (`+pw`), or default hint (template literal `\`${pw}\`, pw + ''`)".
+- Empirical: `+{ [Symbol.toPrimitive]: () => 'Abcdef1234' }` invokes `Symbol.toPrimitive` with hint='number', returns `'Abcdef1234'`, then `Number('Abcdef1234')` is `NaN`. A `pw = +pw + ''` mutation produces `'NaN'` which fails class checks for an unrelated reason (NaN-stringified) — no disagreement to surface in the accumulator, no kill via the named coercion mechanism.
+- The string-hint claim holds (the helper sees `'Abcdef1234'` post-coercion under `String(pw)` mutation). The default-hint claim holds (template literals call `String(pw)` internally; `pw + ''` invokes `Symbol.toPrimitive` with default hint and concatenates). The number-hint claim is structurally weaker than stated.
+- Suggested fix: replace "number hint (`+pw`)" with "default hint (`pw + ''`)". Or drop the "number hint" listing entirely and keep "string hint" + "default hint (template literal `\`${pw}\``, `pw + ''`)" — both are accurately killed by Vector 2. ~2-line edit in the comment.
+
+### Items dismissed during architect triage (do NOT address)
+
+- **None this round** — the only finding is item 1 above; everything else from the persona pass was clean.
+
+### Re-review signal
+
+When item 1 lands, `git mv` this file back to `tasks/review/`. The architect's next review pass picks it up.
