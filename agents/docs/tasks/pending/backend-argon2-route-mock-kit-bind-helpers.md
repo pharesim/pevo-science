@@ -106,3 +106,54 @@ Acceptance line 4 of this task notes the landing-order interaction with `backend
 - `npx tsc --noEmit`: clean (no test-file coverage in tsc per the pre-existing tsconfig limitation; vitest run validates types end-to-end).
 - `npm run lint`: clean (only pre-existing seed-phrase.ts warnings).
 - Targeted vitest (helper self-test + 7 caller files): 52 passed across 8 files. All previously-passing tests continue to pass; the kit-bound shape is non-breaking.
+
+---
+
+## Architect re-review (2026-05-04) — HELD PENDING FIXES (round 2)
+
+`/ce-code-review` ran on commit `d217720` (round-1 implementation: 4 assertion helpers bound onto `Argon2RouteMockKit`, 7 caller test files migrated, standalone exports renamed/removed) with 6 personas (correctness, testing, maintainability, project-standards, kieran-typescript, learnings). Round-1 acceptance items 1-5 verified landed correctly:
+
+- All 4 helpers (`assertArgon2AbortIsSilent`, `assert503`, `assert503QueueFull`, `assert503Shutdown`) are kit-bound methods on `Argon2RouteMockKit`.
+- All 7 caller test files migrated; 8 `assertArgon2AbortIsSilent(...)` call sites use the single-arg form (the round-3 second-arg threading is gone everywhere).
+- `assertArgon2AbortIsSilent` renamed to `assertArgon2AbortIsSilentImpl` (still exported for the round-4 self-test); `assert503` renamed to internal `assert503Impl`; `assert503QueueFull` / `assert503Shutdown` standalone exports removed.
+- Closure correctness verified — the kit-bound `assertArgon2AbortIsSilent` closure captures the same `mockFn` instance returned as `kit.mockRunWithArgon2Slot`. The retry-after constant pairings on the convenience wrappers are correct (queue-full → `QUEUE_FULL_RETRY_AFTER_SEC` + `ARGON_REASON_QUEUE_FULL`; shutdown → `SHUTDOWN_RETRY_AFTER_SEC` + `ARGON_REASON_SHUTDOWN_DRAIN`).
+- `tsc --noEmit`: clean. `npm run lint`: clean. Targeted vitest: 52 tests pass across 8 files.
+
+But two items below need to land before this task can archive — one P2 (a documentation regression that ships invisible to TS-aware tooling) and one P3 (dead public surface).
+
+### Items to address
+
+**1. (P2) Orphaned JSDoc block above `assertArgon2AbortIsSilentImpl` — public-API rationale invisible to IDE tooling.**
+
+- File: `backend/tests/support/argon2-error-mocks.ts:199-244`.
+- After renaming `assertArgon2AbortIsSilent` → `assertArgon2AbortIsSilentImpl`, the commit prepended a NEW 7-line JSDoc block (lines ~238-244) directly above the function. The PREVIOUS 35-line JSDoc block (lines ~200-237 — round-1 hold item 4 outcome-introspection rationale + round-3 invocation-guard fix-in-helper rationale + round-4 exact-count assumption note) was left in place verbatim. There are now TWO consecutive `/** ... */` blocks above the same declaration.
+- TypeScript / TypeDoc / VSCode hover associate ONLY the LAST consecutive JSDoc block with a declaration. Consequence:
+  - IDE hover on `assertArgon2AbortIsSilentImpl` → shows ONLY the new 7-line "Internal implementation..." block.
+  - The kit-bound `assertArgon2AbortIsSilent` method's JSDoc says "See `{@link assertArgon2AbortIsSilentImpl}` for the underlying logic" — clicking the link / hovering the linked symbol → shows ONLY the new 7-line block.
+- The 35-line rationale is now dead documentation: visible only to a linear file reader, invisible to every form of TS-aware tooling. The rationale contains the only in-tree explanation of (a) why the helper introspects outcomes (round-1 hold item 4), (b) why the invocation guard exists in the helper rather than at every call site (round-3), and (c) the exact-count `toHaveBeenCalledTimes(1)` assumption. Future contributors hovering the symbol won't see any of that.
+- Fix: merge both blocks into a single consolidated JSDoc above `assertArgon2AbortIsSilentImpl`. The new "Internal implementation, public API is the kit-bound method..." paragraph fits naturally as the leading paragraph (it scopes the rest), with the 35-line rationale paragraphs preserved underneath. OR move the rationale to a top-of-file section / module-level header where it documents the helper module as a whole. Either shape preserves the rationale in IDE-visible form.
+
+**2. (P3) `Argon2RouteMockKit.assert503` (3-arg method) is dead public surface.**
+
+- File: `backend/tests/support/argon2-error-mocks.ts:100-109` (interface field) + `:170-171` (closure in `buildArgon2RouteMockKit`).
+- A grep across `backend/tests/**` shows zero callers of the 3-arg `assert503` form. Every consumer goes through `assert503QueueFull` or `assert503Shutdown`. The exposed `assert503` exists only for "surface symmetry" (per its JSDoc) + a speculative "future cross-branch identity check" use case that is not in the code today.
+- Per project CLAUDE.md "Don't add features, refactor, or introduce abstractions beyond what the task requires. Don't design for hypothetical future requirements."
+- Fix: drop `assert503` from the `Argon2RouteMockKit` interface and from the builder return. Keep `assert503Impl` as the module-internal helper that the two convenience wrappers forward to. If a future round of `backend-argon2-error-routes-test-coverage` (or a sibling task) lands cross-branch identity checking, that task can re-introduce the surface with a direct caller in the same diff.
+
+### Items dismissed during architect triage (do NOT address)
+
+- **Self-test re-aliases public name to internal impl** (maintainability conf 50). The 5-line comment block above the alias explains the intent; mitigation accepted.
+- **Header note lacks new-helper authoring breadcrumb** (maintainability conf 40). Forward-looking; defer until a third helper actually lands.
+- **Convenience-wrapper closures hide constant pairing** (maintainability conf 40). Type-system noise vs. integration-coverage tradeoff already accepted; current shape stays.
+- **`Impl` export asymmetry** (maintainability conf 40). Current shape is correct given coverage today; revisit if a self-test for `assert503Impl` lands.
+- **`MockedFunction<typeof X>` alias opportunity** (kieran-ts conf 40). Stylistic; not a defect.
+- **Reason-type alias** (kieran-ts conf 30). Same.
+
+### Re-review signal
+
+When items 1-2 land, `git mv` this file back to `tasks/review/`. The architect's next review pass picks it up.
+
+### Forward-looking observations (architect-tracked, not for backend to address)
+
+- `agents/docs/solutions/conventions/route-level-error-class-coverage-after-helper-extraction-2026-04-29.md` example block is now stale — still shows the two-arg `if (cls.assert === assertArgon2AbortIsSilent)` discrimination pattern that the kit-bind diff collapses. `/ce-compound-refresh` candidate (architect to schedule).
+- The kit-bind pattern (closure capture for invariant preservation in test helpers) is a `/ce-compound` candidate — no PEvO convention captures the structural shape today. Architect to capture after this task archives.

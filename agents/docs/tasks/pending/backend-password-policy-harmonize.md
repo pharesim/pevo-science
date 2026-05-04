@@ -100,3 +100,33 @@ Verification:
 - `npm run lint` — clean (only pre-existing accepted `@typescript-eslint/no-explicit-any` warnings in `seed-phrase.ts`).
 - `npx tsc --noEmit` — clean (src/ scope; tests/ is excluded from tsconfig but vitest runs the file as TS).
 - `npx vitest run tests/lib/password-policy-drift.test.ts` — 1 file / 2 tests pass. Both new toString/valueOf vectors flow through the disagreement accumulator without flagging — BE and FE both reject as expected.
+
+---
+
+## Architect re-review (2026-05-04) — HELD PENDING FIXES (round 2)
+
+`/ce-code-review` ran on commit `79ac01d` (round-1 hold-fix: 2 type-coercion mutation-kill vectors + runtime FE-helper shape guard) with 6 personas (correctness, testing, maintainability, project-standards, kieran-typescript, learnings). Round-1 hold item 2 (runtime shape guard) landed correctly — the dynamic-import is now wrapped in a `Record<string, unknown>` cast + structural runtime check + clear "unexpected shape" error, closing the renamed/missing-export drift. Round-1 hold item 1 (type-coercion mutation-kill vectors) is half-resolved.
+
+### Items to address
+
+**1. (P3) `valueOf` vector is dead coverage — does not exercise the named coercion mutation.**
+
+- File: `backend/tests/lib/password-policy-drift.test.ts:65-69`.
+- Empirical verification (Node 20, run 2026-05-04): `String({ valueOf: () => 'Abcdef1234' })` returns `'[object Object]'`, NOT `'Abcdef1234'`. The reason: `String(obj)` invokes `OrdinaryToPrimitive(obj, hint='string')`, which calls `obj.toString()` first. `obj.toString` resolves to `Object.prototype.toString` (callable, returns `'[object Object]'`), so step 2 of the algorithm succeeds and `obj.valueOf()` is never called for the string hint.
+- Under the named mutation `pw = String(pw)` ahead of the typeof guard, the `valueOf` vector reduces to the existing `['object input', {}, false]` case — both coerce to `'[object Object]'`, both fail class checks regardless of the mutation, neither vector kills the mutant.
+- The accompanying comment (lines 54-59) over-claims: "Both helpers MUST reject the input regardless of what its `toString` returns; if one helper coerces and the other type-checks, the disagreement surfaces here." Accurate for the `toString` vector; structurally false for the `valueOf` vector.
+- Fix: replace the `valueOf` vector with `[label, { [Symbol.toPrimitive]: () => 'Abcdef1234' }, false]`. `Symbol.toPrimitive` is the correct shape because it coerces regardless of hint (string, number, default), so a mutation introducing ANY coercion form (`String(pw)`, `+pw + ''`, `\`${pw}\``) is killed by the same vector. Update the comment to name the specific mutation each vector kills, per `agents/docs/solutions/conventions/tests-must-fail-on-mutation-of-code-under-test-2026-04-22.md` ("How to apply" point 2 — the re-review signal should attest "confirmed fails on revert").
+- Verification: insert `pw = String(pw)` ahead of the typeof guard in ONE helper (BE or FE), confirm the suite turns red on the `Symbol.toPrimitive` vector. Mention the verify result in the round-2 signal block. Revert the mutation before commit.
+
+### Items dismissed during architect triage (do NOT address)
+
+- **Untested throw branch on the runtime shape guard** (testing conf ~55). Defensive cleanup; the guard fires only on broken FE imports, which existing tests don't construct. A unit test driving the broken-import path is forward-compat polish, not blocking.
+- **TS predicate function alternative for the shape guard** (kieran-ts / maintainability conf 45). Stylistic preference; the current `as Record<string, unknown>` + check + `as unknown as FeModule` shape is correct.
+
+### Re-review signal
+
+When item 1 lands, `git mv` this file back to `tasks/review/`. The architect's next review pass picks it up.
+
+### Forward-looking observations (architect-tracked)
+
+- No PEvO convention disambiguates `String()` / `valueOf` / `toString` / `Symbol.toPrimitive` semantics for differential-test design today. `/ce-compound` candidate after round-2 lands — provisional title: "Type-coercion mutation-kill vectors must name the mutation each kills (and `String()` invokes `toString` first under the string hint)."
