@@ -105,6 +105,12 @@ import { initSettingsPage } from '../../src/pages/settings.js';
 // to throw, simulating an unguarded helper-internal failure that the
 // try/finally wrap around _performKeychainImport must absorb.
 import { mnemonicToSeedSync } from '../../src/hive-keys.js';
+// Imported so FE-UPGRADE-CLOSURE-WIPE round-1 hold items #2 and #3 can
+// override the per-test Client.broadcast.sendOperations spy: item #2 to
+// force a helper-internal broadcast rejection, item #3 to assert the
+// broadcast-only helper still calls sendOperations when Keychain is
+// uninstalled.
+import { Client } from '@hiveio/dhive';
 
 function createComponent() {
   initSettingsPage();
@@ -590,6 +596,20 @@ describe('settingsPage', () => {
       seedUpgradeState(comp);
 
       const events = [];
+      // Round-1 hold item #1: instrument mnemonicToSeedSync to record WHEN
+      // it's called. A no-op `_performUpgradeKeyRotation` stub passes the
+      // ordering-only assertion (perform:enter < perform:exit < wipe holds
+      // trivially around an empty function), so the architect's ordering
+      // check alone doesn't enforce that the helper actually contains
+      // derivation work. Recording each mnemonicToSeedSync call as a timed
+      // event lets the assertion below force `mnemonicToSeed:call` between
+      // perform:enter and perform:exit. A no-op helper would never push
+      // that event from inside its frame; an inlined-into-caller refactor
+      // would push it BEFORE perform:enter. Both fail the ordering check.
+      vi.mocked(mnemonicToSeedSync).mockImplementation(() => {
+        events.push('mnemonicToSeed:call');
+        return new Uint8Array(64);
+      });
       const origPerform = comp._performUpgradeKeyRotation.bind(comp);
       comp._performUpgradeKeyRotation = async (...args) => {
         events.push('perform:enter');
@@ -616,14 +636,30 @@ describe('settingsPage', () => {
       // Invariant: the derivation helper fully exits (perform:exit) BEFORE
       // the wipe runs. The 'perform:exit' event fires when the awaited
       // promise resolves, which implies the helper's frame has popped.
+      const enterIdx = events.indexOf('perform:enter');
       const exitIdx = events.indexOf('perform:exit');
       const wipeIdx = events.indexOf('wipe');
+      // Find the FIRST mnemonicToSeed:call that occurs inside the helper
+      // window (between perform:enter and perform:exit). The settings page
+      // also calls mnemonicToSeedSync from _performKeychainImport AFTER the
+      // broadcast helper exits — those calls are legitimate and should be
+      // ignored by this invariant; the helper-window call is the one that
+      // proves derivation lives inside `_performUpgradeKeyRotation`.
+      const firstSeedCallInHelper = events.findIndex(
+        (e, i) => e === 'mnemonicToSeed:call' && i > enterIdx && i < exitIdx,
+      );
+      expect(enterIdx).toBeGreaterThanOrEqual(0);
       expect(exitIdx).toBeGreaterThanOrEqual(0);
       expect(wipeIdx).toBeGreaterThanOrEqual(0);
+      // Mutation-kill: a no-op `_performUpgradeKeyRotation` would never call
+      // mnemonicToSeedSync between perform:enter and perform:exit, so this
+      // assertion fails (-1 → not greater than enterIdx).
+      expect(firstSeedCallInHelper).toBeGreaterThan(enterIdx);
+      expect(firstSeedCallInHelper).toBeLessThan(exitIdx);
       expect(exitIdx).toBeLessThan(wipeIdx);
     });
 
-    it('helper frame exits before _clearSensitiveUpgradeState runs (error path)', async () => {
+    it('helper frame exits before _clearSensitiveUpgradeState runs (error path: post-helper fetch failure)', async () => {
       mockIsKeychainInstalled.mockReturnValue(true);
       stubKeychainImportKey();
       // Fetch fails → executeUpgrade lands in the catch block, which still
@@ -663,6 +699,103 @@ describe('settingsPage', () => {
       expect(exitIdx).toBeLessThan(wipeIdx);
 
       warnSpy.mockRestore();
+    });
+
+    // Round-1 hold item #2: the existing error-path test above stubs `fetch`
+    // to fail, but `fetch` runs AFTER `_performUpgradeKeyRotation` already
+    // returned successfully — perform:exit fires on normal helper resolution
+    // before any failure, so `exitIdx < wipeIdx` is trivially true by linear
+    // control flow. The realistic helper-internal failure mode is the
+    // dhive `sendOperations` rejection: that throws INSIDE the helper, and
+    // the test must verify (a) the rejection propagates to executeUpgrade's
+    // catch, (b) the catch runs `_clearSensitiveUpgradeState`, and (c) the
+    // helper's frame still pops before the wipe — proving closure-captured
+    // bindings (`oldSeed`, `oldKeys`, `newSeed`, `newKeys`, `newPubKeys`,
+    // `ownerKey`) become unreachable even on the rejection path.
+    it('helper-internal broadcast rejection: catch wipes and frame pops before wipe', async () => {
+      mockIsKeychainInstalled.mockReturnValue(true);
+      stubKeychainImportKey();
+      // Override the next dhive.Client instance's broadcast.sendOperations
+      // to reject. This puts the failure INSIDE the helper, not after it.
+      vi.mocked(Client).mockImplementationOnce(() => ({
+        broadcast: {
+          sendOperations: vi.fn(async () => {
+            throw new Error('broadcast network failure');
+          }),
+        },
+      }));
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const comp = createComponent();
+      seedUpgradeState(comp);
+
+      const events = [];
+      const origPerform = comp._performUpgradeKeyRotation.bind(comp);
+      // try/finally wrapper: 'perform:exit' MUST fire even when origPerform
+      // rejects. The simple `await origPerform(...); events.push('exit')`
+      // pattern used by the happy-path test would skip the push on
+      // rejection and the ordering assertion would target the wrong event.
+      comp._performUpgradeKeyRotation = async (...args) => {
+        events.push('perform:enter');
+        try {
+          return await origPerform(...args);
+        } finally {
+          events.push('perform:exit');
+        }
+      };
+      const origWipe = comp._clearSensitiveUpgradeState.bind(comp);
+      comp._clearSensitiveUpgradeState = () => {
+        events.push('wipe');
+        return origWipe();
+      };
+
+      await comp.executeUpgrade();
+
+      // The rejection must have driven executeUpgrade into its catch block.
+      expect(comp.upgradePhase).toBe('error');
+      // Frame pop on rejection: 'perform:exit' fires from the finally clause
+      // BEFORE the catch block calls _clearSensitiveUpgradeState. The
+      // helper's local bindings are unreachable by the time wipe runs.
+      const enterIdx = events.indexOf('perform:enter');
+      const exitIdx = events.indexOf('perform:exit');
+      const wipeIdx = events.indexOf('wipe');
+      expect(enterIdx).toBeGreaterThanOrEqual(0);
+      expect(exitIdx).toBeGreaterThan(enterIdx);
+      expect(wipeIdx).toBeGreaterThan(exitIdx);
+
+      warnSpy.mockRestore();
+    });
+
+    // Round-1 hold item #3: at HEAD the broadcast helper
+    // (`_performUpgradeKeyRotation`) is broadcast-only after the round-3
+    // split — Keychain import lives in the sibling `_performKeychainImport`
+    // helper. The broadcast is the IRREVERSIBLE step (account_update on
+    // chain) and MUST run independent of Keychain availability, otherwise
+    // a `!isKeychainInstalled()` precondition would silently skip the
+    // chain rotation while leaving every other step in the upgrade flow
+    // intact. This test locks in that invariant.
+    it('broadcasts via sendOperations even when Keychain is uninstalled', async () => {
+      mockIsKeychainInstalled.mockReturnValue(false);
+      // Pre-warm the next Client instance with a closure-captured spy so
+      // the assertion has a stable handle regardless of how many Clients
+      // executeUpgrade ends up constructing.
+      const sendOpsSpy = vi.fn(async () => ({ id: 'stub-tx' }));
+      vi.mocked(Client).mockImplementationOnce(() => ({
+        broadcast: { sendOperations: sendOpsSpy },
+      }));
+
+      const comp = createComponent();
+      // Call the helper directly — bypasses the executeUpgrade wrapper so
+      // the assertion targets the helper's own invariant, not the
+      // surrounding orchestration.
+      await comp._performUpgradeKeyRotation(
+        Array(12).fill('old').join(' '),
+        Array(12).fill('new').join(' '),
+      );
+
+      // The helper MUST broadcast even with Keychain uninstalled — the
+      // chain rotation cannot be conditional on browser-extension state.
+      expect(sendOpsSpy).toHaveBeenCalled();
     });
 
     it('_performUpgradeKeyRotation returns undefined (no derived key object escapes to caller)', async () => {
