@@ -1629,11 +1629,9 @@ describe.each([
         expect(res.body.error.code).toBe('BROADCAST_TIMEOUT');
         // Envelope per common.md + orcid-specific verify_location (state was
         // consumed before dispatch, so retriable=false; caller verifies chain
-        // state at /settings before attempting a fresh OAuth flow). Canonical
-        // field order: optional fields like verify_location are appended AFTER
-        // timeout_ms so timeout_ms keeps the same position across orcid and
-        // non-orcid 504 envelopes. `toEqual` is order-insensitive at runtime;
-        // the literal order here documents the contract.
+        // state at /settings before attempting a fresh OAuth flow). Field
+        // order mirrors the source convention — see `backend/src/lib/broadcast-error.ts`
+        // timer-fire 504 envelope build.
         expect(res.body.error.details).toEqual({
           retriable: false,
           outcome: 'uncertain',

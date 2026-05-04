@@ -327,9 +327,7 @@ router.post('/:claimer/revoke', verifyHiveSignature, revokeLimiter, async (req: 
         // below: both paths revoke the same authorship `custom_json`, only the
         // signing key differs. The `signer:'bridge'|'admin'` field in the
         // structured log discriminates for operators; the user-facing message
-        // does not need to. Keeping the strings aligned avoids the prior
-        // bridge-vs-admin asymmetry and the cementing of it in the helper
-        // interface during the upcoming helper-extraction task.
+        // does not need to.
         timeoutMsg: 'Broadcasting authorship revocation timed out',
         failMsg: 'Failed to broadcast authorship revocation to Hive',
         logContext: { paperAuthor, paperPermlink, claimer, username, signer: 'bridge' },

@@ -273,11 +273,14 @@ export function handleBroadcastError(
       },
       `${opts.routeLabel} broadcast timed out`,
     );
-    // Canonical 504 envelope field order: required fields first
-    // (retriable, outcome, verify_before_retry, timeout_ms), then optional
-    // fields (verify_location). Keeping `timeout_ms` in the same slot across
-    // orcid and non-orcid surfaces means consumers can read it positionally
-    // without branching on whether the surface adds verify_location.
+    // Source-readability convention for the timer-fire 504 envelope:
+    // required fields first, optional fields appended. `timeout_ms` keeps the
+    // same position across timer-fire 504 envelopes (orcid + non-orcid) so
+    // the literal is grep-aligned across surfaces. JSON consumers read by
+    // key (not position) and `toEqual` is order-insensitive at runtime;
+    // this is a code-aesthetic, not a wire-format contract. Note: the
+    // `forceAmbiguousOutcome` branch below is exempt — it intentionally
+    // omits `timeout_ms` because the throw didn't originate from the timer.
     const details: Record<string, unknown> = {
       retriable: false,
       outcome: 'uncertain',

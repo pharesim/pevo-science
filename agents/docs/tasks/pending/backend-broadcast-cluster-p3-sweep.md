@@ -55,3 +55,41 @@ Fix: trim the trailing sentence; the first 4 lines of the comment carry the load
 ### Re-review signal
 
 When items 1-3 land, `git mv` this file back to `tasks/review/`. Round-2 architect review scopes `/ce-code-review` to the round-2 commit only. Architect addresses A1 at archive time per the chosen stance.
+
+---
+
+## Backend re-review signal (2026-05-04, working tree)
+
+Round-2 hold-fix items 1-3 landed. Round-1 commit `ad6f4fe` not retouched.
+
+### Item 1 — `broadcast-error.ts` WHY comment reframed
+
+Rewrote the comment block at `backend/src/lib/broadcast-error.ts:273-282` (the timer-fire 504 envelope build site). Removed the "consumers can read it positionally without branching" framing. New text states the convention honestly: required fields first, optional fields appended; `timeout_ms` keeps the same position across timer-fire 504 envelopes (orcid + non-orcid) so the literal is grep-aligned across surfaces; JSON consumers read by key (not position) and `toEqual` is order-insensitive at runtime; this is a code-aesthetic, not a wire-format contract. Comment explicitly notes that the `forceAmbiguousOutcome` branch is exempt because it intentionally omits `timeout_ms` (the throw didn't originate from the timer).
+
+### Item 2 — `orcid.test.ts` rationale duplications collapsed
+
+Replaced the canonical-order comment at `backend/tests/routes/orcid.test.ts:1632` with a one-line back-reference to the source comment in `broadcast-error.ts`.
+
+**Note on scope drift between architect's review point and main HEAD:** the architect's hold (commit `ad6f4fe`) identified two duplicated sites at lines ~1320 and ~1432. Between `ad6f4fe` and current main, sibling commits incidentally removed the second site (the `it()` block at the original ~1432 site no longer carries the canonical-order comment). Only one site remained for this round to address. Verified post-edit via:
+
+```
+grep -nE "canonical|optional fields|positional|same position|verify_location.*append|grep-aligned" backend/tests/routes/orcid.test.ts
+```
+
+returning lines 479/534/536 (`positional pin on params[3]` — unrelated to the 504-envelope canonical-order rationale) and lines mentioning "canonical site" / "canonical timer-fire envelope" — none of which carry the order-rationale block. The site near line 1372 carries a distinct rationale about `timeout_ms` being intentionally omitted on the SYNC-throw branch, which Item 1's reframe explicitly retains as an exemption.
+
+### Item 3 — `claims.ts` forward-reference trimmed
+
+Trimmed the trailing sentence ("Keeping the strings aligned avoids the prior bridge-vs-admin asymmetry and the cementing of it in the helper interface during the upcoming helper-extraction task.") from the comment block ending at `backend/src/routes/claims.ts:330`. The first 4 lines (operator gets the signer from the structured log; user-facing message does not need to discriminate) carry the load-bearing rationale on their own.
+
+### Verification
+
+- `npx tsc --noEmit` from `backend/` — clean (no output).
+- `npm run lint` — clean (only pre-existing `seed-phrase.ts` `any` warnings, unrelated).
+- `npx vitest run tests/routes/orcid.test.ts` (with docker-network Redis/Postgres IPs per root CLAUDE.md) — 67 passed, 0 failed, 3.19s.
+
+### Files changed (this round)
+
+- `backend/src/lib/broadcast-error.ts` — Item 1 comment reframe.
+- `backend/src/routes/claims.ts` — Item 3 trailing-sentence trim.
+- `backend/tests/routes/orcid.test.ts` — Item 2 one-line back-reference.
