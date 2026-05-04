@@ -242,6 +242,13 @@ export async function burnSentinel(input: string, signal?: AbortSignal): Promise
     // three subclasses (ArgonQueueFullError, ShuttingDownError,
     // ArgonAbortError) and any future addition extending the base.
     if (isArgonSemaphoreError(err)) throw err;
+    // Cross-file caller attribution: burnSentinel is imported from auth.ts AND
+    // custody.ts AND signup-verify.ts. The `auth.burn_sentinel.*` prefix tags
+    // the FILE the emission lives in, not the calling route — operators
+    // grepping for `auth.signup.*` or `auth.recover.*` will not match this
+    // line even when the failing burn fired from a sibling-file caller. See
+    // `agents/docs/solutions/conventions/auth-structured-log-shape-2026-04-29.md`
+    // §"File-level (non-endpoint) emissions" for the convention.
     logger.warn(
       { event: 'auth.burn_sentinel.failed', route: 'auth.burn_sentinel', err },
       'argon2 sentinel burn failed — timing oracle may be open',
@@ -572,7 +579,7 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
         });
       } catch (mailErr) {
         logger.error(
-          { event: 'auth.signup.smtp_send_failed', route: 'auth.signup', err: (mailErr as Error).message },
+          { event: 'auth.signup.smtp_send_failed', route: 'auth.signup', err: mailErr },
           'Failed to send verification email',
         );
         // Delete the account row since we couldn't send the email

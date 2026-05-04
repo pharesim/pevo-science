@@ -56,7 +56,13 @@ logger.<level>(
 
 ### File-level (non-endpoint) emissions
 
-`auth.ts` also emits at startup (`SENTINEL_ARGON2_HASH_PROMISE`-rejection guard) and inside the `burnSentinel` helper called from `auth.ts` AND `custody.ts`. These follow the same shape with `auth.startup.*` / `auth.burn_sentinel.*` discriminators. The `auth.` prefix tags the file the emission lives in, not the route.
+`auth.ts` also emits at startup (`SENTINEL_ARGON2_HASH_PROMISE`-rejection guard) and inside the `burnSentinel` helper called from `auth.ts` AND `custody.ts` AND `signup-verify.ts`. These follow the same shape with `auth.startup.*` / `auth.burn_sentinel.*` discriminators. The `auth.` prefix tags the file the emission lives in, not the route.
+
+`burnSentinel` importer inventory (relevant when a sibling-file refactor rewires call sites — the emission's file-level prefix stays `auth.burn_sentinel.*` regardless of the caller, so operators grepping for `auth.recover.*` / `auth.signup.*` / `auth.custody.*` etc. will NOT match a burn-sentinel failure that fired from those routes):
+
+- `backend/src/routes/auth.ts` — `/signup` (multiple sites in the dup-burn path), `/login`, `/reset-request`, `/resend-verification`, `/recover`.
+- `backend/src/routes/custody.ts` — line 224 (1 call site).
+- `backend/src/routes/signup-verify.ts` — lines 119, 130, 140 (3 call sites: unknown-email branch, non-confirmed branch, ORCID-only-no-password branch).
 
 ### Existing event values
 

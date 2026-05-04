@@ -157,3 +157,35 @@ But one direct violation of the convention this commit introduces, plus the conv
 ### Re-review signal
 
 When items 1-3 land, `git mv` this file back to `tasks/review/`.
+
+---
+
+## Backend re-review signal (2026-05-05, working tree)
+
+Round-1 hold items 1-3 landed.
+
+1. **(P2) Item 1 — `auth.signup.smtp_send_failed` `err: <Error>` shape fixed.** `backend/src/routes/auth.ts:575` previously passed `err: (mailErr as Error).message` (a STRING). Dropped the cast and the `.message` access; now passes `err: mailErr` directly so pino's built-in `err` serializer fires (`.message + .stack + .type + .cause`). One-character-class change as the hold block noted. Pinned by the new spy assertion in `backend/tests/routes/auth-log-shape.test.ts` (`auth.signup.smtp_send_failed log shape > fires on sendMail throw with err: <Error> (not err.message)`) which asserts `expect(fields.err).toBeInstanceOf(Error)` — a regression to `.message` would fail this assertion loudly.
+
+2. **(P2) Item 2 — 6-10 spy assertions on operationally-critical emissions.** New test file `backend/tests/routes/auth-log-shape.test.ts` (7 specs) plus the 2 spy-assertion specs in `recover.test.ts` BE-AUTH-SMTP-STATUS-CODE-ORACLE block (round-2 hold-fix item 5(b) covered the smtp_not_configured side and counts toward the budget). Total 9 emissions covered:
+   - `auth.signup.smtp_send_failed` (auth-log-shape.test.ts) — pins err: Error shape (item 1 mutation kill)
+   - `auth.signup.smtp_not_configured` (auth-log-shape.test.ts) — pins email_hash field
+   - `auth.signup.failed` (auth-log-shape.test.ts) — outer catch
+   - `auth.login.failed` (auth-log-shape.test.ts) — outer catch
+   - `auth.reset_request.failed` (auth-log-shape.test.ts) — outer catch
+   - `auth.reset.failed` (auth-log-shape.test.ts) — outer catch
+   - `auth.recover.failed` (auth-log-shape.test.ts) — outer catch
+   - `auth.resend_verification.smtp_not_configured` (recover.test.ts integration test from Task A round-2 5(b))
+   - `auth.reset_request.smtp_not_configured` (recover.test.ts integration test from Task A round-2 5(b))
+
+   Spying happens at the `logger` module level (not at call sites), so the helper-extraction refactor from BE-AUTH-SMTP-STATUS-CODE-ORACLE round-2 (which moved /signup's createTransport behind the new `createSmtpTransporter()` helper) doesn't break these assertions. The outer-catch tests use a per-test `pool.query` patch that throws on first call only and restores in finally — `verifyHiveSignature` and rate-limit middleware run real. File-level emissions (`auth.startup.*`, `auth.burn_sentinel.*`) are out of scope per hold-block triage.
+
+3. **(P2) Item 3 — `burnSentinel` cross-file caller attribution.**
+   - **3(a)** Inline comment added at `backend/src/routes/auth.ts:244-251` (just before the `logger.warn` inside `burnSentinel`'s catch) clarifying that `auth.burn_sentinel.*` tags the FILE the emission lives in, not the calling route, and citing the convention doc (`agents/docs/solutions/conventions/auth-structured-log-shape-2026-04-29.md`).
+   - **3(b)** Convention doc updated: `agents/docs/solutions/conventions/auth-structured-log-shape-2026-04-29.md` "File-level (non-endpoint) emissions" section now lists `signup-verify.ts` as a third importer of `burnSentinel` alongside `auth.ts` and `custody.ts`. Added a `burnSentinel importer inventory` sub-section enumerating the 3 call sites in `signup-verify.ts` (lines 119, 130, 140 — verified via `grep -n burnSentinel backend/src/routes/signup-verify.ts`) and the 1 in `custody.ts` (line 224). Operators grepping for route-prefixed events when a sibling-file caller's burn fails will now have the cross-reference.
+
+### Verification (round-1 hold-fix)
+
+- `npm run lint` — clean (only pre-existing accepted seed-phrase warnings).
+- `npx tsc --noEmit` — clean.
+- `npx vitest run tests/routes/auth-log-shape.test.ts tests/routes/auth-smtp-transporter.test.ts` — 11/11 passed (7 log-shape + 4 helper).
+- `npx vitest run tests/routes/recover.test.ts -t "BE-AUTH-SMTP-STATUS-CODE-ORACLE"` — 4/4 passed (re-verified after Item 1 + Item 3 changes).
