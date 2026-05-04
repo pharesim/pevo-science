@@ -169,6 +169,109 @@ json_metadata: {
 }
 ```
 
+### Multi-Author Trust Model
+
+PEvO papers can have multiple co-authors. The chain layer captures who *broadcasts* each post; the metadata layer captures who is *credited* for the paper. These two sets are not the same, and the platform enforces consent-gated authorship to prevent insider abuse where one vouched co-author edits paper metadata to claim or drop authorship without the others' consent.
+
+This section is the canonical spec for who can mutate what on a multi-author paper. The continuation-author-consent gate in `resolveContinuationChain` and the field-mutation rules layered on top of it both derive from this model.
+
+#### Design alternatives considered
+
+A simpler model was considered and rejected: fix the prior subset-check inversion (replace with a no-shrink rule), keep implicit consent (listing = vouched), use accreditation revocation as the only co-author-removal path. No `author_accept` / `author_resign` ops, no vouched-vs-claimed distinction. This alternative cannot tell a legitimate "Carol joined during revision and Bob added her" from a spoofed "Bob added Mallory and is pretending she consented." Both shapes look identical without an explicit consent op from the new author. The chosen design accepts the cost of two new op types in exchange for that distinction. The simpler model also offers no path for a co-author to legitimately disassociate from a paper short of accreditation revocation, which is a platform-wide nuclear option for what should be a per-paper decision.
+
+#### Threat model
+
+The model defends against one explicit adversary class beyond what the continuation-author-consent gate already handles:
+
+- **Outside attacker** posting `pevo.continues = {author, permlink}` to spoof a paper. Handled by the existing continuation-author-consent gate (admitted continuator must be a vouched author of the continued paper). Out of scope for this section.
+- **Vouched co-author turned adversarial.** A legitimately-added co-author whose key is compromised, account is sold, or who is themselves malicious. This includes: silent removal of other co-authors via metadata edit, silent introduction of a third party as a co-author, redirection of canonical payload pointers (`ipfs_cid`, `document_hash`).
+
+The model does NOT defend against arbitrary co-author edits to free-edit fields (body, title, citations, etc.). That is accepted risk; the deterrents are on-chain audit trail (every malicious edit is permanently attributed to the broadcasting author), accreditation revocation, and original-author re-edit power.
+
+#### Vouched vs claimed authorship
+
+For a paper rooted at `(root_author, root_permlink)`, the **claimed authors** set is the union of `pevo.authors[].hive` entries across all operations on admitted chain posts (broadcasts AND subsequent edits — historical union, not current state). The set is append-only: once a hive handle has appeared in any chain post's `pevo.authors[]`, it is permanently in the claimed set, even if a later native-edit removes it from that post's current metadata. This is the load-bearing rule that prevents a vouched co-author from unilaterally unmaking another author's claim by native-editing their own continuation. Authors who contributed to a paper cannot be erased; they can only resign (see "Authors mutation" below).
+
+A claimed author is **vouched** iff:
+1. They broadcast the root post (implicit acceptance via posting-key signature on the post itself), OR
+2. They have broadcast an `author_accept` `custom_json` op for this paper, AND have NOT later broadcast an `author_resign` op (latest op wins per `block_num` ordering).
+
+Vouched status is per-(author, paper), not per-version. Once carol broadcasts a valid `author_accept` for paper P, she is vouched for ALL versions of P (current and future) unless she later broadcasts `author_resign`. A co-author who is unable to accept (no Hive account, never engages with the platform, deceased, lost keys) remains in the claimed-pending state across the paper's lifetime; this is an accepted outcome of the consent-gated model.
+
+`pevo.authors[]` entries with `hive: null` (bridge papers' display-only credits referencing original-preprint authors who lack Hive identity) are claimed but never vouched. They have no on-chain identity to vouch with.
+
+The continuation-author-consent gate admits continuation posts only from vouched authors. Reputation flow, citation credit, and continuation-edit power on the paper's metadata are all gated on vouched status. A claimed-but-unvouched name shown on the paper is informational only.
+
+#### Field mutation rules
+
+When the chain head's metadata is overlaid on the displayed paper, fields are governed by:
+
+| Field | Rule |
+|---|---|
+| `pevo.authors[]` | Consent-gated. Additions allowed (claimed-pending until accept). Removals only via the resigning author's own `author_resign` op. See "Authors mutation" below. |
+| `ipfs_cid`, `document_hash`, `ipfs_filename` | Per-version. Each chain post carries its own; the head's wins for the default view, prior versions accessible via `?version=N`. All historical CIDs preserved on chain (Hive immutability) AND on PEvO's IPFS pinner (see "Pinner constraint" below). |
+| `title`, `body`, `abstract`, `citations`, `keywords`, `discipline`, `tags`, `language`, `supplementary_files`, `addresses_reviews` | Free-edit by any vouched author via continuation. Risk accepted. Deterrents: on-chain audit (broadcaster-attributed), accreditation revocation, original-author re-edit power. |
+
+
+Fields written exclusively by an admin attestation flow (`pevo.doi`, when PEvO acquires DOIs from external registrars) or by bridge import (`source.doi` on bridge papers) are not user-editable and are outside this trust model. The DOI-assignment flow itself is filed separately (not yet scoped); from this trust model's perspective, `pevo.doi` is system-managed read-only metadata.
+
+`citations` is in the free-edit bucket because legitimate revisions regularly update the reference graph (responding to reviewer feedback, adding follow-up work, correcting errors). Treating it as consent-gated would require co-author co-signing on every citation change, which is heavier than the typical revision flow warrants. Mitigations: every edit is broadcaster-attributed on chain (a malicious edit lands under bob's account, not alice's), the original author retains re-edit power to overwrite head metadata, accreditation revocation deters persistent abuse, and the reputation algorithm can weight citations by cross-version stability so manipulation in a single version produces less reputation flow than consistent citations across the chain. Residual risk is accepted: a brief window where a malicious vouched co-author has rewritten citations before re-edit + accreditation governance respond. The deterrent model is load-bearing here, not the gating model.
+
+#### Authors mutation
+
+`pevo.authors[]` is mutable but consent-gated:
+
+- **Adding a new author.** Any vouched author writes the new author into their continuation post's `pevo.authors[]`. The new author becomes a *claimed* author immediately but is *not vouched* until they broadcast an `author_accept` op. The display layer surfaces vouched status via a PEvO user badge plus profile link on the author's name; claimed-but-not-vouched names display as plain text without the badge. There is no separate "pending" UI tier; vouched-status presence or absence is the only display distinction.
+- **Removing an author.** Cannot be done by another author's continuation. The removed author must broadcast an `author_resign` op themselves (self-resign). The vouched-set computation reads the latest `author_accept` / `author_resign` op per (author, paper) pair; resign demotes them out of the vouched set going forward. Pre-resign continuations they broadcast remain in the chain history. **Native-editing a chain post to drop a name from `pevo.authors[]` is NOT a removal.** Authors who have contributed to a paper cannot be erased from the claimed set by metadata edits; the claimed set is the historical union of every operation's `pevo.authors[].hive`. The only way to demote a vouched author is the resigning author's own `author_resign` op.
+- **Authorship disputes** (alice wants bob removed, bob refuses). Out of scope for the metadata layer. Disputes are handled via accreditation governance (revoke bob's accreditation, which removes vouched status across all his papers) or paper retraction (republish as a new paper without bob, citing the original).
+
+`resolveContinuationChain` and the head-meta override path enforce the additive-with-resign rule: head's `pevo.authors[].hive` may be a superset of root's (additions allowed; new entries are claimed-pending until accept), but if any name in root's `pevo.authors[].hive` is missing from head's, the override is rejected and an audit event is logged. Removal of a vouched author from the displayed authors list happens only via that author's own `author_resign` op, computed at read time from the chain's `custom_json` history.
+
+#### Light-account signing of consent ops
+
+Light-account users (server-encrypted posting keys; see "Account Creation" in `CLAUDE.md`) can broadcast `author_accept` and `author_resign` via the custody endpoint. Because these ops are infrequent and reputationally weighty (the broadcast event is permanently attributed on chain, even though the functional vouched state is reversible by a later inverse op), the backend MUST require a per-op fresh authentication challenge appropriate to the user's auth mechanism: a password re-prompt for password-based accounts, a fresh ORCID OAuth round-trip for ORCID-authed accounts, or the analogous fresh-auth for any future auth mechanism. After the fresh-auth succeeds, the backend signs and broadcasts. The backend MUST audit-log every consent op it signs on behalf of a user, including timestamp, session ID, user-agent, and auth-mechanism used.
+
+Self-custody users sign these ops with their own key via Hive Keychain and bypass the custody endpoint entirely; the fresh-auth requirement is a custody-endpoint guard, not a chain-layer rule.
+
+#### Vouched-set computation (Phase 2 constraints)
+
+The vouched-set is computed at read time from on-chain state. The implementation shape (CTE in chain-walk SQL, separate query, materialized view, or other) is a Phase 2 decision, but the spec commits to the following constraints:
+
+- **At most one-block-stale state.** A consent op (`author_accept` or `author_resign`) broadcast at block N MUST be reflected in the vouched-set computation by block N+1.
+- **O(1) HAF queries per paper-detail request.** The vouched-set lookup runs once per request, not per chain hop. Implementations that fire one query per continuation post are out of bounds.
+- **Cache invalidation on every consent op.** Cache invalidation hooks MUST fire on every `custom_json` op with `id = APP_TAG` and `type` in `{author_accept, author_resign}` that cites a paper, in addition to the existing comment-op invalidation hooks.
+- **Cache keys include the version dimension.** Cached vouched-set state MUST be invalidated for both `paper-detail:{author}:{permlink}` and `paper-detail:{author}:{permlink}:v{N}` on every consent op for that paper, since vouched-set affects both default-view and per-version-view.
+
+#### Compromised-key recovery
+
+Posting-key compromise (phishing, malware, sold account, light-account master-key incident) admits a finite, bounded attack window. An attacker with a vouched co-author's posting key can broadcast `author_resign` for that author plus a continuation adding a new claimed-pending author; the new author can then broadcast `author_accept` under their own key. The legitimate co-author becomes unvouched until they:
+
+1. Rotate their posting key via Hive's native `account_update` op (Hive consensus rejects further ops signed by the old key from that block onward).
+2. Broadcast a new `author_accept` for the affected paper to restore vouched status going forward.
+3. File an accreditation-governance ticket against the attacker-introduced author (revocation removes the attacker's vouched status across all their papers).
+
+Pre-rotation damage is permanent on chain (the spurious resign and the attacker's continuation cannot be unmade), but reputation flow and citation credit are restored on re-accept. This residual risk is accepted; raising the resign auth level to active-key would lock light-account users out of the custody-endpoint resign path without preventing the co-pollute arm of the attack.
+
+#### Bridge papers
+
+Bridge papers are imported once and not updated. The bridge account is the sole vouched author. `pevo.authors[]` entries with `hive: null` are display-only credits referencing original-preprint authors who lack Hive identity. The consent-gated authorship flow does not apply; the `extractAuthorizedContinuationAuthors` helper special-cases `bridge_paper` type to return `{config.hiveBridgeAccount}` as the sole authorized continuator.
+
+If/when an original-preprint author joins Hive and wants to claim authorship of an imported bridge paper, the off-chain verification flow plus on-chain attestation (likely issued by the bridge service) is filed as a separate task (`backend-bridge-paper-author-claim-flow`) for scoping when triggered. Out of scope for this section.
+
+Until that claim flow ships, the bridge importer MUST keep `pevo.authors[].hive` as `null` for all non-bridge entries on bridge papers; populating Hive handles via fuzzy ORCID-to-Hive lookup or any other auto-mapping is forbidden, because a dormant `author_accept` op pre-broadcast under a colliding handle would otherwise activate retroactively when the importer assigned the handle to a bridge paper. Authorship binding for bridge papers happens through the explicit attestation path, not through importer-side metadata writes.
+
+#### Migration
+
+Hard cutover. From the flag-day deploy of these rules, vouched status requires either root-broadcast or an on-chain `author_accept` op. Existing multi-author papers' co-authors must broadcast `author_accept` to retain vouched status; until they do, they are demoted to claimed-pending and cannot broadcast continuations admitted by `resolveContinuationChain`. Single-author papers are unaffected (the broadcaster is implicitly vouched).
+
+PEvO is in beta (`pevotest` tag). The user disruption from hard cutover is bounded by the small beta-cohort multi-author paper count and is preferred over carrying a grandfather-exception path indefinitely.
+
+The flag-day deploy depends on two follow-up surfaces shipping concurrently: a backend `GET /api/me/authorships/pending` endpoint (`backend-notification-infra-for-consent-ops`) and a UI surface for paper-detail accept/resign affordances plus a one-time migration banner (`ui-multi-author-consent-affordances`). Without those surfaces, the cutover silently strands existing co-authors with no in-platform discovery path for their demoted status.
+
+#### Pinner constraint
+
+PEvO's IPFS pinning service must retain pins for every CID that has appeared in an admitted chain post's `pevo.ipfs_cid`, `pevo.document_hash`, or `pevo.supplementary_files[].cid`, for the lifetime of the paper. Unpinning is only allowed when the paper itself is retracted (separate flow). This invariant is what makes the per-version preservation rule for `ipfs_cid`/`document_hash` operationally meaningful: prior versions remain retrievable, not just identifiable. The pinner agent owns the operational implementation of this invariant; see `agents/pinner/CLAUDE.md` for the discovery-and-retention pipeline.
+
 ### Review (Hive comment on a paper)
 
 A PEvO review is a Hive comment on a paper post with structured rating metadata.
@@ -256,6 +359,47 @@ json: {
   timestamp: "<ISO 8601>"
 }
 ```
+
+### Author Accept (custom_json)
+
+Broadcast by an author (or claimed-pending author) to register vouched status for a specific paper. See section 2 "Multi-Author Trust Model" for the semantics; this is the wire format.
+
+```
+id: "APP_TAG"
+required_auths: []
+required_posting_auths: ["<accepting_author_hive>"]
+json: {
+  type: "author_accept",
+  root_author: "<paper_root_author>",
+  root_permlink: "<paper_root_permlink>"
+}
+```
+
+Validity (read-time), all conjuncts required:
+- The chain signer (`required_posting_auths[0]` of the `custom_json` op) MUST equal `accepting_author_hive` in the payload. This binds the consent to the actual signer; an attacker cannot mint a third party's acceptance by crafting a payload under their own posting key.
+- `accepting_author_hive` MUST appear in the claimed authors set for the paper (the historical union of `pevo.authors[].hive` across all operations on admitted chain posts; see "Vouched vs claimed authorship" above).
+- The accept op's `block_num` MUST be strictly greater than the `block_num` of the earliest admitted chain post operation that included `accepting_author_hive` in `pevo.authors[]`. This prevents name-squatting: an op pre-broadcast before the author was ever claimed cannot be retroactively activated by a later collision-listing.
+
+Latest valid op (highest `block_num`) wins per `(accepting_author, paper)` pair. Same-block ties are broken by `trx_in_block` (highest wins).
+
+### Author Resign (custom_json)
+
+Broadcast by a vouched author to relinquish authorship of a paper.
+
+```
+id: "APP_TAG"
+required_auths: []
+required_posting_auths: ["<resigning_author_hive>"]
+json: {
+  type: "author_resign",
+  root_author: "<paper_root_author>",
+  root_permlink: "<paper_root_permlink>"
+}
+```
+
+Validity (read-time): the chain signer (`required_posting_auths[0]`) MUST equal `resigning_author_hive` in the payload. Resignation is always self-resignation; an attacker cannot resign someone else by crafting a payload under their own posting key.
+
+Effect: the resigning author is removed from the vouched set for this paper going forward. Pre-resign continuations they broadcast remain in the chain history; their ability to broadcast new admitted continuations is revoked. The resigning author REMAINS in the claimed authors set (resignation withdraws vouched status, not historical contribution; `pevo.authors[]` history is append-only per "Vouched vs claimed authorship"). Re-acceptance after resign is allowed: a later valid `author_accept` overrides per `(block_num, trx_in_block)` ordering.
 
 ### Accreditation Authority Whitelist
 

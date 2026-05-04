@@ -1,0 +1,79 @@
+# BACKEND-BRIDGE-PAPER-AUTHOR-CLAIM-FLOW — let original preprint authors claim authorship of imported bridge papers
+
+**Owner:** Backend Agent (with architect design lead in Phase 1)
+**Created:** 2026-05-05 (architect, surfaced by `/ce-doc-review` of `agents/docs/ARCHITECTURE.md` Multi-Author Trust Model section)
+**Priority:** P2 (deferred until a real user surfaces; stub task for triage visibility)
+**Status:** NOT YET SCOPED. Phase 1 brainstorm + design required before implementation.
+
+## Problem
+
+Bridge papers (imported from arXiv, Crossref, etc. via the bridge service) carry `pevo.authors[]` entries with `hive: null` for original-preprint authors who lack Hive identity. Per the Multi-Author Trust Model in `agents/docs/ARCHITECTURE.md`, these entries are claimed but never vouched — the bridge account is the sole vouched continuator.
+
+When a real original-preprint author joins Hive (registers a handle, e.g., `alice`), they may want to claim authorship of an imported bridge paper that lists them. The current model has no path: alice cannot directly broadcast `author_accept` because the existing `pevo.authors[]` entry has `hive: null`, not `hive: 'alice'`. There is no on-chain link between the imported paper's display-only credit and alice's new Hive identity.
+
+This task is deferred until a real user surfaces. PEvO is in beta; bridge-paper imports are populated automatically by the bridge service; original authors haven't yet joined and asked to claim. When they do, this task picks up.
+
+## Goal (high-level, to be brainstormed in Phase 1)
+
+Design + implement the verification flow that lets a real original-preprint author claim authorship of a bridge paper they were imported into.
+
+## Open design questions (Phase 1 brainstorm seeds)
+
+1. **Verification: how does PEvO confirm "alice on Hive" is the same person as "Alice Researcher" on the original arXiv preprint?**
+   - ORCID-mediated: alice authenticates with her ORCID; ORCID record includes the preprint authorship; PEvO trusts ORCID's verification.
+   - Email-mediated: alice provides the email associated with the preprint corresponding-author role; PEvO sends a verification token; alice broadcasts proof on chain.
+   - Bridge-service-mediated: bridge service (which already verifies preprints) issues an attestation linking alice's Hive handle to the original-preprint metadata.
+   - Manual admin attestation: an accreditation authority verifies off-chain and signs an on-chain attestation.
+
+2. **On-chain primitive for the verification.** Likely a new `custom_json` op type signed by an accreditation authority (or the bridge service's pinned account):
+   - `id: APP_TAG`
+   - `required_posting_auths: [<authority>]`
+   - payload: `{type: 'bridge_author_attestation', root_author: <bridge_account>, root_permlink: <paper_permlink>, original_credit_index: <index_in_pevo.authors_array>, claimant_hive: 'alice'}`
+
+3. **Effect on the paper's metadata.** After attestation:
+   - Alice can broadcast `author_accept` and become vouched.
+   - The displayed authors list shows alice with her PEvO badge (her name resolves to her Hive profile).
+   - The other bridge-paper entries (still `hive: null`) remain display-only.
+
+4. **Multiple claimants for the same display credit.** What if "Alice Researcher" is a common name and two Hive accounts both claim the same display credit? The verification flow must prevent this (e.g., ORCID disambiguates; or the first valid attestation wins; or admin manually resolves).
+
+5. **Bridge papers that are never updated** (per ARCH.md "Bridge papers" subsection: bridge papers are imported once, never updated). The attestation flow needs to operate WITHOUT requiring a continuation broadcast that updates the paper's metadata. The attestation custom_json sits alongside the paper, not inside it.
+
+6. **Vouched-set computation extension.** The vouched-set query (Phase 2 of `backend-coauthor-trust-model`) reads `author_accept` ops. It must also read `bridge_author_attestation` ops to map a `hive: null` display credit to a vouched Hive handle, then check for alice's `author_accept`.
+
+## Acceptance (to be sharpened during Phase 1 brainstorm)
+
+This is a P2 deferred task. Acceptance is the design + implementation, but only when a real user surfaces.
+
+### Phase 1: brainstorm + design (when triggered)
+
+`/ce-brainstorm` on the verification flow with the architect. Output: spec text added to `agents/docs/ARCHITECTURE.md` under section 2 "Multi-Author Trust Model" (a `#### Bridge-paper authorship claim` subsection extending the existing "Bridge papers" subsection), plus the new `custom_json` op type definition. `/ce-doc-review` pass before Phase 2.
+
+### Phase 2: implementation
+
+- New `custom_json` op type validation in HAF query layer.
+- Vouched-set computation extension to honor bridge-paper attestations.
+- Frontend affordance for users to initiate a claim (likely on the bridge paper's display page or in account settings).
+- Verification flow (whichever Phase 1 picks: ORCID, email, manual, etc.).
+- Tests covering: legitimate claim, duplicate-claim rejection, common-name disambiguation, attestation revocation if mis-issued.
+
+## Out of scope
+
+- Bulk-claiming all bridge papers an author was imported into. The flow is per-paper.
+- Migrating the existing bridge-import pipeline to capture Hive handles preemptively. The model is "import once with `hive: null`, claim later if/when the original author joins."
+- Authorship disputes between the bridge service and a claiming author (handled by admin governance, not this metadata layer).
+
+## Cross-references
+
+- `agents/docs/ARCHITECTURE.md` section 2 "Multi-Author Trust Model" → "Bridge papers" subsection — the canonical spec for bridge-paper authorship today, which this task extends.
+- `agents/docs/tasks/pending/backend-coauthor-trust-model.md` — Phase 2 of the multi-author trust model; bridge-paper claim flow layers on top of it.
+- `agents/docs/solutions/conventions/pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28.md` — the convention this attestation flow must respect (every gate terminates in an identity predicate).
+
+## Trigger
+
+This task is filed as a stub for triage visibility. Pick up when:
+- A real original-preprint author asks PEvO support / the architect to claim a bridge paper, OR
+- The bridge service's import volume reaches a threshold where claim requests are anticipated, OR
+- A future architect / product decision elevates this to active work.
+
+Until triggered, this file remains in `tasks/pending/` as a known deferred design.
