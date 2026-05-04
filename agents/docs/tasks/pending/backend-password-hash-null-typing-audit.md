@@ -161,3 +161,65 @@ Verification:
 - `cd backend && npm run lint` — clean (only 2 pre-existing warnings in `seed-phrase.ts`, untouched by this work).
 - `cd backend && npx vitest run tests/routes/custody*.test.ts` — 7/7 pass (the new `custody-upgrade-null-hash.test.ts` 2-case file plus the existing `custody.test.ts` and `custody-upgrade-argon-error-translation.test.ts`).
 - The broader `tests/routes/custody*.test.ts tests/routes/auth*.test.ts tests/routes/signup-verify*.test.ts` set has 10 pre-existing failures across `auth-signup-argon-error-translation.test.ts`, `auth-signup-dup-saturated.test.ts`, and the SEC-004-BE describe blocks of `signup-verify.test.ts`. Reproduced on a clean tree (stash + re-run) before applying these changes; the failure count and identity is identical with and without my work. Out of scope for this task.
+
+---
+
+## Architect re-review (2026-05-04) — HELD PENDING FIXES (round 3)
+
+`/ce-code-review` ran on commit `99c6e72` (round-2 hold-fix: 4 items 1-4 landed) with 9 personas (correctness, testing, maintainability, project-standards, kieran-typescript, security, reliability, adversarial, learnings). Round-2 acceptance verified:
+
+- Item 1 (P1) mutation-fence test landed at `backend/tests/routes/custody-upgrade-null-hash.test.ts` — real-DB, no `getPool`/`getAppPool`/`verifyHiveSignature` mocks. Two paired cases (null-hash + wrong-password) assert status 401, error.code 'UNAUTHORIZED', error.message 'Invalid password', `custody_audit_log` row with `operation_type='upgrade_failure'`, wall-time ≥ TIMING_ORACLE_FLOOR_MS (35ms). Per-account `upgradeLimiter` avoided via unique seed-account suffix. Cleanup in `afterAll`.
+- Item 2 (P2) custody-upgrade null-guard comment rewrite landed at `custody.ts:209-225`. "Unreachable in practice" framing gone; reachable path enumerated explicitly (ORCID-only account → `/api/orcid/callback` `||` default → `/upgrade` custody-gate → null-guard). Notes the orcid.ts `||` default vs `/upgrade` gate as the underlying invariant violation tracked separately.
+- Item 3 (P3) cross-ref polish landed at `auth.ts:621`, `auth.ts:801`, `custody.ts:229` — `signup-verify.ts:145` replaced with "the `/resume-signup` handler in `signup-verify.ts` and BACKEND-PASSWORD-HASH-NULL-TYPING-AUDIT". Greppable, drift-stable.
+- Item 4 (P3) canonical hoist comment expansion + tightening landed at `signup-verify.ts:144-167`. 3-bullet precondition list added; "async closure boundary" → "closure boundary" tightening done correctly (the closure boundary itself is load-bearing, not the async-ness).
+- `tsc --noEmit` clean. `npm run lint` clean. Targeted vitest 7/7 pass.
+
+But four items below need to land before this task can archive — one P1 (test self-poisoning under vitest retry, breaking the mutation-fence's ground-truth signal), one P2 (warmup that doesn't warm), and two P3 polish items.
+
+### Items to address
+
+**1. (P1) Audit-log SELECT races fire-and-forget INSERT and self-poisons under vitest retry.**
+
+- Test file: `backend/tests/routes/custody-upgrade-null-hash.test.ts:147-152` (null-hash case) + `:191-196` (wrong-password case). Production code: `backend/src/routes/custody.ts:228` (`logCustodyBroadcast(username, 'upgrade_failure').catch(() => {})` — fire-and-forget, no `await`).
+- Two compounding problems:
+  1. The SELECT can race the INSERT — the response returns before the audit-log microtask settles. The pattern matches `recover.test.ts` (which apparently works), so the race window may be narrow in practice.
+  2. `vitest.config.ts` sets `retry: 1`. If attempt #1 fails for any reason (race, wall-time hiccup), retry runs. The route writes a SECOND audit-log row (cleanup is `afterAll`, not `beforeEach`). Retry's `expect(auditRows.length).toBe(1)` then fails as `expected 2 to be 1` regardless of whether the actual claim under test is correct. Self-poisoning that breaks the mutation-fence's ground-truth signal.
+- Suggested fix: add a `beforeEach` that DELETEs `custody_audit_log` rows for the seeded usernames AND the seeded account rows that get written during the test. Resets retry state cleanly without changing production audit-log semantics from fire-and-forget to blocking. ~6-line change. Alternative shape that also works: bounded poll for the row + assertion change to `>= 1` (less invasive, but doesn't fix the retry-row-count poisoning by itself; pair with the `beforeEach` reset for completeness).
+- Do NOT change production `custody.ts:228` to `await logCustodyBroadcast(...)`. The fire-and-forget shape is endorsed by `agents/docs/solutions/conventions/auth-structured-log-shape-2026-04-29.md`; one test's reliability needs shouldn't drive the convention.
+
+**2. (P2) Warmup unauthenticated request is a no-op (5-reviewer corroboration).**
+
+- Test file: `backend/tests/routes/custody-upgrade-null-hash.test.ts:128-131` (null-hash case) + `:171-173` (wrong-password case).
+- The warmup `request(app).post('/api/custody/upgrade')` is sent without an `Authorization` header. `verifyHiveSignature` 401s before any route body runs. `burnSentinel` and `argon2.verify` never execute on the warmup path.
+- The stated goal (warming `SENTINEL_ARGON2_HASH_PROMISE`) is moot — that promise is **eager**, computed at `auth.ts:157` module load, fully resolved before any test starts.
+- The first measured request still pays Express cold-path overhead. The `>= 35ms` floor passes only because the floor has ~35× margin, not because the warmup did anything.
+- The misleading comment is a propagation hazard for future timing-equalization tests copy-pasting this pattern.
+- Suggested fix: drop the warmup request + its 4-line comment in both cases. The eager sentinel promise + the documented 35× floor margin handle the cold-path concern. ~6-line cleanup total. (Alternative: add a real `Authorization` header so the warmup actually exercises the route. Adds budget cost for argon2 work in the warmup; A is preferred.)
+
+**3. (P3) Stale `signup-verify.ts:146` line ref in test-name string.**
+
+- File: `backend/tests/routes/signup-verify-resume-argon-error-translation.test.ts:101`. The `it()` name string reads `'confirmed + password_hash branch (signup-verify.ts:146, runWithArgon2Slot)'`.
+- Item 4's 12-line precondition expansion moved `runWithArgon2Slot` from line 146 to line 170. Identical anti-pattern to Item 3 of the round-2 hold (which fixed THREE such drift-stale line refs in production code via symbol-based replacement). This site is in test code and was missed.
+- Suggested fix: replace `'(signup-verify.ts:146, runWithArgon2Slot)'` with `'(\`/resume-signup\` handler in signup-verify.ts, runWithArgon2Slot)'` per Item 3's symbol-based-ref convention.
+
+**4. (P3) `beforeAll` seed INSERTs not error-wrapped.**
+
+- File: `backend/tests/routes/custody-upgrade-null-hash.test.ts:89` (null-hash seed) + `:102` (wrong-password seed).
+- Surrounding DELETEs are `.catch()`-guarded; INSERTs are not. On schema/constraint failure (stale row from prior crash, schema migration not applied), vitest marks `beforeAll` as rejected, the `it` bodies still run, the route returns 401 "Session is no longer valid" via the missing-row branch, the status assertion still passes, and the audit-log assertion fails with cryptic 0-rows message that doesn't point back to seed-time root cause.
+- Suggested fix: wrap each INSERT in a try/catch that re-throws with a descriptive message naming the seeding step (e.g. `Failed to seed null-hash account ${NULL_HASH_USER}: ${err.message}`). ~6 lines per INSERT, ~12 total.
+
+### Items dismissed during architect triage (do NOT address)
+
+- **`clearRateLimitKeys(['custody-upgrade'])` global wildcard** (reliability conf 80). Pre-existing project-wide helper pattern; fixing in this test alone wouldn't close the parallel-conflict risk. Re-evaluate if a real sibling-test conflict surfaces.
+- **`clearRateLimitKeys` doesn't reset in-memory limiter fallback** (adversarial conf 75). Pre-existing helper limitation; helper's own header comment acknowledges it. Right fix is at the helper level (project-wide), not in this test.
+- **Test seeds `custody='light'` directly, masking ORCID-coercion path** (adversarial conf 80). Filed as a separate task `backend-orcid-custody-default-invariant.md` per architect triage on 2026-05-04 — the architect's round-2 hold already noted this as "the underlying invariant violation tracked separately"; surfacing it as a concrete pending task is the natural next step. Modifying the local test addresses the symptom; the new task closes the root cause.
+- **Untyped `pool.query` rows** (kieran-ts conf <75). Pattern is shared with sibling test files; not introduced here.
+- **`SUFFIX` 100-second collision window** (kieran-ts conf <75). Mitigated by `beforeAll` DELETE; concurrent-in-flight collision risk is real but narrow.
+- **`describe.skipIf(!dbReachable)` silent skip** (project-standards residual). Consistent with other real-DB test files in the repo; the mutation fence is only load-bearing when the env override is applied, which is the documented pattern.
+- **Solutions-doc line-ref staleness in `ts-closure-denarrowing-nullable-property-hoist-2026-05-04.md`** (maintainability conf 100). Architect-owned doc; fixed by the architect in a separate `architect(compound-refresh):` commit on 2026-05-04 (out of this task's scope).
+- **Missing `TIMING_ORACLE_CEILING_MS` upper-bound assertion** (security residual). Pre-existing pattern shared with `recover.test.ts`; not introduced here. Architect-tracked as a forward observation.
+- **`(null-hash branch) × (semaphore error)` cell uncovered** (learnings forward observation). Low probability; revisit if a regression surfaces.
+
+### Re-review signal
+
+When items 1-4 land, `git mv` this file back to `tasks/review/`. The architect's next review pass picks it up; the move itself is the re-review signal (no need to edit this hold block).
