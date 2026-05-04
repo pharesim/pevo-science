@@ -358,3 +358,38 @@ Fix: move scratch path to `os.tmpdir()` + a unique subdirectory (e.g., `os.tmpdi
 ### Re-review signal
 
 When items 1-7 land, `git mv` this file back to `tasks/review/`. The architect's next review pass scopes `/ce-code-review` to the round-4 commit. Items 1-3 are P1; the rest are quality-of-life. Anchor: the regex named-groups rewrite (item 1) is the load-bearing structural change; items 2-7 are mostly prose / one-line fixes around it.
+
+---
+
+## Backend re-review signal (2026-05-04, commit b8bcc40)
+
+Round-4 hold-fix items 1-7 all landed in commit `b8bcc40` (cherry-pick of worker `06d46c66`). All changes scoped to test files + the discipline tripwire script — no production SQL/JS code paths changed.
+
+**Item 1 (P1) — Named capture groups.** `assertBridgeAuthorPin` regex switched to `(?<authorSlot>\$\d+)` named groups in both conjunct-order passes. Loop body extracts via `m.groups?.authorSlot` instead of positional `m[2]`. Eliminates comment-vs-code drift; regex is self-documenting.
+
+**Item 2 (P1) — 6 bypass classes documented.** Added "Documented out-of-scope" section to `tests/scripts/check-bridge-paper-discipline.test.ts` enumerating (a) string concatenation, (b) template literal interpolation, (c) `Array.join`, (d) case-toggle, (e) `.slice` from longer literal, (f) `String.fromCharCode(...)`. Referenced `backend-discipline-guard-pipeline-integration.md` as the structural follow-up.
+
+**Item 3 (P1) — Honest framing.** Renamed "CI guard" → "lint discipline tripwire" in `scripts/check-bridge-paper-discipline.sh` header and `tests/scripts/check-bridge-paper-discipline.test.ts` file header.
+
+**Item 4 (P3 batched) — Test scaffolding gaps.**
+- (a) Added the missing 6th case to discipline test: literal in `src/hafsql.ts`-shaped allowlisted file → exit 0.
+- (b) Added `expect(result.source_type).toBe('native')` to existing `toPaperSummary` 'extracts fields from a post' spec.
+- (c) Updated bash script line 33 comment to reflect the three-quote-form coverage.
+
+**Item 5 (P2) — Scratch path to `os.tmpdir()`.** Test scratch path moved from `backend/src/__discipline_test_scratch__/` to `os.tmpdir() + /pevo-discipline-test-${randomUUID()}`. Required adding env-var override `BRIDGE_PAPER_DISCIPLINE_ROOT` to the bash script so tests can drive scanning at the temp root. SIGKILL no longer leaks `'bridge_paper'` artifacts inside `backend/src/`.
+
+**Item 6 (P2) — `.` escaped in allowlist regex.** Bash parameter expansion `${path//./\\.}` per entry before joining.
+
+**Item 7 (P2) — `spawnSync` overload narrowing.** Pinned `encoding: 'utf8' as const`. `result.stdout`/`stderr` typed `string`; `?? ''` fallbacks remain only for the `status` (signal-kill) edge.
+
+### Verification
+
+- Targeted vitest: `tests/routes/bridge-paper-author-gate.test.ts` 14/14, `tests/helpers.test.ts` 22/22, `tests/scripts/check-bridge-paper-discipline.test.ts` 6/6. Total 42/42.
+- `npx tsc --noEmit`: clean.
+- `npm run lint`: clean. Discipline tripwire reports `bridge-paper discipline OK`.
+- **Mutation sensitivity verified:** dropped the bridge-author conjunct from `hafsql.ts:234` → 13/14 canary tests fail red across papers, paper-detail, search, stats, disciplines, comments, bridge/check, sitemap, notifications, reputation. The 1 passing test is the `source=native` asymmetry check (intentionally lacks a bridge arm). Restored; all green again.
+
+### [TODO Architect]
+
+- **Convention doc** `agents/docs/solutions/conventions/pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28.md`: enumerate the same 6 bypass classes (item 2 partial); update prose from "CI guard" to "lint discipline tripwire" framing (item 3 partial). Backend cannot edit `agents/docs/solutions/conventions/...` per backend CLAUDE.md.
+- **Round-2 contract prose carry-forward**: `agents/docs/api-contracts/papers.md` bridge-paper author-identity-as-contract note remains pending.

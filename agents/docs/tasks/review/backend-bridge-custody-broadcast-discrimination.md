@@ -111,3 +111,31 @@ Fix: rename / refactor `logCustodyBroadcast` (or wire a sibling logger call) so 
 
 When items 1-6 land, `git mv` this file back to `tasks/review/`. The architect's next review pass scopes `/ce-code-review` to the round-2 commit and archives on clean. Expected round-2 commit is small (test additions + one structural assertion + log-shape refactor + one new shared module).
 
+---
+
+## Backend re-review signal (2026-05-04, commit 706db7c)
+
+Round-2 hold-fix items 1-6 all landed in commit `706db7c` (cherry-pick of worker `5974687`).
+
+**Item 1 (P1) — Shared mock identity.** Extracted `MockBroadcastTimeoutError` + `makeDhiveLikeError` to new `backend/tests/support/broadcast-mocks.ts`. Both `tests/routes/bridge.test.ts` and `tests/routes/custody.test.ts` import from there. Each file mounts a top-of-`describe` structural assertion `expect(BroadcastTimeoutError).toBe(MockBroadcastTimeoutError)` that mutation-kills future substitution-chain regressions (re-export barrel, hoist preempt, ordering change). Closes M-RR-01 duplicate-stub residual.
+
+**Item 2 (P1) — Custody outer-catch INTERNAL_ERROR coverage.** New spec mocks `decryptKey` to throw, asserts response is 500 `INTERNAL_ERROR` with the static `'Failed to broadcast transaction'` message and the new `event:'custody_broadcast_internal_error'` discriminator. Mutation reverting the rename to `BROADCAST_FAILED` would now fail.
+
+**Item 3 (P1) — VError-shape leak surface.** `makeDhiveLikeError` builds an RPCError-shaped object with `jse_shortmsg`/`jse_cause`/`info`/`cause`. One spec per route (`/register`, `/update`, `/broadcast`) rejects with this shape so the `JSON.stringify(res.body).not.toContain(CHAIN_INTERNAL)` leak-assertion has actual surface.
+
+**Item 4 (P1) — Always-log custody attempts.** New `logBroadcastAttempt` helper fires on EVERY broadcast attempt with `outcome: 'success' | 'failure' | 'timeout'` + `attempt_n` + structured `event:'custody_broadcast_attempt'`. Three specs cover all three outcomes. Closes the audit-log blind spot. Full idempotency design remains filed as `backend-broadcast-idempotency-cluster-followup.md`.
+
+**Item 5 (P2) — `op_types` shape + outer-catch context.** Hoisted `op_types: string[]` and `op_count: number` to outer try-scope; outer catch now logs them with the new event discriminator. Multi-op transactions can now be correlated from logs alone.
+
+**Item 6 (P2) — `LogContext` interface.** Replaced `Record<string, unknown>` in `lib/broadcast-error.ts:84` with a narrowed `LogContext` interface covering all 18 fields used across orcid/bridge/custody/claims/papers/accreditation call sites. `event:` deliberately omitted so helper's spread-after-literal write still wins. Compile-time protection on operator-log shape.
+
+### Verification
+
+- Targeted vitest: `tests/routes/bridge.test.ts` 13/13, `tests/routes/custody.test.ts` 11/11, `tests/lib/broadcast-error.test.ts` 19/19. All green.
+- `npx tsc --noEmit`: clean.
+- `npm run lint`: clean (pre-existing `seed-phrase.ts` `any` warnings only).
+
+### [TODO Architect]
+
+The pre-existing round-1 architect followup A2 (qualifying `timeout_ms` semantics in `bridge.md`/`custody.md`) carries forward unchanged. No NEW architect TODOs from this round.
+

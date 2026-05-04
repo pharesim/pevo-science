@@ -353,3 +353,54 @@ Fix: add `as const` to BOTH sites. One-character change per site. Locks the shap
 ### Re-review signal
 
 When items 1-10 land, `git mv` this file back to `tasks/review/`. The architect's next review pass scopes `/ce-code-review` to the round-4 commit and archives on clean. Architect addresses A1 + A3 + AC-4 contract prose AT archive time. Item 1's test fix expects to fail red until the deferred pino-redact task lands — that's the intended state and the bug exposure is the point.
+
+---
+
+## Backend re-review signal (2026-05-04, commit bed4f1f)
+
+Round-4 hold-fix items 1-10 all landed in commit `bed4f1f` (cherry-pick of worker `7027a11e`).
+
+**Item 1 (P1, INTENTIONAL FAIL-RED) — Test correctness only.** Both the round-3 hold #5 (504+decr) and the 502+deleteToken-rejection specs now stage `Object.assign(new Error('flap'), { command: { name, args: [<key-with-token>] }, name: 'ReplyError' })` to mirror the real ioredis ReplyError shape. The 64-hex token is embedded in `command.args[0]` because the cap-counter Redis key includes the token. The negative-regex `not.toMatch(/[0-9a-f]{64}/)` assertion now FAILS RED — pino's default redact does NOT scrub `err.command.args`. **The 2 fail-reds are by design**; production fix is deferred to `backend-bridge-key-startup-validation-and-pino-redact.md`. Tests transition green when that task lands. Test file header documents the intentional red.
+
+**Item 2 (P1) — Pre-INCR 503 path coverage.** New spec `round-4 hold #2: pre-INCR redis.eval rejection surfaces 503 SERVICE_UNAVAILABLE with {retriable:true}` mocks `redis.eval.mockRejectedValueOnce`, asserts 503 envelope + structured `accred_verify_broadcast_increment_failed` warn fires.
+
+**Item 3 (P1) — Redis-unavailable warn coverage + Reliability-R2 production fix.**
+- (a) Item 11 (pre-INCR 503) covered above.
+- (b) New `round-4 hold #3b` drives `__test_seams.decrementBroadcastAttempts` with `vi.spyOn(redisModule, 'isRedisAvailable').mockReturnValue(false)`; asserts `accred_verify_broadcast_decrement_redis_unavailable` warn fires + no `redis.decr` call.
+- (c) **NEW PRODUCTION WARN** `event: 'accred_verify_broadcast_increment_redis_unavailable'` added to `incrementBroadcastAttempts` symmetric to the existing decrement-side warn. New `round-4 hold #3c (Reliability-R2)` spec drives via the seam. Operators now have a signal when cap enforcement degrades to in-memory fallback.
+
+**Item 5 (P1) — `as const` on test seams.** Added `as const` to `__test_seams` in BOTH `backend/src/routes/accreditation.ts` AND `backend/src/routes/orcid.ts`. Locks shape against accidental test-time mutation.
+
+**Item 6 (P2 batched) — Comment/docstring drift.**
+- (a) Renamed `INCR_AND_EXPIRE_IF_FIRST_LUA` → `INCR_AND_EXPIRE_ON_ZERO_TO_ONE_LUA`.
+- (b) Stripped task-coupled parentheticals from `redis-scripts.ts`.
+- (c) Replaced `(line 178-187 below)` with `see deleteToken below`.
+- (d) Fixed `<= 0` → `< 0` docstring drift in `__test_seams` race-recovery comment + round-3 hold #13 test description.
+
+**Item 7 (P2 batched) — Test scaffolding.**
+- (a) Negative-regex assertion (with circular-safe replacer) added to 502+deleteToken-rejection spec.
+- (b) File header updated to inventory `redis.del`/`redis.decr`/`redis.eval` mocks.
+- (c) Switched 16-hex token to 64-hex `crypto.randomBytes(32).toString('hex')` in both round-3 hold #5 and 502+deleteToken-rejection specs to make redaction assertions load-bearing.
+
+**Item 8 (P2 batched) — Code structure.**
+- (a) Restructured `decrementBroadcastAttempts` as nested `if (redis) { if (isRedisAvailable()) ... else ... }`; same shape applied to `incrementBroadcastAttempts` for symmetry.
+- (b) Narrowed `incrErr: unknown` → `err: incrErr instanceof Error ? incrErr : new Error(String(incrErr))` in pre-INCR catch.
+- (c) Lua constant has `as const`.
+
+**Item 9 (P2) — `token_hash` in cap-exceeded warn.** Added `token_hash: hashTokenForLogs(token)` to cap-exceeded warn payload. Operators can now bucket cap-exceeded events by token.
+
+**Item 10 (P3) — `hashTokenForLogs` parity unit specs.** 6 new parity unit specs in `backend/tests/lib/log-pii.test.ts` (deterministic, no-collisions, 12-hex-lowercase shape, no-normalization invariant, no 3-char-substring leak, no 12-char-prefix leak).
+
+### Verification
+
+- `tests/lib/log-pii.test.ts`: 12/12 (6 existing + 6 new).
+- `tests/routes/accreditation.test.ts`: cap-related specs pass with **2 INTENTIONAL FAIL-REDS** on item 1's ioredis-shape leak (round-3 hold #5 + 502+deleteToken-rejection specs). Plus 2 pre-existing rate-limit pollution failures in `rejects free email`/`rejects yahoo email` (also fail at HEAD; out of scope).
+- `tests/routes/orcid.test.ts`: 67/67 (no regression from `as const`).
+- `npx tsc --noEmit`: clean.
+- `npm run lint`: clean.
+
+### [TODO Architect]
+
+- **A1** Add `BROADCAST_ATTEMPT_LIMIT_EXCEEDED` row to `agents/docs/api-contracts/accreditation.md` AND `common.md`. Note round-3 soft-block side-effect: token PERSISTS on cap-exceeded.
+- **A3 (NEW)** Add 503 `SERVICE_UNAVAILABLE` row to `accreditation.md` for `POST /verify`. Trigger: pre-INCR Redis failure. Envelope: `{retriable: true}`. Note absence of `Retry-After` header and absence of `details.reason` (third-bucket per `common.md`).
+- **AC-4** Update `common.md`'s 503 third-bucket note to acknowledge that `details.retriable: true` may appear in non-argon2 503 responses.

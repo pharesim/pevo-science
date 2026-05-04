@@ -208,3 +208,45 @@ Fix: if `userPostInChain` returns null AND `currentUser.username` IS in `paper.p
 ### Re-review signal
 
 When items 1-7 land (item 8 lives in ζ), `git mv` this file back to `tasks/review/`. The architect's next review pass scopes `/ce-code-review` to the round-2 commits and archives on clean. Item 5 (bridge-paper continuation BUG) requires architect blessing on the design choice (Option b recommended) before backend implements; surface in the implementer's intake question if not yet ratified.
+
+---
+
+## Backend re-review signal (2026-05-04, commit 4e145fc)
+
+Round-2 hold-fix items 1-7 all landed in commit `4e145fc` (cherry-pick of worker `5105646f`). User (acting as architect) ratified **Option b** for item 5 on intake.
+
+**Item 1 (P1) — Continuation type-spoof closed.** `resolveContinuationChain` chain-walk SQL now wraps `validPevoPaperWhere(source: 'all')`; JS-side `isPevoAnyPaper(candidateMeta, candidateAuthor)` re-check on the candidate's parsed metadata. A vouched co-author posting `pevo.type='review'` with `continues={...}` can no longer surface review content as the paper's apparent body. Canary `'rejects a continuation type-spoof'` simulates SQL-predicate bypass and asserts the JS gate trips.
+
+**Item 2 (P1) — Co-author display-spoof closed (scoped).** `fetchPaperDetailFromHaf`'s head-meta override now (a) subset-checks head's `pevo.authors[].hive` against root's authorized-author set (rejects widening into mallory/etc.; warns `event: 'continuation_authors_subset_violation'`), (b) root-pins `ipfs_cid` + `document_hash` (never overridden by continuations). `title`/`body`/`abstract`/`discipline`/`keywords`/`citations`/`language` continue to evolve. Two canaries: subset-rejection on widening, root-pin on payload pointers. Broader trust-model deferred to `backend-coauthor-trust-model.md`.
+
+**Item 3 (P1) — Redundant casts removed.**
+- `helpers.ts`: `extractAuthorizedContinuationAuthors` extracts `entry` once via `const e = entry as Record<string, unknown>`.
+- `routes/papers.ts`: typeof guards added at `fetchHeadAuthorizedAuthors` (return null on non-string author) and the chain-walk hop (break on non-string `candidateAuthor`).
+
+**Item 4 (P2 batched).**
+- (a) Lowercase applied to extracted `pevo.authors[].hive` entries.
+- (b) Audit log: `event: 'paper_authors_metadata_edit'` warn fires from `reconstructVersionsFromHaf` whenever `pevo.authors[]` mutates between versions of the same post.
+- (c) Versioned cache invalidation: `/invalidate` now flushes `paper-detail:{author}:{permlink}:v*` keys via new `QueryCache.invalidatePrefix()` (Redis SCAN+DEL, in-memory prefix-scan fallback). New `cache.test.ts` case pins prefix-match semantics.
+- (d) Hoisted `resolveContinuationChain` out of `Promise.all` in `fetchPaperDetailFromHaf`; `reconstructVersionsFromHaf` accepts an optional `prefetchedChain` to avoid duplicate fetches.
+
+**Item 5 (P1 BUG, Option b ratified) — Bridge-paper continuations work.** `extractAuthorizedContinuationAuthors` signature changed to `(pevoMeta, headAuthor)`. When `pevoMeta.type === 'bridge_paper' && headAuthor === config.hiveBridgeAccount`, the authorized set is `{config.hiveBridgeAccount}`. `bridge.ts /update` is now the only legitimate continuator. Canaries: bridge account admitted; arbitrary attackers AND original-preprint accounts excluded.
+
+**Item 6 (P2 batched) — Test scaffolding.**
+- (a) Test file header corrected to remove false claim about real-HAF coverage; marks real-HAF as filed follow-up.
+- (b) Attacker-exclusion assertion added to bridge canary (now exercises Option b's bridge-paper special-case path).
+
+**Item 7 (P2) — `isAuthorizedContinuationAuthor` inlined.** Removed export + dedicated tests. Single call site uses `authorizedAuthors.has(candidateAuthor)` directly. `extractAuthorizedContinuationAuthors` retained (richer with bridge-paper special case + lowercase normalization).
+
+### Verification
+
+- Targeted vitest: `continuation-author-gate.test.ts` 17/17, `helpers.test.ts` 21/21, `papers.test.ts` 12 passed + 1 skipped (pre-existing), `cache.test.ts` 10/10, `bridge-paper-author-gate.test.ts` 14/14 (regress clean), `paper-detail-v3.test.ts` 1/1.
+- `npx tsc --noEmit`: clean.
+- `npm run lint`: clean. Discipline tripwire OK.
+
+### [TODO Architect]
+
+Round-1 architect followups A1, A2, A3 carry forward (commit-cite correction, ARCHITECTURE.md WHY comments at lines 709-712 and 742-749). Round-2 brings additional contract prose:
+
+- **`agents/docs/ARCHITECTURE.md`** — append a row to the metadata-trust table for `pevo.continues = {author, permlink}` (gated on named-author membership; bridge papers special-case to `config.hiveBridgeAccount`).
+- **`agents/docs/api-contracts/papers.md`** — version-chain admission rule note (server-side filter, no client-visible API change).
+- **`agents/docs/solutions/conventions/pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28.md`** — append "Sites this convention applies to" sub-section enumerating both surfaces (bridge_paper + pevo.continues), AND incorporate the structural-rule strengthening: "every gate enforces author + type identity together, not just one."
