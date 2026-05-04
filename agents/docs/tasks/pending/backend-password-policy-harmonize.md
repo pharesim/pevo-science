@@ -130,3 +130,15 @@ When item 1 lands, `git mv` this file back to `tasks/review/`. The architect's n
 ### Forward-looking observations (architect-tracked)
 
 - No PEvO convention disambiguates `String()` / `valueOf` / `toString` / `Symbol.toPrimitive` semantics for differential-test design today. `/ce-compound` candidate after round-2 lands — provisional title: "Type-coercion mutation-kill vectors must name the mutation each kills (and `String()` invokes `toString` first under the string hint)."
+
+## Backend re-review signal (2026-05-04, working tree)
+
+Round-2 hold item 1 landed at `backend/tests/lib/password-policy-drift.test.ts`:
+
+1. **(P3) Replaced dead `valueOf` vector with `Symbol.toPrimitive`.** The previous `valueOf`-only vector was dead coverage under the named `pw = String(pw)` mutation: `String({ valueOf: () => 'Abcdef1234' })` returns `'[object Object]'` because `OrdinaryToPrimitive(obj, hint='string')` consults `obj.toString()` first, and `Object.prototype.toString` returns `'[object Object]'` before `valueOf` is ever reached. The new vector uses `{ [Symbol.toPrimitive]: () => 'Abcdef1234' }`, which is consulted first by `ToPrimitive` regardless of hint, so the vector kills `String(pw)`, `+pw + ''`, and template-literal coercions uniformly. Comment block above the vectors rewritten to (a) name the specific mutation each vector kills (toString-vector kills the string-hint coercion mutation; Symbol.toPrimitive-vector kills any-hint coercion mutations) and (b) drop the over-claim from round 1 by spelling out exactly why the `valueOf` shape was structurally insufficient.
+
+Verification (mutation-then-revert per `agents/docs/solutions/conventions/tests-must-fail-on-mutation-of-code-under-test-2026-04-22.md`):
+- Mutated **BE** helper: inserted `pw = String(pw);` ahead of the `typeof pw !== 'string'` guard in `backend/src/lib/password-policy.ts`. Confirmed `npx vitest run tests/lib/password-policy-drift.test.ts` turned RED with the disagreement-accumulator naming both vectors. Mutated side accepted (BE=true), unmutated side rejected (FE=false): `"object with toString returning a string that satisfies every class: BE=true FE=false expected=false"` and `"object with Symbol.toPrimitive returning a string that satisfies every class: BE=true FE=false expected=false"`. Mutation reverted before staging; `git diff backend/src/lib/password-policy.ts` shows zero diff. Suite green again post-revert.
+- `npx tsc --noEmit` — clean.
+- `npm run lint` — clean (only pre-existing accepted `@typescript-eslint/no-explicit-any` warnings in `seed-phrase.ts`).
+- `npx vitest run tests/lib/password-policy-drift.test.ts` (post-revert) — 1 file / 2 tests pass.

@@ -51,20 +51,35 @@ const VECTORS: ReadonlyArray<readonly [label: string, input: unknown, expected: 
   ['object input', {}, false],
   ['array input', [], false],
   ['boolean input', true, false],
-  // Mutation-kill vectors for `String()` coercion drift: a backend mutation
-  // that adds `pw = String(pw)` ahead of the typeof guard would render an
-  // input whose default `String()` rendering already passes every class
-  // check, silently shipping a coerced-acceptance regression. Both helpers
-  // MUST reject the input regardless of what its `toString` returns; if one
-  // helper coerces and the other type-checks, the disagreement surfaces here.
+  // Mutation-kill vectors for type-coercion drift: each named scenario kills
+  // a specific coercion mutation that could otherwise sneak past the typeof
+  // guard. Both helpers MUST reject these objects unchanged; if one helper
+  // type-checks while the other coerces, the disagreement-accumulator names
+  // the drifted vector.
+  //
+  // Vector 1 kills `pw = String(pw)` (or any other string-hint coercion like
+  // `''+pw`) inserted ahead of the typeof guard. `String(obj)` invokes
+  // `OrdinaryToPrimitive(obj, hint='string')`, which calls `obj.toString()`
+  // first; this object's `toString` returns 'Abcdef1234' which satisfies
+  // every class check, so a mutated helper that coerces before checking
+  // would silently accept the input.
   [
     'object with toString returning a string that satisfies every class',
     { toString: () => 'Abcdef1234' },
     false,
   ],
+  // Vector 2 kills any coercion mutation regardless of hint -- string hint
+  // (`String(pw)`), number hint (`+pw`), or default hint (template literal
+  // `\`${pw}\``, `pw + ''`). `Symbol.toPrimitive` is consulted first by
+  // `ToPrimitive` for every hint, so a method returning 'Abcdef1234' makes
+  // the input pass every class check after ANY coercion form. The earlier
+  // `valueOf`-only vector did NOT kill `String(pw)` because the string-hint
+  // path consults `toString()` before `valueOf()` and `Object.prototype
+  // .toString` returns '[object Object]'; `Symbol.toPrimitive` covers all
+  // forms uniformly.
   [
-    'object with valueOf returning a string that satisfies every class',
-    { valueOf: () => 'Abcdef1234' },
+    'object with Symbol.toPrimitive returning a string that satisfies every class',
+    { [Symbol.toPrimitive]: () => 'Abcdef1234' },
     false,
   ],
 ];
