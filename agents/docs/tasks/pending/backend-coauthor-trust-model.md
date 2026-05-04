@@ -139,13 +139,31 @@ This is a major feature; expect 2-4 implementation rounds with held-pending-fix 
 
 ---
 
-## [BLOCKED by Architect] (backend startup triage 2026-05-04)
+## Phase 1 design landed (2026-05-05)
 
-Phase 1 of this task is explicit: "Invoke `/ce-brainstorm` on the trust-model question with the architect." The brainstorm is the first deliverable; backend cannot proceed to Phase 2 implementation without (a) the threat-model writeup, (b) the sensitive-vs-non-sensitive field enumeration, (c) the chosen multi-sig primitive (per-paper sub-account vs custom_json+app-layer-validation vs co-author-veto window), and (d) the migration story for existing papers.
+Architect-led `/ce-brainstorm` + `/ce-doc-review` passes both clean. Phase 1 outputs:
 
-What backend needs from architect to unblock:
-1. Architect-led `/ce-brainstorm` session with the user covering the design questions in this task file's "Design questions" section.
-2. Resulting design doc landed under `agents/docs/` (architect-owned zone) with `/ce-doc-review` pass clean.
-3. Decision on the bridge-paper trust model interaction (the ε hold-block special-case admit for `hive: null` authors needs a long-term home that is consistent with this task's design).
+- **Canonical spec:** `agents/docs/ARCHITECTURE.md` section 2 "Multi-Author Trust Model" — 10 subsections covering design alternatives considered, threat model, vouched-vs-claimed semantic, field mutation rules (2-bucket model), authors mutation, light-account signing of consent ops, vouched-set computation Phase 2 constraints, compromised-key recovery, bridge papers, migration, pinner constraint. Plus `### Author Accept (custom_json)` and `### Author Resign (custom_json)` wire formats with full validity rules (signer binding, temporal ordering, (block_num, trx_in_block) tie-breaker). Landed in commit `ddd1c69`.
+- **Three follow-up tasks** filed in `tasks/pending/`:
+  - `backend-notification-infra-for-consent-ops` — pending-authorships endpoint for the migration banner.
+  - `ui-multi-author-consent-affordances` — paper-detail accept/resign affordances + migration banner + badge display.
+  - `backend-bridge-paper-author-claim-flow` — deferred stub for original-preprint author identity binding (P2; pick up when a real user surfaces).
+- **ε round-3 hold-block** appended to `backend-continuation-post-author-consent-gate.md` and moved back to `tasks/pending/`. The round-3 fixes correct ε's subset-check inversion (replace with no-shrink rule) and the `ipfs_cid`/`document_hash` root-pin (replace with per-version + head-preferred display). Phase 2 of this task layers on top of those round-3 fixes.
 
-Once the design doc is ratified, this task moves back to `tasks/pending/` and backend picks up Phase 2 implementation (schema changes, validation logic, tests, convention doc).
+### Phase 2 implementation scope
+
+Backend picks up Phase 2 implementation per the canonical spec. Major work areas:
+
+1. **`custom_json` op handling** — extend `PevoCustomJsonAction` union in `backend/src/types/hive.ts` with `AuthorAcceptAction` and `AuthorResignAction`. Add validators per ARCH.md "Author Accept" and "Author Resign" subsections (signer-binding, temporal-ordering for accept, (block_num, trx_in_block) tie-breaker).
+2. **Vouched-set computation** — implement read-time vouched-set lookup honoring the four constraints in ARCH.md "Vouched-set computation (Phase 2 constraints)" subsection (one-block staleness, O(1) HAF queries per request, cache invalidation on consent ops, version-scoped cache keys). Integrate with `resolveContinuationChain`'s admit gate.
+3. **Custody endpoint extension** — backend signs `author_accept`/`author_resign` for light-account users via the custody endpoint, with the fresh-auth gate (password / ORCID / etc.) per ARCH.md "Light-account signing of consent ops" subsection.
+4. **Migration-day flag** — gate the new vouched-set rules behind a deploy flag; on flag-day, the `/api/me/authorships/pending` endpoint (sibling task) returns the affected papers so the UI surfaces the migration banner.
+5. **Tests** — canary coverage for: legitimate accept flow, legitimate resign flow, signer-binding rejection, temporal-ordering rejection, historical-union claimed-set, no-shrink rule, light-account fresh-auth gate, compromised-key recovery semantics, bridge-paper exclusion from consent flow.
+6. **`/ce-compound`** — at archive, capture the convention doc `agents/docs/solutions/conventions/multi-author-trust-model-<date>.md` if Phase 2 surfaces non-obvious learnings (otherwise skip).
+
+Phase 2 should be planned with `/ce-plan` to break into reviewable rounds. Expect 2-4 rounds of held-pending-fix review given the spec's surface area.
+
+### Phase 2 dependencies
+
+- ε's round-3 fixes must land first (the round-3 corrections establish the no-shrink + per-version baseline that Phase 2 layers consent ops onto).
+- The `/api/me/authorships/pending` endpoint (sibling task `backend-notification-infra-for-consent-ops`) and the UI affordances (`ui-multi-author-consent-affordances`) ship concurrently with Phase 2 for the flag-day migration to work.

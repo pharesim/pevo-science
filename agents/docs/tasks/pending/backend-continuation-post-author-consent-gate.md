@@ -250,3 +250,62 @@ Round-1 architect followups A1, A2, A3 carry forward (commit-cite correction, AR
 - **`agents/docs/ARCHITECTURE.md`** — append a row to the metadata-trust table for `pevo.continues = {author, permlink}` (gated on named-author membership; bridge papers special-case to `config.hiveBridgeAccount`).
 - **`agents/docs/api-contracts/papers.md`** — version-chain admission rule note (server-side filter, no client-visible API change).
 - **`agents/docs/solutions/conventions/pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28.md`** — append "Sites this convention applies to" sub-section enumerating both surfaces (bridge_paper + pevo.continues), AND incorporate the structural-rule strengthening: "every gate enforces author + type identity together, not just one."
+
+---
+
+## Architect re-review (2026-05-05, round-3) — HELD PENDING FIXES
+
+These findings did not come from a fresh `/ce-code-review` pass on the round-2 commit `4e145fc`; they surfaced during the brainstorm of `backend-coauthor-trust-model` and the `/ce-doc-review` of the resulting Multi-Author Trust Model spec landed in `agents/docs/ARCHITECTURE.md` (commit `ddd1c69`). Both are corrections to round-2's hold-fix item 2 ("Co-author display-spoof closed (scoped)"). Both block archive.
+
+### Items to address
+
+**1. (P1) Subset-check inversion on `pevo.authors[]` override.** `backend/src/routes/papers.ts:625-635` implements `headAuthors ⊆ rootAuthors` (every entry in head's authors must be in root's). This is the wrong direction:
+
+- Removing authors silently passes the subset check (e.g., `{bob} ⊆ {alice, bob}` passes — bob silently drops alice). This IS the insider-abuse vector the round-2 fix was supposed to defend against.
+- Adding authors fails the subset check, contradicting the canonical version-chain semantics in `agents/docs/solutions/architecture-patterns/pevo-paper-version-chain-and-edit-semantics-2026-04-30.md` rule #4 (`pevo.authors[]` is monotonic; additions are legitimate when a co-author joins during revision) AND contradicting the Multi-Author Trust Model spec just landed in ARCHITECTURE.md.
+
+The right rule per ARCHITECTURE.md "Authors mutation" subsection (just landed):
+
+- Head's `pevo.authors[].hive` may be a SUPERSET of root's (additions allowed; new entries are claimed-pending until the new author broadcasts a valid `author_accept` op — Phase 2 of `backend-coauthor-trust-model` adds the accept/resign primitive).
+- Head's `pevo.authors[].hive` MUST NOT shrink. If any name in root's `pevo.authors[].hive` is missing from head's, the override is rejected and an audit event is logged (`event: 'continuation_authors_shrink_violation'`).
+- Vouched-set computation reads `author_accept`/`author_resign` ops; that is Phase 2 work. For round-3's hold-fix the simpler "no-shrink" rule is the immediate correction. Phase 2 layers the consent ops on top.
+
+Concretely: replace the `headAuthorsAreSubset` check with `headAuthorsCoverRoot` (or equivalent) — every name in `rootAuthorSet` MUST appear in `headAuthorsRaw`'s extracted hive set. New names in head are admitted (will be claimed-pending in the long-term model; for round-3 they're written into the displayed authors list as plain entries pending Phase 2). Update the audit-event tag accordingly. Update canary tests:
+
+- `'rejects head metadata that drops a root author'` — bob's continuation with `pevo.authors=[bob]` (alice missing) is rejected; warn fires.
+- `'admits head metadata that adds a new author'` — bob's continuation with `pevo.authors=[alice, bob, carol]` is admitted; carol surfaces in the displayed list.
+
+**2. (P1) `ipfs_cid` and `document_hash` root-pin is wrong-shaped.** `backend/src/routes/papers.ts:656-658` root-pins these fields, never overriding from continuations. This kills the legitimate revision use case where each version has its own PDF (alice's v1 has CID_A, bob's v2 has CID_B).
+
+The right rule per ARCHITECTURE.md "Field mutation rules" table (just landed):
+
+- Each chain post's `ipfs_cid`, `document_hash`, and `ipfs_filename` apply to that version's view.
+- The default `/api/papers/:author/:permlink` view (no `?version=N`) reads from the chain head, like other free-edit fields.
+- `?version=N` reads from the N-th version's metadata.
+- All historical CIDs are preserved on chain (Hive immutability); the pinner agent retains them per the "Pinner constraint" subsection.
+
+Concretely: replace the root-pin assignments at `backend/src/routes/papers.ts:656-658` with head-preferred lookup with root fallback:
+
+```ts
+detail.ipfs_cid = headPevo.ipfs_cid ?? rootPevo.ipfs_cid ?? null;
+detail.ipfs_filename = headPevo.ipfs_filename ?? rootPevo.ipfs_filename ?? null;
+detail.document_hash = headPevo.document_hash ?? rootPevo.document_hash ?? null;
+```
+
+Update the comment block at `backend/src/routes/papers.ts:595-613` to reflect the corrected reasoning (per-version retention + per-version display, not root-pin). Update canary tests:
+
+- `'shows head's ipfs_cid for the default view when continuation provides one'` — bob's continuation with a different `ipfs_cid` becomes the displayed CID for the head view.
+- `'falls back to root ipfs_cid when head doesn't carry one'` — head metadata without `ipfs_cid` reads root's.
+- Both `?version=1` and `?version=2` retrieve the correct per-version CID.
+
+The risk of bob spoofing his continuation's `ipfs_cid` to a different paper is treated identically to body-spoof: accepted risk, broadcaster-attributed reputation flow, on-chain audit trail, accreditation revocation as deterrent. Document this in the comment block.
+
+### Re-review signal
+
+When items 1-2 land, `git mv` this file back to `tasks/review/`. The architect's next review pass scopes `/ce-code-review` to the round-3 commits (since the original `/ce-code-review` pass covered round-2). Both items are inline corrections to existing logic — small diff expected.
+
+### Cross-references
+
+- `agents/docs/ARCHITECTURE.md` section 2 "Multi-Author Trust Model" — canonical spec for the corrected rules (commit `ddd1c69`).
+- `agents/docs/tasks/pending/backend-coauthor-trust-model.md` — Phase 2 implementation of the full consent-op flow (`author_accept`/`author_resign`); ε's round-3 fixes establish the minimal correct rule that Phase 2 layers on.
+- `agents/docs/solutions/architecture-patterns/pevo-paper-version-chain-and-edit-semantics-2026-04-30.md` — version-chain semantics that the no-shrink rule restores compatibility with.
