@@ -228,6 +228,52 @@ describe('editPage handleSubmit sanitization', () => {
     warnSpy.mockRestore();
   });
 
+  // Round-2 item 2: $watch handlers + storage listener registration
+  // moved out of loadPaperData() into init()/_setupReactiveBindings().
+  // The Retry button at edit.js:50 re-invokes loadPaperData(); before
+  // the refactor each retry duplicated 8 $watch handlers (Alpine's
+  // returned unsubscribe handle was discarded) and overwrote
+  // _storageListener without removeEventListener'ing the prior one. The
+  // invariant: registrations happen exactly once across init + N
+  // loadPaperData calls.
+  describe('reactive bindings register exactly once across retries', () => {
+    it('init() registers all 8 $watch handlers + 1 storage listener; subsequent loadPaperData() does not re-register', async () => {
+      const addEventListenerSpy = vi.spyOn(window, 'addEventListener');
+      fetchPaper.mockResolvedValue({ data: { author: 'alice', permlink: 'p1', body: '', json_metadata: '{}' } });
+      fetchPaperEnrichment.mockResolvedValue({ data: {} });
+
+      const comp = createComponent();
+      comp._mounted = true;
+
+      // init() is the canonical entry. It calls _setupReactiveBindings()
+      // and then loadPaperData(). We assert post-init state then verify
+      // a second loadPaperData() is invariant.
+      comp.init();
+      const watchCallsAfterInit = comp.$watch.mock.calls.length;
+      const storageListenersAfterInit = addEventListenerSpy.mock.calls.filter(
+        c => c[0] === 'storage'
+      ).length;
+
+      expect(watchCallsAfterInit).toBe(8); // title, abstract, body, keywordsText, authorName, authorAffiliation, authorOrcid, citations
+      expect(storageListenersAfterInit).toBe(1);
+
+      // Retry: simulate the user clicking the Retry button after a
+      // (hypothetical) load error.
+      await comp.loadPaperData();
+
+      const watchCallsAfterRetry = comp.$watch.mock.calls.length;
+      const storageListenersAfterRetry = addEventListenerSpy.mock.calls.filter(
+        c => c[0] === 'storage'
+      ).length;
+
+      // Invariant: no duplication.
+      expect(watchCallsAfterRetry).toBe(watchCallsAfterInit);
+      expect(storageListenersAfterRetry).toBe(storageListenersAfterInit);
+
+      addEventListenerSpy.mockRestore();
+    });
+  });
+
   // UI-COAUTHOR-CONTINUATION-PUBLISHING: a co-author who already has a
   // post in the version chain (e.g. bob with bob/cont-1) must native-edit
   // their existing post on subsequent edits, not balloon the chain with a
@@ -247,6 +293,27 @@ describe('editPage handleSubmit sanitization', () => {
         ],
       };
       expect(comp.userPostInChain).toBeNull();
+    });
+
+    // Round-2 item 8: dedicated unit spec for the user-is-chain-head
+    // partition. Previously only exercised indirectly via the
+    // handleSubmit broadcast-target test; making the partition explicit
+    // protects against regressions in the version walk's tail behavior.
+    it('userPostInChain returns the head entry when the user IS the chain head', () => {
+      const comp = createComponent();
+      mockStores.auth.username = 'bob';
+      comp.paper = {
+        author: 'alice', permlink: 'p1',
+        head_author: 'bob', head_permlink: 'cont-1',
+        versions: [
+          { version_number: 1, author: 'alice', permlink: 'p1' },
+          { version_number: 2, author: 'bob', permlink: 'cont-1' },
+        ],
+      };
+      const own = comp.userPostInChain;
+      expect(own).not.toBeNull();
+      expect(own.author).toBe('bob');
+      expect(own.permlink).toBe('cont-1');
     });
 
     it('userPostInChain returns the latest entry where author === username', () => {
@@ -294,6 +361,59 @@ describe('editPage handleSubmit sanitization', () => {
         ],
       };
       expect(comp.isContinuation).toBe(true);
+    });
+
+    // Round-2 item 3: the `ownPost ?` ternary in handleSubmit's edit
+    // branch is a load-bearing null guard for the sparse-versions
+    // root-author case (versions[] entries lack author/permlink in some
+    // HAF-replay-not-run states). isContinuation returns false because
+    // username === paper.author and chain pointers indicate single-post,
+    // but userPostInChain returns null because the version walk found no
+    // matching `author` field. The broadcast must target paper.author /
+    // paper.permlink, not throw on null.author.
+    it('sparse-versions root-author edit: broadcast targets paper.author/permlink (ownPost null guard load-bearing)', async () => {
+      const { invalidatePaperCache } = await import('../../src/api.js');
+      broadcastOps.mockResolvedValue({ tx_id: 'tx' });
+      invalidatePaperCache.mockResolvedValue({});
+
+      const comp = createComponent();
+      mockStores.auth.username = 'alice';
+      comp.paper = {
+        author: 'alice', permlink: 'p1',
+        head_author: 'alice', head_permlink: 'p1',
+        canonical_author: 'alice', canonical_permlink: 'p1',
+        body: 'old body',
+        json_metadata: JSON.stringify({ pevotest: { version: 1 } }),
+        title: 'Old Title',
+        // Sparse versions[] without author/permlink fields — the shape
+        // the backend emits when HAF replay returns nothing.
+        versions: [{ version_number: 1 }],
+      };
+      comp._originalBody = '## Abstract\n\nold abstract\n\n---\n\nold body';
+      comp.title = 'New Title';
+      comp.abstract = 'new abstract';
+      comp.body = 'new body';
+      comp.discipline = 'Physics';
+      comp.authorName = 'Alice';
+      comp.authorAffiliation = 'MIT';
+      comp.authorOrcid = '';
+      comp.keywordsText = 'quantum';
+
+      // Pre-condition: isContinuation false (sparse-versions fallback,
+      // username === paper.author), userPostInChain null (no entry
+      // carries an `author` field).
+      expect(comp.isContinuation).toBe(false);
+      expect(comp.userPostInChain).toBeNull();
+
+      await comp.handleSubmit();
+
+      expect(comp.step).toBe('success');
+      const commentOp = broadcastOps.mock.calls[0][1][0];
+      // Targets paper.author/paper.permlink via the `ownPost ?` null
+      // guard. A regression that drops the ternary would crash on
+      // `null.author` and never reach this assertion.
+      expect(commentOp[1].author).toBe('alice');
+      expect(commentOp[1].permlink).toBe('p1');
     });
 
     it('isContinuation falls back to legacy semantics when versions[] is sparse', () => {
@@ -356,6 +476,14 @@ describe('editPage handleSubmit sanitization', () => {
       // NOT alice/p1 (the canonical root) and NOT a fresh permlink.
       expect(commentOp[1].author).toBe('bob');
       expect(commentOp[1].permlink).toBe('cont-1');
+      // The collapsed `allAuthors[0].hive = username` (formerly the
+      // vestigial `isContinuation ? username : paper.author` ternary)
+      // must embed the broadcaster, not the canonical root author. A
+      // regression that re-introduces the ternary would silently set
+      // authors[0].hive to 'alice' here even though Bob is the
+      // broadcaster — undetectable without parsing json_metadata.
+      const parsedMeta = JSON.parse(commentOp[1].json_metadata);
+      expect(parsedMeta.pevotest.authors[0].hive).toBe('bob');
       // Cache invalidation keys off the canonical root (papers endpoint
       // resolves any chain entry to canonical before reading).
       expect(invalidatePaperCache).toHaveBeenCalledWith('alice', 'p1');

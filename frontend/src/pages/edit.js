@@ -20,6 +20,14 @@ import diff_match_patch from 'diff-match-patch';
 
 const ABSTRACT_MAX_CHARS = 2000;
 
+// Step state machine. handleSubmit() walks through these in order; the
+// terminal states are 'success' and 'error'. STEP_IN_PROGRESS is a
+// positive-set inclusion list rather than a negative-space exclusion
+// against {idle, success, error} — adding a new step name without
+// updating the exclusion would have silently re-enabled the Submit
+// button mid-flight (state-machine correctness smell).
+const STEP_IN_PROGRESS = ['diffing', 'uploading', 'broadcasting'];
+
 function composePostBody(abstract, fullText) {
   if (!fullText) return '## Abstract\n\n' + abstract;
   return '## Abstract\n\n' + abstract + '\n\n---\n\n' + fullText;
@@ -107,6 +115,15 @@ const template = `
               <div class="card bg-pevo-teal-light border-pevo-teal/30 mb-6">
                 <p class="text-sm font-medium text-ink" x-text="$t('edit.continuationNotice')"></p>
                 <p class="text-xs text-ink-muted mt-1" x-text="$t('edit.continuationExplainer')"></p>
+              </div>
+            </template>
+
+            <!-- Metadata-incomplete warning (named co-author with no chain entry) -->
+            <template x-if="showMetadataIncompleteWarning">
+              <div class="card bg-pevo-crimson-light border-pevo-crimson/30 mb-6">
+                <p class="text-sm font-medium text-ink" x-text="$t('edit.metadataIncomplete')"></p>
+                <p class="text-xs text-ink-muted mt-1" x-text="$t('edit.metadataIncompleteHint')"></p>
+                <button type="button" class="btn-secondary text-xs mt-2" @click="reloadPage()" x-text="$t('common.refresh')"></button>
               </div>
             </template>
 
@@ -388,6 +405,10 @@ export function initEditPage() {
       Alpine.store('router').navigate(path);
     },
 
+    reloadPage() {
+      window.location.reload();
+    },
+
     async handleConnect() {
       try {
         await Alpine.store('auth').connect();
@@ -464,6 +485,29 @@ export function initEditPage() {
       return true;
     },
 
+    // Surfaces a soft warning when the user appears to be a named
+    // co-author (per the chain head's pevo.authors[]) but has no post in
+    // versions[]. Two cases land here:
+    //   (a) Legitimate first-time co-author publish (chain has only the
+    //       root or another author's continuation). The banner is
+    //       informational; the publish-continuation flow proceeds.
+    //   (b) Malformed-metadata case (companion to backend continuation
+    //       gate item 8): the user previously published in this chain
+    //       but their post got filtered out because the backend gate
+    //       degenerated the chain to root-only when head metadata went
+    //       empty/missing. Refreshing or waiting for backend repair is
+    //       the right fix; the user should NOT silently broadcast a
+    //       fresh continuation that orphans their existing post.
+    // The warning is non-blocking by design — case (a) is legitimate,
+    // case (b) requires user intervention. The form remains submittable.
+    get showMetadataIncompleteWarning() {
+      if (!this.paper || !this.username) return false;
+      const pevoAuthors = this.paper.json_metadata?.[getAppTag()]?.authors || [];
+      const isNamedCoAuthor = pevoAuthors.some(a => a?.hive === this.username);
+      if (!isNamedCoAuthor) return false;
+      return this.userPostInChain === null;
+    },
+
     get nextVersion() {
       if (!this.paper?.versions?.length) return 2;
       const max = Math.max(...this.paper.versions.map(v => v.version_number));
@@ -471,7 +515,7 @@ export function initEditPage() {
     },
 
     get isSubmitting() {
-      return this.step !== 'idle' && this.step !== 'success' && this.step !== 'error';
+      return STEP_IN_PROGRESS.includes(this.step);
     },
 
     get stepMessage() {
@@ -497,7 +541,33 @@ export function initEditPage() {
     },
 
     init() {
+      // Reactive bindings register exactly once. loadPaperData() must stay
+      // re-entrant: the Retry button re-invokes it, and registering $watch
+      // / storage listeners inside that path duplicated handlers per retry
+      // (Alpine's $watch returns an unsubscribe handle the previous code
+      // discarded, and the storage listener was overwritten without
+      // removeEventListener). Draft auto-save guards on _initialLoadDone,
+      // so $watch firing before the first successful load is a no-op.
+      this._setupReactiveBindings();
       this.loadPaperData();
+    },
+
+    _setupReactiveBindings() {
+      this._storageListener = (e) => {
+        if (e.key === 'pevo-citation-collection' && e.newValue) {
+          this._mergeCitationCollection();
+        }
+      };
+      window.addEventListener('storage', this._storageListener);
+
+      this.$watch('title', () => this._scheduleDraftSave());
+      this.$watch('abstract', () => this._scheduleDraftSave());
+      this.$watch('body', () => this._scheduleDraftSave());
+      this.$watch('keywordsText', () => this._scheduleDraftSave());
+      this.$watch('authorName', () => this._scheduleDraftSave());
+      this.$watch('authorAffiliation', () => this._scheduleDraftSave());
+      this.$watch('authorOrcid', () => this._scheduleDraftSave());
+      this.$watch('citations', () => this._scheduleDraftSave());
     },
 
     async loadPaperData() {
@@ -535,27 +605,9 @@ export function initEditPage() {
         // Merge citation collection from localStorage
         this._mergeCitationCollection();
 
-        // Listen for cross-tab citation collection changes
-        this._storageListener = (e) => {
-          if (e.key === 'pevo-citation-collection' && e.newValue) {
-            this._mergeCitationCollection();
-          }
-        };
-        window.addEventListener('storage', this._storageListener);
-
         this.$nextTick(() => {
           this._mountEditors();
         });
-
-        // Watch for changes and auto-save draft
-        this.$watch('title', () => this._scheduleDraftSave());
-        this.$watch('abstract', () => this._scheduleDraftSave());
-        this.$watch('body', () => this._scheduleDraftSave());
-        this.$watch('keywordsText', () => this._scheduleDraftSave());
-        this.$watch('authorName', () => this._scheduleDraftSave());
-        this.$watch('authorAffiliation', () => this._scheduleDraftSave());
-        this.$watch('authorOrcid', () => this._scheduleDraftSave());
-        this.$watch('citations', () => this._scheduleDraftSave());
       } catch (err) {
         if (!this._mounted) return;
         if (this.author !== author || this.permlink !== permlink) return;
@@ -809,6 +861,17 @@ export function initEditPage() {
       if (!username || !this.isConnected) return;
       if (!this.authorName.trim()) return;
 
+      // Capture the chain-routing decision atomically, before any awaits.
+      // isContinuation and userPostInChain are getters that recompute from
+      // this.paper.versions[] on every access. The IPFS upload loop can
+      // run for many seconds; if this.paper were ever mutated during that
+      // window (background poll, future refresh hook, reactivity write),
+      // re-reading these getters at submit-time would silently shift the
+      // broadcast target. Locking them as locals here closes the latent
+      // class entirely.
+      const isContinuation = this.isContinuation;
+      const ownPost = this.userPostInChain;
+
       this.step = 'diffing';
       this.errorMessage = '';
 
@@ -866,7 +929,7 @@ export function initEditPage() {
 
         const pevoMeta = this.paper.json_metadata?.[APP_TAG] || {};
 
-        if (this.isContinuation) {
+        if (isContinuation) {
           // Continuation post: new post with full body
           const headAuthor = this.paper.head_author || this.paper.author;
           const headPermlink = this.paper.head_permlink || this.paper.permlink;
@@ -928,10 +991,15 @@ export function initEditPage() {
           }, 1500);
         } else {
           // Same-author native edit: target the user's own post in the
-          // chain (which may be the canonical root, or a continuation post
-          // the user previously authored). userPostInChain is non-null on
-          // this branch — isContinuation === false implies it.
-          const ownPost = this.userPostInChain;
+          // chain (which may be the canonical root, or a continuation
+          // post the user previously authored). ownPost MAY be null when
+          // isContinuation took the sparse-versions fallback path: at
+          // edit.js isContinuation, when the chain pointers indicate a
+          // single-post paper (no chain) and username === paper.author,
+          // the getter returns false even though the version walk found
+          // no entry (versions[] entries lack author/permlink in some
+          // HAF-replay-not-run states). The `ownPost ?` guard below is
+          // load-bearing for that case — DO NOT remove it.
           const targetAuthor = ownPost ? ownPost.author : this.paper.author;
           const targetPermlink = ownPost ? ownPost.permlink : this.paper.permlink;
 

@@ -208,6 +208,101 @@ describe('paperDetailPage', () => {
     });
   });
 
+  // UI-COAUTHOR-CONTINUATION-PUBLISHING round-2 item 1: the Edit-affordance
+  // gate at paper-detail.js:296 reads `isOwnPaper && !paper.is_retracted &&
+  // !isBridgePaper`. Bridge papers update via /api/bridge/update, NOT the
+  // SPA edit flow, so suppressing the affordance for them is load-bearing.
+  // Removing `!isBridgePaper` from the template would silently restore the
+  // pre-fix behavior; these tests pin the getter and predicate matrix so a
+  // mutation is caught at unit level.
+  describe('isBridgePaper', () => {
+    it('returns true when json_metadata.pevotest.type is "bridge_paper"', () => {
+      const comp = createComponent();
+      comp.paper = { json_metadata: { pevotest: { type: 'bridge_paper' } } };
+      expect(comp.isBridgePaper).toBe(true);
+    });
+
+    it('returns false for a normal paper (type: "paper")', () => {
+      const comp = createComponent();
+      comp.paper = { json_metadata: { pevotest: { type: 'paper' } } };
+      expect(comp.isBridgePaper).toBe(false);
+    });
+
+    it('returns false when json_metadata is missing', () => {
+      const comp = createComponent();
+      comp.paper = {};
+      expect(comp.isBridgePaper).toBe(false);
+    });
+
+    it('returns false when pevotest namespace is missing', () => {
+      const comp = createComponent();
+      comp.paper = { json_metadata: {} };
+      expect(comp.isBridgePaper).toBe(false);
+    });
+
+    it('returns false when type field is missing', () => {
+      const comp = createComponent();
+      comp.paper = { json_metadata: { pevotest: { discipline: 'physics' } } };
+      expect(comp.isBridgePaper).toBe(false);
+    });
+  });
+
+  // Affordance predicate matrix: isOwnPaper && !paper.is_retracted && !isBridgePaper.
+  // Asserts at the getter-composition level (no DOM render). The four
+  // dimensions: own paper Y/N, retracted Y/N, bridge paper Y/N. The
+  // predicate must be FALSE on retracted, bridge, or non-own paths.
+  describe('Edit affordance predicate matrix (isOwnPaper && !is_retracted && !isBridgePaper)', () => {
+    it('own paper, non-bridge, not retracted -> predicate true', () => {
+      const comp = createComponent();
+      comp.paper = {
+        author: 'alice',
+        authors: [],
+        is_retracted: false,
+        json_metadata: { pevotest: { type: 'paper' } },
+      };
+      const predicate = comp.isOwnPaper && !comp.paper.is_retracted && !comp.isBridgePaper;
+      expect(predicate).toBe(true);
+    });
+
+    it('own paper, bridge paper -> predicate false (bridge suppressed)', () => {
+      const comp = createComponent();
+      comp.paper = {
+        author: 'alice',
+        authors: [],
+        is_retracted: false,
+        json_metadata: { pevotest: { type: 'bridge_paper' } },
+      };
+      const predicate = comp.isOwnPaper && !comp.paper.is_retracted && !comp.isBridgePaper;
+      expect(predicate).toBe(false);
+    });
+
+    it('own paper, retracted -> predicate false', () => {
+      const comp = createComponent();
+      comp.paper = {
+        author: 'alice',
+        authors: [],
+        is_retracted: true,
+        json_metadata: { pevotest: { type: 'paper' } },
+      };
+      const predicate = comp.isOwnPaper && !comp.paper.is_retracted && !comp.isBridgePaper;
+      expect(predicate).toBe(false);
+    });
+
+    it('non-own paper, normal type -> predicate false', () => {
+      mockStores.auth.username = 'dave';
+      const comp = createComponent();
+      comp.paper = {
+        author: 'alice',
+        authors: [{ hive: 'alice' }],
+        authorship_claims: [],
+        is_retracted: false,
+        json_metadata: { pevotest: { type: 'paper' } },
+      };
+      const predicate = comp.isOwnPaper && !comp.paper.is_retracted && !comp.isBridgePaper;
+      expect(predicate).toBe(false);
+    });
+  });
+
   describe('ipfsUrl', () => {
     it('returns null when no ipfs_cid', () => {
       const comp = createComponent();
