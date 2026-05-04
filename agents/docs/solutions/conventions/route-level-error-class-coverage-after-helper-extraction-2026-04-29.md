@@ -109,10 +109,17 @@ A future regression that swallows the abort wholesale (writing a 200 onto the to
 
 ### Good: route-level cell coverage for every concrete subclass
 
+The argon2 mock kit exports `buildArgon2RouteMockKit()` with the assertion helpers pre-bound as methods on the returned `Argon2RouteMockKit`. Destructure them from the same `vi.hoisted()` block as the mock fn + factory — no separate import, no per-call mock-fn threading. Closure capture inside the kit is what keeps the round-3 invocation guard load-bearing without per-site discipline.
+
 ```ts
 // backend/tests/routes/auth-reset-request-shutdown.test.ts
 import { ArgonAbortError } from '../../src/lib/argon2-semaphore.js';  // real class via vi.importActual
-import { assertArgon2AbortIsSilent } from '../support/argon2-error-mocks.js';
+
+const { mockRunWithArgon2Slot, argon2SemaphoreMockFactory, assertArgon2AbortIsSilent } = await vi.hoisted(
+  async () => (await import('../support/argon2-error-mocks.js')).buildArgon2RouteMockKit(),
+);
+
+vi.mock('../../src/lib/argon2-semaphore.js', () => argon2SemaphoreMockFactory());
 
 it('shutdown unknown email returns 200', () => { ... });
 it('shutdown known email returns 200', () => { ... });
@@ -120,48 +127,65 @@ it('queue-full unknown email returns 503', () => { ... });
 it('abort unknown email returns silently (no body written)', async () => {
   mockRunWithArgon2Slot.mockRejectedValueOnce(new ArgonAbortError());
   await assertArgon2AbortIsSilent(
-    request(app).post('/api/auth/reset-request').send({ email: 'unknown@example.com' }),
-    mockRunWithArgon2Slot,
+    request(app).post('/api/auth/reset-request').send({ email: 'unknown@example.com' }).timeout({ deadline: 250 }),
   );
 });
 ```
 
-Now a regression broadening the inner-catch swallow to `instanceof ArgonSemaphoreError` flips this case from silent to a 200-with-body, and the assertion fails.
+Now a regression broadening the inner-catch swallow to `instanceof ArgonSemaphoreError` flips this case from silent to a 200-with-body, and the assertion fails. The kit-bound `assertArgon2AbortIsSilent` closure captures the same `mockRunWithArgon2Slot` instance the test seeded, so the invocation guard fires correctly without the caller threading the mock fn through.
 
 ### Good: parametric coverage for multi-branch routes
 
 ```ts
 // backend/tests/routes/auth-argon-error-translation.test.ts
+const {
+  mockRunWithArgon2Slot,
+  argon2SemaphoreMockFactory,
+  assertArgon2AbortIsSilent,
+  assert503QueueFull,
+  assert503Shutdown,
+} = await vi.hoisted(
+  async () => (await import('../support/argon2-error-mocks.js')).buildArgon2RouteMockKit(),
+);
+
+vi.mock('../../src/lib/argon2-semaphore.js', () => argon2SemaphoreMockFactory());
+
 const routes = [
   { name: '/login known-account', body: { ... }, seed: known },
   { name: '/login unknown-account', body: { ... }, seed: noUser },
   { name: '/login ORCID-only', body: { ... }, seed: orcidOnly },
 ];
-const errorClasses = [
-  { name: 'queue-full', err: () => new ArgonQueueFullError(), assert: assert503QueueFull },
-  { name: 'shutdown', err: () => new ShuttingDownError(), assert: assert503Shutdown },
-  { name: 'abort', err: () => new ArgonAbortError(), assert: assertArgon2AbortIsSilent },
-];
+
+// 503-emit classes share a uniform shape: take the awaited response, assert
+// status + body + Retry-After. The abort class is silent-return, so it
+// inspects the unawaited promise instead — kept as its own it() per route
+// rather than forced into the parametric loop with an asymmetric callback.
+const emitClasses = [
+  { name: 'queue-full', err: () => new ArgonQueueFullError(), assertEmit: assert503QueueFull },
+  { name: 'shutdown', err: () => new ShuttingDownError(), assertEmit: assert503Shutdown },
+] as const;
 
 describe.each(routes)('$name', (route) => {
-  describe.each(errorClasses)('$name', (cls) => {
-    it('translates to wire shape', async () => {
+  describe.each(emitClasses)('translates $name to wire shape', (cls) => {
+    it('emits 503 envelope', async () => {
       mockRunWithArgon2Slot.mockRejectedValueOnce(cls.err());
-      // The abort-class assert helper takes the mock fn as a second arg
-      // so the silent-return contract can pin invocation count and avoid
-      // false-passing on a mid-handler unmocked await; the 503 helpers
-      // are single-arg.
-      if (cls.assert === assertArgon2AbortIsSilent) {
-        await cls.assert(request(app).post(route.path).send(route.body), mockRunWithArgon2Slot);
-      } else {
-        await cls.assert(request(app).post(route.path).send(route.body));
-      }
+      const res = await request(app).post(route.path).send(route.body);
+      cls.assertEmit(res);
     });
+  });
+
+  it('translates abort to silent return', async () => {
+    mockRunWithArgon2Slot.mockRejectedValueOnce(new ArgonAbortError());
+    await assertArgon2AbortIsSilent(
+      request(app).post(route.path).send(route.body).timeout({ deadline: 250 }),
+    );
   });
 });
 ```
 
-Cell count = `routes.length × errorClasses.length`. Every cell asserts the route-level catch decision, not the helper's. A regression that removes the `=== ARGON_HANDLED`-check from one route's catch fails 3 cells (one per error class on that route).
+Cell count = `routes.length × (emitClasses.length + 1)`. Every cell asserts the route-level catch decision, not the helper's. A regression that removes the `=== ARGON_HANDLED`-check from one route's catch fails 3 cells (one per error class on that route).
+
+Splitting the emit-class loop from the silent-class it() reflects the underlying asymmetry: 503 helpers are sync `(res) => void` over an awaited response; the silent helper is async `(promise) => Promise<void>` over an unawaited promise so it can introspect the deadline-vs-response outcome. Both shapes are kit-bound (no second mock-fn arg), but their call patterns differ — a single parametric callback would obscure that.
 
 ## Related conventions
 
