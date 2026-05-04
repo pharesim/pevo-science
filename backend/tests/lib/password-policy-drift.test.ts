@@ -68,15 +68,19 @@ const VECTORS: ReadonlyArray<readonly [label: string, input: unknown, expected: 
     { toString: () => 'Abcdef1234' },
     false,
   ],
-  // Vector 2 kills any coercion mutation regardless of hint -- string hint
-  // (`String(pw)`), number hint (`+pw`), or default hint (template literal
-  // `\`${pw}\``, `pw + ''`). `Symbol.toPrimitive` is consulted first by
-  // `ToPrimitive` for every hint, so a method returning 'Abcdef1234' makes
-  // the input pass every class check after ANY coercion form. The earlier
-  // `valueOf`-only vector did NOT kill `String(pw)` because the string-hint
-  // path consults `toString()` before `valueOf()` and `Object.prototype
-  // .toString` returns '[object Object]'; `Symbol.toPrimitive` covers all
-  // forms uniformly.
+  // Vector 2 kills string-yielding coercion mutations -- string hint
+  // (`String(pw)`) or default hint (template literal `\`${pw}\``,
+  // `pw + ''`). `Symbol.toPrimitive` is consulted first by `ToPrimitive`
+  // for these hints, so a method returning 'Abcdef1234' makes the input
+  // pass every class check after these coercion forms. (A `+pw` number-hint
+  // mutation invokes `Symbol.toPrimitive` with hint='number', returns
+  // 'Abcdef1234', and then `Number('Abcdef1234')` is `NaN` -- which fails
+  // class checks for an unrelated reason, so this vector does not kill
+  // that specific mutation form.) The earlier `valueOf`-only vector did
+  // NOT kill `String(pw)` because the string-hint path consults
+  // `toString()` before `valueOf()` and `Object.prototype.toString`
+  // returns '[object Object]'; `Symbol.toPrimitive` covers the string and
+  // default hint forms uniformly.
   [
     'object with Symbol.toPrimitive returning a string that satisfies every class',
     { [Symbol.toPrimitive]: () => 'Abcdef1234' },

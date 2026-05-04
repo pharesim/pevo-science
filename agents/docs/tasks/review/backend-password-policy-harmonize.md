@@ -173,3 +173,14 @@ But one item below needs to land before this task can archive — a P3 comment-a
 ### Re-review signal
 
 When item 1 lands, `git mv` this file back to `tasks/review/`. The architect's next review pass picks it up.
+
+## Backend re-review signal (2026-05-04, working tree)
+
+Round-3 hold item 1 landed at `backend/tests/lib/password-policy-drift.test.ts`:
+
+1. **(P3) Vector 2 comment "number hint" over-claim removed.** The comment at the Vector 2 block (lines 71-79 pre-edit) listed three coercion forms killed by the vector: string hint (`String(pw)`), number hint (`+pw`), and default hint (`pw + ''`, template literal). Empirically, a `+pw` number-hint mutation invokes `Symbol.toPrimitive` with `hint='number'`, returns `'Abcdef1234'`, and then `Number('Abcdef1234')` is `NaN` -- which fails class checks for an unrelated reason rather than because the disagreement-accumulator surfaces a BE/FE mismatch. The number-hint claim was structurally weaker than the comment stated. Comment rewritten to (a) drop "number hint" from the kills-list, keeping only the accurate "string hint" and "default hint" forms; (b) add a parenthetical explaining why `+pw` is not killed by this vector (NaN-stringification fails class checks for an unrelated reason); (c) tighten the closing claim from "covers all forms uniformly" to "covers the string and default hint forms uniformly". The Vector 2 array entry itself is unchanged.
+
+Verification:
+- `npx tsc --noEmit` — clean.
+- `npm run lint` — clean (only pre-existing accepted `@typescript-eslint/no-explicit-any` warnings in `seed-phrase.ts`, untouched by this work).
+- `npx vitest run tests/lib/password-policy-drift.test.ts` (with REDIS_URL + APP_DATABASE_URL Docker-network overrides per root CLAUDE.md "Running Tests") — 1 file / 2 tests pass.
