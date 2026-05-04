@@ -63,12 +63,13 @@ export function buildArgon2RouteMockKit(): Argon2RouteMockKit {
     argon2SemaphoreMockFactory: async () => { /* ... */ },
     // Helpers are bound at construction time. mockFn is captured in the closure.
     assertArgon2AbortIsSilent: (promise) => assertArgon2AbortIsSilentImpl(promise, mockFn),
-    assert503: (res, retryAfter, reason) => assert503Impl(res, retryAfter, reason),
-    assert503QueueFull: (res) => assert503Impl(res, QUEUE_FULL_RETRY_AFTER_SEC, ARGON_REASON_QUEUE_FULL),
-    assert503Shutdown: (res) => assert503Impl(res, SHUTDOWN_RETRY_AFTER_SEC, ARGON_REASON_SHUTDOWN_DRAIN),
+    assert503QueueFull: (res) => assert503(res, QUEUE_FULL_RETRY_AFTER_SEC, ARGON_REASON_QUEUE_FULL),
+    assert503Shutdown: (res) => assert503(res, SHUTDOWN_RETRY_AFTER_SEC, ARGON_REASON_SHUTDOWN_DRAIN),
   };
 }
 ```
+
+(Updated 2026-05-04 post-`19a7d0c`: the dead 3-arg `assert503` field was dropped from the kit; the module-internal helper was renamed `assert503Impl` → `assert503` for naming-suffix consistency. The two convenience wrappers forward to the module-internal helper with the right retry-after constant + reason discriminator pre-pinned, so call sites cannot accidentally pair the queue-full retry window with the shutdown reason or vice versa.)
 
 The underlying `assertArgon2AbortIsSilentImpl(promise, mockFn)` still takes both args — the load-bearing invariant (call `expect(mockFn).toHaveBeenCalledTimes(1)`) is still enforced. The kit just eliminates the per-site threading step so callers cannot accidentally omit it.
 
@@ -145,9 +146,8 @@ export function buildArgon2RouteMockKit(): Argon2RouteMockKit {
     argon2SemaphoreMockFactory: async () => { /* ... */ },
     // mockFn is captured at construction time. Callers cannot drop it.
     assertArgon2AbortIsSilent: (promise) => assertArgon2AbortIsSilentImpl(promise, mockFn),
-    assert503: (res, retryAfter, reason) => assert503Impl(res, retryAfter, reason),
-    assert503QueueFull: (res) => assert503Impl(res, QUEUE_FULL_RETRY_AFTER_SEC, ARGON_REASON_QUEUE_FULL),
-    assert503Shutdown: (res) => assert503Impl(res, SHUTDOWN_RETRY_AFTER_SEC, ARGON_REASON_SHUTDOWN_DRAIN),
+    assert503QueueFull: (res) => assert503(res, QUEUE_FULL_RETRY_AFTER_SEC, ARGON_REASON_QUEUE_FULL),
+    assert503Shutdown: (res) => assert503(res, SHUTDOWN_RETRY_AFTER_SEC, ARGON_REASON_SHUTDOWN_DRAIN),
   };
 }
 ```

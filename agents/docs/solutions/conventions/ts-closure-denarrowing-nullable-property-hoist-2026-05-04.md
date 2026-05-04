@@ -68,7 +68,7 @@ const valid = await runWithArgon2Slot(
 );
 ```
 
-Canonical reference site: `backend/src/routes/signup-verify.ts:145` (/resume-signup handler). Additional applied sites: `backend/src/routes/auth.ts:625` (resend-verification, replaces a prior `account.password_hash!` non-null assertion), `backend/src/routes/auth.ts:807` (login), `backend/src/routes/custody.ts:232` (custody-upgrade).
+Canonical reference site: the `/resume-signup` handler in `backend/src/routes/signup-verify.ts`. Additional applied sites: `backend/src/routes/auth.ts:625` (resend-verification, replaces a prior `account.password_hash!` non-null assertion), `backend/src/routes/auth.ts:807` (login), `backend/src/routes/custody.ts:232` (custody-upgrade).
 
 ## Why This Matters
 
@@ -124,7 +124,7 @@ After widening to `string | null`, the `!` assertion still compiles but silences
 ### After (hoist — correct)
 
 ```ts
-// backend/src/routes/signup-verify.ts:145 (/resume-signup handler — canonical site)
+// backend/src/routes/signup-verify.ts — the `/resume-signup` handler (canonical site)
 const { rows } = await pool.query<{
   password_hash: string | null;  // correct: ORCID-only accounts have null
 }>(/* ... */);
