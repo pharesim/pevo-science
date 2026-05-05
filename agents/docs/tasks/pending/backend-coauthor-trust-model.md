@@ -291,3 +291,49 @@ Rounds 2 and 3 are file-disjoint (papers.ts vs custody.ts) and could run as para
 - UI accept/resign affordances + migration banner → `ui-multi-author-consent-affordances` (UI agent).
 - Bridge-paper authorship claim flow → `backend-bridge-paper-author-claim-flow` (P2, deferred stub).
 - Convention doc capture via `/ce-compound` after round 4 archive — gated on whether non-obvious learnings surfaced; default skip.
+
+---
+
+## Backend round-1 signal (2026-05-05, commit 658332a)
+
+Round 1 (types + vouched-set helper, foundational layer) landed at commit `658332a`. Round 2 may proceed as planned in the round breakdown above.
+
+### What landed
+
+- `AuthorAcceptAction` / `AuthorResignAction` added to `PevoCustomJsonAction` union in `backend/src/types/hive.ts`.
+- New module `backend/src/consent-ops.ts` exporting:
+  - `ConsentOp` interface (signer, action, rootAuthor, rootPermlink, blockNum, opId).
+  - `fetchConsentOpsForPaper(rootAuthor, rootPermlink): Promise<ConsentOp[]>` — HAF fetcher.
+  - `computeVouchedAuthors(rootBroadcaster, claimedAuthors, firstClaimBlockByAuthor, consentOps): Set<string>` — pure validity-rule application.
+  - `getVouchedAuthors(rootAuthor, rootPermlink, claimedAuthors, firstClaimBlockByAuthor): Promise<Set<string>>` — orchestrator (the call site Round 2 wires into `resolveContinuationChain`).
+- 22 vitest cases at `backend/tests/consent-ops.test.ts` covering happy paths, temporal-ordering, name-squatting rejection, resign + re-accept, same-block tie-break (including BigInt-precision opIds), non-claimed signer rejection, multi-author independent histories, case-folding, and SQL-shape contract for the fetcher.
+
+### Verification
+
+- `npx tsc --noEmit` clean.
+- `npm run lint` clean (only pre-existing warnings in `seed-phrase.ts`, unrelated).
+- `npx vitest run tests/consent-ops.test.ts` — 22/22 pass in 810ms.
+- Full backend vitest also exercised. **3 pre-existing failures observed on `main` (NOT caused by Round 1)**: `tests/routes/disciplines-canon-mocked.test.ts` (continuation-chain head-override), `tests/routes/accreditation.test.ts` (502/504 token-cleanup paths, 2 cases), `tests/routes/stats-profile-parity.test.ts` (1 case). Verified pre-existing by re-running `disciplines-canon-mocked` against `git stash`-clean main → same failure. Round 1 code is additive (new types in a discriminated union; new module not yet imported anywhere) and cannot affect those code paths. Surfacing for triage; not fixing in scope.
+
+### [TODO Architect] — spec cleanup needed before archive
+
+These are spec-only inconsistencies that emerged when implementing the canonical wire format. The code is internally consistent; the spec needs to be brought in line with the codebase convention. None of these block Round 2 implementation.
+
+1. **ARCH.md "Author Accept (custom_json)" / "Author Resign (custom_json)" — discriminator field name.** The schema snippets in ARCH.md (lines ~371, ~393) use `type: "author_accept"` / `type: "author_resign"`. Every other PEvO custom_json op in ARCH.md and across `backend/src/` uses `action:` (Accreditation, Revocation, Vouch, RetractPaper, Revote, etc.). Broadcast emission (signup-verify.ts, papers.ts, accreditation.ts, orcid.ts, wot.ts) and parsing (custody.ts allowedActions, accreditations.ts, reputation.ts, notification-queries.ts) all key on `payload.action`. Round 1 implements with `action:` to match the universal convention; please update the two ARCH.md snippets to flip `type:` → `action:` (no other text changes needed).
+
+2. **ARCH.md "Author Accept" validity prose — references a payload field that doesn't exist.** The validity rule says the chain signer "MUST equal `accepting_author_hive` in the payload." The schema, however, only includes `root_author` + `root_permlink` — there is no `accepting_author_hive` field. The implicit interpretation (signer IS the accepter; the binding is degenerate) is what Round 1 implements and is operationally secure. Please reword the validity bullet to say "the chain signer is the accepting author for this op (binding is implicit; the payload carries no subject identity field)" or similar. Optional alternative: add `accepting_author_hive: <hive>` to the schema and require signer == that field — requires more discussion since it adds a redundant data field whose only purpose is to make the convention rule 5 binding-check enforceable as a literal SQL/JS predicate. Round 1 chose the "implicit binding" path for spec literalism on the schema side.
+
+3. **ARCH.md / convention-doc — same-block tie-break primitive.** ARCH.md "Author Accept" line: "Same-block ties are broken by `trx_in_block` (highest wins)." The convention doc rule 2 references `(block_num, trx_in_block)` ordering. The HAF view `hafsql.operation_custom_json_view` does NOT expose `trx_in_block` (the underlying tables `hafd.operations` / `hafsql.haf_operations` do, but not the projection PEvO queries). The view's `id` column is the HAF op id (a bigint encoding block_num + trx_in_block + op_in_trx; confirmed via `pg_get_viewdef`). Round 1 uses `id` as the same-block tie-breaker, which is operationally equivalent. Please update either ARCH.md to reference `id` for `operation_custom_json_view` queries, OR the convention doc to acknowledge that `id` is the canonical tie-break primitive when querying flat op-views.
+
+### Ready for Round 2
+
+Round 2 (`resolveContinuationChain` integration + cache invalidation) layers directly on top of Round 1's `getVouchedAuthors(...)` call. The integration site is `backend/src/routes/papers.ts` lines ~632 and ~834 where `extractAuthorizedContinuationAuthors` is called against the head and root metadata. Round 2 will:
+
+1. Compute the chain-walk historical claimed-set (union of `pevo.authors[].hive` across all admitted operations on the chain, plus per-author first-claim blockNum).
+2. Call `getVouchedAuthors(rootAuthor, rootPermlink, claimedAuthors, firstClaimBlockByAuthor)`.
+3. Intersect against the candidate continuator's identity to gate admission.
+4. Wire cache invalidation: `paper-detail:{author}:{permlink}` and `paper-detail:{author}:{permlink}:v{N}` invalidate on every consent op observed by the block-watcher / cache hooks.
+
+The Round 1 fetcher is HAF-only (no Hive API fallback). Round 2 should consider whether to add a fallback path or accept HAF-required for the consent-flow gate. Per CLAUDE.md "Data Source Policy" the existing fallback is HAF → Hive API; for consent ops, querying Hive API for arbitrary custom_json history is impractical, so HAF-required is the likely answer.
+
+The `.env` REDIS_URL workaround (added during Round 1 verification: set REDIS_URL to the docker bridge IP rather than the empty value that triggers `redis://:PASSWORD@redis:6379` fallback unresolvable from host) is local-only (`.env` is gitignored). Future test runs may need the same workaround until vitest.config.ts honors shell-env REDIS_URL overrides.
