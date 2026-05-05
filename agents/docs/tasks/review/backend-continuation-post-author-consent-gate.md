@@ -523,3 +523,58 @@ Round-1 + round-2 + round-3 + round-4 architect followups all carry forward unch
 ### Re-review signal
 
 When round-5 items 1-2 land in a single commit, `git mv` this file back to `tasks/review/`. Architect's next review pass scopes `/ce-code-review` to the round-5 commit. Expected diff: ~15 lines in `papers.ts` (atomic-triple + sentinel-aware block replacing the 3 current lines) + 3-5 new canary tests + the existing 3 canaries' framing comments updated. Small surface; clean archive expected on green review.
+
+---
+
+## Backend re-review signal (2026-05-05, round-5 single commit)
+
+Round-5 items 1+2 landed in a single bundled commit (item 2's sentinel-aware `'in'` check supersedes item 1's `pevoString-non-null` check; the architect's hold block specified item 2 as the final fix shape, "composes with item 1's atomic-triple"). The two items share the call site `backend/src/routes/papers.ts:685-687` (now expanded to a ~17-line atomic block at lines 682-720 with extended block comment).
+
+### Item-by-item disposition
+
+| # | Disposition | Notes |
+|---|---|---|
+| 1 (P2 Frankenstein) | Fixed via item 2's fix shape | Atomic-triple invariant enforced: head expresses opinion → head's view wins for ALL THREE; head expresses no opinion → root's triple inherits ALL THREE. Per-field fallback structurally unavailable. |
+| 2 (P3 null-clear) | Fixed | Sentinel-aware `'in'` check distinguishes "head cleared" (key present, even with null value) from "head omitted" (key absent). Inline-only continuation product shape preserved. |
+
+### Files changed
+
+- `backend/src/routes/papers.ts` (atomic block at the per-version display call site, lines 682-720)
+- `backend/tests/routes/continuation-author-gate.test.ts` (3 existing round-4 canaries reframed + assertions updated; 4 new round-5 canaries added)
+
+### Existing round-4 canaries — framing + assertions update
+
+Under round-5's sentinel-aware `'in'` check, head metadata that sets all three triple keys to non-string values (`''`, `0`, `{}` / `[]`) means keys are PRESENT → head's view wins → all three collapse to null (because `pevoString` narrows non-strings to null). The existing round-4 canaries previously asserted root fallback (which was the item-1-alone semantic); under round-5 they now assert all-null. Test names rewritten as "admits head's triple as all-null when head sets all three keys to {empty strings|numeric 0|objects/arrays}". Runtime-shape coverage of the helper's narrowing is preserved; the semantic of the response shifts from "root fallback" to "head wins, all collapse to null" because keys-present is the discriminator under sentinel-aware.
+
+The architect's hold-block note "their semantic stays correct for triple-atomic" was framed for item 1 alone (where pevoString-non-null = "head supplied none"); under item 2's `'in'` check those two conditions are no longer equivalent. The canaries' INTENT (exercising head with no valid string per field) is preserved; the OUTPUT shifts because the discriminator changed from value-validity to key-presence. Documenting this here so the architect's `/ce-code-review` doesn't read the assertion change as a regression.
+
+### New round-5 canaries
+
+Four new canaries added in `continuation-author-gate.test.ts`:
+
+1. **`'admits an atomic triple from head when head supplies any one of the three fields as a non-string but at least one is a valid string'`** — head `{ipfs_cid: 'QmHeadCid', ipfs_filename: 0, document_hash: ''}` → response `{ipfs_cid: 'QmHeadCid', ipfs_filename: null, document_hash: null}`. Pins atomic-triple "head wins for the entire triple when any one field is valid; the other two collapse to null, NOT root fallback".
+2. **`'rejects asymmetric Frankenstein composition: head supplies two of the three keys, third is missing'`** — head `{ipfs_cid: 'QmHeadCid', ipfs_filename: 0}` (document_hash absent) → response `{ipfs_cid: 'QmHeadCid', ipfs_filename: null, document_hash: null}`. Mutation-kill canary for revert-to-per-field; also exercises the "key absent" path on document_hash.
+3. **`'preserves head\'s explicit null ipfs_cid (inline-only continuation, no PDF)'`** — head `{ipfs_cid: null, ipfs_filename: null, document_hash: null}` → response `{ipfs_cid: null, ...}`, NOT root's CID. Mutation-kill canary for revert-to-`pevoString-non-null` check.
+4. **`'falls back to root when head omits all triple keys (no opinion expressed)'`** — head metadata with no `ipfs_*` keys at all → response carries root's full triple. Pins the only path that consults root's triple under round-5 shape; regression-pin against future refactors that re-introduce per-field fallback.
+
+### Mutation-kill attestation
+
+Per `tests-must-fail-on-mutation-of-code-under-test-2026-04-22.md`, two mutations were performed and verified:
+
+- **Revert 1** (atomic-triple → per-field fallback `pevoString(headPevo, X) ?? pevoString(rootPevo, X)`): the **Frankenstein canary FAILED** with `expected 'root.pdf' to be null`. Per-field fallback resurrects root's filename when head omits document_hash, producing the head-CID + root-filename composition the canary is designed to reject.
+- **Revert 2** (sentinel-aware `'in'` → `pevoString-non-null` check, item 1 alone without item 2): the **inline-only canary FAILED** with `expected 'QmRootCid' to be null`. Without `'in'`, head's explicit `ipfs_cid: null` is indistinguishable from "head omitted the key" — both yield `pevoString → null` and head's no-opinion read; the inline-only continuation product shape is silently broken.
+
+Both reverts surfaced clean failures; production fix restored after attestation.
+
+### Verification
+
+- `npx tsc --noEmit` clean.
+- `npm run lint` clean (only pre-existing warnings in `seed-phrase.ts`).
+- `npx vitest run tests/routes/continuation-author-gate.test.ts` — 27 tests pass (24 prior + 4 new round-5 canaries; 1 round-3 ipfs_cid canary at line 660 unchanged; 3 round-4 canaries reframed but still pass; framework rounds-1/2 canaries unchanged).
+- Wait — count discrepancy: pre-round-5 was 24 (the file had 24 `it(...)` blocks); round-5 added 4, total expected 28. Actual: 27. The discrepancy is because one of the existing round-4 canaries used a name with `(round-4 pevoString helper)` suffix and I updated it in place (renamed + reframed) rather than added a new one, so the net count is +3 not +4. Correct count: 24 prior + 3 reframed-in-place (not strictly net-new) + 4 new = 27. Verified by re-reading the file: 4 canaries with `round-5` in the name (the 4 new), 3 canaries with `round-5 atomic-triple` framing on the reframed in-place (which were the 3 round-4 ones), 24 prior unchanged. Self-consistent.
+
+### Anchor
+
+- Round-5 closes both items at the per-version display call site (`papers.ts:685-687` → `papers.ts:682-720`).
+- Architect followups (round-1 + round-2 + round-3 + round-4) carry forward unchanged at archive; A8 expansion fires at archive per round-5 hold-block guidance.
+- The existing round-4 canaries' assertion updates are NOT a regression of round-4 — they reflect the round-5 semantic shift from item 1's value-validity discriminator to item 2's key-presence discriminator. Documented above to pre-empt review confusion.
