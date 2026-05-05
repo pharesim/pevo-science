@@ -1,3 +1,17 @@
+## BACKEND-SIGNUP-SMTP-STATUS-CODE-ORACLE (archived 2026-05-05) — accepted as residual ✓
+
+P3 task — close the residual `/signup` 4-bin status-code differential under SMTP outage (409 duplicate / 500 sendMail throw / 200 success / 422 unaccredited domain). Filed 2026-05-04 as `[BLOCKED by Architect]` requiring two decisions: (1) close vs accept-as-residual; (2) if close, account-row semantics on sendMail throw (Shape A keep row + 200, B keep row + bg retry, C rollback + 200).
+
+Architect decision (2026-05-05): **accept as residual**, mirroring the precedent of `backend-resend-verification-smtp-timing.md` (archived 2026-04-22). Disclosure value bounded by `signupLimiter` (10/hr/IP) plus multi-IP / multi-domain probe requirement is comparable to the resend-verification timing residual already accepted. Closing carries non-trivial semantic cost: the row-rollback question (Shape A vs B vs C) drags in design choices larger than the disclosure value justifies. If the calculus ever shifts, Shape A is the close-it shape — matches the other two routes, lets `/resend-verification` carry recovery — but today the unaccredited-domain case dominates `/signup` failures and keeping the current 500 ("retry later") is clearer than a 200-with-no-email outcome.
+
+Convention doc `agents/docs/solutions/conventions/timing-equalization-smtp-failure-mode-oracle-2026-04-22.md` extended with an "Accepted Residuals" section enumerating the `/signup` decision and re-open conditions (signupLimiter weakened, new probe channel, account-row semantics shift) so future reviewers don't re-litigate.
+
+Implementer = architect; archived directly without `/ce-code-review` — architect-only design decision plus convention-doc update, no implementer code diff to review.
+
+Full history in git.
+
+---
+
 ## ARCH-TEST-CARVE-OUT-CLAUSE-C-CLARIFY (archived 2026-05-05) — risk-class equivalence settled, mock-target scope expanded
 
 Doc-only architect-self task filed during round-2 review of `backend-auth-smtp-status-code-oracle.md` to stop reviewers (human and persona) from relitigating the same finding on every audit. Settled two ambiguities in root `CLAUDE.md` "Running Tests" carve-out:
@@ -226,18 +240,6 @@ Round-1 architect review held one P3 item (matcher tightening from `toBeGreaterT
 Architect-applied in-place fixes during round-1: JSDoc 'acquired' bullet rewrite, NB comment update post-`d8b9b75` discrimination, convention-doc symmetric-branch paragraph addition, `agents/docs/api-contracts/orcid.md` 504 BROADCAST_TIMEOUT entry rewritten to enumerate three trigger paths with `details.timeout_ms` presence rule, `agents/docs/api-contracts/common.md` POST_BROADCAST_FAILED row added.
 
 Full history: see commits `0d0c156`, `acae57e`, `53da6c9` and the task file body via git.
-
----
-
-## UI-ORCID-CALLBACK-RETRIABLE-BRANCH (archived 2026-04-29) — round-3 clean ✓ (machinery now being removed)
-
-Frontend consumer of the lock-contention 409 retriable surface. Round-2 hold-fix bundle (commit `f996d37`) landed 5 items: upper-bound clamp on `Retry-After` (`Math.max(1, Math.min(300, err.retryAfterSeconds ?? 10))` defending against backend emitting `Retry-After: 99999` which would pin the user for ~28 hours), stale `_retryCount` comment fragment dropped, "single self-triggered retry" prose reworded to "up to MAX_RETRIES self-triggered retries" at two sites, redundant `comp._mounted = true` deleted from a timer-based test (createTimerGuard already initializes it), `expect(comp._retryCount).toBe(0)` invariant added to the undefined-retryAfter test.
-
-Special context: a parallel architect task `ARCHITECT-ORCID-STATE-CONSUMPTION-VS-RETRIABLE-409` (archived 2026-04-29 — Option B chosen) determined the retriable-branch contract is **unreachable by design** — backend consumes the OAuth state token at `orcid.ts:299` BEFORE dispatching to the lock-contention branch, so the SPA's `_retryVerify` always lands on 400 BAD_REQUEST first. The follow-on task `ui-orcid-callback-retriable-machinery-remove.md` strips the `_retryCount`/`MAX_RETRIES`/countdown machinery this round just polished. Per the round-2 architect note "independent and does not block this archive", the polish-then-remove order is acceptable.
-
-Round-3 review: correctness + testing + julik-frontend-races + adversarial all confirm the 5 items land. One vacuous-`_retryCount=0`-assertion finding dismissed as "polish on dead-code-pending" — the surfaces are being torn out anyway by the machinery-removal task.
-
-Full history: see commits `fbe8578`, `f996d37`, `9b2f774` and the task file body via git.
 
 ---
 

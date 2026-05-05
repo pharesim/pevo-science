@@ -1,7 +1,7 @@
 ---
 title: SMTP-failure status-code oracle bypasses timing-equalization on email-path endpoints
 date: 2026-04-22
-last_updated: 2026-04-28
+last_updated: 2026-05-05
 category: conventions
 module: backend
 problem_type: convention
@@ -197,6 +197,31 @@ if (config.smtpHost) {
 }
 sendOk(res, { message: 'If an account exists...' });
 ```
+
+## Accepted Residuals
+
+### `/signup` 4-bin status-code oracle (accepted 2026-05-05)
+
+`/api/auth/signup` distinguishes 4 outcomes by status code under SMTP outage:
+
+- **409 DUPLICATE** — known existing email (verified or unverified).
+- **500 INTERNAL_ERROR** — unknown email on accredited domain + `sendMail` throws (account row inserted then deleted).
+- **200 OK** — unknown email on accredited domain + `sendMail` succeeds.
+- **422 VALIDATION_ERROR** — unaccredited domain (no SMTP attempt at all).
+
+Combined with the institutional vs. unaccredited domain axis, an attacker probing across email addresses can extract registration status by triggering an SMTP outage (or waiting for one) and observing the 4-bin response distribution.
+
+**Decision (2026-05-05):** accepted as residual. The disclosure value is bounded by `signupLimiter` (10/hr/IP) plus the multi-IP / multi-domain probe requirement, comparable to the `/resend-verification` SMTP-latency residual accepted 2026-04-22 (`backend-resend-verification-smtp-timing.md`, sibling-class but same rate-limit-bounded calculus). Closing the oracle requires answering a non-trivial design question — Shape A (keep row + return 200; user recovers via `/resend-verification`), Shape B (keep row + background retry; infrastructure not yet present), Shape C (rollback row + return 200; messy DB state) — that is larger than the disclosure value justifies at current rate-limit posture.
+
+If the calculus ever shifts, Shape A is the close-it shape: it matches the other two routes (`/reset-request`, `/resend-verification`) and lets `/resend-verification` carry the recovery path. Today the unaccredited-domain case dominates `/signup` failure modes, and the existing 500 ("retry later") response is clearer than a 200-with-no-email outcome would be.
+
+**Re-open conditions:**
+
+1. `signupLimiter` is weakened (raised from 10/hr/IP) — the multi-IP probe cost drops.
+2. A new probe channel surfaces (e.g., the duplicate-email-then-accreditation check-order at `auth.ts:418-444` regresses, or a sibling endpoint leaks the same registration-state distinction).
+3. Account-row semantics change such that Shape A's keep-row-and-recover path becomes natural (e.g., a background-retry queue lands for unrelated reasons, making Shape B trivial).
+
+When findings cite the `/signup` 4-bin oracle, dismiss as "accepted residual per `BACKEND-SIGNUP-SMTP-STATUS-CODE-ORACLE` archive 2026-05-05" and link this section.
 
 ## Related
 
