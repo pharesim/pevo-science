@@ -337,3 +337,69 @@ The two architect-owned doc updates (#12 `reputation-algorithm.md`, #13 `ARCHITE
 When items 1, 2-10, 11, 14-21, 22-29 land (items 12-13 are architect-owned; defer), `git mv` this file from `tasks/pending/` back to `tasks/review/`. Use **bare `backend:` or `backend(<scope>):`** commit prefixes so the zone-audit hook fires (item #1). The architect's next review pass scopes `/ce-code-review` to commits since `a370ee2` (the most recent reviewed-and-held SHA) and either archives on clean or appends a new hold block.
 
 **Anchor:** items 2-7 formed one architectural decision cluster — the ownership question of "who is the SSoT, the chain or the batch map." Settled 2026-05-05 in favor of chain-as-SSoT with symmetric reader gating; see "Direction-of-truth" section above the P0 block. Items can fan out in parallel commits.
+
+---
+
+## Backend re-review signal (2026-05-05, commits f746375..4d9d15b)
+
+Round-2 fixes landed in two commits:
+
+- **f746375** (code): `backend: BACKEND-REPUTATION-SSOT round-2 — chain-as-SSoT reader gates + cascade discrimination` — items #3, #4, #5, #6, #7, #8, #9, #10, #11, #23, #24, #26, #27, #28.
+- **4d9d15b** (tests + key-namespace fix): `backend: BACKEND-REPUTATION-SSOT round-2 — tests + lock/in_progress key namespace fix` — items #14, #15, #16, #17, #18, #19, #20, #21, #22, #29.
+
+### Item-by-item disposition
+
+| # | Disposition | Notes |
+|---|---|---|
+| 1 (P0) | Done | All round-2 commits use bare `backend:` prefix; zone-audit hook fires. |
+| 2 | Accepted as residual | Per direction-of-truth downgrade to P3 hygiene. Reader gate (items #3/#4) covers user-visible class. Optional orphan-prod DEL deferred to a future round if hygiene matters at scale. |
+| 3 | Fixed | `routes/stats.ts` now intersects batch map with `getAllAccreditedAccounts()` before picking max. |
+| 4 | Fixed | `routes/papers.ts`, `routes/comments.ts`, `routes/profile.ts` (papers list), `routes/reviews.ts` enrichment all gate displayed score on chain accreditation. |
+| 5 | Fixed (subsumed by #9) | `getAllAccreditedAccounts` re-throws on HAF error so batch's outer catch bails without bumping cycle:last. Empty set now always means legitimate empty population. |
+| 6 | Fixed | `parseBatchValue` malformed-shape branches emit a rate-limited `logger.warn({event:'reputation.batch.parse_failed', count, raw_sample, err})` so deploy-flush-skipped state surfaces on first request. |
+| 7 | Fixed | `wot.cascadeRevocation` calls `invalidateOnRevocation(vouchee)` BEFORE the broadcast on the timeout-ambiguous path. |
+| 8 | Fixed | `routes/signup-verify.ts` `/confirm` and `/link` adopt `PostBroadcastWriteError` discrimination via `lib/broadcast-error.handleBroadcastError`. Broadcast failure → 502 BROADCAST_FAILED / 504 BROADCAST_TIMEOUT; post-broadcast permanent seed failure → 502 POST_BROADCAST_FAILED `failed_step:'reputation_seed'`. No more dangling JWT on broadcast failure. |
+| 9 | Fixed | `accreditation.getAllAccreditedAccounts` re-throws on HAF query error; `pool === null` (dev-no-HAF) preserves the empty-set fallback. |
+| 10 | Fixed | `runBatchComputation` gated on `SET ${appTag}:reputation:lock token NX EX 1800`; release via Lua compare-token DEL on finally. New `RELEASE_LOCK_IF_TOKEN_MATCHES_LUA` in `lib/redis-scripts.ts`. In-process `batchRunning` flag preserved as fast-path. |
+| 11 | Fixed | `runBatchComputation` prev_scores rehydration uses `batchMapToScoreRecord(await getBatchReputationMap())` — drops the third hand-rolled keys/filter/mget/parse loop. |
+| 12, 13 | Architect-owned | `agents/docs/reputation-algorithm.md` + `agents/docs/ARCHITECTURE.md` doc updates; not touched by implementer. |
+| 14 | Test added | `tests/routes/reputation-batch-internals.test.ts` — `clearStagingKeys` DELs every staging key + no-op when none exist. |
+| 15 | Test added | Same file — direct `redis.eval(CYCLE_SWAP_LUA)` asserts staging→prod RENAME, cycle:last advance, sentinel DEL. |
+| 16 | Test added | `tests/routes/reputation-lifecycle.test.ts` — three `backfillAccreditationSeeds` branches (redis-null, accredited-empty, normal pipeline-SET-NX with non-clobber proof). |
+| 17 | Done | New `REDIS_KEY_IN_PROGRESS_PREFIX` sentinel SET before each cycle, DEL'd inside the same Lua. `clearInProgressSentinels` at startup logs a loud error and DELs survivors. Lua signature changed: `KEYS[N]` is the sentinel; ARGV passes both staging substring + prod substring (item #24). |
+| 18 | Test added | `tests/routes/reputation-lifecycle.test.ts` — null/undefined, non-JSON, legacy numeric-string `'42'`, wrong-shape JSON, getReputationScore round-trip via real Redis. |
+| 19 | Test added | `tests/routes/reputation-batch-internals.test.ts` — staging key + prod key for same user; map contains only prod value. |
+| 20 | Test added | `tests/routes/stats-profile-parity.test.ts` — only-zero-scored users → highest_reputation_user is null. |
+| 21 | Test added | Same file — third arm via /api/papers HTTP route + verify-after-SET self-check + concurrency-safe lock acquisition. |
+| 22 | Fixed | Idempotency canary uses `ctx.skip(true, reason)` instead of silent `return` so HAF-empty / no-corpus / no-genesis surfaces in CI output. |
+| 23 | Fixed | Final SELECT in `computeReputationBatch` now `ORDER BY username` for byte-stable map serialization. |
+| 24 | Fixed | `REDIS_KEY_STAGING_PREFIX` derived from `BATCH_KEY_PREFIX`; Lua receives both substrings as ARGV. Single source of truth between TS and Lua. |
+| 25 (P3) | N/A — no item #25 in original hold block. |
+| 26 | Fixed | `cycle_blocks > 0` validation at top of `runBatchComputation`; logs error and bails if violated. |
+| 27 | Fixed | `isPermanentSeedError` docstring updated to plainly say "currently only TypeError is reachable; SyntaxError/RangeError pre-wired anticipatorily" + rationale. |
+| 28 | Fixed | `backfillAccreditationSeeds` emits `'Accreditation seed backfill starting'` log before the pipeline. |
+| 29 | Test added | `tests/wot-broadcast-timeout.test.ts` — drives `cascadeRevocation` and asserts `invalidateOnRevocation` fires per vouchee AND the BEFORE-broadcast ordering. |
+
+### Bug surfaced + fixed in round-2
+
+The new batch lock key was originally `${appTag}:reputation:batch:lock` (under BATCH_KEY_PREFIX). `getBatchReputationMap`'s prefix-glob picked it up as a user entry, and `parseBatchValue` flagged the UUID-shaped value as malformed. Same problem for `${appTag}:reputation:batch:in_progress:N`. Both keys moved to siblings of `${appTag}:reputation:cycle:last` (`${appTag}:reputation:lock`, `${appTag}:reputation:in_progress:N`) so the user-key glob is unambiguous. Fixed in commit 4d9d15b.
+
+### Carry-forwards for architect at archive
+
+- **#12** `agents/docs/reputation-algorithm.md` lines 218-219, 296, 374, 407 — describes unprefixed Redis keys, numeric-string values, and CTE name `active_accounts`. Update to reflect prefixed `${appTag}:reputation:batch:` keys, JSON `{score, breakdown}` shape, and `active_authors` CTE name.
+- **#13** `agents/docs/ARCHITECTURE.md` lines 466-468 — describes pre-task state ("Scores stored in Redis (`reputation:batch:{username}`). On-demand queries read voter weights from the latest batch.", "Keys are not namespaced by APP_TAG"). Update to reflect post-task invariants.
+
+### Verification
+
+- `npx tsc --noEmit` clean.
+- `npm run lint` clean (only pre-existing warnings in seed-phrase.ts).
+- All BACKEND-REPUTATION-SSOT-related tests pass: 29/29 in (reputation-prefix + reputation-lifecycle + reputation-batch-internals + stats-profile-parity).
+- Full backend vitest: 887 passed | 8 skipped | 3 failed; the 3 failures are pre-existing on the `abb0f98` baseline (verified via `git stash`) and unrelated to this task: 2 token-leak assertions in `accreditation.test.ts` (Redis ReplyError serializing `command.args` predates this task) and 1 continuation-chain head-override expectation in `disciplines-canon-mocked.test.ts`.
+
+### Observed concurrency interaction
+
+The new batch lock interacts with the existing test fixture in a useful way: stats-profile-parity tests now claim the same lock the batch uses (`${appTag}:reputation:lock`) before seeding values, and skip with reason when contended. This eliminates the silent "batch RENAME overwrites seeded test value" race that the architect's #21 acceptance scenario was vulnerable to.
+
+### Anchor
+
+Items 2-7 formed the architectural cluster on chain-vs-cache SSoT direction (settled 2026-05-05). Items 8-11 were independent ports of the discrimination/lock pattern. Items 14-21 are test-coverage gaps. Items 22-29 are polish. All landed in the two commits above; no items are deferred except the architect-owned doc updates (#12, #13) and the explicitly-accepted-as-residual orphan-prod cleanup (#2).
