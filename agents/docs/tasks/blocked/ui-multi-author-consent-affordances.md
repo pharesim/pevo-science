@@ -87,3 +87,9 @@ All new microcopy (the accept button label, resign confirmation modal, migration
 - `agents/docs/tasks/pending/backend-coauthor-trust-model.md` — Phase 2 chain-layer implementation.
 - `agents/docs/tasks/pending/backend-notification-infra-for-consent-ops.md` — sibling backend task.
 - `agents/docs/tasks/review/ui-coauthor-continuation-publishing.md` — adjacent UI work for co-author continuation publishing.
+
+[BLOCKED by Backend] (2026-05-05) — Both named dependencies are still in `agents/docs/tasks/pending/`:
+- `backend-coauthor-trust-model.md` — Phase 2 needs to land before the UI can call the custody endpoint with `author_accept`/`author_resign` action types, query the vouched-set, or rely on cache invalidation firing on consent ops.
+- `backend-notification-infra-for-consent-ops.md` — the `/api/me/authorships/pending` endpoint is what the migration-day banner enumerates; without it, acceptance criterion #4 has no data source.
+
+Without these, the UI surface has no working backend to broadcast consent ops through and no list of affected papers to render in the migration banner. Move back to `pending/` once both backend tasks archive (or once Phase 2 lands and the notification endpoint at minimum exposes the pending-authorships list).
