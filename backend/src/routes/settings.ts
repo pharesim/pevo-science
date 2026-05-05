@@ -1,6 +1,6 @@
 import { Router, type Request, type Response } from 'express';
 import crypto from 'node:crypto';
-import nodemailer from 'nodemailer';
+import { createSmtpTransporter } from '../lib/smtp.js';
 import argon2 from 'argon2';
 import { z } from 'zod';
 import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';
@@ -40,12 +40,7 @@ function sendVerificationEmail(to: string, token: string): Promise<void> {
   if (!config.smtpHost) {
     throw new Error('SMTP not configured');
   }
-  const transporter = nodemailer.createTransport({
-    host: config.smtpHost,
-    port: config.smtpPort,
-    secure: config.smtpPort === 465,
-    auth: config.smtpUser ? { user: config.smtpUser, pass: config.smtpPass } : undefined,
-  });
+  const transporter = createSmtpTransporter();
 
   const verifyUrl = `${config.appUrl}/settings/verify-email/${token}`;
   return transporter.sendMail({

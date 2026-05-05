@@ -2,7 +2,6 @@ import { Router, type Request, type Response } from 'express';
 import crypto from 'node:crypto';
 import jwt from 'jsonwebtoken';
 import argon2 from 'argon2';
-import nodemailer from 'nodemailer';
 import { z } from 'zod';
 import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';
 import { sendOk, sendError } from '../response.js';
@@ -19,6 +18,7 @@ import { runWithArgon2Slot, ShuttingDownError, isArgonSemaphoreError } from '../
 import { handleArgonError, ARGON_HANDLED } from '../lib/argon2-error-handler.js';
 import { requestAbortSignal } from '../lib/request-abort-signal.js';
 import { hashEmailForLogs, safeHashEmailForLogs } from '../lib/log-pii.js';
+import { createSmtpTransporter } from '../lib/smtp.js';
 
 // ─── Per-route Zod body schemas (BE-REQUEST-BODY-TYPING-ZOD) ────
 //
@@ -254,46 +254,6 @@ export async function burnSentinel(input: string, signal?: AbortSignal): Promise
       'argon2 sentinel burn failed — timing oracle may be open',
     );
   }
-}
-
-// SMTP transporter factory.
-//
-// Round-2 of BE-AUTH-SMTP-STATUS-CODE-ORACLE collapsed the three per-route
-// inline `nodemailer.createTransport({ ... })` calls (/signup, /reset-request,
-// /resend-verification) into this single helper so every site gets the same
-// canonical 5-field shape (host/port/secure/auth + 4 timeout knobs). The
-// previous round-1 patch added timeouts to /reset-request and /resend-verification
-// but missed /signup, leaving the third caller at nodemailer's defaults; the
-// helper makes that "missed third site" failure mode structurally impossible.
-//
-// Timeout rationale (all four matter; round-1 only added 2):
-//   - connectionTimeout (5s): TCP-connect ceiling. Nodemailer defaults to 2 minutes.
-//   - socketTimeout (10s): per-read ceiling once the TCP connection is up.
-//     Nodemailer defaults to unbounded socket reads.
-//   - greetingTimeout (8s): bounds the SMTP banner + EHLO/HELO handshake.
-//     A relay that completes the TCP handshake but never sends a 220 banner
-//     would otherwise pin the request handler at the SMTP-protocol layer
-//     until socketTimeout fires (10s) — but only if a read is in flight.
-//     greetingTimeout is the explicit ceiling for the pre-EHLO read.
-//   - dnsTimeout (5s): bounds DNS resolution of `host`. Without it, a stalled
-//     resolver can pin the handler before any of the other timeouts fire,
-//     because no socket exists yet for socketTimeout to measure.
-//
-// All four together give a worst-case ceiling of ~10s under partial SMTP
-// failure (DNS + connect + greeting are sequential at startup; socket reads
-// happen after EHLO completes). Without them, nodemailer's per-stage defaults
-// can compound to multi-minute waits and exhaust the event loop under load.
-export function createSmtpTransporter() {
-  return nodemailer.createTransport({
-    host: config.smtpHost,
-    port: config.smtpPort,
-    secure: config.smtpPort === 465,
-    auth: config.smtpUser ? { user: config.smtpUser, pass: config.smtpPass } : undefined,
-    connectionTimeout: 5000,
-    socketTimeout: 10000,
-    greetingTimeout: 8000,
-    dnsTimeout: 5000,
-  });
 }
 
 // Argon2-semaphore catch-block handler factored to lib/argon2-error-handler.ts.

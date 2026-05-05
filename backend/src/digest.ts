@@ -7,7 +7,7 @@
  * so the next run only picks up new events.
  */
 
-import nodemailer from 'nodemailer';
+import { createSmtpTransporter } from './lib/smtp.js';
 import crypto from 'node:crypto';
 import { getAppPool } from './app-db.js';
 import { config } from './config.js';
@@ -107,12 +107,7 @@ async function sendDigestEmail(user: DigestUser, events: NotificationEvent[]): P
     return;
   }
 
-  const transporter = nodemailer.createTransport({
-    host: config.smtpHost,
-    port: config.smtpPort,
-    secure: config.smtpPort === 465,
-    auth: config.smtpUser ? { user: config.smtpUser, pass: config.smtpPass } : undefined,
-  });
+  const transporter = createSmtpTransporter();
 
   const frequency = user.digest_frequency === 'daily' ? 'Daily' : 'Weekly';
   const unsubToken = generateUnsubscribeToken(user.username);

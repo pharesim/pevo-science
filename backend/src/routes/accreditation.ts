@@ -1,6 +1,6 @@
 import { Router, type Request, type Response } from 'express';
 import crypto from 'node:crypto';
-import nodemailer from 'nodemailer';
+import { createSmtpTransporter } from '../lib/smtp.js';
 import { PrivateKey } from '@hiveio/dhive';
 import { config } from '../config.js';
 import { broadcastJsonWithTimeout } from '../hive.js';
@@ -261,12 +261,7 @@ router.post('/request', verifyHiveSignature, accreditationRequestLimiter, valida
   // Send verification email
   if (config.smtpHost) {
     try {
-      const transporter = nodemailer.createTransport({
-        host: config.smtpHost,
-        port: config.smtpPort,
-        secure: config.smtpPort === 465,
-        auth: config.smtpUser ? { user: config.smtpUser, pass: config.smtpPass } : undefined,
-      });
+      const transporter = createSmtpTransporter();
 
       const verifyUrl = `${config.appUrl}/accreditation/verify?token=${token}`;
       await transporter.sendMail({

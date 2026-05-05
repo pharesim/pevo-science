@@ -104,3 +104,45 @@ The attestation also covers the cross-file migration: a structural test that `gr
 - Sibling task (separate scope): `backend-signup-smtp-status-code-oracle.md` — closes the `/signup` status-code residual.
 - Architect-owned follow-up (separate scope): `architect-test-carve-out-clause-c-clarify.md` — clarifies CLAUDE.md "Running Tests" clause (c) convention text.
 - Conventions: `wrapping-primitive-exhaustive-call-site-audit-2026-04-22.md`, `timing-equalization-smtp-failure-mode-oracle-2026-04-22.md`, `tests-must-fail-on-mutation-of-code-under-test-2026-04-22.md`, `auth-structured-log-shape-2026-04-29.md`.
+
+---
+
+## Backend signal (2026-05-05, working tree at this commit)
+
+**Files changed**
+
+- New: `backend/src/lib/smtp.ts` — `createSmtpTransporter()` moved here with explicit `nodemailer.Transporter` return type. Docblock applies Findings 3 (28s sequential cascade ceiling), 4 (`dns.lookup` fallback caveat), 5(c) (parity-framing trim — only timeouts are uniform across the auth routes; status-code parity claim removed), 8 (round-1/round-2 archaeological narrative replaced with one-line cross-reference to the timing-equalization convention).
+- New: `backend/tests/lib/smtp-helper-exhaustive-call-sites.test.ts` — the structural lock that asserts `grep -rln 'nodemailer.createTransport' backend/src/` returns only `src/lib/smtp.ts`. Implements the convention via `execFileSync('grep', ...)`; treats grep's exit-1 (no matches) as an empty result so a future move that drops the helper entirely also fails the assertion.
+- Modified: `backend/src/routes/auth.ts` — removed the in-file `createSmtpTransporter()` definition + its docblock; removed the now-unused `nodemailer` import; added `import { createSmtpTransporter } from '../lib/smtp.js';`. The 3 in-file call sites at lines 531, 667, 959 (post-move offsets) continue to call the helper; only the import-source changed.
+- Modified: `backend/src/digest.ts`, `backend/src/routes/contact.ts`, `backend/src/routes/settings.ts`, `backend/src/routes/accreditation.ts` — each migrated from inline `nodemailer.createTransport({...})` to `createSmtpTransporter()`; each removed its `nodemailer` import in favor of `createSmtpTransporter` from `../lib/smtp.js` (or `./lib/smtp.js` for `digest.ts`). Each site's existing surrounding `try/catch` and response-shaping logic preserved unchanged.
+- Modified: `backend/tests/routes/auth-smtp-transporter.test.ts` — Finding 6 split: the bundled `toMatchObject({4 timeouts})` is now 4 separate `expect(opts.<knob>).toBe(<value>)` calls, one per `it(...)` block, so dropping any single knob fails the matching expectation with `expected <value>, received undefined` rather than a single bundled object diagnostic. Finding 7 header rewrite: clause-c is satisfied at the *risk class* level — option-shape mutations caught here, behavioral SMTP-failure mutations caught in `recover.test.ts` BE-AUTH-SMTP-STATUS-CODE-ORACLE block. References the architect's `architect-test-carve-out-clause-c-clarify` task. Import path updated to `../../src/lib/smtp.js`.
+
+**Verification**
+
+- `npx tsc --noEmit` clean.
+- `npm run lint` clean (only pre-existing accepted `seed-phrase.ts` warnings, untouched).
+- `npx vitest run tests/routes/auth-smtp-transporter.test.ts tests/lib/smtp-helper-exhaustive-call-sites.test.ts` — 8/8 pass.
+- `npx vitest run tests/routes/recover.test.ts -t "BE-AUTH-SMTP-STATUS-CODE-ORACLE"` — 4/4 pass (no behavioral regression; sendMail-rejects → uniform 200 still holds with the helper at its new location).
+- `npx vitest run tests/routes/accreditation.test.ts -t "POST /api/accreditation/request"` — 5/5 pass (the `/request` describe block is the SMTP-relevant area for accreditation).
+- Pre-existing failures in `accreditation.test.ts` (2 specs in the BE-VERIFY-BROADCAST-ATTEMPTS-CAP `/verify` block — `round-3 hold #5` and a sibling) are unrelated to this task. They fail on a regex `/[0-9a-f]{64}/` against the serialized `redis.decr` `ReplyError` payload, which carries the full Redis key `pevotest:pending_accred_broadcast_attempts:<token-sha256>` (the 64-hex match comes from the key suffix). The `/verify` cap path is owned by `backend-verify-broadcast-attempts-cap.md` (still in `tasks/review/`); my diff to `accreditation.ts` is purely the `/request` SMTP transporter migration and does not touch the `/verify` decrement, redis, or logging code.
+- Spec-fails-on-revert attestation per Finding 10 / `tests-must-fail-on-mutation-of-code-under-test-2026-04-22.md`:
+  > Confirmed locally: dropping any single timeout knob from `lib/smtp.ts:createSmtpTransporter` fails the corresponding `expect()` in `auth-smtp-transporter.test.ts` with `expected undefined to be <value>`. Each of the 4 knobs (`connectionTimeout`, `socketTimeout`, `greetingTimeout`, `dnsTimeout`) was deleted in turn (sed-d, restored from snapshot between runs), the `-t '<knob>'` filter was applied to vitest, and the matching `it(...)` block failed.
+  >
+  > Representative diagnostic (knob: `connectionTimeout`):
+  >
+  > ```
+  > AssertionError: expected undefined to be 5000 // Object.is equality
+  >
+  > - Expected:
+  > 5000
+  >
+  > + Received:
+  > undefined
+  > ```
+  >
+  > The remaining three knobs failed in identical shape, varying only the expected scalar (`socketTimeout: 10000`, `greetingTimeout: 8000`, `dnsTimeout: 5000`). The structural grep test in `tests/lib/smtp-helper-exhaustive-call-sites.test.ts` is itself mutation-evident: re-introducing any direct `nodemailer.createTransport(...)` call outside `src/lib/smtp.ts` fails its `toEqual(['src/lib/smtp.ts'])` expectation.
+
+**Architect notes**
+
+- No `[TODO Architect]` markers were added. The task body did not require contract-file edits — `agents/docs/api-contracts/*.md` is unchanged because no route shape or response code changed; the migration is purely structural. The separate `/signup` status-code residual (in `tasks/blocked/backend-signup-smtp-status-code-oracle.md`) is the contract-relevant follow-up and is properly scoped out of this task.
+- The convention referenced in the helper docblock (`agents/docs/solutions/conventions/timing-equalization-smtp-failure-mode-oracle-2026-04-22.md`) is left untouched. If a follow-up wants to widen its title from "auth-route emissions" to the now-broader 7-site call-site set, the architect owns that edit; backend has not pre-empted it.

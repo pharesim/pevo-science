@@ -1,6 +1,6 @@
 import { Router, type Request, type Response } from 'express';
-import nodemailer from 'nodemailer';
 import { config } from '../config.js';
+import { createSmtpTransporter } from '../lib/smtp.js';
 import { sendOk, sendError } from '../response.js';
 import { validate, contactSchema } from '../validation.js';
 import { rateLimit, byIp } from '../middleware/rateLimit.js';
@@ -29,12 +29,7 @@ router.post('/', contactLimiter, validate(contactSchema), async (req: Request, r
 
   if (config.smtpHost) {
     try {
-      const transporter = nodemailer.createTransport({
-        host: config.smtpHost,
-        port: config.smtpPort,
-        secure: config.smtpPort === 465,
-        auth: config.smtpUser ? { user: config.smtpUser, pass: config.smtpPass } : undefined,
-      });
+      const transporter = createSmtpTransporter();
 
       await transporter.sendMail({
         from: config.smtpFrom,
