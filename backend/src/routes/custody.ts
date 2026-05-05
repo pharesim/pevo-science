@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import { Router, type Request, type Response } from 'express';
 import jwt from 'jsonwebtoken';
 import argon2 from 'argon2';
@@ -15,6 +16,12 @@ import { runWithArgon2Slot } from '../lib/argon2-semaphore.js';
 import { handleArgonError, ARGON_HANDLED } from '../lib/argon2-error-handler.js';
 import { requestAbortSignal } from '../lib/request-abort-signal.js';
 import { handleBroadcastError } from '../lib/broadcast-error.js';
+import {
+  CONSENT_OP_ACTIONS,
+  consumeFreshAuthToken,
+  issueFreshAuthToken,
+  type FreshAuthMechanism,
+} from '../lib/fresh-auth.js';
 
 const router = Router();
 
@@ -23,6 +30,50 @@ const ALLOWED_OPS = new Set(['comment', 'vote', 'custom_json']);
 
 const broadcastLimiter = rateLimit({ name: 'custody-broadcast', windowMs: 60_000, max: 30, keyFn: byAccount });
 const upgradeLimiter = rateLimit({ name: 'custody-upgrade', windowMs: 3_600_000, max: 1, keyFn: byAccount });
+// Tighter than broadcast: each issuance pays a full argon2.verify (~50 ms × N
+// in-flight under the JS-level semaphore). 10/min/account is generous for the
+// re-auth-then-broadcast UX (the user sees one prompt → one proof → one
+// broadcast) and bounds the password-guess oracle even if a session is
+// hijacked.
+const freshAuthLimiter = rateLimit({ name: 'custody-fresh-auth', windowMs: 60_000, max: 10, keyFn: byAccount });
+
+/** Stable session-id derived from the bearer JWT for audit-log correlation.
+ *  SHA-256 of the raw token, truncated to 16 hex chars — opaque to the
+ *  client, identifies the issuance session without persisting the token
+ *  itself. Returns `null` when no Authorization header is present. */
+function bearerSessionId(req: Request): string | null {
+  const auth = req.headers.authorization;
+  if (typeof auth !== 'string' || !auth.startsWith('Bearer ')) return null;
+  const token = auth.slice('Bearer '.length).trim();
+  if (token.length === 0) return null;
+  return crypto.createHash('sha256').update(token).digest('hex').slice(0, 16);
+}
+
+/** Returns the consent-op action contained in the operations bundle, or
+ *  `null` if no operation requires fresh-auth. We intentionally allow at
+ *  most one consent-op per bundle: bundling consent ops with arbitrary
+ *  other ops opens a substitution-attack vector where the auth ceremony
+ *  is shown for one op while the wire payload signs another. */
+function findConsentOpAction(operations: unknown[]): string | null {
+  for (const op of operations) {
+    if (!Array.isArray(op) || op.length !== 2) continue;
+    const [opType, opParams] = op;
+    if (opType !== 'custom_json') continue;
+    const params = opParams as { json?: unknown };
+    let payload: { action?: unknown };
+    try {
+      payload = (typeof params.json === 'string'
+        ? JSON.parse(params.json)
+        : params.json) as { action?: unknown };
+    } catch {
+      continue;
+    }
+    if (typeof payload?.action === 'string' && CONSENT_OP_ACTIONS.has(payload.action)) {
+      return payload.action;
+    }
+  }
+  return null;
+}
 
 // ─────────────────────────────────────────────────────────────
 // POST /api/custody/broadcast — Sign and broadcast operations for light accounts (LA9)
@@ -79,7 +130,7 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
         return sendError(res, 403, 'FORBIDDEN', `Voter must be '${username}'`);
       }
     } else if (opType === 'custom_json') {
-      // Only allow revote custom_json, and enforce sender is the authenticated user
+      // Only allow specific custom_json actions, and enforce sender is the authenticated user
       const auths = opParams.required_posting_auths;
       if (!Array.isArray(auths) || auths.length !== 1 || auths[0] !== username) {
         return sendError(res, 403, 'FORBIDDEN', `required_posting_auths must be ['${username}']`);
@@ -89,7 +140,17 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
       }
       try {
         const payload = typeof opParams.json === 'string' ? JSON.parse(opParams.json) : opParams.json;
-        const allowedActions = ['revote', 'claim_authorship', 'approve_authorship', 'revoke_authorship'];
+        const allowedActions = [
+          'revote',
+          'claim_authorship',
+          'approve_authorship',
+          'revoke_authorship',
+          // Round-3 of BACKEND-COAUTHOR-TRUST-MODEL: consent ops gate
+          // continuation-chain admit. Light-account broadcast is allowed,
+          // but each call also requires a fresh-auth proof (gated below).
+          'author_accept',
+          'author_resign',
+        ];
         if (!allowedActions.includes(payload.action)) {
           return sendError(res, 403, 'FORBIDDEN', `Only ${allowedActions.join(', ')} custom_json actions are allowed for custodial accounts`);
         }
@@ -97,6 +158,39 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
         return sendError(res, 400, 'VALIDATION_ERROR', 'Invalid custom_json payload');
       }
     }
+  }
+
+  // Round-3: consent-op operations require a per-op fresh-auth proof.
+  // Verified BEFORE decrypting the posting key so a missing/expired proof
+  // never reaches the broadcast path. The proof is consumed (single-use)
+  // even if the broadcast itself later fails — re-broadcasting requires a
+  // fresh re-auth, matching the ARCH.md "per-op" rule.
+  const consentAction = findConsentOpAction(operations);
+  let freshAuthMechanism: FreshAuthMechanism | null = null;
+  if (consentAction !== null) {
+    const proof = (req.body as { fresh_auth_proof?: unknown })?.fresh_auth_proof;
+    const proofToken = typeof proof === 'string' ? proof : undefined;
+    const result = await consumeFreshAuthToken(proofToken, username);
+    if (!result.valid) {
+      logger.warn(
+        {
+          username,
+          consent_action: consentAction,
+          reason: result.reason,
+          event: 'custody.fresh_auth.rejected',
+        },
+        'custody.broadcast rejected — fresh-auth proof invalid',
+      );
+      const status = result.reason === 'missing' ? 401 : 401;
+      return sendError(
+        res,
+        status,
+        'FRESH_AUTH_REQUIRED',
+        'Re-authentication required to broadcast this operation. Please complete the fresh-auth challenge and retry.',
+        { reason: result.reason },
+      );
+    }
+    freshAuthMechanism = result.mechanism;
   }
 
   const pool = getAppPool();
@@ -183,9 +277,29 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
       const result = await broadcastSendOperationsWithTimeout(operations, key);
 
       // Audit log (DB write, non-blocking) — captures only the success path.
-      logCustodyBroadcast(username, opTypes, result.id, result.block_num).catch(() => {});
+      // Round-3: consent-op broadcasts also persist auth-mechanism + session
+      // + user-agent per ARCH.md "Light-account signing of consent ops".
+      const auditExtras = freshAuthMechanism === null
+        ? undefined
+        : {
+            auth_mechanism: freshAuthMechanism,
+            fresh_auth_outcome: 'verified',
+            session_id: bearerSessionId(req) ?? undefined,
+            user_agent: typeof req.headers['user-agent'] === 'string' ? req.headers['user-agent'] : undefined,
+          };
+      logCustodyBroadcast(username, opTypes, result.id, result.block_num, auditExtras).catch(() => {});
       // Pino-side per-attempt signal (round-2 hold #4 — every attempt logged).
-      logBroadcastAttempt('success', { tx_id: result.id, block_num: result.block_num });
+      logBroadcastAttempt(
+        'success',
+        freshAuthMechanism === null
+          ? { tx_id: result.id, block_num: result.block_num }
+          : {
+              tx_id: result.id,
+              block_num: result.block_num,
+              consent_action: consentAction,
+              auth_mechanism: freshAuthMechanism,
+            },
+      );
 
       return sendOk(res, {
         tx_id: result.id,
@@ -215,6 +329,80 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
       'Custodial broadcast failed (non-chain error)',
     );
     sendError(res, 500, 'INTERNAL_ERROR', 'Failed to broadcast transaction');
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+// POST /api/custody/fresh-auth — Mint a per-op fresh-auth proof (password path).
+// Round-3 of BACKEND-COAUTHOR-TRUST-MODEL. The ORCID issuance path lives in
+// `routes/orcid.ts` under `mode: 'fresh_auth'` (parallel issuance flow that
+// completes a real OAuth round-trip).
+// ─────────────────────────────────────────────────────────────
+router.post('/fresh-auth', verifyHiveSignature, freshAuthLimiter, async (req: Request, res: Response) => {
+  const abortSignal = requestAbortSignal(req, res);
+  const username = req.hiveUsername;
+  const custody = req.hiveCustody;
+
+  if (!username) {
+    return sendError(res, 401, 'UNAUTHORIZED', 'Authentication required');
+  }
+  if (custody !== 'light') {
+    return sendError(res, 403, 'FORBIDDEN', 'This endpoint is only for custodial accounts. Self-custody users sign consent ops via Hive Keychain.');
+  }
+
+  const { password } = (req.body ?? {}) as { password?: unknown };
+  if (typeof password !== 'string' || password.length === 0) {
+    return sendError(res, 400, 'VALIDATION_ERROR', 'Password is required');
+  }
+
+  const pool = getAppPool();
+  if (!pool) return sendError(res, 503, 'INTERNAL_ERROR', 'Service not available');
+
+  try {
+    const { rows } = await pool.query<{
+      password_hash: string | null;
+      upgraded_at: string | null;
+    }>(
+      'SELECT password_hash, upgraded_at FROM accounts WHERE username = $1',
+      [username],
+    );
+
+    if (rows.length === 0) {
+      return sendError(res, 401, 'UNAUTHORIZED', 'Session is no longer valid');
+    }
+
+    const account = rows[0];
+    if (account.upgraded_at) {
+      return sendError(res, 403, 'FORBIDDEN', 'Account has been upgraded to self-custody. Use Hive Keychain.');
+    }
+
+    if (!account.password_hash) {
+      // Password mechanism unavailable for this account (e.g., ORCID-only
+      // hybrid). Direction the user toward the ORCID re-auth path. The
+      // 401 + UNAUTHORIZED shape mirrors the wrong-password branch so the
+      // route does not become a password-existence oracle.
+      return sendError(res, 401, 'UNAUTHORIZED', 'Invalid password');
+    }
+
+    const passwordHash = account.password_hash;
+    const valid = await runWithArgon2Slot(
+      () => argon2.verify(passwordHash, password),
+      { signal: abortSignal },
+    );
+    if (!valid) {
+      return sendError(res, 401, 'UNAUTHORIZED', 'Invalid password');
+    }
+
+    const issued = await issueFreshAuthToken(username, 'password');
+    return sendOk(res, {
+      fresh_auth_proof: issued.token,
+      expires_at: issued.expires_at,
+      mechanism: issued.mechanism,
+    });
+  } catch (err) {
+    if (handleArgonError(res, err, { logContext: { username } }) === ARGON_HANDLED) return;
+    logger.error({ err, username }, 'Fresh-auth issuance failed');
+    sendError(res, 500, 'INTERNAL_ERROR', 'Failed to issue fresh-auth proof');
   }
 });
 

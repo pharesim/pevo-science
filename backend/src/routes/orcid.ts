@@ -23,6 +23,7 @@ import { rateLimit, byIp } from '../middleware/rateLimit.js';
 import { logger } from '../logger.js';
 import { assertNever } from '../util/assertNever.js';
 import { seedAccreditationBonus } from '../reputation.js';
+import { issueFreshAuthToken } from '../lib/fresh-auth.js';
 
 // Per-route Zod body schema for POST /api/orcid/callback
 // (BE-REQUEST-BODY-TYPING-ZOD). Narrows req.body to typed fields so
@@ -57,9 +58,15 @@ const router = Router();
 // surface for future callers (e.g. an admin UI rendering orcid_id in HTML).
 const ORCID_RE = /^\d{4}-\d{4}-\d{4}-\d{3}[\dX]$/;
 
-type OrcidMode = 'signup' | 'login' | 'accredit' | 'link';
-const VALID_MODES: ReadonlySet<string> = new Set(['signup', 'login', 'accredit', 'link']);
-const AUTHENTICATED_MODES: ReadonlySet<string> = new Set(['accredit', 'link']);
+// Round-3 of BACKEND-COAUTHOR-TRUST-MODEL: 'fresh_auth' is an authenticated
+// mode that completes a fresh OAuth round-trip and mints a single-use
+// fresh-auth proof token bound to the JWT subject. Issued tokens are
+// consumed by the custody-broadcast handler when broadcasting `author_accept`
+// or `author_resign` ops. Sibling endpoint to POST /api/custody/fresh-auth
+// (the password-mechanism issuance path).
+type OrcidMode = 'signup' | 'login' | 'accredit' | 'link' | 'fresh_auth';
+const VALID_MODES: ReadonlySet<string> = new Set(['signup', 'login', 'accredit', 'link', 'fresh_auth']);
+const AUTHENTICATED_MODES: ReadonlySet<string> = new Set(['accredit', 'link', 'fresh_auth']);
 
 const ORCID_STATE_TTL = 600; // 10 minutes
 const ORCID_VERIFIED_TTL = 1800; // 30 minutes
@@ -363,6 +370,8 @@ router.post('/callback', callbackLimiter, async (req: Request, res: Response) =>
         return await handleAccredit(res, orcidId, orcidName, storedUsername!, tokenData.access_token);
       case 'link':
         return await handleLink(res, orcidId, storedUsername!);
+      case 'fresh_auth':
+        return await handleFreshAuth(res, orcidId, storedUsername!);
     }
   } catch (err) {
     logger.error({ err }, 'ORCID callback failed');
@@ -842,6 +851,64 @@ async function handleLink(
       tx_id: result.id,
     });
   }, linkAmbiguousOpts);
+}
+
+// ─────────────────────────────────────────────────────────────
+// Round-3 of BACKEND-COAUTHOR-TRUST-MODEL — fresh-auth via ORCID
+// ─────────────────────────────────────────────────────────────
+//
+// Authenticated mode that completes a fresh OAuth round-trip and mints a
+// single-use fresh-auth proof bound to the JWT subject. Consumed by the
+// custody-broadcast handler when broadcasting `author_accept` /
+// `author_resign` ops. Sibling to POST /api/custody/fresh-auth (password
+// path).
+//
+// Security invariant: the OAuth-returned `orcidId` MUST equal
+// `accounts.orcid` for the JWT subject. Without this check, a user could
+// authenticate via any ORCID they control and issue a token for an account
+// whose ORCID linkage is unrelated. Mismatch returns 403 to mirror the
+// `accredit`/`link` mode contracts that require ORCID-account binding.
+
+async function handleFreshAuth(
+  res: Response,
+  orcidId: string,
+  username: string,
+): Promise<void> {
+  if (!ORCID_RE.test(orcidId)) {
+    sendError(res, 400, 'BAD_REQUEST', 'Invalid ORCID iD format');
+    return;
+  }
+
+  const pool = getAppPool();
+  if (!pool) {
+    sendError(res, 503, 'INTERNAL_ERROR', 'Service not available');
+    return;
+  }
+
+  const result = await pool.query<{ orcid: string | null }>(
+    'SELECT orcid FROM accounts WHERE username = $1 LIMIT 1',
+    [username],
+  );
+  if (result.rows.length === 0) {
+    sendError(res, 401, 'UNAUTHORIZED', 'Session is no longer valid');
+    return;
+  }
+  const accountOrcid = result.rows[0].orcid;
+  if (!accountOrcid || accountOrcid !== orcidId) {
+    // Fresh-auth via ORCID requires the OAuth round-trip to be for the
+    // ORCID linked to the account. This is the symmetric guard to the
+    // `link`/`accredit` mode rule that an ORCID belongs to one account.
+    sendError(res, 403, 'FORBIDDEN', 'The ORCID you authenticated with is not linked to this account.');
+    return;
+  }
+
+  const issued = await issueFreshAuthToken(username, 'orcid');
+  sendOk(res, {
+    mode: 'fresh_auth',
+    fresh_auth_proof: issued.token,
+    expires_at: issued.expires_at,
+    mechanism: issued.mechanism,
+  });
 }
 
 // ─────────────────────────────────────────────────────────────

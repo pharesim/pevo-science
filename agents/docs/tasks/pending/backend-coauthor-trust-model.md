@@ -341,3 +341,47 @@ If the cumulative-union task remains blocked for an extended period (e.g., ε's 
 The Round 1 fetcher is HAF-only (no Hive API fallback). Round 2 should consider whether to add a fallback path or accept HAF-required for the consent-flow gate. Per CLAUDE.md "Data Source Policy" the existing fallback is HAF → Hive API; for consent ops, querying Hive API for arbitrary custom_json history is impractical, so HAF-required is the likely answer.
 
 The `.env` REDIS_URL workaround (added during Round 1 verification: set REDIS_URL to the docker bridge IP rather than the empty value that triggers `redis://:PASSWORD@redis:6379` fallback unresolvable from host) is local-only (`.env` is gitignored). Future test runs may need the same workaround until vitest.config.ts honors shell-env REDIS_URL overrides.
+
+---
+
+## Backend round-3 signal (2026-05-05)
+
+Round 3 (custody endpoint extension + fresh-auth gate for `author_accept` / `author_resign`) lands in this branch's working tree (will commit on the same branch as Round 1).
+
+### What landed
+
+- **`backend/src/lib/fresh-auth.ts`** — new module. Exports `CONSENT_OP_ACTIONS` (the set of payload `action` strings that require a fresh-auth proof: `author_accept`, `author_resign`), `issueFreshAuthToken(username, mechanism)` (mints a 32-byte hex token bound to the issuing username, with 5-min TTL), and `consumeFreshAuthToken(token, expectedUsername)` (single-use lookup via Redis `GETDEL`, in-memory fallback for no-Redis paths). Tokens carry a `mechanism` discriminator (`'password' | 'orcid'`) that is informational only — the security primitives are token secrecy + single-use + username binding + TTL. Module-local cleanup interval drains expired in-memory entries every 60 s; mirrors the orcid_state cleaner shape.
+- **`backend/src/routes/custody.ts`** — broadcast handler now detects consent-op operations (`findConsentOpAction`) and requires a `fresh_auth_proof` field in the request body for any bundle containing one. Proof is consumed BEFORE the posting key is decrypted, so a missing/expired/cross-account proof never reaches the broadcast path. New error code `FRESH_AUTH_REQUIRED` (added to `types/api.ts`) carries `details: { reason }` discriminating `'missing' | 'expired' | 'username_mismatch' | …`. Allowlist extended with `'author_accept'` and `'author_resign'`. New endpoint `POST /api/custody/fresh-auth` issues a password-mechanism token (bcrypt verify against `accounts.password_hash`, runs through `runWithArgon2Slot` for queue safety; rate-limited at 10/min/account via the new `custody-fresh-auth` limiter).
+- **`backend/src/routes/orcid.ts`** — new `'fresh_auth'` mode (authenticated). Completes a full OAuth round-trip; the `handleFreshAuth` dispatch verifies the OAuth-returned `orcidId` equals `accounts.orcid` for the JWT subject (mismatch → 403, mirrors `link`/`accredit` mode binding rules) and issues an ORCID-mechanism fresh-auth token via `issueFreshAuthToken`. Sibling issuance path to the password endpoint above; same token shape and consume path.
+- **`backend/src/custody-audit.ts`** — `logCustodyBroadcast` accepts an optional `extras: CustodyAuditExtras` shape with `auth_mechanism`, `fresh_auth_outcome`, `session_id`, `user_agent`. Non-consent broadcasts pass `undefined`; consent-op success path passes the full set. Backwards-compatible.
+- **`backend/migrations/005_custody_audit_consent_ops.sql`** — adds the four new columns to `custody_audit_log`. All nullable; non-consent rows store NULL. Idempotent `ADD COLUMN IF NOT EXISTS`.
+- **`backend/src/types/hive.ts`** — already extended in Round 1 (`AuthorAcceptAction` / `AuthorResignAction`); no changes this round.
+- **`backend/tests/routes/custody-consent-ops.test.ts`** — 12 cases covering: password-mechanism fresh-auth issuance (happy / wrong-password / missing-password / self-custody / already-upgraded), consent-op broadcast (author_accept happy + audit-log row shape, author_resign happy + audit-log, missing proof, replay, cross-account binding, non-consent op no-fresh-auth-required regression, non-allowlisted action regression). Real-DB pattern (mirrors `custody-upgrade-null-hash.test.ts`); only `hive.js` broadcast helpers and `custody-crypto.js` decryptKey are mocked.
+
+### Verification
+
+- `npx tsc --noEmit` clean.
+- `npm run lint` clean (pre-existing `seed-phrase.ts` warnings only).
+- `npx vitest run tests/routes/custody-consent-ops.test.ts` — 12/12 pass.
+- `npx vitest run tests/routes/custody*.test.ts tests/consent-ops.test.ts` — 35/35 pass (12 new + 23 existing custody + Round 1 consent-ops module suite).
+- `npx vitest run tests/routes/orcid.test.ts` — 67/67 pass (new `fresh_auth` mode is non-disruptive to existing modes).
+
+### [TODO Architect] — contract additions for archive-time
+
+The custody contract is architect-owned per backend CLAUDE.md "Boundaries". Round 3 adds:
+
+1. **`agents/docs/api-contracts/custody.md` — new `POST /api/custody/fresh-auth` endpoint.** Request: `Authorization: Bearer <jwt>`, body `{ password: string }`. Response 200: `{ fresh_auth_proof: string, expires_at: number, mechanism: 'password' }`. Error codes: 401 UNAUTHORIZED (invalid password OR no password_hash on account — uniform shape so the route is not a password-existence oracle), 400 VALIDATION_ERROR (missing password), 403 FORBIDDEN (self-custody / already-upgraded), 503 INTERNAL_ERROR (no app DB). Rate limit: 10/min/account (`custody-fresh-auth`).
+
+2. **`agents/docs/api-contracts/custody.md` — `POST /api/custody/broadcast` consent-op contract.** When the operations bundle contains a `custom_json` op with `id = APP_TAG` and payload `action ∈ {'author_accept', 'author_resign'}`, the request body MUST include `fresh_auth_proof: string`. Backend rejects with 401 `FRESH_AUTH_REQUIRED` + `details: { reason }` if missing, expired, malformed, or bound to a different username. Single-use: a successful consume invalidates the proof; subsequent calls with the same token return 401 with `reason: 'expired'`. Bundles MAY mix consent ops with other allowed ops; one proof gates the entire bundle.
+
+3. **`agents/docs/api-contracts/orcid.md` — new `'fresh_auth'` mode.** Authenticated mode. After OAuth callback, returns `{ mode: 'fresh_auth', fresh_auth_proof: string, expires_at: number, mechanism: 'orcid' }` (200) when the OAuth-returned ORCID matches `accounts.orcid` for the JWT subject. 403 FORBIDDEN when the ORCID does not match (or no ORCID linked). Sibling to `POST /api/custody/fresh-auth` — both produce the same proof shape consumed by the broadcast endpoint.
+
+4. **`agents/docs/ARCHITECTURE.md` "Light-account signing of consent ops" — operational note.** The audit-log capture (timestamp / session_id / user_agent / auth_mechanism) is implemented as four columns on `custody_audit_log`; `session_id` is a SHA-256 hash of the bearer JWT truncated to 16 hex chars (opaque to clients, suitable for operator correlation across audit rows from the same session without persisting the token). The bonus column `fresh_auth_outcome` is forward-compatible: today it stores `'verified'` on every row written (the route only writes audit rows on the success path); a future change that adds a row on rejection would set it to the rejection reason.
+
+5. **`agents/docs/ARCHITECTURE.md` — `'fresh_auth'` ORCID mode.** The "Light-account signing of consent ops" subsection states the rule but does not enumerate the issuance endpoints. Adding a one-line cross-reference to `POST /api/custody/fresh-auth` (password) and `POST /api/orcid/start { mode: 'fresh_auth' }` (ORCID) makes the operational story discoverable.
+
+### Round sequencing carry-over
+
+Round 2 (continuation-chain admit-gate integration + cache invalidation) remains gated on `backend-multi-author-cumulative-union.md` per Round 1's signal block. Round 4 (migration-day flag) is gated on Round 2.
+
+Round 3 ships the broadcast surface for consent ops. Once Round 2 lands the read gate, `author_accept` / `author_resign` ops broadcast via Round 3 will start admitting into the vouched-set computation. Until then, broadcast succeeds end-to-end on chain but the read-time consent-gate is not yet enforced (the existing claimed-set gate from ε round-3 still applies).
