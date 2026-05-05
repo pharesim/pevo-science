@@ -77,6 +77,10 @@ export const config = {
   // BE-VERIFY-BROADCAST-ATTEMPTS-CAP. Flippable without redeploy so
   // operators can tighten or relax during incident response.
   verifyBroadcastAttemptsCap: parseInt(process.env.VERIFY_BROADCAST_ATTEMPTS_CAP || '3', 10),
+  // Drain interval (ms) for the in-process pending-decrement queue that
+  // recovers DECR calls failed during a Redis flap on /api/accreditation/verify.
+  // See lib/pending-decrement-queue.ts and BE-VERIFY-CAP-REDIS-FLAP-RECOVERY.
+  verifyDecrementQueueDrainMs: parseInt(process.env.VERIFY_DECREMENT_QUEUE_DRAIN_MS || '30000', 10),
   orcidBaseUrl: process.env.ORCID_BASE_URL || 'https://orcid.org',
   accreditationAuthorities: (() => {
     const extra = (process.env.ACCREDITATION_AUTHORITIES || '').split(',').map(s => s.trim()).filter(Boolean);

@@ -17,6 +17,7 @@ import { startWotThresholdCache } from './wot.js';
 import { startAccountClaimer, stopAccountClaimer } from './account-creation.js';
 import { startSignupCleanup, stopSignupCleanup } from './signup-cleanup.js';
 import { drainArgon2Queue, startArgon2AbortReporter, stopArgon2AbortReporter } from './lib/argon2-semaphore.js';
+import { startDecrementQueueDrainer, stopDecrementQueueDrainer } from './lib/pending-decrement-queue.js';
 import { logger } from './logger.js';
 import type { Server } from 'http';
 
@@ -85,6 +86,11 @@ initAppDb()
       // Surfaces silent ArgonAbortError events to operators at LOG_LEVEL=info.
       startArgon2AbortReporter();
 
+      // Start in-process pending-decrement drainer for the
+      // /api/accreditation/verify broadcast-attempt counter. Drains DECRs
+      // queued during a Redis flap on the route's compensation path.
+      startDecrementQueueDrainer();
+
       // Non-blocking: check Hive API node connectivity at startup
       void checkHiveNodes();
     });
@@ -121,6 +127,7 @@ async function shutdown(signal: string): Promise<void> {
   stopAccountClaimer();
   stopSignupCleanup();
   stopArgon2AbortReporter();
+  stopDecrementQueueDrainer();
 
   // Reject any auth requests parked in the argon2 semaphore queue. Without
   // this, `server.close()` waits for them until the 30s force-timeout fires,

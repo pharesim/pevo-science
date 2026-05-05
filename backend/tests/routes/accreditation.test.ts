@@ -101,6 +101,7 @@ import { logger } from '../../src/logger.js';
 import { INCR_AND_EXPIRE_ON_ZERO_TO_ONE_LUA } from '../../src/lib/redis-scripts.js';
 import * as redisModule from '../../src/redis.js';
 import { __test_seams as accreditationTestSeams } from '../../src/routes/accreditation.js';
+import { __test_seams as queueTestSeams } from '../../src/lib/pending-decrement-queue.js';
 
 // Ensure the admin-posting-key guard inside /verify doesn't short-circuit.
 // A deterministic WIF keeps PrivateKey.fromString happy on the broadcast path.
@@ -1038,5 +1039,97 @@ describe('POST /api/accreditation/verify — BE-VERIFY-BROADCAST-ATTEMPTS-CAP', 
       evalSpy.mockRestore();
       loggerWarnSpy.mockRestore();
     }
+  });
+
+  // ──────────────────────────────────────────────
+  // BE-VERIFY-CAP-REDIS-FLAP-RECOVERY — queue-enqueue + auto-recovery
+  //
+  // Architect-decided design (a) per
+  // agents/docs/tasks/.../backend-verify-cap-redis-flap-recovery.md.
+  // ──────────────────────────────────────────────
+
+  it('flap-recovery: decrementBroadcastAttempts(token, attemptId) with isRedisAvailable()=false enqueues for the periodic drain cycle', async () => {
+    // Round-3 hold #10 added the Redis-unavailable warn at the DECR site, but
+    // left the counter inflated until the 24h TTL with no auto-recovery. This
+    // task adds the queue: when DECR can't land due to a Redis flap mid-request,
+    // the entry is enqueued for retry. A regression that drops the enqueue
+    // returns to the silent-noop pre-flap-recovery shape.
+    const redis = getRedis();
+    if (!redis) throw new Error('Redis required for flap-recovery specs');
+    queueTestSeams.clearQueue();
+
+    const token = `accred-cap-${crypto.randomBytes(8).toString('hex')}`;
+    const attemptId = crypto.randomBytes(8).toString('hex');
+    const isAvailableSpy = vi.spyOn(redisModule, 'isRedisAvailable').mockReturnValue(false);
+
+    try {
+      await accreditationTestSeams.decrementBroadcastAttempts(token, attemptId);
+
+      expect(queueTestSeams.hasAttempt(attemptId)).toBe(true);
+      expect(queueTestSeams.getQueueDepth()).toBe(1);
+    } finally {
+      isAvailableSpy.mockRestore();
+      queueTestSeams.clearQueue();
+    }
+  });
+
+  it('flap-recovery: decrementBroadcastAttempts(token, attemptId) re-throws on redis.decr rejection AND enqueues the entry for retry', async () => {
+    // The route-level catch still emits `accred_verify_broadcast_decrement_failed`
+    // (the per-request operator signal); the queue handles the eventual
+    // recovery. Both must be present — a regression that drops either one
+    // either loses the operator signal or strands the counter.
+    const redis = getRedis();
+    if (!redis) throw new Error('Redis required for flap-recovery specs');
+    queueTestSeams.clearQueue();
+
+    const token = `accred-cap-${crypto.randomBytes(8).toString('hex')}`;
+    const attemptId = crypto.randomBytes(8).toString('hex');
+    const decrSpy = vi
+      .spyOn(redis, 'decr')
+      .mockRejectedValueOnce(new Error('redis flap on compensating decrement'));
+
+    try {
+      await expect(
+        accreditationTestSeams.decrementBroadcastAttempts(token, attemptId),
+      ).rejects.toThrow(/redis flap/);
+
+      expect(queueTestSeams.hasAttempt(attemptId)).toBe(true);
+      expect(queueTestSeams.getQueueDepth()).toBe(1);
+    } finally {
+      decrSpy.mockRestore();
+      queueTestSeams.clearQueue();
+    }
+  });
+
+  it('flap-recovery: drainQueue retries DECR on a queued entry and clears it once the counter is decremented', async () => {
+    const redis = getRedis();
+    if (!redis) throw new Error('Redis required for flap-recovery specs');
+    queueTestSeams.clearQueue();
+
+    // Seed the counter at 1 to mirror the pre-INCR + flap state: the route
+    // pre-incremented, broadcast timed out, DECR couldn't land due to the
+    // flap, entry was enqueued. After Redis recovers, drain should DECR the
+    // counter back to 0.
+    const token = `accred-cap-${crypto.randomBytes(8).toString('hex')}`;
+    const counterKey = `${config.appTag}:pending_accred_broadcast_attempts:${token}`;
+    await redis.set(counterKey, '1');
+    const attemptId = crypto.randomBytes(8).toString('hex');
+
+    // Drive the enqueue via the public route helper so the spec exercises
+    // the production path end-to-end.
+    const isAvailableSpy = vi.spyOn(redisModule, 'isRedisAvailable').mockReturnValue(false);
+    try {
+      await accreditationTestSeams.decrementBroadcastAttempts(token, attemptId);
+    } finally {
+      isAvailableSpy.mockRestore();
+    }
+    expect(queueTestSeams.hasAttempt(attemptId)).toBe(true);
+
+    // Redis has recovered → drain succeeds.
+    await queueTestSeams.drainQueue();
+
+    expect(queueTestSeams.getQueueDepth()).toBe(0);
+    expect(await redis.get(counterKey)).toBe('0');
+    await redis.del(counterKey);
   });
 });

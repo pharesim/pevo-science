@@ -14,6 +14,7 @@ import { logger } from '../logger.js';
 import { isInstitutionalEmail } from '../email-validator.js';
 import { hashEmailForLogs, hashTokenForLogs } from '../lib/log-pii.js';
 import { INCR_AND_EXPIRE_ON_ZERO_TO_ONE_LUA } from '../lib/redis-scripts.js';
+import { enqueueDecrement } from '../lib/pending-decrement-queue.js';
 import { seedAccreditationBonus } from '../reputation.js';
 
 /** How long a verification token stays valid before it expires. */
@@ -125,19 +126,33 @@ async function incrementBroadcastAttempts(pending: PendingAccreditation): Promis
  * from going negative if a parallel deleteBroadcastAttempts (success path)
  * raced ahead of this decrement.
  */
-async function decrementBroadcastAttempts(token: string): Promise<void> {
+async function decrementBroadcastAttempts(token: string, attemptId?: string): Promise<void> {
   const redis = getRedis();
   if (redis) {
+    const key = broadcastAttemptsKey(token);
     if (isRedisAvailable()) {
-      const key = broadcastAttemptsKey(token);
-      const after = await redis.decr(key);
-      if (after < 0) {
-        // Counter was already gone (token deletion raced with the decrement);
-        // either re-priming via SET 0 or DEL is fine. DEL keeps the namespace
-        // clean and matches the "counter scoped to the token's life" invariant.
-        await redis.del(key);
+      try {
+        const after = await redis.decr(key);
+        if (after < 0) {
+          // Counter was already gone (token deletion raced with the decrement);
+          // either re-priming via SET 0 or DEL is fine. DEL keeps the namespace
+          // clean and matches the "counter scoped to the token's life" invariant.
+          await redis.del(key);
+        }
+        return;
+      } catch (decrErr) {
+        // BE-VERIFY-CAP-REDIS-FLAP-RECOVERY: the immediate DECR threw (Redis
+        // flap mid-request, OOM, evicted-to-read-only). Enqueue for retry by
+        // the periodic drain cycle so the counter eventually returns to its
+        // pre-INCR value, then re-throw. Re-throwing preserves the existing
+        // outer-catch `accred_verify_broadcast_decrement_failed` warn (the
+        // route's per-request signal) — the queue handles recovery, the
+        // outer-catch warn handles operator correlation.
+        if (attemptId) {
+          enqueueDecrement({ token, attemptId, key });
+        }
+        throw decrErr;
       }
-      return;
     }
     // Round-3 hold #10: if Redis was reachable at INCR time but is unavailable
     // now (mid-request flap), the in-memory map has no record of the Redis-side
@@ -146,6 +161,13 @@ async function decrementBroadcastAttempts(token: string): Promise<void> {
     // operators can correlate counter drift with Redis incidents; the sibling
     // `accred_verify_broadcast_decrement_failed` event covers the
     // throw-during-DECR case but not this silent-noop case.
+    //
+    // BE-VERIFY-CAP-REDIS-FLAP-RECOVERY: also enqueue for the periodic drain
+    // cycle so the counter is decremented when Redis recovers, instead of
+    // sitting inflated until the 24h Redis TTL.
+    if (attemptId) {
+      enqueueDecrement({ token, attemptId, key });
+    }
     logger.warn(
       {
         token_hash: hashTokenForLogs(token),
@@ -293,6 +315,12 @@ router.post('/request', verifyHiveSignature, accreditationRequestLimiter, valida
 
 router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifySchema), async (req: Request, res: Response) => {
   const { token } = req.body;
+
+  // BE-VERIFY-CAP-REDIS-FLAP-RECOVERY: per-request attempt identifier used by
+  // the in-process pending-decrement queue. Generated once per /verify call so
+  // a duplicate enqueue (e.g. retry within the same request lifetime) is
+  // idempotent — the queue is keyed on attemptId.
+  const attemptId = crypto.randomBytes(8).toString('hex');
 
   const pending = await getToken(token);
   if (!pending) {
@@ -470,7 +498,7 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
     // harmless because the broadcast already failed terminally.
     if (outcome === 'timeout') {
       try {
-        await decrementBroadcastAttempts(token);
+        await decrementBroadcastAttempts(token, attemptId);
       } catch (decrErr) {
         // Compensation failure is not user-visible (the 504 has already been
         // sent and the counter will TTL out with the token). Log so operators

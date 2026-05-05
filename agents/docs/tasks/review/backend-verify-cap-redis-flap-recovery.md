@@ -134,3 +134,95 @@ Backend leaves `[TODO Architect]` marker; architect lands the convention update.
 The manual-reset endpoint (Decision 2) is largely self-contained and can ship first, independent of the queue work (Decision 1). Either order is fine; backend picks. A single PR covering both is also acceptable if scope is manageable.
 
 This task returns to `tasks/pending/` for backend pickup.
+
+---
+
+## Backend implementation (2026-05-05)
+
+Single bundle covering both Decision 1 (queue) and Decision 2 (admin endpoint).
+
+### Files
+
+- `backend/src/lib/pending-decrement-queue.ts` (new): `Map<attemptId, {token, attemptId, queuedAt, key}>` with `enqueueDecrement`, `drainQueue`, `startDecrementQueueDrainer`/`stopDecrementQueueDrainer`. Drain interval = `config.verifyDecrementQueueDrainMs` (env `VERIFY_DECREMENT_QUEUE_DRAIN_MS`, default 30000ms). Cap at 1000 entries with single overflow warn (`accred_verify_decrement_queue_overflow`). Per-cycle `accred_verify_decrement_queue_drain` info-level log with `queue_depth`, `drained`, `initial_depth`. Per-entry retry failure during drain emits `accred_verify_decrement_queue_retry_failed` warn and stops the cycle (remaining entries deferred to the next tick).
+- `backend/src/config.ts`: new `verifyDecrementQueueDrainMs` field.
+- `backend/src/routes/accreditation.ts`: `decrementBroadcastAttempts(token, attemptId?)`; on `isRedisAvailable() === false` and on `redis.decr` rejection, the helper enqueues `(token, attemptId, key)` before warning / re-throwing. Route generates a per-request `attemptId = crypto.randomBytes(8).toString('hex')` and passes it through. The existing `accred_verify_broadcast_decrement_redis_unavailable` warn and the route-level `accred_verify_broadcast_decrement_failed` warn shapes are preserved (queue is additive, not a replacement).
+- `backend/src/index.ts`: `startDecrementQueueDrainer()` after `startArgon2AbortReporter()`; `stopDecrementQueueDrainer()` in graceful shutdown.
+- `backend/src/routes/admin.ts` (new): `POST /api/admin/accreditation/reset-broadcast-counter`. Auth: `verifyHiveSignature` + caller-must-equal-`config.hiveAdminAccount`. Body validated with the existing `accreditationVerifySchema` (token: string, 1-128 chars). Response data shape: `{ token_hash, prior_value }`. Audit log on success: `event: 'admin_reset_broadcast_counter'` with `admin_username`, `token_hash`, `prior_value`. Forbidden-attempt log: `event: 'admin_reset_broadcast_counter_forbidden'` with `attempted_by`, `token_hash` (no raw token to operator logs). 503 path when Redis unavailable preserves the counter for retry.
+- `backend/src/app.ts`: mount `adminRouter` at `/api/admin`.
+
+### Tests
+
+- `backend/tests/lib/pending-decrement-queue.test.ts` (new, 8 specs): enqueue, idempotent enqueue, drain success, race-recovery DEL on `after < 0`, drain skip when Redis unavailable, drain log shape, per-entry failure stops drain, overflow at 1000 entries, env-var wired through to config.
+- `backend/tests/routes/accreditation.test.ts` (3 new specs at the bottom of the BE-VERIFY-BROADCAST-ATTEMPTS-CAP describe): `isRedisAvailable() === false` + attemptId enqueues, `redis.decr` rejection + attemptId enqueues then re-throws, drain end-to-end (enqueue via route helper, then drain decrements the real counter).
+- `backend/tests/routes/admin.test.ts` (new, 6 specs): 401 without auth, 400 missing token, 403 non-admin (audit log + no raw token leak), 200 happy path with prior_value=3, 200 with prior_value=null when key absent, 503 when Redis unavailable.
+
+### Operator-facing log discriminators (new)
+
+- `accred_verify_decrement_queue_drain` (info, every drain cycle when there's anything queued)
+- `accred_verify_decrement_queue_retry_failed` (warn, per-entry on drain)
+- `accred_verify_decrement_queue_overflow` (warn, fires once per overflow streak)
+- `accred_verify_decrement_queue_drain_threw` (error, drain cycle threw — should never fire in practice)
+- `admin_reset_broadcast_counter` (info, audit trail)
+- `admin_reset_broadcast_counter_forbidden` (warn)
+- `admin_reset_broadcast_counter_redis_unavailable` (warn)
+- `admin_reset_broadcast_counter_failed` (error)
+
+## [TODO Architect] — `agents/docs/api-contracts/accreditation.md` admin endpoint contract row
+
+Add a new endpoint section for `POST /api/admin/accreditation/reset-broadcast-counter`. Suggested content (architect to phrase per `common.md` conventions):
+
+- **Path.** `POST /api/admin/accreditation/reset-broadcast-counter`
+- **Auth.** `verifyHiveSignature`; caller MUST equal `config.hiveAdminAccount` (singular per `project_admin_is_singular` memory). Non-admin callers get 403 `FORBIDDEN`.
+- **Request body.**
+
+  ```json
+  { "token": "<verification token>" }
+  ```
+
+  Validated with the existing `accreditationVerifySchema` (string, 1-128 chars). Missing or invalid → 400 `BAD_REQUEST`.
+- **Response (200).**
+
+  ```json
+  {
+    "status": "ok",
+    "data": {
+      "token_hash": "<12-hex sha256 prefix>",
+      "prior_value": 3
+    }
+  }
+  ```
+
+  `prior_value` is the integer counter value before reset, or `null` if the key was absent. The response intentionally returns the hashed token, not the plaintext, so audit consumers can correlate against the operator log without surfacing replay-grade material in transit.
+- **503.** When Redis is unavailable. Envelope per `common.md` 503 shape: `{ retriable: true }`. Counter is unchanged; operator can retry once Redis recovers, or wait the 24h TTL.
+- **403.** When caller is authenticated but not the admin account. Envelope per `common.md` 403 shape.
+- **Use case.** Manual-reset lever for the `/api/accreditation/verify` broadcast-attempts cap when a Redis flap left the counter inflated and the auto-recovery queue (in-process, fail-open on restart) cannot resolve it. See the `chain-write-timeout-ambiguous-outcome` convention's "Manual reset runbook" section for when to invoke.
+
+## [TODO Architect] — `agents/docs/solutions/conventions/chain-write-timeout-ambiguous-outcome-2026-04-22.md` runbook + recovery section
+
+Extend the existing convention doc with two additions:
+
+### Auto-recovery: in-process pending-decrement queue
+
+Counter-side state in `/api/accreditation/verify` is shaped as pre-INCR + decrement-on-timeout. The decrement can fail in two flap modes:
+
+1. `isRedisAvailable() === false` mid-request (the increment landed via the live client, the decrement found `status !== 'ready'`).
+2. `redis.decr` throws (Redis evicted to read-only, ioredis-side connection drop, OOM).
+
+Both modes enqueue `(token, attemptId, key)` into an in-process pending-decrement queue (`backend/src/lib/pending-decrement-queue.ts`). A periodic drainer (`config.verifyDecrementQueueDrainMs`, default 30s) retries DECR when Redis is available. Bounded blast radius: in-process state, fail-open on restart (counter recovers via 24h Redis TTL), 1000-entry depth cap with overflow log.
+
+The queue is keyed on a per-request `attemptId` so duplicate enqueues (same in-flight request) overwrite the prior entry rather than double-counting. The `key` is captured at enqueue time so the drainer doesn't re-derive it.
+
+### Manual reset runbook
+
+Use `POST /api/admin/accreditation/reset-broadcast-counter` to manually clear an inflated counter. When to invoke:
+
+- Operator confirmed via Redis logs that a counter is inflated due to a flap (the auto-recovery queue did not converge — process restart between flap and drain, or flap exceeded 24h, or queue overflowed).
+- A user reported persistent `BROADCAST_ATTEMPT_LIMIT_EXCEEDED` on `/api/accreditation/verify` despite no actual broadcast having fired.
+
+How to call:
+
+- Sign a Hive request as `config.hiveAdminAccount` (singular). The route accepts the standard request-bound signed message: `{APP_TAG}-auth|v1|POST|/api/admin/accreditation/reset-broadcast-counter|sha256(body)|<timestamp>`.
+- Body: `{ "token": "<the affected verification token>" }`.
+- Response includes `prior_value` so the operator can record the pre-reset state in the incident log.
+
+What to log: every reset emits a structured `event: 'admin_reset_broadcast_counter'` info line with `admin_username`, `token_hash`, `prior_value`. Forbidden attempts emit `event: 'admin_reset_broadcast_counter_forbidden'`. Redis-unavailable resets emit `event: 'admin_reset_broadcast_counter_redis_unavailable'`. The plaintext token is NEVER logged — the route is the SOLE credential for `/verify`, so any operator-log retention window would otherwise be a replay grace period.
