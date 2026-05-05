@@ -436,3 +436,90 @@ Round-4 hold-fix item 1 landed in this commit. Scope held to the architect's ins
 ### Architect followups carry forward
 
 Round-1 + round-2 + round-3 + round-4 architect followups all carry forward to archive — no new architect followup items surfaced during this round. A4/A5 still defer to cumulative-union archive; A6/A7/A8/A9 still fire at this task's archive per the round-4 hold block. The on-main commit cite for round-4 will be added to the architect's archive note.
+
+---
+
+## Architect re-review (2026-05-05, round-4 → round-5) — HELD PENDING FIXES
+
+`/ce-code-review` ran on commit `72c4b5c` with 8 reviewers (correctness, testing, maintainability, project-standards, learnings-researcher, security, adversarial, kieran-typescript; ce-agent-native-reviewer skipped per repo CLAUDE.md). Round-4 item 1 (`pevoString` helper) is correct in shape and unit-test coverage. Adversarial surfaced two issues at the per-version IPFS-triple call site (`papers.ts:680-682` adoption block) that the helper enables but does not solve, both rooted in the same call-site design rather than the helper's own contract.
+
+Two-grep audit per `wrapping-primitive-exhaustive-call-site-audit-2026-04-22.md` was run before locking round-5 scope: zero remaining `(headPevo|rootPevo).X as string` sites in `backend/src/`. Round-3's `??` cast-pattern exposure is fully closed. The broader `|| null` / `|| []` / `|| 'literal'` sites surfaced by the audit are A8 territory (less exposure than round-3 because `||` collapses falsy non-strings) — A8 spec will expand at archive to enumerate all 12+ sites.
+
+### Items to address
+
+**1. (P2) Frankenstein triple — per-field independent fallback violates triple-coherence invariant.** `backend/src/routes/papers.ts:685-687` reads `ipfs_cid` / `ipfs_filename` / `document_hash` independently, each falling back to root on its own. A vouched co-author (covering root's authors set, gate passes) can broadcast a continuation v2 whose head metadata is `{ ipfs_cid: 'QmAttacker', ipfs_filename: 0, document_hash: 0 }` (or `''`, `null`, `[]` — all collapse identically via the helper). Result: `detail.ipfs_cid = 'QmAttacker'`, `detail.ipfs_filename = 'root.pdf'`, `detail.document_hash = 'sha256:rootHash'`. The triple never existed on chain in any single version — the displayed filename and hash describe root's PDF; the CID points at attacker's content.
+
+The block comment at `papers.ts:609-619` says "each post's pointers describe that version's PDF" — independent per-field fallback violates this triple-coherence invariant. The 3 round-4 canaries pin the all-three-pathological case as correctly falling back; they never test the asymmetric mixed-shape case, so a future refactor preserving per-field fallback would not fail.
+
+Currently impact is bounded (frontend `paper-detail.js:904-905` reads `ipfs_cid` for the download link but does not use `document_hash` for integrity verification — adversarial confirmed via grep). The architectural risk is forward-looking: when integrity verification lands (SHA-256 check on downloaded payload against displayed `document_hash`), the verification would PASS against root's hash while the attacker's content downloads — silent bypass. Closing the invariant now is much smaller than retrofitting it after consumers depend on per-field fallback.
+
+The cumulative-union supersession plan (`backend-multi-author-cumulative-union.md`) addresses authors-set mutation, NOT the per-version IPFS-triple fallback path. Triple coherence is part of the ARCHITECTURE.md "Field mutation rules" table that round-3 just landed and remains load-bearing under cumulative-union.
+
+**Fix shape.** Treat the triple as atomic at the call site:
+
+```ts
+const headHasAnyTriple =
+  pevoString(headPevo, 'ipfs_cid') !== null
+  || pevoString(headPevo, 'ipfs_filename') !== null
+  || pevoString(headPevo, 'document_hash') !== null;
+if (headHasAnyTriple) {
+  detail.ipfs_cid = pevoString(headPevo, 'ipfs_cid');
+  detail.ipfs_filename = pevoString(headPevo, 'ipfs_filename');
+  detail.document_hash = pevoString(headPevo, 'document_hash');
+} else {
+  detail.ipfs_cid = pevoString(rootPevo, 'ipfs_cid');
+  detail.ipfs_filename = pevoString(rootPevo, 'ipfs_filename');
+  detail.document_hash = pevoString(rootPevo, 'document_hash');
+}
+```
+
+(Helper-extract optional — `applyAtomicTriple(detail, source)` is fine; inline is also fine. Implementer's call.)
+
+**Canary tests** (extend `backend/tests/routes/continuation-author-gate.test.ts`):
+- `'admits an atomic triple from head when head supplies any one of the three fields as a non-string but at least one is a valid string'` — head `{ ipfs_cid: 'QmHeadCid', ipfs_filename: 0, document_hash: '' }` → response carries `{ ipfs_cid: 'QmHeadCid', ipfs_filename: null, document_hash: null }` (head's view; head supplied a CID, so no fallback to root). Update the existing 3 canaries' framing accordingly — they currently test the "head supplied none" case and assert root fallback; that semantic stays correct for triple-atomic.
+- `'falls back to root when head supplies none of the three fields as valid strings'` — already covered by the 3 round-4 canaries; adjust their framing to make explicit that ALL THREE head fields collapse to null.
+- `'rejects asymmetric Frankenstein composition'` — head `{ ipfs_cid: 'QmHeadCid', ipfs_filename: 0 }` (missing document_hash entirely) → response carries `{ ipfs_cid: 'QmHeadCid', ipfs_filename: null, document_hash: null }`, NOT root's filename/hash. This is the canary that would FAIL with the current per-field code and PASS after the atomic-triple fix.
+
+**2. (P3) Null-clear conflation — head intentionally clearing `ipfs_cid` is indistinguishable from head omitting it.** Same call site (`papers.ts:685-687`) and same fix block as item 1, so they bundle. `pevoString` returns `null` for both `headPevo.ipfs_cid === null` (head explicitly cleared the field — alice's v2 short correction with no PDF, inline body only) and `headPevo.ipfs_cid === undefined` (head omitted the key, no opinion). Both fall back to root's CID. Frontend renders root's stale PDF as the v2 download link; `version-diff.js:36 is_diffable` toggles wrong (v2 looks IPFS-hosted when it's actually inline).
+
+Round-3's retrospective explicitly flagged this as a problem with `??`; the round-4 helper preserves it verbatim and extends it to `''`. The docblock frames the empty-string collapse as a feature ("matching the rest of the codebase") but the rest of the codebase is summary paths (`papers.ts:396, 1360`) where there's no head-vs-root distinction. The per-version detail path is the only place where "head explicitly cleared" has semantic weight.
+
+Inline-only continuations ARE a supported product shape (`is_diffable` check exists; frontend renders them differently). The helper silently breaks that shape.
+
+**Fix shape (composes with item 1's atomic-triple).** Use sentinel-aware presence check (`'ipfs_cid' in headPevo`) to distinguish "head cleared" from "head omitted":
+
+```ts
+const headHasAnyTripleKey =
+  'ipfs_cid' in headPevo
+  || 'ipfs_filename' in headPevo
+  || 'document_hash' in headPevo;
+if (headHasAnyTripleKey) {
+  detail.ipfs_cid = pevoString(headPevo, 'ipfs_cid');           // null when head cleared
+  detail.ipfs_filename = pevoString(headPevo, 'ipfs_filename');
+  detail.document_hash = pevoString(headPevo, 'document_hash');
+} else {
+  detail.ipfs_cid = pevoString(rootPevo, 'ipfs_cid');
+  detail.ipfs_filename = pevoString(rootPevo, 'ipfs_filename');
+  detail.document_hash = pevoString(rootPevo, 'document_hash');
+}
+```
+
+The semantic: "if head touched ANY of the triple keys, it's expressing a per-version triple; if head touched NONE, it inherits root's." A head that clears with `ipfs_cid: null` and omits the other two keys is treated as expressing the triple (with all-null contents) — `is_diffable` correctly toggles to "inline".
+
+**Canary tests:**
+- `'preserves head\'s explicit null ipfs_cid (inline-only continuation, no PDF)'` — head `{ ipfs_cid: null, ipfs_filename: null, document_hash: null }` → response `{ ipfs_cid: null, ipfs_filename: null, document_hash: null }`, NOT root's CID.
+- `'falls back to root when head omits all triple keys (no opinion expressed)'` — head metadata with no `ipfs_*` keys → response carries root's triple. (This is the existing fallback behavior; pin it explicitly so a future refactor doesn't regress.)
+
+**Mutation-kill attestation.** Backend's round-5 signal block MUST include the explicit revert-verify attestation per `tests-must-fail-on-mutation-of-code-under-test-2026-04-22.md`: "I reverted the atomic-triple block to per-field fallback and confirmed the asymmetric Frankenstein canary fails. I reverted the sentinel-aware `'in'` check to `pevoString(headPevo, 'ipfs_cid') ?? ...` and confirmed the inline-only-continuation canary fails." One- to three-line attestation in the signal block.
+
+### Items dismissed during architect triage
+
+- **Whitespace / control-char / zero-width-space CIDs pass `pevoString` unmodified into URL-construction sites** (adversarial F3, P3 conf 55, partially corroborated by security residual). Pre-existing behavior; not introduced by round-4. Filed as separate task `backend-paper-detail-cid-validate-on-emit.md` (output-side CID shape validation at API response-emit boundary). Decoupled from this task's archive.
+
+### Architect followups (carry forward to archive)
+
+Round-1 + round-2 + round-3 + round-4 architect followups all carry forward unchanged. The two-grep audit run during this round-5 surfaced A8 scope expansion: A8's spec at archive will list all 12+ sites including `reviews.ts:30`, `bridge.ts:533-535`, `helpers.ts:213, 215`, `papers.ts:396, 680, 681, 688, 689, 1360-1362`, and may need 2 sibling helpers (`pevoStringArray`, `pevoStringWithDefault`) since several sites are array/with-default shapes that `pevoString` doesn't cover. That expansion fires at this task's archive (when this task is archived after round-5 lands clean).
+
+### Re-review signal
+
+When round-5 items 1-2 land in a single commit, `git mv` this file back to `tasks/review/`. Architect's next review pass scopes `/ce-code-review` to the round-5 commit. Expected diff: ~15 lines in `papers.ts` (atomic-triple + sentinel-aware block replacing the 3 current lines) + 3-5 new canary tests + the existing 3 canaries' framing comments updated. Small surface; clean archive expected on green review.
