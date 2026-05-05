@@ -385,3 +385,133 @@ The custody contract is architect-owned per backend CLAUDE.md "Boundaries". Roun
 Round 2 (continuation-chain admit-gate integration + cache invalidation) remains gated on `backend-multi-author-cumulative-union.md` per Round 1's signal block. Round 4 (migration-day flag) is gated on Round 2.
 
 Round 3 ships the broadcast surface for consent ops. Once Round 2 lands the read gate, `author_accept` / `author_resign` ops broadcast via Round 3 will start admitting into the vouched-set computation. Until then, broadcast succeeds end-to-end on chain but the read-time consent-gate is not yet enforced (the existing claimed-set gate from ε round-3 still applies).
+
+---
+
+## Architect re-review (2026-05-05, rounds 1+3 → round-4) — HELD PENDING FIXES
+
+`/ce-code-review` ran on commits `658332a` (round 1) + `b9b3b3b` (round 3) — intermediate `72c4b5c` excluded (different task). 12 personas (correctness, security, adversarial, testing, maintainability, project-standards, learnings, performance, api-contract, data-migrations, reliability, kieran-typescript). `ce-agent-native-reviewer` skipped per root CLAUDE.md (PEvO has no agent-native surface).
+
+**Headline finding:** the multi-consent-op bundle bypass at `findConsentOpAction` flagged by 5 reviewers (correctness, security, adversarial, maintainability, kieran-typescript) — the round-3 comment promises a per-op fresh-auth invariant the implementation does not enforce. Cross-reviewer agreement promotes this to high confidence.
+
+Round-2 deferral remains correct (gated on `backend-multi-author-cumulative-union`); the unwired `papers.ts` integration was not flagged.
+
+### Items to address (P1 — 9)
+
+**1. (P1) Multi-consent-op bundle defeats per-op fresh-auth gate.** `backend/src/routes/custody.ts:57-76, 168-194`. `findConsentOpAction` returns the FIRST consent op found; the broadcast handler consumes ONE fresh-auth proof for the entire bundle. The function's docstring at lines 53-56 claims "we intentionally allow at most one consent-op per bundle: bundling consent ops with arbitrary other ops opens a substitution-attack vector where the auth ceremony is shown for one op while the wire payload signs another." The code does not enforce this. Concrete exploit: a compromised SPA submits `[author_accept{paper A}, author_accept{paper B}]` with the user's single proof; both ops sign and broadcast. The user gave the auth ceremony for one paper but vouched onto N papers.
+
+Fix (preferred): in `findConsentOpAction` or its caller, count consent ops in the bundle; reject the request with 400 / `MULTIPLE_CONSENT_OPS` if more than one is present. Alternative (more invasive): per-op proofs with `fresh_auth_proofs: string[]` aligned by op index. Add a regression test asserting a `[author_accept, author_accept]` bundle is rejected even with a valid proof.
+
+**2. (P1) `app-db.ts:initAppDb()` does not include the four new audit columns — fresh deployments silently drop consent-op audit rows.** `backend/src/app-db.ts:80`. The hard-coded `CREATE TABLE custody_audit_log` block does not list `auth_mechanism`, `fresh_auth_outcome`, `session_id`, `user_agent`. On fresh container boots (dev, CI, new prod node before migration 005 runs), the INSERT in `custody-audit.ts:46` references missing columns; the audit write is fire-and-forget (`.catch(() => {})`) so the broadcast succeeds and the row is silently lost.
+
+Fix: append `ALTER TABLE custody_audit_log ADD COLUMN IF NOT EXISTS ...` blocks for the four columns inside `initAppDb()`, mirroring the migration-005 shape. Pattern: see existing `notification_preferences.last_digest_block` handling at `app-db.ts:47`.
+
+**3. (P1) Redis-issued fresh-auth token lost on transient Redis flap during consume.** `backend/src/lib/fresh-auth.ts:261-284`. When the issuance path succeeded against Redis but `redis.getdel` throws on consume, the code falls through to `memStore.get(token)` — which returns nothing because the token was never written there. The caller receives `{ valid: false, reason: 'expired' }` and a spurious 401. The legitimate user must re-authenticate immediately after just having done so. The line-175 comment describes the inverse path (issuance fell back to mem; consume checks mem) but does NOT cover Redis-up-on-issue / Redis-down-on-consume.
+
+Fix: write to memStore as a backup on Redis-issuance success (so the token is recoverable on a flap), OR retry Redis once with a short backoff in the consume path before falling through. Add a test that (a) issues with Redis available, (b) makes `getdel` throw, (c) asserts the consume succeeds (legitimate user) instead of returning `expired`.
+
+**4. (P1) `fetchConsentOpsForPaper` has no `LIMIT` clause — unbounded row set under consent-op spam.** `backend/src/consent-ops.ts:70`. A malicious claimed co-author (in the task's threat model) can spam `author_accept`/`author_resign` ops on a paper; Hive enforces account-level rate limits but no per-paper cap. Once Round 2 wires `getVouchedAuthors` per paper-detail request, the inline fetch returns all rows and `computeVouchedAuthors` allocates O(N) memory + sort.
+
+Fix: add `LIMIT 1000` (or similar high-water mark per the cumulative-union task's expected chain length) plus `ORDER BY id DESC` so the latest ops are retained when the cap fires. Document the cap in the function's JSDoc so Round 2's integration is aware.
+
+**5. (P1) Audit-log loses per-op consent action and target paper for multi-op bundles.** `backend/src/routes/custody.ts:211-213, 282-302`. `logCustodyBroadcast(...)` records joined op-types; the structured pino event records `consent_action` for the FIRST match only. If item-1's substitution exploit fires (or even a benign multi-consent bundle), forensic correlation requires reading the on-chain tx body. ARCH.md "Light-account signing of consent ops" calls out auth-mechanism + session-id + user-agent capture but not per-op payload identity.
+
+Fix: resolves naturally if item-1 is fixed by single-consent rule (only one consent op per audit row → identity preserved). If the per-op-proofs route is taken instead, write one audit row per consent op, OR widen the schema with a JSON column carrying `[{root_author, root_permlink, action}, ...]`.
+
+**6. (P1) `handleFreshAuth` (ORCID `'fresh_auth'` mode) has zero test coverage.** `backend/src/routes/orcid.ts` (the new mode handler added in round 3). Three load-bearing branches: happy (orcid match → token issued), ORCID mismatch → 403, no account → 401. The round-3 signal's `67/67 pass` claim covers non-disruption only. Removing the `accountOrcid !== orcidId` binding check at the mismatch branch would not fail any test — and that check is the security-critical invariant against an attacker who controls any ORCID + a stolen JWT minting fresh-auth tokens as another user.
+
+Fix: add tests in `backend/tests/routes/orcid.test.ts` (or new file) covering: (a) happy-path token issuance, (b) ORCID mismatch → 403 with binding-check error code, (c) no-ORCID-linked → 403, (d) no-account → 401, (e) audit-log row shape on the broadcast that consumes the ORCID-mechanism token (asserts `auth_mechanism: 'orcid'` written).
+
+**7. (P1) Bridge-paper vouched-set exclusion has no test in `consent-ops.test.ts`.** `backend/tests/consent-ops.test.ts`. Round-1 spec line 199 explicitly required this test: "bridge papers (`type: 'bridge_paper'`, head author = `config.hiveBridgeAccount`) — vouched-set is `{config.hiveBridgeAccount}` only; consent ops on bridge papers are inert." The current suite covers root-broadcaster vouching transitively but has no dedicated bridge-paper fixture. A regression that allowed a non-bridge signer's `author_accept` to vouch onto a bridge paper would not be caught.
+
+Fix: add a test passing `claimedAuthors = {hiveBridgeAccount}` + a non-bridge signer's `author_accept` consent op to `computeVouchedAuthors`; assert the non-bridge signer is NOT in the returned set and the bridge account IS. Mirrors the round-1 plan's edge case.
+
+**8. (P1) Three TypeScript unsafe casts bypass discriminated-union exhaustiveness.** Three sites:
+- `backend/src/consent-ops.ts:96` — `row.action as 'author_accept' | 'author_resign'`. The SQL `IN (...)` filters but TS sees no guard; if the filter is ever relaxed or the view changes shape, an unrecognized action string silently propagates and falls through `=== 'author_accept'` checks (treated as resign).
+- `backend/src/routes/custody.ts:62` — `opParams as { json?: unknown }` from `unknown` without structural narrowing; the followup `as { action?: unknown }` cast on `params.json` accepts `null` typed as object.
+- `backend/src/lib/fresh-auth.ts:200` — `JSON.parse(raw) as StoredEntry`; the field-presence checks at lines 206-208 verify `username`/`mechanism` are strings but the exhaustive `mechanism IN ('password' | 'orcid')` check at line 214 is a hand-written membership test that diverges from the type union if the union is extended.
+
+Fix: introduce type-guards (`isConsentAction(v): v is 'author_accept' | 'author_resign'`, `isFreshAuthMechanism(v): v is FreshAuthMechanism`) used at the parse/read boundaries; replace the `opParams` cast with a narrowing block (`typeof opParams === 'object' && opParams !== null && 'json' in opParams`).
+
+**9. (P1) `CustodyAuditExtras` violates the correlated-options-discriminated-union convention.** `backend/src/custody-audit.ts:19`. Per `agents/docs/solutions/conventions/correlated-options-discriminated-union-2026-04-28.md`, four semantically correlated fields (only meaningful when consent op fires) typed as independent optionals admit a future caller supplying `fresh_auth_outcome` without `auth_mechanism` with no TS error. Round 3 introduces this exact shape. Companion finding: `fresh_auth_outcome?: string` at the same site is bare `string` instead of a constrained literal union.
+
+Fix: convert to discriminated union along the lines of:
+```ts
+type CustodyAuditExtras =
+  | { auth_mechanism?: never; fresh_auth_outcome?: never; session_id?: never; user_agent?: never }
+  | { auth_mechanism: 'password' | 'orcid'; fresh_auth_outcome: 'verified' | 'missing' | 'expired' | 'username_mismatch' | 'malformed'; session_id?: string; user_agent?: string };
+```
+and update the only call site in `routes/custody.ts:282-289` to construct the consent-op variant explicitly.
+
+### Items to address (P2 — 9)
+
+**10. (P2) Dead ternary `?: 401 : 401`.** `backend/src/routes/custody.ts:184`. Both branches return 401. Flagged by 4 reviewers (maintainability, api-contract, reliability, kieran-ts).
+
+Fix: collapse to `const status = 401`. If differentiated status codes were intended (the discriminator suggests 403 for `username_mismatch` and 401 for `missing`/`expired`), implement that and update the [TODO Architect] api-contracts/custody.md note accordingly.
+
+**11. (P2) `custody-consent-ops.test.ts` header lacks carve-out clause (a) justification for `custody-crypto.js` mock.** `backend/tests/routes/custody-consent-ops.test.ts:1-41, 71-78`. Root CLAUDE.md "Carve-out for deterministic edge-case coverage" requires "(a) the test file header documents the justification explicitly (which real path is impractical and why)." The header lists `custody-crypto.js` under "Mocks" with the brief "bypass AES-GCM material" but no per-target paragraph; compare `tests/routes/custody.test.ts:10-19` which has the full justification.
+
+Fix: extend the header with a one-paragraph justification for `custody-crypto.js` (key derivation primitives are non-trivial to seed deterministically per-test; the broadcast-mocking already removes the dependency on the decryption output). `hive.js` mocking is already covered by the carve-out's permitted-target list.
+
+**12. (P2) Phantom `'invalid'` reason variant in `FreshAuthVerifyResult`.** `backend/src/lib/fresh-auth.ts:149`. The discriminated union declares `'missing' | 'invalid' | 'expired' | 'username_mismatch' | 'malformed'` but `consumeFreshAuthToken` never produces `'invalid'`. A future maintainer will reuse it with the wrong semantic.
+
+Fix: trim from the union (or document its reserved future use inline if there's a planned case).
+
+**13. (P2) `fresh-auth.ts` exports three symbols with no external consumer.** `backend/src/lib/fresh-auth.ts:71`. `FRESH_AUTH_TTL_SECONDS`, `IssuedFreshAuth`, `FreshAuthVerifyResult` are exported but neither `routes/custody.ts` nor `routes/orcid.ts` imports them.
+
+Fix: drop the three `export` keywords. If tests need the type aliases, keep them exported with a brief comment naming the test file.
+
+**14. (P2) Comment says "bcrypt-verifies" but algorithm is argon2.** `backend/src/lib/fresh-auth.ts:35`. The Issuance-paths section describes the password mechanism as "bcrypt-verifies against accounts.password_hash". The actual implementation uses `argon2.verify` via `runWithArgon2Slot` (`routes/custody.ts:389`). No bcrypt is used anywhere in PEvO backend.
+
+Fix: rename to "argon2-verifies".
+
+**15. (P2) Module-level cleanup interval not testable; `_resetFreshAuthMemStoreForTests` doesn't pause it.** `backend/src/lib/fresh-auth.ts:90`. The `setInterval` starts at module load with `.unref()` (good — prevents vitest hang). However, no exported hook lets a test pause or stub the interval, so a TTL-boundary test cannot avoid racing the cleaner. Also affects Vitest watch mode (re-evaluation creates a new interval per reload).
+
+Fix: export `_stopCleanupForTests` / `_restartCleanupForTests` and call from `_resetFreshAuthMemStoreForTests` so suites can deterministically control the cleaner.
+
+**16. (P2) `fetchConsentOpsForPaper` uses `pool.query()` with no explicit `statement_timeout`.** `backend/src/consent-ops.ts:93`. Slow HAF holds the paper-detail thread once Round 2 wires this inline.
+
+Fix: set `statement_timeout` per query (or document that the HAF Pool's session-level timeout is sufficient — verify which is configured in `backend/src/db.ts`).
+
+**17. (P2) TTL-expiry path in fresh-auth in-memory fallback never exercised.** `backend/src/lib/fresh-auth.ts:186-196`. The `cached.expiresAt > Date.now()` guard at line 190 is reachable only by waiting (or fake-timer manipulation); no test does either. Removing the guard entirely would not be caught.
+
+Fix: add a fake-timer test that issues to memStore (Redis stubbed unavailable), advances `Date.now()` past TTL, asserts `consume` returns `'expired'`. Pair with `_stopCleanupForTests` from item 15 so the cleaner doesn't race.
+
+**18. (P2) Null `password_hash` branch in `POST /api/custody/fresh-auth` not tested.** `backend/src/routes/custody.ts:379-384`. The branch returns 401 UNAUTHORIZED uniformly to avoid becoming a password-existence oracle. No test seeds an account with `password_hash IS NULL` and asserts the uniform shape (status code, error envelope, latency parity vs wrong-password). Mutating the branch to return 404/403 would not be caught, exposing the oracle.
+
+Fix: add a test seeding `password_hash = NULL` (ORCID-only hybrid path), call `/api/custody/fresh-auth`, assert the response is byte-equivalent to a wrong-password 401.
+
+### Items dismissed during architect triage
+
+- **P3 — `orcid.ts:221` stale error message** (lists `signup, login, accredit, link` and omits `fresh_auth`). VALID_MODES gates the actual flow correctly; the string is only reached on invalid-mode submissions where `fresh_auth` is in fact valid. Architect will fix in-place during the archive doc-cluster pass.
+- **P3 — `handleFreshAuth` doesn't gate on `custody === 'light'`.** Primary gate at `custody.ts:90-92` 403s self-custody at consume time. Issuance produces an unusable token but no escalation. Same posture as the architect-blessed `/upgrade` burn-sentinel removal (per `agents/docs/solutions/`). Per `feedback_dont_relitigate_settled_ssot` memory: don't relitigate accepted defense-in-depth dismissals.
+- **P3 — `author_resign` audit-log test asserts only `auth_mechanism`** (test file lines 303-325; `author_accept` test at 266-301 asserts all four). Folded into items 6 (handleFreshAuth tests) + 9 (CustodyAuditExtras refactor) — the test sweep that lands the discriminated-union-typed extras should also assert all four columns on resign.
+- **Pre-existing — `custody.md` "revote only" allowlist text** drifted before round 3 (claim_authorship/approve/revoke were added in earlier rounds without contract update). Folded into the architect-owned doc-cluster pass at archive.
+
+### Architect-owned doc cluster — landed at archive (not implementer fix)
+
+These are tracked as `[TODO Architect]` in the round-1 + round-3 signal blocks above plus additions surfaced this review. I'll land them in the same commit that archives the task once items 1-18 clear:
+
+1. `agents/docs/ARCHITECTURE.md` Section 2 "Author Accept (custom_json)" / "Author Resign (custom_json)" — flip schema discriminator from `type:` → `action:` to match code (round-1 [TODO #1]).
+2. ARCH.md "Author Accept" validity prose — clarify that the chain signer IS the accepting author (binding is implicit; no payload identity field) (round-1 [TODO #2]).
+3. ARCH.md / convention doc — same-block tie-break primitive: document `id` (HAF op id) as the canonical tie-break for `operation_custom_json_view` queries, with `(block_num, trx_in_block)` carve-out noted (round-1 [TODO #3]).
+4. `agents/docs/api-contracts/custody.md` — new `POST /api/custody/fresh-auth` endpoint (round-3 [TODO #1]).
+5. `agents/docs/api-contracts/custody.md` — `POST /api/custody/broadcast` consent-op contract + `FRESH_AUTH_REQUIRED` error code (round-3 [TODO #2]).
+6. `agents/docs/api-contracts/custody.md` — refresh stale "revote only" allowlist text → full current allowlist (`comment, vote, custom_json {revote, claim_authorship, approve_authorship, revoke_authorship, author_accept, author_resign}`).
+7. `agents/docs/api-contracts/orcid.md` — new `'fresh_auth'` mode (start body schema row + callback response shape) (round-3 [TODO #3]).
+8. `agents/docs/api-contracts/common.md` — rate-limit table: add `custody-fresh-auth` (10/min/account).
+9. `agents/docs/api-contracts/common.md` — note epoch-seconds carve-out for short-lived proof tokens (`expires_at` on `/api/custody/fresh-auth` and ORCID `'fresh_auth'` callback diverges from project-wide ISO 8601 timestamp convention).
+10. ARCH.md "Light-account signing of consent ops" — operational note re: audit-log columns + `session_id` SHA-256 of bearer JWT truncated to 16 hex (round-3 [TODO #4]).
+11. ARCH.md "Light-account signing of consent ops" — cross-reference issuance endpoints `POST /api/custody/fresh-auth` (password) and `POST /api/orcid/start { mode: 'fresh_auth' }` (ORCID) (round-3 [TODO #5]).
+
+### Follow-up tasks filed (3)
+
+- `agents/docs/tasks/pending/architect-haf-unavailability-vouched-set-policy.md` — architect decides fail-open vs fail-closed when HAF returns null pool / throws; Round 2 wires per policy. Currently `consent-ops.ts:68, 102-114` returns `[]` indistinguishably for "no ops" vs "HAF threw"; this is acceptable in isolation (Round 1 not yet integrated) but needs explicit policy before Round 2 lands.
+- `agents/docs/tasks/pending/backend-consent-ops-fetcher-real-haf-coverage.md` — carve-out clause (c) follow-up: real-HAF integration coverage of `fetchConsentOpsForPaper` SQL shape, scheduled to land alongside Round 2's `papers.ts` integration tests.
+- `agents/docs/tasks/pending/backend-custody-audit-pii-annotation.md` — add `COMMENT ON COLUMN custody_audit_log.user_agent` documenting PII status under CNPD jurisdiction + the existing account-deletion sweep at `routes/settings.ts:312`. P2 follow-up; not blocking.
+
+### Re-review signal
+
+When items 1-18 land, `git mv` this file back to `tasks/review/`. The architect's next pass scopes `/ce-code-review` to the round-4 commits since the hold block was written. Items 1-9 are P1; items 10-18 are P2. Anchor: items 1+5 (substitution attack + audit-log identity loss) are the load-bearing structural change; items 2-4 are independent correctness/reliability fixes; items 6-7 close test coverage gaps on load-bearing paths; items 8-9 are type-safety hygiene; items 10-18 are scoped local fixes.
+
+Items 1+5 should land together (item 5's resolution depends on item 1's fix shape). Item 9's discriminated-union refactor will touch the same call site as item 5's audit-log changes; coordinate. Items 6+7 (testing) can ship in parallel with the implementation fixes. Items 16-18 are P2 quality-of-implementation items that may roll into a single sweep commit.
