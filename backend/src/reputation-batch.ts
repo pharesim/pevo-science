@@ -50,9 +50,18 @@ const REDIS_KEY_STAGING_PREFIX = `${BATCH_KEY_PREFIX}${STAGING_SEGMENT}`;
  * recovery action is: log a loud operator alert and DEL the sentinel so the
  * next batch run recomputes from `cycle:last` to current. Per
  * BACKEND-REPUTATION-SSOT round-1 hold #17.
+ *
+ * Lives OUTSIDE BATCH_KEY_PREFIX so it cannot collide with a user-keyed
+ * entry under getBatchReputationMap's prefix glob (a sibling of
+ * `${appTag}:reputation:cycle:last`).
  */
-const REDIS_KEY_IN_PROGRESS_PREFIX = `${BATCH_KEY_PREFIX}in_progress:`;
-const REDIS_KEY_BATCH_LOCK = `${config.appTag}:reputation:batch:lock`;
+const REDIS_KEY_IN_PROGRESS_PREFIX = `${config.appTag}:reputation:in_progress:`;
+/**
+ * Multi-instance lock key. Lives OUTSIDE BATCH_KEY_PREFIX so it cannot
+ * collide with a user-keyed batch entry under getBatchReputationMap's
+ * `${BATCH_KEY_PREFIX}*` glob (a sibling of `${appTag}:reputation:cycle:last`).
+ */
+const REDIS_KEY_BATCH_LOCK = `${config.appTag}:reputation:lock`;
 /**
  * TTL for the multi-instance batch lock. Matches `DEFAULT_MAX_DURATION_MS`
  * (30 min) so a process killed mid-cycle releases its claim within the
@@ -397,3 +406,25 @@ export function stopBatchReputation(): void {
     logger.info('Batch reputation job stopped');
   }
 }
+
+/**
+ * Test seams: module-private constants and helpers exposed for unit-level
+ * tests of the atomic-swap primitive, the in-progress sentinel recovery, and
+ * the staging-key cleanup helper. Production code must not import these.
+ *
+ * Per BACKEND-REPUTATION-SSOT round-1 hold #14/#15/#17: the atomic Lua swap
+ * IS the load-bearing atomicity primitive; the in-progress sentinel IS the
+ * crash-detection contract; clearStagingKeys IS the recovery contract.
+ * Each gets a direct test, not just transitive coverage via runBatchComputation.
+ */
+export const __test_seams = {
+  CYCLE_SWAP_LUA,
+  CYCLE_SWAP_STAGING_SUBSTRING,
+  CYCLE_SWAP_PROD_SUBSTRING,
+  REDIS_KEY_STAGING_PREFIX,
+  REDIS_KEY_LAST_CYCLE,
+  REDIS_KEY_IN_PROGRESS_PREFIX,
+  REDIS_KEY_BATCH_LOCK,
+  clearStagingKeys,
+  clearInProgressSentinels,
+};

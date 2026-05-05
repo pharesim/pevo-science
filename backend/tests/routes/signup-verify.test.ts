@@ -389,7 +389,7 @@ describe.skipIf(!dbReachable)('BE-AUTH-RESUME-SIGNUP-TIMING-GUARD: /resume-signu
 const PII_RUN_ID = Date.now();
 const PII_SUFFIX = (PII_RUN_ID % 100000).toString(36).padStart(4, '0').slice(-6);
 
-describe.skipIf(!dbReachable)('BE-LOG-PII-EMAIL-HASH item 2c: /confirm broadcast-rejection on ORCID-only (email=NULL) row logs email_hash:null, returns 200', () => {
+describe.skipIf(!dbReachable)('BE-LOG-PII-EMAIL-HASH item 2c: /confirm broadcast-rejection on ORCID-only (email=NULL) row logs email_hash safely, returns 502 BROADCAST_FAILED', () => {
   const username = `piinul${PII_SUFFIX}`;
   const orcidId = '0000-0001-0000-1234';
   const confirmedToken = `confirmed:${'a1b2c3d4'.repeat(8)}`;
@@ -412,12 +412,16 @@ describe.skipIf(!dbReachable)('BE-LOG-PII-EMAIL-HASH item 2c: /confirm broadcast
     await cleanupByUsername(username);
   });
 
-  it('logs email_hash:null with no top-level email key, then returns 200 + JWT', async () => {
+  it('logs email_hash:undefined with no top-level email key, then returns 502 BROADCAST_FAILED (no JWT)', async () => {
     await clearRateLimitKeys(['auth-signup', 'signup-confirm']);
 
     // The accreditation broadcast in the catch path is the failure we stage.
     // createClaimedAccount stays at its default success — the broadcast catch
     // is what exercises the safeHashEmailForLogs(account.email) call site.
+    // Per BACKEND-REPUTATION-SSOT round-1 hold #8: broadcast failure now
+    // produces 502 BROADCAST_FAILED instead of the prior 200 + dangling JWT.
+    // The PII-safe email_hash invariant still holds via the structured log
+    // emitted by handleBroadcastError.
     broadcastJsonMock.mockReset();
     broadcastJsonMock.mockRejectedValue(new Error('RPC node rejected: insufficient RC'));
     // Username lookup at line 264 must return [] (Hive-side username is
@@ -442,26 +446,30 @@ describe.skipIf(!dbReachable)('BE-LOG-PII-EMAIL-HASH item 2c: /confirm broadcast
           },
         });
 
-      // Item 1 invariant: 200 + JWT, NOT 500. Pre-fix the TypeError on
-      // null.trim() inside the catch block bubbled up to the outer handler
-      // and produced a 500 INTERNAL_ERROR.
-      expect(res.status).toBe(200);
-      expect(res.body.status).toBe('ok');
-      expect(res.body.data.token).toBeTruthy();
-      expect(res.body.data.username).toBe(username);
+      // Post-fix: broadcast failure surfaces 502 BROADCAST_FAILED, NOT 200 +
+      // JWT (the prior dangling-JWT class). The user must NOT receive a
+      // session for an account whose chain op never landed.
+      expect(res.status).toBe(502);
+      expect(res.body.status).toBe('error');
+      expect(res.body.error?.code).toBe('BROADCAST_FAILED');
+      expect(res.body.data?.token).toBeFalsy();
 
       const emission = errorSpy.mock.calls.find(
         ([, msg]) =>
           typeof msg === 'string' &&
-          msg.includes('Failed to broadcast accreditation — account created but not accredited'),
+          msg.includes('signup_verify.confirm broadcast failed'),
       );
       expect(emission, 'expected broadcast-failure logger.error emission in /confirm').toBeDefined();
       const [payload] = emission!;
       const obj = payload as Record<string, unknown>;
-      // safeHashEmailForLogs(null) === null. Strictly null, not undefined,
-      // pinned so a regression that drops the early-return guard surfaces.
-      expect(obj).toHaveProperty('email_hash', null);
+      // The LogContext interface required `email_hash?: string`, so the route
+      // passes `email_hash: safeHashEmailForLogs(account.email) ?? undefined`.
+      // For ORCID-only signups (email = NULL), the field is absent (vs the
+      // pre-fix `email_hash: null`). The PII invariant — no top-level `email`
+      // key, no raw email value anywhere in the structured log — is what
+      // matters and remains pinned below.
       expect(obj).not.toHaveProperty('email');
+      expect(obj.email_hash).toBeUndefined();
       expect(obj.username).toBe(username);
       expect(obj.orcid).toBe(orcidId);
     } finally {
@@ -476,7 +484,7 @@ describe.skipIf(!dbReachable)('BE-LOG-PII-EMAIL-HASH item 2c: /confirm broadcast
 // getAccountsMock to publish the matching public key on the test username,
 // so middleware succeeds end-to-end against the real signature path. No
 // mock-auth fixture is reused here.
-describe.skipIf(!dbReachable)('BE-LOG-PII-EMAIL-HASH item 2c: /link broadcast-rejection on ORCID-only (email=NULL) row logs email_hash:null, returns 200', () => {
+describe.skipIf(!dbReachable)('BE-LOG-PII-EMAIL-HASH item 2c: /link broadcast-rejection on ORCID-only (email=NULL) row logs email_hash safely, returns 502 BROADCAST_FAILED', () => {
   const username = `piilink${PII_SUFFIX}`;
   const orcidId = '0000-0001-0000-5678';
   const confirmedToken = `confirmed:${'b2c3d4e5'.repeat(8)}`;
@@ -507,13 +515,15 @@ describe.skipIf(!dbReachable)('BE-LOG-PII-EMAIL-HASH item 2c: /link broadcast-re
     return TEST_KEY.sign(msgHash).toString();
   }
 
-  it('logs email_hash:null with no top-level email key, then returns 200 + JWT', async () => {
+  it('logs email_hash:undefined with no top-level email key, then returns 502 BROADCAST_FAILED (no JWT)', async () => {
     await clearRateLimitKeys(['auth-link']);
 
     // verifyHiveSignature looks up the account by username and reads
     // posting.key_auths to verify the recovered key. /link's route handler
     // then calls getAccounts a second time at line 404 (existence check
     // — same return value works there).
+    // Per BACKEND-REPUTATION-SSOT round-1 hold #8: broadcast failure now
+    // surfaces 502 BROADCAST_FAILED instead of 200 + JWT.
     getAccountsMock.mockReset();
     getAccountsMock.mockImplementation(async (names: string[]) => {
       if (names.includes(username)) {
@@ -537,20 +547,25 @@ describe.skipIf(!dbReachable)('BE-LOG-PII-EMAIL-HASH item 2c: /link broadcast-re
         .set('X-Hive-Timestamp', timestamp)
         .send(body);
 
-      expect(res.status).toBe(200);
-      expect(res.body.status).toBe('ok');
-      expect(res.body.data.token).toBeTruthy();
+      expect(res.status).toBe(502);
+      expect(res.body.status).toBe('error');
+      expect(res.body.error?.code).toBe('BROADCAST_FAILED');
+      expect(res.body.data?.token).toBeFalsy();
 
       const emission = errorSpy.mock.calls.find(
         ([, msg]) =>
           typeof msg === 'string' &&
-          msg.includes('Failed to broadcast accreditation for linked account'),
+          msg.includes('signup_verify.link broadcast failed'),
       );
       expect(emission, 'expected broadcast-failure logger.error emission in /link').toBeDefined();
       const [payload] = emission!;
       const obj = payload as Record<string, unknown>;
-      expect(obj).toHaveProperty('email_hash', null);
+      // PII invariant unchanged: no top-level `email` key, no raw email anywhere.
+      // For ORCID-only rows the email_hash field is absent (the route passes
+      // `email_hash: safeHashEmailForLogs(account.email) ?? undefined` to
+      // satisfy the LogContext typed interface).
       expect(obj).not.toHaveProperty('email');
+      expect(obj.email_hash).toBeUndefined();
       expect(obj.username).toBe(username);
       expect(obj.orcid).toBe(orcidId);
     } finally {

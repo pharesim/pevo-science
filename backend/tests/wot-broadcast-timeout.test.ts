@@ -22,11 +22,20 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-const { hafQueryMock, broadcastJsonMock, accreditedSetMock, thresholdMock } = vi.hoisted(() => ({
+const {
+  hafQueryMock,
+  broadcastJsonMock,
+  accreditedSetMock,
+  thresholdMock,
+  invalidateOnRevocationMock,
+  seedAccreditationBonusMock,
+} = vi.hoisted(() => ({
   hafQueryMock: vi.fn(),
   broadcastJsonMock: vi.fn(),
   accreditedSetMock: vi.fn(),
   thresholdMock: vi.fn(),
+  invalidateOnRevocationMock: vi.fn(),
+  seedAccreditationBonusMock: vi.fn(),
 }));
 
 vi.mock('../src/db.js', () => ({
@@ -53,6 +62,15 @@ vi.mock('../src/accreditation.js', () => ({
   getAccreditedSet: accreditedSetMock,
 }));
 
+vi.mock('../src/reputation.js', async () => {
+  const actual = await vi.importActual<typeof import('../src/reputation.js')>('../src/reputation.js');
+  return {
+    ...actual,
+    invalidateOnRevocation: invalidateOnRevocationMock,
+    seedAccreditationBonus: seedAccreditationBonusMock,
+  };
+});
+
 const { broadcastWotAccreditation, cascadeRevocation, PartialCascadeError, getWotThreshold } =
   await import('../src/wot.js');
 const { BroadcastTimeoutError } = await import('../src/hive.js');
@@ -78,7 +96,11 @@ beforeEach(async () => {
   broadcastJsonMock.mockReset();
   accreditedSetMock.mockReset();
   thresholdMock.mockReset();
+  invalidateOnRevocationMock.mockReset();
+  seedAccreditationBonusMock.mockReset();
   accreditedSetMock.mockResolvedValue(new Set<string>());
+  invalidateOnRevocationMock.mockResolvedValue(undefined);
+  seedAccreditationBonusMock.mockResolvedValue(undefined);
 });
 
 describe('BE-WOT-BROADCAST-TIMEOUT-HANDLING — broadcastWotAccreditation tagged union', () => {
@@ -217,6 +239,61 @@ describe('BE-WOT-BROADCAST-TIMEOUT-HANDLING — cascadeRevocation per-vouchee ti
     // v1 and v3 landed; v2's timeout was logged and skipped.
     expect(completed).toEqual(['tx-v1', 'tx-v3']);
     expect(broadcastJsonMock).toHaveBeenCalledTimes(3);
+  });
+});
+
+// BACKEND-REPUTATION-SSOT round-1 hold #29: cascadeRevocation must call
+// invalidateOnRevocation for every cascaded vouchee, AND must do so even on
+// the BroadcastTimeoutError-ambiguous branch (round-1 hold #7 — moved BEFORE
+// broadcast so a chain-revoked-but-cache-positive leak cannot arise from a
+// timed-out broadcast). Wiring coverage; the lifecycle test exercises
+// invalidateOnRevocation directly but not the wot.ts call site.
+describe('BACKEND-REPUTATION-SSOT round-1 hold #29 — cascadeRevocation invalidateOnRevocation wiring', () => {
+  it('fires invalidateOnRevocation for every cascaded vouchee on the success path', async () => {
+    hafQueryMock.mockImplementation(
+      makeCascadeHafMock({
+        childrenByRevoker: { boss: ['v1', 'v2', 'v3'] },
+        wotVouchees: new Set(['v1', 'v2', 'v3']),
+      }),
+    );
+    broadcastJsonMock.mockImplementation(async (payload: { json: string }) => {
+      const parsed = JSON.parse(payload.json) as { account: string };
+      return { id: `tx-${parsed.account}` };
+    });
+
+    const completed = await cascadeRevocation('boss');
+    expect(completed).toEqual(['tx-v1', 'tx-v2', 'tx-v3']);
+    // Every cascaded vouchee got invalidated.
+    expect(invalidateOnRevocationMock).toHaveBeenCalledTimes(3);
+    const invalidatedUsers = invalidateOnRevocationMock.mock.calls.map((c) => c[0]);
+    expect(new Set(invalidatedUsers)).toEqual(new Set(['v1', 'v2', 'v3']));
+  });
+
+  it('fires invalidateOnRevocation BEFORE broadcast on the timeout-ambiguous path (hold #7)', async () => {
+    hafQueryMock.mockImplementation(
+      makeCascadeHafMock({
+        childrenByRevoker: { boss: ['v1'] },
+        wotVouchees: new Set(['v1']),
+      }),
+    );
+
+    // Capture call order via Date.now() ticks: the invalidate must run before
+    // the broadcast (defended fix for the timeout-ambiguous leak).
+    const order: Array<'invalidate' | 'broadcast'> = [];
+    invalidateOnRevocationMock.mockImplementation(async () => {
+      order.push('invalidate');
+    });
+    broadcastJsonMock.mockImplementation(async () => {
+      order.push('broadcast');
+      throw new BroadcastTimeoutError(30_000);
+    });
+
+    const completed = await cascadeRevocation('boss');
+    expect(completed).toEqual([]); // timeout produced no completed tx ids
+    expect(invalidateOnRevocationMock).toHaveBeenCalledTimes(1);
+    expect(invalidateOnRevocationMock).toHaveBeenCalledWith('v1');
+    // Critical wiring assertion: invalidate ran BEFORE broadcast.
+    expect(order).toEqual(['invalidate', 'broadcast']);
   });
 });
 
