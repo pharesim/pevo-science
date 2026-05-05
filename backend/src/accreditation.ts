@@ -58,6 +58,18 @@ export async function getAccreditedSet(usernames: string[]): Promise<Set<string>
  * Get the full set of all accredited accounts, cached for 10 minutes.
  * Used by reputation queries to filter votes without re-running the
  * expensive ACTIVE_ACCREDITATIONS_CTE on every call.
+ *
+ * Distinguishes "HAF returned 0 accredited" (legitimate empty population —
+ * cached) from "HAF query failed" (re-thrown so callers can fail loudly
+ * instead of caching an empty set on outage). Per BACKEND-REPUTATION-SSOT
+ * round-1 hold #9: the batch job's outer catch must observe an HAF outage
+ * and bail without advancing cycle:last; otherwise the batch advances over
+ * empty cycles, prev_scores rehydrates from empty state, and voter weights
+ * collapse to 1.0 for subsequent cycles. Throwing also surfaces visibly in
+ * request handlers (loud 500s) instead of silently rendering empty data.
+ *
+ * `pool === null` (dev environment without HAF connected) still returns the
+ * empty set — that is a startup condition, not a transient outage.
  */
 export async function getAllAccreditedAccounts(): Promise<Set<string>> {
   const arr = await hafCache.getOrSet<string[]>('accredited_accounts_all', async () => {
@@ -74,7 +86,7 @@ export async function getAllAccreditedAccounts(): Promise<Set<string>> {
       return result.rows.map((r: { account: string }) => r.account);
     } catch (err) {
       logger.error({ err }, 'HAF full accreditation set query failed');
-      return [];
+      throw err;
     }
   }, 10 * 60_000, true);
   return new Set(arr);

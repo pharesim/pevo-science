@@ -351,6 +351,16 @@ export async function cascadeRevocation(
       };
 
       try {
+        // Invalidate the batch entry BEFORE broadcasting. If the broadcast
+        // times out (chain outcome ambiguous), we'd otherwise leak a stale
+        // positive score for a chain-revoked user (per BACKEND-REPUTATION-SSOT
+        // round-1 hold #7). Cost of an erroneous DEL on broadcast failure is
+        // one cycle of zero score for a still-accredited user, recovered at
+        // the next batch cycle via getAllAccreditedAccounts() reseeding.
+        // Cost of NOT DEL'ing on a successful timeout is a permanent stale
+        // entry until manual cleanup.
+        await invalidateOnRevocation(vouchee);
+
         const txResult = await broadcastJsonWithTimeout(
           {
             id: config.appTag,
@@ -362,7 +372,6 @@ export async function cascadeRevocation(
         );
 
         logger.info({ vouchee, revokedAccount, txId: txResult.id }, 'WoT cascading revocation broadcast');
-        await invalidateOnRevocation(vouchee);
         completed.push(txResult.id);
 
         // Recursively cascade — the revoked vouchee may have vouched for others.

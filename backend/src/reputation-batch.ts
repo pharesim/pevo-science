@@ -16,6 +16,7 @@
  * Cycle N covers blocks [genesis + N * cycle_blocks, genesis + (N+1) * cycle_blocks).
  */
 
+import crypto from 'node:crypto';
 import type Redis from 'ioredis';
 import { getPool, isHafAvailable } from './db.js';
 import { getRedis } from './redis.js';
@@ -23,18 +24,43 @@ import { config } from './config.js';
 import { logger } from './logger.js';
 import {
   BATCH_KEY_PREFIX,
+  batchMapToScoreRecord,
   computeReputationBatch,
+  getBatchReputationMap,
   getReputationWeights,
-  parseBatchValue,
 } from './reputation.js';
+// `BATCH_KEY_PREFIX` is the canonical prod prefix (`${appTag}:reputation:batch:`);
+// the staging prefix is derived from it, so the Lua substring math and the TS
+// constructor cannot drift (BACKEND-REPUTATION-SSOT round-1 hold #24).
 import { getAllAccreditedAccounts } from './accreditation.js';
 import { getCachedGenesisBlock, T } from './hafsql.js';
+import { RELEASE_LOCK_IF_TOKEN_MATCHES_LUA } from './lib/redis-scripts.js';
 
 const DEFAULT_CHECK_INTERVAL_MS = 60 * 60_000; // 1 hour
 const DEFAULT_MAX_DURATION_MS = 30 * 60_000; // 30 minutes
 
 const REDIS_KEY_LAST_CYCLE = `${config.appTag}:reputation:cycle:last`;
-const REDIS_KEY_STAGING_PREFIX = `${config.appTag}:reputation:batch:staging:`;
+const STAGING_SEGMENT = 'staging:';
+const REDIS_KEY_STAGING_PREFIX = `${BATCH_KEY_PREFIX}${STAGING_SEGMENT}`;
+/**
+ * In-progress sentinel: written by the orchestrator immediately before a
+ * cycle's atomic Lua swap and deleted INSIDE the same Lua. If Redis (or the
+ * orchestrator) crashes between the SET and the Lua, this sentinel survives
+ * to the next startup and signals that a prior run crashed mid-swap. The
+ * recovery action is: log a loud operator alert and DEL the sentinel so the
+ * next batch run recomputes from `cycle:last` to current. Per
+ * BACKEND-REPUTATION-SSOT round-1 hold #17.
+ */
+const REDIS_KEY_IN_PROGRESS_PREFIX = `${BATCH_KEY_PREFIX}in_progress:`;
+const REDIS_KEY_BATCH_LOCK = `${config.appTag}:reputation:batch:lock`;
+/**
+ * TTL for the multi-instance batch lock. Matches `DEFAULT_MAX_DURATION_MS`
+ * (30 min) so a process killed mid-cycle releases its claim within the
+ * same window the in-process time cap enforces. A larger TTL would block
+ * the next scheduled run; a smaller TTL would expire while a legitimate
+ * cycle is still running and let a sibling instance start a parallel cycle.
+ */
+const BATCH_LOCK_TTL_SECONDS = Math.floor(DEFAULT_MAX_DURATION_MS / 1000);
 
 let batchTimer: ReturnType<typeof setInterval> | null = null;
 let batchRunning = false;
@@ -44,19 +70,40 @@ let batchRunning = false;
  * single-threaded execution model, so other clients see either the entire
  * new cycle or none of it.
  *
- * KEYS[1..N] = staging key paths
- * ARGV[1]    = new cycle number (string)
- * ARGV[2]    = cycle:last key path
+ * KEYS[1..N-1] = staging key paths
+ * KEYS[N]      = in-progress sentinel key (DEL'd inside the script after the
+ *                cycle:last advance, so a surviving sentinel on the next
+ *                startup proves the crash happened BEFORE the Lua executed)
+ * ARGV[1]      = new cycle number (string)
+ * ARGV[2]      = cycle:last key path
+ * ARGV[3]      = staging substring to strip (e.g. ':batch:staging:')
+ * ARGV[4]      = prod substring to inject (e.g. ':batch:')
+ *
+ * The substring substrings are passed as ARGV instead of hard-coded so the
+ * Lua side and the TS-side constructors share a single source of truth —
+ * both `staging:` swap and any future prefix migration update one place.
  */
 const CYCLE_SWAP_LUA = `
-for i = 1, #KEYS do
+local nKeys = #KEYS
+local stagingCount = nKeys - 1
+local sentinel = KEYS[nKeys]
+for i = 1, stagingCount do
   local staging = KEYS[i]
-  local prod = string.gsub(staging, ':batch:staging:', ':batch:')
+  local prod = string.gsub(staging, ARGV[3], ARGV[4])
   redis.call('RENAME', staging, prod)
 end
 redis.call('SET', ARGV[2], ARGV[1])
-return #KEYS
+redis.call('DEL', sentinel)
+return stagingCount
 `;
+/**
+ * Lua's `string.gsub` first arg is a pattern, where `%` and other characters
+ * are special. Our prefixes have no special pattern chars, but we keep the
+ * derivation explicit so a future change to prefix structure cannot
+ * silently introduce a pattern char.
+ */
+const CYCLE_SWAP_STAGING_SUBSTRING = `:batch:${STAGING_SEGMENT}`;
+const CYCLE_SWAP_PROD_SUBSTRING = ':batch:';
 
 async function getHeadBlock(): Promise<number> {
   const pool = getPool();
@@ -79,7 +126,35 @@ async function clearStagingKeys(redis: Redis): Promise<void> {
 }
 
 /**
+ * Drop any in-progress sentinels left over from a crash mid-swap. Their
+ * presence at startup signals that the prior run set the sentinel but did
+ * not reach the Lua's DEL — the cycle never atomically committed, prod
+ * keys were not RENAMEd, and `cycle:last` was not advanced. Recovery is
+ * the next batch run starting from the same `cycle:last` value. Logged as
+ * an error so operators see the crash; cleanup itself is safe.
+ */
+async function clearInProgressSentinels(redis: Redis): Promise<void> {
+  const stale = await redis.keys(`${REDIS_KEY_IN_PROGRESS_PREFIX}*`);
+  if (stale.length > 0) {
+    await redis.del(...stale);
+    logger.error(
+      { count: stale.length, keys: stale },
+      'Reputation batch crashed mid-swap on prior run — sentinels cleared, recomputing from cycle:last',
+    );
+  }
+}
+
+/**
  * Run batch computation, catching up from the last computed cycle to the current one.
+ *
+ * Multi-instance safety: gates the body on a Redis SET NX EX 1800 lock so two
+ * backend instances cannot run cycles concurrently. The lock token is a
+ * per-call `crypto.randomUUID()` and the release path is a Lua compare-token
+ * DEL — a naive `redis.del(lockKey)` could release a sibling's lock after
+ * this caller's TTL elapsed. The in-process `batchRunning` flag survives as a
+ * fast-path skip for repeated calls in the same process; the Redis lock is
+ * the source of truth for cross-instance safety. Per BACKEND-REPUTATION-SSOT
+ * round-1 hold #10.
  */
 export async function runBatchComputation(maxDurationMs = DEFAULT_MAX_DURATION_MS): Promise<void> {
   if (batchRunning) {
@@ -89,6 +164,8 @@ export async function runBatchComputation(maxDurationMs = DEFAULT_MAX_DURATION_M
 
   batchRunning = true;
   const startTime = Date.now();
+  const redisInit = getRedis();
+  let lockToken: string | null = null;
 
   try {
     if (!isHafAvailable()) {
@@ -96,18 +173,42 @@ export async function runBatchComputation(maxDurationMs = DEFAULT_MAX_DURATION_M
       return;
     }
 
-    const redis = getRedis();
+    const redis = redisInit;
     if (!redis) {
       logger.warn('Redis unavailable, skipping batch reputation computation');
       return;
     }
 
+    // Multi-instance lock. SET NX EX returns 'OK' on acquire, null on
+    // contention. A sibling instance running its own cycle keeps the lock
+    // until its TTL or its compare-token DEL releases it; this caller skips.
+    const token = crypto.randomUUID();
+    const acquired = await redis.set(REDIS_KEY_BATCH_LOCK, token, 'EX', BATCH_LOCK_TTL_SECONDS, 'NX');
+    if (acquired !== 'OK') {
+      logger.info({ key: REDIS_KEY_BATCH_LOCK }, 'Batch reputation lock held by sibling instance, skipping');
+      return;
+    }
+    lockToken = token;
+
     // Crash-recovery: a prior run may have crashed mid-cycle, leaving staging
     // keys behind. They are write-only intermediates, so dropping them is safe.
+    // The in-progress sentinel surfaces the louder failure mode (crash between
+    // sentinel-SET and atomic-Lua) so operators see the event in logs.
     await clearStagingKeys(redis);
+    await clearInProgressSentinels(redis);
 
     const weights = await getReputationWeights();
     const cycleBlocks = weights.cycle_blocks;
+    if (!Number.isFinite(cycleBlocks) || cycleBlocks <= 0) {
+      // Defense-in-depth against a corrupted update_weights custom_json that
+      // sets cycle_blocks to 0 or negative. With cycle_blocks === 0,
+      // Math.floor((head - genesis) / 0) === Infinity and the catch-up loop
+      // iterates forever bounded only by the wall-clock time cap (BACKEND-
+      // REPUTATION-SSOT round-1 hold #26). Bail loudly so an operator can
+      // patch the weights.
+      logger.error({ cycleBlocks }, 'Reputation weights cycle_blocks must be > 0; skipping batch computation');
+      return;
+    }
     const genesisBlock = getCachedGenesisBlock();
     if (genesisBlock === 0) {
       logger.warn('Genesis block not yet discovered, skipping batch reputation computation');
@@ -139,21 +240,15 @@ export async function runBatchComputation(maxDurationMs = DEFAULT_MAX_DURATION_M
     const totalCycles = currentCycle - startCycle + 1;
     logger.info({ startCycle, currentCycle, totalCycles, genesisBlock, cycleBlocks }, 'Batch reputation: computing cycles');
 
-    // Load previous cycle's scores (or empty for bootstrap). Filter out any
-    // staging keys defensively — clearStagingKeys above already DEL'd them,
-    // but the bare `:batch:*` glob would catch them if they reappeared.
+    // Load previous cycle's scores (or empty for bootstrap). The shared
+    // helper does the staging-key filter, MGET, and parseBatchValue dance
+    // exactly once across the codebase — see BACKEND-REPUTATION-SSOT
+    // round-1 hold #11. Forgetting to share this path is how the prior
+    // hand-rolled loop drifted from the reader (parseBatchValue shape,
+    // staging-key filter, prefix construction).
     let prevScores: Record<string, number> = {};
     if (startCycle > 0) {
-      const allKeys = await redis.keys(`${BATCH_KEY_PREFIX}*`);
-      const prodKeys = allKeys.filter((k) => !k.startsWith(REDIS_KEY_STAGING_PREFIX));
-      if (prodKeys.length > 0) {
-        const values = await redis.mget(prodKeys);
-        for (let i = 0; i < prodKeys.length; i++) {
-          const username = prodKeys[i].replace(BATCH_KEY_PREFIX, '');
-          const parsed = parseBatchValue(values[i]);
-          if (parsed) prevScores[username] = parsed.score;
-        }
-      }
+      prevScores = batchMapToScoreRecord(await getBatchReputationMap());
     }
 
     // Process each cycle sequentially
@@ -170,9 +265,18 @@ export async function runBatchComputation(maxDurationMs = DEFAULT_MAX_DURATION_M
       // accredited users have score 0, so there's no point computing them.
       // The "active authors" subset (gates the activity-based voter-weight
       // bonus) is rebuilt independently inside the SQL `active_authors` CTE.
+      //
+      // Per BACKEND-REPUTATION-SSOT round-1 hold #9: getAllAccreditedAccounts
+      // re-throws on HAF query failure, so an empty set here is always a
+      // legitimate "no accredited users yet" state (early bootstrap, dev env
+      // with HAF connected but no attestations). Failures bubble to the outer
+      // catch and bail without advancing cycle:last. Advancing over a
+      // legitimate empty cycle is correct: there is nothing to score, no
+      // votes from accredited users to weight, and the next cycle's
+      // prev_scores remains empty until accreditations land on chain.
       const scoredUsers = await getAllAccreditedAccounts();
       if (scoredUsers.size === 0) {
-        logger.info({ cycle }, 'No accredited users found, skipping cycle');
+        logger.info({ cycle }, 'No accredited users; advancing cycle with no-op');
         await redis.set(REDIS_KEY_LAST_CYCLE, String(cycle));
         continue;
       }
@@ -201,12 +305,21 @@ export async function runBatchComputation(maxDurationMs = DEFAULT_MAX_DURATION_M
       }
       await pipeline.exec();
 
+      // Crash-mid-Lua sentinel: written BEFORE the atomic swap, DEL'd inside
+      // the Lua. A surviving sentinel on the next startup means the swap
+      // never executed (clearInProgressSentinels surfaces the alert).
+      const sentinelKey = `${REDIS_KEY_IN_PROGRESS_PREFIX}${cycle}`;
+      await redis.set(sentinelKey, String(cycle));
+
       await redis.eval(
         CYCLE_SWAP_LUA,
-        stagingKeys.length,
+        stagingKeys.length + 1,
         ...stagingKeys,
+        sentinelKey,
         String(cycle),
         REDIS_KEY_LAST_CYCLE,
+        CYCLE_SWAP_STAGING_SUBSTRING,
+        CYCLE_SWAP_PROD_SUBSTRING,
       );
 
       // Use this cycle's scores as prev scores for the next cycle (score-only
@@ -232,6 +345,20 @@ export async function runBatchComputation(maxDurationMs = DEFAULT_MAX_DURATION_M
   } catch (err) {
     logger.error({ err }, 'Batch reputation computation failed');
   } finally {
+    if (lockToken && redisInit) {
+      try {
+        await redisInit.eval(
+          RELEASE_LOCK_IF_TOKEN_MATCHES_LUA,
+          1,
+          REDIS_KEY_BATCH_LOCK,
+          lockToken,
+        );
+      } catch (releaseErr) {
+        // Lock auto-expires at TTL even if release fails; the next run is
+        // delayed at most BATCH_LOCK_TTL_SECONDS.
+        logger.warn({ err: releaseErr, key: REDIS_KEY_BATCH_LOCK }, 'Batch lock release failed');
+      }
+    }
     batchRunning = false;
   }
 }

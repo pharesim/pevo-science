@@ -30,26 +30,63 @@ export function batchKey(username: string): string {
  * Shared between the batch writer (rehydrating prev-scores at the start of a
  * new run) and the readers in `getBatchReputationMap` / `getReputationScore`,
  * so the two sides cannot drift on shape interpretation.
+ *
+ * Malformed input (JSON.parse throws OR parsed value lacks numeric `score`)
+ * surfaces a rate-limited operator warn so a deploy-flush-skipped state
+ * (e.g., legacy numeric-string keys persisting after the JSON-shape
+ * migration) is visible on the first request, not after user complaint.
+ * Per BACKEND-REPUTATION-SSOT round-1 hold #6.
  */
+const PARSE_WARN_INTERVAL_MS = 60_000;
+const parseWarnState: { count: number; lastLogTime: number; lastSampleRaw: string | null; lastError: unknown } = {
+  count: 0,
+  lastLogTime: 0,
+  lastSampleRaw: null,
+  lastError: null,
+};
+
+function flagMalformedBatchValue(raw: string, err: unknown): void {
+  parseWarnState.count += 1;
+  parseWarnState.lastSampleRaw = raw.length > 200 ? `${raw.slice(0, 200)}…` : raw;
+  parseWarnState.lastError = err;
+  const now = Date.now();
+  if (now - parseWarnState.lastLogTime < PARSE_WARN_INTERVAL_MS) return;
+  logger.warn(
+    {
+      event: 'reputation.batch.parse_failed',
+      count: parseWarnState.count,
+      raw_sample: parseWarnState.lastSampleRaw,
+      err: parseWarnState.lastError,
+    },
+    'Reputation batch value malformed; reader returning ZERO_SCORE',
+  );
+  parseWarnState.lastLogTime = now;
+  parseWarnState.count = 0;
+}
+
 export function parseBatchValue(raw: string | null | undefined): ReputationScore | null {
   if (raw === null || raw === undefined) return null;
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed === 'object' && typeof parsed.score === 'number') {
-      const b = parsed.breakdown ?? {};
-      return {
-        score: parsed.score,
-        breakdown: {
-          papers: Number(b.papers ?? 0),
-          reviews: Number(b.reviews ?? 0),
-          citations: Number(b.citations ?? 0),
-          accreditation: Number(b.accreditation ?? 0),
-        },
-      };
-    }
-  } catch {
-    // not JSON — fall through
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    flagMalformedBatchValue(raw, err);
+    return null;
   }
+  if (parsed && typeof parsed === 'object' && typeof (parsed as { score?: unknown }).score === 'number') {
+    const obj = parsed as { score: number; breakdown?: Record<string, unknown> };
+    const b = obj.breakdown ?? {};
+    return {
+      score: obj.score,
+      breakdown: {
+        papers: Number(b.papers ?? 0),
+        reviews: Number(b.reviews ?? 0),
+        citations: Number(b.citations ?? 0),
+        accreditation: Number(b.accreditation ?? 0),
+      },
+    };
+  }
+  flagMalformedBatchValue(raw, new TypeError('parsed value lacks numeric score'));
   return null;
 }
 
@@ -81,9 +118,17 @@ function provisionalScore(bonus: number): ReputationScore {
  * Transient errors (Redis-side blips, transient HAF query failures) stay
  * swallowed because the next batch cycle re-derives the score from chain
  * state regardless. Permanent errors are programmer-error class
- * (`TypeError`, `SyntaxError`, `RangeError`) which signal a data-shape
- * regression in `getReputationWeights()` output that the next cycle will
- * NOT self-heal — operator must investigate the upstream weights data.
+ * which signal a data-shape regression in `getReputationWeights()` output
+ * that the next cycle will NOT self-heal — operator must investigate the
+ * upstream weights data.
+ *
+ * Currently only `TypeError` is reachable from the seed try-block in
+ * production: there is no `JSON.parse` on input and no array allocation.
+ * `SyntaxError` and `RangeError` are pre-wired anticipatorily (round-1
+ * hold #27 — tests synthesize them via mocks and the discrimination
+ * surface is the canonical "permanent programmer-error class" set so the
+ * BACKEND-CASCADE-FNS-RETHROW-PERMANENT-ERRORS convention can grow
+ * without the next cascade-fn author re-deriving the membership question).
  */
 function isPermanentSeedError(err: unknown): boolean {
   return err instanceof TypeError
@@ -148,6 +193,7 @@ export async function backfillAccreditationSeeds(): Promise<void> {
       getReputationWeights(),
     ]);
     if (accredited.size === 0) return;
+    logger.info({ count: accredited.size }, 'Accreditation seed backfill starting');
     const value = JSON.stringify(provisionalScore(weights.accreditation_bonus));
     const pipeline = redis.pipeline();
     for (const username of accredited) {
@@ -766,7 +812,8 @@ export async function computeReputationBatch(
         ROUND(reviews::numeric, 1) AS reviews,
         ROUND(citations::numeric, 1) AS citations,
         accreditation::numeric AS accreditation
-      FROM totals`,
+      FROM totals
+      ORDER BY username`,
       [
         usernames,                        // $1
         accreditedArr,                    // $2

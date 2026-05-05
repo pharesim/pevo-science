@@ -270,8 +270,12 @@ router.get('/:username/papers', async (req: Request, res: Response) => {
       getAllAccreditedAccounts(),
     ]);
     for (const row of result.rows) {
-      row.is_accredited = accreditedSet.has(row.author);
-      row.author_reputation = batchScores.get(row.author) ?? 0;
+      const authorAccredited = accreditedSet.has(row.author);
+      row.is_accredited = authorAccredited;
+      // Symmetric chain pre-check: a non-accredited author shows score 0
+      // even if a stale batch entry survives in Redis (per BACKEND-REPUTATION-SSOT
+      // direction-of-truth: chain is SSoT, batch map is a perf cache).
+      row.author_reputation = authorAccredited ? (batchScores.get(row.author) ?? 0) : 0;
       row.accredited_authors = (row.authors || [])
         .filter((a) => a.hive && allAccredited.has(a.hive))
         .map((a) => a.hive!);

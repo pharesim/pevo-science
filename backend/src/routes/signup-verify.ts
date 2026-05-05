@@ -18,6 +18,12 @@ import { handleArgonError, ARGON_HANDLED } from '../lib/argon2-error-handler.js'
 import { requestAbortSignal } from '../lib/request-abort-signal.js';
 import { safeHashEmailForLogs } from '../lib/log-pii.js';
 import { seedAccreditationBonus } from '../reputation.js';
+import {
+  handleBroadcastError,
+  PostBroadcastWriteError,
+  type HandleBroadcastErrorOpts,
+  type PostBroadcastFailedStep,
+} from '../lib/broadcast-error.js';
 
 const router = Router();
 
@@ -294,16 +300,39 @@ router.post('/confirm', confirmLimiter, async (req: Request, res: Response) => {
       ],
     );
 
-    // Broadcast accreditation custom_json
+    // Broadcast accreditation custom_json + seed reputation in a single
+    // discrimination block. Mirrors orcid.ts handleAccredit so a broadcast
+    // failure produces 502 BROADCAST_FAILED / 504 BROADCAST_TIMEOUT, and a
+    // post-broadcast cascade failure (permanent seed error) produces 502
+    // POST_BROADCAST_FAILED with `failed_step:'reputation_seed'`. Without
+    // this, prior code returned 200 + JWT for an account whose chain op
+    // never landed (the "dangling JWT" class — BACKEND-REPUTATION-SSOT
+    // round-1 hold #8).
     if (config.pevoAdminPostingKey) {
-      try {
-        const evidenceHash = crypto
-          .createHash('sha256')
-          .update(`${account.email}:${normalizedUsername}:signup`)
-          .digest('hex');
+      const broadcastErrOpts: HandleBroadcastErrorOpts = {
+        timeoutMsg: 'Broadcasting accreditation timed out',
+        failMsg: 'Failed to broadcast accreditation to Hive',
+        logContext: {
+          email_hash: safeHashEmailForLogs(account.email) ?? undefined,
+          username: normalizedUsername,
+          orcid: account.orcid ?? undefined,
+        },
+        routeLabel: 'signup_verify.confirm',
+        postBroadcastMsgFn: (failedStep: PostBroadcastFailedStep) =>
+          failedStep === 'reputation_seed'
+            ? 'Your account is created and accredited on Hive. Your reputation score will update at the next scheduled cycle.'
+            : `Your account is created and accredited on Hive (step ${failedStep} pending operator reconciliation).`,
+      };
 
-        const adminKey = PrivateKey.fromString(config.pevoAdminPostingKey);
-        await broadcastJsonWithTimeout(
+      const evidenceHash = crypto
+        .createHash('sha256')
+        .update(`${account.email}:${normalizedUsername}:signup`)
+        .digest('hex');
+
+      const adminKey = PrivateKey.fromString(config.pevoAdminPostingKey);
+      let result: Awaited<ReturnType<typeof broadcastJsonWithTimeout>>;
+      try {
+        result = await broadcastJsonWithTimeout(
           {
             id: config.appTag,
             json: JSON.stringify({
@@ -322,17 +351,26 @@ router.post('/confirm', confirmLimiter, async (req: Request, res: Response) => {
           },
           adminKey,
         );
+      } catch (err) {
+        handleBroadcastError(res, err, broadcastErrOpts);
+        return;
+      }
+
+      // Post-broadcast cascade. Chain op confirmed; any throw here is a
+      // downstream failure, not an ambiguous-outcome class. Discriminate
+      // via PostBroadcastWriteError so the catch emits 502
+      // POST_BROADCAST_FAILED with `outcome:'confirmed'` + `tx_id` +
+      // `failed_step` instead of 504 / 502 BROADCAST_FAILED.
+      const currentStep: PostBroadcastFailedStep = 'reputation_seed';
+      try {
         await seedAccreditationBonus(normalizedUsername);
-      } catch (accErr) {
-        logger.error(
-          {
-            err: accErr,
-            email_hash: safeHashEmailForLogs(account.email),
-            username: normalizedUsername,
-            orcid: account.orcid ?? null,
-          },
-          'Failed to broadcast accreditation — account created but not accredited',
+      } catch (postErr) {
+        handleBroadcastError(
+          res,
+          new PostBroadcastWriteError(result.id, postErr, currentStep),
+          broadcastErrOpts,
         );
+        return;
       }
     }
 
@@ -424,16 +462,36 @@ router.post('/link', linkLimiter, verifyHiveSignature, async (req: Request, res:
       [hiveUsername, now, account.id],
     );
 
-    // Broadcast accreditation custom_json
+    // Broadcast accreditation custom_json + seed reputation in a single
+    // discrimination block. See /confirm above for full rationale
+    // (BACKEND-REPUTATION-SSOT round-1 hold #8). Mirrors the orcid.ts
+    // handleLink pattern: broadcast failure → 502/504; post-broadcast
+    // permanent seed failure → 502 POST_BROADCAST_FAILED.
     if (config.pevoAdminPostingKey) {
-      try {
-        const evidenceHash = crypto
-          .createHash('sha256')
-          .update(`${account.email}:${hiveUsername}:link`)
-          .digest('hex');
+      const broadcastErrOpts: HandleBroadcastErrorOpts = {
+        timeoutMsg: 'Broadcasting accreditation timed out',
+        failMsg: 'Failed to broadcast accreditation to Hive',
+        logContext: {
+          email_hash: safeHashEmailForLogs(account.email) ?? undefined,
+          username: hiveUsername,
+          orcid: account.orcid ?? undefined,
+        },
+        routeLabel: 'signup_verify.link',
+        postBroadcastMsgFn: (failedStep: PostBroadcastFailedStep) =>
+          failedStep === 'reputation_seed'
+            ? 'Your Hive account is linked and accredited on Hive. Your reputation score will update at the next scheduled cycle.'
+            : `Your Hive account is linked and accredited on Hive (step ${failedStep} pending operator reconciliation).`,
+      };
 
-        const adminKey = PrivateKey.fromString(config.pevoAdminPostingKey);
-        await broadcastJsonWithTimeout(
+      const evidenceHash = crypto
+        .createHash('sha256')
+        .update(`${account.email}:${hiveUsername}:link`)
+        .digest('hex');
+
+      const adminKey = PrivateKey.fromString(config.pevoAdminPostingKey);
+      let result: Awaited<ReturnType<typeof broadcastJsonWithTimeout>>;
+      try {
+        result = await broadcastJsonWithTimeout(
           {
             id: config.appTag,
             json: JSON.stringify({
@@ -452,17 +510,21 @@ router.post('/link', linkLimiter, verifyHiveSignature, async (req: Request, res:
           },
           adminKey,
         );
+      } catch (err) {
+        handleBroadcastError(res, err, broadcastErrOpts);
+        return;
+      }
+
+      const currentStep: PostBroadcastFailedStep = 'reputation_seed';
+      try {
         await seedAccreditationBonus(hiveUsername);
-      } catch (accErr) {
-        logger.error(
-          {
-            err: accErr,
-            email_hash: safeHashEmailForLogs(account.email),
-            username: hiveUsername,
-            orcid: account.orcid ?? null,
-          },
-          'Failed to broadcast accreditation for linked account',
+      } catch (postErr) {
+        handleBroadcastError(
+          res,
+          new PostBroadcastWriteError(result.id, postErr, currentStep),
+          broadcastErrOpts,
         );
+        return;
       }
     }
 

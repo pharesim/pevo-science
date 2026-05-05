@@ -37,3 +37,23 @@ if count == 1 then
 end
 return count
 ` as const;
+
+/**
+ * Compare-token DEL for distributed locks.
+ *
+ * KEYS[1] = lock key path
+ * ARGV[1] = token the caller wrote at SET-NX time
+ *
+ * Returns 1 if the lock was held by the caller and was released; 0 if the
+ * lock had already expired (different token, or absent). Required for
+ * multi-instance safety — a naive `redis.del(lockKey)` from inside the
+ * caller's `finally` would happily release a lock another instance acquired
+ * after this caller's TTL elapsed.
+ */
+export const RELEASE_LOCK_IF_TOKEN_MATCHES_LUA = `
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return redis.call('DEL', KEYS[1])
+else
+  return 0
+end
+` as const;

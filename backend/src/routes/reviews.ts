@@ -81,10 +81,14 @@ async function enrichReviewDetail(review: Record<string, unknown>): Promise<Reco
     getAccreditedSet([reviewAuthor]),
     getReputationScore(reviewAuthor),
   ]);
+  // Symmetric chain pre-check: non-accredited reviewer shows score 0 even if
+  // a stale batch entry survives in Redis (per BACKEND-REPUTATION-SSOT
+  // direction-of-truth: chain is SSoT, batch map is a perf cache).
+  const isAccredited = accreditedSet.has(reviewAuthor);
   return {
     ...review,
-    is_accredited: accreditedSet.has(reviewAuthor),
-    reviewer_reputation: reputation.score,
+    is_accredited: isAccredited,
+    reviewer_reputation: isAccredited ? reputation.score : 0,
   };
 }
 

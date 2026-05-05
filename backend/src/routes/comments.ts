@@ -149,17 +149,23 @@ async function fetchCommentsFromHaf(
       getReputationScores(authors),
     ]);
 
-    const rows = dataResult.rows.map((r: Record<string, unknown>) => ({
-      author: r.author,
-      permlink: r.permlink,
-      body: r.body,
-      created: r.created,
-      net_votes: r.accredited_votes as number,
-      is_accredited: accreditedSet.has(r.author as string),
-      author_reputation: reputationMap.get(r.author as string) ?? 0,
-      parent_author: r.parent_author,
-      parent_permlink: r.parent_permlink,
-    }));
+    const rows = dataResult.rows.map((r: Record<string, unknown>) => {
+      const authorAccredited = accreditedSet.has(r.author as string);
+      return {
+        author: r.author,
+        permlink: r.permlink,
+        body: r.body,
+        created: r.created,
+        net_votes: r.accredited_votes as number,
+        is_accredited: authorAccredited,
+        // Symmetric chain pre-check: non-accredited commenter shows score 0
+        // even if a stale batch entry survives in Redis (per BACKEND-REPUTATION-SSOT
+        // direction-of-truth: chain is SSoT, batch map is a perf cache).
+        author_reputation: authorAccredited ? (reputationMap.get(r.author as string) ?? 0) : 0,
+        parent_author: r.parent_author,
+        parent_permlink: r.parent_permlink,
+      };
+    });
 
     return { rows, total };
   } catch (err) {

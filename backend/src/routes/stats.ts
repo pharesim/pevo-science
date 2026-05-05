@@ -6,6 +6,7 @@ import { hafCache } from '../cache.js';
 import { logger } from '../logger.js';
 import { T, activeAccreditationsCte, validPevoPaperWhere } from '../hafsql.js';
 import { getBatchReputationMap } from '../reputation.js';
+import { getAllAccreditedAccounts } from '../accreditation.js';
 
 const router = Router();
 
@@ -78,13 +79,21 @@ export async function fetchStatsFromHaf() {
 
     // Find highest reputation from Redis batch scores. The map values are
     // ReputationScore objects ({score, breakdown}); compare on `.score`.
-    // Leave highest_reputation_user null when nobody has a strictly positive
-    // score — the frontend hides the card on a falsy value, which is the
-    // correct rendering for the "fresh Redis, no cycle yet" state.
+    // Symmetric chain pre-check with /api/profile/:username — gate on
+    // currently-accredited set so a stale prod entry for a chain-revoked user
+    // (per BACKEND-REPUTATION-SSOT direction-of-truth: chain is SSoT, batch
+    // map is a perf cache) cannot surface as `highest_reputation_user`.
+    // Leave the field null when nobody has a strictly positive score — the
+    // frontend hides the card on a falsy value, which is the correct
+    // rendering for the "fresh Redis, no cycle yet" state.
     let highest_reputation_user: string | null = null;
     let highest_reputation_score = 0;
-    const repMap = await getBatchReputationMap();
+    const [repMap, accredited] = await Promise.all([
+      getBatchReputationMap(),
+      getAllAccreditedAccounts(),
+    ]);
     for (const [username, rep] of repMap) {
+      if (!accredited.has(username)) continue;
       if (rep.score > highest_reputation_score) {
         highest_reputation_score = rep.score;
         highest_reputation_user = username;

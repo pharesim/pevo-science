@@ -400,8 +400,13 @@ async function fetchPapersFromHaf(
         review_count: (r.review_count as number) ?? 0,
         avg_rating: (r.avg_rating as number) ?? 0,
         citation_count: (r.citation_count as number) ?? 0,
-        author_reputation: batchScores.get(r.author as string) ?? 0,
+        // Symmetric chain pre-check: non-accredited author shows score 0
+        // even if a stale batch entry survives in Redis (per BACKEND-REPUTATION-SSOT
+        // direction-of-truth: chain is SSoT, batch map is a perf cache).
         is_accredited: accreditedSet.has(r.author as string),
+        author_reputation: accreditedSet.has(r.author as string)
+          ? (batchScores.get(r.author as string) ?? 0)
+          : 0,
         accredited_authors: pevoAuthors
           .filter(a => a.hive && allAccredited.has(a.hive))
           .map(a => a.hive!),
