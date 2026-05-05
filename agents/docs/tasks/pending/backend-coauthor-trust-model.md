@@ -325,14 +325,18 @@ These are spec-only inconsistencies that emerged when implementing the canonical
 
 3. **ARCH.md / convention-doc — same-block tie-break primitive.** ARCH.md "Author Accept" line: "Same-block ties are broken by `trx_in_block` (highest wins)." The convention doc rule 2 references `(block_num, trx_in_block)` ordering. The HAF view `hafsql.operation_custom_json_view` does NOT expose `trx_in_block` (the underlying tables `hafd.operations` / `hafsql.haf_operations` do, but not the projection PEvO queries). The view's `id` column is the HAF op id (a bigint encoding block_num + trx_in_block + op_in_trx; confirmed via `pg_get_viewdef`). Round 1 uses `id` as the same-block tie-breaker, which is operationally equivalent. Please update either ARCH.md to reference `id` for `operation_custom_json_view` queries, OR the convention doc to acknowledge that `id` is the canonical tie-break primitive when querying flat op-views.
 
-### Ready for Round 2
+### Ready for Round 2 — but coordinate with the cumulative-union redesign first
 
-Round 2 (`resolveContinuationChain` integration + cache invalidation) layers directly on top of Round 1's `getVouchedAuthors(...)` call. The integration site is `backend/src/routes/papers.ts` lines ~632 and ~834 where `extractAuthorizedContinuationAuthors` is called against the head and root metadata. Round 2 will:
+Round 2 (`resolveContinuationChain` integration + cache invalidation) layers directly on top of Round 1's `getVouchedAuthors(...)` call. The integration site is `backend/src/routes/papers.ts` lines ~632 and ~834 where `extractAuthorizedContinuationAuthors` is called against the head and root metadata. Round 2 plan:
 
-1. Compute the chain-walk historical claimed-set (union of `pevo.authors[].hive` across all admitted operations on the chain, plus per-author first-claim blockNum).
+1. Use the chain-walk historical claimed-set (union of `pevo.authors[].hive` across all admitted operations on the chain, plus per-author first-claim blockNum).
 2. Call `getVouchedAuthors(rootAuthor, rootPermlink, claimedAuthors, firstClaimBlockByAuthor)`.
 3. Intersect against the candidate continuator's identity to gate admission.
 4. Wire cache invalidation: `paper-detail:{author}:{permlink}` and `paper-detail:{author}:{permlink}:v{N}` invalidate on every consent op observed by the block-watcher / cache hooks.
+
+**Round 2 dependency: `backend-multi-author-cumulative-union.md` should land first.** That task (currently in `tasks/blocked/`, gated on ε's round-4 archive of `backend-continuation-post-author-consent-gate.md`) replaces the round-3 no-shrink rule with a cumulative-union construction at `papers.ts:626-690` — the same code surface Round 2 integrates with. The cumulative-union task is also what produces the chain-walk historical claimed-set + per-author first-claim block data that Round 2 feeds into `getVouchedAuthors`. Round 2 layered on top of cumulative-union is straightforward (one call site, well-defined inputs); Round 2 layered on top of the round-3 no-shrink shape would require Round 2 to also reimplement chain-walk-historical-union semantics, which is exactly what cumulative-union was filed to consolidate. Wait for the architect to move cumulative-union back to `pending/` and a backend instance to land it, then pick up Round 2.
+
+If the cumulative-union task remains blocked for an extended period (e.g., ε's round-4 stalls), an alternative is to begin Round 3 (custody endpoint extension + fresh-auth gate) since it's file-disjoint from `papers.ts` and depends only on Round 1 types. Round 3 ships the broadcast surface for `author_accept` / `author_resign`, which can land independently of when Round 2 wires the read gate.
 
 The Round 1 fetcher is HAF-only (no Hive API fallback). Round 2 should consider whether to add a fallback path or accept HAF-required for the consent-flow gate. Per CLAUDE.md "Data Source Policy" the existing fallback is HAF → Hive API; for consent ops, querying Hive API for arbitrary custom_json history is impractical, so HAF-required is the likely answer.
 
