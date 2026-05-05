@@ -1,3 +1,27 @@
+## BE-VERIFY-BROADCAST-ATTEMPTS-CAP (archived 2026-05-06) — round-4 clean ✓ + 9 in-place cleanups + 1 backend follow-up + 3 contract-doc additions
+
+P1 reliability task: bound the broadcast-retry amplification on `/api/accreditation/verify` 504. 4 rounds across ~9 days. Round-1 landed the per-token Redis-counter cap with atomic Lua INCR + first-write EXPIRE; round-2 added a distinct error code `BROADCAST_ATTEMPT_LIMIT_EXCEEDED`, decrement-on-timeout, env-var cap (`VERIFY_BROADCAST_ATTEMPTS_CAP`), concurrent-retry test, structured event field, and tightened the Lua to a single round-trip. Round-3 hardened: token redaction in operator logs (`hashTokenForLogs`, sha256 → 12 hex chars), soft-block on cap-exceeded (do NOT delete token; the legitimate user can wait out the cap-counter TTL rather than burning a `/request` slot), loud Redis-required throws across all 7 cap specs, `__test_seams` export pattern (mirroring the `routes/orcid.ts` precedent), Reliability-R2 disclosure (in-memory fallback when Redis flaps mid-request, with a structured `accred_verify_broadcast_decrement_redis_unavailable` warn for operator visibility), and pre-INCR 503 envelope discipline (`{retriable:true}` on Redis failure before broadcast).
+
+Round-4 added: wrapped pre-INCR 503 try/catch test coverage; Reliability-R2 production fix as a symmetric `accred_verify_broadcast_increment_redis_unavailable` warn so operators see BOTH increment and decrement signals during a flap window; `as const` on `__test_seams` exports in BOTH `accreditation.ts` AND the precedent `orcid.ts` (mutation-locks the seam shape against test-time accidental rewrites); Lua constant rename `INCR_AND_EXPIRE_IF_FIRST_LUA` → `INCR_AND_EXPIRE_ON_ZERO_TO_ONE_LUA` (the new name reflects the actual `count==0 → count==1` invariant rather than the corrected-away "first-write only" framing); `hashTokenForLogs` parity unit specs (deterministic, no-collision, lowercase-hex shape, no normalization, no substring leak); `token_hash` in cap-exceeded warn payload for operator-correlation handle without raw-token exposure.
+
+**Architect round-4 review** invoked `/ce-code-review` on commit `bed4f1f` with 10 personas (`ce-agent-native-reviewer` skipped per project CLAUDE.md). The 10 round-4 hold items mechanically applied; substantive Reliability-R2 production fix verified sound.
+
+The headline P1 question (whether the deferred pino-redact task's plan would actually flip δ's "intentional fail-red" tests to green when it lands) was investigated and dissolved: the deferred task `backend-bridge-key-startup-validation-and-pino-redact.md` already has a re-open block (2026-05-04) acknowledging that wave-1's pino `serializers.err` fires AT WRITE TIME and the spy intercepts BEFORE pino. The wave-2 plan is a `logger` wrapper layer that runs `redactErrSerializer` BEFORE delegating to pino, which makes `vi.spyOn(logger, 'warn').mock.calls` see scrubbed args. The fail-red strategy is structurally sound for that wave-2 plan.
+
+8 P2/P3 in-place cleanups landed at archive (architect cleanup commit, `[skip-zone-audit]` for backend zone): F2 + F3 + F11 stripped task-coupled comment prefixes that round-4 expanded rather than scrubbed (`__test_seams` block, Reliability-R2 production warn, `hashTokenForLogs` describe block); F6 + F7 + F8 fixed test docstring drift across 3 specs (round-4 hold #3b name + comment, round-3 hold #5 prefix-claim, round-4 hold #3c short-circuit-vs-falls-through); F9 strengthened a `toHaveBeenCalled()` to `toHaveBeenCalledTimes(1)` per the inline comment claim; F12 reflowed a line-break artifact in the cap-scope WHY comment. F15 fixed a missing trailing colon on the round-4 backend signal-block header per `agents/backend/CLAUDE.md`'s prescribed form.
+
+1 backend follow-up filed: `backend-decrerr-narrowing-symmetric.md` for the pre-existing `decrErr` outer-catch `unknown` narrowing asymmetry that became visible alongside item 8b's `incrErr` narrowing in the same file.
+
+3 reviewer findings dismissed: F10 (`memoryBroadcastAttempts` test cleanup discipline — fix would widen test-only seam for zero functional benefit; module-private map + random tokens + vitest module reload between files = no practical impact), F13 (12-hex hash birthday-bound at 2^24 — already documented in the helper docstring with widen-when-needed guidance; premature for beta scale), F14 (cap-exceeded `attemptId` operator-correlation enhancement — `token_hash` already gives per-token correlation; per-request granularity is nice-to-have, not a defect; would require helper signature changes for full surface).
+
+3 architect-owned contract-doc updates landed at archive: `BROADCAST_ATTEMPT_LIMIT_EXCEEDED` (502) row added to `agents/docs/api-contracts/accreditation.md` with explicit token-persists-on-soft-block + don't-burn-/request-slot guidance for SPA consumers; `SERVICE_UNAVAILABLE` (503) row added for the pre-INCR Redis-unavailable case; `agents/docs/api-contracts/common.md` third-bucket note extended to acknowledge that `details.retriable: true` may appear on non-argon2 503 envelopes (cross-endpoint convention: opaque retry hint independent of `details.reason`).
+
+**Cross-references:** `agents/docs/solutions/conventions/chain-write-timeout-ambiguous-outcome-2026-04-22.md` Option A.2 (504 envelope used unchanged) + Option A.4 (idempotency_key durable structural fix deferred to `backend-broadcast-idempotency-cluster-followup.md`); `agents/docs/solutions/conventions/test-seams-export-shape-as-const-2026-05-04.md` (`__test_seams` shape lock — round-4 of this task is the canonical application); `agents/docs/solutions/conventions/test-mock-carve-out-clause-c-2026-05-04.md` (mock-target scope authority used to dispatch test scaffolding decisions). The `backend-bridge-key-startup-validation-and-pino-redact.md` task in `tasks/review/` carries the wave-2 work that flips δ's intentional fail-reds green; architect re-verifies the test transition at archive of that task per its TODO #2.
+
+Full history in git: commits `f194a80` (queue + admin reset endpoint, BE-VERIFY-CAP-REDIS-FLAP-RECOVERY landing in parallel), `bed4f1f` (round-4 hold-fix landing), and the round-1/2/3 chain back through `19365d4` and earlier.
+
+---
+
 ## BACKEND-SIGNUP-SMTP-STATUS-CODE-ORACLE (archived 2026-05-05) — accepted as residual ✓
 
 P3 task — close the residual `/signup` 4-bin status-code differential under SMTP outage (409 duplicate / 500 sendMail throw / 200 success / 422 unaccredited domain). Filed 2026-05-04 as `[BLOCKED by Architect]` requiring two decisions: (1) close vs accept-as-residual; (2) if close, account-row semantics on sendMail throw (Shape A keep row + 200, B keep row + bg retry, C rollback + 200).
@@ -212,34 +236,4 @@ Convention doc: `route-level-error-class-coverage-after-helper-extraction-2026-0
 UI side of cross-stack password-policy harmonization. Adds a `Keep in sync with backend/src/lib/password-policy.ts` pointer comment to `frontend/src/password-policy.js`, citing the backend CI drift-check test as the gate. Lands alongside the backend half (`backend-password-policy-harmonize`, currently held in pending/ on round-1 for two test-coverage hardening items). UI half passed `/ce-code-review` (6 personas: correctness, testing, maintainability, project-standards, agent-native, learnings) with zero findings on the comment-only diff. Implementer commit: `0b73a53`.
 
 The pair (BE drift-check test + FE pointer comment) implements the agreed cross-stack harmonization shape: two independent helper implementations, one CI gate that loads both and asserts behavioral agreement on a labelled test-vector grid, plus reciprocal pointer comments so a future unilateral edit has a visible nudge to update the other side. The drift-check test (`backend/tests/lib/password-policy-drift.test.ts`) is the audit surface; the pointer comments are the editor-visible nudges.
-
----
-
-## BACKEND-ORCID-BROADCAST-TIMEOUT-OUTCOME-HANDLING (archived 2026-04-29) — round-4 clean ✓
-
-Architect decision Option A.2 (504 + retriable:false + verify_before_retry envelope) for ORCID-binding broadcast paths whose 30s timer fires while outcome is genuinely uncertain. Closes the ambiguous-outcome window the prior round-3 sweep left open: when chain-write timer fires, the broadcast may or may not have landed; client must verify before retry to avoid duplicate-bind.
-
-Implementation landed in commit `0a5c890` (round-2 hold-fix) and `a0f121d` (round-3 hold-fix) on `backend/src/lib/broadcast-error.ts` and `backend/src/routes/orcid.ts`. Round-3 added a mutation-kill spec for the lockState='unavailable' non-timeout broadcast error path (rejects broadcastJsonMock with non-timeout `Error('synthetic ...')`, asserts 504 ambiguous-outcome envelope with no `details.timeout_ms`, `/uncertain/i` message, ambiguous-outcome operator-alert log suffix, all via the existing `describe.each([accredit, link])` matrix). Item #2 added `errorSpy` named-local capture in `tests/lib/broadcast-error.test.ts` to pin the operator-alert log suffix at unit-layer. Item #3 swapped `MockBroadcastTimeoutError` cause to a generic `Error('synthetic db cascade failure')` in the post-broadcast seam test for semantic clarity.
-
-Architect-applied in-place fixes during round-3: 4th log-suffix added to docblock (`PostBroadcastWriteError` discrimination path), stale "forceAmbiguousOutcome above" comment replaced, `HandleBroadcastErrorAmbiguousOpts` re-derived via `Extract<>`-narrowed type for mechanical sync with `AmbiguousOutcomeFields`, convention-doc round-2 example block rewritten to reflect the discriminated-union shape.
-
-Round-4 review (all 6 commits since round-3 architect review): correctness + testing + adversarial all confirm mutation-kill rigor lands. P3 polish items (hardcoded line numbers in test comments, redundant `not.toHaveProperty` after exact-match `toEqual`, integration-layer log-filter substring vs unit-layer exact match) all dismissed as below action threshold.
-
-Convention docs: `agents/docs/solutions/conventions/chain-write-timeout-ambiguous-outcome-2026-04-22.md`, `inner-catch-shadows-outer-catch-in-route-tests-2026-04-28.md`, `correlated-options-discriminated-union-2026-04-28.md`, `tests-must-fail-on-mutation-of-code-under-test-2026-04-22.md` all directly govern the work.
-
-Full history: see commits `0a5c890`, `df264d7`, `27befcf`, `0d0c156`, `d8b9b75`, `a0f121d` and the task file body via `git show HEAD~N:agents/docs/tasks/review/backend-orcid-broadcast-timeout-outcome-handling.md`.
-
----
-
-## BACKEND-ORCID-ACQUIRED-BRANCH-THROW-GUARD (archived 2026-04-29) — round-2 clean ✓
-
-Filed by architect during BE-ORCID-BROADCAST-TIMEOUT-OUTCOME-HANDLING round-2 re-review (finding #2). The lock-acquired branch of `withOrcidBindingLock` previously had no outer try/catch — sync throws (e.g. `PrivateKey.fromString` on malformed admin key) escaped to the outer `/callback` catch and emitted 500 INTERNAL_ERROR with state token consumed (a hard-block class). Implementation in commit `0d0c156` added the symmetric outer try/catch routing through `handleBroadcastErrorAmbiguous`, producing the 504 ambiguous-outcome envelope. The post-broadcast cascade (`updateAccountOrcid`) is the live integration coverage; pre-broadcast SYNC throws on the acquired branch were filed separately as `backend-pevo-admin-key-startup-validation.md` (a startup-time validation guard makes the production trigger unreachable).
-
-Round-1 architect review held one P3 item (matcher tightening from `toBeGreaterThanOrEqual(1)` to `toBe(1)` at `tests/routes/orcid.test.ts:1340` and `:1441` for the operator-alert log assertions). Round-2 hold-fix in commit `acae57e` landed exactly the 2-line tightening. Mutation-kill verified: a regression that double-emits the operator-alert log (e.g. a misplaced retry that re-throws from the catch block) now flips green-to-red, matching the stated intent in the surrounding spec comments. Lines 2008/2132 (unavailable branch + state-replay scope) deliberately left at `>=1` per architect scope.
-
-Architect-applied in-place fixes during round-1: JSDoc 'acquired' bullet rewrite, NB comment update post-`d8b9b75` discrimination, convention-doc symmetric-branch paragraph addition, `agents/docs/api-contracts/orcid.md` 504 BROADCAST_TIMEOUT entry rewritten to enumerate three trigger paths with `details.timeout_ms` presence rule, `agents/docs/api-contracts/common.md` POST_BROADCAST_FAILED row added.
-
-Full history: see commits `0d0c156`, `acae57e`, `53da6c9` and the task file body via git.
-
----
 

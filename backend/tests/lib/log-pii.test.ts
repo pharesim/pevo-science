@@ -47,11 +47,11 @@ describe('hashEmailForLogs', () => {
   });
 });
 
-// Round-4 hold #10: hashTokenForLogs parity coverage. The accreditation /verify
-// route emits `token_hash` in operator-log paths (decrement-failure warn,
-// cleanup-failure error, cap-exceeded warn) using this helper. Without these
-// specs, a regression that changes the truncation length, swaps the algorithm,
-// or drops normalization would silently shift the on-disk hash shape and break
+// `hashTokenForLogs` parity coverage. The accreditation /verify route emits
+// `token_hash` in operator-log paths (decrement-failure warn, cleanup-failure
+// error, cap-exceeded warn) using this helper. Without these specs, a
+// regression that changes the truncation length, swaps the algorithm, or
+// drops normalization would silently shift the on-disk hash shape and break
 // operator dashboards that grep for `token_hash` against a stable prefix.
 describe('hashTokenForLogs', () => {
   it('is deterministic — same input yields same output', () => {

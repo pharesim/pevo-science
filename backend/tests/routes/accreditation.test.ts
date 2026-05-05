@@ -765,15 +765,17 @@ describe('POST /api/accreditation/verify — BE-VERIFY-BROADCAST-ATTEMPTS-CAP', 
   it('round-3 hold #5: decrement-failure log path fires the structured warn discriminator on a 504 + redis.decr rejection without writing headers twice; no raw token leak', async () => {
     const redis = getRedis();
     if (!redis) throw new Error('Redis required for cap specs');
-    // Round-4 hold #7c: 64-hex token (matches production
-    // `crypto.randomBytes(32).toString('hex')` shape) so the negative-regex
-    // `not.toMatch(/[0-9a-f]{64}/)` assertion below is load-bearing.
+    // 64-hex token (matches production `crypto.randomBytes(32).toString('hex')`
+    // shape) so the negative-regex `not.toMatch(/[0-9a-f]{64}/)` assertion
+    // below is load-bearing — a 16-hex stub token would coincidentally never
+    // match the 64-hex pattern and the assertion would pass by construction.
     const token = crypto.randomBytes(32).toString('hex');
     const counterKey = `${config.appTag}:pending_accred_broadcast_attempts:${token}`;
-    // Seed pending under the existing accred-timeout-* prefix so afterEach
-    // cleanup picks it up. The seeder writes to the pending_accred:<token>
-    // key (not to the broadcast-attempts counter), so the counter key is
-    // separate and gets cleaned up at the bottom of the spec.
+    // Seed the pending row directly via the helper (writes to the
+    // `pending_accred:<token>` key). The describe block's afterEach matches
+    // `*accred-cap-*` keys for cleanup and does NOT pick up this token shape;
+    // the pending row and the broadcast-attempts counter are explicitly
+    // deleted in the spec's finally block at the bottom.
     await seedPendingAccreditation(token);
     const ip = `10.7.${crypto.randomInt(0, 255)}.${crypto.randomInt(1, 254)}`;
 
@@ -923,7 +925,7 @@ describe('POST /api/accreditation/verify — BE-VERIFY-BROADCAST-ATTEMPTS-CAP', 
       // site, mirroring the cap-exceeded short-circuit shape.
       expect(broadcastJsonMock).not.toHaveBeenCalled();
       // Pre-INCR was attempted exactly once.
-      expect(evalSpy).toHaveBeenCalled();
+      expect(evalSpy).toHaveBeenCalledTimes(1);
       // Structured warn discriminator fires; mutation-sensitive call-shape
       // assertion pins the structured fields a future log-message edit
       // can't silently drop.
@@ -940,14 +942,13 @@ describe('POST /api/accreditation/verify — BE-VERIFY-BROADCAST-ATTEMPTS-CAP', 
     }
   });
 
-  it('round-4 hold #3b: decrementBroadcastAttempts emits Redis-unavailable warn and falls through to in-memory map when isRedisAvailable() returns false mid-request', async () => {
-    // Round-3 hold #10 added a structured warn when Redis was reachable at
-    // INCR time but `isRedisAvailable()` returns false at DECR time. Without
-    // a direct spec, a mutation that drops the warn silently degrades cap
-    // enforcement to the in-memory fallback with no operator signal. This
-    // spec drives the path via __test_seams (the route flow is convoluted
-    // because incrementBroadcastAttempts also short-circuits when Redis is
-    // unavailable; the unit-style call isolates the decrement path).
+  it('round-4 hold #3b: decrementBroadcastAttempts emits Redis-unavailable warn and returns without touching in-memory map or redis.decr when isRedisAvailable() returns false mid-request', async () => {
+    // A structured warn fires when Redis was reachable at INCR time but
+    // `isRedisAvailable()` returns false at DECR time. Without a direct
+    // spec, a mutation that drops the warn silently degrades cap
+    // enforcement with no operator signal. This spec drives the path via
+    // __test_seams: the route flow can't reach this branch deterministically
+    // because the increment path also short-circuits when Redis is unavailable.
     const redis = getRedis();
     if (!redis) throw new Error('Redis required for cap specs');
     const token = `accred-cap-${crypto.randomBytes(8).toString('hex')}`;
@@ -955,11 +956,12 @@ describe('POST /api/accreditation/verify — BE-VERIFY-BROADCAST-ATTEMPTS-CAP', 
     const loggerWarnSpy = vi.spyOn(logger, 'warn');
 
     try {
-      // Pre-seed the in-memory map at 2 so we can assert the in-memory
-      // fallback did NOT run (the Redis-was-configured branch warns and
-      // returns without touching the map).
-      // The map is private to the module — assert the warn fires AND the
-      // flow returned (no throw, no attempt to call redis.decr).
+      // The Redis-configured-but-unavailable branch in
+      // `decrementBroadcastAttempts` emits the warn and RETURNS at that point;
+      // it does NOT touch the in-memory map (asymmetric with the increment
+      // path, which falls through to the map). The `memoryBroadcastAttempts`
+      // map is module-private; the proof that the function returned cleanly
+      // is the absence of any `redis.decr` call combined with the warn fire.
       const decrSpy = vi.spyOn(redis, 'decr');
 
       await accreditationTestSeams.decrementBroadcastAttempts(token);
@@ -993,11 +995,13 @@ describe('POST /api/accreditation/verify — BE-VERIFY-BROADCAST-ATTEMPTS-CAP', 
     // that observability gap.
     //
     // Driven via `__test_seams.incrementBroadcastAttempts` directly: the
-    // route flow's `getToken()` short-circuits on `!isRedisAvailable()`
-    // (returning null → 400 BAD_REQUEST) before the pre-INCR site, so a
-    // unit-style call is the only way to drive the in-memory-fallback
-    // warn path deterministically without monkey-patching the entire
-    // module's view of Redis. Mirrors the round-4 hold #3b decrement spec.
+    // route flow's `getToken()` falls through to the in-memory token map
+    // when `isRedisAvailable()` returns false; the test seed lives only in
+    // Redis, so `getToken()` returns null and the route emits 400 BAD_REQUEST
+    // before reaching the pre-INCR site. A unit-style call against the helper
+    // is the only way to drive the in-memory-fallback warn path
+    // deterministically without monkey-patching the entire module's view
+    // of Redis. Mirrors the round-4 hold #3b decrement spec.
     const redis = getRedis();
     if (!redis) throw new Error('Redis required for cap specs');
     const token = crypto.randomBytes(32).toString('hex');

@@ -86,8 +86,8 @@ async function incrementBroadcastAttempts(pending: PendingAccreditation): Promis
       );
       return Number(result);
     }
-    // Reliability-R2 (round-4 hold): symmetric to the decrement-side
-    // `accred_verify_broadcast_decrement_redis_unavailable` warn — when
+    // Symmetric to the decrement-side
+    // `accred_verify_broadcast_decrement_redis_unavailable` warn: when
     // Redis is configured but unavailable at INCR time, cap enforcement
     // silently falls through to the in-memory map (which has no record of
     // any prior Redis-side counter for this token across instances). Emit
@@ -346,9 +346,9 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
   // `deleteToken` below) drops both the pending row AND the counter
   // side-key, and the catch-block 'failure' branch calls deleteToken on
   // the first 502, the sequential-retry case ends after one definitive
-  // failure and cannot accumulate the counter. The cap engages on the parallel-retry
-  // case — N concurrent /verify calls on the same token claim slots
-  // atomically and at most `cap` broadcasts fire.
+  // failure and cannot accumulate the counter. The cap engages on the
+  // parallel-retry case: N concurrent /verify calls on the same token
+  // claim slots atomically and at most `cap` broadcasts fire.
   //
   // Timeout outcomes decrement the counter on the catch path
   // (decrementBroadcastAttempts) so transient slow-Hive windows do not
@@ -541,16 +541,17 @@ setInterval(() => {
 
 export default router;
 
-// Test-only seam (round-3 hold #13, round-4 hold #3): tests need to drive
-// `decrementBroadcastAttempts` and `incrementBroadcastAttempts` directly:
+// Test-only seam: tests need to drive `decrementBroadcastAttempts` and
+// `incrementBroadcastAttempts` directly:
 //   - decrement: assert the `if (after < 0) DEL` race-recovery branch
 //     (mutation-kill: removing the DEL leaves the counter at -1) and the
-//     Redis-unavailable warn (round-3 hold #10).
-//   - increment: assert the symmetric Redis-unavailable warn
-//     (round-4 hold #3c / Reliability-R2). Routing the route flow has
-//     `getToken()` short-circuit on `!isRedisAvailable()` before the
-//     pre-INCR site, so a unit-style call against the helper is the only
-//     way to drive the in-memory-fallback warn path deterministically.
+//     Redis-unavailable warn.
+//   - increment: assert the symmetric Redis-unavailable warn. The route
+//     flow's `getToken()` falls through to the in-memory token map when
+//     `isRedisAvailable()` returns false; the test seed lives only in
+//     Redis, so the route flow returns 400 BAD_REQUEST before reaching
+//     the pre-INCR site. A unit-style call against the helper is the
+//     only way to drive the in-memory-fallback warn path deterministically.
 // Routing through `__test_seams` gives the specs a stable name to call
 // without making the helpers route-public symbols. NOT for production import.
 export const __test_seams = {
