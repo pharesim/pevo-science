@@ -752,18 +752,24 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
     expect(detail.ipfs_filename).toBe('root.pdf');
   });
 
-  // Round-4 hold item 1: pevoString helper closes three runtime-shape gaps
-  // the round-3 cast-and-coalesce pattern silently let through. The cast
-  // shape `(headPevo.ipfs_cid as string) ?? (rootPevo.ipfs_cid as string) ?? null`
+  // Round-4 hold item 1 + round-5 sentinel-aware atomic triple: pevoString
+  // helper closes three runtime-shape gaps the round-3 cast-and-coalesce
+  // pattern silently let through. The cast shape
+  // `(headPevo.ipfs_cid as string) ?? (rootPevo.ipfs_cid as string) ?? null`
   // is a TS assertion, not a narrowing — runtime values like `''`, `0`, and
-  // `{}` flowed through unchanged, diverging from the `|| null` collapse
-  // pattern used at every other pevo-string read site in papers.ts /
-  // helpers.ts. The three integration canaries below pin the head-fallback-
-  // to-root behavior for each non-string runtime shape.
-  it('falls back to root when head ipfs_cid is an empty string (round-4 pevoString helper)', async () => {
-    // Without the helper: `('' as string) ?? rootCid` evaluates to '' (??
-    // only short-circuits on null/undefined). With the helper: '' collapses
-    // to null and falls back to rootCid, matching the rest of the codebase.
+  // `{}` flowed through unchanged. Under round-5's sentinel-aware atomic
+  // triple, when head expresses any of the triple keys (even with non-string
+  // values), head's view wins for the entire triple — all three fields
+  // collapse to null because pevoString narrows the bad values out. No
+  // fallback to root: per-field Frankenstein composition is rejected
+  // structurally. The three integration canaries below pin all-null
+  // collapse for each non-string runtime shape on head.
+  it('admits head\'s triple as all-null when head sets all three keys to empty strings (round-5 atomic-triple)', async () => {
+    // Under round-5: `'ipfs_cid' in headPevo` is true (key present, even
+    // with empty-string value), so head's triple wins atomically. pevoString
+    // narrows '' → null for each, yielding an all-null triple. Root's
+    // triple is NOT consulted — the per-field fallback that would have
+    // produced root.ipfs_cid is structurally unavailable here.
     const continuationMeta = {
       app: `${config.appTag}/test`,
       [config.appTag]: {
@@ -800,16 +806,16 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
     expect(res.status).toBe(200);
     const detail = res.body?.data;
     expect(detail).toBeDefined();
-    expect(detail.ipfs_cid).toBe('QmRootCid');
-    expect(detail.document_hash).toBe('sha256:root');
-    expect(detail.ipfs_filename).toBe('root.pdf');
+    expect(detail.ipfs_cid).toBe(null);
+    expect(detail.document_hash).toBe(null);
+    expect(detail.ipfs_filename).toBe(null);
   });
 
-  it('falls back to root when head ipfs_cid is a non-string (numeric 0) (round-4 pevoString helper)', async () => {
-    // Without the helper: `(0 as string) ?? rootCid` evaluates to 0 (?? only
-    // short-circuits on null/undefined; the `as string` is a TS assertion,
-    // not a runtime narrowing). With the helper: numeric 0 collapses to
-    // null and falls back to rootCid.
+  it('admits head\'s triple as all-null when head sets all three keys to numeric 0 (round-5 atomic-triple)', async () => {
+    // Under round-5: `'ipfs_cid' in headPevo` is true (key present with
+    // value 0), so head's triple wins atomically. pevoString narrows 0 →
+    // null for each, yielding an all-null triple. Root's triple is NOT
+    // consulted.
     const continuationMeta = {
       app: `${config.appTag}/test`,
       [config.appTag]: {
@@ -846,16 +852,17 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
     expect(res.status).toBe(200);
     const detail = res.body?.data;
     expect(detail).toBeDefined();
-    expect(detail.ipfs_cid).toBe('QmRootCid');
-    expect(detail.document_hash).toBe('sha256:root');
-    expect(detail.ipfs_filename).toBe('root.pdf');
+    expect(detail.ipfs_cid).toBe(null);
+    expect(detail.document_hash).toBe(null);
+    expect(detail.ipfs_filename).toBe(null);
   });
 
-  it('falls back to root when head ipfs_cid is a non-string (object) (round-4 pevoString helper)', async () => {
-    // Without the helper: `({} as string) ?? rootCid` evaluates to `{}`. The
-    // response would carry an object where the API contract promises a string
-    // or null. With the helper: object collapses to null and falls back to
-    // rootCid.
+  it('admits head\'s triple as all-null when head sets all three keys to objects/arrays (round-5 atomic-triple)', async () => {
+    // Under round-5: `'ipfs_cid' in headPevo` is true (key present with
+    // object/array value), so head's triple wins atomically. pevoString
+    // narrows {} / [] → null for each, yielding an all-null triple. The API
+    // contract promises string-or-null and atomic-triple keeps that
+    // promise even under runtime-shape adversarial input.
     const continuationMeta = {
       app: `${config.appTag}/test`,
       [config.appTag]: {
@@ -892,9 +899,218 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
     expect(res.status).toBe(200);
     const detail = res.body?.data;
     expect(detail).toBeDefined();
+    expect(detail.ipfs_cid).toBe(null);
+    expect(detail.document_hash).toBe(null);
+    expect(detail.ipfs_filename).toBe(null);
+  });
+
+  // Round-5 hold items 1+2: sentinel-aware atomic triple. The IPFS triple
+  // is read entirely from head when head expresses any of the three keys
+  // (even with null / non-string values), and entirely from root when head
+  // expresses none of them. Per-field fallback (which produced Frankenstein
+  // composition where the displayed triple never existed on chain in any
+  // single version) is structurally unavailable.
+  it('admits an atomic triple from head when head supplies any one of the three fields as a non-string but at least one is a valid string (round-5 atomic-triple)', async () => {
+    // Head supplies `ipfs_cid: 'QmHeadCid'` (valid) plus pathological values
+    // for the other two. Atomic triple: head wins for the entire triple
+    // (head expressed an opinion via the valid CID); the other two collapse
+    // to null because pevoString narrows 0 / '' → null. Root's PDF is NOT
+    // surfaced — head's view is what the response carries.
+    const continuationMeta = {
+      app: `${config.appTag}/test`,
+      [config.appTag]: {
+        type: 'paper',
+        authors: [{ hive: 'alice' }, { hive: 'bob' }],
+        ipfs_cid: 'QmHeadCid',
+        ipfs_filename: 0,
+        document_hash: '',
+      },
+    };
+    installResponder(async (sql, params) => {
+      if (sql.includes('SELECT c.author, c.json_metadata') && sql.includes('parent_permlink = $3')) {
+        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmRootCid', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' })] };
+      }
+      if (sql.includes('SELECT c.author, c.permlink, c.title')) {
+        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmRootCid', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' })] };
+      }
+      if (isForwardChainWalkSql(sql)) {
+        if (params[0] === 'alice') {
+          return { rows: [{ author: 'bob', permlink: 'v2', block_num: 100, json_metadata: continuationMeta }] };
+        }
+        return { rows: [] };
+      }
+      if (sql.includes('ROW_NUMBER') && sql.includes('co.block_num')) {
+        return { rows: [
+          { version_number: 1, block_num: 1, author: 'alice', permlink: 'p1', title: 't', body: 'abstract\n\n---\n\nbody', created: '2026-01-01T00:00:00.000Z', json_metadata: { app: `${config.appTag}/test`, [config.appTag]: { type: 'paper', authors: [{ hive: 'alice' }, { hive: 'bob' }], ipfs_cid: 'QmRootCid', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' } } },
+          { version_number: 2, block_num: 100, author: 'bob', permlink: 'v2', title: 't2', body: 'abstract2\n\n---\n\nbody2', created: '2026-01-02T00:00:00.000Z', json_metadata: continuationMeta },
+        ] };
+      }
+      return { rows: [] };
+    });
+
+    const res = await request(app).get('/api/papers/alice/p1');
+    expect(res.status).toBe(200);
+    const detail = res.body?.data;
+    expect(detail).toBeDefined();
+    expect(detail.ipfs_cid).toBe('QmHeadCid');
+    expect(detail.ipfs_filename).toBe(null);
+    expect(detail.document_hash).toBe(null);
+  });
+
+  it('rejects asymmetric Frankenstein composition: head supplies two of the three keys, third is missing (round-5 atomic-triple)', async () => {
+    // Head supplies `ipfs_cid: 'QmHeadCid', ipfs_filename: 0` — two keys
+    // present, document_hash key entirely absent. Under per-field fallback
+    // (the round-4 shape this canary would FAIL against), document_hash
+    // would fall through to root's `sha256:root`, producing Frankenstein
+    // composition: head's CID + root's hash. Under round-5's atomic
+    // triple, head's view wins for the entire triple because head
+    // expressed an opinion (two keys present); document_hash collapses
+    // to null because the key is absent → pevoString returns null. The
+    // displayed triple is consistent with what head broadcast.
+    //
+    // This is the kill canary for the "Frankenstein" anti-pattern. Revert
+    // the atomic-triple block to per-field fallback and this test FAILS
+    // with `expect document_hash to be null but received 'sha256:root'`.
+    const continuationMeta = {
+      app: `${config.appTag}/test`,
+      [config.appTag]: {
+        type: 'paper',
+        authors: [{ hive: 'alice' }, { hive: 'bob' }],
+        ipfs_cid: 'QmHeadCid',
+        ipfs_filename: 0,
+        // document_hash intentionally omitted — not present on head
+      },
+    };
+    installResponder(async (sql, params) => {
+      if (sql.includes('SELECT c.author, c.json_metadata') && sql.includes('parent_permlink = $3')) {
+        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmRootCid', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' })] };
+      }
+      if (sql.includes('SELECT c.author, c.permlink, c.title')) {
+        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmRootCid', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' })] };
+      }
+      if (isForwardChainWalkSql(sql)) {
+        if (params[0] === 'alice') {
+          return { rows: [{ author: 'bob', permlink: 'v2', block_num: 100, json_metadata: continuationMeta }] };
+        }
+        return { rows: [] };
+      }
+      if (sql.includes('ROW_NUMBER') && sql.includes('co.block_num')) {
+        return { rows: [
+          { version_number: 1, block_num: 1, author: 'alice', permlink: 'p1', title: 't', body: 'abstract\n\n---\n\nbody', created: '2026-01-01T00:00:00.000Z', json_metadata: { app: `${config.appTag}/test`, [config.appTag]: { type: 'paper', authors: [{ hive: 'alice' }, { hive: 'bob' }], ipfs_cid: 'QmRootCid', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' } } },
+          { version_number: 2, block_num: 100, author: 'bob', permlink: 'v2', title: 't2', body: 'abstract2\n\n---\n\nbody2', created: '2026-01-02T00:00:00.000Z', json_metadata: continuationMeta },
+        ] };
+      }
+      return { rows: [] };
+    });
+
+    const res = await request(app).get('/api/papers/alice/p1');
+    expect(res.status).toBe(200);
+    const detail = res.body?.data;
+    expect(detail).toBeDefined();
+    expect(detail.ipfs_cid).toBe('QmHeadCid');
+    expect(detail.ipfs_filename).toBe(null);
+    expect(detail.document_hash).toBe(null);
+  });
+
+  it('preserves head\'s explicit null ipfs_cid (inline-only continuation, no PDF) (round-5 sentinel-aware)', async () => {
+    // Head expresses an inline-only continuation: ipfs_cid: null is the
+    // explicit "no PDF on this version, body is everything" signal. The
+    // sentinel-aware `'in'` check distinguishes this from "head omitted
+    // the keys" — head DID touch the triple keys (assigning null), so
+    // head's view wins atomically, yielding all-null. Root's CID is NOT
+    // surfaced; the frontend's `is_diffable` toggle correctly reads
+    // ipfs_cid: null and renders inline.
+    //
+    // This is the kill canary for round-3's `??` problem. Revert the
+    // sentinel-aware `'in'` check to `pevoString(headPevo, 'ipfs_cid')
+    // ?? pevoString(rootPevo, 'ipfs_cid')` and this test FAILS with
+    // `expect ipfs_cid to be null but received 'QmRootCid'`.
+    const continuationMeta = {
+      app: `${config.appTag}/test`,
+      [config.appTag]: {
+        type: 'paper',
+        authors: [{ hive: 'alice' }, { hive: 'bob' }],
+        ipfs_cid: null,
+        ipfs_filename: null,
+        document_hash: null,
+      },
+    };
+    installResponder(async (sql, params) => {
+      if (sql.includes('SELECT c.author, c.json_metadata') && sql.includes('parent_permlink = $3')) {
+        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmRootCid', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' })] };
+      }
+      if (sql.includes('SELECT c.author, c.permlink, c.title')) {
+        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmRootCid', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' })] };
+      }
+      if (isForwardChainWalkSql(sql)) {
+        if (params[0] === 'alice') {
+          return { rows: [{ author: 'bob', permlink: 'v2', block_num: 100, json_metadata: continuationMeta }] };
+        }
+        return { rows: [] };
+      }
+      if (sql.includes('ROW_NUMBER') && sql.includes('co.block_num')) {
+        return { rows: [
+          { version_number: 1, block_num: 1, author: 'alice', permlink: 'p1', title: 't', body: 'abstract\n\n---\n\nbody', created: '2026-01-01T00:00:00.000Z', json_metadata: { app: `${config.appTag}/test`, [config.appTag]: { type: 'paper', authors: [{ hive: 'alice' }, { hive: 'bob' }], ipfs_cid: 'QmRootCid', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' } } },
+          { version_number: 2, block_num: 100, author: 'bob', permlink: 'v2', title: 't2', body: 'abstract2\n\n---\n\nbody2', created: '2026-01-02T00:00:00.000Z', json_metadata: continuationMeta },
+        ] };
+      }
+      return { rows: [] };
+    });
+
+    const res = await request(app).get('/api/papers/alice/p1');
+    expect(res.status).toBe(200);
+    const detail = res.body?.data;
+    expect(detail).toBeDefined();
+    expect(detail.ipfs_cid).toBe(null);
+    expect(detail.ipfs_filename).toBe(null);
+    expect(detail.document_hash).toBe(null);
+  });
+
+  it('falls back to root when head omits all triple keys (no opinion expressed) (round-5 sentinel-aware)', async () => {
+    // Head expresses no opinion on the triple — none of the keys are
+    // present in head's pevo metadata. The `'in'` check returns false
+    // for all three, so the entire triple inherits from root. This is
+    // the only path that consults root's triple under the round-5
+    // shape; pin it explicitly so a future refactor doesn't regress
+    // back to per-field fallback.
+    const continuationMeta = {
+      app: `${config.appTag}/test`,
+      [config.appTag]: {
+        type: 'paper',
+        authors: [{ hive: 'alice' }, { hive: 'bob' }],
+        // no ipfs_cid, no ipfs_filename, no document_hash — head expresses
+        // no opinion on the triple, inherits from root.
+      },
+    };
+    installResponder(async (sql, params) => {
+      if (sql.includes('SELECT c.author, c.json_metadata') && sql.includes('parent_permlink = $3')) {
+        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmRootCid', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' })] };
+      }
+      if (sql.includes('SELECT c.author, c.permlink, c.title')) {
+        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmRootCid', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' })] };
+      }
+      if (isForwardChainWalkSql(sql)) {
+        if (params[0] === 'alice') {
+          return { rows: [{ author: 'bob', permlink: 'v2', block_num: 100, json_metadata: continuationMeta }] };
+        }
+        return { rows: [] };
+      }
+      if (sql.includes('ROW_NUMBER') && sql.includes('co.block_num')) {
+        return { rows: [
+          { version_number: 1, block_num: 1, author: 'alice', permlink: 'p1', title: 't', body: 'abstract\n\n---\n\nbody', created: '2026-01-01T00:00:00.000Z', json_metadata: { app: `${config.appTag}/test`, [config.appTag]: { type: 'paper', authors: [{ hive: 'alice' }, { hive: 'bob' }], ipfs_cid: 'QmRootCid', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' } } },
+          { version_number: 2, block_num: 100, author: 'bob', permlink: 'v2', title: 't2', body: 'abstract2\n\n---\n\nbody2', created: '2026-01-02T00:00:00.000Z', json_metadata: continuationMeta },
+        ] };
+      }
+      return { rows: [] };
+    });
+
+    const res = await request(app).get('/api/papers/alice/p1');
+    expect(res.status).toBe(200);
+    const detail = res.body?.data;
+    expect(detail).toBeDefined();
     expect(detail.ipfs_cid).toBe('QmRootCid');
-    expect(detail.document_hash).toBe('sha256:root');
     expect(detail.ipfs_filename).toBe('root.pdf');
+    expect(detail.document_hash).toBe('sha256:root');
   });
 
   it('?version=N retrieves per-version ipfs_cid (regression pin)', async () => {

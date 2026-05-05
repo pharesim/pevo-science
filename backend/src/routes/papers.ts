@@ -679,12 +679,42 @@ async function fetchPaperDetailFromHaf(author: string, permlink: string, memo?: 
           detail.discipline = paperDisciplineField(headPevo.discipline);
           detail.keywords = headPevo.keywords || [];
           detail.citations = headPevo.citations || [];
-          // Per-version display: prefer head's pointer, fall back to
-          // root's when the head doesn't carry one. See block comment
-          // above for the trust-model rationale.
-          detail.ipfs_cid = pevoString(headPevo, 'ipfs_cid') ?? pevoString(rootPevo, 'ipfs_cid');
-          detail.ipfs_filename = pevoString(headPevo, 'ipfs_filename') ?? pevoString(rootPevo, 'ipfs_filename');
-          detail.document_hash = pevoString(headPevo, 'document_hash') ?? pevoString(rootPevo, 'document_hash');
+          // Per-version display: the IPFS triple (ipfs_cid /
+          // ipfs_filename / document_hash) is treated atomically.
+          // Either head expresses a per-version triple (any of the
+          // three keys is set on head — even to null, '', or a
+          // non-string) and the displayed triple is read entirely
+          // from head, OR head expresses no opinion (none of the
+          // three keys present on head) and the entire triple falls
+          // back to root.
+          //
+          // Why atomic: per-field fallback creates Frankenstein
+          // composition (e.g. head's CID + root's filename + root's
+          // hash) where the displayed triple never existed on chain
+          // in any single version. The block comment above commits
+          // to "each post's pointers describe that version's PDF";
+          // an atomic triple preserves that invariant.
+          //
+          // Why sentinel-aware (`'in'` rather than non-null check):
+          // a head explicitly clearing the triple (alice's v2 short
+          // correction with no PDF, inline body only) is a supported
+          // product shape — `is_diffable` toggles to "inline" when
+          // ipfs_cid is null. Distinguishing "head cleared" (key
+          // present, value null) from "head omitted" (key absent)
+          // is the signal that drives that toggle correctly.
+          const headHasAnyTripleKey =
+            'ipfs_cid' in headPevo
+            || 'ipfs_filename' in headPevo
+            || 'document_hash' in headPevo;
+          if (headHasAnyTripleKey) {
+            detail.ipfs_cid = pevoString(headPevo, 'ipfs_cid');
+            detail.ipfs_filename = pevoString(headPevo, 'ipfs_filename');
+            detail.document_hash = pevoString(headPevo, 'document_hash');
+          } else {
+            detail.ipfs_cid = pevoString(rootPevo, 'ipfs_cid');
+            detail.ipfs_filename = pevoString(rootPevo, 'ipfs_filename');
+            detail.document_hash = pevoString(rootPevo, 'document_hash');
+          }
           detail.language = headPevo.language || 'en';
           detail.supplementary_files = headPevo.supplementary_files || [];
         }
