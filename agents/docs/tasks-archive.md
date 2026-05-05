@@ -1,3 +1,18 @@
+## ARCH-TEST-CARVE-OUT-CLAUSE-C-CLARIFY (archived 2026-05-05) — risk-class equivalence settled, mock-target scope expanded
+
+Doc-only architect-self task filed during round-2 review of `backend-auth-smtp-status-code-oracle.md` to stop reviewers (human and persona) from relitigating the same finding on every audit. Settled two ambiguities in root `CLAUDE.md` "Running Tests" carve-out:
+
+1. Clause (c) "the same assertion" reads as **risk-class equivalence**, not literal mirror. The real-path companion catches the same failure mode; it does NOT need to assert what the mocked test asserts. Helper-shape units and route-behavior integrations cover complementary mutation classes by design.
+2. Mock-target scope under the carve-out expanded beyond `getPool()` / `getAppPool()` to cover shared pool/cache helpers (`getPool`, `getAppPool`, `getRedis`, `getHafPool`), third-party libraries non-trivial to run for real per-test (nodemailer, hive-API client, IPFS client), and observability surfaces (logger spies). Auth/permission middleware (`verifyHiveSignature` etc.) stays carved out per clause (b).
+
+Decision and dismissed strict-mirror reading captured in `agents/docs/solutions/conventions/test-mock-carve-out-clause-c-2026-05-04.md` so future findings citing "the cited companion does not assert the same thing" are dismissable as relitigating settled convention; reviewers ask "do the two tests cover the same risk class?" instead.
+
+Implementer = architect; archived directly without `/ce-code-review` (architect-self doc-only change, no implementer code diff to review).
+
+Full history: see commit `ed92d82` and the task file body via git.
+
+---
+
 ## BACKEND-BRIDGE-PAPER-AUTHOR-GATE (archived 2026-05-05) — round-4 clean ✓ (META-defense decommissioned upstream by `9bb8fec`; carry-forwards deferred to that archive)
 
 P0 task — close the bridge_paper auth-bypass: any unaccredited Hive account could surface `APP_TAG`-tagged content on `/api/papers`, `/api/search`, `/api/disciplines`, `/api/stats`, etc., by setting `json_metadata.pevotest.type = 'bridge_paper'` — no author check. ARCHITECTURE.md already promised author-pinning to `config.hiveBridgeAccount`; the SQL did not enforce it.
