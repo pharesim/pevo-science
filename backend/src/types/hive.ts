@@ -196,6 +196,37 @@ export interface RevoteAction {
   version: number;   // paper version at time of re-vote
 }
 
+// ─── Multi-author consent ops (ARCH.md "Multi-Author Trust Model") ──
+//
+// `author_accept` / `author_resign` register a claimed author's vouched
+// status for a paper. The chain signer (`required_posting_auths[0]`) IS
+// the accepting/resigning author — binding is implicit since the wire
+// format carries no payload subject identity field. See ARCH.md "Author
+// Accept (custom_json)" / "Author Resign (custom_json)" for full
+// validity rules; consent-ops.ts implements the read-time computation.
+//
+// Discriminator note: ARCH.md's wire-format snippets use `type:` for these
+// ops, but every other PEvO custom_json op uses `action:` (see
+// AccreditAction, RevokeAction, VouchAction, etc.) and the broadcast and
+// parsing infrastructure (custody.ts allowedActions, accreditations.ts,
+// reputation.ts, notification-queries.ts) all key on `payload.action`.
+// Implementing with `action:` to match the universal codebase convention.
+// [TODO Architect] ARCH.md "Author Accept (custom_json)" and "Author
+// Resign (custom_json)" subsections should switch the schema discriminator
+// from `type:` to `action:` for spec-vs-code alignment.
+
+export interface AuthorAcceptAction {
+  action: "author_accept";
+  root_author: string;
+  root_permlink: string;
+}
+
+export interface AuthorResignAction {
+  action: "author_resign";
+  root_author: string;
+  root_permlink: string;
+}
+
 export type PevoCustomJsonAction =
   | AccreditAction
   | RevokeAction
@@ -205,4 +236,6 @@ export type PevoCustomJsonAction =
   | VouchAction
   | RetractVouchAction
   | RetractPaperAction
-  | RevoteAction;
+  | RevoteAction
+  | AuthorAcceptAction
+  | AuthorResignAction;
