@@ -410,3 +410,29 @@ In addition to the round-1 + round-2 + round-3 architect followups already docum
 ### Re-review signal
 
 When round-4 item 1 (the `pevoString` helper extraction + adoption + canaries) lands, `git mv` this file back to `tasks/review/`. Architect's next review pass scopes `/ce-code-review` to the round-4 commit. Expected diff: ~10-15 lines in `helpers.ts` (the helper) + 3 lines replaced in `papers.ts` + 3-5 canary tests. Small surface; clean archive on green review (no further holds expected).
+
+---
+
+## Backend re-review signal (2026-05-05, round-4)
+
+Round-4 hold-fix item 1 landed in this commit. Scope held to the architect's instruction: only the round-3-introduced lines at `papers.ts:679-681` were migrated; broader `|| null` sites at `papers.ts:395, 1354` and `helpers.ts:186` were left untouched per architect followup A8 (separate sweep task to be filed at archive).
+
+**Item 1 (P1) — `pevoString` helper extracted + adopted at the per-version IPFS triple.**
+
+- `backend/src/helpers.ts`: new `pevoString(pevo: Record<string, unknown>, key: string): string | null` helper. Returns the string when the runtime value is a non-empty string; collapses to `null` for empty-string, numeric, boolean, object/array, null, undefined, or missing. Docblock cites the three failure modes the round-3 cast pattern silently let through (empty-string flowing through `??`, numeric `0` flowing through, object/array flowing through), explains the codebase-wide `|| null` collapse convention this helper unifies the read pattern with, and gives the call-shape example.
+- `backend/src/routes/papers.ts`: import `pevoString` from `../helpers.js`; replace the three round-3 lines with `detail.X = pevoString(headPevo, 'X') ?? pevoString(rootPevo, 'X')` for `ipfs_cid`, `ipfs_filename`, and `document_hash`. The `?? null` tail is no longer needed (helper already collapses to `null`).
+
+**Canary tests (3 unit + 3 integration = 6 new tests):**
+
+- `backend/tests/helpers.test.ts` adds a `describe('pevoString', ...)` block with 6 unit tests covering: non-empty string passthrough, empty-string collapse to `null`, numeric (`0` and `42`) collapse, object/array collapse, boolean collapse, and `null`/`undefined`/missing-key collapse. Each test docblock is short; the describe-block lead comment cites round-4 hold item 1 and enumerates the three runtime failure modes the helper closes.
+- `backend/tests/routes/continuation-author-gate.test.ts` adds 3 integration canaries that exercise the helper through the head-meta override at `papers.ts:679-681`. Each canary seeds a continuation with a pathological head value (empty string / numeric `0` / object) for all three IPFS-triple fields, hits `GET /api/papers/alice/p1`, and asserts the response surfaces the root's `QmRootCid` / `sha256:root` / `root.pdf` instead of the pathological head value. The lead comment block cites round-4 hold item 1 and explains why the cast-and-coalesce shape silently let these through.
+
+### Verification
+
+- Targeted vitest: `helpers.test.ts` 27/27 (21 existing + 6 new), `continuation-author-gate.test.ts` 23/23 (20 existing + 3 new). 50/50 across both files.
+- `npx tsc --noEmit`: clean.
+- `npm run lint`: clean (only the two pre-existing `seed-phrase.ts` `no-explicit-any` warnings, unrelated).
+
+### Architect followups carry forward
+
+Round-1 + round-2 + round-3 + round-4 architect followups all carry forward to archive — no new architect followup items surfaced during this round. A4/A5 still defer to cumulative-union archive; A6/A7/A8/A9 still fire at this task's archive per the round-4 hold block. The on-main commit cite for round-4 will be added to the architect's archive note.
