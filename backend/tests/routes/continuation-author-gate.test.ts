@@ -752,6 +752,151 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
     expect(detail.ipfs_filename).toBe('root.pdf');
   });
 
+  // Round-4 hold item 1: pevoString helper closes three runtime-shape gaps
+  // the round-3 cast-and-coalesce pattern silently let through. The cast
+  // shape `(headPevo.ipfs_cid as string) ?? (rootPevo.ipfs_cid as string) ?? null`
+  // is a TS assertion, not a narrowing — runtime values like `''`, `0`, and
+  // `{}` flowed through unchanged, diverging from the `|| null` collapse
+  // pattern used at every other pevo-string read site in papers.ts /
+  // helpers.ts. The three integration canaries below pin the head-fallback-
+  // to-root behavior for each non-string runtime shape.
+  it('falls back to root when head ipfs_cid is an empty string (round-4 pevoString helper)', async () => {
+    // Without the helper: `('' as string) ?? rootCid` evaluates to '' (??
+    // only short-circuits on null/undefined). With the helper: '' collapses
+    // to null and falls back to rootCid, matching the rest of the codebase.
+    const continuationMeta = {
+      app: `${config.appTag}/test`,
+      [config.appTag]: {
+        type: 'paper',
+        authors: [{ hive: 'alice' }, { hive: 'bob' }],
+        ipfs_cid: '', // empty string on head
+        document_hash: '',
+        ipfs_filename: '',
+      },
+    };
+    installResponder(async (sql, params) => {
+      if (sql.includes('SELECT c.author, c.json_metadata') && sql.includes('parent_permlink = $3')) {
+        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmRootCid', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' })] };
+      }
+      if (sql.includes('SELECT c.author, c.permlink, c.title')) {
+        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmRootCid', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' })] };
+      }
+      if (isForwardChainWalkSql(sql)) {
+        if (params[0] === 'alice') {
+          return { rows: [{ author: 'bob', permlink: 'v2', block_num: 100, json_metadata: continuationMeta }] };
+        }
+        return { rows: [] };
+      }
+      if (sql.includes('ROW_NUMBER') && sql.includes('co.block_num')) {
+        return { rows: [
+          { version_number: 1, block_num: 1, author: 'alice', permlink: 'p1', title: 't', body: 'abstract\n\n---\n\nbody', created: '2026-01-01T00:00:00.000Z', json_metadata: { app: `${config.appTag}/test`, [config.appTag]: { type: 'paper', authors: [{ hive: 'alice' }, { hive: 'bob' }], ipfs_cid: 'QmRootCid', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' } } },
+          { version_number: 2, block_num: 100, author: 'bob', permlink: 'v2', title: 't2', body: 'abstract2\n\n---\n\nbody2', created: '2026-01-02T00:00:00.000Z', json_metadata: continuationMeta },
+        ] };
+      }
+      return { rows: [] };
+    });
+
+    const res = await request(app).get('/api/papers/alice/p1');
+    expect(res.status).toBe(200);
+    const detail = res.body?.data;
+    expect(detail).toBeDefined();
+    expect(detail.ipfs_cid).toBe('QmRootCid');
+    expect(detail.document_hash).toBe('sha256:root');
+    expect(detail.ipfs_filename).toBe('root.pdf');
+  });
+
+  it('falls back to root when head ipfs_cid is a non-string (numeric 0) (round-4 pevoString helper)', async () => {
+    // Without the helper: `(0 as string) ?? rootCid` evaluates to 0 (?? only
+    // short-circuits on null/undefined; the `as string` is a TS assertion,
+    // not a runtime narrowing). With the helper: numeric 0 collapses to
+    // null and falls back to rootCid.
+    const continuationMeta = {
+      app: `${config.appTag}/test`,
+      [config.appTag]: {
+        type: 'paper',
+        authors: [{ hive: 'alice' }, { hive: 'bob' }],
+        ipfs_cid: 0,
+        document_hash: 0,
+        ipfs_filename: 0,
+      },
+    };
+    installResponder(async (sql, params) => {
+      if (sql.includes('SELECT c.author, c.json_metadata') && sql.includes('parent_permlink = $3')) {
+        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmRootCid', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' })] };
+      }
+      if (sql.includes('SELECT c.author, c.permlink, c.title')) {
+        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmRootCid', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' })] };
+      }
+      if (isForwardChainWalkSql(sql)) {
+        if (params[0] === 'alice') {
+          return { rows: [{ author: 'bob', permlink: 'v2', block_num: 100, json_metadata: continuationMeta }] };
+        }
+        return { rows: [] };
+      }
+      if (sql.includes('ROW_NUMBER') && sql.includes('co.block_num')) {
+        return { rows: [
+          { version_number: 1, block_num: 1, author: 'alice', permlink: 'p1', title: 't', body: 'abstract\n\n---\n\nbody', created: '2026-01-01T00:00:00.000Z', json_metadata: { app: `${config.appTag}/test`, [config.appTag]: { type: 'paper', authors: [{ hive: 'alice' }, { hive: 'bob' }], ipfs_cid: 'QmRootCid', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' } } },
+          { version_number: 2, block_num: 100, author: 'bob', permlink: 'v2', title: 't2', body: 'abstract2\n\n---\n\nbody2', created: '2026-01-02T00:00:00.000Z', json_metadata: continuationMeta },
+        ] };
+      }
+      return { rows: [] };
+    });
+
+    const res = await request(app).get('/api/papers/alice/p1');
+    expect(res.status).toBe(200);
+    const detail = res.body?.data;
+    expect(detail).toBeDefined();
+    expect(detail.ipfs_cid).toBe('QmRootCid');
+    expect(detail.document_hash).toBe('sha256:root');
+    expect(detail.ipfs_filename).toBe('root.pdf');
+  });
+
+  it('falls back to root when head ipfs_cid is a non-string (object) (round-4 pevoString helper)', async () => {
+    // Without the helper: `({} as string) ?? rootCid` evaluates to `{}`. The
+    // response would carry an object where the API contract promises a string
+    // or null. With the helper: object collapses to null and falls back to
+    // rootCid.
+    const continuationMeta = {
+      app: `${config.appTag}/test`,
+      [config.appTag]: {
+        type: 'paper',
+        authors: [{ hive: 'alice' }, { hive: 'bob' }],
+        ipfs_cid: { unexpected: 'shape' },
+        document_hash: ['arr', 'shape'],
+        ipfs_filename: { also: 'unexpected' },
+      },
+    };
+    installResponder(async (sql, params) => {
+      if (sql.includes('SELECT c.author, c.json_metadata') && sql.includes('parent_permlink = $3')) {
+        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmRootCid', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' })] };
+      }
+      if (sql.includes('SELECT c.author, c.permlink, c.title')) {
+        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmRootCid', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' })] };
+      }
+      if (isForwardChainWalkSql(sql)) {
+        if (params[0] === 'alice') {
+          return { rows: [{ author: 'bob', permlink: 'v2', block_num: 100, json_metadata: continuationMeta }] };
+        }
+        return { rows: [] };
+      }
+      if (sql.includes('ROW_NUMBER') && sql.includes('co.block_num')) {
+        return { rows: [
+          { version_number: 1, block_num: 1, author: 'alice', permlink: 'p1', title: 't', body: 'abstract\n\n---\n\nbody', created: '2026-01-01T00:00:00.000Z', json_metadata: { app: `${config.appTag}/test`, [config.appTag]: { type: 'paper', authors: [{ hive: 'alice' }, { hive: 'bob' }], ipfs_cid: 'QmRootCid', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' } } },
+          { version_number: 2, block_num: 100, author: 'bob', permlink: 'v2', title: 't2', body: 'abstract2\n\n---\n\nbody2', created: '2026-01-02T00:00:00.000Z', json_metadata: continuationMeta },
+        ] };
+      }
+      return { rows: [] };
+    });
+
+    const res = await request(app).get('/api/papers/alice/p1');
+    expect(res.status).toBe(200);
+    const detail = res.body?.data;
+    expect(detail).toBeDefined();
+    expect(detail.ipfs_cid).toBe('QmRootCid');
+    expect(detail.document_hash).toBe('sha256:root');
+    expect(detail.ipfs_filename).toBe('root.pdf');
+  });
+
   it('?version=N retrieves per-version ipfs_cid (regression pin)', async () => {
     // Round-3 hold item 2: ipfs_cid is preserved per-version on chain.
     // The dedicated ?version=N path reads each version's metadata

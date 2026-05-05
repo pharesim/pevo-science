@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseMeta, isPevoPaper, isPevoReview, isPevoBridgePaper, isPevoAnyPaper, toPaperSummary } from '../src/helpers.js';
+import { parseMeta, isPevoPaper, isPevoReview, isPevoBridgePaper, isPevoAnyPaper, toPaperSummary, pevoString } from '../src/helpers.js';
 import { config } from '../src/config.js';
 
 const TAG = config.appTag;
@@ -87,6 +87,46 @@ describe('isPevoReview', () => {
 
   it('returns false for paper type', () => {
     expect(isPevoReview({ app: APP_ID, [TAG]: { type: 'paper' } })).toBe(false);
+  });
+});
+
+describe('pevoString', () => {
+  // Round-4 hold item 1: typed read for `pevo`-string fields. Replaces the
+  // `(pevo[key] as string) ?? null` cast pattern at the per-version IPFS
+  // triple in `papers.ts` head-meta override. Three runtime-shape failure
+  // modes the cast pattern silently lets through:
+  //   (a) `''` empty-string flows through `??`, breaking head-fallback-to-root
+  //       and diverging from `|| null` sites elsewhere in the codebase.
+  //   (b) Numeric `0` flows through unchanged, ending up as a number where a
+  //       string was expected.
+  //   (c) Object/array values flow through unchanged with the same shape mismatch.
+  it('returns the string when the field is a non-empty string', () => {
+    expect(pevoString({ ipfs_cid: 'QmFoo' }, 'ipfs_cid')).toBe('QmFoo');
+  });
+
+  it('returns null for an empty string (codebase-wide convention: "" collapses to null)', () => {
+    expect(pevoString({ ipfs_cid: '' }, 'ipfs_cid')).toBeNull();
+  });
+
+  it('returns null for numeric values (e.g. 0 must not flow through as a string)', () => {
+    expect(pevoString({ ipfs_cid: 0 }, 'ipfs_cid')).toBeNull();
+    expect(pevoString({ ipfs_cid: 42 }, 'ipfs_cid')).toBeNull();
+  });
+
+  it('returns null for object/array values (cast pattern would have leaked the object through)', () => {
+    expect(pevoString({ ipfs_cid: {} }, 'ipfs_cid')).toBeNull();
+    expect(pevoString({ ipfs_cid: ['Qm1', 'Qm2'] }, 'ipfs_cid')).toBeNull();
+  });
+
+  it('returns null for boolean values', () => {
+    expect(pevoString({ ipfs_cid: false }, 'ipfs_cid')).toBeNull();
+    expect(pevoString({ ipfs_cid: true }, 'ipfs_cid')).toBeNull();
+  });
+
+  it('returns null for null / undefined / missing keys', () => {
+    expect(pevoString({ ipfs_cid: null }, 'ipfs_cid')).toBeNull();
+    expect(pevoString({ ipfs_cid: undefined }, 'ipfs_cid')).toBeNull();
+    expect(pevoString({}, 'ipfs_cid')).toBeNull();
   });
 });
 

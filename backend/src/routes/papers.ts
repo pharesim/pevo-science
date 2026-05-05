@@ -15,6 +15,7 @@ import {
   parseOrder,
   extractAbstract,
   extractAuthorizedContinuationAuthors,
+  pevoString,
   type SortField,
 } from '../helpers.js';
 import { getAccreditedSet, getAllAccreditedAccounts } from '../accreditation.js';
@@ -676,9 +677,9 @@ async function fetchPaperDetailFromHaf(author: string, permlink: string, memo?: 
           // Per-version display: prefer head's pointer, fall back to
           // root's when the head doesn't carry one. See block comment
           // above for the trust-model rationale.
-          detail.ipfs_cid = (headPevo.ipfs_cid as string) ?? (rootPevo.ipfs_cid as string) ?? null;
-          detail.ipfs_filename = (headPevo.ipfs_filename as string) ?? (rootPevo.ipfs_filename as string) ?? null;
-          detail.document_hash = (headPevo.document_hash as string) ?? (rootPevo.document_hash as string) ?? null;
+          detail.ipfs_cid = pevoString(headPevo, 'ipfs_cid') ?? pevoString(rootPevo, 'ipfs_cid');
+          detail.ipfs_filename = pevoString(headPevo, 'ipfs_filename') ?? pevoString(rootPevo, 'ipfs_filename');
+          detail.document_hash = pevoString(headPevo, 'document_hash') ?? pevoString(rootPevo, 'document_hash');
           detail.language = headPevo.language || 'en';
           detail.supplementary_files = headPevo.supplementary_files || [];
         }

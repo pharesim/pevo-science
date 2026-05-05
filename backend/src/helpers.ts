@@ -132,6 +132,35 @@ export function extractAuthorizedContinuationAuthors(
   return authors;
 }
 
+/**
+ * Read a string field from parsed `pevo` metadata, or return `null` if
+ * the value isn't a non-empty string.
+ *
+ * Why this exists: `safePevoMeta(...)` returns `Record<string, unknown>`,
+ * so reading a string-shaped field naturally requires a runtime check.
+ * The naive shape `(pevo[key] as string) ?? null` is a TypeScript
+ * assertion (not a narrowing) — runtime values like `0`, `''`, `false`,
+ * and `{}` flow through it as if they were strings, and the `?? null`
+ * tail becomes dead from the checker's perspective. The naive shape
+ * also passes empty strings through unchanged, diverging from the
+ * codebase's other `pevo`-string read sites which all collapse `''`
+ * to `null` via `|| null`. This helper unifies the read pattern: a
+ * string field is either present (non-empty) or absent (null).
+ *
+ * Used in head-preferred / root-fallback chains where the runtime
+ * shape of head/root metadata is `unknown` (parsed JSON):
+ *
+ *     detail.ipfs_cid = pevoString(headPevo, 'ipfs_cid')
+ *       ?? pevoString(rootPevo, 'ipfs_cid');
+ *
+ * Empty-string head values fall back to root, matching the rest of
+ * the codebase. `null`/`undefined`/missing on head also fall back.
+ */
+export function pevoString(pevo: Record<string, unknown>, key: string): string | null {
+  const v = pevo[key];
+  return typeof v === 'string' && v.length > 0 ? v : null;
+}
+
 export function parsePageLimit(req: Request) {
   const page = Math.min(10000, Math.max(1, parseInt(req.query.page as string, 10) || 1));
   const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string, 10) || 20));
