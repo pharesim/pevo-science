@@ -71,4 +71,12 @@ After implementation, append a row to the API contract index (`agents/docs/api-c
 
 - `agents/docs/ARCHITECTURE.md` section 2 "Multi-Author Trust Model" — canonical spec.
 - `agents/docs/tasks/pending/backend-coauthor-trust-model.md` — Phase 2 implementation of the trust model.
-- `agents/docs/tasks/pending/ui-multi-author-consent-affordances.md` — sibling UI task.
+- `agents/docs/tasks/blocked/ui-multi-author-consent-affordances.md` — sibling UI task (also blocked).
+
+---
+
+## [BLOCKED by Backend] (backend startup triage 2026-05-05)
+
+The `GET /api/me/authorships/pending` endpoint requires the vouched-set computation specified in `backend-coauthor-trust-model.md` Phase 2 (see this task's "Dependencies" clause above). Phase 2 has not started in code — none of the new `custom_json` op handlers (`AuthorAcceptAction`/`AuthorResignAction`), the read-time vouched-set lookup, or the migration-day flag exist yet. Without those, this endpoint cannot identify "claimed-pending" authorships.
+
+Move back to `tasks/pending/` once Phase 2 of `backend-coauthor-trust-model.md` lands the vouched-set lookup that this endpoint queries.

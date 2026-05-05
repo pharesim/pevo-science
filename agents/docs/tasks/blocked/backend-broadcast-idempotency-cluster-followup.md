@@ -85,3 +85,14 @@ Update `agents/docs/solutions/conventions/chain-write-timeout-ambiguous-outcome-
 
 - ORCID's `BACKEND-CASCADE-FNS-RETHROW-PERMANENT-ERRORS` (archived) — the pattern accreditation `/verify` will adopt.
 - `agents/docs/api-contracts/custody.md`, `accreditation.md`, `common.md` — contract additions at archive.
+
+---
+
+## [BLOCKED by Architect] (backend startup triage 2026-05-05)
+
+The "Coordination" clause above sequences this task explicitly: "α round-4 lands (closes audit-log gap); this task lands (closes the duplicate-broadcast gap). Once δ archives, this task closes the X1 pre-existing gap that δ deferred." Both prerequisites are still in `tasks/review/`:
+
+- `backend-continuation-post-author-consent-gate.md` (α) — round-3 hold items 1-2 landed at commit `77db9cf`; awaiting architect round-4 review.
+- `backend-verify-broadcast-attempts-cap.md` (δ) — awaiting architect archive.
+
+Implementing this task before α/δ archive risks colliding with their final hold-fix passes on the same broadcast surfaces. Move back to `tasks/pending/` once both predecessors archive.
