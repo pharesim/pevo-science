@@ -593,24 +593,39 @@ async function fetchPaperDetailFromHaf(author: string, permlink: string, memo?: 
         detail.last_update = latest.created;
 
         // Update metadata-derived fields from the head version, subject to
-        // co-author display-spoof guards:
-        //   - `pevo.authors[]` may NOT widen via continuation. The head's
-        //     hive set must be a subset of the root's hive set; any new
-        //     author entry would let a vouched co-author silently swap in
-        //     a different identity (e.g. drop alice + add mallory) and
-        //     have it surface as the original paper's authorship. New
-        //     authors can only be added by the root author editing the
-        //     root post.
-        //   - `pevo.ipfs_cid` and `pevo.document_hash` are root-pinned.
-        //     These pointers identify the canonical paper payload; if the
-        //     gate is supposed to protect the paper's content then the
-        //     payload pointers must NOT be overridable by continuations.
+        // the Multi-Author Trust Model (`agents/docs/ARCHITECTURE.md`
+        // section 2):
+        //   - `pevo.authors[]` MUST NOT shrink via continuation. The
+        //     head's hive set MUST cover (be a superset of) the root's
+        //     authorized-author set. Adding a new author is legitimate
+        //     (`pevo.authors[]` is monotonic per the version-chain edit
+        //     semantics convention; the new entry is claimed-pending
+        //     until they broadcast `author_accept` once Phase 2 of
+        //     `backend-coauthor-trust-model` lands). Dropping a root
+        //     author is the insider-abuse vector (e.g. bob silently
+        //     drops alice from her own paper) and is rejected with an
+        //     audit warn.
+        //   - `pevo.ipfs_cid` / `pevo.document_hash` / `pevo.ipfs_filename`
+        //     apply per-version: each chain post's pointers describe
+        //     that version's PDF (alice's v1 has CID_A, bob's v2 may
+        //     have CID_B). The default `/api/papers/:author/:permlink`
+        //     view reads from the chain head, falling back to the root
+        //     when the head doesn't carry the field. `?version=N` reads
+        //     the N-th version's metadata via the dedicated
+        //     `reconstructVersionsFromHaf` path. All historical CIDs
+        //     are preserved on chain (Hive immutability); the pinner
+        //     agent retains them per the "Pinner constraint" subsection
+        //     of the ARCH spec.
+        //   - The risk of bob spoofing his continuation's `ipfs_cid` to
+        //     a different paper is treated identically to body-spoof:
+        //     accepted risk under the broadcaster-attributed reputation
+        //     model with on-chain audit trail and accreditation
+        //     revocation as the deterrent.
         //   - Other fields (title, body, abstract, discipline, keywords,
-        //     citations, language, supplementary_files) may evolve
-        //     normally as part of legitimate version progression.
-        // Broader trust-model question (co-signing / fully locked fields /
-        // additive-only authorship) is filed as
-        // `backend-coauthor-trust-model.md`.
+        //     citations, language, supplementary_files) evolve normally
+        //     as part of legitimate version progression.
+        // Phase 2 of `backend-coauthor-trust-model.md` layers the full
+        // accept/resign consent ops on top of the no-shrink rule below.
         const headMeta = latest.json_metadata;
         if (isPevoAnyPaper(headMeta, latest.post_author)) {
           const rootPevo = safePevoMeta(meta);
@@ -618,44 +633,52 @@ async function fetchPaperDetailFromHaf(author: string, permlink: string, memo?: 
           const headPevo = safePevoMeta(headMeta);
           const headAuthorsRaw = Array.isArray(headPevo.authors) ? headPevo.authors : [];
 
-          // Subset check: every hive in head's pevo.authors[] must be
-          // present in the root's authorized-author set. If any head
-          // author is outside that set, REJECT the head's authors[]
-          // override (keep root's authors[] for display).
-          const headAuthorsAreSubset = headAuthorsRaw.every((a) => {
-            if (!a || typeof a !== 'object') return true;
-            const hiveRaw = (a as Record<string, unknown>).hive;
-            if (typeof hiveRaw !== 'string') return true;
+          // No-shrink check: every hive in the root's authorized-author
+          // set MUST appear in the head's `pevo.authors[]` extracted hive
+          // set. New names in head are admitted (additions are legitimate
+          // under the monotonic `pevo.authors[]` rule). Missing root
+          // names mean a co-author silently dropped a peer — REJECT the
+          // head's authors[] override (keep root's authors[] for display).
+          const headAuthorHiveSet = new Set<string>();
+          for (const entry of headAuthorsRaw) {
+            if (!entry || typeof entry !== 'object') continue;
+            const hiveRaw = (entry as Record<string, unknown>).hive;
+            if (typeof hiveRaw !== 'string') continue;
             const hive = hiveRaw.trim().toLowerCase();
-            if (hive.length === 0) return true;
-            // For bridge papers, root's authorized set is {bridge}; for
-            // native papers, it's pevo.authors[].hive (lowercased).
-            // Subset check is against the root's authorized set.
-            return rootAuthorSet.has(hive);
-          });
+            if (hive.length === 0) continue;
+            headAuthorHiveSet.add(hive);
+          }
+          let headAuthorsCoverRoot = true;
+          for (const rootHive of rootAuthorSet) {
+            if (!headAuthorHiveSet.has(rootHive)) {
+              headAuthorsCoverRoot = false;
+              break;
+            }
+          }
 
-          // Root-pin payload pointers regardless of head's claim.
           detail.json_metadata = headMeta;
-          detail.authors = headAuthorsAreSubset ? (headPevo.authors || []) : detail.authors;
-          if (!headAuthorsAreSubset) {
+          detail.authors = headAuthorsCoverRoot ? (headPevo.authors || []) : detail.authors;
+          if (!headAuthorsCoverRoot) {
             logger.warn(
               {
                 rootAuthor: row.author as string,
                 rootPermlink: row.permlink as string,
                 headAuthor: latest.post_author,
                 headPermlink: latest.post_permlink,
-                event: 'continuation_authors_subset_violation',
+                event: 'continuation_authors_shrink_violation',
               },
-              'head continuation pevo.authors[] widens beyond root authorized set; rejecting authors override',
+              'head continuation pevo.authors[] drops one or more root authors; rejecting authors override',
             );
           }
           detail.discipline = paperDisciplineField(headPevo.discipline);
           detail.keywords = headPevo.keywords || [];
           detail.citations = headPevo.citations || [];
-          // Root-pinned: NEVER override from continuations.
-          detail.ipfs_cid = rootPevo.ipfs_cid || null;
-          detail.ipfs_filename = rootPevo.ipfs_filename || null;
-          detail.document_hash = rootPevo.document_hash || null;
+          // Per-version display: prefer head's pointer, fall back to
+          // root's when the head doesn't carry one. See block comment
+          // above for the trust-model rationale.
+          detail.ipfs_cid = (headPevo.ipfs_cid as string) ?? (rootPevo.ipfs_cid as string) ?? null;
+          detail.ipfs_filename = (headPevo.ipfs_filename as string) ?? (rootPevo.ipfs_filename as string) ?? null;
+          detail.document_hash = (headPevo.document_hash as string) ?? (rootPevo.document_hash as string) ?? null;
           detail.language = headPevo.language || 'en';
           detail.supplementary_files = headPevo.supplementary_files || [];
         }

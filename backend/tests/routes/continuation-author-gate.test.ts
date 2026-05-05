@@ -10,9 +10,11 @@
  *      account itself), AND
  *   2. the continuation's `pevo.type` is a valid PEvO paper class (native
  *      paper, or bridge-paper variant pinned to the bridge account).
- * Plus head-metadata override guards (subset on `pevo.authors[]`,
- * root-pin on `pevo.ipfs_cid` / `pevo.document_hash`) that close the
- * co-author display-spoof class.
+ * Plus head-metadata override guards under the Multi-Author Trust Model
+ * (no-shrink rule on `pevo.authors[]` — head must cover root's authorized
+ * set, additions admitted; per-version display for `pevo.ipfs_cid` /
+ * `pevo.document_hash` / `pevo.ipfs_filename` with head-preferred fallback
+ * to root) that close the co-author display-spoof class.
  *
  * Threat model: any Hive account (or even a vouched co-author) can
  * broadcast a comment with `pevo.continues = {author, permlink}` pointing
@@ -554,87 +556,27 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
     expect(walks.length).toBeGreaterThan(0);
   });
 
-  it('co-author display-spoof: head pevo.authors[] widening rejected (subset check)', async () => {
-    // Item 2 (round-2 hold): a vouched co-author bob continues alice/p1
-    // legitimately, but bob/v2's metadata sets pevo.authors=[{hive:'mallory'}]
-    // (drops alice, swaps in mallory). Without the subset check, the
-    // version-walker's unconditional override would surface mallory as
-    // the paper's apparent author. The fix locks pevo.authors[] against
-    // widening: head's hive set must be a subset of root's.
+  it('rejects head metadata that drops a root author (no-shrink check)', async () => {
+    // Round-3 hold item 1: a vouched co-author bob continues alice/p1, but
+    // bob/v2's metadata sets pevo.authors=[{hive:'bob'}] — silently dropping
+    // alice from her own paper. Under the no-shrink rule, the head's hive
+    // set must COVER the root's authorized-author set; missing alice means
+    // REJECT the authors[] override and emit
+    // event: 'continuation_authors_shrink_violation'.
     const continuationMeta = {
       app: `${config.appTag}/test`,
       [config.appTag]: {
         type: 'paper',
-        // Spoofed: drops alice, adds mallory (NOT in root authorized set).
-        authors: [{ hive: 'mallory' }],
-        ipfs_cid: 'QmSpoof',
-        document_hash: 'sha256:spoof',
-      },
-    };
-    let capturedReconstruct = false;
-    installResponder(async (sql, params) => {
-      if (sql.includes('SELECT c.author, c.json_metadata') && sql.includes('parent_permlink = $3')) {
-        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmRoot', document_hash: 'sha256:root' })] };
-      }
-      if (sql.includes('SELECT c.author, c.permlink, c.title')) {
-        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmRoot', document_hash: 'sha256:root' })] };
-      }
-      if (isForwardChainWalkSql(sql)) {
-        if (params[0] === 'alice') {
-          return { rows: [{ author: 'bob', permlink: 'v2', block_num: 100, json_metadata: continuationMeta }] };
-        }
-        return { rows: [] };
-      }
-      // Comment_ops query for reconstructVersionsFromHaf
-      if (sql.includes('FROM hafsql.comment_operation') || sql.includes('co.block_num') && sql.includes('ROW_NUMBER')) {
-        capturedReconstruct = true;
-        return { rows: [
-          { version_number: 1, block_num: 1, author: 'alice', permlink: 'p1', title: 't', body: 'abstract\n\n---\n\nbody', created: '2026-01-01T00:00:00.000Z', json_metadata: { app: `${config.appTag}/test`, [config.appTag]: { type: 'paper', authors: [{ hive: 'alice' }, { hive: 'bob' }], ipfs_cid: 'QmRoot', document_hash: 'sha256:root' } } },
-          { version_number: 2, block_num: 100, author: 'bob', permlink: 'v2', title: 't2', body: 'abstract2\n\n---\n\nbody2', created: '2026-01-02T00:00:00.000Z', json_metadata: continuationMeta },
-        ] };
-      }
-      return { rows: [] };
-    });
-
-    const res = await request(app).get('/api/papers/alice/p1');
-    expect(res.status).toBe(200);
-    const detail = res.body?.data;
-    expect(detail).toBeDefined();
-    // Head moved to bob/v2 (legitimate co-author continuation).
-    expect(detail.head_author).toBe('bob');
-    // pevo.authors[] override REJECTED: response must NOT list mallory.
-    const responseAuthors = (detail.authors || []) as Array<{ hive?: string }>;
-    const hiveSet = new Set(responseAuthors.map((a) => a.hive).filter(Boolean));
-    expect(hiveSet.has('mallory')).toBe(false);
-    // root-pin assertions for ipfs_cid and document_hash
-    expect(detail.ipfs_cid).toBe('QmRoot');
-    expect(detail.document_hash).toBe('sha256:root');
-    // Quiet vitest about the unused capture flag
-    expect(capturedReconstruct || !capturedReconstruct).toBe(true);
-  });
-
-  it('co-author display-spoof: payload pointers (ipfs_cid, document_hash) are root-pinned', async () => {
-    // Item 2 (round-2 hold): even when a co-author's continuation legitimately
-    // refines pevo.authors[] within the subset (e.g. removes a co-author),
-    // the IPFS/document-hash payload pointers MUST come from the root, not
-    // the head. These identify the canonical paper payload — overriding
-    // them via continuation lets a co-author swap in any IPFS document
-    // they want.
-    const continuationMeta = {
-      app: `${config.appTag}/test`,
-      [config.appTag]: {
-        type: 'paper',
-        authors: [{ hive: 'alice' }, { hive: 'bob' }], // legitimate, subset of root
-        ipfs_cid: 'QmSpoofedPayload',
-        document_hash: 'sha256:spoofed',
+        // Insider attack: bob drops alice from her own paper.
+        authors: [{ hive: 'bob' }],
       },
     };
     installResponder(async (sql, params) => {
       if (sql.includes('SELECT c.author, c.json_metadata') && sql.includes('parent_permlink = $3')) {
-        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmCanonical', document_hash: 'sha256:canonical' })] };
+        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'])] };
       }
       if (sql.includes('SELECT c.author, c.permlink, c.title')) {
-        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmCanonical', document_hash: 'sha256:canonical' })] };
+        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'])] };
       }
       if (isForwardChainWalkSql(sql)) {
         if (params[0] === 'alice') {
@@ -644,7 +586,7 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
       }
       if (sql.includes('ROW_NUMBER') && sql.includes('co.block_num')) {
         return { rows: [
-          { version_number: 1, block_num: 1, author: 'alice', permlink: 'p1', title: 't', body: 'abstract\n\n---\n\nbody', created: '2026-01-01T00:00:00.000Z', json_metadata: { app: `${config.appTag}/test`, [config.appTag]: { type: 'paper', authors: [{ hive: 'alice' }, { hive: 'bob' }], ipfs_cid: 'QmCanonical', document_hash: 'sha256:canonical' } } },
+          { version_number: 1, block_num: 1, author: 'alice', permlink: 'p1', title: 't', body: 'abstract\n\n---\n\nbody', created: '2026-01-01T00:00:00.000Z', json_metadata: { app: `${config.appTag}/test`, [config.appTag]: { type: 'paper', authors: [{ hive: 'alice' }, { hive: 'bob' }] } } },
           { version_number: 2, block_num: 100, author: 'bob', permlink: 'v2', title: 't2', body: 'abstract2\n\n---\n\nbody2', created: '2026-01-02T00:00:00.000Z', json_metadata: continuationMeta },
         ] };
       }
@@ -655,11 +597,198 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
     expect(res.status).toBe(200);
     const detail = res.body?.data;
     expect(detail).toBeDefined();
-    // Root-pin: payload pointers come from root, NOT the continuation.
-    expect(detail.ipfs_cid).toBe('QmCanonical');
-    expect(detail.document_hash).toBe('sha256:canonical');
-    expect(detail.ipfs_cid).not.toBe('QmSpoofedPayload');
-    expect(detail.document_hash).not.toBe('sha256:spoofed');
+    // Head moved to bob/v2 (legitimate co-author continuation pointer).
+    expect(detail.head_author).toBe('bob');
+    // pevo.authors[] override REJECTED: response retains root's authors[]
+    // (alice + bob), NOT head's (bob alone). Alice must remain visible.
+    const responseAuthors = (detail.authors || []) as Array<{ hive?: string }>;
+    const hiveSet = new Set(responseAuthors.map((a) => a.hive).filter(Boolean));
+    expect(hiveSet.has('alice')).toBe(true);
+    expect(hiveSet.has('bob')).toBe(true);
+  });
+
+  it('admits head metadata that adds a new author (additions are legitimate)', async () => {
+    // Round-3 hold item 1: pevo.authors[] is monotonic per the version-chain
+    // edit semantics convention. bob's continuation with
+    // pevo.authors=[alice, bob, carol] is legitimate (carol joins during
+    // revision, becomes claimed-pending until Phase 2's author_accept op
+    // lands). The override is admitted and carol surfaces in the displayed
+    // authors list.
+    const continuationMeta = {
+      app: `${config.appTag}/test`,
+      [config.appTag]: {
+        type: 'paper',
+        // Legitimate addition: alice + bob (root) + carol (new joiner).
+        authors: [{ hive: 'alice' }, { hive: 'bob' }, { hive: 'carol' }],
+      },
+    };
+    installResponder(async (sql, params) => {
+      if (sql.includes('SELECT c.author, c.json_metadata') && sql.includes('parent_permlink = $3')) {
+        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'])] };
+      }
+      if (sql.includes('SELECT c.author, c.permlink, c.title')) {
+        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'])] };
+      }
+      if (isForwardChainWalkSql(sql)) {
+        if (params[0] === 'alice') {
+          return { rows: [{ author: 'bob', permlink: 'v2', block_num: 100, json_metadata: continuationMeta }] };
+        }
+        return { rows: [] };
+      }
+      if (sql.includes('ROW_NUMBER') && sql.includes('co.block_num')) {
+        return { rows: [
+          { version_number: 1, block_num: 1, author: 'alice', permlink: 'p1', title: 't', body: 'abstract\n\n---\n\nbody', created: '2026-01-01T00:00:00.000Z', json_metadata: { app: `${config.appTag}/test`, [config.appTag]: { type: 'paper', authors: [{ hive: 'alice' }, { hive: 'bob' }] } } },
+          { version_number: 2, block_num: 100, author: 'bob', permlink: 'v2', title: 't2', body: 'abstract2\n\n---\n\nbody2', created: '2026-01-02T00:00:00.000Z', json_metadata: continuationMeta },
+        ] };
+      }
+      return { rows: [] };
+    });
+
+    const res = await request(app).get('/api/papers/alice/p1');
+    expect(res.status).toBe(200);
+    const detail = res.body?.data;
+    expect(detail).toBeDefined();
+    expect(detail.head_author).toBe('bob');
+    // pevo.authors[] override ADMITTED: head's three-author list surfaces.
+    const responseAuthors = (detail.authors || []) as Array<{ hive?: string }>;
+    const hiveSet = new Set(responseAuthors.map((a) => a.hive).filter(Boolean));
+    expect(hiveSet.has('alice')).toBe(true);
+    expect(hiveSet.has('bob')).toBe(true);
+    expect(hiveSet.has('carol')).toBe(true);
+  });
+
+  it('shows head\'s ipfs_cid for the default view when continuation provides one (per-version display)', async () => {
+    // Round-3 hold item 2: ipfs_cid / document_hash / ipfs_filename apply
+    // per-version. The default `/api/papers/:author/:permlink` view reads
+    // from the chain head, like other free-edit fields. bob's v2 carries
+    // its own CID (bob's revised PDF); that's the displayed CID, not
+    // root's. Per-version retention is preserved on chain (Hive
+    // immutability) and accessible via ?version=N.
+    const continuationMeta = {
+      app: `${config.appTag}/test`,
+      [config.appTag]: {
+        type: 'paper',
+        authors: [{ hive: 'alice' }, { hive: 'bob' }], // satisfies no-shrink
+        ipfs_cid: 'QmHeadCid',
+        document_hash: 'sha256:head',
+        ipfs_filename: 'head.pdf',
+      },
+    };
+    installResponder(async (sql, params) => {
+      if (sql.includes('SELECT c.author, c.json_metadata') && sql.includes('parent_permlink = $3')) {
+        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmRootCid', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' })] };
+      }
+      if (sql.includes('SELECT c.author, c.permlink, c.title')) {
+        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmRootCid', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' })] };
+      }
+      if (isForwardChainWalkSql(sql)) {
+        if (params[0] === 'alice') {
+          return { rows: [{ author: 'bob', permlink: 'v2', block_num: 100, json_metadata: continuationMeta }] };
+        }
+        return { rows: [] };
+      }
+      if (sql.includes('ROW_NUMBER') && sql.includes('co.block_num')) {
+        return { rows: [
+          { version_number: 1, block_num: 1, author: 'alice', permlink: 'p1', title: 't', body: 'abstract\n\n---\n\nbody', created: '2026-01-01T00:00:00.000Z', json_metadata: { app: `${config.appTag}/test`, [config.appTag]: { type: 'paper', authors: [{ hive: 'alice' }, { hive: 'bob' }], ipfs_cid: 'QmRootCid', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' } } },
+          { version_number: 2, block_num: 100, author: 'bob', permlink: 'v2', title: 't2', body: 'abstract2\n\n---\n\nbody2', created: '2026-01-02T00:00:00.000Z', json_metadata: continuationMeta },
+        ] };
+      }
+      return { rows: [] };
+    });
+
+    const res = await request(app).get('/api/papers/alice/p1');
+    expect(res.status).toBe(200);
+    const detail = res.body?.data;
+    expect(detail).toBeDefined();
+    // Per-version display: head's pointers surface for the default view.
+    expect(detail.ipfs_cid).toBe('QmHeadCid');
+    expect(detail.document_hash).toBe('sha256:head');
+    expect(detail.ipfs_filename).toBe('head.pdf');
+  });
+
+  it('falls back to root\'s ipfs_cid when head metadata doesn\'t carry one', async () => {
+    // Round-3 hold item 2: when the head version doesn't carry an
+    // ipfs_cid/document_hash/ipfs_filename, the default view falls back
+    // to the root's value. This covers the legitimate case where a
+    // continuation evolves only the body/abstract and inherits the
+    // root's PDF unchanged.
+    const continuationMeta = {
+      app: `${config.appTag}/test`,
+      [config.appTag]: {
+        type: 'paper',
+        authors: [{ hive: 'alice' }, { hive: 'bob' }],
+        // No ipfs_cid / document_hash / ipfs_filename — falls back to root.
+      },
+    };
+    installResponder(async (sql, params) => {
+      if (sql.includes('SELECT c.author, c.json_metadata') && sql.includes('parent_permlink = $3')) {
+        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmRootCid', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' })] };
+      }
+      if (sql.includes('SELECT c.author, c.permlink, c.title')) {
+        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmRootCid', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' })] };
+      }
+      if (isForwardChainWalkSql(sql)) {
+        if (params[0] === 'alice') {
+          return { rows: [{ author: 'bob', permlink: 'v2', block_num: 100, json_metadata: continuationMeta }] };
+        }
+        return { rows: [] };
+      }
+      if (sql.includes('ROW_NUMBER') && sql.includes('co.block_num')) {
+        return { rows: [
+          { version_number: 1, block_num: 1, author: 'alice', permlink: 'p1', title: 't', body: 'abstract\n\n---\n\nbody', created: '2026-01-01T00:00:00.000Z', json_metadata: { app: `${config.appTag}/test`, [config.appTag]: { type: 'paper', authors: [{ hive: 'alice' }, { hive: 'bob' }], ipfs_cid: 'QmRootCid', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' } } },
+          { version_number: 2, block_num: 100, author: 'bob', permlink: 'v2', title: 't2', body: 'abstract2\n\n---\n\nbody2', created: '2026-01-02T00:00:00.000Z', json_metadata: continuationMeta },
+        ] };
+      }
+      return { rows: [] };
+    });
+
+    const res = await request(app).get('/api/papers/alice/p1');
+    expect(res.status).toBe(200);
+    const detail = res.body?.data;
+    expect(detail).toBeDefined();
+    // Fallback: root's pointers surface when head omits them.
+    expect(detail.ipfs_cid).toBe('QmRootCid');
+    expect(detail.document_hash).toBe('sha256:root');
+    expect(detail.ipfs_filename).toBe('root.pdf');
+  });
+
+  it('?version=N retrieves per-version ipfs_cid (regression pin)', async () => {
+    // Round-3 hold item 2: ipfs_cid is preserved per-version on chain.
+    // The dedicated ?version=N path reads each version's metadata
+    // directly via reconstructVersionsFromHaf — alice's v1 surfaces
+    // its CID, bob's v2 surfaces its (different) CID.
+    const v1Meta = {
+      app: `${config.appTag}/test`,
+      [config.appTag]: { type: 'paper', authors: [{ hive: 'alice' }, { hive: 'bob' }], ipfs_cid: 'QmV1Cid', document_hash: 'sha256:v1' },
+    };
+    const v2Meta = {
+      app: `${config.appTag}/test`,
+      [config.appTag]: { type: 'paper', authors: [{ hive: 'alice' }, { hive: 'bob' }], ipfs_cid: 'QmV2Cid', document_hash: 'sha256:v2' },
+    };
+    installResponder(async (sql, _params) => {
+      // findCanonicalRoot probes for `'continues' IS NOT NULL`; alice/p1
+      // is the root, so return empty.
+      if (sql.includes("'continues'") && sql.includes('IS NOT NULL')) {
+        return { rows: [] };
+      }
+      if (sql.includes('ROW_NUMBER') && sql.includes('co.block_num')) {
+        return { rows: [
+          { version_number: 1, block_num: 1, author: 'alice', permlink: 'p1', title: 't1', body: 'abstract1\n\n---\n\nbody1', created: '2026-01-01T00:00:00.000Z', json_metadata: v1Meta },
+          { version_number: 2, block_num: 100, author: 'bob', permlink: 'v2', title: 't2', body: 'abstract2\n\n---\n\nbody2', created: '2026-01-02T00:00:00.000Z', json_metadata: v2Meta },
+        ] };
+      }
+      return { rows: [] };
+    });
+
+    const v1 = await request(app).get('/api/papers/alice/p1?version=1');
+    expect(v1.status).toBe(200);
+    expect(v1.body?.data?.ipfs_cid).toBe('QmV1Cid');
+    expect(v1.body?.data?.document_hash).toBe('sha256:v1');
+
+    const v2 = await request(app).get('/api/papers/alice/p1?version=2');
+    expect(v2.status).toBe(200);
+    expect(v2.body?.data?.ipfs_cid).toBe('QmV2Cid');
+    expect(v2.body?.data?.document_hash).toBe('sha256:v2');
   });
 
   it('non-PEvO head row: chain-walk does not fire (no authorized-author set to admit against)', async () => {

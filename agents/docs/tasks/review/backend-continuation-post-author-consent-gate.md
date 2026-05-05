@@ -309,3 +309,26 @@ When items 1-2 land, `git mv` this file back to `tasks/review/`. The architect's
 - `agents/docs/ARCHITECTURE.md` section 2 "Multi-Author Trust Model" — canonical spec for the corrected rules (commit `ddd1c69`).
 - `agents/docs/tasks/pending/backend-coauthor-trust-model.md` — Phase 2 implementation of the full consent-op flow (`author_accept`/`author_resign`); ε's round-3 fixes establish the minimal correct rule that Phase 2 layers on.
 - `agents/docs/solutions/architecture-patterns/pevo-paper-version-chain-and-edit-semantics-2026-04-30.md` — version-chain semantics that the no-shrink rule restores compatibility with.
+
+---
+
+## Backend re-review signal (2026-05-05, round-3)
+
+Round-3 hold-fix items 1-2 both landed in this commit.
+
+**Item 1 (P1) — `pevo.authors[]` no-shrink rule.** `fetchPaperDetailFromHaf`'s head-meta override at `backend/src/routes/papers.ts` now extracts the head's `pevo.authors[].hive` set and verifies every entry in the root's `extractAuthorizedContinuationAuthors` set is present in head's set (root ⊆ head, i.e. no-shrink). When a root author is missing, the override is REJECTED (root's authors[] kept for display) and `event: 'continuation_authors_shrink_violation'` warns. Additions are admitted (carol joining during revision surfaces in the displayed authors list, claimed-pending until Phase 2 of `backend-coauthor-trust-model` adds `author_accept`/`author_resign`). The prior round-2 `headAuthorsAreSubset` check (head ⊆ root) is removed — that direction blocked legitimate additions and silently passed insider drops, the inversion the round-3 hold called out.
+
+**Item 2 (P1) — Per-version display for `ipfs_cid` / `ipfs_filename` / `document_hash`.** Replaced the round-2 root-pin assignments with head-preferred fallback to root: `headPevo.X ?? rootPevo.X ?? null`. The default `/api/papers/:author/:permlink` view now reflects the chain head's PDF pointers when the head provides them, falling back to root when a continuation only evolves body/abstract. The dedicated `?version=N` path (`reconstructVersionsFromHaf` + `target.json_metadata` at the v3 endpoint) was already per-version; the new regression-pin canary ('?version=N retrieves per-version ipfs_cid') asserts that explicitly. Per-version retention is on chain via Hive immutability; pinner retention follows the ARCH "Pinner constraint" subsection. The accepted-risk reasoning (continuation broadcaster's reputation, on-chain audit trail, accreditation revocation as deterrent) is documented inline at `routes/papers.ts:595-630`.
+
+### Verification
+
+- Targeted vitest: `continuation-author-gate.test.ts` 20/20, `helpers.test.ts` 21/21, `papers.test.ts` 12 passed + 1 skipped (pre-existing), `paper-detail-v3.test.ts` 1/1, `bridge-paper-author-gate.test.ts` 14/14 (regress clean).
+- `npx tsc --noEmit`: clean.
+- `npm run lint`: clean (only the two pre-existing `seed-phrase.ts` `no-explicit-any` warnings).
+
+### [TODO Architect]
+
+Round-1 + round-2 architect followups carry forward (commit-cite correction, ARCHITECTURE.md WHY comments at the audit-warn sites, contract-prose updates to ARCHITECTURE.md / api-contracts/papers.md / convention doc per the round-2 [TODO Architect] block above). Round-3 brings two additional inline-comment freshness items the architect may want to revisit during the next contract-prose pass:
+
+- `routes/papers.ts:595-630` block comment now describes the no-shrink + per-version-display rules; if the metadata-trust table in `agents/docs/ARCHITECTURE.md` lands a row referencing this code path, the comment can be trimmed to a one-liner pointing at the spec (the long form is currently load-bearing because the spec row hasn't landed in ARCHITECTURE.md yet).
+- The `event: 'continuation_authors_shrink_violation'` audit-event tag replaces round-2's `continuation_authors_subset_violation`. If any operator dashboards or alerting rules reference the old tag, they need updating — backend hasn't grepped for external consumers (none found in repo, but this is a heads-up for operator-side sweeps).
