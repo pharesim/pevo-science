@@ -36,3 +36,22 @@ PEvO operates under Portuguese jurisdiction (CNPD). The project already hashes e
 ## Source
 
 `/ce-code-review` (rounds 1+3) on 2026-05-05: data-migrations reviewer (P2, conf 50). Surfaced as a CNPD jurisdiction concern; the deletion path is already in place, the documentation gap is the actionable item.
+
+## Implementation note (2026-05-06, backend)
+
+Landed `backend/migrations/006_custody_audit_pii_annotation.sql` adding the `COMMENT ON COLUMN custody_audit_log.user_agent` annotation. SQL parsed cleanly against the dev `pevo_app` Postgres in a rolled-back transaction; comment is readable via `col_description('custody_audit_log'::regclass, attnum)`. `COMMENT ON COLUMN` is unconditional, so the migration is idempotent.
+
+**Retention decision: 24 months from row insert.** Rationale documented inline in the migration's SQL comment block — industry-standard for security-event log retention, long enough for post-incident forensics beyond a typical breach-discovery window, short enough to honor GDPR data-minimization (Art. 5(1)(c)/(e)). Legal basis for keeping the column at all is legitimate interest in security audit (GDPR Art. 6(1)(f)).
+
+**No periodic cleanup job in this task — see follow-up TODO below.**
+
+[TODO Architect] The migration's SQL comment now carries the operator-facing retention + deletion semantics, but PEvO's integrator-facing surface does not yet document either. Two contract additions are needed; both are out of scope for the backend role's zone (api-contracts/* and ARCHITECTURE.md are architect-owned):
+
+1. **`agents/docs/api-contracts/custody.md`** — add an "Audit log retention" subsection under the consent-ops broadcast surface, stating: "Successful `author_accept` / `author_resign` broadcasts are recorded in `custody_audit_log` with the auth mechanism, hashed session id, and raw `User-Agent` header. Rows are retained for 24 months from insert (security-audit retention, GDPR Art. 6(1)(f) legitimate interest, CNPD jurisdiction). Rows are erased immediately on account deletion via the settings.ts:312 sweep (GDPR Art. 17 right-to-erasure). The `User-Agent` field is the only persisted PII column on this surface; `session_id` is a one-way SHA-256 hash, `tx_id`/`block_num` are public on-chain references." Avoid the emdash in the user-facing copy.
+2. **`agents/docs/ARCHITECTURE.md`** — under the "Light-account signing of consent ops" section (or wherever the audit-log surface is referenced), add a one-line cross-reference: "Audit-log retention is 24 months for consent-op rows; PII annotation is documented inline at `backend/migrations/006_custody_audit_pii_annotation.sql`. Right-to-erasure path is `backend/src/routes/settings.ts:312`."
+
+These additions complete the documentation chain (DB column → contract → ARCH) so a future operator or fork-maintainer reading any of the three lands on the same retention number.
+
+## Follow-up TODO (out of scope, file separately)
+
+- **`backend-custody-audit-retention-sweep`**: implement a periodic job that drops `custody_audit_log` rows where `created_at < now() - interval '24 months'`. Decisions deferred to that task: cron vs. on-demand trigger, batch size, whether to scrub PII columns in-place before deletion (probably unnecessary — full-row delete satisfies GDPR), and whether to emit a pino summary line for ops visibility. The retention number lives in the SQL comment on `custody_audit_log.user_agent` (see migration 006); the sweep should reference that as the authority rather than hard-coding 24 months in two places.
