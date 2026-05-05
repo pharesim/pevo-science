@@ -332,3 +332,81 @@ Round-1 + round-2 architect followups carry forward (commit-cite correction, ARC
 
 - `routes/papers.ts:595-630` block comment now describes the no-shrink + per-version-display rules; if the metadata-trust table in `agents/docs/ARCHITECTURE.md` lands a row referencing this code path, the comment can be trimmed to a one-liner pointing at the spec (the long form is currently load-bearing because the spec row hasn't landed in ARCHITECTURE.md yet).
 - The `event: 'continuation_authors_shrink_violation'` audit-event tag replaces round-2's `continuation_authors_subset_violation`. If any operator dashboards or alerting rules reference the old tag, they need updating — backend hasn't grepped for external consumers (none found in repo, but this is a heads-up for operator-side sweeps).
+
+---
+
+## Architect re-review (2026-05-05, round-4) — HELD PENDING FIXES
+
+`/ce-code-review` ran on commit `77db9cf` with 8 reviewers (correctness, security, adversarial, testing, maintainability, project-standards, learnings-researcher, kieran-typescript). 13 distinct findings after dedup. User triage walk-through (2026-05-05) settled the disposition.
+
+### Context: round-3 is being superseded by cumulative-union
+
+During the triage of finding #3 (per-author sub-field spoofing) and #7 (N-deep author laundering), the user articulated the equal-rights policy: **any author currently in the chain's `pevo.authors[]` can broadcast continuations regardless of when they were added; trust is dynamic; cost falls on the introducer via accreditation revocation cascading.**
+
+The user proposed a cleaner design: replace the round-3 no-shrink rule with **cumulative-union** display construction. The displayed authors[] is the union across all chain posts' `pevo.authors[].hive` entries; drops are forbidden by construction. The round-3 commit `77db9cf` stays in production as interim defense. The cumulative-union redesign is filed at `agents/docs/tasks/blocked/backend-multi-author-cumulative-union.md` (blocked on this task's archive).
+
+This means findings tied to the no-shrink override block become MOOT under the supersession plan. Only finding #2 (the cast pattern at the per-version IPFS triple, which is independent of the no-shrink rule) carries forward as a round-4 fix on this task. The remaining findings are dismissed-with-note here so the archive trail stays complete.
+
+### Item to address
+
+**1. (P1, originally finding #2 in the round-4 review) Cast-and-coalesce pattern at `papers.ts:679-681`.** Six-way cross-reviewer corroboration (correctness, security, adversarial, testing, maintainability, kieran-typescript). The pattern `(headPevo.X as string) ?? (rootPevo.X as string) ?? null` has three problems:
+
+- **Type-unsafe.** `safePevoMeta` returns `Record<string, unknown>`. `as string` is an assertion, not a narrowing. Runtime values like `0`, `''`, `false`, `{}` flow through. TS infers the entire expression as `string` (the `?? null` tail is dead from the checker's perspective, verified via compiler API).
+- **Empty-string divergence.** Every other read site in `papers.ts` (lines 395, 1354) and `helpers.ts:186` uses `pevo.ipfs_cid || null`, which collapses `''` to `null`. The `??` chain passes `''` through unchanged, diverging from the established pattern.
+- **`null` vs absent ambiguity.** A head explicitly clearing `ipfs_cid: null` (e.g., transitioning from IPFS-hosted to inline) is silently overridden by `??` falling back to root's CID.
+
+**Fix shape:** Extract a typed helper in `backend/src/helpers.ts`:
+
+```ts
+export function pevoString(pevo: Record<string, unknown>, key: string): string | null {
+  const v = pevo[key];
+  return typeof v === 'string' && v.length > 0 ? v : null;
+}
+```
+
+Adopt at the three round-3 lines:
+
+```ts
+detail.ipfs_cid = pevoString(headPevo, 'ipfs_cid') ?? pevoString(rootPevo, 'ipfs_cid');
+detail.ipfs_filename = pevoString(headPevo, 'ipfs_filename') ?? pevoString(rootPevo, 'ipfs_filename');
+detail.document_hash = pevoString(headPevo, 'document_hash') ?? pevoString(rootPevo, 'document_hash');
+```
+
+**Canary tests** (extend `continuation-author-gate.test.ts` or `helpers.test.ts`):
+- Empty-string `ipfs_cid` on head → falls back to root's value (matches the rest of the codebase's behavior).
+- Numeric `0` `ipfs_cid` on head → falls back to root (no longer flows through as a non-string).
+- Object `ipfs_cid` on head → falls back to root.
+
+Adoption at the broader cast sites (`papers.ts:395, 1354`, `helpers.ts:186`) is filed as a follow-up at archive (see [TODO Architect] item below). Do NOT include those broader sites in this round-4 commit — keep round-4 narrowly scoped to the round-3-introduced lines so the diff surface stays tight.
+
+### Items dismissed as MOOT under cumulative-union supersession
+
+- **Finding #1 (P1) — `accredited_authors` leak via unconditional `detail.json_metadata = headMeta`.** Originally triaged as hold-block. MOOT under cumulative-union: `accredited_authors` will be rebuilt from the cumulative union (which can't shrink), closing the leak by construction. Captured in `backend-multi-author-cumulative-union.md` rule #6 ("`accredited_authors` rebuilt from union") and canary test.
+- **Finding #4 (P2) — No-shrink test doesn't assert audit event.** Originally triaged as hold-block. MOOT under cumulative-union: there is no audit event because there is no no-shrink rule. The `continuation_authors_shrink_violation` audit event is being removed alongside the no-shrink check.
+- **Finding #5 (P2) — Stale "subset-check" comment in `reconstructVersionsFromHaf` at `papers.ts:1228`.** Originally triaged as hold-block. MOOT under cumulative-union: the comment will be rewritten as part of the cumulative-union landing (the entire override block + supporting comments are replaced).
+- **Finding #9 (P3) — Empty-rootAuthorSet TOCTOU defensive guard.** Originally triaged as hold-block. MOOT under cumulative-union: there is no `rootAuthorSet` to be empty.
+
+### Items dismissed during architect synthesis (per round-3 triage)
+
+- **Finding #6 — Bridge-paper continuation override always rejected.** Dismissed: bridge papers never need to be updated (per user); bridge `/update` route to be retired in a separate task at archive.
+- **Finding #7 — N-deep chain progressive author laundering.** Dismissed as accepted risk under broadcaster-attribution + accreditation cascade. Policy clarification captured for `backend-coauthor-trust-model.md` Phase 2 design.
+- **Finding #8 — Cache key doesn't include head identity.** Dismissed: round-3 extends a pre-existing cache pattern (head-preferred fields already had this property pre-round-3); no new staleness vectors.
+- **Audit-event rename external consumers, normalization asymmetry, audit-log injection, prototype pollution, large-array DoS** — dismissed during synthesis (documented in signal block + verified safe).
+
+### Architect followups (land at archive, do NOT block backend re-submit)
+
+In addition to the round-1 + round-2 + round-3 architect followups already documented in this task, round-4's user-triage adds:
+
+- **A4. ARCHITECTURE.md prose stays at `ddd1c69` for now.** The "Multi-Author Trust Model" section will be REWRITTEN when `backend-multi-author-cumulative-union.md` archives; not at this task's archive. Drop the round-3 [TODO Architect] item to add a metadata-trust table row referencing the no-shrink rule (it'll be replaced).
+- **A5. Convention doc updates carry forward to cumulative-union task.** The `pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28.md` "Sites this convention applies to" sub-section update + the structural-rule strengthening prose ("every gate enforces author + type identity together") move to the cumulative-union task's archive followups.
+- **A6. File three bridge-update retirement tasks at archive.** Per user's call ("bridge papers never need to be updated"):
+  - `architect-bridge-paper-immutability-doc.md` — ARCHITECTURE.md "Bridge papers" subsection rewrite documenting immutability + remove update flow references; revisit option-b carve-out for bridge-paper continuations (likely keep as defense-in-depth, document as inert for current bridge implementation).
+  - `backend-retire-bridge-update-route.md` — remove `POST /api/bridge/update` route, `bridgeUpdateLockKey` helper, related tests in `bridge.test.ts` and `bridge-haf-lag-locks.test.ts`.
+  - `ui-retire-bridge-sync-affordance.md` — remove "Bridge sync" button on paper-detail page, `handleBridgeSync()` method, `updateBridgePaper()` API helper, i18n keys (`bridge.syncing`, `bridge.syncButton`, `bridge.syncSuccess`, `bridge.syncFailed`).
+- **A7. File new UI task `ui-author-input-accredited-prefill.md` at archive.** Per round-3 triage finding #3 (split call): ORCID prefilled from accreditation + deactivate input when the author's hive is accredited; click affordance on the username input to find/select an accredited hive account. Cross-references `ui-multi-author-consent-affordances.md` (currently blocked).
+- **A8. Codebase-wide `pevoString` adoption follow-up.** Once round-4 lands the helper, file `backend-pevo-string-helper-adoption-sweep.md` in `tasks/pending/` to migrate the existing `|| null` cast sites at `papers.ts:395, 1354`, `helpers.ts:186` (and any other similar sites discovered) to the new helper for codebase consistency.
+- **A9. Unblock `backend-multi-author-cumulative-union.md`.** Once this task archives, `git mv` `agents/docs/tasks/blocked/backend-multi-author-cumulative-union.md` to `agents/docs/tasks/pending/` so backend can pick it up.
+
+### Re-review signal
+
+When round-4 item 1 (the `pevoString` helper extraction + adoption + canaries) lands, `git mv` this file back to `tasks/review/`. Architect's next review pass scopes `/ce-code-review` to the round-4 commit. Expected diff: ~10-15 lines in `helpers.ts` (the helper) + 3 lines replaced in `papers.ts` + 3-5 canary tests. Small surface; clean archive on green review (no further holds expected).
