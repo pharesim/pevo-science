@@ -239,6 +239,22 @@ The work that landed cleanly stays: helper extraction (`parseBatchValue`), atomi
 
 ### Items to address
 
+### Direction-of-truth — settled 2026-05-05
+
+The chain is the SSoT for accreditation. The Redis batch map is a performance cache of computed scores; it is not authoritative. Every reader that surfaces a reputation value MUST gate on chain accreditation (`getAccreditation(username)` or set membership in `getAllAccreditedAccounts()`) before displaying a score. `backend/src/routes/profile.ts:142-161` already encodes this pattern; stats, papers list, comments enrichment, and any future reader extend it symmetrically. This rule is downstream of the root `CLAUDE.md` design principles "Hive-native, not Hive-wrapped" and "Reputation is computed, not tokenized" and was confirmed explicitly by the user during this re-review.
+
+This settles the architectural cluster the original anchor flagged. The findings below are reframed in light of this direction:
+
+- **Item #2 is downgraded to P3 hygiene.** Stale prod entries for chain-revoked users become a Redis memory leak, not user-visible divergence — the reader gate short-circuits revoked users to 0 regardless of cache state. Optional fix: post-Lua DEL pass for orphan prod keys (prod keys with no matching staging key in the latest cycle), OR accept as residual. Defer unless implementing it is cheap as part of the Lua script change.
+- **Items #3 and #4 take a specific shape.** Add the chain pre-check pattern from `backend/src/routes/profile.ts:142-161` to:
+  - `backend/src/routes/stats.ts:79-85` (item #3) — before picking max `.score`, intersect the batch map with `getAllAccreditedAccounts()` (already hafCache-backed; cheap Set membership). Users not in the accredited set are excluded from the max calculation.
+  - `backend/src/routes/papers.ts:372-376` and `backend/src/routes/comments.ts:147-159` (item #4) — for each author/commenter, gate the displayed `author_reputation` / `reviewer_reputation` on chain accreditation; non-accredited users render score 0.
+  - Use the existing hafCache-backed accreditation lookup; do NOT add a new HAF roundtrip per request.
+- **Items #5, #7, #9, #10 stay at P1**, reframed as **batch-quality** correctness rather than SSoT divergence. The reader gate is defense-in-depth against stale cache, not a license to let the cache drift. The batch must compute correct values, advance `cycle:last` only on real cycles, resist multi-instance races, and keep its own state honest about what's been processed.
+- **Items #6, #8, #11–#21, #22–#29 are unchanged.** They cover parse-error visibility, broadcast-failure discrimination, helper reuse, missing test coverage, and polish — all independent of the SSoT direction.
+
+Items 3, 4, 5, 6, 7, 8, 9, 10, 11 are independent enough to fan out into parallel commits. Each commit MUST use the bare `backend:` or `backend(<scope>):` prefix per item #1 so the zone-audit hook fires.
+
 #### P0 — commit hygiene
 
 **1. (P0) Use bare `backend:` / `backend(<scope>):` prefix on all future commits for this task.** All 8 commits in this task used conventional-commit wrappers (`feat(backend):`, `refactor(backend):`, `test(backend):`, `docs(backend):`, `chore(tasks):`) which fall through to the unrecognized-prefix path in `.githooks/commit-msg` and silently skip the zone-audit hook (per root CLAUDE.md "Subject-prefix style for agent commits"). Already-landed commits cannot be retroactively re-audited; the next round's commits MUST use the bare form so the audit fires. Verify with `bash .githooks/tests/test-commit-msg.sh` if the hook itself is touched.
@@ -320,4 +336,4 @@ The two architect-owned doc updates (#12 `reputation-algorithm.md`, #13 `ARCHITE
 
 When items 1, 2-10, 11, 14-21, 22-29 land (items 12-13 are architect-owned; defer), `git mv` this file from `tasks/pending/` back to `tasks/review/`. Use **bare `backend:` or `backend(<scope>):`** commit prefixes so the zone-audit hook fires (item #1). The architect's next review pass scopes `/ce-code-review` to commits since `a370ee2` (the most recent reviewed-and-held SHA) and either archives on clean or appends a new hold block.
 
-**Anchor:** items 2-7 form one architectural decision cluster — the ownership question of "who is the SSoT, the chain or the batch map." The right shape for #2-#4 depends on a single direction-of-truth call. Recommend invoking `/ce-brainstorm` with the architect on that question before fanning out implementation work, rather than fixing items piecemeal and discovering they pull against each other.
+**Anchor:** items 2-7 formed one architectural decision cluster — the ownership question of "who is the SSoT, the chain or the batch map." Settled 2026-05-05 in favor of chain-as-SSoT with symmetric reader gating; see "Direction-of-truth" section above the P0 block. Items can fan out in parallel commits.
