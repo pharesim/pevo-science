@@ -167,3 +167,127 @@ Phase 2 should be planned with `/ce-plan` to break into reviewable rounds. Expec
 
 - ε's round-3 fixes must land first (the round-3 corrections establish the no-shrink + per-version baseline that Phase 2 layers consent ops onto).
 - The `/api/me/authorships/pending` endpoint (sibling task `backend-notification-infra-for-consent-ops`) and the UI affordances (`ui-multi-author-consent-affordances`) ship concurrently with Phase 2 for the flag-day migration to work.
+
+---
+
+## Phase 2 round breakdown (planned 2026-05-05, backend)
+
+ε round-3 fixes landed on `main` at commit `77db9cf` (no-shrink rule + per-version `ipfs_cid`/`document_hash`), so Phase 2 dependency #1 is met. Phase 2 splits into four rounds, each scoped as a single held-pending-fix review unit.
+
+### Round 1 — types + vouched-set helper (foundational)
+
+**Goal:** wire the on-chain consent-op shape into the type system and produce a pure read-time helper that returns the vouched-set for a paper. No integration with the continuation-chain admit gate yet — that's round 2.
+
+**Files:**
+- Modify: `backend/src/types/hive.ts` — extend `PevoCustomJsonAction` union with `AuthorAcceptAction` (`type: 'author_accept'`, `root_author`, `root_permlink`) and `AuthorResignAction` (`type: 'author_resign'`, `root_author`, `root_permlink`). Mirror existing `AccreditAction` / `RevokeAction` shape.
+- Create: `backend/src/consent-ops.ts` — new module exporting `getVouchedAuthors(rootAuthor, rootPermlink): Promise<Set<string>>`. Internally fetches `author_accept` / `author_resign` ops via `hafsql.operation_custom_json_view` filtered by `custom_id = config.appTag` and a JSON predicate matching `root_author` / `root_permlink`, then applies all validity rules from ARCH.md "Author Accept" / "Author Resign" subsections (signer-binding, claimed-set membership lookup against the paper's chain-walk historical union of `pevo.authors[]`, temporal ordering ≥ first-claim block, latest valid op wins per `(block_num, trx_in_block)`).
+- Test: `backend/tests/consent-ops.test.ts` — real-HAF carve-out where feasible; mocked-pool variants for deterministic edge cases (signer-mismatch, pre-claim ordering, same-block tie-break).
+
+**Approach:**
+- The helper takes `(rootAuthor, rootPermlink)` and returns the vouched set as a `Set<string>` of lowercased Hive handles. It does NOT cache internally — caching is round 2's concern; round 1 ships a clean read-time function so vouched-set semantics are testable in isolation.
+- Claimed-set computation is the historical union per ARCH.md "Vouched vs claimed authorship". Source of truth is the chain-walk of all admitted operations on the paper's continuation chain — round 1 can call into the existing `resolveContinuationChain` for this, even though round 2 will fold the call into the chain-walk itself.
+- Helper signature returns `Set<string>`; callers compute membership cheaply.
+
+**Test scenarios:**
+- Happy path: root broadcaster is implicitly vouched (no consent op required).
+- Happy path: claimed-pending author broadcasts valid `author_accept` → vouched.
+- Edge: claimed-pending author's accept op signed by a different account (signer-binding mismatch) → rejected.
+- Edge: accept op with `block_num` ≤ first-claim block → rejected (temporal ordering: no name-squatting via pre-broadcast).
+- Edge: accept then resign by same author → resigned (latest op wins).
+- Edge: accept → resign → accept → vouched (re-accept allowed).
+- Edge: same-block tie-break by `trx_in_block` (highest wins).
+- Edge: bridge papers (`type: 'bridge_paper'`, head author = `config.hiveBridgeAccount`) — vouched-set is `{config.hiveBridgeAccount}` only; consent ops on bridge papers are inert. Confirms ARCH.md "Bridge papers" subsection.
+- Edge: `pevo.authors[].hive: null` entries are excluded from claimed set (handled upstream by `extractAuthorizedContinuationAuthors` already).
+
+**Verification:** unit tests pass; `npx tsc --noEmit` clean; `npm run lint` clean.
+
+### Round 2 — integration with continuation-chain admit gate + cache invalidation
+
+**Goal:** replace the raw `pevo.authors[]` membership check in the continuation-chain admit gate with the round-1 vouched-set lookup, satisfying the four constraints in ARCH.md "Vouched-set computation (Phase 2 constraints)" subsection.
+
+**Files:**
+- Modify: `backend/src/routes/papers.ts` — replace the two call sites of `extractAuthorizedContinuationAuthors` that gate continuation-chain admission (lines around 632, 834 per current `main`) with a flow that derives the vouched-set via `getVouchedAuthors(rootAuthor, rootPermlink)` and intersects against the per-post `pevo.authors[]` membership. The bridge-paper special case in `extractAuthorizedContinuationAuthors` stays — bridge papers bypass the consent flow.
+- Modify: `backend/src/consent-ops.ts` — add per-paper memoization wrapper so a single paper-detail request fires one consent-op fetch (O(1) per request constraint).
+- Modify: `backend/src/block-watcher.ts` (or `backend/src/cache.ts` invalidation hooks) — extend the existing `custom_json` invalidation hook to invalidate `paper-detail:{author}:{permlink}` and `paper-detail:{author}:{permlink}:v{N}` whenever a `custom_json` op with `custom_id = config.appTag` and `type ∈ {author_accept, author_resign}` is observed. Cite ARCH.md "Cache invalidation on every consent op".
+- Test: `backend/tests/routes/multi-author-vouched-gate.test.ts` — new test file specifically for the integration path.
+
+**Dependencies:** Round 1.
+
+**Test scenarios:**
+- Happy path: vouched co-author broadcasts continuation → admitted.
+- Edge: claimed-pending co-author (in `pevo.authors[]` but no `author_accept` op) broadcasts continuation → rejected, audit event logged.
+- Edge: vouched co-author resigns, then broadcasts continuation → rejected from the resign block onward.
+- Edge: bridge paper continuations (head author = `config.hiveBridgeAccount`) admitted; bridge paper's `pevo.authors[].hive: null` entries excluded from vouched-set.
+- Integration: consent op at block N is reflected in vouched-set computation by block N+1 (one-block staleness — verify cache invalidation timing through block-watcher).
+- Integration: paper-detail request fires exactly one HAF query for consent ops, regardless of chain length (O(1) constraint).
+- Integration: cache invalidation fires for both `paper-detail:{author}:{permlink}` and `paper-detail:{author}:{permlink}:v{N}` on a consent op.
+
+**Verification:** integration tests pass; manual smoke test against local HAF; `[TODO Architect]` note added in this task file describing the contract change for `agents/docs/api-contracts/papers.md` (the continuation-chain admit semantics now reference the vouched-set).
+
+**Unblocks:** `backend-notification-infra-for-consent-ops` (in `tasks/blocked/`) — its `/api/me/authorships/pending` endpoint queries the vouched-set produced here. Append a coordination note to that task file when round 2 lands.
+
+### Round 3 — custody endpoint extension + fresh-auth gate
+
+**Goal:** allow light-account users to broadcast `author_accept` / `author_resign` via the existing custody/broadcast endpoint, gated by a per-op fresh-authentication challenge per ARCH.md "Light-account signing of consent ops". Self-custody users are unaffected (they sign via Keychain).
+
+**Files:**
+- Modify: `backend/src/routes/custody.ts` — extend the broadcast handler's allowlist of supported op types to include `custom_json` ops with `id = config.appTag` and `json.type ∈ {author_accept, author_resign}`. Reject any other custom_json type that isn't already in the allowlist.
+- Create: `backend/src/lib/fresh-auth.ts` — fresh-auth challenge primitive: validates a per-op fresh-auth proof token against the user's auth mechanism (password re-prompt → bcrypt re-verify; ORCID-authed → fresh OAuth round-trip token within last N seconds). The token shape and TTL are local to this module; the round-3 PR documents them inline.
+- Modify: `backend/src/types/api.ts` — add `fresh_auth_proof` field to the broadcast request shape; declare it required for `author_accept` / `author_resign` payloads, optional otherwise.
+- Modify: `backend/src/custody-audit.ts` (or whichever module owns `logCustodyBroadcast`) — extend audit-log fields to include `auth_mechanism` and the fresh-auth verification outcome. Per ARCH.md the audit log MUST capture timestamp, session ID, user-agent, auth-mechanism.
+- Test: `backend/tests/routes/custody-consent-ops.test.ts` — covers light-account accept/resign flow plus fresh-auth gate.
+
+**Dependencies:** Round 1 (types). Independent of round 2 (round 3 is purely the broadcast path; vouched-set integration in round 2 is the read path).
+
+**Test scenarios:**
+- Happy path: light-account user with valid fresh-auth proof broadcasts `author_accept` → 200, broadcast succeeds, audit log captures all required fields.
+- Happy path: light-account user with valid fresh-auth proof broadcasts `author_resign` → 200, audit log captures fields.
+- Edge: light-account user without fresh-auth proof → 401 / 403 with explicit error code.
+- Edge: light-account user with stale fresh-auth proof (TTL expired) → 401 / 403.
+- Edge: password-account user provides ORCID-style fresh-auth proof (mismatched mechanism) → rejected.
+- Edge: self-custody user calls custody endpoint at all → existing 403 still fires (no regression).
+- Edge: light-account user broadcasts a non-allowlisted custom_json type → rejected (no regression on existing allowlist).
+- Integration: fresh-auth proof is single-use within its TTL — replaying the same proof for a second op fails.
+
+**Verification:** integration tests pass against real Postgres/Redis; `[TODO Architect]` note added describing contract additions for `agents/docs/api-contracts/custody.md`.
+
+### Round 4 — migration-day flag + flag-day cutover canary
+
+**Goal:** gate the new vouched-set rules behind `MULTI_AUTHOR_TRUST_MODEL_ENABLED` env flag. When off, the continuation-chain admit gate falls back to the ε round-3 baseline (raw `pevo.authors[]` membership with no-shrink rule + per-version preservation). When on, the round-2 vouched-set lookup is authoritative. This is the surface that the flag-day deploy flips.
+
+**Files:**
+- Modify: `backend/src/config.ts` — add `multiAuthorTrustModelEnabled: boolean` derived from env, default `false` for migration-day safety.
+- Modify: `backend/src/routes/papers.ts` (the integration site from round 2) — wrap the vouched-set lookup behind the flag. When off, the call site preserves the round-2 invariants for round-1 unit tests but bypasses the vouched-set check at the integration layer.
+- Modify: `backend/src/routes/custody.ts` — broadcast path is NOT flag-gated. Users may broadcast `author_accept` ops before flag-day so the cutover finds them already vouched. Add an inline comment explaining this asymmetry (broadcast lives ahead of the read gate by design).
+- Test: `backend/tests/routes/multi-author-flag-gate.test.ts` — flag-on / flag-off behavioral split.
+
+**Dependencies:** Round 2 (the integration site that the flag wraps).
+
+**Test scenarios:**
+- Happy path (flag off): continuation by claimed-pending co-author admitted (matches ε round-3 baseline).
+- Happy path (flag on): continuation by claimed-pending co-author rejected; same author after broadcasting `author_accept` admitted.
+- Integration: pre-flag `author_accept` ops broadcast while flag was off are honored once flag flips on (vouched status from on-chain state is the source of truth, not flag history).
+- Edge: bridge papers behave identically with flag on or off (consent flow inert per ARCH.md "Bridge papers" subsection).
+
+**Verification:** flag-off variant of full backend vitest suite passes (ensures no regression on baseline behavior); flag-on variant of consent-flow tests pass; `[TODO Architect]` note added describing the env flag for ARCH.md "Migration" subsection if not already covered.
+
+**Unblocks flag-day deploy:** once round 4 lands and `backend-notification-infra-for-consent-ops` + `ui-multi-author-consent-affordances` are also archived, the operator can flip `MULTI_AUTHOR_TRUST_MODEL_ENABLED=true` to execute the hard cutover per ARCH.md "Migration".
+
+### Round sequencing
+
+```
+Round 1 (types + helper)
+  └─► Round 2 (continuation gate integration + cache invalidation)
+        ├─► Round 3 (custody broadcast path; can run in parallel with round 2 after round 1)
+        └─► Round 4 (migration flag wrapping round 2's integration)
+              └─► flag-day deploy (orthogonal: also requires sibling tasks to ship)
+```
+
+Rounds 2 and 3 are file-disjoint (papers.ts vs custody.ts) and could run as parallel worktree fan-out after round 1 lands. Round 4 must come after round 2 (it wraps round 2's integration site). Each round is one held-pending-fix review unit.
+
+### Out-of-scope deferrals (filed elsewhere)
+
+- The `/api/me/authorships/pending` endpoint → `backend-notification-infra-for-consent-ops` (separate task).
+- UI accept/resign affordances + migration banner → `ui-multi-author-consent-affordances` (UI agent).
+- Bridge-paper authorship claim flow → `backend-bridge-paper-author-claim-flow` (P2, deferred stub).
+- Convention doc capture via `/ce-compound` after round 4 archive — gated on whether non-obvious learnings surfaced; default skip.
