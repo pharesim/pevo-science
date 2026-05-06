@@ -706,10 +706,6 @@
     "stepSuccess": "Ön baskı başarıyla kaydedildi! Yönlendiriliyor...",
     "sourcePanel": "İlk olarak {source} üzerinde yayınlandı",
     "viewSource": "{source} üzerinde görüntüle",
-    "syncButton": "Kaynaktan Eşitle",
-    "syncing": "Eşitleniyor...",
-    "syncSuccess": "Makale kaynaktan başarıyla eşitlendi.",
-    "syncFailed": "Kaynaktan eşitleme başarısız oldu.",
     "signInHint": "Ön baskı kaydetmek için giriş yapın. Ayrıca akredite bir araştırmacı olmanız gerekir."
   },
   "common": {

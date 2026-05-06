@@ -702,10 +702,6 @@
     "stepSuccess": "Preprint erfolgreich registriert! Weiterleitung...",
     "sourcePanel": "Ursprünglich veröffentlicht auf {source}",
     "viewSource": "Auf {source} anzeigen",
-    "syncButton": "Von Quelle synchronisieren",
-    "syncing": "Wird synchronisiert...",
-    "syncSuccess": "Publikation erfolgreich von Quelle synchronisiert.",
-    "syncFailed": "Synchronisierung von Quelle fehlgeschlagen.",
     "signInHint": "Melden Sie sich an, um einen Preprint zu registrieren. Sie müssen außerdem akkreditiert sein."
   },
   "common": {

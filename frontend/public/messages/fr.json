@@ -702,10 +702,6 @@
     "stepSuccess": "Prépublication enregistrée avec succès ! Redirection...",
     "sourcePanel": "Publié initialement sur {source}",
     "viewSource": "Voir sur {source}",
-    "syncButton": "Synchroniser depuis la source",
-    "syncing": "Synchronisation...",
-    "syncSuccess": "Article synchronisé depuis la source avec succès.",
-    "syncFailed": "Impossible de synchroniser depuis la source.",
     "signInHint": "Connectez-vous pour enregistrer une prépublication. Vous devez également être un chercheur accrédité."
   },
   "common": {

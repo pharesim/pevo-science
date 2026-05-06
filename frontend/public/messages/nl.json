@@ -706,10 +706,6 @@
     "stepSuccess": "Preprint succesvol geregistreerd! Doorverwijzen...",
     "sourcePanel": "Oorspronkelijk gepubliceerd op {source}",
     "viewSource": "Bekijken op {source}",
-    "syncButton": "Synchroniseren vanaf bron",
-    "syncing": "Synchroniseren...",
-    "syncSuccess": "Artikel succesvol gesynchroniseerd vanaf bron.",
-    "syncFailed": "Synchroniseren vanaf bron mislukt.",
     "signInHint": "Meld u aan om een preprint te registreren. U moet ook een geaccrediteerd onderzoeker zijn."
   },
   "common": {

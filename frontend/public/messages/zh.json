@@ -702,10 +702,6 @@
     "stepSuccess": "预印本注册成功！正在跳转...",
     "sourcePanel": "最初发表于 {source}",
     "viewSource": "在 {source} 上查看",
-    "syncButton": "从源同步",
-    "syncing": "同步中...",
-    "syncSuccess": "论文已成功从源同步。",
-    "syncFailed": "从源同步失败。",
     "signInHint": "请登录以注册预印本。您还需要成为已认证的研究人员。"
   },
   "common": {

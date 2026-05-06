@@ -702,10 +702,6 @@
     "stepSuccess": "Preprint registrato con successo! Reindirizzamento...",
     "sourcePanel": "Originariamente pubblicato su {source}",
     "viewSource": "Visualizza su {source}",
-    "syncButton": "Sincronizza dalla Fonte",
-    "syncing": "Sincronizzazione...",
-    "syncSuccess": "Articolo sincronizzato dalla fonte con successo.",
-    "syncFailed": "Impossibile sincronizzare dalla fonte.",
     "signInHint": "Accedi per registrare un preprint. Devi anche essere un ricercatore accreditato."
   },
   "common": {

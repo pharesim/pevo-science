@@ -312,14 +312,6 @@ export function registerBridgePaper(data) {
   });
 }
 
-export function updateBridgePaper(permlink) {
-  return authenticatedRequest('/bridge/update', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ permlink }),
-  });
-}
-
 // ─── Contact ─────────────────────────────────────────────────────
 
 export function submitContactForm(data) {

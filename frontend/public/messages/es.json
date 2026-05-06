@@ -702,10 +702,6 @@
     "stepSuccess": "¡Preimpresión registrada exitosamente! Redirigiendo...",
     "sourcePanel": "Publicado originalmente en {source}",
     "viewSource": "Ver en {source}",
-    "syncButton": "Sincronizar desde la fuente",
-    "syncing": "Sincronizando...",
-    "syncSuccess": "Artículo sincronizado desde la fuente exitosamente.",
-    "syncFailed": "Error al sincronizar desde la fuente.",
     "signInHint": "Inicie sesión para registrar una preimpresión. También necesita ser un investigador acreditado."
   },
   "common": {

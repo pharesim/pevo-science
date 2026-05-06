@@ -1,5 +1,5 @@
 import Alpine from 'alpinejs';
-import { fetchPaper, fetchPaperEnrichment, fetchCitationExport, retractPaper, updateBridgePaper, claimAuthorship, approveAuthorshipClaim, revokeAuthorshipClaim } from '../api.js';
+import { fetchPaper, fetchPaperEnrichment, fetchCitationExport, retractPaper, claimAuthorship, approveAuthorshipClaim, revokeAuthorshipClaim } from '../api.js';
 import { broadcastOps } from '../signer.js';
 import { getAppTag } from '../config.js';
 import { computeVersionDiff } from '../lib/version-diff.js';
@@ -254,10 +254,6 @@ const template = `
                     </span>
                   </template>
                 </div>
-                <template x-if="$store.auth.isConnected && $store.auth.username === paper.author">
-                  <button class="btn-secondary text-sm" @click="handleBridgeSync()" :disabled="syncLoading"
-                          x-text="syncLoading ? $t('bridge.syncing') : $t('bridge.syncButton')"></button>
-                </template>
               </div>
             </template>
 
@@ -747,9 +743,6 @@ export function initPaperDetailPage() {
     // Authorship claims
     claimLoading: false,
 
-    // Bridge sync
-    syncLoading: false,
-
     // Paper body collapse
     bodyExpanded: false,
 
@@ -1022,28 +1015,6 @@ export function initPaperDetailPage() {
         this.$store.toast.show(this.$t('retraction.failed'), 'error');
       } finally {
         this.retractLoading = false;
-      }
-    },
-
-    // Bridge sync
-    async handleBridgeSync() {
-      if (!this.$store.auth.username) return;
-      const author = this.author;
-      const permlink = this.permlink;
-      this.syncLoading = true;
-      try {
-        await updateBridgePaper(permlink);
-        if (this.author !== author || this.permlink !== permlink) return;
-        this.$store.toast.show(this.$t('bridge.syncSuccess'), 'success');
-        const res = await fetchPaper(author, permlink);
-        if (this.author !== author || this.permlink !== permlink) return;
-        this.paper = res.data;
-      } catch (err) {
-        if (this.author !== author || this.permlink !== permlink) return;
-        console.warn('[paper detail bridge sync]', err);
-        this.$store.toast.show(this.$t('bridge.syncFailed'), 'error');
-      } finally {
-        this.syncLoading = false;
       }
     },
 

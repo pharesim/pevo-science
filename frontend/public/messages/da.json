@@ -702,10 +702,6 @@
     "stepSuccess": "Preprint registreret! Omdirigerer...",
     "sourcePanel": "Oprindeligt publiceret på {source}",
     "viewSource": "Se på {source}",
-    "syncButton": "Synkroniser fra kilde",
-    "syncing": "Synkroniserer...",
-    "syncSuccess": "Artikel synkroniseret fra kilden.",
-    "syncFailed": "Kunne ikke synkronisere fra kilden.",
     "signInHint": "Log ind for at registrere et preprint. Du skal også være akkrediteret forsker."
   },
   "common": {

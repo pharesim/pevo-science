@@ -702,10 +702,6 @@
     "stepSuccess": "Förhandsutskrift registrerad! Omdirigerar...",
     "sourcePanel": "Ursprungligen publicerad på {source}",
     "viewSource": "Visa på {source}",
-    "syncButton": "Synka från källa",
-    "syncing": "Synkar...",
-    "syncSuccess": "Artikeln synkad från källan.",
-    "syncFailed": "Kunde inte synka från källan.",
     "signInHint": "Logga in för att registrera en förhandsutskrift. Du måste också vara en ackrediterad forskare."
   },
   "common": {

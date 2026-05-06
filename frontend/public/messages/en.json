@@ -706,10 +706,6 @@
     "stepSuccess": "Preprint registered successfully! Redirecting...",
     "sourcePanel": "Originally published on {source}",
     "viewSource": "View on {source}",
-    "syncButton": "Sync from Source",
-    "syncing": "Syncing...",
-    "syncSuccess": "Paper synced from source successfully.",
-    "syncFailed": "Failed to sync from source.",
     "signInHint": "Sign in to register a preprint. You also need to be an accredited researcher."
   },
   "common": {

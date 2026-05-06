@@ -5,7 +5,6 @@ vi.mock('../../src/api.js', () => ({
   fetchPaperEnrichment: vi.fn(),
   fetchCitationExport: vi.fn(),
   retractPaper: vi.fn(),
-  updateBridgePaper: vi.fn(),
   claimAuthorship: vi.fn(),
   approveAuthorshipClaim: vi.fn(),
   revokeAuthorshipClaim: vi.fn(),
@@ -50,7 +49,6 @@ import {
   fetchPaper,
   fetchCitationExport,
   retractPaper,
-  updateBridgePaper,
   claimAuthorship,
   approveAuthorshipClaim,
   revokeAuthorshipClaim,
@@ -651,17 +649,6 @@ describe('paperDetailPage', () => {
       const comp = createComponent();
       await comp.handleRetract();
       expect(mockStores.toast.show).toHaveBeenCalledWith('retraction.failed', 'error');
-      expect(mockStores.toast.show.mock.calls[0][0]).not.toContain(LEAK_SENTINEL);
-      expect(warnSpy).toHaveBeenCalled();
-      expect(warnSpy.mock.calls[0][1]).toBe(err);
-    });
-
-    it('handleBridgeSync: generic key, raw err to warn, no leak', async () => {
-      const err = leakyError();
-      updateBridgePaper.mockRejectedValue(err);
-      const comp = createComponent();
-      await comp.handleBridgeSync();
-      expect(mockStores.toast.show).toHaveBeenCalledWith('bridge.syncFailed', 'error');
       expect(mockStores.toast.show.mock.calls[0][0]).not.toContain(LEAK_SENTINEL);
       expect(warnSpy).toHaveBeenCalled();
       expect(warnSpy.mock.calls[0][1]).toBe(err);

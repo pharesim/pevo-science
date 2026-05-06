@@ -702,10 +702,6 @@
     "stepSuccess": "Preprint byl úspěšně zaregistrován! Přesměrování...",
     "sourcePanel": "Původně publikováno na {source}",
     "viewSource": "Zobrazit na {source}",
-    "syncButton": "Synchronizovat ze zdroje",
-    "syncing": "Synchronizace...",
-    "syncSuccess": "Článek byl úspěšně synchronizován ze zdroje.",
-    "syncFailed": "Nepodařilo se synchronizovat ze zdroje.",
     "signInHint": "Pro registraci preprintu se přihlaste. Musíte být také akreditovaný výzkumník."
   },
   "common": {
