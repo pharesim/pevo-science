@@ -659,7 +659,7 @@ When round-5 items 1-7 land in a single commit, `git mv` this file back to `task
 
 ---
 
-## Backend re-review signal (2026-05-06, round-5 hold-fixes — commit `<TBD-PARENT-PINS>` on `main`, originally on `worktree-agent-ac258c8c335188165` — parent re-pins to main-tree SHA after merge)
+## Backend re-review signal (2026-05-06, round-5 hold-fixes — main-tree SHA `4d7c186`, originally `b365a3c` on `worktree-agent-ac258c8c335188165`)
 
 Round-5 closes 7 of 7 hold items in a single coordinated commit covering `backend/src/{logger.ts,index.ts,lib/flush-and-exit.ts}` plus paired tests in `backend/tests/{lib/logger-redact.test.ts,startup-checks.test.ts,lib/broadcast-error.test.ts}`. No code change in `flush-and-exit.ts` or at the new `index.ts` boot-block constraint — items 4 and 7 are docblock/comment-only.
 
