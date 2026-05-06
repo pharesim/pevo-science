@@ -131,3 +131,52 @@ The round-2 fixes are correct on their own terms. However, the architect's own r
 ### Re-review signal
 
 When item 1 lands, `git mv` this file back to `tasks/review/`. Architect's round-3 review will run `/ce-code-review` scoped to the round-3 commit and either archive (along with the deferred TODO Architect contract-doc cleanups, in a separate architect-zone commit) or append a new hold block. Round-3 should be small enough that a clean pass is the expected outcome.
+
+## Backend re-review signal (2026-05-06, main-tree SHA `<TBD>`)
+
+Round-3's single hold item lands in this commit. Architect's hold cited `backend/src/routes/papers.ts:1125-1127`; actual stale-citation lines were `:1126-1129` (small drift, anticipated by the architect's note that "the architect's grep was scoped narrowly and the drift could be larger than expected"). The 4-line stale block was replaced with the architect's verbatim 3-line text.
+
+### Item resolution
+
+**Item 1 (P2) — Stale task-file forward-reference at `papers.ts`.** Edit at lines 1126-1129 (was 1125-1127 in the architect's grep). Old text:
+
+```
+ * stays locked to `{bridgeAccount}` for bridge chains. The bridge update
+ * flow is being retired (see `backend-retire-bridge-update-route.md`)
+ * which makes `chain.length === 1` for bridge papers in practice; the
+ * cumulative-extension path here is defense-in-depth.
+```
+
+New text (architect's verbatim):
+
+```
+ * stays locked to `{bridgeAccount}` for bridge chains. Bridge papers are
+ * immutable post-publish, which makes `chain.length === 1` for bridge
+ * papers in practice; the cumulative-extension path here is defense-in-depth.
+```
+
+The substantive content survives — bridge-paper Option-b carve-out is preserved by construction at the cumulative-set helper level; `chain.length === 1` invariant for bridge papers carries forward; cumulative-extension path is defense-in-depth. Only the rotting task-file cross-reference is dropped.
+
+### Project-wide grep (per architect's signal-block-write-time convention)
+
+```
+grep -rn "backend-retire-bridge-update-route\|/api/bridge/update\|bridgeUpdateLockKey\|updateLimiter\|bridge\.ts /update" backend/src backend/tests
+```
+
+Exit code 1, zero hits. Confirms the in-scope sweep is complete: no remaining citation of the retired route, the deleted helper, the deleted limiter binding, or the deleted comment-anchor in either `backend/src` or `backend/tests`.
+
+### Verification
+
+- `npx tsc --noEmit` — clean.
+- `npm run lint` — clean (2 pre-existing `no-explicit-any` warnings on `seed-phrase.ts:26-27`, out of scope, same as round-1/round-2).
+- Targeted vitest deferred to the parent agent's serialized full-suite pass after worker merge. The change is JSDoc-only — no runtime semantics altered, no test outcome can shift.
+
+### Out-of-scope items honored
+
+- TODO Architect items 1-3 (contract-doc edits in `agents/docs/api-contracts/bridge.md` and `agents/docs/api-contracts/common.md`) remain deferred to the architect's archive-time commit per backend CLAUDE.md.
+- TODO Architect-followup at archive (sibling-task edits to `ui-coauthor-continuation-publishing.md`) — already landed by the architect in commit `41705ca` per the architect's own round-1 note.
+- Round-2 dismissed item (helpers.ts:84-89 "gating" prose imprecision) — left unchanged per the architect's dismissal.
+
+### Working-tree-state note
+
+This round was implemented directly in the main checkout, not a worktree fan-out worker. Two consecutive `isolation: "worktree"` dispatches for this task hit a worktree-base-drift bug (worker worktrees branched from `2616cc1` (2026-05-01) instead of current main HEAD, missing 7 commits including `e647abb` which retired the route in the first place). Workers correctly stopped per dispatch instructions rather than `git reset --hard` to fix the base. The 2-line JSDoc edit was small enough to land in the parent's main checkout without losing the fan-out's serialization properties; sibling workers (bridge-key round-5, auth-converge) which DID branch correctly from `7b8cf0a` continue independently in their own worktrees. The base-drift bug appears specific to certain agentId-prefix patterns; root cause unknown, not investigated as part of this task.

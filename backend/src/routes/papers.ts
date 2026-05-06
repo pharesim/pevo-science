@@ -1123,10 +1123,9 @@ async function fetchHeadAuthorizedAuthors(
  * contribution for `pevo.type === 'bridge_paper'` is `{bridgeAccount}` (per
  * `extractAuthorizedContinuationAuthors`); each admitted bridge-paper
  * candidate's contribution is also `{bridgeAccount}`, so the cumulative
- * stays locked to `{bridgeAccount}` for bridge chains. The bridge update
- * flow is being retired (see `backend-retire-bridge-update-route.md`)
- * which makes `chain.length === 1` for bridge papers in practice; the
- * cumulative-extension path here is defense-in-depth.
+ * stays locked to `{bridgeAccount}` for bridge chains. Bridge papers are
+ * immutable post-publish, which makes `chain.length === 1` for bridge
+ * papers in practice; the cumulative-extension path here is defense-in-depth.
  */
 async function resolveContinuationChain(
   author: string,
