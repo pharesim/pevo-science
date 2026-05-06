@@ -240,7 +240,7 @@ When the hold round lands and the implementer `git mv`s the file back to `tasks/
 
 ---
 
-## Backend re-review signal (2026-05-06, round-3 hold-fixes — commit `<sha-pending>` on `worktree-agent-a863721f5ecf62ee0`)
+## Backend re-review signal (2026-05-06, round-3 hold-fixes — commit `87630e2` on `worktree-agent-a863721f5ecf62ee0`)
 
 Round-3 closes 11 of 11 hold items in a single coordinated diff over `backend/src/{logger.ts,startup-checks.ts,index.ts,routes/bridge.ts,lib/broadcast-error.ts}` plus paired tests in `backend/tests/{lib/logger-redact.test.ts,startup-checks.test.ts,lib/broadcast-error.test.ts}`. Sibling worker (a different worktree) handles `routes/papers.ts`; this signal is for the logger/bridge-key cluster only.
 
