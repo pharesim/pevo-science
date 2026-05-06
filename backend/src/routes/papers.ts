@@ -872,6 +872,13 @@ async function fetchHeadAuthorizedAuthors(
     return set;
   } catch (err) {
     logger.error({ err }, 'Head authorized-authors lookup failed');
+    // Memoize the null on failure too. Documented contract on lines
+    // 826-827 says "Both null and Set results are cached"; without this
+    // set, a single request hitting canonical-walker + a second
+    // `fetchPaperDetailFromHaf` + `reconstructVersionsFromHaf` re-fires
+    // the failing query 3+ times under degraded HAF, each blocking for
+    // the full statement_timeout.
+    memo?.set(key, null);
     return null;
   }
 }
@@ -1047,19 +1054,62 @@ async function findCanonicalRoot(
 
   try {
     // Check if this post has a 'continues' field. We also need the post's
-    // own author so the next-hop gate can verify "child author is in
-    // predecessor's authorized-authors set".
+    // own author + metadata so the next-hop gate can verify "child author
+    // is in predecessor's authorized-authors set" AND so we can re-check
+    // the START's `pevo.type` is a valid paper class JS-side.
+    //
+    // Type-spoof on START gate: a vouched co-author Bob (in alice/v1's
+    // pevo.authors[]) could otherwise post `bob/spoof-review` with
+    // `pevo.type = 'review'` AND `pevo.continues = {alice, v1}`. Without
+    // a type filter on this initial probe, the URL `/api/papers/bob/spoof-review`
+    // would walk back through the gate (alice's authorized set includes
+    // bob → admits) and surface alice/v1 as canonical, rendering alice's
+    // paper content under bob's URL. The convention is "every gate
+    // enforces author + type identity together" (see
+    // `agents/docs/solutions/conventions/pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28.md`).
+    // SQL-side filter via `validPevoPaperWhere(source: 'all')` is the
+    // primary gate; the JS-side `isPevoAnyPaper` re-check below is
+    // defense in depth.
+    const startTypeFilter = validPevoPaperWhere({
+      commentAlias: 'c',
+      appTagParam: '$3',
+      bridgeAccountParam: '$4',
+      source: 'all',
+    });
     const result = await pool.query(
-      `SELECT c.json_metadata -> $3 -> 'continues' ->> 'author' AS cont_author,
+      `SELECT c.author, c.json_metadata,
+              c.json_metadata -> $3 -> 'continues' ->> 'author' AS cont_author,
               c.json_metadata -> $3 -> 'continues' ->> 'permlink' AS cont_permlink
        FROM ${T.comments} c
        WHERE c.author = $1 AND c.permlink = $2
          AND c.parent_author = '' AND c.parent_permlink = $3
-         AND c.json_metadata -> $3 -> 'continues' IS NOT NULL`,
-      [author, permlink, config.appTag],
+         AND c.json_metadata -> $3 -> 'continues' IS NOT NULL
+         AND ${startTypeFilter}`,
+      [author, permlink, config.appTag, config.hiveBridgeAccount],
     );
 
     if (result.rows.length === 0) return null;
+
+    // JS-side defense-in-depth re-check that the START is itself a valid
+    // PEvO paper (native or bridge, identity-pinned). A drift between the
+    // SQL `validPevoPaperWhere` filter and the JS `isPevoAnyPaper` check
+    // (e.g. a future SQL refactor that drops the type predicate, or a
+    // future HAF column-shape change) would be caught here.
+    const startRow = result.rows[0] as Record<string, unknown>;
+    const startMeta = parseMeta(startRow.json_metadata);
+    if (typeof startRow.author !== 'string' || !isPevoAnyPaper(startMeta, startRow.author)) {
+      return null;
+    }
+
+    // Type-narrow the cont_author / cont_permlink columns. HAF could in
+    // principle return NULL columns; bare `as string` would silently
+    // coerce undefined/null and let downstream identity checks evaluate
+    // against a non-string. Round-2 hold item 3 of the FORWARD walker
+    // task explicitly forbade `as` casts on the security path; mirror
+    // the migrated pattern at `fetchHeadAuthorizedAuthors`.
+    if (typeof startRow.cont_author !== 'string' || typeof startRow.cont_permlink !== 'string') {
+      return null;
+    }
 
     // The hop being considered is FROM `(childAuthor, childPermlink)` TO
     // `(currentAuthor, currentPermlink)` (the predecessor). To accept the
@@ -1067,8 +1117,8 @@ async function findCanonicalRoot(
     // set (per `extractAuthorizedContinuationAuthors`).
     let childAuthor: string = author;
     let childPermlink: string = permlink;
-    let currentAuthor = result.rows[0].cont_author as string;
-    let currentPermlink = result.rows[0].cont_permlink as string;
+    let currentAuthor: string = startRow.cont_author;
+    let currentPermlink: string = startRow.cont_permlink;
 
     for (let i = 0; i < CANONICAL_ROOT_MAX_HOPS; i++) {
       // Author-consent gate on the current hop: fetch the predecessor's
@@ -1085,6 +1135,7 @@ async function findCanonicalRoot(
         logger.warn(
           {
             event: 'canonical_root_walker_unauthorized_hop',
+            hopNumber: i + 1,
             childAuthor,
             childPermlink,
             predecessorAuthor: currentAuthor,
@@ -1111,10 +1162,19 @@ async function findCanonicalRoot(
         return { author: currentAuthor, permlink: currentPermlink };
       }
 
+      // Type-narrow: HAF could in principle return NULL cont_author /
+      // cont_permlink. Bare `as string` would silently coerce; bail
+      // explicitly (fail-closed: return current as the deepest verified
+      // root rather than walking with an undefined identity).
+      const parentRow = parentResult.rows[0] as Record<string, unknown>;
+      if (typeof parentRow.cont_author !== 'string' || typeof parentRow.cont_permlink !== 'string') {
+        return { author: currentAuthor, permlink: currentPermlink };
+      }
+
       childAuthor = currentAuthor;
       childPermlink = currentPermlink;
-      currentAuthor = parentResult.rows[0].cont_author as string;
-      currentPermlink = parentResult.rows[0].cont_permlink as string;
+      currentAuthor = parentRow.cont_author;
+      currentPermlink = parentRow.cont_permlink;
     }
 
     // Depth cap exceeded: stop walking and return the deepest verified
@@ -1123,6 +1183,7 @@ async function findCanonicalRoot(
     logger.warn(
       {
         event: 'canonical_root_walker_depth_exceeded',
+        hopNumber: CANONICAL_ROOT_MAX_HOPS,
         startAuthor: author,
         startPermlink: permlink,
         stopAuthor: currentAuthor,
@@ -1133,7 +1194,15 @@ async function findCanonicalRoot(
     );
     return { author: currentAuthor, permlink: currentPermlink };
   } catch (err) {
-    logger.error({ err }, 'Canonical root lookup failed');
+    logger.error(
+      {
+        event: 'canonical_root_walker_error',
+        err,
+        startAuthor: author,
+        startPermlink: permlink,
+      },
+      'Canonical root lookup failed',
+    );
     return null;
   }
 }
@@ -1170,11 +1239,18 @@ function applyHivePatch(base: string, raw: string): string {
  *   chain to avoid duplicate `resolveContinuationChain`/`fetchHeadAuthorizedAuthors`
  *   queries. `fetchPaperDetailFromHaf` resolves the chain itself; passing it
  *   in here halves the HAF query count for an uncached paper-detail request.
+ * @param memo - optional per-request `HeadAuthorsMemo` so the internal
+ *   `resolveContinuationChain` call shares cached metadata fetches with the
+ *   request's other walkers (the backward `findCanonicalRoot` and the
+ *   primary `fetchPaperDetailFromHaf` forward walk). Without this, the
+ *   `?version=N` cache-miss branch and the metadata-restored fallback both
+ *   re-fire the head-authors lookup, defeating the per-request memo.
  */
 async function reconstructVersionsFromHaf(
   author: string,
   permlink: string,
   prefetchedChain?: ChainLink[],
+  memo?: HeadAuthorsMemo,
 ): Promise<ReconstructedVersion[]> {
   const pool = getPool();
   if (!pool) return [];
@@ -1182,7 +1258,7 @@ async function reconstructVersionsFromHaf(
   try {
     // Resolve continuation chain to get all (author, permlink) pairs.
     // Caller may pass it in to avoid the duplicate fetch.
-    const chain = prefetchedChain ?? await resolveContinuationChain(author, permlink);
+    const chain = prefetchedChain ?? await resolveContinuationChain(author, permlink, memo);
 
     // Build a query that fetches operations for ALL posts in the chain
     const conditions: string[] = [];
@@ -1436,7 +1512,7 @@ router.get('/:author/:permlink', async (req: Request, res: Response) => {
   if (requestedVersion !== null) {
     const cacheKey = `paper-detail:${author}:${permlink}:v${requestedVersion}`;
     const cached = await hafCache.getOrSet(cacheKey, async () => {
-      const versions = await reconstructVersionsFromHaf(author, permlink);
+      const versions = await reconstructVersionsFromHaf(author, permlink, undefined, headAuthorsMemo);
       if (versions.length === 0) return null;
 
       // Paper identity is established by the first version (original publication).
@@ -1473,7 +1549,7 @@ router.get('/:author/:permlink', async (req: Request, res: Response) => {
     // If current metadata was stripped by an external edit, reconstruct from
     // version history. The first version establishes paper identity; later
     // versions inherit PEvO metadata when the editing frontend dropped it.
-    const versions = await reconstructVersionsFromHaf(author, permlink);
+    const versions = await reconstructVersionsFromHaf(author, permlink, undefined, headAuthorsMemo);
     if (versions.length > 0 && isPevoAnyPaper(versions[0].json_metadata, versions[0].post_author)) {
       const latest = versions[versions.length - 1];
       const meta = latest.json_metadata;
