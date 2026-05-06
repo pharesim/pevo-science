@@ -83,3 +83,30 @@ The gap is pre-existing. It predates the bridge `/update` retirement (commit e64
 ### Re-review signal
 
 When items 1-2 land, `git mv` this file back to `tasks/review/`. Round-2 architect review scopes `/ce-code-review` to the round-2 commit only.
+
+## Backend re-review signal (2026-05-06, round-1 hold-fixes — commit `<SHA-PIN>` on `worktree-agent-a948e1877ba25061e`)
+
+Round-1 closes 2 of 2 hold items in a single tightly-scoped diff over `backend/tests/routes/app-not-found.test.ts`. No `src/` changes — both items are test-pin tightenings against the canonical `ApiError` shape and the file's own stated `GET/POST/PUT/PATCH/DELETE` scope.
+
+### Item-by-item resolution
+
+**1. PATCH coverage added.** `backend/tests/routes/app-not-found.test.ts:50-53` — new fifth `it()` block matching the architect-supplied snippet verbatim: `request(app).patch(NON_EXISTENT_PATH).send({ foo: 'bar' })` then `expectJsonNotFound(res)`. The file header at lines 8-9 promised `GET/POST/PUT/PATCH/DELETE` coverage; the stated scope and the actual coverage now match. Runtime was already correct (`app.use('/api', ...)` is method-agnostic at `app.ts:402`); this closes the test-pin gap.
+
+**2. Inline cast replaced with canonical `ApiError` type.** `backend/tests/routes/app-not-found.test.ts:4` — added `import type { ApiError } from '../../src/types/index.js';` (verified: `backend/src/types/index.ts:3` re-exports `* from './api.js'`, and `backend/src/types/api.ts:12` defines `ApiError` with `code: ErrorCode` literal-union including `"NOT_FOUND"`). `expectJsonNotFound` body at lines 25-32 collapsed to the architect-supplied snippet verbatim: `const body = res.body as ApiError;` then direct `body.status` / `body.error.code` / `body.error.message.length` assertions. The `?.` optional chains and `?? ''` fallback are dropped — under the canonical type the prior optional-chained / `typeof` checks were unreachable, and a future typo of the error code string ("NOT_FOUNDD") would now fail the typecheck rather than silently regress to a runtime-only catch.
+
+### Verification gate
+
+- `npx tsc --noEmit` — clean, no errors.
+- `npm run lint` — clean, 2 pre-existing warnings only (`src/seed-phrase.ts:26,27` `@typescript-eslint/no-explicit-any`, both acceptable per task-2 round-3 signal-block precedent).
+- Targeted vitest run (`tests/routes/app-not-found.test.ts`): **5 passed (5)** in 1.57s. All `GET/POST/PUT/PATCH/DELETE` cases land 404 + `application/json` + `NOT_FOUND` + non-empty message. Per task brief, full vitest suite is NOT run in this worker — parent serializes that after merging both worker diffs.
+
+### Deviations from architect snippets
+
+None. Both snippets applied verbatim. Import path resolves to `../../src/types/index.js` (the re-export route the architect specified); the direct fallback `../../src/types/api.js` was not needed.
+
+### Out-of-scope items honored
+
+- `backend/src/app.ts` — not touched. Item-2 is a test-pin only; runtime behavior was already correct under round-1's commit `8f2b94d`.
+- Dismissed-triage items (open-coded NOT_FOUND envelope, defensive SPA-layer guard) — left untouched per the architect's hold-block. The envelope-helper sweep is tracked under the spawned follow-up `backend-error-envelope-helper-sweep.md`.
+
+---

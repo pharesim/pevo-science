@@ -17,6 +17,7 @@
 import { describe, it, expect } from 'vitest';
 import request from 'supertest';
 import { createApp } from '../../src/app.js';
+import type { ApiError } from '../../src/types/index.js';
 
 const app = createApp();
 
@@ -25,11 +26,10 @@ const NON_EXISTENT_PATH = '/api/this-route-does-not-exist';
 function expectJsonNotFound(res: { status: number; body: unknown; type: string }) {
   expect(res.status).toBe(404);
   expect(res.type).toBe('application/json');
-  const body = res.body as { status?: string; error?: { code?: string; message?: string } };
+  const body = res.body as ApiError;
   expect(body.status).toBe('error');
-  expect(body.error?.code).toBe('NOT_FOUND');
-  expect(typeof body.error?.message).toBe('string');
-  expect((body.error?.message ?? '').length).toBeGreaterThan(0);
+  expect(body.error.code).toBe('NOT_FOUND');
+  expect(body.error.message.length).toBeGreaterThan(0);
 }
 
 describe('unmatched /api/* requests return JSON 404 envelope (BACKEND-API-FALLTHROUGH-JSON-404)', () => {
@@ -45,6 +45,11 @@ describe('unmatched /api/* requests return JSON 404 envelope (BACKEND-API-FALLTH
 
   it('PUT /api/<unknown> returns JSON envelope with NOT_FOUND', async () => {
     const res = await request(app).put(NON_EXISTENT_PATH).send({ foo: 'bar' });
+    expectJsonNotFound(res);
+  });
+
+  it('PATCH /api/<unknown> returns JSON envelope with NOT_FOUND', async () => {
+    const res = await request(app).patch(NON_EXISTENT_PATH).send({ foo: 'bar' });
     expectJsonNotFound(res);
   });
 
