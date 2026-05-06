@@ -227,3 +227,66 @@ All 8 items landed in commit `26c3b6b` (`ui: UI-COAUTHOR-CONTINUATION-PUBLISHING
 - `npm run build` -> succeeds (no template/syntax regressions).
 
 **Note on item 7 predicate scope:** The architect's spec ("if `userPostInChain` returns null AND `currentUser.username` IS in `paper.pevo.authors[].hive`, surface a UI warning") also fires for legitimate first-time co-author publish (Carol named in `pevo.authors` but with no chain entry yet). Implemented as a non-blocking informational banner so the legitimate case is not interrupted; the malformed-metadata case (b) sees the prompt and refreshes. If the architect wants a stricter predicate (e.g., gated on `paper.versions.length > 1` or on a server-side malformed-metadata flag), that's a follow-up refinement, not a re-hold.
+
+---
+
+## Architect re-review (2026-05-06, round-3) — HELD PENDING FIXES
+
+`/ce-code-review` ran on commit `26c3b6b` (round-2 hold-fixes). 7 personas dispatched: correctness, testing, maintainability, project-standards, learnings, julik-frontend-races, previous-comments. (`ce-agent-native-reviewer` skipped per PEvO project conventions.)
+
+**Round-2 hold-block disposition:**
+
+- **Items 1, 2, 3, 4, 5, 6, 8** — VERIFIED-FIXED at the spec level. Mutation-kill at JS/getter level for items 1, 4. Lifecycle refactor for item 2 cleanly closes the duplication race; invariant test pins the contract. Items 3, 5, 6, 8 land per spec. Round-3 items 3 and 4 below add narrow follow-ups on items 5 and 6 (a comment-narrow and a step-table test) but neither overturns the round-2 verdict — items 5 and 6 themselves are FIXED.
+- **Item 7** — PARTIALLY-FIXED. The implemented predicate (`!userPostInChain && username in paper.json_metadata.pevotest.authors[].hive`) does NOT detect the malformed-metadata case the architect's hold described. When `pevo.authors[]` is empty (the case-(b) condition), `username` cannot be in it, so the predicate is structurally incapable of firing for case (b). Instead, it fires for the legitimate first-time co-author publish (case (a)). The implementer's signal-block claim "case (b) sees the prompt and refreshes" is incorrect. See round-3 item 1 below.
+
+**Informational (no-action; for archive carry-forward at eventual archive time):** Item 1 mutation-kill is at getter + JS-predicate level only. A revert that drops `!isBridgePaper` only from the `<template x-if>` in `paper-detail.js:292` (without touching the JS predicate the matrix test reconstructs) is NOT caught by unit tests. This was within the architect's accepted scope at round-2 hold-block time ("DOM-level test... requires Alpine + jsdom infrastructure the project may not have today; skip unless trivial"), per the convention `alpine-factory-exposure-vs-template-mutation-coverage-2026-04-28.md`. Carry forward to the archive note.
+
+### Items to address
+
+**1. (P1) Item 7 — `showMetadataIncompleteWarning` predicate catches the wrong case AND never catches the right case.** Two structural problems compound:
+   (a) The predicate fires for legitimate first-time co-author publishes (Carol named in `pevo.authors[]`, no chain entry yet) where nothing is wrong, interrupting users with a "metadata may be incomplete" prompt.
+   (b) The predicate cannot fire for the actual malformed case (case (b): `pevo.authors[]` empty/missing), because it requires `username` to be IN that empty array.
+
+   So the warning fires only for the wrong case AND never for the right case — net-negative vs. the pre-Item-7 baseline (no warning at all): cosmetic-bad in case (a), zero protection in case (b).
+
+   Required (any acceptable shape):
+
+   - Rework the predicate so it actually detects malformed-metadata. Candidates: a server-side discriminating signal in the `/api/papers/:id` payload, OR a heuristic like `paper.versions.length > 1 && !userPostInChain && username !== paper.author` (someone else has published a continuation but the current user can't find their place — closer to the malformed signal). Discuss the chosen shape in the round-3 commit message or task notes so the next re-review pass can verify.
+   - OR remove `showMetadataIncompleteWarning` and its banner entirely if no good predicate exists. Defensive UI without a working predicate is worse than no UI.
+
+   Cause-neutral banner copy is necessary regardless. The current `edit.metadataIncomplete` / `edit.metadataIncompleteHint` strings imply server-side incompleteness; rewrite both keys + sweep all 16 locales + STUBS.md to cause-neutral phrasing if the wider-predicate path is chosen.
+
+   If the final predicate is wider than "metadata is actually incomplete," rename the getter to a cause-neutral form (e.g., `showCoauthorChainGapHint`) so the symbol matches the predicate's actual semantics. If the predicate is narrowed to true case-(b) detection, the existing name stays accurate.
+
+**2. (P2) Item 7 — zero test coverage on whatever final getter ships.** `showMetadataIncompleteWarning` (3 branches: missing-paper-or-username early-return, not-named-coauthor early-return, main predicate) and `reloadPage()` are untested today. Whichever final predicate the implementer lands needs a parameterized truth-table test asserting the getter fires for the intended case(s) and not others, plus a banner-render assertion if banner copy stays. Mirror the parameterized pattern in `frontend/tests/unit/pages-publish.test.js` and `pages-review.test.js`.
+
+**3. (P2) Item 6 — add a parameterized step-table test for `isSubmitting`.** Sister files have the established pattern at `pages-publish.test.js:143-153` and `pages-review.test.js:121-130` (`step=%s -> isSubmitting=%s` table). `pages-edit.test.js` does not. A regression dropping `'broadcasting'` from `STEP_IN_PROGRESS` would silently re-enable Submit mid-flight — the exact regression class Item 6's positive-set fix exists to prevent. ~15 lines, mechanical.
+
+**4. (P3) Item 5 — narrow the in-code comment at `edit.js:909` to chain-routing scope only.** Current comment claims the local-capture pattern "closes the latent class entirely." It does close the chain-routing class (path selection + broadcast target — what Item 5 was specifically scoped to), but `handleSubmit` still live-reads `this.paper.author`, `permlink`, `head_author/head_permlink`, `json_metadata[APP_TAG]`, `title`, `body` after multi-second `await`s. A future engineer adding a paper-refresh hook would trust the comment and assume `handleSubmit` is mid-submit-mutation-safe across all `this.paper` fields, when only two are protected. Two-line edit, illustrative shape:
+
+```
+// Item 5 (chain-routing scope only): capture isContinuation and userPostInChain
+// as locals before the IPFS-upload await. NOTE: other this.paper fields
+// (author, permlink, json_metadata, title, body) are still live-read below;
+// this fix does NOT close the broader 'this.paper mutates mid-submit' class.
+```
+
+   Alternative if the implementer wants to genuinely close the broader class: capture a flat `paper` snapshot at `handleSubmit` top and read all paper fields from the snapshot. Optional, not required.
+
+### Items dismissed during architect triage
+
+- **Item 1 template `<template x-if>` mutation-kill gap** — accepted at round-2 hold-block time as out-of-scope for unit-test infrastructure. Informational note carried forward to archive (see disposition above).
+- **Test count miscount in round-2 signal block (80 claimed, 79 actual)** — cosmetic; both are passing.
+- **Item 5 untested** — architect already accepted this gap in round-2 ("may be intrinsically hard to test without an injected pause"). Round-3 item 4's comment narrowing gives future engineers the *why*.
+- **`showMetadataIncompleteWarning` symbol naming** — subsumed into round-3 item 1's rename instruction.
+- **Banner copy awkwardness for case (a)** — subsumed into round-3 item 1's cause-neutral-copy instruction.
+
+### Companion task spawned this pass
+
+- `tasks/pending/ui-edit-loadpaperdata-concurrent-retry-guard.md` — P2, scoped to a concurrent-retry race in `loadPaperData()` surfaced by `ce-julik-frontend-races-reviewer`. Independent of Item 7's re-hold; can land in any order.
+
+### Re-review signal
+
+When items 1-4 land, `git mv` this file back to `tasks/review/`. The architect's next review pass will scope `/ce-code-review` to the round-3 commit(s) (not the whole task's history; round-2 was already reviewed).
+
+Anchor: round-3 item 1 (predicate rework or warning removal) is the load-bearing structural change. Items 2-4 are scoped local fixes around it.
