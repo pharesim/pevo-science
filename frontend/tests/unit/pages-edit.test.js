@@ -274,6 +274,28 @@ describe('editPage handleSubmit sanitization', () => {
     });
   });
 
+  // STEP_IN_PROGRESS is a positive-set inclusion list used by isSubmitting.
+  // Mirrors the parameterized table pattern in pages-publish.test.js and
+  // pages-review.test.js. A regression that drops a step name from
+  // STEP_IN_PROGRESS would silently re-enable Submit mid-flight; the
+  // unrecognized-step case pins the positive-set semantics so a typo or
+  // future step name keeps the button disabled by default.
+  describe('isSubmitting', () => {
+    it.each([
+      ['idle', false],
+      ['success', false],
+      ['error', false],
+      ['diffing', true],
+      ['uploading', true],
+      ['broadcasting', true],
+      ['unknown-future-step', false],
+    ])('step=%s -> isSubmitting=%s', (step, expected) => {
+      const comp = createComponent();
+      comp.step = step;
+      expect(comp.isSubmitting).toBe(expected);
+    });
+  });
+
   // UI-COAUTHOR-CONTINUATION-PUBLISHING: a co-author who already has a
   // post in the version chain (e.g. bob with bob/cont-1) must native-edit
   // their existing post on subsequent edits, not balloon the chain with a

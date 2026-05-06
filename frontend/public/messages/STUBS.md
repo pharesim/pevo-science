@@ -796,54 +796,6 @@ sv: orcid.postBroadcastFailedConfirmed
 tr: orcid.postBroadcastFailedConfirmed
 zh: orcid.postBroadcastFailedConfirmed
 
-### Added 2026-05-04 (UI-COAUTHOR-CONTINUATION-PUBLISHING)
-
-ar: common.refresh
-ar: edit.metadataIncomplete
-ar: edit.metadataIncompleteHint
-cs: common.refresh
-cs: edit.metadataIncomplete
-cs: edit.metadataIncompleteHint
-da: common.refresh
-da: edit.metadataIncomplete
-da: edit.metadataIncompleteHint
-de: common.refresh
-de: edit.metadataIncomplete
-de: edit.metadataIncompleteHint
-es: common.refresh
-es: edit.metadataIncomplete
-es: edit.metadataIncompleteHint
-fa: common.refresh
-fa: edit.metadataIncomplete
-fa: edit.metadataIncompleteHint
-fr: common.refresh
-fr: edit.metadataIncomplete
-fr: edit.metadataIncompleteHint
-he: common.refresh
-he: edit.metadataIncomplete
-he: edit.metadataIncompleteHint
-it: common.refresh
-it: edit.metadataIncomplete
-it: edit.metadataIncompleteHint
-nl: common.refresh
-nl: edit.metadataIncomplete
-nl: edit.metadataIncompleteHint
-pl: common.refresh
-pl: edit.metadataIncomplete
-pl: edit.metadataIncompleteHint
-pt: common.refresh
-pt: edit.metadataIncomplete
-pt: edit.metadataIncompleteHint
-sv: common.refresh
-sv: edit.metadataIncomplete
-sv: edit.metadataIncompleteHint
-tr: common.refresh
-tr: edit.metadataIncomplete
-tr: edit.metadataIncompleteHint
-zh: common.refresh
-zh: edit.metadataIncomplete
-zh: edit.metadataIncompleteHint
-
 ### Added 2026-05-04 (UI-KEYCHAIN-API-MISUSE)
 
 ar: upgrade.keychainImportFailed

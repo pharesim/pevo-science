@@ -119,15 +119,6 @@ const template = `
               </div>
             </template>
 
-            <!-- Metadata-incomplete warning (named co-author with no chain entry) -->
-            <template x-if="showMetadataIncompleteWarning">
-              <div class="card bg-pevo-crimson-light border-pevo-crimson/30 mb-6">
-                <p class="text-sm font-medium text-ink" x-text="$t('edit.metadataIncomplete')"></p>
-                <p class="text-xs text-ink-muted mt-1" x-text="$t('edit.metadataIncompleteHint')"></p>
-                <button type="button" class="btn-secondary text-xs mt-2" @click="reloadPage()" x-text="$t('common.refresh')"></button>
-              </div>
-            </template>
-
             <!-- Progress indicator -->
             <template x-if="step !== 'idle'">
               <div class="card mb-6" :class="stepClass">
@@ -420,10 +411,6 @@ export function initEditPage() {
       Alpine.store('router').navigate(path);
     },
 
-    reloadPage() {
-      window.location.reload();
-    },
-
     async handleConnect() {
       try {
         await Alpine.store('auth').connect();
@@ -498,29 +485,6 @@ export function initEditPage() {
       // Chain exists but the version walk didn't find a user post → user
       // has not contributed to this chain → new continuation.
       return true;
-    },
-
-    // Surfaces a soft warning when the user appears to be a named
-    // co-author (per the chain head's pevo.authors[]) but has no post in
-    // versions[]. Two cases land here:
-    //   (a) Legitimate first-time co-author publish (chain has only the
-    //       root or another author's continuation). The banner is
-    //       informational; the publish-continuation flow proceeds.
-    //   (b) Malformed-metadata case (companion to backend continuation
-    //       gate item 8): the user previously published in this chain
-    //       but their post got filtered out because the backend gate
-    //       degenerated the chain to root-only when head metadata went
-    //       empty/missing. Refreshing or waiting for backend repair is
-    //       the right fix; the user should NOT silently broadcast a
-    //       fresh continuation that orphans their existing post.
-    // The warning is non-blocking by design — case (a) is legitimate,
-    // case (b) requires user intervention. The form remains submittable.
-    get showMetadataIncompleteWarning() {
-      if (!this.paper || !this.username) return false;
-      const pevoAuthors = this.paper.json_metadata?.[getAppTag()]?.authors || [];
-      const isNamedCoAuthor = pevoAuthors.some(a => a?.hive === this.username);
-      if (!isNamedCoAuthor) return false;
-      return this.userPostInChain === null;
     },
 
     get nextVersion() {
@@ -900,14 +864,16 @@ export function initEditPage() {
       if (!username || !this.isConnected) return;
       if (!this.authorName.trim()) return;
 
-      // Capture the chain-routing decision atomically, before any awaits.
-      // isContinuation and userPostInChain are getters that recompute from
-      // this.paper.versions[] on every access. The IPFS upload loop can
-      // run for many seconds; if this.paper were ever mutated during that
-      // window (background poll, future refresh hook, reactivity write),
-      // re-reading these getters at submit-time would silently shift the
-      // broadcast target. Locking them as locals here closes the latent
-      // class entirely.
+      // Chain-routing scope only: capture isContinuation and
+      // userPostInChain as locals before the IPFS-upload await. Both are
+      // getters that recompute from this.paper.versions[] on every
+      // access; pinning them here prevents the broadcast target from
+      // silently shifting if this.paper were mutated mid-submit.
+      // NOTE: other this.paper fields (author, permlink, json_metadata,
+      // title, body) below are still live-read after awaits — this
+      // capture does NOT close the broader "this.paper mutates
+      // mid-submit" class. Future code that adds a paper-refresh hook
+      // must take a flat paper snapshot up front to be fully safe.
       const isContinuation = this.isContinuation;
       const ownPost = this.userPostInChain;
 

@@ -290,3 +290,24 @@ All 8 items landed in commit `26c3b6b` (`ui: UI-COAUTHOR-CONTINUATION-PUBLISHING
 When items 1-4 land, `git mv` this file back to `tasks/review/`. The architect's next review pass will scope `/ce-code-review` to the round-3 commit(s) (not the whole task's history; round-2 was already reviewed).
 
 Anchor: round-3 item 1 (predicate rework or warning removal) is the load-bearing structural change. Items 2-4 are scoped local fixes around it.
+
+---
+
+## UI re-review signal (2026-05-06, working tree on top of main 3d41476)
+
+Round-3 items 1-4 landed. The architect's hold block above is unedited per the review -> held -> re-review protocol; the commit diff is the evidence.
+
+**Item-by-item disposition:**
+
+- **Item 1 (P1)** — `showMetadataIncompleteWarning` warning REMOVED entirely (architect-authorized "OR remove" path). Decision rationale: the existing predicate fires only for case (a) (legitimate first-time co-author publish, false positive that interrupts a normal flow), and the architect's heuristic candidate `paper.versions.length > 1 && !userPostInChain && username !== paper.author` ALSO fires for case (a) (Carol joining a 2-version chain matches the heuristic). Case (b) (empty/missing `pevo.authors[]`) is hypothetical with no concrete user report; an accredited user landing on the edit page with empty `pevo.authors[]` would in practice be the canonical author (where the predicate doesn't fire) or an accreditation-fallback path (rare). Defensive UI without a working predicate is worse than no UI per the architect's hold. `frontend/src/pages/edit.js`: removed `showMetadataIncompleteWarning` getter, `reloadPage()` method, and the banner template. Three locale keys removed across all 16 locale files: `edit.metadataIncomplete`, `edit.metadataIncompleteHint`, `common.refresh`. STUBS.md sweep section `### Added 2026-05-04 (UI-COAUTHOR-CONTINUATION-PUBLISHING)` (45 stub lines) removed.
+- **Item 2 (P2)** — Collapsed by Item 1 removal. No replacement test required since the feature is gone; pre-existing tests had zero references to `showMetadataIncompleteWarning`/`reloadPage`/`metadataIncomplete` (verified via grep), so nothing needed to be deleted from the test suite either.
+- **Item 3 (P2)** — Parameterized step-table test added in `frontend/tests/unit/pages-edit.test.js`, mirroring `pages-publish.test.js:143-153` and `pages-review.test.js:121-130`. 7 cases: `idle`/`success`/`error` -> false; `diffing`/`uploading`/`broadcasting` -> true; `unknown-future-step` -> false (positive-set semantics). A regression dropping any in-progress step name from `STEP_IN_PROGRESS` would now flip the corresponding row to false and fail the test.
+- **Item 4 (P3)** — Comment narrowed at `frontend/src/pages/edit.js` `handleSubmit` local-capture site. Old comment claimed the local-capture pattern "closes the latent class entirely"; new comment scopes the fix to chain-routing only (path selection + broadcast target — what the original Item 5 fix actually addresses) and explicitly notes that other `this.paper` fields (author, permlink, json_metadata, title, body) are still live-read after awaits. Future engineers adding a paper-refresh hook will see that the broader class is not closed.
+
+**Verification:**
+
+- `npx vitest run tests/unit/pages-edit.test.js` -> 23/23 passing.
+- `npx vitest run tests/unit/` -> 1056/1056 passing across 60 test files.
+- `npm run build` -> succeeds (no template/syntax regressions). Pre-existing chunk-size warnings unchanged.
+
+**Note on Item 1 scope expansion:** The hold block instructed "Rework the predicate so it actually detects malformed-metadata. ... OR remove `showMetadataIncompleteWarning` and its banner entirely if no good predicate exists." Both heuristic candidates the architect listed (server-side discriminating signal; the wider `versions.length > 1 && !userPostInChain && username !== paper.author` predicate) either require backend coordination or false-positive on case (a). Removal closes the issue cleanly without inventing a backend signal that has no concrete user-reported justification. If a future user report surfaces a real malformed-metadata case (b), a properly scoped backend signal can be added then with the predicate re-introduced.
