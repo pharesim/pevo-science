@@ -1,6 +1,6 @@
 import { Router, type Request, type Response } from 'express';
 import crypto from 'crypto';
-import { getCachedBridgePostingKey } from '../startup-checks.js';
+import { getRequiredBridgePostingKey } from '../startup-checks.js';
 import { getPool, isHafAvailable } from '../db.js';
 import { broadcastSendOperationsWithTimeout } from '../hive.js';
 import { config } from '../config.js';
@@ -378,9 +378,16 @@ router.post('/register', registerLimiter, verifyHiveSignature, async (req: Reque
     try {
       // Use the boot-cached parsed key. `assertBridgeKeyConfigured` above
       // already returned 503 if the WIF env var is unset, so the cache is
-      // guaranteed populated when we reach here. The non-null assertion
-      // documents that invariant.
-      const key = getCachedBridgePostingKey()!;
+      // guaranteed populated when we reach here. Round-3 hold #6
+      // (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT) replaced
+      // the prior non-null assertion `getCachedBridgePostingKey()!` with
+      // the `getRequiredBridgePostingKey()` accessor that throws a
+      // structured `BridgeKeyCacheUnpopulated` error if the cache is null.
+      // The throw is unreachable on the happy path; it surfaces as a
+      // recognizable shape (instead of a silent `null!.toString()`
+      // TypeError) if a future change ever desyncs the cache from the
+      // config-truthiness check.
+      const key = getRequiredBridgePostingKey();
       const result = await broadcastSendOperationsWithTimeout(
         [
           ['comment', {

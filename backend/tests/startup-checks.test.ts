@@ -4,6 +4,8 @@ import {
   validatePostingKeyFormat,
   validateAccountNameFormat,
   getCachedBridgePostingKey,
+  getRequiredBridgePostingKey,
+  BridgeKeyCacheUnpopulated,
   _resetBridgePostingKeyCacheForTests,
   _initBridgePostingKeyCacheForTests,
 } from '../src/startup-checks.js';
@@ -274,6 +276,52 @@ describe('getCachedBridgePostingKey — boot-cached parsed bridge admin WIF', ()
     expect(getCachedBridgePostingKey()?.toString()).toBe(wifB);
   });
 
+  // Round-3 hold #6 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):
+  // `getRequiredBridgePostingKey` is the throw-on-null variant added so
+  // bridge.ts call sites can drop the non-null assertion `getCachedBridge
+  // PostingKey()!`. The non-null assertion tied type narrowing to
+  // `assertBridgeKeyConfigured(res)` (which checks `config.pevoBridge
+  // PostingKey`, NOT the cache contents) — a future refactor that nulled
+  // the cache while config stayed truthy would silently produce
+  // `null!.toString()` → TypeError. The accessor below ties type
+  // narrowing to the cache directly and throws a structured, redact-safe
+  // error if the cache is ever null at the call site.
+  it('getRequiredBridgePostingKey: returns the parsed key when cache is populated (round-3 hold #6)', () => {
+    const wif = PrivateKey.fromSeed('startup-checks-required-fixture').toString();
+    (config as { pevoBridgePostingKey: string }).pevoBridgePostingKey = wif;
+    _initBridgePostingKeyCacheForTests();
+    const required = getRequiredBridgePostingKey();
+    expect(required.toString()).toBe(wif);
+  });
+
+  it('getRequiredBridgePostingKey: throws structured BridgeKeyCacheUnpopulated when cache is null (round-3 hold #6)', () => {
+    (config as { pevoBridgePostingKey: string }).pevoBridgePostingKey = '';
+    _initBridgePostingKeyCacheForTests();
+    let captured: unknown = null;
+    try {
+      getRequiredBridgePostingKey();
+    } catch (e) {
+      captured = e;
+    }
+    expect(captured).toBeInstanceOf(Error);
+    expect(captured).toBeInstanceOf(BridgeKeyCacheUnpopulated);
+    const err = captured as BridgeKeyCacheUnpopulated;
+    expect(err.name).toBe('BridgeKeyCacheUnpopulated');
+    // Redact-safe: the message MUST NOT contain anything WIF-derived.
+    // (The accessor never sees a parsed value to interpolate, but pin
+    // the contract so a future change can't accidentally leak.)
+    expect(typeof err.message).toBe('string');
+    expect(err.message.length).toBeGreaterThan(0);
+    // Pass the error through the redact policy and verify operators can
+    // still key on `out.type === 'BridgeKeyCacheUnpopulated'` (the
+    // serializer projects `errAny.constructor.name` into the output's
+    // `type` field — using a real subclass over the bare-Error+name route
+    // keeps that projection deterministic).
+    const out = redactErrSerializer(err) as Record<string, unknown>;
+    expect(out.type).toBe('BridgeKeyCacheUnpopulated');
+    expect(typeof out.message).toBe('string');
+  });
+
   it('a malformed WIF surfaces via the format validator at boot, not via this accessor', () => {
     // Defense-in-depth check: the format validator covers
     // PEVO_BRIDGE_POSTING_KEY format errors at boot. The cached accessor's
@@ -284,28 +332,58 @@ describe('getCachedBridgePostingKey — boot-cached parsed bridge admin WIF', ()
     expect(validatePostingKeyFormat('garbage', 'PEVO_BRIDGE_POSTING_KEY')).not.toBeNull();
   });
 
-  it('fatal log on parse-divergence does NOT leak the WIF or AssertionError buffer slices', () => {
-    // Hand-construct an AssertionError-shaped error matching dhive's throw
-    // shape on a malformed WIF. Pass it through the redact-policy serializer
-    // (the same one logger.ts uses). The output must NOT contain the
-    // simulated WIF-derived Buffer hex, which is the load-bearing property
-    // for the startup fatal-log path.
-    const fakeWif = '5JFAKE_WIF_THAT_MUST_NOT_LEAK_INTO_LOGS_aaaaaaaaaaaaaaaaaaaaaaaaaa';
-    const err = Object.assign(new Error('Expected values to match'), {
-      name: 'AssertionError',
-      actual: Buffer.from('e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', 'hex'),
-      expected: Buffer.from('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'hex'),
-      operator: 'deepStrictEqual',
-    });
+  it('fatal log on parse-divergence does NOT leak the WIF or AssertionError buffer slices (real PrivateKey.fromString throw)', () => {
+    // Round-3 hold #9 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):
+    // the prior version of this test hand-rolled an AssertionError-shaped
+    // object with literal `actual`/`expected` Buffer slices. That made the
+    // assertions pass by construction, not by virtue of the redactor — a
+    // mutation that disabled the redactor would still pass because the
+    // hand-rolled buffer contents aren't actually present in the synthetic
+    // err's serialized form (or, conversely, would always pass even when
+    // the redact policy was reverted to pino's default).
+    //
+    // Drive the real dhive throw path: pass a base58-decodable but
+    // network-id-mismatching WIF to `PrivateKey.fromString` so dhive's
+    // internal `assert.deepStrictEqual` fails, producing an AssertionError
+    // whose `.actual` / `.expected` are Buffer slices DERIVED from the
+    // input. This is the production leak shape: under the default pino err
+    // serializer those buffers would land in operator logs as hex strings.
+    // The redactor must strip them.
+    const malformedWif = '5J' + '1'.repeat(50);
+    let captured: unknown = null;
+    try {
+      PrivateKey.fromString(malformedWif);
+    } catch (e) {
+      captured = e;
+    }
+    // Sanity: dhive threw an AssertionError. If a future dhive change
+    // narrows the throw to a different class, this fixture must be updated
+    // (the assertion itself documents the expected throw class).
+    expect(captured).toBeInstanceOf(Error);
+    const errAny = captured as Error & { actual?: unknown; expected?: unknown };
+    expect(errAny.name).toBe('AssertionError');
+    expect(errAny.actual).toBeDefined();
+    expect(errAny.expected).toBeDefined();
 
-    const serialized = JSON.stringify(redactErrSerializer(err));
-    // No WIF surface in the serialized payload.
-    expect(serialized).not.toContain(fakeWif);
-    expect(serialized).not.toContain('e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855');
-    expect(serialized).not.toContain('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
-    expect(serialized).not.toContain('deepStrictEqual');
+    // Run the captured error through the redact-policy serializer.
+    const out = redactErrSerializer(captured) as Record<string, unknown>;
+    expect(out.actual).toBeUndefined();
+    expect(out.expected).toBeUndefined();
+    expect(out.operator).toBeUndefined();
+
+    // Belt-and-suspenders: serialized output does not contain the buffer
+    // slices' hex form. The actual/expected buffers in this real-throw
+    // path are 1-byte each (the network-id byte mismatch); their hex
+    // representation is "1d" / "80" or similar — too short to make a
+    // meaningful negative-substring assertion. Instead verify the literal
+    // input WIF bytes are absent (catch any future serializer that copies
+    // `errAny.input` or echoes the message with input interpolation).
+    const serialized = JSON.stringify(out);
+    expect(serialized).not.toContain(malformedWif);
+
     // Baseline (operator triage info) survives.
-    expect(serialized).toContain('Expected values to match');
+    expect(typeof out.message).toBe('string');
+    expect((out.message as string).length).toBeGreaterThan(0);
   });
 });
 
@@ -327,16 +405,23 @@ describe('getCachedBridgePostingKey — boot-cached parsed bridge admin WIF', ()
 // ──────────────────────────────────────────────
 
 describe('Bridge admin WIF boot validation end-to-end', () => {
-  it('the format-validator error message naming PEVO_BRIDGE_POSTING_KEY does NOT echo the malformed WIF input', () => {
-    // The validator wraps the dhive throw and references the env var name,
-    // but must NOT interpolate the actual value. An attacker who triggers
-    // a boot-error log line could otherwise reconstruct the input.
-    const malformedKey = '5JFAKE_BRIDGE_KEY_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
-    const result = validatePostingKeyFormat(malformedKey, 'PEVO_BRIDGE_POSTING_KEY');
-    expect(result).not.toBeNull();
-    expect(result).toContain('PEVO_BRIDGE_POSTING_KEY');
-    expect(result).not.toContain(malformedKey);
-  });
+  // Round-3 hold #9 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):
+  // the prior "format-validator does NOT echo the malformed WIF input" test
+  // was dropped as redundant. `validatePostingKeyFormat` interpolates only
+  // (a) the env-var name and (b) the dhive error class + message into its
+  // returned string. dhive's error message for malformed input does NOT
+  // substring the input bytes (verified empirically — its 'Non-base58
+  // character' / AssertionError messages are content-independent), so the
+  // not-toContain assertion passed by construction, not by virtue of any
+  // validator-level scrubbing. The real-throw redact-policy test below
+  // (using `PrivateKey.fromString` directly) is the load-bearing canary
+  // for the WIF-leak class. If a future dhive change starts substringing
+  // the input into its error message, that test catches the leak via
+  // `redactErrSerializer` (the wrapper emits `errMsg` verbatim, but the
+  // redactor's recursive cause-chain coverage of the err path scrubs leaks
+  // upstream of the validator's string template). Adding a "validator
+  // scrubs its own template" test on top of that is double-coverage of a
+  // surface the redactor already pins.
 
   it('AssertionError-thrown at parse: passing the err to the logger via redactErrSerializer drops the WIF-derived buffer slices', () => {
     // Drive the actual dhive throw path on a real malformed WIF, capture

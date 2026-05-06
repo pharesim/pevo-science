@@ -160,8 +160,14 @@ export function validateConfig(): void {
   }
 
   if (missing.length > 0) {
+    // Round-3 hold #2 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):
+    // pino's destination transport is async by default; `process.exit(1)` on
+    // the next line would tear down the runtime including the worker thread
+    // before the buffered fatal line drains. Flush before exit so the
+    // boot-fatal log is observable to operators.
     logger.error('Required config missing:\n' + missing.join('\n'));
-    process.exit(1);
+    logger.flush(() => process.exit(1));
+    return;
   }
 
   // After all string-format validations pass, parse the bridge posting key
@@ -221,13 +227,18 @@ function initBridgePostingKeyCache(): void {
     // misconfiguration. Log via the redact-policy logger so the
     // AssertionError's `actual`/`expected` Buffer slices DON'T reach
     // operator logs, then exit. Never log the WIF itself.
+    // Round-3 hold #2 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):
+    // pino's destination transport is async by default; `process.exit(1)`
+    // would otherwise tear down the runtime before the buffered fatal line
+    // drains. Flush before exit so the boot-fatal log is observable to
+    // operators.
     logger.fatal(
       { err, envVar: 'PEVO_BRIDGE_POSTING_KEY' },
       'Bridge posting key parse failed at boot — refusing to start. ' +
       'The format validator passed but PrivateKey.fromString threw; ' +
       'this indicates a validator/dhive divergence. Investigate before deploying.',
     );
-    process.exit(1);
+    logger.flush(() => process.exit(1));
   }
 }
 
@@ -235,15 +246,32 @@ function initBridgePostingKeyCache(): void {
  * Returns the parsed bridge posting key (cached at boot), or `null` when
  * `PEVO_BRIDGE_POSTING_KEY` is unset.
  *
- * Per-request callers MUST NOT call `PrivateKey.fromString(config.pevoBridgePostingKey)`
- * directly — use this accessor instead. Two reasons:
+ * Once boot succeeds AND `config.pevoBridgePostingKey` is not mutated
+ * post-boot, this accessor returns the cached `PrivateKey` without
+ * re-parsing. The lazy-fallback path below (cache miss + key configured)
+ * is a test-and-rotation-only branch; production paths reach it only
+ * post-validator (the validator at `validateConfig()` runs before any
+ * request-handling code, populating the cache).
+ *
+ * Per-request callers in `routes/bridge.ts` MUST NOT call
+ * `PrivateKey.fromString(config.pevoBridgePostingKey)` directly — use this
+ * accessor (or `getRequiredBridgePostingKey()` when null is unacceptable)
+ * instead. Two reasons:
  *   1. The parse result is immutable; recomputing it per request is waste.
  *   2. The parse path can throw `AssertionError` whose `.actual`/`.expected`
  *      Buffer slices are derived from the WIF; even with the redact policy
  *      in `logger.ts` stripping them post-hoc, eliminating the throw site
  *      is the stronger guarantee. The startup validator above is the
- *      single throw site; once boot succeeds, no request-time call to
- *      `PrivateKey.fromString` on this key is reachable.
+ *      single throw site for `bridge.ts` callers; once boot succeeds, no
+ *      request-time call to `PrivateKey.fromString` on this key from
+ *      `bridge.ts` is reachable.
+ *
+ * Round-3 hold #11 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):
+ * the project-wide phrasing of the prior docstring overclaimed coverage —
+ * `routes/claims.ts:214, :311` still call `PrivateKey.fromString(config.
+ * pevoBridgePostingKey)` directly per-request, tracked under the
+ * follow-up task `backend-bridge-key-claims-route-migration`. Until that
+ * lands, the throw-site guarantee scopes to bridge.ts call sites only.
  *
  * Cache miss + key configured: parses lazily, then caches. This keeps the
  * accessor safe to call before `validateConfig()` has run (test harnesses
@@ -268,6 +296,57 @@ export function getCachedBridgePostingKey(): PrivateKey | null {
     parsed: PrivateKey.fromString(source),
   };
   return cachedBridgePostingKey.parsed;
+}
+
+/**
+ * Structured error class thrown by {@link getRequiredBridgePostingKey} when
+ * the cache is unpopulated. Subclassing keeps `err.constructor.name`
+ * (which the redact serializer in `logger.ts` projects into the output's
+ * `type` field) deterministic. Operator alerts and log greps can key on
+ * `err.type === 'BridgeKeyCacheUnpopulated'` from the redacted payload.
+ *
+ * Round-3 hold #6 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT).
+ */
+export class BridgeKeyCacheUnpopulated extends Error {
+  constructor(message?: string) {
+    super(message ?? (
+      'Bridge posting key cache is unpopulated. ' +
+      'Either PEVO_BRIDGE_POSTING_KEY is unset, or boot validation was bypassed in this context.'
+    ));
+    this.name = 'BridgeKeyCacheUnpopulated';
+  }
+}
+
+/**
+ * Required-key accessor for production bridge call sites. Returns the
+ * parsed bridge posting key when configured; throws a structured, redact-
+ * safe error when the cache is null (i.e., `PEVO_BRIDGE_POSTING_KEY`
+ * unset or never initialized).
+ *
+ * Round-3 hold #6 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):
+ * `routes/bridge.ts:233` and `:366` previously used the non-null assertion
+ * `getCachedBridgePostingKey()!` after `assertBridgeKeyConfigured(res)`.
+ * That guard checks `config.pevoBridgePostingKey` (the source string), NOT
+ * the cache contents — a future change that nulls the cache while config
+ * stays truthy would silently produce `null!.toString()` → TypeError. This
+ * helper ties type narrowing to the cache contents directly, so a null
+ * cache surfaces as a recognizable, redact-safe error rather than a
+ * scary runtime TypeError that lands in operator logs.
+ *
+ * The thrown error has a clear shape (`type: 'BridgeKeyCacheUnpopulated'`)
+ * that operators / dashboards can key on. The message is plain ASCII and
+ * carries no secret-derived material — it's safe to log via the project-
+ * wide redact policy without further scrubbing.
+ *
+ * Sets the convention for the `routes/claims.ts` follow-up (see
+ * `backend-bridge-key-claims-route-migration` task) to inherit.
+ */
+export function getRequiredBridgePostingKey(): PrivateKey {
+  const cached = getCachedBridgePostingKey();
+  if (cached === null) {
+    throw new BridgeKeyCacheUnpopulated();
+  }
+  return cached;
 }
 
 /**

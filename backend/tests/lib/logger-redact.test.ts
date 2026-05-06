@@ -33,8 +33,8 @@
  *     project-wide complement.
  */
 
-import { describe, it, expect } from 'vitest';
-import { redactErrSerializer } from '../../src/logger.js';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { redactErrSerializer, logger } from '../../src/logger.js';
 
 describe('redactErrSerializer — pino err serializer redact policy', () => {
   it('AssertionError: strips .actual and .expected (Buffer slices derived from WIF)', () => {
@@ -279,5 +279,285 @@ describe('redactErrSerializer — pino err serializer redact policy', () => {
     // without the leaky fields.
     expect((redactErrSerializer(new TypeError('bad type')) as Record<string, unknown>).type).toBe('TypeError');
     expect((redactErrSerializer(new RangeError('out of range')) as Record<string, unknown>).type).toBe('RangeError');
+  });
+
+  // ───────────────────────────────────────────────────────────────────
+  // Round-3 hold #10 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):
+  // preserve-recursion through cause is well-covered (above). The dual is
+  // unmocked: do the SAFE_BASELINE_FIELDS (`code`, `errno`, `syscall`)
+  // survive at every level of a nested cause chain? An adversarial
+  // refactor that "simplified" the cause-recursion to skip baseline-field
+  // copying at depth > 0 would still pass the existing strip-recursion
+  // tests but would silently lose ENOENT/ECONNREFUSED triage data on
+  // wrapped errors. Pin the preserve invariant.
+  // ───────────────────────────────────────────────────────────────────
+  it('cause chain: code/errno/syscall preservation survives through cause recursion (round-3 hold #10)', () => {
+    const inner = Object.assign(new Error('econnrefused'), {
+      code: 'ECONNREFUSED',
+      errno: -111,
+      syscall: 'connect',
+    });
+    const outer = new Error('outer wrapper for connection error');
+    Object.assign(outer, { cause: inner });
+
+    const out = redactErrSerializer(outer) as Record<string, unknown>;
+    expect(out.cause).toBeDefined();
+    const cause = out.cause as Record<string, unknown>;
+    expect(cause.code).toBe('ECONNREFUSED');
+    expect(cause.errno).toBe(-111);
+    expect(cause.syscall).toBe('connect');
+    // The outer (which has no code/errno/syscall) should not have them
+    // either — they belong to the cause, not the outer.
+    expect(out.code).toBeUndefined();
+    expect(out.errno).toBeUndefined();
+    expect(out.syscall).toBeUndefined();
+  });
+
+  // ───────────────────────────────────────────────────────────────────
+  // Round-3 hold #3 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):
+  // depth/cycle guard. The pre-round-3 self-reference guard caught only
+  // depth-1 cycles (`A.cause = A`); a 2-step cycle (`A.cause = B; B.cause
+  // = A`) or an unbounded chain would stack-overflow and crash. Mutation
+  // kill: removing `if (depth > MAX_CAUSE_DEPTH) return sentinel` would
+  // either crash (cycle) or recurse to an absurd depth (unbounded chain).
+  // ───────────────────────────────────────────────────────────────────
+  it('depth/cycle guard: a 2-step cause cycle does NOT crash and surfaces a MaxDepthExceeded sentinel (round-3 hold #3)', () => {
+    // Construct A.cause = B; B.cause = A. Without the depth guard this
+    // would recurse forever.
+    const a = new Error('A — outer');
+    const b = new Error('B — inner');
+    Object.assign(a, { cause: b });
+    Object.assign(b, { cause: a });
+
+    // Must not throw / crash. Returns finite output.
+    const out = redactErrSerializer(a) as Record<string, unknown>;
+    expect(out).toBeDefined();
+    // Walk the cause chain looking for the sentinel. After 11 levels,
+    // the recursion bails. Each level is its own redacted err object;
+    // the sentinel surfaces somewhere in the chain.
+    let cur: Record<string, unknown> = out;
+    let depth = 0;
+    while (cur.cause && depth < 30) {
+      cur = cur.cause as Record<string, unknown>;
+      if (cur.type === 'MaxDepthExceeded') break;
+      depth += 1;
+    }
+    expect(cur.type).toBe('MaxDepthExceeded');
+    expect(typeof cur.depth).toBe('number');
+  });
+
+  it('depth guard: an unbounded linear cause chain truncates at MaxDepthExceeded (round-3 hold #3)', () => {
+    // Build a 50-deep linear chain; without the guard this would still
+    // serialize (not crash) but would produce a 50-deep nested payload
+    // that would explode log volumes. The guard caps at 11 levels.
+    let head: Error & { cause?: Error } = new Error('leaf');
+    for (let i = 0; i < 50; i += 1) {
+      const wrapper: Error & { cause?: Error } = new Error(`layer-${i}`);
+      wrapper.cause = head;
+      head = wrapper;
+    }
+    const out = redactErrSerializer(head) as Record<string, unknown>;
+    // Walk down the cause chain counting levels.
+    let cur: Record<string, unknown> = out;
+    let depth = 0;
+    while (cur.cause && depth < 60) {
+      cur = cur.cause as Record<string, unknown>;
+      if (cur.type === 'MaxDepthExceeded') break;
+      depth += 1;
+    }
+    expect(cur.type).toBe('MaxDepthExceeded');
+    // Sanity: the truncation kicked in well before 50.
+    expect(depth).toBeLessThan(50);
+  });
+
+  // ───────────────────────────────────────────────────────────────────
+  // Round-3 hold #4 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):
+  // try/catch fallback when `redactErrSerializer` itself throws on a
+  // hostile err shape. Mutation kill: removing the try/catch wrapper
+  // around the serializer call would cause this test to throw out of the
+  // `safeRedactErr` invocation and fail the test (or, in the wrapper-
+  // layer test below, propagate the throw out of `logger.warn(...)`).
+  // ───────────────────────────────────────────────────────────────────
+  it('try/catch fallback: a throwing-getter err yields the RedactSerializerFailed sentinel (round-3 hold #4)', () => {
+    // Construct an err with a throwing `stack` getter. The serializer
+    // reads `errAny.stack`, so this triggers the throw inside it. The
+    // `safeRedactErr` wrapper around `redactErrSerializer` MUST catch it
+    // and return the sentinel instead of letting it propagate.
+    //
+    // Direct call to the pure `redactErrSerializer` would re-raise (it has
+    // no internal try/catch — that lives in `safeRedactErr`). The
+    // serializer is private; we exercise it indirectly through the
+    // wrapper-layer `logger.warn({err})` path that calls `safeRedactErr`
+    // via `redactErrInArg`. Use `vi.spyOn` WITHOUT `mockImplementation` so
+    // the real wrapper logic runs and mutates the err in place; the spy
+    // captures the post-mutation reference.
+    const hostileErr = new Error('hostile shape');
+    Object.defineProperty(hostileErr, 'stack', {
+      get() { throw new Error('stack-getter-throw'); },
+      configurable: true,
+    });
+
+    const warnSpy = vi.spyOn(logger, 'warn');
+    expect(() => logger.warn({ err: hostileErr }, 'should not throw')).not.toThrow();
+    // The wrapper called `safeRedactErr`, which caught the throw and
+    // produced the sentinel; the captured arg's `err` slot was mutated
+    // to that sentinel.
+    const captured = warnSpy.mock.calls[0][0] as { err: Record<string, unknown> };
+    expect(captured.err.type).toBe('RedactSerializerFailed');
+    expect(typeof captured.err.message).toBe('string');
+    warnSpy.mockRestore();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// Round-3 hold #8 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):
+// wrapper-layer mutation-kill canaries. The cases above test
+// `redactErrSerializer` as a pure function. This block calls the public
+// `logger.warn({err: ...})` surface and inspects what the spy captured —
+// closing the spy-vs-serializer ordering trap mutation surface at the
+// wrapper-layer level (locally, not via the distant accreditation tests).
+//
+// Reverting `redactErrInArg` to a no-op (or to a spread-copy that
+// doesn't mutate the captured reference) MUST turn these red.
+// ─────────────────────────────────────────────────────────────────────
+describe('logger wrapper layer — call-site redaction (round-3 hold #8)', () => {
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    warnSpy = vi.spyOn(logger, 'warn');
+  });
+  afterEach(() => {
+    warnSpy.mockRestore();
+  });
+
+  it('logger.warn({err: ReplyError-shaped}) — spy sees redacted err (command stripped)', () => {
+    const verifyToken = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+    const counterKey = `pevotest:pending_accred_broadcast_attempts:${verifyToken}`;
+    const err = Object.assign(new Error('Redis evicted to read-only'), {
+      name: 'ReplyError',
+      command: { name: 'eval', args: ['some-lua', '1', counterKey, '86400'] },
+    });
+
+    logger.warn({ err, route: 'test.canary' }, 'a fake log line');
+
+    // The wrapper mutates `err` in place on the SAME reference the spy
+    // holds. Reverting `redactErrInArg` to a no-op makes this fail because
+    // the spy captures the unmodified ReplyError shape with `command` intact.
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    const captured = warnSpy.mock.calls[0][0] as { err: Record<string, unknown> };
+    // `command` (the leaky field) is gone after redaction.
+    expect(captured.err.command).toBeUndefined();
+    // Baseline survived.
+    expect(captured.err.message).toBe('Redis evicted to read-only');
+    expect(captured.err.type).toBe('Error');
+    // Belt-and-suspenders: serialized payload contains no 64-hex run.
+    const serialized = JSON.stringify(captured);
+    expect(serialized).not.toMatch(/[0-9a-f]{64}/);
+    expect(serialized).not.toContain(verifyToken);
+  });
+
+  it('logger.warn({err: AssertionError-shaped}) — spy sees redacted err (actual/expected stripped)', () => {
+    const err = Object.assign(new Error('Expected values to be strictly deep-equal'), {
+      name: 'AssertionError',
+      actual: Buffer.from('e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', 'hex'),
+      expected: Buffer.from('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'hex'),
+      operator: 'deepStrictEqual',
+    });
+
+    logger.warn({ err, route: 'test.canary-2' }, 'fake log line 2');
+
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    const captured = warnSpy.mock.calls[0][0] as { err: Record<string, unknown> };
+    expect(captured.err.actual).toBeUndefined();
+    expect(captured.err.expected).toBeUndefined();
+    expect(captured.err.operator).toBeUndefined();
+
+    // Belt-and-suspenders: serialized payload contains neither hex string.
+    const serialized = JSON.stringify(captured);
+    expect(serialized).not.toContain('e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855');
+    expect(serialized).not.toContain('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+  });
+
+  it('logger.warn(non-{err}-shaped object) — passes through unchanged', () => {
+    // Mutation kill against a regression that broadens redaction beyond
+    // the err slot. Sibling fields must NOT be touched.
+    logger.warn({ route: 'test.canary-3', some: 'normal-field' }, 'a normal log line');
+
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    const captured = warnSpy.mock.calls[0][0] as { route: string; some: string; err?: unknown };
+    expect(captured.route).toBe('test.canary-3');
+    expect(captured.some).toBe('normal-field');
+    expect(captured.err).toBeUndefined();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// Round-3 hold #7 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):
+// PINO_ERR_REDACT_LEVEL=relaxed branch coverage. `REDACT_LEVEL` is
+// captured at module-load (logger.ts:79-80), so coverage requires a
+// `vi.resetModules()` + `process.env.PINO_ERR_REDACT_LEVEL = 'relaxed'`
+// + dynamic re-import. Mutation kill: removing the relaxed branch (or
+// flipping the env-var name) would surface here as a relaxed-mode
+// allowlist mismatch.
+// ─────────────────────────────────────────────────────────────────────
+describe('PINO_ERR_REDACT_LEVEL=relaxed branch coverage (round-3 hold #7)', () => {
+  let originalLevel: string | undefined;
+  beforeEach(() => {
+    originalLevel = process.env.PINO_ERR_REDACT_LEVEL;
+    vi.resetModules();
+    process.env.PINO_ERR_REDACT_LEVEL = 'relaxed';
+  });
+  afterEach(() => {
+    if (originalLevel === undefined) {
+      delete process.env.PINO_ERR_REDACT_LEVEL;
+    } else {
+      process.env.PINO_ERR_REDACT_LEVEL = originalLevel;
+    }
+    vi.resetModules();
+  });
+
+  it('relaxed: preserves port/address/hostname/path on err', async () => {
+    // Re-import after env-var change so the module-load capture re-reads.
+    const { redactErrSerializer: redactRelaxed } = await import('../../src/logger.js');
+    const err = Object.assign(new Error('connection refused'), {
+      code: 'ECONNREFUSED',
+      port: 5432,
+      address: '10.0.0.5',
+      hostname: 'pevo-postgres-1',
+      path: '/var/run/postgres.sock',
+    });
+    const out = redactRelaxed(err) as Record<string, unknown>;
+    expect(out.port).toBe(5432);
+    expect(out.address).toBe('10.0.0.5');
+    expect(out.hostname).toBe('pevo-postgres-1');
+    expect(out.path).toBe('/var/run/postgres.sock');
+    // Allowlist baseline still survives in relaxed mode.
+    expect(out.code).toBe('ECONNREFUSED');
+  });
+
+  it('relaxed: known-leaky fields (command/args, actual/expected) STILL stripped', async () => {
+    // Mutation kill against a regression that widened the relaxed
+    // allowlist to include known-leaky fields. The relaxed mode is for
+    // operational debugging; it must NOT bypass the security-driven
+    // strip of `command`, `args`, `actual`, `expected`, etc.
+    const { redactErrSerializer: redactRelaxed } = await import('../../src/logger.js');
+
+    const replyErr = Object.assign(new Error('NOSCRIPT'), {
+      name: 'ReplyError',
+      command: { name: 'evalsha', args: ['abcd1234', '1', 'pevotest:secret-key-name'] },
+    });
+    const out1 = redactRelaxed(replyErr) as Record<string, unknown>;
+    expect(out1.command).toBeUndefined();
+    expect(JSON.stringify(out1)).not.toContain('pevotest:secret-key-name');
+
+    const assertErr = Object.assign(new Error('Expected values to be deep-equal'), {
+      name: 'AssertionError',
+      actual: Buffer.from('1111111111111111111111111111111111111111111111111111111111111111', 'hex'),
+      expected: Buffer.from('2222222222222222222222222222222222222222222222222222222222222222', 'hex'),
+      operator: 'deepStrictEqual',
+    });
+    const out2 = redactRelaxed(assertErr) as Record<string, unknown>;
+    expect(out2.actual).toBeUndefined();
+    expect(out2.expected).toBeUndefined();
+    expect(out2.operator).toBeUndefined();
   });
 });

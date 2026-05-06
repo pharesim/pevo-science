@@ -22,14 +22,21 @@ import { logger } from './logger.js';
 import type { Server } from 'http';
 
 // ── Uncaught error handlers ─────────────────────────────────
+//
+// Round-3 hold #2 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):
+// pino's destination transport is async by default; `process.exit(1)` on the
+// next tick after `logger.fatal(...)` tears down the runtime (including
+// the pino worker thread) before the buffered fatal line drains. Operators
+// then see a silent crash with no log evidence. Flush before exit so the
+// fatal line is on the wire before the process dies.
 process.on('uncaughtException', (err) => {
   logger.fatal({ err }, 'Uncaught exception — shutting down');
-  process.exit(1);
+  logger.flush(() => process.exit(1));
 });
 
 process.on('unhandledRejection', (reason) => {
   logger.fatal({ err: reason }, 'Unhandled rejection — shutting down');
-  process.exit(1);
+  logger.flush(() => process.exit(1));
 });
 
 // ── Startup ─────────────────────────────────────────────────
@@ -96,8 +103,11 @@ initAppDb()
     });
   })
   .catch((err) => {
+    // Round-3 hold #2 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):
+    // flush pino's async transport before `process.exit(1)` so the fatal
+    // line is observable to operators (see uncaughtException handler above).
     logger.fatal({ err }, 'Failed to initialize app database');
-    process.exit(1);
+    logger.flush(() => process.exit(1));
   });
 
 // ── Graceful shutdown ───────────────────────────────────────

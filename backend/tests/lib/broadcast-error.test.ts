@@ -569,14 +569,25 @@ describe('handleBroadcastError', () => {
   });
 
   // BACKEND-ORCID-BROADCAST-OUTCOME-DISCRIMINATION round-5 hold #1: extends
-  // the round-4 spread-kill protection from the `event:` field to the four
-  // sibling source-of-truth fields (`err`, `cause`, `txId`, `failedStep`).
-  // Same JS later-wins mechanic, same caller-override exposure: a future
-  // caller dropping a key like `failedStep` into `logContext` would mis-route
+  // the round-4 spread-kill protection from the `event:` field to the
+  // sibling source-of-truth fields (`err`, `txId`, `failedStep`). Same JS
+  // later-wins mechanic, same caller-override exposure: a future caller
+  // dropping a key like `failedStep` into `logContext` would mis-route
   // operator alerts to the wrong cascade step while the wire envelope still
   // uses `err.failedStep`. Round-4 closed this for `event:` only; round-5
   // closes it for the remaining fields. Pattern matches the existing event:
   // spread-kill specs above.
+  //
+  // Round-3 hold #1 of BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT
+  // dropped the redundant top-level `cause: err.cause` field that bypassed
+  // both redaction layers. The recursive `cause` traversal in
+  // `redactErrSerializer` now preserves the redacted cause inside `err.cause`
+  // of the serialized payload, which is the correct surface to assert. The
+  // `cause`-override negative still has value as a no-leak assertion: even
+  // though the helper does not emit a top-level `cause:` field anymore,
+  // a future regression that re-introduced one (or that copied caller-
+  // supplied `logContext.cause` into the payload via spread) would let the
+  // caller-override value surface alongside `err`. Pin the absence here.
   it('post_broadcast_write_failed authoritative fields win over colliding logContext keys (round-5 hold #1)', () => {
     const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => undefined as unknown as void);
     const res = mockResponse();
@@ -586,10 +597,10 @@ describe('handleBroadcastError', () => {
     handleBroadcastError(res, err, {
       timeoutMsg: 'Timed out',
       failMsg: 'Failed',
-      // Adversarial caller-supplied colliding values — none should win.
+      // Adversarial caller-supplied colliding values — none of the
+      // helper-authoritative ones (`err`, `txId`, `failedStep`) should win.
       logContext: {
         err: 'caller-override-err',
-        cause: 'caller-override-cause',
         txId: 'caller-override-tx',
         failedStep: 'caller-override-step',
         run: 'spread-kill-r5-1',
@@ -606,18 +617,27 @@ describe('handleBroadcastError', () => {
     );
     const callArgs = errorSpy.mock.calls[0][0] as {
       err: unknown;
-      cause: unknown;
+      cause?: unknown;
       txId: unknown;
       failedStep: unknown;
     };
     // Positive: helper's source-of-truth values surface.
     expect(callArgs.err).toBe(err);
-    expect(callArgs.cause).toBe(realCause);
     expect(callArgs.txId).toBe('hive-tx-real');
     expect(callArgs.failedStep).toBe('reputation_seed');
-    // Negative: caller-supplied colliding values MUST NOT leak through.
+    // Round-3 hold #1 of BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT:
+    // the helper no longer emits a top-level sibling `cause: err.cause`
+    // field — that field bypassed both redaction layers (the wrapper at
+    // `logger.ts:redactErrInArg` and Layer-B `serializers.err` only redact
+    // the `err` slot). The recursive `cause` traversal inside
+    // `redactErrSerializer` preserves the redacted cause inside `err.cause`
+    // of the serialized payload, which is the correct surface. Pin the
+    // absence of a helper-emitted top-level `cause` here: a regression
+    // re-adding `cause: err.cause` would re-introduce the leak path.
+    expect(callArgs.cause).toBeUndefined();
+    // Negative: caller-supplied colliding values for the helper's
+    // authoritative fields MUST NOT leak through.
     expect(callArgs.err).not.toBe('caller-override-err');
-    expect(callArgs.cause).not.toBe('caller-override-cause');
     expect(callArgs.txId).not.toBe('caller-override-tx');
     expect(callArgs.failedStep).not.toBe('caller-override-step');
   });
@@ -670,13 +690,16 @@ describe('handleBroadcastError', () => {
     expect(callArgs.err).not.toBe('caller-override-err');
     expect(callArgs.txId).not.toBe('caller-override-tx');
     expect(callArgs.failedStep).not.toBe('caller-override-step');
-    // (The msg-fn-threw payload omits `cause:` — the inner error has no
-    // explicit `cause` slot in the helper's call, only the implicit
-    // Error.cause inherited via `super(msg, { cause })`. No 4th negative
-    // assertion here; the round-5 hold block enumerates 4 fields × 2
-    // anchors but the msg-fn anchor only carries 3 source-of-truth fields.
-    // The `cause` coverage is supplied by the post_broadcast_write_failed
-    // spec above, where the helper does emit `cause: err.cause`.)
+    // (The msg-fn-threw payload omits a top-level `cause:` field — the
+    // inner error has no explicit `cause` slot in the helper's call, only
+    // the implicit Error.cause inherited via `super(msg, { cause })`. After
+    // the round-3 hold #1 fix in BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-
+    // PINO-REDACT, the post_broadcast_write_failed spec above also no longer
+    // emits a top-level `cause: err.cause` field — the redacted cause
+    // surfaces inside `err.cause` of the serialized err payload via
+    // `redactErrSerializer`'s recursive traversal. Both anchors carry only
+    // the 3 source-of-truth fields (`err`, `txId`, `failedStep`) at the top
+    // level; the cause is on the err chain, not a sibling.)
   });
 
   // Round-5 hold #2: dedicated event-anchor pin for the 3 sibling logger

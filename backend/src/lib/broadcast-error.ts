@@ -258,16 +258,28 @@ export function handleBroadcastError(
       {
         ...opts.logContext,
         // Authoritative fields placed AFTER `...opts.logContext` so a
-        // caller-supplied `logContext: { err / cause / txId / failedStep /
-        // event: ... }` cannot silently override the helper's
-        // source-of-truth values. JS later-wins semantics; the literals
-        // must always win. Round-5 hold #1 extends the round-4 `event:`
-        // protection to err / cause / txId / failedStep so the discrimination
-        // contract documented in `agents/docs/api-contracts/orcid.md` for
-        // `details.failed_step` remains load-bearing in operator logs even
-        // if a future caller's logContext drops a colliding key.
+        // caller-supplied `logContext: { err / txId / failedStep / event:
+        // ... }` cannot silently override the helper's source-of-truth
+        // values. JS later-wins semantics; the literals must always win.
+        // Round-5 hold #1 extends the round-4 `event:` protection to
+        // err / txId / failedStep so the discrimination contract documented
+        // in `agents/docs/api-contracts/orcid.md` for `details.failed_step`
+        // remains load-bearing in operator logs even if a future caller's
+        // logContext drops a colliding key.
+        //
+        // Round-3 hold #1 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):
+        // a redundant top-level sibling `cause: err.cause` field used to live
+        // here but bypassed both redaction layers — the wrapper at
+        // `logger.ts:redactErrInArg` and the Layer-B `serializers.err` only
+        // strip the `err` slot, so a sibling `cause` would fall through to
+        // pino's default Error serialization (re-introducing the leaky-
+        // enumerable surface the redact policy exists to close). It's also
+        // unnecessary: the recursive `cause` traversal in `redactErrSerializer`
+        // (logger.ts:140-142) already preserves the redacted cause inside
+        // `err.cause` of the serialized payload. Do NOT re-add a top-level
+        // `cause:` here without first widening the redact policy to cover
+        // sibling-cause shapes too.
         err,
-        cause: err.cause,
         txId: err.txId,
         failedStep: err.failedStep,
         event: 'post_broadcast_write_failed',

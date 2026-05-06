@@ -237,3 +237,83 @@ Two follow-up tasks were spawned during triage (created in `tasks/pending/` alon
 ### Re-review pointer
 
 When the hold round lands and the implementer `git mv`s the file back to `tasks/review/`, the architect will run `/ce-code-review` scoped to the new commits since this hold block (per the multi-round re-review protocol). The earlier review of `23bdae9` + `5d9c68d` already passed all non-held findings; the next pass is scoped to the hold-resolution diff only, not the full task history.
+
+---
+
+## Backend re-review signal (2026-05-06, round-3 hold-fixes — commit `<sha-pending>` on `worktree-agent-a863721f5ecf62ee0`)
+
+Round-3 closes 11 of 11 hold items in a single coordinated diff over `backend/src/{logger.ts,startup-checks.ts,index.ts,routes/bridge.ts,lib/broadcast-error.ts}` plus paired tests in `backend/tests/{lib/logger-redact.test.ts,startup-checks.test.ts,lib/broadcast-error.test.ts}`. Sibling worker (a different worktree) handles `routes/papers.ts`; this signal is for the logger/bridge-key cluster only.
+
+### Item-by-item resolution
+
+**P1**:
+1. **`backend/src/lib/broadcast-error.ts:270`** — dropped the redundant `cause: err.cause` field from the `post_broadcast_write_failed` log object. The recursive `cause` traversal in `redactErrSerializer` (`logger.ts:165-171`) preserves the redacted cause inside `err.cause` of the serialized payload, which is the correct surface. Comment block at the call site documents the leak path closure ("any future cascade-fn that re-throws a transient ReplyError or wraps an AssertionError lands its leaky enumerables at top-level cause"). Paired test (`tests/lib/broadcast-error.test.ts:591` round-5 hold #1 spec) updated: now pins the absence of a top-level `cause` field via `expect(callArgs.cause).toBeUndefined()`. The companion `post_broadcast_msg_fn_threw` spec's narrative comment (`tests/lib/broadcast-error.test.ts:693-702`) updated to reflect the new contract.
+
+2. **`backend/src/{startup-checks.ts,index.ts}`** — converted all 4 boot-fatal sites to `logger.fatal(...); logger.flush(() => process.exit(1));`:
+   - `startup-checks.ts:163-166` — required-config-missing path (uses `logger.error` per the existing pattern; flush-then-exit applies regardless of level)
+   - `startup-checks.ts:228-235` — `initBridgePostingKeyCache` parse-divergence fatal
+   - `index.ts:30-37` — `uncaughtException` handler
+   - `index.ts:38-41` — `unhandledRejection` handler
+   - `index.ts:108-113` — `initAppDb().catch(...)` failure
+   Each carries an inline comment explaining the async-transport-drain rationale so future refactors don't strip the flush.
+
+**P2 — wrapper hardening**:
+
+3. **`backend/src/logger.ts:124-179`** — added `depth` parameter (default 0) to `redactErrSerializer`; bails at `depth > 10` returning sentinel `{ type: 'MaxDepthExceeded', depth: <n> }`. Both recursion sites (`cause` at line 170 and `errors[]` map at line 175) pass `depth + 1`. Constant `MAX_CAUSE_DEPTH = 10` documented inline at line 87 with cycle/chain rationale. Two new tests in `tests/lib/logger-redact.test.ts` exercise (a) a 2-step `A.cause = B; B.cause = A` cycle, (b) a 50-deep linear chain — both assert the sentinel surfaces at depth ≤ 11 without crashing.
+
+4. **`backend/src/logger.ts:202-213`** — new `safeRedactErr` wrapper that try/catches `redactErrSerializer` and returns sentinel `{ type: 'RedactSerializerFailed', message: String(...) }` on throw. Wired into both Layer A (`redactErrInArg` at `:267`) and Layer B (`baseLogger.serializers.err` at `:229`, `httpLogger.serializers.err` at `:352`). New test at `tests/lib/logger-redact.test.ts:391-410` exercises a throwing `stack` getter through `logger.warn({err: hostileErr})`; asserts no throw escapes the wrapper and the spy captures the sentinel shape.
+
+5. **`backend/src/logger.ts:291-329`** — replaced the six `WarnArgs = Parameters<typeof baseLogger.warn>` aliases with a `makeLevelWrapper(method: LogFn): LogFn` factory. Each level is now declared as `LogFn` (pino's exported 3-overload type covering msg-only / obj+msg / obj+msg+placeholders), restoring the placeholder type-checking that `Parameters<>` collapsed away. The `.map()` is gone too; the wrapper mutates `args[0]` in place and forwards the unchanged tuple to `method.apply(baseLogger, args)`. The maintainability finding "per-level type aliases are duplication without value" evaporates as a side effect (per the architect's "subsumed" note).
+
+6. **`backend/src/startup-checks.ts:264-296`** — added `BridgeKeyCacheUnpopulated` Error subclass and `getRequiredBridgePostingKey(): PrivateKey` accessor that throws it when the cache is null. `routes/bridge.ts:3,383-393` migrated to `getRequiredBridgePostingKey()` (only one bridge-route call site remains; the prior `:366` site was retired in `e647abb` when `POST /api/bridge/update` was removed). The `claims.ts:214,:311` call sites are scoped to the follow-up task `backend-bridge-key-claims-route-migration` per the architect's coordination note. Two new tests in `tests/startup-checks.test.ts:286-322` cover (a) populated-cache happy path, (b) null-cache throws `BridgeKeyCacheUnpopulated` with `out.type === 'BridgeKeyCacheUnpopulated'` after passing through `redactErrSerializer` (proves operator-alert keying survives the redact policy).
+
+**P2 — test coverage**:
+
+7. **`backend/tests/lib/logger-redact.test.ts:495-571`** — new `describe('PINO_ERR_REDACT_LEVEL=relaxed branch coverage ...')` block with 2 cases. Each uses `vi.resetModules()` + `process.env.PINO_ERR_REDACT_LEVEL = 'relaxed'` + dynamic `await import('../../src/logger.js')` to re-capture the module-load `REDACT_LEVEL`. Asserts (a) `port`/`address`/`hostname`/`path` preserved on err under relaxed AND `code` baseline still survives, (b) known-leaky fields (`command`, `actual`/`expected`, `operator`) STILL stripped under relaxed.
+
+8. **`backend/tests/lib/logger-redact.test.ts:415-487`** — new `describe('logger wrapper layer — call-site redaction (round-3 hold #8)')` block with 3 spy-based mutation-kill cases. Each calls `logger.warn({err: <leaky-shape>}, 'msg')` with `vi.spyOn(logger, 'warn')` (no `mockImplementation` — passthrough spy so the wrapper's `redactErrInArg` runs), then inspects `warnSpy.mock.calls[0][0].err` for the redacted shape. Covers ReplyError command-strip, AssertionError actual/expected-strip, and a non-`{err}`-shaped passthrough.
+
+**P3**:
+
+9. **`backend/tests/startup-checks.test.ts:294-345`** — replaced the synthetic-AssertionError test with a real `PrivateKey.fromString('5J' + '1'.repeat(50))` invocation in try/catch. The empirically-determined fixture triggers dhive's internal `assert.deepStrictEqual` for `private key network id mismatch`, producing a real AssertionError with non-undefined `actual`/`expected` Buffer slices. Asserts the captured err is an AssertionError, that `actual`/`expected` are present pre-redaction, and that `redactErrSerializer(captured)` strips them post-redaction. The format-validator-input-leak test at the top of the same describe block was dropped as redundant — `validatePostingKeyFormat` interpolates only the env-var name and the dhive error class+message, neither of which substring the input bytes; a doc-block at the describe top documents the rationale.
+
+10. **`backend/tests/lib/logger-redact.test.ts:295-313`** — new test "cause chain: code/errno/syscall preservation survives through cause recursion" with the architect-suggested fixture `Object.assign(new Error('econnrefused'), { code: 'ECONNREFUSED', errno: -111, syscall: 'connect' })`. Asserts `out.cause.code === 'ECONNREFUSED'`, `errno === -111`, `syscall === 'connect'`, and that the outer wrapper does NOT inherit those fields (they belong to the cause).
+
+11. **`backend/src/startup-checks.ts:286-320`** — tightened the `getCachedBridgePostingKey` docstring per the architect's verbatim text: "Once boot succeeds AND `config.pevoBridgePostingKey` is not mutated post-boot, this accessor returns the cached `PrivateKey` without re-parsing. The lazy-fallback path is a test-and-rotation-only branch; production paths reach it only post-validator." Added explicit scoping note that the throw-site guarantee covers `bridge.ts` call sites only; `claims.ts` is tracked under the follow-up task. Cross-references the `getRequiredBridgePostingKey` accessor introduced in item 6.
+
+### Mutation-kill attestation (per `tests-must-fail-on-mutation-of-code-under-test-2026-04-22.md`)
+
+Each new canary was verified red against a stripped-down code change. The baseline file was restored after each verification.
+
+- **Item 7 — relaxed branch coverage canary** (red on revert):
+  - Strip the `if (REDACT_LEVEL === 'relaxed') { ... }` block in `logger.ts:156-163`. Result: `tests/lib/logger-redact.test.ts:514` "relaxed: preserves port/address/hostname/path on err" fails: `expected undefined to be 5432`.
+
+- **Item 8 — wrapper-layer spy mutation-kill canary** (red on revert):
+  - Replace `obj.err = safeRedactErr(obj.err);` in `redactErrInArg` (logger.ts:267) with `void obj;` (no-op). Result: 2 of 3 wrapper-layer cases fail (the ReplyError-command and AssertionError-actual/expected canaries); the non-{err}-shaped passthrough still passes (correctly — that case asserts the wrapper does NOT touch sibling fields).
+
+- **Item 9 — real-`PrivateKey.fromString` AssertionError canary** (red on revert):
+  - Replace the allowlist-copy block in `redactErrSerializer` with a denylist that copies all enumerable own properties (default pino behavior). Result: `tests/startup-checks.test.ts:322` "fatal log on parse-divergence does NOT leak ... (real PrivateKey.fromString throw)" fails: `out.actual` is `Buffer [29]` instead of undefined. Confirms the real-throw path now actually depends on the redactor (the synthetic-shape predecessor passed by construction).
+
+- **Item 3 — depth/cycle guard canary** (red on revert):
+  - Strip the `if (depth > MAX_CAUSE_DEPTH) return { type: 'MaxDepthExceeded', depth };` block in `redactErrSerializer`. Result: `tests/lib/logger-redact.test.ts:340-372` "depth/cycle guard: a 2-step cause cycle ..." and "depth guard: an unbounded linear cause chain truncates ..." both fail: `expected 'Error' to be 'MaxDepthExceeded'`.
+
+- **Item 4 — try/catch fallback canary** (red on revert):
+  - Replace `safeRedactErr` body with `return redactErrSerializer(input);` (no try/catch). Result: `tests/lib/logger-redact.test.ts:391` "try/catch fallback: a throwing-getter err yields the RedactSerializerFailed sentinel" fails: the test's `expect(...).not.toThrow()` flips red because the throwing-getter `stack` propagates out through `logger.warn({err})`.
+
+### Verification gate
+
+- `npx tsc --noEmit` — clean, no errors.
+- `npm run lint` — clean, 2 pre-existing warnings only (`src/seed-phrase.ts:26,27` `@typescript-eslint/no-explicit-any`).
+- Targeted vitest run (`tests/lib/logger-redact.test.ts`, `tests/startup-checks.test.ts`, `tests/routes/bridge.test.ts`, `tests/lib/broadcast-error.test.ts`): **87 passed (87)** in 1.49s. Lib subset (`tests/lib/`): **241 passed (241)** in 4.04s. Per task brief, full vitest suite is NOT run in this worker — parent serializes that after merging both worker diffs.
+
+### Out-of-scope items honored
+
+- `agents/docs/api-contracts/*.md` — not edited (architect-owned per backend CLAUDE.md). The wave-1 [TODO Architect] markers (convention doc `pino-err-serializer-redact-policy-2026-05-XX.md`, δ test transition confirmation, no-API-contract-update confirmation) carry forward unchanged.
+- `routes/claims.ts` — left alone per the architect's coordination note. The follow-up task `backend-bridge-key-claims-route-migration` covers `:214` and `:311`.
+- Architect's "Items dismissed (residual risk for archive entry)" — `isErrorLike` predicate, `redactErrSerializer` return-type collapse, `(config as { pevoBridgePostingKey: string })` test casts — left unchanged per the dismissal.
+
+### [TODO Architect] markers (carry forward from wave-1, unchanged)
+
+1. Convention doc `agents/docs/solutions/conventions/pino-err-serializer-redact-policy-2026-05-XX.md` — see wave-1 signal block for required content. The round-3 diff adds new material (depth guard, try/catch fallback, structured `BridgeKeyCacheUnpopulated` error class, explicit `LogFn` overload preservation) that should be folded into the convention doc at architect's archive pass.
+2. δ test transition confirmation — verify `accreditation.test.ts` "no raw token leak" specs at `:332` and `:765` still pass. Confirmed in this round's targeted run via `-t "no raw token leak"`: 2 passed.
+3. No API contract update required — confirmed; this round's diff is internal-only (logger wrapper + bridge-key accessor). Operators see the same JSON envelope shapes; only err-payload internals change.
