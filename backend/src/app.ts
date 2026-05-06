@@ -391,9 +391,25 @@ export function createApp() {
     return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
 
+  // JSON 404 for unmatched /api/* requests (any HTTP method).
+  // Registered AFTER all real /api/* routers above and BEFORE the SPA catch-all
+  // and 4-arg errorHandler. The SPA catch-all is GET-only, so without this
+  // handler unmatched POST/PUT/PATCH/DELETE under /api/* would fall through to
+  // Express's default HTML 404 ("Cannot POST /api/..."), which a frontend
+  // `fetch().json()` cannot parse. This shadows the SPA GET catch-all for
+  // /api/* paths too, ensuring the contract envelope from
+  // agents/docs/api-contracts/common.md holds for every method.
+  app.use('/api', (_req, res) => {
+    res.status(404).json({
+      status: 'error',
+      error: { code: 'NOT_FOUND', message: 'Endpoint not found' },
+    });
+  });
+
   // SPA catch-all: serve index.html for any non-API GET request.
   // This enables client-side routing — the Alpine.js SPA handles its own routes.
-  // API 404s are NOT intercepted; they fall through to the error handler.
+  // API 404s are handled by the /api JSON-404 above; the early-return guard
+  // here is defensive (the /api handler should already have responded).
   app.get('{*splat}', async (req, res, next) => {
     if (req.path.startsWith('/api/')) {
       return next();
