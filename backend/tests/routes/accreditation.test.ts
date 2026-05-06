@@ -905,11 +905,13 @@ describe('POST /api/accreditation/verify — BE-VERIFY-BROADCAST-ATTEMPTS-CAP', 
     await seedPendingAccreditation(token);
     const ip = `10.8.${crypto.randomInt(0, 255)}.${crypto.randomInt(1, 254)}`;
 
-    // Mock redis.eval to reject on the very first call (the route's
-    // pre-INCR for cap counter). Subsequent eval calls (e.g. by the rate
-    // limiter, if any) revert to default behavior. The broadcast site must
-    // NOT be reached when the pre-INCR throws.
-    const evalSpy = vi.spyOn(redis, 'eval').mockRejectedValueOnce(
+    // Mock redis.evalsha to reject on the very first call (the route's
+    // pre-INCR for cap counter, dispatched via evalScript with the warm
+    // SHA cache populated by setup.ts). Subsequent evalsha calls revert to
+    // default behavior. The broadcast site must NOT be reached when the
+    // pre-INCR throws. The non-NOSCRIPT error propagates straight through
+    // evalScript without triggering its re-LOAD + retry path.
+    const evalSpy = vi.spyOn(redis, 'evalsha').mockRejectedValueOnce(
       new Error('Lua error: OOM command not allowed when used memory > maxmemory'),
     );
     const loggerWarnSpy = vi.spyOn(logger, 'warn');

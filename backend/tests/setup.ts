@@ -12,6 +12,7 @@ import { closeHafPool, getPool, isHafAvailable } from '../src/db.js';
 import { getRedis, disconnectRedis } from '../src/redis.js';
 import { getGenesisBlock } from '../src/hafsql.js';
 import { config } from '../src/config.js';
+import { loadAllScripts } from '../src/lib/redis-scripts.js';
 
 beforeAll(async () => {
   const redis = getRedis();
@@ -20,6 +21,10 @@ beforeAll(async () => {
       await redis.ping();
       const keys = await redis.keys(`${config.appTag}:*`);
       if (keys.length > 0) await redis.del(...keys);
+      // The production `ready` handler fires `loadAllScripts` async without
+      // awaiting; tests that mock `evalsha`/`eval` need a warm SHA cache by
+      // assertion time, so block on it here.
+      await loadAllScripts(redis);
     } catch {
       // Redis not available — tests will use in-memory fallback
     }

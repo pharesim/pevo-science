@@ -1,6 +1,7 @@
 import Redis from 'ioredis';
 import { config } from './config.js';
 import { logger } from './logger.js';
+import { loadAllScripts } from './lib/redis-scripts.js';
 
 let redis: Redis | null = null;
 
@@ -19,6 +20,12 @@ export function getRedis(): Redis | null {
 
   client.on('error', (err) => {
     logger.error({ err }, 'Redis connection error');
+  });
+
+  client.on('ready', () => {
+    loadAllScripts(client).catch((err) => {
+      logger.warn({ err }, 'Redis SCRIPT LOAD failed; evalScript will fall back to EVAL until next reconnect');
+    });
   });
 
   client.on('close', () => {

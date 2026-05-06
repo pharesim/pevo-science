@@ -13,7 +13,7 @@ import { rateLimit, byAccount, byIp } from '../middleware/rateLimit.js';
 import { logger } from '../logger.js';
 import { isInstitutionalEmail } from '../email-validator.js';
 import { hashEmailForLogs, hashTokenForLogs } from '../lib/log-pii.js';
-import { INCR_AND_EXPIRE_ON_ZERO_TO_ONE_LUA } from '../lib/redis-scripts.js';
+import { evalScript } from '../lib/redis-scripts.js';
 import { enqueueDecrement } from '../lib/pending-decrement-queue.js';
 import { seedAccreditationBonus } from '../reputation.js';
 
@@ -78,11 +78,11 @@ async function incrementBroadcastAttempts(pending: PendingAccreditation): Promis
     if (isRedisAvailable()) {
       const key = broadcastAttemptsKey(pending.token);
       const ttl = Math.max(1, Math.ceil((pending.expires_at.getTime() - Date.now()) / 1000));
-      const result = await redis.eval(
-        INCR_AND_EXPIRE_ON_ZERO_TO_ONE_LUA,
-        1,
-        key,
-        String(ttl),
+      const result = await evalScript(
+        redis,
+        'INCR_AND_EXPIRE_ON_ZERO_TO_ONE',
+        [key],
+        [String(ttl)],
       );
       return Number(result);
     }

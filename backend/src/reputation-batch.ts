@@ -34,7 +34,7 @@ import {
 // constructor cannot drift (BACKEND-REPUTATION-SSOT round-1 hold #24).
 import { getAllAccreditedAccounts } from './accreditation.js';
 import { getCachedGenesisBlock, T } from './hafsql.js';
-import { RELEASE_LOCK_IF_TOKEN_MATCHES_LUA } from './lib/redis-scripts.js';
+import { evalScript } from './lib/redis-scripts.js';
 
 const DEFAULT_CHECK_INTERVAL_MS = 60 * 60_000; // 1 hour
 const DEFAULT_MAX_DURATION_MS = 30 * 60_000; // 30 minutes
@@ -356,11 +356,11 @@ export async function runBatchComputation(maxDurationMs = DEFAULT_MAX_DURATION_M
   } finally {
     if (lockToken && redisInit) {
       try {
-        await redisInit.eval(
-          RELEASE_LOCK_IF_TOKEN_MATCHES_LUA,
-          1,
-          REDIS_KEY_BATCH_LOCK,
-          lockToken,
+        await evalScript(
+          redisInit,
+          'RELEASE_LOCK_IF_TOKEN_MATCHES',
+          [REDIS_KEY_BATCH_LOCK],
+          [lockToken],
         );
       } catch (releaseErr) {
         // Lock auto-expires at TTL even if release fails; the next run is
