@@ -23,7 +23,7 @@ User chose the narrower scope (option B in the implementer's discovery summary):
 
 **Implementation summary (commit will follow):**
 
-- `paper-detail.js:295` — Edit-button gate widened to `isOwnPaper && !paper.is_retracted && !isBridgePaper` (bridge papers update via `/api/bridge/update`, not via the SPA edit flow).
+- `paper-detail.js:295` — Edit-button gate widened to `isOwnPaper && !paper.is_retracted && !isBridgePaper` (bridge papers are immutable post-publish; not editable via the SPA edit flow).
 - `edit.js` — new `userPostInChain` getter walks `paper.versions[]` for the latest entry where `author === username`. `isContinuation` now returns `false` when `userPostInChain` is non-null (native-edit own post) and `true` otherwise (broadcast new continuation). Falls back to legacy semantics when `versions[]` is sparse (HAF replay didn't run, single-version paper).
 - `edit.js` native-edit submit — broadcast targets `userPostInChain.author/permlink` instead of the canonical root's `(this.author, this.permlink)`. When the user's post is the chain head, the existing diff path runs (size optimization preserved). When the user's post is **not** the chain head (e.g. Alice native-editing alice/v1 while head is bob/cont-1), the broadcast is full-body — Hive applies diffs against the post's own body, so a diff against the head's pre-fill would corrupt the user's post.
 - `edit.js` `allAuthors[0].hive` — vestigial conditional `isContinuation ? username : paper.author` collapsed to `username`. The two branches were equivalent under legacy semantics (the only non-continuation case was username === paper.author); they diverged with co-author native edits in the chain.
@@ -70,7 +70,7 @@ The two affordances are different actions:
 - **Edit own post** (`canEditOwnPost`) — Hive native edit on the post the user already authored. No new continuation; just update the existing comment via the standard Hive edit operation.
 - **Publish continuation** (`canPublishContinuation && !isOwnPost`) — broadcast a new comment under the user's account with `pevo.continues = {author, permlink}` of whatever post in the chain the user is continuing FROM (typically the latest version they're aware of).
 
-Bridge papers (`type: 'bridge_paper'`, post author = `config.hiveBridgeAccount`): the publish-continuation affordance should **not** appear. Bridge-paper updates flow through `/api/bridge/update`. Gate the predicate on `paper.pevo?.type !== 'bridge_paper'`.
+Bridge papers (`type: 'bridge_paper'`, post author = `config.hiveBridgeAccount`): the publish-continuation affordance should **not** appear. Bridge papers are immutable post-publish. Gate the predicate on `paper.pevo?.type !== 'bridge_paper'`.
 
 ### 2. Edit / continuation form — always pre-fill from chain head
 
