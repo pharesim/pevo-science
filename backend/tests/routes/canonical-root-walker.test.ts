@@ -824,14 +824,18 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
     errSpy.mockRestore();
   });
 
-  it('depth-cap warn carries hopNumber field (round-2 item 6)', async () => {
-    // Round-2 hold item 6 (P3 observability): `unauthorized_hop` and
-    // `depth_exceeded` warns must include `hopNumber: i + 1`. The
-    // `depth_exceeded` event uses `CANONICAL_ROOT_MAX_HOPS` as the
-    // hop number (the cap was reached). The `unauthorized_hop` field
-    // is asserted in the type-spoof-intermediate canary above.
+  it('depth-cap warn carries maxHops field (round-3 item 2: dropped duplicate hopNumber)', async () => {
+    // Round-2 hold item 6 (P3 observability) added `hopNumber: i + 1` to both
+    // `unauthorized_hop` and `depth_exceeded` warns for cross-event taxonomy
+    // consistency. Round-3 hold item 2 (P3 maintainability) noted that on
+    // `depth_exceeded` the two fields (`hopNumber` and `maxHops`) are the
+    // same constant by construction — `hopNumber` was dropped from this
+    // event only. `maxHops` documents the cap; the event name itself
+    // signals "we hit the cap". `hopNumber` retains its meaningful
+    // varying-value role on `unauthorized_hop` (asserted in the
+    // type-spoof-intermediate canary above).
     //
-    // Mutation-kill: drop the hopNumber field; this canary fails.
+    // Mutation-kill: drop the `maxHops` field; this canary fails.
     const N = 11;
     const aliceMeta = pevoPaperJsonMeta(['alice']);
 
@@ -874,11 +878,13 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
     expect(res.status).toBe(200);
 
     const depthEvents = warnSpy.mock.calls
-      .map((c) => c[0] as { event?: string; hopNumber?: number } | undefined)
+      .map((c) => c[0] as { event?: string; maxHops?: number; hopNumber?: number } | undefined)
       .filter((e) => e?.event === 'canonical_root_walker_depth_exceeded');
     expect(depthEvents.length).toBeGreaterThan(0);
-    // hopNumber = CANONICAL_ROOT_MAX_HOPS (10).
-    expect(depthEvents[0]?.hopNumber).toBe(10);
+    // maxHops = CANONICAL_ROOT_MAX_HOPS (10).
+    expect(depthEvents[0]?.maxHops).toBe(10);
+    // Round-3 item 2: hopNumber explicitly dropped from depth_exceeded.
+    expect(depthEvents[0]?.hopNumber).toBeUndefined();
 
     warnSpy.mockRestore();
   });
@@ -1092,6 +1098,94 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
     // unauthorized-hop check). The forward walker via
     // fetchPaperDetailFromHaf shares the same memo and does NOT
     // re-fetch alice/v1's missing row.
+    expect(aliceHeadLookupCount).toBe(1);
+  });
+
+  it('memo threading: /enrichment shares memo across resolveVersionsFromHaf forward-walk (round-3 item 1)', async () => {
+    // Round-3 hold item 1 (P2): `resolveVersionsFromHaf` is the third
+    // call site of `reconstructVersionsFromHaf`; round-2 threaded memo
+    // through the `?version=N` and metadata-restored fallback call
+    // sites in GET /:author/:permlink but missed this one in
+    // `fetchEnrichmentFromHaf`. Round-3 closes that gap by adding a
+    // `memo?: HeadAuthorsMemo` parameter to `resolveVersionsFromHaf`,
+    // constructing a memo at the top of `fetchEnrichmentFromHaf`, and
+    // threading it into both the inner `reconstructVersionsFromHaf`
+    // and downstream `resolveContinuationChain` →
+    // `fetchHeadAuthorizedAuthors` lookups.
+    //
+    // Setup: hit /enrichment for alice/v1 with a forward chain
+    // alice/v1 → alice/v2. The route flow:
+    //   1. fetchEnrichmentFromHaf(alice, v1) constructs headAuthorsMemo.
+    //   2. resolveVersionsFromHaf(alice, v1, memo) →
+    //      reconstructVersionsFromHaf(alice, v1, undefined, memo) →
+    //      resolveContinuationChain(alice, v1, memo) →
+    //      fetchHeadAuthorizedAuthors(pool, alice, v1, memo). Count = 1.
+    //
+    // Mutation-kill semantics: this canary asserts the head-authors
+    // lookup count for alice/v1 is exactly 1 across the /enrichment
+    // request. The dual-consumer dedup mutation-kill (count 1→2 on
+    // memo-arg revert) is covered by the existing `?version=N` and
+    // catch-block memo canaries in this file (lines 648 and 726),
+    // which exercise scenarios where two consumers within one request
+    // share the memo. /enrichment has only one consumer of
+    // fetchHeadAuthorizedAuthors today (resolveVersionsFromHaf via
+    // reconstructVersionsFromHaf via resolveContinuationChain), so
+    // strict count 1→2 mutation-kill is not observable in /enrichment
+    // alone. This canary instead pins (a) the integration path stays
+    // wired (fetchEnrichmentFromHaf → resolveVersionsFromHaf →
+    // reconstructVersionsFromHaf → memo all the way down), and (b)
+    // any future second consumer added to fetchEnrichmentFromHaf that
+    // looks up alice/v1's authors will share the memo and not double-
+    // fetch — covered by the existing `?version=N` canary's mutation-
+    // kill on the broader contract.
+    const aliceMeta = pevoPaperJsonMeta(['alice']);
+    const aliceRow = pevoPaperRow('alice', 'v1', ['alice']);
+
+    let aliceHeadLookupCount = 0;
+
+    installResponder(async (sql, params) => {
+      if (isBackwardWalkContinuesProbe(sql)) {
+        return { rows: [] };
+      }
+      if (isHeadAuthorsLookup(sql)) {
+        const a = params[0];
+        const p = params[1];
+        if (a === 'alice' && p === 'v1') {
+          aliceHeadLookupCount += 1;
+          return { rows: [{ author: 'alice', json_metadata: aliceMeta }] };
+        }
+        return { rows: [] };
+      }
+      // Forward chain-walk SQL: alice/v1 has no continuation in this fixture.
+      if (/'continues'\s*->>\s*'author'\s*=\s*\$1/.test(sql)) {
+        return { rows: [] };
+      }
+      // Reconstruct-versions ROW_NUMBER SQL: a single row for alice/v1.
+      if (sql.includes('ROW_NUMBER()') && sql.includes('OVER (ORDER BY co.block_num)')) {
+        return {
+          rows: [
+            {
+              version_number: 1,
+              block_num: 100,
+              author: 'alice',
+              permlink: 'v1',
+              title: 't',
+              body: 'abstract\n\n---\n\nbody',
+              created: '2026-01-01T00:00:00.000Z',
+              json_metadata: aliceRow.json_metadata,
+            },
+          ],
+        };
+      }
+      // Enrichment-specific queries (votes, reviews, claims): empty.
+      return { rows: [] };
+    });
+
+    const res = await request(app).get('/api/papers/alice/v1/enrichment');
+    expect(res.status).toBe(200);
+    // resolveVersionsFromHaf participates in the per-request memo via
+    // the new `memo?` parameter (round-3 item 1). The single forward-
+    // walker lookup of alice/v1's authors fires once.
     expect(aliceHeadLookupCount).toBe(1);
   });
 });

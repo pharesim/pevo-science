@@ -568,7 +568,7 @@ async function fetchPaperDetailFromHaf(author: string, permlink: string, memo?: 
            AND ${detailWhere}`,
         [author, permlink, config.appTag, config.hiveBridgeAccount],
       ),
-      reconstructVersionsFromHaf(author, permlink, chain),
+      reconstructVersionsFromHaf(author, permlink, chain, memo),
       getRetractionInfo(author, permlink),
     ]);
 
@@ -1210,8 +1210,11 @@ async function findCanonicalRoot(
     // attacker-induced amplification patterns.
     logger.warn(
       {
+        // Note: `hopNumber` is intentionally omitted on this event because it
+        // would always equal `maxHops` by construction (the cap is what
+        // triggered the warn). `hopNumber` retains its meaningful
+        // varying-value role on `canonical_root_walker_unauthorized_hop`.
         event: 'canonical_root_walker_depth_exceeded',
-        hopNumber: CANONICAL_ROOT_MAX_HOPS,
         startAuthor: author,
         startPermlink: permlink,
         stopAuthor: currentAuthor,
@@ -1417,8 +1420,9 @@ async function reconstructVersionsFromHaf(
 async function resolveVersionsFromHaf(
   author: string,
   permlink: string,
+  memo?: HeadAuthorsMemo,
 ): Promise<PaperVersionEntry[]> {
-  const versions = await reconstructVersionsFromHaf(author, permlink);
+  const versions = await reconstructVersionsFromHaf(author, permlink, undefined, memo);
   return versions.map(({ body: _body, json_metadata: _meta, post_author: _pa, post_permlink: _pp, ...entry }) => entry);
 }
 
@@ -1612,6 +1616,14 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string) {
   const pool = getPool();
   if (!pool) return null;
 
+  // Per-request memo for `fetchHeadAuthorizedAuthors`. Threaded into
+  // `resolveVersionsFromHaf` so that within a single enrichment request, the
+  // forward-walker lookups initiated by `reconstructVersionsFromHaf` share the
+  // catch-block negative-cache benefit (round-3 hold item 1: third call site
+  // for memo threading, paralleling the `?version=N` branch and the
+  // metadata-restored fallback in the GET /:author/:permlink handler).
+  const headAuthorsMemo = makeHeadAuthorsMemo();
+
   try {
     const accreditedAccounts = await getAllAccreditedAccounts();
     const accreditedArr = [...accreditedAccounts];
@@ -1648,7 +1660,7 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string) {
         [author, permlink, config.appTag, `${config.appTag}/%`, accreditedArr, reviewAuthors],
       ),
       // Version history (needed for review outdated computation)
-      resolveVersionsFromHaf(author, permlink),
+      resolveVersionsFromHaf(author, permlink, headAuthorsMemo),
       // Authorship claims
       (async () => {
         const cte = buildWith(1, activeAccreditationsCteBody, (idx) => authorshipClaimsCteBody(idx, { paperAuthor: author, paperPermlink: permlink }));
@@ -1904,6 +1916,13 @@ router.post('/:author/:permlink/retract', verifyHiveSignature, retractLimiter, a
   const username = req.hiveUsername!;
   const reason = (req.body.reason as string) || '';
 
+  // Canonical-root walker is intentionally NOT invoked here. /cite and /retract
+  // operate on the URL's own (author, permlink) — citation targets the URL post
+  // directly; retraction authorizes username === URL author then broadcasts on
+  // the URL's coords. Canonicalization is a display concern handled by the GET
+  // handler. New /api/papers/:author/:permlink/<verb> routes that want canonical
+  // resolution must call findCanonicalRoot themselves; do not pattern-match this
+  // handler without checking.
   // Check paper exists
   const detail = await fetchPaperDetailFromHaf(author, permlink) as Record<string, unknown> | null;
   if (!detail) {
@@ -2048,6 +2067,13 @@ router.get('/:author/:permlink/cite', async (req: Request, res: Response) => {
     return sendError(res, 400, 'BAD_REQUEST', 'format must be one of: bibtex, ris, apa');
   }
 
+  // Canonical-root walker is intentionally NOT invoked here. /cite and /retract
+  // operate on the URL's own (author, permlink) — citation targets the URL post
+  // directly; retraction authorizes username === URL author then broadcasts on
+  // the URL's coords. Canonicalization is a display concern handled by the GET
+  // handler. New /api/papers/:author/:permlink/<verb> routes that want canonical
+  // resolution must call findCanonicalRoot themselves; do not pattern-match this
+  // handler without checking.
   // Reuse paper detail fetch logic
   const detail = await fetchPaperDetailFromHaf(author, permlink) as Record<string, unknown> | null;
   if (!detail) {

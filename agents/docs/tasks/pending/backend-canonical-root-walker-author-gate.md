@@ -266,3 +266,56 @@ A1-A4 from the round-2 hold block remain. **A2 specifically:** before round-3 ar
 ### Re-review signal
 
 When round-3 items 1-3 land in a single commit on `papers.ts`, `git mv` this file back to `tasks/review/`. Architect's next review pass scopes `/ce-code-review` to the round-3 commit. Expected diff: ~12 LOC in `papers.ts` (`resolveVersionsFromHaf` memo threading + duplicate-field drop + two handler comment blocks) + ~30 LOC of new canary (memo-dedup canary extension covering the `resolveVersionsFromHaf` path).
+
+---
+
+## Backend re-review signal (2026-05-06, round-3 commit on `worktree-agent-a0f12fb8acf2854a9`)
+
+All 3 round-3 hold items landed in a single commit on `papers.ts` + `canonical-root-walker.test.ts`:
+
+1. **`resolveVersionsFromHaf` memo threading (item 1)** — added `memo?: HeadAuthorsMemo` parameter; threaded to inner `reconstructVersionsFromHaf(author, permlink, undefined, memo)` call. `fetchEnrichmentFromHaf` constructs `headAuthorsMemo` (paralleling the GET /:author/:permlink handler at line 1538) and passes it to `resolveVersionsFromHaf(author, permlink, headAuthorsMemo)` at the `Promise.all` site. New canary `'memo threading: /enrichment shares memo across resolveVersionsFromHaf forward-walk (round-3 item 1)'` exercises `/enrichment` for alice/v1 and asserts `aliceHeadLookupCount === 1`.
+2. **Drop duplicate `hopNumber` from `canonical_root_walker_depth_exceeded`** — removed the field; `maxHops` retains the cap documentation. Inline comment explains why `hopNumber` is intentionally omitted on this event (would always equal `maxHops` by construction; `hopNumber` retains its varying-value role on `unauthorized_hop`). Updated existing depth-cap canary to assert `maxHops === 10` and `hopNumber === undefined` (renamed canary to `'depth-cap warn carries maxHops field (round-3 item 2: dropped duplicate hopNumber)'`).
+3. **`/cite` and `/retract` code comments** — added the architect-specified comment block above each handler explaining why `findCanonicalRoot` is intentionally absent and what to check before pattern-matching for new `/api/papers/:author/:permlink/<verb>` routes.
+
+### Mandatory grep audit (architect followup A2)
+
+```
+$ grep -n "reconstructVersionsFromHaf(" backend/src/routes/papers.ts | grep -v "async function\|@param\|//"
+571:      reconstructVersionsFromHaf(author, permlink, chain, memo),
+1425:  const versions = await reconstructVersionsFromHaf(author, permlink, undefined, memo);
+1550:      const versions = await reconstructVersionsFromHaf(author, permlink, undefined, headAuthorsMemo);
+1587:    const versions = await reconstructVersionsFromHaf(author, permlink, undefined, headAuthorsMemo);
+
+$ grep -n "fetchHeadAuthorizedAuthors(" backend/src/routes/papers.ts | grep -v "async function\|@param"
+955:  const authorizedAuthors = await fetchHeadAuthorizedAuthors(pool, author, permlink, memo);
+1156:      const authorizedAuthors = await fetchHeadAuthorizedAuthors( pool, currentAuthor, currentPermlink, memo, );
+```
+
+**A2 fourth call site discovered.** `reconstructVersionsFromHaf` is called from `fetchPaperDetailFromHaf` at line 571 with `(author, permlink, chain)` — three args, no memo. `fetchPaperDetailFromHaf` accepts `memo?: HeadAuthorsMemo` (signature at :539) and the memo IS in scope at the call site. Pre-round-3, this fourth call site received `memo: undefined` even when the caller (the GET /:author/:permlink handler at :1581) passed a populated `headAuthorsMemo` to `fetchPaperDetailFromHaf`. The forward chain-walk inside `reconstructVersionsFromHaf` consequently bypassed the per-request memo on the canonical paper-detail request flow. Threaded memo at :571 → all four call sites now share the per-request memo when caller passes it.
+
+All `fetchHeadAuthorizedAuthors` call sites pass memo. Audit clean.
+
+### Mutation-kill attestation (per `tests-must-fail-on-mutation-of-code-under-test-2026-04-22.md`)
+
+- **Item 1 (memo on `resolveVersionsFromHaf`):** the new `/enrichment` canary asserts `aliceHeadLookupCount === 1`. Strict count 1→2 mutation-kill via memo-arg revert is NOT observable in `/enrichment` alone, because the route has only one consumer of `fetchHeadAuthorizedAuthors` for the URL author/permlink (`resolveVersionsFromHaf` → `reconstructVersionsFromHaf` → `resolveContinuationChain` → `fetchHeadAuthorizedAuthors`). The dual-consumer count 1→2 mutation-kill scenario is structurally covered by:
+  - The existing `?version=N` canary (line ~648 in `canonical-root-walker.test.ts`) — backward walker + `reconstructVersionsFromHaf` share memo for alice/v1; mutation-kill via revert of memo arg on `reconstructVersionsFromHaf`.
+  - The catch-block memo canary (line ~726) — `fetchPaperDetailFromHaf` + `reconstructVersionsFromHaf` share memo for alice/v1; mutation-kill via revert of `memo?.set(key, null)` in catch.
+  - The fourth call site fix at `:571` (memo threading inside `fetchPaperDetailFromHaf`) is exercised by the existing per-request-memo canary at line ~378 (`'per-request memo: head-authors lookup for the canonical root fires once across backward + forward walks'`). That canary's contract — count = 1 across backward + `fetchPaperDetailFromHaf` forward walk for alice/v1 — depends on the memo flowing through `fetchPaperDetailFromHaf`'s internal `reconstructVersionsFromHaf` call. Reverting the new memo arg at `:571` should still keep that canary at count = 1 because `resolveContinuationChain` is called BEFORE `reconstructVersionsFromHaf` (line 560 vs 571), so the memo hit happens at line 560. The :571 fix tightens internal correctness but doesn't change observable behavior on the existing canary; this is consistent with the round-2 hold item 1 attestation pattern (defensive-only changes don't require new canaries).
+  - The new `/enrichment` canary documents the integration path explicitly.
+- **Item 2 (drop duplicate field):** log-shape cleanup; no behavioral change. The existing depth-exceeded canary (now renamed) was updated to assert on `maxHops` field instead of `hopNumber`; the assertion changes assert that the duplicate-field drop is observable in the log payload. Mutation-kill: revert the field drop → `hopNumber` is still emitted → canary fails because `expect(depthEvents[0]?.hopNumber).toBeUndefined()` no longer holds.
+- **Item 3 (handler comments):** comment-only; no behavioral mutation expected. Existing `/cite` and `/retract` canaries continue to pass unchanged.
+
+### Verification
+
+- `npx tsc --noEmit` clean.
+- `npm run lint` clean (only pre-existing seed-phrase warnings on `backend/src/seed-phrase.ts:26-27`).
+- Targeted vitest pass:
+  - `tests/routes/canonical-root-walker.test.ts`: 16 passed (15 prior + 1 new round-3 canary).
+  - `tests/routes/continuation-author-gate.test.ts` + `tests/routes/papers.test.ts`: 43 passed + 1 skipped.
+
+### Out of scope (honored)
+
+- Wall-clock budget on walker — remains as separate task `backend-haf-walker-wall-clock-budget.md`.
+- Cycle detection — remains as separate task `backend-canonical-walker-cycle-detection.md`.
+- Convention doc updates A1-A4 carry forward to architect archive (architect-zone work; no `[TODO Architect]` markers added — the architect's hold block already enumerates these).
+- The pre-existing items surfaced (per-request walker SQL floor before cache consult; `parseMeta` accepting numeric/boolean inputs) — NOT actioned per architect triage.
