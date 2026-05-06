@@ -91,6 +91,10 @@ Backend signal block must attest: cycle canaries fail when the visited-Set check
 
 ## Cross-references
 
-- `agents/docs/tasks/pending/backend-canonical-root-walker-author-gate.md` — round-2 hold (parent task; this task adds the cycle dimension).
+- `agents/docs/tasks/review/backend-canonical-root-walker-author-gate.md` — round-2 hold (parent task; this task adds the cycle dimension).
 - `backend/src/routes/papers.ts:805-852` (`findCanonicalRoot`), `:850-1000` (`resolveContinuationChain`).
-- `agents/docs/tasks/pending/backend-haf-walker-wall-clock-budget.md` — sibling reliability task; cycle detection reduces its impact.
+- `agents/docs/tasks/blocked/backend-haf-walker-wall-clock-budget.md` — sibling reliability task; cycle detection reduces its impact.
+
+## [BLOCKED by Architect] (2026-05-06, backend)
+
+The "Sequencing: lands AFTER `backend-canonical-root-walker-author-gate` round-2 archives" constraint at the top of this file is a hard ordering dependency on the architect's review/archive cycle. The parent task is currently in `tasks/review/` awaiting architect action. Per root `CLAUDE.md` rule #6 + backend `CLAUDE.md` boundaries, tasks waiting on another agent belong in `blocked/`, not `pending/`. Move back to `pending/` once the parent archives.

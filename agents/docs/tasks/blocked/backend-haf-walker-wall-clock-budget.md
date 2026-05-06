@@ -94,6 +94,10 @@ When BOTH depth cap and wall-clock fire on the same request, prefer the wall-clo
 
 ## Cross-references
 
-- `agents/docs/tasks/pending/backend-canonical-root-walker-author-gate.md` — round-2 hold (parent task closing the gate; this task adds the wall-clock dimension).
+- `agents/docs/tasks/review/backend-canonical-root-walker-author-gate.md` — round-2 hold (parent task closing the gate; this task adds the wall-clock dimension).
 - `backend/src/routes/papers.ts:805-852` (current `findCanonicalRoot`), `:850-1000` (current `resolveContinuationChain`), `:780-848` (current `fetchHeadAuthorizedAuthors`).
 - `backend/src/db.ts:22` `statement_timeout=30000ms` — the per-query bound this task complements with a per-request bound.
+
+## [BLOCKED by Architect] (2026-05-06, backend)
+
+The "Sequencing: lands AFTER `backend-canonical-root-walker-author-gate` round-2 archives" constraint at the top of this file is a hard ordering dependency on the architect's review/archive cycle. The parent task is currently in `tasks/review/` awaiting architect action. Per root `CLAUDE.md` rule #6 + backend `CLAUDE.md` boundaries, tasks waiting on another agent belong in `blocked/`, not `pending/`. Move back to `pending/` once the parent archives.
