@@ -23,7 +23,11 @@ import { rateLimit, byIp } from '../middleware/rateLimit.js';
 import { logger } from '../logger.js';
 import { assertNever } from '../util/assertNever.js';
 import { seedAccreditationBonus } from '../reputation.js';
-import { issueFreshAuthToken } from '../lib/fresh-auth.js';
+import {
+  issueFreshAuthToken,
+  type FreshAuthTarget,
+  type FreshAuthTargetAction,
+} from '../lib/fresh-auth.js';
 
 // Per-route Zod body schema for POST /api/orcid/callback
 // (BE-REQUEST-BODY-TYPING-ZOD). Narrows req.body to typed fields so
@@ -43,6 +47,14 @@ const CallbackBodySchema = z.object({
 // system.
 const StartBodySchema = z.object({
   mode: z.string().optional(),
+  // Round-5 hold #3: per-op fresh-auth target binding. When `mode` is
+  // 'fresh_auth', the request body MUST also carry the consent-op target
+  // (`action`, `root_author`, `root_permlink`); the OAuth round-trip stores
+  // the target in the state map alongside `mode`/`username`, and the
+  // callback reads it back to mint a target-bound proof.
+  action: z.string().optional(),
+  root_author: z.string().optional(),
+  root_permlink: z.string().optional(),
 });
 
 const router = Router();
@@ -155,7 +167,16 @@ const RELEASE_LOCK_LUA = `if redis.call('get', KEYS[1]) == ARGV[1] then return r
 const LOCK_NONCE_RE = /^[0-9a-f]{32}$/;
 
 // In-memory fallbacks when Redis is unavailable
-const orcidStates = new Map<string, { mode: OrcidMode; username?: string; timestamp: number; expires: number }>();
+const orcidStates = new Map<string, {
+  mode: OrcidMode;
+  username?: string;
+  /** Round-5 hold #3: target triple stored when `mode === 'fresh_auth'`,
+   *  read back at callback to mint a target-bound proof. Always undefined
+   *  for non-fresh-auth modes. */
+  fresh_auth_target?: FreshAuthTarget;
+  timestamp: number;
+  expires: number;
+}>();
 const orcidVerified = new Map<string, { orcid_id: string; works_count: number; name: string; expires: number }>();
 
 // Periodic cleanup of expired in-memory entries
@@ -171,6 +192,64 @@ setInterval(() => {
 
 const startLimiter = rateLimit({ name: 'orcid-start', windowMs: 60_000, max: 10, keyFn: byIp });
 const callbackLimiter = rateLimit({ name: 'orcid-callback', windowMs: 60_000, max: 10, keyFn: byIp });
+
+/** Round-5 hold #4: per-fetch timeout for ORCID provider calls. Native Node
+ *  `fetch` has no default timeout; an ORCID-side hang (provider outage,
+ *  network blackhole) blocks the handler indefinitely. New consent-flow
+ *  modes (`fresh_auth`) inherited the same surface so the fix is uniform.
+ *  10s is generous for a healthy ORCID round-trip (~50-300ms typical) but
+ *  short enough that a single hung call doesn't cascade into a thread-pool
+ *  starvation. Override via env if a deployment needs to tune it. */
+const ORCID_FETCH_TIMEOUT_MS = (() => {
+  const raw = process.env.ORCID_FETCH_TIMEOUT_MS;
+  const parsed = raw ? Number(raw) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 10_000;
+})();
+
+/** Round-5 hold #4: typed error surface for an ORCID-provider hang. The
+ *  /callback outer catch maps this specifically to a 504
+ *  ORCID_PROVIDER_TIMEOUT response with `details.outcome: 'timeout'`,
+ *  distinct from generic 500 errors and distinct from upstream non-2xx
+ *  responses. */
+class OrcidProviderTimeoutError extends Error {
+  constructor(public readonly url: string) {
+    super(`ORCID provider timed out after ${ORCID_FETCH_TIMEOUT_MS}ms: ${url}`);
+    this.name = 'OrcidProviderTimeoutError';
+  }
+}
+
+/** Round-5 hold #4: timed-fetch wrapper. Combines the per-call timeout
+ *  with any external AbortSignal the caller already supplies. On timer
+ *  fire, throws `OrcidProviderTimeoutError` so the route can map it to a
+ *  504 (rather than `AbortError` which is also surfaced for caller-driven
+ *  aborts). Logs the timeout at warn level with a structured event so
+ *  operators can correlate provider-outage windows. */
+async function fetchWithOrcidTimeout(
+  url: string,
+  init: RequestInit = {},
+) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ORCID_FETCH_TIMEOUT_MS);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } catch (err) {
+    if (controller.signal.aborted) {
+      logger.warn(
+        {
+          event: 'orcid.fetch.timeout',
+          route: 'orcid.fetch',
+          url,
+          timeout_ms: ORCID_FETCH_TIMEOUT_MS,
+        },
+        'ORCID provider fetch timed out',
+      );
+      throw new OrcidProviderTimeoutError(url);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 // Derive redirect URI at runtime (no env var needed)
 function getRedirectUri(): string {
@@ -229,10 +308,38 @@ router.post('/start', startLimiter, async (req: Request, res: Response) => {
     username = authed;
   }
 
+  // Round-5 hold #3: when mode === 'fresh_auth', the request body must
+  // carry the per-op target. Closed-default at issuance: an SPA that
+  // omits/malforms the target gets a 400, never a target-less proof.
+  let freshAuthTarget: FreshAuthTarget | undefined;
+  if (mode === 'fresh_auth') {
+    const { action, root_author: rootAuthor, root_permlink: rootPermlink } = startParsed.data;
+    if (action !== 'author_accept' && action !== 'author_resign') {
+      return sendError(
+        res,
+        400,
+        'VALIDATION_ERROR',
+        'action must be one of: author_accept, author_resign',
+      );
+    }
+    if (typeof rootAuthor !== 'string' || rootAuthor.length === 0) {
+      return sendError(res, 400, 'VALIDATION_ERROR', 'root_author is required');
+    }
+    if (typeof rootPermlink !== 'string' || rootPermlink.length === 0) {
+      return sendError(res, 400, 'VALIDATION_ERROR', 'root_permlink is required');
+    }
+    freshAuthTarget = {
+      action: action as FreshAuthTargetAction,
+      root_author: rootAuthor,
+      root_permlink: rootPermlink,
+    };
+  }
+
   const state = crypto.randomBytes(16).toString('hex');
   const stateKey = `${config.appTag}:orcid_state:${state}`;
   const stateData: Record<string, unknown> = { mode, timestamp: Date.now() };
   if (username) stateData.username = username;
+  if (freshAuthTarget) stateData.fresh_auth_target = freshAuthTarget;
 
   const redis = getRedis();
   if (redis && isRedisAvailable()) {
@@ -241,6 +348,7 @@ router.post('/start', startLimiter, async (req: Request, res: Response) => {
     orcidStates.set(state, {
       mode: mode as OrcidMode,
       username,
+      fresh_auth_target: freshAuthTarget,
       timestamp: Date.now(),
       expires: Date.now() + ORCID_STATE_TTL * 1000,
     });
@@ -288,14 +396,20 @@ router.post('/callback', callbackLimiter, async (req: Request, res: Response) =>
   try {
     let storedMode: OrcidMode | null = null;
     let storedUsername: string | undefined;
+    let storedFreshAuthTarget: FreshAuthTarget | undefined;
 
     if (redisReady) {
       const raw = await redis.get(stateKey);
       if (raw) {
         try {
-          const parsed = JSON.parse(raw) as { mode: OrcidMode; username?: string };
+          const parsed = JSON.parse(raw) as {
+            mode: OrcidMode;
+            username?: string;
+            fresh_auth_target?: FreshAuthTarget;
+          };
           storedMode = parsed.mode;
           storedUsername = parsed.username;
+          storedFreshAuthTarget = parsed.fresh_auth_target;
         } catch {
           // Invalid stored state — fall through to BAD_REQUEST
         }
@@ -305,6 +419,7 @@ router.post('/callback', callbackLimiter, async (req: Request, res: Response) =>
       if (entry && entry.expires > Date.now()) {
         storedMode = entry.mode;
         storedUsername = entry.username;
+        storedFreshAuthTarget = entry.fresh_auth_target;
       }
     }
 
@@ -330,8 +445,11 @@ router.post('/callback', callbackLimiter, async (req: Request, res: Response) =>
       orcidStates.delete(state);
     }
 
-    // Exchange code for access token
-    const tokenRes = await fetch(`${config.orcidBaseUrl}/oauth/token`, {
+    // Exchange code for access token. Round-5 hold #4: wrapped in
+    // `fetchWithOrcidTimeout` so an ORCID provider hang surfaces as a
+    // 504 ORCID_PROVIDER_TIMEOUT (mapped at the outer catch) rather
+    // than blocking the handler indefinitely.
+    const tokenRes = await fetchWithOrcidTimeout(`${config.orcidBaseUrl}/oauth/token`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
       body: new URLSearchParams({
@@ -379,9 +497,45 @@ router.post('/callback', callbackLimiter, async (req: Request, res: Response) =>
       case 'link':
         return await handleLink(res, orcidId, storedUsername!);
       case 'fresh_auth':
-        return await handleFreshAuth(res, orcidId, storedUsername!);
+        // Round-5 hold #3: storedFreshAuthTarget must be present at this
+        // point because /start enforces it on entry. If somehow absent
+        // (corrupt Redis state, future refactor regression), reject as
+        // BAD_REQUEST rather than minting a target-less proof.
+        if (!storedFreshAuthTarget) {
+          return sendError(
+            res,
+            400,
+            'BAD_REQUEST',
+            'fresh_auth state is missing the per-op target binding',
+          );
+        }
+        return await handleFreshAuth(res, orcidId, storedUsername!, storedFreshAuthTarget);
     }
   } catch (err) {
+    // Round-5 hold #4: surface ORCID provider hangs as 504 with a
+    // structured `details` block, distinct from generic 500s. The
+    // closed-enum payload (`outcome: 'timeout'`, `verify_before_retry:
+    // true`) signals to the SPA that retrying immediately is unsafe —
+    // the broadcast may have started on the provider side and a retry
+    // could double-spend the auth code.
+    if (err instanceof OrcidProviderTimeoutError) {
+      logger.error(
+        {
+          event: 'orcid.callback.provider_timeout',
+          route: 'orcid.callback',
+          err,
+        },
+        'ORCID callback failed — provider timeout',
+      );
+      sendError(
+        res,
+        504,
+        'ORCID_PROVIDER_TIMEOUT',
+        'ORCID provider did not respond in time. Please retry after verifying your ORCID account state.',
+        { retriable: false, outcome: 'timeout', verify_before_retry: true },
+      );
+      return;
+    }
     logger.error(
       { event: 'orcid.callback.failed', route: 'orcid.callback', err },
       'ORCID callback failed',
@@ -884,6 +1038,7 @@ async function handleFreshAuth(
   res: Response,
   orcidId: string,
   username: string,
+  target: FreshAuthTarget,
 ): Promise<void> {
   if (!ORCID_RE.test(orcidId)) {
     sendError(res, 400, 'BAD_REQUEST', 'Invalid ORCID iD format');
@@ -913,7 +1068,7 @@ async function handleFreshAuth(
     return;
   }
 
-  const issued = await issueFreshAuthToken(username, 'orcid');
+  const issued = await issueFreshAuthToken(username, 'orcid', target);
   sendOk(res, {
     mode: 'fresh_auth',
     fresh_auth_proof: issued.token,
@@ -1446,7 +1601,11 @@ async function getCachedOrcidBinding(orcidId: string): Promise<string | null> {
 }
 
 async function countExternalWorks(orcidId: string, _accessToken?: string): Promise<number> {
-  const worksRes = await fetch(`https://pub.orcid.org/v3.0/${orcidId}/works`, {
+  // Round-5 hold #4: same timed-fetch wrapper as the token-exchange call.
+  // A hang here propagates `OrcidProviderTimeoutError` up through
+  // `handleSignup` / `handleAccredit`, where the outer /callback catch
+  // maps it to a 504 ORCID_PROVIDER_TIMEOUT.
+  const worksRes = await fetchWithOrcidTimeout(`https://pub.orcid.org/v3.0/${orcidId}/works`, {
     headers: { Accept: 'application/json' },
   });
 

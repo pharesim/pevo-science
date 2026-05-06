@@ -46,10 +46,10 @@
  *     the broadcast path is mocked. The mock returns a fixed test WIF
  *     derived from a deterministic seed, which produces a valid
  *     `PrivateKey` instance. Risk class covered by real-path elsewhere:
- *     the AES-GCM round-trip itself is exercised by
- *     `tests/lib/custody-crypto.test.ts` (HKDF + encrypt/decrypt pin) and
- *     by the signup-verify happy path in `tests/routes/signup-verify.test.ts`
- *     where a real key is encrypted and re-decrypted on first broadcast.
+ *     the AES-GCM round-trip itself is exercised by the signup-verify
+ *     happy path in `tests/routes/signup-verify.test.ts`, where a real
+ *     key is encrypted at signup and re-decrypted on first broadcast,
+ *     pinning the encrypt/decrypt boundary end-to-end with real material.
  *
  * Real:
  *   - argon2 (real verify against a seeded hash).
@@ -104,6 +104,19 @@ const { createApp } = await import('../../src/app.js');
 const { getAppPool } = await import('../../src/app-db.js');
 const { config } = await import('../../src/config.js');
 const { _resetFreshAuthMemStoreForTests, issueFreshAuthToken } = await import('../../src/lib/fresh-auth.js');
+type FreshAuthTargetAction = 'author_accept' | 'author_resign';
+
+// Round-5 hold #3: each fresh-auth proof binds to the consent op's
+// (action, root_author, root_permlink) triple. Tests that broadcast a
+// consent op MUST issue with a target matching that exact op or the
+// consume-side bind check rejects the proof with `target_mismatch`.
+function targetFor(
+  action: FreshAuthTargetAction,
+  rootAuthor: string,
+  rootPermlink: string,
+) {
+  return { action, root_author: rootAuthor, root_permlink: rootPermlink };
+}
 const { clearRateLimitKeys } = await import('../support/redis-helpers.js');
 
 const app = createApp();
@@ -232,7 +245,12 @@ describe.skipIf(!dbReachable)('Round-3 BACKEND-COAUTHOR-TRUST-MODEL — custody 
       const res = await request(app)
         .post('/api/custody/fresh-auth')
         .set('Authorization', bearerFor(ALICE))
-        .send({ password: ALICE_PASSWORD });
+        .send({
+          password: ALICE_PASSWORD,
+          action: 'author_accept',
+          root_author: 'someroot',
+          root_permlink: 'somepermlink-v1',
+        });
       expect(res.status).toBe(200);
       expect(res.body.status).toBe('ok');
       expect(res.body.data.fresh_auth_proof).toMatch(/^[0-9a-f]{64}$/);
@@ -248,7 +266,12 @@ describe.skipIf(!dbReachable)('Round-3 BACKEND-COAUTHOR-TRUST-MODEL — custody 
       const res = await request(app)
         .post('/api/custody/fresh-auth')
         .set('Authorization', bearerFor(ALICE))
-        .send({ password: 'WrongPassword1' });
+        .send({
+          password: 'WrongPassword1',
+          action: 'author_accept',
+          root_author: 'someroot',
+          root_permlink: 'somepermlink-v1',
+        });
       expect(res.status).toBe(401);
       expect(res.body.error.code).toBe('UNAUTHORIZED');
     });
@@ -277,9 +300,129 @@ describe.skipIf(!dbReachable)('Round-3 BACKEND-COAUTHOR-TRUST-MODEL — custody 
       const res = await request(app)
         .post('/api/custody/fresh-auth')
         .set('Authorization', bearerFor(ALICE))
-        .send({ password: ALICE_PASSWORD });
+        .send({
+          password: ALICE_PASSWORD,
+          action: 'author_accept',
+          root_author: 'someroot',
+          root_permlink: 'somepermlink-v1',
+        });
       expect(res.status).toBe(403);
       expect(res.body.error.code).toBe('FORBIDDEN');
+    });
+
+    // Round-5 hold #3: per-op target binding at the issuance route.
+    it('missing action → 400 VALIDATION_ERROR (closed-default issuance)', async () => {
+      const res = await request(app)
+        .post('/api/custody/fresh-auth')
+        .set('Authorization', bearerFor(ALICE))
+        .send({
+          password: ALICE_PASSWORD,
+          root_author: 'someroot',
+          root_permlink: 'somepermlink-v1',
+        });
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('VALIDATION_ERROR');
+    });
+
+    it('non-consent action → 400 VALIDATION_ERROR', async () => {
+      // The closed enum at issuance enforces action ∈ {author_accept,
+      // author_resign}; a creative SPA cannot mint a proof for vote, claim,
+      // or any other op type even structurally.
+      const res = await request(app)
+        .post('/api/custody/fresh-auth')
+        .set('Authorization', bearerFor(ALICE))
+        .send({
+          password: ALICE_PASSWORD,
+          action: 'vote',
+          root_author: 'someroot',
+          root_permlink: 'somepermlink-v1',
+        });
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('VALIDATION_ERROR');
+    });
+
+    it('missing root_author → 400 VALIDATION_ERROR', async () => {
+      const res = await request(app)
+        .post('/api/custody/fresh-auth')
+        .set('Authorization', bearerFor(ALICE))
+        .send({
+          password: ALICE_PASSWORD,
+          action: 'author_accept',
+          root_permlink: 'somepermlink-v1',
+        });
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('VALIDATION_ERROR');
+    });
+
+    it('missing root_permlink → 400 VALIDATION_ERROR', async () => {
+      const res = await request(app)
+        .post('/api/custody/fresh-auth')
+        .set('Authorization', bearerFor(ALICE))
+        .send({
+          password: ALICE_PASSWORD,
+          action: 'author_accept',
+          root_author: 'someroot',
+        });
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('VALIDATION_ERROR');
+    });
+
+    it('proof minted for paper X cannot broadcast author_accept on paper Y → 403 target_mismatch', async () => {
+      // End-to-end pin of the round-5 substitution-attack defense at
+      // the broadcast surface: mint with target paper-x; broadcast with
+      // paper-y; consume side rejects with reason 'target_mismatch'.
+      const issueRes = await request(app)
+        .post('/api/custody/fresh-auth')
+        .set('Authorization', bearerFor(ALICE))
+        .send({
+          password: ALICE_PASSWORD,
+          action: 'author_accept',
+          root_author: 'someroot',
+          root_permlink: 'paper-x-v1',
+        });
+      expect(issueRes.status).toBe(200);
+      const proof = issueRes.body.data.fresh_auth_proof as string;
+
+      const broadcastRes = await request(app)
+        .post('/api/custody/broadcast')
+        .set('Authorization', bearerFor(ALICE))
+        .send({
+          fresh_auth_proof: proof,
+          operations: [authorAcceptOp(ALICE, 'someroot', 'paper-y-v1')],
+        });
+      expect(broadcastRes.status).toBe(403);
+      expect(broadcastRes.body.error.code).toBe('FRESH_AUTH_REQUIRED');
+      expect(broadcastRes.body.error.details?.reason).toBe('target_mismatch');
+      expect(sendOperationsMock).not.toHaveBeenCalled();
+    });
+
+    it('proof minted for author_accept cannot broadcast author_resign → 403 target_mismatch', async () => {
+      // Same as the paper-swap test above, but along the action axis: the
+      // user mentally authenticated for author_accept, the SPA tried to
+      // sneak through author_resign under the same proof.
+      const issueRes = await request(app)
+        .post('/api/custody/fresh-auth')
+        .set('Authorization', bearerFor(ALICE))
+        .send({
+          password: ALICE_PASSWORD,
+          action: 'author_accept',
+          root_author: 'someroot',
+          root_permlink: 'paper-z-v1',
+        });
+      expect(issueRes.status).toBe(200);
+      const proof = issueRes.body.data.fresh_auth_proof as string;
+
+      const broadcastRes = await request(app)
+        .post('/api/custody/broadcast')
+        .set('Authorization', bearerFor(ALICE))
+        .send({
+          fresh_auth_proof: proof,
+          operations: [authorResignOp(ALICE, 'someroot', 'paper-z-v1')],
+        });
+      expect(broadcastRes.status).toBe(403);
+      expect(broadcastRes.body.error.code).toBe('FRESH_AUTH_REQUIRED');
+      expect(broadcastRes.body.error.details?.reason).toBe('target_mismatch');
+      expect(sendOperationsMock).not.toHaveBeenCalled();
     });
   });
 
@@ -287,7 +430,11 @@ describe.skipIf(!dbReachable)('Round-3 BACKEND-COAUTHOR-TRUST-MODEL — custody 
 
   describe('POST /api/custody/broadcast (author_accept / author_resign)', () => {
     it('author_accept with valid fresh-auth → 200 + audit-log row carries auth_mechanism + session_id + user_agent', async () => {
-      const issued = await issueFreshAuthToken(ALICE, 'password');
+      const issued = await issueFreshAuthToken(
+        ALICE,
+        'password',
+        targetFor('author_accept', 'someroot', 'somepermlink-v1'),
+      );
       const res = await request(app)
         .post('/api/custody/broadcast')
         .set('Authorization', bearerFor(ALICE))
@@ -330,7 +477,11 @@ describe.skipIf(!dbReachable)('Round-3 BACKEND-COAUTHOR-TRUST-MODEL — custody 
       // to be co-populated on the consent-op success path. Pin the full
       // shape here so a regression that drops fresh_auth_outcome /
       // session_id / user_agent surfaces.
-      const issued = await issueFreshAuthToken(ALICE, 'password');
+      const issued = await issueFreshAuthToken(
+        ALICE,
+        'password',
+        targetFor('author_resign', 'someroot', 'somepermlink-v1'),
+      );
       const res = await request(app)
         .post('/api/custody/broadcast')
         .set('Authorization', bearerFor(ALICE))
@@ -376,7 +527,11 @@ describe.skipIf(!dbReachable)('Round-3 BACKEND-COAUTHOR-TRUST-MODEL — custody 
     });
 
     it('replay: same token used twice → second call rejected with reason expired', async () => {
-      const issued = await issueFreshAuthToken(ALICE, 'password');
+      const issued = await issueFreshAuthToken(
+        ALICE,
+        'password',
+        targetFor('author_accept', 'someroot', 'somepermlink-v1'),
+      );
       const first = await request(app)
         .post('/api/custody/broadcast')
         .set('Authorization', bearerFor(ALICE))
@@ -401,7 +556,11 @@ describe.skipIf(!dbReachable)('Round-3 BACKEND-COAUTHOR-TRUST-MODEL — custody 
     it('cross-account: token issued for Bob used with Alice JWT → 403 username_mismatch (round-4 hold #10)', async () => {
       // Round-4 hold #10 differentiates the FRESH_AUTH_REQUIRED status
       // by reason: `username_mismatch` is a binding violation → 403.
-      const bobToken = await issueFreshAuthToken(BOB, 'password');
+      const bobToken = await issueFreshAuthToken(
+        BOB,
+        'password',
+        targetFor('author_accept', 'someroot', 'somepermlink-v1'),
+      );
       const res = await request(app)
         .post('/api/custody/broadcast')
         .set('Authorization', bearerFor(ALICE))
@@ -434,7 +593,18 @@ describe.skipIf(!dbReachable)('Round-3 BACKEND-COAUTHOR-TRUST-MODEL — custody 
       // BEFORE consuming the proof. Mutation-kill: a regression that
       // accepted multi-consent bundles would let this assertion fall through
       // to a 200 response and burn the proof on N ops.
-      const issued = await issueFreshAuthToken(ALICE, 'password');
+      // Round-5 hold #3: each proof binds to one (action, root_author,
+      // root_permlink) target. The multi-consent rejection runs BEFORE
+      // consume, so the first call's bundle never reaches the bind check;
+      // the followup uses the same proof, so the issued target must match
+      // the followup's consent op (rootC / paper-c-v1) for the followup
+      // 200 to land. The first call still 400s for MULTIPLE_CONSENT_OPS
+      // before the bind-check ever fires.
+      const issued = await issueFreshAuthToken(
+        ALICE,
+        'password',
+        targetFor('author_accept', 'rootC', 'paper-c-v1'),
+      );
       const res = await request(app)
         .post('/api/custody/broadcast')
         .set('Authorization', bearerFor(ALICE))
@@ -467,7 +637,15 @@ describe.skipIf(!dbReachable)('Round-3 BACKEND-COAUTHOR-TRUST-MODEL — custody 
       // ops accompany the consent ops — only the COUNT of consent ops
       // matters. Pin that a vote sandwiched between two accepts also
       // trips the rejection.
-      const issued = await issueFreshAuthToken(ALICE, 'password');
+      // Multi-consent rejection runs BEFORE consume, so the proof's
+      // target binding is irrelevant here — we just need a well-formed
+      // target on issuance. Use rootA/paper-a-v1 to match the first op
+      // structurally, even though the bind check is never reached.
+      const issued = await issueFreshAuthToken(
+        ALICE,
+        'password',
+        targetFor('author_accept', 'rootA', 'paper-a-v1'),
+      );
       const res = await request(app)
         .post('/api/custody/broadcast')
         .set('Authorization', bearerFor(ALICE))
@@ -484,42 +662,27 @@ describe.skipIf(!dbReachable)('Round-3 BACKEND-COAUTHOR-TRUST-MODEL — custody 
       expect(sendOperationsMock).not.toHaveBeenCalled();
     });
 
-    it('bridge-paper exclusion: vouched-set excludes a non-bridge signer that broadcast author_accept on a bridge paper', async () => {
-      // Round-4 hold #7: ARCH.md "Bridge papers" subsection states bridge
-      // papers' vouched-set is `{config.hiveBridgeAccount}` only — consent
-      // ops are inert. The pure helper `computeVouchedAuthors` enforces
-      // this via the claimed-set membership check (only claimed authors
-      // can be vouched). Pin via a structural test against the round-1
-      // pure helper. (This test lives in consent-ops.test.ts at the
-      // module-level scope; the broadcast-path test here is a sibling
-      // pin against the broadcast surface.)
-      //
-      // The broadcast surface itself does NOT enforce paper-type at
-      // broadcast time (the chain accepts the op; bridge-paper inertness
-      // is read-time). So this test exercises the natural shape: a
-      // light-account user CAN broadcast `author_accept` on a bridge
-      // paper; the audit log records it. Vouched-set computation rejects
-      // the signer at integration time (round 2). Pin the broadcast
-      // outcome here so the broadcast-path contract is consistent: the
-      // route does not pre-filter by paper type.
-      const issued = await issueFreshAuthToken(ALICE, 'password');
-      const res = await request(app)
-        .post('/api/custody/broadcast')
-        .set('Authorization', bearerFor(ALICE))
-        .send({
-          fresh_auth_proof: issued.token,
-          operations: [
-            authorAcceptOp(ALICE, config.hiveBridgeAccount ?? 'pevo-bridge', 'bridge-paper-permlink'),
-          ],
-        });
-      expect(res.status).toBe(200);
-      // Vouched-set inertness is exercised in consent-ops.test.ts at the
-      // pure-function layer; the broadcast surface is paper-type-blind by
-      // design.
-    });
+    // Round-5 hold #6: prior round-4 "bridge-paper exclusion: vouched-set
+    // excludes a non-bridge signer..." test deleted. The test name claimed
+    // to cover hold #7 but the only assertion was `res.status === 200` and
+    // its own body comment said the broadcast surface is paper-type-blind
+    // by design — zero mutation-kill at the broadcast surface. Bridge-paper
+    // exclusion is correctly tested at the pure-function layer in
+    // `consent-ops.test.ts` (where `computeVouchedAuthors` enforces the
+    // claimed-set membership check). The framing — "broadcast surface is
+    // paper-type-blind; vouched-set inertness is read-time" — survives in
+    // `consent-ops.test.ts`'s coverage and ARCH.md.
 
     it('non-allowlisted custom_json action → 403 FORBIDDEN (allowlist regression)', async () => {
-      const issued = await issueFreshAuthToken(ALICE, 'password');
+      // The non-allowlisted action is rejected at the per-op ALLOWED_OPS
+      // check BEFORE fresh-auth gating runs, so the issued target need
+      // only be well-formed (any `author_accept` target works); the bind
+      // check is never reached.
+      const issued = await issueFreshAuthToken(
+        ALICE,
+        'password',
+        targetFor('author_accept', 'someroot', 'somepermlink-v1'),
+      );
       const res = await request(app)
         .post('/api/custody/broadcast')
         .set('Authorization', bearerFor(ALICE))

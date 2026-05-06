@@ -18,9 +18,12 @@ import { requestAbortSignal } from '../lib/request-abort-signal.js';
 import { handleBroadcastError } from '../lib/broadcast-error.js';
 import {
   CONSENT_OP_ACTIONS,
+  computeFreshAuthTargetHash,
   consumeFreshAuthToken,
   issueFreshAuthToken,
   type FreshAuthMechanism,
+  type FreshAuthTarget,
+  type FreshAuthTargetAction,
 } from '../lib/fresh-auth.js';
 
 const router = Router();
@@ -52,10 +55,21 @@ function bearerSessionId(req: Request): string | null {
 /** Result discriminator for `findConsentOpsInBundle`. The single-consent rule
  *  is structural: a bundle either contains zero consent ops (no fresh-auth
  *  required), exactly one consent op (fresh-auth required for that op), or
- *  more than one (rejected). */
+ *  more than one (rejected).
+ *
+ *  Round-5 hold #3: the `single` arm carries the full target triple
+ *  (`action`, `root_author`, `root_permlink`) so the consume side can
+ *  compute the expected target hash and reject substitution attacks where
+ *  a compromised SPA swaps action/paper between the user's auth ceremony
+ *  and the broadcast. The triple shape is `{action, root_author,
+ *  root_permlink}` matching `FreshAuthTarget` in `lib/fresh-auth.ts`; a
+ *  consent op whose payload omits or malforms these fields is treated as
+ *  malformed and skipped (the broadcast then falls into the no-consent-op
+ *  branch and proceeds without proof, but the consent op itself will be
+ *  rejected by the chain since it lacks required fields). */
 type ConsentOpScan =
   | { kind: 'none' }
-  | { kind: 'single'; action: string }
+  | { kind: 'single'; action: string; rootAuthor: string; rootPermlink: string }
   | { kind: 'multiple' };
 
 /** Type guard: a Hive operation is a [type, params] tuple where params is a
@@ -81,6 +95,8 @@ function isOpTuple(op: unknown): op is [string, Record<string, unknown>] {
  *  "exactly one" (verify proof) from "multiple" (reject 400). */
 function findConsentOpsInBundle(operations: unknown[]): ConsentOpScan {
   let firstAction: string | null = null;
+  let firstRootAuthor: string | null = null;
+  let firstRootPermlink: string | null = null;
   for (const op of operations) {
     if (!isOpTuple(op)) continue;
     const [opType, opParams] = op;
@@ -95,8 +111,31 @@ function findConsentOpsInBundle(operations: unknown[]): ConsentOpScan {
     if (typeof payload !== 'object' || payload === null) continue;
     const action = (payload as { action?: unknown }).action;
     if (typeof action !== 'string' || !CONSENT_OP_ACTIONS.has(action)) continue;
+    // Round-5 hold #3: consent ops with malformed targets fall through to
+    // the no-consent path. Chain rejection is the backstop — a missing or
+    // non-string `root_author`/`root_permlink` makes the custom_json op
+    // invalid at the consensus layer, so the bundle's atomic-transaction
+    // semantic rolls back any sibling ops along with it. We surface the
+    // op as no-consent here rather than as a 400 because (a) the per-op
+    // ALLOWED_OPS check upstream already rejected non-allowlisted custom
+    // ops, (b) chain rejection is correlated by `event:'custody_broadcast_failure'`
+    // for operator visibility, and (c) treating this as "no consent op
+    // detected" keeps the substitution-attack surface flat: an attacker
+    // can't slip a malformed consent op into a legitimate bundle to
+    // bypass the fresh-auth gate, because the chain rejects the entire
+    // bundle along with the malformed op.
+    const rawRootAuthor = (payload as { root_author?: unknown }).root_author;
+    const rawRootPermlink = (payload as { root_permlink?: unknown }).root_permlink;
+    if (
+      typeof rawRootAuthor !== 'string' || rawRootAuthor.length === 0 ||
+      typeof rawRootPermlink !== 'string' || rawRootPermlink.length === 0
+    ) {
+      continue;
+    }
     if (firstAction === null) {
       firstAction = action;
+      firstRootAuthor = rawRootAuthor;
+      firstRootPermlink = rawRootPermlink;
     } else {
       // Second consent op detected — short-circuit with the multi-consent
       // discriminator. The caller responds 400 MULTIPLE_CONSENT_OPS without
@@ -104,7 +143,14 @@ function findConsentOpsInBundle(operations: unknown[]): ConsentOpScan {
       return { kind: 'multiple' };
     }
   }
-  return firstAction === null ? { kind: 'none' } : { kind: 'single', action: firstAction };
+  return firstAction === null
+    ? { kind: 'none' }
+    : {
+        kind: 'single',
+        action: firstAction,
+        rootAuthor: firstRootAuthor!,
+        rootPermlink: firstRootPermlink!,
+      };
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -220,10 +266,23 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
   }
   const consentAction = consentScan.kind === 'single' ? consentScan.action : null;
   let freshAuthMechanism: FreshAuthMechanism | null = null;
-  if (consentAction !== null) {
+  if (consentScan.kind === 'single') {
     const proof = (req.body as { fresh_auth_proof?: unknown })?.fresh_auth_proof;
     const proofToken = typeof proof === 'string' ? proof : undefined;
-    const result = await consumeFreshAuthToken(proofToken, username);
+    // Round-5 hold #3: compute the expected target hash from the consent
+    // op's actual fields (action, root_author, root_permlink). The proof
+    // must have been minted for THIS exact target — otherwise a compromised
+    // SPA could swap the action or paper between the user's auth ceremony
+    // and the broadcast. `consentScan.action` is narrowed to the consent
+    // action set at this point; cast is safe because `CONSENT_OP_ACTIONS`
+    // is the same membership as `FreshAuthTargetAction`.
+    const expectedTarget: FreshAuthTarget = {
+      action: consentScan.action as FreshAuthTargetAction,
+      root_author: consentScan.rootAuthor,
+      root_permlink: consentScan.rootPermlink,
+    };
+    const expectedTargetHash = computeFreshAuthTargetHash(expectedTarget);
+    const result = await consumeFreshAuthToken(proofToken, username, expectedTargetHash);
     if (!result.valid) {
       logger.warn(
         {
@@ -231,15 +290,21 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
           route: 'custody.broadcast',
           username,
           consent_action: consentAction,
+          consent_root_author: consentScan.rootAuthor,
+          consent_root_permlink: consentScan.rootPermlink,
           reason: result.reason,
         },
         'custody.broadcast rejected — fresh-auth proof invalid',
       );
-      // Round-4 hold #10: discriminate status code on reason. `username_mismatch`
-      // is a binding violation (token issued for a different user) → 403; the
+      // Round-4 hold #10 + round-5 hold #3: discriminate status code on
+      // reason. `username_mismatch` and `target_mismatch` are binding
+      // violations (token issued for a different user / target) → 403; the
       // remaining outcomes (`missing`, `expired`, `malformed`) are all
       // "no valid proof present" → 401.
-      const status = result.reason === 'username_mismatch' ? 403 : 401;
+      const status =
+        result.reason === 'username_mismatch' || result.reason === 'target_mismatch'
+          ? 403
+          : 401;
       return sendError(
         res,
         status,
@@ -420,10 +485,43 @@ router.post('/fresh-auth', verifyHiveSignature, freshAuthLimiter, async (req: Re
     return sendError(res, 403, 'FORBIDDEN', 'This endpoint is only for custodial accounts. Self-custody users sign consent ops via Hive Keychain.');
   }
 
-  const { password } = (req.body ?? {}) as { password?: unknown };
+  const body = (req.body ?? {}) as {
+    password?: unknown;
+    root_author?: unknown;
+    root_permlink?: unknown;
+    action?: unknown;
+  };
+  const { password } = body;
   if (typeof password !== 'string' || password.length === 0) {
     return sendError(res, 400, 'VALIDATION_ERROR', 'Password is required');
   }
+  // Round-5 hold #3: per-op target binding. The proof binds to the
+  // (action, root_author, root_permlink) triple of the consent op the user
+  // intends to authorize. Closed-default: all three fields are required;
+  // legacy callers that omit them get a 400 rather than a target-less
+  // proof that would still be honored at consume.
+  const action = body.action;
+  const rootAuthor = body.root_author;
+  const rootPermlink = body.root_permlink;
+  if (action !== 'author_accept' && action !== 'author_resign') {
+    return sendError(
+      res,
+      400,
+      'VALIDATION_ERROR',
+      'action must be one of: author_accept, author_resign',
+    );
+  }
+  if (typeof rootAuthor !== 'string' || rootAuthor.length === 0) {
+    return sendError(res, 400, 'VALIDATION_ERROR', 'root_author is required');
+  }
+  if (typeof rootPermlink !== 'string' || rootPermlink.length === 0) {
+    return sendError(res, 400, 'VALIDATION_ERROR', 'root_permlink is required');
+  }
+  const target: FreshAuthTarget = {
+    action,
+    root_author: rootAuthor,
+    root_permlink: rootPermlink,
+  };
 
   const pool = getAppPool();
   if (!pool) return sendError(res, 503, 'INTERNAL_ERROR', 'Service not available');
@@ -463,7 +561,7 @@ router.post('/fresh-auth', verifyHiveSignature, freshAuthLimiter, async (req: Re
       return sendError(res, 401, 'UNAUTHORIZED', 'Invalid password');
     }
 
-    const issued = await issueFreshAuthToken(username, 'password');
+    const issued = await issueFreshAuthToken(username, 'password', target);
     return sendOk(res, {
       fresh_auth_proof: issued.token,
       expires_at: issued.expires_at,

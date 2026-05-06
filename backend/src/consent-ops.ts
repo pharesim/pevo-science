@@ -92,6 +92,31 @@ const FETCH_CONSENT_OPS_LIMIT = 1000;
  * is reached the helper currently does not surface a "more ops exist"
  * signal to the caller; round-2 integration may want a warning event.
  *
+ * Round-5 hold #2: signer-filter pushed down into the SQL WHERE. Without
+ * it, the LIMIT 1000 + ORDER BY cj.id DESC admitted a de-vouch attack:
+ * any Hive account can post a fee-less `custom_json {action:
+ * 'author_accept', root_author: P, root_permlink: P}` against any
+ * paper. The op fails the consent-action validity check at
+ * `computeVouchedAuthors` (signer not in claimed-set), but it still
+ * counts against the LIMIT. An attacker spamming 1000+ such ops pushes
+ * legitimate co-authors' `author_accept` ops below the cut: the latest
+ * 1000 rows by `cj.id` DESC are all attacker-signed, and the legitimate
+ * co-author's accept is invisible to the computation → de-vouched.
+ * Filtering by `cj.required_posting_auths ->> 0 IN (claimed_set)` at
+ * the SQL layer ensures the LIMIT bounds attacker-signed rows OUT of
+ * the row set entirely; the cap only fires on legitimate signer spam,
+ * which is bounded by the claimed-set's cardinality (a few co-authors
+ * per paper) under Hive's per-account rate limit.
+ *
+ * Per HAF Rule 5
+ * (`agents/docs/solutions/conventions/hive-primitive-aware-design-rules-for-pevo-custom-json-ops-2026-05-05.md`):
+ * the `required_posting_auths[0]` IS the consent op's implicit
+ * accepter/resigner (the chain signer is the actor). Filtering by
+ * signer membership at the SQL is therefore equivalent to the
+ * `claimedAuthors.has(signer)` check at `computeVouchedAuthors:221` —
+ * any signer outside the claimed-set produces an inert op no matter
+ * what the broadcast surface allows.
+ *
  * Round-4 hold #16: this fetch runs against the HAF Pool which currently
  * has no per-query `statement_timeout`. The follow-up task
  * `architect-haf-unavailability-vouched-set-policy` handles policy for
@@ -103,9 +128,25 @@ const FETCH_CONSENT_OPS_LIMIT = 1000;
 export async function fetchConsentOpsForPaper(
   rootAuthor: string,
   rootPermlink: string,
+  claimedAuthors: ReadonlySet<string>,
 ): Promise<ConsentOp[]> {
   const pool = getPool();
   if (!pool) return [];
+
+  // Round-5 hold #2: empty claimed-set produces no possible vouched
+  // signers; short-circuit the SQL entirely. Avoids issuing a query with
+  // an empty `IN ()` clause (which is invalid SQL on most dialects) and
+  // matches the semantic at `computeVouchedAuthors`: no claimed authors
+  // means no vouchable consent ops.
+  if (claimedAuthors.size === 0) return [];
+
+  // Build the `IN ($k, $k+1, ...)` placeholder list for the claimed-set
+  // signer filter. Parameterized to prevent SQL injection from any
+  // upstream caller that didn't pre-validate handle shape.
+  const claimedArray = Array.from(claimedAuthors);
+  const claimedPlaceholders = claimedArray
+    .map((_, idx) => `$${idx + 5}`)
+    .join(', ');
 
   const sql = `
     SELECT
@@ -121,6 +162,7 @@ export async function fetchConsentOpsForPaper(
       AND cj.json::jsonb ->> 'action' IN ('author_accept', 'author_resign')
       AND cj.json::jsonb ->> 'root_author' = $3
       AND cj.json::jsonb ->> 'root_permlink' = $4
+      AND cj.required_posting_auths ->> 0 IN (${claimedPlaceholders})
     ORDER BY cj.id DESC
     LIMIT ${FETCH_CONSENT_OPS_LIMIT}
   `;
@@ -129,6 +171,7 @@ export async function fetchConsentOpsForPaper(
     getCachedGenesisBlock(),
     rootAuthor,
     rootPermlink,
+    ...claimedArray,
   ];
 
   try {
@@ -253,7 +296,7 @@ export async function getVouchedAuthors(
   claimedAuthors: Set<string>,
   firstClaimBlockByAuthor: Map<string, number>,
 ): Promise<Set<string>> {
-  const consentOps = await fetchConsentOpsForPaper(rootAuthor, rootPermlink);
+  const consentOps = await fetchConsentOpsForPaper(rootAuthor, rootPermlink, claimedAuthors);
   return computeVouchedAuthors(
     rootAuthor,
     claimedAuthors,

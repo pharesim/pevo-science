@@ -108,10 +108,20 @@ describe.skipIf(!dbReachable)(
     });
 
     it('null password_hash → 401 UNAUTHORIZED with the same envelope shape as wrong-password', async () => {
+      // Round-5 hold #3: /api/custody/fresh-auth now requires the per-op
+      // target binding (`action`, `root_author`, `root_permlink`) on
+      // every issuance request. Both legs of this oracle-parity test
+      // supply identical target fields so the only behavioral
+      // difference is the password-hash status (null vs valid hash).
+      const targetFields = {
+        action: 'author_accept',
+        root_author: 'someroot',
+        root_permlink: 'somepermlink-v1',
+      };
       const nullHashRes = await request(app)
         .post('/api/custody/fresh-auth')
         .set('Authorization', bearerForLight(NULL_HASH_USER))
-        .send({ password: 'AnyPassword1' });
+        .send({ password: 'AnyPassword1', ...targetFields });
 
       expect(nullHashRes.status).toBe(401);
       expect(nullHashRes.body.error.code).toBe('UNAUTHORIZED');
@@ -123,7 +133,7 @@ describe.skipIf(!dbReachable)(
       const wrongPwdRes = await request(app)
         .post('/api/custody/fresh-auth')
         .set('Authorization', bearerForLight(REAL_HASH_USER))
-        .send({ password: 'WrongPassword1' });
+        .send({ password: 'WrongPassword1', ...targetFields });
 
       expect(wrongPwdRes.status).toBe(401);
       expect(wrongPwdRes.body.error.code).toBe('UNAUTHORIZED');

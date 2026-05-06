@@ -680,3 +680,150 @@ Fix: drop the `tests/lib/custody-crypto.test.ts` line. Optionally tighten the he
 
 Items 1, 2, 3, and 10, 11 from the existing TODO Architect cluster (ARCH.md updates: type→action discriminator, author_accept validity prose, same-block tie-break primitive, light-account audit-log columns operational note, fresh-auth issuance endpoint cross-reference) remain pending. They land at archive time, along with item 7 expansion (target-binding fields once round-5 item 3 ships) and the `ORCID_PROVIDER_TIMEOUT` error documentation in `orcid.md` (round-5 item 4).
 
+## Backend re-review signal (2026-05-06, round-5, working tree before commit)
+
+All 9 round-5 hold items addressed. Net diff: 6 production files (`consent-ops.ts`, `custody-audit.ts`, `lib/fresh-auth.ts`, `routes/custody.ts`, `routes/orcid.ts`, `types/api.ts`) + 5 test files (`tests/consent-ops.test.ts`, `tests/consent-ops-real-haf.test.ts`, `tests/lib/fresh-auth.test.ts`, `tests/routes/custody-consent-ops.test.ts`, `tests/routes/orcid.test.ts`) + 1 collateral test (`tests/routes/custody-fresh-auth-null-hash.test.ts`, target-fields plumbed through to keep the password-oracle parity assertion). Bundled into a single commit per round-5 hold guidance.
+
+### Item 1 — Symmetric dual-tier deletion (`backend/src/lib/fresh-auth.ts`)
+
+**Production code:**
+- Updated `consumeFreshAuthToken` docstring (lines ~270-300) to describe symmetric dual-tier deletion: Redis-success leg deletes the memStore backup; memStore-fallback leg issues a best-effort `redis.del(KEY_PREFIX + token)` to clear the canonical Redis entry. Pre-fix asymmetry (only Redis-success leg cleared the other tier) admitted same-process double-consume under a Redis blip mid-`getdel` even though the docstring claimed symmetry.
+- Added the compensating-del block at consume time (around lines 333-352): on `consumedFromMemStore` and Redis still present, attempt `await redis.del(...)`, log on error with `event: 'fresh_auth.redis_compensating_del_failed'`, do not fail the consume.
+- Added `consumedFromMemStore` flag at the consume entry to discriminate which leg succeeded.
+
+**Tests (`tests/lib/fresh-auth.test.ts`):**
+- New describe block `Symmetric dual-tier deletion (round-5 hold #1)` with 2 tests:
+  - `memStore-fallback success path issues a compensating redis.del so a subsequent Redis-recovered consume cannot replay` — stubs Redis to throw on first `getdel`, allows the compensating del to run, verifies a second consume returns `expired`. The pre-fix asymmetric variant would have left the canonical Redis entry alive and admitted a double-consume.
+  - `memStore-fallback compensating del is best-effort (a throwing redis.del does not break the consume)` — stubs both `getdel` and `del` to throw; asserts the consume still returns `valid: true` (the user's broadcast must proceed).
+
+### Item 2 — `fetchConsentOpsForPaper` SQL signer-filter (`backend/src/consent-ops.ts`)
+
+**Production code:**
+- `fetchConsentOpsForPaper` signature grew a third parameter: `claimedAuthors: ReadonlySet<string>`. Empty claimed-set short-circuits to `[]` (avoids invalid `IN ()` SQL and matches the `computeVouchedAuthors` semantic that no claimed authors means no vouchable signers).
+- SQL gained `AND cj.required_posting_auths ->> 0 IN ($5, $6, ...)` clause — each claimed account is a separate `$N` placeholder starting at $5. The signer-filter pushes the claimed-set membership check INTO the database so the LIMIT 1000 cap can't be exhausted by attacker-signed spam ops (de-vouch attack vector closed).
+- Updated docstring to call out the de-vouch attack scenario, the round-5 fix, and HAF Rule 5 (the chain signer IS the implicit accepter/resigner, so signer-filter is equivalent to the `claimedAuthors.has(signer)` check at `computeVouchedAuthors:221`).
+- Caller `getVouchedAuthors` updated to pass `claimedAuthors` through (was already a parameter; just plumbed).
+
+**Tests:**
+- `tests/consent-ops.test.ts`: existing 4 SQL-shape tests updated to take a 2-author claimed-set and assert the new `IN ($5, $6)` clause + `$5..$N` parameter binding.
+- New test `short-circuits to [] when claimedAuthors is empty (no SQL issued)` pins the empty-set semantic.
+- New test `signer filter at the SQL excludes non-claimed signers from the row set under spam (mutation kill)` pins the de-vouch defense: the mock asserts `claimedBindings` does NOT contain `mallory` and DOES contain `alice/bob/carol`. A regression that drops the SQL clause would let the test pass only if the mock returned attacker rows; the mock's claimed-bindings assertion is the structural mutation-kill.
+- `tests/consent-ops-real-haf.test.ts`: `findKnownPaperWithConsentOps` extended to also project `signer` so the real-HAF test can pass it as the claimed-set; both real-HAF tests updated to take the new arg.
+
+### Item 3 — Per-op fresh-auth target binding
+
+**Production code (`backend/src/lib/fresh-auth.ts`):**
+- New types `FreshAuthTargetAction` (`'author_accept' | 'author_resign'`) and `FreshAuthTarget` (`{action, root_author, root_permlink}`).
+- `StoredEntry` gained a `target_hash: string` field (SHA-256 hex of the length-prefixed target encoding).
+- New exported `computeFreshAuthTargetHash(target)` function. **Encoding correction discovered during testing:** the originally drafted `${action}|${root_author}|${root_permlink}` shape collides for `(author='a|b', permlink='c')` vs `(author='a', permlink='b|c')`. Round-5 final encoding is **length-prefixed**: `<len>|<value>` per field. Hive permlinks today are restricted so '|' cannot appear, but the encoder defends against the upstream constraint relaxing in the future and makes the binding self-evidently correct under any string input. A test in `computeFreshAuthTargetHash — content hash` exercises the pipe-laden permlink case to pin this contract.
+- New internal `isValidTargetHash(value)` guard (strict `/^[0-9a-f]{64}$/`).
+- `issueFreshAuthToken` signature: now `(username, mechanism, target)`. Computes the hash, embeds in the stored entry.
+- `consumeFreshAuthToken` signature: now `(token, expectedUsername, expectedTargetHash)`. Three reject conditions added: (a) stored entry without a well-shaped `target_hash` rejects as `malformed` (round-4-shape leak guard), (b) malformed/empty `expectedTargetHash` rejects as `target_mismatch` (closed-default for legacy callers), (c) stored hash ≠ expected hash rejects as `target_mismatch`.
+- New `target_mismatch` reason added to `FreshAuthVerifyResult` and `FreshAuthOutcome` (in `custody-audit.ts`).
+
+**Production callers:**
+- `backend/src/routes/custody.ts`:
+  - `findConsentOpsInBundle` extended to extract `root_author` and `root_permlink` from the consent op payload; malformed targets fall through to the no-consent path (chain rejection backstop). The `single` discriminator carries the full target.
+  - `/api/custody/broadcast` consume site (lines ~225-270): computes `expectedTargetHash` from the actual consent op's fields and passes it. Status code discrimination updated: `target_mismatch` (like `username_mismatch`) returns 403 (binding violation), other reasons 401.
+  - `/api/custody/fresh-auth` issue route: request body grew required `action`/`root_author`/`root_permlink` fields. Closed-default validation rejects 400 if any are missing/malformed.
+- `backend/src/routes/orcid.ts`:
+  - `StartBodySchema` extended with optional `action`/`root_author`/`root_permlink` fields.
+  - `/api/orcid/start` mode === 'fresh_auth' branch validates the target fields (closed-default 400 if missing) and stores them in the state map under `fresh_auth_target`.
+  - `orcidStates` Map type extended with `fresh_auth_target?: FreshAuthTarget`.
+  - `/api/orcid/callback` reads `fresh_auth_target` from state, passes it to `handleFreshAuth`. Defensive 400 if the target is somehow absent (corrupt Redis state).
+  - `handleFreshAuth` signature grew a `target: FreshAuthTarget` parameter.
+
+**Tests (`tests/lib/fresh-auth.test.ts`):**
+- New describe block `computeFreshAuthTargetHash — content hash (round-5 hold #3)` with 6 tests: 64-char-hex shape, determinism, action-axis differentiation, root_author-axis differentiation, root_permlink-axis differentiation, pipe-laden domain-separation pin.
+- New describe block `Per-op target binding (round-5 hold #3)` with 7 tests:
+  - issue/consume same target → valid
+  - issue X / consume Y → `target_mismatch`
+  - 1-fold action-axis substitution (accept → resign with same paper) → `target_mismatch`
+  - 1-fold paper-axis substitution (same action, different permlink) → `target_mismatch`
+  - closed-default empty-string `expectedTargetHash` → `target_mismatch`
+  - closed-default malformed (length-63 hex) → `target_mismatch`
+  - closed-default uppercase hex → `target_mismatch` (strict-lowercase contract pinned)
+- All existing fresh-auth tests updated to pass target arguments.
+
+**Tests (`tests/routes/custody-consent-ops.test.ts`):**
+- New `targetFor` helper extracts the (action, root_author, root_permlink) shape from the test's consent ops.
+- All 7 existing `issueFreshAuthToken` calls updated to pass a target matching their broadcast bundle's consent op (or, for tests where the consume side never runs — multi-consent rejection at the gate, allowlist rejection — a well-formed default target).
+- New POST /api/custody/fresh-auth tests: missing-action 400, non-consent-action 400, missing-root_author 400, missing-root_permlink 400.
+- New end-to-end pin tests: paper-X mint → paper-Y broadcast → 403 `target_mismatch` (audit broadcast surface integration); accept mint → resign broadcast → 403 `target_mismatch`.
+
+### Item 4 — ORCID fetch timeout discipline (`backend/src/routes/orcid.ts`)
+
+**Production code:**
+- New `ORCID_FETCH_TIMEOUT_MS` constant (default 10s, env-overridable via `ORCID_FETCH_TIMEOUT_MS`).
+- New `OrcidProviderTimeoutError` class for typed error surface.
+- New `fetchWithOrcidTimeout(url, init)` wrapper: AbortController + setTimeout; on abort due to the timer firing (vs caller-driven abort), throws `OrcidProviderTimeoutError`. Logs at warn level with structured `event: 'orcid.fetch.timeout'`.
+- Both fetch sites (`/oauth/token` exchange in `/callback`, `pub.orcid.org/.../works` in `countExternalWorks`) wrapped.
+- `/callback` outer catch detects `OrcidProviderTimeoutError instanceof` and returns 504 `ORCID_PROVIDER_TIMEOUT` with `details: { retriable: false, outcome: 'timeout', verify_before_retry: true }`. Generic 500 path unchanged.
+- New `ORCID_PROVIDER_TIMEOUT` error code added to `backend/src/types/api.ts` `ErrorCode` union.
+
+**Tests (`tests/routes/orcid.test.ts`):**
+- New describe block `POST /api/orcid/callback — provider-timeout discipline (round-5 hold #4)` with 2 tests:
+  - token-exchange hang → 504 with full closed-default `details` shape (uses `installAbortingFetchStub('token')` helper — fetch stub that hooks into the production code's AbortSignal and rejects on abort, simulating a hung provider without wall-clock waits).
+  - works-fetch hang → 504 (signup mode reaches `countExternalWorks`).
+- Both tests `it.skipIf(env > 1s)` so a deployment override that cranks the timeout above 1 second skips rather than hanging the test for 10s.
+- Suite-wide change: `startAuthed('fresh_auth', ...)` helper updated to send default target fields so existing fresh_auth callback tests continue to pass.
+
+### Item 5 — Collapse `CustodyAuditExtras` discriminated union (`backend/src/custody-audit.ts`)
+
+**Production code:**
+- `CustodyAuditExtras` collapsed from `T | Record<string, never>` to a single optional shape (`{auth_mechanism, fresh_auth_outcome, session_id?, user_agent?}`). The empty arm was phantom: every call site either passed the consent shape or omitted `extras` entirely; no caller ever constructed `{}`.
+- Narrowing at the consumer in `logCustodyBroadcast` simplified from `extras && 'auth_mechanism' in extras ? extras : undefined` to a bare `extras !== undefined` check (now implicit in the optional-chaining).
+- Updated docstring to explain the round-4 → round-5 evolution and preserve the round-4 hold #9 motivation (correlated-options-discriminated-union convention) — the convention's load-bearing detail (TS rejecting `auth_mechanism` without `fresh_auth_outcome` or vice versa) survives in the new shape's required-fields contract.
+- `'target_mismatch'` added to `FreshAuthOutcome` union (item 3 dependency).
+
+No new tests required (existing audit-log tests pin the shape; the change is type-only at the call sites).
+
+### Item 6 — Delete misnamed bridge-paper exclusion test (`backend/tests/routes/custody-consent-ops.test.ts`)
+
+Deleted lines ~487-519. The test name claimed to cover hold #7 but the only assertion was `res.status === 200` and its own body comment said "broadcast surface is paper-type-blind by design." Zero mutation-kill at the broadcast surface. Bridge-paper exclusion is correctly tested at the pure-function layer in `consent-ops.test.ts:278-336` (the round-5 item 7 update preserves and strengthens that coverage). Replaced with a brief comment block explaining the deletion rationale.
+
+### Item 7 — `consent-ops.test.ts` divergent-guards mutation-kill (`backend/tests/consent-ops.test.ts`)
+
+Setup updated for both affected tests:
+- `computeVouchedAuthors — non-claimed signers (defense in depth)` → `ignores accept ops from accounts not in the claimed set`: mallory now has `firstClaim: 50` so guard (b) at `consent-ops.ts:224` passes, leaving guard (a) at `:221` as the sole barrier. Mallory's accept blockNum 120 > 50 so the temporal-ordering filter passes too.
+- `computeVouchedAuthors — bridge papers` → `vouches only the bridge account...`: mallory's `firstClaim` entry added (50). Same shape: guard (b) and the temporal filter pass; only guard (a) blocks her.
+
+Both tests gained extensive inline comments explaining the divergent-guards mutation-kill design so a future maintainer doesn't "simplify" the setup back into the dual-guard absorption.
+
+**Mutation-kill attestation:** I deleted the `if (!claimedAuthors.has(signer)) continue;` line at `consent-ops.ts:221` and ran the suite. Result: `1 failed | 30 passed (24 in this file, 30 across the run)` — failures specifically at the two updated tests, with shapes `expected Set{ 'alice', 'mallory' } to deeply equal Set{ 'alice' }` and `expected Set{ 'pevotest.admin', 'mallory' } to deeply equal Set{ 'pevotest.admin' }`. Restored the line; suite back to green at 24/24. Pre-round-5 setup absorbed this mutation silently.
+
+### Item 8 — `it.skipIf` for Redis-availability-gated tests (`backend/tests/lib/fresh-auth.test.ts`)
+
+**Implementation note:** `getRedis()` returns the redis instance before its `connect()` promise resolves. `it.skipIf(...)` evaluates at registration time, before `tests/setup.ts`'s `beforeAll` awaits `redis.ping()`. A naive `const redisAvailable = getRedis() && isRedisAvailable()` at module scope evaluates to `false` at import-time and skips on every CI run. Pattern from `tests/support/redis-helpers.ts`: poll up to ~1s for `redis.status === 'ready'` via top-level `await`. Module scope `await` is supported in this ESM project.
+
+Replaced both round-4 hold #3 tests' `if (!redis || !isRedisAvailable()) return;` early-bail with `it.skipIf(!redisAvailable)`. New round-5 item-1 tests inherit the same pattern. Module-level `redisAvailable` constant documented inline with the rationale.
+
+### Item 9 — Stale `tests/lib/custody-crypto.test.ts` citation removed (`backend/tests/routes/custody-consent-ops.test.ts`)
+
+Header line 50 cited `tests/lib/custody-crypto.test.ts` as a clause-(c) real-path companion; that file does not exist (`find tests/ -name custody-crypto.test*` returns nothing). Citation dropped; the surviving citation (`tests/routes/signup-verify.test.ts`) covers the AES-GCM round-trip risk class via real-key encrypt-at-signup → decrypt-on-first-broadcast flow. Header rewritten to make the surviving citation's risk-class coverage explicit.
+
+### Verification
+
+- `npx tsc --noEmit` — clean build.
+- `npm run lint` — clean (2 pre-existing `no-explicit-any` warnings in `seed-phrase.ts`, acceptable per backend CLAUDE.md).
+- Targeted suites:
+  - `npx vitest run tests/lib/fresh-auth.test.ts` — 23/23 passing (was 8 round-4; +6 hash tests, +2 dual-tier tests, +7 binding tests, +existing 8 - 0 deleted = expected 23).
+  - `npx vitest run tests/routes/custody-consent-ops.test.ts` — 20/20 passing (was 14 round-4; -1 deleted item-6 test, +7 round-5 issuance + e2e tests = expected 20).
+  - `npx vitest run tests/consent-ops.test.ts` — 24/24 passing (item-2 SQL-shape tests updated, +1 short-circuit test, +1 signer-filter mutation-kill).
+  - `npx vitest run tests/consent-ops-real-haf.test.ts` — 1 passed | 1 skipped (the skipped test is the real-HAF row-shape pin which auto-activates once consent ops appear on chain — expected in the current dev environment).
+  - `npx vitest run tests/routes/orcid.test.ts` (with `ORCID_FETCH_TIMEOUT_MS=200`) — 73/73 passing (+2 timeout tests).
+  - `npx vitest run tests/routes/custody-fresh-auth-null-hash.test.ts` — 1/1 passing (collateral target-fields plumbing).
+- Full backend `npx vitest run` — `971 passed | 9 skipped`. Two pre-existing failures unrelated to this round (`tests/routes/disciplines-canon-mocked.test.ts:669` continuation-chain head-override discipline lowercase test — verified pre-existing on `main` via `git stash`; the failure persists with the round-5 patches reverted, so it was not introduced here). Stats-profile-parity flap on the first run cleared on re-run (real-data-dependent).
+
+### Architect followups carried forward at archive
+
+- ARCH.md cluster items 1, 2, 3, 10, 11 from the round-5 hold block (type→action discriminator, author_accept validity prose, same-block tie-break primitive, light-account audit-log columns operational note, fresh-auth issuance endpoint cross-reference) — unchanged.
+- New for round-5: `agents/docs/api-contracts/orcid.md` `ORCID_PROVIDER_TIMEOUT` 504 error documentation (item 4) and `agents/docs/api-contracts/custody.md` + `agents/docs/api-contracts/orcid.md` per-op target-binding fields on the issuance request bodies and `target_mismatch` reason on `FRESH_AUTH_REQUIRED` errors (item 3).
+- Round-5 hold #2: the LIMIT-1000 docstring at `consent-ops.ts:69-78` notes that "the threshold is sized for the cumulative-union task's expected chain length." The LIMIT semantic narrows under the new signer-filter (now bounded by claimed-set cardinality × per-author rate-limit), so the architect may want to revisit the doc when item 2 lands at archive.
+
+### Ambient hardening (backend self-discipline, not in any hold)
+
+- The `computeFreshAuthTargetHash` encoding regression (pipe-collision under non-Hive-conformant permlinks) was caught at unit-test write-time by the domain-separation test, before any production caller exercised it. Encoding switched to length-prefixed; updated test passes. Documented as a binding-contract pin so a future "simplify the encoder" refactor can't silently re-introduce the collision.
+
+When round-5 lands, `git mv` this file back to `tasks/review/`.
+

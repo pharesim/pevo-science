@@ -5,17 +5,24 @@ import { logger } from './logger.js';
  * Optional consent-op metadata captured for `author_accept` / `author_resign`
  * broadcasts. ARCH.md "Light-account signing of consent ops" requires the
  * audit log to capture timestamp (`created_at`, default), session ID,
- * user-agent, and auth-mechanism. Non-consent ops omit these fields and the
- * columns store NULL.
+ * user-agent, and auth-mechanism. Non-consent ops omit `extras` entirely
+ * (every field stores NULL) — the parameter is `undefined`, not an empty
+ * object.
  *
- * Round-4 hold #9: typed as a discriminated union per
+ * Round-5 hold #5: collapsed from a `T | Record<string, never>` discriminated
+ * union to a single optional shape. The empty `Record<string, never>` arm was
+ * phantom: every call site either passed the consent shape or omitted `extras`
+ * entirely; no caller ever constructed `{}`. The convention's load-bearing
+ * detail (the round-4 fix preventing half-population — `auth_mechanism`
+ * without `fresh_auth_outcome` or vice versa) is preserved by the consent
+ * arm's required-fields shape: TS still rejects an `extras` value that
+ * carries one of the two co-required fields without the other.
+ *
+ * Round-4 hold #9 carry-over: per
  * `agents/docs/solutions/conventions/correlated-options-discriminated-union-2026-04-28.md`.
  * The four fields are semantically correlated (only meaningful when a
- * consent op fired) — typing them as independent optionals admitted callers
- * supplying `fresh_auth_outcome` without `auth_mechanism` with no TS error.
- * The discriminator is the implicit "consent op fired" signal: `auth_mechanism`
- * + `fresh_auth_outcome` are co-required in the consent variant; the
- * non-consent variant is the empty `{}` (omitted).
+ * consent op fired); the round-4 typing fixed callers supplying
+ * `fresh_auth_outcome` without `auth_mechanism` with no TS error.
  *
  * `fresh_auth_outcome` is constrained to the values `consumeFreshAuthToken`
  * actually emits. Only `'verified'` is written today; the other variants are
@@ -28,16 +35,15 @@ export type FreshAuthOutcome =
   | 'missing'
   | 'expired'
   | 'username_mismatch'
+  | 'target_mismatch'
   | 'malformed';
 
-export type CustodyAuditExtras =
-  | {
-      auth_mechanism: 'password' | 'orcid';
-      fresh_auth_outcome: FreshAuthOutcome;
-      session_id?: string;
-      user_agent?: string;
-    }
-  | Record<string, never>;
+export type CustodyAuditExtras = {
+  auth_mechanism: 'password' | 'orcid';
+  fresh_auth_outcome: FreshAuthOutcome;
+  session_id?: string;
+  user_agent?: string;
+};
 
 /**
  * Log a custodial broadcast to the audit trail.
@@ -57,13 +63,10 @@ export async function logCustodyBroadcast(
   }
 
   try {
-    // Discriminate on `auth_mechanism` presence: only the consent-op variant
-    // carries the extra fields. The Record<string, never> variant collapses
-    // to all NULLs. Direct property access via `'auth_mechanism' in extras`
-    // narrows the union without triggering the optional-chaining-on-never
-    // lint friction that motivated round-4 hold #9 in the first place.
-    const consentExtras =
-      extras && 'auth_mechanism' in extras ? extras : undefined;
+    // Round-5 hold #5: with the union collapsed to a single optional shape,
+    // narrowing degenerates to a bare `extras !== undefined` check. The
+    // empty Record<string, never> arm is gone; callers either pass the
+    // full consent shape or omit `extras` entirely.
     await pool.query(
       `INSERT INTO custody_audit_log
          (username, operation_type, tx_id, block_num,
@@ -74,10 +77,10 @@ export async function logCustodyBroadcast(
         operationType,
         txId || null,
         blockNum || null,
-        consentExtras?.auth_mechanism ?? null,
-        consentExtras?.fresh_auth_outcome ?? null,
-        consentExtras?.session_id ?? null,
-        consentExtras?.user_agent ?? null,
+        extras?.auth_mechanism ?? null,
+        extras?.fresh_auth_outcome ?? null,
+        extras?.session_id ?? null,
+        extras?.user_agent ?? null,
       ],
     );
   } catch (err) {

@@ -55,12 +55,15 @@ import { queryWithRetry } from './support/haf-query.js';
 
 /**
  * Probe HAF for any existing consent op in this appTag namespace. Returns
- * the first row's `(root_author, root_permlink)` so the row-shape tests
- * have a known-positive fixture, or `null` if no consent ops exist yet.
+ * the first row's `(root_author, root_permlink, signer)` so the row-shape
+ * tests have a known-positive fixture (including a claimed-set member to
+ * pass through round-5 hold #2's signer-filter), or `null` if no consent
+ * ops exist yet.
  */
 async function findKnownPaperWithConsentOps(): Promise<{
   rootAuthor: string;
   rootPermlink: string;
+  signer: string;
 } | null> {
   const pool = getPool();
   if (!pool) return null;
@@ -69,7 +72,8 @@ async function findKnownPaperWithConsentOps(): Promise<{
   const probeSql = `
     SELECT
       cj.json::jsonb ->> 'root_author' AS root_author,
-      cj.json::jsonb ->> 'root_permlink' AS root_permlink
+      cj.json::jsonb ->> 'root_permlink' AS root_permlink,
+      cj.required_posting_auths ->> 0 AS signer
     FROM ${T.customJson} cj
     WHERE cj.custom_id = $1
       AND cj.block_num >= $2
@@ -81,10 +85,15 @@ async function findKnownPaperWithConsentOps(): Promise<{
     const result = await queryWithRetry<{
       root_author: string | null;
       root_permlink: string | null;
+      signer: string | null;
     }>(pool, probeSql, [config.appTag, getCachedGenesisBlock()]);
     const row = result.rows[0];
-    if (!row?.root_author || !row?.root_permlink) return null;
-    return { rootAuthor: row.root_author, rootPermlink: row.root_permlink };
+    if (!row?.root_author || !row?.root_permlink || !row?.signer) return null;
+    return {
+      rootAuthor: row.root_author,
+      rootPermlink: row.root_permlink,
+      signer: row.signer,
+    };
   } catch {
     return null;
   }
@@ -102,10 +111,15 @@ describe('fetchConsentOpsForPaper — real HAF SQL shape', () => {
       }
 
       // Deterministic non-existent (author, permlink) — astronomically
-      // unlikely to collide with any real PEvO paper.
+      // unlikely to collide with any real PEvO paper. Round-5 hold #2:
+      // the claimed-set is a single non-existent handle so the SQL
+      // signer-filter has placeholders to bind against; combined with
+      // the non-existent paper identity, the result is unconditionally
+      // empty regardless of HAF state.
       const ops = await fetchConsentOpsForPaper(
         'pevo-real-haf-test-no-such-author',
         'pevo-real-haf-test-no-such-permlink-zzzzz',
+        new Set(['pevo-real-haf-test-no-such-signer']),
       );
       expect(ops).toEqual([]);
     },
@@ -131,9 +145,15 @@ describe('fetchConsentOpsForPaper — real HAF SQL shape', () => {
         return;
       }
 
+      // Round-5 hold #2: pass the discovered signer as the claimed-set
+      // so the SQL signer-filter admits at least the probe's row. A
+      // production caller derives `claimedAuthors` from the chain-walk;
+      // here we use the signer directly because the test asserts
+      // round-trip parsing of any consent op, not vouched-set semantics.
       const ops = await fetchConsentOpsForPaper(
         fixture.rootAuthor,
         fixture.rootPermlink,
+        new Set([fixture.signer]),
       );
       expect(ops.length).toBeGreaterThan(0);
 

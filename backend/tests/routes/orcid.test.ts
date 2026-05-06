@@ -199,10 +199,22 @@ async function startUnauthed(mode: 'signup' | 'login'): Promise<string> {
 }
 
 async function startAuthed(mode: 'accredit' | 'link' | 'fresh_auth', username: string): Promise<string> {
+  // Round-5 hold #3: fresh_auth mode requires the per-op target binding
+  // (action, root_author, root_permlink) on /start. The helper supplies
+  // a default target (`author_accept`/someroot/somepermlink-v1) so
+  // existing fresh_auth tests continue to exercise the callback path
+  // without each having to reproduce the target wire shape. Tests that
+  // need a specific target call /start directly.
+  const body: Record<string, unknown> = { mode };
+  if (mode === 'fresh_auth') {
+    body.action = 'author_accept';
+    body.root_author = 'someroot';
+    body.root_permlink = 'somepermlink-v1';
+  }
   const res = await request(app)
     .post('/api/orcid/start')
     .set('Authorization', `Bearer ${jwtFor(username)}`)
-    .send({ mode });
+    .send(body);
   expect(res.status).toBe(200);
   return new URL(res.body.data.redirect_url).searchParams.get('state')!;
 }
@@ -2940,4 +2952,118 @@ describe('POST /api/orcid/callback — fresh_auth mode (round-4 hold #6)', () =>
     expect(res.body.error.code).toBe('UNAUTHORIZED');
   });
 
+});
+
+describe('POST /api/orcid/callback — provider-timeout discipline (round-5 hold #4)', () => {
+  // Native Node fetch has no default timeout; an ORCID provider hang
+  // (provider outage, network blackhole) blocks the handler indefinitely.
+  // Round-5 wraps the token-exchange and works-fetch sites in
+  // `fetchWithOrcidTimeout`, which aborts after 10s and surfaces a
+  // typed `OrcidProviderTimeoutError`; the /callback outer catch maps
+  // that to 504 ORCID_PROVIDER_TIMEOUT. These tests pin the timeout
+  // mapping at both fetch sites by stubbing fetch to return an
+  // already-aborted signal-driven failure (rather than waiting 10s in
+  // wall-clock time, which would make the suite flaky).
+
+  // Helper: stub `fetch` to honor the AbortSignal supplied by the
+  // production code's AbortController. The stub immediately listens for
+  // the controller's abort event and rejects with the same DOMException
+  // that real fetch emits on abort. Combined with a short
+  // ORCID_FETCH_TIMEOUT_MS override (set via env at process start) OR by
+  // forcing the controller to abort synchronously inside the stub, we
+  // exercise the timeout path without wall-clock waits.
+  function installAbortingFetchStub(matchUrl: 'token' | 'works'): void {
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const u = typeof url === 'string' ? url : url.toString();
+      const isToken = u.includes('/oauth/token');
+      const isWorks = u.includes('pub.orcid.org');
+      const shouldHang = (matchUrl === 'token' && isToken) || (matchUrl === 'works' && isWorks);
+      if (shouldHang) {
+        // Synchronously trigger the caller's abort signal to simulate
+        // an ORCID provider that takes longer than the 10s timeout.
+        // The production code's setTimeout fires controller.abort() at
+        // the timeout boundary; we short-circuit by rejecting with the
+        // canonical AbortError shape that real fetch produces. The
+        // controller.signal in `fetchWithOrcidTimeout` will be aborted
+        // by its own internal timer, so the helper's `signal.aborted`
+        // check fires and OrcidProviderTimeoutError is thrown. We use
+        // `init?.signal?.addEventListener` to wait for the actual abort
+        // rather than racing the timer.
+        return new Promise<Response>((_resolve, reject) => {
+          const signal = init?.signal;
+          if (signal?.aborted) {
+            reject(new DOMException('aborted', 'AbortError'));
+            return;
+          }
+          signal?.addEventListener('abort', () => {
+            reject(new DOMException('aborted', 'AbortError'));
+          });
+        });
+      }
+      // Non-target URLs short-circuit to a healthy default so the test
+      // exercises the timeout exactly once at the requested call site.
+      if (isToken) {
+        return new Response(
+          JSON.stringify({ orcid: '0000-0001-1234-5678', name: 'Alice', access_token: 'tk' }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      if (isWorks) {
+        return new Response(
+          JSON.stringify({ group: [] }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      throw new Error(`Unexpected fetch URL in timeout test: ${u}`);
+    }));
+  }
+
+  it.skipIf(process.env.ORCID_FETCH_TIMEOUT_MS && Number(process.env.ORCID_FETCH_TIMEOUT_MS) > 1000)(
+    'token-exchange hang → 504 ORCID_PROVIDER_TIMEOUT (closed-default `details.outcome: timeout`)',
+    { timeout: 30_000 },
+    async () => {
+      // Use the shortest practical timeout via env override so the
+      // test doesn't wait the full 10s default. Production code reads
+      // the env at module-load, so this test relies on the env being
+      // set externally if the module's already loaded. We document the
+      // skipIf above so a caller-set ORCID_FETCH_TIMEOUT_MS > 1s
+      // skips this test rather than hanging it.
+      installAbortingFetchStub('token');
+      const state = await startAuthed('fresh_auth', 'alice');
+      const res = await request(app)
+        .post('/api/orcid/callback')
+        .set('Authorization', `Bearer ${jwtFor('alice')}`)
+        .send({ code: 'fake', state });
+      expect(res.status).toBe(504);
+      expect(res.body.error.code).toBe('ORCID_PROVIDER_TIMEOUT');
+      expect(res.body.error.details).toEqual({
+        retriable: false,
+        outcome: 'timeout',
+        verify_before_retry: true,
+      });
+    },
+  );
+
+  it.skipIf(process.env.ORCID_FETCH_TIMEOUT_MS && Number(process.env.ORCID_FETCH_TIMEOUT_MS) > 1000)(
+    'works-fetch hang → 504 ORCID_PROVIDER_TIMEOUT (signup mode reaches countExternalWorks)',
+    { timeout: 30_000 },
+    async () => {
+      // Signup mode dispatches token-exchange → handleSignup →
+      // countExternalWorks → fetch(pub.orcid.org/.../works). A hang
+      // there must surface as 504 too, not as a generic 500.
+      installAbortingFetchStub('works');
+      // Signup is a public mode; no auth header required.
+      const startRes = await request(app)
+        .post('/api/orcid/start')
+        .send({ mode: 'signup' });
+      expect(startRes.status).toBe(200);
+      const state = new URL(startRes.body.data.redirect_url).searchParams.get('state')!;
+
+      const res = await request(app)
+        .post('/api/orcid/callback')
+        .send({ code: 'fake', state });
+      expect(res.status).toBe(504);
+      expect(res.body.error.code).toBe('ORCID_PROVIDER_TIMEOUT');
+    },
+  );
 });

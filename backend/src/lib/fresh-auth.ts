@@ -65,6 +65,26 @@ export const CONSENT_OP_ACTIONS: ReadonlySet<string> = new Set([
 
 export type FreshAuthMechanism = 'password' | 'orcid';
 
+/** Round-5 hold #3: action component of the per-op target binding. The
+ *  fresh-auth proof binds to the (action, root_author, root_permlink)
+ *  triple of the consent op being authorized. Without this binding, a
+ *  compromised SPA could swap action/paper between the user's
+ *  authentication ceremony and the broadcast that consumes the proof
+ *  ("substitute author_resign on paper Y for the author_accept on paper X
+ *  the user thought they authorized"). */
+export type FreshAuthTargetAction = 'author_accept' | 'author_resign';
+
+/** Round-5 hold #3: shape of the per-op target the fresh-auth proof
+ *  binds to. The triple is reduced to a SHA-256 hash at issuance time
+ *  via `computeFreshAuthTargetHash`. The hash, not the cleartext fields,
+ *  is what's stored in the entry — the hash domain-separates from any
+ *  other fields that may share the same underlying string-concat shape. */
+export interface FreshAuthTarget {
+  action: FreshAuthTargetAction;
+  root_author: string;
+  root_permlink: string;
+}
+
 /** Round-4 hold #8: type-guard for the storage `mechanism` field. The
  *  membership test diverges from the union if the union grows and the
  *  test isn't updated; consolidating it here means a single point of
@@ -91,6 +111,43 @@ interface StoredEntry {
   mechanism: FreshAuthMechanism;
   /** Epoch ms. Informational; expiry is enforced by Redis EX / map cleanup. */
   issued_at: number;
+  /** Round-5 hold #3: SHA-256 hex of the target triple under a
+   *  length-prefixed encoding (see `computeFreshAuthTargetHash`). The
+   *  consume side recomputes the hash from the bundle's consent op fields
+   *  and rejects on mismatch. Stored as hex (64 chars) for JSON-safety. */
+  target_hash: string;
+}
+
+/**
+ * Round-5 hold #3: compute the per-op target hash. The bind is over a
+ * length-prefixed encoding of the triple:
+ *
+ *   `<len(action)>|<action>|<len(root_author)>|<root_author>|<len(root_permlink)>|<root_permlink>`
+ *
+ * Length-prefixing is collision-free for arbitrary string content: any
+ * two distinct triples produce distinct encodings even if individual
+ * field values share substrings or contain the '|' separator. A naive
+ * pipe-only delimiter (`a|b|c`) collides for `(a='x|y', b='c')` vs
+ * `(a='x', b='y|c')`. Hive permlinks today are restricted to lowercase
+ * alphanumerics and hyphens so '|' cannot appear in practice, but the
+ * encoder defends against that constraint relaxing in the future and
+ * makes the binding contract self-evidently correct under any string
+ * input rather than relying on an external invariant.
+ */
+export function computeFreshAuthTargetHash(target: FreshAuthTarget): string {
+  const concat =
+    `${target.action.length}|${target.action}|` +
+    `${target.root_author.length}|${target.root_author}|` +
+    `${target.root_permlink.length}|${target.root_permlink}`;
+  return crypto.createHash('sha256').update(concat).digest('hex');
+}
+
+/** Round-5 hold #3: type-guard for the `target_hash` field on the stored
+ *  entry. A stored entry written by the round-4 path (no `target_hash`
+ *  field) MUST be rejected on consume — closed-default policy. The
+ *  membership check is structural: hex-string of length 64. */
+function isValidTargetHash(value: unknown): value is string {
+  return typeof value === 'string' && /^[0-9a-f]{64}$/.test(value);
 }
 
 /** In-memory fallback. Intentionally module-scoped — fresh-auth tokens are
@@ -126,9 +183,20 @@ interface IssuedFreshAuth {
 }
 
 /**
- * Mint a fresh-auth token for `username` with the given mechanism. The
- * caller (route handler) is responsible for verifying the user actually
- * proved control via that mechanism BEFORE calling this function.
+ * Mint a fresh-auth token for `username` with the given mechanism, bound to
+ * the per-op target (action + root_author + root_permlink). The caller
+ * (route handler) is responsible for verifying the user actually proved
+ * control via that mechanism BEFORE calling this function. The caller is
+ * also responsible for sourcing the target from the actual op the user
+ * intends to authorize — see the SPA wire-shape note in the `[TODO UI]`
+ * paragraph of the round-5 signal block in
+ * `agents/docs/tasks/pending/backend-coauthor-trust-model.md`.
+ *
+ * Round-5 hold #3: the proof is bound to the consent op via a SHA-256 of
+ * the target triple. Without this bind the proof was 1-fold-amplifiable: a
+ * compromised SPA could authenticate the user for `author_accept` on
+ * paper X then use the proof to broadcast `author_resign` on paper Y under
+ * the same TTL.
  *
  * Storage path: Redis preferred; falls back to the module-local map on
  * unavailable Redis or write failure. Both paths are TTL-bounded.
@@ -136,10 +204,17 @@ interface IssuedFreshAuth {
 export async function issueFreshAuthToken(
   username: string,
   mechanism: FreshAuthMechanism,
+  target: FreshAuthTarget,
 ): Promise<IssuedFreshAuth> {
   const token = crypto.randomBytes(TOKEN_BYTES).toString('hex');
   const issuedAt = Date.now();
-  const entry: StoredEntry = { username, mechanism, issued_at: issuedAt };
+  const targetHash = computeFreshAuthTargetHash(target);
+  const entry: StoredEntry = {
+    username,
+    mechanism,
+    issued_at: issuedAt,
+    target_hash: targetHash,
+  };
   const expiresAt = Math.floor(issuedAt / 1000) + FRESH_AUTH_TTL_SECONDS;
   const memExpiresAtMs = issuedAt + FRESH_AUTH_TTL_SECONDS * 1000;
 
@@ -182,7 +257,12 @@ type FreshAuthVerifyResult =
   | { valid: true; mechanism: FreshAuthMechanism }
   | {
       valid: false;
-      reason: 'missing' | 'expired' | 'username_mismatch' | 'malformed';
+      reason:
+        | 'missing'
+        | 'expired'
+        | 'username_mismatch'
+        | 'target_mismatch'
+        | 'malformed';
     };
 
 /**
@@ -191,25 +271,41 @@ type FreshAuthVerifyResult =
  * `{ valid: false, reason: 'expired' }` (already consumed by the GETDEL /
  * map.delete()).
  *
- * Round-4 hold #3: a successful Redis GETDEL ALSO deletes the memStore
- * backup written at issuance time. Without this paired delete, a token
- * issued on a healthy Redis (Redis copy + memStore backup) and consumed
- * on healthy Redis would leave the memStore backup alive until the cleaner
- * fired, admitting a replay. Symmetrically, if the Redis GETDEL throws
- * mid-call, the memStore fallback path consumes the backup and the user
- * recovers from the flap.
+ * Round-5 hold #1: dual-tier deletion is now SYMMETRIC across both legs.
+ * The Redis-success leg deletes the memStore backup (so a sibling consume
+ * can't replay the token via the fallback path). The memStore-fallback
+ * leg issues a best-effort `redis.del` of the canonical entry (so a
+ * Redis flap mid-call that consumed the memStore copy doesn't leave the
+ * canonical entry behind for a replay once Redis recovers within the
+ * TTL window). The pre-fix asymmetric variant — only the Redis-success
+ * leg cleared the other tier — admitted a same-process double-consume
+ * under a Redis blip mid-`getdel` even though the docstring claimed
+ * symmetry.
+ *
+ * Round-4 hold #3 carry-over: the Redis-flap fallback recovery path
+ * (memStore backup written at issuance) makes the consume side resilient
+ * to mid-call Redis failures without sacrificing single-use semantics.
+ *
+ * Round-5 hold #3: consume requires `expectedTargetHash` (computed by the
+ * caller from the actual consent op being authorized). A token that was
+ * minted for one (action, paper) target cannot authorize a different
+ * target. Closed-default: a missing or non-hex `expectedTargetHash`
+ * rejects with `target_mismatch` rather than skipping the check (the
+ * caller MUST be on the new wire shape for the proof to be honored).
  *
  * The route layer rejects the broadcast on any non-valid outcome.
  */
 export async function consumeFreshAuthToken(
   token: string | undefined,
   expectedUsername: string,
+  expectedTargetHash: string,
 ): Promise<FreshAuthVerifyResult> {
   if (!token || typeof token !== 'string' || token.length === 0) {
     return { valid: false, reason: 'missing' };
   }
 
   let raw: string | null = null;
+  let consumedFromMemStore = false;
 
   const redis = getRedis();
   if (redis && isRedisAvailable()) {
@@ -237,11 +333,33 @@ export async function consumeFreshAuthToken(
       memStore.delete(token); // single-use even on the fallback path
       if (cached.expiresAt > Date.now()) {
         raw = JSON.stringify(cached.entry);
+        consumedFromMemStore = true;
       }
     }
   }
 
   if (!raw) return { valid: false, reason: 'expired' };
+
+  // Round-5 hold #1: when we consumed from the memStore fallback path
+  // (Redis was unavailable or threw on getdel), issue a best-effort
+  // `redis.del` of the canonical Redis entry. Without this, a transient
+  // Redis flap mid-getdel that didn't actually delete the entry would
+  // leave the canonical Redis copy alive — and a replay within the TTL
+  // window once Redis recovered would hit Redis getdel and return valid
+  // a second time (double-consume). The redis.del here is best-effort:
+  // we already consumed the memStore copy, so the user's broadcast is
+  // good to proceed regardless of whether this paired delete lands.
+  // Logging on error correlates the recovery attempt with the flap.
+  if (consumedFromMemStore && redis) {
+    try {
+      await redis.del(KEY_PREFIX + token);
+    } catch (err) {
+      logger.warn(
+        { err, event: 'fresh_auth.redis_compensating_del_failed' },
+        'Compensating Redis del after memStore-fallback consume failed; replay window remains until TTL',
+      );
+    }
+  }
 
   let parsed: unknown;
   try {
@@ -251,23 +369,42 @@ export async function consumeFreshAuthToken(
     return { valid: false, reason: 'malformed' };
   }
 
-  // Round-4 hold #8: structural narrowing replaces the prior unsafe
-  // `JSON.parse(raw) as StoredEntry`. Adding a new field to StoredEntry
-  // requires extending this guard; a future refactor that relaxes the
-  // schema is forced to update the consume path explicitly.
+  // Round-4 hold #8 + round-5 hold #3: structural narrowing replaces the
+  // prior unsafe `JSON.parse(raw) as StoredEntry`. Adding a new field to
+  // StoredEntry requires extending this guard; a future refactor that
+  // relaxes the schema is forced to update the consume path explicitly.
+  // The `target_hash` field MUST be present and well-shaped — a stored
+  // entry without it is a round-4-shape leak (e.g., a token written
+  // before redeploy and consumed after) and is rejected as malformed.
   if (
     typeof parsed !== 'object' ||
     parsed === null ||
     typeof (parsed as { username?: unknown }).username !== 'string' ||
-    !isFreshAuthMechanism((parsed as { mechanism?: unknown }).mechanism)
+    !isFreshAuthMechanism((parsed as { mechanism?: unknown }).mechanism) ||
+    !isValidTargetHash((parsed as { target_hash?: unknown }).target_hash)
   ) {
     return { valid: false, reason: 'malformed' };
   }
 
-  const entry = parsed as { username: string; mechanism: FreshAuthMechanism };
+  const entry = parsed as {
+    username: string;
+    mechanism: FreshAuthMechanism;
+    target_hash: string;
+  };
 
   if (entry.username !== expectedUsername) {
     return { valid: false, reason: 'username_mismatch' };
+  }
+
+  // Round-5 hold #3: closed-default — caller MUST supply a well-formed
+  // expected hash. An empty / malformed argument rejects rather than
+  // bypasses the bind so legacy callers can't accidentally re-enable the
+  // 1-fold substitution attack.
+  if (!isValidTargetHash(expectedTargetHash)) {
+    return { valid: false, reason: 'target_mismatch' };
+  }
+  if (entry.target_hash !== expectedTargetHash) {
+    return { valid: false, reason: 'target_mismatch' };
   }
 
   return { valid: true, mechanism: entry.mechanism };

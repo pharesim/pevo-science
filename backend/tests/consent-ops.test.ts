@@ -239,8 +239,33 @@ describe('computeVouchedAuthors — same-block tie-break (convention rule 2)', (
 describe('computeVouchedAuthors — non-claimed signers (defense in depth)', () => {
   it('ignores accept ops from accounts not in the claimed set', () => {
     // Mallory hasn't been listed in pevo.authors[], so her accept is inert.
+    //
+    // Round-5 hold #7: divergent-guards mutation-kill design. The function
+    // has TWO guards in series at consent-ops.ts:221 and :224:
+    //   (a) `if (!claimedAuthors.has(signer)) continue;` — claimed-set
+    //       membership check (the line this test pins).
+    //   (b) `if (firstClaimBlockByAuthor.get(signer) === undefined) continue;`
+    //       — first-claim-block presence check.
+    // The naive setup that omits mallory from BOTH `claimed` AND `firstClaim`
+    // means a mutation that drops guard (a) leaves mallory falling through
+    // to guard (b), which fires because mallory has no firstClaimBlock entry.
+    // Guard (b) ABSORBS the mutation: the test passes both pre- and post-
+    // mutation. To kill the (a)-mutation specifically, mallory MUST be
+    // present in `firstClaim` with a valid block (so guard (b) passes), AND
+    // her accept must have a blockNum greater than her firstClaim (so the
+    // temporal-ordering filter at consent-ops.ts:230 also passes). Then
+    // dropping (a) admits mallory into the vouched set, the assertion
+    // `expect(vouched).toEqual(Set(['alice']))` fails, and the mutation
+    // is killed. Do NOT "simplify" this setup by removing mallory from
+    // firstClaim — that re-introduces the dual-guard absorption.
     const claimed = new Set(['alice', 'bob']);
-    const firstClaim = new Map([['alice', 100], ['bob', 110]]);
+    // Mallory has a firstClaim block (50) but is NOT in the claimed set.
+    // Without divergent-guards killing line 221, this test passed even
+    // when 221 was deleted, because guard 224 absorbed the failure.
+    const firstClaim = new Map([['alice', 100], ['bob', 110], ['mallory', 50]]);
+    // Mallory's accept (blockNum 120 > her firstClaim 50) passes the
+    // temporal-ordering filter; only the claimed-set guard at line 221
+    // blocks her from vouching.
     const ops: ConsentOp[] = [op({ signer: 'mallory', action: 'author_accept', blockNum: 120 })];
     const vouched = computeVouchedAuthors('alice', claimed, firstClaim, ops);
     expect(vouched).toEqual(new Set(['alice']));
@@ -250,6 +275,17 @@ describe('computeVouchedAuthors — non-claimed signers (defense in depth)', () 
     // Defensive: the caller's chain-walk should always produce a first-claim
     // block for every claimed handle. If it doesn't, we treat the claim as
     // unvalidatable and skip vouching.
+    //
+    // This test specifically pins guard (b) at consent-ops.ts:224 (the
+    // firstClaimBlock-undefined check); the divergent-guards design makes
+    // guard (a) above pin (a) (claimed-set membership), and the two
+    // mutation-kills run in sibling tests rather than as one combined
+    // setup. If a future refactor merges the two guards into one (e.g.,
+    // a single `(claimed.has(s) && firstClaim.has(s))` predicate), THIS
+    // test still kills that single-guard mutation cleanly because bob is
+    // claimed-but-missing-from-firstClaim — the merged predicate would be
+    // false and skip bob, but a mutation that flips the conjunction to
+    // disjunction would admit bob and break this assertion.
     const claimed = new Set(['alice', 'bob']);
     const firstClaim = new Map([['alice', 100]]); // bob missing
     const ops: ConsentOp[] = [op({ signer: 'bob', action: 'author_accept', blockNum: 120 })];
@@ -288,12 +324,29 @@ describe('computeVouchedAuthors — bridge papers (ARCH.md "Bridge papers" subse
     // skipped regardless of any author_accept they broadcast. Mutation-kill:
     // a regression that vouched signers whose handle was NOT in the claimed
     // set would let mallory's accept op vouch onto the bridge paper here.
+    //
+    // Round-5 hold #7: divergent-guards mutation-kill design. Mallory MUST
+    // be present in `firstClaim` (with a valid blockNum strictly less than
+    // her accept's blockNum) so that the second guard at consent-ops.ts:224
+    // (`firstClaimBlock === undefined → continue`) does NOT absorb the
+    // mutation. The pre-fix setup put mallory in NEITHER `claimed` nor
+    // `firstClaim`; deleting the line-221 guard left mallory falling through
+    // to the line-224 guard, which fired because she had no firstClaimBlock
+    // entry — silently absorbing the deletion. With mallory in firstClaim,
+    // line 221's deletion admits her into the vouched set and this test's
+    // `vouched.has('mallory')` assertion flips to true. Do NOT "simplify"
+    // by removing mallory from firstClaim — that re-introduces the dual-
+    // guard absorption.
     const bridgeAccount = config.hiveBridgeAccount;
     const claimed = new Set([bridgeAccount]);
-    const firstClaim = new Map([[bridgeAccount, 100]]);
+    // Mallory has a firstClaim entry (50); the line-221 guard is the only
+    // structural barrier between her and the vouched-set on a bridge paper.
+    const firstClaim = new Map([[bridgeAccount, 100], ['mallory', 50]]);
     const ops: ConsentOp[] = [
       // mallory tries to vouch herself onto a bridge paper. Inert: she's
-      // not in claimedAuthors.
+      // not in claimedAuthors. Her accept blockNum (200) > her firstClaim
+      // (50), so the temporal-ordering filter at line 230 ALSO passes —
+      // only the claimed-set guard blocks her.
       op({ signer: 'mallory', action: 'author_accept', blockNum: 200 }),
     ];
     const vouched = computeVouchedAuthors(bridgeAccount, claimed, firstClaim, ops);
@@ -337,9 +390,16 @@ describe('computeVouchedAuthors — case folding on signer field', () => {
 // ─── fetchConsentOpsForPaper — SQL shape ─────────────────────────────
 
 describe('fetchConsentOpsForPaper — SQL contract', () => {
-  it('filters by appTag, action whitelist, root_author, root_permlink, and genesis block', async () => {
+  // Round-5 hold #2: claimed-set is now a parameter; the SQL filters
+  // by `cj.required_posting_auths ->> 0 IN (claimed_set)` to defeat the
+  // de-vouch spam attack. Tests that previously ran with no claimed-set
+  // pass a 2-author claimed-set so the SQL `IN (...)` clause has
+  // placeholders to bind against.
+  const TEST_CLAIMED = new Set(['alice', 'bob']);
+
+  it('filters by appTag, action whitelist, root_author, root_permlink, claimed-signer set, and genesis block', async () => {
     hafQueryMock.mockResolvedValue({ rows: [] });
-    await fetchConsentOpsForPaper(PAPER.rootAuthor, PAPER.rootPermlink);
+    await fetchConsentOpsForPaper(PAPER.rootAuthor, PAPER.rootPermlink, TEST_CLAIMED);
 
     expect(hafQueryMock).toHaveBeenCalledOnce();
     const [sql, params] = hafQueryMock.mock.calls[0];
@@ -353,6 +413,11 @@ describe('fetchConsentOpsForPaper — SQL contract', () => {
     // Paper identity binds via $3 / $4.
     expect(sql).toMatch(/'root_author'\s*=\s*\$3/);
     expect(sql).toMatch(/'root_permlink'\s*=\s*\$4/);
+    // Round-5 hold #2: claimed-signer filter — push the claimed-set
+    // membership check INTO the SQL so the LIMIT 1000 cap can't be
+    // exhausted by attacker-signed spam ops. Each claimed account
+    // becomes a separate $N placeholder starting at $5.
+    expect(sql).toMatch(/cj\.required_posting_auths\s*->>\s*0\s+IN\s*\(\s*\$5\s*,\s*\$6\s*\)/);
     // Required output columns for the ConsentOp shape.
     expect(sql).toMatch(/required_posting_auths\s*->>\s*0\s+AS\s+signer/);
     expect(sql).toMatch(/cj\.id::text\s+AS\s+op_id/);
@@ -364,7 +429,14 @@ describe('fetchConsentOpsForPaper — SQL contract', () => {
     expect(sql).toMatch(/ORDER\s+BY\s+cj\.id\s+DESC/);
     expect(sql).toMatch(/LIMIT\s+1000/);
 
-    expect(params).toEqual([config.appTag, 100_000_000, PAPER.rootAuthor, PAPER.rootPermlink]);
+    expect(params).toEqual([
+      config.appTag,
+      100_000_000,
+      PAPER.rootAuthor,
+      PAPER.rootPermlink,
+      'alice',
+      'bob',
+    ]);
   });
 
   it('returns parsed ConsentOp shape with case-folded signer and stringified opId', async () => {
@@ -378,7 +450,7 @@ describe('fetchConsentOpsForPaper — SQL contract', () => {
         op_id: '455756464590425874',
       }],
     });
-    const ops = await fetchConsentOpsForPaper(PAPER.rootAuthor, PAPER.rootPermlink);
+    const ops = await fetchConsentOpsForPaper(PAPER.rootAuthor, PAPER.rootPermlink, TEST_CLAIMED);
 
     expect(ops).toEqual([{
       signer: 'bob',
@@ -392,14 +464,70 @@ describe('fetchConsentOpsForPaper — SQL contract', () => {
 
   it('returns [] when HAF pool is unavailable', async () => {
     getPoolMock.mockReturnValue(null);
-    const ops = await fetchConsentOpsForPaper(PAPER.rootAuthor, PAPER.rootPermlink);
+    const ops = await fetchConsentOpsForPaper(PAPER.rootAuthor, PAPER.rootPermlink, TEST_CLAIMED);
     expect(ops).toEqual([]);
     expect(hafQueryMock).not.toHaveBeenCalled();
   });
 
   it('returns [] when the HAF query throws (fail-closed; empty op set yields just root broadcaster)', async () => {
     hafQueryMock.mockRejectedValue(new Error('connection refused'));
-    const ops = await fetchConsentOpsForPaper(PAPER.rootAuthor, PAPER.rootPermlink);
+    const ops = await fetchConsentOpsForPaper(PAPER.rootAuthor, PAPER.rootPermlink, TEST_CLAIMED);
     expect(ops).toEqual([]);
+  });
+
+  // Round-5 hold #2: empty claimed-set short-circuits BEFORE the SQL
+  // is issued. Avoids the `IN ()` invalid-SQL shape and matches the
+  // semantic at `computeVouchedAuthors`: no claimed authors means no
+  // possible vouchable signers.
+  it('short-circuits to [] when claimedAuthors is empty (no SQL issued)', async () => {
+    const ops = await fetchConsentOpsForPaper(PAPER.rootAuthor, PAPER.rootPermlink, new Set());
+    expect(ops).toEqual([]);
+    expect(hafQueryMock).not.toHaveBeenCalled();
+  });
+
+  // Round-5 hold #2: mutation-kill for the SQL signer-filter. The
+  // attack scenario:
+  //   - claimed = {alice, bob, carol}
+  //   - mallory (NOT in claimed) spams 1000 author_accept ops at high
+  //     cj.id
+  //   - bob's legitimate accept lives at low cj.id
+  // Without the signer filter: the LIMIT 1000 ORDER BY id DESC fetches
+  // mallory's spam, bob's accept is invisible, bob is de-vouched.
+  // With the filter: mallory's rows never enter the result set; bob's
+  // accept is visible regardless of mallory's id-position.
+  it('signer filter at the SQL excludes non-claimed signers from the row set under spam (mutation kill)', async () => {
+    // Simulate: HAF returns ONLY the rows that pass the SQL signer
+    // filter. The mock asserts that the query ran with the claimed
+    // set bound, then returns bob's legitimate accept row plus a
+    // sanity check: a row with mallory as the signer is NOT in the
+    // returned set even if HAF would otherwise have surfaced it.
+    hafQueryMock.mockImplementation(async (_sql: string, params: unknown[]) => {
+      // The claimed-set is bound at $5..$N. Confirm mallory is NOT
+      // in the bound set (defense in depth — the filter pushes the
+      // check into the database).
+      const claimedBindings = params.slice(4) as string[];
+      expect(claimedBindings).not.toContain('mallory');
+      expect(claimedBindings).toEqual(expect.arrayContaining(['alice', 'bob', 'carol']));
+      // Return only legitimate-signer rows (HAF would filter
+      // attacker rows out via the SQL `IN` clause).
+      return {
+        rows: [{
+          signer: 'bob',
+          action: 'author_accept',
+          root_author: 'alice',
+          root_permlink: 'paper-v1',
+          block_num: 100,
+          op_id: '999',
+        }],
+      };
+    });
+
+    const ops = await fetchConsentOpsForPaper(
+      'alice',
+      'paper-v1',
+      new Set(['alice', 'bob', 'carol']),
+    );
+    expect(ops.map((op) => op.signer)).toEqual(['bob']);
+    expect(ops.map((op) => op.signer)).not.toContain('mallory');
   });
 });
