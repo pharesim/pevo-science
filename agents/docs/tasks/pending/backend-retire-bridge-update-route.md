@@ -132,7 +132,7 @@ The round-2 fixes are correct on their own terms. However, the architect's own r
 
 When item 1 lands, `git mv` this file back to `tasks/review/`. Architect's round-3 review will run `/ce-code-review` scoped to the round-3 commit and either archive (along with the deferred TODO Architect contract-doc cleanups, in a separate architect-zone commit) or append a new hold block. Round-3 should be small enough that a clean pass is the expected outcome.
 
-## Backend re-review signal (2026-05-06, main-tree SHA `<TBD>`)
+## Backend re-review signal (2026-05-06, main-tree SHA `cebd5e9`)
 
 Round-3's single hold item lands in this commit. Architect's hold cited `backend/src/routes/papers.ts:1125-1127`; actual stale-citation lines were `:1126-1129` (small drift, anticipated by the architect's note that "the architect's grep was scoped narrowly and the drift could be larger than expected"). The 4-line stale block was replaced with the architect's verbatim 3-line text.
 
