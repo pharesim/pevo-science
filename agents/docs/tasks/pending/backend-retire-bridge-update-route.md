@@ -97,3 +97,37 @@ The hold-block content from the architect's commit `41705ca` was sitting uncommi
 
 - TODO Architect items 1-3 (contract-doc edits in `agents/docs/api-contracts/bridge.md` and `agents/docs/api-contracts/common.md`) remain deferred to architect's archive-time commit per backend CLAUDE.md.
 - TODO Architect-followup at archive (sibling-task edits to `ui-coauthor-continuation-publishing.md`) was already landed by the architect in commit `41705ca` per the architect's own note above; no further cross-task edits required.
+
+## Architect re-review (2026-05-06, round-2 → round-3) — HELD PENDING FIXES
+
+`/ce-code-review` ran on commit `60841e4` with 6 reviewers (correctness at opus; testing/maintainability/project-standards/learnings/kieran-typescript at sonnet). All three round-1 hold items verified addressed verbatim:
+
+- **Item 1 (helpers.ts:84 JSDoc reword)** — old "/update path" prose removed; new text anchors on immutability + Option-b carve-out as defense-in-depth.
+- **Item 2 (continuation-author-gate.test.ts three comment sites at 153/422/461 architect-cited / 153/424/463 actual)** — line drift acknowledged in backend signal; all three sites reworded on the immutability + Option-b framing.
+- **Item 3 (LogContext.newVersion + sourceIdentifier deletion)** — both fields plus their JSDoc cleanly removed; kieran-typescript reviewer's grep confirms zero callers; `npx tsc --noEmit` clean per backend signal.
+
+The round-2 fixes are correct on their own terms. However, the architect's own round-1 grep was scoped to the three cited files, missing one additional `/update`-class stale reference. Project-wide grep at re-review surfaces it.
+
+### Items to address (round-3)
+
+**1. (P2) Stale task-file forward-reference at `backend/src/routes/papers.ts:1126`.** Inside the `resolveContinuationChain` JSDoc, the bullet about bridge-paper Option-b cites `backend-retire-bridge-update-route.md` by path: "The bridge update flow is being retired (see `backend-retire-bridge-update-route.md`) which makes `chain.length === 1` for bridge papers in practice". When this task archives, the file at that path is `git rm`'d (per the archive protocol — prepend to `tasks-archive.md`, trim, delete the per-task file). The cross-reference rots **at the exact moment of archive**. Same class as the round-1 hold items; my round-1 grep was scoped narrowly to the three cited files and missed this site.
+
+   Cross-corroboration from `learnings-researcher` (`conventions/wrapping-primitive-exhaustive-call-site-audit-2026-04-22.md` + `conventions/load-bearing-greps-at-signal-block-write-time-2026-05-06.md`): the convention is to run a project-wide grep at signal-block-write-time. Backend's signal-block grep was scoped to the architect's cited files only, inheriting the architect's narrow scope. The convention says project-wide grep should run regardless of hold-block scope.
+
+   Fix: edit `backend/src/routes/papers.ts:1125-1127` to drop the task-file citation while keeping the substantive content:
+
+   ```
+    * stays locked to `{bridgeAccount}` for bridge chains. Bridge papers are
+    * immutable post-publish, which makes `chain.length === 1` for bridge
+    * papers in practice; the cumulative-extension path here is defense-in-depth.
+   ```
+
+   Two-line change. After the fix, run `grep -rn "backend-retire-bridge-update-route\|/api/bridge/update\|bridgeUpdateLockKey\|updateLimiter\|bridge\.ts /update" backend/src backend/tests` project-wide and include the output in the round-3 signal block, confirming zero hits before `git mv pending/ → review/`.
+
+### Items dismissed during architect triage (round-2)
+
+- **(P3, originally rated P1 by maintainability) JSDoc "gating" overstates the helper's role at `backend/src/helpers.ts:84-89`.** Maintainability flagged that the new JSDoc says "gating continuations (reviews/discussions only) on the bridge account" but `extractAuthorizedContinuationAuthors` returns a `Set<string>` and performs no gating; the actual gate is downstream (SQL `c.author = ANY(...)` filter + JS set-membership in `papers.ts`). Dismissed at P3 (not the maintainability reviewer's P1): the function is named `extractAuthorizedContinuationAuthors`, not `gateContinuations`, so the function-name itself signals "extract"; "gating" is contextual shorthand for "the gate (downstream) uses this set to limit allowed accounts to bridge". Sloppy architect-dictated prose, but contextually understandable. Architect-authored imprecision in the round-1 hold dictation — owned but not load-bearing enough to warrant a round-3 fix.
+
+### Re-review signal
+
+When item 1 lands, `git mv` this file back to `tasks/review/`. Architect's round-3 review will run `/ce-code-review` scoped to the round-3 commit and either archive (along with the deferred TODO Architect contract-doc cleanups, in a separate architect-zone commit) or append a new hold block. Round-3 should be small enough that a clean pass is the expected outcome.
