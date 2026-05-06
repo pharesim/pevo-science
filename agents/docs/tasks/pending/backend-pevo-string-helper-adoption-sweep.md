@@ -65,3 +65,48 @@ This task does not block any held task. It can land any time after the keystone 
 - `agents/docs/solutions/conventions/tests-must-fail-on-mutation-of-code-under-test-2026-04-22.md` — mutation-kill attestation requirement.
 - `agents/docs/solutions/architecture-patterns/pevo-cohering-field-triple-atomic-fallback-2026-05-05.md` — companion learning that the round-5 atomic-triple fix at the IPFS-triple site enshrined; this sweep does NOT extend the atomic-triple semantic to other surfaces (most other reads are independent string fields).
 - `backend-continuation-post-author-consent-gate.md` (archived 2026-05-06) — round-4 introduced `pevoString`; round-5 adopted at the IPFS-triple site; round-6 strengthened the JSDoc.
+
+---
+
+## Backend re-review signal block (round-1 implementation, 2026-05-06)
+
+**Worker:** Backend worktree subagent (worktree-agent-a1a77443470f43d4d, rebased onto main 89ec691 before editing)
+
+### Inventory diff vs task-file table
+
+Two-grep audit at task start (`grep -nE '\|\| null|\|\| \[\]|\|\| '"''"'' src/` + `grep -nE 'as string' src/`) returned:
+
+- 114 total `|| null`/`|| []`/`|| ''` hits across `backend/src/`. The vast majority are NOT pevo metadata reads — they are env-var defaults (`process.env.X || ''`), DB row reads (`r.title as string || ''`), URL builders, etc. Only PEvO `pevo.X` reads from parsed `json_metadata` are in scope for this sweep.
+- The task-file table line numbers had drifted post-rebase. Mapped sites:
+  - `routes/reviews.ts:30` (`reviewer_attestation_id || null`) — confirmed; migrated.
+  - `bridge.ts:~533-535` — **NOT a pevo metadata site.** `bridge.ts` ends at line 529 in the current tree; the surviving `|| null` reads (e.g. `orcid: a.orcid || null` at line 495) are on the **CrossRef API response** (`msg`), not on `pevo` metadata. Task-file inventory entry was stale; bridge.ts has no pevo-string sites in scope. Documented here, not migrated.
+  - `helpers.ts:~213,215,224,238` → `helpers.ts:234,235,236,250` (line drift from above edits to the file; same sites). `keywords` migrated to `pevoStringArray`; `ipfs_cid` migrated to `pevoString`. `authors` is an OBJECT array (not a string array — entries are `{name, hive, orcid, affiliation}`) so `pevoStringArray` does not fit; left inline. The nested `pevo.source.doi` at line 250 is bridge-gated via `isPevoBridgePaper` AND nested under `pevo.source` (a Record-cast); leaving inline since `pevoString` does not handle the nested-object access pattern, and forcing it would require reshape beyond the sibling-helper scope.
+  - `routes/papers.ts:~396` → no `|| null` site at line 396; the closest summary read is `routes/papers.ts:555 (pevo.keywords || [])` which migrated to `pevoStringArray`, plus `routes/papers.ts:557 ((pevo.ipfs_cid as string) ?? null)` which migrated to `pevoString` (still wrapped through `validatedCid`).
+  - `routes/papers.ts:~688-689` → `routes/papers.ts:848,910,911` (head-meta override summary fields). Migrated `keywords` (848) → `pevoStringArray`; `language` (910) → `pevoString(...) ?? 'en'` inlined; `citations` (849) and `supplementary_files` (911) are object arrays, left inline.
+  - `routes/papers.ts:~1360-1362` → `routes/papers.ts:1749-1758` (`buildPaperDetail` summary-shape reads). Migrated: `keywords` → `pevoStringArray`; `ipfs_cid` → `pevoString` (wrapped through `validatedCid`); `ipfs_filename`, `document_hash` → `pevoString`; `language` → `pevoString(...) ?? 'en'` inlined. `authors`, `citations`, `supplementary_files` are object arrays, left inline.
+- Net migrations: 4 `pevoStringArray` adoptions (`helpers.ts:keywords`, `papers.ts:555`, `papers.ts:848`, `papers.ts:1749`) + 7 `pevoString` adoptions (`reviews.ts:reviewer_attestation_id`, `helpers.ts:ipfs_cid`, `papers.ts:557 ipfs_cid`, `papers.ts:1751 ipfs_cid`, `papers.ts:1755 ipfs_filename`, `papers.ts:1756 document_hash`, plus 2 inlined `pevoString(...) ?? 'en'` for `language` at 910/1757).
+
+### Sibling helpers introduced/skipped
+
+- **`pevoStringArray(pevo, key): string[]` introduced** — 4 call sites (`helpers.ts:toPaperSummary`, `papers.ts:fetchPapersFromHaf`, `papers.ts:head-meta override`, `papers.ts:buildPaperDetail`). 3+ threshold met. JSDoc mirrors `pevoString` shape (contract paragraph + atomic-triple warning + non-triple usage example).
+- **`pevoStringWithDefault` skipped** — only 2 sites would use it (`papers.ts:910 language`, `papers.ts:1757 language`); task says <3 sites means inline. Inlined as `pevoString(pevo, 'language') ?? 'en'` at both sites. The inline form is short and self-documenting; introducing a 3-line helper for 2 call sites would not earn its keep.
+
+### Mutation-kill attestation
+
+Per `agents/docs/solutions/conventions/tests-must-fail-on-mutation-of-code-under-test-2026-04-22.md`:
+
+- Mutation: in `pevoStringArray`, removed the `&& entry.length > 0` clause from the entry-filter (so empty strings flow through unchanged, mirroring the prior `(pevo.keywords as string[]) || []` cast pattern's behavior).
+- Test that fails red: `pevoStringArray > filters empty-string entries out of an array (codebase-wide convention: "" collapses to drop)` — `expect(pevoStringArray({ keywords: ['', 'foo', ''] }, 'keywords')).toEqual(['foo'])` failed with `Received [ '', 'foo', '' ]`. Confirms the empty-string-collapse semantic is load-bearing and the test catches its removal.
+- Restored the filter; targeted helpers.test.ts re-runs green (33/33 tests pass).
+
+### Test/lint/typecheck status
+
+- `npx tsc --noEmit` — clean (zero errors).
+- `npx eslint src/helpers.ts src/routes/reviews.ts src/routes/papers.ts` — clean (one parsing-error on tests/helpers.test.ts is a pre-existing eslint-project-service configuration issue, identical on a `git stash`'d main; not from this task).
+- Targeted vitest (`tests/helpers.test.ts tests/bridge.test.ts tests/routes/papers.test.ts tests/routes/paper-detail-v3.test.ts tests/routes/continuation-author-gate.test.ts`) — 5 files passed, 106 tests passed + 1 skipped.
+
+### Deviations
+
+- The `bridge.ts:~533-535` inventory entry in the task-file table did not match the current tree (file ends at line 529). All `|| null` reads in bridge.ts are CrossRef API response reads, not pevo metadata reads. Documented above; no migration done.
+- Two of the listed sites (`helpers.ts:~238` nested `pevo.source.doi`, `papers.ts:~396` summary path) are on nested object-typed reads (`pevo.source` then `.doi`) that `pevoString` cannot directly access without reshape. Left inline with documented reason.
+- `pevoStringWithDefault` skipped per the <3-sites-inline rule; both `language` reads use `pevoString(...) ?? 'en'` instead.

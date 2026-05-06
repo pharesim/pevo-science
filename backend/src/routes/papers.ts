@@ -16,6 +16,7 @@ import {
   extractAbstract,
   extractAuthorizedContinuationAuthors,
   pevoString,
+  pevoStringArray,
   type SortField,
 } from '../helpers.js';
 import { getAccreditedSet, getAllAccreditedAccounts, getAccreditedOrcidsByAccount } from '../accreditation.js';
@@ -552,9 +553,9 @@ async function fetchPapersFromHaf(
         title: r.title,
         abstract: r.abstract,
         discipline: paperDisciplineField(pevo.discipline),
-        keywords: pevo.keywords || [],
+        keywords: pevoStringArray(pevo, 'keywords'),
         authors: pevoAuthors,
-        ipfs_cid: validatedCid((pevo.ipfs_cid as string) ?? null, {
+        ipfs_cid: validatedCid(pevoString(pevo, 'ipfs_cid'), {
           author: r.author as string,
           permlink: r.permlink as string,
         }),
@@ -845,7 +846,7 @@ async function fetchPaperDetailFromHaf(author: string, permlink: string, memo?: 
           detail.json_metadata = headMeta;
           detail.authors = cumulativeAuthors;
           detail.discipline = paperDisciplineField(headPevo.discipline);
-          detail.keywords = headPevo.keywords || [];
+          detail.keywords = pevoStringArray(headPevo, 'keywords');
           detail.citations = headPevo.citations || [];
           // Per-version display: the IPFS triple (ipfs_cid /
           // ipfs_filename / document_hash) is treated atomically.
@@ -907,7 +908,7 @@ async function fetchPaperDetailFromHaf(author: string, permlink: string, memo?: 
             detail.ipfs_filename = pevoString(rootPevo, 'ipfs_filename');
             detail.document_hash = pevoString(rootPevo, 'document_hash');
           }
-          detail.language = headPevo.language || 'en';
+          detail.language = pevoString(headPevo, 'language') ?? 'en';
           detail.supplementary_files = headPevo.supplementary_files || [];
         }
       }
@@ -1746,15 +1747,15 @@ function buildPaperDetail(
     last_update: post.last_edited || post.last_update || post.created,
     net_votes: post.net_votes ?? 0,
     discipline: paperDisciplineField(pevo.discipline),
-    keywords: pevo.keywords || [],
+    keywords: pevoStringArray(pevo, 'keywords'),
     authors: pevo.authors || [],
-    ipfs_cid: validatedCid((pevo.ipfs_cid as string) ?? null, {
+    ipfs_cid: validatedCid(pevoString(pevo, 'ipfs_cid'), {
       author: post.author as string,
       permlink: post.permlink as string,
     }),
-    ipfs_filename: pevo.ipfs_filename || null,
-    document_hash: pevo.document_hash || null,
-    language: pevo.language || 'en',
+    ipfs_filename: pevoString(pevo, 'ipfs_filename'),
+    document_hash: pevoString(pevo, 'document_hash'),
+    language: pevoString(pevo, 'language') ?? 'en',
     citations: pevo.citations || [],
     citation_count: 0,
     author_reputation: 0,

@@ -2,7 +2,7 @@ import { Router, type Request, type Response } from 'express';
 import { getPool } from '../db.js';
 import { config } from '../config.js';
 import { sendOk, sendError } from '../response.js';
-import { parseMeta, isPevoReview } from '../helpers.js';
+import { parseMeta, isPevoReview, pevoString } from '../helpers.js';
 import { getAccreditedSet } from '../accreditation.js';
 import { getReputationScore } from '../reputation.js';
 import { logger } from '../logger.js';
@@ -27,7 +27,7 @@ function buildReviewDetail(
     body: post.body,
     rating: rating || { methodology: 0, novelty: 0, clarity: 0, significance: 0 },
     is_anonymous: pevo.is_anonymous ?? false,
-    reviewer_attestation_id: pevo.reviewer_attestation_id || null,
+    reviewer_attestation_id: pevoString(pevo, 'reviewer_attestation_id'),
     paper: {
       author: post.parent_author,
       permlink: post.parent_permlink,

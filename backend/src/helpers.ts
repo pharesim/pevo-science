@@ -182,6 +182,49 @@ export function pevoString(pevo: Record<string, unknown>, key: string): string |
   return typeof v === 'string' && v.length > 0 ? v : null;
 }
 
+/**
+ * Read a string-array field from parsed `pevo` metadata. Non-array values
+ * collapse to `[]`; array values are filtered to non-empty string entries
+ * (numbers, booleans, objects, nulls, empty strings inside the array all
+ * drop out). Always returns a fresh array.
+ *
+ * Why this exists: the prior pattern `(pevo[key] as string[]) || []` is a
+ * TypeScript assertion (not a narrowing). At runtime, `pevo.keywords`
+ * could be a string, a number, an object, or an array of mixed types; the
+ * cast lets all of those flow through as `string[]` from the checker's
+ * perspective. Downstream consumers that call `.map`, `.filter`, or
+ * `.join` on the result then crash on non-string entries or coerce them
+ * to display garbage. This helper unifies the read pattern: the result
+ * is always a real `string[]` whose entries are guaranteed non-empty
+ * strings.
+ *
+ * **Contract:** `pevoStringArray` narrows non-arrays to `[]` and filters
+ * non-string / empty-string entries out of arrays. It does NOT itself
+ * drive head-vs-root selection at coherent-triple sites (the IPFS triple
+ * in `papers.ts` uses an `'in'`-based sentinel for that). Use this for
+ * single-`pevo` reads, not head-vs-root selection at coherent-triple
+ * sites — per-field `??` chaining like
+ * `pevoStringArray(headPevo, 'keywords') ?? pevoStringArray(rootPevo,
+ * 'keywords')` re-introduces the Frankenstein-composition bug-class that
+ * the atomic-block invariant exists to prevent.
+ *
+ * Typical usage at non-triple sites:
+ *
+ *     const keywords = pevoStringArray(pevo, 'keywords');
+ *     // keywords is `string[]`; non-array runtime values collapse to []
+ *     // and non-string array entries (e.g. `[42, 'foo', null]`) are
+ *     // filtered out.
+ */
+export function pevoStringArray(pevo: Record<string, unknown>, key: string): string[] {
+  const v = pevo[key];
+  if (!Array.isArray(v)) return [];
+  const out: string[] = [];
+  for (const entry of v) {
+    if (typeof entry === 'string' && entry.length > 0) out.push(entry);
+  }
+  return out;
+}
+
 export function parsePageLimit(req: Request) {
   const page = Math.min(10000, Math.max(1, parseInt(req.query.page as string, 10) || 1));
   const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string, 10) || 20));
@@ -231,9 +274,9 @@ export function toPaperSummary(post: {
     // Coalesce to '' to preserve PaperSummary.discipline's `string` type
     // (helper returns string | null; '' is the historical absent shape).
     discipline: paperDisciplineField(pevo.discipline) ?? '',
-    keywords: (pevo.keywords as string[]) || [],
+    keywords: pevoStringArray(pevo, 'keywords'),
     authors: (pevo.authors as PaperSummary['authors']) || [],
-    ipfs_cid: (pevo.ipfs_cid as string) || null,
+    ipfs_cid: pevoString(pevo, 'ipfs_cid'),
     created: post.created,
     net_votes: post.net_votes,
     vote_strength: null,

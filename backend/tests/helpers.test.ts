@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseMeta, isPevoPaper, isPevoReview, isPevoBridgePaper, isPevoAnyPaper, toPaperSummary, pevoString } from '../src/helpers.js';
+import { parseMeta, isPevoPaper, isPevoReview, isPevoBridgePaper, isPevoAnyPaper, toPaperSummary, pevoString, pevoStringArray } from '../src/helpers.js';
 import { config } from '../src/config.js';
 
 const TAG = config.appTag;
@@ -127,6 +127,56 @@ describe('pevoString', () => {
     expect(pevoString({ ipfs_cid: null }, 'ipfs_cid')).toBeNull();
     expect(pevoString({ ipfs_cid: undefined }, 'ipfs_cid')).toBeNull();
     expect(pevoString({}, 'ipfs_cid')).toBeNull();
+  });
+});
+
+describe('pevoStringArray', () => {
+  // Round-7 sibling helper for `pevoString`. Mirrors the runtime-shape
+  // failure modes the cast pattern `(pevo[key] as string[]) || []`
+  // silently lets through:
+  //   (a) Non-array runtime values (string, number, object) flow through
+  //       as `string[]` from the checker's perspective, then crash
+  //       downstream `.map`/`.filter`/`.join` consumers.
+  //   (b) Array values with non-string entries (e.g. `[42, 'foo', null]`)
+  //       coerce to display garbage when joined or shown.
+  // The helper unifies the read pattern: the result is always a real
+  // `string[]` whose entries are guaranteed non-empty strings.
+  it('returns the array when all entries are non-empty strings', () => {
+    expect(pevoStringArray({ keywords: ['brain', 'cognition'] }, 'keywords')).toEqual(['brain', 'cognition']);
+  });
+
+  it('returns an empty array for an empty array', () => {
+    expect(pevoStringArray({ keywords: [] }, 'keywords')).toEqual([]);
+  });
+
+  it('filters non-string entries out of an array (mixed types)', () => {
+    expect(pevoStringArray({ keywords: [42, 'foo', null, 'bar', undefined, true, {}] }, 'keywords')).toEqual(['foo', 'bar']);
+  });
+
+  it('filters empty-string entries out of an array (codebase-wide convention: "" collapses to drop)', () => {
+    expect(pevoStringArray({ keywords: ['', 'foo', ''] }, 'keywords')).toEqual(['foo']);
+  });
+
+  it('returns [] for non-array values (string, number, object, boolean, null, undefined, missing)', () => {
+    expect(pevoStringArray({ keywords: 'not-an-array' }, 'keywords')).toEqual([]);
+    expect(pevoStringArray({ keywords: 42 }, 'keywords')).toEqual([]);
+    expect(pevoStringArray({ keywords: { 0: 'foo' } }, 'keywords')).toEqual([]);
+    expect(pevoStringArray({ keywords: true }, 'keywords')).toEqual([]);
+    expect(pevoStringArray({ keywords: false }, 'keywords')).toEqual([]);
+    expect(pevoStringArray({ keywords: null }, 'keywords')).toEqual([]);
+    expect(pevoStringArray({ keywords: undefined }, 'keywords')).toEqual([]);
+    expect(pevoStringArray({}, 'keywords')).toEqual([]);
+  });
+
+  it('returns a fresh array on each call (no caller-mutates-source aliasing)', () => {
+    const pevo = { keywords: ['a', 'b'] };
+    const r1 = pevoStringArray(pevo, 'keywords');
+    const r2 = pevoStringArray(pevo, 'keywords');
+    expect(r1).not.toBe(r2);
+    r1.push('c');
+    expect(r2).toEqual(['a', 'b']);
+    // Source array is also unmutated.
+    expect(pevo.keywords).toEqual(['a', 'b']);
   });
 });
 
