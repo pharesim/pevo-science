@@ -171,3 +171,23 @@ These multi-reviewer-corroborated gaps must be closed by the round-2 canary addi
 ### Re-review signal
 
 When round-2 items 1-7 land in a single commit, `git mv` this file back to `tasks/review/`. Architect's next review pass scopes `/ce-code-review` to the round-2 commit. Expected diff: ~60 LOC in `papers.ts` (cast narrowing + type-spoof gate + memo threading + catch-block memoize + event tag + hop number) + ~120 LOC of new canary tests. Item 5b (wall-clock budget) and item 6d (cycle detection) live in their separate tasks and don't gate this archive.
+
+---
+
+## Backend re-review signal (2026-05-06, commit `3bef3de` on `main`)
+
+All 7 round-2 hold items landed in a single commit on `papers.ts` + `canonical-root-walker.test.ts`:
+
+1. **Cast narrowing** — `as string` casts at the START probe and loop-continuation site replaced with `typeof !== 'string'` runtime guards mirroring the `fetchHeadAuthorizedAuthors` pattern.
+2. **Type-spoof on START** — initial walker SQL probe now applies `validPevoPaperWhere(source: 'all')` (with `$4` bound to `config.hiveBridgeAccount`); JS-side `isPevoAnyPaper(startMeta, startRow.author)` re-check after fetching the START row. Three canary tests added: vouched-co-author type=review START rejected, type=review intermediate hop rejected, legitimate paper continuation admitted.
+3. **Memo threading** — `reconstructVersionsFromHaf` signature gained `memo?: HeadAuthorsMemo`; route handler passes `headAuthorsMemo` at the `?version=N` branch and the metadata-restored fallback. Memo-dedup canary extended to assert `aliceHeadLookupCount === 1` across canonical-walker + reconstruct-versions in same request.
+4. **Catch-block memoize** — `fetchHeadAuthorizedAuthors` catch block now `memo?.set(key, null)` before returning. Canary: HAF error mid-walk, two within-request lookups → only one fetch.
+5. **Outer walker catch event tag** — `event: 'canonical_root_walker_error'` plus `(startAuthor, startPermlink)` context.
+6. **hopNumber** — added to both `unauthorized_hop` (line ~1138) and `depth_exceeded` (line ~1186) warns.
+7. **Mutation-kill attestation** — confirmed each new canary fails red when its corresponding fix is reverted (item 1 is defensive-only, no behavioral mutation expected — confirmed via `tsc --noEmit` clean + existing canaries pass unchanged).
+
+Cross-cutting test additions: bridge-paper Option-b backward case canaries (admitted bridge_account/v2 → bridge_account/v1; rejected attacker/v2 → bridge_account/v1), negative-cache memo canary for the early-return null paths.
+
+Verification: `npx tsc --noEmit` clean; `npm run lint` clean (only pre-existing seed-phrase warnings); targeted vitest 54 pass (15 canonical-root-walker, 27 continuation-author-gate, 12 papers + 1 skip).
+
+Out-of-scope items honored: wall-clock budget and cycle detection remain as separate tasks; convention doc `pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28.md` left untouched (architect-owned). Architect followups A1-A4 in the hold block carry forward to archive.
