@@ -108,3 +108,29 @@ detail.ipfs_cid = validatedCid(pevoString(headPevo, 'ipfs_cid'));
 - `backend/src/helpers.ts:159` `pevoString` — the helper this task does NOT modify; this task adds a sibling validator.
 - `backend/src/routes/papers.ts:396, 685-687, 1360-1362` — the three response-emit sites needing the validator.
 - `frontend/src/pages/paper-detail.js:904-905` — the URL-construction consumer that motivates output-side validation.
+
+---
+
+## Backend completion signal (2026-05-06, commits `7a5ccc1` + `a264ec3` on `main`)
+
+Acceptance items 1, 2, 4, 5 landed; item 3 (`document_hash` validation) deferred per task scope as optional.
+
+**Implementation:**
+
+- New `backend/src/lib/ipfs-validation.ts` exports `isValidIpfsCid(cid: unknown): boolean` (strict CIDv0 base58btc + CIDv1 lowercase-base32 anchored regex) and `validatedCid(value, {author, permlink}): string | null` (warn-and-clear wrapper with `event: 'paper_detail_ipfs_cid_rejected'`, `raw_cid_prefix` truncated to 32 chars to avoid log injection).
+- `backend/src/routes/papers.ts` wraps three emit sites: line 397 (listing summary in `fetchPapersFromHaf().map()`), the per-version override site (head/root atomic-triple branch — both arms wrapped in `validatedCid`, preserving the round-5 atomic-triple invariant), and line 1479 (`buildPaperDetail()` single-paper / canonical-root path).
+- The cherry-pick onto main landed atop the architect's round-5 atomic-triple refactor (`backend-continuation-post-author-consent-gate` round-5 hold, commit `82bec89`), so the worker's simpler `(headPevo.ipfs_cid as string) ?? null` shape was widened during the merge to cover both `pevoString(headPevo, 'ipfs_cid')` and `pevoString(rootPevo, 'ipfs_cid')` reads. The merge consequence: existing fixtures `QmHeadCid`/`QmRootCid`/`QmV1Cid`/`QmV2Cid` (7-9 char placeholders) now correctly fail the regex; commit `a264ec3` replaces them with 46-char base58btc-shape CIDs.
+
+**Tests landed:**
+
+- `backend/tests/lib/ipfs-validation.test.ts` — 16 unit cases: valid CIDv0, valid CIDv1 base32, whitespace-padded reject, control-char reject (newline, null byte, CR, mid-string newline), zero-width / BOM reject, empty reject, garbage reject, non-string reject, prefix-truncation guard, no-warn for null/undefined.
+- `backend/tests/routes/continuation-author-gate.test.ts` extended with two integration canaries: padded CID → null response + warn fires; valid CID → unchanged + no warn.
+
+**Mutation-kill attestation:**
+
+- Reverted `validatedCid()` wrap at the `buildPaperDetail` site → integration canary "clears whitespace-padded ipfs_cid to null" failed red. Restored.
+- Weakened `isValidIpfsCid()` to always-true → 8 of 16 unit canaries failed red. Restored.
+
+**Verification:** `npx tsc --noEmit` clean; `npm run lint` clean (only pre-existing seed-phrase warnings); targeted vitest 72 pass + 1 skipped across `tests/lib/ipfs-validation.test.ts` + `tests/routes/continuation-author-gate.test.ts` + `tests/routes/papers.test.ts` + `tests/routes/canonical-root-walker.test.ts`.
+
+**Out of scope honored:** `document_hash` validation deferred (acceptance item 3 was explicitly optional); `pevoString` not strengthened with trim/validate; convention docs untouched (architect-owned).
