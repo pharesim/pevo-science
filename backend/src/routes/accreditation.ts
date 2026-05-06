@@ -4,7 +4,7 @@ import { createSmtpTransporter } from '../lib/smtp.js';
 import { PrivateKey } from '@hiveio/dhive';
 import { config } from '../config.js';
 import { broadcastJsonWithTimeout } from '../hive.js';
-import { handleBroadcastError } from '../lib/broadcast-error.js';
+import { handleBroadcastError, PostBroadcastWriteError } from '../lib/broadcast-error.js';
 import { getRedis, isRedisAvailable } from '../redis.js';
 import { sendOk, sendError } from '../response.js';
 import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';
@@ -16,6 +16,8 @@ import { hashEmailForLogs, hashTokenForLogs } from '../lib/log-pii.js';
 import { evalScript } from '../lib/redis-scripts.js';
 import { enqueueDecrement } from '../lib/pending-decrement-queue.js';
 import { seedAccreditationBonus } from '../reputation.js';
+import { findAccreditByIdempotencyKey, logIdempotencySkip } from '../lib/idempotency.js';
+import { getPool, isHafAvailable } from '../db.js';
 
 /** How long a verification token stays valid before it expires. */
 const TOKEN_EXPIRY_MS = 24 * 60 * 60 * 1000; // 24 hours
@@ -462,6 +464,89 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
     .update(`${pending.email}:${pending.hive_username}:${pending.token}`)
     .digest('hex');
 
+  // Idempotency key for Option A.4 dedup. Deterministic per (token, username)
+  // pair so a retry — including a retry after a 504 BROADCAST_TIMEOUT, where
+  // the token is preserved per round-2 hold #2 — computes the same value, and
+  // the pre-broadcast HAF lookup short-circuits to 200 instead of broadcasting
+  // a duplicate accredit op signed by the admin key. Distinct from
+  // `evidence_hash` (which encodes the email; staying email-free here keeps
+  // the on-chain field decoupled from PII so a future schema-stability
+  // promise on the dedup field does not commit us to publishing email
+  // hashes too).
+  const idempotencyKey = crypto
+    .createHash('sha256')
+    .update(`${pending.token}:${pending.hive_username}`)
+    .digest('hex');
+
+  // Pre-broadcast HAF check. If a prior /verify already landed an accredit op
+  // carrying this idempotency_key, return its tx_id without re-broadcasting.
+  // Token cleanup follows the existing post-broadcast convention: the token
+  // has done its job once the chain op exists, regardless of whether THIS
+  // request emitted the broadcast.
+  const hafPool = isHafAvailable() ? getPool() : null;
+  if (hafPool) {
+    try {
+      const existing = await findAccreditByIdempotencyKey(hafPool, idempotencyKey);
+      if (existing) {
+        logger.info(
+          {
+            event: 'accreditation.verify.idempotency_hit',
+            route: 'accreditation.verify',
+            username: pending.hive_username,
+            email_hash: hashEmailForLogs(pending.email),
+            tx_id: existing.tx_id,
+          },
+          'accreditation.verify idempotency hit — returning existing tx_id without re-broadcasting',
+        );
+        try {
+          await deleteToken(token);
+        } catch (deleteErr) {
+          // Best-effort: the token TTLs out within 24h regardless. The 200
+          // response is already in flight; do not surface a Redis hiccup as
+          // a 5xx after the user has been told the accreditation succeeded.
+          logger.warn(
+            {
+              event: 'accreditation.verify.idempotency_hit_token_cleanup_failed',
+              route: 'accreditation.verify',
+              username: pending.hive_username,
+              email_hash: hashEmailForLogs(pending.email),
+              token_hash: hashTokenForLogs(token),
+              err: deleteErr instanceof Error ? deleteErr : new Error(String(deleteErr)),
+            },
+            'accreditation.verify idempotency-hit token cleanup failed — orphan TTLs out',
+          );
+        }
+        return sendOk(res, {
+          message: 'Accreditation confirmed',
+          username: pending.hive_username,
+          tx_id: existing.tx_id,
+          outcome: 'already_landed',
+        });
+      }
+    } catch (lookupErr) {
+      logIdempotencySkip(
+        'accreditation.verify.idempotency_lookup_failed',
+        {
+          route: 'accreditation.verify',
+          username: pending.hive_username,
+          email_hash: hashEmailForLogs(pending.email),
+          err: lookupErr instanceof Error ? lookupErr : new Error(String(lookupErr)),
+        },
+        'accreditation.verify idempotency HAF lookup failed — proceeding without dedup',
+      );
+    }
+  } else {
+    logIdempotencySkip(
+      'accreditation.verify.idempotency_haf_unavailable',
+      {
+        route: 'accreditation.verify',
+        username: pending.hive_username,
+        email_hash: hashEmailForLogs(pending.email),
+      },
+      'accreditation.verify idempotency layer degraded — HAF unavailable, proceeding without dedup',
+    );
+  }
+
   const customJsonPayload = {
     action: 'accredit',
     account: pending.hive_username,
@@ -470,6 +555,7 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
     field: pending.field,
     method: 'email',
     evidence_hash: evidenceHash,
+    idempotency_key: idempotencyKey,
     timestamp: new Date().toISOString(),
   };
 
@@ -481,7 +567,22 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
     );
 
     await deleteToken(token);
-    await seedAccreditationBonus(pending.hive_username);
+    // Wrap seedAccreditationBonus in PostBroadcastWriteError discipline (the
+    // pattern documented at `BACKEND-CASCADE-FNS-RETHROW-PERMANENT-ERRORS` and
+    // adopted by ORCID's handleAccredit / handleLink). The chain op landed by
+    // this point; a seed-bonus throw is a downstream cascade failure that
+    // reconciles via the next reputation batch cycle. Without the wrap, the
+    // throw would surface as 502 BROADCAST_FAILED — misleading operators
+    // (broadcast on-call paged for a DB issue) and the user (told their
+    // confirmed accreditation failed). With the wrap, handleBroadcastError
+    // emits 502 POST_BROADCAST_FAILED carrying tx_id + failed_step:
+    // 'reputation_seed' so operator alerts route correctly and the user is
+    // told the chain op is confirmed.
+    try {
+      await seedAccreditationBonus(pending.hive_username);
+    } catch (seedErr) {
+      throw new PostBroadcastWriteError(result.id, seedErr, 'reputation_seed');
+    }
 
     sendOk(res, {
       message: 'Accreditation confirmed',
@@ -564,6 +665,12 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
         );
       }
     }
+    // outcome === 'post_broadcast' (PostBroadcastWriteError): no cleanup
+    // required here. The chain op already landed and `deleteToken` already
+    // ran on the success path BEFORE the seed-bonus throw, so the token is
+    // gone. The user has been told the chain op is confirmed
+    // (`details.outcome:'confirmed'`, `details.tx_id`); the missed bonus
+    // reconciles via the next reputation batch cycle (HAF source of truth).
   }
 });
 

@@ -25,6 +25,13 @@ import {
   type FreshAuthTarget,
   type FreshAuthTargetAction,
 } from '../lib/fresh-auth.js';
+import {
+  embedIdempotencyKey,
+  findCustodyBroadcastByIdempotencyKey,
+  validateIdempotencyKey,
+  logIdempotencySkip,
+} from '../lib/idempotency.js';
+import { getPool, isHafAvailable } from '../db.js';
 
 const router = Router();
 
@@ -169,9 +176,29 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
     return sendError(res, 403, 'FORBIDDEN', 'This endpoint is only for custodial accounts. Use Hive Keychain to sign transactions.');
   }
 
-  const { operations } = req.body || {};
+  let { operations } = req.body || {};
   if (!Array.isArray(operations) || operations.length === 0) {
     return sendError(res, 400, 'VALIDATION_ERROR', 'Operations array is required');
+  }
+
+  // Optional `idempotency_key` (per-broadcast UUID from the SPA) closes the
+  // retry-amplification class documented in
+  // `agents/docs/solutions/conventions/chain-write-timeout-ambiguous-outcome-2026-04-22.md`
+  // Option A.4. When the key is present + HAF is reachable + the bundle has at
+  // least one comment or custom_json op, a pre-broadcast HAF check returns the
+  // existing tx_id with `outcome:'already_landed'` instead of re-broadcasting.
+  // Today's SPA does NOT yet send the field; the corresponding UI task
+  // (`ui-custody-broadcast-idempotency-key.md`) wires it up. The backend
+  // accepts requests without the field with a structured-warn so the
+  // amplification window is observable while the SPA migrates.
+  const rawIdempotencyKey = (req.body as { idempotency_key?: unknown })?.idempotency_key;
+  let idempotencyKey: string | null = null;
+  if (rawIdempotencyKey !== undefined) {
+    const validationErr = validateIdempotencyKey(rawIdempotencyKey);
+    if (validationErr) {
+      return sendError(res, 400, 'VALIDATION_ERROR', validationErr);
+    }
+    idempotencyKey = rawIdempotencyKey as string;
   }
 
   // Validate each operation
@@ -264,6 +291,93 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
       'A custody broadcast bundle may contain at most one consent operation (author_accept or author_resign). Submit each consent op in its own request with its own fresh-auth proof.',
     );
   }
+
+  // Idempotency check + embed. Runs AFTER per-op validation and multi-consent
+  // rejection (so a malformed retry returns 400, not a misleading 200), but
+  // BEFORE the fresh-auth proof verification (so a retry of a confirmed
+  // consent-op broadcast does NOT consume a fresh proof — the user already
+  // paid that ceremony for the original broadcast). The embed mutates the
+  // outer `operations` binding so consent-op verification, op_types
+  // derivation, and the eventual broadcast all see the embedded version.
+  if (idempotencyKey !== null) {
+    const hafPool = isHafAvailable() ? getPool() : null;
+    if (hafPool) {
+      try {
+        const existing = await findCustodyBroadcastByIdempotencyKey(hafPool, username, idempotencyKey);
+        if (existing) {
+          logger.info(
+            {
+              event: 'custody.broadcast.idempotency_hit',
+              route: 'custody.broadcast',
+              username,
+              idempotency_key: idempotencyKey,
+              tx_id: existing.tx_id,
+              block_num: existing.block_num,
+            },
+            'custody.broadcast idempotency hit — returning existing tx_id',
+          );
+          return sendOk(res, {
+            tx_id: existing.tx_id,
+            block_num: existing.block_num,
+            outcome: 'already_landed',
+          });
+        }
+      } catch (lookupErr) {
+        // HAF lookup failure degrades to "no idempotency layer"; the broadcast
+        // proceeds. A 5xx here would be over-cautious — the dedup check is
+        // best-effort, and a HAF blip should not block a legitimate broadcast.
+        logIdempotencySkip(
+          'custody.broadcast.idempotency_lookup_failed',
+          {
+            route: 'custody.broadcast',
+            username,
+            idempotency_key: idempotencyKey,
+            err: lookupErr instanceof Error ? lookupErr : new Error(String(lookupErr)),
+          },
+          'custody.broadcast idempotency HAF lookup failed — proceeding without dedup',
+        );
+      }
+    } else {
+      logIdempotencySkip(
+        'custody.broadcast.idempotency_haf_unavailable',
+        { route: 'custody.broadcast', username, idempotency_key: idempotencyKey },
+        'custody.broadcast idempotency layer degraded — HAF unavailable, proceeding without dedup',
+      );
+    }
+    const embedded = embedIdempotencyKey(operations, idempotencyKey);
+    if (embedded.embedded) {
+      operations = embedded.ops;
+    } else {
+      // Pure-vote bundle (or other no-embed-surface shape). Vote re-cast is
+      // low-harm (duplicate VP cost only); the layer cannot guarantee
+      // dedup here. Surface a structured warn so operators can spot SPAs
+      // that send `idempotency_key` on bundles where it has no effect.
+      logIdempotencySkip(
+        'custody.broadcast.idempotency_no_embed_surface',
+        {
+          route: 'custody.broadcast',
+          username,
+          idempotency_key: idempotencyKey,
+          op_types: operations.map((op: unknown) => Array.isArray(op) ? op[0] : 'unknown'),
+        },
+        'custody.broadcast idempotency_key supplied but bundle has no embed surface (pure-vote)',
+      );
+    }
+  } else {
+    // Today's SPA does not yet send the field; the structured warn lets
+    // operators measure the migration window. Drop this branch entirely once
+    // the SPA migration completes and the field becomes required.
+    logIdempotencySkip(
+      'custody.broadcast.idempotency_key_missing',
+      {
+        route: 'custody.broadcast',
+        username,
+        op_count: operations.length,
+      },
+      'custody.broadcast no idempotency_key supplied — retry-amplification window open',
+    );
+  }
+
   const consentAction = consentScan.kind === 'single' ? consentScan.action : null;
   let freshAuthMechanism: FreshAuthMechanism | null = null;
   if (consentScan.kind === 'single') {
