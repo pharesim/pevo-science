@@ -56,3 +56,44 @@ Three contract-doc edits are gated behind this task and are architect-owned per 
 3. `agents/docs/api-contracts/common.md` line ~179 (the rate-limit table) — delete the `| POST /api/bridge/update | 10 requests | per IP per hour |` row.
 
 No prose-only cross-references in other in-flight task files (e.g. `backend-broadcast-idempotency-cluster-followup.md`, `ui-coauthor-continuation-publishing.md`, `backend-bridge-custody-broadcast-discrimination.md`) need rewriting on the architect's plate; those files will resolve their own references as they archive.
+
+## Architect re-review (2026-05-06) — HELD PENDING FIXES
+
+`/ce-code-review` on `e647abb` came back clean on correctness, security, project-standards, and the test-coverage delta. Architect-owned contract-doc edits (TODO Architect items 1-3 above) remain deferred to archive — they will land in a single architect-zone commit when this task finally clears.
+
+Three classes of stale `/update` reference, however, must be cleaned up before this task archives. The deletion's stated goal — "remove the attractive nuisance for any future contributor who tries to re-enable bridge updates" — is undercut as long as live code/tests continue to cite `/update` as the runtime mechanism for bridge-paper continuations or carry dead handler shape on a typo-protection interface.
+
+1. **`backend/src/helpers.ts:84`** — comment in `extractAuthorizedContinuationAuthors` cites `bridge.ts /update path` as rationale for the Option-b carve-out. Reword to anchor on the immutability policy: e.g., "bridge papers are immutable post-publish; the bridge account vouches for original-preprint authors who lack on-chain identity, gating continuations (reviews/discussions only) on the bridge account." The Option-b carve-out itself stays — it is now strictly defense-in-depth under the immutability policy.
+
+2. **`backend/tests/routes/continuation-author-gate.test.ts:153, 422, 461`** — three design-rationale comments name `bridge.ts /update path` as the live continuation mechanism for the bridge account. Tests themselves are correct (the Option-b carve-out is exercised via canonical-walker / continuation-author-gate paths); only the embedded prose is stale. Reword each site to reference the immutability policy and the Option-b carve-out instead of the deleted route.
+
+3. **`backend/src/lib/broadcast-error.ts:115-118`** — `LogContext.newVersion?: number` and `LogContext.sourceIdentifier?: string` are dead optional fields after `/update` deletion. Both have zero call sites in `backend/src/` per the kieran-typescript reviewer's grep. The JSDoc on line 115 still says "Bridge paper version after an /update broadcast". Delete the two fields and the JSDoc that introduces them — leaving `?:` optional fields with no live producer undermines the typo-protection contract `LogContext` was introduced to provide.
+
+When all three are landed, `git mv` this file back to `tasks/review/`. The architect's re-review will run `/ce-code-review` scoped to the new commits (not the whole task history) and either archive or append a new hold block.
+
+[TODO Architect-followup at archive] Per finding 9 of this review pass, the architect already edited `agents/docs/tasks/review/ui-coauthor-continuation-publishing.md` lines 26 and 73 in the same commit that filed this hold block, dropping the stale `/api/bridge/update` rationale. No further cross-task edits remain.
+
+## Backend re-review signal (2026-05-06, main-tree SHA `60841e4`)
+
+All three architect hold items landed in commit `60841e4`:
+
+1. **`backend/src/helpers.ts:81-91`** — extractAuthorizedContinuationAuthors's bridge-paper bullet rewords the rationale to anchor on the immutability policy. Removed the line citing "bridge papers' canonical update path IS the bridge account itself (bridge.ts /update posts a continuation under config.hiveBridgeAccount)". The Option-b carve-out itself stays as documented; the doc-string now describes it as "strictly defense-in-depth under the immutability policy".
+
+2. **`backend/tests/routes/continuation-author-gate.test.ts:152-160, :419-430, :463-464`** — three design-rationale comments rewored on the immutability + Option-b-carve-out framing. Architect's hold cited lines 153/422/461; actual sites were 153/424/463 (small line-number drift since the architect's grep). Test logic unchanged. Post-fix grep `grep -n "/update\|bridge.ts /update\|bridge /update" backend/tests/routes/continuation-author-gate.test.ts backend/src/helpers.ts` returns zero hits, confirming the in-scope sweep is complete.
+
+3. **`backend/src/lib/broadcast-error.ts`** — deleted `LogContext.newVersion?: number` and `LogContext.sourceIdentifier?: string` plus the two JSDoc lines that introduced them (the `attempt_n` JSDoc above and `identifier` JSDoc below now sit adjacent). Pre-deletion grep `grep -rn "newVersion\b\|sourceIdentifier\b" backend/src backend/tests` returned only the two declarations, zero callers — confirming the architect's kieran-typescript-reviewer call-site finding.
+
+### Verification
+
+- `npx tsc --noEmit` — clean.
+- `npx vitest run tests/routes/continuation-author-gate.test.ts tests/routes/canonical-root-walker.test.ts tests/routes/bridge.test.ts tests/routes/bridge-haf-lag-locks.test.ts` — 4 files / 60 specs / 0 failures.
+- `npm run lint` — 0 errors. (Pre-existing 2 `no-explicit-any` warnings on `seed-phrase.ts:26-27` are out of scope, same as round-1.)
+
+### Working-tree-state note for the architect
+
+The hold-block content from the architect's commit `41705ca` was sitting uncommitted in the working tree when backend picked this up at startup — `git show 41705ca --stat` reports 0 bytes changed for `backend-retire-bridge-update-route.md` (only the rename + sibling-task edits were captured). The hold-block content has now been committed alongside the round-2 fixes' task-file changes in this commit (the same commit that performs the `git mv` from pending/ to review/). No content was modified inside the architect's hold block — backend appended only this re-review signal block underneath, per the protocol.
+
+### Out of scope (honored)
+
+- TODO Architect items 1-3 (contract-doc edits in `agents/docs/api-contracts/bridge.md` and `agents/docs/api-contracts/common.md`) remain deferred to architect's archive-time commit per backend CLAUDE.md.
+- TODO Architect-followup at archive (sibling-task edits to `ui-coauthor-continuation-publishing.md`) was already landed by the architect in commit `41705ca` per the architect's own note above; no further cross-task edits required.
