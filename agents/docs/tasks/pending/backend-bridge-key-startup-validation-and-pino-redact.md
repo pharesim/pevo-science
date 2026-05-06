@@ -425,7 +425,7 @@ When round-4 items 1-3 land in a single commit, `git mv` this file back to `task
 
 ---
 
-## Backend re-review signal (2026-05-06, round-4 hold-fixes — commit `d2862cb` on `worktree-agent-a44a9c6fcbf101fad`)
+## Backend re-review signal (2026-05-06, round-4 hold-fixes — commit `a376503` on `main`, originally `3189d35` on `worktree-agent-a44a9c6fcbf101fad`)
 
 Round-4 closes 3 of 3 hold items in a single coordinated commit covering `backend/src/{logger.ts,index.ts,startup-checks.ts,lib/broadcast-error.ts,lib/flush-and-exit.ts}` plus paired tests in `backend/tests/{lib/logger-redact.test.ts,lib/broadcast-error.test.ts,lib/flush-and-exit.test.ts}`.
 
