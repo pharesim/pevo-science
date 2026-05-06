@@ -113,3 +113,21 @@ This task is the natural home because it already touches the loop SQL for `Abort
 - Canary: extend an existing legitimate-chain canary to assert that walker reaches the root in N hops with N+1 SQL queries (initial + N loop), not N+2. Mutation-kill: revert the new SQL filter → query count rises by 1.
 
 Reviewer attribution: adversarial (`adv-loop-continuation-sql-no-continues-not-null`, conf 80). Single reviewer; deferred from round-3 because this task is the better semantic home.
+
+### Acceptance addition (filed at canonical-walker round-3 archive, 2026-05-06)
+
+Architect followup A3 from the canonical-walker round-2 hold block carries forward to this task because the wall-clock-budget work touches the walker's docblock and hot path: append a depth-cap arithmetic comment to the BACKWARD walker's docblock in `backend/src/routes/papers.ts` spelling out the per-request worst-case before this task's `AbortController` budget closes it. Per `agents/docs/solutions/conventions/verify-resource-knob-math-before-load-bearing-security-margins-2026-04-22.md`, the security margin's underlying math must be documented alongside the constant.
+
+Comment shape (illustrative; implementer applies near `CANONICAL_ROOT_MAX_HOPS = 10`):
+
+```ts
+// CANONICAL_ROOT_MAX_HOPS = 10. Per-request worst-case latency under degraded HAF:
+// 10 hops × 2 sequential SQL queries × 30s statement_timeout = 600s (10 min).
+// This task adds an AbortController-bounded request budget that caps the wall-clock
+// independently of hop count. Until then the depth cap absorbs the per-request exit
+// condition but does not bound the wall-clock tail.
+```
+
+Mirror the same shape on `MAX_HOPS = 50` (forward walker): 50 × ≥1 query × 30s = up to 1500s (~25 min). Both arithmetic comments land in the same diff that introduces the `signal?: AbortSignal` parameter so future readers see the math and the fix together.
+
+Reviewer attribution: carried forward from `backend-canonical-root-walker-author-gate` round-2 hold A3 → round-3 hold A3 → archive at 2026-05-06. Architect-zone scope of A3 was misclassified at round-2 (the comment lives in `backend/src/`, an architect cannot edit it directly); this task is the natural home.

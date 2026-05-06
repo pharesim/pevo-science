@@ -238,6 +238,36 @@ admit(content) iff
 
 The first form is ontological — identity decides membership, metadata decides sub-kind. The second form is self-service — the content writes its own admission ticket.
 
+### Both axes (author AND type) at every PEvO-object gate
+
+The "(optionally)" in the template above is correct for *exemption-only* gates (e.g. moderator-post pass-through where the type tag merely routes which template renders). It is **not optional for object-identity gates** that decide whether the request is operating on a PEvO object at all. For those gates, both axes must be enforced:
+
+```
+is_pevo_object(content) iff
+  author(content) ∈ vouched_identity_set       -- author IDENTITY axis
+  AND metadata(content).type ∈ pevo_type_set   -- object TYPE axis
+```
+
+A bridge-paper-typed Hive comment authored by anyone other than `config.hiveBridgeAccount` is not a bridge paper. A paper-typed Hive comment authored by a non-vouched account is not a PEvO paper. A continuation-typed comment whose author is NOT in the predecessor's vouched-author set is not a continuation in that chain. Identity says "yes, you can speak as a PEvO author"; type narrows "and here is the kind of PEvO object you are speaking about." Either axis alone is bypassable — author-only admits arbitrary type-spoofs (a vouched co-author posting `pevo.type='review'` as if it were a paper); type-only admits self-asserted role escalation (anyone setting `pevo.type='bridge_paper'`).
+
+The continuation-walker security rounds established this concretely. Forward walker (`backend-continuation-post-author-consent-gate`, 2026-05-04, round-2 hold #1): the SQL filter at the candidate-set fetch needed a `validPevoPaperWhere(source: 'all')` predicate so a vouched co-author broadcasting `pevo.type='review'` with `pevo.continues={alice, paper-v1}` couldn't surface as alice's apparent v(N+1). Backward walker (`backend-canonical-root-walker-author-gate`, 2026-05-06, round-2 hold #2): the SAME shape applied to the START post — `validPevoPaperWhere(source: 'all')` on the initial probe AND a JS-side `isPevoAnyPaper(startMeta, startRow.author)` re-check after fetching the row, defense-in-depth so a future SQL refactor can't silently strip the protection.
+
+The structural rule:
+
+- **Identity axis is the gate.** Without an `author = <pinned>` / `signer IN <vouched-set>` / `actor.id = <known>` predicate at every OR-arm and exempt branch, the gate is self-assertable.
+- **Type axis is the gate too** when the gate decides "is this a PEvO object." A bridge-paper / paper / review / continuation predicate must conjoin with the author identity, never carry the gate alone or be applied AFTER an unfiltered fetch.
+- **Defense-in-depth across SQL and JS layers.** SQL filtering is the front line; JS re-check after the fetch is the backstop. Either alone is a single point of failure for the type axis. (See `agents/docs/solutions/conventions/symmetric-walker-convention-application-audit-prototype-holds-2026-05-05.md` for the broader symmetric-application discipline this pattern fits within.)
+
+Audit surface (mirrors the bridge-paper convention's grep targets, scoped to type-axis enforcement):
+
+```bash
+# Find candidate-set SQL fetches that omit the type filter
+grep -rn "FROM comments_view\|FROM hafsql.operations\|FROM hafd" backend/src/ --include="*.ts" \
+  | grep -v "validPevoPaperWhere\|isPevoAnyPaper"
+```
+
+Each match must justify why a type-axis filter is absent or unnecessary. Add `validPevoPaperWhere` (or the analogous helper for new content types) to each gate site, and add the JS-side re-check on the post-fetch path. New content types added to PEvO's object set inherit the rule from day one.
+
 ## Related
 
 - [`enumerated-exemption-lists-are-drift-vectors-2026-04-28.md`](enumerated-exemption-lists-are-drift-vectors-2026-04-28.md) — the meta-rule abstracted from this doc's own initial drift. An earlier revision of this doc enumerated six "non-gating" exempt sites; a subsequent grep audit on commit `497795e` found twelve unguarded sites, several of which the doc had named as exempt. The meta-rule generalizes: convention docs establishing security or data-integrity invariants must use a structural audit surface (grep + centralized helper + CI guard), never a hand-curated list of "safe" sites. This doc is the concrete instance the meta-rule was extracted from.
