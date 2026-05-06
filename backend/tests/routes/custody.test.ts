@@ -261,16 +261,16 @@ describe('BE-BRIDGE-CUSTODY-BROADCAST-DISCRIMINATION — /api/custody/broadcast 
       // operation context).
       const matchingCall = errorSpy.mock.calls.find((call) => {
         const ctx = call[0] as Record<string, unknown> | undefined;
-        return ctx?.event === 'custody_broadcast_internal_error';
+        return ctx?.event === 'custody.broadcast.internal_error';
       });
-      expect(matchingCall, 'expected logger.error to fire with event:custody_broadcast_internal_error').toBeDefined();
+      expect(matchingCall, 'expected logger.error to fire with event:custody.broadcast.internal_error').toBeDefined();
       const ctx = matchingCall![0] as Record<string, unknown>;
       expect(ctx.username).toBe(USERNAME);
       expect(ctx.op_types).toEqual(['vote']);
       expect(ctx.op_count).toBe(1);
       // Must NOT carry the broadcast-attempt event (this is upstream of the
       // broadcast).
-      expect(ctx.event).not.toBe('custody_broadcast_attempt');
+      expect(ctx.event).not.toBe('custody.broadcast.attempt');
       expect(ctx.event).not.toBe('broadcast_failed');
     } finally {
       errorSpy.mockRestore();
@@ -289,7 +289,7 @@ describe('BE-BRIDGE-CUSTODY-BROADCAST-DISCRIMINATION — /api/custody/broadcast 
 // ──────────────────────────────────────────────
 
 describe('BE-BRIDGE-CUSTODY-BROADCAST-DISCRIMINATION — per-attempt audit log', () => {
-  it('success: emits event:custody_broadcast_attempt with outcome:success and tx_id', async () => {
+  it('success: emits event:custody.broadcast.attempt with outcome:success and tx_id', async () => {
     const infoSpy = vi.spyOn(logger, 'info').mockImplementation(() => undefined as never);
     try {
       const token = bearerFor(USERNAME, 'light');
@@ -297,9 +297,9 @@ describe('BE-BRIDGE-CUSTODY-BROADCAST-DISCRIMINATION — per-attempt audit log',
       expect(res.status).toBe(200);
       const matchingCall = infoSpy.mock.calls.find((call) => {
         const ctx = call[0] as Record<string, unknown> | undefined;
-        return ctx?.event === 'custody_broadcast_attempt';
+        return ctx?.event === 'custody.broadcast.attempt';
       });
-      expect(matchingCall, 'expected logger.info to fire with event:custody_broadcast_attempt').toBeDefined();
+      expect(matchingCall, 'expected logger.info to fire with event:custody.broadcast.attempt').toBeDefined();
       const ctx = matchingCall![0] as Record<string, unknown>;
       expect(ctx.outcome).toBe('success');
       expect(ctx.username).toBe(USERNAME);
@@ -314,7 +314,7 @@ describe('BE-BRIDGE-CUSTODY-BROADCAST-DISCRIMINATION — per-attempt audit log',
     }
   });
 
-  it('timeout: emits event:custody_broadcast_attempt with outcome:timeout', async () => {
+  it('timeout: emits event:custody.broadcast.attempt with outcome:timeout', async () => {
     const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never);
     try {
       sendOperationsMock.mockRejectedValueOnce(new MockBroadcastTimeoutError(30_000));
@@ -323,9 +323,9 @@ describe('BE-BRIDGE-CUSTODY-BROADCAST-DISCRIMINATION — per-attempt audit log',
       expect(res.status).toBe(504);
       const matchingCall = warnSpy.mock.calls.find((call) => {
         const ctx = call[0] as Record<string, unknown> | undefined;
-        return ctx?.event === 'custody_broadcast_attempt';
+        return ctx?.event === 'custody.broadcast.attempt';
       });
-      expect(matchingCall, 'expected logger.warn to fire with event:custody_broadcast_attempt').toBeDefined();
+      expect(matchingCall, 'expected logger.warn to fire with event:custody.broadcast.attempt').toBeDefined();
       const ctx = matchingCall![0] as Record<string, unknown>;
       expect(ctx.outcome).toBe('timeout');
       expect(ctx.username).toBe(USERNAME);
@@ -337,7 +337,7 @@ describe('BE-BRIDGE-CUSTODY-BROADCAST-DISCRIMINATION — per-attempt audit log',
     }
   });
 
-  it('failure: emits event:custody_broadcast_attempt with outcome:failure', async () => {
+  it('failure: emits event:custody.broadcast.attempt with outcome:failure', async () => {
     const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never);
     try {
       sendOperationsMock.mockRejectedValueOnce(new Error('chain rejection: missing_posting_auth'));
@@ -346,9 +346,9 @@ describe('BE-BRIDGE-CUSTODY-BROADCAST-DISCRIMINATION — per-attempt audit log',
       expect(res.status).toBe(502);
       const matchingCall = warnSpy.mock.calls.find((call) => {
         const ctx = call[0] as Record<string, unknown> | undefined;
-        return ctx?.event === 'custody_broadcast_attempt';
+        return ctx?.event === 'custody.broadcast.attempt';
       });
-      expect(matchingCall, 'expected logger.warn to fire with event:custody_broadcast_attempt').toBeDefined();
+      expect(matchingCall, 'expected logger.warn to fire with event:custody.broadcast.attempt').toBeDefined();
       const ctx = matchingCall![0] as Record<string, unknown>;
       expect(ctx.outcome).toBe('failure');
       expect(ctx.op_count).toBe(1);

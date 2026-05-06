@@ -16,7 +16,7 @@ import { burnSentinel } from './auth.js';
 import { runWithArgon2Slot } from '../lib/argon2-semaphore.js';
 import { handleArgonError, ARGON_HANDLED } from '../lib/argon2-error-handler.js';
 import { requestAbortSignal } from '../lib/request-abort-signal.js';
-import { safeHashEmailForLogs } from '../lib/log-pii.js';
+import { hashEmailForLogs, safeHashEmailForLogs } from '../lib/log-pii.js';
 import { seedAccreditationBonus } from '../reputation.js';
 import {
   handleBroadcastError,
@@ -82,7 +82,10 @@ router.post('/verify', verifyLimiter, async (req: Request, res: Response) => {
 
     sendOk(res, { flow: 'choose', email: account.email, auth_token: confirmed });
   } catch (err) {
-    logger.error({ err }, 'Email verification failed');
+    logger.error(
+      { event: 'signup_verify.verify.failed', route: 'signup-verify.verify', err },
+      'Email verification failed',
+    );
     sendError(res, 500, 'INTERNAL_ERROR', 'Verification failed');
   }
 });
@@ -188,7 +191,15 @@ router.post('/resume-signup', resumeLimiter, async (req: Request, res: Response)
     sendOk(res, { flow: 'choose', email: normalizedEmail, auth_token: account.verify_token });
   } catch (err) {
     if (handleArgonError(res, err) === ARGON_HANDLED) return;
-    logger.error({ err }, 'Resume signup failed');
+    logger.error(
+      {
+        event: 'signup_verify.resume_signup.failed',
+        route: 'signup-verify.resume-signup',
+        email_hash: hashEmailForLogs(normalizedEmail),
+        err,
+      },
+      'Resume signup failed',
+    );
     sendError(res, 500, 'INTERNAL_ERROR', 'Resume failed');
   }
 });
@@ -390,7 +401,10 @@ router.post('/confirm', confirmLimiter, async (req: Request, res: Response) => {
       block_num: createResult.block_num,
     });
   } catch (err) {
-    logger.error({ err }, 'Account confirmation failed');
+    logger.error(
+      { event: 'signup_verify.confirm.failed', route: 'signup-verify.confirm', err },
+      'Account confirmation failed',
+    );
     sendError(res, 500, 'INTERNAL_ERROR', 'Account creation failed');
   }
 });
@@ -543,7 +557,10 @@ router.post('/link', linkLimiter, verifyHiveSignature, async (req: Request, res:
       username: hiveUsername,
     });
   } catch (err) {
-    logger.error({ err }, 'Account linking failed');
+    logger.error(
+      { event: 'signup_verify.link.failed', route: 'signup-verify.link', err },
+      'Account linking failed',
+    );
     sendError(res, 500, 'INTERNAL_ERROR', 'Account linking failed');
   }
 });

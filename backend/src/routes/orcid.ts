@@ -345,7 +345,15 @@ router.post('/callback', callbackLimiter, async (req: Request, res: Response) =>
 
     if (!tokenRes.ok) {
       const errBody = await tokenRes.text();
-      logger.error({ status: tokenRes.status, body: errBody }, 'ORCID token exchange failed');
+      logger.error(
+        {
+          event: 'orcid.callback.token_exchange_failed',
+          route: 'orcid.callback',
+          status: tokenRes.status,
+          body: errBody,
+        },
+        'ORCID token exchange failed',
+      );
       return sendError(res, 400, 'BAD_REQUEST', 'Failed to exchange authorization code');
     }
 
@@ -374,7 +382,10 @@ router.post('/callback', callbackLimiter, async (req: Request, res: Response) =>
         return await handleFreshAuth(res, orcidId, storedUsername!);
     }
   } catch (err) {
-    logger.error({ err }, 'ORCID callback failed');
+    logger.error(
+      { event: 'orcid.callback.failed', route: 'orcid.callback', err },
+      'ORCID callback failed',
+    );
     sendError(res, 500, 'INTERNAL_ERROR', 'ORCID verification failed');
   }
 });
@@ -978,7 +989,11 @@ async function acquireBindingLock(orcidId: string): Promise<BindingLockState> {
     // only the hex-shape assertion is load-bearing.)
     if (!LOCK_NONCE_RE.test(nonce)) {
       logger.error(
-        { orcidId, event: 'nonce_drift' },
+        {
+          event: 'orcid.binding_lock.nonce_drift',
+          route: 'orcid.binding-lock',
+          orcidId,
+        },
         'orcid binding lock nonce shape invariant violated — code defect, degrading to HAF-only path',
       );
       return { state: 'unavailable' };
@@ -1000,7 +1015,12 @@ async function acquireBindingLock(orcidId: string): Promise<BindingLockState> {
     // structured field discriminates this cause from `event: 'nonce_drift'`
     // above so alert pipelines keyed on message text can tell the two apart.
     logger.error(
-      { err, orcidId, event: 'redis_outage' },
+      {
+        event: 'orcid.binding_lock.redis_outage',
+        route: 'orcid.binding-lock',
+        orcidId,
+        err,
+      },
       'orcid binding lock acquisition failed — redis outage, degrading to HAF-only path',
     );
     return { state: 'unavailable' };
@@ -1016,7 +1036,15 @@ async function releaseBindingLock(orcidId: string, nonce: string): Promise<void>
     await redis.eval(RELEASE_LOCK_LUA, 1, orcidBindingLockKey(orcidId), nonce);
   } catch (err) {
     // Best-effort release. On failure the lock self-expires after the TTL.
-    logger.warn({ err, orcidId }, 'Failed to release ORCID binding lock');
+    logger.warn(
+      {
+        event: 'orcid.binding_lock.release_failed',
+        route: 'orcid.binding-lock',
+        orcidId,
+        err,
+      },
+      'Failed to release ORCID binding lock',
+    );
   }
 }
 
@@ -1059,7 +1087,12 @@ async function extendBindingLockOnTimeoutOrLog(orcidId: string, routeLabel: stri
   const redis = getRedis();
   if (!redis || !isRedisAvailable()) {
     logger.error(
-      { orcidId, event: 'binding_lock_extend_redis_absent' },
+      {
+        event: 'orcid.binding_lock.extend_redis_absent',
+        route: 'orcid.binding-lock',
+        routeLabel,
+        orcidId,
+      },
       `${routeLabel} A.1 lock-TTL extension skipped — Redis unavailable at BroadcastTimeoutError time, duplicate-bind window may be open`,
     );
     return;
@@ -1096,13 +1129,26 @@ async function extendBindingLockOnTimeoutOrLog(orcidId: string, routeLabel: stri
             ? 'released_during_extend'
             : 'unknown';
       logger.error(
-        { orcidId, event: 'binding_lock_extend_lock_missing', cause, pttlBefore },
+        {
+          event: 'orcid.binding_lock.extend_lock_missing',
+          route: 'orcid.binding-lock',
+          routeLabel,
+          orcidId,
+          cause,
+          pttlBefore,
+        },
         `${routeLabel} binding lock expired between acquire and TTL-extend — A.1 protection degraded for this request`,
       );
       return;
     }
     logger.warn(
-      { orcidId, newTtl: HAF_INDEXING_LAG_CEILING_SECONDS, event: 'binding_lock_extend_ok' },
+      {
+        event: 'orcid.binding_lock.extend_ok',
+        route: 'orcid.binding-lock',
+        routeLabel,
+        orcidId,
+        newTtl: HAF_INDEXING_LAG_CEILING_SECONDS,
+      },
       `${routeLabel} binding lock TTL extended on BroadcastTimeoutError — duplicate-bind window held`,
     );
   } catch (expireErr) {
@@ -1113,7 +1159,13 @@ async function extendBindingLockOnTimeoutOrLog(orcidId: string, routeLabel: stri
     // will fall back to its original ~35s TTL and a concurrent bind
     // arriving after that could slip the race A.1 was designed to close.
     logger.error(
-      { err: expireErr, orcidId, event: 'binding_lock_extend_threw' },
+      {
+        event: 'orcid.binding_lock.extend_threw',
+        route: 'orcid.binding-lock',
+        routeLabel,
+        orcidId,
+        err: expireErr,
+      },
       `${routeLabel} orcid binding lock TTL extension failed — duplicate-bind protection degraded for this request`,
     );
   }
@@ -1222,7 +1274,12 @@ async function withOrcidBindingLock(
     // `event:'nonce_drift'`); silent emission here would leave oncall without
     // a forensic trail when triaging 409s on /orcid/callback.
     logger.warn(
-      { orcidId, event: 'lock_contention_held', routeLabel: ambiguousOutcomeOpts.routeLabel },
+      {
+        event: 'orcid.binding_lock.contention_held',
+        route: 'orcid.binding-lock',
+        routeLabel: ambiguousOutcomeOpts.routeLabel,
+        orcidId,
+      },
       `${ambiguousOutcomeOpts.routeLabel} ORCID binding lock contended; client must restart OAuth (state token consumed)`,
     );
     sendError(
@@ -1350,7 +1407,13 @@ async function cacheOrcidBinding(orcidId: string, username: string): Promise<voi
     // degraded, investigate the Redis path." Behavior unchanged (still swallows
     // per availability-over-consistency contract).
     logger.error(
-      { err, orcidId, username },
+      {
+        event: 'orcid.binding_cache.write_failed',
+        route: 'orcid.binding-cache',
+        orcidId,
+        username,
+        err,
+      },
       'orcid binding cache write failed — HAF-lag TOCTOU window may be longer than expected',
     );
   }
@@ -1369,7 +1432,15 @@ async function getCachedOrcidBinding(orcidId: string): Promise<string | null> {
   try {
     return await redis.get(orcidBindingCacheKey(orcidId));
   } catch (err) {
-    logger.warn({ err, orcidId }, 'Failed to read ORCID binding cache');
+    logger.warn(
+      {
+        event: 'orcid.binding_cache.read_failed',
+        route: 'orcid.binding-cache',
+        orcidId,
+        err,
+      },
+      'Failed to read ORCID binding cache',
+    );
     return null;
   }
 }
@@ -1380,7 +1451,15 @@ async function countExternalWorks(orcidId: string, _accessToken?: string): Promi
   });
 
   if (!worksRes.ok) {
-    logger.error({ status: worksRes.status, orcidId }, 'ORCID works fetch failed');
+    logger.error(
+      {
+        event: 'orcid.works_fetch.failed',
+        route: 'orcid.works-fetch',
+        orcidId,
+        status: worksRes.status,
+      },
+      'ORCID works fetch failed',
+    );
     throw new Error('Failed to fetch ORCID works');
   }
 
@@ -1566,7 +1645,15 @@ async function updateAccountOrcid(username: string, orcidId: string): Promise<vo
     // race during a healthy pool isn't operator-actionable per-request — the
     // denormalized accounts.orcid column may be briefly stale, but the chain
     // record is the source of truth for the binding.
-    logger.warn({ err, username }, 'Failed to update accounts.orcid (row may not exist for self-custody user)');
+    logger.warn(
+      {
+        event: 'orcid.account_update.transient_failed',
+        route: 'orcid.account-update',
+        username,
+        err,
+      },
+      'Failed to update accounts.orcid (row may not exist for self-custody user)',
+    );
   }
 }
 

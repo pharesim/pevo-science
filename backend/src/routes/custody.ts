@@ -174,10 +174,11 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
     if (!result.valid) {
       logger.warn(
         {
+          event: 'custody.broadcast.fresh_auth_rejected',
+          route: 'custody.broadcast',
           username,
           consent_action: consentAction,
           reason: result.reason,
-          event: 'custody.fresh_auth.rejected',
         },
         'custody.broadcast rejected — fresh-auth proof invalid',
       );
@@ -223,12 +224,13 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
   // the field is forward-compat for the idempotency cluster's per-key counter.
   function logBroadcastAttempt(outcome: 'success' | 'failure' | 'timeout', extra?: Record<string, unknown>) {
     const fields = {
+      event: 'custody.broadcast.attempt',
+      route: 'custody.broadcast',
       username,
       op_types,
       op_count,
       attempt_n: 1,
       outcome,
-      event: 'custody_broadcast_attempt',
       ...(extra ?? {}),
     };
     if (outcome === 'success') {
@@ -322,10 +324,17 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
     // Outer catch: db / decrypt / PrivateKey.fromString errors. Round-2 hold
     // #5: include the structured `op_types` + `op_count` so operators don't
     // lose the operation context when the failure is upstream of the
-    // broadcast. `event:'custody_broadcast_internal_error'` discriminates
+    // broadcast. `event:'custody.broadcast.internal_error'` discriminates
     // this branch from the broadcast-path event so dashboards filter cleanly.
     logger.error(
-      { err, username, op_types, op_count, event: 'custody_broadcast_internal_error' },
+      {
+        event: 'custody.broadcast.internal_error',
+        route: 'custody.broadcast',
+        username,
+        op_types,
+        op_count,
+        err,
+      },
       'Custodial broadcast failed (non-chain error)',
     );
     sendError(res, 500, 'INTERNAL_ERROR', 'Failed to broadcast transaction');
@@ -401,7 +410,10 @@ router.post('/fresh-auth', verifyHiveSignature, freshAuthLimiter, async (req: Re
     });
   } catch (err) {
     if (handleArgonError(res, err, { logContext: { username } }) === ARGON_HANDLED) return;
-    logger.error({ err, username }, 'Fresh-auth issuance failed');
+    logger.error(
+      { event: 'custody.fresh_auth.failed', route: 'custody.fresh-auth', username, err },
+      'Fresh-auth issuance failed',
+    );
     sendError(res, 500, 'INTERNAL_ERROR', 'Failed to issue fresh-auth proof');
   }
 });
@@ -468,7 +480,11 @@ router.post('/upgrade', verifyHiveSignature, upgradeLimiter, async (req: Request
     // would be a server-internal control-flow bug, not a timing oracle.
     if (!account.password_hash) {
       logger.error(
-        { username, event: 'custody_upgrade_null_hash_unreachable' },
+        {
+          event: 'custody.upgrade.null_hash_unreachable',
+          route: 'custody.upgrade',
+          username,
+        },
         'Custody upgrade reached password-verify branch with null password_hash. The orcid.ts default removal should have made this unreachable; investigate any new direct caller of this route.',
       );
       return sendError(res, 401, 'UNAUTHORIZED', 'Invalid password');
@@ -508,7 +524,10 @@ router.post('/upgrade', verifyHiveSignature, upgradeLimiter, async (req: Request
     sendOk(res, { custody: 'self', token, expires_at: expiresAt });
   } catch (err) {
     if (handleArgonError(res, err, { logContext: { username } }) === ARGON_HANDLED) return;
-    logger.error({ err, username }, 'Custody upgrade failed');
+    logger.error(
+      { event: 'custody.upgrade.failed', route: 'custody.upgrade', username, err },
+      'Custody upgrade failed',
+    );
     sendError(res, 500, 'INTERNAL_ERROR', 'Upgrade failed');
   }
 });

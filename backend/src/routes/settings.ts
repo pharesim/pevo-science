@@ -14,6 +14,7 @@ import { ARGON2_OPTIONS } from '../lib/argon2-options.js';
 import { runWithArgon2Slot } from '../lib/argon2-semaphore.js';
 import { handleArgonError, ARGON_HANDLED } from '../lib/argon2-error-handler.js';
 import { requestAbortSignal } from '../lib/request-abort-signal.js';
+import { hashEmailForLogs } from '../lib/log-pii.js';
 
 const readLimiter = rateLimit({ name: 'settings-read', windowMs: 60_000, max: 30, keyFn: byIp });
 const writeLimiter = rateLimit({ name: 'settings-write', windowMs: 60_000, max: 10, keyFn: byIp });
@@ -87,7 +88,10 @@ router.get('/email', readLimiter, verifyHiveSignature, async (req: Request, res:
       hasPassword: row.password_hash !== null,
     });
   } catch (err) {
-    logger.error({ err }, 'Failed to fetch email status');
+    logger.error(
+      { event: 'settings.email_get.failed', route: 'settings.email-get', username, err },
+      'Failed to fetch email status',
+    );
     sendError(res, 500, 'INTERNAL_ERROR', 'Failed to fetch email status');
   }
 });
@@ -157,7 +161,16 @@ router.post('/email', writeLimiter, verifyHiveSignature, async (req: Request, re
     try {
       await sendVerificationEmail(email, token);
     } catch (mailErr) {
-      logger.error({ err: (mailErr as Error).message }, 'Failed to send verification email');
+      logger.error(
+        {
+          event: 'settings.email_post.smtp_send_failed',
+          route: 'settings.email-post',
+          email_hash: hashEmailForLogs(email),
+          username,
+          err: mailErr,
+        },
+        'Failed to send verification email',
+      );
       // Roll back: clean up the token we just wrote
       if (existing.length === 0) {
         await pool.query('DELETE FROM accounts WHERE username = $1 AND verify_token = $2', [username, token]);
@@ -172,7 +185,16 @@ router.post('/email', writeLimiter, verifyHiveSignature, async (req: Request, re
 
     sendOk(res, { message: 'Verification email sent' });
   } catch (err) {
-    logger.error({ err }, 'Email add/change failed');
+    logger.error(
+      {
+        event: 'settings.email_post.failed',
+        route: 'settings.email-post',
+        email_hash: hashEmailForLogs(email),
+        username,
+        err,
+      },
+      'Email add/change failed',
+    );
     sendError(res, 500, 'INTERNAL_ERROR', 'Failed to update email');
   }
 });
@@ -253,7 +275,10 @@ router.get('/email/verify/:token', readLimiter, async (req: Request, res: Respon
     // Not found
     sendError(res, 400, 'INVALID_TOKEN', 'Invalid or expired verification link');
   } catch (err) {
-    logger.error({ err }, 'Email verification failed');
+    logger.error(
+      { event: 'settings.email_verify.failed', route: 'settings.email-verify', err },
+      'Email verification failed',
+    );
     sendError(res, 500, 'INTERNAL_ERROR', 'Verification failed');
   }
 });
@@ -294,7 +319,14 @@ router.delete('/email', writeLimiter, verifyHiveSignature, async (req: Request, 
 
     // Log if light account user will lose login access
     if (row.custody === 'light' && !row.upgraded_at) {
-      logger.warn({ username }, 'Light account user deleting email — will lose login access');
+      logger.warn(
+        {
+          event: 'settings.email_delete.light_account_login_loss',
+          route: 'settings.email-delete',
+          username,
+        },
+        'Light account user deleting email — will lose login access',
+      );
     }
 
     // Single transaction: audit log, then delete all data
@@ -323,7 +355,10 @@ router.delete('/email', writeLimiter, verifyHiveSignature, async (req: Request, 
 
     sendOk(res, { deleted: true });
   } catch (err) {
-    logger.error({ err }, 'Email deletion failed');
+    logger.error(
+      { event: 'settings.email_delete.failed', route: 'settings.email-delete', username, err },
+      'Email deletion failed',
+    );
     sendError(res, 500, 'INTERNAL_ERROR', 'Failed to delete email data');
   }
 });
@@ -389,7 +424,10 @@ router.post('/set-password', writeLimiter, verifyHiveSignature, async (req: Requ
     sendOk(res, { message: 'Password set. You can now log in with your email/username and this password.' });
   } catch (err) {
     if (handleArgonError(res, err) === ARGON_HANDLED) return;
-    logger.error({ err }, 'Failed to set password');
+    logger.error(
+      { event: 'settings.set_password.failed', route: 'settings.set-password', username, err },
+      'Failed to set password',
+    );
     sendError(res, 500, 'INTERNAL_ERROR', 'Failed to set password');
   }
 });

@@ -707,7 +707,7 @@ describe('POST /api/accreditation/verify — BE-VERIFY-BROADCAST-ATTEMPTS-CAP', 
       // edit can't silently drop it.
       expect(loggerWarnSpy).toHaveBeenCalledWith(
         expect.objectContaining({
-          event: 'accred_verify_broadcast_cap_exceeded',
+          event: 'accreditation.verify.broadcast_cap_exceeded',
           attempts: cap + 1,
           cap,
         }),
@@ -818,7 +818,7 @@ describe('POST /api/accreditation/verify — BE-VERIFY-BROADCAST-ATTEMPTS-CAP', 
       // drop.
       expect(loggerWarnSpy).toHaveBeenCalledWith(
         expect.objectContaining({
-          event: 'accred_verify_broadcast_decrement_failed',
+          event: 'accreditation.verify.broadcast_decrement_failed',
           username: 'accred-timeout-user',
         }),
         expect.stringContaining('counter decrement after timeout failed'),
@@ -931,7 +931,7 @@ describe('POST /api/accreditation/verify — BE-VERIFY-BROADCAST-ATTEMPTS-CAP', 
       // can't silently drop.
       expect(loggerWarnSpy).toHaveBeenCalledWith(
         expect.objectContaining({
-          event: 'accred_verify_broadcast_increment_failed',
+          event: 'accreditation.verify.broadcast_increment_failed',
           username: 'accred-timeout-user',
         }),
         expect.stringContaining('pre-INCR cap counter failed'),
@@ -974,7 +974,7 @@ describe('POST /api/accreditation/verify — BE-VERIFY-BROADCAST-ATTEMPTS-CAP', 
       // a token_hash (NOT raw token).
       expect(loggerWarnSpy).toHaveBeenCalledWith(
         expect.objectContaining({
-          event: 'accred_verify_broadcast_decrement_redis_unavailable',
+          event: 'accreditation.verify.broadcast_decrement_redis_unavailable',
           token_hash: expect.stringMatching(/^[0-9a-f]{12}$/),
         }),
         expect.stringContaining('Redis unavailable mid-request'),
@@ -1033,7 +1033,7 @@ describe('POST /api/accreditation/verify — BE-VERIFY-BROADCAST-ATTEMPTS-CAP', 
       // the increment-side discriminator.
       expect(loggerWarnSpy).toHaveBeenCalledWith(
         expect.objectContaining({
-          event: 'accred_verify_broadcast_increment_redis_unavailable',
+          event: 'accreditation.verify.broadcast_increment_redis_unavailable',
           token_hash: expect.stringMatching(/^[0-9a-f]{12}$/),
         }),
         expect.stringContaining('Redis unavailable mid-request'),

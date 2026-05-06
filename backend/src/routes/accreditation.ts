@@ -98,8 +98,9 @@ async function incrementBroadcastAttempts(pending: PendingAccreditation): Promis
     // enforcement was active or in-memory-fallback at INCR time.
     logger.warn(
       {
+        event: 'accreditation.verify.broadcast_increment_redis_unavailable',
+        route: 'accreditation.verify',
         token_hash: hashTokenForLogs(pending.token),
-        event: 'accred_verify_broadcast_increment_redis_unavailable',
       },
       'accreditation.verify counter increment: Redis unavailable mid-request — cap enforcement degraded to in-memory fallback',
     );
@@ -170,8 +171,9 @@ async function decrementBroadcastAttempts(token: string, attemptId?: string): Pr
     }
     logger.warn(
       {
+        event: 'accreditation.verify.broadcast_decrement_redis_unavailable',
+        route: 'accreditation.verify',
         token_hash: hashTokenForLogs(token),
-        event: 'accred_verify_broadcast_decrement_redis_unavailable',
       },
       'accreditation.verify counter decrement: Redis unavailable mid-request — counter may persist inflated until 24h TTL',
     );
@@ -293,12 +295,29 @@ router.post('/request', verifyHiveSignature, accreditationRequestLimiter, valida
         text: `Hello ${full_name},\n\nPlease verify your email to complete your PEvO accreditation:\n\n${verifyUrl}\n\nThis link expires in 24 hours.\n\nPEvO - Open Scientific Publishing\nhttps://pevo.science`,
       });
     } catch (mailErr) {
-      logger.error({ err: (mailErr as Error).message }, 'Failed to send verification email');
+      logger.error(
+        {
+          event: 'accreditation.request.smtp_send_failed',
+          route: 'accreditation.request',
+          username: hive_username,
+          email_hash: hashEmailForLogs(email),
+          err: mailErr,
+        },
+        'Failed to send verification email',
+      );
       await deleteToken(token);
       return sendError(res, 500, 'INTERNAL_ERROR', 'Failed to send verification email');
     }
   } else {
-    logger.error({ hive_username }, 'SMTP not configured — cannot send verification email');
+    logger.error(
+      {
+        event: 'accreditation.request.smtp_not_configured',
+        route: 'accreditation.request',
+        username: hive_username,
+        email_hash: hashEmailForLogs(email),
+      },
+      'SMTP not configured — cannot send verification email',
+    );
     await deleteToken(token);
     return sendError(res, 500, 'INTERNAL_ERROR', 'Email service not configured');
   }
@@ -384,10 +403,11 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
   } catch (incrErr) {
     logger.warn(
       {
-        err: incrErr instanceof Error ? incrErr : new Error(String(incrErr)),
+        event: 'accreditation.verify.broadcast_increment_failed',
+        route: 'accreditation.verify',
         username: pending.hive_username,
         email_hash: hashEmailForLogs(pending.email),
-        event: 'accred_verify_broadcast_increment_failed',
+        err: incrErr instanceof Error ? incrErr : new Error(String(incrErr)),
       },
       'accreditation.verify pre-INCR cap counter failed — surfacing 503 SERVICE_UNAVAILABLE',
     );
@@ -407,7 +427,8 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
     // `post_broadcast_msg_fn_threw`, `post_broadcast_write_failed`).
     logger.warn(
       {
-        event: 'accred_verify_broadcast_cap_exceeded',
+        event: 'accreditation.verify.broadcast_cap_exceeded',
+        route: 'accreditation.verify',
         username: pending.hive_username,
         email_hash: hashEmailForLogs(pending.email),
         token_hash: hashTokenForLogs(token),
@@ -509,7 +530,14 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
         // give anyone with operator-log read access the ability to replay the
         // verification and enqueue an `accredit` op signed by the admin key.
         logger.warn(
-          { err: decrErr, token_hash: hashTokenForLogs(token), username: pending.hive_username, event: 'accred_verify_broadcast_decrement_failed' },
+          {
+            event: 'accreditation.verify.broadcast_decrement_failed',
+            route: 'accreditation.verify',
+            username: pending.hive_username,
+            email_hash: hashEmailForLogs(pending.email),
+            token_hash: hashTokenForLogs(token),
+            err: decrErr,
+          },
           'accreditation.verify counter decrement after timeout failed — counter may TTL out at token expiration',
         );
       }
@@ -524,7 +552,14 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
         // Per agents/docs/solutions/runtime-errors/helper-extraction-express5-response-ordering-2026-04-28.md
         // ("Survivor log fields for orphan resources").
         logger.error(
-          { err: deleteErr, token_hash: hashTokenForLogs(token), username: pending.hive_username },
+          {
+            event: 'accreditation.verify.token_cleanup_failed',
+            route: 'accreditation.verify',
+            username: pending.hive_username,
+            email_hash: hashEmailForLogs(pending.email),
+            token_hash: hashTokenForLogs(token),
+            err: deleteErr,
+          },
           'accreditation.verify token cleanup failed after broadcast failure — orphan will TTL out',
         );
       }
@@ -535,7 +570,10 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
 // Cleanup expired tokens periodically
 setInterval(() => {
   cleanupExpiredTokens().catch((err) => {
-    logger.error({ err }, 'Failed to cleanup expired accreditation tokens');
+    logger.error(
+      { event: 'accreditation.cleanup.failed', route: 'accreditation.cleanup', err },
+      'Failed to cleanup expired accreditation tokens',
+    );
   });
 }, 60 * 60 * 1000);
 

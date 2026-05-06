@@ -1164,7 +1164,7 @@ describe.each([
         const expectedRouteLabel = mode === 'accredit' ? 'orcid.handleAccredit' : 'orcid.handleLink';
         expect(warnSpy).toHaveBeenCalledWith(
           expect.objectContaining({
-            event: 'lock_contention_held',
+            event: 'orcid.binding_lock.contention_held',
             orcidId,
             routeLabel: expectedRouteLabel,
           }),
@@ -1708,7 +1708,7 @@ describe.each([
         // this spec red against the (still correct) emitted value.
         expect(warnSpy).toHaveBeenCalledWith(
           expect.objectContaining({
-            event: 'binding_lock_extend_ok',
+            event: 'orcid.binding_lock.extend_ok',
             orcidId,
             newTtl: __test_seams.HAF_INDEXING_LAG_CEILING_SECONDS,
           }),
@@ -2016,7 +2016,7 @@ describe.each([
         // even if the message text survives.
         expect(errorSpy).toHaveBeenCalledWith(
           expect.objectContaining({
-            event: 'binding_lock_extend_threw',
+            event: 'orcid.binding_lock.extend_threw',
             orcidId,
             err: expect.any(Error),
           }),
@@ -2111,7 +2111,7 @@ describe.each([
         // load-bearing on this assertion.
         expect(errorSpy).toHaveBeenCalledWith(
           expect.objectContaining({
-            event: 'binding_lock_extend_threw',
+            event: 'orcid.binding_lock.extend_threw',
             orcidId,
             err: expect.any(Error),
           }),
@@ -2121,7 +2121,7 @@ describe.each([
         // alternative branch a swallow-and-fall-through refactor would
         // route to, so pinning its absence catches that mutation class.
         expect(errorSpy).not.toHaveBeenCalledWith(
-          expect.objectContaining({ event: 'binding_lock_extend_lock_missing' }),
+          expect.objectContaining({ event: 'orcid.binding_lock.extend_lock_missing' }),
           expect.anything(),
         );
         // `expire` was never called — the pttl throw skipped past it
@@ -2172,7 +2172,7 @@ describe.each([
         // anchor back to the conflated round-0 form.
         expect(errorSpy).toHaveBeenCalledWith(
           expect.objectContaining({
-            event: 'binding_lock_extend_lock_missing',
+            event: 'orcid.binding_lock.extend_lock_missing',
             orcidId,
             cause: 'expired_or_evicted',
             pttlBefore: -2,
@@ -2210,7 +2210,7 @@ describe.each([
         await __test_seams.extendBindingLockOnTimeoutOrLog(orcidId, routeLabel);
         expect(errorSpy).toHaveBeenCalledWith(
           expect.objectContaining({
-            event: 'binding_lock_extend_lock_missing',
+            event: 'orcid.binding_lock.extend_lock_missing',
             orcidId,
             cause: 'released_during_extend',
             pttlBefore: 30_000,
@@ -2248,7 +2248,7 @@ describe.each([
         await __test_seams.extendBindingLockOnTimeoutOrLog(orcidId, routeLabel);
         expect(errorSpy).toHaveBeenCalledWith(
           expect.objectContaining({
-            event: 'binding_lock_extend_redis_absent',
+            event: 'orcid.binding_lock.extend_redis_absent',
             orcidId,
           }),
           expect.stringContaining('Redis unavailable at BroadcastTimeoutError time'),
@@ -2696,7 +2696,7 @@ describe.each([
         // "— degrading to HAF-only path" would pass the 2xx assertion above
         // but fail this one.
         const nonceDriftCalls = loggerErrorSpy.mock.calls.filter(
-          (call) => typeof call[0] === 'object' && call[0] !== null && (call[0] as { event?: unknown }).event === 'nonce_drift',
+          (call) => typeof call[0] === 'object' && call[0] !== null && (call[0] as { event?: unknown }).event === 'orcid.binding_lock.nonce_drift',
         );
         expect(nonceDriftCalls.length).toBeGreaterThanOrEqual(1);
 
