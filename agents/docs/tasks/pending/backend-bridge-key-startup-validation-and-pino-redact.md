@@ -491,3 +491,164 @@ Each new canary verified red against a stripped-down code change. Baseline resto
    - "Boot-fatal `logger.flush() + setTimeout watchdog` async-transport-drain pattern" — round-4 instantiates; ripe for compound.
    - "Defensive recursive serializer with depth/cycle guard + discriminated sentinel + try/catch fallback + plain-object cause helper" — round-3 + round-4 fold into a single entry.
    - "Boot-fatal call-stack-unwind via subclassed throw + outer catch" — round-4 introduces the pattern; could combine with the watchdog pattern.
+
+---
+
+## Architect re-review (2026-05-06, round-4 → round-5) — HELD PENDING FIXES
+
+`/ce-code-review` ran on commit `a376503` with 10 reviewer personas (correctness, security at opus; testing, maintainability, project-standards, kieran-typescript, performance, reliability, adversarial, ce-learnings-researcher; `ce-agent-native-reviewer` skipped per project CLAUDE.md). After triage: **7 hold items** below, 4 dismissed, several below the 75-gate suppressed.
+
+Round-4's three hold items closed correctly at the named sites — watchdog timer + `BootFatalError` sync-throw shape works, `redactPlainObject` + recursive-cause branch works, sibling-cause destructure works. Re-review surfaced one architectural seam (the catch-throw re-enters `uncaughtException`, defeating the suppress-re-log guard at the catch site), two symmetric residuals from the round-4 redact-policy fix (`errors[].map` and the array-cause early-guard), and one untested invariant (`validateConfig` BootFatalError throw — the round-4 item-1 main contract has no direct unit test).
+
+### Items to address (all bundle into one round-5 commit)
+
+**1. (P2) `errors[]` aggregate plain-object members bypass redact at `redactErrSerializer`'s map site.** `backend/src/logger.ts:189-192`. Round-4 closed the `cause` recursion bypass via `isErrorLike(cause) ? redactErrSerializer : redactPlainObject`. The `out.aggregateErrors = maybeErrors.map((e) => redactErrSerializer(e, depth + 1))` site was NOT updated; a non-Error plain-object member hits `isErrorLike === false` short-circuit at `redactErrSerializer`'s entry and returns verbatim, bypassing `SAFE_BASELINE_FIELDS`. Same risk class round-3/round-4 closed at scalar-cause shapes.
+
+Fix shape:
+```ts
+out.aggregateErrors = maybeErrors.map((e) =>
+  isErrorLike(e) ? redactErrSerializer(e, depth + 1) : redactPlainObject(e, depth + 1)
+);
+```
+
+Add a canary in `backend/tests/lib/logger-redact.test.ts` exercising `Object.assign(new Error('outer'), { errors: [{ command: { args: ['raw-token'] } }] })` and asserting the aggregate member's `command` is absent.
+
+Reviewer attribution: correctness (low conf 50) + reliability (info conf 90) + adversarial (P2 conf 75 at the related array-cause site, finding 2). Cross-reviewer corroboration; anchor promoted to 100.
+
+**2. (P2) `cause: [Array]` routes to `redactPlainObject` and falls through verbatim via the array early-guard at `:225`.** `backend/src/logger.ts:184-186` (the dispatch site) and `:225-229` (the array early-guard).
+
+The dispatch:
+```ts
+out.cause = isErrorLike(errAny.cause)
+  ? redactErrSerializer(errAny.cause, depth + 1)
+  : redactPlainObject(errAny.cause, depth + 1);
+```
+`isErrorLike([])` returns false (no `.name`/`.message`); the array routes to `redactPlainObject`; the early guard returns it verbatim. Construct: `Object.assign(new Error(), { cause: [{ command: { args: ['raw-token'] } }] })` — array members leak.
+
+Fix shape: replace the array-pass-through at `:225-229` with element-wise recursion:
+```ts
+if (Array.isArray(value)) {
+  return value.map((item) =>
+    isErrorLike(item) ? redactErrSerializer(item, depth + 1) : redactPlainObject(item, depth + 1)
+  );
+}
+```
+
+Drop or rewrite the inline comment at `:225-229` that justified the pass-through ("arrays land outside the cause-chain shape this helper exists to defend") — after this fix the comment is inaccurate.
+
+Add a canary in `logger-redact.test.ts` exercising the array-cause shape above and asserting the leaky `command.args` field is stripped at every member.
+
+Reviewer attribution: adversarial (P2 conf 75); same-class as item 1 (`errors[]` site).
+
+**3. (P2) `validateConfig`/`initBridgePostingKeyCache` BootFatalError throw has no direct unit test.** `backend/tests/startup-checks.test.ts`. The round-4 item-1 main contract — replace `flush(() => exit); return` with `logger.fatal; throw BootFatalError` — is the load-bearing semantic that prevents `createApp()` and `initAppDb()` (migrations!) from running on a fatal-misconfigured boot. The existing `startup-checks.test.ts` doesn't import `BootFatalError` and has no test calling `validateConfig()` directly with a missing-required-env fixture.
+
+Mutation-kill: replacing `throw new BootFatalError(...)` with bare `return` inside validateConfig's missing-config branch breaks no test.
+
+Fix shape: import `BootFatalError`. Add `it('validateConfig throws BootFatalError when required env is missing', () => { ... expect(() => validateConfig()).toThrow(BootFatalError); })` plus a symmetric spec for `initBridgePostingKeyCache` parse-divergence path.
+
+Reviewer attribution: testing (medium conf 80, single-reviewer; retained as P2 due to load-bearing scope; `tests-must-fail-on-mutation-of-code-under-test-2026-04-22.md` cited via learnings-researcher).
+
+**4. (P2) `flushAndExit` docblock claims to mirror `routes/auth.ts:175-193` but diverges from it.** `backend/src/lib/flush-and-exit.ts:34`. The auth.ts pattern guards `logger.flush(...)` with `if (typeof logger.flush === 'function')` and has a bare-`process.exit(1)` else-branch; `flushAndExit` calls `logger.flush(...)` unconditionally. The watchdog renders the else-branch redundant (functionally correct), but the docblock's "mirrors" claim is misleading — a future maintainer reading both will either "fix" `flush-and-exit.ts` to add the guard (test churn) or "fix" auth.ts to drop the guard (re-introducing the failure mode the auth.ts author was guarding against).
+
+Fix shape: rewrite the docblock to drop the "mirrors auth.ts:175-193" claim and document the watchdog as the canonical exit guarantee:
+
+```
+/**
+ * Boot-fatal flush + watchdog exit.
+ *
+ * Schedules a 2s watchdog timer (unref'd) and calls logger.flush(...).
+ * Whichever fires first triggers process.exit(1). The watchdog ensures the
+ * process exits even if the flush callback hangs (back-pressured stdout,
+ * wedged worker thread, drain failure).
+ *
+ * The watchdog renders any defensive `typeof logger.flush === 'function'`
+ * guard redundant — if logger.flush is missing or non-function, the
+ * unconditional call throws synchronously, escapes flushAndExit, and the 2s
+ * timer still fires process.exit(1).
+ *
+ * Used by index.ts boot-fatal sites only.
+ */
+```
+
+No code change. Auth.ts convergence (eliminating the duplicate inline watchdog at `routes/auth.ts:175-193`) is filed separately as `backend-flush-and-exit-auth-converge.md` (`tasks/pending/`) — out of scope for this round.
+
+Reviewer attribution: maintainability (P2 conf 85, single-reviewer).
+
+**5. (P3) Boot try/catch's `throw err;` re-enters `uncaughtException` handler at `index.ts:36-39`, defeating the suppress-re-log guard at the catch site.** `backend/src/index.ts:63-71`.
+
+The `instanceof BootFatalError` check at the catch site (`:64`) correctly suppresses redundant fatal logging — but the `throw err;` immediately after propagates the BootFatalError to module-evaluation scope, where Node routes it to the `uncaughtException` handler. That handler unconditionally calls `logger.fatal({err}, 'Uncaught exception — shutting down')` and `flushAndExit()` AGAIN. Two timers, two flush calls, duplicate fatal log line. `process.exit` is idempotent so the process exits correctly, but the operator log stream shows a synthetic "Uncaught exception" fatal for what is in fact a known configuration error.
+
+Fix shape: drop the re-throw. Gate post-catch boot on `app` definite-assignment narrowing:
+
+```ts
+let app: ReturnType<typeof createApp> | undefined;
+try {
+  validateConfig();
+  app = createApp();
+} catch (err) {
+  if (!(err instanceof BootFatalError)) {
+    logger.fatal({ err }, 'Boot failed unexpected throw');
+  }
+  flushAndExit();
+  return;
+}
+if (!app) return;
+// ... rest of boot
+```
+
+The `return` at the end of catch + `if (!app) return;` after the try replaces the `throw err;` in a TS-friendly way. No more re-entry to `uncaughtException`; suppress-re-log guard works as intended.
+
+Reviewer attribution: correctness (low conf 50) + reliability (low conf 80) → cross-reviewer promotion to anchor 100.
+
+**6. (P3) Test gap at `post_broadcast_msg_fn_threw` callArgs.cause assertion.** `backend/tests/lib/broadcast-error.test.ts:667`. The fixture for the `msg_fn_threw` branch includes `cause: 'caller-override-cause'` (the same adversarial value used at `:591`) but the `callArgs` cast at `:667` is `{ err, txId, failedStep }` — `cause` is never asserted. Round-4's centralized destructure was supposed to inherit-protect every spread site; the test canary only pins one of them. A regression that reverted only the warn-site spread back to `...opts.logContext` while leaving the error-site sanitized leaves `callArgs.cause === 'caller-override-cause'` here with no failing test.
+
+Fix shape: widen the cast and add the assertion:
+```ts
+const callArgs = warnSpy.mock.calls[0][1] as { err: ...; txId: ...; failedStep: ...; cause?: unknown };
+expect(callArgs.cause).toBeUndefined();
+```
+
+Reviewer attribution: testing (low conf 75, single-reviewer; load-bearing because the parallel finding "type-level destructure enforcement" was dismissed at this triage — runtime canary is the only protection).
+
+**7. (P3) No code-comment pin against future async-refactor of `validateConfig`/`createApp` escaping the boot try/catch.** `backend/src/index.ts:59-72`. The boot try/catch shape works because both calls are synchronous and at module-evaluation scope. A future refactor moving `validateConfig` inside `initAppDb().then(() => ...)` (e.g. "consolidate boot checks") routes BootFatalError into the wrong catch (`initAppDb().catch(...)` at `:132-138`, logged as `'Failed to initialize app database'`).
+
+Fix shape: add a short comment immediately above the try block:
+
+```ts
+// CONSTRAINT: validateConfig and createApp MUST remain synchronous and at
+// module-evaluation scope. Introducing await or moving these into a .then
+// chain would route BootFatalError to the wrong handler.
+try {
+  // ...
+}
+```
+
+No code change. Future-developer signal.
+
+Reviewer attribution: adversarial (P3 conf 75, single-reviewer).
+
+### Items dismissed during architect triage
+
+- **(P2) Function-entry destructure pattern in `broadcast-error.ts` lacks type-level enforcement** (`broadcast-error.ts:184`). Single-reviewer maintainability (conf 75); cascade risk on shared `LogContext` type if hardened. Runtime strip + canary (now strengthened by item 6) is sufficient.
+- **(P3) `flushAndExit` happy-path test cannot detect dropped `.unref()`** (`flush-and-exit.test.ts:92-122`). Single-reviewer adversarial (conf 75); on a boot-fatal path the process exits within 2s regardless. Wall-clock difference between "exits at flush-cb fire" and "exits at 2s watchdog" is operationally invisible.
+- **(P3) Concurrent `flushAndExit` invocations stack independent timers + closures** (`flush-and-exit.ts:31-38`). Single-reviewer adversarial (conf 75); production-benign (`process.exit` is idempotent). Item 5 closes the dominant concurrent-invocation source (the boot-throw → uncaughtException re-entry chain).
+- **(P4) `instanceof BootFatalError` convention pin against future name-based-detection refactor** (`index.ts:63-66`). Single-reviewer adversarial (conf 75); P4; defends against a refactor that has no concrete proposal. Item 5's simplification reduces the surface anyway.
+
+### Items suppressed at the confidence gate (single-reviewer < 75)
+
+- adversarial: synchronous `logger.flush` throw clobbers BootFatalError (conf 50); destructure on hostile-getter `cause` (conf 50); log ordering on stdout (conf 50); MaxDepthExceeded sentinel loses parent context (conf 50)
+- kieran-typescript: `flushAndExit` no logger param (conf 50); `cause?: never` constraint alternative (conf 55); test type-bypass cast self-documentation (conf 45)
+- testing: `redactPlainObject` RELAXED_EXTRA_FIELDS branch untested (conf 70)
+
+### Architect followups carried forward (still applies at round-5 archive)
+
+All round-3 + round-4 [TODO Architect] markers carry forward unchanged. NEW additions at this round:
+
+- **NEW at this hold:** filed `agents/docs/tasks/pending/backend-flush-and-exit-auth-converge.md` at this re-review pass — backend migrates `routes/auth.ts:175-193` to import `flushAndExit`, eliminating the two-maintenance-sites residual reliability flagged at round-4. No dependency on round-5 closing first; can land independently.
+- **CARRIED:** Convention doc updates (`pino-err-serializer-redact-policy-2026-05-XX.md`, `pino-spy-serializer-ordering-trap-2026-05-06.md` supersession, `pino-err-slot-sibling-bypass-redact-policy-2026-05-06.md` citation) land at archive after round-5 closes, not now.
+- **CARRIED:** Codebase-wide watch-list audit follow-up task to file at archive (per round-4 hold's NEW#3).
+- **CARRIED:** `/ce-compound` candidates at archive: validate-once-and-cache-secret, flushAndExit watchdog pattern, recursive-serializer-with-depth-guard, boot-fatal-call-stack-unwind-via-subclassed-throw.
+
+### Re-review signal
+
+When round-5 items 1-7 land in a single commit, `git mv` this file back to `tasks/review/`. Architect's next pass scopes `/ce-code-review` to the round-5 commit only. Expected diff: ~10 LOC in `logger.ts` (errors[] map + array-cause recursion + comment edit), ~10 LOC in `index.ts` (drop re-throw + `app` narrowing + sync-scope comment), ~5 LOC in `flush-and-exit.ts` (docblock rewrite only), ~30 LOC in `tests/startup-checks.test.ts` (validateConfig + initBridgePostingKeyCache throw specs), ~5 LOC in `tests/lib/logger-redact.test.ts` (errors[] + array-cause canaries), ~3 LOC in `tests/lib/broadcast-error.test.ts:667` (cause assertion).
