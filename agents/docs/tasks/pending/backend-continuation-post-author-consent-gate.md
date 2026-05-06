@@ -578,3 +578,95 @@ Both reverts surfaced clean failures; production fix restored after attestation.
 - Round-5 closes both items at the per-version display call site (`papers.ts:685-687` → `papers.ts:682-720`).
 - Architect followups (round-1 + round-2 + round-3 + round-4) carry forward unchanged at archive; A8 expansion fires at archive per round-5 hold-block guidance.
 - The existing round-4 canaries' assertion updates are NOT a regression of round-4 — they reflect the round-5 semantic shift from item 1's value-validity discriminator to item 2's key-presence discriminator. Documented above to pre-empt review confusion.
+
+---
+
+## Architect re-review (2026-05-06, round-5 → round-6) — HELD PENDING FIXES
+
+`/ce-code-review` on commit `9865a52` (round-5) dispatched 7 reviewers (correctness, testing, maintainability, project-standards, reliability, kieran-typescript, ce-learnings-researcher). Atomic-triple invariant + sentinel-aware `'in'` check land cleanly — both round-4 hold items closed at the call site. Mutation-kill attestation (per-field-fallback revert + non-null-check revert) verified.
+
+Three items held for round-6. One P3 nit dismissed at triage. No P0/P1 findings.
+
+### Item 1 (P2) — `pevoString` JSDoc still documents the superseded `??` per-field pattern
+
+**Location:** `backend/src/helpers.ts:151-156` (the JSDoc on the round-4-introduced `pevoString` helper).
+
+**Cross-reviewer corroboration:** maintainability M1 + reliability RR2 (independent flags, anchor 75 → 100 by promotion).
+
+**Issue:** the JSDoc usage example reads literally `detail.ipfs_cid = pevoString(headPevo, 'ipfs_cid') ?? pevoString(rootPevo, 'ipfs_cid')` — the exact Frankenstein anti-pattern round-5 was written to prevent. The "fallback semantics" sentences ("Empty-string head values fall back to root..." / "null/undefined/missing on head also fall back") are also stale: round-5's sentinel-aware atomic block means `pevoString` no longer drives head-vs-root selection at the IPFS-triple site at all.
+
+**What's needed:** rewrite the JSDoc usage example to show the round-5 shape — the `headHasAnyTripleKey` sentinel + atomic if/else — or, if the helper is now mostly used at non-triple sites where the per-field collapse semantic still applies, replace the IPFS-triple example with a non-triple example (e.g., a single field where head-wins-or-root-fallback IS the right pattern). Update the fallback-semantics paragraph to clarify that `pevoString` narrows non-strings to null but does NOT itself drive head-vs-root selection at the atomic-triple site (the `'in'` sentinel does).
+
+**Why it matters:** the helper's JSDoc is the discoverable contract. A future contributor adding a new head-wins field will copy the JSDoc example verbatim and reproduce the bug round-5 just removed.
+
+### Item 2 (P3) — Block comment cites a `is_diffable` consumer that does not exist
+
+**Location:** `backend/src/routes/papers.ts:701-703` (the "Why sentinel-aware" comment paragraph in the round-5 atomic block).
+
+**Cross-reviewer corroboration:** correctness C1 + reliability residual-risk (independent flags, both confidence 100).
+
+**Issue:** the comment claims:
+> `is_diffable` toggles to "inline" when ipfs_cid is null. Distinguishing "head cleared" (key present, value null) from "head omitted" (key absent) is the signal that drives that toggle correctly.
+
+`is_diffable` does not exist anywhere in `backend/` or `frontend/`. The round-4 → round-5 hold-block also referenced a non-existent `version-diff.js:36 is_diffable`. The motivating consumer for item 2's behavioral distinction (head-cleared vs head-omitted) is aspirational, not real.
+
+**What's needed:**
+1. Reframe the comment to describe the *abstract* semantic ("distinguishing 'head explicitly cleared' from 'head omitted' lets a future per-version display surface read 'no PDF for this version' from the chain truthfully") without asserting a specific consumer that hasn't landed.
+2. **Open question for backend:** is item 2's behavioral distinction (key-presence-aware fallback) actually load-bearing today, or was it preemptive future-proofing? If preemptive: the round-5 code stays (correct under either consumer), and only the comment changes. If load-bearing: identify the consumer (or the planned consumer) and cite it precisely. If neither exists today AND no concrete consumer is planned within the next few sprints, note that observation in the round-6 re-review signal — it will inform the architect's archive followup on whether item 2 was over-specified at the spec side.
+
+**Why it matters:** the same class as item 1 — comments asserting consumers that don't exist create latent contract assumptions. A future implementer adding `is_diffable` to the response and deriving it from `rootPevo` (bypassing the head-wins block) silently re-introduces the bug-class round-5 was supposed to prevent. The reframe also tightens the architect's own self-discipline against citing non-existent consumers in spec text.
+
+### Item 3 (P3) — OR-arm deletion in `headHasAnyTripleKey` predicate is undetected by any canary
+
+**Location:** `backend/tests/routes/continuation-author-gate.test.ts` (the round-5 canary set).
+
+**Cross-reviewer corroboration:** testing T1 + kieran-typescript TG-01 (independent flags, anchor 80 → 100 by promotion).
+
+**Issue:** the predicate at `papers.ts:705-708` is `'ipfs_cid' in headPevo || 'ipfs_filename' in headPevo || 'document_hash' in headPevo`. Every "head wins" canary in the suite (Frankenstein, atomic-mixed-validity, inline-only-continuation, the 3 reframed round-4 canaries) sets `ipfs_cid` as a present key. So a mutation that deletes `'ipfs_filename' in headPevo` or `'document_hash' in headPevo` from the OR — or collapses the predicate to just `'ipfs_cid' in headPevo` — leaves all 7 canaries green. `ipfs_cid` alone satisfies the predicate in every test input.
+
+The mutation-kill attestation in the round-5 re-review signal block is valid for the two attested reverts (per-field-fallback + non-null-check) but doesn't cover the OR-arm-deletion class, which is the only mutation class the suite cannot kill.
+
+**What's needed:** add **2 canaries** to `continuation-author-gate.test.ts`:
+
+1. **`document_hash`-only on head:** head's `pevo.json_metadata` expresses ONLY `document_hash` (no `ipfs_cid`, no `ipfs_filename`). Root has the full triple. Expected response under round-5: `{ipfs_cid: null, ipfs_filename: null, document_hash: '<head-only-hash>'}` (head wins, the two absent-on-head fields collapse to null via `pevoString`). Under OR-arm-deletion mutant that drops `'document_hash' in headPevo`: the predicate is false → root branch fires → `document_hash` surfaces as root's value, not the head-only value. Canary fails, killing the mutation.
+2. **`ipfs_filename`-only on head:** symmetric shape, expressing ONLY `ipfs_filename`. Kills the mutation that drops `'ipfs_filename' in headPevo`.
+
+(One canary covering only-`document_hash` plus only-`ipfs_filename` in a parametrized loop is acceptable if it preserves clarity; two separate canaries are also fine.)
+
+**Mutation-kill attestation expectation for round-6:** revert each OR arm individually, run the suite, confirm one of the new canaries fails for each revert, restore. Document the revert evidence in the round-6 re-review signal block alongside the existing two reverts.
+
+**Why it matters:** the cumulative-union task (`backend-multi-author-cumulative-union.md`, currently blocked on this task's archive) supersedes the multi-author logic at this surface but **does not change the IPFS-triple atomic block** — the `headHasAnyTripleKey` predicate carries forward unchanged. Closing the OR-arm gap now means cumulative-union inherits a tight canary set; deferring means the gap re-emerges in cumulative-union's canary rewrite.
+
+### Dismissed at triage
+
+- **(P3, conf 75) "Frankenstein composition" label is informal jargon without inline definition** at `papers.ts:691` (maintainability M2). Accepted at triage: the parenthetical example "(e.g. head's CID + root's filename + root's hash) where the displayed triple never existed on chain in any single version" carries definitional weight, and the term is owned by `agents/docs/solutions/architecture-patterns/pevo-cohering-field-triple-atomic-fallback-2026-05-05.md` (surfaced by the learnings researcher). No round-6 action.
+
+### Soft buckets surfaced (not held)
+
+- **Residual risk:** 7 atomic-triple canaries share ~105 lines of identical `installResponder` boilerplate (maintainability M3, conf 50, demoted). Test-helper extraction is reasonable but not blocking; would naturally land alongside the cumulative-union canary rewrite.
+- **Residual risk:** test descriptions like `(round-5 atomic-triple)` couple test names to review-cycle archaeology rather than behavior. Cosmetic; not held.
+- **Testing gap:** the Frankenstein canary's mutation-kill comment names only `document_hash` as the kill field, but `ipfs_filename: 0` in the same fixture is also a kill field. Documentation accuracy only; not held.
+
+### Pre-existing not in scope
+
+- `detail.ipfs_cid` receiver is typed `unknown` (inferred from `buildPaperDetail` literal) — no tsc validation of the 6 atomic-block assignments (kieran-typescript KT-01). Would be addressed by extracting a `PaperDetail` interface; out of scope for this task.
+- `parseMeta` cast at `helpers.ts:33` (kieran-typescript KT-03). Contained by `safePevoMeta`'s `typeof === 'object'` guard.
+
+### Round-6 scope
+
+Three items, all in this task's existing surface:
+- `backend/src/helpers.ts` — JSDoc rewrite (~5-10 lines).
+- `backend/src/routes/papers.ts` — comment reframe at lines 701-703 (~3-5 lines).
+- `backend/tests/routes/continuation-author-gate.test.ts` — 1-2 new canaries + mutation-kill attestation in re-review signal (~60-100 lines).
+
+Expected diff: small. Bundle into a single commit. Re-review scope at round-6 close = commits since this hold block.
+
+When round-6 lands, `git mv` this file back to `tasks/review/`.
+
+### Coordination
+
+This task remains the keystone for two `[BLOCKED by Architect]` tasks:
+- `tasks/blocked/backend-broadcast-idempotency-cluster-followup.md` (P1)
+- `tasks/blocked/backend-multi-author-cumulative-union.md` (P1, supersedes round-3 no-shrink rule)
+
+Both unblock at this task's eventual archive (round-6 clean or beyond).
