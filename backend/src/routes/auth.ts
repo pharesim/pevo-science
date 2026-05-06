@@ -11,6 +11,7 @@ import { isInstitutionalEmail } from '../email-validator.js';
 import { getAppPool } from '../app-db.js';
 import { getRedis, isRedisAvailable } from '../redis.js';
 import { logger } from '../logger.js';
+import { flushAndExit } from '../lib/flush-and-exit.js';
 import { decryptKey } from '../custody-crypto.js';
 import { isPasswordValid, PASSWORD_POLICY_MESSAGE } from '../lib/password-policy.js';
 import { ARGON2_OPTIONS } from '../lib/argon2-options.js';
@@ -172,25 +173,12 @@ SENTINEL_ARGON2_HASH_PROMISE.catch((err) => {
     { event: 'auth.startup.sentinel_hash_failed', route: 'auth.startup', err },
     'SENTINEL_ARGON2_HASH_PROMISE rejected at startup — timing-equalization oracle would be silently open; exiting',
   );
-  // Drain the pino transport worker before exit; in dev the transport runs in
-  // a worker thread and a bare process.exit() can lose the final log line.
-  // pino's thread-stream.flush(cb) uses timeout=Infinity, so a deadlocked
-  // worker (same OOM conditions that killed argon2 at startup) would hang the
-  // flush callback forever, leaving the process alive with a permanently-
-  // rejected sentinel and a silently-open timing oracle that no supervisor
-  // can restart. Guard with a 2s timeout fallback so the supervisor always
-  // gets a clean exit.
-  const t = setTimeout(() => process.exit(1), 2000);
-  t.unref();
-  if (typeof logger.flush === 'function') {
-    logger.flush(() => {
-      clearTimeout(t);
-      process.exit(1);
-    });
-  } else {
-    // no flush callback pending; exit directly
-    process.exit(1);
-  }
+  // Drain the pino transport worker before exit via the shared boot-fatal
+  // helper. The helper's 2s watchdog covers the same hang risk this site's
+  // inline copy used to guard against (deadlocked transport worker under
+  // the OOM conditions that killed argon2 at startup). See
+  // `src/lib/flush-and-exit.ts` for the full rationale.
+  flushAndExit();
 });
 
 // Burn one argon2.verify cycle against the pre-computed sentinel to equalize

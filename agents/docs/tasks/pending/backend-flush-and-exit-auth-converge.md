@@ -34,3 +34,17 @@ Eliminate the duplicate inline implementation at `routes/auth.ts:175-193` by imp
 
 - The dismissed-at-round-4-review concurrent-`flushAndExit` timer-stacking. If a module-level `alreadyExiting` guard ends up making sense while in `flush-and-exit.ts`, that's a defensible scope expansion; otherwise leave it.
 - Refactoring `auth.ts` shutdown semantics beyond the flush+exit block. Stay scoped to `:175-193`.
+
+## Backend completion signal (2026-05-06, commit 2170425 on worktree-agent-ac6cce86ab83fb8e8)
+
+**Diff stats:** `backend/src/routes/auth.ts | 26 +++++++-------------------` → `1 file changed, 7 insertions(+), 19 deletions(-)`. Net `-12 LOC`. The +7 is 1 line of import (`import { flushAndExit } from '../lib/flush-and-exit.js';`) plus a 6-line comment block that points the reader at `src/lib/flush-and-exit.ts` for the rationale. The -19 is the inline `setTimeout`/`logger.flush` block at the original `:175-193` and its 8-line preamble comment. Acceptance #4 cited "roughly `-15 LOC, +1 LOC`"; actual `-19/+7` is within that envelope (the +7 keeps a callsite-local breadcrumb comment rather than a bare 1-liner; same shape, slightly more in-place context).
+
+**Verification gates:**
+- `npx tsc --noEmit` from `backend/`: clean (zero output, exit 0).
+- `npm run lint` from `backend/`: clean for changed file. Two pre-existing warnings on `seed-phrase.ts:26-27` (`@typescript-eslint/no-explicit-any`) remain, called out as out of scope in the dispatch.
+- `npx vitest run tests/routes/auth.test.ts tests/lib/flush-and-exit.test.ts`: 2 files passed, 22 passed / 1 skipped / 0 failed in 38.88s. The skipped test is pre-existing (`flush-and-exit.test.ts` skips the real-flush integration assertion per the test-mock carve-out); not introduced by this change.
+- Two adjacent auth-route test files (`auth-signup-dup-saturated.test.ts`, `auth-signup-argon-error-translation.test.ts`) fail identically on the clean baseline (verified via `git stash` + re-run). Failures are pre-existing and unrelated to the `:175-193` swap; the parent agent's full-suite pass owns full-tree triage. Auth-related tests that DO run cleanly today (auth.test.ts, auth-log-shape, auth-concurrency, auth-argon-error-translation, auth-reset-request-shutdown, auth-smtp-transporter, flush-and-exit) all pass with this change.
+
+**Behavior delta confirmation (acceptance #2):** the `typeof logger.flush === 'function'` guard + bare-exit fallback are gone. A pino runtime that exposes no `flush` method would now hit the watchdog's 2s timeout before `process.exit(1)`, rather than exiting on the next tick. The auth.ts call site is the boot-fatal-equivalent shape (sentinel-hash rejection → process must die fast); the +2s upper bound on a corrupt-pino edge case is operationally equivalent to the old immediate-exit. Architect re-review is invited to confirm.
+
+**Deviations from acceptance:** none. Inline at `:175-193`, no scope creep into shutdown semantics or the dismissed timer-stacking guard.
