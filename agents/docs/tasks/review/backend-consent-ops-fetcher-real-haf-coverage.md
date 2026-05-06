@@ -101,3 +101,19 @@ The carve-out clause-c convention at `agents/docs/solutions/conventions/test-moc
 ### Verdict
 
 **Not ready to archive.** F1 alone blocks; F2/F3/F4/F5/F6 fold cleanly into the same revision pass. After fixes land, `git mv` back to `tasks/review/` and the architect re-reviews scoped to commits since this hold block.
+
+## Backend re-review signal (2026-05-06):
+
+Round-2 hold fixes landed in this commit. Resolution map:
+
+- **F1 → A3 (architect's lean).** Removed the third (`block_num >= $2 floor`) and fourth (`op_id non-numeric-typed string`) `it` blocks from `consent-ops-real-haf.test.ts`. Removed the test-local `CONSENT_OPS_SQL` constant and `ConsentOpRow` interface that only those blocks referenced. The remaining file exercises `fetchConsentOpsForPaper` directly through the production helper (no test-local SQL duplication).
+- **F2 → folded into F1.** Block 4 (which carried the placebo `typeof === 'string'` assertion) is gone.
+- **F3 → resolved.** Header rewritten. The "this file catches" list no longer claims `custom_id = $1` coverage. A new "Risk classes covered ELSEWHERE" section explicitly delegates SQL-string mutations (including `custom_id`, `block_num >= $2`, `cj.id::text`, `ORDER BY cj.id DESC`, `LIMIT 1000`) to the mocked sibling's `describe('fetchConsentOpsForPaper — SQL contract')` block.
+- **F4 → resolved (ORDER BY only).** Added `ORDER BY cj.block_num ASC, cj.id ASC` to the probe SQL for cross-run determinism. `beforeAll` hoist deferred per the architect's note that "if F1 lands as A3 ... only block 2 calls the probe and the cross-call inconsistency dissolves for free" — the probe is now called in exactly one surviving block.
+- **F5 → folded into F1.** The line-50/51 inline drift comment vanished with the `CONSENT_OPS_SQL` constant.
+- **F6 → resolved.** Replaced `expect(() => BigInt(op.opId)).not.toThrow()` with `expect(BigInt(op.opId)).toBeGreaterThanOrEqual(0n)`. Asserts parsability + non-negativity in a single diff-ready assertion.
+- **Convention surface (informational) → resolved.** Updated `backend/tests/consent-ops.test.ts:12-22` carve-out section to back-reference `backend/tests/consent-ops-real-haf.test.ts` per the convention template at `agents/docs/solutions/conventions/test-mock-carve-out-clause-c-2026-05-04.md`. The stale "Real-HAF coverage lands in round 2's integration tests" plan is replaced with explicit risk-class-equivalence wording naming the row-shape regression class as the real-path companion's coverage.
+
+**Verification:** `npx vitest run tests/consent-ops.test.ts tests/consent-ops-real-haf.test.ts` → 25 passed, 1 skipped (the surviving row-shape assertion skips per the no-fixture guard until UI affordances ship; auto-activates without test edits). Backend lint clean (only pre-existing `seed-phrase.ts` warnings unrelated to this task).
+
+Files changed: `backend/tests/consent-ops-real-haf.test.ts`, `backend/tests/consent-ops.test.ts`. No production code changed.

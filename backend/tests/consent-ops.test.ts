@@ -9,16 +9,33 @@
  *   2. `fetchConsentOpsForPaper` — SQL-shape verification via mocked
  *      `getPool()`.
  *
- * **Carve-out (per CLAUDE.md "Running Tests"):** the fetcher tests mock
- * `getPool()` because no `author_accept` / `author_resign` ops exist on the
- * real chain yet (the broadcast surface lands in round 3 of this task, the
- * UI surface in `ui-multi-author-consent-affordances`). Until either lands,
- * a real-HAF test would assert against an empty op set, which can't
- * distinguish "fetcher works correctly and the chain is empty" from
- * "fetcher SQL is broken." The mocked-pool variant pins the SQL contract.
- * `verifyHiveSignature` and other middleware are NOT mocked. Real-HAF
- * coverage lands in round 2's integration tests once the consent-ops
- * fetcher is exercised through `resolveContinuationChain`.
+ * **Carve-out (per CLAUDE.md "Running Tests" +
+ * `agents/docs/solutions/conventions/test-mock-carve-out-clause-c-2026-05-04.md`):**
+ * the `fetchConsentOpsForPaper` tests mock `getPool()` (a shared pool
+ * helper, in carve-out scope) so SQL-string regex assertions can pin
+ * the production query shape per-mutation. Real-HAF execution cannot
+ * distinguish single-namespace WHERE-clause mutations (e.g., dropping
+ * `cj.custom_id = $1`) from a working query while only one `appTag`
+ * namespace exists on chain. `verifyHiveSignature` and other
+ * auth/permission middleware are NOT mocked.
+ *
+ * Risk classes covered by THIS file:
+ *   - SQL-string shape: `cj.custom_id = $1`, `cj.block_num >= $2`,
+ *     the action whitelist, root_author / root_permlink binding, the
+ *     `cj.id::text` projection, the `ORDER BY cj.id DESC` clause, and
+ *     the `LIMIT 1000` cap (see `describe('fetchConsentOpsForPaper —
+ *     SQL contract')`).
+ *   - Validity rules in `computeVouchedAuthors` (temporal-ordering,
+ *     signer-binding, same-block tie-break, resign supersession,
+ *     bridge-paper claimed-set membership).
+ *
+ * Real-path companion: `backend/tests/consent-ops-real-haf.test.ts`
+ * exercises `fetchConsentOpsForPaper` against the real HAF pool and
+ * covers the **row-shape regression** risk class (mutations that
+ * change projected columns, action whitelist values, or paper-identity
+ * filters such that the typed `ConsentOp` shape no longer matches what
+ * the SQL returns). Together the two files cover the integrated path
+ * per the carve-out convention's risk-class-equivalence rule.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';

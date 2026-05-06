@@ -1,41 +1,49 @@
 /**
  * Real-HAF coverage for `fetchConsentOpsForPaper` — closes carve-out
  * clause (c) for `backend/tests/consent-ops.test.ts` (mocked-pool unit
- * suite). See `agents/docs/tasks-archive.md` and the `Source` section of
- * the originating task `backend-consent-ops-fetcher-real-haf-coverage.md`
- * for the rationale.
+ * suite). See the originating task
+ * `backend-consent-ops-fetcher-real-haf-coverage.md` for rationale, and
+ * `agents/docs/solutions/conventions/test-mock-carve-out-clause-c-2026-05-04.md`
+ * for the convention this file's header template follows.
  *
- * Risk class under test: SQL-shape mutations at the fetcher (the
- * WHERE/SELECT/ORDER BY against `hafsql.operation_custom_json_view`).
- * The mocked-pool unit suite cannot catch a regression that, e.g.,
- *   - removes the `block_num >= $2` predicate, or
- *   - breaks the `cj.id::text AS op_id` projection that the same-block
- *     tie-break in `compareOpsDesc` depends on, or
- *   - drops the `custom_id = $1` appTag scope and leaks ops from other
- *     PEvO deployments.
- * A real-HAF execution catches every SQL syntax / column-name / operator
- * mutation that the mocked variant would let pass.
+ * Risk class covered by THIS file: row-shape regressions at the production
+ * fetcher. A mutation in `consent-ops.ts:103-126` that renames a SELECT
+ * projection (`signer` / `action` / `root_author` / `root_permlink` /
+ * `block_num` / `op_id`), changes the `IN ('author_accept', 'author_resign')`
+ * action whitelist values, or breaks the `root_author = $3` /
+ * `root_permlink = $4` filter so a known-positive paper no longer
+ * round-trips will fail the row-shape assertions in the second `it`
+ * block. The block exercises `fetchConsentOpsForPaper` directly — a
+ * regression that breaks the typed `ConsentOp` shape surfaces here.
+ *
+ * Risk classes covered ELSEWHERE (deliberate division of labor):
+ *   - SQL-string mutations (dropping `cj.custom_id = $1`,
+ *     `cj.block_num >= $2`, the `cj.id::text` projection, the
+ *     `ORDER BY cj.id DESC` clause, or the `LIMIT 1000` cap) are pinned
+ *     by SQL-string regex assertions in the mocked sibling
+ *     `backend/tests/consent-ops.test.ts` →
+ *     `describe('fetchConsentOpsForPaper — SQL contract')`. A real-HAF
+ *     test cannot distinguish these mutations from a working query
+ *     while only one `appTag` namespace exists on chain and the result
+ *     set fits below the LIMIT.
+ *   - Validity-rule mutations (temporal-ordering, signer-binding,
+ *     same-block tie-break, resign supersession, bridge-paper
+ *     claimed-set membership) are covered by the mocked sibling's
+ *     `computeVouchedAuthors` describe blocks against synthesized op
+ *     shapes.
  *
  * Skip-if-no-HAF guard mirrors `tests/hafsql.test.ts`: when
  * `isHafAvailable()` is false (no `HAF_DATABASE_URL`), every assertion
  * skips so CI environments without HAF stay green.
  *
- * Skip-if-no-fixture guard (per task option (a)): if the live HAF has no
- * `author_accept` / `author_resign` op in this `appTag` namespace yet
- * (broadcast surface lands with the round-3 SPA affordances in
- * `ui-multi-author-consent-affordances`), the row-shape assertions skip.
- * The empty-result and genesis-floor assertions still run — they don't
+ * Skip-if-no-fixture guard (per the originating task option (a)): if
+ * the live HAF has no `author_accept` / `author_resign` op in this
+ * `appTag` namespace yet (broadcast surface lands with the round-3 SPA
+ * affordances in `ui-multi-author-consent-affordances`), the row-shape
+ * assertion skips. The empty-result assertion still runs — it does not
  * depend on consent ops existing on chain. Once UI affordances ship and
- * real consent ops appear in `pevotest`, the row-shape assertions
- * activate automatically without test-file edits.
- *
- * The genesis-floor predicate is exercised against the SQL directly
- * (parameterized `$2` swap with a `Number.MAX_SAFE_INTEGER` floor)
- * because `fetchConsentOpsForPaper` reads the floor from
- * `getCachedGenesisBlock()` with no override hook. The duplicated SQL
- * here is a deliberate regression boundary: if the production SQL drifts
- * apart from what this test runs, the test still pins the SQL contract
- * the production fetcher MUST honor.
+ * real consent ops appear in `pevotest`, the row-shape assertion
+ * activates automatically without test-file edits.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -44,35 +52,6 @@ import { T, getCachedGenesisBlock } from '../src/hafsql.js';
 import { config } from '../src/config.js';
 import { fetchConsentOpsForPaper } from '../src/consent-ops.js';
 import { queryWithRetry } from './support/haf-query.js';
-
-// SQL identical in shape to `fetchConsentOpsForPaper`'s production SQL,
-// reused here so the floor-predicate test can swap `$2` independently of
-// `getCachedGenesisBlock()`. Keep aligned with `consent-ops.ts:70-84` —
-// the assertions below catch any drift.
-const CONSENT_OPS_SQL = `
-  SELECT
-    cj.required_posting_auths ->> 0 AS signer,
-    cj.json::jsonb ->> 'action' AS action,
-    cj.json::jsonb ->> 'root_author' AS root_author,
-    cj.json::jsonb ->> 'root_permlink' AS root_permlink,
-    cj.block_num AS block_num,
-    cj.id::text AS op_id
-  FROM ${T.customJson} cj
-  WHERE cj.custom_id = $1
-    AND cj.block_num >= $2
-    AND cj.json::jsonb ->> 'action' IN ('author_accept', 'author_resign')
-    AND cj.json::jsonb ->> 'root_author' = $3
-    AND cj.json::jsonb ->> 'root_permlink' = $4
-`;
-
-interface ConsentOpRow {
-  signer: string | null;
-  action: string | null;
-  root_author: string | null;
-  root_permlink: string | null;
-  block_num: number;
-  op_id: string;
-}
 
 /**
  * Probe HAF for any existing consent op in this appTag namespace. Returns
@@ -85,6 +64,8 @@ async function findKnownPaperWithConsentOps(): Promise<{
 } | null> {
   const pool = getPool();
   if (!pool) return null;
+  // ORDER BY pins the earliest consent op so the probe stays
+  // deterministic across runs as more ops accumulate on chain.
   const probeSql = `
     SELECT
       cj.json::jsonb ->> 'root_author' AS root_author,
@@ -93,6 +74,7 @@ async function findKnownPaperWithConsentOps(): Promise<{
     WHERE cj.custom_id = $1
       AND cj.block_num >= $2
       AND cj.json::jsonb ->> 'action' IN ('author_accept', 'author_resign')
+    ORDER BY cj.block_num ASC, cj.id ASC
     LIMIT 1
   `;
   try {
@@ -156,10 +138,12 @@ describe('fetchConsentOpsForPaper — real HAF SQL shape', () => {
       expect(ops.length).toBeGreaterThan(0);
 
       // op_id projection must round-trip through BigInt — this is the
-      // same-block tie-break primitive in compareOpsDesc.
+      // same-block tie-break primitive in compareOpsDesc. The
+      // `>= 0n` form asserts parsability AND non-negative shape with
+      // a single diff-ready failure message.
       for (const op of ops) {
         expect(op.opId).toMatch(/^\d+$/);
-        expect(() => BigInt(op.opId)).not.toThrow();
+        expect(BigInt(op.opId)).toBeGreaterThanOrEqual(0n);
         // Sanity: blockNum is a positive integer (block_num column).
         expect(Number.isInteger(op.blockNum)).toBe(true);
         expect(op.blockNum).toBeGreaterThan(0);
@@ -171,98 +155,6 @@ describe('fetchConsentOpsForPaper — real HAF SQL shape', () => {
         expect(op.rootPermlink).toBe(fixture.rootPermlink);
         // Signer is non-empty (required_posting_auths[0] projection).
         expect(op.signer.length).toBeGreaterThan(0);
-      }
-    },
-  );
-
-  it.skipIf(!isHafAvailable())(
-    'block_num >= $2 floor honors the genesis-floor argument',
-    { timeout: 60_000 },
-    async (ctx) => {
-      const pool = getPool();
-      if (!pool) {
-        ctx.skip('no pool available');
-        return;
-      }
-
-      const fixture = await findKnownPaperWithConsentOps();
-      if (!fixture) {
-        ctx.skip(
-          'HAF has no author_accept / author_resign ops yet — ' +
-            'floor-predicate test needs a positive baseline to assert ' +
-            'a high floor filters it out.',
-        );
-        return;
-      }
-
-      // Baseline: with the real cached genesis floor, the same fixture
-      // returns at least one row (proves the SQL works against this paper).
-      const baseline = await queryWithRetry<ConsentOpRow>(
-        pool,
-        CONSENT_OPS_SQL,
-        [
-          config.appTag,
-          getCachedGenesisBlock(),
-          fixture.rootAuthor,
-          fixture.rootPermlink,
-        ],
-      );
-      expect(baseline.rows.length).toBeGreaterThan(0);
-
-      // High floor: pass a block number above any realistic chain head.
-      // If the SQL still returns rows, the `block_num >= $2` predicate
-      // was dropped — exactly the regression this assertion guards.
-      const highFloor = Number.MAX_SAFE_INTEGER;
-      const filtered = await queryWithRetry<ConsentOpRow>(
-        pool,
-        CONSENT_OPS_SQL,
-        [config.appTag, highFloor, fixture.rootAuthor, fixture.rootPermlink],
-      );
-      expect(filtered.rows).toEqual([]);
-    },
-  );
-
-  it.skipIf(!isHafAvailable())(
-    'op_id is projected as a non-numeric-typed string at the SQL boundary',
-    { timeout: 60_000 },
-    async (ctx) => {
-      const pool = getPool();
-      if (!pool) {
-        ctx.skip('no pool available');
-        return;
-      }
-
-      const fixture = await findKnownPaperWithConsentOps();
-      if (!fixture) {
-        ctx.skip(
-          'HAF has no author_accept / author_resign ops yet — ' +
-            'op_id projection test needs a positive row to inspect.',
-        );
-        return;
-      }
-
-      // Direct SQL inspection: pg's default mapping for `bigint` is
-      // string (because the value can exceed Number.MAX_SAFE_INTEGER).
-      // The fetcher relies on this — `String(row.op_id)` and
-      // `BigInt(op.opId)` both depend on the column being projected as
-      // text. A regression that drops the `::text` cast on `cj.id`
-      // would still type-roundtrip via String(), but losing precision —
-      // this assertion guards that the projection stays string-typed.
-      const result = await queryWithRetry<ConsentOpRow>(
-        pool,
-        CONSENT_OPS_SQL,
-        [
-          config.appTag,
-          getCachedGenesisBlock(),
-          fixture.rootAuthor,
-          fixture.rootPermlink,
-        ],
-      );
-      expect(result.rows.length).toBeGreaterThan(0);
-      for (const row of result.rows) {
-        expect(typeof row.op_id).toBe('string');
-        expect(row.op_id).toMatch(/^\d+$/);
-        expect(() => BigInt(row.op_id)).not.toThrow();
       }
     },
   );
