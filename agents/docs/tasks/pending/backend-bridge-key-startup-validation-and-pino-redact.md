@@ -317,3 +317,108 @@ Each new canary was verified red against a stripped-down code change. The baseli
 1. Convention doc `agents/docs/solutions/conventions/pino-err-serializer-redact-policy-2026-05-XX.md` — see wave-1 signal block for required content. The round-3 diff adds new material (depth guard, try/catch fallback, structured `BridgeKeyCacheUnpopulated` error class, explicit `LogFn` overload preservation) that should be folded into the convention doc at architect's archive pass.
 2. δ test transition confirmation — verify `accreditation.test.ts` "no raw token leak" specs at `:332` and `:765` still pass. Confirmed in this round's targeted run via `-t "no raw token leak"`: 2 passed.
 3. No API contract update required — confirmed; this round's diff is internal-only (logger wrapper + bridge-key accessor). Operators see the same JSON envelope shapes; only err-payload internals change.
+
+---
+
+## Architect re-review (2026-05-06, round-3 → round-4) — HELD PENDING FIXES
+
+`/ce-code-review` ran on commit `1a7a3bb` with 10 reviewer personas (correctness, testing, maintainability, project-standards, security, reliability, adversarial, kieran-typescript, performance, ce-learnings-researcher; `ce-agent-native-reviewer` skipped per project CLAUDE.md). After triage: **3 hold items** below, 1 dismissed (dev-only `uncaughtException`-from-pino-worker fallback; pre-existing-equivalent), 4 P3 single-reviewer findings suppressed at the confidence gate.
+
+The round-3 wave-2 implementation closes 11 of 11 prior hold items as the signal block claims. Re-review surfaced one P1 regression directly introduced by hold item #2 (boot-fatal flush refactor), plus two P2 redact-policy completeness gaps.
+
+### Items to address (all bundle into one round-4 commit)
+
+**1. (P1) `logger.flush(() => process.exit(1))` lacks watchdog timeout AND boot continues during the async window.** Affects 5 sites:
+
+- `backend/src/index.ts:32-37` (uncaughtException handler)
+- `backend/src/index.ts:38-41` (unhandledRejection handler)
+- `backend/src/index.ts:108-113` (initAppDb catch)
+- `backend/src/startup-checks.ts:163-166` (validateConfig missing-required path)
+- `backend/src/startup-checks.ts:228-235` (initBridgePostingKeyCache parse-divergence)
+
+Two distinct defects co-located:
+
+(a) **Hung-flush hangs the process.** Pino's `flush(cb)` (sonic-boom in prod, thread-stream in dev) has no built-in timeout. Back-pressured stdout, wedged worker thread, or any condition that prevents drain leaves `cb` un-fired and `process.exit(1)` never reached. The proven pattern at `backend/src/routes/auth.ts:175-193` uses `flush + setTimeout(2000) watchdog`; round-3 hold #2 did not mirror it.
+
+(b) **Async window allows boot to continue.** `validateConfig()` and `initBridgePostingKeyCache()` return SYNCHRONOUSLY to `backend/src/index.ts:43` while flush is pending. `createApp()` runs, `initAppDb()` runs (database migrations execute on a fatal-misconfigured boot), `app.listen()` may bind. Server briefly serves requests until eventual flush drains.
+
+PEvO is single-instance; either failure mode is full availability outage with zero operator visibility (no fatal log on the wire OR migrations applied on misconfigured boot).
+
+Fix shape:
+
+```ts
+// Watchdog: ensures exit even if flush callback never fires
+const exitTimer = setTimeout(() => process.exit(1), 2000);
+exitTimer.unref();
+logger.flush(() => {
+  clearTimeout(exitTimer);
+  process.exit(1);
+});
+```
+
+For the `validateConfig` and `initBridgePostingKeyCache` paths: instead of returning, **throw** after `logger.fatal(...)` so the call stack unwinds and `createApp()`/`initAppDb()` never run. Catch at the outermost `index.ts` boot path → final `logger.fatal` + watchdog-flush-exit.
+
+Verification canary: mock `logger.flush` to never invoke its callback; assert `process.exit(1)` is still reached via the watchdog (mock `process.exit` to throw a sentinel; assert the throw fires within ~2.1s).
+
+Reviewer attribution: correctness P1 conf 75 + security P0 conf 50 + adversarial high conf 75 ×2 sites + reliability P1 conf 75 → cross-reviewer promotion to anchor 100, severity P1 (security's P0-via-WIF-leak chain is mitigated by the redactor itself; the direct defect is the broken boot-fatal contract).
+
+**2. (P2) Plain-object cause leaks via `redactErrSerializer` recursion.** `backend/src/logger.ts:169` (the recursion site). The function entry has an `isErrorLike` short-circuit that returns the input verbatim for non-Error inputs. A future `class WrappedErr extends Error { ... this.cause = leakyContext; }` (or any code that sets `cause` to a plain object carrying `command`/`actual`/`expected`/`info`) hits `isErrorLike(plainObj) === false` on the recursive call and returns it verbatim, bypassing the field allowlist. The convention `agents/docs/solutions/conventions/pino-err-slot-sibling-bypass-redact-policy-2026-05-06.md` describes this class of bypass at the sibling layer; the same logic applies at the recursive cause layer.
+
+Fix shape:
+
+```ts
+// in redactErrSerializer's cause-recursion site (~:169)
+if (errAny.cause !== undefined) {
+  out.cause = isErrorLike(errAny.cause)
+    ? redactErrSerializer(errAny.cause, depth + 1)
+    : redactPlainObject(errAny.cause, depth + 1); // new helper: SAFE_BASELINE_FIELDS allowlist + depth guard, no isErrorLike short-circuit
+}
+```
+
+Add a canary in `backend/tests/lib/logger-redact.test.ts` exercising `Object.assign(new Error('outer'), { cause: { command: { args: ['raw-token'] } } })` and asserting `out.cause.command` is absent.
+
+Reviewer attribution: adversarial single, conf 75 (above gate).
+
+**3. (P2) Sibling-cause drop completeness gap.** Round-3 hold #1 closed `backend/src/lib/broadcast-error.ts:270`. But:
+
+(a) The spread of caller-supplied `opts.logContext` at `backend/src/lib/broadcast-error.ts:253` has no symmetric `cause: undefined` strip. A future caller adding `cause` to its `logContext` (intentionally or by mistake) lands a top-level sibling on the log object, outside both the wrapper layer's `redactErrInArg` (only redacts `arg.err`) and pino's `serializers.err` (only fires on `err`-keyed slots).
+
+(b) The companion adversarial test fixture in `backend/tests/lib/broadcast-error.test.ts:591` previously included `cause: 'caller-override-cause'` to pin that this caller-shape doesn't leak. Round-3 REMOVED the fixture rather than updating the assertion; regression coverage for caller-supplied cause-sibling is gone.
+
+Fix:
+- Re-add the `cause: 'caller-override-cause'` fixture to the test at `broadcast-error.test.ts:591` and assert `expect(captured.cause).toBeUndefined()`. Pins the negative invariant the round-3 fix is supposed to guarantee.
+- At the spread site at `broadcast-error.ts:253`: `const { cause: _ignored, ...sanitizedLogContext } = opts.logContext ?? {};` so caller-supplied `cause` is always dropped before the spread.
+
+Reviewer attribution: adversarial single, conf 75 (above gate).
+
+### Items dismissed during architect triage
+
+- **(P2) uncaughtException originating from pino worker thread loses fatal log line (dev only).** `backend/src/index.ts:32-35`. Production uses sonic-boom direct (no worker thread); the dev-thread-stream-worker case is the source of this risk. Pre-existing-equivalent: round-3 didn't introduce or worsen it. Reliability single, conf 75. The one-line `console.error(err)` fallback fix is trivial but adds clutter to the uncaughtException handler for a developer-only case already debuggable through other means. Skip.
+
+### Items suppressed at the confidence gate (single-reviewer < 75)
+
+- adversarial: `safeRedactErr`'s `String(serializerErr.message ?? serializerErr)` can itself throw on hostile `Symbol.toPrimitive` (defensive depth)
+- correctness: uncaughtException re-entrance during pending flush (benign noise; first process.exit wins)
+- reliability: `MAX_CAUSE_DEPTH=10` not configurable via env-var
+- kieran-typescript: `redactErrSerializer` return type collapses to `unknown` (round-3 didn't add `MaxDepthExceeded` / `RedactSerializerFailed` sentinels to the union); `(depth: number = 0)` exposes recursion bookkeeping on public signature
+
+### Pre-existing items surfaced (NOT round-4 scope; tracked here for future triage)
+
+- **`MAX_CAUSE_DEPTH=10` per-branch AggregateError fanout DoS surface.** A tree with 10-fanout at every level expands ~10^10 calls before bailing. PEvO is single-instance ⇒ DoS in scope. Narrow attack realism (need attacker-controllable AggregateError shape reaching a logger call). NOT actioned now; if a concrete reachability path emerges, file `backend-redact-errors-array-cap.md`.
+
+### Architect followups carried forward (still applies at round-4 archive)
+
+- Wave-1 [TODO Architect] markers (convention doc `pino-err-serializer-redact-policy-2026-05-XX.md`, δ test transition confirmation, no-API-contract-update confirmation) carry forward unchanged.
+- **NEW at this hold:** the architect MUST cite `agents/docs/solutions/conventions/pino-err-slot-sibling-bypass-redact-policy-2026-05-06.md` in the eventual archive entry. It explicitly names `broadcast-error.ts:270` as the violating site this task closes (omitted from the round-3 hold block).
+- **NEW at this hold:** when archiving, update `agents/docs/solutions/conventions/pino-spy-serializer-ordering-trap-2026-05-06.md` to remove the superseded `Parameters<typeof baseLogger.warn>` example pattern (lines ~65-72/151-154); round-3 item 5 supersedes it with the `LogFn` factory.
+- **NEW at this hold:** at archive, file the codebase-wide watch-list audit follow-up task using `pino-err-slot-sibling-bypass-redact-policy-2026-05-06.md`'s watch list (`originalError`, `wrappedError`, `postErr`, `innerError`, `rootCause`, `nestedError`, `sourceError`) plus `cause`. Scope: scan all `{err, ...}` log-call sites for sibling shapes that bypass redact; either strip them at the call site or add a project-wide structural guard.
+
+### `/ce-compound` candidates at archive (per memory: invoke skill, do NOT hand-write)
+
+1. "Validate-once-and-cache-secret pattern" (architect's earlier hold flagged as candidate; round-3 fully instantiates: module-scope cache + `BridgeKeyCacheUnpopulated` Error subclass + `getRequiredBridgePostingKey` accessor + boot-fatal cache-population path).
+2. "Boot-fatal `logger.flush() + setTimeout watchdog` async-transport-drain pattern" — combine with round-4's resolution of finding 1.
+3. "Defensive recursive serializer with depth/cycle guard + discriminated sentinel + try/catch fallback" — fold round-3 items 3+4 + round-4's plain-object-cause fix into a single entry.
+
+### Re-review signal
+
+When round-4 items 1-3 land in a single commit, `git mv` this file back to `tasks/review/`. Architect's next pass scopes `/ce-code-review` to the round-4 commit only (not the whole task history). Expected diff: ~30 LOC across `index.ts`/`startup-checks.ts` (watchdog + sync-throw boot semantics), ~10 LOC in `logger.ts` (plain-object cause helper), ~5 LOC in `broadcast-error.ts` (sanitized logContext spread), plus ~50 LOC of new canaries (watchdog mutation-kill, plain-object-cause, re-added cause-sibling fixture).
