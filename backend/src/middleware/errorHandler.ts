@@ -1,5 +1,6 @@
 import type { Request, Response, NextFunction } from 'express';
 import { logger } from '../logger.js';
+import { sendError } from '../response.js';
 
 export function errorHandler(
   err: Error,
@@ -8,8 +9,5 @@ export function errorHandler(
   _next: NextFunction,
 ) {
   logger.error({ err: { message: err.message, stack: err.stack } }, 'Unhandled error');
-  res.status(500).json({
-    status: 'error',
-    error: { code: 'INTERNAL_ERROR', message: 'Internal server error' },
-  });
+  sendError(res, 500, 'INTERNAL_ERROR', 'Internal server error');
 }

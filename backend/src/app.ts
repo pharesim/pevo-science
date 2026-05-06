@@ -13,6 +13,7 @@ import { extractAbstract, parseMeta, isPevoAnyPaper } from './helpers.js';
 import { paperDisciplineField } from './types/disciplines.js';
 import { validPevoPaperWhere } from './hafsql.js';
 import { errorHandler } from './middleware/errorHandler.js';
+import { sendError } from './response.js';
 import { httpLogger, requestContext } from './logger.js';
 import { rateLimit, byIp } from './middleware/rateLimit.js';
 import papersRouter from './routes/papers.js';
@@ -400,10 +401,7 @@ export function createApp() {
   // /api/* paths too, ensuring the contract envelope from
   // agents/docs/api-contracts/common.md holds for every method.
   app.use('/api', (_req, res) => {
-    res.status(404).json({
-      status: 'error',
-      error: { code: 'NOT_FOUND', message: 'Endpoint not found' },
-    });
+    sendError(res, 404, 'NOT_FOUND', 'Endpoint not found');
   });
 
   // SPA catch-all: serve index.html for any non-API GET request.

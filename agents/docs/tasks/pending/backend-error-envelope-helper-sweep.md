@@ -40,3 +40,28 @@ Both open-coded envelope sites use `sendError()`. The envelope shape lives in ex
 - Surfaced from architect review of `backend-api-fallthrough-json-404.md` (commit 8f2b94d), finding 1.
 - No dependency on the JSON-404 task's archive: these can land independently. (The JSON-404 task is currently in `tasks/pending/` for separate held items about test coverage.)
 - `agents/docs/api-contracts/common.md` does not change. The envelope shape on the wire is identical before and after this task.
+
+---
+
+## Backend re-review signal (2026-05-06)
+
+Both open-coded envelope sites migrated to `sendError()` from `backend/src/response.ts`:
+
+- **Acceptance 1 — `backend/src/app.ts`** — JSON 404 handler at the `/api` fallthrough now calls `sendError(res, 404, 'NOT_FOUND', 'Endpoint not found')`. Added `import { sendError } from './response.js';` next to the existing `errorHandler` import. The 3-line inline `res.status(404).json({ status: 'error', error: { code, message } })` block collapses to one line. Surrounding comment block (registration ordering rationale) is preserved verbatim.
+
+- **Acceptance 2 — `backend/src/middleware/errorHandler.ts`** — 4-arg Express error handler now calls `sendError(res, 500, 'INTERNAL_ERROR', 'Internal server error')`. Added `import { sendError } from '../response.js';`. Per task, the existing handler hard-coded the `INTERNAL_ERROR` / `Internal server error` constants regardless of the caught `err` (only `err.message` / `err.stack` flow into `logger.error`); I threaded those same constants through `sendError()` to preserve identical behavior. The `logger.error({ err: ... }, 'Unhandled error')` call is unchanged and still fires before the response.
+
+- **Acceptance 3 — Verify.**
+  - `cd backend && npx tsc --noEmit` — clean (no output).
+  - `cd backend && npm run lint` — 0 errors. Two pre-existing warnings in `src/seed-phrase.ts` (unrelated `no-explicit-any` warnings, untouched by this task).
+  - `npx vitest run tests/routes/app-not-found.test.ts` — 5/5 green (POST/GET/PUT/PATCH/DELETE on a non-existent `/api/*` path).
+  - `npx vitest run tests/response.test.ts` — 6/6 green (covers `sendError` + `sendOk` directly, including the 500/`INTERNAL_ERROR` envelope shape exercised by the migrated errorHandler).
+  - No errorHandler-specific test file exists in `backend/tests/`; the only `errorHandler` references in tests are documentation comments inside `accreditation.test.ts` (lines 374, 396, 899) referring to Express 5's async-error path, none of which assert on the envelope shape directly.
+
+- **Acceptance 4 — No new tests.** Envelope shape is pinned by `app-not-found.test.ts` (NOT_FOUND/404) and `response.test.ts` (canonical `sendError` shape including INTERNAL_ERROR/500). Existing route tests using `sendError()` cover the same wire shape across other error codes.
+
+- **Out-of-scope guards held.** No change to `code` or `message` strings on either site. No `details` arg added. HTTP status codes unchanged (404, 500). `sendError()` itself untouched.
+
+**Wire shape verification.** Pre-fix and post-fix both produce `{ status: 'error', error: { code, message } }` with no `details` key (omitted when undefined per `response.ts:38`), `Content-Type: application/json`, and the same HTTP status. The `sendError` helper adds one runtime safeguard not present in the inline form: a `headersSent` early return that warn-logs and skips the duplicate write. For the 4-arg errorHandler, this is strictly safer (a route that already responded then threw won't corrupt the stream); for the `/api` 404 fallthrough, `headersSent` is false in normal flow so behavior is identical.
+
+Worktree branch: `worktree-agent-a673241a5ea28b2e6`. Parent merges and moves this file `pending/` → `review/`.
