@@ -38,10 +38,12 @@ import { getPool } from './db.js';
 import { logger } from './logger.js';
 import { T, getCachedGenesisBlock } from './hafsql.js';
 
+export type ConsentAction = 'author_accept' | 'author_resign';
+
 export interface ConsentOp {
   /** required_posting_auths[0] — the implicit accepting/resigning author. */
   signer: string;
-  action: 'author_accept' | 'author_resign';
+  action: ConsentAction;
   rootAuthor: string;
   rootPermlink: string;
   blockNum: number;
@@ -53,12 +55,50 @@ export interface ConsentOp {
   opId: string;
 }
 
+/** Round-4 hold #8: type-guard for the `action` field on the SQL row.
+ *  The query's `IN ('author_accept', 'author_resign')` predicate filters
+ *  the result set, but TS sees no relationship between the predicate and
+ *  the row shape. If the SQL filter is ever relaxed or the view changes
+ *  shape, an unrecognized `action` string would silently propagate and
+ *  fall through `=== 'author_accept'` checks (treated as resign). The
+ *  guard centralizes the membership test. */
+function isConsentAction(value: unknown): value is ConsentAction {
+  return value === 'author_accept' || value === 'author_resign';
+}
+
+/** Round-4 hold #4: hard cap on the consent-op row set per paper. The
+ *  threat-model concern is `author_accept` / `author_resign` spam by a
+ *  malicious claimed co-author: Hive enforces account-level rate limits
+ *  but no per-paper cap, so an adversary can grow a paper's consent-op
+ *  history unbounded. With LIMIT applied + ORDER BY id DESC, the latest
+ *  ops are retained when the cap fires, which is the operationally
+ *  relevant slice (latest valid op wins per `computeVouchedAuthors`). The
+ *  threshold is sized for the cumulative-union task's expected chain
+ *  length (a multi-author paper with weekly version bumps over the
+ *  beta phase; well below 1000 in any plausible scenario). */
+const FETCH_CONSENT_OPS_LIMIT = 1000;
+
 /**
  * Fetch consent ops (`author_accept` / `author_resign`) for a paper from
  * HAF. Returns ops in arbitrary order; `computeVouchedAuthors` is
  * responsible for ordering. Returns `[]` if HAF is unavailable — callers
  * can safely compute the vouched-set from an empty op list (which yields
  * just the root broadcaster, matching ARCH.md rule 1).
+ *
+ * Round-4 hold #4: capped at `FETCH_CONSENT_OPS_LIMIT` rows per paper to
+ * bound memory + sort cost under spam. The `ORDER BY cj.id DESC` clause
+ * ensures the latest ops are retained when the cap fires (latest-op-wins
+ * is the only ordering `computeVouchedAuthors` cares about). When the cap
+ * is reached the helper currently does not surface a "more ops exist"
+ * signal to the caller; round-2 integration may want a warning event.
+ *
+ * Round-4 hold #16: this fetch runs against the HAF Pool which currently
+ * has no per-query `statement_timeout`. The follow-up task
+ * `architect-haf-unavailability-vouched-set-policy` handles policy for
+ * timeouts and HAF-unavailability at the integration site (round 2).
+ * Until then, slow HAF can hold the paper-detail thread for the duration
+ * of the upstream pool's connection-level timeout. The bounded LIMIT +
+ * ORDER BY means a worst-case scan is bounded by the cap.
  */
 export async function fetchConsentOpsForPaper(
   rootAuthor: string,
@@ -81,6 +121,8 @@ export async function fetchConsentOpsForPaper(
       AND cj.json::jsonb ->> 'action' IN ('author_accept', 'author_resign')
       AND cj.json::jsonb ->> 'root_author' = $3
       AND cj.json::jsonb ->> 'root_permlink' = $4
+    ORDER BY cj.id DESC
+    LIMIT ${FETCH_CONSENT_OPS_LIMIT}
   `;
   const params = [
     config.appTag,
@@ -91,14 +133,21 @@ export async function fetchConsentOpsForPaper(
 
   try {
     const result = await pool.query(sql, params);
-    return result.rows.map((row): ConsentOp => ({
-      signer: String(row.signer ?? '').trim().toLowerCase(),
-      action: row.action as 'author_accept' | 'author_resign',
-      rootAuthor: String(row.root_author ?? ''),
-      rootPermlink: String(row.root_permlink ?? ''),
-      blockNum: Number(row.block_num),
-      opId: String(row.op_id),
-    }));
+    return result.rows.flatMap((row): ConsentOp[] => {
+      // Defensive narrowing: even though the WHERE filter restricts the
+      // action to the two consent values, we re-validate at the row
+      // boundary so a future SQL change can't silently corrupt the
+      // typed result.
+      if (!isConsentAction(row.action)) return [];
+      return [{
+        signer: String(row.signer ?? '').trim().toLowerCase(),
+        action: row.action,
+        rootAuthor: String(row.root_author ?? ''),
+        rootPermlink: String(row.root_permlink ?? ''),
+        blockNum: Number(row.block_num),
+        opId: String(row.op_id),
+      }];
+    });
   } catch (err) {
     logger.error(
       {

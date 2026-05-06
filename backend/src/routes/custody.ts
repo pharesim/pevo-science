@@ -10,7 +10,7 @@ import { rateLimit, byAccount } from '../middleware/rateLimit.js';
 import { getAppPool } from '../app-db.js';
 import { broadcastSendOperationsWithTimeout, BroadcastTimeoutError } from '../hive.js';
 import { decryptKey } from '../custody-crypto.js';
-import { logCustodyBroadcast } from '../custody-audit.js';
+import { logCustodyBroadcast, type CustodyAuditExtras } from '../custody-audit.js';
 import { logger } from '../logger.js';
 import { runWithArgon2Slot } from '../lib/argon2-semaphore.js';
 import { handleArgonError, ARGON_HANDLED } from '../lib/argon2-error-handler.js';
@@ -49,30 +49,62 @@ function bearerSessionId(req: Request): string | null {
   return crypto.createHash('sha256').update(token).digest('hex').slice(0, 16);
 }
 
-/** Returns the consent-op action contained in the operations bundle, or
- *  `null` if no operation requires fresh-auth. We intentionally allow at
- *  most one consent-op per bundle: bundling consent ops with arbitrary
- *  other ops opens a substitution-attack vector where the auth ceremony
- *  is shown for one op while the wire payload signs another. */
-function findConsentOpAction(operations: unknown[]): string | null {
+/** Result discriminator for `findConsentOpsInBundle`. The single-consent rule
+ *  is structural: a bundle either contains zero consent ops (no fresh-auth
+ *  required), exactly one consent op (fresh-auth required for that op), or
+ *  more than one (rejected). */
+type ConsentOpScan =
+  | { kind: 'none' }
+  | { kind: 'single'; action: string }
+  | { kind: 'multiple' };
+
+/** Type guard: a Hive operation is a [type, params] tuple where params is a
+ *  non-null object. Replaces the round-3 `as { json?: unknown }` cast at
+ *  this site (round-4 hold #8). */
+function isOpTuple(op: unknown): op is [string, Record<string, unknown>] {
+  return (
+    Array.isArray(op) &&
+    op.length === 2 &&
+    typeof op[0] === 'string' &&
+    typeof op[1] === 'object' &&
+    op[1] !== null
+  );
+}
+
+/** Scan the operations bundle for consent ops (`author_accept` /
+ *  `author_resign`). Per round-4 hold #1, we explicitly reject bundles
+ *  containing more than one consent op: a single fresh-auth proof gates
+ *  the entire bundle, so allowing N consent ops in one call would let a
+ *  compromised SPA convert one auth ceremony into N consent broadcasts
+ *  (substitution-attack vector). The function returns a discriminator so
+ *  the caller can distinguish "no consent op" (no proof needed) from
+ *  "exactly one" (verify proof) from "multiple" (reject 400). */
+function findConsentOpsInBundle(operations: unknown[]): ConsentOpScan {
+  let firstAction: string | null = null;
   for (const op of operations) {
-    if (!Array.isArray(op) || op.length !== 2) continue;
+    if (!isOpTuple(op)) continue;
     const [opType, opParams] = op;
     if (opType !== 'custom_json') continue;
-    const params = opParams as { json?: unknown };
-    let payload: { action?: unknown };
+    const rawJson = opParams.json;
+    let payload: unknown;
     try {
-      payload = (typeof params.json === 'string'
-        ? JSON.parse(params.json)
-        : params.json) as { action?: unknown };
+      payload = typeof rawJson === 'string' ? JSON.parse(rawJson) : rawJson;
     } catch {
       continue;
     }
-    if (typeof payload?.action === 'string' && CONSENT_OP_ACTIONS.has(payload.action)) {
-      return payload.action;
+    if (typeof payload !== 'object' || payload === null) continue;
+    const action = (payload as { action?: unknown }).action;
+    if (typeof action !== 'string' || !CONSENT_OP_ACTIONS.has(action)) continue;
+    if (firstAction === null) {
+      firstAction = action;
+    } else {
+      // Second consent op detected — short-circuit with the multi-consent
+      // discriminator. The caller responds 400 MULTIPLE_CONSENT_OPS without
+      // consuming the proof or reaching the broadcast path.
+      return { kind: 'multiple' };
     }
   }
-  return null;
+  return firstAction === null ? { kind: 'none' } : { kind: 'single', action: firstAction };
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -161,11 +193,32 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
   }
 
   // Round-3: consent-op operations require a per-op fresh-auth proof.
-  // Verified BEFORE decrypting the posting key so a missing/expired proof
-  // never reaches the broadcast path. The proof is consumed (single-use)
-  // even if the broadcast itself later fails — re-broadcasting requires a
-  // fresh re-auth, matching the ARCH.md "per-op" rule.
-  const consentAction = findConsentOpAction(operations);
+  // Round-4 hold #1: bundles with MORE THAN ONE consent op are rejected
+  // with 400 MULTIPLE_CONSENT_OPS — one proof gates one consent op, never
+  // an N-op consent fan-out. Verified BEFORE decrypting the posting key so
+  // a missing/expired proof or multi-consent bundle never reaches the
+  // broadcast path. The proof is consumed (single-use) even if the
+  // broadcast itself later fails — re-broadcasting requires a fresh re-auth,
+  // matching the ARCH.md "per-op" rule.
+  const consentScan = findConsentOpsInBundle(operations);
+  if (consentScan.kind === 'multiple') {
+    logger.warn(
+      {
+        event: 'custody.broadcast.multiple_consent_ops_rejected',
+        route: 'custody.broadcast',
+        username,
+        op_count: operations.length,
+      },
+      'custody.broadcast rejected — bundle contains multiple consent ops',
+    );
+    return sendError(
+      res,
+      400,
+      'MULTIPLE_CONSENT_OPS',
+      'A custody broadcast bundle may contain at most one consent operation (author_accept or author_resign). Submit each consent op in its own request with its own fresh-auth proof.',
+    );
+  }
+  const consentAction = consentScan.kind === 'single' ? consentScan.action : null;
   let freshAuthMechanism: FreshAuthMechanism | null = null;
   if (consentAction !== null) {
     const proof = (req.body as { fresh_auth_proof?: unknown })?.fresh_auth_proof;
@@ -182,7 +235,11 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
         },
         'custody.broadcast rejected — fresh-auth proof invalid',
       );
-      const status = result.reason === 'missing' ? 401 : 401;
+      // Round-4 hold #10: discriminate status code on reason. `username_mismatch`
+      // is a binding violation (token issued for a different user) → 403; the
+      // remaining outcomes (`missing`, `expired`, `malformed`) are all
+      // "no valid proof present" → 401.
+      const status = result.reason === 'username_mismatch' ? 403 : 401;
       return sendError(
         res,
         status,
@@ -281,7 +338,11 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
       // Audit log (DB write, non-blocking) — captures only the success path.
       // Round-3: consent-op broadcasts also persist auth-mechanism + session
       // + user-agent per ARCH.md "Light-account signing of consent ops".
-      const auditExtras = freshAuthMechanism === null
+      // Round-4 hold #9: `auditExtras` is typed as the discriminated
+      // CustodyAuditExtras union; the consent-variant constructor below pins
+      // `auth_mechanism` + `fresh_auth_outcome` together (TS no longer admits
+      // the half-populated shape that motivated the convention).
+      const auditExtras: CustodyAuditExtras | undefined = freshAuthMechanism === null
         ? undefined
         : {
             auth_mechanism: freshAuthMechanism,

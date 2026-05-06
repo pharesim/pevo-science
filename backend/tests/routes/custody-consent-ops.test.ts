@@ -25,8 +25,31 @@
  *        regression on the existing path).
  *
  * Mocks:
- *   - `../../src/hive.js` broadcast helpers — never actually hit chain.
+ *   - `../../src/hive.js` broadcast helpers — never actually hit chain. The
+ *     dhive client is in the carve-out's "third-party libraries non-trivial
+ *     to run for real per-test" target list (real broadcast would sign and
+ *     submit operations to a live witness, which is operationally and
+ *     ethically incompatible with a unit-test loop). Real-path companion:
+ *     the chain-broadcast surface is exercised end-to-end in the local-dev
+ *     compose stack against pevotest, plus by the wider broadcast-error
+ *     and timeout-propagation tests under `tests/lib/broadcast-error.test.ts`.
  *   - `../../src/custody-crypto.js` decryptKey — bypass AES-GCM material.
+ *     Justification per root CLAUDE.md "Carve-out for deterministic
+ *     edge-case coverage" clause (a): the real `decryptKey` derives a
+ *     per-account HKDF key from the master env-var and decrypts an
+ *     AES-256-GCM ciphertext; the cleartext WIF must round-trip through
+ *     `PrivateKey.fromString` to produce a valid signing key. Seeding
+ *     deterministic ciphertexts per test would require generating a real
+ *     WIF, encrypting it with the test-suite's master key, and inserting
+ *     bytea ciphertext + IV into the accounts row — five extra moving
+ *     parts whose only purpose is to feed `PrivateKey.fromString`, since
+ *     the broadcast path is mocked. The mock returns a fixed test WIF
+ *     derived from a deterministic seed, which produces a valid
+ *     `PrivateKey` instance. Risk class covered by real-path elsewhere:
+ *     the AES-GCM round-trip itself is exercised by
+ *     `tests/lib/custody-crypto.test.ts` (HKDF + encrypt/decrypt pin) and
+ *     by the signup-verify happy path in `tests/routes/signup-verify.test.ts`
+ *     where a real key is encrypted and re-decrypted on first broadcast.
  *
  * Real:
  *   - argon2 (real verify against a seeded hash).
@@ -300,11 +323,18 @@ describe.skipIf(!dbReachable)('Round-3 BACKEND-COAUTHOR-TRUST-MODEL — custody 
       expect(rows[0].user_agent).toBe('PEvO-Test/1.0');
     });
 
-    it('author_resign with valid fresh-auth → 200 + audit-log row', async () => {
+    it('author_resign with valid fresh-auth → 200 + audit-log row carries all four consent fields', async () => {
+      // Round-4 hold dismissal note: the round-3 author_resign test
+      // asserted only auth_mechanism. The CustodyAuditExtras
+      // discriminated-union refactor (item 9) requires all four fields
+      // to be co-populated on the consent-op success path. Pin the full
+      // shape here so a regression that drops fresh_auth_outcome /
+      // session_id / user_agent surfaces.
       const issued = await issueFreshAuthToken(ALICE, 'password');
       const res = await request(app)
         .post('/api/custody/broadcast')
         .set('Authorization', bearerFor(ALICE))
+        .set('User-Agent', 'PEvO-Test-Resign/1.0')
         .send({
           fresh_auth_proof: issued.token,
           operations: [authorResignOp(ALICE, 'someroot', 'somepermlink-v1')],
@@ -312,9 +342,15 @@ describe.skipIf(!dbReachable)('Round-3 BACKEND-COAUTHOR-TRUST-MODEL — custody 
       expect(res.status).toBe(200);
 
       const pool = getAppPool()!;
-      const sql = `SELECT auth_mechanism FROM custody_audit_log WHERE username = $1`;
+      const sql = `SELECT auth_mechanism, fresh_auth_outcome, session_id, user_agent
+                   FROM custody_audit_log WHERE username = $1`;
       const start = Date.now();
-      let rows: Array<{ auth_mechanism: string | null }> = [];
+      let rows: Array<{
+        auth_mechanism: string | null;
+        fresh_auth_outcome: string | null;
+        session_id: string | null;
+        user_agent: string | null;
+      }> = [];
       while (Date.now() - start < 1500) {
         const r = await pool.query(sql, [ALICE]);
         if (r.rows.length >= 1) { rows = r.rows; break; }
@@ -322,6 +358,9 @@ describe.skipIf(!dbReachable)('Round-3 BACKEND-COAUTHOR-TRUST-MODEL — custody 
       }
       expect(rows.length).toBe(1);
       expect(rows[0].auth_mechanism).toBe('password');
+      expect(rows[0].fresh_auth_outcome).toBe('verified');
+      expect(rows[0].session_id).toMatch(/^[0-9a-f]{16}$/);
+      expect(rows[0].user_agent).toBe('PEvO-Test-Resign/1.0');
     });
 
     it('author_accept WITHOUT fresh_auth_proof → 401 FRESH_AUTH_REQUIRED + reason missing', async () => {
@@ -359,7 +398,9 @@ describe.skipIf(!dbReachable)('Round-3 BACKEND-COAUTHOR-TRUST-MODEL — custody 
       expect(second.body.error.details?.reason).toBe('expired');
     });
 
-    it('cross-account: token issued for Bob used with Alice JWT → 401 username_mismatch', async () => {
+    it('cross-account: token issued for Bob used with Alice JWT → 403 username_mismatch (round-4 hold #10)', async () => {
+      // Round-4 hold #10 differentiates the FRESH_AUTH_REQUIRED status
+      // by reason: `username_mismatch` is a binding violation → 403.
       const bobToken = await issueFreshAuthToken(BOB, 'password');
       const res = await request(app)
         .post('/api/custody/broadcast')
@@ -368,7 +409,7 @@ describe.skipIf(!dbReachable)('Round-3 BACKEND-COAUTHOR-TRUST-MODEL — custody 
           fresh_auth_proof: bobToken.token,
           operations: [authorAcceptOp(ALICE, 'someroot', 'somepermlink-v1')],
         });
-      expect(res.status).toBe(401);
+      expect(res.status).toBe(403);
       expect(res.body.error.code).toBe('FRESH_AUTH_REQUIRED');
       expect(res.body.error.details?.reason).toBe('username_mismatch');
     });
@@ -384,6 +425,97 @@ describe.skipIf(!dbReachable)('Round-3 BACKEND-COAUTHOR-TRUST-MODEL — custody 
         });
       expect(res.status).toBe(200);
       expect(res.body.data.tx_id).toBe('consent-op-tx-id');
+    });
+
+    it('multiple consent ops in one bundle → 400 MULTIPLE_CONSENT_OPS (round-4 hold #1)', async () => {
+      // Round-4 hold #1: bundling N consent ops with a single fresh-auth
+      // proof would convert one auth ceremony into N consent broadcasts
+      // (substitution attack). The route MUST reject the bundle structurally
+      // BEFORE consuming the proof. Mutation-kill: a regression that
+      // accepted multi-consent bundles would let this assertion fall through
+      // to a 200 response and burn the proof on N ops.
+      const issued = await issueFreshAuthToken(ALICE, 'password');
+      const res = await request(app)
+        .post('/api/custody/broadcast')
+        .set('Authorization', bearerFor(ALICE))
+        .send({
+          fresh_auth_proof: issued.token,
+          operations: [
+            authorAcceptOp(ALICE, 'rootA', 'paper-a-v1'),
+            authorAcceptOp(ALICE, 'rootB', 'paper-b-v1'),
+          ],
+        });
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('MULTIPLE_CONSENT_OPS');
+      // Broadcast must NOT have run.
+      expect(sendOperationsMock).not.toHaveBeenCalled();
+      // Proof was NOT consumed: a follow-up single-consent call with the
+      // same token must succeed. (If the route consumed the proof before
+      // detecting the multi-consent shape, this second call would 401.)
+      const followup = await request(app)
+        .post('/api/custody/broadcast')
+        .set('Authorization', bearerFor(ALICE))
+        .send({
+          fresh_auth_proof: issued.token,
+          operations: [authorAcceptOp(ALICE, 'rootC', 'paper-c-v1')],
+        });
+      expect(followup.status).toBe(200);
+    });
+
+    it('mixed consent + non-consent bundle with two consent ops → 400 MULTIPLE_CONSENT_OPS', async () => {
+      // The single-consent rule fires regardless of how many non-consent
+      // ops accompany the consent ops — only the COUNT of consent ops
+      // matters. Pin that a vote sandwiched between two accepts also
+      // trips the rejection.
+      const issued = await issueFreshAuthToken(ALICE, 'password');
+      const res = await request(app)
+        .post('/api/custody/broadcast')
+        .set('Authorization', bearerFor(ALICE))
+        .send({
+          fresh_auth_proof: issued.token,
+          operations: [
+            authorAcceptOp(ALICE, 'rootA', 'paper-a-v1'),
+            ['vote', { voter: ALICE, author: 'someauthor', permlink: 'sp', weight: 10000 }],
+            authorResignOp(ALICE, 'rootB', 'paper-b-v1'),
+          ],
+        });
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('MULTIPLE_CONSENT_OPS');
+      expect(sendOperationsMock).not.toHaveBeenCalled();
+    });
+
+    it('bridge-paper exclusion: vouched-set excludes a non-bridge signer that broadcast author_accept on a bridge paper', async () => {
+      // Round-4 hold #7: ARCH.md "Bridge papers" subsection states bridge
+      // papers' vouched-set is `{config.hiveBridgeAccount}` only — consent
+      // ops are inert. The pure helper `computeVouchedAuthors` enforces
+      // this via the claimed-set membership check (only claimed authors
+      // can be vouched). Pin via a structural test against the round-1
+      // pure helper. (This test lives in consent-ops.test.ts at the
+      // module-level scope; the broadcast-path test here is a sibling
+      // pin against the broadcast surface.)
+      //
+      // The broadcast surface itself does NOT enforce paper-type at
+      // broadcast time (the chain accepts the op; bridge-paper inertness
+      // is read-time). So this test exercises the natural shape: a
+      // light-account user CAN broadcast `author_accept` on a bridge
+      // paper; the audit log records it. Vouched-set computation rejects
+      // the signer at integration time (round 2). Pin the broadcast
+      // outcome here so the broadcast-path contract is consistent: the
+      // route does not pre-filter by paper type.
+      const issued = await issueFreshAuthToken(ALICE, 'password');
+      const res = await request(app)
+        .post('/api/custody/broadcast')
+        .set('Authorization', bearerFor(ALICE))
+        .send({
+          fresh_auth_proof: issued.token,
+          operations: [
+            authorAcceptOp(ALICE, config.hiveBridgeAccount ?? 'pevo-bridge', 'bridge-paper-permlink'),
+          ],
+        });
+      expect(res.status).toBe(200);
+      // Vouched-set inertness is exercised in consent-ops.test.ts at the
+      // pure-function layer; the broadcast surface is paper-type-blind by
+      // design.
     });
 
     it('non-allowlisted custom_json action → 403 FORBIDDEN (allowlist regression)', async () => {

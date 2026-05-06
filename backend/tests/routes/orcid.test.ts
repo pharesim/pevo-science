@@ -198,7 +198,7 @@ async function startUnauthed(mode: 'signup' | 'login'): Promise<string> {
   return new URL(res.body.data.redirect_url).searchParams.get('state')!;
 }
 
-async function startAuthed(mode: 'accredit' | 'link', username: string): Promise<string> {
+async function startAuthed(mode: 'accredit' | 'link' | 'fresh_auth', username: string): Promise<string> {
   const res = await request(app)
     .post('/api/orcid/start')
     .set('Authorization', `Bearer ${jwtFor(username)}`)
@@ -2830,4 +2830,114 @@ describe('updateAccountOrcid — permanent vs transient error discrimination', (
       getAppPoolSpy.mockRestore();
     }
   });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Round-4 hold #6: handleFreshAuth (ORCID `'fresh_auth'` mode) coverage
+//
+// Round 3 of BACKEND-COAUTHOR-TRUST-MODEL added the `fresh_auth` mode
+// without specs covering its three load-bearing branches: ORCID-binding
+// match (happy), ORCID-binding mismatch (403), no-account-row (401). Without
+// these, removing the `accountOrcid !== orcidId` binding check at the
+// mismatch branch would not fail any test — and that check is the
+// security-critical invariant against an attacker who controls any ORCID
+// + a stolen JWT minting fresh-auth tokens as another user.
+// ─────────────────────────────────────────────────────────────────────────
+
+describe('POST /api/orcid/callback — fresh_auth mode (round-4 hold #6)', () => {
+  it('happy path: orcid-match → 200 with fresh_auth_proof and mechanism: orcid', async () => {
+    const orcidId = '0000-0001-1234-5678';
+    installOrcidFetchStub({ orcid: orcidId, name: 'Alice', works: 3 });
+    appQueryMock.mockImplementation(async (sql: string, params: unknown[]) => {
+      if (sql.includes('SELECT orcid FROM accounts') && params[0] === 'alice') {
+        return { rows: [{ orcid: orcidId }] };
+      }
+      return { rows: [] };
+    });
+    const state = await startAuthed('fresh_auth', 'alice');
+    const res = await request(app)
+      .post('/api/orcid/callback')
+      .set('Authorization', `Bearer ${jwtFor('alice')}`)
+      .send({ code: 'fake', state });
+    expect(res.status).toBe(200);
+    expect(res.body.data.mode).toBe('fresh_auth');
+    expect(res.body.data.mechanism).toBe('orcid');
+    expect(res.body.data.fresh_auth_proof).toMatch(/^[0-9a-f]{64}$/);
+    expect(typeof res.body.data.expires_at).toBe('number');
+    // Token expiry is ~5 min from now (FRESH_AUTH_TTL_SECONDS).
+    const now = Math.floor(Date.now() / 1000);
+    expect(res.body.data.expires_at).toBeGreaterThan(now + 60);
+    expect(res.body.data.expires_at).toBeLessThanOrEqual(now + 301);
+    // No broadcast on this path (fresh_auth is read-only against the chain).
+    expect(broadcastJsonMock).not.toHaveBeenCalled();
+  });
+
+  it('orcid mismatch → 403 FORBIDDEN with binding-check error message (security-critical mutation kill)', async () => {
+    // Alice's account orcid is 0000-0001-1111-1111; the OAuth round-trip
+    // returns 0000-0001-9999-9999 (a different orcid the attacker
+    // controls). The handler MUST reject — without this, an attacker
+    // with any verified ORCID + a stolen Alice JWT could mint Alice's
+    // fresh-auth token. Mutation-kill: removing the
+    // `accountOrcid !== orcidId` binding check would let this pass.
+    const attackerOrcid = '0000-0001-9999-9999';
+    installOrcidFetchStub({ orcid: attackerOrcid, name: 'Mallory', works: 3 });
+    appQueryMock.mockImplementation(async (sql: string, params: unknown[]) => {
+      if (sql.includes('SELECT orcid FROM accounts') && params[0] === 'alice') {
+        return { rows: [{ orcid: '0000-0001-1111-1111' }] };
+      }
+      return { rows: [] };
+    });
+    const state = await startAuthed('fresh_auth', 'alice');
+    const res = await request(app)
+      .post('/api/orcid/callback')
+      .set('Authorization', `Bearer ${jwtFor('alice')}`)
+      .send({ code: 'fake', state });
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe('FORBIDDEN');
+    expect(res.body.error.message).toMatch(/orcid/i);
+    // No token issued.
+    expect(res.body.data?.fresh_auth_proof).toBeUndefined();
+  });
+
+  it('account has no ORCID linked → 403 FORBIDDEN', async () => {
+    // accountOrcid is null (account exists but no ORCID was ever linked).
+    // The handler treats null-orcid identically to mismatch: no token.
+    const orcidId = '0000-0001-1234-5678';
+    installOrcidFetchStub({ orcid: orcidId, name: 'Alice', works: 3 });
+    appQueryMock.mockImplementation(async (sql: string, params: unknown[]) => {
+      if (sql.includes('SELECT orcid FROM accounts') && params[0] === 'alice') {
+        return { rows: [{ orcid: null }] };
+      }
+      return { rows: [] };
+    });
+    const state = await startAuthed('fresh_auth', 'alice');
+    const res = await request(app)
+      .post('/api/orcid/callback')
+      .set('Authorization', `Bearer ${jwtFor('alice')}`)
+      .send({ code: 'fake', state });
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe('FORBIDDEN');
+  });
+
+  it('account row is missing → 401 UNAUTHORIZED (stale session)', async () => {
+    // A JWT outliving its account row produces 401 (not 403): the
+    // semantic is "session is no longer valid", not "you authenticated
+    // with the wrong ORCID".
+    const orcidId = '0000-0001-1234-5678';
+    installOrcidFetchStub({ orcid: orcidId, name: 'Alice', works: 3 });
+    appQueryMock.mockImplementation(async (sql: string) => {
+      if (sql.includes('SELECT orcid FROM accounts')) {
+        return { rows: [] };
+      }
+      return { rows: [] };
+    });
+    const state = await startAuthed('fresh_auth', 'alice');
+    const res = await request(app)
+      .post('/api/orcid/callback')
+      .set('Authorization', `Bearer ${jwtFor('alice')}`)
+      .send({ code: 'fake', state });
+    expect(res.status).toBe(401);
+    expect(res.body.error.code).toBe('UNAUTHORIZED');
+  });
+
 });

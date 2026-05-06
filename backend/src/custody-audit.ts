@@ -8,18 +8,36 @@ import { logger } from './logger.js';
  * user-agent, and auth-mechanism. Non-consent ops omit these fields and the
  * columns store NULL.
  *
+ * Round-4 hold #9: typed as a discriminated union per
+ * `agents/docs/solutions/conventions/correlated-options-discriminated-union-2026-04-28.md`.
+ * The four fields are semantically correlated (only meaningful when a
+ * consent op fired) — typing them as independent optionals admitted callers
+ * supplying `fresh_auth_outcome` without `auth_mechanism` with no TS error.
+ * The discriminator is the implicit "consent op fired" signal: `auth_mechanism`
+ * + `fresh_auth_outcome` are co-required in the consent variant; the
+ * non-consent variant is the empty `{}` (omitted).
+ *
+ * `fresh_auth_outcome` is constrained to the values `consumeFreshAuthToken`
+ * actually emits. Only `'verified'` is written today; the other variants are
+ * forward-compatible for the future failure-row write path.
+ *
  * Migration: `backend/migrations/005_custody_audit_consent_ops.sql`.
  */
-export interface CustodyAuditExtras {
-  auth_mechanism?: 'password' | 'orcid';
-  /** 'verified' on the success path; `'missing' | 'expired' | 'invalid' | …`
-   *  on the rejection path. The handler only writes a row on success today,
-   *  so 'verified' is the typical value; the field is forward-compatible
-   *  with future failure-row writes. */
-  fresh_auth_outcome?: string;
-  session_id?: string;
-  user_agent?: string;
-}
+export type FreshAuthOutcome =
+  | 'verified'
+  | 'missing'
+  | 'expired'
+  | 'username_mismatch'
+  | 'malformed';
+
+export type CustodyAuditExtras =
+  | {
+      auth_mechanism: 'password' | 'orcid';
+      fresh_auth_outcome: FreshAuthOutcome;
+      session_id?: string;
+      user_agent?: string;
+    }
+  | Record<string, never>;
 
 /**
  * Log a custodial broadcast to the audit trail.
@@ -39,6 +57,13 @@ export async function logCustodyBroadcast(
   }
 
   try {
+    // Discriminate on `auth_mechanism` presence: only the consent-op variant
+    // carries the extra fields. The Record<string, never> variant collapses
+    // to all NULLs. Direct property access via `'auth_mechanism' in extras`
+    // narrows the union without triggering the optional-chaining-on-never
+    // lint friction that motivated round-4 hold #9 in the first place.
+    const consentExtras =
+      extras && 'auth_mechanism' in extras ? extras : undefined;
     await pool.query(
       `INSERT INTO custody_audit_log
          (username, operation_type, tx_id, block_num,
@@ -49,10 +74,10 @@ export async function logCustodyBroadcast(
         operationType,
         txId || null,
         blockNum || null,
-        extras?.auth_mechanism ?? null,
-        extras?.fresh_auth_outcome ?? null,
-        extras?.session_id ?? null,
-        extras?.user_agent ?? null,
+        consentExtras?.auth_mechanism ?? null,
+        consentExtras?.fresh_auth_outcome ?? null,
+        consentExtras?.session_id ?? null,
+        consentExtras?.user_agent ?? null,
       ],
     );
   } catch (err) {

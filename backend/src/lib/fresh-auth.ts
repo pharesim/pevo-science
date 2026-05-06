@@ -32,7 +32,7 @@
  * Issuance paths (route-layer; this module is the storage primitive)
  * ------------------------------------------------------------------
  * - Password mechanism: `POST /api/custody/fresh-auth` accepts a password,
- *   bcrypt-verifies against `accounts.password_hash`, then calls
+ *   argon2-verifies against `accounts.password_hash`, then calls
  *   `issueFreshAuthToken(username, 'password')`.
  * - ORCID mechanism: ORCID callback in `mode: 'fresh_auth'` verifies the
  *   OAuth-returned `orcid_id` equals `account.orcid`, then calls
@@ -65,9 +65,22 @@ export const CONSENT_OP_ACTIONS: ReadonlySet<string> = new Set([
 
 export type FreshAuthMechanism = 'password' | 'orcid';
 
+/** Round-4 hold #8: type-guard for the storage `mechanism` field. The
+ *  membership test diverges from the union if the union grows and the
+ *  test isn't updated; consolidating it here means a single point of
+ *  maintenance. Used by `consumeFreshAuthToken` to narrow `unknown` from
+ *  `JSON.parse` into the typed `FreshAuthMechanism`. */
+export function isFreshAuthMechanism(value: unknown): value is FreshAuthMechanism {
+  return value === 'password' || value === 'orcid';
+}
+
 /** Token TTL in seconds. 5 minutes — bounded enough to limit replay risk
  *  if the token leaks, generous enough for a "re-auth then broadcast" UX
- *  without forcing the user to re-prompt mid-flow. */
+ *  without forcing the user to re-prompt mid-flow.
+ *
+ *  Round-4 hold #13: kept exported for tests (the in-memory TTL-expiry
+ *  fake-timer test in `tests/lib/fresh-auth.test.ts` advances `Date.now()`
+ *  past this boundary). */
 export const FRESH_AUTH_TTL_SECONDS = 300;
 
 const TOKEN_BYTES = 32;
@@ -86,16 +99,26 @@ interface StoredEntry {
 const memStore = new Map<string, { entry: StoredEntry; expiresAt: number }>();
 
 /** Periodic cleanup so the map doesn't grow unbounded under no-Redis ops.
- *  Same shape as the orcid_state cleaner in orcid.ts. */
-const cleanupInterval = setInterval(() => {
-  const now = Date.now();
-  for (const [token, { expiresAt }] of memStore) {
-    if (expiresAt <= now) memStore.delete(token);
-  }
-}, 60_000);
-cleanupInterval.unref();
+ *  Same shape as the orcid_state cleaner in orcid.ts. Wrapped in a
+ *  start/stop pair so tests can deterministically pause the cleaner during
+ *  fake-timer scenarios (round-4 hold #15). */
+const CLEANUP_INTERVAL_MS = 60_000;
+let cleanupInterval: ReturnType<typeof setInterval> | null = null;
 
-export interface IssuedFreshAuth {
+function startCleanup(): void {
+  if (cleanupInterval !== null) return;
+  cleanupInterval = setInterval(() => {
+    const now = Date.now();
+    for (const [token, { expiresAt }] of memStore) {
+      if (expiresAt <= now) memStore.delete(token);
+    }
+  }, CLEANUP_INTERVAL_MS);
+  cleanupInterval.unref();
+}
+
+startCleanup();
+
+interface IssuedFreshAuth {
   token: string;
   /** Epoch seconds at which the token expires. */
   expires_at: number;
@@ -118,6 +141,18 @@ export async function issueFreshAuthToken(
   const issuedAt = Date.now();
   const entry: StoredEntry = { username, mechanism, issued_at: issuedAt };
   const expiresAt = Math.floor(issuedAt / 1000) + FRESH_AUTH_TTL_SECONDS;
+  const memExpiresAtMs = issuedAt + FRESH_AUTH_TTL_SECONDS * 1000;
+
+  // Round-4 hold #3: write to memStore as a backup whenever Redis-issuance
+  // succeeds. The pre-fix path stored the token only in Redis on the happy
+  // path; if Redis flapped between issue and consume, the consume side
+  // fell through to memStore.get(token) → empty → spurious 'expired' 401
+  // (the user just authenticated). With the backup write, a Redis-down
+  // consume can recover the entry from memStore. Single-use semantics are
+  // preserved: a successful Redis GETDEL deletes the canonical entry; the
+  // mem-store fallback path also calls memStore.delete() so the entry is
+  // consumed exactly once across the storage tiers.
+  memStore.set(token, { entry, expiresAt: memExpiresAtMs });
 
   const redis = getRedis();
   if (redis && isRedisAvailable()) {
@@ -134,19 +169,20 @@ export async function issueFreshAuthToken(
         { err, username, event: 'fresh_auth.redis_set_failed' },
         'Falling back to in-memory store for fresh-auth token',
       );
-      // fall through
+      // memStore was already populated above — the token survives the
+      // Redis-write failure.
+      return { token, expires_at: expiresAt, mechanism };
     }
   }
 
-  memStore.set(token, { entry, expiresAt: issuedAt + FRESH_AUTH_TTL_SECONDS * 1000 });
   return { token, expires_at: expiresAt, mechanism };
 }
 
-export type FreshAuthVerifyResult =
+type FreshAuthVerifyResult =
   | { valid: true; mechanism: FreshAuthMechanism }
   | {
       valid: false;
-      reason: 'missing' | 'invalid' | 'expired' | 'username_mismatch' | 'malformed';
+      reason: 'missing' | 'expired' | 'username_mismatch' | 'malformed';
     };
 
 /**
@@ -154,6 +190,14 @@ export type FreshAuthVerifyResult =
  * mechanism }` exactly once per issued token; subsequent calls return
  * `{ valid: false, reason: 'expired' }` (already consumed by the GETDEL /
  * map.delete()).
+ *
+ * Round-4 hold #3: a successful Redis GETDEL ALSO deletes the memStore
+ * backup written at issuance time. Without this paired delete, a token
+ * issued on a healthy Redis (Redis copy + memStore backup) and consumed
+ * on healthy Redis would leave the memStore backup alive until the cleaner
+ * fired, admitting a replay. Symmetrically, if the Redis GETDEL throws
+ * mid-call, the memStore fallback path consumes the backup and the user
+ * recovers from the flap.
  *
  * The route layer rejects the broadcast on any non-valid outcome.
  */
@@ -183,7 +227,11 @@ export async function consumeFreshAuthToken(
     }
   }
 
-  if (!raw) {
+  if (raw) {
+    // Redis GETDEL succeeded. Also drop the memStore backup so a sibling
+    // consume can't replay the token via the fallback path.
+    memStore.delete(token);
+  } else {
     const cached = memStore.get(token);
     if (cached) {
       memStore.delete(token); // single-use even on the fallback path
@@ -195,24 +243,31 @@ export async function consumeFreshAuthToken(
 
   if (!raw) return { valid: false, reason: 'expired' };
 
-  let entry: StoredEntry;
+  let parsed: unknown;
   try {
-    entry = JSON.parse(raw) as StoredEntry;
+    parsed = JSON.parse(raw);
   } catch {
     // Stored value parse failure — treat as malformed-but-consumed.
     return { valid: false, reason: 'malformed' };
   }
 
-  if (typeof entry.username !== 'string' || typeof entry.mechanism !== 'string') {
+  // Round-4 hold #8: structural narrowing replaces the prior unsafe
+  // `JSON.parse(raw) as StoredEntry`. Adding a new field to StoredEntry
+  // requires extending this guard; a future refactor that relaxes the
+  // schema is forced to update the consume path explicitly.
+  if (
+    typeof parsed !== 'object' ||
+    parsed === null ||
+    typeof (parsed as { username?: unknown }).username !== 'string' ||
+    !isFreshAuthMechanism((parsed as { mechanism?: unknown }).mechanism)
+  ) {
     return { valid: false, reason: 'malformed' };
   }
+
+  const entry = parsed as { username: string; mechanism: FreshAuthMechanism };
 
   if (entry.username !== expectedUsername) {
     return { valid: false, reason: 'username_mismatch' };
-  }
-
-  if (entry.mechanism !== 'password' && entry.mechanism !== 'orcid') {
-    return { valid: false, reason: 'malformed' };
   }
 
   return { valid: true, mechanism: entry.mechanism };
@@ -222,4 +277,21 @@ export async function consumeFreshAuthToken(
  *  route handlers. */
 export function _resetFreshAuthMemStoreForTests(): void {
   memStore.clear();
+}
+
+/** Round-4 hold #15: test-only hooks to pause / restart the module-level
+ *  cleanup interval. Without these, fake-timer tests that need to advance
+ *  past the TTL boundary race the cleaner and observe non-deterministic
+ *  results (the cleaner fires under fake timers and pre-deletes the entry
+ *  the test was about to assert on). Pair with `_resetFreshAuthMemStoreForTests`
+ *  in `beforeEach` so suites have full control over the in-memory state. */
+export function _stopCleanupForTests(): void {
+  if (cleanupInterval !== null) {
+    clearInterval(cleanupInterval);
+    cleanupInterval = null;
+  }
+}
+
+export function _restartCleanupForTests(): void {
+  startCleanup();
 }

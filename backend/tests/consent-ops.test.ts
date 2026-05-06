@@ -258,6 +258,47 @@ describe('computeVouchedAuthors — multiple authors', () => {
   });
 });
 
+describe('computeVouchedAuthors — bridge papers (ARCH.md "Bridge papers" subsection)', () => {
+  it('vouches only the bridge account; non-bridge signers cannot vouch onto a bridge paper (round-4 hold #7)', () => {
+    // Bridge papers list original-preprint authors as `pevo.authors[].hive: null`
+    // entries; the chain-walk strips these from the claimed set, leaving the
+    // bridge account as the sole claimed author. ARCH.md "Bridge papers"
+    // says the vouched-set is `{config.hiveBridgeAccount}` only; consent ops
+    // by other accounts on bridge papers are inert.
+    //
+    // The structural enforcement here is the claimed-set membership check at
+    // computeVouchedAuthors: a signer who isn't in `claimedAuthors` is
+    // skipped regardless of any author_accept they broadcast. Mutation-kill:
+    // a regression that vouched signers whose handle was NOT in the claimed
+    // set would let mallory's accept op vouch onto the bridge paper here.
+    const bridgeAccount = config.hiveBridgeAccount;
+    const claimed = new Set([bridgeAccount]);
+    const firstClaim = new Map([[bridgeAccount, 100]]);
+    const ops: ConsentOp[] = [
+      // mallory tries to vouch herself onto a bridge paper. Inert: she's
+      // not in claimedAuthors.
+      op({ signer: 'mallory', action: 'author_accept', blockNum: 200 }),
+    ];
+    const vouched = computeVouchedAuthors(bridgeAccount, claimed, firstClaim, ops);
+    expect(vouched).toEqual(new Set([bridgeAccount]));
+    expect(vouched.has('mallory')).toBe(false);
+  });
+
+  it('a self-vouch by the bridge account is a no-op (already implicitly vouched as root broadcaster)', () => {
+    // Defense-in-depth: even if a buggy admin tooling broadcast an
+    // author_accept signed by the bridge account itself, the result is
+    // identical (bridge account is already vouched implicitly).
+    const bridgeAccount = config.hiveBridgeAccount;
+    const claimed = new Set([bridgeAccount]);
+    const firstClaim = new Map([[bridgeAccount, 100]]);
+    const ops: ConsentOp[] = [
+      op({ signer: bridgeAccount, action: 'author_accept', blockNum: 200 }),
+    ];
+    const vouched = computeVouchedAuthors(bridgeAccount, claimed, firstClaim, ops);
+    expect(vouched).toEqual(new Set([bridgeAccount]));
+  });
+});
+
 describe('computeVouchedAuthors — case folding on signer field', () => {
   it('handles whitespace and case in op.signer', () => {
     const claimed = new Set(['alice', 'bob']);
@@ -299,6 +340,12 @@ describe('fetchConsentOpsForPaper — SQL contract', () => {
     expect(sql).toMatch(/required_posting_auths\s*->>\s*0\s+AS\s+signer/);
     expect(sql).toMatch(/cj\.id::text\s+AS\s+op_id/);
     expect(sql).toMatch(/cj\.block_num\s+AS\s+block_num/);
+    // Round-4 hold #4: ORDER BY id DESC + LIMIT 1000 bound the row set
+    // under consent-op spam. Pin both clauses so a regression that drops
+    // either surfaces. The LIMIT value is sized for the cumulative-union
+    // task's expected chain length.
+    expect(sql).toMatch(/ORDER\s+BY\s+cj\.id\s+DESC/);
+    expect(sql).toMatch(/LIMIT\s+1000/);
 
     expect(params).toEqual([config.appTag, 100_000_000, PAPER.rootAuthor, PAPER.rootPermlink]);
   });

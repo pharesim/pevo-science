@@ -86,6 +86,18 @@ export async function initAppDb(): Promise<void> {
       created_at      TIMESTAMPTZ DEFAULT NOW()
     );
 
+    -- Round-3 of BACKEND-COAUTHOR-TRUST-MODEL — extends custody_audit_log
+    -- with consent-op metadata. Mirrors migrations/005_custody_audit_consent_ops.sql.
+    -- initAppDb() is the dual-source schema path for fresh-container boots
+    -- (dev, CI, new prod nodes before migration 005 runs); without these
+    -- ALTERs the consent-op INSERT in custody-audit.ts references missing
+    -- columns and the fire-and-forget catch silently drops the audit row
+    -- (round-4 hold #2).
+    ALTER TABLE custody_audit_log
+      ADD COLUMN IF NOT EXISTS auth_mechanism TEXT,
+      ADD COLUMN IF NOT EXISTS fresh_auth_outcome TEXT,
+      ADD COLUMN IF NOT EXISTS session_id TEXT,
+      ADD COLUMN IF NOT EXISTS user_agent TEXT;
 
     CREATE INDEX IF NOT EXISTS idx_custody_audit_username ON custody_audit_log(username);
     CREATE INDEX IF NOT EXISTS idx_custody_audit_created ON custody_audit_log(created_at);
