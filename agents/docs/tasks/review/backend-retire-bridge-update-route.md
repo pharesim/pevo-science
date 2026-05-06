@@ -33,3 +33,26 @@ Remove the bridge-update route and its supporting helpers. Defense-in-depth in `
 ## Coordination
 
 - Pairs with `ui-retire-bridge-sync-affordance.md` (UI side of the same retirement) and `architect-bridge-paper-immutability-doc.md` (doc side). All three can land independently; lockstep is not required. The UI affordance is harmless if the backend route is removed first (frontend would surface a clear 404); the inverse is also fine (frontend button becomes a no-op until the architect doc rewrite lands).
+
+## Backend implementation note (2026-05-06)
+
+Code-side acceptance landed:
+
+- `backend/src/routes/bridge.ts` — deleted `POST /api/bridge/update`, `bridgeUpdateLockKey` helper, and the `updateLimiter` rate-limit binding. Narrowed the `BE-BRIDGE-WRITE-HAF-LAG` header comment to /register-only. Pruned now-orphan imports (`hiveClient`, `parseMeta`, `isPevoBridgePaper`). Option-b carve-out in `extractAuthorizedContinuationAuthors` (helpers.ts) untouched per the spec; `acquireBridgeLock` / `releaseBridgeLock` / `BRIDGE_LOCK_*` primitives kept (still used by /register).
+- `backend/tests/routes/bridge.test.ts` — deleted the `/update` auth-headers describe, the `/update` 503-misconfig spec, and the entire `BE-BRIDGE-CUSTODY-BROADCAST-DISCRIMINATION — /update timeout discrimination` describe. Pruned the now-unused `databaseCall` mock; narrowed file-header doc + the misconfig-503 describe header.
+- `backend/tests/routes/bridge-haf-lag-locks.test.ts` — deleted the `BE-BRIDGE-WRITE-HAF-LAG — /update concurrent same-paper lock` describe and the now-unused `databaseCall` mock + matching `afterEach` import. Narrowed file-header doc.
+
+Verification:
+- `npx tsc --noEmit` — clean.
+- `npx vitest run tests/routes/bridge.test.ts tests/routes/bridge-haf-lag-locks.test.ts tests/routes/bridge-paper-author-gate.test.ts tests/routes/canonical-root-walker.test.ts tests/routes/continuation-author-gate.test.ts` — 5 files / 73 specs / 0 failures.
+- `npm run lint` — 0 errors. (Pre-existing 2 `no-explicit-any` warnings in `seed-phrase.ts` are outside this task's scope.)
+
+[TODO Architect] (contract-doc cleanup at archive)
+
+Three contract-doc edits are gated behind this task and are architect-owned per backend CLAUDE.md:
+
+1. `agents/docs/api-contracts/bridge.md` — delete the entire `### POST /api/bridge/update` section (currently lines 152-190 inclusive, including the leading `---` separator on line 150 if no other section follows).
+2. `agents/docs/api-contracts/common.md` line ~75 (the `503 SERVICE_UNAVAILABLE` row) — drop `/api/bridge/update` from the enumerated bridge-account-broadcast paths in the prose: "emitted by bridge-account broadcast paths (`/api/bridge/register`, ~~`/api/bridge/update`,~~ and the admin-on-bridge-paper branches of …)".
+3. `agents/docs/api-contracts/common.md` line ~179 (the rate-limit table) — delete the `| POST /api/bridge/update | 10 requests | per IP per hour |` row.
+
+No prose-only cross-references in other in-flight task files (e.g. `backend-broadcast-idempotency-cluster-followup.md`, `ui-coauthor-continuation-publishing.md`, `backend-bridge-custody-broadcast-discrimination.md`) need rewriting on the architect's plate; those files will resolve their own references as they archive.

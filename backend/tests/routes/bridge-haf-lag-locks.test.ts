@@ -1,5 +1,5 @@
 /**
- * BE-BRIDGE-WRITE-HAF-LAG — concurrent /register and /update lock specs.
+ * BE-BRIDGE-WRITE-HAF-LAG — concurrent /register lock specs.
  *
  * Justification for the Redis mock (per root CLAUDE.md carve-out): we need
  * deterministic ordering between two concurrent in-flight requests so the
@@ -16,14 +16,11 @@
  * Specs covered:
  *   1. /register: 2 concurrent calls for the same identifier → exactly ONE
  *      broadcast fires; the second returns 409 with retriable: true.
- *   2. /update: 2 concurrent calls for the same author+permlink → exactly ONE
- *      broadcast fires with version: N+1; the second returns 409 with
- *      retriable: true.
- *   3. /register: HAF query throws → 503 SERVICE_UNAVAILABLE with
+ *   2. /register: HAF query throws → 503 SERVICE_UNAVAILABLE with
  *      retriable: true and structured warn-level log.
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import request from 'supertest';
 import { PrivateKey, cryptoUtils } from '@hiveio/dhive';
 
@@ -48,7 +45,6 @@ vi.mock('../../src/config.js', async () => {
 // the concurrency specs).
 let sendOperationsImpl: (...args: unknown[]) => Promise<{ id: string }> = async () => ({ id: 'mock-tx-id' });
 const sendOperations = vi.fn().mockImplementation((...args: unknown[]) => sendOperationsImpl(...args));
-const databaseCall = vi.fn();
 vi.mock('../../src/hive.js', () => ({
   hiveClient: {
     database: {
@@ -60,7 +56,6 @@ vi.mock('../../src/hive.js', () => ({
           })),
         ),
       ),
-      call: (...args: unknown[]) => databaseCall(...args),
     },
     broadcast: {
       sendOperations: (...args: unknown[]) => sendOperations(...args),
@@ -240,17 +235,12 @@ beforeEach(() => {
   fakeRedis.store.clear();
   sendOperations.mockClear();
   pgQuery.mockClear();
-  databaseCall.mockReset();
   accreditedSet.clear();
   // Default broadcast: instantaneous success. Specs that need slow broadcast
   // override sendOperationsImpl per-test.
   sendOperationsImpl = async () => ({ id: 'mock-tx-id' });
   // Default HAF: no existing duplicate.
   pgQueryImpl = async () => ({ rows: [] });
-});
-
-afterEach(() => {
-  databaseCall.mockReset();
 });
 
 describe('BE-BRIDGE-WRITE-HAF-LAG — /register concurrent same-identifier lock', () => {
@@ -291,82 +281,6 @@ describe('BE-BRIDGE-WRITE-HAF-LAG — /register concurrent same-identifier lock'
     expect(winner.status).toBe(200);
     expect(winner.body.status).toBe('ok');
     expect(winner.body.data.tx_id).toBe('tx-winner');
-
-    expect(loser.status).toBe(409);
-    expect(loser.body.error.code).toBe('DUPLICATE');
-    expect(loser.body.error.details).toEqual({ retriable: true });
-  });
-});
-
-describe('BE-BRIDGE-WRITE-HAF-LAG — /update concurrent same-paper lock', () => {
-  const ACCREDITED = 'racingupdater';
-  const PERMLINK = 'bridge-arxiv-2301-99999';
-
-  beforeEach(() => {
-    accreditedSet.add(ACCREDITED);
-    databaseCall.mockImplementation((method: string, params: unknown[]) => {
-      if (method === 'get_content') {
-        return Promise.resolve({
-          author: config.hiveBridgeAccount,
-          permlink: (params as string[])[1],
-          parent_permlink: config.appTag,
-          title: 'Existing test paper',
-          body: 'body',
-          json_metadata: JSON.stringify({
-            app: `${config.appTag}/1.0`,
-            [config.appTag]: {
-              type: 'bridge_paper',
-              version: 1,
-              discipline: 'CS',
-              keywords: ['test'],
-              language: 'en',
-              source: {
-                registered_by: ACCREDITED,
-                arxiv_id: '2301.99999',
-                doi: null,
-              },
-            },
-          }),
-        });
-      }
-      return Promise.resolve(null);
-    });
-  });
-
-  it('two concurrent /update for the same paper: exactly ONE broadcast fires with version: N+1, the second returns 409 retriable', async () => {
-    let releaseBroadcast: (() => void) | null = null;
-    const broadcastGate = new Promise<void>((resolve) => { releaseBroadcast = resolve; });
-    let observedNewVersion: number | null = null;
-    sendOperationsImpl = async (ops: unknown) => {
-      // Inspect the comment op's json_metadata to assert the winning version.
-      const opsArr = ops as Array<[string, Record<string, unknown>]>;
-      const commentOp = opsArr.find((op) => op[0] === 'comment');
-      if (commentOp) {
-        const meta = JSON.parse(commentOp[1].json_metadata as string);
-        observedNewVersion = meta[config.appTag]?.version ?? null;
-      }
-      await broadcastGate;
-      return { id: 'tx-winner-update' };
-    };
-
-    const body = { permlink: PERMLINK };
-    const reqA = signedPost('/api/bridge/update', ACCREDITED, body);
-    await new Promise((r) => setTimeout(r, 5));
-    const reqB = signedPost('/api/bridge/update', ACCREDITED, body);
-    await new Promise((r) => setTimeout(r, 20));
-    releaseBroadcast!();
-
-    const [resA, resB] = await Promise.all([reqA, reqB]);
-
-    expect(sendOperations).toHaveBeenCalledTimes(1);
-    expect(observedNewVersion).toBe(2);
-
-    const winner = resA.status === 200 ? resA : resB;
-    const loser = resA.status === 200 ? resB : resA;
-
-    expect(winner.status).toBe(200);
-    expect(winner.body.data.previous_version).toBe(1);
-    expect(winner.body.data.new_version).toBe(2);
 
     expect(loser.status).toBe(409);
     expect(loser.body.error.code).toBe('DUPLICATE');

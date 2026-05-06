@@ -2,10 +2,9 @@ import { Router, type Request, type Response } from 'express';
 import crypto from 'crypto';
 import { getCachedBridgePostingKey } from '../startup-checks.js';
 import { getPool, isHafAvailable } from '../db.js';
-import { hiveClient, broadcastSendOperationsWithTimeout } from '../hive.js';
+import { broadcastSendOperationsWithTimeout } from '../hive.js';
 import { config } from '../config.js';
 import { sendOk, sendError } from '../response.js';
-import { parseMeta, isPevoBridgePaper } from '../helpers.js';
 import { getAccreditedSet } from '../accreditation.js';
 import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';
 import { hafCache } from '../cache.js';
@@ -26,12 +25,11 @@ import {
 // ──────────────────────────────────────────────
 // BE-BRIDGE-WRITE-HAF-LAG — read-then-write race protection
 //
-// /register and /update both follow a read-then-write pattern (HAF lookup of
-// existing-paper / previous-version, then broadcast). Without serialization,
-// two concurrent calls for the same identifier (or same author+permlink) both
-// see "no duplicate" / "version: N", both broadcast, and HAF ends up with
-// duplicate top-level posts under the bridge account or a clobbered version
-// counter. Pattern mirrors `withOrcidBindingLock` in routes/orcid.ts:
+// /register follows a read-then-write pattern (HAF duplicate lookup, then
+// broadcast). Without serialization, two concurrent calls for the same
+// identifier both see "no duplicate", both broadcast, and HAF ends up with
+// duplicate top-level posts under the bridge account. Pattern mirrors
+// `withOrcidBindingLock` in routes/orcid.ts:
 //   * SET <key> <nonce> NX EX <ttl> before the read.
 //   * Hold the lock until broadcast resolves (success / 502 / 504).
 //   * Lua-CAS release on the per-acquisition nonce so a stale lock from a
@@ -51,10 +49,6 @@ const BRIDGE_RELEASE_LOCK_LUA = `if redis.call('get', KEYS[1]) == ARGV[1] then r
 
 function bridgeRegisterLockKey(permlink: string): string {
   return `${config.appTag}:bridge_register_lock:${permlink}`;
-}
-
-function bridgeUpdateLockKey(author: string, permlink: string): string {
-  return `${config.appTag}:bridge_update_lock:${author}:${permlink}`;
 }
 
 type BridgeLockState =
@@ -126,7 +120,6 @@ export function assertBridgeKeyConfigured(res: Response): boolean {
 // Per-endpoint rate limiters (per API contract)
 const lookupLimiter = rateLimit({ name: 'bridge-lookup', windowMs: 60_000, max: 20, keyFn: byIp });
 const registerLimiter = rateLimit({ name: 'bridge-register', windowMs: 3_600_000, max: 10, keyFn: byIp });
-const updateLimiter = rateLimit({ name: 'bridge-update', windowMs: 3_600_000, max: 10, keyFn: byIp });
 
 // ──────────────────────────────────────────────
 // GET /api/bridge/lookup?identifier=...
@@ -429,160 +422,6 @@ router.post('/register', registerLimiter, verifyHiveSignature, async (req: Reque
         failMsg: 'Failed to broadcast bridge paper registration to Hive',
         logContext: { author: config.hiveBridgeAccount, permlink, username },
         routeLabel: 'bridge.register',
-      });
-    }
-  } finally {
-    if (lockState.state === 'acquired') {
-      await releaseBridgeLock(lockKey, lockState.nonce);
-    }
-  }
-});
-
-// ──────────────────────────────────────────────
-// POST /api/bridge/update
-// ──────────────────────────────────────────────
-
-router.post('/update', updateLimiter, verifyHiveSignature, async (req: Request, res: Response) => {
-  const username = req.hiveUsername!;
-  const { permlink } = req.body as { permlink?: string };
-
-  if (!permlink) {
-    return sendError(res, 400, 'BAD_REQUEST', 'Field "permlink" is required');
-  }
-
-  // Verify accreditation
-  const accreditedSet = await getAccreditedSet([username]);
-  if (!accreditedSet.has(username)) {
-    return sendError(res, 403, 'FORBIDDEN', 'Only accredited researchers can update bridge papers');
-  }
-
-  if (!assertBridgeKeyConfigured(res)) return;
-
-  // BE-BRIDGE-WRITE-HAF-LAG: lock keyed on (bridge_account, permlink) BEFORE
-  // the get_content read so two concurrent /update calls for the same paper
-  // serialize. Without the lock, both reads can see version=N and both
-  // broadcast version=N+1, clobbering one update. With the lock, the second
-  // call gets 409 and the client retries (which then reads the freshly
-  // updated paper as version=N+1 and increments to N+2 correctly).
-  const lockKey = bridgeUpdateLockKey(config.hiveBridgeAccount, permlink);
-  const lockState = await acquireBridgeLock(lockKey);
-  if (lockState.state === 'held') {
-    return res.status(409).json({
-      status: 'error',
-      error: {
-        code: 'DUPLICATE',
-        message: 'An update for this bridge paper is already in progress',
-        details: { retriable: true },
-      },
-    });
-  }
-
-  try {
-    // Fetch the existing bridge paper (always under bridge account)
-    let existingMeta: Record<string, unknown> | null = null;
-    let existingPevo: Record<string, unknown> | null = null;
-
-    try {
-      const post = await hiveClient.database.call('get_content', [config.hiveBridgeAccount, permlink]);
-      if (!post || !post.author || post.parent_permlink !== config.appTag) {
-        return sendError(res, 404, 'NOT_FOUND', 'Bridge paper not found');
-      }
-
-      existingMeta = parseMeta(post.json_metadata);
-      if (!isPevoBridgePaper(existingMeta, post.author)) {
-        return sendError(res, 404, 'NOT_FOUND', 'Bridge paper not found');
-      }
-
-      existingPevo = (existingMeta[config.appTag] || {}) as Record<string, unknown>;
-    } catch (err) {
-      logger.error({ err, author: config.hiveBridgeAccount, permlink, username }, 'Failed to fetch existing bridge paper');
-      return sendError(res, 500, 'INTERNAL_ERROR', 'Failed to fetch existing bridge paper');
-    }
-
-    // Only the original registerer can update
-    const source = existingPevo.source as Record<string, unknown> | undefined;
-    const registeredBy = source?.registered_by as string | undefined;
-    if (registeredBy !== username) {
-      return sendError(res, 403, 'FORBIDDEN', 'Only the original registerer can update a bridge paper');
-    }
-
-    const sourceIdentifier = (source?.doi as string) || (source?.arxiv_id as string);
-    if (!sourceIdentifier) {
-      return sendError(res, 500, 'INTERNAL_ERROR', 'Bridge paper has no source identifier');
-    }
-
-    // Re-fetch metadata from source
-    let freshMeta;
-    try {
-      freshMeta = await lookupPreprint(sourceIdentifier);
-    } catch (err) {
-      logger.error({ err, sourceIdentifier, author: config.hiveBridgeAccount, permlink, username }, 'Failed to re-fetch preprint metadata for update');
-      return sendError(res, 500, 'INTERNAL_ERROR', 'Failed to fetch updated metadata from source');
-    }
-    if (!freshMeta) {
-      return sendError(res, 400, 'BAD_REQUEST', 'Source metadata could not be retrieved');
-    }
-
-    const previousVersion = (existingPevo.version as number) || 1;
-    const newVersion = previousVersion + 1;
-
-    const body = buildBridgeBody(freshMeta, username);
-    const jsonMetadata = buildBridgeMetadata(
-      freshMeta,
-      username,
-      (existingPevo.discipline as string) || '',
-      (existingPevo.keywords as string[]) || [],
-      (existingPevo.language as string) || 'en',
-      newVersion,
-      freshMeta.title,
-      body,
-      config.hiveBridgeAccount,
-      permlink,
-    );
-
-    try {
-      // Use the boot-cached parsed key. `assertBridgeKeyConfigured` above
-      // already returned 503 if the WIF env var is unset, so the cache is
-      // guaranteed populated when we reach here. The non-null assertion
-      // documents that invariant.
-      const key = getCachedBridgePostingKey()!;
-      const result = await broadcastSendOperationsWithTimeout(
-        [
-          ['comment', {
-            parent_author: '',
-            parent_permlink: config.appTag,
-            author: config.hiveBridgeAccount,
-            permlink,
-            title: freshMeta.title.length > 256 ? freshMeta.title.slice(0, 253) + '...' : freshMeta.title,
-            body,
-            json_metadata: JSON.stringify(jsonMetadata),
-          }],
-          ['comment_options', {
-            author: config.hiveBridgeAccount,
-            permlink,
-            max_accepted_payout: '1000000.000 HBD',
-            percent_hbd: 0,
-            allow_votes: true,
-            allow_curation_rewards: true,
-            extensions: [],
-          }],
-        ],
-        key,
-      );
-
-      sendOk(res, {
-        author: config.hiveBridgeAccount,
-        permlink,
-        tx_id: result.id,
-        previous_version: previousVersion,
-        new_version: newVersion,
-      });
-    } catch (err) {
-      return handleBroadcastError(res, err, {
-        timeoutMsg: 'Broadcasting bridge paper update timed out',
-        failMsg: 'Failed to broadcast bridge paper update to Hive',
-        logContext: { author: config.hiveBridgeAccount, permlink, username, newVersion },
-        routeLabel: 'bridge.update',
       });
     }
   } finally {
