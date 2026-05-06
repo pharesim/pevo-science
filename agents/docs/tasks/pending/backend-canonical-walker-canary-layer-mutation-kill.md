@@ -132,3 +132,45 @@ Cross-reviewer corroboration on the canary mutation-kill gap → anchor 75 (prom
 - `backend/src/routes/papers.ts:1080-1138` (START-bail paths).
 - `backend/tests/routes/canonical-root-walker.test.ts:243` (SQL-regex dispatch site), `:430-511` (existing combined-layer canary).
 - `agents/docs/solutions/conventions/tests-must-fail-on-mutation-of-code-under-test-2026-04-22.md` (load-bearing convention).
+
+## Backend re-review signal (2026-05-06) — round-1 ready
+
+All five acceptance subsections landed. Files touched:
+
+- `backend/src/routes/papers.ts` (+38, -3 net): added `logger.debug` events at all four START-bail paths in `findCanonicalRoot`. The `no-pool` path emits `event: 'canonical_root_walker_no_pool'`; the three in-try-block paths share `event: 'canonical_root_walker_start_invalid'` with `reason` discriminator (`sql_filter_or_missing`, `js_is_pevo_any_paper`, `cont_columns_invalid`). Used `debug` rather than `warn` because the `sql_filter_or_missing` branch fires on any 404 lookup of a non-existent or non-PEvO post — `warn` would be too noisy at production traffic. Operators investigating attack patterns can enable debug.
+
+- `backend/tests/routes/canonical-root-walker.test.ts` (+217, -56 net):
+  - Added `isInitialBackwardProbe(sql)` helper keyed on the `'continues' IS NOT NULL` predicate. Replaces the brittle column-list regex `/c\.author,\s+c\.json_metadata,\s+c\.json_metadata/` at the two sites where it gated initial-vs-subsequent probe dispatch (depth-cap canaries at lines 243 and 855 of pre-edit file).
+  - Added `StartProbeMode = 'with_filter' | 'without_filter'` per-test mock-config primitive and `installTypeSpoofStartResponder(mode)` factory.
+  - **Replaced** (architect's mild preference) the combined-layer canary `'rejects type-spoof on START post (vouched co-author posts type=review continuation)'` at the pre-edit `:430-511` block with two layer-pinning canaries:
+    - `'rejects type-spoof START via SQL filter (sql_filter_or_missing)'`
+    - `'rejects type-spoof START via JS isPevoAnyPaper (js_is_pevo_any_paper)'`
+  - The SQL canary uses faithful-mock semantics: SQL-inspects the production probe for the `'type'` literal (the discriminating marker between SQL filter present vs reverted) and returns 0 rows or the spoof row accordingly.
+  - The JS canary force-feeds the spoof row regardless of SQL state, isolating the JS check as the gate under test.
+
+### Mutation-kill matched-pair attestation
+
+Verified by hand-applying each mutation locally and re-running `vitest run tests/routes/canonical-root-walker.test.ts -t "type-spoof START"`:
+
+| Mutation | SQL canary | JS canary |
+|----------|-----------|-----------|
+| HEAD (no mutation) | PASS | PASS |
+| Drop `validPevoPaperWhere` predicate from initial-probe WHERE clause | **FAIL RED** (`expected 'js_is_pevo_any_paper' to be 'sql_filter_or_missing'`) | PASS |
+| Drop JS `!isPevoAnyPaper(...)` check (replaced condition with `if (false)`) | PASS | **FAIL RED** (`expected 200 to be 404` — alice's content surfaces under bob's URL, exactly the phishing pretext) |
+
+Each layer-pinning canary fails red on exactly one mutation and stays green on the orthogonal one, satisfying acceptance subsection 4. Both mutations were applied in-place to the worktree's `papers.ts`, verified red, and reverted (final `diff /tmp/papers.ts.bak backend/src/routes/papers.ts` is empty modulo my non-mutation event-tag additions).
+
+### Verification
+
+- `npx tsc --noEmit`: clean.
+- `npm run lint`: only the two pre-existing `@typescript-eslint/no-explicit-any` warnings in `seed-phrase.ts` (unrelated to this task).
+- `npx vitest run tests/routes/canonical-root-walker.test.ts`: 17 tests pass on HEAD.
+
+### Deviations / notes for architect
+
+- Used `logger.debug` (not `warn` as suggested in the task file's example block) for the START-bail events. Rationale: the `sql_filter_or_missing` branch fires on any 404 lookup of a non-PEvO post (e.g. someone navigates to a permlink that doesn't exist or isn't a paper). At production traffic levels, `warn` would create constant noise. `debug` lets operators opt in for attack-pattern investigation. The canaries spy on `logger.debug` and the assertion holds either way (the events still fire and carry the discriminator). Revert to `warn` if the architect prefers; it's a one-token swap.
+
+- The `probeSqlHasTypeFilter(sql)` helper inside the responder uses `/'type'/` as the detection marker rather than a more elaborate predicate-shape regex. Justification: the `'type'` literal is unique to `validPevoPaperWhere`'s output on this specific probe (the rest of the initial probe references `'continues'`, never `'type'`). A future refactor that introduces `'type'` elsewhere in the initial probe SQL would require updating this marker, but such a refactor would itself be visible in the SQL string and easy to grep.
+
+- Did NOT keep the combined-layer canary as a smoke test. The two layer-pinning canaries cover the failure mode strictly more thoroughly. Per the task file's "implementer's choice" with mild architect preference for replace.
+

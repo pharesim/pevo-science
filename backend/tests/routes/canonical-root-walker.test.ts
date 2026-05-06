@@ -94,6 +94,25 @@ function isBackwardWalkContinuesProbe(sql: string): boolean {
   return /AS\s+cont_author/.test(sql) && /AS\s+cont_permlink/.test(sql);
 }
 
+/**
+ * Discriminate the initial backward-walker probe (which carries the
+ * `c.json_metadata -> $3 -> 'continues' IS NOT NULL` predicate AND the
+ * START-row identity columns `c.author, c.json_metadata`) from the
+ * subsequent loop-continuation probe (which only selects cont_author /
+ * cont_permlink).
+ *
+ * Detection key: the `IS NOT NULL` predicate is a stable structural
+ * marker tied to the domain logic of the initial probe ("only return
+ * rows that actually have a continues pointer"). Earlier iterations of
+ * this file used a column-list regex (`c.author,\s+c.json_metadata,\s+
+ * c.json_metadata`) which was brittle to whitespace tweaks and coupled
+ * the test dispatch to incidental SQL formatting. The IS NOT NULL
+ * predicate is what semantically defines "initial probe", so pin to it.
+ */
+function isInitialBackwardProbe(sql: string): boolean {
+  return /'continues'\s*IS\s+NOT\s+NULL/i.test(sql);
+}
+
 /** Recognise the head authorized-authors lookup
  *  (`fetchHeadAuthorizedAuthors`'s SQL). */
 function isHeadAuthorsLookup(sql: string): boolean {
@@ -101,6 +120,37 @@ function isHeadAuthorsLookup(sql: string): boolean {
     && /parent_permlink\s*=\s*\$3/.test(sql)
     && !/AS\s+cont_author/.test(sql);
 }
+
+/**
+ * Per-test mock-config primitive for type-spoof START tests.
+ *
+ * `startProbeMode` selects how the responder behaves for the spoof
+ * START row:
+ *
+ *   - `'with_filter'`: faithful-mock mode. The responder SQL-inspects
+ *     the production initial probe and mirrors what real HAF would
+ *     return: zero rows when the `validPevoPaperWhere` filter is
+ *     present (HEAD), or the spoof row when the filter has been
+ *     reverted (mutation). This mode is what makes the SQL-filter
+ *     canary fail red on a SQL-filter mutation: the mock observes
+ *     filter-absent and returns the spoof row, so the walker bails at
+ *     the JS-side check with `reason: 'js_is_pevo_any_paper'` instead
+ *     of the asserted `reason: 'sql_filter_or_missing'`.
+ *
+ *   - `'without_filter'`: force-feed mode. The responder ALWAYS
+ *     returns the spoof row, regardless of production SQL state. This
+ *     isolates the JS-side `isPevoAnyPaper` check as the gate under
+ *     test. On HEAD the JS check fires; on JS-check revert the walker
+ *     proceeds past the spoof row and the canary fails red.
+ *
+ * The two layers are kept SEPARATE in two distinct tests so a mutation
+ * to either layer (drop SQL filter; or drop JS re-check) fails red on
+ * exactly one canary while the other stays green. The earlier combined-
+ * layer canary inspected SQL with a regex inside the responder and
+ * conflated the two layers; the per-canary `mode` flag here lets each
+ * test pin a single layer cleanly.
+ */
+type StartProbeMode = 'with_filter' | 'without_filter';
 
 function pevoPaperJsonMeta(namedAuthors: string[], extra: Record<string, unknown> = {}) {
   return {
@@ -237,10 +287,10 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
         if (i === 0) {
           return { rows: [{ cont_author: null, cont_permlink: null }] };
         }
-        // Initial probe (round-2 SQL: includes c.author + c.json_metadata)
+        // Initial probe (round-2 SQL: carries `IS NOT NULL` predicate)
         // returns the start-row fields. Subsequent loop-continuation probes
         // return only cont_author / cont_permlink.
-        if (/c\.author,\s+c\.json_metadata,\s+c\.json_metadata/.test(sql)) {
+        if (isInitialBackwardProbe(sql)) {
           return {
             rows: [{
               author: 'alice',
@@ -427,52 +477,100 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
   // Round-2 hold-block additions
   // ────────────────────────────────────────────────────────────────────
 
-  it('rejects type-spoof on START post (vouched co-author posts type=review continuation)', async () => {
-    // Round-2 hold item 2 (P1): vouched co-author Bob (in alice/v1's
-    // pevo.authors[]) broadcasts `bob/spoof-review` with pevo.type='review'
-    // AND pevo.continues={alice, v1}. URL `/api/papers/bob/spoof-review`
-    // must NOT walk back through the gate (alice's authorized set includes
-    // bob → would otherwise admit) and surface alice/v1 as canonical.
-    // The fix: SQL-side validPevoPaperWhere filter on the START probe
-    // (rejects type=review at the SQL layer) PLUS JS-side isPevoAnyPaper
-    // re-check (defense in depth). With both removed, the URL would alias
-    // alice/v1's content; the canary fails red.
+  /**
+   * Detect whether the production initial-probe SQL carries the
+   * `validPevoPaperWhere` predicate (the SQL-side type filter). Used by
+   * the layer-pinning responder below to FAITHFULLY simulate what real
+   * HAF would return for the spoof START: if the SQL filter is present,
+   * a `pevo.type='review'` row is rejected at the SQL layer and the
+   * mock returns zero rows; if the SQL filter has been reverted, the
+   * row comes through and the JS-side `isPevoAnyPaper` re-check is the
+   * only remaining gate.
+   *
+   * Detection key: the `'type'` literal appears in `validPevoPaperWhere`
+   * (`(c.json_metadata -> $3 ->> 'type') = 'paper'`) but does NOT appear
+   * elsewhere in the initial probe (the SELECT/WHERE that fetches the
+   * cont_author/cont_permlink values references `'continues'`, not
+   * `'type'`). So `'type'` in the SQL string is a tight, drift-resistant
+   * marker for filter presence on this specific probe.
+   */
+  function probeSqlHasTypeFilter(sql: string): boolean {
+    return /'type'/.test(sql);
+  }
+
+  /**
+   * Shared spoof-START responder. SQL-inspects the initial probe to
+   * decide whether to return zero rows (SQL filter would have rejected
+   * the spoof) or the spoof row (SQL filter absent → JS check must be
+   * the gate). This makes the mock FAITHFUL: when production reverts
+   * the SQL filter, the mock observes the absence and returns the spoof
+   * row, exercising the JS path; when production has the SQL filter,
+   * the mock returns zero rows and the SQL path fires.
+   *
+   * The two canaries below share this responder but assert DIFFERENT
+   * `reason` events:
+   *
+   *   - SQL canary asserts `reason: 'sql_filter_or_missing'`. On main
+   *     (SQL filter present) the mock returns zero rows → walker emits
+   *     that reason → assertion holds. Mutation-kill: revert SQL filter
+   *     in papers.ts → mock now observes filter-absent and returns
+   *     spoof row → walker emits `js_is_pevo_any_paper` instead → SQL
+   *     canary FAILS RED.
+   *   - JS canary asserts `reason: 'js_is_pevo_any_paper'`. On main
+   *     (SQL filter present) the SQL layer is the gate, so the mock
+   *     returns zero rows and the walker emits `sql_filter_or_missing`,
+   *     which means the JS canary cannot pass on green main with the
+   *     same responder. So the JS canary uses `mode: 'without_filter'`
+   *     to FORCE the responder to return the spoof row regardless of
+   *     production SQL state — letting the JS check be the observed
+   *     gate. Mutation-kill: drop the `!isPevoAnyPaper(...)` check in
+   *     papers.ts → walker doesn't reject the spoof START → no
+   *     `js_is_pevo_any_paper` event → JS canary FAILS RED. On SQL-
+   *     filter revert (orthogonal mutation): mock still forces spoof
+   *     row → JS check still fires → JS canary stays GREEN.
+   */
+  function installTypeSpoofStartResponder(mode: StartProbeMode) {
     const aliceMeta = pevoPaperJsonMeta(['alice', 'bob']);
     const aliceRow = pevoPaperRow('alice', 'v1', ['alice', 'bob']);
+    const bobSpoofMeta = {
+      app: `${config.appTag}/test`,
+      [config.appTag]: {
+        type: 'review',
+        continues: { author: 'alice', permlink: 'v1' },
+      },
+    };
+    const spoofRow = {
+      author: 'bob',
+      json_metadata: bobSpoofMeta,
+      cont_author: 'alice',
+      cont_permlink: 'v1',
+    };
 
     installResponder(async (sql, params) => {
       if (isBackwardWalkContinuesProbe(sql)) {
         const a = params[0];
         const p = params[1];
         if (a === 'bob' && p === 'spoof-review') {
-          // The round-2 SQL filter (validPevoPaperWhere(source: 'all'))
-          // means a row with pevo.type='review' is filtered OUT at the
-          // SQL layer. Simulate that here: the START probe returns no
-          // rows because the type filter rejects bob's review post. If
-          // the SQL filter is reverted (i.e. no validPevoPaperWhere on
-          // the initial probe), the bare row would come back and the
-          // walker would proceed; the JS re-check (isPevoAnyPaper) is
-          // the second line of defense.
-          if (/\(c\.json_metadata\s*->\s*\$3\s*->>\s*'type'\)\s*=\s*'paper'/.test(sql)) {
-            // SQL filter present: returns no rows.
-            return { rows: [] };
+          if (mode === 'with_filter') {
+            // Faithful-mock semantics: respond as real HAF would.
+            // - Production SQL has the validPevoPaperWhere filter →
+            //   pevo.type='review' rejected at SQL layer → 0 rows.
+            // - Production SQL has had the filter reverted → row passes
+            //   the SQL layer → mock returns the spoof row.
+            // This makes the SQL-canary fail red on SQL-filter revert:
+            // walker emits `js_is_pevo_any_paper` instead of expected
+            // `sql_filter_or_missing`.
+            if (probeSqlHasTypeFilter(sql)) {
+              return { rows: [] };
+            }
+            return { rows: [spoofRow] };
           }
-          // SQL filter absent (mutation case): return the spoof row,
-          // forcing the JS-side isPevoAnyPaper check to be the gate.
-          return {
-            rows: [{
-              author: 'bob',
-              json_metadata: {
-                app: `${config.appTag}/test`,
-                [config.appTag]: {
-                  type: 'review',
-                  continues: { author: 'alice', permlink: 'v1' },
-                },
-              },
-              cont_author: 'alice',
-              cont_permlink: 'v1',
-            }],
-          };
+          // 'without_filter': force-feed the spoof row regardless of
+          // production SQL state. This isolates the JS-side
+          // `isPevoAnyPaper` check as the gate under test. Mutation-
+          // kill on the JS check: walker doesn't reject → no
+          // `js_is_pevo_any_paper` event → JS canary fails.
+          return { rows: [spoofRow] };
         }
         if (a === 'alice' && p === 'v1') return { rows: [{ cont_author: null, cont_permlink: null }] };
         return { rows: [] };
@@ -485,13 +583,13 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
         }
         return { rows: [] };
       }
-      // Paper detail fetch. With the gate reverted, the walker would
-      // canonicalize to alice/v1 and the route would fetch alice's row,
-      // returning 200 with alice's content under bob's URL — the exact
-      // failure mode the gate prevents. With the gate present, the
-      // walker rejects the START (type=review), no canonicalisation,
-      // bob/spoof-review's own detail SQL (with its validPevoPaperWhere)
-      // returns no row → 404.
+      // Paper detail fetch. With the gate present (either layer), the
+      // walker rejects the START, no canonicalisation; bob/spoof-review's
+      // own detail SQL (which itself runs validPevoPaperWhere) returns no
+      // row → 404. alice/v1's row is wired up so a mutation that surfaces
+      // the gate failure (walker proceeds → canonicalises to alice/v1)
+      // results in 200 with alice's content under bob's URL, exactly the
+      // failure mode the gate prevents.
       if (sql.includes('SELECT c.author, c.permlink, c.title')) {
         const a = params[0];
         const p = params[1];
@@ -500,14 +598,80 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
       }
       return { rows: [] };
     });
+  }
+
+  it('rejects type-spoof START via SQL filter (sql_filter_or_missing)', async () => {
+    // Layer-pinning canary 1 of 2. Pins the SQL-side validPevoPaperWhere
+    // filter on `findCanonicalRoot`'s initial probe. The faithful-mock
+    // SQL-inspects the production probe: when the filter predicate is
+    // present (HEAD), the mock returns zero rows; when reverted, it
+    // returns the spoof row.
+    //
+    // On HEAD: SQL filter present → mock returns 0 rows → walker bails
+    // at `result.rows.length === 0` and emits
+    // `reason: 'sql_filter_or_missing'`. Test passes.
+    //
+    // Mutation-kill: revert the SQL filter (drop the
+    // `validPevoPaperWhere(...)` predicate from the initial probe's
+    // WHERE clause) → the mock observes filter-absent and returns the
+    // spoof row → walker reaches the JS-side `!isPevoAnyPaper(...)`
+    // check, bails there with `reason: 'js_is_pevo_any_paper'` →
+    // assertion `reason === 'sql_filter_or_missing'` fails RED.
+    const debugSpy = vi.spyOn(logger, 'debug').mockImplementation(() => {});
+
+    installTypeSpoofStartResponder('with_filter');
 
     const res = await request(app).get('/api/papers/bob/spoof-review');
-    // The URL must NOT canonicalise to alice/v1. With the gate present
-    // → 404 (no detail row for bob/spoof-review). Mutation-kill: revert
-    // the type-spoof gate (item 2) and the walker canonicalises to
-    // alice/v1 → 200 with alice's content. This canary fails red on
-    // mutation (status changes 404 → 200 + alice content surfaces).
+    // URL must NOT canonicalise to alice/v1. 404 because bob/spoof-review
+    // has no PEvO-paper detail row (and the walker rejected the START).
     expect(res.status).toBe(404);
+
+    // Pin the kill reason: SQL filter (or missing row) is the gate that fired.
+    const events = debugSpy.mock.calls
+      .map((c) => c[0] as { event?: string; reason?: string } | undefined)
+      .filter((e) => e?.event === 'canonical_root_walker_start_invalid');
+    expect(events.length).toBeGreaterThan(0);
+    expect(events[0]?.reason).toBe('sql_filter_or_missing');
+
+    debugSpy.mockRestore();
+  });
+
+  it('rejects type-spoof START via JS isPevoAnyPaper (js_is_pevo_any_paper)', async () => {
+    // Layer-pinning canary 2 of 2. Pins the JS-side defense-in-depth
+    // re-check. The mock force-feeds the spoof row regardless of
+    // production SQL state (mode `'without_filter'`), so the JS
+    // `isPevoAnyPaper` check is the ONLY observed gate. The walker
+    // bails at the `!isPevoAnyPaper(startMeta, startRow.author)` branch.
+    //
+    // On HEAD: mock returns spoof row → walker reaches the JS check →
+    // emits `reason: 'js_is_pevo_any_paper'`. Test passes.
+    //
+    // Mutation-kill: drop the JS re-check
+    // (`if (typeof startRow.author !== 'string' || !isPevoAnyPaper(...))`)
+    // → walker proceeds past the spoof row → canonicalises to alice/v1
+    // → no `js_is_pevo_any_paper` event → assertion FAILS RED. The
+    // surfaced URL would also show alice's content (status 200,
+    // detail.author === 'alice') — the exact phishing pretext the gate
+    // prevents.
+    //
+    // Orthogonal-mutation green: revert ONLY the SQL filter (NOT the
+    // JS check) → mock still force-feeds spoof row → JS check still
+    // fires → event still emits → JS canary stays GREEN.
+    const debugSpy = vi.spyOn(logger, 'debug').mockImplementation(() => {});
+
+    installTypeSpoofStartResponder('without_filter');
+
+    const res = await request(app).get('/api/papers/bob/spoof-review');
+    expect(res.status).toBe(404);
+
+    // Pin the kill reason: JS isPevoAnyPaper was the gate that fired.
+    const events = debugSpy.mock.calls
+      .map((c) => c[0] as { event?: string; reason?: string } | undefined)
+      .filter((e) => e?.event === 'canonical_root_walker_start_invalid');
+    expect(events.length).toBeGreaterThan(0);
+    expect(events[0]?.reason).toBe('js_is_pevo_any_paper');
+
+    debugSpy.mockRestore();
   });
 
   it('rejects type-spoof at intermediate hop (chain bob/v3 → bob/v2 [type=review] → alice/v1)', async () => {
@@ -850,9 +1014,10 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
         if (i === 0) {
           return { rows: [{ cont_author: null, cont_permlink: null }] };
         }
-        // Initial probe shape: include the start-row fields.
-        // Subsequent probe shape: just cont_author / cont_permlink.
-        if (/c\.author,\s+c\.json_metadata,\s+c\.json_metadata/.test(sql)) {
+        // Initial probe shape (carries `IS NOT NULL` predicate): include
+        // the start-row fields. Subsequent probe shape: just cont_author /
+        // cont_permlink.
+        if (isInitialBackwardProbe(sql)) {
           return {
             rows: [{
               author: 'alice',

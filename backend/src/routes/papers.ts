@@ -1284,7 +1284,17 @@ async function findCanonicalRoot(
   memo?: HeadAuthorsMemo,
 ): Promise<ChainLink | null> {
   const pool = getPool();
-  if (!pool) return null;
+  if (!pool) {
+    logger.debug(
+      {
+        event: 'canonical_root_walker_no_pool',
+        startAuthor: author,
+        startPermlink: permlink,
+      },
+      'canonical-root walker bailed: HAF pool unavailable',
+    );
+    return null;
+  }
 
   try {
     // Check if this post has a 'continues' field. We also need the post's
@@ -1322,7 +1332,23 @@ async function findCanonicalRoot(
       [author, permlink, config.appTag, config.hiveBridgeAccount],
     );
 
-    if (result.rows.length === 0) return null;
+    if (result.rows.length === 0) {
+      // Either the post does not exist, has no `continues` pointer, or the
+      // SQL-side `validPevoPaperWhere` filter rejected it (e.g. type-spoof:
+      // pevo.type='review' on a post claiming to continue a paper). Tagged
+      // `sql_filter_or_missing` so a layer-pinning canary can pin the SQL
+      // filter as the kill mechanism.
+      logger.debug(
+        {
+          event: 'canonical_root_walker_start_invalid',
+          reason: 'sql_filter_or_missing',
+          startAuthor: author,
+          startPermlink: permlink,
+        },
+        'canonical-root walker rejected START: SQL filter rejected or no row',
+      );
+      return null;
+    }
 
     // JS-side defense-in-depth re-check that the START is itself a valid
     // PEvO paper (native or bridge, identity-pinned). A drift between the
@@ -1332,6 +1358,18 @@ async function findCanonicalRoot(
     const startRow = result.rows[0] as Record<string, unknown>;
     const startMeta = parseMeta(startRow.json_metadata);
     if (typeof startRow.author !== 'string' || !isPevoAnyPaper(startMeta, startRow.author)) {
+      // SQL filter let this row through but the JS-side identity-pinned
+      // re-check rejected it. Tagged `js_is_pevo_any_paper` so a layer-
+      // pinning canary can pin the JS check as the kill mechanism.
+      logger.debug(
+        {
+          event: 'canonical_root_walker_start_invalid',
+          reason: 'js_is_pevo_any_paper',
+          startAuthor: author,
+          startPermlink: permlink,
+        },
+        'canonical-root walker rejected START: JS isPevoAnyPaper re-check failed',
+      );
       return null;
     }
 
@@ -1342,6 +1380,15 @@ async function findCanonicalRoot(
     // task explicitly forbade `as` casts on the security path; mirror
     // the migrated pattern at `fetchHeadAuthorizedAuthors`.
     if (typeof startRow.cont_author !== 'string' || typeof startRow.cont_permlink !== 'string') {
+      logger.debug(
+        {
+          event: 'canonical_root_walker_start_invalid',
+          reason: 'cont_columns_invalid',
+          startAuthor: author,
+          startPermlink: permlink,
+        },
+        'canonical-root walker rejected START: cont_author/cont_permlink not string',
+      );
       return null;
     }
 
