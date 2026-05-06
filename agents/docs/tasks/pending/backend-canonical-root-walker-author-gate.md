@@ -191,3 +191,78 @@ Cross-cutting test additions: bridge-paper Option-b backward case canaries (admi
 Verification: `npx tsc --noEmit` clean; `npm run lint` clean (only pre-existing seed-phrase warnings); targeted vitest 54 pass (15 canonical-root-walker, 27 continuation-author-gate, 12 papers + 1 skip).
 
 Out-of-scope items honored: wall-clock budget and cycle detection remain as separate tasks; convention doc `pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28.md` left untouched (architect-owned). Architect followups A1-A4 in the hold block carry forward to archive.
+
+---
+
+## Architect re-review (2026-05-06, round-2 → round-3) — HELD PENDING FIXES
+
+`/ce-code-review` ran on commit `3bef3de` with 10 reviewers (correctness, testing, maintainability, project-standards, learnings-researcher, security, performance, reliability, kieran-typescript, adversarial; ce-agent-native-reviewer skipped per repo CLAUDE.md). All 10 returned cleanly.
+
+The round-2 implementation closes the seven hold items as the signal block claims for the THREE call sites the hold block enumerated. Re-review surfaced a fourth caller of `reconstructVersionsFromHaf` that was missed, plus two small polish items at the same call-site cluster. Round-3 bundles all three into one commit.
+
+### Items to address (all bundle into one round-3 commit at the same walker call-site cluster)
+
+**1. (P2) `resolveVersionsFromHaf` calls `reconstructVersionsFromHaf` without memo — third-call-site omission of round-2 hold item 3.** `routes/papers.ts:1421`. The round-2 hold block enumerated "two call sites" for memo threading (`?version=N` at line 1546, metadata-restored fallback at 1583) and the implementer threaded those correctly. But `resolveVersionsFromHaf` at `:1421` calls `reconstructVersionsFromHaf(author, permlink)` with only two args, no memo. That helper is invoked from a route handler's `Promise.all` fan-out at `:1651` where `headAuthorsMemo` is already constructed and in scope. Same risk class as item 3: under degraded HAF, the catch-block negative-cache benefit doesn't cover the reviews-fan-out path → up to 30s extra `statement_timeout` exposure per request when the same `(author, permlink)` is fetched on the canonical-walker path AND the reviews path within one request.
+
+Fix:
+- Add `memo?: HeadAuthorsMemo` parameter to `resolveVersionsFromHaf` signature.
+- Thread `memo` to the inner `reconstructVersionsFromHaf` call.
+- Pass `headAuthorsMemo` from the call site at `:1651`.
+- ~4 LOC.
+
+Canary: extend the existing memo-dedup canary to assert `aliceHeadLookupCount === 1` across canonical-walker + `resolveVersionsFromHaf` in the same request (3rd-call-site coverage paralleling round-2's `?version=N` canary). Mutation-kill: revert the new memo argument → count rises to 2 → canary fails red.
+
+Reviewer attribution: reliability (R1, conf 75) + learnings-researcher (architect-followup A2 grep audit) → cross-reviewer promotion to anchor 100. **A2 is now load-bearing; running the two-grep audit (`grep -n "reconstructVersionsFromHaf" backend/src/routes/papers.ts`) at round-3 commit time is mandatory** to confirm no fourth call site remains undiscovered.
+
+**2. (P3) `canonical_root_walker_depth_exceeded` warn emits both `hopNumber: CANONICAL_ROOT_MAX_HOPS` AND `maxHops: CANONICAL_ROOT_MAX_HOPS` — same constant, duplicate field.** `routes/papers.ts:1213-1220`. Round-2 added `hopNumber` for cross-event taxonomy consistency but didn't drop the pre-existing `maxHops`. On `depth_exceeded` the two fields are the same constant by construction. Drop one (architect's mild preference: drop `hopNumber` from this event only — `maxHops` documents the cap; the event name itself signals "we hit the cap"; `hopNumber` retains its meaningful varying-value role on `unauthorized_hop`). ~1 LOC.
+
+Reviewer attribution: maintainability (M-1, conf 100).
+
+**3. (P3) `/cite` and `/retract` handlers bypass `findCanonicalRoot` — future-route hazard.** `routes/papers.ts:~1908` (`/retract`) and `:~2052` (`/cite`). Verified non-exploitable today by adversarial reviewer (cite serves the URL post's own content; retract authorizes username===URL author and broadcasts on the URL's own (author, permlink); neither aliases foreign content). Risk is future copy-paste: a developer adding a new `/api/papers/:author/:permlink/<verb>` route patterns against these and inherits the bypass without realizing the GET handler's walker-wrapping was load-bearing.
+
+Fix: add a one-paragraph code comment above each handler explaining why `findCanonicalRoot` is intentionally absent. Concrete shape:
+
+```ts
+// Canonical-root walker is intentionally NOT invoked here. /cite and /retract
+// operate on the URL's own (author, permlink) — citation targets the URL post
+// directly; retraction authorizes username === URL author then broadcasts on
+// the URL's coords. Canonicalization is a display concern handled by the GET
+// handler. New /api/papers/:author/:permlink/<verb> routes that want canonical
+// resolution must call findCanonicalRoot themselves; do not pattern-match this
+// handler without checking.
+```
+
+~5 LOC per handler, no behavior change. Reviewer attribution: adversarial (adv-cite-and-retract-bypass-canonical-root-walker, conf 90).
+
+### Items deferred to follow-up tasks (architect files at this hold)
+
+- **`agents/docs/tasks/pending/backend-canonical-walker-canary-layer-mutation-kill.md`** (P3 testing rigor + observability) — Type-spoof START canary mutation-kills only the JOINT (SQL filter + JS `isPevoAnyPaper`) revert because `fetchPaperDetailFromHaf`'s own filter catches the residual on per-layer reverts (adversarial conf 70 + testing T1/TG1 + kieran-typescript TG-1 + learnings-researcher → cross-reviewer promotion to anchor 75). Compounded by the SQL-regex dispatch in the mock being fragile to formatting changes. Closing this requires distinguishing observability (event tags on START-rejection paths — `:1080, 1119, 1129, 1138`) so per-layer canaries can pin which gate fired. Adversarial finding adv-walker-error-event-not-emitted-pre-try (conf 90) bundled into the same task scope because the event tags ARE the discriminating primitive.
+
+- **`agents/docs/tasks/blocked/backend-haf-walker-wall-clock-budget.md`** — Loop-continuation SQL probe at `:1183-1184` omits the `c.json_metadata -> $3 -> 'continues' IS NOT NULL` predicate that the initial probe at `:1107` has. Asymmetric → one extra HAF round-trip per legitimate non-cyclic chain that reaches root + future-drift surface. Adversarial finding (conf 80) appended as a "while we're here" acceptance item to the wall-clock budget task; that task already touches the loop SQL for AbortController threading. Stays in `blocked/` until parent archives.
+
+### Items dismissed during architect triage
+
+- **TOCTOU window between SQL filter and JS re-check** (adversarial conf 60) — fail-closed via single-shot row capture; not exploitable for content aliasing; benign Hive post-mutability artifact.
+- **kieran-typescript KT-1** (loop-continuation root-check reads `cont_author` through `any` before cast — conf 50) — fail-closed via the second `Record<string, unknown>` cast; clarity-only.
+- **kieran-typescript KT-2** (intermediate-hop test mock returns loop-continuation row without author/json_metadata — conf 50) — current loop SQL doesn't read those fields; defensive shape concern only.
+- **maintainability RR-1** (`reconstructVersionsFromHaf` silently ignores memo when `prefetchedChain` is provided — conf 50) — both current callers pass `undefined` for prefetchedChain; would not manifest until a third call site appears with both args.
+
+### Pre-existing items surfaced (NOT round-3 scope; tracked separately if actioned)
+
+- **`findCanonicalRoot` runs in full on every request before consulting `hafCache`** (`routes/papers.ts:1534-1541`, adversarial conf 85). Pre-existing design; cached paper-detail entries don't short-circuit the walker. Surfaces as a per-request SQL floor on every continuation-URL request. NOT actioned now; if the architect later wants to weigh cache-staleness-on-author-edit against per-request-floor amplification, file `backend-canonical-root-walker-result-cache.md`.
+- **`parseMeta` accepts numeric/boolean inputs; fail-closed via property-on-primitive coincidence** (`backend/src/helpers.ts:29-34`, adversarial conf 75). Pre-existing helper not touched by this commit; tightening to assert object-shape would close the works-by-coincidence dimension. NOT actioned now; helpers.ts is in scope for backend agent if a future task picks it up.
+
+### Mutation-kill attestation requirement (round-3)
+
+Backend's round-3 signal block MUST include the explicit revert-verify attestation per `tests-must-fail-on-mutation-of-code-under-test-2026-04-22.md`:
+- Memo-on-`resolveVersionsFromHaf` canary fails when the new memo argument isn't threaded through (item 1).
+- Item 2 (drop one duplicate field) is defensive-only / log-shape; no behavioral mutation expected. Note in attestation: "log-shape cleanup; existing depth-exceeded canary continues to pass unchanged on `maxHops` field".
+- Item 3 (handler comments) is documentation-only; no behavioral mutation expected. Note in attestation: "comment-only; existing /cite and /retract canaries continue to pass unchanged".
+
+### Architect followups carried forward (still applies at round-3 archive)
+
+A1-A4 from the round-2 hold block remain. **A2 specifically:** before round-3 archive, the architect MUST run `grep -n "reconstructVersionsFromHaf" backend/src/routes/papers.ts` and `grep -n "fetchHeadAuthorizedAuthors" backend/src/routes/papers.ts` and confirm every call site that has `headAuthorsMemo` in scope passes it. Round-3 finding 1 is direct evidence that the implementer's mental enumeration missed a call site; the grep audit is the structural backstop.
+
+### Re-review signal
+
+When round-3 items 1-3 land in a single commit on `papers.ts`, `git mv` this file back to `tasks/review/`. Architect's next review pass scopes `/ce-code-review` to the round-3 commit. Expected diff: ~12 LOC in `papers.ts` (`resolveVersionsFromHaf` memo threading + duplicate-field drop + two handler comment blocks) + ~30 LOC of new canary (memo-dedup canary extension covering the `resolveVersionsFromHaf` path).

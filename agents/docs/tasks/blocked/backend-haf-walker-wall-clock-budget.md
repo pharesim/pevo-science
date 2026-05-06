@@ -98,6 +98,18 @@ When BOTH depth cap and wall-clock fire on the same request, prefer the wall-clo
 - `backend/src/routes/papers.ts:805-852` (current `findCanonicalRoot`), `:850-1000` (current `resolveContinuationChain`), `:780-848` (current `fetchHeadAuthorizedAuthors`).
 - `backend/src/db.ts:22` `statement_timeout=30000ms` — the per-query bound this task complements with a per-request bound.
 
-## [BLOCKED by Architect] (2026-05-06, backend)
+## [BLOCKED by Backend] (updated 2026-05-06, architect)
 
-The "Sequencing: lands AFTER `backend-canonical-root-walker-author-gate` round-2 archives" constraint at the top of this file is a hard ordering dependency on the architect's review/archive cycle. The parent task is currently in `tasks/review/` awaiting architect action. Per root `CLAUDE.md` rule #6 + backend `CLAUDE.md` boundaries, tasks waiting on another agent belong in `blocked/`, not `pending/`. Move back to `pending/` once the parent archives.
+The "Sequencing: lands AFTER `backend-canonical-root-walker-author-gate` round-2 archives" constraint at the top of this file is a hard ordering dependency on the parent task's archive. **Architect re-reviewed the parent on 2026-05-06 and held it for round-3** (memo-threading omission at `resolveVersionsFromHaf:1421` plus two polish items); see the round-3 hold block at the bottom of `agents/docs/tasks/review/backend-canonical-root-walker-author-gate.md` (which has been `git mv`'d back to `tasks/pending/`). Backend now holds the next-action; this file stays blocked until round-3 lands and the parent archives.
+
+### Acceptance addition (filed at the same triage, 2026-05-06)
+
+Adversarial reviewer surfaced an asymmetry between the walker's two SQL probes: the initial probe at `papers.ts:1107` includes `c.json_metadata -> $3 -> 'continues' IS NOT NULL`; the loop-continuation probe at `:1183-1184` omits it. Effect: one extra HAF round-trip per legitimate non-cyclic chain that reaches root (the SQL fetches a row whose `cont_author`/`cont_permlink` are NULL via the JSON path, and the JS layer at `:1188` correctly returns the predecessor as canonical). Asymmetric drift surface for future probe refactors.
+
+This task is the natural home because it already touches the loop SQL for `AbortController` threading. Bundle as a "while we're here" acceptance item:
+
+- Add `AND c.json_metadata -> $3 -> 'continues' IS NOT NULL` to the loop-continuation SQL probe at `:1183-1184`.
+- **Verify the loop semantics first.** The change shifts the bail condition from "fetched a row with NULL continues → return predecessor" to "fetched 0 rows → return current as canonical". The implementer must confirm the loop tracks `(currentAuthor, currentPermlink)` independently of the SQL result so the 0-row case correctly returns the previous iteration's predecessor (which IS the root). If the loop today derives `currentAuthor` from the SQL result row, restructure first or skip this acceptance item and surface the restructure as a separate concern.
+- Canary: extend an existing legitimate-chain canary to assert that walker reaches the root in N hops with N+1 SQL queries (initial + N loop), not N+2. Mutation-kill: revert the new SQL filter → query count rises by 1.
+
+Reviewer attribution: adversarial (`adv-loop-continuation-sql-no-continues-not-null`, conf 80). Single reviewer; deferred from round-3 because this task is the better semantic home.
