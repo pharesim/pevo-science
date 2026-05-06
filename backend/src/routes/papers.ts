@@ -702,10 +702,21 @@ async function fetchPaperDetailFromHaf(author: string, permlink: string, memo?: 
           // Why sentinel-aware (`'in'` rather than non-null check):
           // a head explicitly clearing the triple (alice's v2 short
           // correction with no PDF, inline body only) is a supported
-          // product shape — `is_diffable` toggles to "inline" when
-          // ipfs_cid is null. Distinguishing "head cleared" (key
+          // product shape. Distinguishing "head cleared" (key
           // present, value null) from "head omitted" (key absent)
-          // is the signal that drives that toggle correctly.
+          // preserves that signal end-to-end so a future per-version
+          // display surface can read "no PDF for this version" from
+          // the chain truthfully — without that distinction, a head
+          // explicitly clearing its triple would be indistinguishable
+          // from a head that simply didn't restate root's triple, and
+          // the displayed CID would silently fall back to root.
+          //
+          // Note: no current API consumer relies on the head-cleared
+          // vs head-omitted distinction (the response surfaces both
+          // as `ipfs_cid: null`); the sentinel-aware shape is
+          // preemptive future-proofing aligned with the atomic-triple
+          // invariant. See round-6 signal block in
+          // `agents/docs/tasks/...continuation-post-author-consent-gate.md`.
           //
           // ipfs_cid is additionally passed through `validatedCid`
           // so attacker-controlled chain values that flow from

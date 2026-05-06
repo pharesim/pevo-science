@@ -1114,6 +1114,126 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
     expect(detail.document_hash).toBe('sha256:root');
   });
 
+  // Round-6 hold item 3: OR-arm-deletion mutation kill canaries. The
+  // sentinel predicate at papers.ts is `'ipfs_cid' in headPevo ||
+  // 'ipfs_filename' in headPevo || 'document_hash' in headPevo`. Every
+  // prior "head wins" canary in this suite sets `ipfs_cid` as a present
+  // key, so a mutation that deletes either of the latter two OR arms
+  // (or collapses the predicate to just `'ipfs_cid' in headPevo`)
+  // leaves all of them green. These two canaries (head expressing ONLY
+  // `document_hash`, then head expressing ONLY `ipfs_filename`) close
+  // that gap: each head shape activates exactly one of the two
+  // non-`ipfs_cid` OR arms, so deleting that arm flips the head-wins
+  // path into the root-fallback branch and the canary fails.
+  it('admits head\'s triple as document_hash-only when head expresses ONLY document_hash (round-6 OR-arm-kill)', async () => {
+    // Head's pevo metadata expresses ONLY `document_hash` (no
+    // `ipfs_cid`, no `ipfs_filename`). Root has the full triple.
+    // Under round-5's atomic block: `'document_hash' in headPevo` is
+    // true → head wins → ipfs_cid and ipfs_filename collapse to null
+    // (absent on head; pevoString returns null), document_hash
+    // surfaces head's value.
+    //
+    // Mutation kill: revert `'document_hash' in headPevo` from the
+    // OR predicate (or collapse the predicate to
+    // `'ipfs_cid' in headPevo`) and the predicate becomes false →
+    // root branch fires → document_hash surfaces as 'sha256:root'
+    // instead of 'sha256:head-only'. Test FAILS with
+    // `expect document_hash to be 'sha256:head-only' but received
+    // 'sha256:root'`.
+    const continuationMeta = {
+      app: `${config.appTag}/test`,
+      [config.appTag]: {
+        type: 'paper',
+        authors: [{ hive: 'alice' }, { hive: 'bob' }],
+        document_hash: 'sha256:head-only',
+        // no ipfs_cid, no ipfs_filename — head expresses only document_hash
+      },
+    };
+    installResponder(async (sql, params) => {
+      if (sql.includes('SELECT c.author, c.json_metadata') && sql.includes('parent_permlink = $3')) {
+        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmRootCidBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' })] };
+      }
+      if (sql.includes('SELECT c.author, c.permlink, c.title')) {
+        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmRootCidBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' })] };
+      }
+      if (isForwardChainWalkSql(sql)) {
+        if (params[0] === 'alice') {
+          return { rows: [{ author: 'bob', permlink: 'v2', block_num: 100, json_metadata: continuationMeta }] };
+        }
+        return { rows: [] };
+      }
+      if (sql.includes('ROW_NUMBER') && sql.includes('co.block_num')) {
+        return { rows: [
+          { version_number: 1, block_num: 1, author: 'alice', permlink: 'p1', title: 't', body: 'abstract\n\n---\n\nbody', created: '2026-01-01T00:00:00.000Z', json_metadata: { app: `${config.appTag}/test`, [config.appTag]: { type: 'paper', authors: [{ hive: 'alice' }, { hive: 'bob' }], ipfs_cid: 'QmRootCidBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' } } },
+          { version_number: 2, block_num: 100, author: 'bob', permlink: 'v2', title: 't2', body: 'abstract2\n\n---\n\nbody2', created: '2026-01-02T00:00:00.000Z', json_metadata: continuationMeta },
+        ] };
+      }
+      return { rows: [] };
+    });
+
+    const res = await request(app).get('/api/papers/alice/p1');
+    expect(res.status).toBe(200);
+    const detail = res.body?.data;
+    expect(detail).toBeDefined();
+    expect(detail.ipfs_cid).toBe(null);
+    expect(detail.ipfs_filename).toBe(null);
+    expect(detail.document_hash).toBe('sha256:head-only');
+  });
+
+  it('admits head\'s triple as ipfs_filename-only when head expresses ONLY ipfs_filename (round-6 OR-arm-kill)', async () => {
+    // Head's pevo metadata expresses ONLY `ipfs_filename` (no
+    // `ipfs_cid`, no `document_hash`). Root has the full triple.
+    // Under round-5's atomic block: `'ipfs_filename' in headPevo` is
+    // true → head wins → ipfs_cid and document_hash collapse to null,
+    // ipfs_filename surfaces head's value.
+    //
+    // Mutation kill: revert `'ipfs_filename' in headPevo` from the
+    // OR predicate (or collapse the predicate to
+    // `'ipfs_cid' in headPevo`) and the predicate becomes false →
+    // root branch fires → ipfs_filename surfaces as 'root.pdf'
+    // instead of 'head-only.pdf'. Test FAILS with
+    // `expect ipfs_filename to be 'head-only.pdf' but received
+    // 'root.pdf'`.
+    const continuationMeta = {
+      app: `${config.appTag}/test`,
+      [config.appTag]: {
+        type: 'paper',
+        authors: [{ hive: 'alice' }, { hive: 'bob' }],
+        ipfs_filename: 'head-only.pdf',
+        // no ipfs_cid, no document_hash — head expresses only ipfs_filename
+      },
+    };
+    installResponder(async (sql, params) => {
+      if (sql.includes('SELECT c.author, c.json_metadata') && sql.includes('parent_permlink = $3')) {
+        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmRootCidBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' })] };
+      }
+      if (sql.includes('SELECT c.author, c.permlink, c.title')) {
+        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmRootCidBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' })] };
+      }
+      if (isForwardChainWalkSql(sql)) {
+        if (params[0] === 'alice') {
+          return { rows: [{ author: 'bob', permlink: 'v2', block_num: 100, json_metadata: continuationMeta }] };
+        }
+        return { rows: [] };
+      }
+      if (sql.includes('ROW_NUMBER') && sql.includes('co.block_num')) {
+        return { rows: [
+          { version_number: 1, block_num: 1, author: 'alice', permlink: 'p1', title: 't', body: 'abstract\n\n---\n\nbody', created: '2026-01-01T00:00:00.000Z', json_metadata: { app: `${config.appTag}/test`, [config.appTag]: { type: 'paper', authors: [{ hive: 'alice' }, { hive: 'bob' }], ipfs_cid: 'QmRootCidBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' } } },
+          { version_number: 2, block_num: 100, author: 'bob', permlink: 'v2', title: 't2', body: 'abstract2\n\n---\n\nbody2', created: '2026-01-02T00:00:00.000Z', json_metadata: continuationMeta },
+        ] };
+      }
+      return { rows: [] };
+    });
+
+    const res = await request(app).get('/api/papers/alice/p1');
+    expect(res.status).toBe(200);
+    const detail = res.body?.data;
+    expect(detail).toBeDefined();
+    expect(detail.ipfs_cid).toBe(null);
+    expect(detail.ipfs_filename).toBe('head-only.pdf');
+    expect(detail.document_hash).toBe(null);
+  });
+
   it('?version=N retrieves per-version ipfs_cid (regression pin)', async () => {
     // Round-3 hold item 2: ipfs_cid is preserved per-version on chain.
     // The dedicated ?version=N path reads each version's metadata

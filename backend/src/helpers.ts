@@ -147,14 +147,23 @@ export function extractAuthorizedContinuationAuthors(
  * to `null` via `|| null`. This helper unifies the read pattern: a
  * string field is either present (non-empty) or absent (null).
  *
- * Used in head-preferred / root-fallback chains where the runtime
- * shape of head/root metadata is `unknown` (parsed JSON):
+ * **Contract:** `pevoString` narrows non-strings (and empty strings)
+ * to null. It does NOT itself drive head-vs-root selection at the
+ * atomic-triple site in `papers.ts` — the `'in'`-based
+ * `headHasAnyTripleKey` sentinel decides whether head's view or
+ * root's view of the IPFS triple wins atomically; `pevoString` then
+ * narrows whichever side won. Per-field `??` chaining like
+ * `pevoString(headPevo, 'ipfs_cid') ?? pevoString(rootPevo,
+ * 'ipfs_cid')` re-introduces the Frankenstein-composition bug-class
+ * that the atomic block exists to prevent — do not copy that shape
+ * to new head-vs-root sites.
  *
- *     detail.ipfs_cid = pevoString(headPevo, 'ipfs_cid')
- *       ?? pevoString(rootPevo, 'ipfs_cid');
+ * Typical usage is at non-triple sites, where the value is read once
+ * from a single `pevo` object:
  *
- * Empty-string head values fall back to root, matching the rest of
- * the codebase. `null`/`undefined`/missing on head also fall back.
+ *     const doi = pevoString(pevo, 'doi');
+ *     // doi is `string | null`; non-string and empty-string runtime
+ *     // values both collapse to null.
  */
 export function pevoString(pevo: Record<string, unknown>, key: string): string | null {
   const v = pevo[key];

@@ -669,4 +669,73 @@ This task remains the keystone for two `[BLOCKED by Architect]` tasks:
 - `tasks/blocked/backend-broadcast-idempotency-cluster-followup.md` (P1)
 - `tasks/blocked/backend-multi-author-cumulative-union.md` (P1, supersedes round-3 no-shrink rule)
 
+## Backend re-review signal (2026-05-06, round-6, working tree before commit)
+
+All three round-6 hold items addressed in a single commit. Test count: 31 passing (29 round-5 + 2 new round-6 OR-arm-kill canaries).
+
+### Item 1 — `pevoString` JSDoc rewrite (`backend/src/helpers.ts:147-168`)
+
+Replaced the stale per-field-fallback example (`pevoString(headPevo, 'ipfs_cid') ?? pevoString(rootPevo, 'ipfs_cid')` — the exact Frankenstein anti-pattern round-5 was written to prevent) with a contract-first paragraph plus a non-triple usage example (`const doi = pevoString(pevo, 'doi')`). The contract paragraph states explicitly:
+
+- `pevoString` narrows non-strings (and empty strings) to null.
+- It does NOT itself drive head-vs-root selection at the atomic-triple site.
+- The `'in'`-based `headHasAnyTripleKey` sentinel decides whether head's view or root's view of the IPFS triple wins atomically; `pevoString` then narrows whichever side won.
+- Per-field `??` chaining at head-vs-root sites re-introduces the Frankenstein-composition bug-class — explicit "do not copy that shape to new head-vs-root sites" warning.
+
+### Item 2 — `is_diffable` reference removed from `papers.ts:701-720`
+
+Comment reframed in two parts:
+
+1. The "head cleared" vs "head omitted" distinction is now described as preserving the signal end-to-end "so a future per-version display surface can read 'no PDF for this version' from the chain truthfully" — without naming a specific consumer that does not exist. The phrase that previously cited `is_diffable` ("`is_diffable` toggles to 'inline' when ipfs_cid is null") is gone.
+2. Added a `Note:` paragraph stating explicitly that no current API consumer relies on the head-cleared vs head-omitted distinction (the response surfaces both as `ipfs_cid: null`); the sentinel-aware shape is preemptive future-proofing aligned with the atomic-triple invariant.
+
+**Open question per round-5 → round-6 hold guidance:** is item 2's behavioral distinction (key-presence-aware fallback) load-bearing today, or preemptive future-proofing? **Backend's read of the code:** preemptive. `grep -r is_diffable backend/ frontend/` returns no hits; the API response shape (`PaperDetail`) does not expose a per-version `is_diffable`-style field; no UI surface differentiates head-cleared from head-omitted. The round-5 code shape (`'in'`-sentinel) is correct under either consumer (preemptive or load-bearing) and stays as-is; only the comment changes. Architect can decide at archive whether item 2 was over-specified at the spec side and whether to (a) leave as preemptive with the new comment shape, (b) trim back to non-null check (item-1-alone semantics), or (c) commit to a per-version display-surface task that would actually consume the distinction. Backend defaults to (a); recommend NOT (b) because reverting the sentinel would re-introduce the round-5 atomic-triple regression, and (c) would scope-creep this task. **No concrete consumer is planned within the next few sprints to backend's knowledge.**
+
+### Item 3 — OR-arm-deletion mutation-kill canaries (`tests/routes/continuation-author-gate.test.ts:1117-1235`)
+
+Two new canaries added (the hold block specified "1-2 new canaries"; 2 is the minimum for full OR-arm coverage given the predicate is a 3-way OR with `ipfs_cid` already covered by every prior canary):
+
+1. **`admits head's triple as document_hash-only when head expresses ONLY document_hash (round-6 OR-arm-kill)`** — head metadata sets only `document_hash` (no `ipfs_cid`, no `ipfs_filename`). Asserts `{ipfs_cid: null, ipfs_filename: null, document_hash: 'sha256:head-only'}`.
+2. **`admits head's triple as ipfs_filename-only when head expresses ONLY ipfs_filename (round-6 OR-arm-kill)`** — head metadata sets only `ipfs_filename`. Asserts `{ipfs_cid: null, ipfs_filename: 'head-only.pdf', document_hash: null}`.
+
+Each canary's docstring explains the exact OR arm it kills and the expected failure shape under the corresponding mutation.
+
+#### Mutation-kill attestation
+
+Per the round-5 → round-6 hold-block expectation, each OR arm reverted individually with the suite re-run, then restored:
+
+**Revert A — drop `'document_hash' in headPevo`:**
+```ts
+const headHasAnyTripleKey =
+  'ipfs_cid' in headPevo
+  || 'ipfs_filename' in headPevo;
+```
+Result: `1 failed | 30 passed (31)`. Failing test: `admits head's triple as document_hash-only when head expresses ONLY document_hash (round-6 OR-arm-kill)` with `AssertionError: expected 'QmRootCidBBBBBBBBBBBBBBBBBBBBBBBBBBBB…' to be null` (root branch fired; `ipfs_cid` surfaced as root's value instead of the expected null). Restored: 31/31 green.
+
+**Revert B — drop `'ipfs_filename' in headPevo`:**
+```ts
+const headHasAnyTripleKey =
+  'ipfs_cid' in headPevo
+  || 'document_hash' in headPevo;
+```
+Result: `1 failed | 30 passed (31)`. Failing test: `admits head's triple as ipfs_filename-only when head expresses ONLY ipfs_filename (round-6 OR-arm-kill)` with `AssertionError: expected 'QmRootCidBBBBBBBBBBBBBBBBBBBBBBBBBBBB…' to be null` (root branch fired; `ipfs_cid` surfaced as root's value instead of the expected null). Restored: 31/31 green.
+
+The third mutation form noted in the round-5 → round-6 hold ("collapses the predicate to just `'ipfs_cid' in headPevo`") is a strict superset of reverts A+B — both new canaries fail under that mutation, double-killing it.
+
+The pre-existing round-5 mutation-kill attestation (per-field-fallback revert; non-null-check revert) carries forward unchanged — those reverts continue to fire on the existing round-5 canary set.
+
+### Verification
+
+- `npx vitest run tests/routes/continuation-author-gate.test.ts` — 31 passing (29 round-5 + 2 new round-6).
+- Full vitest suite: TODO (parent runs after merge per backend agent CLAUDE.md; deferred to architect re-review intake or a downstream commit).
+- Architect followups (round-1 + round-2 + round-3 + round-4 + round-5) carry forward unchanged at archive; per round-5 hold: A8 expansion fires at archive.
+
+### What landed in this commit
+
+- `backend/src/helpers.ts` — JSDoc rewrite (item 1, ~16 net lines including added paragraph + restructured example).
+- `backend/src/routes/papers.ts` — comment reframe at lines 701-720 (item 2, ~12 net lines including the new "Note: no current API consumer..." paragraph and the round-6 signal-block cross-reference).
+- `backend/tests/routes/continuation-author-gate.test.ts` — 2 new canaries with framing docstrings (item 3, ~120 lines).
+
+Round-6 hold block items 1, 2, 3: all addressed. No new findings surfaced during item-3 mutation-kill testing.
+
 Both unblock at this task's eventual archive (round-6 clean or beyond).
