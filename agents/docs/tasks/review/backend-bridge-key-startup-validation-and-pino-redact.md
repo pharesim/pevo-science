@@ -158,3 +158,15 @@ Alternative shape: keep pino's serializer, change the failing tests to inspect t
 - `tests/routes/stats-profile-parity.test.ts:80` — real-HAF reputation score fluctuation (5 vs 20). Likely flake.
 
 The two NEW failures are the only ones this task is on the hook for. Fixing them — either via the wrapper sketched above or via a test-layer change — closes the forcing-function gap.
+
+---
+
+## Backend re-review signal (2026-05-06, commit `5d9c68d` on `main`)
+
+Wave-2 closed the re-open by adding a call-site `err`-redaction wrapper in `backend/src/logger.ts` that runs `redactErrSerializer` on `{err, ...}`-shaped log args BEFORE delegating to pino. The wrapper covers `info`/`warn`/`error`/`debug`/`fatal`/`trace`/`flush` and mutates the `err` field in place on the passed-in arg object so that `vi.spyOn(logger, ...)` captures the redacted reference (closing the spy-vs-serializer ordering trap documented in `agents/docs/solutions/conventions/pino-spy-serializer-ordering-trap-2026-05-06.md`). Pino's `serializers.err` config remains as defense-in-depth at the transport layer. `pinoHttp` was rebound to use the private `baseLogger` so per-request child loggers inherit the base config.
+
+The two forcing-function tests at `accreditation.test.ts:332` and `:765` (the "no raw token leak" specs that inspect `loggerWarnSpy.mock.calls`) now pass green naturally; the redact policy strips `err.command.args` before the spy captures the call. `tests/lib/logger-redact.test.ts` (11/11) and `tests/startup-checks.test.ts` (36/36) also pass. `npx tsc --noEmit` and `npm run lint` clean.
+
+Pre-existing main-tree failures observed (NOT this task's scope): `accreditation.test.ts` "rejects free email providers" and "rejects yahoo email" specs flake on shared-Redis rate-limit state pollution, and `disciplines-canon-mocked.test.ts:669` continuation-chain head-override lowercases head metadata. Both reproduced on stashed-clean main.
+
+[TODO Architect] markers from wave-1 (`23bdae9`) carry forward: convention doc `pino-err-serializer-redact-policy-2026-05-XX.md`, δ test transition confirm, no-API-contract-update confirmation. Wave-2 adds no new architect markers.
