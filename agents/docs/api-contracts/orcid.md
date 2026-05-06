@@ -20,7 +20,7 @@ Initiate the ORCID OAuth2 flow for any mode. Generates a state parameter stored 
 
 ```json
 {
-  "mode": "signup" | "login" | "accredit" | "link"
+  "mode": "signup" | "login" | "accredit" | "link" | "fresh_auth"
 }
 ```
 
@@ -30,18 +30,19 @@ Initiate the ORCID OAuth2 flow for any mode. Generates a state parameter stored 
 | `login` | No | Sign in via ORCID |
 | `accredit` | Yes (JWT) | Get accredited via ORCID |
 | `link` | Yes (JWT) | Link/update ORCID on existing accreditation |
+| `fresh_auth` | Yes (JWT) | Mint a per-op fresh-auth proof via a fresh OAuth round-trip. Sibling to `POST /api/custody/fresh-auth` (password path). The OAuth-returned ORCID iD MUST equal `accounts.orcid` for the JWT subject; mismatch returns 403. |
 
 **State stored in Redis:** Key `orcid_state:{state}`, TTL 600s.
 
 ```json
 {
-  "mode": "signup" | "login" | "accredit" | "link",
+  "mode": "signup" | "login" | "accredit" | "link" | "fresh_auth",
   "username": "...",
   "timestamp": 1234567890
 }
 ```
 
-`username` is present only for authenticated modes (`accredit`, `link`), read from the JWT.
+`username` is present only for authenticated modes (`accredit`, `link`, `fresh_auth`), read from the JWT.
 
 **Response `data`:**
 
@@ -176,6 +177,35 @@ No min works check on link.
   "tx_id": "<Hive custom_json transaction ID>"
 }
 ```
+
+#### fresh_auth
+
+1. Exchange code for token, get ORCID iD.
+2. Verify the OAuth-returned ORCID iD format matches `/^\d{4}-\d{4}-\d{4}-\d{3}[\dX]$/`. Mismatch returns 400 `BAD_REQUEST`.
+3. Look up `accounts.orcid` for the JWT subject (the `username` bound into the state at `/start`).
+4. Verify `accounts.orcid === orcidId`. Mismatch (or account has no ORCID linked) returns 403 `FORBIDDEN`. This is the symmetric guard to the `link`/`accredit` rule that an ORCID belongs to one account.
+5. Issue a fresh-auth proof bound to the JWT subject with `mechanism: "orcid"`.
+
+No `custom_json` broadcast on this mode. No min works check.
+
+**Response `data`:**
+
+```json
+{
+  "mode": "fresh_auth",
+  "fresh_auth_proof": "<single-use token>",
+  "expires_at": "2026-05-06T12:05:00Z",
+  "mechanism": "orcid"
+}
+```
+
+`fresh_auth_proof` is a single-use bearer token bound to the JWT subject. TTL is 5 minutes. Submit it as the `fresh_auth_proof` field on a subsequent `POST /api/custody/broadcast` request that contains a consent op (`author_accept` or `author_resign`). See [custody.md](custody.md) for the broadcast contract.
+
+**Errors specific to `fresh_auth`:**
+- `BAD_REQUEST` (400) — invalid ORCID iD format returned by the OAuth round-trip.
+- `UNAUTHORIZED` (401) — JWT subject's account not found.
+- `FORBIDDEN` (403) — the OAuth-returned ORCID iD does not match `accounts.orcid` for the JWT subject (binding violation), or the account has no ORCID linked.
+- `INTERNAL_ERROR` (503) — backend service unavailable.
 
 **Errors (all modes):**
 - `BAD_REQUEST` -- invalid/expired state or authorization code
