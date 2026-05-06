@@ -536,7 +536,7 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
             username: pending.hive_username,
             email_hash: hashEmailForLogs(pending.email),
             token_hash: hashTokenForLogs(token),
-            err: decrErr,
+            err: decrErr instanceof Error ? decrErr : new Error(String(decrErr)),
           },
           'accreditation.verify counter decrement after timeout failed — counter may TTL out at token expiration',
         );
@@ -558,7 +558,7 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
             username: pending.hive_username,
             email_hash: hashEmailForLogs(pending.email),
             token_hash: hashTokenForLogs(token),
-            err: deleteErr,
+            err: deleteErr instanceof Error ? deleteErr : new Error(String(deleteErr)),
           },
           'accreditation.verify token cleanup failed after broadcast failure — orphan will TTL out',
         );
