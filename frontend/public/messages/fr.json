@@ -170,7 +170,8 @@
     "noCitations": "Aucune citation ajoutée.",
     "addCitation": "+ Ajouter une citation",
     "draftRestored": "Brouillon restauré de {time}.",
-    "signInHint": "Connectez-vous pour publier. Vous devez également être un chercheur accrédité."
+    "signInHint": "Connectez-vous pour publier. Vous devez également être un chercheur accrédité.",
+    "coAuthorAccreditedHint": "ORCID is bound to the accredited Hive account."
   },
   "edit": {
     "editButton": "Modifier l'article",

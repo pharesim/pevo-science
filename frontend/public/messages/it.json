@@ -170,7 +170,8 @@
     "noCitations": "Nessuna citazione aggiunta.",
     "addCitation": "+ Aggiungi citazione",
     "draftRestored": "Bozza ripristinata da {time}.",
-    "signInHint": "Accedi per pubblicare. Devi anche essere un ricercatore accreditato."
+    "signInHint": "Accedi per pubblicare. Devi anche essere un ricercatore accreditato.",
+    "coAuthorAccreditedHint": "ORCID is bound to the accredited Hive account."
   },
   "edit": {
     "editButton": "Modifica articolo",

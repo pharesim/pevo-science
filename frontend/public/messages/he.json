@@ -170,7 +170,8 @@
     "noCitations": "לא נוספו ציטוטים.",
     "addCitation": "+ הוסף ציטוט",
     "draftRestored": "טיוטה שוחזרה מ-{time}.",
-    "signInHint": "התחברו כדי לפרסם. עליכם להיות גם חוקרים מוסמכים."
+    "signInHint": "התחברו כדי לפרסם. עליכם להיות גם חוקרים מוסמכים.",
+    "coAuthorAccreditedHint": "ORCID is bound to the accredited Hive account."
   },
   "edit": {
     "editButton": "עריכת מאמר",

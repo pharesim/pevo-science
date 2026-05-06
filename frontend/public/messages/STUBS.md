@@ -861,3 +861,22 @@ pt: upgrade.keychainImportFailed
 sv: upgrade.keychainImportFailed
 tr: upgrade.keychainImportFailed
 zh: upgrade.keychainImportFailed
+
+
+### Added 2026-05-06 (UI-AUTHOR-INPUT-ACCREDITED-PREFILL)
+
+ar: publish.coAuthorAccreditedHint
+cs: publish.coAuthorAccreditedHint
+da: publish.coAuthorAccreditedHint
+de: publish.coAuthorAccreditedHint
+es: publish.coAuthorAccreditedHint
+fa: publish.coAuthorAccreditedHint
+fr: publish.coAuthorAccreditedHint
+he: publish.coAuthorAccreditedHint
+it: publish.coAuthorAccreditedHint
+nl: publish.coAuthorAccreditedHint
+pl: publish.coAuthorAccreditedHint
+pt: publish.coAuthorAccreditedHint
+sv: publish.coAuthorAccreditedHint
+tr: publish.coAuthorAccreditedHint
+zh: publish.coAuthorAccreditedHint

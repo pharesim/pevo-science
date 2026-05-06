@@ -170,7 +170,8 @@
     "noCitations": "استنادی اضافه نشده است.",
     "addCitation": "+ افزودن استناد",
     "draftRestored": "پیش‌نویس از {time} بازیابی شد.",
-    "signInHint": "برای انتشار وارد شوید. همچنین باید پژوهشگر معتبر باشید."
+    "signInHint": "برای انتشار وارد شوید. همچنین باید پژوهشگر معتبر باشید.",
+    "coAuthorAccreditedHint": "ORCID is bound to the accredited Hive account."
   },
   "edit": {
     "editButton": "ویرایش مقاله",

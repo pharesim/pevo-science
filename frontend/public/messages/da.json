@@ -170,7 +170,8 @@
     "noCitations": "Ingen citationer tilføjet.",
     "addCitation": "+ Tilføj citation",
     "draftRestored": "Kladde gendannet fra {time}.",
-    "signInHint": "Log ind for at publicere. Du skal også være akkrediteret forsker."
+    "signInHint": "Log ind for at publicere. Du skal også være akkrediteret forsker.",
+    "coAuthorAccreditedHint": "ORCID is bound to the accredited Hive account."
   },
   "edit": {
     "editButton": "Rediger artikel",

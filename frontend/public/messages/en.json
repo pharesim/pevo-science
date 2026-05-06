@@ -170,7 +170,8 @@
     "citationReputationRelevant": "Count toward cited author's reputation",
     "noCitations": "No citations added.",
     "addCitation": "+ Add Citation",
-    "signInHint": "Sign in to publish. You also need to be an accredited researcher."
+    "signInHint": "Sign in to publish. You also need to be an accredited researcher.",
+    "coAuthorAccreditedHint": "ORCID is bound to the accredited Hive account."
   },
   "edit": {
     "editButton": "Edit Paper",

@@ -170,7 +170,8 @@
     "noCitations": "Nie dodano cytowań.",
     "addCitation": "+ Dodaj cytowanie",
     "draftRestored": "Szkic przywrócony z {time}.",
-    "signInHint": "Zaloguj się, aby publikować. Musisz być również akredytowanym naukowcem."
+    "signInHint": "Zaloguj się, aby publikować. Musisz być również akredytowanym naukowcem.",
+    "coAuthorAccreditedHint": "ORCID is bound to the accredited Hive account."
   },
   "edit": {
     "editButton": "Edytuj artykuł",

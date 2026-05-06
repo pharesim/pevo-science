@@ -170,7 +170,8 @@
     "noCitations": "Geen citaties toegevoegd.",
     "addCitation": "+ Citatie toevoegen",
     "draftRestored": "Concept hersteld van {time}.",
-    "signInHint": "Meld u aan om te publiceren. U moet ook een geaccrediteerd onderzoeker zijn."
+    "signInHint": "Meld u aan om te publiceren. U moet ook een geaccrediteerd onderzoeker zijn.",
+    "coAuthorAccreditedHint": "ORCID is bound to the accredited Hive account."
   },
   "edit": {
     "editButton": "Artikel bewerken",

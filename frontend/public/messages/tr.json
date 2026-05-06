@@ -170,7 +170,8 @@
     "noCitations": "Atıf eklenmedi.",
     "addCitation": "+ Atıf Ekle",
     "draftRestored": "Taslak {time} tarihinden geri yüklendi.",
-    "signInHint": "Yayınlamak için giriş yapın. Ayrıca akredite bir araştırmacı olmanız gerekir."
+    "signInHint": "Yayınlamak için giriş yapın. Ayrıca akredite bir araştırmacı olmanız gerekir.",
+    "coAuthorAccreditedHint": "ORCID is bound to the accredited Hive account."
   },
   "edit": {
     "editButton": "Makaleyi Düzenle",

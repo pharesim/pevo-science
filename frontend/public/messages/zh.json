@@ -170,7 +170,8 @@
     "noCitations": "尚未添加引用。",
     "addCitation": "+ 添加引用",
     "draftRestored": "草稿已从{time}恢复。",
-    "signInHint": "请登录后发表论文。您还需要成为已认证的研究人员。"
+    "signInHint": "请登录后发表论文。您还需要成为已认证的研究人员。",
+    "coAuthorAccreditedHint": "ORCID is bound to the accredited Hive account."
   },
   "edit": {
     "editButton": "编辑论文",

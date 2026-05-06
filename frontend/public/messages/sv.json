@@ -170,7 +170,8 @@
     "noCitations": "Inga citeringar tillagda.",
     "addCitation": "+ Lägg till citering",
     "draftRestored": "Utkast återställt från {time}.",
-    "signInHint": "Logga in för att publicera. Du måste också vara en ackrediterad forskare."
+    "signInHint": "Logga in för att publicera. Du måste också vara en ackrediterad forskare.",
+    "coAuthorAccreditedHint": "ORCID is bound to the accredited Hive account."
   },
   "edit": {
     "editButton": "Redigera artikel",

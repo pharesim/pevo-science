@@ -170,7 +170,8 @@
     "noCitations": "لم تُضف استشهادات.",
     "addCitation": "+ إضافة استشهاد",
     "draftRestored": "تمت استعادة المسودة من {time}.",
-    "signInHint": "سجّل الدخول للنشر. يجب أن تكون أيضاً باحثاً معتمداً."
+    "signInHint": "سجّل الدخول للنشر. يجب أن تكون أيضاً باحثاً معتمداً.",
+    "coAuthorAccreditedHint": "ORCID is bound to the accredited Hive account."
   },
   "edit": {
     "editButton": "تعديل البحث",

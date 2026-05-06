@@ -3,6 +3,7 @@ import { fetchPaper, fetchPaperEnrichment, invalidatePaperCache, uploadToIpfs } 
 import { broadcastOps } from '../signer.js';
 import { sha256File, slugify } from '../crypto.js';
 import { createTimerGuard } from '../lib/timer-guard.js';
+import { loadAccreditedDirectory, lookupAccredited } from '../lib/accredited-directory.js';
 import { accreditationBannerTemplate } from '../components/accreditation-banner.js';
 
 import { getAppTag, getAppId, getMaxUploadSize, getMaxUploadSizeMB } from '../config.js';
@@ -204,18 +205,31 @@ const template = `
                 </template>
                 <!-- New co-authors (editable + removable) -->
                 <template x-for="(ca, i) in newCoAuthors" :key="'new-' + i">
-                  <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2 mt-3 p-3 bg-parchment rounded-lg">
-                    <input type="text" class="select-control text-xs" :placeholder="$t('publish.fullName')" :value="ca.name" @input="updateNewCoAuthor(i, 'name', $event.target.value)" />
-                    <input type="text" class="select-control text-xs" :placeholder="$t('publish.hiveUsername')" :value="ca.hive" @input="updateNewCoAuthor(i, 'hive', $event.target.value)" />
-                    <input type="text" class="select-control text-xs" :placeholder="$t('publish.orcidOptional')" :value="ca.orcid" @input="updateNewCoAuthor(i, 'orcid', $event.target.value)" />
-                    <div class="flex gap-2">
-                      <input type="text" class="select-control text-xs flex-1" :placeholder="$t('publish.affiliation')" :value="ca.affiliation" @input="updateNewCoAuthor(i, 'affiliation', $event.target.value)" />
-                      <button type="button" class="text-ink-muted hover:text-ink shrink-0 px-1" @click="removeNewCoAuthor(i)">
-                        <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd" /></svg>
-                      </button>
+                  <div class="mt-3 p-3 bg-parchment rounded-lg">
+                    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
+                      <input type="text" class="select-control text-xs" :placeholder="$t('publish.fullName')" :value="ca.name" @input="updateNewCoAuthor(i, 'name', $event.target.value)" />
+                      <input type="text" class="select-control text-xs" :placeholder="$t('publish.hiveUsername')" :value="ca.hive" list="pevo-accredited-usernames" @input="updateNewCoAuthor(i, 'hive', $event.target.value)" />
+                      <input type="text" class="select-control text-xs" :class="{ 'bg-parchment-warm cursor-not-allowed': isNewCoAuthorAccredited(i) }" :placeholder="$t('publish.orcidOptional')" :value="ca.orcid" :disabled="isNewCoAuthorAccredited(i)" @input="updateNewCoAuthor(i, 'orcid', $event.target.value)" />
+                      <div class="flex gap-2">
+                        <input type="text" class="select-control text-xs flex-1" :placeholder="$t('publish.affiliation')" :value="ca.affiliation" @input="updateNewCoAuthor(i, 'affiliation', $event.target.value)" />
+                        <button type="button" class="text-ink-muted hover:text-ink shrink-0 px-1" @click="removeNewCoAuthor(i)">
+                          <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd" /></svg>
+                        </button>
+                      </div>
                     </div>
+                    <template x-if="isNewCoAuthorAccredited(i)">
+                      <p class="text-[11px] text-pevo-teal-dark mt-1.5 flex items-center gap-1">
+                        <svg class="h-3 w-3" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clip-rule="evenodd" /></svg>
+                        <span x-text="$t('publish.coAuthorAccreditedHint')"></span>
+                      </p>
+                    </template>
                   </div>
                 </template>
+                <datalist id="pevo-accredited-usernames">
+                  <template x-for="acc in Object.values(accreditedDirectory)" :key="acc.username">
+                    <option :value="acc.username" :label="acc.name + (acc.institution ? ' - ' + acc.institution : '')"></option>
+                  </template>
+                </datalist>
               </div>
 
               <!-- Paper body (full editor) -->
@@ -379,6 +393,7 @@ export function initEditPage() {
     authorOrcid: '',
     existingCoAuthors: [],
     newCoAuthors: [],
+    accreditedDirectory: {},
     addressedReviews: [], // [{ author, permlink }]
 
     // Supplementary files
@@ -550,6 +565,7 @@ export function initEditPage() {
       // so $watch firing before the first successful load is a no-op.
       this._setupReactiveBindings();
       this.loadPaperData();
+      this._loadAccreditedDirectory();
     },
 
     _setupReactiveBindings() {
@@ -749,10 +765,33 @@ export function initEditPage() {
 
     updateNewCoAuthor(index, field, value) {
       this.newCoAuthors[index][field] = value;
+      if (field === 'hive') {
+        const acc = lookupAccredited(this.accreditedDirectory, value);
+        if (acc) this.newCoAuthors[index].orcid = acc.orcid || '';
+      }
     },
 
     removeNewCoAuthor(index) {
       this.newCoAuthors.splice(index, 1);
+    },
+
+    isNewCoAuthorAccredited(index) {
+      const ca = this.newCoAuthors[index];
+      if (!ca) return false;
+      return !!lookupAccredited(this.accreditedDirectory, ca.hive);
+    },
+
+    async _loadAccreditedDirectory() {
+      const dir = await loadAccreditedDirectory();
+      if (this._mounted === false) return;
+      this.accreditedDirectory = dir;
+      // After the directory loads, reapply prefill so any new co-author rows
+      // already populated (from a draft) with currently-accredited hive
+      // handles get their ORCID locked to the accreditation record.
+      for (let i = 0; i < this.newCoAuthors.length; i++) {
+        const acc = lookupAccredited(this.accreditedDirectory, this.newCoAuthors[i].hive);
+        if (acc) this.newCoAuthors[i].orcid = acc.orcid || '';
+      }
     },
 
     // Supplementary files

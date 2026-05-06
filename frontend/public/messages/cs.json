@@ -170,7 +170,8 @@
     "noCitations": "Žádné citace nebyly přidány.",
     "addCitation": "+ Přidat citaci",
     "draftRestored": "Koncept obnoven z {time}.",
-    "signInHint": "Pro publikování se přihlaste. Musíte být také akreditovaný výzkumník."
+    "signInHint": "Pro publikování se přihlaste. Musíte být také akreditovaný výzkumník.",
+    "coAuthorAccreditedHint": "ORCID is bound to the accredited Hive account."
   },
   "edit": {
     "editButton": "Upravit článek",
