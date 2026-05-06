@@ -515,3 +515,42 @@ These are tracked as `[TODO Architect]` in the round-1 + round-3 signal blocks a
 When items 1-18 land, `git mv` this file back to `tasks/review/`. The architect's next pass scopes `/ce-code-review` to the round-4 commits since the hold block was written. Items 1-9 are P1; items 10-18 are P2. Anchor: items 1+5 (substitution attack + audit-log identity loss) are the load-bearing structural change; items 2-4 are independent correctness/reliability fixes; items 6-7 close test coverage gaps on load-bearing paths; items 8-9 are type-safety hygiene; items 10-18 are scoped local fixes.
 
 Items 1+5 should land together (item 5's resolution depends on item 1's fix shape). Item 9's discriminated-union refactor will touch the same call site as item 5's audit-log changes; coordinate. Items 6+7 (testing) can ship in parallel with the implementation fixes. Items 16-18 are P2 quality-of-implementation items that may roll into a single sweep commit.
+
+---
+
+## Backend round-4 signal (2026-05-06, commit `a28a0d0` on `main`)
+
+All 18 round-4 hold items landed in a single focused commit. Per-item summary:
+
+**P1 (items 1-9):**
+
+1. **Multi-consent-op bundle bypass** — `findConsentOpsInBundle` returns `none` / `single` / `multiple` discriminator; multi-consent bundles 400 with `MULTIPLE_CONSENT_OPS` BEFORE proof consume. Two regression tests + the proof-not-consumed mutation-kill assertion.
+2. **app-db.ts fresh-deploy column drift** — appended four `ALTER TABLE custody_audit_log ADD COLUMN IF NOT EXISTS …` blocks for `auth_mechanism` / `fresh_auth_outcome` / `session_id` / `user_agent`.
+3. **Redis flap recovery** — `issueFreshAuthToken` writes a memStore backup BEFORE the Redis SET; `consumeFreshAuthToken` deletes the memStore copy on Redis-GETDEL success (no replay window). Two regression tests in `tests/lib/fresh-auth.test.ts`.
+4. **`fetchConsentOpsForPaper` cap** — added `LIMIT 1000` and `ORDER BY id DESC`, documented in JSDoc and asserted in the SQL-shape contract test.
+5. **Audit identity preserved** — natural consequence of item 1; the `author_resign` audit-row test was widened to assert all four columns.
+6. **handleFreshAuth coverage** — 4 new tests in `tests/routes/orcid.test.ts`: happy path, ORCID-mismatch (403, mutation-kills the binding check), no-ORCID-linked (403), no-account (401).
+7. **Bridge-paper vouched-set test** — two cases added to `tests/consent-ops.test.ts` exercising `computeVouchedAuthors` with `claimedAuthors = {hiveBridgeAccount}`.
+8. **Type guards** — `isConsentAction` (consent-ops.ts), `isOpTuple` (custody.ts), `isFreshAuthMechanism` (fresh-auth.ts) replace the three unsafe casts.
+9. **CustodyAuditExtras discriminated union** — converted to `{ auth_mechanism, fresh_auth_outcome, ... } | Record<string, never>`; call site in custody.ts pins the type explicitly; audit log narrows via `'auth_mechanism' in extras`.
+
+**P2 (items 10-18):**
+
+10. **401 vs 403 differentiation** — `FRESH_AUTH_REQUIRED` returns 403 for `details.reason === 'username_mismatch'`, 401 for `'missing'`/`'expired'`/`'malformed'`. Cross-account test updated.
+11. **Test header carve-out** — extended `custody-consent-ops.test.ts` header with per-target paragraphs justifying both `hive.js` and `custody-crypto.js` mocks.
+12. **Phantom `'invalid'` reason** — trimmed from `FreshAuthVerifyResult` union.
+13. **Unused exports dropped** — `IssuedFreshAuth` and `FreshAuthVerifyResult` are now module-internal; `FRESH_AUTH_TTL_SECONDS` stays exported for the new test file.
+14. **Comment fix** — "bcrypt-verifies" → "argon2-verifies".
+15. **Cleanup hooks** — `_stopCleanupForTests` / `_restartCleanupForTests` exported.
+16. **statement_timeout** — documented in JSDoc; per-query timeout deferred to Round 2's integration site per the existing `architect-haf-unavailability-vouched-set-policy` follow-up.
+17. **TTL-expiry fake-timer test** — `tests/lib/fresh-auth.test.ts` exercises the in-memory TTL guard via `vi.spyOn(redis, 'getdel').mockRejectedValue(...)` to force the fallback path; mutation-kill confirmed.
+18. **Null-hash 401 oracle test** — new file `tests/routes/custody-fresh-auth-null-hash.test.ts`; mutation-kill confirmed by temporary 404 substitution.
+
+**Verification:** `npx tsc --noEmit` clean; `npm run lint` clean (pre-existing seed-phrase warnings only); targeted vitest passes — `tests/consent-ops.test.ts` 24/24, `tests/lib/fresh-auth.test.ts` 8/8, `tests/routes/custody-consent-ops.test.ts` 15/15, `tests/routes/custody-fresh-auth-null-hash.test.ts` 1/1, `tests/routes/custody.test.ts` 8/8, `tests/routes/custody-upgrade-null-hash.test.ts` 2/2, `tests/routes/orcid.test.ts` 71/71.
+
+**[TODO Architect] additions for archive (beyond the 11 already in the hold block):**
+
+- `agents/docs/api-contracts/custody.md` — add `MULTIPLE_CONSENT_OPS` (400) error code under `POST /api/custody/broadcast`, returned when a bundle contains >1 `author_accept`/`author_resign` op.
+- `agents/docs/api-contracts/custody.md` — `FRESH_AUTH_REQUIRED` status differentiation: 403 for `details.reason === 'username_mismatch'`, 401 for the other reasons.
+
+Round 2 / Round 4 implementation untouched (gated on `backend-multi-author-cumulative-union`); architect-owned doc cluster carries forward.
