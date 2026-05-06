@@ -699,6 +699,7 @@ describe('handleBroadcastError', () => {
       err: unknown;
       txId: unknown;
       failedStep: unknown;
+      cause?: unknown;
     };
     // Positive: the msg-fn-threw anchor binds `err` to the INNER msg-fn
     // throw (the template error), NOT the outer PostBroadcastWriteError.
@@ -712,16 +713,19 @@ describe('handleBroadcastError', () => {
     expect(callArgs.err).not.toBe('caller-override-err');
     expect(callArgs.txId).not.toBe('caller-override-tx');
     expect(callArgs.failedStep).not.toBe('caller-override-step');
-    // (The msg-fn-threw payload omits a top-level `cause:` field — the
-    // inner error has no explicit `cause` slot in the helper's call, only
-    // the implicit Error.cause inherited via `super(msg, { cause })`. After
-    // the round-3 hold #1 fix in BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-
-    // PINO-REDACT, the post_broadcast_write_failed spec above also no longer
-    // emits a top-level `cause: err.cause` field — the redacted cause
-    // surfaces inside `err.cause` of the serialized err payload via
-    // `redactErrSerializer`'s recursive traversal. Both anchors carry only
-    // the 3 source-of-truth fields (`err`, `txId`, `failedStep`) at the top
-    // level; the cause is on the err chain, not a sibling.)
+    // Round-5 hold #6 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):
+    // pin the absence of a top-level `cause` field on the msg-fn-threw
+    // anchor too — round-4's centralized destructure inherit-protects every
+    // spread site, but the previous test only pinned the protection on ONE
+    // (the post_broadcast_write_failed spec above). A regression that
+    // reverted only the warn-site spread back to `...opts.logContext` while
+    // leaving the error-site sanitized would leave `callArgs.cause ===
+    // 'caller-override-cause'` here with no failing assertion. The
+    // type-bypass via `as unknown as Parameters<...>[2]` at the fixture
+    // (above) carries the adversarial `cause: 'caller-override-cause'`
+    // value into the helper; the destructure at broadcast-error.ts MUST
+    // strip it before the spread.
+    expect(callArgs.cause).toBeUndefined();
   });
 
   // Round-5 hold #2: dedicated event-anchor pin for the 3 sibling logger

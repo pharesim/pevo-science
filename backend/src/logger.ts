@@ -186,9 +186,18 @@ export function redactErrSerializer(err: unknown, depth = 0): SerializedErr | un
       : redactPlainObject(errAny.cause, depth + 1);
   }
 
+  // Round-5 hold #1 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):
+  // Same plain-object bypass class as the `cause` recursion above. A plain-
+  // object `errors[]` member (`Object.assign(new Error('outer'), { errors:
+  // [{ command: { args: ['raw-token'] } }] })`) hits `isErrorLike(plainObj)
+  // === false` on the recursive call and returns the object verbatim,
+  // bypassing the SAFE_BASELINE_FIELDS allowlist. Branch per element so
+  // plain-object members route through `redactPlainObject` instead.
   const maybeErrors = (errAny as unknown as { errors?: unknown }).errors;
   if (Array.isArray(maybeErrors)) {
-    out.aggregateErrors = maybeErrors.map((e) => redactErrSerializer(e, depth + 1));
+    out.aggregateErrors = maybeErrors.map((e) =>
+      isErrorLike(e) ? redactErrSerializer(e, depth + 1) : redactPlainObject(e, depth + 1),
+    );
   }
 
   return out;
@@ -222,10 +231,20 @@ function redactPlainObject(value: unknown, depth: number): unknown {
   if (depth > MAX_CAUSE_DEPTH) {
     return { type: 'MaxDepthExceeded', depth };
   }
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+  // Round-5 hold #2 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):
+  // arrays previously fell through verbatim here, which let an array-shaped
+  // `cause` (`isErrorLike([]) === false` ⇒ this branch) leak its members'
+  // leaky fields. Recurse element-wise so each member passes through the
+  // allowlist (Error-like members go through `redactErrSerializer`; plain
+  // objects through `redactPlainObject` itself; primitives pass through).
+  if (Array.isArray(value)) {
+    return value.map((item) =>
+      isErrorLike(item) ? redactErrSerializer(item, depth + 1) : redactPlainObject(item, depth + 1),
+    );
+  }
+  if (value === null || typeof value !== 'object') {
     // Not a plain object — pass through. Primitives (string/number) carry
-    // no allowlist surface; arrays land outside the cause-chain shape this
-    // helper exists to defend.
+    // no allowlist surface.
     return value;
   }
   const obj = value as Record<string, unknown>;

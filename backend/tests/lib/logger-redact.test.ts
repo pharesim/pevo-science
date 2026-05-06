@@ -483,6 +483,90 @@ describe('redactErrSerializer — pino err serializer redact policy', () => {
     expect(depth).toBeLessThan(50);
   });
 
+  // ───────────────────────────────────────────────────────────────────
+  // Round-5 hold #1 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):
+  // `errors[]` aggregate plain-object members previously bypassed redact at
+  // `redactErrSerializer`'s map site. The `cause` recursion was hardened in
+  // round-4 (`isErrorLike(cause) ? redactErrSerializer : redactPlainObject`)
+  // but the symmetric `errors[]` map still routed every member through
+  // `redactErrSerializer` directly, hitting the `isErrorLike === false`
+  // short-circuit on plain-object members and returning them verbatim.
+  // Mutation kill: reverting the map to `redactErrSerializer(e, depth + 1)`
+  // makes `out.aggregateErrors[0].command` equal the verbatim leaky shape.
+  // ───────────────────────────────────────────────────────────────────
+  it('errors[] aggregate plain-object members route through redactPlainObject (round-5 hold #1)', () => {
+    // The architect's exact reproducer: an Error with an aggregate `errors`
+    // array carrying a plain-object member with an ioredis-shaped command.
+    const verifyToken = 'feed1234feed1234feed1234feed1234feed1234feed1234feed1234feed1234';
+    const outer = Object.assign(new Error('aggregate-outer'), {
+      errors: [
+        { command: { name: 'eval', args: ['some-lua', '1', `pevotest:x:${verifyToken}`] } },
+      ],
+    });
+
+    const out = redactErrSerializer(outer) as Record<string, unknown>;
+    expect(Array.isArray(out.aggregateErrors)).toBe(true);
+    const arr = out.aggregateErrors as Array<Record<string, unknown>>;
+    expect(arr).toHaveLength(1);
+
+    // The plain-object member's leaky `command` field is absent (routed
+    // through `redactPlainObject` instead of returned verbatim).
+    expect(arr[0].command).toBeUndefined();
+
+    // Belt-and-suspenders: the raw 64-hex token is NOT in the serialized
+    // payload anywhere in the aggregate.
+    const serialized = JSON.stringify(out);
+    expect(serialized).not.toMatch(/[0-9a-f]{64}/);
+    expect(serialized).not.toContain(verifyToken);
+
+    // The plain-object redactor surfaces the recognizable `'Object'` type
+    // label so dashboards can distinguish a plain-object aggregate member
+    // from an Error-shaped one.
+    expect(arr[0].type).toBe('Object');
+  });
+
+  // ───────────────────────────────────────────────────────────────────
+  // Round-5 hold #2 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):
+  // an array-shaped `cause` (`isErrorLike([]) === false` ⇒ plain-object
+  // dispatch ⇒ pre-round-5 array early-guard returned verbatim) leaked
+  // every member's leaky fields. Round-5 replaces the array pass-through
+  // in `redactPlainObject` with element-wise recursion. Mutation kill:
+  // restoring the early `if (Array.isArray(value)) return value;` makes
+  // every assertion below fail because the verbatim plain-object members
+  // still carry `command.args`.
+  // ───────────────────────────────────────────────────────────────────
+  it('array cause: plain-object members recurse element-wise via redactPlainObject (round-5 hold #2)', () => {
+    const verifyToken = 'beef1234beef1234beef1234beef1234beef1234beef1234beef1234beef1234';
+    const outer = Object.assign(new Error('outer with array cause'), {
+      cause: [
+        { command: { name: 'eval', args: ['some-lua', '1', `pevotest:y:${verifyToken}`] } },
+        { code: 'ECONNREFUSED', errno: -111, syscall: 'connect', secret_payload: 'must-not-leak' },
+      ],
+    });
+
+    const out = redactErrSerializer(outer) as Record<string, unknown>;
+    expect(Array.isArray(out.cause)).toBe(true);
+    const arr = out.cause as Array<Record<string, unknown>>;
+    expect(arr).toHaveLength(2);
+
+    // Member 0 — leaky `command` stripped, `'Object'` label surfaces.
+    expect(arr[0].command).toBeUndefined();
+    expect(arr[0].type).toBe('Object');
+
+    // Member 1 — SAFE_BASELINE_FIELDS preserved, adversarial sibling stripped.
+    expect(arr[1].code).toBe('ECONNREFUSED');
+    expect(arr[1].errno).toBe(-111);
+    expect(arr[1].syscall).toBe('connect');
+    expect(arr[1].secret_payload).toBeUndefined();
+
+    // Belt-and-suspenders: serialized payload contains neither the raw token
+    // nor the adversarial sibling string.
+    const serialized = JSON.stringify(out);
+    expect(serialized).not.toMatch(/[0-9a-f]{64}/);
+    expect(serialized).not.toContain(verifyToken);
+    expect(serialized).not.toContain('must-not-leak');
+  });
+
   it('try/catch fallback: a throwing-getter err yields the RedactSerializerFailed sentinel (round-3 hold #4)', () => {
     // Construct an err with a throwing `stack` getter. The serializer
     // reads `errAny.stack`, so this triggers the throw inside it. The

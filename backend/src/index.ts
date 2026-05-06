@@ -56,7 +56,23 @@ process.on('unhandledRejection', (reason) => {
 // code runs. Unexpected throws are logged once here (boot-fatal sites
 // already logged before throwing `BootFatalError`, so we suppress the
 // re-log on that subclass to avoid noise).
-let app: ReturnType<typeof createApp>;
+//
+// CONSTRAINT (round-5 hold #7): validateConfig and createApp MUST remain
+// synchronous and at module-evaluation scope. Introducing await or moving
+// these into a .then chain would route BootFatalError to the wrong
+// handler (e.g. initAppDb().catch logged as 'Failed to initialize app
+// database'), defeating the structured boot-fatal path.
+//
+// Round-5 hold #5 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):
+// `app` is narrowed via definite-assignment + `if (!app) return;` rather
+// than a `throw err;` at the end of the catch. The previous re-throw
+// propagated `BootFatalError` to module-evaluation scope, where Node
+// routed it to the `uncaughtException` handler — which logged a synthetic
+// 'Uncaught exception — shutting down' fatal AND called `flushAndExit()`
+// again (two timers, two flush calls, duplicate log line). Returning from
+// the catch + the post-try guard avoids the re-entry; `flushAndExit()` is
+// the sole exit path for boot-fatal cases.
+let app: ReturnType<typeof createApp> | undefined;
 try {
   validateConfig();
   app = createApp();
@@ -65,13 +81,11 @@ try {
     logger.fatal({ err }, 'Boot failed — unexpected throw during startup');
   }
   flushAndExit();
-  // Unreachable in production — flushAndExit either flushes-then-exits or
-  // hits the 2s watchdog. The throw keeps TypeScript's control-flow
-  // narrowing happy (`app` is assigned-or-throw before the next line).
-  throw err;
 }
 let server: Server;
 
+if (app) {
+const bootedApp = app;
 initAppDb()
   .then(async () => {
     // Warm genesis block cache before accepting traffic
@@ -81,7 +95,7 @@ initAppDb()
     // Start periodic cache refreshes before accepting traffic
     await startRetractionCache();
 
-    server = app.listen(config.port, () => {
+    server = bootedApp.listen(config.port, () => {
       // Warm expensive shared HAF caches in the background (non-blocking)
       Promise.all([
         startReputationWeightsCache(),
@@ -136,6 +150,7 @@ initAppDb()
     logger.fatal({ err }, 'Failed to initialize app database');
     flushAndExit();
   });
+} // end `if (app)` — boot-fatal short-circuit (round-5 hold #5)
 
 // ── Graceful shutdown ───────────────────────────────────────
 // Re-entrancy guard: SIGTERM and SIGINT both call shutdown(), and under

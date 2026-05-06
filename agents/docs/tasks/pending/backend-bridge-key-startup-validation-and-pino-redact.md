@@ -656,3 +656,85 @@ All round-3 + round-4 [TODO Architect] markers carry forward unchanged. NEW addi
 ### Re-review signal
 
 When round-5 items 1-7 land in a single commit, `git mv` this file back to `tasks/review/`. Architect's next pass scopes `/ce-code-review` to the round-5 commit only. Expected diff: ~10 LOC in `logger.ts` (errors[] map + array-cause recursion + comment edit), ~10 LOC in `index.ts` (drop re-throw + `app` narrowing + sync-scope comment), ~5 LOC in `flush-and-exit.ts` (docblock rewrite only), ~30 LOC in `tests/startup-checks.test.ts` (validateConfig + initBridgePostingKeyCache throw specs), ~5 LOC in `tests/lib/logger-redact.test.ts` (errors[] + array-cause canaries), ~3 LOC in `tests/lib/broadcast-error.test.ts:667` (cause assertion).
+
+---
+
+## Backend re-review signal (2026-05-06, round-5 hold-fixes — commit `<TBD-PARENT-PINS>` on `main`, originally on `worktree-agent-ac258c8c335188165` — parent re-pins to main-tree SHA after merge)
+
+Round-5 closes 7 of 7 hold items in a single coordinated commit covering `backend/src/{logger.ts,index.ts,lib/flush-and-exit.ts}` plus paired tests in `backend/tests/{lib/logger-redact.test.ts,startup-checks.test.ts,lib/broadcast-error.test.ts}`. No code change in `flush-and-exit.ts` or at the new `index.ts` boot-block constraint — items 4 and 7 are docblock/comment-only.
+
+### Item-by-item resolution
+
+**Item 1 (P2) — `errors[]` aggregate plain-object members.** `backend/src/logger.ts:189-197`. Replaced `out.aggregateErrors = maybeErrors.map((e) => redactErrSerializer(e, depth + 1))` with the per-element `isErrorLike` branch, mirroring the round-4 cause-recursion shape. Plain-object aggregate members now route through `redactPlainObject` instead of returning verbatim via the `redactErrSerializer` entry short-circuit. Inline comment block names round-5 hold #1 and the same-class round-4 cause fix as the cross-reference. New canary at `tests/lib/logger-redact.test.ts:493-525` exercises `Object.assign(new Error('aggregate-outer'), { errors: [{ command: { name: 'eval', args: [..., raw-token] } }] })` and asserts both `arr[0].command === undefined` AND `serialized` does not match `[0-9a-f]{64}` AND surfaces the `'Object'` type label.
+
+**Item 2 (P2) — `cause: [Array]` array early-guard pass-through.** `backend/src/logger.ts:225-238`. Replaced the array short-circuit (`if (... || Array.isArray(value)) return value;`) with element-wise recursion: `if (Array.isArray(value)) { return value.map(item => isErrorLike(item) ? redactErrSerializer : redactPlainObject); }`. The non-array primitive guard remains as a separate `if (value === null || typeof value !== 'object') return value;` after the array branch. Inline comment rewritten to drop the now-inaccurate "arrays land outside the cause-chain shape" justification and document the round-5 element-wise dispatch instead. New canary at `tests/lib/logger-redact.test.ts:537-572` exercises an `Object.assign(new Error(), { cause: [{command: {args: [..., raw-token]}}, {code: 'ECONNREFUSED', errno, syscall, secret_payload}] })` shape and asserts (a) member 0's `command` is stripped, (b) member 1's allowlisted fields preserved + adversarial sibling stripped, (c) belt-and-suspenders the serialized payload contains neither the raw 64-hex token nor `'must-not-leak'`.
+
+**Item 3 (P2) — `validateConfig` / `initBridgePostingKeyCache` BootFatalError throw direct unit tests.** `backend/tests/startup-checks.test.ts:540-651`. New `describe('validateConfig / initBridgePostingKeyCache — BootFatalError throw (round-5 hold #3)')` block with 4 specs. (a) `validateConfig` empty-`hafDatabaseUrls` triggers the missing-required path; assert `expect(() => validateConfig()).toThrow(BootFatalError)`. (b) `validateConfig` BootFatalError carries an operator-grep-friendly message containing `'validateConfig'`. (c) `initBridgePostingKeyCache` parse-divergence path with malformed WIF `5J + '1'.repeat(50)` triggers the parse-divergence throw; assert `expect(() => _initBridgePostingKeyCacheForTests()).toThrow(BootFatalError)`. (d) `initBridgePostingKeyCache` BootFatalError carries an operator-grep-friendly message containing `'initBridgePostingKeyCache'`. Imports `validateConfig` and `BootFatalError` (added to the existing import list at `:3-13`). The `beforeEach`/`afterEach` save and restore `process.env.HAF_DATABASE_URL`, `config.hafDatabaseUrls`, and `config.pevoBridgePostingKey` so the mutations don't leak across the file.
+
+**Item 4 (P2) — `flushAndExit` docblock rewrite.** `backend/src/lib/flush-and-exit.ts:3-22`. Replaced the round-4 docblock that claimed to "mirror the proven pattern at `routes/auth.ts:175-193`" with the architect's verbatim rewrite documenting the watchdog as the canonical exit guarantee and explicitly noting that the watchdog renders any defensive `typeof logger.flush === 'function'` guard redundant. The round-4 hold #1 attribution + the rationale for extracting to its own module (a) so boot path AND unit-test canary share the implementation, (b) for mutation-killability — kept at the bottom of the docblock as historical context. NO code change. The `auth.ts` convergence is left for the separate `backend-flush-and-exit-auth-converge.md` follow-up task per the architect's hold.
+
+**Item 5 (P3) — Drop the `throw err;` re-entry at `index.ts`.** `backend/src/index.ts:75-94`. Replaced `let app: ReturnType<typeof createApp>; try { ... } catch (err) { ...; flushAndExit(); throw err; }` with definite-assignment narrowing: `let app: ReturnType<typeof createApp> | undefined; try { ... } catch (err) { if (!(err instanceof BootFatalError)) { logger.fatal(...); } flushAndExit(); }`. Wrapped the rest of boot (`initAppDb().then(...)` + listen + post-listen jobs) in a top-level `if (app) { const bootedApp = app; ... }` block that closes before the shutdown handlers — module-evaluation scope cannot use top-level `return`, so a structural guard with the inner `bootedApp` constant gives TypeScript the narrowed type for `app.listen(config.port, ...)`. The `initAppDb().catch` site is kept unchanged (it's inside `if (app)` so still wired). Replaced the inner reference `server = app.listen(...)` with `server = bootedApp.listen(...)`. The `bootedApp` constant is the TypeScript-friendly equivalent of the architect's snippet's `if (!app) return;` narrowing — same runtime behavior, no module-scope `return` required.
+
+**Item 6 (P3) — Cast widening at `broadcast-error.test.ts:667`.** `backend/tests/lib/broadcast-error.test.ts:698-734`. Widened the `callArgs` cast at the `post_broadcast_msg_fn_threw` spec from `{ err, txId, failedStep }` to `{ err, txId, failedStep, cause? }` and added `expect(callArgs.cause).toBeUndefined()` after the existing positive/negative assertions. The fixture at `:678-684` already carries `cause: 'caller-override-cause'` in its `logContext` (with the run label `spread-kill-r5-2`), so the type-bypass adversarial value reaches the helper; the destructure at `broadcast-error.ts` strips it before the spread. Removed the now-stale parenthetical comment block (`(The msg-fn-threw payload omits a top-level cause: field — ...)`) — the new direct `expect(callArgs.cause).toBeUndefined()` is the canonical pin.
+
+**Item 7 (P3) — Sync-scope CONSTRAINT comment.** `backend/src/index.ts:60-65`. Added the architect-prescribed comment block immediately above the boot try/catch:
+
+```ts
+// CONSTRAINT (round-5 hold #7): validateConfig and createApp MUST remain
+// synchronous and at module-evaluation scope. Introducing await or moving
+// these into a .then chain would route BootFatalError to the wrong
+// handler (e.g. initAppDb().catch logged as 'Failed to initialize app
+// database'), defeating the structured boot-fatal path.
+```
+
+NO code change.
+
+### Mutation-kill attestation (per `tests-must-fail-on-mutation-of-code-under-test-2026-04-22.md`)
+
+Each new canary verified red against a stripped-down code change. Baseline restored after each verification.
+
+- **Item 1 — `errors[]` plain-object branch canary** (red on revert):
+  - Restore `out.aggregateErrors = maybeErrors.map((e) => redactErrSerializer(e, depth + 1))` (drop the new isErrorLike branch). Result: `tests/lib/logger-redact.test.ts:514` "errors[] aggregate plain-object members route through redactPlainObject" fails red — `expect(arr[0].command).toBeUndefined()` becomes `expected { name: 'eval', args: [...] } to be undefined`. Restore green.
+
+- **Item 2 — array-cause element-wise recursion canary** (red on revert):
+  - Restore `if (value === null || typeof value !== 'object' || Array.isArray(value)) return value;` (the pre-round-5 array short-circuit). Result: `tests/lib/logger-redact.test.ts:553` "array cause: plain-object members recurse element-wise via redactPlainObject" fails red — `expect(arr[0].command).toBeUndefined()` becomes `expected { name: 'eval', args: [...] } to be undefined`. Restore green.
+
+- **Item 3 — BootFatalError throw canary** (red on revert):
+  - Replace `throw new BootFatalError('validateConfig: required configuration missing');` with `return; // mutation-kill stub` (and same for the parse-divergence site). Result: 4 of 4 new specs in `tests/startup-checks.test.ts` `describe('validateConfig / initBridgePostingKeyCache — BootFatalError throw (round-5 hold #3)')` fail red — both `expect(() => ...).toThrow(BootFatalError)` assertions become "expected null to be an instance of BootFatalError". Restore green.
+
+- **Item 6 — sibling-cause strip mutation-kill canary at the warn site** (red on revert):
+  - Replace `...sanitizedLogContext` with `...(opts.logContext ?? {})` at the `post_broadcast_msg_fn_threw` warn site (`broadcast-error.ts:331`). Result: `tests/lib/broadcast-error.test.ts:728` "post_broadcast_msg_fn_threw authoritative fields win over colliding logContext keys" fails red — `expect(callArgs.cause).toBeUndefined()` becomes `expected 'caller-override-cause' to be undefined`. Restore green. Pairs with the existing round-4 round-5 hold #1 canary at the error site (`broadcast-error.ts:284`); both are now pinned independently.
+
+Items 4, 5, and 7 are docblock/comment-only or structural narrowing changes. Item 5's narrowing is verified by the existing `tsc --noEmit` clean run + the inner `bootedApp` reference at the `app.listen` call site — a regression that drops the narrowing surfaces as a tsc error (`Object is possibly 'undefined'`).
+
+### Verification gate
+
+- `npx tsc --noEmit` — clean, no errors.
+- `npm run lint` — clean, 2 pre-existing warnings only (`src/seed-phrase.ts:26,27` `@typescript-eslint/no-explicit-any`).
+- Targeted vitest run (`tests/lib/logger-redact.test.ts`, `tests/lib/broadcast-error.test.ts`, `tests/startup-checks.test.ts`, `tests/lib/flush-and-exit.test.ts`): **88 passed (88)**. Per task brief, the full vitest suite is NOT run in this worker — parent serializes that after merging.
+
+### Out-of-scope items honored
+
+- `agents/docs/api-contracts/*.md` — not edited (architect-owned). The wave-1 / round-3 / round-4 [TODO Architect] markers (convention doc `pino-err-serializer-redact-policy-2026-05-XX.md`, δ test transition confirmation, no-API-contract-update confirmation, `pino-err-slot-sibling-bypass-redact-policy-2026-05-06.md` citation, `pino-spy-serializer-ordering-trap-2026-05-06.md` supersession update, codebase-wide watch-list audit, `/ce-compound` candidates) carry forward unchanged.
+- `agents/docs/solutions/` — not touched by hand per the project memory rule (`/ce-compound` is gated to a future archive pass; the [TODO Architect] markers in the task file remain).
+- `routes/auth.ts:175-193` flush-and-exit convergence — left for the separate `backend-flush-and-exit-auth-converge.md` follow-up per item 4's hold note.
+- Architect's "Items dismissed during architect triage" — function-entry destructure type-level enforcement, `flushAndExit` happy-path `.unref()` detection, concurrent `flushAndExit` invocations stacking, `instanceof BootFatalError` convention pin — left unchanged per the dismissals.
+- Items suppressed at the confidence gate — synchronous flush throw clobbering BootFatalError, hostile-getter cause destructure, log ordering on stdout, MaxDepthExceeded sentinel parent context, no logger param on flushAndExit, `cause?: never` constraint, test type-bypass cast self-documentation, RELAXED_EXTRA_FIELDS branch on `redactPlainObject` — left unchanged per the gate.
+
+### Architectural deviations from the hold's literal snippets
+
+- **Item 5 — `bootedApp` const + `if (app) { ... }` block instead of top-level `return`.** The architect's snippet uses `if (!app) return;` after the try/catch, which works in CommonJS modules but TypeScript with `module: "Node16"` (the project's tsconfig) flags it depending on strict-checking flags. The `if (app) { const bootedApp = app; ... }` block achieves identical runtime behavior (skip the rest of boot when `app` is undefined) AND lets TypeScript's control-flow narrow `app` to the non-undefined type via the local const. The `bootedApp` constant ties the narrowing to a single name visible across the whole inner block, so `app.listen(config.port, ...)` becomes `bootedApp.listen(config.port, ...)` without `!`-assertion clutter. Functionally identical; structurally different from the architect's snippet only in the choice of narrowing primitive.
+
+### [TODO Architect] markers (carry forward from round-3 + round-4 + round-5 additions)
+
+1. Convention doc `agents/docs/solutions/conventions/pino-err-serializer-redact-policy-2026-05-XX.md` — fold round-5's `errors[]` plain-object branch + array-cause element-wise recursion shape into the doc at archive (the round-4 plain-object cause helper is the structural sibling these two close out).
+2. δ test transition confirmation — already-passing as of round-3 wave-2; round-5 doesn't change that path.
+3. No API contract update required — internal-only diff (logger serializer + boot-stack narrowing + docblock + test canaries). Operators see the same JSON envelope shapes.
+4. Cite `agents/docs/solutions/conventions/pino-err-slot-sibling-bypass-redact-policy-2026-05-06.md` in the archive entry — round-4 closed the sibling-cause completeness gap that convention names; round-5 strengthens the test pin on the warn-site spread.
+5. Update `agents/docs/solutions/conventions/pino-spy-serializer-ordering-trap-2026-05-06.md` at archive — remove the superseded `Parameters<typeof baseLogger.warn>` example pattern (round-3 item 5 already superseded it with the `LogFn` factory; carry forward).
+6. File the codebase-wide watch-list audit follow-up task at archive — scope per the round-4 hold's "NEW at this hold" item 3.
+7. `/ce-compound` candidates at archive (per the round-4 hold + carry-forward):
+   - "Validate-once-and-cache-secret pattern" (round-3 instantiation; carry forward).
+   - "Boot-fatal `logger.flush() + setTimeout watchdog` async-transport-drain pattern" — round-4 instantiates; ripe for compound.
+   - "Defensive recursive serializer with depth/cycle guard + discriminated sentinel + try/catch fallback + plain-object cause helper + element-wise array recursion" — round-3 + round-4 + round-5 fold into a single entry.
+   - "Boot-fatal call-stack-unwind via subclassed throw + outer catch + definite-assignment narrowing" — round-4 introduces; round-5 closes the re-entry leak (drop `throw err;`); fold into a single entry.

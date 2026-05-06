@@ -3,8 +3,10 @@ import { PrivateKey } from '@hiveio/dhive';
 import {
   validatePostingKeyFormat,
   validateAccountNameFormat,
+  validateConfig,
   getCachedBridgePostingKey,
   getRequiredBridgePostingKey,
+  BootFatalError,
   BridgeKeyCacheUnpopulated,
   BridgeKeyLazyParseDivergence,
   _resetBridgePostingKeyCacheForTests,
@@ -532,6 +534,107 @@ describe('Bridge admin WIF boot validation end-to-end', () => {
       (config as { pevoBridgePostingKey: string }).pevoBridgePostingKey = original;
       _resetBridgePostingKeyCacheForTests();
     }
+  });
+});
+
+// ──────────────────────────────────────────────
+// Round-5 hold #3 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):
+// `validateConfig` / `initBridgePostingKeyCache` BootFatalError throw.
+//
+// The round-4 item-1 main contract — replace `flush(() => exit); return`
+// with `logger.fatal; throw BootFatalError` — is the load-bearing semantic
+// that prevents `createApp()` and `initAppDb()` (which runs DB migrations!)
+// from running on a fatal-misconfigured boot. Without a direct test of the
+// throw, a regression that replaced `throw new BootFatalError(...)` with a
+// bare `return` would break no test. These canaries pin the throw shape so
+// any regression that drops it surfaces as a failing assertion.
+//
+// Mutation kill: replacing `throw new BootFatalError(...)` with `return;`
+// inside validateConfig's missing-config branch (or
+// initBridgePostingKeyCache's parse-divergence branch) makes the
+// `expect(() => ...).toThrow(BootFatalError)` assertion below fail red.
+// ──────────────────────────────────────────────
+
+describe('validateConfig / initBridgePostingKeyCache — BootFatalError throw (round-5 hold #3)', () => {
+  // Save/restore process.env.HAF_DATABASE_URL and config fields so the
+  // mutations under test don't leak across tests.
+  let originalHafEnv: string | undefined;
+  let originalHafUrls: string[];
+  let originalBridgeKey: string;
+
+  beforeEach(() => {
+    originalHafEnv = process.env.HAF_DATABASE_URL;
+    originalHafUrls = config.hafDatabaseUrls;
+    originalBridgeKey = config.pevoBridgePostingKey;
+    _resetBridgePostingKeyCacheForTests();
+  });
+
+  afterEach(() => {
+    if (originalHafEnv === undefined) {
+      delete process.env.HAF_DATABASE_URL;
+    } else {
+      process.env.HAF_DATABASE_URL = originalHafEnv;
+    }
+    (config as { hafDatabaseUrls: string[] }).hafDatabaseUrls = originalHafUrls;
+    (config as { pevoBridgePostingKey: string }).pevoBridgePostingKey = originalBridgeKey;
+    _resetBridgePostingKeyCacheForTests();
+  });
+
+  it('validateConfig throws BootFatalError when required env (HAF_DATABASE_URL) is missing', () => {
+    // Drive the missing-required path: empty hafDatabaseUrls causes the
+    // `HAF_DATABASE_URL` check to push into `missing[]`, which triggers
+    // the round-4 boot-fatal throw at startup-checks.ts:175.
+    (config as { hafDatabaseUrls: string[] }).hafDatabaseUrls = [];
+
+    expect(() => validateConfig()).toThrow(BootFatalError);
+  });
+
+  it('validateConfig BootFatalError carries an operator-grep-friendly message', () => {
+    (config as { hafDatabaseUrls: string[] }).hafDatabaseUrls = [];
+    let captured: unknown = null;
+    try {
+      validateConfig();
+    } catch (e) {
+      captured = e;
+    }
+    expect(captured).toBeInstanceOf(BootFatalError);
+    const errAny = captured as Error;
+    expect(errAny.name).toBe('BootFatalError');
+    // The message identifies the call site so operators can grep boot logs
+    // without needing the stack trace. Pin the substring so a regression
+    // that drops the call-site label still surfaces.
+    expect(errAny.message).toContain('validateConfig');
+  });
+
+  it('initBridgePostingKeyCache throws BootFatalError on parse-divergence (validator/dhive divergence)', () => {
+    // Drive the parse-divergence path: bypass `validateConfig` (which would
+    // otherwise reject the malformed WIF at the format-validator step) and
+    // call `_initBridgePostingKeyCacheForTests()` directly with a malformed
+    // WIF in `config.pevoBridgePostingKey`. This simulates the "validator
+    // passed but PrivateKey.fromString rejects" divergence the round-4 hold
+    // #1 throw protects against.
+    const malformedWif = '5J' + '1'.repeat(50);
+    (config as { pevoBridgePostingKey: string }).pevoBridgePostingKey = malformedWif;
+
+    expect(() => _initBridgePostingKeyCacheForTests()).toThrow(BootFatalError);
+  });
+
+  it('initBridgePostingKeyCache BootFatalError carries an operator-grep-friendly message', () => {
+    const malformedWif = '5J' + '1'.repeat(50);
+    (config as { pevoBridgePostingKey: string }).pevoBridgePostingKey = malformedWif;
+    let captured: unknown = null;
+    try {
+      _initBridgePostingKeyCacheForTests();
+    } catch (e) {
+      captured = e;
+    }
+    expect(captured).toBeInstanceOf(BootFatalError);
+    const errAny = captured as Error;
+    expect(errAny.name).toBe('BootFatalError');
+    // Identifies the call site (`initBridgePostingKeyCache`) so operators
+    // can distinguish the parse-divergence path from the missing-required
+    // path in boot logs.
+    expect(errAny.message).toContain('initBridgePostingKeyCache');
   });
 });
 
