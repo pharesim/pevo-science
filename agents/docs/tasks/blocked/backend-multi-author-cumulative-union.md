@@ -169,6 +169,7 @@ The rewrite is a [TODO Architect] item at archive (architect followups), alongsi
 ## Cross-references
 
 - `agents/docs/ARCHITECTURE.md` section 2 "Multi-Author Trust Model" — to be rewritten at archive of this task.
+- `agents/docs/ARCHITECTURE.md` section 2 "Vouched-set computation (Phase 2 constraints)" subsection — fail-closed-on-HAF-unavailability paragraph (added 2026-05-06 by `architect-haf-unavailability-vouched-set-policy`). The cumulative-union chain-walk in this task is HAF-required by construction (the per-hop SQL fails-closed implicitly when HAF throws); the consent-ops layer added by `backend-coauthor-trust-model` Round 2 now matches that posture explicitly. No code change to cumulative-union's chain-walk is needed — this is a cross-reference for the holistic posture.
 - `agents/docs/tasks/review/backend-continuation-post-author-consent-gate.md` — round-3 task; this task supersedes its no-shrink rule. Round-3 archives with no-shrink as interim defense (production stays correct under round-3 until cumulative-union lands).
 - `agents/docs/tasks/pending/backend-coauthor-trust-model.md` — Phase 2 design; rebases on cumulative-union once this task archives.
 - `agents/docs/tasks/blocked/ui-multi-author-consent-affordances.md` — Phase 2 UI; cumulative-union doesn't change publish-time UX (the SPA prefill task `ui-author-input-accredited-prefill.md` covers the ORCID prefill at the input level).

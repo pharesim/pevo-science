@@ -224,6 +224,16 @@ Phase 2 should be planned with `/ce-plan` to break into reviewable rounds. Expec
 
 **Verification:** integration tests pass; manual smoke test against local HAF; `[TODO Architect]` note added in this task file describing the contract change for `agents/docs/api-contracts/papers.md` (the continuation-chain admit semantics now reference the vouched-set).
 
+**HAF unavailability — fail closed (per ARCH.md Section 2 "Vouched-set computation (Phase 2 constraints)" / `architect-haf-unavailability-vouched-set-policy`, archived 2026-05-06).** The integration site MUST:
+
+1. Short-circuit before calling `getVouchedAuthors` when the consent flow is inert. Two guards:
+   - **Single-author claimed-set.** If the chain-walk's `claimedAuthors` set has size 1 and that single member is the root broadcaster, the broadcaster is implicitly vouched per ARCH.md "Vouched vs claimed authorship" rule 1 — return immediately with vouched-set `{rootAuthor}` and skip the HAF fetch. Most beta-cohort papers fall into this branch.
+   - **Bridge papers.** If `pevoMeta.type === 'bridge_paper'` and the chain head is `config.hiveBridgeAccount`, the bridge carve-out applies (ARCH.md "Bridge papers" subsection) — return `{config.hiveBridgeAccount}` and skip the HAF fetch.
+2. For genuinely multi-author chains, call `getVouchedAuthors(...)` with the discriminated-union return type from the [TODO Backend] block above. On `result.status === 'haf_unavailable'`, the route MUST `return sendError(res, 503, 'INTERNAL_ERROR', '<message>')` and NOT degrade to a root-only or claimed-set vouched-result. Mirror the precedent at `backend/src/routes/claims.ts:35` and `backend/src/routes/orcid.ts:1502-1506`.
+3. The same policy applies to the sibling `/api/me/authorships/pending` endpoint (`backend-notification-infra-for-consent-ops`): single-author / bridge → short-circuit; multi-author + HAF unavailable → 503.
+
+**Test scenario additions for the fail-closed paths:** `getPool()` returning null on a multi-author paper → 503. HAF query throwing on a multi-author paper → 503. Single-author paper served correctly with HAF down (regression guard against over-eager fail-closed). Bridge paper served correctly with HAF down. The single-author / bridge short-circuit guards MUST execute BEFORE the HAF fetch so they survive HAF outages.
+
 **Unblocks:** `backend-notification-infra-for-consent-ops` (in `tasks/blocked/`) — its `/api/me/authorships/pending` endpoint queries the vouched-set produced here. Append a coordination note to that task file when round 2 lands.
 
 ### Round 3 — custody endpoint extension + fresh-auth gate
@@ -324,6 +334,50 @@ These are spec-only inconsistencies that emerged when implementing the canonical
 2. **ARCH.md "Author Accept" validity prose — references a payload field that doesn't exist.** The validity rule says the chain signer "MUST equal `accepting_author_hive` in the payload." The schema, however, only includes `root_author` + `root_permlink` — there is no `accepting_author_hive` field. The implicit interpretation (signer IS the accepter; the binding is degenerate) is what Round 1 implements and is operationally secure. Please reword the validity bullet to say "the chain signer is the accepting author for this op (binding is implicit; the payload carries no subject identity field)" or similar. Optional alternative: add `accepting_author_hive: <hive>` to the schema and require signer == that field — requires more discussion since it adds a redundant data field whose only purpose is to make the convention rule 5 binding-check enforceable as a literal SQL/JS predicate. Round 1 chose the "implicit binding" path for spec literalism on the schema side.
 
 3. **ARCH.md / convention-doc — same-block tie-break primitive.** ARCH.md "Author Accept" line: "Same-block ties are broken by `trx_in_block` (highest wins)." The convention doc rule 2 references `(block_num, trx_in_block)` ordering. The HAF view `hafsql.operation_custom_json_view` does NOT expose `trx_in_block` (the underlying tables `hafd.operations` / `hafsql.haf_operations` do, but not the projection PEvO queries). The view's `id` column is the HAF op id (a bigint encoding block_num + trx_in_block + op_in_trx; confirmed via `pg_get_viewdef`). Round 1 uses `id` as the same-block tie-breaker, which is operationally equivalent. Please update either ARCH.md to reference `id` for `operation_custom_json_view` queries, OR the convention doc to acknowledge that `id` is the canonical tie-break primitive when querying flat op-views.
+
+### [TODO Backend] — helper signature change before Round 2 picks up
+
+Filed 2026-05-06 by the (now-archived) architect task `architect-haf-unavailability-vouched-set-policy`. The architect-decided fail-closed posture for the consent-ops admit gate (per ARCH.md Section 2 "Vouched-set computation (Phase 2 constraints)" — the new paragraph after the four constraint bullets) requires a return-type change on the Round 1 helpers so the Round 2 integration site can distinguish "no consent ops" from "HAF unavailable" and route the latter to a 503. Land this change before Round 2 starts so Round 2's integration code consumes the new shape directly.
+
+1. **`fetchConsentOpsForPaper` returns a discriminated union, not a bare array.** Today (`backend/src/consent-ops.ts:103-164`) the helper returns `Promise<ConsentOp[]>` and silently coalesces both `getPool() === null` and the catch-block path into `[]`. Change to:
+
+   ```ts
+   export type ConsentOpsFetchResult =
+     | { status: 'ok'; ops: ConsentOp[] }
+     | { status: 'haf_unavailable'; reason: 'no_pool' | 'query_failed' };
+
+   export async function fetchConsentOpsForPaper(
+     rootAuthor: string,
+     rootPermlink: string,
+   ): Promise<ConsentOpsFetchResult> { ... }
+   ```
+
+   Mirror the existing `bridge.ts` precedent (`backend/src/routes/bridge.ts:161-177`, the `BridgeStatusLookupResult` union). Keep the existing structured pino log on the throw path; emit the SAME log shape on the `getPool() === null` path so both fail-closed firings are visible. The `event` discriminator may stay `consent_ops.fetch_failed` (current name) or rename to `consent_ops.haf_unavailable` (more specific) — implementer's call; pick one stable name and use it on both paths.
+
+2. **`getVouchedAuthors` propagates the discriminated union to its caller.** Same shape:
+
+   ```ts
+   export type VouchedAuthorsResult =
+     | { status: 'ok'; vouched: Set<string> }
+     | { status: 'haf_unavailable'; reason: 'no_pool' | 'query_failed' };
+
+   export async function getVouchedAuthors(
+     rootAuthor: string,
+     rootPermlink: string,
+     claimedAuthors: Set<string>,
+     firstClaimBlockByAuthor: Map<string, number>,
+   ): Promise<VouchedAuthorsResult> { ... }
+   ```
+
+   The pure `computeVouchedAuthors` keeps its current `Set<string>` return type — it has no I/O and no failure mode. The orchestrator wraps the fetch and propagates the union upward.
+
+3. **Tests adapt to the new shape.** The 22 existing cases in `tests/consent-ops.test.ts` now assert on `result.status === 'ok'` and `result.ops` / `result.vouched`. Add at least two cases:
+   - `getPool()` returning null → `{ status: 'haf_unavailable', reason: 'no_pool' }` plus the structured pino log fires.
+   - HAF query throws → `{ status: 'haf_unavailable', reason: 'query_failed' }` plus the structured pino log fires.
+
+4. **No production callers exist yet** (Round 2 hasn't wired the read gate; the helper is only exercised by tests). The change is mechanical at this stage. Once Round 2 lands, refactoring the return shape would be a much wider blast radius.
+
+The implementer may either fold this into the same round as the rounds-1+3 hold-block fixes (small, file-local, no integration-site touch) or land it as a separate round — implementer's call. Either way, this MUST land before Round 2 picks up.
 
 ### Ready for Round 2 — but coordinate with the cumulative-union redesign first
 
