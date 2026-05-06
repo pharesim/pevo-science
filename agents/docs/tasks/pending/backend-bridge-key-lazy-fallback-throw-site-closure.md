@@ -66,7 +66,7 @@ The implementer chooses the trade-off. (1) is the strongest guarantee but most i
 
 ---
 
-## Backend round-1 signal block — implementation complete (2026-05-06)
+## Backend round-1 signal block — implementation complete (2026-05-06, commit `6f47a22` on `main`, originally `1f29b0a` on `worktree-agent-a84c88710c41de61b`)
 
 **Approach chosen:** approach (2) — behavior-preserving try/catch rewrap.
 

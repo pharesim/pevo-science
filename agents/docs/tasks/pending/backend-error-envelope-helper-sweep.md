@@ -43,7 +43,7 @@ Both open-coded envelope sites use `sendError()`. The envelope shape lives in ex
 
 ---
 
-## Backend re-review signal (2026-05-06)
+## Backend re-review signal (2026-05-06, round-1 — commit `89ec691` on `main`, originally `c162db8` on `worktree-agent-a673241a5ea28b2e6`)
 
 Both open-coded envelope sites migrated to `sendError()` from `backend/src/response.ts`:
 
@@ -64,4 +64,3 @@ Both open-coded envelope sites migrated to `sendError()` from `backend/src/respo
 
 **Wire shape verification.** Pre-fix and post-fix both produce `{ status: 'error', error: { code, message } }` with no `details` key (omitted when undefined per `response.ts:38`), `Content-Type: application/json`, and the same HTTP status. The `sendError` helper adds one runtime safeguard not present in the inline form: a `headersSent` early return that warn-logs and skips the duplicate write. For the 4-arg errorHandler, this is strictly safer (a route that already responded then threw won't corrupt the stream); for the `/api` 404 fallthrough, `headersSent` is false in normal flow so behavior is identical.
 
-Worktree branch: `worktree-agent-a673241a5ea28b2e6`. Parent merges and moves this file `pending/` → `review/`.

@@ -133,7 +133,7 @@ Cross-reviewer corroboration on the canary mutation-kill gap → anchor 75 (prom
 - `backend/tests/routes/canonical-root-walker.test.ts:243` (SQL-regex dispatch site), `:430-511` (existing combined-layer canary).
 - `agents/docs/solutions/conventions/tests-must-fail-on-mutation-of-code-under-test-2026-04-22.md` (load-bearing convention).
 
-## Backend re-review signal (2026-05-06) — round-1 ready
+## Backend re-review signal (2026-05-06, round-1 — commit `d76c0c8` on `main`, originally `57eda60` on `worktree-agent-af947d14fac39f14a`)
 
 All five acceptance subsections landed. Files touched:
 

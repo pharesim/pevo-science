@@ -100,9 +100,9 @@ The redact policy (Layer-B `serializers.err`) still strips the `AssertionError` 
 
 When items 1-3 land, `git mv` this file back to `tasks/review/`. Round-2 architect review scopes `/ce-code-review` to the round-2 commit only.
 
-## Backend re-review signal (2026-05-06, working tree pre-merge)
+## Backend re-review signal (2026-05-06, round-1 hold-fixes — commit `83031c4` on `main`, originally `103e21d` on `worktree-agent-a0ef875f8f9169812`)
 
-Round-1 hold items 1-3 landed at <commit-sha-pending-merge>.
+Round-1 hold items 1-3 landed.
 
 - Item 1: added `beforeAll` inside the new describe block in `backend/tests/routes/claims.test.ts` that calls `_resetBridgePostingKeyCacheForTests()` then `_initBridgePostingKeyCacheForTests()` (both already exported from `startup-checks.ts`); also added `beforeAll` to the `vitest` import. The cache is now deterministically populated before any spy is installed, so the negative-invariant assertion holds when this describe runs in isolation.
 - Item 2: widened the `getCachedBridgePostingKey()` JSDoc to cover all production bridge-WIF callers (both `routes/bridge.ts` and `routes/claims.ts`), updated the throw-site guarantee to span both files, deleted the round-3-hold-#11 paragraph (no longer accurate post-83c6a28), and added a `grep` cross-reference. Also refreshed the `getRequiredBridgePostingKey()` tail paragraph from "sets the convention for the claims.ts follow-up" to "adopted by bridge.ts and claims.ts:225, :325". Hold block cited lines 256-274 / 269-274; actual lines were 285-318 / 308-313 (the docstring at 256-274 is `validatePostingKeyFormat`'s, unrelated). Honored intent.

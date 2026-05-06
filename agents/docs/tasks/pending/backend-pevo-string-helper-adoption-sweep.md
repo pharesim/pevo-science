@@ -68,9 +68,9 @@ This task does not block any held task. It can land any time after the keystone 
 
 ---
 
-## Backend re-review signal block (round-1 implementation, 2026-05-06)
+## Backend re-review signal block (round-1 implementation, 2026-05-06, commit `ac30ad5` on `main`, originally `7eb5bdc` on `worktree-agent-a1a77443470f43d4d`)
 
-**Worker:** Backend worktree subagent (worktree-agent-a1a77443470f43d4d, rebased onto main 89ec691 before editing)
+**Worker:** Backend worktree subagent (rebased onto main 89ec691 before editing)
 
 ### Inventory diff vs task-file table
 
