@@ -269,7 +269,7 @@ When round-3 items 1-3 land in a single commit on `papers.ts`, `git mv` this fil
 
 ---
 
-## Backend re-review signal (2026-05-06, round-3 commit on `worktree-agent-a0f12fb8acf2854a9`)
+## Backend re-review signal (2026-05-06, round-3 commit `095328b` on `main`, originally `f8ba035` on `worktree-agent-a0f12fb8acf2854a9`)
 
 All 3 round-3 hold items landed in a single commit on `papers.ts` + `canonical-root-walker.test.ts`:
 
