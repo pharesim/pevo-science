@@ -16,7 +16,7 @@
  * `verifyHiveSignature` is NOT mocked.
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
 import request from 'supertest';
 import * as dhive from '@hiveio/dhive';
 import { PrivateKey, cryptoUtils } from '@hiveio/dhive';
@@ -482,6 +482,23 @@ describe('BE-ORCID-BROADCAST-ABORT-TIMEOUT — claims timeout discrimination', (
 // ──────────────────────────────────────────────
 
 describe('BACKEND-BRIDGE-KEY-CLAIMS-ROUTE-MIGRATION — handlers no longer parse the bridge WIF per-request', () => {
+  // Round-1 hold-fix #1: deterministic cache population before any spy is
+  // installed. Without this, the test passes only by cache-state inheritance
+  // from sibling describe blocks. Run in isolation, the lazy-fallback at
+  // `startup-checks.ts` (`getCachedBridgePostingKey()` on a null cache with
+  // a configured source) fires `PrivateKey.fromString(source)` on the
+  // request hot path, the spy records it, and the negative-invariant
+  // assertion fails. Reset+init the cache here so the spy is installed
+  // against a primed cache, and the only legitimate `PrivateKey.fromString`
+  // calls during the request are unrelated parses (e.g. signature
+  // verification of test keys), never the bridge WIF.
+  beforeAll(async () => {
+    const { _resetBridgePostingKeyCacheForTests, _initBridgePostingKeyCacheForTests } =
+      await import('../../src/startup-checks.js');
+    _resetBridgePostingKeyCacheForTests();
+    _initBridgePostingKeyCacheForTests();
+  });
+
   it('approve bridge paper (admin happy path): PrivateKey.fromString NOT called with the bridge WIF', async () => {
     const fromStringSpy = vi.spyOn(dhive.PrivateKey, 'fromString');
     try {

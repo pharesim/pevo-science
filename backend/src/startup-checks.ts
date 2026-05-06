@@ -292,25 +292,23 @@ export class BootFatalError extends Error {
  * post-validator (the validator at `validateConfig()` runs before any
  * request-handling code, populating the cache).
  *
- * Per-request callers in `routes/bridge.ts` MUST NOT call
+ * All production bridge-WIF call sites in `routes/` MUST NOT call
  * `PrivateKey.fromString(config.pevoBridgePostingKey)` directly — use this
  * accessor (or `getRequiredBridgePostingKey()` when null is unacceptable)
- * instead. Two reasons:
+ * instead. As of BACKEND-BRIDGE-KEY-CLAIMS-ROUTE-MIGRATION (commit
+ * `83c6a28`), this covers both `routes/bridge.ts` and `routes/claims.ts`.
+ * Two reasons:
  *   1. The parse result is immutable; recomputing it per request is waste.
  *   2. The parse path can throw `AssertionError` whose `.actual`/`.expected`
  *      Buffer slices are derived from the WIF; even with the redact policy
  *      in `logger.ts` stripping them post-hoc, eliminating the throw site
  *      is the stronger guarantee. The startup validator above is the
- *      single throw site for `bridge.ts` callers; once boot succeeds, no
- *      request-time call to `PrivateKey.fromString` on this key from
- *      `bridge.ts` is reachable.
- *
- * Round-3 hold #11 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):
- * the project-wide phrasing of the prior docstring overclaimed coverage —
- * `routes/claims.ts:214, :311` still call `PrivateKey.fromString(config.
- * pevoBridgePostingKey)` directly per-request, tracked under the
- * follow-up task `backend-bridge-key-claims-route-migration`. Until that
- * lands, the throw-site guarantee scopes to bridge.ts call sites only.
+ *      single throw site for production bridge-WIF callers; once boot
+ *      succeeds, no request-time call to `PrivateKey.fromString` on this
+ *      key from `routes/bridge.ts` or `routes/claims.ts` is reachable.
+ *      Re-derive the call-site map via
+ *      `grep -rn "PrivateKey\.fromString(config.pevoBridgePostingKey" backend/src/`
+ *      — the expected hit count is zero.
  *
  * Cache miss + key configured: parses lazily, then caches. This keeps the
  * accessor safe to call before `validateConfig()` has run (test harnesses
@@ -377,8 +375,10 @@ export class BridgeKeyCacheUnpopulated extends Error {
  * carries no secret-derived material — it's safe to log via the project-
  * wide redact policy without further scrubbing.
  *
- * Sets the convention for the `routes/claims.ts` follow-up (see
- * `backend-bridge-key-claims-route-migration` task) to inherit.
+ * Adopted by `routes/bridge.ts` (rounds 3-4 of the parent task) and
+ * `routes/claims.ts:225, :325` (BACKEND-BRIDGE-KEY-CLAIMS-ROUTE-MIGRATION,
+ * commit `83c6a28`). All production bridge-WIF broadcast call sites
+ * funnel through this helper.
  */
 export function getRequiredBridgePostingKey(): PrivateKey {
   const cached = getCachedBridgePostingKey();

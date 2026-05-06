@@ -212,16 +212,7 @@ router.post('/:claimer/approve', verifyHiveSignature, approveLimiter, async (req
       return sendError(res, 403, 'FORBIDDEN', 'Only the platform admin or an approved co-author can approve claims on bridge papers');
     }
 
-    // Use the boot-cached parsed key. `assertBridgeKeyConfigured` above guards
-    // the source-string truthiness; `getRequiredBridgePostingKey()` ties type
-    // narrowing to the cache contents and throws a structured
-    // `BridgeKeyCacheUnpopulated` error (handled by errorHandler) on the
-    // unreachable cache-desync path. Eliminates the per-request
-    // `PrivateKey.fromString` throw site whose AssertionError carries
-    // `.actual`/`.expected` Buffer slices derived from the WIF (the redact
-    // policy strips them post-hoc; removing the throw site is the stronger
-    // guarantee). Mirrors the pattern landed in `routes/bridge.ts` under
-    // BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT round-3.
+    // Boot-cached key; see getRequiredBridgePostingKey() docstring in startup-checks.ts.
     const key = getRequiredBridgePostingKey();
     try {
       const result = await broadcastJsonWithTimeout(
@@ -319,9 +310,7 @@ router.post('/:claimer/revoke', verifyHiveSignature, revokeLimiter, async (req: 
   // signing identity for a bridge paper).
   if (paperAuthor === config.hiveBridgeAccount && isAdmin) {
     if (!assertBridgeKeyConfigured(res)) return;
-    // See comment at the approve handler's bridge-key call site for the
-    // rationale on `getRequiredBridgePostingKey()` over per-request
-    // `PrivateKey.fromString(config.pevoBridgePostingKey)`.
+    // Boot-cached key; see getRequiredBridgePostingKey() docstring in startup-checks.ts.
     const key = getRequiredBridgePostingKey();
     try {
       const result = await broadcastJsonWithTimeout(
