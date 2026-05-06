@@ -18,7 +18,7 @@ import {
   pevoString,
   type SortField,
 } from '../helpers.js';
-import { getAccreditedSet, getAllAccreditedAccounts } from '../accreditation.js';
+import { getAccreditedSet, getAllAccreditedAccounts, getAccreditedOrcidsByAccount } from '../accreditation.js';
 import { getReputationScores } from '../reputation.js';
 import { hafCache } from '../cache.js';
 import { logger } from '../logger.js';
@@ -185,6 +185,166 @@ function safePevoMeta(meta: Record<string, unknown>): Record<string, unknown> {
     return pevo as Record<string, unknown>;
   }
   return {};
+}
+
+/**
+ * Build the cumulative-union authors[] for a multi-link continuation chain
+ * per `backend-multi-author-cumulative-union.md`. The displayed `authors[]`
+ * is the union of `pevo.authors[].hive` (lowercased, trimmed,
+ * non-empty-string only) across all chain posts; per-hive sub-fields
+ * (`name`, `affiliation`, etc.) resolve to the most-recent self-claim
+ * (a chain post whose `chain-author === hive` claiming itself) or, absent
+ * a self-claim, the most-recent claim across the chain. ORCID is
+ * server-overridden for accredited hives whose claimed ORCID disagrees
+ * with the on-chain accredited ORCID; mismatch emits a structured
+ * `orcid_claim_mismatch` audit warn for post-incident triage.
+ *
+ * Drops are forbidden by construction: the union map only grows, so a
+ * later chain post cannot remove a hive that an earlier post added. This
+ * supersedes the round-3 no-shrink check (`headAuthorsCoverRoot`); a
+ * mathematical invariant replaces a check that could be inverted or get
+ * out of sync with the spec.
+ *
+ * Bridge papers' `hive: null` carrier entries (original-preprint authors
+ * who lack on-chain identity) are filtered out at extract time. Bridge
+ * papers are immutable post-publish so they reach this helper only with
+ * `chain.length === 1` — and the caller skips this helper for
+ * `chain.length === 1`. Defense-in-depth: even if a bridge chain extended
+ * to multiple links, the union strips `hive: null` entries; the existing
+ * bridge metadata path (`buildPaperDetail`'s `pevo.authors || []` for
+ * single-link papers) preserves the full carrier list.
+ *
+ * @param chainPosts - chain links with their latest reconstructed pevo
+ *   metadata, in chain order (root first, head last).
+ * @param rootAuthor / rootPermlink - the canonical paper coordinates,
+ *   used as audit-event payload anchors.
+ * @param accreditedAccounts - membership set of accredited Hive accounts
+ *   (loaded once per request via `getAllAccreditedAccounts`).
+ * @param accreditedOrcids - per-accredited-account ORCID map (loaded once
+ *   per request via `getAccreditedOrcidsByAccount`); `null` value means
+ *   the account is accredited but the on-chain attestation does not
+ *   carry an ORCID — pass-through is the policy in that case.
+ */
+function buildCumulativeAuthorsForChain(
+  chainPosts: Array<{ author: string; permlink: string; pevo: Record<string, unknown> }>,
+  rootAuthor: string,
+  rootPermlink: string,
+  accreditedAccounts: Set<string>,
+  accreditedOrcids: Map<string, string | null>,
+): Array<Record<string, unknown>> {
+  // Per-hive winning claim: latest self-claim wins (most-recent self-claim
+  // by the hive's own continuation post about itself); else latest claim
+  // across the chain wins (the most-recent broadcaster's claim about that
+  // hive). `isSelf` tracks whether the winning claim is a self-claim so
+  // a later non-self claim does not overwrite an earlier self-claim.
+  const winning = new Map<string, {
+    entry: Record<string, unknown>;
+    sourceAuthor: string;
+    sourcePermlink: string;
+    isSelf: boolean;
+  }>();
+  // First-occurrence index: the index at which this hive first appeared
+  // in any chain post. Drives the displayed authors[] order so the chain's
+  // monotonic-growth narrative carries through to the API response.
+  const firstOccurrence = new Map<string, number>();
+  let occurrenceCounter = 0;
+
+  for (const post of chainPosts) {
+    const authorsArr = Array.isArray(post.pevo.authors) ? post.pevo.authors : [];
+    for (const e of authorsArr) {
+      if (!e || typeof e !== 'object') continue;
+      const entry = e as Record<string, unknown>;
+      if (typeof entry.hive !== 'string') continue;
+      const hive = entry.hive.trim().toLowerCase();
+      if (hive.length === 0) continue;
+
+      if (!firstOccurrence.has(hive)) {
+        firstOccurrence.set(hive, occurrenceCounter++);
+      }
+
+      const isSelfClaim = post.author === hive;
+      const existing = winning.get(hive);
+
+      if (!existing) {
+        winning.set(hive, {
+          entry,
+          sourceAuthor: post.author,
+          sourcePermlink: post.permlink,
+          isSelf: isSelfClaim,
+        });
+      } else if (isSelfClaim) {
+        // Most-recent self-claim wins.
+        winning.set(hive, {
+          entry,
+          sourceAuthor: post.author,
+          sourcePermlink: post.permlink,
+          isSelf: true,
+        });
+      } else if (!existing.isSelf) {
+        // No self-claim seen yet; take the most-recent fallback claim.
+        winning.set(hive, {
+          entry,
+          sourceAuthor: post.author,
+          sourcePermlink: post.permlink,
+          isSelf: false,
+        });
+      }
+      // else: existing winner is a self-claim; current is non-self — keep
+      // the self-claim (it outranks any non-self claim regardless of
+      // recency).
+    }
+  }
+
+  const orderedHives = Array.from(winning.keys()).sort(
+    (a, b) => (firstOccurrence.get(a) ?? 0) - (firstOccurrence.get(b) ?? 0),
+  );
+
+  return orderedHives.map((hive) => {
+    const w = winning.get(hive)!;
+    // Clone the winning entry so we can override sub-fields (ORCID) without
+    // mutating the source `pevo.authors[]` array.
+    const out: Record<string, unknown> = { ...w.entry };
+    // Normalize the displayed `hive` to the lowercased canonical form.
+    out.hive = hive;
+
+    // ORCID server-override (rule #3). For accredited hives, the on-chain
+    // accreditation attestation is the authoritative ORCID; broadcaster
+    // claims about an accredited account's ORCID are at most a second-best
+    // signal. Mismatch emits an audit event so accreditation-revocation
+    // triage can correlate spoof attempts; missing-claim prefills from
+    // accreditation; matching claim passes through.
+    if (accreditedAccounts.has(hive)) {
+      const accreditedOrcid = accreditedOrcids.get(hive) ?? null;
+      const claimedOrcid = typeof out.orcid === 'string' && (out.orcid as string).length > 0
+        ? (out.orcid as string)
+        : null;
+      if (accreditedOrcid) {
+        if (claimedOrcid && claimedOrcid !== accreditedOrcid) {
+          logger.warn(
+            {
+              event: 'orcid_claim_mismatch',
+              rootAuthor,
+              rootPermlink,
+              hive,
+              claimedOrcid,
+              accreditedOrcid,
+              claimSource: `${w.sourceAuthor}/${w.sourcePermlink}`,
+            },
+            'broadcaster-claimed ORCID for accredited hive differs from accredited ORCID; server-overriding',
+          );
+          out.orcid = accreditedOrcid;
+        } else if (!claimedOrcid) {
+          // Prefill: accredited carries an ORCID, the chain-claim doesn't.
+          out.orcid = accreditedOrcid;
+        }
+        // else: claimedOrcid === accreditedOrcid — pass through unchanged.
+      }
+      // else: accredited account but accreditation attestation has no
+      // on-chain ORCID — pass the chain-claim through unchanged.
+    }
+
+    return out;
+  });
 }
 
 const retractLimiter = rateLimit({ name: 'paper-retract', windowMs: 3_600_000, max: 5, keyFn: byAccount });
@@ -558,7 +718,12 @@ async function fetchPaperDetailFromHaf(author: string, permlink: string, memo?: 
     // per-`(author, permlink)` metadata cache with the backward
     // canonical-root walker (see `findCanonicalRoot`).
     const chain = await resolveContinuationChain(author, permlink, memo);
-    const [paperResult, fullVersions, retraction] = await Promise.all([
+    // Hoist the accreditation lookups so the cumulative-union construction
+    // (further down) and the `accredited_authors` rebuild share the same
+    // request-scoped fetches. Both helpers cache 10 min via hafCache so
+    // the parallel call is typically free; parallelizing with paperResult
+    // / fullVersions / retraction avoids serial latency on cold cache.
+    const [paperResult, fullVersions, retraction, accreditedAccountSet, accreditedOrcidsByAccount] = await Promise.all([
       pool.query(
         `SELECT c.author, c.permlink, c.title, c.body, c.json_metadata,
                 c.created, c.last_edited
@@ -570,6 +735,8 @@ async function fetchPaperDetailFromHaf(author: string, permlink: string, memo?: 
       ),
       reconstructVersionsFromHaf(author, permlink, chain, memo),
       getRetractionInfo(author, permlink),
+      getAllAccreditedAccounts(),
+      getAccreditedOrcidsByAccount(),
     ]);
 
     if (paperResult.rows.length === 0) return null;
@@ -602,84 +769,81 @@ async function fetchPaperDetailFromHaf(author: string, permlink: string, memo?: 
         detail.abstract = extractAbstract(latest.body);
         detail.last_update = latest.created;
 
-        // Update metadata-derived fields from the head version, subject to
-        // the Multi-Author Trust Model (`agents/docs/ARCHITECTURE.md`
-        // section 2):
-        //   - `pevo.authors[]` MUST NOT shrink via continuation. The
-        //     head's hive set MUST cover (be a superset of) the root's
-        //     authorized-author set. Adding a new author is legitimate
-        //     (`pevo.authors[]` is monotonic per the version-chain edit
-        //     semantics convention; the new entry is claimed-pending
-        //     until they broadcast `author_accept` once Phase 2 of
-        //     `backend-coauthor-trust-model` lands). Dropping a root
-        //     author is the insider-abuse vector (e.g. bob silently
-        //     drops alice from her own paper) and is rejected with an
-        //     audit warn.
+        // Cumulative-union display construction
+        // (`backend-multi-author-cumulative-union.md`).
+        //   - `detail.authors[]` is the cumulative union of
+        //     `pevo.authors[].hive` across all chain posts (in
+        //     first-occurrence order); per-hive sub-fields resolve to the
+        //     most-recent self-claim or, absent a self-claim, the
+        //     most-recent claim across the chain. ORCID is server-
+        //     overridden for accredited hives whose claim diverges from
+        //     the on-chain accredited ORCID. Drops are forbidden by
+        //     construction (the union only grows; no chain post can
+        //     remove a hive that another chain post added). This
+        //     supersedes the round-3 no-shrink check; an inversion-prone
+        //     check is replaced by a structural invariant. See
+        //     `agents/docs/ARCHITECTURE.md` section 2 "Multi-Author Trust
+        //     Model" (architect-rewritten at archive of this task).
         //   - `pevo.ipfs_cid` / `pevo.document_hash` / `pevo.ipfs_filename`
-        //     apply per-version: each chain post's pointers describe
-        //     that version's PDF (alice's v1 has CID_A, bob's v2 may
-        //     have CID_B). The default `/api/papers/:author/:permlink`
-        //     view reads from the chain head, falling back to the root
-        //     when the head doesn't carry the field. `?version=N` reads
-        //     the N-th version's metadata via the dedicated
-        //     `reconstructVersionsFromHaf` path. All historical CIDs
-        //     are preserved on chain (Hive immutability); the pinner
-        //     agent retains them per the "Pinner constraint" subsection
-        //     of the ARCH spec.
-        //   - The risk of bob spoofing his continuation's `ipfs_cid` to
-        //     a different paper is treated identically to body-spoof:
+        //     apply per-version: each chain post's pointers describe that
+        //     version's PDF (alice's v1 has CID_A, bob's v2 may have
+        //     CID_B). The default `/api/papers/:author/:permlink` view
+        //     reads from the chain head, falling back to the root when
+        //     the head doesn't carry the field. `?version=N` reads the
+        //     N-th version's metadata via the dedicated
+        //     `reconstructVersionsFromHaf` path. All historical CIDs are
+        //     preserved on chain (Hive immutability); the pinner agent
+        //     retains them per the "Pinner constraint" subsection of the
+        //     ARCH spec.
+        //   - The risk of bob spoofing his continuation's `ipfs_cid` to a
+        //     different paper is treated identically to body-spoof:
         //     accepted risk under the broadcaster-attributed reputation
         //     model with on-chain audit trail and accreditation
         //     revocation as the deterrent.
         //   - Other fields (title, body, abstract, discipline, keywords,
         //     citations, language, supplementary_files) evolve normally
-        //     as part of legitimate version progression.
+        //     as part of legitimate version progression and are
+        //     head-preferred.
         // Phase 2 of `backend-coauthor-trust-model.md` layers the full
-        // accept/resign consent ops on top of the no-shrink rule below.
+        // accept/resign consent ops on top of the cumulative union; the
+        // union is monotonic membership, vouched-status decays under
+        // resign — orthogonal dimensions.
         const headMeta = latest.json_metadata;
         if (isPevoAnyPaper(headMeta, latest.post_author)) {
           const rootPevo = safePevoMeta(meta);
-          const rootAuthorSet = extractAuthorizedContinuationAuthors(rootPevo, row.author as string);
           const headPevo = safePevoMeta(headMeta);
-          const headAuthorsRaw = Array.isArray(headPevo.authors) ? headPevo.authors : [];
 
-          // No-shrink check: every hive in the root's authorized-author
-          // set MUST appear in the head's `pevo.authors[]` extracted hive
-          // set. New names in head are admitted (additions are legitimate
-          // under the monotonic `pevo.authors[]` rule). Missing root
-          // names mean a co-author silently dropped a peer — REJECT the
-          // head's authors[] override (keep root's authors[] for display).
-          const headAuthorHiveSet = new Set<string>();
-          for (const entry of headAuthorsRaw) {
-            if (!entry || typeof entry !== 'object') continue;
-            const hiveRaw = (entry as Record<string, unknown>).hive;
-            if (typeof hiveRaw !== 'string') continue;
-            const hive = hiveRaw.trim().toLowerCase();
-            if (hive.length === 0) continue;
-            headAuthorHiveSet.add(hive);
-          }
-          let headAuthorsCoverRoot = true;
-          for (const rootHive of rootAuthorSet) {
-            if (!headAuthorHiveSet.has(rootHive)) {
-              headAuthorsCoverRoot = false;
-              break;
-            }
-          }
-
-          detail.json_metadata = headMeta;
-          detail.authors = headAuthorsCoverRoot ? (headPevo.authors || []) : detail.authors;
-          if (!headAuthorsCoverRoot) {
-            logger.warn(
-              {
-                rootAuthor: row.author as string,
-                rootPermlink: row.permlink as string,
-                headAuthor: latest.post_author,
-                headPermlink: latest.post_permlink,
-                event: 'continuation_authors_shrink_violation',
-              },
-              'head continuation pevo.authors[] drops one or more root authors; rejecting authors override',
+          // Build per-link latest pevo metadata for the cumulative-union
+          // construction. `fullVersions` carries per-version metadata
+          // already (each entry tagged with `post_author` / `post_permlink`);
+          // the latest version per chain link is whichever entry came
+          // last in the version-ordered scan. Iterating `fullVersions` in
+          // its existing block_num-ascending order and overwriting on
+          // each post-key collision yields the per-link latest metadata
+          // without an extra query.
+          const latestMetaByLink = new Map<string, Record<string, unknown>>();
+          for (const v of fullVersions) {
+            latestMetaByLink.set(
+              `${v.post_author}/${v.post_permlink}`,
+              v.json_metadata,
             );
           }
+          const chainPosts = chain.map((link) => ({
+            author: link.author,
+            permlink: link.permlink,
+            pevo: safePevoMeta(latestMetaByLink.get(`${link.author}/${link.permlink}`) ?? {}),
+          }));
+
+          const cumulativeAuthors = buildCumulativeAuthorsForChain(
+            chainPosts,
+            row.author as string,
+            row.permlink as string,
+            accreditedAccountSet,
+            accreditedOrcidsByAccount,
+          );
+
+          detail.json_metadata = headMeta;
+          detail.authors = cumulativeAuthors;
           detail.discipline = paperDisciplineField(headPevo.discipline);
           detail.keywords = headPevo.keywords || [];
           detail.citations = headPevo.citations || [];
@@ -749,14 +913,21 @@ async function fetchPaperDetailFromHaf(author: string, permlink: string, memo?: 
       }
     }
 
-    // Accreditation: is_accredited + accredited_authors
-    const allAccredited = await getAllAccreditedAccounts();
-    detail.is_accredited = allAccredited.has(author);
-    const detailMeta = detail.json_metadata as Record<string, unknown>;
-    const pevoAuthors: Array<{ hive?: string }> = (safePevoMeta(detailMeta).authors || []) as Array<{ hive?: string }>;
-    detail.accredited_authors = pevoAuthors
-      .filter(a => a.hive && allAccredited.has(a.hive))
-      .map(a => a.hive!);
+    // Accreditation: is_accredited + accredited_authors. Use the
+    // already-loaded `accreditedAccountSet` (hoisted into the parallel
+    // fetch block above) so this rebuild does not re-issue the
+    // `getAllAccreditedAccounts` HAF query. `accredited_authors` reads
+    // from `detail.authors` (the cumulative-union'd list for chain.length
+    // > 1, or `pevo.authors[]` for single-link papers) rather than from
+    // `detail.json_metadata`. Reading the union closes round-3 finding #1
+    // by construction: a head post that drops a chain author from its own
+    // `pevo.authors[]` cannot leak the shrunken set into accreditation
+    // because the union still carries the dropped author.
+    detail.is_accredited = accreditedAccountSet.has(author);
+    const detailAuthors = (detail.authors as Array<Record<string, unknown>>) || [];
+    detail.accredited_authors = detailAuthors
+      .filter((a) => typeof a.hive === 'string' && accreditedAccountSet.has(a.hive as string))
+      .map((a) => (a.hive as string).trim().toLowerCase());
 
     // Citation count
     const pevo = safePevoMeta(meta);
@@ -917,13 +1088,19 @@ async function fetchHeadAuthorizedAuthors(
  * Returns ordered array starting with the root post, ending at the chain head.
  * Uses block_num to resolve collisions (earliest wins). 50-hop safety cap.
  *
- * **Author-consent gate (BACKEND-CONTINUATION-POST-AUTHOR-CONSENT-GATE).**
- * A candidate continuation post `C` is admitted into the chain only if BOTH:
+ * **Author-consent gate (cumulative-union under
+ * `backend-multi-author-cumulative-union.md`).** A candidate continuation
+ * post `C` is admitted at hop N only if BOTH:
  *
- *   1. `C.author` is one of the head (root) paper's authorized continuation
- *      authors (per `extractAuthorizedContinuationAuthors`):
- *      - For native papers: a member of `pevo.authors[].hive` (lowercased).
- *      - For bridge papers: equal to `config.hiveBridgeAccount`.
+ *   1. `C.author` (chain-level) is in the cumulative union of
+ *      `pevo.authors[].hive` extracted from chain posts `0..N-1` (i.e., all
+ *      predecessors). The cumulative starts at the root's contribution and
+ *      grows as each admitted candidate's `pevo.authors[]` contributes new
+ *      hives. This encodes the equal-rights authorship policy: any author
+ *      currently in the chain's authors[] can broadcast continuations
+ *      regardless of when they were added; trust is dynamic and the cost
+ *      of a bad invitation falls on the introducer via accreditation
+ *      cascade.
  *
  *   2. `C` is itself a valid PEvO paper class — native paper, or the
  *      bridge-paper variant pinned to `config.hiveBridgeAccount` (per
@@ -936,9 +1113,19 @@ async function fetchHeadAuthorizedAuthors(
  *      `agents/docs/solutions/conventions/pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28.md`.
  *
  * Both predicates are enforced SQL-side (the DB never returns disallowed
- * candidates) AND JS-side as defense in depth. If the head paper is not a
- * valid PEvO paper or has no named authors, the chain degenerates to the
- * root only — no continuations are admitted.
+ * candidates) AND JS-side as defense in depth. The cumulative `$N::text[]`
+ * parameter regenerates each iteration with the union built so far. If the
+ * root paper is not a valid PEvO paper or has no named authors, the chain
+ * degenerates to the root only — no continuations are admitted.
+ *
+ * **Bridge-paper Option-b** is preserved by construction: the root's
+ * contribution for `pevo.type === 'bridge_paper'` is `{bridgeAccount}` (per
+ * `extractAuthorizedContinuationAuthors`); each admitted bridge-paper
+ * candidate's contribution is also `{bridgeAccount}`, so the cumulative
+ * stays locked to `{bridgeAccount}` for bridge chains. The bridge update
+ * flow is being retired (see `backend-retire-bridge-update-route.md`)
+ * which makes `chain.length === 1` for bridge papers in practice; the
+ * cumulative-extension path here is defense-in-depth.
  */
 async function resolveContinuationChain(
   author: string,
@@ -950,29 +1137,36 @@ async function resolveContinuationChain(
 
   const chain: ChainLink[] = [{ author, permlink }];
 
-  // Fetch the head paper's authorized-author set ONCE. The chain admit-set
-  // is scoped to the root paper, not per-hop.
-  const authorizedAuthors = await fetchHeadAuthorizedAuthors(pool, author, permlink, memo);
-  if (!authorizedAuthors || authorizedAuthors.size === 0) {
-    // Head is not a valid PEvO paper, or has no named authors. No
+  // Seed the cumulative admit-set from the root's contribution. The root's
+  // contribution is the full cumulative for hop 0 (no predecessors beyond
+  // the root itself).
+  const rootAuthorizedAuthors = await fetchHeadAuthorizedAuthors(pool, author, permlink, memo);
+  if (!rootAuthorizedAuthors || rootAuthorizedAuthors.size === 0) {
+    // Root is not a valid PEvO paper, or has no named authors. No
     // continuations are admitted; chain is root-only.
     return chain;
   }
 
+  // Cumulative admit-set, seeded from root. Extended in-place after each
+  // admitted hop with the candidate's contribution.
+  const cumulative = new Set<string>(rootAuthorizedAuthors);
+
   let currentAuthor = author;
   let currentPermlink = permlink;
   const MAX_HOPS = 50;
-  const authorizedArr = Array.from(authorizedAuthors);
 
   try {
     for (let i = 0; i < MAX_HOPS; i++) {
+      const cumulativeArr = Array.from(cumulative);
       // Find any post whose continues field points to the current head AND
-      // whose author is in the head paper's named-author set AND whose
-      // pevo.type is a valid PEvO paper class (native paper or the
-      // bridge-paper variant pinned to the bridge account, per
-      // validPevoPaperWhere). SQL-side filtering via
-      // $4::text[] (author-set) + validPevoPaperWhere (object-identity) is
-      // the primary gate; the JS-side re-checks below are defense in depth.
+      // whose author is in the cumulative authorized-authors set built from
+      // the chain so far AND whose pevo.type is a valid PEvO paper class
+      // (native paper or the bridge-paper variant pinned to the bridge
+      // account, per validPevoPaperWhere). SQL-side filtering via
+      // $4::text[] (cumulative author-set) + validPevoPaperWhere
+      // (object-identity) is the primary gate; the JS-side re-checks below
+      // are defense in depth. The $4 array is rebuilt each iteration to
+      // reflect the cumulative grown by prior hops.
       const validPaperPredicate = validPevoPaperWhere({
         commentAlias: 'c',
         appTagParam: '$3',
@@ -991,7 +1185,7 @@ async function resolveContinuationChain(
            AND ${validPaperPredicate}
          ORDER BY co.block_num ASC
          LIMIT 1`,
-        [currentAuthor, currentPermlink, config.appTag, authorizedArr, config.hiveBridgeAccount],
+        [currentAuthor, currentPermlink, config.appTag, cumulativeArr, config.hiveBridgeAccount],
       );
 
       if (result.rows.length === 0) break;
@@ -1003,14 +1197,14 @@ async function resolveContinuationChain(
       // (fail-closed: chain ends at the previous hop).
       if (typeof candidateAuthor !== 'string') break;
 
-      // Defense in depth: re-verify (a) author in authorized set,
-      // (b) the candidate's pevo.type is a valid paper class.
-      // A drift between the JS gate and the SQL gate (e.g. a future SQL
-      // refactor that drops one of the predicates) would be caught here.
-      if (!authorizedAuthors.has(candidateAuthor)) {
+      // Defense in depth: re-verify (a) author in cumulative authorized
+      // set, (b) the candidate's pevo.type is a valid paper class. A drift
+      // between the JS gate and the SQL gate (e.g. a future SQL refactor
+      // that drops one of the predicates) would be caught here.
+      if (!cumulative.has(candidateAuthor)) {
         logger.warn(
           { rootAuthor: author, rootPermlink: permlink, candidateAuthor },
-          'continuation candidate slipped past SQL author-set gate; rejecting at JS layer',
+          'continuation candidate slipped past SQL cumulative author-set gate; rejecting at JS layer',
         );
         break;
       }
@@ -1025,6 +1219,18 @@ async function resolveContinuationChain(
       currentAuthor = candidateAuthor;
       currentPermlink = next.permlink as string;
       chain.push({ author: currentAuthor, permlink: currentPermlink });
+
+      // Extend cumulative with the admitted candidate's contribution.
+      // For bridge-paper candidates, the contribution is `{bridgeAccount}`
+      // (no change to cumulative since bridge roots already seed it).
+      // For native paper candidates, the contribution is their
+      // `pevo.authors[].hive` set — admitting authors invited mid-chain
+      // for subsequent hops.
+      const candidateContrib = extractAuthorizedContinuationAuthors(
+        safePevoMeta(candidateMeta),
+        candidateAuthor,
+      );
+      for (const a of candidateContrib) cumulative.add(a);
     }
   } catch (err) {
     logger.error({ err }, 'Continuation chain resolution failed');

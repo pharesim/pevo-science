@@ -1,20 +1,33 @@
 /**
  * Continuation-author consent-gate canary tests.
  *
- * Pins the gate added in BACKEND-CONTINUATION-POST-AUTHOR-CONSENT-GATE:
- * `resolveContinuationChain` admits a continuation post into a paper's
- * version chain only when BOTH:
- *   1. the continuation post's chain-level author is one of the head
- *      paper's authorized continuation authors (native paper:
- *      `pevo.authors[].hive` set, lowercased; bridge paper: the bridge
- *      account itself), AND
- *   2. the continuation's `pevo.type` is a valid PEvO paper class (native
- *      paper, or bridge-paper variant pinned to the bridge account).
- * Plus head-metadata override guards under the Multi-Author Trust Model
- * (no-shrink rule on `pevo.authors[]` — head must cover root's authorized
- * set, additions admitted; per-version display for `pevo.ipfs_cid` /
- * `pevo.document_hash` / `pevo.ipfs_filename` with head-preferred fallback
- * to root) that close the co-author display-spoof class.
+ * Pins the gate added in BACKEND-CONTINUATION-POST-AUTHOR-CONSENT-GATE
+ * and extended in BACKEND-MULTI-AUTHOR-CUMULATIVE-UNION:
+ * `resolveContinuationChain` admits a continuation post `C` at hop N into
+ * a paper's version chain only when BOTH:
+ *   1. `C.author` is in the **cumulative union** of `pevo.authors[].hive`
+ *      across chain posts `0..N-1` (the union starts at the root's
+ *      contribution and grows as each admitted candidate's
+ *      `pevo.authors[]` contributes new hives — encoding the equal-rights
+ *      authorship policy). Bridge papers stay locked to
+ *      `{config.hiveBridgeAccount}` by construction (the bridge carve-out
+ *      in `extractAuthorizedContinuationAuthors`).
+ *   2. `C` is itself a valid PEvO paper class (native paper, or
+ *      bridge-paper variant pinned to the bridge account).
+ *
+ * Plus the cumulative-union display construction:
+ *   - `detail.authors[]` is the cumulative union with sub-fields resolved
+ *     (most-recent self-claim wins; else most-recent fallback claim).
+ *   - ORCID is server-overridden for accredited hives whose claim
+ *     differs from the on-chain accredited ORCID; mismatch emits an
+ *     `orcid_claim_mismatch` audit warn.
+ *   - Per-version display for `pevo.ipfs_cid` / `pevo.document_hash` /
+ *     `pevo.ipfs_filename` (round-5 atomic-triple sentinel-aware
+ *     fallback to root, unchanged).
+ *   - Drops are forbidden by construction — the union only grows; no
+ *     chain post can remove a hive that another chain post added. This
+ *     supersedes the round-3 no-shrink check
+ *     (`continuation_authors_shrink_violation` event removed).
  *
  * Threat model: any Hive account (or even a vouched co-author) can
  * broadcast a comment with `pevo.continues = {author, permlink}` pointing
@@ -563,105 +576,411 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
     expect(walks.length).toBeGreaterThan(0);
   });
 
-  it('rejects head metadata that drops a root author (no-shrink check)', async () => {
-    // Round-3 hold item 1: a vouched co-author bob continues alice/p1, but
-    // bob/v2's metadata sets pevo.authors=[{hive:'bob'}] — silently dropping
-    // alice from her own paper. Under the no-shrink rule, the head's hive
-    // set must COVER the root's authorized-author set; missing alice means
-    // REJECT the authors[] override and emit
-    // event: 'continuation_authors_shrink_violation'.
-    const continuationMeta = {
+  // ────────────────────────────────────────────────────────────────
+  // Cumulative-union display canaries
+  // (`backend-multi-author-cumulative-union.md` acceptance #9)
+  // ────────────────────────────────────────────────────────────────
+
+  /** SQL pattern matchers for accreditation lookups. */
+  function isAccreditedSetSql(sql: string): boolean {
+    return /SELECT\s+account\s+FROM\s+active_accreditations\b/i.test(sql);
+  }
+  function isAccreditedOrcidsSql(sql: string): boolean {
+    return /SELECT\s+account,\s*orcid\s+FROM\s+active_accreditations\b/i.test(sql);
+  }
+  /** Mock paper-detail SELECT row for a multi-link chain seed. */
+  function paperDetailSelectSql(sql: string): boolean {
+    return sql.includes('SELECT c.author, c.permlink, c.title') && sql.includes('parent_permlink = $3');
+  }
+  /** Mock the head-authors lookup probe. */
+  function headAuthorsLookupSql(sql: string): boolean {
+    return sql.includes('SELECT c.author, c.json_metadata') && sql.includes('parent_permlink = $3');
+  }
+  /** Mock the multi-version reconstruction SELECT. */
+  function reconstructVersionsSql(sql: string): boolean {
+    return sql.includes('ROW_NUMBER') && sql.includes('co.block_num');
+  }
+
+  /**
+   * Seed a 2-link chain: alice/p1 (root with `rootAuthors`) → bob/v2
+   * (continuation by bob with `headAuthors`). Both posts get installed
+   * into the head-authors-lookup, paper-detail-select, version
+   * reconstruction, and forward-walker responders. Accreditation
+   * lookups default to empty (no accredited accounts) unless overridden
+   * via `accredited` / `accreditedOrcids` params.
+   */
+  function seedTwoLinkChain(opts: {
+    rootAuthors: Array<Record<string, unknown>>;
+    headAuthors: Array<Record<string, unknown>>;
+    rootPevoExtra?: Record<string, unknown>;
+    headPevoExtra?: Record<string, unknown>;
+    accredited?: string[];
+    accreditedOrcids?: Array<{ account: string; orcid: string | null }>;
+    extraResponder?: (sql: string, params: unknown[]) => Promise<{ rows: unknown[] } | null>;
+  }) {
+    const rootMeta = {
       app: `${config.appTag}/test`,
-      [config.appTag]: {
-        type: 'paper',
-        // Insider attack: bob drops alice from her own paper.
-        authors: [{ hive: 'bob' }],
-      },
+      [config.appTag]: { type: 'paper', authors: opts.rootAuthors, ...(opts.rootPevoExtra ?? {}) },
+    };
+    const headMeta = {
+      app: `${config.appTag}/test`,
+      [config.appTag]: { type: 'paper', authors: opts.headAuthors, ...(opts.headPevoExtra ?? {}) },
+    };
+    const rootRow = {
+      author: 'alice', permlink: 'p1', title: 'Root title', body: 'abstract\n\n---\n\nbody',
+      json_metadata: rootMeta,
+      created: '2026-01-01T00:00:00.000Z', last_edited: '2026-01-01T00:00:00.000Z',
     };
     installResponder(async (sql, params) => {
-      if (sql.includes('SELECT c.author, c.json_metadata') && sql.includes('parent_permlink = $3')) {
-        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'])] };
+      const extra = opts.extraResponder ? await opts.extraResponder(sql, params) : null;
+      if (extra) return extra;
+      if (isAccreditedSetSql(sql)) {
+        return { rows: (opts.accredited ?? []).map((account) => ({ account })) };
       }
-      if (sql.includes('SELECT c.author, c.permlink, c.title')) {
-        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'])] };
+      if (isAccreditedOrcidsSql(sql)) {
+        return { rows: opts.accreditedOrcids ?? [] };
+      }
+      if (headAuthorsLookupSql(sql)) {
+        return { rows: [rootRow] };
+      }
+      if (paperDetailSelectSql(sql)) {
+        return { rows: [rootRow] };
       }
       if (isForwardChainWalkSql(sql)) {
-        if (params[0] === 'alice') {
-          return { rows: [{ author: 'bob', permlink: 'v2', block_num: 100, json_metadata: continuationMeta }] };
+        if (params[0] === 'alice' && params[1] === 'p1') {
+          return { rows: [{ author: 'bob', permlink: 'v2', block_num: 100, json_metadata: headMeta }] };
         }
         return { rows: [] };
       }
-      if (sql.includes('ROW_NUMBER') && sql.includes('co.block_num')) {
+      if (reconstructVersionsSql(sql)) {
         return { rows: [
-          { version_number: 1, block_num: 1, author: 'alice', permlink: 'p1', title: 't', body: 'abstract\n\n---\n\nbody', created: '2026-01-01T00:00:00.000Z', json_metadata: { app: `${config.appTag}/test`, [config.appTag]: { type: 'paper', authors: [{ hive: 'alice' }, { hive: 'bob' }] } } },
-          { version_number: 2, block_num: 100, author: 'bob', permlink: 'v2', title: 't2', body: 'abstract2\n\n---\n\nbody2', created: '2026-01-02T00:00:00.000Z', json_metadata: continuationMeta },
+          { version_number: 1, block_num: 1, author: 'alice', permlink: 'p1', title: 'Root title', body: 'abstract\n\n---\n\nbody', created: '2026-01-01T00:00:00.000Z', json_metadata: rootMeta },
+          { version_number: 2, block_num: 100, author: 'bob', permlink: 'v2', title: 'V2 title', body: 'abstract2\n\n---\n\nbody2', created: '2026-01-02T00:00:00.000Z', json_metadata: headMeta },
         ] };
       }
       return { rows: [] };
     });
+  }
 
+  it('cumulative union admits all hives across the chain (root + head)', async () => {
+    // Acceptance #1: chain `[root, bob/v2]`. Root has [alice, bob]; bob/v2
+    // adds carol. Display authors[] = [alice, bob, carol] in
+    // first-occurrence order.
+    seedTwoLinkChain({
+      rootAuthors: [{ hive: 'alice' }, { hive: 'bob' }],
+      headAuthors: [{ hive: 'alice' }, { hive: 'bob' }, { hive: 'carol' }],
+    });
     const res = await request(app).get('/api/papers/alice/p1');
     expect(res.status).toBe(200);
     const detail = res.body?.data;
-    expect(detail).toBeDefined();
-    // Head moved to bob/v2 (legitimate co-author continuation pointer).
     expect(detail.head_author).toBe('bob');
-    // pevo.authors[] override REJECTED: response retains root's authors[]
-    // (alice + bob), NOT head's (bob alone). Alice must remain visible.
-    const responseAuthors = (detail.authors || []) as Array<{ hive?: string }>;
-    const hiveSet = new Set(responseAuthors.map((a) => a.hive).filter(Boolean));
-    expect(hiveSet.has('alice')).toBe(true);
-    expect(hiveSet.has('bob')).toBe(true);
+    const hives = ((detail.authors || []) as Array<{ hive?: string }>).map((a) => a.hive);
+    expect(hives).toEqual(['alice', 'bob', 'carol']);
   });
 
-  it('admits head metadata that adds a new author (additions are legitimate)', async () => {
-    // Round-3 hold item 1: pevo.authors[] is monotonic per the version-chain
-    // edit semantics convention. bob's continuation with
-    // pevo.authors=[alice, bob, carol] is legitimate (carol joins during
-    // revision, becomes claimed-pending until Phase 2's author_accept op
-    // lands). The override is admitted and carol surfaces in the displayed
-    // authors list.
-    const continuationMeta = {
-      app: `${config.appTag}/test`,
-      [config.appTag]: {
-        type: 'paper',
-        // Legitimate addition: alice + bob (root) + carol (new joiner).
-        authors: [{ hive: 'alice' }, { hive: 'bob' }, { hive: 'carol' }],
-      },
-    };
-    installResponder(async (sql, params) => {
-      if (sql.includes('SELECT c.author, c.json_metadata') && sql.includes('parent_permlink = $3')) {
-        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'])] };
-      }
-      if (sql.includes('SELECT c.author, c.permlink, c.title')) {
-        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'])] };
-      }
-      if (isForwardChainWalkSql(sql)) {
-        if (params[0] === 'alice') {
-          return { rows: [{ author: 'bob', permlink: 'v2', block_num: 100, json_metadata: continuationMeta }] };
-        }
-        return { rows: [] };
-      }
-      if (sql.includes('ROW_NUMBER') && sql.includes('co.block_num')) {
-        return { rows: [
-          { version_number: 1, block_num: 1, author: 'alice', permlink: 'p1', title: 't', body: 'abstract\n\n---\n\nbody', created: '2026-01-01T00:00:00.000Z', json_metadata: { app: `${config.appTag}/test`, [config.appTag]: { type: 'paper', authors: [{ hive: 'alice' }, { hive: 'bob' }] } } },
-          { version_number: 2, block_num: 100, author: 'bob', permlink: 'v2', title: 't2', body: 'abstract2\n\n---\n\nbody2', created: '2026-01-02T00:00:00.000Z', json_metadata: continuationMeta },
-        ] };
-      }
-      return { rows: [] };
+  it('drops are silently ignored under cumulative-union (forbidden by construction)', async () => {
+    // Acceptance #2: bob/v2 drops alice from his pevo.authors[]
+    // (insider-abuse vector). Cumulative union retains alice from root
+    // post; display authors[] still includes alice. No
+    // `continuation_authors_shrink_violation` event fires (event removed
+    // — drops are mathematically impossible under cumulative-union).
+    const warnSpy = vi.spyOn(logger, 'warn');
+    seedTwoLinkChain({
+      rootAuthors: [{ hive: 'alice' }, { hive: 'bob' }],
+      headAuthors: [{ hive: 'bob' }], // insider drops alice
     });
-
     const res = await request(app).get('/api/papers/alice/p1');
     expect(res.status).toBe(200);
     const detail = res.body?.data;
-    expect(detail).toBeDefined();
     expect(detail.head_author).toBe('bob');
-    // pevo.authors[] override ADMITTED: head's three-author list surfaces.
-    const responseAuthors = (detail.authors || []) as Array<{ hive?: string }>;
-    const hiveSet = new Set(responseAuthors.map((a) => a.hive).filter(Boolean));
-    expect(hiveSet.has('alice')).toBe(true);
-    expect(hiveSet.has('bob')).toBe(true);
-    expect(hiveSet.has('carol')).toBe(true);
+    const hives = ((detail.authors || []) as Array<{ hive?: string }>).map((a) => a.hive);
+    expect(hives).toContain('alice');
+    expect(hives).toContain('bob');
+    // No shrink-violation event fired (event class removed).
+    const fired = warnSpy.mock.calls.find(([payload]) => {
+      return typeof payload === 'object' && payload !== null
+        && (payload as { event?: string }).event === 'continuation_authors_shrink_violation';
+    });
+    expect(fired).toBeUndefined();
+    warnSpy.mockRestore();
+  });
+
+  it('self-claim wins for sub-fields (most-recent self-claim by the hive about itself)', async () => {
+    // Acceptance #3: root has alice with name "Alice Smith" + bob with
+    // name "Robert Bob". bob/v2 has alice with no name + bob with name
+    // "Bob Smith" (his self-claim). Display: alice's name = "Alice
+    // Smith" (her self-claim from root); bob's name = "Bob Smith" (his
+    // most-recent self-claim).
+    seedTwoLinkChain({
+      rootAuthors: [
+        { hive: 'alice', name: 'Alice Smith' },
+        { hive: 'bob', name: 'Robert Bob' },
+      ],
+      headAuthors: [
+        { hive: 'alice' },
+        { hive: 'bob', name: 'Bob Smith' },
+      ],
+    });
+    const res = await request(app).get('/api/papers/alice/p1');
+    const authors = ((res.body?.data.authors || []) as Array<{ hive?: string; name?: string }>);
+    const aliceEntry = authors.find((a) => a.hive === 'alice');
+    const bobEntry = authors.find((a) => a.hive === 'bob');
+    expect(aliceEntry?.name).toBe('Alice Smith');
+    expect(bobEntry?.name).toBe('Bob Smith');
+  });
+
+  it('fallback to most-recent claim when no self-claim exists for a hive', async () => {
+    // Acceptance #4: bob's continuation adds carol with a fallback
+    // name. carol hasn't broadcast her own continuation. Display:
+    // carol's name = bob's claim about her (most-recent fallback).
+    seedTwoLinkChain({
+      rootAuthors: [{ hive: 'alice' }, { hive: 'bob' }],
+      headAuthors: [
+        { hive: 'alice' },
+        { hive: 'bob' },
+        { hive: 'carol', name: 'Initial Guess' },
+      ],
+    });
+    const res = await request(app).get('/api/papers/alice/p1');
+    const authors = ((res.body?.data.authors || []) as Array<{ hive?: string; name?: string }>);
+    const carolEntry = authors.find((a) => a.hive === 'carol');
+    expect(carolEntry?.name).toBe('Initial Guess');
+  });
+
+  it('self-claim updates fallback once the hive broadcasts a self-claim', async () => {
+    // Acceptance #5: 3-link chain. bob's continuation adds carol with
+    // name "Initial Guess"; carol's own continuation claims name "Carol
+    // Real". Display: carol's name = "Carol Real" (self-claim wins over
+    // the prior fallback).
+    const carolMeta = {
+      app: `${config.appTag}/test`,
+      [config.appTag]: {
+        type: 'paper',
+        authors: [
+          { hive: 'alice' },
+          { hive: 'bob' },
+          { hive: 'carol', name: 'Carol Real' },
+        ],
+      },
+    };
+    seedTwoLinkChain({
+      rootAuthors: [{ hive: 'alice' }, { hive: 'bob' }],
+      headAuthors: [
+        { hive: 'alice' },
+        { hive: 'bob' },
+        { hive: 'carol', name: 'Initial Guess' },
+      ],
+      extraResponder: async (sql, params) => {
+        if (isForwardChainWalkSql(sql)) {
+          // Hop 1: alice/p1 → bob/v2 (default seed handles).
+          // Hop 2: bob/v2 → carol/v3 (additional admission).
+          if (params[0] === 'bob' && params[1] === 'v2') {
+            return { rows: [{ author: 'carol', permlink: 'v3', block_num: 200, json_metadata: carolMeta }] };
+          }
+        }
+        if (reconstructVersionsSql(sql)) {
+          return { rows: [
+            { version_number: 1, block_num: 1, author: 'alice', permlink: 'p1', title: 'Root title', body: 'abstract\n\n---\n\nbody', created: '2026-01-01T00:00:00.000Z', json_metadata: { app: `${config.appTag}/test`, [config.appTag]: { type: 'paper', authors: [{ hive: 'alice' }, { hive: 'bob' }] } } },
+            { version_number: 2, block_num: 100, author: 'bob', permlink: 'v2', title: 'V2 title', body: 'abstract2\n\n---\n\nbody2', created: '2026-01-02T00:00:00.000Z', json_metadata: { app: `${config.appTag}/test`, [config.appTag]: { type: 'paper', authors: [{ hive: 'alice' }, { hive: 'bob' }, { hive: 'carol', name: 'Initial Guess' }] } } },
+            { version_number: 3, block_num: 200, author: 'carol', permlink: 'v3', title: 'V3 title', body: 'abstract3\n\n---\n\nbody3', created: '2026-01-03T00:00:00.000Z', json_metadata: carolMeta },
+          ] };
+        }
+        return null;
+      },
+    });
+    const res = await request(app).get('/api/papers/alice/p1');
+    expect(res.status).toBe(200);
+    const detail = res.body?.data;
+    expect(detail.head_author).toBe('carol');
+    expect(detail.head_permlink).toBe('v3');
+    const carolEntry = ((detail.authors || []) as Array<{ hive?: string; name?: string }>).find((a) => a.hive === 'carol');
+    expect(carolEntry?.name).toBe('Carol Real');
+  });
+
+  it('ORCID server override fires for accredited-vs-claimed mismatch (audit event + display override)', async () => {
+    // Acceptance #6: alice's most-recent winning entry (whole-entry rule
+    // #2) carries an ORCID that disagrees with her on-chain accreditation
+    // — here, the spoof source is alice's own self-claim post (the rule
+    // governs the resolved entry regardless of whether the wrong ORCID
+    // came from a self-claim or a fallback claim; mismatch fires the
+    // same way). Display: alice's ORCID = the accredited value (server
+    // override). Audit event `orcid_claim_mismatch` fires with the diff
+    // and a `claimSource` pointing at the post that contributed the
+    // wrong claim.
+    const warnSpy = vi.spyOn(logger, 'warn');
+    seedTwoLinkChain({
+      // Alice's self-claim from her own root post carries a wrong ORCID;
+      // bob's continuation does not re-claim alice's ORCID. Under the
+      // whole-entry self-claim rule, alice's winning entry is from the
+      // root (her self-claim), and claimedOrcid is the wrong one.
+      rootAuthors: [{ hive: 'alice', orcid: 'wrong-orcid' }, { hive: 'bob' }],
+      headAuthors: [
+        { hive: 'alice' },
+        { hive: 'bob' },
+      ],
+      accredited: ['alice', 'bob'],
+      accreditedOrcids: [
+        { account: 'alice', orcid: '0000-0000-0000-1234' },
+        { account: 'bob', orcid: '0000-0000-0000-5678' },
+      ],
+    });
+    const res = await request(app).get('/api/papers/alice/p1');
+    expect(res.status).toBe(200);
+    const aliceEntry = ((res.body?.data.authors || []) as Array<{ hive?: string; orcid?: string }>).find((a) => a.hive === 'alice');
+    expect(aliceEntry?.orcid).toBe('0000-0000-0000-1234');
+    const fired = warnSpy.mock.calls.find(([payload]) => {
+      return typeof payload === 'object' && payload !== null
+        && (payload as { event?: string }).event === 'orcid_claim_mismatch';
+    });
+    expect(fired).toBeDefined();
+    const event = fired![0] as Record<string, unknown>;
+    expect(event.hive).toBe('alice');
+    expect(event.claimedOrcid).toBe('wrong-orcid');
+    expect(event.accreditedOrcid).toBe('0000-0000-0000-1234');
+    expect(event.rootAuthor).toBe('alice');
+    expect(event.rootPermlink).toBe('p1');
+    // claimSource is the chain post that contributed the winning entry
+    // (here: alice's own root post — her self-claim wins under rule #2).
+    expect(event.claimSource).toBe('alice/p1');
+    warnSpy.mockRestore();
+  });
+
+  it('ORCID passes through unchanged when claim matches accreditation (no mismatch event)', async () => {
+    // Acceptance #7: alice's claimed ORCID matches her accredited
+    // ORCID. No audit event; display passes the matching value through.
+    const warnSpy = vi.spyOn(logger, 'warn');
+    seedTwoLinkChain({
+      rootAuthors: [{ hive: 'alice', orcid: '0000-0000-0000-1234' }, { hive: 'bob' }],
+      headAuthors: [
+        { hive: 'alice', orcid: '0000-0000-0000-1234' },
+        { hive: 'bob' },
+      ],
+      accredited: ['alice'],
+      accreditedOrcids: [{ account: 'alice', orcid: '0000-0000-0000-1234' }],
+    });
+    const res = await request(app).get('/api/papers/alice/p1');
+    const aliceEntry = ((res.body?.data.authors || []) as Array<{ hive?: string; orcid?: string }>).find((a) => a.hive === 'alice');
+    expect(aliceEntry?.orcid).toBe('0000-0000-0000-1234');
+    const fired = warnSpy.mock.calls.find(([payload]) => {
+      return typeof payload === 'object' && payload !== null
+        && (payload as { event?: string }).event === 'orcid_claim_mismatch';
+    });
+    expect(fired).toBeUndefined();
+    warnSpy.mockRestore();
+  });
+
+  it('non-accredited ORCID claim passes through (no override, no audit)', async () => {
+    // Acceptance #8: carol is NOT accredited. bob's continuation lists
+    // carol with arbitrary ORCID. Display: carol's ORCID = bob's claim
+    // unchanged. No audit event.
+    const warnSpy = vi.spyOn(logger, 'warn');
+    seedTwoLinkChain({
+      rootAuthors: [{ hive: 'alice' }, { hive: 'bob' }],
+      headAuthors: [
+        { hive: 'alice' },
+        { hive: 'bob' },
+        { hive: 'carol', orcid: 'whatever-non-accredited' },
+      ],
+      accredited: ['alice', 'bob'], // carol not accredited
+      accreditedOrcids: [
+        { account: 'alice', orcid: '0000-0000-0000-1234' },
+        { account: 'bob', orcid: '0000-0000-0000-5678' },
+      ],
+    });
+    const res = await request(app).get('/api/papers/alice/p1');
+    const carolEntry = ((res.body?.data.authors || []) as Array<{ hive?: string; orcid?: string }>).find((a) => a.hive === 'carol');
+    expect(carolEntry?.orcid).toBe('whatever-non-accredited');
+    const fired = warnSpy.mock.calls.find(([payload]) => {
+      return typeof payload === 'object' && payload !== null
+        && (payload as { event?: string }).event === 'orcid_claim_mismatch';
+    });
+    expect(fired).toBeUndefined();
+    warnSpy.mockRestore();
+  });
+
+  it('per-hop cumulative admit-set admits an author added mid-chain', async () => {
+    // Acceptance #9: root has [alice, bob]; bob/v2 adds carol;
+    // carol/v3 attempts to broadcast. v3 admitted because carol is in
+    // the cumulative set after hop 1. Without cumulative, v3 would be
+    // rejected (carol not in root's authors[]).
+    const carolMeta = {
+      app: `${config.appTag}/test`,
+      [config.appTag]: { type: 'paper', authors: [{ hive: 'alice' }, { hive: 'bob' }, { hive: 'carol' }] },
+    };
+    seedTwoLinkChain({
+      rootAuthors: [{ hive: 'alice' }, { hive: 'bob' }],
+      headAuthors: [{ hive: 'alice' }, { hive: 'bob' }, { hive: 'carol' }],
+      extraResponder: async (sql, params) => {
+        if (isForwardChainWalkSql(sql)) {
+          if (params[0] === 'bob' && params[1] === 'v2') {
+            // Verify the cumulative array passed to ANY() includes carol
+            // (added by bob/v2's contribution to the cumulative).
+            assertChainWalkAuthorFilter(sql, params, ['alice', 'bob', 'carol']);
+            return { rows: [{ author: 'carol', permlink: 'v3', block_num: 200, json_metadata: carolMeta }] };
+          }
+        }
+        if (reconstructVersionsSql(sql)) {
+          return { rows: [
+            { version_number: 1, block_num: 1, author: 'alice', permlink: 'p1', title: 'Root title', body: 'abstract\n\n---\n\nbody', created: '2026-01-01T00:00:00.000Z', json_metadata: { app: `${config.appTag}/test`, [config.appTag]: { type: 'paper', authors: [{ hive: 'alice' }, { hive: 'bob' }] } } },
+            { version_number: 2, block_num: 100, author: 'bob', permlink: 'v2', title: 'V2 title', body: 'abstract2\n\n---\n\nbody2', created: '2026-01-02T00:00:00.000Z', json_metadata: { app: `${config.appTag}/test`, [config.appTag]: { type: 'paper', authors: [{ hive: 'alice' }, { hive: 'bob' }, { hive: 'carol' }] } } },
+            { version_number: 3, block_num: 200, author: 'carol', permlink: 'v3', title: 'V3 title', body: 'abstract3\n\n---\n\nbody3', created: '2026-01-03T00:00:00.000Z', json_metadata: carolMeta },
+          ] };
+        }
+        return null;
+      },
+    });
+    const res = await request(app).get('/api/papers/alice/p1');
+    expect(res.status).toBe(200);
+    const detail = res.body?.data;
+    expect(detail.head_author).toBe('carol');
+    expect(detail.head_permlink).toBe('v3');
+  });
+
+  it('per-hop cumulative admit-set rejects outsiders (mallory not anywhere in the chain)', async () => {
+    // Acceptance #10: mallory is not in root's authors[] and was never
+    // added by any chain post. Forward walker hop 0 rejects mallory's
+    // continuation candidate via the cumulative SQL filter (mallory NOT
+    // in cumulativeArr).
+    seedTwoLinkChain({
+      rootAuthors: [{ hive: 'alice' }, { hive: 'bob' }],
+      headAuthors: [{ hive: 'alice' }, { hive: 'bob' }], // no mallory anywhere
+      extraResponder: async (sql, params) => {
+        if (isForwardChainWalkSql(sql) && params[0] === 'alice' && params[1] === 'p1') {
+          // Sanity-check: mallory is NOT in the bound cumulative array.
+          const m = sql.match(/c\.author\s*=\s*ANY\s*\(\s*\$(\d+)::text\[\]\s*\)/);
+          if (m) {
+            const idx = Number(m[1]);
+            const bound = params[idx - 1] as string[];
+            expect(bound).not.toContain('mallory');
+          }
+          return { rows: [] }; // SQL gate excludes mallory
+        }
+        return null;
+      },
+    });
+    const res = await request(app).get('/api/papers/alice/p1');
+    expect(res.status).toBe(200);
+    const hives = ((res.body?.data.authors || []) as Array<{ hive?: string }>).map((a) => a.hive);
+    expect(hives).not.toContain('mallory');
+  });
+
+  it('accredited_authors rebuilt from cumulative union (closes round-3 finding #1 leak)', async () => {
+    // Acceptance #12: bob (vouched) drops alice from his head metadata,
+    // but the cumulative union still carries alice. accredited_authors
+    // must include alice (assuming accredited) — reading from
+    // detail.authors (the union), NOT detail.json_metadata's head pevo
+    // (which would have only bob). Closes round-3 finding #1.
+    seedTwoLinkChain({
+      rootAuthors: [{ hive: 'alice' }, { hive: 'bob' }],
+      headAuthors: [{ hive: 'bob' }], // head drops alice
+      accredited: ['alice', 'bob'],
+      accreditedOrcids: [],
+    });
+    const res = await request(app).get('/api/papers/alice/p1');
+    expect(res.status).toBe(200);
+    const detail = res.body?.data;
+    expect(detail.accredited_authors).toContain('alice');
+    expect(detail.accredited_authors).toContain('bob');
   });
 
   it('shows head\'s ipfs_cid for the default view when continuation provides one (per-version display)', async () => {

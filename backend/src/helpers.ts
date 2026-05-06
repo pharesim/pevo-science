@@ -68,8 +68,11 @@ export function isPevoAnyPaper(meta: Record<string, unknown>, author: string): b
 }
 
 /**
- * Extract the set of authorized continuation-author Hive accounts for a
- * given paper. The set membership rule is:
+ * Extract one chain post's contribution to the cumulative authorized
+ * continuation-author set. The chain-walk admit-set under cumulative-union
+ * (`backend-multi-author-cumulative-union.md`) is the union of the
+ * per-post contributions across all chain posts walked so far; this helper
+ * returns a single post's contribution. The set membership rule is:
  *
  *   - **Native paper** (`pevo.type === 'paper'`): the `hive` field values
  *     from `pevo.authors[]`, lowercased. These are the named authors of
@@ -78,22 +81,27 @@ export function isPevoAnyPaper(meta: Record<string, unknown>, author: string): b
  *     would silently lock out the legitimate `alice` continuation. We
  *     normalize at extract time.
  *
- *   - **Bridge paper** (`pevo.type === 'bridge_paper'` AND head author ===
- *     `config.hiveBridgeAccount`): the authorized set is
- *     `{config.hiveBridgeAccount}`. Bridge papers are immutable post-publish;
- *     the bridge account vouches for original-preprint authors who lack
- *     on-chain identity, gating continuations (reviews/discussions only) on
- *     the bridge account. Original-preprint authors are listed in
- *     `pevo.authors[]` but typically have `hive: null` (they don't have
- *     on-chain identity), so deferring to `pevo.authors[]` would yield an
- *     empty set and block ALL continuations of bridge papers. The Option-b
- *     carve-out admitting `config.hiveBridgeAccount` is now strictly
- *     defense-in-depth under the immutability policy.
+ *   - **Bridge paper** (`pevo.type === 'bridge_paper'` AND post author ===
+ *     `config.hiveBridgeAccount`): the contribution is
+ *     `{config.hiveBridgeAccount}`. Bridge papers are immutable
+ *     post-publish; the bridge account vouches for original-preprint
+ *     authors who lack on-chain identity, gating continuations
+ *     (reviews/discussions only) on the bridge account. Original-preprint
+ *     authors are listed in `pevo.authors[]` but typically have
+ *     `hive: null` (they don't have on-chain identity), so deferring to
+ *     `pevo.authors[]` would yield an empty set and block ALL
+ *     continuations of bridge papers. The Option-b carve-out admitting
+ *     `config.hiveBridgeAccount` is now strictly defense-in-depth under
+ *     the immutability policy.
  *
  * Returns an empty Set if the metadata is missing, malformed, the post
  * isn't a valid PEvO paper, or no `hive` entries are valid (defensive:
- * callers must treat empty as "no continuation admits", not as "all
- * admits"). Filters out non-string `hive` entries.
+ * callers must treat empty as "this post contributes nothing", not as
+ * "all admits"). Filters out non-string `hive` entries — bridge papers'
+ * `hive: null` carrier entries do not contribute to the admit-set on
+ * native chain posts; they remain in display via the per-post pass-through
+ * for chain.length === 1 (bridge papers are immutable so they never reach
+ * the cumulative-union display path).
  *
  * See `agents/docs/solutions/conventions/pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28.md`
  * for the convention this enforces. The continuation-author check is
@@ -102,12 +110,14 @@ export function isPevoAnyPaper(meta: Record<string, unknown>, author: string): b
  *
  * @param pevoMeta - the parsed `pevo` metadata sub-object (i.e.
  *   `meta[config.appTag]`). May be null/undefined/non-object.
- * @param headAuthor - the chain-level author of the head paper. Used to
- *   detect bridge papers via the `isPevoBridgePaper` author-pin.
+ * @param postAuthor - the chain-level author of THIS chain post. Used to
+ *   detect bridge papers via the `isPevoBridgePaper` author-pin (each
+ *   post is checked individually; the carve-out fires only when the
+ *   post's author matches the bridge account).
  */
 export function extractAuthorizedContinuationAuthors(
   pevoMeta: Record<string, unknown> | null | undefined,
-  headAuthor: string,
+  postAuthor: string,
 ): Set<string> {
   const authors: Set<string> = new Set();
   if (!pevoMeta || typeof pevoMeta !== 'object') return authors;
@@ -116,7 +126,7 @@ export function extractAuthorizedContinuationAuthors(
   // since the original preprint authors don't own on-chain identity; the
   // bridge account vouches for them via the bridge-paper-author-pin
   // convention.
-  if (pevoMeta.type === 'bridge_paper' && headAuthor === config.hiveBridgeAccount) {
+  if (pevoMeta.type === 'bridge_paper' && postAuthor === config.hiveBridgeAccount) {
     authors.add(config.hiveBridgeAccount);
     return authors;
   }

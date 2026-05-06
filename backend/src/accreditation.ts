@@ -55,6 +55,56 @@ export async function getAccreditedSet(usernames: string[]): Promise<Set<string>
 }
 
 /**
+ * Map of every accredited account to their on-chain ORCID (or `null` when
+ * the accreditation attestation does not carry an ORCID). Cached for 10
+ * minutes alongside `getAllAccreditedAccounts` so callers that need both
+ * the membership check and the ORCID payload do not re-run the CTE.
+ *
+ * Used by `fetchPaperDetailFromHaf`'s cumulative-union construction to
+ * server-override a chain post's claimed `orcid` for a hive when the
+ * accredited record names a different ORCID — closes the direct-Keychain
+ * spoof where a vouched co-author broadcasts a false ORCID for an
+ * accredited peer (`backend-multi-author-cumulative-union.md` rule #3).
+ *
+ * Distinguishes "HAF returned 0 accredited" (legitimate empty population —
+ * cached) from "HAF query failed" (re-thrown so callers can fail loudly
+ * instead of caching an empty map on outage).
+ *
+ * `pool === null` (dev environment without HAF connected) returns an empty
+ * map — that is a startup condition, not a transient outage.
+ */
+export async function getAccreditedOrcidsByAccount(): Promise<Map<string, string | null>> {
+  const arr = await hafCache.getOrSet<Array<{ account: string; orcid: string | null }>>(
+    'accredited_account_orcids',
+    async () => {
+      const pool = getPool();
+      if (!pool) return [];
+
+      try {
+        const cte = activeAccreditationsCteBody();
+        const result = await pool.query(
+          `WITH ${cte.sql}
+           SELECT account, orcid FROM active_accreditations`,
+          cte.params,
+        );
+        return result.rows.map((r: { account: string; orcid: string | null }) => ({
+          account: r.account,
+          orcid: typeof r.orcid === 'string' && r.orcid.length > 0 ? r.orcid : null,
+        }));
+      } catch (err) {
+        logger.error({ err }, 'HAF accredited-orcid lookup failed');
+        throw err;
+      }
+    },
+    10 * 60_000,
+    true,
+  );
+  const map = new Map<string, string | null>();
+  for (const { account, orcid } of arr) map.set(account, orcid);
+  return map;
+}
+
+/**
  * Get the full set of all accredited accounts, cached for 10 minutes.
  * Used by reputation queries to filter votes without re-running the
  * expensive ACTIVE_ACCREDITATIONS_CTE on every call.
