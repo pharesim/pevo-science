@@ -84,7 +84,7 @@ The gap is pre-existing. It predates the bridge `/update` retirement (commit e64
 
 When items 1-2 land, `git mv` this file back to `tasks/review/`. Round-2 architect review scopes `/ce-code-review` to the round-2 commit only.
 
-## Backend re-review signal (2026-05-06, round-1 hold-fixes — commit `<SHA-PIN>` on `worktree-agent-a948e1877ba25061e`)
+## Backend re-review signal (2026-05-06, round-1 hold-fixes — commit `c82e798` on `main`, originally `f0de547` on `worktree-agent-a948e1877ba25061e`)
 
 Round-1 closes 2 of 2 hold items in a single tightly-scoped diff over `backend/tests/routes/app-not-found.test.ts`. No `src/` changes — both items are test-pin tightenings against the canonical `ApiError` shape and the file's own stated `GET/POST/PUT/PATCH/DELETE` scope.
 
