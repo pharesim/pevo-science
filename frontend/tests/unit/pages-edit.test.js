@@ -274,6 +274,69 @@ describe('editPage handleSubmit sanitization', () => {
     });
   });
 
+  // UI-EDIT-LOADPAPERDATA-CONCURRENT-RETRY-GUARD: loadPaperData() is
+  // re-entrant via the Retry button at edit.js:50. Without an in-flight
+  // guard, double-clicking Retry on a slow network races two fetches;
+  // the slower-resolving one overwrites _originalBody / this.paper,
+  // corrupting the diff base for the next native edit. The
+  // _loadInFlight flag guards the entry; it must clear in finally on
+  // both success and Promise.allSettled-rejection paths so a
+  // failed-then-retry sequence still works.
+  describe('loadPaperData concurrent-retry guard', () => {
+    it('rapid concurrent invocation: only one fetch fires; post-state reflects single consistent result', async () => {
+      let resolveFetch;
+      const slowFetch = new Promise((resolve) => { resolveFetch = resolve; });
+      fetchPaper.mockReturnValueOnce(slowFetch);
+      fetchPaperEnrichment.mockResolvedValue({ data: {} });
+
+      const comp = createComponent();
+      comp._mounted = true;
+
+      // Fire two synchronous calls before the slow fetch resolves.
+      // Without the guard p2 would call fetchPaper a second time,
+      // race p1, and either corrupt this.paper / _originalBody on
+      // resolution-order skew or set loadError via paperRes.value
+      // being undefined (subsequent mockReturnValueOnce exhausted).
+      const p1 = comp.loadPaperData();
+      const p2 = comp.loadPaperData();
+
+      resolveFetch({ data: { author: 'alice', permlink: 'p1', body: 'first body', json_metadata: '{}' } });
+
+      await Promise.all([p1, p2]);
+
+      // Mutation-kill: removing the guard makes this 2.
+      expect(fetchPaper).toHaveBeenCalledTimes(1);
+      expect(comp.paper).toBeTruthy();
+      expect(comp.paper.author).toBe('alice');
+      expect(comp._originalBody).toContain('first body');
+      // Without the guard, p2's failed allSettled value lands in the
+      // catch block and writes loadError; with the guard, no error.
+      expect(comp.loadError).toBeNull();
+      expect(comp._loadInFlight).toBe(false);
+    });
+
+    it('flag resets after Promise.allSettled rejection so retry can proceed', async () => {
+      fetchPaper.mockRejectedValueOnce(new Error('boom'));
+      fetchPaper.mockResolvedValueOnce({ data: { author: 'alice', permlink: 'p1', body: 'recovery body', json_metadata: '{}' } });
+      fetchPaperEnrichment.mockResolvedValue({ data: {} });
+
+      const comp = createComponent();
+      comp._mounted = true;
+
+      // First load: paperRes.status === 'rejected', sets loadError,
+      // returns early. Finally clears _loadInFlight regardless.
+      await comp.loadPaperData();
+      expect(comp.loadError).toBe('edit.loadError');
+      expect(comp._loadInFlight).toBe(false);
+
+      // Retry: must proceed because the flag was cleared.
+      await comp.loadPaperData();
+      expect(fetchPaper).toHaveBeenCalledTimes(2);
+      expect(comp.paper).toBeTruthy();
+      expect(comp.paper.author).toBe('alice');
+    });
+  });
+
   // STEP_IN_PROGRESS is a positive-set inclusion list used by isSubmitting.
   // Mirrors the parameterized table pattern in pages-publish.test.js and
   // pages-review.test.js. A regression that drops a step name from

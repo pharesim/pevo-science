@@ -404,6 +404,7 @@ export function initEditPage() {
     _bodyEditor: null,
     _draftTimer: null,
     _initialLoadDone: false,
+    _loadInFlight: false,
     _originalBody: '',
     _storageListener: null,
 
@@ -551,6 +552,17 @@ export function initEditPage() {
     },
 
     async loadPaperData() {
+      // In-flight guard against double-click Retry races. The Retry
+      // button at edit.js:50 re-invokes loadPaperData(); without this
+      // guard a slow network plus rapid retries would race two fetches,
+      // and the slower-resolving one would overwrite _originalBody /
+      // this.paper, corrupting the diff base for the next native edit.
+      // The existing stale-key guard below protects against route
+      // changes (different paper), not concurrent retries on the same
+      // paper.
+      if (this._loadInFlight) return;
+      this._loadInFlight = true;
+
       const author = this.author;
       const permlink = this.permlink;
       this.loadingPaper = true;
@@ -595,6 +607,7 @@ export function initEditPage() {
         this.loadError = this.$t('edit.loadError');
       } finally {
         if (this._mounted) this.loadingPaper = false;
+        this._loadInFlight = false;
       }
     },
 
