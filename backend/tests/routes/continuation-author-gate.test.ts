@@ -62,6 +62,7 @@ const { createApp } = await import('../../src/app.js');
 const { hafCache } = await import('../../src/cache.js');
 const { config } = await import('../../src/config.js');
 const helpers = await import('../../src/helpers.js');
+const { logger } = await import('../../src/logger.js');
 const app = createApp();
 
 type Captured = { sql: string; params: unknown[] };
@@ -1170,5 +1171,123 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
     await request(app).get('/api/papers/alice/p1');
     const walks = chainWalkCaptures();
     expect(walks.length).toBe(0);
+  });
+});
+
+// ──────────────────────────────────────────────
+// Output-side ipfs_cid emit-time validation
+// ──────────────────────────────────────────────
+
+/**
+ * Pins the validation added in BACKEND-PAPER-DETAIL-CID-VALIDATE-ON-EMIT:
+ * paper-detail responses MUST clear `ipfs_cid` to `null` (and emit a
+ * structured `paper_detail_ipfs_cid_rejected` operator warn) when the
+ * chain-supplied value fails the syntactic CID-shape predicate. This is
+ * the integration canary at the buildPaperDetail emit site (no continuation
+ * chain). Mutation kill: deleting the `validatedCid()` wrapper at
+ * `routes/papers.ts:1067` lets a whitespace-padded CID surface unchanged
+ * in the API response, failing this assertion red.
+ *
+ * The pure-predicate canary lives in `tests/lib/ipfs-validation.test.ts`;
+ * this file only pins the wired-up emit path.
+ */
+describe('GET /api/papers/:author/:permlink — output-side ipfs_cid validation', () => {
+  function paperRowWithCid(author: string, permlink: string, ipfsCid: string | null) {
+    return {
+      author,
+      permlink,
+      title: 't',
+      body: 'abstract\n\n---\n\nbody',
+      json_metadata: {
+        app: `${config.appTag}/test`,
+        [config.appTag]: {
+          type: 'paper',
+          authors: [{ hive: author }],
+          ipfs_cid: ipfsCid,
+        },
+      },
+      created: '2026-01-01T00:00:00.000Z',
+      last_edited: '2026-01-01T00:00:00.000Z',
+    };
+  }
+
+  it('clears whitespace-padded ipfs_cid to null in response AND emits paper_detail_ipfs_cid_rejected warn', async () => {
+    const paddedCid = '  QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG  ';
+    const row = paperRowWithCid('alice', 'p1', paddedCid);
+    installResponder(async (sql, _params) => {
+      // Head paper authorized-authors lookup (continuation gate prefetch):
+      if (sql.includes('SELECT c.author, c.json_metadata') && sql.includes('parent_permlink = $3')) {
+        return { rows: [row] };
+      }
+      // Paper-detail SELECT (the actual fetch):
+      if (sql.includes('SELECT c.author, c.permlink, c.title')) {
+        return { rows: [row] };
+      }
+      // No continuation chain.
+      if (isForwardChainWalkSql(sql)) {
+        return { rows: [] };
+      }
+      return { rows: [] };
+    });
+
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as unknown as void);
+
+    const res = await request(app).get('/api/papers/alice/p1');
+    expect(res.status).toBe(200);
+
+    // Response carries null, NOT the padded value (the integrity goal).
+    const detail = res.body?.data;
+    expect(detail).toBeDefined();
+    expect(detail.ipfs_cid).toBe(null);
+
+    // Warn anchor fired with the structured event key + correlation context.
+    const rejectCalls = warnSpy.mock.calls.filter((c) => {
+      const arg = c[0] as Record<string, unknown> | undefined;
+      return arg?.event === 'paper_detail_ipfs_cid_rejected';
+    });
+    expect(rejectCalls.length).toBeGreaterThan(0);
+    const arg = rejectCalls[0][0] as Record<string, unknown>;
+    expect(arg.author).toBe('alice');
+    expect(arg.permlink).toBe('p1');
+    expect(typeof arg.raw_cid_prefix).toBe('string');
+    // Truncation guard against log injection: prefix len <= 32
+    expect((arg.raw_cid_prefix as string).length).toBeLessThanOrEqual(32);
+
+    warnSpy.mockRestore();
+  });
+
+  it('passes a valid CIDv0 through unchanged (no warn)', async () => {
+    const validCid = 'QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG';
+    const row = paperRowWithCid('alice', 'p1', validCid);
+    installResponder(async (sql, _params) => {
+      if (sql.includes('SELECT c.author, c.json_metadata') && sql.includes('parent_permlink = $3')) {
+        return { rows: [row] };
+      }
+      if (sql.includes('SELECT c.author, c.permlink, c.title')) {
+        return { rows: [row] };
+      }
+      if (isForwardChainWalkSql(sql)) {
+        return { rows: [] };
+      }
+      return { rows: [] };
+    });
+
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as unknown as void);
+
+    const res = await request(app).get('/api/papers/alice/p1');
+    expect(res.status).toBe(200);
+
+    const detail = res.body?.data;
+    expect(detail).toBeDefined();
+    expect(detail.ipfs_cid).toBe(validCid);
+
+    // No paper_detail_ipfs_cid_rejected warns for a valid CID.
+    const rejectCalls = warnSpy.mock.calls.filter((c) => {
+      const arg = c[0] as Record<string, unknown> | undefined;
+      return arg?.event === 'paper_detail_ipfs_cid_rejected';
+    });
+    expect(rejectCalls.length).toBe(0);
+
+    warnSpy.mockRestore();
   });
 });

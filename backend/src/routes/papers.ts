@@ -22,6 +22,7 @@ import { getAccreditedSet, getAllAccreditedAccounts } from '../accreditation.js'
 import { getReputationScores } from '../reputation.js';
 import { hafCache } from '../cache.js';
 import { logger } from '../logger.js';
+import { validatedCid } from '../lib/ipfs-validation.js';
 import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';
 import { rateLimit, byAccount } from '../middleware/rateLimit.js';
 import { paperDisciplineField } from '../types/disciplines.js';
@@ -393,7 +394,10 @@ async function fetchPapersFromHaf(
         discipline: paperDisciplineField(pevo.discipline),
         keywords: pevo.keywords || [],
         authors: pevoAuthors,
-        ipfs_cid: pevo.ipfs_cid || null,
+        ipfs_cid: validatedCid((pevo.ipfs_cid as string) ?? null, {
+          author: r.author as string,
+          permlink: r.permlink as string,
+        }),
         created: r.created,
         net_votes: resolved?.net_votes ?? (r.net_votes as number),
         vote_strength: resolved?.vote_strength ?? null,
@@ -702,16 +706,29 @@ async function fetchPaperDetailFromHaf(author: string, permlink: string, memo?: 
           // ipfs_cid is null. Distinguishing "head cleared" (key
           // present, value null) from "head omitted" (key absent)
           // is the signal that drives that toggle correctly.
+          //
+          // ipfs_cid is additionally passed through `validatedCid`
+          // so attacker-controlled chain values that flow from
+          // pevo.ipfs_cid through pevoString to the response are
+          // shape-checked at the emit boundary; whitespace, control
+          // characters, zero-width spaces, and arbitrary garbage
+          // are scrubbed to null with a structured warn.
           const headHasAnyTripleKey =
             'ipfs_cid' in headPevo
             || 'ipfs_filename' in headPevo
             || 'document_hash' in headPevo;
           if (headHasAnyTripleKey) {
-            detail.ipfs_cid = pevoString(headPevo, 'ipfs_cid');
+            detail.ipfs_cid = validatedCid(pevoString(headPevo, 'ipfs_cid'), {
+              author,
+              permlink,
+            });
             detail.ipfs_filename = pevoString(headPevo, 'ipfs_filename');
             detail.document_hash = pevoString(headPevo, 'document_hash');
           } else {
-            detail.ipfs_cid = pevoString(rootPevo, 'ipfs_cid');
+            detail.ipfs_cid = validatedCid(pevoString(rootPevo, 'ipfs_cid'), {
+              author,
+              permlink,
+            });
             detail.ipfs_filename = pevoString(rootPevo, 'ipfs_filename');
             detail.document_hash = pevoString(rootPevo, 'document_hash');
           }
@@ -1463,7 +1480,10 @@ function buildPaperDetail(
     discipline: paperDisciplineField(pevo.discipline),
     keywords: pevo.keywords || [],
     authors: pevo.authors || [],
-    ipfs_cid: pevo.ipfs_cid || null,
+    ipfs_cid: validatedCid((pevo.ipfs_cid as string) ?? null, {
+      author: post.author as string,
+      permlink: post.permlink as string,
+    }),
     ipfs_filename: pevo.ipfs_filename || null,
     document_hash: pevo.document_hash || null,
     language: pevo.language || 'en',
