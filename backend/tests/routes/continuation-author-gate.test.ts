@@ -670,17 +670,17 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
       [config.appTag]: {
         type: 'paper',
         authors: [{ hive: 'alice' }, { hive: 'bob' }], // satisfies no-shrink
-        ipfs_cid: 'QmHeadCid',
+        ipfs_cid: 'QmHeadCidAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
         document_hash: 'sha256:head',
         ipfs_filename: 'head.pdf',
       },
     };
     installResponder(async (sql, params) => {
       if (sql.includes('SELECT c.author, c.json_metadata') && sql.includes('parent_permlink = $3')) {
-        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmRootCid', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' })] };
+        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmRootCidBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' })] };
       }
       if (sql.includes('SELECT c.author, c.permlink, c.title')) {
-        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmRootCid', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' })] };
+        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmRootCidBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' })] };
       }
       if (isForwardChainWalkSql(sql)) {
         if (params[0] === 'alice') {
@@ -690,7 +690,7 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
       }
       if (sql.includes('ROW_NUMBER') && sql.includes('co.block_num')) {
         return { rows: [
-          { version_number: 1, block_num: 1, author: 'alice', permlink: 'p1', title: 't', body: 'abstract\n\n---\n\nbody', created: '2026-01-01T00:00:00.000Z', json_metadata: { app: `${config.appTag}/test`, [config.appTag]: { type: 'paper', authors: [{ hive: 'alice' }, { hive: 'bob' }], ipfs_cid: 'QmRootCid', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' } } },
+          { version_number: 1, block_num: 1, author: 'alice', permlink: 'p1', title: 't', body: 'abstract\n\n---\n\nbody', created: '2026-01-01T00:00:00.000Z', json_metadata: { app: `${config.appTag}/test`, [config.appTag]: { type: 'paper', authors: [{ hive: 'alice' }, { hive: 'bob' }], ipfs_cid: 'QmRootCidBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' } } },
           { version_number: 2, block_num: 100, author: 'bob', permlink: 'v2', title: 't2', body: 'abstract2\n\n---\n\nbody2', created: '2026-01-02T00:00:00.000Z', json_metadata: continuationMeta },
         ] };
       }
@@ -702,7 +702,7 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
     const detail = res.body?.data;
     expect(detail).toBeDefined();
     // Per-version display: head's pointers surface for the default view.
-    expect(detail.ipfs_cid).toBe('QmHeadCid');
+    expect(detail.ipfs_cid).toBe('QmHeadCidAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA');
     expect(detail.document_hash).toBe('sha256:head');
     expect(detail.ipfs_filename).toBe('head.pdf');
   });
@@ -723,10 +723,10 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
     };
     installResponder(async (sql, params) => {
       if (sql.includes('SELECT c.author, c.json_metadata') && sql.includes('parent_permlink = $3')) {
-        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmRootCid', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' })] };
+        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmRootCidBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' })] };
       }
       if (sql.includes('SELECT c.author, c.permlink, c.title')) {
-        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmRootCid', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' })] };
+        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmRootCidBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' })] };
       }
       if (isForwardChainWalkSql(sql)) {
         if (params[0] === 'alice') {
@@ -736,7 +736,7 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
       }
       if (sql.includes('ROW_NUMBER') && sql.includes('co.block_num')) {
         return { rows: [
-          { version_number: 1, block_num: 1, author: 'alice', permlink: 'p1', title: 't', body: 'abstract\n\n---\n\nbody', created: '2026-01-01T00:00:00.000Z', json_metadata: { app: `${config.appTag}/test`, [config.appTag]: { type: 'paper', authors: [{ hive: 'alice' }, { hive: 'bob' }], ipfs_cid: 'QmRootCid', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' } } },
+          { version_number: 1, block_num: 1, author: 'alice', permlink: 'p1', title: 't', body: 'abstract\n\n---\n\nbody', created: '2026-01-01T00:00:00.000Z', json_metadata: { app: `${config.appTag}/test`, [config.appTag]: { type: 'paper', authors: [{ hive: 'alice' }, { hive: 'bob' }], ipfs_cid: 'QmRootCidBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' } } },
           { version_number: 2, block_num: 100, author: 'bob', permlink: 'v2', title: 't2', body: 'abstract2\n\n---\n\nbody2', created: '2026-01-02T00:00:00.000Z', json_metadata: continuationMeta },
         ] };
       }
@@ -748,7 +748,7 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
     const detail = res.body?.data;
     expect(detail).toBeDefined();
     // Fallback: root's pointers surface when head omits them.
-    expect(detail.ipfs_cid).toBe('QmRootCid');
+    expect(detail.ipfs_cid).toBe('QmRootCidBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB');
     expect(detail.document_hash).toBe('sha256:root');
     expect(detail.ipfs_filename).toBe('root.pdf');
   });
@@ -783,10 +783,10 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
     };
     installResponder(async (sql, params) => {
       if (sql.includes('SELECT c.author, c.json_metadata') && sql.includes('parent_permlink = $3')) {
-        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmRootCid', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' })] };
+        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmRootCidBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' })] };
       }
       if (sql.includes('SELECT c.author, c.permlink, c.title')) {
-        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmRootCid', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' })] };
+        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmRootCidBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' })] };
       }
       if (isForwardChainWalkSql(sql)) {
         if (params[0] === 'alice') {
@@ -796,7 +796,7 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
       }
       if (sql.includes('ROW_NUMBER') && sql.includes('co.block_num')) {
         return { rows: [
-          { version_number: 1, block_num: 1, author: 'alice', permlink: 'p1', title: 't', body: 'abstract\n\n---\n\nbody', created: '2026-01-01T00:00:00.000Z', json_metadata: { app: `${config.appTag}/test`, [config.appTag]: { type: 'paper', authors: [{ hive: 'alice' }, { hive: 'bob' }], ipfs_cid: 'QmRootCid', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' } } },
+          { version_number: 1, block_num: 1, author: 'alice', permlink: 'p1', title: 't', body: 'abstract\n\n---\n\nbody', created: '2026-01-01T00:00:00.000Z', json_metadata: { app: `${config.appTag}/test`, [config.appTag]: { type: 'paper', authors: [{ hive: 'alice' }, { hive: 'bob' }], ipfs_cid: 'QmRootCidBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' } } },
           { version_number: 2, block_num: 100, author: 'bob', permlink: 'v2', title: 't2', body: 'abstract2\n\n---\n\nbody2', created: '2026-01-02T00:00:00.000Z', json_metadata: continuationMeta },
         ] };
       }
@@ -829,10 +829,10 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
     };
     installResponder(async (sql, params) => {
       if (sql.includes('SELECT c.author, c.json_metadata') && sql.includes('parent_permlink = $3')) {
-        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmRootCid', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' })] };
+        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmRootCidBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' })] };
       }
       if (sql.includes('SELECT c.author, c.permlink, c.title')) {
-        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmRootCid', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' })] };
+        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmRootCidBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' })] };
       }
       if (isForwardChainWalkSql(sql)) {
         if (params[0] === 'alice') {
@@ -842,7 +842,7 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
       }
       if (sql.includes('ROW_NUMBER') && sql.includes('co.block_num')) {
         return { rows: [
-          { version_number: 1, block_num: 1, author: 'alice', permlink: 'p1', title: 't', body: 'abstract\n\n---\n\nbody', created: '2026-01-01T00:00:00.000Z', json_metadata: { app: `${config.appTag}/test`, [config.appTag]: { type: 'paper', authors: [{ hive: 'alice' }, { hive: 'bob' }], ipfs_cid: 'QmRootCid', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' } } },
+          { version_number: 1, block_num: 1, author: 'alice', permlink: 'p1', title: 't', body: 'abstract\n\n---\n\nbody', created: '2026-01-01T00:00:00.000Z', json_metadata: { app: `${config.appTag}/test`, [config.appTag]: { type: 'paper', authors: [{ hive: 'alice' }, { hive: 'bob' }], ipfs_cid: 'QmRootCidBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' } } },
           { version_number: 2, block_num: 100, author: 'bob', permlink: 'v2', title: 't2', body: 'abstract2\n\n---\n\nbody2', created: '2026-01-02T00:00:00.000Z', json_metadata: continuationMeta },
         ] };
       }
@@ -876,10 +876,10 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
     };
     installResponder(async (sql, params) => {
       if (sql.includes('SELECT c.author, c.json_metadata') && sql.includes('parent_permlink = $3')) {
-        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmRootCid', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' })] };
+        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmRootCidBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' })] };
       }
       if (sql.includes('SELECT c.author, c.permlink, c.title')) {
-        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmRootCid', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' })] };
+        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmRootCidBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' })] };
       }
       if (isForwardChainWalkSql(sql)) {
         if (params[0] === 'alice') {
@@ -889,7 +889,7 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
       }
       if (sql.includes('ROW_NUMBER') && sql.includes('co.block_num')) {
         return { rows: [
-          { version_number: 1, block_num: 1, author: 'alice', permlink: 'p1', title: 't', body: 'abstract\n\n---\n\nbody', created: '2026-01-01T00:00:00.000Z', json_metadata: { app: `${config.appTag}/test`, [config.appTag]: { type: 'paper', authors: [{ hive: 'alice' }, { hive: 'bob' }], ipfs_cid: 'QmRootCid', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' } } },
+          { version_number: 1, block_num: 1, author: 'alice', permlink: 'p1', title: 't', body: 'abstract\n\n---\n\nbody', created: '2026-01-01T00:00:00.000Z', json_metadata: { app: `${config.appTag}/test`, [config.appTag]: { type: 'paper', authors: [{ hive: 'alice' }, { hive: 'bob' }], ipfs_cid: 'QmRootCidBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' } } },
           { version_number: 2, block_num: 100, author: 'bob', permlink: 'v2', title: 't2', body: 'abstract2\n\n---\n\nbody2', created: '2026-01-02T00:00:00.000Z', json_metadata: continuationMeta },
         ] };
       }
@@ -912,7 +912,7 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
   // composition where the displayed triple never existed on chain in any
   // single version) is structurally unavailable.
   it('admits an atomic triple from head when head supplies any one of the three fields as a non-string but at least one is a valid string (round-5 atomic-triple)', async () => {
-    // Head supplies `ipfs_cid: 'QmHeadCid'` (valid) plus pathological values
+    // Head supplies `ipfs_cid: 'QmHeadCidAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'` (valid) plus pathological values
     // for the other two. Atomic triple: head wins for the entire triple
     // (head expressed an opinion via the valid CID); the other two collapse
     // to null because pevoString narrows 0 / '' → null. Root's PDF is NOT
@@ -922,17 +922,17 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
       [config.appTag]: {
         type: 'paper',
         authors: [{ hive: 'alice' }, { hive: 'bob' }],
-        ipfs_cid: 'QmHeadCid',
+        ipfs_cid: 'QmHeadCidAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
         ipfs_filename: 0,
         document_hash: '',
       },
     };
     installResponder(async (sql, params) => {
       if (sql.includes('SELECT c.author, c.json_metadata') && sql.includes('parent_permlink = $3')) {
-        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmRootCid', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' })] };
+        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmRootCidBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' })] };
       }
       if (sql.includes('SELECT c.author, c.permlink, c.title')) {
-        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmRootCid', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' })] };
+        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmRootCidBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' })] };
       }
       if (isForwardChainWalkSql(sql)) {
         if (params[0] === 'alice') {
@@ -942,7 +942,7 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
       }
       if (sql.includes('ROW_NUMBER') && sql.includes('co.block_num')) {
         return { rows: [
-          { version_number: 1, block_num: 1, author: 'alice', permlink: 'p1', title: 't', body: 'abstract\n\n---\n\nbody', created: '2026-01-01T00:00:00.000Z', json_metadata: { app: `${config.appTag}/test`, [config.appTag]: { type: 'paper', authors: [{ hive: 'alice' }, { hive: 'bob' }], ipfs_cid: 'QmRootCid', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' } } },
+          { version_number: 1, block_num: 1, author: 'alice', permlink: 'p1', title: 't', body: 'abstract\n\n---\n\nbody', created: '2026-01-01T00:00:00.000Z', json_metadata: { app: `${config.appTag}/test`, [config.appTag]: { type: 'paper', authors: [{ hive: 'alice' }, { hive: 'bob' }], ipfs_cid: 'QmRootCidBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' } } },
           { version_number: 2, block_num: 100, author: 'bob', permlink: 'v2', title: 't2', body: 'abstract2\n\n---\n\nbody2', created: '2026-01-02T00:00:00.000Z', json_metadata: continuationMeta },
         ] };
       }
@@ -953,13 +953,13 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
     expect(res.status).toBe(200);
     const detail = res.body?.data;
     expect(detail).toBeDefined();
-    expect(detail.ipfs_cid).toBe('QmHeadCid');
+    expect(detail.ipfs_cid).toBe('QmHeadCidAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA');
     expect(detail.ipfs_filename).toBe(null);
     expect(detail.document_hash).toBe(null);
   });
 
   it('rejects asymmetric Frankenstein composition: head supplies two of the three keys, third is missing (round-5 atomic-triple)', async () => {
-    // Head supplies `ipfs_cid: 'QmHeadCid', ipfs_filename: 0` — two keys
+    // Head supplies `ipfs_cid: 'QmHeadCidAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', ipfs_filename: 0` — two keys
     // present, document_hash key entirely absent. Under per-field fallback
     // (the round-4 shape this canary would FAIL against), document_hash
     // would fall through to root's `sha256:root`, producing Frankenstein
@@ -977,17 +977,17 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
       [config.appTag]: {
         type: 'paper',
         authors: [{ hive: 'alice' }, { hive: 'bob' }],
-        ipfs_cid: 'QmHeadCid',
+        ipfs_cid: 'QmHeadCidAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
         ipfs_filename: 0,
         // document_hash intentionally omitted — not present on head
       },
     };
     installResponder(async (sql, params) => {
       if (sql.includes('SELECT c.author, c.json_metadata') && sql.includes('parent_permlink = $3')) {
-        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmRootCid', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' })] };
+        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmRootCidBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' })] };
       }
       if (sql.includes('SELECT c.author, c.permlink, c.title')) {
-        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmRootCid', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' })] };
+        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmRootCidBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' })] };
       }
       if (isForwardChainWalkSql(sql)) {
         if (params[0] === 'alice') {
@@ -997,7 +997,7 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
       }
       if (sql.includes('ROW_NUMBER') && sql.includes('co.block_num')) {
         return { rows: [
-          { version_number: 1, block_num: 1, author: 'alice', permlink: 'p1', title: 't', body: 'abstract\n\n---\n\nbody', created: '2026-01-01T00:00:00.000Z', json_metadata: { app: `${config.appTag}/test`, [config.appTag]: { type: 'paper', authors: [{ hive: 'alice' }, { hive: 'bob' }], ipfs_cid: 'QmRootCid', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' } } },
+          { version_number: 1, block_num: 1, author: 'alice', permlink: 'p1', title: 't', body: 'abstract\n\n---\n\nbody', created: '2026-01-01T00:00:00.000Z', json_metadata: { app: `${config.appTag}/test`, [config.appTag]: { type: 'paper', authors: [{ hive: 'alice' }, { hive: 'bob' }], ipfs_cid: 'QmRootCidBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' } } },
           { version_number: 2, block_num: 100, author: 'bob', permlink: 'v2', title: 't2', body: 'abstract2\n\n---\n\nbody2', created: '2026-01-02T00:00:00.000Z', json_metadata: continuationMeta },
         ] };
       }
@@ -1008,7 +1008,7 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
     expect(res.status).toBe(200);
     const detail = res.body?.data;
     expect(detail).toBeDefined();
-    expect(detail.ipfs_cid).toBe('QmHeadCid');
+    expect(detail.ipfs_cid).toBe('QmHeadCidAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA');
     expect(detail.ipfs_filename).toBe(null);
     expect(detail.document_hash).toBe(null);
   });
@@ -1025,7 +1025,7 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
     // This is the kill canary for round-3's `??` problem. Revert the
     // sentinel-aware `'in'` check to `pevoString(headPevo, 'ipfs_cid')
     // ?? pevoString(rootPevo, 'ipfs_cid')` and this test FAILS with
-    // `expect ipfs_cid to be null but received 'QmRootCid'`.
+    // `expect ipfs_cid to be null but received 'QmRootCidBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB'`.
     const continuationMeta = {
       app: `${config.appTag}/test`,
       [config.appTag]: {
@@ -1038,10 +1038,10 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
     };
     installResponder(async (sql, params) => {
       if (sql.includes('SELECT c.author, c.json_metadata') && sql.includes('parent_permlink = $3')) {
-        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmRootCid', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' })] };
+        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmRootCidBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' })] };
       }
       if (sql.includes('SELECT c.author, c.permlink, c.title')) {
-        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmRootCid', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' })] };
+        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmRootCidBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' })] };
       }
       if (isForwardChainWalkSql(sql)) {
         if (params[0] === 'alice') {
@@ -1051,7 +1051,7 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
       }
       if (sql.includes('ROW_NUMBER') && sql.includes('co.block_num')) {
         return { rows: [
-          { version_number: 1, block_num: 1, author: 'alice', permlink: 'p1', title: 't', body: 'abstract\n\n---\n\nbody', created: '2026-01-01T00:00:00.000Z', json_metadata: { app: `${config.appTag}/test`, [config.appTag]: { type: 'paper', authors: [{ hive: 'alice' }, { hive: 'bob' }], ipfs_cid: 'QmRootCid', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' } } },
+          { version_number: 1, block_num: 1, author: 'alice', permlink: 'p1', title: 't', body: 'abstract\n\n---\n\nbody', created: '2026-01-01T00:00:00.000Z', json_metadata: { app: `${config.appTag}/test`, [config.appTag]: { type: 'paper', authors: [{ hive: 'alice' }, { hive: 'bob' }], ipfs_cid: 'QmRootCidBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' } } },
           { version_number: 2, block_num: 100, author: 'bob', permlink: 'v2', title: 't2', body: 'abstract2\n\n---\n\nbody2', created: '2026-01-02T00:00:00.000Z', json_metadata: continuationMeta },
         ] };
       }
@@ -1085,10 +1085,10 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
     };
     installResponder(async (sql, params) => {
       if (sql.includes('SELECT c.author, c.json_metadata') && sql.includes('parent_permlink = $3')) {
-        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmRootCid', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' })] };
+        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmRootCidBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' })] };
       }
       if (sql.includes('SELECT c.author, c.permlink, c.title')) {
-        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmRootCid', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' })] };
+        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'], { ipfs_cid: 'QmRootCidBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' })] };
       }
       if (isForwardChainWalkSql(sql)) {
         if (params[0] === 'alice') {
@@ -1098,7 +1098,7 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
       }
       if (sql.includes('ROW_NUMBER') && sql.includes('co.block_num')) {
         return { rows: [
-          { version_number: 1, block_num: 1, author: 'alice', permlink: 'p1', title: 't', body: 'abstract\n\n---\n\nbody', created: '2026-01-01T00:00:00.000Z', json_metadata: { app: `${config.appTag}/test`, [config.appTag]: { type: 'paper', authors: [{ hive: 'alice' }, { hive: 'bob' }], ipfs_cid: 'QmRootCid', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' } } },
+          { version_number: 1, block_num: 1, author: 'alice', permlink: 'p1', title: 't', body: 'abstract\n\n---\n\nbody', created: '2026-01-01T00:00:00.000Z', json_metadata: { app: `${config.appTag}/test`, [config.appTag]: { type: 'paper', authors: [{ hive: 'alice' }, { hive: 'bob' }], ipfs_cid: 'QmRootCidBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB', document_hash: 'sha256:root', ipfs_filename: 'root.pdf' } } },
           { version_number: 2, block_num: 100, author: 'bob', permlink: 'v2', title: 't2', body: 'abstract2\n\n---\n\nbody2', created: '2026-01-02T00:00:00.000Z', json_metadata: continuationMeta },
         ] };
       }
@@ -1109,7 +1109,7 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
     expect(res.status).toBe(200);
     const detail = res.body?.data;
     expect(detail).toBeDefined();
-    expect(detail.ipfs_cid).toBe('QmRootCid');
+    expect(detail.ipfs_cid).toBe('QmRootCidBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB');
     expect(detail.ipfs_filename).toBe('root.pdf');
     expect(detail.document_hash).toBe('sha256:root');
   });
@@ -1121,11 +1121,11 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
     // its CID, bob's v2 surfaces its (different) CID.
     const v1Meta = {
       app: `${config.appTag}/test`,
-      [config.appTag]: { type: 'paper', authors: [{ hive: 'alice' }, { hive: 'bob' }], ipfs_cid: 'QmV1Cid', document_hash: 'sha256:v1' },
+      [config.appTag]: { type: 'paper', authors: [{ hive: 'alice' }, { hive: 'bob' }], ipfs_cid: 'QmV1CidCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC', document_hash: 'sha256:v1' },
     };
     const v2Meta = {
       app: `${config.appTag}/test`,
-      [config.appTag]: { type: 'paper', authors: [{ hive: 'alice' }, { hive: 'bob' }], ipfs_cid: 'QmV2Cid', document_hash: 'sha256:v2' },
+      [config.appTag]: { type: 'paper', authors: [{ hive: 'alice' }, { hive: 'bob' }], ipfs_cid: 'QmV2CidDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD', document_hash: 'sha256:v2' },
     };
     installResponder(async (sql, _params) => {
       // findCanonicalRoot probes for `'continues' IS NOT NULL`; alice/p1
@@ -1144,12 +1144,12 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
 
     const v1 = await request(app).get('/api/papers/alice/p1?version=1');
     expect(v1.status).toBe(200);
-    expect(v1.body?.data?.ipfs_cid).toBe('QmV1Cid');
+    expect(v1.body?.data?.ipfs_cid).toBe('QmV1CidCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC');
     expect(v1.body?.data?.document_hash).toBe('sha256:v1');
 
     const v2 = await request(app).get('/api/papers/alice/p1?version=2');
     expect(v2.status).toBe(200);
-    expect(v2.body?.data?.ipfs_cid).toBe('QmV2Cid');
+    expect(v2.body?.data?.ipfs_cid).toBe('QmV2CidDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD');
     expect(v2.body?.data?.document_hash).toBe('sha256:v2');
   });
 
