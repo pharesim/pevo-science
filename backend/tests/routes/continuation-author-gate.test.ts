@@ -149,13 +149,15 @@ describe('extractAuthorizedContinuationAuthors', () => {
   });
 
   it('bridge-paper special-case: authorized set is {bridge account}, NOT pevo.authors[].hive', () => {
-    // Bridge papers' canonical update path is the bridge account itself
-    // (bridge.ts /update posts a continuation under config.hiveBridgeAccount).
+    // Bridge papers are immutable post-publish; the bridge account vouches
+    // for original-preprint authors who lack on-chain identity, gating
+    // continuations (reviews/discussions only) on the bridge account.
     // pevo.authors[] entries carry hive: null since original-preprint
     // authors don't have on-chain identity. Deferring to pevo.authors[]
     // would yield an empty set and block ALL continuations of bridge
-    // papers — the design choice (Option b) is that the bridge account
-    // vouches on their behalf.
+    // papers — the design choice (Option b carve-out) is that the bridge
+    // account vouches on their behalf, now strictly defense-in-depth under
+    // the immutability policy.
     const bridgeAcc = config.hiveBridgeAccount;
     const set = helpers.extractAuthorizedContinuationAuthors({
       type: 'bridge_paper',
@@ -418,10 +420,13 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
     // pevo.authors[] listing original-preprint authors that typically
     // carry hive: null (off-chain identity). Per the bridge-paper Option b
     // design (architect-ratified 2026-05-04), the authorized continuator
-    // set is `{config.hiveBridgeAccount}` itself — bridge papers' canonical
-    // update path IS the bridge account (bridge.ts /update). A continuation
-    // by ANY non-bridge account (including a putative original author or
-    // an attacker) is excluded.
+    // set is `{config.hiveBridgeAccount}` itself — bridge papers are
+    // immutable post-publish, so the bridge account vouches for original-
+    // preprint authors who lack on-chain identity, gating continuations
+    // (reviews/discussions only) on the bridge account. The Option-b carve-
+    // out is now strictly defense-in-depth under the immutability policy.
+    // A continuation by ANY non-bridge account (including a putative
+    // original author or an attacker) is excluded.
     const bridgeAcc = config.hiveBridgeAccount as string;
     const bridgeRow = {
       author: bridgeAcc,
@@ -458,7 +463,8 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
         // (their hive: null entries would have been filtered anyway).
         expect(bound).not.toContain('alice');
         expect(bound).not.toContain('bob');
-        // The bridge account legitimately continues (bridge /update path):
+        // The bridge account legitimately continues (Option-b carve-out
+        // under the bridge-paper immutability policy):
         if (params[0] === bridgeAcc) {
           return { rows: [{
             author: bridgeAcc,

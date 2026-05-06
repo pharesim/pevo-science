@@ -80,13 +80,15 @@ export function isPevoAnyPaper(meta: Record<string, unknown>, author: string): b
  *
  *   - **Bridge paper** (`pevo.type === 'bridge_paper'` AND head author ===
  *     `config.hiveBridgeAccount`): the authorized set is
- *     `{config.hiveBridgeAccount}`. Bridge papers' canonical update path
- *     IS the bridge account itself (`bridge.ts /update` posts a
- *     continuation under `config.hiveBridgeAccount`). Original-preprint
- *     authors are listed in `pevo.authors[]` but typically have `hive: null`
- *     (they don't have on-chain identity), so deferring to `pevo.authors[]`
- *     would yield an empty set and block ALL continuations of bridge
- *     papers. The bridge account vouches on their behalf.
+ *     `{config.hiveBridgeAccount}`. Bridge papers are immutable post-publish;
+ *     the bridge account vouches for original-preprint authors who lack
+ *     on-chain identity, gating continuations (reviews/discussions only) on
+ *     the bridge account. Original-preprint authors are listed in
+ *     `pevo.authors[]` but typically have `hive: null` (they don't have
+ *     on-chain identity), so deferring to `pevo.authors[]` would yield an
+ *     empty set and block ALL continuations of bridge papers. The Option-b
+ *     carve-out admitting `config.hiveBridgeAccount` is now strictly
+ *     defense-in-depth under the immutability policy.
  *
  * Returns an empty Set if the metadata is missing, malformed, the post
  * isn't a valid PEvO paper, or no `hive` entries are valid (defensive:

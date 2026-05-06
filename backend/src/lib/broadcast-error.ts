@@ -112,10 +112,6 @@ export interface LogContext {
   outcome?: 'success' | 'failure' | 'timeout';
   /** Attempt counter (idempotency/retry-amplification audit signal) */
   attempt_n?: number;
-  /** Bridge paper version after an /update broadcast */
-  newVersion?: number;
-  /** Source identifier (DOI / arXiv ID) for bridge surfaces */
-  sourceIdentifier?: string;
   /** Generic identifier (orcid / bridge lookup) */
   identifier?: string;
   /** ORCID iD when binding/unbinding */
