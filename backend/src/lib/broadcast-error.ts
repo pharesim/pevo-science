@@ -234,6 +234,35 @@ export function handleBroadcastError(
   err: unknown,
   opts: HandleBroadcastErrorOpts,
 ): 'timeout' | 'failure' | 'post_broadcast' {
+  // Round-4 hold #3 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):
+  // strip a caller-supplied `cause` field from `opts.logContext` BEFORE
+  // every `{...opts.logContext, err, ...}` spread below. Round-3 hold #1
+  // dropped the helper-emitted top-level `cause: err.cause` field because
+  // it bypassed both redaction layers (the wrapper at `logger.ts:redact-
+  // ErrInArg` and Layer-B `serializers.err` only redact the `err` slot, so
+  // a sibling top-level `cause` falls through to pino's default Error
+  // serialization). The companion gap left open: the spread of caller-
+  // supplied `opts.logContext` had no symmetric `cause: undefined` strip.
+  // A future caller adding `cause` to its `logContext` (intentionally or
+  // by mistake — e.g. a TypeScript-bypass or `as unknown as LogContext`
+  // cast lets a `cause` key slip past the `LogContext` interface, which
+  // does NOT declare a `cause` field) would land a top-level sibling on
+  // the log object, outside both redaction layers, re-opening the leak
+  // path. The destructure here closes the symmetric vector at one
+  // central site so all 4 spread sites below inherit it.
+  //
+  // The cast to `LogContext & { cause?: unknown }` is required because the
+  // `LogContext` interface (declared above) does NOT include a `cause`
+  // field — destructuring it directly off `opts.logContext` would be a
+  // TypeScript error. The cast is sound: at runtime, JavaScript object
+  // destructuring of a property that doesn't exist returns `undefined`
+  // and silently moves on. The `cause` strip therefore costs nothing on
+  // the typed-caller happy path; it only matters on the type-bypass case
+  // this fix exists to defend against.
+  const { cause: _ignored, ...sanitizedLogContext } =
+    (opts.logContext ?? {}) as LogContext & { cause?: unknown };
+  void _ignored;
+
   // PostBroadcastWriteError discrimination MUST run before the
   // BroadcastTimeoutError / forceAmbiguousOutcome branches: the chain op IS
   // confirmed, so the over-cautious 504 outcome:'uncertain' would mislead
@@ -252,8 +281,8 @@ export function handleBroadcastError(
     // the discrimination contract.
     logger.error(
       {
-        ...opts.logContext,
-        // Authoritative fields placed AFTER `...opts.logContext` so a
+        ...sanitizedLogContext,
+        // Authoritative fields placed AFTER `...sanitizedLogContext` so a
         // caller-supplied `logContext: { err / txId / failedStep / event:
         // ... }` cannot silently override the helper's source-of-truth
         // values. JS later-wins semantics; the literals must always win.
@@ -274,7 +303,9 @@ export function handleBroadcastError(
         // (logger.ts:140-142) already preserves the redacted cause inside
         // `err.cause` of the serialized payload. Do NOT re-add a top-level
         // `cause:` here without first widening the redact policy to cover
-        // sibling-cause shapes too.
+        // sibling-cause shapes too. Round-4 hold #3 closes the symmetric
+        // gap by sanitizing caller-supplied `cause` from `opts.logContext`
+        // at the function entry above (the `sanitizedLogContext` const).
         err,
         txId: err.txId,
         failedStep: err.failedStep,
@@ -297,8 +328,8 @@ export function handleBroadcastError(
     } catch (msgErr) {
       logger.warn(
         {
-          ...opts.logContext,
-          // Authoritative fields placed AFTER `...opts.logContext` so a
+          ...sanitizedLogContext,
+          // Authoritative fields placed AFTER `...sanitizedLogContext` so a
           // caller-supplied `logContext: { err / txId / failedStep / event:
           // ... }` cannot silently override the helper's source-of-truth
           // values (round-5 hold #1: extends round-4's `event:` protection
@@ -307,6 +338,10 @@ export function handleBroadcastError(
           // template threw — `err` here is the inner template error, NOT
           // the outer `PostBroadcastWriteError`; we name it `err` so pino's
           // serializer renders it as the primary error.
+          // Round-4 hold #3: caller-supplied `cause` from `opts.logContext`
+          // is stripped at the function entry (`sanitizedLogContext`),
+          // closing the symmetric leak path called out in the round-3 hold
+          // #1 comment block above.
           err: msgErr,
           txId: err.txId,
           failedStep: err.failedStep,
@@ -335,7 +370,7 @@ export function handleBroadcastError(
     // convention).
     logger.warn(
       {
-        ...opts.logContext,
+        ...sanitizedLogContext,
         err,
         timeoutMs: err.timeoutMs,
         event: 'broadcast_timeout',
@@ -378,7 +413,7 @@ export function handleBroadcastError(
     // but route to different operator-alert dispositions.
     logger.error(
       {
-        ...opts.logContext,
+        ...sanitizedLogContext,
         err,
         event: 'broadcast_ambiguous',
       },
@@ -406,7 +441,7 @@ export function handleBroadcastError(
   // to broadcast on-call (vs. DB on-call for `'post_broadcast_write_failed'`).
   logger.error(
     {
-      ...opts.logContext,
+      ...sanitizedLogContext,
       err,
       event: 'broadcast_failed',
     },

@@ -160,14 +160,19 @@ export function validateConfig(): void {
   }
 
   if (missing.length > 0) {
-    // Round-3 hold #2 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):
-    // pino's destination transport is async by default; `process.exit(1)` on
-    // the next line would tear down the runtime including the worker thread
-    // before the buffered fatal line drains. Flush before exit so the
-    // boot-fatal log is observable to operators.
+    // Round-4 hold #1 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):
+    // log then THROW — do NOT call `logger.flush(() => process.exit(1))` here.
+    // Returning after the round-3 flush-exit left the call stack intact:
+    // `validateConfig()` returned synchronously to `index.ts`, and the
+    // module-level `createApp()` / `initAppDb()` lines below it kept running
+    // during the async flush window. Migrations would execute on a fatal-
+    // misconfigured boot; `app.listen` could even bind. Throw a structured
+    // `BootFatalError` so the call stack unwinds — `index.ts`'s top-level
+    // boot wrapper catches it and routes through the single
+    // `flushAndExit()` watchdog (flush + 2s setTimeout fallback so a
+    // wedged transport doesn't hang the boot indefinitely).
     logger.error('Required config missing:\n' + missing.join('\n'));
-    logger.flush(() => process.exit(1));
-    return;
+    throw new BootFatalError('validateConfig: required configuration missing');
   }
 
   // After all string-format validations pass, parse the bridge posting key
@@ -232,13 +237,47 @@ function initBridgePostingKeyCache(): void {
     // would otherwise tear down the runtime before the buffered fatal line
     // drains. Flush before exit so the boot-fatal log is observable to
     // operators.
+    // Round-4 hold #1 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):
+    // log fatal then THROW — do NOT call `logger.flush(() => process.exit(1))`
+    // here. The round-3 flush-exit at this site left the call stack intact:
+    // `initBridgePostingKeyCache()` returned synchronously to
+    // `validateConfig()`, which returned synchronously to `index.ts`,
+    // and the module-level `createApp()` / `initAppDb()` lines below kept
+    // running during the async flush window (migrations would execute on a
+    // fatal-misconfigured boot; `app.listen` could even bind). Throw a
+    // structured `BootFatalError` so the call stack unwinds — `index.ts`'s
+    // top-level boot wrapper catches it and routes through the single
+    // `flushAndExit()` watchdog (flush + 2s setTimeout fallback so a
+    // wedged transport doesn't hang the boot indefinitely).
     logger.fatal(
       { err, envVar: 'PEVO_BRIDGE_POSTING_KEY' },
       'Bridge posting key parse failed at boot — refusing to start. ' +
       'The format validator passed but PrivateKey.fromString threw; ' +
       'this indicates a validator/dhive divergence. Investigate before deploying.',
     );
-    logger.flush(() => process.exit(1));
+    throw new BootFatalError('initBridgePostingKeyCache: parse divergence');
+  }
+}
+
+/**
+ * Round-4 hold #1 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):
+ * structured boot-fatal sentinel. Thrown by `validateConfig()` /
+ * `initBridgePostingKeyCache()` after a fatal log so the call stack unwinds
+ * to the top-level boot wrapper in `index.ts`. The wrapper catches it and
+ * routes through the single `flushAndExit()` watchdog (flush + 2s timer
+ * fallback) so the boot-fatal log line drains before exit AND so a wedged
+ * pino transport cannot hang the boot indefinitely.
+ *
+ * Why a dedicated subclass: identifies "expected boot-fatal we already
+ * logged about" vs. "unexpected throw we still need to log" at the catch
+ * site. The wrapper logs once for unexpected throws, NOT for `BootFatalError`
+ * (the boot-fatal sites already logged the user-actionable detail before
+ * throwing — re-logging would be noise).
+ */
+export class BootFatalError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'BootFatalError';
   }
 }
 

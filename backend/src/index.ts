@@ -2,7 +2,7 @@ import { config } from './config.js';
 import { isHafAvailable, closeHafPool, getPool } from './db.js';
 import { initAppDb, closeAppPool } from './app-db.js';
 import { createApp } from './app.js';
-import { validateConfig, checkOrcidProcessSafety } from './startup-checks.js';
+import { validateConfig, checkOrcidProcessSafety, BootFatalError } from './startup-checks.js';
 import { startBlockWatcher, stopBlockWatcher } from './block-watcher.js';
 import { startDigestScheduler, stopDigestScheduler } from './digest.js';
 import { startIpfsCleanup, stopIpfsCleanup } from './ipfs-cleanup.js';
@@ -19,30 +19,57 @@ import { startSignupCleanup, stopSignupCleanup } from './signup-cleanup.js';
 import { drainArgon2Queue, startArgon2AbortReporter, stopArgon2AbortReporter } from './lib/argon2-semaphore.js';
 import { startDecrementQueueDrainer, stopDecrementQueueDrainer } from './lib/pending-decrement-queue.js';
 import { logger } from './logger.js';
+import { flushAndExit } from './lib/flush-and-exit.js';
 import type { Server } from 'http';
 
-// ── Uncaught error handlers ─────────────────────────────────
+// ── Boot-fatal flush+exit watchdog ──────────────────────────
 //
-// Round-3 hold #2 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):
-// pino's destination transport is async by default; `process.exit(1)` on the
-// next tick after `logger.fatal(...)` tears down the runtime (including
-// the pino worker thread) before the buffered fatal line drains. Operators
-// then see a silent crash with no log evidence. Flush before exit so the
-// fatal line is on the wire before the process dies.
+// Round-4 hold #1 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):
+// `flushAndExit` lives in `src/lib/flush-and-exit.ts` so the boot path AND
+// the unit-test canary at `tests/lib/flush-and-exit.test.ts` share the
+// exact same implementation. The watchdog ensures `process.exit(1)` is
+// reached even when pino's `flush(cb)` callback never fires (back-pressured
+// stdout, wedged worker thread). See the helper's own docblock for the
+// full rationale.
+
+// ── Uncaught error handlers ─────────────────────────────────
 process.on('uncaughtException', (err) => {
   logger.fatal({ err }, 'Uncaught exception — shutting down');
-  logger.flush(() => process.exit(1));
+  flushAndExit();
 });
 
 process.on('unhandledRejection', (reason) => {
   logger.fatal({ err: reason }, 'Unhandled rejection — shutting down');
-  logger.flush(() => process.exit(1));
+  flushAndExit();
 });
 
 // ── Startup ─────────────────────────────────────────────────
-validateConfig();
-
-const app = createApp();
+//
+// Round-4 hold #1 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):
+// Wrap the synchronous boot in a try/catch so a `BootFatalError` thrown
+// from `validateConfig()` / `initBridgePostingKeyCache()` unwinds the call
+// stack before `createApp()` / `initAppDb()` can run. The round-3 flush-
+// exit shape returned synchronously to this module and let `createApp()` +
+// `initAppDb()` (which runs DB migrations!) execute during the async flush
+// window on a fatal-misconfigured boot. The throw-then-catch shape blocks
+// that window — control reaches the catch BEFORE any post-validate boot
+// code runs. Unexpected throws are logged once here (boot-fatal sites
+// already logged before throwing `BootFatalError`, so we suppress the
+// re-log on that subclass to avoid noise).
+let app: ReturnType<typeof createApp>;
+try {
+  validateConfig();
+  app = createApp();
+} catch (err) {
+  if (!(err instanceof BootFatalError)) {
+    logger.fatal({ err }, 'Boot failed — unexpected throw during startup');
+  }
+  flushAndExit();
+  // Unreachable in production — flushAndExit either flushes-then-exits or
+  // hits the 2s watchdog. The throw keeps TypeScript's control-flow
+  // narrowing happy (`app` is assigned-or-throw before the next line).
+  throw err;
+}
 let server: Server;
 
 initAppDb()
@@ -103,11 +130,11 @@ initAppDb()
     });
   })
   .catch((err) => {
-    // Round-3 hold #2 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):
-    // flush pino's async transport before `process.exit(1)` so the fatal
-    // line is observable to operators (see uncaughtException handler above).
+    // Round-4 hold #1 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):
+    // route through `flushAndExit()` so the fatal line drains under the 2s
+    // watchdog (a hung-flush callback no longer hangs the boot indefinitely).
     logger.fatal({ err }, 'Failed to initialize app database');
-    logger.flush(() => process.exit(1));
+    flushAndExit();
   });
 
 // ── Graceful shutdown ───────────────────────────────────────

@@ -378,6 +378,111 @@ describe('redactErrSerializer — pino err serializer redact policy', () => {
   // `safeRedactErr` invocation and fail the test (or, in the wrapper-
   // layer test below, propagate the throw out of `logger.warn(...)`).
   // ───────────────────────────────────────────────────────────────────
+  // ───────────────────────────────────────────────────────────────────
+  // Round-4 hold #2 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):
+  // plain-object cause leak canary. `redactErrSerializer`'s entry guard
+  // (`if (!isErrorLike(err)) return err`) is correct for the top-level
+  // entry (pino can string-coerce non-Error inputs), but at the recursive
+  // cause layer it short-circuits: a future cause shape like
+  //   `Object.assign(new Error('outer'), { cause: { command: { args: [...] } } })`
+  // hits `isErrorLike(plainObj) === false` on the recursive call and
+  // returns the object verbatim — bypassing the SAFE_BASELINE_FIELDS
+  // allowlist. Round-4 routes plain-object causes through `redactPlainObject`,
+  // which applies the allowlist with NO short-circuit. Mutation kill:
+  // reverting the `cause` recursion site to `redactErrSerializer(errAny.cause,
+  // depth + 1)` (the pre-round-4 shape) makes this test fail because
+  // `out.cause.command` is then the verbatim leaky shape.
+  // ───────────────────────────────────────────────────────────────────
+  it('plain-object cause: leaky fields stripped via redactPlainObject (round-4 hold #2)', () => {
+    // The architect's exact reproducer fixture: an Error with a non-Error
+    // `cause` carrying an ioredis-shaped command + args (the δ-flavored
+    // leak surface, but smuggled through a plain-object cause).
+    const verifyToken = 'cafe1234cafe1234cafe1234cafe1234cafe1234cafe1234cafe1234cafe1234';
+    const outer = Object.assign(new Error('outer'), {
+      cause: {
+        command: { name: 'eval', args: ['some-lua', '1', `pevotest:x:${verifyToken}`] },
+      },
+    });
+
+    const out = redactErrSerializer(outer) as Record<string, unknown>;
+
+    // The outer Error's cause survives the recursion as a redacted shape,
+    // not the verbatim plain object.
+    expect(out.cause).toBeDefined();
+    const cause = out.cause as Record<string, unknown>;
+
+    // The leaky `command` field is absent from the redacted plain-object
+    // cause. Pre-round-4 this would equal the verbatim
+    // `{ name: 'eval', args: [...] }` object.
+    expect(cause.command).toBeUndefined();
+
+    // Belt-and-suspenders: the raw 64-hex token is NOT in the serialized
+    // payload anywhere along the chain. Mutation-kill the regression at
+    // the deepest level: a future refactor that "fixes" the type by passing
+    // `errAny.cause as Error` to `redactErrSerializer` would silently fall
+    // back to the entry pass-through and re-leak the token.
+    const serialized = JSON.stringify(out);
+    expect(serialized).not.toMatch(/[0-9a-f]{64}/);
+    expect(serialized).not.toContain(verifyToken);
+
+    // The plain-object cause-redactor surfaces a recognizable `type` label
+    // (`'Object'`) so dashboards can distinguish a plain-object cause from
+    // an Error-shaped cause. (Aesthetic, but pinned so a regression that
+    // drops the label doesn't go unnoticed.)
+    expect(cause.type).toBe('Object');
+  });
+
+  it('plain-object cause: SAFE_BASELINE_FIELDS preserved through plain-object recursion (round-4 hold #2)', () => {
+    // Defense-in-depth test for `redactPlainObject`: the allowlist is the
+    // SAME `SAFE_BASELINE_FIELDS` used by the Error path. A regression that
+    // forgets to copy `code`/`errno`/`syscall` on the plain-object branch
+    // would silently lose ENOENT/ECONNREFUSED triage data on causes that
+    // happen to be plain objects (e.g. a domain wrapper that hangs an
+    // operational-context object off `cause`).
+    const outer = Object.assign(new Error('outer connect-fail'), {
+      cause: {
+        code: 'ECONNREFUSED',
+        errno: -111,
+        syscall: 'connect',
+        // Adversarial sibling that MUST NOT survive the allowlist.
+        secret_payload: 'must-not-leak',
+      },
+    });
+
+    const out = redactErrSerializer(outer) as Record<string, unknown>;
+    const cause = out.cause as Record<string, unknown>;
+    expect(cause.code).toBe('ECONNREFUSED');
+    expect(cause.errno).toBe(-111);
+    expect(cause.syscall).toBe('connect');
+    expect(cause.secret_payload).toBeUndefined();
+
+    const serialized = JSON.stringify(out);
+    expect(serialized).not.toContain('must-not-leak');
+  });
+
+  it('plain-object cause: depth guard bounds recursion through plain-object causes (round-4 hold #2 + round-3 hold #3)', () => {
+    // Build a 50-deep plain-object cause chain. Without the depth guard
+    // carrying through to `redactPlainObject`, this would still serialize
+    // to a 50-deep payload and bloat log volumes; with the guard, it
+    // truncates at MAX_CAUSE_DEPTH.
+    let head: Record<string, unknown> = { code: 'leaf' };
+    for (let i = 0; i < 50; i += 1) {
+      head = { code: `layer-${i}`, cause: head };
+    }
+    const outer = Object.assign(new Error('outer'), { cause: head });
+
+    const out = redactErrSerializer(outer) as Record<string, unknown>;
+    let cur: Record<string, unknown> = out;
+    let depth = 0;
+    while (cur.cause && depth < 60) {
+      cur = cur.cause as Record<string, unknown>;
+      if (cur.type === 'MaxDepthExceeded') break;
+      depth += 1;
+    }
+    expect(cur.type).toBe('MaxDepthExceeded');
+    expect(depth).toBeLessThan(50);
+  });
+
   it('try/catch fallback: a throwing-getter err yields the RedactSerializerFailed sentinel (round-3 hold #4)', () => {
     // Construct an err with a throwing `stack` getter. The serializer
     // reads `errAny.stack`, so this triggers the throw inside it. The

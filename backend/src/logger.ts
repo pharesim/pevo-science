@@ -166,8 +166,24 @@ export function redactErrSerializer(err: unknown, depth = 0): SerializedErr | un
   // ReplyError cannot smuggle leaky fields through a wrapper. Aggregate
   // errors (`err.errors`) follow the same recursion. Both pass `depth + 1`
   // so the depth guard above bounds the total recursion (round-3 hold #3).
+  //
+  // Round-4 hold #2 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):
+  // when `cause` is a non-Error plain object (e.g. `class WrappedErr extends
+  // Error { constructor(...) { super(...); this.cause = leakyContext; } }`
+  // or `Object.assign(new Error(...), { cause: { command: { args: [...] } } })`),
+  // routing it back through `redactErrSerializer` hits the
+  // `if (!isErrorLike(err)) return err` short-circuit at the top of the
+  // function and the plain object is returned VERBATIM, bypassing the
+  // SAFE_BASELINE_FIELDS allowlist. The same bypass class lives at the
+  // top-level sibling layer (see solutions/conventions/pino-err-slot-
+  // sibling-bypass-redact-policy-2026-05-06.md) and now closes here too.
+  // Non-Error causes go through `redactPlainObject`, which applies the
+  // allowlist + depth guard with NO short-circuit so the plain-object
+  // surface has no leak path.
   if (errAny.cause !== undefined && errAny.cause !== errAny) {
-    out.cause = redactErrSerializer(errAny.cause, depth + 1);
+    out.cause = isErrorLike(errAny.cause)
+      ? redactErrSerializer(errAny.cause, depth + 1)
+      : redactPlainObject(errAny.cause, depth + 1);
   }
 
   const maybeErrors = (errAny as unknown as { errors?: unknown }).errors;
@@ -175,6 +191,68 @@ export function redactErrSerializer(err: unknown, depth = 0): SerializedErr | un
     out.aggregateErrors = maybeErrors.map((e) => redactErrSerializer(e, depth + 1));
   }
 
+  return out;
+}
+
+/**
+ * Round-4 hold #2 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):
+ * SAFE_BASELINE_FIELDS allowlist redactor for non-Error `cause` payloads.
+ *
+ * `redactErrSerializer`'s entry guard (`if (!isErrorLike(err)) return err`)
+ * passes plain-object inputs through verbatim, which is correct for the
+ * top-level entry (pino can string-coerce primitives and unknown shapes
+ * itself). At the recursive `cause` layer, however, that pass-through
+ * defeats the redact policy: a future cause shape like
+ *   `Object.assign(new Error('outer'), { cause: { command: { args: ['raw-token'] } } })`
+ * would hit `isErrorLike(plainObj) === false` on the recursive call and
+ * land the unredacted plain object in the serialized payload.
+ *
+ * This helper applies the allowlist (and ONLY the allowlist) to non-null
+ * objects with no isErrorLike short-circuit. The depth guard from round-3
+ * hold #3 carries through so cycles and unbounded chains still bail.
+ * Non-object inputs (strings, numbers, etc.) pass through — pino can
+ * coerce those itself; the failure mode this closes is the structural
+ * smuggling-via-plain-object case.
+ *
+ * Output shape mirrors `SerializedErr` for consumer parity: `type`
+ * surfaces a recognizable label so dashboards can distinguish a redacted
+ * plain-object cause from a redacted Error cause.
+ */
+function redactPlainObject(value: unknown, depth: number): unknown {
+  if (depth > MAX_CAUSE_DEPTH) {
+    return { type: 'MaxDepthExceeded', depth };
+  }
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    // Not a plain object — pass through. Primitives (string/number) carry
+    // no allowlist surface; arrays land outside the cause-chain shape this
+    // helper exists to defend.
+    return value;
+  }
+  const obj = value as Record<string, unknown>;
+  const out: Record<string, unknown> = { type: 'Object' };
+  for (const field of SAFE_BASELINE_FIELDS) {
+    const v = obj[field];
+    if (v !== undefined && (typeof v === 'string' || typeof v === 'number')) {
+      out[field] = v;
+    }
+  }
+  if (REDACT_LEVEL === 'relaxed') {
+    for (const field of RELAXED_EXTRA_FIELDS) {
+      const v = obj[field];
+      if (v !== undefined && (typeof v === 'string' || typeof v === 'number')) {
+        out[field] = v;
+      }
+    }
+  }
+  // Recurse into nested cause if present, applying the same redact
+  // discipline so a deeply-nested plain-object chain cannot smuggle leaks
+  // through. (`isErrorLike` re-checked because a hybrid chain could mix
+  // Error and plain-object levels.)
+  if (obj.cause !== undefined && obj.cause !== obj) {
+    out.cause = isErrorLike(obj.cause)
+      ? redactErrSerializer(obj.cause, depth + 1)
+      : redactPlainObject(obj.cause, depth + 1);
+  }
   return out;
 }
 

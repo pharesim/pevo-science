@@ -594,19 +594,38 @@ describe('handleBroadcastError', () => {
     const realCause = new Error('redis flap (real)');
     const err = new PostBroadcastWriteError('hive-tx-real', realCause, 'reputation_seed');
 
-    handleBroadcastError(res, err, {
+    // Round-4 hold #3 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):
+    // re-adds the `cause: 'caller-override-cause'` adversarial fixture that
+    // round-3 dropped. The architect's hold called out the regression:
+    // round-3 closed the helper-emitted top-level `cause: err.cause` field
+    // (the bypass-both-redaction-layers leak), but the spread of caller-
+    // supplied `opts.logContext` had no symmetric `cause: undefined` strip.
+    // A future caller adding `cause` to its `logContext` (intentionally or
+    // by TypeScript-bypass — the `LogContext` interface does NOT declare a
+    // `cause` field, so this is a `as unknown as LogContext`-shaped vector)
+    // would land a top-level sibling on the log object outside both
+    // redaction layers. Round-4 closes that vector at the function entry
+    // (`sanitizedLogContext`); this fixture pins the negative invariant
+    // the fix is supposed to guarantee. The cast through `as unknown as
+    // Parameters<typeof handleBroadcastError>[2]` mirrors the type-bypass
+    // shape the round-2 ambiguous-message regression-guard test uses.
+    const optsBypass = {
       timeoutMsg: 'Timed out',
       failMsg: 'Failed',
       // Adversarial caller-supplied colliding values — none of the
-      // helper-authoritative ones (`err`, `txId`, `failedStep`) should win.
+      // helper-authoritative ones (`err`, `cause`, `txId`, `failedStep`)
+      // should win. `cause` is the round-4 hold #3 adversarial vector
+      // re-added in this fixture.
       logContext: {
         err: 'caller-override-err',
+        cause: 'caller-override-cause',
         txId: 'caller-override-tx',
         failedStep: 'caller-override-step',
         run: 'spread-kill-r5-1',
       },
       routeLabel: 'orcid.handleAccredit',
-    });
+    } as unknown as Parameters<typeof handleBroadcastError>[2];
+    handleBroadcastError(res, err, optsBypass);
 
     expect(errorSpy).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -627,13 +646,16 @@ describe('handleBroadcastError', () => {
     expect(callArgs.failedStep).toBe('reputation_seed');
     // Round-3 hold #1 of BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT:
     // the helper no longer emits a top-level sibling `cause: err.cause`
-    // field — that field bypassed both redaction layers (the wrapper at
-    // `logger.ts:redactErrInArg` and Layer-B `serializers.err` only redact
-    // the `err` slot). The recursive `cause` traversal inside
-    // `redactErrSerializer` preserves the redacted cause inside `err.cause`
-    // of the serialized payload, which is the correct surface. Pin the
-    // absence of a helper-emitted top-level `cause` here: a regression
-    // re-adding `cause: err.cause` would re-introduce the leak path.
+    // field — that field bypassed both redaction layers. Round-4 hold #3
+    // extends the same protection to caller-supplied `cause` via the
+    // `sanitizedLogContext` strip at the function entry. Pin the absence
+    // of a top-level `cause` here: a regression that either (a) re-adds
+    // `cause: err.cause` after the spread or (b) drops the
+    // `sanitizedLogContext` strip and re-spreads `opts.logContext`
+    // directly would re-introduce the leak path. Mutation kill: removing
+    // the destructure or changing the spread back to `...opts.logContext`
+    // makes `callArgs.cause` equal `'caller-override-cause'` instead of
+    // `undefined`.
     expect(callArgs.cause).toBeUndefined();
     // Negative: caller-supplied colliding values for the helper's
     // authoritative fields MUST NOT leak through.

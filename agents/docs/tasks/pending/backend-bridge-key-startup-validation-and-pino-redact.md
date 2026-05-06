@@ -422,3 +422,72 @@ Reviewer attribution: adversarial single, conf 75 (above gate).
 ### Re-review signal
 
 When round-4 items 1-3 land in a single commit, `git mv` this file back to `tasks/review/`. Architect's next pass scopes `/ce-code-review` to the round-4 commit only (not the whole task history). Expected diff: ~30 LOC across `index.ts`/`startup-checks.ts` (watchdog + sync-throw boot semantics), ~10 LOC in `logger.ts` (plain-object cause helper), ~5 LOC in `broadcast-error.ts` (sanitized logContext spread), plus ~50 LOC of new canaries (watchdog mutation-kill, plain-object-cause, re-added cause-sibling fixture).
+
+---
+
+## Backend re-review signal (2026-05-06, round-4 hold-fixes — commit `d2862cb` on `worktree-agent-a44a9c6fcbf101fad`)
+
+Round-4 closes 3 of 3 hold items in a single coordinated commit covering `backend/src/{logger.ts,index.ts,startup-checks.ts,lib/broadcast-error.ts,lib/flush-and-exit.ts}` plus paired tests in `backend/tests/{lib/logger-redact.test.ts,lib/broadcast-error.test.ts,lib/flush-and-exit.test.ts}`.
+
+### Item-by-item resolution
+
+**Item 1 (P1) — Watchdog + sync-throw boot semantics.**
+
+(a) **Watchdog timeout.** Extracted the boot-fatal flush+exit shape to `backend/src/lib/flush-and-exit.ts` (new file) so the boot path AND the unit-test canary share the exact same implementation. Body: `const exitTimer = setTimeout(() => process.exit(1), 2000); exitTimer.unref(); logger.flush(() => { clearTimeout(exitTimer); process.exit(1); });` — mirrors the proven pattern at `routes/auth.ts:175-193`. `index.ts` imports and calls it from all 3 sites the round-4 hold names plus the new boot-try/catch site (item 1b below).
+
+(b) **Sync-throw boot semantics.** Added a `BootFatalError` subclass in `startup-checks.ts:312-320`. The two boot-fatal sites that previously called `logger.flush(() => process.exit(1)); return;` (`validateConfig` missing-required path at `:163-170` and `initBridgePostingKeyCache` parse-divergence at `:235-243`) now log fatal then THROW `BootFatalError`. `index.ts:72-86` wraps `validateConfig()` + `createApp()` in a try/catch so the call stack unwinds before any post-validate boot code runs (no migrations on a fatal-misconfigured boot, no `app.listen` on a half-initialized app). Unexpected throws are logged once at the catch (`BootFatalError` subclass suppressed because the boot-fatal sites already logged before throwing). The catch routes through `flushAndExit()` — single watchdog mechanism for all boot-fatal exits.
+
+**Item 2 (P2) — Plain-object cause leak.** Added `redactPlainObject(value, depth)` helper in `logger.ts:181-237` that applies `SAFE_BASELINE_FIELDS` (and `RELAXED_EXTRA_FIELDS` under relaxed mode) to non-Error objects with NO `isErrorLike` short-circuit. The depth guard from round-3 hold #3 carries through (bails at `depth > MAX_CAUSE_DEPTH` returning the same `MaxDepthExceeded` sentinel). The recursive `cause` site in `redactErrSerializer` now branches on `isErrorLike(errAny.cause)`: Error-like causes go through `redactErrSerializer(errAny.cause, depth + 1)` (existing path); plain-object causes go through `redactPlainObject(errAny.cause, depth + 1)` (new path). `redactPlainObject` itself recurses on nested `cause` so a deep plain-object chain is bounded the same way.
+
+**Item 3 (P2) — Sibling-cause drop completeness gap.**
+
+(a) `backend/src/lib/broadcast-error.ts:262-264` — added a function-entry destructure `const { cause: _ignored, ...sanitizedLogContext } = (opts.logContext ?? {}) as LogContext & { cause?: unknown };` and replaced all 4 `...opts.logContext` spread sites with `...sanitizedLogContext`. The cast is required because the typed `LogContext` interface does NOT declare a `cause` field; the destructure is a no-op on the typed-caller happy path and only matters under TypeScript bypass. Centralized at the function entry (cleaner than 4 in-place strips) so all spread sites inherit the protection.
+
+(b) `backend/tests/lib/broadcast-error.test.ts:591` — re-added the `cause: 'caller-override-cause'` adversarial fixture that round-3 dropped, plus an `as unknown as Parameters<typeof handleBroadcastError>[2]` type-bypass cast (mirrors the round-2 `failMsg`-leak regression-guard pattern). The test asserts `expect(callArgs.cause).toBeUndefined()` — fails red if a regression either re-adds `cause: err.cause` after the spread OR drops the `sanitizedLogContext` strip and re-spreads `opts.logContext`.
+
+### Mutation-kill attestation (per `tests-must-fail-on-mutation-of-code-under-test-2026-04-22.md`)
+
+Each new canary verified red against a stripped-down code change. Baseline restored after each verification.
+
+- **Item 1 — watchdog mutation-kill canary** (`tests/lib/flush-and-exit.test.ts`):
+  - Strip `setTimeout(() => process.exit(1), 2000); exitTimer.unref(); ...clearTimeout(exitTimer);` and replace with bare `logger.flush(() => process.exit(1))`. Result: "hung flush: watchdog setTimeout fires within ~2s" fails red — `expect(() => vi.advanceTimersByTime(2100)).toThrow(/process\.exit\(1\)/)` catches the missing throw because `process.exit` is never called when the flush callback hangs. Restore green.
+  - Drop only the `clearTimeout(exitTimer)` line (keep watchdog + exit). Result: "happy path: flush callback fires → ... watchdog timer cleared so a stale exit doesn't double-fire later" fails red — `process.exit` fires twice because the timer is not cleared. Restore green.
+
+- **Item 2 — plain-object cause mutation-kill canary** (`tests/lib/logger-redact.test.ts`, 3 new specs):
+  - Revert the `cause` recursion site to `out.cause = redactErrSerializer(errAny.cause, depth + 1)` (pre-round-4 shape). Result: all 3 plain-object cause specs fail red — the `isErrorLike` short-circuit at the entry of `redactErrSerializer` returns the plain-object cause verbatim, so `out.cause.command` is not stripped, `out.cause.code` is `undefined`, and the depth-guard plain-object recursion truncation never triggers. Restore green.
+
+- **Item 3 — sibling-cause mutation-kill canary** (`tests/lib/broadcast-error.test.ts:591`):
+  - Replace `...sanitizedLogContext` with `...opts.logContext` at the `post_broadcast_write_failed` spread site. Result: re-added round-5 hold #1 spec fails red — `callArgs.cause` becomes `'caller-override-cause'` (the type-bypass adversarial value) instead of `undefined`. Restore green.
+
+### Verification gate
+
+- `npx tsc --noEmit` — clean, no errors.
+- `npm run lint` — clean, 2 pre-existing warnings only (`src/seed-phrase.ts:26,27` `@typescript-eslint/no-explicit-any`).
+- Targeted vitest run (`tests/lib/logger-redact.test.ts`, `tests/lib/broadcast-error.test.ts`, `tests/startup-checks.test.ts`, `tests/routes/bridge.test.ts`, `tests/lib/flush-and-exit.test.ts`): **92 passed (92)**. Per task brief, the full vitest suite is NOT run in this worker — parent serializes that after merging.
+
+### Out-of-scope items honored
+
+- `agents/docs/api-contracts/*.md` — not edited (architect-owned). The wave-1 / round-3 [TODO Architect] markers (convention doc `pino-err-serializer-redact-policy-2026-05-XX.md`, δ test transition confirmation, no-API-contract-update confirmation) carry forward unchanged.
+- `routes/claims.ts` — left alone per the original architect coordination note. The `backend-bridge-key-claims-route-migration` follow-up task already landed in `tasks/review/` (commit `83c6a28`) for the architect's separate review pass.
+- Architect's "Items dismissed during architect triage" — dev-only `uncaughtException`-from-pino-worker fallback, `safeRedactErr` `String(...)` defensive depth, `MAX_CAUSE_DEPTH` env-knob, `redactErrSerializer` return-type collapse, `(depth: number = 0)` recursion-bookkeeping exposure — left unchanged per the dismissals.
+- Pre-existing items "NOT round-4 scope" (`MAX_CAUSE_DEPTH=10` per-branch AggregateError fanout DoS) — not actioned.
+
+### Architectural deviations from the hold's literal snippets
+
+- **`flushAndExit` extracted to `src/lib/flush-and-exit.ts` rather than inlined at all 3 `index.ts` sites.** The hold's snippet is inlined per-site; the extracted shape is functionally identical and lets the unit-test canary share the exact same implementation (DRY + mutation-killable at the function-call layer). The 3 `index.ts` call sites now read `flushAndExit()` instead of duplicating the 4-line block.
+- **`BootFatalError` subclass added to `startup-checks.ts` and re-exported from `index.ts`'s import.** The hold names "throw a structured error" without prescribing the class. A dedicated subclass (vs. `throw new Error(...)`) lets the `index.ts` catch site distinguish "expected boot-fatal we already logged about" from "unexpected throw we still need to log", suppressing redundant fatal logs on the expected path.
+- **Sibling-cause strip applied at the function entry (one destructure) rather than at the `:253` spread site only.** The hold's snippet is point-fix at `:253`; centralizing at the function entry inherits the protection across all 4 spread sites in one place. Functionally identical for the named site; defense-in-depth at the others.
+
+### [TODO Architect] markers (carry forward from round-3 + round-4 additions)
+
+1. Convention doc `agents/docs/solutions/conventions/pino-err-serializer-redact-policy-2026-05-XX.md` — fold round-4's plain-object cause helper, `flushAndExit` watchdog pattern, and `BootFatalError` boot-stack-unwind shape into the doc at archive.
+2. δ test transition confirmation — already-passing as of round-3 wave-2; round-4 doesn't change that path.
+3. No API contract update required — internal-only diff (logger serializer + boot-path + broadcast-error helper). Operators see the same JSON envelope shapes; only `err`-payload internals + boot-fatal log timing change.
+4. Cite `agents/docs/solutions/conventions/pino-err-slot-sibling-bypass-redact-policy-2026-05-06.md` in the archive entry — round-4 closes the sibling-cause completeness gap that convention names.
+5. Update `agents/docs/solutions/conventions/pino-spy-serializer-ordering-trap-2026-05-06.md` at archive — remove the superseded `Parameters<typeof baseLogger.warn>` example pattern (round-3 item 5 superseded it with the `LogFn` factory).
+6. File the codebase-wide watch-list audit follow-up task at archive — scope per the round-4 hold's "NEW at this hold" item 3.
+7. `/ce-compound` candidates at archive (per the hold block):
+   - "Validate-once-and-cache-secret pattern" (round-3 instantiation; carry forward).
+   - "Boot-fatal `logger.flush() + setTimeout watchdog` async-transport-drain pattern" — round-4 instantiates; ripe for compound.
+   - "Defensive recursive serializer with depth/cycle guard + discriminated sentinel + try/catch fallback + plain-object cause helper" — round-3 + round-4 fold into a single entry.
+   - "Boot-fatal call-stack-unwind via subclassed throw + outer catch" — round-4 introduces the pattern; could combine with the watchdog pattern.
