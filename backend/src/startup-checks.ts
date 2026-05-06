@@ -313,6 +313,17 @@ export class BootFatalError extends Error {
  * Cache miss + key configured: parses lazily, then caches. This keeps the
  * accessor safe to call before `validateConfig()` has run (test harnesses
  * that bypass startup validation, scripts that import bridge.ts, etc.).
+ *
+ * BACKEND-BRIDGE-KEY-LAZY-FALLBACK-THROW-SITE-CLOSURE (approach 2,
+ * behavior-preserving): the lazy parse below is wrapped in try/catch.
+ * Successful parses populate the cache as before; failed parses throw
+ * `BridgeKeyLazyParseDivergence` (a sanitized sibling of
+ * `BridgeKeyCacheUnpopulated`) instead of letting dhive's raw
+ * `AssertionError` (with WIF-derived `.actual`/`.expected` Buffer slices)
+ * escape. The redact policy in `logger.ts` is the existing post-hoc
+ * mitigation; this catch-and-rewrap is the structural defense-in-depth
+ * complement so the AssertionError surface never reaches a logger from
+ * THIS site even if the redact policy were ever reverted.
  */
 export function getCachedBridgePostingKey(): PrivateKey | null {
   const source = config.pevoBridgePostingKey;
@@ -324,14 +335,29 @@ export function getCachedBridgePostingKey(): PrivateKey | null {
     return cachedBridgePostingKey.parsed;
   }
   // Source changed (test override, in-place rotation) or cache is unset.
-  // Parse lazily. If this throws, it propagates: callers that reach this
-  // path past the format-validator have a genuine misconfiguration and
-  // need to surface it. (The validator runs at boot; production paths
-  // that reach this accessor have already passed validation.)
-  cachedBridgePostingKey = {
-    source,
-    parsed: PrivateKey.fromString(source),
-  };
+  // Parse lazily. The try/catch is the throw-site-closure for the lazy
+  // fallback (BACKEND-BRIDGE-KEY-LAZY-FALLBACK-THROW-SITE-CLOSURE,
+  // approach 2): on parse failure, re-throw a structured, redact-safe
+  // sibling error (`BridgeKeyLazyParseDivergence`) WITHOUT the dhive
+  // AssertionError's `.actual`/`.expected` properties (which carry
+  // WIF-derived Buffer slices). Successful parses populate the cache and
+  // return as before — behavior preserving for the existing
+  // lazy-fallback / in-place-rotation tests.
+  let parsed: PrivateKey;
+  try {
+    parsed = PrivateKey.fromString(source);
+  } catch {
+    // Intentionally swallow the raw error: its shape (an AssertionError
+    // with `.actual`/`.expected` Buffer slices DERIVED from the WIF) is
+    // exactly the leak surface this rewrap closes. Pass NOTHING from the
+    // caught error to the new error — no message interpolation, no
+    // `cause` linkage. Operators distinguish this divergence from the
+    // null-cache case via the distinct error class name; the format
+    // validator's boot-time fatal log is the operator-actionable trigger
+    // (this throw is the request-lifecycle backstop).
+    throw new BridgeKeyLazyParseDivergence();
+  }
+  cachedBridgePostingKey = { source, parsed };
   return cachedBridgePostingKey.parsed;
 }
 
@@ -351,6 +377,45 @@ export class BridgeKeyCacheUnpopulated extends Error {
       'Either PEVO_BRIDGE_POSTING_KEY is unset, or boot validation was bypassed in this context.'
     ));
     this.name = 'BridgeKeyCacheUnpopulated';
+  }
+}
+
+/**
+ * Structured error class thrown by the lazy-fallback path of
+ * {@link getCachedBridgePostingKey} when `PrivateKey.fromString(source)`
+ * rejects the configured WIF at request time.
+ *
+ * Why a dedicated subclass: dhive's raw failure mode here is
+ * `AssertionError` whose `.actual`/`.expected` are Buffer slices derived
+ * FROM the WIF. The redact policy in `logger.ts` strips those keys post-
+ * hoc (Layer-B `serializers.err`), but the structural defense — never
+ * letting that error shape escape this site — is the stronger guarantee
+ * (BACKEND-BRIDGE-KEY-LAZY-FALLBACK-THROW-SITE-CLOSURE, approach 2). The
+ * subclass carries:
+ *   - a fixed redact-safe message (no source interpolation);
+ *   - no `.actual` / `.expected` / `.operator` / `.cause` linkage to the
+ *     swallowed dhive error;
+ *   - a deterministic `name` / `constructor.name` so the redact
+ *     serializer in `logger.ts` projects `type:
+ *     'BridgeKeyLazyParseDivergence'` for operator dashboards.
+ *
+ * Production reachability: the format validator at boot
+ * (`validatePostingKeyFormat`) runs `PrivateKey.fromString` on the same
+ * source value during `validateConfig()`. A throw at the lazy-fallback
+ * path therefore implies validator/dhive divergence (e.g., a future dhive
+ * change widened the parse surface), not a malformed-key
+ * misconfiguration; both are operator-actionable. The boot-fatal log
+ * already carried the user-actionable detail; this throw is the
+ * request-lifecycle backstop.
+ */
+export class BridgeKeyLazyParseDivergence extends Error {
+  constructor(message?: string) {
+    super(message ?? (
+      'Bridge posting key lazy-fallback parse failed at request time. ' +
+      'Boot-time format validation passed but PrivateKey.fromString rejected the same source value here. ' +
+      'This indicates a validator/dhive divergence; investigate before continuing to serve traffic.'
+    ));
+    this.name = 'BridgeKeyLazyParseDivergence';
   }
 }
 

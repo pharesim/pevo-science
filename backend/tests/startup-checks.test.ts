@@ -6,6 +6,7 @@ import {
   getCachedBridgePostingKey,
   getRequiredBridgePostingKey,
   BridgeKeyCacheUnpopulated,
+  BridgeKeyLazyParseDivergence,
   _resetBridgePostingKeyCacheForTests,
   _initBridgePostingKeyCacheForTests,
 } from '../src/startup-checks.js';
@@ -262,6 +263,63 @@ describe('getCachedBridgePostingKey — boot-cached parsed bridge admin WIF', ()
     expect(parsed?.toString()).toBe(wif);
     // Second call hits the cache (same instance returned).
     expect(getCachedBridgePostingKey()).toBe(parsed);
+  });
+
+  // BACKEND-BRIDGE-KEY-LAZY-FALLBACK-THROW-SITE-CLOSURE (approach 2):
+  // when the lazy-fallback path's `PrivateKey.fromString(source)` throws —
+  // i.e. the boot validator passed but request-time dhive parse rejects
+  // the same source (validator/dhive divergence) — the accessor MUST
+  // re-throw a sanitized `BridgeKeyLazyParseDivergence`, NOT let the raw
+  // dhive `AssertionError` (with WIF-derived `.actual`/`.expected` Buffer
+  // slices) escape. Pre-this-task, that AssertionError would propagate
+  // unchanged.
+  it('lazy fallback throw-site closure: a parse rejection re-throws BridgeKeyLazyParseDivergence (NOT AssertionError)', () => {
+    // Drive the divergence: set the source to a base58-decodable but
+    // network-id-mismatching WIF that PrivateKey.fromString rejects.
+    // (The boot validator would normally catch this, but here we bypass
+    // the validator and exercise the accessor's lazy fallback directly,
+    // which is the request-lifecycle path the throw-site closure
+    // protects.)
+    const malformedWif = '5J' + '1'.repeat(50);
+    (config as { pevoBridgePostingKey: string }).pevoBridgePostingKey = malformedWif;
+    // No _initBridgePostingKeyCacheForTests() call — go straight to the
+    // accessor with a null cache so the lazy-fallback parse fires.
+    let captured: unknown = null;
+    try {
+      getCachedBridgePostingKey();
+    } catch (e) {
+      captured = e;
+    }
+    expect(captured).toBeInstanceOf(Error);
+    expect(captured).toBeInstanceOf(BridgeKeyLazyParseDivergence);
+    // Negative invariant: the raw dhive AssertionError must NOT escape.
+    // BridgeKeyLazyParseDivergence is constructed locally and inherits
+    // from Error, NOT from AssertionError; the rewrap discards the dhive
+    // throw entirely.
+    const errAny = captured as Error & {
+      actual?: unknown;
+      expected?: unknown;
+      operator?: unknown;
+      cause?: unknown;
+    };
+    expect(errAny.name).toBe('BridgeKeyLazyParseDivergence');
+    // Sanitization invariants — the rewrap MUST NOT carry forward the
+    // AssertionError's leaky fields, and MUST NOT chain the original via
+    // `cause` (which would pull the same Buffer slices through pino's
+    // recursive cause walk).
+    expect(errAny.actual).toBeUndefined();
+    expect(errAny.expected).toBeUndefined();
+    expect(errAny.operator).toBeUndefined();
+    expect(errAny.cause).toBeUndefined();
+    // Message is a fixed redact-safe string — does not interpolate the
+    // malformed WIF source.
+    expect(errAny.message).not.toContain(malformedWif);
+    // Round-tripping through the redact serializer projects
+    // `type: 'BridgeKeyLazyParseDivergence'` for operator dashboards.
+    const out = redactErrSerializer(errAny) as Record<string, unknown>;
+    expect(out.type).toBe('BridgeKeyLazyParseDivergence');
+    expect(out.actual).toBeUndefined();
+    expect(out.expected).toBeUndefined();
   });
 
   it('cache invalidates when config.pevoBridgePostingKey changes (in-place rotation, test override)', () => {
