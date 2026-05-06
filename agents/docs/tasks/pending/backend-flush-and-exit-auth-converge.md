@@ -35,7 +35,7 @@ Eliminate the duplicate inline implementation at `routes/auth.ts:175-193` by imp
 - The dismissed-at-round-4-review concurrent-`flushAndExit` timer-stacking. If a module-level `alreadyExiting` guard ends up making sense while in `flush-and-exit.ts`, that's a defensible scope expansion; otherwise leave it.
 - Refactoring `auth.ts` shutdown semantics beyond the flush+exit block. Stay scoped to `:175-193`.
 
-## Backend completion signal (2026-05-06, commit 2170425 on worktree-agent-ac6cce86ab83fb8e8)
+## Backend completion signal (2026-05-06, main-tree SHA `084d9ee`)
 
 **Diff stats:** `backend/src/routes/auth.ts | 26 +++++++-------------------` → `1 file changed, 7 insertions(+), 19 deletions(-)`. Net `-12 LOC`. The +7 is 1 line of import (`import { flushAndExit } from '../lib/flush-and-exit.js';`) plus a 6-line comment block that points the reader at `src/lib/flush-and-exit.ts` for the rationale. The -19 is the inline `setTimeout`/`logger.flush` block at the original `:175-193` and its 8-line preamble comment. Acceptance #4 cited "roughly `-15 LOC, +1 LOC`"; actual `-19/+7` is within that envelope (the +7 keeps a callsite-local breadcrumb comment rather than a bare 1-liner; same shape, slightly more in-place context).
 
