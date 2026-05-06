@@ -20,7 +20,10 @@ Initiate the ORCID OAuth2 flow for any mode. Generates a state parameter stored 
 
 ```json
 {
-  "mode": "signup" | "login" | "accredit" | "link" | "fresh_auth"
+  "mode": "signup" | "login" | "accredit" | "link" | "fresh_auth",
+  "action": "author_accept" | "author_resign",
+  "root_author": "<hive-account>",
+  "root_permlink": "<paper-permlink>"
 }
 ```
 
@@ -32,17 +35,24 @@ Initiate the ORCID OAuth2 flow for any mode. Generates a state parameter stored 
 | `link` | Yes (JWT) | Link/update ORCID on existing accreditation |
 | `fresh_auth` | Yes (JWT) | Mint a per-op fresh-auth proof via a fresh OAuth round-trip. Sibling to `POST /api/custody/fresh-auth` (password path). The OAuth-returned ORCID iD MUST equal `accounts.orcid` for the JWT subject; mismatch returns 403. |
 
+`action`, `root_author`, and `root_permlink` are REQUIRED when `mode === "fresh_auth"` and IGNORED in all other modes. Together they form the per-op target the issued proof will bind to; the consent op submitted on a subsequent `POST /api/custody/broadcast` MUST match the triple exactly or the broadcast returns 403 `FRESH_AUTH_REQUIRED` with `details.reason: "target_mismatch"`. Any missing or malformed field on a `fresh_auth` request returns 400 `VALIDATION_ERROR`.
+
 **State stored in Redis:** Key `orcid_state:{state}`, TTL 600s.
 
 ```json
 {
   "mode": "signup" | "login" | "accredit" | "link" | "fresh_auth",
   "username": "...",
-  "timestamp": 1234567890
+  "timestamp": 1234567890,
+  "fresh_auth_target": {
+    "action": "author_accept" | "author_resign",
+    "root_author": "<hive-account>",
+    "root_permlink": "<paper-permlink>"
+  }
 }
 ```
 
-`username` is present only for authenticated modes (`accredit`, `link`, `fresh_auth`), read from the JWT.
+`username` is present only for authenticated modes (`accredit`, `link`, `fresh_auth`), read from the JWT. `fresh_auth_target` is present only when `mode === "fresh_auth"`; the `/callback` handler reads it back from the state map and passes it to `consumeFreshAuthToken` so the issued proof binds to the same target the user authorized at `/start`. State carries the target across the OAuth round-trip; the SPA does not re-submit it on `/callback`.
 
 **Response `data`:**
 
@@ -202,7 +212,7 @@ No `custom_json` broadcast on this mode. No min works check.
 `fresh_auth_proof` is a single-use bearer token bound to the JWT subject. TTL is 5 minutes. Submit it as the `fresh_auth_proof` field on a subsequent `POST /api/custody/broadcast` request that contains a consent op (`author_accept` or `author_resign`). See [custody.md](custody.md) for the broadcast contract.
 
 **Errors specific to `fresh_auth`:**
-- `BAD_REQUEST` (400) — invalid ORCID iD format returned by the OAuth round-trip.
+- `BAD_REQUEST` (400) — invalid ORCID iD format returned by the OAuth round-trip, OR the `fresh_auth_target` is missing from the Redis state map at `/callback`. The latter is a defensive closed-default rejection: `/start` enforces target presence on entry, so an absent `fresh_auth_target` at `/callback` indicates a corrupt state entry rather than a normal client flow. Message: `"fresh_auth state is missing the per-op target binding"`.
 - `UNAUTHORIZED` (401) — JWT subject's account not found.
 - `FORBIDDEN` (403) — the OAuth-returned ORCID iD does not match `accounts.orcid` for the JWT subject (binding violation), or the account has no ORCID linked.
 - `INTERNAL_ERROR` (503) — backend service unavailable.
@@ -223,6 +233,7 @@ No `custom_json` broadcast on this mode. No min works check.
 - `VALIDATION_ERROR` -- ORCID profile has fewer than `ORCID_MIN_WORKS` works (signup/accredit modes only)
 - `VALIDATION_ERROR` -- link mode but user is not accredited
 - `INTERNAL_ERROR` -- ORCID API unreachable
+- `ORCID_PROVIDER_TIMEOUT` (504) -- The ORCID provider HTTP call (token exchange or works fetch) did not return headers within the configured timeout (default 10000ms; env-overridable via `ORCID_FETCH_TIMEOUT_MS`). Distinct from `BROADCAST_TIMEOUT` (which fires on the Hive-broadcast leg, 30s default). Fires across `signup`, `login`, `accredit`, `link`, and `fresh_auth` modes. `details: {retriable: false, outcome: 'timeout', verify_before_retry: true}`. The OAuth `state` has been consumed before the provider call, so a same-`{code, state}` retry returns 400 BAD_REQUEST. On modes where the provider call may have partially completed server-side (the `accredit` token-exchange path may have consumed the auth code on ORCID's side), `verify_before_retry: true` instructs the SPA to verify state at `/settings` before restarting the OAuth flow rather than auto-retrying. Treat `retriable: false` on a 504 as "restart the OAuth flow," not "transient gateway error, retry-after backoff."
 - `BROADCAST_FAILED` (502) -- Hive chain rejected the accreditation/link broadcast (accredit + link modes). `details.retriable: false`. The OAuth `state` has already been consumed; the caller must restart the ORCID flow.
 - `BROADCAST_TIMEOUT` (504) -- Backend either aborted the broadcast at 30s, or caught a non-timer throw on a code path where outcome cannot be determined (accredit + link modes). `details.retriable: false, details.outcome: 'uncertain', details.verify_before_retry: true, details.verify_location: '/settings'` (the field set is the contract; consumers MUST access by key name, not by position. The serialization order is a source-readability convention, not a wire contract). The OAuth `state` has been consumed, so retrying `POST /api/orcid/callback` with the same `{code, state}` body returns 400 BAD_REQUEST. The caller MUST verify linkage at `/settings` (or via `/api/accreditation/:username`) before restarting the flow. Blind retry would duplicate the `custom_json` op if the original broadcast landed. The 504 fires on three distinct trigger paths; clients see the same envelope shape on all three (with `details.timeout_ms` only present when noted):
     - **Timer-fire on the lock-acquired branch.** `BroadcastTimeoutError` raised by the 30s `broadcastJsonWithTimeout` wall-clock bound. `details.timeout_ms: 30000` is present.

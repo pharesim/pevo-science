@@ -54,10 +54,11 @@ Sign and broadcast Hive operations for light accounts. Only `comment`, `vote`, a
 - `FORBIDDEN` — operation not in allowlist, author/voter mismatch, or account already upgraded to self-custody
 - `VALIDATION_ERROR` — malformed operations or missing app tag
 - `MULTIPLE_CONSENT_OPS` (400) — bundle contains more than one consent op. Submit each consent op in its own request.
-- `FRESH_AUTH_REQUIRED` (401|403) — bundle contains a consent op but the `fresh_auth_proof` is missing, expired, malformed, or bound to a different user. Status is discriminated by `details.reason`:
-  - `details.reason: "username_mismatch"` → **403 FORBIDDEN** (binding violation; token was issued for a different account).
+- `FRESH_AUTH_REQUIRED` (401|403) — bundle contains a consent op but the `fresh_auth_proof` is missing, expired, malformed, bound to a different user, or bound to a different consent target. Status is discriminated by `details.reason`:
+  - `details.reason: "username_mismatch"` → **403 FORBIDDEN** (user-binding violation; token was issued for a different account).
+  - `details.reason: "target_mismatch"` → **403 FORBIDDEN** (per-op target-binding violation; token was issued for a different `(action, root_author, root_permlink)` triple than the consent op in the bundle). The fresh-auth proof binds at issuance time to the specific consent op the user authorized; reusing it for a different action or paper is rejected.
   - `details.reason: "missing" | "expired" | "malformed"` → **401 UNAUTHORIZED** (no valid proof present).
-  - `details.reason` is a closed enum: `"missing" | "expired" | "username_mismatch" | "malformed"`. Adding a new value is a wire contract change; document here before shipping. Consumers MUST branch on `details.reason` to render distinct UX, not on the message string.
+  - `details.reason` is a closed enum: `"missing" | "expired" | "username_mismatch" | "target_mismatch" | "malformed"`. Adding a new value is a wire contract change; document here before shipping. Consumers MUST branch on `details.reason` to render distinct UX, not on the message string.
 - `BROADCAST_TIMEOUT` (504) — broadcast timed out before chain confirmation. Message: `"Broadcasting signed operation timed out"`. Details: `{retriable:false, outcome:"uncertain", verify_before_retry:true, timeout_ms}`.
 - `BROADCAST_FAILED` (502) — Hive node rejected the broadcast. Message: `"Failed to broadcast signed operation to Hive"`. Details: `{retriable:false}`.
 - `INTERNAL_ERROR` (500) — non-broadcast errors (database, decryption, key parse) via the outer catch. Only broadcast-path errors flow through 502/504.
@@ -76,9 +77,14 @@ Mint a per-op fresh-auth proof via password re-verification. Light-account-only.
 
 ```json
 {
-  "password": "SecurePass123"
+  "password": "SecurePass123",
+  "action": "author_accept" | "author_resign",
+  "root_author": "<hive-account>",
+  "root_permlink": "<paper-permlink>"
 }
 ```
+
+All four fields are REQUIRED. The `(action, root_author, root_permlink)` triple is the per-op target the proof will bind to; the consent op submitted on a subsequent `POST /api/custody/broadcast` MUST match this triple exactly or the broadcast returns 403 `FRESH_AUTH_REQUIRED` with `details.reason: "target_mismatch"`. The triple is validated as a closed enum on `action` and as non-empty strings on `root_author` and `root_permlink`; any missing or malformed field returns 400 `VALIDATION_ERROR`.
 
 **Response `data`:**
 
@@ -90,14 +96,14 @@ Mint a per-op fresh-auth proof via password re-verification. Light-account-only.
 }
 ```
 
-`fresh_auth_proof` is a single-use bearer token bound to the JWT subject. TTL is 5 minutes. Submit it as the `fresh_auth_proof` field on a subsequent `POST /api/custody/broadcast` request that contains a consent op.
+`fresh_auth_proof` is a single-use bearer token bound to the JWT subject AND to the `(action, root_author, root_permlink)` target. TTL is 5 minutes. Submit it as the `fresh_auth_proof` field on a subsequent `POST /api/custody/broadcast` request that contains a consent op for the same target.
 
 **Rate limit:** 10 requests per account per minute.
 
 **Errors:**
 - `UNAUTHORIZED` (401) — missing JWT, account not found, or password mismatch. The "no password set" case (e.g., ORCID-only account with `password_hash IS NULL`) returns the same shape to avoid becoming a password-existence oracle.
 - `FORBIDDEN` (403) — account has been upgraded to self-custody. Self-custody users sign consent ops via Hive Keychain and do not use this endpoint.
-- `VALIDATION_ERROR` (400) — missing `password`.
+- `VALIDATION_ERROR` (400) — missing `password`, missing or invalid `action` (must be `"author_accept"` or `"author_resign"`), missing or empty `root_author`, or missing or empty `root_permlink`.
 - `INTERNAL_ERROR` (500) — argon2 verification failure or unexpected error.
 - `SERVICE_UNAVAILABLE` (503) — argon2 capacity exhausted or backend draining. See [common.md](common.md).
 

@@ -229,7 +229,15 @@ Fields written exclusively by an admin attestation flow (`pevo.doi`, when PEvO a
 
 #### Light-account signing of consent ops
 
-Light-account users (server-encrypted posting keys; see "Account Creation" in `CLAUDE.md`) can broadcast `author_accept` and `author_resign` via the custody endpoint. Because these ops are infrequent and reputationally weighty (the broadcast event is permanently attributed on chain, even though the functional vouched state is reversible by a later inverse op), the backend MUST require a per-op fresh authentication challenge appropriate to the user's auth mechanism: a password re-prompt for password-based accounts, a fresh ORCID OAuth round-trip for ORCID-authed accounts, or the analogous fresh-auth for any future auth mechanism. After the fresh-auth succeeds, the backend signs and broadcasts. The backend MUST audit-log every consent op it signs on behalf of a user, including timestamp, session ID, user-agent, and auth-mechanism used.
+Light-account users (server-encrypted posting keys; see "Account Creation" in `CLAUDE.md`) can broadcast `author_accept` and `author_resign` via the custody endpoint. Because these ops are infrequent and reputationally weighty (the broadcast event is permanently attributed on chain, even though the functional vouched state is reversible by a later inverse op), the backend MUST require a per-op fresh authentication challenge appropriate to the user's auth mechanism: a password re-prompt for password-based accounts, a fresh ORCID OAuth round-trip for ORCID-authed accounts, or the analogous fresh-auth for any future auth mechanism. After the fresh-auth succeeds, the backend signs and broadcasts.
+
+The fresh-auth challenge mints a single-use proof bound to the JWT subject AND to the specific `(action, root_author, root_permlink)` consent target. The two issuance endpoints are documented in `agents/docs/api-contracts/`:
+- `POST /api/custody/fresh-auth` — password-path issuance (see [custody.md](api-contracts/custody.md)).
+- `POST /api/orcid/start { mode: "fresh_auth" }` followed by `POST /api/orcid/callback` — ORCID-path issuance via a fresh OAuth round-trip (see [orcid.md](api-contracts/orcid.md)).
+
+Both paths produce a proof that is consumed atomically before the broadcast attempt at `POST /api/custody/broadcast`. A proof issued for one target cannot be replayed against another (cross-paper or cross-action substitution is rejected at consume with `details.reason: "target_mismatch"` → 403 `FRESH_AUTH_REQUIRED`).
+
+The backend MUST audit-log every consent op it signs on behalf of a user. The `custody_audit_log` table carries the standard custody columns (`username`, `op_type`, `tx_id`, `block_num`, `created_at`) plus four consent-op-specific columns populated only when fresh-auth was required: `auth_mechanism` (`'password' | 'orcid'`), `fresh_auth_outcome` (the consume result, including the closed enum of rejection reasons), `session_id`, and `user_agent`. Operators investigating consent-op activity for a user query the table by `username` and `op_type IN ('author_accept', 'author_resign')`; the four extra columns provide the auth-mechanism + session correlation needed for abuse triage. The `user_agent` column is annotated as PII per GDPR/CNPD; the user's "delete my account" path MUST `DELETE FROM custody_audit_log WHERE username = $1` inside the same transaction as the rest of the user-data deletion.
 
 Self-custody users sign these ops with their own key via Hive Keychain and bypass the custody endpoint entirely; the fresh-auth requirement is a custody-endpoint guard, not a chain-layer rule.
 
@@ -239,7 +247,7 @@ The vouched-set is computed at read time from on-chain state. The implementation
 
 - **At most one-block-stale state.** A consent op (`author_accept` or `author_resign`) broadcast at block N MUST be reflected in the vouched-set computation by block N+1.
 - **O(1) HAF queries per paper-detail request.** The vouched-set lookup runs once per request, not per chain hop. Implementations that fire one query per continuation post are out of bounds.
-- **Cache invalidation on every consent op.** Cache invalidation hooks MUST fire on every `custom_json` op with `id = APP_TAG` and `type` in `{author_accept, author_resign}` that cites a paper, in addition to the existing comment-op invalidation hooks.
+- **Cache invalidation on every consent op.** Cache invalidation hooks MUST fire on every `custom_json` op with `id = APP_TAG` and `action` in `{author_accept, author_resign}` that cites a paper, in addition to the existing comment-op invalidation hooks.
 - **Cache keys include the version dimension.** Cached vouched-set state MUST be invalidated for both `paper-detail:{author}:{permlink}` and `paper-detail:{author}:{permlink}:v{N}` on every consent op for that paper, since vouched-set affects both default-view and per-version-view.
 
 The HAF read fails closed. When `getPool()` returns null or the consent-op query throws, paper-detail and `/api/me/authorships/pending` MUST return 503 INTERNAL_ERROR rather than degrade to a root-only vouched-set. Degrading would silently demote legitimate co-authors below the cumulative-union claimed-set baseline AND open an attacker-attractive bypass window during HAF flaps; "chain is SSoT" is binding here. The integration site MUST short-circuit the consent fetch when the consent flow is inert (single-author claimed-set or bridge papers per the "Bridge papers" subsection) so the fail-closed surface is bounded to genuinely multi-author papers. The `fetchConsentOpsForPaper` helper MUST distinguish "no ops" from "HAF unavailable" via its return type so the integration site applies the policy explicitly. Operators see the outage as HTTP 503s plus a per-request structured pino log marking the fail-closed event. This posture matches the existing HAF-required reads at `verifyOrcidBinding` (`backend/src/routes/orcid.ts:1502-1506`, "Fail closed when HAF is unavailable: returning null would silently bypass...") and the chain-walk SQL in `resolveContinuationChain`, which is HAF-required by construction.
@@ -371,18 +379,18 @@ id: "APP_TAG"
 required_auths: []
 required_posting_auths: ["<accepting_author_hive>"]
 json: {
-  type: "author_accept",
+  action: "author_accept",
   root_author: "<paper_root_author>",
   root_permlink: "<paper_root_permlink>"
 }
 ```
 
 Validity (read-time), all conjuncts required:
-- The chain signer (`required_posting_auths[0]` of the `custom_json` op) MUST equal `accepting_author_hive` in the payload. This binds the consent to the actual signer; an attacker cannot mint a third party's acceptance by crafting a payload under their own posting key.
-- `accepting_author_hive` MUST appear in the claimed authors set for the paper (the historical union of `pevo.authors[].hive` across all operations on admitted chain posts; see "Vouched vs claimed authorship" above).
-- The accept op's `block_num` MUST be strictly greater than the `block_num` of the earliest admitted chain post operation that included `accepting_author_hive` in `pevo.authors[]`. This prevents name-squatting: an op pre-broadcast before the author was ever claimed cannot be retroactively activated by a later collision-listing.
+- The chain signer (`required_posting_auths[0]` of the `custom_json` op) is the accepting author for this op. The binding is implicit: the payload carries no subject identity field, so signer identity IS the accepter identity. An attacker cannot mint a third party's acceptance by crafting a payload under their own posting key, because the signer would then be the attacker, not the third party.
+- The chain signer MUST appear in the claimed authors set for the paper (the historical union of `pevo.authors[].hive` across all operations on admitted chain posts; see "Vouched vs claimed authorship" above).
+- The accept op's `block_num` MUST be strictly greater than the `block_num` of the earliest admitted chain post operation that included the chain signer in `pevo.authors[]`. This prevents name-squatting: an op pre-broadcast before the author was ever claimed cannot be retroactively activated by a later collision-listing.
 
-Latest valid op (highest `block_num`) wins per `(accepting_author, paper)` pair. Same-block ties are broken by `trx_in_block` (highest wins).
+Latest valid op wins per `(accepting_author, paper)` pair, ordered by `(block_num, id)` (highest wins). The HAF view `hafsql.operation_custom_json_view` exposes `id` as the canonical same-block tie-break primitive (the view does not project `trx_in_block`; `id` is a bigint encoding `block_num + trx_in_block + op_in_trx`, so ordering by `id` within a fixed `block_num` is equivalent to ordering by `trx_in_block`).
 
 ### Author Resign (custom_json)
 
@@ -393,15 +401,15 @@ id: "APP_TAG"
 required_auths: []
 required_posting_auths: ["<resigning_author_hive>"]
 json: {
-  type: "author_resign",
+  action: "author_resign",
   root_author: "<paper_root_author>",
   root_permlink: "<paper_root_permlink>"
 }
 ```
 
-Validity (read-time): the chain signer (`required_posting_auths[0]`) MUST equal `resigning_author_hive` in the payload. Resignation is always self-resignation; an attacker cannot resign someone else by crafting a payload under their own posting key.
+Validity (read-time): the chain signer (`required_posting_auths[0]`) is the resigning author for this op. Same implicit-binding shape as `author_accept`: the payload carries no subject identity field, so signer identity IS the resigner identity. Resignation is always self-resignation; an attacker cannot resign someone else by crafting a payload under their own posting key, because the signer would then be the attacker, not the third party.
 
-Effect: the resigning author is removed from the vouched set for this paper going forward. Pre-resign continuations they broadcast remain in the chain history; their ability to broadcast new admitted continuations is revoked. The resigning author REMAINS in the claimed authors set (resignation withdraws vouched status, not historical contribution; `pevo.authors[]` history is append-only per "Vouched vs claimed authorship"). Re-acceptance after resign is allowed: a later valid `author_accept` overrides per `(block_num, trx_in_block)` ordering.
+Effect: the resigning author is removed from the vouched set for this paper going forward. Pre-resign continuations they broadcast remain in the chain history; their ability to broadcast new admitted continuations is revoked. The resigning author REMAINS in the claimed authors set (resignation withdraws vouched status, not historical contribution; `pevo.authors[]` history is append-only per "Vouched vs claimed authorship"). Re-acceptance after resign is allowed: a later valid `author_accept` overrides per `(block_num, id)` ordering when querying `hafsql.operation_custom_json_view`.
 
 ### Accreditation Authority Whitelist
 
