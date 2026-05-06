@@ -11,6 +11,7 @@ import { logger } from '../logger.js';
 import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';
 import { rateLimit, byAccount } from '../middleware/rateLimit.js';
 import { assertBridgeKeyConfigured } from './bridge.js';
+import { getRequiredBridgePostingKey } from '../startup-checks.js';
 import {
   activeAccreditationsCteBody,
   authorshipClaimsCteBody,
@@ -211,7 +212,17 @@ router.post('/:claimer/approve', verifyHiveSignature, approveLimiter, async (req
       return sendError(res, 403, 'FORBIDDEN', 'Only the platform admin or an approved co-author can approve claims on bridge papers');
     }
 
-    const key = PrivateKey.fromString(config.pevoBridgePostingKey);
+    // Use the boot-cached parsed key. `assertBridgeKeyConfigured` above guards
+    // the source-string truthiness; `getRequiredBridgePostingKey()` ties type
+    // narrowing to the cache contents and throws a structured
+    // `BridgeKeyCacheUnpopulated` error (handled by errorHandler) on the
+    // unreachable cache-desync path. Eliminates the per-request
+    // `PrivateKey.fromString` throw site whose AssertionError carries
+    // `.actual`/`.expected` Buffer slices derived from the WIF (the redact
+    // policy strips them post-hoc; removing the throw site is the stronger
+    // guarantee). Mirrors the pattern landed in `routes/bridge.ts` under
+    // BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT round-3.
+    const key = getRequiredBridgePostingKey();
     try {
       const result = await broadcastJsonWithTimeout(
         {
@@ -308,7 +319,10 @@ router.post('/:claimer/revoke', verifyHiveSignature, revokeLimiter, async (req: 
   // signing identity for a bridge paper).
   if (paperAuthor === config.hiveBridgeAccount && isAdmin) {
     if (!assertBridgeKeyConfigured(res)) return;
-    const key = PrivateKey.fromString(config.pevoBridgePostingKey);
+    // See comment at the approve handler's bridge-key call site for the
+    // rationale on `getRequiredBridgePostingKey()` over per-request
+    // `PrivateKey.fromString(config.pevoBridgePostingKey)`.
+    const key = getRequiredBridgePostingKey();
     try {
       const result = await broadcastJsonWithTimeout(
         {

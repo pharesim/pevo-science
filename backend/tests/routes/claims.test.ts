@@ -18,6 +18,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import request from 'supertest';
+import * as dhive from '@hiveio/dhive';
 import { PrivateKey, cryptoUtils } from '@hiveio/dhive';
 
 // Deterministic test keypair — shared by all test usernames, since the mocked
@@ -465,5 +466,51 @@ describe('BE-ORCID-BROADCAST-ABORT-TIMEOUT — claims timeout discrimination', (
     expect(res.body.error.details).toEqual(TIMEOUT_DETAILS);
     expect(invalidateSpy).not.toHaveBeenCalled();
     invalidateSpy.mockRestore();
+  });
+});
+
+// ──────────────────────────────────────────────
+// BACKEND-BRIDGE-KEY-CLAIMS-ROUTE-MIGRATION — coverage check
+//
+// The migration replaces per-request `PrivateKey.fromString(config.pevoBridgePostingKey)`
+// at the approve / revoke bridge-key call sites with the boot-cached
+// `getRequiredBridgePostingKey()` accessor. The negative invariant — "the
+// per-request parse of the bridge WIF no longer fires inside the request
+// handler" — is the load-bearing assertion: a regression that re-introduces
+// the per-request parse re-opens the AssertionError `.actual`/`.expected`
+// Buffer-slice leak surface that the cache accessor exists to close.
+// ──────────────────────────────────────────────
+
+describe('BACKEND-BRIDGE-KEY-CLAIMS-ROUTE-MIGRATION — handlers no longer parse the bridge WIF per-request', () => {
+  it('approve bridge paper (admin happy path): PrivateKey.fromString NOT called with the bridge WIF', async () => {
+    const fromStringSpy = vi.spyOn(dhive.PrivateKey, 'fromString');
+    try {
+      const path = `/api/papers/${BRIDGE}/${PAPER_PERMLINK}/claims/${CLAIMER}/approve`;
+      const res = await signedPost(path, ADMIN, {});
+      expect(res.status).toBe(200);
+      expect(broadcastJson).toHaveBeenCalledTimes(1);
+      const calledWithBridgeWif = fromStringSpy.mock.calls.some(
+        ([wif]) => wif === config.pevoBridgePostingKey,
+      );
+      expect(calledWithBridgeWif).toBe(false);
+    } finally {
+      fromStringSpy.mockRestore();
+    }
+  });
+
+  it('revoke bridge paper (admin happy path): PrivateKey.fromString NOT called with the bridge WIF', async () => {
+    const fromStringSpy = vi.spyOn(dhive.PrivateKey, 'fromString');
+    try {
+      const path = `/api/papers/${BRIDGE}/${PAPER_PERMLINK}/claims/${CLAIMER}/revoke`;
+      const res = await signedPost(path, ADMIN, { reason: 'abuse' });
+      expect(res.status).toBe(200);
+      expect(broadcastJson).toHaveBeenCalledTimes(1);
+      const calledWithBridgeWif = fromStringSpy.mock.calls.some(
+        ([wif]) => wif === config.pevoBridgePostingKey,
+      );
+      expect(calledWithBridgeWif).toBe(false);
+    } finally {
+      fromStringSpy.mockRestore();
+    }
   });
 });
