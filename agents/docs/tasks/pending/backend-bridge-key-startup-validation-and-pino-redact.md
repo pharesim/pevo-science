@@ -170,3 +170,70 @@ The two forcing-function tests at `accreditation.test.ts:332` and `:765` (the "n
 Pre-existing main-tree failures observed (NOT this task's scope): `accreditation.test.ts` "rejects free email providers" and "rejects yahoo email" specs flake on shared-Redis rate-limit state pollution, and `disciplines-canon-mocked.test.ts:669` continuation-chain head-override lowercases head metadata. Both reproduced on stashed-clean main.
 
 [TODO Architect] markers from wave-1 (`23bdae9`) carry forward: convention doc `pino-err-serializer-redact-policy-2026-05-XX.md`, δ test transition confirm, no-API-contract-update confirmation. Wave-2 adds no new architect markers.
+
+---
+
+## Architect re-review (2026-05-06) — HELD PENDING FIXES
+
+`/ce-code-review` ran on the cherry-picked union diff of `23bdae9` (wave-1) + `5d9c68d` (wave-2) to keep the diff scope precise (the in-between commits on `main` belong to other tasks). 9 reviewer personas spawned (correctness, testing, maintainability, project-standards, security, reliability, adversarial, kieran-typescript, ce-learnings-researcher; `ce-agent-native-reviewer` skipped per project CLAUDE.md). After triage: **12 hold items** below, **2 follow-up tasks** spawned (see "Coordination" addendum), **1 finding subsumed** by another, **3 dismissed** as residual risk for the eventual archive entry. Lands in one hold round to keep the wrapper-layer diff coherent.
+
+### P1 — must fix
+
+1. **`backend/src/lib/broadcast-error.ts:270` — top-level sibling `cause: err.cause` bypasses both redaction layers.** Wrapper (`redactErrInArg` at `logger.ts:189`) and Layer-B `serializers.err` only redact the `err` slot; sibling top-level `cause` falls through to pino's default Error serialization. Reachability today is bounded (no current cascade-fn produces a leaky shape there) but the redact-policy SSoT claim is broken at this surface — any future cascade-fn that re-throws a transient ReplyError or wraps an AssertionError lands its leaky enumerables at top-level cause. **Fix:** drop the redundant `cause: err.cause` field from the broadcast-error.ts:270 log object — the serializer's recursive `cause` traversal at `logger.ts:140-142` already preserves the redacted cause inside `err.cause`. (security + adversarial cross-reviewer)
+
+2. **`backend/src/startup-checks.ts:~224-230`, `:~164`, and `backend/src/index.ts:25-28` — `logger.fatal(...)` then `process.exit(1)` can drop the boot-fatal log line under pino's async transport.** Pino's destination transport is async by default; `process.exit(1)` immediately tears down the runtime including the worker thread before the buffered fatal line drains. The wrapper exposes `logger.flush(cb)` for exactly this case but the boot path doesn't call it. **Fix:** convert all three sites to `logger.fatal(...); logger.flush(() => process.exit(1));`. The two `startup-checks.ts` sites are clearly in scope; `index.ts:25-28` is pre-existing same-pattern code — bundle it here OR file a one-line follow-up at backend's preference. (reliability)
+
+### P2 — wrapper hardening
+
+3. **`backend/src/logger.ts:140` — `redactErrSerializer` recursive `cause`/`errors[]` traversal lacks depth/cycle guard.** Today's depth-1 self-reference guard does not catch 2-step cycles (`A.cause=B; B.cause=A`) or unbounded `errors[]` recursion. Stack overflow → process crash on hostile/buggy error chain (PEvO is single-instance ⇒ full availability impact). **Fix:** add `depth` parameter (default 0), bail at `depth > 10` returning sentinel `{ type: 'MaxDepthExceeded', depth: <n> }`. Recurse with `depth + 1` for `cause` and each `errors[i]`. (correctness + security cross-reviewer)
+
+4. **`backend/src/logger.ts:189-244` — wrapper level methods catch nothing; throwing getter on hostile err propagates synchronously, breaking catch-and-log flow.** `redactErrSerializer` reads `errAny.stack`/`cause`/`errors`/`SAFE_BASELINE_FIELDS` without try/catch. A custom Error subclass with a throwing getter, a Proxy whose `getOwnPropertyDescriptor` throws, or an AggregateError member with throwing `Symbol.toPrimitive` propagates the throw out of every `logger.error({err}, 'msg')` site that already had an err in hand. **Fix:** wrap the `redactErrSerializer` invocation in `redactErrInArg` (and inside the Layer-B `serializers.err` callback) in try/catch with fallback `{ type: 'RedactSerializerFailed', message: String(serializerErr?.message ?? serializerErr) }`. Pair with #3 — together they make the serializer fault-tolerant against deep cycles AND throwing-getter shapes. (reliability)
+
+5. **`backend/src/logger.ts:205-236` — wrapper `Parameters<typeof baseLogger.warn>` collapses pino's three LogFn overloads to one.** TypeScript reduces overload sets to the last overload's tuple at `Parameters<>`, so `%s`/`%d` placeholder type-checking and the msg-only overload are silently lost at every call site. **Fix:** re-declare each level method with an explicit overload set mirroring pino's LogFn (msg-only, obj+optional-msg, obj+msg+placeholders). The six `WarnArgs = Parameters<...>` aliases evaporate as a side effect — this also resolves the maintainability finding "per-level type aliases are duplication without value" (subsumed). (kieran-typescript)
+
+6. **`backend/src/routes/bridge.ts:233, :366` — non-null assertion `getCachedBridgePostingKey()!` ties type narrowing to a runtime-only invariant.** `assertBridgeKeyConfigured` guards `config.pevoBridgePostingKey`, NOT cache contents. A future change that nulls the cache while config stays truthy silently produces `null!.toString()` → TypeError. **Fix:** add a `getRequiredBridgePostingKey(): PrivateKey` accessor in `startup-checks.ts` that throws a structured error (`{ type: 'BridgeKeyCacheUnpopulated' }`, redact-safe message) when the cache is null. Bridge.ts:233/:366 use the helper. Sets the convention for the claims.ts follow-up (see Coordination) to inherit. (kieran-typescript)
+
+### P2 — test coverage
+
+7. **`backend/tests/lib/logger-redact.test.ts` — `PINO_ERR_REDACT_LEVEL=relaxed` branch has zero test coverage.** Acceptance #1 explicitly listed the strict/relaxed env knob. `REDACT_LEVEL` is captured at module-load (logger.ts:79-80), so coverage requires `vi.resetModules()` + `process.env.PINO_ERR_REDACT_LEVEL = 'relaxed'` + re-import. **Fix:** add 1-2 cases asserting (a) `port`/`address`/`hostname`/`path` preserved on err under relaxed, (b) known-leaky fields (`command`/`args`, `actual`/`expected`) STILL stripped under relaxed. (testing)
+
+8. **`backend/tests/lib/logger-redact.test.ts` — wave-2 wrapper layer has no direct mutation-kill test in this diff's new file.** All 11 cases test `redactErrSerializer` as a pure function; none calls `logger.warn({err:...})` and inspects `vi.spyOn(logger,'warn').mock.calls[0][0].err`. The `accreditation.test.ts:332/:765` forcing functions cover the same risk class but live in a distant file. **Fix:** add 2-3 spy-based cases that mutation-kill the wrapper locally — assert the spy's captured arg has `command`/`actual` redacted out. Reverting `redactErrInArg` to a no-op or spread-copy must turn these red. (testing)
+
+### P3
+
+9. **`backend/tests/startup-checks.test.ts:~850` (validatePostingKeyFormat tests) — assertions pass by construction, not by redaction.** The synthetic-AssertionError test never invokes `PrivateKey.fromString(fakeWif)` to capture the real dhive throw — it tests redaction shape on a hand-rolled error. The format-validator test asserts non-leakage of input substrings the function never embeds in its error message at all. Repeat of the original δ-task forcing-function trap (`new Error('flap')` had no `.command` so the regex passed regardless). **Fix:** (a) replace the synthetic-AssertionError test with a real `PrivateKey.fromString(fakeWif)` invocation in try/catch; assert `redactErrSerializer(realErr)` strips `actual`/`expected`. (b) Either construct a malformed WIF whose dhive error message DOES substring the input, or drop the format-validator test as redundant. (correctness, conf 100)
+
+10. **`backend/tests/lib/logger-redact.test.ts` — no test for `code`/`errno`/`syscall` preservation through `cause` recursion.** Strip-recursion is well-covered; preserve-recursion is not. **Fix:** add ~10 lines: outer Error wrapping `Object.assign(new Error('econnrefused'), { code: 'ECONNREFUSED', errno: -111, syscall: 'connect' })`, assert `out.cause.code === 'ECONNREFUSED'` etc. (correctness)
+
+11. **`backend/src/startup-checks.ts:260-271` (`getCachedBridgePostingKey` lazy-fallback) AND the cache accessor's docstring** — wave-1 narrative claimed elimination of per-request `PrivateKey.fromString` but the lazy-fallback path keeps a request-time throw site live (test reset, mid-runtime rotation, init-order edge cases). Compounded with the claims.ts follow-up: the docstring's project-wide phrasing overclaims relative to reality. **Fix:** tighten the docstring on `getCachedBridgePostingKey` to: "Once boot succeeds AND `config.pevoBridgePostingKey` is not mutated post-boot, this accessor returns the cached `PrivateKey` without re-parsing. The lazy-fallback path is a test-and-rotation-only branch; production paths reach it only post-validator." Additionally, scope the project-wide phrasing in the docstring to bridge.ts call sites (claims.ts is now tracked under the `backend-bridge-key-claims-route-migration` follow-up below). (correctness + reliability cross-reviewer)
+
+### Subsumed
+
+- **Maintainability finding "per-level type aliases are duplication without value" (`logger.ts:197-244`)** is subsumed by item 5 above. The six `WarnArgs = Parameters<...>` aliases evaporate when explicit overloads land per method.
+
+### Items dismissed (residual risk for archive entry)
+
+The architect dismissed three documentary/aesthetic findings with no runtime impact and no realistic regression path. To be noted in the eventual archive entry as residual risk, not in code:
+
+- **`backend/src/logger.ts:90-96` — `isErrorLike` type predicate `(value): value is Error` returns true for non-Error duck-typed objects.** Type-system encodes a fiction; runtime is per-field-defended; predicate is local-not-exported. (kieran-typescript)
+- **`backend/src/logger.ts:105` — `redactErrSerializer` return type `SerializedErr | unknown` collapses to `unknown`.** Misleading-as-documentation, useless-as-narrowing. Tests cast 11× via `as Record<string, unknown>`. (kieran-typescript)
+- **`backend/tests/startup-checks.test.ts` (10 sites) — tests bypass `Readonly<Config>` via repeated `(config as { pevoBridgePostingKey: string })` cast.** Test-only convenience; cast pattern is local to one file; future refactor cost is small. (kieran-typescript)
+
+### Coordination
+
+Two follow-up tasks were spawned during triage (created in `tasks/pending/` alongside this hold-block move):
+
+- **`backend-bridge-key-claims-route-migration.md`** — `routes/claims.ts:214` (`/papers/:author/:permlink/claims/approve`) and `:311` (`/revoke`) still call `PrivateKey.fromString(config.pevoBridgePostingKey)` per-request. 3-reviewer cross-corroboration (correctness, maintainability, reliability — confidence 100). Pre-existing relative to this task's named scope, but the cache accessor's docstring claim of project-wide coverage forces resolution. Mechanical migration; depends on item 6 above (use `getRequiredBridgePostingKey()` if it lands here, otherwise `getCachedBridgePostingKey()`).
+
+- **`backend-logger-wrapper-pino-runtime-api-surface.md`** — restore pino runtime API surface lost in the wrapper (`.child(bindings)`, `.isLevelEnabled(level)`, `.level` getter/setter, `.bindings()`). Includes the deliberate child-wrapping decision: do `logger.child({reqId})`-derived loggers inherit the redaction wrapper, and if yes, by what mechanism? Decoupled from this hold cycle to allow that deliberation outside a busy hold round. (reliability)
+
+### Past learnings cited (ce-learnings-researcher)
+
+- `agents/docs/solutions/conventions/pino-spy-serializer-ordering-trap-2026-05-06.md` — wave-2's wrapper IS the implementation of this convention.
+- `agents/docs/solutions/conventions/auth-structured-log-shape-2026-04-29.md` — anticipated this wrapper at line 97 ("transport-only protection insufficient for spy-visible redaction"); wave-2 closes that gap.
+- `agents/docs/solutions/conventions/tests-must-fail-on-mutation-of-code-under-test-2026-04-22.md` — reinforces hold items 8 and 9 (mutation-kill weaknesses).
+- No prior learning on validate-once-and-cache-secret pattern — possible `/ce-compound` candidate at archive.
+
+### Re-review pointer
+
+When the hold round lands and the implementer `git mv`s the file back to `tasks/review/`, the architect will run `/ce-code-review` scoped to the new commits since this hold block (per the multi-round re-review protocol). The earlier review of `23bdae9` + `5d9c68d` already passed all non-held findings; the next pass is scoped to the hold-resolution diff only, not the full task history.
