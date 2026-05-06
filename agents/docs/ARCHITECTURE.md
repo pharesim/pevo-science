@@ -264,7 +264,11 @@ Pre-rotation damage is permanent on chain (the spurious resign and the attacker'
 
 #### Bridge papers
 
-Bridge papers are imported once and not updated. The bridge account is the sole vouched author. `pevo.authors[]` entries with `hive: null` are display-only credits referencing original-preprint authors who lack Hive identity. The consent-gated authorship flow does not apply; the `extractAuthorizedContinuationAuthors` helper special-cases `bridge_paper` type to return `{config.hiveBridgeAccount}` as the sole authorized continuator.
+Bridge papers are immutable post-publish. The bridge writer publishes the canonical mirror of an external preprint (arxiv, crossref, etc.) once and never updates it; the upstream source does not change once cited, so there is no edit, sync, or update flow for bridge papers. The implementation cleanup of the dead update surfaces is filed as `backend-retire-bridge-update-route.md` (backend route removal) and `ui-retire-bridge-sync-affordance.md` (UI affordance removal); both can land independently.
+
+The bridge account is the sole vouched author. `pevo.authors[]` entries with `hive: null` are display-only credits referencing original-preprint authors who lack Hive identity. The consent-gated authorship flow does not apply.
+
+The `extractAuthorizedContinuationAuthors` helper (`backend/src/helpers.ts`) special-cases `bridge_paper` type to return `{config.hiveBridgeAccount}` as the sole authorized continuator. Under the immutability policy this carve-out is inert — bridge papers do not have continuations — and is retained only as defense-in-depth: if the policy is ever revisited and bridge updates are revived, the carve-out becomes load-bearing. Until then, the canonical rule is the immutability statement above, not the helper's continuator admission.
 
 If/when an original-preprint author joins Hive and wants to claim authorship of an imported bridge paper, the off-chain verification flow plus on-chain attestation (likely issued by the bridge service) is filed as a separate task (`backend-bridge-paper-author-claim-flow`) for scoping when triggered. Out of scope for this section.
 
