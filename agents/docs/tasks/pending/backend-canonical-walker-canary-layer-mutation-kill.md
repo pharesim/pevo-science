@@ -346,3 +346,82 @@ The mutation-kill matrix attestation in the round-2 signal block must be re-atte
 
 Items 2-3 and 6 are documentation/comment changes — no test changes, no mutation-kill re-attestation needed for those alone. Item 1 is test-only — vitest run output suffices as verification.
 
+## Backend re-review signal (2026-05-07, round-2 hold-fixes — commit `6f3d356` on `main`)
+
+All six round-2 hold items landed. Worked directly on `main` (no worktree fan-out — single-task execution). Files touched (backend zone only):
+
+- `backend/src/routes/papers.ts` (+15, -8 net)
+- `backend/tests/routes/canonical-root-walker.test.ts` (+141, 0 net)
+
+### Item 1 (spy/pool restoration — afterEach shape)
+
+Picked architect's shape (b). Added `afterEach(() => { vi.restoreAllMocks(); });` immediately below the existing `beforeEach` in `canonical-root-walker.test.ts`, with a 6-line block comment documenting that the new hook is the spy-cleanup safety net regardless of assertion-throw order, that inline `*.mockRestore()` calls scattered through the file are now redundant with this guard but harmless, and that the pool mock (`getPoolMock` is a `vi.fn()`, not a spy) is reset and re-wired by `beforeEach` — not by `restoreAllMocks()`.
+
+The misleading inline comment at the no_pool canary's pool-restore site ("Restore the pool for subsequent tests in this describe block.") was rewritten to "The pool mock is reset by `beforeEach` before the next test runs, so restoring it here is not required for isolation. We re-wire it anyway in case future additions to this it() body assert against a live pool after the no-pool branch." Inline `*.mockRestore()` calls were left in place; removing them is purely cosmetic given the afterEach guard.
+
+The reliability-finding TG1 (no `afterEach(() => vi.restoreAllMocks())` guard) is now closed at the file level — every `vi.spyOn(...)` installed in any `it()` body is restored before the next test, regardless of which assertion threw inside the body.
+
+### Item 2 (pino-spy-level-filter cross-references)
+
+`backend/src/routes/papers.ts` — above the `logger.debug({ event: 'canonical_root_walker_start_invalid', reason: 'sql_filter_or_missing' }, ...)` call site, added a 6-line block stating that the event is emitted at debug because it fires on every 404 of a non-PEvO post, that production observability requires `LOG_LEVEL=debug`, and that the canary spy intercepts at the logger-object boundary BEFORE pino's level filter — so canary green does NOT imply this event is visible at `LOG_LEVEL=info`. Cross-references `agents/docs/solutions/conventions/pino-spy-level-filter-ordering-trap-2026-05-07.md`.
+
+`backend/tests/routes/canonical-root-walker.test.ts` — above `vi.spyOn(logger, 'debug')` in the SQL canary, added a 4-line `NOTE` pointing at the same convention doc and noting that this canary's green tick does NOT imply production visibility at `LOG_LEVEL=info`. The trap awareness is now reachable on read at both sites, not just via cross-reference from a different site.
+
+### Item 3 (brittleness warning above /'type'/ discriminator)
+
+`backend/tests/routes/canonical-root-walker.test.ts` — above the inline `/'type'/.test(sql)` regex inside `installTypeSpoofStartResponder`'s `with_filter` branch, added an 11-line `BRITTLENESS WARNING` block: a future SQL-builder sweep that parametrizes literals (`$N` placeholders for `'type'`/`'paper'`/`'bridge_paper'`) would break the regex match → mock returns the spoof row in `with_filter` mode → SQL canary fails RED on a refactor that did NOT regress security. The warning explicitly flags this as a FALSE ALARM and instructs future readers not to "fix" by relaxing the regex (which would open room for a real `validPevoPaperWhere` drop to slip through later). No code semantics change.
+
+### Item 4 (IS-NOT-NULL canary)
+
+`backend/tests/routes/canonical-root-walker.test.ts` — new test `'pins SQL IS NOT NULL guard on initial probe (no cont_columns_invalid on benign non-continuation lookup)'` placed between the `cont_columns_invalid` canary and the `no_pool` canary, grouping all four START-gate canaries before the pre-START infra check.
+
+Faithful-mock semantics: SQL-inspects the production initial probe for `'continues'\s*IS\s+NOT\s+NULL` (case-insensitive). On HEAD with guard present: mock returns 0 rows → walker bails `sql_filter_or_missing` at debug → warn spy sees nothing → assertion `events.toHaveLength(0)` holds, `expect(res.status).toBe(200)` (alice/v1 served by direct paper-detail fall-through). On Mutation E (drop the predicate): mock observes guard absent → returns alice/v1 row with `cont_author=null, cont_permlink=null` (mimicking real-HAF projection of `->>'author'` against missing JSON keys) → walker passes `validPevoPaperWhere` SQL filter, passes JS `isPevoAnyPaper` re-check (alice/v1 IS a valid PEvO paper), bails `cont_columns_invalid` at warn → warn spy captures the event → assertion FAILS RED.
+
+The same brittleness caveat from item 3 applies to this canary's `'continues' IS NOT NULL` discriminator and is documented inline (3-line BRITTLENESS CAVEAT block) per architect prescription.
+
+**Note on status assertion** (deviation from architect's spec text): the round-2 hold block predicted "with guard present, status 404 + no cont_columns_invalid event; with guard absent (mutation), status 200 (alice/v1 surfaces) + cont_columns_invalid event fires." With the `alice/v1` URL design that surfaces the desired event-presence diagnostic, both HEAD and Mutation E surface 200 — the route's direct paper-detail fall-through serves alice/v1 in both states because the walker returns null in both states (HEAD via `sql_filter_or_missing`, Mutation E via `cont_columns_invalid`). The discriminating signal is the warn-event presence, not the response code. Documented in the canary's header comment with the rationale. If the architect prefers status differential, the URL can be redesigned to a non-existent paper (`alice/nonexist-v1`); both HEAD and Mutation E would then surface 404 — the discriminator stays the warn-event presence either way. Flag for round-3 if the spec's 404/200 framing is load-bearing.
+
+### Item 5 (warn-level discipline contingent on item 4)
+
+Closed by construction. Item 4 lands the IS-NOT-NULL canary that pins the SQL guard, which is exactly the invariant `cont_columns_invalid` warn-level depends on for noise-control (the IS NOT NULL guard prevents the cont_columns narrowing branch from firing on benign traffic). No additional work.
+
+### Item 6 (level-discipline comment reshaped to rule-form)
+
+`backend/src/routes/papers.ts` — replaced the 6-line enumeration ("'sql_filter_or_missing' uses debug because... the other three reasons (no_pool, js_is_pevo_any_paper, cont_columns_invalid) use warn because...") at the `no_pool` branch with a 9-line generalized rule keyed on the `CanonicalRootBailReason` type alias as SSOT for which reasons exist:
+
+> Level discipline for canonical_root_walker_* events:
+> - logger.warn — rare attack-signal or data-integrity paths worth operator alerting at default LOG_LEVEL=info.
+> - logger.debug — high-frequency benign paths where warn would drown signal in noise; production must opt in via LOG_LEVEL=debug (see pino-spy-level-filter-ordering-trap-2026-05-07.md).
+> The CanonicalRootBailReason type alias is the single source of truth for which reasons exist; pick the level per-reason against this rule. Peer walker events (unauthorized_hop, depth_exceeded, walker_error) follow the same rule, similarly graduated by frequency vs severity.
+
+A future 4th `CanonicalRootBailReason` reason no longer stales the comment — readers consult the type alias for the enumeration and the rule for the level. Cross-references at the `js_is_pevo_any_paper` and `cont_columns_invalid` sites ("Level: warn (per discipline comment at the no_pool branch above)") stay valid because they reference the rule, not the enumeration.
+
+### Mutation-kill matrix attestation (5 canaries × 6 mutations)
+
+Each mutation hand-applied in-place to `backend/src/routes/papers.ts`, the five layer-pinning canaries run via `-t` regex filter on `tests/routes/canonical-root-walker.test.ts` (15 unrelated tests skipped per run), mutation reverted, md5sum-verified clean restore between rounds. Final `diff /tmp/papers.ts.canary-bak backend/src/routes/papers.ts` is empty.
+
+| Mutation | SQL | JS | cont_columns | no_pool | IS-NOT-NULL |
+|----------|-----|----|----|----|----|
+| HEAD (no mutation) | PASS | PASS | PASS | PASS | PASS |
+| A: drop `validPevoPaperWhere` predicate from initial-probe WHERE clause | **FAIL RED** | PASS | PASS | PASS | PASS |
+| B: replace `if (typeof startRow.author !== 'string' \|\| !isPevoAnyPaper(...))` with `if (false)` | PASS | **FAIL RED** | PASS | PASS | PASS |
+| C: replace `if (typeof startRow.cont_author !== 'string' \|\| typeof startRow.cont_permlink !== 'string')` with `if (false)` | PASS | PASS | **FAIL RED** | PASS | PASS |
+| D: drop `logger.warn(... canonical_root_walker_no_pool ...)` emission (keep early `return null`) | PASS | PASS | PASS | **FAIL RED** | PASS |
+| E: drop `c.json_metadata -> $3 -> 'continues' IS NOT NULL` predicate from initial-probe WHERE clause | PASS | PASS | PASS | PASS | **FAIL RED** |
+
+FAIL RED diagnostics (vitest assertion failures):
+
+- A → SQL canary: `expected 0 to be greater than 0`. Walker reaches the JS layer, emits `js_is_pevo_any_paper` at warn (post-round-1 level discipline). The SQL canary's `vi.spyOn(logger, 'debug')` doesn't see it → `events.length === 0` → `toBeGreaterThan(0)` fails. Round-1's matrix reported `expected 'js_is_pevo_any_paper' to be 'sql_filter_or_missing'`; round-2's level-discipline split changed the manifest but not the kill strength.
+- B → JS canary: `expected 200 to be 404`. Alice/v1's content surfaces under bob/spoof-review's URL — exactly the phishing pretext the gate exists to prevent. The status assertion fires before the event-presence assertion.
+- C → cont_columns canary: `expected 0 to be greater than 0`. The narrowing branch never fires; no event emitted.
+- D → no_pool canary: `expected 0 to be greater than 0`. Event tag missing.
+- E → IS-NOT-NULL canary: `expected [ {…(4)} ] to have a length of +0 but got 1`. Mutation E lets the alice/v1 row through the SQL gate without the `IS NOT NULL` filter; walker passes JS isPevoAnyPaper, bails `cont_columns_invalid` at warn; the canary's `events.toHaveLength(0)` assertion fails because exactly one warn event was captured.
+
+Each layer-pinning canary fails red on exactly one mutation and stays green on the orthogonal four, satisfying the round-2 acceptance subsection 5.
+
+### Verification
+
+- `npx tsc --noEmit` from `backend/`: clean.
+- `npm run lint` from `backend/`: only the two pre-existing `@typescript-eslint/no-explicit-any` warnings in `seed-phrase.ts` (unrelated to this task).
+- `npx vitest run tests/routes/canonical-root-walker.test.ts`: 20 tests pass on HEAD (was 19 pre-fix; +1 from item 4's IS-NOT-NULL canary).
+
