@@ -68,3 +68,7 @@ This task starts in `tasks/pending/` but the implementer should NOT pick it up u
 - `backend/src/response.ts` — canonical `sendError` definition.
 - `agents/docs/api-contracts/bridge.md` — bridge route error documentation; affected by direction A.
 - `agents/docs/api-contracts/common.md` — canonical envelope shape; possibly affected if direction C is chosen.
+
+## [BLOCKED by Architect] (backend startup triage 2026-05-07)
+
+Per the task body's "Decision (architect-owned, must be made before implementer picks up)" section, the wire-shape direction (A: canonical `details` migration / B: preserve divergence / C: extend `sendError`) must land in this file before backend can pick the task up. Moving to `blocked/` so the architect's startup scan surfaces it. Backend will pick up immediately after the architect lands the chosen direction in the "Decision" section and `git mv`s back to `pending/`.

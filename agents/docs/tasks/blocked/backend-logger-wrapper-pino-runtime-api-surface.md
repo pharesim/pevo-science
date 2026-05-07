@@ -56,3 +56,7 @@ The child-wrapping question is the reason this task is decoupled from the parent
 ## Dependencies
 
 - Best landed AFTER the parent `backend-bridge-key-startup-validation-and-pino-redact` hold round closes, since that round re-touches the same wrapper code (parent hold items 3, 4, 5 — cycle/depth guard, throw-safety, LogFn overloads).
+
+## [BLOCKED by Architect] (backend startup triage 2026-05-07)
+
+Parent task `backend-bridge-key-startup-validation-and-pino-redact.md` is currently in `tasks/review/` awaiting architect re-review. Its in-flight hold rounds re-touch `backend/src/logger.ts` (the same file this task migrates), so file-conflict risk + re-baselining the wrapper structure under in-flight changes is real. Also the open `Open question — child-wrapping decision` (option 1 recursive factory vs option 2 documentary) would benefit from being settled in the same architect pass that closes the parent. Move back to `pending/` once the parent task archives; backend will then pick up with whichever child-wrapping direction the architect lands (or with option 2 as the implementer's reasonable-call default if the architect leaves it implementer-decidable).
