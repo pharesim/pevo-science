@@ -1255,6 +1255,16 @@ async function resolveContinuationChain(
 const CANONICAL_ROOT_MAX_HOPS = 10;
 
 /**
+ * Discriminator for `event: 'canonical_root_walker_start_invalid'` log
+ * payloads. Named-literal-union so misspellings fail at compile time and
+ * any future bail path is the obvious extension point.
+ */
+type CanonicalRootBailReason =
+  | 'sql_filter_or_missing'
+  | 'js_is_pevo_any_paper'
+  | 'cont_columns_invalid';
+
+/**
  * Walk backward from a continuation post to find the canonical (root) post.
  * Returns null if the given post is not a continuation.
  *
@@ -1285,7 +1295,13 @@ async function findCanonicalRoot(
 ): Promise<ChainLink | null> {
   const pool = getPool();
   if (!pool) {
-    logger.debug(
+    // Level discipline: 'sql_filter_or_missing' uses debug because it fires on
+    // every 404 of a non-PEvO post; the other three reasons (this no_pool path,
+    // js_is_pevo_any_paper, cont_columns_invalid) use warn because they are
+    // rare attack-or-data-integrity signals that warrant operator alerting.
+    // Keep this split — peer walker events (unauthorized_hop, depth_exceeded,
+    // walker_error) are similarly graduated by frequency vs severity.
+    logger.warn(
       {
         event: 'canonical_root_walker_no_pool',
         startAuthor: author,
@@ -1338,10 +1354,11 @@ async function findCanonicalRoot(
       // pevo.type='review' on a post claiming to continue a paper). Tagged
       // `sql_filter_or_missing` so a layer-pinning canary can pin the SQL
       // filter as the kill mechanism.
+      const reason: CanonicalRootBailReason = 'sql_filter_or_missing';
       logger.debug(
         {
           event: 'canonical_root_walker_start_invalid',
-          reason: 'sql_filter_or_missing',
+          reason,
           startAuthor: author,
           startPermlink: permlink,
         },
@@ -1361,10 +1378,12 @@ async function findCanonicalRoot(
       // SQL filter let this row through but the JS-side identity-pinned
       // re-check rejected it. Tagged `js_is_pevo_any_paper` so a layer-
       // pinning canary can pin the JS check as the kill mechanism.
-      logger.debug(
+      // Level: warn (per discipline comment at the no_pool branch above).
+      const reason: CanonicalRootBailReason = 'js_is_pevo_any_paper';
+      logger.warn(
         {
           event: 'canonical_root_walker_start_invalid',
-          reason: 'js_is_pevo_any_paper',
+          reason,
           startAuthor: author,
           startPermlink: permlink,
         },
@@ -1380,10 +1399,14 @@ async function findCanonicalRoot(
     // task explicitly forbade `as` casts on the security path; mirror
     // the migrated pattern at `fetchHeadAuthorizedAuthors`.
     if (typeof startRow.cont_author !== 'string' || typeof startRow.cont_permlink !== 'string') {
-      logger.debug(
+      // Level: warn (per discipline comment at the no_pool branch above).
+      // The IS NOT NULL SQL guard should prevent reaching this branch in
+      // practice; if we do, it's a HAF data-integrity surprise worth alerting.
+      const reason: CanonicalRootBailReason = 'cont_columns_invalid';
+      logger.warn(
         {
           event: 'canonical_root_walker_start_invalid',
-          reason: 'cont_columns_invalid',
+          reason,
           startAuthor: author,
           startPermlink: permlink,
         },

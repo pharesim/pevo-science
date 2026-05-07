@@ -478,27 +478,6 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
   // ────────────────────────────────────────────────────────────────────
 
   /**
-   * Detect whether the production initial-probe SQL carries the
-   * `validPevoPaperWhere` predicate (the SQL-side type filter). Used by
-   * the layer-pinning responder below to FAITHFULLY simulate what real
-   * HAF would return for the spoof START: if the SQL filter is present,
-   * a `pevo.type='review'` row is rejected at the SQL layer and the
-   * mock returns zero rows; if the SQL filter has been reverted, the
-   * row comes through and the JS-side `isPevoAnyPaper` re-check is the
-   * only remaining gate.
-   *
-   * Detection key: the `'type'` literal appears in `validPevoPaperWhere`
-   * (`(c.json_metadata -> $3 ->> 'type') = 'paper'`) but does NOT appear
-   * elsewhere in the initial probe (the SELECT/WHERE that fetches the
-   * cont_author/cont_permlink values references `'continues'`, not
-   * `'type'`). So `'type'` in the SQL string is a tight, drift-resistant
-   * marker for filter presence on this specific probe.
-   */
-  function probeSqlHasTypeFilter(sql: string): boolean {
-    return /'type'/.test(sql);
-  }
-
-  /**
    * Shared spoof-START responder. SQL-inspects the initial probe to
    * decide whether to return zero rows (SQL filter would have rejected
    * the spoof) or the spoof row (SQL filter absent → JS check must be
@@ -560,7 +539,13 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
             // This makes the SQL-canary fail red on SQL-filter revert:
             // walker emits `js_is_pevo_any_paper` instead of expected
             // `sql_filter_or_missing`.
-            if (probeSqlHasTypeFilter(sql)) {
+            // Detection key: the `'type'` literal appears in
+            // `validPevoPaperWhere` (`(c.json_metadata -> $3 ->> 'type') =
+            // 'paper'`) but does NOT appear elsewhere in the initial probe
+            // (the SELECT/WHERE references `'continues'`, never `'type'`).
+            // So `'type'` in the SQL string is a tight, drift-resistant
+            // marker for filter presence on this specific probe.
+            if (/'type'/.test(sql)) {
               return { rows: [] };
             }
             return { rows: [spoofRow] };
@@ -657,7 +642,12 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
     // Orthogonal-mutation green: revert ONLY the SQL filter (NOT the
     // JS check) → mock still force-feeds spoof row → JS check still
     // fires → event still emits → JS canary stays GREEN.
-    const debugSpy = vi.spyOn(logger, 'debug').mockImplementation(() => {});
+    //
+    // Spy level: warn (per the level-discipline split documented in
+    // findCanonicalRoot — js_is_pevo_any_paper is a rare attack-signal
+    // path that warrants operator alerting, distinct from the noisy
+    // sql_filter_or_missing 404 path which stays at debug).
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
 
     installTypeSpoofStartResponder('without_filter');
 
@@ -665,13 +655,126 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
     expect(res.status).toBe(404);
 
     // Pin the kill reason: JS isPevoAnyPaper was the gate that fired.
-    const events = debugSpy.mock.calls
+    const events = warnSpy.mock.calls
       .map((c) => c[0] as { event?: string; reason?: string } | undefined)
       .filter((e) => e?.event === 'canonical_root_walker_start_invalid');
     expect(events.length).toBeGreaterThan(0);
     expect(events[0]?.reason).toBe('js_is_pevo_any_paper');
 
-    debugSpy.mockRestore();
+    warnSpy.mockRestore();
+  });
+
+  it('rejects START with invalid cont_author/cont_permlink columns (cont_columns_invalid)', async () => {
+    // Layer-pinning canary 3 of 4 (round-2 hold item 4). Pins the
+    // cont_author / cont_permlink runtime narrowing branch in
+    // findCanonicalRoot. The branch fires when HAF returns a row that
+    // satisfies the SQL gate AND the JS isPevoAnyPaper re-check, but the
+    // cont_author / cont_permlink columns are non-string (e.g. null).
+    //
+    // Setup: force-feed a row that LOOKS like a valid PEvO paper
+    // (alice / valid pevoPaperJsonMeta) so the SQL filter and the JS
+    // isPevoAnyPaper re-check both pass. cont_author / cont_permlink are
+    // null. The narrowing branch must reject and emit
+    // `reason: 'cont_columns_invalid'`.
+    //
+    // The IS NOT NULL SQL guard normally prevents real HAF from returning
+    // such a row, but the branch is real defense-in-depth. Mutation-kill:
+    // remove the typeof guard → walker would proceed past the row →
+    // event would not fire → assertion FAILS RED.
+    //
+    // Spy level: warn (per the level-discipline split — cont_columns_invalid
+    // is a rare HAF data-integrity surprise that warrants alerting).
+    const aliceMeta = pevoPaperJsonMeta(['alice']);
+    const aliceRow = pevoPaperRow('alice', 'v1', ['alice']);
+
+    installResponder(async (sql, params) => {
+      if (isBackwardWalkContinuesProbe(sql)) {
+        const a = params[0];
+        const p = params[1];
+        if (a === 'alice' && p === 'v1') {
+          // Force-feed a row past the SQL guard with non-string cont_*
+          // columns so the JS-side narrowing branch fires.
+          return {
+            rows: [{
+              author: 'alice',
+              json_metadata: aliceRow.json_metadata,
+              cont_author: null,
+              cont_permlink: null,
+            }],
+          };
+        }
+        return { rows: [] };
+      }
+      if (isHeadAuthorsLookup(sql)) {
+        const a = params[0];
+        const p = params[1];
+        if (a === 'alice' && p === 'v1') {
+          return { rows: [{ author: 'alice', json_metadata: aliceMeta }] };
+        }
+        return { rows: [] };
+      }
+      if (sql.includes('SELECT c.author, c.permlink, c.title')) {
+        const a = params[0];
+        const p = params[1];
+        if (a === 'alice' && p === 'v1') return { rows: [aliceRow] };
+        return { rows: [] };
+      }
+      return { rows: [] };
+    });
+
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+
+    const res = await request(app).get('/api/papers/alice/v1');
+    // alice/v1 still resolves (the walker bails returning null, route
+    // falls through to direct paper-detail fetch which succeeds).
+    expect(res.status).toBe(200);
+
+    const events = warnSpy.mock.calls
+      .map((c) => c[0] as { event?: string; reason?: string } | undefined)
+      .filter((e) => e?.event === 'canonical_root_walker_start_invalid');
+    expect(events.length).toBeGreaterThan(0);
+    expect(events[0]?.reason).toBe('cont_columns_invalid');
+
+    warnSpy.mockRestore();
+  });
+
+  it('emits canonical_root_walker_no_pool when HAF pool is unavailable', async () => {
+    // Layer-pinning canary 4 of 4 (round-2 hold item 5). Pins the
+    // no-pool bail in findCanonicalRoot. beforeEach always wires a valid
+    // pool; this canary explicitly nulls it for one request.
+    //
+    // HAF unavailability falls through to other paths (the route's other
+    // walkers and the direct paper-detail fetch), so the response is not
+    // a 5xx — it's an ordinary 404 from the rest of the lookup pipeline
+    // failing to find anything without HAF.
+    //
+    // Mutation-kill: drop the no-pool early-return → walker would attempt
+    // pool.query() on null and crash → not a clean event-tag mutation,
+    // but removing the LOG line itself fails this canary RED.
+    //
+    // Spy level: warn (per the level-discipline split — no_pool is a
+    // rare infra-failure path worth alerting).
+    getPoolMock.mockReturnValue(null);
+
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+
+    const res = await request(app).get('/api/papers/alice/v1');
+    // HAF down → other lookups fail → 404 (not 5xx). The contract is
+    // "non-5xx"; we assert below 500 to be permissive about which
+    // alternative path the route falls through to.
+    expect(res.status).toBeLessThan(500);
+
+    const events = warnSpy.mock.calls
+      .map((c) => c[0] as { event?: string } | undefined)
+      .filter((e) => e?.event === 'canonical_root_walker_no_pool');
+    expect(events.length).toBeGreaterThan(0);
+
+    warnSpy.mockRestore();
+    // Restore the pool for subsequent tests in this describe block.
+    getPoolMock.mockReturnValue({
+      query: hafQueryMock,
+      connect: async () => ({ query: hafQueryMock, release: () => {} }),
+    });
   });
 
   it('rejects type-spoof at intermediate hop (chain bob/v3 → bob/v2 [type=review] → alice/v1)', async () => {

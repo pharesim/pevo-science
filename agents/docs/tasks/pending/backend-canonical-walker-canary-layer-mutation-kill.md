@@ -225,3 +225,63 @@ Each layer-pinning canary fails red on exactly one mutation and stays green on t
 
 When items 1-5 land, `git mv` this file back to `tasks/review/`. Round-2 architect review scopes `/ce-code-review` to the round-2 commit only. The mutation-kill attestation matrix must be re-attested in the round-2 signal block: all 4 canaries (SQL, JS, cont_columns_invalid, no_pool) × HEAD / SQL-revert / JS-revert / cont_columns-revert / no_pool-revert as applicable, since (a) item 1 changes spy levels, and (b) items 4-5 add two new canaries that need their own mutation-kill rows.
 
+## Backend re-review signal (2026-05-07, round-1 hold-fixes — commit `4e4fcd6` on worktree `worktree-agent-ab5bd3bf035988078`)
+
+All five hold items landed. Worker subagent rebased onto main `f73a362` before editing. Files touched:
+
+### Item 1 (level discipline + comment)
+
+`backend/src/routes/papers.ts` — `findCanonicalRoot`:
+
+- `canonical_root_walker_no_pool` → `logger.warn` (was `logger.debug`). Added a multi-line "Level discipline" comment at this site (the first event site in the function) explaining the split: `sql_filter_or_missing` stays at `debug` because it fires on every 404 of a non-PEvO post; the other three reasons (`no_pool`, `js_is_pevo_any_paper`, `cont_columns_invalid`) use `warn` because they are rare attack-or-data-integrity signals worth operator alerting. Comment cross-references the peer walker events (`unauthorized_hop`, `depth_exceeded`, `walker_error`) which are similarly graduated by frequency vs severity.
+- `canonical_root_walker_start_invalid` reason `'sql_filter_or_missing'` → kept at `logger.debug`. SQL canary spy still uses `vi.spyOn(logger, 'debug')` (unchanged).
+- `canonical_root_walker_start_invalid` reason `'js_is_pevo_any_paper'` → `logger.warn` (was `logger.debug`). One-line "Level: warn (per discipline comment ...)" anchor at the site.
+- `canonical_root_walker_start_invalid` reason `'cont_columns_invalid'` → `logger.warn` (was `logger.debug`). One-line anchor + note that the IS NOT NULL guard normally prevents reaching this branch.
+
+JS canary in `canonical-root-walker.test.ts` migrated from `vi.spyOn(logger, 'debug')` → `vi.spyOn(logger, 'warn')`. New canaries from items 4-5 use `vi.spyOn(logger, 'warn')`.
+
+### Item 2 (inline `probeSqlHasTypeFilter`)
+
+`backend/tests/routes/canonical-root-walker.test.ts` — deleted the standalone `probeSqlHasTypeFilter(sql)` function definition. Its single call site inside `installTypeSpoofStartResponder`'s `with_filter` branch now uses the inline regex `/'type'/.test(sql)` with a 6-line block comment explaining the detection key (the `'type'` literal is unique to `validPevoPaperWhere`'s output on this specific probe). Net -23 lines.
+
+### Item 3 (`CanonicalRootBailReason` type alias)
+
+`backend/src/routes/papers.ts` — added type alias just below `CANONICAL_ROOT_MAX_HOPS`:
+
+```ts
+type CanonicalRootBailReason =
+  | 'sql_filter_or_missing'
+  | 'js_is_pevo_any_paper'
+  | 'cont_columns_invalid';
+```
+
+The three `start_invalid` event sites now declare a `const reason: CanonicalRootBailReason = '<literal>';` local before the `logger.*` call and pass it as the `reason` field. A misspelling at any of those three sites is now a compile error. `npx tsc --noEmit` clean.
+
+### Item 4 (`cont_columns_invalid` canary)
+
+`backend/tests/routes/canonical-root-walker.test.ts` — new test `'rejects START with invalid cont_author/cont_permlink columns (cont_columns_invalid)'`. Force-feeds `{ author: 'alice', json_metadata: <valid pevo paper meta>, cont_author: null, cont_permlink: null }` for the initial probe (passes both SQL and JS gates, fires the JS-side narrowing branch). Asserts `res.status === 200` (alice/v1 still resolves via direct paper-detail fetch after the walker bails returning null) and that `logger.warn` received `{ event: 'canonical_root_walker_start_invalid', reason: 'cont_columns_invalid' }`.
+
+### Item 5 (`canonical_root_walker_no_pool` canary)
+
+`backend/tests/routes/canonical-root-walker.test.ts` — new test `'emits canonical_root_walker_no_pool when HAF pool is unavailable'`. Calls `getPoolMock.mockReturnValue(null)` before the request, asserts `res.status < 500` (HAF unavailability falls through to other lookup paths, surfaces as 404 not 5xx), and that `logger.warn` received `{ event: 'canonical_root_walker_no_pool' }`. Restores the pool mock at the end of the test for any successor tests in the describe block.
+
+### Mutation-kill matrix attestation (4 canaries × HEAD + 4 mutations)
+
+Each mutation hand-applied in-place to `backend/src/routes/papers.ts`, the four targeted vitest invocations run, mutation reverted, md5sum-verified clean restore between rounds. Final `diff /tmp/papers.ts.canary-bak backend/src/routes/papers.ts` is empty.
+
+| Mutation | SQL canary | JS canary | cont_columns canary | no_pool canary |
+|----------|-----------|-----------|---------------------|----------------|
+| HEAD (no mutation) | PASS | PASS | PASS | PASS |
+| A: drop `validPevoPaperWhere` predicate from initial-probe WHERE clause | **FAIL RED** (`expected 'js_is_pevo_any_paper' to be 'sql_filter_or_missing'`) | PASS | PASS | PASS |
+| B: replace `if (typeof startRow.author !== 'string' \|\| !isPevoAnyPaper(...))` with `if (false)` | PASS | **FAIL RED** (`expected 200 to be 404` — alice/v1 surfaces under bob/spoof-review) | PASS | PASS |
+| C: replace `if (typeof startRow.cont_author !== 'string' \|\| typeof startRow.cont_permlink !== 'string')` with `if (false)` | PASS | PASS | **FAIL RED** (`expect(events.length).toBeGreaterThan(0)` — narrowing branch never fires, no event) | PASS |
+| D: drop `logger.warn(... canonical_root_walker_no_pool ...)` emission (keep early `return null`) | PASS | PASS | PASS | **FAIL RED** (`expect(events.length).toBeGreaterThan(0)` — event tag missing) |
+
+Each layer-pinning canary fails red on its targeted mutation and stays green on the orthogonal three. Mutation A also exhibits the documented secondary effect (walker proceeds to JS layer, emits `js_is_pevo_any_paper` instead of `sql_filter_or_missing`); the SQL canary's `reason`-field assertion is what fails, exactly as specified in the round-1 signal-block predictions. Mutation B exhibits the high-severity failure mode the gate exists to prevent: alice's content surfaces under bob's spoof URL (status 200 instead of 404), which the JS canary catches via the status assertion before the event-presence assertion.
+
+### Verification
+
+- `npx tsc --noEmit` from `backend/`: clean.
+- `npm run lint` from `backend/`: only the two pre-existing `@typescript-eslint/no-explicit-any` warnings in `seed-phrase.ts` (unrelated).
+- `npx vitest run tests/routes/canonical-root-walker.test.ts`: 19 tests pass on HEAD (was 17 pre-fix; +2 from items 4-5).
+
