@@ -307,7 +307,7 @@ export class BootFatalError extends Error {
  *      succeeds, no request-time call to `PrivateKey.fromString` on this
  *      key from `routes/bridge.ts` or `routes/claims.ts` is reachable.
  *      Re-derive the call-site map via
- *      `grep -rn "PrivateKey\.fromString(config.pevoBridgePostingKey" backend/src/`
+ *      `grep -rn "PrivateKey\.fromString(config.pevoBridgePostingKey" backend/src/routes/`
  *      — the expected hit count is zero.
  *
  * Cache miss + key configured: parses lazily, then caches. This keeps the
@@ -441,7 +441,7 @@ export class BridgeKeyLazyParseDivergence extends Error {
  * wide redact policy without further scrubbing.
  *
  * Adopted by `routes/bridge.ts` (rounds 3-4 of the parent task) and
- * `routes/claims.ts:225, :325` (BACKEND-BRIDGE-KEY-CLAIMS-ROUTE-MIGRATION,
+ * `routes/claims.ts:216, :314` (BACKEND-BRIDGE-KEY-CLAIMS-ROUTE-MIGRATION,
  * commit `83c6a28`). All production bridge-WIF broadcast call sites
  * funnel through this helper.
  */
