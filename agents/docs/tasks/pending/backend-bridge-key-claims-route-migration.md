@@ -135,3 +135,14 @@ Round-1 hold items 1-3 landed.
 ### Re-review signal
 
 When items 1-2 land, `git mv` this file back to `tasks/review/`. Round-3 architect review scopes `/ce-code-review` to the round-3 commit only.
+
+## Backend re-review signal (2026-05-07, round-2 hold-fixes — commit `a7e883e` on `worktree-agent-aa107a8853371aa89`)
+
+Round-2 hold items 1 and 2 landed.
+
+- **Item 1:** Edited `getRequiredBridgePostingKey()` docstring tail paragraph in `backend/src/startup-checks.ts` (the `Adopted by ... routes/claims.ts:225, :325` line) to read `:216, :314`. Verified call-site positions with `sed -n '216p;314p' backend/src/routes/claims.ts` — both lines return `    const key = getRequiredBridgePostingKey();`. Single 2-token swap as the hold block specified.
+- **Item 2:** Edited the operator-facing grep diagnostic in `getCachedBridgePostingKey()`'s JSDoc (line 310 in the actual tree, not 256-274 as the round-2 hold mentions; located by content). Changed grep scope from `backend/src/` to `backend/src/routes/`. Verification: `grep -rn "PrivateKey\.fromString(config.pevoBridgePostingKey" backend/src/routes/` now returns 0 hits (exit code 1, no output) — claim "expected hit count is zero" now holds.
+
+`tsc --noEmit` clean (worktree node_modules linked from main tree for verification, then unlinked before commit). No vitest run — JSDoc-only edits, no behavior change, per task instruction.
+
+Worker-branch commit SHA: `a7e883e`. Parent will merge and pin the main-tree SHA as a follow-up commit per the convention used in round-1 signal block.
