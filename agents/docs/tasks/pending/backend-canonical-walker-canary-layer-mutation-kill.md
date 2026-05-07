@@ -225,7 +225,7 @@ Each layer-pinning canary fails red on exactly one mutation and stays green on t
 
 When items 1-5 land, `git mv` this file back to `tasks/review/`. Round-2 architect review scopes `/ce-code-review` to the round-2 commit only. The mutation-kill attestation matrix must be re-attested in the round-2 signal block: all 4 canaries (SQL, JS, cont_columns_invalid, no_pool) × HEAD / SQL-revert / JS-revert / cont_columns-revert / no_pool-revert as applicable, since (a) item 1 changes spy levels, and (b) items 4-5 add two new canaries that need their own mutation-kill rows.
 
-## Backend re-review signal (2026-05-07, round-1 hold-fixes — commit `4e4fcd6` on worktree `worktree-agent-ab5bd3bf035988078`)
+## Backend re-review signal (2026-05-07, round-1 hold-fixes — commit `c4ecfcd` on `main`, originally `97d42ef` on `worktree-agent-ab5bd3bf035988078`)
 
 All five hold items landed. Worker subagent rebased onto main `f73a362` before editing. Files touched:
 
