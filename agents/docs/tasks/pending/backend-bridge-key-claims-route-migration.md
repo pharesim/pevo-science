@@ -109,3 +109,29 @@ Round-1 hold items 1-3 landed.
 - Item 3: collapsed the 10-line inline rationale at `claims.ts:215-224` and the 3-line cross-ref at `:322-324` into the one-liner the hold block specified (`// Boot-cached key; see getRequiredBridgePostingKey() docstring in startup-checks.ts.`). Item 2 landed first so the docstring the comments now point at is accurate.
 
 `tsc --noEmit` clean. `npm run lint` clean (only 2 pre-existing `seed-phrase.ts` warnings, unrelated). Targeted test passes in isolation: `npx vitest run tests/routes/claims.test.ts -t 'PrivateKey.fromString NOT called'` → 2 passed | 21 skipped.
+
+## Architect re-review (2026-05-07, round-2) — HELD PENDING FIXES
+
+`/ce-code-review` ran on commit `83031c4` (round-1 hold-fix landing) with 8 reviewers (correctness + security + adversarial at opus; testing/maintainability/project-standards/learnings/kieran-typescript at sonnet; ce-agent-native-reviewer skipped per project CLAUDE.md). Round-1 hold items 1-3 land structurally correctly. Two doc-only divergences surfaced — both introduced BY this commit (not pre-existing), both mechanical 1-token edits. Two reviewers cross-corroborate item 1; correctness + adversarial cross-corroborate item 2.
+
+### Items to address
+
+**1. (P2, anchor 100, 4-reviewer corroboration: correctness, adversarial, maintainability, kieran-typescript) Stale line numbers in `getRequiredBridgePostingKey()` JSDoc.** `backend/src/startup-checks.ts` — the docstring paragraph that reads `Adopted by routes/bridge.ts (rounds 3-4 of the parent task) and routes/claims.ts:225, :325 (BACKEND-BRIDGE-KEY-CLAIMS-ROUTE-MIGRATION, commit 83c6a28)`. The cited lines `:225, :325` are pre-collapse positions; actual `getRequiredBridgePostingKey()` call sites in the post-collapse tree are `claims.ts:216` (approve handler) and `:314` (revoke handler). Item 3's comment collapse shifted the calls up by 9 and 11 lines respectively; the docstring was authored against the pre-collapse positions and not updated in the same commit.
+
+   Verify by `sed -n '216p;314p' backend/src/routes/claims.ts` — both lines should return `    const key = getRequiredBridgePostingKey();` (or its current form).
+
+   Fix: edit the docstring paragraph to read `routes/claims.ts:216, :314` instead of `:225, :325`. Single 2-token swap.
+
+**2. (P3, anchor 100, cross-corroborated correctness + adversarial) Docstring grep claim "expected zero" yields 2 hits on the post-migration tree.** `backend/src/startup-checks.ts` — the operator-facing diagnostic command in `getCachedBridgePostingKey()`'s JSDoc (the paragraph instructing operators to re-derive the call-site map via grep). The docstring says: ``Re-derive the call-site map via `grep -rn "PrivateKey\.fromString(config.pevoBridgePostingKey" backend/src/` — the expected hit count is zero.``
+
+   Running that exact grep on the post-migration tree returns **2 hits**: one at `startup-checks.ts:226` (the boot validator's parse — INTENDED, must remain) and one at `startup-checks.ts:296` (the docstring's own self-match). A future operator following the doc at face value reads "2 hits" as either a regression panic or as guidance to edit `routes/` (no code is broken; the edit would be destructive).
+
+   Fix: scope the grep to `backend/src/routes/` so the claim is true. Single edit: change `backend/src/` to `backend/src/routes/` in the grep command. The narrowed grep yields 0 hits cleanly. Alternative phrasing (`grep -v startup-checks.ts`) is also acceptable; the architect's mild preference is the path-narrowing form because it's terser and more obvious to a future reader.
+
+### Items dismissed during architect triage
+
+(None this round — all surfaced findings either hold or are below the confidence gate.)
+
+### Re-review signal
+
+When items 1-2 land, `git mv` this file back to `tasks/review/`. Round-3 architect review scopes `/ce-code-review` to the round-3 commit only.

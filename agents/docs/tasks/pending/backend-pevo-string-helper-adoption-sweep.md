@@ -110,3 +110,38 @@ Per `agents/docs/solutions/conventions/tests-must-fail-on-mutation-of-code-under
 - The `bridge.ts:~533-535` inventory entry in the task-file table did not match the current tree (file ends at line 529). All `|| null` reads in bridge.ts are CrossRef API response reads, not pevo metadata reads. Documented above; no migration done.
 - Two of the listed sites (`helpers.ts:~238` nested `pevo.source.doi`, `papers.ts:~396` summary path) are on nested object-typed reads (`pevo.source` then `.doi`) that `pevoString` cannot directly access without reshape. Left inline with documented reason.
 - `pevoStringWithDefault` skipped per the <3-sites-inline rule; both `language` reads use `pevoString(...) ?? 'en'` instead.
+
+## Architect re-review (2026-05-07, round-1) — HELD PENDING FIXES
+
+`/ce-code-review` ran on commit `ac30ad5` with 6 reviewers (correctness at opus; testing/maintainability/project-standards/learnings/kieran-typescript at sonnet; security/adversarial/api-contract/reliability/performance not dispatched per low-risk-domain + small-diff judgment; ce-agent-native-reviewer skipped per project CLAUDE.md). The 11 site migrations + `pevoStringArray` introduction land structurally correctly; helper-level mutation-kill is attested. Three coverage-gap items hold for round-2 — all in the testing layer, all on `backend/tests/`.
+
+### Items to address
+
+**1. (P2, anchor 80, testing) `pevoStringArray` whitespace-only string contract not pinned by tests.** `backend/tests/helpers.test.ts` (the `pevoStringArray` describe block). The filter is `entry.length > 0`, so whitespace-only strings (`'   '`) are KEPT. Mutation-kill attestation pinned the empty-string-collapse case but not the whitespace boundary. A future "polish" change to `&& entry.trim().length > 0` would silently change public API behavior; no test would catch it.
+
+   Fix: add to the `pevoStringArray` describe block:
+   ```ts
+   it('keeps whitespace-only entries (filter is length > 0, not trim().length > 0)', () => {
+     expect(pevoStringArray({ keywords: ['   ', 'foo'] }, 'keywords')).toEqual(['   ', 'foo']);
+   });
+   ```
+
+**2. (P2, anchor 80, testing) No route-level mutation-kill at the 4 `pevoStringArray` adoption sites.** `helpers.ts:toPaperSummary`, `papers.ts:fetchPapersFromHaf` (~`:556`), `papers.ts` head-meta override (~`:849`), `papers.ts:buildPaperDetail` (~`:1749`) — line numbers approximate; verify at task start. Implementer attested helper-level mutation-kill only. Existing route tests assert `toHaveProperty('keywords')` (truthy) — would pass whether the field is `['neuroscience']` (filtered) or `[42, '', 'neuroscience']` (unfiltered cast pattern). Reverting the migration at any of the 4 sites would not fail any route test red. Fails the `tests-must-fail-on-mutation-of-code-under-test-2026-04-22.md` convention at the call-site layer.
+
+   Fix: add at least one route-level test pinning the filtering effect end-to-end. The mocked-pool scaffold in `backend/tests/routes/continuation-author-gate.test.ts` is already present and can host this cheaply: seed a paper row with `keywords: [42, '', 'neuroscience']`, assert the response carries `keywords: ['neuroscience']` only. One test pinning at any of the 4 sites is sufficient (any of the 4 reverts would break it via shared HAF-fetch-then-summarize path); 4 site-specific tests give stricter symmetry. Implementer's choice.
+
+**3. (P3, anchor 78 + sibling P3 anchor 75, testing) `language` fallback + `reviewer_attestation_id` collapse not pinned at adoption sites.** Two parallel coverage gaps for the `pevoString(...)` migrations:
+   - `papers.ts:911` (`fetchPaperDetailFromHaf`) and `papers.ts:1757` (`buildPaperDetail`) use `pevoString(pevo, 'language') ?? 'en'`. No test seeds a row with `language` absent / empty / non-string and asserts `response.data.language === 'en'`. The migration's behavioral equivalence with the prior `headPevo.language || 'en'` is unverified.
+   - `reviews.ts:30` was migrated from `pevo.reviewer_attestation_id || null` to `pevoString(...)`. No test pins the collapse semantics: a numeric `42` previously returned `42` (truthy passthrough); the new form returns `null` (`pevoString` collapses non-strings). That behavioral difference is untested.
+
+   Fix: add 1-2 short tests:
+   - In `continuation-author-gate.test.ts` (or `papers.test.ts` / `paper-detail-v3.test.ts`, whichever is closest to the adoption site): seed a paper row with `language` absent (or `language: ''`); assert `response.data.language === 'en'`.
+   - In `reviews.test.ts` (or `route-search-reviews.test.ts`): seed a review payload with `reviewer_attestation_id` set to a numeric or empty value; assert the response field collapses to `null`.
+
+### Items dismissed during architect triage
+
+- (None this round — all surfaced findings either hold or are below the confidence gate as residual risks.)
+
+### Re-review signal
+
+When items 1-3 land, `git mv` this file back to `tasks/review/`. Round-2 architect review scopes `/ce-code-review` to the round-2 commit only.

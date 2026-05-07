@@ -174,3 +174,54 @@ Each layer-pinning canary fails red on exactly one mutation and stays green on t
 
 - Did NOT keep the combined-layer canary as a smoke test. The two layer-pinning canaries cover the failure mode strictly more thoroughly. Per the task file's "implementer's choice" with mild architect preference for replace.
 
+## Architect re-review (2026-05-07, round-1) — HELD PENDING FIXES
+
+`/ce-code-review` ran on commit `d76c0c8` with 8 reviewers (correctness + security + adversarial at opus; testing/maintainability/project-standards/learnings/kieran-typescript at sonnet; reliability + ce-agent-native-reviewer not dispatched). Defense layers, per-layer canaries, and SQL-regex dispatch refactor land structurally correctly; mutation-kill matrix attestation matches my trace. Five items hold for round-2: one cross-reviewer-corroborated observability issue (item 1) plus four polish items on the same file pair.
+
+### Items to address
+
+**1. (P2, anchor 100, cross-corroborated 3 reviewers — adversarial, testing, maintainability) debug-vs-warn level discipline at the 4 START-bail events.** `backend/src/routes/papers.ts:1287-1393` (`findCanonicalRoot` event sites — actual line numbers may drift; the 4 sites are `no_pool`, `start_invalid` × 3 `reason` values). Implementer chose `logger.debug` at all 4 sites (deviation from task spec `logger.warn`) because `sql_filter_or_missing` fires on every benign 404 lookup of a non-PEvO post — `warn` would create production noise. Concern: at default `LOG_LEVEL=info`, debug events are silenced. Production attack signal is invisible while canaries pass (canary spies are at the logger object boundary, ahead of pino's level filter — the test doesn't observe the production silencing). Peer walker events use `warn`/`error` (`unauthorized_hop` at warn, `depth_exceeded` at warn, `walker_error` at error); mixed levels lead future readers to "fix" the debug back.
+
+   Fix: hybrid split per event semantics, plus a code comment making the rationale durable.
+   - `canonical_root_walker_no_pool` → `logger.warn` (rare infra-failure path; deserves observability).
+   - `canonical_root_walker_start_invalid` with `reason: 'sql_filter_or_missing'` → keep `logger.debug` (the noisy 404 path; implementer's noise rationale stands for this case only).
+   - `canonical_root_walker_start_invalid` with `reason: 'js_is_pevo_any_paper'` → `logger.warn` (rare attack-signal path; SQL filter bypass + JS reject means a type-spoof attempt actually got past the SQL gate — operator-actionable).
+   - `canonical_root_walker_start_invalid` with `reason: 'cont_columns_invalid'` → `logger.warn` (rare HAF data-integrity issue; the `IS NOT NULL` SQL guard should prevent reaching this branch).
+
+   Add a code comment near the first event site explaining the level discipline — e.g., `// Level discipline: 'sql_filter_or_missing' uses debug because it fires on every 404 of a non-PEvO post; the other three reasons use warn because they are rare attack-or-data-integrity signals that warrant operator alerting. Keep this split — peer walker events (unauthorized_hop, depth_exceeded, walker_error) are similarly graduated by frequency vs severity.` Otherwise a future reader sees the mixed levels and "fixes" them back.
+
+   Update affected canary spies in `backend/tests/routes/canonical-root-walker.test.ts`: the SQL-canary (asserts `reason: 'sql_filter_or_missing'`) keeps `vi.spyOn(logger, 'debug')`. The JS-canary (asserts `reason: 'js_is_pevo_any_paper'`) and the new canaries from items 4-5 below use `vi.spyOn(logger, 'warn')`.
+
+   Re-attest the mutation-kill matrix after the level changes: each layer-pinning canary must still fail RED on its mutation, stay green on the orthogonal mutation. Drop-the-event-emission mutation must still fail RED (`events.length > 0` assertion remains the discriminator for event-tag presence). The matrix attestation in the round-2 signal block must include all 4 canaries (SQL, JS, cont_columns_invalid, no_pool).
+
+**2. (P2, anchor 90, maintainability) Inline `probeSqlHasTypeFilter` — single call site.** `backend/tests/routes/canonical-root-walker.test.ts` — `probeSqlHasTypeFilter(sql)` is defined and called exactly once (inside `installTypeSpoofStartResponder`'s `with_filter` branch). Per project convention (helpers earn their keep at 3+ call sites), single-site extraction has no reuse benefit. The doc comment on `installTypeSpoofStartResponder` already explains the detection-key reasoning; the helper's name adds nothing.
+
+   Fix: delete the function definition; replace the single call site with the inline regex `/'type'/.test(sql)` plus a one-line comment if extra clarity is wanted.
+
+**3. (P2, anchor 75, kieran-typescript) `reason` discriminator is untyped string.** `backend/src/routes/papers.ts` — the 3 `start_invalid` event payloads pass `reason` as inline string literals (`'sql_filter_or_missing'`, `'js_is_pevo_any_paper'`, `'cont_columns_invalid'`). No named literal-union type; misspellings compile silently. The canaries catch drift at test time only.
+
+   Fix: add a type alias near the walker definition:
+   ```ts
+   type CanonicalRootBailReason =
+     | 'sql_filter_or_missing'
+     | 'js_is_pevo_any_paper'
+     | 'cont_columns_invalid';
+   ```
+   Use it on the event payload type so misspellings fail compile. (Bonus: any future bail path becomes the obvious extension point for a 4th reason.)
+
+**4. (P3, anchor 95, testing) `cont_columns_invalid` bail path has no canary.** `backend/src/routes/papers.ts` — the `cont_columns_invalid` event site exists; no test exercises it. Dropping the `logger.debug` (or `logger.warn` post-item-1) at that site fails no test. Task acceptance section 1 explicitly listed this event as part of the deliverable; the mutation-kill story is incomplete without it.
+
+   Fix: add a canary that installs a responder returning `{ author: 'alice', json_metadata: <valid pevo paper meta>, cont_author: null, cont_permlink: null }` for the initial probe (force-feeds the row past the SQL guard so the JS-side narrowing fires), asserts response status `404`, and spies on `logger.warn` (per item 1) to confirm `{ event: 'canonical_root_walker_start_invalid', reason: 'cont_columns_invalid' }` was emitted.
+
+**5. (P3, anchor 90, testing) `canonical_root_walker_no_pool` event has no test.** `backend/src/routes/papers.ts` — the no-pool event site exists; `beforeEach` always sets `getPoolMock` to return a valid pool, so no test exercises the null-pool branch.
+
+   Fix: add a canary that calls `getPoolMock.mockReturnValue(null)` before the request, asserts a non-5xx response (HAF unavailability falls through to other paths), and spies on `logger.warn` (per item 1) to confirm `{ event: 'canonical_root_walker_no_pool' }` was emitted. Restore the mock after.
+
+### Items dismissed during architect triage
+
+- **(P3, anchor 75, adversarial) Source-narrowing mutation gap in `probeSqlHasTypeFilter`.** Detection regex `/'type'/` catches "filter dropped" mutations but is permissive against subtler mutations like `validPevoPaperWhere(source:'all')` → `validPevoPaperWhere(source:'paper-only')` that retain the literal `'type'` substring. Dismissed: explicitly outside this task's declared mutation scope (the task targets complete filter removal; subtler mutations are a separate concern). Implementer documented this as a residual risk. If a follow-up wants to widen mutation coverage, file then.
+
+### Re-review signal
+
+When items 1-5 land, `git mv` this file back to `tasks/review/`. Round-2 architect review scopes `/ce-code-review` to the round-2 commit only. The mutation-kill attestation matrix must be re-attested in the round-2 signal block: all 4 canaries (SQL, JS, cont_columns_invalid, no_pool) × HEAD / SQL-revert / JS-revert / cont_columns-revert / no_pool-revert as applicable, since (a) item 1 changes spy levels, and (b) items 4-5 add two new canaries that need their own mutation-kill rows.
+
