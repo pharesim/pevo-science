@@ -35,7 +35,7 @@
  *   (c) real-HAF integration is filed as a follow-up alongside the sibling
  *       continuation-author-gate canary file.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import request from 'supertest';
 
 const { hafQueryMock, getPoolMock } = vi.hoisted(() => ({
@@ -69,6 +69,16 @@ beforeEach(async () => {
     }),
   });
   await hafCache.clear();
+});
+
+// Spy-cleanup safety net: restores every vi.spyOn(...) installed in an
+// it() body regardless of whether assertions in that body threw. Inline
+// `*.mockRestore()` calls scattered through the file are now redundant
+// with this guard, but harmless. The pool mock (`getPoolMock`) is a
+// vi.fn() (not a spy) — it is reset and re-wired by `beforeEach` above,
+// not by `vi.restoreAllMocks()`.
+afterEach(() => {
+  vi.restoreAllMocks();
 });
 
 function installResponder(handler: (sql: string, params: unknown[]) => Promise<{ rows: unknown[] }>) {
@@ -545,6 +555,18 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
             // (the SELECT/WHERE references `'continues'`, never `'type'`).
             // So `'type'` in the SQL string is a tight, drift-resistant
             // marker for filter presence on this specific probe.
+            //
+            // BRITTLENESS WARNING: this discriminator assumes
+            // `validPevoPaperWhere` emits the literal `'type'` inline in
+            // the rendered SQL. A future SQL-builder sweep that
+            // parametrizes literals (`$N` placeholders for `'type'`,
+            // `'paper'`, `'bridge_paper'`, etc.) would break the regex
+            // match → mock returns the spoof row in `with_filter` mode →
+            // SQL canary fails RED on a refactor that did NOT regress
+            // security. This is a FALSE ALARM: the discriminator needs
+            // updating, the gate is intact. Do not "fix" by relaxing the
+            // regex — that opens room for a real `validPevoPaperWhere`
+            // drop to slip through later.
             if (/'type'/.test(sql)) {
               return { rows: [] };
             }
@@ -602,6 +624,12 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
     // spoof row → walker reaches the JS-side `!isPevoAnyPaper(...)`
     // check, bails there with `reason: 'js_is_pevo_any_paper'` →
     // assertion `reason === 'sql_filter_or_missing'` fails RED.
+    //
+    // NOTE: spy intercepts before pino's level filter; see
+    // pino-spy-level-filter-ordering-trap-2026-05-07.md. This canary's
+    // green tick does NOT imply production visibility at LOG_LEVEL=info
+    // — sql_filter_or_missing fires on every benign 404 lookup, so it
+    // emits at debug deliberately (warn would drown signal in noise).
     const debugSpy = vi.spyOn(logger, 'debug').mockImplementation(() => {});
 
     installTypeSpoofStartResponder('with_filter');
@@ -738,6 +766,112 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
     warnSpy.mockRestore();
   });
 
+  it('pins SQL IS NOT NULL guard on initial probe (no cont_columns_invalid on benign non-continuation lookup)', async () => {
+    // Layer-pinning canary 5 of 5 (round-2 hold item 4). Pins the
+    // `c.json_metadata -> $3 -> 'continues' IS NOT NULL` SQL predicate
+    // on `findCanonicalRoot`'s initial probe. Without this guard, every
+    // benign paper-detail lookup of a non-continuation paper would pass
+    // the SQL `validPevoPaperWhere` filter (it IS a valid PEvO paper),
+    // pass the JS `isPevoAnyPaper` re-check, and bail at the
+    // `cont_author` / `cont_permlink` runtime narrowing branch — emitting
+    // `canonical_root_walker_start_invalid` warn events with reason
+    // `cont_columns_invalid` on every page load. The IS NOT NULL guard
+    // is what keeps the walker scoped to actual continuation rows.
+    //
+    // Faithful-mock semantics — SQL-inspects the production initial
+    // probe for the `IS NOT NULL` predicate:
+    //   - HEAD (guard present): return 0 rows (mimicking real HAF
+    //     excluding alice/v1, which has no continues field). Walker
+    //     bails sql_filter_or_missing at debug → warn spy sees no
+    //     cont_columns_invalid → assertion `events.toHaveLength(0)`
+    //     holds. Route falls through to direct paper-detail fetch and
+    //     surfaces alice/v1 (200).
+    //   - Mutation E (drop the IS NOT NULL predicate): mock observes
+    //     guard absent → returns alice/v1 row with cont_author=null,
+    //     cont_permlink=null (the SQL projection ->>'author' against
+    //     missing JSON keys yields NULL in real HAF). Walker passes SQL
+    //     filter, passes JS isPevoAnyPaper, bails cont_columns_invalid
+    //     at warn → warn spy captures the event → assertion FAILS RED.
+    //
+    // Note on status assertion: both HEAD and Mutation E surface 200
+    // (alice/v1 is served by direct paper-detail fall-through after the
+    // walker returns null in both states). The discriminating signal is
+    // the warn-event presence below, not the response code.
+    //
+    // Orthogonal-mutation green-stays-green:
+    //   - Mutation A (drop validPevoPaperWhere): IS NOT NULL still
+    //     excludes alice/v1 (no continues) → 0 rows → no warn event.
+    //   - Mutations B / C / D (JS check, cont_columns narrowing,
+    //     no_pool warn): unreachable from the 0-rows path the mock
+    //     returns on HEAD.
+    //
+    // BRITTLENESS CAVEAT (mirrors item 3 on the SQL-filter discriminator):
+    // a future SQL-builder sweep that parametrizes the `'continues'`
+    // literal (`$N` placeholder) would break the regex match → mock
+    // would observe guard-absent on HEAD → returns the null-cont row →
+    // canary FAILS RED on a refactor that did NOT regress security.
+    // False alarm: the discriminator needs updating, the gate is
+    // intact. Do not "fix" by relaxing the regex.
+    const aliceMeta = pevoPaperJsonMeta(['alice']);
+    const aliceRow = pevoPaperRow('alice', 'v1', ['alice']);
+
+    installResponder(async (sql, params) => {
+      if (isBackwardWalkContinuesProbe(sql)) {
+        const a = params[0];
+        const p = params[1];
+        if (a === 'alice' && p === 'v1') {
+          // Faithful-mock dispatch on the IS NOT NULL guard.
+          if (/'continues'\s*IS\s+NOT\s+NULL/i.test(sql)) {
+            // Guard present → real HAF would not return alice/v1 (no
+            // continues field). Mock returns 0 rows.
+            return { rows: [] };
+          }
+          // Guard absent (Mutation E) → real HAF returns the row with
+          // null-projected cont_* columns. Mock returns same shape.
+          return {
+            rows: [{
+              author: 'alice',
+              json_metadata: aliceRow.json_metadata,
+              cont_author: null,
+              cont_permlink: null,
+            }],
+          };
+        }
+        return { rows: [] };
+      }
+      if (isHeadAuthorsLookup(sql)) {
+        const a = params[0];
+        const p = params[1];
+        if (a === 'alice' && p === 'v1') {
+          return { rows: [{ author: 'alice', json_metadata: aliceMeta }] };
+        }
+        return { rows: [] };
+      }
+      if (sql.includes('SELECT c.author, c.permlink, c.title')) {
+        const a = params[0];
+        const p = params[1];
+        if (a === 'alice' && p === 'v1') return { rows: [aliceRow] };
+        return { rows: [] };
+      }
+      return { rows: [] };
+    });
+
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+
+    const res = await request(app).get('/api/papers/alice/v1');
+    expect(res.status).toBe(200);
+
+    const events = warnSpy.mock.calls
+      .map((c) => c[0] as { event?: string; reason?: string } | undefined)
+      .filter((e) =>
+        e?.event === 'canonical_root_walker_start_invalid' &&
+        e?.reason === 'cont_columns_invalid',
+      );
+    expect(events).toHaveLength(0);
+
+    warnSpy.mockRestore();
+  });
+
   it('emits canonical_root_walker_no_pool when HAF pool is unavailable', async () => {
     // Layer-pinning canary 4 of 4 (round-2 hold item 5). Pins the
     // no-pool bail in findCanonicalRoot. beforeEach always wires a valid
@@ -770,7 +904,10 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
     expect(events.length).toBeGreaterThan(0);
 
     warnSpy.mockRestore();
-    // Restore the pool for subsequent tests in this describe block.
+    // The pool mock is reset by `beforeEach` before the next test runs,
+    // so restoring it here is not required for isolation. We re-wire it
+    // anyway in case future additions to this it() body assert against
+    // a live pool after the no-pool branch.
     getPoolMock.mockReturnValue({
       query: hafQueryMock,
       connect: async () => ({ query: hafQueryMock, release: () => {} }),

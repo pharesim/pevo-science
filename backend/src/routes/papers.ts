@@ -1295,12 +1295,16 @@ async function findCanonicalRoot(
 ): Promise<ChainLink | null> {
   const pool = getPool();
   if (!pool) {
-    // Level discipline: 'sql_filter_or_missing' uses debug because it fires on
-    // every 404 of a non-PEvO post; the other three reasons (this no_pool path,
-    // js_is_pevo_any_paper, cont_columns_invalid) use warn because they are
-    // rare attack-or-data-integrity signals that warrant operator alerting.
-    // Keep this split — peer walker events (unauthorized_hop, depth_exceeded,
-    // walker_error) are similarly graduated by frequency vs severity.
+    // Level discipline for canonical_root_walker_* events:
+    //   - logger.warn — rare attack-signal or data-integrity paths worth
+    //     operator alerting at default LOG_LEVEL=info.
+    //   - logger.debug — high-frequency benign paths where warn would
+    //     drown signal in noise; production must opt in via LOG_LEVEL=debug
+    //     (see pino-spy-level-filter-ordering-trap-2026-05-07.md).
+    // The CanonicalRootBailReason type alias is the single source of truth
+    // for which reasons exist; pick the level per-reason against this rule.
+    // Peer walker events (unauthorized_hop, depth_exceeded, walker_error)
+    // follow the same rule, similarly graduated by frequency vs severity.
     logger.warn(
       {
         event: 'canonical_root_walker_no_pool',
@@ -1354,6 +1358,13 @@ async function findCanonicalRoot(
       // pevo.type='review' on a post claiming to continue a paper). Tagged
       // `sql_filter_or_missing` so a layer-pinning canary can pin the SQL
       // filter as the kill mechanism.
+      //
+      // Emitted at debug because this fires on every 404 lookup of a
+      // non-PEvO post. Production observability requires `LOG_LEVEL=debug`.
+      // The canary spy in `canonical-root-walker.test.ts` intercepts at
+      // the logger-object boundary, BEFORE pino's level filter, so canary
+      // green does NOT imply this event is visible at `LOG_LEVEL=info`.
+      // See `agents/docs/solutions/conventions/pino-spy-level-filter-ordering-trap-2026-05-07.md`.
       const reason: CanonicalRootBailReason = 'sql_filter_or_missing';
       logger.debug(
         {
