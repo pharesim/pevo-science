@@ -72,7 +72,7 @@ Project `err.name` (and ideally also `constructor.name` via pino's serializer) i
 - `agents/docs/tasks-archive.md` `BACKEND-BRIDGE-KEY-LAZY-FALLBACK-THROW-SITE-CLOSURE` (archived 2026-05-07) — this task's parent surface; reliability R1 is the originating finding.
 - `agents/docs/tasks-archive.md` `BACKEND-BRIDGE-KEY-CLAIMS-ROUTE-MIGRATION round-1 dismissals` — the original P3 dismissal that named this task slug as the load-bearing trigger.
 
-## Backend re-review signal (2026-05-07, round-1 implementation — main-tree commit pinned at parent merge)
+## Backend re-review signal (2026-05-07, round-1 implementation — commit `f715b07` on `main`, originally `d447b6f` + `37243ce` on `worktree-agent-ae8c974b3d6ce3c40`)
 
 ### Decision: Path A (explicit `name: err.name` projection)
 

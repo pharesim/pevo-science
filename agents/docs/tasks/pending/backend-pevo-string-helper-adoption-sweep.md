@@ -148,7 +148,7 @@ When items 1-3 land, `git mv` this file back to `tasks/review/`. Round-2 archite
 
 ---
 
-## Backend re-review signal (2026-05-07, round-1 hold-fixes — commit on worktree-agent-ad7b9790b8b39fc8f, parent will pin SHA after merge)
+## Backend re-review signal (2026-05-07, round-1 hold-fixes — commit `e98d5a1` on `main`, originally `6201cd8` on `worktree-agent-ad7b9790b8b39fc8f`)
 
 **Worker:** Backend worktree subagent (rebased onto main `f73a362` before editing).
 

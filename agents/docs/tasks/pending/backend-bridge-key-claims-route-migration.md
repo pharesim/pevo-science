@@ -136,7 +136,7 @@ Round-1 hold items 1-3 landed.
 
 When items 1-2 land, `git mv` this file back to `tasks/review/`. Round-3 architect review scopes `/ce-code-review` to the round-3 commit only.
 
-## Backend re-review signal (2026-05-07, round-2 hold-fixes — commit `a7e883e` on `worktree-agent-aa107a8853371aa89`)
+## Backend re-review signal (2026-05-07, round-2 hold-fixes — commit `aec207f` on `main`, originally `a7e883e` on `worktree-agent-aa107a8853371aa89`)
 
 Round-2 hold items 1 and 2 landed.
 
