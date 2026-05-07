@@ -157,6 +157,15 @@ describe('pevoStringArray', () => {
     expect(pevoStringArray({ keywords: ['', 'foo', ''] }, 'keywords')).toEqual(['foo']);
   });
 
+  // Round-2 hold item 1: pin the whitespace-vs-empty boundary explicitly.
+  // The filter is `entry.length > 0`, NOT `entry.trim().length > 0` — a
+  // future "polish" change to trim-and-test would silently change public
+  // API behavior (whitespace-only keywords would start dropping). This
+  // test fails red on that mutation.
+  it('keeps whitespace-only entries (filter is length > 0, not trim().length > 0)', () => {
+    expect(pevoStringArray({ keywords: ['   ', 'foo'] }, 'keywords')).toEqual(['   ', 'foo']);
+  });
+
   it('returns [] for non-array values (string, number, object, boolean, null, undefined, missing)', () => {
     expect(pevoStringArray({ keywords: 'not-an-array' }, 'keywords')).toEqual([]);
     expect(pevoStringArray({ keywords: 42 }, 'keywords')).toEqual([]);

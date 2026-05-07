@@ -1736,3 +1736,130 @@ describe('GET /api/papers/:author/:permlink — output-side ipfs_cid validation'
     warnSpy.mockRestore();
   });
 });
+
+describe('GET /api/papers/:author/:permlink — pevoString family adoption: route-level mutation-kill', () => {
+  // Round-2 hold items 2 + 3a for backend-pevo-string-helper-adoption-sweep.
+  //
+  // Item 2 (pevoStringArray route-level mutation-kill): the keywords field is
+  // read at four call sites via `pevoStringArray`. Existing route tests only
+  // assert `toHaveProperty('keywords')` — they would pass whether the field
+  // is `['neuroscience']` (filtered) or `[42, '', 'neuroscience']` (the
+  // unfiltered cast pattern). This describe pins the filtering effect end-to-end
+  // so reverting the migration at any of the 4 sites fails red.
+  //
+  // Item 3a (language fallback): both `fetchPaperDetailFromHaf` (head-meta
+  // override) and `buildPaperDetail` use `pevoString(pevo, 'language') ?? 'en'`.
+  // Single-version papers (no continuation) route through `buildPaperDetail` —
+  // covered here. The integration with the head-meta override path is covered
+  // by the existing per-version display canaries in the multi-version describe
+  // block above (continuation-chain seed); a regression in either site that
+  // collapsed `?? 'en'` to bare `pevoString(...)` would surface as `null`
+  // here for the buildPaperDetail site.
+  function paperRowWithFields(
+    author: string,
+    permlink: string,
+    extra: Record<string, unknown> = {},
+  ) {
+    return {
+      author,
+      permlink,
+      title: 't',
+      body: 'abstract\n\n---\n\nbody',
+      json_metadata: {
+        app: `${config.appTag}/test`,
+        [config.appTag]: {
+          type: 'paper',
+          authors: [{ hive: author }],
+          ...extra,
+        },
+      },
+      created: '2026-01-01T00:00:00.000Z',
+      last_edited: '2026-01-01T00:00:00.000Z',
+    };
+  }
+
+  it('keywords with mixed-type entries: response carries only the string entries (pevoStringArray filtering pinned end-to-end)', async () => {
+    // Seed: a paper whose `pevo.keywords` contains `[42, '', 'neuroscience']`
+    // — exactly the cast-pattern leak shape the migration closes. The
+    // unfiltered cast `(pevo.keywords as string[]) || []` would surface
+    // `[42, '', 'neuroscience']` in the response (numeric/empty leak through);
+    // `pevoStringArray` narrows entries to non-empty strings only. Asserting
+    // `['neuroscience']` pins the migration at the buildPaperDetail call site
+    // (`papers.ts:1749`), which is the active code path for single-version
+    // papers (no continuation chain). A revert at this site would surface
+    // the numeric `42` and empty string and fail red.
+    const row = paperRowWithFields('alice', 'p1', { keywords: [42, '', 'neuroscience'] });
+    installResponder(async (sql, _params) => {
+      if (sql.includes('SELECT c.author, c.json_metadata') && sql.includes('parent_permlink = $3')) {
+        return { rows: [row] };
+      }
+      if (sql.includes('SELECT c.author, c.permlink, c.title')) {
+        return { rows: [row] };
+      }
+      if (isForwardChainWalkSql(sql)) {
+        return { rows: [] };
+      }
+      return { rows: [] };
+    });
+
+    const res = await request(app).get('/api/papers/alice/p1');
+    expect(res.status).toBe(200);
+    const detail = res.body?.data;
+    expect(detail).toBeDefined();
+    expect(detail.keywords).toEqual(['neuroscience']);
+  });
+
+  it('language absent: response defaults to "en" (pevoString(...) ?? "en" fallback pinned end-to-end)', async () => {
+    // Seed: a paper whose `pevo.language` is absent. Pre-migration the read
+    // was `headPevo.language || 'en'`; post-migration it is
+    // `pevoString(pevo, 'language') ?? 'en'`. Both yield `'en'` here. A
+    // regression that dropped the `?? 'en'` fallback would surface `null`
+    // and fail red. Pins the buildPaperDetail call site (`papers.ts:1757`).
+    const row = paperRowWithFields('alice', 'p1', {}); // language absent
+    installResponder(async (sql, _params) => {
+      if (sql.includes('SELECT c.author, c.json_metadata') && sql.includes('parent_permlink = $3')) {
+        return { rows: [row] };
+      }
+      if (sql.includes('SELECT c.author, c.permlink, c.title')) {
+        return { rows: [row] };
+      }
+      if (isForwardChainWalkSql(sql)) {
+        return { rows: [] };
+      }
+      return { rows: [] };
+    });
+
+    const res = await request(app).get('/api/papers/alice/p1');
+    expect(res.status).toBe(200);
+    const detail = res.body?.data;
+    expect(detail).toBeDefined();
+    expect(detail.language).toBe('en');
+  });
+
+  it('language set to empty string: response defaults to "en" (pevoString collapse + ?? "en" combine to fallback)', async () => {
+    // Edge case the cast pattern leaked: `language: ''` previously would
+    // pass through `?? 'en'` (empty string is truthy for `??`) yielding
+    // `''`. The `pevoString` migration narrows `''` to `null` first, so
+    // the `?? 'en'` fallback fires and the response carries `'en'`. This
+    // pins the behavioral upgrade the migration delivered.
+    const row = paperRowWithFields('alice', 'p1', { language: '' });
+    installResponder(async (sql, _params) => {
+      if (sql.includes('SELECT c.author, c.json_metadata') && sql.includes('parent_permlink = $3')) {
+        return { rows: [row] };
+      }
+      if (sql.includes('SELECT c.author, c.permlink, c.title')) {
+        return { rows: [row] };
+      }
+      if (isForwardChainWalkSql(sql)) {
+        return { rows: [] };
+      }
+      return { rows: [] };
+    });
+
+    const res = await request(app).get('/api/papers/alice/p1');
+    expect(res.status).toBe(200);
+    const detail = res.body?.data;
+    expect(detail).toBeDefined();
+    expect(detail.language).toBe('en');
+  });
+});

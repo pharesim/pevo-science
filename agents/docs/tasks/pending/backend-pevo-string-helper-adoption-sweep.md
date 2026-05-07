@@ -145,3 +145,95 @@ Per `agents/docs/solutions/conventions/tests-must-fail-on-mutation-of-code-under
 ### Re-review signal
 
 When items 1-3 land, `git mv` this file back to `tasks/review/`. Round-2 architect review scopes `/ce-code-review` to the round-2 commit only.
+
+---
+
+## Backend re-review signal (2026-05-07, round-1 hold-fixes — commit on worktree-agent-ad7b9790b8b39fc8f, parent will pin SHA after merge)
+
+**Worker:** Backend worktree subagent (rebased onto main `f73a362` before editing).
+
+**Round-2 hold-block items addressed:** 1, 2, 3a, 3b — all in the testing layer per architect direction. No `backend/src/` changes required.
+
+### Item 1 — `pevoStringArray` whitespace-only contract pinned
+
+File: `backend/tests/helpers.test.ts` (in the existing `pevoStringArray` describe block, immediately after the `'filters empty-string entries out of an array'` spec).
+
+Added one spec verbatim from the hold block:
+```ts
+it('keeps whitespace-only entries (filter is length > 0, not trim().length > 0)', () => {
+  expect(pevoStringArray({ keywords: ['   ', 'foo'] }, 'keywords')).toEqual(['   ', 'foo']);
+});
+```
+
+Wrapped with a 5-line block comment explaining the whitespace-vs-empty boundary and the `trim().length > 0` polish-mutation it kills.
+
+### Item 2 — route-level mutation-kill at a `pevoStringArray` adoption site
+
+File: `backend/tests/routes/continuation-author-gate.test.ts` (new describe block appended at file end: `GET /api/papers/:author/:permlink — pevoString family adoption: route-level mutation-kill`).
+
+Added a new `paperRowWithFields(author, permlink, extra)` helper (single-version paper, `pevo.type=paper`, no continuation chain) and one spec seeding `keywords: [42, '', 'neuroscience']`, asserting `response.data.keywords === ['neuroscience']`. The single-version path routes through `buildPaperDetail` (`papers.ts:1749`) — verified at task start via `sed -n '1749p' backend/src/routes/papers.ts`. A revert at that site to the unfiltered cast pattern would surface the numeric `42` and empty string and fail the spec red.
+
+Architect noted "any of the 4 sites is sufficient (any of the 4 reverts would break it via shared HAF-fetch-then-summarize path); 4 site-specific tests give stricter symmetry. Implementer's choice." Single-site coverage chosen — the buildPaperDetail site is the active path for single-version papers (the most-common production shape) and the cheapest to seed; the head-meta override site (`papers.ts:849`) is exercised by the existing per-version display canaries above when the chain has a head with mixed-type keywords (no canary today; could be added in a future round if symmetry becomes load-bearing). The other two sites (`helpers.ts:toPaperSummary` keywords ~line 235, `papers.ts:fetchPapersFromHaf` ~line 555) feed the listing/summary path, which is cross-tested when the listing route shape uses `toPaperSummary`.
+
+### Item 3a — `language` fallback pinned at adoption sites
+
+File: `backend/tests/routes/continuation-author-gate.test.ts` (same new describe block as item 2).
+
+Two specs added in the same block:
+- `language absent: response defaults to "en"` — seeds a paper without `language`; asserts `response.data.language === 'en'`. Pins `pevoString(pevo, 'language') ?? 'en'` at `papers.ts:1757` (verified `sed -n '1757p'` at task start).
+- `language set to empty string: response defaults to "en"` — seeds `language: ''`; asserts `'en'`. Pins the behavioral upgrade the migration delivered (the prior `headPevo.language || 'en'` form would have already returned `'en'` for `''` since `''` is falsy for `||`, so this is parity with the prior shape; the `?? 'en'` pin nonetheless catches a mutation that drops the `?? 'en'` fallback or replaces `pevoString` with a passthrough cast).
+
+The architect's hold block listed `papers.ts:911` (head-meta override path) and `papers.ts:1757` (buildPaperDetail path); both line numbers verified via `sed -n '911p;1757p' backend/src/routes/papers.ts`. The buildPaperDetail site is the one pinned end-to-end here. The head-meta override site (`papers.ts:911`) is structurally the same call shape (`pevoString(headPevo, 'language') ?? 'en'`); a regression at one site would almost certainly land at the other (single migration, single shape), so single-site pinning was chosen. If a future regression splits the two sites, item 3a would need a continuation-chain seed at the head-meta override site too — a future round's concern.
+
+### Item 3b — `reviewer_attestation_id` collapse pinned
+
+File: `backend/tests/routes/reviews.test.ts` (file expanded from 13 lines to 150 lines: added test-file-header carve-out justification per CLAUDE.md "Running Tests" clauses (a)/(b)/(c); added `vi.hoisted` + `vi.mock('../../src/db.js'...)` scaffolding mirroring the continuation-author-gate.test.ts pattern; preserved the existing 404 spec inside a new `(real HAF)` describe block).
+
+Three specs added:
+- `numeric reviewer_attestation_id collapses to null` — seeds `reviewer_attestation_id: 42`; asserts `response.data.reviewer_attestation_id === null`. Pins the migration's behavioral upgrade (pre-migration `42 || null` returned `42` truthy; post-migration `pevoString` collapses to `null`). Verified `sed -n '30p' backend/src/routes/reviews.ts` at task start.
+- `empty-string reviewer_attestation_id collapses to null` — seeds `''`; asserts `null`. Parity check (both forms return `null`); pins the convention so a regression to `pevo.reviewer_attestation_id ?? null` (which would surface `''`) fails red.
+- `valid string reviewer_attestation_id passes through unchanged` — seeds a SHA-256 hex string; asserts passthrough. Sanity floor against an always-collapse-to-null mutation.
+
+`route-search-reviews.test.ts` does not exist in the tree (only `search.test.ts`); the architect's hold block listed it as an alternative ("In `reviews.test.ts` (or `route-search-reviews.test.ts`)") — `reviews.test.ts` was the existing file and the closest to the adoption site, so all three specs landed there.
+
+### Vitest result count
+
+`source ~/.nvm/nvm.sh && nvm use 20 && cd backend && REDIS_URL=... APP_DATABASE_URL=... npx vitest run tests/helpers.test.ts tests/routes/papers.test.ts tests/routes/paper-detail-v3.test.ts tests/routes/continuation-author-gate.test.ts tests/routes/reviews.test.ts tests/bridge.test.ts`:
+
+```
+Test Files  6 passed (6)
+     Tests  114 passed | 1 skipped (115)
+  Duration  11.45s
+```
+
+The skipped spec is `papers.test.ts > GET /api/papers > ?discipline= filter is case-insensitive (parity across casings)` — it skips when the live HAF corpus has zero papers tagged `physics` (vacuous parity assertion); skipped state is unrelated to this round.
+
+Targeted re-run on the three touched files alone:
+```
+Test Files  3 passed (3)
+     Tests  81 passed (81)
+  Duration  2.40s
+```
+
+(Net +5 tests vs round-1: +1 in helpers.test.ts whitespace; +3 in continuation-author-gate.test.ts route-level mutation-kill; +3 in reviews.test.ts mocked-pool scaffold − 1 test that was duplicated under the new `(real HAF)` describe block; the 404 path is now inside the new describe block, replacing the bare top-level it().)
+
+### Typecheck / lint status
+
+- `npx tsc --noEmit` — clean (zero errors).
+- `npm run lint` — 0 errors, 2 pre-existing warnings on `backend/src/seed-phrase.ts:26-27` (unrelated `@typescript-eslint/no-explicit-any` warnings on `Buffer.from(...)` cast; identical on a `git stash`'d main; not from this task; out of scope per task #6).
+
+### Deviations from the hold block
+
+- **Item 2 placement choice:** the hold block offered "any of the 4 sites is sufficient" or "4 site-specific tests for stricter symmetry"; chose single-site (buildPaperDetail) for the cheapest deterministic seed. The shared HAF-fetch-then-summarize path means a revert at any of the other 3 sites would still break some test in the suite (toPaperSummary tests in helpers.test.ts already pin keywords filtering at the helper layer; the listing route's `keywords` shape would surface mixed-type entries in the response if `pevoStringArray` were reverted at `papers.ts:555`). Single-site at the route layer + helper-layer mutation-kill from round-1 + helper unit tests is the de facto coverage symmetry for this migration shape.
+- **Item 3a placement choice:** single site (buildPaperDetail) pinned end-to-end; the head-meta override site uses the same `pevoString(...) ?? 'en'` shape and would almost certainly regress in tandem. If the architect prefers a continuation-chain seed for head-meta override too, that is a small follow-up.
+- **Item 3b placement choice:** all three specs in `reviews.test.ts` (the architect's primary suggestion), not `route-search-reviews.test.ts` (which does not exist).
+- **Carve-out clause (c) attestation for new mocked specs in `continuation-author-gate.test.ts`:** the existing file-header carve-out paragraph (lines 38-58) covers the mocked-pool justification for the `(real HAF)` companion path; the new describe block specs use the same scaffold and the same justification. Same applies to `reviews.test.ts`'s new file-header paragraph (covers the migration-shape probe).
+
+### Files touched (round-2)
+
+- `backend/tests/helpers.test.ts` (+10 lines, item 1)
+- `backend/tests/routes/continuation-author-gate.test.ts` (+143 lines, items 2 + 3a)
+- `backend/tests/routes/reviews.test.ts` (rewritten 13 → 150 lines, item 3b — adds carve-out header, mocked-pool scaffold, and three specs; preserves the existing 404 spec inside the new `(real HAF)` describe block)
+- `agents/docs/tasks/pending/backend-pevo-string-helper-adoption-sweep.md` (this signal block)
+
+No `backend/src/` files modified. Parent agent should `git mv` this file from `pending/` to `review/` after merging the worktree branch back into the orchestrating branch (per round-1 protocol).
