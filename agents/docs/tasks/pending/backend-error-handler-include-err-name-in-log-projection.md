@@ -71,3 +71,72 @@ Project `err.name` (and ideally also `constructor.name` via pino's serializer) i
 - `agents/docs/solutions/conventions/pino-err-slot-sibling-bypass-redact-policy-2026-05-06.md` — keep all error-shaped data on the `err:` slot, not as siblings to it (still applies post-fix).
 - `agents/docs/tasks-archive.md` `BACKEND-BRIDGE-KEY-LAZY-FALLBACK-THROW-SITE-CLOSURE` (archived 2026-05-07) — this task's parent surface; reliability R1 is the originating finding.
 - `agents/docs/tasks-archive.md` `BACKEND-BRIDGE-KEY-CLAIMS-ROUTE-MIGRATION round-1 dismissals` — the original P3 dismissal that named this task slug as the load-bearing trigger.
+
+## Backend re-review signal (2026-05-07, round-1 implementation — main-tree commit pinned at parent merge)
+
+### Decision: Path A (explicit `name: err.name` projection)
+
+Path A vs Path B was decided by reading `backend/src/logger.ts`:
+
+```ts
+export const logger = pino({
+  level: process.env.LOG_LEVEL || 'info',
+  ...(process.env.NODE_ENV !== 'production' && {
+    transport: { target: 'pino/file', options: { destination: 1 } },
+  }),
+});
+```
+
+No `redactErrSerializer` and no `serializers.err` are wired into the logger instance. A repo-wide grep for `redactErrSerializer` returns zero hits. Passing the raw `Error` to pino's `err` slot would silently inherit pino's default error serializer behavior, which differs from how every other `logger.error({ err: ... }, ...)` call site in `backend/src/` projects (all of them use a hand-rolled object literal). Path A keeps the projection explicit and consistent with neighbors. **Note for the architect:** the task body's premise (paragraph mentioning "pino's `serializers.err` ... sees `{ message, stack }` whose `constructor.name` is `'Object'`") is currently inaccurate — no such serializer is wired today. The fix's value is that it adds `name` to the explicit projection; once the deferred `backend-bridge-key-startup-validation-and-pino-redact` task lands its serializer, the projection here may need a follow-up to convert to Path B.
+
+### Files touched (scope respected, no `git add -A`)
+
+- `backend/src/middleware/errorHandler.ts` — added `name: err.name` to the projected payload + comment block explaining the Path A rationale. **Preserved main's `sendError(res, 500, 'INTERNAL_ERROR', ...)` migration** (the original worker's stale base predated the envelope-helper-sweep, and would have regressed to open-coded `res.status(500).json({...})`; the parent merged manually to keep the canonical envelope).
+- `backend/tests/middleware/errorHandler.test.ts` — new file. Stub Express app mounts errorHandler, throws a `class TestError extends Error` with `this.name = 'TestError'`, asserts the spied `logger.error` payload contains `{ err: { name: 'TestError', message: 'test message', stack: <string> } }` and HTTP 500 + the standard error envelope. Test file header documents the test-mock carve-out clauses (a)/(b)/(c) per root CLAUDE.md.
+- `agents/docs/tasks/pending/backend-error-handler-include-err-name-in-log-projection.md` — this signal block.
+
+### Mutation-kill verification (per `tests-must-fail-on-mutation-of-code-under-test-2026-04-22`)
+
+1. **Mutation applied:** reverted projection to the pre-fix shape `{ err: { message: err.message, stack: err.stack } }` (dropped `name`).
+2. **Test result (red):**
+   ```
+   FAIL  tests/middleware/errorHandler.test.ts > errorHandler middleware
+       > logs the error class name in the structured payload
+   AssertionError: expected undefined to be 'TestError' // Object.is equality
+   - Expected: "TestError"
+   + Received: undefined
+   ❯ tests/middleware/errorHandler.test.ts:74:30
+        72|     ];
+        73|     expect(message).toBe('Unhandled error');
+        74|     expect(payload.err.name).toBe('TestError');
+          |                              ^
+   ```
+3. **Restore + re-run (green):**
+   ```
+   Test Files  1 passed (1)
+        Tests  1 passed (1)
+   ```
+
+(Verification was performed on the worker's stale-base tree; the parent re-runs targeted vitest after the manual merge and reports below in the parent merge note.)
+
+### Advisory: other call sites that drop `err.name`
+
+`grep -rn "logger.error({ err:" backend/src/`:
+
+| File:line | Current shape | Notes |
+|-----------|--------------|-------|
+| `backend/src/middleware/errorHandler.ts:11` | `{ err: { message, stack } }` | **Fixed in this commit (worker base; on main now reads `{ name, message, stack }`).** |
+| `backend/src/hafsql.ts:435` | `{ err: headErr }` | Passes raw Error to pino — no `name` extracted into a field, but pino's default serializer applies. Mixed convention vs other sites. |
+| `backend/src/middleware/verifyHiveSignature.ts:185` | `{ err: (err as Error).message }` | Logs only the message string under `err`. Drops `name` AND `stack`. |
+| `backend/src/routes/contact.ts:47` | `{ err: (mailErr as Error).message }` | Same — message-only. |
+| `backend/src/routes/settings.ts:165` | `{ err: (mailErr as Error).message }` | Same. |
+| `backend/src/routes/accreditation.ts:254` | `{ err: (mailErr as Error).message }` | Same. |
+| `backend/src/routes/search.ts:276` | `{ err: (err as Error).message }` | Same. |
+| `backend/src/routes/ipfs.ts:223` | `{ err: (pinErr as Error).message }` | Same. |
+| `backend/src/routes/ipfs.ts:329` | `{ err: (err as Error).message, cid }` | Same — bonus context (`cid`) preserved. |
+
+**Surfaced for architect triage. Not migrated in this task per scope.** A project-wide convention pass might either (a) introduce a shared `projectError(err: Error)` helper that returns `{ name, message, stack, cause? }`, or (b) wire a custom `serializers.err` into the pino instance in `logger.ts` and switch every site to pass the raw Error. Option (b) is the more idiomatic pino fix and would let those sites lose the explicit cast. Out of scope for this task.
+
+### Parent merge note
+
+Original worker (`worktree-agent-ae8c974b3d6ce3c40`, commits `d447b6f` + `37243ce`) branched from a stale base (`2616cc1`) that predated both the parent's `f73a362` checkpoint AND the `89ec691` error-envelope-helper-sweep. Parent attempted cherry-pick — conflicted on `errorHandler.ts` (worker reintroduced the open-coded `res.status(500).json(...)` regression) and on the task file itself (worker recreated it from scratch). Parent aborted the cherry-pick and re-applied the worker's intent manually onto current main: kept the `sendError` migration intact, added `name: err.name` + Path A comment to the existing log call, copied the test file verbatim, and appended this signal block to the task file already on main.
