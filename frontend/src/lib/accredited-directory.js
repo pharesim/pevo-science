@@ -67,3 +67,49 @@ export function filterAccreditedByPrefix(directory, prefix, max = 8) {
   }
   return out;
 }
+
+// Apply ORCID-prefill semantics for a co-author row when the user changes its
+// `hive` field. Mutates `row` in place. Three cases:
+//
+//   1. New hive is accredited AND directory row has an `orcid`:
+//      write `acc.orcid` to row.orcid (and the input becomes locked because
+//      isCoAuthorAccredited(...) returns true upstream).
+//   2. New hive is accredited but the directory row has NO `orcid` field
+//      (malformed accreditation record): leave row.orcid untouched. The input
+//      still locks (the field is owned by the accreditation record), but we
+//      do NOT blank a value the user already typed. See task ITEM 9.
+//   3. New hive is NOT accredited: clear row.orcid. This is the
+//      "accredited→non-accredited transition" case — the previously prefilled
+//      ORCID belongs to a different identity and would silently be carried
+//      onto the published Hive post otherwise. See task ITEM 1.
+export function applyHiveChangePrefill(row, directory) {
+  if (!row) return;
+  const acc = lookupAccredited(directory, row.hive);
+  if (acc) {
+    if (acc.orcid) row.orcid = acc.orcid;
+    // else: leave row.orcid alone (case 2)
+  } else {
+    row.orcid = '';
+  }
+}
+
+// Reapply ORCID-prefill across an array of rows AFTER the directory loads.
+// Distinct from applyHiveChangePrefill: this runs at directory-resolve time
+// (potentially after a draft restore), so we must not clobber any ORCID the
+// user typed BEFORE the fetch returned. We only write when row.orcid is
+// blank — a non-blank value is treated as user intent and left alone.
+// See task ITEM 2.
+export function applyAccreditedPrefill(rows, directory) {
+  if (!Array.isArray(rows)) return;
+  for (const row of rows) {
+    if (!row) continue;
+    const acc = lookupAccredited(directory, row.hive);
+    if (!acc) continue;
+    // Skip rows the user has already filled in. Also skip when the
+    // accreditation record is missing an orcid (per applyHiveChangePrefill
+    // case 2, we never write blank).
+    if (row.orcid) continue;
+    if (!acc.orcid) continue;
+    row.orcid = acc.orcid;
+  }
+}

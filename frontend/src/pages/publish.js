@@ -3,7 +3,7 @@ import { uploadToIpfs } from '../api.js';
 import { broadcastOps } from '../signer.js';
 import { sha256File, slugify } from '../crypto.js';
 import { createTimerGuard } from '../lib/timer-guard.js';
-import { loadAccreditedDirectory, lookupAccredited } from '../lib/accredited-directory.js';
+import { loadAccreditedDirectory, lookupAccredited, applyHiveChangePrefill, applyAccreditedPrefill } from '../lib/accredited-directory.js';
 import { accreditationBannerTemplate } from '../components/accreditation-banner.js';
 
 import { getAppTag, getAppId, getMaxUploadSize, getMaxUploadSizeMB } from '../config.js';
@@ -608,8 +608,7 @@ export function initPublishPage() {
     updateCoAuthor(index, field, value) {
       this.coAuthors[index][field] = value;
       if (field === 'hive') {
-        const acc = lookupAccredited(this.accreditedDirectory, value);
-        if (acc) this.coAuthors[index].orcid = acc.orcid || '';
+        applyHiveChangePrefill(this.coAuthors[index], this.accreditedDirectory);
       }
     },
 
@@ -623,23 +622,16 @@ export function initPublishPage() {
       return !!lookupAccredited(this.accreditedDirectory, ca.hive);
     },
 
-    accreditedCoAuthor(index) {
-      const ca = this.coAuthors[index];
-      if (!ca) return null;
-      return lookupAccredited(this.accreditedDirectory, ca.hive);
-    },
-
     async _loadAccreditedDirectory() {
       const dir = await loadAccreditedDirectory();
-      if (this._mounted === false) return;
+      if (!this._mounted) return;
       this.accreditedDirectory = dir;
       // After the directory loads (potentially after a draft restore), reapply
       // prefill so any existing coAuthors with currently-accredited hive
-      // handles get their ORCID locked to the accreditation record.
-      for (let i = 0; i < this.coAuthors.length; i++) {
-        const acc = lookupAccredited(this.accreditedDirectory, this.coAuthors[i].hive);
-        if (acc) this.coAuthors[i].orcid = acc.orcid || '';
-      }
+      // handles get their ORCID locked to the accreditation record. The
+      // helper protects user-typed ORCIDs that were entered before the
+      // directory resolved.
+      applyAccreditedPrefill(this.coAuthors, this.accreditedDirectory);
     },
 
     addCitation() {

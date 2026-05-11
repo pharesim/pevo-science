@@ -3,7 +3,7 @@ import { fetchPaper, fetchPaperEnrichment, invalidatePaperCache, uploadToIpfs } 
 import { broadcastOps } from '../signer.js';
 import { sha256File, slugify } from '../crypto.js';
 import { createTimerGuard } from '../lib/timer-guard.js';
-import { loadAccreditedDirectory, lookupAccredited } from '../lib/accredited-directory.js';
+import { loadAccreditedDirectory, lookupAccredited, applyHiveChangePrefill, applyAccreditedPrefill } from '../lib/accredited-directory.js';
 import { accreditationBannerTemplate } from '../components/accreditation-banner.js';
 
 import { getAppTag, getAppId, getMaxUploadSize, getMaxUploadSizeMB } from '../config.js';
@@ -743,8 +743,7 @@ export function initEditPage() {
     updateNewCoAuthor(index, field, value) {
       this.newCoAuthors[index][field] = value;
       if (field === 'hive') {
-        const acc = lookupAccredited(this.accreditedDirectory, value);
-        if (acc) this.newCoAuthors[index].orcid = acc.orcid || '';
+        applyHiveChangePrefill(this.newCoAuthors[index], this.accreditedDirectory);
       }
     },
 
@@ -760,15 +759,14 @@ export function initEditPage() {
 
     async _loadAccreditedDirectory() {
       const dir = await loadAccreditedDirectory();
-      if (this._mounted === false) return;
+      if (!this._mounted) return;
       this.accreditedDirectory = dir;
       // After the directory loads, reapply prefill so any new co-author rows
       // already populated (from a draft) with currently-accredited hive
-      // handles get their ORCID locked to the accreditation record.
-      for (let i = 0; i < this.newCoAuthors.length; i++) {
-        const acc = lookupAccredited(this.accreditedDirectory, this.newCoAuthors[i].hive);
-        if (acc) this.newCoAuthors[i].orcid = acc.orcid || '';
-      }
+      // handles get their ORCID locked to the accreditation record. The
+      // helper protects user-typed ORCIDs that were entered before the
+      // directory resolved.
+      applyAccreditedPrefill(this.newCoAuthors, this.accreditedDirectory);
     },
 
     // Supplementary files
