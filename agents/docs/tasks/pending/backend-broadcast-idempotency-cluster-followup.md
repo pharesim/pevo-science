@@ -495,3 +495,216 @@ broadcast-error code table alongside `POST_BROADCAST_FAILED` with the
 discrimination semantics ("support has been notified" vs "will
 reconcile automatically"; same `details.outcome:'confirmed'` shape, but
 distinct user-recovery copy and operator routing).
+
+---
+
+## Architect re-review (2026-05-11) — HELD PENDING FIXES (round 3)
+
+`/ce-code-review` of round-2 cluster (base `3489f43`, 21 commits, 72
+files) fanned out 12 personas. Aggregated findings ranked, triaged with
+user. Architect-zone TODOs (contract docs in `common.md`,
+`custody.md`, `accreditation.md`, `misc.md`) landed in commit `5bcd95c`.
+The 7 items below are implementer-side and gate archive. Two items
+have related new-task spawns (see "Spawned tasks" below) for
+out-of-scope but related work surfaced during this review.
+
+**Items** (apply in any order; commit on a per-item or per-cluster basis
+as you prefer):
+
+1. **Cache key in `buildCustodyCacheKey` must include `op_type`.**
+   `backend/src/lib/idempotency.ts:337`. F2 added op-type scoping to
+   the HAF SQL probe (`findCustodyBroadcastByIdempotencyKey` accepts
+   `opType?: 'comment' | 'custom_json'` and probes only the matching
+   arm). But F5's cache key hashes only `(username, idempotency_key)`,
+   so once any HAF probe lands a positive cache entry for one op-type,
+   the next request with the same `(username, key)` but a different
+   op-type returns the cached hit without consulting F2's scoping.
+   Concrete sequence: user submits comment with `idempotency_key=K`
+   (cache writes hit for cj's tx_id); within the 60s positive TTL the
+   user submits custom_json with the same key → cache returns the
+   comment's tx_id and the custom_json broadcast is suppressed (the
+   SPA receives `outcome: 'already_landed'` with the WRONG op-type's
+   tx_id). Fix: hash `(username, key, op_type)` in
+   `buildCustodyCacheKey`, OR skip the cache entirely when `op_type`
+   is unknown at the call site. Add a unit test pinning
+   "comment-then-custom_json with same key → second request does NOT
+   return `outcome: 'already_landed'` with the comment's tx_id."
+   Today this is dead code in production (SPA does not yet send
+   `idempotency_key` to custody), but the bug bites the moment the UI
+   side adopts the key. Adversarial reviewer A1, conf 75.
+
+2. **`readCached` JSON.parse cast in `lib/idempotency.ts:362` is
+   unchecked.** A stale Redis entry from a future format mutation
+   (e.g., adding a field, renaming `tx_id`, changing the discriminant
+   key) that persists past a process restart can slip through the
+   `cached.kind === 'hit'` discriminant check at the caller and let
+   the route return `{ tx_id: undefined, block_num: ... }` typed as
+   `IdempotencyHit`. Today there are no stale entries (cache format
+   is new), but the gap is real for any future migration. Fix: after
+   `JSON.parse(raw)`, runtime-validate the discriminated union:
+   `typeof parsed?.kind === 'string'` and
+   `parsed.kind === 'hit' || parsed.kind === 'miss'`. On `'hit'` also
+   assert `typeof parsed.tx_id === 'string' && parsed.tx_id.length > 0`
+   and `(typeof parsed.block_num === 'number' || parsed.block_num === null)`.
+   On validation failure: log
+   `event: 'idempotency.cache.corrupt_entry'` with the key + parsed
+   shape, return `undefined` (degrade to cache miss, preserving the
+   fail-open policy). The discipline anchor is
+   `agents/docs/solutions/conventions/caching-wrapper-discriminated-union-poisoning-2026-05-11.md`,
+   which the cluster's F5 cite-block already references — apply the
+   same convention at the readCached boundary. Kieran-typescript KT-2,
+   conf 75.
+
+3. **User-facing message string `defaultPostBroadcastOperatorRequiredMsg`
+   in `lib/broadcast-error.ts:251` is a false promise.** The string
+   "support has been notified" is wire-visible to SPA error pages, but
+   no PagerDuty/Slack/email integration exists in the codebase to back
+   the claim. Only `logger.error({event:'post_broadcast_write_failed',
+   severity:'permanent', ...})` fires; operators learn only by greping
+   logs. The single-instance beta has no alerting backend wired today.
+   Fix in this round: change the user-facing message to remove the
+   false promise. Suggested replacements:
+   `"please contact support"` (honest about today's state) or
+   `"this has been logged for operator review"` (accurate about the
+   current mechanism). Pick one; the actual alerting-wiring decision
+   is filed as a separate `[BLOCKED by User]` task
+   (`backend-post-broadcast-operator-alerting.md`) and is NOT in this
+   round's scope. Reliability R1 + adversarial A4 cross-reviewer,
+   conf 100.
+
+4. **Add unit tests for the `severity: 'permanent'` branch of
+   `handleBroadcastError`.** `backend/tests/lib/broadcast-error.test.ts`
+   has zero occurrences of `'permanent'`,
+   `'POST_BROADCAST_OPERATOR_REQUIRED'`, or the permanent fallback
+   message. The branch is only exercised end-to-end via
+   `accreditation-idempotency.test.ts`. A mutation swapping
+   `=== 'permanent'` to `=== 'transient'` at lines ~391 and ~424 (or
+   either code string) is invisible at the unit layer. Add 2 specs
+   following the existing fixture pattern: (a) construct
+   `new PostBroadcastWriteError(txId, cause, 'reputation_seed',
+   'permanent')`, call `handleBroadcastError`, assert code is
+   `POST_BROADCAST_OPERATOR_REQUIRED` and message contains the new
+   permanent copy from item 3; (b) default severity, assert
+   `POST_BROADCAST_FAILED` and message contains "reconcile". Pairs
+   with item 3 — land in the same round so the test pins the
+   post-item-3 message text. Correctness C3 + testing T1 +
+   kieran-typescript KT-3 three-way cross-reviewer, conf 100.
+
+5. **Negative cache TTL in `lib/idempotency.ts:335`
+   (`IDEMPOTENCY_CACHE_NEGATIVE_TTL_MS = 10000`) can serve stale
+   misses inside the HAF indexer lag window.** Sequence: pre-broadcast
+   probe at t=0 caches `{kind:'miss'}` for 10s; backend broadcasts and
+   chain confirms in ~3s; SPA receives 504 at t=5 (timeout, network
+   blip); SPA retries at t=5; F5 cache returns the stale negative
+   entry, HAF probe is skipped, backend re-broadcasts. For comment
+   ops, chain rejects the duplicate `(author, permlink)`. For
+   custom_json ops (consent ops on custody, etc.) — NO chain-level
+   dedup — the op is duplicated on chain. Pick one of three
+   alternatives with rationale in your signal block: (a) drop
+   negative caching entirely (every probe-miss reaches HAF; bounded
+   cost at PEvO single-instance scale), (b) shorten negative TTL to
+   ~2-3s (below typical HAF lag minimum so any landed op has time to
+   become indexable; preserves retry-storm absorption), (c) skip the
+   negative cache on the pre-broadcast probe path and only cache
+   POST-broadcast outcomes (most structurally correct: cache state
+   reflects reality after the broadcast resolves; a negative result
+   is only safe to cache after the subsequent broadcast attempt has
+   completed). Adversarial A2 + reliability R3 cross-reviewer,
+   conf 100 (promoted from 50/75).
+
+6. **Add observability for the F1 hit-branch decrement degraded path.**
+   `backend/src/routes/accreditation.ts:556`. The HAF-hit branch wraps
+   `decrementBroadcastAttempts` in a try/catch that fires
+   `idempotency_hit_decrement_failed` on throw. But inside
+   `decrementBroadcastAttempts` (defined at accreditation.ts:154-175),
+   the `isRedisAvailable() === false` path emits its own internal warn,
+   calls `enqueueDecrement`, and returns void (does NOT throw). So the
+   hit-branch outer warn never fires for the degraded path. Operators
+   monitoring `idempotency_hit_decrement_failed` rate miss this case;
+   sustained Redis degradation can inflate cap counters without a
+   hit-branch-specific signal. Fix: either return a status
+   discriminator from `decrementBroadcastAttempts`
+   (`'decremented' | 'enqueued_for_drain' | 'failed'`) that the
+   hit-branch caller switches on to emit
+   `event: 'accreditation.verify.idempotency_hit_decrement_degraded'`
+   alongside the enqueue, OR have the hit-branch pre-check
+   `isRedisAvailable()` and emit the distinct event before invoking.
+   The return-status discriminator is cleaner — preserves the helper's
+   existing internal warn AND gives callers per-site context for
+   their own structured logs. Reliability R2, conf 75.
+
+7. **Verify cap-counter check ordering vs idempotency probe in
+   `/verify`; restructure if cap-check runs first.** Adversarial A3
+   constructed a mixed-envelope scenario: under cap exhaustion AND
+   idempotency hits combined, concurrent retries for the same logical
+   accreditation can receive 502 `BROADCAST_ATTEMPT_LIMIT_EXCEEDED`
+   AND 200 `outcome: 'already_landed'` for the same logical op
+   depending on timing. The fix depends on what verification shows:
+   - If cap-counter check runs BEFORE idempotency probe: restructure
+     to (a) idempotency probe (no state change), (b) if hit → 200
+     (no cap consumed), (c) if miss → increment cap, broadcast. This
+     mirrors the F2 fresh-auth hoist ordering principle ("checks that
+     depend on state changing should run AFTER checks that establish
+     whether the operation is needed at all").
+   - If idempotency probe already runs first: document why the mixed-
+     envelope concern is bounded to the narrow t=2 window (broadcast
+     in flight, HAF doesn't have it yet) in your signal block, and
+     pin the ordering with a test asserting "idempotency hit returns
+     200 even when broadcast-attempts counter is at cap." This is the
+     minimum verification step regardless of which branch the code is
+     in today. Adversarial A3, conf 60 (low because reviewer didn't
+     verify ordering; first action is verify).
+
+### Spawned tasks (related but separate from this hold-block)
+
+The following NEW task files are filed for work surfaced during this
+review but not in this cluster's scope:
+
+- `agents/docs/tasks/blocked/backend-post-broadcast-operator-alerting.md`
+  — wire actual outbound alerting (PagerDuty/Slack/email/etc.) on
+  `event:'post_broadcast_write_failed' severity:'permanent'` with
+  dedup. **BLOCKED by User-input on alerting backend.** Separated from
+  this cluster because the decision is strategic and beta-stage-
+  specific. Once item 3 here lands (user message no longer claims
+  alerting), this task can take whatever timeline the user prefers.
+  Surfaced by reliability R1 + adversarial A4.
+- `agents/docs/tasks/pending/backend-tests-typecheck-coverage.md` —
+  sweep to extend tsc coverage over `backend/tests/` and patch ~11
+  test cases in `broadcast-error.test.ts` that bypass the
+  `LogContext` interface's excess-property protection. Surfaced by
+  kieran-typescript KT-1 + maintainability M3.
+- `agents/docs/tasks/pending/backend-mask-email-helper-extract-and-fix.md`
+  — extract `maskEmail` to a shared helper and fix the dead conditional
+  at `routes/accreditation.ts:288` (both ternary branches produce the
+  same template). Surfaced by maintainability M1 + M2.
+- `agents/docs/tasks/pending/backend-orcid-post-broadcast-severity-classification.md`
+  — walk every `PostBroadcastWriteError` throw site in
+  `backend/src/routes/orcid.ts`, classify severity at the call site
+  (permanent for TypeError/SyntaxError/RangeError/23xxx-DB-codes/42xxx-
+  DB-codes; transient otherwise). Surfaced by correctness C1
+  (pre-existing). Pairs conceptually with item 3 + item 4 above but
+  is out-of-cluster-scope per the round-2 back-compat preserve.
+- `agents/docs/tasks/pending/ui-search-dosearch-inflight-guard.md` —
+  guard `frontend/src/pages/search.js` `doSearch` against stacked
+  in-flight requests from `goToPage` and `popstate`. Surfaced by
+  julik-frontend-races JFR-001.
+- `agents/docs/tasks/pending/ui-mount-editors-destroyed-guard.md` —
+  add `if (!this._mounted) return;` after the dynamic
+  `await import('../editor.js')` in `_mountEditors` on both
+  `frontend/src/pages/publish.js` and `frontend/src/pages/edit.js`.
+  Surfaced by julik-frontend-races JFR-002.
+
+### Dismissed findings (recorded for traceability)
+
+- **Adversarial A5: Hit-path token cleanup before seed-error 502 leaves
+  user without recovery path.** Dismissed with rationale: the HAF hit
+  confirms the accreditation IS on chain (chain-is-canonical model);
+  the 502 `POST_BROADCAST_OPERATOR_REQUIRED` carries
+  `details.outcome: 'confirmed'` + `details.tx_id`, which the SPA can
+  surface to the user as "accredited; auxiliary step failed, support
+  notified." Token cleanup ordering after HAF hit is correct for the
+  chain-is-canonical model; the bonus row reconciles via the next
+  reputation-batch cycle (or operator manually). Re-clicking the
+  verification link would not help anyway since the chain state is
+  already set. File a separate SPA-side task IF testing surfaces
+  actual user confusion with the 502-but-confirmed shape.
