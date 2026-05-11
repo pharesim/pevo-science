@@ -15,7 +15,7 @@ import { logger } from '../logger.js';
 import { runWithArgon2Slot } from '../lib/argon2-semaphore.js';
 import { handleArgonError, ARGON_HANDLED } from '../lib/argon2-error-handler.js';
 import { requestAbortSignal } from '../lib/request-abort-signal.js';
-import { handleBroadcastError } from '../lib/broadcast-error.js';
+import { handleBroadcastError, makeLogBroadcastAttempt } from '../lib/broadcast-error.js';
 import {
   CONSENT_OP_ACTIONS,
   computeFreshAuthTargetHash,
@@ -465,22 +465,17 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
   // idempotency cluster (`backend-broadcast-idempotency-cluster-followup.md`)
   // lands the real per-key counter is the safer default: alerts fire on
   // missing-field rather than reading a constant 1 as ground truth.
-  function logBroadcastAttempt(outcome: 'success' | 'failure' | 'timeout', extra?: Record<string, unknown>) {
-    const fields = {
-      event: 'custody.broadcast.attempt',
-      route: 'custody.broadcast',
-      username,
-      op_types,
-      op_count,
-      outcome,
-      ...(extra ?? {}),
-    };
-    if (outcome === 'success') {
-      logger.info(fields, 'custody.broadcast attempt');
-    } else {
-      logger.warn(fields, 'custody.broadcast attempt');
-    }
-  }
+  //
+  // BACKEND-BROADCAST-ATTEMPT-HELPER-EXTRACTION: the closure-shape factor
+  // out to `lib/broadcast-error.ts` so the bridge `/register` audit-log
+  // site shares the same shape (event-label literal + spread-after-literal
+  // for outcome/event). The factory does NOT declare an `attempt_n` param;
+  // the field stays absent until the idempotency cluster lands the real
+  // per-key counter.
+  const logBroadcastAttempt = makeLogBroadcastAttempt(
+    'custody.broadcast.attempt',
+    { route: 'custody.broadcast', username, op_types, op_count },
+  );
 
   try {
     // Fetch and decrypt the posting key

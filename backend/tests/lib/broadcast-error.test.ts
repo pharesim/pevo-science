@@ -3,6 +3,7 @@ import type { Response } from 'express';
 import {
   handleBroadcastError,
   handleBroadcastErrorAmbiguous,
+  makeLogBroadcastAttempt,
   PostBroadcastWriteError,
 } from '../../src/lib/broadcast-error.js';
 import { BroadcastTimeoutError } from '../../src/hive.js';
@@ -794,5 +795,302 @@ describe('handleBroadcastError', () => {
       expect.objectContaining({ event: 'broadcast_failed', run: 'event-pin-failed' }),
       'test.route broadcast failed',
     );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BACKEND-BROADCAST-ATTEMPT-HELPER-EXTRACTION — `makeLogBroadcastAttempt`
+//
+// Round-2 hold #4 of `backend-bridge-custody-broadcast-discrimination` added
+// the per-attempt audit-log signal as an in-handler closure in
+// `routes/custody.ts`. This factor-out moves the closure into a shared
+// `lib/broadcast-error.ts` factory so the bridge `/register` site can adopt
+// the same shape without duplicating the branching logic. The factory is the
+// single source of truth for the level-dispatch (success → info,
+// failure/timeout → warn) and the spread-after-literal property
+// (outcome + event win over caller-supplied `extra`).
+//
+// `attempt_n` is INTENTIONALLY NOT declared on the factory — see the
+// docblock at `lib/broadcast-error.ts:makeLogBroadcastAttempt` for the
+// rationale (a constant placeholder would silence retry-amplification
+// dashboards; the field returns when the idempotency cluster lands the
+// real per-key counter).
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('makeLogBroadcastAttempt', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('outcome:"success" dispatches logger.info (not warn)', () => {
+    const info = vi.fn();
+    const warn = vi.fn();
+    const log = makeLogBroadcastAttempt(
+      'custody.broadcast.attempt',
+      { username: 'alice', op_types: ['vote'], op_count: 1 },
+      { info, warn } as unknown as Parameters<typeof makeLogBroadcastAttempt>[2],
+    );
+
+    log('success', { tx_id: 'mock-tx-id', block_num: 12345 });
+
+    expect(info).toHaveBeenCalledTimes(1);
+    expect(warn).not.toHaveBeenCalled();
+    expect(info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'custody.broadcast.attempt',
+        outcome: 'success',
+        username: 'alice',
+        op_types: ['vote'],
+        op_count: 1,
+        tx_id: 'mock-tx-id',
+        block_num: 12345,
+      }),
+      'broadcast attempt',
+    );
+  });
+
+  it('outcome:"failure" dispatches logger.warn (not info)', () => {
+    const info = vi.fn();
+    const warn = vi.fn();
+    const log = makeLogBroadcastAttempt(
+      'custody.broadcast.attempt',
+      { username: 'bob', op_types: ['comment'], op_count: 1 },
+      { info, warn } as unknown as Parameters<typeof makeLogBroadcastAttempt>[2],
+    );
+
+    log('failure');
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(info).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'custody.broadcast.attempt',
+        outcome: 'failure',
+        username: 'bob',
+      }),
+      'broadcast attempt',
+    );
+  });
+
+  it('outcome:"timeout" dispatches logger.warn (not info)', () => {
+    const info = vi.fn();
+    const warn = vi.fn();
+    const log = makeLogBroadcastAttempt(
+      'custody.broadcast.attempt',
+      { username: 'carol', op_types: ['vote'], op_count: 1 },
+      { info, warn } as unknown as Parameters<typeof makeLogBroadcastAttempt>[2],
+    );
+
+    log('timeout');
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(info).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'custody.broadcast.attempt',
+        outcome: 'timeout',
+        username: 'carol',
+      }),
+      'broadcast attempt',
+    );
+  });
+
+  it('event field is set from the factory\'s eventLabel argument', () => {
+    const info = vi.fn();
+    const warn = vi.fn();
+    const log = makeLogBroadcastAttempt(
+      'bridge.register.attempt',
+      {
+        username: 'dave',
+        author: 'pevo.bridge',
+        permlink: 'arxiv-1234-5678',
+        op_types: ['comment', 'comment_options'],
+        op_count: 2,
+      },
+      { info, warn } as unknown as Parameters<typeof makeLogBroadcastAttempt>[2],
+    );
+
+    log('success', { tx_id: 'mock-tx-id' });
+
+    expect(info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'bridge.register.attempt',
+        outcome: 'success',
+        author: 'pevo.bridge',
+        permlink: 'arxiv-1234-5678',
+      }),
+      'broadcast attempt',
+    );
+  });
+
+  // Spread-after-literal regression guard for `event`. The factory MUST set
+  // `event:` AFTER the `...extra` spread so a caller-supplied colliding key
+  // cannot silently override the dashboard-keyable anchor. Same JS later-wins
+  // semantics as the round-4 hold #1 / round-5 hold #2 protections on
+  // `handleBroadcastError`'s 502/504 anchors. Mutation kill: moving `event:`
+  // BEFORE the spread re-exposes the override regression, and this spec fails.
+  it('caller-supplied `extra.event` does NOT override the factory\'s eventLabel (spread-after-literal)', () => {
+    const info = vi.fn();
+    const warn = vi.fn();
+    const log = makeLogBroadcastAttempt(
+      'custody.broadcast.attempt',
+      { username: 'eve', op_types: ['vote'], op_count: 1 },
+      { info, warn } as unknown as Parameters<typeof makeLogBroadcastAttempt>[2],
+    );
+
+    log('success', { event: 'attacker_override', tx_id: 'mock-tx-id' });
+
+    expect(info).toHaveBeenCalledTimes(1);
+    const fields = info.mock.calls[0][0] as Record<string, unknown>;
+    // Positive: factory's source-of-truth eventLabel wins.
+    expect(fields.event).toBe('custody.broadcast.attempt');
+    // Negative: caller-supplied colliding value MUST NOT leak through.
+    expect(fields.event).not.toBe('attacker_override');
+    // The non-colliding `tx_id` from `extra` still surfaces.
+    expect(fields.tx_id).toBe('mock-tx-id');
+  });
+
+  // Spread-after-literal regression guard for `outcome`. Same mechanic as the
+  // `event:` protection — the helper's outcome literal must win over a
+  // caller-supplied colliding `extra.outcome` key so the level-dispatch
+  // (info vs warn) and the dashboard outcome-filter stay consistent.
+  it('caller-supplied `extra.outcome` does NOT override the explicit outcome arg (spread-after-literal)', () => {
+    const info = vi.fn();
+    const warn = vi.fn();
+    const log = makeLogBroadcastAttempt(
+      'custody.broadcast.attempt',
+      { username: 'frank', op_types: ['vote'], op_count: 1 },
+      { info, warn } as unknown as Parameters<typeof makeLogBroadcastAttempt>[2],
+    );
+
+    // Call with outcome:'failure' but try to override via extra:{outcome:'success'}.
+    // The explicit arg MUST win; level-dispatch routes to warn (not info).
+    log('failure', { outcome: 'success' });
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(info).not.toHaveBeenCalled();
+    const fields = warn.mock.calls[0][0] as Record<string, unknown>;
+    expect(fields.outcome).toBe('failure');
+    expect(fields.outcome).not.toBe('success');
+  });
+
+  // Base context spreads BEFORE extras — documented behavior. A caller may
+  // want to specialize a base field per-attempt (e.g. `username` rebind on a
+  // proxy-account broadcast). Pin the order so a regression that flips it
+  // (causing the base to clobber per-attempt values) fails here.
+  it('base context fields spread BEFORE extras (caller can override base via `extra`)', () => {
+    const info = vi.fn();
+    const warn = vi.fn();
+    const log = makeLogBroadcastAttempt(
+      'custody.broadcast.attempt',
+      { username: 'base-user', op_types: ['vote'], op_count: 1 },
+      { info, warn } as unknown as Parameters<typeof makeLogBroadcastAttempt>[2],
+    );
+
+    log('success', { username: 'extra-user', tx_id: 'mock-tx' });
+
+    expect(info).toHaveBeenCalledTimes(1);
+    const fields = info.mock.calls[0][0] as Record<string, unknown>;
+    // `extra` wins over base on non-authoritative fields.
+    expect(fields.username).toBe('extra-user');
+    expect(fields.username).not.toBe('base-user');
+    // Non-overridden base fields still surface.
+    expect(fields.op_types).toEqual(['vote']);
+    expect(fields.op_count).toBe(1);
+    // Round-3 hold #1 invariant: `attempt_n` MUST NOT appear on the helper
+    // output unless a caller threads it via `extra` (and no caller does
+    // today). The factory does not declare an `attempt_n` parameter — a
+    // hardcoded constant would silence retry-amplification dashboards.
+    expect(fields.attempt_n).toBeUndefined();
+  });
+
+  // `attempt_n` invariant — pinned at the factory layer (the route-level
+  // tests pin the same invariant at custody.ts; this spec pins it at the
+  // shared helper so a regression that adds a placeholder default param
+  // fails here before reaching either route).
+  it('does NOT emit attempt_n by default (round-3 hold #1 invariant — preserved by the factory)', () => {
+    const info = vi.fn();
+    const warn = vi.fn();
+    const log = makeLogBroadcastAttempt(
+      'custody.broadcast.attempt',
+      { username: 'gerry', op_types: ['vote'], op_count: 1 },
+      { info, warn } as unknown as Parameters<typeof makeLogBroadcastAttempt>[2],
+    );
+
+    log('success', { tx_id: 'mock-tx' });
+    log('failure');
+    log('timeout');
+
+    const allCalls = [...info.mock.calls, ...warn.mock.calls];
+    expect(allCalls.length).toBe(3);
+    for (const call of allCalls) {
+      const fields = call[0] as Record<string, unknown>;
+      expect(fields).not.toHaveProperty('attempt_n');
+    }
+  });
+
+  // Default loggerInstance — when no `loggerInstance` arg is passed, the
+  // factory falls back to the module-scope `logger`. Pin this behavior so a
+  // future refactor that changes the default binding (e.g. to a stub) fails
+  // here. The vi.spyOn captures the call without depending on the global
+  // logger's stdout drain.
+  it('falls back to the module-scope logger when no loggerInstance is provided', () => {
+    const infoSpy = vi.spyOn(logger, 'info').mockImplementation(() => undefined as unknown as void);
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as unknown as void);
+
+    const log = makeLogBroadcastAttempt(
+      'custody.broadcast.attempt',
+      { username: 'henry', op_types: ['vote'], op_count: 1 },
+    );
+
+    log('success', { tx_id: 'default-logger-tx' });
+    log('failure');
+
+    expect(infoSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'custody.broadcast.attempt',
+        outcome: 'success',
+        tx_id: 'default-logger-tx',
+      }),
+      'broadcast attempt',
+    );
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'custody.broadcast.attempt',
+        outcome: 'failure',
+      }),
+      'broadcast attempt',
+    );
+  });
+
+  // Both event labels in use today — pin them as a sanity check so a typo at
+  // a call site (e.g. 'custody.broadcast' instead of 'custody.broadcast.attempt')
+  // is caught alongside the route-level integration tests.
+  it('emits the correct eventLabel for each route (custody.broadcast.attempt vs bridge.register.attempt)', () => {
+    const info = vi.fn();
+    const warn = vi.fn();
+    const fakeLogger = { info, warn } as unknown as Parameters<typeof makeLogBroadcastAttempt>[2];
+
+    const custodyLog = makeLogBroadcastAttempt(
+      'custody.broadcast.attempt',
+      { username: 'u1', op_types: ['vote'], op_count: 1 },
+      fakeLogger,
+    );
+    const bridgeLog = makeLogBroadcastAttempt(
+      'bridge.register.attempt',
+      { username: 'u2', op_types: ['comment', 'comment_options'], op_count: 2 },
+      fakeLogger,
+    );
+
+    custodyLog('success', { tx_id: 't1' });
+    bridgeLog('success', { tx_id: 't2' });
+
+    expect(info).toHaveBeenCalledTimes(2);
+    const custodyCall = info.mock.calls[0][0] as Record<string, unknown>;
+    const bridgeCall = info.mock.calls[1][0] as Record<string, unknown>;
+    expect(custodyCall.event).toBe('custody.broadcast.attempt');
+    expect(bridgeCall.event).toBe('bridge.register.attempt');
   });
 });

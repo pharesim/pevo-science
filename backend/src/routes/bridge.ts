@@ -2,7 +2,7 @@ import { Router, type Request, type Response } from 'express';
 import crypto from 'crypto';
 import { getRequiredBridgePostingKey } from '../startup-checks.js';
 import { getPool, isHafAvailable } from '../db.js';
-import { broadcastSendOperationsWithTimeout } from '../hive.js';
+import { broadcastSendOperationsWithTimeout, BroadcastTimeoutError } from '../hive.js';
 import { config } from '../config.js';
 import { sendOk, sendError } from '../response.js';
 import { getAccreditedSet } from '../accreditation.js';
@@ -12,7 +12,7 @@ import { logger } from '../logger.js';
 import { getRedis, isRedisAvailable } from '../redis.js';
 import { rateLimit, byIp } from '../middleware/rateLimit.js';
 import { T, validPevoPaperWhere } from '../hafsql.js';
-import { handleBroadcastError } from '../lib/broadcast-error.js';
+import { handleBroadcastError, makeLogBroadcastAttempt } from '../lib/broadcast-error.js';
 import { assertNever } from '../util/assertNever.js';
 import {
   parseIdentifier,
@@ -452,6 +452,33 @@ router.post('/register', registerLimiter, verifyHiveSignature, async (req: Reque
       permlink,
     );
 
+    // Per-attempt audit-log signal (BACKEND-BROADCAST-ATTEMPT-HELPER-
+    // EXTRACTION). Same pattern as `custody.broadcast.attempt` — fires on
+    // EVERY broadcast attempt (success/failure/timeout) so operators can
+    // correlate retry-amplification. The shared `makeLogBroadcastAttempt`
+    // factory enforces level-dispatch + spread-after-literal symmetry with
+    // the custody site; only the event-label literal differs.
+    //
+    // `attempt_n` is INTENTIONALLY OMITTED here too — same rationale as the
+    // custody site (a hardcoded `attempt_n: 1` would silence retry-
+    // amplification dashboards keyed on the field). The field returns when
+    // `backend-broadcast-idempotency-cluster-followup.md` lands the real
+    // per-key counter.
+    const op_types = ['comment', 'comment_options'];
+    const op_count = op_types.length;
+    const logBroadcastAttempt = makeLogBroadcastAttempt(
+      'bridge.register.attempt',
+      {
+        route: 'bridge.register',
+        username,
+        author: config.hiveBridgeAccount,
+        permlink,
+        identifier,
+        op_types,
+        op_count,
+      },
+    );
+
     try {
       // Use the boot-cached parsed key. `assertBridgeKeyConfigured` above
       // already returned 503 if the WIF env var is unset, so the cache is
@@ -489,6 +516,8 @@ router.post('/register', registerLimiter, verifyHiveSignature, async (req: Reque
         key,
       );
 
+      logBroadcastAttempt('success', { tx_id: result.id });
+
       sendOk(res, {
         author: config.hiveBridgeAccount,
         permlink,
@@ -501,6 +530,12 @@ router.post('/register', registerLimiter, verifyHiveSignature, async (req: Reque
         },
       });
     } catch (err) {
+      // Pino-side per-attempt signal for the broadcast catch path. The
+      // outcome label discriminates timeout vs. failure so dashboards can
+      // separate the two without parsing the inner-helper's stable suffix.
+      // Mirrors the custody.ts pattern at the matching catch site.
+      const outcome: 'failure' | 'timeout' = err instanceof BroadcastTimeoutError ? 'timeout' : 'failure';
+      logBroadcastAttempt(outcome);
       return handleBroadcastError(res, err, {
         timeoutMsg: 'Broadcasting bridge paper registration timed out',
         failMsg: 'Failed to broadcast bridge paper registration to Hive',

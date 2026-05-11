@@ -139,6 +139,16 @@ export interface LogContext {
   claimer?: string;
   /** Signer discriminator for revoke surface ('bridge' | 'admin') */
   signer?: 'bridge' | 'admin';
+  /**
+   * Route discriminator for structured-log filtering ('custody.broadcast',
+   * 'bridge.register', etc.). Used by `makeLogBroadcastAttempt` callers that
+   * want operator dashboards to filter on the route alongside the `event:`
+   * discriminator. Optional; the `event:` label already encodes the route
+   * prefix so callers can omit `route` if they don't need the redundant key.
+   */
+  route?: string;
+  /** Bridge paper identifier (DOI / arXiv id) — used by bridge.register attempts */
+  identifier?: string;
 }
 
 interface BaseHandleBroadcastErrorOpts {
@@ -474,4 +484,101 @@ export function handleBroadcastErrorAmbiguous(
   opts: HandleBroadcastErrorAmbiguousOpts,
 ): 'timeout' | 'failure' | 'post_broadcast' {
   return handleBroadcastError(res, err, opts);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Per-attempt audit-log helper (BACKEND-BROADCAST-ATTEMPT-HELPER-EXTRACTION).
+//
+// Round-2 hold #4 of `backend-bridge-custody-broadcast-discrimination` added
+// a per-attempt audit-log helper inside `routes/custody.ts` as an in-handler
+// closure: every broadcast attempt fires a structured pino event tagged
+// `event:<route>.attempt` with `outcome ∈ {success, failure, timeout}` so
+// operators can correlate retry-amplification before the full idempotency
+// design lands. `routes/bridge.ts` /register adopts the same pattern.
+//
+// The closure shape is identical across the two routes — same base-context
+// fields captured (username, op_types, op_count), same outcome → log-level
+// dispatch (success → info, failure/timeout → warn), same `extra` spread
+// for per-call payloads (tx_id, block_num on success; nothing on
+// failure/timeout). Only the event-label literal differs. Without
+// extraction, a future maintainer editing one of the two closures has no
+// mechanical guarantee the sibling site stays in sync (a divergence at
+// the level-dispatch, the spread direction, or the `event:` placement is
+// the load-bearing failure mode — operator dashboards would silently
+// mis-classify or miss attempts).
+//
+// `makeLogBroadcastAttempt` is the factory. Returns the per-attempt
+// closure pre-bound to the request-scope base context; callers invoke it
+// per attempt with `(outcome, extra?)`. Spread order:
+//
+//   { ...baseContext, ...extra, outcome, event: eventLabel }
+//
+// — `extra` overrides `baseContext` (caller may want to specialize a base
+// field per-attempt; closing over the request-scope is the common case but
+// not load-bearing), and `outcome` + `event` go AFTER `...extra` so the
+// helper's source-of-truth values cannot be silently overridden by a
+// caller-supplied colliding key in `extra`. This is the spread-after-
+// literal convention from `handleBroadcastError`'s round-4/5 holds (the
+// `event:` field guard at the four 502/504 anchors).
+//
+// `attempt_n` is INTENTIONALLY NOT a declared field on the factory. Round-3
+// hold #1 of `backend-bridge-custody-broadcast-discrimination` established
+// that a hardcoded `attempt_n: 1` would silence retry-amplification
+// dashboards keyed on the field (a constant 1 reads as "no retries" to
+// operators). When the full idempotency cluster lands the real per-key
+// counter (filed as `backend-broadcast-idempotency-cluster-followup.md`),
+// callers will thread the counter through `extra` or the factory adds a
+// dedicated `attempt_n?: number` parameter; until then, the slot stays
+// empty so alerts fire on missing-field rather than reading a placeholder
+// as ground truth.
+
+/** Outcome label discriminator for every per-attempt audit-log event. */
+export type AttemptOutcome = 'success' | 'failure' | 'timeout';
+
+/**
+ * Returns a per-attempt audit-log closure pre-bound to `eventLabel` and
+ * `baseContext`. Each invocation emits one structured pino event:
+ *
+ *   logger.info  on outcome:'success'      (broadcast confirmed by Hive)
+ *   logger.warn  on outcome:'failure'      (chain rejection / RPC error)
+ *   logger.warn  on outcome:'timeout'      (BroadcastTimeoutError fired)
+ *
+ * Operator-alert anchor: `event:<eventLabel>` is the dashboard-keyable
+ * literal. The trailing string passed to pino is `'broadcast attempt'`
+ * verbatim (no routeLabel prefix — the `event:` field is the discriminator;
+ * the message is just human readability).
+ *
+ * The returned closure accepts `extra?` for per-call payloads (tx_id and
+ * block_num on success; freshAuthMechanism/consent_action on the custody
+ * consent-op path). `extra` spreads BEFORE `outcome` + `event:` so the
+ * helper's source-of-truth values win.
+ *
+ * `loggerInstance` is parameterized for unit-test injection — the default
+ * binds to the module-scope `logger` re-exported from `../logger.js`.
+ * Tests in `backend/tests/lib/broadcast-error.test.ts` pass a vi.fn-spied
+ * logger to assert on the structured payload without depending on the
+ * global logger's stdout drain.
+ */
+export function makeLogBroadcastAttempt(
+  eventLabel: string,
+  baseContext: LogContext,
+  loggerInstance: { info: typeof logger.info; warn: typeof logger.warn } = logger,
+): (outcome: AttemptOutcome, extra?: Record<string, unknown>) => void {
+  return (outcome, extra) => {
+    const fields = {
+      ...baseContext,
+      ...(extra ?? {}),
+      // Authoritative fields placed AFTER `...extra` so a caller-supplied
+      // `extra: { outcome: ..., event: ... }` cannot silently override the
+      // helper's source-of-truth values. Same spread-after-literal
+      // convention as `handleBroadcastError`'s round-4/5 holds.
+      outcome,
+      event: eventLabel,
+    };
+    if (outcome === 'success') {
+      loggerInstance.info(fields, 'broadcast attempt');
+    } else {
+      loggerInstance.warn(fields, 'broadcast attempt');
+    }
+  };
 }
