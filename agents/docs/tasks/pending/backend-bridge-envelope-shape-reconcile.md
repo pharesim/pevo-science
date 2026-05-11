@@ -29,11 +29,62 @@ The 2 bridge.ts sites diverge from this shape — extra fields nested INSIDE `er
 
 Note: `auth.ts:801` is a third open-coded envelope site, but it carries a TOP-LEVEL `data` field alongside `error` — `sendError` cannot emit this shape. That site is intentionally un-migratable to the canonical helper without expanding the helper signature; out of scope here.
 
-## Decision (architect-owned, must be made before implementer picks up)
+## Decision (architect 2026-05-11): Direction A — canonical migration
 
-The architect must decide between A / B / C **before this task is unblocked**. Recommended: pick A (canonical migration) if the frontend lockstep cost is bounded, or B (preserve divergence) if any consumer's expectations are deeply baked. C (extend `sendError`) is the most intrusive option and should only be picked if a third diverging site is also expected.
+**Chosen direction: A.** Migrate both sites to `sendError(...)` with the divergent fields placed inside `error.details`.
 
-This task starts in `tasks/pending/` but the implementer should NOT pick it up until the architect lands the wire-shape decision in this task file (replace this section with the decision rationale + chosen direction).
+### Corrections to this task's framing
+
+The task body's description of the canonical shape (above this section) is **wrong**. The actual canonical shape, per `backend/src/response.ts:37-43`, is:
+
+```json
+{
+  "status": "error",
+  "error": {
+    "code": "...",
+    "message": "...",
+    "details": { ... }
+  }
+}
+```
+
+`details` is nested INSIDE `error`, NOT at top level. The frontend `ApiRequestError` constructor at `frontend/src/api.js:60` reads `errorBody.error.details` and exposes it as `err.details`, consistent with this shape.
+
+### Status of the two sites at time of decision (line numbers refreshed)
+
+- **`backend/src/routes/bridge.ts:413-420` (LOCK_HELD branch, formerly :318):** the LOCK_HELD rename landed alongside `backend-bridge-write-haf-lag-and-retry-amplification` round-2. The current shape already matches canonical — `error: { code: 'LOCK_HELD', message, details: { retriable: true } }`. **No wire-shape change needed; pure helper migration.**
+- **`backend/src/routes/bridge.ts:435-444` (DUPLICATE-existing branch, formerly :340):** still diverges — `existing_author` and `existing_permlink` are siblings to `code`/`message` at the `error` level, not inside `details`. **Wire shape changes: `body.error.existing_author` → `body.error.details.existing_author` (same for `existing_permlink`).**
+
+### Why A and not B/C
+
+- **B (preserve divergence) rejected.** No consumer is depending on the current divergent shape — grep of `frontend/src/` and `frontend/tests/` for `existing_author`/`existing_permlink` returns zero hits, and `backend/tests/` has no fixture asserting the DUPLICATE-existing path. The "deeply baked consumer" risk that would have justified B doesn't exist; B would lock in inconsistency for no gain.
+- **C (extend `sendError`) rejected.** No third divergent site has been identified (`auth.ts:801` is intentionally un-migratable for a different reason — top-level `data` alongside `error`). C's cost (every existing `sendError` call site must handle the new optional inside-`error` nesting) is real; A's cost is one route file + one doc line.
+
+### Out-of-scope nudges resolved
+
+- **Wire-shape direction for the contract doc:** Direction A. The contract doc update lands in this same commit (see `agents/docs/api-contracts/bridge.md` change in the architect's unblock commit).
+- **Whether to extend `sendError`:** no.
+- **Whether `auth.ts:801` is in scope:** no (per the task body's explicit Out-of-scope clause).
+
+### Refreshed acceptance criteria (supersedes original "## Acceptance" above, except where noted)
+
+1. **`bridge.ts:413-420` (LOCK_HELD):** replace the open-coded `res.status(409).json(...)` block with `sendError(res, 409, 'LOCK_HELD', message, { retriable: true })`. Zero wire-shape change; the existing `bridge-haf-lag-locks.test.ts:390-391` assertions on `body.error.code` and `body.error.details` should pass unchanged.
+
+2. **`bridge.ts:435-444` (DUPLICATE-existing):** replace with `sendError(res, 409, 'DUPLICATE', message, { existing_author: existing.author, existing_permlink: existing.permlink })`. Wire shape now matches the canonical: `body.error.details.existing_author`, `body.error.details.existing_permlink`.
+
+3. **Tests:** no existing test fixture currently asserts the DUPLICATE-existing 409 path (verified at architect re-review 2026-05-11 — `grep -rn "DUPLICATE.*existing\|existing_author\|existing_permlink" backend/tests/` returns zero hits). The implementer SHOULD add a single fixture asserting `body.error.code === 'DUPLICATE'` and `body.error.details.existing_author`/`existing_permlink` on the new wire shape — this closes the pre-existing coverage gap while the migration is fresh. Place in `backend/tests/routes/bridge.test.ts` near the LOCK_HELD coverage in `bridge-haf-lag-locks.test.ts`.
+
+4. **No frontend lockstep needed.** Architect verified zero consumers of these fields in `frontend/src/` and `frontend/tests/`. If the implementer's grep reveals a consumer (e.g. one landed between this decision and pickup), file a paired `ui-bridge-envelope-shape-update.md` task and block this task on it — but do not assume it's needed.
+
+5. **Contract doc:** `agents/docs/api-contracts/bridge.md:144` has been updated in the architect's unblock commit to specify `error.details.existing_author` / `error.details.existing_permlink` as part of the DUPLICATE 409 response. Implementer does NOT need to edit `api-contracts/`; the doc already describes the target shape.
+
+6. **`auth.ts:801` remains intentionally un-migratable** (top-level `data` alongside `error`). Out of scope. No follow-up task needed.
+
+### Implementer pickup notes
+
+- This is now a small, mechanical change: 2 sites in `bridge.ts`, 1 new test, no doc edits, no frontend edits.
+- The LOCK_HELD migration in particular has no behavioral risk — the wire shape is already canonical, the helper just owns the JSON emit.
+- The DUPLICATE migration's wire change is a genuine breaking change for any unknown consumer, but architect verified none exist today. If you find one mid-implementation, hold and ping the architect.
 
 ## Acceptance (assumes direction A; adjust per architect decision above)
 
@@ -72,3 +123,7 @@ This task starts in `tasks/pending/` but the implementer should NOT pick it up u
 ## [BLOCKED by Architect] (backend startup triage 2026-05-07)
 
 Per the task body's "Decision (architect-owned, must be made before implementer picks up)" section, the wire-shape direction (A: canonical `details` migration / B: preserve divergence / C: extend `sendError`) must land in this file before backend can pick the task up. Moving to `blocked/` so the architect's startup scan surfaces it. Backend will pick up immediately after the architect lands the chosen direction in the "Decision" section and `git mv`s back to `pending/`.
+
+## [UNBLOCKED] (architect 2026-05-11)
+
+Wire-shape decision landed in the "## Decision (architect 2026-05-11): Direction A" section above. Direction A (canonical migration to `error.details`) is the chosen path. Refreshed acceptance criteria + frontend/test verification + contract doc spec are all in that block. Moving to `pending/` for backend pickup.

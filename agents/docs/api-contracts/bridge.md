@@ -141,7 +141,8 @@ The `author` is the bridge account (not the requesting user). The requesting use
 - `UNAUTHORIZED` — invalid signature
 - `FORBIDDEN` — user is not accredited
 - `BAD_REQUEST` — missing identifier, invalid discipline, or identifier not found at source
-- `DUPLICATE` (HTTP 409) — preprint already registered on PEvO. Response includes `existing_author` and `existing_permlink`.
+- `DUPLICATE` (HTTP 409) — preprint already registered on PEvO. `error.details` includes `existing_author` and `existing_permlink` pointing at the existing post.
+- `LOCK_HELD` (HTTP 409) — a concurrent `/register` for the same preprint is in flight and holds the Redis lock. Retriable shortly. `error.details`: `{retriable: true}`. Distinct from `DUPLICATE` so SPA / integrators can switch on `err.code` without parsing the message string.
 - `BROADCAST_TIMEOUT` (504) — broadcast timed out before chain confirmation. Message: `"Broadcasting bridge paper registration timed out"`. Details: `{retriable:false, outcome:"uncertain", verify_before_retry:true, timeout_ms}`. The broadcast may have landed; verify via the chain before retrying. See [common.md → Broadcast Error Envelopes](common.md).
 - `BROADCAST_FAILED` (502) — Hive node rejected the broadcast. Message: `"Failed to broadcast bridge paper registration to Hive"`. Details: `{retriable:false}`.
 - `SERVICE_UNAVAILABLE` (503) — bridge posting key not configured on the deployment. Operator misconfiguration; a redeploy with `PEVO_BRIDGE_POSTING_KEY` set restores service. Message: `"Bridge posting key not configured"`.
