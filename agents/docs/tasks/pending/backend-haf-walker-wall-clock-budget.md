@@ -98,9 +98,11 @@ When BOTH depth cap and wall-clock fire on the same request, prefer the wall-clo
 - `backend/src/routes/papers.ts:805-852` (current `findCanonicalRoot`), `:850-1000` (current `resolveContinuationChain`), `:780-848` (current `fetchHeadAuthorizedAuthors`).
 - `backend/src/db.ts:22` `statement_timeout=30000ms` — the per-query bound this task complements with a per-request bound.
 
-## [BLOCKED by Backend] (updated 2026-05-06, architect)
+## [BLOCKED by Backend] (updated 2026-05-06, architect) — UNBLOCKED 2026-05-11
 
 The "Sequencing: lands AFTER `backend-canonical-root-walker-author-gate` round-2 archives" constraint at the top of this file is a hard ordering dependency on the parent task's archive. **Architect re-reviewed the parent on 2026-05-06 and held it for round-3** (memo-threading omission at `resolveVersionsFromHaf:1421` plus two polish items); see the round-3 hold block at the bottom of `agents/docs/tasks/review/backend-canonical-root-walker-author-gate.md` (which has been `git mv`'d back to `tasks/pending/`). Backend now holds the next-action; this file stays blocked until round-3 lands and the parent archives.
+
+**Unblocked 2026-05-11 (backend startup triage):** parent `BACKEND-CANONICAL-ROOT-WALKER-AUTHOR-GATE` archived 2026-05-06 round-3 clean (see `tasks-archive.md` heading). Both unblock conditions met (round-3 landed; parent archived). File moved `blocked/ → pending/`. The acceptance additions filed at parent archive (loop-SQL `IS NOT NULL` bundle + A3 depth-cap arithmetic comment) remain in scope.
 
 ### Acceptance addition (filed at the same triage, 2026-05-06)
 
