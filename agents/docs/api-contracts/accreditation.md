@@ -120,17 +120,22 @@ Confirm an email verification token to complete accreditation.
 {
   "message": "Accreditation confirmed",
   "username": "scientist1",
-  "tx_id": "<Hive custom_json transaction ID>"
+  "tx_id": "<Hive custom_json transaction ID>",
+  "outcome": "already_landed"
 }
 ```
 
-The backend broadcasts the accreditation `custom_json` to Hive upon successful verification.
+The backend broadcasts the accreditation `custom_json` to Hive upon successful verification. The on-chain payload includes an `idempotency_key` field set to `sha256(${token}:${hive_username})` (deterministic per token; no PII since the token is high-entropy and the username is already public). Pre-broadcast the backend probes HAF for a prior `accredit` op carrying the same `idempotency_key`; on hit the response short-circuits to the existing `tx_id` without re-broadcasting.
+
+`outcome` is OPTIONAL. The field is **omitted** on a fresh broadcast and **present with value `"already_landed"`** only on the HAF idempotency-hit path (a prior verification of the same token already landed an accredit op). On the hit path the per-token state is best-effort cleaned and the response carries the prior `tx_id`.
 
 **Errors:**
-- `BAD_REQUEST` — invalid/expired token.
-- `BROADCAST_FAILED` (502) — Hive chain rejected the accreditation broadcast. `details.retriable: false`. The token is consumed; request a new verification token.
+- `BAD_REQUEST`: invalid/expired token.
+- `BROADCAST_FAILED` (502): Hive chain rejected the accreditation broadcast. `details.retriable: false`. The token is consumed; request a new verification token.
+- `POST_BROADCAST_FAILED` (502): Broadcast confirmed on chain, then a transient downstream cascade write failed. Today the only emitter on this route is `seedAccreditationBonus`, which writes the initial reputation-bonus row keyed by username. Wire shape per [common.md](common.md). `details.failed_step: 'reputation_seed'`, `details.outcome: 'confirmed'`, `details.tx_id` carries the confirmed accreditation tx_id. The accreditation IS durable; the bonus row is reconciled by the next reputation-batch cycle. Clients should treat this as success from the user's perspective (do NOT prompt for a new verification token; the chain op is canonical).
+- `POST_BROADCAST_OPERATOR_REQUIRED` (502): Broadcast confirmed on chain, then a permanent downstream cascade write failed (e.g., a TypeError or non-retriable DB error inside `seedAccreditationBonus`). Wire shape per [common.md](common.md). Same chain-is-canonical semantics as `POST_BROADCAST_FAILED`, but operator intervention is required to reconcile the missed bonus. User-facing message indicates support contact rather than automatic reconciliation. Clients should NOT prompt for a new verification token.
 - `BROADCAST_ATTEMPT_LIMIT_EXCEEDED` (502): Per-token broadcast-attempts cap exceeded under concurrent retry burst (the broadcast was never invoked, so this is distinct from `BROADCAST_FAILED`). `details.retriable: false`. The token is **preserved** (soft-block, not consumed): the per-token broadcast-attempts counter and the pending-token entry both TTL out independently within the token's 24h life, after which the user can retry the same token. Clients should NOT call `/api/accreditation/request` for a fresh token in immediate response; that endpoint is rate-limited to 3 requests per account per 24 hours, and burning a slot here may lock the user out for the rest of the day. Surface the message to the user and let them wait or request a fresh email after the wait. Operators alerting on `BROADCAST_FAILED` rate should NOT bucket this code together with `BROADCAST_FAILED`: this signals client retry-pressure, not chain rejection.
-- `BROADCAST_TIMEOUT` (504) — Backend aborted the broadcast at 30s. Outcome uncertain. `details.retriable: false, details.outcome: 'uncertain', details.verify_before_retry: true, details.timeout_ms: 30000`. Verify whether the accreditation landed (query `/api/accreditation/:username` against HAF) before retrying — a blind retry while the original broadcast lands silently produces duplicate `accredit` custom_json ops.
+- `BROADCAST_TIMEOUT` (504): Backend aborted the broadcast at 30s. Outcome uncertain. `details.retriable: false, details.outcome: 'uncertain', details.verify_before_retry: true, details.timeout_ms: 30000`. The on-chain `idempotency_key` field (see Response notes above) means a blind retry within the token's 24h life is now SAFE: the retry's pre-broadcast HAF lookup will find the landed op (if it did land) and short-circuit to `outcome: 'already_landed'`. The historical "blind retry produces duplicate `accredit` ops" hazard is closed by the idempotency layer for this endpoint.
 - `SERVICE_UNAVAILABLE` (503): Backend Redis dependency was unavailable when the per-token broadcast-attempts counter could not be primed before reaching the broadcast site. `details.retriable: true`. No `Retry-After` header (this is the third "non-argon2" 503 sub-case per `common.md`); no `details.reason` discriminator. The broadcast was never invoked and no chain-side or token-side state changed, so clients can safely retry. See the `details.retriable` note in `common.md` for the cross-endpoint convention.
 
 ---

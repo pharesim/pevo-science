@@ -167,4 +167,9 @@ Server health check. Not paginated.
 }
 ```
 
+**Field notes:**
+
+- `haf_available` reflects whether HAF is **configured** in this deployment (i.e., `HAF_DATABASE_URL` is set), NOT whether HAF is currently reachable. A live-unreachable but configured HAF still shows `true`. The wire field name is preserved for backward compatibility; the underlying backend helper is `isHafConfigured()`. Status-page consumers should treat this as a "feature available in this deployment" signal, not a real-time health check. A future contract revision MAY introduce a separate live-reachability field if needed; deployments needing a real-time signal today should probe a HAF-backed endpoint directly (e.g., `GET /api/disciplines`).
+- `redis_available` reflects whether the Redis ping at request time succeeded. This IS a real-time check; a transient Redis outage flips the field to `false`.
+
 Note: This endpoint does not use the standard response envelope.

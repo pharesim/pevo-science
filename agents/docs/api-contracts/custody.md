@@ -25,20 +25,26 @@ Sign and broadcast Hive operations for light accounts. Only `comment`, `vote`, a
       "json_metadata": "{\"app\":\"pevo/1.0\",\"tags\":[\"pevo\",\"science\"]}"
     }]
   ],
-  "fresh_auth_proof": "<token from POST /api/custody/fresh-auth or POST /api/orcid/start { mode: 'fresh_auth' }>"
+  "fresh_auth_proof": "<token from POST /api/custody/fresh-auth or POST /api/orcid/start { mode: 'fresh_auth' }>",
+  "idempotency_key": "<optional 1-128 char client-supplied dedup key>"
 }
 ```
 
 `fresh_auth_proof` is REQUIRED when the bundle contains a consent op (`author_accept` or `author_resign`) and otherwise omitted. The proof is single-use and consumed atomically before the broadcast attempt.
+
+`idempotency_key` is OPTIONAL. When present, the backend embeds the key into the first `comment` op's `json_metadata.<appTag>.idempotency_key` or the first `custom_json` op's `json.idempotency_key` before broadcasting, and on the next retry-equivalent request runs a pre-broadcast HAF lookup. If a prior op carrying the same `(username, key, op_type)` triple has already landed on chain, the backend short-circuits to the existing `tx_id` without re-broadcasting (see response shape extension below). The key MUST be 1-128 characters. Recommended SPA discipline: generate via `crypto.randomUUID()` per logical operation. Pure-vote bundles (no `comment` or `custom_json` op) silently bypass the idempotency layer because votes have no payload surface for embedding; vote re-cast is low-harm (voting-power cost only). Bundles submitted without an `idempotency_key` proceed as before; the field is opt-in during the SPA migration window.
 
 **Response `data`:**
 
 ```json
 {
   "tx_id": "abc123...",
-  "block_num": 12345678
+  "block_num": 12345678,
+  "outcome": "already_landed"
 }
 ```
+
+`outcome` is OPTIONAL. The field is **omitted** on a fresh broadcast and **present with value `"already_landed"`** only on the idempotency-hit path (the backend found a prior op carrying the same `idempotency_key` already on chain and skipped re-broadcasting). On the idempotency-hit path `block_num` MAY be `null` (the HAF row representation does not always preserve `block_num` for legacy operations; consumers MUST handle absence without throwing). On a fresh broadcast `block_num` is always a positive integer.
 
 **Constraints:**
 - Only `comment`, `vote`, and `custom_json` operations are allowed. All other operation types return 403.
@@ -59,8 +65,10 @@ Sign and broadcast Hive operations for light accounts. Only `comment`, `vote`, a
   - `details.reason: "target_mismatch"` → **403 FORBIDDEN** (per-op target-binding violation; token was issued for a different `(action, root_author, root_permlink)` triple than the consent op in the bundle). The fresh-auth proof binds at issuance time to the specific consent op the user authorized; reusing it for a different action or paper is rejected.
   - `details.reason: "missing" | "expired" | "malformed"` → **401 UNAUTHORIZED** (no valid proof present).
   - `details.reason` is a closed enum: `"missing" | "expired" | "username_mismatch" | "target_mismatch" | "malformed"`. Adding a new value is a wire contract change; document here before shipping. Consumers MUST branch on `details.reason` to render distinct UX, not on the message string.
-- `BROADCAST_TIMEOUT` (504) — broadcast timed out before chain confirmation. Message: `"Broadcasting signed operation timed out"`. Details: `{retriable:false, outcome:"uncertain", verify_before_retry:true, timeout_ms}`.
+- `BROADCAST_TIMEOUT` (504) — broadcast timed out before chain confirmation. Message: `"Broadcasting signed operation timed out"`. Details: `{retriable:false, outcome:"uncertain", verify_before_retry:true, timeout_ms}`. Idempotency note: SPA clients carrying an `idempotency_key` MAY retry safely; the retry's pre-broadcast HAF lookup will find the landed op (if it did land) and short-circuit to `outcome: 'already_landed'`. Clients without an `idempotency_key` should verify chain state before retrying.
 - `BROADCAST_FAILED` (502) — Hive node rejected the broadcast. Message: `"Failed to broadcast signed operation to Hive"`. Details: `{retriable:false}`.
+- `POST_BROADCAST_FAILED` (502): Broadcast confirmed on chain, then a transient downstream cascade write failed. Wire shape per [common.md](common.md). The custody route does not currently emit this code (today only ORCID and accreditation routes wrap post-broadcast writes in `PostBroadcastWriteError`), but the shared `handleBroadcastError` helper can surface it if a future cascade step is added to custody (e.g., custody-state DB update, audit log row). SPA error-handling code keyed on the broadcast-error code surface SHOULD include a handler for this code.
+- `POST_BROADCAST_OPERATOR_REQUIRED` (502): Broadcast confirmed on chain, then a permanent downstream cascade write failed. Wire shape per [common.md](common.md). Same custody-not-currently-emitting note as `POST_BROADCAST_FAILED`. Operator intervention required; the user-facing message indicates support contact rather than automatic reconciliation.
 - `INTERNAL_ERROR` (500) — non-broadcast errors (database, decryption, key parse) via the outer catch. Only broadcast-path errors flow through 502/504.
 
 **Single-use proof semantics.** The `fresh_auth_proof` is consumed atomically before the broadcast call. If the broadcast subsequently fails (502, 504), the proof is gone; the caller MUST issue a new proof before retrying. This matches the `chain-write-timeout-ambiguous-outcome` convention: single-use state plus ambiguous broadcast outcome means burn-on-consume is the conservative default.
