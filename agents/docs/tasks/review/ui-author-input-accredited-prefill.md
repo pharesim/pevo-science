@@ -62,3 +62,19 @@ The new `frontend/src/lib/accredited-directory.js` lib + its unit tests are well
 When all 9 items are landed, `git mv` this file back to `tasks/review/`.
 
 Dismissed (audit, not blocking): P3 fetch-failure no-retry/backoff (accepted UX tradeoff — single-instance PEvO, future hardening if accreditation churn grows); P3 `DIRECTORY_LIMIT=200` sync marker (judgment call); P3 raw-English i18n stubs (pre-existing project pattern beyond this task's scope).
+
+## UI re-review signal (2026-05-11, commits ae7e853, 820a710, eb1416b)
+
+All 9 hold items landed across 3 commits. Worker rebased onto main before applying.
+
+- Item 1 (P2, clear ORCID on accredited→non-accredited transition) — `ae7e853`. Replaced inline `if (acc) ca.orcid = acc.orcid || ''` in `updateCoAuthor` (publish.js) and `updateNewCoAuthor` (edit.js) with shared `applyHiveChangePrefill(row, dir)` helper that clears `row.orcid` when the new hive is non-accredited.
+- Item 2 (P2, reapplication-loop clobbering user-typed ORCID) — `ae7e853`. `_loadAccreditedDirectory` (both pages) delegates to shared `applyAccreditedPrefill(rows, dir)` which only writes when `row.orcid` is blank.
+- Item 3 (P2, page-integration test coverage) — `820a710`. Added `co-author ORCID prefill (page integration)` describe block: 8 tests in `pages-publish.test.js`, 8 in `pages-edit.test.js`. Cover accredited prefill+lock, non-accredited free input, transition-out clearing, transition-between-accredited, reapplication-preserves-user-typed, reapplication-fills-blank, item-9 semantic, post-teardown bail. Edit page also pins existingCoAuthors-stay-disabled asymmetry.
+- Item 4 (P2, carve-out justification block) — `820a710`. Carve-out block added at top of `lib-accredited-directory.test.js` per root CLAUDE.md clauses (a)/(b)/(c). Filed `ui-e2e-coauthor-accredited-prefill.md` as the clause-(c) follow-up real-path companion (commit `eb1416b`).
+- Item 5 (P2, remove unused `accreditedCoAuthor`) — `ae7e853`. Deleted speculative method from publish.js.
+- Item 6 (P2, deduplicate `_loadAccreditedDirectory` body) — `ae7e853`. Both pages now invoke shared helpers from `frontend/src/lib/accredited-directory.js`. Page-side `_loadAccreditedDirectory` is a 4-line shell.
+- Item 7 (P3, `!this._mounted` idiom unification) — `ae7e853`. Replaced `if (this._mounted === false) return` with `if (!this._mounted) return` at both sites.
+- Item 8 (P3, concurrent-rejection coalescing test) — `820a710`. Added test mocking `fetchAccreditations` to reject with 3 concurrent `loadAccreditedDirectory()` calls in flight; asserts all three resolve to `{}` with one fetch.
+- Item 9 (P3, undefined-orcid-in-directory test) — `820a710`. Added: (a) `loadAccreditedDirectory` keeps a row without `orcid` indexable; (b) `applyHiveChangePrefill` and `applyAccreditedPrefill` leave a typed orcid intact when the matched directory row has no orcid (documented semantic: don't blank user input).
+
+Worker ran 109 tests across the three target unit files; all pass. No Playwright run for this task (no E2E scope).
