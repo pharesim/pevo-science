@@ -165,7 +165,10 @@ router.get('/lookup', lookupLimiter, async (req: Request, res: Response) => {
     }
     sendOk(res, result);
   } catch (err) {
-    logger.error({ err, identifier }, 'Preprint lookup failed');
+    logger.error(
+      { err, identifier, route: 'bridge.lookup', event: 'bridge.lookup.internal_error' },
+      'Preprint lookup failed',
+    );
     sendError(res, 500, 'INTERNAL_ERROR', 'Failed to fetch preprint metadata');
   }
 });
@@ -318,7 +321,10 @@ router.get('/check', lookupLimiter, async (req: Request, res: Response) => {
       return assertNever(result);
     }
   } catch (err) {
-    logger.error({ err, identifier }, 'Bridge check failed');
+    logger.error(
+      { err, identifier, route: 'bridge.check', event: 'bridge.check.internal_error' },
+      'Bridge check failed',
+    );
     sendError(res, 500, 'INTERNAL_ERROR', 'Failed to check bridge paper status');
   }
 });
@@ -357,7 +363,10 @@ router.post('/register', registerLimiter, verifyHiveSignature, async (req: Reque
   try {
     parsed = await resolveToCanonical(identifier);
   } catch (err) {
-    logger.error({ err, identifier, username }, 'Identifier resolution failed');
+    logger.error(
+      { err, identifier, username, route: 'bridge.register', event: 'bridge.register.identifier_resolution_failed' },
+      'Identifier resolution failed',
+    );
     return sendError(res, 500, 'INTERNAL_ERROR', 'Failed to resolve identifier');
   }
   if (!parsed) {
@@ -376,7 +385,10 @@ router.post('/register', registerLimiter, verifyHiveSignature, async (req: Reque
   try {
     meta = await lookupPreprint(identifier);
   } catch (err) {
-    logger.error({ err, identifier, username }, 'Preprint metadata fetch failed during registration');
+    logger.error(
+      { err, identifier, username, route: 'bridge.register', event: 'bridge.register.metadata_fetch_failed' },
+      'Preprint metadata fetch failed during registration',
+    );
     return sendError(res, 500, 'INTERNAL_ERROR', 'Failed to fetch preprint metadata from source');
   }
   if (!meta) {

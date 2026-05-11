@@ -20,6 +20,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import request from 'supertest';
 import { PrivateKey, cryptoUtils } from '@hiveio/dhive';
 import { MockBroadcastTimeoutError, makeDhiveLikeError } from '../support/broadcast-mocks.js';
+import { logger } from '../../src/logger.js';
 
 // Deterministic test keypair shared by all usernames (mocked getAccounts
 // resolves every name to the same public key).
@@ -371,6 +372,129 @@ describe('BE-BRIDGE-CUSTODY-BROADCAST-DISCRIMINATION — /register timeout discr
     expect(bodyStr).not.toContain(CAUSE);
     expect(bodyStr).not.toContain(INFO_KEY);
     expect(bodyStr).not.toContain('witness_node');
+  });
+});
+
+// ──────────────────────────────────────────────
+// BACKEND-BRIDGE-OUTER-CATCH-EVENT-DISCRIMINATORS — catch-block log shape.
+//
+// Each catch-block `logger.error` site under bridge.ts emits an
+// `event:` discriminator keyed `bridge.<sub-route>.<failure-class>` so
+// operator dashboards filter on event without parsing route+message.
+// The convention mirrors `custody.broadcast.internal_error` (round-2 of
+// backend-bridge-custody-broadcast-discrimination).
+//
+// Site-by-site:
+//   - /lookup outer-catch (lookupPreprint throw) → bridge.lookup.internal_error
+//   - /check outer-catch (resolveToCanonical or downstream throw) →
+//     bridge.check.internal_error
+//   - /register inner-catch around resolveToCanonical →
+//     bridge.register.identifier_resolution_failed
+//   - /register inner-catch around lookupPreprint →
+//     bridge.register.metadata_fetch_failed
+//
+// Each spec finds the matching call by event (NOT by message substring,
+// which would slip through an event-field regression) and asserts the
+// other context fields (route, identifier, username where applicable).
+// Anti-pattern guard: `.not.toBe(<other-event>)` on an already-filtered
+// call is a circular assertion (round-2 hold #4 of
+// backend-bridge-custody-broadcast-discrimination) — we filter by event,
+// then assert non-event fields.
+// ──────────────────────────────────────────────
+
+describe('BACKEND-BRIDGE-OUTER-CATCH-EVENT-DISCRIMINATORS — catch-block log shape', () => {
+  const ACCREDITED_CALLER = 'accreditedevents';
+
+  let errorSpy: ReturnType<typeof vi.spyOn>;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let bridgeMod: any;
+
+  beforeEach(async () => {
+    sendOperations.mockClear();
+    accreditedSet.clear();
+    accreditedSet.add(ACCREDITED_CALLER);
+    errorSpy = vi.spyOn(logger, 'error').mockImplementation((() => undefined) as never);
+    bridgeMod = await import('../../src/bridge.js');
+  });
+
+  afterEach(() => {
+    errorSpy.mockRestore();
+  });
+
+  it('GET /api/bridge/lookup: lookupPreprint throw → event:bridge.lookup.internal_error with route, identifier', async () => {
+    (bridgeMod.lookupPreprint as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('crossref-network-error'));
+    const res = await request(app).get('/api/bridge/lookup?identifier=2301.12345');
+    expect(res.status).toBe(500);
+    expect(res.body.error.code).toBe('INTERNAL_ERROR');
+
+    const matchingCall = errorSpy.mock.calls.find((call) => {
+      const ctx = call[0] as Record<string, unknown> | undefined;
+      return ctx?.event === 'bridge.lookup.internal_error';
+    });
+    expect(matchingCall).toBeDefined();
+    const ctx = matchingCall![0] as Record<string, unknown>;
+    expect(ctx.route).toBe('bridge.lookup');
+    expect(ctx.identifier).toBe('2301.12345');
+    expect(ctx.err).toBeInstanceOf(Error);
+  });
+
+  it('GET /api/bridge/check: resolveToCanonical throw → event:bridge.check.internal_error with route, identifier', async () => {
+    (bridgeMod.resolveToCanonical as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('parser-internal-error'));
+    const res = await request(app).get('/api/bridge/check?identifier=2301.12345');
+    expect(res.status).toBe(500);
+    expect(res.body.error.code).toBe('INTERNAL_ERROR');
+
+    const matchingCall = errorSpy.mock.calls.find((call) => {
+      const ctx = call[0] as Record<string, unknown> | undefined;
+      return ctx?.event === 'bridge.check.internal_error';
+    });
+    expect(matchingCall).toBeDefined();
+    const ctx = matchingCall![0] as Record<string, unknown>;
+    expect(ctx.route).toBe('bridge.check');
+    expect(ctx.identifier).toBe('2301.12345');
+    expect(ctx.err).toBeInstanceOf(Error);
+  });
+
+  it('POST /api/bridge/register: resolveToCanonical throw → event:bridge.register.identifier_resolution_failed with route, identifier, username', async () => {
+    (bridgeMod.resolveToCanonical as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('parser-internal-error'));
+    const res = await signedPost('/api/bridge/register', ACCREDITED_CALLER, {
+      identifier: '2301.12345',
+      discipline: 'CS',
+    });
+    expect(res.status).toBe(500);
+    expect(res.body.error.code).toBe('INTERNAL_ERROR');
+
+    const matchingCall = errorSpy.mock.calls.find((call) => {
+      const ctx = call[0] as Record<string, unknown> | undefined;
+      return ctx?.event === 'bridge.register.identifier_resolution_failed';
+    });
+    expect(matchingCall).toBeDefined();
+    const ctx = matchingCall![0] as Record<string, unknown>;
+    expect(ctx.route).toBe('bridge.register');
+    expect(ctx.identifier).toBe('2301.12345');
+    expect(ctx.username).toBe(ACCREDITED_CALLER);
+    expect(ctx.err).toBeInstanceOf(Error);
+  });
+
+  it('POST /api/bridge/register: lookupPreprint throw → event:bridge.register.metadata_fetch_failed with route, identifier, username', async () => {
+    (bridgeMod.lookupPreprint as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('crossref-network-error'));
+    const res = await signedPost('/api/bridge/register', ACCREDITED_CALLER, {
+      identifier: '2301.12345',
+      discipline: 'CS',
+    });
+    expect(res.status).toBe(500);
+    expect(res.body.error.code).toBe('INTERNAL_ERROR');
+
+    const matchingCall = errorSpy.mock.calls.find((call) => {
+      const ctx = call[0] as Record<string, unknown> | undefined;
+      return ctx?.event === 'bridge.register.metadata_fetch_failed';
+    });
+    expect(matchingCall).toBeDefined();
+    const ctx = matchingCall![0] as Record<string, unknown>;
+    expect(ctx.route).toBe('bridge.register');
+    expect(ctx.identifier).toBe('2301.12345');
+    expect(ctx.username).toBe(ACCREDITED_CALLER);
+    expect(ctx.err).toBeInstanceOf(Error);
   });
 });
 
