@@ -3,13 +3,13 @@
 **Owner:** Backend Agent
 **Created:** 2026-04-28
 **Updated:** 2026-04-28 (architect resolution rewritten with ontological framing — see "Architect resolution" block below; scope expanded twice from the original tests-only canary)
-**Blocked by:** `backend-bridge-paper-author-gate.md` — the architect-resolution block in this task claims spam resistance as a benefit. That benefit is currently FALSE because the bridge-paper exemption has no author-side enforcement (any unaccredited Hive account can spoof `json_metadata.pevotest.type = 'bridge_paper'` to bypass the gate). The blocking task pins the exemption to `config.hiveBridgeAccount`. This task ships truthfully only after that lands.
+**Updated:** 2026-05-11 (architect unblock — see "Architect unblock note" at the bottom)
 
 ## Problem
 
 PEvO's trust layer is documented as accreditation-restricted publishing/reviewing/commenting/voting (root `CLAUDE.md` "Accreditation is the trust layer"), but the backend exposes an `accredited_only=false` opt-out on three endpoints — papers list (`papers.ts:210, 478`), comments list (`comments.ts:19, 61`), and search (`search.ts:36, 81, 148, 171, 311`). The reviews single-doc endpoint (`reviews.ts:91`) has no opt-out parameter but also has no gate, so it silently returns unaccredited content. This is an incoherent invariant: the architecture says hard gate, the code surfaces opt-outs and leaks.
 
-Searching the codebase confirms the opt-outs are dead affordance — frontend never passes `accredited_only=false`, only existing backend tests (`comments.test.ts:21,47`) reference the param. No documented use case exists for surfacing unaccredited content. The bridge-paper carve-out (`papers.ts:263`) handles the only legitimate "unaccredited author appears" scenario via type, not via opt-out — though that carve-out is itself forgeable until `backend-bridge-paper-author-gate.md` lands (see blocked-by).
+Searching the codebase confirms the opt-outs are dead affordance — frontend never passes `accredited_only=false`, only existing backend tests (`comments.test.ts:21,47`) reference the param. No documented use case exists for surfacing unaccredited content. The bridge-paper carve-out (now in `helpers.ts` `isPevoBridgePaper(meta, author)` and the SQL `validPevoPaperWhere` helper) handles the only legitimate "unaccredited author appears" scenario via author-pinned type, not via opt-out.
 
 In addition, the **default-on filter has no canary**: nothing asserts that the gate actually excludes unaccredited content. A regression that quietly drops the WHERE clause would not be caught.
 
@@ -107,7 +107,7 @@ If any lane reveals a fixture gap (no unaccredited-author `APP_TAG` post in the 
 - Removing the now-vestigial `is_accredited: true` on comments — filed as `ui-comment-accredited-badge-vestigial.md`.
 - Researchers directory (`/api/accreditations`) is implicitly accredited-only because its source table is `active_accreditations`; no separate test needed unless the implementation drifts.
 - Reviews-search reachability — the contract at `api-contracts/papers.md:470` says `type` is `paper | all` but `search.ts:246` accepts `type === 'review'`. Filed as `backend-search-reviews-contract-reconcile.md`. Lane 3's hardening applies to whichever branch ships.
-- Bridge-paper exemption author-pinning — filed as `backend-bridge-paper-author-gate.md` (this task's blocker).
+- Bridge-paper exemption author-pinning — was filed as `backend-bridge-paper-author-gate.md` (this task's prior blocker, archived clean 2026-05-05 at commit `58fa8ff`).
 
 ---
 
@@ -117,7 +117,7 @@ The hard gate is **ontological, not privacy or curatorial**. PEvO defines its ob
 
 - **Papers and comments** are author-vouched by accredited Hive accounts.
 - **Reviews** are author-vouched by accredited reviewers, or by `config.hiveAnonAccount` posting on behalf of an accredited reviewer.
-- **Bridge papers** are author-vouched by `config.hiveBridgeAccount` cross-posting external sources (see blocking task `backend-bridge-paper-author-gate.md` — the type-claim alone doesn't grant object status; the bridge-account vouching does).
+- **Bridge papers** are author-vouched by `config.hiveBridgeAccount` cross-posting external sources. The type-claim alone doesn't grant object status; the bridge-account vouching does. Enforced via `validPevoPaperWhere` (SQL) and `isPevoBridgePaper(meta, author)` (JS), with the `pevo/no-bridge-paper-literal` ESLint rule catching new direct-literal sites outside the structural-path allowlist.
 
 A Hive comment with object-shaped metadata authored by an unaccredited account is **not** a PEvO object — it's a Hive comment claiming PEvO-shape. PEvO endpoints serve PEvO objects only.
 
@@ -139,4 +139,25 @@ The asymmetry between "silent-ignore" (lists) and "404" (single-doc) is shape-dr
 2. **Round 2 (2026-04-28b):** user pushback on retained asymmetry ("Accreditation is a hard gate there too"). Confirmed zero frontend consumers of `accredited_only=false`; expanded scope to remove the opt-out across papers/comments/search.
 3. **Round 3 (this pass):** user pointed out accreditation status is public, so the privacy/curatorial framing for the lane-4 404 was misgrounded. Reframed from privacy-by-design to ontological. The 404 stands but on a different rationale (PEvO object doesn't exist at that identifier, not "we're hiding the fact that it does").
 
-The ontological framing supersedes prior rationale. ARCHITECTURE.md, api-contracts/common.md, and api-contracts/papers.md edits land in the same commit as this rewrite. Backend implements code + tests across the four lanes above. Task is blocked on `backend-bridge-paper-author-gate.md` per the blocked-by clause; once that lands, this task moves from `tasks/blocked/` to `tasks/pending/` for implementer pickup.
+The ontological framing supersedes prior rationale. ARCHITECTURE.md, api-contracts/common.md, and api-contracts/papers.md edits already landed in prior architect passes (verified 2026-05-11 — see "Architect unblock note" below). Backend implements code + tests across the four lanes above.
+
+---
+
+## Architect unblock note (2026-05-11)
+
+**Trigger:** backend startup triage on 2026-05-11 surfaced this file as still in `blocked/` citing `backend-bridge-paper-author-gate.md`. That blocker shipped clean on 2026-05-05 (commit `58fa8ff` "architect: archive BACKEND-BRIDGE-PAPER-AUTHOR-GATE round-4 clean"). The `tasks-archive.md` entry has since rolled off the 250-line trim (full history in git).
+
+**Verified primitives in current `main`:**
+- `validPevoPaperWhere` SQL helper in `backend/src/hafsql.ts` (pins `c.author = config.hiveBridgeAccount` on the bridge-paper branch).
+- `isPevoBridgePaper(meta, author)` predicate in `backend/src/helpers.ts:60` (binds author to `config.hiveBridgeAccount`).
+- ESLint rule `pevo/no-bridge-paper-literal` active in `backend/eslint.config.mjs` (AST-based, structural-path allowlist for `hafsql.ts`/`helpers.ts`/`bridge.ts` + `src/types/**`).
+- 12+ call sites in `routes/`, `reputation.ts`, `notification-queries.ts`, `app.ts` correctly thread `config.hiveBridgeAccount` into the SQL.
+
+**Verified architect-owned doc edits already landed:**
+- `agents/docs/ARCHITECTURE.md` "Accredited-Only Data Policy" (line 86+) — ontological framing in place, "no `accredited_only=false` opt-out on any endpoint" stated explicitly.
+- `agents/docs/api-contracts/common.md` (line 20+) — accredited-only policy harmonized with the same "no opt-out" language and the bridge-paper author-and-type-gated note.
+- `agents/docs/api-contracts/papers.md` — `accredited_only` rows already removed from the comments-list section (line 347 says "the gate is unconditional, no opt-out"). No further architect edits required at unblock time.
+
+**Line-number drift in the four lanes' Acceptance criteria:** The `papers.ts`, `comments.ts`, `search.ts` line numbers cited in this task body were captured in 2026-04-28 and have drifted since. Implementer should locate the named symbols (`accredited_only` query parse, `accreditedOnly` destructure, `:ao=`/`:a=` cache-key suffix, `accredited_only?: boolean` interface fields) by grep rather than trusting the line numbers. The intent and surface set are unchanged; only line numbers moved.
+
+**No new [TODO Architect] items at unblock time.** Move from `blocked/` to `pending/` for backend pickup.
