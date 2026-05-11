@@ -46,14 +46,22 @@ async function fetchReviewFromHaf(author: string, permlink: string) {
 
   try {
     const accredCte = activeAccreditationsCte();
+    // PEvO object-identity gate: a review is only a PEvO review if its author
+    // is in `active_accreditations` OR equals `config.hiveAnonAccount`
+    // (anon-proxy authoring on behalf of an accredited reviewer). Without
+    // this clause an unaccredited Hive account broadcasting a review-shaped
+    // comment would surface as a PEvO review. The `|| ''` fallback for an
+    // unset HIVE_ANON_ACCOUNT is safe because Hive prohibits empty author
+    // names, so `c.author = ''` never matches.
     const result = await pool.query(
       `${accredCte.sql}
        SELECT c.author, c.permlink, c.body, c.json_metadata,
               c.parent_author, c.parent_permlink, c.created,
               ${accreditedVoteCount('c.author', 'c.permlink')} AS net_votes
        FROM ${T.comments} c
-       WHERE c.author = $${accredCte.nextIdx} AND c.permlink = $${accredCte.nextIdx + 1}`,
-      [...accredCte.params, author, permlink],
+       WHERE c.author = $${accredCte.nextIdx} AND c.permlink = $${accredCte.nextIdx + 1}
+         AND (c.author IN (SELECT account FROM active_accreditations) OR c.author = $${accredCte.nextIdx + 2})`,
+      [...accredCte.params, author, permlink, config.hiveAnonAccount || ''],
     );
     if (result.rows.length === 0) return null;
 
