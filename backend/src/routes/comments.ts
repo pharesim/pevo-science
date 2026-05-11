@@ -16,10 +16,9 @@ function parseCommentParams(req: Request) {
   const page = Math.max(1, parseInt(req.query.page as string, 10) || 1);
   const limit = Math.min(200, Math.max(1, parseInt(req.query.limit as string, 10) || 50));
   const offset = (page - 1) * limit;
-  const accreditedOnly = req.query.accredited_only !== 'false';
   const sort: CommentSort = req.query.sort === 'votes' ? 'votes' : 'date';
   const order: 'asc' | 'desc' = req.query.order === 'desc' ? 'desc' : 'asc';
-  return { page, limit, offset, accreditedOnly, sort, order };
+  return { page, limit, offset, sort, order };
 }
 
 // ──────────────────────────────────────────────
@@ -56,12 +55,15 @@ async function fetchCommentsFromHaf(
   const pool = getPool();
   if (!pool) return null;
 
-  const { limit, offset, accreditedOnly, sort, order } = params;
+  const { limit, offset, sort, order } = params;
 
   try {
-    const accreditedJoin = accreditedOnly
-      ? `JOIN active_accreditations aa ON aa.account = dc.author`
-      : '';
+    // PEvO object-identity gate is unconditional: comments are author-vouched
+    // by accredited Hive accounts. A Hive comment with comment-shaped metadata
+    // authored by an unaccredited account is not a PEvO comment. The legacy
+    // `?accredited_only=false` opt-out is silently ignored per Express
+    // convention (api-contracts/common.md).
+    const accreditedJoin = `JOIN active_accreditations aa ON aa.account = dc.author`;
 
     const sortCol = sort === 'votes' ? 'accredited_votes' : 'dc.created';
     const safeOrder = order === 'asc' ? 'ASC' : 'DESC';
@@ -188,7 +190,7 @@ router.get('/', async (req: Request, res: Response) => {
     return sendError(res, 404, 'NOT_FOUND', 'Paper not found');
   }
 
-  const cacheKey = `comments:${author}:${permlink}:p=${params.page}:l=${params.limit}:s=${params.sort}:o=${params.order}:ao=${params.accreditedOnly}`;
+  const cacheKey = `comments:${author}:${permlink}:p=${params.page}:l=${params.limit}:s=${params.sort}:o=${params.order}`;
   const result = await hafCache.getOrSet(cacheKey, () =>
     fetchCommentsFromHaf(author, permlink, params),
   );
