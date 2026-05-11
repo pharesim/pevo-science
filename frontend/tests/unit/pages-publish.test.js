@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('../../src/api.js', () => ({
   uploadToIpfs: vi.fn(),
   fetchDisciplines: vi.fn(() => Promise.resolve({ data: [] })),
+  fetchAccreditations: vi.fn(() => Promise.resolve({ data: [] })),
 }));
 
 vi.mock('../../src/signer.js', () => ({
@@ -497,6 +498,144 @@ describe('publishPage', () => {
       comp.citations = [];
       comp._mergeCitationCollection();
       expect(comp.citations).toEqual([]);
+    });
+  });
+
+  // Held re-review item 3: page-integration of the ORCID prefill flow.
+  // The lib unit tests pin the helper semantics; these tests pin the
+  // page-state wiring around them (the methods publish.js exposes to its
+  // Alpine template).
+  describe('co-author ORCID prefill (page integration)', () => {
+    const directory = {
+      alice: { username: 'alice', orcid: '0000-0001-1111-1111', name: 'Alice' },
+      bob: { username: 'bob', orcid: '0000-0002-2222-2222', name: 'Bob' },
+      carol: { username: 'carol', name: 'Carol' }, // accredited but no orcid in record
+    };
+
+    it('updateCoAuthor: typing accredited hive prefills ORCID + locks the input', () => {
+      const comp = createComponent();
+      comp.accreditedDirectory = directory;
+      comp.coAuthors = [{ name: 'A', hive: '', orcid: '', affiliation: '' }];
+      comp.updateCoAuthor(0, 'hive', 'alice');
+      expect(comp.coAuthors[0].hive).toBe('alice');
+      expect(comp.coAuthors[0].orcid).toBe('0000-0001-1111-1111');
+      expect(comp.isCoAuthorAccredited(0)).toBe(true);
+    });
+
+    it('updateCoAuthor: typing non-accredited hive leaves ORCID editable', () => {
+      const comp = createComponent();
+      comp.accreditedDirectory = directory;
+      comp.coAuthors = [{ name: 'A', hive: '', orcid: '', affiliation: '' }];
+      comp.updateCoAuthor(0, 'hive', 'mallory');
+      expect(comp.coAuthors[0].orcid).toBe('');
+      expect(comp.isCoAuthorAccredited(0)).toBe(false);
+    });
+
+    // ITEM 1: accredited→non-accredited hive transition must clear ORCID.
+    it('updateCoAuthor: accredited→non-accredited hive transition clears prefilled ORCID', () => {
+      const comp = createComponent();
+      comp.accreditedDirectory = directory;
+      comp.coAuthors = [{ name: 'A', hive: '', orcid: '', affiliation: '' }];
+      // Step 1: type accredited hive → ORCID prefilled
+      comp.updateCoAuthor(0, 'hive', 'alice');
+      expect(comp.coAuthors[0].orcid).toBe('0000-0001-1111-1111');
+      // Step 2: change to non-accredited hive → ORCID cleared, input editable
+      comp.updateCoAuthor(0, 'hive', 'mallory');
+      expect(comp.coAuthors[0].orcid).toBe('');
+      expect(comp.isCoAuthorAccredited(0)).toBe(false);
+    });
+
+    it('updateCoAuthor: stay-accredited hive change rewrites ORCID to the new accreditation', () => {
+      const comp = createComponent();
+      comp.accreditedDirectory = directory;
+      comp.coAuthors = [{ name: 'A', hive: '', orcid: '', affiliation: '' }];
+      comp.updateCoAuthor(0, 'hive', 'alice');
+      expect(comp.coAuthors[0].orcid).toBe('0000-0001-1111-1111');
+      comp.updateCoAuthor(0, 'hive', 'bob');
+      expect(comp.coAuthors[0].orcid).toBe('0000-0002-2222-2222');
+    });
+
+    // ITEM 9: accredited but no orcid in record → don't blow away existing value.
+    it('updateCoAuthor: accredited hive with no orcid in directory leaves typed orcid intact', () => {
+      const comp = createComponent();
+      comp.accreditedDirectory = directory;
+      comp.coAuthors = [{ name: 'A', hive: '', orcid: '0000-9999-9999-9999', affiliation: '' }];
+      comp.updateCoAuthor(0, 'hive', 'carol');
+      expect(comp.coAuthors[0].orcid).toBe('0000-9999-9999-9999');
+      // Still locked — the field is owned by the accreditation row.
+      expect(comp.isCoAuthorAccredited(0)).toBe(true);
+    });
+
+    // ITEM 2: reapplication after directory loads must protect user-typed
+    // ORCID. Test the `_loadAccreditedDirectory` path by stubbing the lib
+    // module's loader.
+    it('_loadAccreditedDirectory: reapplication preserves user-typed ORCID', async () => {
+      // Reset the cached directory so loadAccreditedDirectory hits the mock
+      // fresh, then seed a draft-restored coAuthors[] with a user-typed ORCID.
+      const { _resetAccreditedDirectoryForTests } = await import('../../src/lib/accredited-directory.js');
+      _resetAccreditedDirectoryForTests();
+      const { fetchAccreditations } = await import('../../src/api.js');
+      fetchAccreditations.mockResolvedValueOnce({
+        data: [
+          { username: 'alice', orcid: '0000-0001-1111-1111', name: 'Alice' },
+        ],
+      });
+
+      const comp = createComponent();
+      // Simulate a draft-restored row: hive=alice (accredited), ORCID
+      // already populated by the user before the fetch returned.
+      comp.coAuthors = [
+        { name: 'A', hive: 'alice', orcid: '0000-9999-9999-9999', affiliation: '' },
+      ];
+
+      await comp._loadAccreditedDirectory();
+
+      // User intent preserved — reapplication did NOT clobber.
+      expect(comp.coAuthors[0].orcid).toBe('0000-9999-9999-9999');
+      // Directory populated for autocomplete + lock signals.
+      expect(comp.accreditedDirectory.alice).toBeDefined();
+      expect(comp.isCoAuthorAccredited(0)).toBe(true);
+    });
+
+    it('_loadAccreditedDirectory: reapplication fills blank ORCID on an accredited row', async () => {
+      const { _resetAccreditedDirectoryForTests } = await import('../../src/lib/accredited-directory.js');
+      _resetAccreditedDirectoryForTests();
+      const { fetchAccreditations } = await import('../../src/api.js');
+      fetchAccreditations.mockResolvedValueOnce({
+        data: [
+          { username: 'alice', orcid: '0000-0001-1111-1111', name: 'Alice' },
+        ],
+      });
+
+      const comp = createComponent();
+      comp.coAuthors = [
+        { name: 'A', hive: 'alice', orcid: '', affiliation: '' },
+      ];
+
+      await comp._loadAccreditedDirectory();
+
+      expect(comp.coAuthors[0].orcid).toBe('0000-0001-1111-1111');
+    });
+
+    it('_loadAccreditedDirectory: bails out if component teardown happened mid-fetch', async () => {
+      const { _resetAccreditedDirectoryForTests } = await import('../../src/lib/accredited-directory.js');
+      _resetAccreditedDirectoryForTests();
+      const { fetchAccreditations } = await import('../../src/api.js');
+      let resolveFn;
+      fetchAccreditations.mockReturnValueOnce(new Promise((r) => { resolveFn = r; }));
+
+      const comp = createComponent();
+      comp.coAuthors = [{ name: 'A', hive: 'alice', orcid: '', affiliation: '' }];
+
+      const pending = comp._loadAccreditedDirectory();
+      comp._teardownTimers(); // flips _mounted to false
+      resolveFn({ data: [{ username: 'alice', orcid: '0000-0001-1111-1111' }] });
+      await pending;
+
+      // Teardown happened before the directory resolved — the page must
+      // NOT touch its reactive state. accreditedDirectory stays at its
+      // initial empty-object value.
+      expect(comp.accreditedDirectory).toEqual({});
     });
   });
 

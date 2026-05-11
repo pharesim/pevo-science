@@ -11,6 +11,7 @@ vi.mock('../../src/api.js', () => ({
   fetchPaperEnrichment: vi.fn(),
   invalidatePaperCache: vi.fn(),
   uploadToIpfs: vi.fn(),
+  fetchAccreditations: vi.fn(() => Promise.resolve({ data: [] })),
 }));
 
 vi.mock('../../src/signer.js', () => ({
@@ -703,5 +704,143 @@ describe('editPage handleSubmit sanitization', () => {
     await pending;
     expect(comp.step).not.toBe('error');
     expect(comp.errorMessage).toBe('');
+  });
+});
+
+// Held re-review item 3: page-integration of the ORCID prefill flow on
+// edit.js. The new-co-author rows mirror publish.js's behavior; the
+// existing-co-author rows must stay disabled regardless of accreditation
+// state (the publish/edit asymmetry the task calls out).
+describe('editPage co-author ORCID prefill (page integration)', () => {
+  const directory = {
+    alice: { username: 'alice', orcid: '0000-0001-1111-1111', name: 'Alice' },
+    bob: { username: 'bob', orcid: '0000-0002-2222-2222', name: 'Bob' },
+    carol: { username: 'carol', name: 'Carol' }, // accredited, no orcid in record
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('updateNewCoAuthor: typing accredited hive prefills ORCID + locks the input', () => {
+    const comp = createComponent();
+    comp.accreditedDirectory = directory;
+    comp.newCoAuthors = [{ name: 'A', hive: '', orcid: '', affiliation: '' }];
+    comp.updateNewCoAuthor(0, 'hive', 'alice');
+    expect(comp.newCoAuthors[0].orcid).toBe('0000-0001-1111-1111');
+    expect(comp.isNewCoAuthorAccredited(0)).toBe(true);
+  });
+
+  it('updateNewCoAuthor: typing non-accredited hive leaves ORCID editable', () => {
+    const comp = createComponent();
+    comp.accreditedDirectory = directory;
+    comp.newCoAuthors = [{ name: 'A', hive: '', orcid: '', affiliation: '' }];
+    comp.updateNewCoAuthor(0, 'hive', 'mallory');
+    expect(comp.newCoAuthors[0].orcid).toBe('');
+    expect(comp.isNewCoAuthorAccredited(0)).toBe(false);
+  });
+
+  // ITEM 1
+  it('updateNewCoAuthor: accredited→non-accredited transition clears prefilled ORCID', () => {
+    const comp = createComponent();
+    comp.accreditedDirectory = directory;
+    comp.newCoAuthors = [{ name: 'A', hive: '', orcid: '', affiliation: '' }];
+    comp.updateNewCoAuthor(0, 'hive', 'alice');
+    expect(comp.newCoAuthors[0].orcid).toBe('0000-0001-1111-1111');
+    comp.updateNewCoAuthor(0, 'hive', 'mallory');
+    expect(comp.newCoAuthors[0].orcid).toBe('');
+    expect(comp.isNewCoAuthorAccredited(0)).toBe(false);
+  });
+
+  // ITEM 9
+  it('updateNewCoAuthor: accredited hive with no orcid in directory leaves typed orcid intact', () => {
+    const comp = createComponent();
+    comp.accreditedDirectory = directory;
+    comp.newCoAuthors = [{ name: 'A', hive: '', orcid: '0000-9999-9999-9999', affiliation: '' }];
+    comp.updateNewCoAuthor(0, 'hive', 'carol');
+    expect(comp.newCoAuthors[0].orcid).toBe('0000-9999-9999-9999');
+    expect(comp.isNewCoAuthorAccredited(0)).toBe(true);
+  });
+
+  // ITEM 2
+  it('_loadAccreditedDirectory: reapplication preserves user-typed ORCID on a draft row', async () => {
+    const { _resetAccreditedDirectoryForTests } = await import('../../src/lib/accredited-directory.js');
+    _resetAccreditedDirectoryForTests();
+    const { fetchAccreditations } = await import('../../src/api.js');
+    fetchAccreditations.mockResolvedValueOnce({
+      data: [
+        { username: 'alice', orcid: '0000-0001-1111-1111', name: 'Alice' },
+      ],
+    });
+
+    const comp = createComponent();
+    comp.newCoAuthors = [
+      { name: 'A', hive: 'alice', orcid: '0000-9999-9999-9999', affiliation: '' },
+    ];
+
+    await comp._loadAccreditedDirectory();
+
+    expect(comp.newCoAuthors[0].orcid).toBe('0000-9999-9999-9999');
+    expect(comp.accreditedDirectory.alice).toBeDefined();
+    expect(comp.isNewCoAuthorAccredited(0)).toBe(true);
+  });
+
+  it('_loadAccreditedDirectory: reapplication fills blank ORCID on an accredited new-row', async () => {
+    const { _resetAccreditedDirectoryForTests } = await import('../../src/lib/accredited-directory.js');
+    _resetAccreditedDirectoryForTests();
+    const { fetchAccreditations } = await import('../../src/api.js');
+    fetchAccreditations.mockResolvedValueOnce({
+      data: [
+        { username: 'alice', orcid: '0000-0001-1111-1111', name: 'Alice' },
+      ],
+    });
+
+    const comp = createComponent();
+    comp.newCoAuthors = [
+      { name: 'A', hive: 'alice', orcid: '', affiliation: '' },
+    ];
+
+    await comp._loadAccreditedDirectory();
+
+    expect(comp.newCoAuthors[0].orcid).toBe('0000-0001-1111-1111');
+  });
+
+  it('_loadAccreditedDirectory: bails out if component teardown happened mid-fetch', async () => {
+    const { _resetAccreditedDirectoryForTests } = await import('../../src/lib/accredited-directory.js');
+    _resetAccreditedDirectoryForTests();
+    const { fetchAccreditations } = await import('../../src/api.js');
+    let resolveFn;
+    fetchAccreditations.mockReturnValueOnce(new Promise((r) => { resolveFn = r; }));
+
+    const comp = createComponent();
+    comp.newCoAuthors = [{ name: 'A', hive: 'alice', orcid: '', affiliation: '' }];
+
+    const pending = comp._loadAccreditedDirectory();
+    comp._teardownTimers();
+    resolveFn({ data: [{ username: 'alice', orcid: '0000-0001-1111-1111' }] });
+    await pending;
+
+    expect(comp.accreditedDirectory).toEqual({});
+  });
+
+  // Edit-specific asymmetry: existingCoAuthors are always disabled in the
+  // template regardless of accreditation state. The page does not expose a
+  // helper analogous to `isNewCoAuthorAccredited` for the existing rows,
+  // and the template hardcodes `disabled` on every existing-row input.
+  // Assert that no method on the page would re-enable an existing row.
+  it('existingCoAuthors remain disabled in the template (no enabling helper exists)', () => {
+    const comp = createComponent();
+    comp.accreditedDirectory = directory;
+    comp.existingCoAuthors = [
+      { name: 'Old', hive: 'alice', orcid: 'whatever', affiliation: '' },
+    ];
+    // There is no `updateCoAuthor` (singular) or `isCoAuthorAccredited`
+    // helper on the edit page — only the `New*` variants. Confirm the
+    // surface explicitly so future maintainers do not accidentally add
+    // a re-enable path that mutates the read-only existing rows.
+    expect(comp.updateNewCoAuthor).toBeTypeOf('function');
+    expect(comp.isNewCoAuthorAccredited).toBeTypeOf('function');
+    expect(comp.updateCoAuthor).toBeUndefined();
+    expect(comp.isCoAuthorAccredited).toBeUndefined();
   });
 });
