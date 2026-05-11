@@ -54,3 +54,36 @@ Carried forward unchanged through rounds 5 and 6.
 - `backend/src/logger.ts` — `redactErrInArg`, `redactErrSerializer`, `redactPlainObject`, `safeRedactErr`, `SAFE_BASELINE_FIELDS`, `RELAXED_EXTRA_FIELDS`.
 - `backend/src/lib/broadcast-error.ts:262-264` — the sanitized-logContext destructure pattern is the reference implementation for option (a).
 - `agents/docs/solutions/conventions/tests-must-fail-on-mutation-of-code-under-test-2026-04-22.md` — mutation-kill discipline for new canary tests.
+
+---
+
+## Backend audit signal (2026-05-11, no code change)
+
+**Outcome: empty audit. Zero fixable hits.** No commit; task moves to `review/` for architect acceptance + convention-doc cross-reference at archive.
+
+### Audit method
+
+Ran the spec'd grep across `backend/src/**/*.ts`:
+
+```bash
+grep -rn -E "\b(originalError|wrappedError|postErr|innerError|rootCause|nestedError|sourceError|cause)\b" backend/src/ --include='*.ts'
+```
+
+Plus follow-up searches for adjacent watch-list candidates (`prevError`, `priorError`, `underlyingError`, `inner`, `baseError`, `chainedError`, `reason`) and a focused scan of every `err:` slot in logger payloads.
+
+### Hit classification
+
+- **Comments / convention narrative:** `logger.ts` redact-policy docstrings, `startup-checks.ts:23/354/396`, `auth.ts:189`, `ipfs-validation.ts:51`, `broadcast-error.ts` round-3/4 explanatory blocks. Not call sites.
+- **`Error.cause` constructor argument (correct ES2022 idiom):** `broadcast-error.ts:113-122` (`PostBroadcastWriteError` super call with `{ cause }`). Goes into the standard `.cause` slot, which the recursive serializer traverses. Correct, not a violation.
+- **Already-fixed reference pattern:** `broadcast-error.ts:372` `sanitizedLogContext` destructure stripping caller-supplied `cause` from `opts.logContext`. The canonical option (a) reference.
+- **`postErr` catch bindings:** `signup-verify.ts:378/535`, `orcid.ts:869/1028` — all are local catch variables passed positionally into `new PostBroadcastWriteError(result.id, postErr, ...)`. Never enter a logger payload as a sibling.
+- **String-enum `cause` (not Error-shaped):** `orcid.ts:1314-1326` — `cause: 'expired_or_evicted' | 'released_during_extend' | 'unknown'` is a discriminator string. Pino renders it as a string; no leak surface.
+- **All 19 `err:` log payloads:** place the error in the `err` slot only. None carry sibling error-shaped fields.
+
+**Watch-list names** `originalError`, `wrappedError`, `innerError`, `rootCause`, `nestedError`, `sourceError`: zero hits across `backend/src/**/*.ts`.
+
+### Why no commit
+
+Acceptance #1 (audit ran), #2 (every hit triaged + documented above), #3 (no fixed sites → no canary tests), #4 (zero hits → structural guard escalation unwarranted), #5 (`tsc/lint/vitest` not run because no code touched). Acceptance #6 (cross-reference in convention doc) is architect-side at archive — recommend a small note in `agents/docs/solutions/conventions/pino-err-slot-sibling-bypass-redact-policy-2026-05-06.md` citing this audit's completion + the date.
+
+The audit closing empty is the expected outcome of `BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT`'s 6-round arc — `broadcast-error.ts` was the only known violating site and was closed in rounds 3 and 4. This audit confirms no other sites exist on the watch list as of `26de0ea`.
