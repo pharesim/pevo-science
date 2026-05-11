@@ -105,22 +105,26 @@ function isBackwardWalkContinuesProbe(sql: string): boolean {
 }
 
 /**
- * Discriminate the initial backward-walker probe (which carries the
- * `c.json_metadata -> $3 -> 'continues' IS NOT NULL` predicate AND the
- * START-row identity columns `c.author, c.json_metadata`) from the
- * subsequent loop-continuation probe (which only selects cont_author /
- * cont_permlink).
+ * Discriminate the initial backward-walker probe (which selects the
+ * START-row identity columns `c.author, c.json_metadata` plus
+ * cont_author/cont_permlink) from the subsequent loop-continuation
+ * probe (which selects ONLY cont_author/cont_permlink).
  *
- * Detection key: the `IS NOT NULL` predicate is a stable structural
- * marker tied to the domain logic of the initial probe ("only return
- * rows that actually have a continues pointer"). Earlier iterations of
- * this file used a column-list regex (`c.author,\s+c.json_metadata,\s+
- * c.json_metadata`) which was brittle to whitespace tweaks and coupled
- * the test dispatch to incidental SQL formatting. The IS NOT NULL
- * predicate is what semantically defines "initial probe", so pin to it.
+ * Detection key: the `c.author, c.json_metadata,` SELECT-clause prefix
+ * is unique to the initial probe (it needs the START row's own author
+ * and metadata for the type-spoof gate's JS-side `isPevoAnyPaper`
+ * re-check; the loop probe only needs the predecessor's cont pointer).
+ *
+ * Previous iterations of this helper used the `'continues' IS NOT NULL`
+ * predicate as the discriminator because, pre-2026-05-11, only the
+ * initial probe carried that predicate. BACKEND-HAF-WALKER-WALL-CLOCK-
+ * BUDGET landed the IS NOT NULL bundle on the loop probe too (mirroring
+ * the SQL-side-SSoT discipline across both probes), so IS NOT NULL no
+ * longer discriminates. The SELECT-clause discriminator is what
+ * semantically defines "initial probe" today.
  */
 function isInitialBackwardProbe(sql: string): boolean {
-  return /'continues'\s*IS\s+NOT\s+NULL/i.test(sql);
+  return /SELECT\s+c\.author,\s+c\.json_metadata,/.test(sql);
 }
 
 /** Recognise the head authorized-authors lookup
@@ -429,6 +433,81 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
       expect(depthEvents.length).toBe(0);
     } finally {
       (config as { hafWalkerWallClockMs: number }).hafWalkerWallClockMs = originalBudget;
+    }
+  });
+
+  it('loop-continuation probe carries IS NOT NULL filter (mirrors initial probe)', async () => {
+    // BACKEND-HAF-WALKER-WALL-CLOCK-BUDGET acceptance addition canary
+    // (from canonical-walker round-2 triage 2026-05-06, adversarial
+    // finding adv-loop-continuation-sql-no-continues-not-null conf 80).
+    //
+    // The initial probe at findCanonicalRoot's entry has carried
+    // `c.json_metadata -> $3 -> 'continues' IS NOT NULL` since the
+    // round-2 type-spoof START gate. The loop-continuation probe
+    // emitted no such predicate until this task — letting the SQL gate
+    // and the JS-side `!cont_author` post-check drift on the same
+    // semantic property ("does this post have a continues pointer?").
+    // The bundle aligns the two probes; this canary pins the alignment.
+    //
+    // Loop semantics: the walker tracks (currentAuthor, currentPermlink)
+    // OUTSIDE the SQL result (advanced at the END of each iteration
+    // from parentRow.cont_author/cont_permlink), so the 0-row case
+    // (root has no continues → SQL filter rejects) correctly returns
+    // the predecessor accumulated so far — identical to the pre-bundle
+    // `!parentRow.cont_author` JS bail.
+    //
+    // Mutation-kill: remove the `AND c.json_metadata -> $3 -> 'continues'
+    // IS NOT NULL` clause from the loop probe → some captured loop-
+    // continues probes (the parent-continues SQL inside the for-loop)
+    // do NOT carry the predicate → assertion fails red.
+    const N = 3; // 3-hop chain → at least 2 loop-continues probes fire
+    const aliceMeta = pevoPaperJsonMeta(['alice']);
+
+    installResponder(async (sql, params) => {
+      if (isBackwardWalkContinuesProbe(sql)) {
+        const p = params[1] as string;
+        const m = /^v(\d+)$/.exec(p);
+        if (!m) return { rows: [] };
+        const i = Number(m[1]);
+        if (i === 0) {
+          // Root: with IS NOT NULL the SQL would return 0 rows.
+          return { rows: [] };
+        }
+        if (isInitialBackwardProbe(sql)) {
+          return {
+            rows: [{
+              author: 'alice',
+              json_metadata: pevoPaperRow('alice', p, ['alice']).json_metadata,
+              cont_author: 'alice',
+              cont_permlink: `v${i - 1}`,
+            }],
+          };
+        }
+        return { rows: [{ cont_author: 'alice', cont_permlink: `v${i - 1}` }] };
+      }
+      if (isHeadAuthorsLookup(sql)) {
+        return { rows: [{ author: 'alice', json_metadata: aliceMeta }] };
+      }
+      if (sql.includes('SELECT c.author, c.permlink, c.title')) {
+        return { rows: [pevoPaperRow('alice', params[1] as string, ['alice'])] };
+      }
+      return { rows: [] };
+    });
+
+    const res = await request(app).get(`/api/papers/alice/v${N}`);
+    expect(res.status).toBe(200);
+
+    // Identify the loop-continuation probes: continues-probe shape but
+    // NOT the initial-probe shape (the initial probe's SELECT prefix
+    // `c.author, c.json_metadata,` is its semantic discriminator —
+    // see isInitialBackwardProbe). After this bundle, every loop probe
+    // must carry the IS NOT NULL predicate.
+    const loopProbes = captured.filter(
+      (c) => isBackwardWalkContinuesProbe(c.sql) && !isInitialBackwardProbe(c.sql),
+    );
+    expect(loopProbes.length).toBeGreaterThan(0);
+    for (const probe of loopProbes) {
+      expect(probe.sql).toMatch(/'continues'\s*IS\s+NOT\s+NULL/i);
     }
   });
 

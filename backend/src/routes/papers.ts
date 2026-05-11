@@ -1592,12 +1592,26 @@ async function findCanonicalRoot(
 
       // Hop accepted. Look up the predecessor's own continues pointer to
       // see if the walk continues another step.
+      //
+      // SQL-side `'continues' IS NOT NULL` filter mirrors the initial
+      // probe's discipline: the SQL is the SSoT for "this post has a
+      // continues pointer", not the JS-side `!cont_author` post-check.
+      // Without this predicate, the loop-continuation probe and the
+      // initial probe drift on the same semantic property — the kind of
+      // asymmetry adversarial review flagged at the canonical-walker
+      // round-2 triage (2026-05-06). Loop semantics are safe: the
+      // `(currentAuthor, currentPermlink)` state is tracked OUTSIDE the
+      // SQL result (advanced at the END of each iteration from
+      // `parentRow.cont_author`/`cont_permlink`), so the 0-row case here
+      // correctly returns the predecessor accumulated so far, identical
+      // to the previous `!parentRow.cont_author` JS bail.
       const parentResult = await pool.query(
         `SELECT c.json_metadata -> $3 -> 'continues' ->> 'author' AS cont_author,
                 c.json_metadata -> $3 -> 'continues' ->> 'permlink' AS cont_permlink
          FROM ${T.comments} c
          WHERE c.author = $1 AND c.permlink = $2
-           AND c.parent_author = '' AND c.parent_permlink = $3`,
+           AND c.parent_author = '' AND c.parent_permlink = $3
+           AND c.json_metadata -> $3 -> 'continues' IS NOT NULL`,
         [currentAuthor, currentPermlink, config.appTag],
       );
 
