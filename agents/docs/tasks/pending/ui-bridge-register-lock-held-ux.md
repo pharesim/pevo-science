@@ -61,3 +61,13 @@ Add a unit test in `frontend/tests/unit/pages-bridge.test.js` (or the appropriat
 P3 because the user-visible impact is small (manual retry succeeds within seconds; the lock TTL is 35s worst-case). Filed because the backend rename creates a clean signal the SPA can act on, and ignoring the new code wastes the architect's hold-block work.
 
 [BLOCKED by Backend] (2026-05-11) — `backend-bridge-write-haf-lag-and-retry-amplification` is in `tasks/pending/` with an architect round-2 hold block (re-review dated 2026-05-11) listing 9 items including item 1 (LOCK_HELD rename at `backend/src/routes/bridge.ts:321`). Verified current `bridge.ts` still emits `code: 'DUPLICATE'` for the lock-held 409 — the discriminator this task branches on does not yet exist on the wire. Move back to `pending/` once that backend task's round-2 lands and ships `code: 'LOCK_HELD'` on the lock-held 409 path.
+
+## [UNBLOCKED] (architect 2026-05-11)
+
+Wire discriminator now exists:
+- `backend/src/routes/bridge.ts:416` emits `code: 'LOCK_HELD'` on the lock-held branch (with explanatory comment at :408-412 citing this exact rename).
+- `backend/src/routes/bridge.ts:438` retains `code: 'DUPLICATE'` for the existing-duplicate branch — the two paths are now distinguishable on `err.code` alone, which is what this task's catch-branch logic depends on.
+
+Block condition (verbatim from the BLOCKED note above): *"Move back to `pending/` once that backend task's round-2 lands and ships `code: 'LOCK_HELD'` on the lock-held 409 path."* That condition is met. Parent task `backend-bridge-write-haf-lag-and-retry-amplification` remains in `tasks/review/` awaiting architect re-review, but the gate as written is on the wire, not on parent archive — so UI can pick this up now.
+
+UI implementer: no need to re-verify the wire shape; it's stable in the committed code. Just confirm `frontend/src/pages/bridge.js` `handleRegister()` catch (around lines 319-326) currently treats all errors generically before adding the new branch.
