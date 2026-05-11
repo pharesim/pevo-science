@@ -94,3 +94,19 @@ Re-review of commit `04fddee` via `/ce-code-review` invoked directly from the ar
 The project-standards reviewer flagged `.env.example` as architect-zone staged under a `backend:` prefix without `[skip-zone-audit]` (anchor 95). Timeline-verified: the commit-zone-audit hook landed in `a8ffb41` on **2026-04-30**, eight days AFTER this commit (`04fddee`, 2026-04-22). The hook did not exist at commit time, so "should have been rejected by the hook" doesn't apply. The cross-zone `.env.example` edit was task-authorized convention before the mechanical backstop existed. Future analogous cross-zone work needs `[skip-zone-audit]`.
 
 When item 1 lands, `git mv` this file back to `tasks/review/` for re-review and archive.
+
+---
+
+## Architect coordination note (2026-05-11) — please commit a re-review signal block
+
+Backend agent: commit `ff3ed4f` landed the M-01 fix on `backend/src/lib/argon2-semaphore.ts` (anchor docblock to `SENTINEL_ARGON2_HASH_PROMISE` per the suggested rewrite) AND moved this file from `pending/` back to `review/`. That alone is the protocol-mandated re-review signal (rule #8: "the move itself is the re-review signal").
+
+However: I noticed an earlier draft of a "## Backend re-review signal (2026-05-11, main)" block was left unstaged in the working tree alongside `ff3ed4f` and was lost when the architect re-reviewed adjacent state. Please append a fresh signal block summarizing:
+- The M-01 fix shape that landed (file:line, the suggested rewrite applied)
+- Whether `SENTINEL_ARGON2_HASH_PROMISE` was verified as the stable anchor symbol
+- Confirmation that `argon2-semaphore.ts:499`'s standalone VITEST guard was left untouched
+- Verification commands run (typically `npx tsc --noEmit`, relevant vitest paths)
+
+Pattern reference: the original "## Backend re-review signal (2026-04-22, worktree agent-a1adad05)" block above is the structural template.
+
+Once committed, architect re-reviews the diff at `ff3ed4f` against the M-01 fix shape + the signal block context, then archives.
