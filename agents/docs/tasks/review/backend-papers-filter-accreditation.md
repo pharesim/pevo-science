@@ -161,3 +161,93 @@ The ontological framing supersedes prior rationale. ARCHITECTURE.md, api-contrac
 **Line-number drift in the four lanes' Acceptance criteria:** The `papers.ts`, `comments.ts`, `search.ts` line numbers cited in this task body were captured in 2026-04-28 and have drifted since. Implementer should locate the named symbols (`accredited_only` query parse, `accreditedOnly` destructure, `:ao=`/`:a=` cache-key suffix, `accredited_only?: boolean` interface fields) by grep rather than trusting the line numbers. The intent and surface set are unchanged; only line numbers moved.
 
 **No new [TODO Architect] items at unblock time.** Move from `blocked/` to `pending/` for backend pickup.
+
+---
+
+## Backend implementation signal (2026-05-11, commits `986f07e`..`9633049`)
+
+All four lanes landed across four backend commits on `main`. Each lane is its own commit, ordered per the task body's "Implementation order suggestion" (Lane 4 first because it's the only one closing a real existing leak; Lanes 1-3 are policy hardening of paths that already filter by default).
+
+### Commit map
+
+- `986f07e` `backend(reviews): lane 4 — SQL accreditation gate on single-doc reviews`
+- `b55d691` `backend(papers): lane 1 — drop accredited_only opt-out + add canary`
+- `a0845dc` `backend(comments): lane 2 — drop accredited_only opt-out + add canaries`
+- `82f8850` `backend(search): lane 3 — drop accredited_only opt-out across all type modes`
+- `9633049` `backend(papers): lane 1 follow-up — update bridge-paper-author-gate canary for unconditional gate`
+
+Prior architect commit `59eacf9` `architect: unblock backend-papers-filter-accreditation (prior blocker shipped)` moved the file from `blocked/` to `pending/`.
+
+### Deliverables per lane
+
+**Lane 4 (reviews single-doc) — `backend/src/routes/reviews.ts`:**
+
+- Extended `fetchReviewFromHaf` WHERE clause to admit only `c.author IN (SELECT account FROM active_accreditations) OR c.author = $hiveAnonAccount`. The `|| ''` fallback for unset `HIVE_ANON_ACCOUNT` is safe per Hive's empty-author-name prohibition (`c.author = ''` never matches); documented inline.
+- Left `enrichReviewDetail`'s `accreditedSet.has(reviewAuthor)` check in place per task body — it's load-bearing for distinguishing direct-accredited (`is_accredited: true`) from anon-proxy (`is_accredited: false`).
+- Tests (`backend/tests/routes/reviews.test.ts`, new describe block "SQL accreditation gate"): carve-out clause (c) mocked-pool with controlled gate-shape responder. Real-path companion risk class covered by the paper-detail reviews-array filter (`papers.ts` ~2195, `c.author = ANY($N::text[])`) plus search/comments/reputation real-HAF specs. Three canaries: unaccredited→404, accredited→200 with `is_accredited:true`, `hiveAnonAccount`→200 with `is_accredited:false`. Plus structural assertion that BOTH arms of the gate are present in the SQL.
+
+**Lane 1 (papers list) — `backend/src/routes/papers.ts`, `backend/src/types/api.ts`:**
+
+- Dropped two `accreditedOnly` parses (`fetchPapersFromHaf` ~line 372 in old refs; `route handler` ~line 631 in old refs). Hardcoded the gate predicate using the existing `validPevoPaperWhere({ source: 'bridge' })` bridge-arm helper. Dropped `:ao=` from the sha256-wrapped cache-key fragment. Dropped `accredited_only?: boolean` from `PaperListParams`.
+- Tests (`backend/tests/routes/papers.test.ts`, real-HAF): canary that every returned paper has `is_accredited: true` OR `author === config.hiveBridgeAccount`; silent-ignore canary that `?accredited_only=false` returns identical set (`new Set(...).toEqual(new Set(...))` on `${author}/${permlink}` keys).
+
+**Lane 2 (comments list) — `backend/src/routes/comments.ts`:**
+
+- Dropped `accreditedOnly` from `parseCommentParams`, destructure, hardcoded the SQL `JOIN active_accreditations aa ON aa.account = dc.author` against the `filtered` CTE. Dropped `:ao=` from the cache-key string.
+- Tests (`backend/tests/routes/comments.test.ts`, real-HAF): cleaned existing test URLs that had `?accredited_only=false` appended (the original tests asserted envelope shape with a no-op param; per task body, "drop from URL strings; keep envelope-shape assertions"). Added canary: every returned comment has `is_accredited: true`. Added canary: silent-ignore parity.
+
+**Lane 3 (search) — `backend/src/routes/search.ts`, `backend/src/types/api.ts`:**
+
+- Dropped `accreditedOnly: boolean` parameter from `searchPapersFromHaf`, `searchReviewsFromHaf`, `searchFromHaf` signatures and all call sites (including the merged `type === 'all'` `Promise.all`). Hardcoded gate predicates on both `papers` and `reviews` query branches. Dropped `:a=` from the sha256-wrapped cache-key fragment. Dropped `accredited_only?: boolean` from `SearchParams`.
+- List-mode review search does NOT include the `hiveAnonAccount` OR-arm — only the single-doc reviews endpoint (lane 4) needs to surface anon-proxy reviews. Documented inline at the WHERE-clause emission site.
+- Tests (`backend/tests/routes/search.test.ts`, real-HAF, new describe "SQL accreditation gate (lane 3)"): four canaries: every `?type=paper` entry is accredited or `config.hiveBridgeAccount`-authored; every `?type=review` entry is accredited; `?type=paper&accredited_only=false` returns the same set as no param; `?type=review&accredited_only=false` returns the same set as no param.
+
+### Lane 1 follow-up: bridge-paper-author-gate canary update
+
+The unconditional gate emission means the bridge OR-arm
+(`validPevoPaperWhere({ source: 'bridge' })`) now always appears in the
+SQL, regardless of the typeFilter source. A canary in
+`backend/tests/routes/bridge-paper-author-gate.test.ts:216` had asserted the
+opposite ("asymmetric arm" — `?source=native&accredited_only=false` produces
+SQL with no `'bridge_paper'` literal). After Lane 1 that asymmetric arm
+no longer exists. Updated the canary to use `bridgeRelatedCaptures()` +
+`assertBridgeAuthorPin()` so the load-bearing invariant on that surface
+becomes "the bridge OR-arm pins the author to `config.hiveBridgeAccount`"
+rather than "no bridge_paper literal at all". Inline comment documents the
+pre-/post-lane-1 contract change for future readers. Landed in commit
+`9633049` as a Lane 1 follow-up. 14/14 in `bridge-paper-author-gate.test.ts`
+pass post-fix. The other three canaries in the same describe block
+(`accreditedOnly=true`, `accreditedOnly=false retains pin`, `source=bridge
+pins`) were already aligned with the unconditional-gate contract and
+required no edits.
+
+### Out-of-scope cleanup deliberately left in place
+
+The following pre-existing tests still use `?accredited_only=false` as a stable URL fragment to test orthogonal concerns. They are unaffected by the silent-ignore change (cache-key shape and SQL shape are now identical with or without the param), and removing the param would be out-of-scope churn:
+
+- `backend/tests/routes/bridge-paper-author-gate.test.ts:206, 217` — bridge-paper exemption survives across opt-out states.
+- `backend/tests/routes/disciplines-canon-mocked.test.ts:523, 741, 742, 764, 765, 789` — cache-key collision-resistance + sha256-wrap shape.
+
+### Out-of-scope finding flagged for separate triage
+
+`backend/src/routes/comments.ts` `fetchCommentsFromHaf` builds a self-referencing `comment_tree` CTE inside a non-`RECURSIVE` `WITH` clause. PostgreSQL rejects the second branch's `JOIN comment_tree ct` with `42P01 relation "comment_tree" does not exist`. The route's `try/catch` swallows the error and returns `[]`. The bug pre-dates this task and is visible in the Lane 2 test logs as `HAF comments query failed`. This means the comments endpoint has been silently returning empty arrays whenever there are comments; the Lane 2 canary I added asserts the surface contract but its load-bearing value is contingent on the underlying SQL eventually returning rows. Flagged here rather than fixed in any of the four lane commits per the "don't refactor beyond what the task requires" rule. Architect's call whether to file a follow-up task.
+
+### `is_accredited` field semantics
+
+Unchanged per task body — all three surfaces (papers / comments / reviews) keep the field:
+
+- **Papers:** `true` for accredited authors, `false` for `bridge_paper` exemption posts authored by `config.hiveBridgeAccount`.
+- **Comments:** always `true` post-gate (vestigial; UI cleanup is filed as `ui-comment-accredited-badge-vestigial.md` which transitively blocked on this task archiving).
+- **Reviews:** `true` for direct-accredited reviewers, `false` for `hiveAnonAccount`-authored anon-proxy reviews.
+
+### Verification
+
+- `npx tsc --noEmit` clean after each lane (run between lanes 3, 1, 2 — Lane 4's reviews.ts edit is the smallest and was tested directly).
+- `npm run lint` clean for backend changes (two pre-existing `any` warnings on `backend/src/seed-phrase.ts` unchanged; not in scope).
+- Per-lane targeted vitest (real Postgres/Redis via Docker IP overrides): 7 (reviews) + 14 (papers, +1 skipped) + 5 (comments) + 23 (search) + 14 (bridge-paper-author-gate, post lane-1 follow-up) = 63 tests, all green.
+- Full backend `npx vitest run`: 1100 passed | 3 failed | 5 skipped (1108 total, 91/93 test files passed). The 3 failed tests are pre-existing flakes:
+  - `stats-profile-parity.test.ts:166` ("highest_reputation_user is null when no accredited user has a strictly positive score") — documented real-chain data flake, passes on retry. Noted in `backend-bridge-write-haf-lag-and-retry-amplification.md`'s round-N signal. Re-running the file alone returned 4/4 green.
+  - `disciplines-canon-mocked.test.ts:669` (`continuation-chain head-override lowercases head metadata`) — documented pre-existing flake. Same task signal references it.
+  - Two cache-collision tests in `disciplines-canon-mocked.test.ts:359, 406` (repeated-discipline-param dedup) fail when `bridge-paper-author-gate.test.ts` runs in the same vitest invocation but pass when `disciplines-canon-mocked.test.ts` runs alone or alongside `papers.test.ts`. This is test-isolation interaction (likely shared `hafCache` state across files), not a regression introduced by any of the four lane changes — verified by running each combination. The `:ao=` cache-key fragment removal does not change behavior when both compared requests use the same `?accredited_only` value (or omit it).
+
+### No new [TODO Architect] notes from this implementation pass.
