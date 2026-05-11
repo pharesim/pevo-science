@@ -127,10 +127,14 @@ vi.mock('../../src/accreditation.js', () => ({
 }));
 
 // DB: no HAF interaction is reached by the 503 scenarios, but supply a safe
-// no-op pool so the module imports succeed.
+// no-op pool so the module imports succeed. The DUPLICATE-existing wire-shape
+// spec below overrides `pool.query` per-test to return a synthetic row so the
+// register handler hits the `existing.exists` branch without seeding HAF.
+const poolQuery = vi.fn();
+const hafConfigured = { value: false };
 vi.mock('../../src/db.js', () => ({
-  getPool: () => null,
-  isHafConfigured: () => false,
+  getPool: () => (hafConfigured.value ? { query: (...args: unknown[]) => poolQuery(...args) } : null),
+  isHafConfigured: () => hafConfigured.value,
   closeHafPool: async () => {},
 }));
 
@@ -213,6 +217,79 @@ describe('POST /api/bridge/register', () => {
       .send({ identifier: '2301.12345', discipline: 'CS' });
     expect(res.status).toBe(401);
     expect(res.body.error.code).toBe('UNAUTHORIZED');
+  });
+});
+
+// ──────────────────────────────────────────────
+// BACKEND-BRIDGE-ENVELOPE-SHAPE-RECONCILE — Direction A canonical migration
+//
+// The DUPLICATE-existing 409 branch in /api/bridge/register migrated from an
+// open-coded res.status(409).json({...}) with existing_author/existing_permlink
+// at error.X to sendError(...) with those fields at error.details.X. Pre-
+// migration there was no test fixture asserting the DUPLICATE-existing path
+// (architect-verified at 2026-05-11 review — grep -rn 'DUPLICATE.*existing' on
+// backend/tests/ returned zero hits before this test landed). This spec closes
+// that pre-existing coverage gap on the post-migration wire shape.
+//
+// Mock-justification (per root CLAUDE.md carve-out): `pool.query` is mocked
+// because reaching the duplicate branch with a real HAF row requires
+// broadcasting a comment under the bridge account and waiting for HAF to
+// index it. That's impractical per-test for what is a deterministic 409
+// wire-shape assertion. `verifyHiveSignature` and the accreditation gate are
+// NOT mocked — both run real (real signature on the request, real
+// `getAccreditedSet` resolves the in-memory `accreditedSet`).
+// ──────────────────────────────────────────────
+
+describe('BACKEND-BRIDGE-ENVELOPE-SHAPE-RECONCILE — DUPLICATE-existing wire shape', () => {
+  const ACCREDITED_CALLER = 'accreditedbridgedup';
+  const EXISTING_AUTHOR = 'pevotest.bridge';
+  const EXISTING_PERMLINK = 'bridge-arxiv-2301-12345';
+
+  beforeEach(() => {
+    sendOperations.mockClear();
+    poolQuery.mockReset();
+    accreditedSet.clear();
+    accreditedSet.add(ACCREDITED_CALLER);
+    hafConfigured.value = true;
+    // Synthetic duplicate row so checkExistingBridge's first SELECT returns
+    // exists=true and the handler reaches the DUPLICATE branch.
+    poolQuery.mockResolvedValueOnce({
+      rows: [
+        {
+          author: EXISTING_AUTHOR,
+          permlink: EXISTING_PERMLINK,
+          title: 'A deterministic test paper',
+          created: '2026-01-20T00:00:00.000Z',
+        },
+      ],
+    });
+  });
+
+  afterEach(() => {
+    hafConfigured.value = false;
+  });
+
+  it('POST /api/bridge/register: duplicate preprint → 409 DUPLICATE with existing_author/existing_permlink at error.details (canonical envelope)', async () => {
+    const res = await signedPost('/api/bridge/register', ACCREDITED_CALLER, {
+      identifier: '2301.12345',
+      discipline: 'CS',
+    });
+    expect(res.status).toBe(409);
+    expect(res.body.status).toBe('error');
+    expect(res.body.error.code).toBe('DUPLICATE');
+    expect(res.body.error.message).toBe('This preprint is already registered on PEvO');
+    // Canonical envelope shape: divergent fields live inside error.details,
+    // NOT at error.existing_author / error.existing_permlink. This is the
+    // load-bearing assertion of the migration.
+    expect(res.body.error.details).toEqual({
+      existing_author: EXISTING_AUTHOR,
+      existing_permlink: EXISTING_PERMLINK,
+    });
+    // Guard against regression to the pre-migration shape.
+    expect(res.body.error.existing_author).toBeUndefined();
+    expect(res.body.error.existing_permlink).toBeUndefined();
+    // No broadcast on the duplicate branch.
+    expect(sendOperations).not.toHaveBeenCalled();
   });
 });
 

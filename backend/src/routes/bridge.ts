@@ -410,14 +410,13 @@ router.post('/register', registerLimiter, verifyHiveSignature, async (req: Reque
     // on err.code without parsing the message string. LOCK_HELD is
     // retriable (the other request will land on chain and the next attempt
     // will hit the DUPLICATE path); existing-duplicate is terminal.
-    return res.status(409).json({
-      status: 'error',
-      error: {
-        code: 'LOCK_HELD',
-        message: 'A registration for this preprint is already in progress',
-        details: { retriable: true },
-      },
-    });
+    return sendError(
+      res,
+      409,
+      'LOCK_HELD',
+      'A registration for this preprint is already in progress',
+      { retriable: true },
+    );
   }
 
   try {
@@ -432,15 +431,16 @@ router.post('/register', registerLimiter, verifyHiveSignature, async (req: Reque
       return sendError(res, 503, 'SERVICE_UNAVAILABLE', 'Bridge duplicate-check is temporarily unavailable. Please retry shortly.', { retriable: true });
     } else if (existing.status === 'ok') {
       if (existing.exists) {
-        return res.status(409).json({
-          status: 'error',
-          error: {
-            code: 'DUPLICATE',
-            message: 'This preprint is already registered on PEvO',
+        return sendError(
+          res,
+          409,
+          'DUPLICATE',
+          'This preprint is already registered on PEvO',
+          {
             existing_author: existing.author,
             existing_permlink: existing.permlink,
           },
-        });
+        );
       }
     } else {
       // Round-2 hold item #3: exhaustiveness guard on BridgeCheckResult so a
