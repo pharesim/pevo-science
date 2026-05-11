@@ -129,8 +129,13 @@ export function fetchProfileReviews(username, params = {}) {
 
 // ─── Search ──────────────────────────────────────────────────────
 
-export function searchPapers(params) {
-  return request(`/search${buildQuery(params)}`);
+// The optional second argument forwards `{ signal }` to the underlying
+// fetch so search-page guards can cancel an in-flight request when the
+// user clicks a new page or hits back/forward (see search.js doSearch).
+// Other options are forwarded verbatim; backward-compatible with the
+// previous single-argument call sites.
+export function searchPapers(params, options = {}) {
+  return request(`/search${buildQuery(params)}`, options);
 }
 
 // ─── Disciplines ─────────────────────────────────────────────────

@@ -177,6 +177,11 @@ export function initSearchPage() {
     error: null,
     hasSearched: false,
     _popstateHandler: null,
+    // Tracks the AbortController for the most recently issued search request.
+    // When a new doSearch starts (via handleSubmit, goToPage, or popstate),
+    // the prior controller is aborted so stacked in-flight requests do not
+    // last-arrival-wins-overwrite the visible results. See JFR-001.
+    _searchController: null,
 
     formatDate,
     titleCaseDiscipline,
@@ -207,6 +212,10 @@ export function initSearchPage() {
       // _teardownTimers first: flips _mounted so in-flight doSearch /
       // loadDisciplines continuations bail before touching reactive state.
       this._teardownTimers();
+      if (this._searchController) {
+        this._searchController.abort();
+        this._searchController = null;
+      }
       if (this._popstateHandler) {
         window.removeEventListener('popstate', this._popstateHandler);
         this._popstateHandler = null;
@@ -244,6 +253,18 @@ export function initSearchPage() {
       // the same trimmed form. Without this the input keeps leading/trailing
       // whitespace and `_pushUrl` produces `?q=+foo+` (space-encoded padding).
       if (this.query !== trimmed) this.query = trimmed;
+      // Cancel-on-new guard (JFR-001): if a prior doSearch is in flight
+      // (from handleSubmit, goToPage, or popstate), abort its underlying
+      // fetch and discard its results. Without this guard, two stacked
+      // requests race and whichever response arrives LAST overwrites
+      // `this.results`. The pagination buttons remain clickable during
+      // loading (a deliberate UX choice); the guard at the entry point
+      // handles all three call paths uniformly.
+      if (this._searchController) {
+        this._searchController.abort();
+      }
+      const controller = new AbortController();
+      this._searchController = controller;
       this.loading = true;
       this.error = null;
       this.hasSearched = true;
@@ -257,19 +278,39 @@ export function initSearchPage() {
         if (this.sourceFilter) params.source = this.sourceFilter;
         if (this.disciplineFilter) params.discipline = this.disciplineFilter;
 
-        const res = await searchPapers(params);
+        const res = await searchPapers(params, { signal: controller.signal });
         if (!this._mounted) return;
+        // A later doSearch superseded us between fetch start and resolve.
+        // Discard the stale response so it cannot overwrite the in-flight
+        // request's eventual results.
+        if (controller.signal.aborted || this._searchController !== controller) return;
         this.results = res.data || [];
         this.totalPages = totalPagesFromMeta(res.meta);
-      } catch {
+      } catch (err) {
         if (!this._mounted) return;
+        // Abort errors are expected when a newer doSearch supersedes this
+        // one (or destroy() runs). Do NOT clobber `error`/`results`/page
+        // state in that case — the superseding request owns the UI now.
+        if (
+          controller.signal.aborted ||
+          this._searchController !== controller ||
+          (err && (err.name === 'AbortError' || err.code === 'ABORT_ERR'))
+        ) {
+          return;
+        }
         this.error = this.$t('search.searchFailed');
         this.results = [];
         this.totalPages = 1;
         this.currentPage = 1;
         this._pushUrl();
       } finally {
-        if (this._mounted) this.loading = false;
+        // Only flip `loading` off if we are still the current request.
+        // Otherwise the superseding doSearch is mid-flight and owns the
+        // flag; flipping it here would briefly hide the loading skeleton.
+        if (this._mounted && this._searchController === controller) {
+          this.loading = false;
+          this._searchController = null;
+        }
       }
     },
 

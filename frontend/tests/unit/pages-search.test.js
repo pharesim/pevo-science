@@ -74,14 +74,17 @@ describe('searchPage', () => {
 
       await comp.doSearch('quantum', 1);
 
-      expect(searchPapers).toHaveBeenCalledWith({
-        q: 'quantum',
-        page: 1,
-        limit: 20,
-        type: 'paper',
-        source: 'bridge',
-        discipline: 'Physics',
-      });
+      expect(searchPapers).toHaveBeenCalledWith(
+        {
+          q: 'quantum',
+          page: 1,
+          limit: 20,
+          type: 'paper',
+          source: 'bridge',
+          discipline: 'Physics',
+        },
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      );
       expect(comp.results).toEqual([{ title: 'Result' }]);
       expect(comp.hasSearched).toBe(true);
     });
@@ -150,8 +153,12 @@ describe('searchPage', () => {
 
       await comp.doSearch('  quantum  ', 1);
 
-      // API sees trimmed
-      expect(searchPapers).toHaveBeenCalledWith(expect.objectContaining({ q: 'quantum' }));
+      // API sees trimmed (signal options is the second arg added by the
+      // cancel-on-new guard; we only assert the params shape here).
+      expect(searchPapers).toHaveBeenCalledWith(
+        expect.objectContaining({ q: 'quantum' }),
+        expect.any(Object),
+      );
       // Component state sees trimmed
       expect(comp.query).toBe('quantum');
       // URL push (via handleSubmit-style path or catch-block push) would see trimmed;
@@ -520,6 +527,159 @@ describe('searchPage', () => {
       await pending;
       expect(comp.disciplinesLoadFailed).toBe(false);
       warnSpy.mockRestore();
+    });
+  });
+
+  // JFR-001: Stacked in-flight doSearch requests (from goToPage / popstate
+  // bypassing the submit-button disable) must not last-arrival-wins-overwrite
+  // the visible results. The fix is cancel-on-new via AbortController at the
+  // entry point of doSearch.
+  describe('cancel-on-new race guard', () => {
+    it('out-of-order resolution: page-1 response after page-2 does NOT overwrite page-2 results', async () => {
+      let resolvePage1;
+      let resolvePage2;
+      searchPapers.mockImplementationOnce(
+        () => new Promise((resolve) => { resolvePage1 = resolve; }),
+      );
+      searchPapers.mockImplementationOnce(
+        () => new Promise((resolve) => { resolvePage2 = resolve; }),
+      );
+      const comp = createComponent();
+      // Start page-1 fetch (e.g. handleSubmit). Don't await.
+      const page1 = comp.doSearch('test', 1);
+      // While page-1 in flight, user clicks page 2 in pagination.
+      const page2 = comp.doSearch('test', 2);
+      // Resolve page-2 FIRST (it returns from the server before page-1).
+      resolvePage2({ data: [{ title: 'page-2' }], meta: { total: 40, limit: 20 } });
+      await page2;
+      expect(comp.results).toEqual([{ title: 'page-2' }]);
+      // Now the slower page-1 fetch resolves. Without the guard this would
+      // overwrite results with page-1. With the guard the stale response is
+      // discarded.
+      resolvePage1({ data: [{ title: 'page-1' }], meta: { total: 40, limit: 20 } });
+      await page1;
+      expect(comp.results).toEqual([{ title: 'page-2' }]);
+    });
+
+    it('aborts the prior AbortController signal when a new doSearch starts', async () => {
+      let resolvePage1;
+      searchPapers.mockImplementationOnce(
+        (params, options) => new Promise((resolve) => {
+          // Capture the signal so the test can inspect it after a new doSearch.
+          resolvePage1 = () => resolve({ data: [], meta: { total: 0, limit: 20 } });
+          // The test reads signal off the captured options.
+          resolvePage1.signal = options?.signal;
+        }),
+      );
+      searchPapers.mockImplementationOnce(
+        () => Promise.resolve({ data: [{ title: 'page-2' }], meta: { total: 40, limit: 20 } }),
+      );
+      const comp = createComponent();
+      const page1 = comp.doSearch('test', 1);
+      expect(resolvePage1.signal).toBeInstanceOf(AbortSignal);
+      expect(resolvePage1.signal.aborted).toBe(false);
+      await comp.doSearch('test', 2);
+      // Starting the second doSearch must have aborted the first request's signal.
+      expect(resolvePage1.signal.aborted).toBe(true);
+      // Resolve page-1 anyway so the hanging promise settles.
+      resolvePage1();
+      await page1;
+    });
+
+    it('aborted (stale) response after destroy/abort does not flip error', async () => {
+      // Simulates: fetch helper that DOES respect the signal and rejects with
+      // an AbortError. The catch block must treat that as silent supersession,
+      // not as a user-visible search failure.
+      let rejectFn;
+      searchPapers.mockImplementationOnce(
+        () => new Promise((_, reject) => { rejectFn = reject; }),
+      );
+      searchPapers.mockImplementationOnce(
+        () => Promise.resolve({ data: [{ title: 'page-2' }], meta: { total: 40, limit: 20 } }),
+      );
+      const comp = createComponent();
+      const page1 = comp.doSearch('test', 1);
+      // Start page-2 (aborts page-1's controller).
+      await comp.doSearch('test', 2);
+      // The aborted page-1 fetch eventually rejects with AbortError.
+      const abortErr = new Error('aborted');
+      abortErr.name = 'AbortError';
+      rejectFn(abortErr);
+      await page1;
+      // Stale abort must NOT clobber results or flip error.
+      expect(comp.results).toEqual([{ title: 'page-2' }]);
+      expect(comp.error).toBeNull();
+    });
+
+    it('loading flag stays true across a superseded request (UI stays in skeleton state)', async () => {
+      let resolvePage1;
+      let resolvePage2;
+      searchPapers.mockImplementationOnce(
+        () => new Promise((resolve) => { resolvePage1 = resolve; }),
+      );
+      searchPapers.mockImplementationOnce(
+        () => new Promise((resolve) => { resolvePage2 = resolve; }),
+      );
+      const comp = createComponent();
+      const page1 = comp.doSearch('test', 1);
+      expect(comp.loading).toBe(true);
+      const page2 = comp.doSearch('test', 2);
+      // Page-1's stale resolve must NOT flip `loading` to false; page-2
+      // is still in flight and owns the loading state.
+      resolvePage1({ data: [{ title: 'page-1' }], meta: { total: 40, limit: 20 } });
+      await page1;
+      expect(comp.loading).toBe(true);
+      resolvePage2({ data: [{ title: 'page-2' }], meta: { total: 40, limit: 20 } });
+      await page2;
+      expect(comp.loading).toBe(false);
+    });
+
+    it('goToPage triggers cancel-on-new against a prior handleSubmit', async () => {
+      let resolveSubmit;
+      let resolvePage;
+      searchPapers.mockImplementationOnce(
+        () => new Promise((resolve) => { resolveSubmit = resolve; }),
+      );
+      searchPapers.mockImplementationOnce(
+        () => new Promise((resolve) => { resolvePage = resolve; }),
+      );
+      const comp = createComponent();
+      comp.query = 'test';
+      comp.totalPages = 5;
+      // First: handleSubmit (page 1) — fires async doSearch.
+      comp.handleSubmit();
+      // While page-1 in flight, user clicks pagination page 3.
+      comp.goToPage(3);
+      // Submit's slow response arrives AFTER page-3's response.
+      resolvePage({ data: [{ title: 'page-3' }], meta: { total: 100, limit: 20 } });
+      // Flush the pending microtasks to let page-3 settle into results.
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(comp.results).toEqual([{ title: 'page-3' }]);
+      resolveSubmit({ data: [{ title: 'page-1' }], meta: { total: 100, limit: 20 } });
+      await Promise.resolve();
+      await Promise.resolve();
+      // Stale submit response must not overwrite page-3.
+      expect(comp.results).toEqual([{ title: 'page-3' }]);
+    });
+
+    it('destroy() aborts the in-flight searchController', async () => {
+      let resolvePage1;
+      searchPapers.mockImplementationOnce(
+        (params, options) => new Promise((resolve) => {
+          resolvePage1 = () => resolve({ data: [], meta: { total: 0, limit: 20 } });
+          resolvePage1.signal = options?.signal;
+        }),
+      );
+      const comp = createComponent();
+      const page1 = comp.doSearch('test', 1);
+      expect(resolvePage1.signal.aborted).toBe(false);
+      comp.destroy();
+      expect(resolvePage1.signal.aborted).toBe(true);
+      expect(comp._searchController).toBeNull();
+      // Settle the pending promise so vitest doesn't leak.
+      resolvePage1();
+      await page1;
     });
   });
 });
