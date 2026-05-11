@@ -27,11 +27,10 @@ import {
 } from '../lib/fresh-auth.js';
 import {
   embedIdempotencyKey,
-  findCustodyBroadcastByIdempotencyKey,
+  lookupCustodyBroadcastIdempotency,
   validateIdempotencyKey,
-  logIdempotencySkip,
 } from '../lib/idempotency.js';
-import { getPool, isHafAvailable } from '../db.js';
+import { getPool, isHafConfigured } from '../db.js';
 
 const router = Router();
 
@@ -194,11 +193,15 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
   const rawIdempotencyKey = (req.body as { idempotency_key?: unknown })?.idempotency_key;
   let idempotencyKey: string | null = null;
   if (rawIdempotencyKey !== undefined) {
-    const validationErr = validateIdempotencyKey(rawIdempotencyKey);
-    if (validationErr) {
-      return sendError(res, 400, 'VALIDATION_ERROR', validationErr);
+    // F11: discriminated result eliminates the prior `string | null` shape
+    // where success (`null`) shared a type with failure (the error message
+    // string). The narrowed `value` is the validated key — no `as string`
+    // cast at the assignment site.
+    const validation = validateIdempotencyKey(rawIdempotencyKey);
+    if (!validation.ok) {
+      return sendError(res, 400, 'VALIDATION_ERROR', validation.error);
     }
-    idempotencyKey = rawIdempotencyKey as string;
+    idempotencyKey = validation.value;
   }
 
   // Validate each operation
@@ -292,92 +295,15 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
     );
   }
 
-  // Idempotency check + embed. Runs AFTER per-op validation and multi-consent
-  // rejection (so a malformed retry returns 400, not a misleading 200), but
-  // BEFORE the fresh-auth proof verification (so a retry of a confirmed
-  // consent-op broadcast does NOT consume a fresh proof — the user already
-  // paid that ceremony for the original broadcast). The embed mutates the
-  // outer `operations` binding so consent-op verification, op_types
-  // derivation, and the eventual broadcast all see the embedded version.
-  if (idempotencyKey !== null) {
-    const hafPool = isHafAvailable() ? getPool() : null;
-    if (hafPool) {
-      try {
-        const existing = await findCustodyBroadcastByIdempotencyKey(hafPool, username, idempotencyKey);
-        if (existing) {
-          logger.info(
-            {
-              event: 'custody.broadcast.idempotency_hit',
-              route: 'custody.broadcast',
-              username,
-              idempotency_key: idempotencyKey,
-              tx_id: existing.tx_id,
-              block_num: existing.block_num,
-            },
-            'custody.broadcast idempotency hit — returning existing tx_id',
-          );
-          return sendOk(res, {
-            tx_id: existing.tx_id,
-            block_num: existing.block_num,
-            outcome: 'already_landed',
-          });
-        }
-      } catch (lookupErr) {
-        // HAF lookup failure degrades to "no idempotency layer"; the broadcast
-        // proceeds. A 5xx here would be over-cautious — the dedup check is
-        // best-effort, and a HAF blip should not block a legitimate broadcast.
-        logIdempotencySkip(
-          'custody.broadcast.idempotency_lookup_failed',
-          {
-            route: 'custody.broadcast',
-            username,
-            idempotency_key: idempotencyKey,
-            err: lookupErr instanceof Error ? lookupErr : new Error(String(lookupErr)),
-          },
-          'custody.broadcast idempotency HAF lookup failed — proceeding without dedup',
-        );
-      }
-    } else {
-      logIdempotencySkip(
-        'custody.broadcast.idempotency_haf_unavailable',
-        { route: 'custody.broadcast', username, idempotency_key: idempotencyKey },
-        'custody.broadcast idempotency layer degraded — HAF unavailable, proceeding without dedup',
-      );
-    }
-    const embedded = embedIdempotencyKey(operations, idempotencyKey);
-    if (embedded.embedded) {
-      operations = embedded.ops;
-    } else {
-      // Pure-vote bundle (or other no-embed-surface shape). Vote re-cast is
-      // low-harm (duplicate VP cost only); the layer cannot guarantee
-      // dedup here. Surface a structured warn so operators can spot SPAs
-      // that send `idempotency_key` on bundles where it has no effect.
-      logIdempotencySkip(
-        'custody.broadcast.idempotency_no_embed_surface',
-        {
-          route: 'custody.broadcast',
-          username,
-          idempotency_key: idempotencyKey,
-          op_types: operations.map((op: unknown) => Array.isArray(op) ? op[0] : 'unknown'),
-        },
-        'custody.broadcast idempotency_key supplied but bundle has no embed surface (pure-vote)',
-      );
-    }
-  } else {
-    // Today's SPA does not yet send the field; the structured warn lets
-    // operators measure the migration window. Drop this branch entirely once
-    // the SPA migration completes and the field becomes required.
-    logIdempotencySkip(
-      'custody.broadcast.idempotency_key_missing',
-      {
-        route: 'custody.broadcast',
-        username,
-        op_count: operations.length,
-      },
-      'custody.broadcast no idempotency_key supplied — retry-amplification window open',
-    );
-  }
-
+  // Fresh-auth verification hoisted ABOVE the idempotency check (round-2 F2).
+  // Pre-fix order ran idempotency first so a retry of a confirmed consent op
+  // wouldn't burn a fresh proof, but that ordering also let a key-collision
+  // bypass the fresh-auth gate: if a prior op for the same (username, key,
+  // op_type) was found, the route short-circuited to 200 WITHOUT verifying
+  // the SPA could prove fresh re-auth. The architect's call: fresh-auth
+  // proofs are single-use anyway — a SPA retry must re-derive the proof,
+  // and the substitution-attack closure (target-hash binding from round-5)
+  // is more important than retry ergonomics on consent ops specifically.
   const consentAction = consentScan.kind === 'single' ? consentScan.action : null;
   let freshAuthMechanism: FreshAuthMechanism | null = null;
   if (consentScan.kind === 'single') {
@@ -428,6 +354,126 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
       );
     }
     freshAuthMechanism = result.mechanism;
+  }
+
+  // Idempotency check + embed. Runs AFTER per-op validation, multi-consent
+  // rejection, AND fresh-auth verification (so a key-collision cannot bypass
+  // the fresh-auth gate — see round-2 F2 reasoning above).
+  //
+  // Embed-first ordering (F2 continued): we run `embedIdempotencyKey` BEFORE
+  // the HAF lookup so the resolved `embedded.opType` plumbs through to the
+  // lookup. The HAF probe is then scoped to the SAME op surface the embed
+  // picks, closing the cross-op-type shadowing class. Pure-vote bundles
+  // (no embed surface) fall through to an unscoped two-arm probe so the
+  // layer still dedups against a prior comment/cj broadcast carrying the
+  // same key. The embed is pure (returns a fresh array); we commit the
+  // result to the outer `operations` binding only AFTER the lookup miss
+  // path is taken, so the broadcast sees the embedded version while a
+  // short-circuit return path doesn't pay the splice.
+  if (idempotencyKey !== null) {
+    const embedded = embedIdempotencyKey(operations, idempotencyKey);
+    if (!embedded.embedded) {
+      // Pure-vote bundle (or other no-embed-surface shape). Vote re-cast is
+      // low-harm (duplicate VP cost only); the layer cannot guarantee
+      // dedup here. Surface a structured warn so operators can spot SPAs
+      // that send `idempotency_key` on bundles where it has no effect.
+      logger.warn(
+        {
+          event: 'custody.broadcast.idempotency_no_embed_surface',
+          route: 'custody.broadcast',
+          username,
+          idempotency_key: idempotencyKey,
+          op_types: operations.map((op: unknown) => Array.isArray(op) ? op[0] : 'unknown'),
+        },
+        'custody.broadcast idempotency_key supplied but bundle has no embed surface (pure-vote)',
+      );
+    }
+    const hafPool = isHafConfigured() ? getPool() : null;
+    if (hafPool) {
+      try {
+        // Pass the resolved opType (when present) so the HAF lookup probes
+        // ONLY the matching arm (F2). Pure-vote bundles fall through to the
+        // unscoped two-arm probe with `opType: undefined`.
+        const probedOpType = embedded.embedded ? embedded.opType : undefined;
+        const existing = await lookupCustodyBroadcastIdempotency(
+          hafPool,
+          username,
+          idempotencyKey,
+          probedOpType,
+        );
+        if (existing) {
+          logger.info(
+            {
+              event: 'custody.broadcast.idempotency_hit',
+              route: 'custody.broadcast',
+              username,
+              idempotency_key: idempotencyKey,
+              tx_id: existing.tx_id,
+              block_num: existing.block_num,
+            },
+            'custody.broadcast idempotency hit — returning existing tx_id',
+          );
+          return sendOk(res, {
+            tx_id: existing.tx_id,
+            // F13: coerce null to undefined so the SPA's arithmetic on a
+            // missing block_num produces NaN (visible failure), not 0
+            // (silent coercion). The fresh-broadcast envelope sets
+            // block_num to the on-chain value; the idempotency-hit path
+            // matches that shape when HAF carries one, else omits the
+            // field entirely.
+            block_num: existing.block_num ?? undefined,
+            outcome: 'already_landed',
+          });
+        }
+      } catch (lookupErr) {
+        // HAF lookup failure degrades to "no idempotency layer"; the broadcast
+        // proceeds. A 5xx here would be over-cautious — the dedup check is
+        // best-effort, and a HAF blip should not block a legitimate broadcast.
+        // F22: inlined from the prior `logIdempotencySkip` helper.
+        logger.warn(
+          {
+            event: 'custody.broadcast.idempotency_lookup_failed',
+            route: 'custody.broadcast',
+            username,
+            idempotency_key: idempotencyKey,
+            err: lookupErr instanceof Error ? lookupErr : new Error(String(lookupErr)),
+          },
+          'custody.broadcast idempotency HAF lookup failed — proceeding without dedup',
+        );
+      }
+    } else {
+      // F10: event renamed from `idempotency_haf_unavailable` to
+      // `idempotency_haf_unconfigured` because `isHafConfigured()` tests
+      // configuration presence, not live reachability. The prior name led
+      // operators to mis-read this branch as an outage signal; the new name
+      // makes the config-only semantics explicit. `_lookup_failed` (above)
+      // remains the real-outage discriminator.
+      logger.warn(
+        {
+          event: 'custody.broadcast.idempotency_haf_unconfigured',
+          route: 'custody.broadcast',
+          username,
+          idempotency_key: idempotencyKey,
+        },
+        'custody.broadcast idempotency layer degraded — HAF not configured, proceeding without dedup',
+      );
+    }
+    if (embedded.embedded) {
+      operations = embedded.ops;
+    }
+  } else {
+    // Today's SPA does not yet send the field; the structured warn lets
+    // operators measure the migration window. Drop this branch entirely once
+    // the SPA migration completes and the field becomes required.
+    logger.warn(
+      {
+        event: 'custody.broadcast.idempotency_key_missing',
+        route: 'custody.broadcast',
+        username,
+        op_count: operations.length,
+      },
+      'custody.broadcast no idempotency_key supplied — retry-amplification window open',
+    );
   }
 
   const pool = getAppPool();

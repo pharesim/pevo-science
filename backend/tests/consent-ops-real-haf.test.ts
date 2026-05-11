@@ -33,7 +33,7 @@
  *     shapes.
  *
  * Skip-if-no-HAF guard mirrors `tests/hafsql.test.ts`: when
- * `isHafAvailable()` is false (no `HAF_DATABASE_URL`), every assertion
+ * `isHafConfigured()` is false (no `HAF_DATABASE_URL`), every assertion
  * skips so CI environments without HAF stay green.
  *
  * Skip-if-no-fixture guard (per the originating task option (a)): if
@@ -47,7 +47,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { getPool, isHafAvailable } from '../src/db.js';
+import { getPool, isHafConfigured } from '../src/db.js';
 import { T, getCachedGenesisBlock } from '../src/hafsql.js';
 import { config } from '../src/config.js';
 import { fetchConsentOpsForPaper } from '../src/consent-ops.js';
@@ -100,7 +100,7 @@ async function findKnownPaperWithConsentOps(): Promise<{
 }
 
 describe('fetchConsentOpsForPaper — real HAF SQL shape', () => {
-  it.skipIf(!isHafAvailable())(
+  it.skipIf(!isHafConfigured())(
     'returns [] for a paper with no consent ops',
     { timeout: 60_000 },
     async (ctx) => {
@@ -125,7 +125,7 @@ describe('fetchConsentOpsForPaper — real HAF SQL shape', () => {
     },
   );
 
-  it.skipIf(!isHafAvailable())(
+  it.skipIf(!isHafConfigured())(
     'returns rows with BigInt-parseable op_id for a paper with consent ops',
     { timeout: 60_000 },
     async (ctx) => {

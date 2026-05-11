@@ -8,7 +8,7 @@
  */
 
 import { beforeAll, afterAll } from 'vitest';
-import { closeHafPool, getPool, isHafAvailable } from '../src/db.js';
+import { closeHafPool, getPool, isHafConfigured } from '../src/db.js';
 import { getRedis, disconnectRedis } from '../src/redis.js';
 import { getGenesisBlock } from '../src/hafsql.js';
 import { config } from '../src/config.js';
@@ -34,7 +34,7 @@ beforeAll(async () => {
   // src/index.ts; createApp() alone does not. Without it every HAF CTE
   // filters `block_num >= 0`, forcing full-history scans that blow the 30s
   // statement timeout on tables like operation_custom_json_view.
-  if (isHafAvailable()) {
+  if (isHafConfigured()) {
     const pool = getPool();
     if (pool) {
       try { await getGenesisBlock(pool); } catch { /* HAF unavailable — individual tests will see the failure */ }

@@ -139,7 +139,7 @@ let pgQueryImpl: (...args: unknown[]) => Promise<{ rows: unknown[] }> = async ()
 const pgQuery = vi.fn().mockImplementation((...args: unknown[]) => pgQueryImpl(...args));
 vi.mock('../../src/db.js', () => ({
   getPool: () => ({ query: pgQuery }),
-  isHafAvailable: () => true,
+  isHafConfigured: () => true,
   closeHafPool: async () => {},
 }));
 

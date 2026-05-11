@@ -11,7 +11,7 @@
  */
 
 import { getRedis } from './redis.js';
-import { getPool, isHafAvailable } from './db.js';
+import { getPool, isHafConfigured } from './db.js';
 import { getAppPool } from './app-db.js';
 import { config } from './config.js';
 import { logger } from './logger.js';
@@ -72,7 +72,7 @@ async function runCleanup(): Promise<void> {
     return;
   }
 
-  if (!isHafAvailable()) {
+  if (!isHafConfigured()) {
     logger.debug('IPFS cleanup skipped — HAF not available');
     return;
   }

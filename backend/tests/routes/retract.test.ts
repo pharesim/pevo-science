@@ -46,7 +46,7 @@ const { hafQueryMock, broadcastJsonMock, MockBroadcastTimeoutError } = vi.hoiste
 
 vi.mock('../../src/db.js', () => ({
   getPool: () => ({ query: hafQueryMock }),
-  isHafAvailable: () => true,
+  isHafConfigured: () => true,
   closeHafPool: async () => { /* no-op */ },
 }));
 

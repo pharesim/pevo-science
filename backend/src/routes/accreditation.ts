@@ -16,8 +16,8 @@ import { hashEmailForLogs, hashTokenForLogs } from '../lib/log-pii.js';
 import { evalScript } from '../lib/redis-scripts.js';
 import { enqueueDecrement } from '../lib/pending-decrement-queue.js';
 import { seedAccreditationBonus } from '../reputation.js';
-import { findAccreditByIdempotencyKey, logIdempotencySkip } from '../lib/idempotency.js';
-import { getPool, isHafAvailable } from '../db.js';
+import { lookupAccreditationBroadcastIdempotency } from '../lib/idempotency.js';
+import { getPool, isHafConfigured } from '../db.js';
 
 /** How long a verification token stays valid before it expires. */
 const TOKEN_EXPIRY_MS = 24 * 60 * 60 * 1000; // 24 hours
@@ -235,6 +235,41 @@ async function deleteToken(token: string): Promise<void> {
   // Counter is scoped to the token's life — a fresh token always starts
   // from zero, so we drop the side-key whenever the token itself is dropped.
   await deleteBroadcastAttempts(token);
+}
+
+/**
+ * Best-effort wrapper around `deleteToken` used by the success path and the
+ * idempotency-hit path (round-2 F8). Both branches have already written or
+ * are about to write a 200 envelope; a Redis hiccup on cleanup must NOT
+ * propagate to Express's async-error handler (`ERR_HTTP_HEADERS_SENT` would
+ * be the visible symptom — the existing `helper-extraction-express5-
+ * response-ordering-2026-04-28.md` learning captures the prior fire).
+ * Caller passes `event` + `msg` discriminators so operators can correlate
+ * the orphan back to the specific branch that observed the failure; the
+ * 24h token TTL is the backstop.
+ */
+async function deleteTokenBestEffort(
+  token: string,
+  username: string,
+  email: string,
+  event: string,
+  msg: string,
+): Promise<void> {
+  try {
+    await deleteToken(token);
+  } catch (deleteErr) {
+    logger.warn(
+      {
+        event,
+        route: 'accreditation.verify',
+        username,
+        email_hash: hashEmailForLogs(email),
+        token_hash: hashTokenForLogs(token),
+        err: deleteErr instanceof Error ? deleteErr : new Error(String(deleteErr)),
+      },
+      msg,
+    );
+  }
 }
 
 async function cleanupExpiredTokens(): Promise<void> {
@@ -483,10 +518,24 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
   // Token cleanup follows the existing post-broadcast convention: the token
   // has done its job once the chain op exists, regardless of whether THIS
   // request emitted the broadcast.
-  const hafPool = isHafAvailable() ? getPool() : null;
+  //
+  // Round-2 F1: on the HAF-hit branch we ALSO decrement the broadcast-attempts
+  // counter (so retries that hit idempotency don't permanently consume cap
+  // slots; without this, after `cap` retries the user gets 502
+  // BROADCAST_ATTEMPT_LIMIT_EXCEEDED on a confirmed-on-chain accreditation
+  // plus 24h /request lockout) and run seedAccreditationBonus (so the bonus
+  // seed fires on the hit branch too — original spec acceptance #2(b)
+  // required this; without it, the bonus is missing until the next batch
+  // cycle reconciles). Both wraps are best-effort: a Redis decrement
+  // failure or a transient bonus-seed failure does NOT downgrade the 200
+  // (the chain op is confirmed; cap drift and missed bonus reconcile via
+  // batch cycles). A PERMANENT bonus-seed throw, however, surfaces as a
+  // 502 POST_BROADCAST_OPERATOR_REQUIRED via F3's severity discrimination
+  // (programmer-error class — operator-actionable, not auto-reconciled).
+  const hafPool = isHafConfigured() ? getPool() : null;
   if (hafPool) {
     try {
-      const existing = await findAccreditByIdempotencyKey(hafPool, idempotencyKey);
+      const existing = await lookupAccreditationBroadcastIdempotency(hafPool, idempotencyKey);
       if (existing) {
         logger.info(
           {
@@ -498,24 +547,68 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
           },
           'accreditation.verify idempotency hit — returning existing tx_id without re-broadcasting',
         );
+        // F1 part 1: decrement the cap slot the pre-INCR claim grabbed. The
+        // hit path consumes ZERO chain ops, so the slot must return to the
+        // pool. Failure is best-effort: the counter TTLs out with the token
+        // (24h) and the user has already been told the accreditation
+        // succeeded; surfacing a 5xx after the in-flight 200 would mislead.
         try {
-          await deleteToken(token);
-        } catch (deleteErr) {
-          // Best-effort: the token TTLs out within 24h regardless. The 200
-          // response is already in flight; do not surface a Redis hiccup as
-          // a 5xx after the user has been told the accreditation succeeded.
+          await decrementBroadcastAttempts(token, attemptId);
+        } catch (decrErr) {
           logger.warn(
             {
-              event: 'accreditation.verify.idempotency_hit_token_cleanup_failed',
+              event: 'accreditation.verify.idempotency_hit_decrement_failed',
               route: 'accreditation.verify',
               username: pending.hive_username,
               email_hash: hashEmailForLogs(pending.email),
               token_hash: hashTokenForLogs(token),
-              err: deleteErr instanceof Error ? deleteErr : new Error(String(deleteErr)),
+              err: decrErr instanceof Error ? decrErr : new Error(String(decrErr)),
             },
-            'accreditation.verify idempotency-hit token cleanup failed — orphan TTLs out',
+            'accreditation.verify idempotency-hit decrement failed — counter TTLs out with token',
           );
         }
+        // F1 part 2: seed the accreditation bonus on the hit branch too.
+        // Original spec acceptance #2(b) required this; absent the seed, the
+        // user shows zero accreditation_bonus until the next batch cycle
+        // reconciles. Permanent throws (TypeError/SyntaxError/RangeError
+        // re-thrown by `seedAccreditationBonus`) surface as 502
+        // POST_BROADCAST_OPERATOR_REQUIRED carrying the EXISTING (already-
+        // landed) tx_id and `failed_step: 'reputation_seed'`. Transient
+        // throws stay swallowed inside the cascade fn so this branch never
+        // sees them. The branch handles the error envelope locally rather
+        // than re-throwing because the success-path catch is scoped to the
+        // broadcast call (further down) — re-throwing would propagate to
+        // the Express async-error handler instead of producing the
+        // discriminated envelope.
+        try {
+          await seedAccreditationBonus(pending.hive_username);
+        } catch (seedErr) {
+          await deleteTokenBestEffort(
+            token,
+            pending.hive_username,
+            pending.email,
+            'accreditation.verify.idempotency_hit_token_cleanup_failed',
+            'accreditation.verify idempotency-hit token cleanup failed (post-seed-error) — orphan TTLs out',
+          );
+          handleBroadcastError(
+            res,
+            new PostBroadcastWriteError(existing.tx_id, seedErr, 'reputation_seed', 'permanent'),
+            {
+              timeoutMsg: 'Broadcasting accreditation timed out',
+              failMsg: 'Failed to broadcast accreditation to Hive',
+              logContext: { username: pending.hive_username, email_hash: hashEmailForLogs(pending.email) },
+              routeLabel: 'accreditation.verify',
+            },
+          );
+          return;
+        }
+        await deleteTokenBestEffort(
+          token,
+          pending.hive_username,
+          pending.email,
+          'accreditation.verify.idempotency_hit_token_cleanup_failed',
+          'accreditation.verify idempotency-hit token cleanup failed — orphan TTLs out',
+        );
         return sendOk(res, {
           message: 'Accreditation confirmed',
           username: pending.hive_username,
@@ -524,9 +617,10 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
         });
       }
     } catch (lookupErr) {
-      logIdempotencySkip(
-        'accreditation.verify.idempotency_lookup_failed',
+      // F22: inlined from the prior `logIdempotencySkip` helper.
+      logger.warn(
         {
+          event: 'accreditation.verify.idempotency_lookup_failed',
           route: 'accreditation.verify',
           username: pending.hive_username,
           email_hash: hashEmailForLogs(pending.email),
@@ -536,17 +630,31 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
       );
     }
   } else {
-    logIdempotencySkip(
-      'accreditation.verify.idempotency_haf_unavailable',
+    // F10: event renamed from `idempotency_haf_unavailable` to
+    // `idempotency_haf_unconfigured` because `isHafConfigured()` tests
+    // configuration presence, not live reachability. The prior name led
+    // operators to mis-read this branch as an outage signal; the new name
+    // makes the config-only semantics explicit. `_lookup_failed` (above)
+    // remains the real-outage discriminator.
+    logger.warn(
       {
+        event: 'accreditation.verify.idempotency_haf_unconfigured',
         route: 'accreditation.verify',
         username: pending.hive_username,
         email_hash: hashEmailForLogs(pending.email),
       },
-      'accreditation.verify idempotency layer degraded — HAF unavailable, proceeding without dedup',
+      'accreditation.verify idempotency layer degraded — HAF not configured, proceeding without dedup',
     );
   }
 
+  // F24: `embedIdempotencyKey` (the generic bundle scanner used by custody
+  // /broadcast) is INTENTIONALLY not used here. The accreditation op is a
+  // single known-shape `custom_json` constructed inline — splicing
+  // `idempotency_key` directly into the payload literal is clearer than
+  // round-tripping through the scanner, and avoids the (small) cost of
+  // re-parsing/re-stringifying the JSON. The convention is: future
+  // surfaces with opaque bundles use the helper; surfaces that construct
+  // a single op inline embed the field directly here.
   const customJsonPayload = {
     action: 'accredit',
     account: pending.hive_username,
@@ -566,22 +674,36 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
       key,
     );
 
-    await deleteToken(token);
+    // F8: wrap deleteToken on the success path in best-effort cleanup so a
+    // Redis hiccup post-success cannot propagate to Express's async-error
+    // handler over the in-flight 200 envelope (closes the
+    // `helper-extraction-express5-response-ordering-2026-04-28.md` class
+    // for this route).
+    await deleteTokenBestEffort(
+      token,
+      pending.hive_username,
+      pending.email,
+      'accreditation.verify.delete_token_failed_post_success',
+      'accreditation.verify token cleanup failed on broadcast success — orphan TTLs out',
+    );
     // Wrap seedAccreditationBonus in PostBroadcastWriteError discipline (the
     // pattern documented at `BACKEND-CASCADE-FNS-RETHROW-PERMANENT-ERRORS` and
     // adopted by ORCID's handleAccredit / handleLink). The chain op landed by
     // this point; a seed-bonus throw is a downstream cascade failure that
-    // reconciles via the next reputation batch cycle. Without the wrap, the
-    // throw would surface as 502 BROADCAST_FAILED — misleading operators
-    // (broadcast on-call paged for a DB issue) and the user (told their
-    // confirmed accreditation failed). With the wrap, handleBroadcastError
-    // emits 502 POST_BROADCAST_FAILED carrying tx_id + failed_step:
-    // 'reputation_seed' so operator alerts route correctly and the user is
-    // told the chain op is confirmed.
+    // requires operator action — `seedAccreditationBonus` only rethrows on
+    // PERMANENT class errors (TypeError/SyntaxError/RangeError) because
+    // transient Redis/HAF blips stay swallowed inside the cascade fn per
+    // `BACKEND-CASCADE-FNS-RETHROW-PERMANENT-ERRORS`. Round-2 F3 makes that
+    // severity explicit at the wrap site so handleBroadcastError emits 502
+    // POST_BROADCAST_OPERATOR_REQUIRED (not POST_BROADCAST_FAILED) and the
+    // user-facing message says "support has been notified" instead of "will
+    // reconcile automatically" — accurate, because the permanent class is
+    // operator-actionable and the next batch cycle will NOT self-heal a
+    // shape regression in `getReputationWeights()` output.
     try {
       await seedAccreditationBonus(pending.hive_username);
     } catch (seedErr) {
-      throw new PostBroadcastWriteError(result.id, seedErr, 'reputation_seed');
+      throw new PostBroadcastWriteError(result.id, seedErr, 'reputation_seed', 'permanent');
     }
 
     sendOk(res, {
@@ -669,8 +791,17 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
     // required here. The chain op already landed and `deleteToken` already
     // ran on the success path BEFORE the seed-bonus throw, so the token is
     // gone. The user has been told the chain op is confirmed
-    // (`details.outcome:'confirmed'`, `details.tx_id`); the missed bonus
-    // reconciles via the next reputation batch cycle (HAF source of truth).
+    // (`details.outcome:'confirmed'`, `details.tx_id`).
+    //
+    // Round-2 F3: this branch ONLY fires on PERMANENT seed-bonus errors
+    // (TypeError/SyntaxError/RangeError rethrown from
+    // `seedAccreditationBonus` per `BACKEND-CASCADE-FNS-RETHROW-PERMANENT-ERRORS`).
+    // Transient cascade errors stay swallowed inside the cascade fn. The
+    // user-facing envelope is 502 POST_BROADCAST_OPERATOR_REQUIRED, NOT
+    // POST_BROADCAST_FAILED — the missed bonus will NOT self-heal via the
+    // next reputation batch cycle (the next cycle re-derives from
+    // `getReputationWeights()` which is the source of the shape regression
+    // that caused the rethrow). Operator action required.
   }
 });
 

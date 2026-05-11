@@ -18,6 +18,13 @@
  * three idempotency arms (hit, miss, lookup-failure) by per-test override.
  * `verifyHiveSignature` middleware runs real (real JWT verify against the
  * suite's `SESSION_SECRET`).
+ *
+ * Round-2 F2: the route now embeds first then runs an opType-SCOPED HAF
+ * lookup. For a CUSTOM_JSON_REVOTE op, embed picks `opType:'custom_json'`,
+ * so the lookup probes ONLY the custom_json arm. Specs below stage the
+ * `hafQueryMock` accordingly (single mock response per scoped probe). The
+ * unscoped two-arm probe is exercised by the pure-vote no-embed spec, where
+ * embed returns false and the lookup falls back to scanning both arms.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -89,15 +96,16 @@ vi.mock('../../src/redis.js', () => ({
 }));
 
 // HAF pool is the load-bearing surface for these specs. `hafQueryMock` lets
-// each test stage the comments-then-customJson query response sequence
-// findCustodyBroadcastByIdempotencyKey emits.
+// each test stage the response for the SCOPED probe arm
+// findCustodyBroadcastByIdempotencyKey emits — one mock response per scoped
+// probe; two mock responses for the unscoped pure-vote fallback path.
 const { hafQueryMock } = vi.hoisted(() => ({
   hafQueryMock: vi.fn(),
 }));
 
 vi.mock('../../src/db.js', () => ({
   getPool: () => ({ query: hafQueryMock }),
-  isHafAvailable: () => true,
+  isHafConfigured: () => true,
   closeHafPool: async () => {},
 }));
 
@@ -124,6 +132,19 @@ const VOTE_OP = [
   { voter: USERNAME, author: 'someauthor', permlink: 'somepermlink', weight: 10000 },
 ];
 
+const COMMENT_OP = [
+  'comment',
+  {
+    parent_author: '',
+    parent_permlink: config.appTag,
+    author: USERNAME,
+    permlink: 'idemtestpost',
+    title: 'idem',
+    body: 'idem body',
+    json_metadata: JSON.stringify({ app: `${config.appTag}/0.1.0`, tags: [config.appTag] }),
+  },
+];
+
 const CUSTOM_JSON_REVOTE = [
   'custom_json',
   {
@@ -147,16 +168,15 @@ beforeEach(() => {
 });
 
 describe('custody /broadcast idempotency (Option A.4)', () => {
-  it('HAF hit on the comments arm short-circuits with outcome:already_landed and skips broadcast', async () => {
-    // First HAF query (comments) returns the prior op; second (custom_json)
-    // is never reached. The route emits 200 with the existing tx_id and
-    // does NOT invoke broadcastSendOperationsWithTimeout.
+  it('HAF hit on the comment arm (scoped probe with opType="comment") short-circuits with outcome:already_landed', async () => {
+    // Comment op embed picks opType='comment'; lookup scopes to the comment
+    // arm only — one HAF round-trip, no fallthrough to custom_json.
     hafQueryMock.mockResolvedValueOnce({
       rows: [{ trx_id: 'tx-prior-comment', block_num: 555 }],
     });
 
     const res = await bearerPost(bearerFor(USERNAME), {
-      operations: [CUSTOM_JSON_REVOTE],
+      operations: [COMMENT_OP],
       idempotency_key: VALID_KEY,
     });
 
@@ -169,10 +189,14 @@ describe('custody /broadcast idempotency (Option A.4)', () => {
     expect(sendOperationsMock).not.toHaveBeenCalled();
     expect(decryptKeyMock).not.toHaveBeenCalled();
     expect(logCustodyBroadcastMock).not.toHaveBeenCalled();
+    // Scoped probe: exactly one HAF round-trip, hitting the comment arm.
+    expect(hafQueryMock).toHaveBeenCalledTimes(1);
+    expect(hafQueryMock.mock.calls[0][0]).toMatch(/operation_comment_view/);
   });
 
-  it('HAF hit on the custom_json arm (after empty comments arm) short-circuits', async () => {
-    hafQueryMock.mockResolvedValueOnce({ rows: [] });
+  it('HAF hit on the custom_json arm (scoped probe with opType="custom_json") short-circuits', async () => {
+    // custom_json op embed picks opType='custom_json'; lookup scopes to the
+    // custom_json arm only — no comment-arm probe.
     hafQueryMock.mockResolvedValueOnce({
       rows: [{ trx_id: 'tx-prior-cj', block_num: 777 }],
     });
@@ -189,6 +213,30 @@ describe('custody /broadcast idempotency (Option A.4)', () => {
       outcome: 'already_landed',
     });
     expect(sendOperationsMock).not.toHaveBeenCalled();
+    // F13: when block_num is non-null the field surfaces normally.
+    expect(res.body.data.block_num).toBe(777);
+    expect(hafQueryMock).toHaveBeenCalledTimes(1);
+    expect(hafQueryMock.mock.calls[0][0]).toMatch(/required_posting_auths/);
+    expect(hafQueryMock.mock.calls[0][0]).not.toMatch(/operation_comment_view/);
+  });
+
+  it('HAF hit with block_num:null coerces to undefined in the response shape (F13)', async () => {
+    hafQueryMock.mockResolvedValueOnce({
+      rows: [{ trx_id: 'tx-prior-cj-null-block', block_num: null }],
+    });
+
+    const res = await bearerPost(bearerFor(USERNAME), {
+      operations: [CUSTOM_JSON_REVOTE],
+      idempotency_key: VALID_KEY,
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.tx_id).toBe('tx-prior-cj-null-block');
+    expect(res.body.data.outcome).toBe('already_landed');
+    // Round-2 F13: null → undefined → omitted from JSON. SPA arithmetic
+    // on a missing field yields NaN (visible failure), not 0 (silent
+    // coercion). The serialized response should NOT carry block_num: null.
+    expect(res.body.data).not.toHaveProperty('block_num');
   });
 
   it('HAF miss embeds idempotency_key into the custom_json op and broadcasts', async () => {
@@ -240,7 +288,9 @@ describe('custody /broadcast idempotency (Option A.4)', () => {
     }
   });
 
-  it('pure-vote bundle WITH key emits no_embed_surface warn and broadcasts unchanged', async () => {
+  it('pure-vote bundle WITH key emits no_embed_surface warn (full payload shape) and broadcasts unchanged', async () => {
+    // Pure-vote: embed returns false, so the lookup falls back to the
+    // UNSCOPED two-arm probe — two mocked HAF responses, both empty.
     hafQueryMock.mockResolvedValue({ rows: [] });
     const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never);
     try {
@@ -250,11 +300,20 @@ describe('custody /broadcast idempotency (Option A.4)', () => {
       });
       expect(res.status).toBe(200);
       expect(sendOperationsMock).toHaveBeenCalledTimes(1);
+      // F21: pin the full warn payload shape via toMatchObject so a future
+      // structured-fields refactor surfaces here, not at dashboard-runtime.
       const matchingCall = warnSpy.mock.calls.find((call) => {
         const ctx = call[0] as Record<string, unknown> | undefined;
         return ctx?.event === 'custody.broadcast.idempotency_no_embed_surface';
       });
       expect(matchingCall, 'expected idempotency_no_embed_surface warn').toBeDefined();
+      expect(matchingCall![0]).toMatchObject({
+        event: 'custody.broadcast.idempotency_no_embed_surface',
+        route: 'custody.broadcast',
+        username: USERNAME,
+        idempotency_key: expect.any(String),
+        op_types: expect.arrayContaining(['vote']),
+      });
       // The vote op shape is unchanged — no embed.
       const broadcastedOps = sendOperationsMock.mock.calls[0][0] as Array<[string, Record<string, unknown>]>;
       expect(broadcastedOps[0][1]).not.toHaveProperty('idempotency_key');

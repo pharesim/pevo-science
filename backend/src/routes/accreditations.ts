@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from 'express';
-import { getPool, isHafAvailable } from '../db.js';
+import { getPool, isHafConfigured } from '../db.js';
 import { config } from '../config.js';
 import { sendOk } from '../response.js';
 import { hafCache } from '../cache.js';
@@ -87,7 +87,7 @@ router.get('/', async (req: Request, res: Response) => {
   const field = req.query.field as string | undefined;
   const institution = req.query.institution as string | undefined;
 
-  if (isHafAvailable()) {
+  if (isHafConfigured()) {
     const cacheKey = `accreditations:${JSON.stringify({ field, institution, page, limit })}`;
     const result = await hafCache.getOrSet(cacheKey, () => fetchAccreditationsFromHaf(limit, offset, field, institution), 60_000);
     if (result) return sendOk(res, result.rows, { page, limit, total: result.total });
@@ -152,7 +152,7 @@ async function fetchAccreditationStatusFromHaf(username: string) {
 router.get('/:username', async (req: Request, res: Response) => {
   const username = req.params.username as string;
 
-  if (isHafAvailable()) {
+  if (isHafConfigured()) {
     const cacheKey = `accreditation-status:${username}`;
     const result = await hafCache.getOrSet(cacheKey, () => fetchAccreditationStatusFromHaf(username), 60_000);
     if (result) return sendOk(res, result);

@@ -6,7 +6,7 @@ import compression from 'compression';
 import cors from 'cors';
 import helmet from 'helmet';
 import { config } from './config.js';
-import { getPool, isHafAvailable } from './db.js';
+import { getPool, isHafConfigured } from './db.js';
 import { isRedisAvailable } from './redis.js';
 import { hiveClient } from './hive.js';
 import { extractAbstract, parseMeta, isPevoAnyPaper } from './helpers.js';
@@ -162,7 +162,7 @@ export function createApp() {
   app.get('/api/health', readLimiter, (_req, res) => {
     res.json({
       status: 'ok',
-      haf_available: isHafAvailable(),
+      haf_available: isHafConfigured(),
       redis_available: isRedisAvailable(),
       timestamp: new Date().toISOString(),
     });

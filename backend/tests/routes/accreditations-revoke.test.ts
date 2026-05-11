@@ -24,7 +24,7 @@ const { hafQueryMock } = vi.hoisted(() => ({
 
 vi.mock('../../src/db.js', () => ({
   getPool: () => ({ query: hafQueryMock }),
-  isHafAvailable: () => true,
+  isHafConfigured: () => true,
   closeHafPool: async () => {},
 }));
 

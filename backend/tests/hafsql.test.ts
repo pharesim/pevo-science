@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { getPool, isHafAvailable } from '../src/db.js';
+import { getPool, isHafConfigured } from '../src/db.js';
 import {
   activeAccreditationsCteBody,
   authorshipClaimsCteBody,
@@ -18,7 +18,7 @@ import { queryWithRetry } from './support/haf-query.js';
  * rather than trivially passing — the invariant only exists to be exercised.
  */
 describe('authorshipClaimsCteBody scope', () => {
-  it.skipIf(!isHafAvailable())(
+  it.skipIf(!isHafConfigured())(
     'claimer scope matches unscoped + post-filter',
     { timeout: 60_000 },
     async (ctx) => {
@@ -52,7 +52,7 @@ describe('authorshipClaimsCteBody scope', () => {
     },
   );
 
-  it.skipIf(!isHafAvailable())(
+  it.skipIf(!isHafConfigured())(
     'paper scope matches unscoped + post-filter',
     { timeout: 60_000 },
     async (ctx) => {

@@ -5,7 +5,7 @@ import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';
 import { rateLimit, byAccount, byIp } from '../middleware/rateLimit.js';
 import { getAccreditation } from './profile.js';
 import { getRedis } from '../redis.js';
-import { getPool, isHafAvailable } from '../db.js';
+import { getPool, isHafConfigured } from '../db.js';
 import { getAppPool } from '../app-db.js';
 import { T } from '../hafsql.js';
 import { logger } from '../logger.js';
@@ -253,7 +253,7 @@ async function cidIsKnown(cid: string): Promise<boolean> {
   }
 
   // Check HAF for published references
-  if (!isHafAvailable()) return false;
+  if (!isHafConfigured()) return false;
   const pool = getPool();
   if (!pool) return false;
 

@@ -47,7 +47,7 @@ const { hafQueryMock, getPoolMock } = vi.hoisted(() => ({
 
 vi.mock('../src/db.js', () => ({
   getPool: getPoolMock,
-  isHafAvailable: () => getPoolMock() !== null,
+  isHafConfigured: () => getPoolMock() !== null,
 }));
 
 // Stub `getCachedGenesisBlock` so the SQL-shape assertions don't depend on

@@ -40,7 +40,7 @@ const {
 
 vi.mock('../src/db.js', () => ({
   getPool: () => ({ query: hafQueryMock, connect: () => Promise.reject(new Error('not used')) }),
-  isHafAvailable: () => true,
+  isHafConfigured: () => true,
   closeHafPool: async () => {},
 }));
 

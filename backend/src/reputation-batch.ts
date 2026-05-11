@@ -18,7 +18,7 @@
 
 import crypto from 'node:crypto';
 import type Redis from 'ioredis';
-import { getPool, isHafAvailable } from './db.js';
+import { getPool, isHafConfigured } from './db.js';
 import { getRedis } from './redis.js';
 import { config } from './config.js';
 import { logger } from './logger.js';
@@ -177,7 +177,7 @@ export async function runBatchComputation(maxDurationMs = DEFAULT_MAX_DURATION_M
   let lockToken: string | null = null;
 
   try {
-    if (!isHafAvailable()) {
+    if (!isHafConfigured()) {
       logger.warn('HAF unavailable, skipping batch reputation computation');
       return;
     }

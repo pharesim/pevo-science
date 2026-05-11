@@ -59,7 +59,7 @@ import {
 } from '../../src/reputation.js';
 import * as accreditationModule from '../../src/accreditation.js';
 import { DEFAULT_REPUTATION_WEIGHTS } from '../../src/types/index.js';
-import { isHafAvailable } from '../../src/db.js';
+import { isHafConfigured } from '../../src/db.js';
 import { getAllAccreditedAccounts } from '../../src/accreditation.js';
 import { getCachedGenesisBlock } from '../../src/hafsql.js';
 
@@ -162,7 +162,7 @@ describe('computeReputationBatch idempotency', () => {
     // silently returned on HAF-empty / no-accredited / no-genesis. Use
     // ctx.skip() so the absence is visible in CI test output rather than
     // a vacuous pass.
-    if (!isHafAvailable()) {
+    if (!isHafConfigured()) {
       return ctx.skip(true, 'HAF unavailable');
     }
     const accredited = await getAllAccreditedAccounts();

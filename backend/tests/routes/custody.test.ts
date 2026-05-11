@@ -111,7 +111,7 @@ vi.mock('../../src/redis.js', () => ({
 // HAF pool is not used by /broadcast; return null so middleware imports succeed.
 vi.mock('../../src/db.js', () => ({
   getPool: () => null,
-  isHafAvailable: () => false,
+  isHafConfigured: () => false,
   closeHafPool: async () => {},
 }));
 

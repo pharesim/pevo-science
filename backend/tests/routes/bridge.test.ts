@@ -130,7 +130,7 @@ vi.mock('../../src/accreditation.js', () => ({
 // no-op pool so the module imports succeed.
 vi.mock('../../src/db.js', () => ({
   getPool: () => null,
-  isHafAvailable: () => false,
+  isHafConfigured: () => false,
   closeHafPool: async () => {},
 }));
 

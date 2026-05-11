@@ -1,7 +1,7 @@
 import { Router, type Request, type Response } from 'express';
 import crypto from 'crypto';
 import { getRequiredBridgePostingKey } from '../startup-checks.js';
-import { getPool, isHafAvailable } from '../db.js';
+import { getPool, isHafConfigured } from '../db.js';
 import { broadcastSendOperationsWithTimeout, BroadcastTimeoutError } from '../hive.js';
 import { config } from '../config.js';
 import { sendOk, sendError } from '../response.js';
@@ -219,7 +219,7 @@ async function checkExistingBridge(
   try {
     // Check all possible authors by querying HAF first
     const pool = getPool();
-    if (pool && isHafAvailable()) {
+    if (pool && isHafConfigured()) {
       // Metadata check: find by source DOI or arXiv ID. Pin to the bridge
       // account so a spoofer can't preempt a canonical bridge import by
       // posting a comment with the same source DOI under their own account.

@@ -1,5 +1,5 @@
 import { config } from './config.js';
-import { isHafAvailable, closeHafPool, getPool } from './db.js';
+import { isHafConfigured, closeHafPool, getPool } from './db.js';
 import { initAppDb, closeAppPool } from './app-db.js';
 import { createApp } from './app.js';
 import { validateConfig, checkOrcidProcessSafety, BootFatalError } from './startup-checks.js';
@@ -103,13 +103,13 @@ if (app) {
           startStatsCache(),
           backfillAccreditationSeeds(),
         ]).catch((err) => logger.warn({ err }, 'Background cache warmup failed'));
-        logger.info({ port: config.port, haf: isHafAvailable(), appDb: !!config.appDatabaseUrl }, 'PEvO backend started');
+        logger.info({ port: config.port, haf: isHafConfigured(), appDb: !!config.appDatabaseUrl }, 'PEvO backend started');
 
         // Production-only: warn if Redis is unavailable, because ORCID OAuth
         // state then falls back to an in-memory map that is NOT multi-process safe.
         checkOrcidProcessSafety();
 
-        if (isHafAvailable()) {
+        if (isHafConfigured()) {
           startBlockWatcher();
         }
 

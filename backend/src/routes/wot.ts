@@ -11,7 +11,7 @@ import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';
 import { getAccreditedSet } from '../accreditation.js';
 import { getVouchStatus, broadcastWotAccreditation, cascadeRevocation, PartialCascadeError } from '../wot.js';
 import { logger } from '../logger.js';
-import { isHafAvailable } from '../db.js';
+import { isHafConfigured } from '../db.js';
 
 const router = Router();
 
@@ -22,7 +22,7 @@ const router = Router();
 router.get('/:username', async (req: Request, res: Response) => {
   const username = req.params.username as string;
 
-  if (!isHafAvailable()) {
+  if (!isHafConfigured()) {
     return sendError(res, 500, 'INTERNAL_ERROR', 'HAF database required for WoT queries');
   }
 

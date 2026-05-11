@@ -1,6 +1,6 @@
 import { Router, type Request, type Response } from 'express';
 import crypto from 'node:crypto';
-import { getPool, isHafAvailable } from '../db.js';
+import { getPool, isHafConfigured } from '../db.js';
 import { config } from '../config.js';
 import { sendOk, sendError } from '../response.js';
 import { parsePageLimit } from '../helpers.js';
@@ -329,7 +329,7 @@ router.get('/', async (req: Request, res: Response) => {
   const sort = (req.query.sort as string) === 'date' ? 'date' : 'relevance';
   const { page, limit, offset } = parsePageLimit(req);
 
-  if (isHafAvailable()) {
+  if (isHafConfigured()) {
     // `discipline` is already lowercased at route entry (see above), so the
     // cache key is canonical — `?discipline=Physics` and `?discipline=physics`
     // share a single Redis entry.

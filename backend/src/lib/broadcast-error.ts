@@ -28,11 +28,37 @@ import { logger } from '../logger.js';
  */
 export type PostBroadcastFailedStep = 'cache_write' | 'account_update' | 'reputation_seed';
 
+/**
+ * Severity discriminator for `PostBroadcastWriteError` (round-2 F3):
+ *
+ *   `'transient'` — the cascade failure may self-heal via a subsequent batch
+ *     cycle, retry, or HAF re-derivation. User-facing message says "will
+ *     reconcile automatically." Emits 502 `POST_BROADCAST_FAILED`. Default
+ *     for callers that don't specify (preserves the prior ORCID-surface
+ *     contract).
+ *
+ *   `'permanent'` — operator must investigate; no batch cycle will recover
+ *     the missed write. User-facing message says "support has been notified."
+ *     Emits 502 `POST_BROADCAST_OPERATOR_REQUIRED`. Structured log severity
+ *     is operator-paged.
+ *
+ * Accreditation `/verify`'s `seedAccreditationBonus` wrap sets `'permanent'`
+ * because `seedAccreditationBonus` only re-throws on permanent (programmer-
+ * error class) failures — transient Redis/HAF blips stay swallowed inside
+ * the cascade fn per `BACKEND-CASCADE-FNS-RETHROW-PERMANENT-ERRORS`. The
+ * comment that previously claimed "next cycle reconciles" at this site was
+ * stale (re. round-2 F3 finding); the next reputation cycle does NOT
+ * self-heal a `TypeError`/`SyntaxError`/`RangeError` in `getReputationWeights`
+ * output, so the user message must reflect that.
+ */
+export type PostBroadcastSeverity = 'transient' | 'permanent';
+
 export class PostBroadcastWriteError extends Error {
   constructor(
     public readonly txId: string,
     cause: unknown,
     public readonly failedStep: PostBroadcastFailedStep,
+    public readonly severity: PostBroadcastSeverity = 'transient',
   ) {
     // Forward `cause` through Error's standard `{ cause }` slot so the native
     // ES2022 Error.cause property is set. pino's error serializer, structured
@@ -215,6 +241,17 @@ function defaultPostBroadcastMsg(txId: string): string {
 }
 
 /**
+ * Permanent-severity counterpart to `defaultPostBroadcastMsg` (round-2 F3).
+ * Communicates "support has been notified" rather than "will reconcile
+ * automatically" because the permanent class — `TypeError`/`SyntaxError`/
+ * `RangeError` rethrown by a cascade fn — represents a programmer-error
+ * state that no batch cycle will self-heal. Operator action required.
+ */
+function defaultPostBroadcastOperatorRequiredMsg(txId: string): string {
+  return `Your operation is confirmed on Hive (tx ${txId}). A backend write failed and could not be reconciled automatically; support has been notified.`;
+}
+
+/**
  * The narrowed ambiguous-only variant. Wrappers that always emit the
  * ambiguous-outcome envelope (currently {@link withOrcidBindingLock}'s
  * `'unavailable'` branch) take this type and call
@@ -290,6 +327,16 @@ export function handleBroadcastError(
   // with details.outcome:'confirmed' is the right shape.
   // (BACKEND-ORCID-BROADCAST-OUTCOME-DISCRIMINATION.)
   if (err instanceof PostBroadcastWriteError) {
+    // Severity discriminator (round-2 F3): permanent-class throws emit a
+    // distinct 502 code (POST_BROADCAST_OPERATOR_REQUIRED) and message
+    // ("support has been notified") so user-visible recovery copy stops
+    // claiming automatic reconciliation on a permanent programmer-error
+    // class. Operator-alert routing keys on the same `event:` anchor today
+    // because both severities share the cascade-failure on-call disposition
+    // (DB on-call, not broadcast on-call). A future dashboard split — e.g.
+    // operator-pager on permanent vs. dashboard-only on transient — keys
+    // off `event` plus the existing structured `severity` field.
+    //
     // Structured `event:'post_broadcast_write_failed'` so the 4th anchor is
     // dashboard-keyable alongside the sibling event-tagged anchors
     // (`event:'binding_lock_extend_*'`, `event:'lock_contention_held'`,
@@ -328,6 +375,7 @@ export function handleBroadcastError(
         err,
         txId: err.txId,
         failedStep: err.failedStep,
+        severity: err.severity,
         event: 'post_broadcast_write_failed',
       },
       `${opts.routeLabel} broadcast confirmed but post-broadcast write failed`,
@@ -339,11 +387,13 @@ export function handleBroadcastError(
     // the route's outer catch as a generic 500 INTERNAL_ERROR, and (on the
     // ORCID surface) consume the OAuth state token in the process — the
     // exact hard-block class the wrapper exists to prevent (round-1 hold #2).
+    const fallbackMsg =
+      err.severity === 'permanent'
+        ? defaultPostBroadcastOperatorRequiredMsg(err.txId)
+        : defaultPostBroadcastMsg(err.txId);
     let userMsg: string;
     try {
-      userMsg = opts.postBroadcastMsgFn
-        ? opts.postBroadcastMsgFn(err.failedStep)
-        : defaultPostBroadcastMsg(err.txId);
+      userMsg = opts.postBroadcastMsgFn ? opts.postBroadcastMsgFn(err.failedStep) : fallbackMsg;
     } catch (msgErr) {
       logger.warn(
         {
@@ -364,13 +414,15 @@ export function handleBroadcastError(
           err: msgErr,
           txId: err.txId,
           failedStep: err.failedStep,
+          severity: err.severity,
           event: 'post_broadcast_msg_fn_threw',
         },
         `${opts.routeLabel} postBroadcastMsgFn threw — using generic fallback`,
       );
-      userMsg = defaultPostBroadcastMsg(err.txId);
+      userMsg = fallbackMsg;
     }
-    sendError(res, 502, 'POST_BROADCAST_FAILED', userMsg, {
+    const code = err.severity === 'permanent' ? 'POST_BROADCAST_OPERATOR_REQUIRED' : 'POST_BROADCAST_FAILED';
+    sendError(res, 502, code, userMsg, {
       retriable: false,
       outcome: 'confirmed',
       tx_id: err.txId,

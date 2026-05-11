@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from 'express';
-import { getPool, isHafAvailable } from '../db.js';
+import { getPool, isHafConfigured } from '../db.js';
 import { config } from '../config.js';
 import { sendOk } from '../response.js';
 import { hafCache } from '../cache.js';
@@ -132,7 +132,7 @@ const ZERO_STATS = {
 };
 
 router.get('/', async (_req: Request, res: Response) => {
-  if (isHafAvailable()) {
+  if (isHafConfigured()) {
     const result = await hafCache.get('stats');
     if (result) return sendOk(res, result);
   }

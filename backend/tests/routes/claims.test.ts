@@ -125,7 +125,7 @@ queryFn.mockImplementation(async (sql: string, params: unknown[]) => {
 
 vi.mock('../../src/db.js', () => ({
   getPool: () => ({ query: queryFn }),
-  isHafAvailable: () => true,
+  isHafConfigured: () => true,
   closeHafPool: async () => {},
 }));
 

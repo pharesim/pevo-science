@@ -169,7 +169,7 @@ export function buildArgon2RouteMockKit(): Argon2RouteMockKit {
  */
 export const dbStubFactory: () => typeof import('../../src/db.js') = () => ({
   getPool: () => null,
-  isHafAvailable: () => false,
+  isHafConfigured: () => false,
   closeHafPool: async () => {},
 });
 

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import request from 'supertest';
 import { createApp } from '../../src/app.js';
-import { getPool, isHafAvailable } from '../../src/db.js';
+import { getPool, isHafConfigured } from '../../src/db.js';
 import { config } from '../../src/config.js';
 import { T, getCachedGenesisBlock } from '../../src/hafsql.js';
 import { queryWithRetry } from '../support/haf-query.js';
@@ -15,7 +15,7 @@ const app = createApp();
  * the settings page (auth store reads this endpoint, not /api/profile).
  */
 describe('GET /api/accreditations/:username', () => {
-  it.skipIf(!isHafAvailable())(
+  it.skipIf(!isHafConfigured())(
     'returns accreditation.orcid when the latest on-chain accreditation has one',
     { timeout: 60_000 },
     async (ctx) => {
@@ -70,7 +70,7 @@ describe('GET /api/accreditations/:username', () => {
     },
   );
 
-  it.skipIf(!isHafAvailable())(
+  it.skipIf(!isHafConfigured())(
     'exposes orcid:null when the latest on-chain accreditation has none',
     { timeout: 60_000 },
     async (ctx) => {
@@ -121,7 +121,7 @@ describe('GET /api/accreditations/:username', () => {
   // response must include the HAF event_id as `tx_id`, matching the shape returned
   // by /api/profile/:username. The auth store and profile page should see the
   // same identifier for the same underlying custom_json op.
-  it.skipIf(!isHafAvailable())(
+  it.skipIf(!isHafConfigured())(
     'returns the same tx_id as /api/profile/:username for an accredited account',
     { timeout: 60_000 },
     async (ctx) => {
@@ -189,7 +189,7 @@ describe('GET /api/accreditations/:username', () => {
   // fetchAccreditationStatusFromHaf must return is_accredited:false with a null
   // accreditation. Without this, a mutation that returns is_accredited:true
   // from the revoke branch would not be caught by the orcid/parity specs above.
-  it.skipIf(!isHafAvailable())(
+  it.skipIf(!isHafConfigured())(
     'returns is_accredited:false when the latest on-chain op is a revoke',
     { timeout: 60_000 },
     async (ctx) => {

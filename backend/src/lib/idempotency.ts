@@ -27,12 +27,22 @@
  *     `accreditationAuthorities` (so a self-broadcast custom_json carrying
  *     a forged key cannot poison the dedup check).
  *
- * Per-request HAF query is sufficient at current scale; cross-route Redis
- * caching is explicitly out of scope per the task spec.
+ * Cross-op-type shadowing defense (round-2 F2): the custody lookup accepts an
+ * optional `opType` parameter. When the caller has run `embedIdempotencyKey`
+ * first and knows which op surface carries the embed, it passes the resolved
+ * `opType` so the HAF lookup probes ONLY that arm. This binds the lookup to
+ * the same surface the embed picks, closing the class where a custom_json op
+ * carrying a forged `idempotency_key` could shadow a legitimate comment-op
+ * broadcast (or vice versa). Pure-vote bundles (no embed surface) fall through
+ * to the unscoped two-arm probe so the layer still dedups against prior
+ * comment/cj broadcasts carrying the same key.
  */
+
+import crypto from 'node:crypto';
 
 import { config } from '../config.js';
 import { logger } from '../logger.js';
+import { getRedis } from '../redis.js';
 import { T, getCachedGenesisBlock } from '../hafsql.js';
 
 /** Minimal pool shape — matches `pg.Pool.query` signature. Keeps this module
@@ -55,7 +65,14 @@ export interface IdempotencyHit {
   block_num: number | null;
 }
 
-const ALLOWED_OPS_FOR_EMBED = new Set(['comment', 'custom_json']);
+/**
+ * Op surfaces that carry an embedded `idempotency_key`. The embed picks the
+ * first eligible op in the bundle; the lookup probes the matching arm when
+ * the caller plumbs the resolved type through.
+ */
+export type IdempotencyEmbedOpType = 'comment' | 'custom_json';
+
+const ALLOWED_OPS_FOR_EMBED = new Set<string>(['comment', 'custom_json']);
 
 /**
  * Embed `idempotency_key` into the first op in `operations` that supports it
@@ -74,7 +91,9 @@ const ALLOWED_OPS_FOR_EMBED = new Set(['comment', 'custom_json']);
 export function embedIdempotencyKey(
   operations: unknown[],
   idempotencyKey: string,
-): { embedded: true; ops: unknown[]; opType: 'comment' | 'custom_json' } | { embedded: false } {
+):
+  | { embedded: true; ops: unknown[]; opType: IdempotencyEmbedOpType }
+  | { embedded: false } {
   for (let i = 0; i < operations.length; i++) {
     const op = operations[i];
     if (!Array.isArray(op) || op.length !== 2) continue;
@@ -82,8 +101,11 @@ export function embedIdempotencyKey(
     if (typeof opType !== 'string' || !ALLOWED_OPS_FOR_EMBED.has(opType)) continue;
     if (typeof opParams !== 'object' || opParams === null) continue;
 
+    // F26: hoist the `params` cast once after the null-guard so future op-type
+    // additions don't pay the "remember to cast" tax per branch.
+    const params = opParams as Record<string, unknown>;
+
     if (opType === 'comment') {
-      const params = opParams as Record<string, unknown>;
       const rawMeta = params.json_metadata;
       let meta: Record<string, unknown>;
       try {
@@ -107,7 +129,6 @@ export function embedIdempotencyKey(
     }
 
     // custom_json
-    const params = opParams as Record<string, unknown>;
     const rawJson = params.json;
     let payload: Record<string, unknown>;
     try {
@@ -128,8 +149,11 @@ export function embedIdempotencyKey(
 
 /**
  * HAF lookup for a prior custody /broadcast carrying `idempotencyKey` for
- * `username`. Probes both `comment` and `custom_json` op surfaces because the
- * embed picks whichever op type comes first in the bundle.
+ * `username`. When `opType` is supplied, probes ONLY that arm (round-2 F2 —
+ * binds the lookup to the same op surface the embed picks, closing the cross-
+ * op-type shadowing class). When `opType` is undefined, probes both arms
+ * (pure-vote bundles fall through here so the layer can still dedup against
+ * prior comment/cj broadcasts that carried the same key).
  *
  * The HAF views (`operation_custom_json_view`, `operation_comment_view`) do
  * not carry the Hive transaction id directly — `trx_id` lives on
@@ -148,34 +172,36 @@ export function embedIdempotencyKey(
  * AND `json::jsonb ->> 'idempotency_key' = key`.
  *
  * Genesis-block floor matches the rest of the HAF queries in the codebase —
- * scans before the appTag's first op are skipped. The query is two-statement
- * to keep each plan simple; an OR'd UNION across two views is harder for the
- * planner and the comment surface is the more common case (consent ops are a
- * minority of custody traffic).
+ * scans before the appTag's first op are skipped.
  */
 export async function findCustodyBroadcastByIdempotencyKey(
   pool: IdempotencyPool,
   username: string,
   idempotencyKey: string,
+  opType?: IdempotencyEmbedOpType,
 ): Promise<IdempotencyHit | null> {
   const genesis = getCachedGenesisBlock();
 
-  const commentHit = await pool.query<{ trx_id: string; block_num: number | null }>(
-    `SELECT op.included_trx_id AS trx_id, ocv.block_num
-     FROM ${T.commentOps} ocv
-     JOIN hafsql.haf_operations op ON op.id = ocv.id
-     WHERE ocv.author = $1
-       AND (ocv.json_metadata -> $2 ->> 'idempotency_key') = $3
-       AND ocv.block_num >= $4
-     ORDER BY ocv.block_num DESC
-     LIMIT 1`,
-    [username, config.appTag, idempotencyKey, genesis],
-  );
-  if (commentHit.rows.length > 0) {
-    const row = commentHit.rows[0];
-    return { tx_id: row.trx_id, block_num: row.block_num };
+  if (opType === undefined || opType === 'comment') {
+    const commentHit = await pool.query<{ trx_id: string; block_num: number | null }>(
+      `SELECT op.included_trx_id AS trx_id, ocv.block_num
+       FROM ${T.commentOps} ocv
+       JOIN hafsql.haf_operations op ON op.id = ocv.id
+       WHERE ocv.author = $1
+         AND (ocv.json_metadata -> $2 ->> 'idempotency_key') = $3
+         AND ocv.block_num >= $4
+       ORDER BY ocv.block_num DESC
+       LIMIT 1`,
+      [username, config.appTag, idempotencyKey, genesis],
+    );
+    if (commentHit.rows.length > 0) {
+      const row = commentHit.rows[0];
+      return { tx_id: row.trx_id, block_num: row.block_num };
+    }
+    if (opType === 'comment') return null;
   }
 
+  // opType === undefined OR opType === 'custom_json'
   const customJsonHit = await pool.query<{ trx_id: string; block_num: number | null }>(
     `SELECT op.included_trx_id AS trx_id, cj.block_num
      FROM ${T.customJson} cj
@@ -205,8 +231,13 @@ export async function findCustodyBroadcastByIdempotencyKey(
  * `trx_id` lives on `haf_operations.included_trx_id`; the JOIN reaches it
  * via the shared op id (see `findCustodyBroadcastByIdempotencyKey` for the
  * schema rationale).
+ *
+ * Renamed (F23) from `findAccreditByIdempotencyKey` to parallel
+ * `findCustodyBroadcastByIdempotencyKey`. Establishes the naming precedent
+ * for the survey table's future per-surface follow-up lookups (claims,
+ * papers, wot, anon-review).
  */
-export async function findAccreditByIdempotencyKey(
+export async function findAccreditationBroadcastByIdempotencyKey(
   pool: IdempotencyPool,
   idempotencyKey: string,
 ): Promise<IdempotencyHit | null> {
@@ -233,26 +264,186 @@ export async function findAccreditByIdempotencyKey(
  * intended client shape (per task spec), but the helper accepts any
  * non-empty string up to 128 chars to avoid coupling the wire shape to a
  * specific format — the field's job is to be a deterministic-per-attempt
- * value the SPA can regenerate on retry. Returns `null` when valid; an error
- * message string when invalid.
+ * value the SPA can regenerate on retry.
+ *
+ * Discriminated result (round-2 F11): `{ ok: true, value }` on success,
+ * `{ ok: false, error }` on failure. Replaces the old `string | null` shape
+ * (null on success, error message on failure) where the success and error
+ * channels shared a type. A future validator extension that forgot to
+ * return null on success would silently bypass the route's check; the
+ * discriminated form is a compile-time guarantee.
  */
-export function validateIdempotencyKey(value: unknown): string | null {
-  if (typeof value !== 'string') return 'idempotency_key must be a string';
-  if (value.length === 0) return 'idempotency_key must not be empty';
-  if (value.length > 128) return 'idempotency_key exceeds 128 characters';
-  return null;
+export type ValidateIdempotencyKeyResult =
+  | { ok: true; value: string }
+  | { ok: false; error: string };
+
+export function validateIdempotencyKey(value: unknown): ValidateIdempotencyKeyResult {
+  if (typeof value !== 'string') {
+    return { ok: false, error: 'idempotency_key must be a string' };
+  }
+  if (value.length === 0) {
+    return { ok: false, error: 'idempotency_key must not be empty' };
+  }
+  if (value.length > 128) {
+    return { ok: false, error: 'idempotency_key exceeds 128 characters' };
+  }
+  return { ok: true, value };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Redis short-circuit cache for the HAF idempotency lookup (round-2 F5/F12).
+//
+// Explicit scope expansion over the original task spec which excluded Redis
+// caching ("Per-request HAF query is sufficient at current scale"). The HAF
+// JSONB extraction is not indexed for `idempotency_key`, and HAF-side indexes
+// are NOT a path (reference: HAF indexes cannot be modified). Without the
+// cache, a fast retry storm (504 -> immediate retry) re-hammers HAF and the
+// indexer-lag window can leave the bare HAF lookup catching only slow-retry-
+// after-confirmed (>30s post-broadcast retries).
+//
+// Discipline per `caching-wrapper-discriminated-union-poisoning-2026-05-11.md`:
+//   - Cache only the resolved `Hit | null` variants. Negative cache (miss) is
+//     a real query result, not a transient failure — caching it is correct
+//     because the indexer-lag window is the same in both directions.
+//   - NEVER cache `haf_unavailable` (config-missing) or `lookup_failed` (HAF
+//     throw) — those degrade to the existing structured-warn paths and the
+//     next request re-runs the live query.
+//   - Positive-cache TTL = `max(observed HAF indexer lag, 60s)` to bridge
+//     the documented indexer-lag defense window.
+//   - Negative-cache TTL = 10s, short to avoid masking genuine state changes
+//     (the user broadcasts a new op with the same key while the prior miss
+//     is still cached).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Cache shape persisted into Redis. Discriminated so a `miss` is a distinct
+ *  value from "no cache entry" — `JSON.parse` of an absent key returns
+ *  `null`, which the consumer must NOT conflate with a real cached miss. */
+type CachedIdempotencyResult =
+  | { kind: 'hit'; tx_id: string; block_num: number | null }
+  | { kind: 'miss' };
+
+/** Positive-TTL floor in ms. Sized to bridge HAF indexer lag (~5-30s typical)
+ *  per `chain-write-timeout-ambiguous-outcome-2026-04-22.md`: a fast retry
+ *  after a 504 lands within the lag window, where the bare HAF lookup would
+ *  still miss; the cached hit closes that vector. */
+const IDEMPOTENCY_CACHE_POSITIVE_TTL_MS = 60_000;
+
+/** Negative-TTL ceiling in ms. Short by design: caching a miss for too long
+ *  risks masking a genuine state change (user broadcasts a new op carrying
+ *  the same key after a prior miss was cached). 10s is short enough to be
+ *  practically invisible to the retry-storm window we are defending. */
+const IDEMPOTENCY_CACHE_NEGATIVE_TTL_MS = 10_000;
+
+function buildCustodyCacheKey(username: string, idempotencyKey: string): string {
+  // sha256(username|key) bounds the key length (idempotency_key may be up to
+  // 128 chars; the hash is always 64 hex). Username is included in the hash
+  // input so two users with the same key — which is allowed by the wire
+  // shape — never share a cache row.
+  const hash = crypto
+    .createHash('sha256')
+    .update(`${username}|${idempotencyKey}`)
+    .digest('hex');
+  return `${config.appTag}:idem:custody:${hash}`;
+}
+
+function buildAccreditationCacheKey(idempotencyKey: string): string {
+  // The accreditation key is already a sha256 hex (derived by accreditation.ts
+  // as sha256(token:username)) so additional hashing buys nothing. Keep the
+  // raw key inline; the appTag + domain segment prefix bounds the namespace.
+  return `${config.appTag}:idem:accred:${idempotencyKey}`;
+}
+
+async function readCached(key: string): Promise<CachedIdempotencyResult | undefined> {
+  const redis = getRedis();
+  if (!redis) return undefined;
+  try {
+    const raw = await redis.get(key);
+    if (!raw) return undefined;
+    return JSON.parse(raw) as CachedIdempotencyResult;
+  } catch (err) {
+    // Redis read failures degrade silently to "no cache" — the HAF lookup
+    // still runs. A 5xx here would be over-cautious: the cache layer is a
+    // fast-path, not a correctness layer.
+    logger.warn(
+      { err, key, event: 'idempotency.cache.read_failed' },
+      'idempotency cache read failed — proceeding to HAF lookup',
+    );
+    return undefined;
+  }
+}
+
+async function writeCached(key: string, value: CachedIdempotencyResult): Promise<void> {
+  const redis = getRedis();
+  if (!redis) return;
+  const ttl =
+    value.kind === 'hit'
+      ? IDEMPOTENCY_CACHE_POSITIVE_TTL_MS
+      : IDEMPOTENCY_CACHE_NEGATIVE_TTL_MS;
+  try {
+    await redis.set(key, JSON.stringify(value), 'PX', ttl);
+  } catch (err) {
+    // Same fail-open rule as the read path.
+    logger.warn(
+      { err, key, event: 'idempotency.cache.write_failed' },
+      'idempotency cache write failed — cache miss extends to next request',
+    );
+  }
 }
 
 /**
- * Structured-log helper for the "idempotency layer skipped" branches. Callers
- * pass a stable `event:` discriminator and contextual fields; the helper
- * routes through `logger.warn` so dashboards can key on the event without
- * suffix-matching a free-text message.
+ * Cache-wrapped lookup for custody broadcasts. Reads the Redis short-circuit
+ * before consulting HAF; populates the cache on resolved (hit OR miss)
+ * results. NEVER caches a HAF-throw — those propagate to the caller's
+ * degraded path.
+ *
+ * Plumbing-through of `opType` is forwarded to the bare HAF lookup so the
+ * scoped probe still happens on cache miss.
  */
-export function logIdempotencySkip(
-  event: string,
-  fields: Record<string, unknown>,
-  msg: string,
-): void {
-  logger.warn({ ...fields, event }, msg);
+export async function lookupCustodyBroadcastIdempotency(
+  pool: IdempotencyPool,
+  username: string,
+  idempotencyKey: string,
+  opType?: IdempotencyEmbedOpType,
+): Promise<IdempotencyHit | null> {
+  const cacheKey = buildCustodyCacheKey(username, idempotencyKey);
+  const cached = await readCached(cacheKey);
+  if (cached !== undefined) {
+    return cached.kind === 'hit'
+      ? { tx_id: cached.tx_id, block_num: cached.block_num }
+      : null;
+  }
+  const result = await findCustodyBroadcastByIdempotencyKey(pool, username, idempotencyKey, opType);
+  await writeCached(
+    cacheKey,
+    result === null
+      ? { kind: 'miss' }
+      : { kind: 'hit', tx_id: result.tx_id, block_num: result.block_num },
+  );
+  return result;
+}
+
+/**
+ * Cache-wrapped lookup for accreditation broadcasts. Same shape as the
+ * custody variant: read cache → HAF on miss → populate cache on resolved
+ * result.
+ */
+export async function lookupAccreditationBroadcastIdempotency(
+  pool: IdempotencyPool,
+  idempotencyKey: string,
+): Promise<IdempotencyHit | null> {
+  const cacheKey = buildAccreditationCacheKey(idempotencyKey);
+  const cached = await readCached(cacheKey);
+  if (cached !== undefined) {
+    return cached.kind === 'hit'
+      ? { tx_id: cached.tx_id, block_num: cached.block_num }
+      : null;
+  }
+  const result = await findAccreditationBroadcastByIdempotencyKey(pool, idempotencyKey);
+  await writeCached(
+    cacheKey,
+    result === null
+      ? { kind: 'miss' }
+      : { kind: 'hit', tx_id: result.tx_id, block_num: result.block_num },
+  );
+  return result;
 }

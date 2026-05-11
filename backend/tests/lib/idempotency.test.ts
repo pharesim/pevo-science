@@ -3,13 +3,18 @@
  * class on custody /broadcast + accreditation /verify (Option A.4 in
  * `agents/docs/solutions/conventions/chain-write-timeout-ambiguous-outcome-2026-04-22.md`).
  *
- * Coverage shape (pure logic + mocked pg.Pool, per the carve-out at root
- * CLAUDE.md "Carve-out for deterministic edge-case coverage"): the helper
- * is shape-only (no I/O) and the pool calls are exercised against a
- * vi.fn-backed query stub. The real HAF integration is exercised by the
- * route-level real-DB tests in `tests/routes/{custody,accreditation}*.test.ts`,
- * so this file is the unit-style companion that pins per-arm behavior
- * without requiring a HAF connection per test.
+ * Mock posture (per root CLAUDE.md "Carve-out for deterministic edge-case
+ * coverage"): this file is the unit-style companion for shape-only logic and
+ * SQL parameterization. The pool is mocked because per-test HAF connections
+ * are operationally infeasible at this granularity. **The sibling route-level
+ * tests in `tests/routes/{custody,accreditation}-idempotency.test.ts` ALSO
+ * mock `db.js`** (per their own carve-out headers), so they are NOT the
+ * real-path companion for the SQL-shape risk class. The real-path
+ * commitment is captured by `backend-idempotency-haf-integration-test.md`
+ * (round-2 F6 follow-up) — that task adds an integration spec that exercises
+ * `findCustodyBroadcastByIdempotencyKey` and
+ * `findAccreditationBroadcastByIdempotencyKey` against a live HAF pool so a
+ * schema/view/operator regression is caught by the real-path lane.
  */
 
 import { describe, it, expect, vi } from 'vitest';
@@ -17,27 +22,37 @@ import {
   embedIdempotencyKey,
   validateIdempotencyKey,
   findCustodyBroadcastByIdempotencyKey,
-  findAccreditByIdempotencyKey,
+  findAccreditationBroadcastByIdempotencyKey,
   type IdempotencyPool,
 } from '../../src/lib/idempotency.js';
 import { config } from '../../src/config.js';
 
 const KEY = '11111111-2222-3333-4444-555555555555';
 
-describe('validateIdempotencyKey', () => {
-  it('accepts a non-empty string within the 128-char cap', () => {
-    expect(validateIdempotencyKey(KEY)).toBeNull();
+describe('validateIdempotencyKey (discriminated result)', () => {
+  it('returns { ok: true, value } for a non-empty string within the 128-char cap', () => {
+    const result = validateIdempotencyKey(KEY);
+    expect(result).toEqual({ ok: true, value: KEY });
   });
-  it('rejects empty string', () => {
-    expect(validateIdempotencyKey('')).toMatch(/empty/);
+  it('rejects empty string with { ok: false, error: /empty/ }', () => {
+    const result = validateIdempotencyKey('');
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.error).toMatch(/empty/);
   });
-  it('rejects non-string', () => {
-    expect(validateIdempotencyKey(42)).toMatch(/string/);
-    expect(validateIdempotencyKey(undefined)).toMatch(/string/);
-    expect(validateIdempotencyKey(null)).toMatch(/string/);
+  it('rejects non-string with { ok: false, error: /string/ }', () => {
+    for (const v of [42, undefined, null]) {
+      const result = validateIdempotencyKey(v);
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error('unreachable');
+      expect(result.error).toMatch(/string/);
+    }
   });
   it('rejects strings longer than 128 chars', () => {
-    expect(validateIdempotencyKey('a'.repeat(129))).toMatch(/128/);
+    const result = validateIdempotencyKey('a'.repeat(129));
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.error).toMatch(/128/);
   });
 });
 
@@ -174,19 +189,19 @@ describe('findCustodyBroadcastByIdempotencyKey', () => {
     return { query } as unknown as IdempotencyPool;
   }
 
-  it('returns the comment hit on first match', async () => {
+  it('returns the comment hit on first match (unscoped probe)', async () => {
     const pool = poolReturning([{ trx_id: 'tx-comment-1', block_num: 100 }], []);
     const hit = await findCustodyBroadcastByIdempotencyKey(pool, 'alice', KEY);
     expect(hit).toEqual({ tx_id: 'tx-comment-1', block_num: 100 });
   });
 
-  it('falls through to custom_json query when no comment matches', async () => {
+  it('falls through to custom_json query when no comment matches (unscoped probe)', async () => {
     const pool = poolReturning([], [{ trx_id: 'tx-cj-1', block_num: 200 }]);
     const hit = await findCustodyBroadcastByIdempotencyKey(pool, 'alice', KEY);
     expect(hit).toEqual({ tx_id: 'tx-cj-1', block_num: 200 });
   });
 
-  it('returns null when neither op surface has a row', async () => {
+  it('returns null when neither op surface has a row (unscoped probe)', async () => {
     const pool = poolReturning([], []);
     const hit = await findCustodyBroadcastByIdempotencyKey(pool, 'alice', KEY);
     expect(hit).toBeNull();
@@ -222,29 +237,85 @@ describe('findCustodyBroadcastByIdempotencyKey', () => {
     expect(secondCall[1][1]).toEqual(['alice']);
     expect(secondCall[1][2]).toBe(KEY);
   });
+
+  // F2 round-2: opType-bound lookup binds the HAF probe to the same op
+  // surface the embed picks, closing the cross-op-type shadowing class.
+  describe('opType-scoped lookup (round-2 F2)', () => {
+    it('opType:"comment" probes ONLY the comment arm and skips custom_json', async () => {
+      const queryFn = vi.fn().mockResolvedValueOnce({ rows: [] });
+      const pool = { query: queryFn } as unknown as IdempotencyPool;
+      const hit = await findCustodyBroadcastByIdempotencyKey(pool, 'alice', KEY, 'comment');
+      expect(hit).toBeNull();
+      // Only one HAF round-trip for the scoped probe.
+      expect(queryFn).toHaveBeenCalledTimes(1);
+      expect(queryFn.mock.calls[0][0]).toMatch(/operation_comment_view/);
+    });
+
+    it('opType:"comment" returns the comment hit without probing custom_json', async () => {
+      const queryFn = vi
+        .fn()
+        .mockResolvedValueOnce({ rows: [{ trx_id: 'tx-comment-2', block_num: 300 }] });
+      const pool = { query: queryFn } as unknown as IdempotencyPool;
+      const hit = await findCustodyBroadcastByIdempotencyKey(pool, 'alice', KEY, 'comment');
+      expect(hit).toEqual({ tx_id: 'tx-comment-2', block_num: 300 });
+      expect(queryFn).toHaveBeenCalledTimes(1);
+    });
+
+    it('opType:"custom_json" probes ONLY the custom_json arm and skips comment', async () => {
+      const queryFn = vi.fn().mockResolvedValueOnce({ rows: [] });
+      const pool = { query: queryFn } as unknown as IdempotencyPool;
+      const hit = await findCustodyBroadcastByIdempotencyKey(pool, 'alice', KEY, 'custom_json');
+      expect(hit).toBeNull();
+      expect(queryFn).toHaveBeenCalledTimes(1);
+      // The single round-trip must be the custom_json query, not the comment query.
+      expect(queryFn.mock.calls[0][0]).toMatch(/required_posting_auths/);
+      expect(queryFn.mock.calls[0][0]).not.toMatch(/operation_comment_view/);
+    });
+
+    it('opType:"custom_json" returns the custom_json hit without probing comment', async () => {
+      const queryFn = vi
+        .fn()
+        .mockResolvedValueOnce({ rows: [{ trx_id: 'tx-cj-2', block_num: 400 }] });
+      const pool = { query: queryFn } as unknown as IdempotencyPool;
+      const hit = await findCustodyBroadcastByIdempotencyKey(pool, 'alice', KEY, 'custom_json');
+      expect(hit).toEqual({ tx_id: 'tx-cj-2', block_num: 400 });
+      expect(queryFn).toHaveBeenCalledTimes(1);
+    });
+
+    it('omitted opType falls back to the unscoped two-arm probe', async () => {
+      const queryFn = vi
+        .fn()
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [] });
+      const pool = { query: queryFn } as unknown as IdempotencyPool;
+      const hit = await findCustodyBroadcastByIdempotencyKey(pool, 'alice', KEY);
+      expect(hit).toBeNull();
+      expect(queryFn).toHaveBeenCalledTimes(2);
+    });
+  });
 });
 
-describe('findAccreditByIdempotencyKey', () => {
+describe('findAccreditationBroadcastByIdempotencyKey', () => {
   it('returns the accredit hit when HAF has a matching row', async () => {
     const queryFn = vi.fn().mockResolvedValueOnce({
       rows: [{ trx_id: 'accredit-tx-1', block_num: 999 }],
     });
     const pool = { query: queryFn } as unknown as IdempotencyPool;
-    const hit = await findAccreditByIdempotencyKey(pool, KEY);
+    const hit = await findAccreditationBroadcastByIdempotencyKey(pool, KEY);
     expect(hit).toEqual({ tx_id: 'accredit-tx-1', block_num: 999 });
   });
 
   it('returns null when no row matches', async () => {
     const queryFn = vi.fn().mockResolvedValueOnce({ rows: [] });
     const pool = { query: queryFn } as unknown as IdempotencyPool;
-    const hit = await findAccreditByIdempotencyKey(pool, KEY);
+    const hit = await findAccreditationBroadcastByIdempotencyKey(pool, KEY);
     expect(hit).toBeNull();
   });
 
   it('filters by accreditationAuthorities + appTag + accredit action and joins haf_operations', async () => {
     const queryFn = vi.fn().mockResolvedValueOnce({ rows: [] });
     const pool = { query: queryFn } as unknown as IdempotencyPool;
-    await findAccreditByIdempotencyKey(pool, KEY);
+    await findAccreditationBroadcastByIdempotencyKey(pool, KEY);
     const [sql, params] = queryFn.mock.calls[0];
     expect(sql).toMatch(/cj\.custom_id = \$1/);
     expect(sql).toMatch(/'action' = 'accredit'/);
