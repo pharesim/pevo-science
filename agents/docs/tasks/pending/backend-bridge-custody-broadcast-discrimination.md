@@ -139,3 +139,67 @@ Round-2 hold-fix items 1-6 all landed in commit `706db7c` (cherry-pick of worker
 
 The pre-existing round-1 architect followup A2 (qualifying `timeout_ms` semantics in `bridge.md`/`custody.md`) carries forward unchanged. No NEW architect TODOs from this round.
 
+---
+
+## Architect re-review (2026-05-11, round-2 → round-3) — HELD PENDING FIXES
+
+`/ce-code-review` ran on round-2 main-tree SHA `706db7c` with 10 reviewer personas (correctness, security, adversarial at opus; testing, maintainability, project-standards, learnings, reliability, kieran-typescript, api-contract at sonnet; `ce-agent-native-reviewer` skipped per project CLAUDE.md). Round-2's 6 hold items (mock-substitution chain, outer-catch INTERNAL_ERROR spec, dhive-shaped fixtures, audit log helper, hoisted op-context, typed `LogContext`) all landed structurally. Re-review surfaced 9 small items clustered on the new `logBroadcastAttempt` helper, the `LogContext` interface, the dhive fixture, and a few test/log polish items. None are blocking; all are bundled into a focused round-3 to converge.
+
+Several cross-task findings (bridge.ts outer-catch missing `event:` discriminators, the `logBroadcastAttempt` closure duplication, the SPA 409 UX gap) are filed as new follow-up tasks rather than bundled here — they have a different ownership shape than this task's narrow contract.
+
+### Items to address (bundle into one round-3 commit)
+
+**1. (P1, anchor 75, adversarial adv-1) `attempt_n: 1` hardcoded gives no retry-amplification signal.** `backend/src/routes/custody.ts` (logBroadcastAttempt helper). The hold-block claimed retry-amplification visibility, but every request collapses to `attempt_n=1` because the helper has no idempotency state. Operator dashboards keyed on `attempt_n` for retry-spike detection are silent. Worse: a constant `attempt_n=1` is harder to fix later than absent-field once dashboards key on it.
+
+   Fix: remove the `attempt_n` field from the helper's log payload entirely until `backend-broadcast-idempotency-cluster-followup.md` lands. Alternative (architect dispreferred but acceptable): keep the field with a load-bearing inline comment naming the idempotency-cluster follow-up as the populator. Architect strongly prefers removal — leaves the dashboard-key-on slot empty rather than misleading.
+
+**2. (P1 anchor 85, cross-reviewer maintainability M-1 + kieran-typescript KTS-2) `LogContext` interface declares 5 fields with no live call sites.** `backend/src/lib/broadcast-error.ts:98`. Fields `newVersion`, `sourceIdentifier`, `identifier`, `cycle_id`, `attempt_n` have no callers passing them through `handleBroadcastError`. The interface's stated purpose — typo detection — only works for fields with live callers. Dead fields broaden the accepted surface and mask future typos that resemble dead names.
+
+   Fix: remove the 5 dead fields from the `LogContext` interface declaration. `newVersion` + `sourceIdentifier` were likely live before `/update` was retired (`e647abb`); the others may never have had callers. Verify with `git grep -n 'logContext: {'` over `backend/src` before removing. Coordinate with item 1: if `attempt_n` is removed per item 1, it leaves this interface entry dead too.
+
+**3. (P2, anchor 100, adversarial adv-2) `makeDhiveLikeError` shared-sentinel weakness.** `backend/tests/support/broadcast-mocks.ts`. The helper sets `err.message === err.jse_shortmsg === opts.shortmsg` (single value reused). The leak-assertion `not.toContain(SHORT)` can't distinguish which field leaked when failing, AND a regression that leaks only one of the two fields while the other is correctly stripped passes spuriously because both share the value. Same shared-value issue for `cause.message` vs `jse_cause`.
+
+   Fix: take distinct per-field sentinels in `makeDhiveLikeError` options (e.g., `messageMarker`, `jseShortMsgMarker`, `causeMarker`, `jseCauseMarker`), or auto-generate per-field unique markers when not provided. Test assertions verify each field's leak path independently. The fixture changes propagate to the 3 dhive-leak specs across bridge.test.ts and custody.test.ts.
+
+**4. (P2, anchor 75, testing T-2) Outer-catch INTERNAL_ERROR spec event-not-equal assertion is circular.** `backend/tests/routes/custody.test.ts` (the outer-catch describe, around lines 248-278 / 718-748 in the original diff view). The spec uses `find(call => ctx?.event === 'custody.broadcast.internal_error')` to locate the matching log call, then asserts `expect(ctx.event).not.toBe('custody.broadcast.attempt')` on that same filtered call — trivially true because the filter already excluded the attempt event. A regression where the inner-catch helper ALSO fires the outer-catch event (or vice versa) would pass this test silently.
+
+   Fix: rewrite the assertion to verify NO call across `errorSpy.mock.calls` (and `infoSpy.mock.calls` for the attempt-side) carries the WRONG event during this test. Pattern:
+   ```js
+   const attemptCalls = infoSpy.mock.calls.filter(c => c[0]?.event === 'custody.broadcast.attempt');
+   expect(attemptCalls).toHaveLength(0);
+   ```
+   Plus the existing internal-error matching assertion. Architect-suggested shape; final form is implementer's choice as long as the dual-emit mutation is mutation-killed.
+
+**5. (P2, anchor 75, kieran-typescript KTS-1) `LogContext & { cause?: unknown }` widening cast partially defeats protection.** `backend/src/lib/broadcast-error.ts:263` (the cause-strip block). The widening cast at the strip site IS the mechanism by which `cause` re-enters the type system at that scope. A future maintainer adding `cause` directly to `LogContext` would silently make the strip a no-op, removing the runtime protection with no compiler signal.
+
+   Fix (lighter): add a load-bearing comment block at the `LogContext` interface definition explicitly stating `cause` is deliberately omitted, pointing to the strip site at `:263`, and naming the round-2 cause-leak rationale that motivated the strip. Comment-only, about 5 lines. Architect prefers this over a heavier type-split refactor; the type-split (introducing `BroadcastLogContextInput` + `SanitizedBroadcastLogContext`) is acceptable but adds machinery for a defense-in-depth case.
+
+**6. (P3, anchor 75, kieran-typescript KTS-3) `DhiveLikeError.cause: Error` (required) is stricter than base `Error.cause?: unknown` — `as DhiveLikeError` cast is unsound.** `backend/tests/support/broadcast-mocks.ts:62`. The factory does `new Error(...) as DhiveLikeError`, but the interface declares `cause: Error` (required, non-optional). TS accepts the cast — but a future refactor that removed the runtime `err.cause = new Error(opts.cause)` assignment would leave the return type claiming `cause` is present, and callers accessing `dhiveErr.cause.message` would crash at runtime with no compile-time warning.
+
+   Fix: change `cause: Error` to `cause?: Error` on the `DhiveLikeError` interface to match the base. Callers updating to use `?.message` where needed. Alternative (heavier): refactor `makeDhiveLikeError` to construct via object-spread so the post-cast assignment is mechanically tied to the type. Architect prefers the optional-field fix — minimal and matches the base type.
+
+**7. (P3, anchor 75, reliability R-RR2-03) Outer-catch `sendError` missing `return`.** `backend/src/routes/custody.ts:580`. The outer-catch calls `sendError(res, 500, 'INTERNAL_ERROR', ...)` without a `return`. Every other `sendError` call in this handler uses `return sendError(...)`. Currently safe (no code after the outer try/catch), but the asymmetry is a fragility pre-emptive guard. Future code added after the outer try/catch would produce a silent `headers-already-sent` warning.
+
+   Fix: add `return` keyword at line 580. Literally one character.
+
+**8. (P3, anchor 80, maintainability M-3) Test section comments cite stale underscore-form event names.** `backend/tests/routes/custody.test.ts:240` and `:284` (the block comments above the audit-log + outer-catch describes). Comments use underscore-form (`custody_broadcast_internal_error`, `custody_broadcast_attempt`); actual code in custody.ts emits dot-form (`custody.broadcast.internal_error`, `custody.broadcast.attempt`); test assertions correctly use the dot-form. The comment/code mismatch makes the section headers unreliable.
+
+   Fix: update the 2 block comments to use dot-form, aligning with the code emission and the assertions below them. About 4 lines.
+
+**9. (P3, anchor 100, adversarial adv-6) Outer-catch test only exercises `decryptKey` throw, not the 3 documented paths.** `backend/tests/routes/custody.test.ts:248-278`. The spec mocks `decryptKey` to throw. The outer catch is also reached by `pool.query` throw (DB unavailable) and `PrivateKey.fromString` throw (malformed WIF). The spec comment claims "routing is the same for all three" — but only `decryptKey` is exercised. A regression that special-cases `PrivateKey.fromString` or `pool.query` would be undetected.
+
+   Fix: add 2 additional specs in the outer-catch describe block exercising the other paths. Mirror the `decryptKey`-throw spec shape (~20 lines each):
+   - `pool.query` throw → assert 500 INTERNAL_ERROR + `event:'custody.broadcast.internal_error'` + `route:'custody.broadcast'`.
+   - `PrivateKey.fromString` throw (drive via mocking `decryptKey` to return a malformed WIF) → same assertions.
+
+   Each spec also asserts `logCustodyBroadcastMock` was NOT called (DB-side audit should not fire on pre-broadcast failure).
+
+### Re-review signal
+
+When items 1-9 land in a single round-3 commit, `git mv` this file back to `tasks/review/`. Architect's round-3 review scopes `/ce-code-review` to the round-3 commit only. The 9 items are localized to 4 files (custody.ts, broadcast-error.ts, broadcast-mocks.ts, custody.test.ts); diff size should be moderate (~80-120 LOC) given items 3 + 9 are the larger ones.
+
+### Architect-zone items (NOT for the implementer)
+
+The following follow-ups are architect-owned and land at archive of this task, not as round-3 hold items:
+- New task `backend-bridge-outer-catch-event-discriminators.md` for the 7 bridge.ts outer-catch logger.error sites lacking `event:` discriminators (api-contract AC-2, P2 — pre-existing pattern this task's custody change made visible).
+- New task `backend-broadcast-attempt-helper-extraction.md` for extracting `logBroadcastAttempt` closure from custody.ts + bridge.ts into a shared factory (maintainability M-2, P2 moderate refactor).

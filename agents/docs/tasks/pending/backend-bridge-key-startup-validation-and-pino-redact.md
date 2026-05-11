@@ -738,3 +738,37 @@ Items 4, 5, and 7 are docblock/comment-only or structural narrowing changes. Ite
    - "Boot-fatal `logger.flush() + setTimeout watchdog` async-transport-drain pattern" — round-4 instantiates; ripe for compound.
    - "Defensive recursive serializer with depth/cycle guard + discriminated sentinel + try/catch fallback + plain-object cause helper + element-wise array recursion" — round-3 + round-4 + round-5 fold into a single entry.
    - "Boot-fatal call-stack-unwind via subclassed throw + outer catch + definite-assignment narrowing" — round-4 introduces; round-5 closes the re-entry leak (drop `throw err;`); fold into a single entry.
+
+---
+
+## Architect re-review (2026-05-11, round-5 → round-6) — HELD PENDING FIXES
+
+`/ce-code-review` ran on round-5 main-tree SHA `4d7c186` with 9 reviewer personas (correctness, security, adversarial at opus; testing, maintainability, project-standards, learnings, reliability, kieran-typescript at sonnet; `ce-agent-native-reviewer` skipped per project CLAUDE.md). Round-5's 7 hold items all closed correctly per all reviewers — no behavioral defects, no security regressions. Re-review surfaced 5 small cleanup items (all in `index.ts` + `logger.ts` + `flush-and-exit.ts`) that the architect held to bundle into a focused round-6.
+
+All 5 items are doc/style/cleanup — no behavior change, no new test required beyond verifying `tsc --noEmit` and `npm run lint` stay clean. The aggregate diff should be very small (about 15-25 lines including the indentation re-flow).
+
+### Items to address (bundle into one round-6 commit)
+
+**1. (P2, anchor 100, cross-reviewer: maintainability + kieran-typescript) `if (app) {` block body zero-indented across 65 lines.** `backend/src/index.ts:87-153`. The new `if (app) { ... }` guard wraps 65 lines of boot orchestration, but the body sits at column 0, not indented. The closing `} // end if (app)` comment marker is the only structural delimiter. A reader scanning the file cannot visually see which startup steps are conditional on `app !== undefined` without manually tracking braces.
+
+   Fix: indent lines 88-152 by 2 spaces. Pure formatting, zero semantic change. tsc and tests stay green. The closing `// end if (app)` comment can stay or be removed once indentation makes the structure self-evident — architect mild preference is removing it after indent, since the indented brace is its own signal.
+
+**2. (P3, anchor 75, kieran-typescript KTS-R5-001) Dead double-cast `as unknown as { errors?: unknown }`.** `backend/src/logger.ts:196`. `errAny` is already typed `Error & Record<string, unknown>` (the cast at line 136). Accessing `errAny.errors` returns `unknown` directly via the index signature — the `(errAny as unknown as { errors?: unknown }).errors` pattern widens to unknown then re-narrows, which is the safe cast idiom but adds nothing here because the source type already provides the target shape.
+
+   Fix: replace with direct access `errAny.errors` OR single cast `(errAny as { errors?: unknown }).errors`. 1-line edit.
+
+**3. (P3, anchor 90, maintainability MR-1) `flush-and-exit.ts` docblock scope claim inaccurate.** Round-5 closed the docblock with "Used by index.ts boot-fatal sites only." `flushAndExit` is also called from `index.ts:38` (`uncaughtException` handler) and `index.ts:43` (`unhandledRejection` handler), which are runtime error paths, not boot-fatal paths. Round-4 docblock was accurate on this point; round-5 rewrite traded accuracy for brevity in the wrong direction.
+
+   Fix: update the trailing scope-claim sentence to enumerate all call sites. Suggested wording: "Used by index.ts boot-fatal site (the boot try/catch in module evaluation) AND by the uncaughtException / unhandledRejection runtime handlers." Final wording is the implementer's call; the requirement is that the docblock no longer claims "boot-fatal only".
+
+**4. (P3, anchor 90, maintainability MR-2) `index.ts:67` comment describes wrong narrowing pattern.** The block comment at lines 66-74 says the narrowing is "`if (!app) return;` rather than a `throw err;`". The actual code at line 87 uses the POSITIVE guard `if (app) { ... }`. The architectural deviation rationale is documented in the round-5 signal block but not in the code. A reader following the comment to locate the `if (!app) return;` finds nothing and may conclude the narrowing was dropped.
+
+   Fix: update the comment to describe the actual `if (app) { ... }` pattern. Architect-suggested wording (not binding): "`app` is narrowed via the `if (app) { ... }` block at line 87 rather than a `throw err;` re-entry that would route back through `uncaughtException` and defeat the suppress-re-log guard at the catch site." The exact phrasing is the implementer's choice as long as the comment accurately reflects the code.
+
+**5. (P3, anchor 85, maintainability MR-3, targeted scope) `index.ts:60` CONSTRAINT comment embeds rotting round-references.** The CONSTRAINT comment is designed as a permanent guardrail (forbids async/dynamic-scope additions to the boot try-block). It currently embeds "round-5 hold #7" and "BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT" — task-coordination round-references that rot after this task archives. The substantive constraint description is stable; only the round-attribution tags are the rotting part.
+
+   Fix (TARGETED, do NOT sweep all round-5 inline comments): strip the round-tag from the CONSTRAINT comment ONLY. Keep the constraint description verbatim. Remove the parenthetical "round-5 hold #N (BACKEND-...)" attribution at the constraint site. Round-attribution tags on one-time-fix inline comments elsewhere in `logger.ts`/`index.ts` (e.g., the per-item cross-references that document a specific round-N change) stay — they document a specific historical change, which is what attribution is for.
+
+### Re-review signal
+
+When items 1-5 land in a single round-6 commit, `git mv` this file back to `tasks/review/`. Architect's round-6 review scopes `/ce-code-review` to the round-6 commit only. Items are cleanup-only and the diff is small, so a clean pass plus archive is the expected outcome. If round-6 surfaces any new findings (unlikely given the scope), they roll into round-7 by the standard mechanism.
