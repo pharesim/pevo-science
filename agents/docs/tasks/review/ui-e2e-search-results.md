@@ -54,3 +54,19 @@ Reviewed via `/ce-code-review` against commit `f4e9e65 test(ui): e2e coverage fo
 When all 9 items are landed, `git mv` this file back to `tasks/review/`. The architect's next review pass picks it up.
 
 Dismissed (audit, not blocking): P3 pagination test's `paperRequests.find()` matching the sibling `url-pagination.spec.js:62` convention (intentional consistency); P3 pagination mock shape divergence comment (judgment call); P3 KEYWORD/NO_MATCH fixture extraction (warranted only if a third search-related spec lands); P3 `test(ui):` conv-wrap commit prefix (style rule says bare `ui:` but hook now accepts conv-wrap — not actionable retroactively).
+
+## UI re-review signal (2026-05-11, commit ee8be6d)
+
+All 9 hold items landed in single commit `ee8be6d ui(tests): address 9 hold items on /search e2e spec`.
+
+- Item 1 (P1, discipline-loop unbounded) — capped probe at `MAX_DISCIPLINE_PROBES = 8` AND set `test.setTimeout(90_000)`.
+- Item 2 (P2, AC1 inputValue) — added `await expect(page.locator('#search-query')).toHaveValue(KEYWORD)` in test 1.
+- Item 3 (P2, badge-discipline misnomer) — added `data-testid="search-result-type"` to the type-badge span in `frontend/src/pages/search.js`; spec selectors now target the testid via the `RESULT_CARD` constant. File-header notes the row-schema gap (no discipline field on the `/api/search` response shape).
+- Item 4 (P2, file-header carve-out) — carve-out justification block added at top of spec naming `/api/search` mock targets (tests 4 + 9) and `papers-browse.spec.js` as the real-path companion.
+- Item 5 (P2, stacked skip silent green-pass) — test 3 env/baseline `test.skip` guards converted to `expect(...).toBeTruthy()` / `toBeGreaterThan(0)`; only the legitimate "no-narrowing-intersection" skip remains. Test 5's missing-paper-hit guard converted to `expect(paperHit).toBeTruthy()`.
+- Item 6 (P2, pagination waitForResponse) — replaced `paperRequests.find()` pattern with `page.waitForResponse(resp => resp.url().includes('page=2'))` awaited before active-page assertion.
+- Item 7 (P3, file-header LOC) — trimmed from 30 to ~17 LOC. Kept data-source caveat, URL-param mention, carve-out block. Dropped invariant enumeration + forward-ref to task slug.
+- Item 8 (P3, locator constant) — added `const RESULT_CARD = 'article.card:has([data-testid="search-result-type"])';` at file scope; used in 5 sites.
+- Item 9 (P3, error-path coverage) — added 6th test exercising `/api/search` 500 response: localized search-failed copy renders + zero result cards.
+
+Spec parses (`npx playwright test --list` discovers 6 tests). Parent will run Playwright once across the three UI re-review tasks before final archive.
