@@ -34,7 +34,6 @@ async function searchPapersFromHaf(
   discipline: string | undefined,
   language: string | undefined,
   source: string | undefined,
-  accreditedOnly: boolean,
   includeRetracted: boolean,
   sort: string,
   limit: number,
@@ -70,9 +69,12 @@ async function searchPapersFromHaf(
     params.push(language);
   }
 
-  if (accreditedOnly) {
-    // Bridge-account-pinned bridge_paper carve-out only. A bridge_paper from
-    // any other author is invalid data per the pevo-object-identity convention.
+  // Accreditation gate is unconditional. Bridge-account-pinned bridge_paper
+  // carve-out only — a bridge_paper from any other author is invalid data
+  // per the pevo-object-identity convention. The legacy
+  // `?accredited_only=false` opt-out is silently ignored per Express
+  // convention (api-contracts/common.md).
+  {
     const bridgeArm = validPevoPaperWhere({ commentAlias: 'c', appTagParam, bridgeAccountParam, source: 'bridge' });
     conditions.push(`(c.author IN (SELECT account FROM active_accreditations) OR ${bridgeArm})`);
   }
@@ -145,7 +147,6 @@ async function searchPapersFromHaf(
 async function searchReviewsFromHaf(
   pool: ReturnType<typeof getPool> & object,
   query: string,
-  accreditedOnly: boolean,
   sort: string,
   limit: number,
   offset: number,
@@ -168,9 +169,13 @@ async function searchReviewsFromHaf(
          AND p.parent_author = '' AND p.parent_permlink = ${appTagParam})`,
   ];
 
-  if (accreditedOnly) {
-    conditions.push(`c.author IN (SELECT account FROM active_accreditations)`);
-  }
+  // Accreditation gate is unconditional — see lane 4 of
+  // backend-papers-filter-accreditation for the single-doc reviews gate
+  // rationale; this list-mode site enforces the same predicate. Reviews
+  // surfaces do NOT include the hiveAnonAccount OR-arm here because list
+  // search has no need to surface anon-proxy reviews — the single-doc
+  // detail endpoint (reviews.ts) handles that path.
+  conditions.push(`c.author IN (SELECT account FROM active_accreditations)`);
 
   const where = conditions.join(' AND ');
 
@@ -235,7 +240,6 @@ async function searchFromHaf(
   discipline: string | undefined,
   language: string | undefined,
   source: string | undefined,
-  accreditedOnly: boolean,
   includeRetracted: boolean,
   sort: string,
   limit: number,
@@ -246,17 +250,17 @@ async function searchFromHaf(
 
   try {
     if (type === 'review') {
-      return await searchReviewsFromHaf(pool, query, accreditedOnly, sort, limit, offset);
+      return await searchReviewsFromHaf(pool, query, sort, limit, offset);
     }
 
     if (type === 'paper') {
-      return await searchPapersFromHaf(pool, query, discipline, language, source, accreditedOnly, includeRetracted, sort, limit, offset);
+      return await searchPapersFromHaf(pool, query, discipline, language, source, includeRetracted, sort, limit, offset);
     }
 
     // type === 'all': run both queries and merge
     const [paperResult, reviewResult] = await Promise.all([
-      searchPapersFromHaf(pool, query, discipline, language, source, accreditedOnly, includeRetracted, sort, limit, offset),
-      searchReviewsFromHaf(pool, query, accreditedOnly, sort, limit, offset),
+      searchPapersFromHaf(pool, query, discipline, language, source, includeRetracted, sort, limit, offset),
+      searchReviewsFromHaf(pool, query, sort, limit, offset),
     ]);
 
     if (!paperResult && !reviewResult) return null;
@@ -324,7 +328,6 @@ router.get('/', async (req: Request, res: Response) => {
   const discipline: string | null = filterResult?.ok ? filterResult.value : null;
   const language = req.query.language as string | undefined;
   const source = req.query.source as string | undefined;
-  const accreditedOnly = req.query.accredited_only !== 'false'; // default true
   const includeRetracted = req.query.include_retracted === 'true'; // default false
   const sort = (req.query.sort as string) === 'date' ? 'date' : 'relevance';
   const { page, limit, offset } = parsePageLimit(req);
@@ -333,9 +336,9 @@ router.get('/', async (req: Request, res: Response) => {
     // `discipline` is already lowercased at route entry (see above), so the
     // cache key is canonical — `?discipline=Physics` and `?discipline=physics`
     // share a single Redis entry.
-    const rawKey = `q=${q}:t=${type}:d=${discipline || ''}:l=${language || ''}:src=${source || ''}:a=${accreditedOnly}:r=${includeRetracted}:s=${sort}:p=${page}:lim=${limit}`;
+    const rawKey = `q=${q}:t=${type}:d=${discipline || ''}:l=${language || ''}:src=${source || ''}:r=${includeRetracted}:s=${sort}:p=${page}:lim=${limit}`;
     const cacheKey = `search:${crypto.createHash('sha256').update(rawKey).digest('hex').slice(0, 32)}`;
-    const result = await hafCache.getOrSet(cacheKey, () => searchFromHaf(q, type, discipline ?? undefined, language, source, accreditedOnly, includeRetracted, sort, limit, offset), 15_000);
+    const result = await hafCache.getOrSet(cacheKey, () => searchFromHaf(q, type, discipline ?? undefined, language, source, includeRetracted, sort, limit, offset), 15_000);
     if (result) {
       const authors = result.rows.map((r) => r.author);
       const accreditedSet = await getAccreditedSet(authors);

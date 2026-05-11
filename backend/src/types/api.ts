@@ -83,7 +83,6 @@ export interface SearchParams {
   type?: SearchContentType;
   discipline?: string;
   source?: PaperSourceFilter;
-  accredited_only?: boolean;
   sort?: SearchSortOption;
   page?: number;
   limit?: number;

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import request from 'supertest';
 import { createApp } from '../../src/app.js';
+import { config } from '../../src/config.js';
 
 const app = createApp();
 
@@ -220,4 +221,62 @@ describe('GET /api/search', () => {
       expect(Array.isArray(res.body.data)).toBe(true);
     });
   });
+
+  // backend-papers-filter-accreditation lane 3 canaries: SQL accreditation
+  // gate is unconditional across all `?type=` modes. Every returned paper
+  // entry must be accredited-authored or `config.hiveBridgeAccount`-authored
+  // (bridge_paper exemption); every returned review entry must be
+  // accredited-authored. A regression that re-introduces the `accreditedOnly`
+  // parameter or the `if (accreditedOnly)` toggle on either WHERE clause
+  // surfaces here.
+  describe('SQL accreditation gate (lane 3)', () => {
+    it('?type=paper excludes unaccredited authors (every entry is accredited or bridge-account)', { timeout: 60_000 }, async () => {
+      const res = await request(app).get('/api/search?q=science&type=paper&limit=50');
+      expect(res.status).toBe(200);
+      for (const item of res.body.data) {
+        const isAccredited = item.is_accredited === true;
+        const isBridgeAuthor = item.author === config.hiveBridgeAccount;
+        expect(
+          isAccredited || isBridgeAuthor,
+          `search paper entry ${item.author}/${item.permlink} leaked the gate: is_accredited=${item.is_accredited}, author=${item.author}`,
+        ).toBe(true);
+      }
+    });
+
+    it('?type=review excludes unaccredited authors (every entry is accredited)', { timeout: 60_000 }, async () => {
+      const res = await request(app).get('/api/search?q=science&type=review&limit=50');
+      expect(res.status).toBe(200);
+      for (const item of res.body.data) {
+        expect(
+          item.is_accredited,
+          `search review entry ${item.author}/${item.permlink} leaked the gate: is_accredited=${item.is_accredited}`,
+        ).toBe(true);
+      }
+    });
+
+    it('?type=paper&accredited_only=false is silently ignored (returns identical set to no param)', { timeout: 60_000 }, async () => {
+      const [withoutParam, withFalseParam] = await Promise.all([
+        request(app).get('/api/search?q=science&type=paper&limit=50&sort=date'),
+        request(app).get('/api/search?q=science&type=paper&limit=50&sort=date&accredited_only=false'),
+      ]);
+      expect(withoutParam.status).toBe(200);
+      expect(withFalseParam.status).toBe(200);
+      expect(withFalseParam.body.meta.total).toBe(withoutParam.body.meta.total);
+      const key = (e: { author: string; permlink: string }) => `${e.author}/${e.permlink}`;
+      expect(new Set(withFalseParam.body.data.map(key))).toEqual(new Set(withoutParam.body.data.map(key)));
+    });
+
+    it('?type=review&accredited_only=false is silently ignored (returns identical set to no param)', { timeout: 60_000 }, async () => {
+      const [withoutParam, withFalseParam] = await Promise.all([
+        request(app).get('/api/search?q=science&type=review&limit=50&sort=date'),
+        request(app).get('/api/search?q=science&type=review&limit=50&sort=date&accredited_only=false'),
+      ]);
+      expect(withoutParam.status).toBe(200);
+      expect(withFalseParam.status).toBe(200);
+      expect(withFalseParam.body.meta.total).toBe(withoutParam.body.meta.total);
+      const key = (e: { author: string; permlink: string }) => `${e.author}/${e.permlink}`;
+      expect(new Set(withFalseParam.body.data.map(key))).toEqual(new Set(withoutParam.body.data.map(key)));
+    });
+  });
+
 });
