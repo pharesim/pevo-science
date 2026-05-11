@@ -58,3 +58,30 @@ Add an existing-accreditation HAF gate to `/api/accreditation/verify` that fires
 - `agents/docs/solutions/conventions/caching-wrapper-discriminated-union-poisoning-2026-05-11.md` (apply if extending F5's Redis layer to cache this gate's result).
 - `backend/src/routes/accreditation.ts` — `/verify` handler integration site.
 - `agents/docs/hive-schemas.md` section 2.1 — accredit custom_json schema.
+
+---
+
+## [BLOCKED by Architect] (backend triage 2026-05-11)
+
+Filed by the architect at the same re-review pass that produced the
+parent task's hold block. This task depends on the parent
+(`backend-broadcast-idempotency-cluster-followup`) archiving first
+because:
+
+1. F23 rename (`findAccreditByIdempotencyKey` →
+   `findAccreditationBroadcastByIdempotencyKey`) is in the parent's
+   round-2 commit `689208f` but not yet archived. The new gate helper
+   (`findExistingAccreditation`) follows the same naming convention
+   and sits alongside in `lib/idempotency.ts`.
+2. F5 Redis cache layer is in `689208f` and this task's
+   "Cross-references" line explicitly notes the gate's result MAY
+   want a parallel cache wrap. The cache shape (TTLs, key prefix,
+   negative-variant handling) is the architect's call at parent
+   archive; implementing here before that lands risks divergent cache
+   shapes between sibling lookups.
+3. Architect's re-review of the parent (in `tasks/review/`) may
+   surface additional API-shape changes (e.g. unified `lookup*`
+   wrapper signature, alternative event names) that would propagate
+   to this task's scope.
+
+Move back to `tasks/pending/` once the parent task archives.
