@@ -1193,6 +1193,17 @@ async function resolveContinuationChain(
 
   let currentAuthor = author;
   let currentPermlink = permlink;
+
+  // Per-walker-call visited set for cycle detection. Keys match the
+  // `memoKey` shape so cycle short-circuit happens at O(N_unique_nodes)
+  // instead of O(MAX_HOPS) on attacker-posted cycles (mutually authorized
+  // co-authors broadcast continuations covering each other: A → B → A).
+  // Seeded with the root (the chain's first entry, which is also the
+  // initial `currentAuthor/currentPermlink`), so a 2-cycle short-circuits
+  // at the first advancement. The depth cap is the attacker-amplifier
+  // backstop; cycle detection is the structural short-circuit on top.
+  const visited = new Set<string>([memoKey(currentAuthor, currentPermlink)]);
+
   // MAX_HOPS = 50. Per-request worst-case latency under degraded HAF:
   // 50 hops × ≥1 sequential SQL query × 30s statement_timeout (`db.ts:22`)
   // = up to 1500s (~25 min) per request before the depth cap exits.
@@ -1287,6 +1298,34 @@ async function resolveContinuationChain(
       }
       currentAuthor = candidateAuthor;
       currentPermlink = next.permlink as string;
+
+      // Cycle detection: revisiting an already-touched `(author, permlink)`
+      // node means the continuation-pointer graph contains a cycle. The
+      // SQL gate admits when both authors are mutually in each other's
+      // `pevo.authors[]` (cumulative-union), which is exactly the setup
+      // that lets a cycle form. Stop the walk before pushing the cycle
+      // terminus into `chain` so downstream consumers
+      // (`reconstructVersionsFromHaf` and friends) do not fetch operations
+      // for the duplicate post. Without this short-circuit the walker
+      // runs to `MAX_HOPS = 50` on any cycle. See
+      // `agents/docs/tasks/pending/backend-canonical-walker-cycle-detection.md`.
+      const visitedKey = memoKey(currentAuthor, currentPermlink);
+      if (visited.has(visitedKey)) {
+        logger.warn(
+          {
+            event: 'continuation_chain_cycle_detected',
+            startAuthor: author,
+            startPermlink: permlink,
+            cycleAuthor: currentAuthor,
+            cyclePermlink: currentPermlink,
+            hopIndex: i,
+          },
+          'continuation chain walker detected cycle in continuation pointers',
+        );
+        return chain;
+      }
+      visited.add(visitedKey);
+
       chain.push({ author: currentAuthor, permlink: currentPermlink });
 
       // Extend cumulative with the admitted candidate's contribution.
@@ -1543,6 +1582,22 @@ async function findCanonicalRoot(
     let currentAuthor: string = startRow.cont_author;
     let currentPermlink: string = startRow.cont_permlink;
 
+    // Per-walker-call visited set for cycle detection. Keys match the
+    // `memoKey` shape so cycle short-circuit happens at O(N_unique_nodes)
+    // instead of O(CANONICAL_ROOT_MAX_HOPS) on attacker-posted cycles
+    // (mutually authorized co-authors like A → B → A). Seeded with the
+    // START (the leaf the walker is descending from) AND the initial
+    // predecessor (the first node `cont_author/cont_permlink` resolves
+    // to), because both are nodes the walker has touched before the
+    // loop. Without seeding both, a 2-cycle A → B → A burns 2-3 SQL
+    // queries before detection; with both seeded, it short-circuits at
+    // the first advancement. The depth cap is the attacker-amplifier
+    // backstop; cycle detection is the structural short-circuit on top.
+    const visited = new Set<string>([
+      memoKey(author, permlink),
+      memoKey(currentAuthor, currentPermlink),
+    ]);
+
     for (let i = 0; i < CANONICAL_ROOT_MAX_HOPS; i++) {
       // Wall-clock budget check at each iteration boundary. When BOTH the
       // depth cap and the wall-clock budget would fire on the same
@@ -1633,6 +1688,32 @@ async function findCanonicalRoot(
       childPermlink = currentPermlink;
       currentAuthor = parentRow.cont_author;
       currentPermlink = parentRow.cont_permlink;
+
+      // Cycle detection: revisiting an already-touched `(author, permlink)`
+      // node means the continuation-pointer graph contains a cycle (A → B →
+      // A → ... — possible when both authors are mutually in each other's
+      // `pevo.authors[]`). Stop the walk at the cycle node and return it as
+      // canonical, emitting a discriminating event so operators can
+      // distinguish "legitimate deep chain" (depth_exceeded) from
+      // "attacker-posted cycle" (cycle_detected). Without this short-circuit
+      // the walker runs to `CANONICAL_ROOT_MAX_HOPS = 10` on any cycle. See
+      // `agents/docs/tasks/pending/backend-canonical-walker-cycle-detection.md`.
+      const visitedKey = memoKey(currentAuthor, currentPermlink);
+      if (visited.has(visitedKey)) {
+        logger.warn(
+          {
+            event: 'canonical_root_walker_cycle_detected',
+            childAuthor,
+            childPermlink,
+            cycleAuthor: currentAuthor,
+            cyclePermlink: currentPermlink,
+            hopNumber: i + 1,
+          },
+          'canonical-root walker detected cycle in continuation pointers',
+        );
+        return { author: currentAuthor, permlink: currentPermlink };
+      }
+      visited.add(visitedKey);
     }
 
     // Depth cap exceeded: stop walking and return the deepest verified

@@ -348,6 +348,163 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
     warnSpy.mockRestore();
   });
 
+  it('detects 2-node cycle (alice/v1 → bob/v1 → alice/v1) on backward walk and stops with cycle event', async () => {
+    // Attacker-posted cycle: alice and bob are mutually in each other's
+    // pevo.authors[] (mutual vouch), so the unauthorized-hop gate admits
+    // both directions. Without cycle detection the walker would run to
+    // CANONICAL_ROOT_MAX_HOPS=10 on a 2-cycle; with visited-Set the walker
+    // short-circuits at the first advancement that revisits a node.
+    //
+    // Mutation kill: remove the `visited` Set check inside the loop. The
+    // walker then advances 10 times alternating alice ↔ bob → emits
+    // `canonical_root_walker_depth_exceeded` instead of
+    // `canonical_root_walker_cycle_detected`, failing both the
+    // `expect(events).toContain('...cycle_detected')` AND the
+    // `expect(events).not.toContain('...depth_exceeded')` assertion red.
+    const mutualMeta = pevoPaperJsonMeta(['alice', 'bob']);
+
+    installResponder(async (sql, params) => {
+      if (isBackwardWalkContinuesProbe(sql)) {
+        const a = params[0];
+        const p = params[1];
+        if (isInitialBackwardProbe(sql)) {
+          // START = alice/v1, cont = bob/v1.
+          if (a === 'alice' && p === 'v1') {
+            return {
+              rows: [{
+                author: 'alice',
+                json_metadata: pevoPaperRow('alice', 'v1', ['alice', 'bob']).json_metadata,
+                cont_author: 'bob',
+                cont_permlink: 'v1',
+              }],
+            };
+          }
+          return { rows: [] };
+        }
+        // Loop-continuation probes: bob/v1 → alice/v1, alice/v1 → bob/v1.
+        if (a === 'bob' && p === 'v1') {
+          return { rows: [{ cont_author: 'alice', cont_permlink: 'v1' }] };
+        }
+        if (a === 'alice' && p === 'v1') {
+          return { rows: [{ cont_author: 'bob', cont_permlink: 'v1' }] };
+        }
+        return { rows: [] };
+      }
+      // Both alice/v1 and bob/v1 admit each other as continuators.
+      if (isHeadAuthorsLookup(sql)) {
+        const a = params[0];
+        if (a === 'alice' || a === 'bob') {
+          return { rows: [{ author: a, json_metadata: mutualMeta }] };
+        }
+        return { rows: [] };
+      }
+      // Paper-detail SELECT for whichever node is returned as canonical.
+      if (sql.includes('SELECT c.author, c.permlink, c.title')) {
+        const a = params[0] as string;
+        const p = params[1] as string;
+        return { rows: [pevoPaperRow(a, p, ['alice', 'bob'])] };
+      }
+      return { rows: [] };
+    });
+
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+
+    const res = await request(app).get('/api/papers/alice/v1');
+    expect(res.status).toBe(200);
+
+    const events = warnSpy.mock.calls
+      .map((c) => c[0] as { event?: string; hopNumber?: number; cycleAuthor?: string; cyclePermlink?: string } | undefined)
+      .filter(Boolean);
+
+    // The cycle event fired.
+    const cycleEvents = events.filter((e) => e?.event === 'canonical_root_walker_cycle_detected');
+    expect(cycleEvents.length).toBeGreaterThan(0);
+    // And the depth-cap event did NOT (cycle detection short-circuits first).
+    const depthEvents = events.filter((e) => e?.event === 'canonical_root_walker_depth_exceeded');
+    expect(depthEvents.length).toBe(0);
+
+    // Backward continues-probe count is bounded well below the depth cap.
+    const probeCount = captured.filter((c) => isBackwardWalkContinuesProbe(c.sql)).length;
+    expect(probeCount).toBeLessThan(10);
+
+    warnSpy.mockRestore();
+  });
+
+  it('detects 3-node cycle (alice/v1 → bob/v1 → carol/v1 → alice/v1) on backward walk', async () => {
+    // 3-node cycle verifies the visited Set is real (not a "back-edge to
+    // immediate predecessor" check that would pass on a 2-cycle but miss
+    // an N-cycle). Without a proper Set, a 3-cycle is indistinguishable
+    // from a legitimate deep chain until depth cap fires.
+    //
+    // Mutation kill: replace `visited.has(visitedKey)` with a "last node"
+    // check (only remembers the immediately previous node) → 3-cycle
+    // walks to depth cap → cycle_detected event count drops to 0.
+    const mutualMeta = pevoPaperJsonMeta(['alice', 'bob', 'carol']);
+
+    installResponder(async (sql, params) => {
+      if (isBackwardWalkContinuesProbe(sql)) {
+        const a = params[0];
+        const p = params[1];
+        if (isInitialBackwardProbe(sql)) {
+          if (a === 'alice' && p === 'v1') {
+            return {
+              rows: [{
+                author: 'alice',
+                json_metadata: pevoPaperRow('alice', 'v1', ['alice', 'bob', 'carol']).json_metadata,
+                cont_author: 'bob',
+                cont_permlink: 'v1',
+              }],
+            };
+          }
+          return { rows: [] };
+        }
+        // Loop probes: bob → carol, carol → alice, alice → bob (closes the cycle).
+        if (a === 'bob' && p === 'v1') {
+          return { rows: [{ cont_author: 'carol', cont_permlink: 'v1' }] };
+        }
+        if (a === 'carol' && p === 'v1') {
+          return { rows: [{ cont_author: 'alice', cont_permlink: 'v1' }] };
+        }
+        if (a === 'alice' && p === 'v1') {
+          return { rows: [{ cont_author: 'bob', cont_permlink: 'v1' }] };
+        }
+        return { rows: [] };
+      }
+      if (isHeadAuthorsLookup(sql)) {
+        const a = params[0];
+        if (a === 'alice' || a === 'bob' || a === 'carol') {
+          return { rows: [{ author: a, json_metadata: mutualMeta }] };
+        }
+        return { rows: [] };
+      }
+      if (sql.includes('SELECT c.author, c.permlink, c.title')) {
+        const a = params[0] as string;
+        const p = params[1] as string;
+        return { rows: [pevoPaperRow(a, p, ['alice', 'bob', 'carol'])] };
+      }
+      return { rows: [] };
+    });
+
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+
+    const res = await request(app).get('/api/papers/alice/v1');
+    expect(res.status).toBe(200);
+
+    const events = warnSpy.mock.calls
+      .map((c) => c[0] as { event?: string; hopNumber?: number } | undefined)
+      .filter(Boolean);
+
+    const cycleEvents = events.filter((e) => e?.event === 'canonical_root_walker_cycle_detected');
+    expect(cycleEvents.length).toBeGreaterThan(0);
+    const depthEvents = events.filter((e) => e?.event === 'canonical_root_walker_depth_exceeded');
+    expect(depthEvents.length).toBe(0);
+
+    const probeCount = captured.filter((c) => isBackwardWalkContinuesProbe(c.sql)).length;
+    expect(probeCount).toBeLessThan(10);
+
+    warnSpy.mockRestore();
+  });
+
   it('wall-clock budget: aborts mid-walk on slow HAF, emits canonical_root_walker_wall_clock_exceeded', async () => {
     // BACKEND-HAF-WALKER-WALL-CLOCK-BUDGET acceptance #4 canary.
     //

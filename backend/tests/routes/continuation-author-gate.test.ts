@@ -1628,6 +1628,139 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
     expect(walks.length).toBe(0);
   });
 
+  it('detects 2-node cycle (alice/v1 → bob/v1 → alice/v1) on forward walk and stops with cycle event', async () => {
+    // Attacker-posted cycle: alice and bob are mutually in each other's
+    // pevo.authors[] (cumulative-union admits both directions), so the
+    // SQL author-set gate and the JS-side gate both admit the cycle. The
+    // forward walker has no depth-cap warn event (per the wall-clock test
+    // pair below: it exits silently at MAX_HOPS=50), so without cycle
+    // detection an attacker-posted cycle burns 50 chain-walk SQL queries
+    // per request silently.
+    //
+    // Mutation kill: remove the `visited` Set check inside the loop. The
+    // walker advances 50 times alternating alice ↔ bob → no cycle event
+    // emits → walks.length jumps from ~2 to ~50, failing both the
+    // `expect(cycleEvents.length).toBeGreaterThan(0)` AND the
+    // `expect(walks.length).toBeLessThan(...)` assertions red.
+    const mutualPevoMeta = {
+      app: `${config.appTag}/test`,
+      [config.appTag]: { type: 'paper', authors: [{ hive: 'alice' }, { hive: 'bob' }] },
+    };
+
+    installResponder(async (sql, params) => {
+      // Suppress backward walker (initial probe carries IS NOT NULL → 0 rows).
+      if (/'continues'\s*IS\s+NOT\s+NULL/i.test(sql)) {
+        return { rows: [] };
+      }
+      // Head authorized-authors lookup (used by both gate-seed and the
+      // per-link JS defense-in-depth re-checks).
+      if (sql.includes('SELECT c.author, c.json_metadata') && sql.includes('parent_permlink = $3')) {
+        const a = params[0];
+        if (a === 'alice' || a === 'bob') {
+          return { rows: [pevoPaperRow(a, params[1] as string, ['alice', 'bob'])] };
+        }
+        return { rows: [] };
+      }
+      // Paper-detail SELECT.
+      if (sql.includes('SELECT c.author, c.permlink, c.title')) {
+        return { rows: [pevoPaperRow('alice', 'v1', ['alice', 'bob'])] };
+      }
+      // Forward chain-walk: return the candidate that continues (params[0], params[1]).
+      if (isForwardChainWalkSql(sql)) {
+        const currentA = params[0] as string;
+        const currentP = params[1] as string;
+        if (currentA === 'alice' && currentP === 'v1') {
+          return { rows: [{ author: 'bob', permlink: 'v1', block_num: 100, json_metadata: mutualPevoMeta }] };
+        }
+        if (currentA === 'bob' && currentP === 'v1') {
+          return { rows: [{ author: 'alice', permlink: 'v1', block_num: 200, json_metadata: mutualPevoMeta }] };
+        }
+        return { rows: [] };
+      }
+      return { rows: [] };
+    });
+
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+
+    const res = await request(app).get('/api/papers/alice/v1');
+    expect(res.status).toBe(200);
+
+    const cycleEvents = warnSpy.mock.calls
+      .map((c) => c[0] as { event?: string; hopIndex?: number; cycleAuthor?: string; cyclePermlink?: string } | undefined)
+      .filter((e) => e?.event === 'continuation_chain_cycle_detected');
+    expect(cycleEvents.length).toBeGreaterThan(0);
+
+    // Chain-walk SQL count well below MAX_HOPS=50. Without cycle detection
+    // this walk would alternate alice ↔ bob for the full 50 hops.
+    const walks = chainWalkCaptures();
+    expect(walks.length).toBeLessThan(10);
+
+    warnSpy.mockRestore();
+  });
+
+  it('detects 3-node cycle (alice/v1 → bob/v1 → carol/v1 → alice/v1) on forward walk', async () => {
+    // 3-node cycle verifies the visited Set is real (not a "back-edge to
+    // immediate predecessor" check, which would mis-pass a 2-cycle while
+    // letting an N-cycle slip through). Cumulative-union of authors across
+    // the chain (alice + bob + carol) admits all three directions.
+    //
+    // Mutation kill: replace `visited.has(visitedKey)` with a check against
+    // only the immediately previous chain link → 3-cycle walks to MAX_HOPS
+    // silently → cycleEvents.length drops to 0.
+    const tripleAuthors = [{ hive: 'alice' }, { hive: 'bob' }, { hive: 'carol' }];
+    const triplePevoMeta = {
+      app: `${config.appTag}/test`,
+      [config.appTag]: { type: 'paper', authors: tripleAuthors },
+    };
+
+    installResponder(async (sql, params) => {
+      if (/'continues'\s*IS\s+NOT\s+NULL/i.test(sql)) {
+        return { rows: [] };
+      }
+      if (sql.includes('SELECT c.author, c.json_metadata') && sql.includes('parent_permlink = $3')) {
+        const a = params[0];
+        if (a === 'alice' || a === 'bob' || a === 'carol') {
+          return { rows: [pevoPaperRow(a, params[1] as string, ['alice', 'bob', 'carol'])] };
+        }
+        return { rows: [] };
+      }
+      if (sql.includes('SELECT c.author, c.permlink, c.title')) {
+        return { rows: [pevoPaperRow('alice', 'v1', ['alice', 'bob', 'carol'])] };
+      }
+      if (isForwardChainWalkSql(sql)) {
+        const currentA = params[0] as string;
+        const currentP = params[1] as string;
+        // alice → bob → carol → alice (cycle).
+        if (currentA === 'alice' && currentP === 'v1') {
+          return { rows: [{ author: 'bob', permlink: 'v1', block_num: 100, json_metadata: triplePevoMeta }] };
+        }
+        if (currentA === 'bob' && currentP === 'v1') {
+          return { rows: [{ author: 'carol', permlink: 'v1', block_num: 200, json_metadata: triplePevoMeta }] };
+        }
+        if (currentA === 'carol' && currentP === 'v1') {
+          return { rows: [{ author: 'alice', permlink: 'v1', block_num: 300, json_metadata: triplePevoMeta }] };
+        }
+        return { rows: [] };
+      }
+      return { rows: [] };
+    });
+
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+
+    const res = await request(app).get('/api/papers/alice/v1');
+    expect(res.status).toBe(200);
+
+    const cycleEvents = warnSpy.mock.calls
+      .map((c) => c[0] as { event?: string } | undefined)
+      .filter((e) => e?.event === 'continuation_chain_cycle_detected');
+    expect(cycleEvents.length).toBeGreaterThan(0);
+
+    const walks = chainWalkCaptures();
+    expect(walks.length).toBeLessThan(10);
+
+    warnSpy.mockRestore();
+  });
+
   it('wall-clock budget: aborts forward walker mid-walk, emits continuation_chain_wall_clock_exceeded', async () => {
     // BACKEND-HAF-WALKER-WALL-CLOCK-BUDGET acceptance #4 canary for the
     // FORWARD walker. The backward walker is suppressed (its initial
