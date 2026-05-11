@@ -82,3 +82,45 @@ export function safeHashEmailForLogs(
 export function hashTokenForLogs(token: string): string {
   return createHash('sha256').update(token).digest('hex').slice(0, 12);
 }
+
+/**
+ * Partially-redacted email for user-facing confirmation messages.
+ *
+ * Distinct from `hashEmailForLogs` (operator-log correlation, fully opaque).
+ * This helper is for surfaces where the user needs to recognize their own
+ * email but the response must not echo the full plaintext back — e.g.
+ * "Verification email sent to j***h@***.edu" on `/api/auth/signup` or
+ * `/api/accreditation/request`.
+ *
+ * Output shape:
+ *   - Long local (≥3 chars): first char + '***' + last char + '@***' + tld
+ *     e.g. `joseph@mit.edu` → `j***h@***.edu`
+ *   - Short local (≤2 chars): first char + '***' + '@***' + tld
+ *     e.g. `j@x.io` → `j***@***.io`, `jo@x.io` → `j***@***.io`
+ *   - `tld` is the slice from the LAST dot in the domain (multi-dot domains
+ *     get only the final TLD, e.g. `mail.example.co.uk` → `.uk`).
+ *
+ * Fallback shape `***@***` is returned for any input lacking exactly one `@`
+ * with non-empty local + domain parts (empty string, missing `@`, multiple
+ * `@`, leading/trailing `@`). Domains without a `.` get an empty tld
+ * (output: `<masked>@***`).
+ *
+ * Three earlier copies of this helper existed in `routes/auth.ts`,
+ * `routes/accreditation.ts`, and `routes/settings.ts`. The accreditation
+ * copy had a dead `length <= 2` conditional (both branches produced the
+ * same output, silently). The settings copy returned the full domain
+ * unmasked. This canonical version replaces all three to keep masking
+ * consistent across user-facing confirmation surfaces.
+ */
+export function maskEmail(email: string): string {
+  const parts = email.split('@');
+  if (parts.length !== 2 || !parts[0] || !parts[1]) return '***@***';
+  const [local, domain] = parts;
+  const tldIdx = domain.lastIndexOf('.');
+  const tld = tldIdx >= 0 ? domain.slice(tldIdx) : '';
+  const maskedLocal =
+    local.length <= 2
+      ? `${local[0]}***`
+      : `${local[0]}***${local[local.length - 1]}`;
+  return `${maskedLocal}@***${tld}`;
+}

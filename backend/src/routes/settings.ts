@@ -14,7 +14,7 @@ import { ARGON2_OPTIONS } from '../lib/argon2-options.js';
 import { runWithArgon2Slot } from '../lib/argon2-semaphore.js';
 import { handleArgonError, ARGON_HANDLED } from '../lib/argon2-error-handler.js';
 import { requestAbortSignal } from '../lib/request-abort-signal.js';
-import { hashEmailForLogs } from '../lib/log-pii.js';
+import { hashEmailForLogs, maskEmail } from '../lib/log-pii.js';
 
 const readLimiter = rateLimit({ name: 'settings-read', windowMs: 60_000, max: 30, keyFn: byIp });
 const writeLimiter = rateLimit({ name: 'settings-write', windowMs: 60_000, max: 10, keyFn: byIp });
@@ -30,12 +30,6 @@ const emailSchema = z.object({
 const deleteSchema = z.object({
   confirm: z.literal(true),
 });
-
-function maskEmail(email: string): string {
-  const parts = email.split('@');
-  if (parts.length !== 2 || !parts[0] || !parts[1]) return '***@***';
-  return parts[0][0] + '***@' + parts[1];
-}
 
 function sendVerificationEmail(to: string, token: string): Promise<void> {
   if (!config.smtpHost) {

@@ -12,7 +12,7 @@ import { validate, accreditationRequestSchema, accreditationVerifySchema } from 
 import { rateLimit, byAccount, byIp } from '../middleware/rateLimit.js';
 import { logger } from '../logger.js';
 import { isInstitutionalEmail } from '../email-validator.js';
-import { hashEmailForLogs, hashTokenForLogs } from '../lib/log-pii.js';
+import { hashEmailForLogs, hashTokenForLogs, maskEmail } from '../lib/log-pii.js';
 import { evalScript } from '../lib/redis-scripts.js';
 import { enqueueDecrement } from '../lib/pending-decrement-queue.js';
 import { seedAccreditationBonus } from '../reputation.js';
@@ -279,16 +279,6 @@ async function cleanupExpiredTokens(): Promise<void> {
     if (now > p.expires_at) memoryTokens.delete(t);
   }
 }
-
-function maskEmail(email: string): string {
-  const parts = email.split('@');
-  if (parts.length !== 2 || !parts[0] || !parts[1]) return '***@***';
-  const [local, domain] = parts;
-  const tld = domain.includes('.') ? domain.slice(domain.lastIndexOf('.')) : domain;
-  const maskedLocal = local.length <= 2 ? `${local[0]}***` : `${local[0]}***`;
-  return `${maskedLocal}@***${tld}`;
-}
-
 
 // ──────────────────────────────────────────────
 // POST /api/accreditation/request

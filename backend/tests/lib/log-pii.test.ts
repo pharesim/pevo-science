@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { hashEmailForLogs, hashTokenForLogs } from '../../src/lib/log-pii.js';
+import { hashEmailForLogs, hashTokenForLogs, maskEmail } from '../../src/lib/log-pii.js';
 
 describe('hashEmailForLogs', () => {
   it('is deterministic — same input yields same output', () => {
@@ -115,5 +115,72 @@ describe('hashTokenForLogs', () => {
       const window = tok.slice(i, i + 12);
       expect(out).not.toBe(window);
     }
+  });
+});
+
+// `maskEmail` partial-redaction coverage. Distinct from `hashEmailForLogs`:
+// this helper produces user-facing confirmation strings (e.g. "Verification
+// email sent to j***h@***.edu") where the user needs to recognize their own
+// address but the response must not echo the full plaintext. Pinned shapes
+// kill mutations that change the local-mask split (long vs. short), the
+// tld-extraction rule (last dot vs. first dot vs. full domain), or the
+// fallback shape. The pre-extract accreditation copy had a dead
+// `length <= 2 ? '${local[0]}***' : '${local[0]}***'` conditional (both
+// branches identical) and the settings copy returned the full domain
+// unmasked — these tests fail-loud if either regression re-appears.
+describe('maskEmail', () => {
+  it('short local (1 char) → first-char + *** + @***.tld', () => {
+    expect(maskEmail('j@x.io')).toBe('j***@***.io');
+  });
+
+  it('short local (2 chars) → first-char + *** + @***.tld', () => {
+    expect(maskEmail('jo@x.io')).toBe('j***@***.io');
+  });
+
+  it('long local (≥3 chars) → first + *** + last + @***.tld', () => {
+    expect(maskEmail('joseph@mit.edu')).toBe('j***h@***.edu');
+  });
+
+  it('multi-dot domain uses ONLY the final tld (not the full suffix)', () => {
+    expect(maskEmail('j@mail.example.co.uk')).toBe('j***@***.uk');
+  });
+
+  it('long local with multi-dot domain composes both rules', () => {
+    expect(maskEmail('joseph@mail.example.co.uk')).toBe('j***h@***.uk');
+  });
+
+  it('missing @ returns the ***@*** fallback', () => {
+    expect(maskEmail('not-an-email')).toBe('***@***');
+  });
+
+  it('empty string returns the ***@*** fallback', () => {
+    expect(maskEmail('')).toBe('***@***');
+  });
+
+  it('multiple @ returns the ***@*** fallback (split count check)', () => {
+    expect(maskEmail('a@b@c.io')).toBe('***@***');
+  });
+
+  it('leading @ (empty local) returns the ***@*** fallback', () => {
+    expect(maskEmail('@example.com')).toBe('***@***');
+  });
+
+  it('trailing @ (empty domain) returns the ***@*** fallback', () => {
+    expect(maskEmail('alice@')).toBe('***@***');
+  });
+
+  it('domain without a dot produces empty tld (no leak of full domain)', () => {
+    // Regression guard: the original `settings.ts` copy returned
+    // `parts[0][0] + '***@' + parts[1]` which echoed the full domain when
+    // present. The canonical helper must never echo the full domain.
+    expect(maskEmail('joseph@localhost')).toBe('j***h@***');
+  });
+
+  it('dead-conditional regression guard: long local does NOT collapse to first-char + ***', () => {
+    // The pre-extract accreditation copy had `local.length <= 2 ?
+    // '${local[0]}***' : '${local[0]}***'` (both branches identical), which
+    // silently produced the short-local shape for ALL inputs. Assert the
+    // long-local output is structurally different from the short-local one.
+    expect(maskEmail('joseph@mit.edu')).not.toBe(maskEmail('jo@mit.edu'));
   });
 });
