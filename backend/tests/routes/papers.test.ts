@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import request from 'supertest';
 import { createApp } from '../../src/app.js';
+import { config } from '../../src/config.js';
 
 const app = createApp();
 
@@ -103,6 +104,42 @@ describe('GET /api/papers', () => {
       expect(res.status).toBe(200);
       expect(Array.isArray(res.body.data)).toBe(true);
     }
+  });
+
+  // backend-papers-filter-accreditation lane 1 canary: the SQL gate is
+  // unconditional. Every returned paper must be either accredited-authored
+  // (is_accredited: true) OR a bridge-paper exempt post authored by
+  // config.hiveBridgeAccount (is_accredited: false). A regression that
+  // silently relaxes the gate would surface here as an entry with
+  // is_accredited:false AND author != hiveBridgeAccount.
+  it('every returned paper is accredited-authored or bridge-account-authored (no unaccredited leaks)', { timeout: 60_000 }, async () => {
+    const res = await request(app).get('/api/papers?limit=100');
+    expect(res.status).toBe(200);
+    for (const paper of res.body.data) {
+      const isAccredited = paper.is_accredited === true;
+      const isBridgeAuthor = paper.author === config.hiveBridgeAccount;
+      expect(
+        isAccredited || isBridgeAuthor,
+        `paper ${paper.author}/${paper.permlink} leaked the gate: is_accredited=${paper.is_accredited}, author=${paper.author}`,
+      ).toBe(true);
+    }
+  });
+
+  // backend-papers-filter-accreditation lane 1 canary: legacy
+  // `?accredited_only=false` opt-out is silently ignored (no error, no
+  // behavioral change). A regression that re-introduces the opt-out branch
+  // would surface here as a divergence between the param-on and param-off
+  // listings.
+  it('?accredited_only=false is silently ignored (returns identical set to no param)', { timeout: 60_000 }, async () => {
+    const [withoutParam, withFalseParam] = await Promise.all([
+      request(app).get('/api/papers?limit=50&sort=date&order=desc'),
+      request(app).get('/api/papers?limit=50&sort=date&order=desc&accredited_only=false'),
+    ]);
+    expect(withoutParam.status).toBe(200);
+    expect(withFalseParam.status).toBe(200);
+    expect(withFalseParam.body.meta.total).toBe(withoutParam.body.meta.total);
+    const key = (p: { author: string; permlink: string }) => `${p.author}/${p.permlink}`;
+    expect(new Set(withFalseParam.body.data.map(key))).toEqual(new Set(withoutParam.body.data.map(key)));
   });
 
   // BE-DISCIPLINE-LENGTH-CAP: guard oversized/malformed ?discipline= inputs

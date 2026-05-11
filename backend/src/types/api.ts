@@ -73,7 +73,6 @@ export interface PaperListParams {
   author?: string;
   sort?: PaperSortOption;
   order?: SortOrder;
-  accredited_only?: boolean;
   source?: PaperSourceFilter;
   page?: number;
   limit?: number;

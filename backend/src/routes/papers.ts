@@ -369,7 +369,6 @@ async function fetchPapersFromHaf(
   const keyword = req.query.keyword as string | undefined;
   const author = req.query.author as string | undefined;
   const language = req.query.language as string | undefined;
-  const accreditedOnly = req.query.accredited_only !== 'false'; // default true
   const includeRetracted = req.query.include_retracted === 'true'; // default false
   const source = req.query.source as string | undefined; // 'native', 'bridge', or omit for both
 
@@ -413,14 +412,15 @@ async function fetchPapersFromHaf(
     conditions.push(`(c.json_metadata -> ${appTagParam} ->> 'language') = $${paramIdx++}`);
     filterParams.push(language);
   }
-  if (accreditedOnly) {
-    // Bridge papers are posted by the system bridge account, not the original author,
-    // so they are exempt from the accredited-only filter — but ONLY when authored
-    // by config.hiveBridgeAccount. The bridge arm of validPevoPaperWhere() pins
-    // the author; we reuse it as the OR-arm here to share the predicate shape.
-    const bridgeArm = validPevoPaperWhere({ commentAlias: 'c', appTagParam, bridgeAccountParam, source: 'bridge' });
-    conditions.push(`(c.author IN (SELECT account FROM active_accreditations) OR ${bridgeArm})`);
-  }
+  // Accreditation gate is unconditional. Bridge papers are posted by the
+  // system bridge account, not the original author, so they are exempt from
+  // the accredited-only filter — but ONLY when authored by
+  // config.hiveBridgeAccount. The bridge arm of validPevoPaperWhere() pins
+  // the author; we reuse it as the OR-arm here to share the predicate shape.
+  // The legacy `?accredited_only=false` opt-out is silently ignored — Express
+  // convention for unknown query params (api-contracts/common.md).
+  const bridgeArm = validPevoPaperWhere({ commentAlias: 'c', appTagParam, bridgeAccountParam, source: 'bridge' });
+  conditions.push(`(c.author IN (SELECT account FROM active_accreditations) OR ${bridgeArm})`);
   if (!includeRetracted) {
     conditions.push(`NOT EXISTS (SELECT 1 FROM retracted_papers rp WHERE rp.author = c.author AND rp.permlink = c.permlink)`);
   }
@@ -628,15 +628,14 @@ router.get('/', async (req: Request, res: Response) => {
   const keyword = req.query.keyword || '';
   const author = req.query.author || '';
   const language = req.query.language || '';
-  const accreditedOnly = req.query.accredited_only !== 'false'; // default true
   const includeRetracted = req.query.include_retracted === 'true';
   const source = req.query.source || '';
   // Sibling fields (keyword, author, language, source) flow in unvalidated;
   // a `:` in any of them collides with the delimiter and lets a crafted
   // `?keyword=:a=alice` poison-cache against `?author=:a=alice`. sha256-wrap
   // the raw fragments so the namespace is collision-stable. Mirrors
-  // search.ts:320.
-  const rawKey = `p=${page}:l=${limit}:s=${sort}:o=${order}:d=${discipline ?? ''}:k=${keyword}:a=${author}:lang=${language}:ao=${accreditedOnly}:ir=${includeRetracted}:src=${source}`;
+  // search.ts.
+  const rawKey = `p=${page}:l=${limit}:s=${sort}:o=${order}:d=${discipline ?? ''}:k=${keyword}:a=${author}:lang=${language}:ir=${includeRetracted}:src=${source}`;
   const cacheKey = `papers:${crypto.createHash('sha256').update(rawKey).digest('hex').slice(0, 32)}`;
   const result = await hafCache.getOrSetSWR(cacheKey, () => fetchPapersFromHaf(req, discipline ?? undefined));
   if (result) {
