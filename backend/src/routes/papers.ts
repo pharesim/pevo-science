@@ -1153,6 +1153,16 @@ async function resolveContinuationChain(
 
   let currentAuthor = author;
   let currentPermlink = permlink;
+  // MAX_HOPS = 50. Per-request worst-case latency under degraded HAF:
+  // 50 hops × ≥1 sequential SQL query × 30s statement_timeout (`db.ts:22`)
+  // = up to 1500s (~25 min) per request before the depth cap exits.
+  // The depth cap is the attacker-amplifier defense; the wall-clock
+  // budget threaded via `signal?: AbortSignal` (and the route-handler
+  // `config.hafWalkerWallClockMs`-bounded `AbortController`) bounds the
+  // degraded-HAF tail independently of hop count. Both signals coexist
+  // because a long legitimate chain under fast HAF is depth-bounded but
+  // not wall-clock-pressured. See
+  // `verify-resource-knob-math-before-load-bearing-security-margins-2026-04-22.md`.
   const MAX_HOPS = 50;
 
   try {
@@ -1251,6 +1261,17 @@ async function resolveContinuationChain(
  * a 50× amplification factor. Beyond the cap the walker stops at the
  * current node and emits a structured warn so operators can detect
  * attack patterns.
+ *
+ * Per-request worst-case latency under degraded HAF: 10 hops × 2
+ * sequential SQL queries (auth-check + parent-continues) × 30s
+ * statement_timeout (`db.ts:22`) = up to 600s (10 min) per request
+ * before the depth cap exits. The depth cap is the attacker-amplifier
+ * defense; the wall-clock budget threaded via `signal?: AbortSignal`
+ * (and the route-handler `config.hafWalkerWallClockMs`-bounded
+ * `AbortController`) bounds the degraded-HAF tail independently of hop
+ * count. Both signals coexist because a long legitimate chain under
+ * fast HAF is depth-bounded but not wall-clock-pressured. See
+ * `verify-resource-knob-math-before-load-bearing-security-margins-2026-04-22.md`.
  */
 const CANONICAL_ROOT_MAX_HOPS = 10;
 

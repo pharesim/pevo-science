@@ -81,6 +81,19 @@ export const config = {
   // recovers DECR calls failed during a Redis flap on /api/accreditation/verify.
   // See lib/pending-decrement-queue.ts and BE-VERIFY-CAP-REDIS-FLAP-RECOVERY.
   verifyDecrementQueueDrainMs: parseInt(process.env.VERIFY_DECREMENT_QUEUE_DRAIN_MS || '30000', 10),
+  // Per-request wall-clock budget (ms) for the HAF chain walkers in
+  // `routes/papers.ts` (`findCanonicalRoot` + `resolveContinuationChain` +
+  // cascading helper calls). Bounds worker-thread starvation under
+  // degraded HAF (genuine ops degradation OR attacker-induced via separate
+  // vector) — the per-query `statement_timeout=30000ms` in `db.ts` is
+  // multiplied by the walker hop caps (10 backward, 50 forward) for a
+  // per-request worst-case of 10-25 minutes if no per-request budget exists.
+  //
+  // Default 3000ms derivation: typical HAF response 50-200ms × expected
+  // 10-15-query depth = 500-3000ms. Anything beyond is degraded HAF.
+  // Operators can tune via env. See BACKEND-HAF-WALKER-WALL-CLOCK-BUDGET
+  // and `verify-resource-knob-math-before-load-bearing-security-margins-2026-04-22.md`.
+  hafWalkerWallClockMs: parseInt(process.env.HAF_WALKER_WALL_CLOCK_MS || '3000', 10),
   orcidBaseUrl: process.env.ORCID_BASE_URL || 'https://orcid.org',
   accreditationAuthorities: (() => {
     const extra = (process.env.ACCREDITATION_AUTHORITIES || '').split(',').map(s => s.trim()).filter(Boolean);
