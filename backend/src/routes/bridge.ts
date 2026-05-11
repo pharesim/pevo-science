@@ -13,6 +13,7 @@ import { getRedis, isRedisAvailable } from '../redis.js';
 import { rateLimit, byIp } from '../middleware/rateLimit.js';
 import { T, validPevoPaperWhere } from '../hafsql.js';
 import { handleBroadcastError } from '../lib/broadcast-error.js';
+import { assertNever } from '../util/assertNever.js';
 import {
   parseIdentifier,
   resolveToCanonical,
@@ -52,7 +53,7 @@ function bridgeRegisterLockKey(permlink: string): string {
 }
 
 type BridgeLockState =
-  | { state: 'acquired'; nonce: string }
+  | { state: 'acquired'; nonce: string; acquiredAtMs: number }
   | { state: 'held' }
   | { state: 'unavailable' };
 
@@ -60,8 +61,8 @@ type BridgeLockState =
 // 'unavailable' on Redis outage (caller degrades to the unlocked path —
 // accept the narrow race rather than fail-closed: a Redis-down 503 on every
 // /register would be more user-hostile than the rare duplicate-broadcast
-// during a Redis flap). Caller MUST call releaseBridgeLock(key, nonce) in
-// finally on the 'acquired' state.
+// during a Redis flap). Caller MUST call releaseBridgeLock(key, nonce,
+// acquiredAtMs) in finally on the 'acquired' state.
 async function acquireBridgeLock(lockKey: string): Promise<BridgeLockState> {
   const redis = getRedis();
   if (!redis || !isRedisAvailable()) return { state: 'unavailable' };
@@ -79,7 +80,7 @@ async function acquireBridgeLock(lockKey: string): Promise<BridgeLockState> {
   }
   try {
     const result = await redis.set(lockKey, nonce, 'EX', BRIDGE_LOCK_TTL_SECONDS, 'NX');
-    if (result === 'OK') return { state: 'acquired', nonce };
+    if (result === 'OK') return { state: 'acquired', nonce, acquiredAtMs: Date.now() };
     return { state: 'held' };
   } catch (err) {
     logger.error(
@@ -90,11 +91,37 @@ async function acquireBridgeLock(lockKey: string): Promise<BridgeLockState> {
   }
 }
 
-async function releaseBridgeLock(lockKey: string, nonce: string): Promise<void> {
+// Lua CAS returns 1 when the stored nonce matched and DEL fired, 0 when the
+// key was absent or held a different nonce (TTL expired and a sibling
+// re-acquired). Round-2 hold item #7: surface the 0-return as a structured
+// warn so operators see TTL-exceeded cascades (the broadcast outlasted the
+// lock TTL — likely under load, slow Hive node, or external API stall). The
+// `wallClockMs` field lets the dashboard correlate against
+// BRIDGE_LOCK_TTL_SECONDS without rebuilding the timeline from logs.
+async function releaseBridgeLock(
+  lockKey: string,
+  nonce: string,
+  acquiredAtMs: number,
+  routeLabel: string,
+  permlink: string,
+): Promise<void> {
   const redis = getRedis();
   if (!redis || !isRedisAvailable()) return;
   try {
-    await redis.eval(BRIDGE_RELEASE_LOCK_LUA, 1, lockKey, nonce);
+    const ret = await redis.eval(BRIDGE_RELEASE_LOCK_LUA, 1, lockKey, nonce);
+    if (ret === 0) {
+      logger.warn(
+        {
+          lockKey,
+          permlink,
+          route: routeLabel,
+          wallClockMs: Date.now() - acquiredAtMs,
+          ttlSeconds: BRIDGE_LOCK_TTL_SECONDS,
+          event: 'bridge.lock.release_no_op',
+        },
+        'bridge lock release no-op: TTL expired or sibling re-acquired',
+      );
+    }
   } catch (err) {
     // Best-effort release. Lock self-expires after BRIDGE_LOCK_TTL_SECONDS.
     logger.warn({ err, lockKey, event: 'bridge.lock.release_failed' }, 'Failed to release bridge lock');
@@ -169,7 +196,16 @@ type BridgeCheckResult =
     }
   | { status: 'haf_unavailable' };
 
-async function checkExistingBridge(identifier: string, resolvedParsed?: { type: 'arxiv' | 'doi'; id: string } | null): Promise<BridgeCheckResult> {
+async function checkExistingBridge(
+  identifier: string,
+  resolvedParsed?: { type: 'arxiv' | 'doi'; id: string } | null,
+  // Round-2 hold item #4: thread the caller label so the HAF-failure warn log
+  // emits route: 'bridge.check' when called from /check and route:
+  // 'bridge.register' when called from /register. Without this, the
+  // route-keyed operator-dashboard filter on `route: 'bridge.register'`
+  // false-alerts on every /check HAF blip.
+  callerLabel: 'bridge.register' | 'bridge.check' = 'bridge.register',
+): Promise<BridgeCheckResult> {
   const parsed = resolvedParsed ?? parseIdentifier(identifier);
   if (!parsed || (parsed.type !== 'arxiv' && parsed.type !== 'doi')) {
     return { status: 'ok', exists: false, author: null, permlink: null, title: null, created: null };
@@ -222,9 +258,11 @@ async function checkExistingBridge(identifier: string, resolvedParsed?: { type: 
     // BE-BRIDGE-WRITE-HAF-LAG fail-closed signal. The /register route handler
     // converts this to 503 + {retriable: true} so a HAF outage can't license a
     // duplicate broadcast. /check (read-only) preserves the prior fail-open
-    // behavior by mapping the signal back to {exists: false}.
+    // behavior by mapping the signal back to {exists: false}. The event field
+    // is parameterized on callerLabel so operator dashboards filtering on
+    // `route: 'bridge.register'` don't false-alert on /check HAF blips.
     logger.warn(
-      { err, identifier, permlink, event: 'bridge.register.haf_check_failed', route: 'bridge.register' },
+      { err, identifier, permlink, event: `${callerLabel}.haf_check_failed`, route: callerLabel },
       'Bridge check HAF query failed — failing closed, surfacing 503 to caller',
     );
     return { status: 'haf_unavailable' };
@@ -245,18 +283,39 @@ router.get('/check', lookupLimiter, async (req: Request, res: Response) => {
       return sendError(res, 400, 'BAD_REQUEST', 'Could not resolve identifier — try pasting a DOI or arXiv ID directly');
     }
 
+    // Round-2 hold item #2: resolve checkExistingBridge OUTSIDE getOrSet so
+    // the haf_unavailable sentinel never lands in the 30s cache. QueryCache
+    // caches any non-null object; the prior `hafCache.getOrSet(...,
+    // checkExistingBridge, 30_000)` poisoned subsequent /check calls with
+    // `{exists: false}` for up to 30s after HAF recovered in 1-2s. We now
+    // probe the cache for the ok shape only and write through only the ok
+    // shape; haf_unavailable bypasses the cache entirely.
     const cacheKey = `bridge-check:${parsed.type}:${parsed.id}`;
-    const result = await hafCache.getOrSet(cacheKey, () => checkExistingBridge(identifier, parsed), 30_000);
+    type OkShape = Extract<BridgeCheckResult, { status: 'ok' }>;
+    let result: BridgeCheckResult;
+    const cached = await hafCache.get<OkShape>(cacheKey);
+    if (cached !== undefined) {
+      result = cached;
+    } else {
+      result = await checkExistingBridge(identifier, parsed, 'bridge.check');
+      if (result.status === 'ok') {
+        await hafCache.set(cacheKey, result, 30_000);
+      }
+    }
     // Read-only path stays fail-open: a HAF blip on /check returns
     // exists=false (the legacy shape) so the UI doesn't pop a 503 banner on
     // every preprint-resolve. The fail-closed policy is intentionally only on
     // /register where the consequence of a bad answer is a duplicate
-    // broadcast.
+    // broadcast. Round-2 hold item #3: assertNever guards the discriminated
+    // union so a future 3rd variant compiles into a build error rather than
+    // silently falling through to the ok branch.
     if (result.status === 'haf_unavailable') {
       sendOk(res, { exists: false, author: null, permlink: null, title: null, created: null });
-    } else {
+    } else if (result.status === 'ok') {
       const { status: _omit, ...payload } = result;
       sendOk(res, payload);
+    } else {
+      return assertNever(result);
     }
   } catch (err) {
     logger.error({ err, identifier }, 'Bridge check failed');
@@ -305,9 +364,28 @@ router.post('/register', registerLimiter, verifyHiveSignature, async (req: Reque
     return sendError(res, 400, 'BAD_REQUEST', 'Could not resolve identifier — try pasting a DOI or arXiv ID directly');
   }
 
+  // Round-2 hold item #6: hoist lookupPreprint OUT of the lock critical
+  // section. CrossRef (15s timeout) + PubMed (15s) + DOI scrape (10s) on top
+  // of the broadcast (~30s) can push wall-clock past the 35s lock TTL,
+  // causing the lock to expire mid-flight and a sibling to re-acquire under
+  // a new nonce. The lookup is a pure external metadata fetch with no chain
+  // state, so it does not need lock protection; after the hoist the in-lock
+  // wall-clock is HAF query (~100ms) + broadcast (~30s), comfortably under
+  // BRIDGE_LOCK_TTL_SECONDS.
+  let meta;
+  try {
+    meta = await lookupPreprint(identifier);
+  } catch (err) {
+    logger.error({ err, identifier, username }, 'Preprint metadata fetch failed during registration');
+    return sendError(res, 500, 'INTERNAL_ERROR', 'Failed to fetch preprint metadata from source');
+  }
+  if (!meta) {
+    return sendError(res, 400, 'BAD_REQUEST', 'No preprint found for the given identifier');
+  }
+
   // BE-BRIDGE-WRITE-HAF-LAG: claim the per-permlink lock BEFORE the HAF
   // duplicate-check so two concurrent /register calls for the same identifier
-  // serialize on Redis (loser gets 409). The lock spans the entire
+  // serialize on Redis (loser gets 409 LOCK_HELD). The lock spans the entire
   // read-then-broadcast window and is released in finally on every exit
   // path. On Redis outage we degrade to the unlocked path (the prior shape)
   // so a Redis flap can't 503 every registration.
@@ -315,10 +393,15 @@ router.post('/register', registerLimiter, verifyHiveSignature, async (req: Reque
   const lockKey = bridgeRegisterLockKey(permlink);
   const lockState = await acquireBridgeLock(lockKey);
   if (lockState.state === 'held') {
+    // Round-2 hold item #1: 409 LOCK_HELD (NOT DUPLICATE). Discriminates
+    // from the existing-duplicate 409 below so SPA / integrators can switch
+    // on err.code without parsing the message string. LOCK_HELD is
+    // retriable (the other request will land on chain and the next attempt
+    // will hit the DUPLICATE path); existing-duplicate is terminal.
     return res.status(409).json({
       status: 'error',
       error: {
-        code: 'DUPLICATE',
+        code: 'LOCK_HELD',
         message: 'A registration for this preprint is already in progress',
         details: { retriable: true },
       },
@@ -329,35 +412,29 @@ router.post('/register', registerLimiter, verifyHiveSignature, async (req: Reque
     // Check for duplicates (now race-free against concurrent /register
     // siblings for the same identifier, modulo the unlocked-degrade window
     // when Redis is unavailable).
-    const existing = await checkExistingBridge(identifier, parsed);
+    const existing = await checkExistingBridge(identifier, parsed, 'bridge.register');
     if (existing.status === 'haf_unavailable') {
       // Fail-closed: do NOT broadcast on a HAF outage — duplicate-check is
       // unreliable and a successful broadcast under those conditions could
       // create a duplicate top-level post under the bridge account.
       return sendError(res, 503, 'SERVICE_UNAVAILABLE', 'Bridge duplicate-check is temporarily unavailable. Please retry shortly.', { retriable: true });
-    }
-    if (existing.exists) {
-      return res.status(409).json({
-        status: 'error',
-        error: {
-          code: 'DUPLICATE',
-          message: 'This preprint is already registered on PEvO',
-          existing_author: existing.author,
-          existing_permlink: existing.permlink,
-        },
-      });
-    }
-
-    // Fetch metadata from source
-    let meta;
-    try {
-      meta = await lookupPreprint(identifier);
-    } catch (err) {
-      logger.error({ err, identifier, username }, 'Preprint metadata fetch failed during registration');
-      return sendError(res, 500, 'INTERNAL_ERROR', 'Failed to fetch preprint metadata from source');
-    }
-    if (!meta) {
-      return sendError(res, 400, 'BAD_REQUEST', 'No preprint found for the given identifier');
+    } else if (existing.status === 'ok') {
+      if (existing.exists) {
+        return res.status(409).json({
+          status: 'error',
+          error: {
+            code: 'DUPLICATE',
+            message: 'This preprint is already registered on PEvO',
+            existing_author: existing.author,
+            existing_permlink: existing.permlink,
+          },
+        });
+      }
+    } else {
+      // Round-2 hold item #3: exhaustiveness guard on BridgeCheckResult so a
+      // future variant becomes a compile error instead of silently falling
+      // through to broadcast.
+      return assertNever(existing);
     }
 
     // Build and broadcast the Hive post under the bridge account
@@ -433,7 +510,7 @@ router.post('/register', registerLimiter, verifyHiveSignature, async (req: Reque
     }
   } finally {
     if (lockState.state === 'acquired') {
-      await releaseBridgeLock(lockKey, lockState.nonce);
+      await releaseBridgeLock(lockKey, lockState.nonce, lockState.acquiredAtMs, 'bridge.register', permlink);
     }
   }
 });

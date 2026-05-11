@@ -25,6 +25,7 @@ export type ErrorCode =
   | "FORBIDDEN"
   | "NOT_FOUND"
   | "DUPLICATE"
+  | "LOCK_HELD"
   | "FILE_TOO_LARGE"
   | "INVALID_FILE_TYPE"
   | "RATE_LIMITED"

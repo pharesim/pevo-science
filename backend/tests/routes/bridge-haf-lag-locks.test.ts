@@ -1,13 +1,21 @@
 /**
  * BE-BRIDGE-WRITE-HAF-LAG — concurrent /register lock specs.
  *
- * Justification for the Redis mock (per root CLAUDE.md carve-out): we need
- * deterministic ordering between two concurrent in-flight requests so the
- * second hits the lock-already-held branch reliably. A real-Redis variant
- * exists implicitly via the broader bridge.test.ts (which exercises the
- * unlocked-degrade branch under `getRedis: () => null`). Here we use a
- * stateful in-memory Redis stub so SET ... NX EX behaves exactly like real
- * Redis for the SETNX semantics under concurrent access.
+ * Justification for the Redis mock (per root CLAUDE.md carve-out clause c):
+ * we need deterministic ordering between two concurrent in-flight requests
+ * so the second hits the lock-already-held branch reliably. Real-Redis
+ * cannot be ordered like this without sleep-tuning that's flaky in CI. We
+ * use a stateful in-memory Redis stub so SET ... NX EX behaves exactly like
+ * real Redis for the SETNX semantics under concurrent access.
+ *
+ * Round-2 hold item #5 (PS-001): the prior citation of bridge.test.ts's
+ * unlocked-degrade path (under `getRedis: () => null`) is a different risk
+ * class — Redis-unavailable fallback, NOT SETNX contention. Backend filed
+ * follow-up task `backend-bridge-lock-real-redis-companion.md` (in
+ * tasks/pending/) to land a real-Redis SETNX-contention companion. Once
+ * that lands, this header is updated to cite the new test file. The
+ * follow-up satisfies clause c via the "OR a follow-up task is filed to add
+ * such coverage" branch.
  *
  * `verifyHiveSignature` is NOT mocked — requests are signed end-to-end. Only
  * `getPool`/`getAppPool`/`getRedis` and broadcast/preprint helpers are stubbed,
@@ -15,9 +23,14 @@
  *
  * Specs covered:
  *   1. /register: 2 concurrent calls for the same identifier → exactly ONE
- *      broadcast fires; the second returns 409 with retriable: true.
+ *      broadcast fires; the second returns 409 LOCK_HELD with retriable:
+ *      true. After both requests resolve, the Redis lock key is absent.
  *   2. /register: HAF query throws → 503 SERVICE_UNAVAILABLE with
- *      retriable: true and structured warn-level log.
+ *      retriable: true and structured warn-level log with route:
+ *      'bridge.register'.
+ *   3. /check: HAF query throws → 200 with fail-open shape {exists: false}
+ *      (no `status` field leaks on the wire); warn-log emits route:
+ *      'bridge.check' (NOT bridge.register).
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -250,7 +263,7 @@ describe('BE-BRIDGE-WRITE-HAF-LAG — /register concurrent same-identifier lock'
     accreditedSet.add(ACCREDITED);
   });
 
-  it('two concurrent /register for the same identifier: exactly ONE broadcast fires, the second returns 409 retriable', async () => {
+  it('two concurrent /register for the same identifier: exactly ONE broadcast fires, the second returns 409 LOCK_HELD retriable, lock key released in finally', async () => {
     // Slow broadcast: hold the lock for ~50ms so the second request hits the
     // SETNX-already-held branch with high reliability.
     let releaseBroadcast: (() => void) | null = null;
@@ -282,9 +295,21 @@ describe('BE-BRIDGE-WRITE-HAF-LAG — /register concurrent same-identifier lock'
     expect(winner.body.status).toBe('ok');
     expect(winner.body.data.tx_id).toBe('tx-winner');
 
+    // Round-2 hold item #1: lock-held 409 carries `code: 'LOCK_HELD'`, NOT
+    // `code: 'DUPLICATE'`. The two 409 shapes share the HTTP status but
+    // differ on the error code so SPA/integrators can switch on
+    // err.code without parsing the message string.
     expect(loser.status).toBe(409);
-    expect(loser.body.error.code).toBe('DUPLICATE');
+    expect(loser.body.error.code).toBe('LOCK_HELD');
     expect(loser.body.error.details).toEqual({ retriable: true });
+
+    // Round-2 hold item #9: assert the lock key is absent from Redis after
+    // both requests resolve — catches early-return / missing-`state ===
+    // 'acquired'` regressions in the finally block. The winner's finally
+    // released the key under Lua CAS; the loser never acquired it.
+    // Reconstruct the key from config.appTag + bridgeRegisterLockKey shape.
+    const expectedLockKey = `${config.appTag}:bridge_register_lock:bridge-arxiv-2301-99999`;
+    expect(fakeRedis.store.has(expectedLockKey)).toBe(false);
   });
 });
 
@@ -326,6 +351,57 @@ describe('BE-BRIDGE-WRITE-HAF-LAG — /register fails closed on HAF outage', () 
       expect(matchingCall, 'expected a logger.warn call with event=bridge.register.haf_check_failed').toBeDefined();
       const ctx = matchingCall![0] as Record<string, unknown>;
       expect(ctx.route).toBe('bridge.register');
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+});
+
+describe('BE-BRIDGE-WRITE-HAF-LAG — /check fail-open on HAF outage (round-2 hold item #8)', () => {
+  it('GET /api/bridge/check: HAF query throws → 200 with {exists:false} fail-open shape, no status field leaks on wire, warn route=bridge.check', async () => {
+    pgQueryImpl = async () => {
+      throw new Error('simulated HAF connection refused');
+    };
+
+    const { logger } = await import('../../src/logger.js');
+    const warnSpy = vi.spyOn(logger, 'warn');
+
+    try {
+      const res = await request(app)
+        .get('/api/bridge/check')
+        .query({ identifier: '2301.99999' });
+
+      // /check is read-only: HAF blip maps to fail-open exists=false. The
+      // 503 fail-closed policy is reserved for /register where the
+      // consequence of a stale answer is a duplicate broadcast.
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe('ok');
+
+      // Round-2 hold item #8: the response body MUST NOT leak the
+      // internal-only `status` discriminator from BridgeCheckResult on the
+      // wire. The handler maps haf_unavailable → exists:false WITHOUT
+      // forwarding the status field.
+      expect(res.body.data).toEqual({
+        exists: false,
+        author: null,
+        permlink: null,
+        title: null,
+        created: null,
+      });
+      expect(res.body.data).not.toHaveProperty('status');
+
+      // Round-2 hold item #4: the HAF-failure warn log emits route:
+      // 'bridge.check' (NOT bridge.register) so operator dashboards
+      // filtering on `route: 'bridge.register'` don't false-alert on
+      // /check HAF blips. The event field is parameterized on callerLabel.
+      const calls = warnSpy.mock.calls;
+      const matchingCall = calls.find((c) => {
+        const ctx = c[0] as Record<string, unknown> | undefined;
+        return ctx?.event === 'bridge.check.haf_check_failed';
+      });
+      expect(matchingCall, 'expected a logger.warn call with event=bridge.check.haf_check_failed').toBeDefined();
+      const ctx = matchingCall![0] as Record<string, unknown>;
+      expect(ctx.route).toBe('bridge.check');
     } finally {
       warnSpy.mockRestore();
     }
