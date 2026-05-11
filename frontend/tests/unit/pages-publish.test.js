@@ -1,5 +1,20 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+// Mocked createEditor for the dynamic `await import('../editor.js')` inside
+// _mountEditors. The test for the teardown-during-init guard asserts that
+// the FACTORY is not invoked when the component is destroyed before the
+// dynamic import resolves — i.e. that the `if (!this._mounted) return;` is
+// reached before createEditor runs. The mock is hoisted by vi.mock and
+// applied to both static and dynamic imports.
+const mockCreateEditor = vi.fn(() => ({
+  destroy: vi.fn(),
+  setContent: vi.fn(),
+}));
+
+vi.mock('../../src/editor.js', () => ({
+  createEditor: (...args) => mockCreateEditor(...args),
+}));
+
 vi.mock('../../src/api.js', () => ({
   uploadToIpfs: vi.fn(),
   fetchDisciplines: vi.fn(() => Promise.resolve({ data: [] })),
@@ -652,6 +667,55 @@ describe('publishPage', () => {
       expect(mockStores.toast.show).toHaveBeenCalledWith('common.connectionFailed', 'error');
       expect(mockStores.toast.show.mock.calls[0][0]).not.toContain('sentinel');
       expect(warnSpy.mock.calls[0][1]).toBe(leaky);
+    });
+  });
+
+  // UI-MOUNT-EDITORS-DESTROYED-GUARD: _mountEditors awaits a dynamic import
+  // of editor.js. If the component is destroyed (Alpine teardown) between
+  // the $nextTick dispatch and the import resolving, $refs are stale and
+  // any editor instances created post-await leak (destroy() already nulled
+  // _abstractEditor / _bodyEditor, so it cannot tear down what we assign
+  // afterwards). The guard is a `if (!this._mounted) return;` immediately
+  // after the dynamic import.
+  describe('_mountEditors teardown-during-init guard', () => {
+    beforeEach(() => {
+      mockCreateEditor.mockClear();
+    });
+
+    it('is a no-op when the component was destroyed before the import resolved', async () => {
+      const comp = createComponent();
+      // Simulate teardown that races with the in-flight dynamic import:
+      // destroy() flips _mounted to false. The guard inside _mountEditors
+      // must short-circuit before calling createEditor.
+      comp.destroy();
+      expect(comp._mounted).toBe(false);
+
+      // Stale $refs are what destroy() would have left behind. The guard
+      // must fire BEFORE these are touched.
+      comp.$refs = { abstractEditor: null, bodyEditor: null };
+      comp._abstractEditor = null;
+      comp._bodyEditor = null;
+
+      await comp._mountEditors();
+
+      expect(mockCreateEditor).not.toHaveBeenCalled();
+      expect(comp._abstractEditor).toBe(null);
+      expect(comp._bodyEditor).toBe(null);
+    });
+
+    it('still mounts editors when the component is alive at import resolution', async () => {
+      const comp = createComponent();
+      // Simulate live refs after $nextTick.
+      const abstractEl = {};
+      const bodyEl = {};
+      comp.$refs = { abstractEditor: abstractEl, bodyEditor: bodyEl };
+
+      await comp._mountEditors();
+
+      // Guard does NOT fire — createEditor runs for both refs.
+      expect(mockCreateEditor).toHaveBeenCalledTimes(2);
+      expect(comp._abstractEditor).toBeTruthy();
+      expect(comp._bodyEditor).toBeTruthy();
     });
   });
 });

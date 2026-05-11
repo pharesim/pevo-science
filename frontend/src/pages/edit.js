@@ -685,6 +685,12 @@ export function initEditPage() {
 
     async _mountEditors() {
       const { createEditor } = await import('../editor.js');
+      // Teardown-during-init guard. If the component was destroyed while the
+      // dynamic import was in flight, $refs are stale and any editor we
+      // create now leaks (destroy() already nulled the previous instance
+      // refs, so it won't tear down anything we assign here). See
+      // ui-mount-editors-destroyed-guard.
+      if (!this._mounted) return;
       const abstractEl = this.$refs.abstractEditor;
       const bodyEl = this.$refs.bodyEditor;
 
