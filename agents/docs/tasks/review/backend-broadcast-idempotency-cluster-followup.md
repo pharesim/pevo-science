@@ -294,3 +294,204 @@ Beyond the original 3 items in `chain-write-timeout-ambiguous-outcome-2026-04-22
 - **(F10 rename propagation) Log event renames in contract docs.** When landing the original `accreditation.md` and `custody.md` updates, use the renamed event names: `idempotency_haf_unconfigured` (not `idempotency_haf_unavailable`).
 - **(F13 part 2) AC-3 block_num nullability.** In the custody.md "success response shape extension" item, document `block_num: number | null` semantics — block_num is present and non-null on fresh broadcasts; may be null (or omitted post-F13-fix coercion) on the idempotency-hit path. SPA code must handle absence without throwing.
 - **(F16) Hive-schemas.md addition.** Update `agents/docs/hive-schemas.md` section 2.1 (accreditation): add `idempotency_key` field to the `accredit` custom_json schema. One-line note: "Deterministic per `(token, username)` via `sha256(token:username)`; no PII (token entropy preserved, username already public). Used for pre-broadcast HAF dedup on `/api/accreditation/verify`."
+
+---
+
+## Backend re-review signal (2026-05-11, commit `689208f`)
+
+All 18 hold items landed in a single round-2 commit (`689208f`, 40 files / +1039/-290).
+Grouped by section below; `event:` discriminators + new error code are
+operator-alert anchors and tested.
+
+### Accreditation /verify correctness (Hi)
+
+- **F1** — `backend/src/routes/accreditation.ts` HAF-hit branch now decrements
+  the broadcast-attempt cap via `decrementBroadcastAttempts(token, attemptId)`
+  AND wraps `seedAccreditationBonus(username)` inline. Both are best-effort;
+  a transient decrement failure or token-cleanup failure logs and continues,
+  but a PERMANENT `seedAccreditationBonus` throw surfaces as 502
+  `POST_BROADCAST_OPERATOR_REQUIRED` via `handleBroadcastError` locally
+  (separate try/catch on the hit branch — the success-path catch only covers
+  the broadcast call, so a re-throw would propagate to Express's async-error
+  handler). Test: `tests/routes/accreditation-idempotency.test.ts` "HAF hit
+  returns existing tx_id ... but still seeds bonus and decrements cap
+  counter" (asserts counter ≤ 0 after hit, `seedBonusMock` called, hit-event
+  fields pinned via `toMatchObject`).
+- **F2** — `lib/idempotency.ts` `findCustodyBroadcastByIdempotencyKey` accepts
+  optional `opType: 'comment' | 'custom_json'` and probes only the matching
+  HAF arm when supplied. `routes/custody.ts` now runs `embedIdempotencyKey`
+  FIRST (it's pure), threads the resolved `embedded.opType` into the
+  lookup, and commits the embedded ops only on the miss path. Fresh-auth
+  verification was hoisted ABOVE the idempotency check on consent-op
+  bundles (the previous "idempotency-first" ordering allowed a key-collision
+  to bypass the fresh-auth gate). Tests: `tests/lib/idempotency.test.ts`
+  new "opType-scoped lookup" describe block (5 specs: scoped-comment,
+  scoped-custom_json, undefined falls back to two-arm probe);
+  `tests/routes/custody-idempotency.test.ts` per-arm hit specs assert
+  `hafQueryMock.toHaveBeenCalledTimes(1)` and matching SQL substring.
+- **F3** — `lib/broadcast-error.ts` `PostBroadcastWriteError` gains
+  `severity: 'transient' | 'permanent'` (default `'transient'` so existing
+  ORCID callers retain POST_BROADCAST_FAILED semantics).
+  `handleBroadcastError` discriminates on `severity`: permanent →
+  `POST_BROADCAST_OPERATOR_REQUIRED` + "support has been notified" message;
+  transient → existing POST_BROADCAST_FAILED + "will reconcile automatically".
+  Both branches log at `.error` with `severity` in the structured payload.
+  `routes/accreditation.ts` wrap site now passes `'permanent'` because
+  `reputation.ts:119-123` (`isPermanentSeedError`) only rethrows
+  TypeError/SyntaxError/RangeError; transient blips stay swallowed inside
+  the cascade fn. ErrorCode union extended in `src/types/api.ts`. Test:
+  `tests/routes/accreditation-idempotency.test.ts` "seedAccreditationBonus
+  throws → 502 POST_BROADCAST_OPERATOR_REQUIRED ..." pins code +
+  failed_step + permanent user-message regex.
+- **F8** — New module-local helper `deleteTokenBestEffort` in
+  `routes/accreditation.ts` wraps the success-path `deleteToken(token)` and
+  the idempotency-hit-path cleanups in try/catch + structured warn.
+  Caller passes `event` discriminator (e.g.
+  `accreditation.verify.delete_token_failed_post_success`,
+  `accreditation.verify.idempotency_hit_token_cleanup_failed`). Closes the
+  `helper-extraction-express5-response-ordering-2026-04-28.md` recurrence
+  for this route. Test: `tests/routes/accreditation-idempotency.test.ts`
+  "token cleanup failure on hit" stubs `redis.del` to throw on the
+  hit-path delete and asserts 200 unaffected + warn emitted.
+
+### Broadcast-path infra (Mid)
+
+- **F4** — `backend/src/db.ts` Pool constructor uses the `onConnect` option
+  (typed at `pg.Pool` constructor) instead of `pool.on('connect', ...)`.
+  The first query on a new connection now waits for
+  `SET statement_timeout = 30000`; pre-fix listener fired asynchronously
+  and the first query could run before the timeout applied. No unit test
+  added — the race is structural and asserting on event ordering against
+  pg internals would couple the test to library internals.
+- **F5/F12** — `lib/idempotency.ts` exports new
+  `lookupCustodyBroadcastIdempotency` + `lookupAccreditationBroadcastIdempotency`
+  wrappers that consult a Redis short-circuit cache before the bare HAF
+  lookup. Cache stores discriminated `{kind:'hit',tx_id,block_num} |
+  {kind:'miss'}` variants only; HAF throws and `haf_unconfigured` paths
+  degrade to existing structured-warn handlers and are NEVER cached
+  (per `caching-wrapper-discriminated-union-poisoning-2026-05-11.md`).
+  Cache keys: `${config.appTag}:idem:custody:<sha256(username|key)>` and
+  `${config.appTag}:idem:accred:<key>` (the accreditation key is already
+  sha256 hex). TTLs: positive 60s (bridges HAF indexer-lag defense
+  window), negative 10s (short, avoids masking genuine state changes).
+  Rationale documented inline in the cache layer. Tests: cache is
+  transparently exercised by the route-level specs; per-test cleanup of
+  `${config.appTag}:idem:accred:*` keys in the accreditation suite's
+  `afterEach` prevents cross-test pollution.
+- **F10** — `isHafAvailable()` → `isHafConfigured()` in `src/db.ts` plus
+  every caller across `src/` (12 sites) and `tests/` (~16 sites). Log
+  events `*.idempotency_haf_unavailable` → `*.idempotency_haf_unconfigured`
+  at custody + accreditation call sites. Docstring at the function says
+  config-only, not reachability; outage discrimination lives on the
+  error path (`_lookup_failed` warns). Wire field `haf_available` in
+  `/api/health` deliberately left as-is — it's a documented contract
+  field (`agents/docs/api-contracts/misc.md`), and the rename was
+  function-semantics not contract-semantics. [TODO Architect: decide
+  whether `haf_available` should also be renamed at contract level for
+  consistency, or remain because the wire field is an effective-state
+  observation rather than a config-only check.]
+
+### Type safety + lookup polish (Mid)
+
+- **F11** — `validateIdempotencyKey` returns
+  `{ok:true,value:string} | {ok:false,error:string}` (was `string | null`).
+  `routes/custody.ts` narrows via `if (!validation.ok)` and assigns
+  `validation.value` without `as string`. Tests rewritten in
+  `tests/lib/idempotency.test.ts` to assert on the discriminated shape.
+- **F13** — `routes/custody.ts` hit-branch response uses
+  `block_num: existing.block_num ?? undefined`. Test
+  `tests/routes/custody-idempotency.test.ts` "HAF hit with block_num:null
+  coerces to undefined" asserts `not.toHaveProperty('block_num')` on the
+  serialized response.
+- **F15** — Folded into F2 (the opType plumbing IS the F15 implementation —
+  scoped probe halves HAF round-trips when the embed picks a known
+  surface).
+
+### Module cleanup (Low)
+
+- **F22** — `logIdempotencySkip` deleted from `lib/idempotency.ts`. Four
+  call sites in `routes/custody.ts` + `routes/accreditation.ts` inlined
+  with direct `logger.warn({...}, '...')`. Hit-event sites (which already
+  used `logger.info` directly) now share the same shape as the
+  skip-event sites — no asymmetric rule.
+- **F23** — `findAccreditByIdempotencyKey` →
+  `findAccreditationBroadcastByIdempotencyKey` in
+  `lib/idempotency.ts`. Three call sites (route, unit test, sibling
+  function comment). Establishes the naming precedent for the survey
+  table's per-surface follow-up lookups (`backend-claims-approve-revoke-idempotency`,
+  `backend-papers-retract-idempotency`, optional `backend-wot-vouch-idempotency`,
+  optional `backend-anonymous-review-attestation-idempotency`).
+- **F24** — One-line comment added at
+  `routes/accreditation.ts` customJsonPayload construction documenting
+  why `embedIdempotencyKey` is not used (single known-shape op; inline
+  is clearer than round-tripping through the generic scanner).
+- **F26** — `embedIdempotencyKey` hoists `const params = opParams as
+  Record<string, unknown>` once after the null-guard; per-branch casts
+  at the comment and custom_json arms removed.
+
+### Test coverage (Low)
+
+- **F6 part 1** — `tests/lib/idempotency.test.ts` header rewritten. Now
+  acknowledges the route-level companions ALSO mock `db.js` (per their
+  own carve-out headers) and explicitly cites
+  `backend-idempotency-haf-integration-test.md` as the real-path
+  commitment per carve-out clause (c).
+- **F9 + F19 + F20** — `tests/routes/accreditation-idempotency.test.ts`
+  gains four new specs: (a) HAF lookup throw → broadcast still fires +
+  `idempotency_lookup_failed` warn; (b) HAF unconfigured → broadcast
+  still fires + `idempotency_haf_unconfigured` warn (uses a hoisted
+  mutable `hafConfiguredFlag.value` to flip configuration presence
+  per-test without re-mocking the module); (c) token cleanup failure
+  on hit → 200 unaffected + `idempotency_hit_token_cleanup_failed` warn
+  (one-shot stub on `redis.del`); (d) hit-path event pin extends the
+  existing HAF-hit spec to assert `logger.info` called with the
+  `accreditation.verify.idempotency_hit` event + structured fields.
+- **F12 part 2** — TTL rationale documented inline in the cache layer
+  (`IDEMPOTENCY_CACHE_POSITIVE_TTL_MS = 60_000`,
+  `IDEMPOTENCY_CACHE_NEGATIVE_TTL_MS = 10_000`).
+- **F21** — `tests/routes/custody-idempotency.test.ts` vote-only
+  no-embed spec extended with `toMatchObject` pin on the full warn
+  payload shape (event + route + username + idempotency_key +
+  op_types).
+
+### Dismissed at triage (architect's call; not implemented per hold-block instructions)
+
+F14, F25, F27, F18 — recorded for transparency only; no code change.
+
+### Filed as separate tasks (architect at re-review pass)
+
+Both already filed in `tasks/pending/` per the hold block:
+- `backend-idempotency-haf-integration-test.md` (F6 part 2)
+- `backend-accreditation-existing-accreditation-gate.md` (F7)
+
+### Verification
+
+- `npx tsc --noEmit` — clean.
+- `npm run lint` — only pre-existing `@typescript-eslint/no-explicit-any`
+  warnings in `src/seed-phrase.ts` (unrelated to this task).
+- `npx vitest run tests/lib/idempotency.test.ts
+  tests/routes/custody-idempotency.test.ts
+  tests/routes/accreditation-idempotency.test.ts` — 37/37 pass.
+- `npx vitest run` (full backend suite, with `REDIS_URL` +
+  `APP_DATABASE_URL` pointing to the Docker container IPs per
+  CLAUDE.md "Running Tests") — 91/93 test files pass. Two failures
+  reproduce on clean `main` HEAD (verified by stashing the round-2
+  changes and re-running):
+  1. `tests/routes/disciplines-canon-mocked.test.ts` "continuation-chain
+     head-override lowercases head metadata" — unrelated to idempotency
+     (papers.ts discipline pipeline); pre-existing flake.
+  2. `tests/routes/stats-profile-parity.test.ts` —
+     `ECONNRESET`/`ETIMEDOUT` against the external HAF SQL host
+     `65.108.207.187:5432`; transient network flake (re-running in
+     isolation passed).
+
+### [TODO Architect] note (new — added by this round)
+
+The F3 supplementary contract item ("Add new permanent-error code from
+F3 when that hold item lands") is ready: `POST_BROADCAST_OPERATOR_REQUIRED`
+is in `src/types/api.ts` and emitted by `lib/broadcast-error.ts`. At
+archive, document the new code in `agents/docs/api-contracts/common.md`
+broadcast-error code table alongside `POST_BROADCAST_FAILED` with the
+discrimination semantics ("support has been notified" vs "will
+reconcile automatically"; same `details.outcome:'confirmed'` shape, but
+distinct user-recovery copy and operator routing).
