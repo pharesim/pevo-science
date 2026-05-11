@@ -58,24 +58,87 @@ export class MockBroadcastTimeoutError extends Error {
  * pre-migration code path; `cause` carries the upstream `Error` so a future
  * pino serializer change that walks `cause` chains does not silently leak the
  * underlying message either.
+ *
+ * Round-3 hold #6 (BACKEND-BRIDGE-CUSTODY-BROADCAST-DISCRIMINATION): `cause`
+ * is declared `cause?: Error` to match the base `Error.cause?: unknown`
+ * declaration. The pre-fix `cause: Error` (required, non-optional) made the
+ * `new Error(...) as DhiveLikeError` cast unsound: a future refactor that
+ * removed the runtime `err.cause = ...` assignment would leave callers
+ * accessing `dhiveErr.cause.message` to crash at runtime with no
+ * compile-time warning. Today's factory always populates `cause`; the
+ * optional type lets the cast carry its weight if that ever changes.
  */
 export interface DhiveLikeError extends Error {
   jse_shortmsg: string;
   jse_cause: string;
   info: Record<string, unknown>;
-  cause: Error;
+  cause?: Error;
+}
+
+/**
+ * Round-3 hold #3 (BACKEND-BRIDGE-CUSTODY-BROADCAST-DISCRIMINATION): per-field
+ * unique sentinels. The pre-fix factory set
+ * `err.message === err.jse_shortmsg === opts.shortmsg` (one value reused) and
+ * `err.cause.message === err.jse_cause === opts.cause` (another value reused).
+ * A leak-assertion of the form `not.toContain(SHORT)` against that fixture
+ * could not distinguish WHICH field leaked when failing, AND a regression
+ * that re-introduced interpolation of only one of two same-value fields
+ * (e.g. `err.jse_shortmsg` but not `err.message`) would pass spuriously
+ * because both fields share the marker.
+ *
+ * Callers may pass distinct per-field markers (`messageMarker`,
+ * `jseShortMsgMarker`, `causeMarker`, `jseCauseMarker`); any field left
+ * undefined is auto-populated with a per-field-unique marker derived from
+ * `shortmsg` / `cause` plus a field-name suffix. This way the existing
+ * 2-marker test ergonomics still work but each leak channel is checkable
+ * independently.
+ *
+ * `shortmsg` and `cause` remain the primary "human-readable" inputs and seed
+ * both the per-field markers (when not explicitly overridden) and the
+ * `err.message` / `err.cause.message` strings. Test sites should assert
+ * `not.toContain(...)` against EACH of the 4 returned per-field markers, not
+ * just the original `shortmsg` / `cause` values, so a single-field leak
+ * surfaces against the field's own marker.
+ */
+export interface DhiveLikeErrorMarkers {
+  /** Marker on `err.message` (string passed to `new Error(...)`). */
+  messageMarker: string;
+  /** Marker on `err.jse_shortmsg`. */
+  jseShortMsgMarker: string;
+  /** Marker on `err.cause.message`. */
+  causeMarker: string;
+  /** Marker on `err.jse_cause`. */
+  jseCauseMarker: string;
 }
 
 export function makeDhiveLikeError(opts: {
   shortmsg: string;
   cause: string;
   info?: Record<string, unknown>;
-}): DhiveLikeError {
-  const err = new Error(opts.shortmsg) as DhiveLikeError;
+  /** Optional override for `err.message`. Defaults to `${shortmsg}::message`. */
+  messageMarker?: string;
+  /** Optional override for `err.jse_shortmsg`. Defaults to `${shortmsg}::jse_shortmsg`. */
+  jseShortMsgMarker?: string;
+  /** Optional override for `err.cause.message`. Defaults to `${cause}::cause_message`. */
+  causeMarker?: string;
+  /** Optional override for `err.jse_cause`. Defaults to `${cause}::jse_cause`. */
+  jseCauseMarker?: string;
+}): DhiveLikeError & DhiveLikeErrorMarkers {
+  const messageMarker = opts.messageMarker ?? `${opts.shortmsg}::message`;
+  const jseShortMsgMarker = opts.jseShortMsgMarker ?? `${opts.shortmsg}::jse_shortmsg`;
+  const causeMarker = opts.causeMarker ?? `${opts.cause}::cause_message`;
+  const jseCauseMarker = opts.jseCauseMarker ?? `${opts.cause}::jse_cause`;
+  const err = new Error(messageMarker) as DhiveLikeError & DhiveLikeErrorMarkers;
   err.name = 'RPCError';
-  err.jse_shortmsg = opts.shortmsg;
-  err.jse_cause = opts.cause;
+  err.jse_shortmsg = jseShortMsgMarker;
+  err.jse_cause = jseCauseMarker;
   err.info = opts.info ?? {};
-  err.cause = new Error(opts.cause);
+  err.cause = new Error(causeMarker);
+  // Surface the chosen markers on the returned object so test sites can
+  // assert leak-by-field without re-deriving the marker strings.
+  err.messageMarker = messageMarker;
+  err.jseShortMsgMarker = jseShortMsgMarker;
+  err.causeMarker = causeMarker;
+  err.jseCauseMarker = jseCauseMarker;
   return err;
 }

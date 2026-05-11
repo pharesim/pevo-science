@@ -94,6 +94,21 @@ export class PostBroadcastWriteError extends Error {
  * here — that's the cost we pay for the typo protection. Compile-time
  * narrowing on a small set of structured fields is the right trade vs. the
  * unbounded `Record<string, unknown>`.
+ *
+ * Round-3 hold #5 (BACKEND-BRIDGE-CUSTODY-BROADCAST-DISCRIMINATION):
+ * `cause` is INTENTIONALLY OMITTED from this interface. The helper at
+ * `:263` below strips a caller-supplied `cause` field from the spread via
+ * a `LogContext & { cause?: unknown }` widening destructure, closing the
+ * sibling-cause leak path documented in round-3 hold #1 of
+ * `backend-bridge-key-startup-validation-and-pino-redact` (top-level
+ * `cause:` siblings bypass both the `redactErrInArg` wrapper and the
+ * Layer-B `serializers.err` redactor, which only key on the `err` slot).
+ * Adding `cause` here directly would silently turn the runtime strip
+ * into a no-op (the widening cast would become unnecessary and could be
+ * removed by a future maintainer), re-opening the leak. If a future
+ * caller genuinely needs to thread a cause, route it through `err`
+ * (pino's recursive cause-traversal preserves it via `err.cause` of the
+ * serialized payload).
  */
 export interface LogContext {
   /** Hive author of the targeted post (bridge/orcid surfaces) */
@@ -110,14 +125,8 @@ export interface LogContext {
   op_count?: number;
   /** Outcome label for audit-log call siblings ('success' | 'failure' | 'timeout') */
   outcome?: 'success' | 'failure' | 'timeout';
-  /** Attempt counter (idempotency/retry-amplification audit signal) */
-  attempt_n?: number;
-  /** Generic identifier (orcid / bridge lookup) */
-  identifier?: string;
   /** ORCID iD when binding/unbinding */
   orcid?: string;
-  /** Reputation cycle id for reputation-bonus seeding */
-  cycle_id?: number | string;
   /** SHA-256 hash of caller email (accreditation surfaces — never the raw email) */
   email_hash?: string;
   /** ORCID-flow mode discriminator ('accredit' | 'link') */

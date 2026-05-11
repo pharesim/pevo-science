@@ -210,6 +210,14 @@ describe('BE-BRIDGE-CUSTODY-BROADCAST-DISCRIMINATION — /api/custody/broadcast 
   // body is a static string regardless of throw shape. Stage a real-shaped
   // RPCError so the leak-assertion has surface to catch a regression that
   // re-introduces `jse_shortmsg` / `jse_cause` / `info` interpolation.
+  //
+  // Round-3 hold #3: per-field unique sentinels. The fixture now stamps each
+  // of `err.message`, `err.jse_shortmsg`, `err.cause.message`, `err.jse_cause`
+  // with a distinct auto-generated marker. A regression that re-interpolates
+  // ANY single one of those fields surfaces against that field's own marker
+  // (rather than the prior shared `shortmsg` value, where a single-field leak
+  // would silently pass because both `message` and `jse_shortmsg` shared the
+  // same value).
   it('dhive-shaped RPCError → 502 BROADCAST_FAILED, no jse_shortmsg/jse_cause/info leak', async () => {
     const SHORT = 'missing_posting_auth custody';
     const CAUSE = 'op_authority_check_failed';
@@ -226,6 +234,14 @@ describe('BE-BRIDGE-CUSTODY-BROADCAST-DISCRIMINATION — /api/custody/broadcast 
     expect(res.body.error.code).toBe('BROADCAST_FAILED');
     expect(res.body.error.message).toBe('Failed to broadcast signed operation to Hive');
     const bodyStr = JSON.stringify(res.body);
+    // Per-field leak assertions: each marker is unique, so a single-field
+    // leak is caught against the field's own marker (round-3 hold #3).
+    expect(bodyStr).not.toContain(dhiveErr.messageMarker);
+    expect(bodyStr).not.toContain(dhiveErr.jseShortMsgMarker);
+    expect(bodyStr).not.toContain(dhiveErr.causeMarker);
+    expect(bodyStr).not.toContain(dhiveErr.jseCauseMarker);
+    // Keep the original shortmsg / cause / info-key assertions too so any
+    // residual interpolation that strips the marker suffix still trips.
     expect(bodyStr).not.toContain(SHORT);
     expect(bodyStr).not.toContain(CAUSE);
     expect(bodyStr).not.toContain(INFO_KEY);
@@ -237,7 +253,7 @@ describe('BE-BRIDGE-CUSTODY-BROADCAST-DISCRIMINATION — /api/custody/broadcast 
 // migration renamed the outer 500 code from `BROADCAST_FAILED` to
 // `INTERNAL_ERROR` (db / decrypt / `PrivateKey.fromString` errors are NOT
 // chain-side and shouldn't share the broadcast-failure code), and added an
-// `event:'custody_broadcast_internal_error'` discriminator on the structured
+// `event:'custody.broadcast.internal_error'` discriminator on the structured
 // log. Without coverage, a mutation that reverts the rename — or drops the
 // event field — is undetected. One spec per failure source (decryptKey here)
 // is sufficient: the outer-catch routing is the same for all three (db,
@@ -247,6 +263,8 @@ describe('BE-BRIDGE-CUSTODY-BROADCAST-DISCRIMINATION — /api/custody/broadcast 
 describe('BE-BRIDGE-CUSTODY-BROADCAST-DISCRIMINATION — /api/custody/broadcast outer-catch', () => {
   it('decryptKey throws → 500 INTERNAL_ERROR with non-chain event discriminator (round-2 hold #2)', async () => {
     const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => undefined as never);
+    const infoSpy = vi.spyOn(logger, 'info').mockImplementation(() => undefined as never);
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never);
     decryptKeyMock.mockImplementationOnce(() => {
       throw new Error('aes-256-gcm: authentication tag mismatch');
     });
@@ -268,12 +286,147 @@ describe('BE-BRIDGE-CUSTODY-BROADCAST-DISCRIMINATION — /api/custody/broadcast 
       expect(ctx.username).toBe(USERNAME);
       expect(ctx.op_types).toEqual(['vote']);
       expect(ctx.op_count).toBe(1);
-      // Must NOT carry the broadcast-attempt event (this is upstream of the
-      // broadcast).
-      expect(ctx.event).not.toBe('custody.broadcast.attempt');
-      expect(ctx.event).not.toBe('broadcast_failed');
+      // Round-3 hold #4: the prior `expect(ctx.event).not.toBe(...)` was
+      // circular — the `find` filter already excluded the dual events, so
+      // the assertion was trivially true. Replace with a no-emit check on
+      // the OTHER side: across ALL logger calls during this outer-catch
+      // path, the broadcast-attempt event MUST NOT fire (the failure was
+      // upstream of the broadcast helper). A regression where the
+      // inner-catch helper also fires the outer-catch event (or vice
+      // versa) is now mutation-killed.
+      const collect = (spy: typeof errorSpy, evt: string) =>
+        spy.mock.calls.filter((c) => (c[0] as Record<string, unknown> | undefined)?.event === evt);
+      const attemptCalls = [
+        ...collect(infoSpy, 'custody.broadcast.attempt'),
+        ...collect(warnSpy, 'custody.broadcast.attempt'),
+        ...collect(errorSpy, 'custody.broadcast.attempt'),
+      ];
+      expect(
+        attemptCalls,
+        'broadcast-attempt event must NOT fire on outer-catch (pre-broadcast) failure',
+      ).toHaveLength(0);
+      // The standard 502/504 broadcast-failure events must also NOT fire on
+      // the outer-catch path — those route to broadcast on-call, this
+      // failure is upstream.
+      const broadcastFailedCalls = [
+        ...collect(errorSpy, 'broadcast_failed'),
+        ...collect(warnSpy, 'broadcast_timeout'),
+      ];
+      expect(
+        broadcastFailedCalls,
+        'broadcast_failed/broadcast_timeout events must NOT fire on outer-catch (pre-broadcast) failure',
+      ).toHaveLength(0);
     } finally {
       errorSpy.mockRestore();
+      infoSpy.mockRestore();
+      warnSpy.mockRestore();
+    }
+  });
+
+  // Round-3 hold #9: the outer-catch is reachable from THREE failure paths
+  // (db / decrypt / PrivateKey.fromString); the spec above only exercised
+  // the `decryptKey` throw. These two siblings exercise the other paths.
+  // The spec comment in the parent describe claims "routing is the same
+  // for all three" — these tests pin that claim so a future regression
+  // that special-cases one of the other branches is mutation-killed.
+  it('pool.query throws → 500 INTERNAL_ERROR with internal_error event (round-3 hold #9)', async () => {
+    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => undefined as never);
+    const infoSpy = vi.spyOn(logger, 'info').mockImplementation(() => undefined as never);
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never);
+    // The middleware does a `sessions_invalidated_at` lookup FIRST. The
+    // handler then issues the `posting_key_enc` SELECT — we throw only on
+    // that second call so the middleware succeeds and the request reaches
+    // the handler's outer-catch. The middleware happens to call
+    // `sessions_invalidated_at` exactly once per request, so a single
+    // `mockImplementationOnce` for the throw-on-posting-key case is racy
+    // — instead, install the throw-by-SQL-shape impl for this test only
+    // and restore the default impl in a finally block so sibling tests
+    // are unaffected (beforeEach only calls `mockClear`, not `mockReset`).
+    const savedImpl = appQueryMock.getMockImplementation();
+    appQueryMock.mockImplementation(async (sql: string, _params: unknown[]) => {
+      if (sql.includes('sessions_invalidated_at')) {
+        return { rows: [{ sessions_invalidated_at: null }] };
+      }
+      if (sql.includes('posting_key_enc')) {
+        throw new Error('pg: connection terminated unexpectedly');
+      }
+      return { rows: [] };
+    });
+    try {
+      const token = bearerFor(USERNAME, 'light');
+      const res = await bearerPost('/api/custody/broadcast', token, { operations: VALID_OPERATIONS });
+      expect(res.status).toBe(500);
+      expect(res.body.error.code).toBe('INTERNAL_ERROR');
+      expect(res.body.error.message).toBe('Failed to broadcast transaction');
+      const matchingCall = errorSpy.mock.calls.find((call) => {
+        const ctx = call[0] as Record<string, unknown> | undefined;
+        return ctx?.event === 'custody.broadcast.internal_error';
+      });
+      expect(matchingCall, 'expected logger.error with event:custody.broadcast.internal_error').toBeDefined();
+      const ctx = matchingCall![0] as Record<string, unknown>;
+      expect(ctx.route).toBe('custody.broadcast');
+      expect(ctx.username).toBe(USERNAME);
+      expect(ctx.op_types).toEqual(['vote']);
+      expect(ctx.op_count).toBe(1);
+      // The DB-side audit log must NOT fire on pre-broadcast failure.
+      expect(logCustodyBroadcastMock).not.toHaveBeenCalled();
+      // No broadcast-attempt event — failure was upstream of the broadcast helper.
+      const collect = (spy: typeof errorSpy, evt: string) =>
+        spy.mock.calls.filter((c) => (c[0] as Record<string, unknown> | undefined)?.event === evt);
+      const attemptCalls = [
+        ...collect(infoSpy, 'custody.broadcast.attempt'),
+        ...collect(warnSpy, 'custody.broadcast.attempt'),
+        ...collect(errorSpy, 'custody.broadcast.attempt'),
+      ];
+      expect(attemptCalls).toHaveLength(0);
+    } finally {
+      errorSpy.mockRestore();
+      infoSpy.mockRestore();
+      warnSpy.mockRestore();
+      // Restore the default impl so sibling tests pick up the seeded row.
+      if (savedImpl) appQueryMock.mockImplementation(savedImpl);
+    }
+  });
+
+  it('PrivateKey.fromString throws (malformed WIF from decryptKey) → 500 INTERNAL_ERROR (round-3 hold #9)', async () => {
+    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => undefined as never);
+    const infoSpy = vi.spyOn(logger, 'info').mockImplementation(() => undefined as never);
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never);
+    // Drive the `PrivateKey.fromString` throw branch by returning a string
+    // that is NOT a valid Hive WIF — the dhive parser rejects it at
+    // `fromString`, the throw propagates to the outer catch.
+    decryptKeyMock.mockReturnValueOnce('not-a-valid-wif-blob');
+    try {
+      const token = bearerFor(USERNAME, 'light');
+      const res = await bearerPost('/api/custody/broadcast', token, { operations: VALID_OPERATIONS });
+      expect(res.status).toBe(500);
+      expect(res.body.error.code).toBe('INTERNAL_ERROR');
+      expect(res.body.error.message).toBe('Failed to broadcast transaction');
+      const matchingCall = errorSpy.mock.calls.find((call) => {
+        const ctx = call[0] as Record<string, unknown> | undefined;
+        return ctx?.event === 'custody.broadcast.internal_error';
+      });
+      expect(matchingCall, 'expected logger.error with event:custody.broadcast.internal_error').toBeDefined();
+      const ctx = matchingCall![0] as Record<string, unknown>;
+      expect(ctx.route).toBe('custody.broadcast');
+      expect(ctx.username).toBe(USERNAME);
+      expect(ctx.op_types).toEqual(['vote']);
+      expect(ctx.op_count).toBe(1);
+      // The DB-side audit log must NOT fire on pre-broadcast failure.
+      expect(logCustodyBroadcastMock).not.toHaveBeenCalled();
+      // No broadcast-attempt event.
+      const collect = (spy: typeof errorSpy, evt: string) =>
+        spy.mock.calls.filter((c) => (c[0] as Record<string, unknown> | undefined)?.event === evt);
+      const attemptCalls = [
+        ...collect(infoSpy, 'custody.broadcast.attempt'),
+        ...collect(warnSpy, 'custody.broadcast.attempt'),
+        ...collect(errorSpy, 'custody.broadcast.attempt'),
+      ];
+      expect(attemptCalls).toHaveLength(0);
+    } finally {
+      errorSpy.mockRestore();
+      infoSpy.mockRestore();
+      warnSpy.mockRestore();
     }
   });
 });
@@ -281,7 +434,7 @@ describe('BE-BRIDGE-CUSTODY-BROADCAST-DISCRIMINATION — /api/custody/broadcast 
 // ──────────────────────────────────────────────
 // Round-2 hold #4: per-attempt audit-log signal. The DB-side
 // `logCustodyBroadcast` writes only on success; the new pino-side
-// `event:'custody_broadcast_attempt'` log fires on EVERY broadcast attempt
+// `event:'custody.broadcast.attempt'` log fires on EVERY broadcast attempt
 // with `outcome ∈ {success, failure, timeout}` so operators have a signal
 // for retry-amplification (the full idempotency design is filed separately
 // as `backend-broadcast-idempotency-cluster-followup.md`; this hold-fix
@@ -305,7 +458,11 @@ describe('BE-BRIDGE-CUSTODY-BROADCAST-DISCRIMINATION — per-attempt audit log',
       expect(ctx.username).toBe(USERNAME);
       expect(ctx.op_types).toEqual(['vote']);
       expect(ctx.op_count).toBe(1);
-      expect(ctx.attempt_n).toBe(1);
+      // Round-3 hold #1: `attempt_n` is INTENTIONALLY ABSENT until the
+      // idempotency cluster lands the real per-key counter. A constant
+      // `attempt_n: 1` would silence retry-amplification dashboards keyed
+      // on the field. The absence is the load-bearing signal.
+      expect(ctx.attempt_n).toBeUndefined();
       expect(ctx.tx_id).toBe('mock-tx-id');
       // The DB-side audit log still fires on success.
       expect(logCustodyBroadcastMock).toHaveBeenCalledTimes(1);

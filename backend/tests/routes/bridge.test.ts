@@ -338,6 +338,10 @@ describe('BE-BRIDGE-CUSTODY-BROADCAST-DISCRIMINATION — /register timeout discr
   // actual surface — every field that pre-migration code path touched
   // (`jse_shortmsg`, `jse_cause`, `info`, `cause.message`) is in the throw
   // payload, and the body must contain none of them.
+  // Round-3 hold #3: per-field unique sentinels. The fixture now stamps each
+  // of `err.message`, `err.jse_shortmsg`, `err.cause.message`, `err.jse_cause`
+  // with a distinct auto-generated marker so a single-field interpolation
+  // regression cannot pass spuriously against a shared sentinel.
   it('POST /api/bridge/register: dhive-shaped RPCError → no jse_shortmsg/jse_cause/info leak', async () => {
     const SHORT = 'missing_active_authority pevotest.bridge';
     const CAUSE = 'op_authority_check_failed';
@@ -356,6 +360,13 @@ describe('BE-BRIDGE-CUSTODY-BROADCAST-DISCRIMINATION — /register timeout discr
     expect(res.body.error.code).toBe('BROADCAST_FAILED');
     expect(res.body.error.message).toBe('Failed to broadcast bridge paper registration to Hive');
     const bodyStr = JSON.stringify(res.body);
+    // Per-field leak assertions: each marker is unique (round-3 hold #3).
+    expect(bodyStr).not.toContain(dhiveErr.messageMarker);
+    expect(bodyStr).not.toContain(dhiveErr.jseShortMsgMarker);
+    expect(bodyStr).not.toContain(dhiveErr.causeMarker);
+    expect(bodyStr).not.toContain(dhiveErr.jseCauseMarker);
+    // Keep the original shortmsg / cause / info-key assertions too so any
+    // residual interpolation that strips the marker suffix still trips.
     expect(bodyStr).not.toContain(SHORT);
     expect(bodyStr).not.toContain(CAUSE);
     expect(bodyStr).not.toContain(INFO_KEY);

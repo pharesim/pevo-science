@@ -453,11 +453,18 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
   // spot). The DB-side `logCustodyBroadcast` writes only on success; this
   // pino-side structured event fires on EVERY attempt with
   // outcome ∈ {success, failure, timeout}. Operators correlate
-  // `event:'custody_broadcast_attempt'` to spot retry-amplification before the
+  // `event:'custody.broadcast.attempt'` to spot retry-amplification before the
   // full idempotency design (filed as
-  // `backend-broadcast-idempotency-cluster-followup.md`) lands. `attempt_n` is
-  // 1 today — each /broadcast call is a fresh request without retry counting;
-  // the field is forward-compat for the idempotency cluster's per-key counter.
+  // `backend-broadcast-idempotency-cluster-followup.md`) lands.
+  //
+  // Round-3 hold #1: `attempt_n` is INTENTIONALLY OMITTED. The handler has no
+  // idempotency / per-key retry counter state today, so a hardcoded
+  // `attempt_n: 1` would silently report "no retries" to dashboards that key
+  // on the field for retry-amplification alerts — masking the very signal
+  // the alert exists to surface. Leaving the slot empty until the
+  // idempotency cluster (`backend-broadcast-idempotency-cluster-followup.md`)
+  // lands the real per-key counter is the safer default: alerts fire on
+  // missing-field rather than reading a constant 1 as ground truth.
   function logBroadcastAttempt(outcome: 'success' | 'failure' | 'timeout', extra?: Record<string, unknown>) {
     const fields = {
       event: 'custody.broadcast.attempt',
@@ -465,7 +472,6 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
       username,
       op_types,
       op_count,
-      attempt_n: 1,
       outcome,
       ...(extra ?? {}),
     };
@@ -577,7 +583,7 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
       },
       'Custodial broadcast failed (non-chain error)',
     );
-    sendError(res, 500, 'INTERNAL_ERROR', 'Failed to broadcast transaction');
+    return sendError(res, 500, 'INTERNAL_ERROR', 'Failed to broadcast transaction');
   }
 });
 
