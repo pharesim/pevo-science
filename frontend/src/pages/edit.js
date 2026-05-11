@@ -335,6 +335,7 @@ const template = `
                     <template x-for="rev in reviews" :key="rev.permlink">
                       <label class="flex items-start gap-3 p-3 rounded-lg hover:bg-parchment transition-colors cursor-pointer">
                         <input type="checkbox" class="mt-1 rounded border-parchment-dark text-pevo-teal focus:ring-pevo-teal"
+                               data-testid="address-review-checkbox"
                                :value="rev.author + '/' + rev.permlink"
                                @change="toggleAddressedReview(rev.author, rev.permlink, $event.target.checked)" />
                         <div class="min-w-0">

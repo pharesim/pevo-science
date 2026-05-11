@@ -93,9 +93,13 @@ function envelope(data) {
 async function installPaperMocks(page, { paper, reviews = [], claims = [] }) {
   const paperPath = `/api/papers/${encodeURIComponent(paper.author)}/${encodeURIComponent(paper.permlink)}`;
 
-  // Order matters with page.route: more specific routes (enrichment,
-  // invalidate) must be registered before the bare paper route, otherwise
-  // the bare matcher swallows the suffix paths.
+  // Playwright dispatches page.route matches in REVERSE registration order
+  // (most-recently-registered first), with route.fallback() walking back
+  // through earlier handlers. So we register the suffix-specific handlers
+  // (enrichment, invalidate) FIRST and the bare paper route LAST. At
+  // runtime the bare matcher fires first; for /enrichment and /invalidate
+  // URLs its else-branch calls route.fallback(), which then resolves to the
+  // earlier-registered specific handlers below.
   await page.route(`**${paperPath}/enrichment`, async (route) => {
     await route.fulfill({
       status: 200,
@@ -114,10 +118,12 @@ async function installPaperMocks(page, { paper, reviews = [], claims = [] }) {
 
   await page.route(`**${paperPath}**`, async (route) => {
     const url = route.request().url();
-    // Let suffix paths (enrichment/invalidate) fall through to their own
-    // handlers — Playwright dispatches the most-recently-registered match,
-    // but registering this last keeps the bare-paper match as the catch-all
-    // for the exact `/papers/:a/:p` and `?version=` cases.
+    // This bare-paper route is registered LAST and therefore fires FIRST by
+    // Playwright's dispatch order. For suffix URLs (/enrichment,
+    // /invalidate, /comments) we call route.fallback() to hand off to the
+    // earlier-registered specific handlers above; the bare matcher itself
+    // services the exact `/papers/:a/:p` request and the `?version=` query
+    // variants.
     if (url.includes('/enrichment') || url.includes('/invalidate') || url.includes('/comments')) {
       return route.fallback();
     }
@@ -140,6 +146,55 @@ async function clearDraft(page, author, permlink) {
   );
 }
 
+// File-scope helper: build a unique permlink per spec run. The 4 tests below
+// each need a permlink that won't collide with sibling runs and is cheap to
+// generate. Centralising the idiom makes the call sites read as intent
+// ("a fresh permlink for the in-place edit scenario") rather than a
+// `Date.now().toString(36)` ritual.
+function uniquePermlink(prefix) {
+  return `${prefix}-${Date.now().toString(36)}`;
+}
+
+// Wait for both Tiptap editors (abstract + body) to finish their async
+// mount. edit.js:_mountEditors runs via $nextTick → dynamic
+// import('../editor.js'), so `_abstractEditor` and `_bodyEditor` populate
+// only after the import resolves. If a test writes to `data.abstract` or
+// `data.body` before then, the about-to-mount editor's constructor will
+// install initialMarkdown from the pre-prefill values and any subsequent
+// editor transaction could re-emit through onChange, clobbering the test
+// write. Gating evaluate-time writes on this readiness check eliminates
+// the race window.
+async function waitForEditorsMounted(page) {
+  await page.waitForFunction(() => {
+    const el = document.querySelector('[x-data="editPage"]');
+    if (!el) return false;
+    const data = window.Alpine?.$data(el);
+    return !!(data?._abstractEditor && data?._bodyEditor);
+  });
+}
+
+// Set abstract+body via BOTH the Alpine state (what edit.js reads on
+// submit) AND the editor view's public setContent (which uses
+// emitUpdate:false per editor.js:681, so it won't re-fire onChange and
+// clobber the Alpine write). This in-band update is the canonical way to
+// keep the editor view and Alpine state coherent from a spec.
+async function setEditorContent(page, { abstract, body }) {
+  await page.evaluate(
+    ({ abstract, body }) => {
+      const el = document.querySelector('[x-data="editPage"]');
+      const data = window.Alpine.$data(el);
+      data.abstract = abstract;
+      data.body = body;
+      // Sync the editor views. setContent uses emitUpdate:false (see
+      // editor.js setContent), so this does not re-trigger the onChange
+      // callback that would overwrite data.abstract / data.body.
+      data._abstractEditor?.setContent(abstract);
+      data._bodyEditor?.setContent(body);
+    },
+    { abstract, body },
+  );
+}
+
 test('original-author edit broadcasts in-place comment with same parent_permlink and permlink', async ({
   page,
   request,
@@ -147,7 +202,7 @@ test('original-author edit broadcasts in-place comment with same parent_permlink
   const researcher = await pickAccreditedResearcher(request);
   if (!researcher) throw new Error('expected at least one accredited researcher in HAF');
 
-  const PERMLINK = `e2e-edit-inplace-${Date.now().toString(36)}`;
+  const PERMLINK = uniquePermlink('e2e-edit-inplace');
   const paper = buildPaperFixture({ author: researcher.username, permlink: PERMLINK });
 
   await installPaperMocks(page, { paper });
@@ -174,18 +229,12 @@ test('original-author edit broadcasts in-place comment with same parent_permlink
 
   await page.locator('input#edit-title').fill(NEW_TITLE);
 
-  // Drive abstract/body via Alpine state — Tiptap editors are awkward to
-  // type into and the broadcast assertions only care about the markdown
-  // strings, which Alpine owns.
-  await page.evaluate(
-    ({ abstract, body }) => {
-      const el = document.querySelector('[x-data="editPage"]');
-      const data = window.Alpine.$data(el);
-      data.abstract = abstract;
-      data.body = body;
-    },
-    { abstract: NEW_ABSTRACT, body: NEW_BODY },
-  );
+  // Drive abstract/body via Alpine state + editor setContent — Tiptap
+  // editors are awkward to type into and the broadcast assertions only
+  // care about the markdown strings, which Alpine owns. The wait+setContent
+  // pair eliminates the editor-mount-race window (see helper docblock).
+  await waitForEditorsMounted(page);
+  await setEditorContent(page, { abstract: NEW_ABSTRACT, body: NEW_BODY });
 
   await page.locator('form button[type="submit"]').click();
 
@@ -243,7 +292,7 @@ test('continuation edit by another accredited user broadcasts a NEW permlink wit
   if (ORIG_AUTHOR === reviewer.username) {
     throw new Error('synthetic original author collided with seeded researcher');
   }
-  const PERMLINK = `e2e-edit-cont-${Date.now().toString(36)}`;
+  const PERMLINK = uniquePermlink('e2e-edit-cont');
   const paper = buildPaperFixture({ author: ORIG_AUTHOR, permlink: PERMLINK });
 
   await installPaperMocks(page, { paper });
@@ -276,15 +325,8 @@ test('continuation edit by another accredited user broadcasts a NEW permlink wit
   const NEW_BODY = '## Introduction\n\nContinuation body content.';
 
   await page.locator('input#edit-title').fill(NEW_TITLE);
-  await page.evaluate(
-    ({ abstract, body }) => {
-      const el = document.querySelector('[x-data="editPage"]');
-      const data = window.Alpine.$data(el);
-      data.abstract = abstract;
-      data.body = body;
-    },
-    { abstract: NEW_ABSTRACT, body: NEW_BODY },
-  );
+  await waitForEditorsMounted(page);
+  await setEditorContent(page, { abstract: NEW_ABSTRACT, body: NEW_BODY });
 
   await page.locator('form button[type="submit"]').click();
 
@@ -334,7 +376,7 @@ test('unaccredited non-author cannot reach the edit form; gating panel and back-
   page,
 }) => {
   const ORIG_AUTHOR = `someauthor${Date.now().toString(36)}`;
-  const PERMLINK = `e2e-edit-gated-${Date.now().toString(36)}`;
+  const PERMLINK = uniquePermlink('e2e-edit-gated');
   const paper = buildPaperFixture({ author: ORIG_AUTHOR, permlink: PERMLINK });
 
   await installPaperMocks(page, { paper });
@@ -386,7 +428,7 @@ test('review-addressing surface renders before submit when paper has prior revie
   const researcher = await pickAccreditedResearcher(request);
   if (!researcher) throw new Error('expected at least one accredited researcher in HAF');
 
-  const PERMLINK = `e2e-edit-reviews-${Date.now().toString(36)}`;
+  const PERMLINK = uniquePermlink('e2e-edit-reviews');
   const paper = buildPaperFixture({ author: researcher.username, permlink: PERMLINK });
 
   const reviews = [
@@ -424,17 +466,20 @@ test('review-addressing surface renders before submit when paper has prior revie
   await expect(page.locator('text=Reviewers will see their feedback was incorporated').first())
     .toBeVisible();
 
-  // Two review checkboxes, one per review.
-  const reviewCheckboxes = page.locator('input[type="checkbox"][value*="reviewer-"]');
+  // Two review checkboxes, one per review. Locate by data-testid: Alpine's
+  // `:value` binding writes the .value PROPERTY only, never setAttribute,
+  // so CSS attribute selectors like `[value*="reviewer-"]` return zero
+  // matches at runtime. See
+  // agents/docs/solutions/conventions/alpine-value-property-not-attribute-trap-2026-05-11.md
+  const reviewCheckboxes = page.getByTestId('address-review-checkbox');
   await expect(reviewCheckboxes).toHaveCount(2);
 
   // Make a real edit so the submit handler does not bail on "no changes".
   await page.locator('input#edit-title').fill('Title Updated To Address Reviews');
-  await page.evaluate(() => {
-    const el = document.querySelector('[x-data="editPage"]');
-    const data = window.Alpine.$data(el);
-    data.abstract = 'Updated abstract that addresses reviewer feedback on methodology and clarity.';
-    data.body = '## Introduction\n\nRewritten body responding to reviewers.';
+  await waitForEditorsMounted(page);
+  await setEditorContent(page, {
+    abstract: 'Updated abstract that addresses reviewer feedback on methodology and clarity.',
+    body: '## Introduction\n\nRewritten body responding to reviewers.',
   });
 
   // Tick the first review so addresses_reviews lands in the broadcast.
