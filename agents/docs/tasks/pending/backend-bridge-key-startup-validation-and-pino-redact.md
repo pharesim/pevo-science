@@ -772,3 +772,30 @@ All 5 items are doc/style/cleanup — no behavior change, no new test required b
 ### Re-review signal
 
 When items 1-5 land in a single round-6 commit, `git mv` this file back to `tasks/review/`. Architect's round-6 review scopes `/ce-code-review` to the round-6 commit only. Items are cleanup-only and the diff is small, so a clean pass plus archive is the expected outcome. If round-6 surfaces any new findings (unlikely given the scope), they roll into round-7 by the standard mechanism.
+
+---
+
+## Backend re-review signal (2026-05-11, round-6 hold-fixes — commit `8281242` on `worktree-agent-a09d4bf4db81a3833`)
+
+Round-6 hold items 1-5 all landed in commit `8281242` on this worktree branch (to be merged onto `main` by the parent). The aggregate diff is `3 files changed, 82 insertions(+), 80 deletions(-)`, all in `backend/src/index.ts`, `backend/src/logger.ts`, and `backend/src/lib/flush-and-exit.ts`. No behavior change; only doc/style/cleanup as the hold scoped.
+
+**Item 1 (P2) — `if (app) { ... }` block body indentation.** `backend/src/index.ts:87-153`. Indented lines 88-152 by 2 spaces inside the `if (app) {` guard. Dropped the `// end if (app)` trailing comment marker since the indented closing brace is now its own structural signal (per architect mild preference). Pure formatting change — `git diff --shortstat` shows 76 insertions / 76 deletions in `index.ts` for the indent pass (line-for-line replacement). tsc + lint stay green.
+
+**Item 2 (P3) — Dead double-cast at `logger.ts:196`.** Replaced `(errAny as unknown as { errors?: unknown }).errors` with direct `errAny.errors`. Since `errAny` is typed `Error & Record<string, unknown>` at line 136, indexing returns `unknown` via the record's index signature — the widen-then-re-narrow dance was a no-op. Single-line edit. `maybeErrors` retains its inferred `unknown` type; the `Array.isArray(maybeErrors)` guard at the next line is unchanged.
+
+**Item 3 (P3) — `flush-and-exit.ts` docblock scope claim.** Replaced "Used by index.ts boot-fatal sites only." with "Used by the index.ts boot-fatal site (the boot try/catch in module evaluation) AND by the uncaughtException / unhandledRejection runtime handlers in index.ts." Enumerates the actual three call sites (the boot try/catch at module-evaluation scope plus the two runtime handlers at `index.ts:38` and `:43`). 4-line docblock edit, no code change.
+
+**Item 4 (P3) — Comment narrowing-pattern mismatch at `index.ts:66-74`.** Updated the block comment to describe the actual `if (app) { ... }` positive-guard pattern at line 87 instead of the previous "`if (!app) return;`" narrowing. New wording: "`app` is narrowed via the `if (app) { ... }` block below rather than a `throw err;` at the end of the catch... Falling through to the positive `if (app)` guard avoids the re-entry; `flushAndExit()` from the catch block is the sole exit path for boot-fatal cases." Preserved the round-5 hold #5 attribution tag (item 5's scope was the CONSTRAINT block ONLY).
+
+**Item 5 (P3) — CONSTRAINT round-tag strip.** `index.ts:60`. Replaced `// CONSTRAINT (round-5 hold #7): validateConfig and createApp MUST...` with `// CONSTRAINT: validateConfig and createApp MUST...`. The substantive constraint description (synchronous + module-evaluation scope requirement; await/.then chain rerouting BootFatalError to the wrong handler) is preserved verbatim. Other round-attribution tags in `index.ts` and `logger.ts` (item-specific cross-references documenting a specific round-N change) intentionally left in place per the hold's "TARGETED, do NOT sweep all round-5 inline comments" directive.
+
+### Verification
+
+- `npx tsc --noEmit` — clean, no output.
+- `npm run lint` — clean, only the 2 pre-existing `seed-phrase.ts:26,27` `@typescript-eslint/no-explicit-any` warnings carried across all prior rounds; unrelated to this task.
+- Full backend vitest suite intentionally NOT run from this worktree (per parent's fan-out protocol — parent serializes `npx vitest run` after merging worker commits back into main to avoid shared-fixture collisions).
+
+Files touched (commit scope-staged via `git add backend/src/index.ts backend/src/logger.ts backend/src/lib/flush-and-exit.ts`, no `git add -A`):
+- `backend/src/index.ts` — items 1, 4, 5
+- `backend/src/logger.ts` — item 2
+- `backend/src/lib/flush-and-exit.ts` — item 3
