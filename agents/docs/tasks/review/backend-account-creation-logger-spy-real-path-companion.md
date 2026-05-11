@@ -73,3 +73,20 @@ This is a legitimate outcome. The carve-out's intent is to prevent silent mock-b
 - `agents/docs/tasks/pending/backend-account-creation-tokens-drop.md` — parent task; round-2 hold block (items 1-4) lands the events that this follow-up validates.
 - `/home/micha/workspace/pevo/CLAUDE.md` "Running Tests" section, carve-out clauses (a)-(c) — the standard this task closes.
 - `backend/tests/account-creation.test.ts` — file header documents criterion (a) for the existing mocked tests; this task addresses criterion (c).
+
+---
+
+## Backend resolution (2026-05-11) — DISMISSED, both risk classes documented as carve-out clause (c) settled
+
+Audited both real-path paths and concluded both should be dismissed per the carve-out's prescribed alternative ("formal dismissal with documented rationale"). Dismissal note filed via `/ce-compound` at `agents/docs/solutions/conventions/real-path-companion-dismissal-criteria-2026-05-11.md`, which:
+
+- Cites both risk classes by name (`account_creation.cache.invalidate_failed` cache-del observability; `account_creation.broadcast.consensus_rejected` diagnostic-context preservation).
+- Enumerates the mutation classes the existing mocked tests in `backend/tests/account-creation.test.ts` kill: field-shape (event slug literal, cacheKey, err: expect.any(Error)), log level, ordering (warn-BEFORE-throw), both regex arms positively covered, negative-pin guard.
+- Documents the marginal-value-vs-infrastructure-cost argument for each path: cache-del real-path adds only ioredis subclass-shape coverage beyond the existing matcher (not load-bearing at PEvO beta scale); consensus-rejection real-path is impractical because Hive testnet `pending_claimed_accounts == 0` state cannot be pinned per-test, and chain-side string drift surfaces as a missing log entry rather than a behavioral failure (catch-all `throw err` is equally graceful).
+- Generalizes the dismissal criteria for future logger-spy clause (c) audits, so subsequent reviewers don't re-derive the analysis from scratch.
+
+**No code changes in this task.** The deliverable is the dismissal doc; the mocked tests already exist and were authored under the parent task's round-2/3. Carve-out clause (c) is now closed for both warn-log call sites — three pointers form the audit trail (this task file's archive entry, the dismissal solutions doc, and the carve-out's definitional doc at `test-mock-carve-out-clause-c-2026-05-04.md`).
+
+**Test coverage:** N/A — no test changes. The 15 existing tests in `backend/tests/account-creation.test.ts` are the in-scope coverage (per the parent task's round-3 re-review signal).
+
+**No new `[TODO Architect]` notes.** This task closes cleanly; the parent task (`backend-account-creation-tokens-drop`) remains in `review/` independently.
