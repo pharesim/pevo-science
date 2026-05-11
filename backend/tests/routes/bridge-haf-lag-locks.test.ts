@@ -137,6 +137,13 @@ vi.mock('../../src/db.js', () => ({
 class FakeRedis {
   store = new Map<string, string>();
   status = 'ready';
+  // Per-key counter of SETNX attempts that observed the key already held.
+  // Used by the concurrent-register spec's barrier to detect that the second
+  // request has hit the lock-already-held branch before we release the
+  // first request's broadcast gate (otherwise A could release the lock
+  // before B reaches SETNX, both broadcasts fire, and the test fails
+  // non-deterministically).
+  setnxBlockedCount = new Map<string, number>();
 
   async set(key: string, value: string, ...args: unknown[]) {
     // SET key value EX <ttl> NX
@@ -144,7 +151,10 @@ class FakeRedis {
     for (const a of args) {
       if (typeof a === 'string' && a.toUpperCase() === 'NX') nx = true;
     }
-    if (nx && this.store.has(key)) return null;
+    if (nx && this.store.has(key)) {
+      this.setnxBlockedCount.set(key, (this.setnxBlockedCount.get(key) ?? 0) + 1);
+      return null;
+    }
     this.store.set(key, value);
     return 'OK';
   }
@@ -244,8 +254,53 @@ async function signedPost(path: string, username: string, body: unknown) {
     .send(body);
 }
 
+/**
+ * Barrier: wait until `fakeRedis.store` contains the given key. Used to
+ * synchronize concurrent-request specs without relying on `setTimeout`
+ * stagger fences. Replaces the prior `setTimeout(r, 5)` + `setTimeout(r, 20)`
+ * timing pair so the test is deterministic under CI load (slow GC, parallel
+ * workers, event-loop contention). Polling-based (zero-delay yield via
+ * `setImmediate`) because `FakeRedis.store` doesn't expose a
+ * change-notification primitive; typical wait is sub-millisecond. See
+ * `backend-bridge-test-fence-replace-setTimeout` in tasks-archive.md.
+ */
+async function waitForLockAcquired(lockKey: string, timeoutMs = 200): Promise<void> {
+  const start = Date.now();
+  while (!fakeRedis.store.has(lockKey)) {
+    if (Date.now() - start > timeoutMs) {
+      throw new Error(`lock ${lockKey} not acquired within ${timeoutMs}ms`);
+    }
+    await new Promise((r) => setImmediate(r));
+  }
+}
+
+/**
+ * Barrier: wait until at least `count` SETNX attempts on `lockKey` have
+ * observed the key already held (i.e., returned null). Pairs with
+ * `waitForLockAcquired` for the two-request-race specs — after A has the
+ * lock, this barrier guarantees B has reached its SETNX and been rejected
+ * before we release A's broadcast gate, so A's lock release can't race
+ * ahead of B's lock check. Without it, A's broadcast can complete and
+ * release the lock before B reaches SETNX, both broadcasts fire, and
+ * `sendOperations.toHaveBeenCalledTimes(1)` fails. Same polling pattern as
+ * `waitForLockAcquired` for the same reason: no change-notification
+ * primitive on FakeRedis state.
+ */
+async function waitForSetnxBlocked(lockKey: string, count = 1, timeoutMs = 200): Promise<void> {
+  const start = Date.now();
+  while ((fakeRedis.setnxBlockedCount.get(lockKey) ?? 0) < count) {
+    if (Date.now() - start > timeoutMs) {
+      throw new Error(
+        `SETNX blocked count on ${lockKey} did not reach ${count} within ${timeoutMs}ms`,
+      );
+    }
+    await new Promise((r) => setImmediate(r));
+  }
+}
+
 beforeEach(() => {
   fakeRedis.store.clear();
+  fakeRedis.setnxBlockedCount.clear();
   sendOperations.mockClear();
   pgQuery.mockClear();
   accreditedSet.clear();
@@ -264,8 +319,9 @@ describe('BE-BRIDGE-WRITE-HAF-LAG — /register concurrent same-identifier lock'
   });
 
   it('two concurrent /register for the same identifier: exactly ONE broadcast fires, the second returns 409 LOCK_HELD retriable, lock key released in finally', async () => {
-    // Slow broadcast: hold the lock for ~50ms so the second request hits the
-    // SETNX-already-held branch with high reliability.
+    // Slow broadcast: A awaits this gate so it holds the lock until we
+    // release. B reaches SETNX while A is still in the broadcast, hits the
+    // lock-already-held branch, and 409s deterministically.
     let releaseBroadcast: (() => void) | null = null;
     const broadcastGate = new Promise<void>((resolve) => { releaseBroadcast = resolve; });
     sendOperationsImpl = async () => {
@@ -273,14 +329,27 @@ describe('BE-BRIDGE-WRITE-HAF-LAG — /register concurrent same-identifier lock'
       return { id: 'tx-winner' };
     };
 
+    const expectedLockKey = `${config.appTag}:bridge_register_lock:bridge-arxiv-2301-99999`;
     const body = { identifier: '2301.99999', discipline: 'CS' };
-    const reqA = signedPost('/api/bridge/register', ACCREDITED, body);
-    // Tiny stagger so reqA wins the SETNX deterministically.
-    await new Promise((r) => setTimeout(r, 5));
-    const reqB = signedPost('/api/bridge/register', ACCREDITED, body);
 
-    // Let reqB hit the lock check before releasing reqA's broadcast.
-    await new Promise((r) => setTimeout(r, 20));
+    // Fire A; wait for A's SETNX to populate fakeRedis.store before firing B.
+    // This barrier replaces the prior `setTimeout(r, 5)` stagger — A is now
+    // the deterministic SETNX winner under any CI load.
+    const reqA = signedPost('/api/bridge/register', ACCREDITED, body);
+    await waitForLockAcquired(expectedLockKey);
+
+    // Fire B; wait until B's SETNX has observed the held lock and been
+    // rejected. This second barrier replaces the prior `setTimeout(r, 20)`
+    // delay — without it A's broadcast (once we release the gate below) can
+    // complete and release the lock before B reaches SETNX, both broadcasts
+    // fire, and `toHaveBeenCalledTimes(1)` fails non-deterministically.
+    const reqB = signedPost('/api/bridge/register', ACCREDITED, body);
+    await waitForSetnxBlocked(expectedLockKey);
+
+    // Both requests have now reached their deterministic state: A holds the
+    // lock and is parked on broadcastGate, B has been rejected at SETNX and
+    // is heading to its 409 response. Release the gate so A can broadcast,
+    // release the lock, and respond 200.
     releaseBroadcast!();
 
     const [resA, resB] = await Promise.all([reqA, reqB]);
@@ -288,27 +357,24 @@ describe('BE-BRIDGE-WRITE-HAF-LAG — /register concurrent same-identifier lock'
     // Exactly one broadcast must have fired.
     expect(sendOperations).toHaveBeenCalledTimes(1);
 
-    const winner = resA.status === 200 ? resA : resB;
-    const loser = resA.status === 200 ? resB : resA;
-
-    expect(winner.status).toBe(200);
-    expect(winner.body.status).toBe('ok');
-    expect(winner.body.data.tx_id).toBe('tx-winner');
+    // A is the deterministic winner: the barrier guarantees A acquired the
+    // SETNX before B was even issued. No winner-flip absorption needed.
+    expect(resA.status).toBe(200);
+    expect(resA.body.status).toBe('ok');
+    expect(resA.body.data.tx_id).toBe('tx-winner');
 
     // Round-2 hold item #1: lock-held 409 carries `code: 'LOCK_HELD'`, NOT
     // `code: 'DUPLICATE'`. The two 409 shapes share the HTTP status but
     // differ on the error code so SPA/integrators can switch on
     // err.code without parsing the message string.
-    expect(loser.status).toBe(409);
-    expect(loser.body.error.code).toBe('LOCK_HELD');
-    expect(loser.body.error.details).toEqual({ retriable: true });
+    expect(resB.status).toBe(409);
+    expect(resB.body.error.code).toBe('LOCK_HELD');
+    expect(resB.body.error.details).toEqual({ retriable: true });
 
     // Round-2 hold item #9: assert the lock key is absent from Redis after
     // both requests resolve — catches early-return / missing-`state ===
     // 'acquired'` regressions in the finally block. The winner's finally
     // released the key under Lua CAS; the loser never acquired it.
-    // Reconstruct the key from config.appTag + bridgeRegisterLockKey shape.
-    const expectedLockKey = `${config.appTag}:bridge_register_lock:bridge-arxiv-2301-99999`;
     expect(fakeRedis.store.has(expectedLockKey)).toBe(false);
   });
 });
