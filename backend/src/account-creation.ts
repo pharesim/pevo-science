@@ -107,11 +107,24 @@ export async function invalidatePendingClaimedAccountsCache(): Promise<void> {
     await redis.del(cacheKey);
   } catch (err) {
     // Cache-del failure surfaces as a stale `pending_claimed_accounts` view
-    // for up to the 10s TTL window, which can block signups (the consume path
-    // sees the now-stale `'0'` and pre-rejects with a retriable error). Warn
-    // so operators have a visible anchor to correlate signup-impact incidents.
+    // for up to the 10s TTL window. The two call sites have different stale-
+    // cache failure modes:
+    //   - After `claimAccountTokens` successfully claims more capacity, a
+    //     missed invalidation leaves the cached counter stale-low (or zero),
+    //     so `createClaimedAccount` pre-rejects legitimate signups with a
+    //     retriable error until the TTL expires.
+    //   - After `createClaimedAccount` consumes capacity, a missed
+    //     invalidation leaves the cached counter stale-high, so the next
+    //     consume call passes the pre-broadcast capacity check and races
+    //     against the chain. The losing broadcast trips the consensus-
+    //     rejection regex below and gets translated to the same retriable
+    //     error shape — graceful, but the user pays a round-trip we could
+    //     have avoided with a fresh read.
+    // Warn so operators have a visible anchor to correlate signup-impact
+    // incidents (stale-low) or extra broadcast traffic (stale-high) back to
+    // a specific Redis failure.
     logger.warn(
-      { err, cacheKey, event: 'pending_claim_cache_invalidate_failed' },
+      { err, cacheKey, event: 'account_creation.cache.invalidate_failed' },
       'pending_claimed_accounts cache invalidation failed',
     );
   }
@@ -265,7 +278,7 @@ export async function createClaimedAccount(
       // collapse it to the retriable shape — the underlying message and
       // stack are otherwise lost across the throw boundary.
       logger.warn(
-        { err, event: 'create_claimed_account_consensus_rejected' },
+        { err, event: 'account_creation.broadcast.consensus_rejected' },
         'create_claimed_account rejected by chain consensus — translating to retriable',
       );
       // Counter changed under us — make sure the next reader sees fresh state.

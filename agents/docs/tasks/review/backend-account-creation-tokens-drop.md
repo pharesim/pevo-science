@@ -186,3 +186,16 @@ Round-1 hold items 1-2 landed in commit `3736932` (cherry-pick of worker `af4212
 ### Re-review signal
 
 When items 1-4 land, `git mv` this file back to `tasks/review/`. Round-3 architect review scopes `/ce-code-review` to the round-3 commit.
+
+## Backend re-review signal (2026-05-11, round-3 fix commit)
+
+Round-2 hold items 1-4 landed in this round-3 commit. All four are observability and test-coverage refinements; no behavioral changes to the chain-read or capacity-check paths.
+
+- **Item 1 (P3)** — `backend/tests/account-creation.test.ts`: added mirror test "translates a consensus-rejection error mentioning 'no available account creation' into the retriable shape", placed immediately after the existing `pending_claimed_accounts` arm test. Pattern mirrors the sibling: `redisGetMock` returns `'1'`, `sendOperationsMock` rejects with `new Error('no available account creation tokens')`, assert `rejects.toThrow('No account creation tokens available')` and cache-del was called. Both regex arms now have positive coverage; a typo or accidental deletion of either branch fails CI.
+- **Item 2 (P3)** — `backend/tests/account-creation.test.ts`: extended the cache-invalidation-failure test's `expect.objectContaining({...})` matcher to include `err: expect.any(Error)`. Now mirrors the consensus-rejection warn test's `err` pin so a field-shape mutation that drops `err` from the cache-del warn payload fails CI instead of silently passing.
+- **Item 3 (P3)** — `backend/src/account-creation.ts`: rewrote the `invalidatePendingClaimedAccountsCache` catch-block comment to describe both call sites' stale-cache failure modes. Stale-low blocks legitimate signups via `claimAccountTokens` (consume path pre-rejects with retriable); stale-high admits a losable race in `createClaimedAccount` (handled gracefully by the consensus-rejection regex translation at the catch site). Comment now matches the helper's actual call-site topology rather than describing only one mode.
+- **Item 4 (P3)** — Renamed two event slugs to the dot-namespaced `<module>.<sublayer>.<verb>` convention used by sibling modules: `pending_claim_cache_invalidate_failed` → `account_creation.cache.invalidate_failed`, `create_claimed_account_consensus_rejected` → `account_creation.broadcast.consensus_rejected`. Two source sites in `backend/src/account-creation.ts` and two `expect.objectContaining({ event: '...' })` test assertions updated in lockstep. Operator alert rules grouped by `<module>.*` prefix now match these slugs.
+
+**Test coverage:** 15 tests in `backend/tests/account-creation.test.ts` (was 14; +1 from item 1). All 15 pass against the unit-test mock topology documented at the file header. `npm run lint` clean for `backend/src/` (the two pre-existing `seed-phrase.ts` `@typescript-eslint/no-explicit-any` warnings are unchanged and unrelated).
+
+**Carve-out (c) status:** The follow-up task `backend-account-creation-logger-spy-real-path-companion.md` (filed during round-2 review, still in `pending/`) closes carve-out criterion (c) for the two new logger-spy tests. That task explicitly depends on this round-3's slug rename landing before its real-path tests can be authored. No additional `[TODO Architect]` notes added in this round — the two pre-existing TODOs at the bottom of this file (api-contracts language sweep + predecessor task supersession) are unaffected.

@@ -239,6 +239,24 @@ describe('createClaimedAccount — capacity check + cache + consensus translatio
     expect(redisDelMock).toHaveBeenCalledWith(EXPECTED_CACHE_KEY);
   });
 
+  it('translates a consensus-rejection error mentioning "no available account creation" into the retriable shape', async () => {
+    // Positive coverage for the second arm of the consensus-rejection
+    // alternation. Without this, a typo or accidental deletion of the
+    // `no available account creation` branch would slip past CI because the
+    // sibling test above only exercises the `assertion failed:
+    // pending_claimed_accounts` arm.
+    redisGetMock.mockResolvedValueOnce('1');
+    sendOperationsMock.mockRejectedValueOnce(
+      new Error('no available account creation tokens'),
+    );
+
+    const { createClaimedAccount } = await import('../src/account-creation.js');
+    await expect(createClaimedAccount('alice', ...KEY_ARGS)).rejects.toThrow(
+      'No account creation tokens available',
+    );
+    expect(redisDelMock).toHaveBeenCalledWith(EXPECTED_CACHE_KEY);
+  });
+
   it('propagates non-counter broadcast errors unchanged (e.g. timeouts, network errors)', async () => {
     redisGetMock.mockResolvedValueOnce('5');
     sendOperationsMock.mockRejectedValueOnce(new MockBroadcastTimeoutError(30_000));
@@ -287,7 +305,7 @@ describe('createClaimedAccount — capacity check + cache + consensus translatio
     expect(warnSpy).toHaveBeenCalledWith(
       expect.objectContaining({
         err: consensusErr,
-        event: 'create_claimed_account_consensus_rejected',
+        event: 'account_creation.broadcast.consensus_rejected',
       }),
       expect.stringContaining('chain consensus'),
     );
@@ -305,7 +323,8 @@ describe('createClaimedAccount — capacity check + cache + consensus translatio
     expect(warnSpy).toHaveBeenCalledWith(
       expect.objectContaining({
         cacheKey: EXPECTED_CACHE_KEY,
-        event: 'pending_claim_cache_invalidate_failed',
+        event: 'account_creation.cache.invalidate_failed',
+        err: expect.any(Error),
       }),
       expect.stringContaining('cache invalidation failed'),
     );
