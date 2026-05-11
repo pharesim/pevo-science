@@ -53,6 +53,60 @@ export type PostBroadcastFailedStep = 'cache_write' | 'account_update' | 'reputa
  */
 export type PostBroadcastSeverity = 'transient' | 'permanent';
 
+/**
+ * Classify a post-broadcast cascade error as `'permanent'` (operator-actionable;
+ * no batch cycle will self-heal) or `'transient'` (may self-heal via retry,
+ * batch re-derivation, or HAF replay). The classification rule mirrors the
+ * `BACKEND-CASCADE-FNS-RETHROW-PERMANENT-ERRORS` convention's permanent-class
+ * union — namely:
+ *
+ *   * `TypeError`, `SyntaxError`, `RangeError`: programmer-error shape
+ *     regressions (e.g. `getReputationWeights()` output drift; coercion-path
+ *     bugs in `provisionalScore`). No batch cycle re-derives these; operator
+ *     must fix the code.
+ *   * PostgreSQL errors with SQLSTATE class `23xxx` (integrity-constraint
+ *     violation: unique key conflict, foreign-key violation, NOT NULL
+ *     violation) or `42xxx` (syntax / access-rule violation: undefined
+ *     column / undefined function, typically schema drift between code and
+ *     DB). Both require operator action.
+ *
+ * Everything else falls through to `'transient'` — network errors, Redis
+ * flaps, HAF unreachable, generic `Error` with unknown root cause, plain
+ * objects, `undefined`. These are conventionally transient because retry or
+ * a subsequent batch cycle can succeed.
+ *
+ * This helper is the single source of truth for the convention at the
+ * route-handler layer. Cascade fns inside route modules (`updateAccountOrcid`
+ * in `routes/orcid.ts`, `seedAccreditationBonus` in `reputation.ts`) still
+ * do their own filtering at the throw boundary (because they decide whether
+ * to re-throw at all vs. swallow + log) — but the route handler's
+ * `PostBroadcastWriteError` wrap calls THIS helper so the route-side
+ * `POST_BROADCAST_OPERATOR_REQUIRED` vs. `POST_BROADCAST_FAILED` decision
+ * stays uniform across all callers. Future cascade-fn callers (signup-verify,
+ * etc.) can adopt this helper as the canonical classification surface
+ * without each call site re-deriving the union.
+ *
+ * Filed by `backend-orcid-post-broadcast-severity-classification`. The orcid
+ * cascade today produces only `'permanent'`-class throws (the cascade fns
+ * already swallow transient errors per the rethrow convention), but routing
+ * through this helper makes the classification explicit at the call site
+ * AND defends against a future cascade-fn refactor that loosens the
+ * re-throw contract — at that point the helper's `'transient'` branch is
+ * what catches it and keeps the user-message accurate.
+ */
+export function classifyPostBroadcastSeverity(err: unknown): PostBroadcastSeverity {
+  if (err instanceof TypeError || err instanceof SyntaxError || err instanceof RangeError) {
+    return 'permanent';
+  }
+  if (err instanceof Error) {
+    const code = (err as Error & { code?: unknown }).code;
+    if (typeof code === 'string' && (code.startsWith('23') || code.startsWith('42'))) {
+      return 'permanent';
+    }
+  }
+  return 'transient';
+}
+
 export class PostBroadcastWriteError extends Error {
   constructor(
     public readonly txId: string,

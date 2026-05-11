@@ -5,6 +5,7 @@ import {
   handleBroadcastErrorAmbiguous,
   makeLogBroadcastAttempt,
   PostBroadcastWriteError,
+  classifyPostBroadcastSeverity,
 } from '../../src/lib/broadcast-error.js';
 import { BroadcastTimeoutError } from '../../src/hive.js';
 import { logger } from '../../src/logger.js';
@@ -1092,5 +1093,88 @@ describe('makeLogBroadcastAttempt', () => {
     const bridgeCall = info.mock.calls[1][0] as Record<string, unknown>;
     expect(custodyCall.event).toBe('custody.broadcast.attempt');
     expect(bridgeCall.event).toBe('bridge.register.attempt');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BACKEND-ORCID-POST-BROADCAST-SEVERITY-CLASSIFICATION — classifyPostBroadcastSeverity
+//
+// Helper that maps a post-broadcast cascade error to a `PostBroadcastSeverity`
+// discriminator. The permanent-class union mirrors the rethrow convention's
+// permanent classes: `TypeError`/`SyntaxError`/`RangeError` (programmer-error
+// shape regressions) plus PostgreSQL SQLSTATE classes `23xxx` (integrity
+// constraint violation) and `42xxx` (syntax/access-rule violation, typically
+// schema drift). Everything else → `'transient'` (the user-message says
+// "will reconcile automatically" and routes to the standard 502
+// POST_BROADCAST_FAILED envelope).
+//
+// Single source of truth at the route-handler layer (`routes/orcid.ts`'s
+// handleAccredit / handleLink call sites today, with signup-verify as a
+// future caller). Cascade fns inside route modules still filter at their
+// own throw boundary — this helper is the route-side classification surface
+// so the `POST_BROADCAST_OPERATOR_REQUIRED` vs. `POST_BROADCAST_FAILED`
+// decision stays uniform across callers and survives a future cascade-fn
+// refactor that loosens the rethrow filter.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('classifyPostBroadcastSeverity', () => {
+  it('returns "permanent" for TypeError (programmer-error shape regression)', () => {
+    expect(classifyPostBroadcastSeverity(new TypeError('cannot read property of undefined'))).toBe('permanent');
+  });
+
+  it('returns "permanent" for SyntaxError', () => {
+    expect(classifyPostBroadcastSeverity(new SyntaxError('unexpected token'))).toBe('permanent');
+  });
+
+  it('returns "permanent" for RangeError', () => {
+    expect(classifyPostBroadcastSeverity(new RangeError('out of range'))).toBe('permanent');
+  });
+
+  it('returns "permanent" for PostgreSQL 23xxx (integrity constraint violation)', () => {
+    // pg's node driver attaches `code` as a string on the Error instance.
+    const err = Object.assign(new Error('duplicate key value violates unique constraint'), {
+      code: '23505',
+    });
+    expect(classifyPostBroadcastSeverity(err)).toBe('permanent');
+  });
+
+  it('returns "permanent" for PostgreSQL 42xxx (syntax/access-rule violation)', () => {
+    const err = Object.assign(new Error('column "missing_col" does not exist'), {
+      code: '42703',
+    });
+    expect(classifyPostBroadcastSeverity(err)).toBe('permanent');
+  });
+
+  it('returns "transient" for generic Error with no SQLSTATE code (unknown root cause)', () => {
+    expect(classifyPostBroadcastSeverity(new Error('redis flap'))).toBe('transient');
+  });
+
+  it('returns "transient" for Error with non-23xxx/42xxx PG code (e.g. 08006 connection_failure)', () => {
+    const err = Object.assign(new Error('connection terminated unexpectedly'), {
+      code: '08006',
+    });
+    expect(classifyPostBroadcastSeverity(err)).toBe('transient');
+  });
+
+  it('returns "transient" for Error with non-string `code` field (defensive)', () => {
+    const err = Object.assign(new Error('weird code'), { code: 42703 });
+    expect(classifyPostBroadcastSeverity(err)).toBe('transient');
+  });
+
+  it('returns "transient" for plain non-Error throws (string, number, plain object, undefined)', () => {
+    expect(classifyPostBroadcastSeverity('string throw')).toBe('transient');
+    expect(classifyPostBroadcastSeverity(42)).toBe('transient');
+    expect(classifyPostBroadcastSeverity({ code: '23505' })).toBe('transient');
+    expect(classifyPostBroadcastSeverity(undefined)).toBe('transient');
+    expect(classifyPostBroadcastSeverity(null)).toBe('transient');
+  });
+
+  it('returns "permanent" for subclasses of TypeError/SyntaxError/RangeError', () => {
+    class CustomTypeError extends TypeError {}
+    class CustomSyntaxError extends SyntaxError {}
+    class CustomRangeError extends RangeError {}
+    expect(classifyPostBroadcastSeverity(new CustomTypeError('x'))).toBe('permanent');
+    expect(classifyPostBroadcastSeverity(new CustomSyntaxError('x'))).toBe('permanent');
+    expect(classifyPostBroadcastSeverity(new CustomRangeError('x'))).toBe('permanent');
   });
 });

@@ -9,6 +9,7 @@ import {
   handleBroadcastError,
   handleBroadcastErrorAmbiguous,
   PostBroadcastWriteError,
+  classifyPostBroadcastSeverity,
   type HandleBroadcastErrorOpts,
   type HandleBroadcastErrorAmbiguousOpts,
   type PostBroadcastFailedStep,
@@ -866,7 +867,27 @@ async function handleAccredit(
 
       await seedAccreditationBonus(username);
     } catch (postErr) {
-      throw new PostBroadcastWriteError(result.id, postErr, currentStep);
+      // BACKEND-ORCID-POST-BROADCAST-SEVERITY-CLASSIFICATION: classify the
+      // re-thrown cascade error at the wrap site so handleBroadcastError emits
+      // 502 POST_BROADCAST_OPERATOR_REQUIRED (with the "support has been
+      // notified" message) for the permanent-class union — TypeError /
+      // SyntaxError / RangeError or PostgreSQL 23xxx/42xxx — and 502
+      // POST_BROADCAST_FAILED (with the "will reconcile automatically"
+      // message) for everything else. Today the three cascade fns above
+      // already filter and only re-throw permanent-class errors per the
+      // `BACKEND-CASCADE-FNS-RETHROW-PERMANENT-ERRORS` convention, so the
+      // helper's `'transient'` branch is effectively dead code on this path.
+      // It's kept as defense-in-depth: a future cascade-fn refactor that
+      // loosens the re-throw filter (e.g. starts re-throwing transient HAF
+      // errors) would otherwise mis-route to `OPERATOR_REQUIRED` and page
+      // operators for self-healing failures. Routing through the helper
+      // keeps the user-message accurate across that refactor surface.
+      throw new PostBroadcastWriteError(
+        result.id,
+        postErr,
+        currentStep,
+        classifyPostBroadcastSeverity(postErr),
+      );
     }
 
     sendOk(res, {
@@ -1005,7 +1026,20 @@ async function handleLink(
       // (round-2 hold item #2 — replaces the fragile getAppPool() Once-stack).
       await __test_seams.updateAccountOrcid(username, orcidId);
     } catch (postErr) {
-      throw new PostBroadcastWriteError(result.id, postErr, currentStep);
+      // BACKEND-ORCID-POST-BROADCAST-SEVERITY-CLASSIFICATION: see handleAccredit
+      // counterpart for full rationale. handleLink's cascade is narrower (no
+      // seedAccreditationBonus step), but the classification helper applies
+      // uniformly across the failing-step union — TypeError / SyntaxError /
+      // RangeError or PostgreSQL 23xxx/42xxx → `'permanent'` →
+      // POST_BROADCAST_OPERATOR_REQUIRED with the "support has been notified"
+      // message; everything else → `'transient'` → POST_BROADCAST_FAILED with
+      // the "will reconcile automatically" message.
+      throw new PostBroadcastWriteError(
+        result.id,
+        postErr,
+        currentStep,
+        classifyPostBroadcastSeverity(postErr),
+      );
     }
 
     sendOk(res, {

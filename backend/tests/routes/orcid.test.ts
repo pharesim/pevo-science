@@ -67,6 +67,29 @@ import { PrivateKey } from '@hiveio/dhive';
 // real `redis.expire`); the carve-out is narrow to the deterministic-race
 // and Redis-flap variants.
 //
+// BACKEND-ORCID-POST-BROADCAST-SEVERITY-CLASSIFICATION (this round): the
+// post-broadcast severity-classification matrix inside the SEC-002-TOCTOU-LOCK
+// describe.each (search for "post-broadcast severity classification") drives
+// `__test_seams.updateAccountOrcid` to reject with the four error classes the
+// task pins:
+//   * TypeError                        → 502 POST_BROADCAST_OPERATOR_REQUIRED
+//   * generic Error                    → 502 POST_BROADCAST_FAILED
+//   * PG 23xxx (unique violation)      → 502 POST_BROADCAST_OPERATOR_REQUIRED
+//   * generic network Error (08006)    → 502 POST_BROADCAST_FAILED
+// Same carve-out justification: seeding a SQLSTATE 23505 / 08006 against the
+// live test DB schema per-test is impractical (we'd need a unique-constraint
+// row to collide on and a deterministic connection-drop oracle). The seam
+// stays at __test_seams.updateAccountOrcid — `verifyHiveSignature` and the
+// rest of the auth middleware chain remain UNMOCKED (clause b). Real-path
+// companion for the same risk class lives in the
+// `updateAccountOrcid — permanent vs transient error discrimination` block at
+// the bottom of this file, which exercises the cascade fn's own filter
+// against real pg error shapes (clause c). The classification helper itself
+// (`classifyPostBroadcastSeverity`) is unit-tested in
+// tests/lib/broadcast-error.test.ts; this integration matrix proves the
+// helper is wired into the wrap site and the resulting severity flows
+// through to the response envelope.
+//
 // Confirmed STILL UNMOCKED for the new specs (per root CLAUDE.md carve-out):
 // verifyHiveSignature, the rest of the auth middleware chain, the real Redis
 // client (lock/cache keys are observed via live redis.get / redis.set calls
@@ -2729,6 +2752,146 @@ describe.each([
       }
     },
   );
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // BACKEND-ORCID-POST-BROADCAST-SEVERITY-CLASSIFICATION — integration matrix
+  //
+  // The post-broadcast cascade wrap in handleAccredit/handleLink classifies
+  // the re-thrown cascade error via `classifyPostBroadcastSeverity` and
+  // attaches the resulting severity to the `PostBroadcastWriteError`.
+  // `handleBroadcastError` then emits one of two 502 envelopes:
+  //
+  //   severity:'permanent' → 502 POST_BROADCAST_OPERATOR_REQUIRED
+  //                          (message: "support has been notified")
+  //   severity:'transient' → 502 POST_BROADCAST_FAILED
+  //                          (message: "will reconcile automatically")
+  //
+  // The permanent-class union mirrors the rethrow convention's permanent
+  // classes: TypeError/SyntaxError/RangeError + PostgreSQL 23xxx/42xxx.
+  // The matrix below pins one representative per branch:
+  //
+  //   * TypeError (programmer error)  → POST_BROADCAST_OPERATOR_REQUIRED
+  //   * Generic Error (unknown cause) → POST_BROADCAST_FAILED
+  //   * PG SQLSTATE 23505 (unique key) → POST_BROADCAST_OPERATOR_REQUIRED
+  //   * Generic network Error         → POST_BROADCAST_FAILED
+  //
+  // All four specs inject the throw deterministically via
+  // `__test_seams.updateAccountOrcid` (the same seam the post-broadcast
+  // discrimination specs above use). This means the throw lands at the
+  // `failed_step:'account_update'` step regardless of error class — the
+  // step is orthogonal to the severity classification.
+  //
+  // Test-mock carve-out (root CLAUDE.md "Running Tests" → "Carve-out for
+  // deterministic edge-case coverage"): __test_seams.updateAccountOrcid is
+  // mocked because exercising each permanent/transient error class via real
+  // pg+HAF infrastructure is impractical per-test — we'd need to seed a
+  // constraint violation against the live test DB schema, force a SQLSTATE
+  // 08006 connection drop, etc., none of which the live test DB exposes
+  // deterministically. `verifyHiveSignature` and the rest of the auth
+  // middleware chain remain UNMOCKED (clause b). Real-path companion for
+  // the same risk class: the `updateAccountOrcid — permanent vs transient
+  // error discrimination` block at the bottom of this file exercises the
+  // cascade fn's own filter against real pg error shapes (clause c). The
+  // helper-level `classifyPostBroadcastSeverity` unit specs in
+  // tests/lib/broadcast-error.test.ts cover the classification map at the
+  // function layer; this matrix is the route-integration companion that
+  // proves the helper is wired into the wrap site and the resulting
+  // severity flows through to the envelope code.
+  describe('post-broadcast severity classification (BACKEND-ORCID-POST-BROADCAST-SEVERITY-CLASSIFICATION)', () => {
+    type SeverityCase = {
+      label: string;
+      makeError: () => unknown;
+      expectedCode: 'POST_BROADCAST_FAILED' | 'POST_BROADCAST_OPERATOR_REQUIRED';
+    };
+
+    const cases: SeverityCase[] = [
+      {
+        label: 'TypeError → POST_BROADCAST_OPERATOR_REQUIRED (permanent)',
+        makeError: () => new TypeError('cannot read property of undefined'),
+        expectedCode: 'POST_BROADCAST_OPERATOR_REQUIRED',
+      },
+      {
+        label: 'generic Error → POST_BROADCAST_FAILED (transient default)',
+        makeError: () => new Error('synthetic transient cascade failure'),
+        expectedCode: 'POST_BROADCAST_FAILED',
+      },
+      {
+        label: 'PostgreSQL 23505 (unique violation) → POST_BROADCAST_OPERATOR_REQUIRED (permanent)',
+        makeError: () => Object.assign(new Error('duplicate key value violates unique constraint'), { code: '23505' }),
+        expectedCode: 'POST_BROADCAST_OPERATOR_REQUIRED',
+      },
+      {
+        label: 'generic network Error (SQLSTATE 08006 connection_failure) → POST_BROADCAST_FAILED (transient)',
+        makeError: () => Object.assign(new Error('connection terminated unexpectedly'), { code: '08006' }),
+        expectedCode: 'POST_BROADCAST_FAILED',
+      },
+    ];
+
+    for (const { label, makeError, expectedCode } of cases) {
+      // Per-case unique suffix tail so concurrent vitest workers across the
+      // parametrized accredit/link describe.each branches don't collide on
+      // the same orcid_binding lock/cache keys. Suffix base 0050-0053 chosen
+      // to sit safely above the existing post-broadcast spec range.
+      const tailIdx = String(50 + cases.indexOf(cases.find((c) => c.label === label)!)).padStart(4, '0');
+      it(label, async () => {
+        const redis = getRedis();
+        if (!redis) return;
+        const orcidId = `0000-0001-${orcidSuffix}${orcidSuffix}${orcidSuffix}${orcidSuffix}-${tailIdx}`;
+        const lockKey = `${config.appTag}:orcid_binding_lock:${orcidId}`;
+        const cacheKey = `${config.appTag}:orcid_binding:${orcidId}`;
+        await redis.del(lockKey, cacheKey).catch(() => { /* ignore */ });
+
+        installOrcidFetchStub({ orcid: orcidId, name: 'Alice', works: 3 });
+        installLockModeMocks();
+        // Inject the per-case error through the deterministic seam so the
+        // post-broadcast cascade catch wraps it in PostBroadcastWriteError
+        // with the appropriate severity, regardless of how many getAppPool()
+        // calls precede it. Same seam pattern as the existing post-broadcast
+        // discrimination specs.
+        const updateOrcidSpy = vi
+          .spyOn(__test_seams, 'updateAccountOrcid')
+          .mockRejectedValueOnce(makeError());
+        const loggerErrorSpy = vi.spyOn(logger, 'error').mockImplementation(() => { /* silence */ });
+
+        try {
+          const state = await startAuthed(mode, 'alice');
+          const res = await request(app)
+            .post('/api/orcid/callback')
+            .set('Authorization', `Bearer ${jwtFor('alice')}`)
+            .send({ code: 'fake', state });
+
+          expect(res.status).toBe(502);
+          expect(res.body.error.code).toBe(expectedCode);
+          // Same envelope shape across both severity branches — only the
+          // top-level code (and user-message string) differ. tx_id and
+          // failed_step come from the wrap site; outcome:'confirmed' is
+          // the discrimination invariant for any PostBroadcastWriteError.
+          expect(res.body.error.details).toEqual({
+            retriable: false,
+            outcome: 'confirmed',
+            tx_id: 'mock-orcid-tx',
+            failed_step: 'account_update',
+          });
+          // Operator-alert anchor still fires — severity is attached to the
+          // structured log payload so dashboards can split permanent vs.
+          // transient on the same event:'post_broadcast_write_failed' key.
+          const expectedSeverity = expectedCode === 'POST_BROADCAST_OPERATOR_REQUIRED' ? 'permanent' : 'transient';
+          expect(loggerErrorSpy).toHaveBeenCalledWith(
+            expect.objectContaining({
+              event: 'post_broadcast_write_failed',
+              failedStep: 'account_update',
+              severity: expectedSeverity,
+            }),
+            expect.stringContaining('broadcast confirmed but post-broadcast write failed'),
+          );
+        } finally {
+          updateOrcidSpy.mockRestore();
+          loggerErrorSpy.mockRestore();
+          await redis.del(lockKey, cacheKey).catch(() => { /* cleanup */ });
+        }
+      });
+    }
+  });
 });
 
 // BACKEND-CASCADE-FNS-RETHROW-PERMANENT-ERRORS — `updateAccountOrcid` re-throws
