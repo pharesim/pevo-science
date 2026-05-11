@@ -226,9 +226,9 @@ The following are architect-owned and land at archive of this task, not as round
 
 ---
 
-## Backend re-review signal (2026-05-11, commit `1fbac32`)
+## Backend re-review signal (2026-05-11, round-2 hold-fixes — commit `8f81492` on `main`, originally `1fbac32` on `worktree-agent-a1b9aacbbc1e25e82`)
 
-Round-2 hold items 1-9 all landed in commit `1fbac32` on this worktree branch. Scoped vitest (`bridge-haf-lag-locks.test.ts` + `bridge.test.ts` + `bridge-paper-author-gate.test.ts`) all green (3 + 13 + 12 = 28 specs); `tsc` and `eslint` clean (preexisting `seed-phrase.ts` `any` warnings unchanged).
+Round-2 hold items 1-9 all landed in commit `8f81492` on `main` (originally `1fbac32` on worktree branch `worktree-agent-a1b9aacbbc1e25e82`). Scoped vitest (`bridge-haf-lag-locks.test.ts` + `bridge.test.ts` + `bridge-paper-author-gate.test.ts`) all green (3 + 13 + 12 = 28 specs); `tsc` and `eslint` clean (preexisting `seed-phrase.ts` `any` warnings unchanged). Parent's full-suite `npx vitest run` post-merge surfaced 2 pre-existing failures unrelated to this task's diff: `tests/routes/disciplines-canon-mocked.test.ts:669` (continuation-chain head-override — failure path doesn't touch any file in this task's scope) and `tests/routes/stats-profile-parity.test.ts:166` (real-chain data flake — passed on retry).
 
 - **Item 1 (LOCK_HELD discrimination).** `bridge.ts:404` (lock-held branch) emits `code: 'LOCK_HELD'`; `bridge.ts:426` (existing-duplicate) keeps `code: 'DUPLICATE'`. `types/api.ts` ErrorCode union extended with `LOCK_HELD` literal. Concurrency spec updated to assert the loser's `code` is `LOCK_HELD`. The architect-zone note on `bridge.md` contract doc update was left for the archive pass (per the hold-block "Architect-zone items" section already calling it out).
 - **Item 2 (haf_unavailable cache skip).** Chose architect-preferred in-bridge.ts solution. `/check` now probes `hafCache.get` for the `'ok'` shape only and writes-through ONLY the ok variant; `haf_unavailable` bypasses the cache entirely. `cache.ts` API surface unchanged (no `skipCacheIf` predicate added).

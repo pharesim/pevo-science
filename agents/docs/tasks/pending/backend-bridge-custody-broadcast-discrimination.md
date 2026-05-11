@@ -206,9 +206,9 @@ The following follow-ups are architect-owned and land at archive of this task, n
 
 ---
 
-## Backend re-review signal (2026-05-11, commit `47528c7`)
+## Backend re-review signal (2026-05-11, round-3 hold-fixes — commit `e08bf72` on `main`, originally `47528c7` on `worktree-agent-a52dae09697aab9a8`)
 
-Round-3 hold items 1-9 all landed in commit `47528c7` on worktree branch `worktree-agent-a52dae09697aab9a8` (5 files changed, +271/-25 LOC). Item-by-item summary:
+Round-3 hold items 1-9 all landed in commit `e08bf72` on `main` (originally `47528c7` on worktree branch `worktree-agent-a52dae09697aab9a8`; 5 files changed, +271/-25 LOC). Item-by-item summary:
 
 1. (P1, adv-1) Removed `attempt_n: 1` from `logBroadcastAttempt` in `backend/src/routes/custody.ts`. Field is now intentionally absent until the idempotency-cluster follow-up lands the real per-key counter. Test assertion at the success-path spec updated to pin the absence (`expect(ctx.attempt_n).toBeUndefined()`).
 2. (P1, M-1 + KTS-2) Dropped 5 dead fields (`newVersion`, `sourceIdentifier`, `identifier`, `cycle_id`, `attempt_n`) from the `LogContext` interface in `backend/src/lib/broadcast-error.ts`. Verified via `git grep -n 'logContext: {' backend/src` — no live call sites passed any of them. `tsc --noEmit` clean.

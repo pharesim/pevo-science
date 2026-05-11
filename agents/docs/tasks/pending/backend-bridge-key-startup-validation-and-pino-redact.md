@@ -775,9 +775,9 @@ When items 1-5 land in a single round-6 commit, `git mv` this file back to `task
 
 ---
 
-## Backend re-review signal (2026-05-11, round-6 hold-fixes — commit `8281242` on `worktree-agent-a09d4bf4db81a3833`)
+## Backend re-review signal (2026-05-11, round-6 hold-fixes — commit `311e474` on `main`, originally `8281242` on `worktree-agent-a09d4bf4db81a3833`)
 
-Round-6 hold items 1-5 all landed in commit `8281242` on this worktree branch (to be merged onto `main` by the parent). The aggregate diff is `3 files changed, 82 insertions(+), 80 deletions(-)`, all in `backend/src/index.ts`, `backend/src/logger.ts`, and `backend/src/lib/flush-and-exit.ts`. No behavior change; only doc/style/cleanup as the hold scoped.
+Round-6 hold items 1-5 all landed in commit `311e474` on `main` (originally `8281242` on worktree branch `worktree-agent-a09d4bf4db81a3833`). The aggregate diff is `3 files changed, 82 insertions(+), 80 deletions(-)`, all in `backend/src/index.ts`, `backend/src/logger.ts`, and `backend/src/lib/flush-and-exit.ts`. No behavior change; only doc/style/cleanup as the hold scoped.
 
 **Item 1 (P2) — `if (app) { ... }` block body indentation.** `backend/src/index.ts:87-153`. Indented lines 88-152 by 2 spaces inside the `if (app) {` guard. Dropped the `// end if (app)` trailing comment marker since the indented closing brace is now its own structural signal (per architect mild preference). Pure formatting change — `git diff --shortstat` shows 76 insertions / 76 deletions in `index.ts` for the indent pass (line-for-line replacement). tsc + lint stay green.
 
