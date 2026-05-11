@@ -173,11 +173,15 @@ async function waitForEditorsMounted(page) {
   });
 }
 
-// Set abstract+body via BOTH the Alpine state (what edit.js reads on
-// submit) AND the editor view's public setContent (which uses
-// emitUpdate:false per editor.js:681, so it won't re-fire onChange and
-// clobber the Alpine write). This in-band update is the canonical way to
-// keep the editor view and Alpine state coherent from a spec.
+// Set abstract+body via Alpine state (what edit.js reads on submit). We
+// gate this on waitForEditorsMounted so the editor instances exist; the
+// editor's onUpdate does not fire on constructor content-init (verified
+// against tiptap source), so the Alpine write is not subsequently
+// clobbered by the editor mount sequence. We deliberately do NOT call
+// editor.setContent() here — invoking it after the editor's own
+// initialMarkdown application produces a tiptap "Applying a mismatched
+// transaction" RangeError (the prior in-progress transaction conflicts
+// with the imperative replace).
 async function setEditorContent(page, { abstract, body }) {
   await page.evaluate(
     ({ abstract, body }) => {
@@ -185,11 +189,6 @@ async function setEditorContent(page, { abstract, body }) {
       const data = window.Alpine.$data(el);
       data.abstract = abstract;
       data.body = body;
-      // Sync the editor views. setContent uses emitUpdate:false (see
-      // editor.js setContent), so this does not re-trigger the onChange
-      // callback that would overwrite data.abstract / data.body.
-      data._abstractEditor?.setContent(abstract);
-      data._bodyEditor?.setContent(body);
     },
     { abstract, body },
   );
@@ -646,11 +645,12 @@ test('no-changes guard blocks the broadcast and surfaces an error step', async (
     const el = document.querySelector('[x-data="editPage"]');
     return window.Alpine?.$data(el)?.errorMessage;
   });
-  // edit.js sets errorMessage to the literal i18n key. The translation
-  // would happen via stepMessage's lookup table, but the raw key surfaces
-  // through the data property and is what we pin against — translation
-  // shifts would otherwise make this assertion brittle.
-  expect(errorMessage).toBe('edit.noChanges');
+  // edit.js:1045 sets errorMessage = this.$t('edit.noChanges'), so the
+  // resolved translation lands in the data property (not the key). Test
+  // navigates to /en/, so we pin against the en.json string for the key
+  // — substring match keeps the assertion robust to en.json copy edits
+  // that don't change the user-visible meaning.
+  expect(errorMessage).toContain('No changes');
 
   // No broadcast may have fired.
   const broadcastCount = await page.evaluate(
