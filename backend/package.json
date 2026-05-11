@@ -13,6 +13,8 @@
     "start": "node --env-file=../.env dist/index.js",
     "lint": "eslint src/",
     "lint:fix": "eslint src/ --fix",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "typecheck:tests": "tsc --noEmit -p tests/tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",

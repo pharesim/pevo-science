@@ -6,9 +6,21 @@ import {
   makeLogBroadcastAttempt,
   PostBroadcastWriteError,
   classifyPostBroadcastSeverity,
+  type LogContext,
 } from '../../src/lib/broadcast-error.js';
 import { BroadcastTimeoutError } from '../../src/hive.js';
 import { logger } from '../../src/logger.js';
+
+// `TestLogContext` opens `LogContext` for test-only debug-marker fields like
+// `run`/`case` that disambiguate which spec invoked the helper inside its
+// structured-log assertions. Production callers MUST stay on the narrowed
+// `LogContext` interface (the typo-protection contract); the cast pattern
+// below is reserved for tests that deliberately exercise the
+// "extra keys spread through" behavior. See
+// `backend/src/lib/broadcast-error.ts` `LogContext` docblock for the
+// motivation; see `backend-tests-typecheck-coverage` task for the rationale
+// for choosing cast-per-site rather than widening the production interface.
+type TestLogContext = LogContext & Record<string, unknown>;
 
 function mockResponse() {
   const res = {
@@ -32,7 +44,7 @@ describe('handleBroadcastError', () => {
     const outcome = handleBroadcastError(res, err, {
       timeoutMsg: 'Broadcasting timed out',
       failMsg: 'Failed',
-      logContext: { user: 'alice', action: 'test' },
+      logContext: { username: 'alice', route: 'test' },
       routeLabel: 'test.route',
     });
 
@@ -52,7 +64,7 @@ describe('handleBroadcastError', () => {
       },
     });
     expect(warnSpy).toHaveBeenCalledWith(
-      { err, timeoutMs: 5000, user: 'alice', action: 'test', event: 'broadcast_timeout' },
+      { err, timeoutMs: 5000, username: 'alice', route: 'test', event: 'broadcast_timeout' },
       'test.route broadcast timed out',
     );
     expect(errorSpy).not.toHaveBeenCalled();
@@ -67,7 +79,7 @@ describe('handleBroadcastError', () => {
     const outcome = handleBroadcastError(res, err, {
       timeoutMsg: 'Broadcasting timed out',
       failMsg: 'Failed to broadcast',
-      logContext: { user: 'bob' },
+      logContext: { username: 'bob' },
       routeLabel: 'test.route',
     });
 
@@ -82,7 +94,7 @@ describe('handleBroadcastError', () => {
       },
     });
     expect(errorSpy).toHaveBeenCalledWith(
-      { err, user: 'bob', event: 'broadcast_failed' },
+      { err, username: 'bob', event: 'broadcast_failed' },
       'test.route broadcast failed',
     );
     expect(warnSpy).not.toHaveBeenCalled();
@@ -256,7 +268,7 @@ describe('handleBroadcastError', () => {
     const outcome = handleBroadcastError(res, err, {
       timeoutMsg: 'Timed out',
       failMsg: 'Failed (should not surface)',
-      logContext: { case: 'B' },
+      logContext: {},
       verifyLocation: '/settings',
       routeLabel: 'orcid.handleAccredit',
       postBroadcastMsgFn: (failedStep) =>
@@ -298,7 +310,7 @@ describe('handleBroadcastError', () => {
     handleBroadcastError(res, err, {
       timeoutMsg: 'T',
       failMsg: 'F',
-      logContext: { case: 'C' },
+      logContext: {},
       routeLabel: 'orcid.handleLink',
       postBroadcastMsgFn: (failedStep) =>
         failedStep === 'account_update'
@@ -360,7 +372,10 @@ describe('handleBroadcastError', () => {
     const outcome = handleBroadcastError(res, err, {
       timeoutMsg: 'T',
       failMsg: 'F',
-      logContext: { run: 'msgfn-throws' },
+      // `run` is a test-only per-spec discriminator (not a real LogContext
+      // field); the assertions below verify it spreads through into both
+      // the error and warn structured payloads.
+      logContext: { run: 'msgfn-throws' } as TestLogContext,
       routeLabel: 'orcid.handleAccredit',
       postBroadcastMsgFn: () => {
         throw innerErr;
@@ -463,7 +478,10 @@ describe('handleBroadcastError', () => {
       timeoutMsg: 'Timed out',
       failMsg: 'Failed (should not surface)',
       ambiguousMsg: 'Outcome uncertain — verify before retrying',
-      logContext: { run: 'item-4' },
+      // `run` is a test-only per-spec discriminator (see TestLogContext
+      // docblock at top of file); pinned by the structured-log assertion
+      // at the end of the spec.
+      logContext: { run: 'item-4' } as TestLogContext,
       verifyLocation: '/settings',
       routeLabel: 'test.route',
       forceAmbiguousOutcome: true,
@@ -517,13 +535,19 @@ describe('handleBroadcastError', () => {
     const cause = new Error('redis flap');
     const err = new PostBroadcastWriteError('hive-tx-spread-override-1', cause, 'cache_write');
 
+    // Type-bypass via `as unknown as Parameters<...>[2]` mirrors the round-5
+    // hold #1 fixture below (line ~614): `event` is intentionally NOT a
+    // declared `LogContext` field (the helper writes `event:` itself, AFTER
+    // the spread, so it overrides any caller-supplied value), so a typed
+    // caller cannot supply it. The cast lets the test exercise the runtime
+    // spread-kill defense a future bypass-shaped caller might reach.
     handleBroadcastError(res, err, {
       timeoutMsg: 'Timed out',
       failMsg: 'Failed',
       // Adversarial caller-supplied `event:` field — should NOT win.
       logContext: { event: 'caller_override_attempt', run: 'spread-kill-1' },
       routeLabel: 'orcid.handleAccredit',
-    });
+    } as unknown as Parameters<typeof handleBroadcastError>[2]);
 
     expect(errorSpy).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -547,6 +571,10 @@ describe('handleBroadcastError', () => {
     const cause = new Error('pool exhausted');
     const err = new PostBroadcastWriteError('hive-tx-spread-override-2', cause, 'account_update');
 
+    // Type-bypass cast — same rationale as the sibling round-4 spread-kill
+    // spec above: `event` is not a declared `LogContext` field, so a typed
+    // caller cannot supply it; the cast lets the test exercise the runtime
+    // spread-kill defense.
     handleBroadcastError(res, err, {
       timeoutMsg: 'Timed out',
       failMsg: 'Failed',
@@ -556,7 +584,7 @@ describe('handleBroadcastError', () => {
       postBroadcastMsgFn: () => {
         throw new Error('msg fn boom');
       },
-    });
+    } as unknown as Parameters<typeof handleBroadcastError>[2]);
 
     expect(warnSpy).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -674,6 +702,12 @@ describe('handleBroadcastError', () => {
     const err = new PostBroadcastWriteError('hive-tx-real-2', realCause, 'cache_write');
     const innerMsgErr = new TypeError('msg-fn template throw');
 
+    // Type-bypass cast — same shape as the sibling round-5 hold #1 fixture
+    // on the write-failed anchor (above): the adversarial `err` / `cause` /
+    // `txId` / `failedStep` keys are not declared on `LogContext` (the
+    // sanitizing destructure in `handleBroadcastError` strips them at runtime
+    // before the spread), so a typed caller cannot supply them; the cast
+    // lets this spec exercise the runtime defense.
     handleBroadcastError(res, err, {
       timeoutMsg: 'Timed out',
       failMsg: 'Failed',
@@ -688,7 +722,7 @@ describe('handleBroadcastError', () => {
       postBroadcastMsgFn: () => {
         throw innerMsgErr;
       },
-    });
+    } as unknown as Parameters<typeof handleBroadcastError>[2]);
 
     expect(warnSpy).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -750,7 +784,8 @@ describe('handleBroadcastError', () => {
     handleBroadcastError(res, err, {
       timeoutMsg: 'T',
       failMsg: 'F',
-      logContext: { run: 'event-pin-timeout' },
+      // `run` is a test-only per-spec discriminator (see TestLogContext docblock).
+      logContext: { run: 'event-pin-timeout' } as TestLogContext,
       routeLabel: 'test.route',
     });
 
@@ -770,7 +805,8 @@ describe('handleBroadcastError', () => {
       failMsg: 'F',
       ambiguousMsg: 'Outcome uncertain',
       forceAmbiguousOutcome: true,
-      logContext: { run: 'event-pin-ambiguous' },
+      // `run` is a test-only per-spec discriminator (see TestLogContext docblock).
+      logContext: { run: 'event-pin-ambiguous' } as TestLogContext,
       routeLabel: 'test.route',
     });
 
@@ -788,7 +824,8 @@ describe('handleBroadcastError', () => {
     handleBroadcastError(res, err, {
       timeoutMsg: 'T',
       failMsg: 'F',
-      logContext: { run: 'event-pin-failed' },
+      // `run` is a test-only per-spec discriminator (see TestLogContext docblock).
+      logContext: { run: 'event-pin-failed' } as TestLogContext,
       routeLabel: 'test.route',
     });
 
