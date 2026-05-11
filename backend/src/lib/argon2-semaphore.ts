@@ -492,8 +492,9 @@ export async function runWithArgon2Slot<T>(
  * `logger.warn` instead of draining. The docblock above is convention-only;
  * a test author who imports this without reading the comment can poison
  * the worker. The guard makes the misuse loud at the call site instead of
- * silent for the rest of the test run. Mirrors the `process.env.VITEST`
- * gate at routes/auth.ts:153-160 for the UV_THREADPOOL_SIZE assertion.
+ * silent for the rest of the test run. Mirrors the defense-in-depth
+ * UV_THREADPOOL_SIZE startup assertion at routes/auth.ts (the bare-block
+ * check immediately before SENTINEL_ARGON2_HASH_PROMISE).
  */
 export function drainArgon2Queue(): void {
   if (process.env.VITEST || process.env.NODE_ENV === 'test') {
