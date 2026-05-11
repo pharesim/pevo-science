@@ -273,21 +273,22 @@ test('original-author edit broadcasts in-place comment with same parent_permlink
   expect(meta[APP_TAG].continues).toBeUndefined();
 });
 
-test('continuation edit by another accredited user broadcasts a NEW permlink with continues link, discipline disabled, banner visible', async ({
+test('accredited non-author (not co-author, no claim) cannot reach the edit form; gating panel renders, no broadcast', async ({
   page,
   request,
 }) => {
+  // Narrow gating (ui-edit-narrow-gating-drop-accredited-fallback,
+  // 2026-05-11): `isAuthorized` no longer falls back to `isAccredited`.
+  // An accredited user who is not the original author, not a named co-
+  // author, and has no accepted authorship claim must land on the
+  // gating panel, not the edit form. The backend continuation consent-
+  // gate (`extractAuthorizedContinuationAuthors`) would have filtered
+  // any broadcast out of the displayed chain anyway; this test asserts
+  // the UI no longer exposes the dead-end affordance.
   const reviewer = await pickAccreditedResearcher(request);
   if (!reviewer) throw new Error('expected at least one accredited researcher in HAF');
 
-  // The fixture paper is authored by a different account so the seeded
-  // user lands in the continuation path (not co-author, no claim, but
-  // accredited).
   const ORIG_AUTHOR = `notauthor${Date.now().toString(36)}`;
-  // Sanity: the seeded researcher must not collide with the synthetic
-  // original author. If they do (vanishingly unlikely with the timestamp
-  // suffix, but worth the explicit guard), the test would fall into the
-  // in-place edit branch and the assertions below would mis-fire.
   if (ORIG_AUTHOR === reviewer.username) {
     throw new Error('synthetic original author collided with seeded researcher');
   }
@@ -304,71 +305,26 @@ test('continuation edit by another accredited user broadcasts a NEW permlink wit
   await page.goto(`/en/edit/${paper.author}/${paper.permlink}`);
 
   await page.waitForSelector('[x-data="editPage"]');
-  await expect(page.locator('input#edit-title')).toBeVisible();
 
-  // Continuation banner shows for accredited non-author.
-  // The exact copy ("Publishing as a revision") comes from
-  // `edit.continuationNotice` in en.json.
-  await expect(page.locator('text=Publishing as a revision').first()).toBeVisible();
+  // Gating panel renders, edit form does not.
+  await expect(page.locator('text=Who can edit this paper?').first()).toBeVisible();
+  await expect(page.locator('input#edit-title')).toHaveCount(0);
+  await expect(page.locator('form button[type="submit"]')).toHaveCount(0);
 
-  // Discipline input is disabled (fixed across continuations).
-  // Alpine binds :value as a property, not the HTML attribute, so locate by
-  // class and verify the value via toHaveValue (reads the property).
-  const disciplineInput = page.locator('input.select-control[disabled]').first();
-  await expect(disciplineInput).toBeVisible();
-  await expect(disciplineInput).toBeDisabled();
-  await expect(disciplineInput).toHaveValue('Computer Science');
+  // Three explanatory bullet points list the legitimate paths.
+  await expect(page.locator('text=original author').first()).toBeVisible();
+  await expect(page.locator('text=co-author').first()).toBeVisible();
+  await expect(page.locator('text=authorship claim').first()).toBeVisible();
 
-  const NEW_TITLE = 'Continuation Revision Title';
-  const NEW_ABSTRACT = 'Continuation abstract authored by a different accredited user.';
-  const NEW_BODY = '## Introduction\n\nContinuation body content.';
+  // Back-to-paper CTA points at the canonical paper.
+  const backLink = page.locator(`a[href$="/paper/${paper.author}/${paper.permlink}"]`).first();
+  await expect(backLink).toBeVisible();
 
-  await page.locator('input#edit-title').fill(NEW_TITLE);
-  await waitForEditorsMounted(page);
-  await setEditorContent(page, { abstract: NEW_ABSTRACT, body: NEW_BODY });
-
-  await page.locator('form button[type="submit"]').click();
-
-  await expect
-    .poll(() => page.evaluate(() => window.__pevoBroadcastCalls?.length || 0), {
-      timeout: 10_000,
-    })
-    .toBeGreaterThan(0);
-
-  const broadcast = await page.evaluate(() => window.__pevoBroadcastCalls[0]);
-
-  expect(broadcast.kind).toBe('broadcast');
-  expect(broadcast.username).toBe(reviewer.username);
-  expect(broadcast.keyType).toBe('posting');
-
-  const commentOp = broadcast.operations.find((op) => op[0] === 'comment');
-  expect(commentOp, 'operations should include a comment op').toBeTruthy();
-  const [, commentBody] = commentOp;
-
-  // Continuation invariants: NEW permlink (different from the original),
-  // authored by the accredited reviewer, parent still APP_TAG (top-level),
-  // and the json_metadata carries a `continues` pointer to the chain head.
-  expect(commentBody.parent_author).toBe('');
-  expect(commentBody.parent_permlink).toBe(APP_TAG);
-  expect(commentBody.author).toBe(reviewer.username);
-  expect(commentBody.permlink).not.toBe(paper.permlink);
-  expect(typeof commentBody.permlink).toBe('string');
-  expect(commentBody.permlink.length).toBeGreaterThan(0);
-
-  const meta = JSON.parse(commentBody.json_metadata);
-  expect(meta.app.startsWith(`${APP_TAG}/`)).toBe(true);
-  expect(meta.tags).toContain(APP_TAG);
-  expect(meta[APP_TAG]).toBeTruthy();
-  expect(meta[APP_TAG].type).toBe('paper');
-  expect(meta[APP_TAG].version).toBe(2);
-  expect(meta[APP_TAG].discipline).toBe('Computer Science');
-  expect(meta[APP_TAG].continues).toBeTruthy();
-  expect(meta[APP_TAG].continues.author).toBe(paper.author);
-  expect(meta[APP_TAG].continues.permlink).toBe(paper.permlink);
-
-  // Continuation also broadcasts comment_options (matches publish flow).
-  const optionsOp = broadcast.operations.find((op) => op[0] === 'comment_options');
-  expect(optionsOp).toBeTruthy();
+  // No broadcast fires — the page has no form to submit.
+  const broadcastCount = await page.evaluate(
+    () => window.__pevoBroadcastCalls?.length || 0,
+  );
+  expect(broadcastCount).toBe(0);
 });
 
 test('unaccredited non-author cannot reach the edit form; gating panel and back-to-paper CTA render instead', async ({
@@ -387,13 +343,15 @@ test('unaccredited non-author cannot reach the edit form; gating panel and back-
 
   await page.waitForSelector('[x-data="editPage"]');
 
-  // Post-gating shape (commit de1c205):
-  //  - red accreditation banner ("You need to be accredited to edit this paper.")
+  // Post-narrow-gating shape (ui-edit-narrow-gating-drop-accredited-
+  // fallback, 2026-05-11):
   //  - "Who can edit this paper?" panel with the three valid paths
   //  - back-to-paper CTA
   //  - NO edit form
+  //  - NO accreditation banner (accreditation is not the gate on this
+  //    page; the three valid paths are the only way in)
   await expect(page.locator('text=Who can edit this paper?').first()).toBeVisible();
-  await expect(page.locator('text=You need to be accredited to edit this paper.').first()).toBeVisible();
+  await expect(page.locator('text=You need to be accredited to edit this paper.')).toHaveCount(0);
 
   // Three explanatory bullet points. We assert by text fragments rather than
   // structural selectors so a future copy tweak surfaces as a focused diff.

@@ -4,20 +4,20 @@ import { broadcastOps } from '../signer.js';
 import { sha256File, slugify } from '../crypto.js';
 import { createTimerGuard } from '../lib/timer-guard.js';
 import { loadAccreditedDirectory, lookupAccredited, applyHiveChangePrefill, applyAccreditedPrefill } from '../lib/accredited-directory.js';
-import { accreditationBannerTemplate } from '../components/accreditation-banner.js';
 
 import { getAppTag, getAppId, getMaxUploadSize, getMaxUploadSizeMB } from '../config.js';
 import diff_match_patch from 'diff-match-patch';
 
-// Gating shape for connected+unaccredited non-author: today the page
-// renders a generic "not authorized" panel that doesn't tell the user how
-// to proceed. We split it into three states so each affordance is clear:
-//   - !isConnected → sign-in banner with sign-in CTA
-//   - isConnected && !isAccredited (non-author, no claim) → red
-//     accreditation banner + a panel explaining the three valid paths to
-//     edit (be the author, be a co-author, or file an authorship claim
-//     from the paper page) with a back-to-paper CTA.
-//   - Author/co-author/accepted-claim/accredited → form renders as before.
+// Gating: only original author + named co-authors + accepted authorship-
+// claimers can edit. Accreditation is NOT the gate on this page (the
+// backend continuation consent-gate filters spoofed continuations from
+// chain reconstruction; the UI must not advertise a path that fails
+// silently). Affordance states:
+//   - !isConnected → sign-in banner with sign-in CTA.
+//   - isConnected && !isAuthorized → "Who can edit this paper?" panel
+//     listing the three valid paths plus a back-to-paper CTA. No
+//     accreditation banner; getting accredited does not unblock editing.
+//   - isAuthorized → form renders.
 
 const ABSTRACT_MAX_CHARS = 2000;
 
@@ -74,30 +74,20 @@ const template = `
           </div>
         </template>
 
-        <!-- Not authorized: connected but unaccredited non-author -->
-        <template x-if="!loadingPaper && !loadError && !isAuthorized && isConnected && !isAccredited">
-          <div>
-            ${accreditationBannerTemplate('edit.accreditationRequired')}
-            <div class="card">
-              <h2 class="text-section-title text-ink font-serif mb-3" x-text="$t('edit.howToEditTitle')"></h2>
-              <p class="text-sm text-ink-light mb-3" x-text="$t('edit.howToEditIntro')"></p>
-              <ul class="list-disc pl-5 space-y-1.5 text-sm text-ink-light mb-4">
-                <li x-text="$t('edit.howToEditOriginalAuthor')"></li>
-                <li x-text="$t('edit.howToEditCoAuthor')"></li>
-                <li x-text="$t('edit.howToEditClaim')"></li>
-              </ul>
-              <a :href="$lp('/paper/' + author + '/' + permlink)" @click.prevent="navigate('/paper/' + author + '/' + permlink)"
-                 class="btn-secondary text-xs no-underline inline-block" x-text="$t('common.backToPapers')"></a>
-            </div>
-          </div>
-        </template>
-
-        <!-- Not authorized: catch-all (e.g. connected accredited user with stale state) -->
-        <template x-if="!loadingPaper && !loadError && !isAuthorized && isConnected && isAccredited">
-          <div class="card bg-pevo-crimson-light border-pevo-crimson/30 text-center py-8">
-            <p class="text-sm text-pevo-crimson font-medium" x-text="$t('edit.notAuthorized')"></p>
+        <!-- Not authorized: connected non-author. Single branch for both
+             accredited and unaccredited users; the page renders the
+             how-to-edit panel listing the three legitimate paths. -->
+        <template x-if="!loadingPaper && !loadError && !isAuthorized && isConnected">
+          <div class="card">
+            <h2 class="text-section-title text-ink font-serif mb-3" x-text="$t('edit.howToEditTitle')"></h2>
+            <p class="text-sm text-ink-light mb-3" x-text="$t('edit.howToEditIntro')"></p>
+            <ul class="list-disc pl-5 space-y-1.5 text-sm text-ink-light mb-4">
+              <li x-text="$t('edit.howToEditOriginalAuthor')"></li>
+              <li x-text="$t('edit.howToEditCoAuthor')"></li>
+              <li x-text="$t('edit.howToEditClaim')"></li>
+            </ul>
             <a :href="$lp('/paper/' + author + '/' + permlink)" @click.prevent="navigate('/paper/' + author + '/' + permlink)"
-               class="btn-secondary text-xs mt-3 no-underline inline-block" x-text="$t('common.backToPapers')"></a>
+               class="btn-secondary text-xs no-underline inline-block" x-text="$t('common.backToPapers')"></a>
           </div>
         </template>
 
@@ -443,8 +433,12 @@ export function initEditPage() {
       // Accepted authorship claim
       const claims = this.paper.authorship_claims || [];
       if (claims.some(c => c.claimer === username && c.status === 'accepted')) return true;
-      // Accredited users can create continuation posts
-      return this.isAccredited;
+      // Narrow gating: only the three positive paths above. Accreditation
+      // alone is NOT sufficient — the backend continuation consent-gate
+      // filters non-co-author continuations from chain reconstruction,
+      // so exposing the edit form to accredited non-authors led to
+      // silently-failing broadcasts.
+      return false;
     },
 
     // The latest version entry in the chain authored by the current user, if
