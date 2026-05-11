@@ -75,8 +75,17 @@ After implementation, append a row to the API contract index (`agents/docs/api-c
 
 ---
 
-## [BLOCKED by Backend] (backend startup triage 2026-05-05)
+## [BLOCKED by Backend] (backend startup triage 2026-05-05) — block-note refreshed 2026-05-11
 
 The `GET /api/me/authorships/pending` endpoint requires the vouched-set computation specified in `backend-coauthor-trust-model.md` Phase 2 (see this task's "Dependencies" clause above). Phase 2 has not started in code — none of the new `custom_json` op handlers (`AuthorAcceptAction`/`AuthorResignAction`), the read-time vouched-set lookup, or the migration-day flag exist yet. Without those, this endpoint cannot identify "claimed-pending" authorships.
 
 Move back to `tasks/pending/` once Phase 2 of `backend-coauthor-trust-model.md` lands the vouched-set lookup that this endpoint queries.
+
+### Block-note refresh 2026-05-11 (backend startup triage)
+
+The dependency framing above is partly stale. Status today:
+- **`backend-coauthor-trust-model` Round 1 primitives landed and archived 2026-05-06.** `consent-ops.ts` exports `fetchConsentOpsForPaper`, `computeVouchedAuthors`, and `getVouchedAuthors`. `types/hive.ts` exports `AuthorAcceptAction` and `AuthorResignAction`. The "vouched-set lookup" the original block-note claimed does not exist DOES exist as a per-paper primitive.
+- **Phase 2 (continuation-chain admit-gate integration + cache invalidation) is currently in `tasks/review/` as `backend-multi-author-cumulative-union.md`** — under architect review, not yet archived. That is the actual current gate on this task.
+- **Phase 4 (migration-day flag) has not started.** Until the flag flips, every existing co-author is implicitly vouched and this endpoint's "pending" set is empty by construction. The migration banner the endpoint serves cannot fire pre-flag.
+
+Net: task remains blocked. The accurate gate now is "`backend-multi-author-cumulative-union.md` archives AND the Phase 4 migration-day flag starts." When the cumulative-union task archives, re-evaluate whether this endpoint can ship ahead of the migration-day flag (the primitives would let it answer correctly; the only consumer is the migration banner which doesn't exist yet).
