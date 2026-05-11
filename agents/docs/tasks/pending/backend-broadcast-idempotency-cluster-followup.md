@@ -169,3 +169,128 @@ Update `agents/docs/api-contracts/common.md` at archive:
 1. Add `POST_BROADCAST_FAILED` to the broadcast-error code table alongside `BROADCAST_FAILED` and `BROADCAST_TIMEOUT`. Note the `details.outcome: 'confirmed'` discriminator.
 
 The architect lands these contract edits in the archive commit (per CLAUDE.md "Boundaries" — backend agent does NOT edit `api-contracts/*.md` under any circumstances).
+
+---
+
+## Architect re-review (2026-05-11) — HELD PENDING FIXES
+
+Re-review of commit `c8153e3` via `/ce-code-review` invoked directly from the architect context. Reviewer team (11 personas): correctness, security, adversarial (Opus tier), testing, maintainability, project-standards, performance, api-contract, reliability, learnings, kieran-typescript (Sonnet tier). Skipped `ce-agent-native-reviewer` per CLAUDE.md.
+
+The Option A.4 design is sound. The implementation has correctness gaps, a cascade-failure class, and several polish items. Triage produced 19 hold items grouped below; F14 / F25 / F27 dismissed; F6 part 2 + F7 filed as new pending tasks.
+
+### Items held — accreditation /verify correctness (Hi)
+
+1. **F1 — idempotency-hit cascade fix.** On the HAF-hit branch in `routes/accreditation.ts:489-525`:
+   - Add `await decrementBroadcastAttempts(token, attemptId)` before `return sendOk(...)`. Mirror the timeout-path decrement at line 623. Without this, idempotency-hit retries permanently consume the broadcast-attempts cap; after `cap` retries the user gets 502 `BROADCAST_ATTEMPT_LIMIT_EXCEEDED` on a confirmed-on-chain accreditation + 24h `/request` lockout.
+   - Add `await seedAccreditationBonus(username)` (wrapped per F3's discipline below) before `return sendOk(...)` so the bonus seed fires on the hit branch too. Original spec acceptance #2(b) called for this; current code skips it. Bonus is otherwise missing until batch cycle reconciles.
+
+2. **F2 — cross-op-type idempotency_key shadowing + fresh-auth proof bypass.** Plumb `embedded.opType` from `embedIdempotencyKey` through to `findCustodyBroadcastByIdempotencyKey` (NB: renamed below to `findAccreditationBroadcastByIdempotencyKey`'s sibling — see F23) and skip the non-matching probe arm in SQL. **AND** reorder `routes/custody.ts` so the consent-op fresh-auth verification (currently at line ~399) runs **before** the idempotency check (currently at line ~302) on consent-op bundles. Closes both shadowing (HAF lookup keyed on `(username, key, op_type)`) and fresh-auth-bypass-on-key-collision. Fresh-auth proofs are single-use anyway — a SPA retry must re-derive the proof regardless.
+
+3. **F3 — PostBroadcastWriteError contract divergence: transient vs permanent discrimination.** `accreditation.ts:670-673` comment + 502 user message say "next cycle reconciles," but `reputation.ts:119-123` explicitly states permanent errors do NOT self-heal. Discriminate at the wrap site:
+   - Introduce a new error code (e.g., `POST_BROADCAST_OPERATOR_REQUIRED`) for the permanent-error branch.
+   - User message accurate per branch: transient → "will reconcile automatically"; permanent → "support has been notified."
+   - Structured log severity bumped on the permanent branch (operator-paged dashboard signal). Use `logger.error` instead of `logger.warn` on the operator-required branch.
+   - The new error code becomes a `common.md` addition (see supplementary TODO Architect below).
+
+4. **F8 — wrap `deleteToken` on the success path.** `accreditation.ts:569` is currently a bare `await deleteToken(token)` after broadcast confirmed. Wrap in try/catch with `logger.warn({..., event: 'accreditation.verify.delete_token_failed_post_success' }, '...')`; same pattern as the existing idempotency-hit-path token cleanup at line ~501. Closes the `ERR_HTTP_HEADERS_SENT` Express-5 ordering risk previously hit on this same route (`helper-extraction-express5-response-ordering-2026-04-28.md`).
+
+### Items held — broadcast-path infra (Mid)
+
+5. **F4 — HAF pool `onConnect` race fix.** Replace `pool.on('connect', client => { client.query('SET statement_timeout = 30000').catch(...) })` in `backend/src/db.ts:21` with the `onConnect` Pool-constructor option:
+   ```ts
+   new Pool({
+     // ...
+     async onConnect(client) {
+       await client.query('SET statement_timeout = 30000');
+     },
+   });
+   ```
+   Pre-existing race exposed by this commit's new HAF query volume on cold pools. Without the change, the first idempotency lookup on a new connection runs with NO statement_timeout applied.
+
+6. **F5 — Redis short-circuit cache for HAF idempotency lookup.** **Explicit scope expansion** over the original task spec which excluded Redis caching ("Per-request HAF query is sufficient at current scale"). The HAF JSONB extraction is not indexed for `idempotency_key`, and HAF-side indexes are NOT a path (`reference_haf_indexes_cannot_be_modified.md`). Cache `(username, idempotency_key) → IdempotencyHit | null` with discipline from `caching-wrapper-discriminated-union-poisoning-2026-05-11.md`:
+   - Cache only the resolved `Hit | null` values.
+   - **Never cache** `haf_unavailable` or `lookup_failed` states — those must fall through to current degradation paths.
+   - Key prefix per appTag convention (`${config.appTag}:idem:<scope>:<sha256(username|key)>` or equivalent).
+   - Positive-cache TTL = `max(observed HAF indexer lag, 60s)` (per F12 — bridges the indexer-lag defense window).
+   - Negative-cache TTL = short, 5-10s, to avoid masking genuine state changes.
+   - Rationale documented inline at the cache layer + in the convention update (architect at archive).
+
+7. **F10 — rename `isHafAvailable()` → `isHafConfigured()`.** The function tests config presence, not live reachability. Rename in `backend/src/db.ts:34` + all call sites. Rename log event `accreditation.verify.idempotency_haf_unavailable` → `accreditation.verify.idempotency_haf_unconfigured` (and the custody counterpart). Add clarifying comment at each idempotency call site: this tests config, not reachability; `_lookup_failed` is the real-outage signal. The supplementary TODO Architect below adjusts the contract docs to match the renamed events.
+
+### Items held — type safety + lookup polish (Mid)
+
+8. **F11 — `validateIdempotencyKey` returns a discriminated result.** Change the signature from `(value: unknown) => string | null` (null on success, error message on failure — ambiguous) to `(value: unknown) => { ok: true, value: string } | { ok: false, error: string }`. Narrow at call sites in `routes/custody.ts:197-201` and remove the `as string` cast. Closes the type-safety gap where future validator extensions would silently bypass the checker.
+
+9. **F13 — coerce `block_num: null` to `undefined` in custody idempotency-hit response.** In `routes/custody.ts:319-323`, change `block_num: existing.block_num` to `block_num: existing.block_num ?? undefined`. SPA arithmetic on `undefined` produces NaN (visible failure) instead of silently coercing `null` to 0. Accreditation already omits `block_num` on its hit path; this brings custody to the same safe behavior.
+
+10. **F15 — fold into F2's opType plumbing.** Use the plumbed `opType` to skip the non-matching HAF probe arm in `findCustodyBroadcastByIdempotencyKey` (now sibling to F23's rename). Halves HAF round-trips on cache-miss paths.
+
+### Items held — module cleanup (Low)
+
+11. **F22 — delete `logIdempotencySkip` + inline at call sites.** The wrapper at `lib/idempotency.ts:252-258` is a one-liner with no added discipline. Hit events bypass it (call `logger.warn` directly), creating an undocumented asymmetric rule. Replace each of the 4 call sites with `logger.warn({ ...fields, event }, msg)`; delete the wrapper.
+
+12. **F23 — rename `findAccreditByIdempotencyKey` → `findAccreditationBroadcastByIdempotencyKey`.** Parallel symmetry with `findCustodyBroadcastByIdempotencyKey`. Three call sites. Establishes the naming precedent for the survey table's four follow-up surfaces (claims, papers, wot, anon-review).
+
+13. **F24 — add one-line comment at `routes/accreditation.ts:554`** `customJsonPayload` construction explaining why `embedIdempotencyKey` is not used (single known-shape op; inline rather than via the generic bundle scanner). Documents the convention: future surfaces with opaque bundles use the helper; surfaces with internally-constructed single ops inline the field.
+
+14. **F26 — hoist `params` cast in `embedIdempotencyKey`.** Move `const params = opParams as Record<string, unknown>` to immediately after the null-guard at `lib/idempotency.ts:83`; remove the per-branch casts at lines 86 and 110. Removes the "remember to cast" tax for future op-type additions.
+
+### Items held — test coverage (Low; some folds together)
+
+15. **F6 (part 1) — fix carve-out header overclaim in `backend/tests/lib/idempotency.test.ts:9`.** The header currently claims `tests/routes/{custody,accreditation}*.test.ts` exercise real HAF — both companions also mock `db.js`. Update the header to:
+   - Acknowledge the integrated path is also mocked at the route layer.
+   - Cite the new follow-up task slug **`backend-idempotency-haf-integration-test.md`** (architect files in this same pass — see below) as the real-path coverage commitment per carve-out clause (c).
+
+16. **F9 + F19 + F20 — accreditation idempotency test additions.** Extend `backend/tests/routes/accreditation-idempotency.test.ts` with three new specs:
+   - **HAF lookup throw:** `hafQueryMock` rejects → broadcast still fires; assert `logger.warn` called with `event: 'accreditation.verify.idempotency_lookup_failed'`; response is fresh-broadcast shape (no `outcome`).
+   - **HAF unconfigured:** `isHafConfigured` returns false → broadcast still fires; assert `logger.warn` called with `event: 'accreditation.verify.idempotency_haf_unconfigured'` (per F10 rename); response is fresh-broadcast shape.
+   - **Token cleanup failure on hit:** `deleteToken` mocked to throw on the idempotency-hit path → response is 200 unaffected; assert `logger.warn` called with `event: 'accreditation.verify.idempotency_hit_token_cleanup_failed'`.
+   - **Hit-path event pin:** extend the existing HAF-hit specs to assert `logger.info` was called with `event: 'accreditation.verify.idempotency_hit'` + fields (`username`, `email_hash`, `tx_id`).
+
+17. **F12 (part 2) — TTL choice + rationale in F5's Redis layer.** Implementation note in the cache layer documents: positive-cache TTL = `max(observed HAF indexer lag, 60s)` to bridge the documented indexer-lag defense window; negative-cache TTL = 5-10s short to avoid masking genuine state changes. Add the rationale inline.
+
+18. **F21 — extend vote-only no-embed spec at `custody-idempotency.test.ts:243`.** Currently asserts only `event` discriminator. Pin the full warn payload shape via `toMatchObject`:
+    ```ts
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'custody.broadcast.idempotency_no_embed_surface',
+        idempotency_key: expect.any(String),
+        op_types: expect.arrayContaining(['vote']),
+      }),
+      expect.any(String),
+    );
+    ```
+
+### Dismissed at triage (recorded for transparency; do not implement)
+
+- **F14 — `operations_hash` dropped from key derivation.** F2's `op_type` binding in the HAF lookup closes the cross-shadowing class without re-introducing `operations_hash` composition (which would require backend-side canonicalization with non-trivial determinism risk). Architect documents the chosen design (op_type-bound lookup, no operations_hash composition) in the convention update at archive.
+- **F25 — `event` parameter typed `string` not literal union.** F22 deletes the helper; project-wide pino event-name discipline is out of scope for this task.
+- **F27 — `idempotency_key` validator accepts 1-128 char strings, no shape enforcement.** F2's op_type binding closes the adversarial cross-shadowing class; remaining self-DoS via predictable keys is user-shoots-self-in-foot. Architect documents recommended SPA-side discipline (UUID v4 from `crypto.randomUUID()`) in convention update at archive; no backend enforcement.
+- **F18 — pure-vote bundle bypass doubles VP burn on whale accounts.** Accepted limitation per PEvO's "no Hive rewards as value proposition" posture. Architect documents in the per-surface amplification table at archive.
+
+### Filed as new pending tasks (architect at this pass)
+
+- **`backend-idempotency-haf-integration-test.md`** — real-path HAF integration test (F6 part 2). Carve-out clause (c) compliance. Backend follow-up.
+- **`backend-accreditation-existing-accreditation-gate.md`** — add `getExistingAccreditation` HAF gate to `/verify` before broadcast (F7). Returns `outcome: 'already_accredited'` on prior accredit op. Closes the multi-token duplicate-broadcast class structurally; pre-existing structural gap, not introduced by this commit.
+
+When all 18 items above land, `git mv` this file back to `tasks/review/` for re-review and archive.
+
+---
+
+## [TODO Architect] (supplementary — added by re-review 2026-05-11)
+
+### Convention update additions
+
+Beyond the original 3 items in `chain-write-timeout-ambiguous-outcome-2026-04-22.md`, also land at archive:
+
+4. **(F12 part 1) Defense window framing.** Document explicitly that Option A.4's defense window is bounded by HAF indexer lag (~5-30s typical), and that the PEvO Redis short-circuit layer (added under F5) is what bridges the fast-retry-after-timeout class — without the Redis layer, the bare HAF lookup catches only slow-retry-after-confirmed (>30s post-broadcast retries).
+5. **(F14) Design choice: op_type-bound lookup, no operations_hash composition.** Document that the implementation chose to bind `op_type` into the HAF lookup at the SQL level (rather than re-introducing `operations_hash` composition into the embedded key) to avoid backend-side canonicalization determinism risk. The on-chain field is the raw client-supplied key; cross-op-type shadowing is closed at the lookup layer.
+6. **(F18) Per-surface amplification table sub-note.** Under the `vote` op-class entry in the new per-surface amplification table: "pure-vote bundles have no embed surface; Hive re-vote semantics burn VP afresh on retry; idempotency layer cannot close this class. Accepted limitation given PEvO's no-rewards-value-proposition posture."
+7. **(F27) SPA-side discipline.** Recommend (non-binding) that SPA implementers generate `idempotency_key` via `crypto.randomUUID()` to avoid predictable-key enumeration. PEvO backend does not enforce a shape per task spec rationale ("avoid coupling the wire shape to a specific format") to keep AGPL forks flexible.
+
+### Contract update adjustments
+
+- **(F17) Common.md framing.** The original item "Add `POST_BROADCAST_FAILED` to the broadcast-error code table" is **stale** — the row was already added by a prior commit in this cluster. Treat as a **verify step**: read the existing `common.md:73` row, confirm it matches code's emitted shape, mark complete. **AND** add the new permanent-error code from F3 (e.g., `POST_BROADCAST_OPERATOR_REQUIRED`) when that hold item lands.
+- **(F10 rename propagation) Log event renames in contract docs.** When landing the original `accreditation.md` and `custody.md` updates, use the renamed event names: `idempotency_haf_unconfigured` (not `idempotency_haf_unavailable`).
+- **(F13 part 2) AC-3 block_num nullability.** In the custody.md "success response shape extension" item, document `block_num: number | null` semantics — block_num is present and non-null on fresh broadcasts; may be null (or omitted post-F13-fix coercion) on the idempotency-hit path. SPA code must handle absence without throwing.
+- **(F16) Hive-schemas.md addition.** Update `agents/docs/hive-schemas.md` section 2.1 (accreditation): add `idempotency_key` field to the `accredit` custom_json schema. One-line note: "Deterministic per `(token, username)` via `sha256(token:username)`; no PII (token entropy preserved, username already public). Used for pre-broadcast HAF dedup on `/api/accreditation/verify`."
