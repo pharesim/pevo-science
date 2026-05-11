@@ -91,7 +91,7 @@ const template = `
                   <template x-for="result in results" :key="result.author + '/' + result.permlink">
                     <article class="card hover:shadow-sm transition-shadow">
                       <div class="flex items-center gap-2 text-xs text-ink-muted mb-2">
-                        <span class="badge-discipline" x-text="$t(result.type === 'review' ? 'search.typeReviews' : 'search.typePapers')"></span>
+                        <span class="badge-discipline" data-testid="search-result-type" x-text="$t(result.type === 'review' ? 'search.typeReviews' : 'search.typePapers')"></span>
                         <time :datetime="result.created" x-text="formatDate(result.created)"></time>
                         <template x-if="result.is_accredited">
                           <span class="badge-accredited" :title="$t('badge.accreditedTitle')">
