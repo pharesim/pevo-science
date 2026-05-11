@@ -213,13 +213,21 @@ describe('GET /api/papers — bridge-author pin', () => {
     }
   });
 
-  it('source=native produces type=paper without bridge author pin (asymmetric arm)', async () => {
+  it('source=native still emits the gate bridge OR-arm with the bridge author pin (post backend-papers-filter-accreditation lane 1: gate is unconditional)', async () => {
+    // Pre backend-papers-filter-accreditation lane 1 this asserted that
+    // `?source=native&accredited_only=false` produced SQL with no
+    // `'bridge_paper'` literal at all (asymmetric arm: typeFilter excluded
+    // bridge AND the gate was disabled). After the opt-out removal the gate
+    // is unconditional; its bridge OR-arm — `validPevoPaperWhere({ source:
+    // 'bridge' })` — always emits regardless of the typeFilter source. The
+    // load-bearing invariant for THIS test is the bridge author pin on that
+    // OR-arm: a regression that drops the pin would still satisfy the old
+    // "no bridge_paper" assertion vacuously, but would be caught here.
     await request(app).get('/api/papers?source=native&accredited_only=false').expect(200);
-    expect(captured.length).toBeGreaterThanOrEqual(1);
-    // Native-only branch: helper emits the native arm only — no bridge_paper
-    // literal at all when accreditedOnly is also off.
-    for (const cap of captured) {
-      expect(cap.sql).not.toContain("'bridge_paper'");
+    const related = bridgeRelatedCaptures();
+    expect(related.length).toBeGreaterThan(0);
+    for (const cap of related) {
+      assertBridgeAuthorPin(cap.sql, cap.params);
     }
   });
 
