@@ -355,6 +355,79 @@ describe('handleBroadcastError', () => {
     expect(body.error.message).toContain('confirmed on Hive');
   });
 
+  // Round-3 hold #4 — unit coverage for the severity:'permanent' branch.
+  // Mutation testing intent: a swap of `=== 'permanent'` to `=== 'transient'`
+  // at the code/message-selection site is invisible if the only end-to-end
+  // exercise is the accreditation-idempotency integration test. These two
+  // unit specs pin the branch at the helper layer so a regression on either
+  // code path or copy is caught locally. Item 4 of the round-3 hold-block.
+  it('severity:"permanent" emits 502 POST_BROADCAST_OPERATOR_REQUIRED with the permanent user-message copy (round-3 hold #4 spec a)', () => {
+    vi.spyOn(logger, 'error').mockImplementation(() => undefined as unknown as void);
+    const res = mockResponse();
+    const cause = new TypeError('reputation weights shape regression');
+    const err = new PostBroadcastWriteError('hive-tx-perm-001', cause, 'reputation_seed', 'permanent');
+
+    const outcome = handleBroadcastError(res, err, {
+      timeoutMsg: 'T',
+      failMsg: 'F (should not surface — chain op landed)',
+      logContext: {},
+      routeLabel: 'accreditation.verify',
+    });
+
+    expect(outcome).toBe('post_broadcast');
+    expect(res.status).toHaveBeenCalledWith(502);
+    const body = (res.json as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(body.error.code).toBe('POST_BROADCAST_OPERATOR_REQUIRED');
+    // Round-3 hold #3: the permanent user-message asks the user to contact
+    // support (replaced the prior "support has been notified" wording which
+    // overstated the alerting backend that doesn't exist yet). Pin the new
+    // copy verbatim so a regression on the message is caught here.
+    expect(body.error.message).toContain('contact support');
+    // The envelope discriminators carry the tx_id of the confirmed-on-chain
+    // op and the cascade step that failed — same shape as the transient
+    // branch; only the code + copy differ on severity.
+    expect(body.error.details).toEqual({
+      retriable: false,
+      outcome: 'confirmed',
+      tx_id: 'hive-tx-perm-001',
+      failed_step: 'reputation_seed',
+    });
+    // Sanitized default: the internal step label is operator vocabulary
+    // (see case D above) — assert it doesn't leak into the user-facing
+    // permanent message either.
+    expect(body.error.message).not.toContain('reputation_seed');
+  });
+
+  it('default severity (transient) emits 502 POST_BROADCAST_FAILED with the "reconcile" user-message copy (round-3 hold #4 spec b)', () => {
+    vi.spyOn(logger, 'error').mockImplementation(() => undefined as unknown as void);
+    const res = mockResponse();
+    // Default severity = 'transient' (preserves prior ORCID-surface
+    // contract for callers that don't pass the field). Construct without
+    // the 4th argument to exercise the default.
+    const err = new PostBroadcastWriteError('hive-tx-trans-001', new Error('redis flap'), 'cache_write');
+
+    const outcome = handleBroadcastError(res, err, {
+      timeoutMsg: 'T',
+      failMsg: 'F',
+      logContext: {},
+      routeLabel: 'orcid.handleAccredit',
+    });
+
+    expect(outcome).toBe('post_broadcast');
+    expect(res.status).toHaveBeenCalledWith(502);
+    const body = (res.json as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(body.error.code).toBe('POST_BROADCAST_FAILED');
+    // Transient user-message tells the user the backend record will
+    // restore from the chain shortly — i.e., reconcile automatically.
+    expect(body.error.message).toMatch(/restore the backend record/i);
+    expect(body.error.details).toEqual({
+      retriable: false,
+      outcome: 'confirmed',
+      tx_id: 'hive-tx-trans-001',
+      failed_step: 'cache_write',
+    });
+  });
+
   // Round-1 hold #2 — `postBroadcastMsgFn` is application code that can
   // throw. Letting an exception escape `handleBroadcastError` here would skip
   // `sendError`, propagate to the route's outer catch as a generic 500

@@ -38,9 +38,11 @@ export type PostBroadcastFailedStep = 'cache_write' | 'account_update' | 'reputa
  *     contract).
  *
  *   `'permanent'` — operator must investigate; no batch cycle will recover
- *     the missed write. User-facing message says "support has been notified."
- *     Emits 502 `POST_BROADCAST_OPERATOR_REQUIRED`. Structured log severity
- *     is operator-paged.
+ *     the missed write. User-facing message asks the user to contact support
+ *     directly (round-3 hold #3: prior "support has been notified" wording
+ *     overstated the alerting backend, which doesn't exist yet beyond log
+ *     greping). Emits 502 `POST_BROADCAST_OPERATOR_REQUIRED`. Structured log
+ *     severity is `'permanent'` for dashboard discrimination.
  *
  * Accreditation `/verify`'s `seedAccreditationBonus` wrap sets `'permanent'`
  * because `seedAccreditationBonus` only re-throws on permanent (programmer-
@@ -296,13 +298,21 @@ function defaultPostBroadcastMsg(txId: string): string {
 
 /**
  * Permanent-severity counterpart to `defaultPostBroadcastMsg` (round-2 F3).
- * Communicates "support has been notified" rather than "will reconcile
- * automatically" because the permanent class — `TypeError`/`SyntaxError`/
- * `RangeError` rethrown by a cascade fn — represents a programmer-error
- * state that no batch cycle will self-heal. Operator action required.
+ * Communicates that operator action is required because the permanent
+ * class — `TypeError`/`SyntaxError`/`RangeError` rethrown by a cascade fn —
+ * represents a programmer-error state that no batch cycle will self-heal.
+ *
+ * Round-3 hold #3: prior wording said "support has been notified" but no
+ * PagerDuty/Slack/email integration is wired in the codebase to back the
+ * claim. The single-instance beta only fires
+ * `logger.error({event:'post_broadcast_write_failed', severity:'permanent'})`,
+ * which operators learn about by greping logs. The honest user-facing copy
+ * is to ask the user to contact support themselves. Once an alerting
+ * backend lands (`backend-post-broadcast-operator-alerting.md`), the
+ * copy can be revisited.
  */
 function defaultPostBroadcastOperatorRequiredMsg(txId: string): string {
-  return `Your operation is confirmed on Hive (tx ${txId}). A backend write failed and could not be reconciled automatically; support has been notified.`;
+  return `Your operation is confirmed on Hive (tx ${txId}). A backend write failed and could not be reconciled automatically; please contact support.`;
 }
 
 /**

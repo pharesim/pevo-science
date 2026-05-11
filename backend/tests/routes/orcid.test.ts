@@ -2762,7 +2762,7 @@ describe.each([
   // `handleBroadcastError` then emits one of two 502 envelopes:
   //
   //   severity:'permanent' → 502 POST_BROADCAST_OPERATOR_REQUIRED
-  //                          (message: "support has been notified")
+  //                          (message: "please contact support")
   //   severity:'transient' → 502 POST_BROADCAST_FAILED
   //                          (message: "will reconcile automatically")
   //

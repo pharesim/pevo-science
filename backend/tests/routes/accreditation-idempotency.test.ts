@@ -147,7 +147,7 @@ describe('accreditation /verify — idempotency hit (Option A.4)', () => {
     }
   });
 
-  it('HAF hit returns existing tx_id with outcome:already_landed, skips broadcast, but still seeds bonus and decrements cap counter (F1)', async () => {
+  it('HAF hit returns existing tx_id with outcome:already_landed, skips broadcast, seeds bonus, no cap slot consumed (F1 + round-3 hold #7)', async () => {
     const redis = getRedis();
     if (!redis) return;
     const token = `accred-idem-${crypto.randomBytes(8).toString('hex')}`;
@@ -175,10 +175,9 @@ describe('accreditation /verify — idempotency hit (Option A.4)', () => {
       // Token cleanup runs on the hit path so the next retry-with-same-token
       // returns 400 BAD_REQUEST instead of looping back through HAF.
       expect(await tokenExists(token)).toBe(false);
-      // F1 part 1: counter pre-INCR'd to 1 (cap defaults to 3, so we're
-      // still under cap); after the hit, decrement brings it back to 0.
-      // The key persists at value 0 until the 24h TTL (DEL only fires when
-      // DECR would go below 0).
+      // Round-3 hold #7: the idempotency probe now runs BEFORE the cap
+      // pre-INCR, so a hit branch consumes ZERO cap slots. The counter
+      // key never exists (no INCR happened).
       const counter = await readBroadcastAttemptsCounter(token);
       expect(counter === null || counter === 0).toBe(true);
       // F19/F20 hit-path event pin: logger.info called with the
@@ -198,6 +197,52 @@ describe('accreditation /verify — idempotency hit (Option A.4)', () => {
     } finally {
       infoSpy.mockRestore();
     }
+  });
+
+  // Round-3 hold #7 — adversarial A3 cap+idempotency mixed-envelope class.
+  // The pre-fix ordering (cap-INCR first, then idempotency probe) could send
+  // concurrent retries through both branches: retry N returns 502
+  // BROADCAST_ATTEMPT_LIMIT_EXCEEDED on cap exhaustion while retry N+1
+  // returns 200 outcome:'already_landed' for the same logical op once the
+  // chain row indexed. Hoisting the probe above the INCR closes this: an
+  // idempotency hit always returns 200 (no cap consumed), regardless of
+  // the counter's current value.
+  it('idempotency hit returns 200 even when broadcast-attempts counter is at cap (round-3 hold #7 ordering)', async () => {
+    const redis = getRedis();
+    if (!redis) return;
+    const token = `accred-idem-${crypto.randomBytes(8).toString('hex')}`;
+    const username = 'idemverifyatcap';
+    await seedPendingAccreditation(token, username);
+
+    // Pre-seed the counter at cap so a cap check that ran first would
+    // return 502 BROADCAST_ATTEMPT_LIMIT_EXCEEDED.
+    const cap = config.verifyBroadcastAttemptsCap;
+    await redis.set(`${config.appTag}:pending_accred_broadcast_attempts:${token}`, cap.toString(), 'EX', 86400);
+
+    hafQueryMock.mockResolvedValueOnce({
+      rows: [{ trx_id: 'tx-prior-at-cap', block_num: 67890 }],
+    });
+
+    const res = await request(app).post('/api/accreditation/verify').send({ token });
+
+    // Hit branch wins: 200 outcome:'already_landed'. If the cap check had
+    // run first, this would be 502 BROADCAST_ATTEMPT_LIMIT_EXCEEDED.
+    expect(res.status).toBe(200);
+    expect(res.body.data).toMatchObject({
+      tx_id: 'tx-prior-at-cap',
+      outcome: 'already_landed',
+    });
+    expect(broadcastJsonMock).not.toHaveBeenCalled();
+    // The cap-exceeded envelope (BROADCAST_ATTEMPT_LIMIT_EXCEEDED, code
+    // 502) is the regression class this test guards against. Asserting on
+    // the response body's absence of that code pins ordering: with the
+    // pre-fix shape, the cap pre-INCR (going from `cap` to `cap+1`)
+    // would have tripped the cap-check and returned 502 before the
+    // probe ran. Hit-branch token cleanup deletes the counter key as a
+    // side effect (deleteToken cascades into deleteBroadcastAttempts),
+    // so a post-call counter read isn't a usable signal — the body
+    // check is the one that matters.
+    expect(res.body.error).toBeUndefined();
   });
 
   it('HAF miss broadcasts and embeds idempotency_key into accredit custom_json payload', async () => {
@@ -383,9 +428,12 @@ describe('accreditation /verify — PostBroadcastWriteError on seedAccreditation
       tx_id: 'confirmed-on-chain-tx',
       failed_step: 'reputation_seed',
     });
-    // User-facing message reflects the permanent severity — "support has
-    // been notified" instead of the transient "will reconcile" copy.
-    expect(res.body.error.message).toMatch(/support has been notified/i);
+    // User-facing message reflects the permanent severity — "contact
+    // support" instead of the transient "reconcile" copy. Round-3 hold #3
+    // changed the prior "support has been notified" wording (which falsely
+    // implied an alerting backend exists) to honest "please contact
+    // support" copy.
+    expect(res.body.error.message).toMatch(/contact support/i);
     // Token already cleaned up before the seed-bonus throw — the chain op
     // landed, so the token has done its job. The post_broadcast catch branch
     // does NOT delete it again.

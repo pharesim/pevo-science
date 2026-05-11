@@ -17,15 +17,18 @@
  * schema/view/operator regression is caught by the real-path lane.
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   embedIdempotencyKey,
   validateIdempotencyKey,
   findCustodyBroadcastByIdempotencyKey,
   findAccreditationBroadcastByIdempotencyKey,
+  lookupCustodyBroadcastIdempotency,
   type IdempotencyPool,
 } from '../../src/lib/idempotency.js';
 import { config } from '../../src/config.js';
+import { getRedis } from '../../src/redis.js';
+import { logger } from '../../src/logger.js';
 
 const KEY = '11111111-2222-3333-4444-555555555555';
 
@@ -325,5 +328,119 @@ describe('findAccreditationBroadcastByIdempotencyKey', () => {
     expect(params[0]).toBe(config.appTag);
     expect(params[1]).toBe(KEY);
     expect(params[2]).toEqual(config.accreditationAuthorities);
+  });
+});
+
+// Round-3 hold #1 — buildCustodyCacheKey must include op_type in the hash
+// so a positive-cache hit for one op-type doesn't shadow a sibling request
+// of a different op-type carrying the same (username, key). F2 closed this
+// class at the HAF SQL layer (opType-bound probe); the cache layer was
+// still open until this hold. This describe block uses REAL Redis (the
+// cache layer's transport) so the assertion is end-to-end at the cache
+// boundary; the underlying HAF pool is still mocked because that's
+// pre-existing for the SQL-shape risk class.
+describe('lookupCustodyBroadcastIdempotency — cache key includes op_type (round-3 hold #1)', () => {
+  const username = 'cachekeyuser';
+  const sharedKey = 'shared-key-across-op-types-001';
+
+  afterEach(async () => {
+    const redis = getRedis();
+    if (!redis) return;
+    const keys = await redis.keys(`${config.appTag}:idem:custody:*`);
+    if (keys.length > 0) await redis.del(...keys);
+  });
+
+  it('comment-then-custom_json with same key does NOT return already_landed with the comment tx_id', async () => {
+    const redis = getRedis();
+    // Skip when Redis is not configured for this test run — the cache key
+    // collision is only observable when the cache layer is live.
+    if (!redis) return;
+
+    // First request: comment-op probe lands a hit, cache writes a positive
+    // entry keyed on (username, key, opType=comment). The HAF pool returns
+    // a comment-op tx_id.
+    const commentTxId = 'tx-comment-cache-key';
+    const queryFn1 = vi
+      .fn()
+      .mockResolvedValueOnce({ rows: [{ trx_id: commentTxId, block_num: 100 }] });
+    const pool1 = { query: queryFn1 } as unknown as IdempotencyPool;
+    const hit1 = await lookupCustodyBroadcastIdempotency(pool1, username, sharedKey, 'comment');
+    expect(hit1).toEqual({ tx_id: commentTxId, block_num: 100 });
+
+    // Second request: same (username, key) but opType='custom_json'. Pre-
+    // round-3-hold-#1, the cache key was just sha256(username|key) so this
+    // would return the cached comment hit and the route would emit
+    // outcome:'already_landed' with the comment's tx_id — a wrong-tx-id
+    // 200 on a sibling op surface. With the op_type fold-in, the cache
+    // key differs; this lookup goes to HAF, which we've mocked to return
+    // empty so the result is null (no shadow hit).
+    const queryFn2 = vi.fn().mockResolvedValueOnce({ rows: [] });
+    const pool2 = { query: queryFn2 } as unknown as IdempotencyPool;
+    const hit2 = await lookupCustodyBroadcastIdempotency(pool2, username, sharedKey, 'custom_json');
+    expect(hit2).toBeNull();
+    // Critically: the second request did NOT receive the comment's tx_id
+    // from the cache. If hit2 were `{ tx_id: commentTxId, ... }` this is
+    // the regression class the hold-block exists to close.
+    expect(hit2).not.toEqual({ tx_id: commentTxId, block_num: 100 });
+    // And the HAF probe ran (cache miss for the cj key path) — proves the
+    // cache layer didn't short-circuit on the comment-key hit.
+    expect(queryFn2).toHaveBeenCalled();
+  });
+});
+
+// Round-3 hold #2 — readCached must runtime-validate the discriminated
+// union shape, not blindly cast JSON.parse output. A stale Redis entry from
+// a future format mutation could otherwise slip through the kind check at
+// the caller and corrupt the IdempotencyHit shape. Cache fail-open: on
+// validation failure, log structured + return undefined (degrade to cache
+// miss). Test by writing a malformed entry into Redis directly and
+// observing the warn + the live HAF probe running.
+describe('readCached — discriminated-union shape validation (round-3 hold #2)', () => {
+  const username = 'shapevaliduser';
+  const idemKey = 'shape-valid-key-001';
+
+  afterEach(async () => {
+    const redis = getRedis();
+    if (!redis) return;
+    const keys = await redis.keys(`${config.appTag}:idem:custody:*`);
+    if (keys.length > 0) await redis.del(...keys);
+  });
+
+  it('corrupt cache entry (missing tx_id on a kind:hit) → warn + degrades to live HAF probe', async () => {
+    const redis = getRedis();
+    if (!redis) return;
+    // Pre-seed a corrupt entry. The cache key is internal to the module
+    // so we hand-compute the expected key shape (this mirrors the
+    // production buildCustodyCacheKey: appTag:idem:custody:<sha256(u|k|op)>).
+    const crypto = await import('node:crypto');
+    const hash = crypto
+      .createHash('sha256')
+      .update(`${username}|${idemKey}|comment`)
+      .digest('hex');
+    const cacheKey = `${config.appTag}:idem:custody:${hash}`;
+    // kind:'hit' but missing tx_id (a future format-mutation might rename
+    // the field; this simulates that drift).
+    await redis.set(cacheKey, JSON.stringify({ kind: 'hit', block_num: 200 }));
+
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never);
+    try {
+      const queryFn = vi.fn().mockResolvedValueOnce({ rows: [] });
+      const pool = { query: queryFn } as unknown as IdempotencyPool;
+      const result = await lookupCustodyBroadcastIdempotency(pool, username, idemKey, 'comment');
+
+      // Fail-open: the corrupt cache entry was treated as a cache miss,
+      // the live HAF probe ran, and we got null (HAF mock returned empty).
+      expect(result).toBeNull();
+      expect(queryFn).toHaveBeenCalledTimes(1);
+      // Structured warn pinned for the corrupt-entry anchor — operators
+      // see a clear signal that the cache layer has a poisoned entry.
+      const matchingCall = warnSpy.mock.calls.find((call) => {
+        const ctx = call[0] as Record<string, unknown> | undefined;
+        return ctx?.event === 'idempotency.cache.corrupt_entry';
+      });
+      expect(matchingCall, 'expected idempotency.cache.corrupt_entry warn').toBeDefined();
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });
