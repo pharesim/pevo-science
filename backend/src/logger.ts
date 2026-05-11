@@ -193,7 +193,7 @@ export function redactErrSerializer(err: unknown, depth = 0): SerializedErr | un
   // === false` on the recursive call and returns the object verbatim,
   // bypassing the SAFE_BASELINE_FIELDS allowlist. Branch per element so
   // plain-object members route through `redactPlainObject` instead.
-  const maybeErrors = (errAny as unknown as { errors?: unknown }).errors;
+  const maybeErrors = errAny.errors;
   if (Array.isArray(maybeErrors)) {
     out.aggregateErrors = maybeErrors.map((e) =>
       isErrorLike(e) ? redactErrSerializer(e, depth + 1) : redactPlainObject(e, depth + 1),

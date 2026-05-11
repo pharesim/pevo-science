@@ -57,21 +57,21 @@ process.on('unhandledRejection', (reason) => {
 // already logged before throwing `BootFatalError`, so we suppress the
 // re-log on that subclass to avoid noise).
 //
-// CONSTRAINT (round-5 hold #7): validateConfig and createApp MUST remain
-// synchronous and at module-evaluation scope. Introducing await or moving
-// these into a .then chain would route BootFatalError to the wrong
-// handler (e.g. initAppDb().catch logged as 'Failed to initialize app
-// database'), defeating the structured boot-fatal path.
+// CONSTRAINT: validateConfig and createApp MUST remain synchronous and at
+// module-evaluation scope. Introducing await or moving these into a .then
+// chain would route BootFatalError to the wrong handler (e.g.
+// initAppDb().catch logged as 'Failed to initialize app database'),
+// defeating the structured boot-fatal path.
 //
 // Round-5 hold #5 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):
-// `app` is narrowed via definite-assignment + `if (!app) return;` rather
-// than a `throw err;` at the end of the catch. The previous re-throw
-// propagated `BootFatalError` to module-evaluation scope, where Node
-// routed it to the `uncaughtException` handler — which logged a synthetic
-// 'Uncaught exception — shutting down' fatal AND called `flushAndExit()`
-// again (two timers, two flush calls, duplicate log line). Returning from
-// the catch + the post-try guard avoids the re-entry; `flushAndExit()` is
-// the sole exit path for boot-fatal cases.
+// `app` is narrowed via the `if (app) { ... }` block below rather than a
+// `throw err;` at the end of the catch. The previous re-throw propagated
+// `BootFatalError` to module-evaluation scope, where Node routed it to the
+// `uncaughtException` handler — which logged a synthetic 'Uncaught
+// exception — shutting down' fatal AND called `flushAndExit()` again (two
+// timers, two flush calls, duplicate log line). Falling through to the
+// positive `if (app)` guard avoids the re-entry; `flushAndExit()` from the
+// catch block is the sole exit path for boot-fatal cases.
 let app: ReturnType<typeof createApp> | undefined;
 try {
   validateConfig();
@@ -85,72 +85,72 @@ try {
 let server: Server;
 
 if (app) {
-const bootedApp = app;
-initAppDb()
-  .then(async () => {
-    // Warm genesis block cache before accepting traffic
-    const hafPool = getPool();
-    if (hafPool) await getGenesisBlock(hafPool);
+  const bootedApp = app;
+  initAppDb()
+    .then(async () => {
+      // Warm genesis block cache before accepting traffic
+      const hafPool = getPool();
+      if (hafPool) await getGenesisBlock(hafPool);
 
-    // Start periodic cache refreshes before accepting traffic
-    await startRetractionCache();
+      // Start periodic cache refreshes before accepting traffic
+      await startRetractionCache();
 
-    server = bootedApp.listen(config.port, () => {
-      // Warm expensive shared HAF caches in the background (non-blocking)
-      Promise.all([
-        startReputationWeightsCache(),
-        startWotThresholdCache(),
-        startStatsCache(),
-        backfillAccreditationSeeds(),
-      ]).catch((err) => logger.warn({ err }, 'Background cache warmup failed'));
-      logger.info({ port: config.port, haf: isHafAvailable(), appDb: !!config.appDatabaseUrl }, 'PEvO backend started');
+      server = bootedApp.listen(config.port, () => {
+        // Warm expensive shared HAF caches in the background (non-blocking)
+        Promise.all([
+          startReputationWeightsCache(),
+          startWotThresholdCache(),
+          startStatsCache(),
+          backfillAccreditationSeeds(),
+        ]).catch((err) => logger.warn({ err }, 'Background cache warmup failed'));
+        logger.info({ port: config.port, haf: isHafAvailable(), appDb: !!config.appDatabaseUrl }, 'PEvO backend started');
 
-      // Production-only: warn if Redis is unavailable, because ORCID OAuth
-      // state then falls back to an in-memory map that is NOT multi-process safe.
-      checkOrcidProcessSafety();
+        // Production-only: warn if Redis is unavailable, because ORCID OAuth
+        // state then falls back to an in-memory map that is NOT multi-process safe.
+        checkOrcidProcessSafety();
 
-      if (isHafAvailable()) {
-        startBlockWatcher();
-      }
+        if (isHafAvailable()) {
+          startBlockWatcher();
+        }
 
-      // Start email digest scheduler if SMTP is configured
-      if (config.smtpHost) {
-        startDigestScheduler();
-      }
+        // Start email digest scheduler if SMTP is configured
+        if (config.smtpHost) {
+          startDigestScheduler();
+        }
 
-      // Start IPFS orphan cleanup job
-      startIpfsCleanup();
+        // Start IPFS orphan cleanup job
+        startIpfsCleanup();
 
-      // Start nightly batch reputation computation (v3 voter weight convergence)
-      startBatchReputation();
+        // Start nightly batch reputation computation (v3 voter weight convergence)
+        startBatchReputation();
 
-      // Start account creation token claimer (every 24h)
-      startAccountClaimer();
+        // Start account creation token claimer (every 24h)
+        startAccountClaimer();
 
-      // Start pending signup cleanup (every 1h)
-      startSignupCleanup();
+        // Start pending signup cleanup (every 1h)
+        startSignupCleanup();
 
-      // Start periodic argon2 abort-summary reporter (every 60s).
-      // Surfaces silent ArgonAbortError events to operators at LOG_LEVEL=info.
-      startArgon2AbortReporter();
+        // Start periodic argon2 abort-summary reporter (every 60s).
+        // Surfaces silent ArgonAbortError events to operators at LOG_LEVEL=info.
+        startArgon2AbortReporter();
 
-      // Start in-process pending-decrement drainer for the
-      // /api/accreditation/verify broadcast-attempt counter. Drains DECRs
-      // queued during a Redis flap on the route's compensation path.
-      startDecrementQueueDrainer();
+        // Start in-process pending-decrement drainer for the
+        // /api/accreditation/verify broadcast-attempt counter. Drains DECRs
+        // queued during a Redis flap on the route's compensation path.
+        startDecrementQueueDrainer();
 
-      // Non-blocking: check Hive API node connectivity at startup
-      void checkHiveNodes();
+        // Non-blocking: check Hive API node connectivity at startup
+        void checkHiveNodes();
+      });
+    })
+    .catch((err) => {
+      // Round-4 hold #1 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):
+      // route through `flushAndExit()` so the fatal line drains under the 2s
+      // watchdog (a hung-flush callback no longer hangs the boot indefinitely).
+      logger.fatal({ err }, 'Failed to initialize app database');
+      flushAndExit();
     });
-  })
-  .catch((err) => {
-    // Round-4 hold #1 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):
-    // route through `flushAndExit()` so the fatal line drains under the 2s
-    // watchdog (a hung-flush callback no longer hangs the boot indefinitely).
-    logger.fatal({ err }, 'Failed to initialize app database');
-    flushAndExit();
-  });
-} // end `if (app)` — boot-fatal short-circuit (round-5 hold #5)
+}
 
 // ── Graceful shutdown ───────────────────────────────────────
 // Re-entrancy guard: SIGTERM and SIGINT both call shutdown(), and under

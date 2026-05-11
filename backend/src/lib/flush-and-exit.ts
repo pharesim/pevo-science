@@ -13,7 +13,9 @@ import { logger } from '../logger.js';
  * unconditional call throws synchronously, escapes flushAndExit, and the 2s
  * timer still fires process.exit(1).
  *
- * Used by index.ts boot-fatal sites only.
+ * Used by the index.ts boot-fatal site (the boot try/catch in module
+ * evaluation) AND by the uncaughtException / unhandledRejection runtime
+ * handlers in index.ts.
  *
  * Round-4 hold #1 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):
  * extracted to its own module (a) so the boot path AND the unit-test canary
