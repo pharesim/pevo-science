@@ -57,7 +57,7 @@
  *       file follows the same pattern. A real-HAF integration variant
  *       is filed as follow-up.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import request from 'supertest';
 
 const { hafQueryMock, getPoolMock } = vi.hoisted(() => ({
@@ -92,6 +92,16 @@ beforeEach(async () => {
     }),
   });
   await hafCache.clear();
+});
+
+// File-level spy-cleanup guard. Without this, vi.spyOn called twice on
+// the same logger method across different `it()` bodies returns the
+// EXISTING spy (vitest contract: "If the method is already a spy, vi.spyOn
+// returns the existing spy") and the second test sees the first test's
+// mock.calls history. Mirrors the equivalent guard in
+// `canonical-root-walker.test.ts`.
+afterEach(() => {
+  vi.restoreAllMocks();
 });
 
 /**
@@ -1616,6 +1626,143 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
     await request(app).get('/api/papers/alice/p1');
     const walks = chainWalkCaptures();
     expect(walks.length).toBe(0);
+  });
+
+  it('wall-clock budget: aborts forward walker mid-walk, emits continuation_chain_wall_clock_exceeded', async () => {
+    // BACKEND-HAF-WALKER-WALL-CLOCK-BUDGET acceptance #4 canary for the
+    // FORWARD walker. The backward walker is suppressed (its initial
+    // probe returns 0 rows so findCanonicalRoot bails at
+    // sql_filter_or_missing at debug, NOT capturing budget time). Only
+    // the forward walker's chain-walk SQL queries are delayed (~80ms).
+    // Budget 50ms → after ~one chain-walk SQL, the abort fires; the
+    // iteration-boundary `if (signal?.aborted)` check emits the
+    // wall-clock warn and returns the chain-so-far.
+    //
+    // This shape pins the FORWARD walker's iteration-boundary check
+    // specifically; the elapsedMs assertion fails red on the pre-loop
+    // check alone, so a mutation that deletes the iteration check
+    // (leaving only the pre-loop check) flips elapsedMs from ~80 to ~0.
+    //
+    // Mutation-kill: remove the iteration-boundary `signal?.aborted`
+    // check in `resolveContinuationChain` → walker runs to depth cap
+    // regardless of budget → wall-clock event count drops (only the
+    // pre-loop emission, which won't fire because signal isn't aborted
+    // pre-loop in this responder shape) → canary fails red.
+    const continuationMeta = {
+      app: `${config.appTag}/test`,
+      [config.appTag]: { type: 'paper', authors: [{ hive: 'alice' }, { hive: 'bob' }] },
+    };
+    installResponder(async (sql, params) => {
+      // Backward walker initial probe (the IS NOT NULL discriminator)
+      // returns 0 rows so findCanonicalRoot bails at sql_filter_or_missing
+      // (debug, not captured by the warn spy). Fast — no delay so the
+      // budget doesn't trip during the backward walker.
+      if (/'continues'\s*IS\s+NOT\s+NULL/i.test(sql)) {
+        return { rows: [] };
+      }
+      // Head authorized-authors lookup and paper-detail SELECT are fast
+      // too — only the forward walker's chain-walk SQL bears the delay.
+      if (sql.includes('SELECT c.author, c.json_metadata') && sql.includes('parent_permlink = $3')) {
+        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'])] };
+      }
+      if (sql.includes('SELECT c.author, c.permlink, c.title')) {
+        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'])] };
+      }
+      if (isForwardChainWalkSql(sql)) {
+        // Slow only the forward walker. Each chain-walk query takes
+        // ~80ms; with a 50ms budget, the abort fires DURING the first
+        // chain-walk query's await. At iter 1's top, signal.aborted is
+        // true → emit + return chain so far.
+        await new Promise((r) => setTimeout(r, 80));
+        const currentAuthor = params[0];
+        const currentPermlink = params[1];
+        const nextAuthor = currentAuthor === 'alice' ? 'bob' : 'alice';
+        return {
+          rows: [{
+            author: nextAuthor,
+            permlink: `${currentPermlink}-cont`,
+            block_num: 100 + captured.length,
+            json_metadata: continuationMeta,
+          }],
+        };
+      }
+      return { rows: [] };
+    });
+
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+
+    const originalBudget = config.hafWalkerWallClockMs;
+    (config as { hafWalkerWallClockMs: number }).hafWalkerWallClockMs = 50;
+    try {
+      const res = await request(app).get('/api/papers/alice/p1');
+      expect(res.status).toBe(200);
+
+      const wallClockEvents = warnSpy.mock.calls
+        .map((c) => c[0] as { event?: string; hopIndex?: number; elapsedMs?: number } | undefined)
+        .filter((e) => e?.event === 'continuation_chain_wall_clock_exceeded');
+      expect(wallClockEvents.length).toBeGreaterThan(0);
+      // The iteration-boundary check fires AFTER at least one chain-walk
+      // query completed (~80ms elapsed). elapsedMs > 0 distinguishes
+      // this from the pre-loop check (which would emit at ~0ms).
+      expect(wallClockEvents[0]?.hopIndex).toBeGreaterThanOrEqual(0);
+      expect(wallClockEvents[0]?.elapsedMs).toBeGreaterThan(0);
+
+      // The chain-walk SQL count is bounded by the budget — well below
+      // MAX_HOPS=50. Pin a generous upper bound robust to timing jitter
+      // while still rejecting the unbounded-walker mutation.
+      const walks = chainWalkCaptures();
+      expect(walks.length).toBeLessThan(20);
+    } finally {
+      (config as { hafWalkerWallClockMs: number }).hafWalkerWallClockMs = originalBudget;
+    }
+  });
+
+  it('forward walker does NOT emit wall-clock event on fast HAF (orthogonal signal pinning)', async () => {
+    // BACKEND-HAF-WALKER-WALL-CLOCK-BUDGET acceptance #4 paired canary.
+    //
+    // The forward walker has no separate depth-cap event (it exits
+    // silently at MAX_HOPS), so this canary's role is the negative
+    // assertion: under fast HAF + generous budget, the wall-clock
+    // signal does NOT false-fire on a benign no-continuations chain.
+    // The signal is reserved for genuinely degraded HAF, not legitimate
+    // traffic patterns.
+    //
+    // Mutation-kill: invert the signal check (treat `signal?.aborted`
+    // as always-true) → wall-clock event fires on every request → this
+    // canary's `events.length === 0` assertion fails red.
+    installResponder(async (sql, _params) => {
+      // Suppress backward walker (same pattern as the slow-HAF canary
+      // above) so logger.warn isn't called for cont_columns_invalid.
+      if (/'continues'\s*IS\s+NOT\s+NULL/i.test(sql)) {
+        return { rows: [] };
+      }
+      if (sql.includes('SELECT c.author, c.json_metadata') && sql.includes('parent_permlink = $3')) {
+        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'])] };
+      }
+      if (sql.includes('SELECT c.author, c.permlink, c.title')) {
+        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'])] };
+      }
+      if (isForwardChainWalkSql(sql)) {
+        return { rows: [] };
+      }
+      return { rows: [] };
+    });
+
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+
+    const originalBudget = config.hafWalkerWallClockMs;
+    (config as { hafWalkerWallClockMs: number }).hafWalkerWallClockMs = 30000;
+    try {
+      const res = await request(app).get('/api/papers/alice/p1');
+      expect(res.status).toBe(200);
+
+      const wallClockEvents = warnSpy.mock.calls
+        .map((c) => c[0] as { event?: string } | undefined)
+        .filter((e) => e?.event === 'continuation_chain_wall_clock_exceeded');
+      expect(wallClockEvents.length).toBe(0);
+    } finally {
+      (config as { hafWalkerWallClockMs: number }).hafWalkerWallClockMs = originalBudget;
+    }
   });
 });
 

@@ -344,6 +344,166 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
     warnSpy.mockRestore();
   });
 
+  it('wall-clock budget: aborts mid-walk on slow HAF, emits canonical_root_walker_wall_clock_exceeded', async () => {
+    // BACKEND-HAF-WALKER-WALL-CLOCK-BUDGET acceptance #4 canary.
+    //
+    // Each pool.query takes ~80ms (longer than the per-test budget of
+    // 50ms). The walker fires the initial probe + at least one loop
+    // iteration's worth of SQL before the budget controller aborts;
+    // the iteration-boundary `if (signal?.aborted)` check then emits the
+    // wall-clock warn and returns the deepest verified node.
+    //
+    // Mutation-kill: remove the iteration-boundary `signal?.aborted`
+    // check in `findCanonicalRoot` → walker runs to depth cap regardless
+    // of budget → wall-clock event never fires → canary fails red on
+    // `events.length > 0`.
+    const N = 6; // depth deeper than where we expect abort to fire
+    const aliceMeta = pevoPaperJsonMeta(['alice']);
+
+    installResponder(async (sql, params) => {
+      // Slow every backward-walker query to 80ms. The budget (set below)
+      // is 50ms, so even the initial probe consumes the budget by the
+      // time it returns; the next iteration's `signal?.aborted` check
+      // fires before the loop body issues further SQL.
+      await new Promise((r) => setTimeout(r, 80));
+      if (isBackwardWalkContinuesProbe(sql)) {
+        const p = params[1] as string;
+        const m = /^v(\d+)$/.exec(p);
+        if (!m) return { rows: [] };
+        const i = Number(m[1]);
+        if (i === 0) {
+          return { rows: [{ cont_author: null, cont_permlink: null }] };
+        }
+        if (isInitialBackwardProbe(sql)) {
+          return {
+            rows: [{
+              author: 'alice',
+              json_metadata: pevoPaperRow('alice', p, ['alice']).json_metadata,
+              cont_author: 'alice',
+              cont_permlink: `v${i - 1}`,
+            }],
+          };
+        }
+        return { rows: [{ cont_author: 'alice', cont_permlink: `v${i - 1}` }] };
+      }
+      if (isHeadAuthorsLookup(sql)) {
+        return { rows: [{ author: 'alice', json_metadata: aliceMeta }] };
+      }
+      if (sql.includes('SELECT c.author, c.permlink, c.title')) {
+        return { rows: [pevoPaperRow('alice', params[1] as string, ['alice'])] };
+      }
+      return { rows: [] };
+    });
+
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+
+    // Per-test override of the wall-clock budget. config is a normal JS
+    // object literal (not Object.freeze'd); mutate its property here and
+    // restore in the finally. afterEach's vi.restoreAllMocks doesn't
+    // restore object properties, so do this defensively.
+    const originalBudget = config.hafWalkerWallClockMs;
+    (config as { hafWalkerWallClockMs: number }).hafWalkerWallClockMs = 50;
+    try {
+      const res = await request(app).get(`/api/papers/alice/v${N}`);
+      expect(res.status).toBe(200);
+
+      const wallClockEvents = warnSpy.mock.calls
+        .map((c) => c[0] as { event?: string; hopIndex?: number; elapsedMs?: number } | undefined)
+        .filter((e) => e?.event === 'canonical_root_walker_wall_clock_exceeded');
+      expect(wallClockEvents.length).toBeGreaterThan(0);
+      // The warn payload carries the iteration index where the abort
+      // tripped and how long the walker had been running. Both fields
+      // are operator-actionable signals; their presence is the mutation-
+      // kill discriminator for "walker silently exited without emitting
+      // an event tag".
+      expect(wallClockEvents[0]?.hopIndex).toBeGreaterThanOrEqual(0);
+      expect(wallClockEvents[0]?.elapsedMs).toBeGreaterThan(0);
+
+      // The walker did NOT exit via the depth cap. With slow HAF the
+      // budget must fire first, otherwise the wall-clock signal is
+      // redundant. This pairs with the depth-cap-fires-first canary
+      // below.
+      const depthEvents = warnSpy.mock.calls
+        .map((c) => c[0] as { event?: string } | undefined)
+        .filter((e) => e?.event === 'canonical_root_walker_depth_exceeded');
+      expect(depthEvents.length).toBe(0);
+    } finally {
+      (config as { hafWalkerWallClockMs: number }).hafWalkerWallClockMs = originalBudget;
+    }
+  });
+
+  it('depth cap fires before wall-clock when budget is generous (orthogonal signal pinning)', async () => {
+    // BACKEND-HAF-WALKER-WALL-CLOCK-BUDGET acceptance #4 paired canary.
+    //
+    // Asserts the orthogonal failure mode: under FAST HAF + LONG budget
+    // + DEEP chain, the depth cap is what stops the walker, NOT the
+    // wall-clock budget. The two signals must be cleanly separable;
+    // observability dashboards filter on `event` to distinguish
+    // "attacker-induced amplification" (depth-exceeded) from
+    // "degraded-HAF tail" (wall-clock-exceeded).
+    //
+    // Mutation-kill: invert the priority order (check depth cap before
+    // wall-clock budget at the loop top) → with a fast responder the
+    // depth-cap canary still passes here, but the slow-responder canary
+    // above stops emitting the wall-clock event because the depth cap
+    // exits first. The two canaries together pin the priority.
+    const N = 11; // > CANONICAL_ROOT_MAX_HOPS (10)
+    const aliceMeta = pevoPaperJsonMeta(['alice']);
+
+    installResponder(async (sql, params) => {
+      if (isBackwardWalkContinuesProbe(sql)) {
+        const p = params[1] as string;
+        const m = /^v(\d+)$/.exec(p);
+        if (!m) return { rows: [] };
+        const i = Number(m[1]);
+        if (i === 0) {
+          return { rows: [{ cont_author: null, cont_permlink: null }] };
+        }
+        if (isInitialBackwardProbe(sql)) {
+          return {
+            rows: [{
+              author: 'alice',
+              json_metadata: pevoPaperRow('alice', p, ['alice']).json_metadata,
+              cont_author: 'alice',
+              cont_permlink: `v${i - 1}`,
+            }],
+          };
+        }
+        return { rows: [{ cont_author: 'alice', cont_permlink: `v${i - 1}` }] };
+      }
+      if (isHeadAuthorsLookup(sql)) {
+        return { rows: [{ author: 'alice', json_metadata: aliceMeta }] };
+      }
+      if (sql.includes('SELECT c.author, c.permlink, c.title')) {
+        return { rows: [pevoPaperRow('alice', params[1] as string, ['alice'])] };
+      }
+      return { rows: [] };
+    });
+
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+
+    // Generous budget (30s) ensures fast queries can't trip the
+    // wall-clock signal even with 10 hops × 2 SQL each.
+    const originalBudget = config.hafWalkerWallClockMs;
+    (config as { hafWalkerWallClockMs: number }).hafWalkerWallClockMs = 30000;
+    try {
+      const res = await request(app).get(`/api/papers/alice/v${N}`);
+      expect(res.status).toBe(200);
+
+      const depthEvents = warnSpy.mock.calls
+        .map((c) => c[0] as { event?: string } | undefined)
+        .filter((e) => e?.event === 'canonical_root_walker_depth_exceeded');
+      expect(depthEvents.length).toBeGreaterThan(0);
+
+      const wallClockEvents = warnSpy.mock.calls
+        .map((c) => c[0] as { event?: string } | undefined)
+        .filter((e) => e?.event === 'canonical_root_walker_wall_clock_exceeded');
+      expect(wallClockEvents.length).toBe(0);
+    } finally {
+      (config as { hafWalkerWallClockMs: number }).hafWalkerWallClockMs = originalBudget;
+    }
+  });
+
   it('legitimate self-continuation: alice/v2 → alice/v1 walks all the way to root', async () => {
     // alice/v1 (root) ← alice/v2. Asking for alice/v2 must canonicalize to
     // alice/v1 because the hop is author-authorized (alice in alice's

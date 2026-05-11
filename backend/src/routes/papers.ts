@@ -697,7 +697,12 @@ async function fetchExternalCitationCounts(dois: string[]): Promise<Record<strin
 // GET /api/papers/:author/:permlink — single paper
 // ──────────────────────────────────────────────
 
-async function fetchPaperDetailFromHaf(author: string, permlink: string, memo?: HeadAuthorsMemo) {
+async function fetchPaperDetailFromHaf(
+  author: string,
+  permlink: string,
+  memo?: HeadAuthorsMemo,
+  signal?: AbortSignal,
+) {
   const pool = getPool();
   if (!pool) return null;
 
@@ -718,7 +723,7 @@ async function fetchPaperDetailFromHaf(author: string, permlink: string, memo?: 
     // The optional `memo` parameter lets the caller share the
     // per-`(author, permlink)` metadata cache with the backward
     // canonical-root walker (see `findCanonicalRoot`).
-    const chain = await resolveContinuationChain(author, permlink, memo);
+    const chain = await resolveContinuationChain(author, permlink, memo, signal);
     // Hoist the accreditation lookups so the cumulative-union construction
     // (further down) and the `accredited_authors` rebuild share the same
     // request-scoped fetches. Both helpers cache 10 min via hafCache so
@@ -734,7 +739,7 @@ async function fetchPaperDetailFromHaf(author: string, permlink: string, memo?: 
            AND ${detailWhere}`,
         [author, permlink, config.appTag, config.hiveBridgeAccount],
       ),
-      reconstructVersionsFromHaf(author, permlink, chain, memo),
+      reconstructVersionsFromHaf(author, permlink, chain, memo, signal),
       getRetractionInfo(author, permlink),
       getAllAccreditedAccounts(),
       getAccreditedOrcidsByAccount(),
@@ -1035,10 +1040,21 @@ async function fetchHeadAuthorizedAuthors(
   author: string,
   permlink: string,
   memo?: HeadAuthorsMemo,
+  signal?: AbortSignal,
 ): Promise<Set<string> | null> {
   const key = memoKey(author, permlink);
   if (memo && memo.has(key)) {
     return memo.get(key) ?? null;
+  }
+  // Defense-in-depth abort check. The walker loops check `signal?.aborted`
+  // at iteration boundaries (the primary gate), but a future caller
+  // outside a walker loop should still self-protect against an exhausted
+  // budget. Fail-closed (return null) matches the existing "head is not a
+  // valid PEvO paper" return shape, so callers handle abort identically
+  // to a benign no-result.
+  if (signal?.aborted) {
+    memo?.set(key, null);
+    return null;
   }
   try {
     const result = await pool.query(
@@ -1131,16 +1147,40 @@ async function resolveContinuationChain(
   author: string,
   permlink: string,
   memo?: HeadAuthorsMemo,
+  signal?: AbortSignal,
 ): Promise<ChainLink[]> {
   const pool = getPool();
   if (!pool) return [{ author, permlink }];
 
+  // Capture entry time so wall-clock-exceeded warns carry the elapsed
+  // signal that operators need to distinguish "budget tripped early"
+  // from "budget tripped after legitimate slow hops".
+  const startedAt = Date.now();
+
   const chain: ChainLink[] = [{ author, permlink }];
+
+  // Pre-loop abort check. The route-handler-bounded `AbortController`
+  // could already have fired before we issued the seed fetch (e.g., a
+  // sibling backward-walker call burned the budget); fail-closed to a
+  // root-only chain rather than starting a forward walk we can't finish.
+  if (signal?.aborted) {
+    logger.warn(
+      {
+        event: 'continuation_chain_wall_clock_exceeded',
+        startAuthor: author,
+        startPermlink: permlink,
+        hopIndex: 0,
+        elapsedMs: Date.now() - startedAt,
+      },
+      'continuation chain walker aborted: wall-clock budget exceeded before seed fetch',
+    );
+    return chain;
+  }
 
   // Seed the cumulative admit-set from the root's contribution. The root's
   // contribution is the full cumulative for hop 0 (no predecessors beyond
   // the root itself).
-  const rootAuthorizedAuthors = await fetchHeadAuthorizedAuthors(pool, author, permlink, memo);
+  const rootAuthorizedAuthors = await fetchHeadAuthorizedAuthors(pool, author, permlink, memo, signal);
   if (!rootAuthorizedAuthors || rootAuthorizedAuthors.size === 0) {
     // Root is not a valid PEvO paper, or has no named authors. No
     // continuations are admitted; chain is root-only.
@@ -1167,6 +1207,25 @@ async function resolveContinuationChain(
 
   try {
     for (let i = 0; i < MAX_HOPS; i++) {
+      // Wall-clock budget check at each iteration boundary. When BOTH the
+      // depth cap and the wall-clock budget would fire on the same
+      // request, the wall-clock signal takes priority (operator-actionable
+      // degraded-HAF signal vs the depth cap's attacker-amplifier signal)
+      // because we check the budget BEFORE the depth-cap exit condition
+      // at line `i < MAX_HOPS`. See task acceptance section 3.
+      if (signal?.aborted) {
+        logger.warn(
+          {
+            event: 'continuation_chain_wall_clock_exceeded',
+            startAuthor: author,
+            startPermlink: permlink,
+            hopIndex: i,
+            elapsedMs: Date.now() - startedAt,
+          },
+          'continuation chain walker aborted: wall-clock budget exceeded mid-walk',
+        );
+        return chain;
+      }
       const cumulativeArr = Array.from(cumulative);
       // Find any post whose continues field points to the current head AND
       // whose author is in the cumulative authorized-authors set built from
@@ -1313,6 +1372,7 @@ async function findCanonicalRoot(
   author: string,
   permlink: string,
   memo?: HeadAuthorsMemo,
+  signal?: AbortSignal,
 ): Promise<ChainLink | null> {
   const pool = getPool();
   if (!pool) {
@@ -1333,6 +1393,33 @@ async function findCanonicalRoot(
         startPermlink: permlink,
       },
       'canonical-root walker bailed: HAF pool unavailable',
+    );
+    return null;
+  }
+
+  // Capture entry time so wall-clock-exceeded warns carry the elapsed
+  // signal that operators need to distinguish "budget tripped early"
+  // from "budget tripped after legitimate slow hops".
+  const startedAt = Date.now();
+
+  // Pre-initial-probe abort check. The route handler's `AbortController`
+  // could already have fired before we issued any SQL (e.g., a sibling
+  // forward-walker call burned the budget); fail-closed to "no canonical
+  // root" rather than issuing a probe we can't honor. Returning null
+  // matches the existing "not a continuation post" return shape, so
+  // callers handle abort identically to a benign no-result. Walker-level
+  // wall-clock warn is emitted at the abort site so operators see a
+  // discriminating event tag rather than just a silent return.
+  if (signal?.aborted) {
+    logger.warn(
+      {
+        event: 'canonical_root_walker_wall_clock_exceeded',
+        startAuthor: author,
+        startPermlink: permlink,
+        hopIndex: 0,
+        elapsedMs: Date.now() - startedAt,
+      },
+      'canonical-root walker aborted: wall-clock budget exceeded before initial probe',
     );
     return null;
   }
@@ -1457,6 +1544,26 @@ async function findCanonicalRoot(
     let currentPermlink: string = startRow.cont_permlink;
 
     for (let i = 0; i < CANONICAL_ROOT_MAX_HOPS; i++) {
+      // Wall-clock budget check at each iteration boundary. When BOTH the
+      // depth cap and the wall-clock budget would fire on the same
+      // request, the wall-clock signal takes priority (operator-actionable
+      // degraded-HAF signal vs the depth cap's attacker-amplifier signal)
+      // because we check the budget BEFORE the depth-cap exit condition
+      // at line `i < CANONICAL_ROOT_MAX_HOPS`. See task acceptance section 3.
+      if (signal?.aborted) {
+        logger.warn(
+          {
+            event: 'canonical_root_walker_wall_clock_exceeded',
+            startAuthor: author,
+            startPermlink: permlink,
+            hopIndex: i,
+            elapsedMs: Date.now() - startedAt,
+          },
+          'canonical-root walker aborted: wall-clock budget exceeded mid-walk',
+        );
+        return { author: currentAuthor, permlink: currentPermlink };
+      }
+
       // Author-consent gate on the current hop: fetch the predecessor's
       // (current's) authorized-authors set. If `childAuthor` is not in it,
       // the chain is broken at this hop — return the CHILD as canonical
@@ -1466,6 +1573,7 @@ async function findCanonicalRoot(
         currentAuthor,
         currentPermlink,
         memo,
+        signal,
       );
       if (!authorizedAuthors || !authorizedAuthors.has(childAuthor)) {
         logger.warn(
@@ -1590,6 +1698,7 @@ async function reconstructVersionsFromHaf(
   permlink: string,
   prefetchedChain?: ChainLink[],
   memo?: HeadAuthorsMemo,
+  signal?: AbortSignal,
 ): Promise<ReconstructedVersion[]> {
   const pool = getPool();
   if (!pool) return [];
@@ -1597,7 +1706,14 @@ async function reconstructVersionsFromHaf(
   try {
     // Resolve continuation chain to get all (author, permlink) pairs.
     // Caller may pass it in to avoid the duplicate fetch.
-    const chain = prefetchedChain ?? await resolveContinuationChain(author, permlink, memo);
+    const chain = prefetchedChain ?? await resolveContinuationChain(author, permlink, memo, signal);
+
+    // Defense-in-depth abort check before the per-chain version replay
+    // query. The forward walker (`resolveContinuationChain`) emits its
+    // own wall-clock warn on abort; if budget tripped during that walk
+    // the chain is partial — proceed with the partial chain rather than
+    // throwing, mirroring how the function handles other no-result paths.
+    if (signal?.aborted) return [];
 
     // Build a query that fetches operations for ALL posts in the chain
     const conditions: string[] = [];
@@ -1845,75 +1961,95 @@ router.get('/:author/:permlink', async (req: Request, res: Response) => {
   // not re-fetch metadata for the same `(author, permlink)`.
   const headAuthorsMemo = makeHeadAuthorsMemo();
 
-  // E4: If this is a continuation post, redirect to the canonical root paper
-  const canonicalRoot = await findCanonicalRoot(author, permlink, headAuthorsMemo);
-  if (canonicalRoot) {
-    author = canonicalRoot.author;
-    permlink = canonicalRoot.permlink;
-  }
+  // Per-request wall-clock budget for the chain walkers. Bounds
+  // worker-thread starvation under degraded HAF (each per-query
+  // statement_timeout=30s × walker hop cap = up to 10/25-minute tail
+  // before the depth cap exits). The signal threads through both
+  // walkers (`findCanonicalRoot` backward, `resolveContinuationChain`
+  // forward via `fetchPaperDetailFromHaf`/`reconstructVersionsFromHaf`)
+  // so the budget covers the full per-request walker-chain
+  // (cascading helper calls included). On abort the walkers emit
+  // `canonical_root_walker_wall_clock_exceeded` or
+  // `continuation_chain_wall_clock_exceeded` and stop at the deepest
+  // verified node / return the chain so far.
+  //
+  // Knob: `config.hafWalkerWallClockMs` (`HAF_WALKER_WALL_CLOCK_MS` env).
+  // Default 3000ms (typical HAF response 50-200ms × 10-15-query depth).
+  const walkerAbort = new AbortController();
+  const walkerBudget = setTimeout(() => walkerAbort.abort(), config.hafWalkerWallClockMs);
+  try {
+    // E4: If this is a continuation post, redirect to the canonical root paper
+    const canonicalRoot = await findCanonicalRoot(author, permlink, headAuthorsMemo, walkerAbort.signal);
+    if (canonicalRoot) {
+      author = canonicalRoot.author;
+      permlink = canonicalRoot.permlink;
+    }
 
-  if (requestedVersion !== null) {
-    const cacheKey = `paper-detail:${author}:${permlink}:v${requestedVersion}`;
+    if (requestedVersion !== null) {
+      const cacheKey = `paper-detail:${author}:${permlink}:v${requestedVersion}`;
+      const cached = await hafCache.getOrSet(cacheKey, async () => {
+        const versions = await reconstructVersionsFromHaf(author, permlink, undefined, headAuthorsMemo, walkerAbort.signal);
+        if (versions.length === 0) return null;
+
+        // Paper identity is established by the first version (original publication).
+        // External edits may overwrite json_metadata, so don't check later versions.
+        if (!isPevoAnyPaper(versions[0].json_metadata, versions[0].post_author)) return null;
+
+        const target = versions.find((v) => v.version_number === requestedVersion);
+        if (!target) return null;
+
+        // Use this version's metadata (IPFS CID, authors, etc.) but fall back to
+        // the original publication's PEvO metadata for fields external edits may strip.
+        const meta = target.json_metadata;
+        const post = { author, permlink, title: target.title, body: target.body, json_metadata: meta, created: target.created, last_edited: target.created };
+        const detail = buildPaperDetail(post, meta, []);
+        detail.versions = versions.map(({ body: _b, json_metadata: _m, ...entry }) => entry);
+
+        const retraction = await getRetractionInfo(author, permlink);
+        detail.is_retracted = retraction.is_retracted;
+        detail.retraction_reason = retraction.retraction_reason ?? null;
+        detail.retraction_timestamp = retraction.retraction_timestamp ?? null;
+
+        return detail;
+      }, 30 * 60_000, true);
+
+      if (cached) return sendOk(res, cached);
+      return sendError(res, 404, 'NOT_FOUND', 'Version not found');
+    }
+
+    const cacheKey = `paper-detail:${author}:${permlink}`;
     const cached = await hafCache.getOrSet(cacheKey, async () => {
-      const versions = await reconstructVersionsFromHaf(author, permlink, undefined, headAuthorsMemo);
-      if (versions.length === 0) return null;
+      const hafResult = await fetchPaperDetailFromHaf(author, permlink, headAuthorsMemo, walkerAbort.signal);
+      if (hafResult) return hafResult;
 
-      // Paper identity is established by the first version (original publication).
-      // External edits may overwrite json_metadata, so don't check later versions.
-      if (!isPevoAnyPaper(versions[0].json_metadata, versions[0].post_author)) return null;
+      // If current metadata was stripped by an external edit, reconstruct from
+      // version history. The first version establishes paper identity; later
+      // versions inherit PEvO metadata when the editing frontend dropped it.
+      const versions = await reconstructVersionsFromHaf(author, permlink, undefined, headAuthorsMemo, walkerAbort.signal);
+      if (versions.length > 0 && isPevoAnyPaper(versions[0].json_metadata, versions[0].post_author)) {
+        const latest = versions[versions.length - 1];
+        const meta = latest.json_metadata;
+        const post = { author, permlink, title: latest.title, body: latest.body, json_metadata: meta, created: versions[0].created, last_edited: latest.created };
+        const detail = buildPaperDetail(post, meta, []);
+        detail.versions = versions.map(({ body: _b, json_metadata: _m, ...entry }) => entry);
+        detail.metadata_restored = true;
 
-      const target = versions.find((v) => v.version_number === requestedVersion);
-      if (!target) return null;
+        const retraction = await getRetractionInfo(author, permlink);
+        detail.is_retracted = retraction.is_retracted;
+        detail.retraction_reason = retraction.retraction_reason ?? null;
+        detail.retraction_timestamp = retraction.retraction_timestamp ?? null;
 
-      // Use this version's metadata (IPFS CID, authors, etc.) but fall back to
-      // the original publication's PEvO metadata for fields external edits may strip.
-      const meta = target.json_metadata;
-      const post = { author, permlink, title: target.title, body: target.body, json_metadata: meta, created: target.created, last_edited: target.created };
-      const detail = buildPaperDetail(post, meta, []);
-      detail.versions = versions.map(({ body: _b, json_metadata: _m, ...entry }) => entry);
+        return detail;
+      }
 
-      const retraction = await getRetractionInfo(author, permlink);
-      detail.is_retracted = retraction.is_retracted;
-      detail.retraction_reason = retraction.retraction_reason ?? null;
-      detail.retraction_timestamp = retraction.retraction_timestamp ?? null;
-
-      return detail;
+      return null;
     }, 30 * 60_000, true);
 
     if (cached) return sendOk(res, cached);
-    return sendError(res, 404, 'NOT_FOUND', 'Version not found');
+    sendError(res, 404, 'NOT_FOUND', 'Paper not found');
+  } finally {
+    clearTimeout(walkerBudget);
   }
-
-  const cacheKey = `paper-detail:${author}:${permlink}`;
-  const cached = await hafCache.getOrSet(cacheKey, async () => {
-    const hafResult = await fetchPaperDetailFromHaf(author, permlink, headAuthorsMemo);
-    if (hafResult) return hafResult;
-
-    // If current metadata was stripped by an external edit, reconstruct from
-    // version history. The first version establishes paper identity; later
-    // versions inherit PEvO metadata when the editing frontend dropped it.
-    const versions = await reconstructVersionsFromHaf(author, permlink, undefined, headAuthorsMemo);
-    if (versions.length > 0 && isPevoAnyPaper(versions[0].json_metadata, versions[0].post_author)) {
-      const latest = versions[versions.length - 1];
-      const meta = latest.json_metadata;
-      const post = { author, permlink, title: latest.title, body: latest.body, json_metadata: meta, created: versions[0].created, last_edited: latest.created };
-      const detail = buildPaperDetail(post, meta, []);
-      detail.versions = versions.map(({ body: _b, json_metadata: _m, ...entry }) => entry);
-      detail.metadata_restored = true;
-
-      const retraction = await getRetractionInfo(author, permlink);
-      detail.is_retracted = retraction.is_retracted;
-      detail.retraction_reason = retraction.retraction_reason ?? null;
-      detail.retraction_timestamp = retraction.retraction_timestamp ?? null;
-
-      return detail;
-    }
-
-    return null;
-  }, 30 * 60_000, true);
-
-  if (cached) return sendOk(res, cached);
-  sendError(res, 404, 'NOT_FOUND', 'Paper not found');
 });
 
 // ──────────────────────────────────────────────
