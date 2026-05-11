@@ -76,4 +76,12 @@ This task is filed as a stub for triage visibility. Pick up when:
 - The bridge service's import volume reaches a threshold where claim requests are anticipated, OR
 - A future architect / product decision elevates this to active work.
 
-Until triggered, this file remains in `tasks/pending/` as a known deferred design.
+Until triggered, this file lives in `tasks/blocked/` (BLOCKED by Architect). The architect owns Phase 1 brainstorm + design; backend cannot proceed without that. When a trigger fires and the architect lands Phase 1 design in `ARCHITECTURE.md`, the architect `git mv`s this file back to `tasks/pending/` for backend pickup of Phase 2 implementation.
+
+## [BLOCKED by Architect] (backend startup triage 2026-05-11)
+
+Body status is "NOT YET SCOPED. Phase 1 brainstorm + design required before implementation," with the architect as Phase 1 design lead. Backend cannot pick this up speculatively — the verification primitive, on-chain op shape, and vouched-set extension are all architect-owned design decisions that must land in `ARCHITECTURE.md` before backend implements.
+
+The "Trigger" section already documents the external conditions for activation (real user request, volume threshold, or architect elevation). Moving to `blocked/` so backend's `pending/` queue reflects only actionable tasks and the architect's startup scan surfaces this when a trigger fires.
+
+When triggered, the architect runs `/ce-brainstorm` per Phase 1, lands the design in `ARCHITECTURE.md`, and `git mv`s this file back to `pending/` for backend Phase 2 implementation.
