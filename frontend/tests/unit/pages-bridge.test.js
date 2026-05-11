@@ -342,6 +342,62 @@ describe('bridgePage', () => {
       vi.useRealTimers();
     });
 
+    // UI-BRIDGE-REGISTER-LOCK-HELD-UX: 409 LOCK_HELD (concurrent registration
+    // of the same preprint, Redis lock held) gets a transient-retry message,
+    // not the generic registration-failed UI. DUPLICATE (existing preprint
+    // already on PEvO) and other errors still fall through to the generic
+    // path so their existing UX surfaces are unaffected.
+    it('LOCK_HELD code surfaces transient-retry message, not generic', async () => {
+      const lockErr = new Error('Registration already in progress');
+      lockErr.code = 'LOCK_HELD';
+      const comp = createComponent();
+      comp.identifier = '10.1234/test';
+      comp.discipline = 'Physics';
+      mockRegisterBridgePaper.mockRejectedValue(lockErr);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      await comp.handleRegister();
+
+      expect(comp.step).toBe('error');
+      expect(comp.errorMessage).toBe('bridge.lockHeldRetry');
+      warnSpy.mockRestore();
+    });
+
+    it('DUPLICATE code with existing_author/existing_permlink falls through to generic (not LOCK_HELD branch)', async () => {
+      const dupErr = new Error('Preprint already registered');
+      dupErr.code = 'DUPLICATE';
+      dupErr.existing_author = 'someone';
+      dupErr.existing_permlink = 'paper-x';
+      const comp = createComponent();
+      comp.identifier = '10.1234/test';
+      comp.discipline = 'Physics';
+      mockRegisterBridgePaper.mockRejectedValue(dupErr);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      await comp.handleRegister();
+
+      expect(comp.step).toBe('error');
+      expect(comp.errorMessage).toBe('common.registrationFailed');
+      expect(comp.errorMessage).not.toBe('bridge.lockHeldRetry');
+      warnSpy.mockRestore();
+    });
+
+    it('non-409 errors (503/500 without code) still reach generic fallback', async () => {
+      const genericErr = new Error('Internal server error');
+      // No `.code` property — simulates a 500/503 reaching the catch.
+      const comp = createComponent();
+      comp.identifier = '10.1234/test';
+      comp.discipline = 'Physics';
+      mockRegisterBridgePaper.mockRejectedValue(genericErr);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      await comp.handleRegister();
+
+      expect(comp.step).toBe('error');
+      expect(comp.errorMessage).toBe('common.registrationFailed');
+      warnSpy.mockRestore();
+    });
+
     // UI-SETTIMEOUT-NAVIGATE-TEARDOWN-GUARD-SWEEP: the 3s post-success
     // redirect must be cancelable. If the user navigates away during the
     // wait for the Hive block, destroy() clears the pending timer and

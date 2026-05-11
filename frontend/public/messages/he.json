@@ -701,6 +701,7 @@
     "stepSuccess": "הטרום-פרסום נרשם בהצלחה! מפנה...",
     "sourcePanel": "פורסם במקור ב-{source}",
     "viewSource": "צפייה ב-{source}",
+    "lockHeldRetry": "A registration for this preprint is already in progress. Please retry in a few seconds.",
     "signInHint": "התחברו כדי לרשום טרום-פרסום. עליכם להיות גם חוקרים מוסמכים."
   },
   "common": {

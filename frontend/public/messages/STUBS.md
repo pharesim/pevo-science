@@ -832,3 +832,21 @@ pt: publish.coAuthorAccreditedHint
 sv: publish.coAuthorAccreditedHint
 tr: publish.coAuthorAccreditedHint
 zh: publish.coAuthorAccreditedHint
+
+### Added 2026-05-11 (UI-BRIDGE-REGISTER-LOCK-HELD-UX)
+
+ar: bridge.lockHeldRetry
+cs: bridge.lockHeldRetry
+da: bridge.lockHeldRetry
+de: bridge.lockHeldRetry
+es: bridge.lockHeldRetry
+fa: bridge.lockHeldRetry
+fr: bridge.lockHeldRetry
+he: bridge.lockHeldRetry
+it: bridge.lockHeldRetry
+nl: bridge.lockHeldRetry
+pl: bridge.lockHeldRetry
+pt: bridge.lockHeldRetry
+sv: bridge.lockHeldRetry
+tr: bridge.lockHeldRetry
+zh: bridge.lockHeldRetry

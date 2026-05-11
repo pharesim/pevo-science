@@ -701,6 +701,7 @@
     "stepSuccess": "Preprint registreret! Omdirigerer...",
     "sourcePanel": "Oprindeligt publiceret på {source}",
     "viewSource": "Se på {source}",
+    "lockHeldRetry": "A registration for this preprint is already in progress. Please retry in a few seconds.",
     "signInHint": "Log ind for at registrere et preprint. Du skal også være akkrediteret forsker."
   },
   "common": {

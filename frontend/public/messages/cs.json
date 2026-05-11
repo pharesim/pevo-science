@@ -701,6 +701,7 @@
     "stepSuccess": "Preprint byl úspěšně zaregistrován! Přesměrování...",
     "sourcePanel": "Původně publikováno na {source}",
     "viewSource": "Zobrazit na {source}",
+    "lockHeldRetry": "A registration for this preprint is already in progress. Please retry in a few seconds.",
     "signInHint": "Pro registraci preprintu se přihlaste. Musíte být také akreditovaný výzkumník."
   },
   "common": {

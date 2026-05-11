@@ -701,6 +701,7 @@
     "stepSuccess": "Preprint erfolgreich registriert! Weiterleitung...",
     "sourcePanel": "Ursprünglich veröffentlicht auf {source}",
     "viewSource": "Auf {source} anzeigen",
+    "lockHeldRetry": "A registration for this preprint is already in progress. Please retry in a few seconds.",
     "signInHint": "Melden Sie sich an, um einen Preprint zu registrieren. Sie müssen außerdem akkreditiert sein."
   },
   "common": {

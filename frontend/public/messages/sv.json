@@ -701,6 +701,7 @@
     "stepSuccess": "Förhandsutskrift registrerad! Omdirigerar...",
     "sourcePanel": "Ursprungligen publicerad på {source}",
     "viewSource": "Visa på {source}",
+    "lockHeldRetry": "A registration for this preprint is already in progress. Please retry in a few seconds.",
     "signInHint": "Logga in för att registrera en förhandsutskrift. Du måste också vara en ackrediterad forskare."
   },
   "common": {

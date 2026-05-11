@@ -701,6 +701,7 @@
     "stepSuccess": "پیش‌چاپ با موفقیت ثبت شد! در حال هدایت...",
     "sourcePanel": "اصل منتشر شده بر {source}",
     "viewSource": "مشاهده بر {source}",
+    "lockHeldRetry": "A registration for this preprint is already in progress. Please retry in a few seconds.",
     "signInHint": "برای ثبت پیش‌چاپ وارد شوید. همچنین باید پژوهشگر معتبر باشید."
   },
   "common": {

@@ -701,6 +701,7 @@
     "stepSuccess": "¡Preimpresión registrada exitosamente! Redirigiendo...",
     "sourcePanel": "Publicado originalmente en {source}",
     "viewSource": "Ver en {source}",
+    "lockHeldRetry": "A registration for this preprint is already in progress. Please retry in a few seconds.",
     "signInHint": "Inicie sesión para registrar una preimpresión. También necesita ser un investigador acreditado."
   },
   "common": {

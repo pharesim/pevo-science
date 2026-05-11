@@ -701,6 +701,7 @@
     "stepSuccess": "预印本注册成功！正在跳转...",
     "sourcePanel": "最初发表于 {source}",
     "viewSource": "在 {source} 上查看",
+    "lockHeldRetry": "A registration for this preprint is already in progress. Please retry in a few seconds.",
     "signInHint": "请登录以注册预印本。您还需要成为已认证的研究人员。"
   },
   "common": {

@@ -701,6 +701,7 @@
     "stepSuccess": "Prépublication enregistrée avec succès ! Redirection...",
     "sourcePanel": "Publié initialement sur {source}",
     "viewSource": "Voir sur {source}",
+    "lockHeldRetry": "A registration for this preprint is already in progress. Please retry in a few seconds.",
     "signInHint": "Connectez-vous pour enregistrer une prépublication. Vous devez également être un chercheur accrédité."
   },
   "common": {

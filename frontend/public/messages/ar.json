@@ -701,6 +701,7 @@
     "stepSuccess": "تم تسجيل المسودة المنشورة بنجاح! جارٍ إعادة التوجيه...",
     "sourcePanel": "نُشر أصلاً على {source}",
     "viewSource": "عرض على {source}",
+    "lockHeldRetry": "A registration for this preprint is already in progress. Please retry in a few seconds.",
     "signInHint": "سجّل الدخول لتسجيل مسودة منشورة. يجب أن تكون أيضاً باحثاً معتمداً."
   },
   "common": {
