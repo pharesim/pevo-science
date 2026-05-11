@@ -8,14 +8,33 @@
  * use a stateful in-memory Redis stub so SET ... NX EX behaves exactly like
  * real Redis for the SETNX semantics under concurrent access.
  *
- * Round-2 hold item #5 (PS-001): the prior citation of bridge.test.ts's
- * unlocked-degrade path (under `getRedis: () => null`) is a different risk
- * class — Redis-unavailable fallback, NOT SETNX contention. Backend filed
- * follow-up task `backend-bridge-lock-real-redis-companion.md` (in
- * tasks/pending/) to land a real-Redis SETNX-contention companion. Once
- * that lands, this header is updated to cite the new test file. The
- * follow-up satisfies clause c via the "OR a follow-up task is filed to add
- * such coverage" branch.
+ * Real-path companion (carve-out clause c):
+ * `backend/tests/routes/orcid.test.ts:1040` — the `same-tick SETNX lock
+ * (SEC-002-TOCTOU-LOCK)` describe block. That suite runs against the
+ * project's live Redis container (resolved via `getRedis()` against
+ * `REDIS_URL`) and covers the same SETNX-contention risk class this file
+ * mocks. Specifically the orcid block exercises:
+ *   - SET NX with a TTL (EX/PX) on a deterministic per-orcid key
+ *     (`${appTag}:orcid_binding_lock:${orcidId}`).
+ *   - Winner-vs-loser semantics under two concurrent requests for the
+ *     same key: exactly one 200, the other 409 from the lock-held
+ *     branch, with `Promise.race(...)` synchronization replacing any
+ *     timing fence (matches the barrier pattern used here).
+ *   - Lock TTL self-cleanup ("stale lock from a crashed holder expires
+ *     after TTL and a retry succeeds" at orcid.test.ts:1192).
+ *   - Lua CAS release via the production path's finally block: the
+ *     winner's release runs the registered CAS-release Lua script
+ *     under `withOrcidBindingLock`, and post-release lock-key absence
+ *     proves the script ran (the same release-semantics property this
+ *     file's "lock key absent" assertion verifies under the mock). The
+ *     literal CAS return values (1 for holder, 0 for non-holder) are
+ *     covered separately by `backend/tests/lib/redis-scripts.test.ts`
+ *     against real Redis; that suite is the canonical home for Lua
+ *     return-shape regressions.
+ * The mocked specs in this file continue to cover the route-level
+ * wiring (cache miss/hit, retry shape, HAF-query throw, fail-open) under
+ * deterministic conditions; the orcid suite is the real-Redis primitive
+ * companion that satisfies clause c.
  *
  * `verifyHiveSignature` is NOT mocked — requests are signed end-to-end. Only
  * `getPool`/`getAppPool`/`getRedis` and broadcast/preprint helpers are stubbed,
