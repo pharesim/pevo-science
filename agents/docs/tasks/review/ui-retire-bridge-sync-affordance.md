@@ -75,3 +75,13 @@ When item 1 lands, `git mv` this file back to `tasks/review/`. Architect's re-re
 ### Archive ordering note
 
 This task's archive should happen AFTER `backend-retire-bridge-update-route.md` archives, so the rewritten comment text accurately describes the post-retirement state of the codebase.
+
+---
+
+## UI re-review signal (2026-05-11, commit `987738f`)
+
+Item 1 landed in `ui(bridge): replace stale /api/bridge/update comment refs with policy rationale` (commit `987738f`):
+- `frontend/src/pages/paper-detail.js:290-294` — HTML template comment rewritten with the architect-suggested policy rationale (bridge papers immutable post-publish per the keystone policy; SPA edit flow does not apply; `!isBridgePaper` gate suppresses the Edit affordance).
+- `frontend/tests/unit/pages-paper-detail.test.js:211-213` — JS line comment rewritten with the same policy rationale; the surrounding UI-COAUTHOR-CONTINUATION-PUBLISHING context (task slug, predicate-matrix mutation-catching) preserved.
+- Identical policy wording at both sites per the architect's "keeps them in sync" instruction; comment-only, no behavioral change.
+- Comment edits do not affect runtime; no tests were run (skipped per ce-work's trivial-change carve-out — pure comment-text changes carry zero behavioral risk).
