@@ -48,10 +48,12 @@ function isAuthorOrCoauthor(paper, username) {
 
 test('upvote on a paper produces a valid Hive vote op', async ({ page, request }) => {
   const voter = await pickAccreditedResearcher(request);
-  // Hard throw (not expect().toBeTruthy()) so execution actually stops here.
-  // The original pattern reports the failure but keeps running; downstream
-  // property accesses on `voter` then throw with a far less helpful message.
-  if (!voter) throw new Error('expected at least one accredited researcher in HAF');
+  // Skip on empty HAF accreditation set so a sparse testnet reports
+  // `skipped` (with a named reason) rather than `failed`. /api/accreditations
+  // is pure-HAF (see backend/src/routes/accreditations.ts); when HAF
+  // currently exposes 0 accredited researchers there's no path to drive the
+  // upvote flow as an accredited user.
+  test.skip(!voter, 'no accredited researcher currently indexed in HAF — upvote flow cannot be exercised');
 
   // Walk the list for a paper this user did not author and has not already
   // voted at the target weight on. The stub doesn't care about uniqueness,
@@ -70,11 +72,10 @@ test('upvote on a paper produces a valid Hive vote op', async ({ page, request }
     target = p;
     break;
   }
-  if (!target) {
-    throw new Error(
-      `expected at least one pevotest paper ${voter.username} did not author`,
-    );
-  }
+  test.skip(
+    !target,
+    `no pevotest paper currently indexed in HAF that ${voter.username} did not author — upvote flow cannot pick a non-self target`,
+  );
 
   await seedAccreditedSession(page, {
     username: voter.username,
@@ -119,7 +120,10 @@ test('top-level comment and review reply assemble correct Hive comment ops', asy
   request,
 }) => {
   const commenter = await pickAccreditedResearcher(request);
-  if (!commenter) throw new Error('expected at least one accredited researcher in HAF');
+  test.skip(
+    !commenter,
+    'no accredited researcher currently indexed in HAF — comment flow cannot be exercised',
+  );
 
   // For the reply flow we need a paper with at least one review — the review
   // card is where the nested `commentComposer` mounts. Also make sure the
@@ -137,11 +141,10 @@ test('top-level comment and review reply assemble correct Hive comment ops', asy
     firstReview = enr.reviews[0];
     break;
   }
-  if (!target) {
-    throw new Error(
-      `expected a pevotest paper with reviews not authored by ${commenter.username}`,
-    );
-  }
+  test.skip(
+    !target,
+    `no pevotest paper currently indexed in HAF with reviews not authored by ${commenter.username} — review-reply flow cannot pick a non-self target`,
+  );
 
   await seedAccreditedSession(page, {
     username: commenter.username,
