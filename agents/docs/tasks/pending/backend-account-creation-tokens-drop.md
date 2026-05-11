@@ -158,3 +158,31 @@ Round-1 hold items 1-2 landed in commit `3736932` (cherry-pick of worker `af4212
 **Test coverage:** 3 new tests in `backend/tests/account-creation.test.ts` — regex-tightening guard ("no claim history yet" propagates unchanged, NOT translated to retriable shape), consensus-rejection original-error preservation via warn spy, cache-invalidation warn-log structured tag. 14/14 pass against real Hive + Redis. `npm run lint` clean.
 
 **No new `[TODO Architect]`** notes. The two pre-existing TODOs at the bottom of this file (api-contracts language sweep + predecessor task supersession) are unaffected.
+
+---
+
+## Architect re-review (2026-05-11, round-2 → round-3) — HELD PENDING FIXES
+
+`/ce-code-review` ran on commit `3736932` (round-2 hold-fixes). Round-1 items 1 (cache-del warn observability) and 2 (tightened consensus-rejection regex + warn-before-throw) are correctly implemented and the implementation is security-, reliability-, and correctness-clean. Five P3 cleanup items surface across the four files touched (two source-level, two test-level, plus one follow-up-task filing). Findings 1-4 land in this hold; finding 5 (mock carve-out criterion (c) compliance) is filed as a separate pending task and does not block this task.
+
+### Items to address
+
+**1. (P3) Missing positive-case test for the second regex arm `no available account creation`.** `backend/tests/account-creation.test.ts` — the tightened alternation has two arms. Round-1 added positive coverage for the first arm (`'assertion failed: pending_claimed_accounts > 0'` at the consensus-rejection warn-log test). The second arm has no positive-case coverage anywhere in the suite — a typo or accidental deletion would slip past CI. Fix: add a mirror test alongside the existing one — `redisGetMock` returns `'1'`, `sendOperationsMock` rejects with `new Error('no available account creation tokens')`, assert `rejects.toThrow('No account creation tokens available')`. ~10 lines. (Testing reviewer + learnings-researcher cross-confirmation; conf 100.)
+
+**2. (P3) Cache-del warn test omits `err` from the `objectContaining` matcher.** `backend/tests/account-creation.test.ts` — the cache-invalidation-failure test asserts `cacheKey` and `event` are present but not `err`. The consensus-rejection warn test on the same file (~line 270) correctly pins `err: consensusErr`; the cache-del test should mirror that pattern. Without `err: expect.any(Error)`, a field-shape mutation that drops `err` from the warn payload passes CI silently. Fix: extend the `expect.objectContaining({...})` matcher in the cache-invalidation-failure test to include `err: expect.any(Error)`. One-line addition. (Testing reviewer + kieran-typescript cross-confirmation, promoted to conf 100.)
+
+**3. (P3) Cache-del warn comment misattributes failure mode for the `createClaimedAccount` call site.** `backend/src/account-creation.ts` — the comment on `invalidatePendingClaimedAccountsCache`'s catch block (added in round-2) describes the stale-`'0'`-blocks-signups failure mode. That mode applies to the `claimAccountTokens` post-broadcast call site, NOT the `createClaimedAccount` post-success call site (where the stale value is positive and any race is admitted; consensus-rejection translation handles the loss gracefully). Since the helper has two call sites with different stale-cache failure modes, the comment should cover both — stale-low blocks legitimate signups via `claimAccountTokens`; stale-high admits a losable race in `createClaimedAccount` (handled by consensus-rejection translation). Fix: rewrite the comment block to describe both call sites' failure modes. ~3-4 lines. (Correctness reviewer; conf 75.)
+
+**4. (P3) Event slugs use flat snake_case, diverging from the dot-namespaced convention every other backend module uses.** `backend/src/account-creation.ts` (2 source sites) + `backend/tests/account-creation.test.ts` (2 test assertion sites) — the new events `pending_claim_cache_invalidate_failed` and `create_claimed_account_consensus_rejected` are descriptive convention drift. Sibling modules use `<module>.<sublayer>.<verb>` dot-notation: `idempotency.cache.read_failed`, `bridge.lock.release_failed`, `custody.broadcast.internal_error`, `fresh_auth.redis_set_failed`, etc. No written rule mandates the dot form outside `auth.ts` (per the auth-structured-log-shape solutions doc's scope), so this is convention drift rather than rule violation — but operator log filtering and alert rules grouped by `<module>.*` prefix won't match these slugs. Fix: rename to `account_creation.cache.invalidate_failed` (cache-del warn site) and `account_creation.broadcast.consensus_rejected` (consensus-rejection warn site). Update the two `expect.objectContaining({ event: '...' })` assertions in the test file to match. (Maintainability reviewer; conf 75.)
+
+### Items dismissed during architect triage
+
+- **Reliability R1: `throw new Error(..., { cause: err })` Node ≥16 idiom not used** — conf 50, soft. The warn-log captures the full `err` for operator diagnosis; downstream catchers in PEvO do not currently read `.cause`. Cosmetic; revisit if a future failure-correlation surface needs stack-stitching.
+- **Reliability R2: no `commandTimeout` on ioredis client** — pre-existing in `backend/src/redis.ts:12`, out-of-diff scope. Not introduced by this commit; file a separate task if the unbounded-wait-on-cache-del concern becomes material at scale.
+- **Correctness #1: regex inspects only `err.message`, not dhive `jse_shortmsg` / `jse_cause` / `cause.message`** — pre-existing from round-1; pre-existing tag preserved. Not regressed by round-2.
+- **Correctness #2: tight-anchor prefix mismatch risk (`Assert Exception:` variant on some Hive nodes)** — conf 25, below gate. Architect asserted the two known phrases as canonical during the task review; a live-broadcast probe would close it but is not warranted at this confidence.
+- **Mock carve-out criterion (c) gap for the two new logger-spy tests (PSR-001, conf 75)** — filed as a separate pending task (`backend-account-creation-logger-spy-real-path-companion.md`) per the carve-out's prescribed remedy. Does not block this task's archive once items 1-4 land.
+
+### Re-review signal
+
+When items 1-4 land, `git mv` this file back to `tasks/review/`. Round-3 architect review scopes `/ce-code-review` to the round-3 commit.
