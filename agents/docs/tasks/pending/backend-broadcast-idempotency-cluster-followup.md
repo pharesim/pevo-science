@@ -708,3 +708,165 @@ review but not in this cluster's scope:
   verification link would not help anyway since the chain state is
   already set. File a separate SPA-side task IF testing surfaces
   actual user confusion with the 502-but-confirmed shape.
+
+---
+
+## Backend re-review signal (2026-05-11, commit `aa303c9`)
+
+All 7 round-3 hold items landed in a single commit (`aa303c9`, 7 files /
++559/-217). Item 5 chose alternative (a) — drop negative caching
+entirely. Grouped per-item below; `event:` discriminators + new test
+coverage are operator-alert anchors and pinned at the unit/integration
+layers.
+
+### Item 1 — buildCustodyCacheKey op_type binding
+
+- `backend/src/lib/idempotency.ts` `buildCustodyCacheKey(username, key,
+  opType)` now hashes `sha256(${username}|${idempotencyKey}|${opType})`.
+  Closes the cache-layer shadowing class that F2 had already closed at
+  the HAF SQL layer.
+- `lookupCustodyBroadcastIdempotency` skips the cache entirely when
+  `opType` is undefined (pure-vote bundles have no embed surface, so no
+  op-type to bind). Pure-vote retries hit HAF live — at PEvO scale that
+  cost is acceptable vs. introducing a cross-op-type-shadowable row.
+- Test: new describe block "lookupCustodyBroadcastIdempotency — cache
+  key includes op_type" in `tests/lib/idempotency.test.ts`. Sequence:
+  request 1 with `opType='comment'` writes the cache; request 2 with
+  same `(username, key)` but `opType='custom_json'` does NOT receive
+  the comment's tx_id from the cache (asserted via
+  `expect(hit2).not.toEqual({tx_id: commentTxId, ...})` AND the HAF
+  probe ran). Uses real Redis; afterEach clears the namespace.
+
+### Item 2 — readCached discriminated-union validation
+
+- `backend/src/lib/idempotency.ts` adds `isValidCachedResult` type
+  guard. `readCached` invokes it after `JSON.parse`; on validation
+  failure logs `event:'idempotency.cache.corrupt_entry'` with the key
+  + parsed shape and returns undefined (degrade to cache miss; fail-
+  open per the convention anchor).
+- Test: new describe block "readCached — discriminated-union shape
+  validation" in `tests/lib/idempotency.test.ts`. Pre-seeds a corrupt
+  entry (`kind:'hit'` missing `tx_id`) into Redis at the production
+  cache-key shape; asserts the warn fired AND the live HAF probe ran
+  (fail-open evidence).
+
+### Item 3 — defaultPostBroadcastOperatorRequiredMsg honest copy
+
+- `backend/src/lib/broadcast-error.ts:~304` now returns "...please
+  contact support." in place of the prior "...support has been
+  notified." Pinned at the unit layer (item 4 below) and at the
+  integration layer (existing
+  `tests/routes/accreditation-idempotency.test.ts` permanent-
+  discrimination spec was updated to assert `/contact support/i`).
+- Docblock at `PostBroadcastSeverity` updated to describe the new
+  copy. The `tests/routes/orcid.test.ts` stale-comment reference
+  also updated for consistency (no test assertion change there).
+
+### Item 4 — handleBroadcastError severity branch coverage
+
+- `tests/lib/broadcast-error.test.ts` gains 2 unit specs alongside the
+  existing case B/C/D PostBroadcastWriteError discrimination block:
+  - (a) severity:'permanent' → 502 POST_BROADCAST_OPERATOR_REQUIRED
+    with message containing "contact support" and details matching
+    `{outcome:'confirmed', tx_id, failed_step:'reputation_seed'}`;
+    asserts sanitized message (does not leak `failed_step`).
+  - (b) default severity → 502 POST_BROADCAST_FAILED with message
+    matching `/restore the backend record/i` and details
+    `{outcome:'confirmed', tx_id, failed_step:'cache_write'}`.
+
+### Item 5 — Negative cache TTL — chose alternative (a) DROP
+
+- `IDEMPOTENCY_CACHE_NEGATIVE_TTL_MS` constant deleted.
+  `writeCached(key, value)` no-ops when `value.kind !== 'hit'`.
+  `lookupCustodyBroadcastIdempotency` and
+  `lookupAccreditationBroadcastIdempotency` no longer write on miss;
+  stale `kind:'miss'` reads from pre-change Redis entries are
+  treated as cache miss (degraded to live HAF probe).
+- Rationale documented inline at the cache layer (replacing the
+  prior negative-TTL rationale block): positive-cache hit case is
+  load-bearing retry-storm absorption; negative caching's bounded
+  benefit doesn't justify the stale-miss bug at single-instance
+  scale. The convention anchor's "never cache transient failures"
+  framing is the cited discipline source.
+
+### Item 6 — Decrement degraded-path observability
+
+- `decrementBroadcastAttempts(token, attemptId?)` signature changed
+  from `Promise<void>` to
+  `Promise<'decremented'|'enqueued_for_drain'|'failed'>`. New
+  exported type `DecrementBroadcastAttemptsResult`. Helper-internal
+  warn (`broadcast_decrement_redis_unavailable`) preserved
+  unchanged; the return discriminator gives callers per-site context
+  for their own structured logs.
+- Hit-branch caller switches on the result: on
+  `'enqueued_for_drain'` emits
+  `event:'accreditation.verify.idempotency_hit_decrement_degraded'`
+  with `username`, `email_hash`, `token_hash`. The throw path's
+  existing `_hit_decrement_failed` warn remains untouched (the
+  throw branch is the DECR-throws-mid-request class; the new
+  event covers the silent-degraded class).
+- Other caller (timeout-branch decrement at the broadcast catch)
+  ignores the return value non-destructively. Test seams in
+  `tests/routes/accreditation.test.ts` likewise ignore the
+  return; surface change is backward-compatible.
+
+### Item 7 — Cap-counter vs idempotency probe ordering
+
+- `backend/src/routes/accreditation.ts`: idempotency probe block
+  hoisted to run BEFORE the cap `incrementBroadcastAttempts` call
+  (was the reverse). The probe is a no-state-change HAF read; the
+  cap exists to bound chain ops; a hit consumes zero chain ops, so
+  the probe-first ordering is structurally correct. The F1 hit-
+  branch decrement logic became dead with the reorder (no INCR ran
+  yet) and was deleted from the hit branch.
+- Test: new spec "idempotency hit returns 200 even when broadcast-
+  attempts counter is at cap (round-3 hold #7 ordering)" in
+  `tests/routes/accreditation-idempotency.test.ts`. Pre-seeds the
+  counter at `cap`, mocks the HAF probe to hit, asserts the
+  response is 200 outcome:'already_landed' (not 502
+  BROADCAST_ATTEMPT_LIMIT_EXCEEDED) and broadcastJson was NOT
+  called. Counter assertion was relaxed to `res.body.error
+  === undefined` because the hit-branch token cleanup cascades
+  into `deleteBroadcastAttempts` and drops the pre-seeded counter
+  key as a side effect — the absent error envelope is the load-
+  bearing signal.
+- The pre-fix mixed-envelope class adversarial A3 surfaced is
+  closed: under cap exhaustion AND a confirmed-on-chain
+  accreditation, all concurrent retries now receive the same 200
+  shape.
+
+### Verification
+
+- `npx tsc --noEmit` — clean (touched src files).
+- `npx tsc --noEmit -p tests/tsconfig.json` — touched test files
+  clean. Pre-existing 222 errors in unrelated files persist; out
+  of scope per task body ("IGNORE those").
+- `npm run lint` — only the pre-existing
+  `@typescript-eslint/no-explicit-any` warnings in
+  `src/seed-phrase.ts` (unrelated).
+- `npx vitest run tests/lib/broadcast-error.test.ts
+  tests/lib/idempotency.test.ts
+  tests/routes/accreditation-idempotency.test.ts
+  tests/routes/custody-idempotency.test.ts` — all green
+  (broadcast-error: 41 pass; idempotency: 27 pass; accreditation-
+  idempotency: 8 pass; custody-idempotency: 7 pass).
+- Broader regression: `tests/routes/accreditation.test.ts` —
+  105/107 pass. The two failures
+  (`POST /api/accreditation/request > rejects free email
+  providers` and `rejects yahoo email`) reproduce on clean
+  pre-change HEAD (verified via `git stash`); they are pre-
+  existing and unrelated to this task (likely the
+  free-email-domain check returns 500 instead of 422 in this
+  environment).
+
+### Items resolved per architect hold block
+
+| Item | Status |
+|---|---|
+| 1 — buildCustodyCacheKey op_type folded in | closed (code + spec) |
+| 2 — readCached union-shape validation | closed (code + spec) |
+| 3 — defaultPostBroadcastOperatorRequiredMsg honest copy | closed (code + integration spec update) |
+| 4 — handleBroadcastError severity:'permanent' unit specs | closed (2 new unit specs) |
+| 5 — Negative cache TTL — chose (a) drop entirely | closed (code + rationale inline) |
+| 6 — Hit-branch decrement degraded-path event | closed (discriminator + new event) |
+| 7 — Cap-counter vs idempotency probe ordering | closed (restructure + spec) |
