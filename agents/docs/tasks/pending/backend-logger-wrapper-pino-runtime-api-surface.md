@@ -57,6 +57,38 @@ The child-wrapping question is the reason this task is decoupled from the parent
 
 - Best landed AFTER the parent `backend-bridge-key-startup-validation-and-pino-redact` hold round closes, since that round re-touches the same wrapper code (parent hold items 3, 4, 5 — cycle/depth guard, throw-safety, LogFn overloads).
 
-## [BLOCKED by Architect] (backend startup triage 2026-05-07)
+## Architect decision (2026-05-11) — child-wrapping = **option 2 (documentary)**
 
-Parent task `backend-bridge-key-startup-validation-and-pino-redact.md` is currently in `tasks/review/` awaiting architect re-review. Its in-flight hold rounds re-touch `backend/src/logger.ts` (the same file this task migrates), so file-conflict risk + re-baselining the wrapper structure under in-flight changes is real. Also the open `Open question — child-wrapping decision` (option 1 recursive factory vs option 2 documentary) would benefit from being settled in the same architect pass that closes the parent. Move back to `pending/` once the parent task archives; backend will then pick up with whichever child-wrapping direction the architect lands (or with option 2 as the implementer's reasonable-call default if the architect leaves it implementer-decidable).
+Parent task `backend-bridge-key-startup-validation-and-pino-redact.md` archived 2026-05-11 (round-6 clean ✓). The wrapper structure is settled: `makeLevelWrapper(method: LogFn): LogFn` factory + in-place `redactErrInArg` mutation + Layer-B `safeRedactErr` in pino's `serializers.err` config + the wrapper's `redactPlainObject` + depth/cycle guard + try/catch fallback. No further file-conflict risk on `backend/src/logger.ts`; this task is free to proceed.
+
+**Decision on the open question:** go with **option 2 (documentary, accept the unwrapped child)**. Rationale:
+
+1. **PEvO has no `.child(...)` call sites today** — and the project memory `project_single_instance_only` (single-instance forever) plus the broader "no premature complexity" stance argue against adding a recursive-wrapping factory for a hypothetical future requirement.
+2. **Layer-B (transport `serializers.err`) still fires on children.** Children inherit the parent pino instance's `serializers` config; the known-leaky-field-by-subclass redact policy applies to ANY pino call through `baseLogger` or its descendants. The security defense is intact regardless of child-wrapping shape.
+3. **Layer-A spy-visibility is the only thing children "skip."** That matters for `vi.spyOn(logger, 'warn').mock.calls` test discipline — but no PEvO test currently spies on a child logger (there are no children to spy on). If a future call site lands `logger.child(...)`, the implementer can either spy on the child's transport stream directly OR migrate to option 1 at that point — additive change, no breaking refactor.
+4. **YAGNI applies.** Three similar lines (forwarding `child` verbatim with a JSDoc warning) is better than a premature recursive-wrapping factory. The cost to switch from option 2 → option 1 if a future call site needs Layer-A on children is ~12 LOC of new factory code, no caller migration.
+
+**JSDoc on the forwarded `child` method MUST name the gap explicitly.** Suggested wording (implementer may adapt while preserving the substantive warning):
+
+```ts
+/**
+ * Forwards to baseLogger.child(...) verbatim. The returned child logger
+ * inherits Layer-B redaction (pino's `serializers.err` config — see
+ * agents/docs/solutions/conventions/defensive-recursive-serializer-and-
+ * pino-err-redact-policy-2026-05-11.md) but does NOT inherit the call-
+ * site Layer-A wrapper (`redactErrInArg`). vi.spyOn on a child logger's
+ * level methods will see UNREDACTED `err` arguments at call time —
+ * redaction fires at write time via the serializer config.
+ *
+ * If a call site needs Layer-A on a child, migrate this method to wrap
+ * the child via a `wrapPinoLogger(baseLogger.child(bindings))` factory
+ * (option 1 of the original task). Today's PEvO has no .child callers,
+ * so the documentary approach (option 2) is the architect's call per
+ * the 2026-05-11 archive of the parent task.
+ */
+child(bindings: pino.Bindings): pino.Logger { return baseLogger.child(bindings); }
+```
+
+The Acceptance section's "for option 2" sub-bullet under tests is the binding one — implement the negative-assertion test that pins the child does NOT redact at the call-site layer (`vi.spyOn(child, 'warn').mock.calls[0][0].err` contains the unredacted shape), so a future inadvertent migration to option 1 fails red until the JSDoc is updated.
+
+Moving back to `tasks/pending/` for backend pickup.
