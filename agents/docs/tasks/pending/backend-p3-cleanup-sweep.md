@@ -57,3 +57,40 @@ Verification:
 - `tests/routes/orcid.test.ts` + `tests/routes/auth-concurrency.test.ts` 39/39 pass.
 - `tests/routes/recover.test.ts` 30/30 pass (including new afterAll block).
 - `env -u UV_THREADPOOL_SIZE npx vitest run tests/routes/auth-concurrency.test.ts` passes — confirms vitest.config.ts env injection is authoritative and the unwrapped assertion behaves correctly under test.
+
+---
+
+## Architect re-review (2026-05-11) — HELD PENDING FIXES
+
+Re-review of commit `04fddee` via `/ce-code-review` invoked directly from the architect context. Reviewer team: correctness, testing, maintainability, project-standards, learnings, security. Sonnet tier for the non-correctness/security personas per the fan-out rule.
+
+### Items held (must fix before archive)
+
+1. **Stale `VITEST` gate cross-reference in `backend/src/lib/argon2-semaphore.ts:495-496`.** The docblock above `drainArgon2Queue` reads:
+
+   > *"Mirrors the `process.env.VITEST` gate at routes/auth.ts:153-160 for the UV_THREADPOOL_SIZE assertion."*
+
+   Commit `04fddee` removed that gate (now a bare block; no `if (!process.env.VITEST)` conditional; no line range 153-160). The cross-reference is rotted documentation introduced by this same cleanup pass.
+
+   Suggested rewrite:
+
+   > *"Mirrors the defense-in-depth UV_THREADPOOL_SIZE startup assertion at routes/auth.ts (the bare-block check immediately before SENTINEL_ARGON2_HASH_PROMISE)."*
+
+   Drop the line numbers — they will rot again on the next edit. Keep the docblock anchored to a stable symbol name (`SENTINEL_ARGON2_HASH_PROMISE`), not line numbers.
+
+   Note: the standalone VITEST guard at `argon2-semaphore.ts:499` (`if (process.env.VITEST || process.env.NODE_ENV === 'test')`) is functionally independent of `routes/auth.ts` and remains intact. Only the docblock cross-reference needs updating.
+
+### Dismissed at triage (recorded for transparency; do not implement)
+
+- **No negative-path test for the UV_THREADPOOL_SIZE startup assertion.** Surfaced by testing + correctness + security reviewers (testing finding T-01, plus testing_gaps on correctness/security). Dismissed: the "every test file fails on a vitest.config.ts regression" property is genuinely strong protection. A child-process startup-assertion test would add spawn isolation, env scrubbing, and CI-worker variance for marginal coverage of a non-runtime path. P3 + low-conviction → not worth adding.
+
+### Advisory items (decided at triage; no action requested)
+
+- **Derivation-chain question (`verify-resource-knob-math-before-load-bearing-security-margins-2026-04-22.md`).** Cleanup stripped the `16/4=4` arithmetic from BOTH `.env.example` AND the `auth.ts` comment. Judged acceptable: the startup assertion now fails loud at the right moment with a clear message ("UV_THREADPOOL_SIZE must be >= 16 for burnSentinel determinism"). The convention's "Right" example included inline math because no assertion existed at the time; the assertion is the stronger mechanical guarantee.
+- **Past-tense "semaphore landed" claim.** Per `wrapping-primitive-exhaustive-call-site-audit-2026-04-22.md`, claims of universal wrapper coverage should be grep-verified. Verified at re-review: 40 `runWithArgon2Slot` references across `backend/src/`. Claim is grounded.
+
+### Project-standards finding (timeline-corrected, not actionable)
+
+The project-standards reviewer flagged `.env.example` as architect-zone staged under a `backend:` prefix without `[skip-zone-audit]` (anchor 95). Timeline-verified: the commit-zone-audit hook landed in `a8ffb41` on **2026-04-30**, eight days AFTER this commit (`04fddee`, 2026-04-22). The hook did not exist at commit time, so "should have been rejected by the hook" doesn't apply. The cross-zone `.env.example` edit was task-authorized convention before the mechanical backstop existed. Future analogous cross-zone work needs `[skip-zone-audit]`.
+
+When item 1 lands, `git mv` this file back to `tasks/review/` for re-review and archive.
