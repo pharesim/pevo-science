@@ -133,3 +133,91 @@ Comment shape (illustrative; implementer applies near `CANONICAL_ROOT_MAX_HOPS =
 Mirror the same shape on `MAX_HOPS = 50` (forward walker): 50 × ≥1 query × 30s = up to 1500s (~25 min). Both arithmetic comments land in the same diff that introduces the `signal?: AbortSignal` parameter so future readers see the math and the fix together.
 
 Reviewer attribution: carried forward from `backend-canonical-root-walker-author-gate` round-2 hold A3 → round-3 hold A3 → archive at 2026-05-06. Architect-zone scope of A3 was misclassified at round-2 (the comment lives in `backend/src/`, an architect cannot edit it directly); this task is the natural home.
+
+## Backend re-review signal (2026-05-11, round-1 — commits `1d01a21` + `79078d7` + `741a3e9` on `main`)
+
+All five acceptance subsections + the two acceptance additions filed at round-2 triage 2026-05-06 (loop-SQL `IS NOT NULL` bundle + A3 depth-cap arithmetic docblocks) landed across three focused commits. Worked directly on `main`, no worktree fan-out — single-task execution with all changes on overlapping `papers.ts` lines.
+
+### Commit 1 (`1d01a21`) — scaffolding (config + docblocks, no behavior change)
+
+Subject carries `[skip-zone-audit]` because the config knob (`backend/src/config.ts`) and its `.env.example` template entry must land together — they're a tightly coupled pair, and `.env.example` is outside the backend zone.
+
+- `backend/src/config.ts`: added `hafWalkerWallClockMs: parseInt(process.env.HAF_WALKER_WALL_CLOCK_MS || '3000', 10)` with the 50-200ms × 10-15-query-depth derivation rationale comment and cross-reference to `verify-resource-knob-math-before-load-bearing-security-margins-2026-04-22.md`.
+- `.env.example`: documents `HAF_WALKER_WALL_CLOCK_MS=3000` next to `HAF_DATABASE_URL` with the operator-signal split (depth-exceeded = attacker amplifier; wall-clock-exceeded = degraded-HAF).
+- `backend/src/routes/papers.ts` `CANONICAL_ROOT_MAX_HOPS = 10` docblock (A3, carried forward from canonical-walker round-2 hold): adds the `10 hops × 2 SQL × 30s = ~10min` worst-case arithmetic and explains why depth cap + wall-clock both exist (orthogonal defense surfaces).
+- Same shape inline comment on `MAX_HOPS = 50` (forward walker, ~25min worst-case) per A3.
+
+### Commit 2 (`79078d7`) — AbortController plumbing + canaries
+
+Threads `signal?: AbortSignal` through five functions in `backend/src/routes/papers.ts`:
+
+- `fetchHeadAuthorizedAuthors(pool, author, permlink, memo?, signal?)` — defense-in-depth abort check at function entry (fail-closed return null).
+- `resolveContinuationChain(author, permlink, memo?, signal?)` — pre-loop abort check + iteration-boundary check at `for (let i = 0; ...)` top. On abort emits `event: 'continuation_chain_wall_clock_exceeded'` warn with `(startAuthor, startPermlink, hopIndex, elapsedMs)`.
+- `findCanonicalRoot(author, permlink, memo?, signal?)` — pre-initial-probe abort check + iteration-boundary check. On abort emits `event: 'canonical_root_walker_wall_clock_exceeded'`. Captures `startedAt = Date.now()` at function entry so `elapsedMs` is meaningful at the warn site.
+- `reconstructVersionsFromHaf(author, permlink, prefetchedChain?, memo?, signal?)` — threads signal to its internal `resolveContinuationChain` call; pre-query abort check before the big version-replay query.
+- `fetchPaperDetailFromHaf(author, permlink, memo?, signal?)` — threads signal to internal `resolveContinuationChain` + `reconstructVersionsFromHaf` calls.
+
+Route handler `GET /:author/:permlink` wraps walker calls in `AbortController` + `setTimeout(config.hafWalkerWallClockMs)` with `try/finally clearTimeout`, so the budget covers the full per-request walker-chain (cascading helper calls included). Per task scope, this is the only handler wrapped — `/retract`, `/cite`, `/enrichment` are out of scope per the task spec's explicit "route handlers" list. If reviewer wants those later, file as follow-up.
+
+Per acceptance section 3 ("when BOTH depth cap and wall-clock fire, prefer wall-clock"): the iteration-boundary `if (signal?.aborted)` check fires BEFORE the depth-cap exit condition at `i < MAX_HOPS` / `i < CANONICAL_ROOT_MAX_HOPS`, so wall-clock takes priority structurally. Inline comment documents this at both walker sites.
+
+Canaries in `canonical-root-walker.test.ts` (+2):
+- `'wall-clock budget: aborts mid-walk on slow HAF, emits canonical_root_walker_wall_clock_exceeded'` — 80ms-per-query responder + 50ms budget. Asserts wall-clock event fires with `hopIndex >= 0` and `elapsedMs > 0`, depth-cap event does NOT fire.
+- `'depth cap fires before wall-clock when budget is generous (orthogonal signal pinning)'` — fast queries + 30s budget + 11-hop chain. Asserts depth-cap event fires, wall-clock does NOT.
+
+Canaries in `continuation-author-gate.test.ts` (+2):
+- `'wall-clock budget: aborts forward walker mid-walk, emits continuation_chain_wall_clock_exceeded'` — same shape, with the backward walker suppressed via 0-row initial probe (matched by the `'continues' IS NOT NULL` discriminator). Only the forward walker's chain-walk SQL is delayed, so the test pins the FORWARD walker's iteration-boundary check specifically (elapsedMs > 0 fails red on a mutation that leaves only the pre-loop check).
+- `'forward walker does NOT emit wall-clock event on fast HAF (orthogonal signal pinning)'` — negative assertion. Mutation: invert the signal check → wall-clock fires on every request → fails red.
+
+Also added file-level `afterEach(() => vi.restoreAllMocks())` to `continuation-author-gate.test.ts` (was missing). Without it, `vi.spyOn(logger, 'warn')` called twice across `it()` bodies returns the EXISTING spy (vitest contract), so the second test's spy contained leaked calls from the first. Mirrors the equivalent guard in `canonical-root-walker.test.ts`. The fix was confirmed by diagnostic instrumentation: `spy.mock.calls.length === 1` BEFORE the fast-HAF test issued its request, with the call having the exact `hopIndex/elapsedMs` signature of the slow-HAF test's event.
+
+### Commit 3 (`741a3e9`) — IS NOT NULL bundle
+
+Added `AND c.json_metadata -> $3 -> 'continues' IS NOT NULL` to the backward walker's loop-continuation probe in `findCanonicalRoot` (the parent-continues SQL inside the for-loop). Aligns with the initial probe's discipline (SQL is SSoT for "has continues pointer"). The JS-side `!parentRow.cont_author` post-check stays in place as defense in depth.
+
+Loop semantics verified: `(currentAuthor, currentPermlink)` is tracked OUTSIDE the SQL result (advanced at the END of each iteration). 0-row case correctly returns the predecessor accumulated so far. Pre-bundle: 1 row with null cont, bail at `!cont_author`. Post-bundle: 0 rows, bail at `rows.length === 0`. Identical outcome.
+
+Canary in `canonical-root-walker.test.ts` (+1):
+- `'loop-continuation probe carries IS NOT NULL filter (mirrors initial probe)'` — 3-hop legitimate chain, asserts every captured loop probe (filtered out initial probe by SELECT-clause discriminator) contains `'continues' IS NOT NULL`. Mutation-kill: remove the predicate → canary fails red.
+
+Test helper `isInitialBackwardProbe` updated: it previously discriminated on the IS NOT NULL predicate (unique to the initial probe pre-bundle), but with the bundle landed both probes carry it. New discriminator: `SELECT\s+c\.author,\s+c\.json_metadata,` SELECT-clause prefix (unique to the initial probe because the JS-side type-spoof re-check needs the START row's own identity columns; the loop probe only needs cont fields).
+
+### Deviation from task spec: N+1 vs N+2 SQL-query perf claim
+
+Task acceptance addition stated: "Canary: extend an existing legitimate-chain canary to assert that walker reaches the root in N hops with N+1 SQL queries (initial + N loop), not N+2. Mutation-kill: revert the new SQL filter → query count rises by 1."
+
+By my trace, this perf claim does NOT hold. For a 1-hop chain (alice/v2 → alice/v1) the query counts are:
+
+- **Pre-bundle:** initial probe (1) + iter 0 auth-check (1) + iter 0 parent-continues (1) = 3 queries. Parent-continues returns 1 row with null cont_author; bail at `!cont_author`.
+- **Post-bundle:** initial probe (1) + iter 0 auth-check (1) + iter 0 parent-continues (1) = 3 queries. Parent-continues returns 0 rows (IS NOT NULL rejects); bail at `rows.length === 0`.
+
+Same query count. The parent-continues probe runs regardless — IS NOT NULL only changes the row shape returned, not whether the query is issued. The N+1 vs N+2 framing only holds if you count "rows returned with non-null cont_author" or similar, which isn't a useful operator metric.
+
+The STRUCTURAL benefit (SQL-side SSoT, mirrored discipline across both probes, reduced drift surface for future refactors) stands. The PERF claim doesn't validate. I wrote a structural canary (assert SQL contains the predicate) instead of a query-count canary. Flagging here in case the perf framing was load-bearing for some reason I'm missing — happy to adjust the canary if the architect wants a query-count variant, but I'd need guidance on how to count given the trace above.
+
+### Mutation-kill attestation (3 mutations × 3 canaries)
+
+Each mutation applied in-place to `backend/src/routes/papers.ts`, targeted vitest invocations run, mutation reverted, md5sum-verified clean restore between rounds. Final `diff /tmp/papers.ts.attest-base backend/src/routes/papers.ts` is empty.
+
+| Mutation | Backward wall-clock canary | Forward wall-clock canary | IS NOT NULL canary |
+|----------|---------------------------|---------------------------|---------------------|
+| HEAD (no mutation) | PASS | PASS | PASS |
+| A: remove iter-boundary `if (signal?.aborted)` in `findCanonicalRoot` | **FAIL RED** (`expected 0 to be greater than 0` on `wallClockEvents.length`) | PASS | PASS |
+| B: remove iter-boundary `if (signal?.aborted)` in `resolveContinuationChain` | PASS | **FAIL RED** (same assertion) | PASS |
+| C: remove `'continues' IS NOT NULL` clause from loop probe | PASS | PASS | **FAIL RED** (`probe.sql does not match /'continues' IS NOT NULL/i`) |
+
+Each canary fails red on exactly one mutation and stays green on the orthogonal two. Pre-loop signal checks (which fire when ANOTHER walker burns the budget before this one enters) remain in place as defense in depth and are exercised by the test bodies as a side effect — no separate canary for them, since the iteration-boundary canaries are strictly stronger (they pin the in-loop check, which subsumes the pre-loop check's "what if budget already exceeded?" case).
+
+### Verification
+
+- `npx tsc --noEmit` from `backend/`: clean.
+- `npm run lint` from `backend/`: only the two pre-existing `@typescript-eslint/no-explicit-any` warnings in `seed-phrase.ts` (unrelated).
+- `npx vitest run tests/routes/canonical-root-walker.test.ts tests/routes/continuation-author-gate.test.ts`: 68 tests pass on HEAD (was 67 pre-bundle; +1 from the IS NOT NULL canary; +3 in commit 2 and +1 in commit 3 versus the pre-task baseline of 64).
+- Broader sweep `npx vitest run tests/routes/canonical-root-walker.test.ts tests/routes/continuation-author-gate.test.ts tests/routes/papers.test.ts tests/routes/paper-detail-v3.test.ts`: 81 pass, 1 skip (Redis-availability `skipIf`). 40s runtime — papers.test.ts and paper-detail-v3.test.ts hit real HAF, which validates the signal-threading doesn't regress the live integration paths.
+- `npx vitest run tests/routes/bridge-paper-author-gate.test.ts`: 14 pass. Adjacent surface that touches walker code paths via `extractAuthorizedContinuationAuthors`.
+
+### Notes for architect
+
+- Scope per task spec: only `GET /:author/:permlink` is AbortController-wrapped. `/retract`, `/cite`, `/enrichment` are NOT wrapped (explicit task-scope choice). If reviewer wants budget on those routes too, follow-up.
+- The IS NOT NULL bundle's perf claim deviation (see above) is the one open question I'd flag for round-2 hold or dismiss.
+- The `isInitialBackwardProbe` test-helper discriminator change is a side effect of the bundle landing. If round-2 hold prefers a different discriminator (e.g., dedicated `mockMode` config flag), happy to refactor.
