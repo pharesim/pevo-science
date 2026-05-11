@@ -506,3 +506,251 @@ test('review-addressing surface renders before submit when paper has prior revie
     ),
   ).toBe(true);
 });
+
+test('accepted-claimer (accredited, not author, not co-author) reaches the edit form and broadcasts', async ({
+  page,
+  request,
+}) => {
+  // edit.js:isAuthorized returns true for an accredited user with an
+  // accepted authorship_claim against the paper. Test 2's continuation
+  // path exercises the accredited-non-author route via isAccredited, and
+  // test 3 covers the negative gating. This is the positive mirror for
+  // the claim branch — a regression that dropped the
+  // `claims.some(c => c.claimer === username && c.status === 'accepted')`
+  // check from isAuthorized would not be caught by the existing four
+  // tests.
+  const claimer = await pickAccreditedResearcher(request);
+  if (!claimer) throw new Error('expected at least one accredited researcher in HAF');
+
+  const ORIG_AUTHOR = `claimorig${Date.now().toString(36)}`;
+  if (ORIG_AUTHOR === claimer.username) {
+    throw new Error('synthetic original author collided with seeded claimer');
+  }
+  const PERMLINK = uniquePermlink('e2e-edit-claimer');
+  const paper = buildPaperFixture({ author: ORIG_AUTHOR, permlink: PERMLINK });
+
+  // Seed an ACCEPTED claim for the seeded researcher. installPaperMocks
+  // returns this via the enrichment endpoint, which edit.js merges onto
+  // this.paper.authorship_claims for isAuthorized to read.
+  await installPaperMocks(page, {
+    paper,
+    claims: [{ claimer: claimer.username, status: 'accepted' }],
+  });
+  await seedAccreditedSession(page, {
+    username: claimer.username,
+    accreditation: claimer.accreditation,
+  });
+  await clearDraft(page, paper.author, paper.permlink);
+
+  await page.goto(`/en/edit/${paper.author}/${paper.permlink}`);
+
+  await page.waitForSelector('[x-data="editPage"]');
+  // Edit form renders → isAuthorized resolved true via the claim path
+  // (not via co-authorship — paper.authors does not list this user — and
+  // not via authorship — paper.author !== this user).
+  await expect(page.locator('input#edit-title')).toBeVisible();
+
+  const NEW_TITLE = 'Edit by Accepted Claimer';
+  const NEW_ABSTRACT = 'Abstract updated by an accepted-claim user (not the original author).';
+  const NEW_BODY = '## Introduction\n\nBody update from accepted claimer.';
+
+  await page.locator('input#edit-title').fill(NEW_TITLE);
+  await waitForEditorsMounted(page);
+  await setEditorContent(page, { abstract: NEW_ABSTRACT, body: NEW_BODY });
+
+  await page.locator('form button[type="submit"]').click();
+
+  await expect
+    .poll(() => page.evaluate(() => window.__pevoBroadcastCalls?.length || 0), {
+      timeout: 10_000,
+    })
+    .toBeGreaterThan(0);
+
+  const broadcast = await page.evaluate(() => window.__pevoBroadcastCalls[0]);
+  expect(broadcast.kind).toBe('broadcast');
+  expect(broadcast.username).toBe(claimer.username);
+
+  const commentOp = broadcast.operations.find((op) => op[0] === 'comment');
+  expect(commentOp, 'operations should include a comment op').toBeTruthy();
+  const [, commentBody] = commentOp;
+  // Claimer is not the canonical author on a single-version paper, so
+  // edit.js:isContinuation takes the !hasChain → username !== paper.author
+  // branch and returns true. The broadcast targets a NEW permlink under
+  // the claimer's account (continuation), parent_permlink is APP_TAG.
+  expect(commentBody.author).toBe(claimer.username);
+  expect(commentBody.parent_permlink).toBe(APP_TAG);
+  expect(commentBody.permlink).not.toBe(paper.permlink);
+});
+
+test('no-changes guard blocks the broadcast and surfaces an error step', async ({
+  page,
+  request,
+}) => {
+  // edit.js:handleSubmit (the in-place edit branch) sets step='error' with
+  // errorMessage='edit.noChanges' and returns without broadcasting when
+  // title + body + abstract + metadata + addressed-reviews are all
+  // unchanged from prefill. A regression that broadened or removed this
+  // guard (allowing a no-op broadcast) would not be caught by the other
+  // tests, all of which deliberately mutate fields before submit.
+  const researcher = await pickAccreditedResearcher(request);
+  if (!researcher) throw new Error('expected at least one accredited researcher in HAF');
+
+  const PERMLINK = uniquePermlink('e2e-edit-nochange');
+  const paper = buildPaperFixture({ author: researcher.username, permlink: PERMLINK });
+
+  await installPaperMocks(page, { paper });
+  await seedAccreditedSession(page, {
+    username: researcher.username,
+    accreditation: researcher.accreditation,
+  });
+  await clearDraft(page, paper.author, paper.permlink);
+
+  await page.goto(`/en/edit/${paper.author}/${paper.permlink}`);
+
+  await page.waitForSelector('[x-data="editPage"]');
+  await expect(page.locator('input#edit-title')).toBeVisible();
+
+  // Wait for editors to finish mounting, then re-stamp Alpine state from
+  // the SAME _originalBody the submit handler will diff against. This
+  // pins data.abstract/data.body exactly (via setEditorContent's
+  // emitUpdate:false path) so any markdown round-trip jitter from the
+  // Tiptap initial render cannot perturb the no-changes equality check.
+  await waitForEditorsMounted(page);
+  const { abstract: prefilledAbstract, body: prefilledBody } = await page.evaluate(() => {
+    const el = document.querySelector('[x-data="editPage"]');
+    const data = window.Alpine.$data(el);
+    // Snapshot the prefill values that _originalBody was computed from in
+    // _prefillForm — what the submit handler will compare new state to.
+    return { abstract: data.abstract, body: data.body };
+  });
+  await setEditorContent(page, { abstract: prefilledAbstract, body: prefilledBody });
+
+  // Submit without modifying ANYTHING.
+  await page.locator('form button[type="submit"]').click();
+
+  // The step state machine should land on 'error' and the broadcast stub
+  // should never have been called. Poll the step value to allow the
+  // submit handler to walk through 'diffing' → 'error' synchronously.
+  await expect
+    .poll(
+      () =>
+        page.evaluate(() => {
+          const el = document.querySelector('[x-data="editPage"]');
+          return window.Alpine?.$data(el)?.step;
+        }),
+      { timeout: 5_000 },
+    )
+    .toBe('error');
+
+  const errorMessage = await page.evaluate(() => {
+    const el = document.querySelector('[x-data="editPage"]');
+    return window.Alpine?.$data(el)?.errorMessage;
+  });
+  // edit.js sets errorMessage to the literal i18n key. The translation
+  // would happen via stepMessage's lookup table, but the raw key surfaces
+  // through the data property and is what we pin against — translation
+  // shifts would otherwise make this assertion brittle.
+  expect(errorMessage).toBe('edit.noChanges');
+
+  // No broadcast may have fired.
+  const broadcastCount = await page.evaluate(
+    () => window.__pevoBroadcastCalls?.length || 0,
+  );
+  expect(broadcastCount).toBe(0);
+});
+
+test('non-head edit target (own post no longer chain head) broadcasts full body, not a diff', async ({
+  page,
+  request,
+}) => {
+  // edit.js:1051-1055 — when the current user's own post in the chain
+  // (userPostInChain) is NOT the chain head, edit.js broadcasts the FULL
+  // new body rather than a diff-match-patch text. The previous tests
+  // always set head_author/head_permlink equal to paper.author/permlink,
+  // so targetIsHead === true and only the diff branch was exercised.
+  // This test pins the full-body branch by building a fixture where
+  // (a) the seeded researcher authored a continuation that USED to be
+  // the chain head, and (b) a later continuation by a different author
+  // is now the head.
+  const researcher = await pickAccreditedResearcher(request);
+  if (!researcher) throw new Error('expected at least one accredited researcher in HAF');
+
+  // The researcher's own (non-head) post — this is what they will edit.
+  const OWN_PERMLINK = uniquePermlink('e2e-edit-nonhead-own');
+  // A later continuation, by a different synthetic author, that is now
+  // the chain head.
+  const HEAD_AUTHOR = `headauth${Date.now().toString(36)}`;
+  const HEAD_PERMLINK = uniquePermlink('e2e-edit-nonhead-head');
+  if (HEAD_AUTHOR === researcher.username) {
+    throw new Error('synthetic head author collided with seeded researcher');
+  }
+
+  // buildPaperFixture builds a single-version paper. Re-shape it for a
+  // 2-version chain where paper.author is still the researcher (the
+  // edit route targets researcher.username), but head_author/head_permlink
+  // point at the later continuation, and versions[] lists both posts so
+  // userPostInChain finds the researcher's entry.
+  const base = buildPaperFixture({ author: researcher.username, permlink: OWN_PERMLINK });
+  const paper = {
+    ...base,
+    head_author: HEAD_AUTHOR,
+    head_permlink: HEAD_PERMLINK,
+    versions: [
+      { version_number: 1, author: researcher.username, permlink: OWN_PERMLINK },
+      { version_number: 2, author: HEAD_AUTHOR, permlink: HEAD_PERMLINK },
+    ],
+  };
+
+  await installPaperMocks(page, { paper });
+  await seedAccreditedSession(page, {
+    username: researcher.username,
+    accreditation: researcher.accreditation,
+  });
+  await clearDraft(page, paper.author, paper.permlink);
+
+  await page.goto(`/en/edit/${paper.author}/${paper.permlink}`);
+
+  await page.waitForSelector('[x-data="editPage"]');
+  await expect(page.locator('input#edit-title')).toBeVisible();
+
+  const NEW_TITLE = 'Non-Head Target Edit';
+  const NEW_ABSTRACT = 'Updated abstract while a later continuation holds the chain head.';
+  const NEW_BODY = '## Introduction\n\nUpdated body for the non-head-target full-body branch.';
+
+  await page.locator('input#edit-title').fill(NEW_TITLE);
+  await waitForEditorsMounted(page);
+  await setEditorContent(page, { abstract: NEW_ABSTRACT, body: NEW_BODY });
+
+  await page.locator('form button[type="submit"]').click();
+
+  await expect
+    .poll(() => page.evaluate(() => window.__pevoBroadcastCalls?.length || 0), {
+      timeout: 10_000,
+    })
+    .toBeGreaterThan(0);
+
+  const broadcast = await page.evaluate(() => window.__pevoBroadcastCalls[0]);
+  const commentOp = broadcast.operations.find((op) => op[0] === 'comment');
+  expect(commentOp).toBeTruthy();
+  const [, commentBody] = commentOp;
+
+  // Target is the researcher's own post (non-head), NOT the chain head.
+  expect(commentBody.author).toBe(researcher.username);
+  expect(commentBody.permlink).toBe(OWN_PERMLINK);
+  expect(commentBody.author).not.toBe(HEAD_AUTHOR);
+  expect(commentBody.permlink).not.toBe(HEAD_PERMLINK);
+
+  // Full-body branch: the broadcast body is the composed post (abstract +
+  // separator + body), not a diff-match-patch text. diff-match-patch
+  // patches start with `@@` headers; a full body starts with the
+  // `## Abstract\n\n` prefix from composePostBody.
+  expect(commentBody.body.startsWith('## Abstract\n\n')).toBe(true);
+  expect(commentBody.body).toContain(NEW_ABSTRACT);
+  expect(commentBody.body).toContain(NEW_BODY);
+  expect(commentBody.body.startsWith('@@')).toBe(false);
+
+  // In-place edit (not continuation): same permlink as the user's own post
+  // in the chain. The json_metadata MUST NOT carry a `continues` pointer.
+  const meta = JSON.parse(commentBody.json_metadata);
+  expect(meta[APP_TAG].continues).toBeUndefined();
+});
