@@ -52,23 +52,45 @@ const baseLogger = pino({
   serializers: { err: redactErrSerializer }, // defense-in-depth on transport
 });
 
-function redactErrInArg(arg: unknown) {
-  if (arg && typeof arg === 'object') {
+function redactErrInArg(arg: unknown): unknown {
+  if (arg && typeof arg === 'object' && !Array.isArray(arg)) {
     const obj = arg as Record<string, unknown>;
     if ('err' in obj) {
-      return { ...obj, err: redactErrSerializer(obj.err) };
+      // In-place mutation is intentional: vi.spyOn captures the argument
+      // reference at the wrapper boundary, so a spread-copy (`{...obj, err: redacted}`)
+      // would leave the spy holding the ORIGINAL unredacted reference. Overwriting
+      // `obj.err` on the same reference makes the redacted form visible to the spy.
+      obj.err = redactErrSerializer(obj.err);
     }
   }
   return arg;
 }
 
-// `Parameters<typeof baseLogger.warn>` preserves pino's `LogFn` overload tuple
-// so spreading the redacted args back into `baseLogger.warn` type-checks under
-// strict mode. Repeat for error / info / debug / fatal / trace.
+// Use pino's `LogFn` type directly (NOT `Parameters<typeof baseLogger.warn>`).
+// `Parameters<>` reduces an overload set to the LAST overload's tuple — pino's
+// LogFn is a 3-overload union (msg-only string, obj+optional-msg, obj+msg+
+// placeholders), so a per-level `Parameters<...>` alias collapses to one shape
+// and silently loses both the msg-only overload AND `%s`/`%d` placeholder
+// type-checking at every call site. A `makeLevelWrapper(method: LogFn): LogFn`
+// factory preserves the full overload surface.
+function makeLevelWrapper(method: LogFn): LogFn {
+  const wrapped: LogFn = ((...args: unknown[]) => {
+    if (args.length > 0) {
+      args[0] = redactErrInArg(args[0]);
+    }
+    (method as (...a: unknown[]) => void).apply(baseLogger, args);
+  }) as LogFn;
+  return wrapped;
+}
+
 export const logger = {
-  warn:  (...args: Parameters<typeof baseLogger.warn>)  => baseLogger.warn(...args.map(redactErrInArg) as Parameters<typeof baseLogger.warn>),
-  error: (...args: Parameters<typeof baseLogger.error>) => baseLogger.error(...args.map(redactErrInArg) as Parameters<typeof baseLogger.error>),
-  // info, debug, fatal, trace — same pattern
+  warn:  makeLevelWrapper(baseLogger.warn.bind(baseLogger)),
+  error: makeLevelWrapper(baseLogger.error.bind(baseLogger)),
+  info:  makeLevelWrapper(baseLogger.info.bind(baseLogger)),
+  debug: makeLevelWrapper(baseLogger.debug.bind(baseLogger)),
+  fatal: makeLevelWrapper(baseLogger.fatal.bind(baseLogger)),
+  trace: makeLevelWrapper(baseLogger.trace.bind(baseLogger)),
+  flush: baseLogger.flush.bind(baseLogger),
 };
 ```
 
@@ -138,18 +160,30 @@ const baseLogger = pino({
   serializers: { err: redactErrSerializer }, // defense-in-depth on transport
 });
 
-function redactErrInArg(arg: unknown) {
-  if (arg && typeof arg === 'object') {
+function redactErrInArg(arg: unknown): unknown {
+  if (arg && typeof arg === 'object' && !Array.isArray(arg)) {
     const obj = arg as Record<string, unknown>;
     if ('err' in obj) {
-      return { ...obj, err: redactErrSerializer(obj.err) };
+      obj.err = redactErrSerializer(obj.err); // in-place mutation: spy must see the redacted reference
     }
   }
   return arg;
 }
 
+// LogFn factory preserves pino's 3-overload set (msg-only, obj+optional-msg,
+// obj+msg+placeholders). Earlier shapes used `Parameters<typeof baseLogger.warn>`
+// per-level, which silently collapsed the overloads to one — losing placeholder
+// type-checking at every call site.
+function makeLevelWrapper(method: LogFn): LogFn {
+  const wrapped: LogFn = ((...args: unknown[]) => {
+    if (args.length > 0) args[0] = redactErrInArg(args[0]);
+    (method as (...a: unknown[]) => void).apply(baseLogger, args);
+  }) as LogFn;
+  return wrapped;
+}
+
 export const logger = {
-  warn: (...args: Parameters<typeof baseLogger.warn>) => baseLogger.warn(...args.map(redactErrInArg) as Parameters<typeof baseLogger.warn>),
+  warn: makeLevelWrapper(baseLogger.warn.bind(baseLogger)),
   // error, info, debug, fatal, trace — same pattern
 };
 
@@ -176,6 +210,7 @@ The same principle applies to `AssertionError` (`actual`/`expected`/`operator` p
 
 ## Related
 
+- [`defensive-recursive-serializer-and-pino-err-redact-policy-2026-05-11.md`](./defensive-recursive-serializer-and-pino-err-redact-policy-2026-05-11.md) — the recursive serializer pattern (`safeRedactErr`, depth guard, plain-object branch, element-wise array recursion) that the wrapper in the present doc invokes; documents the canonical `redactErrSerializer` shape this doc's wrapper layer depends on.
 - [`vitest-fake-timers-module-private-state-isolation-2026-04-29.md`](./vitest-fake-timers-module-private-state-isolation-2026-04-29.md) — establishes the `vi.spyOn(logger, 'info').mock.calls` call-site capture pattern and the pino `LogFn` overload cast (`undefined as never`); the present doc explains WHY that call-site capture layer is distinct from `serializers.err`.
 - [`auth-structured-log-shape-2026-04-29.md`](./auth-structured-log-shape-2026-04-29.md) — establishes that `err` carries the raw Error for pino to serialize; the present doc explains why that convention, combined with a `serializers.err` redact hook, is insufficient for spy-visible redaction without a wrapper layer.
 - [`test-mock-carve-out-clause-c-2026-05-04.md`](./test-mock-carve-out-clause-c-2026-05-04.md) — authorizes `vi.spyOn(logger, 'warn')` as a carve-out-eligible observability surface; the wrapper pattern in the present doc keeps the spy meaningful (sees redacted args) while remaining carve-out-eligible.
