@@ -54,6 +54,7 @@ List PEvO papers with filtering and sorting.
 
 **Field notes:**
 - `discipline` — canon_name form (lowercased), matches `/api/disciplines.canon_name` and the `?discipline=` filter contract; round-trippable through the URL filter without re-canonicalization. Display form via `/api/disciplines.display_name` lookup or CSS `text-transform: capitalize`. May be `null` (paper not tagged with a discipline).
+- `review_count` — number of reviews on this paper satisfying the canonical PEvO review-validity gate (`type='review'`, accredited author or anon-proxy, structurally-valid 4-dim rating object with each dimension an integer in `[1,5]`, not authored by the paper author or a named co-author). Authoring client (`app` field) is not gated. Source of truth: `validReviewWhere()` in `backend/src/hafsql.ts`.
 - `vote_strength` — qualitative tier derived from average accredited vote weight, or `null` if no votes. See enrichment endpoint for possible values.
 - `source_type` — `"native"` for original PEvO papers, `"arxiv"` or `"crossref"` for bridge papers.
 - `doi` — DOI string for bridge papers (from source metadata), `null` for native papers.
@@ -492,3 +493,6 @@ Full-text search across PEvO papers and reviews.
   "is_accredited": true
 }
 ```
+
+**Notes:**
+- `?type=review` results are restricted to reviews satisfying the canonical PEvO review-validity gate (`type='review'`, accredited author or anon-proxy, structurally-valid 4-dim rating object with each dimension an integer in `[1,5]`, not authored by the paper author or a named co-author). Authoring client (`app` field) is not gated. Source of truth: `validReviewWhere()` in `backend/src/hafsql.ts`.

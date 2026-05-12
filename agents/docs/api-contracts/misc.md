@@ -149,6 +149,7 @@ Platform-wide statistics.
 
 - `active_disciplines`: count of distinct lowercase-canonical discipline strings (`count(DISTINCT LOWER(json_metadata -> appTag ->> 'discipline'))`). Case-insensitive dedup matches the `/api/disciplines` canon_name grouping. This semantic changed from case-sensitive `DISTINCT` in BE-DISCIPLINE-CANONICALIZE; the number may step down on first deploy against any corpus with mixed-case discipline variants (e.g. "Physics" and "physics" previously counted as 2, now count as 1).
 - `active_disciplines` counts **only papers authored by currently-accredited researchers** (the `papers` CTE filters via `active_accreditations`), while `/api/disciplines` counts **all** PEvO-tagged papers regardless of accreditation status. The two endpoints count from different sets; `active_disciplines` may be smaller than `/api/disciplines.data.length`. This divergence is intentional per the accredited-only data policy in `ARCHITECTURE.md`.
+- `total_reviews` and `reviews_last_30_days`: counts of reviews satisfying the canonical PEvO review-validity gate (`type='review'`, accredited author or anon-proxy, structurally-valid 4-dim rating object with each dimension an integer in `[1,5]`, not authored by the paper author or a named co-author). Authoring client (`app` field) is not gated. Source of truth: `validReviewWhere()` in `backend/src/hafsql.ts`. Response is cached for 5 minutes; dashboard consumers will see semantic step-changes at the first cache miss after a deploy that alters the gate.
 
 ---
 

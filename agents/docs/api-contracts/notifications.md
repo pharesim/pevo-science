@@ -93,7 +93,7 @@ Fetch notification events for the authenticated user since a given Hive block nu
 
 | Type | Trigger | Who receives it |
 |------|---------|-----------------|
-| `new_review` | New review (pevo.type=review) on your paper | Paper author |
+| `new_review` | New review on your paper. Trigger conditions: `type='review'`, authored by an accredited reviewer or the anon proxy, with a structurally-valid 4-dim rating object (each dimension an integer in `[1,5]`), parent is a PEvO paper (native or bridge), and not authored by the paper author or a named co-author. Source of truth: `validReviewWhere()` in `backend/src/hafsql.ts`. | Paper author |
 | `new_citation` | New paper whose pevo.citations references your paper | Cited paper author |
 | `new_vote` | New vote on your paper or review from an accredited voter | Content author |
 | `accreditation_update` | Your accreditation is granted or revoked | Target account |

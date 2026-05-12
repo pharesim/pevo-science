@@ -17,7 +17,7 @@ All PEvO metadata is keyed by the configurable `APP_TAG` environment variable, *
 - `custom_json` id: `APP_TAG`
 - PEvO-specific metadata object: keyed as `[APP_TAG]: { ... }` in `json_metadata`
 
-The `app` field uses pattern matching (`LIKE '<APP_TAG>/%'`) in SQL queries to allow version bumps without breaking queries.
+The `app` field uses pattern matching (`LIKE '<APP_TAG>/%'`) in SQL queries for **paper-class identity** (`type IN ('paper', 'bridge_paper')`) to allow version bumps without breaking queries. **Review-class identity does NOT gate on `app`** — accreditation is the trust layer for reviews, so an accredited reviewer's structurally-valid review broadcast from any Hive client (peakd, ecency, raw) is a valid PEvO review. See section 4 "All PEvO reviews" for the canonical review-validity gate, and `agents/docs/solutions/conventions/pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28.md` for the rationale.
 
 ---
 
@@ -668,10 +668,20 @@ WHERE c.parent_author = ''
   AND (c.json_metadata -> $1 ->> 'type') = 'bridge_paper'
   AND c.json_metadata ->> 'app' LIKE $2;
 
--- All PEvO reviews
+-- All PEvO reviews (canonical: type='review' AND structurally-valid 4-dim rating
+-- AND accredited author or anon-proxy). The 4-dim rating regex protects
+-- downstream ::numeric casts in the reputation cycle from malformed values;
+-- the `app` field is intentionally not gated for reviews (see line 20 note).
+-- Source of truth: `validReviewWhere()` in `backend/src/hafsql.ts`.
 SELECT * FROM hafsql.comments c
 WHERE (c.json_metadata -> $1 ->> 'type') = 'review'
-  AND c.json_metadata ->> 'app' LIKE $2;
+  AND jsonb_typeof(c.json_metadata -> $1 -> 'rating') = 'object'
+  AND (c.json_metadata -> $1 -> 'rating' ->> 'methodology')  ~ '^[1-5]$'
+  AND (c.json_metadata -> $1 -> 'rating' ->> 'novelty')      ~ '^[1-5]$'
+  AND (c.json_metadata -> $1 -> 'rating' ->> 'clarity')      ~ '^[1-5]$'
+  AND (c.json_metadata -> $1 -> 'rating' ->> 'significance') ~ '^[1-5]$'
+  AND (c.author IN (SELECT account FROM active_accreditations)
+       OR c.author = $2);  -- $2 = HIVE_ANON_ACCOUNT
 
 -- All PEvO custom_json operations
 SELECT * FROM hafsql.operation_custom_json_view cj
