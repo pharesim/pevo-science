@@ -73,15 +73,18 @@ async function fetchCommentsFromHaf(
 
     // Build parameterized CTE
     const accredCte = activeAccreditationsCteBody();
-    // appTag and appLike params come after CTE params
+    // appTag is used by the `type IS DISTINCT FROM 'review'` discriminator,
+    // which excludes typed reviews from the discussion stream while admitting
+    // both PEvO-authored comments (type='comment') and replies that carry no
+    // pevotest metadata (e.g. peakd/ecency). Accreditation, not the authoring
+    // client, is the gate (see CLAUDE.md: "accreditation is the trust layer").
     const appTagIdx = accredCte.nextIdx;
-    const appLikeIdx = accredCte.nextIdx + 1;
-    const paperAuthorIdx = accredCte.nextIdx + 2;
-    const paperPermlinkIdx = accredCte.nextIdx + 3;
-    const limitIdx = accredCte.nextIdx + 4;
-    const offsetIdx = accredCte.nextIdx + 5;
+    const paperAuthorIdx = accredCte.nextIdx + 1;
+    const paperPermlinkIdx = accredCte.nextIdx + 2;
+    const limitIdx = accredCte.nextIdx + 3;
+    const offsetIdx = accredCte.nextIdx + 4;
 
-    const baseParams = [...accredCte.params, config.appTag, `${config.appTag}/%`, paperAuthor, paperPermlink];
+    const baseParams = [...accredCte.params, config.appTag, paperAuthor, paperPermlink];
 
     // Recursive CTE to get all discussion comments in the tree.
     // `WITH RECURSIVE` is required because `comment_tree` self-references in
@@ -97,19 +100,19 @@ async function fetchCommentsFromHaf(
           c.parent_author, c.parent_permlink, 0 AS depth
         FROM ${T.comments} c
         WHERE c.parent_author = $${paperAuthorIdx} AND c.parent_permlink = $${paperPermlinkIdx}
-          AND (c.json_metadata -> $${appTagIdx} ->> 'type') = 'comment'
-          AND c.json_metadata ->> 'app' LIKE $${appLikeIdx}
+          AND (c.json_metadata -> $${appTagIdx} ->> 'type') IS DISTINCT FROM 'review'
 
         UNION ALL
 
-        -- Recursive: replies to discussion comments
+        -- Recursive: replies to discussion comments. The negative
+        -- discriminator (IS DISTINCT FROM 'review') admits comments that
+        -- carry no pevotest metadata at all — NULL is considered "distinct".
         SELECT
           c.author, c.permlink, c.body, c.created,
           c.parent_author, c.parent_permlink, ct.depth + 1
         FROM ${T.comments} c
         JOIN comment_tree ct ON c.parent_author = ct.author AND c.parent_permlink = ct.permlink
-        WHERE (c.json_metadata -> $${appTagIdx} ->> 'type') = 'comment'
-          AND c.json_metadata ->> 'app' LIKE $${appLikeIdx}
+        WHERE (c.json_metadata -> $${appTagIdx} ->> 'type') IS DISTINCT FROM 'review'
           AND ct.depth < 20
       ),
       filtered AS (
@@ -130,14 +133,12 @@ async function fetchCommentsFromHaf(
         SELECT c.author, c.permlink, c.parent_author, c.parent_permlink, 0 AS depth
         FROM ${T.comments} c
         WHERE c.parent_author = $${paperAuthorIdx} AND c.parent_permlink = $${paperPermlinkIdx}
-          AND (c.json_metadata -> $${appTagIdx} ->> 'type') = 'comment'
-          AND c.json_metadata ->> 'app' LIKE $${appLikeIdx}
+          AND (c.json_metadata -> $${appTagIdx} ->> 'type') IS DISTINCT FROM 'review'
         UNION ALL
         SELECT c.author, c.permlink, c.parent_author, c.parent_permlink, ct.depth + 1
         FROM ${T.comments} c
         JOIN comment_tree ct ON c.parent_author = ct.author AND c.parent_permlink = ct.permlink
-        WHERE (c.json_metadata -> $${appTagIdx} ->> 'type') = 'comment'
-          AND c.json_metadata ->> 'app' LIKE $${appLikeIdx}
+        WHERE (c.json_metadata -> $${appTagIdx} ->> 'type') IS DISTINCT FROM 'review'
           AND ct.depth < 20
       )
       SELECT count(*)::int AS total
