@@ -1,6 +1,7 @@
 ---
 title: All error-shaped data must go in the err slot — sibling top-level keys bypass both pino redact layers
 date: 2026-05-06
+last_updated: 2026-05-12
 category: conventions
 module: backend
 problem_type: convention
@@ -164,3 +165,4 @@ logger.warn(
 - `agents/docs/solutions/conventions/auth-structured-log-shape-2026-04-29.md` — structured log shape conventions for authentication flows; uses "the err field" / "redact serializer" framing. The `err?` field rule there is implicit; this doc strengthens it into an explicit prohibition on sibling error-shaped keys.
 - `backend/src/logger.ts:140-142` — serializer recursive cause traversal (the mechanism that makes the sibling cause field redundant).
 - `backend/src/lib/broadcast-error.ts:270` — concrete violating site held for fix in the parent task `backend-bridge-key-startup-validation-and-pino-redact` round (architect commit `7684f8e`, 2026-05-06).
+- `agents/docs/solutions/conventions/strict-superset-wrapper-inherits-escape-hatches-2026-05-12.md` — third bypass surface in the redact-policy bypass catalogue. This doc covers the **payload-shape axis** (sibling top-level keys bypassing the `err`-slot-keyed redact policy at the log-call surface); `defensive-recursive-serializer-and-pino-err-redact-policy` covers the **depth-recursion axis** (depth/cycle/throwing-getter handling inside the err-slot serializer); and the strict-superset sibling covers the **API-surface axis** (child-options forwarding letting a caller install their own non-redacting `serializers.err` on a child logger). All three are bypass mechanisms against the same Layer-A/Layer-B safety contract.

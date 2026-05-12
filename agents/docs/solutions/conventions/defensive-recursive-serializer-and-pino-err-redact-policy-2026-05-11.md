@@ -1,6 +1,7 @@
 ---
 title: "Defensive recursive serializer pattern + pino err-redact policy"
 date: 2026-05-11
+last_updated: 2026-05-12
 category: conventions
 module: backend/src/logger.ts
 problem_type: convention
@@ -293,3 +294,4 @@ Both layers fire. Spy-based tests assert the wrapper's Layer A behavior; integra
 - `backend/src/logger.ts` — canonical implementation (~250 lines).
 - `backend/src/lib/log-pii.ts` — `hashEmailForLogs`, `hashTokenForLogs` — per-field redaction helpers; this policy is the project-wide structural complement.
 - `agents/docs/tasks-archive.md` — `BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT` archive entry, full 6-round history including the round-3 `errors[]` map → round-4 `cause` branch → round-5 array-element-wise + `errors[]` plain-object closure arc.
+- `agents/docs/solutions/conventions/strict-superset-wrapper-inherits-escape-hatches-2026-05-12.md` — extension procedure for child-options forwarded by `logger.child()`. The Layer-A/Layer-B policy in this doc is the safety contract the strict-superset sibling warns can be silently bypassed when a wrapper widens its signature to accept the wrapped library's options type. Specifically, `pino.ChildLoggerOptions.serializers` (merges over parent's `safeRedactErr`) and `.redact` (replaces the parent's redact policy entirely) both defeat Layer-B on a child logger. The sibling doc's per-option triage discipline is the prescribed extension path; this doc's leaky-fields-by-subclass table is the contract surface that triage must protect.
