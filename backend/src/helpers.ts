@@ -68,7 +68,14 @@ export function isPevoReview(meta: Record<string, unknown>): boolean {
   const appMeta = meta[config.appTag] as Record<string, unknown> | undefined;
   if (!appMeta || appMeta.type !== 'review') return false;
   const rating = appMeta.rating;
-  if (!rating || typeof rating !== 'object') return false;
+  // `typeof rating !== 'object'` admits arrays (`typeof [] === 'object'`
+  // returns 'object' in JS), so an array-shaped rating slips through. The
+  // SQL gate now uses `jsonb_typeof(...) = 'object'` which narrows to
+  // JSON objects only (arrays are 'array', numbers/strings/null/booleans
+  // get their own typeof); mirror that here so SQL↔JS parity is
+  // preserved. Same root cause as the helper-doc note: 'object' is not
+  // a runtime shape, it's a category that includes arrays in JS.
+  if (!rating || typeof rating !== 'object' || Array.isArray(rating)) return false;
   const r = rating as Record<string, unknown>;
   return isInt1To5(r.methodology) && isInt1To5(r.novelty) && isInt1To5(r.clarity) && isInt1To5(r.significance);
 }

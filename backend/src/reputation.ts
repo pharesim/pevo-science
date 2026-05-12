@@ -326,7 +326,12 @@ export async function startReputationWeightsCache(): Promise<void> {
  * Parameters: $1 = target usernames, $2 = accredited, $3 = app_tag,
  * $4 = app_like, $5 = prev scores jsonb, $6 = cycle_end_block,
  * $7 = genesis block, $8-$17 = weights (cast once in `w` CTE),
- * $18 = config.hiveBridgeAccount (for validPevoPaperWhere bridge-author pin).
+ * $18 = config.hiveBridgeAccount (for validPevoPaperWhere bridge-author pin),
+ * $19 = config.hiveAnonAccount (for review-class anon-proxy OR-arm at
+ *       the three review CTEs that compose `validReviewWhere` —
+ *       `active_authors` review arm, `paper_reviews`, and
+ *       `citing_paper_quality`'s inner subquery; mirrors the display-side
+ *       accreditation-or-anon shape composed at profile.ts / reviews.ts).
  */
 export async function computeReputationBatch(
   usernames: string[],
@@ -395,12 +400,19 @@ export async function computeReputationBatch(
             AND ${validPevoPaperWhere({ commentAlias: 'c', appTagParam: '$3', bridgeAccountParam: '$18', source: 'all' })}
             AND c.json_metadata ->> 'app' LIKE $4
           UNION ALL
+          -- Review arm: gate on accreditation (or the anon proxy). The
+          -- shared validReviewWhere helper documents that callers must
+          -- compose accreditation; without it, an unaccredited Hive
+          -- account broadcasting a review-shaped reply would inflate
+          -- active_authors -> flow into voter_weights -> game scoring.
+          -- Mirrors the paper-arm identity gate inside validPevoPaperWhere.
           SELECT c.author FROM ${T.comments} c
           JOIN ${T.comments} p ON p.author = c.parent_author AND p.permlink = c.parent_permlink
           WHERE p.parent_author = '' AND p.parent_permlink = $3
             AND ${validPevoPaperWhere({ commentAlias: 'p', appTagParam: '$3', bridgeAccountParam: '$18', source: 'all' })}
             AND p.json_metadata ->> 'app' LIKE $4
             AND ${validReviewWhere({ commentAlias: 'c', appTagParam: '$3' })}
+            AND (c.author = ANY($2::text[]) OR c.author = $19)
         ) t
       ),
 
@@ -569,6 +581,13 @@ export async function computeReputationBatch(
         -- self-5/5/5/5 would push pr.quality toward 1.0 (max), inflating
         -- the paper's vote-derived score in paper_scores at line 591.
         -- Mirrors the paper_resolved_votes self-exclusion at lines 555-560.
+        -- Accreditation gate ($2 = accredited, $19 = anon) — without it,
+        -- any unaccredited Hive account broadcasting a valid-shape review
+        -- to a target user paper would inflate pr.quality (5/5/5/5 ->
+        -- AVG/4.0/5.0 = 1.0x max multiplier on the paper vote-derived
+        -- score). The helper docstring documents that callers must
+        -- compose accreditation; this CTE is one of three review-class
+        -- composition sites flagged by the round-1 review.
         SELECT up.author, up.permlink,
           AVG(
             ((c.json_metadata -> $3 -> 'rating' ->> 'methodology')::numeric +
@@ -581,6 +600,7 @@ export async function computeReputationBatch(
           ON c.parent_author = up.author AND c.parent_permlink = up.permlink
           AND ${validReviewWhere({ commentAlias: 'c', appTagParam: '$3' })}
           AND ${excludeSelfReviewWhere({ reviewAlias: 'c', paperRowAlias: 'up', appTagParam: '$3' })}
+          AND (c.author = ANY($2::text[]) OR c.author = $19)
         GROUP BY up.author, up.permlink
       ),
 
@@ -785,6 +805,12 @@ export async function computeReputationBatch(
             ON c2.parent_author = up2.author AND c2.parent_permlink = up2.permlink
             AND ${validReviewWhere({ commentAlias: 'c2', appTagParam: '$3' })}
             AND ${excludeSelfReviewWhere({ reviewAlias: 'c2', paperRowAlias: 'up2', appTagParam: '$3' })}
+            -- Accreditation gate ($2 = accredited, $19 = anon). Without
+            -- it, an unaccredited reviewer on a citing paper inflates
+            -- cpr.quality -> cpq.review_quality -> multiplies into
+            -- citation_scores weighted_upvotes term -> boosts the cited
+            -- author reputation for free.
+            AND (c2.author = ANY($2::text[]) OR c2.author = $19)
           WHERE (up2.author, up2.permlink) IN (SELECT citing_author, citing_permlink FROM citing_papers)
           GROUP BY up2.permlink, up2.author
         ) cpr ON cpr.author = cp.citing_author AND cpr.permlink = cp.citing_permlink
@@ -860,6 +886,11 @@ export async function computeReputationBatch(
         weights.decay_floor,              // $16
         weights.decay_grace_months,       // $17
         config.hiveBridgeAccount,         // $18
+        config.hiveAnonAccount || '',     // $19 (anon-proxy OR-arm; empty
+                                          //  string is a safe sentinel —
+                                          //  Hive prohibits empty author
+                                          //  names so `c.author = ''`
+                                          //  never matches)
       ],
     );
 

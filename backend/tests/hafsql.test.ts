@@ -239,7 +239,13 @@ describe('validReviewWhere SQL shape', () => {
   it('produces type+rating-shape predicate with no app LIKE gate', () => {
     const sql = validReviewWhere({ commentAlias: 'c', appTagParam: '$1' });
     expect(sql).toContain("(c.json_metadata -> $1 ->> 'type') = 'review'");
-    expect(sql).toContain("c.json_metadata -> $1 -> 'rating' IS NOT NULL");
+    // jsonb_typeof = 'object' replaces the prior `IS NOT NULL` line — the
+    // bare null check passed JSONB null (PG semantics: 'null'::jsonb IS
+    // NOT NULL returns TRUE) and lets JSONB strings/arrays/numbers
+    // through. The jsonb_typeof shape narrows to objects only so the
+    // intent matches the four-regex rating-dimension reads below.
+    expect(sql).toContain("jsonb_typeof(c.json_metadata -> $1 -> 'rating') = 'object'");
+    expect(sql).not.toContain("'rating' IS NOT NULL");
     // The app-LIKE gate was intentionally dropped — see helper docstring.
     expect(sql).not.toContain("'app'");
     expect(sql).not.toContain('LIKE');
@@ -262,7 +268,7 @@ describe('validReviewWhere SQL shape', () => {
   it('custom commentAlias propagates through every clause (no leftover c. references)', () => {
     const sql = validReviewWhere({ commentAlias: 'co', appTagParam: '$3' });
     expect(sql).toContain("(co.json_metadata -> $3 ->> 'type') = 'review'");
-    expect(sql).toContain("co.json_metadata -> $3 -> 'rating' IS NOT NULL");
+    expect(sql).toContain("jsonb_typeof(co.json_metadata -> $3 -> 'rating') = 'object'");
     expect(sql).toContain("(co.json_metadata -> $3 -> 'rating' ->> 'methodology')  ~ '^[1-5]$'");
     // No leftover 'c.' alias from a half-edit.
     expect(sql).not.toMatch(/\bc\.json_metadata/);
@@ -321,6 +327,13 @@ describe('validReviewWhere behavioral matrix (real Postgres, synthetic JSONB)', 
       ['valid_pevo_app', { app: 'pevotest/0.1', pevotest: { type: 'review', rating: { methodology: '4', novelty: '3', clarity: '5', significance: '4' } } }],
       ['valid_foreign_app', { app: 'peakd/2024', pevotest: { type: 'review', rating: { methodology: '5', novelty: '5', clarity: '5', significance: '5' } } }],
       ['valid_no_app_field', { pevotest: { type: 'review', rating: { methodology: '1', novelty: '2', clarity: '3', significance: '4' } } }],
+      // Production chain rows carry JSON-integer ratings (`{methodology: 4, …}`),
+      // not strings. The `->>` operator currently renders JSON integers as
+      // their text form (`'4'`) so the regex passes, but a future Postgres
+      // major or jsonb-codec change to integer rendering would silently
+      // reject every valid review on the chain. Pin the int-form shape
+      // alongside the string-form rows so the matrix catches that mutation.
+      ['valid_int_rating', { app: 'pevotest/0.1', pevotest: { type: 'review', rating: { methodology: 4, novelty: 3, clarity: 5, significance: 4 } } }],
       ['missing_rating', { app: 'pevotest/0.1', pevotest: { type: 'review' } }],
       ['partial_rating_3_of_4', { app: 'pevotest/0.1', pevotest: { type: 'review', rating: { methodology: '4', novelty: '3', clarity: '5' } } }],
       ['non_numeric_rating', { app: 'pevotest/0.1', pevotest: { type: 'review', rating: { methodology: 'five', novelty: '3', clarity: '5', significance: '4' } } }],
@@ -350,7 +363,7 @@ describe('validReviewWhere behavioral matrix (real Postgres, synthetic JSONB)', 
     // Expected admit set: only the three "valid_*" rows. Every other row is
     // either wrong type, missing/partial/malformed rating, or
     // out-of-range — all of which the gate must exclude.
-    expect(admitted).toEqual(['valid_foreign_app', 'valid_no_app_field', 'valid_pevo_app']);
+    expect(admitted).toEqual(['valid_foreign_app', 'valid_int_rating', 'valid_no_app_field', 'valid_pevo_app']);
   });
 });
 

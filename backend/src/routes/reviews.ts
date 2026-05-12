@@ -57,16 +57,30 @@ async function fetchReviewFromHaf(author: string, permlink: string) {
     // row must satisfy validReviewWhere (type='review' + well-formed rating
     // object). The JS-side `isPevoReview` post-filter below is
     // defense-in-depth — keeping the two in sync is the parity invariant.
-    const appTagParamIdx = accredCte.nextIdx + 3;
+    //
+    // Param-index counter pattern (instead of `accredCte.nextIdx + N`
+    // arithmetic): every other call site in the codebase derives `$N`
+    // refs via `paramIdx++` or literal `'$2'`/`'$3'` strings. Offset
+    // arithmetic silently mis-binds if any bind between the lines is
+    // added/removed — see the helper's docstring example for the
+    // canonical shape. Adding `accreditedVoteCount(...)` as a column
+    // here doesn't consume params (it expands to a correlated subquery
+    // with no binds), so the counter only advances for actual `$N`
+    // refs.
+    let paramIdx = accredCte.nextIdx;
+    const authorIdx = paramIdx++;
+    const permlinkIdx = paramIdx++;
+    const anonIdx = paramIdx++;
+    const appTagIdx = paramIdx++;
     const result = await pool.query(
       `${accredCte.sql}
        SELECT c.author, c.permlink, c.body, c.json_metadata,
               c.parent_author, c.parent_permlink, c.created,
               ${accreditedVoteCount('c.author', 'c.permlink')} AS net_votes
        FROM ${T.comments} c
-       WHERE c.author = $${accredCte.nextIdx} AND c.permlink = $${accredCte.nextIdx + 1}
-         AND (c.author IN (SELECT account FROM active_accreditations) OR c.author = $${accredCte.nextIdx + 2})
-         AND ${validReviewWhere({ commentAlias: 'c', appTagParam: `$${appTagParamIdx}` })}`,
+       WHERE c.author = $${authorIdx} AND c.permlink = $${permlinkIdx}
+         AND (c.author IN (SELECT account FROM active_accreditations) OR c.author = $${anonIdx})
+         AND ${validReviewWhere({ commentAlias: 'c', appTagParam: `$${appTagIdx}` })}`,
       [...accredCte.params, author, permlink, config.hiveAnonAccount || '', config.appTag],
     );
     if (result.rows.length === 0) return null;

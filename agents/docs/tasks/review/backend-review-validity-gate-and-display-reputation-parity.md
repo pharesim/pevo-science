@@ -200,3 +200,43 @@ The architect landed these in parallel — no implementer action needed:
 - `agents/docs/api-contracts/notifications.md` `new_review` trigger description
 
 The remaining architect-owned doc-drift (`agents/docs/reputation-algorithm.md` parameter table + 8 CTE sites) is deferred until item #1 lands, so the architect can sync the canonical SQL to the gate-plus-accreditation final shape in one pass.
+
+---
+
+## Backend re-review signal (2026-05-12, working tree pre-commit)
+
+All 8 hold-block items addressed in a single round-2 fix commit. Lint clean (`npm run lint` in `backend/`, 0 errors, 2 pre-existing seed-phrase warnings unrelated to this work). `tsc --noEmit` clean. Targeted test suites re-run against real HAF + Redis: `hafsql.test.ts` (29 passed, 3 skipped), `reviews.test.ts`, `review-parity-invariant.test.ts` (3 files, 29 passed), `helpers.test.ts` + `profile.test.ts` + `notifications.test.ts` + `reputation-lifecycle.test.ts` (4 files, 74 passed), `comments.test.ts` (1 flake on a multi-suite run resolved cleanly on isolated rerun, 6 passed). The architect's full `npx vitest run` at archive-time intake is the authoritative gate.
+
+**Item 1 [P0]** — `reputation.ts`: added `$19 = config.hiveAnonAccount` param at `line 862` and updated the param-list docblock at `lines 326-331`. Three review-class CTEs now compose accreditation via `(c.author = ANY($2::text[]) OR c.author = $19)` matching the helper docstring's "callers compose accreditation" contract:
+- `active_authors` review arm — added at the UNION ALL's second branch after `validReviewWhere`. Comment block explains the inflate-`active_authors` → `voter_weights` attack path the gate closes.
+- `paper_reviews` quality CTE — added inside the JOIN's ON-clause after `excludeSelfReviewWhere`. Comment block explains the 5/5/5/5 → AVG/4.0/5.0 = 1.0x multiplier inflation.
+- `citing_paper_quality` inner subquery — added inside the inner JOIN's ON-clause after `excludeSelfReviewWhere` (alias `c2`). Comment block explains the cpr.quality → cpq.review_quality → citation_scores boost path.
+
+**Item 2 [P1]** — `profile.ts:fetchUserReviewsFromHaf`: rewrote the param-shape to thread the `activeAccreditationsCteBody` helper. New param layout: $1..$3 = CTE (appTag, authorities, genesis), $4 = username, $5 = appTag, $6 = anon, $7 = limit, $8 = offset, $9 = accreditedAccounts (votes-sort only). Both count and data queries now wrap a `WITH ${accredCte.sql}` and compose the accreditation gate via `(c.author IN (SELECT account FROM active_accreditations) OR c.author = $6)`. Comment block explains the spam-vector this closes (300-char body excerpts of review-shaped replies surfacing on unaccredited profile reviews pages).
+
+**Item 3 [P2]** — `notification-queries.ts` arm 1a: replaced the `LEFT JOIN ${T.comments} p` (title-fetch only) with `JOIN ${T.comments} p` plus a paper-class identity check via `validPevoPaperWhere({commentAlias:'p', appTagParam: at, bridgeAccountParam: bridgeParam, source:'all'})`. Comment block explains the cross-zone griefing vector (review-typed reply to a non-paper Hive post triggering `new_review` with empty title) and the `source:'all'` rationale (arm 1a's `co.parent_author = $1` only matches native papers because bridge papers' chain author is `config.hiveBridgeAccount`, never the recipient — the union with arm 1b stays clean).
+
+**Item 4 [P2]** — `reviews.test.ts:installGateResponder`: added a third `throw new Error(...)` mutation-kill canary requiring `sql.includes("~ '^[1-5]$'")` after the existing accreditation + anon-OR-arm checks. Comment cites the defense-in-depth-canary convention doc. Mutation-kill: reverting the `validReviewWhere(...)` call at `reviews.ts:67` makes all three "admitted reviewer" tests fail red (route returns 404 via the catch-path null fall-through).
+
+**Item 5 [P2]** — `reviews.ts`: replaced `const appTagParamIdx = accredCte.nextIdx + 3` with the canonical counter pattern: `let paramIdx = accredCte.nextIdx; const authorIdx = paramIdx++; const permlinkIdx = paramIdx++; const anonIdx = paramIdx++; const appTagIdx = paramIdx++;`. Comment block explains why the offset arithmetic was fragile and notes that `accreditedVoteCount(...)` is a no-bind column expression (the counter doesn't advance for it).
+
+**Item 6 [P3]** — `hafsql.ts:validReviewWhere`: replaced `c.json_metadata -> $appTag -> 'rating' IS NOT NULL` with `jsonb_typeof(c.json_metadata -> $appTag -> 'rating') = 'object'`. Comment block explains the Postgres JSONB-null vs SQL-NULL distinction and why `jsonb_typeof = 'object'` self-documents the shape narrowing the regex relies on. **Companion JS fix in `helpers.ts:isPevoReview`**: added `|| Array.isArray(rating)` to the early-out so JS↔SQL parity holds (typeof [] === 'object' admits arrays in JS; `jsonb_typeof = 'object'` does not in PG — the per-dimension regex reads currently catch arrays by NULL propagation, but the explicit Array.isArray check matches the SQL gate's intent and is defensive against future field-access reshapes).
+
+**Test fallout from Item 6**: the `validReviewWhere SQL shape` block in `hafsql.test.ts` had two cases pinning the literal `'rating' IS NOT NULL` substring; updated to `jsonb_typeof(...) = 'object'` and added a `expect(sql).not.toContain("'rating' IS NOT NULL")` assertion so a future revert is caught.
+
+**Item 7 [P3]** — `hafsql.test.ts:320-333`: added `'valid_int_rating'` row to the behavioral matrix with JSON-integer rating dims (`{methodology: 4, novelty: 3, …}`) alongside the existing string-form rows. Updated the `expect(admitted).toEqual([...])` set to include `'valid_int_rating'` (now 4 admitted, alphabetically sorted). Comment block explains the future-Postgres-upgrade silent-regression vector.
+
+**Item 8 [P3]** — new test file `tests/routes/review-parity-invariant.test.ts`. The test:
+1. Skips with `ctx.skip()` (not vacuous pass) when HAF is unconfigured, no accredited corpus exists, or no paper with passing reviews exists in the corpus.
+2. Finds one native paper with at least one passing review (using `validReviewWhere` + `excludeSelfReviewWhere` + `c.author = ANY(reviewAuthors)`).
+3. Runs two SQL queries selecting `(author, permlink)`:
+   - **Display path** (mirrors `papers.ts:2201-2216`): `c.author = ANY($4::text[])` over `reviewAuthors = accredited ∪ {anon}`.
+   - **Reputation path** (mirrors `reputation.ts:562-585`): `(c.author = ANY($2::text[]) OR c.author = $4)` over `accreditedArr` + `anonAccount`.
+4. Asserts `Set<author|permlink>` equality. Sanity-floor on `displaySet.size > 0` so empty-set vacuous passes can't slip through.
+
+If a future change adds a predicate to the display path but not the cycle (or vice versa), the sets diverge and this test fails red. Per the carve-out clause-C: this test runs real-HAF, no mocking — the carve-out doesn't apply because predicate equivalence on real data is exactly what real-HAF tests are good at.
+
+### Items NOT in scope (potential follow-ups, no scope-expansion this round)
+
+- `getProfileStats` `user_reviews` CTE at `profile.ts:92-100`: also lacks an accreditation gate (would inflate `review_count` on the unaccredited user's profile stats panel). Not listed in the hold block; flagging for architect awareness so it can be ticketed as a separate task if desired. Symmetric in spirit with item 2 but on a different route (`/profile/:username` vs `/profile/:username/reviews`).
+- Architect-owned `agents/docs/reputation-algorithm.md` doc-drift sync (parameter table + 8 CTE sites) is deferred per the hold-block close-out note; will land in the architect's archive-time edits alongside item 1.

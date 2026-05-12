@@ -211,6 +211,16 @@ describe('GET /api/reviews/:author/:permlink — SQL accreditation gate (backend
         if (!sql.includes('OR c.author =')) {
           throw new Error('Review fetch SQL is missing the anon-account OR-arm');
         }
+        // Rating-shape regex is the SQL-side mirror of the JS isPevoReview
+        // gate at helpers.ts. Defense-in-depth needs an independent canary
+        // per layer (see solutions/conventions/defense-in-depth-canary-
+        // must-pin-each-layer-2026-04-30.md); without this line, reverting
+        // validReviewWhere's call at reviews.ts wouldn't fail any
+        // route-layer test — only helpers.test.ts would catch the JS-side
+        // regression, leaving the SQL gate uncanaried at the route.
+        if (!sql.includes("~ '^[1-5]$'")) {
+          throw new Error('Review fetch SQL is missing the rating-shape regex gate');
+        }
         // accredCte takes params[0..2], then author at [3], permlink [4],
         // hiveAnonAccount at [5].
         const author = params[3] as string;

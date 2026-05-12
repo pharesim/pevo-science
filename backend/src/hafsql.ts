@@ -232,9 +232,19 @@ export function validReviewWhere(opts: {
 }): string {
   const alias = opts.commentAlias ?? 'c';
   const appTag = opts.appTagParam;
+  // jsonb_typeof(... 'rating') = 'object' is load-bearing: a bare
+  // `IS NOT NULL` check passes JSONB null (`'null'::jsonb IS NOT NULL` is
+  // TRUE because JSONB has an internal `null` value distinct from SQL
+  // NULL), JSONB strings, JSONB arrays, and JSONB numbers — only `=
+  // 'object'` narrows the rating to a shape whose `->> 'methodology'` /
+  // etc. reads can meaningfully apply. The four regex lines below catch
+  // non-object shapes today via NULL propagation; the explicit
+  // jsonb_typeof check makes that intent self-documenting so a future
+  // maintainer can't delete the regex on the assumption that the
+  // (defunct) `IS NOT NULL` line enforces shape.
   return `(
     (${alias}.json_metadata -> ${appTag} ->> 'type') = 'review'
-    AND ${alias}.json_metadata -> ${appTag} -> 'rating' IS NOT NULL
+    AND jsonb_typeof(${alias}.json_metadata -> ${appTag} -> 'rating') = 'object'
     AND (${alias}.json_metadata -> ${appTag} -> 'rating' ->> 'methodology')  ~ '^[1-5]$'
     AND (${alias}.json_metadata -> ${appTag} -> 'rating' ->> 'novelty')      ~ '^[1-5]$'
     AND (${alias}.json_metadata -> ${appTag} -> 'rating' ->> 'clarity')      ~ '^[1-5]$'

@@ -144,7 +144,18 @@ export async function fetchNotificationsFromHaf(
           AND c.json_metadata ->> 'app' LIKE ${al}
       )
 
-      -- 1a. New reviews on your own papers (accredited reviewers only)
+      -- 1a. New reviews on your own papers (accredited reviewers only).
+      -- INNER JOIN to ${T.comments} p plus a paper-class identity check
+      -- via validPevoPaperWhere — without it, an accredited attacker can
+      -- write a (type=review, rating={1,1,1,1}) reply to ANY of the
+      -- recipient Hive content (a blog post, a non-paper comment, a
+      -- peakd reply) and trigger a new_review notification with an empty
+      -- title (the LEFT JOIN-to-a-non-paper bug surfaced by the round-1
+      -- review item #3). Mirrors arm 1b tighter user_bridge_papers gate.
+      -- source=all is the safe choice — for native papers
+      -- co.parent_author = $1 matches the chain author (recipient);
+      -- bridge papers can never satisfy co.parent_author = $1 because
+      -- their chain author is config.hiveBridgeAccount.
       SELECT
         'new_review'::text AS event_type,
         co.block_num,
@@ -162,7 +173,9 @@ export async function fetchNotificationsFromHaf(
         NULL::text AS parent_author,
         NULL::text AS parent_permlink_ref
       FROM ${T.commentOps} co
-      LEFT JOIN ${T.comments} p ON p.author = co.parent_author AND p.permlink = co.parent_permlink
+      JOIN ${T.comments} p
+        ON p.author = co.parent_author AND p.permlink = co.parent_permlink
+        AND ${validPevoPaperWhere({ commentAlias: 'p', appTagParam: at, bridgeAccountParam: bridgeParam, source: 'all' })}
       JOIN active_accreditations aa_r ON aa_r.account = co.author
       WHERE co.parent_author = $1
         AND co.block_num > $2

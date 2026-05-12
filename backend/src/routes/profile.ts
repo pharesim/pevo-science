@@ -319,22 +319,47 @@ async function fetchUserReviewsFromHaf(username: string, limit: number, offset: 
   if (!pool) return null;
 
   try {
-    // $1 = username (author of the review), $2 = config.appTag (consumed by
-    // validReviewWhere's type+rating-shape gate). Limit/offset live at
-    // $3/$4; the sort-by-votes path adds accreditedAccounts at $5.
+    // Param shape: accred CTE consumes $1..$3 (appTag, authorities,
+    // genesis); $4 = username, $5 = appTag (for validReviewWhere /
+    // excludeSelfReviewWhere), $6 = hiveAnonAccount, $7 = limit,
+    // $8 = offset, $9 = accreditedAccounts (votes-sort only).
+    //
+    // The accreditation OR-anon gate is load-bearing here: without it,
+    // `/api/profile/<unaccredited>/reviews` surfaces 300-char body
+    // excerpts of review-shaped replies that pass validReviewWhere but
+    // fail the per-review accreditation gate at `/api/reviews/...`.
+    // That asymmetry was flagged by the round-1 review (item 2).
     //
     // The JOIN against parent paper `p` is needed both for the title
     // (p.title) and for excludeSelfReviewWhere (reads p.json_metadata ->
     // authors[]). INNER JOIN — a review whose parent paper isn't present
     // in HAF can't surface meaningfully in a profile reviews list anyway.
-    const reviewWhere = validReviewWhere({ commentAlias: 'c', appTagParam: '$2' });
-    const selfExclude = excludeSelfReviewWhere({ reviewAlias: 'c', paperRowAlias: 'p', appTagParam: '$2' });
-    const baseParams: unknown[] = [username, config.appTag];
+    const accredCte = activeAccreditationsCteBody(1);
+    const usernameIdx = accredCte.nextIdx;         // $4
+    const appTagIdx = accredCte.nextIdx + 1;       // $5
+    const anonIdx = accredCte.nextIdx + 2;         // $6
+    const limitIdx = accredCte.nextIdx + 3;        // $7
+    const offsetIdx = accredCte.nextIdx + 4;       // $8
+    const accreditedParamIdx = accredCte.nextIdx + 5; // $9 (votes-sort only)
+
+    const at = `$${appTagIdx}`;
+    const reviewWhere = validReviewWhere({ commentAlias: 'c', appTagParam: at });
+    const selfExclude = excludeSelfReviewWhere({ reviewAlias: 'c', paperRowAlias: 'p', appTagParam: at });
+    const accredGate = `(c.author IN (SELECT account FROM active_accreditations) OR c.author = $${anonIdx})`;
+
+    const baseParams: unknown[] = [
+      ...accredCte.params,                    // $1, $2, $3
+      username,                               // $4
+      config.appTag,                          // $5
+      config.hiveAnonAccount || '',           // $6
+    ];
 
     const countResult = await pool.query(
-      `SELECT count(*)::int AS total FROM ${T.comments} c
+      `WITH ${accredCte.sql}
+       SELECT count(*)::int AS total FROM ${T.comments} c
        JOIN ${T.comments} p ON p.author = c.parent_author AND p.permlink = c.parent_permlink
-       WHERE c.author = $1 AND c.parent_author != ''
+       WHERE c.author = $${usernameIdx} AND c.parent_author != ''
+         AND ${accredGate}
          AND ${reviewWhere}
          AND ${selfExclude}`,
       baseParams,
@@ -343,7 +368,6 @@ async function fetchUserReviewsFromHaf(username: string, limit: number, offset: 
 
     // For sort-by-votes, compute accredited net_votes per review.
     const accreditedAccounts = sort === 'votes' ? [...(await getAllAccreditedAccounts())] : [];
-    const accreditedParamIdx = 5; // $1=username, $2=appTag, $3=limit, $4=offset, $5=accreditedAccounts
     const netVotesSubquery = sort === 'votes'
       ? `(SELECT COALESCE(SUM(CASE WHEN lv.weight > 0 THEN 1 WHEN lv.weight < 0 THEN -1 ELSE 0 END), 0)::int
           FROM (SELECT DISTINCT ON (v.voter) v.weight FROM ${T.voteOps} v
@@ -359,18 +383,20 @@ async function fetchUserReviewsFromHaf(username: string, limit: number, offset: 
     if (sort === 'votes') dataParams.push(accreditedAccounts);
 
     const dataResult = await pool.query(
-      `SELECT c.author, c.permlink, LEFT(c.body, 300) AS body,
+      `WITH ${accredCte.sql}
+       SELECT c.author, c.permlink, LEFT(c.body, 300) AS body,
               c.json_metadata, c.created,
               c.parent_author, c.parent_permlink,
               p.title AS paper_title,
               ${netVotesSubquery}
        FROM ${T.comments} c
        JOIN ${T.comments} p ON p.author = c.parent_author AND p.permlink = c.parent_permlink
-       WHERE c.author = $1 AND c.parent_author != ''
+       WHERE c.author = $${usernameIdx} AND c.parent_author != ''
+         AND ${accredGate}
          AND ${reviewWhere}
          AND ${selfExclude}
        ORDER BY ${orderClause}
-       LIMIT $3 OFFSET $4`,
+       LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
       dataParams,
     );
 
