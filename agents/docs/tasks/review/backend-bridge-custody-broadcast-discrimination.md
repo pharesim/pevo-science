@@ -266,3 +266,28 @@ Non-trivial decisions / surprises:
 ### Re-review signal
 
 When items 1-4 land in a single round-4 commit, `git mv` this file back to `tasks/review/`. Architect's round-4 review scopes `/ce-code-review` to the round-4 commit only. The 4 items are localized to 2 production-source files + 1 test file (`backend/src/lib/broadcast-error.ts`, `backend/src/routes/custody.ts`, `backend/tests/routes/custody.test.ts`); diff size should be small (~10-20 LOC, mostly comment edits + the savedImpl guard removal). Expect convergence at round-4.
+
+---
+
+## Backend re-review signal (2026-05-12, round-4 hold-fixes)
+
+Round-4 hold items 1-4 all landed in the single round-4 commit on `main` (3 files changed; comment edits + one test save/restore refactor). Item-by-item:
+
+1. (P2, M-2) Rewrote both `attempt_n` rationale comment blocks in `backend/src/routes/custody.ts` (the lead-in audit-log comment that introduces the helper, and the round-3 hold #1 INTENTIONALLY-OMITTED block). The new framing reflects reality: the idempotency layer LANDED (`embedIdempotencyKey` + `lookupCustodyBroadcastIdempotency` are live above), but the cluster arc did NOT add a per-attempt counter — the gate either short-circuits with the prior `tx_id` on a hit or proceeds with no retry-history state. The slot stays empty until a per-key counter mechanism is added. The third sibling site (BACKEND-BROADCAST-ATTEMPT-HELPER-EXTRACTION note immediately below) was rewritten to drop "the idempotency cluster lands the real per-key counter" framing for the same reason. Cluster-task name reference removed at all three custody.ts sites — the implementation reference now stands on its own without pointing at a closed task. (The sibling comment block in `backend/src/lib/broadcast-error.ts:640-649` also references the cluster task by name; scope-conservative — left for the architect or a future task since the architect's hold-block called out only `custody.ts:461` and `:506-513`. Surfaces explicitly here so the architect can fold it into the next round if desired.)
+
+2. (P3, M-1) Replaced the stale `:263` line reference in `backend/src/lib/broadcast-error.ts` LogContext comment block with a function/identifier-name reference: "the `handleBroadcastError` body below (see the `sanitizedLogContext` destructure)". Drift-resistant — line numbers rot when the file reflows; function and variable identifiers don't.
+
+3. (P3, M-3) Replaced the underscore-form `event:'custody_broadcast_failure'` in `backend/src/routes/custody.ts:127` (no such event exists in the codebase). For this site — chain rejection of a malformed consent op falling through the broadcast path — the relevant events are `broadcast_failed` (from `handleBroadcastError` on chain rejection) and `custody.broadcast.attempt` with `outcome:'failure'` (from the per-attempt audit-log helper). The comment now cites both. `custody.broadcast.internal_error` deliberately NOT listed at this site because the request reaches broadcast (the outer-catch path doesn't fire on a chain rejection of a malformed-but-valid-op-shape consent op).
+
+4. (P3, T-2/correctness/adversarial) Hoisted `DEFAULT_APP_QUERY_IMPL` as a module-scope `const` in `backend/tests/routes/custody.test.ts`. The module-load `appQueryMock.mockImplementation(...)` now references the const directly. The outer-catch `pool.query` throw spec previously did `const savedImpl = appQueryMock.getMockImplementation()` + `if (savedImpl) appQueryMock.mockImplementation(savedImpl)` in `finally` — now does an unconditional `appQueryMock.mockImplementation(DEFAULT_APP_QUERY_IMPL)`. A future switch from `mockClear` to `mockReset` in `beforeEach` would wipe `getMockImplementation()`'s return value (silently skipping the restore under the old guard, leaking the throw-impl into sibling specs), but the named const resolves regardless. The comment block at the spec was updated to spell out this discipline.
+
+### Verification
+
+- Targeted vitest: `tests/routes/bridge.test.ts`, `tests/routes/custody.test.ts`, `tests/lib/broadcast-error.test.ts` — 3 files, 67/67 tests green.
+- `npx tsc --noEmit`: clean.
+- `npm run lint`: clean (pre-existing `seed-phrase.ts` `any` warnings only).
+
+### Architect followups (carry forward)
+
+- The pre-existing A1 (`/ce-compound-refresh` on `pino-spy-serializer-ordering-trap-2026-05-06.md`), A2 (`/ce-compound-refresh` on `vi-spyon-mockimplementation-bypasses-function-under-test-2026-05-12.md`), and A3 (`timeout_ms` qualifier in `bridge.md` / `custody.md`) from the round-3 hold-block are unchanged.
+- One sibling comment in `backend/src/lib/broadcast-error.ts:640-649` still references the archived `backend-broadcast-idempotency-cluster-followup.md` by name with the same misleading "lands the real per-key counter" framing item 1 fixed in `custody.ts`. Scope-conservative left untouched — surfaces here for architect triage.
