@@ -439,6 +439,14 @@ describe('readCached — discriminated-union shape validation (round-3 hold #2)'
         return ctx?.event === 'idempotency.cache.corrupt_entry';
       });
       expect(matchingCall, 'expected idempotency.cache.corrupt_entry warn').toBeDefined();
+      // Round-5 hold #2: pin cache_class so a mutation dropping the
+      // sibling field at idempotency.ts (or regressing the [2] index
+      // back to [3] — see round-4 hold #8's off-by-one note) fails
+      // here instead of passing silently.
+      expect(matchingCall?.[0]).toMatchObject({
+        event: 'idempotency.cache.corrupt_entry',
+        cache_class: 'custody',
+      });
     } finally {
       warnSpy.mockRestore();
     }

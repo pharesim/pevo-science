@@ -392,10 +392,10 @@ export function handleBroadcastError(
   // (BACKEND-ORCID-BROADCAST-OUTCOME-DISCRIMINATION.)
   if (err instanceof PostBroadcastWriteError) {
     // Severity discriminator (round-2 F3): permanent-class throws emit a
-    // distinct 502 code (POST_BROADCAST_OPERATOR_REQUIRED) and message
-    // ("support has been notified") so user-visible recovery copy stops
-    // claiming automatic reconciliation on a permanent programmer-error
-    // class. Operator-alert routing keys on the same `event:` anchor today
+    // distinct 502 code (POST_BROADCAST_OPERATOR_REQUIRED) and the round-3
+    // hold #3 "please contact support" message so user-visible recovery
+    // copy stops claiming automatic reconciliation on a permanent
+    // programmer-error class. Operator-alert routing keys on the same `event:` anchor today
     // because both severities share the cascade-failure on-call disposition
     // (DB on-call, not broadcast on-call). A future dashboard split — e.g.
     // operator-pager on permanent vs. dashboard-only on transient — keys

@@ -902,8 +902,9 @@ describe('POST /api/accreditation/verify — BE-VERIFY-BROADCAST-ATTEMPTS-CAP', 
         }),
         expect.stringContaining('enqueued for drain'),
       );
-      // Round-3 hold #1 cross-check: the raw 64-hex token does NOT leak
-      // through the new warn payload (token_hash is the 12-hex prefix).
+      // Round-3 hold #1 cross-check: the raw token does NOT leak through
+      // the new warn payload (token_hash is the 12-hex prefix; the full
+      // accred-cap-<16-hex> literal is the regex target).
       const flatPayload = JSON.stringify(loggerWarnSpy.mock.calls);
       expect(flatPayload).not.toMatch(new RegExp(token));
       // The helper-internal broadcast_decrement_redis_unavailable warn
@@ -918,6 +919,12 @@ describe('POST /api/accreditation/verify — BE-VERIFY-BROADCAST-ATTEMPTS-CAP', 
     } finally {
       isAvailableSpy.mockRestore();
       loggerWarnSpy.mockRestore();
+      // Round-5 hold #4: the 'enqueued_for_drain' branch leaves a pending
+      // decrement in the module-level queue Map. Subsequent flap-recovery
+      // specs each clearQueue() at their start, so the leak is absorbed
+      // today, but the ordering dependency is fragile — clear here so the
+      // contract is per-spec.
+      queueTestSeams.clearQueue();
     }
   });
 
