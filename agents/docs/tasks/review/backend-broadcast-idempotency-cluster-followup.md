@@ -1485,3 +1485,137 @@ None — no contract or API-shape changes required.
 - Convention-anchor checks for cited solutions docs: all 14 entries
   surfaced by `ce-learnings-researcher` exist and are not flagged
   as stale.
+
+## Backend re-review signal (2026-05-12, commit `8421a17`)
+
+All 4 round-5 hold-block items landed on `main` in a single commit
+(`8421a17` — `backend(broadcast-idempotency): round-5 hold items 1-4`,
+3 files / +21/-6). On-main SHA cited per the architect's round-4
+orphan-detection note (no worktree fan-out this round; all 4 items
+were narrowly scoped one-shot edits across `broadcast-error.ts`,
+`idempotency.test.ts`, and `accreditation.test.ts`). Verified:
+`git merge-base --is-ancestor 8421a17 HEAD` → OK.
+
+### Item 1 — historical-frame the 5th stale support-notified site (Hi)
+
+`backend/src/lib/broadcast-error.ts:393-397`. The comment block at
+the `if (err instanceof PostBroadcastWriteError)` branch was rewritten
+to historical framing matching siblings at lines 42 and 305. The
+phrasing now reads: "permanent-class throws emit a distinct 502 code
+(POST_BROADCAST_OPERATOR_REQUIRED) and the round-3 hold #3 'please
+contact support' message so user-visible recovery copy stops claiming
+automatic reconciliation on a permanent programmer-error class." The
+round-3 hold #3 anchor is preserved as a cross-reference.
+
+Final grep evidence (run at signal-block-write time per the
+load-bearing-greps-at-signal-block-write-time convention anchor):
+
+```
+$ grep -n "support has been notified" backend/src/lib/broadcast-error.ts
+42: *     directly (round-3 hold #3: prior "support has been notified" wording
+305: * Round-3 hold #3: prior wording said "support has been notified" but no
+```
+
+Two hits, both historical-framed. The round-5 architect verification
+expectation ("should be: only historical-framed occurrences remain")
+is met.
+
+### Item 2 — pin cache_class field in corrupt_entry spec (Mid)
+
+`backend/tests/lib/idempotency.test.ts:441-448`. After the existing
+`expect(matchingCall, ...).toBeDefined()` assertion, added:
+
+```ts
+expect(matchingCall?.[0]).toMatchObject({
+  event: 'idempotency.cache.corrupt_entry',
+  cache_class: 'custody',
+});
+```
+
+Inline rationale cites round-5 hold #2 and the round-4 hold #8
+off-by-one note — a mutation dropping the sibling `cache_class` field
+at `idempotency.ts:438`, or regressing the `[2]` index back to `[3]`
+(the architect's hold-block example), would now fail this assertion
+instead of passing silently.
+
+### Item 3 — fix misleading "raw 64-hex token" comment (Low)
+
+`backend/tests/routes/accreditation.test.ts:905-907`. The comment at
+the cross-check assertion (line 908 is the load-bearing
+`expect(flatPayload).not.toMatch(new RegExp(token))`) was rewritten:
+
+```ts
+// Round-3 hold #1 cross-check: the raw token does NOT leak through
+// the new warn payload (token_hash is the 12-hex prefix; the full
+// accred-cap-<16-hex> literal is the regex target).
+```
+
+Mechanism description now accurately reflects the spec's actual token
+shape (`accred-cap-${crypto.randomBytes(8).toString('hex')}` at line
+866 = 27 chars with a 16-hex suffix). The negative regex itself was
+already correctly load-bearing — only the comment was wrong.
+
+### Item 4 — add clearQueue() to new spec's finally block (Low)
+
+`backend/tests/routes/accreditation.test.ts:918-925`. The finally
+block now reads:
+
+```ts
+} finally {
+  isAvailableSpy.mockRestore();
+  loggerWarnSpy.mockRestore();
+  queueTestSeams.clearQueue();
+}
+```
+
+Inline rationale: the `'enqueued_for_drain'` branch leaves a pending
+decrement in the module-level queue Map. Subsequent flap-recovery
+specs absorb this leak via their own `clearQueue()` calls at start,
+but the ordering dependency is fragile and sets a bad precedent for
+specs added between this one and the next `clearQueue()` site. Now
+per-spec.
+
+### Verification
+
+- `npx tsc --noEmit` — clean.
+- `npm run lint` — 0 errors, 2 warnings (pre-existing
+  `@typescript-eslint/no-explicit-any` warnings in `src/seed-phrase.ts`
+  at lines 26-27, unrelated to this task; identical to round-4
+  verification).
+- `npx vitest run` against the 4 affected suites
+  (`tests/lib/idempotency.test.ts`, `tests/lib/broadcast-error.test.ts`,
+  `tests/routes/accreditation.test.ts`,
+  `tests/routes/accreditation-idempotency.test.ts`) with `REDIS_URL` +
+  `APP_DATABASE_URL` pointing to the Docker container IPs per
+  CLAUDE.md "Running Tests" — **100 / 100 pass** in 4 / 4 test files.
+  Log trace shows the new `accreditation.verify.timeout_decrement_degraded`
+  event firing correctly + clean queue drain
+  (`accred_verify_decrement_queue_drain queue_depth:0 drained:1
+  initial_depth:1`) confirming Item 4's `clearQueue()` is honored.
+
+### Items resolved per architect hold block
+
+| Item | Status |
+|---|---|
+| 1 — 5th stale support-notified site historical-framed | closed (code) |
+| 2 — cache_class field pinned in corrupt_entry spec | closed (spec) |
+| 3 — misleading 64-hex token comment fixed | closed (comment) |
+| 4 — queueTestSeams.clearQueue() in new spec's finally | closed (test) |
+
+### [TODO Architect] note
+
+None this round — no contract or API-shape changes required; all
+items were code-internal, comment-only, or test-internal.
+
+### Working-tree note (informational; not a held item)
+
+At signal-block-write time, the working tree carried an unrelated
+mid-flight edit to `backend/src/routes/comments.ts` (adds
+`WITH RECURSIVE` to two CTEs in `fetchCommentsFromHaf`) and an
+untracked `frontend/tests/e2e/search.spec.js.NEWVERSION`. Neither was
+staged; both are someone else's in-flight work outside the round-5
+scope. Staged commit was narrow per CLAUDE.md "Stage only the files
+you edited this session" discipline:
+`backend/src/lib/broadcast-error.ts`,
+`backend/tests/lib/idempotency.test.ts`,
+`backend/tests/routes/accreditation.test.ts`.
