@@ -19,7 +19,7 @@
  * updated. See backend-logger-wrapper-pino-runtime-api-surface.md.
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { logger } from '../../src/logger.js';
 
 describe('logger wrapper — pino runtime API surface', () => {
@@ -86,6 +86,18 @@ describe('logger wrapper — pino runtime API surface', () => {
   });
 
   describe('child', () => {
+    // Coverage for the `options` second arg pino's child() accepts (level
+    // override, redact, msgPrefix, etc.). A future signature regression
+    // that silently drops the second arg again fails this test red.
+    it('forwards options to baseLogger.child — child-level override is honored', () => {
+      logger.level = 'info';
+      const child = logger.child({}, { level: 'debug' });
+      // The child-level override wins regardless of the root logger's level.
+      expect(child.isLevelEnabled('debug')).toBe(true);
+      // Root logger's level is unaffected by the child override.
+      expect(logger.isLevelEnabled('debug')).toBe(false);
+    });
+
     it('returns a pino logger with the level methods present', () => {
       const child = logger.child({ scope: 'child-shape' });
       expect(typeof child.warn).toBe('function');
@@ -97,42 +109,46 @@ describe('logger wrapper — pino runtime API surface', () => {
       expect(typeof child.child).toBe('function');
     });
 
-    // Negative-assertion test pinning the option 2 (documentary) contract:
-    // the returned child logger does NOT inherit the call-site Layer-A
-    // wrapper (`redactErrInArg`). A spy on `child.warn` sees the
-    // UNREDACTED err object at call time. Layer-B (pino's
-    // `serializers.err` config) still fires at write time, but that is
-    // not observable through vi.spyOn's `.mock.calls` capture.
+    // Negative-assertion ratchet pinning the option 2 (documentary)
+    // contract: the returned child logger does NOT inherit the call-site
+    // Layer-A wrapper (`redactErrInArg`). Layer-A mutates `args[0].err`
+    // in place — see logger.ts:355-368 "IMPORTANT — in-place mutation …
+    // is INTENTIONAL". Observing that mutation directly on the input
+    // object reference is the load-bearing observable here; a vi.spyOn
+    // stub would replace child.warn entirely and pass green under BOTH
+    // option 1 and option 2, defeating the ratchet.
     //
     // If a future change wraps `child` with the Layer-A factory (option
-    // 1), this assertion flips and the test fails red — the developer
-    // is then forced to update the JSDoc on `logger.child` before
-    // re-greening the suite. That is the intended ratchet.
+    // 1), redactErrInArg would mutate argObj.err to the SerializedErr
+    // shape before pino sees it, dropping `command`. That flips this
+    // assertion red, forcing the JSDoc on logger.child to be updated
+    // before the suite re-greens.
     it('child level methods do NOT apply Layer-A redaction (option 2 documentary contract)', () => {
       const child = logger.child({ scope: 'layer-a-gap' });
-      const warnSpy = vi.spyOn(child, 'warn').mockImplementation((() => {}) as never);
-
-      // Construct a leaky err shape that Layer-A WOULD redact at the
-      // wrapper. The `command.args[]` field carries a counterfeit
-      // 64-hex token — the same shape ioredis attaches to ReplyError
-      // and the same shape Layer-A strips via `redactErrInArg`.
       const verifyToken = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
       const leakyErr = Object.assign(new Error('Redis rejected eval'), {
         name: 'ReplyError',
         command: { name: 'eval', args: ['lua-script-body', '1', `pevotest:probe:${verifyToken}`] },
       });
-      child.warn({ err: leakyErr }, 'leaky shape test');
+      const argObj: { err: { command?: { name: string; args: string[] } } } = { err: leakyErr };
 
-      // The spy's captured arg STILL holds the raw leaky shape, because
-      // the child's `warn` method is baseLogger.child(...).warn — not
-      // the Layer-A wrapper. This is the contract the architect's 2026-
-      // 05-11 decision documents.
-      const firstCall = warnSpy.mock.calls[0] as unknown[];
-      const firstArg = firstCall[0] as { err: { command?: { args: string[] } } };
-      expect(firstArg.err.command).toBeDefined();
-      expect(firstArg.err.command?.args).toContain(`pevotest:probe:${verifyToken}`);
+      // Silence stdout — child.warn is the real pino method, not a stub.
+      const savedLevel = logger.level;
+      logger.level = 'silent';
+      try {
+        child.warn(argObj, 'leaky shape test');
+      } finally {
+        logger.level = savedLevel;
+      }
 
-      warnSpy.mockRestore();
+      // Under option 2 (current), child.warn is the raw pino method — no
+      // Layer-A mutation — argObj.err.command stays intact. Under a future
+      // option-1 migration that wraps child via wrapPinoLogger(...),
+      // redactErrInArg would mutate argObj.err to the SerializedErr shape
+      // before pino sees it, dropping command. That mutation flips this
+      // assertion red.
+      expect(argObj.err.command).toBeDefined();
+      expect(argObj.err.command?.args).toContain(`pevotest:probe:${verifyToken}`);
     });
   });
 });
