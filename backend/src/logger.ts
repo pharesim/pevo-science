@@ -400,6 +400,18 @@ function makeLevelWrapper(method: LogFn): LogFn {
   return wrapped;
 }
 
+// Backend-logger-wrapper-pino-runtime-api-surface (architect 2026-05-11):
+// The wrapper exposes the pino runtime methods PEvO call sites actually
+// reach today, plus the four runtime-API entry points that any pino caller
+// expects (`child`, `isLevelEnabled`, `level`, `bindings`). Without these
+// forwards, future code like `logger.child({reqId})` or `if
+// (logger.isLevelEnabled('debug')) { logger.debug({heavy}, 'msg') }` would
+// either TypeError or silently bypass pino's cheap-skip optimization.
+//
+// `child` is forwarded VERBATIM (option 2, documentary) per the architect
+// decision in the task file. See the JSDoc on `child` below for the
+// Layer-A-on-children gap and the migration path to option 1 if a future
+// call site needs it.
 export const logger: {
   warn: LogFn;
   error: LogFn;
@@ -408,6 +420,10 @@ export const logger: {
   fatal: LogFn;
   trace: LogFn;
   flush: (cb?: (err?: Error | null) => void) => void;
+  child: (bindings: pino.Bindings) => pino.Logger;
+  isLevelEnabled: (level: pino.LevelWithSilentOrString) => boolean;
+  bindings: () => pino.Bindings;
+  level: pino.LevelWithSilentOrString;
 } = {
   warn: makeLevelWrapper(baseLogger.warn.bind(baseLogger)),
   error: makeLevelWrapper(baseLogger.error.bind(baseLogger)),
@@ -422,6 +438,38 @@ export const logger: {
   // no redaction is needed.
   flush: (cb?: (err?: Error | null) => void): void => {
     baseLogger.flush(cb);
+  },
+  /**
+   * Forwards to baseLogger.child(...) verbatim. The returned child logger
+   * inherits Layer-B redaction (pino's `serializers.err` config — see
+   * agents/docs/solutions/conventions/defensive-recursive-serializer-and-pino-err-redact-policy-2026-05-11.md)
+   * but does NOT inherit the call-site Layer-A wrapper
+   * (`redactErrInArg`). vi.spyOn on a child logger's level methods will
+   * see UNREDACTED `err` arguments at call time — redaction fires at
+   * write time via the serializer config.
+   *
+   * If a call site needs Layer-A on a child, migrate this method to wrap
+   * the child via a `wrapPinoLogger(baseLogger.child(bindings))` factory
+   * (option 1 of the original task). Today's PEvO has no .child callers,
+   * so the documentary approach (option 2) is the architect's call per
+   * the 2026-05-11 archive of the parent task.
+   */
+  child(bindings: pino.Bindings): pino.Logger {
+    return baseLogger.child(bindings);
+  },
+  isLevelEnabled(level: pino.LevelWithSilentOrString): boolean {
+    return baseLogger.isLevelEnabled(level);
+  },
+  bindings(): pino.Bindings {
+    return baseLogger.bindings();
+  },
+  // Runtime-adjustable log level. Reads and writes pass through to
+  // baseLogger.level so a single source of truth governs pino's filter.
+  get level(): pino.LevelWithSilentOrString {
+    return baseLogger.level;
+  },
+  set level(value: pino.LevelWithSilentOrString) {
+    baseLogger.level = value;
   },
 };
 
