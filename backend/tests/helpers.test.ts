@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseMeta, isPevoPaper, isPevoReview, isPevoBridgePaper, isPevoAnyPaper, toPaperSummary, pevoString, pevoStringArray } from '../src/helpers.js';
+import { parseMeta, isPevoPaper, isPevoReview, isPevoBridgePaper, isPevoAnyPaper, toPaperSummary, pevoString, pevoStringArray, extractAbstract } from '../src/helpers.js';
 import { config } from '../src/config.js';
 
 const TAG = config.appTag;
@@ -186,6 +186,32 @@ describe('pevoStringArray', () => {
     expect(r2).toEqual(['a', 'b']);
     // Source array is also unmutated.
     expect(pevo.keywords).toEqual(['a', 'b']);
+  });
+});
+
+describe('extractAbstract', () => {
+  it('returns body before the "\\n\\n---\\n\\n" separator when full text is present', () => {
+    const body = '## Abstract\n\nShort abstract here\n\n---\n\nFull paper text continues here.';
+    expect(extractAbstract(body)).toBe('## Abstract\n\nShort abstract here');
+  });
+
+  it('returns the entire body when the "## Abstract" heading is present but no separator', () => {
+    // PEvO publish flow with IPFS-only PDF (no inline full text) omits the
+    // separator. Bug fix: the entire body IS the abstract; do not silently
+    // truncate to 300 chars.
+    const longAbstract = 'a'.repeat(1500);
+    const body = `## Abstract\n\n${longAbstract}`;
+    expect(extractAbstract(body)).toBe(body);
+  });
+
+  it('falls back to first 300 chars for legacy/non-PEvO posts with no heading and no separator', () => {
+    const body = 'x'.repeat(400);
+    expect(extractAbstract(body).length).toBe(300);
+  });
+
+  it('returns short legacy bodies whole when under 300 chars', () => {
+    const body = 'A short pre-format post body.';
+    expect(extractAbstract(body)).toBe(body);
   });
 });
 

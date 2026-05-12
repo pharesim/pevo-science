@@ -244,11 +244,16 @@ export function parseOrder(req: Request): 'asc' | 'desc' {
 }
 
 /** Extract the abstract from a post body.
- *  The body format is: abstract + "\n\n---\n\n" + full text.
- *  Falls back to first 300 chars for pre-format posts. */
+ *  PEvO bodies are composed as `## Abstract\n\n<abstract>` optionally followed
+ *  by `\n\n---\n\n<full text>` (see composePostBody in publish.js). When the
+ *  author uploads a PDF to IPFS without inline full text, the separator is
+ *  absent and the entire body IS the abstract — returning only the first
+ *  300 chars would silently truncate it. Legacy/non-PEvO posts that lack
+ *  both the heading and the separator keep the 300-char preview fallback. */
 export function extractAbstract(body: string): string {
   const sepIndex = body.indexOf('\n\n---\n\n');
   if (sepIndex !== -1) return body.slice(0, sepIndex).trim();
+  if (/^##\s+Abstract\s*\n/.test(body)) return body.trim();
   return body.slice(0, 300);
 }
 
