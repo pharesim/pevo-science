@@ -92,3 +92,85 @@ child(bindings: pino.Bindings): pino.Logger { return baseLogger.child(bindings);
 The Acceptance section's "for option 2" sub-bullet under tests is the binding one — implement the negative-assertion test that pins the child does NOT redact at the call-site layer (`vi.spyOn(child, 'warn').mock.calls[0][0].err` contains the unredacted shape), so a future inadvertent migration to option 1 fails red until the JSDoc is updated.
 
 Moving back to `tasks/pending/` for backend pickup.
+
+## Architect re-review (2026-05-12) — HELD PENDING FIXES:
+
+`/ce-code-review` on commit 2da0eae (round-2) returned three actionable findings plus one dismissal. Six reviewers dispatched (correctness, testing, maintainability, project-standards, kieran-typescript, reliability); cross-reviewer corroboration on findings 1 and 3.
+
+### 1. Broken negative-assertion ratchet — `backend/tests/lib/logger-wrapper-api.test.ts:111-136`
+
+The 2026-05-11 architect decision named this ratchet as load-bearing: *"a future inadvertent migration to option 1 fails red until the JSDoc is updated."* The test as landed does NOT fire. `vi.spyOn(child, 'warn').mockImplementation(() => {})` replaces `child.warn` entirely with a no-op stub before any wrapper code can run. Under option 2 (today) and under a future option-1 migration, the spy captures the raw input arg identically — `mock.calls[0][0].err.command` is defined in both cases. The assertion passes green in both. (Cross-reviewer: correctness + testing.)
+
+**Fix:** Stop relying on the spy to observe Layer-A's effect. Layer-A mutates `args[0].err` in place (see `redactErrInArg` at `logger.ts:355-368` and its `IMPORTANT — in-place mutation … is INTENTIONAL` docblock); observe that mutation directly via the input object reference. The in-place mutation contract is itself the observable — no spy needed.
+
+Sketch (adapt to suite style):
+
+```ts
+it('child level methods do NOT apply Layer-A redaction (option 2 documentary contract)', () => {
+  const child = logger.child({ scope: 'layer-a-gap' });
+  const verifyToken = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+  const leakyErr = Object.assign(new Error('Redis rejected eval'), {
+    name: 'ReplyError',
+    command: { name: 'eval', args: ['lua-script-body', '1', `pevotest:probe:${verifyToken}`] },
+  });
+  const argObj = { err: leakyErr };
+
+  // Silence stdout — child.warn is the real pino method, not a stub.
+  const originalLevel = logger.level;
+  logger.level = 'silent';
+  try {
+    child.warn(argObj, 'leaky shape test');
+  } finally {
+    logger.level = originalLevel;
+  }
+
+  // Under option 2 (current), child.warn is the raw pino method — no Layer-A
+  // mutation — argObj.err.command stays intact. Under a future option-1 migration
+  // that wraps child via wrapPinoLogger(...), redactErrInArg would mutate
+  // argObj.err to the SerializedErr shape before pino sees it, dropping
+  // command. That mutation flips this assertion red, forcing the JSDoc on
+  // logger.child to be updated before the suite re-greens — the intended ratchet.
+  expect(argObj.err.command).toBeDefined();
+  expect(argObj.err.command?.args).toContain(`pevotest:probe:${verifyToken}`);
+});
+```
+
+### 2. Task-reference rot in block comment — `backend/src/logger.ts:403-414`
+
+Per root CLAUDE.md ("Doing tasks"): *"Don't reference the current task, fix, or callers … since those belong in the PR description and rot as the codebase evolves."* The block opens with the task slug (`Backend-logger-wrapper-pino-runtime-api-surface`) and the architect date stamp (`architect 2026-05-11`); both decay when the task file is `git rm`d on archive (rule #7). The substantive content (option 2, Layer-A gap, migration path) is already verbatim in the JSDoc on `child` immediately below — the block adds no information, only decay surface.
+
+**Fix:** Delete lines 403-414 entirely. The JSDoc on `child` (lines 442-456 of the as-landed file) is the load-bearing rationale and survives.
+
+### 3. `child()` wrapper drops pino's `options` parameter — `backend/src/logger.ts:423,457`
+
+Pino's actual `Logger.child` signature is `child(bindings, options?: pino.ChildLoggerOptions): pino.Logger`. The wrapper exposes only the first parameter, so a future caller using `logger.child({reqId}, {level: 'debug'})` gets a TS error at the call site — not at the wrapper — and may widen the signature without reading the Layer-A JSDoc context. The original Goal of this task ("Make the wrapper a strict superset of baseLogger's public interface") covers this in scope. (Cross-reviewer: correctness + kieran-typescript + testing.)
+
+**Fix:**
+
+- Update the type annotation at line 423: `child: (bindings: pino.Bindings, options?: pino.ChildLoggerOptions) => pino.Logger`
+- Update the method body at line 457:
+  ```ts
+  child(bindings: pino.Bindings, options?: pino.ChildLoggerOptions): pino.Logger {
+    return baseLogger.child(bindings, options);
+  }
+  ```
+- Add a coverage test that verifies options are actually forwarded (so a future signature regression that silently drops the second arg again fails red):
+  ```ts
+  it('forwards options to baseLogger.child — level override survives', () => {
+    logger.level = 'info';
+    const child = logger.child({}, { level: 'debug' });
+    expect(child.isLevelEnabled('debug')).toBe(true);  // child-level override wins
+  });
+  ```
+
+### Dismissed (recorded for completeness)
+
+- **P3 advisory: `level` setter has no guard against pino's throw on unknown level (`logger.ts:471`).** Pino's `Error('unknown level <X>')` is the correct contract — wrapping it at the wrapper layer would mask invalid input from a legitimate caller. PEvO has no dynamic-level call site today; a future admin/config-driven setter is responsible for input validation at its own layer. Not worth a comment, test, or guard now.
+
+### Pre-existing, not blocking
+
+- `flush` callback type `(cb?: (err?: Error | null) => void) => void` is wider than pino's declared `(cb?: (err?: Error) => void)`. Surface inaccuracy only; callback-parameter contravariance makes it safe at compile time and runtime. Predates this task. Optional cleanup if the implementer touches the type annotation for finding 3 anyway; otherwise leave for a future round.
+
+---
+
+Round-2 hold. Implementer lands the three fixes above; `git mv`s back to `tasks/review/` per rule #8 (the move itself is the re-review signal).
