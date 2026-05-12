@@ -174,3 +174,28 @@ Pino's actual `Logger.child` signature is `child(bindings, options?: pino.ChildL
 ---
 
 Round-2 hold. Implementer lands the three fixes above; `git mv`s back to `tasks/review/` per rule #8 (the move itself is the re-review signal).
+
+## Backend re-review signal (2026-05-12, commit 777192a):
+
+All three round-2 hold items landed in `backend(logger-wrapper-pino-runtime-api-surface): round-2 hold fixes 1-3` (commit `777192a`).
+
+1. **Broken ratchet rewritten** — `backend/tests/lib/logger-wrapper-api.test.ts`. Replaced the `vi.spyOn(child, 'warn').mockImplementation(() => {})` stub (which defeated the ratchet by replacing `child.warn` entirely) with direct observation of the input object reference. Test now wraps `child.warn(argObj, 'leaky shape test')` in a `logger.level = 'silent'` / try-finally, then asserts `argObj.err.command` remains defined post-call. Under option 2 (current), child.warn is the raw pino method — no Layer-A mutation — so command stays intact. Under a hypothetical option-1 migration, `redactErrInArg` would mutate `argObj.err` to the `SerializedErr` shape (dropping `command`), flipping the assertion red. The `vi` import was removed since no spies remain in the file.
+
+2. **Task-reference block comment deleted** — `backend/src/logger.ts:403-414` removed entirely. The JSDoc on `child` immediately below (now lines 430-447) carries the substantive content (option 2, Layer-A gap, migration path) and survives task archive.
+
+3. **`child()` options arg added** — `backend/src/logger.ts`:
+   - Type annotation: `child: (bindings: pino.Bindings, options?: pino.ChildLoggerOptions) => pino.Logger`
+   - Method body: `child(bindings, options) { return baseLogger.child(bindings, options); }`
+   - JSDoc updated to mention `options` (level overrides, redact config, msgPrefix) and the option-1 migration reference now reads `wrapPinoLogger(baseLogger.child(bindings, options))`.
+   - Coverage test added: `forwards options to baseLogger.child — child-level override is honored`. Sets root logger to `info`, creates `logger.child({}, { level: 'debug' })`, asserts the child has `debug` enabled and the root does not.
+
+Verification (all from `backend/`, `nvm use 20`):
+
+- `npx vitest run tests/lib/logger-wrapper-api.test.ts tests/lib/logger-redact.test.ts` — **33/33 passing** (was 32; +1 new options-forwarding test).
+- `npm run lint` — 0 errors. 2 pre-existing warnings in `src/seed-phrase.ts`, unrelated to this task.
+- `npx tsc --noEmit -p tsconfig.json` — clean.
+- `grep -rn "logger\.child" src/ tests/` — confirmed no production callers; only the test file references `logger.child`, so the signature widening cannot surprise existing code.
+
+Dismissed P3 advisory (`level` setter throw-guard) and pre-existing `flush` callback widening were not touched per the architect's call.
+
+Moving back to `tasks/review/` for re-review.
