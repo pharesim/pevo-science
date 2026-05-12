@@ -167,6 +167,7 @@ export async function fetchNotificationsFromHaf(
       WHERE co.parent_author = $1
         AND co.block_num > $2
         AND ${validReviewWhere({ commentAlias: 'co', appTagParam: at })}
+        AND co.author != $1
 
       UNION ALL
 
@@ -187,6 +188,7 @@ export async function fetchNotificationsFromHaf(
       JOIN active_accreditations aa_r ON aa_r.account = co.author
       WHERE co.block_num > $2
         AND ${validReviewWhere({ commentAlias: 'co', appTagParam: at })}
+        AND co.author != $1
 
       UNION ALL
 

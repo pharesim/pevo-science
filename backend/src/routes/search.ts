@@ -7,7 +7,7 @@ import { parsePageLimit } from '../helpers.js';
 import { getAccreditedSet } from '../accreditation.js';
 import { hafCache } from '../cache.js';
 import { logger } from '../logger.js';
-import { T, activeAccreditationsCteBody, retractedPapersCteBody, buildWith, validPevoPaperWhere, validReviewWhere } from '../hafsql.js';
+import { T, activeAccreditationsCteBody, retractedPapersCteBody, buildWith, validPevoPaperWhere, validReviewWhere, excludeSelfReviewWhere } from '../hafsql.js';
 import { validateDisciplineFilter } from '../types/disciplines.js';
 import { validateSearchQuery } from '../types/search-filters.js';
 
@@ -161,13 +161,15 @@ async function searchReviewsFromHaf(
   // canonical type+rating-shape gate; the `app LIKE 'pevotest/%'` gate is
   // intentionally absent (per the trust-layer principle, an accredited
   // reviewer's broadcast counts regardless of authoring client).
+  // The JOIN against parent paper `p` doubles duty: it asserts the parent
+  // is a top-level PEvO post (replacing the prior EXISTS subquery) AND
+  // gives excludeSelfReviewWhere a paperRowAlias to read authors[] from.
   const conditions: string[] = [
     `c.parent_author != ''`,
+    `p.parent_author = ''`,
+    `p.parent_permlink = ${appTagParam}`,
     validReviewWhere({ commentAlias: 'c', appTagParam }),
-    // Ensure parent is a PEvO paper (top-level post in our app namespace)
-    `EXISTS (SELECT 1 FROM ${T.comments} p
-       WHERE p.author = c.parent_author AND p.permlink = c.parent_permlink
-         AND p.parent_author = '' AND p.parent_permlink = ${appTagParam})`,
+    excludeSelfReviewWhere({ reviewAlias: 'c', paperRowAlias: 'p', appTagParam }),
   ];
 
   // Accreditation gate is unconditional — see lane 4 of
@@ -179,6 +181,7 @@ async function searchReviewsFromHaf(
   conditions.push(`c.author IN (SELECT account FROM active_accreditations)`);
 
   const where = conditions.join(' AND ');
+  const parentJoin = `JOIN ${T.comments} p ON p.author = c.parent_author AND p.permlink = c.parent_permlink`;
 
   // See searchPapersFromHaf for the escape contract: `query` is pre-escaped,
   // ESCAPE '\\' makes Postgres treat embedded `\%` `\_` `\\` as literals.
@@ -198,6 +201,7 @@ async function searchReviewsFromHaf(
       `${cte.sql}
        SELECT count(*)::int AS total
        FROM ${T.comments} c
+       ${parentJoin}
        WHERE ${where}
          AND ${textMatch}`,
       [...params, ilikePattern],
@@ -212,6 +216,7 @@ async function searchReviewsFromHaf(
         c.parent_author AS paper_author,
         c.parent_permlink AS paper_permlink
        FROM ${T.comments} c
+       ${parentJoin}
        WHERE ${where}
          AND ${textMatch}
        ORDER BY ${orderBy}

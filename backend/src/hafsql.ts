@@ -243,6 +243,84 @@ export function validReviewWhere(opts: {
 }
 
 /**
+ * SQL WHERE fragment that excludes self-reviews — reviews where the
+ * reviewer is the paper author OR a named co-author of the same paper.
+ *
+ * **Why this helper exists.** Self-votes are already excluded from every
+ * vote-aggregating surface (paper-class via `paper_resolved_votes` at
+ * `reputation.ts:551-561`; review-class via `c2.weight != 0 AND
+ * lv.voter != v.author` patterns). The principle is settled: an
+ * account cannot vote for itself. Self-reviews were the symmetric gap
+ * — an accredited paper author (or named co-author who is accredited)
+ * could broadcast a review-shaped reply to their own paper and inflate
+ * five surfaces: paper-detail review list, listing `review_count` /
+ * `avg_rating`, the reputation `paper_reviews.quality` multiplier
+ * (load-bearing — pushes the paper's vote-derived score toward 1.0×
+ * via a self-5/5/5/5), the reviewer's `user_reviews` cycle universe,
+ * and the paper author's "new review" notification on their own post.
+ *
+ * **What this excludes.**
+ *   - The paper author's own review of their paper.
+ *   - Reviews whose author appears as a named `.hive` entry in the
+ *     paper's `pevo.authors[]` array (the co-author set the
+ *     publishing UI records).
+ *
+ * **What this does NOT exclude.** Accepted authorship-claim claimants.
+ * The task acceptance criteria's compromise clause permits this gap:
+ * resolving claims requires the `authorship_claims` CTE, which isn't
+ * trivially join-able at every callsite (especially the deep CTE
+ * chain in `reputation.ts`). The same gap exists in the precedent
+ * `paper_resolved_votes` (it pre-dates claims integration). When the
+ * vote path picks up claims, this helper should too.
+ *
+ * **Composition with the paper row.** The helper requires the paper
+ * row to be in SQL scope under `paperRowAlias` (with `.author` and
+ * `.json_metadata` columns). For sites that don't naturally have the
+ * paper row in scope (paper-detail reviews query, profile reviews,
+ * search reviews, stats reviews), the caller adds a JOIN against
+ * `hafsql.comments` keyed on `c.parent_author = p.author AND
+ * c.parent_permlink = p.permlink` before invoking the helper. The
+ * JOIN is the SQL equivalent of "look up the paper this review
+ * belongs to."
+ *
+ * @param opts.reviewAlias - SQL alias for the review row (must have
+ *   `.author`). Typically 'c', 'r', 'rv', 'c2'.
+ * @param opts.paperRowAlias - SQL alias for the parent paper row (must
+ *   have `.author` and `.json_metadata`). Typically 'p', 'up', 'up2'.
+ * @param opts.appTagParam - the caller-allocated `$N` reference for
+ *   `config.appTag`.
+ *
+ * @example
+ *   // Reputation paper_reviews CTE: paper row is `up`, review is `c`.
+ *   conditions.push(excludeSelfReviewWhere({
+ *     reviewAlias: 'c',
+ *     paperRowAlias: 'up',
+ *     appTagParam: '$3',
+ *   }));
+ *
+ * @example
+ *   // Paper-detail reviews query: add a JOIN, then invoke the helper.
+ *   //   JOIN hafsql.comments p ON p.author = $1 AND p.permlink = $2
+ *   //   WHERE ... AND ${excludeSelfReviewWhere({...paperRowAlias: 'p'})}
+ */
+export function excludeSelfReviewWhere(opts: {
+  reviewAlias: string;
+  paperRowAlias: string;
+  appTagParam: string;
+}): string {
+  const r = opts.reviewAlias;
+  const p = opts.paperRowAlias;
+  const tag = opts.appTagParam;
+  return `(
+    ${r}.author != ${p}.author
+    AND NOT EXISTS (
+      SELECT 1 FROM jsonb_array_elements(${p}.json_metadata -> ${tag} -> 'authors') auth
+      WHERE auth ->> 'hive' = ${r}.author
+    )
+  )`;
+}
+
+/**
  * Centralized SQL fragment that matches a valid PEvO paper row by type AND
  * (for bridge papers) author identity.
  *

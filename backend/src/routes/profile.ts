@@ -13,7 +13,7 @@ import { validate } from '../validation.js';
 import { getLastBlock } from '../block-watcher.js';
 import { getAppPool } from '../app-db.js';
 import { hafCache } from '../cache.js';
-import { T, validReviewWhere, getCachedGenesisBlock, buildWith, activeAccreditationsCteBody, authorshipClaimsCteBody } from '../hafsql.js';
+import { T, validReviewWhere, excludeSelfReviewWhere, getCachedGenesisBlock, buildWith, activeAccreditationsCteBody, authorshipClaimsCteBody } from '../hafsql.js';
 
 const router = Router();
 
@@ -92,8 +92,10 @@ async function getProfileStats(username: string) {
        user_reviews AS (
          SELECT 1
          FROM ${T.comments} c
+         JOIN ${T.comments} p ON p.author = c.parent_author AND p.permlink = c.parent_permlink
          WHERE c.author = $1
            AND ${validReviewWhere({ commentAlias: 'c', appTagParam: '$2' })}
+           AND ${excludeSelfReviewWhere({ reviewAlias: 'c', paperRowAlias: 'p', appTagParam: '$2' })}
            AND COALESCE(c.json_metadata -> $2 ->> 'is_anonymous', 'false') != 'true'
        ),
        citations AS (
@@ -320,13 +322,21 @@ async function fetchUserReviewsFromHaf(username: string, limit: number, offset: 
     // $1 = username (author of the review), $2 = config.appTag (consumed by
     // validReviewWhere's type+rating-shape gate). Limit/offset live at
     // $3/$4; the sort-by-votes path adds accreditedAccounts at $5.
+    //
+    // The JOIN against parent paper `p` is needed both for the title
+    // (p.title) and for excludeSelfReviewWhere (reads p.json_metadata ->
+    // authors[]). INNER JOIN — a review whose parent paper isn't present
+    // in HAF can't surface meaningfully in a profile reviews list anyway.
     const reviewWhere = validReviewWhere({ commentAlias: 'c', appTagParam: '$2' });
+    const selfExclude = excludeSelfReviewWhere({ reviewAlias: 'c', paperRowAlias: 'p', appTagParam: '$2' });
     const baseParams: unknown[] = [username, config.appTag];
 
     const countResult = await pool.query(
       `SELECT count(*)::int AS total FROM ${T.comments} c
+       JOIN ${T.comments} p ON p.author = c.parent_author AND p.permlink = c.parent_permlink
        WHERE c.author = $1 AND c.parent_author != ''
-         AND ${reviewWhere}`,
+         AND ${reviewWhere}
+         AND ${selfExclude}`,
       baseParams,
     );
     const total = countResult.rows[0]?.total ?? 0;
@@ -355,9 +365,10 @@ async function fetchUserReviewsFromHaf(username: string, limit: number, offset: 
               p.title AS paper_title,
               ${netVotesSubquery}
        FROM ${T.comments} c
-       LEFT JOIN ${T.comments} p ON p.author = c.parent_author AND p.permlink = c.parent_permlink
+       JOIN ${T.comments} p ON p.author = c.parent_author AND p.permlink = c.parent_permlink
        WHERE c.author = $1 AND c.parent_author != ''
          AND ${reviewWhere}
+         AND ${selfExclude}
        ORDER BY ${orderClause}
        LIMIT $3 OFFSET $4`,
       dataParams,

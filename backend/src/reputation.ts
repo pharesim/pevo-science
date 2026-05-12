@@ -12,7 +12,7 @@ import { hafCache } from './cache.js';
 import { getRedis } from './redis.js';
 import { logger } from './logger.js';
 import { DEFAULT_REPUTATION_WEIGHTS, type ReputationWeights, type ReputationScore } from './types/index.js';
-import { T, getCachedGenesisBlock, validPevoPaperWhere, validReviewWhere } from './hafsql.js';
+import { T, getCachedGenesisBlock, validPevoPaperWhere, validReviewWhere, excludeSelfReviewWhere } from './hafsql.js';
 
 // ─── Batch key helpers ──────────────────────────────────────────
 
@@ -565,7 +565,10 @@ export async function computeReputationBatch(
         -- malformed rating (string, partial object, missing key) would
         -- crash the cycle compute. The regex inside validReviewWhere
         -- guarantees each dimension is an integer-shaped string the cast
-        -- can consume.
+        -- can consume. excludeSelfReviewWhere is also load-bearing: a
+        -- self-5/5/5/5 would push pr.quality toward 1.0 (max), inflating
+        -- the paper's vote-derived score in paper_scores at line 591.
+        -- Mirrors the paper_resolved_votes self-exclusion at lines 555-560.
         SELECT up.author, up.permlink,
           AVG(
             ((c.json_metadata -> $3 -> 'rating' ->> 'methodology')::numeric +
@@ -577,6 +580,7 @@ export async function computeReputationBatch(
         JOIN ${T.comments} c
           ON c.parent_author = up.author AND c.parent_permlink = up.permlink
           AND ${validReviewWhere({ commentAlias: 'c', appTagParam: '$3' })}
+          AND ${excludeSelfReviewWhere({ reviewAlias: 'c', paperRowAlias: 'up', appTagParam: '$3' })}
         GROUP BY up.author, up.permlink
       ),
 
@@ -610,11 +614,24 @@ export async function computeReputationBatch(
       ),
 
       -- ═══ REVIEWS ═══
+      -- user_reviews materializes each target_user's universe of reviews
+      -- for the cycle. Self-reviews (paper-author or named-co-author
+      -- reviewing their own paper) are excluded — a self-5/5/5/5 entering
+      -- this CTE would survive the third-party-vote gate at
+      -- review_resolved_votes only on the rare case of being voted by
+      -- accredited third parties, but excluding the row entirely is
+      -- consistent with the paper_resolved_votes treatment for votes.
+      -- The JOIN against parent paper up_for_self materializes the row
+      -- the helper reads authors[] from. INNER JOIN — a review on a
+      -- non-existent parent paper isn't a real review.
       user_reviews AS (
         SELECT c.author, c.permlink, c.created
         FROM ${T.comments} c
+        JOIN ${T.comments} up_for_self
+          ON up_for_self.author = c.parent_author AND up_for_self.permlink = c.parent_permlink
         WHERE c.author IN (SELECT username FROM target_users)
           AND ${validReviewWhere({ commentAlias: 'c', appTagParam: '$3' })}
+          AND ${excludeSelfReviewWhere({ reviewAlias: 'c', paperRowAlias: 'up_for_self', appTagParam: '$3' })}
           AND COALESCE(c.json_metadata -> $3 ->> 'is_anonymous', 'false') != 'true'
       ),
 
@@ -752,6 +769,10 @@ export async function computeReputationBatch(
           -- Citing-paper review quality: mirror of paper_reviews CTE for the
           -- citation arm. validReviewWhere protects the ::numeric casts from
           -- malformed ratings at the gate (same load-bearing reason).
+          -- excludeSelfReviewWhere matches paper_reviews — a self-review on
+          -- a citing paper inflates that paper's citation-discount weight
+          -- via cpq.review_quality at line 743, ultimately boosting the
+          -- cited author's reputation through a self-vouched citation.
           SELECT up2.permlink, up2.author,
             AVG(
               ((c2.json_metadata -> $3 -> 'rating' ->> 'methodology')::numeric +
@@ -763,6 +784,7 @@ export async function computeReputationBatch(
           JOIN ${T.comments} c2
             ON c2.parent_author = up2.author AND c2.parent_permlink = up2.permlink
             AND ${validReviewWhere({ commentAlias: 'c2', appTagParam: '$3' })}
+            AND ${excludeSelfReviewWhere({ reviewAlias: 'c2', paperRowAlias: 'up2', appTagParam: '$3' })}
           WHERE (up2.author, up2.permlink) IN (SELECT citing_author, citing_permlink FROM citing_papers)
           GROUP BY up2.permlink, up2.author
         ) cpr ON cpr.author = cp.citing_author AND cpr.permlink = cp.citing_permlink

@@ -37,6 +37,7 @@ import {
   getCachedGenesisBlock,
   validPevoPaperWhere,
   validReviewWhere,
+  excludeSelfReviewWhere,
 } from '../hafsql.js';
 import { validateDisciplineFilter } from '../types/disciplines.js';
 
@@ -452,11 +453,14 @@ async function fetchPapersFromHaf(
   // Review count: accredited reviewers + anonymous posting account.
   // validReviewWhere supplies the type+rating-shape gate (display↔reputation
   // parity); accreditation stays inline as it does at every review-aggregating
-  // site (see validReviewWhere docstring).
+  // site (see validReviewWhere docstring). excludeSelfReviewWhere drops
+  // self-reviews — the outer paper row `c` IS the paper, so the helper
+  // composes against it directly without a JOIN.
   const reviewCountSelect = `COALESCE((
     SELECT count(*)::int FROM ${T.comments} r
     WHERE r.parent_author = c.author AND r.parent_permlink = c.permlink
       AND ${validReviewWhere({ commentAlias: 'r', appTagParam })}
+      AND ${excludeSelfReviewWhere({ reviewAlias: 'r', paperRowAlias: 'c', appTagParam })}
       AND (EXISTS (SELECT 1 FROM active_accreditations aa WHERE aa.account = r.author) OR r.author = ${anonParam})
   ), 0) AS review_count`;
 
@@ -464,7 +468,8 @@ async function fetchPapersFromHaf(
   // reviews. The rating-shape regex inside validReviewWhere guarantees each
   // dimension is `[1-5]` text, so the `::float` casts below cannot crash on
   // attacker-controlled JSON; the prior `rating IS NOT NULL` safety net is
-  // strictly subsumed by the helper's gate.
+  // strictly subsumed by the helper's gate. Self-reviews are also excluded
+  // so a 5/5/5/5 by the paper author doesn't inflate the displayed average.
   const avgRatingSelect = `COALESCE((
     SELECT round(avg(val)::numeric, 1)::float FROM (
       SELECT (
@@ -476,6 +481,7 @@ async function fetchPapersFromHaf(
       FROM ${T.comments} rv
       WHERE rv.parent_author = c.author AND rv.parent_permlink = c.permlink
         AND ${validReviewWhere({ commentAlias: 'rv', appTagParam })}
+        AND ${excludeSelfReviewWhere({ reviewAlias: 'rv', paperRowAlias: 'c', appTagParam })}
         AND (EXISTS (SELECT 1 FROM active_accreditations aa WHERE aa.account = rv.author) OR rv.author = ${anonParam})
     ) sub
   ), 0) AS avg_rating`;
@@ -2188,6 +2194,10 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string) {
       // Reviews from accredited reviewers (+ anon account) with accredited vote count.
       // $4 = accreditedArr (used for net_votes voter gate), $5 = reviewAuthors
       // (used for c.author gate on the review row itself, includes anon proxy).
+      // The JOIN against `p` materializes the parent paper row so the
+      // excludeSelfReviewWhere helper can read p.json_metadata -> authors[].
+      // The JOIN is a single-row lookup keyed on (author, permlink) — the
+      // planner folds it into a constant against `c`'s scan.
       pool.query(
         `SELECT c.author, c.permlink, c.body, c.json_metadata, c.created,
                 (SELECT COALESCE(SUM(CASE WHEN lv.weight > 0 THEN 1 WHEN lv.weight < 0 THEN -1 ELSE 0 END), 0)::int FROM (
@@ -2197,9 +2207,11 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string) {
                    ORDER BY v.voter, v.block_num DESC
                  ) lv WHERE lv.weight != 0) AS net_votes
          FROM ${T.comments} c
+         JOIN ${T.comments} p ON p.author = $1 AND p.permlink = $2
          WHERE c.parent_author = $1 AND c.parent_permlink = $2
            AND c.author = ANY($5::text[])
            AND ${validReviewWhere({ commentAlias: 'c', appTagParam: '$3' })}
+           AND ${excludeSelfReviewWhere({ reviewAlias: 'c', paperRowAlias: 'p', appTagParam: '$3' })}
          ORDER BY c.created DESC`,
         [author, permlink, config.appTag, accreditedArr, reviewAuthors],
       ),

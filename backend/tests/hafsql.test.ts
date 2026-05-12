@@ -6,6 +6,7 @@ import {
   buildWith,
   validPevoPaperWhere,
   validReviewWhere,
+  excludeSelfReviewWhere,
 } from '../src/hafsql.js';
 import { queryWithRetry } from './support/haf-query.js';
 
@@ -350,5 +351,147 @@ describe('validReviewWhere behavioral matrix (real Postgres, synthetic JSONB)', 
     // either wrong type, missing/partial/malformed rating, or
     // out-of-range — all of which the gate must exclude.
     expect(admitted).toEqual(['valid_foreign_app', 'valid_no_app_field', 'valid_pevo_app']);
+  });
+});
+
+/**
+ * excludeSelfReviewWhere() is the centralized self-review exclusion
+ * predicate, mirroring the paper_resolved_votes self-vote exclusion at
+ * reputation.ts:551-561 but for review-class content. Every review-
+ * aggregating site (paper-detail review list, listing review_count/
+ * avg_rating, profile reviews, search reviews, stats reviews,
+ * reputation's paper_reviews/user_reviews/citing-paper-quality CTEs)
+ * MUST compose against this helper.
+ *
+ * The SQL-shape block pins the predicate grammar (parent-author check
+ * AND co-author EXISTS subquery) so a regression dropping one of the
+ * two conjuncts fails red. The real-Postgres behavioral matrix uses
+ * synthetic JSONB rows — no chain seeds — to exercise the per-axis
+ * admit/exclude semantics deterministically.
+ */
+describe('excludeSelfReviewWhere SQL shape', () => {
+  it('produces paper-author check + co-author EXISTS subquery', () => {
+    const sql = excludeSelfReviewWhere({ reviewAlias: 'c', paperRowAlias: 'p', appTagParam: '$1' });
+    expect(sql).toContain('c.author != p.author');
+    expect(sql).toContain("p.json_metadata -> $1 -> 'authors'");
+    expect(sql).toContain('jsonb_array_elements');
+    expect(sql).toContain("auth ->> 'hive' = c.author");
+    expect(sql).toContain('NOT EXISTS');
+  });
+
+  it('custom aliases propagate through both conjuncts', () => {
+    const sql = excludeSelfReviewWhere({ reviewAlias: 'rv', paperRowAlias: 'up', appTagParam: '$3' });
+    expect(sql).toContain('rv.author != up.author');
+    expect(sql).toContain('up.json_metadata -> $3');
+    expect(sql).toContain("auth ->> 'hive' = rv.author");
+    // No leftover defaults from a half-edit.
+    expect(sql).not.toMatch(/\bc\.author/);
+    expect(sql).not.toMatch(/\bp\.json_metadata/);
+  });
+
+  it('caller-allocated appTagParam string flows verbatim', () => {
+    const sql = excludeSelfReviewWhere({ reviewAlias: 'c', paperRowAlias: 'p', appTagParam: '$42' });
+    expect(sql).toContain('$42');
+    expect(sql).not.toContain('$1');
+  });
+});
+
+/**
+ * Real-Postgres behavioral test for excludeSelfReviewWhere. Uses
+ * synthetic paper+review pairs via VALUES() — no chain dependency.
+ * Tests the canaries from the task acceptance criteria:
+ *
+ *   1. Self-review by paper author → excluded
+ *   2. Self-review by named co-author → excluded
+ *   3. Review by non-author accredited reviewer → admitted (control)
+ *   4. Review on a paper with empty authors[] still excludes the
+ *      paper_author (the parent-author conjunct fires independent of
+ *      the co-author EXISTS)
+ *   5. Co-author with case-different hive name → admitted (the helper
+ *      matches on exact string; case normalization is upstream — pin
+ *      the contract to make future changes explicit)
+ */
+describe('excludeSelfReviewWhere behavioral matrix (real Postgres, synthetic rows)', () => {
+  it.skipIf(!isHafConfigured())('admits non-author reviews and excludes self/co-author reviews', { timeout: 30_000 }, async (ctx) => {
+    const pool = getPool();
+    if (!pool) {
+      ctx.skip('no pool available');
+      return;
+    }
+
+    // Synthetic universe: one paper "alice/p1" with authors [alice, bob].
+    // Multiple review rows reviewing that paper, by different accounts.
+    const paperAuthors = JSON.stringify([{ hive: 'alice' }, { hive: 'bob' }]);
+    const paperMeta = JSON.stringify({ pevotest: { type: 'paper', authors: JSON.parse(paperAuthors) } });
+
+    const reviews = [
+      ['self_review_by_paper_author', 'alice'],
+      ['self_review_by_named_coauthor', 'bob'],
+      ['third_party_review', 'carol'],
+      ['review_by_anon_proxy', 'pevotest.anon'],
+      // Case-sensitivity canary: helper matches exact text. The
+      // upstream publishing path lowercases hive names, so an uppercase
+      // entry in authors[] is malformed data — admitted here pins that
+      // the helper does NOT silently case-fold. Adding case-folding
+      // later would be a deliberate change with a behavioral test.
+      ['casevariant_uppercase', 'Alice'],
+    ];
+
+    const valuesSql = reviews.map((_, i) => `($${i * 2 + 3}::text, $${i * 2 + 4}::text)`).join(', ');
+    const params: unknown[] = ['pevotest', paperMeta];
+    for (const [label, reviewer] of reviews) {
+      params.push(label, reviewer);
+    }
+
+    const sql = `
+      WITH paper(json_metadata) AS (VALUES ('alice'::text, $2::jsonb)),
+           paper_aliased AS (SELECT 'alice'::text AS author, $2::jsonb AS json_metadata),
+           review_rows(label, author) AS (VALUES ${valuesSql})
+      SELECT c.label FROM review_rows c
+      CROSS JOIN paper_aliased p
+      WHERE ${excludeSelfReviewWhere({ reviewAlias: 'c', paperRowAlias: 'p', appTagParam: '$1' })}
+      ORDER BY c.label
+    `;
+    const result = await pool.query(sql, params);
+    const admitted = result.rows.map((r) => r.label as string).sort();
+
+    // Expected admit set: third_party_review, review_by_anon_proxy, and
+    // the case-variant (since the helper does NOT case-fold). Excluded:
+    // self_review_by_paper_author (alice == p.author) and
+    // self_review_by_named_coauthor (bob ∈ p.authors[].hive).
+    expect(admitted).toEqual(['casevariant_uppercase', 'review_by_anon_proxy', 'third_party_review']);
+  });
+
+  it.skipIf(!isHafConfigured())('paper-author check fires even when authors[] is missing or empty', { timeout: 30_000 }, async (ctx) => {
+    // The two conjuncts are independent: even if pevo.authors[] is
+    // missing/empty (jsonb_array_elements returns no rows, NOT EXISTS
+    // returns true), the c.author != p.author check still excludes the
+    // paper author. This guards against a future refactor that conflates
+    // the two conjuncts.
+    const pool = getPool();
+    if (!pool) {
+      ctx.skip('no pool available');
+      return;
+    }
+
+    const paperMetaNoAuthors = JSON.stringify({ pevotest: { type: 'paper' } });
+    const paperMetaEmptyAuthors = JSON.stringify({ pevotest: { type: 'paper', authors: [] } });
+
+    for (const [shapeLabel, meta] of [['no_authors_field', paperMetaNoAuthors], ['empty_authors_array', paperMetaEmptyAuthors]] as const) {
+      const sql = `
+        WITH paper_aliased AS (SELECT 'alice'::text AS author, $2::jsonb AS json_metadata),
+             review_rows(label, author) AS (VALUES
+               ('self', 'alice'::text),
+               ('third_party', 'carol'::text)
+             )
+        SELECT c.label FROM review_rows c
+        CROSS JOIN paper_aliased p
+        WHERE ${excludeSelfReviewWhere({ reviewAlias: 'c', paperRowAlias: 'p', appTagParam: '$1' })}
+        ORDER BY c.label
+      `;
+      const result = await pool.query(sql, ['pevotest', meta]);
+      const admitted = result.rows.map((r) => r.label as string).sort();
+      expect(admitted, `paper shape: ${shapeLabel}`).toEqual(['third_party']);
+    }
   });
 });
