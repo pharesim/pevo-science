@@ -418,8 +418,10 @@ describe('accreditation /verify — PostBroadcastWriteError on seedAccreditation
 
     // F3: permanent severity surfaces as POST_BROADCAST_OPERATOR_REQUIRED
     // (distinct from POST_BROADCAST_FAILED — operator alerts route to DB
-    // on-call, user message says "support has been notified" instead of
-    // "will reconcile automatically").
+    // on-call, user message asks the user to contact support directly
+    // instead of "will reconcile automatically"; round-3 hold #3 corrected
+    // the prior "support has been notified" copy to an honest "please
+    // contact support" until alerting actually fires).
     expect(res.status).toBe(502);
     expect(res.body.error.code).toBe('POST_BROADCAST_OPERATOR_REQUIRED');
     expect(res.body.error.details).toMatchObject({

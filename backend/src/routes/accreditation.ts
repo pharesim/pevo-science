@@ -113,24 +113,19 @@ async function incrementBroadcastAttempts(pending: PendingAccreditation): Promis
 }
 
 /**
- * Compensating decrement when a pre-incremented broadcast attempt resolved
- * to a 504 BROADCAST_TIMEOUT outcome (round-2 hold #2). The cap is intended
- * to bound retries on definitive chain rejections — punishing transient
- * slow-Hive timeouts would force the legitimate user to re-request a fresh
- * accreditation email after 3 unlucky attempts, which itself has a 3/24h
- * per-account limit (24h lockout on a flaky Hive day).
- *
- * Pre-INCR is necessary for the atomic concurrent-claim guarantee (4
- * parallel /verify calls on the same token must enqueue exactly
- * `cap` broadcasts, not 4); decrement-after-timeout is the simplest shape
- * that preserves both that guarantee and the verify-then-retry UX.
- *
- * `DECR` on a missing key resolves to -1; the floor at 0 keeps the counter
- * from going negative if a parallel deleteBroadcastAttempts (success path)
- * raced ahead of this decrement.
- */
-/**
  * Status discriminator for `decrementBroadcastAttempts` (round-3 hold #6).
+ *
+ * The decrement compensates a pre-incremented broadcast attempt that
+ * resolved to a 504 BROADCAST_TIMEOUT (round-2 hold #2): the cap is meant
+ * to bound retries on definitive chain rejections, not punish transient
+ * slow-Hive timeouts (3 unlucky attempts would force a fresh email under
+ * the 3/24h per-account limit). Pre-INCR is necessary for the atomic
+ * concurrent-claim guarantee (4 parallel /verify calls must enqueue at
+ * most `cap` broadcasts); decrement-after-timeout is the simplest shape
+ * that preserves both that guarantee and the verify-then-retry UX. `DECR`
+ * on a missing key resolves to -1; the floor at 0 (via DEL when `after<0`)
+ * keeps the counter from going negative if a parallel
+ * deleteBroadcastAttempts (success path) raced ahead of this decrement.
  *
  *   `'decremented'`       — the counter was successfully decremented (Redis
  *                            DECR landed, OR no-Redis in-memory fallback ran).
@@ -140,9 +135,11 @@ async function incrementBroadcastAttempts(pending: PendingAccreditation): Promis
  *                            an internal warn fired. Caller may emit a
  *                            site-specific structured event so a degraded
  *                            decrement is dashboard-keyable per call site.
- *   `'failed'`             — reserved for future use (Redis DECR throw is
- *                            currently re-thrown rather than returning this
- *                            value, so callers' outer catch handles it).
+ *
+ * Round-4 hold #3: the `'failed'` arm was dropped — the immediate-DECR
+ * throw path re-throws (so the route's outer catch handles it) and never
+ * returned `'failed'` in practice. If a future caller wants a non-throwing
+ * failure return, add the arm back at that point with its narrowing site.
  *
  * Returning a discriminator (round-3 hold #6) lets call sites switch on the
  * degraded path WITHOUT the helper having to know each caller's structured-
@@ -152,8 +149,7 @@ async function incrementBroadcastAttempts(pending: PendingAccreditation): Promis
  */
 export type DecrementBroadcastAttemptsResult =
   | 'decremented'
-  | 'enqueued_for_drain'
-  | 'failed';
+  | 'enqueued_for_drain';
 
 async function decrementBroadcastAttempts(
   token: string,
@@ -705,8 +701,10 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
     // `BACKEND-CASCADE-FNS-RETHROW-PERMANENT-ERRORS`. Round-2 F3 makes that
     // severity explicit at the wrap site so handleBroadcastError emits 502
     // POST_BROADCAST_OPERATOR_REQUIRED (not POST_BROADCAST_FAILED) and the
-    // user-facing message says "support has been notified" instead of "will
-    // reconcile automatically" — accurate, because the permanent class is
+    // user-facing message asks the user to contact support instead of
+    // saying "will reconcile automatically" (round-3 hold #3 corrected the
+    // prior "support has been notified" copy to an honest "please contact
+    // support" until alerting actually fires). The permanent class is
     // operator-actionable and the next batch cycle will NOT self-heal a
     // shape regression in `getReputationWeights()` output.
     try {
@@ -751,7 +749,27 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
     // harmless because the broadcast already failed terminally.
     if (outcome === 'timeout') {
       try {
-        await decrementBroadcastAttempts(token, attemptId);
+        // Round-4 hold #1: capture the discriminator the helper introduced
+        // in round-3 hold #6. `'enqueued_for_drain'` means Redis was
+        // configured at INCR time but unavailable at DECR time (mid-request
+        // flap). The helper-internal `broadcast_decrement_redis_unavailable`
+        // warn fires for the broader operator-correlation signal; this
+        // site-specific event lets a dashboard/alert key on the timeout
+        // call site (vs other future decrement callers) without parsing
+        // message strings.
+        const decrStatus = await decrementBroadcastAttempts(token, attemptId);
+        if (decrStatus === 'enqueued_for_drain') {
+          logger.warn(
+            {
+              event: 'accreditation.verify.timeout_decrement_degraded',
+              route: 'accreditation.verify',
+              username: pending.hive_username,
+              attempt_id: attemptId,
+              token_hash: hashTokenForLogs(token),
+            },
+            'accreditation.verify counter decrement after timeout: enqueued for drain (Redis degraded mid-request)',
+          );
+        }
       } catch (decrErr) {
         // Compensation failure is not user-visible (the 504 has already been
         // sent and the counter will TTL out with the token). Log so operators

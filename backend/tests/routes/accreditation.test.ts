@@ -845,6 +845,82 @@ describe('POST /api/accreditation/verify — BE-VERIFY-BROADCAST-ATTEMPTS-CAP', 
     }
   });
 
+  it('round-4 hold #1+#2: 504 timeout + Redis-unavailable mid-request → route emits `timeout_decrement_degraded` warn with discriminator fields', async () => {
+    // Pins the route-level consumer of the round-3 hold #6 discriminator
+    // (`DecrementBroadcastAttemptsResult`). The helper returns
+    // `'enqueued_for_drain'` when Redis was configured at INCR time but
+    // `isRedisAvailable()` returns false at DECR time (mid-request flap).
+    // Without this spec, a mutation that drops the call-site switch on
+    // `decrStatus` silently degrades observability — the helper-internal
+    // `broadcast_decrement_redis_unavailable` warn still fires, but the
+    // site-specific event a dashboard/alert would key on does NOT.
+    //
+    // Drive shape: stateful `isRedisAvailable()` mock that flips to false
+    // once the broadcast site is reached, so getToken/incrementBroadcast
+    // see Redis available (real seed path), the broadcast throws timeout,
+    // and the compensating decrement observes Redis unavailable. Mirrors
+    // the round-3 hold #5 staging (seed + broadcast-throws-timeout) but
+    // exercises the degraded-return branch instead of the throw branch.
+    const redis = getRedis();
+    if (!redis) throw new Error('Redis required for cap specs');
+    const token = `accred-cap-${crypto.randomBytes(8).toString('hex')}`;
+    await seedPendingAccreditation(token);
+    const ip = `10.8.${crypto.randomInt(0, 255)}.${crypto.randomInt(1, 254)}`;
+
+    // Flip isRedisAvailable() to false once the broadcast site has been
+    // reached. The mockImplementation flips the flag synchronously before
+    // the timeout error is thrown so the catch-path decrement observes
+    // `isRedisAvailable() === false`.
+    let broadcastReached = false;
+    broadcastJsonMock.mockImplementationOnce(async () => {
+      broadcastReached = true;
+      throw new MockBroadcastTimeoutError(30_000);
+    });
+    const isAvailableSpy = vi
+      .spyOn(redisModule, 'isRedisAvailable')
+      .mockImplementation(() => !broadcastReached);
+    const loggerWarnSpy = vi.spyOn(logger, 'warn');
+
+    try {
+      const res = await postVerify(token, ip);
+
+      expect(res.status).toBe(504);
+      expect(res.body.error.code).toBe('BROADCAST_TIMEOUT');
+      // Broadcast was invoked exactly once before the timer fired.
+      expect(broadcastJsonMock).toHaveBeenCalledTimes(1);
+      // The new site-specific warn fires with the round-4 hold #1
+      // discriminator + structured fields. Mutation-sensitive call-shape
+      // assertion: dropping the event name, the route label, the
+      // attempt_id, or the token_hash would all fail this assertion.
+      expect(loggerWarnSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: 'accreditation.verify.timeout_decrement_degraded',
+          route: 'accreditation.verify',
+          username: 'accred-timeout-user',
+          attempt_id: expect.any(String),
+          token_hash: expect.stringMatching(/^[0-9a-f]{12}$/),
+        }),
+        expect.stringContaining('enqueued for drain'),
+      );
+      // Round-3 hold #1 cross-check: the raw 64-hex token does NOT leak
+      // through the new warn payload (token_hash is the 12-hex prefix).
+      const flatPayload = JSON.stringify(loggerWarnSpy.mock.calls);
+      expect(flatPayload).not.toMatch(new RegExp(token));
+      // The helper-internal broadcast_decrement_redis_unavailable warn
+      // still fires alongside the new site-specific one (the discriminator
+      // augments the helper warn, it does not replace it).
+      expect(loggerWarnSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: 'accreditation.verify.broadcast_decrement_redis_unavailable',
+        }),
+        expect.anything(),
+      );
+    } finally {
+      isAvailableSpy.mockRestore();
+      loggerWarnSpy.mockRestore();
+    }
+  });
+
   it('round-3 hold #12: VERIFY_BROADCAST_ATTEMPTS_CAP env var is wired through to config.verifyBroadcastAttemptsCap (operators can flip the cap without redeploy)', async () => {
     // Without this spec, a typo in config.ts (e.g. VERIFY_BROADCAST_CAP)
     // would silently pass every cap-related spec since they read

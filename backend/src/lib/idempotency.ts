@@ -331,6 +331,19 @@ export function validateIdempotencyKey(value: unknown): ValidateIdempotencyKeyRe
 //   double-broadcast cost. The convention anchor's discipline ("never cache
 //   transient failures") frames the policy as conservative-by-default; the
 //   structural-correctness argument here aligns with that posture.
+//
+//   Aggregate-retry dimension (round-4 hold #7): the trade-off above frames
+//   the single-user retry case. For N concurrent retries on the same miss-
+//   key, the HAF pool itself bounds the blast radius: `max:3` with
+//   `connectionTimeoutMillis:5000` (`src/db.ts:23-27`). Requests 1-3 queue
+//   live HAF probes; requests 4+ wait up to 5s for a pool slot, then fall
+//   through to the `lookupErr` handler (which logs
+//   `idempotency_lookup_failed` and degrades to the cap/broadcast path).
+//   The per-token cap (default 3) still bounds chain ops downstream, so
+//   the worst aggregate-retry case is pool latency under sustained storm,
+//   NOT chain duplication. A short negative TTL would absorb the pool
+//   pressure but at the cost of the stale-miss bug above — accepting the
+//   pool-latency tail is the better trade.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Cache shape persisted into Redis. After round-3 hold #5 the `miss` variant
@@ -416,8 +429,13 @@ async function readCached(key: string): Promise<CachedIdempotencyResult | undefi
       // proceeds. The convention anchor at
       // `caching-wrapper-discriminated-union-poisoning-2026-05-11.md` is
       // the discipline source for this fail-open shape.
+      // Round-4 hold #8: `cache_class` discriminator (custody vs accred)
+      // sibling field so an alert/dashboard can filter by class without
+      // parsing the full sha256-prefixed key. The key shape is
+      // `${appTag}:idem:<class>:<hash>`, so the class segment lives at
+      // index 2 of the split (the appTag segment is index 0).
       logger.warn(
-        { key, parsed, event: 'idempotency.cache.corrupt_entry' },
+        { key, parsed, cache_class: key.split(':')[2], event: 'idempotency.cache.corrupt_entry' },
         'idempotency cache entry failed shape validation — proceeding to HAF lookup',
       );
       return undefined;
@@ -458,9 +476,9 @@ async function writeCached(key: string, value: CachedIdempotencyResult): Promise
 
 /**
  * Cache-wrapped lookup for custody broadcasts. Reads the Redis short-circuit
- * before consulting HAF; populates the cache on resolved (hit OR miss)
- * results. NEVER caches a HAF-throw — those propagate to the caller's
- * degraded path.
+ * before consulting HAF; populates the cache on resolved hits only (round-3
+ * hold #5 dropped negative caching — see the discipline block above).
+ * NEVER caches a HAF-throw — those propagate to the caller's degraded path.
  *
  * Plumbing-through of `opType` is forwarded to the bare HAF lookup so the
  * scoped probe still happens on cache miss.

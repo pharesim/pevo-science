@@ -869,11 +869,12 @@ async function handleAccredit(
     } catch (postErr) {
       // BACKEND-ORCID-POST-BROADCAST-SEVERITY-CLASSIFICATION: classify the
       // re-thrown cascade error at the wrap site so handleBroadcastError emits
-      // 502 POST_BROADCAST_OPERATOR_REQUIRED (with the "support has been
-      // notified" message) for the permanent-class union — TypeError /
-      // SyntaxError / RangeError or PostgreSQL 23xxx/42xxx — and 502
-      // POST_BROADCAST_FAILED (with the "will reconcile automatically"
-      // message) for everything else. Today the three cascade fns above
+      // 502 POST_BROADCAST_OPERATOR_REQUIRED (with the "please contact
+      // support" message — round-3 hold #3 honest copy) for the permanent-
+      // class union — TypeError / SyntaxError / RangeError or PostgreSQL
+      // 23xxx/42xxx — and 502 POST_BROADCAST_FAILED (with the "will
+      // reconcile automatically" message) for everything else. Today the
+      // three cascade fns above
       // already filter and only re-throw permanent-class errors per the
       // `BACKEND-CASCADE-FNS-RETHROW-PERMANENT-ERRORS` convention, so the
       // helper's `'transient'` branch is effectively dead code on this path.
@@ -1031,9 +1032,10 @@ async function handleLink(
       // seedAccreditationBonus step), but the classification helper applies
       // uniformly across the failing-step union — TypeError / SyntaxError /
       // RangeError or PostgreSQL 23xxx/42xxx → `'permanent'` →
-      // POST_BROADCAST_OPERATOR_REQUIRED with the "support has been notified"
-      // message; everything else → `'transient'` → POST_BROADCAST_FAILED with
-      // the "will reconcile automatically" message.
+      // POST_BROADCAST_OPERATOR_REQUIRED with the "please contact support"
+      // message (round-3 hold #3 honest copy); everything else →
+      // `'transient'` → POST_BROADCAST_FAILED with the "will reconcile
+      // automatically" message.
       throw new PostBroadcastWriteError(
         result.id,
         postErr,

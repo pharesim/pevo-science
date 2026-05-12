@@ -378,13 +378,13 @@ describe('lookupCustodyBroadcastIdempotency — cache key includes op_type (roun
     const pool2 = { query: queryFn2 } as unknown as IdempotencyPool;
     const hit2 = await lookupCustodyBroadcastIdempotency(pool2, username, sharedKey, 'custom_json');
     expect(hit2).toBeNull();
-    // Critically: the second request did NOT receive the comment's tx_id
-    // from the cache. If hit2 were `{ tx_id: commentTxId, ... }` this is
-    // the regression class the hold-block exists to close.
-    expect(hit2).not.toEqual({ tx_id: commentTxId, block_num: 100 });
-    // And the HAF probe ran (cache miss for the cj key path) — proves the
-    // cache layer didn't short-circuit on the comment-key hit.
-    expect(queryFn2).toHaveBeenCalled();
+    // Round-4 hold #9: the prior `expect(hit2).not.toEqual({tx_id: commentTxId, block_num: 100})`
+    // line passed trivially (null never deep-equals an object) and pinned
+    // nothing. The hold-item-1 contract required "AND the HAF probe ran"
+    // — replace with a load-bearing call-count assertion. The HAF probe
+    // ran for the cj key path (cache miss after the op_type fold-in
+    // closed the shadowing class) and ran exactly once.
+    expect(queryFn2).toHaveBeenCalledTimes(1);
   });
 });
 
