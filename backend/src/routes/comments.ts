@@ -65,7 +65,10 @@ async function fetchCommentsFromHaf(
     // convention (api-contracts/common.md).
     const accreditedJoin = `JOIN active_accreditations aa ON aa.account = dc.author`;
 
-    const sortCol = sort === 'votes' ? 'accredited_votes' : 'dc.created';
+    // ORDER BY runs on the outer `SELECT * FROM filtered`, where the
+    // `dc` alias from inside the `filtered` CTE is no longer in scope.
+    // Reference the projected column names directly.
+    const sortCol = sort === 'votes' ? 'accredited_votes' : 'created';
     const safeOrder = order === 'asc' ? 'ASC' : 'DESC';
 
     // Build parameterized CTE
@@ -80,9 +83,13 @@ async function fetchCommentsFromHaf(
 
     const baseParams = [...accredCte.params, config.appTag, `${config.appTag}/%`, paperAuthor, paperPermlink];
 
-    // Recursive CTE to get all discussion comments in the tree
+    // Recursive CTE to get all discussion comments in the tree.
+    // `WITH RECURSIVE` is required because `comment_tree` self-references in
+    // the UNION ALL arm; PostgreSQL rejects forward references inside a
+    // non-RECURSIVE WITH (the failure is silent here — the caller catches
+    // the parse error and returns []).
     const query = `
-      WITH ${accredCte.sql},
+      WITH RECURSIVE ${accredCte.sql},
       comment_tree AS (
         -- Base: direct replies to the paper that are discussion comments
         SELECT
@@ -118,7 +125,7 @@ async function fetchCommentsFromHaf(
       LIMIT $${limitIdx} OFFSET $${offsetIdx}`;
 
     const countQuery = `
-      WITH ${accredCte.sql},
+      WITH RECURSIVE ${accredCte.sql},
       comment_tree AS (
         SELECT c.author, c.permlink, c.parent_author, c.parent_permlink, 0 AS depth
         FROM ${T.comments} c

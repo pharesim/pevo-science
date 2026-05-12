@@ -70,6 +70,34 @@ describe('GET /api/papers/:author/:permlink/comments', () => {
     }
   });
 
+  // Regression canary: the comment tree CTE uses self-reference in its
+  // UNION ALL recursive arm. Without `WITH RECURSIVE` the query fails
+  // to parse and fetchCommentsFromHaf catches/swallows the error, leaving
+  // the endpoint to return empty `[]` with no signal. A second sibling
+  // bug (ORDER BY referencing the inner-CTE alias `dc` at the outermost
+  // SELECT) only surfaced after the RECURSIVE fix.
+  //
+  // This canary pins a real on-chain PEvO comment that MUST round-trip
+  // through the SQL query. If the comment ever stops appearing here,
+  // either the SQL regressed or the underlying chain object was
+  // retracted — both worth a failing test.
+  it('returns the known PEvO discussion comment for jesusalejos test paper', { timeout: 60_000 }, async () => {
+    const PAPER_AUTHOR = 'jesusalejos';
+    const PAPER_PERMLINK = 'tica-y-meta-antropologa-una-aproximacin-al-sentido-de-la-tecnologa-hoy-en-hans-urs-von-balthasar-mp2t81qb';
+    const KNOWN_COMMENT_PERMLINK = 're-tica-y-meta-antropologa-una-aproximacin--1778602170560-55ex0f';
+    const res = await request(app).get(`/api/papers/${PAPER_AUTHOR}/${PAPER_PERMLINK}/comments`);
+    expect(res.status).toBe(200);
+    const permlinks = res.body.data.map((c: { permlink: string }) => c.permlink);
+    expect(
+      permlinks,
+      'PEvO-authored discussion comment must appear; if missing, the comments CTE likely silently failed (check server logs for "HAF comments query failed")',
+    ).toContain(KNOWN_COMMENT_PERMLINK);
+    // The sibling peakd-authored reply on the same paper has metadata
+    // `{"tags": "pevotest"}` (no `app` field, no `pevotest.type` field)
+    // and must be excluded by the SQL filter.
+    expect(permlinks).not.toContain('re-jesusalejos-texm5t');
+  });
+
   // backend-papers-filter-accreditation lane 2 canary: legacy
   // `?accredited_only=false` opt-out is silently ignored. A regression
   // that re-introduces the parse + JOIN-toggle branch would surface here
