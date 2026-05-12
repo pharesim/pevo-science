@@ -178,8 +178,9 @@ export class PostBroadcastWriteError extends Error {
  * unbounded `Record<string, unknown>`.
  *
  * Round-3 hold #5 (BACKEND-BRIDGE-CUSTODY-BROADCAST-DISCRIMINATION):
- * `cause` is INTENTIONALLY OMITTED from this interface. The helper at
- * `:263` below strips a caller-supplied `cause` field from the spread via
+ * `cause` is INTENTIONALLY OMITTED from this interface. The
+ * `handleBroadcastError` body below (see the `sanitizedLogContext`
+ * destructure) strips a caller-supplied `cause` field from the spread via
  * a `LogContext & { cause?: unknown }` widening destructure, closing the
  * sibling-cause leak path documented in round-3 hold #1 of
  * `backend-bridge-key-startup-validation-and-pino-redact` (top-level

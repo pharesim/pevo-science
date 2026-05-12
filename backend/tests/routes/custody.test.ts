@@ -58,8 +58,16 @@ vi.mock('../../src/hive.js', async () => {
 // iv_posting and no upgraded_at. The session-invalidation check inside
 // verifyHiveSignature also hits this pool; return a row without
 // sessions_invalidated_at for that lookup.
-const appQueryMock = vi.fn();
-appQueryMock.mockImplementation(async (sql: string, _params: unknown[]) => {
+// Hoisted as a module-scope const so the per-test save/restore pattern
+// (e.g., the outer-catch specs that install a throw-by-SQL-shape impl in
+// a single test) can restore the module-load impl unconditionally in
+// `finally`, without depending on `getMockImplementation()` returning the
+// current impl. `beforeEach` calls `mockClear` not `mockReset`, so the
+// module-load impl survives between tests; restoring from this named
+// reference makes the discipline independent of that choice — a future
+// switch to `mockReset` would wipe `getMockImplementation()` but the
+// named reference still resolves.
+const DEFAULT_APP_QUERY_IMPL = async (sql: string, _params: unknown[]) => {
   if (sql.includes('sessions_invalidated_at')) {
     return { rows: [{ sessions_invalidated_at: null }] };
   }
@@ -75,7 +83,9 @@ appQueryMock.mockImplementation(async (sql: string, _params: unknown[]) => {
     };
   }
   return { rows: [] };
-});
+};
+const appQueryMock = vi.fn();
+appQueryMock.mockImplementation(DEFAULT_APP_QUERY_IMPL);
 
 vi.mock('../../src/app-db.js', () => ({
   getAppPool: () => ({ query: appQueryMock }),
@@ -340,9 +350,12 @@ describe('BE-BRIDGE-CUSTODY-BROADCAST-DISCRIMINATION — /api/custody/broadcast 
     // `sessions_invalidated_at` exactly once per request, so a single
     // `mockImplementationOnce` for the throw-on-posting-key case is racy
     // — instead, install the throw-by-SQL-shape impl for this test only
-    // and restore the default impl in a finally block so sibling tests
-    // are unaffected (beforeEach only calls `mockClear`, not `mockReset`).
-    const savedImpl = appQueryMock.getMockImplementation();
+    // and restore the module-load impl (the hoisted `DEFAULT_APP_QUERY_IMPL`
+    // const) in a finally block so sibling tests are unaffected. The
+    // restore is unconditional and does NOT rely on
+    // `getMockImplementation()` — a future `mockReset` in `beforeEach`
+    // would wipe the live impl, but `DEFAULT_APP_QUERY_IMPL` is still
+    // resolvable from module scope.
     appQueryMock.mockImplementation(async (sql: string, _params: unknown[]) => {
       if (sql.includes('sessions_invalidated_at')) {
         return { rows: [{ sessions_invalidated_at: null }] };
@@ -383,8 +396,9 @@ describe('BE-BRIDGE-CUSTODY-BROADCAST-DISCRIMINATION — /api/custody/broadcast 
       errorSpy.mockRestore();
       infoSpy.mockRestore();
       warnSpy.mockRestore();
-      // Restore the default impl so sibling tests pick up the seeded row.
-      if (savedImpl) appQueryMock.mockImplementation(savedImpl);
+      // Restore the module-load impl unconditionally so sibling tests
+      // pick up the seeded row regardless of `mockClear` vs `mockReset`.
+      appQueryMock.mockImplementation(DEFAULT_APP_QUERY_IMPL);
     }
   });
 

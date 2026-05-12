@@ -124,8 +124,10 @@ function findConsentOpsInBundle(operations: unknown[]): ConsentOpScan {
     // semantic rolls back any sibling ops along with it. We surface the
     // op as no-consent here rather than as a 400 because (a) the per-op
     // ALLOWED_OPS check upstream already rejected non-allowlisted custom
-    // ops, (b) chain rejection is correlated by `event:'custody_broadcast_failure'`
-    // for operator visibility, and (c) treating this as "no consent op
+    // ops, (b) chain rejection is correlated for operator visibility by
+    // `event:'broadcast_failed'` (chain-reject path via handleBroadcastError)
+    // and `event:'custody.broadcast.attempt'` with `outcome:'failure'` (the
+    // per-attempt audit-log helper), and (c) treating this as "no consent op
     // detected" keeps the substitution-attack surface flat: an attacker
     // can't slip a malformed consent op into a legitimate bundle to
     // bypass the fresh-auth gate, because the chain rejects the entire
@@ -499,25 +501,25 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
   // spot). The DB-side `logCustodyBroadcast` writes only on success; this
   // pino-side structured event fires on EVERY attempt with
   // outcome ∈ {success, failure, timeout}. Operators correlate
-  // `event:'custody.broadcast.attempt'` to spot retry-amplification before the
-  // full idempotency design (filed as
-  // `backend-broadcast-idempotency-cluster-followup.md`) lands.
+  // `event:'custody.broadcast.attempt'` to spot retry-amplification across
+  // the idempotency-gated request path.
   //
-  // Round-3 hold #1: `attempt_n` is INTENTIONALLY OMITTED. The handler has no
-  // idempotency / per-key retry counter state today, so a hardcoded
-  // `attempt_n: 1` would silently report "no retries" to dashboards that key
-  // on the field for retry-amplification alerts — masking the very signal
-  // the alert exists to surface. Leaving the slot empty until the
-  // idempotency cluster (`backend-broadcast-idempotency-cluster-followup.md`)
-  // lands the real per-key counter is the safer default: alerts fire on
-  // missing-field rather than reading a constant 1 as ground truth.
+  // Round-3 hold #1: `attempt_n` is INTENTIONALLY OMITTED. The idempotency
+  // layer landed (`embedIdempotencyKey` + `lookupCustodyBroadcastIdempotency`
+  // above wire the dedup gate against HAF), but that arc did NOT add a
+  // per-attempt counter — the gate either short-circuits with the prior
+  // tx_id on a hit or proceeds with no retry-history state. So a hardcoded
+  // `attempt_n: 1` would still silently report "no retries" to dashboards
+  // keyed on the field for retry-amplification alerts — masking the very
+  // signal the alert exists to surface. The slot stays empty until a
+  // per-key counter mechanism exists; alerts fire on missing-field rather
+  // than reading a constant 1 as ground truth.
   //
   // BACKEND-BROADCAST-ATTEMPT-HELPER-EXTRACTION: the closure-shape factor
   // out to `lib/broadcast-error.ts` so the bridge `/register` audit-log
   // site shares the same shape (event-label literal + spread-after-literal
   // for outcome/event). The factory does NOT declare an `attempt_n` param;
-  // the field stays absent until the idempotency cluster lands the real
-  // per-key counter.
+  // the field stays absent until a per-key counter mechanism is added.
   const logBroadcastAttempt = makeLogBroadcastAttempt(
     'custody.broadcast.attempt',
     { route: 'custody.broadcast', username, op_types, op_count },
