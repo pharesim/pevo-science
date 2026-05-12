@@ -1,0 +1,202 @@
+# Review filter: drop app gate, add structural-validity gate, enforce display/reputation parity
+
+**Owner:** Backend Agent
+**Created:** 2026-05-12
+
+## Problem
+
+PEvO's review filter today is `type='review' AND app LIKE 'pevotest/%' AND author IN active_accreditations` (with an anon-proxy carve-out). Two consequences flow from this:
+
+1. **The `app LIKE 'pevotest/%'` gate excludes valid reviews authored via non-PEvO Hive clients.** Same failure mode as the discussion-comments bug fixed in `backend(comments): drop authoring-client gate from discussion thread filter` (commit d92e605). Per CLAUDE.md "accreditation is the trust layer", the authoring client is not load-bearing; an accredited scientist's review broadcast from peakd/ecency/any Hive client is still a PEvO review.
+
+2. **The current filter does NOT validate review *shape*.** A reply with `pevotest.type='review'` and `app='pevotest/0.1'` but no `rating` object — or a partial/non-numeric one — surfaces as a review:
+   - Paper-detail review list defaults missing ratings to `{methodology: 0, novelty: 0, clarity: 0, significance: 0}` (`papers.ts:2289`, `reviews.ts:28`) and shows it with all-zero stars.
+   - Listing `review_count` (`papers.ts:455-458`) counts it.
+   - Listing `avg_rating` (`papers.ts:471-474`) has only a single `rating IS NOT NULL` safety net; partial ratings (3-of-4 dims) still pass and produce NULL math downstream.
+   - Reputation `paper_reviews` quality CTE (`reputation.ts:563-577`) casts each rating field to `::numeric` unconditionally — a string rating crashes the cycle compute.
+
+3. **Display and reputation drift.** Because each callsite writes its own filter, there is no guarantee that "review shown on the page" ↔ "review counted in reputation". The user-facing principle is: any review surfaced to a reader MUST contribute to reputation, and vice versa. There must be one canonical "valid PEvO review" SQL fragment used everywhere.
+
+## Acceptance criteria
+
+### 1. Add a canonical `validReviewSql` helper
+
+`backend/src/hafsql.ts` — replace `isPevoReviewSql` (or extend it; keep the name for grep continuity) with a fragment that:
+- Asserts `(c.json_metadata -> $appTag ->> 'type') = 'review'`
+- Drops the `c.json_metadata ->> 'app' LIKE 'pevotest/%'` clause (per principle #1 above)
+- Adds shape validity: rating object present AND all four dimensions are integers in `[1, 5]`. Recommended form:
+  ```sql
+  AND c.json_metadata -> $appTag -> 'rating' IS NOT NULL
+  AND (c.json_metadata -> $appTag -> 'rating' ->> 'methodology')  ~ '^[1-5]$'
+  AND (c.json_metadata -> $appTag -> 'rating' ->> 'novelty')      ~ '^[1-5]$'
+  AND (c.json_metadata -> $appTag -> 'rating' ->> 'clarity')      ~ '^[1-5]$'
+  AND (c.json_metadata -> $appTag -> 'rating' ->> 'significance') ~ '^[1-5]$'
+  ```
+  (Regex over `->>` text is portable across HAF readers; numeric casts on user-supplied JSON values are not — see `reputation.ts:566-569` for the cast-and-crash risk.)
+- Continues to require the author to be in `active_accreditations` OR equal `config.hiveAnonAccount`. Trust layer is unchanged; only the shape/client gates are.
+
+### 2. Apply the helper at every review-class SQL site
+
+Replace ad-hoc `(c.json_metadata -> $X ->> 'type') = 'review' AND c.json_metadata ->> 'app' LIKE $Y` pairs with the helper at:
+
+**Display path:**
+- `backend/src/routes/papers.ts:455-458` — listing `review_count`
+- `backend/src/routes/papers.ts:471-474` — listing `avg_rating` (drop the `rating IS NOT NULL` line; the helper supersedes it)
+- `backend/src/routes/papers.ts:2195-2198` — paper detail review list
+- `backend/src/routes/profile.ts:96` (and `:321` already via `isPevoReviewSql`) — profile reviews list
+- `backend/src/routes/search.ts:165` — search type=review path
+- `backend/src/routes/stats.ts:56` — review counter
+- `backend/src/routes/reviews.ts:56-65, 70` — single-review endpoint (SQL filter + the JS `isPevoReview` post-filter at line 70 should be updated/replaced to match)
+- `backend/src/helpers.ts:41-44` — `isPevoReview` JS-side: update to mirror the SQL shape (drop the `app` startsWith check, add rating-shape validation). Used by `reviews.ts:70`; failing to update it leaves a JS-level mirror that re-imposes the dropped app gate.
+
+**Reputation path:**
+- `backend/src/reputation.ts:403` — confirm context and apply
+- `backend/src/reputation.ts:563-577` — `paper_reviews` quality CTE (the AVG/4.0/5.0 quality computation)
+- `backend/src/reputation.ts:609-616` — `user_reviews` CTE
+- `backend/src/reputation.ts:755-759` — confirm context and apply
+
+**Notifications:**
+- `backend/src/notification-queries.ts:169, 190` — review notifications. Same shape so a reader notified about a new review can actually find it on the paper page.
+
+### 3. Display ↔ reputation parity invariant
+
+After this task, the implementer MUST be able to state (and a test must enforce) that for any chain row `c`:
+
+> `c` surfaces as a review on the paper detail page  ⟺  `c` contributes to the paper's `review_count` and `avg_rating`  ⟺  `c` contributes to the paper's `paper_reviews.quality` multiplier  ⟺  `c` contributes to the reviewer's `user_reviews` in the reputation cycle.
+
+If any of these diverge (e.g., a row passes one filter but not another), the parity invariant is violated.
+
+### 4. Tests
+
+Use real HAF (no mocking; see CLAUDE.md "Running Tests"). Add canaries that pin the four valid/invalid axes:
+
+- **Valid PEvO-app review by accredited author** → surfaces on detail, contributes to count/avg, contributes to reputation cycle.
+- **Valid non-PEvO-app review by accredited author** (peakd/ecency authored): same as above. This is the new behavior — the existing tests likely assume the app gate.
+- **Review-typed reply with missing/partial/non-numeric `rating`** by an accredited author: does NOT surface on detail, NOT in count/avg, NOT in reputation. This pins the structural-validity gate.
+- **Review-typed reply by an unaccredited author**: does NOT surface anywhere. Trust gate is unchanged.
+
+The parity invariant can be pinned at the unit level by a single test that picks one paper and asserts the set of `(author, permlink)` returned by the detail review list equals the set scored in the latest reputation cycle for that paper.
+
+## Implementation notes
+
+- Companion task: `backend-self-review-exclusion-everywhere.md` (sibling). Both tasks touch overlapping SQL sites. If `backend-self-review-exclusion-everywhere` lands first, this task's helper composes against the self-exclusion predicate; if this lands first, the self-exclusion task adds `AND c.author != <paper_author>` at each site. Coordinate ordering with the architect; either order works as long as the second to land doesn't regress the first.
+- The `isPevoReview` JS helper at `helpers.ts:41` is currently the only JS-side filter; its callers (notably `reviews.ts:70` and any test that constructs review-shaped metadata) need to be re-checked after the helper changes — especially that the SQL and JS definitions agree on what "valid" means, otherwise a row can pass SQL but fail JS (or vice versa).
+- The bridge-paper context in `validPevoPaperWhere` (paper-class identity check) is unrelated to review-class identity; no changes there.
+- Worth verifying: does any review URL currently rely on `app === 'pevotest/0.1'` for migration/legacy reasons? Grep the metadata-restored / continuation paths in `papers.ts` before stripping.
+
+---
+
+## Architect re-review (2026-05-12) — HELD PENDING FIXES
+
+`/ce-code-review` on commit `8be9206` dispatched 11 reviewers (correctness, testing, maintainability, project-standards, learnings, security, performance, api-contract, reliability, adversarial, kieran-typescript). 21 findings surfaced through the confidence gate. After user triage: 8 items held below, 6 dismissed, 5 fixed in place by the architect (contract-doc drift across `hive-schemas.md` + 3 api-contracts files, landed in commit `588a654`). The companion commit `2e5d20e` (self-review exclusion) has not been reviewed yet — items below scope to `8be9206`'s diff but should compose cleanly with the self-exclusion helper.
+
+### 1. [P0] Reputation cycle: 3 review-class CTEs gate `validReviewWhere` but NOT `c.author IN active_accreditations`
+
+**Where:** `backend/src/reputation.ts`
+- `paper_reviews` quality CTE — `~line 580` (AVG over ::numeric casts of rating dims)
+- `citing_paper_quality` inner subquery — `~line 766` (same AVG shape, citation arm)
+- `active_authors` review arm — `~line 405` (the second arm of the UNION ALL after the paper arm)
+
+**Why:** Cross-corroborated by 3 reviewers (adversarial P0, correctness P2, security P3). The `validReviewWhere` helper docstring explicitly says callers compose accreditation; these three callsites don't. Pre-commit, the dropped `app LIKE 'pevotest/%'` was a weak spoofable filter; post-commit nothing replaces it. An unaccredited Hive account broadcasting `{type:'review', rating:{5,5,5,5}}` to an accredited author's paper inflates `pr.quality` → multiplies into `paper_scores` → reputation is gameable for free. Display sites (`papers.ts`, `profile.ts` stats CTE, `search.ts`, `stats.ts`, `notification-queries.ts`, `reviews.ts`) all compose accreditation alongside the helper — these 3 CTEs are the asymmetric pair. This directly violates the task's claimed display↔reputation parity invariant.
+
+**Fix:** add at each CTE
+```sql
+AND (EXISTS (SELECT 1 FROM active_accreditations aa WHERE aa.account = c.author)
+     OR c.author = $<anonParam>)
+```
+Wire `config.hiveAnonAccount` as a param at all three sites (`paper_reviews` and `citing_paper_quality` currently bind `$3 = appTag` only — add an anon param; `active_authors` already binds `$18 = bridgeAccount` but not anon — add it).
+
+### 2. [P1] `fetchUserReviewsFromHaf` has no accreditation gate (listing/detail drift + spam vector)
+
+**Where:** `backend/src/routes/profile.ts:317-409` (count + data queries) and the route handler at `:395`.
+
+**Why:** Cross-corroborated by adversarial (P1) and security (P3). The query filters on `c.author = $1` (URL username) + `validReviewWhere`, no accreditation predicate at SQL OR route. `/api/profile/jdoe/reviews` for an unaccredited `jdoe` returns 300-char body excerpts; clicking through hits `/api/reviews/jdoe/<permlink>` which correctly returns 404 (that endpoint DOES gate accreditation). Spam surface: any unaccredited Hive account can write valid-rating review-shaped replies to accredited authors' papers, then their own profile reviews page surfaces the excerpts. Same root cause as item #1 (helper docstring vs. caller composition).
+
+**Fix:** add `AND (c.author IN (SELECT account FROM active_accreditations) OR c.author = $<anonParam>)` to BOTH the count query and the data query. Wire `config.hiveAnonAccount` as a new param (currently `$1 = username`, `$2 = appTag`; add `$3 = anon` and shift limit/offset/accreditedAccounts indices accordingly).
+
+### 3. [P2] Notification arm 1a: no parent-is-PEvO-paper check (cross-zone griefing vector)
+
+**Where:** `backend/src/notification-queries.ts:147` (arm 1a — "new review on your paper").
+
+**Why:** Arm 1a gates only `co.parent_author = $1 AND validReviewWhere(co)`. The LEFT JOIN to the parent paper is for fetching the title, NOT for enforcing the parent IS a PEvO paper. An accredited attacker writes a `type='review' rating={1,1,1,1}` reply to ANY of the recipient's Hive comments (a blog post, a regular comment elsewhere, a peakd reply) → recipient receives a `new_review` notification with an empty title (LEFT JOIN to a non-paper). Arm 1b (bridge papers) is correctly tighter; arm 1a is the gap. Same caller-must-compose-identity-gate root cause.
+
+**Fix:** replace the LEFT JOIN to the parent with an INNER JOIN that also enforces paper-class identity, mirroring arm 1b's pattern:
+```sql
+JOIN ${T.comments} p
+  ON p.author = co.parent_author AND p.permlink = co.parent_permlink
+  AND ${validPevoPaperWhere({commentAlias:'p', appTagParam:'$<N>', bridgeAccountParam:'$<M>', source:'all'})}
+```
+
+### 4. [P2] `reviews.test.ts:201-230` gate responder asserts accreditation strings but not the rating-shape regex (upstream-guard canary gap)
+
+**Where:** `backend/tests/routes/reviews.test.ts:201-230` (`installGateResponder`).
+
+**Why:** Per `agents/docs/solutions/conventions/defense-in-depth-canary-must-pin-each-layer-2026-05-07.md`, when defense-in-depth has multiple gates (here: SQL `validReviewWhere` + JS `isPevoReview` post-filter), each gate must have its own canary. Today only the downstream JS gate has independent test coverage in `helpers.test.ts`; the upstream SQL gate at the route layer has no canary because the responder doesn't assert it. Reverting `validReviewWhere` from `fetchReviewFromHaf` would still pass all existing tests. **The learnings-researcher predicted this gap from the convention doc; the testing reviewer independently surfaced it.**
+
+**Fix (one-line):** add to `installGateResponder`:
+```ts
+expect(sql).toContain("~ '^[1-5]$'");
+```
+Mutation-kill: revert the helper call at `reviews.ts:67` → assertion fails red.
+
+### 5. [P2] `reviews.ts:60` `appTagParamIdx = accredCte.nextIdx + 3` magic offset
+
+**Where:** `backend/src/routes/reviews.ts:60`.
+
+**Why:** Sole call site in the codebase deriving a `$N` parameter index by offset arithmetic instead of a counter. Adding/removing any bind between line 67 and line 70 — or changing `activeAccreditationsCte()` to return additional params — silently mis-binds `appTagParam`. Every other call site uses literal `'$2'`/`'$3'` strings or `$${paramIdx++}`. The helper's own docstring demonstrates the counter pattern as canonical.
+
+**Fix:** replace the offset arithmetic with a local counter (`let paramIdx = accredCte.nextIdx; const authorIdx = paramIdx++; …`).
+
+### 6. [P3] `hafsql.ts:235` `rating IS NOT NULL` is dead-code (Postgres JSONB-null semantics)
+
+**Where:** `backend/src/hafsql.ts:235` (first clause of `validReviewWhere`'s body).
+
+**Why:** `'null'::jsonb IS NOT NULL` returns TRUE in Postgres — JSONB has a distinct internal `null` value separate from SQL NULL. The clause does NOT reject `{rating:null}`; the four regex lines below catch it via NULL propagation. Functionally safe today, but a future maintainer reading the helper would conclude `IS NOT NULL` enforces shape — and deleting the regex on that assumption would silently break the gate.
+
+**Fix:** replace with `AND jsonb_typeof(c.json_metadata -> $appTag -> 'rating') = 'object'`. This rejects SQL NULL, JSONB null, JSONB strings, JSONB arrays, and JSONB numbers — only JSONB objects survive. Self-documenting. **Companion JS fix:** the JS `isPevoReview` in `helpers.ts:62-71` uses `typeof rating !== 'object'` which admits arrays (`typeof [] === 'object'`); add `|| Array.isArray(rating)` to maintain SQL↔JS parity.
+
+### 7. [P3] `hafsql.test.ts:318` behavioral matrix tests only string-form ratings, not JSON integers
+
+**Where:** `backend/tests/hafsql.test.ts:318` (the synthetic-VALUES() behavioral matrix's `valid_*` set).
+
+**Why:** Production chain rows use JSON integers (`{methodology: 4, …}`) — the on-chain shape PEvO clients write. The behavioral matrix only tests string-form (`'4'`). Postgres's `->>` operator renders JSON integer `4` as text `'4'` today, but a future Postgres major-version upgrade or jsonb-codec change altering integer rendering would silently start rejecting every valid review on the chain, undetected by existing tests.
+
+**Fix:** add one row to the `valid_*` set:
+```ts
+['valid_int_rating', { pevotest: { type: 'review', rating: { methodology: 4, novelty: 3, clarity: 5, significance: 4 } } }],
+```
+
+### 8. [P3] Acceptance criterion #4 parity-invariant test not implemented
+
+**Where:** `backend/tests/` (no test file added).
+
+**Why:** Cross-corroborated by testing, project-standards, and correctness residual. AC #4 in this task file explicitly required "a single test that picks one paper and asserts the set of `(author, permlink)` returned by the detail review list equals the set scored in the latest reputation cycle paper_reviews CTE for the same paper." Not implemented in this commit. **Today this test fails because of item #1** (the P0 — `paper_reviews` includes unaccredited reviewers that the detail page filters out). After item #1 is fixed, the test should pass — that's the mechanical proof the parity invariant holds.
+
+**Fix:** real-HAF test in `backend/tests/routes/reputation-lifecycle.test.ts` (or a new `parity-invariant.test.ts`) that:
+1. Picks a paper with reviews in the test HAF corpus.
+2. Queries the detail-review list (via `fetchPaperFromHaf` or equivalent path).
+3. Queries the `paper_reviews` CTE result set for the same paper from the reputation cycle output (or runs the cycle's exact CTE query inline).
+4. Asserts `Set<(author, permlink)>` equality.
+
+Test must run against real HAF (no mocking of `getPool()`/`getHafPool()` per `CLAUDE.md` "Running Tests"). If the test corpus lacks the right shape, the targeted real-path companion to the synthetic-VALUES() test in `hafsql.test.ts` is acceptable under the carve-out clause-C — cite the rationale in the test file header per `agents/docs/solutions/conventions/test-mock-carve-out-clause-c-2026-05-04.md`.
+
+### Findings dismissed at triage (not actionable)
+
+- **#2 (P1, api-contract):** `GET /api/reviews/:author/:permlink` now 404s for malformed reviews — accepted as the strict-gate-everywhere invariant this task closes. Softening the single-doc endpoint would re-introduce display↔reputation drift.
+- **#7 (P2, performance):** `papers.ts:459-487` correlated subquery cost increase — unobservable at beta scale; mitigation path (HAF partial index) is blocked by external infra per `reference_haf_indexes_cannot_be_modified.md`; revisit on production-data evidence.
+- **#9 (P2, testing):** no real-HAF test for `computeReputationBatch` completes on malformed-rating rows — synthetic-VALUES() filter test sufficient; real-HAF malformed-row seeding is impractical.
+- **#15 (P3, performance):** `stats.ts` CTE cost — cache + JOIN-narrowing make negligible.
+- **#16 (P3, maintainability):** rating range `[1,5]` triplicated — domain constant of Likert 5-point scale; drift surface dormant.
+- **#18 (P3, correctness):** `comments.ts:103` hidden-bucket partition — pre-existing; accept the trade-off (malformed `type='review'` from non-PEvO clients vanish from PEvO surfaces).
+- **#20 (P3, adversarial):** `stats.ts:30` param-bind drift — verified `al` is correctly retained for the papers CTE; no orphan param.
+- **Suppressed below confidence gate (8 findings at anchor 50):** AC-8 (frontend `|| 0` dead code), KT-2/KT-3 (TS hardening, mostly pre-existing), M-03 (paper-class `app LIKE` asymmetry — informational only), PERF-03 (reputation-cycle cardinality bounded), correctness 4.0-vs-string asymmetry, adv-anon-proxy historical data drop, adv-active_authors-no-accred (folded into #1). KT-1 (array-as-object guard) is closed by item #6's `jsonb_typeof` + `Array.isArray` companion.
+
+### Architect-owned doc-drift fixed in commit `588a654` (informational)
+
+The architect landed these in parallel — no implementer action needed:
+- `agents/docs/hive-schemas.md` line 20 + Section 4 canonical SQL
+- `agents/docs/api-contracts/papers.md` `review_count` field note + `?type=review` search note
+- `agents/docs/api-contracts/misc.md` `total_reviews` / `reviews_last_30_days` field notes
+- `agents/docs/api-contracts/notifications.md` `new_review` trigger description
+
+The remaining architect-owned doc-drift (`agents/docs/reputation-algorithm.md` parameter table + 8 CTE sites) is deferred until item #1 lands, so the architect can sync the canonical SQL to the gate-plus-accreditation final shape in one pass.
