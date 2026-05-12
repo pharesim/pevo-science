@@ -152,12 +152,82 @@ agents/docs/solutions/conventions/wrapping-primitive-exhaustive-call-site-audit-
 
 Clean. Commit proceeds with the intended scope. Session A's `git rm` remains a working-tree change (the file is gone from disk) and will be re-staged by session A's own archive commit.
 
+## Companion hazard: destructive rewind by concurrent session
+
+Within minutes of the canonical incident above (commit `1a7a264`), the same pair of architect sessions surfaced a second, materially worse failure mode. The full reflog sequence:
+
+```
+08972f6 HEAD@{0}: commit: architect(compound): cross-link strict-superset-wrapper escape-hatch sibling
+56cd171 HEAD@{1}: commit: architect(tasks): file backend-review-validity-gate-and-display-reputation-parity, backend-self-review-exclusion-everywhere
+c33f8e6 HEAD@{2}: reset: moving to HEAD~1
+3c92741 HEAD@{3}: commit: architect(tasks): file backend-review-validity-gate-and-display-reputation-parity, backend-self-review-exclusion-everywhere
+c33f8e6 HEAD@{4}: reset: moving to HEAD~1
+1a7a264 HEAD@{5}: reset: moving to HEAD~1    ← rewinds past two commits…
+ab3fa69 HEAD@{6}: commit: architect(tasks): archive backend-broadcast-idempotency-cluster-followup   ← session A's archive, dropped from main
+1a7a264 HEAD@{7}: commit: architect(compound): back-link 3 redact-policy entries to strict-superset-wrapper
+```
+
+Read bottom-up: session A had landed its archive commit on top of the contaminated `1a7a264`. Session B then ran `git reset --hard HEAD~1` twice — apparently to "fix" the contamination by rewinding past `1a7a264` and rebuilding cleanly. The two resets dropped BOTH `1a7a264` AND `ab3fa69`. Session B then re-committed only its own intended work (`3c92741` → reset → `56cd171`, message-rewritten), leaving session A's archive entirely absent from `main`'s linear history. The task file resurrected in `tasks/review/`, the archive narrative reverted to unstaged in session A's working tree, and the only trace of session A's archive commit lived in the reflog.
+
+**Why this is the same hazard family but worse:**
+
+- The staging sweep (above) corrupts a commit message; the rewind silently *drops the commit entirely*. Audit-trail loss is replaced with code/state loss.
+- `git reflog` is time-bounded: unreachable commits expire after `gc.reflogExpireUnreachable` (default 30 days for HEAD, faster for refs/stash). A force-push during the window or an aggressive `git gc` can shrink the recovery window further. The window felt comfortable in this incident; it is not always.
+- The rewinder's intent (clean up contamination) is benign and disciplined-looking — `git reset --hard HEAD~N` is the textbook way to undo your own most recent local commit. The defect is that on a shared checkout, "your own most recent" can be someone else's by the time you run the command.
+
+**Detection:**
+
+```bash
+# After any unexpected absence of your commit from the linear history:
+git reflog | head -30        # search for your subject line
+git log <your-commit-sha>    # confirm the commit object still exists
+```
+
+If your subject appears in the reflog but not in `git log HEAD`, a destructive rewind has dropped it.
+
+**Recovery:**
+
+```bash
+# Cherry-pick the orphaned commit back onto current HEAD
+git cherry-pick <your-orphaned-sha>
+
+# Or if you have uncommitted working-tree changes that match the orphaned commit
+# (the typical "commit got reset away but my edits are still in the tree" case):
+#   1. Verify the working tree carries the same content as the orphaned commit:
+git diff <your-orphaned-sha> -- <paths>
+#   2. Stage explicitly and commit fresh with a redo note in the body — see "Re-establishing dropped commits" below.
+```
+
+**Re-establishing dropped commits (commit-body etiquette):** when re-doing an archive or other coordination-state commit that was dropped by a rewind, add one line to the commit body noting the original SHA from the reflog: `Re-establishes archive commit <orig-sha> dropped by destructive rewind at <date>.` This prevents future archaeology from concluding the archive was always at the redo's SHA — the reflog window is finite and the original SHA's audit value evaporates without the cross-reference.
+
+**Prevention (rewinder side):**
+
+Do not `git reset --hard HEAD~N` past commits you did not author on a shared branch. If you see a contaminated commit on top of your work (e.g., the canonical staging-sweep incident above), the correct fix is **forward-only**:
+
+```bash
+# Wrong on a shared branch — drops everything between current HEAD and the target,
+# regardless of authorship:
+git reset --hard HEAD~1   # ← FORBIDDEN if the dropped commit isn't yours
+
+# Right — leaves the contaminated commit in history (still flawed, but auditable),
+# adds a clean correcting commit on top:
+git revert <contaminated-sha>     # auto-generates inverse commit
+# OR coordinate with the contaminating-session author to amend before they push.
+```
+
+`git revert` produces a `Revert "..."` commit that other sessions' work above is preserved against. Yes, the contaminated commit is permanently in history. Yes, the subject-vs-diff drift it captured is permanent. That is the cost of choosing forward-only on a shared branch; the alternative is silent loss of unrelated work.
+
+**Prevention (committer side):**
+
+If you are committing on a shared branch and have any reason to suspect you may want to "fix" the commit later via rewind, push to a private branch first, work out the fix there, and merge or PR. Once a commit is on a shared branch with other sessions actively working from its tip, rewinds are no longer a unilateral option.
+
 ## Related Conventions
 
 - `commit-zone-audit-hook-2026-04-30.md` — zone-audit catches cross-role broad-staging contamination at commit time. This convention catches within-role, same-zone session contamination that the hook cannot distinguish (both swept-up and intended paths are in the architect zone in the canonical incident, so the hook rubber-stamps the contaminated commit).
-- `git-checkout-head-destroys-coresident-unstaged-2026-05-11.md` — third member of the multi-agent shared-checkout hazard family. The hazard taxonomy:
-  - **Staging contamination at commit time** — broad `git add` sweeps another session's staged work (this entry).
-  - **Working-tree destruction at reset time** — `git checkout HEAD -- <path>` destroys another agent's unstaged content (the May 11 entry).
-  - **Cross-zone staging at commit time** — broad `git add` sweeps another *role's* in-flight edits (the April 30 zone-hook entry).
-- Root `CLAUDE.md` "Commits and Pushes" — the explicit-path staging mandate. This convention enforces that mandate at the verification layer (`--cached` inspection) rather than only the staging layer (per-path `git add`).
+- `git-checkout-head-destroys-coresident-unstaged-2026-05-11.md` — sibling member of the multi-agent shared-checkout hazard family. The hazard taxonomy now has four members:
+  - **(1) Cross-zone staging at commit time** — broad `git add` sweeps another *role's* in-flight edits (the April 30 zone-hook entry catches this via the commit-msg hook).
+  - **(2) Working-tree destruction at reset time** — `git checkout HEAD -- <path>` or `git restore <path>` destroys another agent's unstaged content (the May 11 entry).
+  - **(3) Within-zone staging at commit time** — broad `git add` or `git commit -a` sweeps another *session's* staged work in the same role (the staging-sweep section of this entry — zone hook cannot catch).
+  - **(4) Destructive rewind by concurrent session** — `git reset --hard HEAD~N` on a shared branch drops commits the rewinder did not author (the rewind section of this entry — only the reflog catches it, time-bounded).
+- Root `CLAUDE.md` "Commits and Pushes" — the explicit-path staging mandate. This convention enforces that mandate at the verification layer (`--cached` inspection) rather than only the staging layer (per-path `git add`), and forbids `git reset --hard HEAD~N` past commits you did not author.
 - `worktree-fanout-orphan-detection-2026-04-29.md` — adjacent family member. Different mechanism (claimed-commit SHA never merged from a worker worktree back to main), same class of "routine git tooling silently corrupts shared coordination state."
