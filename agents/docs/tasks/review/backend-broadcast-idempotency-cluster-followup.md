@@ -1096,3 +1096,200 @@ in their respective tracks.
 - Convention-anchor checks for cited solutions docs: all 8 entries
   surfaced by `ce-learnings-researcher` exist and are not flagged
   as stale.
+
+## Backend re-review signal (2026-05-12, commit `003a302`)
+
+All 9 round-4 hold-block items landed on `main` in a single commit
+(`003a302` — `backend(broadcast-idempotency): round-4 hold items
+1-9`, 6 files / +162/-46). On-main SHA cited per architect's round-4
+orphan-detection note (no worktree fan-out this round; serial
+implementation on `main` since all items overlapped on
+`accreditation.ts` and `idempotency.ts`). Verified:
+`git merge-base --is-ancestor 003a302 HEAD` → OK.
+
+### Item 6 completion (Hi)
+
+#### Item 1 — wire `decrementBroadcastAttempts` return at sole call site
+
+`backend/src/routes/accreditation.ts:754`. Captured the discriminator
+into `decrStatus` and added a site-specific structured warn on the
+`'enqueued_for_drain'` branch:
+
+```ts
+const decrStatus = await decrementBroadcastAttempts(token, attemptId);
+if (decrStatus === 'enqueued_for_drain') {
+  logger.warn(
+    {
+      event: 'accreditation.verify.timeout_decrement_degraded',
+      route: 'accreditation.verify',
+      username: pending.hive_username,
+      attempt_id: attemptId,
+      token_hash: hashTokenForLogs(token),
+    },
+    'accreditation.verify counter decrement after timeout: enqueued for drain (Redis degraded mid-request)',
+  );
+}
+```
+
+Inline rationale comment cites round-4 hold #1, the round-3 hold #6
+discriminator origin, and the dashboard-keying motivation. The
+existing try/catch around the call is preserved; the new warn fires
+inside the success-return branch of `decrementBroadcastAttempts`
+(the throw branch still feeds the existing
+`broadcast_decrement_failed` warn). Helper-internal
+`broadcast_decrement_redis_unavailable` warn continues to fire
+unchanged.
+
+#### Item 2 — spec pinning the new event
+
+`backend/tests/routes/accreditation.test.ts:847`, added inside the
+existing `BE-VERIFY-BROADCAST-ATTEMPTS-CAP` describe block (between
+the round-3 hold #5 decrement-failure spec and the round-3 hold #12
+env-var spec — local to the related cap-counter specs).
+
+Drive shape: stateful `isRedisAvailable()` spy that flips to false
+once `broadcastJsonMock` is invoked. The `getToken`/`incrementBroadcastAttempts`
+calls run with Redis available (seeded via `seedPendingAccreditation`);
+the broadcast throws `MockBroadcastTimeoutError`; the catch-path
+decrement observes `isRedisAvailable() === false` and returns
+`'enqueued_for_drain'`; the route's new switch emits the warn.
+
+Mutation-sensitive call-shape assertion pins:
+
+- `event: 'accreditation.verify.timeout_decrement_degraded'`
+- `route: 'accreditation.verify'`
+- `username: 'accred-timeout-user'`
+- `attempt_id: expect.any(String)`
+- `token_hash: expect.stringMatching(/^[0-9a-f]{12}$/)`
+- Message contains `'enqueued for drain'`
+- No 64-hex token leak (negative regex on flattened payload)
+- Helper-internal `broadcast_decrement_redis_unavailable` warn still
+  fires alongside the new event (augmentation, not replacement)
+
+#### Item 3 — resolve `'failed'` arm
+
+`backend/src/routes/accreditation.ts:150-152`. Chose option (a):
+deleted the arm. `DecrementBroadcastAttemptsResult` is now
+`'decremented' | 'enqueued_for_drain'`. The DECR-throw path
+re-throws (so the route's outer catch handles it) and never
+returned `'failed'` in practice. Inline rationale block in the
+docblock notes the round-4 hold #3 rationale and a "if a future
+caller wants a non-throwing failure return, add it back at that
+site with its narrowing" forward pointer. Verified no consumers
+of `'failed'` exist anywhere in `backend/src` or `backend/tests`
+(grep confirmed).
+
+### Item 3 / Item 5 doc-rot (Mid)
+
+#### Item 4 — 4 stale "support has been notified" comments
+
+- `backend/src/routes/accreditation.ts:704` — narrative comment
+  updated to "asks the user to contact support" with the round-3
+  hold #3 anchor.
+- `backend/src/routes/orcid.ts:872` — `handleAccredit` rationale
+  updated to "please contact support".
+- `backend/src/routes/orcid.ts:1034` — `handleLink` counterpart
+  updated to match.
+- `backend/tests/routes/accreditation-idempotency.test.ts:421` —
+  test rationale comment updated; round-3 hold #3 anchor added.
+
+Discipline anchor (call-site audit on wrapping-primitive adoption)
+cited in commit message but not inlined per-site to avoid noise.
+
+#### Item 5 — stale docblock at `lookupCustodyBroadcastIdempotency`
+
+`backend/src/lib/idempotency.ts:459-463`. Changed "(hit OR miss)
+results" to "hits only (round-3 hold #5 dropped negative caching —
+see the discipline block above)" — points readers to the broader
+rationale block for the dropped-negative-cache reasoning.
+
+#### Item 6 — duplicate JSDoc on `decrementBroadcastAttempts`
+
+`backend/src/routes/accreditation.ts:115-156`. Folded the
+still-relevant rationale from the old block (round-2 hold #2
+context, pre-INCR atomicity, DECR-on-missing-key floor) into the
+new discriminator docblock; deleted the duplicate. TypeScript now
+sees a single JSDoc anchored to `DecrementBroadcastAttemptsResult`.
+
+### Item 5 rationale + observability polish (Mid)
+
+#### Item 7 — extend Item 5 rationale to cover HAF pool retry-storm
+
+`backend/src/lib/idempotency.ts:333-345` (extension of the rationale
+block at lines 313-333). Added an "Aggregate-retry dimension"
+paragraph covering: pool `max:3` with `connectionTimeoutMillis:5000`
+at `src/db.ts:23-27`; requests 1-3 queue live HAF probes; requests
+4+ wait up to 5s for a pool slot then fall through to the
+`lookupErr` handler (`idempotency_lookup_failed` warn, degrade to
+cap/broadcast path); per-token cap (default 3) still bounds chain
+ops. Conclusion: worst case is pool latency tail, NOT chain
+duplication.
+
+#### Item 8 — `cache_class` discriminator on `corrupt_entry` warn
+
+`backend/src/lib/idempotency.ts:419-426`. Added `cache_class` sibling
+field to the warn payload.
+
+**Off-by-one note:** the architect's hold-block example was
+`key.split(':')[3]`. The actual key shape is
+`${appTag}:idem:<class>:<hash>`, so `split(':')` yields:
+
+- `[0]` = appTag (e.g. `pevotest`)
+- `[1]` = `idem`
+- `[2]` = `custody` or `accred`
+- `[3]` = hash
+
+The class lives at index `[2]`, not `[3]`. Verified appTag's regex
+(`/^[a-z][a-z0-9._-]*$/` at `backend/src/config.ts:12`) forbids
+colons, so the index is stable. Used `[2]` for structural
+correctness; an inline comment cites round-4 hold #8 and explains
+the index choice.
+
+### Item 1 test pin (Low)
+
+#### Item 9 — load-bearing HAF-probe pin
+
+`backend/tests/lib/idempotency.test.ts:384`. Replaced the vacuous
+`expect(hit2).not.toEqual({tx_id: commentTxId, block_num: 100})`
+(null never deep-equals an object) with
+`expect(queryFn2).toHaveBeenCalledTimes(1)`. The per-pool spy shape
+(`queryFn2` is the second pool's query mock) maps to the architect's
+generic `expect(queryFn).toHaveBeenCalledTimes(2)` suggestion: each
+lookup has its own spy, so the equivalent is "this lookup's spy
+ran exactly once". Closes the "AND the HAF probe ran" half of the
+round-3 hold #1 contract.
+
+The redundant `expect(queryFn2).toHaveBeenCalled()` at the prior
+line 387 was consolidated into the upgraded assertion at line 384.
+
+### Verification
+
+- Targeted suites (3 files: `accreditation.test.ts`,
+  `idempotency.test.ts`, `accreditation-idempotency.test.ts`):
+  **59 / 59 pass**.
+- `tests/lib/` (all 20 files): **296 / 296 pass**.
+- `tests/routes/orcid*` (touched orcid.ts comments): **81 / 81 pass**.
+- `npm run lint`: 0 errors, 2 warnings (pre-existing dhive boundary
+  warnings at `src/seed-phrase.ts:26-27`, unchanged from before).
+- Architect-zone files (`agents/docs/solutions/conventions/hold-item-completion-structural-vs-behavioral-2026-05-12.md`)
+  noticed staged in working tree; unstaged and left for architect
+  per zone-audit discipline.
+
+### Items resolved per architect hold block
+
+- ✅ Item 1 — `decrementBroadcastAttempts` call site wired
+- ✅ Item 2 — timeout-degraded event spec added
+- ✅ Item 3 — `'failed'` arm dropped (option a)
+- ✅ Item 4 — 4 stale support-notified comments updated
+- ✅ Item 5 — `lookupCustodyBroadcastIdempotency` docblock corrected
+- ✅ Item 6 — duplicate JSDoc consolidated
+- ✅ Item 7 — Item 5 rationale extended with aggregate-retry dimension
+- ✅ Item 8 — `cache_class` discriminator added (index off-by-one
+  noted, structurally correct index used)
+- ✅ Item 9 — vacuous assertion replaced with load-bearing
+  `toHaveBeenCalledTimes(1)`
+
+### [TODO Architect] note
+
+None this round — no contract or API-shape changes required; all
+items were code-internal or test-internal.
