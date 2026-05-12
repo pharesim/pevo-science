@@ -408,8 +408,12 @@ const template = `
               <!-- Vote (wait for enrichment so we get accredited-only counts + voter list) -->
               <template x-if="enrichmentLoaded">
               <div class="mt-4" x-data="voteButtons({ author: paper.author, permlink: paper.permlink, netVotes: paper.net_votes, voteStrength: paper.vote_strength, voters: paper.voters || [], created: paper.created, versions: paper.versions })" @click.outside="selectorOpen = false">
-                <!-- Accredited: vote strength selector -->
-                <template x-if="isAccredited">
+                <!-- Accredited (non-author): vote strength selector. Authors
+                     are excluded because the backend filters self-votes from
+                     all aggregated counts (accreditedVoteCount: v.voter != author),
+                     so offering the action would waste a broadcast for a
+                     vote that can never be displayed. -->
+                <template x-if="isAccredited && !isOwnPaper">
                   <div class="flex items-center gap-3">
                     <div class="relative">
                       <button type="button" class="btn-secondary text-sm flex items-center gap-1.5"
@@ -444,8 +448,8 @@ const template = `
                     <span class="text-sm text-ink-muted" x-text="voteCountLabel()"></span>
                   </div>
                 </template>
-                <!-- Non-accredited: read-only count + strength -->
-                <template x-if="!isAccredited">
+                <!-- Non-accredited or own paper: read-only count + strength -->
+                <template x-if="!isAccredited || isOwnPaper">
                   <div class="flex items-center gap-2 text-sm text-ink-muted">
                     <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor"><path d="M10 3l-7 7h4v7h6v-7h4L10 3z" /></svg>
                     <span x-text="voteCountLabel()"></span>

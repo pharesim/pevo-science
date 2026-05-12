@@ -302,6 +302,50 @@ describe('paperDetailPage', () => {
     });
   });
 
+  // Vote-action predicate matrix: isAccredited && !isOwnPaper.
+  // Asserts at the getter-composition level (no DOM render). Two
+  // dimensions: accredited Y/N and own paper Y/N. The selector must
+  // only show when both halves favor it. Authors get the read-only
+  // count branch because the backend filters self-votes from all
+  // aggregated counts (accreditedVoteCount: v.voter != author), so
+  // offering the action would waste a broadcast.
+  describe('Vote action predicate matrix (isAccredited && !isOwnPaper)', () => {
+    it('accredited, not own paper -> selector visible', () => {
+      mockStores.auth.username = 'dave';
+      mockStores.auth.isAccredited = true;
+      const comp = createComponent();
+      comp.paper = { author: 'alice', authors: [{ hive: 'alice' }], authorship_claims: [] };
+      const predicate = mockStores.auth.isAccredited && !comp.isOwnPaper;
+      expect(predicate).toBe(true);
+    });
+
+    it('accredited, own paper -> selector hidden', () => {
+      mockStores.auth.isAccredited = true;
+      const comp = createComponent();
+      comp.paper = { author: 'alice', authors: [] };
+      const predicate = mockStores.auth.isAccredited && !comp.isOwnPaper;
+      expect(predicate).toBe(false);
+    });
+
+    it('accredited, own paper as co-author -> selector hidden', () => {
+      mockStores.auth.username = 'bob';
+      mockStores.auth.isAccredited = true;
+      const comp = createComponent();
+      comp.paper = { author: 'alice', authors: [{ hive: 'alice' }, { hive: 'bob' }] };
+      const predicate = mockStores.auth.isAccredited && !comp.isOwnPaper;
+      expect(predicate).toBe(false);
+    });
+
+    it('non-accredited, not own paper -> selector hidden (read-only branch)', () => {
+      mockStores.auth.username = 'dave';
+      mockStores.auth.isAccredited = false;
+      const comp = createComponent();
+      comp.paper = { author: 'alice', authors: [{ hive: 'alice' }], authorship_claims: [] };
+      const predicate = mockStores.auth.isAccredited && !comp.isOwnPaper;
+      expect(predicate).toBe(false);
+    });
+  });
+
   describe('ipfsUrl', () => {
     it('returns null when no ipfs_cid', () => {
       const comp = createComponent();
