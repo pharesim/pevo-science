@@ -870,3 +870,229 @@ layers.
 | 5 — Negative cache TTL — chose (a) drop entirely | closed (code + rationale inline) |
 | 6 — Hit-branch decrement degraded-path event | closed (discriminator + new event) |
 | 7 — Cap-counter vs idempotency probe ordering | closed (restructure + spec) |
+
+---
+
+## Architect re-review (2026-05-12) — HELD PENDING FIXES (round 4)
+
+`/ce-code-review` of round-3 cluster (base `7b7f115^` = `31f400b`,
+single commit `7b7f115`, 7 files / +559/-217) fanned out 11 personas
+(`ce-agent-native-reviewer` excluded per the PEvO project constraint in
+root `CLAUDE.md`). Aggregated findings ranked, triaged with user. Most
+of round 3 verified clean; **item 6 is partially missed** (return type
+landed correctly, but the sole live call site discards the result),
+and a small cluster of doc-rot + test-pin + observability polish items
+ride along.
+
+**Signal-block citation note (informational; not a held item):** the
+round-3 signal block at line 714 cites commit `aa303c9`. That SHA
+lives on the worker subagent worktree branch
+`worktree-agent-aa9c967533faf9ca7` and is NOT an ancestor of `main`.
+The actual landed SHA on `main` is `7b7f115` (clean re-apply by the
+parent agent; trees are byte-identical, no work lost). Convention
+anchor:
+`agents/docs/solutions/conventions/worktree-fanout-orphan-detection-2026-04-29.md`.
+For the round-4 signal block, cite the on-main SHA, not the
+worker-orphan SHA. The parent agent's worktree
+`.claude/worktrees/agent-aa9c967533faf9ca7` is still locked at
+re-review time and pending stale-pid cleanup; that's an architect-side
+chore, not implementer scope.
+
+**Round-3 hold-item verification by architect:**
+
+- Item 1 (op_type cache binding): ✅ closed (code + spec)
+- Item 2 (readCached union validation): ✅ closed (code + spec)
+- Item 3 (operator-required copy honesty): ✅ closed at the string;
+  stale call-site comments held below as round-4 item 4.
+- Item 4 (severity:'permanent' unit specs): ✅ closed
+- Item 5 (drop negative cache TTL): ✅ closed at the code; rationale-
+  block coverage gap held below as round-4 item 7.
+- Item 6 (decrement degraded-path discriminator): ⚠️ **PARTIAL** —
+  return type added correctly, but the sole live call site (timeout
+  branch) discards the result; the per-call-site degraded event the
+  type was introduced to enable does not fire. Held below as round-4
+  items 1–3.
+- Item 7 (probe-before-cap ordering): ✅ closed at the code + spec;
+  contract-doc append landed in this architect pass (see "[TODO
+  Architect] landed" below).
+
+**Items** (apply in any order; commit on a per-item or per-cluster
+basis as you prefer):
+
+### Items held — Item 6 completion (Hi)
+
+1. **`decrementBroadcastAttempts` return value discarded at sole call
+   site.** `backend/src/routes/accreditation.ts:754`. The discriminator
+   return added in round-3 (hold item 6) has only one live call site
+   after hold item 7's reorder deleted the hit-branch consumer: the
+   timeout-branch `await decrementBroadcastAttempts(token,
+   attemptId)`. That site discards the result. Item 6 was specifically
+   about per-call-site degraded-path events, so this leaves the
+   discriminator structurally dead — the helper-internal
+   `broadcast_decrement_redis_unavailable` warn still fires, but the
+   per-site event a dashboard/alert would key on does NOT. Fix:
+   capture the result and emit a site-specific structured warn on the
+   degraded path, e.g.
+
+   ```ts
+   const decrStatus = await decrementBroadcastAttempts(token, attemptId);
+   if (decrStatus === 'enqueued_for_drain') {
+     logger.warn({
+       event: 'accreditation.verify.timeout_decrement_degraded',
+       username,
+       attempt_id: attemptId,
+       token_hash,
+     }, 'broadcast timeout: decrement enqueued for drain (redis degraded)');
+   }
+   ```
+
+   Maintainability M-1 + reliability R-1 + kieran-typescript KT-1 +
+   adversarial A-1, four-way cross-reviewer corroborated, conf 100.
+
+2. **Add a spec pinning the new timeout-degraded event.** Once item 1
+   lands, add a spec to `backend/tests/routes/accreditation.test.ts`
+   (or the accreditation-idempotency suite, whichever fits) that
+   drives the Redis-unavailable mid-request path via the existing
+   `__test_seams` and asserts the new
+   `event:'accreditation.verify.timeout_decrement_degraded'` warn
+   fires with the expected discriminator fields. Pairs with item 1 —
+   land in the same round so the discriminator value is pinned at the
+   route layer. Testing T-1.
+
+3. **Resolve `'failed'` arm of `DecrementBroadcastAttemptsResult`.**
+   `backend/src/routes/accreditation.ts:153`. The arm is "reserved for
+   future use" per docblock but is structurally unreachable today
+   (DECR-throw re-throws, never returns `'failed'`). Once item 1 wires
+   the switch, the arm becomes a dead `case 'failed':` (TS narrowing
+   warning) or a missing-case exhaustiveness gap. Pick one: (a)
+   delete the arm now so the type becomes `'decremented' |
+   'enqueued_for_drain'`; (b) keep the arm with a
+   `// TODO(<task-or-issue>):` comment naming the future work item
+   that will convert the throw-path to a return-path. Maintainability
+   M-4, conf 75.
+
+### Items held — Item 3 / Item 5 doc-rot (Mid)
+
+4. **Stale "support has been notified" comments at 4 sites.** Item 3
+   updated the source string in `broadcast-error.ts` correctly, but
+   four surrounding comments still reference the old phrase. Update
+   each to reflect the new "please contact support" copy:
+   - `backend/src/routes/accreditation.ts:708`
+   - `backend/src/routes/orcid.ts:872`
+   - `backend/src/routes/orcid.ts:1034`
+   - `backend/tests/routes/accreditation-idempotency.test.ts:421`
+
+   Discipline anchor (call-site audit on wrapping-primitive adoption):
+   `agents/docs/solutions/conventions/wrapping-primitive-exhaustive-call-site-audit-2026-04-22.md`.
+   Adversarial A-7, conf 95.
+
+5. **Stale docblock at `lookupCustodyBroadcastIdempotency`.**
+   `backend/src/lib/idempotency.ts:461`. Docblock still reads
+   "populates the cache on resolved (hit OR miss) results." After
+   item 5 dropped negative caching, only hits are cached. The sibling
+   `lookupAccreditationBroadcastIdempotency` (line 504) already uses
+   accurate language. One-word edit ("hit OR miss" → "hit").
+   Maintainability M-3, conf 100.
+
+6. **Duplicate JSDoc blocks on `decrementBroadcastAttempts`.**
+   `backend/src/routes/accreditation.ts:115-131` (old) + `132-157`
+   (new). When the round-3 commit added the new discriminator-type
+   docblock at 132-157, the old "Compensating decrement... 504
+   BROADCAST_TIMEOUT" block at 115-131 was not removed. TypeScript
+   associates only the immediately-preceding JSDoc with the
+   declaration, so the first block is invisible to tooling/hover but
+   visible to source readers and contradicts the new block. Delete
+   lines 115-131 or fold the still-relevant phrasing into the new
+   block. Maintainability M-1, conf 100.
+
+### Items held — Item 5 rationale + observability polish (Mid)
+
+7. **Extend the Item 5 inline rationale block to cover HAF pool
+   retry-storm.** `backend/src/lib/idempotency.ts:~439` (the
+   "Item 5 rationale" region replacing the deleted negative-TTL
+   block). Current rationale frames the trade-off as single-user
+   retry: stale-miss bug outweighs retry-storm absorption at
+   single-instance scale. Add one or two sentences covering the
+   aggregate-retry dimension: HAF pool is `max:3` with
+   `connectionTimeoutMillis:5000` (`backend/src/db.ts:26`); N>3
+   concurrent retries on the same miss-key queue against the pool;
+   requests 4+ hit the 5s timeout and fall through to the
+   `lookupErr` handler (which logs `idempotency_lookup_failed` and
+   degrades to the cap/broadcast path). The per-token cap (default
+   3) still bounds chain ops, so the worst case is pool latency
+   under retry storm, not chain duplication. Adversarial A-6 +
+   performance P-1, conf 100 (cross-reviewer promoted from 75).
+
+8. **Add a `cache_class` discriminator field to the
+   `idempotency.cache.corrupt_entry` warn.**
+   `backend/src/lib/idempotency.ts:~226`. The warn currently logs
+   `{key, parsed}` where `key` is the full sha256-namespaced Redis
+   key (e.g., `${appTag}:idem:custody:<hash>` vs
+   `${appTag}:idem:accred:<hash>`). Operators can't tell custody vs
+   accreditation entries at a glance without parsing the prefix. Add
+   a sibling field, e.g. `cache_class: key.split(':')[3]` so a future
+   alert/dashboard can filter cleanly. Pino-Err sibling-field
+   pattern; no payload bloat. Reliability R-2, conf 85.
+
+### Items held — Item 1 test pin (Low)
+
+9. **Replace the vacuous `not.toEqual` assertion in Item 1's test
+   with a load-bearing HAF-probe pin.**
+   `backend/tests/lib/idempotency.test.ts:384`. Line 380 already
+   asserts `expect(hit2).toBeNull()`. The
+   `not.toEqual({tx_id: commentTxId, block_num: 100})` on line 384
+   passes trivially (null never deep-equals an object) and pins
+   nothing. The hold-item-1 contract (round-3 hold block, line ~531)
+   specifically required "AND the HAF probe ran" — that half is
+   currently unenforced. Replace line 384 with
+   `expect(queryFn).toHaveBeenCalledTimes(2)` (or whatever the
+   test's HAF-probe spy is named) so the assertion actually closes
+   the spec contract. Testing T-1-spec, conf 90.
+
+### Dismissed at triage (recorded for transparency; do not implement)
+
+- **Adversarial A-9: `opType=undefined` pure-vote bundles skip
+  cache entirely.** Dismissed with rationale: this is the deliberate
+  trade-off documented in the round-3 signal block at line 730.
+  Caching with `opType=undefined` would re-introduce the
+  cross-op-type shadowing class that hold item 1 just closed.
+  Convention anchor
+  `agents/docs/solutions/conventions/caching-wrapper-discriminated-union-poisoning-2026-05-11.md`
+  favors "skip the cache" over "cache an unsafe key" for exactly
+  this class. Single-instance scale + low pure-vote retry frequency
+  absorbs the HAF cost.
+
+- **Adversarial A-3: Deploy-time stale OLD-code cap counters
+  survive the Item 7 reorder.** Dismissed with rationale: counters
+  incremented under the old (INCR-first) ordering drain via the
+  existing per-token TTL within hours of deploy. PEvO is
+  single-instance beta with sparse traffic; operational complexity
+  of a one-shot Redis DEL at deploy time is not justified for an
+  edge case that resolves itself.
+
+### Filed as new pending tasks (architect at this pass)
+
+None this round; all actionable findings folded into the hold-items
+above. The round-2 / round-3 follow-up tasks (mask-email helper,
+tests-typecheck, post-broadcast-operator-alerting, orcid post-
+broadcast severity classification, UI inflight/mount guards) remain
+in their respective tracks.
+
+### [TODO Architect] landed during this re-review pass
+
+- `agents/docs/api-contracts/accreditation.md:137` — appended the
+  probe-before-cap ordering guarantee sentence to the
+  `BROADCAST_ATTEMPT_LIMIT_EXCEEDED` bullet. Documents the Item 7
+  guarantee that a confirmed-on-chain accreditation cannot mask
+  itself as cap-exhausted. Landed in the same commit as this
+  hold-block append (architect-zone).
+
+### Verification (architect)
+
+- `git merge-base --is-ancestor 7b7f115 HEAD` → OK (commit is on
+  `main`, no orphan).
+- `git diff aa303c9 7b7f115` → empty (worker-orphan and on-main
+  commits are tree-identical clean re-apply; no lost work).
+- Convention-anchor checks for cited solutions docs: all 8 entries
+  surfaced by `ce-learnings-researcher` exist and are not flagged
+  as stale.
