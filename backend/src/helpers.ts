@@ -38,9 +38,39 @@ export function isPevoPaper(meta: Record<string, unknown>): boolean {
   return appMeta?.type === 'paper' && typeof meta.app === 'string' && (meta.app as string).startsWith(`${config.appTag}/`);
 }
 
+/**
+ * JS-side mirror of the canonical `validReviewWhere` SQL gate
+ * (`src/hafsql.ts`). A row is a valid PEvO review iff:
+ *   - `meta[appTag].type === 'review'`, AND
+ *   - `meta[appTag].rating` is an object with all four dimensions
+ *     (methodology, novelty, clarity, significance) being integers in
+ *     `[1, 5]`.
+ *
+ * The `meta.app === '<appTag>/...'` startsWith check was dropped because
+ * the authoring client is not part of PEvO's trust layer — accredited
+ * scientists broadcasting from peakd/ecency/raw clients still count.
+ * Symmetric with the SQL gate's drop of `app LIKE '<appTag>/%'`.
+ *
+ * Keep this in sync with `validReviewWhere`. The post-filter at the
+ * single-review route (`routes/reviews.ts`) acts as defense-in-depth on
+ * top of the SQL gate; if the two definitions drift, a row can pass one
+ * filter but fail the other and the display↔reputation parity invariant
+ * breaks.
+ */
+const RATING_INT_1_TO_5 = /^[1-5]$/;
+function isInt1To5(v: unknown): boolean {
+  if (typeof v === 'number') return Number.isInteger(v) && v >= 1 && v <= 5;
+  if (typeof v === 'string') return RATING_INT_1_TO_5.test(v);
+  return false;
+}
+
 export function isPevoReview(meta: Record<string, unknown>): boolean {
   const appMeta = meta[config.appTag] as Record<string, unknown> | undefined;
-  return appMeta?.type === 'review' && typeof meta.app === 'string' && (meta.app as string).startsWith(`${config.appTag}/`);
+  if (!appMeta || appMeta.type !== 'review') return false;
+  const rating = appMeta.rating;
+  if (!rating || typeof rating !== 'object') return false;
+  const r = rating as Record<string, unknown>;
+  return isInt1To5(r.methodology) && isInt1To5(r.novelty) && isInt1To5(r.clarity) && isInt1To5(r.significance);
 }
 
 /**

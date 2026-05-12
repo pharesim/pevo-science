@@ -36,6 +36,7 @@ import {
   buildWith,
   getCachedGenesisBlock,
   validPevoPaperWhere,
+  validReviewWhere,
 } from '../hafsql.js';
 import { validateDisciplineFilter } from '../types/disciplines.js';
 
@@ -448,16 +449,22 @@ async function fetchPapersFromHaf(
     ? `${accreditedVoteCount('c.author', 'c.permlink')} AS net_votes`
     : '0 AS net_votes';
 
-  // Review count: accredited reviewers + anonymous posting account
+  // Review count: accredited reviewers + anonymous posting account.
+  // validReviewWhere supplies the type+rating-shape gate (display↔reputation
+  // parity); accreditation stays inline as it does at every review-aggregating
+  // site (see validReviewWhere docstring).
   const reviewCountSelect = `COALESCE((
     SELECT count(*)::int FROM ${T.comments} r
     WHERE r.parent_author = c.author AND r.parent_permlink = c.permlink
-      AND (r.json_metadata -> ${appTagParam} ->> 'type') = 'review'
-      AND r.json_metadata ->> 'app' LIKE ${appLikeParam}
+      AND ${validReviewWhere({ commentAlias: 'r', appTagParam })}
       AND (EXISTS (SELECT 1 FROM active_accreditations aa WHERE aa.account = r.author) OR r.author = ${anonParam})
   ), 0) AS review_count`;
 
-  // Average review rating: mean of all four rating dimensions across accredited reviews
+  // Average review rating: mean of all four rating dimensions across accredited
+  // reviews. The rating-shape regex inside validReviewWhere guarantees each
+  // dimension is `[1-5]` text, so the `::float` casts below cannot crash on
+  // attacker-controlled JSON; the prior `rating IS NOT NULL` safety net is
+  // strictly subsumed by the helper's gate.
   const avgRatingSelect = `COALESCE((
     SELECT round(avg(val)::numeric, 1)::float FROM (
       SELECT (
@@ -468,10 +475,8 @@ async function fetchPapersFromHaf(
       ) / 4.0 AS val
       FROM ${T.comments} rv
       WHERE rv.parent_author = c.author AND rv.parent_permlink = c.permlink
-        AND (rv.json_metadata -> ${appTagParam} ->> 'type') = 'review'
-        AND rv.json_metadata ->> 'app' LIKE ${appLikeParam}
+        AND ${validReviewWhere({ commentAlias: 'rv', appTagParam })}
         AND (EXISTS (SELECT 1 FROM active_accreditations aa WHERE aa.account = rv.author) OR rv.author = ${anonParam})
-        AND rv.json_metadata -> ${appTagParam} -> 'rating' IS NOT NULL
     ) sub
   ), 0) AS avg_rating`;
 
@@ -2180,22 +2185,23 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string) {
          ORDER BY v.voter, v.block_num DESC`,
         [author, permlink, accreditedArr],
       ),
-      // Reviews from accredited reviewers (+ anon account) with accredited vote count
+      // Reviews from accredited reviewers (+ anon account) with accredited vote count.
+      // $4 = accreditedArr (used for net_votes voter gate), $5 = reviewAuthors
+      // (used for c.author gate on the review row itself, includes anon proxy).
       pool.query(
         `SELECT c.author, c.permlink, c.body, c.json_metadata, c.created,
                 (SELECT COALESCE(SUM(CASE WHEN lv.weight > 0 THEN 1 WHEN lv.weight < 0 THEN -1 ELSE 0 END), 0)::int FROM (
                    SELECT DISTINCT ON (v.voter) v.weight FROM ${T.voteOps} v
                    WHERE v.author = c.author AND v.permlink = c.permlink
-                     AND v.voter = ANY($5::text[]) AND v.voter != v.author
+                     AND v.voter = ANY($4::text[]) AND v.voter != v.author
                    ORDER BY v.voter, v.block_num DESC
                  ) lv WHERE lv.weight != 0) AS net_votes
          FROM ${T.comments} c
          WHERE c.parent_author = $1 AND c.parent_permlink = $2
-           AND c.author = ANY($6::text[])
-           AND (c.json_metadata -> $3 ->> 'type') = 'review'
-           AND c.json_metadata ->> 'app' LIKE $4
+           AND c.author = ANY($5::text[])
+           AND ${validReviewWhere({ commentAlias: 'c', appTagParam: '$3' })}
          ORDER BY c.created DESC`,
-        [author, permlink, config.appTag, `${config.appTag}/%`, accreditedArr, reviewAuthors],
+        [author, permlink, config.appTag, accreditedArr, reviewAuthors],
       ),
       // Version history (needed for review outdated computation)
       resolveVersionsFromHaf(author, permlink, headAuthorsMemo),

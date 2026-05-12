@@ -13,7 +13,7 @@ import { validate } from '../validation.js';
 import { getLastBlock } from '../block-watcher.js';
 import { getAppPool } from '../app-db.js';
 import { hafCache } from '../cache.js';
-import { T, isPevoReviewSql, getCachedGenesisBlock, buildWith, activeAccreditationsCteBody, authorshipClaimsCteBody } from '../hafsql.js';
+import { T, validReviewWhere, getCachedGenesisBlock, buildWith, activeAccreditationsCteBody, authorshipClaimsCteBody } from '../hafsql.js';
 
 const router = Router();
 
@@ -93,8 +93,7 @@ async function getProfileStats(username: string) {
          SELECT 1
          FROM ${T.comments} c
          WHERE c.author = $1
-           AND (c.json_metadata -> $2 ->> 'type') = 'review'
-           AND c.json_metadata ->> 'app' LIKE $3
+           AND ${validReviewWhere({ commentAlias: 'c', appTagParam: '$2' })}
            AND COALESCE(c.json_metadata -> $2 ->> 'is_anonymous', 'false') != 'true'
        ),
        citations AS (
@@ -318,19 +317,23 @@ async function fetchUserReviewsFromHaf(username: string, limit: number, offset: 
   if (!pool) return null;
 
   try {
-    const reviewFilter = isPevoReviewSql(2);
+    // $1 = username (author of the review), $2 = config.appTag (consumed by
+    // validReviewWhere's type+rating-shape gate). Limit/offset live at
+    // $3/$4; the sort-by-votes path adds accreditedAccounts at $5.
+    const reviewWhere = validReviewWhere({ commentAlias: 'c', appTagParam: '$2' });
+    const baseParams: unknown[] = [username, config.appTag];
 
     const countResult = await pool.query(
       `SELECT count(*)::int AS total FROM ${T.comments} c
        WHERE c.author = $1 AND c.parent_author != ''
-         AND ${reviewFilter.sql}`,
-      [username, ...reviewFilter.params],
+         AND ${reviewWhere}`,
+      baseParams,
     );
     const total = countResult.rows[0]?.total ?? 0;
 
-    // For sort-by-votes, compute accredited net_votes per review
+    // For sort-by-votes, compute accredited net_votes per review.
     const accreditedAccounts = sort === 'votes' ? [...(await getAllAccreditedAccounts())] : [];
-    const accreditedParamIdx = reviewFilter.nextIdx + 2; // after limit and offset
+    const accreditedParamIdx = 5; // $1=username, $2=appTag, $3=limit, $4=offset, $5=accreditedAccounts
     const netVotesSubquery = sort === 'votes'
       ? `(SELECT COALESCE(SUM(CASE WHEN lv.weight > 0 THEN 1 WHEN lv.weight < 0 THEN -1 ELSE 0 END), 0)::int
           FROM (SELECT DISTINCT ON (v.voter) v.weight FROM ${T.voteOps} v
@@ -342,7 +345,7 @@ async function fetchUserReviewsFromHaf(username: string, limit: number, offset: 
       ? `net_votes ${order === 'asc' ? 'ASC' : 'DESC'}, c.created DESC`
       : `c.created ${order === 'asc' ? 'ASC' : 'DESC'}`;
 
-    const dataParams = [username, ...reviewFilter.params, limit, offset];
+    const dataParams: unknown[] = [...baseParams, limit, offset];
     if (sort === 'votes') dataParams.push(accreditedAccounts);
 
     const dataResult = await pool.query(
@@ -354,9 +357,9 @@ async function fetchUserReviewsFromHaf(username: string, limit: number, offset: 
        FROM ${T.comments} c
        LEFT JOIN ${T.comments} p ON p.author = c.parent_author AND p.permlink = c.parent_permlink
        WHERE c.author = $1 AND c.parent_author != ''
-         AND ${reviewFilter.sql}
+         AND ${reviewWhere}
        ORDER BY ${orderClause}
-       LIMIT $${reviewFilter.nextIdx} OFFSET $${reviewFilter.nextIdx + 1}`,
+       LIMIT $3 OFFSET $4`,
       dataParams,
     );
 

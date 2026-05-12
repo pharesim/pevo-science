@@ -81,12 +81,82 @@ describe('isPevoAnyPaper', () => {
 });
 
 describe('isPevoReview', () => {
-  it('returns true for a valid PEvO review metadata', () => {
-    expect(isPevoReview({ app: APP_ID, [TAG]: { type: 'review' } })).toBe(true);
+  // JS-side mirror of the canonical validReviewWhere SQL gate. The display↔
+  // reputation parity invariant requires both filters to admit/exclude the
+  // same rows; this block pins the JS half so a drift from the SQL half is
+  // caught at compile-test time.
+  const validRating = { methodology: 4, novelty: 3, clarity: 5, significance: 4 };
+
+  it('returns true for a review with a complete integer-rating object', () => {
+    expect(isPevoReview({ app: APP_ID, [TAG]: { type: 'review', rating: validRating } })).toBe(true);
+  });
+
+  it('returns true when ratings arrive as integer-shaped strings (chain JSON can deliver "4" or 4)', () => {
+    // The SQL gate uses ~ '^[1-5]$' which matches the text rendering of
+    // either form. The JS helper must mirror that — symmetric admission.
+    expect(isPevoReview({
+      app: APP_ID,
+      [TAG]: { type: 'review', rating: { methodology: '4', novelty: '3', clarity: '5', significance: '4' } },
+    })).toBe(true);
   });
 
   it('returns false for paper type', () => {
-    expect(isPevoReview({ app: APP_ID, [TAG]: { type: 'paper' } })).toBe(false);
+    expect(isPevoReview({ app: APP_ID, [TAG]: { type: 'paper', rating: validRating } })).toBe(false);
+  });
+
+  it('returns false when the rating object is missing entirely', () => {
+    // Pin the structural-validity gate: a review-typed reply with no rating
+    // used to surface on detail with all-zero stars and inflate count math.
+    expect(isPevoReview({ app: APP_ID, [TAG]: { type: 'review' } })).toBe(false);
+  });
+
+  it('returns false for a partial rating (3 of 4 dimensions present)', () => {
+    expect(isPevoReview({
+      app: APP_ID,
+      [TAG]: { type: 'review', rating: { methodology: 4, novelty: 3, clarity: 5 } },
+    })).toBe(false);
+  });
+
+  it('returns false when a rating dimension is non-numeric / non-int-shaped', () => {
+    expect(isPevoReview({
+      app: APP_ID,
+      [TAG]: { type: 'review', rating: { methodology: 'five', novelty: 3, clarity: 5, significance: 4 } },
+    })).toBe(false);
+  });
+
+  it('returns false when a rating dimension is out of [1, 5] range', () => {
+    expect(isPevoReview({
+      app: APP_ID,
+      [TAG]: { type: 'review', rating: { methodology: 6, novelty: 3, clarity: 5, significance: 4 } },
+    })).toBe(false);
+    expect(isPevoReview({
+      app: APP_ID,
+      [TAG]: { type: 'review', rating: { methodology: 0, novelty: 3, clarity: 5, significance: 4 } },
+    })).toBe(false);
+  });
+
+  it('returns false when a rating dimension is a decimal (chain JSON may deliver 4.5 if a broadcaster bypasses validation)', () => {
+    // The SQL regex `^[1-5]$` rejects 4.5 — the JS helper must agree.
+    expect(isPevoReview({
+      app: APP_ID,
+      [TAG]: { type: 'review', rating: { methodology: 4.5, novelty: 3, clarity: 5, significance: 4 } },
+    })).toBe(false);
+  });
+
+  it('returns true regardless of authoring client (no meta.app gate)', () => {
+    // The app LIKE 'pevotest/%' gate was intentionally dropped — an
+    // accredited reviewer's broadcast from peakd/ecency/raw counts as a
+    // PEvO review. Without `meta.app` at all, this still passes; with a
+    // foreign client, also still passes. Authorship-vouching is the trust
+    // layer, not the authoring-client string.
+    expect(isPevoReview({ [TAG]: { type: 'review', rating: validRating } })).toBe(true);
+    expect(isPevoReview({ app: 'peakd/2024', [TAG]: { type: 'review', rating: validRating } })).toBe(true);
+  });
+
+  it('returns false when rating is not an object (null, string, array)', () => {
+    expect(isPevoReview({ app: APP_ID, [TAG]: { type: 'review', rating: null } })).toBe(false);
+    expect(isPevoReview({ app: APP_ID, [TAG]: { type: 'review', rating: 'great' } })).toBe(false);
+    expect(isPevoReview({ app: APP_ID, [TAG]: { type: 'review', rating: [4, 3, 5, 4] } })).toBe(false);
   });
 });
 

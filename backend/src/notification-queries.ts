@@ -6,7 +6,7 @@
 import { getPool } from './db.js';
 import { config } from './config.js';
 import { logger } from './logger.js';
-import { T, activeAccreditationsCteBody, validPevoPaperWhere } from './hafsql.js';
+import { T, activeAccreditationsCteBody, validPevoPaperWhere, validReviewWhere } from './hafsql.js';
 // ─── Notification Types ──────────────────────────────────────────
 
 export type NotificationEventType =
@@ -166,8 +166,7 @@ export async function fetchNotificationsFromHaf(
       JOIN active_accreditations aa_r ON aa_r.account = co.author
       WHERE co.parent_author = $1
         AND co.block_num > $2
-        AND (co.json_metadata -> ${at} ->> 'type') = 'review'
-        AND co.json_metadata ->> 'app' LIKE ${al}
+        AND ${validReviewWhere({ commentAlias: 'co', appTagParam: at })}
 
       UNION ALL
 
@@ -187,8 +186,7 @@ export async function fetchNotificationsFromHaf(
       LEFT JOIN ${T.comments} p ON p.author = co.parent_author AND p.permlink = co.parent_permlink
       JOIN active_accreditations aa_r ON aa_r.account = co.author
       WHERE co.block_num > $2
-        AND (co.json_metadata -> ${at} ->> 'type') = 'review'
-        AND co.json_metadata ->> 'app' LIKE ${al}
+        AND ${validReviewWhere({ commentAlias: 'co', appTagParam: at })}
 
       UNION ALL
 

@@ -4,7 +4,7 @@ import { config } from '../config.js';
 import { sendOk } from '../response.js';
 import { hafCache } from '../cache.js';
 import { logger } from '../logger.js';
-import { T, activeAccreditationsCte, validPevoPaperWhere } from '../hafsql.js';
+import { T, activeAccreditationsCte, validPevoPaperWhere, validReviewWhere } from '../hafsql.js';
 import { getBatchReputationMap } from '../reputation.js';
 import { getAllAccreditedAccounts } from '../accreditation.js';
 
@@ -53,8 +53,7 @@ export async function fetchStatsFromHaf() {
         SELECT r.created
         FROM ${T.comments} r
         INNER JOIN papers p ON r.parent_author = p.author AND r.parent_permlink = p.permlink
-        WHERE (r.json_metadata -> ${at} ->> 'type') = 'review'
-          AND r.json_metadata ->> 'app' LIKE ${al}
+        WHERE ${validReviewWhere({ commentAlias: 'r', appTagParam: at })}
           AND (EXISTS (SELECT 1 FROM active_accreditations aa WHERE aa.account = r.author)
                OR r.author = ${anon})
       )

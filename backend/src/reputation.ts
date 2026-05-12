@@ -12,7 +12,7 @@ import { hafCache } from './cache.js';
 import { getRedis } from './redis.js';
 import { logger } from './logger.js';
 import { DEFAULT_REPUTATION_WEIGHTS, type ReputationWeights, type ReputationScore } from './types/index.js';
-import { T, getCachedGenesisBlock, validPevoPaperWhere } from './hafsql.js';
+import { T, getCachedGenesisBlock, validPevoPaperWhere, validReviewWhere } from './hafsql.js';
 
 // ─── Batch key helpers ──────────────────────────────────────────
 
@@ -400,8 +400,7 @@ export async function computeReputationBatch(
           WHERE p.parent_author = '' AND p.parent_permlink = $3
             AND ${validPevoPaperWhere({ commentAlias: 'p', appTagParam: '$3', bridgeAccountParam: '$18', source: 'all' })}
             AND p.json_metadata ->> 'app' LIKE $4
-            AND (c.json_metadata -> $3 ->> 'type') = 'review'
-            AND c.json_metadata ->> 'app' LIKE $4
+            AND ${validReviewWhere({ commentAlias: 'c', appTagParam: '$3' })}
         ) t
       ),
 
@@ -561,6 +560,12 @@ export async function computeReputationBatch(
       ),
 
       paper_reviews AS (
+        -- validReviewWhere is load-bearing here: the AVG below casts each
+        -- rating dimension to numeric unconditionally. Before this gate, a
+        -- malformed rating (string, partial object, missing key) would
+        -- crash the cycle compute. The regex inside validReviewWhere
+        -- guarantees each dimension is an integer-shaped string the cast
+        -- can consume.
         SELECT up.author, up.permlink,
           AVG(
             ((c.json_metadata -> $3 -> 'rating' ->> 'methodology')::numeric +
@@ -571,8 +576,7 @@ export async function computeReputationBatch(
         FROM user_papers up
         JOIN ${T.comments} c
           ON c.parent_author = up.author AND c.parent_permlink = up.permlink
-          AND (c.json_metadata -> $3 ->> 'type') = 'review'
-          AND c.json_metadata ->> 'app' LIKE $4
+          AND ${validReviewWhere({ commentAlias: 'c', appTagParam: '$3' })}
         GROUP BY up.author, up.permlink
       ),
 
@@ -610,8 +614,7 @@ export async function computeReputationBatch(
         SELECT c.author, c.permlink, c.created
         FROM ${T.comments} c
         WHERE c.author IN (SELECT username FROM target_users)
-          AND (c.json_metadata -> $3 ->> 'type') = 'review'
-          AND c.json_metadata ->> 'app' LIKE $4
+          AND ${validReviewWhere({ commentAlias: 'c', appTagParam: '$3' })}
           AND COALESCE(c.json_metadata -> $3 ->> 'is_anonymous', 'false') != 'true'
       ),
 
@@ -746,6 +749,9 @@ export async function computeReputationBatch(
           ) AS weighted_upvotes
         FROM citing_papers cp
         LEFT JOIN (
+          -- Citing-paper review quality: mirror of paper_reviews CTE for the
+          -- citation arm. validReviewWhere protects the ::numeric casts from
+          -- malformed ratings at the gate (same load-bearing reason).
           SELECT up2.permlink, up2.author,
             AVG(
               ((c2.json_metadata -> $3 -> 'rating' ->> 'methodology')::numeric +
@@ -756,8 +762,7 @@ export async function computeReputationBatch(
           FROM ${T.comments} up2
           JOIN ${T.comments} c2
             ON c2.parent_author = up2.author AND c2.parent_permlink = up2.permlink
-            AND (c2.json_metadata -> $3 ->> 'type') = 'review'
-            AND c2.json_metadata ->> 'app' LIKE $4
+            AND ${validReviewWhere({ commentAlias: 'c2', appTagParam: '$3' })}
           WHERE (up2.author, up2.permlink) IN (SELECT citing_author, citing_permlink FROM citing_papers)
           GROUP BY up2.permlink, up2.author
         ) cpr ON cpr.author = cp.citing_author AND cpr.permlink = cp.citing_permlink

@@ -5,6 +5,7 @@ import {
   authorshipClaimsCteBody,
   buildWith,
   validPevoPaperWhere,
+  validReviewWhere,
 } from '../src/hafsql.js';
 import { queryWithRetry } from './support/haf-query.js';
 
@@ -216,5 +217,138 @@ describe('validPevoPaperWhere SQL shape', () => {
     });
     expect(sql).toContain('$42');
     expect(sql).toContain('$99');
+  });
+});
+
+/**
+ * validReviewWhere() is the centralized predicate for "comment row is a
+ * structurally valid PEvO review." Every review-aggregating site (paper
+ * detail review list, listing review_count/avg_rating, profile reviews,
+ * search, reputation's paper_reviews quality CTE, reputation's user_reviews
+ * CTE, notifications) MUST compose against this helper. The display↔
+ * reputation parity invariant requires one predicate everywhere.
+ *
+ * The pure-string assertions pin the SQL grammar so a future edit that
+ * drops a rating dimension, reintroduces the app LIKE gate, or shifts the
+ * regex shape fails red. The real-Postgres block exercises the predicate
+ * against synthetic JSONB rows — no chain dependency, no HAF reads — to
+ * confirm the per-axis admit/exclude semantics.
+ */
+describe('validReviewWhere SQL shape', () => {
+  it('produces type+rating-shape predicate with no app LIKE gate', () => {
+    const sql = validReviewWhere({ commentAlias: 'c', appTagParam: '$1' });
+    expect(sql).toContain("(c.json_metadata -> $1 ->> 'type') = 'review'");
+    expect(sql).toContain("c.json_metadata -> $1 -> 'rating' IS NOT NULL");
+    // The app-LIKE gate was intentionally dropped — see helper docstring.
+    expect(sql).not.toContain("'app'");
+    expect(sql).not.toContain('LIKE');
+  });
+
+  it("includes all four rating dimensions with regex ~ '^[1-5]$'", () => {
+    const sql = validReviewWhere({ commentAlias: 'c', appTagParam: '$1' });
+    for (const dim of ['methodology', 'novelty', 'clarity', 'significance']) {
+      expect(sql).toContain(`->> '${dim}'`);
+    }
+    expect(sql).toContain("~ '^[1-5]$'");
+  });
+
+  it('default commentAlias is "c" when omitted', () => {
+    const sql = validReviewWhere({ appTagParam: '$1' });
+    expect(sql).toContain('c.json_metadata');
+    expect(sql).not.toContain('co.json_metadata');
+  });
+
+  it('custom commentAlias propagates through every clause (no leftover c. references)', () => {
+    const sql = validReviewWhere({ commentAlias: 'co', appTagParam: '$3' });
+    expect(sql).toContain("(co.json_metadata -> $3 ->> 'type') = 'review'");
+    expect(sql).toContain("co.json_metadata -> $3 -> 'rating' IS NOT NULL");
+    expect(sql).toContain("(co.json_metadata -> $3 -> 'rating' ->> 'methodology')  ~ '^[1-5]$'");
+    // No leftover 'c.' alias from a half-edit.
+    expect(sql).not.toMatch(/\bc\.json_metadata/);
+  });
+
+  it('caller-allocated appTagParam string flows verbatim', () => {
+    const sql = validReviewWhere({ commentAlias: 'c', appTagParam: '$42' });
+    expect(sql).toContain('$42');
+    expect(sql).not.toContain('$1');
+  });
+
+  it('does NOT bake in the accreditation predicate (callers compose it)', () => {
+    // Per the helper docstring: accreditation is intentionally outside the
+    // helper because per-site forms differ (EXISTS / IN / JOIN / = ANY).
+    // The parity invariant holds when callers add both this fragment AND
+    // their accreditation predicate. Pin the helper's narrow scope here so
+    // a future widening that bakes accreditation into the helper (which
+    // would silently break the = ANY($N::text[]) sites at papers.ts:2199)
+    // fails red.
+    const sql = validReviewWhere({ commentAlias: 'c', appTagParam: '$1' });
+    expect(sql).not.toContain('active_accreditations');
+    expect(sql).not.toContain('hiveAnonAccount');
+  });
+});
+
+/**
+ * Real-Postgres behavioral test for validReviewWhere. Uses synthetic JSONB
+ * rows assembled via VALUES() — no chain seeds, no HAF reads, fully
+ * deterministic against the live Postgres pool. Tests the four valid/
+ * invalid axes from the task acceptance criteria:
+ *
+ *   1. Valid review (integer ratings, no app gate) → admitted
+ *   2. Valid review with foreign 'app' value → still admitted (gate dropped)
+ *   3. Review-typed with missing rating → excluded
+ *   4. Review-typed with partial rating (3 of 4 dimensions) → excluded
+ *   5. Review-typed with non-numeric rating value → excluded
+ *   6. Review-typed with out-of-range rating → excluded
+ *
+ * The accreditation gate is NOT exercised here — that's a callsite concern
+ * pinned by the route-level tests in `tests/routes/reviews.test.ts` and
+ * the existing real-HAF surfaces. This block isolates the type+rating-
+ * shape gate that validReviewWhere is responsible for.
+ */
+describe('validReviewWhere behavioral matrix (real Postgres, synthetic JSONB)', () => {
+  it.skipIf(!isHafConfigured())('admits valid and rejects malformed review-typed rows', { timeout: 30_000 }, async (ctx) => {
+    const pool = getPool();
+    if (!pool) {
+      ctx.skip('no pool available');
+      return;
+    }
+
+    // Synthetic rows: each row is (label, json_metadata) where json_metadata
+    // mimics what a chain comment row carries. The helper's appTagParam
+    // binds to 'pevotest'.
+    const rows = [
+      ['valid_pevo_app', { app: 'pevotest/0.1', pevotest: { type: 'review', rating: { methodology: '4', novelty: '3', clarity: '5', significance: '4' } } }],
+      ['valid_foreign_app', { app: 'peakd/2024', pevotest: { type: 'review', rating: { methodology: '5', novelty: '5', clarity: '5', significance: '5' } } }],
+      ['valid_no_app_field', { pevotest: { type: 'review', rating: { methodology: '1', novelty: '2', clarity: '3', significance: '4' } } }],
+      ['missing_rating', { app: 'pevotest/0.1', pevotest: { type: 'review' } }],
+      ['partial_rating_3_of_4', { app: 'pevotest/0.1', pevotest: { type: 'review', rating: { methodology: '4', novelty: '3', clarity: '5' } } }],
+      ['non_numeric_rating', { app: 'pevotest/0.1', pevotest: { type: 'review', rating: { methodology: 'five', novelty: '3', clarity: '5', significance: '4' } } }],
+      ['out_of_range_high', { app: 'pevotest/0.1', pevotest: { type: 'review', rating: { methodology: '6', novelty: '3', clarity: '5', significance: '4' } } }],
+      ['out_of_range_low', { app: 'pevotest/0.1', pevotest: { type: 'review', rating: { methodology: '0', novelty: '3', clarity: '5', significance: '4' } } }],
+      ['decimal_rating', { app: 'pevotest/0.1', pevotest: { type: 'review', rating: { methodology: '4.5', novelty: '3', clarity: '5', significance: '4' } } }],
+      ['paper_type', { app: 'pevotest/0.1', pevotest: { type: 'paper', rating: { methodology: '4', novelty: '3', clarity: '5', significance: '4' } } }],
+      ['rating_is_string', { app: 'pevotest/0.1', pevotest: { type: 'review', rating: 'great' } }],
+      ['rating_is_array', { app: 'pevotest/0.1', pevotest: { type: 'review', rating: [4, 3, 5, 4] } }],
+    ];
+
+    const valuesSql = rows.map((_, i) => `($${i * 2 + 2}, $${i * 2 + 3}::jsonb)`).join(', ');
+    const params: unknown[] = ['pevotest'];
+    for (const [label, meta] of rows) {
+      params.push(label, JSON.stringify(meta));
+    }
+
+    const sql = `
+      WITH synthetic(label, json_metadata) AS (VALUES ${valuesSql})
+      SELECT c.label FROM synthetic c
+      WHERE ${validReviewWhere({ commentAlias: 'c', appTagParam: '$1' })}
+      ORDER BY c.label
+    `;
+    const result = await pool.query(sql, params);
+    const admitted = result.rows.map((r) => r.label as string).sort();
+
+    // Expected admit set: only the three "valid_*" rows. Every other row is
+    // either wrong type, missing/partial/malformed rating, or
+    // out-of-range — all of which the gate must exclude.
+    expect(admitted).toEqual(['valid_foreign_app', 'valid_no_app_field', 'valid_pevo_app']);
   });
 });

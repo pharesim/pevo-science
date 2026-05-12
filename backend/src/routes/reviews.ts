@@ -6,7 +6,7 @@ import { parseMeta, isPevoReview, pevoString } from '../helpers.js';
 import { getAccreditedSet } from '../accreditation.js';
 import { getReputationScore } from '../reputation.js';
 import { logger } from '../logger.js';
-import { T, activeAccreditationsCte, accreditedVoteCount } from '../hafsql.js';
+import { T, activeAccreditationsCte, accreditedVoteCount, validReviewWhere } from '../hafsql.js';
 
 const router = Router();
 
@@ -53,6 +53,11 @@ async function fetchReviewFromHaf(author: string, permlink: string) {
     // comment would surface as a PEvO review. The `|| ''` fallback for an
     // unset HIVE_ANON_ACCOUNT is safe because Hive prohibits empty author
     // names, so `c.author = ''` never matches.
+    // SQL-level gate: author must be accredited (or the anon proxy) AND the
+    // row must satisfy validReviewWhere (type='review' + well-formed rating
+    // object). The JS-side `isPevoReview` post-filter below is
+    // defense-in-depth — keeping the two in sync is the parity invariant.
+    const appTagParamIdx = accredCte.nextIdx + 3;
     const result = await pool.query(
       `${accredCte.sql}
        SELECT c.author, c.permlink, c.body, c.json_metadata,
@@ -60,8 +65,9 @@ async function fetchReviewFromHaf(author: string, permlink: string) {
               ${accreditedVoteCount('c.author', 'c.permlink')} AS net_votes
        FROM ${T.comments} c
        WHERE c.author = $${accredCte.nextIdx} AND c.permlink = $${accredCte.nextIdx + 1}
-         AND (c.author IN (SELECT account FROM active_accreditations) OR c.author = $${accredCte.nextIdx + 2})`,
-      [...accredCte.params, author, permlink, config.hiveAnonAccount || ''],
+         AND (c.author IN (SELECT account FROM active_accreditations) OR c.author = $${accredCte.nextIdx + 2})
+         AND ${validReviewWhere({ commentAlias: 'c', appTagParam: `$${appTagParamIdx}` })}`,
+      [...accredCte.params, author, permlink, config.hiveAnonAccount || '', config.appTag],
     );
     if (result.rows.length === 0) return null;
 

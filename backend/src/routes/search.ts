@@ -7,7 +7,7 @@ import { parsePageLimit } from '../helpers.js';
 import { getAccreditedSet } from '../accreditation.js';
 import { hafCache } from '../cache.js';
 import { logger } from '../logger.js';
-import { T, activeAccreditationsCteBody, retractedPapersCteBody, buildWith, validPevoPaperWhere } from '../hafsql.js';
+import { T, activeAccreditationsCteBody, retractedPapersCteBody, buildWith, validPevoPaperWhere, validReviewWhere } from '../hafsql.js';
 import { validateDisciplineFilter } from '../types/disciplines.js';
 import { validateSearchQuery } from '../types/search-filters.js';
 
@@ -155,14 +155,15 @@ async function searchReviewsFromHaf(
   let paramIdx = cte.nextIdx;
 
   const appTagParam = `$${paramIdx++}`;
-  const appLikeParam = `$${paramIdx++}`;
-  const params: unknown[] = [...cte.params, config.appTag, `${config.appTag}/%`];
+  const params: unknown[] = [...cte.params, config.appTag];
 
-  // Reviews are child comments of PEvO papers
+  // Reviews are child comments of PEvO papers. validReviewWhere supplies the
+  // canonical type+rating-shape gate; the `app LIKE 'pevotest/%'` gate is
+  // intentionally absent (per the trust-layer principle, an accredited
+  // reviewer's broadcast counts regardless of authoring client).
   const conditions: string[] = [
     `c.parent_author != ''`,
-    `c.json_metadata ->> 'app' LIKE ${appLikeParam}`,
-    `(c.json_metadata -> ${appTagParam} ->> 'type') = 'review'`,
+    validReviewWhere({ commentAlias: 'c', appTagParam }),
     // Ensure parent is a PEvO paper (top-level post in our app namespace)
     `EXISTS (SELECT 1 FROM ${T.comments} p
        WHERE p.author = c.parent_author AND p.permlink = c.parent_permlink

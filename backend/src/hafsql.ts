@@ -165,16 +165,81 @@ export function retractedPapersCteBody(startIdx = 1): SqlFragment {
 
 // ─── PEvO content filters ────────────────────────────────────────
 
-/** WHERE clause fragment to identify PEvO reviews in hafsql.comments */
-export function isPevoReviewSql(startIdx = 1): SqlFragment {
-  const p = startIdx;
-  return {
-    sql: `
-  (c.json_metadata -> $${p} ->> 'type') = 'review'
-  AND c.json_metadata ->> 'app' LIKE $${p + 1}`,
-    params: [config.appTag, `${config.appTag}/%`],
-    nextIdx: p + 2,
-  };
+/**
+ * Canonical SQL fragment that matches a structurally valid PEvO review row.
+ *
+ * **Why this helper exists.** Each review-aggregating site (paper-detail
+ * reviews array, listing `review_count`/`avg_rating`, reputation's
+ * `paper_reviews` quality multiplier, reviewer reputation, notifications,
+ * search type=review) used to handcraft `(json_metadata -> $appTag ->>
+ * 'type') = 'review' AND json_metadata ->> 'app' LIKE '<appTag>/%'`. Two
+ * failure modes followed:
+ *
+ *   1. The `app LIKE` gate excluded valid reviews authored via non-PEvO
+ *      Hive clients (peakd, ecency, raw broadcast). Per CLAUDE.md
+ *      "accreditation is the trust layer", the authoring client is not
+ *      load-bearing — an accredited scientist's review is a PEvO review
+ *      regardless of which UI minted it. (Same failure mode as the
+ *      discussion-comments fix in commit `d92e605`.)
+ *
+ *   2. Type-only validation admitted review-shaped replies with missing,
+ *      partial, or non-numeric `rating` objects. Downstream callers then
+ *      cast those values to `numeric` (paper-quality multipliers in
+ *      `reputation.ts`) or defaulted them to `{methodology: 0, ...}` for
+ *      display, both of which silently corrupt review aggregates.
+ *
+ * The display↔reputation parity invariant requires one canonical predicate
+ * everywhere: any row surfaced as a review on the page MUST contribute to
+ * `review_count`, `avg_rating`, the paper's quality multiplier, and (when
+ * the reviewer is in the cycle) the reviewer's `user_reviews`.
+ *
+ * **Trust-layer note.** This helper does NOT bake in the accreditation
+ * predicate (author must be in `active_accreditations` OR equal
+ * `config.hiveAnonAccount`). Callers compose accreditation in whatever
+ * shape fits their context — `EXISTS`, `IN (SELECT ...)`, `JOIN`, or `=
+ * ANY($N::text[])` of a pre-filtered array. The parity invariant holds
+ * when both this fragment AND the accreditation predicate are applied at
+ * every review-aggregating site.
+ *
+ * **Rating-shape gate.** The regex form `~ '^[1-5]$'` over `->>` text is
+ * portable across HAF readers AND safe against attacker-controlled JSON
+ * values. The naive `::numeric` cast on user-supplied JSON (e.g. a string
+ * `"five"` or an object `{"score": 4}`) crashes the enclosing query — see
+ * the `paper_reviews` quality CTE in `reputation.ts` for the load-bearing
+ * site where a malformed rating used to be able to abort a reputation
+ * cycle. This regex rejects non-integer, out-of-range, and structurally
+ * non-scalar rating values at the SQL gate so downstream casts only see
+ * shapes they can consume.
+ *
+ * The caller allocates the parameter index for the appTag bind and pushes
+ * `config.appTag` onto its params array; this helper returns just the SQL
+ * fragment string (no params, no nextIdx — its input is a param-string
+ * reference the caller has already accounted for).
+ *
+ * @param opts.commentAlias - SQL alias for the comments row (default 'c').
+ *   Notification queries use 'co' (commentOps).
+ * @param opts.appTagParam - the caller-allocated `$N` reference for
+ *   `config.appTag`.
+ *
+ * @example
+ *   const appTagParam = `$${paramIdx++}`;
+ *   params.push(config.appTag);
+ *   conditions.push(validReviewWhere({ commentAlias: 'c', appTagParam }));
+ */
+export function validReviewWhere(opts: {
+  commentAlias?: string;
+  appTagParam: string;
+}): string {
+  const alias = opts.commentAlias ?? 'c';
+  const appTag = opts.appTagParam;
+  return `(
+    (${alias}.json_metadata -> ${appTag} ->> 'type') = 'review'
+    AND ${alias}.json_metadata -> ${appTag} -> 'rating' IS NOT NULL
+    AND (${alias}.json_metadata -> ${appTag} -> 'rating' ->> 'methodology')  ~ '^[1-5]$'
+    AND (${alias}.json_metadata -> ${appTag} -> 'rating' ->> 'novelty')      ~ '^[1-5]$'
+    AND (${alias}.json_metadata -> ${appTag} -> 'rating' ->> 'clarity')      ~ '^[1-5]$'
+    AND (${alias}.json_metadata -> ${appTag} -> 'rating' ->> 'significance') ~ '^[1-5]$'
+  )`;
 }
 
 /**
