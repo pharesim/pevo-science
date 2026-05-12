@@ -1293,3 +1293,195 @@ line 387 was consolidated into the upgraded assertion at line 384.
 
 None this round — no contract or API-shape changes required; all
 items were code-internal or test-internal.
+
+## Architect re-review (2026-05-12) — HELD PENDING FIXES (round 5)
+
+`/ce-code-review` of round-4 cluster (commit `003a302`, 6 files /
++162/-46; on-main verified via `git merge-base --is-ancestor 003a302
+main`) fanned out 11 personas (`ce-agent-native-reviewer` excluded
+per the PEvO project constraint in root `CLAUDE.md`). Aggregated
+findings ranked, triaged with user. **Round-4 items 1, 2, 3, 5, 6,
+7, 9 verified clean.** Items 4 and 8 each surface a small residual
+miss; the new Item 2 spec ships with a polish gap; one test-comment
+doc-rot rides along.
+
+**Round-4 hold-item verification by architect:**
+
+- Item 1 (decrement return wired at sole call site): ✅ closed
+  (code + spec). The new `accreditation.verify.timeout_decrement_degraded`
+  warn fires from `accreditation.ts:762` inside the
+  `'enqueued_for_drain'` branch; `hashTokenForLogs(token)` confirmed
+  in payload (no raw 64-hex leak).
+- Item 2 (timeout-degraded event spec): ✅ closed at the assertions;
+  polish gaps held below as round-5 items 3 and 4.
+- Item 3 (drop `'failed'` arm): ✅ closed. Grep across `backend/src`
+  and `backend/tests` confirms no consumers of `'failed'` remain.
+  Union is now `'decremented' | 'enqueued_for_drain'`.
+- Item 4 (4 stale "support has been notified" comments): ⚠️ **PARTIAL**
+  — 4 sites updated correctly, but a 5th occurrence exists at
+  `backend/src/lib/broadcast-error.ts:396` that wasn't in the
+  architect's hold-block enumeration. Held below as round-5 item 1.
+  Discipline anchor (load-bearing greps at signal-block-write time)
+  cited.
+- Item 5 (`lookupCustodyBroadcastIdempotency` docblock): ✅ closed.
+- Item 6 (duplicate JSDoc consolidation): ✅ closed.
+- Item 7 (HAF pool retry-storm rationale extension): ✅ closed.
+  Pool config at `db.ts:23-27` verified (`max:3`,
+  `connectionTimeoutMillis:5000`); prose accurately describes
+  queueing behavior and lookupErr fallthrough.
+- Item 8 (`cache_class` discriminator on `corrupt_entry` warn): ⚠️
+  **PARTIAL** — code lands correctly with `[2]` index (architect's
+  hold suggested `[3]`; backend caught and explained the off-by-one
+  in their signal). But the new field is not pinned by any spec;
+  mutation dropping it passes silently. Held below as round-5 item 2.
+- Item 9 (load-bearing HAF-probe pin): ✅ closed. `queryFn2` spy
+  scope verified (locally-scoped `vi.fn()`, only the second lookup's
+  probe), `toHaveBeenCalledTimes(1)` is genuinely load-bearing
+  (catches both "cache short-circuit" and "helper retries on miss"
+  regressions).
+
+**Items** (apply in any order; commit on a per-item or per-cluster
+basis as you prefer):
+
+### Item 4 sweep completion (Hi)
+
+1. **5th stale "support has been notified" site missed.**
+   `backend/src/lib/broadcast-error.ts:396`. The comment block at
+   lines 394-402 describes the `POST_BROADCAST_OPERATOR_REQUIRED`
+   case and says: `message ("support has been notified") so
+   user-visible recovery copy stops claiming automatic
+   reconciliation`. This phrasing reads as a current description.
+   Sibling occurrences in the same file (lines 42, 305) are correctly
+   framed as historical (`prior wording said "support has been
+   notified"`). Fix: change line 396 to match the historical framing,
+   e.g.
+
+   ```ts
+   // distinct 502 code (POST_BROADCAST_OPERATOR_REQUIRED) and the
+   // round-3 hold #3 "please contact support" message so user-visible
+   ```
+
+   Cross-reviewer corroboration: maintainability M-1 (P1, conf 100) +
+   api-contract residual (conf 100). Convention anchor:
+   `agents/docs/solutions/conventions/wrapping-primitive-exhaustive-call-site-audit-2026-04-22.md`
+   and `agents/docs/solutions/conventions/load-bearing-greps-at-signal-block-write-time-2026-05-06.md`
+   — both cite the "grep the full codebase, do not enumerate from
+   memory" discipline. Run `grep -rn "support has been notified"
+   backend/` at signal-block-write time and include the verbatim
+   output (should be: only historical-framed occurrences remain).
+
+### Item 8 test pin (Mid)
+
+2. **Pin `cache_class` field in the existing `corrupt_entry` spec.**
+   `backend/tests/lib/idempotency.test.ts:~441` (the existing
+   `idempotency.cache.corrupt_entry` spec for the custody-class
+   path). The new sibling field landed in `idempotency.ts:438` but
+   is not pinned by any assertion. Mutation dropping
+   `cache_class: key.split(':')[2]` passes silently. The architect's
+   hold for Item 8 did not mandate a spec, but the load-bearing-
+   assertion principle is the same one that drove Item 9. Fix: add
+   one assertion to the existing spec, e.g.
+
+   ```ts
+   expect(ctx).toMatchObject({ event: 'idempotency.cache.corrupt_entry', cache_class: 'custody' });
+   ```
+
+   (Or whatever matcher shape the surrounding spec uses; the existing
+   test already locates the warn call, so this is a one-line
+   extension.) The index-2-vs-3 distinction backend caught is itself
+   a mutation this assertion would catch — making the spec the
+   structural defense for that fix. Cross-reviewer corroboration:
+   correctness T-1 (P3, conf 75) + testing T-1 (P3, conf 75) →
+   promoted to conf 100. Testing T-1-spec.
+
+### New Item 2 spec polish (Low)
+
+3. **Misleading "raw 64-hex token" comment.**
+   `backend/tests/routes/accreditation.test.ts:905`. The comment
+   says `// Round-3 hold #1 cross-check: the raw 64-hex token does
+   NOT leak through the new warn payload`, but the spec's token at
+   line 866 is `accred-cap-${crypto.randomBytes(8).toString('hex')}`
+   = a 27-char string with a 16-hex suffix, not 64-hex. The negative
+   regex `not.toMatch(new RegExp(token))` at line 908 is still
+   correctly load-bearing (matches the full literal token), but the
+   comment's mechanism description is wrong. Sibling spec at line
+   841 documents the deliberate 64-hex variant pattern explicitly,
+   making this comment's claim doubly misleading. Fix: change line
+   905-906 to accurately describe what the assertion catches, e.g.
+
+   ```ts
+   // Round-3 hold #1 cross-check: the raw token does NOT leak through
+   // the new warn payload (token_hash is the 12-hex prefix; the full
+   // accred-cap-<16-hex> literal is the regex target).
+   ```
+
+   Maintainability M-3, conf 75.
+
+4. **Missing `queueTestSeams.clearQueue()` in the new spec's
+   `finally`.** `backend/tests/routes/accreditation.test.ts:918`.
+   The Item 2 spec drives the `'enqueued_for_drain'` branch, which
+   calls `enqueueDecrement` and leaves a pending decrement entry in
+   the module-level queue Map. The current finally only restores
+   spies (`isAvailableSpy.mockRestore()`, `loggerWarnSpy.mockRestore()`).
+   Subsequent flap-recovery specs each call `clearQueue()` at their
+   start, so the leak is absorbed today — but the ordering
+   dependency is fragile and sets a bad precedent for future specs
+   added between this one and the next `clearQueue()` site. Fix: add
+   one line to the finally, e.g.
+
+   ```ts
+   } finally {
+     isAvailableSpy.mockRestore();
+     loggerWarnSpy.mockRestore();
+     queueTestSeams.clearQueue();
+   }
+   ```
+
+   Cross-reviewer corroboration: correctness residual + testing T-2
+   (P3, conf 75 each) → promoted to conf 100.
+
+### Dismissed at triage (recorded for transparency; do not implement)
+
+- **kieran-typescript T-1: `key.split(':')[2]` types as `string`
+  not `string | undefined`.** Dismissed with rationale: this is a
+  pre-existing `noUncheckedIndexedAccess` gap in `backend/tsconfig.json`,
+  not introduced by commit `003a302`. The runtime invariant
+  (appTag regex forbids colons; cache class is bounded by the two
+  key builders) is sound. Enabling `noUncheckedIndexedAccess` is a
+  project-wide tsconfig decision that would surface narrowing
+  obligations at every `split()` and indexed-access call site
+  across `backend/src` — out of scope for a round-5 hold on this
+  task. If the user wants to track it, file a separate
+  `backend-tsconfig-no-unchecked-indexed-access.md` task.
+
+- **project-standards residual on "round-N hold #N" anchor
+  convention in code comments.** Dismissed with rationale: the
+  reviewer correctly noted that no governing rule exists in
+  `CLAUDE.md` or `agents/backend/CLAUDE.md`. The anchors are
+  load-bearing cross-references the architect actively encourages
+  (each anchor maps to a `docs/solutions/conventions/*.md` entry).
+  Not a violation; flag is informational only.
+
+### Filed as new pending tasks (architect at this pass)
+
+None this round; all 4 actionable findings folded into the hold-
+items above. The pre-existing tsconfig gap (kieran-typescript T-1)
+was dismissed rather than filed — the user can revisit if the
+project-wide narrowing exercise becomes worthwhile.
+
+### [TODO Architect] landed during this re-review pass
+
+None — no contract or API-shape changes required.
+
+### Verification (architect)
+
+- `git merge-base --is-ancestor 003a302 main` → OK (commit is on
+  `main`, no orphan).
+- `grep -n "support has been notified" backend/src/lib/broadcast-error.ts`
+  → 3 hits: lines 42 (historical-framed), 305 (historical-framed),
+  396 (NOT historical-framed — round-5 hold item 1). The live
+  replacement string `please contact support` lives at line 315. One
+  missed site confirmed.
+- Convention-anchor checks for cited solutions docs: all 14 entries
+  surfaced by `ce-learnings-researcher` exist and are not flagged
+  as stale.
