@@ -480,7 +480,9 @@ Full-text search across PEvO papers and reviews.
 | `page` | integer | `1` | Page number |
 | `limit` | integer | `20` | Results per page (max 100) |
 
-**Response `data`:** Array of `SearchResult`
+**Response `data`:** Array of `SearchResult`. `SearchResult` is a discriminated union on the `type` field. Two variants:
+
+**Paper variant** (`type: 'paper'`) — also covers bridge papers:
 
 ```json
 {
@@ -493,6 +495,30 @@ Full-text search across PEvO papers and reviews.
   "is_accredited": true
 }
 ```
+
+**Review variant** (`type: 'review'`):
+
+```json
+{
+  "type": "review",
+  "author": "reviewer1",
+  "permlink": "re-neural-network-plasticity-2026-20260321",
+  "title": null,
+  "snippet": "...highlighted <mark>matching text</mark>...",
+  "created": "2026-03-21T08:15:00Z",
+  "is_accredited": true,
+  "paper_author": "scientist1",
+  "paper_permlink": "neural-network-plasticity-2026"
+}
+```
+
+**Shared fields** (present on both variants): `type`, `author`, `permlink`, `snippet`, `created`, `is_accredited`.
+
+**Variant-only fields:**
+- Paper variant: `title: string` (the paper's title).
+- Review variant: `title: null` (always; reviews have no own-title), `paper_author: string`, `paper_permlink: string` (the parent paper this review is attached to).
+
+Clients should dispatch on `type` before accessing variant-only fields. `?type=all` returns a mixed array of both shapes.
 
 **Notes:**
 - `?type=review` results are restricted to reviews satisfying the canonical PEvO review-validity gate (`type='review'`, accredited author or anon-proxy, structurally-valid 4-dim rating object with each dimension an integer in `[1,5]`, not authored by the paper author or a named co-author). Authoring client (`app` field) is not gated. Source of truth: `validReviewWhere()` in `backend/src/hafsql.ts`.

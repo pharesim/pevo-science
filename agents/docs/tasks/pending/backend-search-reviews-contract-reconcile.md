@@ -81,3 +81,13 @@ This contract update is architect-owned per backend CLAUDE.md "Boundaries"; the 
 - The contract update itself (architect-owned per `agents/docs/solutions/conventions/backend-api-contracts-are-architect-owned-2026-04-21.md`).
 - Validation of other `?` params (`language`, `source`) — the task scope was `type` only. Existing CLAUDE.md guidance: "Don't add features… beyond what the task requires." If the architect wants a broader sweep, file as a follow-up.
 - `searchReviewsFromHaf`'s hard-gate enforcement — owned by `backend-papers-filter-accreditation.md` lane 3.
+
+---
+
+## Architect re-review (2026-05-12) — HELD PENDING FIXES:
+
+1. **Vacuous-pass guard on `?type=review` happy-path test** (P2, testing reviewer, conf 75). `backend/tests/routes/search.test.ts:66-74` — the `for…of` over `res.body.data` runs zero assertions when the live HAF corpus returns no `q=science` review hits. Add `expect(res.body.data.length).toBeGreaterThan(0)` before the loop (or tune the query to a term that's known to match at least one accredited review in the real corpus). The lane-3 accreditation test at lines 233-244 partially mitigates by iterating the same set and asserting authorship, but the dedicated shape test should pin its own non-vacuous contract.
+
+2. **Case-sensitivity pin on `?type=`** (P3, testing reviewer, conf 75). Same file. Add one test immediately after the existing `?type=foo` 400 case asserting that `?type=PAPER` (or any mixed-case variant) returns `400 BAD_REQUEST`. Pins the case-sensitive enum contract so a future defensive `.toLowerCase()` addition before the `includes` check (a reasonable-looking change in isolation) does not silently widen the accepted surface.
+
+Once both items land, `git mv` this file back to `tasks/review/` and the next architect review pass will pick it up. Findings #1, #3, #4 from the same review pass were split into the separate sweep task `backend-search-query-param-typeof-narrow-sweep.md` (already in `pending/`); finding #2 (SearchResult review variant in `api-contracts/papers.md`) was applied in-place by the architect during this re-review.
