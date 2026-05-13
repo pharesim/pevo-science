@@ -19,6 +19,17 @@ import { T, getCachedGenesisBlock, validPevoPaperWhere, validReviewWhere, exclud
 /** Redis key namespace for cycle-computed reputation scores. */
 export const BATCH_KEY_PREFIX = `${config.appTag}:reputation:batch:`;
 
+/**
+ * Sub-namespace under BATCH_KEY_PREFIX where the batch writer stages the next
+ * cycle's values before the atomic Lua swap. Exported so the reader filter
+ * in `getBatchReputationMap` and the writer paths in `reputation-batch.ts`
+ * reference a single source of truth — a future change to the staging
+ * segment cannot leave one side referencing the old prefix while the other
+ * uses the new one (BACKEND-REPUTATION-SSOT round-2 hold #7).
+ */
+export const STAGING_SEGMENT = 'staging:';
+export const REDIS_KEY_STAGING_PREFIX = `${BATCH_KEY_PREFIX}${STAGING_SEGMENT}`;
+
 export function batchKey(username: string): string {
   return `${BATCH_KEY_PREFIX}${username}`;
 }
@@ -44,6 +55,20 @@ const parseWarnState: { count: number; lastLogTime: number; lastSampleRaw: strin
   lastSampleRaw: null,
   lastError: null,
 };
+
+/**
+ * Test-only seam: reset the module-private rate-limiter state for
+ * `flagMalformedBatchValue` so per-test isolation does not require
+ * `vi.resetModules()` + dynamic-import. Production code must not call this.
+ * Per BACKEND-REPUTATION-SSOT round-2 hold #4 + `vitest-fake-timers-module-
+ * private-state-isolation-2026-04-29.md`.
+ */
+export function resetParseWarnStateForTests(): void {
+  parseWarnState.count = 0;
+  parseWarnState.lastLogTime = 0;
+  parseWarnState.lastSampleRaw = null;
+  parseWarnState.lastError = null;
+}
 
 function flagMalformedBatchValue(raw: string, err: unknown): void {
   parseWarnState.count += 1;
@@ -217,9 +242,8 @@ export async function getBatchReputationMap(): Promise<Map<string, ReputationSco
   if (!redis) return map;
 
   try {
-    const stagingPrefix = `${BATCH_KEY_PREFIX}staging:`;
     const allKeys = await redis.keys(`${BATCH_KEY_PREFIX}*`);
-    const prodKeys = allKeys.filter((k) => !k.startsWith(stagingPrefix));
+    const prodKeys = allKeys.filter((k) => !k.startsWith(REDIS_KEY_STAGING_PREFIX));
     if (prodKeys.length === 0) return map;
 
     const values = await redis.mget(prodKeys);

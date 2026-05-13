@@ -20,7 +20,7 @@ import {
   type SortField,
 } from '../helpers.js';
 import { getAccreditedSet, getAllAccreditedAccounts, getAccreditedOrcidsByAccount } from '../accreditation.js';
-import { getReputationScores } from '../reputation.js';
+import { getReputationScore, getReputationScores } from '../reputation.js';
 import { hafCache } from '../cache.js';
 import { logger } from '../logger.js';
 import { validatedCid } from '../lib/ipfs-validation.js';
@@ -533,18 +533,23 @@ async function fetchPapersFromHaf(
 
     // Use batch reputation scores only (no on-demand HAF computation).
     // Returns 0 for users not yet in the batch — profile page has full scores.
-    const allAccredited = await getAllAccreditedAccounts();
-    const allAccreditedArr = [...allAccredited];
     const paperKeys = dataResult.rows.map((r: Record<string, unknown>) => ({
       author: r.author as string,
       permlink: r.permlink as string,
     }));
 
-    // Parallel: batch reputation + accredited set + resolved votes (native + revotes)
-    const [batchScores, accreditedSet, voteData] = await Promise.all([
+    // Parallel: batch reputation + per-row accredited set + full-accredited
+    // set + resolved votes. `batchResolveVotes` needs `allAccreditedArr`, so
+    // it chains on `getAllAccreditedAccounts` within the same Promise.all —
+    // total cold-cache latency: max(allAccredited + batchResolveVotes,
+    // reputation, perRowAccreditedSet) instead of allAccredited serialized
+    // before the parallel fan-out (BACKEND-REPUTATION-SSOT round-2 hold #8).
+    const allAccreditedPromise = getAllAccreditedAccounts();
+    const [batchScores, accreditedSet, voteData, allAccredited] = await Promise.all([
       getReputationScores(authors),
       getAccreditedSet(authors),
-      batchResolveVotes(pool, paperKeys, allAccreditedArr),
+      allAccreditedPromise.then(set => batchResolveVotes(pool, paperKeys, [...set])),
+      allAccreditedPromise,
     ]);
 
     const rows = dataResult.rows.map((r: Record<string, unknown>) => {
@@ -739,7 +744,7 @@ async function fetchPaperDetailFromHaf(
     // request-scoped fetches. Both helpers cache 10 min via hafCache so
     // the parallel call is typically free; parallelizing with paperResult
     // / fullVersions / retraction avoids serial latency on cold cache.
-    const [paperResult, fullVersions, retraction, accreditedAccountSet, accreditedOrcidsByAccount] = await Promise.all([
+    const [paperResult, fullVersions, retraction, accreditedAccountSet, accreditedOrcidsByAccount, authorReputation] = await Promise.all([
       pool.query(
         `SELECT c.author, c.permlink, c.title, c.body, c.json_metadata,
                 c.created, c.last_edited
@@ -753,6 +758,12 @@ async function fetchPaperDetailFromHaf(
       getRetractionInfo(author, permlink),
       getAllAccreditedAccounts(),
       getAccreditedOrcidsByAccount(),
+      // List-view (and profile-view) parity per BACKEND-REPUTATION-SSOT
+      // AC #1: every reputation value displayed in the UI must derive
+      // from the same `${appTag}:reputation:batch:${user}` value. Paper
+      // detail previously hardcoded `author_reputation: 0` (round-2
+      // hold #6).
+      getReputationScore(author),
     ]);
 
     if (paperResult.rows.length === 0) return null;
@@ -940,6 +951,10 @@ async function fetchPaperDetailFromHaf(
     // `pevo.authors[]` cannot leak the shrunken set into accreditation
     // because the union still carries the dropped author.
     detail.is_accredited = accreditedAccountSet.has(author);
+    // Symmetric chain pre-check: non-accredited author shows score 0 even
+    // if a stale batch entry survives in Redis (per BACKEND-REPUTATION-SSOT
+    // direction-of-truth: chain is SSoT, batch map is a perf cache).
+    detail.author_reputation = detail.is_accredited ? authorReputation.score : 0;
     const detailAuthors = (detail.authors as Array<Record<string, unknown>>) || [];
     detail.accredited_authors = detailAuthors
       .filter((a) => typeof a.hive === 'string' && accreditedAccountSet.has(a.hive as string))

@@ -21,6 +21,7 @@ import { seedAccreditationBonus } from '../reputation.js';
 import {
   handleBroadcastError,
   PostBroadcastWriteError,
+  classifyPostBroadcastSeverity,
   type HandleBroadcastErrorOpts,
   type PostBroadcastFailedStep,
 } from '../lib/broadcast-error.js';
@@ -376,9 +377,15 @@ router.post('/confirm', confirmLimiter, async (req: Request, res: Response) => {
       try {
         await seedAccreditationBonus(normalizedUsername);
       } catch (postErr) {
+        // Pass severity explicitly so a permanent-class (TypeError) post-
+        // broadcast failure routes through the operator-required code path
+        // instead of the default 'transient' user copy claiming automatic
+        // reconciliation. seedAccreditationBonus re-throws only permanent-
+        // class errors per broadcast-error.ts:47-55 (BACKEND-REPUTATION-SSOT
+        // round-2 hold #1; mirror orcid.ts:886).
         handleBroadcastError(
           res,
-          new PostBroadcastWriteError(result.id, postErr, currentStep),
+          new PostBroadcastWriteError(result.id, postErr, currentStep, classifyPostBroadcastSeverity(postErr)),
           broadcastErrOpts,
         );
         return;
@@ -533,9 +540,10 @@ router.post('/link', linkLimiter, verifyHiveSignature, async (req: Request, res:
       try {
         await seedAccreditationBonus(hiveUsername);
       } catch (postErr) {
+        // See /confirm above for severity rationale (round-2 hold #1).
         handleBroadcastError(
           res,
-          new PostBroadcastWriteError(result.id, postErr, currentStep),
+          new PostBroadcastWriteError(result.id, postErr, currentStep, classifyPostBroadcastSeverity(postErr)),
           broadcastErrOpts,
         );
         return;

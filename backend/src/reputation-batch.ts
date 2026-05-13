@@ -23,15 +23,18 @@ import { getRedis } from './redis.js';
 import { config } from './config.js';
 import { logger } from './logger.js';
 import {
-  BATCH_KEY_PREFIX,
+  REDIS_KEY_STAGING_PREFIX,
+  STAGING_SEGMENT,
   batchMapToScoreRecord,
   computeReputationBatch,
   getBatchReputationMap,
   getReputationWeights,
 } from './reputation.js';
-// `BATCH_KEY_PREFIX` is the canonical prod prefix (`${appTag}:reputation:batch:`);
-// the staging prefix is derived from it, so the Lua substring math and the TS
-// constructor cannot drift (BACKEND-REPUTATION-SSOT round-1 hold #24).
+// The staging prefix is derived from `BATCH_KEY_PREFIX` (canonical prod
+// prefix `${appTag}:reputation:batch:`) in reputation.ts and re-imported
+// here so the Lua substring math, the TS-side writer, AND the reader
+// filter in `getBatchReputationMap` reference a single source of truth
+// (BACKEND-REPUTATION-SSOT round-1 hold #24, round-2 hold #7).
 import { getAllAccreditedAccounts } from './accreditation.js';
 import { getCachedGenesisBlock, T } from './hafsql.js';
 import { evalScript } from './lib/redis-scripts.js';
@@ -40,8 +43,6 @@ const DEFAULT_CHECK_INTERVAL_MS = 60 * 60_000; // 1 hour
 const DEFAULT_MAX_DURATION_MS = 30 * 60_000; // 30 minutes
 
 const REDIS_KEY_LAST_CYCLE = `${config.appTag}:reputation:cycle:last`;
-const STAGING_SEGMENT = 'staging:';
-const REDIS_KEY_STAGING_PREFIX = `${BATCH_KEY_PREFIX}${STAGING_SEGMENT}`;
 /**
  * In-progress sentinel: written by the orchestrator immediately before a
  * cycle's atomic Lua swap and deleted INSIDE the same Lua. If Redis (or the
@@ -154,6 +155,29 @@ async function clearInProgressSentinels(redis: Redis): Promise<void> {
 }
 
 /**
+ * Run both abandoned-state cleanups (staging keys + in-progress sentinels)
+ * unconditionally at process startup. Independent of the batch schedule,
+ * the HAF-up gate, and the multi-instance lock — a HAF outage at boot or a
+ * sibling instance holding the lock must NOT delay crash detection, or a
+ * mid-swap crash on the prior run goes unannounced for an entire outage.
+ *
+ * Idempotent and Redis-only (no HAF, no pool); safe to fire from the
+ * non-awaited Promise.all warmup in index.ts. Per BACKEND-REPUTATION-SSOT
+ * round-2 hold #2.
+ */
+export async function repairAbandonedBatchState(): Promise<void> {
+  const redis = getRedis();
+  if (!redis) {
+    logger.warn('Redis unavailable, skipping reputation batch state repair');
+    return;
+  }
+  // Pre-swap crash recovery: staging keys exist but the Lua swap never ran.
+  await clearStagingKeys(redis);
+  // Mid-swap crash recovery: sentinel was SET but the Lua's DEL never executed.
+  await clearInProgressSentinels(redis);
+}
+
+/**
  * Run batch computation, catching up from the last computed cycle to the current one.
  *
  * Multi-instance safety: gates the body on a Redis SET NX EX 1800 lock so two
@@ -203,7 +227,13 @@ export async function runBatchComputation(maxDurationMs = DEFAULT_MAX_DURATION_M
     // keys behind. They are write-only intermediates, so dropping them is safe.
     // The in-progress sentinel surfaces the louder failure mode (crash between
     // sentinel-SET and atomic-Lua) so operators see the event in logs.
+    //
+    // The repairAbandonedBatchState() startup hook runs the same two
+    // helpers unconditionally at process boot (see index.ts) so a HAF
+    // outage or lock-contended start does not delay crash detection.
+    // Pre-swap crash recovery: staging keys exist but the Lua swap never ran.
     await clearStagingKeys(redis);
+    // Mid-swap crash recovery: sentinel was SET but the Lua's DEL never executed.
     await clearInProgressSentinels(redis);
 
     const weights = await getReputationWeights();

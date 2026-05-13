@@ -43,6 +43,31 @@
  *     against real Redis + real HAF and exercises `seedAccreditationBonus`
  *     end-to-end on the happy path. The carve-out covers only the
  *     error-class branches the happy path can't reach.
+ *
+ * Carve-out extension for `backfillAccreditationSeeds` describe block
+ * (BACKEND-REPUTATION-SSOT round-2 hold #10): this block uses
+ * `vi.spyOn(accreditationModule, 'getAllAccreditedAccounts')` to drive
+ * the boot-backfill into its `accredited.size === 0` early-return branch
+ * and to pin the normal `pipeline.set('NX')` path against a known
+ * accredited set.
+ *   (a) Real path that's impractical: HAF accreditation state cannot be
+ *       set deterministically per-test — broadcasting `accredit` ops on
+ *       Hive and waiting for HAF to index them is seed-and-wait, and
+ *       constructing a per-test accredited set against a real HAF fixture
+ *       bleeds into every other test in the suite (the
+ *       `accredited_accounts_all` cache TTL is 10 minutes).
+ *   (b) Why this mock is justified: the test pins the
+ *       `backfillAccreditationSeeds` control flow — empty-set short-
+ *       circuit, redis-null short-circuit, normal pipeline-SET-NX path,
+ *       and the "starting"/"complete" log emission ordering. The mocked
+ *       function is a domain function (not pool/cache), so explicit
+ *       per-test justification is required. `verifyHiveSignature` and
+ *       other auth middleware are NOT mocked.
+ *   (c) Real-path companion: the rest of this file exercises the
+ *       boot-backfill's downstream effect (`seedAccreditationBonus` SET
+ *       NX on real Redis) against real HAF, covering the integrated
+ *       behavior on the happy path. The mocked block covers only the
+ *       branches the real-HAF environment cannot reach deterministically.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import * as redisModule from '../../src/redis.js';
@@ -55,6 +80,7 @@ import {
   getReputationScore,
   invalidateOnRevocation,
   parseBatchValue,
+  resetParseWarnStateForTests,
   seedAccreditationBonus,
 } from '../../src/reputation.js';
 import * as accreditationModule from '../../src/accreditation.js';
@@ -203,6 +229,13 @@ describe('parseBatchValue — malformed shape branches surface ZERO_SCORE', () =
   beforeEach(async () => {
     const redis = getRedis();
     if (redis) await redis.del(batchKey(TEST_LEGACY_USER));
+    // Per BACKEND-REPUTATION-SSOT round-2 hold #4 +
+    // vi-spyon-mockimplementation-bypasses-function-under-test-2026-05-12:
+    // reset the module-private rate-limiter so each test sees the immediate-
+    // log branch (not the suppressed-by-recent-fire branch). The warn-fires
+    // assertions below would flake without this — `flagMalformedBatchValue`
+    // suppresses additional warns within PARSE_WARN_INTERVAL_MS (60s).
+    resetParseWarnStateForTests();
   });
 
   it('returns null on null/undefined input', () => {
@@ -210,24 +243,65 @@ describe('parseBatchValue — malformed shape branches surface ZERO_SCORE', () =
     expect(parseBatchValue(undefined)).toBeNull();
   });
 
-  it('returns null on non-JSON garbage and warns', () => {
-    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as unknown as void);
+  it('returns null on non-JSON garbage and warns with structured event payload', () => {
+    // No `.mockImplementation(noop)` — bypassing the function under test would
+    // hide a mutation removing the structured `event` / `count` / `raw_sample`
+    // fields per vi-spyon-mockimplementation-bypasses-function-under-test-2026-05-12.
+    // The spy tracks calls while the real logger still fires (filtered by
+    // pino-level config in the test env so console isn't spammed).
+    const warnSpy = vi.spyOn(logger, 'warn');
     try {
       const result = parseBatchValue('not-valid-json{');
       expect(result).toBeNull();
+
+      const parseFailedCalls = warnSpy.mock.calls.filter(([arg]) => {
+        if (!arg || typeof arg !== 'object') return false;
+        return (arg as { event?: string }).event === 'reputation.batch.parse_failed';
+      });
+      expect(parseFailedCalls.length).toBeGreaterThanOrEqual(1);
+      const [payload] = parseFailedCalls[0];
+      expect(payload).toMatchObject({
+        event: 'reputation.batch.parse_failed',
+        count: expect.any(Number),
+        raw_sample: expect.any(String),
+      });
+      // `raw_sample` should reflect the malformed input (or its truncated head).
+      expect(((payload as { raw_sample: string }).raw_sample)).toContain('not-valid-json');
     } finally {
       warnSpy.mockRestore();
     }
   });
 
-  it('returns null on JSON whose parsed value lacks numeric `score` (legacy numeric-string)', () => {
+  it('returns null on JSON whose parsed value lacks numeric `score` (legacy numeric-string) and warns with the same event', () => {
     // The deploy-flush-skipped scenario: pre-existing keys hold '42'
     // (a JSON-parseable bare number) instead of '{"score":42,...}'.
-    expect(parseBatchValue('42')).toBeNull();
-    // Other malformed shapes:
-    expect(parseBatchValue('{"score":"42"}')).toBeNull();
-    expect(parseBatchValue('{"breakdown":{}}')).toBeNull();
-    expect(parseBatchValue('[]')).toBeNull();
+    // This branch (parsed-but-wrong-shape) fires the same
+    // `reputation.batch.parse_failed` warn as the JSON-parse-throws branch.
+    const warnSpy = vi.spyOn(logger, 'warn');
+    try {
+      expect(parseBatchValue('42')).toBeNull();
+      // Other malformed shapes (no warn assertion here — the rate-limiter
+      // suppresses repeat warns within PARSE_WARN_INTERVAL_MS):
+      expect(parseBatchValue('{"score":"42"}')).toBeNull();
+      expect(parseBatchValue('{"breakdown":{}}')).toBeNull();
+      expect(parseBatchValue('[]')).toBeNull();
+
+      const parseFailedCalls = warnSpy.mock.calls.filter(([arg]) => {
+        if (!arg || typeof arg !== 'object') return false;
+        return (arg as { event?: string }).event === 'reputation.batch.parse_failed';
+      });
+      // At least one warn fired (the rate-limiter may suppress subsequent
+      // ones from the additional malformed-shape assertions).
+      expect(parseFailedCalls.length).toBeGreaterThanOrEqual(1);
+      const [payload] = parseFailedCalls[0];
+      expect(payload).toMatchObject({
+        event: 'reputation.batch.parse_failed',
+        count: expect.any(Number),
+        raw_sample: expect.any(String),
+      });
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   it('getReputationScore returns ZERO_SCORE for a legacy numeric-string entry', async () => {

@@ -24,7 +24,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getRedis } from '../../src/redis.js';
 import { logger } from '../../src/logger.js';
-import { batchKey, BATCH_KEY_PREFIX } from '../../src/reputation.js';
+import { batchKey, BATCH_KEY_PREFIX, REDIS_KEY_STAGING_PREFIX } from '../../src/reputation.js';
 import { __test_seams } from '../../src/reputation-batch.js';
 
 const TEST_USERS = ['pevo-batch-internals-alice', 'pevo-batch-internals-bob'];
@@ -42,13 +42,27 @@ async function cleanup() {
   // Don't touch REDIS_KEY_LAST_CYCLE — other suites may rely on it.
 }
 
+describe('reputation-batch internals: staging-prefix invariant', () => {
+  // Locks the single-source-of-truth derivation from BACKEND-REPUTATION-SSOT
+  // round-2 hold #7. The staging prefix MUST be a sub-namespace under the
+  // prod batch prefix: a divergence would let staging keys leak into the
+  // reader filter in `getBatchReputationMap` (which excludes by
+  // `startsWith(REDIS_KEY_STAGING_PREFIX)`) and produce in-flight values in
+  // the read path. The test-seams export must agree with the canonical
+  // reputation.ts export, since both back the reader and writer respectively.
+  it('REDIS_KEY_STAGING_PREFIX is a sub-namespace under BATCH_KEY_PREFIX', () => {
+    expect(REDIS_KEY_STAGING_PREFIX.startsWith(BATCH_KEY_PREFIX)).toBe(true);
+    expect(__test_seams.REDIS_KEY_STAGING_PREFIX).toBe(REDIS_KEY_STAGING_PREFIX);
+  });
+});
+
 describe('reputation-batch internals: clearStagingKeys', () => {
   beforeEach(cleanup);
   afterEach(cleanup);
 
-  it('DELs every staging key under the prefix', async () => {
+  it('DELs every staging key under the prefix', async (ctx) => {
     const redis = getRedis();
-    if (!redis) return;
+    if (!redis) return ctx.skip(true, 'Redis unavailable');
 
     const key1 = `${__test_seams.REDIS_KEY_STAGING_PREFIX}${TEST_USERS[0]}`;
     const key2 = `${__test_seams.REDIS_KEY_STAGING_PREFIX}${TEST_USERS[1]}`;
@@ -62,9 +76,9 @@ describe('reputation-batch internals: clearStagingKeys', () => {
     expect(await redis.exists(key1, key2)).toBe(0);
   });
 
-  it('is a no-op when no staging keys exist', async () => {
+  it('is a no-op when no staging keys exist', async (ctx) => {
     const redis = getRedis();
-    if (!redis) return;
+    if (!redis) return ctx.skip(true, 'Redis unavailable');
 
     // Should not throw, should not log "Cleared abandoned" with count > 0.
     const infoSpy = vi.spyOn(logger, 'info').mockImplementation(() => undefined as unknown as void);
@@ -85,9 +99,9 @@ describe('reputation-batch internals: atomic Lua RENAME swap', () => {
   beforeEach(cleanup);
   afterEach(cleanup);
 
-  it('renames every staging key, sets cycle:last, DELs the sentinel', async () => {
+  it('renames every staging key, sets cycle:last, DELs the sentinel', async (ctx) => {
     const redis = getRedis();
-    if (!redis) return;
+    if (!redis) return ctx.skip(true, 'Redis unavailable');
 
     const stagingA = `${__test_seams.REDIS_KEY_STAGING_PREFIX}${TEST_USERS[0]}`;
     const stagingB = `${__test_seams.REDIS_KEY_STAGING_PREFIX}${TEST_USERS[1]}`;
@@ -142,9 +156,9 @@ describe('reputation-batch internals: in-progress sentinel recovery', () => {
   beforeEach(cleanup);
   afterEach(cleanup);
 
-  it('clearInProgressSentinels DELs survivors and emits a loud error log', async () => {
+  it('clearInProgressSentinels DELs survivors and emits a loud error log', async (ctx) => {
     const redis = getRedis();
-    if (!redis) return;
+    if (!redis) return ctx.skip(true, 'Redis unavailable');
 
     const sentinel1 = `${__test_seams.REDIS_KEY_IN_PROGRESS_PREFIX}42`;
     const sentinel2 = `${__test_seams.REDIS_KEY_IN_PROGRESS_PREFIX}43`;
@@ -171,9 +185,9 @@ describe('reputation-batch internals: in-progress sentinel recovery', () => {
     }
   });
 
-  it('is silent when no sentinels exist', async () => {
+  it('is silent when no sentinels exist', async (ctx) => {
     const redis = getRedis();
-    if (!redis) return;
+    if (!redis) return ctx.skip(true, 'Redis unavailable');
     const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => undefined as unknown as void);
     try {
       await __test_seams.clearInProgressSentinels(redis);
@@ -191,9 +205,9 @@ describe('reputation-batch internals: getBatchReputationMap staging-key filter',
   beforeEach(cleanup);
   afterEach(cleanup);
 
-  it('returns prod entries and ignores staging entries for the same user', async () => {
+  it('returns prod entries and ignores staging entries for the same user', async (ctx) => {
     const redis = getRedis();
-    if (!redis) return;
+    if (!redis) return ctx.skip(true, 'Redis unavailable');
 
     // Seed: prod entry for alice with score 50, staging entry for alice with
     // score 999 (the "in-flight" value a reader must NOT observe).
@@ -217,5 +231,80 @@ describe('reputation-batch internals: getBatchReputationMap staging-key filter',
     expect(map.get(TEST_USERS[0])?.score).toBe(50);
     // Map keys are bare usernames — no staging-prefix leakage either.
     expect([...map.keys()]).not.toContain(`staging:${TEST_USERS[0]}`);
+  });
+});
+
+describe('reputation-batch internals: prev_scores rehydration uses batchMapToScoreRecord (round-2 hold #5)', () => {
+  // Per BACKEND-REPUTATION-SSOT round-2 hold #5: round-1 hold #11 required
+  // `runBatchComputation` to source prev_scores via
+  // `batchMapToScoreRecord(await getBatchReputationMap())` instead of a
+  // hand-rolled keys/filter/mget/parse loop. The fix landed at
+  // reputation-batch.ts:290 but no test exercises the default-param path —
+  // a revert to a hand-rolled loop produced the same {username: score}
+  // shape via different code and was invisible.
+  //
+  // Carve-out clause-(a): the production triggers for this branch
+  // (startCycle > 0 with a populated Redis map AND a real HAF head block
+  // > genesis + cycle_blocks) require coordinating the periodic batch
+  // scheduler. Driving it deterministically per-test requires mocking the
+  // top-of-function early returns AND short-circuiting computeReputationBatch
+  // so the cycle loop returns quickly. The mutation pinned is structural
+  // (helper usage vs. hand-rolled), not behavioral.
+  //
+  // Real-path companion: stats-profile-parity.test.ts third + fourth arms
+  // exercise getBatchReputationMap + the reader pipeline against real
+  // Redis, covering the {username: score} shape behaviorally — a
+  // hand-rolled loop that produces the wrong shape would surface there.
+  // This test pins the structural usage so a refactor revert is caught.
+  it('runBatchComputation invokes batchMapToScoreRecord on the default-param path', async (ctx) => {
+    const redis = getRedis();
+    if (!redis) return ctx.skip(true, 'Redis unavailable');
+    // Seed a prior cycle's prod entry so `prevScores` rehydration has
+    // something to fold. The spy assertion only requires that the helper
+    // is invoked; it does not depend on the rehydrated shape.
+    const seededUser = TEST_USERS[0];
+    const seededValue = JSON.stringify({
+      score: 12,
+      breakdown: { papers: 7, reviews: 0, citations: 0, accreditation: 5 },
+    });
+    await redis.set(batchKey(seededUser), seededValue);
+
+    const reputationModule = await import('../../src/reputation.js');
+    const reputationBatchModule = await import('../../src/reputation-batch.js');
+    const accreditationModule = await import('../../src/accreditation.js');
+
+    // Force startCycle > 0 so prev-scores rehydration fires. Save and
+    // restore cycle:last so other tests aren't perturbed.
+    const priorCycle = await redis.get(__test_seams.REDIS_KEY_LAST_CYCLE);
+    await redis.set(__test_seams.REDIS_KEY_LAST_CYCLE, '0');
+
+    const batchMapSpy = vi.spyOn(reputationModule, 'batchMapToScoreRecord');
+    // Short-circuit the SQL so the cycle loop doesn't burn the budget.
+    const computeSpy = vi.spyOn(reputationModule, 'computeReputationBatch').mockResolvedValue(new Map());
+    // Pin a small accredited set so the batch has someone to score (or
+    // exits early at scoredUsers.size === 0 with cycle advance, which
+    // still passes through the prev-scores load if startCycle > 0).
+    const accSpy = vi.spyOn(accreditationModule, 'getAllAccreditedAccounts').mockResolvedValue(new Set([seededUser]));
+
+    try {
+      await reputationBatchModule.runBatchComputation(5_000);
+      // Helper invocation pinned — a hand-rolled loop replacing the call
+      // would leave the spy at zero calls.
+      expect(batchMapSpy).toHaveBeenCalled();
+      const firstCallArg = batchMapSpy.mock.calls[0]?.[0];
+      // Argument is the Map<string, ReputationScore> returned by
+      // getBatchReputationMap(); guard it has the expected interface.
+      expect(firstCallArg).toBeInstanceOf(Map);
+    } finally {
+      batchMapSpy.mockRestore();
+      computeSpy.mockRestore();
+      accSpy.mockRestore();
+      if (priorCycle !== null) {
+        await redis.set(__test_seams.REDIS_KEY_LAST_CYCLE, priorCycle);
+      } else {
+        await redis.del(__test_seams.REDIS_KEY_LAST_CYCLE);
+      }
+      await redis.del(batchKey(seededUser));
+    }
   });
 });

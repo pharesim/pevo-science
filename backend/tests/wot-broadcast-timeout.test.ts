@@ -18,6 +18,29 @@
  *     `backend/tests/routes/wot.test.ts` (auth + happy-path listing).
  *
  * Parallels the mocking shape already used by `accreditations-revoke.test.ts`.
+ *
+ * Carve-out clause-(a) extension for `invalidateOnRevocation` /
+ * `seedAccreditationBonus` mocks (BACKEND-REPUTATION-SSOT round-2 hold #9):
+ *   - These are business-logic functions (not pool/cache/third-party), so
+ *     they fall outside the "shared pool/cache helpers" carve-out scope and
+ *     require explicit per-test justification.
+ *   - Real path that's impractical: the production trigger is a real
+ *     cascade broadcast landing (or timing out) on chain — broadcast
+ *     outcomes are non-deterministic at unit test scope, and the
+ *     timeout-ambiguous path requires inducing a 30s timeout, which cannot
+ *     be done reliably against Hive. Mocking the two cascade-fn calls lets
+ *     this file pin one specific risk class — **call-ordering of
+ *     `invalidateOnRevocation` BEFORE `broadcastJsonWithTimeout` on the
+ *     timeout-ambiguous path** (per `chain-write-timeout-ambiguous-outcome-
+ *     2026-04-22` convention). Without the mocks, the assertion can't
+ *     observe the ordering deterministically.
+ *   - Real-path companion: `tests/routes/reputation-lifecycle.test.ts`
+ *     exercises `invalidateOnRevocation` end-to-end against real Redis,
+ *     covering the structural behavior (cache key DEL on revoke). The
+ *     companion's risk class is "behavioral DEL fires" — orthogonal to
+ *     this file's "call-ordering on timeout" risk class. Both must hold;
+ *     each pinned by a different test that exercises a different part of
+ *     the integrated path.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';

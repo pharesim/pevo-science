@@ -245,6 +245,66 @@ describe('stats vs profile reader parity', () => {
   );
 
   it(
+    'paper-detail author_reputation matches seeded score (parity fourth arm)',
+    { timeout: 60_000, retry: 3 },
+    async (ctx) => {
+      // Per BACKEND-REPUTATION-SSOT round-2 hold #6: paper detail
+      // (`GET /api/papers/:author/:permlink`) previously hardcoded
+      // `author_reputation: 0` and never enriched from the batch map. This
+      // closes the paper-detail arm of AC #1 alongside the list-view third
+      // arm above. Skip-fallback shape mirrors the third arm exactly.
+      const redis = getRedis();
+      if (!redis) return ctx.skip(true, 'Redis unavailable');
+
+      const lock = await acquireBatchLockOrNull(redis);
+      if (!lock) return ctx.skip(true, 'Concurrent batch run holds the lock');
+
+      try {
+        const listRes = await request(app).get('/api/papers?limit=10');
+        expect(listRes.status).toBe(200);
+        const rows = listRes.body?.data ?? [];
+        const accreditedRow = rows.find((r: { is_accredited?: boolean; author?: string; permlink?: string }) => r.is_accredited && r.author && r.permlink);
+        if (!accreditedRow) {
+          return ctx.skip(true, 'No accredited paper authors visible to /api/papers');
+        }
+
+        const seededAuthor = accreditedRow.author as string;
+        const seededPermlink = accreditedRow.permlink as string;
+        const seededValue = {
+          score: 41,
+          breakdown: { papers: 31, reviews: 5, citations: 0, accreditation: 5 },
+        };
+
+        const priorRaw = await redis.get(batchKey(seededAuthor));
+        try {
+          await redis.set(batchKey(seededAuthor), JSON.stringify(seededValue));
+
+          const verify = await redis.get(batchKey(seededAuthor));
+          if (verify !== JSON.stringify(seededValue)) {
+            return ctx.skip(true, 'Concurrent writer overwrote seeded value');
+          }
+          await hafCache.clearVolatile();
+
+          const detailRes = await request(app).get(`/api/papers/${encodeURIComponent(seededAuthor)}/${encodeURIComponent(seededPermlink)}`);
+          expect(detailRes.status).toBe(200);
+          const detail = detailRes.body?.data;
+          expect(detail).toBeDefined();
+          expect(detail.is_accredited).toBe(true);
+          expect(detail.author_reputation).toBe(41);
+        } finally {
+          if (priorRaw !== null) {
+            await redis.set(batchKey(seededAuthor), priorRaw);
+          } else {
+            await redis.del(batchKey(seededAuthor));
+          }
+        }
+      } finally {
+        await lock.release();
+      }
+    },
+  );
+
+  it(
     'stats ignores chain-revoked users with stale prod entries (chain pre-check)',
     { timeout: 60_000 },
     async (ctx) => {

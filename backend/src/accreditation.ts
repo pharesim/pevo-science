@@ -8,7 +8,32 @@ import { T, activeAccreditationsCteBody, getCachedGenesisBlock } from './hafsql.
  * Batch-check accreditation status for multiple accounts.
  * Returns a Set of accredited usernames.
  *
- * Strategy: HAF SQL batch query. Returns empty set if HAF is unavailable.
+ * Strategy: HAF SQL batch query. Logs and returns an empty set if HAF is
+ * unavailable or the query fails.
+ *
+ * **Error contract:** safe-fail. HAF outage produces a conservative
+ * false-negative (every user appears non-accredited until HAF recovers),
+ * which renders correctly in display surfaces — non-accredited users get
+ * score 0 and the "not accredited" badge, no crash.
+ *
+ * This is INTENTIONALLY asymmetric with `getAllAccreditedAccounts()`
+ * (which re-throws on HAF error). The split matters:
+ *
+ * - `getAccreditedSet` feeds per-request display enrichment
+ *   (stats.ts, papers.ts, profile.ts, comments.ts, reviews.ts). A 500
+ *   on every read during a HAF outage is worse UX than gating scores to
+ *   zero, so safe-fail.
+ *
+ * - `getAllAccreditedAccounts` feeds the batch job's `scoredUsers` set.
+ *   Silent empty-set there is catastrophic: the cycle advances over
+ *   empty cycles and prev_scores rehydrates from empty state, collapsing
+ *   voter weights to 1.0 for subsequent cycles
+ *   (BACKEND-REPUTATION-SSOT round-1 hold #9). So loud-fail.
+ *
+ * Reader-class divergence under HAF outage is the accepted cost:
+ * batch-fed surfaces 500, display-fed surfaces 200 with everyone marked
+ * non-accredited. The chain remains the SSoT — readers gate on chain
+ * accreditation and short-circuit to score 0 for non-accredited users.
  */
 export async function getAccreditedSet(usernames: string[]): Promise<Set<string>> {
   if (usernames.length === 0) return new Set();
@@ -109,14 +134,21 @@ export async function getAccreditedOrcidsByAccount(): Promise<Map<string, string
  * Used by reputation queries to filter votes without re-running the
  * expensive ACTIVE_ACCREDITATIONS_CTE on every call.
  *
- * Distinguishes "HAF returned 0 accredited" (legitimate empty population —
- * cached) from "HAF query failed" (re-thrown so callers can fail loudly
- * instead of caching an empty set on outage). Per BACKEND-REPUTATION-SSOT
- * round-1 hold #9: the batch job's outer catch must observe an HAF outage
- * and bail without advancing cycle:last; otherwise the batch advances over
- * empty cycles, prev_scores rehydrates from empty state, and voter weights
- * collapse to 1.0 for subsequent cycles. Throwing also surfaces visibly in
- * request handlers (loud 500s) instead of silently rendering empty data.
+ * **Error contract:** loud-fail. Distinguishes "HAF returned 0 accredited"
+ * (legitimate empty population — cached) from "HAF query failed"
+ * (re-thrown so callers can fail loudly instead of caching an empty set
+ * on outage). Per BACKEND-REPUTATION-SSOT round-1 hold #9: the batch
+ * job's outer catch must observe an HAF outage and bail without advancing
+ * cycle:last; otherwise the batch advances over empty cycles,
+ * prev_scores rehydrates from empty state, and voter weights collapse to
+ * 1.0 for subsequent cycles. Throwing also surfaces visibly in request
+ * handlers (loud 500s) instead of silently rendering empty data.
+ *
+ * This is INTENTIONALLY asymmetric with `getAccreditedSet()`
+ * (display-fed, safe-fail). See its docstring for the rationale of the
+ * split. Future implementers adding a new reader should pick the helper
+ * matching their failure-mode tolerance — do not assume symmetric error
+ * contracts.
  *
  * `pool === null` (dev environment without HAF connected) still returns the
  * empty set — that is a startup condition, not a transient outage.

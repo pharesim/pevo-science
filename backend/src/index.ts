@@ -6,7 +6,7 @@ import { validateConfig, checkOrcidProcessSafety, BootFatalError } from './start
 import { startBlockWatcher, stopBlockWatcher } from './block-watcher.js';
 import { startDigestScheduler, stopDigestScheduler } from './digest.js';
 import { startIpfsCleanup, stopIpfsCleanup } from './ipfs-cleanup.js';
-import { startBatchReputation, stopBatchReputation } from './reputation-batch.js';
+import { startBatchReputation, stopBatchReputation, repairAbandonedBatchState } from './reputation-batch.js';
 import { disconnectRedis } from './redis.js';
 import { checkHiveNodes } from './hive.js';
 import { startRetractionCache } from './routes/papers.js';
@@ -96,12 +96,16 @@ if (app) {
       await startRetractionCache();
 
       server = bootedApp.listen(config.port, () => {
-        // Warm expensive shared HAF caches in the background (non-blocking)
+        // Warm expensive shared HAF caches in the background (non-blocking).
+        // repairAbandonedBatchState fires unconditionally at boot so a HAF
+        // outage or lock contention does not delay crash detection on the
+        // reputation batch path (BACKEND-REPUTATION-SSOT round-2 hold #2).
         Promise.all([
           startReputationWeightsCache(),
           startWotThresholdCache(),
           startStatsCache(),
           backfillAccreditationSeeds(),
+          repairAbandonedBatchState(),
         ]).catch((err) => logger.warn({ err }, 'Background cache warmup failed'));
         logger.info({ port: config.port, haf: isHafConfigured(), appDb: !!config.appDatabaseUrl }, 'PEvO backend started');
 
