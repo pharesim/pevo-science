@@ -224,6 +224,70 @@ All 8 hold-block items addressed in a single round-2 fix commit. Lint clean (`np
 
 **Test fallout from Item 6**: the `validReviewWhere SQL shape` block in `hafsql.test.ts` had two cases pinning the literal `'rating' IS NOT NULL` substring; updated to `jsonb_typeof(...) = 'object'` and added a `expect(sql).not.toContain("'rating' IS NOT NULL")` assertion so a future revert is caught.
 
+---
+
+## Architect re-review round-2 (2026-05-13) — HELD PENDING FIXES
+
+`/ce-code-review` on commit `7ca2e86` dispatched 9 reviewers (correctness, security, adversarial, testing, maintainability, project-standards, learnings, performance, kieran-typescript). `ce-agent-native-reviewer` skipped. All 8 round-1 hold items verified as fixed at their cited sites (correctness trace + security trace confirm). After user triage: 4 items held below, 1 dismissed as residual. The hold items are drift introduced by the fixes (one) plus test-coverage gaps the round-2 work did not close (three).
+
+### Items to address
+
+**1. (P2) `profile.ts:fetchUserReviewsFromHaf` kept `nextIdx + N` offset arithmetic — the pattern item #5 explicitly eliminated in `reviews.ts`.**
+
+**Where:** `backend/src/routes/profile.ts:338-343` — six param indices derived as `accredCte.nextIdx + N` constants (`usernameIdx`, `appTagIdx`, `anonIdx`, `limitIdx`, `offsetIdx`, `accreditedParamIdx`).
+
+**Why:** Cross-corroborated by maintainability (P2, conf 75), adversarial (P3, conf 75), kieran-typescript (residual, conf 50), learnings. Round-1 item #5 replaced this exact pattern in `reviews.ts` with `paramIdx++` because offset arithmetic silently mis-binds if any bind between lines is added or removed. The fix landed in `reviews.ts`, but the new `profile.ts` code written in the same commit reproduces the eliminated pattern. The codebase now has two conventions in active use for the same problem: counter in `reviews.ts`, offsets in `profile.ts`. Arithmetic is correct today but the fragility class persists, and a future maintainer cannot infer which convention is canonical from reading either file.
+
+**Fix:** convert to canonical `paramIdx++` counter:
+
+```ts
+let paramIdx = accredCte.nextIdx;
+const usernameIdx = paramIdx++;
+const appTagIdx = paramIdx++;
+const anonIdx = paramIdx++;
+const limitIdx = paramIdx++;
+const offsetIdx = paramIdx++;
+const accreditedParamIdx = paramIdx++;
+```
+
+**2. (P2) `user_reviews` CTE — 4th `validReviewWhere` composition site — has no accreditation gate.**
+
+**Where:** `backend/src/reputation.ts:647-656`.
+
+**Why:** Adversarial (P2, conf 70). Round-1 hold #1 added the `(c.author = ANY($2::text[]) OR c.author = $19)` predicate to three review-class CTEs (`active_authors` review arm, `paper_reviews` quality CTE, `citing_paper_quality` inner subquery). `user_reviews` is the 4th composition site of `validReviewWhere` in the reputation cycle and was missed in the round-1 hold. Currently safe in production because `target_users` is always sourced from accredited accounts (`reputation-batch.ts`), but a revoked-mid-cycle user whose row is still in the target set would surface non-zero `reviews` breakdown. The asymmetry also violates the structural rule: every `validReviewWhere` caller in reputation.ts MUST compose accreditation. This same rule plus the missing `validPevoPaperWhere` paper-class gate are sibling concerns (item #10 in the self-review-exclusion hold block) and should land together.
+
+**Fix:** add `AND (c.author = ANY($2::text[]) OR c.author = $19)` to the JOIN ON-clause at the `user_reviews` CTE, matching the pattern at the sibling 3 sites. Update the param-list docblock at `reputation.ts:326-331` to reflect the 4th composition site.
+
+**3. (P2) Notification arm 1a (round-1 item #3) has no test canary asserting the INNER JOIN + `validPevoPaperWhere` predicate.**
+
+**Where:** `backend/tests/routes/notifications.test.ts` — no SQL-shape canary for the `new_review` arm's JOIN condition.
+
+**Why:** Testing (P2, conf 75). The round-1 fix is a behavioral change (reviews replying to non-paper Hive content no longer trigger `new_review` notifications). Existing `notifications.test.ts` covers envelope shape, limit, and sort-order but not the gate. A future revert of `JOIN` → `LEFT JOIN` (or removal of `validPevoPaperWhere`) passes every existing test. This is the same defense-in-depth canary convention applied to the new gate.
+
+**Fix:** mocked-pool SQL-shape canary (per carve-out clause-(a) — real-corpus seeding of a non-paper review-typed reply is impractical) that throws if the generated SQL for the `new_review` arm lacks `JOIN ${T.comments} p` with the `validPevoPaperWhere` predicate on the parent comment. Sibling to self-review-exclusion hold item #6 (notification arm coverage); both can live in one canary block.
+
+**4. (P2) `profile.ts:fetchUserReviewsFromHaf` accreditation gate (round-1 item #2) has no test for the unaccredited-reviews spam vector.**
+
+**Where:** `backend/tests/routes/profile.test.ts` — no test for `GET /api/profile/:username/reviews`.
+
+**Why:** Testing (P2, conf 72). Round-1 item #2 added the SQL `accredGate` to both count and data queries in `fetchUserReviewsFromHaf`, closing the spam vector where any unaccredited Hive account writing valid-rating review-shaped replies surfaced 300-char body excerpts on `/api/profile/jdoe/reviews`. Reverting `accredGate` passes every existing test.
+
+**Fix:** mocked-pool canary per carve-out clause-(a) asserting both queries' SQL contains the `accredGate` substring AND behavioral assertion that an unaccredited URL produces empty `data` + zero count. Carve-out header justification required.
+
+### Findings dismissed at triage (residual, no action)
+
+- **#19 (testing, conf 80) — `installGateResponder` canary works through error-path fallthrough rather than direct assertion.** The mutation IS killed today: revert of `validReviewWhere(...)` at `reviews.ts:67` makes admitted-reviewer `it` blocks fail because the responder throws → route catch returns null → 404 (test expects 200). **Dismissed as residual** — the route-level catch returning null-on-error is the documented load-bearing behavior; a future change to the catch shape would surface in a different test class (route error-shape tests). The dependency chain is not a current gap, just a structural property.
+
+### Items NOT held (architect-owned doc-drift carry-forward)
+
+The architect-owned `reputation-algorithm.md` parameter table + 8 CTE sites sync (deferred from round-1) is now safe to land at archive time after this round closes — the gate-plus-accreditation final shape is settled. Will land in the architect commit at next archive.
+
+### Re-review signal
+
+When items 1, 2, 3, 4 land, `git mv` this file from `tasks/pending/` back to `tasks/review/`. Use bare `backend:` or `backend(<scope>):` commit prefixes so the zone-audit hook fires. The architect's next review pass scopes `/ce-code-review` to commits since `7ca2e86`. Items 1 and 2 are independent and can fan out; items 3 and 4 can share one canary commit (notification + profile-reviews coverage in one block).
+
+**Cross-task coordination:** Item 2 (user_reviews CTE accreditation gate) overlaps with the self-review-exclusion task's hold item #10 (user_reviews CTE missing `validPevoPaperWhere`). Both apply to the same JOIN at `reputation.ts:647-656`. Implementer should land both in one edit to avoid back-to-back churn at the same site.
+
 **Item 7 [P3]** — `hafsql.test.ts:320-333`: added `'valid_int_rating'` row to the behavioral matrix with JSON-integer rating dims (`{methodology: 4, novelty: 3, …}`) alongside the existing string-form rows. Updated the `expect(admitted).toEqual([...])` set to include `'valid_int_rating'` (now 4 admitted, alphabetically sorted). Comment block explains the future-Postgres-upgrade silent-regression vector.
 
 **Item 8 [P3]** — new test file `tests/routes/review-parity-invariant.test.ts`. The test:

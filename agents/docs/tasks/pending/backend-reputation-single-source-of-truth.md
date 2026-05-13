@@ -403,3 +403,144 @@ The new batch lock interacts with the existing test fixture in a useful way: sta
 ### Anchor
 
 Items 2-7 formed the architectural cluster on chain-vs-cache SSoT direction (settled 2026-05-05). Items 8-11 were independent ports of the discrimination/lock pattern. Items 14-21 are test-coverage gaps. Items 22-29 are polish. All landed in the two commits above; no items are deferred except the architect-owned doc updates (#12, #13) and the explicitly-accepted-as-residual orphan-prod cleanup (#2).
+
+---
+
+## Architect re-review round-2 (2026-05-13) — HELD PENDING FIXES
+
+`/ce-code-review` on commits `f746375..4d9d15b` dispatched 10 reviewers (correctness, security, adversarial, testing, maintainability, project-standards, learnings, performance, reliability, kieran-typescript skipped — no diff-relevant kieran-ts surface). `ce-agent-native-reviewer` skipped. All round-1 hold items are verified addressed per the implementer's disposition table (correctness trace confirms each). Round-2 surfaces 11 new items + 4 deferred-as-residual + 1 architecturally-dismissed + 1 spun off as a separate task.
+
+### Items to address
+
+#### P2 — moderate (code drift / coverage gaps)
+
+**1. (P2) `signup-verify` constructs `PostBroadcastWriteError` without `classifyPostBroadcastSeverity` — permanent (TypeError) failures get the transient user copy.**
+
+**Where:** `backend/src/routes/signup-verify.ts:381` (`/confirm`) and `:538` (`/link`).
+
+**Why:** Cross-corroborated by maintainability (M2, conf 85), adversarial (medium, conf 75), learnings (canonical pattern at `orcid.ts:886`). `broadcast-error.ts:47-55` documents that `seedAccreditationBonus` re-throws only permanent-class errors (TypeError/SyntaxError/RangeError); the post-broadcast wrap should therefore pass `'permanent'` as the severity. With the default `'transient'`, a permanent programmer-error at seed time returns HTTP 502 `POST_BROADCAST_FAILED` with copy claiming automatic reconciliation, misleading the user and the operator-routing trail. ORCID gets this right with `classifyPostBroadcastSeverity(postErr)` as the fourth argument.
+
+**Fix:** at both signup-verify call sites, construct as `new PostBroadcastWriteError(result.id, postErr, currentStep, classifyPostBroadcastSeverity(postErr))`. Mirror orcid.ts's pattern. Add a regression test that constructs `new PostBroadcastWriteError(txId, new TypeError('boom'), 'reputation_seed')` and asserts the response is `POST_BROADCAST_OPERATOR_REQUIRED` (or equivalent permanent-class code), not `POST_BROADCAST_FAILED`.
+
+**2. (P2) `clearInProgressSentinels` not called unconditionally at process startup — only inside `runBatchComputation` behind the Redis lock + HAF-up gate.**
+
+**Where:** `backend/src/reputation-batch.ts:169-207` — both `clearStagingKeys` and `clearInProgressSentinels` are called at lines 206-207 inside `runBatchComputation`, behind the lock acquire + `isHafConfigured` early returns.
+
+**Why:** Reliability (P2, conf 85). The task spec and the docstring state "unconditional at startup." Failure modes the current placement allows: (a) HAF unavailable at boot → sentinels never cleared, operator crash alert never fires; (b) a sibling instance holds the lock when this instance starts → early return without inspecting sentinels; (c) 10-second `setTimeout` in `startBatchReputation` delays sentinel clearance to post-startup. The recovery is still eventual (when HAF recovers and the lock is acquired) but the unconditional-at-startup contract is violated, and a long HAF outage leaves a crash-mid-Lua state undetected throughout the outage.
+
+**Fix:** export a thin `repairAbandonedBatchState(redis)` function that calls both `clearStagingKeys` and `clearInProgressSentinels` independently of the batch schedule. Invoke from `backend/src/index.ts` inside the after-listen `Promise.all([...])` warmup block alongside `backfillAccreditationSeeds`. Only needs Redis, not HAF.
+
+**3. (P2) `getAccreditedSet` vs `getAllAccreditedAccounts` HAF-error contract asymmetry — undocumented.**
+
+**Where:** `backend/src/accreditation.ts:13-55` (`getAccreditedSet` swallows HAF errors, returns empty Set) vs `:715` (`getAllAccreditedAccounts` re-throws per round-1 hold #9).
+
+**Why:** Adversarial (medium, conf 80) + reliability (R4, conf 80). The asymmetry is intentional and correct: `getAllAccreditedAccounts` feeds the batch job where silent empty-set is catastrophic (cycle advances over empty); `getAccreditedSet` feeds per-request display enrichment where conservative zero-score is acceptable safe-fail. The split is undocumented at the helper docstrings, so a future implementer adding a new reader expecting symmetric error contracts will silently get zero-scored readers under HAF outage. Also produces reader-class-specific outage divergence: under HAF outage stats returns 500, papers/comments returns 200 with everyone marked "not accredited".
+
+**Fix:** add docstrings to both helpers explicitly contrasting their error contracts. State the rationale (batch-vs-reader, catastrophic-vs-conservative). One-paragraph block at each. Optionally: a one-line cross-reference comment at the reader callsites (stats.ts, papers.ts, profile.ts, comments.ts, reviews.ts) noting "uses safe-fail helper; HAF outage → false-negative not false-positive."
+
+**4. (P2) `parseBatchValue` warn-fires test name promises but assertion never verifies the warn was called.**
+
+**Where:** `backend/tests/routes/reputation-lifecycle.test.ts:213-221` — test named "returns null on non-JSON garbage and warns" sets up `warnSpy` but the assertion block only checks `expect(result).toBeNull()`.
+
+**Why:** Testing (P2, conf 95). A mutation removing the `flagMalformedBatchValue(raw, err)` call inside `parseBatchValue`'s `JSON.parse` catch branch leaves this test green. The test name creates false confidence for item #6 (operator-alert requirement). Companion gap: the wrong-shape JSON branch test at `:223` has no `warnSpy` at all — same mutation invisibility applies to `reputation.ts:89`. Both branches need pin-down.
+
+**Fix:** at both sub-tests (`:213` and `:223`), install `vi.spyOn(logger, 'warn')` against the freshly-imported logger module per `vi-spyon-mockimplementation-bypasses-function-under-test-2026-05-12` — no `.mockImplementation(noop)`. Assert structured fields `{event:'reputation.batch.parse_failed', count, raw_sample}`. The module-singleton `parseWarnState` requires `vi.resetModules()` + dynamic-import isolation per `vitest-fake-timers-module-private-state-isolation-2026-04-29.md`; export `resetParseWarnState()` as a test-only seam if isolation alone is insufficient.
+
+**5. (P2) No test pins `batchMapToScoreRecord` helper is used in `runBatchComputation` (round-1 item #11 mutation invisibility).**
+
+**Where:** `backend/src/reputation-batch.ts:260` (the default-param call site).
+
+**Why:** Testing (P2, conf 90). Round-1 #11 mandated replacing the hand-rolled keys/filter/mget/parse loop with `batchMapToScoreRecord(await getBatchReputationMap())`. The fix landed in production code, but no test exercises the default-param path: the idempotency canary passes `prevScores={}` explicitly (bypassing the default branch), and the prefix-regression test invokes `runBatchComputation()` without spying on `batchMapToScoreRecord`. A revert to a hand-rolled loop is undetected.
+
+**Fix:** add a `reputation-batch-internals.test.ts` block that invokes `runBatchComputation()` (no explicit `prevScores`) with a stubbed Redis containing two prior cycle values, spies on `batchMapToScoreRecord` to assert it was called once with the map, and asserts the SQL receives the expected `{username: score}` shape.
+
+**6. (P2) Paper detail (`GET /api/papers/:author/:permlink`) hardcodes `author_reputation: 0` — missing reader-gate enrichment.**
+
+**Where:** `backend/src/routes/papers.ts:2036` (`buildPaperDetail`) — sets `author_reputation: 0` and the detail handler does not override.
+
+**Why:** Adversarial (P2, conf 80). Violates AC #1 in this task ("Every reputation value displayed in the UI ... derived from the same `${appTag}:reputation:batch:${user}` value"). List view (`papers.ts:583`) and profile (`profile.ts:279`) enrich with the reader-gated score. Paper detail does not. A user viewing a single paper sees `author_reputation: 0` for any author with a non-zero score.
+
+**Fix:** at the paper-detail handler, fetch the author's reputation via `getReputationScore(author)`, intersect with `getAccreditedSet`, and override `author_reputation` in the response. Mirror the list-view shape verbatim. Add a parity test arm (extending `stats-profile-parity.test.ts` per round-1 #21's pattern) covering paper detail alongside stats and profile.
+
+**7. (P2) Staging-prefix string duplicated TS-internal between reader and writer.**
+
+**Where:** `backend/src/reputation.ts:220` constructs the staging-key filter as `` `${BATCH_KEY_PREFIX}staging:` `` (local template literal); `backend/src/reputation-batch.ts:44` declares `REDIS_KEY_STAGING_PREFIX` but does not export it.
+
+**Why:** Maintainability (M1, conf 80). Round-1 #24 closed the Lua/TS drift via the ARGV passing pattern; the TS-internal drift between reader and writer remains. A change to `STAGING_SEGMENT` in the batch module silently invalidates the filter in `getBatchReputationMap`, allowing staging keys to leak into the production read path.
+
+**Fix:** export `REDIS_KEY_STAGING_PREFIX` from `reputation-batch.ts` (or move the constant to `reputation.ts` where `BATCH_KEY_PREFIX` lives) so both files reference one source. Update the import at `reputation.ts:220`. Add a one-line test in `reputation-batch-internals.test.ts` asserting `REDIS_KEY_STAGING_PREFIX.startsWith(BATCH_KEY_PREFIX)` to lock the invariant.
+
+**8. (P2) `papers.ts:536` awaits `getAllAccreditedAccounts()` serially BEFORE the `Promise.all` parallel fan-out.**
+
+**Where:** `backend/src/routes/papers.ts:536`.
+
+**Why:** Performance (P3 elevated to P2 due to user-facing latency-on-cold-cache; conf 75). `profile.ts:268` correctly includes the same call inside the parallel fan-out alongside `getBatchReputationScores` and `getAccreditedSet`. On `getAllAccreditedAccounts`'s 10-min cache TTL expiry, the cold-path adds ~50-200ms HAF CTE latency serially before the other three parallel awaits begin.
+
+**Fix:** lift `getAllAccreditedAccounts()` into the same `Promise.all` with `getReputationScores`, `getAccreditedSet`, and `batchResolveVotes` (4 parallel awaits). Match `profile.ts:268` shape.
+
+**9. (P2) `wot-broadcast-timeout.test.ts` mocks `invalidateOnRevocation` / `seedAccreditationBonus` without a carve-out header.**
+
+**Where:** `backend/tests/wot-broadcast-timeout.test.ts` header.
+
+**Why:** Project-standards (PS-1). These are business-logic functions, not pool/cache/third-party — outside the carve-out scope as written. The test file lacks (a) justification for why the real path is impractical and (c) which real-path companion covers the same risk class.
+
+**Fix:** add a header block per CLAUDE.md "Running Tests" carve-out clause-(a) documenting: why the real cascadeRevocation→broadcast→invalidate sequence cannot be exercised end-to-end here (broadcast outcomes are non-deterministic at unit test scope), what risk class the mocks pin (call-ordering of invalidate-before-broadcast on timeout), and the real-path companion (the integration coverage in reputation-lifecycle.test.ts that exercises invalidateOnRevocation against real Redis).
+
+**10. (P2) `reputation-lifecycle.test.ts` `backfillAccreditationSeeds` block mocks `getAllAccreditedAccounts` without an updated carve-out header.**
+
+**Where:** `backend/tests/routes/reputation-lifecycle.test.ts` header (carve-out block exists for the `seedAccreditationBonus` error-discrimination tests but does not cover the new `backfillAccreditationSeeds` block).
+
+**Why:** Project-standards (PS-2). Same convention as #9. `getAllAccreditedAccounts` is a domain function, not pool/cache.
+
+**Fix:** extend the existing carve-out header to explicitly cover the `backfillAccreditationSeeds` block — name the function being mocked, why real-path is impractical (HAF accreditation state cannot be set deterministically per-test), and which real-path companion covers the risk class.
+
+#### P3 — polish
+
+**11. (P3) `reputation-batch-internals.test.ts` uses silent `return` instead of `ctx.skip(true, reason)` — inconsistent with round-1 item #22 fix.**
+
+**Where:** `backend/tests/routes/reputation-batch-internals.test.ts:51` and all 7 test bodies use `if (!redis) return`.
+
+**Why:** Testing (P3, conf 85). Round-1 #22 fixed this in the idempotency canary but the pattern wasn't propagated. In a Redis-unavailable CI run all 7 batch-internals tests pass silently, hiding "atomic Lua swap was not exercised" from CI output.
+
+**Fix:** replace each `return` with `return ctx.skip(true, '<reason>')`. Mirror round-1 #22's pattern.
+
+**12. (P3) `clearStagingKeys` and `clearInProgressSentinels` call order at `reputation-batch.ts:206-207` lacks a comment explaining which crash class each pass catches.**
+
+**Where:** `backend/src/reputation-batch.ts:206-207`.
+
+**Why:** Maintainability (M3, conf 75). Definition order is the inverse of call order; the semantic recovery sequence (sentinel detects mid-swap crash, staging keys detect pre-swap crash) is not commented at the call site.
+
+**Fix:** one-line comment above each call:
+
+```ts
+// Pre-swap crash recovery: staging keys exist but Lua swap never ran.
+await clearStagingKeys(redis);
+// Mid-swap crash recovery: sentinel set but Lua DEL never executed.
+await clearInProgressSentinels(redis);
+```
+
+### Findings dismissed at triage
+
+- **(adversarial, conf 75) `cascadeRevocation` invalidate-before-broadcast fires on non-timeout failures.** **Dismissed** — architecturally settled per `chain-write-timeout-ambiguous-outcome-2026-04-22`. The cost asymmetry (one-cycle false-zero for still-accredited user vs permanent leak per round-1 #2) was deliberately chosen toward invalidate-eagerly. Reframing non-timeout RPC failures as a separate ordering class re-litigates the settlement.
+
+### Items deferred as residual (no action this round)
+
+- **(adversarial, conf 70) Batch lock TTL = `DEFAULT_MAX_DURATION_MS` (30 min) — sibling instance can acquire mid-staging at the time-cap boundary.** Single-instance reality per memory `project_single_instance_only`; the test-process contention (vitest workers) is harness concern not production. **Defer** as residual; flag for revisit if PEvO ever moves to multi-replica.
+- **(performance, conf 75) `getBatchReputationMap` still uses `redis.keys()`.** Round-1 #25 already deferred to "revisit at scale." No worse this round.
+- **(performance, conf 75) Lua RENAME N × O(1) at cycle swap.** Threshold revisit at 10k accredited users; beta is ~5. Documented in code comment.
+- **(maintainability, conf 70) Reader-gate pattern duplicated 4x (profile/comments/reviews/stats) with no shared helper.** Premature abstraction at 4 sites. Revisit when a 5th reader appears per `enumerated-exemption-lists-are-drift-vectors-2026-04-28` guidance favoring structural surfaces when N grows.
+
+### Item spun off as separate task
+
+- **(adversarial, conf 80) `signup-verify /confirm` broadcast failure leaves user with a Hive account, encrypted keys in pg, no JWT, no retry path.** Recovery path is a design question with multiple defensible shapes (idempotency_key retry pattern, /retry-broadcast endpoint, /confirm resume-if-claimed detection). New task `backend-signup-verify-stuck-account-recovery.md` filed under `tasks/pending/`. Not held against this task because the fix is non-trivial and orthogonal to SSoT — it's a CASCADE-FNS-RETHROW-PERMANENT-class concern at a different surface than reputation.
+
+### Carry-forwards for architect at archive
+
+- **#12 (round-1)** `agents/docs/reputation-algorithm.md` lines 218-219, 296, 374, 407 — describes pre-task unprefixed keys, numeric-string values, `active_accounts` CTE name.
+- **#13 (round-1)** `agents/docs/ARCHITECTURE.md` lines 466-468 — describes pre-task SSoT state.
+
+Both safe to land at archive of this task. Will be picked up by architect's archive commit.
+
+### Re-review signal
+
+When items 1-12 land, `git mv` this file from `tasks/pending/` back to `tasks/review/`. Use bare `backend:` or `backend(<scope>):` commit prefixes. The architect's next review pass scopes `/ce-code-review` to commits since `4d9d15b`. Items can fan out — natural groupings: {1, 6} (PostBroadcastWriteError + paper-detail enrichment, related to display-parity), {2, 12} (crash-recovery startup + comment), {3} (helper-docstring), {4, 5, 11} (test-coverage cluster), {7, 8} (single-source + Promise.all hygiene), {9, 10} (carve-out headers).
