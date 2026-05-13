@@ -113,6 +113,36 @@ describe('GET /api/search', () => {
     expect(res.body.error.code).toBe('BAD_REQUEST');
   });
 
+  // BE-SEARCH-QUERY-PARAM-TYPEOF-NARROW-SWEEP: extend the `?type=` typeof-
+  // narrow contract to the three sibling enum-shaped params on /api/search.
+  // Each was previously cast `as string` (or coerced via ternary), so a
+  // repeated param yielded a `string[]` that the cast silently joined to
+  // `"a,b"` before reaching downstream code — a silent semantic shift
+  // (zero results for `?language=`, `'all'` fall-through for `?source=`,
+  // `'relevance'` fall-through for `?sort=`) instead of a 400. The sweep
+  // pins the same Option A contract (400 on repeated, 400 on non-string)
+  // that `?type=` already enforces.
+  it('?language=en&language=fr (repeated) returns 400 instead of silently coercing', async () => {
+    const res = await request(app).get('/api/search?q=science&language=en&language=fr');
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('BAD_REQUEST');
+    expect(res.body.error.message).toMatch(/language/i);
+  });
+
+  it('?source=native&source=bridge (repeated) returns 400 instead of silently coercing', async () => {
+    const res = await request(app).get('/api/search?q=science&source=native&source=bridge');
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('BAD_REQUEST');
+    expect(res.body.error.message).toMatch(/Must be one of/);
+  });
+
+  it('?sort=date&sort=relevance (repeated) returns 400 instead of silently coercing', async () => {
+    const res = await request(app).get('/api/search?q=science&sort=date&sort=relevance');
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('BAD_REQUEST');
+    expect(res.body.error.message).toMatch(/Must be one of/);
+  });
+
   // BE-PAPERS-DISCIPLINE-FIELD-CANON-NAME: per-entry `discipline` response
   // field on `paper` / `bridge_paper` result types must be canon_name
   // (lowercased) if/when the search response shape adds one. The current

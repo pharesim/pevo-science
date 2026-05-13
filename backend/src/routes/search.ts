@@ -9,7 +9,18 @@ import { hafCache } from '../cache.js';
 import { logger } from '../logger.js';
 import { T, activeAccreditationsCteBody, retractedPapersCteBody, buildWith, validPevoPaperWhere, validReviewWhere, excludeSelfReviewWhere } from '../hafsql.js';
 import { validateDisciplineFilter } from '../types/disciplines.js';
-import { validateSearchQuery } from '../types/search-filters.js';
+import {
+  validateSearchQuery,
+  SEARCH_TYPES,
+  SEARCH_SOURCES,
+  SEARCH_SORTS,
+  isSearchType,
+  isSearchSource,
+  isSearchSort,
+  parseLanguageFilter,
+  type SearchType,
+  type SearchSort,
+} from '../types/search-filters.js';
 
 const router = Router();
 
@@ -242,7 +253,7 @@ async function searchReviewsFromHaf(
 
 async function searchFromHaf(
   query: string,
-  type: string,
+  type: SearchType,
   discipline: string | undefined,
   language: string | undefined,
   source: string | undefined,
@@ -303,26 +314,50 @@ router.get('/', async (req: Request, res: Response) => {
   }
   const q = qResult.value;
 
-  // BE-SEARCH-REVIEWS-CONTRACT-RECONCILE: validate `?type=` against the
-  // documented enum (`all` | `paper` | `review`) instead of silently coercing
-  // unknown values to `'all'`. Untyped fall-through hid the contract drift
-  // where `papers.md` claimed reviews were unsearchable while the code
-  // shipped a live `type === 'review'` branch. Pin the enum here so any
-  // future drift surfaces as a 400 rather than a quiet semantic shift.
-  // Typeof-narrowed (mirrors the discipline pattern above) — repeated
-  // params (`?type=a&type=b`) yield `string[]` which an `as string` cast
-  // would coerce to `"a,b"`, slipping past the enum check.
-  const VALID_SEARCH_TYPES = ['all', 'paper', 'review'] as const;
-  type SearchType = typeof VALID_SEARCH_TYPES[number];
+  // BE-SEARCH-REVIEWS-CONTRACT-RECONCILE / BE-SEARCH-QUERY-PARAM-TYPEOF-NARROW-SWEEP:
+  // four enum-shaped params (`?type=`, `?source=`, `?sort=`, `?language=`)
+  // are each typeof-narrowed against their literal-tuple constant. Repeated
+  // params yield `string[]` in Express's parsed query — the typeof-string
+  // check rejects them so an `as string` cast can't silently coerce to
+  // `"a,b"` and slip past the enum predicate. Unknown enum values 400 rather
+  // than fall through to a silent default (the prior shape on `?sort=` was a
+  // ternary that masked unknowns as `'relevance'`).
   const rawType = req.query.type;
   let type: SearchType;
   if (rawType === undefined) {
     type = 'all';
-  } else if (typeof rawType === 'string' && (VALID_SEARCH_TYPES as readonly string[]).includes(rawType)) {
-    type = rawType as SearchType;
+  } else if (typeof rawType === 'string' && isSearchType(rawType)) {
+    type = rawType;
   } else {
-    return sendError(res, 400, 'BAD_REQUEST', `Invalid type. Must be one of: ${VALID_SEARCH_TYPES.join(', ')}`);
+    return sendError(res, 400, 'BAD_REQUEST', `Invalid type. Must be one of: ${SEARCH_TYPES.join(', ')}`);
   }
+
+  const rawSource = req.query.source;
+  let source: string | undefined;
+  if (rawSource === undefined) {
+    source = undefined;
+  } else if (typeof rawSource === 'string' && isSearchSource(rawSource)) {
+    source = rawSource;
+  } else {
+    return sendError(res, 400, 'BAD_REQUEST', `Invalid source. Must be one of: ${SEARCH_SOURCES.join(', ')}`);
+  }
+
+  const rawSort = req.query.sort;
+  let sort: SearchSort;
+  if (rawSort === undefined) {
+    sort = 'relevance';
+  } else if (typeof rawSort === 'string' && isSearchSort(rawSort)) {
+    sort = rawSort;
+  } else {
+    return sendError(res, 400, 'BAD_REQUEST', `Invalid sort. Must be one of: ${SEARCH_SORTS.join(', ')}`);
+  }
+
+  const languageResult = parseLanguageFilter(req.query.language);
+  if (!languageResult.ok) {
+    return sendError(res, 400, 'BAD_REQUEST', languageResult.message);
+  }
+  const language = languageResult.value;
+
   // Cache key uses the lowercased value (hashed downstream); the SQL gate
   // uses `discipline ?? undefined` so the `if (discipline)` predicate
   // suppresses the WHERE clause entirely on absent input. Same value, two
@@ -332,10 +367,7 @@ router.get('/', async (req: Request, res: Response) => {
     return sendError(res, 400, 'BAD_REQUEST', filterResult.message);
   }
   const discipline: string | null = filterResult?.ok ? filterResult.value : null;
-  const language = req.query.language as string | undefined;
-  const source = req.query.source as string | undefined;
   const includeRetracted = req.query.include_retracted === 'true'; // default false
-  const sort = (req.query.sort as string) === 'date' ? 'date' : 'relevance';
   const { page, limit, offset } = parsePageLimit(req);
 
   if (isHafConfigured()) {

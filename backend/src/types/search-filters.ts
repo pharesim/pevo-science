@@ -76,3 +76,72 @@ export function validateSearchQuery(raw: unknown): SearchQueryResult | null {
   }
   return { ok: true, value: escapeLikePattern(raw) };
 }
+
+// ──────────────────────────────────────────────
+// /api/search ?type= / ?source= / ?sort= / ?language= filter validation
+// (BE-SEARCH-QUERY-PARAM-TYPEOF-NARROW-SWEEP)
+// ──────────────────────────────────────────────
+//
+// Each `?param=` enum is exported as three pieces:
+//   - a `readonly` literal-tuple `SEARCH_*` constant
+//   - the derived literal-union `Search*` type
+//   - a user-defined type guard `isSearch*(s: string): s is Search*`
+//
+// The type guard form lets route handlers drop the `as Search*` cast at the
+// assignment site after a `typeof raw === 'string'` narrow. Repeated params
+// (`?type=a&type=b`) yield `string[]` in Express's parsed query — the
+// typeof-string narrow rejects them so an `as string` cast can't silently
+// coerce to `"a,b"`.
+
+export const SEARCH_TYPES = ['all', 'paper', 'review'] as const;
+export type SearchType = typeof SEARCH_TYPES[number];
+export function isSearchType(s: string): s is SearchType {
+  return (SEARCH_TYPES as readonly string[]).includes(s);
+}
+
+export const SEARCH_SOURCES = ['native', 'bridge'] as const;
+export type SearchSource = typeof SEARCH_SOURCES[number];
+export function isSearchSource(s: string): s is SearchSource {
+  return (SEARCH_SOURCES as readonly string[]).includes(s);
+}
+
+export const SEARCH_SORTS = ['date', 'relevance'] as const;
+export type SearchSort = typeof SEARCH_SORTS[number];
+export function isSearchSort(s: string): s is SearchSort {
+  return (SEARCH_SORTS as readonly string[]).includes(s);
+}
+
+/**
+ * Result returned by `parseLanguageFilter`:
+ *   - `{ ok: true, value: string | undefined }` — absent (undefined) or a
+ *     single string value passed through unchanged.
+ *   - `{ ok: false, message }` — non-string shape (repeated `?language=`
+ *     yields `string[]`; anything else also rejects).
+ *
+ * **Contract decision (typeof-narrow only, no charset constraint).** The
+ * route currently binds `?language=` value through
+ * `c.json_metadata ->> 'language'` for an exact-equality match. Stored
+ * values are not centrally validated — historical papers may have any
+ * shape. Enforcing ISO 639-1 (e.g. `^[a-z]{2}$`) is a defensible follow-up
+ * but would change the observable accept-set and risks orphaning real
+ * papers in the corpus. The sweep this helper closes is the silent-coerce
+ * vector (repeated params → `"en,fr"`), which is unambiguously a bug.
+ * Charset/length enforcement is intentionally out of scope here; revisit
+ * when the publishing UI's allowed-language set is pinned end-to-end.
+ *
+ * Option A from the sweep spec (mirror `?type=` 400-on-repeated) is the
+ * adopted contract; Option B (silent-unfilter like `?discipline=`) was
+ * dismissed because language has no "all languages" semantic — an
+ * unparseable value is more useful as a 400 than as a silent unfilter.
+ */
+export type LanguageFilterResult =
+  | { ok: true; value: string | undefined }
+  | { ok: false; message: string };
+
+const INVALID_LANGUAGE_MESSAGE = 'Invalid language. Must be a single string value';
+
+export function parseLanguageFilter(raw: unknown): LanguageFilterResult {
+  if (raw === undefined) return { ok: true, value: undefined };
+  if (typeof raw === 'string') return { ok: true, value: raw };
+  return { ok: false, message: INVALID_LANGUAGE_MESSAGE };
+}
