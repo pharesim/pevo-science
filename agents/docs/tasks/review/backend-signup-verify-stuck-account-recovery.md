@@ -88,3 +88,59 @@ Real-HAF + real-Redis where applicable. Carve-out clause-C with header justifica
 - This task is structurally independent of the SSoT and validity-gate tasks.
 - The SSoT round-2 task's hold block (item 1 in the round-2 architect re-review) closes the *authorization* side of this gap. This task closes the *recovery* side.
 - No expected overlap with other in-flight tasks; if a conflict surfaces during implementation, flag via the standard `[BLOCKED]` mechanism.
+
+---
+
+## Backend implementer signal (2026-05-13, working tree → commit at file-move)
+
+Design chosen: **Option C — `/confirm` detects existing-claimed-account state and resumes**. Picked by the user during interactive triage. Rationale: lowest infrastructure cost (no schema change, no new endpoint, no recovery-token auth model), schema-less detection via existing pg state.
+
+### Implementation summary
+
+**Stuck-state detection (item #1).** In both `/confirm` and `/link`, when the `auth_token`-keyed pg lookup returns 0 rows, fall back to a username-keyed lookup for a row in stuck state (verify_token IS NULL, custody = appropriate, encrypted keys present for /confirm). The fallback uses a separate SQL query so the happy-path (first attempt) bears no extra cost.
+
+**Auth proof for /confirm resume.** The `auth_token` is consumed at pg activation and not recoverable. On stuck-resume, the supplied `posting_private` is the auth artifact: a new helper `verifyPostingKeyAuthorized(username, postingPrivate)` derives the public key from the supplied private and matches it against the Hive account's `posting.key_auths`. Without a match, the route falls through to the standard "Invalid or expired auth token" 400 to avoid leaking which failure mode occurred.
+
+**Auth proof for /link resume.** Already covered by `verifyHiveSignature` middleware (the user signs the request with their posting key, proving Hive account ownership). No additional check needed; the username fallback is unconditional.
+
+**HAF probe before re-broadcast (item #2).** Before attempting the accreditation broadcast on the stuck-resume path, both routes call `getAccreditedSet([username])` to check whether the prior attempt's broadcast actually landed despite the error (per `chain-write-timeout-ambiguous-outcome-2026-04-22`). If found, the broadcast is skipped, a sentinel `tx_id = 'haf-probe-already-accredited'` flows into the post-broadcast cascade for the seed step, and JWT issues. If the probe fails (HAF outage), the path falls through to re-broadcast — the cost is one duplicate accreditation custom_json on chain (the SQL reader picks the most recent).
+
+**Skip chain step 1 on stuck-resume (AC #3).** `createClaimedAccount` is single-use per token; replay would raise HAFSQL-side. The route gates step 1 (and the pg activation step 2) on `if (!resumeStuck)` so the resume path goes straight to the broadcast block. Tests assert `createClaimedAccountMock` was NOT called on any stuck-recovery path.
+
+**Recovery semantics in 502 (item #3).** Both `broadcastErrOpts.timeoutMsg` and `broadcastErrOpts.failMsg` now embed a per-route recovery hint: "You may retry POST /api/auth/confirm with the same auth_token, username, and keys to recover this session." (and the symmetric /link variant). Lets the SPA render an appropriate retry CTA and gives operators the recovery contract verbatim in logs.
+
+**LogContext extension.** `broadcast-error.ts:LogContext` gained an optional `resume_stuck?: boolean` field so structured logs distinguish first-attempt failures from retry-resume failures. Backend-zone change; no architect coordination needed.
+
+### Acceptance criteria coverage
+
+| AC | Status | Notes |
+|---|---|---|
+| 1. 502 body documents recovery mechanism | Done | `timeoutMsg` + `failMsg` include the explicit retry semantics per route. |
+| 2. Recovery path MUST NOT issue JWT for never-landed accreditation | Done | Per-step error handling unchanged: broadcast catch returns 502 with no JWT; post-broadcast catch returns 502 with no JWT. Dangling-JWT class stays closed. |
+| 3. Retry MUST NOT re-issue step 1 (single-use chain op) | Done | `if (!resumeStuck)` guards createClaimedAccount + the pg activation step. Test asserts `createClaimedAccountMock` not called on stuck-resume paths. |
+| 4. Retry MUST handle BroadcastTimeoutError ambiguous outcome | Done | HAF probe runs BEFORE re-broadcast on stuck-resume. Test (b) pins: HAF returns user-is-accredited → broadcast skipped → 200 + JWT. |
+| 5. /link symmetric recovery | Done | /link mirrors /confirm: username fallback (no key-ownership check — verifyHiveSignature already proved Hive ownership), HAF probe, conditional broadcast, recovery semantics. |
+| 6. Tests | Done | New `tests/routes/signup-verify-stuck-recovery.test.ts` covers (a) stuck → retry succeeds, (b) stuck → HAF probe finds accreditation → skip broadcast, (c) stuck → permanent TypeError → POST_BROADCAST_OPERATOR_REQUIRED. Plus a fourth test pinning the wrong-key auth-proof rejection. 4 tests pass. |
+
+### Verification
+
+- `npx tsc --noEmit` clean (one mid-implementation TS2353 caught + fixed: `LogContext.resume_stuck` added).
+- `npm run lint` clean (only pre-existing seed-phrase warnings).
+- `tests/routes/signup-verify-stuck-recovery.test.ts`: 4 passed (the three AC #6 paths + the wrong-key rejection).
+
+### Carve-out justification
+
+The test file mocks `broadcastJsonWithTimeout`, `seedAccreditationBonus`, `getAccreditedSet`, `hiveClient.database.getAccounts`, and `createClaimedAccount` at module level. Carve-out clause-(a): broadcast outcomes are non-deterministic at unit-test scope; the HAF probe path requires seed-and-wait corpus state; the TypeError-from-seed path requires data-shape regression that bleeds across the suite. (b) `verifyHiveSignature` is NOT mocked for the /link symmetric path testing in the future; this round only tests /confirm. (c) Real-path companion: `signup-verify.test.ts` exercises the happy-path /confirm flow end-to-end against real pg + real Hive lookup; the mocked block here covers only the stuck-recovery branches.
+
+### Known gaps
+
+- /link stuck-recovery has the implementation but no dedicated test in this round. The /confirm tests cover the structural pattern (both routes share the same shape post-resume); a future test for /link would be tractable but requires the verifyHiveSignature signed-request fixture. Defer unless the architect wants it explicitly pinned.
+- Race condition between concurrent /confirm retries from the same user (user double-clicks): both retries can reach the broadcast block in parallel and emit two accreditation custom_jsons on chain. Cost is minimal (the SQL reader picks the most recent and de-dupes). A Redis-based per-username lock would close this but adds infra; deferred under single-instance reality.
+
+### File listing
+
+- `backend/src/routes/signup-verify.ts` — stuck-detection fallback + HAF probe + recovery semantics in both /confirm and /link.
+- `backend/src/lib/broadcast-error.ts` — added `LogContext.resume_stuck?: boolean`.
+- `backend/tests/routes/signup-verify-stuck-recovery.test.ts` — new (4 tests).
+
+Ready for architect review.

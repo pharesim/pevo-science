@@ -18,6 +18,7 @@ import { handleArgonError, ARGON_HANDLED } from '../lib/argon2-error-handler.js'
 import { requestAbortSignal } from '../lib/request-abort-signal.js';
 import { hashEmailForLogs, safeHashEmailForLogs } from '../lib/log-pii.js';
 import { seedAccreditationBonus } from '../reputation.js';
+import { getAccreditedSet } from '../accreditation.js';
 import {
   handleBroadcastError,
   PostBroadcastWriteError,
@@ -35,6 +36,40 @@ const SIGNUP_TOKEN_EXPIRY_MS = 24 * 60 * 60 * 1000;
 // Username format: 3-16 chars, lowercase a-z, 0-9, dots/hyphens not at start/end
 const USERNAME_RE = /^[a-z][a-z0-9.-]{1,14}[a-z0-9]$/;
 const BAD_SEGMENT_RE = /[.-]{2}/;
+
+/**
+ * Verify the supplied posting private key derives a public key that matches
+ * one of the authorized posting keys on the named Hive account.
+ *
+ * Used by the stuck-account recovery path (Option C / BACKEND-SIGNUP-VERIFY-
+ * STUCK-ACCOUNT-RECOVERY): when a user retries /confirm after a broadcast
+ * failure, the original verify_token has been consumed (verify_token = NULL
+ * after the pg activation step). The supplied posting_private becomes the
+ * auth proof for the resume — anyone who owns the Hive account's posting
+ * authority can recover the session.
+ *
+ * Returns false on any error (malformed key, Hive lookup failure, no match);
+ * the caller then routes to the standard "Invalid or expired auth token"
+ * 400 to avoid leaking which failure mode occurred.
+ */
+async function verifyPostingKeyAuthorized(username: string, postingPrivate: string): Promise<boolean> {
+  try {
+    const supplied = PrivateKey.fromString(postingPrivate);
+    const suppliedPubKey = supplied.createPublic().toString();
+    const [hiveAcct] = await hiveClient.database.getAccounts([username]);
+    if (!hiveAcct) return false;
+    const authorizedPostingPubKeys = hiveAcct.posting.key_auths.map(
+      ([key]: [string | PublicKey, number]) => key.toString(),
+    );
+    return authorizedPostingPubKeys.includes(suppliedPubKey);
+  } catch (err) {
+    logger.warn(
+      { err, username },
+      'signup_verify stuck-recovery key-ownership check failed',
+    );
+    return false;
+  }
+}
 
 const verifyLimiter = rateLimit({ name: 'signup-verify', windowMs: 3_600_000, max: 10, keyFn: byIp });
 const resumeLimiter = rateLimit({ name: 'signup-resume', windowMs: 3_600_000, max: 5, keyFn: byIp });
@@ -258,7 +293,7 @@ router.post('/confirm', confirmLimiter, async (req: Request, res: Response) => {
     // it as `string` would compile-pass `hashEmailForLogs(account.email)` in
     // the broadcast catch below, which then throws TypeError on `null.trim()`
     // and converts a recoverable `logger.error + 200 + JWT` flow into a 500.
-    const { rows } = await pool.query<{
+    type SignupRow = {
       id: number;
       email: string | null;
       password_hash: string | null;
@@ -266,51 +301,97 @@ router.post('/confirm', confirmLimiter, async (req: Request, res: Response) => {
       institution: string;
       field: string;
       orcid: string | null;
-    }>(
+    };
+    const { rows } = await pool.query<SignupRow>(
       `SELECT id, email, password_hash, full_name, institution, field, orcid
        FROM accounts WHERE verify_token = $1`,
       [auth_token],
     );
 
-    if (rows.length === 0) {
+    // Stuck-account recovery detection (BACKEND-SIGNUP-VERIFY-STUCK-ACCOUNT
+    // -RECOVERY, Option C). Chain step 1 (`createClaimedAccount`) is
+    // single-use and pg step 2 clears verify_token; a second /confirm with
+    // the same auth_token gets 0 rows on the lookup above. To let the user
+    // recover their stuck account (chain account created + pg keys stored
+    // + accreditation broadcast failed), fall back to a username-keyed
+    // lookup for a row that ALREADY completed steps 1-2 with this username.
+    //
+    // Auth proof for the fallback: the user must supply a posting_private
+    // matching one of the authorized posting keys on the Hive account.
+    // verify_token has already been consumed and isn't recoverable from
+    // pg; the supplied private key is the user's proof-of-ownership for
+    // the resume path.
+    let account: SignupRow | null = rows[0] ?? null;
+    let resumeStuck = false;
+    if (!account) {
+      const stuckLookup = await pool.query<SignupRow>(
+        `SELECT id, email, password_hash, full_name, institution, field, orcid
+         FROM accounts
+         WHERE username = $1
+           AND verify_token IS NULL
+           AND custody = 'light'
+           AND posting_key_enc IS NOT NULL`,
+        [normalizedUsername],
+      );
+      if (stuckLookup.rows.length > 0) {
+        // Verify the supplied posting_private corresponds to an authorized
+        // posting key on the Hive account. Without this, anyone who knew a
+        // stuck username could request a session by submitting arbitrary
+        // keys.
+        const ownershipOk = await verifyPostingKeyAuthorized(normalizedUsername, posting_private);
+        if (ownershipOk) {
+          account = stuckLookup.rows[0];
+          resumeStuck = true;
+        }
+      }
+    }
+
+    if (!account) {
       return sendError(res, 400, 'BAD_REQUEST', 'Invalid or expired auth token');
     }
 
-    const account = rows[0];
+    // Steps 1 and 2 (create_claimed_account + pg activation) only fire on
+    // the first attempt. On a stuck-resume, the chain account exists and
+    // pg already carries `username`, `custody = 'light'`, encrypted keys;
+    // jump straight to the broadcast block. `createResult` is constructed
+    // synthetically for the stuck path; only `block_num` is consumed
+    // downstream in the response body.
+    let createResult: { block_num: number } = { block_num: 0 };
+    if (!resumeStuck) {
+      // Check Hive username availability
+      const [existingAccount] = await hiveClient.database.getAccounts([normalizedUsername]);
+      if (existingAccount) {
+        return sendError(res, 409, 'DUPLICATE', 'Username is already taken on Hive');
+      }
 
-    // Check Hive username availability
-    const [existingAccount] = await hiveClient.database.getAccounts([normalizedUsername]);
-    if (existingAccount) {
-      return sendError(res, 409, 'DUPLICATE', 'Username is already taken on Hive');
-    }
-
-    // Create the Hive account
-    const createResult = await createClaimedAccount(
-      normalizedUsername,
-      owner_public,
-      active_public,
-      posting_public,
-      memo_public,
-    );
-
-    // Encrypt and store posting + memo private keys
-    const postingEnc = encryptKey(normalizedUsername, posting_private);
-    const memoEnc = encryptKey(normalizedUsername, memo_private);
-
-    // Activate the account: set username, keys, custody, clear verify_token
-    await pool.query(
-      `UPDATE accounts
-       SET username = $1, custody = 'light', verify_token = NULL,
-           posting_key_enc = $2, iv_posting = $3,
-           memo_key_enc = $4, iv_memo = $5
-       WHERE id = $6`,
-      [
+      // Create the Hive account
+      createResult = await createClaimedAccount(
         normalizedUsername,
-        postingEnc.ciphertext, postingEnc.iv,
-        memoEnc.ciphertext, memoEnc.iv,
-        account.id,
-      ],
-    );
+        owner_public,
+        active_public,
+        posting_public,
+        memo_public,
+      );
+
+      // Encrypt and store posting + memo private keys
+      const postingEnc = encryptKey(normalizedUsername, posting_private);
+      const memoEnc = encryptKey(normalizedUsername, memo_private);
+
+      // Activate the account: set username, keys, custody, clear verify_token
+      await pool.query(
+        `UPDATE accounts
+         SET username = $1, custody = 'light', verify_token = NULL,
+             posting_key_enc = $2, iv_posting = $3,
+             memo_key_enc = $4, iv_memo = $5
+         WHERE id = $6`,
+        [
+          normalizedUsername,
+          postingEnc.ciphertext, postingEnc.iv,
+          memoEnc.ciphertext, memoEnc.iv,
+          account.id,
+        ],
+      );
+    }
 
     // Broadcast accreditation custom_json + seed reputation in a single
     // discrimination block. Mirrors orcid.ts handleAccredit so a broadcast
@@ -320,14 +401,29 @@ router.post('/confirm', confirmLimiter, async (req: Request, res: Response) => {
     // this, prior code returned 200 + JWT for an account whose chain op
     // never landed (the "dangling JWT" class — BACKEND-REPUTATION-SSOT
     // round-1 hold #8).
+    //
+    // Stuck-resume path (BACKEND-SIGNUP-VERIFY-STUCK-ACCOUNT-RECOVERY,
+    // Option C): if we detected the user is in stuck state above, first
+    // probe HAF for an existing accreditation custom_json. A prior attempt
+    // whose broadcast was ambiguous (timeout / network failure mid-flight)
+    // may have actually landed on chain; re-broadcasting would emit a
+    // second accreditation event for the same user. Per
+    // `chain-write-timeout-ambiguous-outcome-2026-04-22`, probe-before-
+    // retry is the canonical handling.
     if (config.pevoAdminPostingKey) {
+      // Recovery message: tell the stuck user (or the operator reading
+      // the response) that retrying /confirm with the same input is
+      // safe and idempotent under Option C. Discriminate at the response
+      // level so the SPA can render an appropriate retry CTA.
+      const recoveryHint = 'You may retry POST /api/auth/confirm with the same auth_token, username, and keys to recover this session.';
       const broadcastErrOpts: HandleBroadcastErrorOpts = {
-        timeoutMsg: 'Broadcasting accreditation timed out',
-        failMsg: 'Failed to broadcast accreditation to Hive',
+        timeoutMsg: `Broadcasting accreditation timed out. ${recoveryHint}`,
+        failMsg: `Failed to broadcast accreditation to Hive. ${recoveryHint}`,
         logContext: {
           email_hash: safeHashEmailForLogs(account.email) ?? undefined,
           username: normalizedUsername,
           orcid: account.orcid ?? undefined,
+          resume_stuck: resumeStuck,
         },
         routeLabel: 'signup_verify.confirm',
         postBroadcastMsgFn: (failedStep: PostBroadcastFailedStep) =>
@@ -336,43 +432,77 @@ router.post('/confirm', confirmLimiter, async (req: Request, res: Response) => {
             : `Your account is created and accredited on Hive (step ${failedStep} pending operator reconciliation).`,
       };
 
-      const evidenceHash = crypto
-        .createHash('sha256')
-        .update(`${account.email}:${normalizedUsername}:signup`)
-        .digest('hex');
-
-      const adminKey = PrivateKey.fromString(config.pevoAdminPostingKey);
-      let result: Awaited<ReturnType<typeof broadcastJsonWithTimeout>>;
-      try {
-        result = await broadcastJsonWithTimeout(
-          {
-            id: config.appTag,
-            json: JSON.stringify({
-              action: 'accredit',
-              account: normalizedUsername,
-              name: account.full_name || normalizedUsername,
-              institution: account.institution || '',
-              field: account.field || '',
-              orcid: account.orcid || '',
-              method: 'email',
-              evidence_hash: evidenceHash,
-              timestamp: new Date().toISOString(),
-            }),
-            required_auths: [],
-            required_posting_auths: [config.hiveAdminAccount],
-          },
-          adminKey,
-        );
-      } catch (err) {
-        handleBroadcastError(res, err, broadcastErrOpts);
-        return;
+      // HAF probe BEFORE broadcasting on the stuck-resume path. If the
+      // user is already accredited on chain (prior ambiguous-outcome
+      // broadcast actually landed), skip the broadcast and proceed to
+      // the seed step. The seed is idempotent under SET NX so a re-seed
+      // is safe.
+      let probeFoundAccreditation = false;
+      if (resumeStuck) {
+        try {
+          const accredSet = await getAccreditedSet([normalizedUsername]);
+          probeFoundAccreditation = accredSet.has(normalizedUsername);
+        } catch (probeErr) {
+          // Don't fail the resume on a HAF probe error — fall through to
+          // re-broadcast. Worst case: a duplicate accreditation custom_json
+          // lands on chain (the SQL reads the most recent and de-dupes).
+          logger.warn(
+            { err: probeErr, username: normalizedUsername },
+            'signup_verify.confirm HAF probe for existing accreditation failed; falling through to broadcast retry',
+          );
+        }
       }
 
-      // Post-broadcast cascade. Chain op confirmed; any throw here is a
-      // downstream failure, not an ambiguous-outcome class. Discriminate
-      // via PostBroadcastWriteError so the catch emits 502
-      // POST_BROADCAST_FAILED with `outcome:'confirmed'` + `tx_id` +
-      // `failed_step` instead of 504 / 502 BROADCAST_FAILED.
+      let txId: string;
+      if (probeFoundAccreditation) {
+        // Skip broadcast — already on chain. Use a sentinel tx_id so the
+        // PostBroadcastWriteError envelope still carries something
+        // greppable if seedAccreditationBonus throws here.
+        txId = 'haf-probe-already-accredited';
+        logger.info(
+          { username: normalizedUsername },
+          'signup_verify.confirm stuck-resume: HAF probe found existing accreditation; skipping broadcast',
+        );
+      } else {
+        const evidenceHash = crypto
+          .createHash('sha256')
+          .update(`${account.email}:${normalizedUsername}:signup`)
+          .digest('hex');
+
+        const adminKey = PrivateKey.fromString(config.pevoAdminPostingKey);
+        let result: Awaited<ReturnType<typeof broadcastJsonWithTimeout>>;
+        try {
+          result = await broadcastJsonWithTimeout(
+            {
+              id: config.appTag,
+              json: JSON.stringify({
+                action: 'accredit',
+                account: normalizedUsername,
+                name: account.full_name || normalizedUsername,
+                institution: account.institution || '',
+                field: account.field || '',
+                orcid: account.orcid || '',
+                method: 'email',
+                evidence_hash: evidenceHash,
+                timestamp: new Date().toISOString(),
+              }),
+              required_auths: [],
+              required_posting_auths: [config.hiveAdminAccount],
+            },
+            adminKey,
+          );
+        } catch (err) {
+          handleBroadcastError(res, err, broadcastErrOpts);
+          return;
+        }
+        txId = result.id;
+      }
+
+      // Post-broadcast cascade. Chain op confirmed (or already on chain);
+      // any throw here is a downstream failure, not an ambiguous-outcome
+      // class. Discriminate via PostBroadcastWriteError so the catch
+      // emits 502 POST_BROADCAST_FAILED with `outcome:'confirmed'` +
+      // `tx_id` + `failed_step` instead of 504 / 502 BROADCAST_FAILED.
       const currentStep: PostBroadcastFailedStep = 'reputation_seed';
       try {
         await seedAccreditationBonus(normalizedUsername);
@@ -385,7 +515,7 @@ router.post('/confirm', confirmLimiter, async (req: Request, res: Response) => {
         // round-2 hold #1; mirror orcid.ts:886).
         handleBroadcastError(
           res,
-          new PostBroadcastWriteError(result.id, postErr, currentStep, classifyPostBroadcastSeverity(postErr)),
+          new PostBroadcastWriteError(txId, postErr, currentStep, classifyPostBroadcastSeverity(postErr)),
           broadcastErrOpts,
         );
         return;
@@ -439,7 +569,7 @@ router.post('/link', linkLimiter, verifyHiveSignature, async (req: Request, res:
     // Look up account by auth token (must be in confirmed state).
     // `email` is `string | null` for the same ORCID-only-signup reason
     // documented at the sibling /confirm pg query above.
-    const { rows } = await pool.query<{
+    type LinkRow = {
       id: number;
       email: string | null;
       password_hash: string | null;
@@ -447,55 +577,88 @@ router.post('/link', linkLimiter, verifyHiveSignature, async (req: Request, res:
       institution: string;
       field: string;
       orcid: string | null;
-    }>(
+    };
+    const { rows } = await pool.query<LinkRow>(
       `SELECT id, email, password_hash, full_name, institution, field, orcid
        FROM accounts WHERE verify_token = $1`,
       [auth_token],
     );
 
-    if (rows.length === 0) {
+    // Stuck-account recovery detection (BACKEND-SIGNUP-VERIFY-STUCK-ACCOUNT
+    // -RECOVERY, Option C). Symmetric to /confirm: if a prior /link attempt
+    // consumed the verify_token (pg activation step) but the accreditation
+    // broadcast failed, the user is locked out by the verify_token lookup
+    // failing. Recover by username-keyed fallback. Auth proof comes from
+    // the verifyHiveSignature middleware above (the user proved they own
+    // the Hive account by signing the request), so no additional key-
+    // ownership check is needed here.
+    let account: LinkRow | null = rows[0] ?? null;
+    let resumeStuck = false;
+    if (!account) {
+      const stuckLookup = await pool.query<LinkRow>(
+        `SELECT id, email, password_hash, full_name, institution, field, orcid
+         FROM accounts
+         WHERE username = $1
+           AND verify_token IS NULL
+           AND custody = 'self'`,
+        [hiveUsername],
+      );
+      if (stuckLookup.rows.length > 0) {
+        account = stuckLookup.rows[0];
+        resumeStuck = true;
+      }
+    }
+
+    if (!account) {
       return sendError(res, 400, 'BAD_REQUEST', 'Invalid or expired link request');
     }
 
-    const account = rows[0];
+    if (!resumeStuck) {
+      // Verify the Hive account exists
+      const [hiveAccount] = await hiveClient.database.getAccounts([hiveUsername]);
+      if (!hiveAccount) {
+        return sendError(res, 404, 'NOT_FOUND', 'Hive account not found');
+      }
 
-    // Verify the Hive account exists
-    const [hiveAccount] = await hiveClient.database.getAccounts([hiveUsername]);
-    if (!hiveAccount) {
-      return sendError(res, 404, 'NOT_FOUND', 'Hive account not found');
+      // Check the Hive account isn't already registered
+      const { rows: existing } = await pool.query<{ username: string }>(
+        'SELECT username FROM accounts WHERE username = $1',
+        [hiveUsername],
+      );
+      if (existing.length > 0) {
+        return sendError(res, 409, 'DUPLICATE', 'This Hive account is already linked');
+      }
+
+      // Activate: set username, custody=self, upgraded_at, clear verify_token
+      const now = new Date();
+      await pool.query(
+        `UPDATE accounts
+         SET username = $1, custody = 'self', verify_token = NULL, upgraded_at = $2
+         WHERE id = $3`,
+        [hiveUsername, now, account.id],
+      );
     }
-
-    // Check the Hive account isn't already registered
-    const { rows: existing } = await pool.query<{ username: string }>(
-      'SELECT username FROM accounts WHERE username = $1',
-      [hiveUsername],
-    );
-    if (existing.length > 0) {
-      return sendError(res, 409, 'DUPLICATE', 'This Hive account is already linked');
-    }
-
-    // Activate: set username, custody=self, upgraded_at, clear verify_token
-    const now = new Date();
-    await pool.query(
-      `UPDATE accounts
-       SET username = $1, custody = 'self', verify_token = NULL, upgraded_at = $2
-       WHERE id = $3`,
-      [hiveUsername, now, account.id],
-    );
 
     // Broadcast accreditation custom_json + seed reputation in a single
     // discrimination block. See /confirm above for full rationale
     // (BACKEND-REPUTATION-SSOT round-1 hold #8). Mirrors the orcid.ts
     // handleLink pattern: broadcast failure → 502/504; post-broadcast
     // permanent seed failure → 502 POST_BROADCAST_FAILED.
+    //
+    // Stuck-resume path (BACKEND-SIGNUP-VERIFY-STUCK-ACCOUNT-RECOVERY,
+    // Option C): if we detected the user is in stuck state above, first
+    // probe HAF for an existing accreditation custom_json. See /confirm
+    // above for the full rationale of HAF probe-before-retry.
     if (config.pevoAdminPostingKey) {
+      const recoveryHint = 'You may retry POST /api/auth/link with the same auth_token and signed request to recover this session.';
       const broadcastErrOpts: HandleBroadcastErrorOpts = {
-        timeoutMsg: 'Broadcasting accreditation timed out',
-        failMsg: 'Failed to broadcast accreditation to Hive',
+        timeoutMsg: `Broadcasting accreditation timed out. ${recoveryHint}`,
+        failMsg: `Failed to broadcast accreditation to Hive. ${recoveryHint}`,
         logContext: {
           email_hash: safeHashEmailForLogs(account.email) ?? undefined,
           username: hiveUsername,
           orcid: account.orcid ?? undefined,
+          resume_stuck: resumeStuck,
         },
         routeLabel: 'signup_verify.link',
         postBroadcastMsgFn: (failedStep: PostBroadcastFailedStep) =>
@@ -504,36 +667,59 @@ router.post('/link', linkLimiter, verifyHiveSignature, async (req: Request, res:
             : `Your Hive account is linked and accredited on Hive (step ${failedStep} pending operator reconciliation).`,
       };
 
-      const evidenceHash = crypto
-        .createHash('sha256')
-        .update(`${account.email}:${hiveUsername}:link`)
-        .digest('hex');
+      let probeFoundAccreditation = false;
+      if (resumeStuck) {
+        try {
+          const accredSet = await getAccreditedSet([hiveUsername]);
+          probeFoundAccreditation = accredSet.has(hiveUsername);
+        } catch (probeErr) {
+          logger.warn(
+            { err: probeErr, username: hiveUsername },
+            'signup_verify.link HAF probe for existing accreditation failed; falling through to broadcast retry',
+          );
+        }
+      }
 
-      const adminKey = PrivateKey.fromString(config.pevoAdminPostingKey);
-      let result: Awaited<ReturnType<typeof broadcastJsonWithTimeout>>;
-      try {
-        result = await broadcastJsonWithTimeout(
-          {
-            id: config.appTag,
-            json: JSON.stringify({
-              action: 'accredit',
-              account: hiveUsername,
-              name: account.full_name || hiveUsername,
-              institution: account.institution || '',
-              field: account.field || '',
-              orcid: account.orcid || '',
-              method: 'email',
-              evidence_hash: evidenceHash,
-              timestamp: new Date().toISOString(),
-            }),
-            required_auths: [],
-            required_posting_auths: [config.hiveAdminAccount],
-          },
-          adminKey,
+      let txId: string;
+      if (probeFoundAccreditation) {
+        txId = 'haf-probe-already-accredited';
+        logger.info(
+          { username: hiveUsername },
+          'signup_verify.link stuck-resume: HAF probe found existing accreditation; skipping broadcast',
         );
-      } catch (err) {
-        handleBroadcastError(res, err, broadcastErrOpts);
-        return;
+      } else {
+        const evidenceHash = crypto
+          .createHash('sha256')
+          .update(`${account.email}:${hiveUsername}:link`)
+          .digest('hex');
+
+        const adminKey = PrivateKey.fromString(config.pevoAdminPostingKey);
+        let result: Awaited<ReturnType<typeof broadcastJsonWithTimeout>>;
+        try {
+          result = await broadcastJsonWithTimeout(
+            {
+              id: config.appTag,
+              json: JSON.stringify({
+                action: 'accredit',
+                account: hiveUsername,
+                name: account.full_name || hiveUsername,
+                institution: account.institution || '',
+                field: account.field || '',
+                orcid: account.orcid || '',
+                method: 'email',
+                evidence_hash: evidenceHash,
+                timestamp: new Date().toISOString(),
+              }),
+              required_auths: [],
+              required_posting_auths: [config.hiveAdminAccount],
+            },
+            adminKey,
+          );
+        } catch (err) {
+          handleBroadcastError(res, err, broadcastErrOpts);
+          return;
+        }
+        txId = result.id;
       }
 
       const currentStep: PostBroadcastFailedStep = 'reputation_seed';
@@ -543,7 +729,7 @@ router.post('/link', linkLimiter, verifyHiveSignature, async (req: Request, res:
         // See /confirm above for severity rationale (round-2 hold #1).
         handleBroadcastError(
           res,
-          new PostBroadcastWriteError(result.id, postErr, currentStep, classifyPostBroadcastSeverity(postErr)),
+          new PostBroadcastWriteError(txId, postErr, currentStep, classifyPostBroadcastSeverity(postErr)),
           broadcastErrOpts,
         );
         return;

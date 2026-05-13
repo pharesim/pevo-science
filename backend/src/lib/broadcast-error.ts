@@ -232,6 +232,14 @@ export interface LogContext {
   route?: string;
   /** Bridge paper identifier (DOI / arXiv id) — used by bridge.register attempts */
   identifier?: string;
+  /**
+   * Stuck-recovery flag (signup-verify Option C). True when the route entered
+   * the broadcast block via the stuck-account resume path (chain step 1 +
+   * pg state already complete from a prior attempt); false / undefined for
+   * first-attempt flows. Lets operators distinguish a first-time broadcast
+   * failure from a retry-resume failure when triaging logs.
+   */
+  resume_stuck?: boolean;
 }
 
 interface BaseHandleBroadcastErrorOpts {
