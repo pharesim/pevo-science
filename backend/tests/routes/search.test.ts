@@ -64,10 +64,21 @@ describe('GET /api/search', () => {
   // the branch as supported so a future delete that takes the contract
   // literally trips a failing spec.
   it('?type=review returns 200 with review-shaped results', async () => {
-    const res = await request(app).get('/api/search?q=science&type=review');
+    // `q=evaluation` is chosen because the live HAF corpus contains an
+    // accredited review (`@pevo.science/re-pevotestbridge-…`) whose body
+    // discusses "open evaluation" / "scientific evaluation" — it matches
+    // ILIKE `%evaluation%` and survives the accreditation + non-self-review
+    // gates. Earlier `q=science` returned zero rows because the term appears
+    // only in `scientific`, which doesn't contain literal `science` as a
+    // substring.
+    const res = await request(app).get('/api/search?q=evaluation&type=review');
     expect(res.status).toBe(200);
     expect(res.body.status).toBe('ok');
     expect(Array.isArray(res.body.data)).toBe(true);
+    // Non-vacuous guard: if the live HAF corpus stops returning review hits
+    // for this query, this assertion trips before the loop, surfacing the
+    // empty-corpus regression instead of letting the for…of run zero times.
+    expect(res.body.data.length).toBeGreaterThan(0);
     for (const item of res.body.data) {
       expect(item.type).toBe('review');
     }
@@ -75,6 +86,17 @@ describe('GET /api/search', () => {
 
   it('?type=foo returns 400 on unknown enum value', async () => {
     const res = await request(app).get('/api/search?q=science&type=foo');
+    expect(res.status).toBe(400);
+    expect(res.body.status).toBe('error');
+    expect(res.body.error.code).toBe('BAD_REQUEST');
+    expect(res.body.error.message).toMatch(/Must be one of/);
+  });
+
+  // Pins the case-sensitive enum contract. A future defensive `.toLowerCase()`
+  // before the `includes` check would silently widen the accepted surface from
+  // {all, paper, review} to {ALL, PAPER, Paper, …}; this spec fails first.
+  it('?type=PAPER (mixed-case) returns 400 — enum is case-sensitive', async () => {
+    const res = await request(app).get('/api/search?q=science&type=PAPER');
     expect(res.status).toBe(400);
     expect(res.body.status).toBe('error');
     expect(res.body.error.code).toBe('BAD_REQUEST');

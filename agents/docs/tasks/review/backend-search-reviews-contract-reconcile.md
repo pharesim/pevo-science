@@ -91,3 +91,17 @@ This contract update is architect-owned per backend CLAUDE.md "Boundaries"; the 
 2. **Case-sensitivity pin on `?type=`** (P3, testing reviewer, conf 75). Same file. Add one test immediately after the existing `?type=foo` 400 case asserting that `?type=PAPER` (or any mixed-case variant) returns `400 BAD_REQUEST`. Pins the case-sensitive enum contract so a future defensive `.toLowerCase()` addition before the `includes` check (a reasonable-looking change in isolation) does not silently widen the accepted surface.
 
 Once both items land, `git mv` this file back to `tasks/review/` and the next architect review pass will pick it up. Findings #1, #3, #4 from the same review pass were split into the separate sweep task `backend-search-query-param-typeof-narrow-sweep.md` (already in `pending/`); finding #2 (SearchResult review variant in `api-contracts/papers.md`) was applied in-place by the architect during this re-review.
+
+---
+
+## Backend re-review signal (2026-05-13, working tree)
+
+Both hold-block items landed in `backend/tests/routes/search.test.ts`:
+
+1. **Non-vacuous guard on `?type=review` happy-path test.** Added `expect(res.body.data.length).toBeGreaterThan(0)` before the `for…of` loop. Also tuned the query from `q=science` to `q=evaluation` — the original `q=science` returns zero rows in the live HAF corpus because `science` is not a substring of `scientific`/`scientist` (the only terms the single accredited review uses near that domain). `q=evaluation` matches the `@pevo.science/re-pevotestbridge-…` review body, which discusses "open evaluation" / "scientific evaluation" and survives the accreditation + non-self-review gates. Inline comment in the test file documents the query choice so a future maintainer doesn't revert to the broken `q=science`.
+
+2. **Case-sensitivity pin.** Added a new `?type=PAPER` (mixed-case) test immediately after the existing `?type=foo` 400 case, asserting `400 BAD_REQUEST` with `Must be one of` message. Inline comment notes the future-defensive-`.toLowerCase()` regression vector this pins.
+
+Verification: `backend/tests/routes/search.test.ts` runs 24/24 green against real HAF + Postgres + Redis (~41s). No other test files touched. No code changes outside the test file.
+
+Lane-3 footnote: the lane-3 accreditation tests at `search.test.ts:233-279` still use `q=science&type=review&limit=50` and are vacuous against the same corpus today — they pass because their loop doesn't iterate. Out-of-scope for this hold cycle (hold items targeted the happy-path test only), but worth surfacing for the architect's awareness. If a follow-up non-vacuous guard sweep is desired, the same `q=evaluation` tune would close it.
