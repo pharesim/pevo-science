@@ -304,3 +304,39 @@ If a future change adds a predicate to the display path but not the cycle (or vi
 
 - `getProfileStats` `user_reviews` CTE at `profile.ts:92-100`: also lacks an accreditation gate (would inflate `review_count` on the unaccredited user's profile stats panel). Not listed in the hold block; flagging for architect awareness so it can be ticketed as a separate task if desired. Symmetric in spirit with item 2 but on a different route (`/profile/:username` vs `/profile/:username/reviews`).
 - Architect-owned `agents/docs/reputation-algorithm.md` doc-drift sync (parameter table + 8 CTE sites) is deferred per the hold-block close-out note; will land in the architect's archive-time edits alongside item 1.
+
+---
+
+## Backend re-review signal (2026-05-13, round-3, working tree pre-commit)
+
+All 4 round-2 hold items landed in a single coordinated commit. Cross-task lift-in for `self-review-exclusion` task hold item #10 included at the shared `reputation.ts:647-656` site per the round-2 cross-task-coordination note. Lint clean (`npm run lint` 0 errors, 2 pre-existing seed-phrase warnings unrelated). `tsc --noEmit` clean. Targeted test suites re-run against real HAF + Redis: `notifications-arm-sql-shape.test.ts` + `notifications.test.ts` + `profile-reviews-accred-gate.test.ts` + `profile.test.ts` (16 passed across 4 files), `hafsql.test.ts` + `reviews.test.ts` + `review-parity-invariant.test.ts` + `reputation-lifecycle.test.ts` (46 passed, 3 skipped), `comments.test.ts` + `search.test.ts` + `papers.test.ts` + `helpers.test.ts` (passed clean on isolated re-runs; one HAF ECONNRESET flap on combined run resolved on isolation, no SQL-shape regression).
+
+**Item 1 [P2]** — `profile.ts:fetchUserReviewsFromHaf` paramIdx counter conversion. Replaced the six `accredCte.nextIdx + N` constants at the old `:338-343` with the canonical `let paramIdx = accredCte.nextIdx; const usernameIdx = paramIdx++; const appTagIdx = paramIdx++; const anonIdx = paramIdx++; const limitIdx = paramIdx++; const offsetIdx = paramIdx++; const accreditedParamIdx = paramIdx++;` pattern that matches reviews.ts post-round-1 item #5. Comment block above the block notes why offset arithmetic is fragile (silently mis-binds on add/remove of any intermediate bind or on changes to `activeAccreditationsCteBody`'s return param count) so a future maintainer doesn't revert under the impression that arithmetic is "cleaner." The two queries (count + data) still bind the same params in the same order; only the index source-of-truth changed.
+
+**Item 2 [P2] + Cross-task lift-in** — `reputation.ts` user_reviews CTE (4th `validReviewWhere` composition site). Added two predicates to the JOIN ON-clause:
+- **Accreditation gate** `(c.author = ANY($2::text[]) OR c.author = $19)` — matches the round-1 hold #1 fix shape applied at the three sibling review-class CTEs (`active_authors` review arm, `paper_reviews`, `citing_paper_quality`). Closes the per-callsite invariant violation flagged by adversarial (P2 conf 70) and pins the structural rule "every `validReviewWhere` caller in reputation.ts MUST compose accreditation."
+- **Paper-class gate via `validPevoPaperWhere({commentAlias:'up_for_self', appTagParam:'$3', bridgeAccountParam:'$18', source:'all'})`** — this lifts in the self-review-exclusion task's round-1 hold item #10 at the same JOIN. Without it a review-typed reply to a non-paper Hive post (a blog post, a non-paper comment, a peakd reply) passed the JOIN's existence check on parent comment and inflated target_users' review universe. Sibling `paper_reviews` and `citing_paper_quality` JOIN against `user_papers` (which is itself filtered via `validPevoPaperWhere`), so they are gated implicitly; `user_reviews` was the asymmetric site.
+
+Updated the `computeReputationBatch` param-list docblock at `reputation.ts:326-335` to reflect 4 review-class composition sites (was: "three"). The `$19` param remains the same Redis-cycle binding; no signature changes.
+
+Note on the self-review-exclusion task: only item #10 lands in this commit. The remaining 9 hold items in that task (1, 2, 3, 4, 5, 6, 7, 8, 9) are NOT touched. The self-review-exclusion task file stays in `tasks/pending/`. I did not edit its hold block per the implementer-does-not-edit-hold-block convention; the architect picks up the cross-task lift-in by reading the commit diff at next re-review intake.
+
+**Item 3 [P2]** — new test file `tests/routes/notifications-arm-sql-shape.test.ts`. Mocked-pool SQL-shape canaries for the new_review notification arms, per carve-out clause-(a) (real-corpus seeding of a non-paper review-typed reply is impractical; arm 1b's self-review exclusion has the same seeding impracticality). Three canaries:
+1. Arm 1a's parent-paper JOIN is INNER (not LEFT) — regex `(?<!LEFT )JOIN hafsql\.comments p\b` matches only the arm 1a INNER JOIN; arm 1b's `LEFT JOIN hafsql.comments p` is distinguished by the leading `LEFT`.
+2. Arm 1a's JOIN carries the `validPevoPaperWhere(source='all')` paper-class gate, pinned via the `'paper'` + `'bridge_paper'` substrings against the `(p.json_metadata` parent alias. Arm 1b uses `validPevoPaperWhere(source='bridge')` against `c.json_metadata` inside `user_bridge_papers`, so the native `'paper'` arm only originates from arm 1a in the emitted SQL.
+3. Arm 1a + 1b carry `co.author != $1` self-author exclusion (sibling to self-review-exclusion task hold item #6, which the architect noted "can share one canary commit"). The asymmetric-vs-`excludeSelfReviewWhere` rationale (co-author reviews of a shared paper ARE wanted notifications) is documented in the file header.
+
+Mutation kill: reverting INNER → LEFT, dropping the `validPevoPaperWhere` predicate, or removing `co.author != $1` from either arm fails the corresponding canary. The route entry-point is hit through a real `request(app).get('/api/notifications?since_block=...')` with `MOCK_VERIFY_SIGNATURE`, so the route middleware path (sinceBlock parsing, genesis clamp, auth) runs un-mocked.
+
+**Item 4 [P2]** — new test file `tests/routes/profile-reviews-accred-gate.test.ts`. Mocked-pool coverage for the `fetchUserReviewsFromHaf` round-1 hold #2 fix, per carve-out clause-(a) (the public HAF database cannot be deterministically seeded with an unaccredited author + a passing-shape pevo.review row at test time). Two assertions:
+1. **Canary** — both queries (count + data) emit the `IN (SELECT account FROM active_accreditations)` substring AND the `OR c.author =` anon-OR-arm substring. Reverting either composition site silently drops the substring from that emit and fires red.
+2. **Behavioral** — the responder simulates the gate by inspecting the bound author param (`$4` post-counter-fix) against a seeded `accreditedAuthors = new Set<string>()` (empty). A request for `/api/profile/unaccredited-spammer/reviews` returns `status: 'ok'`, `data: []`, `meta.total: 0` — proving the gate refuses non-admitted authors at the SQL level, not just at the route's post-filter.
+
+The header documents the carve-out justification per `agents/docs/solutions/conventions/test-mock-carve-out-clause-c-2026-05-04.md`.
+
+### Items NOT touched in this round (per the hold-block scope)
+
+The four hold-block items were explicit. I did not pull in scope beyond:
+- Item 7 + Item 8 (P3) carry-overs from the round-1 fix landing — already in place from prior round.
+- `getProfileStats` `user_reviews` accreditation gap flagged by the prior round as out-of-scope is still untouched, awaiting architect ticketing.
+- Architect-owned `reputation-algorithm.md` doc-drift sync stays for the architect's archive commit.

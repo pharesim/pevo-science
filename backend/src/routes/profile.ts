@@ -334,13 +334,18 @@ async function fetchUserReviewsFromHaf(username: string, limit: number, offset: 
     // (p.title) and for excludeSelfReviewWhere (reads p.json_metadata ->
     // authors[]). INNER JOIN — a review whose parent paper isn't present
     // in HAF can't surface meaningfully in a profile reviews list anyway.
+    // Canonical $N counter (matches reviews.ts post-round-1 item #5).
+    // Offset arithmetic (`nextIdx + N` constants) silently mis-binds if any
+    // bind is added or removed between lines, or if activeAccreditationsCteBody
+    // returns additional CTE params; the counter pattern adapts.
     const accredCte = activeAccreditationsCteBody(1);
-    const usernameIdx = accredCte.nextIdx;         // $4
-    const appTagIdx = accredCte.nextIdx + 1;       // $5
-    const anonIdx = accredCte.nextIdx + 2;         // $6
-    const limitIdx = accredCte.nextIdx + 3;        // $7
-    const offsetIdx = accredCte.nextIdx + 4;       // $8
-    const accreditedParamIdx = accredCte.nextIdx + 5; // $9 (votes-sort only)
+    let paramIdx = accredCte.nextIdx;
+    const usernameIdx = paramIdx++;
+    const appTagIdx = paramIdx++;
+    const anonIdx = paramIdx++;
+    const limitIdx = paramIdx++;
+    const offsetIdx = paramIdx++;
+    const accreditedParamIdx = paramIdx++; // votes-sort only; param appended conditionally below
 
     const at = `$${appTagIdx}`;
     const reviewWhere = validReviewWhere({ commentAlias: 'c', appTagParam: at });

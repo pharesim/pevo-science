@@ -328,10 +328,11 @@ export async function startReputationWeightsCache(): Promise<void> {
  * $7 = genesis block, $8-$17 = weights (cast once in `w` CTE),
  * $18 = config.hiveBridgeAccount (for validPevoPaperWhere bridge-author pin),
  * $19 = config.hiveAnonAccount (for review-class anon-proxy OR-arm at
- *       the three review CTEs that compose `validReviewWhere` —
- *       `active_authors` review arm, `paper_reviews`, and
- *       `citing_paper_quality`'s inner subquery; mirrors the display-side
- *       accreditation-or-anon shape composed at profile.ts / reviews.ts).
+ *       the FOUR review CTEs that compose `validReviewWhere` —
+ *       `active_authors` review arm, `paper_reviews`, `user_reviews`,
+ *       and `citing_paper_quality`'s inner subquery; mirrors the
+ *       display-side accreditation-or-anon shape composed at
+ *       profile.ts / reviews.ts).
  */
 export async function computeReputationBatch(
   usernames: string[],
@@ -642,16 +643,31 @@ export async function computeReputationBatch(
       -- accredited third parties, but excluding the row entirely is
       -- consistent with the paper_resolved_votes treatment for votes.
       -- The JOIN against parent paper up_for_self materializes the row
-      -- the helper reads authors[] from. INNER JOIN — a review on a
-      -- non-existent parent paper isn't a real review.
+      -- the helper reads authors[] from, AND enforces paper-class identity
+      -- via validPevoPaperWhere. Without it a review-typed reply to a
+      -- non-paper Hive post (a blog post, a peakd comment, etc.) would pass
+      -- the JOIN existence check and inflate target_users review universe
+      -- (self-review-exclusion task hold item #10). source=all because
+      -- both native and bridge papers are valid review targets here; the
+      -- bridge-author pin inside validPevoPaperWhere narrows the bridge arm.
+      -- Accreditation gate (c.author = ANY($2::text[]) OR c.author = $19)
+      -- mirrors the sibling 3 review-class CTEs landed in round-1 (item #1).
+      -- Helper docstring contract is "callers compose accreditation"; the
+      -- review_resolved_votes downstream gate is third-party-vote-driven so
+      -- the cost of admitting a non-accredited reviewer is bounded today,
+      -- but the asymmetry violates the per-callsite invariant and a
+      -- revoked-mid-cycle reviewer whose row stays in target_users would
+      -- surface non-zero reviews breakdown without the gate.
       user_reviews AS (
         SELECT c.author, c.permlink, c.created
         FROM ${T.comments} c
         JOIN ${T.comments} up_for_self
           ON up_for_self.author = c.parent_author AND up_for_self.permlink = c.parent_permlink
+          AND ${validPevoPaperWhere({ commentAlias: 'up_for_self', appTagParam: '$3', bridgeAccountParam: '$18', source: 'all' })}
         WHERE c.author IN (SELECT username FROM target_users)
           AND ${validReviewWhere({ commentAlias: 'c', appTagParam: '$3' })}
           AND ${excludeSelfReviewWhere({ reviewAlias: 'c', paperRowAlias: 'up_for_self', appTagParam: '$3' })}
+          AND (c.author = ANY($2::text[]) OR c.author = $19)
           AND COALESCE(c.json_metadata -> $3 ->> 'is_anonymous', 'false') != 'true'
       ),
 
