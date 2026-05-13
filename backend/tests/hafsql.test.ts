@@ -384,7 +384,7 @@ describe('validReviewWhere behavioral matrix (real Postgres, synthetic JSONB)', 
  */
 describe('excludeSelfReviewWhere SQL shape', () => {
   it('produces paper-author check + co-author EXISTS subquery', () => {
-    const sql = excludeSelfReviewWhere({ reviewAlias: 'c', paperRowAlias: 'p', appTagParam: '$1' });
+    const sql = excludeSelfReviewWhere({ commentAlias: 'c', paperRowAlias: 'p', appTagParam: '$1' });
     expect(sql).toContain('c.author != p.author');
     expect(sql).toContain("p.json_metadata -> $1 -> 'authors'");
     expect(sql).toContain('jsonb_array_elements');
@@ -393,7 +393,7 @@ describe('excludeSelfReviewWhere SQL shape', () => {
   });
 
   it('custom aliases propagate through both conjuncts', () => {
-    const sql = excludeSelfReviewWhere({ reviewAlias: 'rv', paperRowAlias: 'up', appTagParam: '$3' });
+    const sql = excludeSelfReviewWhere({ commentAlias: 'rv', paperRowAlias: 'up', appTagParam: '$3' });
     expect(sql).toContain('rv.author != up.author');
     expect(sql).toContain('up.json_metadata -> $3');
     expect(sql).toContain("auth ->> 'hive' = rv.author");
@@ -403,7 +403,7 @@ describe('excludeSelfReviewWhere SQL shape', () => {
   });
 
   it('caller-allocated appTagParam string flows verbatim', () => {
-    const sql = excludeSelfReviewWhere({ reviewAlias: 'c', paperRowAlias: 'p', appTagParam: '$42' });
+    const sql = excludeSelfReviewWhere({ commentAlias: 'c', paperRowAlias: 'p', appTagParam: '$42' });
     expect(sql).toContain('$42');
     expect(sql).not.toContain('$1');
   });
@@ -457,12 +457,11 @@ describe('excludeSelfReviewWhere behavioral matrix (real Postgres, synthetic row
     }
 
     const sql = `
-      WITH paper(json_metadata) AS (VALUES ('alice'::text, $2::jsonb)),
-           paper_aliased AS (SELECT 'alice'::text AS author, $2::jsonb AS json_metadata),
+      WITH paper_aliased AS (SELECT 'alice'::text AS author, $2::jsonb AS json_metadata),
            review_rows(label, author) AS (VALUES ${valuesSql})
       SELECT c.label FROM review_rows c
       CROSS JOIN paper_aliased p
-      WHERE ${excludeSelfReviewWhere({ reviewAlias: 'c', paperRowAlias: 'p', appTagParam: '$1' })}
+      WHERE ${excludeSelfReviewWhere({ commentAlias: 'c', paperRowAlias: 'p', appTagParam: '$1' })}
       ORDER BY c.label
     `;
     const result = await pool.query(sql, params);
@@ -499,7 +498,7 @@ describe('excludeSelfReviewWhere behavioral matrix (real Postgres, synthetic row
              )
         SELECT c.label FROM review_rows c
         CROSS JOIN paper_aliased p
-        WHERE ${excludeSelfReviewWhere({ reviewAlias: 'c', paperRowAlias: 'p', appTagParam: '$1' })}
+        WHERE ${excludeSelfReviewWhere({ commentAlias: 'c', paperRowAlias: 'p', appTagParam: '$1' })}
         ORDER BY c.label
       `;
       const result = await pool.query(sql, ['pevotest', meta]);

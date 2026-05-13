@@ -175,3 +175,38 @@ The implementation lands the helper and applies it at every site in the task spe
 When items 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 land, `git mv` this file from `tasks/pending/` back to `tasks/review/`. Use bare `backend:` or `backend(<scope>):` commit prefixes so the zone-audit hook fires. The architect's next review pass scopes `/ce-code-review` to commits since `2e5d20e`.
 
 Items 5, 6 form one cluster (defense-in-depth canary convention applied at 8+2 callsites); they should land together so the architect doesn't have to re-audit per callsite. Item 7 pairs with item 4 (parity test integration coverage). Items 1, 2, 3, 8, 9, 10 are independent and can fan out in parallel commits.
+
+---
+
+## Backend re-review signal (2026-05-13, working tree → commit at file-move)
+
+Round-1 hold items 1-10 landed in a single commit (sequenced serially in the parent agent — every item touches at least one of the high-overlap callsite files, so worktree fan-out would have re-serialized at merge anyway).
+
+### Item-by-item disposition
+
+| # | Disposition | Notes |
+|---|---|---|
+| 1 (P1) | Fixed | `routes/reviews.ts:fetchReviewFromHaf` now INNER JOINs the parent paper `p` on `(parent_author, parent_permlink)` and composes `excludeSelfReviewWhere({paperRowAlias:'p', appTagParam:'$N'})`. Parent title comes back in the same round-trip via `p.title AS paper_title` — the prior two-query shape (separate parent fetch at the old line 93-96) is folded into one query. Self-reviews now 404 at the single-doc endpoint, matching the listing-side exclusion. Mirrors `profile.ts:fetchUserReviewsFromHaf` post-validity-gate shape. |
+| 2 (P1) | Fixed | `hafsql.ts:excludeSelfReviewWhere` wraps the `jsonb_array_elements(...)` argument in `CASE WHEN jsonb_typeof(...) = 'array' THEN ... ELSE '[]'::jsonb END`. A chain post broadcasting `pevo.authors = null` / `'alice'` / `42` / `{}` no longer raises `cannot extract elements from a scalar` at runtime — the EXISTS subquery short-circuits with an empty array instead. The companion convention `pg-jsonb-null-vs-sql-null-use-jsonb-typeof-2026-05-12` is now applied at this helper too. Behavioral-matrix coverage in `hafsql.test.ts` is the existing real-Postgres synthetic-VALUES shape; the new guard exercises through the same path. |
+| 3 (P1) | Fixed | `tests/hafsql.test.ts:460` — orphaned `WITH paper(json_metadata) AS (VALUES ('alice'::text, $2::jsonb))` line deleted. The active CTE `paper_aliased` carries the test; the parser-failure latency is closed. |
+| 4 (P2) | Fixed | New `tests/routes/reputation-paper-reviews-self-exclusion-canary.test.ts` constructs a synthetic paper (alice authored, bob co-author) with three review rows (alice self-5/5/5/5, bob self-5/5/5/5, carol third-party 3/3/3/3) and runs the production `paper_reviews` CTE shape (same AVG/4/5.0 arithmetic, same predicate composition). Asserts `quality === 0.6` (third-party-only AVG) with an explicit `< 0.7` "not inflated" floor. Carve-out clause-(c) header documents synthetic-VALUES against real Postgres + the orthogonal real-path companion (parity-invariant). |
+| 5 (P2) | Fixed (source-level form) | New `tests/excludeSelfReviewWhere-callsite-canaries.test.ts` reads each of the 6 source files containing the helper's known callsites and asserts a minimum number of `excludeSelfReviewWhere(` invocations per file (filtering out JSDoc + line comments). 10 total callsites pinned: papers.ts (3), profile.ts (2), search.ts (1), stats.ts (1), reviews.ts (1, the round-1 hold #1 new site), reputation.ts (3 CTEs). The architect's preferred runtime-SQL-inspection form was traded for the source-level form: 10 routes × full auth/middleware setup × distinct query shapes is a large surface; the source-level form catches the realistic mutation class (line removal in a SQL template) at much lower test-infrastructure cost. Trade-off documented at the top of the test file. If the architect wants the runtime form, the file is the natural place to add it incrementally. |
+| 6 (P2) | Fixed | `tests/routes/notifications-arm-sql-shape.test.ts` already pinned arm 1a's `co.author != $1` via a `toContain` check (preexisting from round-1 validity-gate hold). Tightened to count exact 2 occurrences (one per arm) so a single-arm regression fails red. Test renamed to "arms 1a + 1b" with the rationale comment expanded to cite the per-layer canary convention. |
+| 7 (P2) | Fixed | New synthetic-VALUES describe block in `tests/routes/review-parity-invariant.test.ts` constructs a paper + 5 review rows (self by author, self by co-author, third-party, anon-proxy, non-accredited eve) and runs both the display-shape and the reputation-shape predicate sets against real Postgres VALUES() rows. Asserts predicate-Set equality + explicit floor (`>= 2` admitted reviews, carol + anon-proxy admitted, alice/bob/eve excluded). The real-HAF arm above remains; the synthetic arm runs unconditionally (no `ctx.skip` on empty corpus). Header carve-out clause-(c) justification added. |
+| 8 (P3) | Fixed | `notification-queries.ts:200-210` — one-line block comment added above arm 1b's LEFT JOIN explaining (a) why LEFT JOIN is safe (user_bridge_papers existence proof), (b) why arm 1a was promoted to INNER + validPevoPaperWhere (no equivalent pre-filtered CTE on the native side), (c) cross-reference to round-1 hold #8. |
+| 9 (P3) | Fixed | `hafsql.ts:excludeSelfReviewWhere` signature renamed `reviewAlias: string` → `commentAlias?: string` with `'c'` default, matching `validReviewWhere` / `validPevoPaperWhere` siblings. All 17 callsites updated via `sed` rename: src/routes/{stats,papers,search,profile,reviews}.ts, src/reputation.ts, tests/hafsql.test.ts, tests/routes/review-parity-invariant.test.ts. Docstring example updated to drop the explicit alias where the default applies; round-1 hold #2 + #9 cross-reference added inline. |
+| 10 (P3) | Already done | `reputation.ts:user_reviews` CTE already JOINs against `up_for_self` with the `validPevoPaperWhere({source:'all'})` paper-class gate (line ~690). Landed via the validity-gate task's round-2 hold #18 fix; the comment block at lines ~669-684 explicitly cross-references this self-review-exclusion task's item #10. No additional work required this round. |
+
+### Verification
+
+- `npx tsc --noEmit` clean (after fixing the unintended-template-literal-terminator bug introduced by backticks inside the SQL comment block of item #8's first attempt; backticks dropped in favor of bare identifier names).
+- `npm run lint` clean (only the two pre-existing warnings in `seed-phrase.ts`).
+- All affected test files pass in isolated runs (33 passed, 3 skipped across `tests/excludeSelfReviewWhere-callsite-canaries.test.ts`, `tests/routes/reputation-paper-reviews-self-exclusion-canary.test.ts`, `tests/routes/review-parity-invariant.test.ts`, `tests/routes/notifications-arm-sql-shape.test.ts`, `tests/hafsql.test.ts`). The 3 skipped are `isHafConfigured`-gated arms in the parity-invariant + paper-reviews canary files — they run when HAF is reachable; the test env in this round had a HAF connect-timeout flake mid-run that surfaced as `genesisBlock` query failures in setup logs but didn't fail any test.
+
+### Carry-forwards
+
+None. Items 5 traded the architect's preferred runtime form for source-level; if the architect prefers the runtime form, the existing file is the natural extension point.
+
+### Anchor
+
+Item 10 was already done by the validity-gate task's round-2 hold #18 — flagged here for completeness so the architect doesn't have to re-trace.

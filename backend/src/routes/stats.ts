@@ -54,7 +54,7 @@ export async function fetchStatsFromHaf() {
         FROM ${T.comments} r
         INNER JOIN papers p ON r.parent_author = p.author AND r.parent_permlink = p.permlink
         WHERE ${validReviewWhere({ commentAlias: 'r', appTagParam: at })}
-          AND ${excludeSelfReviewWhere({ reviewAlias: 'r', paperRowAlias: 'p', appTagParam: at })}
+          AND ${excludeSelfReviewWhere({ commentAlias: 'r', paperRowAlias: 'p', appTagParam: at })}
           AND (EXISTS (SELECT 1 FROM active_accreditations aa WHERE aa.account = r.author)
                OR r.author = ${anon})
       )

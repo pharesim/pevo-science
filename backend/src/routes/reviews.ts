@@ -6,7 +6,7 @@ import { parseMeta, isPevoReview, pevoString } from '../helpers.js';
 import { getAccreditedSet } from '../accreditation.js';
 import { getReputationScore } from '../reputation.js';
 import { logger } from '../logger.js';
-import { T, activeAccreditationsCte, accreditedVoteCount, validReviewWhere } from '../hafsql.js';
+import { T, activeAccreditationsCte, accreditedVoteCount, validReviewWhere, excludeSelfReviewWhere } from '../hafsql.js';
 
 const router = Router();
 
@@ -72,15 +72,31 @@ async function fetchReviewFromHaf(author: string, permlink: string) {
     const permlinkIdx = paramIdx++;
     const anonIdx = paramIdx++;
     const appTagIdx = paramIdx++;
+    // INNER JOIN parent paper `p` so `excludeSelfReviewWhere` can read
+    // `p.json_metadata -> authors[]` AND so the parent title comes back in
+    // one round-trip instead of the prior two-query shape
+    // (BACKEND-SELF-REVIEW-EXCLUSION round-1 hold #1). A review whose
+    // parent isn't on HAF can't surface meaningfully via this endpoint
+    // anyway; INNER JOIN matches the parity with `profile.ts:
+    // fetchUserReviewsFromHaf`.
+    //
+    // The self-review predicate joins the validity gate at the SQL layer
+    // so the single-doc endpoint 404s for a self-review for the same
+    // reason listing surfaces hide it. Bypassing via direct URL is no
+    // longer possible; display↔reputation parity now extends from the
+    // listing layer through the single-doc fetch.
     const result = await pool.query(
       `${accredCte.sql}
        SELECT c.author, c.permlink, c.body, c.json_metadata,
               c.parent_author, c.parent_permlink, c.created,
+              p.title AS paper_title,
               ${accreditedVoteCount('c.author', 'c.permlink')} AS net_votes
        FROM ${T.comments} c
+       JOIN ${T.comments} p ON p.author = c.parent_author AND p.permlink = c.parent_permlink
        WHERE c.author = $${authorIdx} AND c.permlink = $${permlinkIdx}
          AND (c.author IN (SELECT account FROM active_accreditations) OR c.author = $${anonIdx})
-         AND ${validReviewWhere({ commentAlias: 'c', appTagParam: `$${appTagIdx}` })}`,
+         AND ${validReviewWhere({ commentAlias: 'c', appTagParam: `$${appTagIdx}` })}
+         AND ${excludeSelfReviewWhere({ paperRowAlias: 'p', appTagParam: `$${appTagIdx}` })}`,
       [...accredCte.params, author, permlink, config.hiveAnonAccount || '', config.appTag],
     );
     if (result.rows.length === 0) return null;
@@ -89,12 +105,7 @@ async function fetchReviewFromHaf(author: string, permlink: string) {
     const meta = parseMeta(row.json_metadata);
     if (!isPevoReview(meta)) return null;
 
-    // Fetch parent paper title
-    const parentResult = await pool.query(
-      `SELECT title FROM ${T.comments} WHERE author = $1 AND permlink = $2`,
-      [row.parent_author, row.parent_permlink],
-    );
-    const parentTitle = parentResult.rows[0]?.title || '';
+    const parentTitle = (row.paper_title as string) || '';
 
     return buildReviewDetail(row, meta, parentTitle);
   } catch (err) {

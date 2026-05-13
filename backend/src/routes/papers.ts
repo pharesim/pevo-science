@@ -460,7 +460,7 @@ async function fetchPapersFromHaf(
     SELECT count(*)::int FROM ${T.comments} r
     WHERE r.parent_author = c.author AND r.parent_permlink = c.permlink
       AND ${validReviewWhere({ commentAlias: 'r', appTagParam })}
-      AND ${excludeSelfReviewWhere({ reviewAlias: 'r', paperRowAlias: 'c', appTagParam })}
+      AND ${excludeSelfReviewWhere({ commentAlias: 'r', paperRowAlias: 'c', appTagParam })}
       AND (EXISTS (SELECT 1 FROM active_accreditations aa WHERE aa.account = r.author) OR r.author = ${anonParam})
   ), 0) AS review_count`;
 
@@ -481,7 +481,7 @@ async function fetchPapersFromHaf(
       FROM ${T.comments} rv
       WHERE rv.parent_author = c.author AND rv.parent_permlink = c.permlink
         AND ${validReviewWhere({ commentAlias: 'rv', appTagParam })}
-        AND ${excludeSelfReviewWhere({ reviewAlias: 'rv', paperRowAlias: 'c', appTagParam })}
+        AND ${excludeSelfReviewWhere({ commentAlias: 'rv', paperRowAlias: 'c', appTagParam })}
         AND (EXISTS (SELECT 1 FROM active_accreditations aa WHERE aa.account = rv.author) OR rv.author = ${anonParam})
     ) sub
   ), 0) AS avg_rating`;
@@ -2226,7 +2226,7 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string) {
          WHERE c.parent_author = $1 AND c.parent_permlink = $2
            AND c.author = ANY($5::text[])
            AND ${validReviewWhere({ commentAlias: 'c', appTagParam: '$3' })}
-           AND ${excludeSelfReviewWhere({ reviewAlias: 'c', paperRowAlias: 'p', appTagParam: '$3' })}
+           AND ${excludeSelfReviewWhere({ commentAlias: 'c', paperRowAlias: 'p', appTagParam: '$3' })}
          ORDER BY c.created DESC`,
         [author, permlink, config.appTag, accreditedArr, reviewAuthors],
       ),

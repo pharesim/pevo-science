@@ -197,6 +197,17 @@ export async function fetchNotificationsFromHaf(
         NULL, NULL, NULL, NULL, NULL, NULL, NULL
       FROM ${T.commentOps} co
       JOIN user_bridge_papers bp ON bp.author = co.parent_author AND bp.permlink = co.parent_permlink
+      -- LEFT JOIN (vs the INNER JOIN + validPevoPaperWhere in arm 1a) is
+      -- safe here because user_bridge_papers is the parent-paper
+      -- existence proof: the bp.author/bp.permlink pair is itself produced
+      -- from a validPevoPaperWhere source=bridge filter upstream, so
+      -- the comments-side row IS guaranteed to be a PEvO bridge paper.
+      -- LEFT JOIN preserves the row if hafsql.comments lags behind the
+      -- comment_operations insert (rare but observable on heavy ingest);
+      -- p.title falls back to empty string via COALESCE above. The arm 1a
+      -- promotion to INNER + validPevoPaperWhere is needed because the
+      -- native arm has no equivalent pre-filtered CTE -- see
+      -- BACKEND-SELF-REVIEW-EXCLUSION round-1 hold #8.
       LEFT JOIN ${T.comments} p ON p.author = co.parent_author AND p.permlink = co.parent_permlink
       JOIN active_accreditations aa_r ON aa_r.account = co.author
       WHERE co.block_num > $2

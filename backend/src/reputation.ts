@@ -624,7 +624,7 @@ export async function computeReputationBatch(
         JOIN ${T.comments} c
           ON c.parent_author = up.author AND c.parent_permlink = up.permlink
           AND ${validReviewWhere({ commentAlias: 'c', appTagParam: '$3' })}
-          AND ${excludeSelfReviewWhere({ reviewAlias: 'c', paperRowAlias: 'up', appTagParam: '$3' })}
+          AND ${excludeSelfReviewWhere({ commentAlias: 'c', paperRowAlias: 'up', appTagParam: '$3' })}
           AND (c.author = ANY($2::text[]) OR c.author = $19)
         GROUP BY up.author, up.permlink
       ),
@@ -690,7 +690,7 @@ export async function computeReputationBatch(
           AND ${validPevoPaperWhere({ commentAlias: 'up_for_self', appTagParam: '$3', bridgeAccountParam: '$18', source: 'all' })}
         WHERE c.author IN (SELECT username FROM target_users)
           AND ${validReviewWhere({ commentAlias: 'c', appTagParam: '$3' })}
-          AND ${excludeSelfReviewWhere({ reviewAlias: 'c', paperRowAlias: 'up_for_self', appTagParam: '$3' })}
+          AND ${excludeSelfReviewWhere({ commentAlias: 'c', paperRowAlias: 'up_for_self', appTagParam: '$3' })}
           AND (c.author = ANY($2::text[]) OR c.author = $19)
           AND COALESCE(c.json_metadata -> $3 ->> 'is_anonymous', 'false') != 'true'
       ),
@@ -844,7 +844,7 @@ export async function computeReputationBatch(
           JOIN ${T.comments} c2
             ON c2.parent_author = up2.author AND c2.parent_permlink = up2.permlink
             AND ${validReviewWhere({ commentAlias: 'c2', appTagParam: '$3' })}
-            AND ${excludeSelfReviewWhere({ reviewAlias: 'c2', paperRowAlias: 'up2', appTagParam: '$3' })}
+            AND ${excludeSelfReviewWhere({ commentAlias: 'c2', paperRowAlias: 'up2', appTagParam: '$3' })}
             -- Accreditation gate ($2 = accredited, $19 = anon). Without
             -- it, an unaccredited reviewer on a citing paper inflates
             -- cpr.quality -> cpq.review_quality -> multiplies into

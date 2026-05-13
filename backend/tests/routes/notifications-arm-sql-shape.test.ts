@@ -117,13 +117,21 @@ describe('GET /api/notifications — new_review arm SQL-shape canaries', () => {
     // source='all' composition.
   });
 
-  it('arm 1a applies co.author != $1 self-author exclusion (mutation-kill for self-review-exclusion item #6 arm 1a)', async () => {
+  it('arms 1a + 1b both apply co.author != $1 self-author exclusion (mutation-kill for self-review-exclusion item #6, per-arm count)', async () => {
     const sql = await captureNotificationsSql();
     // Reverting the inline `AND co.author != $1` filter lets a paper
     // author receive `new_review` notifications for their own self-reply.
     // Asymmetric vs `excludeSelfReviewWhere` is deliberate — co-author
     // reviews of a shared paper ARE wanted notifications (notification
     // surface ≠ aggregation surface).
-    expect(sql).toContain('co.author != $1');
+    //
+    // Per-arm count: arm 1a (native new-review) AND arm 1b (bridge
+    // new-review) each carry their own `co.author != $1` inline filter.
+    // A revert that drops one but leaves the other is invisible to a
+    // bare `toContain` substring check. Pin the count at 2 so a single-
+    // arm regression fails red (BACKEND-SELF-REVIEW-EXCLUSION round-1
+    // hold #6 + `defense-in-depth-canary-must-pin-each-layer-2026-05-07`).
+    const occurrences = (sql.match(/co\.author != \$1/g) ?? []).length;
+    expect(occurrences).toBe(2);
   });
 });

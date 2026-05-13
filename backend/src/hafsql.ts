@@ -301,9 +301,8 @@ export function validReviewWhere(opts: {
  *   `config.appTag`.
  *
  * @example
- *   // Reputation paper_reviews CTE: paper row is `up`, review is `c`.
+ *   // Reputation paper_reviews CTE: paper row is `up`, review is `c` (default).
  *   conditions.push(excludeSelfReviewWhere({
- *     reviewAlias: 'c',
  *     paperRowAlias: 'up',
  *     appTagParam: '$3',
  *   }));
@@ -312,19 +311,34 @@ export function validReviewWhere(opts: {
  *   // Paper-detail reviews query: add a JOIN, then invoke the helper.
  *   //   JOIN hafsql.comments p ON p.author = $1 AND p.permlink = $2
  *   //   WHERE ... AND ${excludeSelfReviewWhere({...paperRowAlias: 'p'})}
+ *
+ * `commentAlias` defaults to `'c'` to match sibling helpers
+ * (`validReviewWhere`, `validPevoPaperWhere`) — reduces parameter-naming
+ * asymmetry across the helper set (BACKEND-SELF-REVIEW-EXCLUSION round-1
+ * hold #9). The `jsonb_typeof(...) = 'array'` guard before
+ * `jsonb_array_elements` defends against a chain post broadcasting a
+ * non-array `pevo.authors` (null, string, integer, object) — without it,
+ * Postgres raises at runtime and the reputation cycle cascade-fails for
+ * every user (BACKEND-SELF-REVIEW-EXCLUSION round-1 hold #2; companion to
+ * `pg-jsonb-null-vs-sql-null-use-jsonb-typeof-2026-05-12`).
  */
 export function excludeSelfReviewWhere(opts: {
-  reviewAlias: string;
+  commentAlias?: string;
   paperRowAlias: string;
   appTagParam: string;
 }): string {
-  const r = opts.reviewAlias;
+  const r = opts.commentAlias ?? 'c';
   const p = opts.paperRowAlias;
   const tag = opts.appTagParam;
   return `(
     ${r}.author != ${p}.author
     AND NOT EXISTS (
-      SELECT 1 FROM jsonb_array_elements(${p}.json_metadata -> ${tag} -> 'authors') auth
+      SELECT 1 FROM jsonb_array_elements(
+        CASE WHEN jsonb_typeof(${p}.json_metadata -> ${tag} -> 'authors') = 'array'
+          THEN ${p}.json_metadata -> ${tag} -> 'authors'
+          ELSE '[]'::jsonb
+        END
+      ) auth
       WHERE auth ->> 'hive' = ${r}.author
     )
   )`;
