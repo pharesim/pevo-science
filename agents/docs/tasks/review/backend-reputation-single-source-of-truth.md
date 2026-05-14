@@ -646,3 +646,40 @@ After items 1 + 2 land and R3 archives, the architect will land these doc update
 ### Re-review signal
 
 When items 1, 2 land, `git mv` this file from `tasks/pending/` back to `tasks/review/`. Use bare `backend:` or `backend(<scope>):` commit prefixes so the zone-audit hook fires. The architect's next review pass scopes `/ce-code-review` to commits since `f848b09`. Items are independent — can fan out: item 1 at `reputation.ts` + `reputation-lifecycle.test.ts`; item 2 at `signup-verify-postbroadcast-severity.test.ts`.
+
+---
+
+## Backend re-review signal (2026-05-14, round-4, working tree pre-commit)
+
+Both round-3 hold items addressed in a single coordinated commit. `tsc --noEmit` clean. `npm run lint` clean (0 errors, 2 pre-existing seed-phrase warnings unrelated). Targeted test suites pass against real Postgres + Redis: `reputation-lifecycle.test.ts` (17 passed) and `signup-verify-postbroadcast-severity.test.ts` (2 passed, one per `/confirm` + `/link` describe block).
+
+**Item 1 [P2]** — `reputation.ts:resetParseWarnStateForTests` removed entirely (the function definition + the `export`). The docblock above the now-removed function had explicitly cited the `vitest-fake-timers-module-private-state-isolation-2026-04-29.md` convention while violating its `__resetForTesting` anti-pattern; the convention's prescribed `vi.resetModules()` + dynamic-import pattern now applies at the test side without any production-surface concession.
+
+In `tests/routes/reputation-lifecycle.test.ts`:
+- Dropped `parseBatchValue` and `resetParseWarnStateForTests` from the static import list.
+- The `parseBatchValue — malformed shape branches surface ZERO_SCORE` describe block's `beforeEach` swapped `resetParseWarnStateForTests()` for `vi.resetModules()`. Comment block updated to cross-reference the convention doc and document why per-test fresh modules are needed (the module-private `parseWarnState` rate-limiter would otherwise suppress warns within `PARSE_WARN_INTERVAL_MS` = 60s, flaking the warn-fires assertions).
+- The four `it()` blocks each `await import('../../src/reputation.js')` (and `logger.js` for the warn-spy cases) at the top of the body, then call `reputationFresh.parseBatchValue(...)` / `reputationFresh.getReputationScore(...)` so the calls hit the freshly-loaded module's `parseWarnState`. The `vi.spyOn(loggerFresh.logger, 'warn')` attaches to the same fresh logger instance the fresh reputation module imports, so the spy intercepts the in-flight warn calls.
+
+The other describe blocks in the file (`accreditation lifecycle: seed on grant`, `invalidate on revocation`, `backfillAccreditationSeeds`, `seedAccreditationBonus permanent vs transient`) continue to use the file-top static imports unchanged — `vi.resetModules()` clears the cache but doesn't invalidate static-import bindings captured at file load, so those tests still resolve against the original module instance with its own singleton Redis client. Per-test fresh-loading is scoped to the describe block that actually needs warn-state isolation.
+
+**Item 2 [P2]** — `tests/routes/signup-verify-postbroadcast-severity.test.ts`:
+- Header docstring updated to acknowledge the round-3 hold #2 extension (parallel describe blocks, mutation at either site fails red).
+- Imports `cryptoUtils` from `@hiveio/dhive` and `clearRateLimitKeys` from `../support/redis-helpers.js`.
+- Appended a new `describe.skipIf(!dbReachable)('signup-verify /link: seedAccreditationBonus TypeError → 502 POST_BROADCAST_OPERATOR_REQUIRED', ...)` block mirroring the `/confirm` block's shape verbatim, with route-specific differences:
+  - Reseeded row has `email = $email` (not NULL — keeps the email-signup path; the `/link`-with-NULL-email ORCID-only path is exercised by `signup-verify.test.ts:518` PII test).
+  - Request body is `{ auth_token: verifyToken }` (no `username`/`keys` block — `/link` derives username from the X-Hive-Username header).
+  - Headers: `X-Hive-Username`, `X-Hive-Signature`, `X-Hive-Timestamp`. `signRequestBound()` helper mirrors the `signup-verify.test.ts` PII block's shape (sha256 of body + signed message with `${appTag}-auth|v1|POST|/api/auth/link|<hash>|<ts>`).
+  - `getAccountsMock` returns the test account with matching `posting.key_auths` so `verifyHiveSignature` middleware passes and the route's own `getAccounts` existence check at `signup-verify.ts:618` resolves cleanly.
+  - `tx_id` differs (`'signup-link-tx-permanent'` vs `/confirm`'s `'signup-confirm-tx-permanent'`) so cross-test mutation kills are isolated.
+- `await clearRateLimitKeys(['auth-link'])` called inside the `it()` body so vitest's `retry:1` replays cleanly without 429s.
+- Verified at runtime: log emission shows `"event": "post_broadcast_write_failed", "severity": "permanent"` and HTTP 502 for both `/confirm` and `/link` paths. A mutation removing `classifyPostBroadcastSeverity(postErr)` from `signup-verify.ts:732` (the `/link` site) now fails red at this test's `expect(res.body.error?.code).toBe('POST_BROADCAST_OPERATOR_REQUIRED')` assertion.
+
+### Carry-forwards
+
+The architect-owned doc updates listed in the round-3 hold's "Carry-forwards for architect at archive" remain pending for the archive commit:
+- `reputation-algorithm.md` lines 218-219, 296, 374, 407 (carry-forward from round-1+)
+- `ARCHITECTURE.md` lines 466-468 (carry-forward from round-1+)
+- `api-contracts/papers.md:136` (`author_reputation` field correction)
+- `api-contracts/auth.md:219-224, 256-260` (`/confirm` + `/link` error tables)
+- `api-contracts/reviews.md` NOT_FOUND description (self-review trigger)
+- `api-contracts/common.md` Accredited-Only Data Policy (self-review exclusion)

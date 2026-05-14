@@ -56,20 +56,6 @@ const parseWarnState: { count: number; lastLogTime: number; lastSampleRaw: strin
   lastError: null,
 };
 
-/**
- * Test-only seam: reset the module-private rate-limiter state for
- * `flagMalformedBatchValue` so per-test isolation does not require
- * `vi.resetModules()` + dynamic-import. Production code must not call this.
- * Per BACKEND-REPUTATION-SSOT round-2 hold #4 + `vitest-fake-timers-module-
- * private-state-isolation-2026-04-29.md`.
- */
-export function resetParseWarnStateForTests(): void {
-  parseWarnState.count = 0;
-  parseWarnState.lastLogTime = 0;
-  parseWarnState.lastSampleRaw = null;
-  parseWarnState.lastError = null;
-}
-
 function flagMalformedBatchValue(raw: string, err: unknown): void {
   parseWarnState.count += 1;
   parseWarnState.lastSampleRaw = raw.length > 200 ? `${raw.slice(0, 200)}…` : raw;

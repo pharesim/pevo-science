@@ -79,8 +79,6 @@ import {
   computeReputationBatch,
   getReputationScore,
   invalidateOnRevocation,
-  parseBatchValue,
-  resetParseWarnStateForTests,
   seedAccreditationBonus,
 } from '../../src/reputation.js';
 import * as accreditationModule from '../../src/accreditation.js';
@@ -229,29 +227,35 @@ describe('parseBatchValue — malformed shape branches surface ZERO_SCORE', () =
   beforeEach(async () => {
     const redis = getRedis();
     if (redis) await redis.del(batchKey(TEST_LEGACY_USER));
-    // Per BACKEND-REPUTATION-SSOT round-2 hold #4 +
-    // vi-spyon-mockimplementation-bypasses-function-under-test-2026-05-12:
-    // reset the module-private rate-limiter so each test sees the immediate-
-    // log branch (not the suppressed-by-recent-fire branch). The warn-fires
-    // assertions below would flake without this — `flagMalformedBatchValue`
-    // suppresses additional warns within PARSE_WARN_INTERVAL_MS (60s).
-    resetParseWarnStateForTests();
+    // Per `vitest-fake-timers-module-private-state-isolation-2026-04-29.md`:
+    // clear the module cache so each test re-imports `reputation.js` with a
+    // fresh module-private `parseWarnState` at zero. `flagMalformedBatchValue`
+    // suppresses additional warns within PARSE_WARN_INTERVAL_MS (60s), so the
+    // warn-fires assertions below would flake without per-test isolation. The
+    // convention prescribes `vi.resetModules()` + dynamic-import rather than
+    // a `__resetForTesting()` export, so no production-surface seam is needed.
+    vi.resetModules();
   });
 
-  it('returns null on null/undefined input', () => {
-    expect(parseBatchValue(null)).toBeNull();
-    expect(parseBatchValue(undefined)).toBeNull();
+  it('returns null on null/undefined input', async () => {
+    const reputationFresh = await import('../../src/reputation.js');
+    expect(reputationFresh.parseBatchValue(null)).toBeNull();
+    expect(reputationFresh.parseBatchValue(undefined)).toBeNull();
   });
 
-  it('returns null on non-JSON garbage and warns with structured event payload', () => {
-    // No `.mockImplementation(noop)` — bypassing the function under test would
-    // hide a mutation removing the structured `event` / `count` / `raw_sample`
-    // fields per vi-spyon-mockimplementation-bypasses-function-under-test-2026-05-12.
-    // The spy tracks calls while the real logger still fires (filtered by
-    // pino-level config in the test env so console isn't spammed).
-    const warnSpy = vi.spyOn(logger, 'warn');
+  it('returns null on non-JSON garbage and warns with structured event payload', async () => {
+    // Dynamic-import after `vi.resetModules()`: `reputationFresh` and
+    // `loggerFresh` resolve to the same fresh module graph, so spying on
+    // `loggerFresh.logger.warn` intercepts the call reputation.ts makes
+    // internally. No `.mockImplementation(noop)` — bypassing the function
+    // under test would hide a mutation removing the structured `event` /
+    // `count` / `raw_sample` fields per
+    // vi-spyon-mockimplementation-bypasses-function-under-test-2026-05-12.
+    const reputationFresh = await import('../../src/reputation.js');
+    const loggerFresh = await import('../../src/logger.js');
+    const warnSpy = vi.spyOn(loggerFresh.logger, 'warn');
     try {
-      const result = parseBatchValue('not-valid-json{');
+      const result = reputationFresh.parseBatchValue('not-valid-json{');
       expect(result).toBeNull();
 
       const parseFailedCalls = warnSpy.mock.calls.filter(([arg]) => {
@@ -272,19 +276,21 @@ describe('parseBatchValue — malformed shape branches surface ZERO_SCORE', () =
     }
   });
 
-  it('returns null on JSON whose parsed value lacks numeric `score` (legacy numeric-string) and warns with the same event', () => {
+  it('returns null on JSON whose parsed value lacks numeric `score` (legacy numeric-string) and warns with the same event', async () => {
     // The deploy-flush-skipped scenario: pre-existing keys hold '42'
     // (a JSON-parseable bare number) instead of '{"score":42,...}'.
     // This branch (parsed-but-wrong-shape) fires the same
     // `reputation.batch.parse_failed` warn as the JSON-parse-throws branch.
-    const warnSpy = vi.spyOn(logger, 'warn');
+    const reputationFresh = await import('../../src/reputation.js');
+    const loggerFresh = await import('../../src/logger.js');
+    const warnSpy = vi.spyOn(loggerFresh.logger, 'warn');
     try {
-      expect(parseBatchValue('42')).toBeNull();
+      expect(reputationFresh.parseBatchValue('42')).toBeNull();
       // Other malformed shapes (no warn assertion here — the rate-limiter
       // suppresses repeat warns within PARSE_WARN_INTERVAL_MS):
-      expect(parseBatchValue('{"score":"42"}')).toBeNull();
-      expect(parseBatchValue('{"breakdown":{}}')).toBeNull();
-      expect(parseBatchValue('[]')).toBeNull();
+      expect(reputationFresh.parseBatchValue('{"score":"42"}')).toBeNull();
+      expect(reputationFresh.parseBatchValue('{"breakdown":{}}')).toBeNull();
+      expect(reputationFresh.parseBatchValue('[]')).toBeNull();
 
       const parseFailedCalls = warnSpy.mock.calls.filter(([arg]) => {
         if (!arg || typeof arg !== 'object') return false;
@@ -307,8 +313,9 @@ describe('parseBatchValue — malformed shape branches surface ZERO_SCORE', () =
   it('getReputationScore returns ZERO_SCORE for a legacy numeric-string entry', async () => {
     const redis = getRedis();
     if (!redis) return;
+    const reputationFresh = await import('../../src/reputation.js');
     await redis.set(batchKey(TEST_LEGACY_USER), '42');
-    const rep = await getReputationScore(TEST_LEGACY_USER);
+    const rep = await reputationFresh.getReputationScore(TEST_LEGACY_USER);
     expect(rep.score).toBe(0);
     expect(rep.breakdown).toEqual({ papers: 0, reviews: 0, citations: 0, accreditation: 0 });
   });
