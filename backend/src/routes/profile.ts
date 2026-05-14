@@ -13,7 +13,7 @@ import { validate } from '../validation.js';
 import { getLastBlock } from '../block-watcher.js';
 import { getAppPool } from '../app-db.js';
 import { hafCache } from '../cache.js';
-import { T, validReviewWhere, excludeSelfReviewWhere, getCachedGenesisBlock, buildWith, activeAccreditationsCteBody, authorshipClaimsCteBody } from '../hafsql.js';
+import { T, validReviewWhere, validPevoPaperWhere, excludeSelfReviewWhere, getCachedGenesisBlock, buildWith, activeAccreditationsCteBody, authorshipClaimsCteBody } from '../hafsql.js';
 
 const router = Router();
 
@@ -321,8 +321,9 @@ async function fetchUserReviewsFromHaf(username: string, limit: number, offset: 
   try {
     // Param shape: accred CTE consumes $1..$3 (appTag, authorities,
     // genesis); $4 = username, $5 = appTag (for validReviewWhere /
-    // excludeSelfReviewWhere), $6 = hiveAnonAccount, $7 = limit,
-    // $8 = offset, $9 = accreditedAccounts (votes-sort only).
+    // excludeSelfReviewWhere / validPevoPaperWhere), $6 = hiveAnonAccount,
+    // $7 = hiveBridgeAccount (for validPevoPaperWhere bridge-author pin),
+    // $8 = limit, $9 = offset, $10 = accreditedAccounts (votes-sort only).
     //
     // The accreditation OR-anon gate is load-bearing here: without it,
     // `/api/profile/<unaccredited>/reviews` surfaces 300-char body
@@ -330,9 +331,16 @@ async function fetchUserReviewsFromHaf(username: string, limit: number, offset: 
     // fail the per-review accreditation gate at `/api/reviews/...`.
     // That asymmetry was flagged by the round-1 review (item 2).
     //
-    // The JOIN against parent paper `p` is needed both for the title
-    // (p.title) and for excludeSelfReviewWhere (reads p.json_metadata ->
-    // authors[]). INNER JOIN — a review whose parent paper isn't present
+    // The JOIN against parent paper `p` enforces three things: (a) the
+    // title (p.title), (b) self-review exclusion (p.json_metadata ->
+    // authors[]), and (c) parent-paper class identity — without
+    // validPevoPaperWhere on `p`, a `pevo.review`-shaped reply to a non-
+    // paper Hive post (a peakd blog post, a non-paper comment) would
+    // surface here with paper_title='' while reputation correctly excludes
+    // it (the user_reviews CTE in reputation.ts composes validPevoPaperWhere
+    // on its parent JOIN). This is the round-3 hold #1 parity fix: display
+    // and reputation must agree on which (author, permlink) reviews
+    // contribute. INNER JOIN — a review whose parent paper isn't present
     // in HAF can't surface meaningfully in a profile reviews list anyway.
     // Canonical $N counter (matches reviews.ts post-round-1 item #5).
     // Offset arithmetic (`nextIdx + N` constants) silently mis-binds if any
@@ -343,12 +351,15 @@ async function fetchUserReviewsFromHaf(username: string, limit: number, offset: 
     const usernameIdx = paramIdx++;
     const appTagIdx = paramIdx++;
     const anonIdx = paramIdx++;
+    const bridgeIdx = paramIdx++;
     const limitIdx = paramIdx++;
     const offsetIdx = paramIdx++;
     const accreditedParamIdx = paramIdx++; // votes-sort only; param appended conditionally below
 
     const at = `$${appTagIdx}`;
+    const bridgeParam = `$${bridgeIdx}`;
     const reviewWhere = validReviewWhere({ commentAlias: 'c', appTagParam: at });
+    const paperGate = validPevoPaperWhere({ commentAlias: 'p', appTagParam: at, bridgeAccountParam: bridgeParam, source: 'all' });
     const selfExclude = excludeSelfReviewWhere({ paperRowAlias: 'p', appTagParam: at });
     const accredGate = `(c.author IN (SELECT account FROM active_accreditations) OR c.author = $${anonIdx})`;
 
@@ -357,6 +368,7 @@ async function fetchUserReviewsFromHaf(username: string, limit: number, offset: 
       username,                               // $4
       config.appTag,                          // $5
       config.hiveAnonAccount || '',           // $6
+      config.hiveBridgeAccount || '',         // $7
     ];
 
     const countResult = await pool.query(
@@ -366,6 +378,7 @@ async function fetchUserReviewsFromHaf(username: string, limit: number, offset: 
        WHERE c.author = $${usernameIdx} AND c.parent_author != ''
          AND ${accredGate}
          AND ${reviewWhere}
+         AND ${paperGate}
          AND ${selfExclude}`,
       baseParams,
     );
@@ -399,6 +412,7 @@ async function fetchUserReviewsFromHaf(username: string, limit: number, offset: 
        WHERE c.author = $${usernameIdx} AND c.parent_author != ''
          AND ${accredGate}
          AND ${reviewWhere}
+         AND ${paperGate}
          AND ${selfExclude}
        ORDER BY ${orderClause}
        LIMIT $${limitIdx} OFFSET $${offsetIdx}`,

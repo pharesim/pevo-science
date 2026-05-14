@@ -1,36 +1,49 @@
 /**
- * Mocked-pool coverage for /api/profile/:username/reviews accreditation gate.
+ * Mocked-pool coverage for /api/profile/:username/reviews SQL-shape gates.
  *
  * Per CLAUDE.md "Running Tests" carve-out clauses (a)/(b)/(c):
- *   (a) Real-corpus seeding is impractical: the defended failure mode is
+ *   (a) Real-corpus seeding is impractical: the defended failure modes are
  *       an unaccredited Hive account writing valid-rating review-shaped
- *       replies to accredited authors' papers, so their own profile reviews
- *       page surfaces 300-char body excerpts (round-1 hold #2 spam vector).
- *       The public HAF database cannot be deterministically seeded with an
- *       unaccredited author + a passing-shape pevo.review row + a parent
- *       paper at test time.
+ *       replies to accredited authors' papers (round-1 hold #2 spam vector),
+ *       and an accredited reviewer writing a pevo.review-shaped reply to a
+ *       non-paper Hive post (round-3 hold #1 display↔reputation parity
+ *       break). The public HAF database cannot be deterministically seeded
+ *       with these author × parent-shape combinations at test time.
  *   (b) `verifyHiveSignature` is NOT mocked — the route is a public GET
  *       (no middleware to short-circuit).
  *   (c) Real-path companion: the rest of the profile reviews surface
  *       (envelope shape, ordering, sort, pagination) is exercised against
  *       real HAF by profile.test.ts / papers.test.ts integration. This
  *       file covers the SQL-shape risk class — that the accred-OR-anon
- *       predicate is composed at both queries — which no real-HAF test
- *       pins.
+ *       gate AND the validPevoPaperWhere parent-paper gate are composed
+ *       at both queries — which no real-HAF test pins.
  *
  * Canaries pinned in this file:
  *   1. Both the count query and the data query carry the accreditation
  *      gate `(c.author IN (SELECT account FROM active_accreditations) OR
  *      c.author = $N)` (round-1 hold #2 fix). Reverting either of the two
  *      composition sites silently re-opens the spam vector.
- *   2. The canonical $N counter pattern (round-2 hold #1 fix) — both
- *      queries reach the gate with consistently-numbered params.
- *   3. Behavioral: a request for an unaccredited user's reviews returns
- *      `data: []` with `total: 0`, modeling the gate via the responder.
+ *   2. Both queries also carry the parent-paper validPevoPaperWhere gate
+ *      (round-3 hold #1 fix) — pinned via the `'paper'` and `'bridge_paper'`
+ *      substrings emitted by the `source:'all'` arm of the helper. Reverting
+ *      either gate silently breaks display↔reputation parity (reputation
+ *      already composes this gate at user_reviews CTE; this site closed the
+ *      symmetric display surface).
+ *   3. The canonical $N counter pattern (round-2 hold #1 fix) — both
+ *      queries reach the gates with consistently-numbered params.
+ *   4. Envelope shape: a request for an unaccredited user's reviews
+ *      returns `data: []` with `total: 0` when the responder simulates the
+ *      gate via the bound author param. NOTE (round-3 hold #6): this test
+ *      pins envelope handling on the empty result set, NOT gate enforcement
+ *      at the SQL level — the actual gate mutation-kill is the SQL-shape
+ *      canary above. Removing the accreditation gate from
+ *      `fetchUserReviewsFromHaf` would not change this behavioral test's
+ *      outcome because the mock returns empty regardless of what SQL is
+ *      emitted.
  *
  * Mutation kill: dropping the accreditation gate substring from either the
- * count or data query, or reverting the route to skip the gate composition,
- * fails the assertions below.
+ * count or data query, OR dropping the validPevoPaperWhere paper-class
+ * substrings from either query, fails the SQL-shape assertions below.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import request from 'supertest';
@@ -56,12 +69,18 @@ beforeEach(async () => {
   await hafCache.clear();
 });
 
-describe('GET /api/profile/:username/reviews — SQL accreditation gate', () => {
+describe('GET /api/profile/:username/reviews — SQL-shape gates (accred + parent-paper)', () => {
   const accredGateSubstring = 'IN (SELECT account FROM active_accreditations)';
   // The route's data query also accepts the anon-proxy account in an OR-arm
   // matching the display-side composition (anon reviews surface for the
   // owning anon-mapping user, not as a generic spam channel).
   const anonOrArmSubstring = 'OR c.author =';
+  // validPevoPaperWhere({source:'all'}) emits BOTH the native arm
+  // (`'paper'`) and the bridge arm (`'bridge_paper'`) joined by OR. Both
+  // substrings together pin that this route is using the source:'all' shape
+  // (vs source:'native' which would omit `'bridge_paper'`).
+  const nativePaperSubstring = "= 'paper'";
+  const bridgePaperSubstring = "= 'bridge_paper'";
 
   it('count query and data query both compose the accred-OR-anon gate (mutation-kill)', async () => {
     const capturedSqls: string[] = [];
@@ -83,15 +102,53 @@ describe('GET /api/profile/:username/reviews — SQL accreditation gate', () => 
     }
   });
 
-  it('returns empty data and zero total for an unaccredited username (behavioral)', async () => {
-    // Responder simulates the gate by inspecting params + the seeded
-    // accredited set. The author parameter is bound at `$4` (per the
-    // canonical paramIdx++ shape: $1..$3 = accred CTE params, $4 = username,
-    // $5 = appTag, $6 = anon).
+  it('count query and data query both compose validPevoPaperWhere on parent paper (mutation-kill)', async () => {
+    // Round-3 hold #1: parent-paper class gate is the load-bearing
+    // display↔reputation parity fix. Reverting either site silently
+    // re-admits review-shaped replies to non-paper Hive posts (peakd blog
+    // posts, non-paper comments) with paper_title='' while reputation
+    // correctly excludes them via the sibling user_reviews CTE gate.
+    const capturedSqls: string[] = [];
+    hafQueryMock.mockImplementation(async (sql: string) => {
+      capturedSqls.push(sql);
+      if (sql.includes('count(*)')) return { rows: [{ total: 0 }] };
+      return { rows: [] };
+    });
+    const res = await request(app).get('/api/profile/unaccredited-spammer/reviews');
+    expect(res.status).toBe(200);
+    expect(capturedSqls.length).toBeGreaterThanOrEqual(2);
+    for (const sql of capturedSqls) {
+      expect(sql, 'count or data query missing native-paper arm').toContain(nativePaperSubstring);
+      expect(sql, 'count or data query missing bridge_paper arm — validPevoPaperWhere source:"all" requires both').toContain(bridgePaperSubstring);
+    }
+  });
+
+  it('envelope shape: empty data and zero total when responder simulates an unaccredited author', async () => {
+    // Round-3 hold #6 accurate scope: this test pins envelope handling on
+    // the empty result set, NOT gate enforcement at the SQL level. The
+    // mock makes the admission decision in JavaScript by inspecting bound
+    // params; removing the accred gate from fetchUserReviewsFromHaf would
+    // NOT change this test's outcome because the responder returns empty
+    // regardless of what SQL is emitted. The SQL-shape canaries above are
+    // the actual gate mutation-kills.
+    //
+    // Param positions after round-3 hold #1 param-shape extension:
+    //   $1..$3 = accred CTE params, $4 = username, $5 = appTag,
+    //   $6 = anonAccount, $7 = bridgeAccount, $8 = limit, $9 = offset,
+    //   $10 = accreditedAccounts (votes-sort only).
+    // 0-indexed: params[3] = username, params[5] = anonAccount.
+    // Runtime narrowing replaces an unchecked `as string` cast — the cast
+    // masks param-ordering regressions (round-3 hold #4) by silently
+    // resolving to `''` via `??` if the slot ever shifts; an explicit
+    // `expect(typeof ...).toBe('string')` fails red on regression.
     const accreditedAuthors = new Set<string>(); // empty: nobody is accredited
     hafQueryMock.mockImplementation(async (sql: string, params: unknown[]) => {
-      const author = (params?.[3] as string) ?? '';
-      const anonAccount = (params?.[5] as string) ?? '';
+      const rawAuthor = params?.[3];
+      const rawAnon = params?.[5];
+      expect(typeof rawAuthor).toBe('string');
+      expect(typeof rawAnon).toBe('string');
+      const author = typeof rawAuthor === 'string' ? rawAuthor : '';
+      const anonAccount = typeof rawAnon === 'string' ? rawAnon : '';
       const admitted = accreditedAuthors.has(author) || (author !== '' && author === anonAccount);
       if (sql.includes('count(*)')) {
         return { rows: [{ total: admitted ? 1 : 0 }] };

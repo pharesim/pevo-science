@@ -661,28 +661,28 @@ export async function computeReputationBatch(
 
       -- ═══ REVIEWS ═══
       -- user_reviews materializes each target_user's universe of reviews
-      -- for the cycle. Self-reviews (paper-author or named-co-author
-      -- reviewing their own paper) are excluded — a self-5/5/5/5 entering
-      -- this CTE would survive the third-party-vote gate at
-      -- review_resolved_votes only on the rare case of being voted by
-      -- accredited third parties, but excluding the row entirely is
-      -- consistent with the paper_resolved_votes treatment for votes.
-      -- The JOIN against parent paper up_for_self materializes the row
-      -- the helper reads authors[] from, AND enforces paper-class identity
-      -- via validPevoPaperWhere. Without it a review-typed reply to a
-      -- non-paper Hive post (a blog post, a peakd comment, etc.) would pass
-      -- the JOIN existence check and inflate target_users review universe
-      -- (self-review-exclusion task hold item #10). source=all because
-      -- both native and bridge papers are valid review targets here; the
-      -- bridge-author pin inside validPevoPaperWhere narrows the bridge arm.
-      -- Accreditation gate (c.author = ANY($2::text[]) OR c.author = $19)
-      -- mirrors the sibling 3 review-class CTEs landed in round-1 (item #1).
-      -- Helper docstring contract is "callers compose accreditation"; the
-      -- review_resolved_votes downstream gate is third-party-vote-driven so
-      -- the cost of admitting a non-accredited reviewer is bounded today,
-      -- but the asymmetry violates the per-callsite invariant and a
-      -- revoked-mid-cycle reviewer whose row stays in target_users would
-      -- surface non-zero reviews breakdown without the gate.
+      -- for the cycle. Composed predicates:
+      --   - validReviewWhere: rating-shape + review-type-tag identity.
+      --   - excludeSelfReviewWhere: rejects paper-author + named-co-author
+      --     self-reviews (consistent with paper_resolved_votes vote treatment).
+      --   - validPevoPaperWhere on the parent paper: ensures the JOIN
+      --     materializes a real PEvO paper (native or bridge) so a review-
+      --     typed reply to a non-paper Hive post doesn't inflate the cycle.
+      --     source='all' admits both arms; the bridge-author pin narrows
+      --     the bridge arm. Per the pevo-object-identity-is-author-vouching
+      --     convention.
+      --   - Accreditation gate (c.author = ANY($2::text[]) OR c.author = $19):
+      --     structurally required per the helper contract (callers compose
+      --     accreditation), mirroring the sibling 3 review-class CTEs and
+      --     the display-side composition at profile.ts. In the current call-
+      --     graph $1 and $2 derive from the same getAllAccreditedAccounts
+      --     snapshot, so this site's check is functionally subsumed by the
+      --     c.author IN target_users filter; the structural rule — every
+      --     validReviewWhere caller MUST compose accreditation — is the
+      --     load-bearing invariant. A future caller passing a non-accredited
+      --     usernames set won't silently bypass.
+      -- Mutation kill at each composed site lives in the
+      -- defense-in-depth-canary-must-pin-each-layer convention.
       user_reviews AS (
         SELECT c.author, c.permlink, c.created
         FROM ${T.comments} c

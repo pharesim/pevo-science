@@ -427,3 +427,40 @@ Both safe to land at archive of this task once round-4 items land.
 ### Re-review signal
 
 When items 1, 2, 3, 4, 5, 6 land, `git mv` this file from `tasks/pending/` back to `tasks/review/`. Use bare `backend:` or `backend(<scope>):` commit prefixes so the zone-audit hook fires. The architect's next review pass scopes `/ce-code-review` to commits since `69459e3`. Items 2 and 5 share the same comment cluster — bundle them. Items 4 and 6 share the same test file — bundle them. Item 1 is the load-bearing P1 fix and is independent.
+
+---
+
+## Backend re-review signal (2026-05-14, round-4, working tree pre-commit)
+
+All 6 round-3 hold items addressed in a single coordinated commit. `tsc --noEmit` clean (fixed an unintended-template-literal-terminator bug introduced by backticks inside the SQL comment block of items 2+5's first attempt; backticks dropped in favor of bare identifier names — same mitigation as the self-review-exclusion task's round-1 item #8 fix). `npm run lint` clean (0 errors, 2 pre-existing seed-phrase warnings unrelated). Targeted test suites pass against real Postgres: `profile-reviews-accred-gate.test.ts` + `notifications-arm-sql-shape.test.ts` + `profile.test.ts` + `reputation-lifecycle.test.ts` (28 passed across 4 files); `review-parity-invariant.test.ts` + `reputation-paper-reviews-self-exclusion-canary.test.ts` + `hafsql.test.ts` + `excludeSelfReviewWhere-callsite-canaries.test.ts` (31 passed, 3 skipped — `isHafConfigured`-gated arms in real-HAF tests where the test env couldn't reach Mahdi's HAF; the synthetic-VALUES arms ran clean).
+
+**Item 1 [P1]** — `fetchUserReviewsFromHaf` parent-paper class gate landed at both count + data queries. `validPevoPaperWhere({ commentAlias: 'p', appTagParam: at, bridgeAccountParam: bridgeParam, source: 'all' })` composes after `validReviewWhere` and before `excludeSelfReviewWhere` in both query bodies. Param shape extended via the canonical `paramIdx++` counter: new `bridgeIdx` slot binds `config.hiveBridgeAccount || ''` at `$7`, pushing `limitIdx` → `$8`, `offsetIdx` → `$9`, `accreditedParamIdx` → `$10`. Comment block above the counter rewritten to:
+- Document the round-3 hold #1 parity fix at the JOIN-level rationale (display ↔ reputation parity at the sibling site).
+- Update the param-position map (the round-2 #1 paramIdx counter convention's load-bearing comment) to reflect the new bridge slot.
+
+A new SQL-shape canary in `profile-reviews-accred-gate.test.ts` pins both queries: `nativePaperSubstring = "= 'paper'"` AND `bridgePaperSubstring = "= 'bridge_paper'"` must appear in every emitted query. The substrings together pin the `source:'all'` arm of `validPevoPaperWhere` (vs `source:'native'` which omits the bridge arm); a revert at either query drops the substring and fires red. The mutation-kill is verified at runtime: the canary fires the new assertion against the current source.
+
+**Items 2 + 5 [P3]** — bundled at the user_reviews CTE comment cluster (`reputation.ts:662-685`). Replaced the round-1-style narrative comment with a bullet-style block listing the four composed predicates and their structural rationale. Decision narrative ("the cost of admitting a non-accredited reviewer is bounded today") and round-number cross-references ("sibling 3 review-class CTEs landed in round-1 (item #1)") are dropped in favor of named convention cross-references (`pevo-object-identity-is-author-vouching`, `defense-in-depth-canary-must-pin-each-layer`). Item 5's rewrite: the accreditation-gate rationale block now reflects actual call-graph reality — `$1` and `$2` derive from the same `getAllAccreditedAccounts` snapshot, so the per-callsite gate is functionally subsumed by the upstream `c.author IN target_users` filter; the structural rule (every `validReviewWhere` caller MUST compose accreditation) is the load-bearing invariant, defending against a future caller passing a non-accredited `usernames` set.
+
+The first edit attempt accidentally embedded backticks inside the SQL `${...}` template literal — Postgres-comment style ` `\`name\` ` worked in markdown but broke TypeScript template-literal parsing (tsc surfaced 10 errors). The recovery dropped the backticks; sibling identifier names like `getAllAccreditedAccounts`, `c.author IN target_users`, `validReviewWhere`, `usernames` appear as bare text — readable in-source, no markdown polish required because these comments are SQL not docstrings.
+
+**Item 3 [P3]** — `notifications-arm-sql-shape.test.ts` `captureNotificationsSql` mock loosened. The prior `if (sql.includes('custom_id') && sql.includes('MAX'))` filter matched NEITHER of the two queries that pool.query actually emits in the notifications route (genesis uses `MIN`, not `MAX`; there's no head-block lookup in the route — only the genesis + notifications queries fire). The prior test "worked" only because both fall-through queries hit `capturedSql = sql` and the notifications query was the last to execute, so `capturedSql` happened to hold the right SQL.
+
+The new mock implements an explicit two-branch dispatch:
+- `if (sql.includes('AS genesis')) return { rows: [{ genesis: 0 }] }` — short-circuits the `getGenesisBlock` query with a result that bypasses the clamp.
+- `if (sql.includes("'new_review'::text")) { capturedSql = sql; return { rows: [] }; }` — captures ONLY when the SQL contains the notifications-arm event-type tag, a distinctive substring emitted by the UNION-ALL arms of `fetchNotificationsFromHaf`. A future pre-notifications query added inside the route falls through to the empty `return { rows: [] }` branch WITHOUT capturing, so the canary continues to pin the correct SQL.
+
+Round-3 hold #3 (b) (the per-arm count assertion for `co.author != $1`) was ALREADY in place from the self-review-exclusion task's round-1 hold #6 fix that landed earlier — the test at line 134 already uses `(sql.match(/co\.author != \$1/g) ?? []).length` and asserts `toBe(2)`. No edit needed; called out for the architect's awareness so the round-3 finding's (b) clause doesn't get re-flagged at round-4 intake.
+
+**Items 4 + 6 [P3]** — bundled at `profile-reviews-accred-gate.test.ts`. Item 4: the prior `(params?.[3] as string) ?? ''` unchecked-cast pattern is replaced by runtime narrowing — `expect(typeof rawAuthor).toBe('string')` fires red on any param-ordering regression that shifts the position from string to undefined/number, which is exactly the mutation class the round-2 #1 paramIdx counter convention was introduced to prevent silent positional mis-binding. The fallback `''` is preserved (TypeScript's narrowing is the runtime guard; the fallback is a defense-in-depth for the type system). Item 6: the second `it` block's title + inline comment now accurately describes envelope-shape handling on an empty result set instead of overclaiming SQL-level gate enforcement. The actual gate mutation-kills live in the two SQL-shape canaries above it (accred gate + parent-paper gate); this `it` block verifies that the route's response wrapping does the right thing on empty rows. File-header docblock updated to acknowledge both round-3 holds' scope changes (parent-paper canary, narrowing approach, envelope-vs-gate accuracy).
+
+### Carry-forwards for architect at archive
+
+Carried over from round-1 (still pending):
+- `agents/docs/reputation-algorithm.md` lines 218-219, 296, 374, 407 (pre-task descriptions of unprefixed keys, numeric-string values, `active_accounts` CTE name).
+- `agents/docs/ARCHITECTURE.md` lines 466-468 (pre-task SSoT state).
+
+### Item NOT touched
+
+- `getProfileStats` `user_reviews` CTE at `profile.ts:92-100` accreditation gap (flagged round-2 as out-of-scope, still flagged for follow-up ticket).
+- Architect-zone update to `agents/docs/reputation-algorithm.md` documenting the 4-site validPevoPaperWhere composition and the FIVE self-exclusion composition sites (4 in reputation.ts review-class CTEs + 1 at profile.ts fetchUserReviewsFromHaf for round-3 hold #1) — folded into the architect's archive commit alongside the carry-forwards above.

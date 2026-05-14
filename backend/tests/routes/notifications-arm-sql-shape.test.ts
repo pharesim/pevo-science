@@ -66,16 +66,30 @@ beforeEach(async () => {
 describe('GET /api/notifications — new_review arm SQL-shape canaries', () => {
   async function captureNotificationsSql(): Promise<string> {
     // Use a sinceBlock past the genesis short-circuit so the route reaches
-    // the notification query. genesis-block lookup hits `pool.query` first
-    // with a `SELECT MAX(...) ... custom_id = $1` shape — return 0 so the
-    // clamp doesn't engage.
+    // the notification query. The route hits pool.query twice:
+    //   1. `getGenesisBlock` — `SELECT MIN(cj.block_num) AS genesis ...
+    //      WHERE cj.custom_id = $1` (MIN, NOT MAX — round-3 hold #3
+    //      corrected the prior MAX-shape mock that matched neither
+    //      bootstrap query and worked only by capture-overwrite ordering).
+    //   2. `fetchNotificationsFromHaf` — the notification CTE-chain that
+    //      we want to inspect. Its UNION-ALL arms tag rows with
+    //      `'new_review'::text AS event_type` (and several other event
+    //      types); capture only when the SQL contains that distinctive
+    //      arm-tag substring so a future pre-notifications query added
+    //      inside the route does NOT steal the capture.
     let capturedSql = '';
     hafQueryMock.mockImplementation(async (sql: string) => {
-      if (sql.includes('custom_id') && sql.includes('MAX')) {
-        return { rows: [{ block_num: 0 }] };
+      // Bootstrap: genesis-block lookup. Return 0 so the clamp doesn't engage.
+      if (sql.includes('AS genesis')) {
+        return { rows: [{ genesis: 0 }] };
       }
-      // Notifications query.
-      capturedSql = sql;
+      // Notifications query — distinguishable by the event-type tags
+      // emitted in the UNION-ALL arms.
+      if (sql.includes("'new_review'::text")) {
+        capturedSql = sql;
+        return { rows: [] };
+      }
+      // Anything else: empty fall-through (don't capture).
       return { rows: [] };
     });
     const res = await request(app)
