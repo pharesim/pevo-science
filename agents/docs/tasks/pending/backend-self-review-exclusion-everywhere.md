@@ -210,3 +210,88 @@ None. Items 5 traded the architect's preferred runtime form for source-level; if
 ### Anchor
 
 Item 10 was already done by the validity-gate task's round-2 hold #18 — flagged here for completeness so the architect doesn't have to re-trace.
+
+---
+
+## Architect re-review round-2 (2026-05-14) — HELD PENDING FIXES
+
+`/ce-code-review` on commit `39966f5` dispatched 10 reviewers (correctness, testing, maintainability, project-standards, learnings, security, performance, api-contract, adversarial, kieran-typescript). All 10 round-1 hold items verified addressed per the implementer's disposition table. Item 10's cross-task lift-in (`validPevoPaperWhere` at `reputation.ts:user_reviews` CTE JOIN) verified at HEAD — landed via commit `69459e3` (the validity-gate task's round-3 commit), NOT via "round-2 hold #18" as the disposition's anchor cites. Substance is correct; the round-number citation is a minor doc-trail error.
+
+Round-2 surfaces 3 items held below — one P1 self-exclusion-bypass discovered at real Postgres (subsumes round-1 hold #2's missing behavioral matrix), plus two P3 cleanups including the 4th composition site that was outside round-1's enumerated 10-callsite scope.
+
+### Items to address
+
+#### P1 — high
+
+**1. (P1) `excludeSelfReviewWhere` over-admits array-of-non-objects authors — verified bypass at real Postgres. Subsumes round-1 hold #2's missing behavioral matrix.**
+
+**Where:** `backend/src/hafsql.ts:333-344` (the `CASE WHEN jsonb_typeof = 'array'` guard added round-1 #2).
+
+**Why:** Adversarial (P1, conf 100) verified at real Postgres (docker exec psql). A paper broadcast with `json_metadata = {"pevotest":{"type":"paper","authors":["alice","bob"]}}` (authors as bare strings, NOT objects with a `hive` key) is admitted by `validPevoPaperWhere`. `jsonb_typeof(...)` returns `'array'` (correct), so the CASE THEN branch fires. `jsonb_array_elements` yields JSONB strings (`"alice"`, `"bob"`). On a JSONB string, `auth ->> 'hive'` returns NULL (`->>` only extracts object keys). `NULL = c.author` is NULL, not TRUE → EXISTS returns 0 rows → NOT EXISTS evaluates to TRUE for every reviewer. **A named-string co-author can submit a review the helper admits.** Same bypass verified at psql for `[null]`, `[1,2,3]`, `[{"name":"alice"}]` (object missing 'hive' key).
+
+The round-1 hold #2 fix listed 4 *top-level* shapes (null/string/integer/object) but did not enumerate array-of-non-objects. The implementer's round-1 disposition note for hold #2 also claimed "the new guard exercises through the same path" pointing at the existing behavioral matrix — but testing reviewer (P1, conf 100) confirms the existing matrix at `hafsql.test.ts:477-508` covers only missing-key + empty-array, NOT the 4 non-array top-level shapes the architect originally asked for, NOR the array-of-non-objects shapes flagged here. The behavioral coverage gap subsumes the original hold #2 ask.
+
+**Fix:** Tighten the EXISTS predicate inside `excludeSelfReviewWhere` to require object-typed elements with a non-null `hive` key:
+
+```sql
+NOT EXISTS (
+  SELECT 1 FROM jsonb_array_elements(
+    CASE WHEN jsonb_typeof(p.json_metadata -> $tag -> 'authors') = 'array'
+         THEN p.json_metadata -> $tag -> 'authors'
+         ELSE '[]'::jsonb
+    END
+  ) auth
+  WHERE jsonb_typeof(auth) = 'object'
+    AND auth ->> 'hive' = c.author
+)
+```
+
+Add behavioral-matrix rows in `backend/tests/hafsql.test.ts` covering:
+- The originally-asked 4 top-level shapes (`authors: null`, `authors: "alice"`, `authors: 42`, `authors: {hive: 'bob'}`) — pin no Postgres exception + admit-row matches the empty-array case.
+- The array-of-non-objects shapes (`authors: ["alice","bob"]`, `authors: [null]`, `authors: [{name: 'alice'}]`) — pin that the named-string co-author and the object-without-hive-key co-author are NOT admitted as non-self reviewers.
+
+#### P3 — polish
+
+**2. (P3) Stale `@param opts.reviewAlias` JSDoc + 7 redundant explicit `commentAlias: 'c'` callsites after default was introduced.**
+
+**Where:** `backend/src/hafsql.ts:296` (JSDoc), plus 7 production callsites: `reputation.ts:627`, `:693`; `profile.ts:98`, `:352`; `papers.ts:2229`; `search.ts:183`; `stats.ts:57`.
+
+**Why:** Cross-corroborated by correctness (P3, conf 100), maintainability (P3, conf 100), kieran-typescript (P3, conf 100). The round-1 #9 rename (`reviewAlias` → `commentAlias?` with default `'c'`) updated the signature, the `@example` block, and the prose paragraph, but the `@param opts.reviewAlias` JSDoc tag at `hafsql.ts:296` was not updated — IDE hovers show a phantom property. Separately, the new callsite at `reviews.ts:99` correctly omits the argument; the 7 pre-existing callsites that use alias `'c'` still pass `commentAlias: 'c'` explicitly, now dead weight that defeats the purpose of the default and leaves the codebase with two conventions for the same call.
+
+**Fix:** Bundle: (a) update `@param opts.reviewAlias` → `@param opts.commentAlias` (with `(optional, defaults to 'c')` description) at `hafsql.ts:296`. (b) drop `commentAlias: 'c'` argument at the 7 production callsites listed above. Keep test-file callsites as-is (test verbosity is lower-cost). Callsites with non-default aliases (`'r'` in `papers.ts:463`, `'rv'` in `papers.ts:484`, `'c2'` in `reputation.ts:847`) correctly retain their explicit argument.
+
+**3. (P3) `active_authors` review arm doesn't compose `excludeSelfReviewWhere` — 4th composition site missed from round-1's enumerated 10-callsite scope.**
+
+**Where:** `backend/src/reputation.ts:434-440` (the active_authors CTE's review arm).
+
+**Why:** Adversarial (P3, conf 50) + architect decision. Round-1 enumerated 10 callsites of `excludeSelfReviewWhere` across 6 src files (papers/profile/search/stats/reviews + reputation.ts paper_reviews + user_reviews + citing_paper_quality = 3 reputation sites). The `active_authors` review arm is the 4th composition site of `validReviewWhere` in `reputation.ts` (the round-3 validity-gate commit's docblock explicitly counted "FOUR review CTEs" composing `validReviewWhere`). The architect decided named-co-authors reviewing their own paper should NOT enter `active_authors` via the review arm — symmetric with the other 3 CTEs.
+
+Concrete exploit path enabled by the gap: paper-author alice names bob as co-author in `pevo.authors[]`. bob doesn't publish a paper himself. bob is accredited. bob writes a `pevo.review` reply to alice's paper (a self-review, since bob is a named co-author). The 3 sibling CTEs (paper_reviews, user_reviews, citing_paper_quality) correctly reject bob's row via `excludeSelfReviewWhere`. But `active_authors` review arm accepts it. `voter_weights` LEFT JOIN admits bob → accredited-curve boost: `LEAST(1.0, GREATEST(0.4, 0.4 + 0.6 * sqrt(rep/100)))` instead of `LEAST(1.0, sqrt(rep/100))`. At rep=0: 0.0 → 0.4. bob now has meaningful voter weight despite authoring zero non-self content.
+
+**Fix:**
+
+(a) Compose the helper at the review arm:
+```sql
+SELECT c.author FROM ${T.comments} c
+JOIN ${T.comments} p ON p.author = c.parent_author AND p.permlink = c.parent_permlink
+WHERE p.parent_author = '' AND p.parent_permlink = $3
+  AND ${validPevoPaperWhere({ commentAlias: 'p', appTagParam: '$3', bridgeAccountParam: '$18', source: 'all' })}
+  AND p.json_metadata ->> 'app' LIKE $4
+  AND ${validReviewWhere({ commentAlias: 'c', appTagParam: '$3' })}
+  AND ${excludeSelfReviewWhere({ paperRowAlias: 'p', appTagParam: '$3' })}   -- new (commentAlias defaults to 'c')
+  AND (c.author = ANY($2::text[]) OR c.author = $19)
+```
+
+(b) Update `backend/tests/excludeSelfReviewWhere-callsite-canaries.test.ts` `CALLSITES` table: bump `reputation.ts` from 3 → 4 invocations.
+
+(c) Update `reputation.ts:326-335` `computeReputationBatch` param-list docblock to reflect 4 self-exclusion composition sites (matches the existing "FOUR review CTEs" language for `validReviewWhere`).
+
+(d) Add a one-paragraph block comment above the `active_authors` review arm explaining that self-reviewers (paper authors + named co-authors reviewing their own paper) are excluded so they can't bootstrap into the accredited voter_weight curve via self-review alone. Reference the named-co-author edge case explicitly so future maintainers don't strip the helper "for consistency" thinking it's redundant given the upstream accreditation gate.
+
+### Carry-forwards for architect at archive
+
+- Architect-zone update to `agents/docs/reputation-algorithm.md` to document the 4-site self-exclusion invariant (folds into the existing round-1+ doc-sync carry-forward across the reputation cluster).
+
+### Re-review signal
+
+When items 1, 2, 3 land, `git mv` this file from `tasks/pending/` back to `tasks/review/`. Use bare `backend:` or `backend(<scope>):` commit prefixes so the zone-audit hook fires. The architect's next review pass scopes `/ce-code-review` to commits since `39966f5`. Items can fan out independently — natural groupings: item 1 (jsonb-typeof guard + behavioral matrix) at `hafsql.ts` + `hafsql.test.ts`; item 2 (JSDoc + callsite cleanup) at `hafsql.ts` + 7 routes; item 3 (`active_authors` compose) at `reputation.ts` + canary file + comment.
