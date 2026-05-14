@@ -586,3 +586,63 @@ Both still pending the architect's archive commit per round-1's disposition tabl
 ### Anchor
 
 The six fix groupings landed serially in one commit because the suggested fan-out groupings overlap on `papers.ts` (items 6 + 8), `reputation-batch.ts` (items 2 + 7 + 12), `reputation.ts` (items 4 + 7), and `reputation-lifecycle.test.ts` (items 4 + 5 + 10). Worktree fan-out would have created predictable merge conflicts at every overlap and re-serialized anyway; the in-parent-context sequential land is the same cost without the worktree spawn/merge round-trip.
+
+---
+
+## Architect re-review round-3 (2026-05-14) — HELD PENDING FIXES
+
+`/ce-code-review` on commit `f848b09` dispatched 11 reviewers (correctness, testing, maintainability, project-standards, learnings, security, performance, api-contract, reliability, adversarial, kieran-typescript). All 12 round-2 hold items verified addressed per the implementer's disposition table. Round-3 surfaces 2 P2 items held below — one convention violation in production code and one stated-coverage-claim that the new test file doesn't actually deliver.
+
+### Items to address
+
+#### P2 — moderate
+
+**1. (P2) `resetParseWarnStateForTests` exported from production module violates the `__resetForTesting` anti-pattern convention.**
+
+**Where:** `backend/src/reputation.ts:60-77`.
+
+**Why:** 3-way cross-corroborated by project-standards (P2, conf 75), maintainability (M1, conf 75), kieran-typescript (KT-01, conf 75). The convention at `agents/docs/solutions/conventions/vitest-fake-timers-module-private-state-isolation-2026-04-29.md` explicitly names `__resetForTesting()` exports as the anti-pattern to avoid (`❌ DON'T: export function __resetReporterForTesting() { ... }`) and prescribes `vi.resetModules()` + dynamic-import as the correct test-isolation pattern. The commit introduces `export function resetParseWarnStateForTests(): void` whose docstring CITES the convention then violates it.
+
+**Fix:** Remove `resetParseWarnStateForTests()` from `reputation.ts`. In `tests/routes/reputation-lifecycle.test.ts`'s `parseBatchValue` describe block, replace the `beforeEach` reset with the convention's prescribed pattern:
+
+```ts
+beforeEach(async () => {
+  vi.resetModules();
+  // re-import for a fresh module instance with parseWarnState at zero
+  const reputationFresh = await import('../../src/reputation.js');
+  // use reputationFresh.parseBatchValue going forward (or rebind module-scope imports inside the describe block)
+});
+```
+
+The dynamic-import pattern is established elsewhere in the codebase per the convention doc. No production-module surface concession is needed.
+
+**2. (P2) `/link` route postBroadcast severity classification has no regression test — coverage claim in the new test file's header is unmet.**
+
+**Where:** `backend/tests/routes/signup-verify-postbroadcast-severity.test.ts` (the new file added by round-2 hold #1).
+
+**Why:** 5-way cross-corroborated (testing P2 conf 100, project-standards PS-002 P2 conf 75, correctness P3 conf 50, security testing-gap, api-contract TG-1, learnings L7). The file header at line 2 claims the test pins "signup-verify `/confirm` + `/link` PostBroadcastWriteError severity discrimination" and line 17 states "a mutation removing `classifyPostBroadcastSeverity(postErr)` from either call site is invisible to both of the above tests." But the file contains exactly one `describe` block (line 125) covering only `/confirm`. The `/link` call site at `signup-verify.ts:546` received the identical fix; a mutation removing `classifyPostBroadcastSeverity(postErr)` from `/link` only is invisible to this test. The cited companions (`broadcast-error.test.ts:364` testing the handler branch, `accreditation-idempotency.test.ts:402` testing a different route) do NOT exercise the signup-verify `/link` surface. Per CLAUDE.md "Running Tests" carve-out clause (c): real-path companion covering same risk class OR follow-up task filed — neither condition is met for `/link`.
+
+**Fix:** Add a parallel describe block to `signup-verify-postbroadcast-severity.test.ts`:
+
+```ts
+describe('POST /api/auth/link — post-broadcast severity discrimination', () => {
+  it('TypeError from seedAccreditationBonus → POST_BROADCAST_OPERATOR_REQUIRED', async () => { ... });
+});
+```
+
+Mirror the `/confirm` test shape verbatim — same mock setup, same fixture loading. Swap the route URL + required request fields for `/link`'s shape (which differs in payload requirements per `signup-verify.ts:498-546`).
+
+### Carry-forwards for architect at archive
+
+After items 1 + 2 land and R3 archives, the architect will land these doc updates in the archive commit:
+
+- **Round-1+ carry-forward:** `agents/docs/reputation-algorithm.md` lines 218-219, 296, 374, 407 — describes pre-task unprefixed keys, numeric-string values, `active_accounts` CTE name.
+- **Round-1+ carry-forward:** `agents/docs/ARCHITECTURE.md` lines 466-468 — describes pre-task SSoT state.
+- **New (P1 from this review pass):** `agents/docs/api-contracts/papers.md:136` — drop the "always 0" claim on paper-detail `author_reputation`; document that detail now populates the field for accredited authors mirroring the list-view shape. Update the example JSON at line 105 to show a non-zero score.
+- **New (P2 from this review pass):** `agents/docs/api-contracts/auth.md:219-224, 256-260` — add `POST_BROADCAST_FAILED` + `POST_BROADCAST_OPERATOR_REQUIRED` to the per-endpoint error tables for `/confirm` and `/link`. Cross-reference `common.md`'s global note about the two codes being co-handled.
+- **New (P3 from this review pass, from the self-review-exclusion task):** `agents/docs/api-contracts/reviews.md` NOT_FOUND error — extend the description to include "is a self-review (author is paper author or named co-author)" trigger that landed in the self-review-exclusion task's round-1 commit.
+- **New (P3 from this review pass):** `agents/docs/api-contracts/common.md` Accredited-Only Data Policy — add self-review exclusion alongside the existing unaccredited mention.
+
+### Re-review signal
+
+When items 1, 2 land, `git mv` this file from `tasks/pending/` back to `tasks/review/`. Use bare `backend:` or `backend(<scope>):` commit prefixes so the zone-audit hook fires. The architect's next review pass scopes `/ce-code-review` to commits since `f848b09`. Items are independent — can fan out: item 1 at `reputation.ts` + `reputation-lifecycle.test.ts`; item 2 at `signup-verify-postbroadcast-severity.test.ts`.
