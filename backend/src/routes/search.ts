@@ -180,7 +180,7 @@ async function searchReviewsFromHaf(
     `p.parent_author = ''`,
     `p.parent_permlink = ${appTagParam}`,
     validReviewWhere({ commentAlias: 'c', appTagParam }),
-    excludeSelfReviewWhere({ commentAlias: 'c', paperRowAlias: 'p', appTagParam }),
+    excludeSelfReviewWhere({ paperRowAlias: 'p', appTagParam }),
   ];
 
   // Accreditation gate is unconditional — see lane 4 of

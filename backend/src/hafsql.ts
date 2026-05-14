@@ -293,8 +293,9 @@ export function validReviewWhere(opts: {
  * JOIN is the SQL equivalent of "look up the paper this review
  * belongs to."
  *
- * @param opts.reviewAlias - SQL alias for the review row (must have
- *   `.author`). Typically 'c', 'r', 'rv', 'c2'.
+ * @param opts.commentAlias - SQL alias for the review row (must have
+ *   `.author`). Optional, defaults to `'c'` to match sibling helpers
+ *   (`validReviewWhere`, `validPevoPaperWhere`). Typically 'c', 'r', 'rv', 'c2'.
  * @param opts.paperRowAlias - SQL alias for the parent paper row (must
  *   have `.author` and `.json_metadata`). Typically 'p', 'up', 'up2'.
  * @param opts.appTagParam - the caller-allocated `$N` reference for
@@ -330,6 +331,14 @@ export function excludeSelfReviewWhere(opts: {
   const r = opts.commentAlias ?? 'c';
   const p = opts.paperRowAlias;
   const tag = opts.appTagParam;
+  // Tightened EXISTS predicate (round-2 hold #1): require each element to be
+  // a JSONB object with a non-null `hive` key. Without `jsonb_typeof(auth) =
+  // 'object'`, an authors array of bare strings (`["alice","bob"]`) or other
+  // JSONB-scalar elements admits a named co-author as a non-self reviewer:
+  // `auth ->> 'hive'` on a JSONB string returns NULL, `NULL = c.author`
+  // evaluates to NULL (not TRUE), so EXISTS returns 0 rows and NOT EXISTS
+  // admits every reviewer. The object-type guard rejects strings, integers,
+  // booleans, and JSONB null elements at the row level.
   return `(
     ${r}.author != ${p}.author
     AND NOT EXISTS (
@@ -339,7 +348,8 @@ export function excludeSelfReviewWhere(opts: {
           ELSE '[]'::jsonb
         END
       ) auth
-      WHERE auth ->> 'hive' = ${r}.author
+      WHERE jsonb_typeof(auth) = 'object'
+        AND auth ->> 'hive' = ${r}.author
     )
   )`;
 }

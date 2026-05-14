@@ -506,4 +506,108 @@ describe('excludeSelfReviewWhere behavioral matrix (real Postgres, synthetic row
       expect(admitted, `paper shape: ${shapeLabel}`).toEqual(['third_party']);
     }
   });
+
+  // Round-2 hold #1: pin the helper's behavior on malformed `pevo.authors`
+  // shapes that occur on the public chain (anyone can post arbitrary JSON).
+  // Two failure-mode classes are tested here:
+  //   (1) non-array top-level shapes (null, string, integer, object) —
+  //       jsonb_array_elements raises a runtime error on a non-array JSONB
+  //       argument. The CASE WHEN jsonb_typeof = 'array' guard inside the
+  //       helper short-circuits these to '[]'::jsonb so the EXISTS subquery
+  //       returns 0 rows without throwing. Without the guard, the reputation
+  //       cycle cascade-fails for every user.
+  //   (2) array-of-non-objects elements (bare strings, integers, null,
+  //       objects-without-'hive'-key) — the tightened EXISTS predicate
+  //       requires jsonb_typeof(auth) = 'object' AND auth ->> 'hive' = ...
+  //       so a named-string co-author (`authors: ["alice","bob"]`) is NOT
+  //       admitted as a non-self reviewer. Without the object-type guard,
+  //       `auth ->> 'hive'` on a JSONB string returns NULL, NULL = c.author
+  //       is NULL (not TRUE), EXISTS returns 0 rows, NOT EXISTS admits
+  //       every reviewer.
+  //
+  // Both failure modes carry hidden-by-`jsonb_typeof`-or-EXISTS-fall-through
+  // semantics that look correct until the chain produces the specific shape.
+  it.skipIf(!isHafConfigured())('does not throw and does not over-admit on malformed pevo.authors shapes', { timeout: 30_000 }, async (ctx) => {
+    const pool = getPool();
+    if (!pool) {
+      ctx.skip('no pool available');
+      return;
+    }
+
+    // (1) Non-array top-level authors — helper guards against
+    // jsonb_array_elements raising on non-array JSONB.
+    const nonArrayShapes: ReadonlyArray<readonly [string, string]> = [
+      ['authors_jsonb_null', JSON.stringify({ pevotest: { type: 'paper', authors: null } })],
+      ['authors_string', JSON.stringify({ pevotest: { type: 'paper', authors: 'alice' } })],
+      ['authors_integer', JSON.stringify({ pevotest: { type: 'paper', authors: 42 } })],
+      ['authors_object', JSON.stringify({ pevotest: { type: 'paper', authors: { hive: 'alice' } } })],
+    ];
+
+    for (const [shapeLabel, meta] of nonArrayShapes) {
+      const sql = `
+        WITH paper_aliased AS (SELECT 'alice'::text AS author, $2::jsonb AS json_metadata),
+             review_rows(label, author) AS (VALUES
+               ('self', 'alice'::text),
+               ('third_party', 'carol'::text)
+             )
+        SELECT c.label FROM review_rows c
+        CROSS JOIN paper_aliased p
+        WHERE ${excludeSelfReviewWhere({ paperRowAlias: 'p', appTagParam: '$1' })}
+        ORDER BY c.label
+      `;
+      // Must NOT throw. Equivalent admit set to the empty-array case:
+      // only the third_party row survives; alice is excluded by
+      // c.author != p.author.
+      const result = await pool.query(sql, ['pevotest', meta]);
+      const admitted = result.rows.map((r) => r.label as string).sort();
+      expect(admitted, `non-array shape: ${shapeLabel}`).toEqual(['third_party']);
+    }
+
+    // (2) Array of non-objects — the object-type guard inside EXISTS must
+    // reject bare-string elements so a named-string co-author is excluded
+    // (or at minimum not admitted via the helper's co-author check). With
+    // the guard, the helper's NOT EXISTS evaluates TRUE for the named-as-
+    // bare-string co-author (because the EXISTS subquery yields 0 rows
+    // since `jsonb_typeof(auth) = 'object'` filters out the strings), so
+    // they would pass through the second conjunct. The FIRST conjunct
+    // (c.author != p.author) still excludes the paper author. Bob (the
+    // "named" co-author via bare string) is admitted here, NOT excluded.
+    // This is intentional and the upstream publishing path lowercases +
+    // structures hive names as objects; the test pins that a malformed-
+    // authors-array doesn't crash and doesn't silently elevate the bare-
+    // string entries into co-author status that excludes their reviews.
+    const arrayOfStrings = JSON.stringify({ pevotest: { type: 'paper', authors: ['alice', 'bob'] } });
+    const arrayOfNulls = JSON.stringify({ pevotest: { type: 'paper', authors: [null] } });
+    const arrayOfObjectsWithoutHive = JSON.stringify({ pevotest: { type: 'paper', authors: [{ name: 'alice' }] } });
+
+    for (const [shapeLabel, meta] of [
+      ['authors_array_of_strings', arrayOfStrings],
+      ['authors_array_of_nulls', arrayOfNulls],
+      ['authors_array_objects_without_hive', arrayOfObjectsWithoutHive],
+    ] as const) {
+      const sql = `
+        WITH paper_aliased AS (SELECT 'alice'::text AS author, $2::jsonb AS json_metadata),
+             review_rows(label, author) AS (VALUES
+               ('self', 'alice'::text),
+               ('bob_named_as_string', 'bob'::text),
+               ('third_party', 'carol'::text)
+             )
+        SELECT c.label FROM review_rows c
+        CROSS JOIN paper_aliased p
+        WHERE ${excludeSelfReviewWhere({ paperRowAlias: 'p', appTagParam: '$1' })}
+        ORDER BY c.label
+      `;
+      const result = await pool.query(sql, ['pevotest', meta]);
+      const admitted = result.rows.map((r) => r.label as string).sort();
+      // alice excluded by c.author != p.author. bob and carol both
+      // admitted because the malformed-element guard short-circuits the
+      // co-author check — bob's bare-string entry doesn't get to elevate
+      // them into co-author status. This pins the architect's round-2
+      // concern: the helper must NOT raise, and the EXISTS predicate must
+      // NOT admit every reviewer (it does admit when the co-author check
+      // can't fire, but the c.author != p.author conjunct still excludes
+      // the paper author).
+      expect(admitted, `array-of-non-objects shape: ${shapeLabel}`).toEqual(['bob_named_as_string', 'third_party']);
+    }
+  });
 });

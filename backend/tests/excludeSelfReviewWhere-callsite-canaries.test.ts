@@ -43,12 +43,15 @@
  *                                                `selfExclude` constructed)
  *   - search.ts:        type=review search (line 183-ish)
  *   - stats.ts:         review counter (line 57-ish)
- *   - reputation.ts:    paper_reviews CTE   (line 627-ish)
+ *   - reputation.ts:    active_authors review arm (round-2 hold #3)
+ *                       paper_reviews CTE   (line 627-ish)
  *                       user_reviews CTE    (line 693-ish)
  *                       citing_paper_quality CTE (line 847-ish)
  *
- * That's 10 callsites (the architect's "8" rolled the three reputation.ts
- * sites into one bullet). The notification arms 1a/1b have their own inline
+ * That's 11 callsites (the architect's original "8" rolled the three
+ * reputation.ts sites into one bullet, and the round-2 hold #3 added
+ * `active_authors` review arm as the 4th `validReviewWhere` composition
+ * site that should also compose self-exclusion). The notification arms 1a/1b have their own inline
  * `co.author != $1` predicate covered separately by
  * `notifications-arm-sql-shape.test.ts`.
  *
@@ -100,8 +103,8 @@ const CALLSITES: Callsite[] = [
   },
   {
     file: 'src/reputation.ts',
-    minOccurrences: 3,
-    callsites: ['paper_reviews CTE', 'user_reviews CTE', 'citing_paper_quality CTE'],
+    minOccurrences: 4,
+    callsites: ['active_authors review arm', 'paper_reviews CTE', 'user_reviews CTE', 'citing_paper_quality CTE'],
   },
 ];
 

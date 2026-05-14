@@ -343,6 +343,13 @@ export async function startReputationWeightsCache(): Promise<void> {
  *       and `citing_paper_quality`'s inner subquery; mirrors the
  *       display-side accreditation-or-anon shape composed at
  *       profile.ts / reviews.ts).
+ *
+ * The same FOUR review CTEs also compose `excludeSelfReviewWhere` so
+ * paper-authors and named co-authors reviewing their own paper are
+ * filtered before contributing to active_authors (voter_weight curve),
+ * paper_reviews.quality (paper_scores multiplier), user_reviews
+ * (reviewer's own breakdown), and citing_paper_quality (citation
+ * discount). Per-site rationale lives at the CTEs.
  */
 export async function computeReputationBatch(
   usernames: string[],
@@ -411,18 +418,26 @@ export async function computeReputationBatch(
             AND ${validPevoPaperWhere({ commentAlias: 'c', appTagParam: '$3', bridgeAccountParam: '$18', source: 'all' })}
             AND c.json_metadata ->> 'app' LIKE $4
           UNION ALL
-          -- Review arm: gate on accreditation (or the anon proxy). The
-          -- shared validReviewWhere helper documents that callers must
-          -- compose accreditation; without it, an unaccredited Hive
-          -- account broadcasting a review-shaped reply would inflate
-          -- active_authors -> flow into voter_weights -> game scoring.
-          -- Mirrors the paper-arm identity gate inside validPevoPaperWhere.
+          -- Review arm: gate on accreditation (or the anon proxy), AND
+          -- exclude self-reviews. The shared validReviewWhere helper
+          -- documents that callers must compose accreditation; without it,
+          -- an unaccredited Hive account broadcasting a review-shaped reply
+          -- would inflate active_authors -> flow into voter_weights ->
+          -- game scoring. The excludeSelfReviewWhere predicate rejects
+          -- paper-authors and named co-authors reviewing their own paper:
+          -- a named co-author who has never published nor reviewed others'
+          -- work could otherwise bootstrap into the accredited voter_weight
+          -- curve (LEAST(1.0, GREATEST(0.4, ...)) — floor 0.4 at rep=0) by
+          -- broadcasting one self-review. Sibling 3 review-class CTEs
+          -- (paper_reviews, user_reviews, citing_paper_quality) already
+          -- compose this helper; this is the 4th composition site.
           SELECT c.author FROM ${T.comments} c
           JOIN ${T.comments} p ON p.author = c.parent_author AND p.permlink = c.parent_permlink
           WHERE p.parent_author = '' AND p.parent_permlink = $3
             AND ${validPevoPaperWhere({ commentAlias: 'p', appTagParam: '$3', bridgeAccountParam: '$18', source: 'all' })}
             AND p.json_metadata ->> 'app' LIKE $4
             AND ${validReviewWhere({ commentAlias: 'c', appTagParam: '$3' })}
+            AND ${excludeSelfReviewWhere({ paperRowAlias: 'p', appTagParam: '$3' })}
             AND (c.author = ANY($2::text[]) OR c.author = $19)
         ) t
       ),
@@ -610,7 +625,7 @@ export async function computeReputationBatch(
         JOIN ${T.comments} c
           ON c.parent_author = up.author AND c.parent_permlink = up.permlink
           AND ${validReviewWhere({ commentAlias: 'c', appTagParam: '$3' })}
-          AND ${excludeSelfReviewWhere({ commentAlias: 'c', paperRowAlias: 'up', appTagParam: '$3' })}
+          AND ${excludeSelfReviewWhere({ paperRowAlias: 'up', appTagParam: '$3' })}
           AND (c.author = ANY($2::text[]) OR c.author = $19)
         GROUP BY up.author, up.permlink
       ),
@@ -676,7 +691,7 @@ export async function computeReputationBatch(
           AND ${validPevoPaperWhere({ commentAlias: 'up_for_self', appTagParam: '$3', bridgeAccountParam: '$18', source: 'all' })}
         WHERE c.author IN (SELECT username FROM target_users)
           AND ${validReviewWhere({ commentAlias: 'c', appTagParam: '$3' })}
-          AND ${excludeSelfReviewWhere({ commentAlias: 'c', paperRowAlias: 'up_for_self', appTagParam: '$3' })}
+          AND ${excludeSelfReviewWhere({ paperRowAlias: 'up_for_self', appTagParam: '$3' })}
           AND (c.author = ANY($2::text[]) OR c.author = $19)
           AND COALESCE(c.json_metadata -> $3 ->> 'is_anonymous', 'false') != 'true'
       ),

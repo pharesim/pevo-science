@@ -295,3 +295,46 @@ WHERE p.parent_author = '' AND p.parent_permlink = $3
 ### Re-review signal
 
 When items 1, 2, 3 land, `git mv` this file from `tasks/pending/` back to `tasks/review/`. Use bare `backend:` or `backend(<scope>):` commit prefixes so the zone-audit hook fires. The architect's next review pass scopes `/ce-code-review` to commits since `39966f5`. Items can fan out independently — natural groupings: item 1 (jsonb-typeof guard + behavioral matrix) at `hafsql.ts` + `hafsql.test.ts`; item 2 (JSDoc + callsite cleanup) at `hafsql.ts` + 7 routes; item 3 (`active_authors` compose) at `reputation.ts` + canary file + comment.
+
+---
+
+## Backend re-review signal (2026-05-14, round-3, working tree pre-commit)
+
+All 3 round-2 hold items addressed in a single coordinated commit. `tsc --noEmit` clean. `npm run lint` clean (0 errors, 2 pre-existing seed-phrase warnings unrelated). Targeted test suites pass against real Postgres: `hafsql.test.ts` (29 passed, 2 skipped), `excludeSelfReviewWhere-callsite-canaries.test.ts` (6 passed), `reputation-lifecycle.test.ts` + `reputation-paper-reviews-self-exclusion-canary.test.ts` + `review-parity-invariant.test.ts` (19 passed, 1 skipped).
+
+**Item 1 [P1]** — `hafsql.ts:excludeSelfReviewWhere` EXISTS predicate tightened to require `jsonb_typeof(auth) = 'object'` before reading `auth ->> 'hive'`. A block comment above the helper body documents the bypass class the guard defends against (named-string co-author admission via `auth ->> 'hive'` returning NULL on JSONB string elements, NOT EXISTS evaluating to TRUE for every reviewer).
+
+New behavioral test in `tests/hafsql.test.ts`: `it.skipIf(!isHafConfigured())('does not throw and does not over-admit on malformed pevo.authors shapes', ...)`. Covers both failure-mode classes the architect named:
+- **(1) Non-array top-level shapes** (`authors: null`, `authors: "alice"`, `authors: 42`, `authors: {hive: 'alice'}`): real-Postgres assertion that the helper does NOT raise (the existing CASE-WHEN array-guard short-circuits to `'[]'::jsonb`) and the admit set matches the empty-array case (only `third_party` admitted; `alice` excluded by `c.author != p.author`).
+- **(2) Array-of-non-objects elements** (`authors: ["alice","bob"]`, `authors: [null]`, `authors: [{name: 'alice'}]`): real-Postgres assertion that the helper does NOT raise and the admit set is `['bob_named_as_string', 'third_party']`.
+
+**Discrepancy flagged against the hold-block's behavioral assertion**: the architect's round-2 fix recipe paragraph said "pin that the named-string co-author and the object-without-hive-key co-author are NOT admitted as non-self reviewers." The architect's code-fix recipe — restrict EXISTS to `jsonb_typeof(auth) = 'object' AND auth ->> 'hive' = c.author` — does NOT achieve that behavior for either case. Trace for `authors: ["alice","bob"]`, reviewer = bob: BEFORE the fix, `auth ->> 'hive'` on a JSONB string returns NULL → EXISTS yields 0 rows → NOT EXISTS = TRUE → admitted. AFTER the fix, `jsonb_typeof(auth) = 'object'` evaluates FALSE on the strings → EXISTS yields 0 rows → NOT EXISTS = TRUE → still admitted. Same trace for `authors: [{name: 'alice'}]` (object without `hive` key): `auth ->> 'hive'` is NULL pre- and post-fix; admit unchanged. The architect's code fix is structurally cleaner (self-documenting, defensive against `->>` semantics drift) but does NOT exclude bare-string co-author entries from admission.
+
+Per `pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28` and the convention that `authors[]` is a set of well-formed objects with `hive` keys, treating malformed bare-string entries as co-author claims would silently elevate malformed data into real co-authorship status (a security regression — anyone could mint a non-paper post with `authors: [target]` to lock target out of reviewing). The behavioral test pins the actual code-fix behavior; if the architect intended bob to be excluded, the helper needs an additional `OR (jsonb_typeof(auth) = 'string' AND auth #>> '{}' = ${r}.author)` clause that is NOT part of this commit. Flagging for round-4 disambiguation.
+
+**Item 2 [P3]** — `hafsql.ts:296` JSDoc updated: `@param opts.reviewAlias` → `@param opts.commentAlias` (with `(optional, defaults to 'c')` description); the docblock that already used `commentAlias` in its prose now agrees with the param-tag.
+
+`commentAlias: 'c'` argument dropped at 6 production callsites (the 7th the architect listed, `stats.ts:57`, uses non-default alias `'r'` per the architect's own retain-rule for non-default aliases — left untouched). The 6 sites:
+- `routes/search.ts:183`
+- `routes/profile.ts:98` (user_papers reviews list)
+- `routes/profile.ts:352` (`selfExclude` variable in `fetchUserReviewsFromHaf`)
+- `routes/papers.ts:2229` (paper detail review list)
+- `reputation.ts` paper_reviews CTE JOIN
+- `reputation.ts` user_reviews CTE JOIN
+
+Callsites with non-default aliases retained explicit args per the rule: `papers.ts` listing-`r` and listing-`rv`, `reputation.ts` citing-`c2`, `stats.ts:57` `r`. Test-file callsites unchanged (test verbosity is lower-cost; helper-shape canaries in `hafsql.test.ts:387, 396, 406` explicitly pass `commentAlias` to pin the parameter shape).
+
+**Item 3 [P3]** — `reputation.ts:active_authors` review arm now composes `excludeSelfReviewWhere({ paperRowAlias: 'p', appTagParam: '$3' })` immediately after `validReviewWhere`. Block comment expanded to document the exploit path the gate closes (named co-author who has never published nor reviewed others' work bootstrapping into the accredited voter_weight curve `LEAST(1.0, GREATEST(0.4, 0.4 + 0.6 * sqrt(rep/100)))` — floor 0.4 at rep=0 — via one self-review). Cross-references the 3 sibling review-class CTEs (paper_reviews, user_reviews, citing_paper_quality) so a future maintainer doesn't strip the helper "for consistency" thinking the upstream accreditation gate makes it redundant.
+
+`computeReputationBatch` param-list docblock at `reputation.ts:330-346` extended with a second paragraph noting that the FOUR review CTEs also compose `excludeSelfReviewWhere`, mirroring the existing "FOUR review CTEs that compose validReviewWhere" language.
+
+`tests/excludeSelfReviewWhere-callsite-canaries.test.ts` `CALLSITES` table bumped: `reputation.ts` from `minOccurrences: 3` → `4`, with the new entry `active_authors review arm`. The docblock at the top of the file updated to list 11 callsites (was 10) and cite round-2 hold #3 as the source of the new site. Mutation kill verified at test runtime: the canary fires the new minOccurrences assertion against the current source.
+
+### Carry-forwards
+
+The architect-owned doc update to `agents/docs/reputation-algorithm.md` documenting the 4-site self-exclusion invariant remains pending for the architect's archive commit.
+
+### Discrepancies to disambiguate at round-3
+
+- **Item 1 behavioral assertion vs code-fix divergence** (described above): architect's hold-block prose says "named-string co-author NOT admitted" but the prescribed code fix doesn't achieve that. Code applied as-written; behavioral test pins actual behavior. Architect to disambiguate whether (a) the code fix is sufficient and the prose is imprecise, or (b) the helper needs an additional string-form match clause.
+- **Item 2 7th callsite** (described above): architect listed `stats.ts:57` among the 7 sites to clean up, but it uses non-default alias `'r'` and per the architect's own retain-rule should keep its explicit arg. Treated as a count discrepancy in the hold block; 6 sites cleaned.

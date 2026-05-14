@@ -2226,7 +2226,7 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string) {
          WHERE c.parent_author = $1 AND c.parent_permlink = $2
            AND c.author = ANY($5::text[])
            AND ${validReviewWhere({ commentAlias: 'c', appTagParam: '$3' })}
-           AND ${excludeSelfReviewWhere({ commentAlias: 'c', paperRowAlias: 'p', appTagParam: '$3' })}
+           AND ${excludeSelfReviewWhere({ paperRowAlias: 'p', appTagParam: '$3' })}
          ORDER BY c.created DESC`,
         [author, permlink, config.appTag, accreditedArr, reviewAuthors],
       ),

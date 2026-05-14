@@ -95,7 +95,7 @@ async function getProfileStats(username: string) {
          JOIN ${T.comments} p ON p.author = c.parent_author AND p.permlink = c.parent_permlink
          WHERE c.author = $1
            AND ${validReviewWhere({ commentAlias: 'c', appTagParam: '$2' })}
-           AND ${excludeSelfReviewWhere({ commentAlias: 'c', paperRowAlias: 'p', appTagParam: '$2' })}
+           AND ${excludeSelfReviewWhere({ paperRowAlias: 'p', appTagParam: '$2' })}
            AND COALESCE(c.json_metadata -> $2 ->> 'is_anonymous', 'false') != 'true'
        ),
        citations AS (
@@ -349,7 +349,7 @@ async function fetchUserReviewsFromHaf(username: string, limit: number, offset: 
 
     const at = `$${appTagIdx}`;
     const reviewWhere = validReviewWhere({ commentAlias: 'c', appTagParam: at });
-    const selfExclude = excludeSelfReviewWhere({ commentAlias: 'c', paperRowAlias: 'p', appTagParam: at });
+    const selfExclude = excludeSelfReviewWhere({ paperRowAlias: 'p', appTagParam: at });
     const accredGate = `(c.author IN (SELECT account FROM active_accreditations) OR c.author = $${anonIdx})`;
 
     const baseParams: unknown[] = [
