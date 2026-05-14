@@ -340,3 +340,90 @@ The four hold-block items were explicit. I did not pull in scope beyond:
 - Item 7 + Item 8 (P3) carry-overs from the round-1 fix landing — already in place from prior round.
 - `getProfileStats` `user_reviews` accreditation gap flagged by the prior round as out-of-scope is still untouched, awaiting architect ticketing.
 - Architect-owned `reputation-algorithm.md` doc-drift sync stays for the architect's archive commit.
+
+---
+
+## Architect re-review round-3 (2026-05-14) — HELD PENDING FIXES
+
+`/ce-code-review` on commit `69459e3` dispatched 10 reviewers (correctness, testing, maintainability, project-standards, learnings, security, performance, api-contract, adversarial, kieran-typescript). All 4 round-2 hold items + the cross-task lift-in for self-review-exclusion item #10 verified addressed per the implementer's disposition table. Round-3 surfaces 6 items held below — one P1 parity gap discovered at a sibling display surface and five P3 comment/test-hygiene items.
+
+### Items to address
+
+#### P1 — high
+
+**1. (P1) `fetchUserReviewsFromHaf` missing `validPevoPaperWhere` parent-paper gate — display↔reputation parity broken at the symmetric site this task's slug literally names.**
+
+**Where:** `backend/src/routes/profile.ts:362-406` (both count and data queries inside `fetchUserReviewsFromHaf`).
+
+**Why:** Cross-corroborated by adversarial (P1, conf 75) and security (P2, conf 75). Round-3 lifted `validPevoPaperWhere` into `reputation.ts:user_reviews` CTE JOIN and `notifications-arm-sql-shape` arm 1a — but the symmetric display surface at `fetchUserReviewsFromHaf` did NOT get the gate. An accredited reviewer writes a `pevo.review`-shaped reply to a non-paper Hive post (a peakd blog post, a non-paper comment). validReviewWhere passes (rating shape valid). excludeSelfReviewWhere passes (authors[] empty/missing on the non-paper parent). Accreditation gate passes. The row surfaces on `/api/profile/alice/reviews` with `paper_title=''`. Display↔reputation parity invariant — the load-bearing claim of this task's slug — is broken at this sibling site: reputation correctly excludes the row (via the user_reviews CTE lift-in just landed); display still admits it. Architect's round-2 "Items NOT in scope" note flagged the parallel asymmetry at `getProfileStats user_reviews CTE` at `profile.ts:92-100` but missed `fetchUserReviewsFromHaf` at `profile.ts:317`.
+
+**Fix:** Add `validPevoPaperWhere({ commentAlias: 'p', appTagParam: at, bridgeAccountParam: <push hiveBridgeAccount>, source: 'all' })` to both the count query (~line 365) and data query (~line 398) JOIN ON-clauses. Push `config.hiveBridgeAccount` into the bound params, allocating a new `$N` slot via the canonical `paramIdx++` counter pattern landed by round-2 hold item #1. Add a SQL-shape canary at `profile-reviews-accred-gate.test.ts` (or a new sibling file) pinning the `validPevoPaperWhere` substring at both count + data queries.
+
+#### P3 — polish
+
+**2. (P3) user_reviews CTE comment block: 24 lines for 4-line CTE body, mixes settled design with rotting cross-references.**
+
+**Where:** `backend/src/reputation.ts:637-660`.
+
+**Why:** Maintainability (P3, conf 75). The comment mixes settled facts (self-review exclusion, paper-class identity) with decision narrative ("the cost of admitting a non-accredited reviewer is bounded today") and round-number cross-references ("sibling 3 review-class CTEs landed in round-1 (item #1)"). Future readers can't distinguish settled design from in-flight reasoning; round-number references rot. Coordinate with item 5 below — the accred-gate rationale block is part of this same comment cluster.
+
+**Fix:** Trim to settled facts only — what the predicates do and why. Drop round-number cross-references and decision narrative. Cross-reference convention docs (`agents/docs/solutions/conventions/defense-in-depth-canary-must-pin-each-layer-2026-05-07.md`, `pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28.md`) instead of round numbers.
+
+**3. (P3) Notifications canary: MAX/MIN mock mismatch + single `co.author != $1` substring check doesn't pin both arms.**
+
+**Where:** `backend/tests/routes/notifications-arm-sql-shape.test.ts:74, 127`.
+
+**Why:** Correctness (P3, conf 90-95).
+
+(a) The mock predicate at line 74 filters on `sql.includes('custom_id') && sql.includes('MAX')` to short-circuit the genesis-block lookup. The real `getGenesisBlock` uses `SELECT MIN(cj.block_num) AS genesis ... custom_id = $1` (MIN, not MAX). The test works only because BOTH the genesis query AND a fallback MAX(blocks) query fall through to `capturedSql = sql; return {rows:[]}`, and `fetchNotificationsFromHaf`'s SQL is the final overwriting capture. Any future pre-notifications query added inside the route would steal the capture and the canary would silently pin the wrong SQL.
+
+(b) The single `toContain('co.author != $1')` assertion at line 127 is satisfied by either arm 1a or arm 1b independently. Docstring claims the canary mutation-kills both arms; it doesn't. Mutation dropping the predicate from one arm passes because the other arm's identical predicate satisfies the assertion.
+
+**Fix:** (a) Loosen the mock to short-circuit on both bootstrap shapes — e.g., `if (sql.includes('genesis')) return { rows: [{ genesis: 0 }] };` and `if (sql.includes('AS head') && sql.includes('FROM hafsql.blocks')) return { rows: [{ head: 0 }] };`. Capture only when the notifications shape is present. (b) Replace the substring assertion with counted occurrences: `const matches = sql.match(/co\.author != \$1/g) ?? []; expect(matches.length).toBe(2);`.
+
+**4. (P3) `params: unknown[]` unchecked cast to string defeats the mutation-kill guarantee of the round-2 paramIdx counter conversion.**
+
+**Where:** `backend/tests/routes/profile-reviews-accred-gate.test.ts:92`.
+
+**Why:** Cross-corroborated by kieran-typescript (P2, conf 75) and adversarial (P3, conf 75). The mock responder reads `(params?.[3] as string) ?? ''` for username and `(params?.[5] as string) ?? ''` for anonAccount. The `as string` cast is unchecked on `unknown`. The `?? ''` fallback masks param-ordering regressions — if `activeAccreditationsCteBody` ever changes the number of CTE params it consumes, the test silently aligns to wrong slots, the admission check returns false, and the test passes (data:[], total:0) for the wrong reason. This defeats the paramIdx counter conversion's mutation-kill intent — the canonical pattern was specifically introduced to prevent silent positional mis-binding.
+
+**Fix:** Replace the cast with runtime narrowing + a positional assertion that fails loudly on regression:
+
+```ts
+const rawAuthor = params?.[3];
+const rawAnon = params?.[5];
+expect(typeof rawAuthor).toBe('string');
+const author = typeof rawAuthor === 'string' ? rawAuthor : '';
+const anonAccount = typeof rawAnon === 'string' ? rawAnon : '';
+```
+
+**5. (P3) user_reviews accreditation-gate rationale block claims a defense the code doesn't actually deliver in the current call-graph.**
+
+**Where:** `backend/src/reputation.ts:653-660` (part of the comment cluster at item 2 above).
+
+**Why:** Adversarial (P3, conf 75). The hold-block docstring (which the implementer faithfully copied) motivates the gate with "a revoked-mid-cycle reviewer whose row stays in target_users would surface non-zero `reviews` breakdown." Tracing the call graph: `$1 = usernames = scoredUsers = await getAllAccreditedAccounts()`; `$2 = accreditedArr = [...await getAllAccreditedAccounts()]` — same snapshot. So `c.author IN target_users` and `c.author = ANY($2)` evaluate against identical sets. The "revoked-mid-cycle reviewer in target_users" scenario isn't reachable in the current architecture. The gate IS structurally valid (per-callsite invariant + defense against a future caller passing a different `usernames` set), but the rationale block as written is wrong.
+
+**Fix:** Rewrite the rationale block to reflect actual call-graph reality:
+
+> "Accreditation gate `(c.author = ANY($2::text[]) OR c.author = $19)` mirrors the sibling review-class CTEs. In the current call-graph $1 and $2 are sourced from the same `getAllAccreditedAccounts` snapshot, so the gate is functionally subsumed by the upstream `c.author IN target_users` filter. The structural rule — every `validReviewWhere` caller in `reputation.ts` MUST compose accreditation — is the load-bearing invariant; this site enforces it so a future caller passing a non-accredited `usernames` set doesn't silently bypass."
+
+Bundle the rewrite with item 2's broader comment trim — same comment cluster.
+
+**6. (P3) Profile-reviews behavioral test docstring overstates what the test verifies.**
+
+**Where:** `backend/tests/routes/profile-reviews-accred-gate.test.ts:86-107`.
+
+**Why:** Testing (P3, conf 75). The second `it` block is titled `returns empty data and zero total for an unaccredited username (behavioral)` and its inline comment claims it proves the gate "refuses non-admitted authors at the SQL level." Actually the mock responder makes admission decisions in JavaScript (the `admitted` boolean), not based on SQL content. Removing the `accredGate` from `fetchUserReviewsFromHaf` would not change this test's outcome — the mock returns empty regardless of what SQL is emitted. The SQL-shape canary above it (first `it` block) is the actual gate mutation-kill; this behavioral test verifies envelope handling on empty result sets.
+
+**Fix:** Update the inline comment + test title to accurately describe what it verifies: envelope shape (`status: 'ok'`, `data: []`, `meta.total: 0`) on empty result set. Drop the "gate at the SQL level" claim. The SQL-shape canary remains the actual mutation-kill.
+
+### Carry-forwards for architect at archive
+
+- **Round-1 #12** `agents/docs/reputation-algorithm.md` lines 218-219, 296, 374, 407 — describes pre-task unprefixed keys, numeric-string values, `active_accounts` CTE name. (Still pending.)
+- **Round-1 #13** `agents/docs/ARCHITECTURE.md` lines 466-468 — describes pre-task SSoT state. (Still pending.)
+
+Both safe to land at archive of this task once round-4 items land.
+
+### Re-review signal
+
+When items 1, 2, 3, 4, 5, 6 land, `git mv` this file from `tasks/pending/` back to `tasks/review/`. Use bare `backend:` or `backend(<scope>):` commit prefixes so the zone-audit hook fires. The architect's next review pass scopes `/ce-code-review` to commits since `69459e3`. Items 2 and 5 share the same comment cluster — bundle them. Items 4 and 6 share the same test file — bundle them. Item 1 is the load-bearing P1 fix and is independent.
