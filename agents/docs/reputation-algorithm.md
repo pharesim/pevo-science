@@ -214,9 +214,9 @@ This is fully deterministic: given the same HAF snapshot + the same prior-cycle 
 
 ### Storage
 
-Batch-computed reputation scores are stored in Redis:
-- `reputation:batch:{username}` — score (number), no TTL (overwritten each cycle)
-- `reputation:cycle:last` — the last completed cycle number (integer)
+Batch-computed reputation scores are stored in Redis under the project-wide app-tag prefix (`${config.appTag}:`):
+- `${appTag}:reputation:batch:{username}`. JSON-encoded `{score, breakdown}` where breakdown is `{papers, reviews, citations, accreditation}`. No TTL; overwritten each cycle. Readers parse defensively and surface `ZERO_SCORE` on parse failure (a rate-limited operator warn fires; readers do not recompute at head-block).
+- `${appTag}:reputation:cycle:last`. The last completed cycle number (integer).
 
 On a fresh system with no batch scores, `voter_weight(v) = 1.0` for all accredited voters (bootstrap mode). On startup, if the system is behind by multiple cycles, it catches up sequentially from the last completed cycle.
 
@@ -293,7 +293,7 @@ decay(age_months) =
 
 ## Canonical SQL Query
 
-This SQL query **is** the algorithm definition. It computes reputation scores for all target users in a single pass. Shared CTEs (cycle_ref, prev_scores, active_accounts, voter_weights) run once regardless of user count. Anyone with HAF access can run it and get identical scores given the same inputs.
+This SQL query **is** the algorithm definition. It computes reputation scores for all target users in a single pass. Shared CTEs (cycle_ref, prev_scores, active_authors, voter_weights) run once regardless of user count. Anyone with HAF access can run it and get identical scores given the same inputs.
 
 ### Parameters
 
@@ -369,9 +369,12 @@ prev_scores AS (
   FROM jsonb_each_text($5)
 ),
 
--- ── Active accounts: users who have published or reviewed ───────
--- Used for the activity-gated voter weight floor (R9).
-active_accounts AS (
+-- ── Active authors: users who have published or reviewed ───────
+-- Used for the activity-gated voter weight floor (R9). Distinct from the
+-- "users to score" set (which is `getAllAccreditedAccounts()`); a newly-
+-- accredited but non-publishing user is scored but does not get the
+-- accredited-active voter bonus until they author a paper or review.
+active_authors AS (
   SELECT DISTINCT author FROM (
     SELECT c.author FROM hafsql.comments c
     WHERE c.parent_author = '' AND c.parent_permlink = $3
@@ -404,7 +407,7 @@ voter_weights AS (
     END AS vw
   FROM unnest($2::text[]) AS a(voter)
   LEFT JOIN prev_scores ps ON ps.username = a.voter
-  LEFT JOIN active_accounts aa ON aa.author = a.voter
+  LEFT JOIN active_authors aa ON aa.author = a.voter
 ),
 
 -- ═══ PAPERS ═══

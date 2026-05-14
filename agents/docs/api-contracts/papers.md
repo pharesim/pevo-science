@@ -102,7 +102,7 @@ Single paper with full content and reviews.
     { "author": "scientist2", "permlink": "related-work", "title": "Related Work Title" }
   ],
   "citation_count": 0,
-  "author_reputation": 0,
+  "author_reputation": 12,
   "is_accredited": true,
   "accredited_authors": ["scientist1"],
   "reviews": [],
@@ -133,7 +133,7 @@ Single paper with full content and reviews.
 - `discipline` — same canon_name semantics as `PaperSummary.discipline` above (lowercased, round-trippable through `?discipline=`, may be `null`).
 - Unlike `PaperSummary`, this endpoint does not return `vote_strength`, `review_count`, `source_type`, or `doi`. Those fields are on the list view only. `vote_strength` is returned by the enrichment endpoint.
 - `citation_count` is computed for single-paper views: for native papers via HAF (counting accredited papers that cite this one), for bridge papers via Semantic Scholar external citation counts.
-- `author_reputation` is always `0` in this endpoint (not computed for single-paper views; the list endpoint populates it via batch reputation queries).
+- `author_reputation` is populated from the batch reputation cache for accredited authors (mirrors `PaperSummary.author_reputation` on the list endpoint). Non-accredited authors return `0`. Single-paper view and list view resolve to the same value within a cycle. See [reputation-algorithm.md](../reputation-algorithm.md) for the cache shape and read path.
 - The `reviews` array is always empty in this endpoint. Reviews and vote details are loaded lazily via `GET /api/papers/:author/:permlink/enrichment` to speed up initial page loads.
 - The `versions` array contains the edit history of this paper (from HAF operation history), ordered by `version_number` ascending. Papers are versioned via Hive's native edit mechanism (same author/permlink). The Hive API only returns the latest version; HAF is required to view older versions. Each version entry includes `is_content_revision` (true when the body or title changed), `author`/`permlink` (the post this version came from, relevant for continuation chains), and `addresses_reviews` (array of `{author, permlink}` for reviews this revision responds to, or null).
 - **Continuation-chain admission rule.** The `versions` array admits a continuation post `C` (a Hive comment with `pevo.continues = {author, permlink}` pointing into this paper's chain) only if `C.author` is a named author of the continued paper, where "named author" is defined as a `hive` value present in the continued paper's `pevo.authors[]` set. Posts from non-author accounts are filtered server-side and do not appear in `versions[]`. For bridge papers (`type: 'bridge_paper'`), the sole legitimate continuation author is `config.hiveBridgeAccount` (the platform's bridge identity); other continuation authors are filtered. This filter is server-side only (no client-visible API change beyond the contents of `versions[]`).

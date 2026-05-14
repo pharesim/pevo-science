@@ -221,6 +221,8 @@ On success: Hive account created via `create_claimed_account`, posting and memo 
 - `BAD_REQUEST` — invalid or expired auth token
 - `DUPLICATE` — username already taken on Hive
 - `INTERNAL_ERROR` — account creation failed (e.g., no on-chain `pending_claimed_accounts` capacity on the onboarding account, transient HAF/Hive read failure, or chain-side rejection of `create_claimed_account`). The platform reads chain capacity directly via `getCachedPendingClaimedAccounts()` (10s Redis cache); there is no DB token mirror.
+- `POST_BROADCAST_FAILED`: the on-chain `create_claimed_account` and accreditation broadcast both landed, but a downstream non-blocking step (reputation seed) failed transiently. The user's account is recoverable on a subsequent retry via the resume-on-/confirm flow. Retry safe. See [common.md](common.md) for the global handler shape and the per-attempt vs error event role split.
+- `POST_BROADCAST_OPERATOR_REQUIRED`: the on-chain broadcasts landed but a downstream step failed permanently (e.g., programmer error such as a reputation seed shape regression). The user's account state is recoverable on subsequent retry; an operator alert is raised. See [common.md](common.md).
 
 ---
 
@@ -258,6 +260,8 @@ On success: account activated with `custody: "self"`, accreditation `custom_json
 - `BAD_REQUEST` — invalid or expired auth token
 - `NOT_FOUND` — Hive account does not exist
 - `DUPLICATE` — Hive account already linked to another PEvO account
+- `POST_BROADCAST_FAILED`: the accreditation broadcast landed but a downstream non-blocking step (reputation seed) failed transiently. The user's account is recoverable on a subsequent retry via the resume-on-/link flow. Retry safe. See [common.md](common.md) for the global handler shape and the per-attempt vs error event role split.
+- `POST_BROADCAST_OPERATOR_REQUIRED`: the accreditation broadcast landed but a downstream step failed permanently (e.g., programmer error such as a reputation seed shape regression). The user's account state is recoverable on subsequent retry; an operator alert is raised. See [common.md](common.md).
 
 ---
 
