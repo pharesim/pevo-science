@@ -1,6 +1,6 @@
 import { config } from './config.js';
 import { isHafConfigured, closeHafPool, getPool } from './db.js';
-import { initAppDb, closeAppPool } from './app-db.js';
+import { initAppDb, closeAppPool, getAppPool } from './app-db.js';
 import { createApp } from './app.js';
 import { validateConfig, checkOrcidProcessSafety, BootFatalError } from './startup-checks.js';
 import { startBlockWatcher, stopBlockWatcher } from './block-watcher.js';
@@ -16,6 +16,7 @@ import { startReputationWeightsCache, backfillAccreditationSeeds } from './reput
 import { startWotThresholdCache } from './wot.js';
 import { startAccountClaimer, stopAccountClaimer } from './account-creation.js';
 import { startSignupCleanup, stopSignupCleanup } from './signup-cleanup.js';
+import { startRetentionSweep, stopRetentionSweep } from './jobs/custody-audit-retention-sweep.js';
 import { drainArgon2Queue, startArgon2AbortReporter, stopArgon2AbortReporter } from './lib/argon2-semaphore.js';
 import { startDecrementQueueDrainer, stopDecrementQueueDrainer } from './lib/pending-decrement-queue.js';
 import { logger } from './logger.js';
@@ -94,6 +95,11 @@ if (app) {
 
       // Start periodic cache refreshes before accepting traffic
       await startRetractionCache();
+
+      // GDPR Art. 5(1)(e) custody_audit_log retention sweep (boot-fatal on
+      // SOT-parse failure — startup-sweep doubles as backfill, daily setInterval
+      // keeps long-running processes compliant).
+      await startRetentionSweep(getAppPool());
 
       server = bootedApp.listen(config.port, () => {
         // Warm expensive shared HAF caches in the background (non-blocking).
@@ -184,6 +190,7 @@ async function shutdown(signal: string): Promise<void> {
   stopSignupCleanup();
   stopArgon2AbortReporter();
   stopDecrementQueueDrainer();
+  stopRetentionSweep();
 
   // Reject any auth requests parked in the argon2 semaphore queue. Without
   // this, `server.close()` waits for them until the 30s force-timeout fires,
