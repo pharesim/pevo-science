@@ -63,6 +63,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import request from 'supertest';
 import crypto from 'node:crypto';
 import { PrivateKey } from '@hiveio/dhive';
+import nodemailer from 'nodemailer';
 
 vi.mock('../../src/middleware/verifyHiveSignature.js', async () => {
   const { MOCK_VERIFY_SIGNATURE } = await import('../fixtures/index.js');
@@ -1220,5 +1221,313 @@ describe('POST /api/accreditation/verify — BE-VERIFY-BROADCAST-ATTEMPTS-CAP', 
     expect(queueTestSeams.getQueueDepth()).toBe(0);
     expect(await redis.get(counterKey)).toBe('0');
     await redis.del(counterKey);
+  });
+});
+
+// ──────────────────────────────────────────────
+// BACKEND-LOG-SHAPE-CONVERGENCE-SIBLING-FILES (Item 3 part C):
+// Mutation-killing spy assertions on operationally-critical structured log
+// emissions in `backend/src/routes/accreditation.ts` per
+// `agents/docs/solutions/conventions/auth-structured-log-shape-2026-04-29.md`.
+//
+// Justification (per root CLAUDE.md test carve-out clauses a/b/c):
+//   (a) Real-path impracticality: the SMTP-failure paths require either an
+//       unreachable host (slow + non-deterministic) or an empty smtpHost
+//       config; both are mocked deterministically here. The token-cleanup-
+//       failure path requires a Redis-side rejection on `del` mid-handler
+//       (impractical to induce against the real dev container). The periodic
+//       cleanup catch path fires from a `setInterval` callback whose
+//       cleanupExpiredTokens helper is module-private with no test seam;
+//       driving it requires capturing the callback at module-load time via
+//       a setInterval spy (see the spec below).
+//   (b) Mock targets per spec: `nodemailer.createTransport` (SMTP-failure
+//       paths), `redis.del` (token cleanup), `globalThis.setInterval` for
+//       the periodic-cleanup callback capture. `verifyHiveSignature` is
+//       mocked at the file level via `MOCK_VERIFY_SIGNATURE` (justified at
+//       the file header above). The logger is spied (not mocked) so the
+//       production format string still runs.
+//   (c) Real-path companion: the broadcast-error 502 path has real-Redis
+//       coverage in the sibling specs (`non-timeout broadcast error → 502
+//       BROADCAST_FAILED with retriable=false`); SMTP-failure handling has
+//       a real-path companion in `backend/tests/routes/recover.test.ts`'s
+//       BE-AUTH-SMTP-STATUS-CODE-ORACLE block (mirrors the same throw-from-
+//       sendMail wiring against the recover/reset routes). The cleanup
+//       catch handler shape is verified structurally; the underlying
+//       `cleanupExpiredTokens` helper is pure-iteration over a private Map
+//       and has no production failure mode today, so the catch is a future-
+//       proofing log-shape pin.
+// ──────────────────────────────────────────────
+
+describe('BE-LOG-SHAPE-CONVERGENCE — accreditation.ts structured-log emissions (Item 3 part C)', () => {
+  it('accreditation.request.smtp_send_failed: sendMail throw emits canonical error log shape with err: <Error>', async () => {
+    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => logger);
+    const sendMailSpy = vi.fn().mockRejectedValue(new Error('SMTP connection refused'));
+    const transportSpy = vi
+      .spyOn(nodemailer, 'createTransport')
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .mockReturnValue({ sendMail: sendMailSpy } as any);
+    const prevHost = config.smtpHost;
+    // Need a non-empty host so the route takes the sendMail branch (not the
+    // smtp_not_configured branch). The transport itself is the spy — actual
+    // host value is irrelevant.
+    config.smtpHost = 'smtp-fail-test.invalid';
+    // Distinct username dodges the per-account `accred-req` limiter
+    // (max=3/24h) so this and the next spec don't collide.
+    const username = `aclogshpsmtpf${Date.now() % 1000}`;
+    try {
+      const res = await request(app)
+        .post('/api/accreditation/request')
+        .set('X-Hive-Username', username)
+        .set('X-Hive-Signature', 'mock')
+        .send({
+          full_name: 'Log Shape Tester',
+          institution: 'MIT',
+          field: 'physics',
+          email: `${username}@harvard.edu`,
+        });
+      expect(res.status).toBe(500);
+
+      const matchingCall = errorSpy.mock.calls.find((call) => {
+        const ctx = call[0] as Record<string, unknown> | undefined;
+        return ctx?.event === 'accreditation.request.smtp_send_failed';
+      });
+      expect(
+        matchingCall,
+        'expected logger.error with event:accreditation.request.smtp_send_failed',
+      ).toBeDefined();
+      expect(matchingCall![0]).toEqual(
+        expect.objectContaining({
+          event: 'accreditation.request.smtp_send_failed',
+          route: 'accreditation.request',
+          username,
+          email_hash: expect.stringMatching(/^[0-9a-f]{12}$/),
+        }),
+      );
+      // err MUST be the Error instance (not its .message string) so pino's
+      // err serializer produces .message + .stack + .type at write time.
+      expect((matchingCall![0] as { err?: unknown }).err).toBeInstanceOf(Error);
+    } finally {
+      errorSpy.mockRestore();
+      transportSpy.mockRestore();
+      config.smtpHost = prevHost;
+    }
+  });
+
+  it('accreditation.request.smtp_not_configured: empty smtpHost emits canonical error log shape with email_hash', async () => {
+    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => logger);
+    const prevHost = config.smtpHost;
+    config.smtpHost = '';
+    const username = `aclogshpsmtpc${Date.now() % 1000}`;
+    try {
+      const res = await request(app)
+        .post('/api/accreditation/request')
+        .set('X-Hive-Username', username)
+        .set('X-Hive-Signature', 'mock')
+        .send({
+          full_name: 'Log Shape Tester',
+          institution: 'MIT',
+          field: 'physics',
+          email: `${username}@harvard.edu`,
+        });
+      expect(res.status).toBe(500);
+      expect(res.body.error.message).toContain('Email service not configured');
+
+      const matchingCall = errorSpy.mock.calls.find((call) => {
+        const ctx = call[0] as Record<string, unknown> | undefined;
+        return ctx?.event === 'accreditation.request.smtp_not_configured';
+      });
+      expect(
+        matchingCall,
+        'expected logger.error with event:accreditation.request.smtp_not_configured',
+      ).toBeDefined();
+      expect(matchingCall![0]).toEqual(
+        expect.objectContaining({
+          event: 'accreditation.request.smtp_not_configured',
+          route: 'accreditation.request',
+          username,
+          // CNPD: email_hash is the only allowed email identity in logs.
+          email_hash: expect.stringMatching(/^[0-9a-f]{12}$/),
+        }),
+      );
+    } finally {
+      errorSpy.mockRestore();
+      config.smtpHost = prevHost;
+    }
+  });
+
+  it('accreditation.verify.token_cleanup_failed: pins the canonical event field on a 502 + redis.del rejection', async () => {
+    // The earlier deleteToken-rejection spec (BE-HANDLE-BROADCAST-ERROR-HELPER
+    // round-2 hold #1, ~line 332) asserts the cleanup-failure log path via a
+    // message-substring match (`stringContaining('token cleanup failed after
+    // broadcast failure')`). Per the round-2 hold-block on this task, we
+    // additionally pin the structured `event:` discriminator exactly so a
+    // future log-message edit can't silently drop the dashboard-keyable
+    // anchor while the message-text assertion still passes.
+    const redis = getRedis();
+    if (!redis) return;
+    // Clear the per-IP rate-limit window so this spec doesn't 429 from
+    // accumulated prior /verify calls. Mirrors the sibling spec's discipline.
+    const limitKeys = await redis.keys(`${config.appTag}:rl:accred-verify:*`);
+    if (limitKeys.length > 0) await redis.del(...limitKeys);
+    const token = `accred-tcf-${crypto.randomBytes(8).toString('hex')}`;
+    const tokenKey = `${config.appTag}:pending_accred:${token}`;
+    await seedPendingAccreditation(token);
+
+    broadcastJsonMock.mockRejectedValueOnce(new Error('RPC node rejected: insufficient RC'));
+    const delSpy = vi
+      .spyOn(redis, 'del')
+      .mockRejectedValueOnce(new Error('Redis evicted to read-only'));
+    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => logger);
+
+    try {
+      const res = await request(app)
+        .post('/api/accreditation/verify')
+        .send({ token });
+      expect(res.status).toBe(502);
+      expect(res.body.error.code).toBe('BROADCAST_FAILED');
+
+      // The structured event discriminator must fire exactly once for this
+      // path. Find by event name (not message substring) to pin the
+      // dashboard-keyable anchor.
+      const matchingCall = errorSpy.mock.calls.find((call) => {
+        const ctx = call[0] as Record<string, unknown> | undefined;
+        return ctx?.event === 'accreditation.verify.token_cleanup_failed';
+      });
+      expect(
+        matchingCall,
+        'expected logger.error with event:accreditation.verify.token_cleanup_failed',
+      ).toBeDefined();
+      expect(matchingCall![0]).toEqual(
+        expect.objectContaining({
+          event: 'accreditation.verify.token_cleanup_failed',
+          route: 'accreditation.verify',
+          username: 'accred-timeout-user',
+          email_hash: expect.stringMatching(/^[0-9a-f]{12}$/),
+          token_hash: expect.stringMatching(/^[0-9a-f]{12}$/),
+        }),
+      );
+      expect((matchingCall![0] as { err?: unknown }).err).toBeInstanceOf(Error);
+    } finally {
+      delSpy.mockRestore();
+      errorSpy.mockRestore();
+      // Token may still be present (delete failed); clean explicitly so the
+      // afterEach `accred-timeout-*` filter doesn't miss this `accred-tcf-*`
+      // shape.
+      await redis.del(tokenKey);
+    }
+  });
+
+  it('accreditation.cleanup.failed: periodic cleanup catch path emits canonical error log shape', async () => {
+    // The periodic cleanup callback at accreditation.ts:901 is registered via
+    // `setInterval(() => { cleanupExpiredTokens().catch((err) => logger.error(
+    // {event: 'accreditation.cleanup.failed', ...}, '...')); }, 60*60*1000)`.
+    // `cleanupExpiredTokens` is module-private with no test seam, and its
+    // body is pure-iteration over a private Map (no production failure mode
+    // today). To pin the catch handler's structured-log shape without route-
+    // file changes, we re-import the route module under a `setInterval` spy
+    // to capture the callback, then drive a forced rejection by patching
+    // `Map.prototype.delete` on the next call so the cleanup loop's
+    // `memoryTokens.delete(t)` throws → catch fires.
+    //
+    // Mutation kills (load-bearing for this spec):
+    //   - "rename event field": match-by-event find returns undefined.
+    //   - "drop the route field": objectContaining assertion fails.
+    //   - "drop the .catch() entirely": the test's awaited rejection
+    //     surfaces as an unhandled rejection (vitest fails the spec).
+
+    // Capture the setInterval callback the route registers. Re-importing
+    // under the spy is necessary because the original setInterval (from the
+    // top-level static import) ran before any spy could intercept it.
+    const intervalCallbacks: Array<() => void> = [];
+    const originalSetInterval = globalThis.setInterval;
+    const setIntervalSpy = vi
+      .spyOn(globalThis, 'setInterval')
+      .mockImplementation(((cb: () => void, ms: number) => {
+        intervalCallbacks.push(cb);
+        // Return a real (no-op) timer handle so the route's bookkeeping is
+        // satisfied. We never let the timer actually fire on its own.
+        return originalSetInterval(() => {}, ms * 100);
+      }) as typeof setInterval);
+
+    let freshLogger: typeof logger;
+    try {
+      vi.resetModules();
+      // Re-import the route to re-run setInterval under our spy. The original
+      // module's setInterval already fired (at top-of-file static import time)
+      // and is still registered; we capture the freshly re-imported one.
+      // After resetModules, the route closes over a NEW `logger` instance
+      // (different module identity than the file-level `logger` import). We
+      // import that fresh instance and spy on IT — the captured callback's
+      // catch handler will route to the fresh instance.
+      await import('../../src/routes/accreditation.js');
+      freshLogger = (await import('../../src/logger.js')).logger;
+    } finally {
+      setIntervalSpy.mockRestore();
+    }
+
+    expect(intervalCallbacks.length).toBeGreaterThanOrEqual(1);
+    const cleanupCallback = intervalCallbacks[intervalCallbacks.length - 1];
+
+    const errorSpy = vi.spyOn(freshLogger, 'error').mockImplementation(() => freshLogger);
+    // Patch Map.prototype.delete to throw on the next call only. The
+    // cleanup loop's `for (const [t, p] of memoryTokens) { if (now > p.expires_at)
+    // memoryTokens.delete(t); }` path needs a token present in memoryTokens
+    // whose expires_at < now, so .delete is invoked. Driving that without a
+    // route-file test seam is awkward, so we instead patch Map.prototype's
+    // iterator so the for-of throws synchronously on the first iteration.
+    // The async function body wraps the throw in a rejected Promise; the
+    // catch handler then runs.
+    const origIterator = Map.prototype[Symbol.iterator];
+    let iteratorCalls = 0;
+    const iteratorSpy = vi
+      .spyOn(Map.prototype, Symbol.iterator)
+      .mockImplementation(function (this: Map<unknown, unknown>) {
+        iteratorCalls++;
+        // First call: throw (the cleanup callback's `for...of memoryTokens`).
+        // Subsequent calls: pass through (other code paths in the test
+        // process — e.g. loggers, supertest internals — must keep working).
+        if (iteratorCalls === 1) {
+          throw new Error('synthetic Map iteration failure for cleanup.failed');
+        }
+        return origIterator.call(this);
+      });
+
+    try {
+      // Fire the captured setInterval callback. The cleanup function inside
+      // throws on the iteration; the wrapping `.catch((err) => logger.error(
+      // ..., 'Failed to cleanup expired accreditation tokens'))` handles it.
+      cleanupCallback();
+      // Wait for the async catch handler to flush. The microtask ordering is
+      // (1) cleanupExpiredTokens rejects, (2) .catch handler runs, (3) the
+      // logger.error call lands on errorSpy.mock.calls. `vi.waitFor` polls
+      // the assertion until it passes (or times out at 1s) — robust against
+      // microtask-ordering surprises across node versions.
+      await vi.waitFor(
+        () => {
+          const found = errorSpy.mock.calls.find((call) => {
+            const ctx = call[0] as Record<string, unknown> | undefined;
+            return ctx?.event === 'accreditation.cleanup.failed';
+          });
+          expect(found, 'cleanup.failed event not yet emitted').toBeDefined();
+        },
+        { timeout: 1_000, interval: 5 },
+      );
+
+      const matchingCall = errorSpy.mock.calls.find((call) => {
+        const ctx = call[0] as Record<string, unknown> | undefined;
+        return ctx?.event === 'accreditation.cleanup.failed';
+      });
+      expect(matchingCall![0]).toEqual(
+        expect.objectContaining({
+          event: 'accreditation.cleanup.failed',
+          route: 'accreditation.cleanup',
+        }),
+      );
+      // err MUST be an Error so pino's serializer produces structured fields.
+      expect((matchingCall![0] as { err?: unknown }).err).toBeInstanceOf(Error);
+    } finally {
+      iteratorSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
   });
 });

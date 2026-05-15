@@ -530,3 +530,236 @@ describe('BE-BRIDGE-CUSTODY-BROADCAST-DISCRIMINATION — per-attempt audit log',
     }
   });
 });
+
+// ──────────────────────────────────────────────
+// BACKEND-LOG-SHAPE-CONVERGENCE-SIBLING-FILES (Item 3 part B):
+// Mutation-killing spy assertions on operationally-critical structured log
+// emissions in `backend/src/routes/custody.ts` per
+// `agents/docs/solutions/conventions/auth-structured-log-shape-2026-04-29.md`.
+//
+// Justification (per root CLAUDE.md test carve-out clauses a/b/c):
+//   (a) Real-path impracticality: each event sits behind a runtime failure
+//       (rejected fresh-auth proof, outer-catch DB throws, the documented-
+//       unreachable null-hash safety sentinel). Driving them deterministically
+//       requires per-test mocks. The carve-out scope is the same as the
+//       outer-catch + audit-log specs already in this file (decryptKey,
+//       pool.query). `verifyHiveSignature` is NOT mocked — every spec mints
+//       a real Bearer JWT signed with `config.sessionSecret` and exercises
+//       the real middleware path.
+//   (b) Mock targets: the existing module-level mocks (getAppPool, decryptKey,
+//       broadcastSendOperationsWithTimeout, redis null) are the only mocks.
+//       The logger is spied (not mocked at the module level) so call shape
+//       can be asserted while the production format string still fires.
+//   (c) Real-path companion: real-path coverage of `/fresh-auth` and
+//       `/upgrade` lives in `custody-fresh-auth-null-hash.test.ts` and
+//       `custody-upgrade-null-hash.test.ts` (real argon2, real pg pool,
+//       real verifyHiveSignature middleware). Those exercise the documented-
+//       reachable branches end-to-end; this file pins the structured-log
+//       shape on the failure-path branches that the real-path companions
+//       don't drive.
+// ──────────────────────────────────────────────
+
+describe('BE-LOG-SHAPE-CONVERGENCE — custody.ts structured-log emissions (Item 3 part B)', () => {
+  it('custody.broadcast.fresh_auth_rejected: consent op without fresh_auth_proof emits canonical warn shape', async () => {
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never);
+    try {
+      // Bundle carries a single consent op (`author_accept`) but no
+      // `fresh_auth_proof`. `consumeFreshAuthToken(undefined, ...)` resolves
+      // to `{valid:false, reason:'missing'}` and the route warns + 401s.
+      const consentOps = [
+        [
+          'custom_json',
+          {
+            required_posting_auths: [USERNAME],
+            id: config.appTag,
+            json: JSON.stringify({
+              action: 'author_accept',
+              root_author: 'someroot',
+              root_permlink: 'somepermlink-v1',
+            }),
+          },
+        ],
+      ];
+      const token = bearerFor(USERNAME, 'light');
+      const res = await bearerPost('/api/custody/broadcast', token, {
+        operations: consentOps,
+        // fresh_auth_proof intentionally omitted
+      });
+      // Round-4 hold #10: missing/expired/malformed → 401 (not 403, which is
+      // reserved for username/target binding violations).
+      expect(res.status).toBe(401);
+      expect(res.body.error.code).toBe('FRESH_AUTH_REQUIRED');
+
+      const matchingCall = warnSpy.mock.calls.find((call) => {
+        const ctx = call[0] as Record<string, unknown> | undefined;
+        return ctx?.event === 'custody.broadcast.fresh_auth_rejected';
+      });
+      expect(
+        matchingCall,
+        'expected logger.warn with event:custody.broadcast.fresh_auth_rejected',
+      ).toBeDefined();
+      expect(matchingCall![0]).toEqual(
+        expect.objectContaining({
+          event: 'custody.broadcast.fresh_auth_rejected',
+          route: 'custody.broadcast',
+          username: USERNAME,
+          consent_action: 'author_accept',
+          consent_root_author: 'someroot',
+          consent_root_permlink: 'somepermlink-v1',
+          reason: 'missing',
+        }),
+      );
+      // Broadcast must NOT have run — fresh-auth gate fires before decrypt.
+      expect(sendOperationsMock).not.toHaveBeenCalled();
+      expect(decryptKeyMock).not.toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('custody.fresh_auth.failed: outer-catch on /fresh-auth emits canonical error shape with err: <Error>', async () => {
+    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => undefined as never);
+    // Drive the outer-catch by throwing on the route's password_hash SELECT.
+    // The middleware's `sessions_invalidated_at` lookup runs first and must
+    // succeed; the throw is scoped to the second query.
+    appQueryMock.mockImplementation(async (sql: string, _params: unknown[]) => {
+      if (sql.includes('sessions_invalidated_at')) {
+        return { rows: [{ sessions_invalidated_at: null }] };
+      }
+      if (sql.includes('password_hash')) {
+        throw new Error('pg: connection terminated unexpectedly (fresh-auth)');
+      }
+      return { rows: [] };
+    });
+    try {
+      const token = bearerFor(USERNAME, 'light');
+      const res = await bearerPost('/api/custody/fresh-auth', token, {
+        password: 'AnyPassword1',
+        action: 'author_accept',
+        root_author: 'someroot',
+        root_permlink: 'somepermlink-v1',
+      });
+      expect(res.status).toBe(500);
+      expect(res.body.error.code).toBe('INTERNAL_ERROR');
+
+      const matchingCall = errorSpy.mock.calls.find((call) => {
+        const ctx = call[0] as Record<string, unknown> | undefined;
+        return ctx?.event === 'custody.fresh_auth.failed';
+      });
+      expect(
+        matchingCall,
+        'expected logger.error with event:custody.fresh_auth.failed',
+      ).toBeDefined();
+      expect(matchingCall![0]).toEqual(
+        expect.objectContaining({
+          event: 'custody.fresh_auth.failed',
+          route: 'custody.fresh-auth',
+          username: USERNAME,
+        }),
+      );
+      // err MUST be an Error instance (not its .message string) so pino's
+      // err serializer produces .message + .stack + .type at write time.
+      expect((matchingCall![0] as { err?: unknown }).err).toBeInstanceOf(Error);
+    } finally {
+      errorSpy.mockRestore();
+      appQueryMock.mockImplementation(DEFAULT_APP_QUERY_IMPL);
+    }
+  });
+
+  it('custody.upgrade.null_hash_unreachable: light-custody JWT + null password_hash row fires safety-sentinel error log', async () => {
+    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => undefined as never);
+    // The /upgrade route's per-account `upgradeLimiter` (max=1/hr keyed by
+    // account) means the per-account rate-limit bucket fills after one call.
+    // Use a fresh username per upgrade-test so the bucket starts empty —
+    // mirrors the same dodge in custody-upgrade-argon-error-translation.test.ts.
+    const upgradeUser = 'lightupgnullhsh';
+    // Drive the documented-unreachable branch: middleware passes `custody:
+    // 'light'`, route's SELECT returns a row with password_hash=null. Per
+    // custody.ts:803 the route emits a sentinel error log + returns 401
+    // UNAUTHORIZED. The branch is unreachable through the orcid.ts JWT mint
+    // (custody=null → middleware coerces to 'self' → 403 at the gate above);
+    // the sentinel exists for any hypothetical future direct caller.
+    appQueryMock.mockImplementation(async (sql: string, _params: unknown[]) => {
+      if (sql.includes('sessions_invalidated_at')) {
+        return { rows: [{ sessions_invalidated_at: null }] };
+      }
+      if (sql.includes('password_hash')) {
+        return {
+          rows: [{ password_hash: null, posting_key_enc: Buffer.from('x'), upgraded_at: null }],
+        };
+      }
+      return { rows: [] };
+    });
+    try {
+      const token = bearerFor(upgradeUser, 'light');
+      const res = await bearerPost('/api/custody/upgrade', token, { password: 'AnyPassword1' });
+      expect(res.status).toBe(401);
+      expect(res.body.error.code).toBe('UNAUTHORIZED');
+      expect(res.body.error.message).toBe('Invalid password');
+
+      const matchingCall = errorSpy.mock.calls.find((call) => {
+        const ctx = call[0] as Record<string, unknown> | undefined;
+        return ctx?.event === 'custody.upgrade.null_hash_unreachable';
+      });
+      expect(
+        matchingCall,
+        'expected logger.error with event:custody.upgrade.null_hash_unreachable',
+      ).toBeDefined();
+      expect(matchingCall![0]).toEqual(
+        expect.objectContaining({
+          event: 'custody.upgrade.null_hash_unreachable',
+          route: 'custody.upgrade',
+          username: upgradeUser,
+        }),
+      );
+    } finally {
+      errorSpy.mockRestore();
+      appQueryMock.mockImplementation(DEFAULT_APP_QUERY_IMPL);
+    }
+  });
+
+  it('custody.upgrade.failed: outer-catch on /upgrade emits canonical error shape with err: <Error>', async () => {
+    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => undefined as never);
+    // Distinct username from the sibling null_hash_unreachable spec to dodge
+    // the per-account `upgradeLimiter` (max=1/hr) — see comment on the
+    // sibling spec for the rate-limiter bucket rationale.
+    const upgradeUser = 'lightupgouterct';
+    // Drive the outer-catch by throwing on the route's password_hash SELECT
+    // (after the middleware's sessions_invalidated_at lookup succeeds).
+    appQueryMock.mockImplementation(async (sql: string, _params: unknown[]) => {
+      if (sql.includes('sessions_invalidated_at')) {
+        return { rows: [{ sessions_invalidated_at: null }] };
+      }
+      if (sql.includes('password_hash')) {
+        throw new Error('pg: connection terminated unexpectedly (upgrade)');
+      }
+      return { rows: [] };
+    });
+    try {
+      const token = bearerFor(upgradeUser, 'light');
+      const res = await bearerPost('/api/custody/upgrade', token, { password: 'AnyPassword1' });
+      expect(res.status).toBe(500);
+      expect(res.body.error.code).toBe('INTERNAL_ERROR');
+
+      const matchingCall = errorSpy.mock.calls.find((call) => {
+        const ctx = call[0] as Record<string, unknown> | undefined;
+        return ctx?.event === 'custody.upgrade.failed';
+      });
+      expect(
+        matchingCall,
+        'expected logger.error with event:custody.upgrade.failed',
+      ).toBeDefined();
+      expect(matchingCall![0]).toEqual(
+        expect.objectContaining({
+          event: 'custody.upgrade.failed',
+          route: 'custody.upgrade',
+          username: upgradeUser,
+        }),
+      );
+      expect((matchingCall![0] as { err?: unknown }).err).toBeInstanceOf(Error);
+    } finally {
+      errorSpy.mockRestore();
+      appQueryMock.mockImplementation(DEFAULT_APP_QUERY_IMPL);
+    }
+  });
+});
