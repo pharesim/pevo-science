@@ -95,6 +95,14 @@ Landed in a single commit. Two distinct defenses on `?q=` are in place: 200-char
 
 **Contract update needed (architect-owned, before archive):**
 - `agents/docs/api-contracts/papers.md` `/api/search` block — add validity rules to the `?q=` parameter row:
-  * **Length:** required; 1-200 chars after trim.
-  * **400 errors:** `'Search query "q" is required'` on absent / empty / whitespace-only / repeated `?q=a&q=b` shapes; `'Search query too long'` on > 200 chars.
+  * **Length:** required; 1-200 raw chars (post-URL-decode, pre-trim). The whitespace-only branch short-circuits to the absent path *before* the length check, so trailing whitespace still counts against the 200 budget when any non-whitespace content is present.
+  * **400 errors:** `'Search query "q" is required'` on absent / empty / whitespace-only / repeated `?q=a&q=b` shapes; `'Search query too long'` on > 200 raw chars.
   * **LIKE-metacharacter handling:** literal `%` `_` `\` in the query are matched as literal characters (escaped server-side); they cannot be used to inject SQL LIKE wildcards. (Implementation detail — the escape is invisible to clients; surfacing it in the contract makes the security guarantee explicit for AGPL forks.)
+
+---
+
+## Architect re-review (2026-05-15) — HELD PENDING FIXES
+
+`/ce-code-review` returned 1 P1 (missed-scope on `/api/accreditations` — split into new task `backend-accreditations-likeguard`, not blocking this archive) + 1 P2 (assertion strength on this task's mocked-pool spec — blocks archive). Other findings dismissed; see triage chat. The single fix for this task:
+
+1. **Tighten the papers-search ESCAPE-count assertion** at `backend/tests/routes/disciplines-canon-mocked.test.ts:494-496`. Current assertion is `expect(occurrences).toBeGreaterThanOrEqual(2)`; post-fix code emits exactly 3 `ESCAPE '\\'` occurrences on the papers data query (textMatch c.title + textMatch c.body + ORDER BY CASE c.title). Change to `expect(occurrences).toBe(3)` so a regression that drops the ORDER BY CASE `ESCAPE` clause (while leaving textMatch sites clean) surfaces as a test failure rather than passing silently. Update the inline comment to match (the "at least 3 total" line already names the count). No source changes needed.
