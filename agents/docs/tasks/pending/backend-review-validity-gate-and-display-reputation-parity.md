@@ -464,3 +464,81 @@ Carried over from round-1 (still pending):
 
 - `getProfileStats` `user_reviews` CTE at `profile.ts:92-100` accreditation gap (flagged round-2 as out-of-scope, still flagged for follow-up ticket).
 - Architect-zone update to `agents/docs/reputation-algorithm.md` documenting the 4-site validPevoPaperWhere composition and the FIVE self-exclusion composition sites (4 in reputation.ts review-class CTEs + 1 at profile.ts fetchUserReviewsFromHaf for round-3 hold #1) — folded into the architect's archive commit alongside the carry-forwards above.
+
+---
+
+## Architect re-review round-4 (2026-05-15) — HELD PENDING FIXES
+
+`/ce-code-review` on commit `f77ae21` dispatched 9 reviewers (correctness, testing, maintainability, project-standards, learnings, security, performance, adversarial, kieran-typescript; `ce-agent-native-reviewer` skipped per root CLAUDE.md project policy). All 6 round-3 hold items verified addressed at their cited sites — items 2+5 (user_reviews CTE comment trim), item 3 (notifications canary mock + per-arm assertion), and items 4+6 (test runtime narrowing + docstring) all land at the directed sites. Round-4 surfaces 4 items held below — two are convention purges incompletely applied (items 2+5's trim convention left siblings untouched), and two are test-fixture corrections (an assertion that doesn't actually mutation-kill because of try/catch swallow, and a comment that misstates the route's actual query count).
+
+Triage disposition this round: 1 P2 → new task (filed separately as `backend-getprofilestats-user-reviews-parity-gate.md`), 4 P3 → held below, 4 P3 → dismissed (preemptive hardening per `feedback_dismiss_preemptive_test_hardening.md` + sibling-pattern justifications), 1 P3 → acknowledged (performance verdict, no fix required). Three pre-existing findings: 1 bundled below (header in the same test file being edited), 2 folded into the new parity-gate task.
+
+### Items to address
+
+**1. (P3) `notifications-arm-sql-shape.test.ts:69` comment misstates query count and verifyHiveSignature status**
+
+**Where:** `backend/tests/routes/notifications-arm-sql-shape.test.ts:69-82` (comment block above the mock dispatch).
+
+**Why:** Testing reviewer at confidence 100 traced the route's actual call sequence: (1) `getGenesisBlock` fires `SELECT MIN(...) AS genesis` (matched by the mock's first branch, returns `{genesis: 0}`); (2) since `0 && 0 > 0` is false, `getGenesisBlock` falls through to its `SELECT MAX(block_num) AS head FROM hafsql.haf_blocks` fallback (returns empty via the no-match path); (3) `fetchNotificationsFromHaf` notifications query (captured via the `'new_review'::text` branch). Three `pool.query` calls, not two as the comment claims. The comment also says "verifyHiveSignature is NOT mocked" — it IS, via the `MOCK_VERIFY_SIGNATURE` fixture at lines 40-43 (carve-out clause-(b) permits this for SQL-shape-focused tests). Canary behavior is correct; documentation drifts from reality. Future maintainers reading the comment will trust the misstatement.
+
+**Fix:** Update the comment to reflect the actual three-query sequence (genesis MIN → HEAD fallback → notifications UNION) and accurately describe the auth-middleware mocking. Reference `agents/docs/solutions/conventions/test-mock-carve-out-clause-c-2026-05-04.md` as the canonical source for the auth-mock policy. No behavioral change.
+
+**2. (P3) `profile-reviews-accred-gate.test.ts:148-150` runtime-narrowing assertion swallowed by route's try/catch — claimed mutation-kill is a no-op**
+
+**Where:** `backend/tests/routes/profile-reviews-accred-gate.test.ts:148-150`.
+
+**Why:** Correctness reviewer at confidence 75 traced execution: the `expect(typeof rawAuthor).toBe('string')` and `expect(typeof rawAnon).toBe('string')` calls run INSIDE the `mockImplementation` callback for `pool.query`. When an `expect` throws inside that callback, the throw propagates into `hafQueryMock` which is inside the route's `try { ... } catch (err) { return null; }` block at `fetchUserReviewsFromHaf`. The route swallows the throw, returns null, and the route handler returns the empty envelope `{status:'ok', data:[], total:0}` — which the behavioral test expects anyway. The test passes for the wrong reason. The structural intent of round-3 hold item #4 ("fails red on regression") does not actually fire. Round-3 hold #4 is addressed in form but broken in substance.
+
+**Fix:** Move the assertions out of the mock callback. Capture `rawAuthor`/`rawAnon` into outer-scope variables inside the mock; after `await request(app).get(...)` returns, assert the captured types in test scope so a non-string param fails the test loudly. Natural cleanup: drop the dead-code `: ''` fallback at line 150 — once the outer-scope `expect` enforces the precondition, the inner ternary's false branch is unreachable (per root CLAUDE.md "Don't add error handling, fallbacks, or validation for scenarios that can't happen"). Use `as string` after the outer expect, or whatever narrowing shape reads cleanest inside the mock body.
+
+**3. (P3) Round-number cross-refs surviving the items-2+5 trim — sibling comment cluster in `profile.ts` and a surviving count in `reputation.ts`**
+
+**Where:**
+- `backend/src/routes/profile.ts:332` — "That asymmetry was flagged by the round-1 review (item 2)."
+- `backend/src/routes/profile.ts:341` — "This is the round-3 hold #1 parity fix:"
+- `backend/src/routes/profile.ts:345` — "Canonical $N counter (matches reviews.ts post-round-1 item #5)."
+- `backend/src/reputation.ts:676` — "mirroring the sibling **3** review-class CTEs"
+
+**Why:** Maintainability reviewer at confidence 75 (3 sibling findings, same risk class). Round-3 hold items 2+5 directed: "Drop round-number cross-references and decision narrative. Cross-reference convention docs instead of round numbers." The implementer applied this faithfully to the `reputation.ts:662-685` user_reviews CTE comment cluster (the directed site) — but missed the sibling `profile.ts:fetchUserReviewsFromHaf` comment cluster written in the same commit, and left one surviving count ("sibling 3 review-class CTEs") at `reputation.ts:676` inside the otherwise-trimmed block. The convention purge was scoped to the directed site but should have applied to any comment cluster touched by the same commit; round numbers rot fast, and a future re-organization of holds (or this task collapsing to a single archive entry) breaks all four references at once.
+
+**Fix:** Apply the items-2+5 trim convention to the sibling sites:
+- `profile.ts:332,341,345`: drop the round-number cross-references. Replace with convention-doc references (`cross-surface-parity-audit-at-sibling-composition-sites-2026-05-14.md` covers the parity-fix motivation; `defense-in-depth-canary-must-pin-each-layer-2026-05-07.md` covers the counter-pattern rationale where applicable). Describe the SQL gates by what they do, not by when they landed.
+- `reputation.ts:676`: replace "mirroring the sibling 3 review-class CTEs" with a non-counting phrase ("mirroring the sibling review-class CTEs" or similar). The count adds nothing and breaks on every CTE add/remove.
+
+**4. (P3) `profile-reviews-accred-gate.test.ts:14` carve-out clause-(c) header claim overstated**
+
+**Where:** `backend/tests/routes/profile-reviews-accred-gate.test.ts:14` (file header docblock — pre-existing claim, bundled because the file is being edited for items 1-2 above).
+
+**Why:** Correctness reviewer (pre-existing, conf 75). The header claims `profile.test.ts` and `papers.test.ts` provide real-HAF companion coverage for `/api/profile/:user/reviews` end-to-end. Grep shows no real-HAF integration test exercising that route specifically. The companion claim under-substantiates the carve-out clause-(c) requirement at `agents/docs/solutions/conventions/test-mock-carve-out-clause-c-2026-05-04.md`. Bundled into this round purely because the file's header is already being edited.
+
+**Fix:** Two paths, implementer's choice:
+- **Downgrade the claim** — rephrase the header to acknowledge that this file is the load-bearing coverage for `/api/profile/:user/reviews` and that the carve-out clause-(c) companion is structural (the gate composition pattern exercised by sibling-route real-HAF tests) rather than literal-route coverage.
+- **Add the companion** — extend `profile.test.ts` with a real-HAF integration test exercising the route. Wider in scope; only land it here if trivial, otherwise downgrade and file a separate test-coverage task.
+
+### Findings dismissed at triage (no action)
+
+- **`profile-reviews-accred-gate.test.ts:148` `typeof === 'string'` narrowing's string-to-different-string drift class** (testing reviewer) — preemptive hardening per `feedback_dismiss_preemptive_test_hardening.md`. The realistic drift class (params[3] becoming non-string) is held above as item 2; the further drift class (params[3] becoming a different string value) requires an explicit upstream refactor that would be caught at the source in code review.
+- **`config.hiveBridgeAccount || ''` at `profile.ts:371`** (kieran-typescript) — dead-code today but consistent with the pre-existing sibling pattern `config.hiveAnonAccount || ''` at the same file (line 370). Security reviewer treats the fallback as a deliberate safety net against config drift. Stripping #6 alone breaks pattern symmetry; stripping both is wider scope.
+- **SQL-shape canary at `profile-reviews-accred-gate.test.ts:105` doesn't pin `commentAlias`** (adversarial) — preemptive hardening against a theoretical alias-swap mutation. Real-path defense (integration tests reading empty data on deny-all) plus code review at the SQL change site cover the failure mode.
+- **`review-parity-invariant.test.ts:60` does not exercise the round-4 sibling site** (adversarial) — preemptive hardening; the local SQL-shape canary at the round-4 site is the load-bearing defense. Extending the parity test to enumerate all symmetric sites is convention work, deferred to the new parity-gate task or a future test-coverage pass.
+
+### Findings acknowledged (no fix)
+
+- **Performance verdict at `profile.ts:381`** (performance) — new `validPevoPaperWhere` JOIN predicate cost is unobservable at beta scale and structurally consistent with `reputation.ts:user_reviews` CTE. Predicate applies to JOIN-key columns already materialized; no new table scan. No fix required.
+
+### Carry-forwards for architect at archive (no implementer action)
+
+- Architect-zone `agents/docs/reputation-algorithm.md` lines 218-219, 296, 374, 407 — pre-task descriptions of unprefixed keys, numeric-string values, `active_accounts` CTE name. Still pending.
+- Architect-zone `agents/docs/ARCHITECTURE.md` lines 466-468 — pre-task SSoT state. Still pending.
+
+Both safe to land at archive of this task once round-5 items land.
+
+### Cross-surface parity follow-up
+
+The architect-flagged "Item NOT touched" carry-forward at `getProfileStats user_reviews CTE` (profile.ts:92-100) is now an actively-visible asymmetry — round-4 closed the `/api/profile/:user/reviews` listing side, so a user with reviews on non-paper Hive parents sees mismatched `review_count` on `/api/profile/:user` (which counts those reviews via the un-gated CTE) vs the listing on `/api/profile/:user/reviews` (which correctly excludes them post round-4). Plus two pre-existing sibling parity gaps at `search.ts:178` (review-search parent gate) and `papers.ts:2216` + `reviews.ts:88` (enrichment + single-doc parent JOINs) flagged by the security reviewer.
+
+These four sibling sites are filed as a single new task `backend-getprofilestats-user-reviews-parity-gate.md` at `tasks/pending/` per the cross-surface parity audit convention's "enumerated sibling sites with explicit dispositions" shape. The new task absorbs the architect's prior out-of-scope carry-forwards and supersedes the prose footnotes.
+
+### Re-review signal
+
+When items 1, 2, 3, 4 land, `git mv` this file from `tasks/pending/` back to `tasks/review/` per `feedback_task_mv_to_review_after_each_round.md`. Use bare `backend:` or `backend(<scope>):` commit prefixes so the zone-audit hook fires. The architect's next review pass scopes `/ce-code-review` to commits since `f77ae21`. Items 1, 2, and 4 all touch test files; items 1+4 touch the same test fixture (different sections); item 2 is the substantive fix in a third test file. Item 3 touches production-code comments at two source files (`profile.ts` + `reputation.ts`). Items can land in any order or in one combined commit.
