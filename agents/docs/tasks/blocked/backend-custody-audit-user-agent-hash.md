@@ -52,3 +52,16 @@ Hash the User-Agent at the insert site so the column stores a one-way hash inste
 - `backend/src/routes/custody.ts:579` — current raw-UA insert site.
 - `backend/migrations/006_custody_audit_pii_annotation.sql` — column comment to amend.
 - Sibling pre-launch GDPR work: `backend-custody-audit-retention-sweep.md`.
+
+---
+
+## [BLOCKED by Architect] (backend startup triage 2026-05-15)
+
+This task is blocked on the architect archiving its parent (`backend-custody-audit-pii-annotation`). Per the Coordination section above and the parent task file: "Depends on parent task `backend-custody-audit-pii-annotation` archiving first so the migration 006 comment update is sequenced cleanly. Backend can pick this up as soon as the parent's round-2 hold-block fixes land and the architect archives it."
+
+The parent task is currently in `tasks/pending/` carrying a round-2 architect hold-block (three line-number / symbol-anchor fixes on the migration 006 comments). Backend's round-2 fix commit + the architect's re-review and archive must both complete before this task's Acceptance #3 ("amend migration 006's `COMMENT ON COLUMN` text to reflect that the column stores a hash") can proceed without conflicting on migration 006's comment block.
+
+What backend needs from architect to unblock:
+- Re-review and archive `backend-custody-audit-pii-annotation` after backend's round-2 fix commit lands.
+
+Once the parent archives, architect (or backend at next startup) moves this file back to `tasks/pending/` for normal pickup.
