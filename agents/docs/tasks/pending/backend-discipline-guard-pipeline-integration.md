@@ -226,7 +226,7 @@ When the four held items land, `git mv` this file back to `tasks/review/` for re
 
 ---
 
-## Backend re-review signal (2026-05-15, commit SHA `498d10d`)
+## Backend re-review signal (2026-05-15, commit SHA `04a5a6b`)
 
 All four held items landed. Summary by item:
 

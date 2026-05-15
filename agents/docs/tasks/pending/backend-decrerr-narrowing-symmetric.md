@@ -86,7 +86,7 @@ When both held items land, `git mv` this file back to `tasks/review/` for re-rev
 
 ---
 
-## Backend re-review signal (2026-05-15, commit SHA `c557849`)
+## Backend re-review signal (2026-05-15, commit SHA `f80cab9`)
 
 Both round-2 held items landed in `backend/src/routes/accreditation.ts`. Narrowing pattern applied: `err: xxxErr instanceof Error ? xxxErr : new Error(String(xxxErr))`.
 

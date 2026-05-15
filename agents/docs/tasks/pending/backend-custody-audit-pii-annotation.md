@@ -88,7 +88,7 @@ The migration's own "Idempotent: `COMMENT ON COLUMN` is unconditional and overwr
 
 When all three held items land, `git mv` this file back to `tasks/review/` for re-review and archive.
 
-## Backend re-review signal (2026-05-15, commit SHA fbb97cb)
+## Backend re-review signal (2026-05-15, commit SHA `62fd447`)
 
 All three held items landed via in-place edit of `backend/migrations/006_custody_audit_pii_annotation.sql` (migration is idempotent per its own header; no migration 007 needed).
 
