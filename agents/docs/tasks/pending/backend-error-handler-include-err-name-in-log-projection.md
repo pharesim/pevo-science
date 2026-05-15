@@ -140,3 +140,47 @@ No `redactErrSerializer` and no `serializers.err` are wired into the logger inst
 ### Parent merge note
 
 Original worker (`worktree-agent-ae8c974b3d6ce3c40`, commits `d447b6f` + `37243ce`) branched from a stale base (`2616cc1`) that predated both the parent's `f73a362` checkpoint AND the `89ec691` error-envelope-helper-sweep. Parent attempted cherry-pick — conflicted on `errorHandler.ts` (worker reintroduced the open-coded `res.status(500).json(...)` regression) and on the task file itself (worker recreated it from scratch). Parent aborted the cherry-pick and re-applied the worker's intent manually onto current main: kept the `sendError` migration intact, added `name: err.name` + Path A comment to the existing log call, copied the test file verbatim, and appended this signal block to the task file already on main.
+
+---
+
+## Architect re-review (2026-05-15) — HELD PENDING FIXES (round 2)
+
+`/ce-code-review` ran on commit `f715b07` with 7 personas (correctness, testing, maintainability, project-standards, learnings, reliability, kieran-typescript). The Path A landing's premise is FALSE at HEAD: the implementer's signal-block claim (lines 79-90 of this file) that "no `redactErrSerializer` and no `serializers.err` are wired into the logger instance" was true at round-1 implementation time but stopped being true when `BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT` landed. At HEAD, both layers ARE wired and they actively defeat the Path A plain-object projection.
+
+### Items to address
+
+**1. (P1) Path A is silently defeated in production by the Layer-A wrapper**
+
+- File: `backend/src/middleware/errorHandler.ts:18` + `backend/tests/middleware/errorHandler.test.ts:60`
+- Cross-reviewer convergence: correctness (100), maintainability M-1 (100), learnings (high), kieran-typescript RR-1 (high) → anchor 100.
+- Verified directly at HEAD:
+  - `backend/src/logger.ts:326` wires `serializers.err = safeRedactErr` (Layer B).
+  - `backend/src/logger.ts:355-368` defines `redactErrInArg` (Layer A wrapper).
+  - `backend/src/logger.ts:417` applies `makeLevelWrapper(baseLogger.error.bind(baseLogger))` so every `logger.error(...)` flows through Layer A first.
+- Production trace through `logger.error({err: {name, message, stack}}, 'Unhandled error')`:
+  1. `redactErrInArg` mutates `obj.err` via `safeRedactErr({name, message, stack})`.
+  2. `redactErrSerializer` checks `isErrorLike({name, message, stack})` → true (both name+message are strings).
+  3. `out.type = errAny.constructor?.name || errAny.name || 'Error'` — for a plain object, `({}).constructor === Object` so `Object.name === 'Object'`. `out.type = 'Object'`. The class identity Path A was supposed to preserve is dropped.
+  4. `SAFE_BASELINE_FIELDS = ['code', 'errno', 'syscall']` does NOT include `name` → the explicit `name: err.name` field is dropped from the output.
+- Production log: `{err: {type: 'Object', message, stack}}`. The whole task's goal (preserve subclass class name in operator dashboards) is silently defeated. Custom Error subclasses (TypeError, BridgeKeyParseError, etc.) all serialize as `type: 'Object'`.
+- Test passes only because `vi.spyOn(logger, 'error').mockImplementation(() => undefined)` REPLACES the wrapper LogFn entirely; the spy captures the raw arg before `redactErrInArg` runs. The test does not pin production behavior.
+- **Fix:** switch to Path B. Pass the raw Error: `logger.error({ err }, 'Unhandled error')`. Then `redactErrSerializer` projects `out.type = err.constructor?.name = 'TestError'` / `'TypeError'` / `'BridgeKeyParseError'`. The Path A comment block (lines 11-16 of errorHandler.ts) becomes obsolete and should be removed (or replaced with a 1-line note that the raw Error is passed to honor the Layer-A serializer).
+
+**2. (P3) Test cleanup nits — fold into the same rewrite**
+
+- File: `backend/tests/middleware/errorHandler.test.ts:60-69`
+- Source: kieran-typescript KT-2 (90) + KT-3 (75).
+- The test must be rewritten anyway to match Path B (assert `payload.err.type === 'TestError'` not `name`, and replace `mockImplementation(() => undefined)` with `logger.level = 'silent'` so the wrapper actually runs and the assertion verifies post-serializer shape). While rewriting:
+  - Drop the double-cast `() => undefined as unknown as void`. Use `() => {}` (returns undefined implicitly, TS accepts as `() => void`).
+  - Replace the `mock.calls[0] as [...]` cast with `expect(errorSpy).toHaveBeenCalledWith(expect.objectContaining({err: expect.objectContaining({type: 'TestError', message: 'test message'})}), 'Unhandled error')`. Idiomatic, no cast, better failure message.
+- These are cleanup, not blockers; they're called out so the rewrite for item 1 absorbs them.
+
+### Items dismissed during architect triage (do NOT address)
+
+- **`{err: {message: err.message}}` plaintext-message-only sites flagged in advisory table at lines 122-138** (verifyHiveSignature.ts:185, contact.ts:47, settings.ts:165, accreditation.ts:254, search.ts:276, ipfs.ts:223,329) — out of THIS task's scope; surfaces a class-wide gap better tackled as a sweep follow-up, not folded into this task.
+- **Plain-Error name-flow gap (testing residual risk)** — theoretical-only; production code reads `err.name` unconditionally; preemptive hardening per memory feedback_dismiss_preemptive_test_hardening.
+- **Custom Error subclass `this.name` audit (reliability RR-2)** — confirmed all 8 subclasses already set `this.name` correctly; advisory only.
+
+### Re-review signal
+
+When items 1 + 2 land, `git mv` this file from `tasks/pending/` back to `tasks/review/`. The move itself is the re-review signal.
