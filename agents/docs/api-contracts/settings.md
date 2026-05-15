@@ -17,7 +17,7 @@ Read the authenticated account's email and password status. Used by the settings
 ```json
 {
   "hasEmail": true,
-  "email": "j***h@example.com",
+  "email": "j***h@***.com",
   "verified": true,
   "custody": "light",
   "pendingChange": false,

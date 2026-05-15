@@ -1,5 +1,5 @@
 ---
-title: Canonical structured-log shape for auth-route emissions
+title: Canonical structured-log shape for backend route emissions
 date: 2026-04-29
 category: conventions
 module: backend
@@ -7,10 +7,10 @@ problem_type: convention
 component: logging
 severity: medium
 applies_when:
-  - Adding a new structured log emission inside backend/src/routes/auth.ts
-  - Modifying an existing logger.* call in auth.ts
-  - Writing a test that asserts on auth-route log fields
-  - Building or extending an aggregator dashboard or log-grep runbook for auth endpoints
+  - Adding a new structured log emission inside any file under backend/src/routes/
+  - Modifying an existing logger.* call in a route handler
+  - Writing a test that asserts on route log fields
+  - Building or extending an aggregator dashboard or log-grep runbook for backend endpoints
 tags:
   - "logging"
   - "structured-logs"
@@ -30,13 +30,13 @@ Co-existence in the same file forced operators to know two key names to find eve
 
 ## Convention
 
-Every structured log emission in `backend/src/routes/auth.ts` uses the canonical merged shape:
+Every structured log emission in `backend/src/routes/{auth,accreditation,custody,signup-verify,settings,orcid}.ts` (and any future route file) uses the canonical merged shape:
 
 ```ts
 logger.<level>(
   {
-    event: 'auth.<endpoint>.<sub_event>',     // canonical aggregator key, snake_case
-    route: 'auth.<endpoint>',                 // grep-friendly, kebab-case where the endpoint URL is kebab
+    event: '<file>.<endpoint>.<sub_event>',   // canonical aggregator key, snake_case
+    route: '<file>.<endpoint>',               // grep-friendly, kebab-case where the endpoint URL is kebab
     email_hash?: hashEmailForLogs(email),     // when correlating per-email; never raw email
     emailKnown?: 'known' | 'unknown',         // when the branch identity matters operationally
     err?: <Error>,                            // when warn/error
@@ -45,6 +45,17 @@ logger.<level>(
   '<human-readable message>',
 );
 ```
+
+The `<file>` segment is the route file name (snake_case for `event`, kebab-case for `route` when the URL is kebab). Per-file prefixes in use today:
+
+- `backend/src/routes/auth.ts` → `auth.<endpoint>` (event + route)
+- `backend/src/routes/accreditation.ts` → `accreditation.<endpoint>`
+- `backend/src/routes/custody.ts` → `custody.<endpoint>`
+- `backend/src/routes/signup-verify.ts` → `signup_verify.<endpoint>` (event), `signup-verify.<endpoint>` (route)
+- `backend/src/routes/settings.ts` → `settings.<endpoint>`
+- `backend/src/routes/orcid.ts` → `orcid.<endpoint>`
+
+The auth.ts examples below illustrate the shape; the same rules apply to every other file with its own prefix substituted.
 
 ### Field rules
 
@@ -58,11 +69,11 @@ logger.<level>(
 
 `auth.ts` also emits at startup (`SENTINEL_ARGON2_HASH_PROMISE`-rejection guard) and inside the `burnSentinel` helper called from `auth.ts` AND `custody.ts` AND `signup-verify.ts`. These follow the same shape with `auth.startup.*` / `auth.burn_sentinel.*` discriminators. The `auth.` prefix tags the file the emission lives in, not the route.
 
-`burnSentinel` importer inventory (relevant when a sibling-file refactor rewires call sites — the emission's file-level prefix stays `auth.burn_sentinel.*` regardless of the caller, so operators grepping for `auth.recover.*` / `auth.signup.*` / `auth.custody.*` etc. will NOT match a burn-sentinel failure that fired from those routes):
+`burnSentinel` importer inventory (relevant when a sibling-file refactor rewires call sites — the emission's file-level prefix stays `auth.burn_sentinel.*` regardless of the caller, so operators grepping for `auth.recover.*` / `auth.signup.*` / `custody.*` etc. will NOT match a burn-sentinel failure that fired from those routes). Citations are by branch description rather than line number; line numbers shift with every neighboring edit and re-stale this list immediately. Use `grep -n burnSentinel backend/src/routes/` for the live anchors.
 
 - `backend/src/routes/auth.ts` — `/signup` (multiple sites in the dup-burn path), `/login`, `/reset-request`, `/resend-verification`, `/recover`.
-- `backend/src/routes/custody.ts` — line 224 (1 call site).
-- `backend/src/routes/signup-verify.ts` — lines 119, 130, 140 (3 call sites: unknown-email branch, non-confirmed branch, ORCID-only-no-password branch).
+- `backend/src/routes/signup-verify.ts` — 3 call sites: unknown-email branch, non-confirmed branch, ORCID-only-no-password branch.
+- `backend/src/routes/custody.ts` — currently zero call sites. A prior `/upgrade` timing-equalization burn was removed in a fresh-auth refactor (see comment block in custody.ts at the prior call site for the rationale). Listed here so a future re-introduction of `burnSentinel` in custody.ts updates this inventory rather than recreating the cross-file attribution gap.
 
 ### Existing event values
 
@@ -88,7 +99,9 @@ Aggregators or runbooks pinned to the old value need a one-line update. The `rou
 
 ## Scope
 
-This convention covers `backend/src/routes/auth.ts` only. Migration of non-`auth.ts` routes (accreditation, custody, settings, etc.) onto the same shape is a follow-up and can be picked up if the auth-side convergence proves the shape in production. Any new emission in those files is free to adopt the shape preemptively.
+This convention covers all backend route files: `auth.ts`, `accreditation.ts`, `custody.ts`, `signup-verify.ts`, `settings.ts`, `orcid.ts` (and any future route file under `backend/src/routes/`). The auth-side convergence landed first (commit `153605c` + round-2 hold-fix `62674b1`); the sibling-file migration followed in commit `54532c2`. Any new emission in any of these files MUST adopt the canonical shape with the appropriate file-level prefix.
+
+Lib-level helpers and other non-route emissions (e.g., `lib/argon2-error-handler.ts`'s `event: 'argon2_abort_summary'`, `lib/broadcast-error.ts`, the cross-file `burnSentinel` helper which lives in auth.ts and emits under `auth.burn_sentinel.*`) follow their own established discriminator patterns. The "prefix tags the file the emission lives in, not the calling route" rule applies to those helpers — see the `burnSentinel` importer inventory above for the canonical example.
 
 ## Cross-references
 

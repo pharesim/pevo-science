@@ -89,7 +89,7 @@ The `X-Hive-Signature` header proves the requester controls the Hive account. Th
 
 ```json
 {
-  "message": "Verification email sent to j***h@mit.edu",
+  "message": "Verification email sent to j***h@***.edu",
   "expires_at": "2026-03-26T14:30:00Z"
 }
 ```
