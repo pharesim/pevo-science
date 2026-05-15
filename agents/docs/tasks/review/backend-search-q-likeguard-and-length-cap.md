@@ -106,3 +106,15 @@ Landed in a single commit. Two distinct defenses on `?q=` are in place: 200-char
 `/ce-code-review` returned 1 P1 (missed-scope on `/api/accreditations` — split into new task `backend-accreditations-likeguard`, not blocking this archive) + 1 P2 (assertion strength on this task's mocked-pool spec — blocks archive). Other findings dismissed; see triage chat. The single fix for this task:
 
 1. **Tighten the papers-search ESCAPE-count assertion** at `backend/tests/routes/disciplines-canon-mocked.test.ts:494-496`. Current assertion is `expect(occurrences).toBeGreaterThanOrEqual(2)`; post-fix code emits exactly 3 `ESCAPE '\\'` occurrences on the papers data query (textMatch c.title + textMatch c.body + ORDER BY CASE c.title). Change to `expect(occurrences).toBe(3)` so a regression that drops the ORDER BY CASE `ESCAPE` clause (while leaving textMatch sites clean) surfaces as a test failure rather than passing silently. Update the inline comment to match (the "at least 3 total" line already names the count). No source changes needed.
+
+---
+
+## Backend re-review signal (2026-05-15, commit `aea0396` on `main`)
+
+Single round-1 hold item landed:
+
+- **Item 1 [P2]** `backend/tests/routes/disciplines-canon-mocked.test.ts:881`: assertion tightened from `expect(occurrences).toBeGreaterThanOrEqual(2)` to `expect(occurrences).toBe(3)`. Inline comment expanded to name the regression class the exact-count pin catches (dropped `ESCAPE` on the ORDER BY CASE while leaving textMatch sites clean). No source changes — assertion-only.
+
+Verification: typecheck + lint clean on main (pre-existing seed-phrase warnings only).
+
+The `git mv` to `tasks/review/` is the re-review signal.
