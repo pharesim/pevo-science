@@ -275,3 +275,53 @@ describe('GET /api/reviews/:author/:permlink — SQL accreditation gate (backend
     expect(res.body?.data?.is_accredited).toBe(false);
   });
 });
+
+describe('GET /api/reviews/:author/:permlink — SQL parent-paper parity gate', () => {
+  // Cross-surface parity canary for the round-4 carry-forward of
+  // backend-review-validity-gate-and-display-reputation-parity.
+  //
+  // Carve-out justification (root CLAUDE.md "Running Tests"):
+  //   (a) Provoking a `pevo.review`-shaped reply to a non-paper Hive parent
+  //       (peakd blog, non-paper comment) deterministically requires writing
+  //       such a payload to HAF — impractical against the public chain in
+  //       unit tests.
+  //   (b) `verifyHiveSignature` is NOT mocked — the route is a public GET
+  //       (no middleware to short-circuit).
+  //   (c) Real-path companion: SQL-shape composition of `validPevoPaperWhere`
+  //       on parent paper is exercised against real HAF at sibling review-class
+  //       SQL sites via `review-parity-invariant.test.ts` (real-HAF arm +
+  //       synthetic-VALUES fallback) and `reputation-lifecycle.test.ts`. The
+  //       same risk class (display-side admitting rows reputation excludes)
+  //       is caught there; this mocked block pins the single-doc reviews
+  //       endpoint's SQL shape so a refactor that drops the parent-paper
+  //       gate fails red. Literal-route real-HAF coverage for
+  //       `/api/reviews/:author/:permlink` parent-paper gate remains a
+  //       follow-up.
+  //
+  // Mutation kill: dropping either `'paper'` or `'bridge_paper'` from the
+  // emitted SQL fires the canary red.
+
+  it('review fetch SQL composes validPevoPaperWhere on parent paper (mutation-kill)', async () => {
+    const capturedSqls: string[] = [];
+    hafQueryMock.mockImplementation(async (sql: string) => {
+      capturedSqls.push(sql);
+      return { rows: [] };
+    });
+    // 404 is expected (empty rows from mock) — the SUT is the SQL emit.
+    const res = await request(app).get('/api/reviews/alice/r1');
+    expect(res.status).toBe(404);
+
+    // The single-doc review SQL is identified by its review-detail payload
+    // shape: `SELECT c.author, c.permlink, c.body, c.json_metadata` combined
+    // with the JOIN against parent `p`.
+    const reviewSqls = capturedSqls.filter(
+      (s) => s.includes('SELECT c.author, c.permlink, c.body, c.json_metadata')
+        && s.includes('JOIN'),
+    );
+    expect(reviewSqls.length, 'expected the single-doc review SQL to have been emitted').toBeGreaterThanOrEqual(1);
+    for (const sql of reviewSqls) {
+      expect(sql, 'review SQL missing native-paper arm').toContain("= 'paper'");
+      expect(sql, 'review SQL missing bridge_paper arm — validPevoPaperWhere source:"all" requires both').toContain("= 'bridge_paper'");
+    }
+  });
+});

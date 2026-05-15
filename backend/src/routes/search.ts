@@ -166,19 +166,28 @@ async function searchReviewsFromHaf(
   let paramIdx = cte.nextIdx;
 
   const appTagParam = `$${paramIdx++}`;
-  const params: unknown[] = [...cte.params, config.appTag];
+  const bridgeAccountParam = `$${paramIdx++}`;
+  const params: unknown[] = [...cte.params, config.appTag, config.hiveBridgeAccount || ''];
 
   // Reviews are child comments of PEvO papers. validReviewWhere supplies the
   // canonical type+rating-shape gate; the `app LIKE 'pevotest/%'` gate is
   // intentionally absent (per the trust-layer principle, an accredited
   // reviewer's broadcast counts regardless of authoring client).
   // The JOIN against parent paper `p` doubles duty: it asserts the parent
-  // is a top-level PEvO post (replacing the prior EXISTS subquery) AND
-  // gives excludeSelfReviewWhere a paperRowAlias to read authors[] from.
+  // is a PEvO paper-class post (native or pinned bridge_paper, per
+  // `validPevoPaperWhere(source:'all')`) AND gives excludeSelfReviewWhere a
+  // paperRowAlias to read authors[] from.
+  //
+  // Display↔reputation parity (cross-surface): the prior weaker
+  // `p.parent_author = '' AND p.parent_permlink = $appTag` check admitted
+  // review-shaped replies to *any* top-level pevotest-tagged post (peakd
+  // blogs, non-paper comments) while reputation correctly excludes them via
+  // the user_reviews CTE that composes validPevoPaperWhere. This site now
+  // composes the same gate; see
+  // `agents/docs/solutions/conventions/cross-surface-parity-audit-at-sibling-composition-sites-2026-05-14.md`.
   const conditions: string[] = [
     `c.parent_author != ''`,
-    `p.parent_author = ''`,
-    `p.parent_permlink = ${appTagParam}`,
+    validPevoPaperWhere({ commentAlias: 'p', appTagParam, bridgeAccountParam, source: 'all' }),
     validReviewWhere({ commentAlias: 'c', appTagParam }),
     excludeSelfReviewWhere({ paperRowAlias: 'p', appTagParam }),
   ];

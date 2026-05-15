@@ -6,7 +6,7 @@ import { parseMeta, isPevoReview, pevoString } from '../helpers.js';
 import { getAccreditedSet } from '../accreditation.js';
 import { getReputationScore } from '../reputation.js';
 import { logger } from '../logger.js';
-import { T, activeAccreditationsCte, accreditedVoteCount, validReviewWhere, excludeSelfReviewWhere } from '../hafsql.js';
+import { T, activeAccreditationsCte, accreditedVoteCount, validReviewWhere, excludeSelfReviewWhere, validPevoPaperWhere } from '../hafsql.js';
 
 const router = Router();
 
@@ -72,6 +72,7 @@ async function fetchReviewFromHaf(author: string, permlink: string) {
     const permlinkIdx = paramIdx++;
     const anonIdx = paramIdx++;
     const appTagIdx = paramIdx++;
+    const bridgeIdx = paramIdx++;
     // INNER JOIN parent paper `p` so `excludeSelfReviewWhere` can read
     // `p.json_metadata -> authors[]` AND so the parent title comes back in
     // one round-trip instead of the prior two-query shape
@@ -85,6 +86,14 @@ async function fetchReviewFromHaf(author: string, permlink: string) {
     // reason listing surfaces hide it. Bypassing via direct URL is no
     // longer possible; display↔reputation parity now extends from the
     // listing layer through the single-doc fetch.
+    //
+    // Display↔reputation parity (cross-surface): without validPevoPaperWhere
+    // on `p`, a `pevo.review`-shaped reply to a non-paper Hive parent (a
+    // peakd blog post, a non-paper comment) would surface here while
+    // reputation correctly excludes it via the user_reviews CTE that
+    // composes validPevoPaperWhere. The single-doc endpoint is directly
+    // URL-addressable, so the gate must compose here too. See
+    // `agents/docs/solutions/conventions/cross-surface-parity-audit-at-sibling-composition-sites-2026-05-14.md`.
     const result = await pool.query(
       `${accredCte.sql}
        SELECT c.author, c.permlink, c.body, c.json_metadata,
@@ -96,8 +105,9 @@ async function fetchReviewFromHaf(author: string, permlink: string) {
        WHERE c.author = $${authorIdx} AND c.permlink = $${permlinkIdx}
          AND (c.author IN (SELECT account FROM active_accreditations) OR c.author = $${anonIdx})
          AND ${validReviewWhere({ commentAlias: 'c', appTagParam: `$${appTagIdx}` })}
+         AND ${validPevoPaperWhere({ commentAlias: 'p', appTagParam: `$${appTagIdx}`, bridgeAccountParam: `$${bridgeIdx}`, source: 'all' })}
          AND ${excludeSelfReviewWhere({ paperRowAlias: 'p', appTagParam: `$${appTagIdx}` })}`,
-      [...accredCte.params, author, permlink, config.hiveAnonAccount || '', config.appTag],
+      [...accredCte.params, author, permlink, config.hiveAnonAccount || '', config.appTag, config.hiveBridgeAccount || ''],
     );
     if (result.rows.length === 0) return null;
 

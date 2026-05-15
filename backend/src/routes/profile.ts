@@ -79,43 +79,83 @@ async function getProfileStats(username: string) {
   if (!pool) return { paper_count: 0, review_count: 0, citation_count: 0, first_pevo_post: null };
 
   try {
+    // Cross-surface parity: the user_reviews CTE must compose the same gate
+    // set as the reputation cycle's user_reviews CTE (reputation.ts) AND the
+    // listing display surface (`fetchUserReviewsFromHaf`). Pre-fix, this
+    // stats CTE lacked BOTH the accreditation gate (admitting unaccredited
+    // spam) AND validPevoPaperWhere on the parent paper (admitting
+    // review-shaped replies to non-paper Hive posts). Reputation already
+    // composes both; this site closes the parity gap on the actively-visible
+    // `/api/profile/:user` stats surface where `review_count` was diverging
+    // from the listing's `meta.total`. See
+    // `agents/docs/solutions/conventions/cross-surface-parity-audit-at-sibling-composition-sites-2026-05-14.md`.
+    //
+    // Param-shape: canonical paramIdx++ counter pattern (per
+    // `agents/docs/solutions/conventions/defense-in-depth-canary-must-pin-each-layer-2026-05-07.md`
+    // and the round-2 hold #1 convention from reviews.ts). Offset arithmetic
+    // silently mis-binds if any bind is added/removed; the counter adapts.
+    const accredCte = activeAccreditationsCteBody(1);
+    let paramIdx = accredCte.nextIdx;
+    const usernameIdx = paramIdx++;
+    const appTagIdx = paramIdx++;
+    const appPrefixIdx = paramIdx++;
+    const anonIdx = paramIdx++;
+    const bridgeIdx = paramIdx++;
+
+    const at = `$${appTagIdx}`;
+    const bridgeParam = `$${bridgeIdx}`;
+    const reviewWhere = validReviewWhere({ commentAlias: 'c', appTagParam: at });
+    const paperGate = validPevoPaperWhere({ commentAlias: 'p', appTagParam: at, bridgeAccountParam: bridgeParam, source: 'all' });
+    const selfExclude = excludeSelfReviewWhere({ paperRowAlias: 'p', appTagParam: at });
+    const accredGate = `(c.author IN (SELECT account FROM active_accreditations) OR c.author = $${anonIdx})`;
+
     const result = await pool.query(
-      `WITH user_papers AS (
+      `WITH ${accredCte.sql},
+       user_papers AS (
          SELECT c.created
          FROM ${T.comments} c
-         WHERE c.author = $1
-           AND c.parent_author = '' AND c.parent_permlink = $2
-           AND (c.json_metadata -> $2 ->> 'type') = 'paper'
-           AND c.json_metadata ->> 'app' LIKE $3
-           AND (c.json_metadata -> $2 -> 'continues') IS NULL
+         WHERE c.author = $${usernameIdx}
+           AND c.parent_author = '' AND c.parent_permlink = ${at}
+           AND (c.json_metadata -> ${at} ->> 'type') = 'paper'
+           AND c.json_metadata ->> 'app' LIKE $${appPrefixIdx}
+           AND (c.json_metadata -> ${at} -> 'continues') IS NULL
        ),
        user_reviews AS (
          SELECT 1
          FROM ${T.comments} c
          JOIN ${T.comments} p ON p.author = c.parent_author AND p.permlink = c.parent_permlink
-         WHERE c.author = $1
-           AND ${validReviewWhere({ commentAlias: 'c', appTagParam: '$2' })}
-           AND ${excludeSelfReviewWhere({ paperRowAlias: 'p', appTagParam: '$2' })}
-           AND COALESCE(c.json_metadata -> $2 ->> 'is_anonymous', 'false') != 'true'
+         WHERE c.author = $${usernameIdx}
+           AND ${accredGate}
+           AND ${reviewWhere}
+           AND ${paperGate}
+           AND ${selfExclude}
+           AND COALESCE(c.json_metadata -> ${at} ->> 'is_anonymous', 'false') != 'true'
        ),
        citations AS (
          SELECT 1
          FROM ${T.comments} citing
          CROSS JOIN LATERAL jsonb_array_elements(
-           citing.json_metadata -> $2 -> 'citations'
+           citing.json_metadata -> ${at} -> 'citations'
          ) AS cit
-         WHERE citing.parent_author = '' AND citing.parent_permlink = $2
-           AND (citing.json_metadata -> $2 ->> 'type') = 'paper'
-           AND citing.json_metadata ->> 'app' LIKE $3
-           AND jsonb_typeof(citing.json_metadata -> $2 -> 'citations') = 'array'
-           AND (cit ->> 'author') = $1
+         WHERE citing.parent_author = '' AND citing.parent_permlink = ${at}
+           AND (citing.json_metadata -> ${at} ->> 'type') = 'paper'
+           AND citing.json_metadata ->> 'app' LIKE $${appPrefixIdx}
+           AND jsonb_typeof(citing.json_metadata -> ${at} -> 'citations') = 'array'
+           AND (cit ->> 'author') = $${usernameIdx}
        )
        SELECT
          (SELECT COUNT(*) FROM user_papers) AS paper_count,
          (SELECT MIN(created) FROM user_papers) AS first_pevo_post,
          (SELECT COUNT(*) FROM user_reviews) AS review_count,
          (SELECT COUNT(*) FROM citations) AS citation_count`,
-      [username, config.appTag, `${config.appTag}/%`],
+      [
+        ...accredCte.params,                  // $1..$3
+        username,                             // $usernameIdx
+        config.appTag,                        // $appTagIdx
+        `${config.appTag}/%`,                 // $appPrefixIdx
+        config.hiveAnonAccount || '',         // $anonIdx
+        config.hiveBridgeAccount || '',       // $bridgeIdx
+      ],
     );
 
     const row = result.rows[0];

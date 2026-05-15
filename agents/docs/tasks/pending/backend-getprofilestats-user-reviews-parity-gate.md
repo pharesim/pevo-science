@@ -76,3 +76,50 @@ Per `agents/docs/solutions/conventions/cross-surface-parity-audit-at-sibling-com
 - `backend/tests/routes/reviews.test.ts` — single-doc parent-JOIN canary.
 
 Real-HAF companion at the integration level for at least one site is preferable per clause-(c); if impractical for all four, document the carve-out justification in each canary file's header.
+
+---
+
+Backend re-review signal (2026-05-15, working tree pre-commit):
+
+All 4 production-code sites landed in a single combined commit. SQL-shape mutation-kill verified by stashing the 4 src/ edits and re-running the 4 test files — 5 expected canaries failed red (2 in profile-stats, 1 in search, 1 in papers-enrichment, 1 in reviews). After restoring the src/ edits, all 12 tests pass green.
+
+**Site 1 — `backend/src/routes/profile.ts` `getProfileStats user_reviews` CTE (priority).**
+- Lifted BOTH gates as specified: accreditation gate `(c.author IN active_accreditations OR c.author = $anonIdx)` AND `validPevoPaperWhere({commentAlias: 'p', source: 'all'})`.
+- Param-shape: converted the literal `$1..$3` form to the canonical `paramIdx++` counter starting from `accredCte.nextIdx`. Slots: `usernameIdx`, `appTagIdx`, `appPrefixIdx`, `anonIdx`, `bridgeIdx`. The accred CTE was added via `activeAccreditationsCteBody(1)`, threading `config.hiveAnonAccount` and `config.hiveBridgeAccount` into the params array.
+- The `is_anonymous != 'true'` filter on c.json_metadata is preserved (it excludes self-tagged anonymous reviews, distinct from the anon-proxy account path). The accred OR-arm at `$anonIdx` covers the anon-proxy authoring case for parity with `fetchUserReviewsFromHaf`.
+
+**Site 2 — `backend/src/routes/search.ts:178` review-search parent gate.**
+- Replaced the weaker `p.parent_author = '' AND p.parent_permlink = $appTag` with `validPevoPaperWhere({commentAlias: 'p', appTagParam, bridgeAccountParam, source: 'all'})`. Allocated `bridgeAccountParam` via `paramIdx++` and pushed `config.hiveBridgeAccount` into the params array.
+- Both the count query and the data query share the `where` clause, so a single composition lifts both surfaces.
+
+**Site 3 — `backend/src/routes/papers.ts:2216` `fetchEnrichmentFromHaf` parent JOIN.**
+- Added `validPevoPaperWhere({commentAlias: 'p', appTagParam: '$3', bridgeAccountParam: '$6', source: 'all'})` to the reviews sub-query's WHERE. Appended `config.hiveBridgeAccount` as the 6th param (the existing local style at this call site uses literal `$N` strings, preserved for consistency with siblings in the same Promise.all block).
+
+**Site 4 — `backend/src/routes/reviews.ts:88` single-doc parent JOIN.**
+- Added `validPevoPaperWhere({commentAlias: 'p', appTagParam: `$${appTagIdx}`, bridgeAccountParam: `$${bridgeIdx}`, source: 'all'})` to the WHERE. Allocated `bridgeIdx` via the existing `paramIdx++` counter and appended `config.hiveBridgeAccount` to the params array. The pre-existing accreditation gate is unchanged.
+
+**Tests / canary approach (per clause-(c)):**
+Added 3 new SQL-shape canary files modeled on `profile-reviews-accred-gate.test.ts` (the reference shape), plus a 4th appended block in the existing `reviews.test.ts`:
+- `backend/tests/routes/profile-stats-parity-gate.test.ts` — pins BOTH the accred gate substring and the `validPevoPaperWhere(source:'all')` arms (`'paper'` + `'bridge_paper'`) at the `user_reviews` CTE. Includes a default mock responder for the accreditation lookup so the route reaches `getProfileStats` (otherwise it short-circuits with zero stats).
+- `backend/tests/routes/search-reviews-parity-gate.test.ts` — pins both arms at both the count and data review-search SQLs.
+- `backend/tests/routes/papers-enrichment-parity-gate.test.ts` — pins both arms at the enrichment reviews sub-query.
+- `backend/tests/routes/reviews.test.ts` (new `describe` block, lines ~278-329) — pins both arms at the single-doc review SQL.
+
+Each new canary file's header carries the clause-(a)/(b)/(c) justification per the carve-out convention. Clause-(c) real-path companions exist at sibling review-class SQL sites (`reputation-lifecycle.test.ts` real-HAF + `review-parity-invariant.test.ts` real-HAF arm + synthetic-VALUES fallback). A literal-route real-HAF companion for each site remains as a documented follow-up (consistent with `profile-reviews-accred-gate.test.ts`'s prior precedent).
+
+**Cross-surface parity audit (criterion #4):**
+Audited the codebase for additional review-class parent JOIN sites beyond the four enumerated. The matches found in `grep` either:
+- `reputation.ts:435` (`active_authors` review arm) — already composes `validPevoPaperWhere`.
+- `notification-queries.ts:178` (`new_review` notification arm) — already composes `validPevoPaperWhere`.
+- `stats.ts:55` — `reviews` CTE joins through an already-`validPevoPaperWhere`-filtered `papers` CTE, so the gate is implicit through the upstream filter.
+- `papers.ts:461` / `papers.ts:482` (`reviewCountSelect` / `avgRatingSelect`) — scalar correlated subqueries bound to the outer paper row `c`, which is itself filtered by `validPevoPaperWhere` in the enclosing listing WHERE. Parity is implicit.
+- `comments.ts:114, 140` — generic comment-tree recursive walker; NOT review-class.
+
+No DEFERRED dispositions required. The four sites in this task are the canonical enumeration.
+
+**Verification:**
+- `npx tsc --noEmit` clean.
+- `npm run lint` clean (2 pre-existing warnings in `seed-phrase.ts`, unrelated).
+- All 12 tests across the 4 touched test files pass green; mutation-kill confirmed against the stashed pre-edit src/.
+
+Single combined commit (scope manageable per task guidance).

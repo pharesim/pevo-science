@@ -2208,11 +2208,22 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string) {
       ),
       // Reviews from accredited reviewers (+ anon account) with accredited vote count.
       // $4 = accreditedArr (used for net_votes voter gate), $5 = reviewAuthors
-      // (used for c.author gate on the review row itself, includes anon proxy).
+      // (used for c.author gate on the review row itself, includes anon proxy),
+      // $6 = hiveBridgeAccount (for validPevoPaperWhere bridge-author pin).
       // The JOIN against `p` materializes the parent paper row so the
       // excludeSelfReviewWhere helper can read p.json_metadata -> authors[].
       // The JOIN is a single-row lookup keyed on (author, permlink) — the
       // planner folds it into a constant against `c`'s scan.
+      //
+      // Display↔reputation parity (cross-surface): without validPevoPaperWhere
+      // on `p`, a directly-addressed (author, permlink) pair that isn't a
+      // PEvO paper-class post (a peakd blog post, a non-paper comment) would
+      // surface as an enrichment review-set while reputation correctly
+      // excludes such rows via the user_reviews CTE that composes
+      // validPevoPaperWhere. The route at /api/papers/<author>/<permlink>/enrichment
+      // reaches this fetcher directly without the upstream paper-class gate
+      // that `fetchPaperFromHaf` applies, so the gate must compose here. See
+      // `agents/docs/solutions/conventions/cross-surface-parity-audit-at-sibling-composition-sites-2026-05-14.md`.
       pool.query(
         `SELECT c.author, c.permlink, c.body, c.json_metadata, c.created,
                 (SELECT COALESCE(SUM(CASE WHEN lv.weight > 0 THEN 1 WHEN lv.weight < 0 THEN -1 ELSE 0 END), 0)::int FROM (
@@ -2226,9 +2237,10 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string) {
          WHERE c.parent_author = $1 AND c.parent_permlink = $2
            AND c.author = ANY($5::text[])
            AND ${validReviewWhere({ commentAlias: 'c', appTagParam: '$3' })}
+           AND ${validPevoPaperWhere({ commentAlias: 'p', appTagParam: '$3', bridgeAccountParam: '$6', source: 'all' })}
            AND ${excludeSelfReviewWhere({ paperRowAlias: 'p', appTagParam: '$3' })}
          ORDER BY c.created DESC`,
-        [author, permlink, config.appTag, accreditedArr, reviewAuthors],
+        [author, permlink, config.appTag, accreditedArr, reviewAuthors, config.hiveBridgeAccount || ''],
       ),
       // Version history (needed for review outdated computation)
       resolveVersionsFromHaf(author, permlink, headAuthorsMemo),
