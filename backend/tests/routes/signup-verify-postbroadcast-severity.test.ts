@@ -39,8 +39,9 @@
  */
 import { describe, it, expect, vi, afterAll, afterEach } from 'vitest';
 import request from 'supertest';
-import { PrivateKey, cryptoUtils } from '@hiveio/dhive';
+import { PrivateKey } from '@hiveio/dhive';
 import { clearRateLimitKeys } from '../support/redis-helpers.js';
+import { signRequestBound as signRequestBoundShared } from '../support/sign-request.js';
 
 const { getAccountsMock, broadcastJsonMock, createClaimedAccountMock, seedBonusMock } = vi.hoisted(() => ({
   getAccountsMock: vi.fn().mockResolvedValue([]),
@@ -232,10 +233,7 @@ describe.skipIf(!dbReachable)('signup-verify /link: seedAccreditationBonus TypeE
   }
 
   function signRequestBound(method: string, fullPath: string, body: unknown, timestamp: string): string {
-    const bodyHash = cryptoUtils.sha256(JSON.stringify(body || {})).toString('hex');
-    const msg = `${config.appTag}-auth|v1|${method}|${fullPath}|${bodyHash}|${timestamp}`;
-    const msgHash = cryptoUtils.sha256(msg);
-    return TEST_KEY.sign(msgHash).toString();
+    return signRequestBoundShared(TEST_KEY, method, fullPath, body, timestamp);
   }
 
   afterAll(async () => cleanupByUsername(username));

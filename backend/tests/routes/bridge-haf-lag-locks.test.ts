@@ -54,7 +54,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import request from 'supertest';
-import { PrivateKey, cryptoUtils } from '@hiveio/dhive';
+import { PrivateKey } from '@hiveio/dhive';
 
 const TEST_PRIVATE_KEY = PrivateKey.fromSeed('pevo-bridge-haf-lag-seed');
 const TEST_PUBLIC_KEY = TEST_PRIVATE_KEY.createPublic().toString();
@@ -252,14 +252,16 @@ vi.mock('../../src/app-db.js', () => ({
 
 const { createApp } = await import('../../src/app.js');
 const { config } = await import('../../src/config.js');
+// Dynamic import (not top-level static) so the eager import chain doesn't
+// pull `../../src/config.js` in before this file's vi.mock factory's closed-
+// over `TEST_BRIDGE_KEY` initializes. Static import would trigger a TDZ
+// ReferenceError on test-runner module evaluation.
+const { signRequestBound: signRequestBoundShared } = await import('../support/sign-request.js');
 
 const app = createApp();
 
 function signRequestBound(method: string, fullPath: string, body: unknown, timestamp: string): string {
-  const bodyHash = cryptoUtils.sha256(JSON.stringify(body || {})).toString('hex');
-  const msg = `${config.appTag}-auth|v1|${method}|${fullPath}|${bodyHash}|${timestamp}`;
-  const msgHash = cryptoUtils.sha256(msg);
-  return TEST_PRIVATE_KEY.sign(msgHash).toString();
+  return signRequestBoundShared(TEST_PRIVATE_KEY, method, fullPath, body, timestamp);
 }
 
 async function signedPost(path: string, username: string, body: unknown) {

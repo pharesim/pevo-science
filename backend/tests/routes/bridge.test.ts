@@ -18,7 +18,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import request from 'supertest';
-import { PrivateKey, cryptoUtils } from '@hiveio/dhive';
+import { PrivateKey } from '@hiveio/dhive';
 import { MockBroadcastTimeoutError, makeDhiveLikeError } from '../support/broadcast-mocks.js';
 import { logger } from '../../src/logger.js';
 
@@ -153,14 +153,16 @@ vi.mock('../../src/app-db.js', () => ({
 // Import createApp + config AFTER the mocks so route wiring picks them up.
 const { createApp } = await import('../../src/app.js');
 const { config } = await import('../../src/config.js');
+// Dynamic import (not top-level static) so the eager import chain doesn't
+// pull `../../src/config.js` in before this file's vi.mock factory's closed-
+// over `TEST_BRIDGE_KEY` initializes. Static import would trigger a TDZ
+// ReferenceError on test-runner module evaluation.
+const { signRequestBound: signRequestBoundShared } = await import('../support/sign-request.js');
 
 const app = createApp();
 
 function signRequestBound(method: string, fullPath: string, body: unknown, timestamp: string): string {
-  const bodyHash = cryptoUtils.sha256(JSON.stringify(body || {})).toString('hex');
-  const msg = `${config.appTag}-auth|v1|${method}|${fullPath}|${bodyHash}|${timestamp}`;
-  const msgHash = cryptoUtils.sha256(msg);
-  return TEST_PRIVATE_KEY.sign(msgHash).toString();
+  return signRequestBoundShared(TEST_PRIVATE_KEY, method, fullPath, body, timestamp);
 }
 
 async function signedPost(path: string, username: string, body: unknown) {
