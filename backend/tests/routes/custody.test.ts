@@ -672,7 +672,7 @@ describe('BE-LOG-SHAPE-CONVERGENCE — custody.ts structured-log emissions (Item
     // account) means the per-account rate-limit bucket fills after one call.
     // Use a fresh username per upgrade-test so the bucket starts empty —
     // mirrors the same dodge in custody-upgrade-argon-error-translation.test.ts.
-    const upgradeUser = 'lightupgnullhsh';
+    const upgradeUser = `lightupgnullhsh_${Date.now() % 100000}`;
     // Drive the documented-unreachable branch: middleware passes `custody:
     // 'light'`, route's SELECT returns a row with password_hash=null. Per
     // custody.ts:803 the route emits a sentinel error log + returns 401
@@ -723,7 +723,7 @@ describe('BE-LOG-SHAPE-CONVERGENCE — custody.ts structured-log emissions (Item
     // Distinct username from the sibling null_hash_unreachable spec to dodge
     // the per-account `upgradeLimiter` (max=1/hr) — see comment on the
     // sibling spec for the rate-limiter bucket rationale.
-    const upgradeUser = 'lightupgouterct';
+    const upgradeUser = `lightupgouterct_${Date.now() % 100000}`;
     // Drive the outer-catch by throwing on the route's password_hash SELECT
     // (after the middleware's sessions_invalidated_at lookup succeeds).
     appQueryMock.mockImplementation(async (sql: string, _params: unknown[]) => {
