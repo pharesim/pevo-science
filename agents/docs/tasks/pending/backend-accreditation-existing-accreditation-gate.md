@@ -146,3 +146,65 @@ Applied correctly in this diff:
 ### Clean dimensions (no findings)
 
 `security`, `performance`, `reliability`, `kieran-typescript` returned zero findings each. SQL parameterization, JSONB extraction operator usage, async/await placement, error-handling typing, and HAF-throw fallthrough preservation are all clean.
+
+## Backend re-review signal (2026-05-15, commit `9a456d5` on `worktree-agent-ac218192d21a9fb51`)
+
+**Worker:** Backend worktree subagent (rebased onto main `b71e3c6` before editing).
+
+**Round-1 hold-block items addressed:** all 5 (1 P1, 3 P2, 1 P3).
+
+### Item 1 [P1] — revoke-handling alignment in `findExistingAccreditation`
+
+File: `backend/src/lib/idempotency.ts:299-321` (`findExistingAccreditation` helper).
+
+- `WHERE` clause now selects `cj.json::jsonb ->> 'action' IN ('accredit', 'revoke')`. Mirrors the sibling reads at `profile.ts:37`, `orcid.ts:1756`, `accreditations.ts:59`, `hafsql.ts:79`, `wot.ts:347`.
+- `SELECT` projects the `action` column alongside `trx_id` and `block_num`. Row type widened to `{ trx_id: string; block_num: number | null; action: string }`.
+- Latest-action-wins applied in the helper (not the caller): when `row.action !== 'accredit'` (i.e., latest op is revoke), return `null`. Helper signature is unchanged from the caller's perspective (still returns `IdempotencyHit | null`); the revoke-tail branch returns `null` exactly like the gate-miss branch, so the /verify route falls through to the per-token check + broadcast path without any callsite change.
+- ORDER BY remains `(cj.block_num DESC, cj.id DESC) LIMIT 1` (convention Rule 2). JSDoc updated to note tiebreaker determinism matters MORE here than under the prior strict-accredit shape, because picking the wrong same-block row can now flip between accredit/revoke actions and change the gate-hit/gate-miss outcome.
+
+Route-level regression guard: new spec at `backend/tests/routes/accreditation-idempotency.test.ts` inside the `accreditation /verify — existing-accreditation gate (user-level)` describe block, titled `revoke→re-accredit flow: latest action is revoke → gate falls through, fresh broadcast fires`. Mocks the gate query to return `{ trx_id: 'tx-revoke-after-accredit', block_num: 99999, action: 'revoke' }`, then the per-token check empty, asserts the broadcast fires and the response is the fresh-accred-tx-id envelope (no `outcome` field). Pre-fix this test would have failed: the gate would have hit on the revoke row's trx_id and returned `outcome:'already_accredited'` with the stale tx_id.
+
+Lib unit-test coverage: new spec at `backend/tests/lib/idempotency.test.ts` inside the `findExistingAccreditation` describe block, titled `returns null when latest action is revoke (revoke→re-accredit flow falls through to broadcast)`. Pins the helper-level behavior directly with a mocked pool row carrying `action: 'revoke'`.
+
+### Item 5 [P3] — sibling helper ORDER BY tiebreaker alignment
+
+File: `backend/src/lib/idempotency.ts:240-260` (`findAccreditationBroadcastByIdempotencyKey`).
+
+ORDER BY now `cj.block_num DESC, cj.id DESC` matching the new helper. JSDoc added inline explaining convention Rule 2 anchor + bounded practical impact under LIMIT 1 (idempotency_key collisions are vanishingly unlikely). SQL-shape test in `tests/lib/idempotency.test.ts` updated to assert the tiebreaker pin.
+
+### Item 2 [P2] — integration-task scope update
+
+File: `agents/docs/tasks/review/backend-idempotency-haf-integration-test.md` (task lives in `review/` on main as of `b71e3c6`; the architect will move it back to `pending/` if a fresh round is needed, but the edit applies in place).
+
+- "Why now" paragraph rewritten to enumerate all three sibling helpers (`findCustodyBroadcastByIdempotencyKey`, `findAccreditationBroadcastByIdempotencyKey`, `findExistingAccreditation`) and the shared risk class.
+- "Goal" sentence amended to list all three helpers as integration-test scope.
+
+### Item 3 [P2] — carve-out clause (a) header acknowledgment
+
+File: `backend/tests/lib/idempotency.test.ts:1-21` (file header JSDoc).
+
+Real-path companion attribution line now lists all three helpers (`findCustodyBroadcastByIdempotencyKey`, `findAccreditationBroadcastByIdempotencyKey`, `findExistingAccreditation`) alongside the schema-regression risk-class statement.
+
+### Item 4 [P2] — metadata-update path on gate-hit (one-shot disposition resolved in-round)
+
+File: `backend/src/routes/accreditation.ts:478-498` (gate-hit branch in `/verify`).
+
+Verified the product flow: there is no `update_accreditation` custom_op (`grep update_accreditation` in `backend/src/` finds only the notification type, not a broadcast helper); the only path that captures `full_name`/`institution`/`field` is `POST /api/accreditation/request`, which feeds the metadata into the pending row and then into the `accredit` custom_json at `/verify`. The product model is one-shot at first /verify; there is no UI affordance for editing accreditation metadata post-verification. Inline comment added near the gate-hit `return sendOk(...)` documenting this invariant and the future-design hook (broadcast fresh accredit op, distinct `update_accreditation` op type, or reject metadata changes at /request) if updateable-metadata is later introduced. Item resolved in this round per the hold-block's "one-shot branch" disposition; no `blocked/` move required.
+
+### Verification
+
+- `npx vitest run tests/lib/idempotency.test.ts` → 29 passed.
+- `npx vitest run tests/routes/accreditation-idempotency.test.ts` → 12 passed.
+- `npm run lint` → 0 errors (2 pre-existing warnings in unrelated `seed-phrase.ts`).
+- `npx tsc --noEmit -p tsconfig.json` → clean.
+
+### Files staged for this round
+
+- `backend/src/lib/idempotency.ts` (item 1 + item 5)
+- `backend/src/routes/accreditation.ts` (item 4 comment)
+- `backend/tests/lib/idempotency.test.ts` (item 3 header + item 1 + item 5 lib-level coverage)
+- `backend/tests/routes/accreditation-idempotency.test.ts` (item 1 route-level revoke→re-accredit spec + mock-shape updates)
+- `agents/docs/tasks/review/backend-idempotency-haf-integration-test.md` (item 2)
+- `agents/docs/tasks/pending/backend-accreditation-existing-accreditation-gate.md` (this signal block, separate commit)
+
+**Architect: please mv to `review/` on intake.**
