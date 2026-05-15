@@ -1,10 +1,11 @@
 import { Router, type Request, type Response } from 'express';
 import { getPool, isHafConfigured } from '../db.js';
 import { config } from '../config.js';
-import { sendOk } from '../response.js';
+import { sendOk, sendError } from '../response.js';
 import { hafCache } from '../cache.js';
 import { logger } from '../logger.js';
 import { T, getCachedGenesisBlock } from '../hafsql.js';
+import { validateOptionalLikeFilter } from '../types/search-filters.js';
 
 const router = Router();
 
@@ -22,17 +23,26 @@ async function fetchAccreditationsFromHaf(
   if (!pool) return null;
 
   try {
-    // $1 is always appTag
+    // $1 is always appTag.
+    //
+    // BE-ACCREDITATIONS-LIKEGUARD: `field` and `institution` arrive here
+    // already LIKE-metacharacter-escaped via validateOptionalLikeFilter at
+    // route entry. The bound pattern is `${escaped}%` — the trailing `%` is
+    // the deliberate prefix-match wildcard; any user-supplied `%` / `_` / `\`
+    // appears in `escaped` as `\%` / `\_` / `\\` and is treated as a literal
+    // character under the `ESCAPE '\\'` clause on the ILIKE site below.
+    // Without that clause, `_%_%_…` would inject N live wildcards and force
+    // Postgres to backtrack against every accredited-account row.
     const conditions: string[] = [];
     const params: unknown[] = [config.appTag];
     let paramIdx = 2;
 
     if (field) {
-      conditions.push(`latest.field ILIKE $${paramIdx++}`);
+      conditions.push(`latest.field ILIKE $${paramIdx++} ESCAPE '\\'`);
       params.push(`${field}%`);
     }
     if (institution) {
-      conditions.push(`latest.institution ILIKE $${paramIdx++}`);
+      conditions.push(`latest.institution ILIKE $${paramIdx++} ESCAPE '\\'`);
       params.push(`${institution}%`);
     }
 
@@ -84,8 +94,26 @@ router.get('/', async (req: Request, res: Response) => {
   const page = Math.max(1, parseInt(req.query.page as string, 10) || 1);
   const limit = Math.min(200, Math.max(1, parseInt(req.query.limit as string, 10) || 50));
   const offset = (page - 1) * limit;
-  const field = req.query.field as string | undefined;
-  const institution = req.query.institution as string | undefined;
+
+  // BE-ACCREDITATIONS-LIKEGUARD: validate ?field= and ?institution= length +
+  // LIKE-escape BEFORE the bound parameter reaches the SQL binder. The helper
+  // silent-unfilters absent / empty / repeated-param (`string[]`) / non-string
+  // shapes (returns value: undefined), 400s on >200-char input, and escapes
+  // `\` `%` `_` to `\\` `\%` `\_` on the success path. The SQL ILIKE sites
+  // carry an `ESCAPE '\\'` clause so the escaped sequences are treated as
+  // literal characters. Replaces the prior `req.query.field as string |
+  // undefined` cast that silently coerced repeated `?field=a&field=b`
+  // (string[]) to a comma-joined string passing through to the binder.
+  const fieldResult = validateOptionalLikeFilter(req.query.field, 'field');
+  if (!fieldResult.ok) {
+    return sendError(res, 400, 'BAD_REQUEST', fieldResult.message);
+  }
+  const institutionResult = validateOptionalLikeFilter(req.query.institution, 'institution');
+  if (!institutionResult.ok) {
+    return sendError(res, 400, 'BAD_REQUEST', institutionResult.message);
+  }
+  const field = fieldResult.value;
+  const institution = institutionResult.value;
 
   if (isHafConfigured()) {
     const cacheKey = `accreditations:${JSON.stringify({ field, institution, page, limit })}`;

@@ -78,6 +78,67 @@ export function validateSearchQuery(raw: unknown): SearchQueryResult | null {
 }
 
 // ──────────────────────────────────────────────
+// Generic optional LIKE-filter validation
+// (BE-ACCREDITATIONS-LIKEGUARD — ports the `?q=` defenses to optional
+// LIKE-bound filters where absent means "no filter" rather than 400).
+// ──────────────────────────────────────────────
+//
+// Same two defenses as validateSearchQuery, but with optional semantics:
+// `?param=` is OPTIONAL — absent / repeated-param / non-string all silently
+// unfilter (return value: undefined) rather than 400ing as "required".
+// Used for the `?field=` and `?institution=` filters on /api/accreditations,
+// which bind to `latest.field ILIKE $N` and `latest.institution ILIKE $N`
+// against the same ranked-CTE materialization.
+//
+// Caller wires the result like:
+//   const r = validateOptionalLikeFilter(req.query.field, 'field');
+//   if (!r.ok) return sendError(res, 400, 'BAD_REQUEST', r.message);
+//   const field = r.value; // string | undefined — fold into SQL params on string
+
+/**
+ * Result returned by `validateOptionalLikeFilter`:
+ * - `{ ok: true, value: string }` — the filter is present and valid; `value`
+ *   is the LIKE-metacharacter-escaped form ready to bind into a pattern
+ *   under `ESCAPE '\\'`.
+ * - `{ ok: true, value: undefined }` — the filter is absent (missing,
+ *   empty/whitespace-only, repeated `?param=a&param=b` array shape, or
+ *   non-string). Callers omit the WHERE clause entirely (silent-unfilter).
+ * - `{ ok: false, message }` — the filter is present but violates the
+ *   length cap. Callers convert to `400 BAD_REQUEST`.
+ */
+export type OptionalLikeFilterResult =
+  | { ok: true; value: string | undefined }
+  | { ok: false; message: string };
+
+/**
+ * Validates an optional `?param=` filter value bound to an ILIKE site.
+ * `paramName` is interpolated into the "too long" error message so callers
+ * get a per-param-specific 400 string (e.g. "Filter \"field\" too long").
+ *
+ * Behaviour:
+ * - absent (missing) / non-string (repeated `?param=a&param=b` → string[]) /
+ *   empty / whitespace-only → `{ ok: true, value: undefined }` (silent
+ *   unfilter; mirrors the round-4 `?discipline=` contract).
+ * - length > SEARCH_QUERY_MAX_LEN → `{ ok: false, message }`.
+ * - otherwise → `{ ok: true, value: escapeLikePattern(raw) }`.
+ *
+ * The escape MUST be paired with an `ESCAPE '\\'` clause at every ILIKE
+ * call site that binds the returned value.
+ */
+export function validateOptionalLikeFilter(
+  raw: unknown,
+  paramName: string,
+): OptionalLikeFilterResult {
+  if (raw == null) return { ok: true, value: undefined };
+  if (typeof raw !== 'string') return { ok: true, value: undefined };
+  if (raw.trim().length === 0) return { ok: true, value: undefined };
+  if (raw.length > SEARCH_QUERY_MAX_LEN) {
+    return { ok: false, message: `Filter "${paramName}" too long` };
+  }
+  return { ok: true, value: escapeLikePattern(raw) };
+}
+
+// ──────────────────────────────────────────────
 // /api/search ?type= / ?source= / ?sort= / ?language= filter validation
 // (BE-SEARCH-QUERY-PARAM-TYPEOF-NARROW-SWEEP)
 // ──────────────────────────────────────────────
