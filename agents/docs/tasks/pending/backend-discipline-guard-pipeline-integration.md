@@ -192,3 +192,34 @@ ESLint custom rule `pevo/no-bridge-paper-literal` lands inline in `backend/eslin
 - **Acceptance #5 — convention-doc update at `agents/docs/solutions/conventions/pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28.md`** (architect-owned zone, untouched by this commit): strip the "CI guard" / `check-bridge-paper-discipline.sh` framing; reference `pevo/no-bridge-paper-literal` (inline in `backend/eslint.config.mjs`) + the structural-path allowlist (`src/types/**` glob + named `src/hafsql.ts`, `src/helpers.ts`, `src/bridge.ts`) as the enforcement story; acknowledge the runtime-only bypass classes (`.toLowerCase()`, `.slice()`, `String.fromCharCode(...)`, interpolated templates, non-literal join separator) as known evasion that requires code-review attention; document the GH Actions / CI deferral per architect decision (c).
 - **Acceptance #2 — follow-up architect-owned task at `agents/docs/tasks/pending/architect-discipline-guard-precommit-hook.md`**: covers `.githooks/pre-commit`, its test under `.githooks/tests/test-pre-commit.sh`, and the `commit-msg` `allowed_for_agent()` zone-map update for the new hook. Sequencing per architect decision (b): the ESLint rule lands first (this commit), the hook lands separately and is a no-op without the rule.
 - **Allowlist path confirmation:** verify `src/hafsql.ts` (the actual file path) vs `src/lib/hafsql.ts` (the brief's path) — the rule uses `src/hafsql.ts` to match the existing bash-guard allowlist and the actual file location. If the architect intended a future `src/lib/hafsql.ts`, the allowlist needs updating in tandem with the file move.
+
+---
+
+## Architect re-review (2026-05-15) — HELD PENDING FIXES
+
+`/ce-code-review` on commit `9bb8fec` (8 reviewers: correctness on Opus; testing, maintainability, project-standards, security, adversarial, kieran-typescript, learnings-researcher on Sonnet; `ce-agent-native-reviewer` skipped per project CLAUDE.md). User-triaged session 2026-05-15. Four items held — all are rule-correctness or test-coverage enhancements; architect-zone follow-ups are routed separately (no architect-blocking work in this round).
+
+### Items held (must fix before archive)
+
+1. **TS wrapper expressions silently bypass constant-folding** — file `backend/eslint.config.mjs` (the `resolveStringValue` recursion). The folding does strict `node.type === 'Literal'` / `node.type === 'ArrayExpression'` checks, so idiomatic-TS wrapper nodes — `TSAsExpression` (e.g., `'bridge_' as const`, `'bridge_' as string`), `TSNonNullExpression` (e.g., `'bridge_'!`), `TSTypeAssertion` — cause the recursion to bail silently. These are accidental-bypass forms, not adversarial evasion, so they fall squarely inside the rule's stated job ("catch ACCIDENTAL bypasses, not deliberate evasion"). Adversarial conf 70. Extend `resolveStringValue` to unwrap these TS-only wrapper nodes and recurse on the underlying expression — ~10 LOC addition mirroring the existing recursion shape. Update the `[TODO Architect]` convention-doc bullet to reflect the new in-scope coverage and the remaining adversarial-only evasion classes.
+
+2. **No valid test case for `.join()` bail-out on non-resolvable array element** — file `backend/tests/eslint/no-bridge-paper-literal.test.ts`. The bail-out branch at `eslint.config.mjs:98` (`if (part === null) return null`) is in-scope by design (a `.join()` on a literal array containing a variable element should NOT fire). No valid test pins it. Add e.g.: `{ filename: abs('src/routes/papers.ts'), code: "const sep = '_'; const x = ['bridge', sep, 'paper'].join('_');" }`. Locks the contract against accidental removal of the early-return. Testing conf 75.
+
+3. **Default `.join()` (no separator argument) is in-scope but untested** — same test file. The rule's handler defaults `sep=','` (matching JS runtime semantics), so `['bridge_paper'].join()` IS caught. No invalid test pins this default-comma behavior. Add an invalid case calling `.join()` with no separator argument on a literal array that resolves to `'bridge_paper'`. Correctness conf 100.
+
+4. **Mixed-form constant folding untested** — same test file. The recursion is designed to handle mixed concat + template + join in any combination but the suite only exercises single-form cases. Add two invalid cases: (a) `` 'bridge_' + `paper` `` (concat + template), and (b) `'bridge_' + ['paper'].join('')` (concat + join). Correctness conf 75.
+
+### Architect-zone follow-ups (separate landing on archive, not held by backend)
+
+These do NOT block backend's round-3 commit — architect lands them when this task archives.
+
+- **Stale `npm run check:bridge-paper-discipline` reference at `agents/docs/api-contracts/papers.md:5`** — corroborated correctness P2 + maintainability P1 conf 95+. Architect updates `papers.md` to reference `pevo/no-bridge-paper-literal` (inline in `backend/eslint.config.mjs`) + `npm run lint` during the same edit pass that lands the existing `[TODO Architect]` convention-doc update.
+- **`src/types/**` glob coverage gap** (security SEC-001 P2 anchor 75 + adversarial corroboration) — types files are convention-only "never gate/route/filter at runtime"; future runtime-gating types file would be silently exempted. Architect adds a "Known coverage gap" section to the convention doc update at `agents/docs/solutions/conventions/pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28.md`.
+- **`.concat()` omitted from documented out-of-scope evasion list** (adversarial P3 conf 65) — extend the evasion-list bullet in the same convention-doc update.
+- **JSDoc/comment coverage delta vs old bash grep** (adversarial P3 conf 55) — old bash grep fired on literals inside comments/JSDoc; AST rule visits only executable nodes. Intentional behavior (runtime enforcement only), but the delta is worth documenting in the convention doc so a future reader (especially a fork maintainer) understands JSDoc drift is now a code-review concern, not a tool concern.
+
+### Dismissed at triage (recorded for transparency)
+
+- **`@ts-expect-error` on the `.mjs` import propagates `any` into `RuleTester.run()`** (kieran-typescript KT-01 conf 60) — theoretical failure mode; runtime RuleTester validation catches malformed rules today. Memory `feedback_dismiss_preemptive_test_hardening` analogy applies — wait until ESLint 10 or similar surfaces a real regression.
+
+When the four held items land, `git mv` this file back to `tasks/review/` for re-review and archive.
