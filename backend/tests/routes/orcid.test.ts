@@ -3230,3 +3230,365 @@ describe('POST /api/orcid/callback — provider-timeout discipline (round-5 hold
     },
   );
 });
+
+// ─────────────────────────────────────────────────────────────────────────
+// BE-LOG-SHAPE-CONVERGENCE-SIBLING-FILES round-2 hold-fix — orcid.ts
+// structured-log spy coverage for the seven error-path emissions the
+// architect's hold block flagged as missing mutation-kill assertions:
+//
+//   * orcid.callback.token_exchange_failed   (logger.error, outer-catch sibling)
+//   * orcid.callback.failed                  (logger.error, outer catch)
+//   * orcid.binding_lock.release_failed      (logger.warn, releaseBindingLock catch)
+//   * orcid.binding_cache.write_failed       (logger.error, cacheOrcidBinding catch)
+//   * orcid.binding_cache.read_failed        (logger.warn, getCachedOrcidBinding catch)
+//   * orcid.works_fetch.failed               (logger.error, countExternalWorks non-OK)
+//   * orcid.account_update.transient_failed  (logger.warn, updateAccountOrcid transient)
+//
+// Each spec asserts the canonical { event, route, ... } structured shape per
+// agents/docs/solutions/conventions/auth-structured-log-shape-2026-04-29.md.
+// Pinning the `event` literal (not the message text) makes a regression that
+// renames or drops the structured field surface as a red test rather than
+// silently degrading a dashboard-keyed contract; pinning `route` likewise
+// pins the kebab-grep anchor. Per
+// agents/docs/solutions/conventions/tests-must-fail-on-mutation-of-code-under-test-2026-04-22.md
+// each spec is mutation-killed: typoing the production event literal (e.g.
+// `orcid.callback.failed` → `orcid.callback.failedX`) flips the spec red.
+//
+// Driving notes (mock carve-out — clause (a) justification, see test-file
+// header for the broader carve-out scope):
+//   - All seven paths are deterministic to drive: HTTP non-OK, generic fetch
+//     reject, redis op rejection, pg-transient error class. Real-path
+//     companion coverage exists for the same risk class — outer-catch
+//     mapping is exercised by the existing `outer-catch + handleBroadcast*`
+//     specs above; the cache write/read graceful-degrade behaviour is
+//     exercised by the `link still returns 200 when the ORCID binding cache
+//     write fails` spec; the works-fetch envelope is exercised by the
+//     provider-timeout block; the transient pg-error swallow is exercised by
+//     the `updateAccountOrcid — permanent vs transient error
+//     discrimination` block. The new specs add the structured-log
+//     mutation-kill missing from the round-1 sibling-files migration.
+//   - verifyHiveSignature stays UNMOCKED end-to-end on the link/accredit
+//     paths; only the per-spec narrow Redis / fetch / seam mocks fire.
+// ─────────────────────────────────────────────────────────────────────────
+
+describe('orcid.ts structured-log shape coverage (round-2 hold-fix — Item 3 part A)', () => {
+  it(
+    'orcid.callback.token_exchange_failed: ORCID OAuth token-exchange returns non-OK → logger.error fires with canonical event/route + status',
+    async () => {
+      // Drive the non-OK token-exchange branch at orcid.ts:465. State is
+      // already consumed by this point; the handler short-circuits to a 400
+      // BAD_REQUEST and emits the structured operator-alert anchor before
+      // returning. A regression that drops the `event` field would slip a
+      // bare toHaveBeenCalled() but not the find()-keyed objectContaining
+      // assertion below.
+      vi.stubGlobal('fetch', vi.fn(async (url: string | URL) => {
+        const u = typeof url === 'string' ? url : url.toString();
+        if (u.includes('/oauth/token')) {
+          return new Response('upstream rejected', { status: 502 });
+        }
+        throw new Error(`Unexpected fetch URL in token-exchange spec: ${u}`);
+      }));
+      const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => undefined as unknown as void);
+      try {
+        const state = await startUnauthed('signup');
+        const res = await request(app).post('/api/orcid/callback').send({ code: 'fake', state });
+        expect(res.status).toBe(400);
+        expect(res.body.error.code).toBe('BAD_REQUEST');
+        const call = errorSpy.mock.calls.find(
+          (args) => (args[0] as { event?: string } | undefined)?.event === 'orcid.callback.token_exchange_failed',
+        );
+        expect(call).toBeDefined();
+        expect(call![0]).toEqual(
+          expect.objectContaining({
+            event: 'orcid.callback.token_exchange_failed',
+            route: 'orcid.callback',
+            status: 502,
+          }),
+        );
+      } finally {
+        errorSpy.mockRestore();
+      }
+    },
+  );
+
+  it(
+    'orcid.callback.failed: outer-catch fires on non-timeout fetch reject → logger.error with canonical event/route + err',
+    async () => {
+      // Drive the outer /callback catch at orcid.ts:540. fetchWithOrcidTimeout
+      // re-throws the original error when controller.signal.aborted is false
+      // (i.e. NOT a timer-fire), which propagates through handleSignup → the
+      // outer try/catch. The instanceof OrcidProviderTimeoutError branch
+      // doesn't match, so the catch routes to the generic `orcid.callback.failed`
+      // emission + 500 INTERNAL_ERROR response.
+      vi.stubGlobal('fetch', vi.fn(async () => {
+        throw new Error('synthetic non-timeout fetch reject (outer-catch driver)');
+      }));
+      const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => undefined as unknown as void);
+      try {
+        const state = await startUnauthed('signup');
+        const res = await request(app).post('/api/orcid/callback').send({ code: 'fake', state });
+        expect(res.status).toBe(500);
+        expect(res.body.error.code).toBe('INTERNAL_ERROR');
+        const call = errorSpy.mock.calls.find(
+          (args) => (args[0] as { event?: string } | undefined)?.event === 'orcid.callback.failed',
+        );
+        expect(call).toBeDefined();
+        expect(call![0]).toEqual(
+          expect.objectContaining({
+            event: 'orcid.callback.failed',
+            route: 'orcid.callback',
+            err: expect.any(Error),
+          }),
+        );
+      } finally {
+        errorSpy.mockRestore();
+      }
+    },
+  );
+
+  it(
+    'orcid.binding_lock.release_failed: redis.eval reject → logger.warn fires with canonical event/route + orcidId + err',
+    async () => {
+      // Direct __test_releaseBindingLock invocation against a spy that
+      // rejects on the Lua CAS DEL. The helper's catch swallows the throw
+      // (best-effort release; lock self-expires on TTL) and emits the
+      // structured warn. A regression renaming or dropping the event would
+      // surface here even if the catch survives.
+      const redis = getRedis();
+      if (!redis) return;
+      const orcidId = '0000-0001-0000-7001';
+      const evalSpy = vi
+        .spyOn(redis, 'eval')
+        .mockRejectedValueOnce(new Error('synthetic redis.eval flap'));
+      const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as unknown as void);
+      try {
+        await releaseBindingLock(orcidId, 'a'.repeat(32));
+        const call = warnSpy.mock.calls.find(
+          (args) => (args[0] as { event?: string } | undefined)?.event === 'orcid.binding_lock.release_failed',
+        );
+        expect(call).toBeDefined();
+        expect(call![0]).toEqual(
+          expect.objectContaining({
+            event: 'orcid.binding_lock.release_failed',
+            route: 'orcid.binding-lock',
+            orcidId,
+            err: expect.any(Error),
+          }),
+        );
+      } finally {
+        evalSpy.mockRestore();
+        warnSpy.mockRestore();
+      }
+    },
+  );
+
+  it(
+    'orcid.binding_cache.write_failed: redis.set reject on cache key after broadcast → logger.error with canonical shape + err',
+    async () => {
+      // Sibling to the existing "link still returns 200 when the ORCID
+      // binding cache write fails" spec (which proves the swallow), this
+      // spec pins the structured warn anchor that fires inside
+      // cacheOrcidBinding's catch. Drive: same set-spy filtered to the
+      // cache-key prefix so the state-DEL still works.
+      const redis = getRedis();
+      if (!redis) return;
+      const orcidId = '0000-0001-0000-7002';
+      const cacheKey = `${config.appTag}:orcid_binding:${orcidId}`;
+      await redis.del(cacheKey).catch(() => { /* ignore */ });
+      installOrcidFetchStub({ orcid: orcidId, name: 'Alice', works: 3 });
+      hafQueryMock.mockImplementation(async (sql: string) => {
+        if (sql.includes("'orcid' = $1")) return { rows: [] };
+        if (sql.includes("'action' IN ('accredit', 'revoke')") && sql.includes("'account' = $1")) {
+          return {
+            rows: [{
+              json: { action: 'accredit', name: 'Alice', institution: 'MIT', field: 'CS', method: 'email' },
+            }],
+          };
+        }
+        return { rows: [] };
+      });
+      const origSet = redis.set.bind(redis);
+      const setSpy = vi.spyOn(redis, 'set').mockImplementation(async (...args: unknown[]) => {
+        const k = String(args[0]);
+        if (k.includes(':orcid_binding:') && !k.includes(':orcid_binding_lock:')) {
+          throw new Error('synthetic Redis flap on binding-cache SET');
+        }
+        // @ts-expect-error ioredis set is variadic; forwarding by spread is safe here.
+        return origSet(...args);
+      });
+      const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => undefined as unknown as void);
+      try {
+        const state = await startAuthed('link', 'alice');
+        const res = await request(app)
+          .post('/api/orcid/callback')
+          .set('Authorization', `Bearer ${jwtFor('alice')}`)
+          .send({ code: 'fake', state });
+        expect(res.status).toBe(200);
+        const call = errorSpy.mock.calls.find(
+          (args) => (args[0] as { event?: string } | undefined)?.event === 'orcid.binding_cache.write_failed',
+        );
+        expect(call).toBeDefined();
+        expect(call![0]).toEqual(
+          expect.objectContaining({
+            event: 'orcid.binding_cache.write_failed',
+            route: 'orcid.binding-cache',
+            orcidId,
+            username: 'alice',
+            err: expect.any(Error),
+          }),
+        );
+      } finally {
+        setSpy.mockRestore();
+        errorSpy.mockRestore();
+        await redis.del(cacheKey).catch(() => { /* cleanup */ });
+      }
+    },
+  );
+
+  it(
+    'orcid.binding_cache.read_failed: redis.get reject on cache key during findAccreditedAccountWithOrcid → logger.warn with canonical shape + err',
+    async () => {
+      // Drive the read-side cache failure path. getCachedOrcidBinding fires
+      // first inside findAccreditedAccountWithOrcid, well before HAF; on a
+      // throw the helper logs warn and returns null so the HAF path runs.
+      // The accredit/link callback completes normally because HAF reports no
+      // existing binding (default empty rows + authority-signed accredit row
+      // for alice).
+      const redis = getRedis();
+      if (!redis) return;
+      const orcidId = '0000-0001-0000-7003';
+      const cacheKey = `${config.appTag}:orcid_binding:${orcidId}`;
+      const stateRedisKeyPrefix = `${config.appTag}:orcid_state:`;
+      await redis.del(cacheKey).catch(() => { /* ignore */ });
+      installOrcidFetchStub({ orcid: orcidId, name: 'Alice', works: 3 });
+      hafQueryMock.mockImplementation(async (sql: string) => {
+        if (sql.includes("'orcid' = $1")) return { rows: [] };
+        if (sql.includes("'action' IN ('accredit', 'revoke')") && sql.includes("'account' = $1")) {
+          return {
+            rows: [{
+              json: { action: 'accredit', name: 'Alice', institution: 'MIT', field: 'CS', method: 'email' },
+            }],
+          };
+        }
+        return { rows: [] };
+      });
+      const origGet = redis.get.bind(redis);
+      const getSpy = vi.spyOn(redis, 'get').mockImplementation(async (key: string) => {
+        // Throw only on the cache-read path so the state-GET still works
+        // (state lookup happens before the cache check at /callback entry).
+        if (key.startsWith(stateRedisKeyPrefix)) return origGet(key);
+        if (key === cacheKey) throw new Error('synthetic Redis flap on binding-cache GET');
+        return origGet(key);
+      });
+      const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as unknown as void);
+      try {
+        const state = await startAuthed('link', 'alice');
+        const res = await request(app)
+          .post('/api/orcid/callback')
+          .set('Authorization', `Bearer ${jwtFor('alice')}`)
+          .send({ code: 'fake', state });
+        expect(res.status).toBe(200);
+        const call = warnSpy.mock.calls.find(
+          (args) => (args[0] as { event?: string } | undefined)?.event === 'orcid.binding_cache.read_failed',
+        );
+        expect(call).toBeDefined();
+        expect(call![0]).toEqual(
+          expect.objectContaining({
+            event: 'orcid.binding_cache.read_failed',
+            route: 'orcid.binding-cache',
+            orcidId,
+            err: expect.any(Error),
+          }),
+        );
+      } finally {
+        getSpy.mockRestore();
+        warnSpy.mockRestore();
+        await redis.del(cacheKey).catch(() => { /* cleanup */ });
+      }
+    },
+  );
+
+  it(
+    'orcid.works_fetch.failed: pub.orcid.org works endpoint returns non-OK → logger.error with canonical event/route + status',
+    async () => {
+      // Drive countExternalWorks's non-OK branch by stubbing the works fetch
+      // to return 502. The helper logs error then throws — the throw
+      // propagates to the outer /callback catch → 500 INTERNAL_ERROR (and
+      // the outer catch ALSO emits orcid.callback.failed; the find() filter
+      // isolates the works_fetch event).
+      const orcidId = '0000-0001-0000-7004';
+      vi.stubGlobal('fetch', vi.fn(async (url: string | URL) => {
+        const u = typeof url === 'string' ? url : url.toString();
+        if (u.includes('/oauth/token')) {
+          return new Response(
+            JSON.stringify({ orcid: orcidId, name: 'Alice', access_token: 'tk' }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          );
+        }
+        if (u.includes('pub.orcid.org')) {
+          return new Response('upstream works rejected', { status: 502 });
+        }
+        throw new Error(`Unexpected fetch URL in works-fetch spec: ${u}`);
+      }));
+      const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => undefined as unknown as void);
+      try {
+        const state = await startUnauthed('signup');
+        await request(app).post('/api/orcid/callback').send({ code: 'fake', state });
+        const call = errorSpy.mock.calls.find(
+          (args) => (args[0] as { event?: string } | undefined)?.event === 'orcid.works_fetch.failed',
+        );
+        expect(call).toBeDefined();
+        expect(call![0]).toEqual(
+          expect.objectContaining({
+            event: 'orcid.works_fetch.failed',
+            route: 'orcid.works-fetch',
+            orcidId,
+            status: 502,
+          }),
+        );
+      } finally {
+        errorSpy.mockRestore();
+      }
+    },
+  );
+
+  it(
+    'orcid.account_update.transient_failed: pg transient error class swallowed → logger.warn with canonical event/route + username + err',
+    async () => {
+      // Direct __test_seams.updateAccountOrcid invocation against a pool
+      // that rejects with a transient error (no SQLSTATE 23xxx; isPermanentDbError
+      // returns false). The helper's catch logs warn + swallows; the resolves
+      // assertion proves the swallow, the spy assertion proves the structured
+      // event. Mirrors the existing `swallows transient pg errors` spec
+      // immediately above; the structured-log mutation-kill is what's new.
+      const transientErr = new Error('connection terminated unexpectedly');
+      (transientErr as Error & { code: string }).code = '08006';
+      const stubPool = { query: vi.fn().mockRejectedValueOnce(transientErr) };
+      const getAppPoolSpy = vi
+        .spyOn(appDbModule, 'getAppPool')
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .mockReturnValue(stubPool as any);
+      const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as unknown as void);
+      try {
+        await expect(
+          __test_seams.updateAccountOrcid('alice', '0000-0001-0000-7005'),
+        ).resolves.toBeUndefined();
+        const call = warnSpy.mock.calls.find(
+          (args) => (args[0] as { event?: string } | undefined)?.event === 'orcid.account_update.transient_failed',
+        );
+        expect(call).toBeDefined();
+        expect(call![0]).toEqual(
+          expect.objectContaining({
+            event: 'orcid.account_update.transient_failed',
+            route: 'orcid.account-update',
+            username: 'alice',
+            err: transientErr,
+          }),
+        );
+      } finally {
+        warnSpy.mockRestore();
+        getAppPoolSpy.mockRestore();
+      }
+    },
+  );
+});
