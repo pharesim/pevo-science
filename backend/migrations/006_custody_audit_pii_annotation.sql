@@ -21,9 +21,9 @@
 --     hoarding PII indefinitely. A periodic cleanup job that drops rows older
 --     than 24 months is OUT OF SCOPE for this migration and tracked as a
 --     follow-up TODO inside the task file.
---   - Deletion path on user request: account-deletion sweep at
---     `backend/src/routes/settings.ts:312` runs
---     `DELETE FROM custody_audit_log WHERE username = $1` inside the same
+--   - Deletion path on user request: the account-deletion sweep inside the
+--     `DELETE /api/settings/email` handler in `backend/src/routes/settings.ts`
+--     runs `DELETE FROM custody_audit_log WHERE username = $1` inside the same
 --     transaction that drops the account row, satisfying GDPR right-to-erasure
 --     (Art. 17). No separate per-row scrub endpoint is needed; the column is
 --     erased in full when the user deletes their account.
@@ -31,17 +31,24 @@
 -- Idempotent: `COMMENT ON COLUMN` is unconditional and overwrites any prior
 -- comment on the same column, so re-applying this migration is safe.
 --
--- Insert path reference: `backend/src/routes/custody.ts:282-289` populates
--- `user_agent` from `req.headers['user-agent']` only when a fresh-auth
--- challenge was answered (i.e., for consent-op success rows). Non-consent
--- broadcasts continue to write NULL into this column.
+-- Insert path reference: the success-path `auditExtras` constructor inside
+-- the `POST /api/custody/broadcast` handler in `backend/src/routes/custody.ts`
+-- populates `user_agent` from `req.headers['user-agent']` and passes it to
+-- `logCustodyBroadcast`. The constructor is reached only when a fresh-auth
+-- challenge has been answered for the broadcast, i.e., the consent-op signing
+-- flow (`author_accept` / `author_resign`). Other broadcasts skip the
+-- constructor and write NULL into this column.
 
 COMMENT ON COLUMN custody_audit_log.user_agent IS
   'PII (GDPR / CNPD). Raw HTTP User-Agent header from the consent-op fresh-auth request. '
   'Legal basis: legitimate interest in security audit, GDPR Art. 6(1)(f). '
   'Retention: 24 months from row insert (security-audit retention, balanced against '
   'GDPR data-minimization Art. 5(1)(c)/(e)); periodic cleanup job is a follow-up. '
-  'Right-to-erasure deletion path: account-deletion sweep at '
-  'backend/src/routes/settings.ts:312 (DELETE FROM custody_audit_log WHERE username = $1). '
-  'Populated only on consent-op broadcasts (author_accept / author_resign); NULL for all '
-  'other custody-broadcast rows. See `routes/custody.ts:282-289` for the insert path.';
+  'Right-to-erasure deletion path: the account-deletion sweep inside the '
+  'DELETE /api/settings/email handler in backend/src/routes/settings.ts runs '
+  'DELETE FROM custody_audit_log WHERE username = $1 in the same transaction that '
+  'drops the account row. '
+  'Populated only when a fresh-auth challenge has been answered for the broadcast, '
+  'i.e., the consent-op signing flow (author_accept / author_resign); other broadcasts '
+  'write NULL. See the success-path auditExtras constructor inside the '
+  'POST /api/custody/broadcast handler in backend/src/routes/custody.ts for the insert path.';

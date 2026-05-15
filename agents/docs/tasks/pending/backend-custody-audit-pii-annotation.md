@@ -87,3 +87,18 @@ The migration's own "Idempotent: `COMMENT ON COLUMN` is unconditional and overwr
 - **GDPR Art. 15 data-export endpoint** (security SEC-4 P2) — DISMISSED at triage as out of scope for this review (future PM/launch decision).
 
 When all three held items land, `git mv` this file back to `tasks/review/` for re-review and archive.
+
+## Backend re-review signal (2026-05-15, commit SHA <pending>)
+
+All three held items landed via in-place edit of `backend/migrations/006_custody_audit_pii_annotation.sql` (migration is idempotent per its own header; no migration 007 needed).
+
+**Item 1 (settings.ts:312 -> symbol-anchored).** Replaced both occurrences (header comment block lines 24-29, COMMENT ON COLUMN string) with: "the account-deletion sweep inside the `DELETE /api/settings/email` handler in `backend/src/routes/settings.ts` runs `DELETE FROM custody_audit_log WHERE username = $1` inside the same transaction that drops the account row". Anchor is the HTTP verb + route + file, not a line number. Verified `settings.ts` line 338 currently holds the DELETE inside the `router.delete('/email', ...)` handler; the anchored reference survives further drift because the handler symbol is stable.
+
+**Item 2 (custody.ts:282-289 -> symbol-anchored).** Replaced both occurrences (header comment block lines 34-40, COMMENT ON COLUMN string trailing sentence) with: "the success-path `auditExtras` constructor inside the `POST /api/custody/broadcast` handler in `backend/src/routes/custody.ts` ... populates `user_agent` from `req.headers['user-agent']` and passes it to `logCustodyBroadcast`". Anchor is the constructor + handler + helper, not a line number. Verified `custody.ts` line 579 currently holds `user_agent:` inside the `auditExtras` constructor at the success path of `router.post('/broadcast', ...)`.
+
+**Item 3 (coupling claim rewrite).** Closing comment-block paragraph + COMMENT ON COLUMN trailing sentence rewritten from "Populated only on consent-op broadcasts (author_accept / author_resign); NULL for all other custody-broadcast rows" to "Populated only when a fresh-auth challenge has been answered for the broadcast, i.e., the consent-op signing flow (author_accept / author_resign); other broadcasts write NULL". Anchor is now the WHAT-triggers-population invariant (a fresh-auth challenge was answered) rather than the WHERE-the-branch-lives shape (the `freshAuthMechanism === null` discriminator call site). No emdashes in the new text; ", i.e., " used where the prior intent was an elaboration.
+
+**Verification gates run.**
+- `cd backend && npx tsc --noEmit`: clean (no unrelated regressions; migrations are SQL so no direct typecheck coverage, run as sanity).
+- `./deploy.sh migrate` applied 006 to live dev DB; `SELECT col_description('custody_audit_log'::regclass, attnum) FROM pg_attribute WHERE attrelid = 'custody_audit_log'::regclass AND attname = 'user_agent';` returns the new comment text cleanly.
+- `grep -nE 'settings\.ts:|custody\.ts:' backend/migrations/006_custody_audit_pii_annotation.sql` returns no matches: every line-number citation in the migration is gone, replaced by symbol-anchored references.
