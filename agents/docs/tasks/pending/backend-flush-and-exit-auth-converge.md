@@ -76,7 +76,7 @@ Eliminate the duplicate inline implementation at `routes/auth.ts:175-193` by imp
 
 When the held item lands, `git mv` this file back to `tasks/review/` for re-review and archive.
 
-## Backend re-review signal (2026-05-15, commit SHA <pending>)
+## Backend re-review signal (2026-05-15, commit SHA `763e3c9`)
 
 Item #1 (stale companion-comment in `backend/tests/lib/flush-and-exit.test.ts:23-25`) landed. The docblock sentence that cited the deleted `routes/auth.ts:175-193` production block has been rewritten to anchor on the stable symbol `flushAndExit()` and the two surrounding mock-based tests, rather than on a now-defunct line range.
 
