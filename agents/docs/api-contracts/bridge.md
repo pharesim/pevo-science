@@ -94,7 +94,7 @@ If not registered:
 
 **Errors:**
 - `BAD_REQUEST` — missing or unparseable identifier
-- `INTERNAL_ERROR` — check failed (e.g. HAF query error)
+- `INTERNAL_ERROR` — check failed for a non-HAF reason (e.g. `resolveToCanonical` throws or another outer-catch error). HAF query failures do NOT flow through `INTERNAL_ERROR`: `/check` is fail-open on HAF outage and returns HTTP 200 with body `{exists:false, author:null, permlink:null, title:null, created:null}`, accompanied by a structured warn log keyed on `event:'bridge.check.haf_check_failed'`, `route:'bridge.check'` for operator visibility. Callers reading `/check` for client-side duplicate-prevention should treat a `{exists:false}` answer during a known HAF outage as advisory: the authoritative duplicate-check guarantee applies only when `/register` is invoked, and `/register` itself fail-closes with `503 SERVICE_UNAVAILABLE` on HAF outage (see the `/register` errors section below).
 
 ---
 
