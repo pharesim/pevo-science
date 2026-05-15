@@ -184,3 +184,57 @@ Original worker (`worktree-agent-ae8c974b3d6ce3c40`, commits `d447b6f` + `37243c
 ### Re-review signal
 
 When items 1 + 2 land, `git mv` this file from `tasks/pending/` back to `tasks/review/`. The move itself is the re-review signal.
+
+---
+
+## Backend re-review signal (2026-05-15, round-2 hold fixes — worktree `agent-a871598b2734aa165`)
+
+### Decision: Path B (raw Error to pino's `err` slot)
+
+Item 1's verification stands. Re-traced through `backend/src/logger.ts` at HEAD before landing:
+- Line 326: `serializers.err = safeRedactErr` (Layer B) ✓
+- Lines 355-368: `redactErrInArg` (Layer A wrapper) mutates `obj.err` via `safeRedactErr(...)` ✓
+- Line 417: `makeLevelWrapper(baseLogger.error.bind(baseLogger))` ✓
+
+All three layers are wired. Path B is the correct fix.
+
+### Files touched (scope respected, narrow staging)
+
+- `backend/src/middleware/errorHandler.ts` — switched to Path B: `logger.error({ err }, 'Unhandled error')`. Replaced the obsolete Path A comment block (lines 11-16) with a Path B rationale block citing the new convention doc (`agents/docs/solutions/conventions/pino-err-slot-plain-object-projection-loss-2026-05-15.md`).
+- `backend/tests/middleware/errorHandler.test.ts` — rewrote per item 2:
+  - Replaced `mockImplementation(() => undefined as unknown as void)` with `vi.spyOn(logger, 'error')` (no mock impl) plus `beforeEach`/`afterEach` that toggle `logger.level = 'silent'` / restore. The wrapper now runs end-to-end so the assertion verifies the production-trace post-serializer shape.
+  - Replaced the `mock.calls[0] as [...]` cast with `expect(errorSpy).toHaveBeenCalledWith(expect.objectContaining({ err: expect.objectContaining({ type: 'TestError', message: 'test message' }) }), 'Unhandled error')`.
+  - Test name updated to "logs the serialized error class type in the structured payload" (was "logs the error class name ...") to reflect the post-serializer `type` field.
+  - Header carve-out justification rewritten: no `mockImplementation`, real wrapper runs, `level='silent'` rationale documented.
+- `agents/docs/tasks/pending/backend-error-handler-include-err-name-in-log-projection.md` — `git mv`'d from `review/` (worker's stale-base state) back to `pending/` to match parent's HEAD, then this signal block appended.
+
+### Verification
+
+- `npx tsc --noEmit` — clean.
+- `npm run lint` — clean (2 pre-existing warnings in `src/seed-phrase.ts`, unrelated).
+- `npx vitest run tests/middleware/errorHandler.test.ts` — passes (1 test). Production log line observed in test output confirms the wrapper actually ran end-to-end: `{"err":{"type":"TestError","message":"test message","stack":"..."},"msg":"Unhandled error"}`.
+
+### Mutation-kill verification (per `tests-must-fail-on-mutation-of-code-under-test-2026-04-22`)
+
+1. **Mutation applied:** reverted the production projection to the plain-object Path A shape: `logger.error({ err: { name: err.name, message: err.message, stack: err.stack } }, 'Unhandled error')` (the exact pre-fix shape the hold block calls out as silently defeated by the wrapper).
+2. **Test result (red):**
+   ```
+   FAIL  tests/middleware/errorHandler.test.ts
+     > logs the serialized error class type in the structured payload
+   AssertionError: expected "spy" to be called with arguments: ...
+   Received:
+     { err: { message: 'test message', stack: '...', type: 'Object' } }, 'Unhandled error'
+   Expected:
+     { err: ObjectContaining { message: 'test message', type: 'TestError' } }, 'Unhandled error'
+   ```
+   Exactly the production defect the hold block describes — the wrapper's `redactErrSerializer` treats the plain object as ErrorLike and sets `type: 'Object'`.
+3. **Restore + re-run (green):** 1 test passed.
+
+### Notes on architect's item-2 hint
+
+Architect suggested `logger.level = 'silent'` so the wrapper actually runs. Implemented. Caveat: pino's transport runs in a worker thread, so `level='silent'` doesn't always suppress the in-flight log line from reaching stdout during the test (visible in the targeted vitest output above). The level filter still applies at the base-pino layer AFTER the wrapper mutation, so the spy still captures the production-trace serialized shape — which is the property the architect's hint was protecting. The stdout noise is cosmetic; the assertion correctness is unaffected.
+
+### Items 1 + 2 status
+
+- Item 1 (P1, Path B switch + comment-block rewrite): **landed**.
+- Item 2 (P3, test rewrite shape): **landed**.
