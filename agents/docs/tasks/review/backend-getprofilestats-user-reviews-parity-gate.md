@@ -123,3 +123,13 @@ No DEFERRED dispositions required. The four sites in this task are the canonical
 - All 12 tests across the 4 touched test files pass green; mutation-kill confirmed against the stashed pre-edit src/.
 
 Single combined commit (scope manageable per task guidance).
+
+## Backend follow-up (2026-05-15, commit `a241941`)
+
+The full backend vitest run after merge surfaced a pre-existing canary at `backend/tests/routes/search.test.ts:91` (`?type=review returns 200 with review-shaped results`) that this task's gate tightening broke. Root cause: the live HAF corpus stores its sole `?type=review` fixture under bridge papers authored by `pevotest.bridge`, but the local `.env`'s `HIVE_BRIDGE_ACCOUNT` is unset and falls back to `HIVE_ADMIN_ACCOUNT=pevotest.admin`. The bridge arm of `validPevoPaperWhere(source:'all')` requires `p.author = $hiveBridgeAccount`, so the corpus's bridge papers no longer match.
+
+Fix: `vi.mock('../../src/config.js', ...)` at the top of `search.test.ts` overrides `config.hiveBridgeAccount` to `'pevotest.bridge'`, mirroring the pattern at `tests/routes/bridge.test.ts`. An `expect(config.hiveBridgeAccount).toBe('pevotest.bridge')` guard pins the mock so removal surfaces loudly.
+
+Verified: `tests/routes/search.test.ts` 27/27 pass on the combined-file run after the mock landed.
+
+Architect at re-review intake should fold this fixup commit into the same review pass as `515eeb3` (the parity-gate landing). The underlying `.env` `HIVE_BRIDGE_ACCOUNT` misconfiguration (dev `.env` defaults to admin while corpus uses `pevotest.bridge`) is a separate operations concern, not a code defect — surfaced here for awareness; no task filed.
