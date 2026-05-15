@@ -197,3 +197,41 @@ Items #1-6 from the round-3 hold all landed. Ready for architect round-4 re-revi
 - `npx vitest run tests/unit/pages-settings.test.js` — 47/47 pass (was 41 before; +6 round-4 hold tests).
 - `npx vitest run` (full unit suite) — 1024/1024 across 59 test files pass.
 - `npm run build` — clean (existing chunk-size + dhive-eval warnings unchanged from baseline).
+
+## Architect re-review (2026-05-15) — HELD PENDING FIXES
+
+Round-4 `/ce-code-review` on commit `0a6b176`. The try/catch/finally wrap landed cleanly and the round-3 P1 pre-loop-throw injection point is closed (correctness, security, maintainability, project-standards all confirm zero findings). Round-4 surfaced 2 cross-reviewer-converged P1s + 1 P2 — the same wedged-state class reachable via non-throw injection paths the wrap was not designed for.
+
+1. **P1 — Hung Keychain callback bypasses the round-4 try/finally** (adversarial + reliability + julik-frontend-races converge, anchor 100). `frontend/src/pages/settings.js:847` (inside `_performKeychainImport` loop body). Each role's import is `await new Promise(r => requestImportKey(username, wif, r))`. The Hive Keychain extension does not guarantee the callback fires if the user dismisses the popup by closing the extension UI, the content script wedges, or the extension is uninstalled mid-flow. A never-settling Promise means `await` never returns; the `finally` at the call site never runs. Terminal state matches the round-3 wedge exactly — chain rotated + backend cleaned + mnemonic still in `this.newSeedPhrase` + `upgradePhase` stuck at `'upgrading'` with no recovery UI. Fix: `Promise.race` each `requestImportKey` against a 30-45s timeout; the existing per-role catch handles the rejection so the loop continues to the next role on timeout:
+   ```js
+   const rolePromise = new Promise((resolve, reject) => {
+     window.hive_keychain.requestImportKey(this.username, wif, (res) =>
+       res.success ? resolve(res) : reject(new Error(res.message || 'Keychain import failed'))
+     );
+   });
+   await Promise.race([
+     rolePromise,
+     new Promise((_, reject) => setTimeout(() => reject(new Error('keychain timeout')), 45_000)),
+   ]);
+   ```
+   A new i18n key `upgrade.keychainImportTimeout.{posting,active,memo}` may be appropriate to distinguish timeout from denial in the warning surface; alternatively reuse the existing per-role `keychainImportWarning.<role>` if the distinction does not matter to the user (recommendation: reuse the existing keys — the user's recovery action is the same either way). Stub across 15 non-English locales + STUBS.md sweep entry if new keys are added. Add a regression spec that stubs a never-resolving `requestImportKey` for one or more roles and asserts (a) the helper returns after the timeout fires, (b) `upgradePhase === 'done'`, (c) mnemonic wiped (`newSeedPhrase` is empty), (d) `upgradeWarnings` contains the affected role warning(s).
+
+2. **P1 — No concurrent-invocation guard on `executeUpgrade()`** (julik-frontend-races P1 + adversarial P2 + reliability P3-with-fix converge, anchor 100 after cross-reviewer promotion). `frontend/src/pages/settings.js:606`. The opening guard is a field-presence check (`!this.oldSeedPhrase.trim() || !this.upgradePassword`), not a phase guard. The `this.upgradePhase = 'upgrading'` assignment is synchronous but Alpine's reactive DOM update that hides the "Upgrade" button via `x-show="upgradePhase === 'enter-old'"` is batched and runs asynchronously. A double-click that lands inside the microtask window passes the field check, re-enters the method, and starts a parallel flow → two `account_update` broadcasts + two `/api/custody/upgrade` POSTs + potentially two 3-popup Keychain sequences. Fix: one-line phase guard at the top of `executeUpgrade()`:
+   ```js
+   if (this.upgradePhase !== 'enter-old') return;
+   ```
+   Add a regression spec that invokes `executeUpgrade()` twice without awaiting between calls and asserts exactly one broadcast (single `client.broadcast.sendOperations` / equivalent call recorded) and exactly one `/api/custody/upgrade` POST.
+
+3. **P2 — Backend-cleanup fetch has no timeout** (reliability, anchor 75). `frontend/src/pages/settings.js:662` (the `fetch('/api/custody/upgrade', { method: 'POST', ... })` call). No `signal: AbortSignal.timeout(...)`, no manual race. If the backend hangs after `account_update` lands on-chain, the flow blocks on `await fetch(...)` until OS-level TCP teardown — minutes for a half-open socket, unbounded for a stalled response stream. During the hang, `upgradePhase` is stuck at `'upgrading'` with no escape and the mnemonic stays in reactive state. Different boundary than items #1 and #2 but the same wedged-state class. Fix: pass `signal: AbortSignal.timeout(20000)` to the fetch (20s budget — adjust based on the backend cleanup's normal p99). The existing fetch error path runs on abort; set `upgradeError` to a localized timeout-specific message. Add a new i18n key `upgrade.backendTimeout` ("Backend cleanup did not respond. The on-chain update succeeded; the server may be temporarily slow. Please contact support if this persists." or similar — no emdash) so the timeout vs. backend-rejection distinction is user-readable; stub across 15 non-English locales + STUBS.md sweep entry per UI agent convention. Add a regression spec that stubs `fetch` to return a never-resolving Promise (or to `await new Promise(() => {})`), runs `executeUpgrade()`, and asserts (a) AbortSignal fires after the budget, (b) `upgradeError` is set to the timeout message, (c) mnemonic is NOT wiped (the failure here is a real error — cleanup never succeeded, so the upgrade is in a partially-applied state the user should be aware of), (d) `upgradePhase` is set to `'error'`, not `'done'`.
+
+**Dismissed from round-4 findings:**
+
+- **P2 — Hold-#1 regression test coupled to `mnemonicToSeedSync` call count** (testing + adversarial converge, anchor 100). The "helper throws — mnemonicToSeedSync rejects pre-loop" spec uses a closure-captured counter to throw on call 3 (assumes 2 calls in `_performUpgradeKeyRotation`, then the 3rd lands in `_performKeychainImport`). Failure mode: a future refactor of `_performUpgradeKeyRotation` that drops one `mnemonicToSeedSync` call would silently route the throw to the broadcast step; the test would still pass but exercise the wrong code path. Dismissed per the preemptive-test-hardening default-dismiss rule — current code matches the assumption and passes correctly; the failure mode requires a future refactor to materialize. Re-evaluate at the time of any `_performUpgradeKeyRotation` refactor.
+
+- **P3 — Ordering test silently degrades if a second `fetch` is added to `executeUpgrade`** (adversarial, anchor 75). The "backend cleanup runs BEFORE the first keychain import attempt" spec captures `fetchSeq` on first invocation without filtering on URL. Future-refactor failure mode: a refactor that adds a second `fetch` to `executeUpgrade` (status probe, telemetry beacon) would silently break the ordering invariant the test claims to enforce. Dismissed per the preemptive-test-hardening default-dismiss rule — current code has one fetch in `executeUpgrade` and the assertion holds.
+
+**Filed separately (not part of this hold block):**
+
+- **P3 — Copy promises a retry path the UI does not expose** (reliability, anchor 75). The fallback warning `upgrade.keychainImportFailed` and the per-role `upgrade.keychainImportWarning.{posting,active,memo}` warnings tell the user to "retry from settings later" but no standalone re-import affordance exists. Filed as `agents/docs/tasks/blocked/ui-keychain-warning-copy-or-retry-action.md` with `[BLOCKED by Architect]` — direction (rewrite copy vs. add re-import button) needs a brainstorm pass before implementation.
+
+**Path to re-archive:** (1) UI agent applies items #1-3. (2) `git mv` to `tasks/review/`. (3) Architect runs round-5 `/ce-code-review` on the new diff and archives if clean.
