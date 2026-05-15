@@ -992,6 +992,7 @@
     "execute": "Upgrade Account",
     "invalidOldSeed": "Invalid recovery phrase. Please check and try again.",
     "backendFailed": "Account upgrade notification failed.",
+    "backendTimeout": "Backend cleanup did not respond in time. The on-chain update succeeded, so your keys have rotated, but the server has not confirmed cleanup. Please contact support if this persists.",
     "upgrading": "Upgrading your account…",
     "doneTitle": "Upgrade Complete",
     "doneDescription": "Your account is now fully self-custodied via Hive Keychain. Keep your old recovery phrase for 30 days as a backup.",

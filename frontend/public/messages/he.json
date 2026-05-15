@@ -971,6 +971,7 @@
     "execute": "שדרוג חשבון",
     "invalidOldSeed": "ביטוי שחזור לא תקף. אנא בדקו ונסו שוב.",
     "backendFailed": "הודעת שדרוג החשבון נכשלה.",
+    "backendTimeout": "Backend cleanup did not respond in time. The on-chain update succeeded, so your keys have rotated, but the server has not confirmed cleanup. Please contact support if this persists.",
     "upgrading": "משדרג את החשבון…",
     "doneTitle": "השדרוג הושלם",
     "doneDescription": "החשבון שלכם כעת בניהול עצמי מלא דרך Hive Keychain. שמרו את ביטוי השחזור הישן למשך 30 יום כגיבוי.",

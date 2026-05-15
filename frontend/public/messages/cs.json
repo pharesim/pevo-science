@@ -971,6 +971,7 @@
     "execute": "Upgradovat účet",
     "invalidOldSeed": "Neplatná obnovovací fráze. Zkontrolujte ji a zkuste to znovu.",
     "backendFailed": "Oznámení o upgradu účtu selhalo.",
+    "backendTimeout": "Backend cleanup did not respond in time. The on-chain update succeeded, so your keys have rotated, but the server has not confirmed cleanup. Please contact support if this persists.",
     "upgrading": "Probíhá upgrade účtu…",
     "doneTitle": "Upgrade dokončen",
     "doneDescription": "Váš účet je nyní plně pod vaší správou prostřednictvím Hive Keychain. Uchovejte svou starou obnovovací frázi ještě 30 dní jako zálohu.",

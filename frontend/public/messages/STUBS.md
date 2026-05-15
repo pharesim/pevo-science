@@ -886,3 +886,21 @@ pt: common.verifyInSettings
 sv: common.verifyInSettings
 tr: common.verifyInSettings
 zh: common.verifyInSettings
+
+### Added 2026-05-15 (UI-KEYCHAIN-API-MISUSE)
+
+ar: upgrade.backendTimeout
+cs: upgrade.backendTimeout
+da: upgrade.backendTimeout
+de: upgrade.backendTimeout
+es: upgrade.backendTimeout
+fa: upgrade.backendTimeout
+fr: upgrade.backendTimeout
+he: upgrade.backendTimeout
+it: upgrade.backendTimeout
+nl: upgrade.backendTimeout
+pl: upgrade.backendTimeout
+pt: upgrade.backendTimeout
+sv: upgrade.backendTimeout
+tr: upgrade.backendTimeout
+zh: upgrade.backendTimeout

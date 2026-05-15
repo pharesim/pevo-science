@@ -971,6 +971,7 @@
     "execute": "Konto upgraden",
     "invalidOldSeed": "Ungültige Wiederherstellungsphrase. Bitte überprüfen und erneut versuchen.",
     "backendFailed": "Benachrichtigung über das Konto-Upgrade fehlgeschlagen.",
+    "backendTimeout": "Backend cleanup did not respond in time. The on-chain update succeeded, so your keys have rotated, but the server has not confirmed cleanup. Please contact support if this persists.",
     "upgrading": "Konto wird upgegradet…",
     "doneTitle": "Upgrade abgeschlossen",
     "doneDescription": "Ihr Konto wird jetzt vollständig über Hive Keychain eigenverwaltet. Bewahren Sie Ihre alte Wiederherstellungsphrase noch 30 Tage als Sicherung auf.",

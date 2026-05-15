@@ -971,6 +971,7 @@
     "execute": "升级账户",
     "invalidOldSeed": "恢复助记词无效，请检查后重试。",
     "backendFailed": "账户升级通知失败。",
+    "backendTimeout": "Backend cleanup did not respond in time. The on-chain update succeeded, so your keys have rotated, but the server has not confirmed cleanup. Please contact support if this persists.",
     "upgrading": "正在升级账户…",
     "doneTitle": "升级完成",
     "doneDescription": "您的账户现已通过 Hive Keychain 完全自主托管。请保留旧恢复助记词 30 天作为备份。",

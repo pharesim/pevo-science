@@ -604,6 +604,17 @@ export function initSettingsPage() {
     },
 
     async executeUpgrade() {
+      // Concurrent-invocation guard. The opening field-presence check below
+      // is not sufficient: `this.upgradePhase = 'upgrading'` is synchronous,
+      // but Alpine's reactive DOM update that hides the "Upgrade" button
+      // (via `x-show="upgradePhase === 'enter-old'"`) is batched. A
+      // double-click landing inside the microtask window would otherwise
+      // pass the field check, re-enter the method, and start a parallel
+      // flow (two `account_update` broadcasts + two `/api/custody/upgrade`
+      // POSTs + two 3-popup Keychain sequences). The phase-guard is the
+      // mechanically-correct lock — the only legal entry phase is
+      // 'enter-old' (set by `confirmNewSeed()`).
+      if (this.upgradePhase !== 'enter-old') return;
       if (!this.oldSeedPhrase.trim() || !this.upgradePassword) return;
       this.upgradePhase = 'upgrading';
       this.upgradeError = null;
@@ -659,6 +670,18 @@ export function initSettingsPage() {
         // stale encrypted keys for now-superseded authorities). We keep it
         // as a real error so the user can contact support to resolve.
         const auth = Alpine.store('auth');
+        // Budget guard: a hung backend after the on-chain rotation would
+        // otherwise block on the fetch until OS-level TCP teardown
+        // (minutes for a half-open socket, unbounded for a stalled response
+        // stream). During the hang upgradePhase is stuck at 'upgrading'
+        // with no escape and the mnemonic stays in reactive state. The
+        // 20s budget is generous for a normal cleanup (p99 is well under
+        // a second) but bounded enough to surface a hang as an error
+        // screen the user can act on. Timeout produces a TimeoutError
+        // DOMException which the catch below routes to upgrade.backendTimeout
+        // WITHOUT wiping the mnemonic — the upgrade is partially applied
+        // (chain rotated, backend cleanup pending) and the user may need
+        // the mnemonic to contact support or for manual recovery.
         const res = await fetch('/api/custody/upgrade', {
           method: 'POST',
           headers: {
@@ -666,6 +689,7 @@ export function initSettingsPage() {
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({ password: this.upgradePassword }),
+          signal: AbortSignal.timeout(20_000),
         });
 
         if (!res.ok) {
@@ -695,6 +719,20 @@ export function initSettingsPage() {
         // either (b) reverted (Keychain-signing of account_update denied,
         // chain rejection) or (c) failed (backend refused). Both are real
         // failures from the user's perspective.
+        //
+        // Special case: backend-cleanup timeout. AbortSignal.timeout() on
+        // the fetch above produces a TimeoutError DOMException when the
+        // 20s budget elapses. This is structurally distinct: the on-chain
+        // rotation succeeded (b), only the backend cleanup hung. The
+        // upgrade is partially applied; preserve the mnemonic so the user
+        // can contact support or recover manually, and surface a
+        // timeout-specific message so the distinction is user-readable.
+        if (err && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
+          console.warn('[custody upgrade] backend cleanup timeout', err);
+          this.upgradeError = this.$t('upgrade.backendTimeout');
+          this.upgradePhase = 'error';
+          return;
+        }
         //
         // Defense in depth: zero sensitive state on error. The 'error'
         // phase routes the user to `resetUpgrade()` via the "try again"
@@ -846,18 +884,40 @@ export function initSettingsPage() {
       for (const role of importRoles) {
         const wif = dhive.PrivateKey.fromSeed(newKeys[role]).toString();
         try {
-          await new Promise((resolve, reject) => {
+          // Promise.race against a 45s timeout: the Hive Keychain extension
+          // does not guarantee its callback fires if the popup is dismissed
+          // via the extension UI, the content script wedges, or the
+          // extension is uninstalled mid-flow. Without the race, a hung
+          // callback leaves the `await` permanently pending, the for-loop
+          // stalls, the call site's `finally` never runs, and the user is
+          // wedged: chain rotated + backend cleaned + mnemonic still in
+          // reactive state + upgradePhase stuck at 'upgrading'. The race
+          // converts a hang into a normal per-role rejection that the
+          // existing catch surfaces as a warning, and the loop proceeds.
+          const importPromise = new Promise((resolve, reject) => {
             window.hive_keychain.requestImportKey(
               this.username, wif,
               (res) => res.success ? resolve(res) : reject(new Error(res.message || 'Keychain import failed'))
             );
           });
+          const timeoutPromise = new Promise((_, reject) => {
+            setTimeout(
+              () => reject(new Error('keychain timeout')),
+              45_000,
+            );
+          });
+          await Promise.race([importPromise, timeoutPromise]);
         } catch (err) {
           // Per-role failure becomes a warning, not a fatal error. The
           // loop continues to the next role so a denial on (e.g.) active
           // doesn't block the memo import.
           // Sanitization pattern: raw err to console.warn for diagnostics,
           // localized message to user-visible warnings array.
+          // Both denial and timeout funnel through here; the user's
+          // recovery action is the same either way ("retry from settings
+          // later"), so we reuse the per-role keychainImportWarning keys
+          // for both paths rather than introducing a separate
+          // keychainImportTimeout family.
           console.warn(`[custody upgrade] keychain import ${role}`, err);
           const key = `upgrade.keychainImportWarning.${role}`;
           this.upgradeWarnings.push(this.$t(key));

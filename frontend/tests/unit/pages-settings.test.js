@@ -418,6 +418,10 @@ describe('settingsPage', () => {
       comp.newSeedWords = comp.newSeedPhrase.split(' ');
       comp.confirmInputs = { 0: 'new', 5: 'new', 11: 'new' };
       comp.upgradePassword = 'light-password';
+      // Round-5 P1 hold: executeUpgrade() now phase-guards on 'enter-old'
+      // (only legal entry phase, set by confirmNewSeed()). Existing tests
+      // entered from the default 'idle' phase and would now early-return.
+      comp.upgradePhase = 'enter-old';
       return comp;
     }
 
@@ -592,6 +596,10 @@ describe('settingsPage', () => {
       comp.newSeedWords = comp.newSeedPhrase.split(' ');
       comp.confirmInputs = { 0: 'new', 5: 'new', 11: 'new' };
       comp.upgradePassword = 'light-password';
+      // Round-5 P1 hold: executeUpgrade() now phase-guards on 'enter-old'
+      // (only legal entry phase, set by confirmNewSeed()). Existing tests
+      // entered from the default 'idle' phase and would now early-return.
+      comp.upgradePhase = 'enter-old';
       return comp;
     }
 
@@ -867,6 +875,10 @@ describe('settingsPage', () => {
       comp.newSeedWords = comp.newSeedPhrase.split(' ');
       comp.confirmInputs = { 0: 'new', 5: 'new', 11: 'new' };
       comp.upgradePassword = 'light-password';
+      // Round-5 P1 hold: executeUpgrade() now phase-guards on 'enter-old'
+      // (only legal entry phase, set by confirmNewSeed()). Existing tests
+      // entered from the default 'idle' phase and would now early-return.
+      comp.upgradePhase = 'enter-old';
       return comp;
     }
 
@@ -1097,6 +1109,10 @@ describe('settingsPage', () => {
       comp.newSeedWords = comp.newSeedPhrase.split(' ');
       comp.confirmInputs = { 0: 'new', 5: 'new', 11: 'new' };
       comp.upgradePassword = 'light-password';
+      // Round-5 P1 hold: executeUpgrade() now phase-guards on 'enter-old'
+      // (only legal entry phase, set by confirmNewSeed()). Existing tests
+      // entered from the default 'idle' phase and would now early-return.
+      comp.upgradePhase = 'enter-old';
 
       await comp.executeUpgrade();
 
@@ -1162,6 +1178,10 @@ describe('settingsPage', () => {
       comp.newSeedWords = comp.newSeedPhrase.split(' ');
       comp.confirmInputs = { 0: 'new', 5: 'new', 11: 'new' };
       comp.upgradePassword = 'light-password';
+      // Round-5 P1 hold: executeUpgrade() now phase-guards on 'enter-old'
+      // (only legal entry phase, set by confirmNewSeed()). Existing tests
+      // entered from the default 'idle' phase and would now early-return.
+      comp.upgradePhase = 'enter-old';
 
       await comp.executeUpgrade();
 
@@ -1211,6 +1231,10 @@ describe('settingsPage', () => {
       comp.newSeedWords = comp.newSeedPhrase.split(' ');
       comp.confirmInputs = { 0: 'new', 5: 'new', 11: 'new' };
       comp.upgradePassword = 'light-password';
+      // Round-5 P1 hold: executeUpgrade() now phase-guards on 'enter-old'
+      // (only legal entry phase, set by confirmNewSeed()). Existing tests
+      // entered from the default 'idle' phase and would now early-return.
+      comp.upgradePhase = 'enter-old';
 
       await comp.executeUpgrade();
 
@@ -1272,6 +1296,10 @@ describe('settingsPage', () => {
       comp.newSeedWords = comp.newSeedPhrase.split(' ');
       comp.confirmInputs = { 0: 'new', 5: 'new', 11: 'new' };
       comp.upgradePassword = 'light-password';
+      // Round-5 P1 hold: executeUpgrade() now phase-guards on 'enter-old'
+      // (only legal entry phase, set by confirmNewSeed()). Existing tests
+      // entered from the default 'idle' phase and would now early-return.
+      comp.upgradePhase = 'enter-old';
 
       await comp.executeUpgrade();
 
@@ -1326,6 +1354,10 @@ describe('settingsPage', () => {
       comp.newSeedWords = comp.newSeedPhrase.split(' ');
       comp.confirmInputs = { 0: 'new', 5: 'new', 11: 'new' };
       comp.upgradePassword = 'light-password';
+      // Round-5 P1 hold: executeUpgrade() now phase-guards on 'enter-old'
+      // (only legal entry phase, set by confirmNewSeed()). Existing tests
+      // entered from the default 'idle' phase and would now early-return.
+      comp.upgradePhase = 'enter-old';
 
       await comp.executeUpgrade();
 
@@ -1375,6 +1407,10 @@ describe('settingsPage', () => {
       comp.newSeedWords = comp.newSeedPhrase.split(' ');
       comp.confirmInputs = { 0: 'new', 5: 'new', 11: 'new' };
       comp.upgradePassword = 'light-password';
+      // Round-5 P1 hold: executeUpgrade() now phase-guards on 'enter-old'
+      // (only legal entry phase, set by confirmNewSeed()). Existing tests
+      // entered from the default 'idle' phase and would now early-return.
+      comp.upgradePhase = 'enter-old';
 
       await comp.executeUpgrade();
 
@@ -1427,6 +1463,10 @@ describe('settingsPage', () => {
       comp.newSeedWords = comp.newSeedPhrase.split(' ');
       comp.confirmInputs = { 0: 'new', 5: 'new', 11: 'new' };
       comp.upgradePassword = 'light-password';
+      // Round-5 P1 hold: executeUpgrade() now phase-guards on 'enter-old'
+      // (only legal entry phase, set by confirmNewSeed()). Existing tests
+      // entered from the default 'idle' phase and would now early-return.
+      comp.upgradePhase = 'enter-old';
 
       await comp.executeUpgrade();
 
@@ -1470,6 +1510,10 @@ describe('settingsPage', () => {
       comp.newSeedWords = comp.newSeedPhrase.split(' ');
       comp.confirmInputs = { 0: 'new', 5: 'new', 11: 'new' };
       comp.upgradePassword = 'light-password';
+      // Round-5 P1 hold: executeUpgrade() now phase-guards on 'enter-old'
+      // (only legal entry phase, set by confirmNewSeed()). Existing tests
+      // entered from the default 'idle' phase and would now early-return.
+      comp.upgradePhase = 'enter-old';
 
       await comp.executeUpgrade();
 
@@ -1520,6 +1564,12 @@ describe('settingsPage', () => {
         comp.newSeedWords = comp.newSeedPhrase.split(' ');
         comp.confirmInputs = { 0: 'new', 5: 'new', 11: 'new' };
         comp.upgradePassword = 'light-password';
+        // Round-5 P1 hold: re-establish 'enter-old' before each attempt so
+        // the new phase-guard at the top of executeUpgrade() admits entry.
+        // The wipe + 'done' transition runs at the end of the prior attempt,
+        // so this re-seed mirrors what confirmNewSeed() would do for a real
+        // second pass.
+        comp.upgradePhase = 'enter-old';
       };
 
       seed();
@@ -1538,6 +1588,215 @@ describe('settingsPage', () => {
       expect(comp.upgradeWarnings).toEqual([]);
 
       warnSpy.mockRestore();
+    });
+
+    // FE-KEYCHAIN-API-MISUSE round-5 hold #1 (P1):
+    // Hung Keychain callback bypasses the round-4 try/finally. The Hive
+    // Keychain extension does not guarantee its callback fires if the
+    // popup is dismissed via the extension UI, the content script wedges,
+    // or the extension is uninstalled mid-flow. Without the Promise.race
+    // timeout, a never-settling Promise leaves the per-role `await`
+    // pending forever, the loop stalls, the call site's `finally` never
+    // runs, and the user is wedged: chain rotated + backend cleaned +
+    // mnemonic still in reactive state + upgradePhase stuck at
+    // 'upgrading'. The race converts a hang into a per-role rejection
+    // that the existing catch surfaces as a warning, and the loop
+    // proceeds. We use fake timers so the 45s budget elapses in 0ms of
+    // wall time.
+    it('best-effort: hung requestImportKey callback → done + role warning after timeout', async () => {
+      vi.useFakeTimers();
+      try {
+        mockIsKeychainInstalled.mockReturnValue(true);
+        const importKeyCalls = [];
+        const fetchCalls = [];
+        // First call (posting) NEVER invokes its callback. Second (active)
+        // and third (memo) settle normally. This pins the hang to a single
+        // role so we can assert the loop continued past it.
+        vi.stubGlobal('window', {
+          ...globalThis.window,
+          hive_keychain: {
+            requestImportKey: (account, wifKey, cb) => {
+              importKeyCalls.push({ account, wifKey });
+              const idx = importKeyCalls.length - 1;
+              if (idx === 0) return; // hang: callback never fires
+              queueMicrotask(() => cb({ success: true }));
+            },
+          },
+        });
+        vi.stubGlobal('fetch', vi.fn(async (...args) => {
+          fetchCalls.push(args);
+          return {
+            ok: true,
+            json: async () => ({ data: { token: 'new-jwt', custody: 'self' } }),
+          };
+        }));
+        const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+        const comp = createComponent();
+        comp.oldSeedPhrase = Array(12).fill('old').join(' ');
+        comp.newSeedPhrase = Array(12).fill('new').join(' ');
+        comp.newSeedWords = comp.newSeedPhrase.split(' ');
+        comp.confirmInputs = { 0: 'new', 5: 'new', 11: 'new' };
+        comp.upgradePassword = 'light-password';
+        comp.upgradePhase = 'enter-old';
+
+        const upgradePromise = comp.executeUpgrade();
+        // Drain microtasks so the helper enters the loop and the first
+        // requestImportKey fires (which never resolves). Then advance past
+        // the 45s budget so the race's setTimeout rejects.
+        await vi.advanceTimersByTimeAsync(46_000);
+        await upgradePromise;
+
+        // Backend cleanup fired (the irreversible pair completed before
+        // the hung import). Upgrade flipped to 'done' despite the hang.
+        expect(fetchCalls.length).toBe(1);
+        expect(comp.upgradePhase).toBe('done');
+        expect(comp.upgradeError).toBeNull();
+        // Posting warning surfaced (timed-out role); loop continued to
+        // active + memo so all 3 import attempts ran.
+        expect(comp.upgradeWarnings).toEqual(
+          expect.arrayContaining(['upgrade.keychainImportWarning.posting']),
+        );
+        expect(importKeyCalls.length).toBe(3);
+        // Mnemonic wiped — the try/finally ran because the timeout
+        // converted the hang into a normal per-role rejection.
+        expect(comp.newSeedPhrase).toBe('');
+        expect(comp.oldSeedPhrase).toBe('');
+
+        warnSpy.mockRestore();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    // FE-KEYCHAIN-API-MISUSE round-5 hold #2 (P1):
+    // No concurrent-invocation guard on executeUpgrade(). The opening
+    // field-presence check is not a phase guard: `upgradePhase =
+    // 'upgrading'` is synchronous but Alpine's reactive DOM update that
+    // hides the "Upgrade" button is batched, so a double-click inside the
+    // microtask window otherwise passes the field check and re-enters,
+    // starting a parallel flow (two account_update broadcasts + two
+    // /api/custody/upgrade POSTs + two 3-popup Keychain sequences).
+    // Phase-guard locks the only legal entry phase to 'enter-old'.
+    it('concurrent double-call to executeUpgrade → exactly one broadcast + one backend POST', async () => {
+      mockIsKeychainInstalled.mockReturnValue(true);
+      const importKeyCalls = [];
+      const fetchCalls = [];
+      vi.stubGlobal('window', {
+        ...globalThis.window,
+        hive_keychain: {
+          requestImportKey: (account, wifKey, cb) => {
+            importKeyCalls.push({ account, wifKey });
+            queueMicrotask(() => cb({ success: true }));
+          },
+        },
+      });
+      vi.stubGlobal('fetch', vi.fn(async (...args) => {
+        fetchCalls.push(args);
+        return {
+          ok: true,
+          json: async () => ({ data: { token: 'new-jwt', custody: 'self' } }),
+        };
+      }));
+      // Spy on broadcast.sendOperations to count chain calls independently
+      // of the fetch count. The first call should land; the second
+      // invocation must short-circuit at the phase guard before reaching
+      // sendOperations.
+      const sendOpsSpy = vi.fn(async () => ({ id: 'stub-tx' }));
+      vi.mocked(Client).mockImplementation(() => ({
+        broadcast: { sendOperations: sendOpsSpy },
+      }));
+
+      const comp = createComponent();
+      comp.oldSeedPhrase = Array(12).fill('old').join(' ');
+      comp.newSeedPhrase = Array(12).fill('new').join(' ');
+      comp.newSeedWords = comp.newSeedPhrase.split(' ');
+      comp.confirmInputs = { 0: 'new', 5: 'new', 11: 'new' };
+      comp.upgradePassword = 'light-password';
+      comp.upgradePhase = 'enter-old';
+
+      // Fire two invocations without awaiting between them. The first sets
+      // upgradePhase = 'upgrading' synchronously inside executeUpgrade();
+      // the second must see that and short-circuit at the phase guard
+      // (returning a resolved promise without doing any work).
+      const p1 = comp.executeUpgrade();
+      const p2 = comp.executeUpgrade();
+      await Promise.all([p1, p2]);
+
+      // Exactly one broadcast and one backend POST. Without the guard,
+      // the second call would re-enter and cause sendOpsSpy === 2 and
+      // fetchCalls.length === 2 (the second's broadcast lands on a chain
+      // whose authorities the first already rotated → likely rejected,
+      // but the request goes out either way).
+      expect(sendOpsSpy).toHaveBeenCalledTimes(1);
+      expect(fetchCalls.length).toBe(1);
+      expect(comp.upgradePhase).toBe('done');
+    });
+
+    // FE-KEYCHAIN-API-MISUSE round-5 hold #3 (P2):
+    // Backend-cleanup fetch had no timeout. If the backend hangs after
+    // account_update lands on-chain, the flow blocks on `await fetch(...)`
+    // until OS-level TCP teardown — minutes for a half-open socket,
+    // unbounded for a stalled response stream. During the hang
+    // upgradePhase is stuck at 'upgrading' and the mnemonic stays in
+    // reactive state. AbortSignal.timeout(20_000) bounds the budget; the
+    // resulting TimeoutError DOMException routes to upgrade.backendTimeout
+    // WITHOUT wiping the mnemonic — the upgrade is partially applied
+    // (chain rotated, backend cleanup pending) and the user may need the
+    // mnemonic to contact support or for manual recovery.
+    it('backend cleanup fetch timeout → upgradeError + phase=error, mnemonic NOT wiped', async () => {
+      vi.useFakeTimers();
+      try {
+        mockIsKeychainInstalled.mockReturnValue(true);
+        vi.stubGlobal('window', {
+          ...globalThis.window,
+          hive_keychain: {
+            requestImportKey: (account, wifKey, cb) => {
+              queueMicrotask(() => cb({ success: true }));
+            },
+          },
+        });
+        // Never-resolving fetch that honors AbortSignal. The signal is
+        // produced by AbortSignal.timeout(20_000) inside executeUpgrade().
+        // When fake timers advance past 20s, the signal aborts and the
+        // promise rejects with the signal's reason (a TimeoutError
+        // DOMException per spec).
+        vi.stubGlobal('fetch', vi.fn((url, opts) => new Promise((_, reject) => {
+          opts?.signal?.addEventListener('abort', () => {
+            reject(opts.signal.reason);
+          });
+        })));
+        const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+        const comp = createComponent();
+        const oldMnemonic = Array(12).fill('old').join(' ');
+        const newMnemonic = Array(12).fill('new').join(' ');
+        comp.oldSeedPhrase = oldMnemonic;
+        comp.newSeedPhrase = newMnemonic;
+        comp.newSeedWords = comp.newSeedPhrase.split(' ');
+        comp.confirmInputs = { 0: 'new', 5: 'new', 11: 'new' };
+        comp.upgradePassword = 'light-password';
+        comp.upgradePhase = 'enter-old';
+
+        const upgradePromise = comp.executeUpgrade();
+        // Advance past the 20s budget; the AbortSignal fires and fetch
+        // rejects.
+        await vi.advanceTimersByTimeAsync(21_000);
+        await upgradePromise;
+
+        // Phase routed to 'error', not 'done'.
+        expect(comp.upgradePhase).toBe('error');
+        // Specific timeout message, not the generic backendFailed/failed.
+        expect(comp.upgradeError).toBe('upgrade.backendTimeout');
+        // Mnemonic NOT wiped — partially-applied state preserved so the
+        // user can act on it (contact support, manual recovery).
+        expect(comp.newSeedPhrase).toBe(newMnemonic);
+        expect(comp.oldSeedPhrase).toBe(oldMnemonic);
+
+        warnSpy.mockRestore();
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 
