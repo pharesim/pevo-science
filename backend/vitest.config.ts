@@ -26,6 +26,9 @@ export default defineConfig(({ mode }) => {
       // connection capacity, so 3+ concurrent test files saturate it and
       // tests fail with ECONNRESET/ETIMEDOUT bursts. retry=3 absorbs the
       // residual flake when both workers happen to hit a transient drop.
+      // Paired with `tests/support/haf-query.ts queryWithRetry`'s 8-attempt
+      // exponential backoff at the query level, which absorbs most HAF
+      // ECONNRESET/ETIMEDOUT bursts within a single test attempt.
       maxWorkers: 2,
       retry: 3,
       setupFiles: ['tests/setup.ts'],

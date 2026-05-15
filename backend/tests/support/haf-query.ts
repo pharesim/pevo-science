@@ -11,7 +11,7 @@ export async function queryWithRetry<T extends QueryResultRow = QueryResultRow>(
   pool: Pool,
   sql: string,
   params: unknown[],
-  attempts = 4,
+  attempts = 8,
 ): Promise<QueryResult<T>> {
   let lastErr: unknown;
   for (let i = 0; i < attempts; i++) {
