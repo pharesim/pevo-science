@@ -782,10 +782,7 @@ describe.skipIf(!dbReachable)('signup_verify.link.failed log shape', () => {
   const TEST_PUB = TEST_KEY.createPublic().toString();
 
   function signRequestBound(method: string, fullPath: string, body: unknown, timestamp: string): string {
-    const bodyHash = cryptoUtils.sha256(JSON.stringify(body || {})).toString('hex');
-    const msg = `${config.appTag}-auth|v1|${method}|${fullPath}|${bodyHash}|${timestamp}`;
-    const msgHash = cryptoUtils.sha256(msg);
-    return TEST_KEY.sign(msgHash).toString();
+    return signRequestBoundShared(TEST_KEY, method, fullPath, body, timestamp);
   }
 
   it('fires from outer catch with event + route + err: <Error>', async () => {
