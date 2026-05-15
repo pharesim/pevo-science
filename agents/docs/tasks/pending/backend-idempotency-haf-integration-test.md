@@ -46,3 +46,72 @@ Add an integration test (or test suite) that exercises `findCustodyBroadcastById
 
 - `backend/src/lib/idempotency.ts` — the lookup functions under test.
 - `backend/tests/lib/idempotency.test.ts:9` — header overclaim that the F6 part-1 hold-block fixes alongside this task.
+
+---
+
+## Backend re-review signal (2026-05-15, working tree pre-commit)
+
+**Landed:**
+
+- `backend/tests/lib/idempotency-real-haf.test.ts` (new) — 8 `it` blocks across two `describe` blocks, one per lookup function. All `it.skipIf(!isHafConfigured())` so CI environments without HAF stay green.
+- `backend/tests/lib/idempotency.test.ts` header (Edit) — updated to point at the new file as the real-path companion (the F6 part-1 hold-block half-fix; the prior "commitment is captured by `backend-idempotency-haf-integration-test.md`" language was future-tense and stale).
+
+**Approach for HAF indexer lag:** pre-existing-fixture discovery. The test
+scans HAF for any op already carrying `idempotency_key` in the
+`config.appTag` namespace; if found, exercises the positive-hit and
+per-route-scoping assertions against that fixture; if not, `ctx.skip()`s
+the positive-hit arms (negative-miss and deterministic-non-existent-key
+scoping arms still run). Mirrors the `consent-ops-real-haf.test.ts`
+pattern (broadcast-pending skip-if-no-fixture). Documented at length in
+the test file header. Rationale: broadcasting from tests is not the
+codebase's pattern (no other test does it; all route tests mock
+`broadcastSendOperationsWithTimeout`); and the public HAF probe confirmed
+zero idempotency_key ops exist in the `pevotest` namespace yet (Option
+A.4 layer hasn't been live-broadcast). Once /broadcast traffic populates
+the field, the positive-hit assertions auto-activate without test edits.
+
+**Three acceptance scenarios — how exercised:**
+
+1. **Positive hit** — `findKnownCustodyIdempotencyOp()` /
+   `findKnownAccreditationIdempotencyOp()` probe HAF for any existing op
+   carrying `idempotency_key` in the appTag namespace; the test then
+   calls the lookup with the discovered `(author, key, surface)` triple
+   and asserts the returned `IdempotencyHit.tx_id` + `block_num` match
+   the HAF row. Currently `ctx.skip()`s because no idempotency ops exist
+   yet; auto-activates once live broadcasts populate HAF.
+2. **Negative miss** — two arms exercise the unscoped (opType undefined)
+   probe and both scoped (`opType:'comment'`, `opType:'custom_json'`)
+   probes with `crypto.randomUUID()`-derived keys, asserting `null`.
+   Plus the accreditation analogue. All four run unconditionally and
+   pass against the live HAF. (Confirmed: returns `null` end-to-end.)
+3. **Per-route scoping** —
+   - Custody: reuses the discovered fixture's `(key, surface)` but
+     queries a non-matching author; asserts `null`. Skips when no
+     fixture is available (positive baseline required).
+   - Accreditation: deterministic-non-existent-key miss exercises the
+     authority-filter path unconditionally; plus a probe for any
+     non-authority `accredit` op carrying `idempotency_key` (forged
+     poisoning attempt) — if found, asserts the lookup returns `null`
+     under that key. Vacuously true if no forged ops exist on chain
+     (the realistic case; only admin signs `accredit` in production).
+
+**Verification:**
+
+- `npx vitest run tests/lib/idempotency-real-haf.test.ts` → 5 passed, 3 skipped (positive-hit + custody scoping baseline + accreditation positive hit — all gated on no idempotency_key ops in HAF yet).
+- `npx vitest run tests/lib/idempotency.test.ts` (header-change regression) → 25 passed.
+- `npx tsc --noEmit` → clean.
+- `npx eslint tests/lib/idempotency-real-haf.test.ts tests/lib/idempotency.test.ts` → clean (no warnings/errors).
+
+**Files staged for this commit:**
+
+- `backend/tests/lib/idempotency-real-haf.test.ts` (new)
+- `backend/tests/lib/idempotency.test.ts` (header Edit)
+- `agents/docs/tasks/pending/backend-idempotency-haf-integration-test.md`
+  (re-review signal block appended; task was already unblocked on main
+  before parent dispatched the work, so no `blocked/` → `pending/` move
+  required at this point).
+
+**No code changes** to `backend/src/lib/idempotency.ts` (per task "Out of
+scope: Changing the lookup SQL queries themselves").
+
+**Architect: please mv to `review/` on intake.**

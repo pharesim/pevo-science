@@ -9,12 +9,15 @@
  * are operationally infeasible at this granularity. **The sibling route-level
  * tests in `tests/routes/{custody,accreditation}-idempotency.test.ts` ALSO
  * mock `db.js`** (per their own carve-out headers), so they are NOT the
- * real-path companion for the SQL-shape risk class. The real-path
- * commitment is captured by `backend-idempotency-haf-integration-test.md`
- * (round-2 F6 follow-up) — that task adds an integration spec that exercises
+ * real-path companion for the SQL-shape risk class. The real-path companion
+ * is `backend/tests/lib/idempotency-real-haf.test.ts`, which exercises
  * `findCustodyBroadcastByIdempotencyKey` and
  * `findAccreditationBroadcastByIdempotencyKey` against a live HAF pool so a
- * schema/view/operator regression is caught by the real-path lane.
+ * schema/view/operator regression is caught by the real-path lane (column
+ * rename on `operation_custom_json_view` / `operation_comment_view`, `?|`
+ * operator behavior change, `json::jsonb ->>` extraction regression, or
+ * `haf_operations.included_trx_id` join-shape break). That file's risk-
+ * class division is documented in its own header.
  */
 
 import { describe, it, expect, vi, afterEach } from 'vitest';
