@@ -158,4 +158,4 @@ The success-rate dashboard's denominator now counts only successes; the failure-
 - [[chain-write-timeout-ambiguous-outcome]] — sibling for `outcome:` slot semantics (success/failure/timeout); applies to the per-attempt event's `outcome` field.
 - Task: `backend-broadcast-attempt-helper-extraction` (archived 2026-05-13) — the review where this rationale was triaged.
 - Code: `backend/src/lib/broadcast-error.ts` — `makeLogBroadcastAttempt` factory + `handleBroadcastError` co-located.
-- Follow-up task `backend-broadcast-idempotency-cluster-followup.md` — `attempt_n` per-key counter lands on the per-attempt event when idempotency cluster ships.
+- Per-key retry counter (TODO): not yet implemented. The factory at `backend/src/lib/broadcast-error.ts:makeLogBroadcastAttempt` deliberately omits `attempt_n` until a per-key counter mechanism exists. See [[task-slug-citations-in-comments-go-stale-on-archive]] for why this is anchored on a behavioral condition rather than a task slug.

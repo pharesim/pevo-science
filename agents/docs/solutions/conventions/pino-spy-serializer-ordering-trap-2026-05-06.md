@@ -208,6 +208,41 @@ mockRedis.eval.mockRejectedValueOnce(
 
 The same principle applies to `AssertionError` (`actual`/`expected`/`operator` properties), VError (`info`/`jse_info`/`jse_shortmsg`/`jse_cause`), and dhive errors. Use a 64-hex-shaped token in the fixture so the negative regex has actual surface — a 16-hex stub passes vacuously.
 
+**Use distinct per-field markers when fields may leak independently.** A common shape for VError / dhive errors stamps the same string onto multiple fields (`err.message === err.jse_shortmsg === opts.shortmsg`, and `err.cause.message === err.jse_cause === opts.cause`). A fixture that reuses one value per field-pair has two failure modes:
+
+1. When `not.toContain(SHORT)` fails, the test can't tell WHICH field leaked — `message`, `jse_shortmsg`, or both — because they share the value.
+2. A regression that correctly strips one field but leaks the other passes spuriously: the surviving leaked field still matches the assertion's expected string, so `not.toContain(SHORT)` doesn't fire.
+
+Fix: give each potentially-leaking field its own unique marker, and assert against each marker independently:
+
+```ts
+function makeDhiveLikeError(opts: { shortmsg: string; cause: string; ... }) {
+  // Per-field markers — caller may pin them or accept the auto-generated default.
+  const messageMarker      = opts.messageMarker      ?? `${opts.shortmsg}::message`;
+  const jseShortMsgMarker  = opts.jseShortMsgMarker  ?? `${opts.shortmsg}::jse_shortmsg`;
+  const causeMessageMarker = opts.causeMessageMarker ?? `${opts.cause}::cause_message`;
+  const jseCauseMarker     = opts.jseCauseMarker     ?? `${opts.cause}::jse_cause`;
+
+  const err = Object.assign(new Error(messageMarker), {
+    jse_shortmsg: jseShortMsgMarker,
+    jse_cause:    jseCauseMarker,
+    cause: new Error(causeMessageMarker),
+  });
+  // Surface the markers on the returned object so test sites don't re-derive them.
+  return Object.assign(err, { messageMarker, jseShortMsgMarker, causeMessageMarker, jseCauseMarker });
+}
+
+// In a test:
+const dhiveErr = makeDhiveLikeError({ shortmsg: 'SHORT', cause: 'CAUSE' });
+// ... drive the leak surface ...
+expect(JSON.stringify(res.body)).not.toContain(dhiveErr.messageMarker);
+expect(JSON.stringify(res.body)).not.toContain(dhiveErr.jseShortMsgMarker);
+expect(JSON.stringify(res.body)).not.toContain(dhiveErr.causeMessageMarker);
+expect(JSON.stringify(res.body)).not.toContain(dhiveErr.jseCauseMarker);
+```
+
+Now each field's leak path is independently asserted. A regression that strips three of four fields fails on the fourth's marker, naming the surviving leak. Belt-and-braces: keep the original coarse `not.toContain(SHORT)` assertion alongside the per-field markers — a future caller that doesn't pin markers and lets the auto-generated defaults handle it still has the shortmsg substring as a backstop.
+
 ## Related
 
 - [`defensive-recursive-serializer-and-pino-err-redact-policy-2026-05-11.md`](./defensive-recursive-serializer-and-pino-err-redact-policy-2026-05-11.md) — the recursive serializer pattern (`safeRedactErr`, depth guard, plain-object branch, element-wise array recursion) that the wrapper in the present doc invokes; documents the canonical `redactErrSerializer` shape this doc's wrapper layer depends on.

@@ -110,6 +110,53 @@ The failure is particularly deceptive because:
 
 The inverse also applies: if you need to assert that a function does NOT mutate an argument (as in the option-2 documentary contract), variant (b) is the clearest expression — pass a known reference, call the real function with output suppressed, then assert the reference was not changed.
 
+### Save/restore vs `mockImplementationOnce` when the mock is shared with sibling middleware/helpers
+
+A related but distinct pattern: a single test wants to swap a mock's implementation for ONE call and then restore the original, but `mockImplementationOnce` won't work because a sibling (middleware, helper, beforeEach setup) calls the same mock first and consumes the once-implementation before the function under test gets there.
+
+**The failure mode.** `appQueryMock.mockImplementationOnce(() => { throw new Error('boom') })` is naively scoped to "the next call to appQueryMock." But Express middleware on the route (session-invalidation lookup, auth check, rate limiter) also calls `appQueryMock` before reaching the route handler. The middleware's call consumes the once-implementation, so the handler sees the default implementation and the test exercises the wrong code path — silently passing on the wrong branch.
+
+This pattern is common in any test setup where:
+- A shared mock (`appQueryMock`, `redisMock`, a logger spy) is wired in `beforeEach` with a default implementation.
+- Middleware or helpers on the route under test invoke that mock before the function-under-test does.
+- A specific test wants to throw or return a particular value on the function-under-test's call only.
+- `beforeEach` uses `mockClear()` (not `mockReset()`), so the default implementation survives between tests but call counts reset.
+
+**The fix.** Hoist the default implementation as a module-scope `const`, then save-and-restore unconditionally via `try/finally`:
+
+```ts
+// At module scope:
+const DEFAULT_APP_QUERY_IMPL: typeof appQueryMock['_mockImplementation'] = (sql, params) => {
+  // ... the production-like default ...
+};
+
+beforeEach(() => {
+  appQueryMock.mockClear();
+  appQueryMock.mockImplementation(DEFAULT_APP_QUERY_IMPL);
+});
+
+it('outer catch fires when pool.query throws', async () => {
+  appQueryMock.mockImplementation(() => { throw new Error('db unavailable') });
+  try {
+    const res = await request(app).post('/route').send(payload);
+    expect(res.status).toBe(500);
+    expect(res.body.code).toBe('INTERNAL_ERROR');
+  } finally {
+    appQueryMock.mockImplementation(DEFAULT_APP_QUERY_IMPL); // unconditional restore
+  }
+});
+```
+
+**Why unconditional restore (not `if (savedImpl)`).** A natural-looking shape is `const savedImpl = appQueryMock.getMockImplementation(); ... finally { if (savedImpl) appQueryMock.mockImplementation(savedImpl); }`. The guard looks defensive, but `getMockImplementation()` returns `undefined` when the module-load impl has been wiped (which `mockReset` does, even though `mockClear` doesn't). The guard then silently skips the restore, letting the throw-impl leak into sibling specs. If a future `beforeEach` switch from `mockClear` to `mockReset` lands, the leak appears with no test-output signal.
+
+Capturing the intended default as a named module-scope `const` and restoring from that reference unconditionally eliminates the guard's silent-skip path. The test's discipline becomes independent of whether the module-load impl survives `beforeEach` — the named const always resolves.
+
+**Why not `mockImplementationOnce`.** Two pitfalls:
+1. **Consumed by the sibling.** Middleware/helper that calls the same mock first consumes the once-impl. The function under test sees the default. Silent wrong-branch test.
+2. **Order coupling.** Even if the middleware doesn't call the mock today, a future middleware addition that hits it would silently break this test — same wrong-branch symptom, no failure signal. `mockImplementationOnce` couples test correctness to middleware call order in a way that's invisible at the call site.
+
+**When `mockImplementationOnce` IS appropriate.** When the mock is exclusively called by the function-under-test (no middleware, no shared helpers), `mockImplementationOnce` is fine and slightly cleaner than save/restore. Verify the call-graph exclusivity before choosing it.
+
 ## Examples
 
 **Before (broken — `mockImplementation` disables the mutation, making the ratchet vacuous):**
