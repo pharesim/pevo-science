@@ -90,7 +90,7 @@ Do NOT apply when:
 Existing mocked-spy coverage in `backend/tests/account-creation.test.ts` pins:
 
 - `cacheKey` literal, `event` slug literal, `err: expect.any(Error)`, `warn` log level (cache-del site).
-- `event` slug literal, `err: consensusErr` original reference, `warn` log level, `warn`-BEFORE-`throw` ordering via spy call order, both regex arms positively covered, negative-pin guard against the over-broad pre-tightening regex (consensus-rejection site).
+- `event` slug literal, `err: consensusErr` original reference, `warn` log level, `warn`-BEFORE-`throw` ordering pinned by spy-was-called assertion (a mutation moving `warn` after the subsequent `throw` would suppress the call entirely, failing the spy check; no explicit `mock.invocationCallOrder` assertion is required), both regex arms positively covered for the throw-translation behavior with the warn-log assertion landing on arm 1 (source structure places `warn` outside any arm-specific branch, so a single positive assertion plus the negative-pin guard kills the slug+level+err mutations on both arms), negative-pin guard against the over-broad pre-tightening regex (consensus-rejection site).
 
 Real-path companion analysis:
 
@@ -108,5 +108,5 @@ A logger-spy test pinning `event: 'rate_limit.exceeded'` on `vi.spyOn(logger, 'w
 - `agents/docs/solutions/conventions/test-mock-carve-out-clause-c-2026-05-04.md` — definitional doc for clause (c) risk-class equivalence; lists carve-out-eligible mock targets. This doc complements that one by documenting the dismissal half of the "real-path OR follow-up task" alternative.
 - `agents/docs/solutions/conventions/mock-guard-assertion-must-verify-call-shape-2026-04-21.md` — when the mocked test under audit uses a `mockImplementation` predicate guard, the in-mock assertion shape must hold up under the fallback path; verify before considering dismissal.
 - `agents/docs/solutions/conventions/auth-structured-log-shape-2026-04-29.md` — structured log shape conventions used by the warn-logs that triggered this dismissal (event-slug naming, field set, log-level discipline).
-- `agents/docs/tasks/pending/backend-account-creation-logger-spy-real-path-companion.md` — the originating task; closed by this dismissal.
-- `agents/docs/tasks/review/backend-account-creation-tokens-drop.md` — the parent task whose round-2/3 hold-fixes added the two warn-logs and triggered the clause (c) gap audit.
+- `agents/docs/tasks-archive.md` under `BACKEND-ACCOUNT-CREATION-LOGGER-SPY-REAL-PATH-COMPANION` (archived 2026-05-15 by this dismissal) — the originating task. Per `CLAUDE.md` rule #7 the per-task file is `git rm`'d at archive and only the archive entry survives; the 250-line trim will eventually evict the entry, after which git history (commits up to and including the dismissal commit) is the audit-trail of record.
+- Parent task `BACKEND-ACCOUNT-CREATION-TOKENS-DROP` — round-2/3 hold-fixes at commit `3736932` (slug-renamed in round-3) added the two warn-logs and triggered the clause (c) gap audit. Currently in `agents/docs/tasks/review/`; will archive separately.
