@@ -357,7 +357,7 @@ router.post('/request', verifyHiveSignature, accreditationRequestLimiter, valida
           route: 'accreditation.request',
           username: hive_username,
           email_hash: hashEmailForLogs(email),
-          err: mailErr,
+          err: mailErr instanceof Error ? mailErr : new Error(String(mailErr)),
         },
         'Failed to send verification email',
       );
@@ -916,7 +916,11 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
 setInterval(() => {
   cleanupExpiredTokens().catch((err) => {
     logger.error(
-      { event: 'accreditation.cleanup.failed', route: 'accreditation.cleanup', err },
+      {
+        event: 'accreditation.cleanup.failed',
+        route: 'accreditation.cleanup',
+        err: err instanceof Error ? err : new Error(String(err)),
+      },
       'Failed to cleanup expired accreditation tokens',
     );
   });

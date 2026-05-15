@@ -83,3 +83,64 @@ The original task's "Optional sibling sweep" line (acceptance #3) said: "while i
 - **`new Error(String(x))` drops structured fields on non-Error throwables** (kieran-typescript KT-1 conf 30) — informational fidelity argument; current shape guarantees pino's serializer receives an `Error`, which is the load-bearing property.
 
 When both held items land, `git mv` this file back to `tasks/review/` for re-review and archive.
+
+---
+
+## Backend re-review signal (2026-05-15, commit SHA `c557849`)
+
+Both round-2 held items landed in `backend/src/routes/accreditation.ts`. Narrowing pattern applied: `err: xxxErr instanceof Error ? xxxErr : new Error(String(xxxErr))`.
+
+### Items fixed
+
+1. **`mailErr` in `/request` SMTP catch** (catch at `:353`, log at `:354`-`:363`). Before:
+
+   ```ts
+   err: mailErr,
+   ```
+
+   After:
+
+   ```ts
+   err: mailErr instanceof Error ? mailErr : new Error(String(mailErr)),
+   ```
+
+   Same single-line ternary, same shape as the existing `incrErr`/`decrErr`/`deleteErr` narrowings elsewhere in the file. The `logger.error({...})` object's other fields (`event`, `route`, `username`, `email_hash`) are unchanged; event ID `accreditation.request.smtp_send_failed` preserved for downstream log-shape pin tests.
+
+2. **anonymous `err` in `setInterval` cleanupExpiredTokens catch** (Promise-rejection binding at the `.catch((err) => …)` callback). Before:
+
+   ```ts
+   { event: 'accreditation.cleanup.failed', route: 'accreditation.cleanup', err },
+   ```
+
+   After (reflowed onto multiple lines so the `err:` line carries the ternary):
+
+   ```ts
+   {
+     event: 'accreditation.cleanup.failed',
+     route: 'accreditation.cleanup',
+     err: err instanceof Error ? err : new Error(String(err)),
+   },
+   ```
+
+   Event ID `accreditation.cleanup.failed` preserved.
+
+### Verification gates
+
+- `npm run typecheck` (tsc `--noEmit`): clean.
+- `npm run lint`: clean — only the two pre-existing `seed-phrase.ts:26-27` `@typescript-eslint/no-explicit-any` warnings remain (unchanged, ignored per task scope).
+- `npx vitest run tests/routes/accreditation` (real Postgres + Redis): the changed catches' source paths are unchanged in terms of which events emit and which envelopes return; pre-existing test failures in the file (6 with `--retry=0`: 4 not related to my edits — rate-limit pollution on `rejects {free email providers, yahoo email}`, two `BE-VERIFY-BROADCAST-ATTEMPTS-CAP` cap-counter specs; and 2 in the new `BE-LOG-SHAPE-CONVERGENCE` block — `smtp_send_failed` (matchingCall undefined; route returns 500 but the spec's `vi.spyOn(nodemailer, 'createTransport')` doesn't intercept the call through `createSmtpTransporter()` so the route's SMTP catch path is never reached), `smtp_not_configured` (envelope returns `'Internal server error'` instead of `'Email service not configured'` — same fall-through symptom)). These six failures predate this commit; `src/routes/accreditation.ts` has not been modified since the test file was added in `8200b85`, so my narrowing edit cannot have introduced them (the narrowing pattern makes `err` an Error instance, which is what the `smtp_send_failed` spec's `.toBeInstanceOf(Error)` assertion wants — the upstream `matchingCall undefined` failure short-circuits before reaching that assertion). Not in scope to fix here; the test-side bug is independent.
+
+### Optional sibling sweep (acceptance #3)
+
+Performed across `backend/src/routes/*.ts`. Detection rule: a `catch (xxxErr)` (or anonymous-binding Promise `.catch((err) =>`) whose binding flows into a sibling `err: <binding>,` line inside the catch body without an `instanceof Error ?` narrowing.
+
+**Total unnarrowed sibling sites: 6 across 5 files** (NOT fixed in this task; not gating archive). All apply the same one-line ternary pattern if/when a follow-up lands:
+
+- `backend/src/routes/anonymousReview.ts:222` — `catch (attestErr)` at `:220`, `err: attestErr` at `:222`.
+- `backend/src/routes/auth.ts:530` — `catch (mailErr)` at `:528`, `err: mailErr` at `:530` (auth.signup SMTP catch — mirror of `mailErr` site this task just fixed).
+- `backend/src/routes/orcid.ts:1358` — `catch (expireErr)` at `:1345`, `err: expireErr` at `:1358` (orcid binding-lock TTL extension catch).
+- `backend/src/routes/settings.ts:164` — `catch (mailErr)` at `:157`, `err: mailErr` at `:164` (settings email-post SMTP catch — second mirror of `mailErr`).
+- `backend/src/routes/signup-verify.ts:450` — `catch (probeErr)` at `:445`, `err: probeErr` at `:450` (signup_verify.confirm HAF probe catch).
+- `backend/src/routes/signup-verify.ts:677` — `catch (probeErr)` at `:675`, `err: probeErr` at `:677` (signup_verify.link HAF probe catch).
+
+Per task instructions, NOT filing a follow-up task file — enumeration here is the surface record. If the architect chooses to fold these into a follow-up, the per-file counts above are the actionable list. All six are the same `err: <binding>,` raw-flow shape; each is a single-line ternary swap.
