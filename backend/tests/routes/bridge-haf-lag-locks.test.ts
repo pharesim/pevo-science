@@ -489,6 +489,16 @@ describe('BE-BRIDGE-WRITE-HAF-LAG — /check fail-open on HAF outage (round-2 ho
       expect(matchingCall, 'expected a logger.warn call with event=bridge.check.haf_check_failed').toBeDefined();
       const ctx = matchingCall![0] as Record<string, unknown>;
       expect(ctx.route).toBe('bridge.check');
+
+      // Round-3 hold item #1: mutation-kills round-2 item 2's invariant
+      // that the `haf_unavailable` sentinel never lands in the 30s cache.
+      // A regression re-introducing `hafCache.getOrSet(...)` wrapping or
+      // calling `hafCache.set` on the haf_unavailable branch would write
+      // the QueryCache-prefixed key into fakeRedis.store. The expected
+      // shape matches `hafCache`'s prefix (`${config.appTag}:cache:`)
+      // concatenated with the route-side cache key
+      // (`bridge-check:${parsed.type}:${parsed.id}`).
+      expect(fakeRedis.store.has(`${config.appTag}:cache:bridge-check:arxiv:2301.99999`)).toBe(false);
     } finally {
       warnSpy.mockRestore();
     }

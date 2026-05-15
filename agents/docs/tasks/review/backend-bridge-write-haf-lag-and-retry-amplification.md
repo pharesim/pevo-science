@@ -287,3 +287,29 @@ Architect-zone parallel work landed in commit `938af54` (separate from this hold
 ### Re-review signal
 
 When items 1-4 land in a single round-3 commit, `git mv` this file back to `tasks/review/`. Architect's round-3 review scopes `/ce-code-review` to the round-3 commit only. Items 1-4 are localized to 3 files: `backend/src/routes/bridge.ts` (items 2, 3, 4 — docblock rewrite + signature change + message string), `backend/tests/routes/bridge-haf-lag-locks.test.ts` (item 1 — assertion). Total diff ~15-20 LOC of source + ~5 LOC of test assertion. Expect convergence at round-3 and archive immediately after, at which point the architect lands followups A1, A2, and A3 in separate architect-zone commits.
+
+---
+
+## Backend re-review signal (2026-05-15, round-3 hold-fixes)
+
+All four round-3 hold items landed in a single commit. Scoped vitest (`bridge-haf-lag-locks.test.ts` + `bridge.test.ts` + `bridge-paper-author-gate.test.ts`) all green (3 + 13 + 17 = 33 specs); `npm run lint` clean (preexisting `seed-phrase.ts` `any` warnings unchanged); `npx tsc --noEmit` clean.
+
+### Item 1 — `/check` fail-open cache-key-absence assertion
+
+`backend/tests/routes/bridge-haf-lag-locks.test.ts:494-502` — added `expect(fakeRedis.store.has(...)).toBe(false)` for the appTag-prefixed `cache:bridge-check:arxiv:2301.99999` key inside the existing `/check fail-open on HAF outage (round-2 hold item #8)` describe block. The key shape matches `hafCache`'s `${config.appTag}:cache:` prefix concatenated with the route-side cache key (`bridge-check:${parsed.type}:${parsed.id}`). Mutation-kills round-2 item 2's invariant: a regression re-introducing `hafCache.getOrSet(...)` wrapping or calling `hafCache.set` on the `haf_unavailable` branch would write the prefixed key and fail this assertion.
+
+### Item 2 — `logBroadcastAttempt` docblock rewrite
+
+`backend/src/routes/bridge.ts:474-481` — replaced the stale `backend-broadcast-idempotency-cluster-followup.md` reference and "lands the real per-key counter" framing with the custody.ts round-3 framing: idempotency layer landed (HAF dedup + tx_id replay short-circuit), per-attempt counter intentionally not added, slot stays absent until a per-key counter mechanism exists. Mirrors the `custody.ts:507-516` framing one-for-one.
+
+### Item 3 — Drop `callerLabel` default value
+
+`backend/src/routes/bridge.ts:215` — `callerLabel: 'bridge.register' | 'bridge.check'` (no default). Both call sites (`/check` at `:309` after the docblock additions and `/register` at `:432`) already pass explicitly. TS surfaced a follow-on constraint: `callerLabel` (now required) cannot follow `resolvedParsed?` (optional). Resolved by dropping `?` from `resolvedParsed` (line 210). Both call sites already pass `parsed` non-null after the route's early-400 guard, so the change is safe. The `?? parseIdentifier(identifier)` defensive fallback inside `checkExistingBridge` stays in place for the `null` case.
+
+### Item 4 — Generalize HAF-failure warn log message
+
+`backend/src/routes/bridge.ts:271-277` — message string changed from `'Bridge check HAF query failed — failing closed, surfacing 503 to caller'` to `'Bridge HAF query failed; route field carries fail-open vs. fail-closed disposition'`. Now disposition-neutral and accurate for both `/register` (fail-closed → 503) and `/check` (fail-open → 200) call paths. Operator dashboards key on structured fields (`event`, `route`), not message text. Verified at runtime in the test output: both the `/register` HAF-throw test and the `/check` HAF-throw test now emit the new message with the appropriate `route` field discriminator.
+
+### Notes on the architect-zone items
+
+The "Architect followups (A1, A2, A3) at archive" section is unchanged. Item 5 from round-2 (mock carve-out clause C) was historically true at `8f81492` but currently moot per the architect's dismissal in this round-3 hold block — clause C is satisfied via the orcid real-Redis SETNX-contention test cited in the test-file header (`orcid.test.ts:1040`).

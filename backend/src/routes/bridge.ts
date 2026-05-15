@@ -201,13 +201,20 @@ type BridgeCheckResult =
 
 async function checkExistingBridge(
   identifier: string,
-  resolvedParsed?: { type: 'arxiv' | 'doi'; id: string } | null,
+  // Round-3 hold item #3: required (not optional). Both callers always pass
+  // the result of `resolveToCanonical`, and a required positional precedes the
+  // required `callerLabel` below, so the parameter list parses cleanly under
+  // strict TS. Defensive null-handling stays in place via the `??` fallback.
+  resolvedParsed: { type: 'arxiv' | 'doi'; id: string } | null,
   // Round-2 hold item #4: thread the caller label so the HAF-failure warn log
   // emits route: 'bridge.check' when called from /check and route:
   // 'bridge.register' when called from /register. Without this, the
   // route-keyed operator-dashboard filter on `route: 'bridge.register'`
-  // false-alerts on every /check HAF blip.
-  callerLabel: 'bridge.register' | 'bridge.check' = 'bridge.register',
+  // false-alerts on every /check HAF blip. Round-3 hold item #3: no default
+  // value — the literal-union forces every new call site to pick a label
+  // explicitly so a future caller can't silently inherit 'bridge.register'
+  // and reintroduce the false-alert this parameter was added to prevent.
+  callerLabel: 'bridge.register' | 'bridge.check',
 ): Promise<BridgeCheckResult> {
   const parsed = resolvedParsed ?? parseIdentifier(identifier);
   if (!parsed || (parsed.type !== 'arxiv' && parsed.type !== 'doi')) {
@@ -266,7 +273,12 @@ async function checkExistingBridge(
     // `route: 'bridge.register'` don't false-alert on /check HAF blips.
     logger.warn(
       { err, identifier, permlink, event: `${callerLabel}.haf_check_failed`, route: callerLabel },
-      'Bridge check HAF query failed — failing closed, surfacing 503 to caller',
+      // Round-3 hold item #4: route field carries the fail-open vs.
+      // fail-closed disposition; this path fires from /register (fail-closed
+      // → 503) AND /check (fail-open → 200) so the human-readable message
+      // stays disposition-neutral. Operator dashboards key on structured
+      // fields, not message text.
+      'Bridge HAF query failed; route field carries fail-open vs. fail-closed disposition',
     );
     return { status: 'haf_unavailable' };
   }
@@ -471,11 +483,14 @@ router.post('/register', registerLimiter, verifyHiveSignature, async (req: Reque
     // factory enforces level-dispatch + spread-after-literal symmetry with
     // the custody site; only the event-label literal differs.
     //
-    // `attempt_n` is INTENTIONALLY OMITTED here too — same rationale as the
-    // custody site (a hardcoded `attempt_n: 1` would silence retry-
-    // amplification dashboards keyed on the field). The field returns when
-    // `backend-broadcast-idempotency-cluster-followup.md` lands the real
-    // per-key counter.
+    // `attempt_n` is INTENTIONALLY OMITTED here, same rationale as the
+    // custody site. The idempotency layer landed (HAF dedup + tx_id replay
+    // short-circuit), but that arc did NOT add a per-attempt counter. A
+    // hardcoded `attempt_n: 1` would silently report "no retries" to
+    // dashboards keyed on the field for retry-amplification alerts, masking
+    // the very signal the alert exists to surface. The slot stays absent
+    // until a per-key counter mechanism exists; alerts fire on missing-field
+    // rather than reading a constant 1 as ground truth.
     const op_types = ['comment', 'comment_options'];
     const op_count = op_types.length;
     const logBroadcastAttempt = makeLogBroadcastAttempt(
