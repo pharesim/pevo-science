@@ -420,7 +420,7 @@ router.post('/confirm', confirmLimiter, async (req: Request, res: Response) => {
         timeoutMsg: `Broadcasting accreditation timed out. ${recoveryHint}`,
         failMsg: `Failed to broadcast accreditation to Hive. ${recoveryHint}`,
         logContext: {
-          email_hash: safeHashEmailForLogs(account.email) ?? undefined,
+          email_hash: safeHashEmailForLogs(account.email),
           username: normalizedUsername,
           orcid: account.orcid ?? undefined,
           resume_stuck: resumeStuck,
@@ -655,7 +655,7 @@ router.post('/link', linkLimiter, verifyHiveSignature, async (req: Request, res:
         timeoutMsg: `Broadcasting accreditation timed out. ${recoveryHint}`,
         failMsg: `Failed to broadcast accreditation to Hive. ${recoveryHint}`,
         logContext: {
-          email_hash: safeHashEmailForLogs(account.email) ?? undefined,
+          email_hash: safeHashEmailForLogs(account.email),
           username: hiveUsername,
           orcid: account.orcid ?? undefined,
           resume_stuck: resumeStuck,

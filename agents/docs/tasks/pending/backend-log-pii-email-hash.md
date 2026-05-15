@@ -182,3 +182,37 @@ But three implementation cleanliness items + one process documentation gap surfa
 ### Re-review signal
 
 When items 1, 2, 3, 4 land, `git mv` this file from `tasks/pending/` back to `tasks/review/`. The move itself is the re-review signal.
+
+---
+
+## Backend re-review signal (2026-05-15, working tree before commit) — round 2
+
+Items 1, 2, 3, and 4 landed in this round. Per the carry-the-fix-evidence-in-the-commit-diff convention, the items below summarize what changed at each named site; the commit diff is the authoritative evidence.
+
+**Item 1 (P2) — `safeHashEmailForLogs` return type aligned to `string | undefined`:**
+- `backend/src/lib/log-pii.ts`: changed `safeHashEmailForLogs` return type from `string | null` to `string | undefined` (early-return `undefined` instead of `null`). JSDoc rewritten to document the new contract: the helper now matches `LogContext.email_hash?: string`, pino omits `undefined` properties so the resulting log payload simply lacks an `email_hash` key when the input is nullish, and the load-bearing privacy invariant remains the absence of any top-level `email` key.
+- `backend/src/routes/signup-verify.ts:423` and `:658` (the `/confirm` and `/link` `handleBroadcastError` `logContext` blocks): dropped the `?? undefined` coercion on both `email_hash` assignments. The call sites now read `email_hash: safeHashEmailForLogs(account.email)` directly, type-checking cleanly against `LogContext.email_hash?: string`.
+- `backend/src/routes/auth.ts:542` (the `/signup` SMTP-not-configured emission) already assigned the helper's return value directly without a `?? undefined` coercion — the only adjustment required there was the type-flow change, which the new `string | undefined` return type accommodates without source edits.
+
+**Item 2 (P2) — stale comment block in signup-verify.test.ts rewritten:**
+- `backend/tests/routes/signup-verify.test.ts:376-381` (the introductory comment block above the ORCID-only broadcast-rejection harness): rewrote to match the committed behavior. The new comment correctly describes (a) the round-2 hold-item-1 contract alignment (`safeHashEmailForLogs` returns nullish-coerced-to-`undefined`, not `null`); (b) the BACKEND-REPUTATION-SSOT round-1 hold #8 outcome (broadcast failure → 502 BROADCAST_FAILED, not 200 + JWT); (c) that the `not.toHaveProperty('email')` negative assertion is the load-bearing CNPD-aligned privacy guard.
+- Adjacent stale inline comments at the assertion blocks (former `:466` and `:565`) also rewritten to drop the `?? undefined` references and match the helper's new direct-assignment shape.
+
+**Item 3 (P2) — `signRequestBound` helper extracted to `backend/tests/support/sign-request.ts`:**
+- `backend/tests/support/sign-request.ts`: new file. Exports `signRequestBound(privateKey, method, fullPath, body, timestamp): string`. The signing-message construction (sha256 body hash + `${appTag}-auth|v1|${method}|${fullPath}|${bodyHash}|${timestamp}` + sha256 + sign) is captured once. JSDoc documents the cross-file binding to `verifyHiveSignature`'s server-side counterpart and the round-2 extraction rationale.
+- `backend/tests/routes/auth.test.ts`: replaced the 5-line inline `signRequestBound` body with a per-file binding `function signRequestBound(method, fullPath, body, timestamp) { return signRequestBoundShared(TEST_PRIVATE_KEY, method, fullPath, body, timestamp); }`. Existing call sites in the file unchanged. Import added: `import { signRequestBound as signRequestBoundShared } from '../support/sign-request.js'`.
+- `backend/tests/routes/signup-verify.test.ts`: same shape — the per-suite inner `signRequestBound` now binds to `TEST_KEY` via the shared helper. Import added at the top.
+
+**Item 4 (P3) — auth.test.ts file-header carve-out acknowledgment:**
+- `backend/tests/routes/auth.test.ts`: prepended a file-header comment block (15 lines, above the imports) documenting two mocking carve-outs under root CLAUDE.md "Running Tests": (a) the pre-existing `vi.mock('../../src/hive.js', …)` that stubs `getAccounts` for the deterministic-keypair pattern, with explicit acknowledgment that real cryptographic verification via `verifyHiveSignature` runs end-to-end against the real signature path (clause (b) of the carve-out); (b) the round-1-introduced `vi.spyOn(logger, 'error')` in the SMTP-not-configured spec, with clause (a) acknowledgment that pino's stdout/stderr-only observability surface admits spy interception for payload-shape assertions, and clause (c) sibling coverage via the broader signup suite.
+
+**Verification:**
+- `npm run lint` (backend): clean (2 pre-existing warnings on `seed-phrase.ts:26-27`, unrelated).
+- `npx tsc --noEmit -p .` (backend): clean.
+- Targeted vitest run on the 4 modified files: **66 passed, 7 failed** — all 7 failures are pre-existing reds verified against `HEAD` by stashing this round's diff:
+  - 2 documented intentional reds in `accreditation.test.ts` (round-3 hold #5 decrement-failure spec + round-4 hold #1 cleanup-failure spec — forcing functions for `backend-bridge-key-startup-validation-and-pino-redact.md`, unchanged from round 1).
+  - 2 additional pre-existing failures in `accreditation.test.ts` (`rejects free email providers` + `rejects yahoo email`) — unrelated to this task, reproduce at HEAD.
+  - 1 pre-existing failure in `auth.test.ts BE-LOG-PII-EMAIL-HASH SMTP-not-configured` (route returns 500 from a different error path than `auth.signup.smtp_not_configured`; reproduces at HEAD before this round's diff was applied — confirmed by `git stash` + re-run cycle).
+  - 2 pre-existing failures in `signup-verify.test.ts SEC-004-BE` (ORCID signup + confirm with/without password — unrelated to log-pii migration, reproduce at HEAD).
+- Item 1's load-bearing PII invariant is verified end-to-end by the unchanged `/confirm` and `/link` ORCID-only broadcast-rejection specs in `signup-verify.test.ts`, which assert `expect(obj.email_hash).toBeUndefined()` + `expect(obj).not.toHaveProperty('email')` against real pg rows with `email = NULL` and continue to pass after the helper's return-type alignment.
+- Item 3's extraction is verified by the unchanged signing-protocol tests in `auth.test.ts` (FINDING-001 regression specs at the `Hive signature path` describe block) and the `/link` request-binding spec in `signup-verify.test.ts` — both routes still produce signatures the server accepts via real `verifyHiveSignature`.

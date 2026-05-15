@@ -1,3 +1,18 @@
+// Mocking carve-out acknowledgments (root CLAUDE.md "Running Tests"):
+//   - `vi.mock('../../src/hive.js', …)` below stubs `getAccounts` to publish
+//     TEST_PUBLIC_KEY for TEST_USERNAME. Real cryptographic verification via
+//     `verifyHiveSignature` runs end-to-end against deterministic signatures
+//     produced by `signRequestBound` (see clause (b): auth-focused tests use
+//     real signature verification, not the MOCK_VERIFY_SIGNATURE fixture).
+//   - `vi.spyOn(logger, 'error')` is used in the SMTP-not-configured spec
+//     (BE-LOG-PII-EMAIL-HASH item 2b) to assert structured log payload shape
+//     (observability surface; pino writes to stdout/stderr without a
+//     testable return value, so spy interception is the only deterministic
+//     anchor for payload-shape assertions). Risk class — accidental
+//     plaintext-email leak in operator logs — is also exercised by real-path
+//     signup specs that go through the same code path. Per root CLAUDE.md
+//     carve-out clause (a) (observability surface, clause-(c) sibling
+//     coverage in the broader signup suite).
 import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
 import request from 'supertest';
 import jwt from 'jsonwebtoken';
@@ -9,6 +24,7 @@ import { config } from '../../src/config.js';
 import { logger } from '../../src/logger.js';
 import { getAppPool } from '../../src/app-db.js';
 import { clearRateLimitKeys } from '../support/redis-helpers.js';
+import { signRequestBound as signRequestBoundShared } from '../support/sign-request.js';
 
 // Generate a deterministic test keypair and mock the Hive client so the
 // middleware's on-chain account lookup returns this public key for the
@@ -53,11 +69,11 @@ let dbReachable = false;
   }
 }
 
+// Per-file binding of the shared helper to TEST_PRIVATE_KEY. The signing
+// protocol is implemented once in `../support/sign-request.ts`
+// (BE-LOG-PII-EMAIL-HASH round-2 hold item 3).
 function signRequestBound(method: string, fullPath: string, body: unknown, timestamp: string): string {
-  const bodyHash = cryptoUtils.sha256(JSON.stringify(body || {})).toString('hex');
-  const msg = `${config.appTag}-auth|v1|${method}|${fullPath}|${bodyHash}|${timestamp}`;
-  const msgHash = cryptoUtils.sha256(msg);
-  return TEST_PRIVATE_KEY.sign(msgHash).toString();
+  return signRequestBoundShared(TEST_PRIVATE_KEY, method, fullPath, body, timestamp);
 }
 
 describe('POST /api/auth/session', () => {

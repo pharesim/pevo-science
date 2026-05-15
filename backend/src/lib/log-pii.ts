@@ -41,8 +41,9 @@ export function hashEmailForLogs(email: string): string {
 }
 
 /**
- * Nullable-input companion to `hashEmailForLogs`. Returns `null` when the
- * input is `null` or `undefined`, otherwise delegates to `hashEmailForLogs`.
+ * Nullable-input companion to `hashEmailForLogs`. Returns `undefined` when
+ * the input is `null` or `undefined`, otherwise delegates to
+ * `hashEmailForLogs`.
  *
  * ORCID-only signups insert `accounts.email = NULL` (the user authenticated
  * via ORCID without supplying an email). Routes that catch errors after
@@ -52,11 +53,20 @@ export function hashEmailForLogs(email: string): string {
  * log call site where the underlying column is nullable. Reserve the strict
  * `hashEmailForLogs` for sites where the email is provably non-null (e.g.,
  * accreditation `pending_accreditations.email NOT NULL`).
+ *
+ * Return type is `string | undefined` (not `string | null`) to match the
+ * shape consumed by `LogContext.email_hash?: string` and the project-wide
+ * convention of using `undefined` for "absent" structured-log fields. This
+ * lets call sites assign the return value directly without a `?? undefined`
+ * coercion. Pino omits `undefined` properties from emitted JSON, so the
+ * resulting log payload simply lacks an `email_hash` key when the input is
+ * nullish — the load-bearing privacy invariant is the absence of any
+ * top-level `email` key, not the literal value of `email_hash`.
  */
 export function safeHashEmailForLogs(
   email: string | null | undefined,
-): string | null {
-  if (email == null) return null;
+): string | undefined {
+  if (email == null) return undefined;
   return hashEmailForLogs(email);
 }
 

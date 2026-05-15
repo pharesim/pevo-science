@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest';
 import request from 'supertest';
-import { PrivateKey, cryptoUtils } from '@hiveio/dhive';
+import { PrivateKey } from '@hiveio/dhive';
+import { signRequestBound as signRequestBoundShared } from '../support/sign-request.js';
 
 // Mock chain-broadcasting bits before createApp() so the confirm flow does not
 // hit the real Hive network. We still use the real argon2, real pg pool, and
@@ -373,12 +374,21 @@ describe.skipIf(!dbReachable)('BE-AUTH-RESUME-SIGNUP-TIMING-GUARD: /resume-signu
 //   (1) account.email IS NULL (ORCID-only signup state). Pre-fix
 //       hashEmailForLogs(account.email) called null.trim() and threw a
 //       synchronous TypeError, which propagated to the outer catch and
-//       converted the recoverable `logger.error + 200 + JWT` flow into a
-//       500 INTERNAL_ERROR. The post-fix path uses safeHashEmailForLogs and
-//       returns email_hash: null, then proceeds to the 200 + JWT response.
-//   (2) The log payload carries email_hash (null on this branch), NOT a
-//       top-level `email` key. A regression that reverts to plaintext shape
-//       fails the negative assertion.
+//       converted the recoverable `logger.error + handled response` flow
+//       into a 500 INTERNAL_ERROR. The post-fix path uses
+//       safeHashEmailForLogs, which returns `undefined` for nullish input
+//       (round-2 hold item 1 aligned the return type from `null` to
+//       `undefined` to match LogContext.email_hash?: string). The route
+//       then proceeds to the BACKEND-REPUTATION-SSOT round-1 hold #8
+//       handler: broadcast failure now returns 502 BROADCAST_FAILED (no
+//       dangling JWT), NOT the previous 200 + JWT.
+//   (2) The structured log payload carries `email_hash` (absent / omitted
+//       on this branch because pino strips `undefined` properties from
+//       emitted JSON), and crucially has NO top-level `email` key. The
+//       `not.toHaveProperty('email')` negative assertion is the
+//       load-bearing CNPD-aligned privacy invariant: a regression that
+//       reverts to the plaintext `email:` shape fails this assertion even
+//       if the `email_hash` value matches.
 //
 // Without these specs, a revert of either fix passes every other suite. The
 // harness shape (account.email = NULL row + broadcastJsonMock rejecting) is
@@ -462,12 +472,14 @@ describe.skipIf(!dbReachable)('BE-LOG-PII-EMAIL-HASH item 2c: /confirm broadcast
       expect(emission, 'expected broadcast-failure logger.error emission in /confirm').toBeDefined();
       const [payload] = emission!;
       const obj = payload as Record<string, unknown>;
-      // The LogContext interface required `email_hash?: string`, so the route
-      // passes `email_hash: safeHashEmailForLogs(account.email) ?? undefined`.
-      // For ORCID-only signups (email = NULL), the field is absent (vs the
-      // pre-fix `email_hash: null`). The PII invariant — no top-level `email`
-      // key, no raw email value anywhere in the structured log — is what
-      // matters and remains pinned below.
+      // The LogContext interface declares `email_hash?: string`. Per round-2
+      // hold item 1, safeHashEmailForLogs now returns `string | undefined`
+      // (was `string | null` in round 1, with a `?? undefined` coercion at
+      // the call site). The route now assigns the helper's return value
+      // directly; for ORCID-only signups (email = NULL) the field is
+      // `undefined`, which pino omits from emitted JSON. The PII invariant
+      // — no top-level `email` key, no raw email value anywhere in the
+      // structured log — is what matters and remains pinned below.
       expect(obj).not.toHaveProperty('email');
       expect(obj.email_hash).toBeUndefined();
       expect(obj.username).toBe(username);
@@ -508,11 +520,11 @@ describe.skipIf(!dbReachable)('BE-LOG-PII-EMAIL-HASH item 2c: /link broadcast-re
     await cleanupByUsername(username);
   });
 
+  // Per-suite binding of the shared helper to TEST_KEY. The signing protocol
+  // is implemented once in `../support/sign-request.ts`
+  // (BE-LOG-PII-EMAIL-HASH round-2 hold item 3).
   function signRequestBound(method: string, fullPath: string, body: unknown, timestamp: string): string {
-    const bodyHash = cryptoUtils.sha256(JSON.stringify(body || {})).toString('hex');
-    const msg = `${config.appTag}-auth|v1|${method}|${fullPath}|${bodyHash}|${timestamp}`;
-    const msgHash = cryptoUtils.sha256(msg);
-    return TEST_KEY.sign(msgHash).toString();
+    return signRequestBoundShared(TEST_KEY, method, fullPath, body, timestamp);
   }
 
   it('logs email_hash:undefined with no top-level email key, then returns 502 BROADCAST_FAILED (no JWT)', async () => {
@@ -560,10 +572,12 @@ describe.skipIf(!dbReachable)('BE-LOG-PII-EMAIL-HASH item 2c: /link broadcast-re
       expect(emission, 'expected broadcast-failure logger.error emission in /link').toBeDefined();
       const [payload] = emission!;
       const obj = payload as Record<string, unknown>;
-      // PII invariant unchanged: no top-level `email` key, no raw email anywhere.
-      // For ORCID-only rows the email_hash field is absent (the route passes
-      // `email_hash: safeHashEmailForLogs(account.email) ?? undefined` to
-      // satisfy the LogContext typed interface).
+      // PII invariant unchanged: no top-level `email` key, no raw email
+      // anywhere. For ORCID-only rows the email_hash field is absent
+      // because safeHashEmailForLogs returns `undefined` for nullish input
+      // (round-2 hold item 1) and pino omits `undefined` properties from
+      // emitted JSON. The route assigns the helper's return value directly
+      // to satisfy the LogContext.email_hash?: string typed interface.
       expect(obj).not.toHaveProperty('email');
       expect(obj.email_hash).toBeUndefined();
       expect(obj.username).toBe(username);
