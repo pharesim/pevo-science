@@ -876,9 +876,11 @@ describe('GET /api/search — ?q= LIKE-escape SQL contract (BE-SEARCH-Q-LIKEGUAR
     expect(capturedSql).toContain(escapeClause);
     // textMatch site (data query): both c.title ILIKE and c.body ILIKE
     // each carry ESCAPE — that's 2; ORDER BY CASE adds 1 more → 3 total
-    // on the data query.
+    // on the data query. Pin the exact count so a regression that drops
+    // the ORDER BY CASE `ESCAPE` clause (while leaving textMatch sites
+    // clean) surfaces as a test failure rather than passing silently.
     const occurrences = capturedSql!.split(escapeClause).length - 1;
-    expect(occurrences).toBeGreaterThanOrEqual(2);
+    expect(occurrences).toBe(3);
   });
 
   it('reviews-search SQL carries ESCAPE clause on c.body ILIKE', async () => {
