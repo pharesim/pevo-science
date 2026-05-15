@@ -130,7 +130,7 @@ describe('Settings email (with DB)', () => {
     expect(res.body.data.hasEmail).toBe(true);
     expect(res.body.data.verified).toBe(true);
     expect(res.body.data.pendingChange).toBe(false);
-    expect(res.body.data.email).toMatch(/^s\*\*\*@example\.com$/);
+    expect(res.body.data.email).toMatch(/^s\*\*\*\d@\*\*\*\.com$/);
 
     await pool.query('DELETE FROM accounts WHERE username = $1', [TEST_USER]);
   });

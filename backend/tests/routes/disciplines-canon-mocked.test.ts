@@ -620,7 +620,22 @@ describe('per-paper `discipline` response field — canon_name (lowercased) via 
       if (sql.includes("'continues' ->> 'author' = $1")) {
         if (params[0] === 'alice' && params[1] === 'p-1') {
           continuationCallCount++;
-          return { rows: [{ author: 'bob', permlink: 'p-2', block_num: 200 }] };
+          // The continuation-chain walker's defense-in-depth JS gate at
+          // `papers.ts:1317` re-checks `isPevoAnyPaper(candidateMeta, candidateAuthor)`
+          // on the SQL-admitted row, so the mock must include `json_metadata`
+          // that satisfies the paper-class predicate (type='paper', authors[]
+          // covering the candidate's hive). Without it, the gate breaks the
+          // chain at hop 1 and the head-override at papers.ts:786 is skipped.
+          // BACKEND-CONTINUATION-POST-AUTHOR-CONSENT-GATE round-2 added the
+          // JS gate after this test was written.
+          return {
+            rows: [{
+              author: 'bob',
+              permlink: 'p-2',
+              json_metadata: buildPevoPaperMeta('BiOlOgY', ['alice', 'bob']),
+              block_num: 200,
+            }],
+          };
         }
         return { rows: [] };
       }
