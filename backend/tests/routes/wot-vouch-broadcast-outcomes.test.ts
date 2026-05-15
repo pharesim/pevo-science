@@ -21,7 +21,12 @@
  *     real HAF query against pevotest scans the full custom_json table and
  *     can timeout. The shape we assert on is contract-stable and matches
  *     the live-HAF response covered by the auth-only happy-path tests in
- *     `tests/routes/wot.test.ts` (the "real HAF" sibling file).
+ *     `tests/routes/wot.test.ts` (the "real HAF" sibling file). This intra-
+ *     app helper is not in the carve-out's enumerated mock-target list;
+ *     it falls under the carve-out's catch-all clause ("any case where
+ *     exercising the real path per-test is impractical") because the real
+ *     HAF call wraps an unbounded custom_json scan whose latency makes
+ *     per-test invocation unreliable.
  *   - `verifyHiveSignature` is NOT mocked. Auth uses the JWT Bearer token
  *     short-circuit in the real middleware (same pattern as
  *     `tests/routes/orcid.test.ts`). `getAppPool()` is mocked because the
@@ -30,8 +35,15 @@
  *     in `orcid.test.ts` and `accreditations-revoke.test.ts`.
  *   - `getAccreditedSet` is mocked so the voucher-is-accredited gate at
  *     `wot.ts:57-60` lets the request through without seeding pevotest.
+ *     Like `getVouchStatus` this intra-app helper is not in the carve-out's
+ *     enumerated mock-target list; it falls under the carve-out's catch-all
+ *     clause ("any case where exercising the real path per-test is
+ *     impractical") because seeding the accredited set on real HAF for
+ *     each arm of the tagged-union under test would require broadcasting
+ *     and confirming live accreditation custom_json ops per test.
  *
- * Mutation-kill verification (performed 2026-04-28 against this file):
+ * Mutation-kill verification (performed 2026-04-28 + 2026-05-15 round-1
+ * follow-ups against this file):
  *   - Deleted the entire `if (accreditResult.reason === 'timeout') { ... }`
  *     block at `backend/src/routes/wot.ts:79-95`. The "timeout arm" test
  *     fails red: response body falls through to the skipped-shape and the
@@ -42,8 +54,13 @@
  *   - Deleted just the `logger.error(...)` call inside each branch (without
  *     touching the response). The `expect(loggerErrorMock).toHaveBeenCalledWith(...)`
  *     assertion fires in both branch tests. Restored.
- * The four mutation-kill checks confirm both the response branching and
- * the observability calls are independently asserted.
+ *   - Flipped the unaccredited-voucher gate at `wot.ts:57-60` so it no
+ *     longer short-circuits. The 403-arm test fails red:
+ *     `expect(broadcastWotAccreditationMock).not.toHaveBeenCalled()` fires
+ *     and the response is no longer 403. Restored.
+ * The mutation-kill checks confirm both the response branching, the
+ * observability calls, and the voucher-accredited gate are independently
+ * asserted.
  *
  * Sibling fixtures kept in mind:
  *   - `MOCK_VERIFY_SIGNATURE` in `tests/fixtures/mock-auth.ts` is the
@@ -54,13 +71,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import request from 'supertest';
 import jwt from 'jsonwebtoken';
+import type { VouchStatus } from '../../src/wot.js';
 
 const { appQueryMock, broadcastWotAccreditationMock, getVouchStatusMock, getAccreditedSetMock, loggerErrorMock, loggerInfoMock } =
   vi.hoisted(() => ({
     appQueryMock: vi.fn().mockResolvedValue({ rows: [] }),
     broadcastWotAccreditationMock: vi.fn(),
-    getVouchStatusMock: vi.fn(),
-    getAccreditedSetMock: vi.fn(),
+    getVouchStatusMock: vi.fn<(username: string) => Promise<VouchStatus | null>>(),
+    getAccreditedSetMock: vi.fn<(usernames: string[]) => Promise<Set<string>>>(),
     loggerErrorMock: vi.fn(),
     loggerInfoMock: vi.fn(),
   }));
@@ -123,9 +141,9 @@ const VOUCH_STATUS_FIXTURE = {
   username: VOUCHEE,
   vouch_count: 3,
   threshold: 3,
-  is_accredited_via_wot: false,
+  eligible: false,
   vouches: [],
-};
+} satisfies VouchStatus;
 
 beforeEach(() => {
   appQueryMock.mockReset().mockResolvedValue({ rows: [] });
@@ -207,7 +225,10 @@ describe('POST /api/wot/vouch — broadcastWotAccreditation tagged-union arms', 
       accreditation_outcome: 'chain_error',
       tx_id: null,
     });
-    expect(res.body.data.message).toContain('failed');
+    // Arm-unique substring — matches the route's chain_error message
+    // (`Vouch recorded. Auto-accreditation broadcast for ${vouchee} failed.`)
+    // and would not pass for the timeout arm's "degraded state" wording.
+    expect(res.body.data.message).toContain(`broadcast for ${VOUCHEE} failed`);
 
     // Mutation-kill: deleting the chain_error-branch logger.error trips this.
     expect(loggerErrorMock).toHaveBeenCalledWith(
@@ -243,5 +264,26 @@ describe('POST /api/wot/vouch — broadcastWotAccreditation tagged-union arms', 
     expect(res.body.data.message).toContain('1/3 vouches');
     // Skipped is not an error condition — no logger.error.
     expect(loggerErrorMock).not.toHaveBeenCalled();
+  });
+
+  it('returns 403 FORBIDDEN when the voucher is not accredited (gate at wot.ts:57-60)', async () => {
+    // Override the default accredited-set so the voucher is NOT in it. The
+    // route should short-circuit at the gate before ever calling
+    // broadcastWotAccreditation or getVouchStatus.
+    getAccreditedSetMock.mockResolvedValueOnce(new Set());
+
+    const res = await request(app)
+      .post('/api/wot/vouch')
+      .set('Authorization', `Bearer ${jwtFor(VOUCHER)}`)
+      .send({ vouchee: VOUCHEE });
+
+    expect(res.status).toBe(403);
+    expect(res.body.status).toBe('error');
+    expect(res.body.error.code).toBe('FORBIDDEN');
+
+    // Mutation-kill: deleting the gate (or flipping `!accreditedSet.has(...)`)
+    // would let the request fall through to the broadcast call. Asserting the
+    // broadcast was NOT invoked pins the gate's short-circuit behavior.
+    expect(broadcastWotAccreditationMock).not.toHaveBeenCalled();
   });
 });

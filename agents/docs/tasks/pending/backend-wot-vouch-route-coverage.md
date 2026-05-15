@@ -105,3 +105,27 @@ The `timeout` arm asserts `toContain('degraded state')` — arm-unique (only the
 
 - **ORCID 504 vs WoT 200-with-`accreditation_outcome:'timeout'` design divergence.** ORCID surfaces broadcast timeouts as 504; WoT vouch surfaces them as 200 with a `degraded state` message. WoT idempotency makes 200 defensible, but verify this 200-with-timeout shape is explicitly intentional in the original BE-WOT-BROADCAST-TIMEOUT-HANDLING hold block design rather than an accidental 2xx collapse. Out of scope for this archive.
 - **Per-attempt audit event** per `agents/docs/solutions/conventions/broadcast-per-attempt-vs-error-event-roles-2026-05-13.md`. The convention requires audit-on-every-attempt + error-on-failure for broadcast handlers. The test only asserts `logger.error` on failure arms; out of scope for this test commit, but spot-check whether `wot.ts` emits the per-attempt audit event on the ok arm. File a follow-up task if missing.
+
+---
+
+## Backend re-review signal (2026-05-15, working tree on top of `6439df6`)
+
+All four hold-block items landed against `backend/tests/routes/wot-vouch-broadcast-outcomes.test.ts`:
+
+- **Item 1 (P1) — `VOUCH_STATUS_FIXTURE` shape.** Replaced `is_accredited_via_wot: false` with `eligible: false`. Added `satisfies VouchStatus` annotation (type imported from `../../src/wot.js`). Also typed the mocks themselves (`vi.fn<(username: string) => Promise<VouchStatus | null>>()` for `getVouchStatusMock`, `vi.fn<(usernames: string[]) => Promise<Set<string>>>()` for `getAccreditedSetMock`) so future fixture or override drift is caught at compile time. `npx tsc --noEmit` passes clean.
+- **Item 2 (P2) — 403 unaccredited-voucher gate.** Added an `it()` test in the same describe block. Overrides `getAccreditedSetMock.mockResolvedValueOnce(new Set())`, asserts `res.status === 403` + `res.body.error.code === 'FORBIDDEN'`, and pins the short-circuit behavior via `expect(broadcastWotAccreditationMock).not.toHaveBeenCalled()`. Mutation-killed by flipping the gate condition (`if (accreditedSet.has(voucher) && false)`): the test fails red (the assertion fires and the response is no longer 403). Restored.
+- **Item 3 (P2) — Docblock invocation of carve-out catch-all.** Added an explicit invocation of the catch-all clause ("any case where exercising the real path per-test is impractical") to both the `getVouchStatus` and `getAccreditedSet` bullets in the justification block (~lines 24-29 and 38-43). One-sentence-each addition naming why the real path is impractical (unbounded HAF scan; live accreditation custom_json broadcasts per test).
+- **Item 4 (P3) — Tightened `chain_error` substring.** Replaced `toContain('failed')` with `toContain(`broadcast for ${VOUCHEE} failed`)` (resolves to `broadcast for bob failed`). The substring is arm-unique vs the timeout arm's `degraded state` and matches the route's chain_error message at `wot.ts:103`.
+
+Mutation-kill rerun (2026-05-15):
+
+- Deleting the `logger.error` call inside the `chain_error` branch → the chain_error-arm test fails red on `expect(loggerErrorMock).toHaveBeenCalledWith(...)`. Restored.
+- Flipping the 403 gate → the 403-arm test fails red on the new `expect(broadcastWotAccreditationMock).not.toHaveBeenCalled()` line. Restored.
+
+Test run: `npx vitest run tests/routes/wot-vouch-broadcast-outcomes.test.ts` → **5 passed (5)** in 1.61s. The HAF connection warnings in `tests/setup.ts` are ambient and not from this file.
+
+Lint: `npm run lint` → 0 errors (2 pre-existing warnings in `seed-phrase.ts` unrelated to this change).
+
+Type check: `npx tsc --noEmit` → clean.
+
+Triage-decision acknowledgment: noted on commit-subject convention (`backend(test):` / `backend(wot):` over `test(wot):`) for this and future commits.
