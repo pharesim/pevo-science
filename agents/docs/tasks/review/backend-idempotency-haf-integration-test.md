@@ -6,7 +6,7 @@
 
 ## Why now
 
-`BACKEND-BROADCAST-IDEMPOTENCY-CLUSTER-FOLLOWUP` introduced two HAF lookup queries (`findCustodyBroadcastByIdempotencyKey`, `findAccreditByIdempotencyKey` — renamed to `findAccreditationBroadcastByIdempotencyKey` per F23) that are the load-bearing dedup mechanism on the new Option A.4 layer. The test files added by that commit (`backend/tests/lib/idempotency.test.ts`, `backend/tests/routes/{custody,accreditation}-idempotency.test.ts`) all mock `db.js` — `getPool`, `getAppPool`, `isHafAvailable` (renamed `isHafConfigured` per F10) all stubbed via `vi.fn`. No test anywhere runs these queries against a real HAF PostgreSQL connection.
+`BACKEND-BROADCAST-IDEMPOTENCY-CLUSTER-FOLLOWUP` introduced two HAF lookup queries (`findCustodyBroadcastByIdempotencyKey`, `findAccreditByIdempotencyKey` — renamed to `findAccreditationBroadcastByIdempotencyKey` per F23) that are the load-bearing dedup mechanism on the new Option A.4 layer. `BACKEND-ACCREDITATION-EXISTING-ACCREDITATION-GATE` (2026-05-15) added a third sibling helper — `findExistingAccreditation` — covering the user-level "is this account currently accredited?" gate at /verify. All three queries share the same risk class (HAF JSONB extraction / operator / schema-rename regression silently breaking the lookup) and the same load-bearing role (a regression here flips the gate to "always miss", reopening the duplicate-broadcast class each helper was filed to close). The test files added by those commits (`backend/tests/lib/idempotency.test.ts`, `backend/tests/routes/{custody,accreditation}-idempotency.test.ts`) all mock `db.js` — `getPool`, `getAppPool`, `isHafAvailable` (renamed `isHafConfigured` per F10) all stubbed via `vi.fn`. No test anywhere runs these queries against a real HAF PostgreSQL connection.
 
 Per `agents/docs/solutions/conventions/test-mock-carve-out-clause-c-2026-05-04.md`, mocking shared pool helpers is permitted under the carve-out IF a real-path companion test exists for the same risk class OR a follow-up task is filed for such coverage. The original commit's `idempotency.test.ts` header claimed the route-level tests provided real-path coverage; verified at re-review that those companions also mock `db.js`. This task is the filed follow-up.
 
@@ -14,7 +14,7 @@ The risk class the real-path test must cover: a HAF schema column rename, view d
 
 ## Goal
 
-Add an integration test (or test suite) that exercises `findCustodyBroadcastByIdempotencyKey` and `findAccreditationBroadcastByIdempotencyKey` against the real HAF database connection, asserting:
+Add an integration test (or test suite) that exercises `findCustodyBroadcastByIdempotencyKey`, `findAccreditationBroadcastByIdempotencyKey`, and `findExistingAccreditation` against the real HAF database connection, asserting:
 
 1. **Positive hit:** broadcast a known op (or seed a known fixture) carrying a known `idempotency_key`; after HAF indexer ingest, call the lookup; assert the returned `IdempotencyHit` matches the expected `tx_id` + `block_num`.
 2. **Negative miss:** call the lookup with a random key that's never been embedded; assert `null` is returned.

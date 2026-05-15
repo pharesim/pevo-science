@@ -11,8 +11,9 @@
  * mock `db.js`** (per their own carve-out headers), so they are NOT the
  * real-path companion for the SQL-shape risk class. The real-path companion
  * is `backend/tests/lib/idempotency-real-haf.test.ts`, which exercises
- * `findCustodyBroadcastByIdempotencyKey` and
- * `findAccreditationBroadcastByIdempotencyKey` against a live HAF pool so a
+ * `findCustodyBroadcastByIdempotencyKey`,
+ * `findAccreditationBroadcastByIdempotencyKey`, and
+ * `findExistingAccreditation` against a live HAF pool so a
  * schema/view/operator regression is caught by the real-path lane (column
  * rename on `operation_custom_json_view` / `operation_comment_view`, `?|`
  * operator behavior change, `json::jsonb ->>` extraction regression, or
@@ -319,7 +320,7 @@ describe('findAccreditationBroadcastByIdempotencyKey', () => {
     expect(hit).toBeNull();
   });
 
-  it('filters by accreditationAuthorities + appTag + accredit action and joins haf_operations', async () => {
+  it('filters by accreditationAuthorities + appTag + accredit action and joins haf_operations; orders by (block_num, id) DESC', async () => {
     const queryFn = vi.fn().mockResolvedValueOnce({ rows: [] });
     const pool = { query: queryFn } as unknown as IdempotencyPool;
     await findAccreditationBroadcastByIdempotencyKey(pool, KEY);
@@ -329,6 +330,10 @@ describe('findAccreditationBroadcastByIdempotencyKey', () => {
     expect(sql).toMatch(/required_posting_auths/);
     expect(sql).toMatch(/haf_operations/);
     expect(sql).toMatch(/included_trx_id/);
+    // Round-1 hold #5: tiebreaker alignment with sibling
+    // `findExistingAccreditation` per convention Rule 2 of
+    // `hive-primitive-aware-design-rules-for-pevo-custom-json-ops-2026-05-05.md`.
+    expect(sql).toMatch(/ORDER BY cj\.block_num DESC, cj\.id DESC/);
     expect(params[0]).toBe(config.appTag);
     expect(params[1]).toBe(KEY);
     expect(params[2]).toEqual(config.accreditationAuthorities);
@@ -339,9 +344,9 @@ describe('findAccreditationBroadcastByIdempotencyKey', () => {
 // for /api/accreditation/verify. Distinct from
 // `findAccreditationBroadcastByIdempotencyKey` (per-token).
 describe('findExistingAccreditation', () => {
-  it('returns the accredit hit when HAF has a matching row for this user', async () => {
+  it('returns the accredit hit when HAF has a matching row for this user (latest action = accredit)', async () => {
     const queryFn = vi.fn().mockResolvedValueOnce({
-      rows: [{ trx_id: 'accredit-user-tx-1', block_num: 12345 }],
+      rows: [{ trx_id: 'accredit-user-tx-1', block_num: 12345, action: 'accredit' }],
     });
     const pool = { query: queryFn } as unknown as IdempotencyPool;
     const hit = await findExistingAccreditation(pool, 'alice');
@@ -355,17 +360,38 @@ describe('findExistingAccreditation', () => {
     expect(hit).toBeNull();
   });
 
-  it('filters by appTag + accredit action + account=$username + accreditationAuthorities; orders by (block_num, id) DESC', async () => {
+  // Round-1 hold #1 — revoke-handling alignment with sibling reads
+  // (profile.ts:37, orcid.ts:1756, accreditations.ts:59, hafsql.ts:79,
+  // wot.ts:347). wot.ts:347 is a live producer of revoke ops via the WoT
+  // cleanup path, so a revoked user's /verify retry must NOT hit the gate
+  // on their old accredit op. Latest-action-wins: if the LIMIT-1 row's
+  // action is 'revoke', return null so /verify falls through to broadcast.
+  it('returns null when latest action is revoke (revoke→re-accredit flow falls through to broadcast)', async () => {
+    const queryFn = vi.fn().mockResolvedValueOnce({
+      rows: [{ trx_id: 'revoke-tx-after-accredit', block_num: 99999, action: 'revoke' }],
+    });
+    const pool = { query: queryFn } as unknown as IdempotencyPool;
+    const hit = await findExistingAccreditation(pool, 'alice');
+    expect(hit).toBeNull();
+  });
+
+  it('filters by appTag + action IN (accredit,revoke) + account=$username + accreditationAuthorities; orders by (block_num, id) DESC', async () => {
     const queryFn = vi.fn().mockResolvedValueOnce({ rows: [] });
     const pool = { query: queryFn } as unknown as IdempotencyPool;
     await findExistingAccreditation(pool, 'alice');
     const [sql, params] = queryFn.mock.calls[0];
     expect(sql).toMatch(/cj\.custom_id = \$1/);
-    expect(sql).toMatch(/'action' = 'accredit'/);
+    // Round-1 hold #1: action IN ('accredit','revoke') mirrors every
+    // sibling accreditation-state read in PEvO. The caller inspects the
+    // returned action and gates only on accredit-tail.
+    expect(sql).toMatch(/'action' IN \('accredit', 'revoke'\)/);
     expect(sql).toMatch(/'account' = \$2/);
     expect(sql).toMatch(/required_posting_auths \?\| \$3::text\[\]/);
     expect(sql).toMatch(/haf_operations/);
     expect(sql).toMatch(/included_trx_id/);
+    // SELECT projects the action column so the caller can apply
+    // latest-action-wins (gate-hit only on accredit-tail).
+    expect(sql).toMatch(/'action' AS action/);
     // Convention Rule 2 tiebreaker (cj.id substitutes for trx_in_block,
     // which operation_custom_json_view does not expose).
     expect(sql).toMatch(/ORDER BY cj\.block_num DESC, cj\.id DESC/);

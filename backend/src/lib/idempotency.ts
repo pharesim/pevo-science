@@ -241,6 +241,15 @@ export async function findAccreditationBroadcastByIdempotencyKey(
   pool: IdempotencyPool,
   idempotencyKey: string,
 ): Promise<IdempotencyHit | null> {
+  // Round-1 hold #5: ORDER BY (cj.block_num, cj.id) DESC matches the sibling
+  // `findExistingAccreditation` tiebreaker per convention Rule 2 of
+  // `hive-primitive-aware-design-rules-for-pevo-custom-json-ops-2026-05-05.md`.
+  // `operation_custom_json_view` does NOT expose `trx_in_block`; cj.id (the
+  // HAF op id, monotonic per chain) is the operationally-equivalent secondary
+  // key. Under LIMIT 1 the practical impact is bounded (`idempotency_key` is
+  // a sha256 hash; collisions implying multiple same-block rows are
+  // vanishingly unlikely), but the convention-alignment matters across both
+  // accreditation-state helpers.
   const result = await pool.query<{ trx_id: string; block_num: number | null }>(
     `SELECT op.included_trx_id AS trx_id, cj.block_num
      FROM ${T.customJson} cj
@@ -250,7 +259,7 @@ export async function findAccreditationBroadcastByIdempotencyKey(
        AND (cj.json::jsonb ->> 'idempotency_key') = $2
        AND cj.required_posting_auths ?| $3::text[]
        AND cj.block_num >= $4
-     ORDER BY cj.block_num DESC
+     ORDER BY cj.block_num DESC, cj.id DESC
      LIMIT 1`,
     [config.appTag, idempotencyKey, config.accreditationAuthorities, getCachedGenesisBlock()],
   );
@@ -260,7 +269,7 @@ export async function findAccreditationBroadcastByIdempotencyKey(
 }
 
 /**
- * User-level "is this account already accredited?" HAF gate for
+ * User-level "is this account currently accredited?" HAF gate for
  * /api/accreditation/verify. Distinct from `findAccreditationBroadcastByIdempotencyKey`:
  * that helper is per-token (deterministic per `sha256(token:hive_username)`)
  * and only catches retries of the same logical /verify call; this helper is
@@ -273,12 +282,24 @@ export async function findAccreditationBroadcastByIdempotencyKey(
  * BEFORE the per-token check so a hit on the user gate short-circuits without
  * touching the per-token lookup or the broadcast-attempt cap counter.
  *
+ * Revoke-handling alignment (round-1 hold #1): the query selects from BOTH
+ * `accredit` and `revoke` ops and uses the latest-action-wins semantics every
+ * other accreditation-state read in PEvO uses (profile.ts:37, orcid.ts:1756,
+ * accreditations.ts:59, hafsql.ts:79, wot.ts:347). wot.ts:347 is a live
+ * producer of revoke ops via the WoT cleanup path, so a revoked user retrying
+ * /verify must NOT hit the gate on their old accredit op — that would return
+ * 200 outcome='already_accredited' with a stale tx_id, eat the fresh token in
+ * cleanup, and silently lock the user out of re-accreditation. Helper picks
+ * the LIMIT-1 row by (block_num, cj.id) DESC and returns the hit only when
+ * that row's action is 'accredit'; when the latest is 'revoke' it returns
+ * null so /verify falls through to the per-token check + broadcast path,
+ * which is correct for a re-accreditation attempt after revoke.
+ *
  * Scope per the filing task:
  *   - `cj.custom_id = appTag`
- *   - `cj.json::jsonb ->> 'action' = 'accredit'` (only accredit; revoke ops
- *     are out of scope — the gate is "did a prior accredit op land for this
- *     account?", not "what is the account's current accreditation status?".
- *     Mirrors `findAccreditationBroadcastByIdempotencyKey`'s action filter.)
+ *   - `cj.json::jsonb ->> 'action' IN ('accredit','revoke')` (the gate is
+ *     "what is the account's current accreditation status?"; sibling reads
+ *     all use the same latest-action-wins pattern.)
  *   - `cj.json::jsonb ->> 'account' = $hiveUsername` (subject-binding via
  *     payload field — the same JSONB extraction the sibling helpers use)
  *   - `cj.required_posting_auths ?| $accreditationAuthorities::text[]`
@@ -292,20 +313,21 @@ export async function findAccreditationBroadcastByIdempotencyKey(
  * `trx_in_block` (documented in `consent-ops.ts` header), so `cj.id` (the
  * HAF op id — monotonic per chain; within a block, higher id = later op)
  * is the operationally-equivalent secondary key. Determinism matters here
- * less than for `author_accept`/`author_resign` (the gate only needs SOME
- * prior accredit op; tiebreaker only picks WHICH prior op's tx_id we
- * surface), but the convention is uniform across PEvO custom_json reads.
+ * MORE than for the prior strict-accredit shape: under the revoke-aware
+ * latest-action-wins semantics, picking the wrong row at the same-block
+ * boundary can flip between 'accredit' and 'revoke' actions, which changes
+ * the gate-hit/gate-miss outcome.
  */
 export async function findExistingAccreditation(
   pool: IdempotencyPool,
   hiveUsername: string,
 ): Promise<IdempotencyHit | null> {
-  const result = await pool.query<{ trx_id: string; block_num: number | null }>(
-    `SELECT op.included_trx_id AS trx_id, cj.block_num
+  const result = await pool.query<{ trx_id: string; block_num: number | null; action: string }>(
+    `SELECT op.included_trx_id AS trx_id, cj.block_num, cj.json::jsonb ->> 'action' AS action
      FROM ${T.customJson} cj
      JOIN hafsql.haf_operations op ON op.id = cj.id
      WHERE cj.custom_id = $1
-       AND cj.json::jsonb ->> 'action' = 'accredit'
+       AND cj.json::jsonb ->> 'action' IN ('accredit', 'revoke')
        AND cj.json::jsonb ->> 'account' = $2
        AND cj.required_posting_auths ?| $3::text[]
        AND cj.block_num >= $4
@@ -315,6 +337,10 @@ export async function findExistingAccreditation(
   );
   if (result.rows.length === 0) return null;
   const row = result.rows[0];
+  // Latest-action-wins: gate-hit ONLY when the most recent op is 'accredit'.
+  // When the latest is 'revoke', return null so /verify falls through to the
+  // per-token check + broadcast path — the correct re-accreditation flow.
+  if (row.action !== 'accredit') return null;
   return { tx_id: row.trx_id, block_num: row.block_num };
 }
 

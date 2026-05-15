@@ -478,6 +478,21 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
     try {
       const existingForUser = await findExistingAccreditation(hafPool, pending.hive_username);
       if (existingForUser) {
+        // Round-1 hold #4: metadata-update invariant. Gate-hit short-circuits
+        // before the pending row's metadata (full_name, institution, field
+        // captured at /request) would be embedded into a fresh accredit op.
+        // This is correct under the current product model: there is no
+        // `update_accreditation` custom_op, no UI affordance for editing
+        // accreditation metadata post-verification, and the only path that
+        // could re-issue an accredit op with new metadata is a second
+        // /request → /verify flow. Profile metadata is one-shot at first
+        // /verify; the gate-hit discard is intentional. If a future product
+        // change introduces an updateable-metadata flow, this branch needs
+        // a paired design pass (broadcast a fresh accredit op, distinct
+        // `update_accreditation` op type, or reject metadata changes at
+        // /request when an accreditation exists). The gate's revoke-aware
+        // semantics (round-1 hold #1) preserve the re-accreditation path
+        // after revoke — that flow DOES rebroadcast with fresh metadata.
         logger.info(
           {
             event: 'accreditation.verify.existing_accreditation_hit',

@@ -434,7 +434,7 @@ describe('accreditation /verify — existing-accreditation gate (user-level)', (
     // the query would reject `mockResolvedValueOnce`'s no-more-mocks fallback
     // and the test would fail in an observable way.
     hafQueryMock.mockResolvedValueOnce({
-      rows: [{ trx_id: 'tx-from-earlier-token', block_num: 42000 }],
+      rows: [{ trx_id: 'tx-from-earlier-token', block_num: 42000, action: 'accredit' }],
     });
 
     const infoSpy = vi.spyOn(logger, 'info').mockImplementation(() => undefined as never);
@@ -494,7 +494,7 @@ describe('accreditation /verify — existing-accreditation gate (user-level)', (
     await redis.set(`${config.appTag}:pending_accred_broadcast_attempts:${token}`, cap.toString(), 'EX', 86400);
 
     hafQueryMock.mockResolvedValueOnce({
-      rows: [{ trx_id: 'tx-prior-gate-at-cap', block_num: 88888 }],
+      rows: [{ trx_id: 'tx-prior-gate-at-cap', block_num: 88888, action: 'accredit' }],
     });
 
     const res = await request(app).post('/api/accreditation/verify').send({ token });
@@ -558,7 +558,7 @@ describe('accreditation /verify — existing-accreditation gate (user-level)', (
     await seedPendingAccreditation(token, username);
 
     hafQueryMock.mockResolvedValueOnce({
-      rows: [{ trx_id: 'tx-gate-cleanup-prior', block_num: 60000 }],
+      rows: [{ trx_id: 'tx-gate-cleanup-prior', block_num: 60000, action: 'accredit' }],
     });
 
     // Stub `redis.del` to throw exactly once so the gate-path deleteToken
@@ -591,6 +591,49 @@ describe('accreditation /verify — existing-accreditation gate (user-level)', (
       warnSpy.mockRestore();
       redisAny.del = originalDel as unknown as typeof redisAny.del;
     }
+  });
+
+  // Round-1 hold #1 — revoke→re-accredit flow. A user previously accredited
+  // and subsequently revoked (e.g., wot.ts:347 WoT-cleanup revoke producer)
+  // must NOT hit the gate on their stale accredit op when retrying /verify.
+  // Pre-fix the gate filtered on `action = 'accredit'` only and would have
+  // returned 200 outcome:'already_accredited' with the stale tx_id, eaten
+  // the fresh token in cleanup, and silently locked the user out of
+  // re-accreditation. Post-fix the gate selects from action IN
+  // ('accredit','revoke') ORDER BY (block_num, id) DESC LIMIT 1 and returns
+  // null when the LIMIT-1 row is 'revoke', falling through to the per-token
+  // idempotency check and ultimately broadcasting the fresh accredit op.
+  it('revoke→re-accredit flow: latest action is revoke → gate falls through, fresh broadcast fires', async () => {
+    const redis = getRedis();
+    if (!redis) return;
+    const token = `accred-idem-${crypto.randomBytes(8).toString('hex')}`;
+    const username = 'gaterevokeuser';
+    await seedPendingAccreditation(token, username);
+
+    // Gate query returns a row whose latest action is 'revoke' (prior
+    // accredit was revoked later via wot.ts cleanup or admin action).
+    // The helper inspects the action field and returns null, so the
+    // route should fall through to the per-token check (miss → broadcast).
+    hafQueryMock.mockResolvedValueOnce({
+      rows: [{ trx_id: 'tx-revoke-after-accredit', block_num: 99999, action: 'revoke' }],
+    });
+    // Per-token idempotency miss → broadcast proceeds.
+    hafQueryMock.mockResolvedValueOnce({ rows: [] });
+
+    const res = await request(app).post('/api/accreditation/verify').send({ token });
+
+    // Fresh broadcast envelope — the gate did NOT short-circuit on the
+    // stale accredit tx_id. This is the regression guard for the round-1
+    // P1 hold.
+    expect(res.status).toBe(200);
+    expect(res.body.data.tx_id).toBe('fresh-accred-tx-id');
+    expect(res.body.data.outcome).toBeUndefined();
+    expect(broadcastJsonMock).toHaveBeenCalledTimes(1);
+    // Both layers ran: gate (returned null from revoke-tail) and per-token
+    // check (returned empty rows).
+    expect(hafQueryMock).toHaveBeenCalledTimes(2);
+    // Bonus seed fires on the broadcast path.
+    expect(seedBonusMock).toHaveBeenCalledWith(username);
   });
 });
 
