@@ -182,3 +182,21 @@ Items 1, 2, and 3 (parts A + B + C) landed via parallel worker fan-out, then che
 ### Re-review signal
 
 When item 1 lands, `git mv` this file from `tasks/pending/` back to `tasks/review/`. The move itself is the re-review signal.
+
+---
+
+## Backend re-review signal (2026-05-15) — round 3
+
+Item 1 (P2) landed via a single worker, cherry-picked onto main as `4c82a15` (worker SHA `0c06a1e` on `worktree-agent-a8d777d86910dcaff`).
+
+**Item 1 (P2) — timestamp-suffixed upgradeLimiter usernames at `backend/tests/routes/custody.test.ts`:**
+- Switched the two static usernames `lightupgnullhsh` (for `custody.upgrade.null_hash_unreachable` spec) and `lightupgouterct` (for `custody.upgrade.failed` spec) to template literals `lightupgnullhsh_${Date.now() % 100000}` and `lightupgouterct_${Date.now() % 100000}`. Matches the established sibling-spec pattern in the same file for vitest-retry resilience against the per-account 1/hr `upgradeLimiter`.
+- Each spec already held the username in a `const upgradeUser` at the top of its `it` block, so all downstream references (`bearerFor`, `bearerPost` request body, spy `username:` assertion) inherit the suffix automatically. No structural changes to the assertions or driver shape.
+
+**Verification:**
+- `npx tsc --noEmit -p .` (backend): clean.
+- `npm run lint` (backend): clean modulo the 2 pre-existing `seed-phrase.ts:26-27` warnings, unrelated.
+- Targeted vitest on `tests/routes/custody.test.ts`: 14 passed (14), including both upgrade specs (`custody.upgrade.null_hash_unreachable` returns 401 + spy match, `custody.upgrade.failed` returns 500 + spy match).
+- Full backend `npx vitest run` gate run by the parent post-merge.
+
+**Cherry-pick provenance:** Worker B commit `0c06a1e` cherry-picked onto main as `4c82a15`. No file conflicts; `custody.test.ts` zone clean against the parallel architect commits (`33a1d5a`, `89a0535`, `bdb7186`).
