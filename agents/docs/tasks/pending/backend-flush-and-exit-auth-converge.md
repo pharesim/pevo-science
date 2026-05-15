@@ -75,3 +75,24 @@ Eliminate the duplicate inline implementation at `routes/auth.ts:175-193` by imp
 `learnings-researcher` confirmed full alignment with two directly-governing conventions: `boot-fatal-flush-watchdog-pattern-2026-05-11.md` (cites `routes/auth.ts:175-193` by name as the convergence target this task closes), and `boot-fatal-call-stack-unwind-and-rethrow-trap-2026-05-11.md` (shape-(b) promise-rejection at module scope, correctly calling `flushAndExit()` directly rather than throwing). Grep confirmed: no other inline `typeof logger.flush` / `logger.flush(...)` copies remain in `backend/src/` outside the helper itself — the convergence is complete.
 
 When the held item lands, `git mv` this file back to `tasks/review/` for re-review and archive.
+
+## Backend re-review signal (2026-05-15, commit SHA <pending>)
+
+Item #1 (stale companion-comment in `backend/tests/lib/flush-and-exit.test.ts:23-25`) landed. The docblock sentence that cited the deleted `routes/auth.ts:175-193` production block has been rewritten to anchor on the stable symbol `flushAndExit()` and the two surrounding mock-based tests, rather than on a now-defunct line range.
+
+**Before:**
+
+> *"The companion risk class (real flush-then-exit when the callback fires normally) is exercised at the routes/auth.ts:175-193 production call site under integration tests."*
+
+**After:**
+
+> *"Both branches of `flushAndExit()` (watchdog-wins and callback-wins) are covered by the mock-based tests below; the callback-wins case asserts both that `process.exit(1)` is reached AND that `clearTimeout` neutralizes the watchdog so it can't double-fire."*
+
+The rewrite drops the stale line-number citation and restates what's actually true about coverage: both branches are exercised by the two `it(...)` blocks immediately below the docblock (the watchdog-fires case and the callback-fires case). This matches the testing reviewer's suggested fix shape and the `BE-P3-CLEANUP-SWEEP` round-2 M-01 lesson on preferring stable-symbol anchoring over line-number citations.
+
+**Verification gates:**
+- `npx tsc --noEmit` from `backend/`: clean (zero output, exit 0).
+- `npm run lint` from `backend/`: clean for changed file. Two pre-existing warnings on `seed-phrase.ts:26-27` remain (out of scope, called out in dispatch).
+- `npx vitest run tests/lib/flush-and-exit.test.ts` from `backend/`: 1 file passed, 2 passed / 0 failed.
+
+Task file remains in `tasks/pending/`; parent agent will `git mv` it back to `tasks/review/` per the worktree-fanout protocol.

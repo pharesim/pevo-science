@@ -20,9 +20,10 @@
  * runtime. The risk class — "watchdog timer fails to fire when flush
  * callback hangs" — is covered ONLY by the timer-wins case here; no
  * real-path companion exists because the failure mode IS the timer
- * mechanism. The companion risk class (real flush-then-exit when the
- * callback fires normally) is exercised at the routes/auth.ts:175-193
- * production call site under integration tests.
+ * mechanism. Both branches of `flushAndExit()` (watchdog-wins and
+ * callback-wins) are covered by the mock-based tests below; the
+ * callback-wins case asserts both that `process.exit(1)` is reached AND
+ * that `clearTimeout` neutralizes the watchdog so it can't double-fire.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { logger } from '../../src/logger.js';
