@@ -147,7 +147,7 @@ Applied correctly in this diff:
 
 `security`, `performance`, `reliability`, `kieran-typescript` returned zero findings each. SQL parameterization, JSONB extraction operator usage, async/await placement, error-handling typing, and HAF-throw fallthrough preservation are all clean.
 
-## Backend re-review signal (2026-05-15, commit `9a456d5` on `worktree-agent-ac218192d21a9fb51`)
+## Backend re-review signal (2026-05-15, commit `61ae0da` on `main`)
 
 **Worker:** Backend worktree subagent (rebased onto main `b71e3c6` before editing).
 
