@@ -975,7 +975,7 @@
     "execute": "Account upgraden",
     "invalidOldSeed": "Ongeldige herstelzin. Controleer en probeer opnieuw.",
     "backendFailed": "Melding van accountupgrade mislukt.",
-    "backendTimeout": "Backend cleanup did not respond in time. The on-chain update succeeded, so your keys have rotated, but the server has not confirmed cleanup. Please contact support if this persists.",
+    "backendTimeout": "Backend cleanup did not confirm in time. Your on-chain keys have already rotated. If Hive Keychain shows your account with posting, active, and memo keys, you are safe to continue. Otherwise contact support with your account name. Do not share your recovery phrase.",
     "upgrading": "Je account upgraden…",
     "doneTitle": "Upgrade voltooid",
     "doneDescription": "Je account is nu volledig zelfbeheerd via Hive Keychain. Bewaar je oude herstelzin nog 30 dagen als back-up.",

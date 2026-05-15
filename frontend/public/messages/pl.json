@@ -971,7 +971,7 @@
     "execute": "Zaktualizuj konto",
     "invalidOldSeed": "Nieprawidłowa fraza odzyskiwania. Sprawdź i spróbuj ponownie.",
     "backendFailed": "Powiadomienie o aktualizacji konta nie powiodło się.",
-    "backendTimeout": "Backend cleanup did not respond in time. The on-chain update succeeded, so your keys have rotated, but the server has not confirmed cleanup. Please contact support if this persists.",
+    "backendTimeout": "Backend cleanup did not confirm in time. Your on-chain keys have already rotated. If Hive Keychain shows your account with posting, active, and memo keys, you are safe to continue. Otherwise contact support with your account name. Do not share your recovery phrase.",
     "upgrading": "Aktualizowanie konta…",
     "doneTitle": "Aktualizacja zakończona",
     "doneDescription": "Twoje konto jest teraz w pełni pod Twoją kontrolą dzięki Hive Keychain. Zachowaj starą frazę odzyskiwania przez 30 dni jako kopię zapasową.",

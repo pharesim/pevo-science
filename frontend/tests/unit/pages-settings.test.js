@@ -419,7 +419,7 @@ describe('settingsPage', () => {
       comp.confirmInputs = { 0: 'new', 5: 'new', 11: 'new' };
       comp.upgradePassword = 'light-password';
       // Round-5 P1 hold: executeUpgrade() now phase-guards on 'enter-old'
-      // (only legal entry phase, set by confirmNewSeed()). Existing tests
+      // (only legal entry phase, set by proceedToOldSeed()). Existing tests
       // entered from the default 'idle' phase and would now early-return.
       comp.upgradePhase = 'enter-old';
       return comp;
@@ -597,7 +597,7 @@ describe('settingsPage', () => {
       comp.confirmInputs = { 0: 'new', 5: 'new', 11: 'new' };
       comp.upgradePassword = 'light-password';
       // Round-5 P1 hold: executeUpgrade() now phase-guards on 'enter-old'
-      // (only legal entry phase, set by confirmNewSeed()). Existing tests
+      // (only legal entry phase, set by proceedToOldSeed()). Existing tests
       // entered from the default 'idle' phase and would now early-return.
       comp.upgradePhase = 'enter-old';
       return comp;
@@ -876,7 +876,7 @@ describe('settingsPage', () => {
       comp.confirmInputs = { 0: 'new', 5: 'new', 11: 'new' };
       comp.upgradePassword = 'light-password';
       // Round-5 P1 hold: executeUpgrade() now phase-guards on 'enter-old'
-      // (only legal entry phase, set by confirmNewSeed()). Existing tests
+      // (only legal entry phase, set by proceedToOldSeed()). Existing tests
       // entered from the default 'idle' phase and would now early-return.
       comp.upgradePhase = 'enter-old';
       return comp;
@@ -1110,7 +1110,7 @@ describe('settingsPage', () => {
       comp.confirmInputs = { 0: 'new', 5: 'new', 11: 'new' };
       comp.upgradePassword = 'light-password';
       // Round-5 P1 hold: executeUpgrade() now phase-guards on 'enter-old'
-      // (only legal entry phase, set by confirmNewSeed()). Existing tests
+      // (only legal entry phase, set by proceedToOldSeed()). Existing tests
       // entered from the default 'idle' phase and would now early-return.
       comp.upgradePhase = 'enter-old';
 
@@ -1179,7 +1179,7 @@ describe('settingsPage', () => {
       comp.confirmInputs = { 0: 'new', 5: 'new', 11: 'new' };
       comp.upgradePassword = 'light-password';
       // Round-5 P1 hold: executeUpgrade() now phase-guards on 'enter-old'
-      // (only legal entry phase, set by confirmNewSeed()). Existing tests
+      // (only legal entry phase, set by proceedToOldSeed()). Existing tests
       // entered from the default 'idle' phase and would now early-return.
       comp.upgradePhase = 'enter-old';
 
@@ -1232,7 +1232,7 @@ describe('settingsPage', () => {
       comp.confirmInputs = { 0: 'new', 5: 'new', 11: 'new' };
       comp.upgradePassword = 'light-password';
       // Round-5 P1 hold: executeUpgrade() now phase-guards on 'enter-old'
-      // (only legal entry phase, set by confirmNewSeed()). Existing tests
+      // (only legal entry phase, set by proceedToOldSeed()). Existing tests
       // entered from the default 'idle' phase and would now early-return.
       comp.upgradePhase = 'enter-old';
 
@@ -1297,7 +1297,7 @@ describe('settingsPage', () => {
       comp.confirmInputs = { 0: 'new', 5: 'new', 11: 'new' };
       comp.upgradePassword = 'light-password';
       // Round-5 P1 hold: executeUpgrade() now phase-guards on 'enter-old'
-      // (only legal entry phase, set by confirmNewSeed()). Existing tests
+      // (only legal entry phase, set by proceedToOldSeed()). Existing tests
       // entered from the default 'idle' phase and would now early-return.
       comp.upgradePhase = 'enter-old';
 
@@ -1355,7 +1355,7 @@ describe('settingsPage', () => {
       comp.confirmInputs = { 0: 'new', 5: 'new', 11: 'new' };
       comp.upgradePassword = 'light-password';
       // Round-5 P1 hold: executeUpgrade() now phase-guards on 'enter-old'
-      // (only legal entry phase, set by confirmNewSeed()). Existing tests
+      // (only legal entry phase, set by proceedToOldSeed()). Existing tests
       // entered from the default 'idle' phase and would now early-return.
       comp.upgradePhase = 'enter-old';
 
@@ -1408,7 +1408,7 @@ describe('settingsPage', () => {
       comp.confirmInputs = { 0: 'new', 5: 'new', 11: 'new' };
       comp.upgradePassword = 'light-password';
       // Round-5 P1 hold: executeUpgrade() now phase-guards on 'enter-old'
-      // (only legal entry phase, set by confirmNewSeed()). Existing tests
+      // (only legal entry phase, set by proceedToOldSeed()). Existing tests
       // entered from the default 'idle' phase and would now early-return.
       comp.upgradePhase = 'enter-old';
 
@@ -1464,7 +1464,7 @@ describe('settingsPage', () => {
       comp.confirmInputs = { 0: 'new', 5: 'new', 11: 'new' };
       comp.upgradePassword = 'light-password';
       // Round-5 P1 hold: executeUpgrade() now phase-guards on 'enter-old'
-      // (only legal entry phase, set by confirmNewSeed()). Existing tests
+      // (only legal entry phase, set by proceedToOldSeed()). Existing tests
       // entered from the default 'idle' phase and would now early-return.
       comp.upgradePhase = 'enter-old';
 
@@ -1511,7 +1511,7 @@ describe('settingsPage', () => {
       comp.confirmInputs = { 0: 'new', 5: 'new', 11: 'new' };
       comp.upgradePassword = 'light-password';
       // Round-5 P1 hold: executeUpgrade() now phase-guards on 'enter-old'
-      // (only legal entry phase, set by confirmNewSeed()). Existing tests
+      // (only legal entry phase, set by proceedToOldSeed()). Existing tests
       // entered from the default 'idle' phase and would now early-return.
       comp.upgradePhase = 'enter-old';
 
@@ -1567,7 +1567,7 @@ describe('settingsPage', () => {
         // Round-5 P1 hold: re-establish 'enter-old' before each attempt so
         // the new phase-guard at the top of executeUpgrade() admits entry.
         // The wipe + 'done' transition runs at the end of the prior attempt,
-        // so this re-seed mirrors what confirmNewSeed() would do for a real
+        // so this re-seed mirrors what proceedToOldSeed() would do for a real
         // second pass.
         comp.upgradePhase = 'enter-old';
       };
@@ -1733,7 +1733,7 @@ describe('settingsPage', () => {
       expect(comp.upgradePhase).toBe('done');
     });
 
-    // FE-KEYCHAIN-API-MISUSE round-5 hold #3 (P2):
+    // FE-KEYCHAIN-API-MISUSE round-5 hold #3 (P2) + round-6 hold #1 (P1):
     // Backend-cleanup fetch had no timeout. If the backend hangs after
     // account_update lands on-chain, the flow blocks on `await fetch(...)`
     // until OS-level TCP teardown — minutes for a half-open socket,
@@ -1741,10 +1741,11 @@ describe('settingsPage', () => {
     // upgradePhase is stuck at 'upgrading' and the mnemonic stays in
     // reactive state. AbortSignal.timeout(20_000) bounds the budget; the
     // resulting TimeoutError DOMException routes to upgrade.backendTimeout
-    // WITHOUT wiping the mnemonic — the upgrade is partially applied
-    // (chain rotated, backend cleanup pending) and the user may need the
-    // mnemonic to contact support or for manual recovery.
-    it('backend cleanup fetch timeout → upgradeError + phase=error, mnemonic NOT wiped', async () => {
+    // AND wipes the mnemonic (round-6: the round-5 no-wipe decision was
+    // reverted; the user already saw + confirmed the mnemonic in the
+    // new-seed/confirm-new phases, so keeping it in reactive state past
+    // the error screen is pure XSS surface with no recovery value).
+    it('backend cleanup fetch timeout → upgradeError + phase=error, mnemonic IS wiped', async () => {
       vi.useFakeTimers();
       try {
         mockIsKeychainInstalled.mockReturnValue(true);
@@ -1788,10 +1789,12 @@ describe('settingsPage', () => {
         expect(comp.upgradePhase).toBe('error');
         // Specific timeout message, not the generic backendFailed/failed.
         expect(comp.upgradeError).toBe('upgrade.backendTimeout');
-        // Mnemonic NOT wiped — partially-applied state preserved so the
-        // user can act on it (contact support, manual recovery).
-        expect(comp.newSeedPhrase).toBe(newMnemonic);
-        expect(comp.oldSeedPhrase).toBe(oldMnemonic);
+        // Mnemonic IS wiped (round-6 hold #1): the user already confirmed
+        // the new mnemonic in earlier phases and the error-screen copy
+        // directs them to verify Keychain or contact support with their
+        // account name, not to recover from the in-DOM mnemonic.
+        expect(comp.newSeedPhrase).toBe('');
+        expect(comp.oldSeedPhrase).toBe('');
 
         warnSpy.mockRestore();
       } finally {

@@ -604,16 +604,20 @@ export function initSettingsPage() {
     },
 
     async executeUpgrade() {
-      // Concurrent-invocation guard. The opening field-presence check below
-      // is not sufficient: `this.upgradePhase = 'upgrading'` is synchronous,
-      // but Alpine's reactive DOM update that hides the "Upgrade" button
-      // (via `x-show="upgradePhase === 'enter-old'"`) is batched. A
-      // double-click landing inside the microtask window would otherwise
-      // pass the field check, re-enter the method, and start a parallel
-      // flow (two `account_update` broadcasts + two `/api/custody/upgrade`
-      // POSTs + two 3-popup Keychain sequences). The phase-guard is the
-      // mechanically-correct lock — the only legal entry phase is
-      // 'enter-old' (set by `confirmNewSeed()`).
+      // Concurrent-invocation guard. The phase assignment two lines below
+      // (`this.upgradePhase = 'upgrading'`) runs synchronously before the
+      // first `await`. Any subsequent invocation — whether a synchronous
+      // back-to-back x-on:click handler, a re-entry during a suspended
+      // await (sendOperations in `_performUpgradeKeyRotation`, the
+      // `/api/custody/upgrade` fetch, `_performKeychainImport`), or a
+      // stray `$watch`/`x-effect` triggered by the phase change itself —
+      // observes the mutated phase and short-circuits at this guard. The
+      // opening field-presence check below is not sufficient because it
+      // does not change between invocations; the phase IS the lock.
+      // 'enter-old' is the only legal entry phase (set by
+      // `proceedToOldSeed()`); two parallel flows would otherwise issue
+      // two `account_update` broadcasts + two `/api/custody/upgrade` POSTs
+      // + two 3-popup Keychain sequences.
       if (this.upgradePhase !== 'enter-old') return;
       if (!this.oldSeedPhrase.trim() || !this.upgradePassword) return;
       this.upgradePhase = 'upgrading';
@@ -679,9 +683,13 @@ export function initSettingsPage() {
         // a second) but bounded enough to surface a hang as an error
         // screen the user can act on. Timeout produces a TimeoutError
         // DOMException which the catch below routes to upgrade.backendTimeout
-        // WITHOUT wiping the mnemonic — the upgrade is partially applied
-        // (chain rotated, backend cleanup pending) and the user may need
-        // the mnemonic to contact support or for manual recovery.
+        // with a timeout-specific message AND wipes the mnemonic. The
+        // user already confirmed the new mnemonic in the new-seed/confirm-new
+        // phases (they should have written it down before clicking Execute),
+        // so keeping it in reactive Alpine state past the error screen adds
+        // pure XSS surface with no recovery value. The copy on the error
+        // screen tells the user to verify Keychain has their keys or
+        // contact support with their account name.
         const res = await fetch('/api/custody/upgrade', {
           method: 'POST',
           headers: {
@@ -723,12 +731,16 @@ export function initSettingsPage() {
         // Special case: backend-cleanup timeout. AbortSignal.timeout() on
         // the fetch above produces a TimeoutError DOMException when the
         // 20s budget elapses. This is structurally distinct: the on-chain
-        // rotation succeeded (b), only the backend cleanup hung. The
-        // upgrade is partially applied; preserve the mnemonic so the user
-        // can contact support or recover manually, and surface a
-        // timeout-specific message so the distinction is user-readable.
+        // rotation succeeded (b), only the backend cleanup hung. Surface a
+        // timeout-specific message so the user-readable copy can name the
+        // chain-rotated-but-backend-pending state and direct the user to
+        // verify Keychain or contact support with their account name. We
+        // still wipe the mnemonic — the user keeps it via the earlier
+        // write-down step, and leaving it in reactive Alpine state past
+        // the error screen is pure XSS surface with no recovery value.
         if (err && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
           console.warn('[custody upgrade] backend cleanup timeout', err);
+          this._clearSensitiveUpgradeState();
           this.upgradeError = this.$t('upgrade.backendTimeout');
           this.upgradePhase = 'error';
           return;
@@ -900,13 +912,25 @@ export function initSettingsPage() {
               (res) => res.success ? resolve(res) : reject(new Error(res.message || 'Keychain import failed'))
             );
           });
+          // Capture the timer id so we can clear it after the race
+          // resolves. Without `clearTimeout`, a successful (or denied)
+          // import leaves the 45s timer + its closure live until the timer
+          // fires, then the race's now-settled internal reject path
+          // silently swallows the rejection. 45s × 3 roles = ~135s of
+          // orphan timers per successful upgrade. Cleanliness/resource
+          // concern only — see round-5 hold #4 fact-check.
+          let timerId;
           const timeoutPromise = new Promise((_, reject) => {
-            setTimeout(
+            timerId = setTimeout(
               () => reject(new Error('keychain timeout')),
               45_000,
             );
           });
-          await Promise.race([importPromise, timeoutPromise]);
+          try {
+            await Promise.race([importPromise, timeoutPromise]);
+          } finally {
+            clearTimeout(timerId);
+          }
         } catch (err) {
           // Per-role failure becomes a warning, not a fatal error. The
           // loop continues to the next role so a denial on (e.g.) active

@@ -971,7 +971,7 @@
     "execute": "ترقية الحساب",
     "invalidOldSeed": "عبارة الاسترداد غير صالحة. يرجى التحقق والمحاولة مرة أخرى.",
     "backendFailed": "فشل إشعار ترقية الحساب.",
-    "backendTimeout": "Backend cleanup did not respond in time. The on-chain update succeeded, so your keys have rotated, but the server has not confirmed cleanup. Please contact support if this persists.",
+    "backendTimeout": "Backend cleanup did not confirm in time. Your on-chain keys have already rotated. If Hive Keychain shows your account with posting, active, and memo keys, you are safe to continue. Otherwise contact support with your account name. Do not share your recovery phrase.",
     "upgrading": "جارٍ ترقية حسابك…",
     "doneTitle": "اكتملت الترقية",
     "doneDescription": "حسابك الآن تحت سيطرتك الكاملة عبر Hive Keychain. احتفظ بعبارة الاسترداد القديمة لمدة 30 يومًا كنسخة احتياطية.",

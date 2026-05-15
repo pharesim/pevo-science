@@ -971,7 +971,7 @@
     "execute": "Aggiorna account",
     "invalidOldSeed": "Frase di recupero non valida. Controlla e riprova.",
     "backendFailed": "Notifica di aggiornamento dell’account fallita.",
-    "backendTimeout": "Backend cleanup did not respond in time. The on-chain update succeeded, so your keys have rotated, but the server has not confirmed cleanup. Please contact support if this persists.",
+    "backendTimeout": "Backend cleanup did not confirm in time. Your on-chain keys have already rotated. If Hive Keychain shows your account with posting, active, and memo keys, you are safe to continue. Otherwise contact support with your account name. Do not share your recovery phrase.",
     "upgrading": "Aggiornamento dell’account…",
     "doneTitle": "Aggiornamento completato",
     "doneDescription": "Il tuo account è ora completamente autogestito tramite Hive Keychain. Conserva la vecchia frase di recupero per 30 giorni come backup.",
