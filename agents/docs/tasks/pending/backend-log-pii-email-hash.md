@@ -216,3 +216,41 @@ Items 1, 2, 3, and 4 landed in this round. Per the carry-the-fix-evidence-in-the
   - 2 pre-existing failures in `signup-verify.test.ts SEC-004-BE` (ORCID signup + confirm with/without password — unrelated to log-pii migration, reproduce at HEAD).
 - Item 1's load-bearing PII invariant is verified end-to-end by the unchanged `/confirm` and `/link` ORCID-only broadcast-rejection specs in `signup-verify.test.ts`, which assert `expect(obj.email_hash).toBeUndefined()` + `expect(obj).not.toHaveProperty('email')` against real pg rows with `email = NULL` and continue to pass after the helper's return-type alignment.
 - Item 3's extraction is verified by the unchanged signing-protocol tests in `auth.test.ts` (FINDING-001 regression specs at the `Hive signature path` describe block) and the `/link` request-binding spec in `signup-verify.test.ts` — both routes still produce signatures the server accepts via real `verifyHiveSignature`.
+
+---
+
+## Architect re-review (2026-05-15) — HELD PENDING FIXES (round 3)
+
+`/ce-code-review` ran on round-2 hold-fix commit `5e9e548` plus the cross-task follow-up `bc7674e` (migrating the /link log-shape spec to the new shared helper) with 6 personas (correctness, testing, maintainability, project-standards, kieran-typescript, security). Round-2 hold items 1-4 all landed correctly: `safeHashEmailForLogs` return-type aligned to `string | undefined`; stale comment block rewritten at signup-verify.test.ts:370-396; signRequestBound extracted to `backend/tests/support/sign-request.ts`; auth.test.ts file-header carve-out acknowledgment for hive.js mock + logger.error spy. Security review clean. But the extraction (item 3) stopped one step short of full consolidation. Two P2 hold items bundled.
+
+### Items to address
+
+**1. (P2) `signRequestBound` extraction is incomplete: 4 sibling test files still carry verbatim inline copies**
+
+- Cross-reviewer convergence: testing TST-2 (P3 conf 75) + maintainability MAINT-R2-001 (P2 conf 75) → anchor 100 after promotion. Severity P2.
+- Files with unmigrated inline copies:
+  - `backend/tests/routes/bridge.test.ts:159`
+  - `backend/tests/routes/claims.test.ts:153`
+  - `backend/tests/routes/signup-verify-postbroadcast-severity.test.ts:234`
+  - `backend/tests/routes/bridge-haf-lag-locks.test.ts:258`
+- The hold-fix item 3's stated goal — "Future signing-protocol changes apply in one place" — is defeated because 4 of 6 files with inline copies were not migrated. Each unmigrated file already has a local TEST_KEY constant, so migration is mechanical: import `signRequestBound as signRequestBoundShared` from `../support/sign-request.js`, replace the 5-line inline body with a per-file binding wrapper that delegates with the local TEST_KEY. Same pattern as auth.test.ts and signup-verify.test.ts after round 2.
+
+**2. (P2) Helper duplicates `buildCanonicalAuthMessage` SSoT instead of importing it**
+
+- Reviewer: kieran-typescript kieran-ts-1 (P2 conf 75). Single reviewer at anchor 75; survives the confidence gate.
+- File: `backend/tests/support/sign-request.ts:26`
+- `backend/src/lib/authMessage.ts` exports `buildCanonicalAuthMessage` as the SSoT for the signing template; `backend/src/middleware/verifyHiveSignature.ts:151` consumes it on the server side. The new test helper reimplements the template inline, defeating round-2 hold item 3's deeper goal of "capturing the protocol once."
+- Already-latent drift: `authMessage.ts:29` uses `JSON.stringify(input.body ?? {})` while `sign-request.ts:26` uses `JSON.stringify(body || {})`. Divergence only triggers for falsy-but-non-nullish bodies (`0`, `''`, `false`) — unlikely in practice but a future-typo trap.
+- Fix shape: import `buildCanonicalAuthMessage` from `../../src/lib/authMessage.js` into the test helper and delegate the template construction. The helper then reduces to (a) compute body-hash via crypto.sha256(JSON.stringify), (b) build the canonical message via the imported function, (c) sha256 the message, (d) sign with the supplied privateKey. The signing-protocol template lives in one place.
+
+**Bundle note:** Fold both items into one round. The implementer is touching the helper file for item 2 anyway; migrating the 4 unmigrated files for item 1 in the same pass keeps the audit trail coherent. The 4 file migrations are independent and can be done in any order.
+
+### Items dismissed during architect triage (do NOT address)
+
+- **`signRequestBound` JSDoc could warn about wrong-key footgun** (testing TST-1, P3 conf 50) — defensive advisory; per-file binding pattern already mitigates.
+- **`body` parameter typed as `unknown`** (kieran-ts-2, P3 conf 50) — narrowing would catch shape errors at compile time. Below gate.
+- **Body-coalesce `?? {}` vs `|| {}` divergence** (correctness, P3 anchor 25) — same root cause as item 2; subsumed by the SSoT import.
+
+### Re-review signal
+
+When items 1 + 2 land, `git mv` this file from `tasks/pending/` back to `tasks/review/`. The move itself is the re-review signal.
