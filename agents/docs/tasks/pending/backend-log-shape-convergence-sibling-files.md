@@ -153,3 +153,32 @@ Items 1, 2, and 3 (parts A + B + C) landed via parallel worker fan-out, then che
 - Worker fan-out: 4 parallel worktree subagents (`agent-a5a90b2f375f7ce9f`, `agent-aab0a845914612d30`, `agent-a16031c1f3bd7321c`, `agent-ae9b5c276d40cd715`). No file overlap between workers; cherry-picks onto main were clean (no conflicts on test files).
 - Workers were instructed not to modify the task file or route files; this signal block is the parent's unified summary.
 - Total: 23 new spy assertions across 5 test files (4 + 7 + 7 + 4 + 4 — wait, recount: 4 sigup-verify + 7 settings + 7 orcid + 4 custody + 4 accreditation = 26).
+
+---
+
+## Architect re-review (2026-05-15) — HELD PENDING FIXES (round 3)
+
+`/ce-code-review` ran on the 4 hold-fix commits (`bac0615`, `ade1d20`, `21eb8b7`, `8200b85`) with 6 personas (correctness, testing, maintainability, project-standards, reliability, security). All 16 hold-block events covered with correct literals, canonical-shape compliance verified across 5 files, project-standards clean. The bulk of the round-2 work landed correctly. Two reviewer-flagged P1s on the `accreditation.cleanup.failed` driver's invasive Map.prototype + setInterval patterns were dismissed at user triage (implementer-acknowledged invasive trade-off; failure mode is loud not silent). 4 P2 reviewer findings + 1 P3 dismissed at triage (asymmetric CNPD coverage, helper-extract opportunities, orcid upstream-body redaction policy, settings.email_delete login-loss guard). One P2 hold item remains.
+
+### Items to address
+
+**1. (P2) Static upgradeLimiter usernames in custody upgrade specs collide with per-account 1/hr limiter across vitest retries**
+
+- Reviewer: reliability RELI-3 (P2 conf 75). Single reviewer at anchor 75; survives the confidence gate.
+- File: `backend/tests/routes/custody.test.ts:475, 526`
+- Static usernames `lightupgnullhsh` (for `custody.upgrade.null_hash_unreachable` spec) and `lightupgouterct` (for `custody.upgrade.failed` spec) target a per-account 1/hr upgrade limiter. Companion specs in the same file correctly use timestamp-suffixed usernames (per the round-2 signal block: "distinct usernames per test to dodge per-account upgradeLimiter"). The 2 upgrade specs are the outlier — guaranteed flake on vitest retries within an hour.
+- Fix shape: switch to `lightupgnullhsh_${Date.now() % 100000}` and `lightupgouterct_${Date.now() % 100000}` (matching the sibling pattern), OR clear the upgradeLimiter rate-limit key in `beforeEach` for the upgrade-spec describe block. The Date.now() suffix is mechanical and matches the established pattern.
+
+### Items dismissed during architect triage (do NOT address)
+
+- **`accreditation.cleanup.failed` Map.prototype[Symbol.iterator] global patch is race-prone** (P1, 4 reviewers anchor 100) — accepted as an invasive driver trade-off documented inline by the implementer ("future-proofing log-shape pin, real-path companion infeasible without route-file __test_seams expansion"); fails loud not silent. Future refactor of accreditation.ts's cleanupExpiredTokens to expose `__test_seams.cleanupExpiredTokens` would let the spec spy directly, but that's a separate task.
+- **`accreditation.cleanup.failed` setInterval leak + duplicate cleanup interval from `vi.resetModules`** (P1, 2 reviewers anchor 100) — same spec, same root cause, same dismissal as the Map.prototype finding above. Bundled fix is `__test_seams` export.
+- **`config.smtpHost` mutation outside try block in accreditation/settings** (P2 conf 75) — narrow 1-statement leak window; defensive fix declined as preemptive hardening when the gap is a programming error rather than a behavioral path.
+- **`pool.query` patch-once pattern accumulated at 9+ sites across 5 files** (P2 anchor 100 cross-reviewer) — real maintainability/reliability concern but cross-cutting cleanup belongs in its own task, not folded into this archive. Pattern was established in round 1; round-2 didn't introduce a regression in shape.
+- **`findEvent` helper duplicated as 2 named variants + ~28 inline copies** (P2 conf 75) — pure dedup, worker fan-out artifact; not a regression; analogous treatment to the pool.query helper-extract dismissal.
+- **`orcid.callback.token_exchange_failed` logs raw upstream body; test doesn't pin absence of secrets** (P2 anchor 75) — production-code logging-policy decision separate from the test scope; dismissed at user triage. Upstream body is currently bounded by ORCID's documented error responses; leak surface is theoretical.
+- **`settings.email_delete.light_account_login_loss` missing `not.toHaveProperty('email')` guard** (P3 anchor 75) — class-wide cluster of asymmetric CNPD negative-guard coverage across ~11 PII-sensitive emissions. Dismissed at triage as preemptive test hardening when production code is already CNPD-aligned; future symmetric-coverage sweep can address all sites together.
+
+### Re-review signal
+
+When item 1 lands, `git mv` this file from `tasks/pending/` back to `tasks/review/`. The move itself is the re-review signal.
