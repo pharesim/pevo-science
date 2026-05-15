@@ -422,3 +422,16 @@ Add a behavioral test exercising the cascade-fail path at `paper_resolved_votes`
 When items 1, 2, 3, 4 land, `git mv` this file from `tasks/pending/` back to `tasks/review/`. Use bare `backend:` or `backend(<scope>):` commit prefixes so the zone-audit hook fires. The architect's next review pass scopes `/ce-code-review` to commits since `ef137ba`.
 
 Items can fan out independently — natural groupings: item 1 (paper_resolved_votes guard + behavioral test) at `reputation.ts` + extension to `hafsql.test.ts` or a new test file; item 2 (comment fixes) at `hafsql.ts` + `hafsql.test.ts`; item 3 (SQL-shape canary) at `hafsql.test.ts:386`; item 4 (docblock count) at `excludeSelfReviewWhere-callsite-canaries.test.ts`. Items 2 and 3 both touch `hafsql.test.ts` so consider bundling.
+
+## Backend re-review signal (2026-05-15, commit `ba95a4a` on `main`)
+
+All four round-3 hold items addressed in a single commit on `main` post-rebase from worker subagent commit `2e7894c`:
+
+- **Item 1 [P1]** `reputation.ts` `paper_resolved_votes` CTE: wrapped the `jsonb_array_elements(... -> 'authors')` argument with a CASE-WHEN `jsonb_typeof = 'array'` outer guard plus inner `jsonb_typeof(a) = 'object'` element-level guard. Symmetric with the round-1 helper-level guard in `excludeSelfReviewWhere` and the round-2 inner object-type tightening. Behavioral test added in `hafsql.test.ts` covering non-array top-level shapes (null, string, integer, object), array-of-non-objects shapes, and a well-formed control case.
+- **Item 2 [P2]** comment-only fixes at `hafsql.ts:334-341` (helper block comment) and `hafsql.test.ts:519-540` (test block comment). The round-2 prose "named-string co-author NOT admitted" contradicted the actual pinned behavior — the EXISTS subquery's `jsonb_typeof(auth) = 'object'` guard is a cascade-fail defense, not an admission-tightening. Comments now match the code; rationale (denial-of-review attack via malformed metadata) cross-references `pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28`.
+- **Item 3 [P2]** SQL-shape canary at `hafsql.test.ts:386`: added `expect(sql).toContain("jsonb_typeof(auth) = 'object'")` to the first shape `it` block. Reverting the round-2 guard now fails red at the pure-unit layer, not just the HAF-gated behavioral layer.
+- **Item 4 [P3]** docblock prose at `excludeSelfReviewWhere-callsite-canaries.test.ts:385`: bumped "11 callsites" to "12 callsites" and added the reviews.ts entry to the prose listing. The CALLSITES data table already had it at `minOccurrences: 1` since round-1 hold #1; only the prose was out of sync.
+
+Verification: `tsc --noEmit` clean, `npm run lint` clean (0 errors, 2 pre-existing seed-phrase warnings), touched test files pass against real Postgres on retry. HAF connect flakes on first attempt (Mahdi node transient unreachability) resolved on retry per round-2 disposition.
+
+The `git mv` to `tasks/review/` is the re-review signal.
