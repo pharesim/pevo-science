@@ -338,3 +338,87 @@ The architect-owned doc update to `agents/docs/reputation-algorithm.md` document
 
 - **Item 1 behavioral assertion vs code-fix divergence** (described above): architect's hold-block prose says "named-string co-author NOT admitted" but the prescribed code fix doesn't achieve that. Code applied as-written; behavioral test pins actual behavior. Architect to disambiguate whether (a) the code fix is sufficient and the prose is imprecise, or (b) the helper needs an additional string-form match clause.
 - **Item 2 7th callsite** (described above): architect listed `stats.ts:57` among the 7 sites to clean up, but it uses non-default alias `'r'` and per the architect's own retain-rule should keep its explicit arg. Treated as a count discrepancy in the hold block; 6 sites cleaned.
+
+---
+
+## Architect re-review round-3 (2026-05-15) — HELD PENDING FIXES
+
+`/ce-code-review` on commit `ef137ba` dispatched 10 reviewers (correctness, security, adversarial, testing, maintainability, project-standards, performance, reliability, kieran-typescript, ce-learnings-researcher; `ce-agent-native-reviewer` skipped per project CLAUDE.md). All 3 round-2 hold items addressed in form. Round-3 surfaces 4 items held below — 1 P1 that subsumes round-2's stated purpose (cascade-fail path still reachable via a sibling site that bypasses the hardened helper), 2 P2 (the implementer-flagged disambiguation, plus an SQL-shape canary gap), 1 P3 docblock count fix. Item 5 (lattice-coverage gap) dismissed; round-3 disambiguation resolved in favor of the implementer's read — see item 2.
+
+### Items to address
+
+#### P1 — high
+
+**1. (P1) `paper_resolved_votes` CTE has unguarded `jsonb_array_elements(... -> 'authors')` — same cascade-fail class round-2 hold #1 was hardening; round-2's stated purpose is NOT yet achieved.**
+
+**Where:** `backend/src/reputation.ts:594-597` (paper_resolved_votes CTE's NOT EXISTS subquery).
+
+**Why:** Cross-corroborated by reliability (P1, conf 100); architect-verified at the worktree. The round-1 hold #2 framing said "the daily reputation cycle would crash for all users" if a chain post broadcasts `pevo.authors` as a non-array JSONB. Round-2 hardened the `excludeSelfReviewWhere` helper, but `paper_resolved_votes` does its own inline `jsonb_array_elements(up.json_metadata -> $3 -> 'authors')` at line 595 WITHOUT routing through the helper. Same single-transaction `computeReputationBatch` query — the cascade-fail still happens here. A chain post with `authors: null` (or string / integer / object) on any `user_papers` row throws `cannot extract elements from a scalar`, and the entire daily cycle fails for all users. The round-1 #2 framing literally cited this site (lines 555-560) as the canonical precedent shape for the helper's identity predicate, but the helper hardening did not propagate back into the CTE that inspired it.
+
+**Fix:** Wrap the `-> 'authors'` argument with a CASE-WHEN array guard, identical to the helper's round-1 #2 fix:
+
+```sql
+NOT EXISTS (
+  SELECT 1 FROM jsonb_array_elements(
+    CASE WHEN jsonb_typeof(up.json_metadata -> $3 -> 'authors') = 'array'
+         THEN up.json_metadata -> $3 -> 'authors'
+         ELSE '[]'::jsonb
+    END
+  ) a
+  WHERE a ->> 'hive' = plv.voter
+)
+```
+
+Optional structural improvement: extract a helper (e.g., `excludeNamedCoAuthorVotesWhere`) so the next sibling vote-class CTE can't re-introduce the inline shape. Non-blocking — decide at implementation time. If you go that route, also bring the helper through the `excludeSelfReviewWhere-callsite-canaries.test.ts` source-level canary so the new helper has parity coverage with the round-1 #2 sibling.
+
+Add a behavioral test exercising the cascade-fail path at `paper_resolved_votes` (a synthetic `up` row with `authors: null` + a vote row, asserting NOT EXISTS short-circuits without raising). Real-Postgres synthetic-VALUES is fine under carve-out clause-(c) — same shape as the round-1 #2 malformed-shapes matrix in `hafsql.test.ts`. The new test can sit in either `hafsql.test.ts` (as a parallel describe block) or a new `reputation-paper-resolved-votes-malformed-authors-canary.test.ts`; implementer's call.
+
+#### P2 — moderate
+
+**2. (P2) Bare-string co-author admission — implementer-flagged disambiguation resolved: code is correct, hold-block prose was imprecise. Comment-only fixes.**
+
+**Where:** `backend/src/hafsql.ts:334-341` (block comment above the EXISTS predicate) + `backend/tests/hafsql.test.ts:519-540` (block comment above the array-of-non-objects assertion).
+
+**Why:** Cross-corroborated by correctness (P3, conf 75), adversarial (P2, conf 75), maintainability (P3, conf 75), testing (P3, conf 75), security (residual), learnings (cited convention) — 4-reviewer cross-corroboration promotes confidence to 100. The round-2 code fix (`jsonb_typeof(auth) = 'object'` guard inside EXISTS) does NOT exclude bare-string co-author entries from being admitted as non-self reviewers — the test correctly pins `bob_named_as_string` IS admitted under `authors: ["alice","bob"]`. The implementer's argument (per `pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28`) stands: treating bare-string entries as co-author claims would let anyone broadcast `authors: [target]` to lock `target` out of reviewing — a worse vulnerability than the current admit-the-bare-string outcome. **Resolution: code stays as-is; the round-2 hold-block prose was imprecise.**
+
+**Fix:**
+
+(a) Rewrite the comment block at `hafsql.ts:334-341` to accurately describe the admit outcome. Specifically: explain that the `jsonb_typeof(auth) = 'object'` guard prevents the EXISTS subquery from raising on non-object elements (the cascade-fail vector round-2 #1 closed at the helper level), AND that bare-string elements (e.g., `authors: ["alice","bob"]`) are intentionally NOT treated as co-author claims — those reviewers fall through to the second conjunct of `excludeSelfReviewWhere` and ARE admitted as non-self reviewers. Make explicit that the alternative (treat bare strings as identity claims) was rejected because it would enable a cheap denial-of-review attack via malformed metadata broadcast (anyone publishes a non-paper post with `authors: [target]`, target gets locked out of reviewing). Cross-reference `pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28`.
+
+(b) Rewrite the misleading block comment at `hafsql.test.ts:519-540`. The current opening sentence ("so a named-string co-author is NOT admitted as a non-self reviewer") contradicts the assertion below it (`expect(admitted).toEqual(['bob_named_as_string', 'third_party'])` — bob IS admitted). Make the comment match the actual pinned behavior and explain why this is the intended outcome (cross-ref the rationale from item (a)). Keep the test assertion as-is — it pins the correct intentional behavior.
+
+(c) No code-fix to the helper itself.
+
+**3. (P2) SQL-shape pure-unit canary at `hafsql.test.ts:386` does not pin the new `jsonb_typeof(auth) = 'object'` guard — pure-unit layer provides zero mutation kill for round-2's central change.**
+
+**Where:** `backend/tests/hafsql.test.ts:386-410` (the `excludeSelfReviewWhere SQL shape` describe block).
+
+**Why:** Cross-corroborated by testing (P2, conf 100) + kieran-typescript (P3 testing-gap). Per `defense-in-depth-canary-must-pin-each-layer-2026-05-07`, each defense layer needs its own canary. The 3 shape `it` blocks at lines 386-410 assert `c.author != p.author`, `jsonb_array_elements`, `auth ->> 'hive' = c.author`, `NOT EXISTS` — none assert the new guard. Reverting the guard leaves shape tests green; only the HAF-gated behavioral test catches the revert.
+
+**Fix:** Add `expect(sql).toContain("jsonb_typeof(auth) = 'object'")` to the first shape `it` block at line 387. Optionally add the same assertion to the other 2 shape blocks for consistency, but the first site is sufficient mutation kill.
+
+#### P3 — polish
+
+**4. (P3) Docblock prose count drift in `excludeSelfReviewWhere-callsite-canaries.test.ts`: prose says "11 callsites" but the docblock listing omits `reviews.ts` (which IS in the CALLSITES data table at `minOccurrences: 1`).**
+
+**Where:** `backend/tests/excludeSelfReviewWhere-callsite-canaries.test.ts:385` (the `That's 11 callsites` line + the docblock listing immediately above it).
+
+**Why:** Maintainability (P3, conf 75). Sum of `minOccurrences` across the CALLSITES data table = papers(3) + profile(2) + search(1) + stats(1) + reviews(1) + reputation(4) = 12. The docblock listing above the count line enumerates papers / profile / search / stats / reputation but omits the reviews.ts entry. Pre-existing -1 drift extended by this round to a -1 (reviews.ts was missing from the listing in round-1 hold #1's lift-in too). A future maintainer reconciling prose against the data table will get confused which basis the number uses.
+
+**Fix:** Bump prose to "12 callsites" and add `- reviews.ts: fetchReviewFromHaf single-doc fetch (round-1 hold #1)` to the docblock listing. One-line edit + count update.
+
+### Findings dismissed at triage (residual, no action)
+
+- **(learnings, conf 100) — Behavioral matrix missing 4 array-element-axis rows from `hold-block-shape-coverage-must-walk-full-lattice-2026-05-14`.** Missing rows: `[1,2,3]` (integer-element array), `[{hive:null}]` (object with JSONB null at discriminator), `[{hive:'alice'},'bob']` (mixed valid+string), `[{hive:'alice'},{name:'bob'}]` (mixed valid+invalid-object). Per the convention author's own analysis, all 4 shapes behave correctly under current code (no throw, no over-admission shift). The gap is theoretical lattice-coverage, not live regression risk. **Dismissed per `feedback_dismiss_preemptive_test_hardening`** — preemptive hardening of already-correct behavior defaults to dismiss; if a real regression class shows up later, file then.
+
+### Pre-existing findings surfaced (no action this task; informational)
+
+- **adversarial — edit-after-self-review race.** Paper author edits `authors[]` to remove a named co-author after their self-5/5/5/5 review lands; next cycle re-admits. Symmetric with `paper_resolved_votes`'s same edit-after-vote race against `authors[]` mutability. Round-1 dismissed as residual; carries over.
+- **adversarial — anon-proxy bypass.** Reviews routed via `hiveAnonAccount` ($19) bypass `excludeSelfReviewWhere` entirely (the proxy identity is neither paper-author nor named-co-author, so the helper admits regardless of the true reviewer). Privacy-vs-self-exclusion trade-off; out of scope.
+- **reliability (P2) — `notification-queries.ts:329, 358` use unguarded `jsonb_array_elements(... -> 'citations')`.** Same vulnerability class as item 1 but on `citations`, not `authors`. Sibling sites at `profile.ts:110`, `stats.ts:72`, `reputation.ts:781` all have the `jsonb_typeof = 'array'` guard. Per-user query failure (not cascade-fail across cycle). Pre-existing; not introduced by this commit. Worth a separate follow-up task if the architect wants the convention applied universally, deferred to user triage.
+
+### Re-review signal
+
+When items 1, 2, 3, 4 land, `git mv` this file from `tasks/pending/` back to `tasks/review/`. Use bare `backend:` or `backend(<scope>):` commit prefixes so the zone-audit hook fires. The architect's next review pass scopes `/ce-code-review` to commits since `ef137ba`.
+
+Items can fan out independently — natural groupings: item 1 (paper_resolved_votes guard + behavioral test) at `reputation.ts` + extension to `hafsql.test.ts` or a new test file; item 2 (comment fixes) at `hafsql.ts` + `hafsql.test.ts`; item 3 (SQL-shape canary) at `hafsql.test.ts:386`; item 4 (docblock count) at `excludeSelfReviewWhere-callsite-canaries.test.ts`. Items 2 and 3 both touch `hafsql.test.ts` so consider bundling.
