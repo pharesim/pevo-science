@@ -214,7 +214,7 @@ async function findKnownAccreditationIdempotencyOp(): Promise<AccreditFixture | 
 describe('findCustodyBroadcastByIdempotencyKey — real HAF SQL shape', () => {
   it.skipIf(!isHafConfigured())(
     'returns null for a never-broadcast idempotency key (negative miss)',
-    { timeout: 60_000 },
+    { timeout: 60_000, retry: 5 },
     async (ctx) => {
       const pool = getPool();
       if (!pool) {
@@ -239,7 +239,7 @@ describe('findCustodyBroadcastByIdempotencyKey — real HAF SQL shape', () => {
 
   it.skipIf(!isHafConfigured())(
     'returns null when scoped to opType:"comment" with a never-used key',
-    { timeout: 60_000 },
+    { timeout: 60_000, retry: 5 },
     async (ctx) => {
       const pool = getPool();
       if (!pool) {
@@ -260,7 +260,7 @@ describe('findCustodyBroadcastByIdempotencyKey — real HAF SQL shape', () => {
 
   it.skipIf(!isHafConfigured())(
     'returns null when scoped to opType:"custom_json" with a never-used key',
-    { timeout: 60_000 },
+    { timeout: 60_000, retry: 5 },
     async (ctx) => {
       const pool = getPool();
       if (!pool) {
@@ -281,7 +281,7 @@ describe('findCustodyBroadcastByIdempotencyKey — real HAF SQL shape', () => {
 
   it.skipIf(!isHafConfigured())(
     'positive hit returns IdempotencyHit with matching tx_id and block_num',
-    { timeout: 60_000 },
+    { timeout: 60_000, retry: 5 },
     async (ctx) => {
       const pool = getPool();
       if (!pool) {
@@ -315,7 +315,7 @@ describe('findCustodyBroadcastByIdempotencyKey — real HAF SQL shape', () => {
 
   it.skipIf(!isHafConfigured())(
     'per-route scoping: another username with the same key returns null',
-    { timeout: 60_000 },
+    { timeout: 60_000, retry: 5 },
     async (ctx) => {
       const pool = getPool();
       if (!pool) {
@@ -351,7 +351,7 @@ describe('findCustodyBroadcastByIdempotencyKey — real HAF SQL shape', () => {
 describe('findAccreditationBroadcastByIdempotencyKey — real HAF SQL shape', () => {
   it.skipIf(!isHafConfigured())(
     'returns null for a never-broadcast accreditation idempotency key (negative miss)',
-    { timeout: 60_000 },
+    { timeout: 60_000, retry: 5 },
     async (ctx) => {
       const pool = getPool();
       if (!pool) {
@@ -367,7 +367,7 @@ describe('findAccreditationBroadcastByIdempotencyKey — real HAF SQL shape', ()
 
   it.skipIf(!isHafConfigured())(
     'positive hit returns IdempotencyHit with matching tx_id and block_num',
-    { timeout: 60_000 },
+    { timeout: 60_000, retry: 5 },
     async (ctx) => {
       const pool = getPool();
       if (!pool) {
@@ -395,7 +395,7 @@ describe('findAccreditationBroadcastByIdempotencyKey — real HAF SQL shape', ()
 
   it.skipIf(!isHafConfigured())(
     'per-route scoping: non-authority self-broadcast carrying the same key returns null',
-    { timeout: 60_000 },
+    { timeout: 60_000, retry: 5 },
     async (ctx) => {
       const pool = getPool();
       if (!pool) {

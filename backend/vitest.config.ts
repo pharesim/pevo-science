@@ -22,8 +22,12 @@ export default defineConfig(({ mode }) => {
       include: ['tests/**/*.test.ts'],
       testTimeout: 30_000,
       hookTimeout: 15_000,
-      maxWorkers: 3,
-      retry: 1,
+      // maxWorkers=2 + retry=3: the external HAF SQL endpoint has limited
+      // connection capacity, so 3+ concurrent test files saturate it and
+      // tests fail with ECONNRESET/ETIMEDOUT bursts. retry=3 absorbs the
+      // residual flake when both workers happen to hit a transient drop.
+      maxWorkers: 2,
+      retry: 3,
       setupFiles: ['tests/setup.ts'],
       coverage: {
         provider: 'v8',

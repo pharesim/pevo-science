@@ -256,7 +256,7 @@ describe('reputation-batch internals: prev_scores rehydration uses batchMapToSco
   // Redis, covering the {username: score} shape behaviorally — a
   // hand-rolled loop that produces the wrong shape would surface there.
   // This test pins the structural usage so a refactor revert is caught.
-  it('runBatchComputation invokes batchMapToScoreRecord on the default-param path', async (ctx) => {
+  it('runBatchComputation invokes batchMapToScoreRecord on the default-param path', { retry: 5, timeout: 30_000 }, async (ctx) => {
     const redis = getRedis();
     if (!redis) return ctx.skip(true, 'Redis unavailable');
     // Seed a prior cycle's prod entry so `prevScores` rehydration has

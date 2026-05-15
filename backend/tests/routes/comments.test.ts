@@ -81,7 +81,7 @@ describe('GET /api/papers/:author/:permlink/comments', () => {
   // through the SQL query. If the comment ever stops appearing here,
   // either the SQL regressed or the underlying chain object was
   // retracted — both worth a failing test.
-  it('returns both PEvO-authored and non-PEvO-authored replies by accredited scientists', { timeout: 60_000 }, async () => {
+  it('returns both PEvO-authored and non-PEvO-authored replies by accredited scientists', { timeout: 60_000, retry: 5 }, async () => {
     const PAPER_AUTHOR = 'jesusalejos';
     const PAPER_PERMLINK = 'tica-y-meta-antropologa-una-aproximacin-al-sentido-de-la-tecnologa-hoy-en-hans-urs-von-balthasar-mp2t81qb';
     // PEvO-authored: app=pevotest/0.1, pevotest.type='comment'
