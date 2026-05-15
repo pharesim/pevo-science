@@ -887,33 +887,11 @@ sv: common.verifyInSettings
 tr: common.verifyInSettings
 zh: common.verifyInSettings
 
-### Added 2026-05-15 (UI-KEYCHAIN-API-MISUSE)
+### Added 2026-05-15 (ui-keychain-api-misuse)
 
-ar: upgrade.backendTimeout
-cs: upgrade.backendTimeout
-da: upgrade.backendTimeout
-de: upgrade.backendTimeout
-es: upgrade.backendTimeout
-fa: upgrade.backendTimeout
-fr: upgrade.backendTimeout
-he: upgrade.backendTimeout
-it: upgrade.backendTimeout
-nl: upgrade.backendTimeout
-pl: upgrade.backendTimeout
-pt: upgrade.backendTimeout
-sv: upgrade.backendTimeout
-tr: upgrade.backendTimeout
-zh: upgrade.backendTimeout
-
-### Updated 2026-05-15 (UI-KEYCHAIN-API-MISUSE round-6)
-
-English source text for `upgrade.backendTimeout` changed in this commit
-(see settings.js round-6 hold #1 — wipe-on-timeout reverted, copy now
-directs the user to verify Keychain or contact support with their account
-name rather than implying mnemonic-based recovery). The 15 locale stubs
-below were re-stubbed with the new English text. Existing `Added` entries
-above still mark these keys as untranslated; translators can resolve via
-either section.
+English source text for `upgrade.backendTimeout` was revised after the
+initial 2026-05-15 stub. The 15 locale stubs below were re-stubbed with
+the current English copy.
 
 ar: upgrade.backendTimeout
 cs: upgrade.backendTimeout

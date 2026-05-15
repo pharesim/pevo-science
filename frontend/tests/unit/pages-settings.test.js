@@ -1791,8 +1791,10 @@ describe('settingsPage', () => {
         expect(comp.upgradeError).toBe('upgrade.backendTimeout');
         // Mnemonic IS wiped (round-6 hold #1): the user already confirmed
         // the new mnemonic in earlier phases and the error-screen copy
-        // directs them to verify Keychain or contact support with their
-        // account name, not to recover from the in-DOM mnemonic.
+        // (round-7 hold #1) directs them to contact support with their
+        // account name, not to recover from the in-DOM mnemonic. The
+        // Keychain-verification path was removed because `_performKeychainImport`
+        // never runs on the timeout branch — Keychain has no entry to verify.
         expect(comp.newSeedPhrase).toBe('');
         expect(comp.oldSeedPhrase).toBe('');
 
@@ -1800,6 +1802,31 @@ describe('settingsPage', () => {
       } finally {
         vi.useRealTimers();
       }
+    });
+
+    // FE-KEYCHAIN-API-MISUSE round-7 hold #2 (P1): the "Try Again" button
+    // is a dead-end on the backend-timeout sub-case. resetUpgrade() flips
+    // phase to 'idle'; the user clicks Start; startUpgrade() generates a
+    // NEW mnemonic; user re-enters their original light-account old seed;
+    // _performUpgradeKeyRotation signs account_update with old seed-derived
+    // keys; chain rejects with Missing Authority because the chain's owner
+    // key is now the prior attempt's mnemonic (rotation already landed).
+    // The button must therefore be hidden on this sub-case and present on
+    // every other error sub-case (generic upgrade.failed, keychainRequired,
+    // generationFailed). The `canRetryUpgrade` getter drives the button's
+    // x-show binding; these specs assert the getter directly so a refactor
+    // that re-enables the dead-end (drops x-show, inverts the comparison,
+    // renames the getter) fails here.
+    it('canRetryUpgrade: false on backend-timeout sub-case (Try Again hidden)', () => {
+      const comp = createComponent();
+      comp.upgradeError = comp.$t('upgrade.backendTimeout');
+      expect(comp.canRetryUpgrade).toBe(false);
+    });
+
+    it('canRetryUpgrade: true on generic error sub-case (Try Again shown)', () => {
+      const comp = createComponent();
+      comp.upgradeError = comp.$t('upgrade.failed');
+      expect(comp.canRetryUpgrade).toBe(true);
     });
   });
 

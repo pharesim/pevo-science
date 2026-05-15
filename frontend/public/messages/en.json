@@ -992,7 +992,7 @@
     "execute": "Upgrade Account",
     "invalidOldSeed": "Invalid recovery phrase. Please check and try again.",
     "backendFailed": "Account upgrade notification failed.",
-    "backendTimeout": "Backend cleanup did not confirm in time. Your on-chain keys have already rotated. If Hive Keychain shows your account with posting, active, and memo keys, you are safe to continue. Otherwise contact support with your account name. Do not share your recovery phrase.",
+    "backendTimeout": "Backend cleanup did not confirm in time. Your on-chain keys have already rotated, but Hive Keychain has not been updated yet. Please contact support with your account name. Do not share your recovery phrase.",
     "upgrading": "Upgrading your account…",
     "doneTitle": "Upgrade Complete",
     "doneDescription": "Your account is now fully self-custodied via Hive Keychain. Keep your old recovery phrase for 30 days as a backup.",

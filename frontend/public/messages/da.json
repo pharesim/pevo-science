@@ -971,7 +971,7 @@
     "execute": "Opgrader konto",
     "invalidOldSeed": "Ugyldig gendannelsesfrase. Kontrollér og prøv igen.",
     "backendFailed": "Notifikation om kontoopgradering mislykkedes.",
-    "backendTimeout": "Backend cleanup did not confirm in time. Your on-chain keys have already rotated. If Hive Keychain shows your account with posting, active, and memo keys, you are safe to continue. Otherwise contact support with your account name. Do not share your recovery phrase.",
+    "backendTimeout": "Backend cleanup did not confirm in time. Your on-chain keys have already rotated, but Hive Keychain has not been updated yet. Please contact support with your account name. Do not share your recovery phrase.",
     "upgrading": "Opgraderer din konto…",
     "doneTitle": "Opgradering færdig",
     "doneDescription": "Din konto er nu fuldt selvforvaltet via Hive Keychain. Behold din gamle gendannelsesfrase i 30 dage som sikkerhedskopi.",

@@ -37,7 +37,14 @@ const template = `
                   <div class="bg-red-50 border border-red-200 rounded-lg p-4 mb-4">
                     <p class="text-red-700 text-sm" x-text="upgradeError"></p>
                   </div>
-                  <button @click="resetUpgrade()" class="text-pevo-teal hover:underline text-sm" x-text="$t('common.tryAgain')"></button>
+                  <!-- "Try Again" is hidden on the backend-timeout sub-case
+                       because resetUpgrade()→startUpgrade() generates a new
+                       mnemonic and re-broadcasts account_update with the
+                       OLD seed-derived keys, which the chain rejects (the
+                       prior attempt's rotation already landed). The copy
+                       on this sub-case routes the user to support; no
+                       in-app retry is meaningful. See round-7 hold item #2. -->
+                  <button x-show="canRetryUpgrade" @click="resetUpgrade()" class="text-pevo-teal hover:underline text-sm" x-text="$t('common.tryAgain')"></button>
                 </div>
 
                 <!-- Step 1: New seed phrase display -->
@@ -402,6 +409,21 @@ export function initSettingsPage() {
       return this.confirmIndices.every(
         (i) => this.confirmInputs[i]?.trim().toLowerCase() === this.newSeedWords[i]
       );
+    },
+
+    // Drives the "Try Again" button visibility on the error screen. False
+    // when upgradeError reflects the backend-cleanup-timeout sub-case
+    // (round-7 hold item #2): on that path the on-chain account_update has
+    // already landed, so a fresh attempt would sign account_update with the
+    // OLD seed-derived keys and the chain would reject it (auth mismatch).
+    // The error-copy on that sub-case directs the user to support; the
+    // in-app retry path is structurally unavailable. The comparison is
+    // against `$t('upgrade.backendTimeout')` rather than the literal key
+    // because upgradeError holds the translated string in production (and
+    // the key in unit tests where $t is mocked to return its key) — `$t`
+    // bridges both modes.
+    get canRetryUpgrade() {
+      return this.upgradeError !== this.$t('upgrade.backendTimeout');
     },
 
     // Set-password validity mirrors signup/recover password policy

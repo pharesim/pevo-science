@@ -971,7 +971,7 @@
     "execute": "Uppgradera konto",
     "invalidOldSeed": "Ogiltig återställningsfras. Kontrollera och försök igen.",
     "backendFailed": "Avisering om kontouppgradering misslyckades.",
-    "backendTimeout": "Backend cleanup did not confirm in time. Your on-chain keys have already rotated. If Hive Keychain shows your account with posting, active, and memo keys, you are safe to continue. Otherwise contact support with your account name. Do not share your recovery phrase.",
+    "backendTimeout": "Backend cleanup did not confirm in time. Your on-chain keys have already rotated, but Hive Keychain has not been updated yet. Please contact support with your account name. Do not share your recovery phrase.",
     "upgrading": "Uppgraderar ditt konto…",
     "doneTitle": "Uppgradering klar",
     "doneDescription": "Ditt konto är nu fullt självförvaltande via Hive Keychain. Behåll din gamla återställningsfras i 30 dagar som säkerhetskopia.",
