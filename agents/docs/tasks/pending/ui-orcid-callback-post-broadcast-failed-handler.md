@@ -84,3 +84,30 @@ The backend already emits the correct envelope (`code: POST_BROADCAST_FAILED`, `
 
 - Backend companion task already shipped (`09e01e3`). Backend is NOT blocked on this UI task — the 502 path is correct on the wire; only the SPA UX is wrong.
 - Cluster 2 task 6 (`ui-orcid-callback-retriable-machinery-remove.md`) can archive independently; the machinery-removal cleanup is correct and orthogonal to this new branch.
+
+## Architect re-review (2026-05-15) — HELD PENDING FIXES:
+
+Round-1 implementation at commit `9fe875d` lands the `POST_BROADCAST_FAILED` + `details.outcome === 'confirmed'` branch correctly. `/ce-code-review` was clean on correctness, security, reliability, project-standards, testing, maintainability, and learnings. **One item from the api-contract reviewer (conf 95) blocks archive:** the new branch needs to also match the sibling code `POST_BROADCAST_OPERATOR_REQUIRED`, otherwise the permanent-severity half of the cascade-failure space falls through to the generic verification-failed + `/recover` path — recreating the exact UX bug this task was filed to fix.
+
+This is a scope gap in my original task spec, not an implementer miss. The spec referenced `agents/docs/api-contracts/orcid.md:203-208` only, and orcid.md itself did not document `POST_BROADCAST_OPERATOR_REQUIRED` (it does now — I edited orcid.md in the same review session to add the sibling-code bullet; see the section on `POST_BROADCAST_OPERATOR_REQUIRED` under the accredit/link errors). The cross-resource MUST in `agents/docs/api-contracts/common.md:74` says clients keying on `POST_BROADCAST_FAILED` for cascade failures MUST also include `POST_BROADCAST_OPERATOR_REQUIRED`. Backend emits it from the same ORCID route (orcid.ts:871-886 for accredit, orcid.ts:1035-1039 for link) when `PostBroadcastWriteError.severity === 'permanent'` — TypeError/SyntaxError/RangeError or SQLSTATE class `23*`/`42*`.
+
+### What needs to land
+
+1. **Second branch** in `frontend/src/pages/orcid-callback.js` `_verify()` catch — match `err.code === 'POST_BROADCAST_OPERATOR_REQUIRED' && err?.details?.outcome === 'confirmed'`. Same discriminator load-bearing rule (any other outcome / absent details falls through to the generic path). The two branches MUST NOT share copy — per `common.md:74` and the new orcid.md OPERATOR_REQUIRED bullet, `POST_BROADCAST_FAILED` should indicate automatic reconciliation, while `POST_BROADCAST_OPERATOR_REQUIRED` should indicate operator/support contact (the "give it a moment to sync" framing is misleading for the permanent class).
+
+2. **Second i18n key** `orcid.postBroadcastOperatorRequired` in `frontend/public/messages/en.json` with copy along the lines of: "Your ORCID is linked. A follow-up step needs manual attention; please contact support if your linkage does not appear in Settings shortly." (UI agent owns exact wording. No emdashes.) Stub in the 15 other locale files and append a row to `frontend/public/messages/STUBS.md` under a fresh sweep heading. The `errorAction` for this branch should also be `'settings'` (the CTA path is correct — verify in Settings) so no template change is needed; the message itself carries the operator-contact framing.
+
+3. **Mirror unit tests** in `frontend/tests/unit/pages-orcid-callback.test.js`:
+   - happy path: 502 with `code === 'POST_BROADCAST_OPERATOR_REQUIRED'` and `details.outcome === 'confirmed'` renders the operator-required message and `errorAction === 'settings'`, NOT `'recover'`.
+   - mutation guards: same three fallthrough cases (missing outcome, wrong outcome, no details) for the OPERATOR_REQUIRED code, mirroring the existing POST_BROADCAST_FAILED tests.
+
+4. **errorAction comment** on line ~69 of `orcid-callback.js` — extend the inline enumeration to mention both POST_BROADCAST_FAILED and POST_BROADCAST_OPERATOR_REQUIRED.
+
+### Out of scope for this hold round
+
+- The CTA-label issue (`common.tryAgain` is the wrong verb on the `errorAction === 'settings'` template path — "Try Again" after "Your ORCID is linked"). I filed this as a separate UI task at `tasks/pending/ui-orcid-callback-settings-cta-label.md` because it also affects the BROADCAST_TIMEOUT branch and is orthogonal to the POST_BROADCAST_OPERATOR_REQUIRED contract gap.
+- Changing the wording of the existing `orcid.postBroadcastFailedConfirmed` string — it is correct for the transient (auto-reconciling) class.
+
+### Architect signal
+
+After landing the four items above, `git mv` this file back to `tasks/review/`. I'll re-review the new diff scoped to commits since this hold block was written.
