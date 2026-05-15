@@ -11,6 +11,16 @@
  *       (b) TemplateLiteral (no interp): `` `bridge_paper` ``
  *       (c) Array.prototype.join with literal array + literal sep:
  *           `['bridge', 'paper'].join('_')`
+ *   - Default `.join()` (no separator argument) uses the JS-runtime ',' default;
+ *     `['bridge_paper'].join()` therefore resolves to `'bridge_paper'` and IS
+ *     flagged (pins the default-comma branch of the resolver).
+ *   - Mixed-form constant folding (concat + template, concat + join) — exercises
+ *     the recursion through heterogeneous resolvable nodes.
+ *   - TS-only wrapper nodes (TSAsExpression / TSNonNullExpression /
+ *     TSTypeAssertion) — `'bridge_paper' as const`, `'bridge_paper'!`,
+ *     `<string>'bridge_paper'`. Accidental-bypass forms inside the rule's
+ *     stated scope; the recursion unwraps them. Requires the TS parser, so a
+ *     second RuleTester drives these cases.
  *   - Allowlisted by named file (src/hafsql.ts, src/helpers.ts, src/bridge.ts)
  *     → silent.
  *   - Allowlisted by structural-path glob (src/types/**) → silent.
@@ -19,6 +29,9 @@
  *   - Out-of-scope runtime constructions (`.toLowerCase()`, `.slice()`,
  *     `String.fromCharCode(...)`) → silent (documented evasion, not lint
  *     enforcement; this test pins the scope).
+ *   - `.join()` with a non-resolvable array element bails out (returns null);
+ *     a valid test pins the in-scope-by-design bail-out so the early-return
+ *     can't be silently removed.
  *
  * The rule is exported from `eslint.config.mjs` so RuleTester can drive it
  * directly without spinning up the full ESLint engine. We pass synthetic
@@ -28,6 +41,7 @@
 import { RuleTester } from 'eslint';
 // @ts-expect-error — eslint.config.mjs has no .d.ts; the named export is the rule object
 import { noBridgePaperLiteralRule } from '../../eslint.config.mjs';
+import tsParser from '@typescript-eslint/parser';
 import path from 'node:path';
 
 const backendRoot = path.resolve(__dirname, '..', '..');
@@ -38,6 +52,17 @@ function abs(rel: string): string {
 
 const ruleTester = new RuleTester({
   languageOptions: {
+    ecmaVersion: 2022,
+    sourceType: 'module',
+  },
+});
+
+// Separate RuleTester wired to @typescript-eslint/parser so TS-only wrapper
+// nodes (TSAsExpression / TSNonNullExpression / TSTypeAssertion) parse into
+// the AST the rule unwraps.
+const tsRuleTester = new RuleTester({
+  languageOptions: {
+    parser: tsParser,
     ecmaVersion: 2022,
     sourceType: 'module',
   },
@@ -105,6 +130,15 @@ ruleTester.run('pevo/no-bridge-paper-literal', noBridgePaperLiteralRule, {
       filename: abs('src/routes/papers.ts'),
       code: "const sep = '_'; const x = ['bridge', 'paper'].join(sep);",
     },
+    // Join with a non-resolvable array ELEMENT — pins the in-scope-by-design
+    // bail-out at `if (part === null) return null` in `resolveStringValue`.
+    // A `.join()` over a literal array containing a variable element must
+    // NOT fire; this case locks the contract against accidental removal of
+    // the early-return.
+    {
+      filename: abs('src/routes/papers.ts'),
+      code: "const sep = '_'; const x = ['bridge', sep, 'paper'].join('_');",
+    },
   ],
   invalid: [
     // Direct single-quoted literal in a non-allowlisted file.
@@ -141,6 +175,85 @@ ruleTester.run('pevo/no-bridge-paper-literal', noBridgePaperLiteralRule, {
     {
       filename: abs('src/routes/papers.ts'),
       code: "const x = ('bri' + 'dge_') + 'paper';",
+      errors: [{ messageId: 'forbidden' }],
+    },
+    // Default `.join()` (no separator argument) — JS-runtime default is ','.
+    // A singleton array of `'bridge_paper'` joined with the default separator
+    // resolves to `'bridge_paper'` and MUST fire. Pins the `sep = ','` default
+    // branch of the resolver.
+    {
+      filename: abs('src/routes/papers.ts'),
+      code: "const x = ['bridge_paper'].join();",
+      errors: [{ messageId: 'forbidden' }],
+    },
+    // Mixed-form (a): concat + template — `'bridge_' + \`paper\`` exercises
+    // the BinaryExpression branch recursing into TemplateLiteral.
+    {
+      filename: abs('src/routes/papers.ts'),
+      code: "const x = 'bridge_' + `paper`;",
+      errors: [{ messageId: 'forbidden' }],
+    },
+    // Mixed-form (b): concat + join — `'bridge_' + ['paper'].join('')`
+    // exercises the BinaryExpression branch recursing into a CallExpression
+    // (Array.join) whose array contains a string literal.
+    {
+      filename: abs('src/routes/papers.ts'),
+      code: "const x = 'bridge_' + ['paper'].join('');",
+      errors: [{ messageId: 'forbidden' }],
+    },
+  ],
+});
+
+// TS-only wrapper-node coverage. These forms parse into TSAsExpression /
+// TSNonNullExpression / TSTypeAssertion ESTree nodes which the rule
+// transparently unwraps. They're accidental-bypass forms — idiomatic-TS
+// authors reaching for `as const` / `!` / `<T>` without realizing the rule
+// previously bailed silently on them — so they sit squarely inside the
+// rule's "catch ACCIDENTAL bypasses" scope.
+tsRuleTester.run('pevo/no-bridge-paper-literal (TS wrappers)', noBridgePaperLiteralRule, {
+  valid: [
+    // Sanity: a wrapper around an UNRELATED literal must NOT fire — confirms
+    // the unwrap doesn't broaden the rule.
+    {
+      filename: abs('src/routes/papers.ts'),
+      code: "const x = 'hello' as const;",
+    },
+    // Wrappers inside allowlisted files stay silent.
+    {
+      filename: abs('src/hafsql.ts'),
+      code: "const x = 'bridge_paper' as const;",
+    },
+  ],
+  invalid: [
+    // TSAsExpression: `'bridge_paper' as const`
+    {
+      filename: abs('src/routes/papers.ts'),
+      code: "const x = 'bridge_paper' as const;",
+      errors: [{ messageId: 'forbidden' }],
+    },
+    // TSAsExpression with explicit type: `'bridge_paper' as string`
+    {
+      filename: abs('src/routes/papers.ts'),
+      code: "const x = 'bridge_paper' as string;",
+      errors: [{ messageId: 'forbidden' }],
+    },
+    // TSNonNullExpression: `'bridge_paper'!`
+    {
+      filename: abs('src/routes/papers.ts'),
+      code: "const x = 'bridge_paper'!;",
+      errors: [{ messageId: 'forbidden' }],
+    },
+    // TSTypeAssertion: `<string>'bridge_paper'`
+    {
+      filename: abs('src/routes/papers.ts'),
+      code: "const x = <string>'bridge_paper';",
+      errors: [{ messageId: 'forbidden' }],
+    },
+    // Wrapper composing with constant-folding: `('bridge_' as const) + 'paper'`
+    // — exercises BinaryExpression recursion into TSAsExpression.
+    {
+      filename: abs('src/routes/papers.ts'),
+      code: "const x = ('bridge_' as const) + 'paper';",
       errors: [{ messageId: 'forbidden' }],
     },
   ],

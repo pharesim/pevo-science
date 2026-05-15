@@ -60,11 +60,27 @@ function isAllowlistedFile(absoluteFilePath, configDir) {
 //                                     resolvable string values and the
 //                                     argument (if present) is a string
 //                                     literal separator.
+//   - TS-only wrapper nodes:          'bridge_paper' as const, 'bridge_paper' as string,
+//                                     'bridge_paper'!, <string>'bridge_paper'
+//                                     (TSAsExpression / TSNonNullExpression /
+//                                     TSTypeAssertion — unwrap and recurse on
+//                                     the underlying expression; these are
+//                                     idiomatic-TS forms that would otherwise
+//                                     silently bail the recursion).
 // Anything outside these forms returns null — runtime-only constructions
 // (toLowerCase, slice, fromCharCode) are documented evasion that requires
 // code-review attention, NOT lint enforcement.
 function resolveStringValue(node) {
   if (!node) return null;
+  // Unwrap TS-only wrapper nodes — accidental-bypass forms inside the rule's
+  // stated scope. The wrapped child sits on `.expression` for all three.
+  if (
+    node.type === 'TSAsExpression'
+    || node.type === 'TSNonNullExpression'
+    || node.type === 'TSTypeAssertion'
+  ) {
+    return resolveStringValue(node.expression);
+  }
   if (node.type === 'Literal' && typeof node.value === 'string') {
     return node.value;
   }

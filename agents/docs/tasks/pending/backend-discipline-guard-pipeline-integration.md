@@ -223,3 +223,54 @@ These do NOT block backend's round-3 commit — architect lands them when this t
 - **`@ts-expect-error` on the `.mjs` import propagates `any` into `RuleTester.run()`** (kieran-typescript KT-01 conf 60) — theoretical failure mode; runtime RuleTester validation catches malformed rules today. Memory `feedback_dismiss_preemptive_test_hardening` analogy applies — wait until ESLint 10 or similar surfaces a real regression.
 
 When the four held items land, `git mv` this file back to `tasks/review/` for re-review and archive.
+
+---
+
+## Backend re-review signal (2026-05-15, commit SHA `d61b453`)
+
+All four held items landed. Summary by item:
+
+### Item 1 — TS wrapper expressions now unwrap in `resolveStringValue`
+
+`backend/eslint.config.mjs` — extended `resolveStringValue` with an early branch that unwraps `TSAsExpression`, `TSNonNullExpression`, and `TSTypeAssertion` and recurses on `.expression`. All three TS-AST nodes carry the wrapped child on `.expression` (verified against `@typescript-eslint/parser` ~v8.59 output for `'bridge_' as const`, `'bridge_'!`, and `<string>'bridge_'`). The unwrap runs before the existing `Literal` / `TemplateLiteral` / `BinaryExpression` / `CallExpression` branches so a wrapper at any depth composes naturally with constant-folding (e.g., `('bridge_' as const) + 'paper'` resolves through `BinaryExpression → TSAsExpression → Literal`). Header comment on `resolveStringValue` updated to enumerate the new TS-wrapper case.
+
+### Item 2 — `.join()` bail-out on non-resolvable element pinned (valid case)
+
+`backend/tests/eslint/no-bridge-paper-literal.test.ts` — added a valid case `const sep = '_'; const x = ['bridge', sep, 'paper'].join('_');` on a non-allowlisted filename. Pins the `if (part === null) return null` branch at the `.join()` array-element resolution site; locks the contract against accidental removal of the early-return.
+
+### Item 3 — Default `.join()` (no separator argument) pinned (invalid case)
+
+Same test file — added an invalid case `const x = ['bridge_paper'].join();` (singleton array, no separator argument). The resolver's `sep = ','` default matches JS runtime `[].join()` semantics; the singleton joins to `'bridge_paper'` and the rule fires. Pins the default-comma branch.
+
+### Item 4 — Mixed-form constant folding pinned (two invalid cases)
+
+Same test file — added two invalid cases:
+- `const x = 'bridge_' + \`paper\`;` (concat + template) — exercises `BinaryExpression` recursing into `TemplateLiteral`.
+- `const x = 'bridge_' + ['paper'].join('');` (concat + join) — exercises `BinaryExpression` recursing into a `CallExpression` (Array.join) whose array contains a string literal.
+
+### Test suite delta
+
+- Test count: 17 → 28 (+11 cases). New valid: 1 (Item 2's `.join()` array-element bail-out) + 2 (TS-wrapper sanity: unrelated literal + allowlisted-file wrapper). New invalid: 1 (Item 3 default-`.join()`) + 2 (Item 4 mixed-form) + 5 (TS-wrapper invalids: `as const`, `as string`, `!`, `<string>`, wrapper-in-concat).
+- The TS-wrapper cases require `@typescript-eslint/parser` since plain `espree` doesn't parse `TSAsExpression` / `TSNonNullExpression` / `TSTypeAssertion`. A second `RuleTester` configured with `parser: tsParser` drives those cases; the existing parser-free `RuleTester` continues to drive the non-TS cases.
+
+### Verification gates
+
+- `npx vitest run tests/eslint/no-bridge-paper-literal.test.ts` — 28 passed.
+- `cd backend && npx tsc --noEmit` — clean.
+- `cd backend && npm run lint` — clean (two pre-existing `@typescript-eslint/no-explicit-any` warnings in `src/seed-phrase.ts` unrelated).
+- Smoke test: temporary `backend/src/__violation_smoke__.ts` exercising all 5 TS-wrapper forms (`as const`, `as string`, `!`, `<string>`, wrapper-in-concat) — rule fires 5 times with the expected message; file deleted; clean lint re-verified.
+
+### Updated `[TODO Architect]` coverage characterization
+
+The convention-doc bullet above (Acceptance #5) needs one refinement when the architect lands the doc update:
+
+- In-scope coverage now includes the TS-only wrapper forms `TSAsExpression` (`'bridge_paper' as const`, `'bridge_paper' as string`), `TSNonNullExpression` (`'bridge_paper'!`), and `TSTypeAssertion` (`<string>'bridge_paper'`) — these unwrap transparently and compose with the existing constant-folding (concat, template, join).
+- Remaining out-of-scope evasion (documented as "known evasion requiring code-review attention", not lint enforcement): `.toLowerCase()`, `.slice()`, `String.fromCharCode(...)`, template-literal interpolation, non-literal `.join()` separator, and the architect-zone follow-up additions surfaced at re-review (`.concat()`, JSDoc/comment literals — code-review concern now that AST visits only executable nodes).
+
+### Files touched in this commit
+
+- `backend/eslint.config.mjs` — `resolveStringValue` TS-wrapper unwrap branch + header comment update.
+- `backend/tests/eslint/no-bridge-paper-literal.test.ts` — 11 new cases (1 valid + 5 invalid in the parser-free suite, 2 valid + 5 invalid in the new TS-parser suite) + `@typescript-eslint/parser` import.
+- `agents/docs/tasks/pending/backend-discipline-guard-pipeline-integration.md` — this signal block.
+
+When ready, this file moves back to `tasks/review/` for the architect's re-review pass (parent serializes the `git mv`).
