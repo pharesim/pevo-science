@@ -587,3 +587,256 @@ describe.skipIf(!dbReachable)('BE-LOG-PII-EMAIL-HASH item 2c: /link broadcast-re
     }
   });
 });
+
+// ──────────────────────────────────────────────────────────────
+// BE-LOG-SHAPE-CONVERGENCE-SIBLING-FILES round-2 hold-fix item 1:
+// mutation-killing spy assertions on the 4 outer-catch `*.failed`
+// events added in `backend/src/routes/signup-verify.ts` during the
+// canonical-shape migration.
+//
+// The 2 existing `errorSpy` blocks above (BE-LOG-PII-EMAIL-HASH item
+// 2c) match by log MESSAGE text emitted from broadcast-error.ts —
+// they do NOT cover these 4 outer-catch events whose `event` field
+// is the only stable discriminator. A typo or rename mutation on any
+// of the 4 event names passes every behavioral check while breaking
+// operator dashboards keyed on `event`.
+//
+// Strategy mirrors `auth-log-shape.test.ts`: spy on `logger.error`,
+// trigger each handler's outer catch by patching the live `pool.query`
+// to reject on the first call only (restored in finally), then assert
+// the canonical `event` + `route` + `err: <Error>` shape per
+// `agents/docs/solutions/conventions/auth-structured-log-shape-2026-04-29.md`.
+//
+// Justification for `vi.spyOn` (per root CLAUDE.md test carve-out,
+// clauses a/b/c):
+//   (a) Real-path impracticality: forcing the outer catch requires
+//       inducing pg failures mid-handler, which conflicts with the
+//       real-pg policy. The catch paths exist for unforeseen runtime
+//       failures; the only deterministic way to exercise them is to
+//       mock the pool's `query` so the catch fires reproducibly. The
+//       /link spec additionally uses real `verifyHiveSignature` (no
+//       mock-auth) — only `pool.query` is patched.
+//   (b) Mock target is the live `pool.query` only (and the logger
+//       spy that captures without suppressing). All other middleware
+//       — rateLimit, verifyHiveSignature, abort-signal — runs real.
+//   (c) Real-HAF behavioral coverage of the same routes lives in the
+//       BE-LOG-PII-EMAIL-HASH /confirm and /link specs above (and the
+//       BE-AUTH-RESUME-SIGNUP-TIMING-GUARD spec for /resume-signup);
+//       this block is the complementary log-shape pin.
+// ──────────────────────────────────────────────────────────────
+
+// Helper: search a spy's call list for the first call whose first
+// argument is an object with a matching `event` discriminator.
+// Returns the structured-fields object or undefined. Mirrors the
+// `findEvent` helper in `auth-log-shape.test.ts`.
+function findEventCall(
+  spy: ReturnType<typeof vi.spyOn>,
+  event: string,
+): Record<string, unknown> | undefined {
+  for (const call of spy.mock.calls) {
+    const [obj] = call;
+    if (obj && typeof obj === 'object' && (obj as { event?: string }).event === event) {
+      return obj as Record<string, unknown>;
+    }
+  }
+  return undefined;
+}
+
+describe.skipIf(!dbReachable)('signup_verify.verify.failed log shape', () => {
+  it('fires from outer catch with event + route + err: <Error>', async () => {
+    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => logger);
+    const pool = getAppPool()!;
+    const origQuery = pool.query.bind(pool);
+    let calls = 0;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (pool as any).query = (...args: unknown[]) => {
+      calls++;
+      if (calls === 1) {
+        return Promise.reject(new Error('synthetic db failure for signup_verify.verify.failed'));
+      }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return origQuery(...(args as [any]));
+    };
+
+    try {
+      await clearRateLimitKeys(['signup-verify']);
+      const res = await request(app)
+        .post('/api/auth/verify')
+        .send({ token: 'log_shape_synthetic_token_for_verify_failed' });
+      expect(res.status).toBe(500);
+
+      const fields = findEventCall(errorSpy as never, 'signup_verify.verify.failed');
+      expect(fields, 'expected logger.error call with event=signup_verify.verify.failed').toBeDefined();
+      expect(fields).toMatchObject({
+        event: 'signup_verify.verify.failed',
+        route: 'signup-verify.verify',
+      });
+      expect(fields!.err).toBeInstanceOf(Error);
+    } finally {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (pool as any).query = origQuery;
+      errorSpy.mockRestore();
+    }
+  });
+});
+
+describe.skipIf(!dbReachable)('signup_verify.resume_signup.failed log shape', () => {
+  it('fires from outer catch with event + route + err: <Error>', async () => {
+    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => logger);
+    const pool = getAppPool()!;
+    const origQuery = pool.query.bind(pool);
+    let calls = 0;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (pool as any).query = (...args: unknown[]) => {
+      calls++;
+      if (calls === 1) {
+        return Promise.reject(new Error('synthetic db failure for signup_verify.resume_signup.failed'));
+      }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return origQuery(...(args as [any]));
+    };
+
+    try {
+      await clearRateLimitKeys(['signup-resume']);
+      const res = await request(app)
+        .post('/api/auth/resume-signup')
+        .send({
+          email: `log_shape_resume_failed_${Date.now()}@example.com`,
+          password: 'TestPassword1',
+        });
+      expect(res.status).toBe(500);
+
+      const fields = findEventCall(errorSpy as never, 'signup_verify.resume_signup.failed');
+      expect(fields, 'expected logger.error call with event=signup_verify.resume_signup.failed').toBeDefined();
+      expect(fields).toMatchObject({
+        event: 'signup_verify.resume_signup.failed',
+        route: 'signup-verify.resume-signup',
+      });
+      expect(fields!.err).toBeInstanceOf(Error);
+    } finally {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (pool as any).query = origQuery;
+      errorSpy.mockRestore();
+    }
+  });
+});
+
+describe.skipIf(!dbReachable)('signup_verify.confirm.failed log shape', () => {
+  it('fires from outer catch with event + route + err: <Error>', async () => {
+    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => logger);
+    const pool = getAppPool()!;
+    const origQuery = pool.query.bind(pool);
+    let calls = 0;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (pool as any).query = (...args: unknown[]) => {
+      calls++;
+      if (calls === 1) {
+        return Promise.reject(new Error('synthetic db failure for signup_verify.confirm.failed'));
+      }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return origQuery(...(args as [any]));
+    };
+
+    try {
+      await clearRateLimitKeys(['signup-confirm']);
+      const username = `lscfm${SUFFIX}`;
+      const res = await request(app)
+        .post('/api/auth/confirm')
+        .send({
+          auth_token: `confirmed:${'9'.repeat(64)}`,
+          username,
+          keys: {
+            owner_public: PrivateKey.fromSeed(`${username}-o`).createPublic().toString(),
+            active_public: PrivateKey.fromSeed(`${username}-a`).createPublic().toString(),
+            posting_public: PrivateKey.fromSeed(`${username}-p`).createPublic().toString(),
+            memo_public: PrivateKey.fromSeed(`${username}-m`).createPublic().toString(),
+            posting_private: PrivateKey.fromSeed(`${username}-p`).toString(),
+            memo_private: PrivateKey.fromSeed(`${username}-m`).toString(),
+          },
+        });
+      expect(res.status).toBe(500);
+
+      const fields = findEventCall(errorSpy as never, 'signup_verify.confirm.failed');
+      expect(fields, 'expected logger.error call with event=signup_verify.confirm.failed').toBeDefined();
+      expect(fields).toMatchObject({
+        event: 'signup_verify.confirm.failed',
+        route: 'signup-verify.confirm',
+      });
+      expect(fields!.err).toBeInstanceOf(Error);
+    } finally {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (pool as any).query = origQuery;
+      errorSpy.mockRestore();
+    }
+  });
+});
+
+describe.skipIf(!dbReachable)('signup_verify.link.failed log shape', () => {
+  // /link uses real verifyHiveSignature middleware (per file header).
+  // The harness signs a request-bound message with a deterministic test
+  // private key and primes getAccountsMock to publish the matching
+  // public key on the test username, so middleware succeeds end-to-end
+  // against the real signature path before the outer catch is exercised.
+  const username = `lslfm${SUFFIX}`;
+  const TEST_KEY = PrivateKey.fromSeed(`log-shape-link-${SUFFIX}`);
+  const TEST_PUB = TEST_KEY.createPublic().toString();
+
+  function signRequestBound(method: string, fullPath: string, body: unknown, timestamp: string): string {
+    const bodyHash = cryptoUtils.sha256(JSON.stringify(body || {})).toString('hex');
+    const msg = `${config.appTag}-auth|v1|${method}|${fullPath}|${bodyHash}|${timestamp}`;
+    const msgHash = cryptoUtils.sha256(msg);
+    return TEST_KEY.sign(msgHash).toString();
+  }
+
+  it('fires from outer catch with event + route + err: <Error>', async () => {
+    // Stage Hive lookup so verifyHiveSignature succeeds.
+    getAccountsMock.mockReset();
+    getAccountsMock.mockImplementation(async (names: string[]) => {
+      if (names.includes(username)) {
+        return [{ name: username, posting: { key_auths: [[TEST_PUB, 1]] } }];
+      }
+      return [];
+    });
+
+    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => logger);
+    const pool = getAppPool()!;
+    const origQuery = pool.query.bind(pool);
+    let calls = 0;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (pool as any).query = (...args: unknown[]) => {
+      calls++;
+      if (calls === 1) {
+        return Promise.reject(new Error('synthetic db failure for signup_verify.link.failed'));
+      }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return origQuery(...(args as [any]));
+    };
+
+    try {
+      await clearRateLimitKeys(['signup-link']);
+      const body = { auth_token: `confirmed:${'8'.repeat(64)}` };
+      const timestamp = new Date().toISOString();
+      const signature = signRequestBound('POST', '/api/auth/link', body, timestamp);
+
+      const res = await request(app)
+        .post('/api/auth/link')
+        .set('X-Hive-Username', username)
+        .set('X-Hive-Signature', signature)
+        .set('X-Hive-Timestamp', timestamp)
+        .send(body);
+      expect(res.status).toBe(500);
+
+      const fields = findEventCall(errorSpy as never, 'signup_verify.link.failed');
+      expect(fields, 'expected logger.error call with event=signup_verify.link.failed').toBeDefined();
+      expect(fields).toMatchObject({
+        event: 'signup_verify.link.failed',
+        route: 'signup-verify.link',
+      });
+      expect(fields!.err).toBeInstanceOf(Error);
+    } finally {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (pool as any).query = origQuery;
+      errorSpy.mockRestore();
+    }
+  });
+});
