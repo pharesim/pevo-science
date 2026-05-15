@@ -189,3 +189,45 @@ Round-1 hold items 1-3 landed.
 - `npx tsc --noEmit` — clean.
 - `npx vitest run tests/routes/auth-log-shape.test.ts tests/routes/auth-smtp-transporter.test.ts` — 11/11 passed (7 log-shape + 4 helper).
 - `npx vitest run tests/routes/recover.test.ts -t "BE-AUTH-SMTP-STATUS-CODE-ORACLE"` — 4/4 passed (re-verified after Item 1 + Item 3 changes).
+
+---
+
+## Architect re-review (2026-05-15) — HELD PENDING FIXES (round 2)
+
+`/ce-code-review` ran on round-2 hold-fix commit `62674b1` with 6 personas (correctness, testing, maintainability, project-standards, learnings, kieran-typescript). Round-1 hold items 1-3 landed correctly: the `err: <Error>` shape fix is verified via the `toBeInstanceOf(Error)` spy assertion; the `burnSentinel` inline comment at auth.ts:244-251 is accurate; the convention doc was updated (then separately corrected by the architect in commit `c21d856` for the factual errors documented below). One coverage gap and one type-safety nit remain.
+
+Note: the round-2 commit's convention-doc edits to `agents/docs/solutions/conventions/auth-structured-log-shape-2026-04-29.md` cited stale line numbers for signup-verify.ts (119/130/140 instead of 164/175/185) and listed custody.ts as a 1-call-site importer (custody.ts has zero `burnSentinel` calls at HEAD; 2 comment mentions noting prior removal). The architect fixed these inline in `c21d856` along with broadening the doc's scope to all 6 route files. The implementer is NOT asked to redo that work; flagging here so a future re-reviewer sees the cause-and-effect.
+
+### Items to address
+
+**1. (P2) Hold-block required 3 `*.smtp_send_failed` specs; only 1 landed**
+
+- File: `backend/tests/routes/auth-log-shape.test.ts`
+- Source: testing T1+T2 (conf 100). Round-1 hold-block at this file's lines 138-143 was explicit: "operationally-critical emissions where typos or field drops actually hurt operators during incidents — the outer-catch *.failed events on /login, /reset, /reset-request, /recover, /signup; **the 3 *.smtp_send_failed**; the 3 *.smtp_not_configured."
+- Coverage delivered:
+  - `auth.signup.smtp_send_failed` — pinned (item 1's mutation kill).
+  - `auth.resend_verification.smtp_send_failed` — **MISSING.** Zero spy assertion across the entire suite.
+  - `auth.reset_request.smtp_send_failed` — **MISSING.** Zero spy assertion across the entire suite.
+  - `auth.resend_verification.failed` — **MISSING.** This outer-catch event is part of the `*.failed` priority class the hold block named, but no spec exercises it. (The 5 outer-catch `*.failed` events that DID land cover login/reset/reset_request/recover/signup; resend_verification.failed was missed.)
+- Fix: 3 new specs in `auth-log-shape.test.ts`, modeled on the existing patterns:
+  - For `auth.resend_verification.smtp_send_failed` and `auth.reset_request.smtp_send_failed`: drive the path that exercises an SMTP send failure on those endpoints, spy `logger.error`/`logger.warn` (the round-1 sweep emits these as `warn`, not `error`), assert `event` exact-match + `route` + `emailKnown: 'known'` + `err` is an Error instance.
+  - For `auth.resend_verification.failed`: drive the outer-catch path (existing pattern: `pool.query` patch that throws on first call, restored in finally), spy `logger.error`, assert `event` + `route` exact-match.
+- The existing `findEvent` helper in `auth-log-shape.test.ts` is the natural anchor; wire the new specs into the same describe-shape as the 5 already-pinned outer-catch events.
+
+**2. (P3) `errorSpy as never` cast at every findEvent call site**
+
+- File: `backend/tests/routes/auth-log-shape.test.ts` (lines 148, 189, 243, 286, 329, 377, 425; 7 sites)
+- Source: kieran-typescript KT-2 (95).
+- `vi.spyOn(logger, 'error')` returns `MockInstance<LogFn>`. `findEvent` declares its `spy` parameter as `ReturnType<typeof vi.fn>` which is `Mock<[], void>` — a different concrete type. Every call site bridges the gap with `as never`, the maximally-suppressive cast (the checker treats the expression as the bottom type, so any type signature change at `vi.spyOn` or `findEvent` will silently slip past).
+- Fix: widen `findEvent`'s `spy` parameter from `ReturnType<typeof vi.fn>` to `{ mock: { calls: unknown[][] } }`. Drop all 7 `as never` casts at the call sites. The new minimal type accepts both `MockInstance` and `Mock` shapes without bottom-type suppression.
+- Rationale for folding into the same round: implementer is editing this file anyway for item 1; one-pass cleanup is cheaper than a separate task.
+
+### Items dismissed during architect triage (do NOT address)
+
+- **`mockImplementation` Layer-A bypass concern (testing T3 observation)** — the spy is correctly used here because the assertions pin event/route/err presence (not redaction absence); `mockImplementation` is safe for that assertion class. Documented in this round's hold note for transparency, not surfaced as a fix item.
+- **Stale `it()` description strings in orcid.test.ts:2186/2678 referencing OLD event names** (residual risk from correctness pass) — out of THIS task's scope (those edits live in the sibling-file convergence task `backend-log-shape-convergence-sibling-files`, not auth-converge).
+- **Test-helper duplication (signRequestBound)** — surfaced in the parallel `backend-log-pii-email-hash` round-2 review and folded into THAT task's hold; not duplicated here.
+
+### Re-review signal
+
+When items 1 + 2 land, `git mv` this file from `tasks/pending/` back to `tasks/review/`. The move itself is the re-review signal.
