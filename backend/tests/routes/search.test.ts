@@ -1,7 +1,32 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import request from 'supertest';
-import { createApp } from '../../src/app.js';
-import { config } from '../../src/config.js';
+
+// The live HAF corpus stores bridge papers under `pevotest.bridge` (the
+// historical account that minted the test-fixture bridge_paper posts),
+// while `.env`'s `HIVE_BRIDGE_ACCOUNT` is unset and falls back to
+// `HIVE_ADMIN_ACCOUNT=pevotest.admin`. Task `backend-getprofilestats-user-
+// reviews-parity-gate` tightened `searchReviewsFromHaf`'s parent-paper
+// gate to `validPevoPaperWhere(source:'all')` — the bridge arm requires
+// `p.author = $hiveBridgeAccount`, so the gate excludes the corpus's
+// bridge papers under the env default. Mirroring the pattern at
+// `tests/routes/bridge.test.ts`, this mock pins `hiveBridgeAccount` to
+// the corpus's actual bridge author so the canary tests that depend on
+// review-of-bridge-paper rows surfacing (e.g. `?type=review returns 200
+// with review-shaped results`) reflect the production-like binding
+// rather than the dev-env shortcut.
+vi.mock('../../src/config.js', async () => {
+  const actual = await vi.importActual<typeof import('../../src/config.js')>('../../src/config.js');
+  return {
+    ...actual,
+    config: {
+      ...actual.config,
+      hiveBridgeAccount: 'pevotest.bridge',
+    },
+  };
+});
+
+const { createApp } = await import('../../src/app.js');
+const { config } = await import('../../src/config.js');
 
 const app = createApp();
 
@@ -71,6 +96,7 @@ describe('GET /api/search', () => {
     // gates. Earlier `q=science` returned zero rows because the term appears
     // only in `scientific`, which doesn't contain literal `science` as a
     // substring.
+    expect(config.hiveBridgeAccount).toBe('pevotest.bridge');
     const res = await request(app).get('/api/search?q=evaluation&type=review');
     expect(res.status).toBe(200);
     expect(res.body.status).toBe('ok');
