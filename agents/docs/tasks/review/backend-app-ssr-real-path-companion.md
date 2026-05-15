@@ -58,11 +58,12 @@ The mocked test is the load-bearing regression net for the canon-lowering transf
 
 Landed the real-path SSR JSON-LD wiring companion as `backend/tests/routes/app-ssr-discipline-real-path.test.ts` (128 lines). The test walks `/api/papers` for an existing paper with a non-empty discipline, fetches the raw post via the same `get_content` call site `injectPaperMeta` uses, then asserts the SSR `ScholarlyArticle.about` equals `paperDisciplineField(raw_chain_discipline)`. A single equality assertion suffices for the current all-lowercase corpus (raw == canon-lowered).
 
-Catches the wiring mutation class the mocked test cannot:
+Catches the wiring-bypass mutation class the mocked test cannot:
 - `paperDisciplineField` import reverted
 - `if (canonDiscipline) jsonLd.about = canonDiscipline;` short-circuited or replaced
-- helper call replaced with raw `pevoMeta.discipline`
 - SSR catch-all never reaching `injectPaperMeta`
+
+Helper-self-mutation (raw `pevoMeta.discipline` bypass, transform regressed) stays with the mocked sibling — the all-lowercase corpus invariant makes raw == canon, so this companion's equality assertion is blind to that mutation class.
 
 Uses the established sibling skip-on-empty-corpus / null-discipline / malformed-json_metadata pattern from `papers.test.ts` for degenerate states.
 
@@ -98,3 +99,19 @@ The `git mv` to `tasks/review/` is the completion signal.
 ### Re-review signal
 
 When item 1 lands, `git mv` this file from `tasks/pending/` back to `tasks/review/`. The move itself is the re-review signal.
+
+---
+
+## Backend re-review signal (2026-05-15, working tree) — round 2
+
+Item 1 landed. Three documented locations now describe the test as wiring-bypass-only coverage and explicitly defer helper-self-mutation to the mocked sibling:
+
+- `backend/tests/routes/app-ssr-discipline-real-path.test.ts` header (lines 14-21 in the new shape): drops "the helper call being replaced with raw `pevoMeta.discipline`" from the wiring enumeration, renames it "wiring-bypass mutation class", and adds a paragraph naming the helper-self-mutation class as out-of-scope and pinned by the mocked sibling.
+- `backend/tests/routes/app-ssr-discipline-canon.test.ts` clause-c companion paragraph: drops "raw `pevoMeta.discipline` bypass" from the companion's claimed-kill list and adds a sentence asserting the helper-self-mutation class stays here.
+- This task body's mutation-kill enumeration (above): drops the third bullet and adds the corpus-invariant deferral sentence.
+
+Also touched the inline assertion comment in the real-path test (around the load-bearing `expect(jsonLd!.about).toBe(expectedAbout)`) — same overstatement, same fix, called out here for transparency. The architect's hold-block enumerated only the file/sibling headers and the task body, but the inline comment carried the same false claim and was inconsistent with the corpus-invariant rationale. Easier to bring it into line now than ship a third round.
+
+No code changes — purely descriptive. The test still asserts `expect(jsonLd!.about).toBe(expectedAbout)`; the assertion's load-bearing mutation classes are now described accurately.
+
+The `git mv` to `tasks/review/` is the re-review signal.

@@ -26,9 +26,14 @@
  * Carve-out clause (c) companion: `app-ssr-discipline-real-path.test.ts`
  * exercises the integrated SSR wiring path against real `hiveClient` +
  * real HAF on an existing all-lowercase corpus paper. That file covers
- * the wiring mutation class (dropped helper import, short-circuited
- * `about` branch, raw `pevoMeta.discipline` bypass, catch-all not
- * reaching `injectPaperMeta`) which this mocked file cannot catch.
+ * the wiring-bypass mutation class (dropped helper import,
+ * short-circuited `about` branch, catch-all not reaching
+ * `injectPaperMeta`) which this mocked file cannot catch. The
+ * helper-self-mutation class (raw `pevoMeta.discipline` bypass,
+ * `paperDisciplineField` transform regressed) stays here: the
+ * companion's all-lowercase corpus invariant makes raw == canon, so
+ * its equality assertion is blind to that class; the mocked seeds
+ * below distinguish raw-vs-canon deterministically.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import request from 'supertest';

@@ -11,14 +11,23 @@
  * transform when the current corpus is all-lowercase per
  * ARCHITECT-DISCIPLINE-FILTER-PUBLISH-CHARSET-ALIGNMENT.
  *
- * This file covers the **wiring mutation class** the mocked file
- * cannot catch: the helper import being reverted, the
+ * This file covers the **wiring-bypass mutation class** the mocked
+ * file cannot catch: the helper import being reverted, the
  * `if (canonDiscipline) jsonLd.about = canonDiscipline;` branch being
- * short-circuited, the helper call being replaced with raw
- * `pevoMeta.discipline`, or the SSR catch-all never reaching
+ * short-circuited, or the SSR catch-all never reaching
  * `injectPaperMeta` at all. All of those would still let the mocked
  * test pass (since it stubs the same call sites it asserts on) but
  * would break the real integrated SSR path.
+ *
+ * Note: the helper-self-mutation class (e.g. the call site replaced
+ * with raw `pevoMeta.discipline`, or `paperDisciplineField`'s
+ * trim+lowercase transform regressed) is NOT covered here. On the
+ * current all-lowercase corpus the raw chain value equals the
+ * canon-lowered value, so the load-bearing equality assertion below
+ * cannot distinguish raw-vs-canon emission. The sibling mocked file
+ * `app-ssr-discipline-canon.test.ts` pins the transform-axis
+ * mutation class deterministically by seeding mixed-case and
+ * whitespace-padded shapes; this companion is wiring-axis only.
  *
  * No mocks here. Real `createApp()`, real `hiveClient`, real HAF.
  * Per root CLAUDE.md carve-out clause (b): no auth middleware is
@@ -119,9 +128,11 @@ describe('SSR JSON-LD `about` field — real-path wiring (BE-APP-SSR-REAL-PATH-C
       expect(jsonLd!['@type']).toBe('ScholarlyArticle');
       // The load-bearing assertion: the SSR JSON-LD `about` field
       // matches the canon-lowered raw chain discipline verbatim. A
-      // wiring mutation (dropped import, short-circuited branch,
-      // replaced helper call with raw `pevoMeta.discipline`,
-      // catch-all bypassing `injectPaperMeta`) breaks this.
+      // wiring-bypass mutation (dropped helper import,
+      // short-circuited `about` branch, catch-all bypassing
+      // `injectPaperMeta`) breaks this. Helper-self-mutation
+      // (raw-vs-canon emission, transform regressed) is pinned by
+      // the mocked sibling — see file header.
       expect(jsonLd!.about).toBe(expectedAbout);
     },
   );
