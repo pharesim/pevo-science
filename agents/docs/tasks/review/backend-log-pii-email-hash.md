@@ -254,3 +254,26 @@ Items 1, 2, 3, and 4 landed in this round. Per the carry-the-fix-evidence-in-the
 ### Re-review signal
 
 When items 1 + 2 land, `git mv` this file from `tasks/pending/` back to `tasks/review/`. The move itself is the re-review signal.
+
+---
+
+## Backend re-review signal (2026-05-15) — round 3
+
+Items 1 and 2 landed via a parallel-worker fan-out, cherry-picked onto main. Order in this section reverses the architect's hold-block numbering (item 2 first) because item 2 is the load-bearing helper refactor that item 1's call-site migrations depend on.
+
+**Item 2 (P2) — `backend/tests/support/sign-request.ts` refactored to delegate template construction to `buildCanonicalAuthMessage`:**
+- The shared helper now imports `buildCanonicalAuthMessage` from `../../src/lib/authMessage.js` (the SSoT consumed server-side by `verifyHiveSignature.ts:151`). The inline `${appTag}-auth|v1|${method}|${fullPath}|${bodyHash}|${timestamp}` template was dropped; the helper now (a) delegates the canonical-message construction to the imported function (which body-hashes internally with `?? {}` semantics per `authMessage.ts:29`), (b) sha256s the message, (c) signs with the supplied privateKey, (d) returns the signature. The latent `?? {}` vs `|| {}` body-coalesce divergence at the prior `:26` is closed.
+- JSDoc rewritten to document the SSoT delegation. The previously-flagged "wrong-key footgun" advisory dismissed at triage (per-file binding pattern mitigates).
+
+**Item 1 (P2) — 4 sibling test files migrated to the shared `signRequestBound`:**
+- `backend/tests/routes/bridge.test.ts`, `backend/tests/routes/claims.test.ts`, `backend/tests/routes/bridge-haf-lag-locks.test.ts`, `backend/tests/routes/signup-verify-postbroadcast-severity.test.ts`: each dropped the 5-line inline `signRequestBound` body (and the now-unused `cryptoUtils` named import where applicable), replacing it with a one-line delegating call to `signRequestBoundShared(<localKey>, method, fullPath, body, timestamp)` using the file's existing `TEST_PRIVATE_KEY` / `TEST_KEY` constant. Per-file binding pattern matches `auth.test.ts` and `signup-verify.test.ts` after round 2.
+- **Worker departure from prompt — flag for re-review:** three of the four migrated files (`bridge.test.ts`, `claims.test.ts`, `bridge-haf-lag-locks.test.ts`) had to use a top-level dynamic `await import('../support/sign-request.js')` instead of the static `import { signRequestBound as signRequestBoundShared } from '../support/sign-request.js'` pattern from auth/signup-verify after round 2. Reason: those three files `vi.mock('../../src/config.js', …)` with factory closures that reference module-level `const TEST_BRIDGE_KEY` / `TEST_ADMIN_KEY` not wrapped in `vi.hoisted()`. A static import pulls `src/config.js` into the eager evaluation chain, the mock factory fires before the `const` initializes, and tests crash with `ReferenceError: Cannot access 'TEST_BRIDGE_KEY' before initialization`. The dynamic-import sidestep is placed adjacent to each file's existing dynamic `config` import; an inline comment in each affected file documents the deviation. `signup-verify-postbroadcast-severity.test.ts` has no config mock, so it keeps the static import. The deeper convention question — whether the round-2 helper-extraction goal should mandate `vi.hoisted()` wrapping of TEST_KEY constants instead of dynamic imports — is left for architect re-review.
+
+**Verification:**
+- `npx tsc --noEmit -p .` (backend): clean.
+- `npm run lint` (backend): clean modulo the 2 pre-existing `seed-phrase.ts:26-27` warnings, unrelated.
+- Targeted vitest across the 4 modified test files: 44 passed, 0 failures. The shared helper has no own tests; its risk class is covered transitively by every test that signs a request.
+- Full backend `npx vitest run` gate run by the parent post-merge; pre-existing reds documented in earlier round signal blocks remain.
+
+**Cherry-pick provenance:**
+- Worker A commit `6883693` (worktree branch `worktree-agent-af7624166bf167e7b`) cherry-picked onto main as `8841a12`. No file conflicts; backend test-file zone clean against the parallel architect commits (`33a1d5a`, `89a0535`, `bdb7186`) that landed concurrently.
