@@ -39,7 +39,7 @@ Single review with full details.
 - `net_votes` — counts only votes from accredited users (net sum of +1/-1 per accredited voter), not all Hive votes.
 
 **Errors:**
-- `NOT_FOUND` — review does not exist or is not a PEvO review
+- `NOT_FOUND` — review does not exist, is not a PEvO review (fails `validReviewWhere()` in `backend/src/hafsql.ts`), or its parent post is not a valid PEvO paper (fails `validPevoPaperWhere(source:'all')` in `backend/src/hafsql.ts`; covers both native pevo paper posts and `bridge_paper` posts authored by `config.hiveBridgeAccount`)
 
 ---
 
