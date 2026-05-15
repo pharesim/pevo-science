@@ -122,3 +122,34 @@ But acceptance #4 (spy assertions on operationally-critical emissions per the mu
 ### Re-review signal
 
 When items 1, 2, 3 land, `git mv` this file from `tasks/pending/` back to `tasks/review/`. Convention-doc scope update (acceptance #6) is already done by the architect in commit `c21d856`; not in implementer scope.
+
+---
+
+## Backend re-review signal (2026-05-15) — round 2
+
+Items 1, 2, and 3 (parts A + B + C) landed via parallel worker fan-out, then cherry-picked onto main:
+
+- **Item 1 (P1) — signup-verify.ts** (commit `bac0615`, was worker SHA `d54a288`):
+  4 new spy-assertion specs in `backend/tests/routes/signup-verify.test.ts` covering `signup_verify.verify.failed`, `signup_verify.resume_signup.failed`, `signup_verify.confirm.failed`, `signup_verify.link.failed`. Each driven via per-test `pool.query` patch that throws on first call only and restored in finally. The `/link` spec uses real `verifyHiveSignature` with a deterministic signed request and primes `getAccountsMock`. Mutation-kill verified per spec (typo on event literal → red, restore → green).
+
+- **Item 2 (P1) — settings.ts** (commit `ade1d20`, was worker SHA `313f775`):
+  7 new spy-assertion specs in `backend/tests/routes/settings.test.ts` covering all 7 emissions (`settings.email_get.failed`, `settings.email_post.smtp_send_failed`, `settings.email_post.failed`, `settings.email_verify.failed`, `settings.email_delete.light_account_login_loss`, `settings.email_delete.failed`, `settings.set_password.failed`). Introduced fresh logger-spy infrastructure in this file (settings.test.ts previously had no logger spy, only `MOCK_VERIFY_SIGNATURE`): `findEvent` helper, `nodemailer` import, `logger` import, `clearRateLimitKeys` import, file-header carve-out docblock (clauses a/b/c). Mutation-killed per spec.
+
+- **Item 3 part A (P2) — orcid.ts** (commit `21eb8b7`, was worker SHA `8e6dabc`):
+  7 new spy assertions in `backend/tests/routes/orcid.test.ts` covering `orcid.callback.token_exchange_failed`, `orcid.callback.failed`, `orcid.binding_lock.release_failed`, `orcid.binding_cache.write_failed`, `orcid.binding_cache.read_failed`, `orcid.works_fetch.failed`, `orcid.account_update.transient_failed`. Drivers: fetch-stub for token-exchange + works-fetch + outer-catch, narrow `redis.set`/`redis.get`/`redis.eval` rejections for binding cache/lock paths, direct `__test_seams.updateAccountOrcid` against pg `08006` for transient failure. All 7 mutation-killed.
+
+- **Item 3 part B (P2) — custody.ts** + **Item 3 part C (P2) — accreditation.ts** (commit `8200b85`, was worker SHA `d948bd5`):
+  4 specs in `custody.test.ts` covering `custody.broadcast.fresh_auth_rejected` (consent-op bundle without `fresh_auth_proof`), `custody.fresh_auth.failed` (per-test `appQueryMock` throw), `custody.upgrade.null_hash_unreachable` (per-test impl returns `password_hash: null`), `custody.upgrade.failed` (per-test impl throws on `password_hash` SELECT, distinct usernames per test to dodge per-account `upgradeLimiter` max=1/hr). 4 specs in `accreditation.test.ts` covering `accreditation.request.smtp_send_failed`, `accreditation.request.smtp_not_configured`, `accreditation.verify.token_cleanup_failed` (pins `event` field; prior spec at line 414 only matched message-substring), `accreditation.cleanup.failed` (captures the `setInterval` callback via `globalThis.setInterval` spy + `vi.resetModules()` re-import; forces a rejection by patching `Map.prototype[Symbol.iterator]` for one call so `cleanupExpiredTokens`'s for-of throws — documented inline as a future-proofing log-shape pin, real-path companion infeasible without route-file `__test_seams` expansion). All 8 mutation-killed.
+
+### Verification
+
+- `npx tsc --noEmit` — clean across all 5 modified files.
+- `npm run lint` — clean (only pre-existing seed-phrase warnings).
+- Targeted vitest per file, all new specs pass. Pre-existing intentional reds and unrelated flakes (2 SEC-004-BE in signup-verify; 6 unrelated `Settings email (with DB)` maskEmail/stale-row reds; 1 `concurrent retries claim slots atomically` flaky concurrency red in accreditation; 2 documented intentional reds in accreditation forcing functions for `backend-bridge-key-startup-validation-and-pino-redact.md`) are NOT introduced by this round and reproduce on HEAD before this round's diff was applied.
+- Mutation-kill verified on every new spec per `tests-must-fail-on-mutation-of-code-under-test-2026-04-22.md`.
+
+### Coordination notes
+
+- Worker fan-out: 4 parallel worktree subagents (`agent-a5a90b2f375f7ce9f`, `agent-aab0a845914612d30`, `agent-a16031c1f3bd7321c`, `agent-ae9b5c276d40cd715`). No file overlap between workers; cherry-picks onto main were clean (no conflicts on test files).
+- Workers were instructed not to modify the task file or route files; this signal block is the parent's unified summary.
+- Total: 23 new spy assertions across 5 test files (4 + 7 + 7 + 4 + 4 — wait, recount: 4 sigup-verify + 7 settings + 7 orcid + 4 custody + 4 accreditation = 26).
