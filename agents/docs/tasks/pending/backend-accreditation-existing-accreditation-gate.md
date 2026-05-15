@@ -87,3 +87,62 @@ Landed on working tree (pre-commit, to be committed before move to review/):
    Both branches return the same envelope shape (`{ message, username, tx_id, outcome }`); only the discriminator differs. The `tx_id` references the relevant prior chain op in each case.
 
 2. **`backend-idempotency-haf-integration-test.md`** — append `findExistingAccreditation` to the helper list under "Why now" and "Goal" so the integration spec covers all three sibling helpers (the existing two + this new one). The risk class is identical (HAF JSONB extraction / schema-rename regression silently breaking the lookup), and the gate's correctness is load-bearing for closing the multi-token coexistence class.
+
+## Architect re-review (2026-05-15) — HELD PENDING FIXES
+
+`/ce-code-review` run id `20260515-123246-1289ca32`. 11 reviewer personas dispatched (always-on + security + performance + api-contract + reliability + adversarial + kieran-typescript; ce-agent-native-reviewer skipped per root CLAUDE.md). 11 findings surfaced; user triage:
+
+5 items held (1 P1, 3 P2, 1 P3). 2 archive-time follow-ups. 4 dismissals.
+
+### Hold items
+
+1. **[P1] Revoke-handling alignment — `findExistingAccreditation` ignores subsequent revoke ops.** The new gate filters strictly on `action = 'accredit'` (idempotency.ts:299-319). Every sibling accreditation-state read in PEvO uses `action IN ('accredit','revoke') ORDER BY block_num DESC` and treats latest=revoke as not-accredited:
+   - `backend/src/routes/profile.ts:37`
+   - `backend/src/routes/orcid.ts:1756`
+   - `backend/src/routes/accreditations.ts:59`
+   - `backend/src/hafsql.ts:79`
+   - `backend/src/wot.ts:347` — **live producer of revoke ops** via the WoT cleanup path.
+
+   A revoked user's `/verify` retry hits the gate on the old accredit op, gets `200 outcome='already_accredited'` with the stale tx_id, has their fresh token deleted by cleanup, and is silently locked out of re-accreditation. The gate's "has prior accredit" semantics structurally diverge from the codebase's "current accreditation state" semantics.
+
+   Fix shape (defensible from sibling patterns):
+   - Change the `WHERE` clause in `findExistingAccreditation` to `cj.json::jsonb ->> 'action' IN ('accredit','revoke')`, keep the same `ORDER BY (cj.block_num DESC, cj.id DESC) LIMIT 1`, return the row.
+   - Inspect `row.action` in the caller (or in the helper before return); gate-hits only when `row.action === 'accredit'`. When the latest is `'revoke'`, return `null` so /verify falls through to the per-token check + broadcast path (same as gate-miss).
+   - Add a route-level test for the revoke→re-accredit flow: prior accredit (block N) then revoke (block N+M) → /verify on a fresh token broadcasts the new accredit op (no gate-hit).
+   - Helper signature may need to widen the result type to include `action` (or just return `null` for revoke-tail and keep the existing `{ tx_id; block_num }` shape).
+
+   Surfaced by cross-reviewer corroboration (correctness + adversarial, merged confidence 100). This is the structural blocker.
+
+2. **[P2] Carve-out clause (c) follow-up scope update.** The pending task `backend-idempotency-haf-integration-test.md` names the two prior HAF helpers in Goal and Acceptance but does NOT name `findExistingAccreditation`. Edit that task file to add the new helper to its "Why now" and "Goal" sections (risk class identical: HAF JSONB extraction / operator / schema-rename regression silently breaking the lookup). This was queued as `[TODO Architect]` item 2 for archive-time; landing it as a hold-block item closes the carve-out clause (c) loop in the same round as #1.
+
+3. **[P2] Carve-out clause (a) header acknowledgment.** `backend/tests/lib/idempotency.test.ts` header at lines 13-15 names the two prior helpers as having deferred real-path coverage but omits `findExistingAccreditation`. Append `findExistingAccreditation` to the same acknowledgment line so clause (a) — "test file header documents the justification explicitly" — is satisfied per-file. (The route test header at `accreditation-idempotency.test.ts` already names it; only the lib unit test header is missing it.)
+
+4. **[P2] Metadata-update path on gate-hit (design-call linked to #1).** Gate-hit short-circuits before profile metadata (name, institution, field) submitted in the fresh `/request` would be written. After #1's revoke-handling fix lands, verify the current product flow:
+   - **If profile metadata is one-shot at first `/request` (not updateable thereafter):** the gate-hit metadata discard is moot — the new `/request` carries identical metadata to the prior — and a short comment near the gate-hit branch documenting the invariant closes this item. Backend can resolve in this round.
+   - **If profile metadata is intended to be updateable post-accreditation:** the gate currently silently eats updates. This is a design pass (broadcast a fresh accredit op carrying new metadata? A distinct `update_accreditation` custom_op? Reject metadata changes at `/request` when an accreditation exists?). In that case, do NOT resolve in this round — `git mv` the task to `blocked/` with `[BLOCKED by Architect]` and a one-paragraph statement of the design question.
+
+5. **[P3] Sibling helper ORDER BY tiebreaker alignment.** `findAccreditationBroadcastByIdempotencyKey` (idempotency.ts:253) sorts by `cj.block_num DESC` only. The new helper at line 312 sorts by `(block_num DESC, cj.id DESC)` with JSDoc citing the uniform PEvO tiebreaker convention (`hive-primitive-aware-design-rules-for-pevo-custom-json-ops-2026-05-05.md` Rule 2). Add `cj.id DESC` to the sibling's ORDER BY so the new convention anchor is upheld across both helpers. Mechanical edit. Under LIMIT 1 the practical impact is bounded but the convention-alignment signal matters.
+
+### Archive-time follow-ups (architect, on next clean review)
+
+A. **Update `agents/docs/api-contracts/accreditation.md`** per the existing `[TODO Architect]` item 1, AND rewrite the binary-prose paragraph at line 130 to enumerate all three outcome states (absent | `'already_landed'` | `'already_accredited'`) rather than appending a bullet. The `BROADCAST_ATTEMPT_LIMIT_EXCEEDED` ordering-guarantee paragraph at line 137 also needs a one-line extension naming both short-circuit outcomes, not just `'already_landed'`. Distinguish `tx_id` semantics across the three states (fresh broadcast = this call's tx; `'already_landed'` = prior broadcast of same token; `'already_accredited'` = prior accredit op from a different flow, potentially older). If #1's fix changes the `'already_accredited'` semantic ("prior accredit op" → "current active accreditation"), reflect that wording shift.
+
+B. **Verify `backend-idempotency-haf-integration-test.md` was updated by backend in this round** (hold item #2). The `[TODO Architect]` item 2 in this task's signal block can then be marked done.
+
+### Dismissed (with reasons)
+
+- **HAF-throw fallthrough reopens duplicate class during HAF outage** (adversarial, P3 conf 100) — by design and documented in this task's "Why now" section as a bounded class (≤3 duplicates/user/24h via `/request` rate limiter). The gate is best-effort dedup; the HAF-throw try/catch preserves pre-gate baseline behavior.
+- **Cleanup-failure feedback loop** (adversarial, P3 conf 75) — requires both consistent Redis del flapping AND client retry; bounded by token's 24h TTL and operator dashboard rate-limiting. No concrete production scenario.
+- **Multi-token concurrent burst** (adversarial, P3 conf 75) and **same-token concurrent retry** (adversarial, P3 conf 75) — both are the bounded duplicate-broadcast classes the task explicitly accepts. Same disposition as the HAF-throw window above.
+
+### Convention compliance (verified by `ce-learnings-researcher`)
+
+Applied correctly in this diff:
+- `hive-primitive-aware-design-rules-for-pevo-custom-json-ops-2026-05-05.md` Rule 2 (block_num + cj.id DESC tiebreaker in the new helper) and Rule 5 (signer-subject binding via `required_posting_auths ?| $accreditationAuthorities::text[]`).
+- `typescript-template-literal-sql-backtick-pitfall-2026-05-15.md` — no SQL block comments inside backticks.
+- `caching-wrapper-discriminated-union-poisoning-2026-05-11.md` — uncached path taken; no poisoning vector.
+- `test-mock-carve-out-clause-c-2026-05-04.md` — follow-up task deferral mechanic used correctly; hold items #2 and #3 close the residual gaps.
+
+### Clean dimensions (no findings)
+
+`security`, `performance`, `reliability`, `kieran-typescript` returned zero findings each. SQL parameterization, JSONB extraction operator usage, async/await placement, error-handling typing, and HAF-throw fallthrough preservation are all clean.
