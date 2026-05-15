@@ -71,3 +71,30 @@ Also updated `backend/tests/routes/app-ssr-discipline-canon.test.ts` header to c
 The mocked test stays load-bearing for the transform-axis mutation class; this companion covers the orthogonal wiring-axis class per the architect's clause-c refresh at commit `41ebc5b`.
 
 The `git mv` to `tasks/review/` is the completion signal.
+
+---
+
+## Architect re-review (2026-05-15) — HELD PENDING FIXES (round 1)
+
+`/ce-code-review` ran on commit `b71e3c6` (round-1 implementation) with 5 personas (correctness, testing, maintainability, project-standards, reliability). Test wiring lands correctly for 3 of the 4 claimed mutations (helper-import revert, branch short-circuit, catch-all bypass — all caught by the integrated `expect(jsonLd!.about).toBe(expectedAbout)` assertion at line 125). But the fourth claimed mutation is not actually killed on the current corpus, and both test headers plus the task body's enumeration overstate coverage. One P1 hold item; other findings dismissed at user triage.
+
+### Items to address
+
+**1. (P1) "helper call replaced with raw `pevoMeta.discipline`" mutation is NOT caught on the all-lowercase corpus**
+
+- Cross-reviewer convergence: correctness-3 (P3 conf 50) + testing-001 (P1) → anchor 75 after promotion. Severity P1.
+- Files: `backend/tests/routes/app-ssr-discipline-real-path.test.ts:125` (the load-bearing assertion); claimed-kill text at `:14-22` (real-path file header); `backend/tests/routes/app-ssr-discipline-canon.test.ts:22-29` (mocked-sibling header added in this same commit); mutation-kill enumeration at lines 62-66 of THIS task body.
+- `paperDisciplineField` at `backend/src/types/disciplines.ts:171` is `trim + lowercase`. For the current all-lowercase corpus, raw chain value === canon-lowered value. If the production code at `backend/src/app.ts:355-356` is mutated to emit raw `pevoMeta.discipline` instead of calling `paperDisciplineField(...)`, the SSR output equals the test's expected value, and `expect(jsonLd!.about).toBe(expectedAbout)` passes green. The mutation is not killed.
+- The task body acknowledges this corpus invariant on line 18 ("For lowercase corpus data, raw == canon, so a single equality assertion suffices") but the headers and the enumeration still claim the bypass mutation is killed. Restore consistency between rationale and claimed coverage.
+- Fix shape: drop "helper call replaced with raw `pevoMeta.discipline`" from BOTH (a) the real-path test header's claimed-kill list at lines 14-22, AND (b) the mocked-sibling header's claimed-kill list at canon test lines 22-29, AND (c) this task body's mutation-kill enumeration at lines 62-66. Reframe the test as wiring-bypass-only coverage (assignment to `jsonLd.about` exists; helper presence by trace; catch-all reach). The mocked sibling already pins the transform-axis mutation class (canon-lowering across mixed-case/whitespace/non-string shapes); explicitly defer helper-self-mutation coverage to it. Mechanical edit — purely descriptive, brings the claim into line with what the test actually catches.
+
+### Items dismissed during architect triage (do NOT address)
+
+- **JSON-LD regex `[^<]+` truncates if JSON body contains `<`** (correctness-1, P2 conf 75) — accepted as a false-positive risk; corpus is small enough that `<` in titles is unlikely, and the test errors loudly rather than silently passing.
+- **Verbatim `extractJsonLd` duplicated between canon and real-path tests** (maintainability MAINT-001, P2 conf 75) — pure dedup without functional improvement; the sibling helper pre-existed and the new test conformed to the established pattern.
+- **Skip-as-pass anti-pattern: 3 silent `return`s** (4-reviewer convergent finding, P3 anchor 100 after promotion) — pattern matches sibling `papers.test.ts:195,216` (established project convention); flipping it in this file alone would break consistency. If the convention should change project-wide, that's a separate testing-convention task, not a hold-block item.
+- **Inline `/api/papers` response shape duplication, listing reads only page 1, concurrent corpus mutation hazards** (maintainability + reliability, all P3 anchor 50) — below gate; acceptable for the test's scope.
+
+### Re-review signal
+
+When item 1 lands, `git mv` this file from `tasks/pending/` back to `tasks/review/`. The move itself is the re-review signal.
