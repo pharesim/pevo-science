@@ -716,6 +716,7 @@
     "retry": "Tekrar Dene",
     "error": "Bir hata oluştu.",
     "tryAgain": "Tekrar dene",
+    "verifyInSettings": "Verify in Settings",
     "connectionFailed": "Bağlantı başarısız",
     "ok": "Tamam",
     "discard": "Sil",

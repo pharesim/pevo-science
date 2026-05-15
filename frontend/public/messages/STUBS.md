@@ -868,3 +868,21 @@ pt: orcid.postBroadcastOperatorRequired
 sv: orcid.postBroadcastOperatorRequired
 tr: orcid.postBroadcastOperatorRequired
 zh: orcid.postBroadcastOperatorRequired
+
+### Added 2026-05-15 (UI-ORCID-CALLBACK-SETTINGS-CTA-LABEL)
+
+ar: common.verifyInSettings
+cs: common.verifyInSettings
+da: common.verifyInSettings
+de: common.verifyInSettings
+es: common.verifyInSettings
+fa: common.verifyInSettings
+fr: common.verifyInSettings
+he: common.verifyInSettings
+it: common.verifyInSettings
+nl: common.verifyInSettings
+pl: common.verifyInSettings
+pt: common.verifyInSettings
+sv: common.verifyInSettings
+tr: common.verifyInSettings
+zh: common.verifyInSettings

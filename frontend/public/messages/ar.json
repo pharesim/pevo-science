@@ -712,6 +712,7 @@
     "retry": "إعادة المحاولة",
     "error": "حدث خطأ.",
     "tryAgain": "حاول مرة أخرى",
+    "verifyInSettings": "Verify in Settings",
     "connectionFailed": "فشل الاتصال",
     "ok": "موافق",
     "discard": "تجاهل",

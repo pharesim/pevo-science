@@ -712,6 +712,7 @@
     "retry": "Prøv igen",
     "error": "Der opstod en fejl.",
     "tryAgain": "Prøv igen",
+    "verifyInSettings": "Verify in Settings",
     "connectionFailed": "Forbindelse mislykkedes",
     "ok": "OK",
     "discard": "Kassér",

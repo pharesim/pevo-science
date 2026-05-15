@@ -712,6 +712,7 @@
     "retry": "Erneut versuchen",
     "error": "Ein Fehler ist aufgetreten.",
     "tryAgain": "Erneut versuchen",
+    "verifyInSettings": "Verify in Settings",
     "connectionFailed": "Verbindung fehlgeschlagen",
     "ok": "OK",
     "discard": "Verwerfen",

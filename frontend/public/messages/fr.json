@@ -712,6 +712,7 @@
     "retry": "Réessayer",
     "error": "Une erreur est survenue.",
     "tryAgain": "Réessayer",
+    "verifyInSettings": "Verify in Settings",
     "connectionFailed": "La connexion a échoué",
     "ok": "OK",
     "discard": "Supprimer",

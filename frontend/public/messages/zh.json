@@ -712,6 +712,7 @@
     "retry": "重试",
     "error": "发生错误。",
     "tryAgain": "重试",
+    "verifyInSettings": "Verify in Settings",
     "connectionFailed": "连接失败",
     "ok": "确定",
     "discard": "丢弃",

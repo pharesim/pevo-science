@@ -716,6 +716,7 @@
     "retry": "Retry",
     "error": "An error occurred.",
     "tryAgain": "Try Again",
+    "verifyInSettings": "Verify in Settings",
     "connectionFailed": "Connection failed",
     "ok": "OK",
     "discard": "Discard",
