@@ -63,3 +63,26 @@ Document the carve-out justification inline per the project clause (a)/(c) requi
 - Repeated `?field=a&field=b` silent-unfilters (no 400, no string-array coercion bug).
 - No regression on the existing accreditations specs.
 - `agents/docs/api-contracts/accreditations.md` (or wherever the `/api/accreditations` contract lives) updated to describe the new validity rules on both filters. (Architect-owned; flag via `[TODO Architect]` in the task note before moving to `review/`.)
+
+---
+
+## Implementer signal (2026-05-15, commit `fc0aa29` on `main`) — round 1
+
+Landed the BE-SEARCH-Q-LIKEGUARD defenses on `/api/accreditations`'s `?field=` and `?institution=` filters in a single commit.
+
+**Helper-shape decision:** new sibling helper `validateOptionalLikeFilter(raw, paramName)` exported from `backend/src/types/search-filters.ts`. Differs from `validateSearchQuery` only in the absent-vs-required semantic: optional filters silent-unfilter on absent/empty/non-string (returns `{ ok: true, value: undefined }`) instead of returning `null` for the route's required-400 path. `paramName` is interpolated into the per-param "too long" message so clients get `'Filter "field" too long'` / `'Filter "institution" too long'`.
+
+**Code changes:**
+- `backend/src/types/search-filters.ts` — appended `validateOptionalLikeFilter()` + `OptionalLikeFilterResult` discriminated-union return type with full docblock.
+- `backend/src/routes/accreditations.ts`:
+  * Route entry: replaced `as string | undefined` casts on `req.query.field` / `req.query.institution` with `validateOptionalLikeFilter` calls + ok-branching. 400 BAD_REQUEST on length violation, silent-unfilter on absent/non-string/array.
+  * `fetchAccreditationsFromHaf`: added `ESCAPE '\\'` to both ILIKE sites. Added a comment block explaining the pre-escape contract and the attack shape (`_%_%_…`).
+
+**Tests landed:**
+- `backend/tests/routes/accreditations-likeguard.test.ts` (new) — 13 specs across 4 describe blocks: length cap boundary at 200/201/4000 on both `?field=` and `?institution=`; LIKE-metacharacter escape on `_%_%` + literal backslash; repeated-param silent-unfilter; absent/empty/whitespace fall-through.
+
+**Verification:** lint clean (2 pre-existing seed-phrase warnings unchanged). Typecheck clean. Per-file test run passed at the worker subagent stage.
+
+### [TODO Architect]
+
+Contract update needed: `agents/docs/api-contracts/accreditations.md` (or wherever the `/api/accreditations` contract lives) — add the new validity rules on `?field=` and `?institution=` filters (200-char cap, LIKE-metacharacter literal-treatment, repeated-param silent-unfilter, per-param "too long" 400 message).
