@@ -60,3 +60,26 @@ Round-4 of `backend-verify-broadcast-attempts-cap.md` archived clean with the na
 
 - `backend/src/routes/accreditation.ts` `incrementBroadcastAttempts` pre-INCR catch (the canonical narrowing pattern).
 - The deferred `backend-bridge-key-startup-validation-and-pino-redact.md` already lands a project-wide `redactErrSerializer` policy that strips known-leaky standard error properties from the `err` payload at pino level. The narrowing in this task is type-safety symmetry, not leak prevention; both layers are independent (narrowing happens at the call site, redaction happens at the serializer). Land independently.
+
+---
+
+## Architect re-review (2026-05-15) — HELD PENDING FIXES
+
+`/ce-code-review` on commit `5883be8` (6 reviewers: correctness on Opus; testing, maintainability, project-standards, kieran-typescript, learnings-researcher on Sonnet; `ce-agent-native-reviewer` skipped per project CLAUDE.md). User-triaged session 2026-05-15. Two items held — both are the same acceptance-criterion escape ("every `catch (xxxErr) { logger.{warn,error}({err: xxxErr, ...}) }` site in `backend/src/routes/accreditation.ts`" from acceptance #1).
+
+### Items held (must fix before archive)
+
+1. **`mailErr` not narrowed in the `/request` SMTP catch** — file `backend/src/routes/accreditation.ts:360` (binding `catch (mailErr)` at `:353`). `err: mailErr,` flows raw into `logger.error({...})`. Cross-corroborated by correctness P2 conf 100 + maintainability P1 conf 100. Same single-line fix shape as the `incrErr`/`decrErr`/`deleteErr` narrowings: `err: mailErr instanceof Error ? mailErr : new Error(String(mailErr)),`. Per the `pino-err-slot-plain-object-projection-loss-2026-05-15` convention, a non-Error rejection (nodemailer misconfiguration shapes) would land as `type='Object'` in pino — exactly what this task closes elsewhere in the file.
+
+2. **`err` not narrowed in the `setInterval` cleanupExpiredTokens catch** — same file, `:919` (`.catch((err) => { logger.error({ ..., err }, ...) })`). Promise-rejection bindings are `unknown`-typed, exactly the shape this task closes. Cross-corroborated by maintainability P1 conf 100 + kieran-typescript RR-2 (anonymous-binding form noted in the residual notes). Same single-line fix shape applied to the anonymous `err` binding.
+
+### Residual scope check (worth doing before round-2 closes)
+
+The original task's "Optional sibling sweep" line (acceptance #3) said: "while in the file, scan adjacent route files (`bridge.ts`, `orcid.ts`, `papers.ts`, etc.) for the same `unknown`-to-pino pattern. Filing is OK; this task does not require fixing siblings." Round-2 is a good time to do that grep and either file follow-up tasks for the sibling files or note explicitly that the sibling scan was performed and the count was zero. Not gating archive; just don't drop the optional-sweep entirely.
+
+### Dismissed at triage (recorded for transparency)
+
+- **Helper extraction (`narrowToError`)** (single-reviewer maintainability watch) — explicitly out-of-scope per task; threshold for extraction would be 6+ sites in one file. After round-2, the count is 5 narrowed sites in `accreditation.ts` (within threshold).
+- **`new Error(String(x))` drops structured fields on non-Error throwables** (kieran-typescript KT-1 conf 30) — informational fidelity argument; current shape guarantees pino's serializer receives an `Error`, which is the load-bearing property.
+
+When both held items land, `git mv` this file back to `tasks/review/` for re-review and archive.
