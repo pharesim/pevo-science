@@ -55,3 +55,9 @@ Move to `tasks/pending/` when:
 1. The user decides on the alerting backend (one of the options above, or "no alerting"), AND
 2. Cluster hold-block item 3 has landed (the message text is now honest about today's no-alert state), AND
 3. The user authorizes the implementation work.
+
+## Deferred 2026-05-15 (user decision)
+
+User: "Operator alerts will be a future feature, we ignore that for now."
+
+Interpretation: this is NOT "no alerting" (which would let us dismiss the task and file a `solutions/conventions/` entry). It is "deferred indefinitely, revisit when alerting becomes a priority." The task stays in `blocked/` as a parking spot. Do NOT re-raise at routine architect startup scans; the user will re-elevate when the future-feature trigger fires (e.g., a real permanent-cascade incident in production, or growth past single-instance).
