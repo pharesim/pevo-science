@@ -10,9 +10,16 @@
  *       1b's `co.author != $1` self-review exclusion has the same seeding
  *       impracticality (a paper author's self-review reply on their own
  *       bridge paper).
- *   (b) `verifyHiveSignature` is NOT mocked — the route middleware runs
- *       real via the existing MOCK_VERIFY_SIGNATURE fixture that
- *       notifications.test.ts already uses for real-HAF coverage.
+ *   (b) `verifyHiveSignature` is mocked via the project-wide
+ *       MOCK_VERIFY_SIGNATURE fixture (see
+ *       `agents/docs/solutions/conventions/test-mock-carve-out-clause-c-2026-05-04.md`).
+ *       This file's focus is SQL-shape predicates, NOT cryptographic
+ *       verification behavior, so the carve-out's clause-(b) refinement
+ *       permits the fixture: the 401-on-missing-header gate and the
+ *       username-extraction behavior are preserved; only the cryptographic
+ *       signature check is bypassed. The real `verifyHiveSignature`
+ *       middleware is exercised against signed requests in
+ *       notifications.test.ts (the clause-(c) real-path companion).
  *   (c) Real-path companion: the envelope shape + sort-order + limit
  *       behavior is exercised against real HAF in notifications.test.ts;
  *       this file covers the SQL-shape predicates those tests cannot pin
@@ -66,17 +73,27 @@ beforeEach(async () => {
 describe('GET /api/notifications — new_review arm SQL-shape canaries', () => {
   async function captureNotificationsSql(): Promise<string> {
     // Use a sinceBlock past the genesis short-circuit so the route reaches
-    // the notification query. The route hits pool.query twice:
+    // the notification query. The route hits pool.query three times in
+    // sequence:
     //   1. `getGenesisBlock` — `SELECT MIN(cj.block_num) AS genesis ...
-    //      WHERE cj.custom_id = $1` (MIN, NOT MAX — round-3 hold #3
-    //      corrected the prior MAX-shape mock that matched neither
-    //      bootstrap query and worked only by capture-overwrite ordering).
-    //   2. `fetchNotificationsFromHaf` — the notification CTE-chain that
+    //      WHERE cj.custom_id = $1`. The first dispatch branch below
+    //      short-circuits this with `{ genesis: 0 }` so the `head > genesis`
+    //      clamp doesn't engage.
+    //   2. `getGenesisBlock` HEAD fallback — `SELECT MAX(block_num) AS head
+    //      FROM hafsql.haf_blocks`. Falls through to the catch-all
+    //      `return { rows: [] }` branch; no capture (the empty result is
+    //      benign for the genesis lookup).
+    //   3. `fetchNotificationsFromHaf` — the notification CTE-chain that
     //      we want to inspect. Its UNION-ALL arms tag rows with
     //      `'new_review'::text AS event_type` (and several other event
     //      types); capture only when the SQL contains that distinctive
-    //      arm-tag substring so a future pre-notifications query added
-    //      inside the route does NOT steal the capture.
+    //      arm-tag substring so neither bootstrap query nor any future
+    //      pre-notifications query added inside the route steals the
+    //      capture. `verifyHiveSignature` is mocked at the module level
+    //      above via the project-wide MOCK_VERIFY_SIGNATURE fixture; this
+    //      file's focus is SQL-shape, not cryptographic verification (see
+    //      `agents/docs/solutions/conventions/test-mock-carve-out-clause-c-2026-05-04.md`
+    //      for the auth-mock policy under clause-(b)).
     let capturedSql = '';
     hafQueryMock.mockImplementation(async (sql: string) => {
       // Bootstrap: genesis-block lookup. Return 0 so the clamp doesn't engage.

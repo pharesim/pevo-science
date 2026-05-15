@@ -11,12 +11,21 @@
  *       with these author × parent-shape combinations at test time.
  *   (b) `verifyHiveSignature` is NOT mocked — the route is a public GET
  *       (no middleware to short-circuit).
- *   (c) Real-path companion: the rest of the profile reviews surface
- *       (envelope shape, ordering, sort, pagination) is exercised against
- *       real HAF by profile.test.ts / papers.test.ts integration. This
- *       file covers the SQL-shape risk class — that the accred-OR-anon
- *       gate AND the validPevoPaperWhere parent-paper gate are composed
- *       at both queries — which no real-HAF test pins.
+ *   (c) Real-path companion: this file is the load-bearing coverage for
+ *       `/api/profile/:user/reviews` SQL-shape gates — no real-HAF
+ *       integration test exercises that specific route end-to-end. The
+ *       carve-out clause-(c) companion is structural: the gate
+ *       composition pattern (accred-OR-anon gate + validPevoPaperWhere
+ *       parent-paper gate) is exercised against real HAF at sibling
+ *       review-class SQL sites (the `user_reviews` CTE in
+ *       reputation-lifecycle.test.ts, the paper-detail review list in
+ *       papers.test.ts, the review-search arm in search.test.ts). A
+ *       different mutation class at the SAME helper/CTE family is caught
+ *       by those tests, satisfying clause-(c)'s "same risk class covered
+ *       by a real-path test elsewhere" requirement (see
+ *       `agents/docs/solutions/conventions/test-mock-carve-out-clause-c-2026-05-04.md`).
+ *       Literal-route real-HAF coverage for `/api/profile/:user/reviews`
+ *       remains a follow-up.
  *
  * Canaries pinned in this file:
  *   1. Both the count query and the data query carry the accreditation
@@ -138,17 +147,22 @@ describe('GET /api/profile/:username/reviews — SQL-shape gates (accred + paren
     //   $10 = accreditedAccounts (votes-sort only).
     // 0-indexed: params[3] = username, params[5] = anonAccount.
     // Runtime narrowing replaces an unchecked `as string` cast — the cast
-    // masks param-ordering regressions (round-3 hold #4) by silently
-    // resolving to `''` via `??` if the slot ever shifts; an explicit
-    // `expect(typeof ...).toBe('string')` fails red on regression.
+    // masks param-ordering regressions by silently resolving to `''` via
+    // `??` if the slot ever shifts. Capture the param types in outer-scope
+    // arrays and assert in test scope AFTER the request completes; an
+    // expect-throw inside the mock callback would propagate into the
+    // route's `try { ... } catch { return null; }` block at
+    // `fetchUserReviewsFromHaf` and be swallowed, masking the mutation.
     const accreditedAuthors = new Set<string>(); // empty: nobody is accredited
+    const capturedAuthorTypes: string[] = [];
+    const capturedAnonTypes: string[] = [];
     hafQueryMock.mockImplementation(async (sql: string, params: unknown[]) => {
       const rawAuthor = params?.[3];
       const rawAnon = params?.[5];
-      expect(typeof rawAuthor).toBe('string');
-      expect(typeof rawAnon).toBe('string');
-      const author = typeof rawAuthor === 'string' ? rawAuthor : '';
-      const anonAccount = typeof rawAnon === 'string' ? rawAnon : '';
+      capturedAuthorTypes.push(typeof rawAuthor);
+      capturedAnonTypes.push(typeof rawAnon);
+      const author = rawAuthor as string;
+      const anonAccount = rawAnon as string;
       const admitted = accreditedAuthors.has(author) || (author !== '' && author === anonAccount);
       if (sql.includes('count(*)')) {
         return { rows: [{ total: admitted ? 1 : 0 }] };
@@ -157,6 +171,14 @@ describe('GET /api/profile/:username/reviews — SQL-shape gates (accred + paren
       return { rows: admitted ? [{ author, permlink: 'r1', body: '', json_metadata: {}, created: '2026-01-01T00:00:00.000Z', parent_author: 'someone', parent_permlink: 'p', paper_title: '', net_votes: 0 }] : [] };
     });
     const res = await request(app).get('/api/profile/unaccredited-spammer/reviews');
+    // Outer-scope narrowing: every emitted query must have bound a string
+    // at the username + anonAccount slots. A non-string at either slot
+    // signals a param-ordering regression. Asserting here (not inside the
+    // mock) bypasses the route's try/catch swallow so the test fails red
+    // on regression instead of returning the empty envelope from null.
+    expect(capturedAuthorTypes.length).toBeGreaterThan(0);
+    for (const t of capturedAuthorTypes) expect(t).toBe('string');
+    for (const t of capturedAnonTypes) expect(t).toBe('string');
     expect(res.status).toBe(200);
     expect(res.body.status).toBe('ok');
     expect(res.body.data).toEqual([]);

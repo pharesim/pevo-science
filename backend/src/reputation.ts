@@ -673,7 +673,7 @@ export async function computeReputationBatch(
       --     convention.
       --   - Accreditation gate (c.author = ANY($2::text[]) OR c.author = $19):
       --     structurally required per the helper contract (callers compose
-      --     accreditation), mirroring the sibling 3 review-class CTEs and
+      --     accreditation), mirroring the sibling review-class CTEs and
       --     the display-side composition at profile.ts. In the current call-
       --     graph $1 and $2 derive from the same getAllAccreditedAccounts
       --     snapshot, so this site's check is functionally subsumed by the

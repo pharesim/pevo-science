@@ -328,8 +328,9 @@ async function fetchUserReviewsFromHaf(username: string, limit: number, offset: 
     // The accreditation OR-anon gate is load-bearing here: without it,
     // `/api/profile/<unaccredited>/reviews` surfaces 300-char body
     // excerpts of review-shaped replies that pass validReviewWhere but
-    // fail the per-review accreditation gate at `/api/reviews/...`.
-    // That asymmetry was flagged by the round-1 review (item 2).
+    // fail the per-review accreditation gate at `/api/reviews/...`. The
+    // listing and per-review surfaces must agree on what counts as a
+    // review (per the pevo-object-identity-is-author-vouching convention).
     //
     // The JOIN against parent paper `p` enforces three things: (a) the
     // title (p.title), (b) self-review exclusion (p.json_metadata ->
@@ -338,14 +339,19 @@ async function fetchUserReviewsFromHaf(username: string, limit: number, offset: 
     // paper Hive post (a peakd blog post, a non-paper comment) would
     // surface here with paper_title='' while reputation correctly excludes
     // it (the user_reviews CTE in reputation.ts composes validPevoPaperWhere
-    // on its parent JOIN). This is the round-3 hold #1 parity fix: display
-    // and reputation must agree on which (author, permlink) reviews
-    // contribute. INNER JOIN — a review whose parent paper isn't present
-    // in HAF can't surface meaningfully in a profile reviews list anyway.
-    // Canonical $N counter (matches reviews.ts post-round-1 item #5).
-    // Offset arithmetic (`nextIdx + N` constants) silently mis-binds if any
-    // bind is added or removed between lines, or if activeAccreditationsCteBody
-    // returns additional CTE params; the counter pattern adapts.
+    // on its parent JOIN). Display and reputation must agree on which
+    // (author, permlink) reviews contribute (see
+    // `agents/docs/solutions/conventions/cross-surface-parity-audit-at-sibling-composition-sites-2026-05-14.md`
+    // for the parity-audit convention). INNER JOIN — a review whose
+    // parent paper isn't present in HAF can't surface meaningfully in a
+    // profile reviews list anyway.
+    // Canonical $N counter pattern (matches reviews.ts). Offset arithmetic
+    // (`nextIdx + N` constants) silently mis-binds if any bind is added or
+    // removed between lines, or if activeAccreditationsCteBody returns
+    // additional CTE params; the counter pattern adapts. Per
+    // `agents/docs/solutions/conventions/defense-in-depth-canary-must-pin-each-layer-2026-05-07.md`,
+    // the SQL-shape canary in profile-reviews-accred-gate.test.ts pins
+    // the resolved param positions so a positional mis-bind fails red.
     const accredCte = activeAccreditationsCteBody(1);
     let paramIdx = accredCte.nextIdx;
     const usernameIdx = paramIdx++;

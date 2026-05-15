@@ -542,3 +542,33 @@ These four sibling sites are filed as a single new task `backend-getprofilestats
 ### Re-review signal
 
 When items 1, 2, 3, 4 land, `git mv` this file from `tasks/pending/` back to `tasks/review/` per `feedback_task_mv_to_review_after_each_round.md`. Use bare `backend:` or `backend(<scope>):` commit prefixes so the zone-audit hook fires. The architect's next review pass scopes `/ce-code-review` to commits since `f77ae21`. Items 1, 2, and 4 all touch test files; items 1+4 touch the same test fixture (different sections); item 2 is the substantive fix in a third test file. Item 3 touches production-code comments at two source files (`profile.ts` + `reputation.ts`). Items can land in any order or in one combined commit.
+
+---
+
+## Backend re-review signal (2026-05-15, round-5, working tree pre-commit)
+
+All 4 round-4 hold items addressed in a single coordinated commit. No behavioral changes — all four are comment/test-fixture corrections. Files touched: `backend/tests/routes/notifications-arm-sql-shape.test.ts`, `backend/tests/routes/profile-reviews-accred-gate.test.ts`, `backend/src/routes/profile.ts`, `backend/src/reputation.ts`.
+
+**Item 1 [P3]** — `notifications-arm-sql-shape.test.ts` comment block above the mock dispatch rewritten to reflect the actual three-query call sequence: (1) `getGenesisBlock` MIN query (short-circuited via the first dispatch branch), (2) `getGenesisBlock` HEAD-fallback MAX query (falls through to the catch-all empty return, no capture), (3) the `fetchNotificationsFromHaf` UNION-ALL query (captured via the `'new_review'::text` distinctive substring). The comment now explicitly documents the fall-through branch for the HEAD query so a future maintainer doesn't re-introduce the prior MAX-shape misstatement. The file's header docblock clause-(b) statement also rewritten: it previously claimed `verifyHiveSignature` was NOT mocked, but the file uses the project-wide `MOCK_VERIFY_SIGNATURE` fixture at lines 40-43 (carve-out clause-(b) refinement permits this for SQL-shape-focused tests where cryptographic verification is NOT the focus). The new header references `agents/docs/solutions/conventions/test-mock-carve-out-clause-c-2026-05-04.md` as the canonical source for the auth-mock policy and notes that the real-path companion (real `verifyHiveSignature` against signed requests) lives in `notifications.test.ts`.
+
+**Item 2 [P3]** — `profile-reviews-accred-gate.test.ts:148-150` runtime-narrowing assertion moved out of the `pool.query` mock callback into test scope. Inside the mock, `typeof rawAuthor` / `typeof rawAnon` are captured into outer-scope arrays (`capturedAuthorTypes`, `capturedAnonTypes`). After `await request(app).get(...)` returns, the test asserts every captured type is `'string'` so a param-ordering regression that shifts the slot to undefined/number fails red instead of throwing inside the mock callback (where the throw would propagate into `fetchUserReviewsFromHaf`'s `try { ... } catch (err) { return null; }` swallow and let the test pass for the wrong reason). The dead-code `: ''` fallback is dropped — the outer-scope `expect` enforces the precondition, so the inner cast is a bare `as string`. Test still passes against real Postgres + Redis.
+
+**Item 3 [P3]** — Convention purge of round-number cross-refs at the sibling sites missed in items 2+5's earlier trim:
+- `backend/src/routes/profile.ts:332` ("round-1 review (item 2)") rewritten to "The listing and per-review surfaces must agree on what counts as a review (per the pevo-object-identity-is-author-vouching convention)."
+- `backend/src/routes/profile.ts:341` ("round-3 hold #1 parity fix") rewritten to reference `cross-surface-parity-audit-at-sibling-composition-sites-2026-05-14.md` as the parity-audit convention.
+- `backend/src/routes/profile.ts:345` ("matches reviews.ts post-round-1 item #5") rewritten as "Canonical $N counter pattern (matches reviews.ts)" plus a reference to `defense-in-depth-canary-must-pin-each-layer-2026-05-07.md` for the SQL-shape canary that pins the resolved param positions.
+- `backend/src/reputation.ts:676` ("sibling 3 review-class CTEs") → "sibling review-class CTEs" (non-counting phrase; the count adds nothing and breaks on every CTE add/remove).
+
+**Item 4 [P3]** — `profile-reviews-accred-gate.test.ts:14` carve-out clause-(c) header rephrased per the architect's "downgrade the claim" path. The header no longer claims `profile.test.ts` / `papers.test.ts` provide real-HAF companion coverage for the literal route `/api/profile/:user/reviews`. The new wording acknowledges this file as the load-bearing coverage for that route's SQL-shape gates and explains the carve-out clause-(c) companion as structural: the gate composition pattern (accred-OR-anon + validPevoPaperWhere) is exercised against real HAF at sibling review-class SQL sites (the `user_reviews` CTE in `reputation-lifecycle.test.ts`, paper-detail review list in `papers.test.ts`, review-search arm in `search.test.ts`). Literal-route real-HAF coverage for `/api/profile/:user/reviews` remains a follow-up (no separate task filed; existing `backend-getprofilestats-user-reviews-parity-gate.md` covers the related parity-test extension).
+
+### Verification
+
+- `npx tsc --noEmit`: clean (no new errors).
+- `npm run lint`: clean (0 errors).
+- Targeted tests against real Postgres + Redis:
+  - `backend/tests/routes/notifications-arm-sql-shape.test.ts` — passes.
+  - `backend/tests/routes/profile-reviews-accred-gate.test.ts` — passes; the new outer-scope narrowing fires when the mock implementation runs and the `capturedAuthorTypes`/`capturedAnonTypes` arrays contain a string per query.
+
+### Items NOT touched
+
+- Architect-zone carry-forwards (`agents/docs/reputation-algorithm.md` lines 218-219, 296, 374, 407; `agents/docs/ARCHITECTURE.md` lines 466-468). Still pending, safe to land at archive of this task once round-5 is reviewed.
