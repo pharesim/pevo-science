@@ -12,13 +12,22 @@
  * item 1 surface) passes every behavioral check while breaking operator
  * dashboards.
  *
- * Scope: outer-catch `*.failed` events on the 5 auth handlers + the 3
+ * Scope: outer-catch `*.failed` events on all 6 auth handlers (login,
+ * reset-request, reset, recover, signup, resend-verification) + the 3
  * `*.smtp_send_failed` events. The 2 `*.smtp_not_configured` events on
  * /reset-request and /resend-verification are covered by the integration
  * tests in `recover.test.ts` BE-AUTH-SMTP-STATUS-CODE-ORACLE block (round-2
  * hold-fix item 5(b)) and counted toward the 6-10 budget there. File-level
  * emissions (`auth.startup.*`, `auth.burn_sentinel.*`) are out of scope per
  * the hold-block triage.
+ *
+ * Round-2 hold-fix item 1 added the 3 specs the round-1 hold block called
+ * for but the round-1 implementer missed: `auth.resend_verification.smtp_send_failed`,
+ * `auth.reset_request.smtp_send_failed`, and the outer-catch
+ * `auth.resend_verification.failed`. The two SMTP-send-failed specs insert
+ * a real pending/active account in the DB and spy on
+ * `nodemailer.createTransport` so `sendMail` rejects deterministically (the
+ * same pattern as `recover.test.ts` BE-AUTH-SMTP-STATUS-CODE-ORACLE).
  *
  * Strategy: each test triggers the catch path and asserts the resulting
  * `logger.<level>` call captures the canonical fields. Spying on the logger
@@ -87,8 +96,17 @@ try {
 // Helper: search a spy's call list for the first call with matching event
 // discriminator. Returns the structured-fields object (the first arg) or
 // undefined.
+//
+// Round-2 hold-fix item 2: the `spy` parameter is typed as a minimal
+// structural shape (`{ mock: { calls: unknown[][] } }`) rather than
+// `ReturnType<typeof vi.fn>`. The minimal shape accepts both
+// `MockInstance<LogFn>` (from `vi.spyOn(logger, 'error')`) and
+// `Mock<[], void>` (from `vi.fn()`) without requiring an `as never` cast at
+// each call site. The maximally-suppressive `as never` cast was previously
+// repeated at 7 call sites and silently swallowed any future type drift in
+// either `vi.spyOn` or this helper's signature.
 function findEvent(
-  spy: ReturnType<typeof vi.fn>,
+  spy: { mock: { calls: unknown[][] } },
   event: string,
 ): Record<string, unknown> | undefined {
   for (const call of spy.mock.calls) {
@@ -145,7 +163,7 @@ describe('auth.signup.smtp_send_failed log shape', () => {
         // future refactor that drops the catch entirely fails loudly.
         expect(res.status).toBe(500);
 
-        const fields = findEvent(errorSpy as never, 'auth.signup.smtp_send_failed');
+        const fields = findEvent(errorSpy, 'auth.signup.smtp_send_failed');
         expect(fields).toBeDefined();
         expect(fields).toMatchObject({
           event: 'auth.signup.smtp_send_failed',
@@ -186,7 +204,7 @@ describe('auth.signup.smtp_not_configured log shape', () => {
         });
         expect(res.status).toBe(500);
 
-        const fields = findEvent(errorSpy as never, 'auth.signup.smtp_not_configured');
+        const fields = findEvent(errorSpy, 'auth.signup.smtp_not_configured');
         expect(fields).toBeDefined();
         expect(fields).toMatchObject({
           event: 'auth.signup.smtp_not_configured',
@@ -240,7 +258,7 @@ describe('auth.login.failed log shape', () => {
           .send({ email_or_username: 'no_such_user_for_log_shape', password: 'X1' });
         expect(res.status).toBe(500);
 
-        const fields = findEvent(errorSpy as never, 'auth.login.failed');
+        const fields = findEvent(errorSpy, 'auth.login.failed');
         expect(fields).toBeDefined();
         expect(fields).toMatchObject({
           event: 'auth.login.failed',
@@ -283,7 +301,7 @@ describe('auth.reset_request.failed log shape', () => {
           .send({ email: `${SHAPE_TEST_EMAIL_PREFIX}rr_fail_${Date.now()}@example.com` });
         expect(res.status).toBe(500);
 
-        const fields = findEvent(errorSpy as never, 'auth.reset_request.failed');
+        const fields = findEvent(errorSpy, 'auth.reset_request.failed');
         expect(fields).toBeDefined();
         expect(fields).toMatchObject({
           event: 'auth.reset_request.failed',
@@ -326,7 +344,7 @@ describe('auth.reset.failed log shape', () => {
           .send({ token: 'a'.repeat(64), password: 'NewPassword1' });
         expect(res.status).toBe(500);
 
-        const fields = findEvent(errorSpy as never, 'auth.reset.failed');
+        const fields = findEvent(errorSpy, 'auth.reset.failed');
         expect(fields).toBeDefined();
         expect(fields).toMatchObject({
           event: 'auth.reset.failed',
@@ -374,7 +392,7 @@ describe('auth.recover.failed log shape', () => {
           });
         expect(res.status).toBe(500);
 
-        const fields = findEvent(errorSpy as never, 'auth.recover.failed');
+        const fields = findEvent(errorSpy, 'auth.recover.failed');
         expect(fields).toBeDefined();
         expect(fields).toMatchObject({
           event: 'auth.recover.failed',
@@ -422,11 +440,230 @@ describe('auth.signup.failed log shape', () => {
         });
         expect(res.status).toBe(500);
 
-        const fields = findEvent(errorSpy as never, 'auth.signup.failed');
+        const fields = findEvent(errorSpy, 'auth.signup.failed');
         expect(fields).toBeDefined();
         expect(fields).toMatchObject({
           event: 'auth.signup.failed',
           route: 'auth.signup',
+        });
+        expect(fields!.err).toBeInstanceOf(Error);
+      } finally {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (pool as any).query = origQuery;
+        errorSpy.mockRestore();
+      }
+    },
+  );
+});
+
+// ─── Round-2 hold-fix item 1: missing SMTP-send-failed + outer-catch specs ───
+//
+// The round-1 hold block (file lines 138-143) asked for spy assertions on the
+// 3 `*.smtp_send_failed` events and the 5 outer-catch `*.failed` events. The
+// round-1 implementer landed only 1 of 3 SMTP-send-failed (signup) and 5 of
+// 6 outer-catch (login/reset/reset_request/recover/signup). The 3 specs below
+// close the gap:
+//   - auth.resend_verification.smtp_send_failed  (warn)
+//   - auth.reset_request.smtp_send_failed        (warn)
+//   - auth.resend_verification.failed            (error, outer catch)
+//
+// For the two SMTP-send-failed specs, the handler only reaches the sendMail
+// branch when (a) `config.smtpHost` is non-empty and (b) the email
+// corresponds to an existing account in the known-email branch — for
+// /resend-verification, an account with a hex `verify_token` (pending state)
+// AND a matching password; for /reset-request, any account row. Without the
+// matching DB row + password, /resend-verification falls into the
+// unknown-email or wrong-password branch which burns sentinel and returns
+// 200 without ever invoking sendMail. The setup mirrors `recover.test.ts`
+// BE-AUTH-SMTP-STATUS-CODE-ORACLE block.
+
+describe('auth.resend_verification.smtp_send_failed log shape', () => {
+  const RESEND_EMAIL = `${SHAPE_TEST_EMAIL_PREFIX}resend_smtp_${Date.now()}@example.com`;
+  const RESEND_PASSWORD = 'ResendSmtpFailPwd1';
+  let acctSetupOk = false;
+
+  beforeAll(async () => {
+    if (!dbReachable) return;
+    const pool = getAppPool()!;
+    const passwordHash = await argon2.hash(RESEND_PASSWORD, { type: argon2.argon2id });
+    // Pending account: hex verify_token (NOT prefixed with `confirmed:`) so
+    // the handler enters the sendMail branch (lines 631-685 of auth.ts).
+    try {
+      await pool.query(
+        `INSERT INTO accounts (email, username, password_hash, custody, verify_token, expires_at)
+         VALUES ($1, $2, $3, 'light', $4, $5)`,
+        [
+          RESEND_EMAIL,
+          `log_shape_resend_smtp_${Date.now()}`,
+          passwordHash,
+          'abcdef0123456789abcdef0123456789',
+          new Date(Date.now() + 24 * 60 * 60 * 1000),
+        ],
+      );
+      acctSetupOk = true;
+    } catch {
+      acctSetupOk = false;
+    }
+  });
+
+  afterAll(async () => {
+    if (!dbReachable) return;
+    const pool = getAppPool()!;
+    await pool.query('DELETE FROM accounts WHERE email = $1', [RESEND_EMAIL]).catch(() => {});
+  });
+
+  it.skipIf(!dbReachable || !redisReachable)(
+    'fires on sendMail throw with route + emailKnown:known + err: <Error>',
+    async () => {
+      if (!acctSetupOk) return;
+      const prevHost = config.smtpHost;
+      config.smtpHost = 'smtp-fail-test.invalid';
+      const sendMailSpy = vi.fn().mockRejectedValue(new Error('SMTP connection refused'));
+      const transportSpy = vi
+        .spyOn(nodemailer, 'createTransport')
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .mockReturnValue({ sendMail: sendMailSpy } as any);
+      // Emission is at logger.warn (auth.ts:665), not logger.error.
+      const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(
+        () => undefined as unknown as void,
+      );
+
+      try {
+        await clearRateLimitKeys(['auth-resend']);
+        const res = await request(app)
+          .post('/api/auth/resend-verification')
+          .send({ email: RESEND_EMAIL, password: RESEND_PASSWORD });
+        // Per BE-AUTH-SMTP-STATUS-CODE-ORACLE: route returns 200 even when
+        // sendMail throws (status-code oracle prevention). Pin the 200 so a
+        // regression that re-introduces 500 on SMTP failure fails loudly.
+        expect(res.status).toBe(200);
+        // sendMail must have actually fired — otherwise we're asserting a
+        // no-op path (e.g. password mismatch short-circuit).
+        expect(sendMailSpy).toHaveBeenCalledTimes(1);
+
+        const fields = findEvent(warnSpy, 'auth.resend_verification.smtp_send_failed');
+        expect(fields).toBeDefined();
+        expect(fields).toMatchObject({
+          event: 'auth.resend_verification.smtp_send_failed',
+          route: 'auth.resend-verification',
+          emailKnown: 'known',
+        });
+        expect(fields!.err).toBeInstanceOf(Error);
+      } finally {
+        warnSpy.mockRestore();
+        transportSpy.mockRestore();
+        config.smtpHost = prevHost;
+      }
+    },
+  );
+});
+
+describe('auth.reset_request.smtp_send_failed log shape', () => {
+  const RESET_EMAIL = `${SHAPE_TEST_EMAIL_PREFIX}reset_smtp_${Date.now()}@example.com`;
+  let acctSetupOk = false;
+
+  beforeAll(async () => {
+    if (!dbReachable) return;
+    const pool = getAppPool()!;
+    const passwordHash = await argon2.hash('PwdForResetSmtp1', { type: argon2.argon2id });
+    // Active account (verify_token NULL) — any account row is enough for
+    // /reset-request's known-email branch (handler doesn't require a
+    // specific lifecycle state, just a matching email).
+    try {
+      await pool.query(
+        `INSERT INTO accounts (email, username, password_hash, custody, verify_token)
+         VALUES ($1, $2, $3, 'light', NULL)`,
+        [RESET_EMAIL, `log_shape_reset_smtp_${Date.now()}`, passwordHash],
+      );
+      acctSetupOk = true;
+    } catch {
+      acctSetupOk = false;
+    }
+  });
+
+  afterAll(async () => {
+    if (!dbReachable) return;
+    const pool = getAppPool()!;
+    await pool.query('DELETE FROM accounts WHERE email = $1', [RESET_EMAIL]).catch(() => {});
+  });
+
+  it.skipIf(!dbReachable || !redisReachable)(
+    'fires on sendMail throw with route + emailKnown:known + err: <Error>',
+    async () => {
+      if (!acctSetupOk) return;
+      const prevHost = config.smtpHost;
+      config.smtpHost = 'smtp-fail-test.invalid';
+      const sendMailSpy = vi.fn().mockRejectedValue(new Error('SMTP connection refused'));
+      const transportSpy = vi
+        .spyOn(nodemailer, 'createTransport')
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .mockReturnValue({ sendMail: sendMailSpy } as any);
+      // Emission is at logger.warn (auth.ts:957), not logger.error.
+      const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(
+        () => undefined as unknown as void,
+      );
+
+      try {
+        await clearRateLimitKeys(['auth-reset-request']);
+        const res = await request(app)
+          .post('/api/auth/reset-request')
+          .send({ email: RESET_EMAIL });
+        // Per BE-AUTH-SMTP-STATUS-CODE-ORACLE: 200 even on sendMail throw.
+        expect(res.status).toBe(200);
+        expect(sendMailSpy).toHaveBeenCalledTimes(1);
+
+        const fields = findEvent(warnSpy, 'auth.reset_request.smtp_send_failed');
+        expect(fields).toBeDefined();
+        expect(fields).toMatchObject({
+          event: 'auth.reset_request.smtp_send_failed',
+          route: 'auth.reset-request',
+          emailKnown: 'known',
+        });
+        expect(fields!.err).toBeInstanceOf(Error);
+      } finally {
+        warnSpy.mockRestore();
+        transportSpy.mockRestore();
+        config.smtpHost = prevHost;
+      }
+    },
+  );
+});
+
+describe('auth.resend_verification.failed log shape', () => {
+  it.skipIf(!dbReachable || !redisReachable)(
+    'fires from outer catch with route + err',
+    async () => {
+      const errorSpy = vi.spyOn(logger, 'error').mockImplementation(
+        () => undefined as unknown as void,
+      );
+      const pool = getAppPool()!;
+      const origQuery = pool.query.bind(pool);
+      let calls = 0;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (pool as any).query = (...args: unknown[]) => {
+        calls++;
+        if (calls === 1) {
+          return Promise.reject(new Error('synthetic db failure for resend_verification.failed'));
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return origQuery(...(args as [any]));
+      };
+
+      try {
+        await clearRateLimitKeys(['auth-resend']);
+        const res = await request(app)
+          .post('/api/auth/resend-verification')
+          .send({
+            email: `${SHAPE_TEST_EMAIL_PREFIX}resend_fail_${Date.now()}@example.com`,
+            password: 'AnyPassword1',
+          });
+        expect(res.status).toBe(500);
+
+        const fields = findEvent(errorSpy, 'auth.resend_verification.failed');
+        expect(fields).toBeDefined();
+        expect(fields).toMatchObject({
+          event: 'auth.resend_verification.failed',
+          route: 'auth.resend-verification',
         });
         expect(fields!.err).toBeInstanceOf(Error);
       } finally {

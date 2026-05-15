@@ -231,3 +231,29 @@ Note: the round-2 commit's convention-doc edits to `agents/docs/solutions/conven
 ### Re-review signal
 
 When items 1 + 2 land, `git mv` this file from `tasks/pending/` back to `tasks/review/`. The move itself is the re-review signal.
+
+---
+
+## Backend re-review signal (2026-05-15, working tree)
+
+Round-2 hold items 1 + 2 landed.
+
+1. **(P2) Item 1 — 3 missing spy-assertion specs added.** New specs in `backend/tests/routes/auth-log-shape.test.ts` close the round-1 coverage gap that the round-2 hold flagged:
+   - `auth.resend_verification.smtp_send_failed log shape > fires on sendMail throw with route + emailKnown:known + err: <Error>` — beforeAll inserts a pending account (hex `verify_token`, matching argon2 password hash) so the handler reaches the sendMail branch; spies on `nodemailer.createTransport` so `sendMail` rejects with a synthetic Error; spies on `logger.warn` (not `error` — auth.ts:665 emits at warn). Asserts `event` exact-match, `route: 'auth.resend-verification'`, `emailKnown: 'known'`, and `err: instanceof Error`. Also pins `res.status === 200` (BE-AUTH-SMTP-STATUS-CODE-ORACLE invariant) and `sendMailSpy.toHaveBeenCalledTimes(1)` so a regression that short-circuits before sendMail fails the assertion rather than passing as a no-op.
+   - `auth.reset_request.smtp_send_failed log shape > fires on sendMail throw with route + emailKnown:known + err: <Error>` — beforeAll inserts an active account (verify_token NULL); same `nodemailer.createTransport` spy pattern. Spies on `logger.warn` (auth.ts:957 emits at warn). Asserts `event`, `route: 'auth.reset-request'`, `emailKnown: 'known'`, `err: instanceof Error`, `res.status === 200`, `sendMailSpy.toHaveBeenCalledTimes(1)`.
+   - `auth.resend_verification.failed log shape > fires from outer catch with route + err` — outer-catch path driven by a per-test `pool.query` patch that throws on first call only and restores in finally (same pattern as the 5 already-pinned outer-catch specs). Spies on `logger.error`. Asserts `event`, `route: 'auth.resend-verification'`, `err: instanceof Error`. Per the carve-out clause (b) refinement, `verifyHiveSignature` is not relevant here (these are unauthenticated routes); the rate-limit, abort-signal, and zod middleware all run real.
+
+   Mutation kills (per `tests-must-fail-on-mutation-of-code-under-test-2026-04-22.md`): each new event name was mutated in `backend/src/routes/auth.ts` (e.g. `auth.resend_verification.smtp_send_failed` → `auth.resend_verification.SMTP_send_failed`, `.failed` → `.FAILED`); the corresponding spec failed red on each mutation, restored after verification.
+
+   Spec budget: file is now at 10 specs (7 round-1 + 3 round-2). Combined with the 2 spy-assertion specs in `recover.test.ts` BE-AUTH-SMTP-STATUS-CODE-ORACLE block, total is 12 spy-pinned emissions across the auth surface — covering all 3 `*.smtp_send_failed`, all 3 `*.smtp_not_configured`, and all 6 outer-catch `*.failed` events called out by the round-1 hold block. Only file-level emissions (`auth.startup.*`, `auth.burn_sentinel.*`) remain unpinned, which the round-1 hold block explicitly excluded.
+
+2. **(P3) Item 2 — `errorSpy as never` cast dropped at all 7 call sites.** Widened `findEvent`'s `spy` parameter from `ReturnType<typeof vi.fn>` (which resolves to `Mock<[], void>`) to `{ mock: { calls: unknown[][] } }`. The minimal structural shape accepts both `MockInstance<LogFn>` (returned by `vi.spyOn(logger, 'error')` and `vi.spyOn(logger, 'warn')`) and `Mock` (returned by `vi.fn()`) without the maximally-suppressive bottom-type cast. Replaced the 7 `findEvent(errorSpy as never, '<event>')` sites (lines 148, 189, 243, 286, 329, 377, 425 in the round-1 file) with `findEvent(errorSpy, '<event>')`. The new 3 specs from item 1 use the same uncast pattern (one with `warnSpy`, two with `errorSpy`/`warnSpy`), so any future spy-shape drift now surfaces at the type checker rather than slipping through `as never`.
+
+   Inline doc comment added above `findEvent` documenting the round-2 rationale: why the cast was repeated, what the minimal shape accepts, and how it prevents future drift.
+
+### Verification (round-2 hold-fix)
+
+- `npm run lint` — clean (only pre-existing accepted seed-phrase warnings).
+- `npx tsc --noEmit` — clean.
+- `npx vitest run tests/routes/auth-log-shape.test.ts` — 10/10 passed (7 round-1 + 3 new round-2 specs).
+- Mutation kills verified for all 3 new specs (event-name typos: `smtp_send_failed → SMTP_send_failed`, `failed → FAILED`); each mutation made the corresponding spec fail red, restored after verification. Confirms specs would catch a real drift on these event names.
