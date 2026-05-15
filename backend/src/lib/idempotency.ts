@@ -260,6 +260,65 @@ export async function findAccreditationBroadcastByIdempotencyKey(
 }
 
 /**
+ * User-level "is this account already accredited?" HAF gate for
+ * /api/accreditation/verify. Distinct from `findAccreditationBroadcastByIdempotencyKey`:
+ * that helper is per-token (deterministic per `sha256(token:hive_username)`)
+ * and only catches retries of the same logical /verify call; this helper is
+ * per-user and catches the multi-token coexistence class (two pending tokens
+ * for the same user → both /verify calls would otherwise broadcast).
+ *
+ * Filed as a separate gate from the per-token check because the failure mode
+ * differs structurally: per-token dedup cannot prevent two distinct tokens'
+ * idempotency keys from missing each other on chain. The user-level gate runs
+ * BEFORE the per-token check so a hit on the user gate short-circuits without
+ * touching the per-token lookup or the broadcast-attempt cap counter.
+ *
+ * Scope per the filing task:
+ *   - `cj.custom_id = appTag`
+ *   - `cj.json::jsonb ->> 'action' = 'accredit'` (only accredit; revoke ops
+ *     are out of scope — the gate is "did a prior accredit op land for this
+ *     account?", not "what is the account's current accreditation status?".
+ *     Mirrors `findAccreditationBroadcastByIdempotencyKey`'s action filter.)
+ *   - `cj.json::jsonb ->> 'account' = $hiveUsername` (subject-binding via
+ *     payload field — the same JSONB extraction the sibling helpers use)
+ *   - `cj.required_posting_auths ?| $accreditationAuthorities::text[]`
+ *     (signer-binding via authority whitelist — see Rule 5 of
+ *     `hive-primitive-aware-design-rules-for-pevo-custom-json-ops-2026-05-05.md`,
+ *     the "inverted-shape" admin-issued op case)
+ *   - `cj.block_num >= getCachedGenesisBlock()` (genesis floor convention)
+ *
+ * Same-block tiebreaker: `ORDER BY cj.block_num DESC, cj.id DESC` per
+ * convention Rule 2. `operation_custom_json_view` does NOT expose
+ * `trx_in_block` (documented in `consent-ops.ts` header), so `cj.id` (the
+ * HAF op id — monotonic per chain; within a block, higher id = later op)
+ * is the operationally-equivalent secondary key. Determinism matters here
+ * less than for `author_accept`/`author_resign` (the gate only needs SOME
+ * prior accredit op; tiebreaker only picks WHICH prior op's tx_id we
+ * surface), but the convention is uniform across PEvO custom_json reads.
+ */
+export async function findExistingAccreditation(
+  pool: IdempotencyPool,
+  hiveUsername: string,
+): Promise<IdempotencyHit | null> {
+  const result = await pool.query<{ trx_id: string; block_num: number | null }>(
+    `SELECT op.included_trx_id AS trx_id, cj.block_num
+     FROM ${T.customJson} cj
+     JOIN hafsql.haf_operations op ON op.id = cj.id
+     WHERE cj.custom_id = $1
+       AND cj.json::jsonb ->> 'action' = 'accredit'
+       AND cj.json::jsonb ->> 'account' = $2
+       AND cj.required_posting_auths ?| $3::text[]
+       AND cj.block_num >= $4
+     ORDER BY cj.block_num DESC, cj.id DESC
+     LIMIT 1`,
+    [config.appTag, hiveUsername, config.accreditationAuthorities, getCachedGenesisBlock()],
+  );
+  if (result.rows.length === 0) return null;
+  const row = result.rows[0];
+  return { tx_id: row.trx_id, block_num: row.block_num };
+}
+
+/**
  * Validation guard for the `idempotency_key` body field. UUIDs are the
  * intended client shape (per task spec), but the helper accepts any
  * non-empty string up to 128 chars to avoid coupling the wire shape to a

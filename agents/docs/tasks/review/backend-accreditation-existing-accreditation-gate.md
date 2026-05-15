@@ -58,3 +58,32 @@ Add an existing-accreditation HAF gate to `/api/accreditation/verify` that fires
 - `agents/docs/solutions/conventions/caching-wrapper-discriminated-union-poisoning-2026-05-11.md` (apply if extending F5's Redis layer to cache this gate's result).
 - `backend/src/routes/accreditation.ts` — `/verify` handler integration site.
 - `agents/docs/hive-schemas.md` section 2.1 — accredit custom_json schema.
+
+## Backend implementation signal (2026-05-15)
+
+Landed on working tree (pre-commit, to be committed before move to review/):
+
+1. **New helper:** `findExistingAccreditation(pool, hiveUsername)` in `backend/src/lib/idempotency.ts`. Query shape mirrors `findAccreditationBroadcastByIdempotencyKey` and adds the `account = $username` payload-binding filter. ORDER BY uses `(cj.block_num DESC, cj.id DESC)` — `cj.id` substitutes for `trx_in_block` per the column-omission note in `backend/src/consent-ops.ts:14-23` (the convention's tiebreaker intent preserved via the monotonic HAF op-id).
+
+2. **Route wire:** `backend/src/routes/accreditation.ts /verify` runs the gate inside the existing `if (hafPool)` block, BEFORE the per-token `lookupAccreditationBroadcastIdempotency` call. Order is now: validation → existing-accreditation gate → per-token idempotency check → pre-INCR → broadcast. Both lookup layers fire before the cap pre-INCR so a hit consumes zero cap slots. Token cleanup on gate-hit uses `deleteTokenBestEffort` with distinct discriminators (`existing_accreditation_hit_token_cleanup_failed`). Gate HAF-throw degrades to a structured warn (`existing_accreditation_lookup_failed`) and falls through to the per-token check. `seedAccreditationBonus` is NOT re-invoked on gate-hit (the prior /verify call that produced the on-chain accredit op seeded the bonus; the periodic reputation batch and boot-time `backfillAccreditationSeeds` reconcile if it somehow didn't).
+
+3. **Structured log events added** (inline in route; for operator dashboards):
+   - `accreditation.verify.existing_accreditation_hit` (info) — gate hit, prior tx_id returned.
+   - `accreditation.verify.existing_accreditation_lookup_failed` (warn) — gate HAF query threw.
+   - `accreditation.verify.existing_accreditation_hit_token_cleanup_failed` (warn) — orphan-cleanup signal on gate-hit branch.
+
+4. **Tests:**
+   - `backend/tests/lib/idempotency.test.ts` → new `describe('findExistingAccreditation')` block (3 specs: hit, miss, SQL shape).
+   - `backend/tests/routes/accreditation-idempotency.test.ts` → new `describe('… existing-accreditation gate (user-level)')` block (4 specs: gate-hit happy path, gate-hit while counter at cap, gate HAF throw falls through, gate-hit token cleanup failure). Existing per-token specs in the same file have been updated to chain `hafQueryMock.mockResolvedValueOnce({rows: []})` for the gate preamble before their existing mocks.
+
+5. **Carve-out clause (c) hook:** real-path coverage for `findExistingAccreditation` joins the `backend-idempotency-haf-integration-test.md` scope (sibling helper, same risk class — HAF schema / operator / JSONB-extraction change silently breaking the SQL). See [TODO Architect] item below; the existing follow-up task should explicitly enumerate the new helper alongside the two prior helpers it already covers.
+
+## [TODO Architect] — contract + cross-task scope updates at archive time
+
+1. **`agents/docs/api-contracts/accreditation.md`** — extend the `POST /api/accreditation/verify` success-response shape to document the new `outcome` enum value `'already_accredited'` alongside the existing `'already_landed'`. Suggested prose distinction:
+   - `outcome: 'already_landed'` (existing): "the same per-token retry has already produced a chain op — same `idempotency_key` already on chain."
+   - `outcome: 'already_accredited'` (new): "this Hive account has a prior `accredit` op on chain from a DIFFERENT verification flow (e.g., a sibling pending token). No broadcast was attempted."
+
+   Both branches return the same envelope shape (`{ message, username, tx_id, outcome }`); only the discriminator differs. The `tx_id` references the relevant prior chain op in each case.
+
+2. **`backend-idempotency-haf-integration-test.md`** — append `findExistingAccreditation` to the helper list under "Why now" and "Goal" so the integration spec covers all three sibling helpers (the existing two + this new one). The risk class is identical (HAF JSONB extraction / schema-rename regression silently breaking the lookup), and the gate's correctness is load-bearing for closing the multi-token coexistence class.

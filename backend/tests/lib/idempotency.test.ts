@@ -23,6 +23,7 @@ import {
   validateIdempotencyKey,
   findCustodyBroadcastByIdempotencyKey,
   findAccreditationBroadcastByIdempotencyKey,
+  findExistingAccreditation,
   lookupCustodyBroadcastIdempotency,
   type IdempotencyPool,
 } from '../../src/lib/idempotency.js';
@@ -327,6 +328,47 @@ describe('findAccreditationBroadcastByIdempotencyKey', () => {
     expect(sql).toMatch(/included_trx_id/);
     expect(params[0]).toBe(config.appTag);
     expect(params[1]).toBe(KEY);
+    expect(params[2]).toEqual(config.accreditationAuthorities);
+  });
+});
+
+// BACKEND-ACCREDITATION-EXISTING-ACCREDITATION-GATE — user-level lookup
+// for /api/accreditation/verify. Distinct from
+// `findAccreditationBroadcastByIdempotencyKey` (per-token).
+describe('findExistingAccreditation', () => {
+  it('returns the accredit hit when HAF has a matching row for this user', async () => {
+    const queryFn = vi.fn().mockResolvedValueOnce({
+      rows: [{ trx_id: 'accredit-user-tx-1', block_num: 12345 }],
+    });
+    const pool = { query: queryFn } as unknown as IdempotencyPool;
+    const hit = await findExistingAccreditation(pool, 'alice');
+    expect(hit).toEqual({ tx_id: 'accredit-user-tx-1', block_num: 12345 });
+  });
+
+  it('returns null when the user has no prior accredit op', async () => {
+    const queryFn = vi.fn().mockResolvedValueOnce({ rows: [] });
+    const pool = { query: queryFn } as unknown as IdempotencyPool;
+    const hit = await findExistingAccreditation(pool, 'alice');
+    expect(hit).toBeNull();
+  });
+
+  it('filters by appTag + accredit action + account=$username + accreditationAuthorities; orders by (block_num, id) DESC', async () => {
+    const queryFn = vi.fn().mockResolvedValueOnce({ rows: [] });
+    const pool = { query: queryFn } as unknown as IdempotencyPool;
+    await findExistingAccreditation(pool, 'alice');
+    const [sql, params] = queryFn.mock.calls[0];
+    expect(sql).toMatch(/cj\.custom_id = \$1/);
+    expect(sql).toMatch(/'action' = 'accredit'/);
+    expect(sql).toMatch(/'account' = \$2/);
+    expect(sql).toMatch(/required_posting_auths \?\| \$3::text\[\]/);
+    expect(sql).toMatch(/haf_operations/);
+    expect(sql).toMatch(/included_trx_id/);
+    // Convention Rule 2 tiebreaker (cj.id substitutes for trx_in_block,
+    // which operation_custom_json_view does not expose).
+    expect(sql).toMatch(/ORDER BY cj\.block_num DESC, cj\.id DESC/);
+    expect(sql).toMatch(/LIMIT 1/);
+    expect(params[0]).toBe(config.appTag);
+    expect(params[1]).toBe('alice');
     expect(params[2]).toEqual(config.accreditationAuthorities);
   });
 });

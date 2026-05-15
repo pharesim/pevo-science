@@ -16,10 +16,18 @@
  * stores the pending-accreditation row.
  *
  * Round-2 F6 (carve-out clause c) follow-up: real-path HAF integration
- * coverage for `findAccreditationBroadcastByIdempotencyKey` is filed as
- * `backend-idempotency-haf-integration-test.md`. This file's HAF mocks
- * pin the route-side glue; the integration test will exercise the SQL
- * shape against a live HAF pool.
+ * coverage for `findAccreditationBroadcastByIdempotencyKey`,
+ * `findCustodyBroadcastByIdempotencyKey`, and `findExistingAccreditation`
+ * is filed as `backend-idempotency-haf-integration-test.md`. This file's
+ * HAF mocks pin the route-side glue; the integration test will exercise
+ * the SQL shape against a live HAF pool.
+ *
+ * Two-layer HAF call ordering: starting with the existing-accreditation
+ * gate (BACKEND-ACCREDITATION-EXISTING-ACCREDITATION-GATE), /verify
+ * performs TWO sequential HAF queries when both layers fire (gate miss
+ * flows into per-token idempotency check). Tests below chain
+ * `hafQueryMock.mockResolvedValueOnce({rows: []})` for the gate
+ * preamble where needed.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -154,6 +162,8 @@ describe('accreditation /verify — idempotency hit (Option A.4)', () => {
     const username = 'idemverifyuser';
     await seedPendingAccreditation(token, username);
 
+    // Gate miss (no prior accredit op for this user), then per-token idempotency hit.
+    hafQueryMock.mockResolvedValueOnce({ rows: [] });
     hafQueryMock.mockResolvedValueOnce({
       rows: [{ trx_id: 'tx-prior-accredit', block_num: 12345 }],
     });
@@ -219,6 +229,9 @@ describe('accreditation /verify — idempotency hit (Option A.4)', () => {
     const cap = config.verifyBroadcastAttemptsCap;
     await redis.set(`${config.appTag}:pending_accred_broadcast_attempts:${token}`, cap.toString(), 'EX', 86400);
 
+    // Gate miss, then per-token idempotency hit. Both layers run before the
+    // pre-INCR, so either layer's hit consumes zero cap slots.
+    hafQueryMock.mockResolvedValueOnce({ rows: [] });
     hafQueryMock.mockResolvedValueOnce({
       rows: [{ trx_id: 'tx-prior-at-cap', block_num: 67890 }],
     });
@@ -252,6 +265,8 @@ describe('accreditation /verify — idempotency hit (Option A.4)', () => {
     const username = 'idemverify2';
     await seedPendingAccreditation(token, username);
 
+    // Gate miss + per-token idempotency miss → fall through to broadcast.
+    hafQueryMock.mockResolvedValueOnce({ rows: [] });
     hafQueryMock.mockResolvedValueOnce({ rows: [] });
 
     const res = await request(app).post('/api/accreditation/verify').send({ token });
@@ -275,6 +290,11 @@ describe('accreditation /verify — idempotency hit (Option A.4)', () => {
     const username = 'idemverifylookupfail';
     await seedPendingAccreditation(token, username);
 
+    // Gate miss; per-token idempotency lookup throws — exercises the existing
+    // `idempotency_lookup_failed` warn discrimination (not the gate's
+    // `existing_accreditation_lookup_failed` warn, which is covered in a
+    // separate spec below).
+    hafQueryMock.mockResolvedValueOnce({ rows: [] });
     hafQueryMock.mockRejectedValueOnce(new Error('haf connection drop'));
     const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never);
     try {
@@ -331,6 +351,10 @@ describe('accreditation /verify — idempotency hit (Option A.4)', () => {
     const username = 'idemverifyclean';
     await seedPendingAccreditation(token, username);
 
+    // Gate miss, then per-token idempotency hit. Exercises the per-token
+    // branch's `idempotency_hit_token_cleanup_failed` warn — the gate's
+    // sibling warn has its own coverage below.
+    hafQueryMock.mockResolvedValueOnce({ rows: [] });
     hafQueryMock.mockResolvedValueOnce({
       rows: [{ trx_id: 'tx-prior-cleanup', block_num: 50001 }],
     });
@@ -364,6 +388,207 @@ describe('accreditation /verify — idempotency hit (Option A.4)', () => {
     } finally {
       warnSpy.mockRestore();
       // Restore real del so afterEach cleanup works.
+      redisAny.del = originalDel as unknown as typeof redisAny.del;
+    }
+  });
+});
+
+// BACKEND-ACCREDITATION-EXISTING-ACCREDITATION-GATE — user-level "is this
+// account already accredited?" HAF gate. Runs BEFORE the per-token
+// idempotency check to close the multi-token coexistence class (two pending
+// tokens for the same user produce different per-token keys, so the
+// per-token check can't catch each other).
+describe('accreditation /verify — existing-accreditation gate (user-level)', () => {
+  beforeEach(() => {
+    broadcastJsonMock.mockReset();
+    broadcastJsonMock.mockResolvedValue({ id: 'fresh-accred-tx-id' });
+    hafQueryMock.mockReset();
+    seedBonusMock.mockReset();
+    seedBonusMock.mockResolvedValue(undefined);
+    hafConfiguredFlag.value = true;
+  });
+
+  afterEach(async () => {
+    const redis = getRedis();
+    if (redis) {
+      const keys = await redis.keys(`${config.appTag}:pending_accred:accred-idem-*`);
+      if (keys.length > 0) await redis.del(...keys);
+      const counters = await redis.keys(`${config.appTag}:pending_accred_broadcast_attempts:accred-idem-*`);
+      if (counters.length > 0) await redis.del(...counters);
+      const limitKeys = await redis.keys(`${config.appTag}:rl:accred-verify:*`);
+      if (limitKeys.length > 0) await redis.del(...limitKeys);
+      const idemKeys = await redis.keys(`${config.appTag}:idem:accred:*`);
+      if (idemKeys.length > 0) await redis.del(...idemKeys);
+    }
+  });
+
+  it('gate hit returns outcome:already_accredited, skips per-token check + broadcast, consumes zero cap slots', async () => {
+    const redis = getRedis();
+    if (!redis) return;
+    const token = `accred-idem-${crypto.randomBytes(8).toString('hex')}`;
+    const username = 'gatehitsuser';
+    await seedPendingAccreditation(token, username);
+
+    // First (and only) HAF query is the gate. A second `mockResolvedValueOnce`
+    // is NOT set: if the route reaches the per-token check on a gate hit,
+    // the query would reject `mockResolvedValueOnce`'s no-more-mocks fallback
+    // and the test would fail in an observable way.
+    hafQueryMock.mockResolvedValueOnce({
+      rows: [{ trx_id: 'tx-from-earlier-token', block_num: 42000 }],
+    });
+
+    const infoSpy = vi.spyOn(logger, 'info').mockImplementation(() => undefined as never);
+    try {
+      const res = await request(app).post('/api/accreditation/verify').send({ token });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data).toMatchObject({
+        message: 'Accreditation confirmed',
+        username,
+        tx_id: 'tx-from-earlier-token',
+        outcome: 'already_accredited',
+      });
+      // No broadcast — chain op already exists for this account.
+      expect(broadcastJsonMock).not.toHaveBeenCalled();
+      // Bonus seed is NOT re-invoked on gate-hit (the prior /verify call
+      // that produced the on-chain accredit op already seeded it; the
+      // periodic reputation batch + boot-time backfillAccreditationSeeds
+      // reconcile if it didn't).
+      expect(seedBonusMock).not.toHaveBeenCalled();
+      // Per-token idempotency check did NOT run — only one HAF call.
+      expect(hafQueryMock).toHaveBeenCalledTimes(1);
+      // Token cleanup runs on gate-hit so a subsequent retry with the same
+      // token returns 400 BAD_REQUEST instead of looping.
+      expect(await tokenExists(token)).toBe(false);
+      // Cap counter never incremented — the gate runs before pre-INCR.
+      const counter = await readBroadcastAttemptsCounter(token);
+      expect(counter === null || counter === 0).toBe(true);
+      // Structured event pin for operator dashboards.
+      const matchingCall = infoSpy.mock.calls.find((call) => {
+        const ctx = call[0] as Record<string, unknown> | undefined;
+        return ctx?.event === 'accreditation.verify.existing_accreditation_hit';
+      });
+      expect(matchingCall, 'expected accreditation.verify.existing_accreditation_hit info event').toBeDefined();
+      expect(matchingCall![0]).toMatchObject({
+        event: 'accreditation.verify.existing_accreditation_hit',
+        route: 'accreditation.verify',
+        username,
+        email_hash: expect.any(String),
+        tx_id: 'tx-from-earlier-token',
+      });
+    } finally {
+      infoSpy.mockRestore();
+    }
+  });
+
+  it('gate hit returns 200 even when broadcast-attempts counter is at cap (gate runs before pre-INCR)', async () => {
+    const redis = getRedis();
+    if (!redis) return;
+    const token = `accred-idem-${crypto.randomBytes(8).toString('hex')}`;
+    const username = 'gateatcapuser';
+    await seedPendingAccreditation(token, username);
+
+    // Pre-seed counter at cap. The gate must short-circuit BEFORE the cap
+    // check; otherwise this would return 502 BROADCAST_ATTEMPT_LIMIT_EXCEEDED.
+    const cap = config.verifyBroadcastAttemptsCap;
+    await redis.set(`${config.appTag}:pending_accred_broadcast_attempts:${token}`, cap.toString(), 'EX', 86400);
+
+    hafQueryMock.mockResolvedValueOnce({
+      rows: [{ trx_id: 'tx-prior-gate-at-cap', block_num: 88888 }],
+    });
+
+    const res = await request(app).post('/api/accreditation/verify').send({ token });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toMatchObject({
+      tx_id: 'tx-prior-gate-at-cap',
+      outcome: 'already_accredited',
+    });
+    expect(res.body.error).toBeUndefined();
+    expect(broadcastJsonMock).not.toHaveBeenCalled();
+  });
+
+  it('gate HAF throw degrades to per-token idempotency check, broadcast proceeds + existing_accreditation_lookup_failed warn', async () => {
+    const redis = getRedis();
+    if (!redis) return;
+    const token = `accred-idem-${crypto.randomBytes(8).toString('hex')}`;
+    const username = 'gatethrowuser';
+    await seedPendingAccreditation(token, username);
+
+    // Gate throws → fall through to per-token check (empty) → broadcast.
+    hafQueryMock.mockRejectedValueOnce(new Error('haf gate query exploded'));
+    hafQueryMock.mockResolvedValueOnce({ rows: [] });
+
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never);
+    try {
+      const res = await request(app).post('/api/accreditation/verify').send({ token });
+
+      // Fresh broadcast envelope — gate-throw fall-through preserves
+      // pre-gate baseline behavior (at worst a duplicate on-chain op, which
+      // is the bounded class the gate exists to close).
+      expect(res.status).toBe(200);
+      expect(res.body.data.tx_id).toBe('fresh-accred-tx-id');
+      expect(res.body.data.outcome).toBeUndefined();
+      expect(broadcastJsonMock).toHaveBeenCalledTimes(1);
+      // Both HAF probes attempted — gate threw, per-token returned empty.
+      expect(hafQueryMock).toHaveBeenCalledTimes(2);
+      // Discriminator pin — distinct from `idempotency_lookup_failed`.
+      const matchingCall = warnSpy.mock.calls.find((call) => {
+        const ctx = call[0] as Record<string, unknown> | undefined;
+        return ctx?.event === 'accreditation.verify.existing_accreditation_lookup_failed';
+      });
+      expect(matchingCall, 'expected existing_accreditation_lookup_failed warn').toBeDefined();
+      expect(matchingCall![0]).toMatchObject({
+        event: 'accreditation.verify.existing_accreditation_lookup_failed',
+        route: 'accreditation.verify',
+        username,
+        email_hash: expect.any(String),
+        err: expect.any(Error),
+      });
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('gate-hit token cleanup failure — 200 envelope unaffected + existing_accreditation_hit_token_cleanup_failed warn', async () => {
+    const redis = getRedis();
+    if (!redis) return;
+    const token = `accred-idem-${crypto.randomBytes(8).toString('hex')}`;
+    const username = 'gatecleanuser';
+    await seedPendingAccreditation(token, username);
+
+    hafQueryMock.mockResolvedValueOnce({
+      rows: [{ trx_id: 'tx-gate-cleanup-prior', block_num: 60000 }],
+    });
+
+    // Stub `redis.del` to throw exactly once so the gate-path deleteToken
+    // throws inside the best-effort wrapper. Subsequent del calls work
+    // normally so afterEach cleanup still runs.
+    const redisAny = redis as unknown as {
+      del: (...args: unknown[]) => Promise<number>;
+    };
+    const originalDel = redisAny.del.bind(redis);
+    const delMock = vi.fn().mockImplementationOnce(async () => {
+      throw new Error('redis del flap');
+    }).mockImplementation(originalDel);
+    redisAny.del = delMock as unknown as typeof redisAny.del;
+
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never);
+    try {
+      const res = await request(app).post('/api/accreditation/verify').send({ token });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data).toMatchObject({
+        tx_id: 'tx-gate-cleanup-prior',
+        outcome: 'already_accredited',
+      });
+      const matchingCall = warnSpy.mock.calls.find((call) => {
+        const ctx = call[0] as Record<string, unknown> | undefined;
+        return ctx?.event === 'accreditation.verify.existing_accreditation_hit_token_cleanup_failed';
+      });
+      expect(matchingCall, 'expected existing_accreditation_hit_token_cleanup_failed warn').toBeDefined();
+    } finally {
+      warnSpy.mockRestore();
       redisAny.del = originalDel as unknown as typeof redisAny.del;
     }
   });
@@ -406,6 +631,8 @@ describe('accreditation /verify — PostBroadcastWriteError on seedAccreditation
     const username = 'postbroadcastuser';
     await seedPendingAccreditation(token, username);
 
+    // Gate miss + per-token idempotency miss → reaches broadcast.
+    hafQueryMock.mockResolvedValueOnce({ rows: [] });
     hafQueryMock.mockResolvedValueOnce({ rows: [] });
     broadcastJsonMock.mockResolvedValueOnce({ id: 'confirmed-on-chain-tx' });
     // seedAccreditationBonus rethrows ONLY permanent classes (TypeError/

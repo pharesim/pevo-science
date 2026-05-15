@@ -16,7 +16,7 @@ import { hashEmailForLogs, hashTokenForLogs, maskEmail } from '../lib/log-pii.js
 import { evalScript } from '../lib/redis-scripts.js';
 import { enqueueDecrement } from '../lib/pending-decrement-queue.js';
 import { seedAccreditationBonus } from '../reputation.js';
-import { lookupAccreditationBroadcastIdempotency } from '../lib/idempotency.js';
+import { findExistingAccreditation, lookupAccreditationBroadcastIdempotency } from '../lib/idempotency.js';
 import { getPool, isHafConfigured } from '../db.js';
 
 /** How long a verification token stays valid before it expires. */
@@ -456,6 +456,71 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
   // auto-reconciled).
   const hafPool = isHafConfigured() ? getPool() : null;
   if (hafPool) {
+    // User-level "is this account already accredited?" gate. Runs BEFORE the
+    // per-token idempotency-key check (which catches retries of the SAME
+    // /verify call) so the multi-token coexistence class is closed: two
+    // pending tokens for the same user produce different `idempotency_key`s
+    // (the key is `sha256(token:username)`), so the per-token check misses
+    // across tokens. The user-level gate catches that case via the
+    // `account` payload field — independent of which token the second
+    // /verify call carried.
+    //
+    // Order: validation → existing-accreditation gate → idempotency check →
+    // broadcast. Each layer fires only if the prior didn't short-circuit;
+    // both layers run BEFORE the broadcast-attempt cap pre-INCR so a hit
+    // here consumes zero cap slots (mirrors the round-3 hold #7 reordering
+    // for the per-token check). Token cleanup follows the existing
+    // best-effort wrap pattern. `seedAccreditationBonus` is NOT re-invoked
+    // on gate-hit because the prior /verify that produced the on-chain
+    // accredit op already seeded the bonus (or the next reputation batch
+    // cycle / boot-time `backfillAccreditationSeeds` reconciles if it
+    // didn't).
+    try {
+      const existingForUser = await findExistingAccreditation(hafPool, pending.hive_username);
+      if (existingForUser) {
+        logger.info(
+          {
+            event: 'accreditation.verify.existing_accreditation_hit',
+            route: 'accreditation.verify',
+            username: pending.hive_username,
+            email_hash: hashEmailForLogs(pending.email),
+            tx_id: existingForUser.tx_id,
+          },
+          'accreditation.verify existing-accreditation gate hit — returning prior tx_id without re-broadcasting',
+        );
+        await deleteTokenBestEffort(
+          token,
+          pending.hive_username,
+          pending.email,
+          'accreditation.verify.existing_accreditation_hit_token_cleanup_failed',
+          'accreditation.verify existing-accreditation gate token cleanup failed — orphan TTLs out',
+        );
+        return sendOk(res, {
+          message: 'Accreditation confirmed',
+          username: pending.hive_username,
+          tx_id: existingForUser.tx_id,
+          outcome: 'already_accredited',
+        });
+      }
+    } catch (gateErr) {
+      // Symmetric to the idempotency lookup degraded-path: the gate is a
+      // structural defense, not a correctness layer. A HAF throw here
+      // (connection drop, schema regression) falls through to the per-token
+      // idempotency check and ultimately the broadcast — at worst the user
+      // gets a duplicate on-chain op (the bounded class the gate exists to
+      // close), which is the pre-gate baseline behavior.
+      logger.warn(
+        {
+          event: 'accreditation.verify.existing_accreditation_lookup_failed',
+          route: 'accreditation.verify',
+          username: pending.hive_username,
+          email_hash: hashEmailForLogs(pending.email),
+          err: gateErr instanceof Error ? gateErr : new Error(String(gateErr)),
+        },
+        'accreditation.verify existing-accreditation gate HAF lookup failed — proceeding to per-token idempotency check',
+      );
+    }
+
     try {
       const existing = await lookupAccreditationBroadcastIdempotency(hafPool, idempotencyKey);
       if (existing) {
