@@ -51,3 +51,23 @@ The mocked test is the load-bearing regression net for the canon-lowering transf
 - The existing mocked file's header at `backend/tests/routes/app-ssr-discipline-canon.test.ts` lines 1-27 can be updated by the implementer (in the same commit that lands this companion) to cite the companion file under clause (c). Until that happens, the carve-out paperwork is incomplete but functionally satisfied by this filed task.
 - `paperDisciplineField` is at `backend/src/types/disciplines.ts:171` (canon-lower + trim, returns `string | null`).
 - SSR handler is `injectPaperMeta` in `backend/src/app.ts:317-377` (helper-routed at `:355`).
+
+---
+
+## Implementer signal (2026-05-15, commit `b71e3c6` on `main`) — round 1
+
+Landed the real-path SSR JSON-LD wiring companion as `backend/tests/routes/app-ssr-discipline-real-path.test.ts` (128 lines). The test walks `/api/papers` for an existing paper with a non-empty discipline, fetches the raw post via the same `get_content` call site `injectPaperMeta` uses, then asserts the SSR `ScholarlyArticle.about` equals `paperDisciplineField(raw_chain_discipline)`. A single equality assertion suffices for the current all-lowercase corpus (raw == canon-lowered).
+
+Catches the wiring mutation class the mocked test cannot:
+- `paperDisciplineField` import reverted
+- `if (canonDiscipline) jsonLd.about = canonDiscipline;` short-circuited or replaced
+- helper call replaced with raw `pevoMeta.discipline`
+- SSR catch-all never reaching `injectPaperMeta`
+
+Uses the established sibling skip-on-empty-corpus / null-discipline / malformed-json_metadata pattern from `papers.test.ts` for degenerate states.
+
+Also updated `backend/tests/routes/app-ssr-discipline-canon.test.ts` header to cite the companion under clause (c) per the task's coordination note.
+
+The mocked test stays load-bearing for the transform-axis mutation class; this companion covers the orthogonal wiring-axis class per the architect's clause-c refresh at commit `41ebc5b`.
+
+The `git mv` to `tasks/review/` is the completion signal.
