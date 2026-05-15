@@ -125,3 +125,60 @@ Items 1, 2, and 3 landed in this round. Per the carry-the-fix-evidence-in-the-co
 - `npx tsc --noEmit -p .` (backend): clean.
 - Targeted vitest run on the 4 modified files: **60 passed, 2 failed** — the 2 failures are pre-existing intentional reds in `accreditation.test.ts` (round-3 hold #5 decrement-failure spec + round-4 hold #1 cleanup-failure spec), documented as forcing functions for `backend-bridge-key-startup-validation-and-pino-redact.md` per the file's header docstring (`/^[0-9a-f]{64}/` redaction-negative against `err.command.args` raw-token leak). Do NOT fix these in this round.
 - Item 1's load-bearing 200-not-500 invariant is verified end-to-end by the new `/confirm` and `/link` specs in `signup-verify.test.ts` — both pass against the real pg pool with `account.email = NULL` rows.
+
+---
+
+## Architect re-review (2026-05-15) — HELD PENDING FIXES (round 2)
+
+`/ce-code-review` ran on hold-fix commit `e4b0c17` + signal-only commit `a0e89f8` with 7 personas (correctness, testing, maintainability, project-standards, security, learnings, kieran-typescript). Round-1 hold items 1-3 landed correctly: the `safeHashEmailForLogs` companion is implemented as documented; the value-pinned hash `'ff8d9819fc0e'` is correct (independently verified via `crypto.createHash('sha256').update('alice@example.com').digest('hex').slice(0, 12)`); the 4 spy assertions correctly assert the email-hash invariant (positive shape + negative `not.toHaveProperty('email')`); the `/link` spec exercises real `verifyHiveSignature` with a deterministic test key. Security review came back clean.
+
+But three implementation cleanliness items + one process documentation gap surfaced.
+
+### Items to address
+
+**1. (P2) `safeHashEmailForLogs` API contract mismatch — `null` vs `undefined`**
+
+- File: `backend/src/lib/log-pii.ts` (return type) + `backend/src/routes/signup-verify.ts:423,658` (call sites)
+- Source: maintainability M2 (75) corroborated by kieran-typescript KT-1 (75) at a different evidence point.
+- The helper's signature is `safeHashEmailForLogs(email: string|null|undefined): string | null`. JSDoc + the round-1 hold-block design both promise `email_hash: null` for nullish inputs. But the actual call sites in signup-verify.ts append `?? undefined` to coerce null to undefined before assigning to the LogContext field, and the tests pin `expect(obj.email_hash).toBeUndefined()`. Three different shapes encoded for the same "absent email" concept: function returns `null`, route emits `undefined`, test asserts `undefined`.
+- A future caller reading the JSDoc and writing `email_hash: safeHashEmailForLogs(account.email)` (without `?? undefined`) gets `null` in the log payload — different from the existing emissions, breaks aggregator parsers expecting a consistent shape.
+- Fix (preferred): align the helper's return type to `string | undefined` (early-return `undefined` instead of `null`). Update the JSDoc to match. Drop the `?? undefined` coercion at signup-verify.ts:423 and :658. Tests already assert `toBeUndefined()` so they continue to pass.
+- Alternative if the implementer prefers to keep `null`: keep the return type `string | null`, drop the `?? undefined` coercion at the 2 call sites, update the tests from `toBeUndefined()` to `toBeNull()`. Either fix closes the contract mismatch.
+
+**2. (P2) Stale comment block in signup-verify.test.ts:376-381 contradicts the assertions it prefaces**
+
+- File: `backend/tests/routes/signup-verify.test.ts:376-381`
+- Source: kieran-typescript KT-1 (75).
+- The introductory comment block says "The post-fix path uses safeHashEmailForLogs and returns email_hash: null, then proceeds to the 200 + JWT response." Both claims are wrong for the committed code:
+  - `email_hash: null` — actual is `undefined` (call sites apply `?? undefined`; assertions use `toBeUndefined()`).
+  - `200 + JWT` — actual assertions expect `502 BROADCAST_FAILED` (per the subsequent BACKEND-REPUTATION-SSOT round-1 hold #8 outcome that changed broadcast-failure semantics from "log + 200" to "log + 502").
+- A future reader will be misled about the route's invariant.
+- Fix: rewrite the comment block to match current behavior. State that broadcast failure now produces 502, that `safeHashEmailForLogs` returns nullish-but-coerced-to-undefined for ORCID-only NULL emails, and that the `not.toHaveProperty('email')` negative assertion is the load-bearing CNPD guard.
+- Closely tied to item 1: after item 1's contract alignment, the stale comment can be rewritten in the same pass without contradiction.
+
+**3. (P2) `signRequestBound` test helper duplicated across 2 test files**
+
+- Files: `backend/tests/routes/auth.test.ts:56-61` + `backend/tests/routes/signup-verify.test.ts:511-516`
+- Source: maintainability M1 (75).
+- Two structurally identical 5-line functions (sha256 body hash + same message format + same sign call). Only difference: the test private key constant they bind. Future signing-protocol changes must be applied in 2 places.
+- Fix: extract to `backend/tests/support/sign-request.ts` accepting the private key as a parameter. Update the 2 imports.
+- The implementer is already returning to both test files for items 1 + 2; folding the extraction into the same round is cheap.
+
+**4. (P3) auth.test.ts file header doesn't acknowledge the new logger.error spy under carve-out clause (a)**
+
+- File: `backend/tests/routes/auth.test.ts:329-388` (new describe block) + file header.
+- Source: project-standards PS-002 (50).
+- The new SMTP-not-configured describe block uses `vi.spyOn(logger, 'error')` (an observability surface — explicitly allowed under root CLAUDE.md "Running Tests" carve-out scope). The existing file header documents only the pre-existing hive-client mock; no clause (a) acknowledgment for the new logger spy.
+- Fix: add a one-line file-header note acknowledging the logger.error spy is used for asserting structured log payload (observability surface; pino writes to stdout/stderr without a testable return value, so spy interception is the only deterministic anchor for payload-shape assertions). Folded into this hold because the implementer is editing auth.test.ts anyway for items 1 + 3.
+
+### Items dismissed during architect triage (do NOT address)
+
+- **Wrong-order signal block commits (project-standards PS-001)** — past-tense; functional outcome correct (signal block is in `tasks/review/` at HEAD). Already covered by personal-memory entry `feedback_git_mv_after_edit_staging`.
+- **Helper-extraction class-wide concerns (correctness residual risks)** — 3 residual risks flagged at conf 60-80 but all are correctly handled at the migrated sites (rate-limit-key naming, broadcast-failure log discriminator, evidence-hash sha256 of 'null' for ORCID-only signups). None require code change in this round.
+- **Direct unit test for `safeHashEmailForLogs` null branch (testing TG1)** — null branch IS exercised end-to-end in the /confirm and /link specs that assert `email_hash: undefined` against real pg rows with `email = NULL`. Adding a redundant lib-level test is preemptive hardening (per memory feedback_dismiss_preemptive_test_hardening).
+- **Pending-accreditation Redis blob stores plaintext email (security RR-3)** — pre-existing, out of THIS task's scope; the migrated log call sites correctly hash on read. The Redis storage surface is a separate task class.
+- **48-bit truncation collision-resistance (security RR-1)** — JSDoc explicitly accepts the operator-log trust boundary; advisory only.
+
+### Re-review signal
+
+When items 1, 2, 3, 4 land, `git mv` this file from `tasks/pending/` back to `tasks/review/`. The move itself is the re-review signal.
