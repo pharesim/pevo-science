@@ -259,3 +259,58 @@ Items #1, #2, #3 from the round-4 hold all landed. Ready for architect round-5 r
 - `npx vitest run tests/unit/pages-settings.test.js` — 55/55 pass (was 52 before; +3 round-5 hold tests).
 - `npx vitest run` (full unit suite) — 1112/1112 across 60 test files pass. Three pre-existing unhandled rejections in `tests/unit/pages-edit.test.js` (abstractEditor cleanup race) reproduce on the standalone run unchanged.
 - `npm run build` — clean (existing chunk-size + dhive-eval warnings unchanged from baseline).
+
+## Architect re-review (2026-05-15b) — HELD PENDING FIXES
+
+Round-5 `/ce-code-review` on commit `8c6b352` (9 personas: correctness/security/adversarial at Opus, testing/maintainability/project-standards/learnings/reliability/julik-frontend-races at Sonnet; `ce-agent-native-reviewer` skipped per project `CLAUDE.md`). Round-4 hold #1 (Promise.race 45s timeout on `requestImportKey`), #2 (phase guard), #3 (AbortSignal.timeout(20_000) + TimeoutError catch) all landed. Round-5 surfaced 1 cross-reviewer-converged P1 + 1 P2 + 2 P3s the architect verified empirically before triage.
+
+1. **P1 — Timeout-error recovery story is structurally broken** (reliability + security + adversarial + correctness converge, 4-reviewer cross-promotion, anchor 100). The round-4 hold #3 introduced a deliberate no-wipe-on-timeout decision with the rationale "the upgrade is partially applied (chain rotated, backend cleanup pending) and the user may need the mnemonic to contact support or for manual recovery" — but the recovery affordance does not exist in the UI:
+   - The error-phase template at `frontend/src/pages/settings.js:36-41` renders only the localized error string (`x-text="upgradeError"`) and a single button bound to `resetUpgrade()`. There is no `x-text`/`x-for` rendering of `newSeedWords`/`newSeedPhrase` on the error screen, so the preserved mnemonic is invisible to the user.
+   - `resetUpgrade()` at `frontend/src/pages/settings.js:949-955` unconditionally calls `_clearSensitiveUpgradeState()`, which wipes `newSeedPhrase`, `oldSeedPhrase`, `newSeedWords`, `confirmInputs`, and `upgradePassword` to empty strings. The "Try Again" button is therefore a one-click destructor for the preserved recovery artifact.
+   - Side-finding (security): preserving `oldSeedPhrase` on the timeout path adds zero recovery value — that mnemonic controls the now-defunct keyset after `account_update` landed. Pure XSS surface; nothing to recover from.
+   - Worst-of-both-worlds: the mnemonic lingers in DOM-reachable Alpine reactive state indefinitely (any browser extension content script with `tabs`/`scripting` permission can read `Alpine.$data(el).newSeedPhrase`) while delivering none of the support-recovery affordance the design promised.
+
+   **Resolution direction (architect):** revert the no-wipe decision on the timeout branch — wipe both seeds, same as the generic error branch — and pair the wipe with stronger error-phase copy that surfaces the chain-rotated/backend-stale state to the user. The user already saw + confirmed the new mnemonic in the `new-seed` and `confirm-new` phases (so they should have written it down before clicking Execute), and `agents/docs/solutions/conventions/chain-write-timeout-ambiguous-outcome-2026-04-22.md` validates the retry-semantics principle (the timeout outcome is uncertain, not failed) but does NOT mandate keeping secrets in DOM state to express that semantic. Concretely:
+   - In the `TimeoutError`/`AbortError` catch branch, call `this._clearSensitiveUpgradeState()` before setting `upgradePhase = 'error'`.
+   - Update the `upgrade.backendTimeout` English copy to convey: backend cleanup did not confirm in time; on-chain keys have rotated; if Keychain shows your account with posting+active+memo keys you are safe to proceed; otherwise contact support with your account name (NOT the mnemonic — the user keeps the mnemonic via the write-down step earlier). No emdashes.
+   - Update the 15 locale stubs accordingly and append a fresh `### Updated 2026-05-15 (UI-KEYCHAIN-API-MISUSE round-6)` entry to `frontend/public/messages/STUBS.md`.
+   - Update the fetch-timeout test at `frontend/tests/unit/pages-settings.test.js` to assert mnemonic IS wiped (`comp.newSeedPhrase === ''` and `comp.oldSeedPhrase === ''`) and `upgradePhase === 'error'`. The current assertion (mnemonic preserved) is the round-5 behavior being reversed.
+
+   If the implementer has a stronger design alternative — e.g., a "save your seed phrase" copy-acknowledgement affordance on the error screen that wipes on user click — push back with that proposal before implementing. The reverted-wipe is the simpler safe default but is not the only correct shape.
+
+2. **P2 — Phase-guard comment misdescribes the invariant** (julik-frontend-races, anchor 80). At `frontend/src/pages/settings.js:607-617` the 9-line comment claims the guard exists because *"Alpine's reactive DOM update that hides the 'Upgrade' button (via `x-show=\"upgradePhase === 'enter-old'\"`) is batched. A double-click landing inside the microtask window would otherwise pass the field check, re-enter the method, and start a parallel flow..."*. The diagnosis is wrong on mechanism. JS is single-threaded; `x-on:click` callbacks dispatch synchronously to the handler, which runs to its first `await`; `this.upgradePhase = 'upgrading'` is assigned before yielding. A second synchronous click event fires *after* that assignment, sees the new phase, and is blocked by the guard regardless of how Alpine batches DOM updates. The guard IS load-bearing — it defends against the genuine mid-flight re-entry case where `executeUpgrade` is suspended at an `await` (sendOperations, fetch, _performKeychainImport) and a subsequent invocation starts — but the "Alpine batched DOM update" framing in the comment is misleading. Fix: rewrite the comment to describe the actual invariant — *the phase assignment runs synchronously before the first `await`, so any subsequent invocation (whether synchronously back-to-back or genuinely concurrent via a later `x-on:click`, a stray $watch/x-effect, or any other re-entry path) sees the mutated phase and short-circuits at the guard.*
+
+3. **P3 — `confirmNewSeed()` referenced in comments does not exist** (correctness + adversarial converge, anchor 100, factually verified by architect). `frontend/src/pages/settings.js:616` and the 12 test-fixture comments at `frontend/tests/unit/pages-settings.test.js` (the 3 `seedUpgradeState` helpers + 9 inlined setup blocks) all describe `'enter-old'` as *"set by `confirmNewSeed()`"*. `confirmNewSeed` does not exist in the codebase. The actual setter is `proceedToOldSeed()` at `frontend/src/pages/settings.js:599`. Mechanical fix: `s/confirmNewSeed/proceedToOldSeed/g` across the 13 sites.
+
+4. **P3 — Orphan `setTimeout(45_000)` in `Promise.race` is never cleared on import success** (correctness + reliability + julik-frontend-races converge, anchor 75). At `frontend/src/pages/settings.js:903-909` the timeoutPromise's `setTimeout` is not paired with a `clearTimeout` when `importPromise` wins the race. The timer + closure stay live for up to 45s × 3 roles = ~135s per successful upgrade. **Important fact-check** (architect ran a node repro before triage): the eventual rejection does NOT fire `unhandledrejection` — `Promise.race` internally attaches `.then(resolve, reject)` to losing inputs, so the rejection is *handled* (silently swallowed by the now-settled race's internal reject). julik's specific harm claim about `showErrorToast()` firing on the success screen was empirically falsified; the orphan timer is a cleanliness/resource concern only. Fix: capture the timer id and clear it after the race resolves. Idiomatic 3-line pattern:
+   ```js
+   let timerId;
+   const timeoutPromise = new Promise((_, reject) => {
+     timerId = setTimeout(() => reject(new Error('keychain timeout')), 45_000);
+   });
+   try {
+     await Promise.race([importPromise, timeoutPromise]);
+   } finally {
+     clearTimeout(timerId);
+   }
+   ```
+   The existing per-role `catch (err)` block sits at the next outer scope; the `try/finally` here is purely for `clearTimeout` ordering and does not interfere with the warning-on-rejection path.
+
+**Dismissed from round-5 findings:**
+
+- **P2 — 9 inlined `phase = 'enter-old'` blocks duplicate the helper-function additions** (maintainability M-1, anchor 75). Per `feedback_dismiss_preemptive_test_hardening.md`: the duplication's failure mode is a hypothetical future invariant change touching 12 sites instead of 3. No current failure mode; mechanical grep-replace if it ever materializes. Default-dismiss applies.
+
+- **P2 — Double-click test exercises synchronous back-to-back invocations, not mid-flight re-entry** (julik-frontend-races JFR-R5-03, anchor 75). The current test verifies the guard fires (assertions would fail if removed); it does not exercise the genuine mid-flight scenario where p1 is suspended at an `await` and a second invocation starts. Failure mode is theoretical (future refactor moves `phase = 'upgrading'` past the first await). Default-dismiss per preemptive-test-hardening rule.
+
+- **P3 — `err.name === 'AbortError'` branch in timeout catch is unreachable today** (reliability R-R5-03, anchor 90). No external `AbortController` feeds this fetch; only `AbortSignal.timeout()` does, and per spec that produces `TimeoutError`. Latent trap if a future user-cancel feature is added (cancel path would silently inherit timeout semantics). Dismissed because the future feature's review will catch it, and defensive OR-broadening on error-name discriminators is a tolerable pattern.
+
+**Filed separately (not part of this hold block):**
+
+- **Process note (project-standards PS-001, anchor 100)** — the `git mv pending/ → review/` for the round-5 fix landed in commit `959ac70`, a separate follow-up from the fix commit (`8c6b352`). Per project `CLAUDE.md` rule #8, the move IS the re-review signal and must accompany the fix commit. For round-6, please stage the per-task-file edits AND the `git mv` in the same commit (the round-5 path was: `git add` your edits → `git mv pending/ review/` → `git commit` with both staged). Process observation only; not a blocking hold-item.
+
+**Architect fact-checks performed before triage:**
+- Verified `frontend/src/error-tracking.js:15-18` does register a `window.addEventListener('unhandledrejection', ...)` handler that calls `showErrorToast()` — but verified empirically (node repro) that `Promise.race` losing-input rejections do NOT trigger `unhandledrejection` because the race attaches `.then(resolve, reject)` internally. Finding #4's harm-claim downgraded from P1 to P3.
+- Verified `proceedToOldSeed()` exists at `frontend/src/pages/settings.js:599` and `confirmNewSeed` does not exist in the codebase. Finding #3 confirmed.
+- Verified the error template at `frontend/src/pages/settings.js:36-41` shows error text + `resetUpgrade()` button only — no mnemonic display. Verified `resetUpgrade()` at `:949-955` calls `_clearSensitiveUpgradeState()`. Finding #1's structural-breakage chain confirmed.
+
+**Path to re-archive:** (1) UI agent applies items #1-4 on this task. (2) Stage edits AND `git mv tasks/pending/ui-keychain-api-misuse.md tasks/review/` in one commit (rule #8). (3) Architect runs round-6 `/ce-code-review` on the new diff and archives if clean. Item #1 is cross-cutting (touches settings.js error-phase template + catch branch + i18n + test assertions); expect a thorough review.
