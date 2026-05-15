@@ -291,3 +291,29 @@ Round-4 hold items 1-4 all landed in the single round-4 commit on `main` (3 file
 
 - The pre-existing A1 (`/ce-compound-refresh` on `pino-spy-serializer-ordering-trap-2026-05-06.md`), A2 (`/ce-compound-refresh` on `vi-spyon-mockimplementation-bypasses-function-under-test-2026-05-12.md`), and A3 (`timeout_ms` qualifier in `bridge.md` / `custody.md`) from the round-3 hold-block are unchanged.
 - One sibling comment in `backend/src/lib/broadcast-error.ts:640-649` still references the archived `backend-broadcast-idempotency-cluster-followup.md` by name with the same misleading "lands the real per-key counter" framing item 1 fixed in `custody.ts`. Scope-conservative left untouched — surfaces here for architect triage.
+
+---
+
+## Architect re-review (2026-05-15, round-4 → round-5) — HELD PENDING FIXES
+
+`/ce-code-review` ran on round-4 main-tree SHA `6da1024` with 9 reviewer personas (correctness, security, adversarial at opus; testing, maintainability, project-standards, learnings, reliability, kieran-typescript, api-contract at sonnet; `ce-agent-native-reviewer` skipped per project CLAUDE.md). Round-4's 4 hold items (attempt_n rationale rewrites at the three `custody.ts` sites, `:263` line-ref → `handleBroadcastError` / `sanitizedLogContext` function-name anchor, underscore-form `custody_broadcast_failure` event-name fix, `DEFAULT_APP_QUERY_IMPL` hoist + unconditional restore) all landed structurally and against intent. Re-review surfaced one item that needs to land before archive: the architect-noted sibling drift the implementer's round-4 signal explicitly surfaced for triage.
+
+### Item to address (single round-5 commit)
+
+**1. (P2, anchor 100, 5-reviewer corroboration: correctness + adversarial + maintainability + learnings + project-standards residual) Sibling stale archived-task reference at `backend/src/lib/broadcast-error.ts:649-658`.** The `makeLogBroadcastAttempt` factory's docblock still references the archived `backend-broadcast-idempotency-cluster-followup.md` task by name with the same misleading "the field stays absent until the idempotency cluster lands the real per-key counter" framing that round-4 item 1 fixed at the three sibling sites in `custody.ts`. The cluster task archived 2026-05-12 (commit `c715db1`) and did NOT add a per-attempt counter — leaving the pointer in place mis-frames closed work as pending and points future readers at a dead task slug. The implementer surfaced this in the round-4 backend re-review signal block at the bottom of this task file; the architect's round-4 hold-block deliberately left it for round-5 triage. `/ce-code-review`'s round-4 pass confirms the implementer's observation.
+
+   Fix: rewrite the docblock at `backend/src/lib/broadcast-error.ts:649-658` (the `makeLogBroadcastAttempt` factory comment block) to drop the archived-task name and reflect the actual state. Mirror the round-4 framing applied at the `custody.ts` sites: the idempotency layer LANDED (`embedIdempotencyKey` + `lookupCustodyBroadcastIdempotency` are live), but a per-attempt counter mechanism was intentionally NOT added in that arc and remains future work. The `attempt_n` slot stays absent in the factory's log payload until a per-key counter mechanism exists. The factory deliberately does NOT declare an `attempt_n` parameter for the same reason: a hardcoded value would silently report "no retries" to dashboards keyed on the field for retry-amplification alerts. ~5-10 lines.
+
+### Items dismissed during architect triage
+
+- **`releaseBridgeLock` 5 positional parameters (maintainability M1 on Task 2 review, surfaced via cross-cluster scan).** Single call site, well-named parameters, immediate adjacency. PEvO bias is YAGNI; an options-object refactor adds indirection to protect against a transposition bug that has not occurred and is unlikely with one call site. Revisit if a second call site lands.
+
+### Architect followups (land at archive, do NOT block backend re-submit)
+
+- **A1 (new).** `/ce-compound` for the "task-slug citations in code comments and solution docs go stale on archive — anchor on behavioral invariants instead" convention. Round-4 item 1 (custody.ts sites), this round-5 item (broadcast-error.ts site), and Task 2 round-3 item 2 (bridge.ts:474-478 site) are three instances of the same pattern; the existing `docblock-anchor-stable-symbols-not-line-numbers-2026-05-15.md` carve-out explicitly excludes task-coordination files, leaving this related pattern undocumented. Architect to invoke `/ce-compound` at archive.
+- **A2 (new).** `/ce-compound-refresh` on `agents/docs/solutions/conventions/broadcast-per-attempt-vs-error-event-roles-2026-05-13.md` to remove its own stale `backend-broadcast-idempotency-cluster-followup.md` reference in the Related section (learnings researcher surfaced the self-referential drift).
+- **A3 (carry forward).** Round-3 A1 (`/ce-compound-refresh` on `pino-spy-serializer-ordering-trap-2026-05-06.md`), round-3 A2 (`/ce-compound-refresh` on `vi-spyon-mockimplementation-bypasses-function-under-test-2026-05-12.md`), and round-2 A2 (`timeout_ms` qualifier in `bridge.md` / `custody.md`) all carry forward unchanged.
+
+### Re-review signal
+
+When the single round-5 item lands, `git mv` this file back to `tasks/review/`. Architect's round-5 review scopes `/ce-code-review` to the round-5 commit only. Diff is trivial (~5-10 lines of comment text on `backend/src/lib/broadcast-error.ts`); expect convergence at round-5 and archive immediately after.
