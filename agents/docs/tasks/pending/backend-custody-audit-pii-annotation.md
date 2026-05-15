@@ -55,3 +55,35 @@ These additions complete the documentation chain (DB column → contract → ARC
 ## Follow-up TODO (out of scope, file separately)
 
 - **`backend-custody-audit-retention-sweep`**: implement a periodic job that drops `custody_audit_log` rows where `created_at < now() - interval '24 months'`. Decisions deferred to that task: cron vs. on-demand trigger, batch size, whether to scrub PII columns in-place before deletion (probably unnecessary — full-row delete satisfies GDPR), and whether to emit a pino summary line for ops visibility. The retention number lives in the SQL comment on `custody_audit_log.user_agent` (see migration 006); the sweep should reference that as the authority rather than hard-coding 24 months in two places.
+
+---
+
+## Architect re-review (2026-05-15) — HELD PENDING FIXES
+
+`/ce-code-review` on commit `fdca2eb` (8 reviewers: correctness on Opus; testing, maintainability, project-standards, data-migrations, security, schema-drift-detector, learnings-researcher on Sonnet; `ce-agent-native-reviewer` skipped per project CLAUDE.md). User-triaged session 2026-05-15. Three items held; six items routed to separate follow-up work and not re-reviewed here.
+
+### Items held (must fix before archive)
+
+1. **Wrong line number for `settings.ts` deletion path** — file `backend/migrations/006_custody_audit_pii_annotation.sql`. The migration's SQL header comment AND the `COMMENT ON COLUMN` string both cite `settings.ts:312` as the right-to-erasure DELETE sweep (4 occurrences: lines 24-29, 44-45, 65, 85). Actual line is **338**. Line 312 is `const row = rows[0];` — unrelated row read. Cross-corroborated by correctness + maintainability (both conf 100). Operationally load-bearing for GDPR audit: a CNPD inspector reading `\d+ custody_audit_log` follows this breadcrumb. Suggested shape: prefer symbol-anchored reference ("the account-deletion sweep that runs `DELETE FROM custody_audit_log` inside the account-deletion transaction") over a bare line-number update — same lesson as the `BE-P3-CLEANUP-SWEEP` round-2 M-01 fix.
+
+2. **Wrong line number for `custody.ts` insert path** — same migration file. Both header comment and `COMMENT ON COLUMN` string cite `custody.ts:282-289` as the `user_agent` insert path (4 occurrences: lines 34-37, 46-47, 74, 87). Actual line is **573-580**, specifically `user_agent:` at 579. Lines 282-289 are the `multiple_consent_ops_rejected` pino log block — a rejection path, not the insert path. Cross-corroborated by correctness + maintainability (both conf 100). Same fix shape recommendation as item 1: prefer symbol-anchored ("the fresh-auth-answered consent-op insert at `custody.ts`'s `logBroadcastAttempt` audit-extras") over a bare line-number update.
+
+3. **Coupling claim "Populated only on consent-op broadcasts" anchored to route-level branching** — same migration file's closing comment paragraph (the `Insert path reference:` sentence). The "only when a fresh-auth challenge was answered" claim is currently correct (gated by `freshAuthMechanism === null` discriminator at `custody.ts:573`) but couples the column-level GDPR documentation to a route-level branching invariant. A future change setting `freshAuthMechanism` outside the consent branch would silently invalidate the doc claim. Surfaced by correctness conf 75. Suggested rewrite: anchor on the WHAT-triggers-population invariant ("populated only when a fresh-auth challenge has been answered for the broadcast — i.e., the consent-op signing flow; other broadcasts write NULL") rather than the WHERE-the-branch-lives shape. Removes the file:line coupling. Same shape lesson as items 1+2 (the cross-references should anchor on stable conceptual invariants, not on rotted line ranges or branch-location coupling).
+
+### Recommended approach
+
+The migration's own "Idempotent: `COMMENT ON COLUMN` is unconditional and overwrites any prior comment on the same column, so re-applying this migration is safe" framing allows editing migration 006 in place rather than writing migration 007 with the corrected comment. Implementer's call. If edited in place, the SQL-comment-block ABOVE the `COMMENT ON COLUMN` statement should also be rewritten consistently (it's read by anyone running the migration via `./deploy.sh migrate`).
+
+### Dismissed at triage (recorded for transparency)
+
+- **`COMMENT ON COLUMN` emdash applicability** (project-standards RR-1, conf 50) — no live violation; definitional gap only.
+- **No automated test for the column comment surviving migration replay** (data-migrations TG-1, conf low) — preemptive test hardening per memory `feedback_dismiss_preemptive_test_hardening`.
+
+### Routed to separate follow-up work (not held; not re-reviewed here)
+
+- **Retention enforcement** (security SEC-1 P1 + data-migrations RR-1 P2, cross-corroborated) — filed as `backend-custody-audit-retention-sweep.md` in `tasks/pending/` with PRE-LAUNCH BLOCKER priority. Pre-launch readiness item; tracked separately so this annotation task can archive cleanly after the held fixes land.
+- **LIA documentation** (security SEC-2 P2) — bundled into the existing `[TODO Architect]` block at `agents/docs/api-contracts/custody.md`. Architect lands during the convention-doc/contract pass when this task archives.
+- **User-Agent hashing for Art. 5(1)(c) data minimization** (security SEC-3 P2) — filed as `backend-custody-audit-user-agent-hash.md` in `tasks/pending/`. Pre-launch GDPR-readiness companion to the retention sweep.
+- **GDPR Art. 15 data-export endpoint** (security SEC-4 P2) — DISMISSED at triage as out of scope for this review (future PM/launch decision).
+
+When all three held items land, `git mv` this file back to `tasks/review/` for re-review and archive.
