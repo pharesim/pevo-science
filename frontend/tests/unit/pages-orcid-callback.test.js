@@ -761,6 +761,87 @@ describe('orcidCallbackPage', () => {
       warnSpy.mockRestore();
     });
 
+    // Sibling code of POST_BROADCAST_FAILED, emitted when the cascade failure
+    // is permanent-severity (TypeError/SyntaxError/RangeError or SQLSTATE
+    // class 23*/42*). Per api-contracts/common.md, clients keying on
+    // POST_BROADCAST_FAILED MUST also handle this. Same outcome-discriminator
+    // load-bearing rule; same /settings affordance (the ORCID is bound on
+    // chain); different copy (operator-contact framing, not "give it a
+    // moment to sync"). Must NOT route to /recover for the same reason
+    // POST_BROADCAST_FAILED does not.
+    it('POST_BROADCAST_OPERATOR_REQUIRED with outcome:confirmed: renders operator-required message and settings affordance, no recover', async () => {
+      const comp = createComponent();
+      const err = new Error('Cascade failed permanently');
+      err.code = 'POST_BROADCAST_OPERATOR_REQUIRED';
+      err.details = {
+        retriable: false,
+        outcome: 'confirmed',
+        tx_id: 'b'.repeat(40),
+        failed_step: 'account_update',
+      };
+      mockCompleteOrcid.mockRejectedValue(err);
+
+      await comp._verify('code', 'state', 'link');
+
+      expect(comp.status).toBe('error');
+      expect(comp.errorMessage).toBe('orcid.postBroadcastOperatorRequired');
+      expect(comp.errorAction).toBe('settings');
+      expect(comp.errorAction).not.toBe('recover');
+    });
+
+    // Mutation guards mirroring the POST_BROADCAST_FAILED ones. The
+    // outcome:'confirmed' discriminator is load-bearing for this code too.
+    it('POST_BROADCAST_OPERATOR_REQUIRED without outcome:confirmed falls through to generic path', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const comp = createComponent();
+      const err = new Error('Cascade failed permanently');
+      err.code = 'POST_BROADCAST_OPERATOR_REQUIRED';
+      err.details = { retriable: false, failed_step: 'account_update' }; // no outcome
+      mockCompleteOrcid.mockRejectedValue(err);
+
+      await comp._verify('code', 'state', 'accredit');
+
+      expect(comp.status).toBe('error');
+      expect(comp.errorMessage).toBe('orcid.verificationFailed');
+      expect(comp.errorAction).not.toBe('settings');
+      expect(warnSpy).toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
+
+    it('POST_BROADCAST_OPERATOR_REQUIRED with outcome other than "confirmed" falls through to generic path', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const comp = createComponent();
+      const err = new Error('Cascade failed permanently');
+      err.code = 'POST_BROADCAST_OPERATOR_REQUIRED';
+      err.details = { retriable: false, outcome: 'uncertain', failed_step: 'account_update' };
+      mockCompleteOrcid.mockRejectedValue(err);
+
+      await comp._verify('code', 'state', 'accredit');
+
+      expect(comp.status).toBe('error');
+      expect(comp.errorMessage).toBe('orcid.verificationFailed');
+      expect(comp.errorAction).not.toBe('settings');
+      expect(warnSpy).toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
+
+    it('POST_BROADCAST_OPERATOR_REQUIRED with no details object falls through to generic path', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const comp = createComponent();
+      const err = new Error('Cascade failed permanently');
+      err.code = 'POST_BROADCAST_OPERATOR_REQUIRED';
+      // details intentionally absent
+      mockCompleteOrcid.mockRejectedValue(err);
+
+      await comp._verify('code', 'state', 'link');
+
+      expect(comp.status).toBe('error');
+      expect(comp.errorMessage).toBe('orcid.verificationFailed');
+      expect(comp.errorAction).not.toBe('settings');
+      expect(warnSpy).toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
+
     it('503 from completeOrcid leaves pevo_orcid_mode in localStorage so a refresh-retry can re-enter the correct flow', async () => {
       localStorageData['pevo_orcid_mode'] = 'link';
       const firstComp = createComponent();

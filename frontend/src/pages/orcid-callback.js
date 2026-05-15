@@ -66,7 +66,7 @@ export function initOrcidCallbackPage() {
 
     status: 'verifying',
     errorMessage: '',
-    errorAction: '', // 'signup' for NO_ACCOUNT, 'recover' for ORCID_ALREADY_LINKED, 'settings' for BROADCAST_TIMEOUT and POST_BROADCAST_FAILED (outcome:'confirmed'), else empty
+    errorAction: '', // 'signup' for NO_ACCOUNT, 'recover' for ORCID_ALREADY_LINKED, 'settings' for BROADCAST_TIMEOUT, POST_BROADCAST_FAILED (outcome:'confirmed'), and POST_BROADCAST_OPERATOR_REQUIRED (outcome:'confirmed'), else empty
     resultUsername: '',
     backPath: '/',
 
@@ -150,6 +150,22 @@ export function initOrcidCallbackPage() {
         // never on details.failed_step or err.message substrings.
         if (err.code === 'POST_BROADCAST_FAILED' && err?.details?.outcome === 'confirmed') {
           this.errorMessage = this.$t('orcid.postBroadcastFailedConfirmed');
+          this.errorAction = 'settings';
+          return;
+        }
+
+        // POST_BROADCAST_OPERATOR_REQUIRED is the permanent-severity sibling of
+        // POST_BROADCAST_FAILED (TypeError/SyntaxError/RangeError or SQLSTATE
+        // class 23*/42* on the cascade write). Chain bind succeeded; the
+        // app-side failure won't auto-reconcile and needs operator/support
+        // attention. Per api-contracts/common.md, clients keying on
+        // POST_BROADCAST_FAILED MUST also handle this sibling — the same
+        // outcome-discriminator rule applies (load-bearing per the contract).
+        // Routing to /recover is still wrong (the ORCID is bound), so the
+        // affordance points at /settings; the copy carries the operator-contact
+        // framing instead of the "give it a moment to sync" framing.
+        if (err.code === 'POST_BROADCAST_OPERATOR_REQUIRED' && err?.details?.outcome === 'confirmed') {
+          this.errorMessage = this.$t('orcid.postBroadcastOperatorRequired');
           this.errorAction = 'settings';
           return;
         }

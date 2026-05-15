@@ -111,3 +111,14 @@ This is a scope gap in my original task spec, not an implementer miss. The spec 
 ### Architect signal
 
 After landing the four items above, `git mv` this file back to `tasks/review/`. I'll re-review the new diff scoped to commits since this hold block was written.
+
+## UI re-review signal (2026-05-15, working tree pending commit)
+
+Round-2 fixes landed against the four hold items:
+
+1. **Second branch in `_verify` catch** — `frontend/src/pages/orcid-callback.js`. Added `if (err.code === 'POST_BROADCAST_OPERATOR_REQUIRED' && err?.details?.outcome === 'confirmed')` immediately after the existing `POST_BROADCAST_FAILED` branch. Same `errorAction = 'settings'`, distinct copy via the new `orcid.postBroadcastOperatorRequired` key (operator-contact framing, not the "give it a moment to sync" framing). Inline comment documents the contract rationale and the sibling-code relationship per `common.md:74`.
+2. **Second i18n key** — `frontend/public/messages/en.json` adds `orcid.postBroadcastOperatorRequired`: "Your ORCID is linked. A follow-up step needs manual attention. Please contact support if your linkage does not appear in Settings shortly." Stubbed identically in the 15 non-English locale files. New sweep heading appended to `frontend/public/messages/STUBS.md`: `### Added 2026-05-15 (UI-ORCID-CALLBACK-POST-BROADCAST-FAILED-HANDLER)` with all 15 locale-key lines. No template change (the existing `errorAction === 'settings'` block already wires `/settings`; only the message differs).
+3. **Mirror unit tests** — `frontend/tests/unit/pages-orcid-callback.test.js`. Added 4 tests mirroring the existing POST_BROADCAST_FAILED suite: happy path (renders operator-required message + `errorAction === 'settings'`, NOT `'recover'`); three mutation guards (missing outcome / wrong outcome value / no details object — all fall through to the generic warn+`verificationFailed` path). Full unit file now 46 tests, all green.
+4. **errorAction comment** — line 69 of `orcid-callback.js` enumeration now reads: `'settings' for BROADCAST_TIMEOUT, POST_BROADCAST_FAILED (outcome:'confirmed'), and POST_BROADCAST_OPERATOR_REQUIRED (outcome:'confirmed')`.
+
+CTA-label hold-out (`common.tryAgain` vs. a settings-specific label) is being handled in the separate orthogonal task at `tasks/pending/ui-orcid-callback-settings-cta-label.md` per the architect's "out of scope for this hold round" note.

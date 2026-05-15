@@ -642,7 +642,8 @@
     "noAccountFound": "No account is linked to this ORCID. Please sign up first.",
     "alreadyLinkedDurable": "This ORCID is linked to another account. Recover access or contact support.",
     "broadcastPending": "Broadcast is pending. Verify your ORCID linkage in Settings before retrying.",
-    "postBroadcastFailedConfirmed": "Your ORCID is linked. Some account details may take a moment to sync. Verify your linkage in Settings before retrying."
+    "postBroadcastFailedConfirmed": "Your ORCID is linked. Some account details may take a moment to sync. Verify your linkage in Settings before retrying.",
+    "postBroadcastOperatorRequired": "Your ORCID is linked. A follow-up step needs manual attention. Please contact support if your linkage does not appear in Settings shortly."
   },
   "citation": {
     "citeButton": "Cite",

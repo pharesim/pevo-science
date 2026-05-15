@@ -850,3 +850,21 @@ pt: bridge.lockHeldRetry
 sv: bridge.lockHeldRetry
 tr: bridge.lockHeldRetry
 zh: bridge.lockHeldRetry
+
+### Added 2026-05-15 (UI-ORCID-CALLBACK-POST-BROADCAST-FAILED-HANDLER)
+
+ar: orcid.postBroadcastOperatorRequired
+cs: orcid.postBroadcastOperatorRequired
+da: orcid.postBroadcastOperatorRequired
+de: orcid.postBroadcastOperatorRequired
+es: orcid.postBroadcastOperatorRequired
+fa: orcid.postBroadcastOperatorRequired
+fr: orcid.postBroadcastOperatorRequired
+he: orcid.postBroadcastOperatorRequired
+it: orcid.postBroadcastOperatorRequired
+nl: orcid.postBroadcastOperatorRequired
+pl: orcid.postBroadcastOperatorRequired
+pt: orcid.postBroadcastOperatorRequired
+sv: orcid.postBroadcastOperatorRequired
+tr: orcid.postBroadcastOperatorRequired
+zh: orcid.postBroadcastOperatorRequired
