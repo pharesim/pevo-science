@@ -22,6 +22,13 @@
  * (Google Scholar, Semantic Scholar, OpenAlex) consume; emitting raw
  * on-chain casing there while the API ships canon-lowered values gives
  * external fingerprinters two different values for the same paper.
+ *
+ * Carve-out clause (c) companion: `app-ssr-discipline-real-path.test.ts`
+ * exercises the integrated SSR wiring path against real `hiveClient` +
+ * real HAF on an existing all-lowercase corpus paper. That file covers
+ * the wiring mutation class (dropped helper import, short-circuited
+ * `about` branch, raw `pevoMeta.discipline` bypass, catch-all not
+ * reaching `injectPaperMeta`) which this mocked file cannot catch.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import request from 'supertest';
