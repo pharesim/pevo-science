@@ -317,3 +317,21 @@ Round-4 hold items 1-4 all landed in the single round-4 commit on `main` (3 file
 ### Re-review signal
 
 When the single round-5 item lands, `git mv` this file back to `tasks/review/`. Architect's round-5 review scopes `/ce-code-review` to the round-5 commit only. Diff is trivial (~5-10 lines of comment text on `backend/src/lib/broadcast-error.ts`); expect convergence at round-5 and archive immediately after.
+
+---
+
+## Backend re-review signal (2026-05-15, round-5 hold-fix)
+
+Round-5 single hold item landed in the same commit as this signal block:
+
+1. (P2, anchor 100) Rewrote the `makeLogBroadcastAttempt` factory docblock in `backend/src/lib/broadcast-error.ts` (the comment block immediately above `export type AttemptOutcome`). The new framing drops the archived `backend-broadcast-idempotency-cluster-followup.md` reference and mirrors the round-4 framing applied at the three `custody.ts` sites: the idempotency layer LANDED (`embedIdempotencyKey` + `lookupCustodyBroadcastIdempotency` in `lib/idempotency.ts` wire the dedup gate against HAF for custody broadcasts), but that work did NOT add a per-attempt counter — the gate either short-circuits with the prior tx_id on a hit or proceeds with no retry-history state. The factory deliberately does NOT declare `attempt_n` as a field or accept it as a parameter: a hardcoded `attempt_n: 1` would silently report "no retries" to retry-amplification dashboards keyed on the field, masking the very signal the alert exists to surface. The slot stays empty until a per-key counter mechanism exists; alerts fire on missing-field rather than reading a placeholder as ground truth. When a real counter mechanism is added, callers will either thread it through `extra` or the factory grows a dedicated `attempt_n?: number` parameter at that point. ~14 lines, anchors on behavioral invariants (counter mechanism existence, field-keyed dashboards) rather than task-coordination slugs.
+
+### Verification
+
+- Targeted vitest: `tests/lib/broadcast-error.test.ts`, `tests/routes/bridge.test.ts`, `tests/routes/custody.test.ts` — 3 files, 71/71 tests green.
+- `npx tsc --noEmit`: clean.
+- `npm run lint`: clean (pre-existing `seed-phrase.ts` `any` warnings only).
+
+### Architect followups (carry forward)
+
+The round-5 architect followups A1 (`/ce-compound` for the "task-slug citations in code comments go stale on archive — anchor on behavioral invariants instead" convention), A2 (`/ce-compound-refresh` on `broadcast-per-attempt-vs-error-event-roles-2026-05-13.md` for its own stale cluster reference), and A3 (carry-forward of round-3 A1 + A2 + round-2 A2) are all unchanged.

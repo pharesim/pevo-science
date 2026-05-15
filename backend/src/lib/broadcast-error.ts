@@ -646,16 +646,20 @@ export function handleBroadcastErrorAmbiguous(
 // literal convention from `handleBroadcastError`'s round-4/5 holds (the
 // `event:` field guard at the four 502/504 anchors).
 //
-// `attempt_n` is INTENTIONALLY NOT a declared field on the factory. Round-3
-// hold #1 of `backend-bridge-custody-broadcast-discrimination` established
-// that a hardcoded `attempt_n: 1` would silence retry-amplification
-// dashboards keyed on the field (a constant 1 reads as "no retries" to
-// operators). When the full idempotency cluster lands the real per-key
-// counter (filed as `backend-broadcast-idempotency-cluster-followup.md`),
-// callers will thread the counter through `extra` or the factory adds a
-// dedicated `attempt_n?: number` parameter; until then, the slot stays
-// empty so alerts fire on missing-field rather than reading a placeholder
-// as ground truth.
+// `attempt_n` is INTENTIONALLY NOT a declared field on the factory and the
+// factory deliberately does NOT accept it as a parameter. The idempotency
+// layer landed (`embedIdempotencyKey` + `lookupCustodyBroadcastIdempotency`
+// in `lib/idempotency.ts` wire the dedup gate against HAF for custody
+// broadcasts), but that work did NOT add a per-attempt counter — the gate
+// either short-circuits with the prior tx_id on a hit or proceeds with no
+// retry-history state. A hardcoded `attempt_n: 1` would therefore silently
+// report "no retries" to operator dashboards keyed on the field for retry-
+// amplification alerts, masking the very signal the alert exists to surface.
+// The slot stays empty until a per-key counter mechanism exists; alerts
+// fire on missing-field rather than reading a constant 1 as ground truth.
+// When a real counter mechanism is added, callers will either thread it
+// through `extra` or the factory grows a dedicated `attempt_n?: number`
+// parameter at that point.
 
 /** Outcome label discriminator for every per-attempt audit-log event. */
 export type AttemptOutcome = 'success' | 'failure' | 'timeout';
