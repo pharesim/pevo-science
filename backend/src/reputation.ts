@@ -586,14 +586,32 @@ export async function computeReputationBatch(
       ),
 
       paper_resolved_votes AS (
+        -- The CASE WHEN jsonb_typeof = array guard on the authors argument
+        -- defends against a chain post broadcasting a non-array
+        -- pevo.authors (null, string, integer, object). Without it,
+        -- jsonb_array_elements raises "cannot extract elements from a scalar"
+        -- at runtime and the entire daily reputation cycle cascade-fails for
+        -- every user. Symmetric with the helper-level guard in
+        -- excludeSelfReviewWhere (BACKEND-SELF-REVIEW-EXCLUSION round-1 hold
+        -- #2; companion convention pg-jsonb-null-vs-sql-null-use-jsonb-typeof
+        -- -2026-05-12). The inner jsonb_typeof(a) = object guard mirrors
+        -- the helper round-2 hold #1 tightening so bare-string elements
+        -- (authors: [alice, bob]) do not admit a named-string co-author
+        -- as a non-self voter via a ->> hive returning NULL.
         SELECT plv.voter, plv.author, plv.permlink, plv.weight, plv.block_num
         FROM paper_latest_votes plv
         JOIN user_papers up ON up.author = plv.author AND up.permlink = plv.permlink
         WHERE plv.voter != up.author
           AND plv.weight != 0
           AND NOT EXISTS (
-            SELECT 1 FROM jsonb_array_elements(up.json_metadata -> $3 -> 'authors') a
-            WHERE a ->> 'hive' = plv.voter
+            SELECT 1 FROM jsonb_array_elements(
+              CASE WHEN jsonb_typeof(up.json_metadata -> $3 -> 'authors') = 'array'
+                THEN up.json_metadata -> $3 -> 'authors'
+                ELSE '[]'::jsonb
+              END
+            ) a
+            WHERE jsonb_typeof(a) = 'object'
+              AND a ->> 'hive' = plv.voter
           )
       ),
 

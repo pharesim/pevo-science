@@ -43,13 +43,15 @@
  *                                                `selfExclude` constructed)
  *   - search.ts:        type=review search (line 183-ish)
  *   - stats.ts:         review counter (line 57-ish)
+ *   - reviews.ts:       fetchReviewFromHaf single-doc fetch (round-1 hold #1)
  *   - reputation.ts:    active_authors review arm (round-2 hold #3)
  *                       paper_reviews CTE   (line 627-ish)
  *                       user_reviews CTE    (line 693-ish)
  *                       citing_paper_quality CTE (line 847-ish)
  *
- * That's 11 callsites (the architect's original "8" rolled the three
- * reputation.ts sites into one bullet, and the round-2 hold #3 added
+ * That's 12 callsites (the architect's original "8" rolled the three
+ * reputation.ts sites into one bullet; round-1 hold #1 added the
+ * reviews.ts single-doc fetch site; round-2 hold #3 added the
  * `active_authors` review arm as the 4th `validReviewWhere` composition
  * site that should also compose self-exclusion). The notification arms 1a/1b have their own inline
  * `co.author != $1` predicate covered separately by

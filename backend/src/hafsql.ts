@@ -331,14 +331,40 @@ export function excludeSelfReviewWhere(opts: {
   const r = opts.commentAlias ?? 'c';
   const p = opts.paperRowAlias;
   const tag = opts.appTagParam;
-  // Tightened EXISTS predicate (round-2 hold #1): require each element to be
-  // a JSONB object with a non-null `hive` key. Without `jsonb_typeof(auth) =
-  // 'object'`, an authors array of bare strings (`["alice","bob"]`) or other
-  // JSONB-scalar elements admits a named co-author as a non-self reviewer:
-  // `auth ->> 'hive'` on a JSONB string returns NULL, `NULL = c.author`
-  // evaluates to NULL (not TRUE), so EXISTS returns 0 rows and NOT EXISTS
-  // admits every reviewer. The object-type guard rejects strings, integers,
-  // booleans, and JSONB null elements at the row level.
+  // `jsonb_typeof(auth) = 'object'` inside the EXISTS predicate is a
+  // cascade-fail defense, NOT a co-author admission tightening. It works
+  // alongside the outer CASE-WHEN array guard (round-1 hold #2) to defend
+  // the helper against malformed `pevo.authors` shapes on chain.
+  //
+  // What this guard prevents: a chain post whose `authors` element is a
+  // JSONB scalar (string, integer, null literal) would otherwise reach the
+  // `auth ->> 'hive' = ${r}.author` predicate inside the EXISTS subquery.
+  // `->>` only extracts object keys; on a JSONB scalar it returns NULL.
+  // `NULL = ${r}.author` evaluates to NULL (not TRUE), the EXISTS subquery
+  // yields 0 rows, and NOT EXISTS unconditionally evaluates TRUE. That's
+  // not a wrong admit class per se — it falls back to the first conjunct
+  // (`${r}.author != ${p}.author`) which still excludes the paper author —
+  // but the cleaner shape is to filter non-objects at the element level so
+  // the predicate's intent (match author identity by `.hive` key) is
+  // self-evident in the SQL and not implicit in `->>`-on-scalar semantics.
+  //
+  // What this guard does NOT prevent: bare-string author entries in
+  // `authors[]` are intentionally NOT treated as co-author identity claims.
+  // A paper broadcast with `authors: ["alice","bob"]` (strings, not
+  // objects with a `hive` key) does NOT exclude `bob` from reviewing
+  // `alice`'s paper as a non-self reviewer — bob falls through to the
+  // second conjunct, the EXISTS subquery yields 0 rows (the `'object'`
+  // filter rejects the strings), and NOT EXISTS evaluates TRUE so bob is
+  // admitted. This is INTENTIONAL: per
+  // `pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28`,
+  // a PEvO `authors[]` entry is a well-formed object with a `hive` key,
+  // not a free-text identity claim. Treating bare strings as co-author
+  // identity would enable a cheap denial-of-review attack: anyone could
+  // broadcast a non-paper post with `authors: [target]` to lock `target`
+  // out of reviewing the post's parent paper.
+  //
+  // Behavioral coverage of both cases lives in `hafsql.test.ts` —
+  // (1) non-array top-level shapes, (2) array-of-non-objects shapes.
   return `(
     ${r}.author != ${p}.author
     AND NOT EXISTS (

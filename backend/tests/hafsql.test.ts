@@ -390,6 +390,12 @@ describe('excludeSelfReviewWhere SQL shape', () => {
     expect(sql).toContain('jsonb_array_elements');
     expect(sql).toContain("auth ->> 'hive' = c.author");
     expect(sql).toContain('NOT EXISTS');
+    // Round-3 hold #3: pin the round-2 `jsonb_typeof(auth) = 'object'` guard
+    // inside the EXISTS predicate. Without this assertion, reverting the
+    // object-type tightening leaves the pure-unit shape tests green and only
+    // the HAF-gated behavioral matrix catches the regression — defense-in-
+    // depth-canary-must-pin-each-layer-2026-05-07.
+    expect(sql).toContain("jsonb_typeof(auth) = 'object'");
   });
 
   it('custom aliases propagate through both conjuncts', () => {
@@ -563,19 +569,32 @@ describe('excludeSelfReviewWhere behavioral matrix (real Postgres, synthetic row
       expect(admitted, `non-array shape: ${shapeLabel}`).toEqual(['third_party']);
     }
 
-    // (2) Array of non-objects — the object-type guard inside EXISTS must
-    // reject bare-string elements so a named-string co-author is excluded
-    // (or at minimum not admitted via the helper's co-author check). With
-    // the guard, the helper's NOT EXISTS evaluates TRUE for the named-as-
-    // bare-string co-author (because the EXISTS subquery yields 0 rows
-    // since `jsonb_typeof(auth) = 'object'` filters out the strings), so
-    // they would pass through the second conjunct. The FIRST conjunct
-    // (c.author != p.author) still excludes the paper author. Bob (the
-    // "named" co-author via bare string) is admitted here, NOT excluded.
-    // This is intentional and the upstream publishing path lowercases +
-    // structures hive names as objects; the test pins that a malformed-
-    // authors-array doesn't crash and doesn't silently elevate the bare-
-    // string entries into co-author status that excludes their reviews.
+    // (2) Array of non-objects — pins the INTENTIONAL admission outcome
+    // for malformed `authors[]` element shapes. The `jsonb_typeof(auth) =
+    // 'object'` guard inside the EXISTS predicate is a cascade-fail
+    // defense, not a co-author admission tightening. Under `authors:
+    // ["alice","bob"]`, bob (named as a bare string, NOT as an object
+    // with a `hive` key) IS admitted as a non-self reviewer: the EXISTS
+    // subquery's object-type filter rejects the bare strings, EXISTS
+    // yields 0 rows, NOT EXISTS evaluates TRUE, and bob passes the
+    // second conjunct of `excludeSelfReviewWhere`. Only the first
+    // conjunct (c.author != p.author) excludes alice.
+    //
+    // This is INTENTIONAL per
+    // `pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28`:
+    // a PEvO co-author entry is a well-formed object with a `hive` key,
+    // not a free-text identity claim. Treating bare strings as co-author
+    // identity would let anyone broadcast a non-paper post with `authors:
+    // [target]` to lock `target` out of reviewing the parent paper. The
+    // accepted trade-off: malformed-bare-string entries don't elevate
+    // someone into co-author status (and thus don't exclude them from
+    // reviewing), but the helper also doesn't crash on the malformed
+    // shape. (Round-2 hold #1 + round-3 hold #2 resolution.)
+    //
+    // Behavioral pin: alice excluded (c.author != p.author), bob and
+    // carol both admitted. The expected admit set is the architect's
+    // round-3 resolution, not the round-2 hold-block prose which was
+    // imprecise about admit outcome.
     const arrayOfStrings = JSON.stringify({ pevotest: { type: 'paper', authors: ['alice', 'bob'] } });
     const arrayOfNulls = JSON.stringify({ pevotest: { type: 'paper', authors: [null] } });
     const arrayOfObjectsWithoutHive = JSON.stringify({ pevotest: { type: 'paper', authors: [{ name: 'alice' }] } });
@@ -600,14 +619,148 @@ describe('excludeSelfReviewWhere behavioral matrix (real Postgres, synthetic row
       const result = await pool.query(sql, ['pevotest', meta]);
       const admitted = result.rows.map((r) => r.label as string).sort();
       // alice excluded by c.author != p.author. bob and carol both
-      // admitted because the malformed-element guard short-circuits the
-      // co-author check — bob's bare-string entry doesn't get to elevate
-      // them into co-author status. This pins the architect's round-2
-      // concern: the helper must NOT raise, and the EXISTS predicate must
-      // NOT admit every reviewer (it does admit when the co-author check
-      // can't fire, but the c.author != p.author conjunct still excludes
-      // the paper author).
+      // admitted: the malformed-element `jsonb_typeof(auth) = 'object'`
+      // guard short-circuits the co-author EXISTS check on bare-string
+      // entries (per the rationale block above). Bob is INTENTIONALLY
+      // admitted — bare-string entries are not co-author identity claims
+      // per the pevo-object-identity-is-author-vouching convention.
+      // The helper must NOT raise on malformed shapes (cascade-fail
+      // defense), and the first conjunct (c.author != p.author) still
+      // excludes the paper author regardless of how malformed authors[]
+      // is. Round-3 hold #2 resolution.
       expect(admitted, `array-of-non-objects shape: ${shapeLabel}`).toEqual(['bob_named_as_string', 'third_party']);
     }
+  });
+});
+
+/**
+ * Round-3 hold #1: pin the cascade-fail defense at `paper_resolved_votes`
+ * CTE in `reputation.ts`. The CTE has its own inline
+ * `jsonb_array_elements(up.json_metadata -> $3 -> 'authors')` shape — it
+ * does NOT route through `excludeSelfReviewWhere`. Without a CASE-WHEN
+ * `jsonb_typeof = 'array'` guard, a chain post broadcasting non-array
+ * `pevo.authors` raises `cannot extract elements from a scalar` at runtime
+ * and the entire daily reputation cycle cascade-fails for every user.
+ *
+ * This test exercises the production CTE's NOT EXISTS subquery shape
+ * against synthetic VALUES() rows under real Postgres, asserting:
+ *   (1) malformed top-level shapes (null/string/integer/object) do NOT raise
+ *       and admit the third-party voter as expected
+ *   (2) the inner `jsonb_typeof(a) = 'object'` guard mirrors the helper's
+ *       round-2 hold #1 tightening so bare-string elements don't admit a
+ *       named-string co-author voter
+ *
+ * Carve-out clause-(c): synthetic-VALUES is justified because seeding the
+ * full reputation cycle's `user_papers` + `paper_latest_votes` chain with
+ * malformed-authors data per shape per test is impractical; the assertion
+ * (cascade-fail defense + admit-set shape) is exactly what the carve-out
+ * is for. The real-path companion is the parity-invariant test in
+ * `review-parity-invariant.test.ts` exercising the integrated
+ * `paper_resolved_votes` shape against well-formed HAF rows.
+ */
+describe('paper_resolved_votes NOT EXISTS subquery cascade-fail defense (real Postgres, synthetic rows)', () => {
+  it.skipIf(!isHafConfigured())('does not throw on malformed pevo.authors and admits the expected voters', { timeout: 30_000 }, async (ctx) => {
+    const pool = getPool();
+    if (!pool) {
+      ctx.skip('no pool available');
+      return;
+    }
+
+    // Helper that renders the production CTE's NOT EXISTS subquery shape
+    // exactly as `reputation.ts:paper_resolved_votes` composes it. The
+    // test is intentionally a structural mirror (not a substring scrape)
+    // so a future refactor that splits the inline shape into a helper
+    // keeps the cascade-fail defense exercised.
+    const subqueryShape = `
+      NOT EXISTS (
+        SELECT 1 FROM jsonb_array_elements(
+          CASE WHEN jsonb_typeof(up.json_metadata -> $1 -> 'authors') = 'array'
+            THEN up.json_metadata -> $1 -> 'authors'
+            ELSE '[]'::jsonb
+          END
+        ) a
+        WHERE jsonb_typeof(a) = 'object'
+          AND a ->> 'hive' = plv.voter
+      )
+    `;
+
+    // (1) Non-array top-level authors — without the guard, jsonb_array_elements
+    // would raise on each shape and crash every user's cycle compute.
+    const nonArrayShapes: ReadonlyArray<readonly [string, string]> = [
+      ['authors_jsonb_null', JSON.stringify({ pevotest: { type: 'paper', authors: null } })],
+      ['authors_string', JSON.stringify({ pevotest: { type: 'paper', authors: 'alice' } })],
+      ['authors_integer', JSON.stringify({ pevotest: { type: 'paper', authors: 42 } })],
+      ['authors_object', JSON.stringify({ pevotest: { type: 'paper', authors: { hive: 'alice' } } })],
+    ];
+
+    for (const [shapeLabel, meta] of nonArrayShapes) {
+      const sql = `
+        WITH up AS (SELECT 'alice'::text AS author, $2::jsonb AS json_metadata),
+             plv(voter) AS (VALUES
+               ('alice'::text),
+               ('carol'::text)
+             )
+        SELECT plv.voter FROM plv
+        CROSS JOIN up
+        WHERE plv.voter != up.author
+          AND ${subqueryShape}
+        ORDER BY plv.voter
+      `;
+      const result = await pool.query(sql, ['pevotest', meta]);
+      const admitted = result.rows.map((r) => r.voter as string).sort();
+      // alice excluded by plv.voter != up.author. carol admitted (the
+      // guard short-circuits to '[]' and NOT EXISTS evaluates TRUE).
+      expect(admitted, `non-array shape: ${shapeLabel}`).toEqual(['carol']);
+    }
+
+    // (2) Array-of-non-objects elements — pins the inner object-type guard.
+    // Without it, `a ->> 'hive'` on bare-string elements returns NULL,
+    // EXISTS yields 0 rows for every voter, and NOT EXISTS admits all of
+    // them. The intentional outcome (per
+    // pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28):
+    // a bare-string `bob` entry is NOT a co-author identity claim, so bob
+    // votes ARE admitted as non-self votes.
+    const arrayOfStrings = JSON.stringify({ pevotest: { type: 'paper', authors: ['alice', 'bob'] } });
+    const sql = `
+      WITH up AS (SELECT 'alice'::text AS author, $2::jsonb AS json_metadata),
+           plv(voter) AS (VALUES
+             ('alice'::text),
+             ('bob'::text),
+             ('carol'::text)
+           )
+      SELECT plv.voter FROM plv
+      CROSS JOIN up
+      WHERE plv.voter != up.author
+        AND ${subqueryShape}
+      ORDER BY plv.voter
+    `;
+    const result = await pool.query(sql, ['pevotest', arrayOfStrings]);
+    const admitted = result.rows.map((r) => r.voter as string).sort();
+    // alice excluded by plv.voter != up.author. bob admitted (bare-string
+    // not treated as identity claim). carol admitted.
+    expect(admitted).toEqual(['bob', 'carol']);
+
+    // (3) Well-formed authors — co-author IS excluded as a voter.
+    // Control case pins that the guard doesn't over-exclude well-formed data.
+    const wellFormed = JSON.stringify({
+      pevotest: { type: 'paper', authors: [{ hive: 'alice' }, { hive: 'bob' }] },
+    });
+    const sql2 = `
+      WITH up AS (SELECT 'alice'::text AS author, $2::jsonb AS json_metadata),
+           plv(voter) AS (VALUES
+             ('alice'::text),
+             ('bob'::text),
+             ('carol'::text)
+           )
+      SELECT plv.voter FROM plv
+      CROSS JOIN up
+      WHERE plv.voter != up.author
+        AND ${subqueryShape}
+      ORDER BY plv.voter
+    `;
+    const result2 = await pool.query(sql2, ['pevotest', wellFormed]);
+    const admitted2 = result2.rows.map((r) => r.voter as string).sort();
+    // alice excluded (paper author), bob excluded (named co-author), carol admitted.
+    expect(admitted2).toEqual(['carol']);
   });
 });
