@@ -908,3 +908,21 @@ pt: upgrade.backendTimeout
 sv: upgrade.backendTimeout
 tr: upgrade.backendTimeout
 zh: upgrade.backendTimeout
+
+### Added 2026-05-16 (ui-canretryupgrade-discriminator-key-refactor)
+
+ar: upgrade.partialApplyFailed
+cs: upgrade.partialApplyFailed
+da: upgrade.partialApplyFailed
+de: upgrade.partialApplyFailed
+es: upgrade.partialApplyFailed
+fa: upgrade.partialApplyFailed
+fr: upgrade.partialApplyFailed
+he: upgrade.partialApplyFailed
+it: upgrade.partialApplyFailed
+nl: upgrade.partialApplyFailed
+pl: upgrade.partialApplyFailed
+pt: upgrade.partialApplyFailed
+sv: upgrade.partialApplyFailed
+tr: upgrade.partialApplyFailed
+zh: upgrade.partialApplyFailed

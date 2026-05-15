@@ -515,7 +515,13 @@ describe('settingsPage', () => {
 
       expect(comp.upgradePhase).toBe('error');
       expect(typeof comp.upgradeError).toBe('string');
-      expect(comp.upgradeError).toBe('upgrade.failed');
+      // Post-broadcast fetch rejection — under FE-CANRETRYUPGRADE-
+      // DISCRIMINATOR-KEY-REFACTOR the catch routes anything caught after
+      // `_performUpgradeKeyRotation` has resolved (broadcastLanded=true) to
+      // `upgrade.partialApplyFailed` instead of the pre-broadcast
+      // `upgrade.failed`. The sanitization invariant this test guards is
+      // identical for both keys; only the key identity moves.
+      expect(comp.upgradeError).toBe('upgrade.partialApplyFailed');
       // Critical: neither of the leak substrings may appear in the DOM-bound
       // error string.
       expect(comp.upgradeError).not.toContain(leakHex);
@@ -536,14 +542,19 @@ describe('settingsPage', () => {
     });
 
     // Round-3 hold item #1: regression-class guard against the
-    // `$t('upgrade.failed') || err.message` OR-fallback pattern. Stubs
-    // $t to return '' for the specific key (simulating a missing
-    // translation in a locale file) and exercises the same leak path.
-    // Under safe production code (`upgradeError = $t(...)`), this test
-    // passes because upgradeError lands at ''. Under a regressed
+    // `$t('upgrade.partialApplyFailed') || err.message` OR-fallback
+    // pattern. Stubs $t to return '' for the specific key (simulating a
+    // missing translation in a locale file) and exercises the same leak
+    // path. Under safe production code (`upgradeError = $t(...)`), this
+    // test passes because upgradeError lands at ''. Under a regressed
     // OR-fallback, $t returns '' → falls through to err.message → leak
     // substrings appear in upgradeError → assertion fails.
-    it('does not leak key-material when $t returns empty for upgrade.failed', async () => {
+    //
+    // The post-broadcast catch (broadcastLanded=true) reads
+    // `$t('upgrade.partialApplyFailed')` after FE-CANRETRYUPGRADE-
+    // DISCRIMINATOR-KEY-REFACTOR; the simulated missing-translation key
+    // tracks the actual key the catch consults on this path.
+    it('does not leak key-material when $t returns empty for upgrade.partialApplyFailed', async () => {
       mockIsKeychainInstalled.mockReturnValue(true);
       stubKeychainImportKey();
       const leakHex = 'deadbeef' + 'c'.repeat(56);
@@ -555,9 +566,10 @@ describe('settingsPage', () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
       const comp = createComponent();
-      // Simulate a locale where 'upgrade.failed' has no translation.
-      // Other keys still resolve so the rest of the flow behaves normally.
-      comp.$t = (key) => (key === 'upgrade.failed' ? '' : key);
+      // Simulate a locale where 'upgrade.partialApplyFailed' has no
+      // translation. Other keys still resolve so the rest of the flow
+      // behaves normally.
+      comp.$t = (key) => (key === 'upgrade.partialApplyFailed' ? '' : key);
       seedUpgradeState(comp);
 
       await comp.executeUpgrade();
@@ -1811,22 +1823,173 @@ describe('settingsPage', () => {
     // _performUpgradeKeyRotation signs account_update with old seed-derived
     // keys; chain rejects with Missing Authority because the chain's owner
     // key is now the prior attempt's mnemonic (rotation already landed).
-    // The button must therefore be hidden on this sub-case and present on
-    // every other error sub-case (generic upgrade.failed, keychainRequired,
-    // generationFailed). The `canRetryUpgrade` getter drives the button's
-    // x-show binding; these specs assert the getter directly so a refactor
-    // that re-enables the dead-end (drops x-show, inverts the comparison,
-    // renames the getter) fails here.
+    // The button must therefore be hidden on this sub-case (and on the
+    // sibling post-broadcast non-retryable sub-case, partialApplyFailed)
+    // and present on every pre-broadcast error sub-case (generic
+    // upgrade.failed, keychainRequired, generationFailed). The
+    // `canRetryUpgrade` getter drives the button's x-show binding; these
+    // specs assert the getter directly so a refactor that re-enables the
+    // dead-end (drops x-show, inverts the comparison, renames the getter)
+    // fails here.
+    //
+    // FE-CANRETRYUPGRADE-DISCRIMINATOR-KEY-REFACTOR (Finding B): the
+    // comparison is now keyed on `upgradeErrorKey` (a stable i18n key
+    // discriminator), not on the translated `upgradeError` string. Setting
+    // `upgradeErrorKey` directly here documents the contract — the getter
+    // consumes the discriminator, not the translation.
     it('canRetryUpgrade: false on backend-timeout sub-case (Try Again hidden)', () => {
       const comp = createComponent();
-      comp.upgradeError = comp.$t('upgrade.backendTimeout');
+      comp.upgradeErrorKey = 'upgrade.backendTimeout';
       expect(comp.canRetryUpgrade).toBe(false);
     });
 
-    it('canRetryUpgrade: true on generic error sub-case (Try Again shown)', () => {
+    // Generic error sub-case = a PRE-BROADCAST failure (Keychain denial of
+    // account_update, chain rejection of the broadcast itself, invalid old
+    // seed). The chain has NOT rotated, so retrying is safe and Try Again
+    // must be shown. Post-broadcast generic failures route to
+    // `upgrade.partialApplyFailed` and are covered by the separate
+    // post-broadcast routing specs below.
+    it('canRetryUpgrade: true on generic error sub-case (Try Again shown for pre-broadcast errors)', () => {
       const comp = createComponent();
-      comp.upgradeError = comp.$t('upgrade.failed');
+      comp.upgradeErrorKey = 'upgrade.failed';
       expect(comp.canRetryUpgrade).toBe(true);
+    });
+
+    // FE-CANRETRYUPGRADE-DISCRIMINATOR-KEY-REFACTOR (Finding B, acceptance
+    // criterion 2): the getter must be invariant to mid-error-screen
+    // locale switches. The user can flip locales from the header switcher
+    // while sitting on the upgrade error screen; `upgradeError` was
+    // captured once at error time but `$t` reads live from the i18n store.
+    // Comparing translated strings would break the moment any locale ships
+    // a real translation; comparing the discriminator key does not.
+    it('canRetryUpgrade is invariant to locale-switch after error is set', () => {
+      const comp = createComponent();
+      comp.upgradeErrorKey = 'upgrade.backendTimeout';
+      comp.upgradeError = 'Backend cleanup did not confirm in time. ...';
+      expect(comp.canRetryUpgrade).toBe(false);
+      // Simulate locale switch: $t now returns Spanish (or anything that
+      // differs from upgradeError). The pre-refactor implementation would
+      // flip canRetryUpgrade to true here because
+      // `upgradeError !== $t('upgrade.backendTimeout')` would now hold.
+      comp.$t = (_key) => 'La limpieza del backend no se confirmó a tiempo. ...';
+      expect(comp.canRetryUpgrade).toBe(false);
+    });
+
+    // FE-CANRETRYUPGRADE-DISCRIMINATOR-KEY-REFACTOR (Finding A, acceptance
+    // criterion 3a): post-broadcast `TypeError: Failed to fetch` (network
+    // drop mid-fetch after the chain rotation already landed) must route
+    // to the non-retryable sub-case. Pre-refactor, the catch's generic
+    // fall-through routed every non-TimeoutError to `upgrade.failed` and
+    // canRetryUpgrade returned true — re-clicking Try Again signed
+    // account_update with stale seed-derived keys and the chain rejected
+    // with auth mismatch.
+    it('post-broadcast TypeError routes to non-retryable (partialApplyFailed)', async () => {
+      mockIsKeychainInstalled.mockReturnValue(true);
+      vi.stubGlobal('window', {
+        ...globalThis.window,
+        hive_keychain: {
+          requestImportKey: (account, wifKey, cb) => {
+            queueMicrotask(() => cb({ success: true }));
+          },
+        },
+      });
+      // Fetch rejects with a TypeError ("Failed to fetch") — the broadcast
+      // helper has already resolved by this point.
+      vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new TypeError('Failed to fetch'))));
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const comp = createComponent();
+      comp.oldSeedPhrase = Array(12).fill('old').join(' ');
+      comp.newSeedPhrase = Array(12).fill('new').join(' ');
+      comp.newSeedWords = comp.newSeedPhrase.split(' ');
+      comp.confirmInputs = { 0: 'new', 5: 'new', 11: 'new' };
+      comp.upgradePassword = 'light-password';
+      comp.upgradePhase = 'enter-old';
+
+      await comp.executeUpgrade();
+
+      expect(comp.upgradePhase).toBe('error');
+      expect(comp.upgradeErrorKey).toBe('upgrade.partialApplyFailed');
+      expect(comp.canRetryUpgrade).toBe(false);
+
+      warnSpy.mockRestore();
+    });
+
+    // FE-CANRETRYUPGRADE-DISCRIMINATOR-KEY-REFACTOR (Finding A, acceptance
+    // criterion 3b): backend 500 after rotation must route non-retryable.
+    // The `!res.ok` branch throws an Error which the catch's generic
+    // fall-through previously routed to `upgrade.failed` (retriable).
+    it('post-broadcast backend 500 routes to non-retryable (partialApplyFailed)', async () => {
+      mockIsKeychainInstalled.mockReturnValue(true);
+      vi.stubGlobal('window', {
+        ...globalThis.window,
+        hive_keychain: {
+          requestImportKey: (account, wifKey, cb) => {
+            queueMicrotask(() => cb({ success: true }));
+          },
+        },
+      });
+      vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({
+        ok: false,
+        status: 500,
+        json: async () => ({ error: 'Internal error' }),
+      })));
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const comp = createComponent();
+      comp.oldSeedPhrase = Array(12).fill('old').join(' ');
+      comp.newSeedPhrase = Array(12).fill('new').join(' ');
+      comp.newSeedWords = comp.newSeedPhrase.split(' ');
+      comp.confirmInputs = { 0: 'new', 5: 'new', 11: 'new' };
+      comp.upgradePassword = 'light-password';
+      comp.upgradePhase = 'enter-old';
+
+      await comp.executeUpgrade();
+
+      expect(comp.upgradePhase).toBe('error');
+      expect(comp.upgradeErrorKey).toBe('upgrade.partialApplyFailed');
+      expect(comp.canRetryUpgrade).toBe(false);
+
+      warnSpy.mockRestore();
+    });
+
+    // FE-CANRETRYUPGRADE-DISCRIMINATOR-KEY-REFACTOR (Finding A, acceptance
+    // criterion 3c): backend 409 ALREADY_UPGRADED after rotation must
+    // route non-retryable. Surfaces when a concurrent flow already wiped
+    // server-side custody — the rotation in the current flow still
+    // landed on-chain, so retrying is structurally unavailable.
+    it('post-broadcast backend 409 ALREADY_UPGRADED routes to non-retryable (partialApplyFailed)', async () => {
+      mockIsKeychainInstalled.mockReturnValue(true);
+      vi.stubGlobal('window', {
+        ...globalThis.window,
+        hive_keychain: {
+          requestImportKey: (account, wifKey, cb) => {
+            queueMicrotask(() => cb({ success: true }));
+          },
+        },
+      });
+      vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({
+        ok: false,
+        status: 409,
+        json: async () => ({ error: 'ALREADY_UPGRADED' }),
+      })));
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const comp = createComponent();
+      comp.oldSeedPhrase = Array(12).fill('old').join(' ');
+      comp.newSeedPhrase = Array(12).fill('new').join(' ');
+      comp.newSeedWords = comp.newSeedPhrase.split(' ');
+      comp.confirmInputs = { 0: 'new', 5: 'new', 11: 'new' };
+      comp.upgradePassword = 'light-password';
+      comp.upgradePhase = 'enter-old';
+
+      await comp.executeUpgrade();
+
+      expect(comp.upgradePhase).toBe('error');
+      expect(comp.upgradeErrorKey).toBe('upgrade.partialApplyFailed');
+      expect(comp.canRetryUpgrade).toBe(false);
+
+      warnSpy.mockRestore();
     });
   });
 

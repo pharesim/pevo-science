@@ -972,6 +972,7 @@
     "invalidOldSeed": "عبارت بازیابی نامعتبر است. لطفاً بررسی کرده و دوباره تلاش کنید.",
     "backendFailed": "اطلاع‌رسانی ارتقای حساب ناموفق بود.",
     "backendTimeout": "Backend cleanup did not confirm in time. Your on-chain keys have already rotated, but Hive Keychain has not been updated yet. Please contact support with your account name. Do not share your recovery phrase.",
+    "partialApplyFailed": "Account upgrade could not be completed. Your on-chain keys have already rotated, but the backend did not finish cleanup. Please contact support with your account name. Do not share your recovery phrase.",
     "upgrading": "در حال ارتقای حساب…",
     "doneTitle": "ارتقا کامل شد",
     "doneDescription": "حساب شما اکنون به طور کامل از طریق Hive Keychain تحت مدیریت شماست. عبارت بازیابی قبلی را تا ۳۰ روز به عنوان پشتیبان نگه دارید.",

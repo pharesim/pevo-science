@@ -385,6 +385,16 @@ export function initSettingsPage() {
     // Phases: 'idle' | 'new-seed' | 'confirm-new' | 'enter-old' | 'upgrading' | 'done' | 'error'
     upgradePhase: 'idle',
     upgradeError: null,
+    // Discriminator paired with `upgradeError`. Holds the i18n key behind
+    // the currently-displayed error string, not the translated text. The
+    // `canRetryUpgrade` getter consults this key (not the translated
+    // `upgradeError`) so its decision is invariant to locale switches the
+    // user might trigger from the header switcher on the error screen, and
+    // so a future non-retryable sub-case requires only an addition to
+    // NON_RETRYABLE_KEYS — not a coincidental string match. Per
+    // agents/docs/solutions/conventions/correlated-options-discriminated-union-2026-04-28.md.
+    // Reset alongside `upgradeError` at every clear site.
+    upgradeErrorKey: null,
 
     // Best-effort Keychain-import warnings surfaced on the success screen.
     // Populated when one or more `requestImportKey` popups are denied or
@@ -412,18 +422,17 @@ export function initSettingsPage() {
     },
 
     // Drives the "Try Again" button visibility on the error screen. False
-    // when upgradeError reflects the backend-cleanup-timeout sub-case
-    // (round-7 hold item #2): on that path the on-chain account_update has
-    // already landed, so a fresh attempt would sign account_update with the
-    // OLD seed-derived keys and the chain would reject it (auth mismatch).
-    // The error-copy on that sub-case directs the user to support; the
-    // in-app retry path is structurally unavailable. The comparison is
-    // against `$t('upgrade.backendTimeout')` rather than the literal key
-    // because upgradeError holds the translated string in production (and
-    // the key in unit tests where $t is mocked to return its key) — `$t`
-    // bridges both modes.
+    // when `upgradeErrorKey` is one of the post-broadcast sub-cases: on
+    // those paths the on-chain account_update has already landed, so a
+    // fresh attempt would sign account_update with the OLD seed-derived
+    // keys and the chain would reject it (auth mismatch). The error-copy
+    // on those sub-cases directs the user to support; the in-app retry
+    // path is structurally unavailable. Compares discriminator keys, not
+    // translated strings, so the result is invariant to mid-error-screen
+    // locale switches.
     get canRetryUpgrade() {
-      return this.upgradeError !== this.$t('upgrade.backendTimeout');
+      const NON_RETRYABLE_KEYS = ['upgrade.backendTimeout', 'upgrade.partialApplyFailed'];
+      return !NON_RETRYABLE_KEYS.includes(this.upgradeErrorKey);
     },
 
     // Set-password validity mirrors signup/recover password policy
@@ -589,6 +598,7 @@ export function initSettingsPage() {
     startUpgrade() {
       if (!isKeychainInstalled()) {
         this.upgradeError = this.$t('upgrade.keychainRequired');
+        this.upgradeErrorKey = 'upgrade.keychainRequired';
         this.upgradePhase = 'error';
         return;
       }
@@ -599,6 +609,7 @@ export function initSettingsPage() {
         this.newSeedWords = this.newSeedPhrase.split(' ');
         this.upgradePhase = 'new-seed';
         this.upgradeError = null;
+        this.upgradeErrorKey = null;
       } catch (err) {
         // Sanitization pattern (see executeUpgrade() below). The
         // generateMnemonic() path pulls BIP39 entropy; a thrown error
@@ -607,6 +618,7 @@ export function initSettingsPage() {
         // console.warn for diagnostics.
         console.warn('[custody upgrade start]', err);
         this.upgradeError = this.$t('upgrade.generationFailed');
+        this.upgradeErrorKey = 'upgrade.generationFailed';
         this.upgradePhase = 'error';
       }
     },
@@ -644,9 +656,19 @@ export function initSettingsPage() {
       if (!this.oldSeedPhrase.trim() || !this.upgradePassword) return;
       this.upgradePhase = 'upgrading';
       this.upgradeError = null;
+      this.upgradeErrorKey = null;
       // Reset best-effort warnings on each attempt so a previous partial
       // run doesn't leak its messages into a subsequent success screen.
       this.upgradeWarnings = [];
+
+      // Discriminator: flipped to true the moment `_performUpgradeKeyRotation`
+      // resolves. Anything caught after that point is a post-broadcast
+      // failure (chain rotation has already landed, retry would sign with
+      // stale keys), and the catch routes to a non-retryable sub-case.
+      // Errors caught BEFORE this flip (invalid old seed, Keychain denial
+      // of account_update, chain rejection of the broadcast) are pre-
+      // broadcast and genuinely retriable.
+      let broadcastLanded = false;
 
       // Snapshot the new seed phrase locally so the keychain-import helper
       // (and the broadcast helper) receive it as a primitive-string argument
@@ -689,6 +711,7 @@ export function initSettingsPage() {
         // invariant: no variable bound inside `_performUpgradeKeyRotation()`
         // escapes to `executeUpgrade()` other than control flow.
         await this._performUpgradeKeyRotation(oldWords, newSeedPhrase);
+        broadcastLanded = true;
 
         // Notify backend to clean up stored keys. Failure here surfaces as
         // upgradeError — this is the only remaining irreversible-pair gap
@@ -764,6 +787,7 @@ export function initSettingsPage() {
           console.warn('[custody upgrade] backend cleanup timeout', err);
           this._clearSensitiveUpgradeState();
           this.upgradeError = this.$t('upgrade.backendTimeout');
+          this.upgradeErrorKey = 'upgrade.backendTimeout';
           this.upgradePhase = 'error';
           return;
         }
@@ -781,7 +805,22 @@ export function initSettingsPage() {
         // error string. The real error is still surfaced to the debugger via
         // console.warn for developer diagnostics.
         console.warn('[custody upgrade]', err);
-        this.upgradeError = this.$t('upgrade.failed');
+        // Post-broadcast failures (network drop after the on-chain rotation
+        // landed, backend 500/503/429/409) are NOT retriable: the chain has
+        // already rotated to the new keys, so a fresh attempt would sign
+        // account_update with old seed-derived keys and the chain would
+        // reject with auth mismatch. Route to a non-retryable sub-case so
+        // `canRetryUpgrade` hides Try Again and the user-facing copy
+        // directs to support. Pre-broadcast failures (Keychain denial of
+        // account_update, chain rejection of the broadcast itself, invalid
+        // old seed) are genuinely retriable.
+        if (broadcastLanded) {
+          this.upgradeError = this.$t('upgrade.partialApplyFailed');
+          this.upgradeErrorKey = 'upgrade.partialApplyFailed';
+        } else {
+          this.upgradeError = this.$t('upgrade.failed');
+          this.upgradeErrorKey = 'upgrade.failed';
+        }
         this.upgradePhase = 'error';
         return;
       }
@@ -996,6 +1035,7 @@ export function initSettingsPage() {
       this._clearSensitiveUpgradeState();
       this.upgradePhase = 'idle';
       this.upgradeError = null;
+      this.upgradeErrorKey = null;
       this.upgradeWarnings = [];
     },
 

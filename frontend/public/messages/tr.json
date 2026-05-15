@@ -976,6 +976,7 @@
     "invalidOldSeed": "Kurtarma ifadesi geçersiz. Lütfen kontrol edip tekrar deneyin.",
     "backendFailed": "Hesap yükseltme bildirimi başarısız oldu.",
     "backendTimeout": "Backend cleanup did not confirm in time. Your on-chain keys have already rotated, but Hive Keychain has not been updated yet. Please contact support with your account name. Do not share your recovery phrase.",
+    "partialApplyFailed": "Account upgrade could not be completed. Your on-chain keys have already rotated, but the backend did not finish cleanup. Please contact support with your account name. Do not share your recovery phrase.",
     "upgrading": "Hesabınız yükseltiliyor…",
     "doneTitle": "Yükseltme Tamamlandı",
     "doneDescription": "Hesabınız artık Hive Keychain aracılığıyla tamamen sizin kontrolünüzde. Eski kurtarma ifadenizi yedek olarak 30 gün boyunca saklayın.",
