@@ -101,9 +101,9 @@ router.get('/email', readLimiter, verifyHiveSignature, async (req: Request, res:
 // POST /api/settings/email — Add or change email
 // ─────────────────────────────────────────────────────────────
 //
-// BACKEND-SETTINGS-EMAIL-REAUTH-FRESH-AUTH: the change-email branch (existing
-// row) is a critical action per ARCHITECTURE.md § 6.5 invariant #1 — a stolen
-// JWT must not be a one-step takeover vector. When authenticated via Bearer
+// The change-email branch (existing row) is a critical action per
+// ARCHITECTURE.md § 6.5 invariant #1 — a stolen JWT must not be a one-step
+// takeover vector. When authenticated via Bearer
 // JWT (the only auth path that can be replayed without a fresh signature),
 // the request body MUST carry a `fresh_auth_proof` whose mechanism matches
 // what the account has registered:
@@ -165,13 +165,19 @@ router.post('/email', writeLimiter, verifyHiveSignature, async (req: Request, re
     const expiresAt = new Date(Date.now() + EMAIL_TOKEN_EXPIRY_MS);
 
     // Check if account row exists for this username. Read enough columns to
-    // discriminate the registered auth-factor set for the fresh-auth gate.
+    // (a) discriminate the registered auth-factor set for the fresh-auth gate
+    // and (b) snapshot the existing pending_email triple so an SMTP failure
+    // on the change branch can restore the prior state instead of nulling
+    // a still-valid 24h verify link from a previous successful request.
     const { rows: existing } = await pool.query<{
       id: number;
       password_hash: string | null;
       orcid: string | null;
+      pending_email: string | null;
+      pending_email_token: string | null;
+      pending_email_expires_at: Date | null;
     }>(
-      'SELECT id, password_hash, orcid FROM accounts WHERE username = $1',
+      'SELECT id, password_hash, orcid, pending_email, pending_email_token, pending_email_expires_at FROM accounts WHERE username = $1',
       [username],
     );
 
@@ -180,6 +186,16 @@ router.post('/email', writeLimiter, verifyHiveSignature, async (req: Request, re
       // from the Hive-signature path of verifyHiveSignature (no JWT exists
       // before a row exists); the fresh-auth gate below is skipped because
       // there's no JWT replay vector to defend against on this branch.
+      //
+      // Defense-in-depth: explicit JWT-rejection here makes the invariant
+      // load-bearing at the consume site. Today no jwt.sign call mints a
+      // JWT before the accounts row is INSERTed, so this branch is dead
+      // code on every reachable path. A future feature that mints a
+      // transient JWT before INSERT would otherwise silently bypass the
+      // fresh-auth gate on this branch.
+      if (req.hiveAuthMethod === 'jwt') {
+        return sendError(res, 401, 'UNAUTHORIZED', 'Session is no longer valid');
+      }
       await pool.query(
         `INSERT INTO accounts (email, username, verify_token, expires_at)
          VALUES ($1, $2, $3, $4)`,
@@ -204,8 +220,17 @@ router.post('/email', writeLimiter, verifyHiveSignature, async (req: Request, re
             },
             'settings.email change-email rejected — fresh-auth proof invalid',
           );
+          // Mirror the sibling mapping at custody.ts:372-377: binding
+          // violations (token issued for a different user / target / kind)
+          // → 403; "no valid proof present" outcomes → 401. The SPA error-
+          // router branches on status code (401 → re-login, 403 → wrong-
+          // account/wrong-proof), so all three routes that consume the
+          // fresh-auth primitive must emit the same signal for the same
+          // class of failure.
           const status =
-            result.reason === 'username_mismatch' || result.reason === 'target_mismatch'
+            result.reason === 'username_mismatch' ||
+            result.reason === 'target_mismatch' ||
+            result.reason === 'kind_mismatch'
               ? 403
               : 401;
           return sendError(
@@ -276,13 +301,22 @@ router.post('/email', writeLimiter, verifyHiveSignature, async (req: Request, re
         },
         'Failed to send verification email',
       );
-      // Roll back: clean up the token we just wrote
+      // Roll back the write this request made. On the Add branch the row
+      // didn't exist before, so DELETE is correct. On the Change branch we
+      // restore the snapshotted pending_email triple — nulling would
+      // destroy a still-valid 24h verify link from a previous successful
+      // change request, locking the user out of completing it.
       if (existing.length === 0) {
         await pool.query('DELETE FROM accounts WHERE username = $1 AND verify_token = $2', [username, token]);
       } else {
+        const prior = existing[0];
         await pool.query(
-          'UPDATE accounts SET pending_email = NULL, pending_email_token = NULL, pending_email_expires_at = NULL WHERE username = $1',
-          [username],
+          `UPDATE accounts
+             SET pending_email = $1,
+                 pending_email_token = $2,
+                 pending_email_expires_at = $3
+             WHERE username = $4`,
+          [prior.pending_email, prior.pending_email_token, prior.pending_email_expires_at, username],
         );
       }
       return sendError(res, 500, 'INTERNAL_ERROR', 'Failed to send verification email');

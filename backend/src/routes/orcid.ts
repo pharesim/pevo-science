@@ -26,8 +26,10 @@ import { logger } from '../logger.js';
 import { assertNever } from '../util/assertNever.js';
 import { seedAccreditationBonus } from '../reputation.js';
 import {
+  changeEmailFreshAuthTarget,
   issueFreshAuthToken,
   issueSessionFreshAuthToken,
+  setPasswordFreshAuthTarget,
   type FreshAuthTarget,
   type FreshAuthTargetAction,
 } from '../lib/fresh-auth.js';
@@ -333,11 +335,13 @@ router.post('/start', startLimiter, async (req: Request, res: Response) => {
     if (action === 'set_password') {
       // username is guaranteed set here: mode === 'fresh_auth' is in
       // AUTHENTICATED_MODES, so authenticateRequest above bound `username`.
-      freshAuthTarget = {
-        action: 'set_password',
-        root_author: username!,
-        root_permlink: '',
-      };
+      freshAuthTarget = setPasswordFreshAuthTarget(username!);
+    } else if (action === 'change_email') {
+      // Non-broadcast target. Same shape as set_password: target binds to
+      // (action, <authenticated username>, ''); request body does not carry
+      // root_author / root_permlink. Helper enforces the bind so a future
+      // refactor cannot silently re-introduce the inline literal.
+      freshAuthTarget = changeEmailFreshAuthTarget(username!);
     } else if (action === 'author_accept' || action === 'author_resign') {
       if (typeof rootAuthor !== 'string' || rootAuthor.length === 0) {
         return sendError(res, 400, 'VALIDATION_ERROR', 'root_author is required');
@@ -355,7 +359,7 @@ router.post('/start', startLimiter, async (req: Request, res: Response) => {
         res,
         400,
         'VALIDATION_ERROR',
-        'action must be one of: author_accept, author_resign, set_password',
+        'action must be one of: author_accept, author_resign, set_password, change_email',
       );
     }
   }

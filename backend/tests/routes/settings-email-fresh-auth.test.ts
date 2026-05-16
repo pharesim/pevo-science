@@ -63,6 +63,7 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import jwt from 'jsonwebtoken';
+import argon2 from 'argon2';
 
 vi.mock('../../src/middleware/verifyHiveSignature.js', async () => {
   const { MOCK_VERIFY_SIGNATURE } = await import('../fixtures/index.js');
@@ -98,6 +99,7 @@ const {
   _resetFreshAuthMemStoreForTests,
   issueFreshAuthToken,
   changeEmailFreshAuthTarget,
+  setPasswordFreshAuthTarget,
 } = await import('../../src/lib/fresh-auth.js');
 const { clearRateLimitKeys } = await import('../support/redis-helpers.js');
 
@@ -263,6 +265,13 @@ describe.skipIf(!dbReachable)('POST /api/settings/email — JWT-path fresh-auth 
       .set('X-Hive-Username', STATE_B_USER)
       .send({ email: NEW_EMAIL_B, fresh_auth_proof: issued.token });
     expect(res.status).toBe(200);
+
+    const pool = getAppPool()!;
+    const { rows } = await pool.query<{ pending_email: string | null }>(
+      'SELECT pending_email FROM accounts WHERE username = $1',
+      [STATE_B_USER],
+    );
+    expect(rows[0].pending_email).toBe(NEW_EMAIL_B);
   });
 
   it('state C: orcid-mechanism proof → 200', async () => {
@@ -333,6 +342,30 @@ describe.skipIf(!dbReachable)('POST /api/settings/email — JWT-path fresh-auth 
       STATE_A_USER,
       'password',
       { action: 'author_accept', root_author: 'someroot', root_permlink: 'paper-v1' },
+    );
+    const res = await request(app)
+      .post('/api/settings/email')
+      .set('Authorization', bearerFor(STATE_A_USER))
+      .set('X-Hive-Username', STATE_A_USER)
+      .send({ email: NEW_EMAIL_A, fresh_auth_proof: issued.token });
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe('FRESH_AUTH_REQUIRED');
+    expect(res.body.error.details?.reason).toBe('target_mismatch');
+  });
+
+  it('cross-target proof (set_password masqueraded as change-email) → 403 target_mismatch', async () => {
+    // Defense-in-depth pin against a future refactor that consolidates
+    // both `set_password` and `change_email` (both bind to (action,
+    // username, '')) into a single `nonBroadcastFreshAuthTarget(username)`
+    // helper. Collision-freedom hinges entirely on the `action` field in
+    // `computeFreshAuthTargetHash`; a refactor that drops the
+    // discriminator would silently authorize set-password proofs at the
+    // /email surface. This test catches the regression at the route
+    // boundary.
+    const issued = await issueFreshAuthToken(
+      STATE_A_USER,
+      'password',
+      setPasswordFreshAuthTarget(STATE_A_USER),
     );
     const res = await request(app)
       .post('/api/settings/email')
@@ -553,6 +586,197 @@ describe.skipIf(!dbReachable)(
         .set('X-Hive-Username', STATE_A_USER)
         .send({ email: NEW_EMAIL_A });
       expect(res.status).toBe(200);
+    });
+  },
+);
+
+// ────────────────────────────────────────────────────────────────────
+// BACKEND-CHANGE-EMAIL-MINT-PATH-AND-FOLLOWUPS — end-to-end mint→consume
+// round-trips through both newly-widened mint surfaces.
+//
+// The other describes in this file mint proofs by calling
+// `issueFreshAuthToken` directly (bypassing the route's auth + validation)
+// to focus on the consume-side gate at /api/settings/email. These tests
+// exercise the full path: the request body reaches POST /api/orcid/start
+// (or POST /api/custody/fresh-auth) with `action: 'change_email'`, the
+// validation widening accepts it, the proof is minted bound to
+// `changeEmailFreshAuthTarget(username)`, and the SPA submits it to
+// /api/settings/email which completes the change.
+//
+// The orcid round-trip stubs the OAuth token-exchange + pub.orcid.org
+// fetches (mirroring the pattern in orcid.test.ts), but every other
+// dependency (DB, Redis, fresh-auth lib) runs real. The custody
+// round-trip re-seeds the state-A user's password_hash with a real
+// argon2 hash so the route's argon2.verify runs against a known plaintext.
+// ────────────────────────────────────────────────────────────────────
+
+describe.skipIf(!dbReachable)(
+  'POST /api/settings/email — round-trip through new change_email mint surfaces',
+  () => {
+    const RT_PASSWORD = 'StateA-roundtrip-pwd-1';
+    let rtPasswordHash: string;
+
+    beforeAll(async () => {
+      await cleanupAll();
+      await seedStates();
+      // Real argon2 hash for STATE_A_USER so /api/custody/fresh-auth's
+      // argon2.verify path runs end-to-end. Hashed once per describe block;
+      // re-seeded into the row in beforeEach so other tests' FAKE hash
+      // never bleeds into this round-trip.
+      rtPasswordHash = await argon2.hash(RT_PASSWORD, { type: argon2.argon2id });
+      // Patch ORCID credentials — the dev .env leaves these empty and the
+      // /api/orcid/start handler short-circuits with 500 if either is
+      // missing. Mirrors the pattern at orcid.test.ts:207-209.
+      config.orcidClientId = 'test-orcid-client-id';
+      config.orcidClientSecret = 'test-orcid-client-secret';
+      await clearRateLimitKeys([
+        'settings-write',
+        'settings-read',
+        'custody-fresh-auth',
+        'orcid-start',
+        'orcid-callback',
+      ]);
+    });
+
+    beforeEach(async () => {
+      _resetFreshAuthMemStoreForTests();
+      await clearRateLimitKeys([
+        'settings-write',
+        'settings-read',
+        'custody-fresh-auth',
+        'orcid-start',
+        'orcid-callback',
+      ]);
+      if (!dbReachable) return;
+      const pool = getAppPool()!;
+      // Re-seed STATE_A's password_hash with the real argon2 hash so
+      // /api/custody/fresh-auth's argon2.verify succeeds against RT_PASSWORD.
+      await pool.query(
+        'UPDATE accounts SET password_hash = $1 WHERE username = $2',
+        [rtPasswordHash, STATE_A_USER],
+      );
+      // Reset pending_email between tests so each assertion starts clean.
+      await pool.query(
+        `UPDATE accounts SET pending_email = NULL, pending_email_token = NULL, pending_email_expires_at = NULL
+         WHERE username IN ($1, $2, $3, $4)`,
+        [STATE_A_USER, STATE_B_USER, STATE_C_USER, OTHER_USER],
+      ).catch(() => {});
+    });
+
+    afterAll(async () => {
+      vi.unstubAllGlobals();
+      await cleanupAll();
+    });
+
+    it('custody /fresh-auth (action=change_email) → /api/settings/email → 200 + pending_email written', async () => {
+      // Mint side: state-A user submits password + change_email action.
+      // The route's widened validation accepts change_email; the issued
+      // proof binds to changeEmailFreshAuthTarget(STATE_A_USER) via the
+      // server-synthesized target (no root_author/root_permlink in body).
+      const mintRes = await request(app)
+        .post('/api/custody/fresh-auth')
+        .set('Authorization', bearerFor(STATE_A_USER))
+        .set('X-Hive-Username', STATE_A_USER)
+        .send({ password: RT_PASSWORD, action: 'change_email' });
+      expect(mintRes.status).toBe(200);
+      expect(mintRes.body.status).toBe('ok');
+      expect(mintRes.body.data.fresh_auth_proof).toMatch(/^[0-9a-f]{64}$/);
+      expect(mintRes.body.data.mechanism).toBe('password');
+
+      // Consume side: submit the proof to /api/settings/email.
+      const consumeRes = await request(app)
+        .post('/api/settings/email')
+        .set('Authorization', bearerFor(STATE_A_USER))
+        .set('X-Hive-Username', STATE_A_USER)
+        .send({ email: NEW_EMAIL_A, fresh_auth_proof: mintRes.body.data.fresh_auth_proof });
+      expect(consumeRes.status).toBe(200);
+
+      const pool = getAppPool()!;
+      const { rows } = await pool.query<{ pending_email: string | null }>(
+        'SELECT pending_email FROM accounts WHERE username = $1',
+        [STATE_A_USER],
+      );
+      expect(rows[0].pending_email).toBe(NEW_EMAIL_A);
+    });
+
+    it('orcid /start (action=change_email) → /callback → /api/settings/email → 200 + pending_email written', async () => {
+      // Stub fetch so the OAuth token-exchange returns STATE_C_ORCID and
+      // pub.orcid.org returns enough external works to satisfy the
+      // accreditation precondition (handleFreshAuth itself does not gate
+      // on works, but the shared installer keeps the stub general). Mirrors
+      // the pattern in orcid.test.ts:251-277.
+      const worksCount = config.orcidMinWorks;
+      const group = Array.from({ length: worksCount }, (_, i) => ({
+        'work-summary': [
+          { source: { 'source-orcid': { path: `9999-9999-9999-${String(i).padStart(4, '0')}` } } },
+        ],
+      }));
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (url: string | URL) => {
+          const u = typeof url === 'string' ? url : url.toString();
+          if (u.includes('/oauth/token')) {
+            return new Response(
+              JSON.stringify({ orcid: STATE_C_ORCID, name: 'Test User', access_token: 'tk' }),
+              { status: 200, headers: { 'Content-Type': 'application/json' } },
+            );
+          }
+          if (u.includes('pub.orcid.org')) {
+            return new Response(
+              JSON.stringify({ group }),
+              { status: 200, headers: { 'Content-Type': 'application/json' } },
+            );
+          }
+          throw new Error(`Unexpected fetch URL in test: ${u}`);
+        }),
+      );
+
+      try {
+        // /start: widened validation accepts action='change_email' without
+        // root_author/root_permlink. Returns redirect_url carrying state.
+        const startRes = await request(app)
+          .post('/api/orcid/start')
+          .set('Authorization', bearerFor(STATE_C_USER))
+          .set('X-Hive-Username', STATE_C_USER)
+          .send({ mode: 'fresh_auth', action: 'change_email' });
+        expect(startRes.status).toBe(200);
+        const redirectUrl = startRes.body.data.redirect_url as string;
+        const state = new URL(redirectUrl).searchParams.get('state');
+        expect(state).toMatch(/^[0-9a-f]{32}$/);
+
+        // /callback: completes OAuth round-trip, calls handleFreshAuth,
+        // mints the proof bound to changeEmailFreshAuthTarget(STATE_C_USER).
+        const callbackRes = await request(app)
+          .post('/api/orcid/callback')
+          .set('Authorization', bearerFor(STATE_C_USER))
+          .set('X-Hive-Username', STATE_C_USER)
+          .send({ code: 'fake-oauth-code', state });
+        expect(callbackRes.status).toBe(200);
+        expect(callbackRes.body.data.mode).toBe('fresh_auth');
+        expect(callbackRes.body.data.mechanism).toBe('orcid');
+        expect(callbackRes.body.data.action).toBe('change_email');
+        expect(callbackRes.body.data.fresh_auth_proof).toMatch(/^[0-9a-f]{64}$/);
+
+        // Consume at /api/settings/email.
+        const consumeRes = await request(app)
+          .post('/api/settings/email')
+          .set('Authorization', bearerFor(STATE_C_USER))
+          .set('X-Hive-Username', STATE_C_USER)
+          .send({
+            email: NEW_EMAIL_C,
+            fresh_auth_proof: callbackRes.body.data.fresh_auth_proof,
+          });
+        expect(consumeRes.status).toBe(200);
+
+        const pool = getAppPool()!;
+        const { rows } = await pool.query<{ pending_email: string | null }>(
+          'SELECT pending_email FROM accounts WHERE username = $1',
+          [STATE_C_USER],
+        );
+        expect(rows[0].pending_email).toBe(NEW_EMAIL_C);
+      } finally {
+        vi.unstubAllGlobals();
+      }
     });
   },
 );

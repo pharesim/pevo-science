@@ -13,11 +13,32 @@
  * the change-email branch of POST `/api/settings/email`) see the same value
  * they would under real verification.
  *
+ * `req.hiveCustody` is populated from the JWT's `custody` claim on the JWT
+ * path (decoded WITHOUT signature verification — that's the bypassed leg of
+ * this fixture) and defaults to `'self'` otherwise. Routes that gate on
+ * custody (e.g., POST `/api/custody/fresh-auth` requires `'light'`) see the
+ * same value they would under the real middleware.
+ *
  * Usage:
  *   import { MOCK_VERIFY_SIGNATURE } from '../fixtures/mock-auth.js';
  *
  *   vi.mock('../../src/middleware/verifyHiveSignature.js', () => MOCK_VERIFY_SIGNATURE);
  */
+
+function decodeJwtCustodyClaim(authHeader: string | undefined): 'light' | 'self' {
+  if (typeof authHeader !== 'string' || !authHeader.startsWith('Bearer ')) {
+    return 'self';
+  }
+  const token = authHeader.slice(7);
+  const parts = token.split('.');
+  if (parts.length !== 3) return 'self';
+  try {
+    const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+    return payload?.custody === 'light' ? 'light' : 'self';
+  } catch {
+    return 'self';
+  }
+}
 
 export const MOCK_VERIFY_SIGNATURE = {
   verifyHiveSignature: (req: Record<string, unknown>, _res: unknown, next: () => void) => {
@@ -34,6 +55,7 @@ export const MOCK_VERIFY_SIGNATURE = {
     const authHeader = headers?.['authorization'];
     req.hiveAuthMethod =
       typeof authHeader === 'string' && authHeader.startsWith('Bearer ') ? 'jwt' : 'signature';
+    req.hiveCustody = decodeJwtCustodyClaim(authHeader);
     next();
   },
 };

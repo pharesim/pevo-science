@@ -18,6 +18,7 @@ import { requestAbortSignal } from '../lib/request-abort-signal.js';
 import { handleBroadcastError, makeLogBroadcastAttempt } from '../lib/broadcast-error.js';
 import {
   CONSENT_OP_ACTIONS,
+  changeEmailFreshAuthTarget,
   computeFreshAuthTargetHash,
   consumeFreshAuthToken,
   consumeSessionFreshAuthToken,
@@ -717,31 +718,42 @@ router.post('/fresh-auth', verifyHiveSignature, freshAuthLimiter, async (req: Re
   }
   // Round-5 hold #3: per-op target binding. The proof binds to the
   // (action, root_author, root_permlink) triple of the consent op the user
-  // intends to authorize. Closed-default: all three fields are required;
-  // legacy callers that omit them get a 400 rather than a target-less
-  // proof that would still be honored at consume.
+  // intends to authorize. Closed-default: consent-op callers must supply
+  // all three fields; legacy callers that omit them get a 400 rather than
+  // a target-less proof that would still be honored at consume.
+  //
+  // change_email is a non-broadcast critical action: the target binds to
+  // (change_email, <authenticated username>, '') and request body does NOT
+  // carry root_author / root_permlink. Issuance via this route is only
+  // admissible for state A/B accounts (password_hash IS NOT NULL); state C
+  // (passwordless) has no password to base a password-mechanism proof on
+  // and must mint via /api/orcid/start { mode: 'fresh_auth' } instead.
   const action = body.action;
   const rootAuthor = body.root_author;
   const rootPermlink = body.root_permlink;
-  if (action !== 'author_accept' && action !== 'author_resign') {
+  let target: FreshAuthTarget;
+  if (action === 'change_email') {
+    target = changeEmailFreshAuthTarget(username);
+  } else if (action === 'author_accept' || action === 'author_resign') {
+    if (typeof rootAuthor !== 'string' || rootAuthor.length === 0) {
+      return sendError(res, 400, 'VALIDATION_ERROR', 'root_author is required');
+    }
+    if (typeof rootPermlink !== 'string' || rootPermlink.length === 0) {
+      return sendError(res, 400, 'VALIDATION_ERROR', 'root_permlink is required');
+    }
+    target = {
+      action,
+      root_author: rootAuthor,
+      root_permlink: rootPermlink,
+    };
+  } else {
     return sendError(
       res,
       400,
       'VALIDATION_ERROR',
-      'action must be one of: author_accept, author_resign',
+      'action must be one of: author_accept, author_resign, change_email',
     );
   }
-  if (typeof rootAuthor !== 'string' || rootAuthor.length === 0) {
-    return sendError(res, 400, 'VALIDATION_ERROR', 'root_author is required');
-  }
-  if (typeof rootPermlink !== 'string' || rootPermlink.length === 0) {
-    return sendError(res, 400, 'VALIDATION_ERROR', 'root_permlink is required');
-  }
-  const target: FreshAuthTarget = {
-    action,
-    root_author: rootAuthor,
-    root_permlink: rootPermlink,
-  };
 
   const pool = getAppPool();
   if (!pool) return sendError(res, 503, 'INTERNAL_ERROR', 'Service not available');
