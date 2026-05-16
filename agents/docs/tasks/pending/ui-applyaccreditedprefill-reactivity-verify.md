@@ -91,3 +91,26 @@ Single comment added at the helper definition in `frontend/src/lib/accredited-di
 ### Dismissed alternative
 
 The task body's "Case B" workaround (`this.coAuthors = this.coAuthors.slice();` at both call sites) would force a wholesale array-replacement reactive notification rather than relying on in-place mutation. It is unnecessary given Case A, and would introduce a confusing-pattern (`slice` for-its-side-effect) that future maintainers would have to understand and preserve.
+
+## Architect re-review (2026-05-16) — HELD PENDING FIXES:
+
+Reviewed via `/ce-code-review` against commit `ad3ec1c` with 6 personas (correctness Opus; testing/maintainability/project-standards/julik-frontend-races/learnings-researcher Sonnet; `ce-agent-native-reviewer` skipped per PEvO CLAUDE.md). Julik-frontend-races independently verified the reactivity claim against `@vue/reactivity/dist/reactivity.cjs.js` (lines 224-231 push instrumentation, 253-309 createGetter/createSetter): the rebuttal to JFR-2 is mechanically sound on all four questions (lazy deep-proxy on access, `for...of` traversal exposes wrapped rows, no production call shape bypasses the proxy, push-after-init pattern matches production exactly). Correctness, testing, project-standards all clean. Learnings-researcher confirmed no existing `agents/docs/solutions/` entry covers `@vue/reactivity` proxy semantics or in-place mutation safety.
+
+One item to address before archive:
+
+1. **P2 — Line-number citation `alpinejs/src/index.js:40-42` in the new comment will drift on Alpine 3.x minor bumps (`frontend/src/lib/accredited-directory.js:96-97`).** maintainability (P2/75). Alpine is declared as `^3.15.11` (caret range), meaning any 3.x minor update is automatic. Source line numbers drift across refactors; on the first Alpine bump that moves that code block, a future maintainer who goes to verify the citation will find it pointing at an unrelated line, making the comment actively misleading rather than informative. The conceptual claim (Alpine 3's reactivity engine is `@vue/reactivity reactive()` and `for...of` traversal yields proxied rows) is correct and worth preserving — only the parenthetical line reference is fragile.
+
+   **Fix:** drop the parenthetical `(alpinejs/src/index.js:40-42)` from the comment. The "Verified 2026-05-16 against @vue/reactivity directly" sentence already establishes confidence without the line anchor. Suggested rewrite of the affected line:
+
+   ```js
+   // proxy. Alpine's reactivity engine is @vue/reactivity's `reactive()`,
+   // which lazily deep-proxies nested objects on access — including
+   ```
+
+   (Drop the parenthetical, keep the rest of the comment intact.)
+
+When the item is landed, `git mv` this file back to `tasks/review/`. The next architect re-review will cover the single comment edit.
+
+Dismissed at architect triage (audit, not blocking): Maintainability MAINT-R1 hypothetical-future-Alpine-4 iteration-semantics concern (lifecycle-only risk, confidence 40, below 75 gate); julik testing-gap TG-1 "no automated test for the reactivity contract" (the @vue/reactivity proxy contract is upstream and not PEvO's responsibility to pin, per the original UI re-review rationale; agree). Learnings-researcher's suggestion to also capture a `/ce-compound` learning for the reactivity rationale is deferred to the archive checkpoint per architect protocol.
+
+Cross-references: `agents/docs/solutions/conventions/docblock-anchor-stable-symbols-not-line-numbers-2026-05-15.md` is the directly-applicable convention — drop the line numbers, keep the symbol reference.
