@@ -572,3 +572,43 @@ All 4 round-4 hold items addressed in a single coordinated commit. No behavioral
 ### Items NOT touched
 
 - Architect-zone carry-forwards (`agents/docs/reputation-algorithm.md` lines 218-219, 296, 374, 407; `agents/docs/ARCHITECTURE.md` lines 466-468). Still pending, safe to land at archive of this task once round-5 is reviewed.
+
+---
+
+## Architect re-review (2026-05-16) — HELD PENDING FIXES (round 5)
+
+`/ce-code-review` on commit `6bc1056` dispatched 5 reviewers (correctness on Opus; testing, maintainability, project-standards, ce-learnings-researcher on Sonnet; `ce-agent-native-reviewer` skipped per project CLAUDE.md). User-triaged 2026-05-16. All 4 round-4 hold items verified addressed in form (item 2 outer-scope narrowing mutation-kills param-shift regression; item 3 round-number references replaced at all 4 directed sites with convention-doc references; item 4 header downgrade is honest about the gap). One P3 item held below — the same overstatement class item 4 was supposed to close, now reappearing at item 1's new header.
+
+### Items to address
+
+#### P3 — polish
+
+**1. (P3) Item-1's new clause-(b) header overstates clause-(c) companion coverage — same overstatement class item 4 closed elsewhere, now reappearing in the notifications-test header.**
+
+**Where:** `backend/tests/routes/notifications-arm-sql-shape.test.ts:20-22` (the new clause-(b) header introduced by item 1 of this round).
+
+**Why:** Correctness CORR-1 (P3, conf 90). The new header claims "real `verifyHiveSignature` middleware is exercised against signed requests in `notifications.test.ts` (the clause-(c) real-path companion)." Verified: `notifications.test.ts:7-10` ALSO hoists `vi.mock(MOCK_VERIFY_SIGNATURE)`; every signed request in that file uses the literal string `'mock-sig'` (lines 33, 43, 52, 65, 74). No real-signature exercise of `verifyHiveSignature` exists anywhere in the notifications domain. The new header makes a load-bearing claim that is factually wrong, in exactly the same shape item 4 corrected for `profile-reviews-accred-gate.test.ts`.
+
+**Fix:** apply the same "downgrade the claim" treatment item 4 applied. Two paths, implementer's choice:
+
+- **(a) Downgrade the claim.** Rewrite the header to acknowledge that no real-`verifyHiveSignature` companion exists in the notifications domain. The clause-(b) refinement is met by the SQL-shape focus alone (the 401-on-missing-header gate and username-extraction behavior are still preserved by the fixture; the cryptographic signature check is bypassed; no real-path test pins the cryptographic behavior in this domain). Mark the real-path companion as a follow-up, optionally file a new task.
+- **(b) Add the companion.** Extend `notifications.test.ts` (or a new file) with a real-signature integration test for `/api/notifications` that exercises real `verifyHiveSignature` against signed requests. Wider scope; only land it here if trivial.
+
+Architect preference: (a). Filing a real-signature companion task for the notifications domain is broader than this hold's scope.
+
+### Findings dismissed at triage (no action)
+
+- **(maintainability M1, P2 conf 80)** Convention-doc absolute paths in profile.ts comments use date-stamped filenames; rename via `/ce-compound-refresh` would leave dead pointers. Dismissed per `feedback_dismiss_preemptive_test_hardening` + the conventions cited by learnings researcher: convention docs are immutable post-write (no archive cycle, no 250-line cap). Mitigation lives in the refresh workflow (grep + update call sites in the refresh commit), not at this task.
+
+### Pre-existing findings surfaced (no action this task; informational)
+
+- **(project-standards residual)** `agents/docs/solutions/conventions/test-mock-carve-out-clause-c-2026-05-04.md` lines 44 + 137 are stale relative to root CLAUDE.md's clause-(b) refinement (the solution doc still says `verifyHiveSignature` is "NOT carve-out-eligible regardless of what real-path companions exist", but CLAUDE.md permits the fixture for non-crypto-focused tests). Architect-zone (solutions/); architect lands the wording refresh at archive of this task, bundled with the existing convention-doc carry-forwards.
+
+### Architect-zone carry-forwards (no implementer action; architect lands at archive)
+
+- All round-4 carry-forwards remain pending: `agents/docs/reputation-algorithm.md` lines 218-219, 296, 374, 407; `agents/docs/ARCHITECTURE.md` lines 466-468.
+- NEW carry-forward: `test-mock-carve-out-clause-c-2026-05-04.md` clause-(b) wording refresh (pre-existing finding surfaced this round).
+
+### Re-review signal
+
+When item 1 lands, `git mv` this file from `tasks/pending/` back to `tasks/review/`. Use bare `backend:` or `backend(<scope>):` commit prefixes so the zone-audit hook fires. The architect's next review pass scopes `/ce-code-review` to commits since `6bc1056`. Single-item hold; can land as one focused commit touching only `notifications-arm-sql-shape.test.ts`.
