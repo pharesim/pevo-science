@@ -89,11 +89,29 @@ export const config = {
   // multiplied by the walker hop caps (10 backward, 50 forward) for a
   // per-request worst-case of 10-25 minutes if no per-request budget exists.
   //
+  // **Real worst-case per request = `hafWalkerWallClockMs` + `statement_timeout`.**
+  // The AbortSignal stops NEW queries from starting; in-flight `pool.query`
+  // calls continue until PostgreSQL's `statement_timeout` (30000ms) resolves
+  // them — pg v8.x does NOT support `AbortSignal` in `pool.query` (verified
+  // empirically against `node_modules/pg/lib/`). Operators tuning this knob
+  // downward to "tighten the budget" should know the bound is the SUM of the
+  // configured value and the per-query statement_timeout, not the configured
+  // value alone. Still an 18-45× improvement over the pre-fix tail at the
+  // 3000ms default, so the DoS-amplifier closure is meaningfully achieved.
+  //
   // Default 3000ms derivation: typical HAF response 50-200ms × expected
   // 10-15-query depth = 500-3000ms. Anything beyond is degraded HAF.
   // Operators can tune via env. See BACKEND-HAF-WALKER-WALL-CLOCK-BUDGET
   // and `verify-resource-knob-math-before-load-bearing-security-margins-2026-04-22.md`.
-  hafWalkerWallClockMs: parseInt(process.env.HAF_WALKER_WALL_CLOCK_MS || '3000', 10),
+  //
+  // NaN guard: `parseInt` ordering matters — putting the `||` AFTER the parse
+  // means a non-numeric env (`disabled`, `3000ms`) → NaN → falls through to
+  // 3000. The pre-fix form `parseInt(env || '3000', 10)` swallowed the env
+  // value first; `parseInt('disabled', 10) = NaN` then `setTimeout(fn, NaN)`
+  // coerces to `setTimeout(fn, 0)` per ECMAScript spec — fires immediately,
+  // every request emits wall-clock-exceeded. `Math.max(1, …)` also floors at
+  // 1ms to prevent a literal `0` env from producing the same immediate-fire.
+  hafWalkerWallClockMs: Math.max(1, parseInt(process.env.HAF_WALKER_WALL_CLOCK_MS || '', 10) || 3000),
   orcidBaseUrl: process.env.ORCID_BASE_URL || 'https://orcid.org',
   accreditationAuthorities: (() => {
     const extra = (process.env.ACCREDITATION_AUTHORITIES || '').split(',').map(s => s.trim()).filter(Boolean);

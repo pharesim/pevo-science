@@ -122,6 +122,23 @@ function isBackwardWalkContinuesProbe(sql: string): boolean {
  * the SQL-side-SSoT discipline across both probes), so IS NOT NULL no
  * longer discriminates. The SELECT-clause discriminator is what
  * semantically defines "initial probe" today.
+ *
+ * **BRITTLENESS WARNING** — the regex matches a column-list prefix
+ * (`SELECT c.author, c.json_metadata,` with a trailing comma). Any
+ * future SQL refactor that:
+ *   - reorders the initial probe's SELECT columns,
+ *   - inserts a 3rd column between `c.author` and `c.json_metadata`,
+ *   - drops the trailing comma (e.g., projecting just the two columns),
+ *   - or normalizes whitespace differently
+ * will silently break the discriminator → mock returns the wrong fixture
+ * → canaries using `isInitialBackwardProbe` pass for the wrong reason
+ * (false GREEN). The same brittleness class as the `/'type'/.test(sql)`
+ * discriminator elsewhere in this file. If this canary or the
+ * layer-pinning canaries that depend on its dispatch start failing red
+ * after such a refactor, the security property is NOT regressed — the
+ * discriminator needs updating, not the production gate. Update both
+ * this function AND `isHeadAuthorsLookup` (next) in the same change so
+ * they stay mutually exclusive.
  */
 function isInitialBackwardProbe(sql: string): boolean {
   return /SELECT\s+c\.author,\s+c\.json_metadata,/.test(sql);
@@ -566,7 +583,12 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
     (config as { hafWalkerWallClockMs: number }).hafWalkerWallClockMs = 50;
     try {
       const res = await request(app).get(`/api/papers/alice/v${N}`);
-      expect(res.status).toBe(200);
+      // Round-2 item 4 (P2 reliability): walker-aborted requests surface as
+      // 503 SERVICE_UNAVAILABLE so HTTP-status-only monitors catch degraded
+      // HAF independently of the warn log. Pre-round-2 the route returned
+      // 200 with possibly-incorrect cached data; the abort wasn't visible
+      // at the HTTP layer.
+      expect(res.status).toBe(503);
 
       const wallClockEvents = warnSpy.mock.calls
         .map((c) => c[0] as { event?: string; hopIndex?: number; elapsedMs?: number } | undefined)
@@ -590,6 +612,109 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
       expect(depthEvents.length).toBe(0);
     } finally {
       (config as { hafWalkerWallClockMs: number }).hafWalkerWallClockMs = originalBudget;
+    }
+  });
+
+  it('wall-clock abort fail-CLOSES to URL coords, not attacker-controlled pevo.continues target (P1 security)', async () => {
+    // BACKEND-HAF-WALKER-WALL-CLOCK-BUDGET round-2 hold item 1 canary.
+    //
+    // PHISHING SCENARIO: attacker posts /api/papers/attacker/spoof-paper
+    // carrying `pevo.continues = {alice, real-paper}` pointing at alice's
+    // real content. Under degraded HAF where the initial probe takes long
+    // enough to trip the wall-clock budget BEFORE the iter-0
+    // author-consent gate (`fetchHeadAuthorizedAuthors`) runs, the
+    // walker's mid-walk abort path returns canonical coords.
+    //
+    // - Pre-fix (defect): return { author: currentAuthor, permlink: currentPermlink }
+    //   where current is sourced from startRow.cont_author/cont_permlink =
+    //   the attacker's spoof target. Route handler then sets
+    //   author=alice/permlink=real-paper and the response surfaces alice's
+    //   content under /api/papers/attacker/spoof-paper. Phishing complete.
+    //
+    // - Post-fix (correct): return { author: childAuthor, permlink: childPermlink }
+    //   where child at iter-0 === (URL author, URL permlink) from route
+    //   params. Response stays on attacker's own coords (safe — surfaces
+    //   the attacker's own content or 404).
+    //
+    // Mutation-kill: revert papers.ts iter-0 abort return from
+    // childAuthor/childPermlink back to currentAuthor/currentPermlink →
+    // the captured paper-detail SQL params switch from
+    // ['attacker', 'spoof-paper', …] to ['alice', 'real-paper', …] →
+    // canary fails RED on the predecessor-coord assertions below.
+    //
+    // Observable layer: the WALKER's return is private (findCanonicalRoot
+    // is not exported), but the route handler immediately rewrites
+    // (author, permlink) from canonicalRoot and passes the result to
+    // fetchPaperDetailFromHaf, which issues a `SELECT c.author, c.permlink,
+    // c.title, …` query. The captured params on that query are the
+    // walker's return value lifted to the SQL layer.
+    const aliceMeta = pevoPaperJsonMeta(['alice']);
+
+    installResponder(async (sql, params) => {
+      // Slow every backward-walker query to 80ms (budget is 50ms below).
+      await new Promise((r) => setTimeout(r, 80));
+      if (isBackwardWalkContinuesProbe(sql)) {
+        const a = params[0] as string;
+        const p = params[1] as string;
+        if (isInitialBackwardProbe(sql) && a === 'attacker' && p === 'spoof-paper') {
+          // Attacker's post: type=paper (passes SQL gate) with cont
+          // pointing at alice's real paper (the spoof).
+          return {
+            rows: [{
+              author: 'attacker',
+              json_metadata: pevoPaperRow('attacker', 'spoof-paper', ['attacker']).json_metadata,
+              cont_author: 'alice',
+              cont_permlink: 'real-paper',
+            }],
+          };
+        }
+        return { rows: [] };
+      }
+      if (isHeadAuthorsLookup(sql)) {
+        if (params[0] === 'alice') return { rows: [{ author: 'alice', json_metadata: aliceMeta }] };
+        if (params[0] === 'attacker') return { rows: [{ author: 'attacker', json_metadata: pevoPaperJsonMeta(['attacker']) }] };
+        return { rows: [] };
+      }
+      if (sql.includes('SELECT c.author, c.permlink, c.title')) {
+        const a = params[0] as string;
+        const p = params[1] as string;
+        return { rows: [pevoPaperRow(a, p, [a])] };
+      }
+      return { rows: [] };
+    });
+
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    const originalBudget = config.hafWalkerWallClockMs;
+    (config as { hafWalkerWallClockMs: number }).hafWalkerWallClockMs = 50;
+    try {
+      await request(app).get('/api/papers/attacker/spoof-paper');
+
+      // The wall-clock event fired (the abort path was exercised).
+      const wallClockEvents = warnSpy.mock.calls
+        .map((c) => c[0] as { event?: string } | undefined)
+        .filter((e) => e?.event === 'canonical_root_walker_wall_clock_exceeded');
+      expect(wallClockEvents.length).toBeGreaterThan(0);
+
+      // CRITICAL — security assertion. After the walker's abort, the
+      // route handler may have called fetchPaperDetailFromHaf with the
+      // walker's returned coords. Filter the captured SQL probes for the
+      // paper-detail SELECT (issued by fetchPaperDetailFromHaf) and
+      // assert NONE of them was issued with alice's coords. Pre-fix the
+      // SQL would land as ['alice', 'real-paper', …]; post-fix the
+      // walker returns ['attacker', 'spoof-paper'] so any subsequent
+      // detail fetch stays on the attacker's own coords (or never runs
+      // because fetchPaperDetailFromHaf short-circuits on the aborted
+      // signal at its end and returns null).
+      const detailQueries = captured.filter((c) =>
+        /SELECT\s+c\.author,\s+c\.permlink,\s+c\.title/.test(c.sql)
+      );
+      for (const q of detailQueries) {
+        expect(q.params[0]).not.toBe('alice');
+        expect(q.params[1]).not.toBe('real-paper');
+      }
+    } finally {
+      (config as { hafWalkerWallClockMs: number }).hafWalkerWallClockMs = originalBudget;
+      warnSpy.mockRestore();
     }
   });
 

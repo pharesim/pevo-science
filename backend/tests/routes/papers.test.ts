@@ -1,9 +1,27 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import request from 'supertest';
 import { createApp } from '../../src/app.js';
 import { config } from '../../src/config.js';
 
 const app = createApp();
+
+// Tests in this file hit real HAF — round-trip latency on the testnet
+// regularly exceeds the production-default `hafWalkerWallClockMs=3000`
+// budget, which now (post-BACKEND-HAF-WALKER-WALL-CLOCK-BUDGET round-2)
+// surfaces as `503 SERVICE_UNAVAILABLE` instead of silently returning
+// possibly-stale data. Override the budget to a generous value so the
+// integration-shape assertions (200 + structure checks) aren't masked
+// by the testnet's slower-than-default HAF tail. Walker-specific
+// budget canaries override the value per-test in their own files
+// (`canonical-root-walker.test.ts`, `continuation-author-gate.test.ts`).
+let originalBudgetMs: number;
+beforeAll(() => {
+  originalBudgetMs = config.hafWalkerWallClockMs;
+  (config as { hafWalkerWallClockMs: number }).hafWalkerWallClockMs = 60_000;
+});
+afterAll(() => {
+  (config as { hafWalkerWallClockMs: number }).hafWalkerWallClockMs = originalBudgetMs;
+});
 
 describe('GET /api/papers', () => {
   it('returns a list of papers with correct envelope', { timeout: 60_000 }, async () => {

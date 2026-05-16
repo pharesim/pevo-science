@@ -1828,7 +1828,10 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
     (config as { hafWalkerWallClockMs: number }).hafWalkerWallClockMs = 50;
     try {
       const res = await request(app).get('/api/papers/alice/p1');
-      expect(res.status).toBe(200);
+      // Round-2 item 4 (P2 reliability): walker-aborted requests surface
+      // as 503 so HTTP-status monitors catch degraded HAF. Pre-round-2
+      // returned 200 with possibly-stale or partial-chain data.
+      expect(res.status).toBe(503);
 
       const wallClockEvents = warnSpy.mock.calls
         .map((c) => c[0] as { event?: string; hopIndex?: number; elapsedMs?: number } | undefined)
@@ -1893,6 +1896,99 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
         .map((c) => c[0] as { event?: string } | undefined)
         .filter((e) => e?.event === 'continuation_chain_wall_clock_exceeded');
       expect(wallClockEvents.length).toBe(0);
+    } finally {
+      (config as { hafWalkerWallClockMs: number }).hafWalkerWallClockMs = originalBudget;
+    }
+  });
+
+  // Sibling-route DoS-amplifier closure: BACKEND-HAF-WALKER-WALL-CLOCK-BUDGET
+  // round-2 hold item 2. Pre-fix only `GET /:author/:permlink` carried the
+  // AbortController wrapper; `/cite`, `/retract`, `/enrichment` reached the
+  // same forward walker via `fetchPaperDetailFromHaf` / `fetchEnrichmentFromHaf`
+  // without a per-request budget, so the same attacker-posted long chains
+  // under degraded HAF could starve worker threads on those three URLs.
+  // These canaries pin the wrapper presence + the route's abort-detection
+  // 503 surface. /retract is covered in retract.test.ts where auth is
+  // mocked.
+
+  // Slow-forward-walker responder reused by the 3 sibling-route canaries.
+  // Lifted here as a helper because all three want the same shape:
+  // backward walker suppressed (0 rows on initial probe), head/paper-detail
+  // SELECTs fast (so the budget is only consumed by the forward-walker
+  // chain-walk SQL), forward chain-walk SQL slowed to ~80ms (budget 50ms).
+  function installSlowForwardResponder() {
+    const continuationMeta = {
+      app: `${config.appTag}/test`,
+      [config.appTag]: { type: 'paper', authors: [{ hive: 'alice' }, { hive: 'bob' }] },
+    };
+    installResponder(async (sql, params) => {
+      if (/'continues'\s*IS\s+NOT\s+NULL/i.test(sql)) {
+        return { rows: [] };
+      }
+      if (sql.includes('SELECT c.author, c.json_metadata') && sql.includes('parent_permlink = $3')) {
+        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'])] };
+      }
+      if (sql.includes('SELECT c.author, c.permlink, c.title')) {
+        return { rows: [pevoPaperRow('alice', 'p1', ['alice', 'bob'])] };
+      }
+      if (isForwardChainWalkSql(sql)) {
+        await new Promise((r) => setTimeout(r, 80));
+        const currentAuthor = params[0];
+        const currentPermlink = params[1];
+        const nextAuthor = currentAuthor === 'alice' ? 'bob' : 'alice';
+        return {
+          rows: [{
+            author: nextAuthor,
+            permlink: `${currentPermlink}-cont`,
+            block_num: 100 + captured.length,
+            json_metadata: continuationMeta,
+          }],
+        };
+      }
+      return { rows: [] };
+    });
+  }
+
+  it('/cite wraps walker in AbortController + surfaces 503 on wall-clock abort', async () => {
+    // Mutation-kill: drop the AbortController wrapper from the /cite handler
+    // (revert to bare `fetchPaperDetailFromHaf(author, permlink)` without
+    // signal) → forward walker runs to depth cap regardless of budget →
+    // wall-clock event never fires AND status stays 200/404, not 503 →
+    // both assertions below fail red.
+    installSlowForwardResponder();
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    const originalBudget = config.hafWalkerWallClockMs;
+    (config as { hafWalkerWallClockMs: number }).hafWalkerWallClockMs = 50;
+    try {
+      const res = await request(app).get('/api/papers/alice/p1/cite?format=bibtex');
+      expect(res.status).toBe(503);
+
+      const wallClockEvents = warnSpy.mock.calls
+        .map((c) => c[0] as { event?: string } | undefined)
+        .filter((e) => e?.event === 'continuation_chain_wall_clock_exceeded');
+      expect(wallClockEvents.length).toBeGreaterThan(0);
+    } finally {
+      (config as { hafWalkerWallClockMs: number }).hafWalkerWallClockMs = originalBudget;
+    }
+  });
+
+  it('/enrichment wraps walker in AbortController + surfaces 503 on wall-clock abort', async () => {
+    // Mutation-kill: drop the AbortController wrapper from the /enrichment
+    // handler (revert resolveVersionsFromHaf back to its no-signal form
+    // OR drop the wrapper but keep the signal param) → wall-clock event
+    // count drops to 0 AND status becomes 200/404 → assertions fail red.
+    installSlowForwardResponder();
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    const originalBudget = config.hafWalkerWallClockMs;
+    (config as { hafWalkerWallClockMs: number }).hafWalkerWallClockMs = 50;
+    try {
+      const res = await request(app).get('/api/papers/alice/p1/enrichment');
+      expect(res.status).toBe(503);
+
+      const wallClockEvents = warnSpy.mock.calls
+        .map((c) => c[0] as { event?: string } | undefined)
+        .filter((e) => e?.event === 'continuation_chain_wall_clock_exceeded');
+      expect(wallClockEvents.length).toBeGreaterThan(0);
     } finally {
       (config as { hafWalkerWallClockMs: number }).hafWalkerWallClockMs = originalBudget;
     }

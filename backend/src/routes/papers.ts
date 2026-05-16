@@ -988,6 +988,17 @@ async function fetchPaperDetailFromHaf(
       detail.citation_count = citResult.rows[0]?.cnt ?? 0;
     }
 
+    // Cache-poisoning defense: if the wall-clock budget tripped during
+    // this fetcher's walker calls (`resolveContinuationChain` /
+    // `reconstructVersionsFromHaf`), the chain may be partial. The detail
+    // object built from a partial chain has wrong `head_author` /
+    // `head_permlink` / `versions[]`. Returning it would let `hafCache`
+    // cache the bad shape for 30 min. Return null so the cache layer's
+    // null-skip rule (`cache.ts:73`) leaves the cache cold and the next
+    // request retries against (hopefully recovered) HAF. The route handler
+    // then surfaces 503 to the client via its own `signal.aborted` check.
+    if (signal?.aborted) return null;
+
     return detail;
   } catch (err) {
     logger.error({ err }, 'HAF paper detail query failed');
@@ -1196,6 +1207,7 @@ async function resolveContinuationChain(
         startPermlink: permlink,
         hopIndex: 0,
         elapsedMs: Date.now() - startedAt,
+        budgetMs: config.hafWalkerWallClockMs,
       },
       'continuation chain walker aborted: wall-clock budget exceeded before seed fetch',
     );
@@ -1257,6 +1269,7 @@ async function resolveContinuationChain(
             startPermlink: permlink,
             hopIndex: i,
             elapsedMs: Date.now() - startedAt,
+            budgetMs: config.hafWalkerWallClockMs,
           },
           'continuation chain walker aborted: wall-clock budget exceeded mid-walk',
         );
@@ -1481,6 +1494,7 @@ async function findCanonicalRoot(
         startPermlink: permlink,
         hopIndex: 0,
         elapsedMs: Date.now() - startedAt,
+        budgetMs: config.hafWalkerWallClockMs,
       },
       'canonical-root walker aborted: wall-clock budget exceeded before initial probe',
     );
@@ -1637,10 +1651,21 @@ async function findCanonicalRoot(
             startPermlink: permlink,
             hopIndex: i,
             elapsedMs: Date.now() - startedAt,
+            budgetMs: config.hafWalkerWallClockMs,
           },
           'canonical-root walker aborted: wall-clock budget exceeded mid-walk',
         );
-        return { author: currentAuthor, permlink: currentPermlink };
+        // SECURITY: fail-CLOSED to the verified CHILD coords, not the
+        // attacker-controlled `currentAuthor/currentPermlink` (which were
+        // sourced from `pevo.continues` without passing the
+        // `fetchHeadAuthorizedAuthors` author-consent gate below). At iter-0
+        // `(childAuthor, childPermlink) === (author, permlink)` from the
+        // route params, so the URL safely surfaces the attacker's own
+        // content. At iter-N>0 the child is the previous iteration's
+        // verified predecessor. Mirrors the `unauthorized_hop` rejection
+        // shape at line ~1670. See task BACKEND-HAF-WALKER-WALL-CLOCK-BUDGET
+        // round-2 hold item 1.
+        return { author: childAuthor, permlink: childPermlink };
       }
 
       // Author-consent gate on the current hop: fetch the predecessor's
@@ -1963,8 +1988,9 @@ async function resolveVersionsFromHaf(
   author: string,
   permlink: string,
   memo?: HeadAuthorsMemo,
+  signal?: AbortSignal,
 ): Promise<PaperVersionEntry[]> {
-  const versions = await reconstructVersionsFromHaf(author, permlink, undefined, memo);
+  const versions = await reconstructVersionsFromHaf(author, permlink, undefined, memo, signal);
   return versions.map(({ body: _body, json_metadata: _meta, post_author: _pa, post_permlink: _pp, ...entry }) => entry);
 }
 
@@ -2091,6 +2117,14 @@ router.get('/:author/:permlink', async (req: Request, res: Response) => {
   // `continuation_chain_wall_clock_exceeded` and stop at the deepest
   // verified node / return the chain so far.
   //
+  // **Real worst-case per request = `hafWalkerWallClockMs` + `statement_timeout`.**
+  // The signal stops NEW queries from starting; in-flight `pool.query`
+  // continues until PostgreSQL's `statement_timeout` (30s) resolves it —
+  // pg v8.x does NOT support `AbortSignal` in `pool.query`. At the 3000ms
+  // default the per-request ceiling is ~33s rather than 3s, still 18-45×
+  // improvement over the pre-fix 10/25-min tail. See `config.ts`'s
+  // `hafWalkerWallClockMs` docblock for tuning guidance.
+  //
   // Knob: `config.hafWalkerWallClockMs` (`HAF_WALKER_WALL_CLOCK_MS` env).
   // Default 3000ms (typical HAF response 50-200ms × 10-15-query depth).
   const walkerAbort = new AbortController();
@@ -2131,6 +2165,9 @@ router.get('/:author/:permlink', async (req: Request, res: Response) => {
         return detail;
       }, 30 * 60_000, true);
 
+      if (walkerAbort.signal.aborted) {
+        return sendError(res, 503, 'SERVICE_UNAVAILABLE', 'HAF walker budget exceeded; please retry');
+      }
       if (cached) return sendOk(res, cached);
       return sendError(res, 404, 'NOT_FOUND', 'Version not found');
     }
@@ -2163,6 +2200,9 @@ router.get('/:author/:permlink', async (req: Request, res: Response) => {
       return null;
     }, 30 * 60_000, true);
 
+    if (walkerAbort.signal.aborted) {
+      return sendError(res, 503, 'SERVICE_UNAVAILABLE', 'HAF walker budget exceeded; please retry');
+    }
     if (cached) return sendOk(res, cached);
     sendError(res, 404, 'NOT_FOUND', 'Paper not found');
   } finally {
@@ -2174,7 +2214,7 @@ router.get('/:author/:permlink', async (req: Request, res: Response) => {
 // GET /api/papers/:author/:permlink/enrichment
 // ──────────────────────────────────────────────
 
-async function fetchEnrichmentFromHaf(author: string, permlink: string) {
+async function fetchEnrichmentFromHaf(author: string, permlink: string, signal?: AbortSignal) {
   const pool = getPool();
   if (!pool) return null;
 
@@ -2241,7 +2281,7 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string) {
         [author, permlink, config.appTag, accreditedArr, reviewAuthors, config.hiveBridgeAccount || ''],
       ),
       // Version history (needed for review outdated computation)
-      resolveVersionsFromHaf(author, permlink, headAuthorsMemo),
+      resolveVersionsFromHaf(author, permlink, headAuthorsMemo, signal),
       // Authorship claims
       (async () => {
         const cte = buildWith(1, activeAccreditationsCteBody, (idx) => authorshipClaimsCteBody(idx, { paperAuthor: author, paperPermlink: permlink }));
@@ -2414,6 +2454,15 @@ async function fetchEnrichmentFromHaf(author: string, permlink: string) {
       claimed_at: r.claimed_at as string,
     }));
 
+    // Cache-poisoning defense: if the wall-clock budget tripped during
+    // the embedded `resolveVersionsFromHaf` walker call, `versions` is
+    // empty (the version-history walker bails on abort) and `latestVersion`
+    // collapses to 1. The enrichment payload would still serialize but
+    // misreports review.outdated booleans against the truncated version
+    // chain. Return null so `hafCache.getOrSet` leaves the cache cold;
+    // the route surfaces 503 via its own `signal.aborted` check.
+    if (signal?.aborted) return null;
+
     return {
       net_votes,
       vote_strength,
@@ -2431,13 +2480,29 @@ router.get('/:author/:permlink/enrichment', async (req: Request, res: Response) 
   const author = req.params.author as string;
   const permlink = req.params.permlink as string;
 
-  const cacheKey = `paper-enrichment:${author}:${permlink}`;
-  const cached = await hafCache.getOrSet(cacheKey, () =>
-    fetchEnrichmentFromHaf(author, permlink),
-  5 * 60_000, true);
+  // Per-request wall-clock budget. The route reaches the walker amplifier
+  // via `fetchEnrichmentFromHaf → resolveVersionsFromHaf →
+  // reconstructVersionsFromHaf → resolveContinuationChain` (forward
+  // walker, depth cap 50). Without this wrapper, attacker-posted long
+  // chains under degraded HAF can starve worker threads for tens of
+  // minutes per request, replicating the DoS amplifier closed on the
+  // primary `GET /:author/:permlink` handler.
+  const walkerAbort = new AbortController();
+  const walkerBudget = setTimeout(() => walkerAbort.abort(), config.hafWalkerWallClockMs);
+  try {
+    const cacheKey = `paper-enrichment:${author}:${permlink}`;
+    const cached = await hafCache.getOrSet(cacheKey, () =>
+      fetchEnrichmentFromHaf(author, permlink, walkerAbort.signal),
+    5 * 60_000, true);
 
-  if (!cached) return sendError(res, 404, 'NOT_FOUND', 'Paper not found');
-  sendOk(res, cached);
+    if (walkerAbort.signal.aborted) {
+      return sendError(res, 503, 'SERVICE_UNAVAILABLE', 'HAF walker budget exceeded; please retry');
+    }
+    if (!cached) return sendError(res, 404, 'NOT_FOUND', 'Paper not found');
+    sendOk(res, cached);
+  } finally {
+    clearTimeout(walkerBudget);
+  }
 });
 
 // ──────────────────────────────────────────────
@@ -2504,8 +2569,22 @@ router.post('/:author/:permlink/retract', verifyHiveSignature, retractLimiter, a
   // handler. New /api/papers/:author/:permlink/<verb> routes that want canonical
   // resolution must call findCanonicalRoot themselves; do not pattern-match this
   // handler without checking.
-  // Check paper exists
-  const detail = await fetchPaperDetailFromHaf(author, permlink) as Record<string, unknown> | null;
+
+  // Per-request wall-clock budget. `fetchPaperDetailFromHaf` calls the
+  // forward walker (`resolveContinuationChain`); without this wrapper,
+  // attacker-posted long chains under degraded HAF would saturate the
+  // pool here too, identical threat model to the primary GET handler.
+  const walkerAbort = new AbortController();
+  const walkerBudget = setTimeout(() => walkerAbort.abort(), config.hafWalkerWallClockMs);
+  let detail: Record<string, unknown> | null;
+  try {
+    detail = await fetchPaperDetailFromHaf(author, permlink, undefined, walkerAbort.signal) as Record<string, unknown> | null;
+  } finally {
+    clearTimeout(walkerBudget);
+  }
+  if (walkerAbort.signal.aborted) {
+    return sendError(res, 503, 'SERVICE_UNAVAILABLE', 'HAF walker budget exceeded; please retry');
+  }
   if (!detail) {
     return sendError(res, 404, 'NOT_FOUND', 'Paper not found');
   }
@@ -2655,8 +2734,21 @@ router.get('/:author/:permlink/cite', async (req: Request, res: Response) => {
   // handler. New /api/papers/:author/:permlink/<verb> routes that want canonical
   // resolution must call findCanonicalRoot themselves; do not pattern-match this
   // handler without checking.
-  // Reuse paper detail fetch logic
-  const detail = await fetchPaperDetailFromHaf(author, permlink) as Record<string, unknown> | null;
+
+  // Per-request wall-clock budget — same DoS-amplifier closure as the
+  // primary GET handler and /retract. `fetchPaperDetailFromHaf` calls
+  // the forward walker via `resolveContinuationChain`.
+  const walkerAbort = new AbortController();
+  const walkerBudget = setTimeout(() => walkerAbort.abort(), config.hafWalkerWallClockMs);
+  let detail: Record<string, unknown> | null;
+  try {
+    detail = await fetchPaperDetailFromHaf(author, permlink, undefined, walkerAbort.signal) as Record<string, unknown> | null;
+  } finally {
+    clearTimeout(walkerBudget);
+  }
+  if (walkerAbort.signal.aborted) {
+    return sendError(res, 503, 'SERVICE_UNAVAILABLE', 'HAF walker budget exceeded; please retry');
+  }
   if (!detail) {
     return sendError(res, 404, 'NOT_FOUND', 'Paper not found');
   }

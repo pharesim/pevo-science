@@ -295,3 +295,111 @@ Item 1 (this task) and the sibling task `backend-canonical-walker-cycle-detectio
 ### Re-review signal
 
 When items 1-8 land in a single round-2 commit, `git mv` this file back to `tasks/review/`. The mv itself is the re-review signal. Round-2 architect review scopes `/ce-code-review` to the round-2 commit only. Item 1 is the highest-risk change semantically (the security fix on the abort fail-closed return); items 2-3-5 are mechanical-ish; items 4+7 are bundled (abort detection at route handler); items 6+8 are localized.
+
+## Backend re-review signal (2026-05-16, round-2 — working tree of this commit)
+
+All 8 hold items land in a single round-2 commit alongside this signal block + the `git mv` to `tasks/review/`.
+
+### Item 1 (P1 SECURITY) — backward walker iter-0 wall-clock abort fail-CLOSES to URL coords
+
+`backend/src/routes/papers.ts` `findCanonicalRoot`, iter-0 wall-clock abort site: changed `return { author: currentAuthor, permlink: currentPermlink }` to `return { author: childAuthor, permlink: childPermlink }`. At iter-0 `childAuthor/childPermlink === route params (author, permlink)` (set at `papers.ts:~1604-1605` from the route handler's own params), so the URL safely surfaces the attacker's own content rather than the attacker-controlled `pevo.continues` target. Mirrors the `unauthorized_hop` rejection's fail-CLOSED shape at `papers.ts:~1670`. Added an explanatory comment block at the return site referencing the security invariant.
+
+Layer-pinning canary in `backend/tests/routes/canonical-root-walker.test.ts` (+1, `'wall-clock abort fail-CLOSES to URL coords, not attacker-controlled pevo.continues target (P1 security)'`):
+
+- Spoof-START setup: `attacker/spoof-paper` with `pevo.continues = {alice, real-paper}` pointing at alice's real content. 80ms-per-query responder + 50ms budget.
+- Observes via SQL probe capture: after the walker's abort, the route handler immediately rewrites `(author, permlink)` from `canonicalRoot` and passes them to `fetchPaperDetailFromHaf`, which issues a `SELECT c.author, c.permlink, c.title, …` query. The captured params on that probe are the walker's return value lifted to the SQL layer.
+- Assertion: NONE of the detail-SELECT probes carry `params[0] === 'alice' && params[1] === 'real-paper'`. Pre-fix the SQL would land as `['alice', 'real-paper', …]`; post-fix the walker returns `['attacker', 'spoof-paper']` so any subsequent detail fetch stays on the attacker's own coords (or never runs because `fetchPaperDetailFromHaf` short-circuits on the aborted signal at its end and returns null).
+- Mutation-kill (verified): revert `papers.ts:~1654` from `childAuthor/childPermlink` back to `currentAuthor/currentPermlink` → captured paper-detail SQL params switch to `['alice', 'real-paper', …]` → canary fails RED on the predecessor-coord assertions.
+
+### Item 2 (P1 DoS) — `/cite`, `/retract`, `/enrichment` wrapped in AbortController
+
+Three sibling routes that pre-fix reached the forward walker (`resolveContinuationChain` via `fetchPaperDetailFromHaf` / `fetchEnrichmentFromHaf` / `resolveVersionsFromHaf`) without per-request wall-clock budgets, leaving the DoS amplifier open on the three sibling URLs. Wrapped each in the same `AbortController` + `setTimeout(config.hafWalkerWallClockMs)` + `try/finally clearTimeout` shape as the primary `GET /:author/:permlink` handler.
+
+Signature change per kieran-typescript KT-1: `resolveVersionsFromHaf(author, permlink, memo?, signal?)` now accepts `signal?: AbortSignal` and threads it into `reconstructVersionsFromHaf`. `fetchEnrichmentFromHaf(author, permlink, signal?)` accepts and threads `signal` into `resolveVersionsFromHaf` (the only walker-amplifier helper inside its `Promise.all`).
+
+Three abort canaries (one per route, per architect spec):
+
+- `tests/routes/continuation-author-gate.test.ts` (+2): `'/cite wraps walker in AbortController + surfaces 503 on wall-clock abort'` and `'/enrichment wraps walker in AbortController + surfaces 503 on wall-clock abort'`. Both use a shared `installSlowForwardResponder()` helper that backs the forward walker with 80ms responses. 50ms budget → forward walker's first chain-walk query consumes the budget → iteration-boundary `signal?.aborted` check fires → fetchPaperDetailFromHaf / fetchEnrichmentFromHaf return null at end (item 7) → route handler observes `walkerAbort.signal.aborted` → 503.
+- `tests/routes/retract.test.ts` (+1): `'/retract wraps walker in AbortController + surfaces 503 on wall-clock abort'`. Uses a fresh `(ABORT_USER, ABORT_PAPER)` pair to avoid the `paper-retract` rate limiter (max 5/hour byAccount at `papers.ts:353`) that prior tests in the file would exhaust on `PAPER_AUTHOR='alice'`. Assertion includes `expect(broadcastJsonMock).not.toHaveBeenCalled()` — the abort path returns BEFORE the authorization check and broadcast.
+
+### Item 3 (P2 doc fix) — real worst-case = budget + statement_timeout
+
+pg v8.20.0 does NOT support `AbortSignal` in `pool.query` (verified empirically against `node_modules/pg/lib/` — zero hits for `signal`/`abort`/`AbortSignal`). The signal stops NEW queries from starting; in-flight queries continue until PostgreSQL's `statement_timeout` (30s) resolves them. Real worst-case per request = `hafWalkerWallClockMs + statement_timeout`, not the configured budget alone. Still 18-45× improvement over the pre-fix 10/25-min tail.
+
+Updated 3 documentation surfaces:
+
+- `backend/src/config.ts` `hafWalkerWallClockMs` knob docblock: added the "Real worst-case = budget + statement_timeout" explanation block referencing the pg v8.x AbortSignal-unsupported reality.
+- `.env.example` `HAF_WALKER_WALL_CLOCK_MS` operator-facing block: same explanation, framed for ops tuning intuition ("tuning DOWN tightens the new-query gate but the in-flight last-query still has the 30s ceiling; the bound is the SUM").
+- `backend/src/routes/papers.ts` primary handler AbortController docblock (~line 2092): "Real worst-case per request = `hafWalkerWallClockMs` + `statement_timeout`" block referencing the config docblock.
+
+### Item 4 (P2 reliability) — 503 SERVICE_UNAVAILABLE on walker abort
+
+Pre-fix the route handler returned `404 NOT_FOUND` (or `200 OK` with stale cached data) on walker abort, indistinguishable from "paper not found" or "cache hit" in HTTP-status-only monitoring. Worse: a forward walker abort mid-canonical-root resolution could assemble a structurally valid but semantically WRONG detail object and return 200 OK with stale `canonical_author/canonical_permlink` and missing `versions[]` entries.
+
+Added `if (walkerAbort.signal.aborted)` checks after each cache lookup in the 4 affected route handlers:
+
+- Primary `GET /:author/:permlink` — both the `?version=N` branch (`papers.ts:~2160`) and the unversioned branch (`papers.ts:~2196`) check `walkerAbort.signal.aborted` after `hafCache.getOrSet` returns. On abort: `return sendError(res, 503, 'SERVICE_UNAVAILABLE', 'HAF walker budget exceeded; please retry')`.
+- `/retract`, `/cite`, `/enrichment` — same pattern, scoped to the AbortController + try/finally added per item 2.
+
+Bundles with item 7's `fetchPaperDetailFromHaf` / `fetchEnrichmentFromHaf` null-return — together they ensure abort surfaces as a distinct HTTP signal AND the cache stays cold so the next request gets fresh data when HAF recovers.
+
+### Item 5 (P2 kieran-typescript) — NaN guard on env parse
+
+`backend/src/config.ts`: changed
+```ts
+hafWalkerWallClockMs: parseInt(process.env.HAF_WALKER_WALL_CLOCK_MS || '3000', 10),
+```
+to
+```ts
+hafWalkerWallClockMs: Math.max(1, parseInt(process.env.HAF_WALKER_WALL_CLOCK_MS || '', 10) || 3000),
+```
+
+Pre-fix: a non-numeric env (`disabled`, `3000ms`) is truthy → `||` fallback DOESN'T fire → `parseInt('disabled', 10) = NaN` → `setTimeout(fn, NaN)` coerces to `setTimeout(fn, 0)` per ECMAScript spec → fires on the next tick → every paper-detail request emits wall-clock-exceeded and returns 503.
+
+Post-fix: `parseInt(env || '', 10)` produces NaN on bad input → `NaN || 3000` falls through to 3000 → `Math.max(1, …)` floors at 1ms to also prevent literal `HAF_WALKER_WALL_CLOCK_MS=0` from producing immediate-fire. Added an explanatory comment block at the knob declaration walking through the `||`-ordering subtlety.
+
+### Item 6 (P3 reliability) — budgetMs in wall-clock event payloads
+
+Added `budgetMs: config.hafWalkerWallClockMs` to 4 `logger.warn(…)` calls:
+
+- `findCanonicalRoot` pre-initial-probe abort (`papers.ts:~1486`).
+- `findCanonicalRoot` iteration-boundary abort (`papers.ts:~1640`).
+- `resolveContinuationChain` pre-loop abort (`papers.ts:~1199`).
+- `resolveContinuationChain` iteration-boundary abort (`papers.ts:~1259`).
+
+Operators can now compute the `elapsedMs / budgetMs` ratio to distinguish "HAF was actually slow" (`elapsedMs ≈ budgetMs`) from "budget was misconfigured too low" (`elapsedMs << budgetMs`).
+
+### Item 7 (P3 reliability) — cache bypass on abort (bundled with item 4)
+
+Added `if (signal?.aborted) return null` at the end of two fetchers, both BEFORE their `return` statement:
+
+- `fetchPaperDetailFromHaf` (`papers.ts:~993`): after the optional citation-count Promise.all branch returns. Comment block explains the cache-poisoning defense: a partial chain from an aborted walker produces wrong `head_author`/`head_permlink`/`versions[]`; returning the detail would let `hafCache` cache the bad shape for 30 min.
+- `fetchEnrichmentFromHaf` (`papers.ts:~2452`): after the `authorship_claims` mapping. Same shape — partial versions from aborted `resolveVersionsFromHaf` cause misreported `review.outdated` booleans against a truncated version chain.
+
+`hafCache.getOrSet` already skips caching when the inner function returns `null` (`cache.ts:73`), so returning null IS the cache-bypass mechanism. Route handler then surfaces 503 via item 4's `signal.aborted` check.
+
+### Item 8 (P3 brittleness warning) — comment block above `isInitialBackwardProbe` regex
+
+`backend/tests/routes/canonical-root-walker.test.ts` `isInitialBackwardProbe` (~line 127): added a `BRITTLENESS WARNING` block mirroring the canary-task convention. Spells out the regex matches a column-list prefix (`SELECT c.author, c.json_metadata,` with trailing comma), and any future SQL refactor that reorders, inserts a 3rd column, drops the trailing comma, or normalizes whitespace differently silently breaks the discriminator → false-GREEN canaries. Notes that failing red after such a refactor does NOT indicate a regressed security property — the discriminator needs updating. Closes the brittleness asymmetry with the `'type'`-discriminator's WARNING block elsewhere in the file.
+
+### Test changes summary
+
+Test files touched:
+
+- `backend/tests/routes/canonical-root-walker.test.ts` (+1 canary, +1 brittleness comment block, +1 status assertion update on the existing slow-HAF wall-clock canary 200→503).
+- `backend/tests/routes/continuation-author-gate.test.ts` (+2 canaries via `installSlowForwardResponder` helper, +1 status assertion update on existing forward-walker wall-clock canary 200→503).
+- `backend/tests/routes/retract.test.ts` (+1 canary in a new describe block).
+- `backend/tests/routes/papers.test.ts` (+1 beforeAll/afterAll pair bumping `hafWalkerWallClockMs` to 60_000ms for the file). Necessary because the integration-shape tests hit real testnet HAF whose round-trip latency reliably exceeds the production-default 3000ms budget; with item 4's 503-on-abort change, the budget tripping silently is no longer acceptable. The pre-fix wall-clock-tripped tests returned 200 with possibly-stale cached data; post-fix they return 503 unless the budget is generous enough to absorb the testnet's HAF tail.
+
+### Verification
+
+- `npx tsc --noEmit` from `backend/`: clean (no output).
+- `npm run lint` from `backend/`: only the two pre-existing `seed-phrase.ts` `@typescript-eslint/no-explicit-any` warnings (unrelated).
+- `npx vitest run` on the 7 most-affected test files (`canonical-root-walker`, `continuation-author-gate`, `retract`, `papers`, `paper-detail-v3`, `cite`, `papers-enrichment-parity-gate`) with Redis + Postgres reachable via Docker IPs per CLAUDE.md "Running Tests": **99/100 pass, 1 skipped, 1 unrelated pre-existing real-HAF flake** on `papers.test.ts > 'every returned paper is accredited-authored or bridge-account-authored'` (the test depends on which papers are in the top 100 returned by the live testnet HAF; `jesusalejos/...` appears unaccredited in real HAF state and flickers in/out of the result set; verified to pass on the baseline pre-my-changes via `git stash` round-trip).
+
+### Notes for architect
+
+- The `/retract` canary uses a fresh `(ABORT_USER, ABORT_PAPER)` pair rather than the file's standard `PAPER_AUTHOR/PAPER_PERMLINK` to dodge the `paper-retract` rate limiter (max 5/hour byAccount). The mocked `hafQueryMock` doesn't filter by params, so any author/permlink works to seed the response shape.
+- `papers.test.ts`'s `beforeAll` budget override (60_000ms) is the right shape for this test file because it exercises real testnet HAF whose tail is slower than the production-default 3000ms. Other tests in the suite either use mocked pools (no real HAF) or set their own per-test budget (the wall-clock canaries themselves). No global default change was made — the architect's task spec sets 3000ms intentionally and operators tune via env.
+- The pg v8.x AbortSignal-unsupported finding (item 3) is a documentation fix only; the implementation correctly falls back to "manual abort check between queries" per the original task spec. No production code change at the helper layer beyond the docblock updates.
+- All 4 wall-clock event payloads now carry `budgetMs`. None of the existing canaries assert exhaustive event-payload shape (just specific fields), so no test breakage from the additive field.

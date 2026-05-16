@@ -195,3 +195,78 @@ describe('POST /api/papers/:author/:permlink/retract — BE-ORCID-BROADCAST-ABOR
     expect(res.body.error.details).toEqual({ retriable: false });
   });
 });
+
+// ──────────────────────────────────────────────
+// BACKEND-HAF-WALKER-WALL-CLOCK-BUDGET round-2 hold item 2 — sibling-route
+// DoS-amplifier closure. /retract reaches the forward walker via
+// `fetchPaperDetailFromHaf → resolveContinuationChain`; pre-fix this route
+// was not wrapped in an AbortController, so attacker-posted long chains
+// under degraded HAF could starve worker threads here too. The canary
+// pins the wrapper presence + the route's 503 surface on abort.
+//
+// Mutation-kill: drop the AbortController wrapper (revert to bare
+// `fetchPaperDetailFromHaf(author, permlink)` without signal) → wall-clock
+// abort never fires → fetchPaperDetailFromHaf returns the mocked paper
+// row → handler reaches the authorization check → 403 (not paper author)
+// or 404, not 503. Status assertion fails red.
+// ──────────────────────────────────────────────
+
+describe('POST /api/papers/:author/:permlink/retract — wall-clock budget (round-2 item 2)', () => {
+  // Fresh (account, paper) pair to avoid the `paper-retract` rate limiter
+  // (max 5/hour byAccount, declared at papers.ts:353) which is exhausted
+  // by prior tests in this file using PAPER_AUTHOR='alice'. Without a
+  // fresh account the canary's request gets 429'd before reaching the
+  // walker abort path.
+  const ABORT_USER = 'abort-canary-user';
+  const ABORT_PAPER = 'abort-canary-paper';
+
+  beforeEach(() => {
+    broadcastJsonMock.mockReset();
+    broadcastJsonMock.mockResolvedValue({ id: 'mock-retract-tx' });
+  });
+
+  it('/retract wraps walker in AbortController + surfaces 503 on wall-clock abort', async () => {
+    // Slow EVERY hafQueryMock call to ~80ms. Budget is 50ms below, so
+    // the forward walker's first chain-walk query consumes the budget;
+    // the next iteration's signal.aborted check emits the wall-clock
+    // event and fetchPaperDetailFromHaf returns null at the end (item
+    // 7's cache-bypass return), then the route handler observes
+    // walkerAbort.signal.aborted → 503.
+    hafQueryMock.mockReset().mockImplementation(async (sql: string) => {
+      await new Promise((r) => setTimeout(r, 80));
+      if (sql.includes('parent_author') && sql.includes('parent_permlink') && sql.includes('json_metadata') && !sql.includes("'continues'")) {
+        return {
+          rows: [{
+            author: ABORT_USER,
+            permlink: ABORT_PAPER,
+            title: 'Test Paper',
+            body: 'Abstract',
+            json_metadata: {
+              app: `${config.appTag}/0.1`,
+              [config.appTag]: { type: 'paper', authors: [] },
+            },
+            created: '2026-04-22T00:00:00Z',
+            last_edited: null,
+          }],
+        };
+      }
+      return { rows: [] };
+    });
+
+    const originalBudget = config.hafWalkerWallClockMs;
+    (config as { hafWalkerWallClockMs: number }).hafWalkerWallClockMs = 50;
+    try {
+      const res = await request(app)
+        .post(`/api/papers/${ABORT_USER}/${ABORT_PAPER}/retract`)
+        .set('X-Hive-Username', ABORT_USER)
+        .send({ reason: 'Degraded HAF abort canary' });
+
+      expect(res.status).toBe(503);
+      // No broadcast happens on abort — the abort path returns BEFORE
+      // the authorization check + broadcast.
+      expect(broadcastJsonMock).not.toHaveBeenCalled();
+    } finally {
+      (config as { hafWalkerWallClockMs: number }).hafWalkerWallClockMs = originalBudget;
+    }
+  });
+});
