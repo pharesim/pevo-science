@@ -44,6 +44,7 @@ import Alpine from 'alpinejs';
 import { initOrcidCallbackPage } from '../../src/pages/orcid-callback.js';
 
 let localStorageData;
+let sessionStorageData;
 
 function createComponent() {
   initOrcidCallbackPage();
@@ -57,10 +58,16 @@ describe('orcidCallbackPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorageData = {};
+    sessionStorageData = {};
     vi.stubGlobal('localStorage', {
       getItem: vi.fn((key) => localStorageData[key] ?? null),
       setItem: vi.fn((key, val) => { localStorageData[key] = val; }),
       removeItem: vi.fn((key) => { delete localStorageData[key]; }),
+    });
+    vi.stubGlobal('sessionStorage', {
+      getItem: vi.fn((key) => sessionStorageData[key] ?? null),
+      setItem: vi.fn((key, val) => { sessionStorageData[key] = val; }),
+      removeItem: vi.fn((key) => { delete sessionStorageData[key]; }),
     });
     mockRouterStore.query = { code: 'abc123', state: 'xyz' };
   });
@@ -826,6 +833,89 @@ describe('orcidCallbackPage', () => {
       expect(comp.errorAction).not.toBe('settings');
       expect(warnSpy).toHaveBeenCalled();
       warnSpy.mockRestore();
+    });
+
+    // fresh_auth mode: target-bound (consent_op-kind) ORCID-mediated proof
+    // issuance for self-custody / password-mechanism users who use ORCID as
+    // the fresh-auth factor for `author_accept` / `author_resign` consent
+    // ops. Callback handler must cache the proof against the
+    // (action, root_author, root_permlink) triple so the eventual broadcast
+    // consumer can look it up by matching target.
+    it('handles fresh_auth mode: caches target-bound proof, navigates return path, fires success toast', async () => {
+      sessionStorageData['pevo_fresh_auth_return_to'] = '/papers/alice/some-paper';
+      const comp = createComponent();
+      mockCompleteOrcid.mockResolvedValue({
+        data: {
+          mode: 'fresh_auth',
+          fresh_auth_proof: 'tok-target-bound',
+          expires_at: '2099-01-01T00:00:00.000Z',
+          action: 'author_accept',
+          root_author: 'alice',
+          root_permlink: 'some-paper',
+          mechanism: 'orcid',
+        },
+      });
+
+      await comp._verify('code', 'state', 'fresh_auth');
+
+      // Proof cached under the consent-op slot with the full target binding.
+      const cached = JSON.parse(sessionStorageData['pevo_fresh_auth_consent_op_proof']);
+      expect(cached.token).toBe('tok-target-bound');
+      expect(cached.expiresAt).toBe('2099-01-01T00:00:00.000Z');
+      expect(cached.action).toBe('author_accept');
+      expect(cached.rootAuthor).toBe('alice');
+      expect(cached.rootPermlink).toBe('some-paper');
+      // Return path is consumed (cleared) so a subsequent flow can't reuse it.
+      expect(sessionStorageData['pevo_fresh_auth_return_to']).toBeUndefined();
+      // Navigated back to the page that initiated the flow.
+      expect(mockRouterStore.navigate).toHaveBeenCalledWith('/papers/alice/some-paper');
+      // Same success-toast key as session_auth (per task acceptance §5: no new
+      // i18n key — mirror the existing reauth pattern).
+      expect(mockToastStore.show).toHaveBeenCalledWith('orcid.reauthSuccess', 'success');
+    });
+
+    it('fresh_auth without a stored return path falls back to /', async () => {
+      const comp = createComponent();
+      mockCompleteOrcid.mockResolvedValue({
+        data: {
+          mode: 'fresh_auth',
+          fresh_auth_proof: 'tok',
+          expires_at: '2099-01-01T00:00:00.000Z',
+          action: 'author_resign',
+          root_author: 'bob',
+          root_permlink: 'paper-x',
+        },
+      });
+
+      await comp._verify('code', 'state', 'fresh_auth');
+
+      expect(mockRouterStore.navigate).toHaveBeenCalledWith('/');
+    });
+
+    it('_handleFreshAuth direct-call post-teardown is a no-op (handler self-guards)', () => {
+      const comp = createComponent();
+      comp.destroy();
+      comp._handleFreshAuth({
+        fresh_auth_proof: 'tok',
+        expires_at: '2099-01-01T00:00:00.000Z',
+        action: 'author_accept',
+        root_author: 'alice',
+        root_permlink: 'paper',
+      });
+
+      // No cache write, no navigation, no toast.
+      expect(sessionStorageData['pevo_fresh_auth_consent_op_proof']).toBeUndefined();
+      expect(mockRouterStore.navigate).not.toHaveBeenCalled();
+      expect(mockToastStore.show).not.toHaveBeenCalled();
+    });
+
+    it('init sets backPath from getReturnPath for fresh_auth mode', () => {
+      sessionStorageData['pevo_fresh_auth_return_to'] = '/papers/alice/some-paper';
+      localStorageData['pevo_orcid_mode'] = 'fresh_auth';
+      const comp = createComponent();
+      mockCompleteOrcid.mockResolvedValue({ data: { mode: 'fresh_auth' } });
+      comp.init();
+      expect(comp.backPath).toBe('/papers/alice/some-paper');
     });
 
     it('503 from completeOrcid leaves pevo_orcid_mode in localStorage so a refresh-retry can re-enter the correct flow', async () => {

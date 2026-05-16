@@ -11,6 +11,17 @@ import { broadcastOps } from '../signer.js';
 // proof is gone — re-mint on retry.
 const PROOF_KEY = 'pevo_fresh_auth_session_proof';
 
+// In-tab cache of a consent_op-kind fresh_auth_proof. Target-bound to the
+// triple `(action, root_author, root_permlink)`; the broadcast consumer
+// MUST match all three to consume. Single-slot by design: each ORCID
+// fresh_auth round-trip mints state for one target, so a second flow
+// overwrites the cached entry (matches the existing pevo_orcid_mode
+// overwrite pattern). The token itself is a single-use bearer bound to the
+// JWT subject with the same 5-minute TTL as session-kind proofs; backend
+// invariant is identical (consumed atomically on broadcast attempt, gone
+// post-attempt whether success or failure).
+const CONSENT_OP_PROOF_KEY = 'pevo_fresh_auth_consent_op_proof';
+
 // Stashed pre-redirect context so the callback handler can navigate the
 // user back to the page they initiated the action on. Cleared by the
 // callback handler after the proof lands.
@@ -50,6 +61,59 @@ export function cacheSessionProof(token, expiresAt) {
 export function clearCachedSessionProof() {
   try {
     sessionStorage.removeItem(PROOF_KEY);
+  } catch {
+    /* noop */
+  }
+}
+
+// Cache a consent_op-kind proof along with its `(action, root_author,
+// root_permlink)` binding. Returns void; failures (private mode, quota) are
+// swallowed and the consumer simply won't find a cache hit on lookup — the
+// freshly-minted token returned by the mint flow can still be passed to the
+// broadcast in-memory.
+export function cacheConsentOpProof(token, expiresAt, action, rootAuthor, rootPermlink) {
+  try {
+    sessionStorage.setItem(
+      CONSENT_OP_PROOF_KEY,
+      JSON.stringify({ token, expiresAt, action, rootAuthor, rootPermlink }),
+    );
+  } catch {
+    /* same swallow as cacheSessionProof */
+  }
+}
+
+// Look up a cached consent_op-kind proof. Strict match on all three target
+// fields — any mismatch returns null so the consumer mints fresh. Also
+// returns null and clears the slot on TTL expiry.
+export function getCachedConsentOpProof(action, rootAuthor, rootPermlink) {
+  try {
+    const raw = sessionStorage.getItem(CONSENT_OP_PROOF_KEY);
+    if (!raw) return null;
+    const entry = JSON.parse(raw);
+    if (!entry || !entry.token || !entry.expiresAt) {
+      sessionStorage.removeItem(CONSENT_OP_PROOF_KEY);
+      return null;
+    }
+    if (Date.now() >= new Date(entry.expiresAt).getTime()) {
+      sessionStorage.removeItem(CONSENT_OP_PROOF_KEY);
+      return null;
+    }
+    if (
+      entry.action !== action ||
+      entry.rootAuthor !== rootAuthor ||
+      entry.rootPermlink !== rootPermlink
+    ) {
+      return null;
+    }
+    return entry.token;
+  } catch {
+    return null;
+  }
+}
+
+export function clearCachedConsentOpProof() {
+  try {
+    sessionStorage.removeItem(CONSENT_OP_PROOF_KEY);
   } catch {
     /* noop */
   }

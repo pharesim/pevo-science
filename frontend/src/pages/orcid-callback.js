@@ -1,7 +1,12 @@
 import Alpine from 'alpinejs';
 import { completeOrcid } from '../api.js';
 import { createTimerGuard } from '../lib/timer-guard.js';
-import { cacheSessionProof, getReturnPath, clearReturnPath } from '../lib/fresh-auth.js';
+import {
+  cacheSessionProof,
+  cacheConsentOpProof,
+  getReturnPath,
+  clearReturnPath,
+} from '../lib/fresh-auth.js';
 
 const template = `
       <div x-data="orcidCallbackPage" class="container-narrow py-8">
@@ -97,7 +102,7 @@ export function initOrcidCallbackPage() {
         this.backPath = '/accreditation';
       } else if (mode === 'link') {
         this.backPath = '/settings';
-      } else if (mode === 'session_auth') {
+      } else if (mode === 'session_auth' || mode === 'fresh_auth') {
         this.backPath = getReturnPath() || '/';
       }
 
@@ -215,6 +220,9 @@ export function initOrcidCallbackPage() {
         case 'link':
           this._handleLink(data);
           break;
+        case 'fresh_auth':
+          this._handleFreshAuth(data);
+          break;
         case 'session_auth':
           this._handleSessionAuth(data);
           break;
@@ -285,6 +293,26 @@ export function initOrcidCallbackPage() {
       // Signal settings page to show success
       localStorage.setItem('pevo_orcid_link_complete', '1');
       this.navigate('/settings');
+    },
+
+    _handleFreshAuth(data) {
+      if (!this._mounted) return;
+      // Target-bound consent-op proof: cache against the triple the backend
+      // bound at /start (action + root_author + root_permlink) so the eventual
+      // broadcast consumer can look it up by matching target. Single-slot
+      // cache; the consumer side (ui-multi-author-consent-affordances) calls
+      // getCachedConsentOpProof(action, rootAuthor, rootPermlink) to retrieve.
+      cacheConsentOpProof(
+        data.fresh_auth_proof,
+        data.expires_at,
+        data.action,
+        data.root_author,
+        data.root_permlink,
+      );
+      const returnPath = getReturnPath() || '/';
+      clearReturnPath();
+      Alpine.store('toast')?.show(this.$t('orcid.reauthSuccess'), 'success');
+      this.navigate(returnPath);
     },
 
     _handleSessionAuth(data) {

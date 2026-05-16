@@ -93,3 +93,39 @@ If a new toast string differs from `orcid.reauthSuccess` (the existing session_a
 - `backend/src/routes/orcid.ts:1148` — the backend issuance call site (read for the response shape).
 - `agents/docs/tasks/blocked/ui-multi-author-consent-affordances.md` — the future consumer; coordinate cache shape.
 - `agents/docs/ARCHITECTURE.md` § 6.4 — re-auth contract and the role of `mode: 'fresh_auth'` in consent-op flows.
+
+## UI implementation signal (2026-05-16, working tree)
+
+Landed the dispatch handler and cache primitives so `mode: 'fresh_auth'` callbacks no longer fall into the default error branch.
+
+**Cache shape decision: Option (b) — new `cacheConsentOpProof` helpers.** Rationale: the existing `cacheSessionProof`/`getCachedSessionProof`/`clearCachedSessionProof` triad is explicitly session-kind specialized (storage key `pevo_fresh_auth_session_proof`, comments name "session-kind", mint helper `mintNonConsentProof`). The session/consent_op kind distinction is first-class on the backend (different broadcast surfaces, different ban rules, different mismatch error reasons); mirroring it on the frontend keeps the helper boundary clean and avoids overloading the session helpers with optional target fields they don't otherwise need.
+
+**Cache shape — for `ui-multi-author-consent-affordances` consumer side:**
+
+- Storage key: `pevo_fresh_auth_consent_op_proof` (sessionStorage, single slot)
+- Cached entry shape: `{ token, expiresAt, action, rootAuthor, rootPermlink }`
+- Lookup API: `getCachedConsentOpProof(action, rootAuthor, rootPermlink)` — strict match on all three target fields plus TTL check; returns `null` on miss/mismatch/expiry
+- Write API: `cacheConsentOpProof(token, expiresAt, action, rootAuthor, rootPermlink)`
+- Clear API: `clearCachedConsentOpProof()`
+
+The consumer-side broadcast helper (consent-op equivalent of `broadcastWithFreshAuth`) should call `getCachedConsentOpProof` keyed on the consent op's `(action, root_author, root_permlink)` triple. On miss it mints fresh via a `POST /api/orcid/start` call with `mode: 'fresh_auth'` plus the target triple; the `_handleFreshAuth` callback below seeds the cache when the OAuth round-trip returns. Single-slot is sufficient: each `/start` call mints state for one target, and a second flow legitimately overwrites the prior cached entry (matching the existing `pevo_orcid_mode` localStorage overwrite pattern).
+
+**Deliverables landed:**
+
+- `frontend/src/lib/fresh-auth.js`: added `CONSENT_OP_PROOF_KEY` constant + `cacheConsentOpProof` / `getCachedConsentOpProof` / `clearCachedConsentOpProof` exports.
+- `frontend/src/pages/orcid-callback.js`: added `_handleFreshAuth(data)` handler (mirrors `_handleSessionAuth` pattern: self-guard on `_mounted`, cache target-bound proof, consume `getReturnPath()` + `clearReturnPath()`, fire `orcid.reauthSuccess` toast, navigate). Added `case 'fresh_auth':` between `link` and `session_auth` in the dispatch switch. Extended `init()`'s backPath branch to cover `mode === 'fresh_auth'` alongside `session_auth` (both consume the shared return-path slot).
+
+**i18n:** No new keys added. The success toast reuses `orcid.reauthSuccess` — the per-task acceptance §5 escape hatch ("If a new toast string differs from `orcid.reauthSuccess`... add the new key"). For target-bound vs target-less re-auth, the same "Re-authenticated. Please retry your action." copy applies — the consumer-side broadcast already handles the retry.
+
+**Tests added (`frontend/tests/unit/pages-orcid-callback.test.js`):**
+
+- `handles fresh_auth mode: caches target-bound proof, navigates return path, fires success toast` — full happy path through `_verify`, asserts sessionStorage payload shape (including all three target fields), return-path consumption, navigation, and toast.
+- `fresh_auth without a stored return path falls back to /` — default-path fallback.
+- `_handleFreshAuth direct-call post-teardown is a no-op (handler self-guards)` — mirrors the existing self-guard regression coverage for sibling handlers.
+- `init sets backPath from getReturnPath for fresh_auth mode` — init() backPath branch coverage.
+
+Added a `sessionStorage` global stub to the test file's `beforeEach` (the existing test fixture only stubbed `localStorage`, but the new tests need session storage for the cache + return-path slots). Stub is non-disruptive — none of the existing 46 tests touch sessionStorage, and all 50 tests (46 + 4 new) pass.
+
+Per task acceptance §4 "May not be implementable until the SPA caller side exists; in that case, add at minimum a unit test." — only unit tests added; the E2E test waits for the consumer-side caller (`ui-multi-author-consent-affordances`) to land.
+
+**Out of scope as documented:** no backend changes (the `mode: 'fresh_auth'` issuance path at `backend/src/routes/orcid.ts:1144` already works); no consent-op broadcast helper (consumer side); no consent-op UI itself.
