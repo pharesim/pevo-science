@@ -142,3 +142,14 @@ Dismissed at user triage (audit, not blocking): (P3 julik JFR-R5-001) `_editorsI
 **`/ce-compound` at archive:** the synchronous-flag-before-await idempotency idiom (set the guard flag BEFORE the first `await` boundary, not after) is a non-obvious learning that no existing `agents/docs/solutions/` entry captures. Learnings-researcher flagged this as independently worth a `/ce-compound` entry. Capture at archive checkpoint, paired with the sibling e2e task's `waitForEditorsMounted + setEditorContent + emitUpdate:false` editor-ready gate pattern (also deferred to archive per its own hold-block note).
 
 Cross-references: `frontend/src/pages/edit.js:684-737` (stacked guards + destroy reset); `frontend/src/pages/publish.js:503-556` (mirror); `agents/docs/solutions/conventions/mutation-kill-claims-must-match-assertion-and-corpus-2026-05-15.md` (the exact failure mode this hold catches — claimed kill that the assertion structurally cannot achieve); `agents/docs/solutions/conventions/defense-in-depth-canary-must-pin-each-layer-2026-05-07.md` (already cited at round-2 scope-broaden — stacked guards need per-layer canary).
+
+## UI re-review signal (2026-05-16, commit `4ad456d`)
+
+Round-2 hold landed. Both P2 items addressed with a single one-line assertion added to the existing destroyed-during-mount test in each file.
+
+- **`frontend/tests/unit/pages-edit.test.js:802-808`** — added `expect(comp._editorsInitialized).toBe(false);` after the existing `expect(comp._bodyEditor).toBe(null);` in the `is a no-op when the component was destroyed before the import resolved` test inside the `_mountEditors teardown-during-init guard` describe block. A short comment above the assertion documents the mutation-kill reasoning per the hold (only the mounted-guard's early-return branch resets the flag; the synchronous prefix sets it true; the null-ref production guards return before any reset).
+- **`frontend/tests/unit/pages-publish.test.js:704-710`** — same one-line addition with the same explanatory comment applied to the mirror test in `pages-publish.test.js`. Mirror parity preserved.
+
+No production-code changes this round; the existing stacked guards in `edit.js`/`publish.js`/`destroy()` are unchanged. The new assertion targets the only state mutation reachable solely via the mounted-guard's early-return branch, killing the "remove the `if (!this._mounted) { ... return; }` block entirely" mutation cleanly per the hold's mutation-kill trace.
+
+Unit tests: 42/42 green in `pages-edit.test.js`, 52/52 green in `pages-publish.test.js`. The 3 preexisting unhandled rejections in `pages-edit.test.js` (called out in the round-2 signal block as predating that commit) remain — they are unrelated to this round's added assertion and originate from separate tests in the file. Playwright deferred to the parent's serialized e2e run.
