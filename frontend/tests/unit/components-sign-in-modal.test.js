@@ -113,7 +113,14 @@ describe('signInModal', () => {
       comp.passwordValue = 'pass123';
       await comp.handleEmailLogin();
       expect(mockLoginWithPassword).toHaveBeenCalledWith('test@example.com', 'pass123');
-      expect(mockAuthStore.loginFromResponse).toHaveBeenCalledWith({ token: 'abc' });
+      // is_accredited / accreditation explicit overrides prevent cross-user
+      // re-login from leaking stale accreditation state per the loginFromResponse
+      // preserve-on-undefined contract.
+      expect(mockAuthStore.loginFromResponse).toHaveBeenCalledWith({
+        token: 'abc',
+        is_accredited: false,
+        accreditation: null,
+      });
       expect(comp.open).toBe(false);
     });
 

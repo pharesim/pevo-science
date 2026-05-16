@@ -76,7 +76,13 @@ export function initSignInModal() {
         const res = await loginWithPassword(this.emailValue.trim(), this.passwordValue);
         if (!this._mounted) return;
         const auth = Alpine.store('auth');
-        auth.loginFromResponse(res.data);
+        // Explicit overrides: the password-login response carries
+        // {token, expires_at, username, custody} but NOT is_accredited /
+        // accreditation. The helper preserves-on-undefined, so without
+        // these overrides a cross-user re-login on a shared device leaks
+        // user-A's accreditation badge / publish-write affordances into
+        // user-B's session until the polling round-trip arrives.
+        auth.loginFromResponse({ ...res.data, is_accredited: false, accreditation: null });
         this.open = false;
         this.mode = 'choose';
         // Resolve the prompt promise with null so the Keychain connect() path doesn't proceed

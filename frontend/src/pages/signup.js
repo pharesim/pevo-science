@@ -334,7 +334,12 @@ export function initSignupPage() {
         const res = await loginWithPassword(this.email.trim(), this.password);
         if (!this._mounted) return;
         const auth = Alpine.store('auth');
-        auth.loginFromResponse(res.data);
+        // Explicit overrides: the password-login response carries
+        // {token, expires_at, username, custody} but NOT is_accredited /
+        // accreditation. The helper preserves-on-undefined, so without
+        // these overrides a cross-user re-login leaks user-A's accreditation
+        // into user-B's session until the polling round-trip arrives.
+        auth.loginFromResponse({ ...res.data, is_accredited: false, accreditation: null });
         Alpine.store('router').navigate('/papers');
       } catch (loginErr) {
         if (!this._mounted) return;

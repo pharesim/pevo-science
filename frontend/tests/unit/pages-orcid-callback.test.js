@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { mockLoginFromResponse } from './fixtures/mock-auth.js';
 
 const mockCompleteOrcid = vi.fn();
 
@@ -6,26 +7,11 @@ vi.mock('../../src/api.js', () => ({
   completeOrcid: (...args) => mockCompleteOrcid(...args),
 }));
 
-// Mirror the real `loginFromResponse` helper from src/auth.js so call-site
-// tests can keep asserting post-call state on mockAuthStore. The
-// preserve-on-undefined branch is critical here: the ORCID login site
-// passes explicit `is_accredited: false` and `accreditation: null`
-// overrides, which the helper lands on the store BEFORE _saveSession
-// fires (locks in the "ORCID login clears stale accreditation state"
-// invariant the existing test asserts).
-function mockLoginFromResponse(data) {
-  if (data.token && data.expires_at) {
-    this.token = data.token;
-    this.expiresAt = data.expires_at;
-  }
-  if (data.username !== undefined) this.username = data.username;
-  if (data.is_accredited !== undefined) this.isAccredited = data.is_accredited;
-  if (data.accreditation !== undefined) this.accreditation = data.accreditation;
-  if (data.custody !== undefined) this.custody = data.custody;
-  this.isConnected = true;
-  this._saveSession();
-  this._startAccreditationPolling();
-}
+// The shared mockLoginFromResponse fixture's preserve-on-undefined branch
+// is critical for this site: the ORCID login passes explicit
+// `is_accredited: false` and `accreditation: null` overrides, which the
+// helper lands on the store BEFORE _saveSession fires (locks in the
+// "ORCID login clears stale accreditation state" invariant asserted below).
 const mockAuthStore = {
   isConnected: true,
   token: '',

@@ -221,7 +221,14 @@ describe('signupPage', () => {
       await comp.handleSubmit();
 
       expect(mockLoginWithPassword).toHaveBeenCalledWith('x@x.com', 'Abcdefgh1x');
-      expect(mockAuthStore.loginFromResponse).toHaveBeenCalledWith(loginData);
+      // is_accredited / accreditation explicit overrides prevent cross-user
+      // re-login from leaking stale accreditation state per the loginFromResponse
+      // preserve-on-undefined contract.
+      expect(mockAuthStore.loginFromResponse).toHaveBeenCalledWith({
+        ...loginData,
+        is_accredited: false,
+        accreditation: null,
+      });
       expect(mockRouterStore.navigate).toHaveBeenCalledWith('/papers');
     });
 

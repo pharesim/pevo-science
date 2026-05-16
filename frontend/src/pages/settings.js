@@ -4,6 +4,7 @@ import { fetchEmailStatus, submitEmail, deleteEmail, startOrcid, setPassword } f
 import { deriveHiveKeys, deriveHivePublicKeys, generateMnemonic, validateMnemonic, mnemonicToSeedSync } from '../hive-keys.js';
 import { isPasswordValid } from '../password-policy.js';
 import { getAppTag } from '../config.js';
+import { createTimerGuard } from '../lib/timer-guard.js';
 
 // Number of words to re-enter for confirmation
 const CONFIRM_WORD_COUNT = 3;
@@ -351,6 +352,14 @@ function pickRandomIndices(total, count) {
 
 export function initSettingsPage() {
   Alpine.data('settingsPage', () => ({
+    // Lifecycle guard. See frontend/src/lib/timer-guard.js. executeUpgrade's
+    // post-broadcast _postUpgradeBackend fetch can take 20s before resolving;
+    // if the user navigates away mid-flight, the continuation must not call
+    // loginFromResponse (and _saveSession + _startAccreditationPolling
+    // through it) on the singleton auth store, since the singleton has no
+    // component boundary to absorb the writes.
+    ...createTimerGuard(),
+
     get isConnected() { return Alpine.store('auth').isConnected; },
     get username() { return Alpine.store('auth').username; },
     get custody() { return Alpine.store('auth').custody; },
@@ -488,6 +497,10 @@ export function initSettingsPage() {
         Alpine.store('auth')._checkAccreditation();
         Alpine.store('toast').show(this.$t('settings.orcidLinkSuccess'), 'success');
       }
+    },
+
+    destroy() {
+      this._teardownTimers();
     },
 
     async handleOrcidLink() {
@@ -753,6 +766,13 @@ export function initSettingsPage() {
         // RPC lookup failed); other post-broadcast errors route to a
         // terminal sub-case.
         const result = await this._postUpgradeBackend(proof);
+        // Post-await unmount guard: the backend cleanup can take up to 20s
+        // before resolving. Every other adoption site of loginFromResponse
+        // gates the helper call on `_mounted`; without the gate here, a
+        // post-unmount continuation calls loginFromResponse on the singleton
+        // auth store (firing _saveSession + _startAccreditationPolling) for
+        // a user who has navigated away or explicitly disconnected.
+        if (!this._mounted) return;
 
         // Update session via the shared helper. The upgrade response
         // rotates the session token; the helper enforces the atomic

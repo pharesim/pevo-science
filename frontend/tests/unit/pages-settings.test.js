@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { mockLoginFromResponse } from './fixtures/mock-auth.js';
 
 const mockFetchEmailStatus = vi.fn();
 const mockSubmitEmail = vi.fn();
@@ -72,25 +73,11 @@ vi.mock('@hiveio/dhive', () => ({
   })),
 }));
 
-// Mirror the real `loginFromResponse` helper from src/auth.js so the
-// upgrade-flow test can keep asserting post-call state on mockAuthStore.
-// The preserve-on-undefined branch is critical here: the upgrade site
-// only passes {token, expires_at, custody}, and the helper must
-// preserve username/isAccredited/accreditation (the upgrade rotates
-// session credentials and flips custody, not identity or accreditation).
-function mockLoginFromResponse(data) {
-  if (data.token && data.expires_at) {
-    this.token = data.token;
-    this.expiresAt = data.expires_at;
-  }
-  if (data.username !== undefined) this.username = data.username;
-  if (data.is_accredited !== undefined) this.isAccredited = data.is_accredited;
-  if (data.accreditation !== undefined) this.accreditation = data.accreditation;
-  if (data.custody !== undefined) this.custody = data.custody;
-  this.isConnected = true;
-  this._saveSession();
-  this._startAccreditationPolling();
-}
+// The shared mockLoginFromResponse fixture's preserve-on-undefined branch
+// is critical for this site: the upgrade flow only passes
+// {token, expires_at, custody}, and the helper must preserve
+// username/isAccredited/accreditation (the upgrade rotates session
+// credentials and flips custody, not identity or accreditation).
 const mockAuthStore = {
   isConnected: true,
   username: 'alice',

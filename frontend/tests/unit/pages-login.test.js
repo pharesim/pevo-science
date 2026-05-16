@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { mockLoginFromResponse } from './fixtures/mock-auth.js';
 
 const mockLoginWithPassword = vi.fn();
 const mockResendVerification = vi.fn();
@@ -10,23 +11,6 @@ vi.mock('../../src/api.js', () => ({
   startOrcid: (...args) => mockStartOrcid(...args),
 }));
 
-// Mirror the real `loginFromResponse` helper from src/auth.js so call-site
-// tests can keep asserting post-call state on mockAuthStore. Atomic
-// {token, expires_at} pair + preserve-on-undefined for the other fields
-// is part of the contract this site relies on.
-function mockLoginFromResponse(data) {
-  if (data.token && data.expires_at) {
-    this.token = data.token;
-    this.expiresAt = data.expires_at;
-  }
-  if (data.username !== undefined) this.username = data.username;
-  if (data.is_accredited !== undefined) this.isAccredited = data.is_accredited;
-  if (data.accreditation !== undefined) this.accreditation = data.accreditation;
-  if (data.custody !== undefined) this.custody = data.custody;
-  this.isConnected = true;
-  this._saveSession();
-  this._startAccreditationPolling();
-}
 const mockAuthStore = {
   isConnected: false,
   token: null,

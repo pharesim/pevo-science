@@ -18,6 +18,16 @@ export function initAuth() {
     custody: null,
 
     _accreditationInterval: null,
+    // Monotonically increasing; bumped on every _startAccreditationPolling()
+    // call. An in-flight _checkAccreditation fetch captures the generation
+    // it started in; if the value advances before the fetch resolves, the
+    // continuation discards its result rather than clobbering whatever the
+    // newer polling loop has since written to the store. _stopAccreditationPolling
+    // cancels the setInterval but cannot abort an in-flight fetch, so a
+    // rapid disconnect→login (or storage-event re-login as a different
+    // user) without this guard lets the prior user's accreditation overwrite
+    // the new user's session.
+    _pollingGeneration: 0,
 
     init() {
       this._restoreSession();
@@ -168,13 +178,20 @@ export function initAuth() {
       }));
     },
 
-    async _checkAccreditation() {
+    async _checkAccreditation(gen) {
       // Skip if the session isn't fully connected yet. Prevents requests to
       // /api/accreditations/null during page teardown or before a login has
       // populated the store.
       if (!this.username || !this.isConnected) return;
       try {
         const accRes = await fetchAccreditationStatus(this.username);
+        // Stale-fetch guard: a newer _startAccreditationPolling() has bumped
+        // _pollingGeneration. The polling loop that owned this gen is gone;
+        // its in-flight result must not clobber whatever the new loop has
+        // written to the store. `gen === undefined` (callers that don't pass
+        // a generation) is admitted unconditionally for backward compat with
+        // future call sites that haven't yet adopted the gen-token pattern.
+        if (gen !== undefined && gen !== this._pollingGeneration) return;
         // disconnect() may have run while the fetch was in flight; drop the
         // stale result rather than re-persisting a cleared session.
         if (!this.username || !this.isConnected) return;
@@ -190,13 +207,14 @@ export function initAuth() {
 
     _startAccreditationPolling() {
       this._stopAccreditationPolling();
-      this._checkAccreditation();
+      const myGen = ++this._pollingGeneration;
+      this._checkAccreditation(myGen);
       this._accreditationInterval = setInterval(() => {
         if (!this.username || this.isAccredited) {
           this._stopAccreditationPolling();
           return;
         }
-        this._checkAccreditation();
+        this._checkAccreditation(myGen);
       }, 60000);
     },
 
