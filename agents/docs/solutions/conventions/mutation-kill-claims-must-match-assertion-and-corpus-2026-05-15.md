@@ -1,6 +1,7 @@
 ---
 title: Mutation-kill claims in test headers and convention docs must match what the assertion actually catches against the corpus the test sees
 date: 2026-05-15
+last_updated: 2026-05-16
 category: conventions
 module: backend
 problem_type: convention
@@ -98,6 +99,33 @@ The 4 enumerated mutations cover the wiring axis. But `paperDisciplineField` is 
 
 The claim is now honest about what each axis catches and where the other axis is covered.
 
+### Branch-reachability gated by fixture size (size-threshold subtype)
+
+**Overstated** (from UI-E2E-EDIT-PAPER-FLOW round-2 hold-fix landing at commit `407ce10`):
+
+> "Mutation-killed: production always broadcasts full body via `expect(commentBody.body.startsWith('@@')).toBe(true)`."
+
+The assertion is well-formed and the mutation class is real (`edit.js:1063` has `broadcastBody = diffText.length >= newPostBody.length ? newPostBody : diffText` — dropping the length-gate by always returning `newPostBody` is a concrete mutation to kill). What the round-2 claim missed: the test 1 fixture had `_originalBody=104 chars` and a `NEW_BODY=146 chars` wholesale replacement. `diff-match-patch` produces a diffText of ~290 chars > 146, so production's length-gate falls through to the full-body fallback unconditionally. `body.startsWith('@@')` is `false` on UNMUTATED code → assertion fails on the un-mutated path → the mutation never has a chance to be killed because the assertion was never green to begin with.
+
+The architect's round-3 re-review caught this via cross-reviewer (correctness P1/95 + testing P1/95 each with diff-match-patch reproductions). The diff-branch coverage was structurally absent until the fixture body was enlarged.
+
+**Corrected** (round-3 fix at commit `5b9ff3d`):
+
+The fixture body grew from ~100 chars to ~1.2KB (4 paragraphs: Introduction, Methodology, Results, Discussion). `NEW_BODY` was rewritten as additive rather than wholesale (start from the prefilled body + append one sentence to Discussion). After the change: `_originalBody=1237`, `newPostBody=1339`, `diffText=187`, ratio 0.140 — production now takes the diff branch, `commentBody.body.startsWith('@@')` is `true` on unmutated code, and removing the length-gate (always full body) flips it to `false`. Clean kill.
+
+**The structural pattern:** when production has a size-gated branch (`diffText.length < newPostBody.length`, `body.length > THRESHOLD`, etc.), the test's fixture must produce data that lands on the intended side of the gate. If the fixture sits on the wrong side, the branch under test is unreachable, the assertion fails on unmutated code, and the mutation-kill claim is structurally vacuous in a particularly nasty way — the test fails red on the un-mutated path AND on the mutated path, indistinguishable. A reviewer skimming "test asserts `body.startsWith('@@')`, diff branch covered" assumes the test is green and the mutation is killed; the reality is the test was never green and the branch was never reached.
+
+Before landing a size-gated branch-coverage claim, run the production transform against the test fixture and verify the gate fires the way you expect. For diff-match-patch specifically:
+
+```js
+const dmp = require('diff-match-patch').diff_match_patch ? new (require('diff-match-patch').diff_match_patch)() : new (require('diff-match-patch'))();
+const diffs = dmp.diff_main(original, modified);
+const diffText = dmp.patch_toText(dmp.patch_make(original, modified));
+console.log({ originalLen: original.length, modifiedLen: modified.length, diffLen: diffText.length, takesDiffBranch: diffText.length < modified.length });
+```
+
+Verify `takesDiffBranch` matches the branch the test claims to exercise BEFORE committing the spec.
+
 ### Scope ambiguity
 
 **Overstated** (from BE-ACCOUNT-CREATION-LOGGER-SPY-REAL-PATH-COMPANION dismissal doc, "both regex arms positively covered"):
@@ -118,3 +146,4 @@ States WHAT is covered on each arm and WHY single-arm coverage suffices structur
 - `agents/docs/solutions/conventions/real-path-companion-dismissal-criteria-2026-05-11.md` — generalized dismissal criteria for logger-spy clause (c). Its Examples section was the first site to apply this honesty principle (corrected at commit `a13f364`).
 - `agents/docs/solutions/conventions/mock-guard-assertion-must-verify-call-shape-2026-04-21.md` — adjacent: when the assertion's mock-guard predicate doesn't pin the shape claimed, the kill is structurally absent. This convention covers the case where the kill is present but the description overstates the mechanism.
 - `agents/docs/tasks-archive.md` BE-APP-SSR-REAL-PATH-COMPANION (when round-2 archives) — concrete instance of the corpus-conditional-kill case.
+- `agents/docs/tasks/pending/ui-e2e-edit-paper-flow.md` (when it archives) — round-2 and round-3 hold cycles are the canonical instance of the size-threshold subtype. Round-2 landed the assertion against a fixture that failed it on unmutated code; round-3 enlarged the fixture body to make the diff branch reachable. The fix took two architect re-review rounds to surface because round-2's review accepted the structural assertion without running the production transform against the fixture.
