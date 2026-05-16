@@ -69,13 +69,24 @@ function buildPaperFixture({ author, permlink, coAuthorHive = null }) {
     authors,
     citations: [],
   };
+  // Body sized so a small edit produces a diff-match-patch text SHORTER
+  // than the full new body — required to exercise the diff-broadcast
+  // branch at edit.js:1063 (`broadcastBody = diffText.length >= newPostBody.length
+  // ? newPostBody : diffText`). With this multi-paragraph original (~1.2KB),
+  // a single-sentence addition gives a ~200-char diff vs a ~1.3KB full body,
+  // so the diff branch fires and `commentBody.body.startsWith('@@')` holds.
+  // The earlier ~100-char body fell through to the full-body fallback
+  // unconditionally, leaving the diff branch uncovered (round-3 hold).
   return {
     author,
     permlink,
     title: 'Original E2E Edit Paper Title',
     body:
       '## Abstract\n\nOriginal abstract text for the E2E edit spec.\n\n---\n\n' +
-      '## Introduction\n\nOriginal body content.',
+      '## Introduction\n\nThis paper investigates the foundational characteristics of end-to-end testing infrastructure in distributed scientific publishing systems. We begin by surveying the landscape of automated browser-driven test frameworks, including their respective tradeoffs around determinism, speed, and maintenance overhead.\n\n' +
+      '## Methodology\n\nOur approach combines property-based testing with scenario-driven integration coverage. We selected Playwright as the driver due to its strong support for parallel execution and its first-class handling of asynchronous DOM mutations introduced by reactive frameworks such as Alpine.js.\n\n' +
+      '## Results\n\nWe observed that the test suite caught seven distinct regression classes across the edit-paper flow. Three of these involved subtle interactions between the Tiptap editor mount sequence and the underlying Alpine reactive state, and would not have been caught by unit tests alone.\n\n' +
+      '## Discussion\n\nThese findings reinforce the value of end-to-end coverage for flows that bridge multiple reactive frameworks. Future work should extend the methodology to the publication and review flows, which share similar architectural patterns.',
     authors,
     head_author: author,
     head_permlink: permlink,
@@ -175,8 +186,20 @@ test('original-author edit broadcasts in-place comment with same parent_permlink
   await expect(page.locator('text=Publishing as a revision')).toHaveCount(0);
 
   const NEW_TITLE = 'Updated E2E Edit Paper Title';
-  const NEW_ABSTRACT = 'Updated abstract that the spec will verify in the broadcast body.';
-  const NEW_BODY = '## Introduction\n\nUpdated body content from the E2E edit spec.';
+  // Small additive edits to the prefilled abstract and body. Keeping the
+  // bulk of the original content intact is what makes the diff-match-patch
+  // representation smaller than the full new body, so production's
+  // `diffText.length < newPostBody.length` check selects the diff branch
+  // at edit.js:1063 and `commentBody.body.startsWith('@@')` holds below.
+  // Wholesale replacement would blow the diff up past the full-body size
+  // and silently route the broadcast through the full-body fallback.
+  const PREFILLED_ABSTRACT = 'Original abstract text for the E2E edit spec.';
+  const NEW_ABSTRACT = PREFILLED_ABSTRACT + ' This revision sharpens the experimental claims.';
+  const NEW_BODY =
+    '## Introduction\n\nThis paper investigates the foundational characteristics of end-to-end testing infrastructure in distributed scientific publishing systems. We begin by surveying the landscape of automated browser-driven test frameworks, including their respective tradeoffs around determinism, speed, and maintenance overhead.\n\n' +
+    '## Methodology\n\nOur approach combines property-based testing with scenario-driven integration coverage. We selected Playwright as the driver due to its strong support for parallel execution and its first-class handling of asynchronous DOM mutations introduced by reactive frameworks such as Alpine.js.\n\n' +
+    '## Results\n\nWe observed that the test suite caught seven distinct regression classes across the edit-paper flow. Three of these involved subtle interactions between the Tiptap editor mount sequence and the underlying Alpine reactive state, and would not have been caught by unit tests alone.\n\n' +
+    '## Discussion\n\nThese findings reinforce the value of end-to-end coverage for flows that bridge multiple reactive frameworks. Future work should extend the methodology to the publication and review flows, which share similar architectural patterns. We also note an open question around drift detection.';
 
   await page.locator('input#edit-title').fill(NEW_TITLE);
 
@@ -506,10 +529,11 @@ test('accepted-claimer (accredited, not author, not co-author) reaches the edit 
   //  - parent_author empty (top-level Hive post invariant).
   //  - version > 1 (continuation has version > 1 of the chain).
   //  - continues pointer present and resolves to the previous version.
-  //  - comment_options op present (PEvO no-Hive-rewards principle is
-  //    enforced via comment_options.allow_curation_rewards: false; a
-  //    regression dropping this op would enable curation rewards on
-  //    continuations).
+  // All PEvO posts are broadcast with comment_options.percent_hbd: 0 (100% Hive Power
+  // payout). Rewards are allowed; the UI doesn't surface them as a value proposition.
+  // A regression dropping this op would let the default 50/50 HBD/HP split apply
+  // to continuations. See edit.js:998-1006 (canonical shape) and publish.js:887-895
+  // (publish-side parity).
   expect(commentBody.parent_author).toBe('');
   const meta = JSON.parse(commentBody.json_metadata);
   expect(meta[APP_TAG].version).toBeGreaterThan(1);
@@ -518,6 +542,7 @@ test('accepted-claimer (accredited, not author, not co-author) reaches the edit 
   expect(meta[APP_TAG].continues.permlink).toBe(paper.permlink);
   const optionsOp = broadcast.operations.find((op) => op[0] === 'comment_options');
   expect(optionsOp).toBeTruthy();
+  expect(optionsOp[1].percent_hbd).toBe(0);
 });
 
 test('no-changes guard blocks the broadcast and surfaces an error step', async ({
