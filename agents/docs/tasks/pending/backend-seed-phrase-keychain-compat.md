@@ -72,3 +72,41 @@ Mechanics:
 - `dhive.PrivateKey.fromLogin` — the canonical Hive master-password → WIF derivation, used by every Hive ecosystem app including Hive Keychain (verified 2026-05-16: `typeof PrivateKey.fromLogin === 'function'` in `@hiveio/dhive`).
 - Architect re-review of `ui-keychain-warning-copy-or-retry-action` 2026-05-16 — discovered the algorithm mismatch and scoped the migration via HAF query of `pevo.onboarding` + `pevotest.admin`.
 - Predecessor (pre-split) version of this task: see git history of this file in `tasks/blocked/` prior to 2026-05-16.
+
+## Backend implementation signal (2026-05-16, worktree-agent-ad49650532e76310b)
+
+Initial implementation landed. Parent took over after the worker subagent died silently with no work on disk. Wrote the algorithm swap and the parity test directly.
+
+**AC #1 — `backend/src/seed-phrase.ts`:** `derivePrivateKey` body rewritten to return `PrivateKey.fromLogin(account, mnemonic, role)`. Function signature changed: now takes the mnemonic string directly (not pre-computed seed bytes). `deriveKeysFromMnemonic` and `generateKeysFromNewSeed` callers updated accordingly. The `crypto` import (used for the old HMAC pipeline) is dropped. `validateMnemonic` is kept as a UX guardrail to catch user typos before derivation; the docblock notes it is no longer cryptographically required since `PrivateKey.fromLogin` accepts any string. The `loadBip39` helper switched from `eval('import(...)')` to plain dynamic `import()` — the eval workaround failed under vitest because eval doesn't carry the dynamic-import callback. Plain `import()` works under both Node16/CommonJS (Node treats `import()` as ESM regardless of host module classification) and vitest/ESBuild. The wordlist subpath now requires the `.js` suffix per the package's exports field (`./wordlists/english.js` instead of `./wordlists/english`).
+
+**AC #2 — Backend parity test:** new file `backend/tests/seed-phrase.test.ts`. 7 specs covering:
+
+- Every role's WIF equals `PrivateKey.fromLogin(account, mnemonic, role).toString()` computed directly.
+- Every role's public key equals the `createPublic()` of the `fromLogin` private key; STM-prefix shape pin.
+- Derivation depends on the account name (different account → different WIFs).
+- Derivation depends on the role (4 distinct WIFs per account).
+- Invalid BIP39 mnemonic rejected.
+- `generateKeysFromNewSeed` returns a self-consistent (mnemonic, keys) pair (re-deriving from the returned mnemonic yields the returned keys).
+- `generateSeedPhrase` produces a valid 12-word BIP39 mnemonic.
+
+No pinned-WIF strings: the parity test computes `PrivateKey.fromLogin` directly and compares against the helper's output, so future dhive upgrades that change `fromLogin` move both sides of the equation together. The drift the test guards against is `deriveKeysFromMnemonic` itself wandering from `fromLogin`.
+
+**AC #3 — Pinned-WIF tests across backend/tests:** none affected. `grep -rln "from.*seed-phrase" backend/` returned zero hits: `backend/src/seed-phrase.ts` has no backend importers in either production code or existing test files. The seed-phrase derivation is exercised entirely client-side per the architecture (frontend generates mnemonic, derives keys, broadcasts pubkeys; backend stores encrypted posting/memo keys received from the frontend). The seed-phrase helper is reserved for future signup/recovery flows where the backend would need to verify a re-derivation from a mnemonic input; today, the parity test is the load-bearing contract gate.
+
+**AC #4 — No migration:** confirmed per task spec. `testaccount23652` is the only on-chain account from the old derivation; dormant per architect's HAF query of `pevo.onboarding` + `pevotest.admin`. No backfill script, no operator `account_update`, no user-facing migration flow.
+
+**AC #5 — Doc handoff for ARCHITECTURE.md:** `[TODO ARCHITECT]` — the following sections of `agents/docs/ARCHITECTURE.md` describe the old BIP39 → HMAC-SHA512 → PrivateKey.fromSeed derivation and need updating to reflect the new `PrivateKey.fromLogin(account, mnemonic, role)` algorithm so the seed phrase functions as a Hive master password:
+
+- "Account Creation" section, light-accounts subsection — describes the key-derivation flow from the 12-word mnemonic.
+- "Light Accounts" section, key-derivation paragraph — describes the per-role derivation pipeline.
+- Any "Key Derivation" or cryptographic-primitives reference describing the HMAC-SHA512 + first-32-bytes-hex pipeline.
+
+The architect should rewrite these to: "Per-role private keys are derived via `PrivateKey.fromLogin(account, mnemonic, role)` — the same algorithm Hive Keychain's 'Add Account by Master Password' flow uses. The 12-word BIP39 mnemonic functions as the master-password input; `fromLogin` accepts any string. A user can paste their mnemonic into Keychain's 'Add Account by Master Password' field to import their PEvO-derived account directly."
+
+**Verification gates:**
+
+- `npx tsc --noEmit` clean.
+- `npm run lint` clean (only the 2 pre-existing `@typescript-eslint/no-explicit-any` warnings in `seed-phrase.ts` from the lazy-load helper, unrelated; the pattern is unchanged from the prior implementation).
+- `npx vitest run tests/seed-phrase.test.ts`: **7 passed**. The Redis-connection-refused log lines in the test output are unrelated infrastructure noise from `tests/setup.ts` (Redis container not reachable at the worktree-resolved IP); they do not affect the parity test, which queries no infrastructure.
+
+No `git mv` from `pending/` to `review/` was performed in this worktree; parent serializes that after all in-flight workers merge.

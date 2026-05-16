@@ -1,4 +1,3 @@
-import crypto from 'node:crypto';
 import { PrivateKey } from '@hiveio/dhive';
 
 const ROLES = ['owner', 'active', 'posting', 'memo'] as const;
@@ -16,18 +15,25 @@ export interface DerivedKeys {
   memo: HiveKeyPair;
 }
 
-// Lazy-load ESM-only @scure/bip39
+// Lazy-load ESM-only @scure/bip39 (only used for mnemonic generation/validation
+// as a UX guardrail; PrivateKey.fromLogin itself accepts any string).
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let _bip39: any = null;
 let _wordlist: string[] | null = null;
 
 async function loadBip39() {
   if (!_bip39) {
-    _bip39 = await (eval('import("@scure/bip39")') as Promise<any>);
-    const wl = await (eval('import("@scure/bip39/wordlists/english")') as Promise<any>);
+    // ESM-only deps. Dynamic import works at runtime under both Node16/CJS
+    // (Node treats import() as ESM regardless of host module classification)
+    // and under vitest/ESBuild's ESM bundling. The earlier eval('import(...)')
+    // workaround failed under vitest because eval doesn't carry the
+    // dynamic-import callback. The '.js' suffix on the wordlist subpath is
+    // required by the package's exports field.
+    _bip39 = await import('@scure/bip39');
+    const wl = await import('@scure/bip39/wordlists/english.js');
     _wordlist = wl.wordlist;
   }
-  return { bip39: _bip39 as { generateMnemonic: Function; validateMnemonic: Function; mnemonicToSeedSync: Function }, wordlist: _wordlist! };
+  return { bip39: _bip39 as { generateMnemonic: Function; validateMnemonic: Function }, wordlist: _wordlist! };
 }
 
 /**
@@ -39,7 +45,8 @@ export async function generateSeedPhrase(): Promise<string> {
 }
 
 /**
- * Validate a BIP39 mnemonic.
+ * Validate a BIP39 mnemonic. UX guardrail to catch user typos before
+ * derivation; PrivateKey.fromLogin itself accepts any string.
  */
 export async function isValidSeedPhrase(mnemonic: string): Promise<boolean> {
   const { bip39, wordlist } = await loadBip39();
@@ -47,18 +54,17 @@ export async function isValidSeedPhrase(mnemonic: string): Promise<boolean> {
 }
 
 /**
- * Derive a Hive private key from a seed + account name + role.
- * Uses HMAC-SHA512 with `account + role` as key identifier,
- * matching the spec's deriveKey(seed, account, role) approach.
+ * Derive a Hive private key from a mnemonic + account name + role using
+ * `PrivateKey.fromLogin(account, master_password, role)` — the same
+ * derivation Hive Keychain's "Add Account by Master Password" flow uses.
+ * The mnemonic functions as the master-password input.
+ *
+ * Mirrors frontend/src/hive-keys.js. If the two derivations drift, every
+ * new light-account signup splits across two algorithms (frontend broadcasts
+ * pubkeys derived one way, backend recovery expects the other).
  */
-function derivePrivateKey(seed: Uint8Array, account: string, role: HiveRole): PrivateKey {
-  const data = `${account}${role}`;
-  const hmac = crypto.createHmac('sha512', Buffer.from(seed));
-  hmac.update(data);
-  const derived = hmac.digest();
-  // Use first 32 bytes as the private key seed string (hex-encoded)
-  const keyHex = derived.subarray(0, 32).toString('hex');
-  return PrivateKey.fromSeed(keyHex);
+function derivePrivateKey(mnemonic: string, account: string, role: HiveRole): PrivateKey {
+  return PrivateKey.fromLogin(account, mnemonic, role);
 }
 
 /**
@@ -73,16 +79,20 @@ export async function generateKeysFromNewSeed(account: string): Promise<{ mnemon
 
 /**
  * Derive all 4 Hive key pairs from an existing mnemonic + account name.
+ *
+ * The mnemonic is validated against the BIP39 wordlist as a UX guardrail
+ * to catch user typos. The validation is no longer cryptographically
+ * required (PrivateKey.fromLogin accepts any string), but rejecting
+ * typos at this layer surfaces the error closer to user input.
  */
 export async function deriveKeysFromMnemonic(mnemonic: string, account: string): Promise<DerivedKeys> {
   const { bip39, wordlist } = await loadBip39();
   if (!bip39.validateMnemonic(mnemonic, wordlist)) {
     throw new Error('Invalid BIP39 mnemonic');
   }
-  const seed = bip39.mnemonicToSeedSync(mnemonic);
   const result = {} as DerivedKeys;
   for (const role of ROLES) {
-    const priv = derivePrivateKey(seed, account, role);
+    const priv = derivePrivateKey(mnemonic, account, role);
     result[role] = {
       private: priv.toString(),
       public: priv.createPublic().toString(),
