@@ -179,7 +179,6 @@
     "description": "Update your publication. Changes are recorded as a new version.",
     "loadingPaper": "Loading paper data...",
     "loadError": "Failed to load paper. Please try again.",
-    "notAuthorized": "You are not authorized to edit this paper.",
     "continuationNotice": "Publishing as a revision",
     "continuationExplainer": "You are not the original author. Your changes will be published as a new revision that continues this paper.",
     "disciplineFixed": "Discipline cannot be changed after publication.",
@@ -195,14 +194,13 @@
     "noChanges": "No changes detected. The paper content is identical to the current version.",
     "authorsAddOnly": "Existing authors cannot be removed. You may add new co-authors.",
     "versionLabel": "Version {version}",
-    "accreditationRequired": "You need to be accredited to edit this paper.",
     "signInToEdit": "Sign in to edit this paper.",
     "signInHint": "You also need to be the original author or a named co-author to edit.",
     "howToEditTitle": "Who can edit this paper?",
     "howToEditIntro": "Editing is restricted to the people responsible for the work. You can edit if any of these apply:",
     "howToEditOriginalAuthor": "You are the original author posting from this account.",
     "howToEditCoAuthor": "You are listed as a co-author with a Hive username matching this account.",
-    "howToEditClaim": "You file an authorship claim from the paper page and the author approves it, or you are an accredited researcher publishing a revision."
+    "howToEditClaim": "You file an authorship claim from the paper page and the author approves it."
   },
   "review": {
     "backToPaper": "Back to paper",

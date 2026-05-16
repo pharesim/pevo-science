@@ -179,7 +179,6 @@
     "description": "Yayınınızı güncelleyin. Değişiklikler yeni bir sürüm olarak kaydedilir.",
     "loadingPaper": "Makale verileri yükleniyor...",
     "loadError": "Makale yüklenemedi. Lütfen tekrar deneyin.",
-    "notAuthorized": "Bu makaleyi düzenleme yetkiniz yok.",
     "continuationNotice": "Revizyon olarak yayınlanıyor",
     "continuationExplainer": "Orijinal yazar siz değilsiniz. Değişiklikleriniz bu makaleyi devam ettiren yeni bir revizyon olarak yayınlanacaktır.",
     "disciplineFixed": "Disiplin yayınlandıktan sonra değiştirilemez.",
@@ -195,14 +194,13 @@
     "noChanges": "Değişiklik algılanmadı. Makale içeriği mevcut sürümle aynı.",
     "authorsAddOnly": "Mevcut yazarlar kaldırılamaz. Yeni ortak yazarlar ekleyebilirsiniz.",
     "versionLabel": "Sürüm {version}",
-    "accreditationRequired": "You need to be accredited to edit this paper.",
     "signInToEdit": "Sign in to edit this paper.",
     "signInHint": "You also need to be the original author or a named co-author to edit.",
     "howToEditTitle": "Who can edit this paper?",
     "howToEditIntro": "Editing is restricted to the people responsible for the work. You can edit if any of these apply:",
     "howToEditOriginalAuthor": "You are the original author posting from this account.",
     "howToEditCoAuthor": "You are listed as a co-author with a Hive username matching this account.",
-    "howToEditClaim": "You file an authorship claim from the paper page and the author approves it, or you are an accredited researcher publishing a revision."
+    "howToEditClaim": "You file an authorship claim from the paper page and the author approves it."
   },
   "review": {
     "backToPaper": "Makaleye dön",

@@ -374,6 +374,54 @@ describe('editPage handleSubmit sanitization', () => {
     });
   });
 
+  // UI-EDIT-NARROW-GATING-DROP-ACCREDITED-FALLBACK: isAuthorized recognises
+  // exactly three paths to the edit form — original author, named co-author,
+  // accepted authorship-claimer. Accreditation alone is NOT sufficient (the
+  // dropped fallback). The backend continuation consent-gate filters
+  // non-co-author continuations from chain reconstruction, so the UI affordance
+  // for accredited non-authors silently failed before this narrowing.
+  describe('isAuthorized', () => {
+    it('returns true for the original author', () => {
+      const comp = createComponent();
+      mockStores.auth.username = 'alice';
+      comp.paper = { author: 'alice', permlink: 'p1', authors: [], authorship_claims: [] };
+      expect(comp.isAuthorized).toBe(true);
+    });
+
+    it('returns true for a named co-author', () => {
+      const comp = createComponent();
+      mockStores.auth.username = 'bob';
+      comp.paper = {
+        author: 'alice', permlink: 'p1',
+        authors: [{ hive: 'bob' }],
+        authorship_claims: [],
+      };
+      expect(comp.isAuthorized).toBe(true);
+    });
+
+    it('returns true for an accepted authorship-claimer', () => {
+      const comp = createComponent();
+      mockStores.auth.username = 'carol';
+      comp.paper = {
+        author: 'alice', permlink: 'p1', authors: [],
+        authorship_claims: [{ claimer: 'carol', status: 'accepted' }],
+      };
+      expect(comp.isAuthorized).toBe(true);
+    });
+
+    // Mutation-kill for the dropped fallback. The accredited-non-author has
+    // no positive path. Restoring `|| this.isAccredited` (or any equivalent
+    // re-introduction of the auth-store fallback) makes this assertion fail
+    // because the mocked auth store defaults to isAccredited: true.
+    it('returns false for an accredited non-author with no claim', () => {
+      const comp = createComponent();
+      mockStores.auth.username = 'dave';
+      mockStores.auth.isAccredited = true;
+      comp.paper = { author: 'alice', permlink: 'p1', authors: [], authorship_claims: [] };
+      expect(comp.isAuthorized).toBe(false);
+    });
+  });
+
   // UI-COAUTHOR-CONTINUATION-PUBLISHING: a co-author who already has a
   // post in the version chain (e.g. bob with bob/cont-1) must native-edit
   // their existing post on subsequent edits, not balloon the chain with a

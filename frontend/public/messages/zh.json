@@ -179,7 +179,6 @@
     "description": "更新您的出版物。更改将记录为新版本。",
     "loadingPaper": "正在加载论文数据...",
     "loadError": "加载论文失败。请重试。",
-    "notAuthorized": "您无权编辑此论文。",
     "continuationNotice": "作为修订版发布",
     "continuationExplainer": "您不是原作者。您的更改将作为延续此论文的新修订版发布。",
     "disciplineFixed": "发表后无法更改学科。",
@@ -195,14 +194,13 @@
     "noChanges": "未检测到更改。论文内容与当前版本相同。",
     "authorsAddOnly": "现有作者不能被移除。您可以添加新的共同作者。",
     "versionLabel": "版本 {version}",
-    "accreditationRequired": "You need to be accredited to edit this paper.",
     "signInToEdit": "Sign in to edit this paper.",
     "signInHint": "You also need to be the original author or a named co-author to edit.",
     "howToEditTitle": "Who can edit this paper?",
     "howToEditIntro": "Editing is restricted to the people responsible for the work. You can edit if any of these apply:",
     "howToEditOriginalAuthor": "You are the original author posting from this account.",
     "howToEditCoAuthor": "You are listed as a co-author with a Hive username matching this account.",
-    "howToEditClaim": "You file an authorship claim from the paper page and the author approves it, or you are an accredited researcher publishing a revision."
+    "howToEditClaim": "You file an authorship claim from the paper page and the author approves it."
   },
   "review": {
     "backToPaper": "返回论文",

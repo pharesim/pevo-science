@@ -179,7 +179,6 @@
     "description": "Werk uw publicatie bij. Wijzigingen worden vastgelegd als een nieuwe versie.",
     "loadingPaper": "Artikelgegevens laden...",
     "loadError": "Artikel laden mislukt. Probeer het opnieuw.",
-    "notAuthorized": "U bent niet bevoegd om dit artikel te bewerken.",
     "continuationNotice": "Publiceren als revisie",
     "continuationExplainer": "U bent niet de oorspronkelijke auteur. Uw wijzigingen worden gepubliceerd als een nieuwe revisie die dit artikel voortzet.",
     "disciplineFixed": "Discipline kan niet worden gewijzigd na publicatie.",
@@ -195,14 +194,13 @@
     "noChanges": "Geen wijzigingen gedetecteerd. De artikelinhoud is identiek aan de huidige versie.",
     "authorsAddOnly": "Bestaande auteurs kunnen niet worden verwijderd. U kunt nieuwe medeauteurs toevoegen.",
     "versionLabel": "Versie {version}",
-    "accreditationRequired": "You need to be accredited to edit this paper.",
     "signInToEdit": "Sign in to edit this paper.",
     "signInHint": "You also need to be the original author or a named co-author to edit.",
     "howToEditTitle": "Who can edit this paper?",
     "howToEditIntro": "Editing is restricted to the people responsible for the work. You can edit if any of these apply:",
     "howToEditOriginalAuthor": "You are the original author posting from this account.",
     "howToEditCoAuthor": "You are listed as a co-author with a Hive username matching this account.",
-    "howToEditClaim": "You file an authorship claim from the paper page and the author approves it, or you are an accredited researcher publishing a revision."
+    "howToEditClaim": "You file an authorship claim from the paper page and the author approves it."
   },
   "review": {
     "backToPaper": "Terug naar artikel",

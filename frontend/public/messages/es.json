@@ -179,7 +179,6 @@
     "description": "Actualice su publicación. Los cambios se registran como una nueva versión.",
     "loadingPaper": "Cargando datos del artículo...",
     "loadError": "No se pudo cargar el artículo. Por favor, inténtelo de nuevo.",
-    "notAuthorized": "No está autorizado para editar este artículo.",
     "continuationNotice": "Publicar como revisión",
     "continuationExplainer": "No es el autor original. Sus cambios se publicarán como una nueva revisión que continúa este artículo.",
     "disciplineFixed": "La disciplina no se puede cambiar después de la publicación.",
@@ -195,14 +194,13 @@
     "noChanges": "No se detectaron cambios. El contenido del artículo es idéntico a la versión actual.",
     "authorsAddOnly": "Los autores existentes no se pueden eliminar. Puede agregar nuevos coautores.",
     "versionLabel": "Versión {version}",
-    "accreditationRequired": "You need to be accredited to edit this paper.",
     "signInToEdit": "Sign in to edit this paper.",
     "signInHint": "You also need to be the original author or a named co-author to edit.",
     "howToEditTitle": "Who can edit this paper?",
     "howToEditIntro": "Editing is restricted to the people responsible for the work. You can edit if any of these apply:",
     "howToEditOriginalAuthor": "You are the original author posting from this account.",
     "howToEditCoAuthor": "You are listed as a co-author with a Hive username matching this account.",
-    "howToEditClaim": "You file an authorship claim from the paper page and the author approves it, or you are an accredited researcher publishing a revision."
+    "howToEditClaim": "You file an authorship claim from the paper page and the author approves it."
   },
   "review": {
     "backToPaper": "Volver al artículo",

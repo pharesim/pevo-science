@@ -415,9 +415,7 @@ export function initEditPage() {
     },
 
     get isConnected() { return Alpine.store('auth').isConnected; },
-    get isAccredited() { return Alpine.store('auth').isAccredited; },
     get username() { return Alpine.store('auth').username; },
-    get accreditation() { return Alpine.store('auth').accreditation; },
 
     get author() { return this.$store.router.params.author; },
     get permlink() { return this.$store.router.params.permlink; },

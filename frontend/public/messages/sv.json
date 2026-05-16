@@ -179,7 +179,6 @@
     "description": "Uppdatera din publikation. Ändringar registreras som en ny version.",
     "loadingPaper": "Laddar artikeldata...",
     "loadError": "Kunde inte ladda artikeln. Försök igen.",
-    "notAuthorized": "Du har inte behörighet att redigera denna artikel.",
     "continuationNotice": "Publicera som revision",
     "continuationExplainer": "Du är inte den ursprungliga författaren. Dina ändringar publiceras som en ny revision som fortsätter denna artikel.",
     "disciplineFixed": "Disciplin kan inte ändras efter publicering.",
@@ -195,14 +194,13 @@
     "noChanges": "Inga ändringar hittades. Artikelinnehållet är identiskt med den nuvarande versionen.",
     "authorsAddOnly": "Befintliga författare kan inte tas bort. Du kan lägga till nya medförfattare.",
     "versionLabel": "Version",
-    "accreditationRequired": "You need to be accredited to edit this paper.",
     "signInToEdit": "Sign in to edit this paper.",
     "signInHint": "You also need to be the original author or a named co-author to edit.",
     "howToEditTitle": "Who can edit this paper?",
     "howToEditIntro": "Editing is restricted to the people responsible for the work. You can edit if any of these apply:",
     "howToEditOriginalAuthor": "You are the original author posting from this account.",
     "howToEditCoAuthor": "You are listed as a co-author with a Hive username matching this account.",
-    "howToEditClaim": "You file an authorship claim from the paper page and the author approves it, or you are an accredited researcher publishing a revision."
+    "howToEditClaim": "You file an authorship claim from the paper page and the author approves it."
   },
   "review": {
     "backToPaper": "Tillbaka till artikeln",

@@ -609,21 +609,6 @@ zh: recover.orcidNoPassword
 
 ### Added 2026-04-28 (UI-GATING-COHERENCE-PUBLISH-REVIEW-EDIT)
 
-ar: edit.accreditationRequired
-cs: edit.accreditationRequired
-da: edit.accreditationRequired
-de: edit.accreditationRequired
-es: edit.accreditationRequired
-fa: edit.accreditationRequired
-fr: edit.accreditationRequired
-he: edit.accreditationRequired
-it: edit.accreditationRequired
-nl: edit.accreditationRequired
-pl: edit.accreditationRequired
-pt: edit.accreditationRequired
-sv: edit.accreditationRequired
-tr: edit.accreditationRequired
-zh: edit.accreditationRequired
 ar: edit.signInToEdit
 cs: edit.signInToEdit
 da: edit.signInToEdit

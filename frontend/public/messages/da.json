@@ -179,7 +179,6 @@
     "description": "Opdater din publikation. Ændringer registreres som en ny version.",
     "loadingPaper": "Indlæser artikeldata...",
     "loadError": "Kunne ikke indlæse artiklen. Prøv venligst igen.",
-    "notAuthorized": "Du har ikke tilladelse til at redigere denne artikel.",
     "continuationNotice": "Udgiv som revision",
     "continuationExplainer": "Du er ikke den oprindelige forfatter. Dine ændringer vil blive udgivet som en ny revision, der fortsætter denne artikel.",
     "disciplineFixed": "Disciplin kan ikke ændres efter udgivelse.",
@@ -195,14 +194,13 @@
     "noChanges": "Ingen ændringer fundet. Artikelindholdet er identisk med den nuværende version.",
     "authorsAddOnly": "Eksisterende forfattere kan ikke fjernes. Du kan tilføje nye medforfattere.",
     "versionLabel": "Version",
-    "accreditationRequired": "You need to be accredited to edit this paper.",
     "signInToEdit": "Sign in to edit this paper.",
     "signInHint": "You also need to be the original author or a named co-author to edit.",
     "howToEditTitle": "Who can edit this paper?",
     "howToEditIntro": "Editing is restricted to the people responsible for the work. You can edit if any of these apply:",
     "howToEditOriginalAuthor": "You are the original author posting from this account.",
     "howToEditCoAuthor": "You are listed as a co-author with a Hive username matching this account.",
-    "howToEditClaim": "You file an authorship claim from the paper page and the author approves it, or you are an accredited researcher publishing a revision."
+    "howToEditClaim": "You file an authorship claim from the paper page and the author approves it."
   },
   "review": {
     "backToPaper": "Tilbage til artikel",
