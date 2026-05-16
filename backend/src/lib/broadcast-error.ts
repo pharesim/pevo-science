@@ -284,6 +284,25 @@ export interface LogContext {
    * failure from a retry-resume failure when triaging logs.
    */
   resume_stuck?: boolean;
+  /**
+   * Per-attempt / per-spec discriminator for structured-log filtering. Real
+   * production callers may set this to a short stable label (e.g. an
+   * attempt-id or a retry-cycle name) so operators can correlate multiple
+   * sibling log entries emitted by the same logical attempt. Optional; the
+   * `event:` label already encodes the primary anchor so most callers leave
+   * `run` undefined.
+   *
+   * Backend-tests-typecheck-coverage round-1 hold item 2 (path (a)): the
+   * field was promoted from a test-only `TestLogContext` cast to a declared
+   * `LogContext` field after the round-5 hold #2 specs (event-anchor pins
+   * in `broadcast-error.test.ts`) demonstrated that `run` is a stable
+   * structured marker the helper spreads into the operator-keyable log
+   * payload. Declaring it here closes the typo-protection bypass at the
+   * five test cast sites while honestly modeling what the field actually
+   * is. See the task file for the alternative paths (b) and (c) that were
+   * dismissed.
+   */
+  run?: string;
 }
 
 interface BaseHandleBroadcastErrorOpts {
