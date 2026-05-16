@@ -105,6 +105,49 @@ A PEvO paper is a top-level Hive post (comment with no parent author).
 - `discipline` — a discipline string. The frontend offers a taxonomy dropdown, but user-provided values are accepted. The `/api/disciplines` endpoint returns the list of disciplines derived from existing papers. In tags, disciplines are lowercased with spaces replaced by hyphens (e.g., "Computer Science" becomes "computer-science").
 - `version` — content version counter, starting at 1. The author increments this on each edit. Revisions use Hive's native edit mechanism (same `author/permlink`, new `comment` operation) or continuation posts (new permlink, with `continues` pointer). HAF stores the full operation history; the Hive API returns only the latest version.
 
+**ORCID supersession rule (read time).** The chain-stored `authors[i].orcid` is the **as-typed-or-prefilled-at-broadcast-time** value — the publisher's stated claim, frozen forever once broadcast. It is NOT authoritative for display when a more trustworthy attestation exists. Backends and frontends MUST resolve the **canonical display ORCID** for each `authors[i]` row as follows:
+
+1. If `authors[i].hive` is empty or absent, use `authors[i].orcid` as-is. No supersession applies (the row carries no on-chain identity to look up).
+2. If `authors[i].hive` is set AND that account is currently accredited (per `active_accreditations` — latest `accredit` / `revoke` action wins, see [accreditation-state-read-latest-action-wins-2026-05-15.md](solutions/conventions/accreditation-state-read-latest-action-wins-2026-05-15.md)) AND the accreditation record carries a non-empty `orcid`, the **accreditation-attested ORCID supersedes the chain-stored value** for canonical display. The chain-stored `authors[i].orcid` remains the publisher's stated claim but is not authoritative.
+3. If `authors[i].hive` is set AND that account is NOT currently accredited (no row, or latest action is `revoke`), use `authors[i].orcid` as-is.
+4. If `authors[i].hive` is set AND currently accredited BUT the accreditation record's `orcid` is null/empty, use `authors[i].orcid` as-is (the accreditation carries no ORCID claim to supersede with).
+
+When the chain-stored `authors[i].orcid` differs from the accreditation-attested ORCID for the same hive account, surfaces SHOULD render a discrepancy indicator so readers can see both values (the publisher's claim and the verified attestation). This addresses the forward-looking case where a co-author becomes accredited after the paper was broadcast, and the original case where the publisher typed an ORCID that doesn't match the co-author's later-verified identity.
+
+This rule is purely about **read-time interpretation** of the chain data. The chain post is immutable; PEvO does not rewrite history. The supersession operates on the existing `{hive, orcid}` fields — no new on-chain `verified_orcid` field is introduced.
+
+The same supersession rule applies to reputation queries that aggregate by ORCID. See [reputation-algorithm.md § "ORCID-keyed Aggregations"](reputation-algorithm.md#orcid-keyed-aggregations) for the canonical pattern.
+
+**Canonical SQL pattern.** Backends resolving `authors[i]` for display MUST LEFT JOIN per-author against the `active_accreditations` CTE (defined in `backend/src/hafsql.ts:activeAccreditationsCteBody`). The CTE already encodes the latest-action-wins predicate (`IN ('accredit','revoke')`, partitioned by account, `rn = 1 AND action = 'accredit'`) and exposes the attested `orcid` per accredited account. There is no separate query to author; reuse the existing CTE and project the supersession fields:
+
+```sql
+WITH ${activeAccreditationsCteBody(...).sql}
+SELECT
+  a.elem ->> 'name'        AS name,
+  a.elem ->> 'hive'        AS hive,
+  a.elem ->> 'orcid'       AS orcid,            -- chain-typed (publisher's claim)
+  a.elem ->> 'affiliation' AS affiliation,
+  aa.orcid                 AS orcid_verified,   -- accreditation-attested, NULL when not currently accredited or no ORCID
+  CASE
+    WHEN aa.orcid IS NOT NULL
+     AND (a.elem ->> 'orcid') IS NOT NULL
+     AND aa.orcid <> (a.elem ->> 'orcid')
+    THEN true
+    ELSE false
+  END                      AS orcid_discrepancy
+FROM jsonb_array_elements(
+  (post.json_metadata -> $appTag -> 'authors')
+) WITH ORDINALITY AS a(elem, ordinality)
+LEFT JOIN active_accreditations aa
+  ON aa.account = (a.elem ->> 'hive')
+ORDER BY a.ordinality;
+```
+
+Notes on the canonical pattern:
+- The LEFT JOIN handles all four supersession cases naturally: no `hive` value yields no JOIN match (`aa.orcid` is NULL → `orcid_verified` is NULL → consumer falls back to chain `orcid`); a `hive` value with no current accreditation also yields no match (same fallback); a `hive` value with a current accreditation carrying NULL `orcid` projects `aa.orcid = NULL` (still falls back); only when the accreditation carries a non-empty `orcid` does `orcid_verified` populate.
+- `active_accreditations` already filters to `action = 'accredit'` after ranking by `block_num DESC`. A revoked account is absent from the CTE entirely, which is the correct semantics for supersession (revoked accounts contribute no attested ORCID).
+- ORDER BY `ordinality` preserves the `authors[]` array order from chain. Without it, the row order is undefined and the response shape may flip authors between requests.
+
 **Body Format:**
 
 The post `body` is structured as abstract + separator + full text:

@@ -740,3 +740,13 @@ FROM totals;
 
 10. **Citation COALESCE.** `LEAST(w.citation_max, COALESCE(SUM(...), 0))` prevents Postgres `LEAST(N, NULL) = N` from awarding phantom citation points when no citations exist.
 
+---
+
+### ORCID-keyed Aggregations
+
+The reputation algorithm today aggregates by Hive account (`tu.username`, `authors[].hive`, the post `author`). It does NOT aggregate by ORCID. ORCID values surface in two narrow places: (a) `authorshipClaimsCteBody`'s ORCID auto-accept trigger (comparing the claimer's accreditation `orcid` to `paper.authors[i].orcid` for a slot-match), and (b) display fields on paper-detail responses (see `agents/docs/hive-schemas.md` § 1.1 "ORCID supersession rule"). Neither is an aggregation over ORCID values, so the supersession rule does not currently change any reputation score.
+
+If a future revision adds an ORCID-keyed query (e.g., "citation counts grouped by author ORCID across papers", or an h-index-style ORCID rollup), the query MUST resolve the canonical display ORCID per the supersession rule rather than aggregating directly on the chain-typed `authors[i].orcid`. Concretely: LEFT JOIN against `active_accreditations` and prefer `aa.orcid` when present, fall back to `authors[].orcid` when not. Aggregating on the chain-typed value would double-count or mis-attribute reputation in the (rare today, growing as the platform onboards) case where a co-author was typed before they were accredited and later verified a different ORCID via accreditation.
+
+The ORCID auto-accept in `authorshipClaimsCteBody` is correctly framed as a one-way slot-matching trigger and is NOT an aggregation. The matched slot is then credited via the existing hive-keyed aggregation (`accepted_claims` JOIN onto papers). No change to auto-accept semantics is required: the rule that "claimer's accreditation `orcid` matches `authors[i].orcid` → auto-accept slot `i`" continues to honor the publisher's chain-stored claim as the slot key.
+

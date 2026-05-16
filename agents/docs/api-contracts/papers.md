@@ -36,7 +36,13 @@ List PEvO papers with filtering and sorting.
   "discipline": "neuroscience",
   "keywords": ["plasticity", "neural-networks"],
   "authors": [
-    { "name": "Dr. Jane Smith", "hive": "scientist1", "orcid": "0000-0001-2345-6789" }
+    {
+      "name": "Dr. Jane Smith",
+      "hive": "scientist1",
+      "orcid": "0000-0001-2345-6789",
+      "orcid_verified": "0000-0001-2345-6789" | null,
+      "orcid_discrepancy": false
+    }
   ],
   "ipfs_cid": "QmXyz..." | null,
   "created": "2026-03-20T14:30:00Z",
@@ -54,6 +60,9 @@ List PEvO papers with filtering and sorting.
 
 **Field notes:**
 - `discipline` — canon_name form (lowercased), matches `/api/disciplines.canon_name` and the `?discipline=` filter contract; round-trippable through the URL filter without re-canonicalization. Display form via `/api/disciplines.display_name` lookup or CSS `text-transform: capitalize`. May be `null` (paper not tagged with a discipline).
+- `authors[].orcid` — the chain-stored ORCID exactly as broadcast by the publisher (typed or accredited-prefilled at publish time). This is the publisher's stated claim, frozen on the immutable post. Not authoritative when a more trustworthy attestation exists; use `orcid_verified` as the canonical display value when present.
+- `authors[].orcid_verified` — the accreditation-attested ORCID for the author's hive account, looked up at read time against `active_accreditations`. Present and non-null when `authors[].hive` is set, that account is currently accredited (latest `accredit` / `revoke` action wins per `accreditation-state-read-latest-action-wins-2026-05-15.md`), and the accreditation record carries a non-empty `orcid`. Null when the hive is empty, the account is not currently accredited, or the accreditation carries no ORCID. The canonical display rule is "use `orcid_verified` if non-null, else fall back to `orcid`".
+- `authors[].orcid_discrepancy` — `true` when both `orcid` and `orcid_verified` are non-null and they differ. Clients SHOULD render a discrepancy indicator (e.g., a tooltip showing both values labeled "claimed" and "verified"). `false` otherwise.
 - `review_count` — number of reviews on this paper satisfying the canonical PEvO review-validity gate (`type='review'`, accredited author or anon-proxy, structurally-valid 4-dim rating object with each dimension an integer in `[1,5]`, not authored by the paper author or a named co-author) AND whose parent post is a valid PEvO paper (native pevo paper or `bridge_paper` authored by `config.hiveBridgeAccount`). Authoring client (`app` field) is not gated. Source of truth: `validReviewWhere()` AND `validPevoPaperWhere(source:'all')` in `backend/src/hafsql.ts` (both gates compose at every review-class surface for display↔reputation parity).
 - `vote_strength` — qualitative tier derived from average accredited vote weight, or `null` if no votes. See enrichment endpoint for possible values.
 - `source_type` — `"native"` for original PEvO papers, `"arxiv"` or `"crossref"` for bridge papers.
@@ -91,6 +100,8 @@ Single paper with full content and reviews.
       "name": "Dr. Jane Smith",
       "hive": "scientist1",
       "orcid": "0000-0001-2345-6789",
+      "orcid_verified": "0000-0001-2345-6789" | null,
+      "orcid_discrepancy": false,
       "affiliation": "MIT"
     }
   ],
@@ -131,6 +142,7 @@ Single paper with full content and reviews.
 
 **Notes:**
 - `discipline` — same canon_name semantics as `PaperSummary.discipline` above (lowercased, round-trippable through `?discipline=`, may be `null`).
+- `authors[].orcid` / `authors[].orcid_verified` / `authors[].orcid_discrepancy` — same supersession semantics as `PaperSummary.authors[]` above. `orcid` is the chain-stored typed-or-prefilled value; `orcid_verified` is the accreditation-attested ORCID for `authors[].hive` (null when no current accreditation or the accreditation carries no ORCID); `orcid_discrepancy` is `true` when both are present and differ. Use `orcid_verified` as the canonical display ORCID when non-null; otherwise fall back to `orcid`. See [hive-schemas.md § 1.1 "ORCID supersession rule"](../hive-schemas.md) for the full rule.
 - Unlike `PaperSummary`, this endpoint does not return `vote_strength`, `review_count`, `source_type`, or `doi`. Those fields are on the list view only. `vote_strength` is returned by the enrichment endpoint.
 - `citation_count` is computed for single-paper views: for native papers via HAF (counting accredited papers that cite this one), for bridge papers via Semantic Scholar external citation counts.
 - `author_reputation` is populated from the batch reputation cache for accredited authors (mirrors `PaperSummary.author_reputation` on the list endpoint). Non-accredited authors return `0`. Single-paper view and list view resolve to the same value within a cycle. See [reputation-algorithm.md](../reputation-algorithm.md) for the cache shape and read path.
