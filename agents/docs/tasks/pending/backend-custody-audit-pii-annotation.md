@@ -154,3 +154,61 @@ When item 1 lands, `git mv` this file back to `tasks/review/`. Round-3 architect
 Round-2 hold item 1 (P1) landed: rewrote the SQL header comment block AND the COMMENT ON COLUMN body in 006_custody_audit_pii_annotation.sql to reflect that fresh-auth is now universal on /api/custody/broadcast — both consent and non-consent paths set freshAuthMechanism via fresh-auth consume early-return, the dead `=== null` arms were dropped in W6 commit 1437e41, so user_agent populates on every successful broadcast row. Replaced the stale "i.e., the consent-op signing flow (author_accept / author_resign); other broadcasts write NULL" parenthetical with the compact wording from the hold-block. No emdashes in the new text. Migration remains idempotent (COMMENT ON COLUMN is unconditional). In-place edit; no migration 007 needed.
 
 Verification: migration was not re-run against a live Postgres from this worktree subagent (no DB access in this isolation), but the only statement is the unconditional `COMMENT ON COLUMN` so the parse risk is limited to string-syntax — visually inspected, balanced single quotes, no embedded apostrophes. The parent will re-apply via `./deploy.sh migrate` after cherry-pick.
+
+---
+
+## Architect re-review (2026-05-16, round-3 → round-4) — HELD PENDING FIXES
+
+`/ce-code-review` ran on commit `afe0ad4` (round-3 hold fix). Round-3's load-bearing claims verified clean at HEAD: every `/api/custody/broadcast` call requires fresh-auth (`backend/src/routes/custody.ts:337-413`, early-returns on `!result.valid` at lines 351 and 391); both consent and non-consent paths assign `freshAuthMechanism` (lines 385, 412); the `auditExtras` constructor at `custody.ts:636-641` is a flat object literal with no residual `=== null` gate. The round-3 trailing-sentence rewrite is factually correct.
+
+Three items held — all in `backend/migrations/006_custody_audit_pii_annotation.sql`, all in the same file. Bundle into a single round-4 fix commit. Migration remains idempotent (`COMMENT ON COLUMN` is unconditional and `deploy.sh:101-104`'s `migrate_db()` re-runs all `*.sql` files unconditionally), so in-place edit is appropriate; no migration 007 needed.
+
+### Items held (must fix before archive)
+
+**1. (P1, conf 90) Opening sentence at line 46 still scopes to consent-op only.** `backend/migrations/006_custody_audit_pii_annotation.sql:46`, opening sentence of the `COMMENT ON COLUMN` body:
+
+```
+'PII (GDPR / CNPD). Raw HTTP User-Agent header from the consent-op fresh-auth request. '
+```
+
+The phrase "from the consent-op fresh-auth request" still scopes the column to consent-op flows. Lines 54-58 of the same `COMMENT ON COLUMN` body now assert universal population on every broadcast. A CNPD inspector running `\d+ custody_audit_log` sees both sentences in one column description and gets a self-contradicting answer: sentence 1 says consent-op only, sentences 4-6 say every call. Surfaced by maintainability M1 (conf 90) + project-standards (residual).
+
+Suggested fix: replace "from the consent-op fresh-auth request" with "captured when a fresh-auth challenge is answered for the broadcast" (or similar wording consistent with lines 54-58). The header SQL-comment block above does NOT contain this same phrasing so this fix is body-only — verify before editing.
+
+**2. (P2, conf 90 — cross-corroborated) Route-policy assertion + sibling-task-slug citation will rot.** Same migration file. Both occurrences:
+- Header SQL-comment block lines 38-43: `At HEAD every /api/custody/broadcast call requires a fresh-auth proof (see backend-custody-broadcast-orcid-fresh-auth), so this column is populated on every successful broadcast row...`
+- `COMMENT ON COLUMN` body lines 55-58: same text in string form.
+
+Two coupling issues, both retreads of round-2 hold #3's lesson:
+
+- **(a) Route-level policy assertion that can rot.** "Every call requires a fresh-auth proof" is a snapshot claim about current route policy. The preceding sentence — "The constructor is reached whenever a fresh-auth challenge has been answered for the broadcast" — already states the column's semantics *invariantly*. A future PR adding a fresh-auth-optional path through `/api/custody/broadcast` would silently invalidate the sentence with no detector.
+- **(b) Slug citation that goes stale on archive.** `(see backend-custody-broadcast-orcid-fresh-auth)` cites a sibling task slug. That task is currently in `tasks/review/` waiting to archive; once archived, the slug stops resolving to a live file (and `tasks-archive.md` is trimmed to 250 lines, so older entries fall off entirely). The named convention against this is `agents/docs/solutions/conventions/task-slug-citations-in-comments-go-stale-on-archive-2026-05-15.md`.
+
+Surfaced by maintainability M2 + ce-learnings-researcher (cross-corroborated, promoted to conf 90).
+
+Suggested fix: drop both the "At HEAD every ... requires a fresh-auth proof (see ...)" sentence AND the slug parenthetical entirely — at both occurrences (header SQL-comment block + `COMMENT ON COLUMN` body). The preceding sentence ("The constructor is reached whenever a fresh-auth challenge has been answered for the broadcast") is already invariant and sufficient. The "covering both consent-op signing and non-consent broadcasts" trailer can stand on its own as a clarifying illustration of what answering the fresh-auth challenge looks like in practice. Net deletion is ~3 lines per occurrence.
+
+**3. (P2, conf 75) Broadcast-type enumeration couples to current op-type set.** Same migration file, lines 41-43 (header SQL-comment block) and the matching trailer in the `COMMENT ON COLUMN` body:
+
+```
+covering both consent-op signing (`author_accept` / `author_resign`) and
+non-consent broadcasts (vote, comment, custom_json).
+```
+
+The enumeration "(vote, comment, custom_json)" is presented as exhaustive. A future task routing a new Hive op type through `POST /api/custody/broadcast` would silently make the list incomplete. Surfaced by maintainability M3 (conf 75).
+
+Suggested fix: prefix with `e.g.,` — i.e., `(e.g., vote, comment, custom_json)` — at both occurrences. Signals the list is illustrative, not exhaustive. Alternatively, drop the enumeration entirely; "non-consent broadcasts" is self-describing.
+
+### Recommended approach
+
+All three items are in the same file and can be addressed in a single in-place edit pass. The header SQL-comment block and the `COMMENT ON COLUMN` body have parallel structure — apply the same rewrite shape to both. After the edit, re-run `./deploy.sh migrate` against the dev DB and verify the new comment via `SELECT col_description('custody_audit_log'::regclass, attnum) FROM pg_attribute WHERE attrelid = 'custody_audit_log'::regclass AND attname = 'user_agent';`.
+
+### Items dismissed during architect triage
+
+- **correctness residual (conf 30)** "wording-vs-mechanism gap" — the COMMENT says "populated on every successful broadcast row" but `user_agent` can still be NULL when `req.headers['user-agent']` is absent (HTTP spec allows UA omission; `custody.ts:640` narrows via `typeof`, `custody-audit.ts:83` coalesces undefined→NULL). Below threshold; the wording captures the column's intent (the *path* always reaches the constructor and attempts to populate), and a NULL row is still consistent with "the column captures the UA header *if the client sends one*". No CNPD-audit-trail impact.
+- **data-migrations residual (low)** "when the hashing task lands, the 'Raw HTTP User-Agent header' wording will need to update" — that task is currently in `tasks/blocked/`. Future drift, not a defect now.
+- **testing — non-consent path missing a `user_agent` populate assertion** — preemptive hardening per project memory `feedback_dismiss_preemptive_test_hardening`. Consent path has `expect(rows[0].user_agent).toBe(...)` at `backend/tests/routes/custody-consent-ops.test.ts:478,522`; non-consent path doesn't read back UA after broadcast. Regression risk is theoretical; would be caught at code-review of the application code, not by a missing assertion on a documentation commit.
+
+### Re-review signal
+
+When all three items land, `git mv` this file back to `tasks/review/`. Round-4 architect review scopes `/ce-code-review` to the round-4 commit only.
