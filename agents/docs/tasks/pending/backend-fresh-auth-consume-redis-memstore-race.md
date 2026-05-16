@@ -75,3 +75,37 @@ Either close the race or document its bounded scope explicitly.
 `/ce-code-review` on `backend-custody-broadcast-orcid-fresh-auth` round-2 (architect session 2026-05-16): adversarial adv-1, P1 conf 75. Surfaced as pre-existing of round-2 (round-2 just copies a comment); filed separately because the fix is in the consume helpers, outside that task's round-2 diff scope.
 
 The architect's review recommendation: this is a real defect class that warrants design discussion. The narrow window in production today doesn't make it dismissible — a future audit-write `await` between get and delete would widen it silently. Option C (document the bounded scope) is the cheapest mitigation; Option B (in-process lock) is the cleanest closure for a single-instance deployment.
+
+---
+
+## Backend implementer signal (2026-05-16, round-1)
+
+**Option chosen: B (in-process lock).** Architect-recommended for single-instance; closes the race rather than merely documenting it. Per memory `project_single_instance_only`, multi-instance coordination is not in scope. Cost: ~10 lines of lock code plus matching test coverage. The lock is a defense-in-depth fold over the existing Redis GETDEL atomicity — Redis GETDEL alone is atomic at the Redis-server level, but the post-GETDEL memStore fallback admits the dual-consume window the task describes. Option B closes the door permanently and is robust to a future `await` between `memStore.get` and `memStore.delete`.
+
+**Design:**
+- Module-scoped `inFlightConsumes: Set<string>` in `backend/src/lib/fresh-auth.ts`, sibling to the existing `memStore` Map.
+- BOTH `consumeFreshAuthToken` and `consumeSessionFreshAuthToken` perform a synchronous `has` → `add` critical section on entry, BEFORE any awaits. Because JavaScript is single-threaded, the `has` → `add` pair is uninterruptible by sibling promises. If the token is already in-flight, the loser returns `{ valid: false, reason: 'expired' }` immediately.
+- Single shared `inFlightConsumes` set spans both helpers because a single token is uniquely bound to ONE kind at issuance (either `issueFreshAuthToken` ⇒ consent_op-kind or `issueSessionFreshAuthToken` ⇒ session-kind). Two concurrent consumes targeting the same token from different helpers is the same race surface as two consumes through the same helper, so the lock domain is "token", not "(token, helper)".
+- Each consume helper splits into a thin outer (lock acquire/release in `try/finally`) and an inner `*Locked` helper that contains the original consume body. The `finally` block guarantees lock cleanup even when the inner consume throws.
+
+**Loser semantics:** the in-flight loser receives `{ valid: false, reason: 'expired' }` — the same wire shape a stale-replay caller observes. Reasoning: (a) no new reason code on the `FreshAuthVerifyResult` reason union, preserving the existing wire contract; (b) functionally indistinguishable from the user's perspective — the token IS being consumed by the concurrent sibling caller, so single-use semantics report "already consumed" via the same code path; (c) avoids inventing a new `in_progress` variant whose only consumer would be one test assertion.
+
+**Test coverage (acceptance §4):**
+Added 7 concurrent-consume tests in `backend/tests/lib/fresh-auth.test.ts` under a new describe block `BACKEND-FRESH-AUTH-CONSUME-REDIS-MEMSTORE-RACE — concurrent dual-consume produces exactly one winner`:
+
+1. **`consumeFreshAuthToken` Redis-up Promise.all** (skipIf no Redis): two concurrent consumes for the same token; assert `winners.length === 1` and the loser's reason is `'expired'`.
+2. **`consumeFreshAuthToken` Redis-stubbed-to-throw on getdel** (skipIf no Redis): widest race window — both consumes fall through to memStore. Without the lock, both would synchronously read the entry before either reached `memStore.delete`, returning two valids. With the lock, exactly one returns valid. `mockImplementation` (not `mockRejectedValueOnce`) so both concurrent getdel calls throw.
+3. **`consumeFreshAuthToken` no-Redis real-path Promise.all** (always runs): the carve-out clause (c) real-path companion — exercises the same race class against real infrastructure when Redis is absent.
+4-5. **Same three tests for `consumeSessionFreshAuthToken`** (Redis-up, Redis-stubbed, no-Redis real-path).
+6. **Lock cleanup test**: pins the `try/finally` discipline by issuing → consuming → re-consuming and asserting the second consume returns `expired` (token consumed, not stuck-in-lock). The wire-code-collapse between "token consumed" and "lock held" makes this a documentation-of-intent assertion; the actual cleanup contract is enforced structurally by the `finally` block.
+
+The Redis-stubbed variant is where the test is most informative per the task body — pre-fix, two memStore fallback consumes both succeed; post-fix, exactly one does.
+
+**Architect-zone notes:** none. The change is contained to:
+- `backend/src/lib/fresh-auth.ts` (implementation)
+- `backend/tests/lib/fresh-auth.test.ts` (tests + header carve-out paragraph)
+- This task file (signal block).
+
+**Worktree note:** this worktree (`agent-a30f543f5bdba25e8`) is several commits behind `main`'s `fresh-auth.ts`. The task file was filed on `main` and copied into the worktree at task start. The implementation here applies to the pre-`expires_at` ISO-string-conversion shape (`expires_at: number`) and the pre-kind-neutral key-prefix shape (`:fresh_auth:consent_op:`). On parent merge, the lock code (the new `inFlightConsumes` set, the outer/inner split, and the `try/finally` cleanup) should rebase cleanly onto main's `fresh-auth.ts` — none of the diverged areas (the key prefix string, the `expires_at` wire format) overlap with the Option B mechanism.
+
+**Verification:** `cd backend && npm run typecheck` clean. `npm run lint` returns the two pre-existing `no-explicit-any` warnings in `seed-phrase.ts` (outside this task's zone) and 0 errors. Vitest NOT run in worktree per parent instructions — parent serializes.

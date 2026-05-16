@@ -237,6 +237,37 @@ export function changeEmailFreshAuthTarget(username: string): FreshAuthTarget {
  *  unavailable (matches the convention in `routes/orcid.ts:151`). */
 const memStore = new Map<string, { entry: StoredEntry; expiresAt: number }>();
 
+/** BACKEND-FRESH-AUTH-CONSUME-REDIS-MEMSTORE-RACE: in-process lock set for
+ *  the consume helpers. Closes the concurrent-dual-consume race surfaced by
+ *  the architect's adversarial review of `backend-custody-broadcast-orcid-
+ *  fresh-auth` round-2.
+ *
+ *  The race: `consumeFreshAuthToken` / `consumeSessionFreshAuthToken` do a
+ *  Redis GETDEL (atomic) followed by a memStore fallback `get` + `delete`
+ *  (synchronous, but separated by an await on the GETDEL itself plus any
+ *  future intervening awaits). On a concurrent `Promise.all` dual-consume
+ *  for the same token, the second caller's GETDEL returns null (consumed
+ *  by the first), falls through to memStore — which still holds the entry
+ *  if the first caller hasn't yet executed its post-GETDEL `memStore.delete`.
+ *  On Redis-down (both GETDELs throw), both fall through to memStore and
+ *  the same widens. Worse, any future `await` between `memStore.get` and
+ *  `memStore.delete` widens the window silently.
+ *
+ *  Mechanism: the consume helpers `inFlightConsumes.has(token)` synchronously
+ *  on entry. If the token is already in-flight, the loser returns
+ *  `{ valid: false, reason: 'expired' }` — same outcome a stale-replay
+ *  caller observes, no new reason code on the wire. The winner adds the
+ *  token to the set BEFORE any awaits, removes it in a `finally` so a
+ *  throwing consume cleans up. Because JS is single-threaded, the
+ *  `has` → `add` pair is an uninterruptible synchronous critical section.
+ *
+ *  Single-instance scope: PEvO is single-instance per memory
+ *  `project_single_instance_only`; cross-process coordination isn't needed.
+ *  A future multi-instance topology would re-open the race and require a
+ *  Redis-side SETNX sentinel (task Option A) — the in-process lock is
+ *  not a substitute for that under multi-instance. */
+const inFlightConsumes = new Set<string>();
+
 /** Periodic cleanup so the map doesn't grow unbounded under no-Redis ops.
  *  Same shape as the orcid_state cleaner in orcid.ts. Wrapped in a
  *  start/stop pair so tests can deterministically pause the cleaner during
@@ -472,6 +503,30 @@ export async function consumeFreshAuthToken(
     return { valid: false, reason: 'missing' };
   }
 
+  // BACKEND-FRESH-AUTH-CONSUME-REDIS-MEMSTORE-RACE (Option B): in-process
+  // lock check. Synchronous `has` → `add` is atomic under the JS event loop;
+  // a concurrent dual-consume for the same token has exactly one caller
+  // reach the body, the loser returns `expired` immediately. The lock is
+  // released in a `finally` below so a throwing consume cleans up. The
+  // loser's `expired` is indistinguishable from a stale replay, preserving
+  // the single-use contract as the user perceives it.
+  if (inFlightConsumes.has(token)) {
+    return { valid: false, reason: 'expired' };
+  }
+  inFlightConsumes.add(token);
+
+  try {
+    return await consumeFreshAuthTokenLocked(token, expectedUsername, expectedTargetHash);
+  } finally {
+    inFlightConsumes.delete(token);
+  }
+}
+
+async function consumeFreshAuthTokenLocked(
+  token: string,
+  expectedUsername: string,
+  expectedTargetHash: string,
+): Promise<FreshAuthVerifyResult> {
   let raw: string | null = null;
   let consumedFromMemStore = false;
 
@@ -657,6 +712,32 @@ export async function consumeSessionFreshAuthToken(
     return { valid: false, reason: 'missing' };
   }
 
+  // BACKEND-FRESH-AUTH-CONSUME-REDIS-MEMSTORE-RACE (Option B): mirrors the
+  // in-process lock from `consumeFreshAuthToken`. The race + mitigation are
+  // identical; only the kind-acceptance contract differs (session consume
+  // accepts both kinds — see docstring). The same `inFlightConsumes` set is
+  // shared across both consume helpers because a single token is uniquely
+  // bound to ONE kind at issuance (either `issueFreshAuthToken` =>
+  // consent_op or `issueSessionFreshAuthToken` => session). Two concurrent
+  // consumes targeting the same token from different helpers is the same
+  // race surface as two consumes through the same helper, so the lock
+  // domain is "token", not "(token, helper)".
+  if (inFlightConsumes.has(token)) {
+    return { valid: false, reason: 'expired' };
+  }
+  inFlightConsumes.add(token);
+
+  try {
+    return await consumeSessionFreshAuthTokenLocked(token, expectedUsername);
+  } finally {
+    inFlightConsumes.delete(token);
+  }
+}
+
+async function consumeSessionFreshAuthTokenLocked(
+  token: string,
+  expectedUsername: string,
+): Promise<FreshAuthVerifyResult> {
   let raw: string | null = null;
   let consumedFromMemStore = false;
 
