@@ -53,6 +53,27 @@ async function pickTwoAccreditedResearchersWithOrcid(request) {
   });
 }
 
+// Pre-flight contract probe for `GET /api/accreditations`. Surfaces a
+// backend-side field rename (e.g. `orcid` → `orcid_id`, `username` nested
+// under `account`) as a contract-level failure with a usable message,
+// rather than the downstream "no accredited researchers with non-empty
+// ORCIDs" message which would otherwise be misread as a HAF data shortage.
+// The list endpoint is the consumer surface this spec exercises in
+// production via `fetchAccreditations`; pinning its shape here is the
+// risk-class companion the carve-out clause asks for.
+async function assertAccreditationsListContract(request) {
+  const resp = await request.get('/api/accreditations?limit=1');
+  expect(resp.ok(), `GET /api/accreditations responded ${resp.status()}`).toBe(true);
+  const list = (await resp.json()).data || [];
+  if (list.length === 0) {
+    throw new Error(
+      'GET /api/accreditations returned no rows. Cannot assert contract shape against an empty list.',
+    );
+  }
+  expect(list[0]).toHaveProperty('username');
+  expect(list[0]).toHaveProperty('orcid');
+}
+
 // Build a deterministic non-accredited handle. The accredited directory caps
 // at 200 rows; a timestamp suffix makes collision astronomically improbable.
 function makeNonAccreditedHandle() {
@@ -63,15 +84,31 @@ function makeNonAccreditedHandle() {
 // Alpine state. The directory load is fire-and-forget from init(), so the
 // form renders before it resolves; assertions on prefill/lock would race
 // without this gate.
+//
+// Explicit 10s timeout: `_loadAccreditedDirectory` swallows fetch errors and
+// assigns the empty `{}` map unconditionally, so when `/api/accreditations`
+// errors the predicate `Object.keys(...).length > 0` never resolves true.
+// Without the explicit timeout Playwright falls back to its 30s default and
+// emits a generic `waitForFunction timed out` message; the wrap-and-rethrow
+// surfaces the actual failure mode (directory load failed) so debugging
+// hits `/api/accreditations` instead of the predicate.
 async function waitForAccreditedDirectoryLoaded(page, xDataSelector) {
-  await page.waitForFunction(
-    (sel) => {
-      const el = document.querySelector(sel);
-      const data = window.Alpine?.$data(el);
-      return !!data && Object.keys(data.accreditedDirectory || {}).length > 0;
-    },
-    xDataSelector,
-  );
+  try {
+    await page.waitForFunction(
+      (sel) => {
+        const el = document.querySelector(sel);
+        const data = window.Alpine?.$data(el);
+        return !!data && Object.keys(data.accreditedDirectory || {}).length > 0;
+      },
+      xDataSelector,
+      { timeout: 10_000 },
+    );
+  } catch (err) {
+    throw new Error(
+      'accredited directory never loaded. Check /api/accreditations for HAF availability and response shape. Underlying: ' +
+        (err?.message || String(err)),
+    );
+  }
 }
 
 // The hive input on each co-author row is the only `<input list="...">` in
@@ -102,6 +139,7 @@ test('publish form: accredited co-author prefills+locks ORCID; non-accredited st
   page,
   request,
 }) => {
+  await assertAccreditationsListContract(request);
   const pair = await pickTwoAccreditedResearchersWithOrcid(request);
   if (!pair) {
     throw new Error(
@@ -169,6 +207,7 @@ test('publish broadcast carries accredited co-author ORCID in json_metadata.auth
   page,
   request,
 }) => {
+  await assertAccreditationsListContract(request);
   const pair = await pickTwoAccreditedResearchersWithOrcid(request);
   if (!pair) {
     throw new Error(
@@ -252,6 +291,11 @@ test('publish broadcast carries accredited co-author ORCID in json_metadata.auth
   const broadcast = await page.evaluate(() => window.__pevoBroadcastCalls[0]);
   const commentOp = broadcast.operations.find((op) => op[0] === 'comment');
   expect(commentOp, 'operations should include a comment op').toBeTruthy();
+  // Per Hive wire format, `json_metadata` MUST be a JSON-encoded string.
+  // Asserting the type here surfaces a contract-level failure if
+  // `publish.js` ever passes the metadata object unparsed, instead of a
+  // cryptic `JSON.parse` TypeError downstream.
+  expect(typeof commentOp[1].json_metadata).toBe('string');
   const meta = JSON.parse(commentOp[1].json_metadata);
 
   // The published authors array is [primary, ...coAuthors-with-name]. Find
@@ -274,6 +318,7 @@ test('edit form: existing co-author with accredited hive stays disabled; new co-
   page,
   request,
 }) => {
+  await assertAccreditationsListContract(request);
   const pair = await pickTwoAccreditedResearchersWithOrcid(request);
   if (!pair) {
     throw new Error(
