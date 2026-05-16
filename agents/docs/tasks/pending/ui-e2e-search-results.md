@@ -70,3 +70,36 @@ All 9 hold items landed in single commit `ee8be6d ui(tests): address 9 hold item
 - Item 9 (P3, error-path coverage) — added 6th test exercising `/api/search` 500 response: localized search-failed copy renders + zero result cards.
 
 Spec parses (`npx playwright test --list` discovers 6 tests). Parent will run Playwright once across the three UI re-review tasks before final archive.
+
+## Architect re-review (2026-05-16, round-2) — HELD PENDING FIXES:
+
+`/ce-code-review` ran on commit `ee8be6d` with 6 personas (correctness Opus; testing/maintainability/project-standards/previous-comments/learnings-researcher Sonnet; `ce-agent-native-reviewer` skipped per PEvO CLAUDE.md). The `previous-comments` reviewer verified all 9 round-1 hold items as fixed. 1 item blocks archive — one round-1 partial-fix plus two folded cosmetic items.
+
+### Items to address
+
+**1. (P1 maintainability) Header trim dropped the bridge-paper accreditation-bypass caveat that round-1 item 7 asked to preserve.** `frontend/tests/e2e/search.spec.js:4` (header comment). The old header explicitly explained why the `q=consensus` keyword fixture works even with an empty accreditation table: "Bridge papers bypass the accreditation filter server-side, so search results are non-empty even with an empty pevo_app_test accreditation table." Round-1 hold item 7 spec'd: "Trim to ~12 LOC keeping the data-source caveat (bridge papers bypass accreditation)." The implementer kept the corpus-probe term ("consensus") but dropped the bridge-paper caveat itself — the data-source caveat IS the bridge-paper sentence. A future debugger seeing empty-table test failures has no in-file signal pointing to the bridge-paper bypass. (maintainability, conf 90)
+
+   Fix: restore one sentence to the header, e.g.:
+   ```js
+   // Bridge papers bypass the accreditation filter server-side, so the
+   // corpus is non-empty even with an empty pevo_app_test accreditation table.
+   ```
+
+   **Folded item 1b (P3 correctness, conf 100):** the trimmed header comment references non-existent test numbers (says "tests 4 and 9 mock /api/search" but the file has only 6 tests; mocked ones are at positions 4 and 6, and the companion-tests reference "tests 1/2/3/5" should also be re-counted). Stale numbering from an earlier draft. Renumber while restoring the caveat.
+
+   **Folded item 1c (P3 testing, conf 75):** test 6 mock at `search.spec.js:263` uses `{status:'error', error:'mocked failure'}` where `error` is a string. The real backend envelope per `api.js` is `{status:'error', error: {code, message}}`. Test still passes today via the generic `INTERNAL_ERROR` fallback path, but the mock has fidelity drift. Correct to `{status:'error', error: {code: 'INTERNAL_ERROR', message: 'mocked failure'}}` so the mock exercises the structured-error path the spec is trying to assert.
+
+### Items dismissed during architect triage
+
+- **MAX_DISCIPLINE_PROBES=8 narrows coverage vs prior all-disciplines loop (correctness, low/75).** Trade-off acknowledged in implementer's comment.
+- **`waitForResponse('page=2')` substring also matches page=20+ (correctness, low/50).** No test in the same worker emits page=20+; hardcoded-safe today. Defensible per project bias against preemptive test hardening.
+- **Test 3 narrowing assertion at API-layer only (testing, residual).** Acceptable.
+- **AbortController cancellation path in doSearch and destroy()-during-fetch (testing, gaps).** Pre-existing; not introduced by this diff.
+- **URL-param table compressed (maintainability, residual/45).** Recoverable from production source; judgment call.
+- **Inline data-testid selector at line 61 not via RESULT_CARD (maintainability, residual/35).** Intentional sub-locator pattern.
+
+### Architect signal
+
+After landing item 1 (the caveat restoration + folded subtitems 1b and 1c), `git mv` this file back to `tasks/review/`. I'll re-review the new diff scoped to commits since this hold block was written.
+
+Anchor: all three sub-items touch nearby lines (header block + line 263 mock body). Single commit recommended.

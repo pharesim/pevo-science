@@ -54,3 +54,49 @@ Add specs to `frontend/tests/unit/pages-search.test.js` (create the file if it d
 ## Priority rationale
 
 P2 because the user-visible failure mode is concrete (wrong-page data shown with URL/footer claiming a different page), the trigger is plausible (slow HAF + impatient user), and the fix is ~8 lines. Not P1 because the rate at which users actually hit this on PEvO's current scale is bounded.
+
+## Architect re-review (2026-05-16) — HELD PENDING FIXES:
+
+`/ce-code-review` ran on commit `eff1bcc` with 6 personas (correctness Opus; testing/maintainability/project-standards/julik-frontend-races/learnings-researcher Sonnet; `ce-agent-native-reviewer` skipped per PEvO CLAUDE.md). All 5 acceptance criteria verified; 6 new race-guard tests cleanly exercise the cancel-on-new invariant. 2 P2 items block archive — one shared-helper regression caused by becoming the first caller to pass a signal, plus one maintainability cleanup.
+
+### Items to address
+
+**1. (P2) `api.js request()` spread overrides the 30s `AbortSignal.timeout` fallback once a caller passes a signal.** `frontend/src/api.js:47-48`. The helper sets `signal: init?.signal ?? AbortSignal.timeout(DEFAULT_TIMEOUT_MS)` on line 47, then `...init` on line 48 immediately overwrites with the caller's `{signal: controller.signal}`. The `??` fallback is computed but never used when `init.signal` is present. Before this commit no caller passed `signal`, so the 30s server-hang timeout was always live on every request. After this commit, search.js is the FIRST caller passing a signal — search requests now have NO server-hang timeout; the only thing that can cancel them is a new doSearch starting or destroy() running. A user who searches and walks away with backend stalled holds the fetch open indefinitely. (julik-frontend-races, conf 90)
+
+   This is a wider regression vector for any future caller adopting the `{signal}` pattern (e.g., the researchers.js sibling-page fix this task's "Out of scope" carved out). Each future adopter silently loses the 30s budget.
+
+   Fix: compose the signals via `AbortSignal.any()`:
+   ```js
+   signal: init?.signal
+     ? AbortSignal.any([init.signal, AbortSignal.timeout(DEFAULT_TIMEOUT_MS)])
+     : AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
+   ```
+   `AbortSignal.any()` is a standard browser primitive; no dependency. 3 lines.
+
+**2. (P2) Three-clause OR in catch has an unreachable third clause.** `frontend/src/pages/search.js:289-300`. The supersession guard reads:
+   ```js
+   if (
+     controller.signal.aborted ||
+     this._searchController !== controller ||
+     (err && (err.name === 'AbortError' || err.code === 'ABORT_ERR'))
+   ) { return; }
+   ```
+   Any path that aborts the controller goes through `this._searchController.abort()` at a superseding doSearch's entry point, which synchronously sets `controller.signal.aborted = true` AND reassigns `this._searchController`. By the time `!== controller` is true, `signal.aborted` is also true. The only scenario where AbortError arrives but neither of the first two is true would require the signal to be aborted without going through `_searchController` — which this code never does. A future reader sees the third clause and wonders if it defends a real edge case they're missing. (maintainability, conf 72)
+
+   Fix: pick one of:
+   - (a) **Remove the third clause** — verifiably correct under the current control flow; 3-line delete.
+   - (b) **Extract to a named predicate** — `if (this._isSupersededOrAborted(controller, err)) return;` plus a helper method that retains all three clauses as belt-and-suspenders against hypothetical future browser/polyfill behavior. Implementer's call; (a) is the smaller change.
+
+### Items dismissed during architect triage
+
+- **3-deep stacked request not tested (julik-frontend-races, residual/65).** Mechanically safe by induction on the identity check; testing all combinatorial depths is preemptive.
+- **err.code === 'ABORT_ERR' path has no dedicated test (testing, low).** Defensive belt-and-suspenders; redundant with item 2 cleanup.
+- **Test 5 (`goToPage` race) uses `await Promise.resolve()` flushes (testing, residual/low).** Stable under current doSearch shape; preemptive hardening.
+- **No real-fetch E2E verifying AbortSignal propagates through request() to fetch (correctness, gap).** Already covered by static read; E2E would not strengthen the invariant.
+- **researchers.js follow-up** — dismissed per architect triage; pre-existing latent race, low churn surface, no concrete user reports. Re-evaluate if a future incident surfaces.
+
+### Architect signal
+
+After landing items 1 and 2, `git mv` this file back to `tasks/review/`. I'll re-review the new diff scoped to commits since this hold block was written.
+
+Anchor: item 1 (api.js) and item 2 (search.js) touch different files; one or two commits.

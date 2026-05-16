@@ -100,3 +100,41 @@ get canRetryUpgrade() {
 ## Origin
 
 Round-7 `/ce-code-review` on commit `aba3dc3` of `ui-keychain-api-misuse`. Findings #1 (reliability + adversarial) and #2 (maintainability + adversarial + correctness) cross-reviewer-converged to anchor 100 at the same code path; user triage on 2026-05-15 bundled them into a single follow-up. See archived `FE-KEYCHAIN-API-MISUSE` entry in `agents/docs/tasks-archive.md` for the round-7 architect re-review block that spawned this task.
+
+## Architect re-review (2026-05-16) — HELD PENDING FIXES:
+
+`/ce-code-review` ran on commit `14d65b7` with 8 personas (correctness/adversarial Opus; testing/maintainability/project-standards/reliability/julik-frontend-races/learnings-researcher Sonnet; `ce-agent-native-reviewer` skipped per PEvO CLAUDE.md). All 6 acceptance criteria met. 2 items block archive — one cross-reviewer-convergent P1 routing defect and one maintainability extraction.
+
+### Items to address
+
+**1. (P1) `TimeoutError/AbortError` catch shortcut at line 786 fires unconditionally regardless of `broadcastLanded`.** `frontend/src/pages/settings.js:786`. The shortcut routes to `upgrade.backendTimeout` (non-retryable; copy directs to support) on TimeoutError or AbortError. Today the only AbortSignal in the try block is on the post-broadcast cleanup fetch at line 746 (after `broadcastLanded = true`), so the assumption holds — but `_performUpgradeKeyRotation` (line 905) contains an un-budgeted dhive `client.broadcast.sendOperations` call. If dhive ever surfaces a hung connection as an AbortError (some implementations wrap internal aborts this way), or a future refactor adds a timeout to the broadcast, the shortcut fires with `broadcastLanded = false` and routes the user to non-retryable copy when the chain has NOT rotated and retry would actually succeed. The refactor architecturally cements the assumption: previously a locale-text mismatch could accidentally unlock Try Again; now nothing can. (adversarial + reliability cross-reviewer convergent, both at conf 75/medium-P1 — cross-reviewer agreement promotes to anchor 100)
+
+   Fix: gate the shortcut on `broadcastLanded`:
+   ```js
+   if (err && (err.name === 'TimeoutError' || err.name === 'AbortError') && broadcastLanded) {
+   ```
+   Semantically correct by construction rather than by assumption about which signal exists in scope.
+
+**2. (P2) `NON_RETRYABLE_KEYS` list defined inside getter body; future-update discoverability relies solely on the field comment.** `frontend/src/pages/settings.js:434`. The array literal `['upgrade.backendTimeout', 'upgrade.partialApplyFailed']` is allocated fresh on every reactive read. The field-level comment at line 393-397 directs developers to "add to NON_RETRYABLE_KEYS," but the name only exists inside the getter body. A future developer adding a third non-retryable sub-case has to open the getter to find the registry; there's no module-top constant whose name advertises it. (maintainability, conf 75)
+
+   Fix: extract to a module-level constant above the Alpine.data block:
+   ```js
+   const NON_RETRYABLE_UPGRADE_ERROR_KEYS = ['upgrade.backendTimeout', 'upgrade.partialApplyFailed'];
+   ```
+   Update the getter to reference the name. Update the field comment to say "add to NON_RETRYABLE_UPGRADE_ERROR_KEYS at module top." Side benefit: eliminates a per-reactive-read array reallocation.
+
+### Items dismissed during architect triage
+
+- **AC4 integration test missing `upgradeErrorKey`/`canRetryUpgrade` assertions on the pre-broadcast catch branch (testing, conf 75).** AC4 is covered at the getter unit-test level; no concrete mutation observed. Defensible per project bias against preemptive-hardening tests.
+- **dhive `client.broadcast.sendOperations` has no AbortSignal/timeout (reliability, conf 75).** Pre-existing; distinct from the discriminator refactor. Hive API nodes generally fast; narrow failure tail.
+- **Transient 503/429 on cleanup routes permanently to partialApplyFailed (reliability, conf 50).** Out of scope per task spec.
+- **i18n: `upgrade.partialApplyFailed` and `upgrade.backendTimeout` carry identical copy in all 16 locales (maintainability, residual).** Separate-key decision defensible.
+- **broadcastLanded boolean name (maintainability, no-change-needed).** Adequately clear.
+- **canRetryUpgrade returns true when `upgradeErrorKey` is null (julik-frontend-races, low/72).** Template `x-show` outer guard makes null case unreachable in DOM.
+- **Discriminator write ordering fragility (adversarial, P3/55).** No concrete await currently between the writes.
+
+### Architect signal
+
+After landing items 1 and 2, `git mv` this file back to `tasks/review/`. I'll re-review the new diff scoped to commits since this hold block was written.
+
+Anchor: items 1 and 2 are independent small fixes; they can land in one commit or two. Item 1 is the P1 correctness fix on the same try/catch the refactor edited.

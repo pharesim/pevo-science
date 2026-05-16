@@ -71,3 +71,37 @@ Wire discriminator now exists:
 Block condition (verbatim from the BLOCKED note above): *"Move back to `pending/` once that backend task's round-2 lands and ships `code: 'LOCK_HELD'` on the lock-held 409 path."* That condition is met. Parent task `backend-bridge-write-haf-lag-and-retry-amplification` remains in `tasks/review/` awaiting architect re-review, but the gate as written is on the wire, not on parent archive — so UI can pick this up now.
 
 UI implementer: no need to re-verify the wire shape; it's stable in the committed code. Just confirm `frontend/src/pages/bridge.js` `handleRegister()` catch (around lines 319-326) currently treats all errors generically before adding the new branch.
+
+## Architect re-review (2026-05-16) — HELD PENDING FIXES:
+
+`/ce-code-review` ran on commit `812e7cc` with 6 personas (correctness Opus; testing/maintainability/project-standards/julik-frontend-races/learnings-researcher Sonnet; `ce-agent-native-reviewer` skipped per PEvO CLAUDE.md). Acceptance criteria met. 2 P2 items block archive.
+
+### Items to address
+
+**1. (P2) `err && err.code === 'LOCK_HELD'` has redundant null-guard inconsistent with sibling sites.** `frontend/src/pages/bridge.js:329`. Inside a catch block `err` is always truthy; the JS runtime never delivers a nullish thrown value here. The sibling lookup error handler at `bridge.js:291` (`const code = err.code || ''`) and the analogous `settings.js` DUPLICATE branch (`if (err.code === 'DUPLICATE')`) both omit the prefix. The inconsistency adds cognitive noise: a reader sees `err && ...` and pauses to ask whether some path could deliver a falsy `err`. (maintainability, conf 90)
+
+   Fix: drop the `err &&` prefix so the check reads `if (err.code === 'LOCK_HELD')`, matching the codebase-wide idiom.
+
+**2. (P2) `console.warn('[bridge register]', err)` fires unconditionally before the LOCK_HELD branch — log spam on routine contention.** `frontend/src/pages/bridge.js:323`. Per `agents/docs/solutions/conventions/frontend-error-sanitization-2026-04-21.md`, warn belongs only in the unexpected-failure else-branch. LOCK_HELD is a semantic, expected code the UI owns (the very reason the discriminator was introduced); warning on every routine contention retry is noise. Aligned with the project's logging-minimal bias (`feedback_pevo_logging_minimal.md` — "prune when in the area"). (learnings, medium confidence)
+
+   Fix: reorder the catch so the LOCK_HELD branch returns BEFORE the warn:
+
+   ```js
+   this.step = 'error';
+   if (err.code === 'LOCK_HELD') {
+     this.errorMessage = this.$t('bridge.lockHeldRetry');
+     return;
+   }
+   console.warn('[bridge register]', err);
+   this.errorMessage = this.$t('common.registrationFailed');
+   ```
+
+### Items dismissed during architect triage
+
+- **`errorMessage` never cleared on Try Again (julik-frontend-races, conf 60).** Template guards on `step === 'error'` so the stale string is never displayed. Pure preemptive hygiene; dismissed per project bias.
+- **`handleRegister` has no re-entry guard at function boundary (julik-frontend-races, residual).** Not reachable from current template (button gates on `step === 'idle'`).
+- **Translation stubs in 15 non-English locales (julik-frontend-races, residual).** STUBS.md convention.
+
+### Architect signal
+
+After landing items 1-2, `git mv` this file back to `tasks/review/`. I'll re-review the new diff scoped to commits since this hold block was written. Both items are trivial; they can land in one commit.
