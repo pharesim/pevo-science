@@ -251,3 +251,45 @@ Unchanged per task body — all three surfaces (papers / comments / reviews) kee
   - Two cache-collision tests in `disciplines-canon-mocked.test.ts:359, 406` (repeated-discipline-param dedup) fail when `bridge-paper-author-gate.test.ts` runs in the same vitest invocation but pass when `disciplines-canon-mocked.test.ts` runs alone or alongside `papers.test.ts`. This is test-isolation interaction (likely shared `hafCache` state across files), not a regression introduced by any of the four lane changes — verified by running each combination. The `:ao=` cache-key fragment removal does not change behavior when both compared requests use the same `?accredited_only` value (or omit it).
 
 ### No new [TODO Architect] notes from this implementation pass.
+
+---
+
+## Architect re-review round-2 (2026-05-16) — HELD PENDING FIXES
+
+`/ce-code-review` on commits `986f07e..9633049` dispatched 11 reviewers (correctness, security, adversarial, testing, maintainability, project-standards, learnings, performance, api-contract, reliability, kieran-typescript; `ce-agent-native-reviewer` skipped per root CLAUDE.md). Mostly clean. 1 P2 held below; 1 P2 filed as separate task; remaining findings dismissed at triage or noted for architect-side doc updates.
+
+### Items to address
+
+**1. (P2) `accredCte.nextIdx + 2` flat-offset arithmetic diverges from `paramIdx++` convention**
+
+**Where:** `backend/src/routes/reviews.ts:62-64` (at commit `986f07e`). **Verify current working-tree state first** — the kieran-typescript reviewer noted the working tree may have superseded the flat-offset form; if `paramIdx++` is already in place on `main`, mark this item done without further changes.
+
+**Why:** The canonical pattern across PEvO's backend is the `paramIdx++` counter idiom:
+
+```ts
+let paramIdx = accredCte.nextIdx;
+const authorIdx = paramIdx++;
+const permlinkIdx = paramIdx++;
+const anonIdx = paramIdx++;
+```
+
+The flat-offset form is mechanically correct today (exactly three binds follow the CTE params), but it's one bind-insertion away from silent SQL parameter mis-alignment. The same file's own comments document the `paramIdx++` convention as canonical; the inconsistency is self-contradicting. Per `agents/docs/solutions/conventions/defense-in-depth-canary-must-pin-each-layer-2026-05-07.md`, the canonical counter pattern exists exactly to make bind-insertion regressions impossible.
+
+**Fix:** If `reviews.ts:62-64` still uses `accredCte.nextIdx + 2` flat arithmetic on current `main`, refactor to the `paramIdx++` counter idiom shown above. Otherwise mark this item done.
+
+### Findings filed as separate tasks (no action on this hold)
+
+- `backend-search-partial-degradation-allsettled.md` (P2) — `searchFromHaf` `type=all` branch uses `Promise.all` which collapses to empty 200 on single-branch throw, silently masking partial degradation. Pre-existing bug surfaced during lane-3 review; filed as follow-up since not in the task's accreditation-gate scope.
+
+### Findings dismissed at triage (no action)
+
+- Lane-2 comments canaries were vacuously passing at commit `a0845dc` due to the pre-existing non-RECURSIVE CTE bug returning `[]` silently (testing T-01 P2/90). The bug was fixed out-of-scope at commit `893f43d` ("fix discussion thread query swallowing all PEvO comments"); canaries are live on current `main`. No architect action needed beyond noting that the lane-2 mutation-kill claim was effectively re-attested by `893f43d`'s downstream fix.
+- Anon-proxy canary silently degrades to weaker 404 assertion when `HIVE_ANON_ACCOUNT` is unset (testing T-02 low/75): preemptive hardening per `feedback_dismiss_preemptive_test_hardening`. The `pevo.anon` default makes the degradation path unreachable in normal deployments.
+- `/api/profile/:username/papers` (`fetchUserPapersFromHaf`) lacks `validPevoPaperWhere` + accreditation gate (adversarial P3/90): out-of-scope of the 4 named lanes. Folded into the `backend-cumulative-union-listing-surfaces-parity.md` follow-up's audit scope (the missed-surface audit there should enumerate `fetchUserPapersFromHaf` + the `authorship_claims` UNION arm).
+- Stale `accreditedOnly` references in `bridge-paper-author-gate.test.ts` comments/titles (maintainability M2 low/75): cosmetic test-file cleanup; bundle into next backend touch of that file.
+- Bare `{ }` block leftover in `search.ts:88` (maintainability M1 low/80): cosmetic; bundle into next backend touch.
+- Contract-doc items (api-contract AC-01: `reviews.md` Errors block doesn't enumerate the new 404-for-unaccredited; AC-02: `is_accredited` per-surface anon-proxy semantics undocumented): architect-side. Fold into the next `agents/docs/api-contracts/{reviews.md,papers.md}` touch — not a hold item on this task.
+
+### Re-review signal
+
+When item 1 is resolved (either applied or confirmed-already-fixed-on-main), `git mv` this file from `tasks/pending/` back to `tasks/review/`. The architect's next review pass scopes `/ce-code-review` to commits since `9633049` (or skips if item 1 is verified already-fixed in working tree).
