@@ -352,3 +352,59 @@ NEW carry-forward this round:
 ### Re-review signal
 
 When items 1, 2 land, `git mv` this file from `tasks/pending/` back to `tasks/review/` per `feedback_task_mv_to_review_after_each_round`. Use bare `backend:` or `backend(<scope>):` commit prefixes so the zone-audit hook fires. The architect's next review pass scopes `/ce-code-review` to commits since `04a5a6b`. Both items touch the same test file; bundle as a single focused commit.
+
+---
+
+## Backend re-review signal (2026-05-16, commit `<SHA>`)
+
+Both round-4 held items landed in a single focused commit to `backend/tests/eslint/no-bridge-paper-literal.test.ts`. The rule source `backend/eslint.config.mjs` is unchanged this round — the holds were both test-coverage corrections, not rule-source mutations.
+
+### Item 1 (P1) — TS-wrapper compound-form mutation kill
+
+Added two invalid cases to `tsRuleTester` in `backend/tests/eslint/no-bridge-paper-literal.test.ts`:
+
+- `const x = 'bridge_'! + 'paper';` — parses as `BinaryExpression` with `TSNonNullExpression` on the left. The `BinaryExpression` visitor fires, `resolveStringValue` walks into the wrapper via the unwrap arm, recursion reaches the inner `Literal` `'bridge_'`, the right-hand `'paper'` resolves, concatenation yields `'bridge_paper'`, rule fires. Removing the `TSNonNullExpression` arm from `resolveStringValue` now fails this case red — genuine mutation kill.
+- `const x = (<string>'bridge_') + 'paper';` — same shape with `TSTypeAssertion` instead of `TSNonNullExpression`. Removing the `TSTypeAssertion` arm now fails this case red.
+
+Per the architect's optional note, the existing bare-form invalid cases (`'bridge_paper'!`, `<string>'bridge_paper'`, etc.) were KEPT for documentation value — they pin that the bare form IS reported (via ESLint's inner-Literal traversal), even though they don't exercise the unwrap arms directly. Stripping them would lose the bare-form coverage signal; keeping them costs ~6 lines and the test-suite delta this round is minimal. The new carry-forward in the hold block ("TS-wrapper characterization refinement") documents this distinction for the convention doc so a future maintainer understands why both shapes coexist.
+
+### Item 2 (P2) — `.join()` bail-out valid case with real mutation kill
+
+Replaced the previous valid case `const sep = '_'; const x = ['bridge', sep, 'paper'].join('_');` with the architect-supplied shape:
+
+```ts
+{
+  filename: abs('src/routes/papers.ts'),
+  code: "const sep = 'whatever'; const x = ['bridge_', sep, 'paper'].join('');",
+},
+```
+
+Mutation kill verification (against `eslint.config.mjs:115` — `if (part === null) return null`):
+
+- **With early-return intact (current behavior):** `sep` is an `Identifier`; `resolveStringValue(Identifier)` returns null on the unhandled node-type fall-through; the `.join()` loop's `if (part === null) return null` fires; resolver bails; rule does NOT fire; valid case stays green.
+- **With early-return removed (mutation):** `part === null` is no longer caught; `parts.push(null)` runs; `parts.join('')` in JS coerces null to empty string, producing `'bridge_' + '' + 'paper'` = `'bridge_paper'`; the resolved value matches `BRIDGE_PAPER_LITERAL`; rule fires; valid case fails red.
+
+The empty separator + null-coerce-to-empty-string at the middle element is the load-bearing detail — the previous shape used `'_'` as the join separator, which after null-coercion produced `'bridge__paper'` (not `'bridge_paper'`) and left the rule silent in both states. The mutation now has a real test gate. Extended the comment block above the case to document the shape rationale.
+
+### Test suite delta
+
+- 28 → 30 cases (+2 invalid in `tsRuleTester`). The `.join()` valid case was rewritten in place (not added), so the net delta is +2.
+- Parser-free `RuleTester` cases unchanged.
+- TS `tsRuleTester` cases: 2 valid + 5 invalid → 2 valid + 7 invalid.
+
+### Verification gates
+
+- `npx vitest run tests/eslint/no-bridge-paper-literal.test.ts` — 30 passed.
+- `npm run lint` from `backend/` — clean (two pre-existing `@typescript-eslint/no-explicit-any` warnings in `src/seed-phrase.ts` unrelated).
+- `npx tsc --noEmit` from `backend/` — clean.
+
+### Files touched in this commit
+
+- `backend/tests/eslint/no-bridge-paper-literal.test.ts` — 2 new invalid cases in `tsRuleTester` (item 1) + 1 valid case rewrite (item 2) + extended comment on the `.join()` bail-out case.
+- `agents/docs/tasks/pending/backend-discipline-guard-pipeline-integration.md` — this signal block.
+
+### Architect-zone carry-forwards remain pending
+
+Unchanged from round-3 + the new TS-wrapper characterization refinement added in the round-4 hold block. Architect lands all carry-forwards when this task archives.
+
+When ready, this file moves back to `tasks/review/` for the architect's re-review pass (parent serializes the `git mv`).

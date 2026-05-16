@@ -135,9 +135,20 @@ ruleTester.run('pevo/no-bridge-paper-literal', noBridgePaperLiteralRule, {
     // A `.join()` over a literal array containing a variable element must
     // NOT fire; this case locks the contract against accidental removal of
     // the early-return.
+    //
+    // Shape rationale: with empty separator `''` and array `['bridge_', sep,
+    // 'paper']`, removing the early-return would cause the resolver to
+    // coerce the non-resolvable middle element to an empty string, yielding
+    // `'bridge_' + '' + 'paper'` = `'bridge_paper'` — the rule would then
+    // fire and this valid case would fail red. With the early-return
+    // intact, the resolver bails on the Identifier element, returns null,
+    // and the rule does NOT fire (valid case stays green). The separator
+    // value `'whatever'` doesn't matter for the green path (we never reach
+    // join) and is named distinctly so a reader doesn't confuse it with the
+    // join's empty separator.
     {
       filename: abs('src/routes/papers.ts'),
-      code: "const sep = '_'; const x = ['bridge', sep, 'paper'].join('_');",
+      code: "const sep = 'whatever'; const x = ['bridge_', sep, 'paper'].join('');",
     },
   ],
   invalid: [
@@ -254,6 +265,30 @@ tsRuleTester.run('pevo/no-bridge-paper-literal (TS wrappers)', noBridgePaperLite
     {
       filename: abs('src/routes/papers.ts'),
       code: "const x = ('bridge_' as const) + 'paper';",
+      errors: [{ messageId: 'forbidden' }],
+    },
+    // Compound-form mutation kill for TSNonNullExpression: `'bridge_'! + 'paper'`
+    // — the bare-form `'bridge_paper'!` case above fires via the inner-Literal
+    // visitor (ESLint's traversal descends INTO the wrapper), so the
+    // TSNonNullExpression arm in resolveStringValue is never exercised by that
+    // case. This compound case parses as BinaryExpression with the wrapper on
+    // the left; the BinaryExpression visitor fires, resolveStringValue walks
+    // into the wrapper, the unwrap arm executes, recursion reaches the inner
+    // Literal, and the rule fires. Removing the TSNonNullExpression arm now
+    // fails this case red — genuine mutation kill.
+    {
+      filename: abs('src/routes/papers.ts'),
+      code: "const x = 'bridge_'! + 'paper';",
+      errors: [{ messageId: 'forbidden' }],
+    },
+    // Compound-form mutation kill for TSTypeAssertion: `(<string>'bridge_') + 'paper'`
+    // — same rationale as the TSNonNullExpression case above. The bare-form
+    // `<string>'bridge_paper'` case fires via inner-Literal traversal; this
+    // compound form is what actually exercises the TSTypeAssertion arm in
+    // resolveStringValue.
+    {
+      filename: abs('src/routes/papers.ts'),
+      code: "const x = (<string>'bridge_') + 'paper';",
       errors: [{ messageId: 'forbidden' }],
     },
   ],
