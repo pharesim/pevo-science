@@ -9,6 +9,18 @@ import { createTimerGuard } from '../lib/timer-guard.js';
 // Number of words to re-enter for confirmation
 const CONFIRM_WORD_COUNT = 3;
 
+// Discriminator keys whose `upgradeErrorKey` value disables the Try Again
+// button (terminal post-broadcast sub-cases — chain rotation has landed
+// and a fresh attempt would sign account_update with stale old-seed keys).
+// To add a new non-retryable sub-case: append the key here AND assign it
+// at the catch-block sub-case below. See `canRetryUpgrade` getter.
+const NON_RETRYABLE_UPGRADE_ERROR_KEYS = [
+  'upgrade.backendTimeout',
+  'upgrade.partialApplyFailed',
+  'upgrade.alreadyUpgraded',
+  'upgrade.rateLimited',
+];
+
 const template = `
       <div x-data="settingsPage" class="container-narrow py-8">
         <!-- Not signed in -->
@@ -401,7 +413,8 @@ export function initSettingsPage() {
     // `upgradeError`) so its decision is invariant to locale switches the
     // user might trigger from the header switcher on the error screen, and
     // so a future non-retryable sub-case requires only an addition to
-    // NON_RETRYABLE_KEYS — not a coincidental string match. Per
+    // NON_RETRYABLE_UPGRADE_ERROR_KEYS at module top — not a coincidental
+    // string match. Per
     // agents/docs/solutions/conventions/correlated-options-discriminated-union-2026-04-28.md.
     // Reset alongside `upgradeError` at every clear site.
     upgradeErrorKey: null,
@@ -444,13 +457,7 @@ export function initSettingsPage() {
     // Compares discriminator keys, not translated strings, so the result
     // is invariant to mid-error-screen locale switches.
     get canRetryUpgrade() {
-      const NON_RETRYABLE_KEYS = [
-        'upgrade.backendTimeout',
-        'upgrade.partialApplyFailed',
-        'upgrade.alreadyUpgraded',
-        'upgrade.rateLimited',
-      ];
-      return !NON_RETRYABLE_KEYS.includes(this.upgradeErrorKey);
+      return !NON_RETRYABLE_UPGRADE_ERROR_KEYS.includes(this.upgradeErrorKey);
     },
 
     // Dispatch retry to the right action based on the error sub-case. The
@@ -806,7 +813,16 @@ export function initSettingsPage() {
         // and wipe — leaving the mnemonic in reactive state past the
         // error screen is pure XSS surface with no recovery value (the
         // user wrote down the mnemonic at the new-seed phase).
-        if (err && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
+        //
+        // Gated on `broadcastLanded`: the shortcut routes to a
+        // non-retryable sub-case (Try Again hidden, copy directs to
+        // support) only AFTER the chain rotation has landed. A pre-
+        // broadcast TimeoutError/AbortError (e.g. dhive surfacing a hung
+        // connection as AbortError on the `account_update` sign, or a
+        // future timeout added to the broadcast) is genuinely retriable
+        // because the chain has NOT rotated; falls through to the
+        // pre-broadcast `upgrade.failed` catch-all.
+        if (err && (err.name === 'TimeoutError' || err.name === 'AbortError') && broadcastLanded) {
           console.warn('[custody upgrade] backend cleanup timeout', err);
           this._clearSensitiveUpgradeState();
           this.upgradeError = this.$t('upgrade.backendTimeout');
