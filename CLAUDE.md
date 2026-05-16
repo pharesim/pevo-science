@@ -57,6 +57,16 @@ Two paths: (1) **Self-custody** — user brings an existing Hive account and con
 
 ## Agent Coordination Rules
 
+**Default posture: assume another agent is active right now.** PEvO is a permanently multi-agent setup. At any moment, sibling agents (architect, backend, ui, pinner — and parallel sessions of the same role) may be editing files, staging paths, or committing in the same `.git`. Do not treat the working tree, the index, or HEAD as yours alone. The user does NOT have to announce a sibling is active for this to be true; the default is "someone else is also working." Concrete consequences:
+
+- Re-read task files immediately before acting on them — a sibling may have moved or appended to one between your startup listing and your edit.
+- Verify `git status` and `git diff --cached --name-only` in the seconds before every commit; if a path you did not touch appears staged, `git restore --staged <path>` to leave it for its owner.
+- Stage paths explicitly by name. Never `git add -A` / `git add .` / broad directory adds — those sweep sibling edits.
+- Never `git reset --hard HEAD~N` past commits you did not author. "Your most recent commit" can be a sibling's by the time you run the command. Use `git revert <sha>` or `git reset --soft <your-specific-sha>` for forward-only cleanup.
+- For task-file moves with a content edit: `Edit → git add <file> → git mv <src> <dst> → git commit`. `git mv` records from the index, not the working tree.
+
+The "Shared-index race discipline" subsection under "Commits and Pushes" below has the full mechanics and incident references; this preamble is the posture.
+
 1. Agents communicate ONLY through files in the repo. No shared memory.
 2. The **Architect agent** owns `agents/docs/ARCHITECTURE.md` and the `agents/docs/tasks/` tree. It does NOT write standalone spec or contract files. The code is the source of truth for API shapes, data models, and schemas. If something needs documenting, put it in `ARCHITECTURE.md` or inline in the code. **Commit-time enforcement of the agent ownership boundaries lives in `.githooks/commit-msg`'s `allowed_for_agent()` function** (the runtime-authoritative zone map); this rule's narrative and `agents/architect/CLAUDE.md` "Files You Own" are derived references — see "Commits and Pushes" below.
 3. The **UI agent** reads the code and `ARCHITECTURE.md` to understand interfaces. It does NOT define API shapes.
