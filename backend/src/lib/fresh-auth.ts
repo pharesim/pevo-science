@@ -73,17 +73,21 @@ export type FreshAuthMechanism = 'password' | 'orcid';
  *  ("substitute author_resign on paper Y for the author_accept on paper X
  *  the user thought they authorized").
  *
- *  Round-6 of BACKEND-SETTINGS-SET-PASSWORD-FRESH-AUTH:
- *  `'set_password'` joins the consent-op actions as a non-broadcast
- *  critical action (transitions state C → state B per ARCHITECTURE.md
- *  § 6.3, requiring fresh ORCID re-auth per § 6.4). For `'set_password'`
- *  there is no paper involved; the binding fields used are
- *  `root_author = <username>` and `root_permlink = ''`. The username
- *  binding via `root_author` plus the action discriminator keeps the
- *  resulting target hash collision-free against any consent-op proof
- *  (consent ops require non-empty `root_permlink` at the route layer).
- *  See `routes/orcid.ts` `/start` and `routes/settings.ts` `/set-password`. */
-export type FreshAuthTargetAction = 'author_accept' | 'author_resign' | 'set_password';
+ *  Non-broadcast critical actions (`set_password`, `change_email`) reuse
+ *  the same target-binding primitive even though they don't broadcast to
+ *  chain. They bind to `(action, <username>, '')` via per-action helpers
+ *  below (`setPasswordFreshAuthTarget`, `changeEmailFreshAuthTarget`).
+ *  Collision-free against consent-op proofs because consent ops require
+ *  non-empty `root_permlink` at the route layer. `set_password`
+ *  transitions state C → state B per ARCHITECTURE.md § 6.3 and requires
+ *  fresh ORCID re-auth per § 6.4; `change_email` transitions the address
+ *  that receives password-reset tokens (auth-adjacent factor), so the
+ *  JWT-only path is closed via a body-proof check per § 6.5 invariant #1. */
+export type FreshAuthTargetAction =
+  | 'author_accept'
+  | 'author_resign'
+  | 'set_password'
+  | 'change_email';
 
 /** Round-5 hold #3: shape of the per-op target the fresh-auth proof
  *  binds to. The triple is reduced to a SHA-256 hash at issuance time
@@ -201,6 +205,20 @@ function isValidTargetHash(value: unknown): value is string {
  *  fires (closed-default for the original security property). */
 function isFreshAuthKind(value: unknown): value is FreshAuthKind {
   return value === 'consent_op' || value === 'session';
+}
+
+/** Target-binding helper for the `change_email` critical action.
+ *  Change-email is a per-user (not per-broadcast) critical action — it
+ *  transitions the address that receives password-reset tokens, which
+ *  gates password rotation. The proof binds to `(change_email, <username>,
+ *  '')`; `root_permlink` is empty so the same target-hash domain stays
+ *  collision-free against consent-op proofs (which require non-empty
+ *  `root_permlink` at the route layer). Used by `routes/settings.ts` POST
+ *  `/email` on the change-email branch; the production issuance side
+ *  (orcid `/start` + custody `/fresh-auth` action widening) is tracked
+ *  separately as a follow-up. */
+export function changeEmailFreshAuthTarget(username: string): FreshAuthTarget {
+  return { action: 'change_email', root_author: username, root_permlink: '' };
 }
 
 /** In-memory fallback. Intentionally module-scoped — fresh-auth tokens are

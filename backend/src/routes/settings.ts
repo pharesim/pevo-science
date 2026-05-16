@@ -16,9 +16,11 @@ import { handleArgonError, ARGON_HANDLED } from '../lib/argon2-error-handler.js'
 import { requestAbortSignal } from '../lib/request-abort-signal.js';
 import { hashEmailForLogs, maskEmail } from '../lib/log-pii.js';
 import {
+  changeEmailFreshAuthTarget,
   computeFreshAuthTargetHash,
   consumeFreshAuthToken,
   setPasswordFreshAuthTarget,
+  type FreshAuthMechanism,
 } from '../lib/fresh-auth.js';
 
 const readLimiter = rateLimit({ name: 'settings-read', windowMs: 60_000, max: 30, keyFn: byIp });
@@ -98,6 +100,31 @@ router.get('/email', readLimiter, verifyHiveSignature, async (req: Request, res:
 // ─────────────────────────────────────────────────────────────
 // POST /api/settings/email — Add or change email
 // ─────────────────────────────────────────────────────────────
+//
+// BACKEND-SETTINGS-EMAIL-REAUTH-FRESH-AUTH: the change-email branch (existing
+// row) is a critical action per ARCHITECTURE.md § 6.5 invariant #1 — a stolen
+// JWT must not be a one-step takeover vector. When authenticated via Bearer
+// JWT (the only auth path that can be replayed without a fresh signature),
+// the request body MUST carry a `fresh_auth_proof` whose mechanism matches
+// what the account has registered:
+//
+//   State A (password, no orcid)  : 'password' only
+//   State B (password + orcid)    : 'password' OR 'orcid'
+//   State C (orcid, no password)  : 'orcid' only
+//   State D (upgraded)            : preserved password/orcid factors
+//
+// Keychain (Hive-signature) requests skip the body-proof check entirely — the
+// per-request signed canonical message IS the fresh proof and is already
+// timestamp + replay-bounded by `verifyHiveSignature`.
+//
+// The Add-flow no-row branch (Keychain user with no `accounts` row yet) is
+// only reachable on the Hive-signature path (no JWT can exist before a row
+// exists), so the no-row INSERT path remains gated by the Hive-signature
+// freshness alone. The discriminator below is the same `authHeader
+// startsWith('Bearer ')` check used inside `verifyHiveSignature.ts:79`; a
+// follow-up task (backend-verifyhive-authmethod-discriminator.md) extracts
+// this into an explicit `req.hiveAuthMethod` field on the middleware to
+// avoid the header re-parse at each call site.
 router.post('/email', writeLimiter, verifyHiveSignature, async (req: Request, res: Response) => {
   const pool = getAppPool();
   if (!pool) return sendError(res, 503, 'INTERNAL_ERROR', 'Service not available');
@@ -108,6 +135,12 @@ router.post('/email', writeLimiter, verifyHiveSignature, async (req: Request, re
   }
   const { email } = parsed.data;
   const username = req.hiveUsername!;
+
+  // JWT-vs-Keychain discriminator. The Hive-signature path runs after JWT in
+  // `verifyHiveSignature` and is fresh per-request; we only require a body
+  // proof on the JWT path.
+  const authHeader = req.headers['authorization'];
+  const isJwtPath = typeof authHeader === 'string' && authHeader.startsWith('Bearer ');
 
   try {
     // Check email not already used by another account
@@ -131,20 +164,93 @@ router.post('/email', writeLimiter, verifyHiveSignature, async (req: Request, re
     const token = crypto.randomBytes(32).toString('hex');
     const expiresAt = new Date(Date.now() + EMAIL_TOKEN_EXPIRY_MS);
 
-    // Check if account row exists for this username
-    const { rows: existing } = await pool.query<{ id: number }>(
-      'SELECT id FROM accounts WHERE username = $1',
+    // Check if account row exists for this username. Read enough columns to
+    // discriminate the registered auth-factor set for the fresh-auth gate.
+    const { rows: existing } = await pool.query<{
+      id: number;
+      password_hash: string | null;
+      orcid: string | null;
+    }>(
+      'SELECT id, password_hash, orcid FROM accounts WHERE username = $1',
       [username],
     );
 
     if (existing.length === 0) {
-      // Add flow: INSERT new row (Keychain user, no password)
+      // Add flow: INSERT new row (Keychain user, no password). Only reachable
+      // from the Hive-signature path of verifyHiveSignature (no JWT exists
+      // before a row exists); the fresh-auth gate below is skipped because
+      // there's no JWT replay vector to defend against on this branch.
       await pool.query(
         `INSERT INTO accounts (email, username, verify_token, expires_at)
          VALUES ($1, $2, $3, $4)`,
         [email, username, token, expiresAt],
       );
     } else {
+      // Change flow: critical action gated by fresh-auth proof on JWT path.
+      if (isJwtPath) {
+        const proof = (req.body as { fresh_auth_proof?: unknown })?.fresh_auth_proof;
+        const proofToken = typeof proof === 'string' ? proof : undefined;
+        const expectedTargetHash = computeFreshAuthTargetHash(
+          changeEmailFreshAuthTarget(username),
+        );
+        const result = await consumeFreshAuthToken(proofToken, username, expectedTargetHash);
+        if (!result.valid) {
+          logger.warn(
+            {
+              event: 'settings.email_post.fresh_auth_rejected',
+              route: 'settings.email-post',
+              username,
+              reason: result.reason,
+            },
+            'settings.email change-email rejected — fresh-auth proof invalid',
+          );
+          const status =
+            result.reason === 'username_mismatch' || result.reason === 'target_mismatch'
+              ? 403
+              : 401;
+          return sendError(
+            res,
+            status,
+            'FRESH_AUTH_REQUIRED',
+            'Re-authentication required to change your email. Please complete the fresh-auth challenge and retry.',
+            { reason: result.reason },
+          );
+        }
+
+        // Mechanism must match a factor the account has registered (§ 6.5
+        // invariant #2). Closed-default: a mechanism that isn't registered
+        // on this account is treated as a wrong-mechanism failure even if
+        // the proof itself verified cryptographically — a password proof
+        // on a passwordless account is structurally invalid.
+        const { password_hash, orcid } = existing[0];
+        const mechanism: FreshAuthMechanism = result.mechanism;
+        const hasPassword = password_hash !== null;
+        const hasOrcid = orcid !== null;
+        const mechanismAccepted =
+          (mechanism === 'password' && hasPassword) ||
+          (mechanism === 'orcid' && hasOrcid);
+        if (!mechanismAccepted) {
+          logger.warn(
+            {
+              event: 'settings.email_post.fresh_auth_wrong_mechanism',
+              route: 'settings.email-post',
+              username,
+              mechanism,
+              has_password: hasPassword,
+              has_orcid: hasOrcid,
+            },
+            'settings.email change-email rejected — fresh-auth proof mechanism not registered on account',
+          );
+          return sendError(
+            res,
+            401,
+            'FRESH_AUTH_REQUIRED',
+            'Re-authentication required to change your email. Please complete the fresh-auth challenge and retry.',
+            { reason: 'wrong_mechanism' },
+          );
+        }
+      }
+
       // Change flow: set pending_email fields
       await pool.query(
         `UPDATE accounts

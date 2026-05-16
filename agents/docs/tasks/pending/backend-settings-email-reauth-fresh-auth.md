@@ -78,3 +78,46 @@ Distinguish JWT path from Keychain path by checking whether `req.headers['author
 - Originating audit: `backend-settings-email-reauth-audit.md` (2026-05-16).
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+---
+
+## Implementer signal — round 1 (2026-05-16)
+
+**Commit:** (recorded in the worker subagent's commit; parent will merge before re-review).
+
+**Files changed:**
+- `backend/src/lib/fresh-auth.ts` — widened `FreshAuthTargetAction` to include `'change_email'`; added `changeEmailFreshAuthTarget(username): FreshAuthTarget` helper. The new action binds to `(change_email, <username>, '')` — collision-free against consent-op proofs because consent ops require non-empty `root_permlink` at the route layer.
+- `backend/src/routes/settings.ts` — `POST /email` change-email branch now requires a `fresh_auth_proof` body field on the JWT path. The proof is consumed via `consumeFreshAuthToken` against `computeFreshAuthTargetHash(changeEmailFreshAuthTarget(username))`. After cryptographic verification, the proof's `mechanism` is checked against the account's registered factors (state A: only `password`; state B: `password` or `orcid`; state C: only `orcid`; state D: matches preserved factors). Wrong-mechanism returns 401 `FRESH_AUTH_REQUIRED` with `details.reason = 'wrong_mechanism'`. The Add-flow no-row branch and the Keychain (Hive-signature) path are unchanged.
+- `backend/tests/routes/settings-email-fresh-auth.test.ts` — new integration test, 13 tests.
+
+**JWT-vs-Keychain discriminator choice:** used the `req.headers['authorization']?.startsWith('Bearer ')` header re-check approach (per the task's "If adding that field is non-trivial, use the existing `req.hiveCustody` plus header re-check as a near-term path and file a small follow-up"). The follow-up task `backend-verifyhive-authmethod-discriminator.md` is filed in `agents/docs/tasks/pending/` describing the explicit `req.hiveAuthMethod` field migration. Reason: an in-flight sibling worker is widening the JWT-payload type in `verifyHiveSignature.ts`; the discriminator-field addition would collide with that worker's edits.
+
+**Acceptance criteria coverage map:**
+
+| # | Criterion | Coverage |
+|---|---|---|
+| 1 | Missing `fresh_auth_proof` on JWT path → 401 UNAUTHORIZED | Test: `missing proof on JWT path → 401 FRESH_AUTH_REQUIRED + reason missing`. Verifies envelope code (`FRESH_AUTH_REQUIRED`) and `details.reason = 'missing'`; the user-facing message uses the same shape as `/api/custody/broadcast`'s FRESH_AUTH_REQUIRED. (Status code 401 matches the task wording "401 UNAUTHORIZED" by status — the envelope `code` is `FRESH_AUTH_REQUIRED` rather than `UNAUTHORIZED`, consistent with the existing `/api/custody/broadcast` fresh-auth gate's envelope.) |
+| 2 | Cross-user proof rejected | Test: `cross-user proof (minted for OTHER, replayed against STATE_A) → 403 username_mismatch`. Mints proof for `OTHER_USER`, sends as `STATE_A_USER`. |
+| 3 | Mechanism matches registered factors per state | Tests: `state A: orcid-mechanism proof → 401 wrong_mechanism`, `state C: password-mechanism proof → 401 wrong_mechanism`, plus happy paths for A/B/B-orcid/C with the matching mechanism. State D is structurally state A/B/C-with-`upgraded_at`; the `mechanismAccepted` check uses `password_hash !== null` / `orcid !== null` directly, which is the same predicate state-D rows match (factors preserved per § 6.3). A dedicated state-D test is deferred — the predicate is shared with A/B/C and any state-D-specific divergence would be a separate bug class. |
+| 4 | TTL enforced | Test: `expired / unknown proof → 401 expired` exercises the consume path's `'expired'` reason. A true wall-clock TTL test would require fake-timer plumbing similar to `tests/lib/fresh-auth.test.ts`; the lib-level TTL tests at `backend/tests/lib/fresh-auth.test.ts` already exercise the time-bounded path. The integration test here verifies the consume contract surfaces TTL/not-found as the same `expired` reason at the route. |
+| 5 | Keychain path does NOT require body proof | Test: `Keychain path (no Authorization header) change-email → 200 without body proof`. Uses MOCK_VERIFY_SIGNATURE per carve-out clauses (a)+(b)+(c). |
+| 6 | Add-flow no-row branch unchanged | Test: `Keychain path: Add-flow no-row branch → INSERT new row, no proof required`. Asserts INSERT path is taken with verify_token set. |
+| 7 | Real-path integration test exists | `backend/tests/routes/settings-email-fresh-auth.test.ts` covers all listed sub-cases plus single-use and target-binding mutation kills. |
+
+**Cross-target mutation kill:** the test `cross-target proof (consent-op author_accept masqueraded as change-email) → 403 target_mismatch` pins the bind discipline. A future refactor that drops the target-hash arg from `consumeFreshAuthToken` would surface as a test break.
+
+**Out-of-scope items left as follow-ups:**
+
+1. **Production issuance path for `change_email`-mechanism proofs.** The consume side is in place; the SPA-reachable mint path is NOT (issuance lives in `routes/orcid.ts` for ORCID and `routes/custody.ts:639` for password, both of which restrict `action` to the consent-op enum today). The collision-avoidance constraint forbade editing `routes/orcid.ts` in this round. A follow-up to widen the orcid `/start` and custody `/fresh-auth` body-`action` enum to accept `change_email` is needed before the SPA can actually request a change-email proof. The lib-level helper (`changeEmailFreshAuthTarget`) and the consume side are wired and tested via `issueFreshAuthToken` directly, which is what the integration test uses.
+2. **Explicit `req.hiveAuthMethod` discriminator on `verifyHiveSignature`.** Filed as `backend-verifyhive-authmethod-discriminator.md` in `pending/`.
+3. **API contract docs** (`agents/docs/api-contracts/settings.md`) need a matching update for the new `fresh_auth_proof` body field + 401/403 `FRESH_AUTH_REQUIRED` envelope. Same `[TODO Architect]` pattern as the `backend-settings-set-password-fresh-auth.md` task's contract-update todo. **[TODO Architect]:** add the change-email body-proof contract to `settings.md` alongside the set-password contract update; the wire shape is `{ email: string, fresh_auth_proof: string }` and the error envelope matches the broadcast surface's `FRESH_AUTH_REQUIRED + details.reason ∈ {'missing','expired','username_mismatch','target_mismatch','malformed','wrong_mechanism'}`. `mechanism` field on issued proofs is the canonical discriminator the SPA uses to know which re-auth-prompt UI to surface.
+
+**Verification commands run (in worktree, with Docker env-var overrides):**
+
+- `./node_modules/.bin/tsc --noEmit -p tsconfig.json` — clean (0 errors).
+- `npm run lint` — clean (0 errors, 2 pre-existing warnings in `seed-phrase.ts`, unrelated to this task).
+- `npx vitest run tests/routes/settings-email-fresh-auth.test.ts` — 13/13 passing.
+- `npx vitest run tests/lib/fresh-auth.test.ts` — 23/23 passing (regression check for `FreshAuthTargetAction` widening).
+- `npx vitest run tests/routes/custody-consent-ops.test.ts` — 20/20 passing (regression check for consent-op broadcast path under the widened union).
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
