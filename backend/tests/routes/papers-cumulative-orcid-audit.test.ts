@@ -73,7 +73,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import request from 'supertest';
 
 const { hafQueryMock, getPoolMock } = vi.hoisted(() => ({
-  hafQueryMock: vi.fn(async () => ({ rows: [] })),
+  hafQueryMock: vi.fn(async (..._args: any[]) => ({ rows: [] as any[] })),
   getPoolMock: vi.fn(),
 }));
 
@@ -200,7 +200,7 @@ function seedTwoLinkChain(opts: {
 }
 
 function findAuditEvent(warnSpy: ReturnType<typeof vi.spyOn>): Record<string, unknown> | undefined {
-  const fired = warnSpy.mock.calls.find(([payload]) => {
+  const fired = warnSpy.mock.calls.find(([payload]: unknown[]) => {
     return typeof payload === 'object' && payload !== null
       && (payload as { event?: string }).event === 'orcid_claim_mismatch';
   });
