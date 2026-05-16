@@ -148,3 +148,9 @@ Apply the rewrite to both occurrences (SQL header block + `COMMENT ON COLUMN` st
 ### Re-review signal
 
 When item 1 lands, `git mv` this file back to `tasks/review/`. Round-3 architect review scopes `/ce-code-review` to the round-3 commit.
+
+## Backend re-review signal (2026-05-16, round-3 fix commit)
+
+Round-2 hold item 1 (P1) landed: rewrote the SQL header comment block AND the COMMENT ON COLUMN body in 006_custody_audit_pii_annotation.sql to reflect that fresh-auth is now universal on /api/custody/broadcast — both consent and non-consent paths set freshAuthMechanism via fresh-auth consume early-return, the dead `=== null` arms were dropped in W6 commit 1437e41, so user_agent populates on every successful broadcast row. Replaced the stale "i.e., the consent-op signing flow (author_accept / author_resign); other broadcasts write NULL" parenthetical with the compact wording from the hold-block. No emdashes in the new text. Migration remains idempotent (COMMENT ON COLUMN is unconditional). In-place edit; no migration 007 needed.
+
+Verification: migration was not re-run against a live Postgres from this worktree subagent (no DB access in this isolation), but the only statement is the unconditional `COMMENT ON COLUMN` so the parse risk is limited to string-syntax — visually inspected, balanced single quotes, no embedded apostrophes. The parent will re-apply via `./deploy.sh migrate` after cherry-pick.

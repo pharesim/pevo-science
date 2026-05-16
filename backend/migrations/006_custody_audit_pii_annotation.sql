@@ -34,10 +34,13 @@
 -- Insert path reference: the success-path `auditExtras` constructor inside
 -- the `POST /api/custody/broadcast` handler in `backend/src/routes/custody.ts`
 -- populates `user_agent` from `req.headers['user-agent']` and passes it to
--- `logCustodyBroadcast`. The constructor is reached only when a fresh-auth
--- challenge has been answered for the broadcast, i.e., the consent-op signing
--- flow (`author_accept` / `author_resign`). Other broadcasts skip the
--- constructor and write NULL into this column.
+-- `logCustodyBroadcast`. The constructor is reached whenever a fresh-auth
+-- challenge has been answered for the broadcast. At HEAD every
+-- `/api/custody/broadcast` call requires a fresh-auth proof (see
+-- `backend-custody-broadcast-orcid-fresh-auth`), so this column is populated
+-- on every successful broadcast row, covering both consent-op signing
+-- (`author_accept` / `author_resign`) and non-consent broadcasts (vote,
+-- comment, custom_json).
 
 COMMENT ON COLUMN custody_audit_log.user_agent IS
   'PII (GDPR / CNPD). Raw HTTP User-Agent header from the consent-op fresh-auth request. '
@@ -48,7 +51,9 @@ COMMENT ON COLUMN custody_audit_log.user_agent IS
   'DELETE /api/settings/email handler in backend/src/routes/settings.ts runs '
   'DELETE FROM custody_audit_log WHERE username = $1 in the same transaction that '
   'drops the account row. '
-  'Populated only when a fresh-auth challenge has been answered for the broadcast, '
-  'i.e., the consent-op signing flow (author_accept / author_resign); other broadcasts '
-  'write NULL. See the success-path auditExtras constructor inside the '
-  'POST /api/custody/broadcast handler in backend/src/routes/custody.ts for the insert path.';
+  'Populated whenever a fresh-auth challenge has been answered for the broadcast. '
+  'At HEAD every /api/custody/broadcast call requires a fresh-auth proof '
+  '(see backend-custody-broadcast-orcid-fresh-auth), so this column is populated '
+  'on every successful broadcast row. See the success-path auditExtras constructor '
+  'inside the POST /api/custody/broadcast handler in backend/src/routes/custody.ts '
+  'for the insert path.';
