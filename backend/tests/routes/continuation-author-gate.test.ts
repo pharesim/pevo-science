@@ -921,31 +921,42 @@ describe('GET /api/papers/:author/:permlink — continuation chain-walk SQL gate
     // surface as authoritative on the displayed entry. Expected
     // behavior: out.orcid = null AND orcid_claim_mismatch audit event
     // fires with accreditedOrcid: null so operators see the spoof.
+    //
+    // Chain shape: carol is added by bob in his continuation and never
+    // broadcasts herself, so the cumulative-union has no self-claim for
+    // carol and falls back to bob's most-recent claim. That claim
+    // carries the spoofed ORCID. carol is accredited but her
+    // accreditation has no on-chain ORCID — exactly the spoof surface
+    // the round-2 hold identifies. Using carol (not alice/bob) keeps the
+    // root and head authors having their own self-claims, isolating the
+    // no-self-claim no-on-chain-orcid path.
     const warnSpy = vi.spyOn(logger, 'warn');
     seedTwoLinkChain({
       rootAuthors: [{ hive: 'alice' }, { hive: 'bob' }],
       headAuthors: [
-        // bob (vouched co-author) claims an ORCID for alice on his
-        // continuation, but alice's accreditation has no on-chain ORCID.
-        { hive: 'alice', orcid: 'spoofed-orcid' },
+        { hive: 'alice' },
         { hive: 'bob' },
+        // bob's continuation adds carol with a spoofed ORCID. carol
+        // never broadcasts, so this is the most-recent claim about her.
+        { hive: 'carol', orcid: 'spoofed-orcid' },
       ],
-      accredited: ['alice', 'bob'],
-      // alice has no on-chain ORCID; bob's accreditation has none either.
+      accredited: ['alice', 'bob', 'carol'],
+      // carol has no on-chain ORCID — the accreditation set is silent
+      // on her ORCID per her own choice not to share one.
       accreditedOrcids: [],
     });
     const res = await request(app).get('/api/papers/alice/p1');
     expect(res.status).toBe(200);
-    const aliceEntry = ((res.body?.data.authors || []) as Array<{ hive?: string; orcid?: string | null }>).find((a) => a.hive === 'alice');
-    expect(aliceEntry?.orcid).toBeNull();
+    const carolEntry = ((res.body?.data.authors || []) as Array<{ hive?: string; orcid?: string | null }>).find((a) => a.hive === 'carol');
+    expect(carolEntry?.orcid).toBeNull();
     const fired = warnSpy.mock.calls.find(([payload]) => {
       return typeof payload === 'object' && payload !== null
         && (payload as { event?: string }).event === 'orcid_claim_mismatch'
-        && (payload as { hive?: string }).hive === 'alice';
+        && (payload as { hive?: string }).hive === 'carol';
     });
     expect(fired).toBeDefined();
     const event = fired![0] as Record<string, unknown>;
-    expect(event.hive).toBe('alice');
+    expect(event.hive).toBe('carol');
     expect(event.claimedOrcid).toBe('spoofed-orcid');
     expect(event.accreditedOrcid).toBeNull();
     warnSpy.mockRestore();
