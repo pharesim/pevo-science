@@ -38,21 +38,6 @@ test.use({ trace: 'off', video: 'off', screenshot: 'off' });
 
 const APP_TAG = 'pevotest';
 
-// Pick two distinct accredited researchers (A, B) from HAF with non-empty
-// ORCIDs. Without an ORCID on B, scenario (1) "ORCID prefilled to B's ORCID"
-// has no value to assert against. Consumes the shared retry-shell helper in
-// fixtures/auth.js; only the selection predicate (non-empty ORCID) is local
-// to this spec. The retry-policy parameters (4 attempts, 500*(i+1) ms
-// backoff, 20-row list page) live in one place across all multi-pick
-// callers.
-async function pickTwoAccreditedResearchersWithOrcid(request) {
-  return pickAccreditedResearchers(request, {
-    count: 2,
-    limit: 20,
-    predicate: (r) => !!r.username && !!r.orcid,
-  });
-}
-
 // Pre-flight contract probe for `GET /api/accreditations`. Surfaces a
 // backend-side field rename (e.g. `orcid` → `orcid_id`, `username` nested
 // under `account`) as a contract-level failure with a usable message,
@@ -85,13 +70,18 @@ function makeNonAccreditedHandle() {
 // form renders before it resolves; assertions on prefill/lock would race
 // without this gate.
 //
-// Explicit 10s timeout: `_loadAccreditedDirectory` swallows fetch errors and
+// Explicit 20s timeout: `_loadAccreditedDirectory` swallows fetch errors and
 // assigns the empty `{}` map unconditionally, so when `/api/accreditations`
 // errors the predicate `Object.keys(...).length > 0` never resolves true.
 // Without the explicit timeout Playwright falls back to its 30s default and
 // emits a generic `waitForFunction timed out` message; the wrap-and-rethrow
 // surfaces the actual failure mode (directory load failed) so debugging
-// hits `/api/accreditations` instead of the predicate.
+// hits `/api/accreditations` instead of the predicate. 20s (vs the natural
+// 30s default) absorbs cold-HAF tail latency on CI runners — the
+// `/api/accreditations` route's underlying `fetchAccreditationsFromHaf` runs
+// a window-function CTE over `custom_json` since genesis on cold cache, and
+// scheduler contention plus the Alpine reactivity tick can plausibly exceed
+// 10s.
 async function waitForAccreditedDirectoryLoaded(page, xDataSelector) {
   try {
     await page.waitForFunction(
@@ -101,7 +91,7 @@ async function waitForAccreditedDirectoryLoaded(page, xDataSelector) {
         return !!data && Object.keys(data.accreditedDirectory || {}).length > 0;
       },
       xDataSelector,
-      { timeout: 10_000 },
+      { timeout: 20_000 },
     );
   } catch (err) {
     throw new Error(
@@ -131,6 +121,13 @@ function orcidInputForRow(page, rowIdx) {
 
 const ACCREDITED_BADGE_TEXT = 'ORCID is bound to the accredited Hive account.';
 
+// Contract probe runs once per file: the helper hits the list endpoint with
+// `limit=1` and asserts shape, with no per-test variation. Running it per-test
+// would cost three HAF round-trips per spec run for zero diagnostic benefit.
+test.beforeAll(async ({ request }) => {
+  await assertAccreditationsListContract(request);
+});
+
 // ─────────────────────────────────────────────────────────────────────────
 // PUBLISH FORM — scenarios 1, 2, 3 (UI states only, no broadcast)
 // ─────────────────────────────────────────────────────────────────────────
@@ -139,8 +136,18 @@ test('publish form: accredited co-author prefills+locks ORCID; non-accredited st
   page,
   request,
 }) => {
-  await assertAccreditationsListContract(request);
-  const pair = await pickTwoAccreditedResearchersWithOrcid(request);
+  // Pick two distinct accredited researchers (A, B) from HAF with non-empty
+  // ORCIDs. Without an ORCID on B, scenario (1) "ORCID prefilled to B's ORCID"
+  // has no value to assert against. Consumes the shared retry-shell helper in
+  // fixtures/auth.js; only the selection predicate (non-empty ORCID) is local
+  // to this spec. The retry-policy parameters (4 attempts, 500*(i+1) ms
+  // backoff, 20-row list page) live in one place across all multi-pick
+  // callers.
+  const pair = await pickAccreditedResearchers(request, {
+    count: 2,
+    limit: 20,
+    predicate: (r) => !!r.username && !!r.orcid,
+  });
   if (!pair) {
     throw new Error(
       'expected at least two accredited researchers with non-empty ORCIDs in HAF',
@@ -207,8 +214,11 @@ test('publish broadcast carries accredited co-author ORCID in json_metadata.auth
   page,
   request,
 }) => {
-  await assertAccreditationsListContract(request);
-  const pair = await pickTwoAccreditedResearchersWithOrcid(request);
+  const pair = await pickAccreditedResearchers(request, {
+    count: 2,
+    limit: 20,
+    predicate: (r) => !!r.username && !!r.orcid,
+  });
   if (!pair) {
     throw new Error(
       'expected at least two accredited researchers with non-empty ORCIDs in HAF',
@@ -318,8 +328,11 @@ test('edit form: existing co-author with accredited hive stays disabled; new co-
   page,
   request,
 }) => {
-  await assertAccreditationsListContract(request);
-  const pair = await pickTwoAccreditedResearchersWithOrcid(request);
+  const pair = await pickAccreditedResearchers(request, {
+    count: 2,
+    limit: 20,
+    predicate: (r) => !!r.username && !!r.orcid,
+  });
   if (!pair) {
     throw new Error(
       'expected at least two accredited researchers with non-empty ORCIDs in HAF',
