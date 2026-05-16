@@ -902,6 +902,16 @@ describe('editPage co-author ORCID prefill (page integration)', () => {
     expect(comp.isNewCoAuthorAccredited(0)).toBe(false);
   });
 
+  it('updateNewCoAuthor: stay-accredited hive change rewrites ORCID to the new accreditation', () => {
+    const comp = createComponent();
+    comp.accreditedDirectory = directory;
+    comp.newCoAuthors = [{ name: 'A', hive: '', orcid: '', affiliation: '' }];
+    comp.updateNewCoAuthor(0, 'hive', 'alice');
+    expect(comp.newCoAuthors[0].orcid).toBe('0000-0001-1111-1111');
+    comp.updateNewCoAuthor(0, 'hive', 'bob');
+    expect(comp.newCoAuthors[0].orcid).toBe('0000-0002-2222-2222');
+  });
+
   // ITEM 9
   it('updateNewCoAuthor: accredited hive with no orcid in directory leaves typed orcid intact', () => {
     const comp = createComponent();
