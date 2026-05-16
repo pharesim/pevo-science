@@ -143,3 +143,61 @@ This task is moved to `review/` for architect ratification. No code changes have
 ### Move
 
 This file moves from `tasks/review/` back to `tasks/pending/` so the backend implementer sees it at startup per root CLAUDE.md rule #8. After landing, `git mv` to `tasks/review/` for architect re-review.
+
+---
+
+## Backend implementer signal (2026-05-16, round-1)
+
+Alt 2 (architect-ratified) implemented per the ratification block: extend the accreditation lookup to include revoked-but-once-accredited hives with a status flag; audit event payload gains an `accreditationStatus: 'active' | 'revoked'` distinguisher; server-override applies only on `active`, `revoked` passes the broadcaster's claim through with the audit emitting for triage visibility.
+
+**Files changed:**
+
+- `backend/src/hafsql.ts` — added `accreditationStatusCteBody(startIdx = 1)`. Derives a per-account status row from `accred_ranked` (materialized by the existing `activeAccreditationsCteBody`). For each account: `status = 'active'` when the most-recent action is `accredit`, else `'revoked'`; `orcid` for active rows = the most-recent `accredit`'s ORCID, for revoked rows = the most-recent *prior* `accredit`'s ORCID via a LATERAL lookup. Empty-params CTE; `nextIdx` passes through.
+- `backend/src/accreditation.ts` — added `AccreditationStatus` type + `getAccreditationOrcidsWithStatus()`. Cached 10 min (parity with `getAccreditedOrcidsByAccount`), throw-on-error parity (loud-fail so audit visibility doesn't degrade silently on HAF outage). Did NOT refactor `getAccreditedOrcidsByAccount` (architect's YAGNI dismissal of the optional refactor).
+- `backend/src/routes/papers.ts` — wired the new helper into the paper-detail parallel fetch block (alongside `getAccreditedOrcidsByAccount`); extended `buildCumulativeAuthorsForChain` signature with a sixth `accreditationOrcidStatus` parameter; split the ORCID override block into two arms (active-arm preserves existing rule #3 behavior with `accreditationStatus: 'active'`; revoked-arm passes the claim through but emits the audit with `accreditationStatus: 'revoked'`); added request-scoped audit dedup keyed by `(rootAuthor, rootPermlink, hive)`.
+- `backend/tests/routes/papers-cumulative-orcid-audit.test.ts` — new file. Four canaries (see Test coverage list below).
+
+**Multi-cycle SQL shape (the LATERAL):**
+
+```sql
+accreditation_status AS (
+  SELECT
+    ar.account,
+    CASE WHEN ar.action = 'accredit' THEN 'active' ELSE 'revoked' END AS status,
+    CASE
+      WHEN ar.action = 'accredit' THEN ar.orcid
+      ELSE (
+        SELECT prior.orcid FROM accred_ranked prior
+        WHERE prior.account = ar.account
+          AND prior.action = 'accredit'
+        ORDER BY prior.rn ASC
+        LIMIT 1
+      )
+    END AS orcid
+  FROM accred_ranked ar
+  WHERE ar.rn = 1
+)
+```
+
+Multi-cycle correctness (accredit ORCID-X → revoke → re-accredit ORCID-Y → revoke): `accred_ranked` is partitioned by `account` and ordered by `block_num DESC`, so `rn = 1` is the most-recent event (the second revoke), `rn = 2` is the second-to-most-recent (the second accredit with ORCID-Y), `rn = 3` is the first revoke, `rn = 4` is the first accredit with ORCID-X. The subselect filters to `action = 'accredit'` and orders by `rn ASC LIMIT 1`, so it picks `rn = 2` (the ORCID-Y accredit) — NOT ORCID-X. The docstring on `accreditationStatusCteBody` walks through this; the multi-cycle test canary pins the JS-side contract.
+
+**Dedup approach:**
+
+Request-scoped `auditedKeys: Set<string>` initialized at function entry in `buildCumulativeAuthorsForChain`. Key shape: `${rootAuthor}/${rootPermlink}/${hive}`. Both audit-emission arms (active + revoked) consult and update the same Set. Per architect's "right initial approach" decision — no preemptive gating; future volume data drives any further rate-limiting. The Set is GC'd with the function call (no cross-request leakage).
+
+**Server-override split:**
+
+- `accreditedAccounts.has(hive)` (active arm) → existing rule #3 behavior unchanged. On mismatch: audit with `accreditationStatus: 'active'`, override display ORCID to the accredited value. On prefill: override to accredited (no audit). On match: pass through (no audit).
+- `accreditationOrcidStatus.get(hive)?.status === 'revoked'` (revoked arm, only reached when NOT in `accreditedAccounts`) → broadcaster's claim passes through unchanged. On mismatch (forged claim vs last-attested ORCID, both non-null): audit with `accreditationStatus: 'revoked'`. Other missing/match cases are silent.
+- Never-accredited hives fall through both arms silently (carol-style — no signal to emit).
+
+**Test coverage:**
+
+`backend/tests/routes/papers-cumulative-orcid-audit.test.ts` (new file, mocked-pool carve-out per clauses (a)/(b)/(c) documented in the file header):
+
+1. **Single-cycle post-revocation canary** (acceptance §3): alice revoked, bob's continuation forges alice's ORCID. Asserts: audit fires with `accreditationStatus: 'revoked'`, `accreditedOrcid: '0000-0000-0000-1234'` (last-attested), `claimedOrcid: 'forged-orcid-by-bob'`, `claimSource: 'bob/v2'`; display alice's ORCID = the forged claim (no server override).
+2. **Multi-cycle post-revocation canary** (architect's additive concern): alice's history is accredit ORCID-X → revoke → re-accredit ORCID-Y → revoke. Asserts: audit's `accreditedOrcid` is ORCID-Y (the most-recent prior accredit), explicitly NOT ORCID-X.
+3. **Active spoof regression**: alice currently accredited with a known ORCID; bob forges. Asserts: audit fires with `accreditationStatus: 'active'`, server overrides display ORCID to the accredited value. Pins the parent task's rule #3 behavior.
+4. **Post-revocation match (non-firing)**: bob's claim equals alice's last-attested ORCID. Asserts: no audit fires.
+
+[TODO Architect] Audit event schema documentation — the `accreditationStatus` field is a new additive field on the `orcid_claim_mismatch` event payload. If `agents/docs/ARCHITECTURE.md` enumerates audit event payloads (it currently does not have a dedicated audit-event-schema section), the new field would be a natural addition. Suggest the architect decide whether to document the field there or in an inline doc-comment on the audit emission site (the latter is what the implementation already does). The `accreditationStatusCteBody` docstring covers the SQL-side multi-cycle invariant. No `ARCHITECTURE.md` updates were made under this task to respect the agent-zone boundary.

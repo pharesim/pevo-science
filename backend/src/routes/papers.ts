@@ -19,7 +19,8 @@ import {
   pevoStringArray,
   type SortField,
 } from '../helpers.js';
-import { getAccreditedSet, getAllAccreditedAccounts, getAccreditedOrcidsByAccount } from '../accreditation.js';
+import { getAccreditedSet, getAllAccreditedAccounts, getAccreditedOrcidsByAccount, getAccreditationOrcidsWithStatus } from '../accreditation.js';
+import type { AccreditationStatus } from '../accreditation.js';
 import { getReputationScore, getReputationScores } from '../reputation.js';
 import { hafCache } from '../cache.js';
 import { logger } from '../logger.js';
@@ -228,6 +229,13 @@ function safePevoMeta(meta: Record<string, unknown>): Record<string, unknown> {
  *   per request via `getAccreditedOrcidsByAccount`); `null` value means
  *   the account is accredited but the on-chain attestation does not
  *   carry an ORCID — pass-through is the policy in that case.
+ * @param accreditationOrcidStatus - per-ever-accredited-account
+ *   `{orcid, status}` map (loaded once per request via
+ *   `getAccreditationOrcidsWithStatus`); union of active + revoked.
+ *   Drives the `accreditationStatus` field on the audit-event payload and
+ *   the revoked-arm pass-through behavior. See the in-function comment
+ *   under "ORCID server-override + audit emission" for the active vs
+ *   revoked split.
  */
 /**
  * Compute `orcid_verified` and `orcid_discrepancy` for a single author
@@ -293,7 +301,18 @@ function buildCumulativeAuthorsForChain(
   rootPermlink: string,
   accreditedAccounts: Set<string>,
   accreditedOrcids: Map<string, string | null>,
+  accreditationOrcidStatus: Map<string, { orcid: string | null; status: AccreditationStatus }>,
 ): Array<Record<string, unknown>> {
+  // Per-(rootAuthor, rootPermlink, hive) dedup set for the
+  // `orcid_claim_mismatch` audit emission. The cumulative-union loop iterates
+  // chain posts and resolves one winning entry per hive; the audit only
+  // needs to fire once per (paper, hive) combination regardless of how
+  // many chain posts contributed a spoofed claim. Per architect ratification
+  // 2026-05-16 (`backend-orcid-claim-mismatch-post-revocation-audit.md`):
+  // dedup by (rootAuthor, rootPermlink, hive); future volume data drives
+  // any further gating (e.g., per-hive-per-cycle rate limit, persistent
+  // store). The Set is request-scoped — no cross-request leakage.
+  const auditedKeys = new Set<string>();
   // Per-hive winning claim: latest self-claim wins (most-recent self-claim
   // by the hive's own continuation post about itself); else latest claim
   // across the chain wins (the most-recent broadcaster's claim about that
@@ -386,10 +405,35 @@ function buildCumulativeAuthorsForChain(
       ? (out.orcid as string)
       : null;
 
+    // ORCID server-override + audit emission. Two distinct branches:
+    //
+    //  1. ACTIVE accreditation (rule #3 of cumulative-union): the on-chain
+    //     accreditation attestation is the authoritative ORCID; mismatch
+    //     fires `orcid_claim_mismatch` audit AND server-overrides the
+    //     displayed ORCID. Prefill applies when the broadcaster's claim is
+    //     absent. Match passes through unchanged.
+    //
+    //  2. REVOKED accreditation
+    //     (`backend-orcid-claim-mismatch-post-revocation-audit.md`):
+    //     the operator has retired this account's accreditation. The
+    //     account no longer has authoritative ORCID standing, so the
+    //     server does NOT override the broadcaster's claim. BUT the audit
+    //     fires anyway when the broadcaster's claim disagrees with the
+    //     last-attested ORCID, carrying `accreditationStatus: 'revoked'`
+    //     so operators can distinguish active-spoof from post-revocation
+    //     residual during triage.
+    //
+    // The `accreditationOrcidStatus` map carries both active and revoked
+    // entries; `accreditedAccounts` (membership set) still only carries
+    // active. Branch selection: `accreditedAccounts.has(hive)` for the
+    // active arm; `accreditationOrcidStatus.get(hive)?.status === 'revoked'`
+    // for the revoked arm.
+    const claimedOrcid = preOverrideChainOrcid;
+    const statusEntry = accreditationOrcidStatus.get(hive);
+
     if (accreditedAccounts.has(hive)) {
       const accreditedOrcid = accreditedOrcids.get(hive) ?? null;
-      const claimedOrcid = preOverrideChainOrcid;
-      // Four branches of the "accredited ORCID is authoritative" rule
+      // Five branches of the "accredited ORCID is authoritative" rule
       // (see agents/docs/ARCHITECTURE.md § 2 "Multi-Author Trust Model"):
       //   (a) accreditedOrcid set, claim matches    → pass through
       //   (b) accreditedOrcid set, claim mismatches → override + audit
@@ -401,18 +445,23 @@ function buildCumulativeAuthorsForChain(
       //   (e) accreditedOrcid null, no claim        → no-op
       if (accreditedOrcid) {
         if (claimedOrcid && claimedOrcid !== accreditedOrcid) {
-          logger.warn(
-            {
-              event: 'orcid_claim_mismatch',
-              rootAuthor,
-              rootPermlink,
-              hive,
-              claimedOrcid,
-              accreditedOrcid,
-              claimSource: `${w.sourceAuthor}/${w.sourcePermlink}`,
-            },
-            'broadcaster-claimed ORCID for accredited hive differs from accredited ORCID; server-overriding',
-          );
+          const auditKey = `${rootAuthor}/${rootPermlink}/${hive}`;
+          if (!auditedKeys.has(auditKey)) {
+            auditedKeys.add(auditKey);
+            logger.warn(
+              {
+                event: 'orcid_claim_mismatch',
+                rootAuthor,
+                rootPermlink,
+                hive,
+                claimedOrcid,
+                accreditedOrcid,
+                accreditationStatus: 'active' as const,
+                claimSource: `${w.sourceAuthor}/${w.sourcePermlink}`,
+              },
+              'broadcaster-claimed ORCID for accredited hive differs from accredited ORCID; server-overriding',
+            );
+          }
           out.orcid = accreditedOrcid;
         } else if (!claimedOrcid) {
           // Prefill: accredited carries an ORCID, the chain-claim doesn't.
@@ -437,8 +486,36 @@ function buildCumulativeAuthorsForChain(
         );
         out.orcid = null;
       }
-      // else: accredited but accreditation attestation has no on-chain
+      // else (e): accredited but accreditation attestation has no on-chain
       // ORCID AND no broadcaster claim — pass through unchanged (null).
+    } else if (statusEntry && statusEntry.status === 'revoked') {
+      // Post-revocation residual: account was once accredited, now revoked.
+      // The last-attested ORCID (from the most-recent prior `accredit`) is
+      // the comparison anchor. Server does NOT override (the revoked
+      // actor has no authoritative ORCID standing anymore); the audit
+      // fires on mismatch for triage visibility.
+      const lastAttestedOrcid = statusEntry.orcid;
+      if (lastAttestedOrcid && claimedOrcid && claimedOrcid !== lastAttestedOrcid) {
+        const auditKey = `${rootAuthor}/${rootPermlink}/${hive}`;
+        if (!auditedKeys.has(auditKey)) {
+          auditedKeys.add(auditKey);
+          logger.warn(
+            {
+              event: 'orcid_claim_mismatch',
+              rootAuthor,
+              rootPermlink,
+              hive,
+              claimedOrcid,
+              accreditedOrcid: lastAttestedOrcid,
+              accreditationStatus: 'revoked' as const,
+              claimSource: `${w.sourceAuthor}/${w.sourcePermlink}`,
+            },
+            'broadcaster-claimed ORCID for revoked-but-previously-accredited hive differs from last-attested ORCID; passing through (no override)',
+          );
+        }
+      }
+      // No override: broadcaster's claim passes through unchanged. Other
+      // missing/match cases are silent (no audit signal worth firing).
     }
 
     // Supersession fields (BACKEND-PAPERS-CANONICAL-ORCID-RESOLUTION). The
@@ -872,7 +949,7 @@ async function fetchPaperDetailFromHaf(
     // request-scoped fetches. Both helpers cache 10 min via hafCache so
     // the parallel call is typically free; parallelizing with paperResult
     // / fullVersions / retraction avoids serial latency on cold cache.
-    const [paperResult, fullVersions, retraction, accreditedAccountSet, accreditedOrcidsByAccount, authorReputation] = await Promise.all([
+    const [paperResult, fullVersions, retraction, accreditedAccountSet, accreditedOrcidsByAccount, accreditationOrcidStatus, authorReputation] = await Promise.all([
       pool.query(
         `WITH ${detailCte.sql}
          SELECT c.author, c.permlink, c.title, c.body, c.json_metadata,
@@ -888,6 +965,7 @@ async function fetchPaperDetailFromHaf(
       getRetractionInfo(author, permlink),
       getAllAccreditedAccounts(),
       getAccreditedOrcidsByAccount(),
+      getAccreditationOrcidsWithStatus(),
       // List-view (and profile-view) parity per BACKEND-REPUTATION-SSOT
       // AC #1: every reputation value displayed in the UI must derive
       // from the same `${appTag}:reputation:batch:${user}` value. Paper
@@ -1006,6 +1084,7 @@ async function fetchPaperDetailFromHaf(
             row.permlink as string,
             accreditedAccountSet,
             accreditedOrcidsByAccount,
+            accreditationOrcidStatus,
           );
 
           detail.json_metadata = headMeta;

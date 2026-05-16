@@ -99,6 +99,70 @@ export function activeAccreditationsCte(startIdx = 1): SqlFragment {
 }
 
 /**
+ * CTE body that derives a per-account accreditation status row for every
+ * account that has ever been accredited. Distinguishes 'active' from
+ * 'revoked' so post-revocation audit visibility can be preserved on
+ * forged-ORCID claims (`backend-orcid-claim-mismatch-post-revocation-audit.md`).
+ *
+ * Composition contract: this CTE MUST be combined with
+ * `activeAccreditationsCteBody` in the same WITH block (it depends on
+ * `accred_ranked`, which `activeAccreditationsCteBody` materializes).
+ *
+ * Shape per row:
+ *   - account: hive account
+ *   - status: 'active' (most-recent action is `accredit`) | 'revoked'
+ *     (most-recent action is `revoke`)
+ *   - orcid:  for 'active' rows, the ORCID from the most-recent `accredit`
+ *             event for the account (the same value `active_accreditations`
+ *             carries). For 'revoked' rows, the ORCID from the most-recent
+ *             *prior* `accredit` event for the account — looked up via
+ *             LATERAL against `accred_ranked` filtered to `action='accredit'`,
+ *             ordered by `rn ASC` (lowest rn = most recent due to the DESC
+ *             ROW_NUMBER ordering inside `accred_ranked`).
+ *
+ * **Multi-cycle correctness.** A bad actor can accredit → forge → revoke →
+ * re-accredit (operator restored access) → forge again → revoke. After the
+ * second revoke, the lookup MUST return the ORCID from the second `accredit`
+ * (the one currently being audited), NOT the first. The LATERAL subquery
+ * orders by `rn ASC` against `accred_ranked` (which is partitioned by
+ * `account` and ordered by `block_num DESC`), so `rn = 1` for the
+ * most-recent accredit, `rn = 2` for the next-most-recent, and so on.
+ * `LIMIT 1` picks the most-recent accredit. The second-cycle test canary
+ * in `papers-cumulative-orcid-audit.test.ts` pins this.
+ *
+ * Why a separate CTE and not an extension of `active_accreditations`:
+ * `active_accreditations` is consumed throughout the codebase as a
+ * filtered membership view (`WHERE rn = 1 AND action = 'accredit'`).
+ * Including revoked rows there would silently widen every consumer's set,
+ * including reputation-cycle filters and vote-eligibility gates. The
+ * status CTE is additive and only audit emission consumes it.
+ */
+export function accreditationStatusCteBody(startIdx = 1): SqlFragment {
+  return {
+    sql: `
+  accreditation_status AS (
+    SELECT
+      ar.account,
+      CASE WHEN ar.action = 'accredit' THEN 'active' ELSE 'revoked' END AS status,
+      CASE
+        WHEN ar.action = 'accredit' THEN ar.orcid
+        ELSE (
+          SELECT prior.orcid FROM accred_ranked prior
+          WHERE prior.account = ar.account
+            AND prior.action = 'accredit'
+          ORDER BY prior.rn ASC
+          LIMIT 1
+        )
+      END AS orcid
+    FROM accred_ranked ar
+    WHERE ar.rn = 1
+  )`,
+    params: [],
+    nextIdx: startIdx,
+  };
+}
+
+/**
  * CTE body that computes the latest vouch/unvouch action per (voucher, vouchee) pair.
  * Replaces `pevo.active_vouches`.
  *

@@ -2,7 +2,7 @@ import { getPool } from './db.js';
 import { config } from './config.js';
 import { logger } from './logger.js';
 import { hafCache } from './cache.js';
-import { T, activeAccreditationsCteBody, getCachedGenesisBlock } from './hafsql.js';
+import { T, activeAccreditationsCteBody, accreditationStatusCteBody, getCachedGenesisBlock } from './hafsql.js';
 
 /**
  * Batch-check accreditation status for multiple accounts.
@@ -163,6 +163,91 @@ export async function getAccreditedOrcidsByAccount(): Promise<Map<string, string
  * `pool === null` (dev environment without HAF connected) still returns the
  * empty set — that is a startup condition, not a transient outage.
  */
+/**
+ * Map of every account that has ever been accredited to its current
+ * accreditation status (`active` or `revoked`) plus the ORCID from the
+ * most-recent `accredit` event for that account.
+ *
+ * **Why this exists.** `getAccreditedOrcidsByAccount` is active-only — it
+ * drops revoked accounts. The `orcid_claim_mismatch` audit primitive
+ * (per `backend-multi-author-cumulative-union.md` rule #3) is gated by
+ * the active-only lookup, so once a bad actor is revoked the audit goes
+ * silent on subsequent forged-ORCID broadcasts targeting them. Operators
+ * want visibility *during* the post-revocation triage window — exactly
+ * when the current code goes silent
+ * (`backend-orcid-claim-mismatch-post-revocation-audit.md`).
+ *
+ * This helper preserves audit visibility by carrying revoked accounts
+ * (with their last-attested ORCID) alongside active ones. Callers in
+ * `papers.ts` consume the merged map and split server-override behavior:
+ * `status === 'active'` overrides the broadcaster's claim (existing rule
+ * #3 behavior), `status === 'revoked'` does NOT override (the broadcaster's
+ * claim passes through) but still emits the audit event with the
+ * `accreditationStatus: 'revoked'` distinguisher so operators can prioritize
+ * active-spoof over post-revocation residual.
+ *
+ * **Multi-cycle correctness.** Same SQL CTE (`accreditation_status`)
+ * handles accredit → revoke → re-accredit → revoke chains correctly: the
+ * lookup returns the ORCID from the most-recent `accredit` (the one the
+ * second revoke retired), not the first. See the CTE's docstring in
+ * `hafsql.ts`.
+ *
+ * **Error contract.** Loud-fail parity with `getAccreditedOrcidsByAccount`
+ * — distinguishes "HAF returned 0" (legitimate empty population, cached)
+ * from "HAF query failed" (re-thrown). Audit emission silently degrading
+ * to "no rows" on HAF outage would mask the visibility this task exists to
+ * preserve.
+ *
+ * `pool === null` (dev environment without HAF connected) returns an empty
+ * map — that is a startup condition, not a transient outage.
+ */
+export type AccreditationStatus = 'active' | 'revoked';
+
+export async function getAccreditationOrcidsWithStatus(): Promise<
+  Map<string, { orcid: string | null; status: AccreditationStatus }>
+> {
+  const arr = await hafCache.getOrSet<
+    Array<{ account: string; orcid: string | null; status: AccreditationStatus }>
+  >(
+    'accreditation_orcid_status',
+    async () => {
+      const pool = getPool();
+      if (!pool) return [];
+
+      try {
+        // `accreditation_status` depends on `accred_ranked` (materialized
+        // by `activeAccreditationsCteBody`), so the WITH block must
+        // include both. Params come from the active-accreditations CTE
+        // alone (the status CTE adds no params).
+        const accredCte = activeAccreditationsCteBody();
+        const statusCte = accreditationStatusCteBody(accredCte.nextIdx);
+        const result = await pool.query(
+          `WITH ${accredCte.sql}, ${statusCte.sql}
+           SELECT account, orcid, status FROM accreditation_status`,
+          [...accredCte.params, ...statusCte.params],
+        );
+        return result.rows.map(
+          (r: { account: string; orcid: string | null; status: AccreditationStatus }) => ({
+            account: r.account,
+            orcid: typeof r.orcid === 'string' && r.orcid.length > 0 ? r.orcid : null,
+            status: r.status,
+          }),
+        );
+      } catch (err) {
+        logger.error({ err }, 'HAF accreditation-status lookup failed');
+        throw err;
+      }
+    },
+    10 * 60_000,
+    true,
+  );
+  const map = new Map<string, { orcid: string | null; status: AccreditationStatus }>();
+  for (const { account, orcid, status } of arr) {
+    map.set(account, { orcid, status });
+  }
+  return map;
+}
+
 export async function getAllAccreditedAccounts(): Promise<Set<string>> {
   const arr = await hafCache.getOrSet<string[]>('accredited_accounts_all', async () => {
     const pool = getPool();
