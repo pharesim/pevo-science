@@ -85,3 +85,34 @@ While in the area, audit `accreditationLimiter`, ORCID rate limits, and any othe
 - `backend/src/routes/custody.ts:42` — limiter declaration.
 - `backend/src/middleware/rateLimit.ts:44` — the unconditional `redis.incr` site.
 - `frontend/tests/e2e/custody-upgrade.spec.js:415` — the test that masks this gap (stubs the route; never hits the real limiter).
+
+---
+
+## Backend implementation signal (2026-05-16)
+
+The substantive fix (acceptance #1: `skipFailedRequests: true` on `upgradeLimiter`) was implemented in flight by `backend-custody-upgrade-seed-phrase-reauth` round-2 item 2 (commits `9210dd2` + cherry-pick chain) BEFORE this task was filed. That work also added `skipFailedRequests` as an option on the `rateLimit` primitive in `backend/src/middleware/rateLimit.ts` — backward-compatible default `false`, opt-in `true`. `upgradeLimiter` at `backend/src/routes/custody.ts:50` opts in.
+
+This commit adds the missing acceptance-#3 canary and the acceptance-#4 sibling audit; the rest of acceptance #1+#2 was already covered.
+
+### Acceptance #3 canary added
+
+`backend/tests/routes/custody-upgrade.test.ts` (new test "Hive getAccounts throws then recovers: 503 refunds limiter slot so the retry succeeds"): drives 503 outcome, then retries with a freshly-signed proof on the same account, asserts the retry returns 200 (not 429). Pins the slot-refund behaviour against the seed-phrase-loss cascade. 16/16 in the test file green.
+
+### Acceptance #2 4xx-vs-5xx semantic
+
+Verified via the existing 401 canaries (proof signature mismatch, no DB row) — those return 401 and DO consume the slot today (intentional: brute-force attempts must rate-limit). Only 5xx refunds. 503 is the only 5xx code emitted by the upgrade handler at HEAD.
+
+### Acceptance #4 sibling-limiter audit
+
+Surveyed all 35 `rateLimit({...})` declarations under `backend/src/`. None other than `upgradeLimiter` opts in to `skipFailedRequests` post-W7. Per-limiter recommendation:
+
+- **HIGH (file separate follow-up):** `accreditationRequestLimiter` at `backend/src/routes/accreditation.ts:25` — `max: 3` / 24h, `keyFn: byAccount`. The accreditation request flow performs an on-chain `custom_json` attestation broadcast; a Hive RPC transient during that broadcast that surfaces as 5xx burns one of three slots for 24 hours. Same cascade class as the upgrade limiter (irreversible/critical action + low quota + long window). Recommend a follow-up task to add `skipFailedRequests: true` once the actual 5xx surface of `/api/accreditation/request` is audited (the route may swallow chain errors to a 4xx envelope today, in which case the gap is latent — file the task to make the audit explicit).
+- **MODERATE:** `bridge.registerLimiter` at `backend/src/routes/bridge.ts:149` — `max: 10` / hour, `keyFn: byIp`. Bridge-paper register flow makes external lookups (arXiv / Crossref / DOI) that can 5xx. IP-keyed rather than account-keyed, so the user can switch networks; 10/hour quota means slot burn is annoying but not catastrophic. Worth a sweep but not a deploy-blocker.
+- **LOWER PRIORITY:** Auth flows (`signupLimiter`, `loginLimiter`, `resetLimiter`, `resendLimiter`, `resetRequestLimiter`, `recoverLimiter`) at `backend/src/routes/auth.ts:262-266,568,1072` — `max: 5-10` / hour, `keyFn: byIp`. Failure modes are 4xx-dominant (wrong password, no such account); 5xx during auth would be unusual.
+- **NEGLIGIBLE:** short-window high-quota limiters (`broadcastLimiter` 30/min, `freshAuthLimiter` 10/min, `sessionAuthLimiter` 10/min, `startLimiter` 10/min, `callbackLimiter` 10/min, `readLimiter` 120/min, `searchLimiter` 60/min, `notificationLimiter` 30/5min, `claimLimiter` 5/min, `approveLimiter` 10/min, `revokeLimiter` 10/min, `verifyLimiter` 10/hour byIp, `resumeLimiter` 5/hour byIp, `confirmLimiter` 10/hour byIp, `linkLimiter` 10/hour byIp, `contactLimiter` 5/hour byIp, `lookupLimiter` 20/min, `ipfsUploadLimiter` 10/hour byAccount, `ipfsDownloadLimiter` 60/min byIp, `anonReviewLimiter` 5/hour byAccount, `accreditationVerifyLimiter` 5/min byIp, `retractLimiter` 5/hour byAccount, `invalidateLimiter` 10/min byAccount, `sessionLimiter` 10/hour byAccount). None has the load-bearing seed-phrase-loss-style cascade.
+
+### Architect call
+
+`accreditationRequestLimiter` is the only sibling with a comparable cascade shape (long window, low quota, irreversible action). Filed for architect triage as a recommended follow-up; the current task's scope (`upgradeLimiter` specifically) closes here.
+
+`npm run lint` clean (pre-existing seed-phrase warnings only); `npx tsc --noEmit` clean.

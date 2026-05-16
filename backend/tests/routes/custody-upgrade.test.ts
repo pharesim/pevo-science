@@ -488,6 +488,42 @@ describe.skipIf(!dbReachable)(
       expect(res.body.error.code).toBe('SERVICE_UNAVAILABLE');
     });
 
+    // BACKEND-CUSTODY-UPGRADE-LIMITER-SKIP-FAILED P0 canary: the upgrade
+    // limiter at custody.ts:50 uses `skipFailedRequests: true` so a 5xx
+    // response refunds the per-account slot. Without it, a transient Hive
+    // RPC blip burns the user's only retry attempt for the hour and leaves
+    // them locked out with chain rotated to new keys but backend retaining
+    // stale encrypted keys (catastrophic data-loss UX — they cannot retry
+    // for an hour). This test pins the slot-refund behaviour.
+    it('Hive getAccounts throws then recovers: 503 refunds limiter slot so the retry succeeds', async () => {
+      const proof = buildProofBody(STATE_A_USER, wifA);
+      // First call fails with 503; default mock then returns the chain key
+      // set so the retry is a valid upgrade.
+      getAccountsMock.mockRejectedValueOnce(new Error('rpc unreachable'));
+      getAccountsMock.mockResolvedValue([fakeChainAccount(proof.derived_pubkey)]);
+
+      const firstRes = await request(app)
+        .post('/api/custody/upgrade')
+        .set('Authorization', bearerForLight(STATE_A_USER))
+        .send(proof);
+      expect(firstRes.status).toBe(503);
+
+      // Retry immediately with a freshly signed proof (the original
+      // signed_at would still be within the 60s window but signing again
+      // mirrors the SPA's retry path).
+      const retryProof = buildProofBody(STATE_A_USER, wifA);
+      const retryRes = await request(app)
+        .post('/api/custody/upgrade')
+        .set('Authorization', bearerForLight(STATE_A_USER))
+        .send(retryProof);
+
+      // If the limiter had NOT refunded the slot, this would be 429. The
+      // 200 here is the load-bearing assertion against the
+      // seed-phrase-loss cascade documented in
+      // backend-custody-upgrade-limiter-skip-failed.
+      expect(retryRes.status).toBe(200);
+    });
+
     // ─── Stale JWT / missing DB row (401 canary) ───────────────────────
     // Round-2 hold item 6: after the SELECT shape change to just
     // `upgraded_at`, `rows[0]` access requires the `rows.length === 0`
