@@ -217,3 +217,44 @@ Slug citations carrying `BACKEND-PASSWORD-HASH-NULL-TYPING-AUDIT` still exist at
 - `agents/docs/tasks/pending/backend-orcid-custody-default-invariant.md` (item 4(b): narrative correction preamble; this signal block)
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+---
+
+## Architect re-review (2026-05-16, round-3) — HELD PENDING FIXES:
+
+`/ce-code-review` of round-3 commit `3a9f7af` (7 reviewers — correctness on opus; security, kieran-typescript, maintainability, project-standards, api-contract, learnings-researcher on sonnet; `ce-agent-native-reviewer` and adversarial skipped per scope). Security, maintainability, project-standards all clean. Held on a single comment-only correctness regression against the round-2 hold's item #4, plus a folded pre-existing JWT-validation gap, plus the carved-out slug-citation cleanup.
+
+### Items to address
+
+1. **[P2] orcid.ts comment reframe (regression against round-2 hold item #4).** The new comments at `backend/src/routes/orcid.ts:657-661` (SQL row-type annotation) and `:682-689` (JWT-mint) cite "transient signup-pending states (E, F per ARCHITECTURE.md § 6.1)" as the defended `custody=NULL` case. Per the correctness reviewer's cross-check against § 6.1: states E/F have `username=NULL` and are filtered out by the SQL's `WHERE username IS NOT NULL` clause, so `account.custody` is never null at this query in production. The round-2 hold item #4 had asked for state-C framing, but on inspection state C has `custody='light'` (not null), so the `null` branch isn't defending state C either — the prior hold's instruction was imprecise. Honest reframe: the SQL query never produces `custody=null` rows at runtime; the `string | null` annotation honest-types the COLUMN's nullability (per the wrapping-primitive convention) as belt-and-suspenders for a hypothetical future query that drops the `username IS NOT NULL` filter. It is NOT defending any currently-reachable production state. Acknowledge state C (`custody='light' + password_hash=NULL`) exists as the real production passwordless shape, but note password_hash null is defended elsewhere (the `/upgrade` seed-phrase re-auth contract per § 6.4), not by the custody annotation. Keep both comments tight — ~3-4 lines each, pointing at § 6.1 for the model rather than re-explaining inline.
+
+2. **[P2, folded pre-existing] JWT `sub` runtime validation in verifyHiveSignature.ts.** The `as` cast at `backend/src/middleware/verifyHiveSignature.ts:79-83` doesn't validate `payload.sub`. A JWT with `sub` absent or non-string passes the cast silently, writes `undefined` to `req.hiveUsername`, and calls `next()` — making the request look authenticated with no username. Pre-existing weakness surfaced by kieran-typescript during the type-widening audit; folded into this hold because the implementer is already in this middleware file. Add a runtime guard immediately after the cast, e.g.:
+
+   ```ts
+   if (typeof payload.sub !== 'string' || payload.sub.length === 0) {
+     return next(); // fall through to unauthenticated branch (Hive-signature path or 401)
+   }
+   ```
+
+   Exploitability is low (HMAC verification precedes the cast; only an internal bug or test-fixture leak could mint such a token), but the static type is currently a lie and the fix is small. A targeted test that decodes a `sub`-less JWT into the middleware and asserts `req.hiveUsername` is undefined (or that downstream returns 401) would be the canonical pin.
+
+3. **[P3, folded residual] Slug-citation cleanup in 3 out-of-round-3-scope sites.** `backend/src/routes/auth.ts:612, 780` and `backend/src/routes/signup-verify.ts:191` still carry stale `BACKEND-PASSWORD-HASH-NULL-TYPING-AUDIT` slug citations. The round-2 hold's "Files for round-3 cleanup" list scoped narrowly; in hindsight the slug-cleanup was fungible across files. Apply the same behavioral-replacement convention used in `orcid.ts` round-3 (point at the audit's invariant or the relevant ARCHITECTURE.md section, not the task slug). After the cleanup, `grep -rn 'BACKEND-PASSWORD-HASH-NULL-TYPING-AUDIT' backend/src/ backend/tests/` should return zero hits.
+
+### Dismissed at architect triage
+
+- **AC-01 (P3, api-contract) — auth.md describes JWT `custody` as `'self' | 'light'` only; widening allows null.** Dismissed: auth.md describes the actual WIRE shape, which is non-null in production at handleLogin (per item 1's correctness analysis — the SQL filter excludes all custody=null rows). Internal type widening for column-nullability honesty doesn't require doc changes; the SPA's two consumer sites (`orcid-callback.js:269` does `data.custody || 'light'`; `auth.js:80` does `?? 'self'`) already defend defensively. A future change that actually emits null in the wire would prompt the doc update.
+
+### Suppressed below anchor 75 (surfaced for transparency)
+
+- kieran-typescript KT-2 (P3/50): DB `custody TEXT` column lacks CHECK constraint — pre-existing schema gap, mis-classification not escalation.
+- kieran-typescript KT-3 (P3/50): informational; type-narrowing on `payload.custody || 'self'` confirmed safe.
+- maintainability MAINT-R2 (P3/50): convention-file path in comment could itself rot on `/ce-compound-refresh` rename.
+
+### Files for round-4 cleanup
+
+- `backend/src/routes/orcid.ts` (item 1)
+- `backend/src/middleware/verifyHiveSignature.ts` (item 2)
+- `backend/src/routes/auth.ts` (item 3)
+- `backend/src/routes/signup-verify.ts` (item 3)
+
+Per root CLAUDE.md rule #8, this file moves from `tasks/review/` back to `tasks/pending/` so the implementer sees it at startup. After landing the round-4 fixes, `git mv` back to `tasks/review/` for round-4 re-review.
