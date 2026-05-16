@@ -283,13 +283,54 @@ async function searchFromHaf(
       return await searchPapersFromHaf(pool, query, discipline, language, source, includeRetracted, sort, limit, offset);
     }
 
-    // type === 'all': run both queries and merge
-    const [paperResult, reviewResult] = await Promise.all([
+    // type === 'all': run both queries and merge.
+    //
+    // BE-SEARCH-PARTIAL-DEGRADATION-ALLSETTLED: `Promise.all` rejects on the
+    // FIRST branch rejection and the outer catch swallows the failure into a
+    // 200 empty envelope, which collapses both branches when only one is
+    // broken. `Promise.allSettled` lets us return the surviving branch and
+    // emit a structured `search.type_all.partial_degradation` event so
+    // operators can distinguish "no matches in corpus" from "one branch
+    // transiently broken". When BOTH branches throw, we still return an
+    // empty result (the outer route renders that as 200 with `total: 0`),
+    // preserving the prior no-throw-escape behavior for the catastrophic
+    // case. Cache layer stores partial results — acceptable trade-off given
+    // the 15s TTL and the rarity of single-branch HAF failures.
+    const queryParams = { type: 'all' as const, discipline, language, source, includeRetracted, sort, limit, offset };
+    const [paperSettled, reviewSettled] = await Promise.allSettled([
       searchPapersFromHaf(pool, query, discipline, language, source, includeRetracted, sort, limit, offset),
       searchReviewsFromHaf(pool, query, sort, limit, offset),
     ]);
 
-    if (!paperResult && !reviewResult) return null;
+    if (paperSettled.status === 'rejected') {
+      const err = paperSettled.reason;
+      logger.warn(
+        {
+          event: 'search.type_all.partial_degradation',
+          branch: 'papers',
+          errClass: (err as Error | null | undefined)?.constructor?.name ?? 'Unknown',
+          err,
+          queryParams,
+        },
+        'search type=all papers branch failed; returning reviews-only result',
+      );
+    }
+    if (reviewSettled.status === 'rejected') {
+      const err = reviewSettled.reason;
+      logger.warn(
+        {
+          event: 'search.type_all.partial_degradation',
+          branch: 'reviews',
+          errClass: (err as Error | null | undefined)?.constructor?.name ?? 'Unknown',
+          err,
+          queryParams,
+        },
+        'search type=all reviews branch failed; returning papers-only result',
+      );
+    }
+
+    const paperResult = paperSettled.status === 'fulfilled' ? paperSettled.value : null;
+    const reviewResult = reviewSettled.status === 'fulfilled' ? reviewSettled.value : null;
 
     const paperRows = paperResult?.rows ?? [];
     const reviewRows = reviewResult?.rows ?? [];

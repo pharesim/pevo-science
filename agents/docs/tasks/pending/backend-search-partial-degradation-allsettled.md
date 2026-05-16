@@ -43,3 +43,17 @@ Surface partial results from `?type=all` search when one branch degrades, with a
 
 - `agents/docs/tasks/pending/backend-papers-filter-accreditation.md` — sibling task; reviewer surfaced this finding while inspecting lane-3 search.ts changes.
 - `backend/src/routes/search.ts:286-308` — `searchFromHaf` type=all branch.
+
+## Backend implementation signal (2026-05-16, worktree)
+
+Acceptance items 1-4 + lint/tsc gate landed.
+
+- **Refactor:** `Promise.allSettled` replaces `Promise.all` in `searchFromHaf` `type=all` branch (`backend/src/routes/search.ts:277-336` post-edit). Each rejected branch logs a `logger.warn` with the structured event slug below, then the merge step uses `[]` for the failed branch's rows. Both-throw degrades to empty rows → route renders as `200 OK { data: [], total: 0 }` (regression preserved). The outer `try/catch` is retained as the catch-all safety net for any unexpected throw outside the two helpers.
+- **Event slug:** `search.type_all.partial_degradation` (dot-namespaced per the recent convention sweep; consistent with `accreditation.verify.*`, `custody.broadcast.*`, `auth.signup.*`). Payload shape: `{ event, branch: 'papers' | 'reviews', errClass, err, queryParams: { type, discipline, language, source, includeRetracted, sort, limit, offset } }`.
+- **Tests:** 4 canaries added in a new file `backend/tests/routes/search-partial-degradation.test.ts`:
+  - Reviews-branch-throws → 200, papers-only data, one warn fires with `branch: 'reviews'`.
+  - Papers-branch-throws → 200, reviews-only data, one warn fires with `branch: 'papers'`.
+  - Both-throw → 200 empty, two warns fire (one per branch). Regression guard against outer-catch collapse re-introduction.
+  - QueryParams payload shape canary — pins `type`, `discipline`, `language`, `sort` in the warn event so future filter additions get operator-dashboard visibility.
+- **Carve-out:** mocked `getPool()` via `vi.mock` so `pool.query` discriminates by SQL substring (` p ON ` is the reviews-branch JOIN — structural discriminator, not a brittle alias-name match). Real-HAF was impractical: inducing single-branch failure (one query times out, the other succeeds) requires per-statement timeouts plus a controlled rogue-query fixture the live corpus does not provide. Real-path companion is the existing `?type=all` happy-path coverage in `backend/tests/routes/search.test.ts` (different risk class — SQL-shape vs JS-level allSettled discrimination). New test file header documents the carve-out under clauses (a), (b), (c). `verifyHiveSignature` is NOT mocked (`/api/search` is unauthenticated; carve-out's auth-focused exclusion does not apply).
+- `npm run lint` clean (pre-existing seed-phrase.ts warnings only); `npx tsc --noEmit` clean. Vitest not run in worktree (parent serializes after all worktrees merge).
