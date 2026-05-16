@@ -33,6 +33,12 @@ export async function loadAccreditedDirectory() {
       cache = map;
       return cache;
     } catch (err) {
+      // Intentional: do NOT assign `cache` on failure. A transient fetch
+      // failure (network blip, backend hiccup) should be recoverable on the
+      // next call — the next caller will re-enter this IIFE and re-issue
+      // `fetchAccreditations`. If we cached `{}` here, every subsequent
+      // call would short-circuit at the `if (cache) return cache` gate and
+      // the directory would stay empty for the rest of the session.
       console.warn('[accredited-directory]', err);
       return {};
     } finally {
@@ -52,20 +58,6 @@ export function lookupAccredited(directory, username) {
   const key = normalizeUsername(username);
   if (!key) return null;
   return directory[key] || null;
-}
-
-export function filterAccreditedByPrefix(directory, prefix, max = 8) {
-  if (!directory) return [];
-  const p = normalizeUsername(prefix);
-  if (!p) return [];
-  const out = [];
-  for (const username of Object.keys(directory)) {
-    if (username.startsWith(p)) {
-      out.push(directory[username]);
-      if (out.length >= max) break;
-    }
-  }
-  return out;
 }
 
 // Apply ORCID-prefill semantics for a co-author row when the user changes its

@@ -33,7 +33,6 @@ import { fetchAccreditations } from '../../src/api.js';
 import {
   loadAccreditedDirectory,
   lookupAccredited,
-  filterAccreditedByPrefix,
   applyHiveChangePrefill,
   applyAccreditedPrefill,
   _resetAccreditedDirectoryForTests,
@@ -70,36 +69,6 @@ describe('lookupAccredited', () => {
   it('returns null when the directory itself is null or empty', () => {
     expect(lookupAccredited(null, 'alice')).toBeNull();
     expect(lookupAccredited({}, 'alice')).toBeNull();
-  });
-});
-
-describe('filterAccreditedByPrefix', () => {
-  const directory = {
-    alice: { username: 'alice' },
-    alicia: { username: 'alicia' },
-    bob: { username: 'bob' },
-    alfred: { username: 'alfred' },
-  };
-
-  it('returns rows whose username starts with the prefix', () => {
-    const matches = filterAccreditedByPrefix(directory, 'al');
-    expect(matches.map((m) => m.username).sort()).toEqual(['alfred', 'alice', 'alicia']);
-  });
-
-  it('normalizes the prefix (trim, lowercase, strip @)', () => {
-    expect(filterAccreditedByPrefix(directory, '  AL  ').length).toBe(3);
-    expect(filterAccreditedByPrefix(directory, '@alic').length).toBe(2);
-  });
-
-  it('caps results at the max parameter', () => {
-    const matches = filterAccreditedByPrefix(directory, 'a', 2);
-    expect(matches.length).toBe(2);
-  });
-
-  it('returns [] for empty/missing prefix or directory', () => {
-    expect(filterAccreditedByPrefix(directory, '')).toEqual([]);
-    expect(filterAccreditedByPrefix(directory, null)).toEqual([]);
-    expect(filterAccreditedByPrefix(null, 'al')).toEqual([]);
   });
 });
 
@@ -140,6 +109,26 @@ describe('loadAccreditedDirectory', () => {
     fetchAccreditations.mockRejectedValue(new Error('network down'));
     const dir = await loadAccreditedDirectory();
     expect(dir).toEqual({});
+  });
+
+  // The catch block in loadAccreditedDirectory intentionally does NOT cache
+  // on rejection — a transient failure must be recoverable on the next call.
+  // Pin that semantic: after a rejection resolves, a subsequent call
+  // re-issues `fetchAccreditations` (it does not stick at the empty result).
+  it('refetches on the next call after a rejection (no negative caching)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    fetchAccreditations.mockRejectedValueOnce(new Error('network down'));
+    const firstDir = await loadAccreditedDirectory();
+    expect(firstDir).toEqual({});
+    expect(fetchAccreditations).toHaveBeenCalledTimes(1);
+
+    fetchAccreditations.mockResolvedValueOnce({
+      data: [{ username: 'alice', orcid: '0000-0001-1111-1111', name: 'Alice' }],
+    });
+    const secondDir = await loadAccreditedDirectory();
+    expect(secondDir.alice.orcid).toBe('0000-0001-1111-1111');
+    expect(fetchAccreditations).toHaveBeenCalledTimes(2);
+    warnSpy.mockRestore();
   });
 
   it('skips rows without a username', async () => {
