@@ -172,4 +172,4 @@ backend/tests/routes/orcid.test.ts
 - Missing convention slug for task-slug-citations-in-code-comments. The architect will dispose of this post-archive (e.g. via `/ce-compound` to file the convention).
 - `Error.cause` unwrap in the classifier. The classifier currently inspects `err instanceof X` directly; it does not walk `err.cause` chains. The architect will dispose of this post-archive.
 
-**Round-2 commit SHA:** (filled in after `git commit` lands below)
+**Round-2 commit SHA:** `0305eb9f0c8c9924aea25544c1fd03164621a34c` (worktree-agent-aaa9e2939c6484c80; parent merges into orchestrating branch and `git mv`s this file back to `review/` after merge).
