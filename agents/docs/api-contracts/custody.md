@@ -25,12 +25,17 @@ Sign and broadcast Hive operations for light accounts. Only `comment`, `vote`, a
       "json_metadata": "{\"app\":\"pevo/1.0\",\"tags\":[\"pevo\",\"science\"]}"
     }]
   ],
-  "fresh_auth_proof": "<token from POST /api/custody/fresh-auth or POST /api/orcid/start { mode: 'fresh_auth' }>",
+  "fresh_auth_proof": "<token from POST /api/custody/fresh-auth, POST /api/orcid/start { mode: 'fresh_auth' }, or POST /api/orcid/start { mode: 'session_auth' }>",
   "idempotency_key": "<optional 1-128 char client-supplied dedup key>"
 }
 ```
 
-`fresh_auth_proof` is REQUIRED when the bundle contains a consent op (`author_accept` or `author_resign`) and otherwise omitted. The proof is single-use and consumed atomically before the broadcast attempt.
+`fresh_auth_proof` is REQUIRED on every call. The proof binding semantics differ based on the bundle contents:
+
+- **Bundles containing a consent op** (`author_accept` or `author_resign`) require a **consent-op-kind** proof bound to the specific `(action, root_author, root_permlink)` triple of the consent op. The backend rejects session-kind proofs on this surface with 403 `FRESH_AUTH_REQUIRED` `details.reason: "kind_mismatch"`. Mint via `POST /api/custody/fresh-auth` (password mechanism) or `POST /api/orcid/start { mode: "fresh_auth" }` (ORCID mechanism).
+- **Non-consent bundles** (vote, comment, non-consent `custom_json`) accept EITHER a session-kind proof OR a consent_op-kind proof (cross-kind accept: a consent_op-kind proof is strictly more proof and is admitted on this surface). Session-kind proofs are mintable via `POST /api/orcid/start { mode: "session_auth" }` (ORCID mechanism, available to State B/C accounts with a linked ORCID).
+
+The proof is single-use and consumed atomically before the broadcast attempt.
 
 `idempotency_key` is OPTIONAL. When present, the backend embeds the key into the first `comment` op's `json_metadata.<appTag>.idempotency_key` or the first `custom_json` op's `json.idempotency_key` before broadcasting, and on the next retry-equivalent request runs a pre-broadcast HAF lookup. If a prior op carrying the same `(username, key, op_type)` triple has already landed on chain, the backend short-circuits to the existing `tx_id` without re-broadcasting (see response shape extension below). The key MUST be 1-128 characters. Recommended SPA discipline: generate via `crypto.randomUUID()` per logical operation. Pure-vote bundles (no `comment` or `custom_json` op) silently bypass the idempotency layer because votes have no payload surface for embedding; vote re-cast is low-harm (voting-power cost only). Bundles submitted without an `idempotency_key` proceed as before; the field is opt-in during the SPA migration window.
 
@@ -60,11 +65,12 @@ Sign and broadcast Hive operations for light accounts. Only `comment`, `vote`, a
 - `FORBIDDEN` — operation not in allowlist, author/voter mismatch, or account already upgraded to self-custody
 - `VALIDATION_ERROR` — malformed operations or missing app tag
 - `MULTIPLE_CONSENT_OPS` (400) — bundle contains more than one consent op. Submit each consent op in its own request.
-- `FRESH_AUTH_REQUIRED` (401|403) — bundle contains a consent op but the `fresh_auth_proof` is missing, expired, malformed, bound to a different user, or bound to a different consent target. Status is discriminated by `details.reason`:
-  - `details.reason: "username_mismatch"` → **403 FORBIDDEN** (user-binding violation; token was issued for a different account).
-  - `details.reason: "target_mismatch"` → **403 FORBIDDEN** (per-op target-binding violation; token was issued for a different `(action, root_author, root_permlink)` triple than the consent op in the bundle). The fresh-auth proof binds at issuance time to the specific consent op the user authorized; reusing it for a different action or paper is rejected.
-  - `details.reason: "missing" | "expired" | "malformed"` → **401 UNAUTHORIZED** (no valid proof present).
-  - `details.reason` is a closed enum: `"missing" | "expired" | "username_mismatch" | "target_mismatch" | "malformed"`. Adding a new value is a wire contract change; document here before shipping. Consumers MUST branch on `details.reason` to render distinct UX, not on the message string.
+- `FRESH_AUTH_REQUIRED` (401|403) — the `fresh_auth_proof` is missing, expired, malformed, bound to a different user, bound to a different consent target, or of the wrong kind for this surface. Status is discriminated by `details.reason`:
+  - `details.reason: "username_mismatch"` → **403 FORBIDDEN** (user-binding violation; token was issued for a different account). Returned on both consent and non-consent surfaces.
+  - `details.reason: "target_mismatch"` → **403 FORBIDDEN** (per-op target-binding violation; token was issued for a different `(action, root_author, root_permlink)` triple than the consent op in the bundle). The fresh-auth proof binds at issuance time to the specific consent op the user authorized; reusing it for a different action or paper is rejected. Consent-surface only (the non-consent surface does not perform target binding).
+  - `details.reason: "kind_mismatch"` → **403 FORBIDDEN** (kind-binding violation; a session-kind proof was submitted on the consent-op surface). Session-kind proofs are scoped to non-consent broadcasts only; the consent surface requires a consent_op-kind proof bound to the per-op target. Consent-surface only.
+  - `details.reason: "missing" | "expired" | "malformed"` → **401 UNAUTHORIZED** (no valid proof present). Returned on both consent and non-consent surfaces.
+  - `details.reason` is a closed enum: `"missing" | "expired" | "username_mismatch" | "target_mismatch" | "kind_mismatch" | "malformed"`. Adding a new value is a wire contract change; document here before shipping. Consumers MUST branch on `details.reason` to render distinct UX, not on the message string.
 - `BROADCAST_TIMEOUT` (504) — broadcast timed out before chain confirmation. Message: `"Broadcasting signed operation timed out"`. Details: `{retriable:false, outcome:"uncertain", verify_before_retry:true, timeout_ms}` (`timeout_ms` is present; these routes always use the timer-fire path). Idempotency note: SPA clients carrying an `idempotency_key` MAY retry safely; the retry's pre-broadcast HAF lookup will find the landed op (if it did land) and short-circuit to `outcome: 'already_landed'`. Clients without an `idempotency_key` should verify chain state before retrying.
 - `BROADCAST_FAILED` (502) — Hive node rejected the broadcast. Message: `"Failed to broadcast signed operation to Hive"`. Details: `{retriable:false}`.
 - `POST_BROADCAST_FAILED` (502): Broadcast confirmed on chain, then a transient downstream cascade write failed. Wire shape per [common.md](common.md). The custody route does not currently emit this code (today only ORCID and accreditation routes wrap post-broadcast writes in `PostBroadcastWriteError`), but the shared `handleBroadcastError` helper can surface it if a future cascade step is added to custody (e.g., custody-state DB update, audit log row). SPA error-handling code keyed on the broadcast-error code surface SHOULD include a handler for this code.
@@ -119,7 +125,7 @@ All four fields are REQUIRED. The `(action, root_author, root_permlink)` triple 
 
 ### POST /api/custody/upgrade
 
-Notify the backend that the user has completed a client-side key upgrade to self-custody. The backend deletes stored encrypted keys and issues a new JWT.
+Notify the backend that the user has completed a client-side key upgrade to self-custody. The backend verifies a seed-phrase-derived-pubkey proof, deletes stored encrypted keys, and issues a new JWT. Per ARCHITECTURE.md § 6.4 the upgrade action's required re-auth is the seed-phrase-derived pubkey (not password); per § 6.5 invariant #6 the seed phrase is the upgrade proof, not a session-auth factor.
 
 **Headers:** `Authorization: Bearer <jwt>` or `X-Hive-Username`, `X-Hive-Signature` (account must have `custody: "light"`)
 
@@ -127,9 +133,15 @@ Notify the backend that the user has completed a client-side key upgrade to self
 
 ```json
 {
-  "password": "SecurePass123"
+  "derived_pubkey": "STM<base58>",
+  "signed_proof": "<hex signature>",
+  "signed_at": "<ISO-8601 timestamp, within 60s of request>"
 }
 ```
+
+`derived_pubkey` is the public key the UI derives client-side from the BIP39 seed phrase (the same seed generated at signup, never sent to the server). `signed_proof` is a hex-encoded Hive signature over the canonical challenge `${appTag}-custody-upgrade|v1|${username}|${signed_at}`, signed with the seed-derived private key. `signed_at` is the timestamp baked into the challenge; the backend rejects timestamps outside a 60-second window relative to wall-clock time.
+
+The backend verifies the proof by (a) checking the timestamp window, (b) recovering the signing pubkey from `signed_proof` and timing-safe-comparing it to `derived_pubkey`, and (c) confirming `derived_pubkey` appears in the on-chain account's `posting`, `active`, or `owner` key_auths (fetched via Hive RPC). Any failure collapses to a uniform `401 UNAUTHORIZED` with a generic message so the route does not become a chain-state / signature-validity oracle.
 
 **Response `data`:**
 
@@ -145,8 +157,8 @@ Notify the backend that the user has completed a client-side key upgrade to self
 
 **Errors:**
 - `NOT_FOUND` — account not found
-- `UNAUTHORIZED` — invalid password
-- `VALIDATION_ERROR` — missing password
-- `FORBIDDEN` — account is not a light account
-- `ALREADY_UPGRADED` (409) — account already upgraded
-- `SERVICE_UNAVAILABLE` (503) — argon2 capacity exhausted or backend draining. See [common.md](common.md).
+- `FORBIDDEN` — account is not a light account (self-custody or upgraded account submitting the upgrade endpoint)
+- `VALIDATION_ERROR` (400) — missing or non-string `derived_pubkey`, `signed_proof`, or `signed_at`
+- `UNAUTHORIZED` (401) — proof verification failed. Uniform message and status for all of: `signed_at` outside the 60s freshness window, malformed `signed_proof`, signature recovery returns a pubkey that does not match `derived_pubkey`, `derived_pubkey` not present in the on-chain account's key_auths, or no on-chain account exists for the username. Server-side telemetry discriminates via `event:` slugs (`custody.upgrade.proof_malformed`, `custody.upgrade.pubkey_binding_mismatch`, `custody.upgrade.chain_key_mismatch`, `custody.upgrade.hive_account_missing`); the wire envelope is intentionally non-discriminating to prevent oracle behavior.
+- `ALREADY_UPGRADED` (409) — account already upgraded (`upgraded_at IS NOT NULL`). Fires before proof verification.
+- `SERVICE_UNAVAILABLE` (503) — Hive RPC unavailable during the on-chain key_auths lookup. Distinct from the prior argon2-based 503 (argon2 is no longer in the upgrade path). The message indicates retriability; clients SHOULD distinguish 503 from terminal errors and offer retry rather than routing to a permanent-failure screen.

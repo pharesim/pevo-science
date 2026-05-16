@@ -14,13 +14,13 @@ Unified ORCID OAuth endpoints replacing the separate auth and accreditation ORCI
 
 Initiate the ORCID OAuth2 flow for any mode. Generates a state parameter stored in Redis and returns the ORCID authorization URL.
 
-**Auth:** Required for `accredit` and `link` modes (JWT). Not required for `signup` and `login` modes.
+**Auth:** Required for `accredit`, `link`, `fresh_auth`, and `session_auth` modes (JWT). Not required for `signup` and `login` modes.
 
 **Body:**
 
 ```json
 {
-  "mode": "signup" | "login" | "accredit" | "link" | "fresh_auth",
+  "mode": "signup" | "login" | "accredit" | "link" | "fresh_auth" | "session_auth",
   "action": "author_accept" | "author_resign",
   "root_author": "<hive-account>",
   "root_permlink": "<paper-permlink>"
@@ -33,15 +33,16 @@ Initiate the ORCID OAuth2 flow for any mode. Generates a state parameter stored 
 | `login` | No | Sign in via ORCID |
 | `accredit` | Yes (JWT) | Get accredited via ORCID |
 | `link` | Yes (JWT) | Link/update ORCID on existing accreditation |
-| `fresh_auth` | Yes (JWT) | Mint a per-op fresh-auth proof via a fresh OAuth round-trip. Sibling to `POST /api/custody/fresh-auth` (password path). The OAuth-returned ORCID iD MUST equal `accounts.orcid` for the JWT subject; mismatch returns 403. |
+| `fresh_auth` | Yes (JWT) | Mint a per-op (consent_op-kind) fresh-auth proof via a fresh OAuth round-trip. Sibling to `POST /api/custody/fresh-auth` (password path). Bound to a specific `(action, root_author, root_permlink)` target. The OAuth-returned ORCID iD MUST equal `accounts.orcid` for the JWT subject; mismatch returns 403. |
+| `session_auth` | Yes (JWT) | Mint a target-less (session-kind) fresh-auth proof via a fresh OAuth round-trip. Used by State C (passwordless ORCID-only) accounts — and State B accounts — to authorize non-consent broadcasts (vote, comment, non-consent `custom_json`). The OAuth-returned ORCID iD MUST equal `accounts.orcid` for the JWT subject; mismatch returns 403. |
 
-`action`, `root_author`, and `root_permlink` are REQUIRED when `mode === "fresh_auth"` and IGNORED in all other modes. Together they form the per-op target the issued proof will bind to; the consent op submitted on a subsequent `POST /api/custody/broadcast` MUST match the triple exactly or the broadcast returns 403 `FRESH_AUTH_REQUIRED` with `details.reason: "target_mismatch"`. Any missing or malformed field on a `fresh_auth` request returns 400 `VALIDATION_ERROR`.
+`action`, `root_author`, and `root_permlink` are REQUIRED when `mode === "fresh_auth"` and IGNORED in all other modes (including `session_auth`, which is target-less by design). On a `fresh_auth` request these three fields form the per-op target the issued proof will bind to; the consent op submitted on a subsequent `POST /api/custody/broadcast` MUST match the triple exactly or the broadcast returns 403 `FRESH_AUTH_REQUIRED` with `details.reason: "target_mismatch"`. Any missing or malformed field on a `fresh_auth` request returns 400 `VALIDATION_ERROR`. Session-kind proofs minted via `session_auth` do NOT carry a target and are admitted only on the non-consent broadcast surface; submitting one to a consent-op bundle returns 403 `FRESH_AUTH_REQUIRED` with `details.reason: "kind_mismatch"`.
 
 **State stored in Redis:** Key `orcid_state:{state}`, TTL 600s.
 
 ```json
 {
-  "mode": "signup" | "login" | "accredit" | "link" | "fresh_auth",
+  "mode": "signup" | "login" | "accredit" | "link" | "fresh_auth" | "session_auth",
   "username": "...",
   "timestamp": 1234567890,
   "fresh_auth_target": {
@@ -52,7 +53,7 @@ Initiate the ORCID OAuth2 flow for any mode. Generates a state parameter stored 
 }
 ```
 
-`username` is present only for authenticated modes (`accredit`, `link`, `fresh_auth`), read from the JWT. `fresh_auth_target` is present only when `mode === "fresh_auth"`; the `/callback` handler reads it back from the state map and passes it to `consumeFreshAuthToken` so the issued proof binds to the same target the user authorized at `/start`. State carries the target across the OAuth round-trip; the SPA does not re-submit it on `/callback`.
+`username` is present only for authenticated modes (`accredit`, `link`, `fresh_auth`, `session_auth`), read from the JWT. `fresh_auth_target` is present only when `mode === "fresh_auth"` (target-bound issuance); session_auth is target-less by design so the field is absent. The `/callback` handler reads `fresh_auth_target` back from the state map for fresh_auth and passes it to `consumeFreshAuthToken` so the issued proof binds to the same target the user authorized at `/start`. State carries the target across the OAuth round-trip; the SPA does not re-submit it on `/callback`.
 
 **Response `data`:**
 
@@ -215,6 +216,37 @@ No `custom_json` broadcast on this mode. No min works check.
 - `BAD_REQUEST` (400) — invalid ORCID iD format returned by the OAuth round-trip, OR the `fresh_auth_target` is missing from the Redis state map at `/callback`. The latter is a defensive closed-default rejection: `/start` enforces target presence on entry, so an absent `fresh_auth_target` at `/callback` indicates a corrupt state entry rather than a normal client flow. Message: `"fresh_auth state is missing the per-op target binding"`.
 - `UNAUTHORIZED` (401) — JWT subject's account not found.
 - `FORBIDDEN` (403) — the OAuth-returned ORCID iD does not match `accounts.orcid` for the JWT subject (binding violation), or the account has no ORCID linked.
+- `INTERNAL_ERROR` (503) — backend service unavailable.
+
+#### session_auth
+
+Target-less ORCID session-kind proof issuance. Used by State C (passwordless ORCID-only) accounts that have no password mechanism to mint via `POST /api/custody/fresh-auth`, and by State B accounts that prefer the ORCID factor over their password. The mint flow is identical to `fresh_auth` except (a) no per-op target binding, (b) the issued proof is admitted only on the non-consent `POST /api/custody/broadcast` surface.
+
+1. Exchange code for token, get ORCID iD.
+2. Verify the OAuth-returned ORCID iD format matches `/^\d{4}-\d{4}-\d{4}-\d{3}[\dX]$/`. Mismatch returns 400 `BAD_REQUEST`.
+3. Look up `accounts.orcid` for the JWT subject (the `username` bound into the state at `/start`).
+4. Verify `accounts.orcid === orcidId`. Mismatch (or account has no ORCID linked) returns 403 `FORBIDDEN`. Same symmetric guard as `fresh_auth`.
+5. Issue a session-kind fresh-auth proof bound to the JWT subject with `mechanism: "orcid"`. No target binding.
+
+No `custom_json` broadcast on this mode. No min works check.
+
+**Response `data`:**
+
+```json
+{
+  "mode": "session_auth",
+  "fresh_auth_proof": "<single-use token>",
+  "expires_at": "2026-05-06T12:05:00Z",
+  "mechanism": "orcid"
+}
+```
+
+`fresh_auth_proof` is a single-use bearer token bound to the JWT subject (no target binding). TTL is 5 minutes. Submit it as the `fresh_auth_proof` field on a subsequent `POST /api/custody/broadcast` request whose bundle does NOT contain a consent op. Submitting a session-kind proof to a consent-op bundle returns 403 `FRESH_AUTH_REQUIRED` with `details.reason: "kind_mismatch"`.
+
+**Errors specific to `session_auth`:**
+- `BAD_REQUEST` (400) — invalid ORCID iD format returned by the OAuth round-trip.
+- `UNAUTHORIZED` (401) — JWT subject's account not found.
+- `FORBIDDEN` (403) — the OAuth-returned ORCID iD does not match `accounts.orcid` for the JWT subject, or the account has no ORCID linked.
 - `INTERNAL_ERROR` (503) — backend service unavailable.
 
 **Errors (all modes):**
