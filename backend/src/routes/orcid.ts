@@ -88,7 +88,19 @@ const ORCID_RE = /^\d{4}-\d{4}-\d{4}-\d{3}[\dX]$/;
 // target). Both require an authenticated session and complete a fresh
 // OAuth round-trip.
 type OrcidMode = 'signup' | 'login' | 'accredit' | 'link' | 'fresh_auth' | 'session_auth';
-const VALID_MODES: ReadonlySet<string> = new Set(['signup', 'login', 'accredit', 'link', 'fresh_auth', 'session_auth']);
+// Round-3 hold KT-1: typed as `Set<OrcidMode>` (not `Set<string>`) so a
+// future `OrcidMode` literal added to the union but missed in this array
+// becomes a compile error. The `satisfies ReadonlySet<OrcidMode>` keeps
+// the inferred type as the literal-element-typed set.
+const VALID_MODES = new Set<OrcidMode>(['signup', 'login', 'accredit', 'link', 'fresh_auth', 'session_auth']) satisfies ReadonlySet<OrcidMode>;
+
+/** Type predicate that narrows `string` to `OrcidMode` via `VALID_MODES`
+ *  membership. Encapsulates the `.has(value as OrcidMode)` cast required by
+ *  `Set<OrcidMode>.has`'s nominal element-typed signature so the cast lives
+ *  in exactly one place and callers narrow safely. */
+function isOrcidMode(value: string): value is OrcidMode {
+  return VALID_MODES.has(value as OrcidMode);
+}
 const AUTHENTICATED_MODES: ReadonlySet<string> = new Set(['accredit', 'link', 'fresh_auth', 'session_auth']);
 
 const ORCID_STATE_TTL = 600; // 10 minutes
@@ -307,7 +319,7 @@ router.post('/start', startLimiter, async (req: Request, res: Response) => {
     return sendError(res, 400, 'VALIDATION_ERROR', 'Invalid request body');
   }
   const { mode } = startParsed.data;
-  if (!mode || !VALID_MODES.has(mode)) {
+  if (!mode || !isOrcidMode(mode)) {
     return sendError(res, 400, 'VALIDATION_ERROR', 'mode must be one of: signup, login, accredit, link');
   }
 
@@ -375,7 +387,7 @@ router.post('/start', startLimiter, async (req: Request, res: Response) => {
     await redis.set(stateKey, JSON.stringify(stateData), 'EX', ORCID_STATE_TTL);
   } else {
     orcidStates.set(state, {
-      mode: mode as OrcidMode,
+      mode,
       username,
       fresh_auth_target: freshAuthTarget,
       timestamp: Date.now(),
@@ -437,17 +449,15 @@ router.post('/callback', callbackLimiter, async (req: Request, res: Response) =>
             fresh_auth_target?: FreshAuthTarget;
           };
           // Round-2 hold #3: runtime membership guard on the deserialized
-          // `mode`. The compile-time `as OrcidMode` cast was a lie — a stale
-          // Redis entry written by a prior code version carrying an
-          // unrecognized literal would assign that string into a variable
-          // typed `OrcidMode`, then fall out of the dispatch switch at the
-          // end of this function with no `default` arm and send no response.
-          // Reject explicitly here so the failure mode is a clean 400 with
-          // a structured error instead of a hung request.
-          if (typeof parsed.mode !== 'string' || !VALID_MODES.has(parsed.mode)) {
+          // `mode`. A stale Redis entry written by a prior code version
+          // carrying an unrecognized literal would otherwise fall out of the
+          // dispatch switch at the end of this function and send no response.
+          // The `isOrcidMode` predicate narrows `string` → `OrcidMode` so no
+          // cast is needed on assignment.
+          if (typeof parsed.mode !== 'string' || !isOrcidMode(parsed.mode)) {
             return sendError(res, 400, 'BAD_REQUEST', 'Unrecognized state mode');
           }
-          storedMode = parsed.mode as OrcidMode;
+          storedMode = parsed.mode;
           storedUsername = parsed.username;
           storedFreshAuthTarget = parsed.fresh_auth_target;
         } catch {
@@ -551,9 +561,9 @@ router.post('/callback', callbackLimiter, async (req: Request, res: Response) =>
         }
         return await handleFreshAuth(res, orcidId, storedUsername!, storedFreshAuthTarget);
       case 'session_auth':
-        // BACKEND-CUSTODY-BROADCAST-ORCID-FRESH-AUTH: target-less session
-        // proof for the non-consent broadcast surface. Same binding to the
-        // (orcidId, username) pair as fresh_auth, no per-op target.
+        // Target-less session-kind proof issuance — used by the non-consent
+        // broadcast surface where per-op target binding is not required.
+        // Same (orcidId, username) binding check as fresh_auth.
         return await handleSessionAuth(res, orcidId, storedUsername!);
       default:
         // Round-2 hold #2: explicit `assertNever` so a future arm added to

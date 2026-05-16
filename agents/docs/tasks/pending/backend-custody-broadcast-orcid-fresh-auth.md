@@ -161,3 +161,19 @@ Round-1 hold items 1-6 landed.
 ### Re-review signal
 
 When items 1-4 land, `git mv` this file back to `tasks/review/`. Round-3 architect review scopes `/ce-code-review` to the round-3 commit only.
+
+## Backend re-review signal (2026-05-16, round-3 fix commit)
+
+Round-2 hold items 1-4 landed.
+
+- Item 1 (P2) — task-slug citations and bare line-number anchors removed from three production code-comment sites.
+  - `backend/src/lib/fresh-auth.ts` — `FreshAuthKind` docstring rewritten to anchor on the durable State C / ARCH.md § 6.5 invariant #1 wording the architect proposed; slug dropped.
+  - `backend/src/routes/custody.ts` — hold #6 banner block rewritten to reference the consume helpers by name (`consumeFreshAuthToken` and `consumeSessionFreshAuthToken` early-return 401/403 on missing/invalid proof, so `result.mechanism` is assigned before reaching the audit-extras constructor); bare line-number citations dropped.
+  - `backend/src/routes/orcid.ts` — `session_auth` case body comment rewritten to describe the case ("target-less session-kind proof issuance — used by the non-consent broadcast surface where per-op target binding is not required"); slug prefix dropped.
+- Item 2 (P2) — `KEY_PREFIX` comment trimmed at `backend/src/lib/fresh-auth.ts` from the six-sentence rename-history paragraph to the two-sentence kind-neutral invariant (shared namespace; discrimination by the `kind` JSON field, not by key namespace). Git history retains the rename rationale permanently.
+- Item 3 (P2) — `VALID_MODES` retyped at `backend/src/routes/orcid.ts` from `ReadonlySet<string>` to `new Set<OrcidMode>([...]) satisfies ReadonlySet<OrcidMode>`. A future `OrcidMode` literal missing from the array is now a compile error. Added a single `isOrcidMode(value: string): value is OrcidMode` type-predicate helper that encapsulates the one remaining `as OrcidMode` cast (required by `Set<OrcidMode>.has`'s nominal element-typed signature) so the cast lives in exactly one place. Both call sites (`/start` mode-validation and Redis-deserialize path) now narrow via `isOrcidMode`, removing the prior `as OrcidMode` casts at the orcidStates.set call and the storedMode assignment.
+- Item 4 (P2) — added a new `it('DB rejection in handleSessionAuth → 500 INTERNAL_ERROR with `orcid.session_auth.db_failed` event slug', ...)` test in the `session_auth` describe block of `backend/tests/routes/orcid.test.ts`. Stubs `appQueryMock` to throw on the `SELECT orcid FROM accounts` query, spies on `logger.error`, asserts (a) status 500, (b) error code INTERNAL_ERROR, (c) `logger.error` called with the `orcid.session_auth.db_failed` event slug plus `route: 'orcid.handleSessionAuth'`, `username: 'alice'`, and `err: any(Error)`. Pattern matches the `orcid.callback.failed` slug assertion at `orcid.test.ts:3508` (originally cited at :3462 pre-this-test-addition).
+
+`npm run lint` clean; `npm run typecheck` clean. Vitest not run in worktree (parent serializes).
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>

@@ -651,14 +651,12 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
       // together (TS no longer admits the half-populated shape that
       // motivated the convention).
       //
-      // BACKEND-CUSTODY-BROADCAST-ORCID-FRESH-AUTH round-2 hold #6:
-      // `freshAuthMechanism` is universally non-null on the success path now
-      // — both consent (line 372) AND non-consent (line 399) branches set
-      // it from `consumeFreshAuthToken` / `consumeSessionFreshAuthToken`
-      // results, and both consume helpers early-return 401/403 on missing
-      // or invalid proof before reaching this block. The prior
-      // `=== null ? undefined : {...}` arm was unreachable; inlined the
-      // populated branch.
+      // `freshAuthMechanism` is non-null on the success path:
+      // `consumeFreshAuthToken` and `consumeSessionFreshAuthToken` early-
+      // return 401/403 on missing/invalid proof, so whichever upstream
+      // branch ran has assigned `result.mechanism` before reaching this
+      // constructor. The prior `=== null ? undefined : {...}` arm was
+      // unreachable; inlined the populated branch.
       const auditExtras: CustodyAuditExtras = {
         auth_mechanism: freshAuthMechanism,
         fresh_auth_outcome: 'verified',

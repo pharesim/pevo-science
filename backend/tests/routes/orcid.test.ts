@@ -3255,6 +3255,47 @@ describe('POST /api/orcid/callback — session_auth mode (BACKEND-CUSTODY-BROADC
     expect(res.body.error.code).toBe('UNAUTHORIZED');
   });
 
+  it('DB rejection in handleSessionAuth → 500 INTERNAL_ERROR with `orcid.session_auth.db_failed` event slug', async () => {
+    // Round-3 hold T1: pin the inner try/catch in handleSessionAuth that
+    // discriminates DB-failure from the generic outer `orcid.callback.failed`
+    // path. A mutation removing the inner try/catch reverts to a bare
+    // `await pool.query` — the outer catch still emits 500 INTERNAL_ERROR,
+    // so the status assertion alone would not catch the regression. The
+    // slug-level assertion below is the canary.
+    const orcidId = '0000-0001-1234-5678';
+    installOrcidFetchStub({ orcid: orcidId, name: 'Alice', works: 3 });
+    appQueryMock.mockImplementation(async (sql: string) => {
+      if (sql.includes('SELECT orcid FROM accounts')) {
+        throw new Error('synthetic DB connection failure');
+      }
+      return { rows: [] };
+    });
+    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => undefined as unknown as void);
+    try {
+      const state = await startAuthed('session_auth', 'alice');
+      const res = await request(app)
+        .post('/api/orcid/callback')
+        .set('Authorization', `Bearer ${jwtFor('alice')}`)
+        .send({ code: 'fake', state });
+      expect(res.status).toBe(500);
+      expect(res.body.error.code).toBe('INTERNAL_ERROR');
+      const call = errorSpy.mock.calls.find(
+        (args) => (args[0] as { event?: string } | undefined)?.event === 'orcid.session_auth.db_failed',
+      );
+      expect(call).toBeDefined();
+      expect(call![0]).toEqual(
+        expect.objectContaining({
+          event: 'orcid.session_auth.db_failed',
+          route: 'orcid.handleSessionAuth',
+          username: 'alice',
+          err: expect.any(Error),
+        }),
+      );
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   it('mode session_auth on /start does NOT require per-op target fields (target-less)', async () => {
     // The /start route enforces target fields for fresh_auth (round-5
     // hold #3); session_auth must NOT require them. Send mode='session_auth'

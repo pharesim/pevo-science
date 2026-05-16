@@ -141,20 +141,15 @@ export const FRESH_AUTH_TTL_SECONDS = 300;
 
 const TOKEN_BYTES = 32;
 // Kind-neutral key prefix. Both consent-op-kind (issueFreshAuthToken) and
-// session-kind (issueSessionFreshAuthToken) entries are stored under this
-// single namespace; the `kind` field inside the JSON value (not the key)
-// discriminates. The historical name was `:fresh_auth:consent_op:`, which
-// became a mislabel once session entries started sharing the prefix —
-// operator inspections of the Redis keyspace saw `consent_op`-prefixed
-// keys that were actually session entries. Renamed to kind-neutral
-// `:fresh_auth:token:` so the keyspace shape matches the storage reality.
+// session-kind (issueSessionFreshAuthToken) entries share this single
+// namespace; discrimination is by the `kind` JSON field inside the stored
+// value, not by key namespace.
 const KEY_PREFIX = `${config.appTag}:fresh_auth:token:`;
 
 /** Discriminates per-op consent proofs (target-bound) from session-level
- *  broadcast proofs (target-less). Non-consent broadcast surfaces don't
- *  need per-op binding — they just need proof that the user re-authed in
- *  the recent past. See BACKEND-CUSTODY-BROADCAST-ORCID-FRESH-AUTH for
- *  the State C / non-consent broadcast path that motivates the variant. */
+ *  broadcast proofs (target-less). State C ORCID-only accounts have no
+ *  per-op target to bind a consent-op-kind proof to; session-kind closes
+ *  the JWT-only takeover gap per ARCH.md § 6.5 invariant #1. */
 export type FreshAuthKind = 'consent_op' | 'session';
 
 interface StoredEntry {
