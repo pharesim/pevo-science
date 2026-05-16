@@ -1300,6 +1300,13 @@ export function initSettingsPage() {
       this.newSeedPhrase = '';
       this.newSeedWords = [];
       this.confirmInputs = {};
+      // upgradePassword is the user's light-account password held in
+      // reactive state during the upgrade wizard (re-auth proof input).
+      // It is just as sensitive as the mnemonic: leaking it from Alpine's
+      // reactive data after a completed or failed upgrade is the same XSS
+      // surface as leaking the seed phrase, just for a different
+      // credential. Wipe alongside the mnemonics.
+      this.upgradePassword = '';
     },
 
     resetUpgrade() {

@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const mockFetchVouchStatus = vi.fn();
 const mockNotifyVouch = vi.fn();
 const mockNotifyRetractVouch = vi.fn();
-const mockBroadcastOps = vi.fn();
+const mockBroadcastWithFreshAuth = vi.fn();
 
 vi.mock('../../src/api.js', () => ({
   fetchVouchStatus: (...args) => mockFetchVouchStatus(...args),
@@ -11,8 +11,13 @@ vi.mock('../../src/api.js', () => ({
   notifyRetractVouch: (...args) => mockNotifyRetractVouch(...args),
 }));
 
-vi.mock('../../src/signer.js', () => ({
-  broadcastOps: (...args) => mockBroadcastOps(...args),
+// vouch-section now broadcasts via the fresh-auth helper rather than
+// signer.broadcastOps directly. Mock the helper at its import site.
+// FRESH_AUTH_REDIRECT_PENDING is the sentinel returned when a re-auth
+// round-trip is in progress (the component bails on that branch).
+vi.mock('../../src/lib/fresh-auth.js', () => ({
+  broadcastWithFreshAuth: (...args) => mockBroadcastWithFreshAuth(...args),
+  FRESH_AUTH_REDIRECT_PENDING: null,
 }));
 
 vi.mock('../../src/config.js', () => ({
@@ -51,7 +56,7 @@ describe('vouchSection', () => {
     mockAuthStore.isConnected = true;
     mockAuthStore.username = 'alice';
     mockAuthStore.custody = 'keychain';
-    mockBroadcastOps.mockResolvedValue(undefined);
+    mockBroadcastWithFreshAuth.mockResolvedValue(undefined);
     mockFetchVouchStatus.mockResolvedValue({ data: { vouches: [] } });
   });
 
@@ -114,10 +119,10 @@ describe('vouchSection', () => {
       comp.vouchStatus = { vouches: [] };
       await comp.handleVouch();
 
-      expect(mockBroadcastOps).toHaveBeenCalledWith('alice', [['custom_json', expect.objectContaining({
+      expect(mockBroadcastWithFreshAuth).toHaveBeenCalledWith('alice', [['custom_json', expect.objectContaining({
         id: 'pevotest',
       })]]);
-      const json = JSON.parse(mockBroadcastOps.mock.calls[0][1][0][1].json);
+      const json = JSON.parse(mockBroadcastWithFreshAuth.mock.calls[0][1][0][1].json);
       expect(json.action).toBe('vouch');
       expect(json.voucher).toBe('alice');
       expect(json.vouchee).toBe('bob');
@@ -135,7 +140,7 @@ describe('vouchSection', () => {
     // surfaces a generic localized message; raw err reaches console.warn.
     it('sanitizes broadcast failure: generic message to DOM, raw err to console.warn', async () => {
       const leaky = new Error('Signing failed hex=deadbeefcafebabe');
-      mockBroadcastOps.mockRejectedValue(leaky);
+      mockBroadcastWithFreshAuth.mockRejectedValue(leaky);
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const comp = createComponent({ targetUsername: 'bob' });
       await comp.handleVouch();
@@ -155,7 +160,7 @@ describe('vouchSection', () => {
       comp.vouchStatus = { vouches: [{ voucher: 'alice' }] };
       await comp.handleRetract();
 
-      const json = JSON.parse(mockBroadcastOps.mock.calls[0][1][0][1].json);
+      const json = JSON.parse(mockBroadcastWithFreshAuth.mock.calls[0][1][0][1].json);
       expect(json.action).toBe('retract_vouch');
       expect(comp.step).toBe('success');
       expect(comp.showRetract).toBe(false);
@@ -172,7 +177,7 @@ describe('vouchSection', () => {
     // surfaces a generic localized message; raw err reaches console.warn.
     it('sanitizes retract broadcast failure: generic message to DOM, raw err to console.warn', async () => {
       const leaky = new Error('Signing failed hex=deadbeefcafebabe');
-      mockBroadcastOps.mockRejectedValue(leaky);
+      mockBroadcastWithFreshAuth.mockRejectedValue(leaky);
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const comp = createComponent({ targetUsername: 'bob' });
       comp.vouchStatus = { vouches: [{ voucher: 'alice' }] };
@@ -194,7 +199,7 @@ describe('vouchSection', () => {
   describe('teardown guard', () => {
     it('post-destroy() handleVouch rejection does not write to step or message', async () => {
       let rejectFn;
-      mockBroadcastOps.mockReturnValue(new Promise((_, reject) => { rejectFn = reject; }));
+      mockBroadcastWithFreshAuth.mockReturnValue(new Promise((_, reject) => { rejectFn = reject; }));
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
       const comp = createComponent({ targetUsername: 'bob' });

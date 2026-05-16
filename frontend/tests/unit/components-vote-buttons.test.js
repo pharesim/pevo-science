@@ -1,10 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const mockBroadcastOps = vi.fn();
+const mockBroadcastWithFreshAuth = vi.fn();
 const mockInvalidatePaperCache = vi.fn();
 
-vi.mock('../../src/signer.js', () => ({
-  broadcastOps: (...args) => mockBroadcastOps(...args),
+// vote-buttons now broadcasts via the fresh-auth helper rather than
+// signer.broadcastOps directly. Mock the helper at its import site.
+// FRESH_AUTH_REDIRECT_PENDING is the sentinel returned when a re-auth
+// round-trip is in progress (the component bails on that branch).
+vi.mock('../../src/lib/fresh-auth.js', () => ({
+  broadcastWithFreshAuth: (...args) => mockBroadcastWithFreshAuth(...args),
+  FRESH_AUTH_REDIRECT_PENDING: null,
 }));
 
 vi.mock('../../src/api.js', () => ({
@@ -57,7 +62,7 @@ describe('voteButtons', () => {
     mockAuthStore.isConnected = true;
     mockAuthStore.isAccredited = true;
     mockAuthStore.username = 'alice';
-    mockBroadcastOps.mockResolvedValue(undefined);
+    mockBroadcastWithFreshAuth.mockResolvedValue(undefined);
     mockInvalidatePaperCache.mockResolvedValue(undefined);
     mockBroadcastConfirmStore.request.mockResolvedValue(true);
   });
@@ -204,13 +209,13 @@ describe('voteButtons', () => {
       });
       comp._restoreVoteState();
       await comp.handleVote(10000);
-      expect(mockBroadcastOps).not.toHaveBeenCalled();
+      expect(mockBroadcastWithFreshAuth).not.toHaveBeenCalled();
     });
 
     it('broadcasts vote and updates display count (none -> up)', async () => {
       const comp = createComponent({ author: 'bob', permlink: 'p1', netVotes: 5 });
       await comp.handleVote(10000);
-      expect(mockBroadcastOps).toHaveBeenCalledWith('alice', [['vote', {
+      expect(mockBroadcastWithFreshAuth).toHaveBeenCalledWith('alice', [['vote', {
         voter: 'alice', author: 'bob', permlink: 'p1', weight: 10000,
       }]]);
       expect(comp.displayVotes).toBe(6);
@@ -237,14 +242,14 @@ describe('voteButtons', () => {
       });
       comp._restoreVoteState();
       await comp.handleVote(6000);
-      expect(mockBroadcastOps).toHaveBeenCalledWith('alice', [['custom_json', expect.objectContaining({
+      expect(mockBroadcastWithFreshAuth).toHaveBeenCalledWith('alice', [['custom_json', expect.objectContaining({
         id: 'pevotest',
       })]]);
     });
 
     it('shows sanitized toast on broadcast error (vote submit)', async () => {
       const leaky = new Error('broadcast-failed-sentinel');
-      mockBroadcastOps.mockRejectedValue(leaky);
+      mockBroadcastWithFreshAuth.mockRejectedValue(leaky);
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const comp = createComponent({ author: 'bob', permlink: 'p1', netVotes: 5 });
       await comp.handleVote(10000);
@@ -255,7 +260,7 @@ describe('voteButtons', () => {
 
     it('shows sanitized toast on vote-cancel error', async () => {
       const leaky = new Error('cancel-failed-sentinel');
-      mockBroadcastOps.mockRejectedValue(leaky);
+      mockBroadcastWithFreshAuth.mockRejectedValue(leaky);
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const comp = createComponent({ author: 'bob', permlink: 'p1', netVotes: 5 });
       comp.voteState = 'up';
@@ -274,7 +279,7 @@ describe('voteButtons', () => {
   describe('teardown', () => {
     it('handleVote happy path does not mutate vote state after destroy()', async () => {
       let resolveBroadcast;
-      mockBroadcastOps.mockImplementationOnce(() => new Promise((resolve) => { resolveBroadcast = resolve; }));
+      mockBroadcastWithFreshAuth.mockImplementationOnce(() => new Promise((resolve) => { resolveBroadcast = resolve; }));
       const comp = createComponent({ author: 'bob', permlink: 'p1', netVotes: 5 });
       comp.voteState = 'none';
       comp.currentWeight = 0;
@@ -299,7 +304,7 @@ describe('voteButtons', () => {
 
     it('handleVote catch does not toast or flip isVoting after destroy()', async () => {
       let rejectBroadcast;
-      mockBroadcastOps.mockImplementationOnce(() => new Promise((_, reject) => { rejectBroadcast = reject; }));
+      mockBroadcastWithFreshAuth.mockImplementationOnce(() => new Promise((_, reject) => { rejectBroadcast = reject; }));
       const comp = createComponent({ author: 'bob', permlink: 'p1', netVotes: 5 });
       comp.isVoting = false;
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -315,7 +320,7 @@ describe('voteButtons', () => {
 
     it('retract (weight=0) happy path does not mutate state after destroy()', async () => {
       let resolveBroadcast;
-      mockBroadcastOps.mockImplementationOnce(() => new Promise((resolve) => { resolveBroadcast = resolve; }));
+      mockBroadcastWithFreshAuth.mockImplementationOnce(() => new Promise((resolve) => { resolveBroadcast = resolve; }));
       const comp = createComponent({ author: 'bob', permlink: 'p1', netVotes: 5 });
       comp.voteState = 'up';
       comp.currentWeight = 10000;

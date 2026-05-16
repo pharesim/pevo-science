@@ -1,9 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const mockBroadcastOps = vi.fn();
+const mockBroadcastWithFreshAuth = vi.fn();
 
-vi.mock('../../src/signer.js', () => ({
-  broadcastOps: (...args) => mockBroadcastOps(...args),
+// comment-composer now broadcasts via the fresh-auth helper rather than
+// signer.broadcastOps directly. Mock the helper at its import site;
+// FRESH_AUTH_REDIRECT_PENDING is the sentinel returned when a re-auth
+// round-trip is in progress (the component bails on that branch).
+vi.mock('../../src/lib/fresh-auth.js', () => ({
+  broadcastWithFreshAuth: (...args) => mockBroadcastWithFreshAuth(...args),
+  FRESH_AUTH_REDIRECT_PENDING: null,
 }));
 
 vi.mock('../../src/config.js', () => ({
@@ -42,7 +47,7 @@ describe('commentComposer', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockAuthStore.username = 'alice';
-    mockBroadcastOps.mockResolvedValue(undefined);
+    mockBroadcastWithFreshAuth.mockResolvedValue(undefined);
     mockBroadcastConfirmStore.request.mockResolvedValue(true);
   });
 
@@ -50,7 +55,7 @@ describe('commentComposer', () => {
     const comp = createComponent({ parentAuthor: 'bob', parentPermlink: 'post1' });
     comp.body = '   ';
     await comp.handleSubmit();
-    expect(mockBroadcastOps).not.toHaveBeenCalled();
+    expect(mockBroadcastWithFreshAuth).not.toHaveBeenCalled();
   });
 
   it('does nothing when username is falsy', async () => {
@@ -58,7 +63,7 @@ describe('commentComposer', () => {
     const comp = createComponent({ parentAuthor: 'bob', parentPermlink: 'post1' });
     comp.body = 'Hello';
     await comp.handleSubmit();
-    expect(mockBroadcastOps).not.toHaveBeenCalled();
+    expect(mockBroadcastWithFreshAuth).not.toHaveBeenCalled();
   });
 
   it('broadcasts comment with correct metadata', async () => {
@@ -66,7 +71,7 @@ describe('commentComposer', () => {
     comp.body = 'Great paper!';
     await comp.handleSubmit();
 
-    expect(mockBroadcastOps).toHaveBeenCalledWith('alice', expect.arrayContaining([
+    expect(mockBroadcastWithFreshAuth).toHaveBeenCalledWith('alice', expect.arrayContaining([
       expect.arrayContaining(['comment', expect.objectContaining({
         parent_author: 'bob',
         parent_permlink: 'post1',
@@ -76,7 +81,7 @@ describe('commentComposer', () => {
     ]));
 
     // Check json_metadata
-    const ops = mockBroadcastOps.mock.calls[0][1];
+    const ops = mockBroadcastWithFreshAuth.mock.calls[0][1];
     const commentOp = ops.find((op) => op[0] === 'comment');
     const meta = JSON.parse(commentOp[1].json_metadata);
     expect(meta.app).toBe('pevo/1.0');
@@ -89,7 +94,7 @@ describe('commentComposer', () => {
     comp.body = 'Nice';
     await comp.handleSubmit();
 
-    const ops = mockBroadcastOps.mock.calls[0][1];
+    const ops = mockBroadcastWithFreshAuth.mock.calls[0][1];
     const commentOp = ops.find((op) => op[0] === 'comment');
     expect(commentOp[1].permlink).toMatch(/^re-my-great-paper-\d+-[a-z0-9]+$/);
   });
@@ -99,7 +104,7 @@ describe('commentComposer', () => {
     comp.body = 'Nice!';
     await comp.handleSubmit();
 
-    const ops = mockBroadcastOps.mock.calls[0][1];
+    const ops = mockBroadcastWithFreshAuth.mock.calls[0][1];
     const optionsOp = ops.find((op) => op[0] === 'comment_options');
     expect(optionsOp).toBeDefined();
     expect(optionsOp[1].author).toBe('alice');
@@ -118,7 +123,7 @@ describe('commentComposer', () => {
   // surfaces a generic localized message; raw err reaches console.warn.
   it('sanitizes broadcast failure: generic message to DOM, raw err to console.warn', async () => {
     const leaky = new Error('Network error hex=deadbeefcafebabe');
-    mockBroadcastOps.mockRejectedValue(leaky);
+    mockBroadcastWithFreshAuth.mockRejectedValue(leaky);
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const comp = createComponent({ parentAuthor: 'bob', parentPermlink: 'post1' });
     comp.body = 'Hey';
@@ -136,7 +141,7 @@ describe('commentComposer', () => {
     const comp = createComponent({ parentAuthor: 'bob', parentPermlink: 'post1' });
     comp.body = 'Hey';
     await comp.handleSubmit();
-    expect(mockBroadcastOps).not.toHaveBeenCalled();
+    expect(mockBroadcastWithFreshAuth).not.toHaveBeenCalled();
     expect(comp.isSubmitting).toBe(false);
   });
 
@@ -146,7 +151,7 @@ describe('commentComposer', () => {
   // _mounted === false and short-circuits before touching `error`.
   it('post-destroy() broadcast rejection does not write to error or isSubmitting', async () => {
     let rejectFn;
-    mockBroadcastOps.mockReturnValue(new Promise((_, reject) => { rejectFn = reject; }));
+    mockBroadcastWithFreshAuth.mockReturnValue(new Promise((_, reject) => { rejectFn = reject; }));
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     const comp = createComponent({ parentAuthor: 'bob', parentPermlink: 'post1' });

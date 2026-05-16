@@ -1952,8 +1952,12 @@ describe('settingsPage', () => {
     // criterion 3c): backend 409 ALREADY_UPGRADED after rotation must
     // route non-retryable. Surfaces when a concurrent flow already wiped
     // server-side custody — the rotation in the current flow still
-    // landed on-chain, so retrying is structurally unavailable.
-    it('post-broadcast backend 409 ALREADY_UPGRADED routes to non-retryable (partialApplyFailed)', async () => {
+    // landed on-chain, so retrying is structurally unavailable. The
+    // code routes 409 to its dedicated `upgrade.alreadyUpgraded`
+    // sub-case key (a member of NON_RETRYABLE_UPGRADE_ERROR_KEYS); the
+    // canRetryUpgrade=false assertion below verifies the non-retryable
+    // contract regardless of which specific terminal key fired.
+    it('post-broadcast backend 409 ALREADY_UPGRADED routes to non-retryable (alreadyUpgraded)', async () => {
       mockIsKeychainInstalled.mockReturnValue(true);
       vi.stubGlobal('window', {
         ...globalThis.window,
@@ -1981,7 +1985,7 @@ describe('settingsPage', () => {
       await comp.executeUpgrade();
 
       expect(comp.upgradePhase).toBe('error');
-      expect(comp.upgradeErrorKey).toBe('upgrade.partialApplyFailed');
+      expect(comp.upgradeErrorKey).toBe('upgrade.alreadyUpgraded');
       expect(comp.canRetryUpgrade).toBe(false);
 
       warnSpy.mockRestore();
