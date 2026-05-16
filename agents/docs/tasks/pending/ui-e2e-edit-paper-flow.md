@@ -154,3 +154,28 @@ When both items are landed, `git mv` this file back to `tasks/review/`.
 Dismissed at user triage (audit, not blocking): (P3 maintainability M-E2E-2) `setEditorContent` docblock says "We gate this on `waitForEditorsMounted` so the editor instances exist" but the function doesn't gate — callers do; minor subject ambiguity below the anchor-75 confidence gate. (P3 julik JFR-001) Discipline locator `input.select-control[disabled]` depends on the static HTML `disabled` attribute and would silently break if production refactored to `:disabled`; latent risk only, preemptive per `feedback_dismiss_preemptive_test_hardening.md`. Also dismissed: learnings-researcher's `docblock-anchor-stable-symbols-not-line-numbers-2026-05-15.md` reminder is informational; no specific docblock in this diff cites a line number, so the convention isn't violated.
 
 Cross-references: `frontend/src/pages/edit.js:1033-1063` (diff-vs-full-body length-gate optimization); `frontend/src/pages/edit.js:1000-1010` (`comment_options` op assembly with `allow_curation_rewards: true` + `max_accepted_payout: 0` for the no-rewards principle); `agents/docs/solutions/conventions/alpine-value-property-not-attribute-trap-2026-05-11.md` (round-1 close — covers JFR-001 discipline-locator latent risk).
+
+## UI re-review signal (2026-05-16, worker commit `132ecfe`)
+
+Worker subagent landed both round-3 hold items in `frontend/tests/e2e/edit-paper.spec.js`. Parent will cherry-pick / merge back into main. Worker rebased its branch onto main before applying so round-3 hold block (commit `119a36f` + amendment `7f2e3cb`) was visible. No production-code changes in this round; spec-only edits.
+
+- **Item 1 (P1, diff-broadcast assertion fails unconditionally)** — Enlarged `buildPaperFixture.body` from ~100 chars to ~1.2KB (4 paragraphs: Introduction, Methodology, Results, Discussion). Rewrote test 1's `NEW_ABSTRACT` and `NEW_BODY` as additive edits (start from `PREFILLED_ABSTRACT` + appended sentence; `NEW_BODY` mirrors prefilled body with one sentence appended to the Discussion paragraph) so the diff-match-patch representation stays small relative to the full body. Documented the sizing rationale inline at `buildPaperFixture` and at the test 1 `NEW_*` block.
+
+- **Item 2 (P3, comment_options assertion + comment)** — Rewrote the inline comment in the accepted-claimer test (now describes `percent_hbd: 0` / 100% HP payout as the load-bearing field, not `allow_curation_rewards: false`; rewards ARE allowed and the UI doesn't surface them) and tightened the assertion to `expect(optionsOp[1].percent_hbd).toBe(0)`. The existing presence pin (`expect(optionsOp).toBeTruthy()`) is retained immediately before the new field assertion.
+
+**Node repro numbers for item 1** (run against `diff-match-patch` package, same lib `edit.js:9` imports):
+
+| metric                          | value |
+| ------------------------------- | ----- |
+| `_originalBody.length`          | 1237  |
+| `newPostBody.length`            | 1339  |
+| `diffText.length`               | 187   |
+| ratio `diff / newPostBody`      | 0.140 |
+| selected branch                 | DIFF  |
+| `body.startsWith('@@')` holds   | true  |
+
+Pre-fix numbers (for contrast): `_originalBody=104`, `newPostBody=146`, `diffText=290`, ratio 1.99, branch FULL BODY, assertion failed.
+
+Spec syntax verified via `node --check`. `npx playwright test --list edit-paper.spec.js` not run from the worktree (no local `node_modules`; the worker had no permission to symlink or write into the main checkout); test count unchanged structurally — `grep -cE '^test\(' edit-paper.spec.js` reports `7`, matching the prior signal block's count. No `test()` declarations added or removed.
+
+No additional `/ce-compound` candidates surfaced from this round. The diff-match-patch length-gate behavior is documented in production at `edit.js:1036-1044` inline; no separate solutions doc warranted.
