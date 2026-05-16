@@ -139,8 +139,8 @@ const COMMENT_OP = (author: string) => [
 ];
 
 describe.skipIf(!dbReachable)('POST /api/custody/session-auth — password-mechanism session-kind mint', () => {
-  let aliceHash: string;
-  let daveHash: string;
+  let aliceHash!: string;
+  let daveHash!: string;
 
   beforeAll(async () => {
     if (!dbReachable) return;
@@ -312,6 +312,21 @@ describe.skipIf(!dbReachable)('POST /api/custody/session-auth — password-mecha
       // State C has password_hash IS NULL. The route must NOT differentiate
       // its response from the wrong-password branch above, or it becomes a
       // password-existence oracle for ORCID-only accounts.
+      //
+      // Wall-time-oracle guard: the route must call `burnSentinel` BEFORE
+      // returning 401 on the null-hash branch, otherwise a JWT-holding
+      // attacker can distinguish State C (~1ms early return) from State A/B
+      // (~50ms argon2.verify) along the latency axis. We spy on
+      // `argon2.verify` (the underlying primitive called by both burnSentinel
+      // and the password-check path) and assert it was invoked exactly once
+      // on the null-hash branch. Per project memory
+      // `feedback_dismiss_preemptive_test_hardening`, the spy is preferred
+      // over a timing-band assertion (deterministic vs flaky). A mutation
+      // that drops the burnSentinel call from the null-hash branch would
+      // surface as `argon2.verify` count=0 on this assertion.
+      const verifySpy = vi.spyOn(argon2, 'verify');
+      const verifyCallsBefore = verifySpy.mock.calls.length;
+
       const nullHashRes = await request(app)
         .post('/api/custody/session-auth')
         .set('Authorization', bearerFor(CARL_C))
@@ -320,6 +335,9 @@ describe.skipIf(!dbReachable)('POST /api/custody/session-auth — password-mecha
       expect(nullHashRes.status).toBe(401);
       expect(nullHashRes.body.error.code).toBe('UNAUTHORIZED');
       expect(nullHashRes.body.error.message).toBe('Invalid password');
+      // The route invoked argon2.verify (via burnSentinel) on the null-hash
+      // branch — wall-time-oracle equalization closed.
+      expect(verifySpy.mock.calls.length - verifyCallsBefore).toBeGreaterThanOrEqual(1);
 
       // Wrong-password baseline (same as the test above) for byte-equivalent
       // envelope comparison.
@@ -331,6 +349,8 @@ describe.skipIf(!dbReachable)('POST /api/custody/session-auth — password-mecha
       expect(nullHashRes.status).toBe(wrongPwdRes.status);
       expect(nullHashRes.body.error.code).toBe(wrongPwdRes.body.error.code);
       expect(nullHashRes.body.error.message).toBe(wrongPwdRes.body.error.message);
+
+      verifySpy.mockRestore();
     });
   });
 

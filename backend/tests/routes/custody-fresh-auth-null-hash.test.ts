@@ -22,7 +22,7 @@
  *     message": the byte-equivalent envelope assertion below fails.
  */
 
-import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import argon2 from 'argon2';
 import jwt from 'jsonwebtoken';
@@ -113,6 +113,19 @@ describe.skipIf(!dbReachable)(
       // every issuance request. Both legs of this oracle-parity test
       // supply identical target fields so the only behavioral
       // difference is the password-hash status (null vs valid hash).
+      //
+      // Wall-time-oracle guard (round-2 of `backend-custody-session-auth-
+      // password-mint`): the route must call `burnSentinel` BEFORE returning
+      // 401 on the null-hash branch, otherwise the route differentiates
+      // State C from State A/B along the latency axis. We spy on
+      // `argon2.verify` and assert it was invoked on the null-hash request;
+      // a mutation that drops the burnSentinel call would result in 0
+      // verify invocations on the null-hash path. Spy preferred over a
+      // timing-band assertion per `feedback_dismiss_preemptive_test_hardening`
+      // (deterministic vs flaky).
+      const verifySpy = vi.spyOn(argon2, 'verify');
+      const verifyCallsBefore = verifySpy.mock.calls.length;
+
       const targetFields = {
         action: 'author_accept',
         root_author: 'someroot',
@@ -126,6 +139,7 @@ describe.skipIf(!dbReachable)(
       expect(nullHashRes.status).toBe(401);
       expect(nullHashRes.body.error.code).toBe('UNAUTHORIZED');
       expect(nullHashRes.body.error.message).toBe('Invalid password');
+      expect(verifySpy.mock.calls.length - verifyCallsBefore).toBeGreaterThanOrEqual(1);
 
       // Wrong-password baseline. The route must return the SAME envelope
       // (status, code, message) so the route is not an oracle that leaks
@@ -146,6 +160,8 @@ describe.skipIf(!dbReachable)(
       expect(nullHashRes.status).toBe(wrongPwdRes.status);
       expect(nullHashRes.body.error.code).toBe(wrongPwdRes.body.error.code);
       expect(nullHashRes.body.error.message).toBe(wrongPwdRes.body.error.message);
+
+      verifySpy.mockRestore();
     });
   },
 );

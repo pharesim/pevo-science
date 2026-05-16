@@ -14,6 +14,7 @@ import { logCustodyBroadcast, type CustodyAuditExtras } from '../custody-audit.j
 import { logger } from '../logger.js';
 import { runWithArgon2Slot } from '../lib/argon2-semaphore.js';
 import { handleArgonError, ARGON_HANDLED } from '../lib/argon2-error-handler.js';
+import { burnSentinel } from './auth.js';
 import { requestAbortSignal } from '../lib/request-abort-signal.js';
 import { handleBroadcastError, makeLogBroadcastAttempt } from '../lib/broadcast-error.js';
 import {
@@ -53,13 +54,37 @@ const upgradeLimiter = rateLimit({ name: 'custody-upgrade', windowMs: 3_600_000,
 // in-flight under the JS-level semaphore). 10/min/account is generous for the
 // re-auth-then-broadcast UX (the user sees one prompt → one proof → one
 // broadcast) and bounds the password-guess oracle even if a session is
-// hijacked.
-const freshAuthLimiter = rateLimit({ name: 'custody-fresh-auth', windowMs: 60_000, max: 10, keyFn: byAccount });
+// hijacked. `skipFailedRequests: true` so a stolen JWT cannot DoS the
+// legitimate user by burning 10 wrong-password attempts in 60s (slot-burn
+// lockout). Per `RateLimitConfig.skipFailedRequests` JSDoc, this opt-in is
+// safe here because the route already requires a valid JWT — wrong-password
+// probing is account-state guessing under an authenticated channel, NOT
+// unauthenticated credential enumeration; the password-oracle bound still
+// holds via the JS-level argon2 semaphore + the per-account JWT issuance
+// gate upstream. The mint path's burnSentinel call on the null-hash branch
+// (timing-oracle equalization) runs BEFORE the deferred-consume hook, so
+// the null-hash 401 also benefits from the slot-non-consume semantic.
+const freshAuthLimiter = rateLimit({
+  name: 'custody-fresh-auth',
+  windowMs: 60_000,
+  max: 10,
+  keyFn: byAccount,
+  skipFailedRequests: true,
+});
 // Same shape and budget as `freshAuthLimiter` — both routes pay an argon2.verify
 // per call and serve the State A/B mint paths; bucket them under a dedicated
 // name so the metric/observability surface for the session-mint path stays
-// distinct from the per-op consent-mint path.
-const sessionAuthLimiter = rateLimit({ name: 'custody-session-auth', windowMs: 60_000, max: 10, keyFn: byAccount });
+// distinct from the per-op consent-mint path. `skipFailedRequests: true` for
+// the same stolen-JWT slot-burn DoS reason documented on `freshAuthLimiter`
+// above; the JWT-gate + argon2 semaphore enforce the password-oracle bound
+// independently of slot-consume semantics.
+const sessionAuthLimiter = rateLimit({
+  name: 'custody-session-auth',
+  windowMs: 60_000,
+  max: 10,
+  keyFn: byAccount,
+  skipFailedRequests: true,
+});
 
 /** Stable session-id derived from the bearer JWT for audit-log correlation.
  *  SHA-256 of the raw token, truncated to 16 hex chars — opaque to the
@@ -780,7 +805,15 @@ router.post('/fresh-auth', verifyHiveSignature, freshAuthLimiter, async (req: Re
       // Password mechanism unavailable for this account (e.g., ORCID-only
       // hybrid). Direction the user toward the ORCID re-auth path. The
       // 401 + UNAUTHORIZED shape mirrors the wrong-password branch so the
-      // route does not become a password-existence oracle.
+      // route does not become a password-existence oracle. Burn an argon2
+      // sentinel verify BEFORE the 401 to equalize wall-time with the
+      // password-verify path (~50ms) — otherwise the null-hash branch
+      // returns in <10ms and a JWT-holding attacker can distinguish State C
+      // (password_hash IS NULL) from State A/B accounts along the latency
+      // axis, reopening the same oracle the envelope-equivalence assertion
+      // closes. Mirrors the `/login` ORCID-only burn (auth.ts) and the
+      // `/session-auth` null-hash branch (sibling site below).
+      await burnSentinel(password, abortSignal);
       return sendError(res, 401, 'UNAUTHORIZED', 'Invalid password');
     }
 
@@ -811,8 +844,8 @@ router.post('/fresh-auth', verifyHiveSignature, freshAuthLimiter, async (req: Re
 
 // ─────────────────────────────────────────────────────────────
 // POST /api/custody/session-auth — Mint a session-kind fresh-auth proof (password path).
-// BACKEND-CUSTODY-SESSION-AUTH-PASSWORD-MINT: State A users (light + password,
-// no ORCID) previously had no usable mint path for non-consent broadcasts.
+// State A users (light + password, no ORCID) previously had no usable mint
+// path for non-consent broadcasts.
 // `/api/custody/fresh-auth` mints `consent_op`-kind proofs that require per-op
 // target binding (action + root_author + root_permlink) — hostile UX for
 // vote/comment flows. `/api/orcid/start { mode: 'session_auth' }` needs ORCID
@@ -866,6 +899,13 @@ router.post('/session-auth', verifyHiveSignature, sessionAuthLimiter, async (req
       // `password_hash IS NULL`). Mirror the wrong-password 401 envelope so
       // the route does not become a password-existence oracle. State C users
       // should mint via `/api/orcid/start { mode: 'session_auth' }` instead.
+      // Burn an argon2 sentinel verify BEFORE the 401 to equalize wall-time
+      // with the password-verify path (~50ms) — without this, a JWT-holding
+      // attacker can distinguish State C accounts (~1ms) from State A/B
+      // accounts (~50ms) along the latency axis. Same equalization the
+      // sibling `/fresh-auth` route applies above, and the canonical pattern
+      // `/login` uses for its ORCID-only branch (`auth.ts`).
+      await burnSentinel(password, abortSignal);
       return sendError(res, 401, 'UNAUTHORIZED', 'Invalid password');
     }
 
