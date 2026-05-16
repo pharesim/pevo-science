@@ -319,17 +319,19 @@ export function initBridgePage() {
       } catch (err) {
         if (!this._mounted) return;
         this.step = 'error';
-        // Sanitization pattern (see executeUpgrade() in settings.js).
-        console.warn('[bridge register]', err);
         // 409 LOCK_HELD: a concurrent registration of the same preprint
         // holds the Redis lock (35s TTL). Surface a transient-retry message
         // so the user retries against the released lock instead of seeing
-        // the generic failure UI. Existing-duplicate is `DUPLICATE` and
-        // continues to fall through to the generic path.
-        if (err && err.code === 'LOCK_HELD') {
+        // the generic failure UI. LOCK_HELD is a semantic, expected code on
+        // routine contention, so it returns BEFORE console.warn to avoid
+        // log spam. Existing-duplicate is `DUPLICATE` and continues to fall
+        // through to the generic path.
+        if (err.code === 'LOCK_HELD') {
           this.errorMessage = this.$t('bridge.lockHeldRetry');
           return;
         }
+        // Sanitization pattern (see executeUpgrade() in settings.js).
+        console.warn('[bridge register]', err);
         this.errorMessage = this.$t('common.registrationFailed');
       }
     },
