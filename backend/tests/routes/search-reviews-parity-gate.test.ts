@@ -34,7 +34,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import request from 'supertest';
 
 const { hafQueryMock, getPoolMock } = vi.hoisted(() => ({
-  hafQueryMock: vi.fn(async () => ({ rows: [] })),
+  hafQueryMock: vi.fn(async (..._args: any[]) => ({ rows: [] as any[] })),
   getPoolMock: vi.fn(),
 }));
 

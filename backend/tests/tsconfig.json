@@ -3,7 +3,15 @@
   "compilerOptions": {
     "rootDir": "..",
     "noEmit": true,
-    "types": ["node"]
+    // Override the root's Node16 module setting so test files can use
+    // top-level `await` (TS1309). Tests run via vitest/esbuild at
+    // runtime, not via tsc emit, so the module shape here only affects
+    // static analysis. `Bundler` resolution matches what vitest/esbuild
+    // does at runtime (no `.js` extension requirement, no CJS/ESM file
+    // classification by package.json type).
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "types": ["node", "vitest/globals"]
   },
   "include": ["../src", "../tests"],
   "exclude": ["../node_modules", "../dist"]

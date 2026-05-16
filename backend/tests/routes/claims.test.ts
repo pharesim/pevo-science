@@ -155,11 +155,11 @@ const { signRequestBound: signRequestBoundShared } = await import('../support/si
 
 const app = createApp();
 
-function signRequestBound(method: string, fullPath: string, body: unknown, timestamp: string): string {
+function signRequestBound(method: string, fullPath: string, body: Record<string, unknown>, timestamp: string): string {
   return signRequestBoundShared(TEST_PRIVATE_KEY, method, fullPath, body, timestamp);
 }
 
-async function signedPost(path: string, username: string, body: unknown) {
+async function signedPost(path: string, username: string, body: Record<string, unknown>) {
   const timestamp = new Date().toISOString();
   const signature = signRequestBound('POST', path, body, timestamp);
   return request(app)

@@ -350,9 +350,9 @@ describe('redactErrSerializer — pino err serializer redact policy', () => {
     // Build a 50-deep linear chain; without the guard this would still
     // serialize (not crash) but would produce a 50-deep nested payload
     // that would explode log volumes. The guard caps at 11 levels.
-    let head: Error & { cause?: Error } = new Error('leaf');
+    let head: Error & { cause?: Error } = new Error('leaf') as Error & { cause?: Error };
     for (let i = 0; i < 50; i += 1) {
-      const wrapper: Error & { cause?: Error } = new Error(`layer-${i}`);
+      const wrapper = new Error(`layer-${i}`) as Error & { cause?: Error };
       wrapper.cause = head;
       head = wrapper;
     }

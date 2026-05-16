@@ -62,7 +62,7 @@ describe('createSmtpTransporter — canonical options shape', () => {
     createSmtpTransporter();
 
     expect(spy).toHaveBeenCalledTimes(1);
-    const opts = spy.mock.calls[0][0];
+    const opts = spy.mock.calls[0][0] as Record<string, unknown> & { auth?: Record<string, unknown> };
     expect(opts.connectionTimeout).toBe(5000);
   });
 
@@ -75,7 +75,7 @@ describe('createSmtpTransporter — canonical options shape', () => {
     createSmtpTransporter();
 
     expect(spy).toHaveBeenCalledTimes(1);
-    const opts = spy.mock.calls[0][0];
+    const opts = spy.mock.calls[0][0] as Record<string, unknown> & { auth?: Record<string, unknown> };
     expect(opts.socketTimeout).toBe(10000);
   });
 
@@ -88,7 +88,7 @@ describe('createSmtpTransporter — canonical options shape', () => {
     createSmtpTransporter();
 
     expect(spy).toHaveBeenCalledTimes(1);
-    const opts = spy.mock.calls[0][0];
+    const opts = spy.mock.calls[0][0] as Record<string, unknown> & { auth?: Record<string, unknown> };
     expect(opts.greetingTimeout).toBe(8000);
   });
 
@@ -101,7 +101,7 @@ describe('createSmtpTransporter — canonical options shape', () => {
     createSmtpTransporter();
 
     expect(spy).toHaveBeenCalledTimes(1);
-    const opts = spy.mock.calls[0][0];
+    const opts = spy.mock.calls[0][0] as Record<string, unknown> & { auth?: Record<string, unknown> };
     expect(opts.dnsTimeout).toBe(5000);
   });
 
@@ -124,7 +124,7 @@ describe('createSmtpTransporter — canonical options shape', () => {
       createSmtpTransporter();
 
       expect(spy).toHaveBeenCalledTimes(1);
-      const opts = spy.mock.calls[0][0];
+      const opts = spy.mock.calls[0][0] as Record<string, unknown> & { auth?: Record<string, unknown> };
       // `secure` is `port === 465`; pin both port and secure to lock the
       // implicit derivation in the helper.
       expect(opts).toMatchObject({
@@ -155,7 +155,7 @@ describe('createSmtpTransporter — canonical options shape', () => {
     try {
       createSmtpTransporter();
       expect(spy).toHaveBeenCalledTimes(1);
-      const opts = spy.mock.calls[0][0];
+      const opts = spy.mock.calls[0][0] as Record<string, unknown> & { auth?: Record<string, unknown> };
       expect(opts.auth).toBeUndefined();
     } finally {
       config.smtpUser = prevUser;
@@ -174,7 +174,7 @@ describe('createSmtpTransporter — canonical options shape', () => {
 
     try {
       createSmtpTransporter();
-      const opts = spy.mock.calls[0][0];
+      const opts = spy.mock.calls[0][0] as Record<string, unknown> & { auth?: Record<string, unknown> };
       expect(opts.secure).toBe(false);
     } finally {
       config.smtpPort = prevPort;

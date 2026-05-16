@@ -194,7 +194,7 @@ describe('GET /api/search?type=all partial degradation (allSettled)', () => {
     expect(res.body.data[0].type).toBe('paper');
     expect(res.body.data[0].author).toBe(SYNTHETIC_PAPER_ROW.author);
     const warnCalls = warnSpy.mock.calls.filter(
-      (c) => (c[0] as { event?: string })?.event === 'search.type_all.partial_degradation',
+      (c: unknown[]) => (c[0] as { event?: string })?.event === 'search.type_all.partial_degradation',
     );
     expect(warnCalls.length).toBe(1);
     const payload = warnCalls[0][0] as { branch: string; errClass: string };
@@ -214,7 +214,7 @@ describe('GET /api/search?type=all partial degradation (allSettled)', () => {
     expect(res.body.data[0].type).toBe('review');
     expect(res.body.data[0].author).toBe(SYNTHETIC_REVIEW_ROW.author);
     const warnCalls = warnSpy.mock.calls.filter(
-      (c) => (c[0] as { event?: string })?.event === 'search.type_all.partial_degradation',
+      (c: unknown[]) => (c[0] as { event?: string })?.event === 'search.type_all.partial_degradation',
     );
     expect(warnCalls.length).toBe(1);
     const payload = warnCalls[0][0] as { branch: string; errClass: string };
@@ -232,10 +232,10 @@ describe('GET /api/search?type=all partial degradation (allSettled)', () => {
     // Both branches log their own partial_degradation event. Two events,
     // one per branch, with the branch discriminator set.
     const warnCalls = warnSpy.mock.calls.filter(
-      (c) => (c[0] as { event?: string })?.event === 'search.type_all.partial_degradation',
+      (c: unknown[]) => (c[0] as { event?: string })?.event === 'search.type_all.partial_degradation',
     );
     expect(warnCalls.length).toBe(2);
-    const branches = warnCalls.map((c) => (c[0] as { branch: string }).branch).sort();
+    const branches = warnCalls.map((c: unknown[]) => (c[0] as { branch: string }).branch).sort();
     expect(branches).toEqual(['papers', 'reviews']);
   });
 
@@ -251,7 +251,7 @@ describe('GET /api/search?type=all partial degradation (allSettled)', () => {
       .get('/api/search?q=science&type=all&discipline=physics&language=en&sort=date');
     expect(res.status).toBe(200);
     const warnCalls = warnSpy.mock.calls.filter(
-      (c) => (c[0] as { event?: string })?.event === 'search.type_all.partial_degradation',
+      (c: unknown[]) => (c[0] as { event?: string })?.event === 'search.type_all.partial_degradation',
     );
     expect(warnCalls.length).toBe(1);
     const payload = warnCalls[0][0] as {

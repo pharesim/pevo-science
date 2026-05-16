@@ -107,3 +107,9 @@ The UI agent owns client-side light account operations (seed phrase generation, 
 ## Linting
 
 Backend has a minimal ESLint flat config at `backend/eslint.config.mjs` with `@typescript-eslint/no-floating-promises` as the load-bearing rule (catches fire-and-forget on safety primitives like `burnSentinel` and `withOrcidBindingLock`). Run `npm run lint` from `backend/` before committing changes that touch `src/`. `npm run lint:fix` applies auto-fixes for the small subset that supports it. Warnings for `@typescript-eslint/no-explicit-any` are acceptable at Express/dhive/pg boundaries.
+
+## Typecheck
+
+`npm run typecheck` from `backend/` runs `typecheck:src` (root `tsconfig.json` against `src/`) and then `typecheck:tests` (`tests/tsconfig.json` against `src/` + `tests/`). Both must pass before committing. The chained gate catches typos in fields of typed log payloads (`LogContext`) and other test-file drift that would otherwise only surface at runtime.
+
+The tests-tsconfig overrides the root's Node16 module setting to `module: ESNext` + `moduleResolution: Bundler`. Top-level `await` is permitted in test files (the root's CJS-by-default classification forbade it). `vitest/globals` is in `types:[]` so `describe`/`it`/`expect`/`vi`/`beforeEach` are available without per-file imports. New test files inherit both — no per-file tsconfig fields needed. Mocked-pool tests that wire `vi.fn` around a polymorphic shape (e.g., `pool.query`) should type the factory with `vi.fn(async (..._args: any[]) => ({ rows: [] as any[] }))` so per-test `mockImplementation`s with various (sql/params) signatures and row shapes type-check cleanly. The looser typing is intentional at the boundary between vitest's call-signature inference and the actual pg/dhive surfaces; production code keeps strict types.

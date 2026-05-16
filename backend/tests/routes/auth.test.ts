@@ -72,7 +72,7 @@ let dbReachable = false;
 // Per-file binding of the shared helper to TEST_PRIVATE_KEY. The signing
 // protocol is implemented once in `../support/sign-request.ts`
 // (BE-LOG-PII-EMAIL-HASH round-2 hold item 3).
-function signRequestBound(method: string, fullPath: string, body: unknown, timestamp: string): string {
+function signRequestBound(method: string, fullPath: string, body: Record<string, unknown>, timestamp: string): string {
   return signRequestBoundShared(TEST_PRIVATE_KEY, method, fullPath, body, timestamp);
 }
 
@@ -268,7 +268,7 @@ describe('BE-REQUEST-BODY-TYPING-ZOD: 400 VALIDATION_ERROR does not leak Zod sch
       'auth-reset',
     ]);
   });
-  const cases: Array<{ route: string; body: unknown }> = [
+  const cases: Array<{ route: string; body: Record<string, unknown> }> = [
     // /login: refine requires at least one of username/email_or_username.
     { route: '/api/auth/login', body: { password: 'x' } },
     // /signup: non-string email triggers parse failure at the object level.

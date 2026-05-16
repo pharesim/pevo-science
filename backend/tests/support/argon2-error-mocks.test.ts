@@ -76,7 +76,7 @@ describe('assertArgon2AbortIsSilent — outcome classification self-tests', () =
     // Mock was "called once" (simulating the route entering argon2 then
     // writing a body) so the second assertion would otherwise pass; the
     // outcome.kind branch is what must trip first.
-    mockFn();
+    mockFn(async () => undefined);
 
     await expect(
       assertArgon2AbortIsSilent(fakeResponse(500), mockFn),
@@ -88,7 +88,7 @@ describe('assertArgon2AbortIsSilent — outcome classification self-tests', () =
 
   it('resolves cleanly when the request timed out AND the mock fn was called once', async () => {
     const mockFn = makeMockFn();
-    mockFn(); // Simulate the route entering argon2 before hanging.
+    mockFn(async () => undefined); // Simulate the route entering argon2 before hanging.
 
     await expect(
       assertArgon2AbortIsSilent(Promise.reject(timeoutRejection()), mockFn),
@@ -115,7 +115,7 @@ describe('assertArgon2AbortIsSilent — outcome classification self-tests', () =
     // Fixture has `code` set, no numeric `timeout` field, message does NOT
     // contain `/Timeout/i` ('aborted' is the only signal).
     const mockFn = makeMockFn();
-    mockFn();
+    mockFn(async () => undefined);
     const codeOnlyRejection = Object.assign(new Error('aborted'), {
       code: 'ECONNABORTED',
     });
@@ -130,7 +130,7 @@ describe('assertArgon2AbortIsSilent — outcome classification self-tests', () =
     // Fixture has a numeric `timeout` field, no `code` field, message does
     // NOT contain `/Timeout/i` ('connection-failure' is the only signal).
     const mockFn = makeMockFn();
-    mockFn();
+    mockFn(async () => undefined);
     const timeoutFieldOnlyRejection = Object.assign(new Error('connection-failure'), {
       timeout: 250,
     });
@@ -146,7 +146,7 @@ describe('assertArgon2AbortIsSilent — outcome classification self-tests', () =
     // numeric `timeout` field. The phrasing 'Operation Timeout exceeded' is
     // chosen to avoid coupling to supertest's exact internal text shape.
     const mockFn = makeMockFn();
-    mockFn();
+    mockFn(async () => undefined);
     const messageOnlyRejection = new Error('Operation Timeout exceeded');
 
     await expect(
@@ -176,7 +176,7 @@ describe('assertArgon2AbortIsSilent — outcome classification self-tests', () =
     // 'other-error' to be 'timeout'` would not surface the underlying
     // err.toString() that names what actually went wrong.
     const mockFn = makeMockFn();
-    mockFn();
+    mockFn(async () => undefined);
     const otherErr = new Error('ECONNRESET');
 
     await expect(

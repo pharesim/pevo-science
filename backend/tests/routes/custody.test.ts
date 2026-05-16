@@ -146,7 +146,7 @@ function bearerFor(username: string, custody: 'light' | 'self' = 'light'): strin
   return jwt.sign({ sub: username, custody }, config.sessionSecret, { expiresIn: '1h' });
 }
 
-async function bearerPost(path: string, token: string, body: unknown) {
+async function bearerPost(path: string, token: string, body: Record<string, unknown>) {
   return request(app)
     .post(path)
     .set('Authorization', `Bearer ${token}`)

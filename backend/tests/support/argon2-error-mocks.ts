@@ -144,7 +144,12 @@ export function buildArgon2RouteMockKit(): Argon2RouteMockKit {
         ArgonQueueFullError: actual.ArgonQueueFullError,
         ShuttingDownError: actual.ShuttingDownError,
         ArgonAbortError: actual.ArgonAbortError,
-        runWithArgon2Slot: mockFn,
+        // `mockFn`'s generic `<T>` erases to `unknown` through vi.fn, so the
+        // returned `Promise<unknown>` doesn't match the actual signature's
+        // `Promise<T>`. Cast back to the real type — runtime behavior is
+        // unaffected since the mock either resolves or rejects, both of
+        // which are valid `Promise<T>` regardless of T.
+        runWithArgon2Slot: mockFn as typeof actual.runWithArgon2Slot,
         MAX_CONCURRENT_ARGON2_OPS: actual.MAX_CONCURRENT_ARGON2_OPS,
         MAX_QUEUE_DEPTH: actual.MAX_QUEUE_DEPTH,
         getArgon2QueueDepth: () => 0,
@@ -152,6 +157,9 @@ export function buildArgon2RouteMockKit(): Argon2RouteMockKit {
         drainArgon2Queue: () => {},
         isArgonSemaphoreError: actual.isArgonSemaphoreError,
         createArgon2Semaphore: actual.createArgon2Semaphore,
+        getArgon2AbortCount: actual.getArgon2AbortCount,
+        startArgon2AbortReporter: actual.startArgon2AbortReporter,
+        stopArgon2AbortReporter: actual.stopArgon2AbortReporter,
       };
     },
     assertArgon2AbortIsSilent: (promise) => assertArgon2AbortIsSilentImpl(promise, mockFn),

@@ -5,8 +5,8 @@ import {
   buildBridgeBody,
   buildBridgeMetadata,
 } from '../src/bridge.js';
+import type { BridgeLookupResult } from '../src/bridge.js';
 import { config } from '../src/config.js';
-import type { BridgeLookupResult } from '../src/types/index.js';
 
 const TAG = config.appTag;
 const APP_ID = config.appId;
@@ -143,12 +143,27 @@ describe('buildBridgeBody', () => {
 
 describe('buildBridgeMetadata', () => {
   it('returns valid bridge paper metadata', () => {
-    const meta = buildBridgeMetadata(SAMPLE_LOOKUP, 'scientist1', 'Computer Science', ['NLP'], 'en', 1);
+    const meta = buildBridgeMetadata(
+      SAMPLE_LOOKUP,
+      'scientist1',
+      'Computer Science',
+      ['NLP'],
+      'en',
+      1,
+      SAMPLE_LOOKUP.title,
+      buildBridgeBody(SAMPLE_LOOKUP, 'scientist1'),
+      config.hiveBridgeAccount || 'pevo.bridge',
+      'bridge-arxiv-2301-12345',
+    );
     expect(meta.app).toBe(APP_ID);
     expect(meta.tags).toContain(TAG);
     expect(meta.tags).toContain('science');
 
-    const pevo = meta[TAG];
+    // meta[TAG] is typed as the union of every value in the returned object
+    // (app: string, tags: string[], canonical_url: string, [TAG]: pevo). Narrow
+    // to the pevo shape by extracting the bridge-paper-tagged variant.
+    type BridgePevo = Extract<typeof meta[typeof TAG], { type: 'bridge_paper' }>;
+    const pevo = meta[TAG] as BridgePevo;
     expect(pevo.type).toBe('bridge_paper');
     expect(pevo.version).toBe(1);
     expect(pevo.discipline).toBe('Computer Science');

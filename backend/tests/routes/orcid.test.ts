@@ -706,12 +706,16 @@ describe('POST /api/orcid/callback — hardening (SEC-002-HARDENING)', () => {
       // the wrong call under mockImplementationOnce. Filtering by key keeps
       // the throw bound to the state-read site this spec is exercising.
       const origGet = redis.get.bind(redis);
-      const getSpy = vi.spyOn(redis, 'get').mockImplementation(async (key: string) => {
+      // ioredis `get` is overloaded `(key, callback?) => ...`; the mock only
+      // needs the first arg. Cast to `any` to bypass the overload constraint
+      // — vitest's mockImplementation parameter checks against the widest
+      // overload by default.
+      const getSpy = vi.spyOn(redis, 'get').mockImplementation((async (key: string) => {
         if (key === stateKey) {
           throw new Error('simulated Redis flap on state GET');
         }
         return origGet(key);
-      });
+      }) as never);
       const delSpy = vi.spyOn(redis, 'del');
       try {
         const res = await request(app)
@@ -3620,13 +3624,15 @@ describe('orcid.ts structured-log shape coverage (round-2 hold-fix — Item 3 pa
         return { rows: [] };
       });
       const origGet = redis.get.bind(redis);
-      const getSpy = vi.spyOn(redis, 'get').mockImplementation(async (key: string) => {
+      // ioredis `get` is overloaded `(key, callback?) => ...`; cast bypasses
+      // the overload constraint (see sibling site at ~709).
+      const getSpy = vi.spyOn(redis, 'get').mockImplementation((async (key: string) => {
         // Throw only on the cache-read path so the state-GET still works
         // (state lookup happens before the cache check at /callback entry).
         if (key.startsWith(stateRedisKeyPrefix)) return origGet(key);
         if (key === cacheKey) throw new Error('synthetic Redis flap on binding-cache GET');
         return origGet(key);
-      });
+      }) as never);
       const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as unknown as void);
       try {
         const state = await startAuthed('link', 'alice');

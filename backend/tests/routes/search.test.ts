@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import request from 'supertest';
+import type { Response as SupertestResponse } from 'supertest';
 import { createApp } from '../../src/app.js';
 import { config } from '../../src/config.js';
 import { hafCache } from '../../src/cache.js';
@@ -115,7 +116,7 @@ describe('GET /api/search', () => {
       // recover and forces a fresh SQL execution per attempt. Skips with a
       // structured reason after 6 attempts so the suite doesn't fail when
       // HAF is genuinely degraded for the full window.
-      let res: Awaited<ReturnType<typeof request>> | undefined;
+      let res: SupertestResponse | undefined;
       for (let attempt = 0; attempt < 6; attempt++) {
         if (attempt > 0) {
           await hafCache.clearVolatile();

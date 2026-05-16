@@ -55,7 +55,7 @@ vi.mock('../../src/middleware/verifyHiveSignature.js', async () => {
 });
 
 const { hafQueryMock, getPoolMock } = vi.hoisted(() => ({
-  hafQueryMock: vi.fn(async () => ({ rows: [] })),
+  hafQueryMock: vi.fn(async (..._args: any[]) => ({ rows: [] as any[] })),
   getPoolMock: vi.fn(),
 }));
 
