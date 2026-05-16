@@ -239,12 +239,12 @@ describe('GET /api/search?type=all partial degradation (allSettled)', () => {
     expect(branches).toEqual(['papers', 'reviews']);
   });
 
-  // Pins the queryParams payload shape on the warn event so future filter
-  // additions get visibility in operator dashboards. If a new filter param
-  // is added to the route but not threaded into the warn event, this spec
-  // fails first. Asserts every field of the route's `queryParams` object
-  // (type, discipline, language, source, includeRetracted, sort) so a
-  // partial omission can't slip through.
+  // Pin: every user-filter field of the route's `queryParams` warn payload
+  // (type, discipline, language, source, includeRetracted, sort). Pagination
+  // fields (limit, offset) are present in the production payload but out of
+  // scope for this canary — they are pagination internals, not user filters,
+  // and a future refactor splitting them out is not the "new filter not
+  // threaded" regression class this canary is meant to catch.
   it('warn event payload includes queryParams with the request filters', async () => {
     mockReviewsBranchThrows();
     const res = await request(app)

@@ -170,3 +170,11 @@ All 5 hold-block items landed in a single commit. Files touched:
 ### Re-review signal
 
 When the comment fix above lands, `git mv` this file back to `tasks/review/`. Round-3 architect re-review scopes `/ce-code-review` to the round-3 commit. Anchor: comment-only change at one test-file location; trivial single commit.
+
+## Backend re-review signal (2026-05-16, round-3 hold)
+
+P3 comment-only fix landed at `backend/tests/routes/search-partial-degradation.test.ts:242-247` (the canary 4 lead-in comment). The previous comment claimed the canary asserted "every field" of the route's `queryParams` warn payload — but the production payload has 8 fields (`type, discipline, language, source, includeRetracted, sort, limit, offset`) and the canary asserts 6 (the 4 user filters originally + `source` + `includeRetracted` added in round-2). Rewrote the lead-in comment to scope the pin precisely to user-filter fields and explicitly carve out pagination internals (`limit, offset`) as out-of-scope, with the rationale that pagination drift is not the "new-filter-not-threaded" regression class the canary is meant to catch. No assertion changes.
+
+`npm run lint` clean (pre-existing seed-phrase.ts warnings only); `npx tsc --noEmit` clean. Vitest deferred to parent serialized run.
+
+Note on cherry-pick mechanics: the worker originally edited the file at `tasks/review/`, but the architect's round-3 hold-block commit (`4b19635`) moved it back to `tasks/pending/` during the worktree's lifetime. Parent resolved the cherry-pick conflict by deleting the worker's stale `review/` copy and re-recording this signal block at the architect-current `pending/` path so the round-3 hold-block (the architect-added context above) is preserved.
