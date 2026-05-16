@@ -355,7 +355,7 @@ When items 1, 2 land, `git mv` this file from `tasks/pending/` back to `tasks/re
 
 ---
 
-## Backend re-review signal (2026-05-16, commit `<SHA>`)
+## Backend re-review signal (2026-05-16, commit `3e618a4`)
 
 Both round-4 held items landed in a single focused commit to `backend/tests/eslint/no-bridge-paper-literal.test.ts`. The rule source `backend/eslint.config.mjs` is unchanged this round — the holds were both test-coverage corrections, not rule-source mutations.
 
