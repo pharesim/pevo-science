@@ -55,8 +55,10 @@ import {
   FRESH_AUTH_TTL_SECONDS,
   computeFreshAuthTargetHash,
   consumeFreshAuthToken,
+  consumeSessionFreshAuthToken,
   isFreshAuthMechanism,
   issueFreshAuthToken,
+  issueSessionFreshAuthToken,
   _resetFreshAuthMemStoreForTests,
   _restartCleanupForTests,
   _stopCleanupForTests,
@@ -467,6 +469,88 @@ describe('Per-op target binding (round-5 hold #3)', () => {
     expect(result.valid).toBe(false);
     if (!result.valid) {
       expect(result.reason).toBe('target_mismatch');
+    }
+  });
+});
+
+// ─── BACKEND-CUSTODY-BROADCAST-ORCID-FRESH-AUTH — session-kind primitives ───
+
+describe('BACKEND-CUSTODY-BROADCAST-ORCID-FRESH-AUTH — session-kind issue / consume', () => {
+  beforeEach(() => {
+    _resetFreshAuthMemStoreForTests();
+  });
+
+  it('issue then consume session-kind → valid + mechanism preserved', async () => {
+    const issued = await issueSessionFreshAuthToken('alice', 'password');
+    const result = await consumeSessionFreshAuthToken(issued.token, 'alice');
+    expect(result.valid).toBe(true);
+    if (result.valid) {
+      expect(result.mechanism).toBe('password');
+    }
+  });
+
+  it('session-kind via ORCID mechanism → valid + mechanism=orcid', async () => {
+    const issued = await issueSessionFreshAuthToken('carl', 'orcid');
+    const result = await consumeSessionFreshAuthToken(issued.token, 'carl');
+    expect(result.valid).toBe(true);
+    if (result.valid) {
+      expect(result.mechanism).toBe('orcid');
+    }
+  });
+
+  it('single-use semantic on session consume: second consume → expired', async () => {
+    const issued = await issueSessionFreshAuthToken('alice', 'password');
+    const first = await consumeSessionFreshAuthToken(issued.token, 'alice');
+    expect(first.valid).toBe(true);
+    const second = await consumeSessionFreshAuthToken(issued.token, 'alice');
+    expect(second.valid).toBe(false);
+    if (!second.valid) {
+      expect(second.reason).toBe('expired');
+    }
+  });
+
+  it('cross-account: session token for bob consumed with alice → username_mismatch', async () => {
+    const issued = await issueSessionFreshAuthToken('bob', 'password');
+    const result = await consumeSessionFreshAuthToken(issued.token, 'alice');
+    expect(result.valid).toBe(false);
+    if (!result.valid) {
+      expect(result.reason).toBe('username_mismatch');
+    }
+  });
+
+  it('missing token → missing reason', async () => {
+    const result = await consumeSessionFreshAuthToken(undefined, 'alice');
+    expect(result.valid).toBe(false);
+    if (!result.valid) {
+      expect(result.reason).toBe('missing');
+    }
+  });
+
+  // ─── Cross-kind acceptance / isolation ──────────────────────────────
+
+  it('cross-kind accept: consent_op-kind proof works on session consume', async () => {
+    // Strictly more proof: a consent_op-kind proof carries target binding
+    // AND proves recent re-auth. Non-consent broadcast doesn't need the
+    // binding, so the proof is acceptable on the session surface.
+    const issued = await issueFreshAuthToken('alice', 'password', T);
+    const result = await consumeSessionFreshAuthToken(issued.token, 'alice');
+    expect(result.valid).toBe(true);
+    if (result.valid) {
+      expect(result.mechanism).toBe('password');
+    }
+  });
+
+  it('kind isolation: session-kind proof on consent_op consume → kind_mismatch', async () => {
+    // The reverse direction is NOT accepted: session proofs don't carry
+    // the per-op binding the consent surface requires. Pre-fix, the
+    // session consume's "no target check" might tempt a refactor to drop
+    // the target check on the consent consume too. This test pins the
+    // strict-isolation property.
+    const issued = await issueSessionFreshAuthToken('alice', 'password');
+    const result = await consumeFreshAuthToken(issued.token, 'alice', TH);
+    expect(result.valid).toBe(false);
+    if (!result.valid) {
+      expect(result.reason).toBe('kind_mismatch');
     }
   });
 });

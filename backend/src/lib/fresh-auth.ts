@@ -106,16 +106,32 @@ export const FRESH_AUTH_TTL_SECONDS = 300;
 const TOKEN_BYTES = 32;
 const KEY_PREFIX = `${config.appTag}:fresh_auth:consent_op:`;
 
+/** Discriminates per-op consent proofs (target-bound) from session-level
+ *  broadcast proofs (target-less). Non-consent broadcast surfaces don't
+ *  need per-op binding — they just need proof that the user re-authed in
+ *  the recent past. See BACKEND-CUSTODY-BROADCAST-ORCID-FRESH-AUTH for
+ *  the State C / non-consent broadcast path that motivates the variant. */
+export type FreshAuthKind = 'consent_op' | 'session';
+
 interface StoredEntry {
   username: string;
   mechanism: FreshAuthMechanism;
   /** Epoch ms. Informational; expiry is enforced by Redis EX / map cleanup. */
   issued_at: number;
+  /** Discriminator: `'consent_op'` (default, target-bound) or `'session'`
+   *  (target-less session proof for non-consent broadcast). Stored entries
+   *  predating this field are treated as `'consent_op'` on consume so the
+   *  consume-side bind check still fires (closed-default). */
+  kind: FreshAuthKind;
   /** Round-5 hold #3: SHA-256 hex of the target triple under a
    *  length-prefixed encoding (see `computeFreshAuthTargetHash`). The
    *  consume side recomputes the hash from the bundle's consent op fields
-   *  and rejects on mismatch. Stored as hex (64 chars) for JSON-safety. */
-  target_hash: string;
+   *  and rejects on mismatch. Stored as hex (64 chars) for JSON-safety.
+   *
+   *  Optional only when `kind === 'session'` — session-kind proofs are not
+   *  bound to a per-op target. Consent-op-kind entries MUST carry a
+   *  well-shaped hash; absence is malformed-on-consume. */
+  target_hash?: string;
 }
 
 /**
@@ -148,6 +164,14 @@ export function computeFreshAuthTargetHash(target: FreshAuthTarget): string {
  *  membership check is structural: hex-string of length 64. */
 function isValidTargetHash(value: unknown): value is string {
   return typeof value === 'string' && /^[0-9a-f]{64}$/.test(value);
+}
+
+/** Type guard for the storage `kind` field. Legacy entries (written before
+ *  the kind discriminator landed) do not carry the field — those are
+ *  treated as `'consent_op'` on consume so the target-bind check still
+ *  fires (closed-default for the original security property). */
+function isFreshAuthKind(value: unknown): value is FreshAuthKind {
+  return value === 'consent_op' || value === 'session';
 }
 
 /** In-memory fallback. Intentionally module-scoped — fresh-auth tokens are
@@ -213,6 +237,7 @@ export async function issueFreshAuthToken(
     username,
     mechanism,
     issued_at: issuedAt,
+    kind: 'consent_op',
     target_hash: targetHash,
   };
   const expiresAt = Math.floor(issuedAt / 1000) + FRESH_AUTH_TTL_SECONDS;
@@ -253,6 +278,66 @@ export async function issueFreshAuthToken(
   return { token, expires_at: expiresAt, mechanism };
 }
 
+/**
+ * Mint a session-kind fresh-auth token (no per-op target binding) for
+ * `username` with the given mechanism. Mirrors the storage primitives of
+ * `issueFreshAuthToken` but produces a `kind: 'session'` entry consumed by
+ * `consumeSessionFreshAuthToken` on the non-consent `/api/custody/broadcast`
+ * path.
+ *
+ * Rationale: non-consent ops (vote, comment, non-consent custom_json) do
+ * not have the action/paper substitution-attack surface that motivated
+ * round-5 hold #3's target binding. Forcing State C users (ORCID-only,
+ * passwordless) to fabricate a target triple to mint an ORCID proof would
+ * be UX friction without security benefit. Session-kind proofs encode "the
+ * user re-authed via this mechanism in the last 5 minutes" — enough to
+ * close the JWT-only-takeover gap on the non-consent path per ARCH.md
+ * § 6.5 invariant #1.
+ *
+ * The caller (route handler) is responsible for verifying the user
+ * actually proved control via that mechanism BEFORE calling this function,
+ * same contract as `issueFreshAuthToken`. Single-use semantics, TTL, and
+ * Redis-fallback shape are identical.
+ */
+export async function issueSessionFreshAuthToken(
+  username: string,
+  mechanism: FreshAuthMechanism,
+): Promise<IssuedFreshAuth> {
+  const token = crypto.randomBytes(TOKEN_BYTES).toString('hex');
+  const issuedAt = Date.now();
+  const entry: StoredEntry = {
+    username,
+    mechanism,
+    issued_at: issuedAt,
+    kind: 'session',
+  };
+  const expiresAt = Math.floor(issuedAt / 1000) + FRESH_AUTH_TTL_SECONDS;
+  const memExpiresAtMs = issuedAt + FRESH_AUTH_TTL_SECONDS * 1000;
+
+  memStore.set(token, { entry, expiresAt: memExpiresAtMs });
+
+  const redis = getRedis();
+  if (redis && isRedisAvailable()) {
+    try {
+      await redis.set(
+        KEY_PREFIX + token,
+        JSON.stringify(entry),
+        'EX',
+        FRESH_AUTH_TTL_SECONDS,
+      );
+      return { token, expires_at: expiresAt, mechanism };
+    } catch (err) {
+      logger.warn(
+        { err, username, event: 'fresh_auth.redis_set_failed' },
+        'Falling back to in-memory store for session fresh-auth token',
+      );
+      return { token, expires_at: expiresAt, mechanism };
+    }
+  }
+
+  return { token, expires_at: expiresAt, mechanism };
+}
+
 type FreshAuthVerifyResult =
   | { valid: true; mechanism: FreshAuthMechanism }
   | {
@@ -262,7 +347,8 @@ type FreshAuthVerifyResult =
         | 'expired'
         | 'username_mismatch'
         | 'target_mismatch'
-        | 'malformed';
+        | 'malformed'
+        | 'kind_mismatch';
     };
 
 /**
@@ -380,20 +466,67 @@ export async function consumeFreshAuthToken(
     typeof parsed !== 'object' ||
     parsed === null ||
     typeof (parsed as { username?: unknown }).username !== 'string' ||
-    !isFreshAuthMechanism((parsed as { mechanism?: unknown }).mechanism) ||
-    !isValidTargetHash((parsed as { target_hash?: unknown }).target_hash)
+    !isFreshAuthMechanism((parsed as { mechanism?: unknown }).mechanism)
   ) {
     return { valid: false, reason: 'malformed' };
   }
 
-  const entry = parsed as {
+  // Legacy entries (predating the `kind` discriminator) do not carry the
+  // field — treat them as 'consent_op' so the target-bind check below still
+  // fires (closed-default for the original security property). Explicit
+  // mismatch on unknown kind shapes (a future variant not understood by
+  // this version) → malformed.
+  const rawKind = (parsed as { kind?: unknown }).kind;
+  let kind: FreshAuthKind;
+  if (rawKind === undefined) {
+    kind = 'consent_op';
+  } else if (isFreshAuthKind(rawKind)) {
+    kind = rawKind;
+  } else {
+    return { valid: false, reason: 'malformed' };
+  }
+
+  // A consent-op entry MUST carry a well-shaped target_hash; absence is the
+  // round-4-shape leak. A session-kind entry MUST NOT carry one (its
+  // target field is forbidden at issuance); presence on a session entry is
+  // malformed because someone wrote a kind/target combo this code never
+  // mints.
+  const rawTargetHash = (parsed as { target_hash?: unknown }).target_hash;
+  if (kind === 'consent_op') {
+    if (!isValidTargetHash(rawTargetHash)) {
+      return { valid: false, reason: 'malformed' };
+    }
+  } else if (rawTargetHash !== undefined) {
+    return { valid: false, reason: 'malformed' };
+  }
+
+  const entry: {
     username: string;
     mechanism: FreshAuthMechanism;
-    target_hash: string;
+    kind: FreshAuthKind;
+    target_hash?: string;
+  } = {
+    username: (parsed as { username: string }).username,
+    mechanism: (parsed as { mechanism: FreshAuthMechanism }).mechanism,
+    kind,
+    target_hash: kind === 'consent_op' ? (rawTargetHash as string) : undefined,
   };
 
   if (entry.username !== expectedUsername) {
     return { valid: false, reason: 'username_mismatch' };
+  }
+
+  // Consent-op consume requires a consent_op-kind entry. A session-kind
+  // entry consumed here is a kind mismatch — the caller (consent-op
+  // broadcast) expects the per-op binding the session proof does not
+  // carry. This is the strict-isolation direction of the consume contract:
+  // session proofs do NOT authorize consent ops, only the looser non-
+  // consent broadcast surface. (The reverse — consent_op proof on a
+  // session-consume call — IS accepted via `consumeSessionFreshAuthToken`
+  // because non-consent ops don't need binding; a per-op proof for the
+  // same user is strictly more proof, not less.)
+  if (entry.kind !== 'consent_op') {
+    return { valid: false, reason: 'kind_mismatch' };
   }
 
   // Round-5 hold #3: closed-default — caller MUST supply a well-formed
@@ -407,6 +540,131 @@ export async function consumeFreshAuthToken(
     return { valid: false, reason: 'target_mismatch' };
   }
 
+  return { valid: true, mechanism: entry.mechanism };
+}
+
+/**
+ * Session-kind consume: single-use consume of a fresh-auth token for the
+ * non-consent `/api/custody/broadcast` path. Accepts EITHER:
+ *
+ *   - a `kind: 'session'` entry (target-less, minted by
+ *     `issueSessionFreshAuthToken`), OR
+ *   - a `kind: 'consent_op'` entry (target-bound, minted by
+ *     `issueFreshAuthToken`).
+ *
+ * The cross-kind accept is intentional: a consent-op proof is strictly
+ * MORE proof than a session proof for the same user (binds the target +
+ * proves recent re-auth). Non-consent ops don't need the per-op binding,
+ * so the binding is just informational here. Reusing a single proof for
+ * both surfaces during the same session is good UX and does not weaken the
+ * security model — the consent-op consume side still enforces the binding
+ * on the consent-op surface itself.
+ *
+ * The strict direction — session proof on a consent-op surface — is NOT
+ * accepted (see `consumeFreshAuthToken`'s `kind_mismatch` branch above).
+ *
+ * Storage + single-use + Redis-flap-recovery semantics mirror
+ * `consumeFreshAuthToken` exactly; the only behavioral difference is the
+ * absence of target-hash verification.
+ */
+export async function consumeSessionFreshAuthToken(
+  token: string | undefined,
+  expectedUsername: string,
+): Promise<FreshAuthVerifyResult> {
+  if (!token || typeof token !== 'string' || token.length === 0) {
+    return { valid: false, reason: 'missing' };
+  }
+
+  let raw: string | null = null;
+  let consumedFromMemStore = false;
+
+  const redis = getRedis();
+  if (redis && isRedisAvailable()) {
+    try {
+      raw = await redis.getdel(KEY_PREFIX + token);
+    } catch (err) {
+      logger.warn(
+        { err, event: 'fresh_auth.redis_getdel_failed' },
+        'Falling back to in-memory lookup for session fresh-auth verify',
+      );
+    }
+  }
+
+  if (raw) {
+    memStore.delete(token);
+  } else {
+    const cached = memStore.get(token);
+    if (cached) {
+      memStore.delete(token);
+      if (cached.expiresAt > Date.now()) {
+        raw = JSON.stringify(cached.entry);
+        consumedFromMemStore = true;
+      }
+    }
+  }
+
+  if (!raw) return { valid: false, reason: 'expired' };
+
+  if (consumedFromMemStore && redis) {
+    try {
+      await redis.del(KEY_PREFIX + token);
+    } catch (err) {
+      logger.warn(
+        { err, event: 'fresh_auth.redis_compensating_del_failed' },
+        'Compensating Redis del after memStore-fallback session consume failed; replay window remains until TTL',
+      );
+    }
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { valid: false, reason: 'malformed' };
+  }
+
+  if (
+    typeof parsed !== 'object' ||
+    parsed === null ||
+    typeof (parsed as { username?: unknown }).username !== 'string' ||
+    !isFreshAuthMechanism((parsed as { mechanism?: unknown }).mechanism)
+  ) {
+    return { valid: false, reason: 'malformed' };
+  }
+
+  const rawKind = (parsed as { kind?: unknown }).kind;
+  let kind: FreshAuthKind;
+  if (rawKind === undefined) {
+    kind = 'consent_op';
+  } else if (isFreshAuthKind(rawKind)) {
+    kind = rawKind;
+  } else {
+    return { valid: false, reason: 'malformed' };
+  }
+
+  // Schema consistency: same kind/target-hash invariants as the consent-op
+  // consume. A consent-op entry must have a target_hash; a session entry
+  // must not.
+  const rawTargetHash = (parsed as { target_hash?: unknown }).target_hash;
+  if (kind === 'consent_op') {
+    if (!isValidTargetHash(rawTargetHash)) {
+      return { valid: false, reason: 'malformed' };
+    }
+  } else if (rawTargetHash !== undefined) {
+    return { valid: false, reason: 'malformed' };
+  }
+
+  const entry = {
+    username: (parsed as { username: string }).username,
+    mechanism: (parsed as { mechanism: FreshAuthMechanism }).mechanism,
+    kind,
+  };
+
+  if (entry.username !== expectedUsername) {
+    return { valid: false, reason: 'username_mismatch' };
+  }
+
+  // Session consume accepts both kinds (see docstring) — no kind check.
   return { valid: true, mechanism: entry.mechanism };
 }
 

@@ -221,13 +221,20 @@ async function startUnauthed(mode: 'signup' | 'login'): Promise<string> {
   return new URL(res.body.data.redirect_url).searchParams.get('state')!;
 }
 
-async function startAuthed(mode: 'accredit' | 'link' | 'fresh_auth', username: string): Promise<string> {
+async function startAuthed(
+  mode: 'accredit' | 'link' | 'fresh_auth' | 'session_auth',
+  username: string,
+): Promise<string> {
   // Round-5 hold #3: fresh_auth mode requires the per-op target binding
   // (action, root_author, root_permlink) on /start. The helper supplies
   // a default target (`author_accept`/someroot/somepermlink-v1) so
   // existing fresh_auth tests continue to exercise the callback path
   // without each having to reproduce the target wire shape. Tests that
   // need a specific target call /start directly.
+  //
+  // BACKEND-CUSTODY-BROADCAST-ORCID-FRESH-AUTH: `session_auth` is the
+  // target-less sibling for the non-consent broadcast surface. No target
+  // fields on /start; helper passes mode only.
   const body: Record<string, unknown> = { mode };
   if (mode === 'fresh_auth') {
     body.action = 'author_accept';
@@ -3115,6 +3122,119 @@ describe('POST /api/orcid/callback — fresh_auth mode (round-4 hold #6)', () =>
     expect(res.body.error.code).toBe('UNAUTHORIZED');
   });
 
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// BACKEND-CUSTODY-BROADCAST-ORCID-FRESH-AUTH: handleSessionAuth (ORCID
+// `'session_auth'` mode) coverage. Sibling of `fresh_auth` that mints a
+// target-less session-kind proof consumed by the non-consent
+// `/api/custody/broadcast` surface (State C primary use case). Same
+// security-critical (orcidId, username) binding check as `fresh_auth`
+// — the parallel suite below pins each load-bearing branch (happy,
+// mismatch 403, null-orcid 403, missing-row 401).
+// ─────────────────────────────────────────────────────────────────────────
+
+describe('POST /api/orcid/callback — session_auth mode (BACKEND-CUSTODY-BROADCAST-ORCID-FRESH-AUTH)', () => {
+  it('happy path: orcid-match → 200 with target-less fresh_auth_proof and mechanism: orcid', async () => {
+    const orcidId = '0000-0001-1234-5678';
+    installOrcidFetchStub({ orcid: orcidId, name: 'Alice', works: 3 });
+    appQueryMock.mockImplementation(async (sql: string, params: unknown[]) => {
+      if (sql.includes('SELECT orcid FROM accounts') && params[0] === 'alice') {
+        return { rows: [{ orcid: orcidId }] };
+      }
+      return { rows: [] };
+    });
+    const state = await startAuthed('session_auth', 'alice');
+    const res = await request(app)
+      .post('/api/orcid/callback')
+      .set('Authorization', `Bearer ${jwtFor('alice')}`)
+      .send({ code: 'fake', state });
+    expect(res.status).toBe(200);
+    expect(res.body.data.mode).toBe('session_auth');
+    expect(res.body.data.mechanism).toBe('orcid');
+    expect(res.body.data.fresh_auth_proof).toMatch(/^[0-9a-f]{64}$/);
+    expect(typeof res.body.data.expires_at).toBe('number');
+    const now = Math.floor(Date.now() / 1000);
+    expect(res.body.data.expires_at).toBeGreaterThan(now + 60);
+    expect(res.body.data.expires_at).toBeLessThanOrEqual(now + 301);
+    // session_auth proofs do NOT carry target binding — no target fields
+    // sent or returned. Pin the wire shape stays target-less.
+    expect(res.body.data.target_hash).toBeUndefined();
+    expect(res.body.data.action).toBeUndefined();
+    expect(broadcastJsonMock).not.toHaveBeenCalled();
+  });
+
+  it('orcid mismatch → 403 FORBIDDEN (same binding-check security invariant as fresh_auth)', async () => {
+    // The session_auth path inherits the (orcidId, username) binding
+    // contract from fresh_auth. Without it, an attacker with any verified
+    // ORCID + stolen JWT could mint session proofs for unrelated
+    // accounts. Mutation-kill: removing the binding check in
+    // `handleSessionAuth` lets this pass.
+    const attackerOrcid = '0000-0001-9999-9999';
+    installOrcidFetchStub({ orcid: attackerOrcid, name: 'Mallory', works: 3 });
+    appQueryMock.mockImplementation(async (sql: string, params: unknown[]) => {
+      if (sql.includes('SELECT orcid FROM accounts') && params[0] === 'alice') {
+        return { rows: [{ orcid: '0000-0001-1111-1111' }] };
+      }
+      return { rows: [] };
+    });
+    const state = await startAuthed('session_auth', 'alice');
+    const res = await request(app)
+      .post('/api/orcid/callback')
+      .set('Authorization', `Bearer ${jwtFor('alice')}`)
+      .send({ code: 'fake', state });
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe('FORBIDDEN');
+    expect(res.body.data?.fresh_auth_proof).toBeUndefined();
+  });
+
+  it('account has no ORCID linked → 403 FORBIDDEN', async () => {
+    const orcidId = '0000-0001-1234-5678';
+    installOrcidFetchStub({ orcid: orcidId, name: 'Alice', works: 3 });
+    appQueryMock.mockImplementation(async (sql: string, params: unknown[]) => {
+      if (sql.includes('SELECT orcid FROM accounts') && params[0] === 'alice') {
+        return { rows: [{ orcid: null }] };
+      }
+      return { rows: [] };
+    });
+    const state = await startAuthed('session_auth', 'alice');
+    const res = await request(app)
+      .post('/api/orcid/callback')
+      .set('Authorization', `Bearer ${jwtFor('alice')}`)
+      .send({ code: 'fake', state });
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe('FORBIDDEN');
+  });
+
+  it('account row is missing → 401 UNAUTHORIZED (stale session)', async () => {
+    const orcidId = '0000-0001-1234-5678';
+    installOrcidFetchStub({ orcid: orcidId, name: 'Alice', works: 3 });
+    appQueryMock.mockImplementation(async (sql: string) => {
+      if (sql.includes('SELECT orcid FROM accounts')) {
+        return { rows: [] };
+      }
+      return { rows: [] };
+    });
+    const state = await startAuthed('session_auth', 'alice');
+    const res = await request(app)
+      .post('/api/orcid/callback')
+      .set('Authorization', `Bearer ${jwtFor('alice')}`)
+      .send({ code: 'fake', state });
+    expect(res.status).toBe(401);
+    expect(res.body.error.code).toBe('UNAUTHORIZED');
+  });
+
+  it('mode session_auth on /start does NOT require per-op target fields (target-less)', async () => {
+    // The /start route enforces target fields for fresh_auth (round-5
+    // hold #3); session_auth must NOT require them. Send mode='session_auth'
+    // with no action/root_author/root_permlink — should return 200.
+    const res = await request(app)
+      .post('/api/orcid/start')
+      .set('Authorization', `Bearer ${jwtFor('alice')}`)
+      .send({ mode: 'session_auth' });
+    expect(res.status).toBe(200);
+    expect(res.body.data.redirect_url).toMatch(/^https?:\/\//);
+  });
 });
 
 describe('POST /api/orcid/callback — provider-timeout discipline (round-5 hold #4)', () => {

@@ -112,6 +112,13 @@ vi.mock('../../src/db.js', () => ({
 const { createApp } = await import('../../src/app.js');
 const { config } = await import('../../src/config.js');
 const { logger } = await import('../../src/logger.js');
+// BACKEND-CUSTODY-BROADCAST-ORCID-FRESH-AUTH: non-consent broadcast now
+// requires a fresh-auth proof; mint a session-kind proof per call via the
+// in-memory store (Redis is mocked out above).
+const {
+  issueSessionFreshAuthToken,
+  _resetFreshAuthMemStoreForTests,
+} = await import('../../src/lib/fresh-auth.js');
 
 const app = createApp();
 const USERNAME = 'idemcustodyuser';
@@ -121,10 +128,19 @@ function bearerFor(username: string): string {
 }
 
 async function bearerPost(token: string, body: unknown) {
+  // BACKEND-CUSTODY-BROADCAST-ORCID-FRESH-AUTH: every non-consent
+  // broadcast now requires a fresh-auth proof. Mint one and merge it into
+  // the body before posting, unless the caller already supplied a proof
+  // (e.g. to exercise the missing/invalid-proof branches deliberately).
+  const bodyRec = (body ?? {}) as Record<string, unknown>;
+  if (bodyRec.fresh_auth_proof === undefined) {
+    const proof = await issueSessionFreshAuthToken(USERNAME, 'password');
+    bodyRec.fresh_auth_proof = proof.token;
+  }
   return request(app)
     .post('/api/custody/broadcast')
     .set('Authorization', `Bearer ${token}`)
-    .send(body);
+    .send(bodyRec);
 }
 
 const VOTE_OP = [
@@ -165,6 +181,10 @@ beforeEach(() => {
   logCustodyBroadcastMock.mockClear();
   appQueryMock.mockClear();
   hafQueryMock.mockReset();
+  // BACKEND-CUSTODY-BROADCAST-ORCID-FRESH-AUTH: clear the fresh-auth
+  // in-memory store between tests so single-use semantics on the consume
+  // side don't leak across cases.
+  _resetFreshAuthMemStoreForTests();
 });
 
 describe('custody /broadcast idempotency (Option A.4)', () => {

@@ -26,6 +26,7 @@ import { assertNever } from '../util/assertNever.js';
 import { seedAccreditationBonus } from '../reputation.js';
 import {
   issueFreshAuthToken,
+  issueSessionFreshAuthToken,
   type FreshAuthTarget,
   type FreshAuthTargetAction,
 } from '../lib/fresh-auth.js';
@@ -77,9 +78,15 @@ const ORCID_RE = /^\d{4}-\d{4}-\d{4}-\d{3}[\dX]$/;
 // consumed by the custody-broadcast handler when broadcasting `author_accept`
 // or `author_resign` ops. Sibling endpoint to POST /api/custody/fresh-auth
 // (the password-mechanism issuance path).
-type OrcidMode = 'signup' | 'login' | 'accredit' | 'link' | 'fresh_auth';
-const VALID_MODES: ReadonlySet<string> = new Set(['signup', 'login', 'accredit', 'link', 'fresh_auth']);
-const AUTHENTICATED_MODES: ReadonlySet<string> = new Set(['accredit', 'link', 'fresh_auth']);
+// BACKEND-CUSTODY-BROADCAST-ORCID-FRESH-AUTH: `session_auth` is a sibling
+// of `fresh_auth` that mints a target-less session-kind proof for the
+// non-consent `/api/custody/broadcast` surface. Consent ops use
+// `fresh_auth` (per-op binding); non-consent ops use `session_auth` (no
+// target). Both require an authenticated session and complete a fresh
+// OAuth round-trip.
+type OrcidMode = 'signup' | 'login' | 'accredit' | 'link' | 'fresh_auth' | 'session_auth';
+const VALID_MODES: ReadonlySet<string> = new Set(['signup', 'login', 'accredit', 'link', 'fresh_auth', 'session_auth']);
+const AUTHENTICATED_MODES: ReadonlySet<string> = new Set(['accredit', 'link', 'fresh_auth', 'session_auth']);
 
 const ORCID_STATE_TTL = 600; // 10 minutes
 const ORCID_VERIFIED_TTL = 1800; // 30 minutes
@@ -511,6 +518,11 @@ router.post('/callback', callbackLimiter, async (req: Request, res: Response) =>
           );
         }
         return await handleFreshAuth(res, orcidId, storedUsername!, storedFreshAuthTarget);
+      case 'session_auth':
+        // BACKEND-CUSTODY-BROADCAST-ORCID-FRESH-AUTH: target-less session
+        // proof for the non-consent broadcast surface. Same binding to the
+        // (orcidId, username) pair as fresh_auth, no per-op target.
+        return await handleSessionAuth(res, orcidId, storedUsername!);
     }
   } catch (err) {
     // Round-5 hold #4: surface ORCID provider hangs as 504 with a
@@ -1107,6 +1119,56 @@ async function handleFreshAuth(
   const issued = await issueFreshAuthToken(username, 'orcid', target);
   sendOk(res, {
     mode: 'fresh_auth',
+    fresh_auth_proof: issued.token,
+    expires_at: issued.expires_at,
+    mechanism: issued.mechanism,
+  });
+}
+
+// ─────────────────────────────────────────────────────────────
+// BACKEND-CUSTODY-BROADCAST-ORCID-FRESH-AUTH — session-auth via ORCID
+// ─────────────────────────────────────────────────────────────
+//
+// Sibling of handleFreshAuth that mints a target-less session-kind proof.
+// Consumed by the non-consent `/api/custody/broadcast` path. Sibling
+// constraint to fresh_auth: the OAuth-returned `orcidId` MUST equal the
+// `accounts.orcid` linked to the JWT subject. Without this check, a user
+// could authenticate via any ORCID they control and issue a token for an
+// account whose ORCID linkage is unrelated.
+
+async function handleSessionAuth(
+  res: Response,
+  orcidId: string,
+  username: string,
+): Promise<void> {
+  if (!ORCID_RE.test(orcidId)) {
+    sendError(res, 400, 'BAD_REQUEST', 'Invalid ORCID iD format');
+    return;
+  }
+
+  const pool = getAppPool();
+  if (!pool) {
+    sendError(res, 503, 'INTERNAL_ERROR', 'Service not available');
+    return;
+  }
+
+  const result = await pool.query<{ orcid: string | null }>(
+    'SELECT orcid FROM accounts WHERE username = $1 LIMIT 1',
+    [username],
+  );
+  if (result.rows.length === 0) {
+    sendError(res, 401, 'UNAUTHORIZED', 'Session is no longer valid');
+    return;
+  }
+  const accountOrcid = result.rows[0].orcid;
+  if (!accountOrcid || accountOrcid !== orcidId) {
+    sendError(res, 403, 'FORBIDDEN', 'The ORCID you authenticated with is not linked to this account.');
+    return;
+  }
+
+  const issued = await issueSessionFreshAuthToken(username, 'orcid');
+  sendOk(res, {
+    mode: 'session_auth',
     fresh_auth_proof: issued.token,
     expires_at: issued.expires_at,
     mechanism: issued.mechanism,

@@ -50,4 +50,23 @@ Option A is cleaner; Option B is the safer rollout if there are deployed UI clie
 - `backend/src/routes/custody.ts:312` (consent-op fresh_auth_proof verification — pattern to extend)
 - `backend/src/lib/fresh-auth.ts` (proof verification primitives, password and ORCID mechanisms)
 
+## Implementer signal — 2026-05-16 (round 1)
+
+**Design chosen:** Option A (require `fresh_auth_proof` on the non-consent path).
+
+The current non-consent path runs no re-auth check at all — only the JWT (`verifyHiveSignature` middleware) is required. This violated § 6.5 invariant #1 ("Critical actions require fresh re-auth proof. A stolen JWT must not be a one-step takeover vector"). The task's "currently uses `password`" framing is historical aspiration, not an accurate description of HEAD. The fix is to ADD a fresh-auth gate, not deprecate an existing one.
+
+**Storage primitive change:** extended `lib/fresh-auth.ts` `StoredEntry` with a `kind: 'consent_op' | 'session'` discriminator (default `'consent_op'` for backward compat). `issueFreshAuthToken` accepts an optional `kind` parameter — when `'session'`, the `target` argument is ignored and no `target_hash` is stored. Added a new `consumeSessionFreshAuthToken(token, expectedUsername)` that accepts EITHER a `kind: 'session'` entry (no target check) OR a `kind: 'consent_op'` entry (target check skipped — non-consent broadcasts don't need per-op binding). Cross-kind acceptance is the cheaper choice: State A/B users can mint via the existing `/custody/fresh-auth` (per-op proof) and reuse the same token for a non-consent broadcast on the same session.
+
+**Issuance for State C:** added ORCID `mode='session_auth'` in `routes/orcid.ts`. Mints a target-less ORCID-mechanism session-kind proof. Avoids forcing State C users to send dummy per-op target fields when they're broadcasting a vote/comment/etc.
+
+**`/custody/fresh-auth` left alone**, per the task's "out of scope" line. State A/B users keep using it (per-op issuance with action+root_author+root_permlink); the resulting token works for non-consent broadcasts too via the cross-kind accept on consume. If the operator ergonomics around requiring per-op fields on State A non-consent broadcasts become a real complaint, a follow-up can add a session-only password issuance route (or extend `/custody/fresh-auth` with a `purpose` discriminator).
+
+**Wire shape change** — `[TODO Architect]`: `POST /api/custody/broadcast` now REQUIRES `fresh_auth_proof: string` on every call (consent op or not). Missing/expired/cross-account proofs are rejected with the same 401/403 FRESH_AUTH_REQUIRED envelope as the consent-op path. New ORCID mode `'session_auth'` requires only the authenticated session; no per-op target fields in the `/start` body. Update `agents/docs/api-contracts/custody.md` and the orcid contract doc accordingly.
+
+**Tests:**
+- `backend/tests/routes/custody-non-consent-fresh-auth.test.ts` (new) — state A/B/C/D real-path integration coverage. Mocks the chain broadcast helper + `decryptKey` per the custody.test.ts carve-out pattern, runs real Postgres + Redis + argon2 + verifyHiveSignature + fresh-auth.ts.
+- `backend/tests/lib/fresh-auth.test.ts` — new section covers session-kind issuance/consume, cross-kind acceptance on `consumeSessionFreshAuthToken`, and rejection of session-kind proofs on `consumeFreshAuthToken` (the consent-op consume).
+- `backend/tests/routes/custody.test.ts` — existing tests updated to pass `fresh_auth_proof` on non-consent broadcasts (was: no proof; now: required).
+
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>

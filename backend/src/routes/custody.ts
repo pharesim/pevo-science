@@ -20,6 +20,7 @@ import {
   CONSENT_OP_ACTIONS,
   computeFreshAuthTargetHash,
   consumeFreshAuthToken,
+  consumeSessionFreshAuthToken,
   issueFreshAuthToken,
   type FreshAuthMechanism,
   type FreshAuthTarget,
@@ -306,11 +307,21 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
   // proofs are single-use anyway — a SPA retry must re-derive the proof,
   // and the substitution-attack closure (target-hash binding from round-5)
   // is more important than retry ergonomics on consent ops specifically.
+  //
+  // BACKEND-CUSTODY-BROADCAST-ORCID-FRESH-AUTH: the non-consent branch now
+  // requires `fresh_auth_proof` too (consumed via the session-kind path,
+  // no per-op binding check). This closes ARCH.md § 6.5 invariant #1 on
+  // the non-consent surface — pre-fix, only the JWT was required, making
+  // a stolen JWT a one-step takeover vector for vote/comment broadcasts.
+  // State A/B users mint via `/api/custody/fresh-auth` (password, per-op
+  // proof — accepted via the cross-kind-accept on session consume); State
+  // B/C users mint via `/api/orcid/callback mode='session_auth'` (ORCID,
+  // session-kind proof).
   const consentAction = consentScan.kind === 'single' ? consentScan.action : null;
   let freshAuthMechanism: FreshAuthMechanism | null = null;
+  const proofRaw = (req.body as { fresh_auth_proof?: unknown })?.fresh_auth_proof;
+  const proofToken = typeof proofRaw === 'string' ? proofRaw : undefined;
   if (consentScan.kind === 'single') {
-    const proof = (req.body as { fresh_auth_proof?: unknown })?.fresh_auth_proof;
-    const proofToken = typeof proof === 'string' ? proof : undefined;
     // Round-5 hold #3: compute the expected target hash from the consent
     // op's actual fields (action, root_author, root_permlink). The proof
     // must have been minted for THIS exact target — otherwise a compromised
@@ -342,11 +353,41 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
       // reason. `username_mismatch` and `target_mismatch` are binding
       // violations (token issued for a different user / target) → 403; the
       // remaining outcomes (`missing`, `expired`, `malformed`) are all
-      // "no valid proof present" → 401.
+      // "no valid proof present" → 401. `kind_mismatch` is also a binding
+      // violation (session-kind proof on the consent surface).
       const status =
-        result.reason === 'username_mismatch' || result.reason === 'target_mismatch'
+        result.reason === 'username_mismatch' ||
+        result.reason === 'target_mismatch' ||
+        result.reason === 'kind_mismatch'
           ? 403
           : 401;
+      return sendError(
+        res,
+        status,
+        'FRESH_AUTH_REQUIRED',
+        'Re-authentication required to broadcast this operation. Please complete the fresh-auth challenge and retry.',
+        { reason: result.reason },
+      );
+    }
+    freshAuthMechanism = result.mechanism;
+  } else {
+    // Non-consent path: require a session-kind proof (or cross-kind-accept
+    // a consent_op-kind proof). No per-op binding check. The same status
+    // discrimination applies — `username_mismatch` → 403, everything else
+    // → 401.
+    const result = await consumeSessionFreshAuthToken(proofToken, username);
+    if (!result.valid) {
+      logger.warn(
+        {
+          event: 'custody.broadcast.fresh_auth_rejected',
+          route: 'custody.broadcast',
+          username,
+          consent_action: null,
+          reason: result.reason,
+        },
+        'custody.broadcast rejected — fresh-auth proof invalid (non-consent path)',
+      );
+      const status = result.reason === 'username_mismatch' ? 403 : 401;
       return sendError(
         res,
         status,

@@ -128,6 +128,15 @@ vi.mock('../../src/db.js', () => ({
 const { createApp } = await import('../../src/app.js');
 const { config } = await import('../../src/config.js');
 const { logger } = await import('../../src/logger.js');
+// BACKEND-CUSTODY-BROADCAST-ORCID-FRESH-AUTH: non-consent broadcast now
+// requires a fresh-auth proof. The route consumes via
+// `consumeSessionFreshAuthToken` which accepts both session-kind and
+// consent_op-kind proofs. Tests mint a fresh proof per call via the
+// in-memory fallback store (Redis is mocked out above).
+const {
+  issueSessionFreshAuthToken,
+  _resetFreshAuthMemStoreForTests,
+} = await import('../../src/lib/fresh-auth.js');
 
 const app = createApp();
 
@@ -142,6 +151,15 @@ async function bearerPost(path: string, token: string, body: unknown) {
     .post(path)
     .set('Authorization', `Bearer ${token}`)
     .send(body);
+}
+
+/** Mint a session-kind fresh-auth proof for USERNAME via the in-memory
+ *  store (Redis is mocked unavailable above). Each test that hits the
+ *  non-consent broadcast surface MUST acquire a fresh proof — single-use
+ *  semantic on the consume side burns it after one call. */
+async function mintSessionProof(username: string = USERNAME): Promise<string> {
+  const { token } = await issueSessionFreshAuthToken(username, 'password');
+  return token;
 }
 
 const VALID_OPERATIONS = [
@@ -170,6 +188,10 @@ beforeEach(() => {
   decryptKeyMock.mockReset();
   decryptKeyMock.mockReturnValue(TEST_POSTING_WIF);
   logCustodyBroadcastMock.mockClear();
+  // BACKEND-CUSTODY-BROADCAST-ORCID-FRESH-AUTH: clear the fresh-auth
+  // in-memory store between tests so single-use semantics on the consume
+  // side don't leak across cases.
+  _resetFreshAuthMemStoreForTests();
 });
 
 describe('BE-BRIDGE-CUSTODY-BROADCAST-DISCRIMINATION — /api/custody/broadcast timeout discrimination', () => {
@@ -191,7 +213,10 @@ describe('BE-BRIDGE-CUSTODY-BROADCAST-DISCRIMINATION — /api/custody/broadcast 
   it('BroadcastTimeoutError → 504 BROADCAST_TIMEOUT with uncertain-outcome envelope', async () => {
     sendOperationsMock.mockRejectedValueOnce(new MockBroadcastTimeoutError(30_000));
     const token = bearerFor(USERNAME, 'light');
-    const res = await bearerPost('/api/custody/broadcast', token, { operations: VALID_OPERATIONS });
+    const res = await bearerPost('/api/custody/broadcast', token, {
+      operations: VALID_OPERATIONS,
+      fresh_auth_proof: await mintSessionProof(),
+    });
     expect(res.status).toBe(504);
     expect(res.body.error.code).toBe('BROADCAST_TIMEOUT');
     expect(res.body.error.message).toBe('Broadcasting signed operation timed out');
@@ -204,7 +229,10 @@ describe('BE-BRIDGE-CUSTODY-BROADCAST-DISCRIMINATION — /api/custody/broadcast 
     const CHAIN_INTERNAL = 'RPC node rejected: missing_posting_auth custody';
     sendOperationsMock.mockRejectedValueOnce(new Error(CHAIN_INTERNAL));
     const token = bearerFor(USERNAME, 'light');
-    const res = await bearerPost('/api/custody/broadcast', token, { operations: VALID_OPERATIONS });
+    const res = await bearerPost('/api/custody/broadcast', token, {
+      operations: VALID_OPERATIONS,
+      fresh_auth_proof: await mintSessionProof(),
+    });
     expect(res.status).toBe(502);
     expect(res.body.error.code).toBe('BROADCAST_FAILED');
     expect(res.body.error.message).toBe('Failed to broadcast signed operation to Hive');
@@ -239,7 +267,10 @@ describe('BE-BRIDGE-CUSTODY-BROADCAST-DISCRIMINATION — /api/custody/broadcast 
     });
     sendOperationsMock.mockRejectedValueOnce(dhiveErr);
     const token = bearerFor(USERNAME, 'light');
-    const res = await bearerPost('/api/custody/broadcast', token, { operations: VALID_OPERATIONS });
+    const res = await bearerPost('/api/custody/broadcast', token, {
+      operations: VALID_OPERATIONS,
+      fresh_auth_proof: await mintSessionProof(),
+    });
     expect(res.status).toBe(502);
     expect(res.body.error.code).toBe('BROADCAST_FAILED');
     expect(res.body.error.message).toBe('Failed to broadcast signed operation to Hive');
@@ -280,7 +311,10 @@ describe('BE-BRIDGE-CUSTODY-BROADCAST-DISCRIMINATION — /api/custody/broadcast 
     });
     try {
       const token = bearerFor(USERNAME, 'light');
-      const res = await bearerPost('/api/custody/broadcast', token, { operations: VALID_OPERATIONS });
+      const res = await bearerPost('/api/custody/broadcast', token, {
+      operations: VALID_OPERATIONS,
+      fresh_auth_proof: await mintSessionProof(),
+    });
       expect(res.status).toBe(500);
       expect(res.body.error.code).toBe('INTERNAL_ERROR');
       expect(res.body.error.message).toBe('Failed to broadcast transaction');
@@ -367,7 +401,10 @@ describe('BE-BRIDGE-CUSTODY-BROADCAST-DISCRIMINATION — /api/custody/broadcast 
     });
     try {
       const token = bearerFor(USERNAME, 'light');
-      const res = await bearerPost('/api/custody/broadcast', token, { operations: VALID_OPERATIONS });
+      const res = await bearerPost('/api/custody/broadcast', token, {
+      operations: VALID_OPERATIONS,
+      fresh_auth_proof: await mintSessionProof(),
+    });
       expect(res.status).toBe(500);
       expect(res.body.error.code).toBe('INTERNAL_ERROR');
       expect(res.body.error.message).toBe('Failed to broadcast transaction');
@@ -412,7 +449,10 @@ describe('BE-BRIDGE-CUSTODY-BROADCAST-DISCRIMINATION — /api/custody/broadcast 
     decryptKeyMock.mockReturnValueOnce('not-a-valid-wif-blob');
     try {
       const token = bearerFor(USERNAME, 'light');
-      const res = await bearerPost('/api/custody/broadcast', token, { operations: VALID_OPERATIONS });
+      const res = await bearerPost('/api/custody/broadcast', token, {
+      operations: VALID_OPERATIONS,
+      fresh_auth_proof: await mintSessionProof(),
+    });
       expect(res.status).toBe(500);
       expect(res.body.error.code).toBe('INTERNAL_ERROR');
       expect(res.body.error.message).toBe('Failed to broadcast transaction');
@@ -460,7 +500,10 @@ describe('BE-BRIDGE-CUSTODY-BROADCAST-DISCRIMINATION — per-attempt audit log',
     const infoSpy = vi.spyOn(logger, 'info').mockImplementation(() => undefined as never);
     try {
       const token = bearerFor(USERNAME, 'light');
-      const res = await bearerPost('/api/custody/broadcast', token, { operations: VALID_OPERATIONS });
+      const res = await bearerPost('/api/custody/broadcast', token, {
+      operations: VALID_OPERATIONS,
+      fresh_auth_proof: await mintSessionProof(),
+    });
       expect(res.status).toBe(200);
       const matchingCall = infoSpy.mock.calls.find((call) => {
         const ctx = call[0] as Record<string, unknown> | undefined;
@@ -490,7 +533,10 @@ describe('BE-BRIDGE-CUSTODY-BROADCAST-DISCRIMINATION — per-attempt audit log',
     try {
       sendOperationsMock.mockRejectedValueOnce(new MockBroadcastTimeoutError(30_000));
       const token = bearerFor(USERNAME, 'light');
-      const res = await bearerPost('/api/custody/broadcast', token, { operations: VALID_OPERATIONS });
+      const res = await bearerPost('/api/custody/broadcast', token, {
+      operations: VALID_OPERATIONS,
+      fresh_auth_proof: await mintSessionProof(),
+    });
       expect(res.status).toBe(504);
       const matchingCall = warnSpy.mock.calls.find((call) => {
         const ctx = call[0] as Record<string, unknown> | undefined;
@@ -513,7 +559,10 @@ describe('BE-BRIDGE-CUSTODY-BROADCAST-DISCRIMINATION — per-attempt audit log',
     try {
       sendOperationsMock.mockRejectedValueOnce(new Error('chain rejection: missing_posting_auth'));
       const token = bearerFor(USERNAME, 'light');
-      const res = await bearerPost('/api/custody/broadcast', token, { operations: VALID_OPERATIONS });
+      const res = await bearerPost('/api/custody/broadcast', token, {
+      operations: VALID_OPERATIONS,
+      fresh_auth_proof: await mintSessionProof(),
+    });
       expect(res.status).toBe(502);
       const matchingCall = warnSpy.mock.calls.find((call) => {
         const ctx = call[0] as Record<string, unknown> | undefined;

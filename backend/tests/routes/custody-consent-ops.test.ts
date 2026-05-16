@@ -573,7 +573,28 @@ describe.skipIf(!dbReachable)('Round-3 BACKEND-COAUTHOR-TRUST-MODEL — custody 
       expect(res.body.error.details?.reason).toBe('username_mismatch');
     });
 
-    it('non-consent op (vote) does NOT require fresh-auth — no regression', async () => {
+    // BACKEND-CUSTODY-BROADCAST-ORCID-FRESH-AUTH: non-consent ops now also
+    // require a fresh-auth proof (session-kind or consent_op-kind via the
+    // cross-kind accept). Pre-change, only the consent ops gated; the
+    // non-consent surface was JWT-only, violating ARCH.md § 6.5 invariant
+    // #1. This test is renamed and rewritten to pin the new contract.
+    it('non-consent op (vote) WITH session-kind fresh-auth proof → 200', async () => {
+      const { issueSessionFreshAuthToken } = await import('../../src/lib/fresh-auth.js');
+      const proof = await issueSessionFreshAuthToken(ALICE, 'password');
+      const res = await request(app)
+        .post('/api/custody/broadcast')
+        .set('Authorization', bearerFor(ALICE))
+        .send({
+          fresh_auth_proof: proof.token,
+          operations: [
+            ['vote', { voter: ALICE, author: 'someauthor', permlink: 'somepermlink', weight: 10000 }],
+          ],
+        });
+      expect(res.status).toBe(200);
+      expect(res.body.data.tx_id).toBe('consent-op-tx-id');
+    });
+
+    it('non-consent op (vote) WITHOUT fresh-auth proof → 401 FRESH_AUTH_REQUIRED', async () => {
       const res = await request(app)
         .post('/api/custody/broadcast')
         .set('Authorization', bearerFor(ALICE))
@@ -582,8 +603,9 @@ describe.skipIf(!dbReachable)('Round-3 BACKEND-COAUTHOR-TRUST-MODEL — custody 
             ['vote', { voter: ALICE, author: 'someauthor', permlink: 'somepermlink', weight: 10000 }],
           ],
         });
-      expect(res.status).toBe(200);
-      expect(res.body.data.tx_id).toBe('consent-op-tx-id');
+      expect(res.status).toBe(401);
+      expect(res.body.error.code).toBe('FRESH_AUTH_REQUIRED');
+      expect(res.body.error.details?.reason).toBe('missing');
     });
 
     it('multiple consent ops in one bundle → 400 MULTIPLE_CONSENT_OPS (round-4 hold #1)', async () => {
