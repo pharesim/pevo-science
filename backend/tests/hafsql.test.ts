@@ -654,12 +654,19 @@ describe('excludeSelfReviewWhere behavioral matrix (real Postgres, synthetic row
  * full reputation cycle's `user_papers` + `paper_latest_votes` chain with
  * malformed-authors data per shape per test is impractical; the assertion
  * (cascade-fail defense + admit-set shape) is exactly what the carve-out
- * is for. The real-path companion is the parity-invariant test in
- * `review-parity-invariant.test.ts` exercising the integrated
- * `paper_resolved_votes` shape against well-formed HAF rows.
+ * is for. No real-path companion exists for `paper_resolved_votes` — the
+ * sibling `review-parity-invariant.test.ts` covers the `paper_reviews`
+ * CTE (a different code path), NOT `paper_resolved_votes`. This synthetic-
+ * VALUES test is the load-bearing coverage for `paper_resolved_votes`'s
+ * cascade-fail defense; a future task may add an integrated real-HAF
+ * companion if a corpus of malformed-authors papers becomes seedable.
  */
 describe('paper_resolved_votes NOT EXISTS subquery cascade-fail defense (real Postgres, synthetic rows)', () => {
-  it.skipIf(!isHafConfigured())('does not throw on malformed pevo.authors and admits the expected voters', { timeout: 30_000 }, async (ctx) => {
+  // Note: this test uses synthetic VALUES() against the app Postgres pool —
+  // it does NOT query HAF. Gating on `isHafConfigured()` would skip on
+  // HAF-flake (the most common flake mode). Gate only on getPool() being
+  // available; if app Postgres is up, the test runs.
+  it('does not throw on malformed pevo.authors and admits the expected voters', { timeout: 30_000 }, async (ctx) => {
     const pool = getPool();
     if (!pool) {
       ctx.skip('no pool available');
@@ -762,5 +769,100 @@ describe('paper_resolved_votes NOT EXISTS subquery cascade-fail defense (real Po
     const admitted2 = result2.rows.map((r) => r.voter as string).sort();
     // alice excluded (paper author), bob excluded (named co-author), carol admitted.
     expect(admitted2).toEqual(['carol']);
+  });
+});
+
+/**
+ * Round-4 hold #1: pin the cascade-fail defense at `citing_papers` CTE in
+ * `reputation.ts`. The CTE uses `CROSS JOIN LATERAL jsonb_array_elements
+ * (citing.json_metadata -> $3 -> 'citations')` to walk the citations array.
+ * Postgres evaluates LATERAL BEFORE the WHERE clause, so a pre-existing
+ * `WHERE jsonb_typeof(...) = 'array'` guard was a placebo — the SRF
+ * expanded first on every row regardless of the WHERE filter. A chain
+ * post broadcasting non-array `pevo.citations` would raise "cannot
+ * extract elements from a scalar" and cascade-fail the daily reputation
+ * cycle for every user. Fix: move the type-guard INTO the SRF argument
+ * via CASE-WHEN with `ELSE '[]'::jsonb` fallback.
+ *
+ * Carve-out clause-(c): synthetic-VALUES is justified because seeding the
+ * full reputation cycle's user_papers + citing-papers chain with
+ * malformed-citations data per shape per test is impractical; the
+ * assertion (cascade-fail defense + admit-set shape) is exactly what the
+ * carve-out is for. No real-path companion exists for `citing_papers` —
+ * this synthetic-VALUES test is the load-bearing coverage for the CTE's
+ * cascade-fail defense.
+ *
+ * See conventions:
+ *   - pg-cross-join-lateral-where-guard-fires-after-srf-2026-05-16
+ *   - pg-jsonb-null-vs-sql-null-use-jsonb-typeof-2026-05-12
+ */
+describe('citing_papers CROSS JOIN LATERAL cascade-fail defense (real Postgres, synthetic rows)', () => {
+  // Synthetic VALUES() against app Postgres — no HAF queries. Gate on
+  // getPool() availability rather than isHafConfigured().
+  it('does not throw on malformed pevo.citations and yields the expected citation rows', { timeout: 30_000 }, async (ctx) => {
+    const pool = getPool();
+    if (!pool) {
+      ctx.skip('no pool available');
+      return;
+    }
+
+    // Mirror of the production CTE's CROSS JOIN LATERAL shape at
+    // reputation.ts:citing_papers. Synthetic input substitutes a one-row
+    // `citing` relation with controlled json_metadata so we exercise the
+    // CASE-WHEN array guard at the SRF argument position.
+    const lateralShape = `
+      CROSS JOIN LATERAL jsonb_array_elements(
+        CASE WHEN jsonb_typeof(citing.json_metadata -> $1 -> 'citations') = 'array'
+             THEN citing.json_metadata -> $1 -> 'citations'
+             ELSE '[]'::jsonb
+        END
+      ) AS cit
+    `;
+
+    // (1) Non-array top-level shapes. Without the guard, jsonb_array_elements
+    // would raise on each shape and crash the cycle. The CASE-WHEN
+    // short-circuits to '[]', yielding zero LATERAL rows (no citation
+    // edges emitted) without raising.
+    const nonArrayShapes: ReadonlyArray<readonly [string, string]> = [
+      ['citations_jsonb_null', JSON.stringify({ pevotest: { type: 'paper', citations: null } })],
+      ['citations_string', JSON.stringify({ pevotest: { type: 'paper', citations: 'foo' } })],
+      ['citations_integer', JSON.stringify({ pevotest: { type: 'paper', citations: 42 } })],
+      ['citations_object', JSON.stringify({ pevotest: { type: 'paper', citations: { author: 'alice' } } })],
+    ];
+
+    for (const [shapeLabel, meta] of nonArrayShapes) {
+      const sql = `
+        WITH citing AS (SELECT 'someone'::text AS author, 'p1'::text AS permlink, $2::jsonb AS json_metadata)
+        SELECT (cit ->> 'author') AS cited_author
+        FROM citing
+        ${lateralShape}
+      `;
+      const result = await pool.query(sql, ['pevotest', meta]);
+      // Zero rows: the CASE-WHEN substituted '[]'::jsonb, so the SRF
+      // emitted nothing. The query did NOT raise.
+      expect(result.rows, `non-array shape: ${shapeLabel}`).toEqual([]);
+    }
+
+    // (2) Well-formed citations array. Control case pins that the guard
+    // doesn't over-exclude — the citation edges enumerate normally.
+    const wellFormed = JSON.stringify({
+      pevotest: {
+        type: 'paper',
+        citations: [
+          { author: 'alice', permlink: 'paper-a' },
+          { author: 'bob', permlink: 'paper-b' },
+        ],
+      },
+    });
+    const sql = `
+      WITH citing AS (SELECT 'someone'::text AS author, 'p1'::text AS permlink, $2::jsonb AS json_metadata)
+      SELECT (cit ->> 'author') AS cited_author
+      FROM citing
+      ${lateralShape}
+      ORDER BY cited_author
+    `;
+    const result = await pool.query(sql, ['pevotest', wellFormed]);
+    const cited = result.rows.map((r) => r.cited_author as string);
+    expect(cited).toEqual(['alice', 'bob']);
   });
 });

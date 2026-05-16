@@ -729,7 +729,12 @@ export function authorsWithSupersessionSelect(commentAlias: string, appTagParam:
       )
       ORDER BY a.ordinality
     )
-    FROM jsonb_array_elements(${commentAlias}.json_metadata -> ${appTagParam} -> 'authors') WITH ORDINALITY AS a(elem, ordinality)
+    FROM jsonb_array_elements(
+      CASE WHEN jsonb_typeof(${commentAlias}.json_metadata -> ${appTagParam} -> 'authors') = 'array'
+           THEN ${commentAlias}.json_metadata -> ${appTagParam} -> 'authors'
+           ELSE '[]'::jsonb
+      END
+    ) WITH ORDINALITY AS a(elem, ordinality)
     LEFT JOIN active_accreditations aa ON aa.account = (a.elem ->> 'hive')
   ), '[]'::jsonb)`;
 }

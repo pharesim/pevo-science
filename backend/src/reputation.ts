@@ -592,12 +592,33 @@ export async function computeReputationBatch(
         -- jsonb_array_elements raises "cannot extract elements from a scalar"
         -- at runtime and the entire daily reputation cycle cascade-fails for
         -- every user. Symmetric with the helper-level guard in
-        -- excludeSelfReviewWhere (BACKEND-SELF-REVIEW-EXCLUSION round-1 hold
-        -- #2; companion convention pg-jsonb-null-vs-sql-null-use-jsonb-typeof
-        -- -2026-05-12). The inner jsonb_typeof(a) = object guard mirrors
-        -- the helper round-2 hold #1 tightening so bare-string elements
-        -- (authors: [alice, bob]) do not admit a named-string co-author
-        -- as a non-self voter via a ->> hive returning NULL.
+        -- excludeSelfReviewWhere's EXISTS predicate (per
+        -- agents/docs/solutions/conventions/pg-jsonb-null-vs-sql-null-use-jsonb-typeof-2026-05-12.md).
+        --
+        -- The inner jsonb_typeof(a) = object guard is also a cascade-fail
+        -- defense -- NOT a co-author admission tightening. It prevents
+        -- jsonb_array_elements yields (which can be JSONB scalars when the
+        -- outer guard's []::jsonb fallback path is NOT taken; i.e., authors
+        -- IS an array but contains bare strings, null, or integers) from
+        -- reaching a ->> hive. The ->> operator on a JSONB scalar returns
+        -- NULL silently; NULL = plv.voter evaluates to NULL (not TRUE), the
+        -- EXISTS subquery yields 0 rows, and NOT EXISTS evaluates TRUE for
+        -- every voter -- falling back to the plv.voter != up.author first
+        -- conjunct (which still excludes the paper author).
+        --
+        -- What this guard does NOT do: it does NOT exclude bare-string
+        -- author entries from being admitted as non-self voters. A paper
+        -- broadcast with authors: [alice, bob] (strings, not objects with a
+        -- hive key) admits bob as a non-self voter -- bob's row falls
+        -- through to the second conjunct, the object filter rejects the
+        -- strings, EXISTS yields 0 rows, NOT EXISTS evaluates TRUE.
+        -- This is INTENTIONAL: per
+        -- agents/docs/solutions/conventions/pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28.md,
+        -- a PEvO authors[] entry is a well-formed object with a hive key,
+        -- not a free-text identity claim. Treating bare strings as
+        -- co-author identity would enable a denial-of-vote attack -- anyone
+        -- could broadcast authors: [target] to lock target out of voting
+        -- on the paper.
         SELECT plv.voter, plv.author, plv.permlink, plv.weight, plv.block_num
         FROM paper_latest_votes plv
         JOIN user_papers up ON up.author = plv.author AND up.permlink = plv.permlink
@@ -782,6 +803,16 @@ export async function computeReputationBatch(
 
       -- ═══ CITATIONS ═══
       citing_papers AS (
+        -- CASE-WHEN array guard at the SRF argument position. The prior
+        -- WHERE-clause jsonb_typeof on citations was a placebo: Postgres
+        -- evaluates CROSS JOIN LATERAL BEFORE the WHERE clause, so the
+        -- SRF expands on every input row regardless of the WHERE filter.
+        -- A chain post broadcasting pevo.citations as null, string,
+        -- integer, or object would raise cannot extract elements from a
+        -- scalar and cascade-fail the daily reputation cycle for every
+        -- user. See pg-cross-join-lateral-where-guard-fires-after-srf
+        -- -2026-05-16 (companion: pg-jsonb-null-vs-sql-null-use-jsonb
+        -- -typeof-2026-05-12).
         SELECT
           citing.author AS citing_author,
           citing.permlink AS citing_permlink,
@@ -791,12 +822,14 @@ export async function computeReputationBatch(
           COALESCE((cit ->> 'reputation_relevant')::boolean, true) AS reputation_relevant
         FROM ${T.comments} citing
         CROSS JOIN LATERAL jsonb_array_elements(
-          citing.json_metadata -> $3 -> 'citations'
+          CASE WHEN jsonb_typeof(citing.json_metadata -> $3 -> 'citations') = 'array'
+               THEN citing.json_metadata -> $3 -> 'citations'
+               ELSE '[]'::jsonb
+          END
         ) AS cit
         WHERE citing.parent_author = '' AND citing.parent_permlink = $3
           AND (citing.json_metadata -> $3 ->> 'type') = 'paper'
           AND citing.json_metadata ->> 'app' LIKE $4
-          AND jsonb_typeof(citing.json_metadata -> $3 -> 'citations') = 'array'
           AND citing.author = ANY($2::text[])
           AND (cit ->> 'author') IN (SELECT username FROM target_users)
           AND COALESCE((cit ->> 'reputation_relevant')::boolean, true) = true

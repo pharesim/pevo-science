@@ -529,3 +529,27 @@ Architect preference: (a) — the synthetic-VALUES test plus item 1's behavioral
 ### Re-review signal
 
 When items 1, 2, 3, 4, 5, 6 land, `git mv` this file from `tasks/pending/` back to `tasks/review/` per `feedback_task_mv_to_review_after_each_round`. Use bare `backend:` or `backend(<scope>):` commit prefixes so the zone-audit hook fires. The architect's next review pass scopes `/ce-code-review` to commits since `ba95a4a`. Items can fan out independently — natural groupings: item 1 (citing_papers guard + behavioral test) at `reputation.ts` + `hafsql.test.ts`; item 2 (authors helper guard) at `hafsql.ts`; items 3 + 4 (comment fixes) at the same two files; item 5 (skip-if change) at `hafsql.test.ts`; item 6 (comment rewrite) at `reputation.ts`. Items 4 + 6 both touch `reputation.ts` comments so bundle them.
+
+## Backend re-review signal (2026-05-16, round-5, worktree-agent-aaf35ed4daa8c8792)
+
+All 6 round-4 hold items addressed in a single commit. Parent re-took over after worker subagent was killed before running tsc/lint; also fixed JS template-literal terminator bugs introduced by backticks inside SQL comments at the new and rewritten reputation.ts comment blocks.
+
+**Items by disposition:**
+
+- **Item 1 [P1]** — `backend/src/reputation.ts` `citing_papers` CTE migrated to CASE-WHEN at the SRF argument position; redundant WHERE-clause `jsonb_typeof = 'array'` guard removed. New behavioral test in `backend/tests/hafsql.test.ts` (`citing_papers CROSS JOIN LATERAL cascade-fail defense` describe block): synthetic VALUES + real Postgres, 1 spec covering 4 non-array shapes (jsonb null, string, integer, object) + well-formed control. Test does NOT raise on malformed shapes; admit set matches well-formed expectation.
+- **Item 2 [P1]** — `backend/src/hafsql.ts` `authorsWithSupersessionSelect` (line 732) wrapped its `jsonb_array_elements(... -> 'authors')` argument in CASE-WHEN at SRF arg position. The `WITH ORDINALITY` clause + LEFT JOIN on `aa.account = a.elem ->> 'hive'` preserved unchanged. Same shape as the helper-level guard in `excludeSelfReviewWhere`.
+- **Item 3 [P2]** — Carve-out clause-(c) header at `backend/tests/hafsql.test.ts` paper_resolved_votes describe block rewritten. Acknowledges no real-path companion exists for `paper_resolved_votes` (the sibling `review-parity-invariant.test.ts` covers `paper_reviews`, a different CTE) and that the synthetic-VALUES test is the load-bearing coverage. Architect-preferred option (a).
+- **Item 4 [P2]** — Block comment at `backend/src/reputation.ts:597-621` (paper_resolved_votes CTE) rewritten. The round-4 misframing ("the inner jsonb_typeof = object guard tightens admission") replaced with the corrected framing (cascade-fail defense; bare-string co-author entries ARE admitted as non-self voters because authors[] is a set of well-formed objects per `pevo-object-identity-is-author-vouching-not-metadata-claim-2026-04-28`, not a free-text identity claim — treating bare strings as identity would enable denial-of-vote attacks via malformed-metadata broadcast).
+- **Item 5 [P2]** — `it.skipIf(!isHafConfigured())` on the paper_resolved_votes describe block at `backend/tests/hafsql.test.ts` dropped in favor of plain `it()` + per-spec `getPool()` null-check (`ctx.skip('no pool available')`). Test uses synthetic VALUES + app Postgres only — no HAF queries — so gating on HAF reachability skipped on the most common flake mode. Now only skips when app Postgres itself is unreachable.
+- **Item 6 [P3]** — `backend/src/reputation.ts:595` task-slug citation (`BACKEND-SELF-REVIEW-EXCLUSION round-1 hold #2`) replaced with the shipped code symbol + solution-doc path: `excludeSelfReviewWhere's EXISTS predicate (per agents/docs/solutions/conventions/pg-jsonb-null-vs-sql-null-use-jsonb-typeof-2026-05-12.md)`. Survives archive per `task-slug-citations-in-comments-go-stale-on-archive-2026-05-15.md`.
+
+**Verification gates:**
+
+- `npx tsc --noEmit` clean.
+- `npm run lint` clean (only the 2 pre-existing `@typescript-eslint/no-explicit-any` warnings in `seed-phrase.ts`, unrelated).
+- Targeted vitest deferred to the parent's serialized run after all in-flight backend tasks merge back.
+
+**Notes:**
+
+- The initial worker edit on reputation.ts's two new comment blocks (paper_resolved_votes inner-guard rationale at lines ~597-621 and citing_papers cascade-fail framing at lines ~806-815) wrapped SQL identifier names and JSON-shape literals in backticks, prematurely terminating the JS template literal that wraps the SQL string. Parent dropped the backticks in favor of bare identifier names (matching the convention established by the round-3 fix on item #8 of this same task).
+- No `git mv` from `pending/` to `review/` was performed in this worktree; parent serializes that after all in-flight workers merge.
