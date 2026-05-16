@@ -78,3 +78,35 @@ All 9 hold items landed across 3 commits. Worker rebased onto main before applyi
 - Item 9 (P3, undefined-orcid-in-directory test) — `820a710`. Added: (a) `loadAccreditedDirectory` keeps a row without `orcid` indexable; (b) `applyHiveChangePrefill` and `applyAccreditedPrefill` leave a typed orcid intact when the matched directory row has no orcid (documented semantic: don't blank user input).
 
 Worker ran 109 tests across the three target unit files; all pass. No Playwright run for this task (no E2E scope).
+
+## Architect re-review (2026-05-16, round-2) — HELD PENDING FIXES:
+
+`/ce-code-review` ran on commits `ae7e853`, `820a710`, `eb1416b`. 7 personas dispatched: correctness, testing, maintainability, project-standards, learnings, previous-comments, julik-frontend-races (`ce-agent-native-reviewer` skipped per PEvO conventions). All 9 round-1 hold items VERIFIED-FIXED by the previous-comments reviewer; round-2 hold items below are surfaced by re-review of the round-2 diff itself, not unaddressed prior feedback.
+
+3 items block archive.
+
+### Items to address
+
+**1. (P2) `pages-edit.test.js` integration block missing the "stay-accredited rewrites ORCID" transition test.** The architect's round-1 hold item 3 enumerated 8 cases for each page's integration block. `pages-publish.test.js` covers all 8 (line 563 has the alice→bob stay-accredited transition asserting ORCID rewrites). `pages-edit.test.js` covers 7 of the 8 — it has (a) accredited prefill+lock, (b) non-accredited free input, (item-1) transition-out clearing, (item-9) no-orcid-in-record, (item-2) reapplication preserves typed, (fill-blank) reapplication fills blank, (teardown) bail, (existing-disabled) edit-only asymmetry pin — but no `comp.updateNewCoAuthor(0, 'hive', 'bob')` after an initial `'alice'` to verify the stay-accredited rewrite. Bob is in the directory fixture (line 780) but never used in a transition assertion. Cross-surface parity break: a regression in `applyHiveChangePrefill`'s case-3 logic (stay-accredited rewrites) would be caught by `pages-publish.test.js` but pass silently in `pages-edit.test.js`. (testing, conf 95)
+
+   Fix: add a `'updateNewCoAuthor: stay-accredited hive change rewrites ORCID'` test in `frontend/tests/unit/pages-edit.test.js` mirroring the publish-side test at line 563. ~10 lines.
+
+**2. (P2) `filterAccreditedByPrefix` exported from `frontend/src/lib/accredited-directory.js:57` but has zero consumers.** Grep across all of `frontend/src/` confirms no file imports `filterAccreditedByPrefix`. Both pages drive their `<datalist>` element directly from `Object.values(accreditedDirectory)` in the Alpine template — no JS-side prefix filter is wired or planned. Speculative API surface in a brand-new shared module, contra root CLAUDE.md "Don't add features, refactor, or introduce abstractions beyond what the task requires." (maintainability, conf 75)
+
+   Fix: delete `filterAccreditedByPrefix` from `accredited-directory.js`. If a future custom autocomplete dropdown beyond the native datalist needs prefix filtering, add it then with a real call site.
+
+**3. (P2) `loadAccreditedDirectory` post-rejection retry semantic is undocumented and untested.** `frontend/src/lib/accredited-directory.js:26-43`. The `finally` block unconditionally sets `inFlight = null`; on the rejection path, `cache` is never assigned. Concurrent callers coalesce correctly (item 8 test covers this) — but a caller arriving immediately after the rejection resolves sees `inFlight === null` and `cache === null` and fires a fresh fetch. The module silently implements "always retry after failure." Probably intentional (one-time network blip should not poison the directory permanently), but undocumented and untested. A future maintainer could misread "no cache write on reject" as a bug and "fix" it by assigning `cache = {}` on rejection, converting the silent retry into permanent poisoning until reload. (julik-frontend-races, conf 80)
+
+   Fix: (a) add an inline comment in the catch block documenting that omitting `cache` assignment is intentional (allows retry after transient failure); (b) add one test to `lib-accredited-directory.test.js` that, after the rejection resolves, calls `loadAccreditedDirectory()` again and asserts `fetchAccreditations` was called twice total.
+
+### Items dismissed during architect triage
+
+- **Carve-out header at `frontend/tests/unit/lib-accredited-directory.test.js:20` cites `publish.spec.ts` (wrong extension) + false coverage claim (testing + correctness + project-standards, conf 65-100).** Clause-c IS substantively met (the round-2 work landed `coauthor-accredited-prefill.spec.js` as the real-path companion via the filed follow-up task). The pointer in the comment is wrong, but the convention is satisfied. Accepted as cosmetic.
+- **`applyAccreditedPrefill` item-9 test asserts empty-to-empty (testing, conf 90).** Dismissed via design pushback during architect triage: the user clarified the supersession rule (typed-ORCID-valid-for-non-hive co-authors; on-chain accredited ORCID supersedes typed when hive is bound). Hardening test coverage on the empty-to-empty path that is downstream of an unsettled spec is preemptive. The supersession spec is captured in a separate new task at `tasks/pending/architect-orcid-typed-vs-accredited-supersession-spec.md`.
+- **Alpine reactivity gap on in-place `applyAccreditedPrefill` mutation (julik-frontend-races, conf 75).** Spawned as a separate investigation task at `tasks/pending/ui-applyaccreditedprefill-reactivity-verify.md` — needs empirical verification (throttle `/api/accreditations`, observe UI) before applying a `.slice()` workaround. Not bundled into this hold round because the right move depends on the investigation outcome.
+
+### Architect signal
+
+After landing items 1-3, `git mv` this file back to `tasks/review/`. I'll re-review the new diff scoped to commits since this hold block was written.
+
+Anchor: items 1, 2, 3 are independent small fixes; they can land in one commit or three. Item 2 (delete dead export) is trivial; item 1 (mirror test) is mechanical; item 3 (comment + test) closes a documentation gap on the new shared lib.
