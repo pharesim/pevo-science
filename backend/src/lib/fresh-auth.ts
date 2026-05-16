@@ -67,12 +67,23 @@ export type FreshAuthMechanism = 'password' | 'orcid';
 
 /** Round-5 hold #3: action component of the per-op target binding. The
  *  fresh-auth proof binds to the (action, root_author, root_permlink)
- *  triple of the consent op being authorized. Without this binding, a
- *  compromised SPA could swap action/paper between the user's
- *  authentication ceremony and the broadcast that consumes the proof
+ *  triple of the op being authorized. Without this binding, a
+ *  compromised SPA could swap action/target between the user's
+ *  authentication ceremony and the route that consumes the proof
  *  ("substitute author_resign on paper Y for the author_accept on paper X
- *  the user thought they authorized"). */
-export type FreshAuthTargetAction = 'author_accept' | 'author_resign';
+ *  the user thought they authorized").
+ *
+ *  Round-6 of BACKEND-SETTINGS-SET-PASSWORD-FRESH-AUTH:
+ *  `'set_password'` joins the consent-op actions as a non-broadcast
+ *  critical action (transitions state C → state B per ARCHITECTURE.md
+ *  § 6.3, requiring fresh ORCID re-auth per § 6.4). For `'set_password'`
+ *  there is no paper involved; the binding fields used are
+ *  `root_author = <username>` and `root_permlink = ''`. The username
+ *  binding via `root_author` plus the action discriminator keeps the
+ *  resulting target hash collision-free against any consent-op proof
+ *  (consent ops require non-empty `root_permlink` at the route layer).
+ *  See `routes/orcid.ts` `/start` and `routes/settings.ts` `/set-password`. */
+export type FreshAuthTargetAction = 'author_accept' | 'author_resign' | 'set_password';
 
 /** Round-5 hold #3: shape of the per-op target the fresh-auth proof
  *  binds to. The triple is reduced to a SHA-256 hash at issuance time
@@ -83,6 +94,24 @@ export interface FreshAuthTarget {
   action: FreshAuthTargetAction;
   root_author: string;
   root_permlink: string;
+}
+
+/** Round-6 of BACKEND-SETTINGS-SET-PASSWORD-FRESH-AUTH: helper that builds
+ *  the canonical `FreshAuthTarget` for the `/set-password` flow. The target
+ *  binds the proof to the username so a proof minted for user A cannot
+ *  authorize a set-password on user B (the `consumeFreshAuthToken` username
+ *  check already enforces this; the target binding is a defense-in-depth
+ *  fold that also kills swap-of-action substitution attacks at the consume
+ *  side). `root_permlink` is intentionally empty: no paper is involved in
+ *  set-password, and the route layer for consent ops forbids empty
+ *  `root_permlink` strings, so this hash cannot collide with any
+ *  consent-op proof. */
+export function setPasswordFreshAuthTarget(username: string): FreshAuthTarget {
+  return {
+    action: 'set_password',
+    root_author: username,
+    root_permlink: '',
+  };
 }
 
 /** Round-4 hold #8: type-guard for the storage `mechanism` field. The

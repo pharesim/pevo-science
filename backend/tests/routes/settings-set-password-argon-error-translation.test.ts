@@ -56,6 +56,10 @@ const {
   ShuttingDownError,
   ArgonAbortError,
 } = await import('../../src/lib/argon2-semaphore.js');
+const {
+  issueFreshAuthToken,
+  setPasswordFreshAuthTarget,
+} = await import('../../src/lib/fresh-auth.js');
 
 const app = createApp();
 
@@ -75,7 +79,21 @@ function seedSetPasswordAccount() {
   });
 }
 
-const ROUTE_BODY = { password: 'AnyPassword1' };
+// Per BACKEND-SETTINGS-SET-PASSWORD-FRESH-AUTH the route now requires a
+// valid ORCID-mechanism fresh-auth proof before it pays the argon2 hash.
+// Mint one inline per case: this test mocks `redis.js` to force the
+// in-memory fallback tier of the fresh-auth primitive, so issuance writes
+// to the memStore backup and consume reads it. The proof binding
+// (username + per-user target hash) is enforced; this is the canonical
+// shape the route validates against.
+async function mintProof(username: string): Promise<string> {
+  const issued = await issueFreshAuthToken(
+    username,
+    'orcid',
+    setPasswordFreshAuthTarget(username),
+  );
+  return issued.token;
+}
 
 describe('POST /api/settings/set-password — argon2 error → HTTP translation', () => {
   it('ArgonQueueFullError → 503 SERVICE_UNAVAILABLE + Retry-After: 5 + generic body', async () => {
@@ -84,10 +102,12 @@ describe('POST /api/settings/set-password — argon2 error → HTTP translation'
     mockRunWithArgon2Slot.mockReset();
     mockRunWithArgon2Slot.mockRejectedValueOnce(new ArgonQueueFullError());
 
+    const username = 'setpw-queuefull';
+    const proof = await mintProof(username);
     const res = await request(app)
       .post('/api/settings/set-password')
-      .set('Authorization', authHeader('setpw-queuefull'))
-      .send(ROUTE_BODY);
+      .set('Authorization', authHeader(username))
+      .send({ password: 'AnyPassword1', fresh_auth_proof: proof });
 
     assert503QueueFull(res);
   });
@@ -98,10 +118,12 @@ describe('POST /api/settings/set-password — argon2 error → HTTP translation'
     mockRunWithArgon2Slot.mockReset();
     mockRunWithArgon2Slot.mockRejectedValueOnce(new ShuttingDownError());
 
+    const username = 'setpw-shutdown';
+    const proof = await mintProof(username);
     const res = await request(app)
       .post('/api/settings/set-password')
-      .set('Authorization', authHeader('setpw-shutdown'))
-      .send(ROUTE_BODY);
+      .set('Authorization', authHeader(username))
+      .send({ password: 'AnyPassword1', fresh_auth_proof: proof });
 
     assert503Shutdown(res);
   });
@@ -112,10 +134,12 @@ describe('POST /api/settings/set-password — argon2 error → HTTP translation'
     mockRunWithArgon2Slot.mockReset();
     mockRunWithArgon2Slot.mockRejectedValueOnce(new ArgonAbortError());
 
+    const username = 'setpw-abort';
+    const proof = await mintProof(username);
     const reqPromise = request(app)
       .post('/api/settings/set-password')
-      .set('Authorization', authHeader('setpw-abort'))
-      .send(ROUTE_BODY)
+      .set('Authorization', authHeader(username))
+      .send({ password: 'AnyPassword1', fresh_auth_proof: proof })
       .timeout({ deadline: 250 });
 
     await assertArgon2AbortIsSilent(reqPromise);

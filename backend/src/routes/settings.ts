@@ -15,6 +15,11 @@ import { runWithArgon2Slot } from '../lib/argon2-semaphore.js';
 import { handleArgonError, ARGON_HANDLED } from '../lib/argon2-error-handler.js';
 import { requestAbortSignal } from '../lib/request-abort-signal.js';
 import { hashEmailForLogs, maskEmail } from '../lib/log-pii.js';
+import {
+  computeFreshAuthTargetHash,
+  consumeFreshAuthToken,
+  setPasswordFreshAuthTarget,
+} from '../lib/fresh-auth.js';
 
 const readLimiter = rateLimit({ name: 'settings-read', windowMs: 60_000, max: 30, keyFn: byIp });
 const writeLimiter = rateLimit({ name: 'settings-write', windowMs: 60_000, max: 10, keyFn: byIp });
@@ -362,6 +367,18 @@ router.delete('/email', writeLimiter, verifyHiveSignature, async (req: Request, 
 // Auth: verifyHiveSignature (Keychain) or Bearer JWT for light accounts.
 // This is the "set from null" operation; rotating an existing password is a
 // separate flow (not yet implemented) that must require the current password.
+//
+// Re-auth contract (BACKEND-SETTINGS-SET-PASSWORD-FRESH-AUTH, see
+// ARCHITECTURE.md § 6.4): JWT alone is not sufficient. The request body MUST
+// carry a `fresh_auth_proof` minted via `POST /api/orcid/start { mode:
+// 'fresh_auth', action: 'set_password' }` followed by `POST
+// /api/orcid/callback`. The proof's `mechanism` MUST be `'orcid'`: a state-C
+// account (null password_hash) has no password to base a password-mechanism
+// proof on, so a password-mechanism proof on this branch is structurally
+// invalid. Closes the JWT-only escalation path described in
+// ARCHITECTURE.md § 6.5 invariant #1 (a stolen JWT would otherwise let an
+// attacker set a password they know, then chain `/custody/fresh-auth` →
+// `/custody/broadcast` for full account takeover).
 // ─────────────────────────────────────────────────────────────
 router.post('/set-password', writeLimiter, verifyHiveSignature, async (req: Request, res: Response) => {
   const abortSignal = requestAbortSignal(req, res);
@@ -406,6 +423,60 @@ router.post('/set-password', writeLimiter, verifyHiveSignature, async (req: Requ
         403,
         'ORCID_REQUIRED',
         'Set-password requires a linked ORCID account',
+      );
+    }
+
+    // Fresh ORCID re-auth gate (see ARCHITECTURE.md § 6.4 + § 6.5
+    // invariant #1). Runs AFTER eligibility checks so the rejection path
+    // doesn't widen the oracle surface beyond what an attacker holding a
+    // valid JWT can already probe (state-C detection is already available
+    // via `GET /api/settings/email`'s `hasPassword` field for the
+    // JWT-holder). The check runs BEFORE the argon2 hash so a missing /
+    // bad proof short-circuits before paying argon2 wall-time.
+    const rawProof = (req.body as { fresh_auth_proof?: unknown })?.fresh_auth_proof;
+    const proofToken = typeof rawProof === 'string' ? rawProof : undefined;
+    const expectedTargetHash = computeFreshAuthTargetHash(
+      setPasswordFreshAuthTarget(username),
+    );
+    const proofResult = await consumeFreshAuthToken(proofToken, username, expectedTargetHash);
+    if (!proofResult.valid) {
+      logger.warn(
+        {
+          event: 'settings.set_password.fresh_auth_rejected',
+          route: 'settings.set-password',
+          username,
+          reason: proofResult.reason,
+        },
+        'set-password rejected — fresh-auth proof invalid',
+      );
+      return sendError(
+        res,
+        401,
+        'FRESH_AUTH_REQUIRED',
+        'Re-authentication required. Complete the ORCID fresh-auth challenge and retry.',
+        { reason: proofResult.reason },
+      );
+    }
+    // Closed-default per ARCHITECTURE.md § 6.4: state C has no registered
+    // password factor, so a password-mechanism proof here is structurally
+    // invalid (would only arise from misuse or a bug elsewhere). Reject
+    // 401 — the proof is consumed-but-not-honored.
+    if (proofResult.mechanism !== 'orcid') {
+      logger.warn(
+        {
+          event: 'settings.set_password.fresh_auth_wrong_mechanism',
+          route: 'settings.set-password',
+          username,
+          mechanism: proofResult.mechanism,
+        },
+        'set-password rejected — fresh-auth proof has unexpected mechanism',
+      );
+      return sendError(
+        res,
+        401,
+        'FRESH_AUTH_REQUIRED',
+        'Re-authentication required. Complete the ORCID fresh-auth challenge and retry.',
+        { reason: 'wrong_mechanism' },
       );
     }
 

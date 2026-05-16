@@ -6,6 +6,10 @@ import { createApp } from '../../src/app.js';
 import { getAppPool } from '../../src/app-db.js';
 import { config } from '../../src/config.js';
 import { clearRateLimitKeys } from '../support/redis-helpers.js';
+import {
+  issueFreshAuthToken,
+  setPasswordFreshAuthTarget,
+} from '../../src/lib/fresh-auth.js';
 
 // SEC-004-BE: Tests for POST /api/settings/set-password.
 // Real verifyHiveSignature (Bearer JWT path) — no MOCK_VERIFY_SIGNATURE.
@@ -108,10 +112,17 @@ describe.skipIf(!dbReachable)('POST /api/settings/set-password', () => {
 
   it('sets password on null-hash account and password login then works', async () => {
     const newPw = 'FreshPassword1';
+    // Fresh-auth gate per BACKEND-SETTINGS-SET-PASSWORD-FRESH-AUTH:
+    // ORCID-mechanism proof bound to the per-user set-password target.
+    const issued = await issueFreshAuthToken(
+      NULL_USER,
+      'orcid',
+      setPasswordFreshAuthTarget(NULL_USER),
+    );
     const res = await request(app)
       .post('/api/settings/set-password')
       .set('Authorization', `Bearer ${bearer(NULL_USER)}`)
-      .send({ password: newPw });
+      .send({ password: newPw, fresh_auth_proof: issued.token });
     expect(res.status).toBe(200);
 
     const pool = getAppPool()!;
@@ -208,10 +219,15 @@ describe.skipIf(!dbReachable)('GET /api/settings/email — hasPassword flag', ()
     expect(before.status).toBe(200);
     expect(before.body.data.hasPassword).toBe(false);
 
+    const issued = await issueFreshAuthToken(
+      FLAG_USER,
+      'orcid',
+      setPasswordFreshAuthTarget(FLAG_USER),
+    );
     const setRes = await request(app)
       .post('/api/settings/set-password')
       .set('Authorization', `Bearer ${bearer(FLAG_USER)}`)
-      .send({ password: 'FlagPassword1' });
+      .send({ password: 'FlagPassword1', fresh_auth_proof: issued.token });
     expect(setRes.status).toBe(200);
 
     const after = await request(app)

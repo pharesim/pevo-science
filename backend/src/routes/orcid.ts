@@ -319,28 +319,44 @@ router.post('/start', startLimiter, async (req: Request, res: Response) => {
   // Round-5 hold #3: when mode === 'fresh_auth', the request body must
   // carry the per-op target. Closed-default at issuance: an SPA that
   // omits/malforms the target gets a 400, never a target-less proof.
+  //
+  // Round-6 of BACKEND-SETTINGS-SET-PASSWORD-FRESH-AUTH: the `set_password`
+  // action is non-broadcast (transitions state C → state B per
+  // ARCHITECTURE.md § 6.3) and has no paper. The target binds to the
+  // authenticated username via `root_author`; `root_permlink` is forced
+  // empty so the resulting hash cannot collide with any consent-op proof
+  // (consent ops require non-empty `root_permlink` at this layer).
   let freshAuthTarget: FreshAuthTarget | undefined;
   if (mode === 'fresh_auth') {
     const { action, root_author: rootAuthor, root_permlink: rootPermlink } = startParsed.data;
-    if (action !== 'author_accept' && action !== 'author_resign') {
+    if (action === 'set_password') {
+      // username is guaranteed set here: mode === 'fresh_auth' is in
+      // AUTHENTICATED_MODES, so authenticateRequest above bound `username`.
+      freshAuthTarget = {
+        action: 'set_password',
+        root_author: username!,
+        root_permlink: '',
+      };
+    } else if (action === 'author_accept' || action === 'author_resign') {
+      if (typeof rootAuthor !== 'string' || rootAuthor.length === 0) {
+        return sendError(res, 400, 'VALIDATION_ERROR', 'root_author is required');
+      }
+      if (typeof rootPermlink !== 'string' || rootPermlink.length === 0) {
+        return sendError(res, 400, 'VALIDATION_ERROR', 'root_permlink is required');
+      }
+      freshAuthTarget = {
+        action: action as FreshAuthTargetAction,
+        root_author: rootAuthor,
+        root_permlink: rootPermlink,
+      };
+    } else {
       return sendError(
         res,
         400,
         'VALIDATION_ERROR',
-        'action must be one of: author_accept, author_resign',
+        'action must be one of: author_accept, author_resign, set_password',
       );
     }
-    if (typeof rootAuthor !== 'string' || rootAuthor.length === 0) {
-      return sendError(res, 400, 'VALIDATION_ERROR', 'root_author is required');
-    }
-    if (typeof rootPermlink !== 'string' || rootPermlink.length === 0) {
-      return sendError(res, 400, 'VALIDATION_ERROR', 'root_permlink is required');
-    }
-    freshAuthTarget = {
-      action: action as FreshAuthTargetAction,
-      root_author: rootAuthor,
-      root_permlink: rootPermlink,
-    };
   }
 
   const state = crypto.randomBytes(16).toString('hex');

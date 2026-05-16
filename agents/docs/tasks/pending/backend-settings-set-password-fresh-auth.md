@@ -49,4 +49,14 @@ Reuse the existing fresh-auth primitive at `backend/src/lib/fresh-auth.ts` and t
 - `backend/src/lib/fresh-auth.ts` (proof-verification primitives)
 - Originating Group 3 review session: surfaced as F#19 during review of commit `36b3f49`, then confirmed during architect brainstorm 2026-05-16.
 
+## [TODO Architect] — API contract update for fresh-auth wire shape on set-password
+
+Backend implementation extended the existing fresh-auth primitive to cover the `set_password` non-broadcast action; the architect-owned contract docs need a matching update before this lands in `review/`. Changes implemented in code (so the contract author has the canonical wire shape):
+
+1. **`POST /api/orcid/start` — `action` field widened.** The body's `action` field now accepts a third value: `set_password` (in addition to `author_accept` and `author_resign`). When `action === 'set_password'`, `root_author` and `root_permlink` are NOT required in the request body — the backend synthesizes the target from the authenticated username (`root_author = <jwt subject>`, `root_permlink = ''`). The SPA does NOT need to send `root_author`/`root_permlink` for the set-password flow; it just sends `{ mode: 'fresh_auth', action: 'set_password' }` and completes the ORCID round-trip. Validation error message at the layer also widens: `'action must be one of: author_accept, author_resign, set_password'`. See `backend/src/routes/orcid.ts` (the `mode === 'fresh_auth'` block in the `/start` handler).
+2. **`POST /api/settings/set-password` — request body adds `fresh_auth_proof`.** Required field, single-use 64-hex token issued by the `mode='fresh_auth'` ORCID callback above. Missing or invalid proof → `401 FRESH_AUTH_REQUIRED` with `details.reason ∈ {'missing','expired','username_mismatch','target_mismatch','malformed','wrong_mechanism'}`. The route additionally rejects proofs whose `mechanism !== 'orcid'` (state C has no password to base a password-mechanism proof on; the only registered factor is ORCID per ARCHITECTURE.md § 6.4). The existing 200/400/403/409/401-stale-session behaviors are unchanged.
+3. **Library export added.** `backend/src/lib/fresh-auth.ts` now exports `setPasswordFreshAuthTarget(username): FreshAuthTarget`, the canonical target-binding helper used by both the orcid `/start` issuer and the settings `/set-password` consumer. The `FreshAuthTargetAction` union widens to include `'set_password'`. The target hash is collision-free against consent-op proofs because consent ops require non-empty `root_permlink` at the route layer.
+
+The contract docs to update are `agents/docs/api-contracts/settings.md` (for the set-password change) and `agents/docs/api-contracts/orcid.md` (for the start-body `action` widening). The error-shape envelope on the new 401 path matches the broadcast surface's `FRESH_AUTH_REQUIRED + details.reason` convention so contract changes are mechanical.
+
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
