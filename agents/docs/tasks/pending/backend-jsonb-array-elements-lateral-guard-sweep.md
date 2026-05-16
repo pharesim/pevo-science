@@ -81,3 +81,44 @@ Sites 3 + 4 add the same shape from scratch.
 - `agents/docs/solutions/conventions/pg-jsonb-null-vs-sql-null-use-jsonb-typeof-2026-05-12.md` — the canonical convention this task instantiates.
 - `agents/docs/solutions/conventions/defense-in-depth-canary-must-pin-each-layer-2026-05-07.md` — per-layer canary requirement.
 - `backend-self-review-exclusion-everywhere` round-4 hold items 1 + 2 (sibling cycle-cascade fixes).
+
+## Backend implementation signal (2026-05-16, worktree-agent-a63c3c89c4ff8ebf2)
+
+All 4 migration sites + audit landed. Parent re-took over after worker subagent was killed mid-flight (before the notification-queries canary file landed); the parent finished the notification-queries canary, fixed a JS template-literal terminator bug introduced by backticks inside SQL comments at the migrated profile.ts and stats.ts sites, and committed.
+
+**Sites migrated (WHERE-clause guard → CASE-WHEN at SRF argument position):**
+
+- `backend/src/routes/profile.ts` citations CTE — pre-fix WHERE-clause `jsonb_typeof = 'array'` (placebo, fires after LATERAL) replaced with CASE-WHEN at the `jsonb_array_elements(...)` argument; redundant WHERE clause removed.
+- `backend/src/routes/stats.ts` total_citations subquery — same shape, same fix.
+- `backend/src/notification-queries.ts` arm 6a CROSS JOIN LATERAL (formerly line 329) — pre-fix had NO guard at all; added CASE-WHEN at SRF arg.
+- `backend/src/notification-queries.ts` arm 6b CROSS JOIN LATERAL (formerly line 358) — same.
+
+**New behavioral canaries (synthetic VALUES + real Postgres, per carve-out clause-(c)):**
+
+- `backend/tests/routes/citations-lateral-guard-canary.test.ts` — covers profile.ts + stats.ts citations CTE shapes. 5 specs: 4 malformed-shape negatives (jsonb null, string, integer, object), 1 well-formed positive control, 1 mixed-batch (well-formed + malformed) regression guard.
+- `backend/tests/notification-queries-lateral-guard-canary.test.ts` — covers arm 6a + arm 6b shapes. 5 specs of the same structure as the citations canary.
+
+**Audit (per acceptance #3, full enumeration of `jsonb_array_elements` in `backend/src/`):**
+
+- `backend/src/hafsql.ts:371` (`excludeSelfReviewWhere` NOT EXISTS) → already correct, reference implementation.
+- `backend/src/hafsql.ts:732` (`authorsWithSupersessionSelect`) → OUT OF SCOPE; tracked by `backend-self-review-exclusion-everywhere` round-4 item 2.
+- `backend/src/reputation.ts:607` (`paper_resolved_votes` NOT EXISTS) → already correct (landed round-4 of sibling task).
+- `backend/src/reputation.ts:793` (`citing_papers` CTE CROSS JOIN LATERAL) → OUT OF SCOPE; tracked by `backend-self-review-exclusion-everywhere` round-5 item 1.
+- `backend/src/notification-queries.ts` arm 6a + arm 6b → MIGRATED in this task.
+- `backend/src/routes/profile.ts` citations CTE → MIGRATED.
+- `backend/src/routes/stats.ts` total_citations → MIGRATED.
+- `backend/src/routes/ipfs.ts:265` (`jsonb_array_elements_text` on `c.json_metadata -> 'image'`) → EXEMPT (different SRF on the IPFS pinner path; non-pevo-namespaced field; per-pinner blast radius rather than user read path).
+- `backend/src/ipfs-cleanup.ts:38` (same SRF as above) → EXEMPT, same disposition.
+
+The full audit is duplicated as a docblock comment at the top of `backend/tests/routes/citations-lateral-guard-canary.test.ts` and `backend/tests/notification-queries-lateral-guard-canary.test.ts` so future maintainers can find it from either test entry-point.
+
+**Verification gates:**
+
+- `npx tsc --noEmit` clean.
+- `npm run lint` clean (only the 2 pre-existing `@typescript-eslint/no-explicit-any` warnings in `seed-phrase.ts`, unrelated).
+- Targeted vitest deferred to the parent's serialized run after all in-flight backend tasks merge back.
+
+**Notes:**
+
+- The initial worker edit on profile.ts and stats.ts wrapped SQL identifier names with backticks inside the JS template-literal comments, prematurely terminating the JS template. Parent dropped the backticks in favor of bare identifier names (matching the convention already established by the round-3 fix on `backend-self-review-exclusion-everywhere` item #8).
+- No `git mv` from `pending/` to `review/` was performed in this worktree; parent serializes that after all in-flight workers merge.

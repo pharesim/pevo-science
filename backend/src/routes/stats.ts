@@ -67,9 +67,23 @@ export async function fetchStatsFromHaf() {
         (SELECT count(DISTINCT LOWER(json_metadata -> ${at} ->> 'discipline'))::int FROM papers
           WHERE (json_metadata -> ${at} ->> 'discipline') IS NOT NULL) AS active_disciplines,
         COALESCE((
+          -- CASE-WHEN array-guard at SRF argument position. The previous
+          -- shape had a WHERE-clause jsonb_typeof = array guard AFTER the
+          -- implicit LATERAL -- that fires too late: Postgres expands the
+          -- SRF BEFORE the WHERE filter, so a chain post broadcasting
+          -- non-array pevo.citations (null, string, integer, object) would
+          -- have crashed the entire /api/stats response with cannot extract
+          -- elements from a scalar. The CASE-WHEN absorbs the non-array
+          -- case to []::jsonb at the argument site so jsonb_array_elements
+          -- never sees a scalar. See agents/docs/solutions/conventions/
+          -- pg-cross-join-lateral-where-guard-fires-after-srf-2026-05-16.md.
           SELECT count(*)::int FROM papers ci,
-            jsonb_array_elements(ci.json_metadata -> ${at} -> 'citations') AS cit
-          WHERE jsonb_typeof(ci.json_metadata -> ${at} -> 'citations') = 'array'
+            jsonb_array_elements(
+              CASE WHEN jsonb_typeof(ci.json_metadata -> ${at} -> 'citations') = 'array'
+                THEN ci.json_metadata -> ${at} -> 'citations'
+                ELSE '[]'::jsonb
+              END
+            ) AS cit
         ), 0) AS total_citations,
         (SELECT count(*)::int FROM reviews) AS total_reviews,
         (SELECT count(*)::int FROM reviews WHERE created >= now() - interval '30 days') AS reviews_last_30_days

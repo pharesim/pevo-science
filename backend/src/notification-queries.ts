@@ -326,8 +326,19 @@ export async function fetchNotificationsFromHaf(
         NULL, NULL, NULL, NULL, NULL, NULL, NULL
       FROM ${T.commentOps} citing
       JOIN active_accreditations aa_ct ON aa_ct.account = citing.author
+      -- CASE-WHEN array-guard at SRF argument position. Without it, a chain
+      -- post broadcasting non-array pevo.citations (null, string, integer,
+      -- object) would crash the entire /api/notifications GET for the
+      -- recipient with "cannot extract elements from a scalar". The
+      -- CASE-WHEN absorbs the non-array case to '[]'::jsonb at the
+      -- argument site so jsonb_array_elements never sees a scalar. See
+      -- agents/docs/solutions/conventions/
+      -- pg-cross-join-lateral-where-guard-fires-after-srf-2026-05-16.md.
       CROSS JOIN LATERAL jsonb_array_elements(
-        citing.json_metadata -> ${at} -> 'citations'
+        CASE WHEN jsonb_typeof(citing.json_metadata -> ${at} -> 'citations') = 'array'
+          THEN citing.json_metadata -> ${at} -> 'citations'
+          ELSE '[]'::jsonb
+        END
       ) AS cite_elem
       CROSS JOIN LATERAL (
         SELECT cite_elem ->> 'author' AS author, cite_elem ->> 'permlink' AS permlink
@@ -355,8 +366,15 @@ export async function fetchNotificationsFromHaf(
         NULL, NULL, NULL, NULL, NULL, NULL, NULL
       FROM ${T.commentOps} citing
       JOIN active_accreditations aa_ct ON aa_ct.account = citing.author
+      -- CASE-WHEN array-guard at SRF argument position. Same defensive
+      -- shape as arm 6a above. See
+      -- agents/docs/solutions/conventions/
+      -- pg-cross-join-lateral-where-guard-fires-after-srf-2026-05-16.md.
       CROSS JOIN LATERAL jsonb_array_elements(
-        citing.json_metadata -> ${at} -> 'citations'
+        CASE WHEN jsonb_typeof(citing.json_metadata -> ${at} -> 'citations') = 'array'
+          THEN citing.json_metadata -> ${at} -> 'citations'
+          ELSE '[]'::jsonb
+        END
       ) AS cite_elem
       CROSS JOIN LATERAL (
         SELECT cite_elem ->> 'author' AS author, cite_elem ->> 'permlink' AS permlink

@@ -132,15 +132,27 @@ async function getProfileStats(username: string) {
            AND COALESCE(c.json_metadata -> ${at} ->> 'is_anonymous', 'false') != 'true'
        ),
        citations AS (
+         -- CASE-WHEN array-guard at SRF argument position. The previous shape
+         -- had a WHERE-clause jsonb_typeof = array guard AFTER the LATERAL --
+         -- that fires too late: Postgres expands the LATERAL SRF BEFORE the
+         -- WHERE filter, so a chain post broadcasting non-array pevo.citations
+         -- (null, string, integer, object) would have crashed the per-user
+         -- profile fetch with cannot extract elements from a scalar. The
+         -- CASE-WHEN absorbs the non-array case to []::jsonb at the argument
+         -- site so jsonb_array_elements never sees a scalar. See
+         -- agents/docs/solutions/conventions/
+         -- pg-cross-join-lateral-where-guard-fires-after-srf-2026-05-16.md.
          SELECT 1
          FROM ${T.comments} citing
          CROSS JOIN LATERAL jsonb_array_elements(
-           citing.json_metadata -> ${at} -> 'citations'
+           CASE WHEN jsonb_typeof(citing.json_metadata -> ${at} -> 'citations') = 'array'
+             THEN citing.json_metadata -> ${at} -> 'citations'
+             ELSE '[]'::jsonb
+           END
          ) AS cit
          WHERE citing.parent_author = '' AND citing.parent_permlink = ${at}
            AND (citing.json_metadata -> ${at} ->> 'type') = 'paper'
            AND citing.json_metadata ->> 'app' LIKE $${appPrefixIdx}
-           AND jsonb_typeof(citing.json_metadata -> ${at} -> 'citations') = 'array'
            AND (cit ->> 'author') = $${usernameIdx}
        )
        SELECT
