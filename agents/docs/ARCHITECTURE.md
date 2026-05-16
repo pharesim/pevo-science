@@ -515,3 +515,122 @@ Emitted from `backend/src/lib/argon2-error-handler.ts` when a route catches `Arg
 ### Worker / instance scope
 
 The argon2 abort counter is per-process. If PEvO ever runs in cluster mode (multi-worker), the counter is per-worker and the summary log fires per-worker. Aggregating across workers is the dashboard's responsibility — the log line carries no worker/PID field today (one process = one source).
+
+## 6. Account State Machine and Re-Auth Invariants
+
+The `accounts` Postgres table tracks signup-originated users (email and ORCID signups) and post-upgrade self-custody users. Pure self-custody users who bring their own Hive account have no `accounts` row at all; they authenticate via the `verifyHiveSignature` middleware's per-request Hive-signature path. This section is the canonical reference for every reachable steady state, the routes that transition between them, and the re-auth proof each critical action requires. Code that defends, branches on, or migrates between account states must be reviewable against this section; defenses against `(field, field, field)` combinations not enumerated here are dead code and should be flagged at review.
+
+### 6.1 Reachable Steady States
+
+Six dimensions of the `accounts` row affect auth and state transitions: `verify_token`, `username`, `password_hash`, `orcid`, `custody`, `upgraded_at`. Orthogonal overlays (`reset_token`, `pending_email_*`, `sessions_invalidated_at`) are transient flags layered on top of these states, not states themselves.
+
+| State | verify_token | username | password_hash | orcid | custody | upgraded_at | Reached by |
+|---|---|---|---|---|---|---|---|
+| A | NULL | SET | SET | NULL | `'light'` | NULL | Email signup, no ORCID linked |
+| B | NULL | SET | SET | SET | `'light'` | NULL | A with ORCID linked, or combined email+ORCID signup |
+| C | NULL | SET | NULL | SET | `'light'` | NULL | ORCID-only signup, or A/B after `/recover` with `orcid_token` and no `new_password` |
+| D | NULL | SET | (preserved from A/B/C) | (preserved) | `'self'` | SET | A/B/C after `/api/custody/upgrade` |
+| E | random hex | NULL | SET | NULL | NULL | NULL | Email signup, after `/api/auth/signup`, before email-verify-link click |
+| F | `'confirmed:<hex>'` | NULL | SET (email path) or NULL (ORCID path) | NULL or SET | NULL | NULL | Email signup after verify-link click, OR ORCID signup (skips E directly per `auth.ts:460-490`) |
+
+Plus the **no-row case**: pure self-custody. User brings their own Hive account, never goes through PEvO signup, has no `accounts` row. Authenticated via `verifyHiveSignature` middleware per request (Hive-signature path); `req.hiveCustody = 'self'`.
+
+States E and F are transient signup-pending. States A, B, C, D are finalized. **No transition produces a row that doesn't match one of the rows above.** Any code that posits another combination is defending a fictional state.
+
+**Field rationale:**
+- `verify_token`: encodes signup progress. Random hex = email not yet confirmed (state E). `'confirmed:<hex>'` = ready to finalize via `/signup-verify` (state F). NULL = finalized.
+- `username`: NULL while pending finalization; SET to Hive username once the user picks one (light path) or links to an existing one (self path).
+- `password_hash`: SET if account can password-auth. NULL for ORCID-only signups (no password ever set) and after `/recover-orcid-no-password` (password dropped). Argon2id-hashed.
+- `orcid`: SET if account has an ORCID linked. ORCID-only signup sets this at signup; email-signup users can link later via `/orcid/callback mode='link'`.
+- `custody`: `'light'` while server holds encrypted broadcasting keys. `'self'` after upgrade. NULL only during transient pre-finalize states E and F.
+- `upgraded_at`: Set by `/api/custody/upgrade` as part of the light→self transition. Once set, never unset.
+
+### 6.2 Per-State Concept and Session Auth Factors
+
+**State A — Light, password-set, no ORCID.** Standard light account from email + password signup. Session auth: `POST /api/auth/login` (mints JWT with `custody='light'`). Recovery factor: BIP39 seed phrase (generated client-side at signup, used via `/api/auth/recover` with `memo_key`).
+
+**State B — Light, password-set + ORCID-linked.** Either email signup followed by `/orcid/callback mode='link'`, or combined email + ORCID signup. Session auth: `POST /api/auth/login` (password path) or `POST /api/orcid/callback mode='login'` (ORCID path). Recovery factors: seed phrase or ORCID.
+
+**State C — Light, passwordless ORCID-only.** Either ORCID-only signup (skipped password at signup, no email required), or A/B after `/api/auth/recover` with `orcid_token` and `new_password` omitted. Session auth: `POST /api/orcid/callback mode='login'` only. Recovery factors: seed phrase (all light signups produce one) or ORCID.
+
+**State D — Upgraded self-custody.** Originally light (any of A/B/C), then upgraded via `/api/custody/upgrade`. `custody='self'`, `upgraded_at` set. Encrypted broadcasting keys (`posting_key_enc`, `memo_key_enc`, IVs) wiped during upgrade. `password_hash` and `orcid` are **preserved** — the user can still session-auth via the same factors they had before. But server-side broadcasting via `/api/custody/broadcast` is now disabled (no encrypted keys to decrypt). Useful work post-upgrade requires Keychain on the client.
+
+**No-row case — Pure self-custody.** User brings their own Hive account and signs every request via Hive Keychain. The `verifyHiveSignature` middleware verifies the signature against the on-chain posting key from `getAccounts` (Hive API) and sets `req.hiveCustody = 'self'`. No `accounts` row exists; no PEvO-server session is involved.
+
+### 6.3 Transitions
+
+All routes that mutate state. Routes that only read state (login session-mint, accreditation queries) do not appear here.
+
+```
+Initial → finalized:
+  [no row] ──signup(email+password)──> E ──email-verify-link──> F ──signup-verify(light)──> A
+  [no row] ──signup(orcid_token only)─────────────────────────> F ──signup-verify(light)──> C
+  [no row] ──signup(email+password+orcid_token)──────────────> F ──signup-verify(light)──> B
+  [no row] ──(bring own Hive account)──────> no-row case
+
+Adding auth factors:
+  A ──orcid-callback(link)──────> B          (links ORCID to existing light-with-password)
+  C ──settings/set-password─────> B          (adds password to passwordless ORCID-only)
+  (B does NOT transition back to A — no unlink-ORCID route exists)
+
+Recovery (proof factor must match registered set):
+  A ──recover(seed_phrase, new_password)──> A          (password rotated)
+  B ──recover(seed_phrase, new_password)──> B
+  B ──recover(orcid, new_password)──> B
+  B ──recover(orcid, no new_password)──> C             (drops password)
+  C ──recover(seed_phrase, new_password)──> B          (adds password)
+  C ──recover(orcid, new_password)──> B                (adds password)
+  C ──recover(orcid, no new_password)──> C             (no-op on auth factors)
+
+Forgot password (requires email access):
+  A ──reset(email-link, new_password)──> A             (password rotated)
+  B ──reset(email-link, new_password)──> B
+  (C cannot use /reset — state C may have no email, and has no password to reset)
+
+Light → self upgrade:
+  A ──custody/upgrade(seed-phrase-derived-key proof)──> D
+  B ──custody/upgrade(seed-phrase-derived-key proof)──> D
+  C ──custody/upgrade(seed-phrase-derived-key proof)──> D
+  D ──custody/upgrade──> 409 ALREADY_UPGRADED
+```
+
+Pure self-custody (no-row) users never enter this state machine; their identity is on-chain only.
+
+### 6.4 Critical-Action / Re-Auth Contract
+
+Every critical action requires a fresh re-auth proof; the JWT alone is never sufficient. The required proof factor is determined by **what kind of control the action transfers or uses**, not by what auth factors the account happens to have. Per-state availability captures intent; current code may diverge — divergences are tracked as separate tasks, not inline here.
+
+| Action | Endpoint | Required re-auth (intended) | Per-state availability |
+|---|---|---|---|
+| Server-side broadcast (non-consent ops) | `POST /api/custody/broadcast` | Fresh-auth proof matching a factor registered on the account | A: password proof. B: password OR ORCID proof. C: ORCID proof. D: blocked (encrypted keys nulled at upgrade). no-row: n/a (Keychain). |
+| Server-side broadcast (consent ops: `author_accept`, `author_resign`) | `POST /api/custody/broadcast` | Per-target fresh-auth proof (target binds `op_type` + `paper_author` + `paper_permlink`) | Same as non-consent. Implemented at `custody.ts:312`. |
+| Issue fresh-auth proof (password) | `POST /api/custody/fresh-auth` | Current password | A or B (states with password registered) |
+| Issue fresh-auth proof (ORCID) | `POST /api/orcid/callback mode='fresh_auth'` | Fresh ORCID OAuth round-trip | B or C (states with ORCID registered) |
+| Light → self upgrade | `POST /api/custody/upgrade` | Seed-phrase-derived pubkey (UI derives from BIP39 client-side; backend verifies pubkey matches on-chain `getAccounts` posting/active key) | All light states (A, B, C). D: 409. Pure self-custody: n/a. |
+| Set password from null | `POST /api/settings/set-password` | Fresh ORCID OAuth proof (null-hash accounts have ORCID as their only registered factor) | C only. A and B return 409 (`PASSWORD_ALREADY_SET`). |
+| Recover (lost email access) | `POST /api/auth/recover` | Seed-phrase derived key OR fresh ORCID OAuth, matching what the account has registered | All light states. Seed phrase works from any state (every light signup produces one); ORCID requires `orcid IS NOT NULL`. |
+| Reset (forgot password) | `POST /api/auth/reset-request` + `POST /api/auth/reset` | Email-link token | A and B (states with email AND password). C: not applicable. |
+| Change email | `POST /api/settings/email` | TBD — re-auth model unverified; see open audit task | All light states |
+| Link ORCID | `POST /api/orcid/callback mode='link'` | Fresh ORCID OAuth | A → B |
+
+### 6.5 Security Invariants
+
+These invariants hold across every authenticated route. Code that violates an invariant is a security defect, not a stylistic preference.
+
+1. **Critical actions require fresh re-auth proof.** A stolen JWT must not be a one-step takeover vector. JWT-only access on a critical action is a defect.
+2. **Re-auth factor must match a factor the account has registered.** ORCID OAuth proof from an unrelated ORCID iD does not authenticate; password verification against a null hash does not authenticate; seed-phrase derived key proves possession only when the derived pubkey matches the on-chain account's posting/active key.
+3. **Recovery proof must match a factor the account has registered.** State A (no ORCID) cannot recover via ORCID — no registered ORCID to prove against. State C (no password) cannot use `/reset` — no password to forget.
+4. **State transitions only via the documented routes in § 6.3.** No code path may produce an `accounts` row that doesn't match a state in § 6.1. If a new state is needed, this section must be updated first and the transition added before code lands.
+5. **Field-state inference is grounded in this section, not in code-side assumptions.** Reviewers MUST flag code that defends, branches on, or migrates `(verify_token, username, password_hash, orcid, custody, upgraded_at)` combinations not enumerated in § 6.1. Verbose-but-correct defense against the enumerated states is fine; defense against a state that doesn't exist is dead code that misleads future maintainers and reviewers.
+6. **The seed phrase is the upgrade proof, not a session-auth factor.** UI derives a key from the BIP39 mnemonic locally and sends the derived pubkey to the backend. Backend verifies it matches the on-chain account's posting/active key via `getAccounts`. The seed phrase itself never leaves the client. Critical actions other than upgrade do not accept the seed-phrase-derived key as proof.
+7. **The upgrade transition is one-way.** Once `upgraded_at` is set, the account is in state D forever. No "downgrade-to-light" route exists; the encrypted keys were destroyed during upgrade and cannot be reconstructed.
+
+### 6.6 Maintenance
+
+When any of the following change, this section is updated in the same commit as the code change:
+- New routes that write `verify_token`, `username`, `password_hash`, `orcid`, `custody`, or `upgraded_at`.
+- New auth factors (a hypothetical hardware-key or WebAuthn factor would add columns and states).
+- New critical actions (anything that broadcasts, mutates an auth factor, or transfers control).
+- New transitions, even between existing states.
+
+The section is referenced from root `CLAUDE.md` "Code Review Findings" guidance: reviewers must consult § 6.1 to verify any defended account state is actually reachable.
