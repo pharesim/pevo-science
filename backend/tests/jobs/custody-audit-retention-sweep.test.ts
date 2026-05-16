@@ -65,10 +65,6 @@ describe('parseRetentionMonthsFromComment — pure parse contract (no DB)', () =
     expect(parseRetentionMonthsFromComment('Foo. Retention: 24 months from row insert. Bar.')).toBe(24);
   });
 
-  it('parses "Retention period: 36 months" wording variant', () => {
-    expect(parseRetentionMonthsFromComment('Retention period: 36 months')).toBe(36);
-  });
-
   it('is case-insensitive on the "Retention" key', () => {
     expect(parseRetentionMonthsFromComment('retention: 12 months')).toBe(12);
   });
@@ -170,13 +166,20 @@ describe.skipIf(!dbReachable)('custody-audit retention sweep — real Postgres i
     // Temporarily clear the column comment inside a transaction, then roll
     // back so the production SOT is preserved for other tests / the live DB.
     // `COMMENT ON COLUMN ... IS NULL` is the canonical "remove comment"
-    // shape per Postgres docs.
+    // shape per Postgres docs. The nested finally pattern guarantees ROLLBACK
+    // runs even if the inner `expect(...).rejects.toThrow(...)` mismatches
+    // and Vitest rethrows — otherwise the open transaction would leak back
+    // to the pool with the SOT cleared, and the next test borrowing that
+    // client would silently strip the production SOT from the live test DB.
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-      await client.query('COMMENT ON COLUMN custody_audit_log.user_agent IS NULL');
-      await expect(readRetentionMonths(client)).rejects.toThrow(/missing or empty/i);
-      await client.query('ROLLBACK');
+      try {
+        await client.query('COMMENT ON COLUMN custody_audit_log.user_agent IS NULL');
+        await expect(readRetentionMonths(client)).rejects.toThrow(/missing or empty/i);
+      } finally {
+        await client.query('ROLLBACK');
+      }
     } finally {
       client.release();
     }
@@ -193,11 +196,14 @@ describe.skipIf(!dbReachable)('custody-audit retention sweep — real Postgres i
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-      await client.query(
-        "COMMENT ON COLUMN custody_audit_log.user_agent IS 'PII placeholder with no retention line'",
-      );
-      await expect(readRetentionMonths(client)).rejects.toThrow(/parseable "Retention/);
-      await client.query('ROLLBACK');
+      try {
+        await client.query(
+          "COMMENT ON COLUMN custody_audit_log.user_agent IS 'PII placeholder with no retention line'",
+        );
+        await expect(readRetentionMonths(client)).rejects.toThrow(/parseable "Retention/);
+      } finally {
+        await client.query('ROLLBACK');
+      }
     } finally {
       client.release();
     }

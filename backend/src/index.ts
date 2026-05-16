@@ -16,7 +16,7 @@ import { startReputationWeightsCache, backfillAccreditationSeeds } from './reput
 import { startWotThresholdCache } from './wot.js';
 import { startAccountClaimer, stopAccountClaimer } from './account-creation.js';
 import { startSignupCleanup, stopSignupCleanup } from './signup-cleanup.js';
-import { startRetentionSweep, stopRetentionSweep } from './jobs/custody-audit-retention-sweep.js';
+import { startRetentionSweep, startRetentionSweepTicker, stopRetentionSweep } from './jobs/custody-audit-retention-sweep.js';
 import { drainArgon2Queue, startArgon2AbortReporter, stopArgon2AbortReporter } from './lib/argon2-semaphore.js';
 import { startDecrementQueueDrainer, stopDecrementQueueDrainer } from './lib/pending-decrement-queue.js';
 import { logger } from './logger.js';
@@ -96,9 +96,13 @@ if (app) {
       // Start periodic cache refreshes before accepting traffic
       await startRetractionCache();
 
-      // GDPR Art. 5(1)(e) custody_audit_log retention sweep (boot-fatal on
-      // SOT-parse failure — startup-sweep doubles as backfill, daily setInterval
-      // keeps long-running processes compliant).
+      // GDPR Art. 5(1)(e) custody_audit_log retention sweep — boot-fatal SOT
+      // validation only. Throws BootFatalError on parseable-comment failure,
+      // which propagates into the sibling .catch (lines below) for flushAndExit
+      // before listen() runs. The first DELETE (which doubles as backfill for
+      // pre-existing rows older than the retention period) is deferred to
+      // startRetentionSweepTicker inside the listen callback so a degraded-DB
+      // state can't hang the boot indefinitely.
       await startRetentionSweep(getAppPool());
 
       server = bootedApp.listen(config.port, () => {
@@ -139,6 +143,12 @@ if (app) {
 
         // Start pending signup cleanup (every 1h)
         startSignupCleanup();
+
+        // Start custody_audit_log retention sweep ticker (first sweep
+        // immediately as backfill of pre-existing rows older than the SOT
+        // retention period, then every 24h). Boot-time SOT validation
+        // already ran above via startRetentionSweep before listen().
+        startRetentionSweepTicker(getAppPool());
 
         // Start periodic argon2 abort-summary reporter (every 60s).
         // Surfaces silent ArgonAbortError events to operators at LOG_LEVEL=info.

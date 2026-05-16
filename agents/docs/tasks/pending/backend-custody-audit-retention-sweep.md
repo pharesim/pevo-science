@@ -100,3 +100,19 @@ The in-code justification ("absorb minor future copy edits without forcing a cod
 ### Re-review signal
 
 When items 1-4 land, `git mv` this file back to `tasks/review/`. Round-2 architect review scopes `/ce-code-review` to the round-2 commit.
+
+---
+
+## Backend re-review signal (2026-05-16, round-2 fix commit)
+
+Round-1 hold items 1-4 landed in `backend/src/jobs/custody-audit-retention-sweep.ts`, `backend/src/index.ts`, and `backend/tests/jobs/custody-audit-retention-sweep.test.ts`.
+
+- **Item 1 (P1 boot-fatal call-stack unwind)** — Dropped the helper's internal `try { runSweep } catch { logger.fatal; flushAndExit(); return }` block at the old line range 163-187. `startRetentionSweep(pool)` now reads the SOT via `readRetentionMonths(pool)` and re-throws as `BootFatalError` (`custody-audit-retention-sweep.ts:180-200`). The throw propagates out of the awaited call inside `initAppDb().then(...)` at `backend/src/index.ts:102` into the sibling `.catch` at `index.ts:156-162`, which routes through `flushAndExit()` before `bootedApp.listen()` ever runs. Removed the now-unused `flushAndExit` import. Followed `agents/docs/solutions/conventions/boot-fatal-call-stack-unwind-and-rethrow-trap-2026-05-11.md`; `BootFatalError` shape mirrors `backend/src/startup-checks.ts`.
+- **Item 2 (P1 test (c) ROLLBACK placement)** — Wrapped `await client.query('ROLLBACK')` in a nested `finally` block inside both (c) subtests (`backend/tests/jobs/custody-audit-retention-sweep.test.ts:174-185` for the null-comment subtest, `194-209` for the malformed-comment subtest). If the inner `expect(...).rejects.toThrow(...)` assertion ever mismatches, the ROLLBACK now runs before `client.release()` returns the connection to the pool, so a stale BEGIN with the cleared COMMENT cannot leak across tests.
+- **Item 3 (P2 split SOT-parse from backfill DELETE on boot)** — `startRetentionSweep(pool)` now only validates the SOT at boot (no DELETE). Added `startRetentionSweepTicker(pool)` at `custody-audit-retention-sweep.ts:218-236` that runs the first sweep DELETE immediately (preserving the "backfill on first deploy" acceptance — DELETE is idempotent and stateless) and schedules the 24h `setInterval`. Wired the ticker inside the `bootedApp.listen(...)` callback at `backend/src/index.ts` alongside `startSignupCleanup` / `startBatchReputation` / sibling jobs. `stopRetentionSweep()` stays as-is (still clears the same module-scoped `sweepTimer`).
+- **Item 4 (P2 tighten regex, drop phantom variant)** — Tightened the regex at `custody-audit-retention-sweep.ts:82` to `/Retention\s*:\s*(\d+)\s+months/i` (dropped the `(?:\s+period)?` capture group that never matched migration 006's live SOT). Updated the parser docstring (`custody-audit-retention-sweep.ts:53-62`) and inline regex comment (`77-81`) to reflect the single-wording stance. Removed the corresponding `'Retention period: 36 months'` test case at `backend/tests/jobs/custody-audit-retention-sweep.test.ts:68-70`.
+
+**Verification gates run.**
+- `npm run lint`: clean (only pre-existing `seed-phrase.ts` warnings, unrelated).
+- `npx tsc --noEmit`: clean.
+- Tests not run in worktree per fan-out protocol; parent serializes after merge.

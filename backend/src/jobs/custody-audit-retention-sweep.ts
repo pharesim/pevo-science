@@ -1,6 +1,6 @@
 import type pg from 'pg';
 import { logger } from '../logger.js';
-import { flushAndExit } from '../lib/flush-and-exit.js';
+import { BootFatalError } from '../startup-checks.js';
 
 /**
  * BACKEND-CUSTODY-AUDIT-RETENTION-SWEEP — GDPR Art. 5(1)(e) storage-limitation
@@ -9,21 +9,32 @@ import { flushAndExit } from '../lib/flush-and-exit.js';
  * Migration 006 (`backend/migrations/006_custody_audit_pii_annotation.sql`)
  * documents the retention period for `custody_audit_log.user_agent` in a
  * `COMMENT ON COLUMN` annotation. That comment is the single source of truth
- * (SOT) for the retention window. This sweep reads the comment at startup,
- * parses the "Retention period: <N> months" line, and runs a periodic
+ * (SOT) for the retention window. This module reads the comment at startup
+ * (fail-loud on parse error — see `startRetentionSweep`), parses the
+ * "Retention: <N> months" line, and runs a periodic
  * `DELETE FROM custody_audit_log WHERE created_at < now() - interval '<N> months'`.
  *
- * Trigger shape: startup sweep + daily `setInterval` tick. PEvO is
- * single-instance (no leader-election concerns), so a daily cadence is fine.
- * The startup sweep naturally backfills pre-existing rows older than the
- * retention period on the first boot after deploy — no separate backfill
- * code path is needed.
+ * Trigger shape: boot validates the SOT (refuses to start if the comment is
+ * missing or unparseable, per `startRetentionSweep` below), then the post-
+ * `listen()` ticker (`startRetentionSweepTicker`) runs an immediate first
+ * sweep and schedules a 24h `setInterval`. PEvO is single-instance (no
+ * leader-election concerns), so a daily cadence is fine. The immediate first
+ * sweep doubles as backfill of pre-existing rows older than the retention
+ * period on the first boot after deploy — no separate backfill code path is
+ * needed. Splitting the SOT-parse (boot, fail-loud) from the first DELETE
+ * (post-listen, idempotent) keeps the boot path from hanging on degraded-DB
+ * states (`VACUUM FULL`, large first-boot backfill) where an unbounded DELETE
+ * could block before the boot-fatal watchdog fires.
  *
  * Logging discipline (memory `feedback_pevo_logging_minimal`): NO info-level
- * logs on per-tick success. The only log lines are (a) a fatal boot-fatal on
- * SOT-parse failure (followed by `flushAndExit()`), and (b) an error log if
- * the DELETE itself throws on a periodic tick (we keep the process alive on
- * runtime failures so a transient DB blip doesn't take down the backend).
+ * logs on per-tick success. The only log lines are (a) the fatal boot-fatal
+ * already emitted by `validateConfig` / `index.ts`'s outer catch when the
+ * `BootFatalError` thrown here propagates (the helper itself does NOT log on
+ * the SOT-parse failure — per the boot-fatal call-stack-unwind convention,
+ * the throw is the signal, and the outer catch handles the log + exit), and
+ * (b) an error log if the DELETE itself throws on a periodic tick (we keep
+ * the process alive on runtime failures so a transient DB blip doesn't take
+ * down the backend).
  */
 
 const SWEEP_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24h
@@ -39,14 +50,16 @@ let sweepTimer: ReturnType<typeof setInterval> | null = null;
 /**
  * Parse the retention-period months from the `user_agent` column comment.
  *
- * Expected format: the comment text contains a substring like
- * `Retention: 24 months from row insert` (case-insensitive, "Retention period"
- * also accepted). Returns the integer month count.
+ * Expected format: the comment text contains a substring matching
+ * `Retention: <N> months` (case-insensitive). Migration 006 writes
+ * "Retention: 24 months from row insert"; the parser accepts only this
+ * wording — see the regex below for the fail-loud rationale. Returns the
+ * integer month count.
  *
  * Throws on:
  *   - `null` input (column comment is missing — migration 006 not applied).
  *   - Empty / whitespace-only comment.
- *   - Comment present but missing the "Retention[: | period] <N> months" line.
+ *   - Comment present but missing the "Retention: <N> months" line.
  *   - Parsed value <= 0 or non-integer.
  *
  * This is exported separately from `runSweep` so the test suite can assert
@@ -63,11 +76,12 @@ export function parseRetentionMonthsFromComment(comment: string | null): number 
       'BACKEND-CUSTODY-AUDIT-RETENTION-SWEEP — refusing to start.',
     );
   }
-  // Match `Retention: <N> months` or `Retention period: <N> months`,
-  // case-insensitive. The migration 006 text uses "Retention: 24 months from
-  // row insert"; the older "Retention period: 24 months" wording is also
-  // accepted to absorb minor future copy edits without forcing a code change.
-  const match = comment.match(/Retention(?:\s+period)?\s*:\s*(\d+)\s+months/i);
+  // Match `Retention: <N> months`, case-insensitive. The migration 006 text
+  // uses "Retention: 24 months from row insert" — this is the only live SOT
+  // wording. A future migration that changes the wording (e.g., to "Retention
+  // period: ...") must update this parser deliberately rather than rely on
+  // silent regex-tolerance, per the module's fail-loud SOT philosophy.
+  const match = comment.match(/Retention\s*:\s*(\d+)\s+months/i);
   if (!match) {
     throw new Error(
       'custody_audit_log.user_agent column comment is present but does not ' +
@@ -140,18 +154,30 @@ export async function runSweep(
 }
 
 /**
- * Wire the retention sweep at boot.
+ * Validate the retention SOT at boot.
  *
- * Flow:
- *   1. Run a sweep pass immediately. Parse failure here is BOOT-FATAL —
- *      logs a `fatal` line and calls `flushAndExit()` so the bad-config
- *      doesn't silently become indefinite retention.
- *   2. Schedule a 24h `setInterval` tick. The timer is `.unref()`d so it
- *      doesn't keep the event loop alive past graceful shutdown.
+ * Reads the column comment via `readRetentionMonths(pool)` and lets any
+ * throw propagate. Does NOT run the first DELETE — that is deferred to
+ * `startRetentionSweepTicker(pool)` which fires after `app.listen()`. The
+ * split exists so a degraded-DB state during boot (e.g., a long-running
+ * `VACUUM FULL`, `pg_dump`, or large first-boot backfill colliding with the
+ * DELETE) cannot hang the boot under an unbounded query wait — the boot
+ * only needs the SOT-parse to succeed.
+ *
+ * On parse failure this throws `BootFatalError`. The throw propagates out
+ * of the awaited call inside `initAppDb().then(...)` in `index.ts`, into
+ * the sibling `.catch` (lines 156-162), which calls `flushAndExit()` before
+ * `app.listen()` ever runs — per the boot-fatal call-stack-unwind convention
+ * (`agents/docs/solutions/conventions/boot-fatal-call-stack-unwind-and-rethrow-trap-2026-05-11.md`).
+ * The helper does NOT catch the throw and call `flushAndExit()` itself: an
+ * internal `try { ... } catch { logger.fatal; flushAndExit(); return; }` would
+ * let the awaiting caller continue past `await startRetentionSweep(...)` to
+ * `bootedApp.listen(...)` while `flushAndExit` runs async — the backend would
+ * accept traffic for up to 2 seconds during what should be a hard boot abort.
  *
  * Per memory `feedback_pevo_logging_minimal`: no info-level log on success.
- * Operators infer health via existing healthchecks; per-tick logs would
- * add log volume without catching a concrete failure mode.
+ * Operators infer health via existing healthchecks; per-tick logs would add
+ * log volume without catching a concrete failure mode.
  */
 export async function startRetentionSweep(pool: pg.Pool | null): Promise<void> {
   if (!pool) {
@@ -161,20 +187,45 @@ export async function startRetentionSweep(pool: pg.Pool | null): Promise<void> {
     return;
   }
   try {
-    await runSweep(pool);
+    await readRetentionMonths(pool);
   } catch (err) {
-    logger.fatal(
-      { err },
-      'custody-audit retention sweep boot-fatal — refusing to start. ' +
-      'GDPR Art. 5(1)(e) requires mechanical enforcement of the retention ' +
-      'window documented in migration 006. See ' +
-      'agents/docs/tasks/* BACKEND-CUSTODY-AUDIT-RETENTION-SWEEP.',
+    // Re-throw as BootFatalError so `instanceof BootFatalError` at the outer
+    // catch identifies the failure class for operator alerting. The original
+    // throw's message is preserved in the cause chain via {cause: err}-style
+    // err logging at the catch site (the .catch in index.ts logs {err}).
+    throw new BootFatalError(
+      `custody-audit retention sweep SOT-parse failed: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
     );
-    flushAndExit();
-    // Defensive: flushAndExit triggers an async process.exit; bail out so
-    // we don't schedule a setInterval on the way down.
+  }
+}
+
+/**
+ * Start the post-`listen()` retention sweep ticker.
+ *
+ * Runs an immediate first sweep DELETE (the backfill pass for pre-existing
+ * rows older than the retention period — DELETE is idempotent and stateless,
+ * so deferring it to the first tick preserves the "backfill on first deploy"
+ * acceptance criterion) and schedules a 24h `setInterval` for ongoing
+ * enforcement. The timer is `.unref()`d so it doesn't keep the event loop
+ * alive past graceful shutdown.
+ *
+ * Called inside the `bootedApp.listen(...)` callback in `index.ts`, mirroring
+ * the placement of `startSignupCleanup` / `startBatchReputation` / sibling
+ * jobs. Boot-time SOT validation (`startRetentionSweep`) has already run by
+ * the time this fires, so the immediate-tick DELETE is safe to assume a
+ * parseable column comment.
+ */
+export function startRetentionSweepTicker(pool: pg.Pool | null): void {
+  if (!pool) {
     return;
   }
+  runSweep(pool).catch((err) => {
+    // First-tick failure is NOT boot-fatal (we're already past listen). Same
+    // treatment as periodic-tick failures: log and let the next tick retry.
+    logger.error({ err }, 'custody-audit retention sweep first tick failed');
+  });
   sweepTimer = setInterval(() => {
     runSweep(pool).catch((err) => {
       // Runtime DELETE failures are NOT boot-fatal — a transient pool error
