@@ -194,3 +194,35 @@ Pick one and update the JSDoc to match. Note which path was taken in the re-revi
 ### Re-review signal
 
 When items 1-3 land, `git mv` this file from `tasks/pending/` back to `tasks/review/` per `feedback_task_mv_to_review_after_each_round.md`. Use bare `backend:` or `backend(<scope>):` commit prefixes so the zone-audit hook fires. The architect's next review pass scopes `/ce-code-review` to commits since `a264ec3`. Items can land in any order or in one combined commit.
+
+---
+
+## Backend re-review signal (2026-05-16, round-2 fix commit)
+
+Round-2 hold items 1-3 landed.
+
+- Item 1 (P1) — `toPaperSummary()` `ipfs_cid` is now wrapped in `validatedCid(...)` at `backend/src/helpers.ts:327` (with the `(author, permlink)` correlation context). Added 2 canaries on `/api/profile/:username/papers` in a new file `backend/tests/routes/profile-papers-cid-validate.test.ts`: a malformed-CID paper returns `ipfs_cid: null` + the `paper_detail_ipfs_cid_rejected` warn fires with correlation context + 32-char-truncated `raw_cid_prefix`; a valid CIDv0 passes through unchanged with no warn (negative control). The new file documents the carve-out under clauses (a)/(b)/(c).
+- Item 2 (P1) — chose **widen-to-unknown**. Rationale: the round-1 implementation already widened `isValidIpfsCid` to `unknown`, so widening `validatedCid` matches the sibling-function shape and removes the need for `as` casts at any future call site that bypasses `pevoString`; the dead branch becomes live and the structured warn anchor is exercised. JSDoc updated to document the `unknown` choice and the rationale (today's callers funnel through `pevoString`; future TS-loose callers get the warn anchor instead of silent coercion). Added 2 unit canaries in `backend/tests/lib/ipfs-validation.test.ts` (number input → `42` prefix + warn; object input → `[object Object]` prefix + warn) that pin the now-live typeof branch — deleting it fails them red.
+- Item 3 (P2) — extracted exported `interface CidValidationContext { author: string; permlink: string; }` in `backend/src/lib/ipfs-validation.ts`. `validatedCid` signature uses it. The unit-test `ctx` constant is now typed against the imported interface so a future shape change ripples through tests at compile time.
+
+Grep audit per `wrapping-primitive-exhaustive-call-site-audit-2026-04-22.md` (verbatim output of `grep -rn "ipfs_cid\s*[:=]" backend/src/`):
+
+```
+backend/src/ipfs-cleanup.ts:43:      JSON.stringify({ pevo: { ipfs_cid: cid } }),
+backend/src/helpers.ts:12:  ipfs_cid: string | null;
+backend/src/helpers.ts:327:    ipfs_cid: validatedCid(pevoString(pevo, 'ipfs_cid'), {
+backend/src/routes/ipfs.ts:270:      JSON.stringify({ pevo: { ipfs_cid: cid } }),
+backend/src/bridge.ts:506:    ipfs_cid: null,
+backend/src/types/hive.ts:39:  ipfs_cid: string | null;
+backend/src/types/hive.ts:83:  ipfs_cid: null;
+backend/src/lib/ipfs-validation.ts:9: * `pevo.ipfs_cid = "Qm…\n<script>"` or `"  Qm…  "` or an arbitrary garbage
+backend/src/routes/papers.ts:662:        ipfs_cid: validatedCid(pevoString(pevo, 'ipfs_cid'), {
+backend/src/routes/papers.ts:1020:          // as `ipfs_cid: null`); the sentinel-aware shape is
+backend/src/routes/papers.ts:1036:            detail.ipfs_cid = validatedCid(pevoString(headPevo, 'ipfs_cid'), {
+backend/src/routes/papers.ts:1043:            detail.ipfs_cid = validatedCid(pevoString(rootPevo, 'ipfs_cid'), {
+backend/src/routes/papers.ts:2179:    ipfs_cid: validatedCid(pevoString(pevo, 'ipfs_cid'), {
+```
+
+Audit interpretation: 4 emit sites in `routes/papers.ts` (lines 662, 1036, 1043, 2179) — all `validatedCid`-wrapped (round-1). 1 emit site in `helpers.ts` (line 327) — `validatedCid`-wrapped post-fix (round-2 item 1). Non-emit hits: 2 chain-write sites (`ipfs-cleanup.ts:43` + `routes/ipfs.ts:270`) where the backend constructs the value, not surfaces an attacker-supplied one — out of scope for emit-time CID-shape validation. 1 hardcoded-null construction site (`bridge.ts:506` — bridge papers have no IPFS attachment by design). 3 type-decl hits (`helpers.ts:12`, `types/hive.ts:39, 83`). 1 comment hit (`papers.ts:1020`) plus 1 inside `ipfs-validation.ts`'s own JSDoc. No fifth unwrapped emit site.
+
+`npm run lint` clean (2 pre-existing `seed-phrase.ts` warnings only); `npx tsc --noEmit` clean.

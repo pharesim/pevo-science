@@ -25,6 +25,7 @@ export interface PaperSummary {
 import { config } from './config.js';
 import { logger } from './logger.js';
 import { paperDisciplineField } from './types/disciplines.js';
+import { validatedCid } from './lib/ipfs-validation.js';
 
 export function parseMeta(raw: unknown): Record<string, unknown> {
   if (typeof raw === 'string') {
@@ -318,7 +319,15 @@ export function toPaperSummary(post: {
     discipline: paperDisciplineField(pevo.discipline) ?? '',
     keywords: pevoStringArray(pevo, 'keywords'),
     authors: (pevo.authors as PaperSummary['authors']) || [],
-    ipfs_cid: pevoString(pevo, 'ipfs_cid'),
+    // Output-side CID shape validation. Closes the fourth emit path missed
+    // by BACKEND-PAPER-DETAIL-CID-VALIDATE-ON-EMIT round-1 (the three sites
+    // in `routes/papers.ts` were wrapped; this site, which feeds
+    // `/api/profile/:username/papers` and any future consumer of
+    // `toPaperSummary`, was unwrapped). See task round-2 hold item 1.
+    ipfs_cid: validatedCid(pevoString(pevo, 'ipfs_cid'), {
+      author: post.author,
+      permlink: post.permlink,
+    }),
     created: post.created,
     net_votes: post.net_votes,
     vote_strength: null,

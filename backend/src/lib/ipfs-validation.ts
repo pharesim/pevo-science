@@ -43,6 +43,20 @@ const CIDV0_RE = /^Qm[1-9A-HJ-NP-Za-km-z]{44}$/;
 const CIDV1_BASE32_RE = /^b[a-z2-7]{20,}$/;
 
 /**
+ * Correlation context for `validatedCid` operator warns. Threaded into the
+ * structured `paper_detail_ipfs_cid_rejected` event so operators can pivot a
+ * rejected-CID anchor back to the chain post that supplied the malformed
+ * value. Exported as a named interface (not inlined on the function
+ * signature) so callers and tests can construct context objects against a
+ * deliberate contract rather than an anonymous bag, and so editor hover
+ * surfaces the type by name.
+ */
+export interface CidValidationContext {
+  author: string;
+  permlink: string;
+}
+
+/**
  * Returns true iff `cid` is a syntactically well-formed IPFS CID
  * (CIDv0 base58btc or CIDv1 lowercase-base32). Returns false on null,
  * non-string, empty, padded, or malformed input.
@@ -72,19 +86,33 @@ export function isValidIpfsCid(cid: unknown): boolean {
  *   3. Avoid log-injection: the raw value is prefix-truncated to 32 chars
  *      so a multi-line attack payload can't widen the log line.
  *
- * `value === null` is a legitimate state (paper has no IPFS attachment);
- * it returns null silently with no warn emission. Only string values that
- * fail the shape predicate trigger the warn.
+ * `value === null` (and `value === undefined`) is a legitimate state (paper
+ * has no IPFS attachment); it returns null silently with no warn emission.
+ * Any other non-string runtime value (number, object, array, boolean) is a
+ * defect upstream — the typeof guard fires the structured warn and clears
+ * to null so the bad call site is detectable in operator logs without
+ * surfacing the value to API consumers.
+ *
+ * The parameter is typed `unknown` (not `string | null | undefined`) so the
+ * non-string defensive branch is live, not a dead type-narrowed branch.
+ * This matches `isValidIpfsCid`'s signature and removes the need for `as`
+ * casts at any future TS-loose call site that passes a non-string value.
+ * Today's callers all funnel through `pevoString(...)` which returns
+ * `string | null`, so the typeof branch is exercised only by tests and by
+ * any future call site that bypasses `pevoString` — both of which we want
+ * to surface, not silently coerce.
  */
 export function validatedCid(
-  value: string | null | undefined,
-  context: { author: string; permlink: string },
+  value: unknown,
+  context: CidValidationContext,
 ): string | null {
   if (value === null || value === undefined) return null;
   if (typeof value !== 'string') {
-    // Defensive: callers pass through `pevoString`/`safePevoMeta` which
-    // already string-coerce, but the type signature admits `unknown`-shaped
-    // call sites in TS-loose neighborhoods.
+    // Defensive: today's callers pass through `pevoString`/`safePevoMeta`
+    // which already string-coerce, but the `unknown` signature admits
+    // future call sites that might bypass those helpers (e.g., a direct
+    // JSON-metadata read in a TS-loose neighborhood). When that happens
+    // we want a structured warn anchor, not a silent coercion.
     logger.warn(
       {
         event: 'paper_detail_ipfs_cid_rejected',

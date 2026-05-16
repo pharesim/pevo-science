@@ -13,7 +13,7 @@
  * `tests/routes/continuation-author-gate.test.ts`.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { isValidIpfsCid, validatedCid } from '../../src/lib/ipfs-validation.js';
+import { isValidIpfsCid, validatedCid, type CidValidationContext } from '../../src/lib/ipfs-validation.js';
 import { logger } from '../../src/logger.js';
 
 describe('isValidIpfsCid', () => {
@@ -86,7 +86,9 @@ describe('isValidIpfsCid', () => {
 });
 
 describe('validatedCid', () => {
-  const ctx = { author: 'alice', permlink: 'p1' };
+  // Constructed against the exported interface so a future rename or shape
+  // change to `CidValidationContext` ripples through tests at compile time.
+  const ctx: CidValidationContext = { author: 'alice', permlink: 'p1' };
 
   it('passes through a valid CIDv0 unchanged (no warn)', () => {
     const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as unknown as void);
@@ -156,6 +158,44 @@ describe('validatedCid', () => {
     const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as unknown as void);
     expect(validatedCid('QmYwAPJzv\n5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG', ctx)).toBe(null);
     expect(warnSpy).toHaveBeenCalledTimes(1);
+    warnSpy.mockRestore();
+  });
+
+  it('clears non-string input to null AND emits paper_detail_ipfs_cid_rejected warn (typeof guard liveness)', () => {
+    // Pins the round-2 design choice: `validatedCid` accepts `unknown` (not
+    // `string | null | undefined`), so the `typeof value !== 'string'`
+    // defensive branch is LIVE — not a dead type-narrowed branch. Today's
+    // callers all funnel through `pevoString(...)` which returns
+    // `string | null`, but future call sites in TS-loose neighborhoods may
+    // bypass `pevoString` and pass through a raw JSON-metadata read. When
+    // that happens we want the structured warn anchor to fire, not silent
+    // coercion. Mutation kill: deleting the typeof branch from
+    // `validatedCid` lets a non-string runtime value flow into the response
+    // via `String(value)` somewhere downstream and bypasses the operator
+    // warn anchor entirely.
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as unknown as void);
+    // Exercise a non-string input via the `unknown`-typed signature.
+    expect(validatedCid(42 as unknown, ctx)).toBe(null);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    const arg = warnSpy.mock.calls[0][0] as Record<string, unknown>;
+    expect(arg.event).toBe('paper_detail_ipfs_cid_rejected');
+    expect(arg.author).toBe('alice');
+    expect(arg.permlink).toBe('p1');
+    // Raw value was coerced to its String() form for the truncated prefix.
+    expect(arg.raw_cid_prefix).toBe('42');
+    warnSpy.mockRestore();
+  });
+
+  it('clears non-string object input to null with warn (defends against future raw-JSON-metadata callers)', () => {
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as unknown as void);
+    // An object (e.g., a nested JSON shape) — also exercises the typeof
+    // branch. The `String({})` coercion yields "[object Object]" which is
+    // length 15, well under the 32-char truncation guard.
+    expect(validatedCid({ unexpected: 'shape' } as unknown, ctx)).toBe(null);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    const arg = warnSpy.mock.calls[0][0] as Record<string, unknown>;
+    expect(arg.event).toBe('paper_detail_ipfs_cid_rejected');
+    expect((arg.raw_cid_prefix as string).length).toBeLessThanOrEqual(32);
     warnSpy.mockRestore();
   });
 });
