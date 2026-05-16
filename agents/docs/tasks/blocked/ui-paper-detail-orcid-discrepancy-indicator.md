@@ -63,3 +63,5 @@ This is purely a display-layer change; the chain post is immutable.
 - `agents/docs/api-contracts/papers.md` — PaperSummary / PaperDetail field documentation including `orcid_verified` and `orcid_discrepancy`.
 - `frontend/src/lib/accredited-directory.js` — existing prefill helpers (`applyHiveChangePrefill`, `applyAccreditedPrefill`); the publish/edit form-time behavior matches spec § 2.
 - Parent spec: archived as `architect-orcid-typed-vs-accredited-supersession-spec` on 2026-05-16 in `agents/docs/tasks-archive.md`.
+
+[BLOCKED by Backend] — UI cannot render `orcid_verified` / `orcid_discrepancy` until `backend-papers-canonical-orcid-resolution` (currently pending) emits those fields on the `authors[]` rows in `/api/papers` and `/api/papers/:author/:permlink` responses. Move back to `tasks/pending/` once the backend task archives and the contract docs (`api-contracts/papers.md`, `hive-schemas.md` § 1.1) reflect the new shape.
