@@ -42,6 +42,24 @@ test.use({ trace: 'off', video: 'off', screenshot: 'off' });
 
 const APP_TAG = 'pevotest';
 
+// Shared four-paragraph academic prose used by `buildPaperFixture.body`
+// (test 1's fixture body) AND by `NEW_BODY` in test 1's in-place edit
+// (which appends a single sentence to the Discussion paragraph). The
+// additive relationship is structural: NEW_BODY is `ORIG_BODY_PARAGRAPHS
+// + " <one short sentence>"`, so anyone editing the prose only touches
+// this constant and the diff-branch invariant survives. Sizing rationale:
+// the ~1.2KB original keeps the diff-match-patch representation of a
+// single-sentence addition far below the ~1.3KB full-body length, so
+// production at edit.js:1063 selects the diff branch
+// (`diffText.length < newPostBody.length`) and `body.startsWith('@@')`
+// holds. Earlier ~100-char bodies fell through to the full-body fallback
+// unconditionally, leaving the diff branch uncovered (round-3 hold).
+const ORIG_BODY_PARAGRAPHS =
+  '## Introduction\n\nThis paper investigates the foundational characteristics of end-to-end testing infrastructure in distributed scientific publishing systems. We begin by surveying the landscape of automated browser-driven test frameworks, including their respective tradeoffs around determinism, speed, and maintenance overhead.\n\n' +
+  '## Methodology\n\nOur approach combines property-based testing with scenario-driven integration coverage. We selected Playwright as the driver due to its strong support for parallel execution and its first-class handling of asynchronous DOM mutations introduced by reactive frameworks such as Alpine.js.\n\n' +
+  '## Results\n\nWe observed that the test suite caught seven distinct regression classes across the edit-paper flow. Three of these involved subtle interactions between the Tiptap editor mount sequence and the underlying Alpine reactive state, and would not have been caught by unit tests alone.\n\n' +
+  '## Discussion\n\nThese findings reinforce the value of end-to-end coverage for flows that bridge multiple reactive frameworks. Future work should extend the methodology to the publication and review flows, which share similar architectural patterns.';
+
 // ─── Test paper fixture ──────────────────────────────────────────────────
 //
 // Shape mirrors the `/api/papers/:author/:permlink` envelope that the edit
@@ -69,24 +87,18 @@ function buildPaperFixture({ author, permlink, coAuthorHive = null }) {
     authors,
     citations: [],
   };
-  // Body sized so a small edit produces a diff-match-patch text SHORTER
-  // than the full new body — required to exercise the diff-broadcast
-  // branch at edit.js:1063 (`broadcastBody = diffText.length >= newPostBody.length
-  // ? newPostBody : diffText`). With this multi-paragraph original (~1.2KB),
-  // a single-sentence addition gives a ~200-char diff vs a ~1.3KB full body,
-  // so the diff branch fires and `commentBody.body.startsWith('@@')` holds.
-  // The earlier ~100-char body fell through to the full-body fallback
-  // unconditionally, leaving the diff branch uncovered (round-3 hold).
+  // Body derives from the module-scope `ORIG_BODY_PARAGRAPHS` constant so
+  // the diff-broadcast invariant is structurally enforced: test 1's
+  // NEW_BODY is `ORIG_BODY_PARAGRAPHS + " <one short sentence>"`, which
+  // keeps the diff-match-patch representation far shorter than the full
+  // body. See ORIG_BODY_PARAGRAPHS docblock above for the sizing rationale.
   return {
     author,
     permlink,
     title: 'Original E2E Edit Paper Title',
     body:
       '## Abstract\n\nOriginal abstract text for the E2E edit spec.\n\n---\n\n' +
-      '## Introduction\n\nThis paper investigates the foundational characteristics of end-to-end testing infrastructure in distributed scientific publishing systems. We begin by surveying the landscape of automated browser-driven test frameworks, including their respective tradeoffs around determinism, speed, and maintenance overhead.\n\n' +
-      '## Methodology\n\nOur approach combines property-based testing with scenario-driven integration coverage. We selected Playwright as the driver due to its strong support for parallel execution and its first-class handling of asynchronous DOM mutations introduced by reactive frameworks such as Alpine.js.\n\n' +
-      '## Results\n\nWe observed that the test suite caught seven distinct regression classes across the edit-paper flow. Three of these involved subtle interactions between the Tiptap editor mount sequence and the underlying Alpine reactive state, and would not have been caught by unit tests alone.\n\n' +
-      '## Discussion\n\nThese findings reinforce the value of end-to-end coverage for flows that bridge multiple reactive frameworks. Future work should extend the methodology to the publication and review flows, which share similar architectural patterns.',
+      ORIG_BODY_PARAGRAPHS,
     authors,
     head_author: author,
     head_permlink: permlink,
@@ -195,11 +207,15 @@ test('original-author edit broadcasts in-place comment with same parent_permlink
   // and silently route the broadcast through the full-body fallback.
   const PREFILLED_ABSTRACT = 'Original abstract text for the E2E edit spec.';
   const NEW_ABSTRACT = PREFILLED_ABSTRACT + ' This revision sharpens the experimental claims.';
+  // NEW_BODY = ORIG_BODY_PARAGRAPHS + one short appended sentence. The
+  // additive shape is load-bearing: it keeps the diff-match-patch
+  // representation small relative to the full body, so production's
+  // length-gate ternary selects the diff branch and the
+  // `body.startsWith('@@')` assertion below holds. Wholesale replacement
+  // would balloon the diff past the full-body size and silently route
+  // the broadcast through the full-body fallback.
   const NEW_BODY =
-    '## Introduction\n\nThis paper investigates the foundational characteristics of end-to-end testing infrastructure in distributed scientific publishing systems. We begin by surveying the landscape of automated browser-driven test frameworks, including their respective tradeoffs around determinism, speed, and maintenance overhead.\n\n' +
-    '## Methodology\n\nOur approach combines property-based testing with scenario-driven integration coverage. We selected Playwright as the driver due to its strong support for parallel execution and its first-class handling of asynchronous DOM mutations introduced by reactive frameworks such as Alpine.js.\n\n' +
-    '## Results\n\nWe observed that the test suite caught seven distinct regression classes across the edit-paper flow. Three of these involved subtle interactions between the Tiptap editor mount sequence and the underlying Alpine reactive state, and would not have been caught by unit tests alone.\n\n' +
-    '## Discussion\n\nThese findings reinforce the value of end-to-end coverage for flows that bridge multiple reactive frameworks. Future work should extend the methodology to the publication and review flows, which share similar architectural patterns. We also note an open question around drift detection.';
+    ORIG_BODY_PARAGRAPHS + ' We also note an open question around drift detection.';
 
   await page.locator('input#edit-title').fill(NEW_TITLE);
 

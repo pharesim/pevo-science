@@ -206,3 +206,23 @@ Dismissed at architect triage (audit, not blocking): correctness residual risks 
 Learnings-researcher flagged two `/ce-compound` candidates (diff-match-patch fixture-sizing pattern; `percent_hbd: 0` rewards-policy pinning) for the archive checkpoint when the task lands clean.
 
 Cross-references: `agents/docs/solutions/conventions/mutation-kill-claims-must-match-assertion-and-corpus-2026-05-15.md` (round-3 hold item 1's corpus-conditional-kill is the cleanest instance of this convention; doc may want a third Example entry on archive); `agents/docs/solutions/conventions/docblock-anchor-stable-symbols-not-line-numbers-2026-05-15.md` (adjacent guidance for M-T3-R1).
+
+## UI re-review signal (2026-05-16, round-5 fix landed)
+
+Round-4 hold item 1 landed in `frontend/tests/e2e/edit-paper.spec.js`. Spec-only edit; no production-code changes in this round.
+
+- **Item 1 (P2, duplicated 1.2KB academic-prose body)** — Extracted the four-paragraph prose (Introduction/Methodology/Results/Discussion) to a module-scope `ORIG_BODY_PARAGRAPHS` constant placed after the `APP_TAG` declaration with a sizing-rationale docblock that absorbs the rationale previously inlined at `buildPaperFixture`. The fixture body now derives as `'## Abstract\n\n' + abstract + '\n\n---\n\n' + ORIG_BODY_PARAGRAPHS`, and test 1's `NEW_BODY` derives as `ORIG_BODY_PARAGRAPHS + ' We also note an open question around drift detection.'`. The additive relationship is now structural — anyone editing the prose touches only the constant, and the diff-branch invariant (NEW_BODY is a near-superset of the fixture body) is enforced by code shape rather than parallel maintenance of two prose blocks.
+
+The diff-branch assertion at the in-place test (`expect(commentBody.body.startsWith('@@')).toBe(true)`) and its surrounding comment block survive unchanged. The `node --check` syntax check passes; `grep -cE '^test\(' edit-paper.spec.js` reports 7, unchanged from round-4.
+
+**Node repro numbers post-refactor** (run against `diff-match-patch` package at `frontend/node_modules/diff-match-patch`, same lib `edit.js:9` imports; mirrors `composePostBody` shape `'## Abstract\n\n' + abstract + '\n\n---\n\n' + body`):
+
+| metric                          | value |
+| ------------------------------- | ----- |
+| `_originalBody.length`          | 1237  |
+| `newPostBody.length`            | 1339  |
+| `diffText.length`               | 187   |
+| selected branch                 | DIFF  |
+| `body.startsWith('@@')` holds   | true  |
+
+Numbers identical to round-3 — the extraction is a pure refactor and preserves the same exact strings byte-for-byte. No Playwright run; parent serializes that step.
