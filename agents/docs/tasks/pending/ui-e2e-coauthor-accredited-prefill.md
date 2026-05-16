@@ -83,3 +83,21 @@ Round-1 spec successfully exercises all 5 acceptance scenarios with load-bearing
 After landing items 1-7, `git mv` this file back to `tasks/review/`. I'll re-review the new diff scoped to commits since this hold block was written.
 
 Anchor: items 1-3 share the same goal (durable selectors + shared fixtures); land them in one commit. Item 5 (retry helper factor) is logically related to items 1-3 (shared E2E fixture surface) and can ride in the same commit. Items 4, 6, 7 are independent small additions to the spec; one commit covers them.
+
+## UI re-review signal (2026-05-16, round-2, commits 80ca559, 3243583)
+
+All 7 P2 hold items landed across the architect's anchored 2 commits.
+
+- Item 1 (P2, durable existing-coauthor-row selector) — `80ca559`. Added `data-testid="existing-coauthor-row"` to the existing-author row container in `frontend/src/pages/edit.js`. Replaced the spec's `page.locator('div.opacity-75').first()` with `page.getByTestId('existing-coauthor-row').first()`. The previous selector silently retargeted the first supplementary-file row (which shares the `opacity-75` class) the moment a fixture added a supplementary file without a corresponding existing co-author.
+- Item 2 (P2, durable coauthor-orcid-input selector) — `80ca559`. Added `data-testid="coauthor-orcid-input"` to the ORCID input on the new-co-author row template in `frontend/src/pages/publish.js` and `frontend/src/pages/edit.js`. The testid is on the new-row template only, so `.nth(rowIdx)` continues to address only new co-author rows. Replaced the XPath `following-sibling::input[1]` helper with `page.getByTestId('coauthor-orcid-input').nth(rowIdx)`.
+- Item 3 (P2, extract shared installPaperMocks fixture) — `80ca559`. New file `frontend/tests/e2e/fixtures/paper-mocks.js` exports `installPaperMocks` and `envelope`. The LIFO route-dispatch comment lives once on the shared helper. Imported in `frontend/tests/e2e/edit-paper.spec.js` and `frontend/tests/e2e/coauthor-accredited-prefill.spec.js`; the duplicated local copies were removed from both specs.
+- Item 5 (P2, factor pickAccreditedResearchers retry shell) — `80ca559`. Refactored `frontend/tests/e2e/fixtures/auth.js` to expose `pickAccreditedResearchers({ count, predicate, limit, attempts })` plus `pickAccreditedResearchersOnce()`. The single-pick `pickAccreditedResearcher(request)` was preserved as a backwards-compatible wrapper. The spec's hand-rolled 4-attempt retry collapsed to a one-line call into the shared helper with a non-empty-ORCID predicate.
+- Item 4 (P2, bounded waitForAccreditedDirectoryLoaded) — `3243583`. Added `{ timeout: 10_000 }` to the `waitForFunction` call. Wrapped with try/catch that re-throws "accredited directory never loaded. Check /api/accreditations for HAF availability and response shape." Message uses periods (no emdashes) per project CLAUDE.md.
+- Item 6 (P2, contract assertion on /api/accreditations list shape) — `3243583`. Added `assertAccreditationsListContract(request)` helper invoked at the start of each test (and ahead of the picker), asserting `list[0]` has both `username` and `orcid` properties via `toHaveProperty`. A field rename surfaces as a contract-level failure with a usable message rather than the misleading "no accredited researchers with non-empty ORCIDs" message.
+- Item 7 (P2, assert json_metadata is a string before JSON.parse) — `3243583`. Added `expect(typeof commentOp[1].json_metadata).toBe('string')` immediately before the `JSON.parse(commentOp[1].json_metadata)` call. Surfaces a publish-side regression that passes the metadata object unparsed as a contract-level failure rather than a cryptic `TypeError`.
+
+New file: `frontend/tests/e2e/fixtures/paper-mocks.js` (shared installPaperMocks + envelope helpers).
+
+Test status: Playwright deferred to parent agent per UI agent CLAUDE.md (E2E specs share the dev backend port; concurrent runs collide).
+
+NOT in scope (dismissed at architect triage): per-user `accreditation/:username` endpoint coverage, carve-out header cosmetic typo, item-9 empty-to-empty test.
