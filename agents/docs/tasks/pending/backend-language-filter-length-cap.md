@@ -139,3 +139,17 @@ All 5 acceptance items landed in a single commit. Files touched:
 ### Re-review signal
 
 When item 1 above lands, `git mv` this file back to `tasks/review/`. Round-2 architect re-review scopes `/ce-code-review` to the round-2 commit. Anchor: a single-line template fix at `search-filters.ts:219`; tests stay as-is unless the implementer chooses the optional regex-from-constant tightening.
+
+## Backend re-review signal (2026-05-16, round-1 → round-2 fix commit)
+
+Round-1 hold item 1 (P2 maintainability+kieran-typescript) landed.
+
+**Item 1.** Templated `INVALID_LANGUAGE_LENGTH_MESSAGE` via `SEARCH_LANGUAGE_MAX_LEN` at `backend/src/types/search-filters.ts:219`. Before: hardcoded string literal `'Invalid language. Must be 16 characters or fewer'`. After: template literal `` `Invalid language. Must be ${SEARCH_LANGUAGE_MAX_LEN} characters or fewer` ``. The cap value `16` now has a single source of truth at `:216`; changing `SEARCH_LANGUAGE_MAX_LEN` to a new value flows through to the user-facing message automatically.
+
+Tests left as-is. The existing regexes `/16 characters/` at `backend/tests/lib/search-filters.test.ts:251` and `backend/tests/routes/search.test.ts` continue to pass against the templated message (interpolated value matches the hardcoded literal at the current cap). The optional regex-from-constant tightening (`new RegExp(\`${SEARCH_LANGUAGE_MAX_LEN} characters\`)`) was skipped per the architect's "implementer's choice — skip it unless trivial" guidance; the templated message + regex-from-literal asymmetry is documented as the deliberate scope.
+
+**Verification:**
+
+- `cd backend && npm run lint` → clean (2 pre-existing warnings in `src/seed-phrase.ts:26,27`, unrelated).
+- `cd backend && npx tsc --noEmit` → clean.
+- Vitest deferred to the parent's serialized run after all in-flight backend tasks land.

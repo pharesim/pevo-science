@@ -216,7 +216,7 @@ export type LanguageFilterResult =
 export const SEARCH_LANGUAGE_MAX_LEN = 16;
 
 const INVALID_LANGUAGE_SHAPE_MESSAGE = 'Invalid language. Must be a single value (repeated params not allowed)';
-const INVALID_LANGUAGE_LENGTH_MESSAGE = 'Invalid language. Must be 16 characters or fewer';
+const INVALID_LANGUAGE_LENGTH_MESSAGE = `Invalid language. Must be ${SEARCH_LANGUAGE_MAX_LEN} characters or fewer`;
 
 export function parseLanguageFilter(raw: unknown): LanguageFilterResult {
   if (raw === undefined) return { ok: true, value: undefined };
