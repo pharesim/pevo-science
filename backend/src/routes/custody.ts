@@ -45,9 +45,9 @@ const broadcastLimiter = rateLimit({ name: 'custody-broadcast', windowMs: 60_000
 // not to penalize transient upstream failures (Hive RPC 503) or stolen-JWT
 // attackers spraying empty bodies (400 VALIDATION_ERROR). Failed responses
 // (status >= 400) don't count, so the legitimate user can always retry after
-// a transient failure within the hour. The full rationale lives in
-// `agents/docs/tasks/pending/backend-custody-upgrade-seed-phrase-reauth.md`
-// round-2 hold items 2 + 5.
+// a transient failure within the hour. Full rationale (skipFailedRequests
+// design choice + stolen-JWT-DoS protection) lives in the
+// `RateLimitConfig.skipFailedRequests` JSDoc above the type definition.
 const upgradeLimiter = rateLimit({ name: 'custody-upgrade', windowMs: 3_600_000, max: 1, keyFn: byAccount, skipFailedRequests: true });
 // Tighter than broadcast: each issuance pays a full argon2.verify (~50 ms × N
 // in-flight under the JS-level semaphore). 10/min/account is generous for the
@@ -911,13 +911,20 @@ router.post('/session-auth', verifyHiveSignature, sessionAuthLimiter, async (req
 //     `derived_pubkey` (binding check), and requires that pubkey to appear in
 //     the on-chain account's posting/active/owner key-auths set fetched via
 //     `getAccounts(username)`.
-//   • `signed_at` is an ISO-8601 timestamp; we enforce a past-only 60s window
-//     (future timestamps reject) so the captured-proof replay race window stays
-//     bounded at 60s rather than the 120s a symmetric `|delta| < 60s` form would
-//     permit. The `signed_at` is excluded from the request body when hashing for
-//     signature reconstruction because the entire body is what the client signs
-//     over; we re-build the canonical message from the body fields. This avoids
-//     the circular-hash problem of having the signature embedded in the message
+//   • `signed_at` is an ISO-8601 timestamp; we enforce a past-biased window
+//     with a small forward-skew tolerance: `tsMs > Date.now() +
+//     UPGRADE_PROOF_FUTURE_SKEW_MS` rejects, and `Date.now() - tsMs >
+//     UPGRADE_PROOF_TIMESTAMP_WINDOW_MS` rejects. The 5s forward tolerance
+//     absorbs typical client clock drift (non-NTP devices, mobile, browsers
+//     without precision-time-sync) without materially extending the captured-
+//     proof replay race window (60s past + 5s forward = 65s, still under
+//     adversarial-observation thresholds). The symmetric `|delta| < 60s` form
+//     this replaced doubled the race window to 120s; the zero-skew form that
+//     followed locked out users with 100ms of normal forward drift. The
+//     `signed_at` is excluded from the request body when hashing for signature
+//     reconstruction because the entire body is what the client signs over;
+//     we re-build the canonical message from the body fields. This avoids the
+//     circular-hash problem of having the signature embedded in the message
 //     being signed.
 //
 // We require BOTH a `derived_pubkey` declaration AND a `signed_proof` signature
@@ -927,6 +934,10 @@ router.post('/session-auth', verifyHiveSignature, sessionAuthLimiter, async (req
 // post-rotation); the signature requirement closes that gap by proving private-
 // key possession in addition.
 const UPGRADE_PROOF_TIMESTAMP_WINDOW_MS = 60_000;
+// Forward-skew tolerance (5s) absorbs typical client clock drift without
+// materially extending the captured-proof replay race window. See
+// `signed_at` discussion in the doc comment above for rationale.
+const UPGRADE_PROOF_FUTURE_SKEW_MS = 5_000;
 
 function buildCustodyUpgradeChallenge(input: {
   appTag: string;
@@ -977,16 +988,20 @@ router.post('/upgrade', verifyHiveSignature, upgradeLimiter, async (req: Request
     return sendError(res, 400, 'VALIDATION_ERROR', 'signed_at is required');
   }
 
-  // Freshness gate: past-only 60s window. The symmetric form (`Math.abs(...)`)
-  // accepted `signed_at = now + 60s`, effectively doubling the captured-proof
-  // replay race window to 120s. One-sided rejects future-dated timestamps
-  // deterministically — clock-skew tolerance is not load-bearing for an
-  // upgrade proof; the user signs in the same second they submit.
+  // Freshness gate: past-biased 60s window with 5s forward-skew tolerance.
+  // The symmetric `Math.abs(...) > 60s` form this replaced doubled the
+  // captured-proof replay race window to 120s. The zero-forward-skew form
+  // that followed rejected users with 100ms of normal forward clock drift
+  // (common on non-NTP devices, mobile, browsers without precision-time-
+  // sync). The 5s forward tolerance absorbs that drift while keeping the
+  // race window bounded (60s past + 5s forward = 65s, well under
+  // adversarial-observation thresholds).
   const tsMs = Date.parse(signedAt);
+  const nowMs = Date.now();
   if (
     !Number.isFinite(tsMs) ||
-    tsMs > Date.now() ||
-    Date.now() - tsMs > UPGRADE_PROOF_TIMESTAMP_WINDOW_MS
+    tsMs > nowMs + UPGRADE_PROOF_FUTURE_SKEW_MS ||
+    nowMs - tsMs > UPGRADE_PROOF_TIMESTAMP_WINDOW_MS
   ) {
     return sendError(res, 401, 'UNAUTHORIZED', 'Upgrade proof expired or invalid timestamp');
   }

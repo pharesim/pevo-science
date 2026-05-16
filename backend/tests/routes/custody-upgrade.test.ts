@@ -392,6 +392,26 @@ describe.skipIf(!dbReachable)(
       expect(res.body.error.code).toBe('UNAUTHORIZED');
     });
 
+    // Round-3 hold item 3: clock-skew tolerance is an Option-A 5s forward
+    // skew. A timestamp 30s in the future exceeds the 5s tolerance and
+    // must reject. The symmetric `Math.abs(...) < 60s` form this replaced
+    // would have accepted +30s and doubled the replay race window; the
+    // zero-skew form locked out users with 100ms of normal forward drift.
+    // This test pins the bounded forward window.
+    it('Future-dated signed_at (> 5s skew tolerance): returns 401 UNAUTHORIZED', async () => {
+      const futureTs = new Date(Date.now() + 30_000).toISOString();
+      const proof = buildProofBody(REJECT_USER, wifR, { signedAtOverride: futureTs });
+      getAccountsMock.mockResolvedValue([fakeChainAccount(proof.derived_pubkey)]);
+
+      const res = await request(app)
+        .post('/api/custody/upgrade')
+        .set('Authorization', bearerForLight(REJECT_USER))
+        .send(proof);
+
+      expect(res.status).toBe(401);
+      expect(res.body.error.code).toBe('UNAUTHORIZED');
+    });
+
     it('Malformed signed_proof (bad hex): returns 401 UNAUTHORIZED', async () => {
       const proof = buildProofBody(REJECT_USER, wifR);
       getAccountsMock.mockResolvedValue([fakeChainAccount(proof.derived_pubkey)]);
