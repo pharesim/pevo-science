@@ -3,6 +3,7 @@ import {
   validateSearchQuery,
   escapeLikePattern,
   SEARCH_QUERY_MAX_LEN,
+  SEARCH_LANGUAGE_MAX_LEN,
   isSearchType,
   isSearchSource,
   isSearchSort,
@@ -200,13 +201,55 @@ describe('isSearchSort — literal-tuple guard for ?sort=', () => {
   });
 });
 
-describe('parseLanguageFilter — typeof-narrow on ?language=', () => {
+describe('parseLanguageFilter — typeof-narrow + length cap on ?language=', () => {
   it('returns ok=true value=undefined when raw is undefined (absent)', () => {
     expect(parseLanguageFilter(undefined)).toEqual({ ok: true, value: undefined });
   });
 
+  it('returns ok=true value=undefined for empty string (empty-as-absent)', () => {
+    // `?language=` (no value) yields the empty string in Express's parsed
+    // query. The contract treats empty string as ABSENT, mirroring the
+    // `?q=` whitespace-only contract — avoids querying for papers with a
+    // literal empty-string language tag.
+    expect(parseLanguageFilter('')).toEqual({ ok: true, value: undefined });
+  });
+
   it('returns ok=true value=raw for a single string', () => {
     expect(parseLanguageFilter('en')).toEqual({ ok: true, value: 'en' });
+  });
+
+  it('returns ok=true value=raw for a BCP-47 subtagged shape (pt-BR)', () => {
+    // Real-world BCP-47 tags often include a region subtag. 5 chars is
+    // well under the cap; the test pins that no charset constraint
+    // rejects the hyphen.
+    expect(parseLanguageFilter('pt-BR')).toEqual({ ok: true, value: 'pt-BR' });
+  });
+
+  it('exposes SEARCH_LANGUAGE_MAX_LEN === 16', () => {
+    // Pinning the exported constant prevents a silent widening of the cap.
+    expect(SEARCH_LANGUAGE_MAX_LEN).toBe(16);
+  });
+
+  it('accepts input at exactly SEARCH_LANGUAGE_MAX_LEN chars (boundary accept)', () => {
+    // Boundary: the cap is inclusive (`raw.length > MAX` is the reject
+    // branch). 16 chars must be accepted; an off-by-one flip from `>` to
+    // `>=` would surface here.
+    const at = 'a'.repeat(SEARCH_LANGUAGE_MAX_LEN);
+    expect(at).toHaveLength(16);
+    expect(parseLanguageFilter(at)).toEqual({ ok: true, value: at });
+  });
+
+  it('rejects input at exactly SEARCH_LANGUAGE_MAX_LEN + 1 chars (boundary reject)', () => {
+    // Boundary: 17 chars must be rejected. Together with the 16-accept case
+    // above this pins `>` (the correct operator). The error message must
+    // mention "16 characters" so operators can identify the cap from logs.
+    const over = 'a'.repeat(SEARCH_LANGUAGE_MAX_LEN + 1);
+    expect(over).toHaveLength(17);
+    const result = parseLanguageFilter(over);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.message).toMatch(/16 characters/);
+    }
   });
 
   it('rejects repeated-param string[] shape (?language=en&language=fr)', () => {
@@ -217,7 +260,7 @@ describe('parseLanguageFilter — typeof-narrow on ?language=', () => {
     const result = parseLanguageFilter(['en', 'fr']);
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.message).toMatch(/language/i);
+      expect(result.message).toMatch(/single value/i);
     }
   });
 
@@ -225,7 +268,7 @@ describe('parseLanguageFilter — typeof-narrow on ?language=', () => {
     const result = parseLanguageFilter(42);
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.message).toMatch(/language/i);
+      expect(result.message).toMatch(/single value/i);
     }
   });
 });

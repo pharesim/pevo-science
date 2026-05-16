@@ -172,21 +172,36 @@ export function isSearchSort(s: string): s is SearchSort {
 
 /**
  * Result returned by `parseLanguageFilter`:
- *   - `{ ok: true, value: string | undefined }` — absent (undefined) or a
- *     single string value passed through unchanged.
+ *   - `{ ok: true, value: string | undefined }` — absent (undefined or
+ *     empty string) or a single non-empty string passed through unchanged.
  *   - `{ ok: false, message }` — non-string shape (repeated `?language=`
- *     yields `string[]`; anything else also rejects).
+ *     yields `string[]`) or length exceeds SEARCH_LANGUAGE_MAX_LEN.
  *
- * **Contract decision (typeof-narrow only, no charset constraint).** The
- * route currently binds `?language=` value through
+ * **Contract decision: typeof-narrow + length cap, charset deferred.** The
+ * route binds `?language=` value through
  * `c.json_metadata ->> 'language'` for an exact-equality match. Stored
- * values are not centrally validated — historical papers may have any
- * shape. Enforcing ISO 639-1 (e.g. `^[a-z]{2}$`) is a defensible follow-up
- * but would change the observable accept-set and risks orphaning real
- * papers in the corpus. The sweep this helper closes is the silent-coerce
- * vector (repeated params → `"en,fr"`), which is unambiguously a bug.
- * Charset/length enforcement is intentionally out of scope here; revisit
- * when the publishing UI's allowed-language set is pinned end-to-end.
+ * values are not centrally validated — historical papers (including
+ * bridge imports from arXiv/Crossref) may have any shape. Length is
+ * capped at SEARCH_LANGUAGE_MAX_LEN = 16, which fits BCP-47 / IETF
+ * language tags comfortably (most real tags are ≤10 chars; 16 leaves
+ * headroom for shapes like `zh-Hant-TW`). The cap closes the cache-key
+ * enumeration vector flagged during the typeof-narrow-sweep cluster-3
+ * review (2026-05-16): without it, an attacker could enumerate distinct
+ * `?language=` values to populate distinct `hafCache` entries on
+ * cache-miss, costing HAF backend CPU. SHA-256 hashing of the cache
+ * `rawKey` bounds Redis KEY size but does not bound the COUNT of distinct
+ * cache entries.
+ *
+ * Empty-string handling: `?language=` (no value) yields the empty string.
+ * Treated as ABSENT (returns `{ok: true, value: undefined}`), mirroring
+ * the `?q=` whitespace-only contract — avoids querying for papers with
+ * a literal empty-string language tag.
+ *
+ * Charset enforcement (e.g. `^[a-zA-Z0-9-]+$` for BCP-47) is intentionally
+ * out of scope here. The publishing UI's allowed-language set is not yet
+ * pinned end-to-end, and enforcing a charset would orphan any historical
+ * bridge papers with non-conforming tags. A separate follow-up can pin
+ * the charset once the publishing UI lands.
  *
  * Option A from the sweep spec (mirror `?type=` 400-on-repeated) is the
  * adopted contract; Option B (silent-unfilter like `?discipline=`) was
@@ -197,10 +212,18 @@ export type LanguageFilterResult =
   | { ok: true; value: string | undefined }
   | { ok: false; message: string };
 
-const INVALID_LANGUAGE_MESSAGE = 'Invalid language. Must be a single string value';
+/** Maximum allowed length of the raw `?language=` parameter, in code points. */
+export const SEARCH_LANGUAGE_MAX_LEN = 16;
+
+const INVALID_LANGUAGE_SHAPE_MESSAGE = 'Invalid language. Must be a single value (repeated params not allowed)';
+const INVALID_LANGUAGE_LENGTH_MESSAGE = 'Invalid language. Must be 16 characters or fewer';
 
 export function parseLanguageFilter(raw: unknown): LanguageFilterResult {
   if (raw === undefined) return { ok: true, value: undefined };
-  if (typeof raw === 'string') return { ok: true, value: raw };
-  return { ok: false, message: INVALID_LANGUAGE_MESSAGE };
+  if (typeof raw !== 'string') return { ok: false, message: INVALID_LANGUAGE_SHAPE_MESSAGE };
+  if (raw.length === 0) return { ok: true, value: undefined };
+  if (raw.length > SEARCH_LANGUAGE_MAX_LEN) {
+    return { ok: false, message: INVALID_LANGUAGE_LENGTH_MESSAGE };
+  }
+  return { ok: true, value: raw };
 }

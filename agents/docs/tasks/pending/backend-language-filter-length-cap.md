@@ -89,3 +89,13 @@ Add a length cap (and optionally a charset constraint) to `parseLanguageFilter` 
 - `agents/docs/tasks/archive/be-discipline-length-cap.md` (100-char cap on `?discipline=`; analogous design)
 - `backend/src/types/search-filters.ts:180-194` — the docblock deferral this task closes
 - `backend/src/types/disciplines.ts` — `validateDisciplineFilter` pattern (Result-shape return, length cap, charset guard)
+
+## Backend implementation signal (2026-05-16)
+
+All 5 acceptance items landed in a single commit. Files touched:
+
+- `backend/src/types/search-filters.ts` — added `SEARCH_LANGUAGE_MAX_LEN = 16` exported constant; rewrote `parseLanguageFilter` to the 5-branch contract spec'd by the task (undefined → ok-absent; non-string → fail with refined message naming the "single value (repeated params not allowed)" contract; empty string → ok-absent; over-cap → fail with length-cap message naming "16 characters"; otherwise → ok with raw value). Rewrote the helper docblock to reflect that LENGTH is now enforced (cap = 16) and charset is still deferred, naming the cluster-3 review pass (2026-05-16) as the gate that closed the length deferral. The contract decision for empty-string-as-absent is also documented inline.
+- `backend/tests/lib/search-filters.test.ts` — extended the `parseLanguageFilter` describe block with 6 new specs covering: empty-string-as-absent, BCP-47 subtagged shape (`pt-BR`), `SEARCH_LANGUAGE_MAX_LEN` constant pin, 16-char boundary accept, 17-char boundary reject (with `/16 characters/` message), and refined the existing repeated-param / non-string assertions to match `/single value/i` (the new error-message contract). 8 specs total per acceptance criterion #2.
+- `backend/tests/routes/search.test.ts` — added 2 route-level specs: `?language=<17-char>` → 400 with length-cap message; `?language=en` → 200 happy-path.
+
+`npm run lint` clean (pre-existing seed-phrase.ts warnings only); `npx tsc --noEmit` clean. Vitest deferred to the parent's serialized run after all in-flight backend tasks land.

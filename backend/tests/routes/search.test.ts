@@ -236,6 +236,23 @@ describe('GET /api/search', () => {
     expect(res.body.status).toBe('ok');
   });
 
+  // BE-LANGUAGE-FILTER-LENGTH-CAP: `?language=` enforces a 16-char length
+  // cap (BCP-47 tags are well under 16; the cap bounds cache-key
+  // enumeration). The empty-string variant is treated as absent (returns
+  // 200 unfiltered), mirroring the `?q=` whitespace-only contract.
+  it('?language=<17-char> returns 400 with length-cap message', async () => {
+    const res = await request(app).get(`/api/search?q=science&language=${'a'.repeat(17)}`);
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('BAD_REQUEST');
+    expect(res.body.error.message).toMatch(/16 characters/);
+  });
+
+  it('?language=en returns 200 (happy path; filter applied)', { timeout: 60_000 }, async () => {
+    const res = await request(app).get('/api/search?q=science&language=en');
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('ok');
+  });
+
   // BE-PAPERS-DISCIPLINE-FIELD-CANON-NAME: per-entry `discipline` response
   // field on `paper` / `bridge_paper` result types must be canon_name
   // (lowercased) if/when the search response shape adds one. The current
