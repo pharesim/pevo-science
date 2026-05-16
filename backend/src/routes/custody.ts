@@ -366,8 +366,12 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
     // must have been minted for THIS exact target — otherwise a compromised
     // SPA could swap the action or paper between the user's auth ceremony
     // and the broadcast. `consentScan.action` is narrowed to the consent
-    // action set at this point; cast is safe because `CONSENT_OP_ACTIONS`
-    // is the same membership as `FreshAuthTargetAction`.
+    // action set at this point; cast is safe because `consentScan.action`
+    // has already been filtered through `CONSENT_OP_ACTIONS.has()` at the
+    // scan site (see `findConsentOpsInBundle` around line 133), and those
+    // values are a strict subset of `FreshAuthTargetAction` (which now
+    // additionally includes `set_password` and `change_email` for the
+    // non-broadcast surfaces).
     const expectedTarget: FreshAuthTarget = {
       action: consentScan.action as FreshAuthTargetAction,
       root_author: consentScan.rootAuthor,

@@ -8,8 +8,46 @@
  * separate router file (settings.ts) and was not previously covered by any
  * route-level test for the argon2-error path.
  *
- * `verifyHiveSignature` is NOT mocked. The route requires authentication;
- * we satisfy it via a legitimate Bearer JWT signed with `config.sessionSecret`.
+ * ── vi.mock carve-out justification (per root CLAUDE.md "Running Tests"
+ * + `agents/docs/solutions/conventions/test-mock-carve-out-clause-c-2026-05-04.md`) ──
+ *
+ * (a) IMPRACTICALITY OF REAL ARGON2 SATURATION + REAL REDIS:
+ *     - `runWithArgon2Slot` mock throws `ArgonQueueFullError` /
+ *       `ShuttingDownError` / `ArgonAbortError` synchronously rather than
+ *       requiring 50 concurrent stuck argon2 hashes (MAX_QUEUE_DEPTH=50)
+ *       AND a real SIGTERM-drain mid-test (which would poison every
+ *       subsequent test in the same Vitest worker — `drainArgon2Queue`
+ *       on the singleton is irreversible, see argon2-semaphore.ts:362-369).
+ *       The mock injects the exact errors the production handler is required
+ *       to catch; the route-level translation is what's under test, not the
+ *       semaphore's saturation logic (covered by `tests/lib/argon2-semaphore.test.ts`).
+ *     - `getAppPool()` mock seeds DB rows deterministically without writing
+ *       to the real `accounts` table during a test run.
+ *     - `redis.js` mock (via `redisStubFactory`) forces the in-memory
+ *       fallback tier of the fresh-auth primitive (`getRedis()` returns null
+ *       / `isRedisAvailable()` returns false), so each test mints + consumes
+ *       its proof through the memStore path. This is one of the
+ *       carve-out-eligible mock targets (shared pool/cache helpers per the
+ *       mock-target scope clause). Mocking `redis.js` is what gates the
+ *       per-test determinism: with a real Redis the mint side would persist
+ *       proofs across cases and the saturation arm couldn't be re-driven
+ *       deterministically.
+ *
+ * (b) `verifyHiveSignature` is NOT mocked. The route requires
+ *     authentication; we satisfy it via a legitimate Bearer JWT signed with
+ *     `config.sessionSecret`. Cryptographic verification still runs on the
+ *     real Bearer JWT path — only the argon2 slot helper, the DB pool, and
+ *     the Redis pool helper are mocked.
+ *
+ * (c) REAL-PATH COMPANION: `settings-set-password-fresh-auth.test.ts` is the
+ *     real-path companion for this transform-axis file. The companion
+ *     exercises the integrated fresh-auth + UPDATE path against real Redis
+ *     + real `getAppPool` + real argon2, covering the wiring-axis risk class
+ *     that this transform-axis test pins (fresh-auth proof storage,
+ *     single-use, TTL, target binding, real DB state-C → state-B
+ *     transition). The risk classes are complementary: the mocked file
+ *     pins the argon2-failure → HTTP translation; the real-path companion
+ *     pins the wired storage + handler behavior.
  *
  * `getAppPool()` IS mocked so the row the route reads has `password_hash =
  * NULL` AND `orcid` non-null (the two preconditions for set-password

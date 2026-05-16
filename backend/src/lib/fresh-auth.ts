@@ -68,24 +68,35 @@ export const CONSENT_OP_ACTIONS: ReadonlySet<string> = new Set([
 
 export type FreshAuthMechanism = 'password' | 'orcid';
 
-/** Round-5 hold #3: action component of the per-op target binding. The
- *  fresh-auth proof binds to the (action, root_author, root_permlink)
- *  triple of the op being authorized. Without this binding, a
- *  compromised SPA could swap action/target between the user's
- *  authentication ceremony and the route that consumes the proof
- *  ("substitute author_resign on paper Y for the author_accept on paper X
- *  the user thought they authorized").
+/** Action component of the per-op target binding. The fresh-auth proof
+ *  binds to the (action, root_author, root_permlink) triple of the op being
+ *  authorized. Without this binding, a compromised SPA could swap
+ *  action/target between the user's authentication ceremony and the route
+ *  that consumes the proof ("substitute author_resign on paper Y for the
+ *  author_accept on paper X the user thought they authorized").
  *
- *  Non-broadcast critical actions (`set_password`, `change_email`) reuse
- *  the same target-binding primitive even though they don't broadcast to
- *  chain. They bind to `(action, <username>, '')` via per-action helpers
- *  below (`setPasswordFreshAuthTarget`, `changeEmailFreshAuthTarget`).
- *  Collision-free against consent-op proofs because consent ops require
- *  non-empty `root_permlink` at the route layer. `set_password`
- *  transitions state C → state B per ARCHITECTURE.md § 6.3 and requires
- *  fresh ORCID re-auth per § 6.4; `change_email` transitions the address
- *  that receives password-reset tokens (auth-adjacent factor), so the
- *  JWT-only path is closed via a body-proof check per § 6.5 invariant #1. */
+ *  Two sub-patterns share this union:
+ *
+ *  - **Consent-op actions (broadcast):** `author_accept` and `author_resign`
+ *    bind to `(action, <paper root_author>, <paper root_permlink>)`. These
+ *    actions issue a `custom_json` op on chain (see `CONSENT_OP_ACTIONS`
+ *    above), and the `root_*` fields come from the paper being acted on.
+ *
+ *  - **Non-broadcast critical actions:** `set_password` and `change_email`
+ *    bind to `(action, <authenticated username>, '')` via per-action helpers
+ *    below (`setPasswordFreshAuthTarget`, `changeEmailFreshAuthTarget`).
+ *    Empty `root_permlink` is collision-free against consent-op proofs
+ *    because the route layer for consent ops forbids empty `root_permlink`
+ *    strings. `set_password` transitions state C → state B per
+ *    ARCHITECTURE.md § 6.3 and requires fresh ORCID re-auth per § 6.4;
+ *    `change_email` transitions the address that receives password-reset
+ *    tokens (auth-adjacent factor), so the JWT-only path is closed via a
+ *    body-proof check per § 6.5 invariant #1.
+ *
+ *  Collision-freedom across the union hinges on the `action` field in
+ *  `computeFreshAuthTargetHash`: even two non-broadcast actions that share
+ *  the same `(<username>, '')` tail produce distinct target hashes because
+ *  `action` is length-prefixed into the encoded bytes. */
 export type FreshAuthTargetAction =
   | 'author_accept'
   | 'author_resign'
@@ -103,16 +114,15 @@ export interface FreshAuthTarget {
   root_permlink: string;
 }
 
-/** Round-6 of BACKEND-SETTINGS-SET-PASSWORD-FRESH-AUTH: helper that builds
- *  the canonical `FreshAuthTarget` for the `/set-password` flow. The target
- *  binds the proof to the username so a proof minted for user A cannot
- *  authorize a set-password on user B (the `consumeFreshAuthToken` username
- *  check already enforces this; the target binding is a defense-in-depth
- *  fold that also kills swap-of-action substitution attacks at the consume
- *  side). `root_permlink` is intentionally empty: no paper is involved in
- *  set-password, and the route layer for consent ops forbids empty
- *  `root_permlink` strings, so this hash cannot collide with any
- *  consent-op proof. */
+/** Helper that builds the canonical `FreshAuthTarget` for the `/set-password`
+ *  flow. The target binds the proof to the username so a proof minted for
+ *  user A cannot authorize a set-password on user B (the
+ *  `consumeFreshAuthToken` username check already enforces this; the target
+ *  binding is a defense-in-depth fold that also kills swap-of-action
+ *  substitution attacks at the consume side). `root_permlink` is
+ *  intentionally empty: no paper is involved in set-password, and the route
+ *  layer for consent ops forbids empty `root_permlink` strings, so this
+ *  hash cannot collide with any consent-op proof. */
 export function setPasswordFreshAuthTarget(username: string): FreshAuthTarget {
   return {
     action: 'set_password',
@@ -446,17 +456,34 @@ export async function issueSessionFreshAuthToken(
   return { token, expires_at: expiresAt, mechanism };
 }
 
+/** Reasons for a non-valid fresh-auth verify outcome.
+ *
+ *  `consumeFreshAuthToken` and its session-kind sibling produce every value
+ *  in this union except `'wrong_mechanism'`. `'wrong_mechanism'` is
+ *  synthesized at the route layer (e.g., `settings.ts` set-password +
+ *  change-email handlers) AFTER a successful consume returned
+ *  `{ valid: true, mechanism }` but the route's per-account mechanism
+ *  predicate (§ 6.4: factor must be registered on the account) rejects the
+ *  result. Keeping the value in this union — rather than as a magic string
+ *  at each call site — gives the typechecker compile-time enforcement that
+ *  every route that emits this reason agrees on the spelling. A typo at a
+ *  third call site (`'wrong-mechanism'`, `'mechanism_mismatch'`) would fail
+ *  the assignability check against `details.reason` rather than silently
+ *  landing a divergent wire token. */
+export type FreshAuthVerifyFailureReason =
+  | 'missing'
+  | 'expired'
+  | 'username_mismatch'
+  | 'target_mismatch'
+  | 'malformed'
+  | 'kind_mismatch'
+  | 'wrong_mechanism';
+
 type FreshAuthVerifyResult =
   | { valid: true; mechanism: FreshAuthMechanism }
   | {
       valid: false;
-      reason:
-        | 'missing'
-        | 'expired'
-        | 'username_mismatch'
-        | 'target_mismatch'
-        | 'malformed'
-        | 'kind_mismatch';
+      reason: FreshAuthVerifyFailureReason;
     };
 
 /**

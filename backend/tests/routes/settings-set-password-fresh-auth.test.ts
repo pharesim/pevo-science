@@ -127,9 +127,12 @@ describe.skipIf(!dbReachable)('POST /api/settings/set-password — fresh-auth ga
     expect(rows[0].password_hash).toBeNull();
   });
 
-  it('rejects with 401 FRESH_AUTH_REQUIRED when proof was issued for a different user (cross-user replay)', async () => {
+  it('rejects with 403 FRESH_AUTH_REQUIRED when proof was issued for a different user (cross-user replay)', async () => {
     // Mint a proof for OTHER_USER, attempt to use it on STATE_C_USER's
     // set-password request. The consume-side username binding rejects.
+    // Per the canonical status-code split mirrored from custody.ts:397-402,
+    // `username_mismatch` is a binding violation → 403 (the SPA
+    // error-router treats 401 → re-login, 403 → wrong-account/wrong-proof).
     const issued = await issueFreshAuthToken(
       OTHER_USER,
       'orcid',
@@ -139,9 +142,42 @@ describe.skipIf(!dbReachable)('POST /api/settings/set-password — fresh-auth ga
       .post('/api/settings/set-password')
       .set('Authorization', `Bearer ${bearer(STATE_C_USER)}`)
       .send({ password: 'FreshPassword1', fresh_auth_proof: issued.token });
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(403);
     expect(res.body.error.code).toBe('FRESH_AUTH_REQUIRED');
     expect(res.body.error.details?.reason).toBe('username_mismatch');
+
+    const pool = getAppPool()!;
+    const { rows } = await pool.query<{ password_hash: string | null }>(
+      'SELECT password_hash FROM accounts WHERE username = $1',
+      [STATE_C_USER],
+    );
+    expect(rows[0].password_hash).toBeNull();
+  });
+
+  it('rejects with 403 FRESH_AUTH_REQUIRED + target_mismatch when proof is bound to a consent-op target (cross-target)', async () => {
+    // Defense-in-depth pin at the route boundary: a proof minted for a
+    // consent-op target (`author_accept` on some paper) is bound to a
+    // different `target_hash` than the set-password proof (which is bound
+    // to `(set_password, <username>, '')`). The route's
+    // `computeFreshAuthTargetHash(setPasswordFreshAuthTarget(username))`
+    // recomputes the expected hash; `consumeFreshAuthToken` rejects on
+    // mismatch with `reason: 'target_mismatch'`. Without this route-level
+    // test a future refactor of the target encoding could silently allow
+    // consent-op proofs to authorize set-password — the library-level
+    // target-mismatch tests cover the primitive, but not its wiring through
+    // this route.
+    const issued = await issueFreshAuthToken(
+      STATE_C_USER,
+      'orcid',
+      { action: 'author_accept', root_author: STATE_C_USER, root_permlink: 'paper-v1' },
+    );
+    const res = await request(app)
+      .post('/api/settings/set-password')
+      .set('Authorization', `Bearer ${bearer(STATE_C_USER)}`)
+      .send({ password: 'FreshPassword1', fresh_auth_proof: issued.token });
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe('FRESH_AUTH_REQUIRED');
+    expect(res.body.error.details?.reason).toBe('target_mismatch');
 
     const pool = getAppPool()!;
     const { rows } = await pool.query<{ password_hash: string | null }>(

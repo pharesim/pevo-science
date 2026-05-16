@@ -21,6 +21,7 @@ import {
   consumeFreshAuthToken,
   setPasswordFreshAuthTarget,
   type FreshAuthMechanism,
+  type FreshAuthVerifyFailureReason,
 } from '../lib/fresh-auth.js';
 
 const readLimiter = rateLimit({ name: 'settings-read', windowMs: 60_000, max: 30, keyFn: byIp });
@@ -266,12 +267,16 @@ router.post('/email', writeLimiter, verifyHiveSignature, async (req: Request, re
             },
             'settings.email change-email rejected — fresh-auth proof mechanism not registered on account',
           );
+          // Synthesized reason — see the FreshAuthVerifyFailureReason
+          // doc-comment in fresh-auth.ts. The typed const forces a compile
+          // error if a future narrowing of the union drops the value.
+          const reason: FreshAuthVerifyFailureReason = 'wrong_mechanism';
           return sendError(
             res,
             401,
             'FRESH_AUTH_REQUIRED',
             'Re-authentication required to change your email. Please complete the fresh-auth challenge and retry.',
-            { reason: 'wrong_mechanism' },
+            { reason },
           );
         }
       }
@@ -573,6 +578,19 @@ router.post('/set-password', writeLimiter, verifyHiveSignature, async (req: Requ
     // via `GET /api/settings/email`'s `hasPassword` field for the
     // JWT-holder). The check runs BEFORE the argon2 hash so a missing /
     // bad proof short-circuits before paying argon2 wall-time.
+    //
+    // Why no sentinel burn: the bad-proof / good-proof timing differential
+    // is an accepted residual per
+    // `agents/docs/solutions/conventions/timing-equalization-sub-branch-oracles-2026-04-21.md`.
+    // The attacker must already hold a valid JWT to reach this gate (the
+    // route is behind `verifyHiveSignature`), and `hasPassword` (the
+    // equivalent state-C / state-B distinction this timing oracle would
+    // leak) is already discoverable to a JWT-holder via
+    // `GET /api/settings/email`'s `hasPassword` field. Burning argon2 on
+    // the rejection path to equalize would double the rejection-path
+    // response time and burn argon2 capacity on invalid traffic for zero
+    // additional security since the attacker already knows the answer
+    // through a cheaper channel.
     const rawProof = (req.body as { fresh_auth_proof?: unknown })?.fresh_auth_proof;
     const proofToken = typeof rawProof === 'string' ? rawProof : undefined;
     const expectedTargetHash = computeFreshAuthTargetHash(
@@ -589,9 +607,22 @@ router.post('/set-password', writeLimiter, verifyHiveSignature, async (req: Requ
         },
         'set-password rejected — fresh-auth proof invalid',
       );
+      // Mirror the canonical mapping at custody.ts:397-402 + the sibling
+      // change-email handler at settings.ts:230-235: binding violations
+      // (token issued for a different user / target / kind) → 403; "no
+      // valid proof present" outcomes → 401. The SPA error-router branches
+      // on status code (401 → re-login, 403 → wrong-account/wrong-proof),
+      // so every route that consumes the fresh-auth primitive must emit
+      // the same signal for the same class of failure.
+      const status =
+        proofResult.reason === 'username_mismatch' ||
+        proofResult.reason === 'target_mismatch' ||
+        proofResult.reason === 'kind_mismatch'
+          ? 403
+          : 401;
       return sendError(
         res,
-        401,
+        status,
         'FRESH_AUTH_REQUIRED',
         'Re-authentication required. Complete the ORCID fresh-auth challenge and retry.',
         { reason: proofResult.reason },
@@ -611,12 +642,16 @@ router.post('/set-password', writeLimiter, verifyHiveSignature, async (req: Requ
         },
         'set-password rejected — fresh-auth proof has unexpected mechanism',
       );
+      // Synthesized reason — see the FreshAuthVerifyFailureReason
+      // doc-comment in fresh-auth.ts. The typed const forces a compile
+      // error if a future narrowing of the union drops the value.
+      const reason: FreshAuthVerifyFailureReason = 'wrong_mechanism';
       return sendError(
         res,
         401,
         'FRESH_AUTH_REQUIRED',
         'Re-authentication required. Complete the ORCID fresh-auth challenge and retry.',
-        { reason: 'wrong_mechanism' },
+        { reason },
       );
     }
 

@@ -344,16 +344,34 @@ router.post('/start', startLimiter, async (req: Request, res: Response) => {
   let freshAuthTarget: FreshAuthTarget | undefined;
   if (mode === 'fresh_auth') {
     const { action, root_author: rootAuthor, root_permlink: rootPermlink } = startParsed.data;
-    if (action === 'set_password') {
-      // username is guaranteed set here: mode === 'fresh_auth' is in
-      // AUTHENTICATED_MODES, so authenticateRequest above bound `username`.
-      freshAuthTarget = setPasswordFreshAuthTarget(username!);
-    } else if (action === 'change_email') {
-      // Non-broadcast target. Same shape as set_password: target binds to
-      // (action, <authenticated username>, ''); request body does not carry
-      // root_author / root_permlink. Helper enforces the bind so a future
-      // refactor cannot silently re-introduce the inline literal.
-      freshAuthTarget = changeEmailFreshAuthTarget(username!);
+    if (action === 'set_password' || action === 'change_email') {
+      // Non-broadcast actions bind the target to the authenticated
+      // username. The invariant "`username` is set when `mode === 'fresh_auth'`"
+      // is enforced by middleware composition (`AUTHENTICATED_MODES`
+      // membership + `authenticateRequest` above), not by the type system.
+      // A future refactor that reorders or adds a new mode to
+      // `AUTHENTICATED_MODES` without re-checking would silently let
+      // `username = undefined` flow into the per-action helpers, producing
+      // a proof bound to a string-ified undefined. Per
+      // `agents/docs/solutions/conventions/validate-once-cache-secret-pattern-2026-05-11.md`,
+      // prefer a structured runtime guard over a bare `!` for runtime-only
+      // invariants — the cost is 3 dead lines, the benefit is compile-time-
+      // enforced shape (the narrowed `username` is `string` after the guard).
+      if (!username) {
+        // ErrorCode union does not include AUTH_REQUIRED; UNAUTHORIZED is the
+        // canonical 401 code used by `verifyHiveSignature` and the parallel
+        // `authenticateRequest` helper above (see types/api.ts).
+        return sendError(res, 401, 'UNAUTHORIZED', 'Authentication required for fresh-auth action');
+      }
+      if (action === 'set_password') {
+        freshAuthTarget = setPasswordFreshAuthTarget(username);
+      } else {
+        // Non-broadcast target. Same shape as set_password: target binds to
+        // (action, <authenticated username>, ''); request body does not carry
+        // root_author / root_permlink. Helper enforces the bind so a future
+        // refactor cannot silently re-introduce the inline literal.
+        freshAuthTarget = changeEmailFreshAuthTarget(username);
+      }
     } else if (action === 'author_accept' || action === 'author_resign') {
       if (typeof rootAuthor !== 'string' || rootAuthor.length === 0) {
         return sendError(res, 400, 'VALIDATION_ERROR', 'root_author is required');

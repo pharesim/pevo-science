@@ -105,3 +105,45 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 Implementer: address all 10 items, push as round-N+1 commit, append an implementer-signal block with commit SHA + acceptance-criteria coverage map, then `git mv` this file back to `agents/docs/tasks/review/` for re-review. Architect re-review will scope `/ce-code-review` to the commits since this hold block was written (not the whole task history — round-1 was already reviewed). The audit-task archive's doc updates (`agents/docs/api-contracts/settings.md` for POST /set-password) already document the intended 401/403 split per item 1; bringing code into line is the load-bearing closure.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+---
+
+## Backend re-review signal (2026-05-16, round-2 fix commit)
+
+All 10 items from the round-1 hold block addressed. Per-item resolution:
+
+1. **Status-code split (settings.ts set-password handler).** Added the canonical mapping at the `proofResult.valid === false` branch: `username_mismatch | target_mismatch | kind_mismatch → 403`, all others (`missing | expired | malformed | wrong_mechanism`) → 401. Comment block above the `status` ternary cites the mirror sites at `custody.ts:397-402` and the sibling change-email handler at `settings.ts:230-235`. Touched: `backend/src/routes/settings.ts`.
+
+2. **`FreshAuthVerifyFailureReason` union widened.** Hoisted the failure-reason union into a new exported type alias `FreshAuthVerifyFailureReason` that includes `'wrong_mechanism'`. The doc-comment explains that `'wrong_mechanism'` is route-layer-synthesized (the primitive itself never returns it). The two route-layer emissions (change-email handler and set-password handler) now bind the value to a typed local `const reason: FreshAuthVerifyFailureReason = 'wrong_mechanism';` so a typo or future narrowing fails at compile-time. Touched: `backend/src/lib/fresh-auth.ts`, `backend/src/routes/settings.ts`.
+
+3. **`custody.ts:343-344` stale comment.** Rewrote the cast-safety justification to reference the runtime gate at the scan site (`CONSENT_OP_ACTIONS.has()` check in `findConsentOpsInBundle`) instead of the now-stale "same membership" claim. The expanded `FreshAuthTargetAction` union (4 members: `author_accept`, `author_resign`, `set_password`, `change_email`) is acknowledged. Touched: `backend/src/routes/custody.ts`.
+
+4. **Issuer-side helper adoption (orcid.ts).** Already landed on main prior to this round (the `set_password` branch in `/start fresh_auth` was already calling `setPasswordFreshAuthTarget(username!)` at line 338 when the worktree rebased to current main). Verified at re-check — no further edit needed. The structured null guard from item 8 below now narrows `username` so the bare `!` is also gone.
+
+5. **Cross-target consent-op proof test at /set-password.** Added a new `it(...)` case to `backend/tests/routes/settings-set-password-fresh-auth.test.ts` that mints a proof with `{ action: 'author_accept', root_author: STATE_C_USER, root_permlink: 'paper-v1' }` and submits it to `POST /api/settings/set-password`. Asserts `status: 403`, `error.code: 'FRESH_AUTH_REQUIRED'`, `error.details.reason: 'target_mismatch'`. Also flipped the existing cross-user test's expected status from 401 → 403 to match item 1's status-code split. Touched: `backend/tests/routes/settings-set-password-fresh-auth.test.ts`.
+
+6. **Timing-oracle residual documented.** Added a `// Why no sentinel burn:` block above the fresh-auth gate at `settings.ts:569-595`. References `agents/docs/solutions/conventions/timing-equalization-sub-branch-oracles-2026-04-21.md` and spells out why no sentinel-burn is appropriate (attacker already holds a valid JWT to reach the gate; `hasPassword` state is already discoverable via `GET /api/settings/email` for any JWT-holder; burning argon2 on the rejection path would double the rejection-path response time for zero security gain). Touched: `backend/src/routes/settings.ts`.
+
+7. **Stripped task-slug prefix from `setPasswordFreshAuthTarget` JSDoc.** Removed the `Round-6 of BACKEND-SETTINGS-SET-PASSWORD-FRESH-AUTH:` opening. Kept the substantive content (target-binding rationale, collision-free `root_permlink = ''` invariant against consent-op proofs). Touched: `backend/src/lib/fresh-auth.ts`.
+
+8. **Structured null guard on `username` in /start set_password + change_email branch.** Replaced the two bare `username!` non-null assertions with a single `if (!username) { return sendError(res, 401, 'UNAUTHORIZED', '...') }` guard at the top of the `action === 'set_password' || action === 'change_email'` branch. After the guard, `username` is narrowed to `string`. Note: used `'UNAUTHORIZED'` rather than the suggested `'AUTH_REQUIRED'` — `AUTH_REQUIRED` is not in the `ErrorCode` union (see `backend/src/types/api.ts`); `UNAUTHORIZED` is the canonical 401 code used by the parallel `authenticateRequest` helper in the same file. Touched: `backend/src/routes/orcid.ts`.
+
+9. **Restructured `FreshAuthTargetAction` JSDoc.** Rewrote to cover all four members via a pattern description: "consent-op actions (broadcast) + non-broadcast critical actions" with explicit enumeration of which members fall in each sub-pattern (`author_accept` + `author_resign` vs `set_password` + `change_email`). Calls out the `action` length-prefix as the load-bearing collision-freedom invariant across the union. Touched: `backend/src/lib/fresh-auth.ts`.
+
+10. **Mock-carve-out file header added.** Replaced the abbreviated header on `settings-set-password-argon-error-translation.test.ts` with a full clause-(a)/(b)/(c) block. Clause (a) documents both the argon2-saturation impracticality AND the `redis.js` mock target. Clause (b) confirms `verifyHiveSignature` is NOT mocked (real Bearer JWT path). Clause (c) names `settings-set-password-fresh-auth.test.ts` as the real-path companion that covers the integrated fresh-auth + UPDATE risk class against real Redis + real DB + real argon2. Touched: `backend/tests/routes/settings-set-password-argon-error-translation.test.ts`.
+
+**Verification:**
+
+- `cd backend && npm run typecheck` — clean (both `src` and `tests` tsconfig).
+- `cd backend && npm run lint` — clean.
+- Vitest NOT run in worktree per task instructions (parent serializes test execution).
+
+**Acceptance-criteria coverage map:**
+
+- AC#1 (missing proof → 401 `FRESH_AUTH_REQUIRED`): unchanged from round-1; still covered by `missing` reason → 401 branch of the status split.
+- AC#2 (cross-user proof rejected): unchanged from round-1 (consume-side `username_mismatch`); status code now correctly 403 per the canonical mapping.
+- AC#3 (password-mechanism proof rejected): unchanged from round-1; still 401 with `reason: 'wrong_mechanism'`. Reason value now backed by `FreshAuthVerifyFailureReason` union for compile-time safety.
+- AC#4 (expired-proof rejected): unchanged from round-1; 401 `expired`.
+- AC#5 (real-path integration tests): all five cases preserved; cross-user expected status updated to 403; new cross-target case added.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
