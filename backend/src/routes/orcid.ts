@@ -637,12 +637,10 @@ async function handleLogin(res: Response, orcidId: string): Promise<void> {
   }
 
   // `accounts.custody` is nullable (TEXT, no NOT NULL — see
-  // backend/migrations/001_schema.sql); ORCID-only accounts have
-  // `custody=NULL`. Annotate the SQL result honestly so the compiler enforces
-  // null-handling, per
-  // `agents/docs/solutions/conventions/wrapping-primitive-exhaustive-call-site-audit-2026-04-22.md`
-  // (the same null-typing audit class as `password_hash` in
-  // BACKEND-PASSWORD-HASH-NULL-TYPING-AUDIT).
+  // backend/migrations/001_schema.sql); transient signup-pending states
+  // (E, F per ARCHITECTURE.md § 6.1) carry `custody=NULL`. Annotate the
+  // SQL result honestly so the compiler enforces null-handling, per
+  // `agents/docs/solutions/conventions/wrapping-primitive-exhaustive-call-site-audit-2026-04-22.md`.
   const result = await pool.query<{ username: string; custody: string | null }>(
     `SELECT username, custody FROM accounts WHERE orcid = $1 AND username IS NOT NULL LIMIT 1`,
     [orcidId],
@@ -663,22 +661,14 @@ async function handleLogin(res: Response, orcidId: string): Promise<void> {
   }
 
   const account = result.rows[0];
-  // BACKEND-ORCID-CUSTODY-DEFAULT-INVARIANT: mint the JWT with the actual DB
-  // value (possibly null). The prior `account.custody || 'light'` coerced
-  // ORCID-only accounts (custody=NULL) into a JWT claim of `'light'`, which
-  // then passed `/api/custody/upgrade`'s `custody !== 'light'` gate and
-  // reached the password-verify branch with `password_hash=NULL` — the
-  // invariant violation tracked separately from the round-2 mutation-fence
-  // null-guard at custody.ts. After this fix:
-  //   - JWT carries `custody: null` for ORCID-only accounts (the field still
-  //     serializes through jsonwebtoken; verified locally).
-  //   - `verifyHiveSignature.ts:84` coerces null → `'self'` via `||`, so
-  //     `req.hiveCustody === 'self'` for ORCID-only callers.
-  //   - The custody.ts `'light'` gate now correctly 403s ORCID-only callers
-  //     before they reach any password-hash branch — closing the JWT-vs-DB
-  //     drift end-to-end.
-  // The frontend's existing `data.custody || 'light'` coercion in
-  // orcid-callback.js is a separate concern outside backend scope.
+  // Mint the JWT with the actual DB value (possibly null) so the claim
+  // matches the row's persisted state. Finalized accounts have
+  // `custody ∈ {'light', 'self'}` set (states A/B/C/D per ARCHITECTURE.md
+  // § 6.1); the null branch defends transient signup-pending rows that
+  // briefly reach this code path. `verifyHiveSignature` coerces a null
+  // claim to `'self'`, which causes consumer routes (e.g. /custody/upgrade)
+  // to gate per the § 6.4 re-auth contract rather than mis-treating the
+  // caller as light-custody.
   const token = jwt.sign(
     { sub: account.username, custody: account.custody },
     config.sessionSecret,

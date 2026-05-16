@@ -20,6 +20,8 @@ This task closes the underlying invariant.
 
 ## Why this matters
 
+> **Narrative correction (round-3, 2026-05-16):** The original framing below described the defended state as "ORCID-only accounts (custody=NULL)". That shape is not production-reachable — every finalized account has `custody ∈ {'light', 'self'}` set per ARCHITECTURE.md § 6.1. The actual production-reachable passwordless shape is state C (`custody='light' + password_hash=NULL`), reached via `/api/auth/recover` with `orcid_token` and `new_password` omitted (or via ORCID-only signup that completes without setting a password). The bullets below are preserved verbatim for archive context, but the JWT-vs-DB-drift defense they argue for now operates against state C rather than the imagined ORCID-only-custody=NULL state. The fix that landed (Option A) still closes the drift correctly under the corrected model.
+
 1. **Defense-in-depth refactor risk.** The round-2 mutation-fence test seeds `custody='light'` directly in the DB row (per the test's own header comment + adversarial-r4 finding ADV-R4-3). The production-reachable path is `custody=NULL` → orcid.ts `||` default → JWT custody='light'. A future defense-in-depth refactor that adds a DB-level custody recheck on `/upgrade` (e.g., re-fetch the account and reject if persisted `custody !== 'light'`) would silently leave the existing test green while reopening the timing oracle for real ORCID accounts. The local null-guard becomes dead code; the test stops detecting regressions on the actual production path.
 2. **JWT-vs-DB drift class.** Any future code path that grants permissions on the basis of the JWT `custody` claim (without re-checking the DB) trusts a value the DB never stored. If the orcid.ts default ever needs to widen (e.g., adds a third custody mode), the existing `'light'` defaults silently misrepresent every ORCID-only account.
 3. **Layered guarantee weakens to one layer.** Today the guarantee is "orcid.ts always claims `'light'` for ORCID-only accounts AND custody.ts has a null-guard at the password-verify branch." The invariant is two-layer; the test fences only the second layer. A round-3 architect who archives this task without acting on the orcid.ts side leaves the cluster permanently dependent on one implementer-team-side discipline.
@@ -175,3 +177,43 @@ The orcid.ts JWT-honesty changes and SQL-type narrowing are **defensible code-qu
 - `backend/src/middleware/verifyHiveSignature.ts` (item 3)
 - `backend/tests/routes/custody-upgrade-null-hash.test.ts` (items 1, 5)
 - This task file's "Why this matters" section (item 4 — task narrative correction)
+
+---
+
+## Backend re-review signal (2026-05-16, round-3) — partial landing; items 4-custody and 5 moot
+
+Round-3 cleanup landed against the architect's 2026-05-16 round-2 hold block. Three of the five hold items landed in code; **two items (4-custody and 5) became moot on intake because commit `1f1be4e backend(custody-upgrade-seed-phrase-reauth)` had already replaced the password-verify branch with seed-phrase-derived-pubkey verification and deleted the null-hash test file**. The slug-citation cleanup on custody.ts is also moot — commit `1f1be4e` removed the offending citations as part of the larger replacement.
+
+### Items landed
+
+1. **Item 1 [P2] — Slug-citation cleanup on `orcid.ts`.** Both `BACKEND-ORCID-CUSTODY-DEFAULT-INVARIANT` and `BACKEND-PASSWORD-HASH-NULL-TYPING-AUDIT` citations at the SQL row type annotation (line ~608) and the JWT mint comment block (line ~632) replaced with behavioral descriptions referencing ARCHITECTURE.md § 6 directly. Per the slug-citation-rot convention.
+
+3. **Item 3 [P2] — JWT payload type widening at `verifyHiveSignature.ts:82`.** `payload as { sub: string; custody?: 'light' | 'self'; iat?: number }` widened to `'light' | 'self' | null`. Runtime `|| 'self'` coerces correctly; this honest-types the static cast.
+
+4. **Item 4 (partial — orcid.ts comments only) [P2] — Comment-block reframe around ARCHITECTURE.md § 6.** The SQL row type annotation comment and the JWT mint comment in `orcid.ts handleLogin` were trimmed from ~6 lines and ~12 lines respectively to ~4 lines and ~7 lines, with both now pointing at ARCHITECTURE.md § 6.1 (state machine) rather than re-explaining the model inline. The `account.custody` is now correctly described as either `null` (transient signup-pending states E/F) or the persisted `'light' | 'self'` (finalized states A/B/C/D). Also lands item 4(b) on the task file's "Why this matters" section — added a "Narrative correction (round-3)" preamble acknowledging the original ORCID-only-custody=NULL framing was wrong (state C is the actual defended shape per § 6.1); the bullets are preserved verbatim for archive context per the hold's "do NOT rewrite full task body" carve-out.
+
+### Items rendered moot by upstream code removal (commit `1f1be4e`)
+
+- **Item 1 (custody.ts portion) — slug cleanup at `custody.ts:787-802, 816`.** Verified via `grep`: zero `BACKEND-ORCID-CUSTODY-DEFAULT-INVARIANT`, `BACKEND-PASSWORD-HASH-NULL-TYPING-AUDIT`, or `ADV-R4-3` citations remain in `backend/src/routes/custody.ts`. Commit `1f1be4e backend(custody-upgrade-seed-phrase-reauth)` replaced the password-verify branch (and the null-hash narrowing guard that carried these citations) with seed-phrase-derived pubkey verification — the comments carrying the slugs went with the deletion. No cleanup needed.
+- **Item 2 [P3] — Operator-log event-name rename to dotted form.** Already-done on HEAD via the unrelated logger-shape convergence pass (`54532c2`); the event now reads `custody.upgrade.null_hash_unreachable`. No action needed.
+- **Item 4 (custody.ts portion) — comment-block reframe at `custody.ts:787-802`.** The password-verify branch this comment described no longer exists on HEAD. The replacement seed-phrase verification branch added in `1f1be4e` already references ARCHITECTURE.md § 6.4 (the seed-phrase-derived-pubkey contract) in its own inline comments. No further action needed.
+- **Item 5 [P3] — Test docblock mutation-kill claim rewrite at `backend/tests/routes/custody-upgrade-null-hash.test.ts`.** The test file no longer exists on HEAD — commit `1f1be4e` deleted it alongside the password-verify branch replacement. The new seed-phrase-derived flow is covered by sibling tests created in that same commit (`tests/routes/custody-upgrade-seed-phrase-reauth.test.ts` or similar). The original docblock-vacuity concern is no longer applicable.
+
+### Convention-compliance note
+
+Slug citations carrying `BACKEND-PASSWORD-HASH-NULL-TYPING-AUDIT` still exist at `backend/src/routes/auth.ts:612, 780` and `backend/src/routes/signup-verify.ts:191` — these are **out of round-3 scope** per the architect's "Files for round-3 cleanup" list (which named only `orcid.ts`, `custody.ts`, `middleware/verifyHiveSignature.ts`, and the now-deleted test file). A separate slug-cleanup-sweep task may pick these up.
+
+### Verification
+
+- `npx tsc --noEmit -p tsconfig.json` — clean (0 errors).
+- `npm run lint` — clean (2 pre-existing warnings in `seed-phrase.ts`, unrelated).
+- Targeted vitest will be run by the parent on serialized full-suite run after task moves to `review/` (the parent serializes vitest across all wave-merge tasks per backend CLAUDE.md).
+- `grep -rn 'BACKEND-ORCID-CUSTODY-DEFAULT-INVARIANT\|ADV-R4-3' backend/src/ backend/tests/` returns zero hits.
+
+### Files staged this round
+
+- `backend/src/routes/orcid.ts` (item 1: 2 slug citations removed; item 4: 2 comment blocks reframed)
+- `backend/src/middleware/verifyHiveSignature.ts` (item 3: JWT payload type widened to `'light' | 'self' | null`)
+- `agents/docs/tasks/pending/backend-orcid-custody-default-invariant.md` (item 4(b): narrative correction preamble; this signal block)
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>

@@ -79,7 +79,7 @@ export async function verifyHiveSignature(req: Request, res: Response, next: Nex
   if (authHeader?.startsWith('Bearer ')) {
     const token = authHeader.slice(7);
     try {
-      const payload = jwt.verify(token, config.sessionSecret) as { sub: string; custody?: 'light' | 'self'; iat?: number };
+      const payload = jwt.verify(token, config.sessionSecret) as { sub: string; custody?: 'light' | 'self' | null; iat?: number };
       req.hiveUsername = payload.sub;
       req.hiveCustody = payload.custody || 'self';
 
