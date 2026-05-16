@@ -101,3 +101,39 @@ New file: `frontend/tests/e2e/fixtures/paper-mocks.js` (shared installPaperMocks
 Test status: Playwright deferred to parent agent per UI agent CLAUDE.md (E2E specs share the dev backend port; concurrent runs collide).
 
 NOT in scope (dismissed at architect triage): per-user `accreditation/:username` endpoint coverage, carve-out header cosmetic typo, item-9 empty-to-empty test.
+
+## Architect re-review (2026-05-16) — HELD PENDING FIXES (round-3):
+
+Reviewed via `/ce-code-review` against commits `80ca559` + `3243583` with 6 personas (correctness Opus; testing/maintainability/project-standards/julik-frontend-races/learnings-researcher Sonnet; `ce-agent-native-reviewer` skipped per PEvO CLAUDE.md). All 7 round-2 hold items verified landed structurally: correctness independently confirmed data-testid placements on the right templates (existing-coauthor-row has 1 occurrence in edit.js; coauthor-orcid-input is on new-row only, not on the existing-row template), the shared `paper-mocks.js` import works in both consumer specs, the `pickAccreditedResearchers` factoring preserves the single-pick wrapper for 6 existing call sites across 4 spec files (publish.spec, edit-paper.spec, review-submit.spec, vote-comment.spec), and the assertion order in the spec body is correct (typeof before JSON.parse, contract probe at top of each test). 3 items must land before archive.
+
+1. **P1 — `pickTwoAccreditedResearchersWithOrcid` is a one-call wrapper that adds no abstraction (`frontend/tests/e2e/coauthor-accredited-prefill.spec.js:48-54, 143, 211, 322`).** maintainability (P1/80). The function is defined at file scope and called at exactly three call sites in the same file, all with identical arguments — its entire body is a single forwarding call to `pickAccreditedResearchers` with three fixed parameters. Since `pickAccreditedResearchers` already accepts a `predicate` option, the three call sites can inline the call directly without any loss of readability. The wrapper adds an extra name for a reader to track without providing an abstraction barrier, a simpler signature, or reuse across files.
+
+   **Fix:** delete the file-scope wrapper and inline at each of the three call sites:
+   ```js
+   const pair = await pickAccreditedResearchers(request, {
+     count: 2,
+     limit: 20,
+     predicate: (r) => !!r.username && !!r.orcid,
+   });
+   ```
+   The carved-out predicate explanation comment (currently above the wrapper) can ride above the first call site.
+
+2. **P1 — `assertAccreditationsListContract` called per-test → 3 redundant HAF round-trips (`frontend/tests/e2e/coauthor-accredited-prefill.spec.js:64-75, 142, 210, 321`).** maintainability (P1/85). The helper does a one-shot `GET /api/accreditations?limit=1` and asserts contract shape. It is a file-scope precondition with no per-test variation. Running it three times costs three full HAF round-trips per spec run with no diagnostic benefit (the ordering at lines 210-211 and 321-322 has the picker call immediately after anyway).
+
+   **Fix:** hoist into a `test.beforeAll` hook:
+   ```js
+   test.beforeAll(async ({ request }) => {
+     await assertAccreditationsListContract(request);
+   });
+   ```
+   and remove the three per-test calls. The helper definition itself stays as-is.
+
+3. **P2 — 10s `waitForAccreditedDirectoryLoaded` timeout may be fragile under cold-HAF CI runners (`frontend/tests/e2e/coauthor-accredited-prefill.spec.js:95-112`).** julik-frontend-races (P2/75). The backend `/api/accreditations` route hits `hafCache.getOrSet(key, fetchFn, 60_000)`; on a cold-cache scan the underlying `fetchAccreditationsFromHaf` runs a window-function CTE (`ROW_NUMBER() OVER (PARTITION BY account ORDER BY block_num DESC)`) against all `custom_json` rows since genesis. On a CI runner under scheduler contention, full HAF-scan latency + network + Alpine reactivity tick can plausibly exceed 10s. The current 10s ceiling is documented but the rationale for choosing 10s over the natural 20-25s is not.
+
+   **Fix:** raise the timeout to `{ timeout: 20_000 }`. The wrap-and-rethrow message stays unchanged. 20s is still well below Playwright's 30s default but absorbs cold-HAF tail latency. Either land this fix OR leave a comment naming the chosen 10s budget as a deliberate tail-latency trade-off — open to either; raising is cheaper.
+
+When all 3 items are landed, `git mv` this file back to `tasks/review/`.
+
+Dismissed at architect triage (audit, not blocking): julik JFR-002 (`installPaperMocks` suffix exclusion list is manual allowlist; new sub-route silently intercepted) — preemptive per `feedback_dismiss_preemptive_test_hardening`, no concrete near-term sub-route addition planned; julik JFR-004 (`.nth(rowIdx)` depends on Alpine not re-sorting `newCoAuthors`) — preemptive, addCoAuthor always pushes, no mid-flow removal in current tests; julik JFR-003 info-only (cross-request-context cache interaction — verified harmless); correctness residuals on `assertAccreditationsListContract` envelope-vs-rows-empty conflation + `pickAccreditedResearchers` not protecting against genuine HAF row shortage — both data-dependency / theoretical-only.
+
+Cross-references: `agents/docs/solutions/conventions/alpine-value-property-not-attribute-trap-2026-05-11.md` (parent doc for the data-testid additions — each new testid escapes the property-vs-attribute trap this doc documents); `agents/docs/solutions/conventions/playwright-page-route-trigger-timing-2026-04-21.md` (adjacent guidance for the route-stub timing in `installPaperMocks`).
