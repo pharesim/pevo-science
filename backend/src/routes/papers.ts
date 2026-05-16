@@ -1332,8 +1332,7 @@ async function resolveContinuationChain(
       // terminus into `chain` so downstream consumers
       // (`reconstructVersionsFromHaf` and friends) do not fetch operations
       // for the duplicate post. Without this short-circuit the walker
-      // runs to `MAX_HOPS = 50` on any cycle. See
-      // `agents/docs/tasks/pending/backend-canonical-walker-cycle-detection.md`.
+      // runs to `MAX_HOPS = 50` on any cycle.
       const visitedKey = memoKey(currentAuthor, currentPermlink);
       if (visited.has(visitedKey)) {
         logger.warn(
@@ -1659,7 +1658,7 @@ async function findCanonicalRoot(
         logger.warn(
           {
             event: 'canonical_root_walker_unauthorized_hop',
-            hopNumber: i + 1,
+            hopIndex: i,
             childAuthor,
             childPermlink,
             predecessorAuthor: currentAuthor,
@@ -1721,8 +1720,7 @@ async function findCanonicalRoot(
       // canonical, emitting a discriminating event so operators can
       // distinguish "legitimate deep chain" (depth_exceeded) from
       // "attacker-posted cycle" (cycle_detected). Without this short-circuit
-      // the walker runs to `CANONICAL_ROOT_MAX_HOPS = 10` on any cycle. See
-      // `agents/docs/tasks/pending/backend-canonical-walker-cycle-detection.md`.
+      // the walker runs to `CANONICAL_ROOT_MAX_HOPS = 10` on any cycle.
       const visitedKey = memoKey(currentAuthor, currentPermlink);
       if (visited.has(visitedKey)) {
         logger.warn(
@@ -1732,7 +1730,7 @@ async function findCanonicalRoot(
             childPermlink,
             cycleAuthor: currentAuthor,
             cyclePermlink: currentPermlink,
-            hopNumber: i + 1,
+            hopIndex: i,
           },
           'canonical-root walker detected cycle in continuation pointers',
         );
@@ -1746,9 +1744,9 @@ async function findCanonicalRoot(
     // attacker-induced amplification patterns.
     logger.warn(
       {
-        // Note: `hopNumber` is intentionally omitted on this event because it
+        // Note: `hopIndex` is intentionally omitted on this event because it
         // would always equal `maxHops` by construction (the cap is what
-        // triggered the warn). `hopNumber` retains its meaningful
+        // triggered the warn). `hopIndex` retains its meaningful
         // varying-value role on `canonical_root_walker_unauthorized_hop`.
         event: 'canonical_root_walker_depth_exceeded',
         startAuthor: author,

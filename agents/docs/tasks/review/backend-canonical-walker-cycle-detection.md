@@ -137,3 +137,45 @@ Several review findings were dismissed during architect triage: the iter-0 abort
 ### Re-review signal
 
 When items 1-2 land in a single round-2 commit, `git mv` this file back to `tasks/review/`. The mv itself is the re-review signal. Round-2 architect review scopes `/ce-code-review` to the round-2 commit only. Item 1 is structural (touches 3 event payloads + test assertions). Item 2 is comment-only.
+
+## Backend re-review signal (2026-05-16, round-2 — working tree of this commit)
+
+Items 1 and 2 from the architect's 2026-05-16 round-1 hold land in a single round-2 commit alongside this signal block + the `git mv` to `tasks/review/`.
+
+### Item 1 — backward-walker hop-field naming convergence
+
+Renamed `hopNumber: i + 1` → `hopIndex: i` on the two backward-walker events that carried the 1-based field, and converged the `depth_exceeded` explanation comment to the new field name (the event itself still omits the field — the round-3 decision from the parent `BACKEND-CANONICAL-ROOT-WALKER-AUTHOR-GATE` task stands; only the comment + test assertion text move from `hopNumber` to `hopIndex`).
+
+`backend/src/routes/papers.ts`:
+- `canonical_root_walker_unauthorized_hop` (~line 1662): `hopNumber: i + 1` → `hopIndex: i`.
+- `canonical_root_walker_cycle_detected` (~line 1735): `hopNumber: i + 1` → `hopIndex: i`.
+- `canonical_root_walker_depth_exceeded` (~lines 1749-1752): comment text `hopNumber` → `hopIndex` (×2). The event payload was already free of any 1-based hop field per the round-3 drop; nothing structural changed there.
+
+`backend/tests/routes/canonical-root-walker.test.ts`:
+- Two cycle-event captured-events type casts (~lines 416, 494): `hopNumber?: number` → `hopIndex?: number`.
+- Type-spoof-intermediate canary (~lines 1383-1388): comment, type cast, and value (`toBe(1)` → `toBe(0)`, since `hopIndex = i = 0` on the first iteration where `hopNumber = i + 1 = 1`).
+- Depth-cap canary (~lines 1627-1688): test name + 4× comment occurrences in the explanatory header + type cast + dropped-field assertion (`hopNumber` → `hopIndex`).
+
+The backward walker now reads symmetrically with the forward walker (`continuation_chain_*` events already use `hopIndex: i` per the sibling wall-clock task) and with the wall-clock events on both walkers (which also use `hopIndex: i`). Operator dashboards joining the four backward-walker event types on the same hop position now share a single field name.
+
+### Item 2 — drop task-slug citation comments
+
+Removed the `See agents/docs/tasks/pending/backend-canonical-walker-cycle-detection.md.` sentences from the two cycle-detection comment blocks per `agents/docs/solutions/conventions/task-slug-citations-in-comments-go-stale-on-archive-2026-05-15.md`. The surrounding comments already explain the cycle-detection mechanism; the task pointer adds no value once the task archives.
+
+- `backend/src/routes/papers.ts:~1335-1336` (forward walker, before `continuation_chain_cycle_detected`): drop the trailing `See <task-path>.` sentence.
+- `backend/src/routes/papers.ts:~1724-1725` (backward walker, before `canonical_root_walker_cycle_detected`): drop the trailing `See <task-path>.` sentence.
+
+~4 LOC removed total.
+
+### Verification
+
+- `npx tsc --noEmit` from `backend/`: clean (no output).
+- `npm run lint` from `backend/`: only the two pre-existing `seed-phrase.ts` `@typescript-eslint/no-explicit-any` warnings (unrelated).
+- `npx vitest run tests/routes/canonical-root-walker.test.ts`: **25 tests pass** (full file). Includes the cycle-detection canaries (2-node + 3-node), the type-spoof unauthorized-hop canary that asserts `hopIndex: 0` (was `hopNumber: 1`), and the depth-cap canary that asserts `hopIndex` is undefined on `depth_exceeded` (was `hopNumber` undefined). No new tests; existing assertions migrated to the new field name.
+
+### Notes for architect re-review
+
+- The `unauthorized_hop` value migration (`toBe(1)` → `toBe(0)`) is a real semantic change in the test, not a pure rename. It pins the off-by-one fix at the test layer: a regression that re-introduced `i + 1` would now fail with `expected 1 to be 0`. Mutation-kill: revert the production code's `hopIndex: i` to `hopIndex: i + 1` → canary fails red.
+- The `depth_exceeded` event is still field-less for hop position (round-3 decision held). Only the explanation comment + test assertion text changed names. This is intentional — the architect's hold spelled out "if the event payload includes `hopNumber` or equivalent 1-based field, normalize to `hopIndex`"; the event payload doesn't include one, so only the comment/test naming converges.
+- The continuation-author-gate test file (`continuation-author-gate.test.ts`) was checked for stale `hopNumber` references — none found; it already uses `hopIndex` for forward-walker events.
+- Did not run the full vitest suite per parent agent's instruction; the parent serializes the full run after all four pending backend tasks finish.

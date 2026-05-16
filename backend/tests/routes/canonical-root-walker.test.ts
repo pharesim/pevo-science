@@ -413,7 +413,7 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
     expect(res.status).toBe(200);
 
     const events = warnSpy.mock.calls
-      .map((c) => c[0] as { event?: string; hopNumber?: number; cycleAuthor?: string; cyclePermlink?: string } | undefined)
+      .map((c) => c[0] as { event?: string; hopIndex?: number; cycleAuthor?: string; cyclePermlink?: string } | undefined)
       .filter(Boolean);
 
     // The cycle event fired.
@@ -491,7 +491,7 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
     expect(res.status).toBe(200);
 
     const events = warnSpy.mock.calls
-      .map((c) => c[0] as { event?: string; hopNumber?: number } | undefined)
+      .map((c) => c[0] as { event?: string; hopIndex?: number } | undefined)
       .filter(Boolean);
 
     const cycleEvents = events.filter((e) => e?.event === 'canonical_root_walker_cycle_detected');
@@ -1380,12 +1380,12 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
     expect(detail.permlink).toBe('v3');
     expect(detail.author).not.toBe('alice');
 
-    // Walker emitted unauthorized-hop with hopNumber set (round-2 item 6).
+    // Walker emitted unauthorized-hop with hopIndex set (round-2 item 6).
     const hopEvents = warnSpy.mock.calls
-      .map((c) => c[0] as { event?: string; hopNumber?: number } | undefined)
+      .map((c) => c[0] as { event?: string; hopIndex?: number } | undefined)
       .filter((e) => e?.event === 'canonical_root_walker_unauthorized_hop');
     expect(hopEvents.length).toBeGreaterThan(0);
-    expect(hopEvents[0]?.hopNumber).toBe(1);
+    expect(hopEvents[0]?.hopIndex).toBe(0);
 
     warnSpy.mockRestore();
   });
@@ -1624,14 +1624,14 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
     errSpy.mockRestore();
   });
 
-  it('depth-cap warn carries maxHops field (round-3 item 2: dropped duplicate hopNumber)', async () => {
-    // Round-2 hold item 6 (P3 observability) added `hopNumber: i + 1` to both
+  it('depth-cap warn carries maxHops field (round-3 item 2: dropped duplicate hopIndex)', async () => {
+    // Round-2 hold item 6 (P3 observability) added a hop-position field to both
     // `unauthorized_hop` and `depth_exceeded` warns for cross-event taxonomy
     // consistency. Round-3 hold item 2 (P3 maintainability) noted that on
-    // `depth_exceeded` the two fields (`hopNumber` and `maxHops`) are the
-    // same constant by construction — `hopNumber` was dropped from this
+    // `depth_exceeded` the two fields (`hopIndex` and `maxHops`) are the
+    // same constant by construction — `hopIndex` was dropped from this
     // event only. `maxHops` documents the cap; the event name itself
-    // signals "we hit the cap". `hopNumber` retains its meaningful
+    // signals "we hit the cap". `hopIndex` retains its meaningful
     // varying-value role on `unauthorized_hop` (asserted in the
     // type-spoof-intermediate canary above).
     //
@@ -1679,13 +1679,13 @@ describe('GET /api/papers/:author/:permlink — backward canonical-root walker a
     expect(res.status).toBe(200);
 
     const depthEvents = warnSpy.mock.calls
-      .map((c) => c[0] as { event?: string; maxHops?: number; hopNumber?: number } | undefined)
+      .map((c) => c[0] as { event?: string; maxHops?: number; hopIndex?: number } | undefined)
       .filter((e) => e?.event === 'canonical_root_walker_depth_exceeded');
     expect(depthEvents.length).toBeGreaterThan(0);
     // maxHops = CANONICAL_ROOT_MAX_HOPS (10).
     expect(depthEvents[0]?.maxHops).toBe(10);
-    // Round-3 item 2: hopNumber explicitly dropped from depth_exceeded.
-    expect(depthEvents[0]?.hopNumber).toBeUndefined();
+    // Round-3 item 2: hopIndex explicitly dropped from depth_exceeded.
+    expect(depthEvents[0]?.hopIndex).toBeUndefined();
 
     warnSpy.mockRestore();
   });
