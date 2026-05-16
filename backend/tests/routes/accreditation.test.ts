@@ -95,6 +95,28 @@ vi.mock('../../src/hive.js', () => ({
   DEFAULT_BROADCAST_TIMEOUT_MS: 30_000,
 }));
 
+// Stub the existing-accreditation gate to always miss. Carve-out clause (a):
+// the gate's α-disposition (HAF-throw → 503 ACCREDITATION_GATE_UNAVAILABLE)
+// fires non-deterministically under the burst loads driven by the
+// BE-VERIFY-BROADCAST-ATTEMPTS-CAP specs (cap+2 sequential and cap+1 parallel
+// /verify calls), because the test HAF pool can flake on transient pool
+// pressure. The gate's own contract is exercised in the sibling file
+// `accreditation-idempotency.test.ts` against an explicit mocked pool, with
+// dedicated specs for gate-hit / gate-miss / gate-throw → 503. The mock here
+// neutralizes the gate so this file's broadcast/cap/timeout specs exercise
+// only their target surface. `lookupAccreditationBroadcastIdempotency` keeps
+// its real (catch-and-warn) behavior because its consumer-side throw path
+// already degrades gracefully without breaking the cap/timeout flows.
+vi.mock('../../src/lib/idempotency.js', async () => {
+  const actual = await vi.importActual<typeof import('../../src/lib/idempotency.js')>(
+    '../../src/lib/idempotency.js',
+  );
+  return {
+    ...actual,
+    findExistingAccreditation: vi.fn().mockResolvedValue(null),
+  };
+});
+
 import { createApp } from '../../src/app.js';
 import { config } from '../../src/config.js';
 import { getRedis } from '../../src/redis.js';
