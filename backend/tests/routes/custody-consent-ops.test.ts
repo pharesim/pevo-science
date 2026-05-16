@@ -255,11 +255,19 @@ describe.skipIf(!dbReachable)('Round-3 BACKEND-COAUTHOR-TRUST-MODEL — custody 
       expect(res.body.status).toBe('ok');
       expect(res.body.data.fresh_auth_proof).toMatch(/^[0-9a-f]{64}$/);
       expect(res.body.data.mechanism).toBe('password');
-      expect(typeof res.body.data.expires_at).toBe('number');
-      // ~5 min in the future, give or take request latency.
-      const now = Math.floor(Date.now() / 1000);
-      expect(res.body.data.expires_at).toBeGreaterThan(now + 60);
-      expect(res.body.data.expires_at).toBeLessThanOrEqual(now + 301);
+      // P0 deploy-blocker (backend-expires-at-iso-conformance, 2026-05-16):
+      // expires_at is the documented ISO-8601 string. Frontend reads via
+      // `new Date(expiresAt).getTime()`; if backend regresses to a number
+      // (epoch seconds), the SPA fresh-auth cache silently treats every
+      // proof as expired and every broadcast triggers a full OAuth round-trip.
+      expect(typeof res.body.data.expires_at).toBe('string');
+      const parsedExpiresAtMs = Date.parse(res.body.data.expires_at);
+      expect(Number.isFinite(parsedExpiresAtMs)).toBe(true);
+      // ~5 min in the future, give or take request latency (±2s of TTL).
+      const nowMs = Date.now();
+      expect(parsedExpiresAtMs).toBeGreaterThan(nowMs);
+      expect(parsedExpiresAtMs).toBeGreaterThan(nowMs + 60_000);
+      expect(parsedExpiresAtMs).toBeLessThanOrEqual(nowMs + 301_000);
     });
 
     it('wrong password → 401 UNAUTHORIZED', async () => {

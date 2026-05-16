@@ -103,3 +103,72 @@ The fresh-auth proof TTL gate is what gives users the 5-minute reuse window. Wit
 - `frontend/src/auth.js` — the latent-bug audit site.
 - `frontend/tests/e2e/non-consent-fresh-auth.spec.js:57` — the test that masks this gap.
 - `agents/docs/tasks/blocked/ui-non-consent-broadcast-fresh-auth-wiring.md` — the blocked UI task.
+
+## Backend implementation signal (2026-05-16, worktree)
+
+Acceptance items 1-3 + 5-6 landed; item 4 flagged as [TODO Architect].
+
+### Item 1: emission change
+
+- `backend/src/lib/fresh-auth.ts:264` — `IssuedFreshAuth.expires_at` type changed from `number` to `string`. Doc-comment expanded to call out the wire-format contract and link the catastrophic-failure path so future contributors don't regress.
+- `backend/src/lib/fresh-auth.ts:301-305` (`issueFreshAuthToken`) — emission changed from `Math.floor(issuedAt / 1000) + FRESH_AUTH_TTL_SECONDS` (epoch seconds, number) to `new Date(memExpiresAtMs).toISOString()` (ISO-8601 string). Reused the already-computed `memExpiresAtMs` so the value is derived from a single source.
+- `backend/src/lib/fresh-auth.ts:374-378` (`issueSessionFreshAuthToken`) — same change. The two issuance paths are the only sites that constructed `IssuedFreshAuth`, so all four downstream call sites (`custody.ts:787`, `custody.ts:872`, `orcid.ts:1148`, `orcid.ts:1214`) now pass through an ISO string without any change at the route layer.
+
+Audit summary: no other backend route constructs an `IssuedFreshAuth`-like response with a buggy `expires_at`. All sibling JWT mint paths (`auth.ts:278`, `auth.ts:493`, `auth.ts:552`, `auth.ts:834`, `auth.ts:1258`, `custody.ts:1124`, `orcid.ts:695`, `signup-verify.ts:531`, `signup-verify.ts:749`) already emit ISO via `.toISOString()`. Audit was exhaustive across `backend/src/` via grep.
+
+### Item 2: frontend audit findings (READ-ONLY, no code changes)
+
+- `frontend/src/lib/fresh-auth.js:30` reads `Date.now() >= new Date(expiresAt).getTime()` for the SPA cache check. Confirmed: with the pre-fix backend emitting `1746535500` (epoch seconds), JavaScript interprets the number as milliseconds → `new Date(1746535500).getTime() ≈ 1.7e9 < Date.now() ≈ 1.7e12` → cache always treated expired. With the fix emitting `'2026-05-16T...'`, `new Date('<iso>').getTime()` parses to ~5 min in the future, cache works.
+- `frontend/src/auth.js:147` (`_restoreSession`) reads `new Date(expiresAt) > new Date()` for the JWT-staleness check. Same comparison shape as the fresh-auth cache, **but** the JWT mint paths (`auth.ts:278` etc.) already emit ISO. The latent bug never reached `_restoreSession` because no JWT mint path emitted numeric `expires_at`. Today's fix doesn't change `_restoreSession`'s observable behavior.
+- `frontend/src/auth.js:114-117` (`loginFromResponse`) stores `data.expires_at` verbatim into `this.expiresAt`, then `_saveSession` JSON-serializes it. ISO string serializes as string, round-trips correctly through `localStorage`. No frontend change needed.
+
+Net: backend fix is sufficient to restore the SPA's fresh-auth cache. No defensive parsing required (item 5 below for deploy strategy).
+
+### Item 3: tests
+
+Updated 4 existing assertion blocks (no new test files — the existing surfaces already had the right route coverage, just the wrong shape assertion):
+
+- `backend/tests/routes/custody-consent-ops.test.ts:258-262` — `/api/custody/fresh-auth` (password mechanism). Now asserts `typeof === 'string'`, `Date.parse(...)` finite, `parsed > Date.now()`, `parsed ∈ (Date.now() + 60s, Date.now() + 301s]`.
+- `backend/tests/routes/custody-session-auth.test.ts:240-243` — `/api/custody/session-auth` (password mechanism, State A users). Same assertion block, ±2s tolerance on the 5-min TTL.
+- `backend/tests/routes/orcid.test.ts:3047-3051` — `/api/orcid/callback` mode=`fresh_auth` (orcid mechanism). Same assertion block.
+- `backend/tests/routes/orcid.test.ts:3155-3158` — `/api/orcid/callback` mode=`session_auth` (orcid mechanism). Same assertion block.
+
+Each updated block includes an inline comment naming the P0 deploy-blocker and pointing to this task, so a future numeric-regression PR fails the test with a clear pointer to the rationale.
+
+`custody-upgrade.test.ts:265` (JWT mint surface, custody-upgrade) was already asserting `string` — unchanged. `recover.test.ts:213` uses `toBeDefined()` (shape-agnostic) — unchanged.
+
+### Item 4: [TODO Architect]
+
+- `agents/docs/api-contracts/custody.md:108` already says ISO-8601. No change needed; architect to verify on re-review.
+- `agents/docs/api-contracts/orcid.md:208,239` already says ISO-8601. No change needed; architect to verify on re-review.
+- No `agents/docs/` writes performed (backend zone).
+
+### Item 5: deploy strategy
+
+**Backend-first deploy is safe.** Analysis:
+
+- Old-bundle-still-cached scenario: backend emits ISO string. `frontend/src/lib/fresh-auth.js:30` does `new Date('<iso>').getTime()` which parses correctly. **Same or better behavior than today** — today the old bundle treats every proof as expired (number→ms gap); tomorrow it treats them as valid.
+- Old-backend-still-running scenario: irrelevant — single backend instance, no rolling-deploy ordering ambiguity. Backend swaps atomically on `./deploy.sh restart`.
+- New bundle + new backend: ISO end-to-end, cache works as designed.
+
+Worst case during transition: in-flight broadcast requests with proofs minted under the old backend (numeric) reach the new bundle. The new bundle reads `new Date(<number>).getTime()` → ms-interpretation → 1970 → "expired" → re-mint via fresh-auth/orcid. Same as today's broken state. Brief degradation, no regression.
+
+No SPA-first deploy required. No defensive parsing follow-up needed in the SPA.
+
+### Item 6: related limiter findings
+
+Quick survey of the limiter table on the affected routes:
+
+- `freshAuthLimiter` (`custody.ts:56`): 10/min per account on `/api/custody/fresh-auth`. With the broken cache, every consent broadcast burned 1 mint. Users could legitimately hit 10 in a busy editing/review session. Limiter is per-account so users self-throttle, not global.
+- `sessionAuthLimiter` (`custody.ts:61`): 10/min per account on `/api/custody/session-auth`. Same blast radius as above.
+- `startLimiter` (`orcid.ts:202`): 10/min per IP on `/api/orcid/start`. Per-IP not per-account — a user behind a corporate NAT sharing the IP with other PEvO users could hit this faster.
+- `callbackLimiter` (`orcid.ts:203`): 10/min per IP on `/api/orcid/callback`. Same per-IP concern.
+- `broadcastLimiter` (`custody.ts:42`): 30/min per account on `/api/custody/broadcast`. Independent of the bug; mint-retry doesn't burn broadcast budget.
+
+Once the fix lands, the cache reuse drops the steady-state mint rate to ~1 per session per mechanism. No limiter changes recommended — the budgets are sized for the cache-working steady state, and the fix restores it.
+
+### Verification
+
+- `npm run lint`: clean (2 pre-existing seed-phrase warnings only, unchanged by this task).
+- `npx tsc --noEmit`: clean. Type change `number → string` would surface any caller doing numeric arithmetic on `expires_at`; none surfaced — the four downstream call sites (`custody.ts:787,872`, `orcid.ts:1148,1214`) all just pass the value through to `sendOk(...)`.
+- Vitest not run in worktree (parent serializes).

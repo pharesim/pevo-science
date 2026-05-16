@@ -259,8 +259,15 @@ startCleanup();
 
 interface IssuedFreshAuth {
   token: string;
-  /** Epoch seconds at which the token expires. */
-  expires_at: number;
+  /** ISO-8601 string at which the token expires.
+   *  Wire format per `agents/docs/api-contracts/custody.md:108` and
+   *  `agents/docs/api-contracts/orcid.md:208,239`. The frontend reads this
+   *  via `new Date(expiresAt).getTime()` — emitting epoch seconds (number)
+   *  here would be silently interpreted as milliseconds and resolve to
+   *  1970, making the SPA cache 100% non-functional (every broadcast
+   *  triggers a full ORCID OAuth round-trip). See P0 task
+   *  `backend-expires-at-iso-conformance` (archived 2026-05-16). */
+  expires_at: string;
   mechanism: FreshAuthMechanism;
 }
 
@@ -298,8 +305,10 @@ export async function issueFreshAuthToken(
     kind: 'consent_op',
     target_hash: targetHash,
   };
-  const expiresAt = Math.floor(issuedAt / 1000) + FRESH_AUTH_TTL_SECONDS;
   const memExpiresAtMs = issuedAt + FRESH_AUTH_TTL_SECONDS * 1000;
+  // ISO-8601 string per the documented wire contract — see IssuedFreshAuth
+  // doc-comment above for why epoch-seconds breaks the SPA cache.
+  const expiresAt = new Date(memExpiresAtMs).toISOString();
 
   // Round-4 hold #3: write to memStore as a backup whenever Redis-issuance
   // succeeds. The pre-fix path stored the token only in Redis on the happy
@@ -369,8 +378,10 @@ export async function issueSessionFreshAuthToken(
     issued_at: issuedAt,
     kind: 'session',
   };
-  const expiresAt = Math.floor(issuedAt / 1000) + FRESH_AUTH_TTL_SECONDS;
   const memExpiresAtMs = issuedAt + FRESH_AUTH_TTL_SECONDS * 1000;
+  // ISO-8601 string per the documented wire contract — see IssuedFreshAuth
+  // doc-comment above for why epoch-seconds breaks the SPA cache.
+  const expiresAt = new Date(memExpiresAtMs).toISOString();
 
   // Round-4 hold #3 (carried from `issueFreshAuthToken`): write to memStore
   // as a backup whenever Redis-issuance succeeds. The pre-fix path stored

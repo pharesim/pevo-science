@@ -3044,11 +3044,19 @@ describe('POST /api/orcid/callback — fresh_auth mode (round-4 hold #6)', () =>
     expect(res.body.data.mode).toBe('fresh_auth');
     expect(res.body.data.mechanism).toBe('orcid');
     expect(res.body.data.fresh_auth_proof).toMatch(/^[0-9a-f]{64}$/);
-    expect(typeof res.body.data.expires_at).toBe('number');
-    // Token expiry is ~5 min from now (FRESH_AUTH_TTL_SECONDS).
-    const now = Math.floor(Date.now() / 1000);
-    expect(res.body.data.expires_at).toBeGreaterThan(now + 60);
-    expect(res.body.data.expires_at).toBeLessThanOrEqual(now + 301);
+    // P0 deploy-blocker (backend-expires-at-iso-conformance, 2026-05-16):
+    // expires_at is the documented ISO-8601 string. Frontend reads via
+    // `new Date(expiresAt).getTime()`; if backend regresses to epoch
+    // seconds (number), the SPA fresh-auth cache silently treats every
+    // proof as expired and every broadcast triggers a full OAuth round-trip.
+    expect(typeof res.body.data.expires_at).toBe('string');
+    const parsedExpiresAtMs = Date.parse(res.body.data.expires_at);
+    expect(Number.isFinite(parsedExpiresAtMs)).toBe(true);
+    // Token expiry is ~5 min from now (FRESH_AUTH_TTL_SECONDS = 300), ±2s.
+    const nowMs = Date.now();
+    expect(parsedExpiresAtMs).toBeGreaterThan(nowMs);
+    expect(parsedExpiresAtMs).toBeGreaterThan(nowMs + 60_000);
+    expect(parsedExpiresAtMs).toBeLessThanOrEqual(nowMs + 302_000);
     // No broadcast on this path (fresh_auth is read-only against the chain).
     expect(broadcastJsonMock).not.toHaveBeenCalled();
   });
@@ -3152,10 +3160,16 @@ describe('POST /api/orcid/callback — session_auth mode (BACKEND-CUSTODY-BROADC
     expect(res.body.data.mode).toBe('session_auth');
     expect(res.body.data.mechanism).toBe('orcid');
     expect(res.body.data.fresh_auth_proof).toMatch(/^[0-9a-f]{64}$/);
-    expect(typeof res.body.data.expires_at).toBe('number');
-    const now = Math.floor(Date.now() / 1000);
-    expect(res.body.data.expires_at).toBeGreaterThan(now + 60);
-    expect(res.body.data.expires_at).toBeLessThanOrEqual(now + 301);
+    // ISO-8601 string per the documented wire contract (P0
+    // backend-expires-at-iso-conformance, 2026-05-16). See the
+    // fresh_auth-mode assertion above for the full rationale.
+    expect(typeof res.body.data.expires_at).toBe('string');
+    const parsedExpiresAtMs = Date.parse(res.body.data.expires_at);
+    expect(Number.isFinite(parsedExpiresAtMs)).toBe(true);
+    const nowMs = Date.now();
+    expect(parsedExpiresAtMs).toBeGreaterThan(nowMs);
+    expect(parsedExpiresAtMs).toBeGreaterThan(nowMs + 60_000);
+    expect(parsedExpiresAtMs).toBeLessThanOrEqual(nowMs + 302_000);
     // session_auth proofs do NOT carry target binding — no target fields
     // sent or returned. Pin the wire shape stays target-less.
     expect(res.body.data.target_hash).toBeUndefined();

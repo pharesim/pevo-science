@@ -238,9 +238,21 @@ describe.skipIf(!dbReachable)('POST /api/custody/session-auth — password-mecha
       expect(mint.body.data.fresh_auth_proof.length).toBeGreaterThan(0);
       expect(mint.body.data.mechanism).toBe('password');
       // expires_at convention matches `/api/custody/fresh-auth` and
-      // `/api/orcid/start mode=session_auth`: epoch seconds (number).
-      expect(typeof mint.body.data.expires_at).toBe('number');
-      expect(mint.body.data.expires_at).toBeGreaterThan(Math.floor(Date.now() / 1000));
+      // `/api/orcid/start mode=session_auth`: ISO-8601 string per the
+      // documented wire contract (api-contracts/custody.md:108,
+      // api-contracts/orcid.md:208,239). Frontend reads via
+      // `new Date(expiresAt).getTime()`; a numeric epoch-seconds value
+      // would be silently interpreted as milliseconds and resolve to 1970,
+      // making the SPA fresh-auth cache 100% non-functional. P0 deploy-
+      // blocker fixed in 2026-05-16 (backend-expires-at-iso-conformance).
+      expect(typeof mint.body.data.expires_at).toBe('string');
+      const parsedExpiresAtMs = Date.parse(mint.body.data.expires_at);
+      expect(Number.isFinite(parsedExpiresAtMs)).toBe(true);
+      const nowMs = Date.now();
+      expect(parsedExpiresAtMs).toBeGreaterThan(nowMs);
+      // ~5 min in the future (FRESH_AUTH_TTL_SECONDS = 300), ±2s.
+      expect(parsedExpiresAtMs).toBeGreaterThan(nowMs + 60_000);
+      expect(parsedExpiresAtMs).toBeLessThanOrEqual(nowMs + 302_000);
 
       const proof = mint.body.data.fresh_auth_proof;
 
