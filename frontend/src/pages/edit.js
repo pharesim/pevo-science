@@ -684,13 +684,27 @@ export function initEditPage() {
     },
 
     async _mountEditors() {
+      // Mount-during-mount idempotency guard. loadPaperData's _loadInFlight
+      // mutex clears in `finally` BEFORE _mountEditors actually runs (deferred
+      // via $nextTick + async import). A Retry that lands between the mutex
+      // clear and the import resolution can schedule a second _mountEditors;
+      // both invocations call createEditor on the same $refs and leak the
+      // first pair of instances. The flag short-circuits the second call
+      // synchronously (before the await), so only one createEditor pair lands.
+      if (this._editorsInitialized) return;
+      this._editorsInitialized = true;
       const { createEditor } = await import('../editor.js');
       // Teardown-during-init guard. If the component was destroyed while the
       // dynamic import was in flight, $refs are stale and any editor we
       // create now leaks (destroy() already nulled the previous instance
       // refs, so it won't tear down anything we assign here). See
       // ui-mount-editors-destroyed-guard.
-      if (!this._mounted) return;
+      if (!this._mounted) {
+        // Release the idempotency flag so a legitimate later remount (e.g.
+        // live-reload, navigation back to the page) can re-mount editors.
+        this._editorsInitialized = false;
+        return;
+      }
       const abstractEl = this.$refs.abstractEditor;
       const bodyEl = this.$refs.bodyEditor;
 
@@ -720,6 +734,7 @@ export function initEditPage() {
       if (this._draftTimer) { clearTimeout(this._draftTimer); this._draftTimer = null; }
       if (this._abstractEditor) { this._abstractEditor.destroy(); this._abstractEditor = null; }
       if (this._bodyEditor) { this._bodyEditor.destroy(); this._bodyEditor = null; }
+      this._editorsInitialized = false;
       if (this._storageListener) { window.removeEventListener('storage', this._storageListener); this._storageListener = null; }
     },
 

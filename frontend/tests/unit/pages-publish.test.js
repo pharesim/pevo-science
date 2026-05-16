@@ -717,5 +717,38 @@ describe('publishPage', () => {
       expect(comp._abstractEditor).toBeTruthy();
       expect(comp._bodyEditor).toBeTruthy();
     });
+
+    // Mount-during-mount idempotency: a second _mountEditors call scheduled
+    // before the first dynamic import resolves must short-circuit so the
+    // same $refs are not re-bound and the first instance pair is not
+    // orphaned-and-replaced. The `_editorsInitialized` guard at the top of
+    // _mountEditors fires synchronously, before the await.
+    it('is idempotent when invoked concurrently before the first import resolves', async () => {
+      const comp = createComponent();
+      const abstractEl = {};
+      const bodyEl = {};
+      comp.$refs = { abstractEditor: abstractEl, bodyEditor: bodyEl };
+
+      const p1 = comp._mountEditors();
+      const p2 = comp._mountEditors();
+      await Promise.all([p1, p2]);
+
+      expect(mockCreateEditor).toHaveBeenCalledTimes(2);
+      expect(comp._abstractEditor).toBe(mockCreateEditor.mock.results[0].value);
+      expect(comp._bodyEditor).toBe(mockCreateEditor.mock.results[1].value);
+    });
+
+    // The idempotency flag must clear on destroy so a later legitimate remount
+    // (live-reload, navigation back to the page) can re-mount editors fresh.
+    it('releases the idempotency flag on destroy so a later remount can re-init', async () => {
+      const comp = createComponent();
+      comp.$refs = { abstractEditor: {}, bodyEditor: {} };
+
+      await comp._mountEditors();
+      expect(comp._editorsInitialized).toBe(true);
+
+      comp.destroy();
+      expect(comp._editorsInitialized).toBe(false);
+    });
   });
 });

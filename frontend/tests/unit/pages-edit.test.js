@@ -767,6 +767,45 @@ describe('editPage handleSubmit sanitization', () => {
       expect(comp._abstractEditor).toBeTruthy();
       expect(comp._bodyEditor).toBeTruthy();
     });
+
+    // Mount-during-mount idempotency: loadPaperData's _loadInFlight mutex
+    // clears in `finally` before _mountEditors actually runs (deferred via
+    // $nextTick + async import). A Retry that lands in that window can
+    // schedule a second _mountEditors; the `_editorsInitialized` guard at the
+    // top short-circuits the second call synchronously, so createEditor runs
+    // exactly twice total (one abstract + one body), not four times.
+    it('is idempotent when invoked concurrently before the first import resolves', async () => {
+      const comp = createComponent();
+      const abstractEl = {};
+      const bodyEl = {};
+      comp.$refs = { abstractEditor: abstractEl, bodyEditor: bodyEl };
+
+      // Two concurrent calls. The second hits `if (this._editorsInitialized)
+      // return;` synchronously, before the first call's `await import(...)`
+      // resolves, so it never reaches createEditor.
+      const p1 = comp._mountEditors();
+      const p2 = comp._mountEditors();
+      await Promise.all([p1, p2]);
+
+      expect(mockCreateEditor).toHaveBeenCalledTimes(2);
+      // Both instances come from the FIRST _mountEditors invocation — no
+      // orphaned-and-replaced pair from a second mount.
+      expect(comp._abstractEditor).toBe(mockCreateEditor.mock.results[0].value);
+      expect(comp._bodyEditor).toBe(mockCreateEditor.mock.results[1].value);
+    });
+
+    // The idempotency flag must clear on destroy so a later legitimate remount
+    // (live-reload, navigation back to the page) can re-mount editors fresh.
+    it('releases the idempotency flag on destroy so a later remount can re-init', async () => {
+      const comp = createComponent();
+      comp.$refs = { abstractEditor: {}, bodyEditor: {} };
+
+      await comp._mountEditors();
+      expect(comp._editorsInitialized).toBe(true);
+
+      comp.destroy();
+      expect(comp._editorsInitialized).toBe(false);
+    });
   });
 });
 

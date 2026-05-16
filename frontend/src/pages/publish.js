@@ -501,13 +501,26 @@ export function initPublishPage() {
     },
 
     async _mountEditors() {
+      // Mount-during-mount idempotency guard. A second _mountEditors call
+      // scheduled before the first dynamic import resolves would re-run
+      // createEditor on the same $refs and leak the first instance pair.
+      // The flag short-circuits the second call synchronously (before the
+      // await), so only one createEditor pair lands per mount. See
+      // ui-mount-editors-destroyed-guard (round-2 scope broadening).
+      if (this._editorsInitialized) return;
+      this._editorsInitialized = true;
       const { createEditor } = await import('../editor.js');
       // Teardown-during-init guard. If the component was destroyed while the
       // dynamic import was in flight, $refs are stale and any editor we
       // create now leaks (destroy() already nulled the previous instance
       // refs, so it won't tear down anything we assign here). See
       // ui-mount-editors-destroyed-guard.
-      if (!this._mounted) return;
+      if (!this._mounted) {
+        // Release the idempotency flag so a legitimate later remount (e.g.
+        // live-reload, navigation back to the page) can re-mount editors.
+        this._editorsInitialized = false;
+        return;
+      }
       const abstractEl = this.$refs.abstractEditor;
       const bodyEl = this.$refs.bodyEditor;
 
@@ -538,6 +551,7 @@ export function initPublishPage() {
       if (this._draftTimer) { clearTimeout(this._draftTimer); this._draftTimer = null; }
       if (this._abstractEditor) { this._abstractEditor.destroy(); this._abstractEditor = null; }
       if (this._bodyEditor) { this._bodyEditor.destroy(); this._bodyEditor = null; }
+      this._editorsInitialized = false;
       if (this._storageListener) { window.removeEventListener('storage', this._storageListener); this._storageListener = null; }
     },
 
