@@ -3,19 +3,18 @@ import { logger } from '../logger.js';
 import { BootFatalError } from '../startup-checks.js';
 
 /**
- * BACKEND-CUSTODY-AUDIT-RETENTION-SWEEP — GDPR Art. 5(1)(e) storage-limitation
- * enforcement for `custody_audit_log`.
+ * GDPR Art. 5(1)(e) storage-limitation enforcement for `custody_audit_log`.
  *
  * Migration 006 (`backend/migrations/006_custody_audit_pii_annotation.sql`)
  * documents the retention period for `custody_audit_log.user_agent` in a
  * `COMMENT ON COLUMN` annotation. That comment is the single source of truth
  * (SOT) for the retention window. This module reads the comment at startup
- * (fail-loud on parse error — see `startRetentionSweep`), parses the
+ * (fail-loud on parse error — see `validateRetentionSweepConfig`), parses the
  * "Retention: <N> months" line, and runs a periodic
  * `DELETE FROM custody_audit_log WHERE created_at < now() - interval '<N> months'`.
  *
  * Trigger shape: boot validates the SOT (refuses to start if the comment is
- * missing or unparseable, per `startRetentionSweep` below), then the post-
+ * missing or unparseable, per `validateRetentionSweepConfig` below), then the post-
  * `listen()` ticker (`startRetentionSweepTicker`) runs an immediate first
  * sweep and schedules a 24h `setInterval`. PEvO is single-instance (no
  * leader-election concerns), so a daily cadence is fine. The immediate first
@@ -72,8 +71,7 @@ export function parseRetentionMonthsFromComment(comment: string | null): number 
     throw new Error(
       'custody_audit_log.user_agent column comment is missing or empty. ' +
       'Migration 006_custody_audit_pii_annotation.sql must run before boot. ' +
-      'The retention period SOT lives in the column comment per ' +
-      'BACKEND-CUSTODY-AUDIT-RETENTION-SWEEP — refusing to start.',
+      'The retention period SOT lives in the column comment — refusing to start.',
     );
   }
   // Match `Retention: <N> months`, case-insensitive. The migration 006 text
@@ -166,12 +164,13 @@ export async function runSweep(
  *
  * On parse failure this throws `BootFatalError`. The throw propagates out
  * of the awaited call inside `initAppDb().then(...)` in `index.ts`, into
- * the sibling `.catch` (lines 156-162), which calls `flushAndExit()` before
+ * the `.catch` of that `initAppDb().then(...)` chain, which discriminates
+ * `instanceof BootFatalError` and calls `flushAndExit()` before
  * `app.listen()` ever runs — per the boot-fatal call-stack-unwind convention
  * (`agents/docs/solutions/conventions/boot-fatal-call-stack-unwind-and-rethrow-trap-2026-05-11.md`).
  * The helper does NOT catch the throw and call `flushAndExit()` itself: an
  * internal `try { ... } catch { logger.fatal; flushAndExit(); return; }` would
- * let the awaiting caller continue past `await startRetentionSweep(...)` to
+ * let the awaiting caller continue past `await validateRetentionSweepConfig(...)` to
  * `bootedApp.listen(...)` while `flushAndExit` runs async — the backend would
  * accept traffic for up to 2 seconds during what should be a hard boot abort.
  *
@@ -179,7 +178,7 @@ export async function runSweep(
  * Operators infer health via existing healthchecks; per-tick logs would add
  * log volume without catching a concrete failure mode.
  */
-export async function startRetentionSweep(pool: pg.Pool | null): Promise<void> {
+export async function validateRetentionSweepConfig(pool: pg.Pool | null): Promise<void> {
   if (!pool) {
     // Mirrors `signup-cleanup.cleanupExpiredSignups`: when APP_DATABASE_URL
     // is unset (rare dev configuration), the sweep is a no-op. Production
@@ -191,12 +190,12 @@ export async function startRetentionSweep(pool: pg.Pool | null): Promise<void> {
   } catch (err) {
     // Re-throw as BootFatalError so `instanceof BootFatalError` at the outer
     // catch identifies the failure class for operator alerting. The original
-    // throw's message is preserved in the cause chain via {cause: err}-style
-    // err logging at the catch site (the .catch in index.ts logs {err}).
+    // throw is preserved on the `.cause` property of the BootFatalError; the
+    // `.catch` in index.ts logs `{err}`, and pino's standard `err` serializer
+    // walks `.cause` so the underlying parse error surfaces in the fatal log.
     throw new BootFatalError(
-      `custody-audit retention sweep SOT-parse failed: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
+      'custody-audit retention sweep SOT-parse failed at boot',
+      { cause: err },
     );
   }
 }
@@ -213,7 +212,7 @@ export async function startRetentionSweep(pool: pg.Pool | null): Promise<void> {
  *
  * Called inside the `bootedApp.listen(...)` callback in `index.ts`, mirroring
  * the placement of `startSignupCleanup` / `startBatchReputation` / sibling
- * jobs. Boot-time SOT validation (`startRetentionSweep`) has already run by
+ * jobs. Boot-time SOT validation (`validateRetentionSweepConfig`) has already run by
  * the time this fires, so the immediate-tick DELETE is safe to assume a
  * parseable column comment.
  */
@@ -221,6 +220,27 @@ export function startRetentionSweepTicker(pool: pg.Pool | null): void {
   if (!pool) {
     return;
   }
+  // First-tick gating design (round-3 item 6): the immediate first sweep is
+  // fired un-awaited, deliberately, for three reasons:
+  //   1. Backfill semantics: the first DELETE after deploy must drop pre-
+  //      existing rows older than the retention period (acceptance #3).
+  //      Awaiting it would block the listen-callback chain that registers
+  //      sibling jobs (signup-cleanup, batch-reputation, etc.) — none of
+  //      those need to wait for a backfill DELETE that may scan a large
+  //      historical row set.
+  //   2. Ticker-registration independence: a slow first DELETE (e.g.,
+  //      VACUUM-FULL contention, large first-deploy backfill) must not
+  //      delay `setInterval` registration. The 24h cadence means there's
+  //      no risk of two sweeps overlapping at this scale — even a sweep
+  //      taking minutes is well under the next tick.
+  //   3. Failure containment: a first-tick exception cannot crash the
+  //      backend post-listen (the `.catch` below routes it through
+  //      `logger.error`); the next tick retries on the normal cadence.
+  // Future-shortening risk: if the interval ever drops below the worst-case
+  // sweep duration, two `runSweep` invocations could overlap. At 24h
+  // cadence and the current row volume, that's well outside the operating
+  // envelope; revisit if the interval ever shortens (e.g., compliance
+  // policy change to weekly-or-tighter sweeps on a heavier audit table).
   runSweep(pool).catch((err) => {
     // First-tick failure is NOT boot-fatal (we're already past listen). Same
     // treatment as periodic-tick failures: log and let the next tick retry.

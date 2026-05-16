@@ -16,7 +16,7 @@ import { startReputationWeightsCache, backfillAccreditationSeeds } from './reput
 import { startWotThresholdCache } from './wot.js';
 import { startAccountClaimer, stopAccountClaimer } from './account-creation.js';
 import { startSignupCleanup, stopSignupCleanup } from './signup-cleanup.js';
-import { startRetentionSweep, startRetentionSweepTicker, stopRetentionSweep } from './jobs/custody-audit-retention-sweep.js';
+import { validateRetentionSweepConfig, startRetentionSweepTicker, stopRetentionSweep } from './jobs/custody-audit-retention-sweep.js';
 import { drainArgon2Queue, startArgon2AbortReporter, stopArgon2AbortReporter } from './lib/argon2-semaphore.js';
 import { startDecrementQueueDrainer, stopDecrementQueueDrainer } from './lib/pending-decrement-queue.js';
 import { logger } from './logger.js';
@@ -103,7 +103,7 @@ if (app) {
       // pre-existing rows older than the retention period) is deferred to
       // startRetentionSweepTicker inside the listen callback so a degraded-DB
       // state can't hang the boot indefinitely.
-      await startRetentionSweep(getAppPool());
+      await validateRetentionSweepConfig(getAppPool());
 
       server = bootedApp.listen(config.port, () => {
         // Warm expensive shared HAF caches in the background (non-blocking).
@@ -147,7 +147,7 @@ if (app) {
         // Start custody_audit_log retention sweep ticker (first sweep
         // immediately as backfill of pre-existing rows older than the SOT
         // retention period, then every 24h). Boot-time SOT validation
-        // already ran above via startRetentionSweep before listen().
+        // already ran above via validateRetentionSweepConfig before listen().
         startRetentionSweepTicker(getAppPool());
 
         // Start periodic argon2 abort-summary reporter (every 60s).
@@ -167,7 +167,21 @@ if (app) {
       // Round-4 hold #1 (BACKEND-BRIDGE-KEY-STARTUP-VALIDATION-AND-PINO-REDACT):
       // route through `flushAndExit()` so the fatal line drains under the 2s
       // watchdog (a hung-flush callback no longer hangs the boot indefinitely).
-      logger.fatal({ err }, 'Failed to initialize app database');
+      //
+      // BootFatalError discrimination (BACKEND-CUSTODY-AUDIT-RETENTION-SWEEP
+      // round-3 item 1): boot-fatal throws (e.g. SOT-parse failure in
+      // `validateRetentionSweepConfig`) propagate out of the awaited call
+      // inside `initAppDb().then(...)` and land here. The sync top-level
+      // catch in `index.ts` (lines 80-85) already discriminates this class
+      // to suppress the re-log of the user-actionable detail emitted at
+      // the throw site; mirror that pattern here so the async path's fatal
+      // log carries the BootFatalError's own message rather than the
+      // mislabelled "Failed to initialize app database".
+      if (err instanceof BootFatalError) {
+        logger.fatal({ err }, err.message);
+      } else {
+        logger.fatal({ err }, 'Failed to initialize app database');
+      }
       flushAndExit();
     });
 }
