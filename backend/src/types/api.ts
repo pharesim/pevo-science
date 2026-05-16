@@ -50,6 +50,7 @@ export type ErrorCode =
   | "PASSWORD_ALREADY_SET"
   | "ORCID_REQUIRED"
   | "SERVICE_UNAVAILABLE"
+  | "ACCREDITATION_GATE_UNAVAILABLE"
   | "INTERNAL_ERROR";
 
 export interface PaginationMeta {

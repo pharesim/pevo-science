@@ -508,38 +508,58 @@ describe('accreditation /verify — existing-accreditation gate (user-level)', (
     expect(broadcastJsonMock).not.toHaveBeenCalled();
   });
 
-  it('gate HAF throw degrades to per-token idempotency check, broadcast proceeds + existing_accreditation_lookup_failed warn', async () => {
+  // Round-3 (architect α-disposition, 2026-05-16): gate-query failure no
+  // longer degrades to broadcast. Under PEvO's operator-only-reversible
+  // revoke semantic, fallthrough during HAF outage would let a fresh
+  // accredit override a chain-recorded revoke — a structural gap, not a
+  // bounded duplicate class. The route now returns 503 SERVICE_UNAVAILABLE
+  // with a stable error code, preserves the token (no deleteToken), does
+  // NOT increment the pre-INCR rate-limit counter, and does NOT broadcast.
+  it('gate HAF throw returns 503 ACCREDITATION_GATE_UNAVAILABLE — token preserved, no broadcast, no cap INCR (round-3 α)', async () => {
     const redis = getRedis();
     if (!redis) return;
     const token = `accred-idem-${crypto.randomBytes(8).toString('hex')}`;
     const username = 'gatethrowuser';
     await seedPendingAccreditation(token, username);
 
-    // Gate throws → fall through to per-token check (empty) → broadcast.
+    // Only the gate query is exercised; if the route reached the per-token
+    // check or broadcast, the next HAF call would be `mockResolvedValueOnce`'s
+    // no-more-mocks fallback and the test would fail in an observable way.
     hafQueryMock.mockRejectedValueOnce(new Error('haf gate query exploded'));
-    hafQueryMock.mockResolvedValueOnce({ rows: [] });
 
     const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never);
     try {
       const res = await request(app).post('/api/accreditation/verify').send({ token });
 
-      // Fresh broadcast envelope — gate-throw fall-through preserves
-      // pre-gate baseline behavior (at worst a duplicate on-chain op, which
-      // is the bounded class the gate exists to close).
-      expect(res.status).toBe(200);
-      expect(res.body.data.tx_id).toBe('fresh-accred-tx-id');
-      expect(res.body.data.outcome).toBeUndefined();
-      expect(broadcastJsonMock).toHaveBeenCalledTimes(1);
-      // Both HAF probes attempted — gate threw, per-token returned empty.
-      expect(hafQueryMock).toHaveBeenCalledTimes(2);
-      // Discriminator pin — distinct from `idempotency_lookup_failed`.
+      // 503 envelope with stable error code + retriable hint.
+      expect(res.status).toBe(503);
+      expect(res.body.error).toMatchObject({
+        code: 'ACCREDITATION_GATE_UNAVAILABLE',
+        details: { retriable: true },
+      });
+      // Broadcast must NOT fire under HAF outage — the override class is
+      // closed by short-circuiting before the broadcast path.
+      expect(broadcastJsonMock).not.toHaveBeenCalled();
+      // Only the gate query was attempted — per-token check did not run.
+      expect(hafQueryMock).toHaveBeenCalledTimes(1);
+      // Token MUST remain valid so the user can retry once HAF recovers.
+      // This is a deliberate divergence from the gate-hit and idempotency-
+      // hit cleanup branches.
+      expect(await tokenExists(token)).toBe(true);
+      // Pre-INCR rate-limit counter must NOT have been touched — consistent
+      // with the gate-hit / idempotency-hit short-circuits.
+      const counter = await readBroadcastAttemptsCounter(token);
+      expect(counter === null || counter === 0).toBe(true);
+      // Structured-log event pin for operator dashboards. `warn` (not
+      // `error`) per the project log-volume-minimal stance — this is an
+      // external-dependency degraded-state, not a server-internal bug.
       const matchingCall = warnSpy.mock.calls.find((call) => {
         const ctx = call[0] as Record<string, unknown> | undefined;
-        return ctx?.event === 'accreditation.verify.existing_accreditation_lookup_failed';
+        return ctx?.event === 'accreditation.verify.existing_accreditation_gate_unavailable';
       });
-      expect(matchingCall, 'expected existing_accreditation_lookup_failed warn').toBeDefined();
+      expect(matchingCall, 'expected existing_accreditation_gate_unavailable warn').toBeDefined();
       expect(matchingCall![0]).toMatchObject({
-        event: 'accreditation.verify.existing_accreditation_lookup_failed',
+        event: 'accreditation.verify.existing_accreditation_gate_unavailable',
         route: 'accreditation.verify',
         username,
         email_hash: expect.any(String),

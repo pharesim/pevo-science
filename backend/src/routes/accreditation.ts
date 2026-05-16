@@ -518,21 +518,33 @@ router.post('/verify', accreditationVerifyLimiter, validate(accreditationVerifyS
         });
       }
     } catch (gateErr) {
-      // Symmetric to the idempotency lookup degraded-path: the gate is a
-      // structural defense, not a correctness layer. A HAF throw here
-      // (connection drop, schema regression) falls through to the per-token
-      // idempotency check and ultimately the broadcast — at worst the user
-      // gets a duplicate on-chain op (the bounded class the gate exists to
-      // close), which is the pre-gate baseline behavior.
+      // Round-2's revoke-handling fix (the gate now considers latest of
+      // ('accredit','revoke')) reshaped what fallthrough means here: a
+      // catch-and-degrade would let a fresh broadcast OVERRIDE a chain-
+      // recorded revoke during HAF outage, not just permit a bounded
+      // duplicate accredit. Under PEvO's operator-only-reversible revoke
+      // semantic (architect disposition α, 2026-05-16), that override is a
+      // structural gap, not an accepted bounded class. So when the gate
+      // query throws we surface 503 SERVICE_UNAVAILABLE and preserve the
+      // token (no deleteTokenBestEffort) so the user can retry once HAF
+      // recovers. The rate-limit counter is not incremented either: this
+      // path short-circuits before the pre-INCR slot claim.
       logger.warn(
         {
-          event: 'accreditation.verify.existing_accreditation_lookup_failed',
+          event: 'accreditation.verify.existing_accreditation_gate_unavailable',
           route: 'accreditation.verify',
           username: pending.hive_username,
           email_hash: hashEmailForLogs(pending.email),
           err: gateErr instanceof Error ? gateErr : new Error(String(gateErr)),
         },
-        'accreditation.verify existing-accreditation gate HAF lookup failed — proceeding to per-token idempotency check',
+        'accreditation.verify existing-accreditation gate HAF query failed — returning 503 SERVICE_UNAVAILABLE; token preserved for retry',
+      );
+      return sendError(
+        res,
+        503,
+        'ACCREDITATION_GATE_UNAVAILABLE',
+        'Verification temporarily unavailable. Please retry shortly.',
+        { retriable: true },
       );
     }
 
