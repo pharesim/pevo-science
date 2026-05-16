@@ -1,8 +1,9 @@
 /**
- * Real-HAF coverage for `findCustodyBroadcastByIdempotencyKey` and
- * `findAccreditationBroadcastByIdempotencyKey` — closes carve-out clause
- * (c) for `backend/tests/lib/idempotency.test.ts` (mocked-pool unit suite)
- * and the route-level sibling suites
+ * Real-HAF coverage for `findCustodyBroadcastByIdempotencyKey`,
+ * `findAccreditationBroadcastByIdempotencyKey`, and
+ * `findExistingAccreditation` — closes carve-out clause (c) for
+ * `backend/tests/lib/idempotency.test.ts` (mocked-pool unit suite) and the
+ * route-level sibling suites
  * `backend/tests/routes/custody-idempotency.test.ts` /
  * `tests/routes/accreditation-idempotency.test.ts` (which also mock
  * `db.js`). See the originating task
@@ -63,6 +64,7 @@ import { config } from '../../src/config.js';
 import {
   findCustodyBroadcastByIdempotencyKey,
   findAccreditationBroadcastByIdempotencyKey,
+  findExistingAccreditation,
 } from '../../src/lib/idempotency.js';
 import { queryWithRetry } from '../support/haf-query.js';
 
@@ -90,76 +92,76 @@ async function findKnownCustodyIdempotencyOp(): Promise<CustodyFixture | null> {
   // custom_json arm — required_posting_auths ?| ARRAY[required].
   // ORDER BY block_num ASC pins the earliest op so the probe stays
   // deterministic across runs as more ops accumulate.
-  try {
-    const cjRes = await queryWithRetry<{
-      author: string | null;
-      key: string | null;
-      trx_id: string | null;
-      block_num: number | null;
-    }>(
-      pool,
-      `SELECT
-         cj.required_posting_auths ->> 0 AS author,
-         cj.json::jsonb ->> 'idempotency_key' AS key,
-         op.included_trx_id AS trx_id,
-         cj.block_num
-       FROM ${T.customJson} cj
-       JOIN hafsql.haf_operations op ON op.id = cj.id
-       WHERE cj.custom_id = $1
-         AND (cj.json::jsonb ->> 'idempotency_key') IS NOT NULL
-         AND cj.block_num >= $2
-       ORDER BY cj.block_num ASC
-       LIMIT 1`,
-      [config.appTag, genesis],
-    );
-    const row = cjRes.rows[0];
-    if (row?.author && row?.key && row?.trx_id && row?.block_num !== null) {
-      return {
-        author: row.author,
-        key: row.key,
-        trxId: row.trx_id,
-        blockNum: row.block_num,
-        surface: 'custom_json',
-      };
-    }
-  } catch {
-    // Fall through to comment probe.
+  //
+  // Round-1 hold item 1: no try/catch. queryWithRetry only retries
+  // transient pg codes (ECONNRESET/ETIMEDOUT/EPIPE/ECONNREFUSED) and
+  // re-throws everything else, so a column rename (42703) or
+  // relation-not-found (42P01) — exactly the schema-regression class
+  // this file is filed to catch — propagates as a test failure. A bare
+  // catch here would invert the file's purpose by reporting SKIPPED on
+  // the regression we want to fail loudly.
+  const cjRes = await queryWithRetry<{
+    author: string | null;
+    key: string | null;
+    trx_id: string | null;
+    block_num: number | null;
+  }>(
+    pool,
+    `SELECT
+       cj.required_posting_auths ->> 0 AS author,
+       cj.json::jsonb ->> 'idempotency_key' AS key,
+       op.included_trx_id AS trx_id,
+       cj.block_num
+     FROM ${T.customJson} cj
+     JOIN hafsql.haf_operations op ON op.id = cj.id
+     WHERE cj.custom_id = $1
+       AND (cj.json::jsonb ->> 'idempotency_key') IS NOT NULL
+       AND cj.block_num >= $2
+     ORDER BY cj.block_num ASC
+     LIMIT 1`,
+    [config.appTag, genesis],
+  );
+  const cjRow = cjRes.rows[0];
+  if (cjRow?.author && cjRow?.key && cjRow?.trx_id && cjRow?.block_num !== null) {
+    return {
+      author: cjRow.author,
+      key: cjRow.key,
+      trxId: cjRow.trx_id,
+      blockNum: cjRow.block_num,
+      surface: 'custom_json',
+    };
   }
 
-  // Comment arm.
-  try {
-    const coRes = await queryWithRetry<{
-      author: string | null;
-      key: string | null;
-      trx_id: string | null;
-      block_num: number | null;
-    }>(
-      pool,
-      `SELECT
-         ocv.author,
-         (ocv.json_metadata -> $1 ->> 'idempotency_key') AS key,
-         op.included_trx_id AS trx_id,
-         ocv.block_num
-       FROM ${T.commentOps} ocv
-       JOIN hafsql.haf_operations op ON op.id = ocv.id
-       WHERE (ocv.json_metadata -> $1 ->> 'idempotency_key') IS NOT NULL
-         AND ocv.block_num >= $2
-       ORDER BY ocv.block_num ASC
-       LIMIT 1`,
-      [config.appTag, genesis],
-    );
-    const row = coRes.rows[0];
-    if (row?.author && row?.key && row?.trx_id && row?.block_num !== null) {
-      return {
-        author: row.author,
-        key: row.key,
-        trxId: row.trx_id,
-        blockNum: row.block_num,
-        surface: 'comment',
-      };
-    }
-  } catch {
-    return null;
+  // Comment arm — fall through when custom_json probe found no fixture.
+  const coRes = await queryWithRetry<{
+    author: string | null;
+    key: string | null;
+    trx_id: string | null;
+    block_num: number | null;
+  }>(
+    pool,
+    `SELECT
+       ocv.author,
+       (ocv.json_metadata -> $1 ->> 'idempotency_key') AS key,
+       op.included_trx_id AS trx_id,
+       ocv.block_num
+     FROM ${T.commentOps} ocv
+     JOIN hafsql.haf_operations op ON op.id = ocv.id
+     WHERE (ocv.json_metadata -> $1 ->> 'idempotency_key') IS NOT NULL
+       AND ocv.block_num >= $2
+     ORDER BY ocv.block_num ASC
+     LIMIT 1`,
+    [config.appTag, genesis],
+  );
+  const coRow = coRes.rows[0];
+  if (coRow?.author && coRow?.key && coRow?.trx_id && coRow?.block_num !== null) {
+    return {
+      author: coRow.author,
+      key: coRow.key,
+      trxId: coRow.trx_id,
+      blockNum: coRow.block_num,
+      surface: 'comment',
+    };
   }
   return null;
 }
@@ -179,34 +181,32 @@ async function findKnownAccreditationIdempotencyOp(): Promise<AccreditFixture | 
   const pool = getPool();
   if (!pool) return null;
   const genesis = getCachedGenesisBlock();
-  try {
-    const res = await queryWithRetry<{
-      key: string | null;
-      trx_id: string | null;
-      block_num: number | null;
-    }>(
-      pool,
-      `SELECT
-         cj.json::jsonb ->> 'idempotency_key' AS key,
-         op.included_trx_id AS trx_id,
-         cj.block_num
-       FROM ${T.customJson} cj
-       JOIN hafsql.haf_operations op ON op.id = cj.id
-       WHERE cj.custom_id = $1
-         AND cj.json::jsonb ->> 'action' = 'accredit'
-         AND (cj.json::jsonb ->> 'idempotency_key') IS NOT NULL
-         AND cj.required_posting_auths ?| $2::text[]
-         AND cj.block_num >= $3
-       ORDER BY cj.block_num ASC
-       LIMIT 1`,
-      [config.appTag, config.accreditationAuthorities, genesis],
-    );
-    const row = res.rows[0];
-    if (row?.key && row?.trx_id && row?.block_num !== null) {
-      return { key: row.key, trxId: row.trx_id, blockNum: row.block_num };
-    }
-  } catch {
-    return null;
+  // Round-1 hold item 1: no try/catch — SQL errors propagate as test
+  // failures. See the comment in findKnownCustodyIdempotencyOp.
+  const res = await queryWithRetry<{
+    key: string | null;
+    trx_id: string | null;
+    block_num: number | null;
+  }>(
+    pool,
+    `SELECT
+       cj.json::jsonb ->> 'idempotency_key' AS key,
+       op.included_trx_id AS trx_id,
+       cj.block_num
+     FROM ${T.customJson} cj
+     JOIN hafsql.haf_operations op ON op.id = cj.id
+     WHERE cj.custom_id = $1
+       AND cj.json::jsonb ->> 'action' = 'accredit'
+       AND (cj.json::jsonb ->> 'idempotency_key') IS NOT NULL
+       AND cj.required_posting_auths ?| $2::text[]
+       AND cj.block_num >= $3
+     ORDER BY cj.block_num ASC
+     LIMIT 1`,
+    [config.appTag, config.accreditationAuthorities, genesis],
+  );
+  const row = res.rows[0];
+  if (row?.key && row?.trx_id && row?.block_num !== null) {
+    return { key: row.key, trxId: row.trx_id, blockNum: row.block_num };
   }
   return null;
 }
@@ -308,8 +308,14 @@ describe('findCustodyBroadcastByIdempotencyKey — real HAF SQL shape', () => {
         fixture.surface,
       );
       expect(result).not.toBeNull();
-      expect(result?.tx_id).toBe(fixture.trxId);
-      expect(result?.block_num).toBe(fixture.blockNum);
+      // Round-1 hold item 3: result!.tx_id (not result?.tx_id) — after the
+      // `not.toBeNull()` runtime guard the value is known non-null, but
+      // TypeScript still views `result` as `IdempotencyHit | null`. The
+      // optional chain would compile and produce `undefined` on a null
+      // regression, masking the failure as "expected undefined to be X"
+      // instead of a clean null-vs-value signal at this line.
+      expect(result!.tx_id).toBe(fixture.trxId);
+      expect(result!.block_num).toBe(fixture.blockNum);
     },
   );
 
@@ -388,8 +394,10 @@ describe('findAccreditationBroadcastByIdempotencyKey — real HAF SQL shape', ()
 
       const result = await findAccreditationBroadcastByIdempotencyKey(pool, fixture.key);
       expect(result).not.toBeNull();
-      expect(result?.tx_id).toBe(fixture.trxId);
-      expect(result?.block_num).toBe(fixture.blockNum);
+      // Round-1 hold item 3: non-null assertion after the runtime guard.
+      // See the custody describe block for rationale.
+      expect(result!.tx_id).toBe(fixture.trxId);
+      expect(result!.block_num).toBe(fixture.blockNum);
     },
   );
 
@@ -425,40 +433,216 @@ describe('findAccreditationBroadcastByIdempotencyKey — real HAF SQL shape', ()
       // attempt). If found, assert the lookup does NOT return it —
       // the authority filter is load-bearing for the security
       // boundary.
-      try {
-        const probe = await queryWithRetry<{
-          key: string | null;
-          required_posting_auths: string[] | null;
-        }>(
+      //
+      // Round-1 hold item 1: no try/catch — SQL errors propagate as
+      // test failures so a schema regression on the probe SQL surfaces
+      // as a FAIL, not a silent swallow.
+      const probe = await queryWithRetry<{
+        key: string | null;
+        required_posting_auths: string[] | null;
+      }>(
+        pool,
+        `SELECT
+           cj.json::jsonb ->> 'idempotency_key' AS key,
+           cj.required_posting_auths
+         FROM ${T.customJson} cj
+         WHERE cj.custom_id = $1
+           AND cj.json::jsonb ->> 'action' = 'accredit'
+           AND (cj.json::jsonb ->> 'idempotency_key') IS NOT NULL
+           AND NOT (cj.required_posting_auths ?| $2::text[])
+           AND cj.block_num >= $3
+         ORDER BY cj.block_num ASC
+         LIMIT 1`,
+        [config.appTag, config.accreditationAuthorities, getCachedGenesisBlock()],
+      );
+      const forged = probe.rows[0];
+      if (forged?.key) {
+        const forgedLookup = await findAccreditationBroadcastByIdempotencyKey(
           pool,
-          `SELECT
-             cj.json::jsonb ->> 'idempotency_key' AS key,
-             cj.required_posting_auths
-           FROM ${T.customJson} cj
-           WHERE cj.custom_id = $1
-             AND cj.json::jsonb ->> 'action' = 'accredit'
-             AND (cj.json::jsonb ->> 'idempotency_key') IS NOT NULL
-             AND NOT (cj.required_posting_auths ?| $2::text[])
-             AND cj.block_num >= $3
-           ORDER BY cj.block_num ASC
-           LIMIT 1`,
-          [config.appTag, config.accreditationAuthorities, getCachedGenesisBlock()],
+          forged.key,
         );
-        const forged = probe.rows[0];
-        if (forged?.key) {
-          const forgedLookup = await findAccreditationBroadcastByIdempotencyKey(
-            pool,
-            forged.key,
-          );
-          // The filter must reject the forged op. A regression that
-          // drops the authority predicate would surface here as a non-null
-          // result with the forged signer's tx_id.
-          expect(forgedLookup).toBeNull();
-        }
-      } catch {
-        // Probe failure does not invalidate the deterministic-miss
-        // assertion above; the authority-filter coverage is still held
-        // by the randomUUID() miss.
+        // The filter must reject the forged op. A regression that
+        // drops the authority predicate would surface here as a non-null
+        // result with the forged signer's tx_id.
+        expect(forgedLookup).toBeNull();
+      }
+    },
+  );
+});
+
+/**
+ * Round-1 hold item 2: real-HAF coverage for `findExistingAccreditation`,
+ * the third in-scope function per the originating task spec. The function
+ * implements latest-action-wins semantics over `(accredit, revoke)` ops
+ * scoped to `(account = $hiveUsername, required_posting_auths ?|
+ * accreditationAuthorities)`. See `backend/src/lib/idempotency.ts`
+ * (lines ~282-345) for the SQL shape this test exercises.
+ *
+ * Discovery helper: probe HAF for the most-recent (`ORDER BY block_num
+ * DESC, id DESC`) `accredit`-OR-`revoke` op signed by a configured
+ * authority. Returns the account, the action of the latest op (so the
+ * positive-hit arm can predict gate-hit vs gate-miss correctly), and the
+ * expected tx_id + block_num when the latest action is `accredit`. When
+ * the latest action is `revoke`, `findExistingAccreditation` returns
+ * null by design — the positive-hit arm asserts that revoke-latest
+ * accounts produce null and accredit-latest accounts produce the hit.
+ */
+type ExistingAccreditationFixture = {
+  account: string;
+  latestAction: 'accredit' | 'revoke';
+  trxId: string;
+  blockNum: number;
+};
+
+async function findKnownExistingAccreditationFixture(): Promise<ExistingAccreditationFixture | null> {
+  const pool = getPool();
+  if (!pool) return null;
+  const genesis = getCachedGenesisBlock();
+  // Round-1 hold item 1: no try/catch — SQL errors propagate as test
+  // failures. The probe mirrors findExistingAccreditation's SQL shape so
+  // a regression on the underlying view surfaces here as well as in the
+  // assertion below.
+  const res = await queryWithRetry<{
+    account: string | null;
+    action: string | null;
+    trx_id: string | null;
+    block_num: number | null;
+  }>(
+    pool,
+    `SELECT
+       cj.json::jsonb ->> 'account' AS account,
+       cj.json::jsonb ->> 'action' AS action,
+       op.included_trx_id AS trx_id,
+       cj.block_num
+     FROM ${T.customJson} cj
+     JOIN hafsql.haf_operations op ON op.id = cj.id
+     WHERE cj.custom_id = $1
+       AND cj.json::jsonb ->> 'action' IN ('accredit', 'revoke')
+       AND cj.required_posting_auths ?| $2::text[]
+       AND cj.block_num >= $3
+     ORDER BY cj.block_num DESC, cj.id DESC
+     LIMIT 1`,
+    [config.appTag, config.accreditationAuthorities, genesis],
+  );
+  const row = res.rows[0];
+  if (!row?.account || !row?.action || !row?.trx_id || row?.block_num === null) {
+    return null;
+  }
+  if (row.action !== 'accredit' && row.action !== 'revoke') return null;
+  return {
+    account: row.account,
+    latestAction: row.action,
+    trxId: row.trx_id,
+    blockNum: row.block_num,
+  };
+}
+
+describe('findExistingAccreditation — real HAF SQL shape', () => {
+  it.skipIf(!isHafConfigured())(
+    'returns null for an account that has never been accredited (negative miss)',
+    { timeout: 60_000, retry: 5 },
+    async (ctx) => {
+      const pool = getPool();
+      if (!pool) {
+        ctx.skip('no pool available');
+        return;
+      }
+
+      // Deterministic non-existent account. randomUUID() in the suffix
+      // makes per-run collision astronomically unlikely. The string is
+      // longer than a real Hive username (max 16 chars) but the SQL
+      // just compares `cj.json::jsonb ->> 'account' = $2` as text, so
+      // length doesn't matter — the only requirement is that no
+      // accredit/revoke op exists for this string.
+      const noSuchAccount = `pevo-real-haf-noaccount-${crypto.randomUUID()}`;
+      const result = await findExistingAccreditation(pool, noSuchAccount);
+      expect(result).toBeNull();
+    },
+  );
+
+  it.skipIf(!isHafConfigured())(
+    'positive hit: latest-action-wins returns IdempotencyHit when latest is accredit, null when revoke',
+    { timeout: 60_000, retry: 5 },
+    async (ctx) => {
+      const pool = getPool();
+      if (!pool) {
+        ctx.skip('no pool available');
+        return;
+      }
+
+      const fixture = await findKnownExistingAccreditationFixture();
+      if (!fixture) {
+        ctx.skip(
+          'HAF has no accredit/revoke op from a configured authority yet — ' +
+            'the existing-accreditation gate has not been live-broadcast. This ' +
+            'assertion auto-activates once /verify or /revoke traffic ' +
+            'populates the field.',
+        );
+        return;
+      }
+
+      const result = await findExistingAccreditation(pool, fixture.account);
+      if (fixture.latestAction === 'accredit') {
+        // Latest action accredit: gate-hit, function returns the trx.
+        expect(result).not.toBeNull();
+        // Round-1 hold item 3: non-null assertion after the runtime guard.
+        expect(result!.tx_id).toBe(fixture.trxId);
+        expect(result!.block_num).toBe(fixture.blockNum);
+      } else {
+        // Latest action revoke: gate-miss by design (see
+        // findExistingAccreditation lines 340-343); /verify falls through
+        // to the re-accreditation broadcast path.
+        expect(result).toBeNull();
+      }
+    },
+  );
+
+  it.skipIf(!isHafConfigured())(
+    'per-route scoping: non-authority self-broadcast accredit for an account returns null',
+    { timeout: 60_000, retry: 5 },
+    async (ctx) => {
+      const pool = getPool();
+      if (!pool) {
+        ctx.skip('no pool available');
+        return;
+      }
+
+      // Mirrors the accreditation idempotency-key scoping arm: scan for
+      // any non-authority `accredit` op carrying an `account` field
+      // (forged self-broadcast). If found, the lookup MUST NOT return it
+      // — the `required_posting_auths ?| accreditationAuthorities` filter
+      // is the security boundary. If no such ops exist (the realistic
+      // case in production where only the admin authority issues
+      // accredit), the assertion is vacuously true.
+      //
+      // Round-1 hold item 1: no try/catch — SQL errors fail the test
+      // loudly.
+      const probe = await queryWithRetry<{
+        account: string | null;
+        required_posting_auths: string[] | null;
+      }>(
+        pool,
+        `SELECT
+           cj.json::jsonb ->> 'account' AS account,
+           cj.required_posting_auths
+         FROM ${T.customJson} cj
+         WHERE cj.custom_id = $1
+           AND cj.json::jsonb ->> 'action' = 'accredit'
+           AND (cj.json::jsonb ->> 'account') IS NOT NULL
+           AND NOT (cj.required_posting_auths ?| $2::text[])
+           AND cj.block_num >= $3
+         ORDER BY cj.block_num ASC
+         LIMIT 1`,
+        [config.appTag, config.accreditationAuthorities, getCachedGenesisBlock()],
+      );
+      const forged = probe.rows[0];
+      if (forged?.account) {
+        const forgedLookup = await findExistingAccreditation(pool, forged.account);
+        // The authority filter must reject the forged op. A regression
+        // that drops the predicate would surface here as a non-null
+        // result with the forged signer's tx_id, allowing a self-
+        // bootstrap accreditation.
+        expect(forgedLookup).toBeNull();
       }
     },
   );

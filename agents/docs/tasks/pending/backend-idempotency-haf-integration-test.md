@@ -179,3 +179,32 @@ Or simpler: drop the try/catch entirely. If the SQL is correct, the query won't 
 ### Re-review signal
 
 When items 1, 2, 3 land, `git mv` this file from `tasks/pending/` back to `tasks/review/` per `feedback_task_mv_to_review_after_each_round`. Use bare `backend:` or `backend(<scope>):` commit prefixes so the zone-audit hook fires. The architect's next review pass scopes `/ce-code-review` to commits since `42ac79c`. Items can land in one commit (all three touch the same file) or fan out — item 1 is the load-bearing structural fix; items 2 and 3 are additive.
+
+---
+
+## Backend re-review signal (2026-05-16, round-1 → round-2 fix commit)
+
+Round-1 hold items P0 #1, P1 #2, P1 #3 landed.
+
+**Item 1 (P0).** Dropped the bare `catch {}` blocks in `findKnownCustodyIdempotencyOp` (custom_json + comment arms) and `findKnownAccreditationIdempotencyOp` in `backend/tests/lib/idempotency-real-haf.test.ts`. Also dropped the bare catch in the accreditation forged-op probe inside `describe('findAccreditationBroadcastByIdempotencyKey ...')`. SQL errors (Postgres 42703 column-rename, 42P01 relation-not-found) now propagate as test failures rather than silent `ctx.skip()`s — the file now does what its header advertises. The new `findKnownExistingAccreditationFixture()` helper and the new describe block's forged-op probe were written without try/catch from the start (round-1 hold item 1 explicitly noted in inline comments at each site).
+
+**Item 2 (P1).** Added `describe('findExistingAccreditation — real HAF SQL shape', ...)` block with three `it.skipIf(!isHafConfigured())` arms: positive-hit via fixture discovery with latest-action-wins handling (gate-hit when latest action is `accredit`, gate-miss when `revoke` — exercises both branches of the function's latest-action semantics depending on what HAF surfaces), negative miss with a never-existed `pevo-real-haf-noaccount-${randomUUID()}` account, per-route scoping that probes for non-authority `accredit` ops carrying an `account` field (forged self-bootstrap attempt) and asserts the authority filter rejects them. New helper `findKnownExistingAccreditationFixture()` mirrors the sibling discovery helpers' shape. Header docblock updated to acknowledge the third function. Import added. `idempotency.test.ts` header was already accurate per pre-edit re-read (the architect's hold-block diagnosis confirmed the header already referenced `findExistingAccreditation` as real-path-covered); no edit needed there.
+
+**Item 3 (P1).** Replaced `result?.tx_id`/`result?.block_num` with `result!.tx_id`/`result!.block_num` at the load-bearing positive-hit assertions in all three describe blocks (custody, accreditation, existing-accreditation). After the `expect(result).not.toBeNull()` guard, the non-null assertion produces clear failure messages when a regression makes result null.
+
+**Verification:**
+- `npx vitest run tests/lib/idempotency-real-haf.test.ts` → 8 passed, 3 skipped (positive-hit + per-route-scoping baseline arms gated on no idempotency-key or accredit/revoke authority fixtures in HAF yet).
+- `npx vitest run tests/lib/idempotency.test.ts` → 29 passed (header was unchanged this round).
+- `npx tsc --noEmit` → clean.
+- `npx eslint tests/lib/idempotency-real-haf.test.ts tests/lib/idempotency.test.ts` → clean.
+- `grep -n 'catch {' tests/lib/idempotency-real-haf.test.ts` → zero bare-catch matches.
+- `grep -n 'result?\.\(tx_id\|block_num\)' tests/lib/idempotency-real-haf.test.ts` → zero functional matches (one comment-line mention of `result?.tx_id` documents the round-1 fix rationale).
+
+**Files staged for this commit:**
+
+- `backend/tests/lib/idempotency-real-haf.test.ts` (Edit — 4 bare-catch drops + new helper + new describe block + 4 optional-chain → non-null replacements + header + import update)
+- `agents/docs/tasks/pending/backend-idempotency-haf-integration-test.md` (this signal block appended)
+
+**No code changes** to `backend/src/lib/idempotency.ts` (per task "Out of scope: Changing the lookup SQL queries themselves").
+
+**No changes** to `backend/tests/lib/idempotency.test.ts` (header already accurately references all three functions, as verified pre-edit).
