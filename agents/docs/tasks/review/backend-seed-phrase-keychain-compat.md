@@ -161,3 +161,19 @@ Round-2 fixes for the 3 hold-block items landed in `backend/`. Architect re-revi
 - `[TODO ARCHITECT]` for ARCHITECTURE.md "Account Creation" / "Light Accounts" / "Key Derivation" section updates — owned by the architect at dual-archive intake, NOT an implementer hold-block item.
 
 **Re-review trigger:** when the item above lands, `git mv` this file back to `tasks/review/` and the architect's next review pass picks it up. Do NOT edit the hold block itself or annotate fixes inside it — the commit diff is the evidence; the architect updates the hold block during re-review.
+
+## Backend re-review signal (2026-05-16, round 3, working tree)
+
+Round-3 fix for the single hold-block item landed in `backend/src/seed-phrase.ts`. Architect re-review intake.
+
+- **Item 1 (`_wordlist!` non-null assertion / type-fidelity hole):** the two nullable module-level variables (`_bip39: typeof Bip39 | null` and `_wordlist: string[] | null`) collapsed into a single atomic cache object — `let _cache: { bip39: typeof Bip39; wordlist: string[] } | null = null`. The `loadBip39` guard now checks `_cache` instead of `_bip39`, populates a local `bip39` and `wl.wordlist` inside the branch, and assigns the populated object to `_cache` in one step. The return is a bare `return _cache;` (tsc proves it non-null inside the guard's else-path via the populated assignment in the if-branch, since the assignment happens unconditionally inside `if (!_cache)`). The previous `return { bip39: _bip39, wordlist: _wordlist! }` shape is gone, including the `!` assertion. The structural invariant the assertion was load-bearing on — "if `_bip39` is non-null, `_wordlist` is also non-null" — is now expressed in the type system itself (the cache is either fully populated or `null`, never half-populated), so an asymmetric refactor that, e.g., inserted a throw between the two `await import(...)` calls would either leave `_cache` null (and the next `loadBip39` call retries) or fail the function entirely (and the caller propagates the error). Either way, no null-dereference path opens at the three downstream `bip39.generateMnemonic` / `bip39.validateMnemonic` call sites.
+
+  The JSDoc above the cache declaration grew a new sentence noting the atomic-object rationale: "Cached as a single atomic object so tsc proves both fields non-null at the return site — splitting into two nullable variables would require a `!` assertion load-bearing on a structural invariant the type system can't see." This is the type-fidelity rationale, mirroring round-2's JSDoc on `deriveKeysFromMnemonic`.
+
+**Verification gates:**
+
+- `npm run typecheck` clean (both `typecheck:src` and `typecheck:tests`).
+- `npm run lint` clean (zero warnings; same as round-2).
+- `npx vitest run tests/seed-phrase.test.ts`: **7 passed**. Same parity vectors as rounds 1–2; the algorithm is unchanged, only the lazy-load cache shape changed. The Redis-connection-refused log lines are unrelated infrastructure noise from `tests/setup.ts` (the parity test queries no infrastructure).
+
+`[TODO ARCHITECT]` from rounds 1–2 stands unchanged: the `ARCHITECTURE.md` "Account Creation" / "Light Accounts" / "Key Derivation" sections still need the algorithm-description update from HMAC-SHA512 → `PrivateKey.fromLogin`. No new doc work was introduced by round-3.

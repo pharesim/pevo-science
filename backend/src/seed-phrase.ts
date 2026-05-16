@@ -16,23 +16,25 @@ export interface DerivedKeys {
 }
 
 // Lazy-load ESM-only @scure/bip39 (only used for mnemonic generation/validation
-// as a UX guardrail; PrivateKey.fromLogin itself accepts any string).
-let _bip39: typeof Bip39 | null = null;
-let _wordlist: string[] | null = null;
+// as a UX guardrail; PrivateKey.fromLogin itself accepts any string). Cached
+// as a single atomic object so tsc proves both fields non-null at the return
+// site — splitting into two nullable variables would require a `!` assertion
+// load-bearing on a structural invariant the type system can't see.
+let _cache: { bip39: typeof Bip39; wordlist: string[] } | null = null;
 
 async function loadBip39() {
-  if (!_bip39) {
+  if (!_cache) {
     // ESM-only deps. Dynamic import works at runtime under both Node16/CJS
     // (Node treats import() as ESM regardless of host module classification)
     // and under vitest/ESBuild's ESM bundling. The earlier eval('import(...)')
     // workaround failed under vitest because eval doesn't carry the
     // dynamic-import callback. The '.js' suffix on the wordlist subpath is
     // required by the package's exports field.
-    _bip39 = await import('@scure/bip39');
+    const bip39 = await import('@scure/bip39');
     const wl = await import('@scure/bip39/wordlists/english.js');
-    _wordlist = wl.wordlist;
+    _cache = { bip39, wordlist: wl.wordlist };
   }
-  return { bip39: _bip39, wordlist: _wordlist! };
+  return _cache;
 }
 
 /**
